@@ -235,8 +235,8 @@ in a known direction:
 
 #### DECISION (user confirmed): **Scheme A — broad `PassiveComponent`**
 
-Trait shape (revised by doc review M5, 2026-04-09 — see "Trait
-contract revision" below):
+Trait shape (revised by doc review M5 + M2, 2026-04-09 — see
+"Trait contract revision" below and Decision 7):
 
 ```rust
 pub trait PassiveComponent: Send + Sync + 'static {
@@ -248,6 +248,12 @@ pub trait PassiveComponent: Send + Sync + 'static {
     /// `model.nv` and is shared (accumulating) with other components
     /// in the same `PassiveStack`.
     fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>);
+
+    /// If this component has a stochastic part, return a handle to
+    /// toggle it. Default: no stochastic part, returns `None`.
+    /// Components that implement `Stochastic` (Decision 7) override
+    /// this to return `Some(self)`.
+    fn as_stochastic(&self) -> Option<&dyn Stochastic> { None }
 }
 ```
 
@@ -1988,8 +1994,8 @@ sim/L0/thermostat/                       (NEW directory)
 ├── Cargo.toml                           (~20 LOC)
 └── src/
     ├── lib.rs                           (~50 LOC: docs + re-exports)
-    ├── component.rs                     (~30 LOC: trait + tests)
-    ├── stack.rs                         (~120 LOC: builder + install + install_per_env + tests)
+    ├── component.rs                     (~70 LOC: PassiveComponent + Stochastic + tests)
+    ├── stack.rs                         (~160 LOC: builder + install + install_per_env + stochastic gating + tests)
     ├── diagnose.rs                      (~20 LOC: trait + tests)
     ├── langevin.rs                      (~150 LOC: struct + impl + tests)
     └── test_utils.rs                    (~170 LOC: Welford + reset + merge + assertions + tests)
@@ -1997,7 +2003,7 @@ sim/L0/thermostat/                       (NEW directory)
     └── langevin_thermostat.rs           (~250 LOC: integration tests)
 ```
 
-Total Phase 1 footprint: **~810 LOC** across **8 files**.
+Total Phase 1 footprint: **~890 LOC** across **8 files**.
 Comparable to a small ml-bridge algorithm file plus its
 tests. Manageable, mechanical, swappable.
 
@@ -2013,6 +2019,507 @@ Architecture is observable from `ls sim/L0/thermostat/src/`.
 - **Decision 6 RESOLVED.** Scheme A confirmed. The Phase 1
   file inventory above is the on-disk layout the crate ships
   with.
+- **Updated by doc review M2 (2026-04-09)**: `component.rs`
+  grows from ~30 to ~70 LOC (adds the `Stochastic` trait
+  and the `as_stochastic` introspection hook on
+  `PassiveComponent`). `stack.rs` grows from ~120 to ~160 LOC
+  (adds `set_all_stochastic` and the `StochasticGuard` RAII
+  type). Total Phase 1 footprint moves from ~810 to ~890 LOC.
+- No code, no Cargo.toml changes, no new files written beyond
+  this document.
+
+---
+
+### Decision 7 (2026-04-09, doc review M2): Stochastic gating for FD/autograd contexts
+
+- **Question**: When the autograd engine perturbs `qpos[i]` and
+  re-runs `forward()` to compute `∂qacc/∂qpos[i]` via finite
+  differences, the call chain `forward_acc()` → `mj_fwd_passive()`
+  → `cb_passive` fires the `PassiveStack` closure, which fires
+  every component's `apply()`, which (for stochastic components
+  like `LangevinThermostat`) consumes RNG and produces a *fresh*
+  noise sample on every call. The baseline and perturbed runs
+  therefore see *different* noise samples, and the FD estimate
+  `(qacc(qpos+ε) - qacc(qpos)) / ε` is dominated by
+  `Var(noise)/ε`, blowing up as `ε → 0`. **What does the chassis
+  provide so Phase 5 (differentiable cf-design) and the D3
+  headline experiment can recover meaningful derivatives?**
+- **Why this is Decision 7**: Decisions 1-6 settled the trait,
+  composer, lifecycle, introspection, test utilities, and crate
+  layout. The "Phase 5+ caveat" in master plan §The Gap and
+  recon log part 4 flagged this issue but punted it. Doc review
+  M2 (2026-04-09) escalated it to a chassis-level decision: the
+  chassis exists *exactly* so Phase 5 doesn't get caught
+  off-guard, and "we'll deal with it later" is the failure mode
+  the chassis is designed to prevent. Retrofitting a gating
+  mechanism into the trait at Phase 5 would be breaking-change
+  territory; doing it now is one trait method + one introspection
+  hook + one stack method, with zero implementations to migrate.
+- **Constraint from item 8**: Zero sim-core changes. Cannot add
+  a "disable cb_passive" flag to `Model`. The gating must live
+  entirely inside `sim-thermostat`.
+- **Constraint from M5**: Components have no mutable access to
+  `Data`. Whatever gating mechanism we add, the component must
+  honor it from inside `apply(&self, &Model, &Data, &mut DVector<f64>)`.
+- **Observation that drives the recommendation**: Every stochastic
+  component on the Research Directions roadmap has
+  **state-independent noise**. The Langevin thermostat draws from
+  `N(0, 2γkT/h)` — depends on `γ`, `kT`, `h`, none of which
+  depend on `qpos` or `qvel`. The flashing-ratchet Brownian motor
+  (D1) gates a fixed potential on/off with thermal noise from a
+  fixed-`T` bath. Stochastic resonance (D2) injects sub-threshold
+  periodic forcing plus thermal bath at fixed `T`. None of these
+  has noise that depends on the perturbation variables.
+
+  For state-independent noise, the FD derivative satisfies
+  `∂(F_det + ξ)/∂qpos = ∂F_det/∂qpos + 0 = ∂F_det/∂qpos`. So
+  **disabling the noise during FD perturbation runs gives the
+  exactly-correct derivative for the deterministic part** —
+  which, for state-independent noise, is the *complete* answer.
+
+#### Scheme A — Orthogonal `Stochastic` opt-in trait + RAII gating
+
+A small extension trait that stochastic components opt into,
+plus a default-`None` introspection hook on `PassiveComponent`
+so the stack can find them, plus an RAII guard on `PassiveStack`
+that disables-on-construction and re-enables-on-drop.
+
+```rust
+// component.rs
+
+pub trait PassiveComponent: Send + Sync + 'static {
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>);
+
+    /// If this component has a stochastic part, return a handle to
+    /// toggle it. Default: no stochastic part, returns `None`.
+    /// Components that implement `Stochastic` override this to return
+    /// `Some(self)`.
+    fn as_stochastic(&self) -> Option<&dyn Stochastic> { None }
+}
+
+pub trait Stochastic: Send + Sync {
+    /// When false, `apply()` must produce ONLY this component's
+    /// deterministic contribution (e.g., a Langevin thermostat
+    /// outputs only `-γ·v`, no noise). When true (the default),
+    /// `apply()` produces the full stochastic contribution.
+    ///
+    /// Used by FD/autograd contexts where the perturbed runs must
+    /// be deterministic to recover meaningful derivatives.
+    fn set_stochastic_active(&self, active: bool);
+    fn is_stochastic_active(&self) -> bool;
+}
+```
+
+`LangevinThermostat` implements both:
+
+```rust
+// langevin.rs
+
+pub struct LangevinThermostat {
+    gamma: DVector<f64>,
+    k_b_t: f64,
+    rng: Mutex<ChaCha8Rng>,
+    stochastic_active: AtomicBool,  // M2: defaults to true
+}
+
+impl PassiveComponent for LangevinThermostat {
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+        let h = model.timestep;
+        let active = self.stochastic_active.load(Ordering::Acquire);
+        let mut rng = self.rng.lock().unwrap();
+        for i in 0..self.gamma.len() {
+            let g = self.gamma[i];
+            let damping = -g * data.qvel[i];
+            let noise = if active {
+                let z: f64 = StandardNormal.sample(&mut *rng);
+                (2.0 * g * self.k_b_t / h).sqrt() * z
+            } else {
+                0.0
+            };
+            qfrc_out[i] += damping + noise;
+        }
+    }
+
+    fn as_stochastic(&self) -> Option<&dyn Stochastic> { Some(self) }
+}
+
+impl Stochastic for LangevinThermostat {
+    fn set_stochastic_active(&self, active: bool) {
+        self.stochastic_active.store(active, Ordering::Release);
+    }
+    fn is_stochastic_active(&self) -> bool {
+        self.stochastic_active.load(Ordering::Acquire)
+    }
+}
+```
+
+`PassiveStack` exposes a one-shot toggle and an RAII guard:
+
+```rust
+// stack.rs
+
+impl PassiveStack {
+    /// Toggle the stochastic part of every stochastic component
+    /// in the stack. Non-stochastic components are unaffected.
+    /// Prefer `disable_stochastic()` when possible — the RAII
+    /// guard cannot be forgotten.
+    pub fn set_all_stochastic(&self, active: bool) {
+        for c in &self.components {
+            if let Some(s) = c.as_stochastic() {
+                s.set_stochastic_active(active);
+            }
+        }
+    }
+
+    /// Disable every stochastic component for the lifetime of
+    /// the returned guard. On drop, re-enables every component
+    /// that was previously enabled. Use this around FD/autograd
+    /// perturbation loops.
+    pub fn disable_stochastic(&self) -> StochasticGuard<'_> {
+        let prior: Vec<bool> = self.components.iter()
+            .filter_map(|c| c.as_stochastic())
+            .map(|s| {
+                let was = s.is_stochastic_active();
+                s.set_stochastic_active(false);
+                was
+            })
+            .collect();
+        StochasticGuard { stack: self, prior }
+    }
+}
+
+pub struct StochasticGuard<'a> {
+    stack: &'a PassiveStack,
+    prior: Vec<bool>,
+}
+
+impl<'a> Drop for StochasticGuard<'a> {
+    fn drop(&mut self) {
+        for (c, &was) in self.stack.components.iter()
+            .filter_map(|c| c.as_stochastic())
+            .zip(self.prior.iter())
+        {
+            c.set_stochastic_active(was);
+        }
+    }
+}
+```
+
+Use site (Phase 5 FD code):
+
+```rust
+let stack: Arc<PassiveStack> = ...;
+// stack.install(&mut model) already done elsewhere
+
+let baseline_qacc = {
+    let _guard = stack.disable_stochastic();
+    forward_skip(&model, &mut data);  // deterministic
+    data.qacc.clone()
+};
+
+let mut grad = DVector::zeros(model.nv);
+for i in 0..model.nv {
+    let _guard = stack.disable_stochastic();
+    data.qpos[i] += eps;
+    forward_skip(&model, &mut data);
+    grad[i] = (data.qacc[i] - baseline_qacc[i]) / eps;
+    data.qpos[i] -= eps;
+}
+// guard drops, stochastic re-enabled, normal sampling resumes
+```
+
+**Pros**:
+- **Solves the actual Phase 5 problem for the actual Phase 5 components.**
+  All stochastic components on the roadmap have state-independent
+  noise; disabling noise during FD gives exactly the right
+  derivative.
+- **Cheap.** One extension trait + one introspection hook + one
+  RAII guard. ~40 LOC of chassis code total.
+- **RAII makes forgetting impossible.** A user who reaches for
+  `set_all_stochastic(false)` and forgets to call
+  `set_all_stochastic(true)` leaves the system permanently
+  deterministic. The guard makes that footgun unrepresentable.
+- **Orthogonal trait pattern matches `Diagnose` (Decision 4).**
+  Components opt in by implementing `Stochastic`; non-stochastic
+  components ignore it entirely. The pattern is already
+  established.
+- **Composes with multi-stochastic stacks correctly.** A stack
+  with three stochastic components and two deterministic ones
+  toggles only the three. The two deterministic components are
+  silently bypassed because their `as_stochastic` returns `None`.
+- **Reentrant.** Nested guards (e.g., FD inside FD) compose
+  correctly via the `prior: Vec<bool>` capture-and-restore
+  pattern. Each guard restores to the state at its construction,
+  not to "true."
+- **Doesn't pollute non-stochastic components.** A user writing
+  a custom drag-law `PassiveComponent` doesn't have to think
+  about stochasticity at all — `as_stochastic` defaults to
+  `None`, and no other change is required.
+
+**Cons**:
+- **Adds one method to `PassiveComponent`.** This is a small bleed
+  of "what type of component is this?" introspection into the
+  broad trait. Decision 1's "broad trait stays minimal" principle
+  is mildly compromised, but the method has a sensible default
+  and non-stochastic components pay zero cost.
+- **Wrong for state-dependent noise.** A future component whose
+  noise depends on `qpos`/`qvel` (e.g., multiplicative-noise
+  processes) cannot be correctly handled by "just disable the
+  noise" — it would also disable the *correct* state-dependent
+  derivative contribution. Scheme B is required for that case.
+  No such component is on the Research Directions roadmap, but
+  it's worth being honest.
+- **Atomic load per `apply()` call.** One `AtomicBool::load` per
+  component per step. Negligible — atomics on x86 are nearly
+  free in the uncontended case.
+
+#### Scheme B — RNG snapshot/restore on `PassiveStack`
+
+A more general mechanism: stochastic components expose
+`rng_state(&self) -> Vec<u8>` and `restore_rng(&self, &[u8])`.
+The stack collects per-component snapshots and restores them
+around perturbation calls. The FD code does:
+
+```rust
+let snap = stack.snapshot_rng();
+forward_skip(&model, &mut data);  // baseline, consumes RNG
+let baseline_qacc = data.qacc.clone();
+for i in 0..model.nv {
+    stack.restore_rng(&snap);     // back to pre-baseline state
+    data.qpos[i] += eps;
+    forward_skip(&model, &mut data);  // perturbed, same noise sample
+    grad[i] = (data.qacc[i] - baseline_qacc[i]) / eps;
+    data.qpos[i] -= eps;
+}
+```
+
+The perturbed and baseline runs see the *same* noise sample,
+so the noise contribution cancels in the FD difference.
+
+**Pros**:
+- **Strictly more general.** Handles state-dependent noise
+  correctly by ensuring that "the same noise sample appears in
+  baseline and perturbed runs," not by "no noise appears in
+  either."
+- **No need for `Stochastic` to expose an `active` flag.** The
+  noise still fires; it just fires from the same RNG state on
+  every call.
+
+**Cons**:
+- **More implementation surface.** Each stochastic component
+  must expose snapshot/restore for its RNG state. `ChaCha8Rng`
+  state is ~40 bytes; serializing it correctly across `rand_chacha`
+  versions is its own can of worms (the same hazard item 4
+  resolved by *not* using `StdRng`). An explicit
+  `serde`-ish dance per component is significant added complexity.
+- **Per-call overhead is non-trivial.** Snapshot is a deep copy
+  of RNG state; restore is a deep copy back. For an FD loop with
+  `nv=1000` perturbations, that's 2000 RNG copies per gradient
+  evaluation. Not catastrophic but measurable.
+- **Doesn't compose with the `Mutex<ChaCha8Rng>` ownership model
+  cleanly.** To snapshot, you'd lock the mutex, clone the
+  internal state, unlock. To restore, lock, overwrite, unlock.
+  Three lock acquisitions per FD call per stochastic component.
+- **Harder to reason about.** A user reading the FD code has to
+  understand that the perturbed and baseline runs are *meant* to
+  produce identical noise — and if they accidentally call into
+  unrelated code that draws from the RNG between snapshot and
+  restore, the contract silently breaks.
+- **Solves a problem we don't have on the roadmap.** No current
+  or planned Research Direction needs state-dependent noise.
+
+#### Recommendation: **Scheme A — orthogonal `Stochastic` trait + RAII guard**
+
+Confidence: high. Five reasons in priority order:
+
+1. **Correct for every stochastic component on the roadmap.**
+   Langevin thermostat (Phase 1+), flashing ratchet (D1),
+   stochastic resonance driver (D2), coupled bistable arrays
+   (Phase 4), EBM training noise (Phase 5), Brownian computer
+   lattices (D5) — all have state-independent noise. "Disable
+   the noise" gives the exactly-correct derivative for all of
+   them. Scheme B's extra generality is generality we don't
+   need.
+
+2. **RAII makes forgetting unrepresentable.** The same "loud
+   over silent" principle that drove items 2, 4, 6, and M5:
+   a user who forgets to re-enable noise gets a *visible*
+   anomaly (their simulation is permanently deterministic) —
+   bad, but obvious. Without the guard, the same forgetting
+   gives *correct-looking but quietly wrong* statistics, which
+   is the exact failure mode sharpen-the-axe forbids. Decision
+   7 inherits the principle and applies it at the chassis API
+   surface.
+
+3. **~40 LOC vs. ~150 LOC.** Scheme A's total cost is
+   `Stochastic` trait (~10 LOC) + `as_stochastic` default-None
+   (~3 LOC) + `set_all_stochastic` (~8 LOC) + `disable_stochastic`
+   + `StochasticGuard` (~25 LOC). Scheme B requires per-component
+   serialization (~40 LOC × N components) + stack snapshot/restore
+   (~50 LOC) + per-component lock dance (~20 LOC each). Scheme A
+   is one quarter the surface for the same Phase 5 capability.
+
+4. **Scheme B is additive on top of A, never the other way
+   around.** If a future component lands with state-dependent
+   noise, we add a *second* orthogonal trait `RngSnapshot:
+   Stochastic` (or just `RngSnapshot: PassiveComponent`) and a
+   second `PassiveStack::snapshot_rng_state` method. The
+   `Stochastic` trait keeps working unchanged for everything
+   that doesn't need snapshot/restore. The reverse is harder:
+   if we ship Scheme B first and later realize most users only
+   need "disable noise," we have a heavy API consumers must
+   know how to wrap.
+
+5. **Matches the chassis style.** Decision 4 ships `Diagnose`
+   as an orthogonal opt-in trait. Decision 7 ships `Stochastic`
+   as another orthogonal opt-in trait. The pattern is already
+   established and proven; Scheme B would invent a new pattern
+   (stack-level snapshot/restore) for one feature.
+
+**Why I'm not recommending Scheme B**: it solves a problem we
+don't have, at three to four times the implementation cost, with
+a more error-prone use site. The "strictly more general" pro
+turns into "more flexibility than the roadmap can use" in
+practice. If a state-dependent noise component ever lands, we
+add Scheme B alongside Scheme A — additive, non-breaking. The
+chassis explicitly leaves that door open below.
+
+#### Sub-decisions inside Decision 7
+
+- **Trait name**: `Stochastic`. Matches the physics term, reads
+  cleanly as `LangevinThermostat: PassiveComponent + Stochastic`.
+  Considered: `Noisy` (informal), `RandomSource` (focuses on
+  the source rather than the behavior), `HasNoise` (matches the
+  Decision 4 forecast `HasTemperature` shape). `Stochastic` is
+  the most idiomatic and the shortest.
+- **Method names**: `set_stochastic_active` and
+  `is_stochastic_active`. Verbose-on-purpose so they're hard to
+  confuse with `Diagnose::diagnostic_*` methods or with
+  generic `set_active`/`is_active` patterns from other crates.
+- **Interior mutability via `AtomicBool`**: matches the existing
+  `Mutex<ChaCha8Rng>` pattern in `LangevinThermostat`. Lighter
+  than a mutex (no kernel call, no lock contention), correct
+  for a single bool, `Send + Sync` for free. `Ordering::Acquire`
+  for loads, `Ordering::Release` for stores — the standard
+  release/acquire pattern for "publish a flag, then read it on
+  another thread."
+- **Default value**: `true` (stochastic-on by default). Set in
+  `LangevinThermostat::new(...)`. A user who never touches it
+  gets a fully-stochastic thermostat, which is the common case.
+- **`as_stochastic` default returns `None`**: non-stochastic
+  components opt in by overriding to return `Some(self)`. This
+  is the only place `PassiveComponent` mentions `Stochastic`,
+  and the bleed is justified by the cost of the alternative
+  (separate builder methods, footgun risk — see "Why a single
+  builder method" below).
+- **Why a single builder method (`with`) instead of separate
+  `with` and `with_stochastic`**: separate methods would let
+  the user accidentally register a stochastic component with
+  the non-stochastic builder method, silently breaking the
+  gating. The introspection-hook approach makes the component
+  itself responsible for declaring its stochasticity, removing
+  the footgun. Decision 2's `with(impl PassiveComponent)`
+  signature is unchanged.
+- **`StochasticGuard` is `Drop`-based, not method-based**:
+  RAII over `enable()`/`disable()` pairs because forgetting
+  is the failure mode. The guard cannot be forgotten — when it
+  goes out of scope, the disabled components are re-enabled.
+  Reentrant by virtue of the `prior: Vec<bool>` capture (each
+  guard restores to its construction-time state, not to
+  hard-coded `true`).
+- **`StochasticGuard` is non-`Send`** (no explicit `unsafe impl`,
+  inherits from `&PassiveStack` which is `Send + Sync` so the
+  guard is technically `Send`, but conceptually it should not
+  cross thread boundaries because the disable/enable lifetime
+  is scoped). The guard is intended for synchronous FD loops
+  on a single thread; if Phase 5 ever needs cross-thread FD,
+  we revisit.
+- **Error mode if `Drop` panics**: `set_stochastic_active` is
+  an `AtomicBool::store`, which is infallible. The guard's
+  `Drop` implementation cannot panic. Clean.
+- **`set_all_stochastic(false)` is exposed alongside the guard**:
+  for the rare case where a user genuinely wants to leave
+  stochasticity off for an indefinite period (e.g., debugging,
+  golden-trajectory tests). Documented as "prefer the guard
+  unless you have a specific reason."
+- **No interaction with `install_per_env`**: each per-env stack
+  has its own components and its own gating state. Toggling
+  one stack's stochastic state does not affect any other stack.
+- **Phase 1 test additions**: the Phase 1 test suite gains one
+  small test that verifies `disable_stochastic` zeroes the noise
+  contribution. Equipartition under disabled noise should give
+  `⟨½v²⟩ → 0` (the deterministic damping decays the system to
+  rest), which is a different but verifiable invariant.
+
+#### Future direction (not Phase 1, named here for completeness)
+
+If a future component lands with state-dependent noise (e.g., a
+multiplicative-noise diffusion process), Scheme B can be added
+as a second orthogonal trait *alongside* `Stochastic`:
+
+```rust
+pub trait RngSnapshot: PassiveComponent {
+    type State: Clone + Send + Sync;
+    fn snapshot_rng(&self) -> Self::State;
+    fn restore_rng(&self, state: &Self::State);
+}
+```
+
+Components that need snapshot/restore implement both
+`Stochastic` (for the cheap "disable" path when correctness
+allows it) and `RngSnapshot` (for the precise "same noise sample"
+path when correctness requires it). The `PassiveStack` exposes
+a parallel `snapshot_rng_states` / `restore_rng_states` API. None
+of this changes Decision 7's `Stochastic` trait — it's purely
+additive.
+
+The chassis explicitly does not ship `RngSnapshot` in Phase 1
+because no Phase 1-7 component needs it. If that changes, the
+door is open.
+
+#### DECISION (user confirmed): **Scheme A — `Stochastic` trait + RAII gating**
+
+The chassis ships `Stochastic` as an orthogonal opt-in trait
+with `set_stochastic_active` / `is_stochastic_active`,
+`PassiveComponent` gains a default-`None` `as_stochastic`
+introspection hook, and `PassiveStack` exposes both
+`set_all_stochastic` and `disable_stochastic` (RAII guard) for
+FD/autograd contexts. `LangevinThermostat` implements both
+traits and gates its noise contribution on an `AtomicBool`.
+
+Total chassis cost: ~40 LOC across `component.rs` (+~40 LOC)
+and `stack.rs` (+~40 LOC).
+
+Phase 5 FD code becomes:
+```rust
+let _guard = stack.disable_stochastic();
+fd_perturbation_loop(...);
+// guard drops, stochastic re-enabled
+```
+
+Scheme B (`RngSnapshot`) is named as the additive future
+direction for state-dependent noise components, when and if
+one lands.
+
+#### Status
+
+- **Decision 7 RESOLVED.** Scheme A confirmed. The "Phase 5+
+  caveat" from master plan §The Gap
+  is now answered at the chassis level instead of being
+  punted; Phase 5 inherits a working FD path by construction.
+- **Trait additions to Decision 1**: `PassiveComponent` gains a
+  default-`None` `as_stochastic(&self) -> Option<&dyn Stochastic>`
+  hook. The change is additive and non-breaking (every existing
+  reference to `PassiveComponent` keeps working without
+  modification).
+- **API additions to Decision 2**: `PassiveStack` gains
+  `set_all_stochastic(active)` and `disable_stochastic() ->
+  StochasticGuard<'_>`. Both are pure additions; the existing
+  `builder()` / `install()` / `install_per_env()` API is
+  unchanged.
+- **File inventory updated**: `component.rs` ~30 → ~70 LOC,
+  `stack.rs` ~120 → ~160 LOC, total Phase 1 footprint ~810 →
+  ~890 LOC.
 - No code, no Cargo.toml changes, no new files written beyond
   this document.
 
@@ -2020,7 +2527,7 @@ Architecture is observable from `ls sim/L0/thermostat/src/`.
 
 ## 2. Chassis design round complete
 
-All six decisions resolved:
+All seven decisions resolved:
 
 | # | Decision                       | Resolution |
 |---|--------------------------------|------------|
@@ -2030,6 +2537,7 @@ All six decisions resolved:
 | 4 | `Diagnose` trait surface       | Minimal: `diagnostic_summary -> String` only |
 | 5 | Public test utilities          | `WelfordOnline` + `assert_within_n_sigma` + `sample_stats` |
 | 6 | Crate layout                   | Flat ml-bridge style, 5 source files + 1 test file |
+| 7 | Stochastic gating (FD/autograd)| `Stochastic` orthogonal trait + RAII `disable_stochastic()` guard |
 
 The chassis is structurally complete. Phase 1 implementation
 will be a learning exercise *for* the chassis (per the user's

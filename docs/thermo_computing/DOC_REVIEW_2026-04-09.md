@@ -29,13 +29,24 @@ sessions can reconstruct the *why* without re-running the analysis.
   ≈4.5% for option β). ✓ *Applied 2026-04-09: master plan correction box and
   chassis side finding now use `(½kT)·√2/√10 ≈ 0.45·(½kT)` and explicitly
   state the "fraction of expected mean ½kT" tolerance convention.*
-- [ ] **M2** — Add a chassis-level decision (Decision 7) for stochastic
+- [x] **M2** — Add a chassis-level decision (Decision 7) for stochastic
   gating in FD/autograd contexts. Currently filed only as a Phase 5+ caveat.
   Three candidate patterns to compare honestly: (1) orthogonal `Stochastic`
   trait with `set_stochastic(active: bool)`, (2) RNG snapshot/restore on
   `PassiveStack`, (3) sim-core `disable_passive_callback` flag (forbidden by
   item 8). **Acceptance**: chassis doc has a Decision 7 section, schemes
-  compared, recommendation made, decision logged.
+  compared, recommendation made, decision logged. ✓ *Applied 2026-04-09 —
+  Decision 7 added with full Scheme A (Stochastic trait + RAII gating) vs
+  Scheme B (RNG snapshot/restore) treatment. Scheme A recommended on five
+  grounds: correctness for state-independent noise (matches every roadmap
+  component), RAII forgetting-impossible, ~40 LOC vs ~150 LOC, additive
+  on-top-of-A path for B if state-dependent noise ever lands, matches
+  Decision 4 orthogonal-trait pattern. Decision 1 trait gains `as_stochastic`
+  default-None hook; Decision 2 stack gains `set_all_stochastic` and
+  `disable_stochastic` RAII guard. File inventory bumped: component.rs
+  30→70, stack.rs 120→160, total 810→890. Chassis design round complete
+  table updated to 7 rows. Master plan §Phase 1 caveat 1 (FD perturbation)
+  marked RESOLVED with reference to Decision 7.*
 - [ ] **M3** — Move Q5 (cf-design end-to-end differentiability) from
   "unresolved, gates Phase 5" to active foreground recon, scheduled in
   parallel with the Phase 1 spec drafting. **Acceptance**: master plan §5
@@ -192,8 +203,9 @@ substrate.
 - [x] **M5** — Tighten the `PassiveComponent` doc-contract (option 1:
   doc-only) or change the signature (option 2). ~10-30 min. ✓ done — chose
   option 2 (signature change with scratch buffer).
-- [ ] **M2** — Add Decision 7 to the chassis doc — stochastic gating for
-  FD/autograd contexts. ~30 min of design + ~30 lines.
+- [x] **M2** — Add Decision 7 to the chassis doc — stochastic gating for
+  FD/autograd contexts. ✓ done — Scheme A (`Stochastic` trait + RAII guard)
+  recommended; full two-scheme treatment in chassis Decision 7.
 - [ ] **S1** — Resolve Q3 (`thrml-rs`) with a 5-min web search.
 - [ ] **M3** — Open Q5 (cf-design differentiability) as foreground recon in
   parallel with Phase 1 spec drafting.

@@ -477,16 +477,25 @@ temperature. Passing this is the gate to all of Phase 2+.
 **Phase 5+ caveats** (flagged here, addressed in later phases):
 1. **Derivatives / FD perturbation** — `cb_passive` fires inside
    `forward_skip()` because `mj_fwd_passive` is called from `forward_acc`,
-   which `forward_skip` calls. For deterministic derivative computation
-   in Phase 5, the thermostat needs gating or RNG snapshot/restore.
+   which `forward_skip` calls. **RESOLVED at the chassis level by
+   doc review M2 → Decision 7 (2026-04-09)**: `PassiveStack` exposes
+   `disable_stochastic() -> StochasticGuard<'_>`, an RAII guard that
+   sets every `Stochastic` component to deterministic-mode for the
+   guard's lifetime and restores prior state on drop. Phase 5 FD
+   loops wrap their perturbation block in the guard; the perturbed
+   and baseline runs both produce zero noise, so the FD difference
+   recovers `∂F_det/∂qpos` exactly. See `THERMO_CHASSIS_DESIGN.md`
+   Decision 7 for the full reasoning and the Scheme A vs. Scheme B
+   trade-off.
 2. **Plugin passive forces fire after `cb_passive`** (`passive.rs:723-731`).
    If a model has plugins contributing passive forces, the thermostat's
    noise will be present when the plugin runs. Not a Phase 1 issue (no
    plugins) but worth being aware of.
 3. **BatchSim parallel envs** need *one* `LangevinThermostat` instance
    per env, not a shared instance. Avoids lock contention on the RNG
-   mutex and keeps RNG streams independent across envs. The API should
-   make the wrong choice hard.
+   mutex and keeps RNG streams independent across envs. **Resolved at
+   the chassis level by Decision 3** (`install_per_env` factory +
+   defensive clear).
 
 ### Phases 2–7
 
