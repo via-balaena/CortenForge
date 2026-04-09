@@ -255,3 +255,296 @@ drivers, ratchets, custom drag laws, energy biases — implement
   ships.
 - No code, no Cargo.toml changes, no new files written beyond this
   document.
+
+---
+
+### Decision 2 (2026-04-09): Composition idiom
+
+- **Question**: How do `PassiveComponent` implementations compose?
+  `sim-core`'s `cb_passive` is single-slot — only one callback per
+  Model. If a user wants Langevin thermostat + sub-threshold
+  periodic driver + Brownian ratchet running together (D1, D2, D3
+  territory), the chassis needs a way to take N components and
+  install ONE callback that calls them all in order. What does the
+  composer look like, what does its install API look like, and what
+  is the user-facing call shape?
+- **Why this is decision 2**: Decision 1 settled the trait. Decision
+  2 settles how multiple instances of the trait coexist. Everything
+  about the lifecycle (install, clear), test-utility shape, and
+  clone handling depends on the composer existing first.
+- **Constraint from the chassis**: `Model::set_passive_callback`
+  takes a single `Fn(&Model, &mut Data) + Send + Sync + 'static`.
+  Whatever composer we design must produce exactly one such closure
+  internally and install it via this API. Verified `pub` in
+  Decision 8 / part 10 of the master plan recon.
+
+#### Scheme A — Mutable vec with explicit push
+
+A plain stack with a `new`/`push`/`install` lifecycle:
+
+```rust
+pub struct PassiveStack {
+    components: Vec<Arc<dyn PassiveComponent>>,
+}
+
+impl PassiveStack {
+    pub fn new() -> Self { Self { components: Vec::new() } }
+    pub fn push<C: PassiveComponent>(&mut self, component: C) {
+        self.components.push(Arc::new(component));
+    }
+    pub fn install(self: Arc<Self>, model: &mut Model) { ... }
+}
+```
+
+User code:
+
+```rust
+let stack = Arc::new({
+    let mut s = PassiveStack::new();
+    s.push(LangevinThermostat::new(gamma, kT, seed));
+    s.push(StochasticDriver::new(...));
+    s
+});
+stack.install(&mut model);
+```
+
+**Pros**:
+- Direct, mechanical, no extra builder type.
+- One type to learn (`PassiveStack`) instead of two
+  (`PassiveStack` + `PassiveStackBuilder`).
+
+**Cons**:
+- Two-step pattern: build the stack mutably, *then* wrap in `Arc`,
+  *then* install. The `Arc::new({ let mut s = ...; s })` dance is
+  awkward and is exactly the kind of pattern beginners trip on.
+- `let mut` is required, breaking the chained-fluent style.
+- Diverges from `sim-ml-bridge`'s `ActionSpace::builder()` idiom,
+  which is the explicit reference architecture for the thermo
+  crate. The user has to learn two patterns: builder for
+  ml-bridge, vec-and-push for thermo.
+- Single-component case is just as awkward as multi-component case
+  — the boilerplate cost is uniform, no advantage when N=1.
+
+#### Scheme B — Builder pattern (matches `ActionSpace::builder`)
+
+A builder type that accumulates components fluently and `build()`s
+into an `Arc<PassiveStack>` ready to install:
+
+```rust
+pub struct PassiveStack {
+    components: Vec<Arc<dyn PassiveComponent>>,
+}
+
+pub struct PassiveStackBuilder {
+    components: Vec<Arc<dyn PassiveComponent>>,
+}
+
+impl PassiveStack {
+    pub fn builder() -> PassiveStackBuilder {
+        PassiveStackBuilder { components: Vec::new() }
+    }
+}
+
+impl PassiveStackBuilder {
+    pub fn with<C: PassiveComponent>(mut self, component: C) -> Self {
+        self.components.push(Arc::new(component));
+        self
+    }
+    pub fn build(self) -> Arc<PassiveStack> {
+        Arc::new(PassiveStack { components: self.components })
+    }
+}
+
+impl PassiveStack {
+    pub fn install(self: Arc<Self>, model: &mut Model) {
+        let me = Arc::clone(&self);
+        model.set_passive_callback(move |m, d| {
+            for c in &me.components {
+                c.apply(m, d);
+            }
+        });
+    }
+}
+```
+
+User code (single component):
+
+```rust
+PassiveStack::builder()
+    .with(LangevinThermostat::new(gamma, kT, seed))
+    .build()
+    .install(&mut model);
+```
+
+User code (multi-component):
+
+```rust
+PassiveStack::builder()
+    .with(LangevinThermostat::new(gamma, kT, seed))
+    .with(StochasticDriver::new(...))
+    .build()
+    .install(&mut model);
+```
+
+`with` takes `impl PassiveComponent` so the user does NOT have to
+write `Arc::new(...)` at every call site — the builder wraps
+internally. The user gets clean, chained, mechanical syntax for
+both single and multi cases with no `let mut`.
+
+**Clear path**: not on the stack at all. The user calls
+`model.clear_passive_callback()` directly — that is already a
+public sim-core API and there is no value in wrapping it. The
+thermo crate does not duplicate sim-core APIs unnecessarily.
+
+**Pros**:
+- **One pattern for all cases** — single-component (N=1) and
+  multi-component (N≥2) use the exact same call shape. Beginners
+  learn one thing, and adding a component later is a one-line
+  change (`.with(...)`).
+- **Matches `sim-ml-bridge::ActionSpace::builder()` exactly** — the
+  user already knows this pattern from ml-bridge. The thermo crate
+  reads as a sibling rather than as a different shape.
+- **`with(impl PassiveComponent)` is ergonomic** — no `Arc::new`
+  noise at the call site, the builder wraps internally.
+- **Chained fluent style** — no `let mut`, no `Arc::new({ ... })`
+  dance. Reads top-to-bottom like a sentence.
+- **Build returns the install-ready Arc** — one less ceremony
+  step for the user.
+
+**Cons**:
+- Two types instead of one (`PassiveStack` + `PassiveStackBuilder`).
+  Trivial cost: ~30 LOC of crate code, zero user-facing cost.
+- Slight overhead in the trivial single-component case
+  (`.builder().with(...).build()` vs. one constructor call). Real
+  but ~5 chars; outweighed by the consistency benefit.
+
+#### Recommendation: **Scheme B — builder pattern**
+
+Confidence: high. Four reasons in priority order:
+
+1. **ml-bridge precedent is the explicit reference architecture
+   for this crate.** The user named ml-bridge's modularity as the
+   model when reframing the chassis design. `ActionSpace::builder()`
+   is exactly this pattern. Diverging from it would require
+   beginners to learn two builder shapes for two L0 crates that
+   are conceptually parallel — direct violation of "readability
+   and organization are the highest priority."
+
+2. **One pattern for single and multi cases**. The trivial case
+   (one thermostat) and the headline case (D3 multi-component
+   co-design with thermostat + driver + ratchet) use *the same
+   API shape*. Beginners who start with one component and later
+   add a second do not have to relearn anything; they add one
+   `.with(...)` line. This is the mechanical-and-modular property
+   the user explicitly asked for.
+
+3. **No `Arc::new` noise at the call site**. `with(impl
+   PassiveComponent)` taking the concrete type and wrapping
+   internally eliminates a category of beginner errors (forgetting
+   to wrap, double-wrapping, wrapping the wrong thing). The
+   builder owns the wrapping discipline.
+
+4. **The cost is invisible to users**. Two types in the crate
+   (`PassiveStack` + `PassiveStackBuilder`) are implementation
+   details. The user-facing surface is one fluent call chain.
+
+**Why I'm not recommending A**: Scheme A's "one type" advantage is
+real but its `Arc::new({ let mut s = ...; s })` dance is the
+exact pattern that drives beginners away from Rust crates. Scheme
+B trades one extra type for vastly better ergonomics. The trade
+is uneven in B's favor.
+
+#### Sub-decisions inside Decision 2
+
+Locking these in alongside the scheme so the API surface is clear:
+
+- **Builder method name**: `with(component)`. Reads as "the stack
+  with this component"; matches Rust's `with_*` builder convention
+  (cf. `nalgebra::Matrix::with_diagonal`,
+  `bevy::Transform::with_translation`, etc.). Considered: `add`,
+  `push`, `component`. `with` is the most idiomatic; the others
+  read as imperative or noisy.
+- **`with` signature**: `with<C: PassiveComponent>(mut self,
+  component: C) -> Self`. Takes the concrete type by value,
+  wraps in `Arc` internally. Considered: `with(Arc<dyn
+  PassiveComponent>)` (more flexible but requires user to wrap)
+  and `with(Arc<impl PassiveComponent>)` (middle ground). The
+  concrete-type form is the most ergonomic for Phase 1; if a
+  later phase needs to share an `Arc<dyn PassiveComponent>`
+  between stacks, we can add a parallel `with_arc` method
+  without breaking `with`.
+- **`build` return type**: `Arc<PassiveStack>`. Pre-wrapped so
+  the user does not have to think about `Arc`. The `install`
+  method takes `self: Arc<Self>` so the chained-fluent style
+  works: `.build().install(&mut model)`.
+- **Order semantics**: Vec order = call order. The first
+  `.with(...)` call's component runs first inside the
+  `cb_passive` closure. This is the obvious behavior; document
+  it explicitly so users can rely on it (e.g., for stochastic
+  driver-then-thermostat sequencing).
+- **`clear` is NOT on `PassiveStack`**. Users call
+  `model.clear_passive_callback()` directly — that is already a
+  public sim-core API. Don't duplicate.
+- **Component inspection (`.components() -> &[...]`) is NOT in
+  Phase 1**. Not needed yet. Add when there is a concrete use
+  case (probably Decision 4 or Decision 5).
+
+#### Open follow-ons triggered by this decision
+
+- The `install` method takes `self: Arc<Self>`, which means a
+  user who clones the underlying `Arc` and installs it on two
+  Models gets *one shared stack*, *one shared component set*,
+  *one shared RNG state per stateful component*. **This is the
+  clone footgun.** Decision 3 resolves it at the chassis level
+  with a "build N independent stacks from one prototype"
+  pattern, so Decision 2 does not need to solve it — but the
+  install signature here makes Decision 3 inescapable.
+
+#### DECISION (user confirmed): **Scheme B — builder pattern**
+
+Final API surface:
+
+```rust
+pub struct PassiveStack {
+    components: Vec<Arc<dyn PassiveComponent>>,
+}
+
+pub struct PassiveStackBuilder {
+    components: Vec<Arc<dyn PassiveComponent>>,
+}
+
+impl PassiveStack {
+    pub fn builder() -> PassiveStackBuilder { ... }
+    pub fn install(self: Arc<Self>, model: &mut Model) { ... }
+}
+
+impl PassiveStackBuilder {
+    pub fn with<C: PassiveComponent>(mut self, component: C) -> Self {
+        self.components.push(Arc::new(component));
+        self
+    }
+    pub fn build(self) -> Arc<PassiveStack> {
+        Arc::new(PassiveStack { components: self.components })
+    }
+}
+```
+
+User code is uniform across single-component and multi-component
+cases:
+
+```rust
+PassiveStack::builder()
+    .with(LangevinThermostat::new(gamma, kT, seed))
+    .with(StochasticDriver::new(...))
+    .build()
+    .install(&mut model);
+```
+
+#### Status
+
+- **Decision 2 RESOLVED.** Scheme B confirmed. The composer is
+  the builder-pattern `PassiveStack` + `PassiveStackBuilder`,
+  matching `sim-ml-bridge::ActionSpace::builder()`. This is the
+  one and only composition path for the thermo crate.
+- No code, no Cargo.toml changes, no new files written beyond
+  this document.
