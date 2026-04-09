@@ -1487,6 +1487,47 @@ Confidence: high. Five reasons:
   for precision in the failure message.
 - **Welford's `push` takes `f64` by value, not `&f64`**.
   f64 is Copy, no reason to take a reference.
+- **`reset()` ships in Phase 1** (added by doc review M4,
+  2026-04-09). Without it, the streaming-Welford burn-in
+  story is broken: the chassis explicitly does not ship a
+  `burn_in_skip` helper because "it's literal slice
+  indexing," but slice indexing is unavailable when the
+  samples were never materialized in the first place. The
+  natural pattern is *push during burn-in → reset → push
+  the real samples → assert*, which requires `reset()`.
+  One-line implementation (`*self = Self::new();`), real
+  ergonomic win for the streaming use case the chassis was
+  designed around.
+- **`merge(&other)` ships in Phase 1** (added by doc review
+  M4, 2026-04-09). Combines two independent `WelfordOnline`
+  accumulators into one global statistic using the
+  Chan/Pébay parallel-merge formula (Chan, Golub, LeVeque
+  1979; Pébay 2008 generalization). Required by option (β)
+  of the Phase 1 validation parameter fix — 100 independent
+  trajectories, each with its own per-trajectory accumulator,
+  combined into a single 100-trajectory mean + variance —
+  and by every Phase 4+ parallel-env test that wants to
+  fold per-env statistics together. Without `merge`, option
+  (β) has to materialize per-trajectory means in a `Vec<f64>`
+  and re-Welford them, which loses the streaming property
+  for the variance estimate. ~6 LOC implementation:
+  ```rust
+  pub fn merge(&mut self, other: &Self) {
+      if other.count == 0 { return; }
+      if self.count == 0 { *self = other.clone(); return; }
+      let n_a = self.count as f64;
+      let n_b = other.count as f64;
+      let n   = n_a + n_b;
+      let delta = other.mean - self.mean;
+      self.mean += delta * (n_b / n);
+      self.m2   += other.m2 + delta * delta * (n_a * n_b / n);
+      self.count += other.count;
+  }
+  ```
+  Requires `WelfordOnline: Clone`, which is trivial (three
+  `Copy` fields). Tested against the equivalent
+  push-everything-into-one-accumulator path for byte-exact
+  agreement.
 - **`integrated_autocorrelation_time` is NOT in Phase 1**.
   Deferred to whichever later phase needs single-trajectory
   correlated-sample tests. If Phase 1 spec ends up choosing
@@ -1533,10 +1574,13 @@ pub fn assert_within_n_sigma(
     description: &str,
 );
 
+#[derive(Clone)]
 pub struct WelfordOnline { /* count, mean, m2 — all private */ }
 impl WelfordOnline {
     pub fn new() -> Self;
     pub fn push(&mut self, x: f64);
+    pub fn reset(&mut self);                // discard all samples (burn-in)
+    pub fn merge(&mut self, other: &Self);  // Chan/Pébay parallel merge
     pub fn count(&self) -> usize;
     pub fn mean(&self) -> f64;
     pub fn variance(&self) -> f64;          // unbiased (n-1)
@@ -1866,12 +1910,12 @@ sim/L0/thermostat/                       (NEW directory)
     ├── stack.rs                         (~120 LOC: builder + install + install_per_env + tests)
     ├── diagnose.rs                      (~20 LOC: trait + tests)
     ├── langevin.rs                      (~150 LOC: struct + impl + tests)
-    └── test_utils.rs                    (~150 LOC: Welford + assertions + tests)
+    └── test_utils.rs                    (~170 LOC: Welford + reset + merge + assertions + tests)
 └── tests/
     └── langevin_thermostat.rs           (~250 LOC: integration tests)
 ```
 
-Total Phase 1 footprint: **~790 LOC** across **8 files**.
+Total Phase 1 footprint: **~810 LOC** across **8 files**.
 Comparable to a small ml-bridge algorithm file plus its
 tests. Manageable, mechanical, swappable.
 

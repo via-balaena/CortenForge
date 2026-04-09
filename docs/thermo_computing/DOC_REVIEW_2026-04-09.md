@@ -41,12 +41,15 @@ sessions can reconstruct the *why* without re-running the analysis.
   parallel with the Phase 1 spec drafting. **Acceptance**: master plan §5
   Q5 entry updated to "in-progress recon, target resolution before Phase 1
   ships," with a recon log entry opened when the recon starts.
-- [ ] **M4** — Add `Welford::reset()` and `Welford::merge(&other)` to
+- [x] **M4** — Add `Welford::reset()` and `Welford::merge(&other)` to
   Decision 5's `WelfordOnline` API. `reset()` is needed because the burn-in
   story breaks for streaming Welford. `merge()` is needed for option β (100
   independent trajectories combined into one statistic) and for parallel-env
   Phase 4+. **Acceptance**: chassis Decision 5 final API surface lists both
-  methods with one-sentence rationale each.
+  methods with one-sentence rationale each. ✓ *Applied 2026-04-09: both
+  methods added to the final API surface, full rationale + Chan/Pébay
+  parallel-merge formula in the sub-decisions list, struct gains `#[derive(Clone)]`,
+  test_utils.rs LOC bumped 150→170, total footprint 790→810.*
 - [ ] **M5** — Tighten the `PassiveComponent` trait contract on what it's
   allowed to write to. Currently the trait gives `&mut Data` and the contract
   is implied by prose, not enforced. Two options: (1) hard doc-contract +
@@ -177,8 +180,8 @@ substrate.
 ## Suggested order of attack
 
 - [x] **M1** — One-paragraph wording fix in two places. ~10 min. ✓ done
-- [ ] **M4** — `Welford::reset()` and `Welford::merge()` added to Decision 5
-  API surface. ~10 min in the doc.
+- [x] **M4** — `Welford::reset()` and `Welford::merge()` added to Decision 5
+  API surface. ~10 min in the doc. ✓ done
 - [ ] **M5** — Tighten the `PassiveComponent` doc-contract (option 1:
   doc-only) or change the signature (option 2). ~10-30 min.
 - [ ] **M2** — Add Decision 7 to the chassis doc — stochastic gating for
