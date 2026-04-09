@@ -156,11 +156,16 @@ sessions can reconstruct the *why* without re-running the analysis.
   in CortenForge yet, parallel build), (4) per-device calibration loop
   for measuring effective `T`/`γ`/barrier height. Stack-fit clarified
   from "no fab dependency" to "no fab-house dependency."*
-- [ ] **S6** — Add a one-sentence "future direction" note for thermostat
+- [x] **S6** — Add a one-sentence "future direction" note for thermostat
   persistence/checkpointing. ChaCha8 state + gamma + kT + seed are trivially
   serializable; ml-bridge already has policy persistence as a precedent.
   **Acceptance**: chassis Decision 6 (or §2 Future Extensions) mentions
-  serialization as a known additive direction.
+  serialization as a known additive direction. ✓ *Applied 2026-04-09 — added
+  as a sub-decision in Decision 6 alongside the other "explicitly not in
+  Phase 1, with the door open" items (no examples, no benches, no README).
+  Notes the addition path: feature-gated `serde` derive on
+  `LangevinThermostat`, leveraging `rand_chacha`'s existing serde support.
+  Cites ml-bridge policy persistence (commit `4260a58`) as precedent.*
 
 ### Nits (4)
 
@@ -262,7 +267,7 @@ substrate.
 - [x] **S3** — `install_per_env` returns `EnvBatch` instead of `Vec<Model>`.
 - [x] **S4** — "Passive forces only" framing + flashing-ratchet sketch in chassis §0.
 - [x] **S5** — D4 external-dependencies subsection.
-- [ ] **S6** — Thermostat persistence future-direction note.
+- [x] **S6** — Thermostat persistence future-direction note.
 - [ ] **N1, N2, N3, N4** — Polish pass.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 

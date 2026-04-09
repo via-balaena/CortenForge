@@ -2099,6 +2099,24 @@ of file-level review boundaries is not.
   READMEs go in examples, not in core sim crates. (Verified:
   `sim/L0/core`, `sim/L0/ml-bridge`, etc. don't have
   READMEs.) Skip.
+- **No persistence / serde in Phase 1, but it's a known
+  additive future direction** (added by doc review S6,
+  2026-04-09). For long-running thermo experiments —
+  especially Phase 5+ where EBMs are being trained over
+  hours/days — it will be valuable to checkpoint and resume
+  the full thermostat state (`gamma: DVector<f64>`, `k_b_t: f64`,
+  `seed: u64`, `ChaCha8Rng` internal state ~32 bytes,
+  `stochastic_active: AtomicBool`). Every field is trivially
+  serializable, and ml-bridge already shipped policy
+  persistence as a precedent (`4260a58`). Phase 1 ships
+  *without* `serde` to keep the dep tree lean and to avoid
+  committing to a wire format before there's a real use
+  case; the addition path is straightforward — gate `serde`
+  on a feature flag, derive `Serialize`/`Deserialize` on
+  `LangevinThermostat`, and lean on `rand_chacha`'s existing
+  serde support for the RNG state. Don't ship it now; do
+  ship it the moment a checkpointed-experiment use case
+  appears (probably Phase 5+).
 
 #### Final Phase 1 file inventory
 
