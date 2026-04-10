@@ -478,7 +478,7 @@ The Phase 1 implementation is "done" when **all** of the following hold:
    - §7.4 (γ + T sweep) lands within `±3σ` on every combination, possibly under `--ignored` if total runtime exceeds the CI budget.
    - §8 (callback firing count) holds as **hard equality**.
    - §9 (reproducibility) holds as **hard f64 equality** on `qvel` and `qpos`.
-   - §10 (Stochastic gating sanity) decays to `<1e-6` under the guard, re-energizes immediately on guard drop.
+   - §10 (Stochastic gating sanity) decays to `<1e-3` under the guard (per the Euler-at-h=0.001-after-50k-steps floor reasoning in §10's body — `1e-6` would risk a false negative on a correct implementation), re-energizes immediately on guard drop.
 5. `cargo xtask grade sim-thermostat` reaches **A across all 7 criteria**. Anything less is stop-the-line per the project's `A-grade or it doesn't ship` rule.
 6. `sim/L0/core/Cargo.toml` shows **no production deps** on `rand`, `rand_chacha`, `rand_distr`. The sim-core-stays-rand-free invariant from item 4 + item 8 must be verifiable by `grep`.
 7. The crate-level `lib.rs` rustdoc renders cleanly (`cargo doc -p sim-thermostat`) and contains the four pieces from chassis Decision 6 sub-decisions: purpose paragraph, architecture summary, quick-start example, link to chassis_design.md and to this spec.
