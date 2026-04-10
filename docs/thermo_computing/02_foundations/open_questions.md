@@ -6,12 +6,21 @@
 These need answers before the relevant phase can start. Numbered for
 referenceability.
 
-- **Q1 — Noise vs. constraint projection.** When stochastic forces are
-  written into `qfrc_applied` and projected by the constraint solver, what is
-  the effective temperature on constrained DOFs? There is real literature on
-  constrained Langevin dynamics (Lelièvre, Stoltz, *Free Energy Computations*)
-  — needs a half-day read before Phase 2 can claim a meaningful equipartition
-  test on articulated bodies.
+- **Q1 — Noise vs. constraint projection.** **RESOLVED 2026-04-10 (Phase 2
+  spec §3).** For Phase 2's joint-only models (free body + hinge chain),
+  constraint projection does not apply — joint DOFs in generalized coordinates
+  are already the unconstrained variables. The constraint solver only activates
+  for equality/inequality constraints (contacts, connect, weld), none of which
+  appear in Phase 2. The force-space FDT (`σ² = 2γkT`) is mass-independent
+  and samples the canonical distribution regardless of M(q). The real subtlety
+  Phase 2 tests is the **generalized equipartition theorem** for non-diagonal M:
+  `⟨v_i · (M(q)·v)_i⟩ = kT`. True constraint-projection testing (noise + active
+  contacts) deferred to Phase 3 where bistable elements introduce contacts.
+  **Additional finding**: Euler-Maruyama integrator breaks equipartition at large
+  joint angles where M(q) changes significantly per step — this is an integrator
+  limitation, not a thermostat limitation. See
+  [`../03_phases/02_multi_dof_equipartition.md`](../03_phases/02_multi_dof_equipartition.md)
+  §3 and §12 Finding 1 for the full resolution and stiffness sweep data.
 - **Q2 — Implicit integrator interaction.** **RESOLVED 2026-04-09 (part 2).**
   Recon of `forward/mod.rs` and `integrate/mod.rs` showed that the canonical
   force-injection point is `qfrc_applied` between `step1()` and `step2()`,

@@ -12,7 +12,7 @@ phases do not start until the previous gate is green. This implements the
 | #   | Phase                              | Status   | Validation gate                                                       | Spec |
 | --- | ---------------------------------- | -------- | --------------------------------------------------------------------- | ---- |
 | 1   | Langevin thermostat (1-DOF)        | spec'd   | Equipartition `⟨½mv²⟩ = ½k_B·T` on damped harmonic oscillator         | [`01_langevin_thermostat.md`](./01_langevin_thermostat.md) |
-| 2   | Thermostat on free + articulated   | pending  | Equipartition holds on 3-DOF free body; on a constrained chain        | —    |
+| 2   | Thermostat on free + articulated   | **done**  | Equipartition holds on 6-DOF free body; on a 2-link hinge chain      | [`02_multi_dof_equipartition.md`](./02_multi_dof_equipartition.md) |
 | 3   | Single bistable element            | pending  | Double-well switching rate matches Kramers' formula                   | —    |
 | 4   | Coupled bistable array             | pending  | Joint distribution matches analytical Ising / CPU Gibbs ground truth  | —    |
 | 5   | Differentiable EBM via cf-design   | pending  | Trained array matches a 2D Gaussian mixture target                    | —    |

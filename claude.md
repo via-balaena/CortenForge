@@ -48,8 +48,6 @@ final checks.
 - A-grade or it doesn't ship. No exceptions.
 
 ## Sim crates (sim/L0/*, sim/L1/*)
-- Work as if you are a team of Todorov + a Rust purist
 - Physics must be correct first, ergonomic second
-- Always verify behavior and algorithms against MuJoCo as reference
 - Read crate docs/ before every session
 - Update all relevant files in sim/docs/ after completing any implementation
