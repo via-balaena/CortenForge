@@ -767,34 +767,128 @@ fn has_same_line_comment(trimmed: &str) -> bool {
     }
 }
 
-/// Grade dependencies by counting and checking for heavy deps
+/// Grade dependencies: justification check (hard gate) + dep count (informational).
+///
+/// Per chassis ss2.5: every dependency in Cargo.toml must have a `#` comment
+/// in the preceding 1-3 lines or inline. Dep count > 10 is flagged as "(heavy)"
+/// but does not affect grade.
 fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
-    let output = cmd!(sh, "cargo tree -p {crate_name} --edges normal --depth 1")
-        .ignore_status()
-        .ignore_stderr()
+    // Step 1: dep count via cargo metadata (informational)
+    let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
         .read()
         .unwrap_or_default();
+    let metadata: serde_json::Value =
+        serde_json::from_str(&metadata_json).unwrap_or(serde_json::Value::Null);
 
-    let dep_count = output.lines().count().saturating_sub(1); // Subtract the crate itself
+    let dep_count = metadata["packages"]
+        .as_array()
+        .and_then(|pkgs| pkgs.iter().find(|p| p["name"].as_str() == Some(crate_name)))
+        .and_then(|pkg| pkg["dependencies"].as_array())
+        .map(|deps| {
+            deps.iter()
+                .filter(|d| {
+                    // Count normal and dev deps; exclude build deps
+                    let kind = d["kind"].as_str();
+                    kind.is_none() || kind == Some("dev")
+                })
+                .count()
+        })
+        .unwrap_or(0);
 
-    // Thresholds: A ≤7 allows reasonable crates (mesh-types + error + logging + domain-specific)
-    // GPU crates legitimately need wgpu + bytemuck + pollster + thiserror + tracing
-    let grade = if dep_count <= 7 {
-        Grade::A
-    } else if dep_count <= 12 {
-        Grade::B
-    } else if dep_count <= 20 {
-        Grade::C
+    let heavy_note = if dep_count > 10 { " (heavy)" } else { "" };
+
+    // Step 2: justification check via Cargo.toml text scan (hard gate)
+    let crate_path = find_crate_path(sh, crate_name)?;
+    let cargo_toml_path = format!("{}/Cargo.toml", crate_path);
+    let cargo_content = match std::fs::read_to_string(&cargo_toml_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(CriterionResult {
+                name: "5. Dependencies",
+                result: format!("error: {}", e),
+                grade: Grade::F,
+                threshold: "all justified",
+                measured_detail: format!("error reading Cargo.toml: {}", e),
+            });
+        }
+    };
+
+    let mut unjustified = 0;
+    let mut in_dep_section = false;
+    let lines: Vec<&str> = cargo_content.lines().collect();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Track dependency sections
+        if trimmed.starts_with('[') {
+            in_dep_section = trimmed == "[dependencies]"
+                || trimmed == "[dev-dependencies]"
+                || trimmed == "[build-dependencies]";
+            continue;
+        }
+
+        if !in_dep_section {
+            continue;
+        }
+
+        // Skip blank lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // A dependency entry is a line with `name = ...` in a dep section
+        if !trimmed.contains('=') {
+            continue;
+        }
+
+        // Check for inline comment
+        if trimmed.contains('#') {
+            continue; // has inline justification
+        }
+
+        // Check preceding 1-3 lines for a # comment.
+        // Stop at blank lines or section headers (they break the chain).
+        let has_justification = {
+            let mut found = false;
+            for offset in 1..=3 {
+                if let Some(j) = i.checked_sub(offset) {
+                    let prev = lines[j].trim();
+                    if prev.is_empty() || prev.starts_with('[') {
+                        break;
+                    }
+                    if prev.starts_with('#') {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            found
+        };
+
+        if !has_justification {
+            unjustified += 1;
+        }
+    }
+
+    // Binary A/F
+    let grade = if unjustified == 0 { Grade::A } else { Grade::F };
+
+    let result = if unjustified > 0 {
+        format!(
+            "{} deps{}, {} unjustified",
+            dep_count, heavy_note, unjustified
+        )
     } else {
-        Grade::F
+        format!("{} deps{}, all just.", dep_count, heavy_note)
     };
 
     Ok(CriterionResult {
         name: "5. Dependencies",
-        result: format!("{} deps", dep_count),
+        result: result.clone(),
         grade,
-        threshold: "≤7",
-        measured_detail: format!("{} deps", dep_count),
+        threshold: "all justified",
+        measured_detail: result,
     })
 }
 
