@@ -104,7 +104,9 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
     // 1. Test Coverage
     report.criteria.push(grade_coverage(sh, crate_name)?);
     // 2. Documentation
-    report.criteria.push(grade_documentation(sh, crate_name)?);
+    report
+        .criteria
+        .push(grade_documentation(sh, crate_name, &crate_path)?);
     // 3. Clippy
     report.criteria.push(grade_clippy(sh, crate_name)?);
     // 4. Safety
@@ -390,36 +392,56 @@ fn grade_coverage(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
     })
 }
 
-/// Grade documentation by checking for warnings
-fn grade_documentation(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
+/// Grade documentation by checking for warnings.
+///
+/// Captures stderr + exit code (B2 fix: `cargo doc` writes diagnostics
+/// to stderr, not stdout — the old gate read stdout and always saw 0).
+fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
     let output = cmd!(sh, "cargo doc --no-deps -p {crate_name}")
         .env("RUSTDOCFLAGS", "-D warnings")
         .ignore_status()
-        .ignore_stderr()
-        .read()
-        .unwrap_or_default();
+        .output()?;
 
-    let warning_count = output.matches("warning:").count();
-    let error_count = output.matches("error").count();
+    let exit_code = output.status.code().unwrap_or(1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    let total_issues = warning_count + error_count;
-
-    let grade = if total_issues == 0 {
-        Grade::A
-    } else if total_issues <= 5 {
-        Grade::B
-    } else if total_issues <= 20 {
-        Grade::C
+    // Count diagnostics. With -D warnings, warnings are promoted to errors,
+    // so also count "error:" lines (excluding "aborting due to" summaries).
+    let warning_count = stderr.matches("warning:").count();
+    let issue_count = if warning_count == 0 && exit_code != 0 {
+        stderr
+            .lines()
+            .filter(|l| l.contains("error:") && !l.contains("aborting"))
+            .count()
     } else {
-        Grade::F
+        warning_count
     };
+
+    // Binary A/F: exit 0 = A (zero warnings), non-zero = F
+    let grade = if exit_code == 0 { Grade::A } else { Grade::F };
+
+    // Informational: check if missing_docs lint is enabled in lib.rs
+    let lib_path = format!("{}/src/lib.rs", crate_path);
+    let has_missing_docs = if let Ok(content) = std::fs::read_to_string(&lib_path) {
+        content.contains("#![warn(missing_docs)]") || content.contains("#![deny(missing_docs)]")
+    } else {
+        false
+    };
+
+    let missing_docs_note = if !has_missing_docs && grade == Grade::A {
+        " (missing_docs not enabled)"
+    } else {
+        ""
+    };
+
+    let result = format!("{} warnings{}", issue_count, missing_docs_note);
 
     Ok(CriterionResult {
         name: "2. Documentation",
-        result: format!("{} warnings", total_issues),
+        result,
         grade,
-        threshold: "0",
-        measured_detail: format!("{} warnings", total_issues),
+        threshold: "0 warnings",
+        measured_detail: format!("{} warnings", issue_count),
     })
 }
 
