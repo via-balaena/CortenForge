@@ -91,14 +91,20 @@ fn test_sho_model_invariants() {
 
 /// THE Phase 1 gate — equipartition on the central parameter set.
 ///
-/// Per spec §7.1 option β: 100 trajectories of 100,000 measurement
-/// steps each, after a 25,000-step burn-in. Each trajectory's
-/// per-step ½v² is accumulated into a per-trajectory `WelfordOnline`,
-/// then merged into a global accumulator via the Chan/Pébay
-/// parallel-merge formula (chassis M4). The global accumulator's
-/// mean is asserted to be within ±3σ of the equipartition target
-/// `½kT`, with std error ≈ 4.5% of `½kT` per the spec §7.2
-/// statistical accounting.
+/// Per spec §7.1 option β + §7.3 two-level Welford pattern: 100
+/// trajectories of 100,000 measurement steps each, after a 25,000-step
+/// burn-in. Each trajectory's per-step ½v² is folded into a per-trajectory
+/// `WelfordOnline` whose `mean()` becomes one IID sample of the
+/// equilibrium ⟨½v²⟩. The 100 trajectory means are pushed into a top-level
+/// `WelfordOnline` whose `std_error_of_mean()` is the correct std error
+/// of the grand mean (the trajectory means are IID by construction —
+/// independent seeds + sufficient burn-in). The grand mean is then
+/// asserted to be within ±3σ of `½kT`, with std error ≈ 4.5% of `½kT`
+/// per the spec §7.2 statistical accounting.
+///
+/// `WelfordOnline::merge` is intentionally NOT used here. See
+/// `06_findings/2026-04-09_phase1_statistical_propagation_chain.md` for
+/// the propagation-chain post-mortem.
 #[test]
 fn test_equipartition_central_parameter_set() {
     let n_burn_in = 25_000;
@@ -108,7 +114,10 @@ fn test_equipartition_central_parameter_set() {
     let k_b_t = 1.0_f64;
     let gamma_value = 0.1_f64;
 
-    let mut global = WelfordOnline::new();
+    // Top-level accumulator over the 100 trajectory means. The trajectory
+    // means are IID by construction, so std_error_of_mean on this
+    // accumulator is the correct std error of the grand mean.
+    let mut across_trajectories = WelfordOnline::new();
 
     for i in 0..n_traj {
         let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
@@ -128,20 +137,23 @@ fn test_equipartition_central_parameter_set() {
             data.step(&model).expect("burn-in step");
         }
 
-        // Measure ½ M v² into a per-trajectory accumulator.
+        // Inner accumulator: collect per-step ½v² for this trajectory.
         let mut traj = WelfordOnline::new();
         for _ in 0..n_measure {
             data.step(&model).expect("measure step");
             traj.push(0.5 * 1.0 * data.qvel[0] * data.qvel[0]);
         }
 
-        // Merge into the global accumulator (Chan/Pébay, M4).
-        global.merge(&traj);
+        // Push the trajectory mean as one IID sample. Within-trajectory
+        // autocorrelation is absorbed into how much each trajectory mean
+        // varies around the grand mean — exactly the variance the
+        // top-level accumulator captures.
+        across_trajectories.push(traj.mean());
     }
 
-    let measured = global.mean();
+    let measured = across_trajectories.mean();
     let expected = 0.5 * k_b_t;
-    let std_error = global.std_error_of_mean();
+    let std_error = across_trajectories.std_error_of_mean();
     assert_within_n_sigma(
         measured,
         expected,
@@ -176,7 +188,9 @@ fn test_equipartition_sweep_gamma_t() {
 
     for &gamma_value in &gammas {
         for &k_b_t in &temperatures {
-            let mut global = WelfordOnline::new();
+            // Two-level Welford pattern per spec §7.4 + §7.3 — fresh
+            // top-level accumulator per (γ, kT) combination.
+            let mut across_trajectories = WelfordOnline::new();
 
             for i in 0..n_traj_per_combo {
                 let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
@@ -199,12 +213,12 @@ fn test_equipartition_sweep_gamma_t() {
                     data.step(&model).expect("measure");
                     traj.push(0.5 * 1.0 * data.qvel[0] * data.qvel[0]);
                 }
-                global.merge(&traj);
+                across_trajectories.push(traj.mean());
             }
 
-            let measured = global.mean();
+            let measured = across_trajectories.mean();
             let expected = 0.5 * k_b_t;
-            let std_error = global.std_error_of_mean();
+            let std_error = across_trajectories.std_error_of_mean();
             let description = format!("equipartition sweep: γ={gamma_value}, kT={k_b_t}");
             assert_within_n_sigma(measured, expected, std_error, 3.0, &description);
         }
@@ -327,8 +341,9 @@ fn test_reproducibility_from_seed() {
 ///
 /// 1. Stretch the spring to `qpos = 1.0`, set `qvel = 0`.
 /// 2. Disable stochastic via the RAII guard.
-/// 3. Run 50,000 Euler steps (5× the M/γ time constant) — the
-///    system should decay to near-rest, qpos and qvel both `< 1e-3`.
+/// 3. Run 200,000 Euler steps (10× the amplitude time constant
+///    `2M/γ = 20`) — the system decays to envelope ≈ `exp(-10) ≈
+///    4.5e-5`, ~22× margin under the `< 1e-3` threshold.
 /// 4. Drop the guard (re-enables noise).
 /// 5. Run one more step — qvel should jump above 1e-3 from the
 ///    re-engaged FDT noise.
@@ -353,9 +368,18 @@ fn test_stochastic_gating_sanity() {
     // Disable noise for the decay phase.
     {
         let _guard = stack.disable_stochastic();
-        // Damping time constant M/γ = 10 time units = 10_000 steps.
-        // Run 5× that to land in numerical-floor territory.
-        for _ in 0..50_000 {
+        // Amplitude time constant of the underdamped oscillator is
+        // 2M/γ = 20 time units = 20_000 steps. Run 10× that to land
+        // in numerical-floor territory: envelope ≈ exp(-10) ≈ 4.5e-5,
+        // ~22× margin under the 1e-3 threshold below.
+        //
+        // Note: M/γ = 10 would be the time constant for free-particle
+        // velocity decay or for underdamped-oscillator ENERGY decay
+        // (energy ∝ amplitude², so energy decays at twice the
+        // amplitude rate). Neither matches what we check here — we
+        // check qpos and qvel, both of which scale with amplitude,
+        // so the relevant time constant is 2M/γ = 20.
+        for _ in 0..200_000 {
             data.step(&model).expect("decay step");
         }
         assert!(
