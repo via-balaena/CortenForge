@@ -396,7 +396,7 @@ A failure of this test means either the RNG implementation drifted (catastrophic
 
 Per chassis Decision 7 sub-decision "Phase 1 test additions": one small test that proves `disable_stochastic()` zeroes the noise contribution end-to-end, before the FD/autograd code paths that depend on this property exist in Phases 5+.
 
-The test pattern (note the Arc-clone-before-install dance — `PassiveStack::install` consumes the `Arc<Self>`, so a handle for the guard call must be retained separately):
+The test pattern. Note that `PassiveStack::install` takes `self: &Arc<Self>` (the standard idiomatic-Rust pattern for a method that captures a clone of `self` into a callback closure: the function clones once internally and the caller's `Arc` handle is retained automatically). The test holds onto `stack` after `install`, then calls `stack.disable_stochastic()` later — no manual `Arc::clone` dance.
 
 ```rust
 #[test]
@@ -404,7 +404,7 @@ fn test_stochastic_gating_sanity() {
     let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
     let mut data  = model.make_data();
 
-    // Build the stack and KEEP a clone before install consumes the original.
+    // Build the stack. install takes &Arc<Self> so the caller's handle is retained.
     let stack: Arc<PassiveStack> = PassiveStack::builder()
         .with(LangevinThermostat::new(
             DVector::from_element(model.nv, 0.1),
@@ -412,7 +412,7 @@ fn test_stochastic_gating_sanity() {
             0xC0FFEE_u64,
         ))
         .build();
-    Arc::clone(&stack).install(&mut model);
+    stack.install(&mut model);
 
     // Initial state: stretched spring at rest.
     data.qpos[0] = 1.0;
