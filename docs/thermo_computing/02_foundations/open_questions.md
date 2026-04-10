@@ -7,15 +7,23 @@ These need answers before the relevant phase can start. Numbered for
 referenceability.
 
 - **Q1 — Noise vs. constraint projection.** **RESOLVED 2026-04-10 (Phase 2
-  spec §3).** For Phase 2's joint-only models (free body + hinge chain),
-  constraint projection does not apply — joint DOFs in generalized coordinates
-  are already the unconstrained variables. The constraint solver only activates
-  for equality/inequality constraints (contacts, connect, weld), none of which
-  appear in Phase 2. The force-space FDT (`σ² = 2γkT`) is mass-independent
-  and samples the canonical distribution regardless of M(q). The real subtlety
-  Phase 2 tests is the **generalized equipartition theorem** for non-diagonal M:
-  `⟨v_i · (M(q)·v)_i⟩ = kT`. True constraint-projection testing (noise + active
-  contacts) deferred to Phase 3 where bistable elements introduce contacts.
+  spec §3) for joint-only models. Constraint-projection testing still deferred.**
+  For Phases 2–4's joint-only models (free body, hinge chain, slide-joint
+  bistable elements), constraint projection does not apply — joint DOFs in
+  generalized coordinates are already the unconstrained variables. The constraint
+  solver only activates for equality/inequality constraints (contacts, connect,
+  weld), none of which appear in Phases 2–4. The force-space FDT (`σ² = 2γkT`)
+  is mass-independent and samples the canonical distribution regardless of M(q).
+  The real subtlety Phase 2 tests is the **generalized equipartition theorem**
+  for non-diagonal M: `⟨v_i · (M(q)·v)_i⟩ = kT`.
+  **Constraint-projection testing** (noise + active contacts/equality constraints)
+  is deferred to the first phase that *naturally* introduces active constraints —
+  likely D2 (cf-design buckling beam with contact surfaces) or a dedicated
+  integration test. Phases 2–4 use joint-only models where the question doesn't
+  apply; forcing constraints into Phase 4 to test Q1 would mix concerns.
+  The theoretical expectation (Lelièvre, Stoltz) is that constraint forces do no
+  work on average and should not affect the canonical distribution of unconstrained
+  DOFs — but this is unvalidated in our stack.
   **Additional finding**: Euler-Maruyama integrator breaks equipartition at large
   joint angles where M(q) changes significantly per step — this is an integrator
   limitation, not a thermostat limitation. See
