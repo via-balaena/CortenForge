@@ -571,8 +571,16 @@ fn glob_rs_files(dir: &str) -> Result<Vec<String>> {
     Ok(files)
 }
 
-/// Grade safety by checking for unwrap/expect in library code
-fn grade_safety(sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
+/// Grade safety: check for panic-capable patterns in library code.
+///
+/// Full rewrite per chassis ss2.4. Fixes B3 bugs 1-5:
+/// - Brace-depth tracked test exclusion (not first-#[cfg(test)]-to-EOF)
+/// - Block comment handling
+/// - All 6 patterns (todo!, unimplemented!, unwrap, expect, panic!, unreachable!)
+/// - Unsafe-without-SAFETY check
+/// - Blanket assert exclusion removed
+/// - Direct file reading (no grep shell-outs)
+fn grade_safety(_sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
     let src_path = format!("{}/src", crate_path);
 
     if !Path::new(&src_path).exists() {
@@ -580,101 +588,183 @@ fn grade_safety(sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
             name: "4. Safety",
             result: "(no src/)".to_string(),
             grade: Grade::Manual,
-            threshold: "0",
+            threshold: "0 violations",
             measured_detail: "(no src/)".to_string(),
         });
     }
 
-    // First, find where test sections start in each file
-    let test_starts = cmd!(
-        sh,
-        "grep -rn '#\\[cfg(test)\\]' {src_path} --include='*.rs'"
-    )
-    .ignore_status()
-    .ignore_stderr()
-    .read()
-    .unwrap_or_default();
+    let files = glob_rs_files(&src_path)?;
 
-    // Build a map of file -> test start line
-    let mut test_start_lines: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for line in test_starts.lines() {
-        // Format: path/file.rs:123:#[cfg(test)]
-        let parts: Vec<&str> = line.splitn(3, ':').collect();
-        if parts.len() >= 2 {
-            if let Ok(line_num) = parts[1].parse::<usize>() {
-                let file = parts[0].to_string();
-                test_start_lines.entry(file).or_insert(line_num);
+    let mut has_todo_or_unimplemented = false;
+    let mut counted_violations = 0usize;
+    let mut unsafe_violations = 0usize;
+
+    for file_path in &files {
+        let is_build_rs = file_path.ends_with("build.rs");
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Brace-depth tracked test exclusion state machine (ss2.4)
+        let mut in_test = false;
+        let mut test_brace_depth: usize = 0;
+        let mut pending_test_attr = false;
+        let mut in_block_comment = false;
+
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+
+            // Track block comments
+            if !in_block_comment && trimmed.contains("/*") {
+                in_block_comment = true;
             }
-        }
-    }
-
-    // Count unwrap/expect occurrences (excluding tests)
-    let patterns = [".unwrap()", ".expect("];
-    let mut total_count = 0;
-
-    for pattern in &patterns {
-        let output = cmd!(sh, "grep -rn {pattern} {src_path} --include='*.rs'")
-            .ignore_status()
-            .ignore_stderr()
-            .read()
-            .unwrap_or_default();
-
-        for line in output.lines() {
-            if line.trim().is_empty() {
+            if in_block_comment {
+                if trimmed.contains("*/") {
+                    in_block_comment = false;
+                }
                 continue;
             }
 
-            // Parse file:line:content format
-            let parts: Vec<&str> = line.splitn(3, ':').collect();
-            if parts.len() < 3 {
+            // Skip line comments
+            if trimmed.starts_with("//") {
                 continue;
             }
-            let file = parts[0];
-            let line_num: usize = parts[1].parse().unwrap_or(0);
-            let content = parts[2];
 
-            // Skip if this line is in or after a #[cfg(test)] section
-            if let Some(&test_start) = test_start_lines.get(file) {
-                if line_num >= test_start {
-                    continue;
+            // Test exclusion: #[cfg(test)] attribute detection
+            if !trimmed.starts_with("//") && trimmed.contains("#[cfg(test)]") {
+                pending_test_attr = true;
+            }
+
+            // Track braces for test region
+            if pending_test_attr && trimmed.contains('{') {
+                in_test = true;
+                test_brace_depth = 0;
+                pending_test_attr = false;
+            }
+
+            if in_test {
+                for ch in trimmed.chars() {
+                    if ch == '{' {
+                        test_brace_depth += 1;
+                    } else if ch == '}' {
+                        test_brace_depth = test_brace_depth.saturating_sub(1);
+                        if test_brace_depth == 0 {
+                            in_test = false;
+                            break;
+                        }
+                    }
+                }
+                if in_test {
+                    continue; // still inside test block
+                }
+                continue; // just exited test block on this line
+            }
+
+            // === Pattern checks on library code ===
+
+            // Hard-fail: todo!() and unimplemented!()
+            if trimmed.contains("todo!") || trimmed.contains("unimplemented!") {
+                has_todo_or_unimplemented = true;
+            }
+
+            // Counted: .unwrap()
+            if trimmed.contains(".unwrap()") {
+                counted_violations += 1;
+            }
+
+            // Counted: .expect( — skip in build.rs
+            if !is_build_rs && trimmed.contains(".expect(") {
+                counted_violations += 1;
+            }
+
+            // Counted with justification: panic!()
+            if trimmed.contains("panic!") {
+                let has_justification =
+                    has_preceding_comment(&lines, i) || has_same_line_comment(trimmed);
+                if !has_justification {
+                    counted_violations += 1;
                 }
             }
 
-            // Skip comments and doc comments
-            let trimmed = content.trim();
-            if trimmed.starts_with("//") || trimmed.starts_with("///") || trimmed.starts_with("//!")
+            // Counted with justification: unreachable!()
+            if trimmed.contains("unreachable!") {
+                let has_justification =
+                    has_preceding_comment(&lines, i) || has_same_line_comment(trimmed);
+                if !has_justification {
+                    counted_violations += 1;
+                }
+            }
+
+            // Unsafe-without-SAFETY check (F-ext-4)
+            if trimmed.contains("unsafe")
+                && (trimmed.contains("unsafe {") || trimmed.contains("unsafe fn"))
             {
-                continue;
+                let has_safety_comment = (1..=3).any(|offset| {
+                    i.checked_sub(offset).is_some_and(|j| {
+                        let prev = lines[j].trim().to_lowercase();
+                        prev.contains("// safety:")
+                    })
+                });
+                if !has_safety_comment {
+                    unsafe_violations += 1;
+                }
             }
-
-            // Skip assert macros (test-like code)
-            if content.contains("assert") {
-                continue;
-            }
-
-            total_count += 1;
         }
     }
 
-    // B grade is acceptable for most crates (some legitimate uses in error paths)
-    let grade = if total_count == 0 {
-        Grade::A
-    } else if total_count <= 5 {
-        Grade::B
-    } else if total_count <= 15 {
-        Grade::C
+    // Grading (binary A/F)
+    if has_todo_or_unimplemented {
+        return Ok(CriterionResult {
+            name: "4. Safety",
+            result: "F: found todo!/unimplemented!".to_string(),
+            grade: Grade::F,
+            threshold: "0 violations",
+            measured_detail: "F: found todo!/unimplemented!".to_string(),
+        });
+    }
+
+    let total = counted_violations + unsafe_violations;
+    let grade = if total == 0 { Grade::A } else { Grade::F };
+
+    let result = if unsafe_violations > 0 {
+        format!(
+            "{} violations ({} unsafe without SAFETY)",
+            total, unsafe_violations
+        )
     } else {
-        Grade::F
+        format!("{} violations", total)
     };
 
     Ok(CriterionResult {
         name: "4. Safety",
-        result: format!("{} violations", total_count),
+        result: result.clone(),
         grade,
-        threshold: "≤5",
-        measured_detail: format!("{} violations", total_count),
+        threshold: "0 violations",
+        measured_detail: result,
     })
+}
+
+/// Check if any of the preceding 1-3 lines is a `//` comment (not `///` or `//!`).
+fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
+    (1..=3).any(|offset| {
+        i.checked_sub(offset).is_some_and(|j| {
+            let prev = lines[j].trim();
+            prev.starts_with("//") && !prev.starts_with("///") && !prev.starts_with("//!")
+        })
+    })
+}
+
+/// Check if the line has a trailing `//` comment after the code.
+fn has_same_line_comment(trimmed: &str) -> bool {
+    // Find last "//" that isn't inside a string literal (simple heuristic)
+    if let Some(pos) = trimmed.rfind("//") {
+        // Must be after some code content
+        pos > 0 && trimmed[..pos].contains(|c: char| c.is_alphanumeric() || c == '!')
+    } else {
+        false
+    }
 }
 
 /// Grade dependencies by counting and checking for heavy deps
