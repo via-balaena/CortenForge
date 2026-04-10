@@ -270,7 +270,7 @@ The chassis flagged three options for fixing the recon-log-part-2 sampling-error
 | | Trajectory shape | Per-test cost | Helper requirement | Combined std error |
 |---|---|---|---|---|
 | α | 1 trajectory of ~10⁷ steps | ~10⁷ sim steps | needs `integrated_autocorrelation_time` (deferred per Decision 5) | ~4.5% of ½kT |
-| **β** | **100 trajectories of 10⁵ steps each** | **~10⁷ sim steps** | **only `WelfordOnline` (two-level pattern, see §7.3)** | **~4.5% of ½kT** |
+| **β** | **100 trajectories of 2×10⁵ steps each** | **~2×10⁷ sim steps** | **only `WelfordOnline` (two-level pattern, see §7.3)** | **~3.2% of ½kT** |
 | γ | 1 trajectory of 10⁵ steps, loose tolerance | ~10⁵ sim steps | none extra | ~5–10% of ½kT, no discretization-bias detection |
 
 **Pick: option β.** Five reasons in priority order:
@@ -374,7 +374,7 @@ fn test_equipartition_central_parameter_set() {
     let std_error = across_trajectories.std_error_of_mean();
     assert_within_n_sigma(
         measured, expected, std_error, 3.0,
-        "equipartition central: 1-DOF damped harmonic oscillator, 100 traj × 10⁵ steps",
+        "equipartition central: 1-DOF damped harmonic oscillator, 100 traj × 2×10⁵ steps",
     );
 }
 ```

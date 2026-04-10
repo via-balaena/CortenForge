@@ -5,10 +5,16 @@
 //! - [`WelfordOnline`]: a numerically stable single-pass mean/variance
 //!   accumulator (Welford 1962) with `reset` (M4: burn-in support) and
 //!   `merge` (M4: Chan/Pébay parallel-accumulator combination). The
-//!   merge operation is load-bearing for the Phase 1 equipartition
-//!   gate (spec §7.3 option β), which folds 100 per-trajectory
-//!   accumulators into a single global accumulator via this exact
-//!   formula.
+//!   Phase 1 equipartition gate (spec §7.3 option β) uses a **two-level
+//!   Welford pattern** built on `push` and `mean` — a per-trajectory
+//!   inner accumulator collects per-step `½v²` samples, and its scalar
+//!   `mean()` is pushed into a top-level accumulator that holds the
+//!   100 trajectory means as IID samples. `merge` is **not** used by
+//!   the §7 gate (see
+//!   `06_findings/2026-04-09_phase1_statistical_propagation_chain.md`
+//!   for why merging per-step accumulators across trajectories
+//!   underestimates the std error by `√(1+2·τ_int) ≈ 100`); it ships
+//!   for IID parallel-reduce contexts in Phase 4+ batch reductions.
 //!
 //! - [`assert_within_n_sigma`]: a small assertion helper that fails
 //!   with a clear diagnostic when a measured value deviates from its
@@ -39,14 +45,17 @@
 /// recovered as `m2 / (count - 1)` without ever forming the naive
 /// `Σx²` (which loses precision for samples with large mean and
 /// small variance — exactly the regime the equipartition gate runs
-/// in: `½v² ≈ 0.5` with std error `≈ 0.045`).
+/// in: `½v² ≈ 0.5` with std error `≈ 0.032`).
 ///
 /// Supports both [`reset`](Self::reset) (M4: re-initialize for
 /// burn-in) and [`merge`](Self::merge) (M4: combine two independent
-/// accumulators via Chan/Pébay 1979/2008), so the spec §7.3 option β
-/// pattern of "100 trajectories × 10⁵ steps, each accumulated
-/// separately then merged" works without ever materializing the
-/// per-step samples.
+/// accumulators via Chan/Pébay 1979/2008). The Phase 1 §7.3 gate
+/// uses `push`/`mean` in a **two-level pattern** (per-trajectory
+/// inner accumulator + across-trajectories top-level accumulator);
+/// `merge` ships for Phase 4+ IID parallel-reduce contexts but is
+/// not used by the §7 gate. See the module-level docstring and
+/// `06_findings/2026-04-09_phase1_statistical_propagation_chain.md`
+/// for why.
 #[derive(Clone, Debug)]
 pub struct WelfordOnline {
     count: usize,
@@ -101,19 +110,29 @@ impl WelfordOnline {
     /// - `μ   = μ_a + δ · n_b / n`
     /// - `M2  = M2_a + M2_b + δ² · n_a · n_b / n`
     ///
-    /// This is the formula the spec §7.3 equipartition gate uses to
-    /// fold 100 per-trajectory accumulators into one global
-    /// accumulator. **Getting this formula right is load-bearing for
-    /// the Phase 1 gate** — an off-by-one or sign error here would
-    /// inflate or deflate the merged variance, producing either a
-    /// false-positive or a false-negative on the gate.
+    /// **`merge` is intended for IID parallel-reduce contexts** (e.g.
+    /// folding per-env statistics across `BatchSim` envs in Phase 4+
+    /// where every sample is independent of every other). It is
+    /// **NOT** used by the Phase 1 §7 equipartition gate. The §7.3
+    /// gate uses a two-level Welford pattern (`push`/`mean` only)
+    /// because per-step `½v²` samples within a trajectory are
+    /// autocorrelated (`τ_int ≈ 5000` steps for the central case),
+    /// and merging per-step accumulators across trajectories then
+    /// calling `std_error_of_mean` on the merged result yields the
+    /// IID std error — which underestimates the true std error by
+    /// `√(1+2·τ_int) ≈ 100`. See
+    /// `06_findings/2026-04-09_phase1_statistical_propagation_chain.md`
+    /// for the full propagation-chain post-mortem.
     ///
     /// The unit test
     /// `welford_merge_matches_one_pass_over_full_dataset` locks the
     /// formula by splitting a deterministic dataset into two halves,
     /// computing Welford on each half, merging, and asserting the
     /// merged `mean`/`variance` match a one-pass Welford over the
-    /// whole dataset to within an absolute tolerance of `1e-12`.
+    /// whole dataset to within an absolute tolerance of `1e-12`. The
+    /// merge formula is mathematically correct for IID samples; it
+    /// just isn't the right primitive for the §7 gate's autocorrelated
+    /// per-step samples.
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;
@@ -195,7 +214,7 @@ impl Default for WelfordOnline {
 ///
 /// The `description` argument should name the test and parameter set
 /// (e.g. `"equipartition central: 1-DOF damped harmonic oscillator,
-/// 100 traj × 10⁵ steps"`) so failures in CI logs are immediately
+/// 100 traj × 2×10⁵ steps"`) so failures in CI logs are immediately
 /// identifiable without grepping back to the test source.
 ///
 /// # Panics

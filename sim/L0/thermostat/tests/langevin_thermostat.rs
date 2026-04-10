@@ -167,7 +167,7 @@ fn test_equipartition_central_parameter_set() {
         expected,
         std_error,
         3.0,
-        "equipartition central: 1-DOF damped harmonic oscillator, 100 traj × 10⁵ steps",
+        "equipartition central: 1-DOF damped harmonic oscillator, 100 traj × 2×10⁵ steps",
     );
 }
 
