@@ -9475,6 +9475,7 @@ dependencies = [
  "owo-colors",
  "regex",
  "serde",
+ "serde_json",
  "toml",
  "walkdir",
  "which",

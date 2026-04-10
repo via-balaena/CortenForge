@@ -282,27 +282,45 @@ fn find_workspace_root(sh: &Shell) -> Result<String> {
     Ok(root.to_string_lossy().to_string())
 }
 
-/// Find the path to a crate within the workspace
-fn find_crate_path(_sh: &Shell, crate_name: &str) -> Result<String> {
-    // Try common locations
-    let locations = ["design", "mesh", "geometry", "sim"];
+/// Find the path to a crate within the workspace.
+///
+/// Uses `cargo metadata` to look up the crate's manifest path by package
+/// name, then derives the directory and rebases it onto the workspace
+/// root. This works for any workspace layout — flat (`mesh/mesh-types`),
+/// layered (`sim/L0/thermostat`), or anything else cargo recognizes —
+/// without hard-coded directory heuristics.
+fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
+    let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
+        .read()
+        .context("Failed to run `cargo metadata`")?;
 
-    for loc in &locations {
-        let path = format!("{}/{}", loc, crate_name);
-        if Path::new(&path).exists() {
-            return Ok(path);
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json)
+        .context("Failed to parse `cargo metadata` JSON output")?;
+
+    let packages = metadata["packages"]
+        .as_array()
+        .context("`cargo metadata`: missing 'packages' array")?;
+
+    let workspace_root = metadata["workspace_root"]
+        .as_str()
+        .context("`cargo metadata`: missing 'workspace_root' field")?;
+
+    for pkg in packages {
+        if pkg["name"].as_str() == Some(crate_name) {
+            let manifest_path = pkg["manifest_path"]
+                .as_str()
+                .context("`cargo metadata`: package missing 'manifest_path'")?;
+            let crate_dir = Path::new(manifest_path)
+                .parent()
+                .context("manifest_path has no parent directory")?;
+            let relative = crate_dir.strip_prefix(workspace_root).unwrap_or(crate_dir);
+            return Ok(relative.to_string_lossy().to_string());
         }
     }
 
-    // Try direct path
-    if Path::new(crate_name).exists() {
-        return Ok(crate_name.to_string());
-    }
-
     bail!(
-        "Could not find crate '{}'. Looked in: {:?}",
-        crate_name,
-        locations
+        "Could not find crate '{}' in workspace metadata",
+        crate_name
     )
 }
 
