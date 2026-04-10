@@ -26,7 +26,7 @@
 )]
 
 use sim_core::DVector;
-use sim_thermostat::test_utils::WelfordOnline;
+use sim_thermostat::test_utils::{WelfordOnline, WellState};
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PassiveStack};
 
 // ─── MJCF model ───────────────────��────────────────────────────────────────
@@ -73,26 +73,6 @@ const T_MEASURE: f64 = N_MEASURE as f64 * TIMESTEP; // 4990 time units
 /// Hysteresis is essential for measuring the genuine Kramers rate.
 const X_THRESH: f64 = X_0 / 2.0; // 0.5
 
-/// State machine for hysteresis-based transition counting.
-#[derive(Clone, Copy, PartialEq)]
-enum WellState {
-    Left,    // x < -X_THRESH
-    Right,   // x > +X_THRESH
-    Barrier, // -X_THRESH <= x <= +X_THRESH
-}
-
-impl WellState {
-    fn from_position(x: f64) -> Self {
-        if x > X_THRESH {
-            Self::Right
-        } else if x < -X_THRESH {
-            Self::Left
-        } else {
-            Self::Barrier
-        }
-    }
-}
-
 /// Run a trajectory and count committed transitions using hysteresis.
 /// Returns (transition_count, ke_welford).
 fn run_trajectory(k_b_t: f64, seed: u64) -> (usize, WelfordOnline) {
@@ -121,13 +101,13 @@ fn run_trajectory(k_b_t: f64, seed: u64) -> (usize, WelfordOnline) {
 
     // Measurement: count committed transitions via hysteresis + track KE
     let mut transitions = 0usize;
-    let mut last_well = WellState::from_position(data.qpos[0]);
+    let mut last_well = WellState::from_position(data.qpos[0], X_THRESH);
     let mut ke_welford = WelfordOnline::new();
 
     for _ in 0..N_MEASURE {
         data.step(&model).expect("measure step");
         let x = data.qpos[0];
-        let current = WellState::from_position(x);
+        let current = WellState::from_position(x, X_THRESH);
 
         // A transition is only counted when the particle moves from one
         // well to the other (Left→Right or Right→Left). Barrier visits

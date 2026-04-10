@@ -69,6 +69,7 @@ mod component;
 mod diagnose;
 mod double_well;
 mod langevin;
+mod pairwise_coupling;
 mod stack;
 
 pub mod test_utils;
@@ -77,4 +78,5 @@ pub use component::{PassiveComponent, Stochastic};
 pub use diagnose::Diagnose;
 pub use double_well::DoubleWellPotential;
 pub use langevin::LangevinThermostat;
+pub use pairwise_coupling::PairwiseCoupling;
 pub use stack::{EnvBatch, PassiveStack, PassiveStackBuilder, StochasticGuard};
