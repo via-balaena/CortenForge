@@ -595,30 +595,33 @@ fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
     })
 }
 
-/// Check that a crate has no Bevy dependencies
+/// Check that a crate has no Bevy dependencies.
 ///
 /// Layer 0 crates should not depend on Bevy or windowing libraries.
-/// Note: `wgpu` is NOT considered a Bevy dependency - it's a standalone
-/// WebGPU implementation that can be used independently for compute shaders.
+/// `wgpu` is allowed — it's a standalone WebGPU implementation used
+/// independently for compute shaders (F6 decision).
 fn grade_bevy_free(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
-    let output = cmd!(sh, "cargo tree -p {crate_name}")
-        .ignore_status()
-        .ignore_stderr()
-        .read()
-        .unwrap_or_default();
+    // --prefix none --format "{p}" outputs one "pkg_name vX.Y.Z" per line
+    let tree_format = "{p}";
+    let output = cmd!(
+        sh,
+        "cargo tree -p {crate_name} --prefix none --format {tree_format}"
+    )
+    .ignore_status()
+    .ignore_stderr()
+    .read()
+    .unwrap_or_default();
 
-    // Only check for actual Bevy ecosystem dependencies
-    // wgpu is NOT a Bevy dependency - it's a standalone GPU library
-    let has_bevy = output.contains("bevy");
-    let has_winit = output.contains("winit");
-
-    let violations: Vec<&str> = [
-        if has_bevy { Some("bevy") } else { None },
-        if has_winit { Some("winit") } else { None },
-    ]
-    .iter()
-    .filter_map(|&x| x)
-    .collect();
+    // Exact package-name prefix matching (not substring contains)
+    let mut violations: Vec<String> = Vec::new();
+    for line in output.lines() {
+        let pkg_name = line.split_whitespace().next().unwrap_or("");
+        if (pkg_name.starts_with("bevy") || pkg_name == "winit")
+            && !violations.contains(&pkg_name.to_string())
+        {
+            violations.push(pkg_name.to_string());
+        }
+    }
 
     let grade = if violations.is_empty() {
         Grade::A
@@ -638,7 +641,7 @@ fn grade_bevy_free(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         name: "6. Bevy-free",
         result,
         grade,
-        threshold: "no bevy",
+        threshold: "no bevy/winit",
         measured_detail,
     })
 }
