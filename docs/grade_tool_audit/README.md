@@ -29,14 +29,14 @@ for that initiative.
 
 ## Status
 
-**RECON COMPLETE** as of 2026-04-10. Scope C (full rebuild) accepted.
+**CHASSIS DESIGN COMPLETE** as of 2026-04-10. Scope C (full rebuild) accepted.
 
 - ✓ Audit findings captured (2026-04-09)
 - ✓ Recon plan written (2026-04-09)
 - ✓ Recon round complete (2026-04-10) — D1-D5 + B1-B5 + F1-F6 all resolved
 - ✓ Recon report written (2026-04-10) — scope C recommended and accepted
-- ✗ Chassis design — next session
-- ✗ Rebuild plan + grading — future session
+- ✓ Chassis design written (2026-04-10) — A across all 7 rubric criteria
+- ✗ Rebuild plan + grading — next session
 - ✗ Rebuild execution — future session
 - ✗ Rebuild verification + Phase 1 PR resumption — future session
 
@@ -48,12 +48,9 @@ for that initiative.
 | [`audit_findings_2026-04-09.md`](audit_findings_2026-04-09.md) | The 23-item punch list, evidence, and analysis from the originating session. The canonical record of the initial audit. | Frozen. Recon findings extend this in the recon report. |
 | [`recon_plan.md`](recon_plan.md) | Self-contained brief for the recon session — what to investigate, in what order, what to NOT do. | Frozen. |
 | [`recon_report_2026-04-10.md`](recon_report_2026-04-10.md) | Output of the recon round: D1-D5 findings, B1-B5 verdicts, F1-F6 decisions, scope recommendation (C). | Frozen. |
+| [`chassis_design.md`](chassis_design.md) | Blueprint for the rebuilt grade tool: architecture, per-criterion measurement specs, grade scale, STANDARDS.md changes, complete redesign, scope, verification plan. | Frozen. |
 
 Future files (created by subsequent sessions):
-
-- `chassis_design.md` — the rebuilt grade tool's API + architecture
-- `chassis_design_rubric_<date>.md` — paper-artifact rubric grading
-  the chassis design
 - `rebuild_plan.md` — step-by-step execution plan
 - `rebuild_plan_rubric_<date>.md` — paper-artifact rubric grading the
   plan
