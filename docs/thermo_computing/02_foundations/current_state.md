@@ -3,11 +3,11 @@
 > Extracted from `MASTER_PLAN.md` §3 *Current state of the thermo line*
 > subsection during the 2026-04-09 doc-tree refactor.
 
-*Snapshot — last updated 2026-04-09 (after doc review pass). The Recon
-Log at the bottom of this document is append-only history; **this section
-is the canonical "where are we right now"** and is rewritten as the
-state evolves. Re-verify before relying on these claims; the codebase
-moves.*
+*Snapshot — last updated 2026-04-09 (after Phase 1 implementation +
+closing review). The Recon Log at the bottom of this document is
+append-only history; **this section is the canonical "where are we
+right now"** and is rewritten as the state evolves. Re-verify before
+relying on these claims; the codebase moves.*
 
 ## Current state of the thermo line (where we are *right now*)
 
@@ -38,16 +38,71 @@ review pass.*
   escalated to active recon), M4 (Welford reset + merge), M5 (trait
   write-target contract type-enforced) all landed. Should-fix and
   nit items are in flight on `feature/thermo-doc-review`.
-- **Phase-1 implementation: NOT YET STARTED.** No code, no
-  Cargo.toml, no `sim/L0/thermostat/` directory. The chassis is a
-  paper artifact; everything is by design — Phase 1 implementation
-  starts with the spec, not direct code.
-- **Crate to be created**: `sim/L0/thermostat/` (package
-  `sim-thermostat`). Deps: `sim-core`, `nalgebra`, `rand`,
-  `rand_chacha`, `rand_distr`. Estimated Phase 1 footprint:
-  ~890 LOC across 8 files (per Decision 6 + M4 + M2 inventory).
-  **sim-core stays rand-free in production** (item 8 + Decision 6
-  constraint).
+- **Phase 1 spec COMMITTED.**
+  [`../03_phases/01_langevin_thermostat.md`](../03_phases/01_langevin_thermostat.md)
+  drafted, fresh-eyes reviewed, and tightened post-Crack-4 (see below).
+  Inherits chassis Decisions 1–7 verbatim. Q1 named as Phase 2 gate.
+- **Phase 1 implementation COMPLETE.** `sim/L0/thermostat/` crate
+  shipped. Production code: ~1450 LOC across 8 files. **35 unit tests
+  + 5 mandatory integration tests + 1 sweep test (`#[ignore]`'d), all
+  green** on three back-to-back runs of the central gate, no flake.
+  `cargo clippy -p sim-thermostat --tests --release -- -D warnings`
+  clean; `cargo fmt --check` clean. **sim-core stays rand-free in
+  production** (verified by inspection: `rand` is in
+  `sim/L0/core/Cargo.toml` `[dev-dependencies]`, not `[dependencies]`).
+- **Phase 1 — three cracks found across two sessions, all fixed.**
+  Each is recorded in
+  [`../06_findings/`](../06_findings/) with quantitative diagnosis,
+  fix plan, and post-fix verification:
+  - **Cracks 1+2** (statistical propagation chain):
+    [`2026-04-09_phase1_statistical_propagation_chain.md`](../06_findings/2026-04-09_phase1_statistical_propagation_chain.md)
+    — chassis Decision 5 ship-justification framed `WelfordOnline::merge`
+    as the §7.3 primitive, but merging per-step accumulators across
+    autocorrelated trajectories underestimates the std error by
+    `√(1+2·τ_int) ≈ 100`. Fix: two-level Welford (per-trajectory inner
+    accumulator + across-trajectories top-level accumulator). Merge
+    still ships for Phase 4+ IID parallel-reduce contexts but is not
+    used by the §7 gate.
+  - **Crack 3** (§10 underdamped time constant):
+    [`2026-04-09_phase1_section_10_time_constant.md`](../06_findings/2026-04-09_phase1_section_10_time_constant.md)
+    — spec said amplitude time constant is `M/γ = 10`; correct value
+    is `2M/γ = 20` (the spec confused free-particle velocity decay /
+    oscillator energy decay with oscillator amplitude decay). Fix:
+    extend §10 decay window from 50,000 to 200,000 steps; envelope
+    ≈ `exp(-10) ≈ 4.5e-5`, ~22× margin under the `< 1e-3` threshold.
+  - **Crack 4** (burn-in `τ_int` vs `τ_eq` conflation):
+    [`2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md`](../06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md)
+    — spec §7.2 used `5·τ_int` as the burn-in heuristic, but burn-in
+    adequacy is governed by `τ_eq = M/γ`, which is 2× longer than
+    `τ_int = M/(2γ)`. The conflation was invisible at γ=0.1 (residual
+    bias 0.82%, swamped by sampling noise) but catastrophic at γ=0.01
+    in the §7.4 sweep (49% bias). Fix: name `τ_eq` and `τ_int` as
+    distinct quantities in §7.2; central test scaled to `n_burn_in =
+    5·τ_eq = 50_000`, `n_measure = 20·τ_eq = 200_000`; sweep test
+    parameterized per combo by `τ_eq(γ)`. Quantitative model matched
+    both Probe F's central-test 6-seed average and the sweep failure
+    to 1% relative — diagnosis confirmed by independent first-principles
+    derivation.
+  - **Three foundational time constants now distinguished** in spec
+    §7.2 ("Two distinct time scales") and inherited by every future
+    phase: amplitude decay `2M/γ`, equilibration `τ_eq = M/γ`,
+    `½v²` autocorrelation `τ_int = M/(2γ)`. Phase 2+ specs that run
+    equipartition tests must use `τ_eq` for burn-in, `τ_int` for
+    `N_eff`. **Don't conflate.**
+- **Closing implementation review (§13) DONE.** No chassis breaks
+  surfaced. Spec/impl alignment verified end-to-end. Documentation
+  drift in `test_utils.rs` (lingering "merge for §7.3" framing from
+  before Cracks 1+2 fix) reconciled in commit `a7192bc`. Phase 1
+  acceptance criteria §12.4 #1–#4, #6, #7 all satisfied; #5
+  (`cargo xtask grade sim-thermostat`) deferred to PR-prep per the
+  user's "never run heavy gates during normal work" preference.
+- **Recon-to-iteration handoff principle empirically validated TWICE
+  on this branch.** First iteration (previous session) caught Cracks
+  1+2+3 on the very first central-test run after multiple paper
+  passes. Second iteration (this session) caught Crack 4 on the very
+  first sweep run after Cracks 1+2+3 were fixed. Pattern is now
+  battle-tested, not speculative. See
+  [`../06_findings/2026-04-09_phase1_handoff_principle_vindication.md`](../06_findings/2026-04-09_phase1_handoff_principle_vindication.md).
 - **Open questions status**:
   - Q1 (constrained Langevin) — UNRESOLVED, gates Phase 2.
     Reference: Lelièvre, Rousset, Stoltz.
@@ -69,7 +124,19 @@ review pass.*
     "blocked on cf-design foundation, revisit when D2/D4 force the
     question." Phases 1-4 unaffected.
   - Q6 (Phase 7 reward signal) — deferred until Phase 6 results.
-- **Next action**: draft
-  [`../03_phases/01_langevin_thermostat.md`](../03_phases/01_langevin_thermostat.md)
-  against the now-finalized chassis. The doc review pass and Q5 recon
-  are both complete.
+- **Next action**: Phase 1 is **DONE**. Three candidate next moves,
+  each deserving its own session:
+  1. **Phase 2 spec drafting** — free + articulated body equipartition,
+     gated on Q1 (constrained Langevin). The natural follow-on. Phase 2
+     burn-in choices must use `τ_eq`, not `τ_int`, per Crack 4's lesson.
+  2. **Chassis amendment session** — fold Cracks 1+2+4 corrections into
+     `chassis_design.md` Decision 5 (the merge ship-justification + the
+     `τ_int` derivation context). Open question — current weak
+     recommendation is **Option A**: chassis stays paper-locked, the
+     `06_findings/` entries remain canonical. Decide in a session that
+     explicitly intends to amend the chassis.
+  3. **PR prep** — Phase 1 ships as a single PR off
+     `feature/thermo-doc-review`. Includes running `cargo xtask grade
+     sim-thermostat` (acceptance criterion §12.4 #5, deferred from this
+     session) and writing the PR description against the spec + the
+     four findings docs.
