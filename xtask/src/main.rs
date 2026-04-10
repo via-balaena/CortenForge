@@ -70,9 +70,9 @@ enum Commands {
         #[arg(name = "CRATE")]
         crate_name: String,
 
-        /// Skip interactive API review confirmation
+        /// Bypass manual API review (records reviewer as "automated (forced)")
         #[arg(long)]
-        skip_review: bool,
+        force: bool,
     },
 
     /// Run full CI suite (same as GitHub Actions)
@@ -94,10 +94,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Check { ci } => check::run(ci),
         Commands::Grade { crate_name, format } => grade::run(&crate_name, &format),
-        Commands::Complete {
-            crate_name,
-            skip_review,
-        } => complete::run(&crate_name, skip_review),
+        Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
         Commands::Setup => setup::run(),

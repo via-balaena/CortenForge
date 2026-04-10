@@ -2,16 +2,17 @@
 //!
 //! This module handles recording when a crate achieves A-grade status.
 
-use anyhow::{bail, Context, Result};
+use crate::grade;
+use anyhow::{bail, Result};
 use chrono::Utc;
 use owo_colors::OwoColorize;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use xshell::{cmd, Shell};
+use xshell::Shell;
 
 /// Record A-grade completion for a crate
-pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
+pub fn run(crate_name: &str, force: bool) -> Result<()> {
     let sh = Shell::new()?;
 
     println!();
@@ -19,31 +20,54 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
     println!("{}", "============================".bold());
     println!();
 
-    // Find the crate path
-    let crate_path = find_crate_path(crate_name)?;
+    // Use the shared cargo-metadata path lookup (ss5.2)
+    let crate_path = grade::find_crate_path(&sh, crate_name)?;
 
-    // First, verify automated criteria pass
+    // Run the rebuilt grade tool internally (ss5.1)
     println!("{}", "Step 1: Verifying automated criteria...".cyan());
+    let report = grade::evaluate(&sh, crate_name)?;
 
-    let grade_output = cmd!(sh, "cargo xtask grade {crate_name}")
-        .ignore_status()
-        .read()?;
-
-    // Check if we got automated A grade
-    if !grade_output.contains("AUTOMATED") || grade_output.contains("Refactor required") {
+    // Check automated grade
+    let passes = matches!(
+        report.automated_grade,
+        grade::Grade::A | grade::Grade::APlus
+    );
+    if !passes {
         println!();
-        println!("{}", "✗ Automated criteria not all A-grade.".red().bold());
+        println!(
+            "{}",
+            format!(
+                "✗ Automated grade: {}. Not all criteria pass.",
+                report.automated_grade.as_str()
+            )
+            .red()
+            .bold()
+        );
         println!("Run `cargo xtask grade {}` to see details.", crate_name);
         std::process::exit(1);
     }
 
-    println!("  {} Automated criteria: A", "✓".green());
+    println!(
+        "  {} Automated criteria: {}",
+        "✓".green(),
+        report.automated_grade.as_str()
+    );
 
     // API Review
     println!();
     println!("{}", "Step 2: API Design Review".cyan());
 
-    if !skip_review {
+    if force {
+        // --force bypass (ss5.4)
+        println!("{}", "  ⚠ Bypassing manual API review (--force).".yellow());
+        println!(
+            "{}",
+            "    Criterion 7 will be recorded as 'automated (forced)'.".yellow()
+        );
+        write_completion(&crate_path, crate_name, "automated (forced)", &report)?;
+        update_completion_log(crate_name, "automated (forced)")?;
+    } else {
+        // Interactive review flow (ss5.5)
         println!();
         println!(
             "{}",
@@ -89,15 +113,8 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
 
         println!("  {} API Design reviewed by: {}", "✓".green(), reviewer);
 
-        // Write COMPLETION.md
-        write_completion(&crate_path, crate_name, reviewer)?;
-
-        // Update project-wide log
+        write_completion(&crate_path, crate_name, reviewer, &report)?;
         update_completion_log(crate_name, reviewer)?;
-    } else {
-        println!("  {} Skipping review (--skip-review)", "⚠".yellow());
-        write_completion(&crate_path, crate_name, "automated")?;
-        update_completion_log(crate_name, "automated")?;
     }
 
     println!();
@@ -112,32 +129,27 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
     Ok(())
 }
 
-fn find_crate_path(crate_name: &str) -> Result<String> {
-    let locations = ["design", "mesh", "geometry", "sim"];
-
-    for loc in &locations {
-        let path = format!("{}/{}", loc, crate_name);
-        if Path::new(&path).exists() {
-            return Ok(path);
-        }
-    }
-
-    // Try direct path
-    if Path::new(crate_name).exists() {
-        return Ok(crate_name.to_string());
-    }
-
-    bail!(
-        "Could not find crate '{}'. Looked in: {:?}",
-        crate_name,
-        locations
-    )
-}
-
-fn write_completion(crate_path: &str, crate_name: &str, reviewer: &str) -> Result<()> {
+/// Write COMPLETION.md with actual measured values from GradeReport (ss5.3).
+fn write_completion(
+    crate_path: &str,
+    crate_name: &str,
+    reviewer: &str,
+    report: &grade::GradeReport,
+) -> Result<()> {
     let now = Utc::now();
     let date = now.format("%Y-%m-%d").to_string();
     let timestamp = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    // Build criteria table rows from actual measured values
+    let mut criteria_rows = String::new();
+    for c in &report.criteria {
+        let status = if c.grade == grade::Grade::Manual {
+            format!("✅ A | Reviewed by {}", reviewer)
+        } else {
+            format!("✅ {} | {}", c.grade.as_str(), c.measured_detail)
+        };
+        criteria_rows.push_str(&format!("| {} | {} |\n", c.name, status));
+    }
 
     let content = format!(
         r#"# {crate_name} - A-Grade Completion
@@ -155,16 +167,9 @@ fn write_completion(crate_path: &str, crate_name: &str, reviewer: &str) -> Resul
 
 ## Criteria Status
 
-| # | Criterion | Status | Notes |
-|---|-----------|--------|-------|
-| 1 | Test Coverage | ✅ A | ≥90% line coverage |
-| 2 | Documentation | ✅ A | Zero warnings |
-| 3 | Clippy | ✅ A | Zero warnings |
-| 4 | Safety | ✅ A | Zero unwrap/expect |
-| 5 | Dependencies | ✅ A | Minimal, justified |
-| 6 | Bevy-free | ✅ A | No bevy in tree |
-| 7 | API Design | ✅ A | Reviewed by {reviewer} |
-
+| Criterion | Status |
+|-----------|--------|
+{criteria_rows}
 ## Maintenance
 
 This crate must maintain A-grade status. Any PR that causes a criterion to drop below A will be blocked by CI.
@@ -182,7 +187,7 @@ cargo xtask grade {crate_name}
     );
 
     let completion_path = format!("{}/COMPLETION.md", crate_path);
-    fs::write(&completion_path, content).context("Failed to write COMPLETION.md")?;
+    fs::write(&completion_path, content).context_msg("Failed to write COMPLETION.md")?;
 
     println!("  {} Created {}", "✓".green(), completion_path);
 
@@ -200,14 +205,12 @@ fn update_completion_log(crate_name: &str, reviewer: &str) -> Result<()> {
         // Append to existing log
         let content = fs::read_to_string(log_path)?;
         if content.contains(&format!("| {} |", crate_name)) {
-            // Already has an entry, update it
             println!(
                 "  {} {} already in completion log (updating)",
                 "⚠".yellow(),
                 crate_name
             );
         } else {
-            // Append new entry
             let mut file = fs::OpenOptions::new().append(true).open(log_path)?;
             file.write_all(entry.as_bytes())?;
             println!("  {} Updated {}", "✓".green(), log_path);
@@ -235,4 +238,15 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the workflow.
     }
 
     Ok(())
+}
+
+/// Helper trait for adding context to fs errors.
+trait ContextMsg<T> {
+    fn context_msg(self, msg: &str) -> Result<T>;
+}
+
+impl<T> ContextMsg<T> for std::result::Result<T, std::io::Error> {
+    fn context_msg(self, msg: &str) -> Result<T> {
+        self.map_err(|e| anyhow::anyhow!("{}: {}", msg, e))
+    }
 }
