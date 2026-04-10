@@ -71,3 +71,5 @@ mod langevin;
 mod stack;
 
 pub mod test_utils;
+
+pub use component::{PassiveComponent, Stochastic};
