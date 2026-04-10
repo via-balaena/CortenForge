@@ -1,7 +1,7 @@
 # Phase 3 — Single Bistable Element + Kramers' Escape Rate
 
-> **Status**: Spec draft, pending approval.
-> **Branch**: TBD (will branch from `main` after approval)
+> **Status**: **Done.** Implemented and all gates green on `main`.
+> **Commit**: `ffbb14d`
 > **Owner**: Jon
 > **Parents**:
 > - [`02_multi_dof_equipartition.md`](./02_multi_dof_equipartition.md) (Phase 2 — the gate this phase inherits)
