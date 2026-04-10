@@ -108,7 +108,9 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
         .criteria
         .push(grade_documentation(sh, crate_name, &crate_path)?);
     // 3. Clippy
-    report.criteria.push(grade_clippy(sh, crate_name)?);
+    report
+        .criteria
+        .push(grade_clippy(sh, crate_name, &crate_path)?);
     // 4. Safety
     report.criteria.push(grade_safety(sh, &crate_path)?);
     // 5. Dependencies
@@ -445,39 +447,128 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
     })
 }
 
-/// Grade clippy warnings
-fn grade_clippy(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
+/// Grade clippy warnings via JSON output parsing.
+///
+/// Uses `--message-format=json` instead of `-- -D warnings` so we can
+/// count diagnostics directly from structured output (B1 fix: old gate
+/// read stdout but clippy wrote diagnostics to stderr).
+fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
     let output = cmd!(
         sh,
-        "cargo clippy -p {crate_name} --all-targets --all-features -- -D warnings"
+        "cargo clippy -p {crate_name} --all-targets --all-features --message-format=json"
     )
     .ignore_status()
     .ignore_stderr()
     .read()
     .unwrap_or_default();
 
-    let warning_count = output.matches("warning:").count();
-    let error_count = output.matches("error[").count();
+    // Parse JSON lines: filter compiler-message with warning/error level and non-empty spans
+    let mut clippy_count = 0;
+    for line in output.lines() {
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if json["reason"].as_str() != Some("compiler-message") {
+            continue;
+        }
+        let level = json["message"]["level"].as_str().unwrap_or("");
+        if level != "warning" && level != "error" {
+            continue;
+        }
+        // Exclude summary lines (empty spans = "N warnings emitted")
+        let spans = &json["message"]["spans"];
+        if !spans.is_array() || spans.as_array().is_none_or(|a| a.is_empty()) {
+            continue;
+        }
+        clippy_count += 1;
+    }
 
-    let total_issues = warning_count + error_count;
+    // Unjustified #[allow(clippy:: check (F-ext-3)
+    // Simple heuristic: skip lines after #[cfg(test)] to EOF (brace-depth tracker in Step 5)
+    let mut allow_count = 0;
+    let src_path = format!("{}/src", crate_path);
+    if let Ok(entries) = glob_rs_files(&src_path) {
+        for file_path in entries {
+            if let Ok(content) = std::fs::read_to_string(&file_path) {
+                let lines: Vec<&str> = content.lines().collect();
+                let mut in_test = false;
+                for (i, line) in lines.iter().enumerate() {
+                    let trimmed_line = line.trim();
+                    if !trimmed_line.starts_with("//") && trimmed_line.contains("#[cfg(test)]") {
+                        in_test = true;
+                    }
+                    if in_test {
+                        continue;
+                    }
+                    let trimmed = line.trim();
+                    if !trimmed.contains("#[allow(clippy::") {
+                        continue;
+                    }
+                    // Check preceding 1-3 lines for a justification comment
+                    let has_justification = (1..=3).any(|offset| {
+                        i.checked_sub(offset).is_some_and(|j| {
+                            let prev = lines[j].trim();
+                            prev.starts_with("//")
+                                && !prev.starts_with("///")
+                                && !prev.starts_with("//!")
+                        })
+                    });
+                    if !has_justification {
+                        // Also check same-line trailing comment
+                        let has_inline = trimmed.contains("//") && {
+                            let comment_pos = trimmed.rfind("//").unwrap_or(0);
+                            comment_pos > trimmed.find("#[allow(clippy::").unwrap_or(0)
+                        };
+                        if !has_inline {
+                            allow_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-    let grade = if total_issues == 0 {
-        Grade::A
-    } else if total_issues <= 5 {
-        Grade::B
-    } else if total_issues <= 20 {
-        Grade::C
+    let total = clippy_count + allow_count;
+
+    // Binary A/F
+    let grade = if total == 0 { Grade::A } else { Grade::F };
+
+    let result = if allow_count > 0 {
+        format!(
+            "{} warnings, {} unjustified allows",
+            clippy_count, allow_count
+        )
     } else {
-        Grade::F
+        format!("{} warnings", clippy_count)
     };
+
+    let measured_detail = result.clone();
 
     Ok(CriterionResult {
         name: "3. Clippy",
-        result: format!("{} warnings", total_issues),
+        result,
         grade,
-        threshold: "0",
-        measured_detail: format!("{} warnings", total_issues),
+        threshold: "0 warnings",
+        measured_detail,
     })
+}
+
+/// Collect all `.rs` files under a directory.
+fn glob_rs_files(dir: &str) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    if !Path::new(dir).exists() {
+        return Ok(files);
+    }
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            files.push(path.to_string_lossy().to_string());
+        }
+    }
+    Ok(files)
 }
 
 /// Grade safety by checking for unwrap/expect in library code
