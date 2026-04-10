@@ -4,7 +4,6 @@
 
 use anyhow::{bail, Context, Result};
 use owo_colors::OwoColorize;
-use regex::Regex;
 use std::path::Path;
 use xshell::{cmd, Shell};
 
@@ -336,50 +335,59 @@ pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
     )
 }
 
-/// Grade test coverage using cargo tarpaulin
+/// Grade test coverage using cargo-llvm-cov (F2 decision: replaces tarpaulin).
+///
+/// Two-tier thresholds (F1 decision): >=90% = A+, >=75% = A.
+/// Graceful degradation (ss1.4): if cargo-llvm-cov is not installed, reports Manual.
 fn grade_coverage(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
-    // Check if tarpaulin is installed
-    let tarpaulin_check = cmd!(sh, "cargo tarpaulin --version")
+    // Check if cargo-llvm-cov is installed
+    let version_check = cmd!(sh, "cargo llvm-cov --version")
         .ignore_status()
         .ignore_stderr()
         .read()
         .unwrap_or_default();
 
-    // If the output doesn't contain version info, tarpaulin isn't installed
-    if !tarpaulin_check.contains("cargo-tarpaulin") {
+    if !version_check.contains("cargo-llvm-cov") {
         return Ok(CriterionResult {
             name: "1. Coverage",
-            result: "(tarpaulin n/a)".to_string(),
+            result: "(llvm-cov n/a)".to_string(),
             grade: Grade::Manual,
-            threshold: "≥90%",
-            measured_detail: "(tarpaulin n/a)".to_string(),
+            threshold: "≥75%/≥90% A+",
+            measured_detail: "(llvm-cov n/a)".to_string(),
         });
     }
 
-    // Run tarpaulin and parse output (stderr is captured separately)
-    let output = cmd!(
-        sh,
-        "cargo tarpaulin -p {crate_name} --out Json --output-dir target/tarpaulin"
-    )
-    .ignore_status()
-    .ignore_stderr()
-    .read()
-    .unwrap_or_default();
+    // Run cargo llvm-cov --json -p <crate>
+    let output = cmd!(sh, "cargo llvm-cov --json -p {crate_name}")
+        .ignore_status()
+        .ignore_stderr()
+        .read()
+        .unwrap_or_default();
 
-    // Parse coverage percentage from output
-    // Look for pattern like "XX.XX% coverage"
-    let coverage_regex = Regex::new(r"(\d+\.?\d*)% coverage")?;
-    let coverage = coverage_regex
-        .captures(&output)
-        .and_then(|c| c.get(1))
-        .and_then(|m| m.as_str().parse::<f64>().ok())
-        .unwrap_or(0.0);
+    // Parse JSON: data[0].totals.lines.percent
+    let coverage = (|| -> Option<f64> {
+        let json: serde_json::Value = serde_json::from_str(&output).ok()?;
+        json["data"][0]["totals"]["lines"]["percent"].as_f64()
+    })();
 
+    let Some(coverage) = coverage else {
+        return Ok(CriterionResult {
+            name: "1. Coverage",
+            result: "(parse error)".to_string(),
+            grade: Grade::F,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: "(failed to parse llvm-cov JSON)".to_string(),
+        });
+    };
+
+    // Two-tier thresholds (F1): A+ >= 90%, A >= 75%, B >= 60%, C >= 40%, F < 40%
     let grade = if coverage >= 90.0 {
+        Grade::APlus
+    } else if coverage >= 75.0 {
         Grade::A
-    } else if coverage >= 80.0 {
-        Grade::B
     } else if coverage >= 60.0 {
+        Grade::B
+    } else if coverage >= 40.0 {
         Grade::C
     } else {
         Grade::F
@@ -389,7 +397,7 @@ fn grade_coverage(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         name: "1. Coverage",
         result: format!("{:.1}%", coverage),
         grade,
-        threshold: "≥90%",
+        threshold: "≥75%/≥90% A+",
         measured_detail: format!("{:.1}% line coverage", coverage),
     })
 }
