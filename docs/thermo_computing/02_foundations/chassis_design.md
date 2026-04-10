@@ -39,6 +39,72 @@ This document does the same thing for the thermo crate.
   add a new thermostat?" is anything other than "implement the trait,
   done," the chassis is wrong.
 
+### Scope: this chassis is for passive forces only
+
+*Added by doc review S4, 2026-04-09.*
+
+This chassis is the bolt pattern for **passive forces only** —
+things that fire inside `mj_fwd_passive()` via sim-core's
+`cb_passive` callback and contribute to `qfrc_passive`. Controlled
+forces (motor commands, RL action injection, manual loads) still
+flow through sim-core's existing infrastructure: `cb_control` /
+`ctrl` for actuator commands, `qfrc_applied` / `xfrc_applied` for
+direct force injection. The thermo crate does not wrap, replace,
+or extend any of those paths.
+
+**Implication for components that need both** (e.g., D1's
+flashing-ratchet Brownian motor, where an RL policy gates a
+ratchet potential on/off): split the component into two halves
+that share state via an `Arc`:
+
+```rust
+// The passive half — a PassiveComponent that bolts onto this chassis.
+struct FlashingRatchetPotential {
+    on: Arc<AtomicBool>,           // shared with the controller half
+    bistable_params: ...,
+}
+impl PassiveComponent for FlashingRatchetPotential {
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+        if self.on.load(Ordering::Acquire) {
+            // contribute the bistable potential gradient
+        }
+        // when off, contribute nothing
+    }
+}
+
+// The controlled half — a cb_control callback (sim-core's existing hook).
+let on = Arc::new(AtomicBool::new(false));
+let on_for_passive = Arc::clone(&on);
+let on_for_control = Arc::clone(&on);
+
+PassiveStack::builder()
+    .with(FlashingRatchetPotential { on: on_for_passive, ... })
+    .build()
+    .install(&mut model);
+
+model.set_control_callback(move |m, d| {
+    // policy decides whether to flip the ratchet at this step
+    let flip = policy.decide(d);
+    on_for_control.store(flip, Ordering::Release);
+});
+```
+
+Both halves run in the same `step()` (control fires before
+passive), share the `Arc<AtomicBool>` state, and compose without
+either side knowing about the other. The chassis stays
+single-purpose (passive forces); the cross-cutting active +
+passive coordination is the user's composition of two existing
+sim-core hooks. **D1 (Brownian motor), D2 (stochastic resonance
+driver), and any future mixed active/passive component bolt onto
+the chassis through this pattern.**
+
+This is the only place the chassis acknowledges controlled forces.
+Everywhere else in this document, "component" means
+"`PassiveComponent` implementation." When the rest of the chassis
+says "the only mutable surface is `qfrc_out`," that is a property
+of the passive half — the controlled half is governed by sim-core's
+own contracts on `cb_control` / `qfrc_applied`.
+
 ---
 
 ## 1. Decision Log
@@ -176,7 +242,8 @@ or implement only a fallback `apply`-only trait.
 Confidence: high. Five reasons in priority order:
 
 1. **Future-proofness against the Research Directions**.
-   `MASTER_PLAN.md` §2 names five concrete experiments. D1
+   [`../01_vision/research_directions.md`](../01_vision/research_directions.md)
+   names five concrete experiments. D1
    (Brownian ratchet/motor) and D2 (stochastic resonance with a
    sub-threshold periodic driver) are *not* thermostats but they
    are passive forces that bolt into `qfrc_passive` exactly the
@@ -235,11 +302,25 @@ in a known direction:
 
 #### DECISION (user confirmed): **Scheme A — broad `PassiveComponent`**
 
-Trait shape:
+Trait shape (revised by doc review M5 + M2, 2026-04-09 — see
+"Trait contract revision" below and Decision 7):
 
 ```rust
 pub trait PassiveComponent: Send + Sync + 'static {
-    fn apply(&self, model: &Model, data: &mut Data);
+    /// Add this component's per-DOF passive force contribution to
+    /// `qfrc_out`. The component MUST NOT mutate `data` — it is passed
+    /// immutably so the component can read state (`qpos`, `qvel`,
+    /// `model.timestep`, etc.) without being able to write to it.
+    /// `qfrc_out` is the only legal write target; it has length
+    /// `model.nv` and is shared (accumulating) with other components
+    /// in the same `PassiveStack`.
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>);
+
+    /// If this component has a stochastic part, return a handle to
+    /// toggle it. Default: no stochastic part, returns `None`.
+    /// Components that implement `Stochastic` (Decision 7) override
+    /// this to return `Some(self)`.
+    fn as_stochastic(&self) -> Option<&dyn Stochastic> { None }
 }
 ```
 
@@ -248,11 +329,60 @@ Introspection lives on the orthogonal `Diagnose` trait
 drivers, ratchets, custom drag laws, energy biases — implement
 `PassiveComponent` and bolt to the same chassis.
 
+##### Trait contract revision (doc review M5, 2026-04-09)
+
+The original Decision 1 trait gave each component `&mut Data` —
+exactly what `cb_passive` natively provides. That preserved
+maximum flexibility but enforced *nothing*: a buggy or hostile
+component could legally mutate `qpos`, `qvel`, `qfrc_actuator`,
+`time`, or any other field, breaking physics in ways that take
+days to debug. The contract was implied by prose, not by the
+type system.
+
+The revised trait moves the only mutable surface to a `&mut
+DVector<f64>` (the per-DOF force contribution) and demotes
+`Data` to immutable. Three consequences:
+
+1. **Type-enforced contract.** A component physically cannot
+   write to anything except its `qfrc_out` buffer. The class of
+   bugs M5 was opened to address becomes uncompilable.
+2. **Read-only access to `Data` is preserved.** Components still
+   read `data.qvel`, `data.qpos`, `data.time`, `model.timestep`
+   etc. through the immutable `&Data` and `&Model` references —
+   everything legitimate the previous signature allowed.
+3. **`PassiveStack::install` allocates a scratch buffer per
+   step**, runs each component into it (accumulating across the
+   stack), then writes `data.qfrc_passive += scratch` once at the
+   end. Allocation cost is one `DVector::zeros(nv)` per step —
+   tens of bytes at Phase 1 (`nv=1`) up to a few KB at the
+   largest plausible Phase 5+ scale (`nv ≈ 1000`); negligible
+   compared to one constraint solve. See Decision 2 for the
+   updated install body.
+
+Why this is the right call (consistent with the "loud over
+silent" line drawn in items 2, 4, and 6 of the master plan
+recon): every other "type-enforced vs. doc-trust" decision in
+this initiative has gone the same way. Item 2 chose sole-writer
+overwrite over additive (loud failure beats silent compounding).
+Item 4 chose `ChaCha8Rng` over `StdRng` (loud reproducibility
+beats silent algorithm-bump drift). Item 6 chose read-fresh over
+cache (loud robustness beats silent precompute hazard). M5
+applies the same principle to the trait contract itself.
+
+The breaking change is free *right now* because no code has
+been written. After Phase 1 ships, breaking the trait would
+ripple through every component implementation; before Phase 1
+ships, it's a one-line edit per (zero) implementations.
+
 #### Status
 
 - **Decision 1 RESOLVED.** Scheme A confirmed. The trait shape
   above is the chassis for every component the thermo crate ever
   ships.
+- **Trait signature revised by doc review M5 (2026-04-09)** —
+  `apply` now takes `&Data` and `&mut DVector<f64>` instead of
+  `&mut Data`. The "broad trait" decision itself is unchanged;
+  only the write-target contract is tightened.
 - No code, no Cargo.toml changes, no new files written beyond this
   document.
 
@@ -359,8 +489,15 @@ impl PassiveStack {
     pub fn install(self: Arc<Self>, model: &mut Model) {
         let me = Arc::clone(&self);
         model.set_passive_callback(move |m, d| {
+            // M5: components write into a scratch buffer, not into d
+            // directly. The stack folds the result into qfrc_passive
+            // after every component has run.
+            let mut scratch = DVector::zeros(d.qfrc_passive.len());
             for c in &me.components {
-                c.apply(m, d);
+                c.apply(m, d, &mut scratch);
+            }
+            for i in 0..scratch.len() {
+                d.qfrc_passive[i] += scratch[i];
             }
         });
     }
@@ -515,7 +652,25 @@ pub struct PassiveStackBuilder {
 
 impl PassiveStack {
     pub fn builder() -> PassiveStackBuilder { ... }
-    pub fn install(self: Arc<Self>, model: &mut Model) { ... }
+
+    /// Install the stack as the model's `cb_passive` callback.
+    /// Each step, allocates a scratch `DVector::zeros(model.nv)`,
+    /// runs every component into it (accumulating across the stack),
+    /// then folds the result into `data.qfrc_passive`. Components
+    /// see `&Data` and `&mut DVector<f64>` only — they cannot mutate
+    /// any other field by construction (M5).
+    pub fn install(self: Arc<Self>, model: &mut Model) {
+        let me = Arc::clone(&self);
+        model.set_passive_callback(move |m, d| {
+            let mut scratch = DVector::zeros(d.qfrc_passive.len());
+            for c in &me.components {
+                c.apply(m, d, &mut scratch);
+            }
+            for i in 0..scratch.len() {
+                d.qfrc_passive[i] += scratch[i];
+            }
+        });
+    }
 }
 
 impl PassiveStackBuilder {
@@ -645,9 +800,11 @@ impl PassiveStack {
     ///    `Arc<PassiveStack>` for env `i`.
     /// 4. Installs that fresh stack on the cloned model.
     ///
-    /// Returns N independent Models, each with its own
-    /// statistically-independent stack and (for stateful
-    /// components like `LangevinThermostat`) its own RNG.
+    /// Returns an `EnvBatch` containing N independent Models AND
+    /// the per-env stacks (S3 — doc review 2026-04-09): the common
+    /// case unwraps `envs.models`, but the introspection case can
+    /// reach `envs.stacks[i].diagnostic_summary()` without having
+    /// to recreate the stacks.
     ///
     /// **Use this for BatchSim setups.** Naïvely cloning a
     /// Model after installing a stack will share the underlying
@@ -657,18 +814,37 @@ impl PassiveStack {
         prototype: &Model,
         n: usize,
         build_one: F,
-    ) -> Vec<Model>
+    ) -> EnvBatch
     where
         F: Fn(usize) -> Arc<PassiveStack>,
     {
-        (0..n).map(|i| {
+        let mut models = Vec::with_capacity(n);
+        let mut stacks = Vec::with_capacity(n);
+        for i in 0..n {
             let stack = build_one(i);
             let mut model = prototype.clone();
             model.clear_passive_callback();  // defensive
-            stack.install(&mut model);
-            model
-        }).collect()
+            debug_assert!(model.cb_passive.is_none());  // N4
+            stack.clone().install(&mut model);
+            models.push(model);
+            stacks.push(stack);
+        }
+        EnvBatch { models, stacks }
     }
+}
+
+/// Result of `PassiveStack::install_per_env`. Holds N independent
+/// Models alongside the per-env stacks that produced them.
+///
+/// Common case: take the models with `envs.models` (a one-token
+/// unwrap; the field is `pub`).
+///
+/// Introspection case: reach into `envs.stacks[i]` to call
+/// diagnostic accessors, extract per-env RNG state for
+/// checkpointing, etc.
+pub struct EnvBatch {
+    pub models: Vec<Model>,
+    pub stacks: Vec<Arc<PassiveStack>>,
 }
 ```
 
@@ -688,7 +864,8 @@ let envs = PassiveStack::install_per_env(
             .build()
     },
 );
-// envs is Vec<Model>, ready for BatchSim::new(envs) or whatever
+// envs.models is Vec<Model>, ready for BatchSim::new(envs.models)
+// envs.stacks[i] is the per-env Arc<PassiveStack> for introspection
 ```
 
 The closure takes `i` (the env index) so users can vary
@@ -808,12 +985,22 @@ Confidence: high. Five reasons in priority order:
   (uninformative), `install_independent` (verbose), `replicate`
   (too short). `install_per_env` is the clearest match for the
   BatchSim mental model.
-- **Return type**: `Vec<Model>`. Simplest, most directly
-  composable with `BatchSim::new(envs)` or any other downstream
-  consumer. If a user wants the stacks back for inspection,
-  they can store them in the closure's outer scope. Considered:
-  `Vec<(Model, Arc<PassiveStack>)>` — rejected as imposing a
-  cost on the common case for an uncommon need.
+- **Return type**: `EnvBatch { pub models: Vec<Model>, pub
+  stacks: Vec<Arc<PassiveStack>> }` (revised by doc review S3,
+  2026-04-09). Originally `Vec<Model>` — that lost access to the
+  per-env stacks for any introspection use case (diagnostic
+  summaries, per-env RNG checkpointing, parameter inspection),
+  forcing the user to keep the stacks alive in the closure's
+  outer scope by hand. The `EnvBatch` form gives the common case
+  a one-token unwrap (`envs.models`) and the introspection case
+  works for free (`envs.stacks[i]`). Cost: one struct definition
+  with two `pub` fields (~10 LOC). Considered: a tuple
+  `(Vec<Model>, Vec<Arc<PassiveStack>>)` — rejected because
+  named fields are clearer at the call site (`envs.models`
+  vs `envs.0`); a single `Vec<(Model, Arc<PassiveStack>)>` —
+  rejected because the common case wants two separate Vecs
+  (`BatchSim::new(envs.models)` is one move, not a per-element
+  destructure).
 - **Closure signature**: `Fn(usize) -> Arc<PassiveStack>`. The
   index lets users vary parameters per env (parameter sweeps,
   varying ICs, varying seeds). Considered: `Fn() ->
@@ -825,6 +1012,20 @@ Confidence: high. Five reasons in priority order:
   `model.clear_passive_callback()` inside the loop is what
   makes Scheme B bulletproof against the install-then-batch
   order. Document it explicitly in the rustdoc.
+- **Debug-assert the clear** (added by doc review N4,
+  2026-04-09). Belt-and-suspenders for the non-negotiable
+  defensive clear: a `debug_assert!(model.cb_passive.is_none())`
+  immediately after `clear_passive_callback()` validates the
+  assumption that the clear actually cleared. Verified
+  feasible: `cb_passive` is `pub Option<...>` at
+  `sim/L0/core/src/types/model.rs:1002`, so the field is
+  directly readable from external crates. Zero release-mode
+  cost; catches any future regression in
+  `clear_passive_callback()`'s contract during test runs.
+  This is the same "make wrong code impossible by
+  construction *where you can*, debug-assert *where you
+  can't*" line that shapes the rest of the chassis (M5,
+  Decision 7).
 - **Warning on `install`'s rustdoc**: required. The single-env
   `install` method must warn about the clone footgun and point
   users to `install_per_env` for batch use. This is the
@@ -845,25 +1046,39 @@ Scheme D (modify sim-core) is named as the *eventual* right
 answer if a future user demands truly impossible-to-misuse
 semantics, but is Phase-1-out-of-scope.
 
-Final API surface:
+Final API surface (return type revised by doc review S3,
+2026-04-09 — `Vec<Model>` → `EnvBatch`):
 
 ```rust
+pub struct EnvBatch {
+    pub models: Vec<Model>,
+    pub stacks: Vec<Arc<PassiveStack>>,
+}
+
 impl PassiveStack {
     pub fn install_per_env<F>(
         prototype: &Model,
         n: usize,
         build_one: F,
-    ) -> Vec<Model>
+    ) -> EnvBatch
     where
         F: Fn(usize) -> Arc<PassiveStack>,
     {
-        (0..n).map(|i| {
+        let mut models = Vec::with_capacity(n);
+        let mut stacks = Vec::with_capacity(n);
+        for i in 0..n {
             let stack = build_one(i);
             let mut model = prototype.clone();
             model.clear_passive_callback();  // defensive — non-negotiable
-            stack.install(&mut model);
-            model
-        }).collect()
+            debug_assert!(
+                model.cb_passive.is_none(),
+                "clear_passive_callback() must leave cb_passive None (N4)"
+            );
+            stack.clone().install(&mut model);
+            models.push(model);
+            stacks.push(stack);
+        }
+        EnvBatch { models, stacks }
     }
 }
 ```
@@ -877,6 +1092,12 @@ pointing users to `install_per_env` for batch use.
   provides one named API for the BatchSim case, defensively
   clears the inherited callback inside the loop, and documents
   the trap on the regular `install` method.
+- **Return type revised by doc review S3 (2026-04-09)**:
+  `Vec<Model>` → `EnvBatch { models, stacks }`. Common case
+  is unchanged ergonomically (`envs.models` instead of bare
+  `envs`); introspection case (per-env diagnostic summaries,
+  RNG checkpointing, parameter inspection) now works without
+  external bookkeeping. Adds ~10 LOC (one struct definition).
 - The Scheme D trapdoor is named in the document so future-us
   has a clear path if the constraint ever changes.
 - No code, no Cargo.toml changes, no new files written beyond
@@ -1248,32 +1469,52 @@ h=0.001:
 τ_int ≈ 1 / (2 · 0.1 · 0.001) = 5000 steps
 ```
 
+> **Forward note (post-Phase 1 implementation, 2026-04-09):** This
+> `τ_int = M/(2γh)` is the **autocorrelation time** of `½v²` in the
+> steady state, used here to compute `N_eff`. It is **distinct from**
+> `τ_eq = M/(γh)`, the **equilibration time** of `⟨v²⟩` from a
+> cold-start initial condition, which is the relevant time scale for
+> choosing burn-in length. The two quantities differ by a factor of 2
+> and govern different things; conflating them caused **Crack 4** in
+> the Phase 1 fix execution session — see
+> [`../06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md`](../06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md).
+> Phase 2+ specs that run equipartition tests must use `τ_eq` for
+> burn-in scaling and `τ_int` for `N_eff` computation. **Don't conflate.**
+
 So 10⁵ steps gives an *effective* sample count of:
 
 ```
 N_eff ≈ 10⁵ / (1 + 2·5000) ≈ 10
 ```
 
-For a chi-squared distributed `½ M v²` with mean `½ kT` and
-relative std `√2`, the standard error of the sample mean over
-N_eff = 10 effective samples is approximately
-`√2 · (½ kT) / √10 ≈ 0.22 · (½ kT)` — about **±22% sampling
-noise**, not ±2%.
+For chi-squared distributed `½ M v²` (mean `½ kT`, standard
+deviation `(½ kT)·√2`), the standard error of the sample mean
+over N_eff = 10 effective samples is
+`(½ kT)·√2/√10 ≈ 0.45 · (½ kT)` — about **±45% relative to
+the expected mean ½kT**, not ±2%.
 
-**Implication**: the part-2 reasoning was *too optimistic*.
-The test as currently parameterized cannot pass with margin
-at ±2% — the statistical noise dominates the discretization
-bias by about a factor of 20. Three plausible fixes (Phase 1
-spec design question, not Decision 5):
+**Tolerance convention** (locked in by doc review M1,
+2026-04-09): all sampling-error tolerances in the thermo line
+are expressed as a fraction of the expected mean (here `½kT`),
+not as a fraction of `kT`. The pre-correction wording mixed
+the two and was off by a factor of 2.
+
+**Implication**: the part-2 reasoning was *too optimistic*. The
+test as currently parameterized cannot pass with margin at ±2%
+of `½kT` — the statistical noise (±45% of `½kT`) dominates the
+discretization bias by more than an order of magnitude. Three
+plausible fixes (Phase 1 spec design question, not Decision 5):
 
 - **(α)** Increase total step count by ~100× to ~10⁷.
-- **(β)** Use multiple independent trajectories: e.g., 100
-  runs of 10⁵ steps each, with different seeds. Each run
-  gives one independent estimate; the standard error of the
-  100-estimate mean is `run_std / √100`. For 100 runs the
-  standard error is ~2% — in the right neighborhood.
-- **(γ)** Loosen the tolerance to match reality (~5-10%) and
-  accept that Phase 1 cannot detect discretization bias.
+- **(β)** Use multiple independent trajectories: e.g., 100 runs
+  of 10⁵ steps each, with different seeds. Each run gives one
+  independent estimate; the standard error of the 100-estimate
+  mean is `run_std / √100`, bringing the combined std error to
+  about **±4.5% of `½kT`** — in the right neighborhood for a
+  meaningful gate.
+- **(γ)** Loosen the tolerance to match reality (~5-10% of
+  `½kT`) and accept that Phase 1 cannot detect discretization
+  bias.
 
 I lean toward (β) — multiple independent trajectories — because
 it (i) avoids the autocorrelation analysis entirely, (ii) gives
@@ -1381,6 +1622,24 @@ implementations of mean/variance that Phase 1+ tests don't
 have to re-derive; numerical-stability built in (Welford);
 standard error of mean is a one-line accessor.
 
+> **Forward note (post-Phase 1 implementation, 2026-04-09):** The
+> "standard error of mean is a one-line accessor" claim above holds
+> **only for IID samples**. For autocorrelated time series — per-step
+> `½v²` from a Langevin trajectory has `τ_int ≈ 5000` steps for the
+> central case — calling `WelfordOnline::std_error_of_mean()` on a
+> single accumulator over the per-step samples gives the **IID** std
+> error, which underestimates the true std error by
+> `√(1+2·τ_int) ≈ 100`. The Phase 1 §7.3 gate uses a **two-level
+> Welford pattern** instead: per-trajectory inner accumulator collects
+> per-step samples, its `mean()` is pushed into a top-level
+> across-trajectories accumulator, and `std_error_of_mean()` on the
+> top-level accumulator is correct because the trajectory means ARE
+> IID by construction (independent seeds + sufficient burn-in). See
+> [`../06_findings/2026-04-09_phase1_statistical_propagation_chain.md`](../06_findings/2026-04-09_phase1_statistical_propagation_chain.md)
+> for the **Cracks 1+2** propagation chain analysis. The
+> `std_error_of_mean()` accessor itself is correct — the gap is in
+> *which samples* the caller pushes into the accumulator.
+
 **Cons**: ~80 LOC of crate code (Welford has more state than
 the naive version). One more module to maintain.
 
@@ -1477,8 +1736,109 @@ Confidence: high. Five reasons:
   the computed |z| score, and the n_sigma threshold. All
   numerics in scientific notation with 6 significant digits
   for precision in the failure message.
+- **Default `n_sigma` convention: 3σ** (added by doc review
+  N2, 2026-04-09). Tests in the thermo line should call
+  `assert_within_n_sigma(measured, expected, std_error, 3.0,
+  "...")` unless they have a specific reason to do otherwise.
+  3σ corresponds to a one-sided false-positive rate of ~0.13%
+  (~99.7% pass rate for a true-positive test under a normal
+  null), which is the standard "tight enough to catch real
+  bugs, loose enough to not flake on legitimate sampling
+  variation" balance for physics validation. Considered: 2σ
+  (~5% false-positive rate, too flaky — equipartition tests
+  in the option-β setup will produce ~5% std error and a
+  legitimate run would frequently land just outside 2σ); 5σ
+  (overkill — would only catch order-of-magnitude bugs and
+  miss the discretization-bias detection we *want* the gate
+  to do). 3σ is the chassis convention; individual tests
+  override only with a written rationale.
 - **Welford's `push` takes `f64` by value, not `&f64`**.
   f64 is Copy, no reason to take a reference.
+- **`reset()` ships in Phase 1** (added by doc review M4,
+  2026-04-09). Without it, the streaming-Welford burn-in
+  story is broken: the chassis explicitly does not ship a
+  `burn_in_skip` helper because "it's literal slice
+  indexing," but slice indexing is unavailable when the
+  samples were never materialized in the first place. The
+  natural pattern is *push during burn-in → reset → push
+  the real samples → assert*, which requires `reset()`.
+  One-line implementation (`*self = Self::new();`), real
+  ergonomic win for the streaming use case the chassis was
+  designed around.
+- **`merge(&other)` ships in Phase 1** (added by doc review
+  M4, 2026-04-09). Combines two independent `WelfordOnline`
+  accumulators into one global statistic using the
+  Chan/Pébay parallel-merge formula (Chan, Golub, LeVeque
+  1979; Pébay 2008 generalization). Required by option (β)
+  of the Phase 1 validation parameter fix — 100 independent
+  trajectories, each with its own per-trajectory accumulator,
+  combined into a single 100-trajectory mean + variance —
+  and by every Phase 4+ parallel-env test that wants to
+  fold per-env statistics together. Without `merge`, option
+  (β) has to materialize per-trajectory means in a `Vec<f64>`
+  and re-Welford them, which loses the streaming property
+  for the variance estimate. ~6 LOC implementation:
+  ```rust
+  pub fn merge(&mut self, other: &Self) {
+      if other.count == 0 { return; }
+      if self.count == 0 { *self = other.clone(); return; }
+      let n_a = self.count as f64;
+      let n_b = other.count as f64;
+      let n   = n_a + n_b;
+      let delta = other.mean - self.mean;
+      self.mean += delta * (n_b / n);
+      self.m2   += other.m2 + delta * delta * (n_a * n_b / n);
+      self.count += other.count;
+  }
+  ```
+  Requires `WelfordOnline: Clone`, which is trivial (three
+  `Copy` fields). Tested against the equivalent
+  push-everything-into-one-accumulator path for byte-exact
+  agreement.
+
+  > **Forward note (post-Phase 1 implementation, 2026-04-09):** The
+  > "Required by option (β)" framing in this ship-justification was
+  > **wrong**. The Phase 1 §7.3 equipartition gate does **NOT** use
+  > `merge`; it uses a **two-level Welford pattern** built on
+  > `push`/`mean`. Per-trajectory inner accumulator collects per-step
+  > `½v²`; its `mean()` is one IID sample of the equilibrium ⟨½v²⟩;
+  > the 100 trajectory means are pushed into a top-level
+  > across-trajectories accumulator whose `std_error_of_mean()` is the
+  > correct std error of the grand mean.
+  >
+  > **The reasoning error**: per-step `½v²` samples within a trajectory
+  > are autocorrelated (`τ_int ≈ 5000` steps for the central case).
+  > Merging per-step accumulators across trajectories and calling
+  > `std_error_of_mean()` on the merged result yields the **IID** std
+  > error, which underestimates the true std error by
+  > `√(1+2·τ_int) ≈ 100` — the bug that produced the `12.54σ` first
+  > failure on the Phase 1 gate's first run. The
+  > "materialize per-trajectory means in a `Vec<f64>` and re-Welford
+  > them" alternative the ship-justification rejects above as a
+  > "loses the streaming property" downside is **actually the correct
+  > approach** (modulo the `Vec` allocation, which the two-level pattern
+  > eliminates by pushing trajectory means directly into a top-level
+  > `WelfordOnline`).
+  >
+  > **`merge` itself is mathematically correct and still ships in
+  > Phase 1.** The Chan/Pébay formula above is verified by the unit
+  > test `welford_merge_matches_one_pass_over_full_dataset` in
+  > `sim/L0/thermostat/src/test_utils.rs` to absolute `1e-12` for both
+  > equal and unequal halves. Its **intended use** is IID
+  > parallel-reduce contexts (Phase 4+ batch reductions across
+  > `BatchSim` envs where every sample is independent), **not** the
+  > §7.3 gate. The unit test is correct; only the use-case framing in
+  > this ship-justification was wrong.
+  >
+  > See [`../06_findings/2026-04-09_phase1_statistical_propagation_chain.md`](../06_findings/2026-04-09_phase1_statistical_propagation_chain.md)
+  > for the full **Cracks 1+2** propagation chain — how the wrong
+  > inference rode through 4 paper passes (chassis grade, doc review,
+  > spec self-read, fresh-eyes review) without being caught, and was
+  > finally surfaced by the first run of the integration test gate.
+  > This is the empirical confirmation of the recon-to-iteration
+  > handoff principle that gives `feedback_recon_to_iteration_handoff.md`
+  > its first iteration's evidence; **Crack 4** (the τ_int vs τ_eq
+  > forward note above) is the second iteration's evidence.
 - **`integrated_autocorrelation_time` is NOT in Phase 1**.
   Deferred to whichever later phase needs single-trajectory
   correlated-sample tests. If Phase 1 spec ends up choosing
@@ -1525,10 +1885,13 @@ pub fn assert_within_n_sigma(
     description: &str,
 );
 
+#[derive(Clone)]
 pub struct WelfordOnline { /* count, mean, m2 — all private */ }
 impl WelfordOnline {
     pub fn new() -> Self;
     pub fn push(&mut self, x: f64);
+    pub fn reset(&mut self);                // discard all samples (burn-in)
+    pub fn merge(&mut self, other: &Self);  // Chan/Pébay parallel merge
     pub fn count(&self) -> usize;
     pub fn mean(&self) -> f64;
     pub fn variance(&self) -> f64;          // unbiased (n-1)
@@ -1794,9 +2157,9 @@ of file-level review boundaries is not.
      test infrastructure (`test_utils`).
   3. Quick-start example: a short code block showing
      `PassiveStack::builder().with(LangevinThermostat::new(...)).build().install(&mut model)`.
-  4. Link to `docs/thermo_computing/THERMO_CHASSIS_DESIGN.md`
+  4. Link to `docs/thermo_computing/02_foundations/chassis_design.md`
      for the design rationale.
-  5. Link to `docs/thermo_computing/PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md`
+  5. Link to `docs/thermo_computing/03_phases/01_langevin_thermostat.md`
      once that exists.
 - **Module visibility**: `mod component;`, `mod stack;`,
   `mod diagnose;`, `mod langevin;` are all private — the
@@ -1846,6 +2209,24 @@ of file-level review boundaries is not.
   READMEs go in examples, not in core sim crates. (Verified:
   `sim/L0/core`, `sim/L0/ml-bridge`, etc. don't have
   READMEs.) Skip.
+- **No persistence / serde in Phase 1, but it's a known
+  additive future direction** (added by doc review S6,
+  2026-04-09). For long-running thermo experiments —
+  especially Phase 5+ where EBMs are being trained over
+  hours/days — it will be valuable to checkpoint and resume
+  the full thermostat state (`gamma: DVector<f64>`, `k_b_t: f64`,
+  `seed: u64`, `ChaCha8Rng` internal state ~32 bytes,
+  `stochastic_active: AtomicBool`). Every field is trivially
+  serializable, and ml-bridge already shipped policy
+  persistence as a precedent (`4260a58`). Phase 1 ships
+  *without* `serde` to keep the dep tree lean and to avoid
+  committing to a wire format before there's a real use
+  case; the addition path is straightforward — gate `serde`
+  on a feature flag, derive `Serialize`/`Deserialize` on
+  `LangevinThermostat`, and lean on `rand_chacha`'s existing
+  serde support for the RNG state. Don't ship it now; do
+  ship it the moment a checkpointed-experiment use case
+  appears (probably Phase 5+).
 
 #### Final Phase 1 file inventory
 
@@ -1854,16 +2235,16 @@ sim/L0/thermostat/                       (NEW directory)
 ├── Cargo.toml                           (~20 LOC)
 └── src/
     ├── lib.rs                           (~50 LOC: docs + re-exports)
-    ├── component.rs                     (~30 LOC: trait + tests)
-    ├── stack.rs                         (~120 LOC: builder + install + install_per_env + tests)
+    ├── component.rs                     (~70 LOC: PassiveComponent + Stochastic + tests)
+    ├── stack.rs                         (~170 LOC: builder + install + install_per_env + EnvBatch + stochastic gating + tests)
     ├── diagnose.rs                      (~20 LOC: trait + tests)
     ├── langevin.rs                      (~150 LOC: struct + impl + tests)
-    └── test_utils.rs                    (~150 LOC: Welford + assertions + tests)
+    └── test_utils.rs                    (~170 LOC: Welford + reset + merge + assertions + tests)
 └── tests/
     └── langevin_thermostat.rs           (~250 LOC: integration tests)
 ```
 
-Total Phase 1 footprint: **~790 LOC** across **8 files**.
+Total Phase 1 footprint: **~900 LOC** across **8 files**.
 Comparable to a small ml-bridge algorithm file plus its
 tests. Manageable, mechanical, swappable.
 
@@ -1879,6 +2260,511 @@ Architecture is observable from `ls sim/L0/thermostat/src/`.
 - **Decision 6 RESOLVED.** Scheme A confirmed. The Phase 1
   file inventory above is the on-disk layout the crate ships
   with.
+- **Updated by doc review M2 (2026-04-09)**: `component.rs`
+  grows from ~30 to ~70 LOC (adds the `Stochastic` trait
+  and the `as_stochastic` introspection hook on
+  `PassiveComponent`). `stack.rs` grows from ~120 to ~160 LOC
+  (adds `set_all_stochastic` and the `StochasticGuard` RAII
+  type).
+- **Updated by doc review S3 (2026-04-09)**: `stack.rs` grows
+  from ~160 to ~170 LOC (adds the `EnvBatch` struct and
+  `install_per_env` returns it instead of `Vec<Model>`). Total
+  Phase 1 footprint moves from ~810 to ~900 LOC.
+- No code, no Cargo.toml changes, no new files written beyond
+  this document.
+
+---
+
+### Decision 7 (2026-04-09, doc review M2): Stochastic gating for FD/autograd contexts
+
+- **Question**: When the autograd engine perturbs `qpos[i]` and
+  re-runs `forward()` to compute `∂qacc/∂qpos[i]` via finite
+  differences, the call chain `forward_acc()` → `mj_fwd_passive()`
+  → `cb_passive` fires the `PassiveStack` closure, which fires
+  every component's `apply()`, which (for stochastic components
+  like `LangevinThermostat`) consumes RNG and produces a *fresh*
+  noise sample on every call. The baseline and perturbed runs
+  therefore see *different* noise samples, and the FD estimate
+  `(qacc(qpos+ε) - qacc(qpos)) / ε` is dominated by
+  `Var(noise)/ε`, blowing up as `ε → 0`. **What does the chassis
+  provide so Phase 5 (differentiable cf-design) and the D3
+  headline experiment can recover meaningful derivatives?**
+- **Why this is Decision 7**: Decisions 1-6 settled the trait,
+  composer, lifecycle, introspection, test utilities, and crate
+  layout. The "Phase 5+ caveat" in master plan §The Gap and
+  recon log part 4 flagged this issue but punted it. Doc review
+  M2 (2026-04-09) escalated it to a chassis-level decision: the
+  chassis exists *exactly* so Phase 5 doesn't get caught
+  off-guard, and "we'll deal with it later" is the failure mode
+  the chassis is designed to prevent. Retrofitting a gating
+  mechanism into the trait at Phase 5 would be breaking-change
+  territory; doing it now is one trait method + one introspection
+  hook + one stack method, with zero implementations to migrate.
+- **Constraint from item 8**: Zero sim-core changes. Cannot add
+  a "disable cb_passive" flag to `Model`. The gating must live
+  entirely inside `sim-thermostat`.
+- **Constraint from M5**: Components have no mutable access to
+  `Data`. Whatever gating mechanism we add, the component must
+  honor it from inside `apply(&self, &Model, &Data, &mut DVector<f64>)`.
+- **Observation that drives the recommendation**: Every stochastic
+  component on the Research Directions roadmap has
+  **state-independent noise**. The Langevin thermostat draws from
+  `N(0, 2γkT/h)` — depends on `γ`, `kT`, `h`, none of which
+  depend on `qpos` or `qvel`. The flashing-ratchet Brownian motor
+  (D1) gates a fixed potential on/off with thermal noise from a
+  fixed-`T` bath. Stochastic resonance (D2) injects sub-threshold
+  periodic forcing plus thermal bath at fixed `T`. None of these
+  has noise that depends on the perturbation variables.
+
+  For state-independent noise, the FD derivative satisfies
+  `∂(F_det + ξ)/∂qpos = ∂F_det/∂qpos + 0 = ∂F_det/∂qpos`. So
+  **disabling the noise during FD perturbation runs gives the
+  exactly-correct derivative for the deterministic part** —
+  which, for state-independent noise, is the *complete* answer.
+
+#### Scheme A — Orthogonal `Stochastic` opt-in trait + RAII gating
+
+A small extension trait that stochastic components opt into,
+plus a default-`None` introspection hook on `PassiveComponent`
+so the stack can find them, plus an RAII guard on `PassiveStack`
+that disables-on-construction and re-enables-on-drop.
+
+```rust
+// component.rs
+
+pub trait PassiveComponent: Send + Sync + 'static {
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>);
+
+    /// If this component has a stochastic part, return a handle to
+    /// toggle it. Default: no stochastic part, returns `None`.
+    /// Components that implement `Stochastic` override this to return
+    /// `Some(self)`.
+    fn as_stochastic(&self) -> Option<&dyn Stochastic> { None }
+}
+
+pub trait Stochastic: Send + Sync {
+    /// When false, `apply()` must produce ONLY this component's
+    /// deterministic contribution (e.g., a Langevin thermostat
+    /// outputs only `-γ·v`, no noise). When true (the default),
+    /// `apply()` produces the full stochastic contribution.
+    ///
+    /// Used by FD/autograd contexts where the perturbed runs must
+    /// be deterministic to recover meaningful derivatives.
+    fn set_stochastic_active(&self, active: bool);
+    fn is_stochastic_active(&self) -> bool;
+}
+```
+
+`LangevinThermostat` implements both:
+
+```rust
+// langevin.rs
+
+pub struct LangevinThermostat {
+    gamma: DVector<f64>,
+    k_b_t: f64,
+    rng: Mutex<ChaCha8Rng>,
+    stochastic_active: AtomicBool,  // M2: defaults to true
+}
+
+impl PassiveComponent for LangevinThermostat {
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+        let h = model.timestep;
+        let active = self.stochastic_active.load(Ordering::Acquire);
+        let mut rng = self.rng.lock().unwrap();
+        for i in 0..self.gamma.len() {
+            let g = self.gamma[i];
+            let damping = -g * data.qvel[i];
+            let noise = if active {
+                let z: f64 = StandardNormal.sample(&mut *rng);
+                (2.0 * g * self.k_b_t / h).sqrt() * z
+            } else {
+                0.0
+            };
+            qfrc_out[i] += damping + noise;
+        }
+    }
+
+    fn as_stochastic(&self) -> Option<&dyn Stochastic> { Some(self) }
+}
+
+impl Stochastic for LangevinThermostat {
+    fn set_stochastic_active(&self, active: bool) {
+        self.stochastic_active.store(active, Ordering::Release);
+    }
+    fn is_stochastic_active(&self) -> bool {
+        self.stochastic_active.load(Ordering::Acquire)
+    }
+}
+```
+
+`PassiveStack` exposes a one-shot toggle and an RAII guard:
+
+```rust
+// stack.rs
+
+impl PassiveStack {
+    /// Toggle the stochastic part of every stochastic component
+    /// in the stack. Non-stochastic components are unaffected.
+    /// Prefer `disable_stochastic()` when possible — the RAII
+    /// guard cannot be forgotten.
+    pub fn set_all_stochastic(&self, active: bool) {
+        for c in &self.components {
+            if let Some(s) = c.as_stochastic() {
+                s.set_stochastic_active(active);
+            }
+        }
+    }
+
+    /// Disable every stochastic component for the lifetime of
+    /// the returned guard. On drop, re-enables every component
+    /// that was previously enabled. Use this around FD/autograd
+    /// perturbation loops.
+    pub fn disable_stochastic(&self) -> StochasticGuard<'_> {
+        let prior: Vec<bool> = self.components.iter()
+            .filter_map(|c| c.as_stochastic())
+            .map(|s| {
+                let was = s.is_stochastic_active();
+                s.set_stochastic_active(false);
+                was
+            })
+            .collect();
+        StochasticGuard { stack: self, prior }
+    }
+}
+
+pub struct StochasticGuard<'a> {
+    stack: &'a PassiveStack,
+    prior: Vec<bool>,
+}
+
+impl<'a> Drop for StochasticGuard<'a> {
+    fn drop(&mut self) {
+        for (c, &was) in self.stack.components.iter()
+            .filter_map(|c| c.as_stochastic())
+            .zip(self.prior.iter())
+        {
+            c.set_stochastic_active(was);
+        }
+    }
+}
+```
+
+Use site (Phase 5 FD code):
+
+```rust
+let stack: Arc<PassiveStack> = ...;
+// stack.install(&mut model) already done elsewhere
+
+let baseline_qacc = {
+    let _guard = stack.disable_stochastic();
+    forward_skip(&model, &mut data);  // deterministic
+    data.qacc.clone()
+};
+
+let mut grad = DVector::zeros(model.nv);
+for i in 0..model.nv {
+    let _guard = stack.disable_stochastic();
+    data.qpos[i] += eps;
+    forward_skip(&model, &mut data);
+    grad[i] = (data.qacc[i] - baseline_qacc[i]) / eps;
+    data.qpos[i] -= eps;
+}
+// guard drops, stochastic re-enabled, normal sampling resumes
+```
+
+**Pros**:
+- **Solves the actual Phase 5 problem for the actual Phase 5 components.**
+  All stochastic components on the roadmap have state-independent
+  noise; disabling noise during FD gives exactly the right
+  derivative.
+- **Cheap.** One extension trait + one introspection hook + one
+  RAII guard. ~40 LOC of chassis code total.
+- **RAII makes forgetting impossible.** A user who reaches for
+  `set_all_stochastic(false)` and forgets to call
+  `set_all_stochastic(true)` leaves the system permanently
+  deterministic. The guard makes that footgun unrepresentable.
+- **Orthogonal trait pattern matches `Diagnose` (Decision 4).**
+  Components opt in by implementing `Stochastic`; non-stochastic
+  components ignore it entirely. The pattern is already
+  established.
+- **Composes with multi-stochastic stacks correctly.** A stack
+  with three stochastic components and two deterministic ones
+  toggles only the three. The two deterministic components are
+  silently bypassed because their `as_stochastic` returns `None`.
+- **Reentrant.** Nested guards (e.g., FD inside FD) compose
+  correctly via the `prior: Vec<bool>` capture-and-restore
+  pattern. Each guard restores to the state at its construction,
+  not to "true."
+- **Doesn't pollute non-stochastic components.** A user writing
+  a custom drag-law `PassiveComponent` doesn't have to think
+  about stochasticity at all — `as_stochastic` defaults to
+  `None`, and no other change is required.
+
+**Cons**:
+- **Adds one method to `PassiveComponent`.** This is a small bleed
+  of "what type of component is this?" introspection into the
+  broad trait. Decision 1's "broad trait stays minimal" principle
+  is mildly compromised, but the method has a sensible default
+  and non-stochastic components pay zero cost.
+- **Wrong for state-dependent noise.** A future component whose
+  noise depends on `qpos`/`qvel` (e.g., multiplicative-noise
+  processes) cannot be correctly handled by "just disable the
+  noise" — it would also disable the *correct* state-dependent
+  derivative contribution. Scheme B is required for that case.
+  No such component is on the Research Directions roadmap, but
+  it's worth being honest.
+- **Atomic load per `apply()` call.** One `AtomicBool::load` per
+  component per step. Negligible — atomics on x86 are nearly
+  free in the uncontended case.
+
+#### Scheme B — RNG snapshot/restore on `PassiveStack`
+
+A more general mechanism: stochastic components expose
+`rng_state(&self) -> Vec<u8>` and `restore_rng(&self, &[u8])`.
+The stack collects per-component snapshots and restores them
+around perturbation calls. The FD code does:
+
+```rust
+let snap = stack.snapshot_rng();
+forward_skip(&model, &mut data);  // baseline, consumes RNG
+let baseline_qacc = data.qacc.clone();
+for i in 0..model.nv {
+    stack.restore_rng(&snap);     // back to pre-baseline state
+    data.qpos[i] += eps;
+    forward_skip(&model, &mut data);  // perturbed, same noise sample
+    grad[i] = (data.qacc[i] - baseline_qacc[i]) / eps;
+    data.qpos[i] -= eps;
+}
+```
+
+The perturbed and baseline runs see the *same* noise sample,
+so the noise contribution cancels in the FD difference.
+
+**Pros**:
+- **Strictly more general.** Handles state-dependent noise
+  correctly by ensuring that "the same noise sample appears in
+  baseline and perturbed runs," not by "no noise appears in
+  either."
+- **No need for `Stochastic` to expose an `active` flag.** The
+  noise still fires; it just fires from the same RNG state on
+  every call.
+
+**Cons**:
+- **More implementation surface.** Each stochastic component
+  must expose snapshot/restore for its RNG state. `ChaCha8Rng`
+  state is ~40 bytes; serializing it correctly across `rand_chacha`
+  versions is its own can of worms (the same hazard item 4
+  resolved by *not* using `StdRng`). An explicit
+  `serde`-ish dance per component is significant added complexity.
+- **Per-call overhead is non-trivial.** Snapshot is a deep copy
+  of RNG state; restore is a deep copy back. For an FD loop with
+  `nv=1000` perturbations, that's 2000 RNG copies per gradient
+  evaluation. Not catastrophic but measurable.
+- **Doesn't compose with the `Mutex<ChaCha8Rng>` ownership model
+  cleanly.** To snapshot, you'd lock the mutex, clone the
+  internal state, unlock. To restore, lock, overwrite, unlock.
+  Three lock acquisitions per FD call per stochastic component.
+- **Harder to reason about.** A user reading the FD code has to
+  understand that the perturbed and baseline runs are *meant* to
+  produce identical noise — and if they accidentally call into
+  unrelated code that draws from the RNG between snapshot and
+  restore, the contract silently breaks.
+- **Solves a problem we don't have on the roadmap.** No current
+  or planned Research Direction needs state-dependent noise.
+
+#### Recommendation: **Scheme A — orthogonal `Stochastic` trait + RAII guard**
+
+Confidence: high. Five reasons in priority order:
+
+1. **Correct for every stochastic component on the roadmap.**
+   Langevin thermostat (Phase 1+), flashing ratchet (D1),
+   stochastic resonance driver (D2), coupled bistable arrays
+   (Phase 4), EBM training noise (Phase 5), Brownian computer
+   lattices (D5) — all have state-independent noise. "Disable
+   the noise" gives the exactly-correct derivative for all of
+   them. Scheme B's extra generality is generality we don't
+   need.
+
+2. **RAII makes forgetting unrepresentable.** The same "loud
+   over silent" principle that drove items 2, 4, 6, and M5:
+   a user who forgets to re-enable noise gets a *visible*
+   anomaly (their simulation is permanently deterministic) —
+   bad, but obvious. Without the guard, the same forgetting
+   gives *correct-looking but quietly wrong* statistics, which
+   is the exact failure mode sharpen-the-axe forbids. Decision
+   7 inherits the principle and applies it at the chassis API
+   surface.
+
+3. **~40 LOC vs. ~150 LOC.** Scheme A's total cost is
+   `Stochastic` trait (~10 LOC) + `as_stochastic` default-None
+   (~3 LOC) + `set_all_stochastic` (~8 LOC) + `disable_stochastic`
+   + `StochasticGuard` (~25 LOC). Scheme B requires per-component
+   serialization (~40 LOC × N components) + stack snapshot/restore
+   (~50 LOC) + per-component lock dance (~20 LOC each). Scheme A
+   is one quarter the surface for the same Phase 5 capability.
+
+4. **Scheme B is additive on top of A, never the other way
+   around.** If a future component lands with state-dependent
+   noise, we add a *second* orthogonal trait `RngSnapshot:
+   Stochastic` (or just `RngSnapshot: PassiveComponent`) and a
+   second `PassiveStack::snapshot_rng_state` method. The
+   `Stochastic` trait keeps working unchanged for everything
+   that doesn't need snapshot/restore. The reverse is harder:
+   if we ship Scheme B first and later realize most users only
+   need "disable noise," we have a heavy API consumers must
+   know how to wrap.
+
+5. **Matches the chassis style.** Decision 4 ships `Diagnose`
+   as an orthogonal opt-in trait. Decision 7 ships `Stochastic`
+   as another orthogonal opt-in trait. The pattern is already
+   established and proven; Scheme B would invent a new pattern
+   (stack-level snapshot/restore) for one feature.
+
+**Why I'm not recommending Scheme B**: it solves a problem we
+don't have, at three to four times the implementation cost, with
+a more error-prone use site. The "strictly more general" pro
+turns into "more flexibility than the roadmap can use" in
+practice. If a state-dependent noise component ever lands, we
+add Scheme B alongside Scheme A — additive, non-breaking. The
+chassis explicitly leaves that door open below.
+
+#### Sub-decisions inside Decision 7
+
+- **Trait name**: `Stochastic`. Matches the physics term, reads
+  cleanly as `LangevinThermostat: PassiveComponent + Stochastic`.
+  Considered: `Noisy` (informal), `RandomSource` (focuses on
+  the source rather than the behavior), `HasNoise` (matches the
+  Decision 4 forecast `HasTemperature` shape). `Stochastic` is
+  the most idiomatic and the shortest.
+- **Method names**: `set_stochastic_active` and
+  `is_stochastic_active`. Verbose-on-purpose so they're hard to
+  confuse with `Diagnose::diagnostic_*` methods or with
+  generic `set_active`/`is_active` patterns from other crates.
+- **Interior mutability via `AtomicBool`**: matches the existing
+  `Mutex<ChaCha8Rng>` pattern in `LangevinThermostat`. Lighter
+  than a mutex (no kernel call, no lock contention), correct
+  for a single bool, `Send + Sync` for free. `Ordering::Acquire`
+  for loads, `Ordering::Release` for stores — the standard
+  release/acquire pattern for "publish a flag, then read it on
+  another thread."
+- **Default value**: `true` (stochastic-on by default). Set in
+  `LangevinThermostat::new(...)`. A user who never touches it
+  gets a fully-stochastic thermostat, which is the common case.
+- **`as_stochastic` default returns `None`**: non-stochastic
+  components opt in by overriding to return `Some(self)`. This
+  is the only place `PassiveComponent` mentions `Stochastic`,
+  and the bleed is justified by the cost of the alternative
+  (separate builder methods, footgun risk — see "Why a single
+  builder method" below).
+- **Why a single builder method (`with`) instead of separate
+  `with` and `with_stochastic`**: separate methods would let
+  the user accidentally register a stochastic component with
+  the non-stochastic builder method, silently breaking the
+  gating. The introspection-hook approach makes the component
+  itself responsible for declaring its stochasticity, removing
+  the footgun. Decision 2's `with(impl PassiveComponent)`
+  signature is unchanged.
+- **`StochasticGuard` is `Drop`-based, not method-based**:
+  RAII over `enable()`/`disable()` pairs because forgetting
+  is the failure mode. The guard cannot be forgotten — when it
+  goes out of scope, the disabled components are re-enabled.
+  Reentrant by virtue of the `prior: Vec<bool>` capture (each
+  guard restores to its construction-time state, not to
+  hard-coded `true`).
+- **`StochasticGuard` is non-`Send`** (no explicit `unsafe impl`,
+  inherits from `&PassiveStack` which is `Send + Sync` so the
+  guard is technically `Send`, but conceptually it should not
+  cross thread boundaries because the disable/enable lifetime
+  is scoped). The guard is intended for synchronous FD loops
+  on a single thread; if Phase 5 ever needs cross-thread FD,
+  we revisit.
+- **Error mode if `Drop` panics**: `set_stochastic_active` is
+  an `AtomicBool::store`, which is infallible. The guard's
+  `Drop` implementation cannot panic. Clean.
+- **`set_all_stochastic(false)` is exposed alongside the guard**:
+  for the rare case where a user genuinely wants to leave
+  stochasticity off for an indefinite period (e.g., debugging,
+  golden-trajectory tests). Documented as "prefer the guard
+  unless you have a specific reason."
+- **No interaction with `install_per_env`**: each per-env stack
+  has its own components and its own gating state. Toggling
+  one stack's stochastic state does not affect any other stack.
+- **Phase 1 test additions**: the Phase 1 test suite gains one
+  small test that verifies `disable_stochastic` zeroes the noise
+  contribution. Equipartition under disabled noise should give
+  `⟨½v²⟩ → 0` (the deterministic damping decays the system to
+  rest), which is a different but verifiable invariant.
+
+#### Future direction (not Phase 1, named here for completeness)
+
+If a future component lands with state-dependent noise (e.g., a
+multiplicative-noise diffusion process), Scheme B can be added
+as a second orthogonal trait *alongside* `Stochastic`:
+
+```rust
+pub trait RngSnapshot: PassiveComponent {
+    type State: Clone + Send + Sync;
+    fn snapshot_rng(&self) -> Self::State;
+    fn restore_rng(&self, state: &Self::State);
+}
+```
+
+Components that need snapshot/restore implement both
+`Stochastic` (for the cheap "disable" path when correctness
+allows it) and `RngSnapshot` (for the precise "same noise sample"
+path when correctness requires it). The `PassiveStack` exposes
+a parallel `snapshot_rng_states` / `restore_rng_states` API. None
+of this changes Decision 7's `Stochastic` trait — it's purely
+additive.
+
+The chassis explicitly does not ship `RngSnapshot` in Phase 1
+because no Phase 1-7 component needs it. If that changes, the
+door is open.
+
+#### DECISION (user confirmed): **Scheme A — `Stochastic` trait + RAII gating**
+
+The chassis ships `Stochastic` as an orthogonal opt-in trait
+with `set_stochastic_active` / `is_stochastic_active`,
+`PassiveComponent` gains a default-`None` `as_stochastic`
+introspection hook, and `PassiveStack` exposes both
+`set_all_stochastic` and `disable_stochastic` (RAII guard) for
+FD/autograd contexts. `LangevinThermostat` implements both
+traits and gates its noise contribution on an `AtomicBool`.
+
+Total chassis cost: ~40 LOC across `component.rs` (+~40 LOC)
+and `stack.rs` (+~40 LOC).
+
+Phase 5 FD code becomes:
+```rust
+let _guard = stack.disable_stochastic();
+fd_perturbation_loop(...);
+// guard drops, stochastic re-enabled
+```
+
+Scheme B (`RngSnapshot`) is named as the additive future
+direction for state-dependent noise components, when and if
+one lands.
+
+#### Status
+
+- **Decision 7 RESOLVED.** Scheme A confirmed. The "Phase 5+
+  caveat" from master plan §The Gap
+  is now answered at the chassis level instead of being
+  punted; Phase 5 inherits a working FD path by construction.
+- **Trait additions to Decision 1**: `PassiveComponent` gains a
+  default-`None` `as_stochastic(&self) -> Option<&dyn Stochastic>`
+  hook. The change is additive and non-breaking (every existing
+  reference to `PassiveComponent` keeps working without
+  modification).
+- **API additions to Decision 2**: `PassiveStack` gains
+  `set_all_stochastic(active)` and `disable_stochastic() ->
+  StochasticGuard<'_>`. Both are pure additions; the existing
+  `builder()` / `install()` / `install_per_env()` API is
+  unchanged.
+- **File inventory updated**: `component.rs` ~30 → ~70 LOC,
+  `stack.rs` ~120 → ~160 LOC, total Phase 1 footprint ~810 →
+  ~890 LOC.
 - No code, no Cargo.toml changes, no new files written beyond
   this document.
 
@@ -1886,7 +2772,7 @@ Architecture is observable from `ls sim/L0/thermostat/src/`.
 
 ## 2. Chassis design round complete
 
-All six decisions resolved:
+All seven decisions resolved:
 
 | # | Decision                       | Resolution |
 |---|--------------------------------|------------|
@@ -1896,6 +2782,7 @@ All six decisions resolved:
 | 4 | `Diagnose` trait surface       | Minimal: `diagnostic_summary -> String` only |
 | 5 | Public test utilities          | `WelfordOnline` + `assert_within_n_sigma` + `sample_stats` |
 | 6 | Crate layout                   | Flat ml-bridge style, 5 source files + 1 test file |
+| 7 | Stochastic gating (FD/autograd)| `Stochastic` orthogonal trait + RAII `disable_stochastic()` guard |
 
 The chassis is structurally complete. Phase 1 implementation
 will be a learning exercise *for* the chassis (per the user's

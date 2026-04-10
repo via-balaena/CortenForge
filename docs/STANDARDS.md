@@ -23,10 +23,10 @@ Every crate is graded on seven criteria. All must be A-grade before the crate is
 
 | # | Criterion | A Standard | Measurement |
 |---|-----------|------------|-------------|
-| 1 | Test Coverage | ≥75% (target: 90%) | `cargo tarpaulin` (Linux only) |
+| 1 | Test Coverage | ≥75% (A); ≥90% (A+) | `cargo llvm-cov` (cross-platform) |
 | 2 | Documentation | Zero warnings | `RUSTDOCFLAGS="-D warnings" cargo doc` |
 | 3 | Clippy | Zero warnings | `cargo clippy -- -D warnings` |
-| 4 | Safety | Zero unwrap/expect | grep + review |
+| 4 | Safety | Zero safety violations | grep (6 patterns) + review |
 | 5 | Dependencies | Minimal, justified | `cargo tree` + review |
 | 6 | Bevy-free (Layer 0) | No bevy in tree | `cargo tree \| grep bevy` |
 | 7 | API Design | Idiomatic, intuitive | Manual review |
@@ -35,21 +35,21 @@ Every crate is graded on seven criteria. All must be A-grade before the crate is
 
 ## Criterion 1: Test Coverage
 
-### A Standard: ≥75% Line Coverage (Target: 90%)
+### A Standard: ≥75% Line Coverage; A+ Standard: ≥90%
 
-**Measurement (Linux only):**
+**Measurement:**
 ```bash
-cargo tarpaulin -p <crate> --out Html
-
-# To match CI threshold enforcement:
-cargo tarpaulin -p <crate> --fail-under 75
+cargo llvm-cov -p <crate> --json
+cargo llvm-cov -p <crate> --fail-under-lines 75
 ```
 
-Note: `cargo tarpaulin` only works reliably on Linux. Mac/Windows users should rely on CI for coverage reporting.
+Note: Requires `cargo-llvm-cov` installed. Works on Linux,
+macOS (including Apple Silicon), and Windows.
 
 **Requirements:**
 
-- [ ] Line coverage ≥75% (target: 90%)
+- [ ] Line coverage ≥75% (A grade — ships)
+- [ ] Line coverage ≥90% (A+ grade — gold standard)
 - [ ] All public functions have at least one test
 - [ ] All error paths are tested
 - [ ] Edge cases are explicitly tested:
@@ -307,7 +307,10 @@ unsafe {
 
 **Measurement:**
 ```bash
-cargo tree -p <crate> --edges normal
+# Dep count (informational):
+cargo metadata --format-version 1 --no-deps
+# Justification check (hard gate):
+# Every dependency in Cargo.toml must have a justification comment
 ```
 
 **Requirements:**
@@ -358,13 +361,13 @@ advanced = ["heavy-dep"]
 
 **Measurement:**
 ```bash
-cargo tree -p <crate> | grep -E "(bevy|wgpu|winit)"
+cargo tree -p <crate> --prefix none --format "{p}" | grep -E "^(bevy|winit)"
 # Must return empty
 ```
 
 **Requirements:**
 
-- [ ] `cargo tree` shows no bevy, wgpu, or winit
+- [ ] `cargo tree` shows no bevy or winit
 - [ ] No bevy types in public API
 - [ ] No bevy traits implemented directly (only in cortenforge crate)
 - [ ] Can be compiled for `--target wasm32-unknown-unknown` without bevy
@@ -525,12 +528,12 @@ $ cargo xtask grade mesh-types
 ╠══════════════════════════════════════════════════════════════╣
 ║ Criterion        │ Result           │ Grade │ Threshold      ║
 ╠══════════════════════════════════════════════════════════════╣
-║ 1. Test Coverage │ 94.2%            │   A   │ ≥75%           ║
-║ 2. Documentation │ 0 warnings       │   A   │ 0              ║
-║ 3. Clippy        │ 0 warnings       │   A   │ 0              ║
-║ 4. Safety        │ 0 unwrap/expect  │   A   │ 0              ║
-║ 5. Dependencies  │ 1 dep (nalgebra) │   A   │ minimal        ║
-║ 6. Bevy-free     │ ✓ confirmed      │   A   │ no bevy        ║
+║ 1. Test Coverage │ 94.2%            │  A+   │ ≥75%(A),≥90%(A+) ║
+║ 2. Documentation │ 0 warnings       │   A   │ 0 warnings     ║
+║ 3. Clippy        │ 0 warnings       │   A   │ 0 warnings     ║
+║ 4. Safety        │ 0 violations     │   A   │ 0 violations   ║
+║ 5. Dependencies  │ 1 dep, all just. │   A   │ all justified  ║
+║ 6. Bevy-free     │ ✓ confirmed      │   A   │ no bevy/winit  ║
 ║ 7. API Design    │ (manual review)  │   ?   │ checklist      ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ AUTOMATED        │                  │   A   │                ║
@@ -552,11 +555,21 @@ cargo xtask complete X # Record A-grade completion
 
 ### CI: Quality Gate
 
-Every push triggers:
-- All automated criteria checked
-- Coverage computed
-- Dependency tree analyzed
-- PR blocked if any criterion fails
+Every push to `main`/`develop` and every PR triggers independent
+quality jobs (`.github/workflows/quality-gate.yml`):
+- Format: `cargo fmt` strict check
+- Clippy: zero warnings, all targets
+- Tests: full test suite, 3-OS matrix
+- Documentation: zero warnings under `-D warnings`
+- Safety: awk-based scan for panic-capable patterns
+- Dependencies: `cargo-deny` license and source audit
+- Bevy-free: dependency tree check for Layer 0 crates
+- WASM: compilation check for select Layer 0 crates
+
+PR is blocked if any job fails. Note: CI does not run
+`cargo xtask grade`. The grade tool is a local per-crate
+diagnostic; CI enforces workspace-wide quality jobs.
+Coverage (criterion 1) is local-only — CI has no coverage gate.
 
 ### Review: Human Required
 
