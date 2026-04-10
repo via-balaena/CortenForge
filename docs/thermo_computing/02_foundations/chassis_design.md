@@ -1469,6 +1469,18 @@ h=0.001:
 τ_int ≈ 1 / (2 · 0.1 · 0.001) = 5000 steps
 ```
 
+> **Forward note (post-Phase 1 implementation, 2026-04-09):** This
+> `τ_int = M/(2γh)` is the **autocorrelation time** of `½v²` in the
+> steady state, used here to compute `N_eff`. It is **distinct from**
+> `τ_eq = M/(γh)`, the **equilibration time** of `⟨v²⟩` from a
+> cold-start initial condition, which is the relevant time scale for
+> choosing burn-in length. The two quantities differ by a factor of 2
+> and govern different things; conflating them caused **Crack 4** in
+> the Phase 1 fix execution session — see
+> [`../06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md`](../06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md).
+> Phase 2+ specs that run equipartition tests must use `τ_eq` for
+> burn-in scaling and `τ_int` for `N_eff` computation. **Don't conflate.**
+
 So 10⁵ steps gives an *effective* sample count of:
 
 ```
@@ -1609,6 +1621,24 @@ the convenience for tests that already have a slice.
 implementations of mean/variance that Phase 1+ tests don't
 have to re-derive; numerical-stability built in (Welford);
 standard error of mean is a one-line accessor.
+
+> **Forward note (post-Phase 1 implementation, 2026-04-09):** The
+> "standard error of mean is a one-line accessor" claim above holds
+> **only for IID samples**. For autocorrelated time series — per-step
+> `½v²` from a Langevin trajectory has `τ_int ≈ 5000` steps for the
+> central case — calling `WelfordOnline::std_error_of_mean()` on a
+> single accumulator over the per-step samples gives the **IID** std
+> error, which underestimates the true std error by
+> `√(1+2·τ_int) ≈ 100`. The Phase 1 §7.3 gate uses a **two-level
+> Welford pattern** instead: per-trajectory inner accumulator collects
+> per-step samples, its `mean()` is pushed into a top-level
+> across-trajectories accumulator, and `std_error_of_mean()` on the
+> top-level accumulator is correct because the trajectory means ARE
+> IID by construction (independent seeds + sufficient burn-in). See
+> [`../06_findings/2026-04-09_phase1_statistical_propagation_chain.md`](../06_findings/2026-04-09_phase1_statistical_propagation_chain.md)
+> for the **Cracks 1+2** propagation chain analysis. The
+> `std_error_of_mean()` accessor itself is correct — the gap is in
+> *which samples* the caller pushes into the accumulator.
 
 **Cons**: ~80 LOC of crate code (Welford has more state than
 the naive version). One more module to maintain.
@@ -1765,6 +1795,50 @@ Confidence: high. Five reasons:
   `Copy` fields). Tested against the equivalent
   push-everything-into-one-accumulator path for byte-exact
   agreement.
+
+  > **Forward note (post-Phase 1 implementation, 2026-04-09):** The
+  > "Required by option (β)" framing in this ship-justification was
+  > **wrong**. The Phase 1 §7.3 equipartition gate does **NOT** use
+  > `merge`; it uses a **two-level Welford pattern** built on
+  > `push`/`mean`. Per-trajectory inner accumulator collects per-step
+  > `½v²`; its `mean()` is one IID sample of the equilibrium ⟨½v²⟩;
+  > the 100 trajectory means are pushed into a top-level
+  > across-trajectories accumulator whose `std_error_of_mean()` is the
+  > correct std error of the grand mean.
+  >
+  > **The reasoning error**: per-step `½v²` samples within a trajectory
+  > are autocorrelated (`τ_int ≈ 5000` steps for the central case).
+  > Merging per-step accumulators across trajectories and calling
+  > `std_error_of_mean()` on the merged result yields the **IID** std
+  > error, which underestimates the true std error by
+  > `√(1+2·τ_int) ≈ 100` — the bug that produced the `12.54σ` first
+  > failure on the Phase 1 gate's first run. The
+  > "materialize per-trajectory means in a `Vec<f64>` and re-Welford
+  > them" alternative the ship-justification rejects above as a
+  > "loses the streaming property" downside is **actually the correct
+  > approach** (modulo the `Vec` allocation, which the two-level pattern
+  > eliminates by pushing trajectory means directly into a top-level
+  > `WelfordOnline`).
+  >
+  > **`merge` itself is mathematically correct and still ships in
+  > Phase 1.** The Chan/Pébay formula above is verified by the unit
+  > test `welford_merge_matches_one_pass_over_full_dataset` in
+  > `sim/L0/thermostat/src/test_utils.rs` to absolute `1e-12` for both
+  > equal and unequal halves. Its **intended use** is IID
+  > parallel-reduce contexts (Phase 4+ batch reductions across
+  > `BatchSim` envs where every sample is independent), **not** the
+  > §7.3 gate. The unit test is correct; only the use-case framing in
+  > this ship-justification was wrong.
+  >
+  > See [`../06_findings/2026-04-09_phase1_statistical_propagation_chain.md`](../06_findings/2026-04-09_phase1_statistical_propagation_chain.md)
+  > for the full **Cracks 1+2** propagation chain — how the wrong
+  > inference rode through 4 paper passes (chassis grade, doc review,
+  > spec self-read, fresh-eyes review) without being caught, and was
+  > finally surfaced by the first run of the integration test gate.
+  > This is the empirical confirmation of the recon-to-iteration
+  > handoff principle that gives `feedback_recon_to_iteration_handoff.md`
+  > its first iteration's evidence; **Crack 4** (the τ_int vs τ_eq
+  > forward note above) is the second iteration's evidence.
 - **`integrated_autocorrelation_time` is NOT in Phase 1**.
   Deferred to whichever later phase needs single-trajectory
   correlated-sample tests. If Phase 1 spec ends up choosing

@@ -32,6 +32,21 @@ Both findings are non-blocking and zero-urgency. Recorded so a future "chassis d
 
 **Fix**: update every `chassis_design.md` reference to `passive.rs:723-731` → `:723-735`. By inspection, roughly 2-3 occurrences in the Decision 7 section.
 
+### Status update — Drift #1 RESOLVED (2026-04-09, Phase 1 chassis amendment session)
+
+**The chassis-location claim above was factually wrong at write-time.** During the chassis amendment session that added forward links for Cracks 1+2+4, the chassis was inspected by `grep` for any reference to `passive.rs`, `723`, `731`, `forward/passive`, or `plugin`. **All grep patterns returned zero matches** in `chassis_design.md`. The chassis genuinely has no references to the Drift #1 citation — the original finding's "Decision 7 section, multiple references" claim and "roughly 2-3 occurrences" estimate were both incorrect.
+
+The actual stale citations to `passive.rs:723-731` exist in:
+
+- **`docs/thermo_computing/03_phases/overview.md:165`** — inside the intentional `<details>` block at the bottom of the Phase 1 section that preserves the historical inline sketch. Per the same convention as the recon log, collapsed historical material is **not edited retroactively**: leave alone.
+- **`~/.claude/projects/.../memory/project_thermo_computing.md:146`** — auto-memory file, in the now-historical "Phase 5+ caveats flagged for later" list. Out of scope for the chassis amendment commit; can be cleaned up as a separate micro-edit if/when the auto-memory file is otherwise being touched.
+
+The Phase 1 spec (`03_phases/01_langevin_thermostat.md`) had **already adopted the corrected `:723-735` range** in §2, §11, and §14 during the spec stress-test pass — that part of the original Drift #1 finding is correct.
+
+**Why was the original Drift #1 finding wrong about chassis location?** Most likely cause: the finding was written in the same stress-test session that surfaced the spec-side correction. The author inferred "if the spec used to have this and was just corrected, the chassis must too" without actually grep-checking the chassis. This is itself a small instance of the **same paper-vs-code translation gap** the recon-to-iteration handoff principle is about — except here the "code" is the actual file content under `grep`, not a Rust compiler. **Always grep before claiming a citation exists.**
+
+**Disposition**: Drift #1 is **RESOLVED as not-applicable to chassis**. The chassis was already clean. No chassis edit was needed; the chassis amendment commit that added forward links for Cracks 1+2+4 also added this status update but did not touch the chassis text for any Drift #1 reason.
+
 ---
 
 ## Drift #2 — `constraint/mod.rs:78-87` (qfrc_smooth aggregation)
