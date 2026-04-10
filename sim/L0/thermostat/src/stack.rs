@@ -169,6 +169,7 @@ impl PassiveStack {
     /// marker for additional `PassiveStack`-level configuration that
     /// `build_one` could read. Today the prototype carries no such
     /// state, so `clippy::unused_self` is allowed below.
+    // Prototype carries no per-stack state yet; self is for future extensibility.
     #[allow(clippy::unused_self)]
     pub fn install_per_env<F>(self: &Arc<Self>, n: usize, mut build_one: F) -> EnvBatch
     where
@@ -265,7 +266,7 @@ impl PassiveStack {
 pub struct EnvBatch {
     /// One Model per env, with `cb_passive` already installed.
     pub models: Vec<Model>,
-    /// One Arc<PassiveStack> per env, in the same order as `models`.
+    /// One `Arc<PassiveStack>` per env, in the same order as `models`.
     pub stacks: Vec<Arc<PassiveStack>>,
 }
 

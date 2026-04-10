@@ -143,10 +143,12 @@ impl WelfordOnline {
         }
         let total_count = self.count + other.count;
         let delta = other.mean - self.mean;
+        // u64 → f64 cast: counts are small enough that precision loss is negligible.
         #[allow(clippy::cast_precision_loss)]
         let weight_a = self.count as f64;
         #[allow(clippy::cast_precision_loss)]
         let weight_b = other.count as f64;
+        // (same justification as weight_a/weight_b above)
         #[allow(clippy::cast_precision_loss)]
         let weight_total = total_count as f64;
         self.mean += delta * weight_b / weight_total;
@@ -178,6 +180,7 @@ impl WelfordOnline {
         if self.count < 2 {
             return f64::NAN;
         }
+        // u64 → f64: count is small enough that precision loss is negligible.
         #[allow(clippy::cast_precision_loss)]
         let denom = (self.count - 1) as f64;
         self.m2 / denom
@@ -190,6 +193,7 @@ impl WelfordOnline {
         if self.count < 2 {
             return f64::NAN;
         }
+        // u64 → f64: count is small enough that precision loss is negligible.
         #[allow(clippy::cast_precision_loss)]
         let count_f64 = self.count as f64;
         (self.variance() / count_f64).sqrt()

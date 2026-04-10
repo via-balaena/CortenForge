@@ -9,13 +9,19 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Simulation engine — Model, Data, callback hooks
 sim-core    = { workspace = true }
+# Linear algebra — DVector for per-DOF damping/noise
 nalgebra    = { workspace = true }
+# RNG traits — Rng trait used by LangevinThermostat
 rand        = { workspace = true }
+# Deterministic CSPRNG — reproducible noise sequences
 rand_chacha = { workspace = true }
+# Normal distribution — Gaussian noise for fluctuation force
 rand_distr  = { workspace = true }
 
 [dev-dependencies]
+# MJCF model loading — test fixtures for integration tests
 sim-mjcf = { workspace = true }
 
 [lints]
