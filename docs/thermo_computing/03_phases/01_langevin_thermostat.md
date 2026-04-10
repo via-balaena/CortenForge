@@ -270,15 +270,15 @@ The chassis flagged three options for fixing the recon-log-part-2 sampling-error
 | | Trajectory shape | Per-test cost | Helper requirement | Combined std error |
 |---|---|---|---|---|
 | α | 1 trajectory of ~10⁷ steps | ~10⁷ sim steps | needs `integrated_autocorrelation_time` (deferred per Decision 5) | ~4.5% of ½kT |
-| **β** | **100 trajectories of 10⁵ steps each** | **~10⁷ sim steps** | **only `WelfordOnline` + `merge` (M4 — already shipping)** | **~4.5% of ½kT** |
+| **β** | **100 trajectories of 10⁵ steps each** | **~10⁷ sim steps** | **only `WelfordOnline` (two-level pattern, see §7.3)** | **~4.5% of ½kT** |
 | γ | 1 trajectory of 10⁵ steps, loose tolerance | ~10⁵ sim steps | none extra | ~5–10% of ½kT, no discretization-bias detection |
 
 **Pick: option β.** Five reasons in priority order:
 
 1. **It is the only option compatible with the chassis test utilities Phase 1 actually ships.** Decision 5 explicitly defers `integrated_autocorrelation_time` to whichever later phase first needs it (a Sokal-style automatic-windowing implementation is its own ~100 LOC of statistical code with its own correctness validation needs). Option α requires it; option β does not. Option γ technically does not require it either but ships with no discretization-bias-detection capability, which fails the "pass with margin, not at threshold" rule.
-2. **It uses `WelfordOnline::merge` (chassis M4) end-to-end.** Per-trajectory accumulators get folded into a global accumulator via the Chan/Pébay formula. The chassis added `merge` specifically for this option; using it for the Phase 1 gate validates `merge` itself as a side effect.
+2. **It implements via a clean two-level Welford pattern.** Each trajectory's per-step `½v²` samples are folded into a per-trajectory `WelfordOnline` whose `mean()` is one IID sample of the equilibrium `⟨½v²⟩`. Pushing 100 such trajectory means into a top-level `WelfordOnline` gives a streaming, alloc-free estimator whose `std_error_of_mean` is the *correct* std error of the grand mean — the 100 trajectory means are IID by construction (independent seeds, sufficient burn-in to forget initial conditions), so the IID formula applies directly at the top level. **`WelfordOnline::merge` (chassis M4) is intentionally not used by the §7 gate.** Merge collapses two accumulators into one population statistic via Chan/Pébay; it is correct only for IID samples, and per-step `½v²` values within a trajectory are autocorrelated (`τ_int ≈ 5000` steps), so calling `std_error_of_mean` on a merged per-step accumulator gives the IID std error and underestimates by `√(1+2·τ_int) ≈ 100`. Merge still ships in the chassis for IID parallel-reduce contexts (Phase 4+ batch reductions); it just is not the right primitive for the §7 gate. See `06_findings/2026-04-09_phase1_statistical_propagation_chain.md` for the full propagation-chain post-mortem.
 3. **It exercises the seed/RNG path under normal use.** Each of the 100 trajectories constructs a fresh `LangevinThermostat::new(gamma, k_b_t, seed_base + i)`, which exercises the same code path the eventual `install_per_env` BatchSim case will use. The reproducibility test in §10 then locks the property that this is bit-stable.
-4. **It avoids autocorrelation analysis entirely** — each trajectory contributes one *aggregated* `(mean, variance)` pair via its own per-trajectory `WelfordOnline`, and the final assertion runs on the merged 100-trajectory accumulator. The autocorrelation between consecutive samples *within* a trajectory is folded into the per-trajectory variance, where it belongs.
+4. **It avoids autocorrelation analysis entirely.** The trajectories are IID by construction, so the variance *across* the 100 trajectory means is a clean Monte Carlo estimator of the variance of the equilibrium ⟨½v²⟩ estimator. The autocorrelation between consecutive samples *within* a trajectory is absorbed into the trajectory mean's sampling variability, which manifests automatically as larger across-trajectory variance — `τ_int` never has to be estimated.
 5. **Total wall-clock cost is seconds.** ~10⁷ sim steps at `nv=1` with the constraint solver running on a 1-DOF system is order-of-seconds on any developer machine. Acceptable for an integration test that runs in CI on every thermo-touching PR.
 
 ### 7.2 Parameter set (locked)
@@ -304,7 +304,11 @@ The chassis flagged three options for fixing the recon-log-part-2 sampling-error
 - 100-trajectory aggregated std error ≈ per-traj std error / `√100` ≈ `0.045·(½kT)` ≈ **±4.5% of ½kT**.
 - At `n_sigma=3.0`, the gate's fail boundary is at `±13.5% of ½kT`. Discretization bias `~10⁻⁴ · ½kT` is two orders of magnitude below the gate. **Margin is real.**
 
+The `√100` factor in the third bullet is what the across-trajectories estimator computes directly: the top-level `WelfordOnline` (see §7.3) holds 100 IID trajectory means, and its `std_error_of_mean` is `run_std / √100`, where `run_std` is the standard deviation of the trajectory means around the grand mean. This is the correct std error of the grand mean precisely because the trajectory means are IID by construction. Empirically (Probe E in the propagation-chain finding) the across-trajectories `std_error_of_mean` lands at ~`0.024` for the central parameter set, in close agreement with the `±4.5% of ½kT` analytic prediction.
+
 ### 7.3 Test pseudocode
+
+The pattern is **two-level Welford**: an inner per-trajectory accumulator collects per-step `½v²` samples and is reduced to a single trajectory mean via `inner.mean()`. That trajectory mean is pushed into a top-level `across_trajectories` accumulator. After 100 trajectories the top-level accumulator holds 100 IID samples (the trajectory means), and `across_trajectories.std_error_of_mean()` is the correct std error of the grand mean. The inner accumulator is rebuilt fresh each trajectory; nothing crosses the trajectory boundary except the scalar mean.
 
 ```rust
 #[test]
@@ -317,7 +321,12 @@ fn test_equipartition_central_parameter_set() {
     let k_b_t       = 1.0;
     let gamma_value = 0.1;
 
-    let mut global = WelfordOnline::new();
+    // Top-level accumulator over the 100 trajectory means. The trajectory
+    // means are IID by construction (independent seeds + sufficient burn-in),
+    // so std_error_of_mean on this accumulator is the correct std error of
+    // the grand mean. See §7.1 reason 2 and the propagation-chain finding
+    // in 06_findings/ for why merge of per-step accumulators is wrong here.
+    let mut across_trajectories = WelfordOnline::new();
 
     for i in 0..n_traj {
         let mut model = sim_mjcf::load_model(xml).expect("load");
@@ -335,20 +344,23 @@ fn test_equipartition_central_parameter_set() {
         // Burn in (no measurement).
         for _ in 0..n_burn_in { data.step(&model).expect("burn-in step"); }
 
-        // Measure ½ M v² into a per-trajectory accumulator.
+        // Inner accumulator: collect per-step ½v² for this trajectory.
         let mut traj = WelfordOnline::new();
         for _ in 0..n_measure {
             data.step(&model).expect("measure step");
             traj.push(0.5 * 1.0 * data.qvel[0] * data.qvel[0]);
         }
 
-        // Merge into the global accumulator (Chan/Pébay, M4).
-        global.merge(&traj);
+        // Push this trajectory's mean as one IID sample. The within-trajectory
+        // autocorrelation is absorbed into how much each trajectory mean
+        // varies around the grand mean — exactly the variance the top-level
+        // accumulator captures.
+        across_trajectories.push(traj.mean());
     }
 
-    let measured     = global.mean();
-    let expected     = 0.5 * k_b_t;
-    let std_error    = global.std_error_of_mean();
+    let measured  = across_trajectories.mean();
+    let expected  = 0.5 * k_b_t;
+    let std_error = across_trajectories.std_error_of_mean();
     assert_within_n_sigma(
         measured, expected, std_error, 3.0,
         "equipartition central: 1-DOF damped harmonic oscillator, 100 traj × 10⁵ steps",
@@ -359,6 +371,8 @@ fn test_equipartition_central_parameter_set() {
 ### 7.4 The γ + T sweep (separate test, not the gate)
 
 A 3×3 sweep over `γ ∈ {0.01, 0.1, 1.0}` and `k_B·T ∈ {0.5, 1.0, 2.0}` verifies T-linearity (`⟨½v²⟩ ∝ T`) and γ-independence (the stationary temperature must not depend on γ — γ controls relaxation time, not equilibrium). Smaller per-combination trajectory count (`n_traj = 30`) keeps total cost bounded; the central combination is already proven by §7.3 so the sweep is verification, not the gate. Run as a separate `#[test]` that may be marked `#[ignore]` if total runtime becomes a CI concern.
+
+The sweep test uses **the same two-level Welford pattern as §7.3** for each `(γ, k_B·T)` combination — fresh inner accumulator per trajectory, push trajectory means into a fresh top-level accumulator per combination, assert via `assert_within_n_sigma` against `0.5 · k_B·T`. The merge-of-per-step-accumulators anti-pattern from the propagation-chain finding must not reappear here.
 
 Combinations where `h·γ/M ≥ 10⁻³` (i.e. the `γ=1.0` row) push the discretization-bias closer to the sampling tolerance and are the most informative — if the test ever fails on the `γ=1.0` rows but passes on the `γ=0.01`/`γ=0.1` rows, that is a discretization-bias signal, and the spec's response is to drop `h` rather than loosen the tolerance.
 
@@ -421,9 +435,18 @@ fn test_stochastic_gating_sanity() {
     // Disable noise for the decay phase.
     {
         let _guard = stack.disable_stochastic();
-        // Damping time constant M/γ = 10 time units = 10_000 steps.
-        // Run 5× that to land in numerical-floor territory.
-        for _ in 0..50_000 { data.step(&model).expect("step"); }
+        // Amplitude time constant of the underdamped oscillator is
+        // 2M/γ = 20 time units = 20_000 steps. Run 10× that to land in
+        // numerical-floor territory: envelope ≈ exp(-10) ≈ 4.5e-5, ~22×
+        // margin under the 1e-3 threshold below.
+        //
+        // Note: M/γ = 10 would be the time constant for free-particle
+        // velocity decay or for underdamped-oscillator ENERGY decay (which
+        // is 2× faster than amplitude decay because energy ∝ amplitude²).
+        // Neither matches what we check here — we check qpos and qvel,
+        // both of which scale with amplitude, so the relevant decay rate
+        // is γ/(2M) = 0.05 and the time constant is 2M/γ = 20.
+        for _ in 0..200_000 { data.step(&model).expect("step"); }
         assert!(
             data.qvel[0].abs() < 1e-3 && data.qpos[0].abs() < 1e-3,
             "decayed state should be near rest, got qpos={}, qvel={}",
@@ -445,7 +468,7 @@ fn test_stochastic_gating_sanity() {
 }
 ```
 
-The post-decay assertion uses `< 1e-3` rather than `< 1e-6` because Euler integration of a damped harmonic oscillator at `h=0.001` after 50k steps lands in the `O(1e-4)`-to-`O(1e-3)` range, not at the f64 floor — `1e-6` would be too tight and risk a false negative on a correct implementation.
+The post-decay assertion uses `< 1e-3` rather than `< 1e-6` because the test deliberately stops at 10× the amplitude time constant (envelope ≈ `exp(-10) ≈ 4.5e-5`), not at the f64 floor — running deeper into decay would need an unbounded step count, and `1e-6` would still be tight enough to risk a false negative on a correct implementation if some other unrelated parameter drifted slightly. `1e-3` gives ~22× margin against the actual decayed amplitude at 200k steps, which is the right side of the "pass with margin, not at threshold" rule.
 
 This is a smoke test, not a full FD validation. Phase 5 will exercise `disable_stochastic` under actual perturbation loops with derivative checks. Phase 1's job is to prove the chassis gating mechanism wires through `LangevinThermostat::apply` correctly.
 
@@ -478,7 +501,7 @@ The Phase 1 implementation is "done" when **all** of the following hold:
    - §7.4 (γ + T sweep) lands within `±3σ` on every combination, possibly under `--ignored` if total runtime exceeds the CI budget.
    - §8 (callback firing count) holds as **hard equality**.
    - §9 (reproducibility) holds as **hard f64 equality** on `qvel` and `qpos`.
-   - §10 (Stochastic gating sanity) decays to `<1e-3` under the guard (per the Euler-at-h=0.001-after-50k-steps floor reasoning in §10's body — `1e-6` would risk a false negative on a correct implementation), re-energizes immediately on guard drop.
+   - §10 (Stochastic gating sanity) decays to `<1e-3` under the guard (200k steps is 10× the amplitude time constant `2M/γ = 20`, giving envelope ≈ `exp(-10) ≈ 4.5e-5` and ~22× margin under the threshold per the §10 body), re-energizes immediately on guard drop.
 5. `cargo xtask grade sim-thermostat` reaches **A across all 7 criteria**. Anything less is stop-the-line per the project's `A-grade or it doesn't ship` rule.
 6. `sim/L0/core/Cargo.toml` shows **no production deps** on `rand`, `rand_chacha`, `rand_distr`. The sim-core-stays-rand-free invariant from item 4 + item 8 must be verifiable by `grep`.
 7. The crate-level `lib.rs` rustdoc renders cleanly (`cargo doc -p sim-thermostat`) and contains the four pieces from chassis Decision 6 sub-decisions: purpose paragraph, architecture summary, quick-start example, link to chassis_design.md and to this spec.
