@@ -124,19 +124,30 @@ review pass.*
     "blocked on cf-design foundation, revisit when D2/D4 force the
     question." Phases 1-4 unaffected.
   - Q6 (Phase 7 reward signal) — deferred until Phase 6 results.
-- **Next action**: Phase 1 is **DONE**. Three candidate next moves,
-  each deserving its own session:
-  1. **Phase 2 spec drafting** — free + articulated body equipartition,
-     gated on Q1 (constrained Langevin). The natural follow-on. Phase 2
-     burn-in choices must use `τ_eq`, not `τ_int`, per Crack 4's lesson.
-  2. **Chassis amendment session** — fold Cracks 1+2+4 corrections into
-     `chassis_design.md` Decision 5 (the merge ship-justification + the
-     `τ_int` derivation context). Open question — current weak
-     recommendation is **Option A**: chassis stays paper-locked, the
-     `06_findings/` entries remain canonical. Decide in a session that
-     explicitly intends to amend the chassis.
-  3. **PR prep** — Phase 1 ships as a single PR off
-     `feature/thermo-doc-review`. Includes running `cargo xtask grade
-     sim-thermostat` (acceptance criterion §12.4 #5, deferred from this
-     session) and writing the PR description against the spec + the
-     four findings docs.
+- **Phase 1 PR PARKED** (2026-04-09 PR prep session). Phase 1
+  implementation is complete and validated (35 unit + 5 mandatory
+  integration + 1 sweep test all green; clippy + fmt clean; rustdoc
+  has the four chassis Decision 6 pieces; sim-core stays rand-free in
+  production). **Six of seven §12.4 criteria are satisfied; only #5
+  (`cargo xtask grade sim-thermostat` reaches A across 7 criteria) is
+  open**, and the openness is due to grade tool gaps, not
+  sim-thermostat gaps. PR prep was attempted in a dedicated session
+  and surfaced two pre-existing latent bugs in the grade tool itself
+  (one fixed in flight at commit `c3f08c5`, one diagnosed but unfixed)
+  plus six concrete drifts between the tool and the canonical
+  `docs/STANDARDS.md`. The gaps are large enough that the right scope
+  of fix is its own initiative — recon → audit → chassis → rebuild
+  plan → execute → grade — not in-flight patches. Phase 1 PR ships
+  AFTER the grade tool audit closes, OR after Phase 1 spec §12.4 #5
+  is amended to acknowledge the gate's known gaps. See
+  [`../../grade_tool_audit/audit_findings_2026-04-09.md`](../../grade_tool_audit/audit_findings_2026-04-09.md)
+  for the full 23-item inventory and
+  [`../../grade_tool_audit/recon_plan.md`](../../grade_tool_audit/recon_plan.md)
+  for what the next session does.
+- **Next action**: **Grade tool audit recon round.** First session
+  of the new `grade_tool_audit` initiative. Read-only investigation
+  (D1-D5 + B1-B5 audits + F1-F6 decision escalation), produces a
+  recon report and a scope recommendation (one of A/B/C/D). See
+  `../../grade_tool_audit/recon_plan.md` for the self-contained brief.
+  Phase 1 PR resumption + Phase 2 spec drafting + chassis amendment
+  all wait behind the audit closing.
