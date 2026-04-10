@@ -101,7 +101,9 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
     };
 
     // 1. Test Coverage
-    report.criteria.push(grade_coverage(sh, crate_name)?);
+    report
+        .criteria
+        .push(grade_coverage(sh, crate_name, &crate_path)?);
     // 2. Documentation
     report
         .criteria
@@ -339,7 +341,17 @@ pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
 ///
 /// Two-tier thresholds (F1 decision): >=90% = A+, >=75% = A.
 /// Graceful degradation (ss1.4): if cargo-llvm-cov is not installed, reports Manual.
-fn grade_coverage(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
+///
+/// **Per-crate report filtering:** `cargo llvm-cov -p <crate>` scopes the
+/// *tests* to the named package but includes all workspace-member source
+/// files in the *report* (because workspace deps are compiled with
+/// instrumentation). Without filtering, the denominator includes sim-core,
+/// cf-geometry, mesh-*, etc. and structurally tanks any crate that depends
+/// on large workspace siblings. We filter the JSON `data[0].files` array
+/// to only sum lines from files whose path contains the crate's source
+/// directory (e.g. `sim/L0/thermostat/`), giving the correct per-crate
+/// coverage.
+fn grade_coverage(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
     // Check if cargo-llvm-cov is installed
     let version_check = cmd!(sh, "cargo llvm-cov --version")
         .ignore_status()
@@ -364,10 +376,30 @@ fn grade_coverage(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         .read()
         .unwrap_or_default();
 
-    // Parse JSON: data[0].totals.lines.percent
+    // Parse JSON and filter to files belonging to the target crate.
+    // The llvm-cov report includes all instrumented workspace members;
+    // we sum only files whose path contains the crate's directory
+    // (e.g. "sim/L0/thermostat/") to get the correct per-crate number.
     let coverage = (|| -> Option<f64> {
         let json: serde_json::Value = serde_json::from_str(&output).ok()?;
-        json["data"][0]["totals"]["lines"]["percent"].as_f64()
+        let files = json["data"][0]["files"].as_array()?;
+
+        let mut covered: u64 = 0;
+        let mut total: u64 = 0;
+        for file in files {
+            let filename = file["filename"].as_str().unwrap_or("");
+            if !filename.contains(crate_path) {
+                continue;
+            }
+            let lines = &file["summary"]["lines"];
+            covered += lines["covered"].as_u64().unwrap_or(0);
+            total += lines["count"].as_u64().unwrap_or(0);
+        }
+
+        if total == 0 {
+            return None;
+        }
+        Some(100.0 * covered as f64 / total as f64)
     })();
 
     let Some(coverage) = coverage else {
