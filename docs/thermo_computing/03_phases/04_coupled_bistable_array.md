@@ -1,6 +1,7 @@
 # Phase 4 — Coupled Bistable Array + Ising Comparison
 
-> **Status**: Spec'd. Pending implementation.
+> **Status**: **Done.** Implemented and all gates green.
+> **Commit**: `1d2810b`
 > **Owner**: Jon
 > **Parents**:
 > - [`03_bistable_kramers.md`](./03_bistable_kramers.md) (Phase 3 — the gate this phase inherits)

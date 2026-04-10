@@ -14,7 +14,7 @@ phases do not start until the previous gate is green. This implements the
 | 1   | Langevin thermostat (1-DOF)        | spec'd   | Equipartition `⟨½mv²⟩ = ½k_B·T` on damped harmonic oscillator         | [`01_langevin_thermostat.md`](./01_langevin_thermostat.md) |
 | 2   | Thermostat on free + articulated   | **done**  | Equipartition holds on 6-DOF free body; on a 2-link hinge chain      | [`02_multi_dof_equipartition.md`](./02_multi_dof_equipartition.md) |
 | 3   | Single bistable element            | **done**  | Double-well switching rate matches Kramers' formula                   | [`03_bistable_kramers.md`](./03_bistable_kramers.md) |
-| 4   | Coupled bistable array             | **spec'd** | Pairwise correlations match exact Ising model on same coupling topology | [`04_coupled_bistable_array.md`](./04_coupled_bistable_array.md) |
+| 4   | Coupled bistable array             | **done**  | Pairwise correlations match exact Ising model on same coupling topology | [`04_coupled_bistable_array.md`](./04_coupled_bistable_array.md) |
 | 5   | Differentiable EBM via cf-design   | pending  | Trained array matches a 2D Gaussian mixture target                    | —    |
 | 6   | THRML bridge or native Gibbs       | pending  | Physical sampler vs. software sampler on the same energy function    | —    |
 | 7   | RL on the sampler                  | pending  | Agent improves sample quality (ESS / autocorrelation / KL to target)  | —    |
