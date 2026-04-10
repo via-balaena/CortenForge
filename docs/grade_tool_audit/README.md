@@ -29,13 +29,13 @@ for that initiative.
 
 ## Status
 
-**RECON pending** as of 2026-04-09.
+**RECON COMPLETE** as of 2026-04-10. Scope C (full rebuild) accepted.
 
-- ✓ Audit findings captured (this session)
-- ✓ Recon plan written (this session)
-- ✗ Recon round (D1-D5 + B1-B5 audits) — next session
-- ✗ Recon report — next session
-- ✗ Chassis design — future session
+- ✓ Audit findings captured (2026-04-09)
+- ✓ Recon plan written (2026-04-09)
+- ✓ Recon round complete (2026-04-10) — D1-D5 + B1-B5 + F1-F6 all resolved
+- ✓ Recon report written (2026-04-10) — scope C recommended and accepted
+- ✗ Chassis design — next session
 - ✗ Rebuild plan + grading — future session
 - ✗ Rebuild execution — future session
 - ✗ Rebuild verification + Phase 1 PR resumption — future session
@@ -45,13 +45,12 @@ for that initiative.
 | File | Purpose | Lifecycle |
 |---|---|---|
 | [`README.md`](README.md) | This file. Top-level orientation. | Updated as the initiative evolves. |
-| [`audit_findings_2026-04-09.md`](audit_findings_2026-04-09.md) | The 17-item punch list, evidence, and analysis from the originating session. The canonical record of what's known about the grade tool's gaps. | Frozen. New findings go in `recon_report_<date>.md` files. |
-| [`recon_plan.md`](recon_plan.md) | Self-contained brief for the next session — what to investigate, in what order, what to NOT do. | Updated as new sessions add context. |
+| [`audit_findings_2026-04-09.md`](audit_findings_2026-04-09.md) | The 23-item punch list, evidence, and analysis from the originating session. The canonical record of the initial audit. | Frozen. Recon findings extend this in the recon report. |
+| [`recon_plan.md`](recon_plan.md) | Self-contained brief for the recon session — what to investigate, in what order, what to NOT do. | Frozen. |
+| [`recon_report_2026-04-10.md`](recon_report_2026-04-10.md) | Output of the recon round: D1-D5 findings, B1-B5 verdicts, F1-F6 decisions, scope recommendation (C). | Frozen. |
 
-Future files (created by subsequent sessions, not by this one):
+Future files (created by subsequent sessions):
 
-- `recon_report_<date>.md` — output of the recon round; updates the
-  punch list with verdicts and recommends scope (A/B/C/D)
 - `chassis_design.md` — the rebuilt grade tool's API + architecture
 - `chassis_design_rubric_<date>.md` — paper-artifact rubric grading
   the chassis design
