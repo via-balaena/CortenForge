@@ -73,4 +73,5 @@ mod stack;
 pub mod test_utils;
 
 pub use component::{PassiveComponent, Stochastic};
+pub use diagnose::Diagnose;
 pub use stack::{EnvBatch, PassiveStack, PassiveStackBuilder, StochasticGuard};
