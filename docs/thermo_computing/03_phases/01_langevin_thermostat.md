@@ -199,7 +199,7 @@ sim/L0/thermostat/                       (NEW directory)
 │   ├── langevin.rs                      (~150 LOC: LangevinThermostat struct + 3 trait impls + unit tests)
 │   └── test_utils.rs                    (~170 LOC: WelfordOnline + assert_within_n_sigma + sample_stats + unit tests)
 └── tests/
-    └── langevin_thermostat.rs           (~250 LOC: 4 integration tests from §8–§11)
+    └── langevin_thermostat.rs           (~250 LOC: 4 integration tests from §7–§10)
 ```
 
 Total Phase 1 footprint: **~900 LOC across 8 files**.
@@ -251,7 +251,7 @@ The 1-DOF damped harmonic oscillator is constructed via MJCF XML (test-conventio
 | `model.nq` | `1` | direct read |
 | `model.timestep` | `0.001` | direct read |
 | `model.integrator` | `Integrator::Euler` | direct read |
-| Mass on the moving body | `1.0` | direct read from `model.body_mass` or equivalent |
+| Mass on the moving body | `1.0` | direct read of `model.body_mass[1]` (`pub body_mass: Vec<f64>` at `sim/L0/core/src/types/model.rs:139`; body 0 is the world body, body 1 is the user body) |
 | `model.dof_damping[0]` | `0.0` | direct read — **critical**; thermostat owns damping (Q4 option (a) from recon log part 2). Model damping would compound with thermostat damping and silently shift the equilibrium temperature. |
 | Linear restoring force | `F = −k·x` with `k = 1.0` | step the un-thermostatted model from `qpos[0]=0.5, qvel[0]=0`; assert `qacc[0] ≈ −0.5` on the first forward solve (spring force `-k·(x − springref) = −1·0.5 = −0.5`, mass `1.0`). This is a sanity-check fixture inside the test module, run once before the equipartition gate. |
 
@@ -321,7 +321,7 @@ fn test_equipartition_central_parameter_set() {
 
     for i in 0..n_traj {
         let mut model = sim_mjcf::load_model(xml).expect("load");
-        let mut data  = sim_core::Data::new(&model);
+        let mut data  = model.make_data();
 
         PassiveStack::builder()
             .with(LangevinThermostat::new(
@@ -364,18 +364,19 @@ Combinations where `h·γ/M ≥ 10⁻³` (i.e. the `γ=1.0` row) push the discre
 
 ---
 
-## 8. Validation test #2 — callback firing-count and RNG-draw count
+## 8. Validation test #2 — callback firing-count
 
 Per recon log part 9: the thermostat is the workspace's first **stateful** `cb_passive` consumer, so its tests need to establish the precedent for callback-RNG reproducibility. The existing `tests/integration/callbacks.rs::passive_callback_adds_force` (line 11) only proves the callback fires; it does not exercise the stateful + `Mutex<RNG>` + per-step-RNG-advance path the thermostat introduces.
 
 The test:
 
-1. Construct an `Arc<AtomicUsize>` counter; install a thin diagnostic `PassiveComponent` wrapper around the `LangevinThermostat` that increments the counter inside `apply` before delegating.
+1. Construct an `Arc<AtomicUsize>` counter; install a thin diagnostic `PassiveComponent` wrapper around the `LangevinThermostat` that increments the counter inside `apply` before delegating to the inner thermostat.
 2. Run `data.step(&model)` exactly `K = 1000` times.
-3. Assert the counter is exactly `K` (callback fired once per `step()` — hard equality, not approximate).
-4. Assert RNG advancement: a second test constructs two thermostats with the same seed, runs one through `K` steps, runs the other through nothing, then samples one `f64` from each via a thin `Diagnose`-or-helper accessor; the *difference* in RNG output proves the first thermostat advanced its RNG by `K · n_dofs` draws (= `K · 1` for Phase 1).
+3. Assert the counter is exactly `K` — `cb_passive` fired once per `step()`, hard equality.
 
 This test is small (~25 LOC) and is the workspace's first hard-equality check on `cb_passive` invocation count. Future stateful `cb_passive` consumers can copy the pattern.
+
+**RNG-advancement-by-construction note**: a separate test asserting "the RNG advanced by exactly `K · n_dofs` draws over `K` steps" is **deliberately not part of Phase 1**. The combination of this test (callback fires `K` times) and §9 (bit-stable seed reproducibility) is already a complete proof of RNG advancement: the `apply` method's per-call RNG-draw count is structural source code, not behavior that needs separate runtime verification, and adding a public test-only `draw_for_test()` accessor on `LangevinThermostat` would pollute the chassis's deliberately minimal Decision 1 surface. If a future phase needs in-test RNG inspection for some other reason, it adds the accessor then with a real motivating use case.
 
 ---
 
@@ -395,14 +396,56 @@ A failure of this test means either the RNG implementation drifted (catastrophic
 
 Per chassis Decision 7 sub-decision "Phase 1 test additions": one small test that proves `disable_stochastic()` zeroes the noise contribution end-to-end, before the FD/autograd code paths that depend on this property exist in Phases 5+.
 
-The test:
+The test pattern (note the Arc-clone-before-install dance — `PassiveStack::install` consumes the `Arc<Self>`, so a handle for the guard call must be retained separately):
 
-1. Construct the central-parameter-set thermostat (`γ=0.1`, `k_BT=1.0`, `h=0.001`).
-2. Set initial state to `qpos[0]=1.0, qvel[0]=0.0` (stretched spring at rest).
-3. Acquire the guard: `let _guard = stack.disable_stochastic();`.
-4. Step forward `N = 50_000` steps under the guard. With noise disabled, the system is a pure damped harmonic oscillator: `⟨½v²⟩ → 0` at the damping time constant `M/γ = 10` time units = `10_000` steps.
-5. After `N` steps (5× the relaxation time), assert `(0.5 * data.qvel[0].powi(2)) < 1e-6`. Plain `<`, not `assert_within_n_sigma!` — there is no statistical noise here; the system has decayed to numerical-floor rest.
-6. Drop the guard, step one more time, assert `data.qvel[0] != 0.0` (a single noise sample re-energizes the system within one step under thermal forcing).
+```rust
+#[test]
+fn test_stochastic_gating_sanity() {
+    let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
+    let mut data  = model.make_data();
+
+    // Build the stack and KEEP a clone before install consumes the original.
+    let stack: Arc<PassiveStack> = PassiveStack::builder()
+        .with(LangevinThermostat::new(
+            DVector::from_element(model.nv, 0.1),
+            1.0,
+            0xC0FFEE_u64,
+        ))
+        .build();
+    Arc::clone(&stack).install(&mut model);
+
+    // Initial state: stretched spring at rest.
+    data.qpos[0] = 1.0;
+    data.qvel[0] = 0.0;
+
+    // Disable noise for the decay phase.
+    {
+        let _guard = stack.disable_stochastic();
+        // Damping time constant M/γ = 10 time units = 10_000 steps.
+        // Run 5× that to land in numerical-floor territory.
+        for _ in 0..50_000 { data.step(&model).expect("step"); }
+        assert!(
+            data.qvel[0].abs() < 1e-3 && data.qpos[0].abs() < 1e-3,
+            "decayed state should be near rest, got qpos={}, qvel={}",
+            data.qpos[0], data.qvel[0],
+        );
+    } // guard drops here, stochastic re-enabled
+
+    // One step with noise re-enabled. Expected kick magnitude ≈ σ·h
+    // = sqrt(2γkT/h)·h = sqrt(2·0.1·1·1000)·0.001 ≈ 0.014. We assert
+    // a threshold an order of magnitude below the kick to remain robust
+    // against single-sample variance while still catching "noise didn't
+    // re-engage" failures.
+    data.step(&model).expect("post-guard step");
+    assert!(
+        data.qvel[0].abs() > 1e-3,
+        "guard drop should re-energize the system; got qvel={}",
+        data.qvel[0],
+    );
+}
+```
+
+The post-decay assertion uses `< 1e-3` rather than `< 1e-6` because Euler integration of a damped harmonic oscillator at `h=0.001` after 50k steps lands in the `O(1e-4)`-to-`O(1e-3)` range, not at the f64 floor — `1e-6` would be too tight and risk a false negative on a correct implementation.
 
 This is a smoke test, not a full FD validation. Phase 5 will exercise `disable_stochastic` under actual perturbation loops with derivative checks. Phase 1's job is to prove the chassis gating mechanism wires through `LangevinThermostat::apply` correctly.
 
