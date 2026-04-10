@@ -292,19 +292,28 @@ The chassis flagged three options for fixing the recon-log-part-2 sampling-error
 | `h` (timestep) | `0.001` | `h·ω = 10⁻³`, `h·γ/M = 10⁻⁴` (discretization-bias floor) |
 | `Integrator` | `Euler` | Phase 1 only |
 | `dof_damping` | `0` (model) | thermostat owns damping (Q4 option (a)) |
-| `n_burn_in` | `25_000` steps (= `5·τ_int`) | `τ_int ≈ M/(2γh) = 5000` (recon log part 2) |
-| `n_measure` | `100_000` steps | per trajectory |
+| `n_burn_in` | `50_000` steps (= `5·τ_eq`) | `τ_eq = M/(γh) = 10_000` steps; see "Two distinct time scales" below |
+| `n_measure` | `200_000` steps (= `20·τ_eq`) | gives `N_eff ≈ 20` per trajectory |
 | `n_traj` | `100` | independent trajectories |
 | `seed_base` | `0xC0FFEE_u64` | arbitrary fixed; reproducibility-from-seed locks bit-stability |
 | `n_sigma` | `3.0` | chassis Decision 5 sub-decision N2 default |
 
-**Statistical accounting** (per the M1 correction):
-- Per-trajectory effective sample count `N_eff ≈ n_measure / (1 + 2·τ_int) ≈ 10`.
-- Per-trajectory std error of `⟨½v²⟩` ≈ `(½kT)·√2/√10 ≈ 0.45·(½kT)`.
-- 100-trajectory aggregated std error ≈ per-traj std error / `√100` ≈ `0.045·(½kT)` ≈ **±4.5% of ½kT**.
-- At `n_sigma=3.0`, the gate's fail boundary is at `±13.5% of ½kT`. Discretization bias `~10⁻⁴ · ½kT` is two orders of magnitude below the gate. **Margin is real.**
+**Two distinct time scales (load-bearing distinction — see `06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md` for the full derivation):**
 
-The `√100` factor in the third bullet is what the across-trajectories estimator computes directly: the top-level `WelfordOnline` (see §7.3) holds 100 IID trajectory means, and its `std_error_of_mean` is `run_std / √100`, where `run_std` is the standard deviation of the trajectory means around the grand mean. This is the correct std error of the grand mean precisely because the trajectory means are IID by construction. Empirically (Probe E in the propagation-chain finding) the across-trajectories `std_error_of_mean` lands at ~`0.024` for the central parameter set, in close agreement with the `±4.5% of ½kT` analytic prediction.
+The underdamped Langevin SHO has two relevant time scales that look superficially similar but are physically distinct:
+
+1. **Equilibration time `τ_eq = M/γ`** — how long `⟨½v²⟩(t)` takes to relax from a cold-start initial condition (`v=0`) to the equilibrium value `½kT/M`. Governs **burn-in adequacy**. For γ=0.1: `τ_eq = 10 time units = 10,000 steps`.
+2. **Autocorrelation time `τ_int = M/(2γ)`** — how decorrelated successive `½v²` samples are *in steady state*. The chassis derives this from the v² autocorrelation rate `2γ/M` and uses it correctly in the N_eff calculation. Governs **std error sizing**. For γ=0.1: `τ_int = 5 time units = 5,000 steps`.
+
+**These differ by a factor of 2: `τ_eq = 2·τ_int`.** The chassis is rigorously correct about τ_int as the v² autocorrelation time (chassis_design.md:1463). Earlier drafts of this spec incorrectly used `5·τ_int` as the burn-in heuristic, which works for γ=0.1 by accident (residual bias 0.82% < std error 4.5%) but fails catastrophically for slow-γ combos in the §7.4 sweep. **Burn-in must scale with τ_eq, not τ_int.** With `n_burn_in = 5·τ_eq`, the residual energy fraction missing is `exp(−5) ≈ 0.7%`, and the time-averaged bias on the measurement window drops to ~`0.034%` of `½kT` — well below any reasonable std error tolerance.
+
+**Statistical accounting** (post-Crack-4 correction):
+- Per-trajectory effective sample count `N_eff ≈ n_measure / (1 + 2·τ_int) ≈ 200_000 / 10_001 ≈ 20`.
+- Per-trajectory std error of `⟨½v²⟩` ≈ `(½kT)·√2/√20 ≈ 0.316·(½kT)`.
+- 100-trajectory aggregated std error ≈ per-traj std error / `√100` ≈ `0.0316·(½kT)` ≈ **±3.2% of ½kT**.
+- At `n_sigma=3.0`, the gate's fail boundary is at `±9.5% of ½kT`. Discretization bias `~10⁻⁴ · ½kT` is three orders of magnitude below the gate. Burn-in residual bias `~0.034% · ½kT` is two orders of magnitude below the gate. **Margin is real on both axes** (statistical and systematic).
+
+The `√100` factor in the third bullet is what the across-trajectories estimator computes directly: the top-level `WelfordOnline` (see §7.3) holds 100 IID trajectory means, and its `std_error_of_mean` is `run_std / √100`, where `run_std` is the standard deviation of the trajectory means around the grand mean. This is the correct std error of the grand mean precisely because the trajectory means are IID by construction.
 
 ### 7.3 Test pseudocode
 
@@ -314,8 +323,10 @@ The pattern is **two-level Welford**: an inner per-trajectory accumulator collec
 #[test]
 fn test_equipartition_central_parameter_set() {
     let xml = SHO_1D_XML;
-    let n_burn_in   = 25_000;
-    let n_measure   = 100_000;
+    // n_burn_in = 5·τ_eq, n_measure = 20·τ_eq where τ_eq = M/(γh) = 10_000.
+    // See §7.2 "Two distinct time scales" — burn-in scales with τ_eq, not τ_int.
+    let n_burn_in   = 50_000;
+    let n_measure   = 200_000;
     let n_traj      = 100;
     let seed_base   = 0xC0FFEE_u64;
     let k_b_t       = 1.0;
@@ -374,7 +385,16 @@ A 3×3 sweep over `γ ∈ {0.01, 0.1, 1.0}` and `k_B·T ∈ {0.5, 1.0, 2.0}` ver
 
 The sweep test uses **the same two-level Welford pattern as §7.3** for each `(γ, k_B·T)` combination — fresh inner accumulator per trajectory, push trajectory means into a fresh top-level accumulator per combination, assert via `assert_within_n_sigma` against `0.5 · k_B·T`. The merge-of-per-step-accumulators anti-pattern from the propagation-chain finding must not reappear here.
 
-Combinations where `h·γ/M ≥ 10⁻³` (i.e. the `γ=1.0` row) push the discretization-bias closer to the sampling tolerance and are the most informative — if the test ever fails on the `γ=1.0` rows but passes on the `γ=0.01`/`γ=0.1` rows, that is a discretization-bias signal, and the spec's response is to drop `h` rather than loosen the tolerance.
+**Per-combo parameters scaled to τ_eq(γ).** Burn-in must scale with `τ_eq = M/(γh)` per the §7.2 "Two distinct time scales" derivation; using a fixed `n_burn_in` across the sweep would leave the slow-γ rows catastrophically un-equilibrated (see `06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md` for the full quantitative analysis — the γ=0.01 row of an unscaled sweep produces a 49%-of-½kT systematic bias). Compute `tau_eq` per combo and set burn-in = `5·τ_eq`, measure = `20·τ_eq`:
+
+| γ | τ_eq (steps) | n_burn_in | n_measure | per-traj steps | per-row cost (30 traj × 3 kT) |
+|---|---|---|---|---|---|
+| 0.01 | 100,000 | 500,000 | 2,000,000 | 2,500,000 | 225M sim steps |
+| 0.1 | 10,000 | 50,000 | 200,000 | 250,000 | 22.5M sim steps |
+| 1.0 | 1,000 | 5,000 | 20,000 | 25,000 | 2.25M sim steps |
+| **Total** | | | | | **~250M sim steps (~25 seconds in release mode)** |
+
+Combinations where `h·γ/M ≥ 10⁻³` (i.e. the `γ=1.0` row) push the discretization-bias closer to the sampling tolerance and are the most informative — if the test ever fails on the `γ=1.0` rows but passes on the `γ=0.01`/`γ=0.1` rows, that is a discretization-bias signal, and the spec's response is to drop `h` rather than loosen the tolerance. Symmetrically, slow-γ failures with the corrected per-combo scaling would indicate something other than burn-in (e.g., a stationary-distribution miscalibration), since the burn-in is now `5·τ_eq` for every combo by construction.
 
 ---
 
