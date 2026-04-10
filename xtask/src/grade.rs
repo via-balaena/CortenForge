@@ -11,6 +11,7 @@ use xshell::{cmd, Shell};
 /// Grade for a single criterion
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grade {
+    APlus,
     A,
     B,
     C,
@@ -20,8 +21,9 @@ pub enum Grade {
 }
 
 impl Grade {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
+            Grade::APlus => "A+",
             Grade::A => "A",
             Grade::B => "B",
             Grade::C => "C",
@@ -32,6 +34,7 @@ impl Grade {
 
     fn colored(&self) -> String {
         match self {
+            Grade::APlus => "A+".green().bold().to_string(),
             Grade::A => "A".green().bold().to_string(),
             Grade::B => "B".yellow().bold().to_string(),
             Grade::C => "C".red().to_string(),
@@ -48,51 +51,84 @@ pub struct CriterionResult {
     pub result: String,
     pub grade: Grade,
     pub threshold: &'static str,
+    /// Full descriptive string for COMPLETION.md (e.g., "96.2% line coverage").
+    /// Read by `complete.rs` (Step 9 of the grade tool rebuild).
+    #[allow(dead_code)]
+    pub measured_detail: String,
 }
 
 /// Full grade report for a crate
 #[derive(Debug)]
 pub struct GradeReport {
-    /// Crate name (reserved for future JSON/report output)
-    #[allow(dead_code)]
     pub crate_name: String,
     pub criteria: Vec<CriterionResult>,
     pub automated_grade: Grade,
-    /// Whether manual API review is needed (reserved for future use)
     #[allow(dead_code)]
     pub needs_review: bool,
 }
 
 impl GradeReport {
     fn overall_automated(&self) -> Grade {
-        let mut worst = Grade::A;
+        let mut worst = Grade::APlus;
         for c in &self.criteria {
             if c.grade == Grade::Manual {
                 continue;
             }
-            // ALL criteria must be A for A-grade
+            // Worst-grade ordering: F < C < B < A < A+
             worst = match (&worst, &c.grade) {
                 (Grade::F, _) | (_, Grade::F) => Grade::F,
                 (Grade::C, _) | (_, Grade::C) => Grade::C,
                 (Grade::B, _) | (_, Grade::B) => Grade::B,
-                _ => Grade::A,
+                (Grade::A, _) | (_, Grade::A) => Grade::A,
+                _ => Grade::APlus,
             };
         }
         worst
     }
 }
 
-/// Run grading for a specific crate
-pub fn run(crate_name: &str, _format: &str) -> Result<()> {
-    let sh = Shell::new()?;
-
-    // Find workspace root
-    let workspace_root = find_workspace_root(&sh)?;
+/// Run all automated criteria and return structured results.
+pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
+    let workspace_root = find_workspace_root(sh)?;
     sh.change_dir(&workspace_root);
 
-    // Verify crate exists
-    let crate_path = find_crate_path(&sh, crate_name)?;
+    let crate_path = find_crate_path(sh, crate_name)?;
 
+    let mut report = GradeReport {
+        crate_name: crate_name.to_string(),
+        criteria: Vec::new(),
+        automated_grade: Grade::A,
+        needs_review: true,
+    };
+
+    // 1. Test Coverage
+    report.criteria.push(grade_coverage(sh, crate_name)?);
+    // 2. Documentation
+    report.criteria.push(grade_documentation(sh, crate_name)?);
+    // 3. Clippy
+    report.criteria.push(grade_clippy(sh, crate_name)?);
+    // 4. Safety
+    report.criteria.push(grade_safety(sh, &crate_path)?);
+    // 5. Dependencies
+    report.criteria.push(grade_dependencies(sh, crate_name)?);
+    // 6. Bevy-free
+    report.criteria.push(grade_bevy_free(sh, crate_name)?);
+    // 7. API Design (manual)
+    report.criteria.push(CriterionResult {
+        name: "7. API Design",
+        result: "(manual review)".to_string(),
+        grade: Grade::Manual,
+        threshold: "checklist",
+        measured_detail: "(manual review)".to_string(),
+    });
+
+    report.automated_grade = report.overall_automated();
+
+    Ok(report)
+}
+
+/// Display grade report as Unicode-box table.
+fn display(report: &GradeReport) {
     println!();
     println!(
         "{}",
@@ -103,7 +139,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     );
     println!(
         "{}",
-        format!("║{:^62}║", format!("GRADING: {}", crate_name))
+        format!("║{:^62}║", format!("GRADING: {}", report.crate_name))
             .bright_white()
             .bold()
     );
@@ -129,54 +165,9 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
             .bright_white()
     );
 
-    let mut report = GradeReport {
-        crate_name: crate_name.to_string(),
-        criteria: Vec::new(),
-        automated_grade: Grade::A,
-        needs_review: true,
-    };
-
-    // 1. Test Coverage
-    let coverage = grade_coverage(&sh, crate_name)?;
-    print_criterion(&coverage);
-    report.criteria.push(coverage);
-
-    // 2. Documentation
-    let docs = grade_documentation(&sh, crate_name)?;
-    print_criterion(&docs);
-    report.criteria.push(docs);
-
-    // 3. Clippy
-    let clippy = grade_clippy(&sh, crate_name)?;
-    print_criterion(&clippy);
-    report.criteria.push(clippy);
-
-    // 4. Safety
-    let safety = grade_safety(&sh, &crate_path)?;
-    print_criterion(&safety);
-    report.criteria.push(safety);
-
-    // 5. Dependencies
-    let deps = grade_dependencies(&sh, crate_name)?;
-    print_criterion(&deps);
-    report.criteria.push(deps);
-
-    // 6. Bevy-free
-    let bevy = grade_bevy_free(&sh, crate_name)?;
-    print_criterion(&bevy);
-    report.criteria.push(bevy);
-
-    // 7. API Design (manual)
-    let api = CriterionResult {
-        name: "7. API Design",
-        result: "(manual review)".to_string(),
-        grade: Grade::Manual,
-        threshold: "checklist",
-    };
-    print_criterion(&api);
-    report.criteria.push(api);
-
-    report.automated_grade = report.overall_automated();
+    for c in &report.criteria {
+        print_criterion(c);
+    }
 
     println!(
         "{}",
@@ -187,10 +178,10 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     println!(
         "{}",
         format!(
-            "║ {:16} │ {:16} │   {}   │ {:14} ║",
+            "║ {:16} │ {:16} │{}│ {:14} ║",
             "AUTOMATED",
             "",
-            report.automated_grade.colored(),
+            grade_cell(&report.automated_grade),
             ""
         )
         .bright_white()
@@ -198,10 +189,10 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     println!(
         "{}",
         format!(
-            "║ {:16} │ {:16} │   {}   │ {:14} ║",
+            "║ {:16} │ {:16} │{}│ {:14} ║",
             "OVERALL",
             "",
-            Grade::Manual.colored(),
+            grade_cell(&Grade::Manual),
             "needs review"
         )
         .bright_white()
@@ -212,17 +203,24 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
             .to_string()
             .bright_white()
     );
+}
+
+/// Run grading for a specific crate
+pub fn run(crate_name: &str, _format: &str) -> Result<()> {
+    let sh = Shell::new()?;
+    let report = evaluate(&sh, crate_name)?;
+    display(&report);
     println!();
 
     match report.automated_grade {
-        Grade::A => {
+        Grade::A | Grade::APlus => {
             println!(
                 "{}",
                 "✓ All automated criteria pass. Ready for API review.".green()
             );
             println!();
             println!("Next step: Review against API checklist in docs/STANDARDS.md");
-            println!("Then run: cargo xtask complete {}", crate_name);
+            println!("Then run: cargo xtask complete {}", report.crate_name);
         }
         _ => {
             println!(
@@ -236,7 +234,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
             println!();
             println!(
                 "Fix failing criteria and run: cargo xtask grade {}",
-                crate_name
+                report.crate_name
             );
         }
     }
@@ -246,14 +244,24 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     Ok(())
 }
 
+/// Format grade for display in a fixed-width table cell (7 visible chars).
+fn grade_cell(grade: &Grade) -> String {
+    match grade {
+        // A+ is 2 visible chars: 2 spaces + A+ + 3 spaces = 7
+        Grade::APlus => format!("  {}   ", grade.colored()),
+        // All others are 1 visible char: 3 spaces + X + 3 spaces = 7
+        _ => format!("   {}   ", grade.colored()),
+    }
+}
+
 fn print_criterion(c: &CriterionResult) {
     println!(
         "{}",
         format!(
-            "║ {:16} │ {:16} │   {}   │ {:14} ║",
+            "║ {:16} │ {:16} │{}│ {:14} ║",
             c.name,
             truncate(&c.result, 16),
-            c.grade.colored(),
+            grade_cell(&c.grade),
             c.threshold
         )
         .bright_white()
@@ -289,7 +297,7 @@ fn find_workspace_root(sh: &Shell) -> Result<String> {
 /// root. This works for any workspace layout — flat (`mesh/mesh-types`),
 /// layered (`sim/L0/thermostat`), or anything else cargo recognizes —
 /// without hard-coded directory heuristics.
-fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
+pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
     let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
         .read()
         .context("Failed to run `cargo metadata`")?;
@@ -340,6 +348,7 @@ fn grade_coverage(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
             result: "(tarpaulin n/a)".to_string(),
             grade: Grade::Manual,
             threshold: "≥90%",
+            measured_detail: "(tarpaulin n/a)".to_string(),
         });
     }
 
@@ -377,6 +386,7 @@ fn grade_coverage(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         result: format!("{:.1}%", coverage),
         grade,
         threshold: "≥90%",
+        measured_detail: format!("{:.1}% line coverage", coverage),
     })
 }
 
@@ -409,6 +419,7 @@ fn grade_documentation(sh: &Shell, crate_name: &str) -> Result<CriterionResult> 
         result: format!("{} warnings", total_issues),
         grade,
         threshold: "0",
+        measured_detail: format!("{} warnings", total_issues),
     })
 }
 
@@ -443,6 +454,7 @@ fn grade_clippy(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         result: format!("{} warnings", total_issues),
         grade,
         threshold: "0",
+        measured_detail: format!("{} warnings", total_issues),
     })
 }
 
@@ -456,6 +468,7 @@ fn grade_safety(sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
             result: "(no src/)".to_string(),
             grade: Grade::Manual,
             threshold: "0",
+            measured_detail: "(no src/)".to_string(),
         });
     }
 
@@ -547,6 +560,7 @@ fn grade_safety(sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
         result: format!("{} violations", total_count),
         grade,
         threshold: "≤5",
+        measured_detail: format!("{} violations", total_count),
     })
 }
 
@@ -577,6 +591,7 @@ fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         result: format!("{} deps", dep_count),
         grade,
         threshold: "≤7",
+        measured_detail: format!("{} deps", dep_count),
     })
 }
 
@@ -617,11 +632,14 @@ fn grade_bevy_free(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         format!("has: {}", violations.join(", "))
     };
 
+    let measured_detail = result.clone();
+
     Ok(CriterionResult {
         name: "6. Bevy-free",
         result,
         grade,
         threshold: "no bevy",
+        measured_detail,
     })
 }
 
