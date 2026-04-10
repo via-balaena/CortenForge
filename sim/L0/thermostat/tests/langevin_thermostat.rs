@@ -92,23 +92,31 @@ fn test_sho_model_invariants() {
 /// THE Phase 1 gate — equipartition on the central parameter set.
 ///
 /// Per spec §7.1 option β + §7.3 two-level Welford pattern: 100
-/// trajectories of 100,000 measurement steps each, after a 25,000-step
+/// trajectories of 200,000 measurement steps each, after a 50,000-step
 /// burn-in. Each trajectory's per-step ½v² is folded into a per-trajectory
 /// `WelfordOnline` whose `mean()` becomes one IID sample of the
 /// equilibrium ⟨½v²⟩. The 100 trajectory means are pushed into a top-level
 /// `WelfordOnline` whose `std_error_of_mean()` is the correct std error
 /// of the grand mean (the trajectory means are IID by construction —
 /// independent seeds + sufficient burn-in). The grand mean is then
-/// asserted to be within ±3σ of `½kT`, with std error ≈ 4.5% of `½kT`
+/// asserted to be within ±3σ of `½kT`, with std error ≈ 3.2% of `½kT`
 /// per the spec §7.2 statistical accounting.
+///
+/// `n_burn_in = 5·τ_eq` and `n_measure = 20·τ_eq` where `τ_eq = M/(γh) =
+/// 10_000` steps is the energy equilibration time. Burn-in scales with
+/// `τ_eq`, NOT with `τ_int = M/(2γ)` (which is the v² autocorrelation
+/// time, used only for `N_eff` sizing). See
+/// `06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md` for the
+/// foundational distinction and Crack 4 propagation chain.
 ///
 /// `WelfordOnline::merge` is intentionally NOT used here. See
 /// `06_findings/2026-04-09_phase1_statistical_propagation_chain.md` for
 /// the propagation-chain post-mortem.
 #[test]
 fn test_equipartition_central_parameter_set() {
-    let n_burn_in = 25_000;
-    let n_measure = 100_000;
+    // n_burn_in = 5·τ_eq, n_measure = 20·τ_eq where τ_eq = M/(γh) = 10_000.
+    let n_burn_in = 50_000;
+    let n_measure = 200_000;
     let n_traj = 100_usize;
     let seed_base = 0x00C0_FFEE_u64;
     let k_b_t = 1.0_f64;
@@ -175,18 +183,31 @@ fn test_equipartition_central_parameter_set() {
 /// is order-of-minutes vs order-of-seconds. Run with
 /// `cargo test -p sim-thermostat -- --ignored test_equipartition_sweep_gamma_T`
 /// when manually verifying after touching the thermostat algorithm.
+///
+/// **Per-combo `τ_eq` scaling.** `n_burn_in` and `n_measure` are computed
+/// per combo as `5·τ_eq` and `20·τ_eq` where `τ_eq = M/(γh)` is the
+/// energy equilibration time. A fixed step count would leave the slow-γ
+/// rows catastrophically un-equilibrated — see
+/// `06_findings/2026-04-09_phase1_burn_in_tau_int_vs_tau_eq.md` for the
+/// quantitative analysis (`γ=0.01` with fixed `25k` burn-in produces a
+/// `49%`-of-`½kT` systematic bias).
 #[test]
 #[ignore = "order-of-minutes runtime — opt-in via --ignored; central combo is gated by test_equipartition_central_parameter_set"]
 fn test_equipartition_sweep_gamma_t() {
-    let n_burn_in = 25_000;
-    let n_measure = 100_000;
     let n_traj_per_combo = 30_usize;
     let seed_base = 0xBEEF_CAFE_u64;
 
-    let gammas = [0.01_f64, 0.1, 1.0];
+    // Per-combo (γ, τ_eq_in_steps) pairs. τ_eq = M/(γh) = 1/(γh) for M=1
+    // and the Phase 1 fixture h=0.001 (locked in §6 + §7.2). Storing the
+    // pair lets us avoid an f64→usize cast that would trip clippy without
+    // adding a #[allow] override; the values are exact integers anyway.
+    let gamma_tau_eq_pairs: [(f64, usize); 3] = [(0.01, 100_000), (0.10, 10_000), (1.00, 1_000)];
     let temperatures = [0.5_f64, 1.0, 2.0];
 
-    for &gamma_value in &gammas {
+    for &(gamma_value, tau_eq_steps) in &gamma_tau_eq_pairs {
+        let n_burn_in = 5 * tau_eq_steps;
+        let n_measure = 20 * tau_eq_steps;
+
         for &k_b_t in &temperatures {
             // Two-level Welford pattern per spec §7.4 + §7.3 — fresh
             // top-level accumulator per (γ, kT) combination.
