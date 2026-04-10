@@ -11,7 +11,7 @@ phases do not start until the previous gate is green. This implements the
 
 | #   | Phase                              | Status   | Validation gate                                                       | Spec |
 | --- | ---------------------------------- | -------- | --------------------------------------------------------------------- | ---- |
-| 1   | Langevin thermostat (1-DOF)        | sketch   | Equipartition `⟨½mv²⟩ = ½k_B·T` on damped harmonic oscillator         | —    |
+| 1   | Langevin thermostat (1-DOF)        | spec'd   | Equipartition `⟨½mv²⟩ = ½k_B·T` on damped harmonic oscillator         | [`01_langevin_thermostat.md`](./01_langevin_thermostat.md) |
 | 2   | Thermostat on free + articulated   | pending  | Equipartition holds on 3-DOF free body; on a constrained chain        | —    |
 | 3   | Single bistable element            | pending  | Double-well switching rate matches Kramers' formula                   | —    |
 | 4   | Coupled bistable array             | pending  | Joint distribution matches analytical Ising / CPU Gibbs ground truth  | —    |
@@ -21,9 +21,25 @@ phases do not start until the previous gate is green. This implements the
 
 ## Phase 1 — Langevin thermostat (1-DOF)
 
-> **Revised 2026-04-09 (part 4)** — superseded the original `qfrc_applied`
-> design after recon found `cb_passive`. See Recon Log part 4 for the
-> trade-off table and full reasoning.
+> **Spec'd 2026-04-09**: the inline sketch that previously lived here has
+> been replaced by a full per-phase spec at
+> [`01_langevin_thermostat.md`](./01_langevin_thermostat.md). That file
+> is the canonical Phase 1 source: API surface, MJCF model, validation
+> tests (equipartition gate + callback firing-count + reproducibility +
+> Stochastic gating sanity), acceptance criteria, and forwarded Phase 5+
+> caveats. Read it before implementing or reviewing Phase 1 work.
+
+The historical sketch and the older `qfrc_applied`-based revision notes
+are preserved verbatim in the recon log: see parts
+[02](../04_recon_log/2026-04-09_part_02_forward_step.md),
+[03](../04_recon_log/2026-04-09_part_03_qfrc_applied.md), and
+[04](../04_recon_log/2026-04-09_part_04_cb_passive.md) for the design
+trail.
+
+<!-- prior inline sketch removed; see 01_langevin_thermostat.md -->
+
+<details>
+<summary>Original inline sketch (collapsed; preserved for historical reference)</summary>
 
 The minimum viable first move. Implement a `LangevinThermostat` struct
 that wraps in a `PassiveStack` (chassis Decision 2) and installs as a
@@ -155,6 +171,8 @@ temperature. Passing this is the gate to all of Phase 2+.
    mutex and keeps RNG streams independent across envs. **Resolved at
    the chassis level by Decision 3** (`install_per_env` factory +
    defensive clear).
+
+</details>
 
 ## Phases 2–7
 
