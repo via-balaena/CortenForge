@@ -297,6 +297,7 @@ members = [
     "sim/L0/tests",
     "sim/L0/gpu",
     "sim/L0/ml-bridge",
+    "sim/L0/thermostat",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -373,6 +374,7 @@ parry3d = "0.17"
 # Randomness
 # ---------------------------------------------------------------------------
 rand = "0.9"
+rand_chacha = "0.9"
 rand_distr = "0.5"
 
 # ---------------------------------------------------------------------------
@@ -471,6 +473,7 @@ sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
 sim-ml-bridge = { path = "sim/L0/ml-bridge" }
+sim-thermostat = { path = "sim/L0/thermostat" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 

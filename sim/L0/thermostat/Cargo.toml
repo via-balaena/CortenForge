@@ -1,0 +1,22 @@
+[package]
+name = "sim-thermostat"
+description = "Langevin thermostat + passive-component framework for thermodynamic computing on CortenForge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sim-core    = { workspace = true }
+nalgebra    = { workspace = true }
+rand        = { workspace = true }
+rand_chacha = { workspace = true }
+rand_distr  = { workspace = true }
+
+[dev-dependencies]
+sim-mjcf = { workspace = true }
+
+[lints]
+workspace = true
