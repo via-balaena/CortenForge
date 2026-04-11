@@ -3,7 +3,7 @@
 8 items promoted from the deferred item tracker (119 total, audited 2026-04-11).
 48 confirmed DONE. 58 LOW deferred to post-v1.0. These 8 are the only MEDIUM
 items still open. Full tracker detail preserved in git history
-(`sim/docs/todo/archived/future_work_10b.md` through `10j.md`).
+(`sim/docs/todo/future_work_10b.md` through `10j.md`).
 
 ---
 

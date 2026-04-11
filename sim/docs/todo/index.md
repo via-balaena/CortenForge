@@ -9,7 +9,7 @@ Completed phase specs deleted 2026-04-11 — preserved in git history.
 |----------|------|
 | [V1_DEFERRED_ITEMS.md](./V1_DEFERRED_ITEMS.md) | 8 medium-priority items for v1.0 |
 | [POST_V1_ROADMAP.md](./POST_V1_ROADMAP.md) | Full tracker — 179 DT items (56 done, 122 open) |
-| [archived/future_work_10b-10j](./archived/) | Detailed per-item context for DT-1 through DT-160 |
+| [future_work_10b-10j](./future_work_10b.md) | Detailed per-item context for DT-1 through DT-160 |
 
 ## Phase Specs (Not Yet Executed)
 
