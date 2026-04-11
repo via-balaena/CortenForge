@@ -234,7 +234,7 @@ fn perf_ball_stack() {
 /// cargo test -p sim-conformance-tests --test integration perf_falling_boxes -- --ignored
 /// ```
 #[test]
-#[ignore]
+#[ignore = "benchmark — sensitive to system load, run separately with --release --ignored"]
 fn perf_falling_boxes() {
     let mjcf = r#"
         <mujoco model="falling_boxes">

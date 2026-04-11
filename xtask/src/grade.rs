@@ -369,10 +369,13 @@ fn grade_coverage(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Crit
         });
     }
 
-    // Run cargo llvm-cov --json -p <crate>
-    let output = cmd!(sh, "cargo llvm-cov --json -p {crate_name}")
+    // Run cargo llvm-cov --json --release -p <crate>
+    // --release avoids debug-mode runtime explosion on heavy tests (e.g.,
+    // sim-thermostat boltzmann Gate A: 100M steps, 100×+ slower in debug).
+    // ignore_status: don't fail on non-zero exit (we parse JSON ourselves).
+    // stderr flows to terminal so the user sees compile/test progress.
+    let output = cmd!(sh, "cargo llvm-cov --json --release -p {crate_name}")
         .ignore_status()
-        .ignore_stderr()
         .read()
         .unwrap_or_default();
 
@@ -498,7 +501,6 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
         "cargo clippy -p {crate_name} --all-targets --all-features --message-format=json"
     )
     .ignore_status()
-    .ignore_stderr()
     .read()
     .unwrap_or_default();
 
