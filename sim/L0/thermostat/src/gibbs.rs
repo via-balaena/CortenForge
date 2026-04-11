@@ -25,6 +25,8 @@ use rand_chacha::ChaCha8Rng;
 /// format as [`exact_distribution`](crate::ising::exact_distribution).
 pub struct GibbsSampler {
     n: usize,
+    edges: Vec<(usize, usize)>,
+    coupling_j: Vec<f64>,
     field_h: Vec<f64>,
     k_b_t: f64,
     /// Current spin configuration: each element is +1.0 or −1.0.
@@ -78,12 +80,32 @@ impl GibbsSampler {
 
         Self {
             n,
+            edges: edges.to_vec(),
+            coupling_j: coupling_j.to_vec(),
             field_h: field_h.to_vec(),
             k_b_t,
             spins: vec![1.0; n],
             rng: ChaCha8Rng::seed_from_u64(seed),
             neighbors,
         }
+    }
+
+    /// Edge list (read-only).
+    #[must_use]
+    pub fn edges(&self) -> &[(usize, usize)] {
+        &self.edges
+    }
+
+    /// Per-edge coupling constants (read-only).
+    #[must_use]
+    pub fn coupling_j(&self) -> &[f64] {
+        &self.coupling_j
+    }
+
+    /// Per-site external fields (read-only).
+    #[must_use]
+    pub fn field_h(&self) -> &[f64] {
+        &self.field_h
     }
 
     /// Perform one full sweep: update each site once in index order.
