@@ -344,35 +344,46 @@ optimal, but the continuous parameterization is more general.
 ### 7.3 Reward
 
 ```text
-reward = data.qvel[0]
+reward = -data.qvel[0]
 ```
 
-Instantaneous velocity. Stateless — no tracking of previous position
-needed.
+Negated instantaneous velocity. Stateless — no tracking of previous
+position needed.
+
+**Why negated?** The ratchet drift direction is a physical property of
+the potential, determined by (V₁, V₂, φ). D1b measured the drift
+direction as −x for φ = π/4 (random baseline mean displacement =
+−2.15 ± 1.69). CEM maximizes fitness (`cem.rs:187` sorts descending).
+Without negation, CEM would converge to zero-velocity policies (always-ON
+or always-OFF, fitness ≈ 0) that beat the optimal ratchet (negative
+velocity, fitness < 0). Negation aligns the reward with the physics:
+positive reward = stronger drift in the ratchet direction.
+
+**Why not change φ instead?** That would rearrange the physics to fit a
+coordinate convention — "physics correct first, ergonomic second"
+inverted. The drift direction is not a bug; it's a measured property.
 
 **Why not `(x_new - x_old) / Δt`?** The reward closure signature is
 `Fn(&Model, &Data) -> f64` — stateless, shared across VecEnv envs.
 There's no `x_old` to reference without interior-mutability hacks.
 
-**Why `qvel[0]` works**: CEM computes fitness as `Σ rewards / episode_length`
+**Why velocity works**: CEM computes fitness as `Σ rewards / episode_length`
 (`cem.rs:182`). With all episodes the same length (1000 steps — see §7.4),
 this is proportional to the sum:
 
 ```text
-fitness = (1/N) · Σ_t qvel[0]_t ≈ (1/N·Δt) · ∫₀ᵀ v(t) dt = Δx / T_episode
+fitness = -(1/N) · Σ_t qvel[0]_t ≈ -Δx / T_episode
 ```
 
-CEM's fitness is the **mean velocity** = net current. It ranks policies
-by current, which is exactly the optimization target.
+CEM's fitness is the **negated mean velocity** = ratchet current
+magnitude. It ranks policies by current strength, which is exactly the
+optimization target.
 
 **Load-bearing invariant**: `done = never` (§7.4) ensures all episodes
 have equal length. If episodes could terminate early, CEM's
 `sum / length` normalization would distort rankings (a short lucky
 episode would score disproportionately high). The fixed-length design
 is a correctness requirement, not just a physics choice.
-
-**Positive = directed transport** in the +x direction (determined by the
-sign convention of V₂ and φ).
 
 **Noise**: per-step velocity is thermally noisy (σ_v = √(kT/M) = 1.0).
 Over 1000 steps the noise averages out: σ_fitness ≈ σ_v / √1000 ≈ 0.03.
@@ -501,7 +512,13 @@ test with baseline measurements.
    with zero (within 3σ of sampling error)
 
 **Gate**: baselines produce expected behavior — zero net current for
-always-ON and always-OFF; small but positive for random.
+always-ON and always-OFF; small but nonzero for random.
+
+**D1b finding (2026-04-10)**: with φ = π/4, the ratchet drifts in −x
+(random baseline mean displacement = −2.15 ± 1.69). The reward is
+negated (`-qvel[0]`, see §7.3) so CEM sees positive fitness for
+leftward drift and maximizes it correctly. The D1c gates below use
+the negated reward convention.
 
 ### Phase D1c — CEM training
 
@@ -518,14 +535,15 @@ always-ON and always-OFF; small but positive for random.
 4. Evaluate trained policy: 50 episodes, measure mean current
 5. Compare against baselines
 
-**Gate A** (ratchet effect): trained policy mean displacement > 0 with
-p < 0.01 (one-sample t-test against zero).
+**Gate A** (ratchet effect): trained policy mean fitness > 0 with
+p < 0.01 (one-sample t-test against zero). With `reward = -qvel[0]`,
+positive fitness = net displacement in the ratchet direction (−x).
 
-**Gate B** (learning): mean reward improves over training (best-of-last-10
-epochs > epoch 0 reward).
+**Gate B** (learning): mean fitness improves over training
+(best-of-last-10 > epoch 0 fitness).
 
-**Gate C** (baseline separation): trained policy mean current > 2×
-random-baseline mean current.
+**Gate C** (baseline separation): trained policy mean fitness > 2×
+random-baseline mean fitness.
 
 ### Phase D1d — REINFORCE comparison (stretch)
 
