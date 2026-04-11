@@ -378,3 +378,81 @@ fn baseline_high_noise_zero_synchrony() {
         3.0 * stderr,
     );
 }
+
+/// Control: no signal (A₀ = 0) produces zero synchrony at any temperature.
+///
+/// With zero signal amplitude, switching is purely noise-driven regardless
+/// of kT. The synchrony metric (sign(x) · cos(ωt)) has no physical basis
+/// for correlation — it should average to zero. This validates the metric
+/// itself: any nonzero synchrony in the SR tests is attributable to the
+/// signal, not an artifact.
+///
+/// Spec §10.5.
+#[test]
+#[ignore = "requires --release (100M physics steps)"]
+fn control_no_signal_zero_synchrony() {
+    let omega = signal_omega();
+
+    // Test at kT near the SR peak — the regime most likely to produce
+    // a false positive if the metric were biased.
+    let kt_mult: f32 = 1.5;
+
+    let mut synchronies = Vec::with_capacity(N_BASELINE_EPISODES);
+
+    for i in 0..N_BASELINE_EPISODES {
+        let seed = SEED_BASE + 30_000 + i as u64;
+
+        // Build env with A₀ = 0 (no signal force)
+        let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+
+        let thermostat =
+            LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed)
+                .with_ctrl_temperature(0);
+        let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
+        // Zero-amplitude signal — the OscillatingField still runs (ω > 0)
+        // but contributes zero force.
+        let signal = OscillatingField::new(0.0, omega, 0.0, 0);
+
+        PassiveStack::builder()
+            .with(thermostat)
+            .with(double_well)
+            .with(signal)
+            .build()
+            .install(&mut model);
+
+        let model = Arc::new(model);
+
+        let obs_space = ObservationSpace::builder()
+            .all_qpos()
+            .all_qvel()
+            .build(&model)
+            .unwrap();
+        let act_space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+
+        let mut env = SimEnv::builder(model)
+            .observation_space(obs_space)
+            .action_space(act_space)
+            .reward(move |_m, data| data.qpos[0].signum() * (omega * data.time).cos())
+            .done(|_m, _d| false)
+            .truncated(|_m, data| data.time > (EPISODE_STEPS as f64) * (SUB_STEPS as f64) * 0.001)
+            .sub_steps(SUB_STEPS)
+            .build()
+            .unwrap();
+
+        let sync = run_episode_fixed_temp(&mut env, kt_mult);
+        synchronies.push(sync);
+    }
+
+    let (mean, stderr) = mean_stderr(&synchronies);
+    eprintln!(
+        "no signal (A₀=0, kT×{kt_mult}): mean synchrony = {mean:.6} ± {stderr:.6} (3σ = {:.6})",
+        3.0 * stderr
+    );
+
+    // Zero synchrony: |mean| < 3σ
+    assert!(
+        mean.abs() < 3.0 * stderr,
+        "no-signal control should have zero synchrony: mean = {mean:.6}, 3σ = {:.6}",
+        3.0 * stderr,
+    );
+}
