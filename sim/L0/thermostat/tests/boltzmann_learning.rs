@@ -158,6 +158,26 @@ fn gate_a_kl_convergence() {
         "Gate A FAILED: KL_best_late = {kl_best_late:.4} > 0.15",
     );
 
+    // ── Supporting (§8.3): Learning curve monotonicity ──────────────
+    // With η=0.5 and noisy gradients, per-window monotonicity is too
+    // strict (single-iteration spikes of ~4× drag up any small window).
+    // Instead: verify that the second-half mean KL is significantly
+    // lower than the first-half mean — robust to per-iteration noise
+    // while still validating that sustained learning occurred.
+    let mid = curve.len() / 2;
+    let first_half_mean = curve[..mid].iter().map(|r| r.kl_divergence).sum::<f64>() / mid as f64;
+    let second_half_mean =
+        curve[mid..].iter().map(|r| r.kl_divergence).sum::<f64>() / (curve.len() - mid) as f64;
+    eprintln!(
+        "  Learning curve: first_half_mean = {first_half_mean:.4}, \
+         second_half_mean = {second_half_mean:.4}"
+    );
+    assert!(
+        second_half_mean < first_half_mean * 0.8,
+        "Learning curve not improving: second_half_mean ({second_half_mean:.4}) >= \
+         first_half_mean ({first_half_mean:.4}) * 0.8",
+    );
+
     eprintln!("Gate A PASSED");
 }
 
