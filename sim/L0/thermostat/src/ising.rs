@@ -115,6 +115,35 @@ pub fn ising_statistics(dist: &[(u32, f64)], n: usize, edges: &[(usize, usize)])
     }
 }
 
+/// Total variation distance between two distributions over the same
+/// configuration space.
+///
+/// `TV(P, Q) = ½ Σ_c |P(c) − Q(c)|`
+///
+/// Returns a value in `[0, 1]`. Unlike KL divergence, TV distance is
+/// symmetric and bounded, making it more suitable for validation gates.
+///
+/// Both distributions must have the same length and be sorted by config
+/// index (as returned by [`exact_distribution`]).
+///
+/// # Panics
+/// Panics if `p.len() != q.len()`.
+#[must_use]
+pub fn tv_distance(p: &[(u32, f64)], q: &[(u32, f64)]) -> f64 {
+    assert!(
+        p.len() == q.len(),
+        "distributions must have the same length: {} vs {}",
+        p.len(),
+        q.len(),
+    );
+
+    0.5 * p
+        .iter()
+        .zip(q)
+        .map(|(&(_, p_val), &(_, q_val))| (p_val - q_val).abs())
+        .sum::<f64>()
+}
+
 /// KL divergence `KL(P ‖ Q)` between two distributions over the same
 /// configuration space.
 ///
@@ -265,5 +294,65 @@ mod tests {
             (kl_pq - kl_qp).abs() > 1e-6,
             "KL should be asymmetric: KL(P||Q)={kl_pq}, KL(Q||P)={kl_qp}"
         );
+    }
+
+    // ─── tv_distance tests ───────────────────────────────────────────
+
+    #[test]
+    fn tv_distance_identity_is_zero() {
+        let dist = exact_distribution(3, &[(0, 1)], &[0.5], &[0.0; 3], 1.0);
+        let tv = tv_distance(&dist, &dist);
+        assert!(tv.abs() < 1e-14, "TV(P, P) should be 0, got {tv}");
+    }
+
+    #[test]
+    fn tv_distance_is_symmetric() {
+        let p = exact_distribution(3, &[(0, 1)], &[0.5], &[0.0; 3], 1.0);
+        let q = exact_distribution(3, &[(0, 1)], &[1.0], &[0.0; 3], 1.0);
+        let tv_pq = tv_distance(&p, &q);
+        let tv_qp = tv_distance(&q, &p);
+        assert!(
+            (tv_pq - tv_qp).abs() < 1e-14,
+            "TV should be symmetric: TV(P,Q)={tv_pq}, TV(Q,P)={tv_qp}"
+        );
+    }
+
+    #[test]
+    fn tv_distance_is_positive_for_different_distributions() {
+        let p = exact_distribution(3, &[(0, 1)], &[0.5], &[0.0; 3], 1.0);
+        let q = exact_distribution(3, &[(0, 1)], &[1.0], &[0.0; 3], 1.0);
+        let tv = tv_distance(&p, &q);
+        assert!(tv > 0.0, "TV(P,Q) should be positive, got {tv}");
+        assert!(tv <= 1.0, "TV(P,Q) should be at most 1, got {tv}");
+    }
+
+    #[test]
+    fn tv_distance_uniform_vs_delta() {
+        // Uniform over 2^N=8 configs vs delta at config 0.
+        // TV = ½ Σ |1/8 - δ(c,0)| = ½ (|1/8 - 1| + 7·|1/8 - 0|)
+        //    = ½ (7/8 + 7/8) = 7/8 = 1 - 1/2^N
+        let n = 3;
+        let uniform = exact_distribution(n, &[], &[], &[0.0; 3], 1.0);
+        let mut delta: Vec<(u32, f64)> = (0..8).map(|c| (c, 0.0)).collect();
+        delta[0].1 = 1.0;
+
+        let tv = tv_distance(&uniform, &delta);
+        let expected = 1.0 - 1.0 / 8.0;
+        assert!(
+            (tv - expected).abs() < 1e-14,
+            "TV(uniform, delta) should be {expected}, got {tv}"
+        );
+    }
+
+    #[test]
+    fn tv_distance_bounded_zero_to_one() {
+        // TV is always in [0, 1]. Test with various distributions.
+        let n = 4;
+        let edges: Vec<(usize, usize)> = vec![(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+        let p = exact_distribution(n, &edges, &[0.3; 6], &[0.0; 4], 1.0);
+        let q = exact_distribution(n, &edges, &[-0.5; 6], &[0.5, -0.5, 0.0, 0.1], 2.0);
+        let tv = tv_distance(&p, &q);
+        assert!(tv >= 0.0, "TV should be >= 0, got {tv}");
+        assert!(tv <= 1.0, "TV should be <= 1, got {tv}");
     }
 }
