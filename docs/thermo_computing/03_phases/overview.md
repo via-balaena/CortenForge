@@ -18,6 +18,7 @@ phases do not start until the previous gate is green. This implements the
 | 5   | Boltzmann learning on physical Ising sampler | **done** | KL convergence + parameter recovery on fully-connected 4-element graph | [`05_boltzmann_learning.md`](./05_boltzmann_learning.md) |
 | 6   | Native Gibbs sampler + three-way comparison | **done** | TV(Gibbs,exact)<0.02; TV(Langevin,exact)<0.15; Gibbs≪Langevin; Phase 4 §11.4 closed | [`06_gibbs_sampler.md`](./06_gibbs_sampler.md) |
 | 7   | RL on the sampler                  | pending  | Agent improves sample quality (ESS / autocorrelation / KL to target)  | —    |
+| D1  | Brownian ratchet motor (RL harvests thermal noise) | **done** | CEM displacement −40 periods (140× random); REINFORCE noise-inflation finding | [`d1_brownian_ratchet.md`](./d1_brownian_ratchet.md) |
 
 ## Phase 1 — Langevin thermostat (1-DOF)
 

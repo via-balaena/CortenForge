@@ -1,6 +1,6 @@
 # D1 — Brownian Ratchet Motor: RL Harvests Thermal Noise
 
-> **Status**: spec draft
+> **Status**: **done** (D1a–D1d complete, 2026-04-10)
 > **Branch**: `feature/thermo-phase-2-3`
 > **Depends on**: Phases 1-3 (Langevin thermostat, multi-DOF equipartition,
 > bistable Kramers — all done), sim-ml-bridge (CEM, REINFORCE — all done)
