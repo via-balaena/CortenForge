@@ -595,7 +595,7 @@ pub struct LearnerConfig {
     pub k_b_t: f64,
     /// Learning rate η.
     pub learning_rate: f64,
-    /// Simulation steps per trajectory (measurement window).
+    /// Total simulation steps per trajectory (including burn-in).
     pub n_steps: usize,
     /// Burn-in steps per trajectory.
     pub n_burn_in: usize,
@@ -608,11 +608,42 @@ pub struct LearnerConfig {
 }
 
 /// Target distribution for the learner.
+///
+/// Stores both the full probability distribution (for KL computation)
+/// and the summary statistics (for the Boltzmann learning rule update).
+/// Construct via `from_ising_params` when the target is a known Ising
+/// model, or manually for empirical / non-Ising targets.
 pub struct IsingTarget {
     /// Per-site target magnetizations ⟨σ_i⟩.
     pub magnetizations: Vec<f64>,
     /// Per-edge target correlations ⟨σ_i σ_j⟩ (same order as edge list).
     pub correlations: Vec<f64>,
+    /// Full target distribution over 2^N configurations.
+    /// Required for KL divergence computation at each iteration.
+    pub distribution: Vec<(u32, f64)>,
+}
+
+impl IsingTarget {
+    /// Construct from known Ising parameters.
+    ///
+    /// Computes the exact distribution via enumeration and extracts
+    /// the summary statistics. This is the typical constructor for
+    /// Phase 5's validation tests (known target).
+    pub fn from_ising_params(
+        n: usize,
+        edges: &[(usize, usize)],
+        coupling_j: &[f64],
+        field_h: &[f64],
+        k_b_t: f64,
+    ) -> Self {
+        let dist = ising::exact_distribution(n, edges, coupling_j, field_h, k_b_t);
+        let stats = ising::ising_statistics(&dist, n, edges);
+        Self {
+            magnetizations: stats.magnetizations,
+            correlations: stats.correlations,
+            distribution: dist,
+        }
+    }
 }
 
 /// Record of a single learning iteration.
@@ -721,8 +752,9 @@ Each call to `step()`:
    `⟨σ_i σ_j⟩_model` (|edges| values).
 
 4. **Compute KL**: Use the `ising` module to compute the exact Ising
-   distribution at the current `{J, h}` and at the target's `{J*, h*}`.
-   Compute `KL(P_target ‖ P_current)`.
+   distribution at the current `{J, h}`. Compute
+   `KL(target.distribution ‖ P_current)` using the target distribution
+   stored in `IsingTarget`.
 
 5. **Update parameters**:
    ```
