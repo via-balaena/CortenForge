@@ -371,42 +371,38 @@ fn grade_coverage(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Crit
 
     // Two-pass coverage strategy:
     //
-    // Pass 1: Run coverage with heavy tests skipped (fast — ~2 min).
-    //   Tests named `gate_a_*` run 100M+ physics steps; llvm-cov
-    //   instrumentation adds ~10× overhead even in release mode.
-    //   The lighter tests exercise the same source code paths.
+    // Pass 1: Run coverage on unit tests only (fast — ~1 sec after compile).
+    //   Integration tests (tests/*.rs) run millions of physics steps;
+    //   llvm-cov instrumentation adds ~10× overhead even in release.
+    //   Unit tests in src/ exercise the same source code paths.
     //
-    // Pass 2: Run heavy tests WITHOUT instrumentation (fast — ~5 sec).
+    // Pass 2: Run ALL tests (unit + integration) WITHOUT instrumentation.
     //   Verifies correctness without paying the coverage overhead.
     //   Failures here still block the grade.
     //
     // --release avoids debug-mode runtime explosion (100×+ slower).
     // stderr flows to terminal so the user sees compile/test progress.
 
-    println!("    Pass 1: coverage (skipping heavy gate_a tests)...");
+    // Pass 1: coverage with all gate tests skipped (gate_a/b/c run
+    // millions of physics steps; llvm-cov instrumentation adds ~10×
+    // overhead). Unit tests + lighter integration tests still exercise
+    // the same source paths.
+    println!("    Pass 1: coverage (skipping gate_ tests)...");
     let output = cmd!(
         sh,
-        "cargo llvm-cov --json --release -p {crate_name} -- --skip gate_a_"
+        "cargo llvm-cov --json --release -p {crate_name} -- --skip gate_"
     )
     .ignore_status()
     .read()
     .unwrap_or_default();
 
-    // Pass 2: run heavy tests without instrumentation for correctness.
-    println!("    Pass 2: heavy tests (no instrumentation)...");
-    let heavy_result = cmd!(sh, "cargo test --release -p {crate_name} -- gate_a_")
-        .ignore_status()
-        .read_stderr()
-        .unwrap_or_default();
-
-    let heavy_passed = heavy_result.contains("test result: ok");
+    // Pass 2: run ALL tests without instrumentation for correctness.
+    println!("    Pass 2: all tests (no instrumentation)...");
+    let heavy_passed = cmd!(sh, "cargo test --release -p {crate_name}")
+        .run()
+        .is_ok();
     if !heavy_passed {
-        // Check if there were simply no matching tests (not a failure).
-        let no_tests =
-            heavy_result.contains("0 passed") || heavy_result.contains("running 0 tests");
-        if !no_tests {
-            eprintln!("    ⚠ Heavy tests (gate_a_*) failed — see output above");
-        }
+        eprintln!("    ⚠ Tests failed — see output above");
     }
 
     // Parse JSON and filter to files belonging to the target crate.
