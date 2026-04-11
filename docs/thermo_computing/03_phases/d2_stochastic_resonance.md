@@ -791,6 +791,56 @@ The effective kT should be within ±50% of the **empirical** SR peak
 from D2b (not the analytical prediction — see §2.2 caveat and §9
 signal frequency design).
 
+**D2c results (2026-04-11)**: 4-algorithm comparison. Gate A soft-fail
+across all algorithms with linear function approximation.
+
+| Algorithm | Eval synchrony | Eval kT | Gate A | Gate B | Finding |
+|-----------|---------------|---------|--------|--------|---------|
+| CEM | 0.012 ± 0.023 | 0.99 | FAIL | PASS | Finds SR band, can't resolve peak |
+| TD3 | −0.009 ± 0.008 | −0.31 | FAIL | FAIL | Linear Q can't represent SR value landscape |
+| PPO | 0.006 ± 0.002 | 0.005 | PASS* | PASS | Exploration-noise inflation (D1d pattern) |
+| SAC | −0.005 ± 0.006 | −0.78 | FAIL | PASS | Linear Q can't represent SR value landscape |
+
+\*PPO Gate A is a false positive — synchrony 0.006 is from the initial
+thermalization transient, not from SR. The deterministic policy outputs
+kT ≈ 0 (no noise).
+
+**Findings**:
+
+1. **CEM is closest** — converges to kT ≈ 1.0, which is inside the SR band
+   (D2b showed elevated synchrony at kT ≈ 1.1–2.5). But the per-episode
+   noise floor (~0.02 from 6 signal cycles) is comparable to the fitness
+   gradient within the band, so CEM can't push the mean past kT ≈ 1 to
+   the peak at kT ≈ 2.5.
+
+2. **TD3 and SAC fail to learn** — linear Q-functions produce zero reward
+   throughout training. The SR value landscape (Q as a function of
+   temperature) has a broad nonlinear peak that a linear approximation
+   `Q ≈ w·obs + b` cannot represent. These algorithms need nonlinear
+   function approximation (MLP Q-networks) to learn the SR structure.
+
+3. **PPO shows the D1d exploration-noise pattern** — training rewards are
+   high (17–21) because PPO's Gaussian exploration noise `σ·ε` randomly
+   perturbs the action to temperatures in the SR band. But the learned
+   deterministic policy converges to kT ≈ 0 (bias ≈ 0.02). The gradient
+   signal teaches "outputs in this range + noise = good" rather than
+   "output a specific temperature." Same mechanism as D1d's REINFORCE
+   finding, generalized: action-space noise inflation is not specific to
+   switching tasks — it affects any task where the noise itself produces
+   reward.
+
+4. **The SR task is a challenging benchmark** — the broad, flat peak
+   (synchrony 0.03–0.10 across kT ≈ 1–3) with high per-episode noise
+   (σ ≈ 0.02) creates a fitness landscape that is difficult for all
+   tested algorithms at 100 epochs with linear function approximation.
+
+**Next levers** (not attempted):
+- **10,000-step episodes** — halves noise floor, doubles SNR
+- **MLP function approximation** — enables TD3/SAC to learn the nonlinear
+  SR value landscape
+- **More epochs (200+)** — gives CEM more time to navigate the shallow
+  gradient
+
 ### Phase D2d — Dynamic modulation extension (optional, deferred)
 
 **Deliverable**: Test whether phase-dependent temperature modulation
