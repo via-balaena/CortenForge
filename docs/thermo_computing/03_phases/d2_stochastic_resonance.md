@@ -732,6 +732,32 @@ with temperature sweep and baseline measurements.
 have synchrony consistent with zero. Peak synchrony is statistically
 greater than zero (p < 0.01).
 
+**D2b results (2026-04-11)**: all gates passed.
+
+| Baseline | Synchrony (mean ± stderr) | Gate |
+|----------|---------------------------|------|
+| Temperature sweep peak | 0.098 ± 0.022 at kT×2.55 | |t| = 4.40, p < 0.01 PASS |
+| Low noise (kT×0.1) | 0.003 ± 0.002 | |mean| < 3σ PASS |
+| High noise (kT×5.0) | 0.044 ± 0.017 | |mean| < 3σ PASS |
+| No signal (A₀=0, kT×1.5) | 0.019 ± 0.024 | |mean| < 3σ PASS |
+| Peak > 2× tails | 0.098 > 2×0.034 | PASS |
+
+**Findings**:
+- The SR curve is broad: synchrony is elevated across kT ≈ 1.1–2.5
+  (all in the 0.04–0.10 range), with the measured peak at kT×2.55. The
+  analytical prediction (§2.2, §9) of kT ≈ 1.0–1.6 falls within this
+  elevated band but not at the noisy maximum. With 20 episodes × 6 signal
+  cycles, per-kT variance is high; the "peak" location is noise-sensitive.
+- Peak synchrony (0.098) is well below the theoretical maximum 2/π ≈ 0.637.
+  This is expected: at A₀/F_c ≈ 6.5%, the signal barely modulates the
+  barrier. The synchrony is measurable but modest.
+- CEM fitness signal for D2c: peak synchrony ~0.10, noise floor
+  σ_fitness ≈ 1/√5000 ≈ 0.014, giving SNR ≈ 7. Weaker than D1c's
+  SNR ≈ 12 but adequate for CEM to distinguish temperatures.
+- Episode length 5000 is sufficient — the fallback to 10,000 (§8.5) is
+  NOT needed.
+- Gate D target for D2c: ±50% of empirical peak kT×2.55 = [1.27, 3.82].
+
 ### Phase D2c — CEM training
 
 **Deliverable**: CEM trains a policy that discovers the SR-optimal
