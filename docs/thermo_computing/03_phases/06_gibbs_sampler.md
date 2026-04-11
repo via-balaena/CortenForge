@@ -1,6 +1,6 @@
 # Phase 6 — Native Gibbs Sampler + Three-Way Distribution Comparison
 
-> **Status**: Spec draft.
+> **Status**: **Done** (2026-04-10). All gates green.
 > **Owner**: Jon
 > **Parents**:
 > - [`05_boltzmann_learning.md`](./05_boltzmann_learning.md) (Phase 5 — the gate this phase inherits)

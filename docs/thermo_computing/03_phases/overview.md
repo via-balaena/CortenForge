@@ -16,7 +16,7 @@ phases do not start until the previous gate is green. This implements the
 | 3   | Single bistable element            | **done**  | Double-well switching rate matches Kramers' formula                   | [`03_bistable_kramers.md`](./03_bistable_kramers.md) |
 | 4   | Coupled bistable array             | **done**  | Pairwise correlations match exact Ising model on same coupling topology | [`04_coupled_bistable_array.md`](./04_coupled_bistable_array.md) |
 | 5   | Boltzmann learning on physical Ising sampler | **done** | KL convergence + parameter recovery on fully-connected 4-element graph | [`05_boltzmann_learning.md`](./05_boltzmann_learning.md) |
-| 6   | THRML bridge or native Gibbs       | pending  | Physical sampler vs. software sampler on the same energy function    | —    |
+| 6   | Native Gibbs sampler + three-way comparison | **done** | TV(Gibbs,exact)<0.02; TV(Langevin,exact)<0.15; Gibbs≪Langevin; Phase 4 §11.4 closed | [`06_gibbs_sampler.md`](./06_gibbs_sampler.md) |
 | 7   | RL on the sampler                  | pending  | Agent improves sample quality (ESS / autocorrelation / KL to target)  | —    |
 
 ## Phase 1 — Langevin thermostat (1-DOF)

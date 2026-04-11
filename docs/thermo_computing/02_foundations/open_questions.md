@@ -40,7 +40,11 @@ referenceability.
   No BAOAB or integrator bypass needed for Phase 1. See Recon Log entry
   2026-04-09 part 2 for the full trace.
 - **Q3 — Does `thrml-rs` exist?** **RESOLVED 2026-04-09 (doc review S1)
-  via web search.** Answer is *"yes, but with caveats."*
+  via web search. COMMITTED 2026-04-10: Option B (native single-site Gibbs
+  sampler in Rust). Implemented as `GibbsSampler` in `sim-thermostat/src/gibbs.rs`.
+  See [`../03_phases/06_gibbs_sampler.md`](../03_phases/06_gibbs_sampler.md) §4
+  for the decision rationale.**
+  Answer is *"yes, but with caveats."*
   - **Original THRML exists**: `extropic-ai/thrml` on GitHub — a JAX
     library, "Thermodynamic Hypergraphical Model Library," focused on
     block Gibbs sampling on sparse heterogeneous graphs and discrete
