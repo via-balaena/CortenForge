@@ -545,11 +545,78 @@ positive fitness = net displacement in the ratchet direction (−x).
 **Gate C** (baseline separation): trained policy mean fitness > 2×
 random-baseline mean fitness.
 
-### Phase D1d — REINFORCE comparison (stretch)
+**D1c results (2026-04-10)**: all gates passed with wide margin.
+Mean displacement = −40.08 ± 1.38 periods (|t| = 29.01). Trained/random
+ratio = 140.7× (spec required 2×). CEM fitness improved monotonically
+from −0.006 to 0.349 over 100 epochs. The ratchet signal is far stronger
+than the thermal noise floor, which de-risks D1d (REINFORCE may work
+even without variance reduction despite the noisy per-step reward).
 
-Same environment, train with REINFORCE. Compare learning curves and
-final performance against CEM. This phase is optional for the initial
-D1 deliverable but informs the D2/D4 algorithm selection.
+### Phase D1d — REINFORCE comparison
+
+**Deliverable**: REINFORCE trains a policy on the same environment.
+Compare learning efficiency and final performance against CEM.
+
+1. Same `VecEnv` as D1c (32 envs, `reward = -qvel[0]`, 1000 steps)
+2. Train REINFORCE with `LinearPolicy(obs_dim=2, act_dim=1)`
+3. Hyperparameters:
+   - Learning rate: 0.01 (Adam)
+   - Gamma (discount): 1.0 (undiscounted — episode is fixed-length)
+   - Max episode steps: 1000
+   - Budget: 100 epochs
+   - Advantage normalization: on (per prior REINFORCE findings)
+4. Evaluate trained policy: 50 episodes, measure mean displacement
+5. Compare against CEM's D1c result
+
+**Gate A** (ratchet effect): same as D1c — trained policy mean
+displacement significantly different from zero (p < 0.01).
+
+**Gate B** (learning): mean fitness improves over training
+(best-of-last-10 > epoch 0 fitness).
+
+**Gate C** (CEM comparison): report the trained/CEM displacement ratio.
+No hard pass/fail — this is a data point for D2 algorithm selection.
+REINFORCE reaching ≥50% of CEM's displacement would be a strong result
+given its gradient-based nature; reaching ≥100% would suggest CEM's
+advantage was sample efficiency, not asymptotic performance.
+
+**D1d results (2026-04-10)**: Gate B PASS, Gate A SOFT FAIL, Gate C = 0.03.
+
+| Metric | REINFORCE | CEM |
+|--------|-----------|-----|
+| Peak training reward | 82.67 | 0.35 |
+| Deterministic eval displacement | −1.33 | −40.08 |
+| Training/eval gap | **62×** | ~1× |
+| REINFORCE/CEM ratio | 0.03 | 1.00 |
+
+**Finding — exploration-noise inflation**: REINFORCE's Gaussian
+exploration noise (`σ · z` added to the policy output each step)
+creates random flashing, which activates the ratchet and produces
+enormous training rewards (peak 82.67). But the gradient signal
+teaches "outputs in this range + noise = good" rather than "switch
+sharply based on position." The deterministic policy (`forward()`
+without noise) never learns the switching behavior — it achieves
+only 3% of CEM's performance. The 62× training/evaluation gap
+confirms the noise was doing the work, not the learned parameters.
+
+**Why CEM doesn't have this problem**: CEM evaluates each candidate
+*deterministically* — no exploration noise during fitness evaluation.
+The elite selection ensures the winning policy produces switching
+on its own. CEM's training reward (0.35) is modest but predictive
+of deterministic evaluation (−40.08 displacement, consistent scale).
+
+**Implication for D2**: For tasks where the mechanism requires
+discrete switching (ratchets, p-bit flipping, stochastic resonance
+gating), **CEM is the preferred algorithm**. REINFORCE (and likely
+PPO/SAC) will suffer the same exploration-noise inflation because
+they all add action-level noise during training. The fix would
+require a fundamentally different exploration strategy — e.g.,
+parameter-space noise (as in CEM) rather than action-space noise.
+This finding is consistent with the prior REINFORCE stress-test
+result (linear policy plateaus at 91% on reaching tasks — see
+`project_reinforce_findings.md`) but the mechanism here is
+different: it's not a capacity limitation, it's a noise-attribution
+error.
 
 ## 11. Dependency Routing
 
