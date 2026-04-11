@@ -24,11 +24,9 @@
 //!    split-borrow dance between `Fn(&Model, &mut Data)` (the real
 //!    `cb_passive` shape) and the trait's `&Data + &mut DVector<f64>` shape,
 //!    so component authors never touch raw borrowing.
-//! 3. **Production component** ([`LangevinThermostat`]) — Euler-Maruyama
-//!    Langevin thermostat with FDT-paired noise, an owned `ChaCha8Rng` (bit-
-//!    stable across `rand`/`rand_chacha` versions), and integration with the
-//!    `Stochastic` gating trait so finite-difference / autograd contexts can
-//!    reversibly switch noise off via [`PassiveStack::disable_stochastic`].
+//! 3. **Production components** ([`LangevinThermostat`],
+//!    [`DoubleWellPotential`], [`PairwiseCoupling`], [`ExternalField`]) —
+//!    the building blocks for thermodynamic computing simulations.
 //!
 //! `sim-core` does **not** depend on any `rand` crate — that property is the
 //! load-bearing reason this crate exists as a sibling crate rather than as a
@@ -68,6 +66,9 @@
 mod component;
 mod diagnose;
 mod double_well;
+mod external_field;
+pub mod ising;
+mod ising_learner;
 mod langevin;
 mod pairwise_coupling;
 mod stack;
@@ -77,6 +78,8 @@ pub mod test_utils;
 pub use component::{PassiveComponent, Stochastic};
 pub use diagnose::Diagnose;
 pub use double_well::DoubleWellPotential;
+pub use external_field::ExternalField;
+pub use ising_learner::{IsingLearner, IsingTarget, LearnerConfig, LearningRecord};
 pub use langevin::LangevinThermostat;
 pub use pairwise_coupling::PairwiseCoupling;
 pub use stack::{EnvBatch, PassiveStack, PassiveStackBuilder, StochasticGuard};
