@@ -72,6 +72,7 @@ pub mod ising;
 mod ising_learner;
 mod langevin;
 mod pairwise_coupling;
+mod ratchet;
 mod stack;
 
 pub mod test_utils;
@@ -84,4 +85,5 @@ pub use gibbs::GibbsSampler;
 pub use ising_learner::{IsingLearner, IsingTarget, LearnerConfig, LearningRecord};
 pub use langevin::LangevinThermostat;
 pub use pairwise_coupling::PairwiseCoupling;
+pub use ratchet::RatchetPotential;
 pub use stack::{EnvBatch, PassiveStack, PassiveStackBuilder, StochasticGuard};
