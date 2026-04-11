@@ -47,14 +47,14 @@ sim/
     │   ├── future_work_14.md          # Phase 3C: Data Fields + Derivatives + API #56–59
     │   ├── future_work_15.md          # Phase 3D: Edge-Case Features #60–64
     │   ├── future_work_16.md          # Phase 3D: Mesh + Plugin Infrastructure #65–66
-    │   ├── future_work_17.md          # Phase 3E: GPU Pipeline #67–71
     │   ├── POST_V1_ROADMAP.md         # Consolidated post-v1.0 deferred tasks (DT items)
-    │   └── archived/                   # Historical future_work_10b–10j files
+    │   ├── V1_DEFERRED_ITEMS.md       # 8 medium-priority items for v1.0
+    │   ├── future_work_10b–10j.md     # Detailed per-item DT context
+    │   └── spec_fleshouts/            # Phase 7–13 draft specs
     ├── TRAIT_ARCHITECTURE.md            # Trait boundary vision (modeling choices vs solver variants vs core math)
     ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
     ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
-    ├── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode
-    └── SIM_BEVY_IMPLEMENTATION_PLAN.md # Bevy visualization layer plan
+    └── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode
 ```
 
 ## Core Architecture: Model/Data
@@ -573,8 +573,7 @@ lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 
 The `sim-gpu` crate was removed in workspace trim (2026-03-19) — zero
 consumers outside the workspace. GPU acceleration will be rebuilt against
-the architecture as it exists when needed. See `docs/archive/WORKSPACE_TRIM_SPEC.md`.
-See [future_work_3 #10](./todo/future_work_3.md) for remaining phases.
+the architecture as it exists when needed. See `sim/L0/gpu/` for current state.
 
 ### sim-bevy (Layer 1)
 

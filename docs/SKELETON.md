@@ -46,11 +46,10 @@ cortenforge/
 │   │   └── gpu/           # 1 GPU example
 │   └── integration/       # 4 cross-domain examples
 ├── docs/                  # Cross-domain docs
-│   ├── thermo_computing/  # Thermo initiative (54+ files, well-organized)
-│   ├── grade_tool_audit/  # Grade tool rebuild (complete)
-│   ├── archive/           # Completed/cleanup docs
+│   ├── thermo_computing/  # Thermo initiative (vision + foundations)
 │   ├── SKELETON.md        # This file
 │   ├── STANDARDS.md       # A-grade quality rubric (7 criteria)
+│   ├── LAYER_1_SPEC.md    # Current work — visual foundations
 │   ├── V1_ROADMAP.md      # v1.0 release path
 │   ├── VISION.md          # Platform vision
 │   └── INFRASTRUCTURE.md  # Quality gates
@@ -63,7 +62,7 @@ cortenforge/
 ### sim/L0/core — Physics Engine
 - **Status:** Phases 1-13 spec'd. Phases 1-6 implemented. Phases 7-13 drafted.
 - **Tests:** ~54 `#[ignore]` tests (5 known blockers, 25+ conformance gaps, rest release-only)
-- **Specs:** 16 active specs in `sim/docs/`, 70+ phase specs in `sim/docs/todo/`
+- **Specs:** 7 active docs in `sim/docs/`, 90 phase specs in `sim/docs/todo/spec_fleshouts/`
 - **Deferred items:** 119 tracked (48 done, 8 medium → `sim/docs/todo/V1_DEFERRED_ITEMS.md`, 58 low)
 
 ### sim/L0/thermostat — Thermo-Computing
@@ -139,14 +138,11 @@ Zero circular dependencies. Clean L0/L1 separation.
 
 ## Hygiene Items
 
-- [ ] Create STATUS.md files per domain (0 of 5 proposed files exist)
-- [ ] Clean stale refs: `route-*` in CF_GEOMETRY_SPEC, `sensor-fusion` in FUTURE/INFRASTRUCTURE
 - [ ] Delete 2 dead dependabot branches
 - [ ] Push feature/thermo-phase-2-3 to remote
-- [ ] Add READMEs to 25 examples that lack them
-- [ ] Merge or close ready-for-PR branches
-- [ ] Reconcile `docs/V1_ROADMAP.md` and `sim/docs/ROADMAP_V1.md`
-- [ ] Complete sim-thermostat A-grade certification (Step 11)
+- [ ] Merge or close ready-for-PR branches (best-policy-tracking, policy-persistence)
+- [ ] Complete sim-thermostat A-grade certification (Step 11 — running)
+- [ ] Remaining cleanup tracked in Layer 1 spec (READMEs, etc.)
 
 ## Layer 1-6 Roadmap to D4
 

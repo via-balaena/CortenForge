@@ -906,7 +906,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | Sleeping bodies | Native | `mj_sleep`, `mj_wake*`, `mj_island`, selective CRBA, partial LDL | **Implemented** (Phases A/B/C — 93 tests; [future_work_5 §16](./todo/future_work_5.md)) | - |
 | Constraint islands | Auto | `mj_island` (DFS flood-fill in pipeline) + `mj_fwd_constraint_islands` (per-island solving) | **Implemented** (pipeline island discovery + block-diagonal solving) | - |
 | **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Active** — `BatchSim::step_all()` uses `par_iter_mut` for cross-environment parallelism (`batch.rs`); see [future_work_3 #9](./todo/future_work_3.md) | - |
-| **GPU acceleration** | MuJoCo MJX (JAX) | Removed in workspace trim (2026-03-19) | **Future** — will be rebuilt when needed. See `docs/archive/WORKSPACE_TRIM_SPEC.md` | - |
+| **GPU acceleration** | MuJoCo MJX (JAX) | Removed in workspace trim (2026-03-19) | **Future** — will be rebuilt when needed. See `sim/L0/gpu/` and `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md` | - |
 | SIMD | Likely | `sim-simd` crate | **Partial** (only `find_max_dot()` is used by sim-core GJK; all other batch ops have zero callers outside benchmarks) | - |
 
 ### Implementation Notes: SIMD Optimization ⚠️ PARTIAL (crate complete; only `find_max_dot` has production callers)
@@ -986,7 +986,7 @@ which uses rayon's `par_iter_mut` to step multiple simulation environments concu
 The `sim-gpu` crate was removed in workspace trim (2026-03-19) — zero consumers
 outside the workspace. The `gpu-internals` feature flag remains in sim-core for
 future GPU backends. GPU acceleration will be rebuilt against the current
-architecture when needed. See `docs/archive/WORKSPACE_TRIM_SPEC.md`.
+architecture when needed. See `sim/L0/gpu/` and `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`.
 
 ### Implementation Notes: Sleeping / Body Deactivation ✅ COMPLETE (Phases A/B/C — 93 tests)
 
