@@ -7506,6 +7506,7 @@ dependencies = [
  "rand_distr",
  "sim-core",
  "sim-mjcf",
+ "sim-ml-bridge",
 ]
 
 [[package]]
