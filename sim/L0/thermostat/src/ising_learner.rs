@@ -350,10 +350,19 @@ impl IsingLearner {
     }
 
     /// Run multiple iterations. Returns the full learning curve.
+    ///
+    /// Prints per-iteration progress to stderr (visible with
+    /// `cargo test -- --nocapture` or when run outside of test harness).
     pub fn train(&mut self, n_iterations: usize) -> Vec<LearningRecord> {
         let mut curve = Vec::with_capacity(n_iterations);
-        for _ in 0..n_iterations {
-            curve.push(self.step());
+        for i in 0..n_iterations {
+            let record = self.step();
+            eprintln!(
+                "  [IsingLearner] iter {}/{n_iterations}: KL = {:.6}",
+                i + 1,
+                record.kl_divergence,
+            );
+            curve.push(record);
         }
         curve
     }
