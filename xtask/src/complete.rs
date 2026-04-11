@@ -233,6 +233,9 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the workflow.
             entry
         );
 
+        if let Some(parent) = Path::new(log_path).parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(log_path, content)?;
         println!("  {} Created {}", "✓".green(), log_path);
     }

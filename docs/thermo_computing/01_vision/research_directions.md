@@ -78,12 +78,13 @@ simple actuator + existing RL is enough.
 ("the agent learned to harvest heat") and a publishable result. Direct
 analogue to molecular motors. Earliest payoff for the entire research line.
 
-**Status**: idea / mid-term reach / very high novelty.
+**Status**: **DONE** (2026-04-10). CEM discovers flashing strategy;
+mean displacement −40 periods (140× random baseline). REINFORCE
+comparison reveals exploration-noise inflation for switching tasks.
+Spec: [`d1_brownian_ratchet.md`](../03_phases/d1_brownian_ratchet.md).
 
-**Foundation status**: viable. Phase 1 (Langevin thermostat) is the
-gating precondition; everything else (asymmetric potential, binary
-actuator, RL training loop) is achievable on the substrate already
-in place. No open-question blockers.
+**Foundation status**: complete. The ctrl-channel bridge pattern
+(spec §3) established the long-term thermostat ↔ RL interface.
 
 ## D2 — Stochastic resonance, RL-tuned
 

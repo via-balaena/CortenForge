@@ -1962,7 +1962,7 @@ fn test_pos_deriv_sleeping_body() {
 
 // T12: Performance benchmark — analytical ≥1.5× faster than FD position columns
 #[test]
-#[ignore] // CI: run manually with --release for meaningful timing
+#[ignore = "benchmark — run with --release --ignored for meaningful timing"]
 fn test_pos_deriv_performance() {
     let mut model = Model::n_link_pendulum(6, 1.0, 0.1);
     add_torque_actuators(&mut model, 6);

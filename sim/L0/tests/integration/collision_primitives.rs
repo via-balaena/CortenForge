@@ -1531,7 +1531,7 @@ fn sphere_stack_contacts() {
 /// doesn't maintain sphere-on-sphere separation with free joints.
 /// This is NOT an SDF-specific problem — it affects all geom types.
 #[test]
-#[ignore] // Known issue: free-body stacking doesn't work yet
+#[ignore = "known issue: free-body stacking not implemented yet"]
 fn sphere_stack_dynamic() {
     let mjcf = r#"
         <mujoco model="dynamic_stack">
@@ -1587,7 +1587,7 @@ fn sphere_stack_dynamic() {
 /// Same stacking test but at meter-scale (MuJoCo standard units).
 /// Tests whether the stacking failure is mm-scale-specific.
 #[test]
-#[ignore] // Diagnostic test for scale investigation
+#[ignore = "diagnostic: free-body stacking at meter scale"]
 fn sphere_stack_dynamic_meter_scale() {
     let mjcf = r#"
         <mujoco model="dynamic_stack_m">
@@ -1629,7 +1629,7 @@ fn sphere_stack_dynamic_meter_scale() {
 /// MM-scale with DEFAULT solref (not tightened). Tests whether solref=0.005
 /// specifically causes the failure.
 #[test]
-#[ignore]
+#[ignore = "diagnostic: free-body stacking with default solref"]
 fn sphere_stack_dynamic_mm_default_solref() {
     let mjcf = r#"
         <mujoco model="dynamic_stack_mm_default">
@@ -1672,7 +1672,7 @@ fn sphere_stack_dynamic_mm_default_solref() {
 
 /// MM-scale with smaller timestep. Tests whether the issue is Nyquist-related.
 #[test]
-#[ignore]
+#[ignore = "diagnostic: free-body stacking with small timestep"]
 fn sphere_stack_dynamic_mm_small_timestep() {
     let mjcf = r#"
         <mujoco model="dynamic_stack_mm_small_dt">
@@ -1715,7 +1715,7 @@ fn sphere_stack_dynamic_mm_small_timestep() {
 
 /// MM-scale with 0.0005s timestep — compromise between speed and stability.
 #[test]
-#[ignore]
+#[ignore = "diagnostic: free-body stacking with mid timestep"]
 fn sphere_stack_dynamic_mm_mid_timestep() {
     let mjcf = r#"
         <mujoco model="dynamic_stack_mm_mid_dt">

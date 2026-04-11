@@ -23,6 +23,8 @@ rand_distr  = { workspace = true }
 [dev-dependencies]
 # MJCF model loading — test fixtures for integration tests
 sim-mjcf = { workspace = true }
+# ML bridge — RL environment + algorithms for D1+ integration tests
+sim-ml-bridge = { workspace = true }
 
 [lints]
 workspace = true

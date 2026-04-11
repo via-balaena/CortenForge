@@ -6,12 +6,29 @@
 These need answers before the relevant phase can start. Numbered for
 referenceability.
 
-- **Q1 — Noise vs. constraint projection.** When stochastic forces are
-  written into `qfrc_applied` and projected by the constraint solver, what is
-  the effective temperature on constrained DOFs? There is real literature on
-  constrained Langevin dynamics (Lelièvre, Stoltz, *Free Energy Computations*)
-  — needs a half-day read before Phase 2 can claim a meaningful equipartition
-  test on articulated bodies.
+- **Q1 — Noise vs. constraint projection.** **RESOLVED 2026-04-10 (Phase 2
+  spec §3) for joint-only models. Constraint-projection testing still deferred.**
+  For Phases 2–4's joint-only models (free body, hinge chain, slide-joint
+  bistable elements), constraint projection does not apply — joint DOFs in
+  generalized coordinates are already the unconstrained variables. The constraint
+  solver only activates for equality/inequality constraints (contacts, connect,
+  weld), none of which appear in Phases 2–4. The force-space FDT (`σ² = 2γkT`)
+  is mass-independent and samples the canonical distribution regardless of M(q).
+  The real subtlety Phase 2 tests is the **generalized equipartition theorem**
+  for non-diagonal M: `⟨v_i · (M(q)·v)_i⟩ = kT`.
+  **Constraint-projection testing** (noise + active contacts/equality constraints)
+  is deferred to the first phase that *naturally* introduces active constraints —
+  likely D2 (cf-design buckling beam with contact surfaces) or a dedicated
+  integration test. Phases 2–4 use joint-only models where the question doesn't
+  apply; forcing constraints into Phase 4 to test Q1 would mix concerns.
+  The theoretical expectation (Lelièvre, Stoltz) is that constraint forces do no
+  work on average and should not affect the canonical distribution of unconstrained
+  DOFs — but this is unvalidated in our stack.
+  **Additional finding**: Euler-Maruyama integrator breaks equipartition at large
+  joint angles where M(q) changes significantly per step — this is an integrator
+  limitation, not a thermostat limitation. See
+  [`../03_phases/02_multi_dof_equipartition.md`](../03_phases/02_multi_dof_equipartition.md)
+  §3 and §12 Finding 1 for the full resolution and stiffness sweep data.
 - **Q2 — Implicit integrator interaction.** **RESOLVED 2026-04-09 (part 2).**
   Recon of `forward/mod.rs` and `integrate/mod.rs` showed that the canonical
   force-injection point is `qfrc_applied` between `step1()` and `step2()`,
@@ -23,7 +40,11 @@ referenceability.
   No BAOAB or integrator bypass needed for Phase 1. See Recon Log entry
   2026-04-09 part 2 for the full trace.
 - **Q3 — Does `thrml-rs` exist?** **RESOLVED 2026-04-09 (doc review S1)
-  via web search.** Answer is *"yes, but with caveats."*
+  via web search. COMMITTED 2026-04-10: Option B (native single-site Gibbs
+  sampler in Rust). Implemented as `GibbsSampler` in `sim-thermostat/src/gibbs.rs`.
+  See [`../03_phases/06_gibbs_sampler.md`](../03_phases/06_gibbs_sampler.md) §4
+  for the decision rationale.**
+  Answer is *"yes, but with caveats."*
   - **Original THRML exists**: `extropic-ai/thrml` on GitHub — a JAX
     library, "Thermodynamic Hypergraphical Model Library," focused on
     block Gibbs sampling on sparse heterogeneous graphs and discrete

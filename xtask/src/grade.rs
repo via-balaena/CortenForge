@@ -369,12 +369,38 @@ fn grade_coverage(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Crit
         });
     }
 
-    // Run cargo llvm-cov --json -p <crate>
-    let output = cmd!(sh, "cargo llvm-cov --json -p {crate_name}")
+    // Two-pass coverage strategy:
+    //
+    // Pass 1: Run coverage on unit tests only (fast — ~1 sec after compile).
+    //   Integration tests (tests/*.rs) run millions of physics steps;
+    //   llvm-cov instrumentation adds ~10× overhead even in release.
+    //   Unit tests in src/ exercise the same source code paths.
+    //
+    // Pass 2: Run ALL tests (unit + integration) WITHOUT instrumentation.
+    //   Verifies correctness without paying the coverage overhead.
+    //   Failures here still block the grade.
+    //
+    // --release avoids debug-mode runtime explosion (100×+ slower).
+    // stderr flows to terminal so the user sees compile/test progress.
+
+    // Pass 1: coverage from unit tests only (--lib). Integration tests
+    // run millions of physics steps; llvm-cov instrumentation adds ~10×
+    // overhead making them impractical for coverage measurement.
+    // Unit tests cover all source modules except ising_learner.rs.
+    println!("    Pass 1: coverage (unit tests only)...");
+    let output = cmd!(sh, "cargo llvm-cov --json --release -p {crate_name} --lib")
         .ignore_status()
-        .ignore_stderr()
         .read()
         .unwrap_or_default();
+
+    // Pass 2: run ALL tests without instrumentation for correctness.
+    println!("    Pass 2: all tests (no instrumentation)...");
+    let heavy_passed = cmd!(sh, "cargo test --release -p {crate_name}")
+        .run()
+        .is_ok();
+    if !heavy_passed {
+        eprintln!("    ⚠ Tests failed — see output above");
+    }
 
     // Parse JSON and filter to files belonging to the target crate.
     // The llvm-cov report includes all instrumented workspace members;
@@ -413,7 +439,10 @@ fn grade_coverage(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Crit
     };
 
     // Two-tier thresholds (F1): A+ >= 90%, A >= 75%, B >= 60%, C >= 40%, F < 40%
-    let grade = if coverage >= 90.0 {
+    // Heavy test failure overrides to F regardless of coverage %.
+    let grade = if !heavy_passed {
+        Grade::F
+    } else if coverage >= 90.0 {
         Grade::APlus
     } else if coverage >= 75.0 {
         Grade::A
@@ -425,12 +454,18 @@ fn grade_coverage(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Crit
         Grade::F
     };
 
+    let detail = if !heavy_passed {
+        format!("{:.1}% line coverage (heavy tests FAILED)", coverage)
+    } else {
+        format!("{:.1}% line coverage", coverage)
+    };
+
     Ok(CriterionResult {
         name: "1. Coverage",
         result: format!("{:.1}%", coverage),
         grade,
         threshold: "≥75%/≥90% A+",
-        measured_detail: format!("{:.1}% line coverage", coverage),
+        measured_detail: detail,
     })
 }
 
@@ -498,7 +533,6 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
         "cargo clippy -p {crate_name} --all-targets --all-features --message-format=json"
     )
     .ignore_status()
-    .ignore_stderr()
     .read()
     .unwrap_or_default();
 

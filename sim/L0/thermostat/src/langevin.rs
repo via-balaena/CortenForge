@@ -75,6 +75,10 @@ pub struct LangevinThermostat {
     seed: u64,
     rng: Mutex<ChaCha8Rng>,
     stochastic_active: AtomicBool,
+    /// Optional ctrl index for runtime temperature modulation (D2).
+    /// When `Some(idx)`, `apply` reads `data.ctrl[idx]` as a multiplier
+    /// on `k_b_t`. When `None`, `k_b_t` is used directly.
+    k_b_t_ctrl: Option<usize>,
 }
 
 impl LangevinThermostat {
@@ -102,7 +106,27 @@ impl LangevinThermostat {
             seed,
             rng: Mutex::new(ChaCha8Rng::seed_from_u64(seed)),
             stochastic_active: AtomicBool::new(true),
+            k_b_t_ctrl: None,
         }
+    }
+
+    /// Enable runtime temperature modulation via a ctrl channel.
+    ///
+    /// When set, `apply` reads `data.ctrl[ctrl_idx]` as a multiplier on
+    /// the base `k_b_t`. The effective temperature is
+    /// `k_b_t * ctrl.clamp(0.0, 10.0)`. At multiplier 0, the thermostat
+    /// produces pure damping (no noise). At 10, the effective temperature
+    /// is 10× the base.
+    ///
+    /// This is the D2 forward design from D1 spec §3.4: the first time a
+    /// physical parameter of the bath becomes an RL action.
+    ///
+    /// Without calling this method, `k_b_t_ctrl` is `None` and `apply`
+    /// uses `self.k_b_t` directly — identical to the pre-D2 behavior.
+    #[must_use]
+    pub const fn with_ctrl_temperature(mut self, ctrl_idx: usize) -> Self {
+        self.k_b_t_ctrl = Some(ctrl_idx);
+        self
     }
 }
 
@@ -121,6 +145,15 @@ impl PassiveComponent for LangevinThermostat {
         let h = model.timestep;
         let active = self.stochastic_active.load(Ordering::Relaxed);
         let n_dofs = self.gamma.len();
+
+        // Effective temperature: base kT scaled by ctrl multiplier
+        // when with_ctrl_temperature is active. Damping is NOT affected
+        // by the multiplier — only the FDT-paired noise amplitude
+        // changes. This preserves the FDT relation at the effective
+        // temperature.
+        let k_b_t = self.k_b_t_ctrl.map_or(self.k_b_t, |idx| {
+            self.k_b_t * data.ctrl[idx].clamp(0.0, 10.0)
+        });
 
         // Damping (-γ·v) is unconditional — it is the deterministic
         // half of the FD pair and runs in both stochastic-active and
@@ -152,9 +185,9 @@ impl PassiveComponent for LangevinThermostat {
 
         for i in 0..n_dofs {
             let gamma_i = self.gamma[i];
-            // σ² = 2·γ·k_B·T / h. Sqrt is per-DOF because gamma can
-            // vary; for the Phase 1 1-DOF case it computes once.
-            let sigma = (2.0 * gamma_i * self.k_b_t / h).sqrt();
+            // σ² = 2·γ·k_B·T_eff / h. Uses the effective temperature
+            // (ctrl-modulated when with_ctrl_temperature is active).
+            let sigma = (2.0 * gamma_i * k_b_t / h).sqrt();
             let z: f64 = StandardNormal.sample(&mut *rng);
             qfrc_out[i] += sigma * z;
         }
@@ -177,11 +210,24 @@ impl Stochastic for LangevinThermostat {
 
 impl Diagnose for LangevinThermostat {
     fn diagnostic_summary(&self) -> String {
-        format!(
-            "LangevinThermostat(kT={:.6}, n_dofs={}, seed={})",
-            self.k_b_t,
-            self.gamma.len(),
-            self.seed,
+        self.k_b_t_ctrl.map_or_else(
+            || {
+                format!(
+                    "LangevinThermostat(kT={:.6}, n_dofs={}, seed={})",
+                    self.k_b_t,
+                    self.gamma.len(),
+                    self.seed,
+                )
+            },
+            |idx| {
+                format!(
+                    "LangevinThermostat(kT={:.6}, n_dofs={}, seed={}, ctrl_temp={})",
+                    self.k_b_t,
+                    self.gamma.len(),
+                    self.seed,
+                    idx,
+                )
+            },
         )
     }
 }
@@ -348,6 +394,225 @@ mod tests {
         assert!(
             (qfrc_out[0] - 6.9).abs() < 1e-15,
             "apply should accumulate with +=: expected 6.9, got {}",
+            qfrc_out[0],
+        );
+    }
+
+    // ── with_ctrl_temperature tests ─────────────────────────────────────
+
+    #[test]
+    fn default_has_no_ctrl_temperature() {
+        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42);
+        let s = t.diagnostic_summary();
+        assert!(
+            !s.contains("ctrl_temp"),
+            "default thermostat should not have ctrl_temp: {s}",
+        );
+    }
+
+    #[test]
+    fn with_ctrl_temperature_shows_in_diagnostic() {
+        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42)
+            .with_ctrl_temperature(0);
+        let s = t.diagnostic_summary();
+        assert!(
+            s.contains("ctrl_temp=0"),
+            "diagnostic should show ctrl_temp=0: {s}",
+        );
+    }
+
+    #[test]
+    fn ctrl_temperature_damping_unchanged() {
+        // Damping (-γ·v) must NOT depend on the ctrl temperature
+        // multiplier — damping is a bath-coupling property, not a
+        // temperature property.
+        let xml = r#"
+        <mujoco model="ctrl_temp_damping">
+          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+          <worldbody>
+            <body name="particle">
+              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
+              <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
+                     ctrllimited="true" ctrlrange="0 10"/>
+          </actuator>
+        </mujoco>"#;
+        let model = sim_mjcf::load_model(xml).unwrap();
+        let mut data = model.make_data();
+        data.qvel[0] = 1.0;
+        data.ctrl[0] = 5.0; // 5× multiplier
+
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+            .with_ctrl_temperature(0);
+        t.set_stochastic_active(false);
+
+        let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
+        t.apply(&model, &data, &mut qfrc_out);
+
+        // Damping = -γ·v = -0.1·1.0 = -0.1, independent of ctrl
+        assert!(
+            (qfrc_out[0] - (-0.1)).abs() < 1e-15,
+            "damping should be -0.1 regardless of ctrl multiplier: got {}",
+            qfrc_out[0],
+        );
+    }
+
+    #[test]
+    fn ctrl_temperature_scales_noise() {
+        // Two thermostats, same seed: one with kT=2.0 (no ctrl),
+        // one with kT=1.0 + ctrl=2.0. Both should produce identical
+        // noise because effective kT is 2.0 in both cases.
+        let xml = r#"
+        <mujoco model="ctrl_temp_noise">
+          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+          <worldbody>
+            <body name="particle">
+              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
+              <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
+                     ctrllimited="true" ctrlrange="0 10"/>
+          </actuator>
+        </mujoco>"#;
+        let model = sim_mjcf::load_model(xml).unwrap();
+
+        // Thermostat A: kT=2.0, no ctrl
+        let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 2.0, 42);
+        let data_a = model.make_data();
+        // qvel already 0 from make_data → zero damping
+
+        let mut q_a: DVector<f64> = DVector::zeros(model.nv);
+        t_a.apply(&model, &data_a, &mut q_a);
+
+        // Thermostat B: kT=1.0, ctrl=2.0 → effective kT=2.0
+        let t_b = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+            .with_ctrl_temperature(0);
+        let mut data_b = model.make_data();
+        data_b.qvel[0] = 0.0;
+        data_b.ctrl[0] = 2.0;
+
+        let mut q_b: DVector<f64> = DVector::zeros(model.nv);
+        t_b.apply(&model, &data_b, &mut q_b);
+
+        assert_eq!(
+            q_a[0], q_b[0],
+            "same seed, same effective kT=2.0 should produce identical noise: \
+             A={}, B={}",
+            q_a[0], q_b[0],
+        );
+    }
+
+    #[test]
+    fn ctrl_temperature_clamps_negative_to_zero() {
+        // Negative ctrl → clamped to 0.0 → effective kT = 0 → no noise
+        let xml = r#"
+        <mujoco model="ctrl_temp_clamp_neg">
+          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+          <worldbody>
+            <body name="particle">
+              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
+              <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"/>
+          </actuator>
+        </mujoco>"#;
+        let model = sim_mjcf::load_model(xml).unwrap();
+        let mut data = model.make_data();
+        data.ctrl[0] = -5.0; // negative → clamped to 0
+
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+            .with_ctrl_temperature(0);
+
+        let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
+        t.apply(&model, &data, &mut qfrc_out);
+
+        // kT_eff = 0 → σ = 0 → noise = 0. Damping also 0 (qvel=0).
+        assert_eq!(
+            qfrc_out[0], 0.0,
+            "negative ctrl should clamp to zero noise: got {}",
+            qfrc_out[0],
+        );
+    }
+
+    #[test]
+    fn ctrl_temperature_clamps_above_ten() {
+        // ctrl=20 → clamped to 10 → effective kT = 10. Should match
+        // a thermostat with kT=10 directly.
+        let xml = r#"
+        <mujoco model="ctrl_temp_clamp_high">
+          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+          <worldbody>
+            <body name="particle">
+              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
+              <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"/>
+          </actuator>
+        </mujoco>"#;
+        let model = sim_mjcf::load_model(xml).unwrap();
+
+        // Thermostat A: kT=10, no ctrl
+        let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 10.0, 42);
+        let data_a = model.make_data();
+        let mut q_a: DVector<f64> = DVector::zeros(model.nv);
+        t_a.apply(&model, &data_a, &mut q_a);
+
+        // Thermostat B: kT=1.0, ctrl=20 → clamped to 10 → effective kT=10
+        let t_b = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+            .with_ctrl_temperature(0);
+        let mut data_b = model.make_data();
+        data_b.ctrl[0] = 20.0;
+        let mut q_b: DVector<f64> = DVector::zeros(model.nv);
+        t_b.apply(&model, &data_b, &mut q_b);
+
+        assert_eq!(
+            q_a[0], q_b[0],
+            "ctrl=20 should clamp to 10, matching kT=10 thermostat: \
+             A={}, B={}",
+            q_a[0], q_b[0],
+        );
+    }
+
+    #[test]
+    fn ctrl_zero_produces_zero_noise() {
+        // ctrl=0 → kT_eff=0 → σ=0 → pure damping (+ RNG advances)
+        let xml = r#"
+        <mujoco model="ctrl_temp_zero">
+          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+          <worldbody>
+            <body name="particle">
+              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
+              <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"/>
+          </actuator>
+        </mujoco>"#;
+        let model = sim_mjcf::load_model(xml).unwrap();
+        let mut data = model.make_data();
+        data.qvel[0] = 1.0;
+        data.ctrl[0] = 0.0;
+
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+            .with_ctrl_temperature(0);
+
+        let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
+        t.apply(&model, &data, &mut qfrc_out);
+
+        // Pure damping: -γ·v = -0.1·1.0 = -0.1, no noise
+        assert!(
+            (qfrc_out[0] - (-0.1)).abs() < 1e-15,
+            "ctrl=0 should produce pure damping: expected -0.1, got {}",
             qfrc_out[0],
         );
     }
