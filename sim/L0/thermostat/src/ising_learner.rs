@@ -205,6 +205,8 @@ impl IsingLearner {
 
     /// Run a single trajectory and return per-site magnetization means
     /// and per-edge correlation means.
+    // Precision loss is acceptable for trajectory/seed index casting.
+    // Panics on step/forward failure are intentional — see § Panics.
     #[allow(clippy::cast_precision_loss, clippy::panic)]
     fn run_trajectory(&mut self, seed: u64) -> (Vec<f64>, Vec<f64>) {
         let n = self.config.n;
@@ -219,6 +221,7 @@ impl IsingLearner {
             data.qpos[i] = self.config.x_0;
             data.qvel[i] = 0.0;
         }
+        // Infallible with valid MJCF — panic is an intentional safety net.
         if let Err(e) = data.forward(&self.model) {
             panic!("forward failed: {e}");
         }
@@ -237,6 +240,7 @@ impl IsingLearner {
         let mut corr_count = vec![0_usize; n_edges];
 
         for _ in 0..n_measure {
+            // Infallible with valid MJCF — panic is an intentional safety net.
             if let Err(e) = data.step(&self.model) {
                 panic!("measure step failed: {e}");
             }
@@ -279,6 +283,7 @@ impl IsingLearner {
     /// # Panics
     /// Panics if `data.forward()` or `data.step()` fails (should not
     /// happen with valid MJCF models).
+    // Precision loss is acceptable for trajectory count / iteration index casting.
     #[allow(clippy::cast_precision_loss)]
     pub fn step(&mut self) -> LearningRecord {
         let n = self.config.n;
@@ -377,5 +382,196 @@ impl IsingLearner {
     #[must_use]
     pub fn field_h(&self) -> &[f64] {
         &self.field_h
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    /// Minimal 2-element MJCF model with slide joints and no gravity.
+    const MINIMAL_XML: &str = r#"
+    <mujoco model="ising_learner_test">
+      <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+      <worldbody>
+        <body name="e0">
+          <joint name="x0" type="slide" axis="1 0 0" damping="0"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+        <body name="e1" pos="0.2 0 0">
+          <joint name="x1" type="slide" axis="1 0 0" damping="0"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+      </worldbody>
+    </mujoco>"#;
+
+    fn minimal_config() -> LearnerConfig {
+        LearnerConfig {
+            n: 2,
+            edges: vec![(0, 1)],
+            delta_v: 5.0,
+            x_0: 0.3,
+            gamma: 0.1,
+            k_b_t: 1.0,
+            learning_rate: 0.1,
+            n_steps: 20,
+            n_burn_in: 5,
+            n_trajectories: 1,
+            x_thresh: 0.15,
+            seed_base: 42,
+        }
+    }
+
+    fn minimal_target() -> IsingTarget {
+        IsingTarget::from_ising_params(2, &[(0, 1)], &[0.5], &[0.0, 0.0], 1.0)
+    }
+
+    fn load_model() -> Model {
+        sim_mjcf::load_model(MINIMAL_XML).unwrap()
+    }
+
+    // ── IsingTarget ────────────────────────────────────────────────────
+
+    #[test]
+    fn target_from_ising_params_has_correct_shape() {
+        let target = minimal_target();
+        assert_eq!(target.magnetizations.len(), 2);
+        assert_eq!(target.correlations.len(), 1);
+        assert_eq!(target.distribution.len(), 4); // 2^2 = 4 configs
+        // Probabilities sum to 1.
+        let sum: f64 = target.distribution.iter().map(|(_, p)| p).sum();
+        assert!((sum - 1.0).abs() < 1e-12);
+    }
+
+    // ── IsingLearner::new ─────────────────────────────────���────────────
+
+    #[test]
+    fn new_initializes_zero_params() {
+        let learner = IsingLearner::new(minimal_config(), minimal_target(), load_model());
+        assert_eq!(learner.coupling_j(), &[0.0]);
+        assert_eq!(learner.field_h(), &[0.0, 0.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "model has")]
+    #[allow(clippy::let_underscore_must_use)]
+    fn new_panics_model_too_small() {
+        // 1-DOF model with n=2 config → should panic.
+        let xml = r#"
+        <mujoco model="small">
+          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+          <worldbody>
+            <body name="e0">
+              <joint name="x0" type="slide" axis="1 0 0" damping="0"/>
+              <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+          </worldbody>
+        </mujoco>"#;
+        let model = sim_mjcf::load_model(xml).unwrap();
+        let _ = IsingLearner::new(minimal_config(), minimal_target(), model);
+    }
+
+    #[test]
+    #[should_panic(expected = "target correlations length")]
+    #[allow(clippy::let_underscore_must_use)]
+    fn new_panics_correlations_mismatch() {
+        let mut target = minimal_target();
+        target.correlations = vec![0.0, 0.0]; // 2 but config has 1 edge
+        let _ = IsingLearner::new(minimal_config(), target, load_model());
+    }
+
+    #[test]
+    #[should_panic(expected = "target magnetizations length")]
+    #[allow(clippy::let_underscore_must_use)]
+    fn new_panics_magnetizations_mismatch() {
+        let mut target = minimal_target();
+        target.magnetizations = vec![0.0]; // 1 but config has n=2
+        let _ = IsingLearner::new(minimal_config(), target, load_model());
+    }
+
+    // ── with_initial_params ────────────────────────────────────────────
+
+    #[test]
+    fn with_initial_params_sets_custom() {
+        let learner = IsingLearner::with_initial_params(
+            minimal_config(),
+            minimal_target(),
+            load_model(),
+            vec![0.25],
+            vec![0.1, -0.1],
+        );
+        assert_eq!(learner.coupling_j(), &[0.25]);
+        assert_eq!(learner.field_h(), &[0.1, -0.1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "initial_j length")]
+    #[allow(clippy::let_underscore_must_use)]
+    fn with_initial_params_panics_j_mismatch() {
+        let _ = IsingLearner::with_initial_params(
+            minimal_config(),
+            minimal_target(),
+            load_model(),
+            vec![0.1, 0.2], // 2 but 1 edge
+            vec![0.0, 0.0],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "initial_h length")]
+    #[allow(clippy::let_underscore_must_use)]
+    fn with_initial_params_panics_h_mismatch() {
+        let _ = IsingLearner::with_initial_params(
+            minimal_config(),
+            minimal_target(),
+            load_model(),
+            vec![0.1],
+            vec![0.0], // 1 but n=2
+        );
+    }
+
+    // ── step + train ───────────────────────────────────────────────────
+
+    #[test]
+    fn step_returns_valid_record() {
+        let mut learner = IsingLearner::new(minimal_config(), minimal_target(), load_model());
+        let record = learner.step();
+        assert_eq!(record.iteration, 0);
+        assert_eq!(record.coupling_j.len(), 1);
+        assert_eq!(record.field_h.len(), 2);
+        assert_eq!(record.measured_magnetizations.len(), 2);
+        assert_eq!(record.measured_correlations.len(), 1);
+        assert!(record.kl_divergence >= 0.0);
+    }
+
+    #[test]
+    fn step_updates_params() {
+        let mut learner = IsingLearner::new(minimal_config(), minimal_target(), load_model());
+        let j_before = learner.coupling_j().to_vec();
+        let h_before = learner.field_h().to_vec();
+        learner.step();
+        // After one step, at least one parameter should have moved
+        // (target is non-trivial and initial params are all zero).
+        let j_moved = learner.coupling_j()[0] != j_before[0];
+        let h_moved = learner.field_h().iter().zip(&h_before).any(|(a, b)| a != b);
+        assert!(
+            j_moved || h_moved,
+            "parameters should change after step: J {:?} → {:?}, H {:?} → {:?}",
+            j_before,
+            learner.coupling_j(),
+            h_before,
+            learner.field_h(),
+        );
+    }
+
+    #[test]
+    fn train_returns_correct_length() {
+        let mut learner = IsingLearner::new(minimal_config(), minimal_target(), load_model());
+        let curve = learner.train(3);
+        assert_eq!(curve.len(), 3);
+        assert_eq!(curve[0].iteration, 0);
+        assert_eq!(curve[1].iteration, 1);
+        assert_eq!(curve[2].iteration, 2);
     }
 }

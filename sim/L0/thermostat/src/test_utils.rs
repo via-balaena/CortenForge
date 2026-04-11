@@ -75,12 +75,13 @@ impl WellState {
     /// Panics if called on `Barrier` — callers must check
     /// [`is_in_well`](Self::is_in_well) first.
     #[must_use]
+    // Panic on Barrier is a deliberate contract — callers must check is_in_well() first.
     #[allow(clippy::panic)]
     pub fn spin(self) -> f64 {
         match self {
             Self::Right => 1.0,
             Self::Left => -1.0,
-            Self::Barrier => panic!("spin() called on Barrier state"),
+            Self::Barrier => panic!("spin() called on Barrier state"), // deliberate contract violation
         }
     }
 
