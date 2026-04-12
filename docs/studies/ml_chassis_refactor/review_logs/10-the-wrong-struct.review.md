@@ -1,4 +1,4 @@
-# Review log — Chapter 10: The wrong struct
+# Review log — Chapter 10: The wrong arrangement
 
 ## Factual pass
 
@@ -212,7 +212,91 @@ the chapter now makes a narrower and better-supported claim.
   counter-based is a third option that should be explicitly
   considered in chapter 15 and not dismissed by omission.
 
+## Round 3 — post-commit review pass
+
+**Triggered:** Yes. After the initial commit (`ab03e05f`), a full
+second review was conducted on the committed chapter as a unit,
+using a fresh cold-reader sub-agent with no context from the first
+round. Round 2 had fixed the counter-based-RNG oversight; round 3
+found a further set of substantive issues that survived it.
+
+**Findings:**
+
+1. **Title mismatch.** After round 2 narrowed the argument from
+   "the RNG struct is physically wrong" to "the current code is
+   none of the faithful mechanisms," the title "The wrong struct"
+   over-promised relative to the revised claim.
+2. **Incomplete taxonomy.** The three-mechanism enumeration
+   (per-trajectory stateful, counter-based, pre-generated tape)
+   omitted splittable RNGs (SplitMix / JAX `random.key` style),
+   which a reader coming from functional-ML codebases expects to
+   see named.
+3. **Joint-vs-marginals asserted, not argued.** The claim "the
+   joint distribution is the thing ensemble statistics are
+   computed over" was true but unexplained, leaving a reader to
+   take it on faith rather than see the mechanism.
+4. **Missing "single-threaded draws" pre-emption.** A reader could
+   agree with the physics argument and conclude "so the fix is
+   force all noise draws onto one thread in a fixed order." The
+   chapter's counter-argument lived implicitly in the mutex
+   section but was never tied back to the conclusion, so a
+   skeptic could miss it.
+
+**Revisions applied (round 3):**
+
+- **Retitled to "The wrong arrangement"** — h1 heading, SUMMARY.md
+  display text, internal "wrong-struct problem" phrase, this
+  review log's heading. Filename kept stable
+  (`10-the-wrong-struct.md`) to avoid git rename churn and broken
+  links. Added a short disclosure paragraph in the chapter
+  opening noting the retitle and why.
+- **Added splittable RNGs as mechanism #2** in the enumeration,
+  with a SplitMix / JAX `random.key` reference. Renumbered
+  counter-based to #3 and pre-generated tape to #4. Updated the
+  "What this chapter does not decide" section from "three shapes"
+  to "four shapes" and added splittable to the opening's
+  engineering-question list.
+- **Added a concrete variance argument** to the joint-vs-marginals
+  paragraph. The addition cites the standard sample-mean variance
+  formula `(1/N)(σ² + (N-1)ρ̄σ²)` and explains that when samples
+  share a stream, ρ̄ is nonzero and unknown, breaking the nominal
+  `1/N` shrinkage. Closing sentence: "every effect-size, every
+  error bar, every significance test downstream of ensemble
+  averaging inherits the lie."
+- **Added a dismissal of the "force single-threaded draws" fix**
+  in the "Why the mutex is not the fix" section. The argument:
+  single-threaded ordered draws are equivalent to a pre-generated
+  tape computed lazily (option 4) — physically fine, operationally
+  a global sequencing barrier on every Langevin step, dominating
+  the wall-clock cost of the thing `BatchSim` was built to
+  accelerate. The right answer has to preserve both the physics
+  and the parallelism.
+
+**Minor items noted but not acted on in round 3:**
+
+- Structural redundancy between "Why the current code is none of
+  the above" and "Why the mutex is not the fix" (cold reader
+  flagged potential folding). Left separated: the first is a
+  static placement argument, the second is a dynamic "why the
+  obvious patch fails" walkthrough plus the new single-threaded
+  dismissal. They serve different purposes now.
+- Voice wobbles: "is not, at all, a compromise" (counter-based
+  paragraph) and "A small defect in a load-bearing place is worth
+  a large correction." Cold reader flagged as the two places
+  leaning on emphasis. The first was incidentally cleaned up when
+  the counter-based paragraph was renumbered and partly rewritten;
+  the second is still in the text and is kept as earned
+  editorializing.
+
+**Design-fork implication.** The "RNG on Data vs install_per_env"
+two-way fork flagged in memory for chapters 14/15 is now a
+four-way fork: those two engineering sub-options within the
+per-trajectory-stateful mechanism, plus splittable keys, plus
+counter-based. Chapter 15 must consider all four, not two. Memory
+updated separately to reflect this.
+
 ## Status
 
-Drafted, factual pass complete, cold-reader thinking pass complete,
-second-round revisions applied. Not yet committed.
+Drafted, factual pass complete, two rounds of thinking-pass
+review applied, four substantive revisions landed in round 3.
+Ready for a post-revision commit.

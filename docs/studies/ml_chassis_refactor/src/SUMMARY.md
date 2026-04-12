@@ -9,7 +9,7 @@
 
 # Part 1 — Foundation: Stochastic State
 
-- [The wrong struct](10-the-wrong-struct.md)
+- [The wrong arrangement](10-the-wrong-struct.md)
 - [BatchSim parallelism today]()
 - [Stochastic component survey]()
 - [Latent flakiness]()

@@ -13,9 +13,13 @@ test as drafted inherits the flaw directly.
 There is a published, well-known version of this argument. It is
 not a subtle or contested point. What the chapter adds is the
 specific mapping onto our codebase, and the specific observation
-that the flaw is structural — you cannot run a multi-seed rematch
-with the current `Competition` shape, no matter how much you want
-to.
+that the `Competition` API is *structurally mismatched* with a
+multi-seed experiment — not literally unable to host one (a
+determined test author can loop in client code), but mismatched
+in a way that makes every cross-algorithm benchmark reinvent the
+same wheel at its own risk. The chassis should carry the
+multi-seed contract once, so that every subsequent experiment
+inherits it rather than re-deriving it.
 
 ## What the API currently looks like
 
@@ -38,16 +42,18 @@ algorithm per task. There is no vector type anywhere on the hot
 path — the shape of the API says, at the type level, "a competition
 is one seed's worth of experiment."
 
-This is the entire problem. Not the scalar-vs-vector detail, but the
+This is the core problem. Not the scalar-vs-vector detail, but the
 fact that the *type* of the experiment is "single replicate." Every
 downstream operation — the result table, the ranking, the gate
 condition in the rematch test — is defined in terms of one number
-per algorithm per task. Introducing replicates later is not a matter
-of looping over seeds in client code; it requires re-typing the
-result surface to nest per-seed runs, re-typing the gate to operate
-on distributions, and re-typing the per-algorithm `best_reward`
-reporting to mean "best across replicates" rather than "best within
-the single run." That is a Competition v2, not a patch.
+per algorithm per task. Introducing replicates as a first-class
+chassis capability requires re-typing the result surface to nest
+per-seed runs, re-typing the gate to operate on distributions, and
+re-typing the per-algorithm `best_reward` reporting to mean "best
+across replicates" rather than "best within the single run." That
+is a Competition v2, not a patch — and the later section "Why the
+fix belongs in the chassis" argues why it needs to be done as a
+v2 rather than papered over in client code.
 
 ## What Henderson et al. 2018 demonstrated
 
@@ -85,12 +91,16 @@ debated; the requirement to run multiple seeds is not.
 A single-seed comparison can, in principle, still be informative —
 if the effect size you are trying to detect is much larger than the
 seed-to-seed variance of both algorithms, a single seed is enough.
-But establishing that precondition requires knowing the variance,
-which requires running multiple seeds. The only situations in which
-single-seed is genuinely safe are situations in which you have
-already run multi-seed and decided the variance is negligible. For
-any experiment that has not been through that calibration, single-
-seed is a way of not-knowing dressed up as a way of knowing.
+**But establishing that precondition requires knowing the variance,
+which requires running multiple seeds.** The asymmetry is the whole
+point: multi-seed is what *licenses* single-seed, not the other way
+around. You cannot skip multi-seed on the argument that "our effect
+is probably big," because "probably big" is exactly the claim multi-
+seed would justify or disprove. The only situations in which single-
+seed is genuinely safe are situations in which you have already run
+multi-seed and decided the variance is negligible. For any
+experiment that has not been through that calibration, single-seed
+is a way of not-knowing dressed up as a way of knowing.
 
 ## Our specific case: the rematch
 
@@ -125,29 +135,46 @@ is not small. The single-seed gate is not just statistically
 questionable in general; it is questionable in the specific
 experiment the rematch is running.
 
-## Why the fix is architectural
+## Why the fix belongs in the chassis
 
-The fix cannot be "wrap `Competition::run` in a loop over seeds in
-the test file." Consider what that loop would have to do: run the
-competition five times, collect five `CompetitionResult` objects,
-then somehow merge them into a single table that reports
-`sa_best_mean ± sa_best_stderr` and runs a one-sided test against
-`best_rl_mean`. The merging step has no home in the current code.
-`CompetitionResult` is shaped as a flat list of `(task, algorithm,
-best_reward)` triples; it has no slot for "this is run 3 of 5." The
-ranking function `result.print_ranked(...)` operates on that flat
-list. `best_reward` itself is a per-algorithm scalar, and chapter
-24 will show that its meaning already differs across algorithms in
-subtle ways that multi-seed aggregation will make worse, not better.
+The fix is not *literally impossible* in client code. A determined
+test author could write a thirty-line helper that calls
+`comp.run()` five times, pulls `sa.best_reward()` and
+`cem.best_reward()` (etc.) out of each `CompetitionResult`,
+collects them into `Vec<f64>`, and runs a scipy-equivalent
+significance test in the test file. For the one-shot rematch
+test, that would work. Calling the current API "structurally
+unable" to run the experiment would overclaim — what is true is
+that the current API is *structurally mismatched* with the
+experiment, and the mismatch has to be papered over somewhere.
 
-The right shape is a `Competition` that takes a list of seeds up
-front, loops internally, and returns a result object whose leaves
-are `Vec<f64>` rather than `f64`. The gate then operates on those
-vectors with an explicit statistical test. This is a small amount
-of code, but it is impossible without changing the type of
-`CompetitionResult`, and changing that type is a breaking change to
-every caller. That is what makes it architectural rather than a
-patch — not the line count, but the API surface.
+The question is *where*. If the mismatch lives in the test file,
+every subsequent cross-algorithm benchmark — D3, D4, any future
+rematch against any future landscape — re-implements the same
+thirty lines, and every implementation has its own chance to get
+the significance test wrong. The chassis is the place where
+cross-algorithm benchmarks live; a benchmark protocol is a
+chassis feature, not a per-test feature. Making multi-seed
+comparison a first-class chassis capability is what keeps the
+gate honest across the next several experiments without each one
+paying a tax for it. That is the real reason the fix belongs at
+the type signature and not in the test file — not that the loop
+is impossible, but that having every test re-implement the loop
+is worse than having none of them do it.
+
+Concretely, the right shape is a `Competition` that takes a list
+of seeds up front, loops internally, and returns a result object
+whose leaves are `Vec<f64>` rather than `f64`. The gate then
+operates on those vectors with an explicit statistical test. This
+is a small amount of code, but it cannot happen without changing
+the type of `CompetitionResult`, and changing that type is a
+breaking change to every caller. `CompetitionResult` is currently
+a flat list of `(task, algorithm, best_reward)` triples with no
+slot for replicate index, and `result.print_ranked(...)` operates
+on that flat list. `best_reward` itself is a per-algorithm
+scalar, and chapter 24 will show that its meaning already differs
+across algorithms in subtle ways that multi-seed aggregation will
+make worse, not better.
 
 ## What this chapter does not decide
 
@@ -163,6 +190,8 @@ load-bearing the moment the PR lands and any subsequent shape
 change breaks every caller.
 
 The point of this chapter is only to establish that the current
-`Competition` shape is structurally unable to run the experiment
-the rematch needs to run, and that the fix lives at the type
-signature, not inside the implementation of `run`.
+`Competition` shape is structurally mismatched with the experiment
+the rematch needs to run — not *impossible*, but mismatched in a
+way that forces every future cross-algorithm benchmark to pay a
+tax the chassis should be paying once — and that the fix lives at
+the type signature, not inside the implementation of `run`.

@@ -160,7 +160,82 @@ new issues.
   read in isolation? Will be testable once chapter 24 is written
   in Phase 2.
 
+## Round 3 — post-commit review pass
+
+**Triggered:** Yes. Cold-reader sub-agent reviewed the committed
+chapter. Two substantive findings and some minor notes.
+
+**Findings:**
+
+1. **"Structurally unable" overreaches.** The chapter said the
+   current `Competition` shape is "structurally unable" to run a
+   multi-seed rematch. Cold reader pointed out that a 30-line
+   client-side helper could loop `comp.run()`, collect scalar
+   `best_reward` values into a `Vec<f64>`, and run a scipy-style
+   test in the test file. For the one-shot rematch, that works.
+   "Structurally unable" was not the right phrase; the real
+   problem is that the shape is *structurally mismatched* with
+   the experiment, which is a different and more defensible
+   claim.
+2. **Inverse skeptic not pre-empted.** The chapter engaged the
+   "our case might be harder than generic RL" direction (flat
+   landscape, probably big variance) but not the inverse: "what
+   if SA crushes CEM by 3× and the effect is so huge single-seed
+   is fine?" The implicit answer — "you need multi-seed to
+   license single-seed; you cannot use 'probably big' to skip
+   measuring variance" — was buried in one sentence rather than
+   stated up front as the chapter's cleanest rebuttal.
+
+**Lower-severity notes (addressed or filed):**
+
+- Volume of forward-references high but the chapter survives
+  because its in-chapter argument is complete. Chapter 24
+  forward-reference (about `best_reward` semantics) is the
+  weakest of them; accepted as a book-read-in-order cost.
+- `SEED`, `N_ENVS`, `TrainingBudget::Epochs(N_EPOCHS)` reproduced
+  from the construction spec. Cold reader suggested compressing
+  `N_ENVS` and the budget token since they belong to chapter 00's
+  fairness finding rather than this chapter's argument. Left as
+  is — the context is cheap and makes the rematch protocol
+  concrete in one place.
+- "Single-seed is a way of not-knowing dressed up as a way of
+  knowing" flagged as the glibbest sentence. Kept as the
+  chapter's earned editorial line; it is inside the voice's
+  established range.
+
+**Revisions applied (round 3):**
+
+- **Replaced "structurally unable" language** throughout. The
+  chapter's opening framing paragraph, the "Why the fix is
+  architectural" section (renamed "Why the fix belongs in the
+  chassis"), and the closing sentence now all say "structurally
+  mismatched" or equivalent. The argument is now "not literally
+  impossible — a loop in the test file would work for one test —
+  but mismatched in a way that makes every cross-algorithm
+  benchmark reinvent the same thirty lines at its own risk, so
+  the chassis should carry the multi-seed contract once."
+- **Reconciled the opening's "This is the entire problem"
+  paragraph** with the softened framing. Replaced "Introducing
+  replicates later is not a matter of looping over seeds in
+  client code" with "Introducing replicates as a first-class
+  chassis capability requires..." — the claim now is about
+  first-class chassis support, not about impossibility.
+- **Promoted the inverse-skeptic rebuttal** to its own explicit
+  paragraph. The new paragraph pulls "the asymmetry is the whole
+  point: multi-seed is what licenses single-seed, not the other
+  way around" into a load-bearing position directly after the
+  Henderson summary. Previously buried as a single sentence at
+  the end of a longer paragraph.
+- **Added the chassis-fairness pre-emption explicitly** in the
+  renamed "Why the fix belongs in the chassis" section. The
+  argument now is: "the chassis is where cross-algorithm
+  benchmarks live; a benchmark protocol is a chassis feature,
+  not a per-test feature; the real reason the fix belongs at
+  the type signature is that having every test re-implement the
+  significance test is worse than having none of them do it."
+
 ## Status
 
-Drafted, factual pass complete, self-reviewed, one substantive
-factual fix applied in a second round. Not yet committed.
+Drafted, factual pass complete, self-reviewed, two rounds of
+thinking-pass review applied, four substantive revisions
+landed in round 3. Ready for a post-revision commit.

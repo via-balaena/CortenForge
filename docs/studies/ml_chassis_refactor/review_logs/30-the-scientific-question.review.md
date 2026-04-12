@@ -179,7 +179,118 @@ rounds pending unless user review surfaces something new.
 - If the next session reruns `d2b_stochastic_resonance_baselines`
   under release, update the peak numbers here if they drift.
 
+## Round 3 — post-commit review pass
+
+**Triggered:** Yes. Cold-reader sub-agent reviewed the committed
+chapter. **Four substantive findings**, one of which was a
+genuine factual contradiction.
+
+**Findings:**
+
+1. **Band / peak arithmetic contradiction.** The chapter claimed
+   the elevated band was `kt_mult ∈ [1.1, 2.5]` and the peak was
+   near `kt_mult ≈ 2.55`. Those are mutually inconsistent: 2.55
+   is outside [1.1, 2.5]. Both claims came from the D2 SR
+   findings memo, which records them as separate observations
+   from the d2b run without noticing they disagree on their face.
+   The likely truth is that the upper bound "2.5" is eyeballed
+   from a printed sweep table and the empirical peak at 2.55 sits
+   at the region's upper shoulder rather than inside a
+   precisely-bounded interval.
+2. **Asymmetric narrowing of positive vs null interpretations.**
+   The chapter narrowed a null result carefully ("evidence about
+   this particular algorithm on this particular task") but
+   interpreted a positive result broadly ("the pivot's strategic
+   claim is vindicated on its first test"). One standard, applied
+   both directions, would be honest — the positive interpretation
+   should be narrowed to match.
+3. **"The pivot does not die" as pre-commitment to not updating.**
+   The null-outcome paragraph offered three follow-up moves
+   (richer proposal, Parallel Tempering, move the benchmark) and
+   declared "the pivot does not die." Option (c) especially — move
+   the benchmark — was a get-out-of-jail card that made the null
+   unfalsifiable, since any null can be reinterpreted as "bad test
+   bed." A chapter that aspires to honest falsifiability needs to
+   state the update rule, not pre-commit to its conclusion.
+4. **TD3 deferral inconsistent with the chapter's own logic.** The
+   chapter argued that TD3's D2c failure was linear-$Q$
+   expressiveness, not geometry, and that such methods would fail
+   the rematch for the same reason if included — then deferred
+   the call on whether to exclude TD3 to chapter 23. Cold reader:
+   the deferral is inconsistent with scope. Budget/seeds/thresholds
+   belong in ch23. Pool membership is a *question* question, which
+   is this chapter's job.
+
+**Lower-severity note:** "matched complexity" is not defined
+operationally in the chapter; if SA uses a richer policy class
+than CEM did in D2c, a positive result could be expressiveness
+masquerading as geometry. Cold reader flagged this as a ch23
+operational concern worth naming here. Not acted on in round 3
+(would be additive, not corrective); filed as a ch23 input.
+
+**Revisions applied (round 3):**
+
+- **C1 — Band / peak arithmetic.** Replaced the false-precision
+  `[1.1, 2.5]` interval with "spanning roughly `kt_mult` 1 through
+  3" and explicitly noted that "the D2 SR findings memo records
+  peak synchrony $0.098 \pm 0.022$ near `kt_mult` $\approx 2.55$
+  ... which places the peak toward the upper shoulder of the
+  elevated region rather than at its center." The contradiction
+  is resolved by dropping false precision, not by inventing new
+  numbers. Also normalized "band" → "region" throughout the
+  chapter for consistency (three instances: the concrete
+  methodology paragraph, the "two observations" paragraph, and
+  the null-outcome paragraph's wording).
+- **H1 — Positive interpretation narrowed.** Rewrote the positive
+  outcome paragraph to read "geometry-appropriate updates beat
+  generic RL *on this particular task, at this particular matched
+  complexity, with this particular physics-aware method*. It is
+  evidence for the pivot's strategic claim, not vindication of
+  it." Added an explicit "read larger than that, a single positive
+  result would be exactly the kind of SOTA-by-partition inflation
+  chapter 20 warns about" to mirror the null's seed-variance
+  caution.
+- **H2 — "Pivot does not die" → explicit update rule.** Rewrote
+  the null outcome paragraph. Replaced "the pivot does not die"
+  with "a null updates against *that specific hypothesis*, not
+  against physics-aware ML as a class — but it does put the next
+  experiment explicitly in charge of carrying the pivot's
+  strategic claim, which means the claim is on a clock rather
+  than on a concept." Removed "move the benchmark" from the
+  follow-up list; added an explicit "picking a new benchmark post
+  hoc is explicitly not on this list" clause so a future
+  move-the-benchmark response cannot be dressed up as a
+  pre-planned option.
+- **H3 — TD3 exclusion recommendation made directly.** In the
+  "What 'physics-aware beats generic RL' is supposed to mean"
+  section's bullet list, the SAC-exclusion mention now continues:
+  "**TD3 should be excluded for the same reason.** The current
+  construction spec has it in the pool; this is an error
+  inherited from the spec's original framing, not a deliberate
+  choice." Added the argument that including a known-expressiveness-
+  bounded algorithm drags down the baseline and inflates any SA
+  victory by an amount unrelated to geometry. Updated the "What
+  this chapter does not decide" closing to reflect that this
+  chapter *does* make the pool-membership call for TD3/SAC (on
+  linear-$Q$ grounds) while explicitly deferring PPO's status to
+  chapter 23, because PPO's D2c failure was a different mechanism
+  (D1d-style exploration-noise inflation) that the chapter's
+  linear-$Q$ reasoning doesn't cover.
+
+**PPO-status caveat.** When I first drafted the round-3 fix for
+H3 I wrote "SA + CEM + PPO, with TD3 and SAC excluded" as the
+pool, but on re-read I noticed that implied a PPO-stays call I
+hadn't actually argued for. The current text deliberately *does
+not* make the PPO call, because PPO's D2c failure mechanism is
+different from TD3/SAC's and requires its own argument that
+belongs to chapter 23. This is the one place round 3 consciously
+*does* defer, and the deferral is consistent with the
+chapter's scope (linear-$Q$ is in scope; D1d-style on-policy
+exploration artifacts are not).
+
 ## Status
 
-Drafted, factual pass complete, self-reviewed, kT/kt_mult semantic
-fix applied. Not yet committed.
+Drafted, factual pass complete, self-reviewed, three rounds of
+thinking-pass review applied, four substantive revisions landed
+in round 3 (one of which was a factual contradiction fix).
+Ready for a post-revision commit.

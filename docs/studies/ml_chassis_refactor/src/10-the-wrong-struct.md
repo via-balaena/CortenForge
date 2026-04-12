@@ -1,8 +1,13 @@
-# The wrong struct
+# The wrong arrangement
 
 The first finding in Part 0 — "`LangevinThermostat` stores its RNG as
 a field on a shared struct" — was stated there as a conclusion. This
 chapter is where the conclusion is argued from first principles.
+The title is a downgrade from "the wrong struct" after the review
+process: the current arrangement *is* wrong, but the reasons are
+more about where state lives relative to parallelism than about any
+single struct being in the wrong place. The old title promised a
+cleaner verdict than the argument actually supports.
 
 The claim, restated in the strongest form the physics alone will
 license: **the noise process driving each parallel trajectory must be
@@ -15,11 +20,11 @@ is possible to have one without the other.
 
 The *engineering* question of which struct owns the noise-producing
 machinery — `Model`, `Data`, a counter-based generator indexed by
-trajectory and step, a pre-generated disjoint tape handed out at
-setup — is a separate act of thinking, and the answer depends on
-tradeoffs that the physics alone does not resolve. This chapter
-argues the physics requirement. The engineering argument is
-deferred, explicitly, to chapters 14 and 15.
+trajectory and step, a splittable key handed out at init, a
+pre-generated disjoint tape — is a separate act of thinking, and
+the answer depends on tradeoffs that the physics alone does not
+resolve. This chapter argues the physics requirement. The
+engineering argument is deferred, explicitly, to chapters 14 and 15.
 
 ## What a Langevin trajectory is
 
@@ -61,6 +66,19 @@ samples whose joint law depends on scheduling." The marginals may
 be fine; the joint distribution is not, and the joint distribution
 is the thing ensemble statistics are computed over.
 
+Concretely, the variance of a sample mean $\bar{X} = (1/N) \sum_i
+X_i$ is $(1/N)(\sigma^2 + (N-1)\bar{\rho}\sigma^2)$, where
+$\bar{\rho}$ is the average pairwise correlation among the samples.
+When the samples are independent, $\bar{\rho} = 0$ and the
+variance shrinks like $1/N$ — the whole reason running more
+trajectories is supposed to help. When the samples share a stream,
+$\bar{\rho}$ is nonzero and unknown, the $(N-1)\bar{\rho}$ term
+does not vanish, and the nominal $1/N$ shrinkage is a lie of
+exactly the magnitude we could not compute without first knowing
+the thing we were trying to measure. This is not a theoretical
+nitpick. Every effect-size, every error bar, every significance
+test downstream of ensemble averaging inherits the lie.
+
 ## What faithful implementations look like
 
 The physics requirement is: each trajectory sees a noise sequence
@@ -77,19 +95,27 @@ satisfy it:
    standard generator. This is the most obvious shape and the one
    the rest of this book will adopt, for reasons chapters 14 and 15
    will argue.
-2. **Counter-based generator keyed by `(trajectory_id, step_index)`.**
+2. **Splittable RNGs.** Generators in the SplitMix / JAX `random.key`
+   family support a `split` operation that takes a parent key and
+   produces $N$ child keys guaranteed to produce non-overlapping
+   sequences. A single parent key lives on `Model` or on the
+   simulation setup; each trajectory receives its own child key at
+   init, and child keys advance per-trajectory without coordination.
+   This is the functional-programming answer and is what
+   reproducibility-first ML codebases reach for when a pure-function
+   interface matters.
+3. **Counter-based generator keyed by `(trajectory_id, step_index)`.**
    Generators in the Philox / Threefry / PCG-with-streams family
    are effectively bijections from `(key, counter)` to uniform
    output. A single such generator lives on `Model`, and each
    trajectory reads its $k$-th noise value by asking for the output
    at key `trajectory_id` and counter `step_index`. No per-trajectory
-   mutable state exists; the generator is pure. Independence follows
-   from the bijection being keyed on `trajectory_id`; reproducibility
-   follows from the function being deterministic. This is the
-   standard answer in Monte Carlo codes that care about
-   reproducibility under parallelism and is not, at all, a
-   compromise.
-3. **Pre-generated noise tape.** At setup time, generate $N$
+   mutable state exists at all; the generator is pure. Independence
+   follows from the bijection being keyed on `trajectory_id`;
+   reproducibility follows from the function being deterministic.
+   This is the standard answer in Monte Carlo codes that care about
+   reproducibility under parallelism and is not a compromise.
+4. **Pre-generated noise tape.** At setup time, generate $N$
    disjoint sequences of Gaussian draws, one per trajectory, sized
    for the full run. At step $k$ on trajectory $i$, read the $k$-th
    value of sequence $i$. No generator runs during the simulation;
@@ -98,7 +124,7 @@ satisfy it:
    straightforwardly correct and is used in some high-stakes
    reference implementations.
 
-All three satisfy the physics. The difference between them is an
+All four satisfy the physics. The difference between them is an
 engineering question about where state lives, what the API surface
 is, and how the machinery interacts with the rest of the chassis
 (the `Stochastic` gating trait, the `PassiveComponent::apply`
@@ -153,6 +179,24 @@ attainable for a `BatchSim` containing a `LangevinThermostat`. This
 is the latent flakiness that the refactor is attempting to fix: not
 a bug that trips a test, but a property that quietly does not hold.
 
+There is a tempting-looking cheaper fix: force all noise draws onto
+a single thread in a fixed order. Each env would then receive its
+own disjoint slice of the one shared stream, and the slices would
+be — given any decent PRNG — statistically indistinguishable from
+independent draws. On the narrow question of "does the ensemble
+get the right answer" this is fine; it is exactly option 4 in the
+taxonomy (pre-generated tape), just computed lazily. What it is
+*not* is an acceptable operational answer for a 32-env parallel
+`BatchSim` whose entire reason for existing is that the per-step
+physics work can be executed across threads. Serializing all
+stochastic work onto one thread is a global sequencing barrier on
+every Langevin step, and at 32 envs the barrier dominates the
+wall-clock cost of the thing the `BatchSim` was built to
+accelerate. The single-threaded fix resolves the physics at the
+cost of the parallelism — which is not a tradeoff we are willing
+to make, because the parallelism is load-bearing for every
+downstream experiment. The right answer has to preserve both.
+
 ## The smallness of the actual defect
 
 One honest observation before moving on. The architectural fault is
@@ -161,8 +205,8 @@ in `sim/L0/thermostat/src/` holds RNG state — `LangevinThermostat` —
 and that every other passive component (`DoubleWellPotential`,
 `OscillatingField`, `RatchetPotential`, `PairwiseCoupling`,
 `ExternalField`) is pure: given the same `Model` and `Data`, they
-produce the same force. The wrong-struct problem is a *single
-component's problem*, not a trait-wide redesign.
+produce the same force. The wrong-arrangement problem is a
+*single component's problem*, not a trait-wide redesign.
 
 This is good news for the scope of the fix and bad news for the
 history of the code, because "only one component is wrong" is
@@ -177,19 +221,19 @@ place is worth a large correction.
 
 ## What this chapter does not decide
 
-It does not prescribe the fix. At least three shapes are faithful
-to the physics (stateful per-trajectory, counter-based, pre-generated
-tape), and even within the stateful-per-trajectory family there are
-sub-shapes — putting the state on `Data` directly, or giving each
-environment its own `(Model, PassiveStack)` pair via a per-env
-installer. Each has its own blast radius and its own interaction
-with the `Stochastic` gating trait that deterministic-mode tests
-rely on. Those are chapter 14 and 15's problem, and both are
-flagged for human review because the right answer is not obvious
-from the physics alone. The physics only tells us that the noise
-sequences must be per-trajectory independent. Which mechanism
-produces them is an engineering decision made on top of that
-requirement.
+It does not prescribe the fix. At least four shapes are faithful
+to the physics (stateful per-trajectory, splittable keys, counter-
+based, pre-generated tape), and even within the stateful-per-
+trajectory family there are sub-shapes — putting the state on
+`Data` directly, or giving each environment its own `(Model,
+PassiveStack)` pair via a per-env installer. Each mechanism has
+its own blast radius and its own interaction with the `Stochastic`
+gating trait that deterministic-mode tests rely on. Those are
+chapter 14 and 15's problem, and both are flagged for human review
+because the right answer is not obvious from the physics alone.
+The physics only tells us that the noise sequences must be per-
+trajectory independent. Which mechanism produces them is an
+engineering decision made on top of that requirement.
 
 For now, the chapter ends on the requirement, not the decision: the
 noise driving each trajectory must be that trajectory's own, and
