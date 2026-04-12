@@ -18,7 +18,7 @@
 
 - [Single-seed is broken](20-single-seed-is-broken.md)
 - [TrainingBudget::Steps audit](21-training-budget-steps-audit.md)
-- [Fair compute parity]()
+- [Fair compute parity](22-fair-compute-parity.md)
 - [Competition API v2]()
 - [Result semantics]()
 
