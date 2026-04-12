@@ -1,0 +1,16 @@
+[package]
+name = "example-ml-vec-env-terminal-obs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bevy = { workspace = true }
+sim-bevy = { workspace = true }
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
+sim-ml-bridge = { workspace = true }
+
+[lints]
+workspace = true

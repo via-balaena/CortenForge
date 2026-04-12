@@ -1,0 +1,17 @@
+[book]
+title = "ML Chassis Refactor — A Study"
+authors = ["CortenForge"]
+description = "A durable investigation of sim-ml-bridge and sim-thermostat foundations, with a ground-up plan for refactoring them to support physics-aware ML research."
+language = "en"
+multilingual = false
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+
+[output.html.fold]
+enable = true
+level = 1

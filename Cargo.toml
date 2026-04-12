@@ -246,6 +246,7 @@ members = [
     "examples/fundamentals/sim-ml/vec-env/stress-test",
     "examples/fundamentals/sim-ml/vec-env/parallel-step",
     "examples/fundamentals/sim-ml/vec-env/auto-reset",
+    "examples/fundamentals/sim-ml/vec-env/terminal-obs",
     "examples/fundamentals/sim-ml/vec-env/reinforce",
     "examples/fundamentals/sim-ml/vec-env/ppo",
     "examples/fundamentals/sim-ml/vec-env/td3",
@@ -253,6 +254,10 @@ members = [
 
     # Examples — fundamentals / sim-ml / persistence
     "examples/fundamentals/sim-ml/persistence/train-then-replay",
+
+    # Examples — fundamentals / sim-ml / 6dof
+    "examples/fundamentals/sim-ml/6dof/stress-test",
+    "examples/fundamentals/sim-ml/6dof/cem-linear",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",

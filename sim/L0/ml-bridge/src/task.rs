@@ -314,19 +314,19 @@ const MJCF_6DOF: &str = r#"
              limited="true" range="-3.14 3.14"/>
       <joint name="j2" type="hinge" axis="0 0 1" damping="1.5"
              limited="true" range="-1.57 1.57"/>
-      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+      <geom name="seg1_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
       <body name="seg2" pos="0.3 0 0">
         <joint name="j3" type="hinge" axis="0 -1 0" damping="1.5"
                limited="true" range="-2.6 2.6"/>
         <joint name="j4" type="hinge" axis="0 0 1" damping="1.0"
                limited="true" range="-1.57 1.57"/>
-        <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
+        <geom name="seg2_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
         <body name="seg3" pos="0.25 0 0">
           <joint name="j5" type="hinge" axis="0 -1 0" damping="1.0"
                  limited="true" range="-2.6 2.6"/>
           <joint name="j6" type="hinge" axis="0 0 1" damping="0.5"
                  limited="true" range="-1.57 1.57"/>
-          <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
+          <geom name="seg3_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
           <site name="fingertip" pos="0.2 0 0" size="0.015"/>
         </body>
       </body>
@@ -562,19 +562,19 @@ const MJCF_6DOF_OBSTACLE: &str = r#"
              limited="true" range="-3.14 3.14"/>
       <joint name="j2" type="hinge" axis="0 0 1" damping="1.5"
              limited="true" range="-1.57 1.57"/>
-      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+      <geom name="seg1_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
       <body name="seg2" pos="0.3 0 0">
         <joint name="j3" type="hinge" axis="0 -1 0" damping="1.5"
                limited="true" range="-2.6 2.6"/>
         <joint name="j4" type="hinge" axis="0 0 1" damping="1.0"
                limited="true" range="-1.57 1.57"/>
-        <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
+        <geom name="seg2_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
         <body name="seg3" pos="0.25 0 0">
           <joint name="j5" type="hinge" axis="0 -1 0" damping="1.0"
                  limited="true" range="-2.6 2.6"/>
           <joint name="j6" type="hinge" axis="0 0 1" damping="0.5"
                  limited="true" range="-1.57 1.57"/>
-          <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
+          <geom name="seg3_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
           <site name="fingertip" pos="0.2 0 0" size="0.015"/>
         </body>
       </body>

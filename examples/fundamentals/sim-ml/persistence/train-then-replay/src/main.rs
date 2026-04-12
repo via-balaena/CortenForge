@@ -154,7 +154,7 @@ fn main() {
     );
 
     // ── Phase 2: Extract artifact with provenance ───────────────────────
-    let artifact = cem.policy_artifact().with_provenance(TrainingProvenance {
+    let artifact = cem.best_artifact().with_provenance(TrainingProvenance {
         algorithm: "CEM".into(),
         task: "reaching-2dof".into(),
         seed: SEED,

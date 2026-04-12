@@ -211,6 +211,7 @@ enum Phase {
     Warmup,
     Running,
     Paused,
+    Done,
 }
 
 #[derive(Resource)]
@@ -395,13 +396,24 @@ fn step_td3(mut res: ResMut<Td3Resource>, time: Res<Time>) {
     if res.phase == Phase::Paused {
         let wall_dt = time.delta_secs_f64();
         res.pause_timer -= wall_dt;
-        if res.pause_timer <= 0.0 && res.step_count < MAX_STEPS {
-            res.phase = Phase::Running;
+        if res.pause_timer <= 0.0 {
+            if res.step_count < MAX_STEPS {
+                res.phase = Phase::Running;
+            } else {
+                res.phase = Phase::Done;
+            }
         }
         return;
     }
 
+    if res.phase == Phase::Done {
+        return;
+    }
+
     if res.step_count >= MAX_STEPS {
+        if res.phase != Phase::Done {
+            res.phase = Phase::Done;
+        }
         return;
     }
 
@@ -618,20 +630,24 @@ fn update_hud(res: Res<Td3Resource>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Reaching Arm (VecEnv + TD3)");
     hud.raw(format!("step: {} / {MAX_STEPS}", res.step_count));
-    hud.raw(format!(
-        "epoch: {} / {MAX_EPOCHS}  ({}/{NUM_ENVS} episodes)",
-        res.display_epoch,
-        res.completed_rewards.len()
-    ));
-    hud.raw(format!(
-        "phase: {:?}{}",
-        res.phase,
-        if res.phase == Phase::Paused {
-            format!(" ({:.1}s)", res.pause_timer.max(0.0))
-        } else {
-            String::new()
-        }
-    ));
+    if res.phase == Phase::Done {
+        hud.raw(format!("training complete ({} epochs)", res.display_epoch));
+    } else {
+        hud.raw(format!(
+            "epoch: {} / {MAX_EPOCHS}  ({}/{NUM_ENVS} episodes)",
+            res.display_epoch,
+            res.completed_rewards.len()
+        ));
+        hud.raw(format!(
+            "phase: {:?}{}",
+            res.phase,
+            if res.phase == Phase::Paused {
+                format!(" ({:.1}s)", res.pause_timer.max(0.0))
+            } else {
+                String::new()
+            }
+        ));
+    }
 
     hud.raw(format!(
         "buffer: {} / {BUFFER_CAPACITY}",

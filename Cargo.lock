@@ -3504,6 +3504,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-6dof-cem-linear"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "example-ml-shared",
+ "rand 0.9.2",
+ "rand_distr",
+ "sim-bevy",
+ "sim-core",
+ "sim-ml-bridge",
+]
+
+[[package]]
+name = "example-ml-6dof-stress-test"
+version = "0.7.0"
+dependencies = [
+ "rand 0.9.2",
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-ml-persistence-train-then-replay"
 version = "0.7.0"
 dependencies = [
@@ -3701,6 +3724,17 @@ dependencies = [
  "rand_distr",
  "sim-bevy",
  "sim-core",
+ "sim-ml-bridge",
+]
+
+[[package]]
+name = "example-ml-vec-env-terminal-obs"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
  "sim-ml-bridge",
 ]
 

@@ -1,16 +1,23 @@
 # sim-ml-bridge Visual Examples Spec
 
-> **Status**: Draft v4 — Phase 4 complete (5 algorithm examples, 17 total)
+> **Status**: Draft v5 — Phases 1–4 complete, Phases 5–8 specified
 > **Location**: `examples/fundamentals/sim-ml/`
 > **Depends on**: `sim-ml-bridge`, `sim-bevy`, `sim-core`, `sim-mjcf`
 
 ## Context
 
-The sim-ml-bridge crate (Phases 1–6 complete, 111 tests) needs visual Bevy
+The sim-ml-bridge crate (Phases 1–6 complete, 342 tests) needs visual Bevy
 examples following the same "baby steps, one concept per example" pattern as
 `examples/fundamentals/sim-cpu/`. The crown jewels should have "watch the
 learning happen" quality — a population of arms going from chaos to
 coordinated reaching.
+
+Phases 1–4 covered spaces, SimEnv, VecEnv, and the 2-DOF algorithm ladder
+(all 5 algorithms with hand-coded linear policies). Since then the crate has
+grown substantially — MLP networks, autograd (tape-based reverse-mode AD),
+6-DOF and obstacle tasks, full checkpoint resume, best-policy tracking, and
+a competition runner — all proven by 342 headless tests but with zero visual
+Bevy proof. Phases 5–8 close that gap.
 
 ## Prerequisite sim-cpu Examples
 
@@ -45,33 +52,48 @@ API end-to-end.
 
 ```
 examples/fundamentals/sim-ml/
-├── spaces/
+├── spaces/                   # Phase 1 — DONE
 │   ├── stress-test/          #1  — headless correctness gate
 │   ├── obs-extract/          #2  — see tensor values update live
 │   ├── act-inject/           #3  — action drives the pendulum
 │   ├── obs-rich/             #4  — 13 extractor types in one HUD
 │   └── act-clamping/         #5  — out-of-range actions get clipped
-├── sim-env/
+├── sim-env/                  # Phase 2 — DONE
 │   ├── stress-test/          #6  — headless correctness gate
 │   ├── episode-loop/         #7  — Pattern B spike + episode lifecycle
 │   ├── sub-stepping/         #8  — side-by-side 1 vs 10 sub-steps
 │   └── on-reset/             #9  — different starting angle each episode
-└── vec-env/
-    ├── stress-test/          #10 — headless correctness gate
-    ├── parallel-step/        #11 — 8 pendulums, different actions
-    ├── auto-reset/           #12 — ★ 50 reaching arms + CEM (sampling)
-    ├── terminal-obs/         #13 — done vs truncated, value bootstrapping
-    ├── reinforce/            #14 — ★ 50 reaching arms + REINFORCE (gradient)
-    ├── ppo/                  #15 — ★ 50 reaching arms + PPO (actor-critic)
-    ├── td3/                  #16 — ★ 50 reaching arms + TD3 (off-policy, DPG)
-    └── sac/                  #17 — ★ 50 reaching arms + SAC (off-policy, entropy)
+├── vec-env/                  # Phases 3–4 — DONE (except #13)
+│   ├── stress-test/          #10 — headless correctness gate
+│   ├── parallel-step/        #11 — 8 pendulums, different actions
+│   ├── auto-reset/           #12 — ★ 50 reaching arms + CEM (sampling)
+│   ├── terminal-obs/         #13 — done vs truncated, value bootstrapping
+│   ├── reinforce/            #14 — ★ 50 reaching arms + REINFORCE (gradient)
+│   ├── ppo/                  #15 — ★ 50 reaching arms + PPO (actor-critic)
+│   ├── td3/                  #16 — ★ 50 reaching arms + TD3 (off-policy, DPG)
+│   └── sac/                  #17 — ★ 50 reaching arms + SAC (off-policy, entropy)
+├── persistence/              # Phase 7
+│   ├── train-then-replay/    #P1 — CEM train → save artifact → replay (DONE)
+│   └── checkpoint-resume/    #24 — full checkpoint save + resume training
+├── 6dof/                     # Phase 5
+│   ├── stress-test/          #18 — headless 6-DOF integration checks
+│   ├── cem-linear/           #19 — ★ 6-DOF + CEM + linear policy
+│   ├── ppo-mlp/              #20 — ★ 6-DOF + PPO + MLP (hidden layer)
+│   └── sac-autograd/         #21 — ★ 6-DOF + SAC + autograd 2-layer
+├── obstacle/                 # Phase 6
+│   ├── stress-test/          #22 — headless obstacle edge cases
+│   └── sac-autograd/         #23 — ★ 50 arms curving around obstacle
+├── competition/              # Phase 8
+│   └── dashboard/            #25 — multi-algorithm comparison replay
+└── shared/                   # shared Bevy scaffolding
 ```
 
-17 examples total. Package naming: `example-ml-{group}-{name}`.
+25 examples total (17 existing + 8 new). Package naming: `example-ml-{group}-{name}`.
 
-Examples #12, #14, #15 form a **learning algorithm ladder**: same arm,
-same target, same VecEnv — three different optimizers. The visual
-progression tells the story of the level 0-1 landscape:
+Examples #12, #14–#17 form the **2-DOF algorithm ladder**: same arm,
+same target, same VecEnv — five different optimizers, all with hand-coded
+linear policies (10–12 params). The visual progression tells the story of
+the level 0-1 landscape:
 
 | # | Algorithm | Type | Visual result |
 |---|-----------|------|---------------|
@@ -89,6 +111,21 @@ are too noisy to outperform gradient-free search on a smooth quadratic
 reward. The visual examples should reflect what actually happens — CEM
 as the crown jewel, gradient methods as the "why autograd matters"
 motivation. See `COMPETITION_TESTS_SPEC.md` for full analysis.
+
+Examples #19–#21 form the **6-DOF architecture ladder**: same 6-DOF task,
+three different (algorithm, network) pairs — each step adds one variable.
+The progression tells the story of why deeper networks and automatic
+differentiation matter:
+
+| # | Algorithm | Network | One new variable | Visual result |
+|---|-----------|---------|------------------|---------------|
+| 19 | CEM | Linear | Task complexity (2→6 DOF) | CEM struggles — 12-dim obs, 6-dim action |
+| 20 | PPO | MLP (hidden=32) | Network architecture | Gradient method shines with capacity |
+| 21 | SAC | Autograd [64,64] ReLU | Autograd + entropy | Deep network at the frontier |
+
+Examples #22–#23 add **obstacle avoidance** — the reward landscape becomes
+non-convex. Example #25 is the **competition dashboard** — all 5 algorithms
+on 6-DOF, best policies replayed side by side.
 
 ## Bevy Integration Patterns
 
@@ -543,6 +580,321 @@ resets, HUD highlights terminal obs vs initial obs for 1 second. Shows
 - dones and truncateds are mutually exclusive (done takes precedence)
 - After auto-reset, env continues stepping normally
 
+## Phase 5: 6-DOF Architecture Ladder
+
+The 2-DOF algorithm ladder (Phase 4) proved all 5 algorithms work with
+linear policies. Phase 5 escalates: harder task (6-DOF), deeper networks
+(MLP, autograd), and the algorithms that benefit most from capacity.
+
+**Key insight from competition tests:** CEM dominates on 2-DOF because the
+problem is trivially solvable by sampling 10 parameters. On 6-DOF, the
+story reverses — gradient methods with deeper networks overtake CEM.
+Phase 5 makes this visible.
+
+**Physics:** 3-segment planar arm (seg1→seg2→seg3), 6 hinge joints
+(j1–j6 alternating pitch/yaw), 6 motors with decreasing gear ratios
+(10→8→6→5→4→3). Fingertip site at end of seg3. Gravity enabled,
+contacts disabled. dt=0.002, RK4. Defined in `TaskConfig::reaching_6dof()`.
+
+**Shared lib:** Extend `shared/src/lib.rs` with `setup_reaching_6dof_arms()`
+for the 3-segment arm geometry.
+
+### #18. stress-test (headless)
+
+6-DOF-specific integration checks. The crate already has unit tests for
+`reaching_6dof()` (dims, build, step), but this covers visual-example
+prerequisites:
+
+1. **6-DOF VecEnv parity** — 50-env VecEnv matches sequential stepping
+2. **Obs scaling sanity** — obs_scale [1/π×6, 0.1×6] keeps values in
+   reasonable range after 100 steps
+3. **Done condition reachable** — starting from target_joints, fingertip
+   is within 5cm of target (done fires)
+4. **Truncated timing** — episode truncates at 5.0s
+5. **Reward gradient** — reward improves as qpos approaches target_joints
+6. **Auto-reset terminal_obs** — terminal observations populated correctly
+7. **6-DOF linear policy** — 72 params (6×12), forward produces valid
+   actions in [-1,1] (tanh)
+8. **6-DOF MLP policy** — hidden=32, 614 params, forward produces valid
+   actions
+9. **6-DOF autograd policy** — 2-layer [64,64] ReLU, forward matches
+   expected param count, gradient finite after backward
+10. **No NaN after 500 steps** — endurance with random actions
+
+### #19. cem-linear — "6-DOF Reaching: CEM + Linear Policy"
+
+**The familiar algorithm on a harder task.** 50 three-segment arms learn to
+reach a target via CEM. Same CEM that was king on 2-DOF — but 6-DOF
+has 12-dim obs and 6-dim action, so the linear policy now has 78 params
+(6×12 weights + 6 biases). CEM needs more envs or more generations to
+search this space.
+
+**Task:** `TaskConfig::reaching_6dof()`. Target joints:
+[0.5, 0.2, -0.8, 0.1, 0.5, -0.1]. Reward: negative squared joint-space
+error. Done: fingertip within 5cm + vel < 1.0. Truncated: t > 5.0s.
+Sub-steps: 5.
+
+**Policy:** `LinearPolicy` — `action = tanh(W · obs_scaled + b)`, 78 params.
+Obs scaled by [1/π×6, 0.1×6].
+
+**CEM config:** 50 envs, elite_fraction ~0.2, noise_std ~1.0 (higher than
+2-DOF because more params need wider search). 40 generations.
+
+**Visual story:** Gen 1 — 3-segment arms flail in all directions (pitch and
+yaw). Gen 10–20 — some arms find partial solutions (seg1 points toward
+target but seg2/seg3 don't coordinate). Gen 30–40 — CEM finds decent
+solutions but fewer arms converge than 2-DOF CEM did. The visual contrast
+with 2-DOF auto-reset (#12) is immediate: harder problem, less convergence.
+
+**HUD:** Generation, phase, reached count, best reward, sigma, per-env
+scoreboard (same layout as #12 but adapted for 6-DOF metrics).
+
+**Validates:**
+- Some arms reach target (≥5/50 trigger done by gen 40)
+- Reward improves from gen 1 (≥30% improvement)
+- Sigma decreases over training
+- Visual: arms coordinate across 3 segments, not just seg1
+
+### #20. ppo-mlp — "6-DOF Reaching: PPO + MLP"
+
+**Gradient methods shine with capacity.** Same 6-DOF task as #19 — but
+replaces CEM with PPO and upgrades from linear to MLP (1 hidden layer,
+32 units). The MLP has 614 params (much more than CEM's 78 linear params),
+but PPO uses gradients to navigate this space efficiently.
+
+**Why this matters:** Linear policies can't represent nonlinear value
+landscapes well. MLP adds a ReLU/tanh hidden layer that lets the policy
+learn joint coordination patterns CEM's linear policy can't capture. The
+competition tests (`hypothesis_mlp_beats_linear`) confirm MLP PPO
+outperforms linear PPO on 6-DOF.
+
+**Policy:** `MlpPolicy` — hidden=32, tanh activation. 614 params.
+**Critic:** `MlpValue` — hidden=32, same architecture. ~200 params.
+**Optimizer:** Adam, lr ~3e-4.
+
+**PPO config:** 50 envs, clip_eps=0.2, k_passes=2–4, gamma=0.99,
+gae_lambda=0.95, sigma annealing. 40 epochs.
+
+**Visual story:** Epoch 1 — random flailing (like CEM gen 1). Epoch 10 —
+all 50 arms moving in unison toward target (shared policy, unlike CEM's
+per-env perturbations). Epoch 20–30 — coordinated 3-segment reaching,
+most arms park near target. The contrast with #19: more convergence,
+smoother motion, all arms in sync.
+
+**HUD:** Epoch, phase, reached count, mean reward, sigma, value loss,
+clip fraction, reward curve.
+
+**Validates:**
+- ≥20/50 trigger done by epoch 30
+- Reward improvement ≥60% from epoch 1
+- Value loss decreases over training
+- Visual: all arms move in unison (shared policy)
+
+### #21. sac-autograd — "6-DOF Reaching: SAC + Autograd 2-Layer"
+
+**Deep network + entropy at the frontier.** Same 6-DOF task — SAC with
+autograd-backed 2-hidden-layer networks ([64,64] ReLU, Xavier init).
+This is the most capable architecture in the crate: automatic
+differentiation through arbitrary-depth networks, stochastic policy with
+learned log-std, entropy-regularized exploration, and twin Q-networks.
+
+**Why this matters:** SAC requires `StochasticPolicy` for reparameterized
+sampling. Only `AutogradStochasticPolicy` provides this with MLP capacity
+(there's no `MlpStochasticPolicy`). This example is the visual proof that
+the autograd system — tape, backward, Xavier init, ReLU layers — works
+end-to-end in a real learning loop.
+
+**Policy:** `AutogradStochasticPolicy` — 2 hidden layers [64,64], ReLU,
+Xavier init. Stochastic: learned log_std per action dimension.
+**Critics:** `AutogradQ` × 2 (twin Q-networks), same architecture.
+**Optimizer:** Adam, lr ~3e-4. Separate optimizers for actor and critics.
+**Alpha:** auto-tuned, target_entropy = -act_dim.
+
+**SAC config:** 50 envs, gamma=0.99, tau=0.005, batch_size=256,
+buffer_capacity ~50k, warmup_steps ~1000. 50 epochs.
+
+**Visual story:** Steps 1–1000 (warmup) — random exploration fills replay
+buffer. Epoch 5–10 — arms begin coordinating, entropy high (diverse
+exploration). Epoch 20–30 — arms converge smoothly, alpha decreases as
+policy becomes more confident. Epoch 40–50 — tight reaching, most arms
+at target. The contrast with #20: off-policy efficiency means more
+sample reuse, entropy prevents premature convergence.
+
+**HUD:** Step count, epoch, phase (warmup/running/paused), replay buffer
+fill, mean Q1, alpha, entropy, reached count, reward curve.
+
+**Validates:**
+- ≥15/50 trigger done by epoch 40
+- Reward improvement ≥40% (early to late episodes)
+- Alpha adapted (|final - initial| > 0.001)
+- Replay buffer fills to warmup threshold
+- Visual: arms explore diversely early, converge late
+
+## Phase 6: Obstacle Avoidance
+
+The hardest learning task. A ghost sphere sits between the arm's rest
+configuration and the target. The agent must curve around it. The reward
+includes a distance penalty:
+`r = -dist(fingertip, target) - 10 * max(0, 0.12 - dist(fingertip, obstacle))`
+
+This makes the reward landscape non-convex — the shortest path to the
+target goes through the obstacle, so the arm must find a longer path
+around it.
+
+**Physics:** Same 3-segment arm as Phase 5. Obstacle at (0.730, 0.046, 0.030),
+radius 0.06. Target at (0.681, 0.154, 0.101). Defined in
+`TaskConfig::obstacle_reaching_6dof()`.
+
+**Observation:** 21-dim: qpos(6) + qvel(6) + fingertip_xpos(3) +
+obstacle_xpos(3) + target_xpos(3). The agent sees where the obstacle
+and target are.
+
+### #22. stress-test (headless)
+
+Obstacle-specific integration checks beyond the crate's 6 unit tests:
+
+1. **Penalty fires near obstacle** — at rest (qpos=0), fingertip ≈ 0.058m
+   from obstacle center, well within r_safe=0.12, penalty > 0
+2. **Penalty zero when far** — at target config, fingertip far from obstacle,
+   penalty == 0.0
+3. **Reward gradient toward target** — moving qpos toward target_joints
+   improves reward (when not near obstacle)
+4. **Obstacle position in obs** — obs[15..18] matches body 4 xpos
+5. **Target position in obs** — obs[18..21] matches site 0 xpos
+6. **50-env VecEnv parity** — batched stepping matches sequential
+7. **500-step endurance** — no NaN with random actions near obstacle
+8. **Done reachable** — from target_joints, fingertip within 5cm, done fires
+
+### #23. sac-autograd — "Obstacle Avoidance: SAC + Autograd 2-Layer"
+
+**The capstone learning example.** 50 three-segment arms learn to reach
+the green target while avoiding the red obstacle. SAC + autograd 2-layer
+([64,64] ReLU) — the same architecture as #21, but the obstacle penalty
+forces the arm to find a non-trivial path.
+
+**Visual:** Same 3-segment arm layout as Phase 5 examples. Add:
+- Red semi-transparent sphere at obstacle position (r=0.06)
+- Green sphere at target position
+- Arms that clip the obstacle's safe radius (r=0.12) should visually
+  show the proximity (e.g., segment near obstacle turns amber/red)
+
+**SAC config:** Same as #21 but with the obstacle task. May need more
+epochs (50–80) due to harder exploration.
+
+**Visual story:** Warmup — random exploration, many arms clip the obstacle.
+Epoch 10–20 — arms begin routing around the obstacle, some from above,
+some below. Epoch 30–50 — most arms find clean paths that curve around
+the obstacle to the target. The penalty visualization shows fewer
+near-misses as training progresses.
+
+**HUD:** Same as #21, plus:
+- Obstacle penalty (mean penalty across envs this epoch)
+- Near-miss count (envs where fingertip entered r_safe)
+
+**Validates:**
+- ≥10/50 trigger done by epoch 50
+- Reward improvement ≥30% (early to late)
+- Mean obstacle penalty decreases over training
+- Visual: arms curve around obstacle, not through it
+
+## Phase 7: Persistence Depth
+
+The existing `train-then-replay` example (#P1) demonstrates saving and
+loading a `PolicyArtifact` — policy weights only. But the crate has full
+`TrainingCheckpoint` support: policy, critics, optimizer momentum (m, v, t),
+algorithm-specific state (noise_std, sigma, log_alpha), and best-epoch
+tracking. None of that has visual proof.
+
+### #24. checkpoint-resume — "Checkpoint Resume: Pause, Save, Continue"
+
+**Full checkpoint round-trip.** Train a CEM on 2-DOF reaching for 15 epochs
+→ save a `TrainingCheckpoint` to disk → reload the checkpoint → continue
+training for 15 more epochs. The learning curve should be seamless across
+the boundary — no regression, no re-exploration.
+
+**Why CEM on 2-DOF:** The concept is persistence, not the learning problem.
+CEM on 2-DOF converges visibly in 15–20 epochs, making the resume effect
+obvious. A harder task would obscure the signal.
+
+**Two-phase visual:**
+- **Phase A (epochs 1–15):** Live CEM training, 50 reaching arms. HUD shows
+  epoch, reward, sigma, best-epoch tracking. At epoch 15, training pauses.
+  HUD shows "Saving checkpoint..." then the file path.
+- **Phase B (epochs 16–30):** Checkpoint loaded. Training resumes. HUD shows
+  "Resumed from checkpoint (epoch 15)" and the learning curve continues
+  from where it left off. Best-epoch tracker carries over — if the best
+  epoch was epoch 12, the HUD shows "Best: epoch 12 (reward: -X.XX)" and
+  only updates if a later epoch beats it.
+
+**Best-policy tracking in HUD:** Every frame shows:
+```
+Best epoch: 12  reward: -0.83  (params saved)
+```
+This persists across the checkpoint boundary. If epoch 22 beats epoch 12,
+it updates live. This is the visual proof that `BestTracker` works.
+
+**Checkpoint contents saved:**
+- `algorithm_name: "CEM"`
+- `policy_artifact` (current policy weights)
+- `algorithm_state: { "noise_std": ... }`
+- `best_params`, `best_reward`, `best_epoch`
+
+**Validates:**
+- Reward at epoch 16 ≥ reward at epoch 15 (no regression after resume)
+- noise_std at epoch 16 matches noise_std at epoch 15 (state preserved)
+- Best epoch/reward carries across checkpoint boundary
+- Final reward (epoch 30) ≥ reward at checkpoint (epoch 15)
+- Checkpoint file written and read successfully
+
+## Phase 8: Competition Dashboard
+
+The crate has a `Competition` runner with 13 integration tests validating
+algorithm ordering hypotheses. This example makes it visual: train all 5
+algorithms headlessly on the same task, then replay each algorithm's best
+policy.
+
+### #25. dashboard — "Competition: 5 Algorithms on 6-DOF"
+
+**Multi-algorithm comparison.** Headless CEM/REINFORCE/PPO/TD3/SAC training
+on `reaching_6dof()`, then replay each algorithm's `best_artifact()` in a
+row of 5 arms.
+
+**Training phase (headless):** Use `Competition::new(50, Epochs(30), 42)`.
+All 5 algorithms get autograd 2-layer [64,64] networks (level 2). Training
+runs headlessly at startup — progress bar or HUD showing "Training CEM...
+REINFORCE... PPO... TD3... SAC..." with wall times.
+
+**Replay phase (visual):** 5 arms side by side, each executing the best
+policy from one algorithm. Arms color-coded and labeled:
+
+| Position | Algorithm | Color |
+|----------|-----------|-------|
+| 1 (leftmost) | CEM | Blue |
+| 2 | REINFORCE | Cyan |
+| 3 | PPO | Green |
+| 4 | TD3 | Orange |
+| 5 (rightmost) | SAC | Red |
+
+**HUD (per arm):**
+```
+CEM         REINFORCE   PPO         TD3         SAC
+-0.83       -12.4       -3.1        -8.7        -5.2
+ep 22/30    ep 18/30    ep 25/30    ep 14/30    ep 20/30
+3.2s        4.1s        5.8s        6.2s        7.1s
+```
+Shows: algorithm name, best reward, best epoch, training wall time.
+
+**Visual story:** Viewers immediately see which algorithms learned to reach
+(arms at target) vs which didn't (arms stuck or flailing). The ranking
+matches the competition test findings — likely CEM or SAC at the top for
+this configuration.
+
+**Validates:**
+- All 5 algorithms complete training without panic
+- At least 2 algorithms achieve meaningful reward improvement (≥30%)
+- Best policies replay without error
+- Arms visually differentiated (different colors, labels)
+
 ## Implementation Order
 
 Stress-test first in each phase — establishes correctness before investing
@@ -552,30 +904,50 @@ visual examples build on a confirmed-working foundation.
 Build one at a time. Review each (numbers pass + visuals pass) before the
 next:
 
-### Phase 1: Spaces
-1. **stress-test** — headless, 9 integration checks
-2. obs-extract — establishes visual boilerplate for Phase 1
-3. act-inject — adds action system to the pattern
-4. obs-rich — more complex model (cart-pole), rich HUD
-5. act-clamping — focused concept, completes spaces coverage
+### Phase 1: Spaces — COMPLETE
+1. **stress-test** — headless, 9 integration checks — **DONE**
+2. obs-extract — **DONE**
+3. act-inject — **DONE**
+4. obs-rich — **DONE**
+5. act-clamping — **DONE**
 
-### Phase 2: SimEnv
-6. **stress-test** — headless, 10 integration checks
-7. episode-loop — **Pattern B spike** + episode lifecycle
-8. sub-stepping — PhysicsScenes for SimEnv side-by-side
-9. on-reset — domain randomization
+### Phase 2: SimEnv — COMPLETE
+6. **stress-test** — **DONE**
+7. episode-loop — **DONE**
+8. sub-stepping — **DONE**
+9. on-reset — **DONE**
 
-### Phase 3: VecEnv
-10. **stress-test** — headless, 11 integration checks
-11. parallel-step — introduces Pattern C (VecEnv rendering) — **DONE**
-12. auto-reset — ★ reaching arm + CEM (sampling-based) — **DONE**
-13. terminal-obs — deep RL concept, HUD-focused
+### Phase 3: VecEnv — DONE except #13
+10. **stress-test** — **DONE**
+11. parallel-step — **DONE**
+12. auto-reset — ★ CEM — **DONE**
+13. terminal-obs — to build
 
-### Phase 4: Learning Algorithm Ladder — COMPLETE
-14. reinforce — ★ same arm + REINFORCE (gradient-based) — **DONE**
-15. ppo — ★ same arm + PPO (actor-critic) — **DONE**
-16. td3 — ★ same arm + TD3 (off-policy, twin-Q, DPG) — **DONE**
-17. sac — ★ same arm + SAC (off-policy, entropy, reparameterized) — **DONE**
+### Phase 4: 2-DOF Algorithm Ladder — COMPLETE
+14. reinforce — **DONE**
+15. ppo — **DONE** (README missing)
+16. td3 — **DONE** (README missing)
+17. sac — **DONE** (README missing)
+
+### Housekeeping
+- terminal-obs (#13)
+- PPO/TD3/SAC READMEs
+
+### Phase 5: 6-DOF Architecture Ladder
+18. **stress-test** — headless, 10 integration checks
+19. cem-linear — ★ 6-DOF + CEM + linear (task complexity)
+20. ppo-mlp — ★ 6-DOF + PPO + MLP (architecture upgrade)
+21. sac-autograd — ★ 6-DOF + SAC + autograd 2-layer (deep network)
+
+### Phase 6: Obstacle Avoidance
+22. **stress-test** — headless, 8 obstacle checks
+23. sac-autograd — ★ 50 arms + obstacle avoidance
+
+### Phase 7: Persistence Depth
+24. checkpoint-resume — full checkpoint save/resume + best-policy tracking
+
+### Phase 8: Competition Dashboard
+25. dashboard — 5 algorithms on 6-DOF, best policies replayed side by side
 
 ## READMEs
 
@@ -630,6 +1002,13 @@ cargo run -p example-ml-{group}-stress-test --release
 - **sim-bevy helpers:** `sim/L1/bevy/src/examples.rs`
 - **Multi-scene:** `sim/L1/bevy/src/multi_scene.rs`
 - **Model/Data:** `sim/L1/bevy/src/model_data.rs`
+- **6-DOF task:** `sim/L0/ml-bridge/src/task.rs` — `reaching_6dof()`, `obstacle_reaching_6dof()`
+- **Competition runner:** `sim/L0/ml-bridge/src/competition.rs`
+- **Competition tests:** `sim/L0/ml-bridge/tests/competition.rs` (13 hypothesis tests)
+- **Artifact/checkpoint:** `sim/L0/ml-bridge/src/artifact.rs`
+- **Best-policy tracker:** `sim/L0/ml-bridge/src/best_tracker.rs`
+- **Autograd:** `sim/L0/ml-bridge/src/autograd.rs`, `autograd_policy.rs`, `autograd_value.rs`
+- **MLP networks:** `sim/L0/ml-bridge/src/mlp.rs`
 
 ## Verification
 
