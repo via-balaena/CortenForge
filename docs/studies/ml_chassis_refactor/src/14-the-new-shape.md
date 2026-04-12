@@ -192,10 +192,9 @@ axis has three live entries, not four.
 
 Ch 14 lists shape 2 separately for honest coverage of Ch 10's
 enumeration and for readers coming from a JAX / functional
-background, but in a Rust chassis the axis has three live entries,
-not four. Subsequent sections do not give shape 2 its own hosting
-analysis; any hosting choice for shape 1 applies to a Rust-flavored
-shape 2 identically.
+background. Subsequent sections do not give shape 2 its own
+hosting analysis; any hosting choice for shape 1 applies to a
+Rust-flavored shape 2 identically.
 
 ### Shape 3: counter-based PRF
 
@@ -665,9 +664,9 @@ A, B, and C. None is eliminated by the walk.
 ## Section 3 — The grid
 
 Composing the mechanism and hosting axes produces twelve cells in
-principle. Shape 2 collapses into shape 1 in Rust, shape 4 is
-dominated by cost, and the remaining cells fall into a small
-shortlist. The table below summarizes; each row is a cell labeled
+principle. Shape 2 collapses (in two directions) into shapes 1 and
+3 in Rust, shape 4 is eliminated by memory and flexibility cost,
+and the remaining cells fall into a small shortlist. The table below summarizes; each row is a cell labeled
 `<hosting>-<mechanism>`. "Chassis changes" counts strictly
 structural work, not per-component logic changes.
 
