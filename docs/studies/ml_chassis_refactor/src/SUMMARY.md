@@ -20,7 +20,7 @@
 - [TrainingBudget::Steps audit](21-training-budget-steps-audit.md)
 - [Fair compute parity](22-fair-compute-parity.md)
 - [Competition API v2](23-competition-api-v2.md)
-- [Result semantics]()
+- [Result semantics](24-result-semantics.md)
 
 # Part 3 — The Rematch
 
