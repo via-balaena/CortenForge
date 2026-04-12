@@ -288,9 +288,42 @@ belongs to chapter 23. This is the one place round 3 consciously
 chapter's scope (linear-$Q$ is in scope; D1d-style on-policy
 exploration artifacts are not).
 
+## Round 4 — tightening pass (M3)
+
+**Triggered:** Yes, voluntary tightening pass on a round-3 defer.
+
+**Finding:** The geometry-vs-expressiveness split is load-bearing
+for the rematch's interpretation but the chapter never stated
+that the split depends on "matched complexity" being defined
+operationally rather than rhetorically. Round 3's cold reader
+flagged this explicitly: if SA ends up running with a
+parameterization richer than the linear-policy class CEM had in
+D2c, a positive result could be expressiveness masquerading as
+geometry and the whole chapter's framing collapses. Round 3
+deferred the fix because it was additive, not corrective, and
+round 4 is the natural place to add it.
+
+**Revision applied:**
+
+- Added a one-paragraph caveat after the "Two observations matter
+  for the rematch" block. The paragraph names the dependence
+  ("the distinction only holds if 'matched complexity' is defined
+  operationally rather than rhetorically"), the failure mode
+  ("expressiveness masquerading as geometry"), and the deferral
+  ("the operational definition of matched complexity ... is a
+  chapter 23 question and has to be nailed down before any
+  rematch result can be interpreted through the split this
+  chapter is building on").
+- This is additive content — it does not remove or restructure
+  anything else. Net effect: readers now see that "matched
+  complexity" is a precise ch23 commitment, not a throwaway
+  phrase, before they read the three-outcome framing that
+  depends on it.
+
 ## Status
 
-Drafted, factual pass complete, self-reviewed, three rounds of
-thinking-pass review applied, four substantive revisions landed
-in round 3 (one of which was a factual contradiction fix).
-Ready for a post-revision commit.
+Drafted, factual pass complete, three rounds of thinking-pass
+review applied (round 2 drafting → factual fixes; round 3
+post-commit cold read → four revisions including a factual
+contradiction fix; round 4 tightening pass → one additive caveat).
+Ready for a follow-up commit.

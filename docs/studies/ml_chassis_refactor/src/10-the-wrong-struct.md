@@ -133,7 +133,7 @@ makes that call. The point of this chapter is only that **some**
 faithful implementation is required, and that **the current code is
 not one of them.**
 
-## Why the current code is none of the above
+## Why the current arrangement fails the requirement
 
 The current implementation is a per-trajectory stateful RNG (shape
 1 above) in everything except the critical detail of where the
@@ -145,22 +145,20 @@ of a `BatchSim`. Every environment reaches the same
 `Arc<LangevinThermostat>`, which means every environment shares the
 same `Mutex<ChaCha8Rng>`. There is one generator, not $N$, and the
 $N$ environments draw from it in whatever order the scheduler
-happens to acquire the mutex.
+happens to acquire the mutex. A per-trajectory stateful RNG with
+$N$ generators is faithful; a single stateful RNG with a mutex is
+not. The code is the second thing while looking structurally like
+the first.
 
-A per-trajectory stateful RNG with $N$ generators is faithful. A
-single stateful RNG with a mutex is not. The code is the second
-thing while looking structurally like the first; the bug is in the
-mismatch.
-
-## Why the mutex is not the fix
-
-The current code guards its RNG with a mutex. In Rust terms this is
-correct: it prevents a data race when multiple threads call `apply`
-on the same `Arc<Model>` concurrently. In physics terms it is exactly
-the wrong fix, because the thing it prevents — a data race — is not
-the thing that went wrong. What went wrong is that two trajectories
-are sharing one noise process, and the mutex makes that sharing
-*orderly* instead of *racy*. Order is not independence.
+The mutex itself is the natural first thing to defend, and it
+deserves a direct rebuttal. In Rust terms, guarding the RNG with
+a mutex is correct: it prevents a data race when multiple threads
+call `apply` on the same `Arc<Model>` concurrently. In physics
+terms it is exactly the wrong fix, because the thing it prevents —
+a data race — is not the thing that went wrong. What went wrong
+is that two trajectories are sharing one noise process, and the
+mutex makes that sharing *orderly* instead of *racy*. Order is not
+independence.
 
 To see why, imagine two parallel environments stepping in lockstep.
 Environment 1 acquires the mutex, draws its noise, releases it.

@@ -234,8 +234,34 @@ chapter. Two substantive findings and some minor notes.
   the type signature is that having every test re-implement the
   significance test is worse than having none of them do it."
 
+## Round 4 — tightening pass (M2)
+
+**Triggered:** Yes, voluntary tightening pass on a round-3 defer.
+
+**Finding:** The rematch-section walkthrough cited `N_ENVS`,
+`TrainingBudget::Epochs(N_EPOCHS)`, and `SEED` all at once. Of
+those, `SEED` is the only load-bearing detail for this chapter's
+single-seed argument. The env count and budget tokens belong to
+chapter 00's third bullet — the fairness finding about CEM vs SA
+per-epoch cost — not to this chapter's argument.
+
+**Revision applied:**
+
+- Replaced the full `Competition::new_verbose(N_ENVS,
+  TrainingBudget::Epochs(N_EPOCHS), SEED)` line with
+  `Competition::new_verbose(...)`, keeping only the `const SEED:
+  u64 = 20_260_412` detail in prose.
+- Added a one-line parenthetical clarifying that the env count
+  and budget are fixed by the D2c protocol the rematch mirrors,
+  not by a choice made in this chapter — so a reader doesn't
+  wonder why those numbers disappeared.
+- Net change: ~3 tokens saved, the scalar-gate argument is no
+  longer competing for attention with budget/env numbers that
+  belong somewhere else.
+
 ## Status
 
-Drafted, factual pass complete, self-reviewed, two rounds of
-thinking-pass review applied, four substantive revisions
-landed in round 3. Ready for a post-revision commit.
+Drafted, factual pass complete, self-reviewed, three rounds of
+thinking-pass review applied (round 2 drafting → factual fix;
+round 3 post-commit cold read → four revisions; round 4
+tightening pass → one compression). Ready for a follow-up commit.

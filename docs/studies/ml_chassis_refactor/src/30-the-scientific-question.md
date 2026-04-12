@@ -78,6 +78,19 @@ to track the problem. That second failure is about expressiveness,
 not about geometry, and it is the one that a matched-complexity
 rematch has to control for.
 
+The geometry-vs-expressiveness distinction is load-bearing for
+the rest of this chapter — the rematch tests the first, not the
+second — and the distinction only holds if "matched complexity" is
+defined operationally rather than rhetorically. If the rematch ends
+up running SA with a parameterization that happens to be richer
+than the linear-policy class CEM had in D2c, a positive result
+could be expressiveness masquerading as geometry and the whole
+framing collapses. The operational definition of matched
+complexity (parameter count? parameterization family? representation
+width?) is a chapter 23 question and has to be nailed down before
+any rematch result can be interpreted through the split this
+chapter is building on.
+
 ## What "physics-aware beats generic RL" is supposed to mean
 
 The rematch adds Simulated Annealing (and, eventually, Parallel

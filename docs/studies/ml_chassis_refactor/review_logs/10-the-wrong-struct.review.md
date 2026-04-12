@@ -295,8 +295,40 @@ per-trajectory-stateful mechanism, plus splittable keys, plus
 counter-based. Chapter 15 must consider all four, not two. Memory
 updated separately to reflect this.
 
+## Round 4 — tightening pass (M1)
+
+**Triggered:** Yes, but voluntarily — user-approved tightening
+pass on a medium-severity finding round 3 had deferred.
+
+**Finding:** "Why the current code is none of the above" and "Why
+the mutex is not the fix" overlapped. Both were saying "shared
+stream with ordering is not independence" — the first structurally,
+the second dynamically. After round 3 expanded "Why the mutex is
+not the fix" with the single-threaded pre-emption, the second
+section was doing more distinct work but the overlap with the
+first was still visible on re-read.
+
+**Revision applied:**
+
+- Merged the two sections into one, renamed "Why the current
+  arrangement fails the requirement."
+- The static placement observation (one `Mutex<ChaCha8Rng>` inside
+  an `Arc<PassiveStack>` shared via `cb_passive` on a single
+  `Arc<Model>`) is now the section's first paragraph. The mutex
+  rebuttal is the second paragraph, led by "The mutex itself is
+  the natural first thing to defend, and it deserves a direct
+  rebuttal." The lockstep/rayon walkthrough and the single-threaded
+  pre-emption follow unchanged.
+- Saved one `##` heading and about 15 lines of restatement. The
+  section now reads as a single progression — placement, why the
+  obvious fix (mutex) doesn't work, dynamic demonstration,
+  pre-emption of the next-obvious fix (force single-threaded).
+
+**Not acted on:** nothing else from round 3 or round 4 remains.
+
 ## Status
 
-Drafted, factual pass complete, two rounds of thinking-pass
-review applied, four substantive revisions landed in round 3.
-Ready for a post-revision commit.
+Drafted, factual pass complete, three rounds of thinking-pass
+review applied (round 2 cold read → revisions; round 3 post-commit
+cold read → four revisions; round 4 tightening pass → one
+structural fold). Ready for a follow-up commit.

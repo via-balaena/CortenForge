@@ -105,13 +105,16 @@ is a way of not-knowing dressed up as a way of knowing.
 ## Our specific case: the rematch
 
 The construction spec defines the D2c rematch test as a single call
-to `Competition::new_verbose(N_ENVS, TrainingBudget::Epochs(N_EPOCHS), SEED)`
-with `const SEED: u64 = 20_260_412`, followed by a call to
-`comp.run(...)` and a gate `sa_best >= best_rl` that compares
-scalar `best_reward` values. Every element of that protocol is
-single-seed: the competition object is single-seed by type, the
-returned `sa_best` is single-seed by type, the gate is a scalar
-comparison with no notion of variance or confidence.
+to `Competition::new_verbose(...)` with `const SEED: u64 = 20_260_412`,
+followed by `comp.run(...)` and a gate `sa_best >= best_rl` that
+compares scalar `best_reward` values. Every element of that
+protocol is single-seed: the competition object is single-seed by
+type, the returned `sa_best` is single-seed by type, the gate is
+a scalar comparison with no notion of variance or confidence.
+(The env count and budget — 32 envs, 100 epochs, 5000-step episodes
+— are chapter 00's fairness finding, not this chapter's argument;
+they're fixed because the rematch is designed to mirror the D2c
+protocol they came from.)
 
 The relevant effect size is whatever margin by which we expect
 physics-aware SA to beat matched-complexity RL on a stochastic-
