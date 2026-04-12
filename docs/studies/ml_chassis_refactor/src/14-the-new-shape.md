@@ -237,28 +237,55 @@ is satisfied by the same early-return pattern the current code uses,
 just with the integer counter standing in for the ChaCha stream
 state.
 
-The cost shape 3 imposes is a dependency on a PRF implementation.
-`rand_chacha` is not a PRF — it is a stream cipher used as a
-streaming RNG, and treating it as a PRF by re-seeding per `(traj,
-step)` and taking the first output would cost a full `seed_from_u64`
-call per step (ChaCha8 key schedule plus initialization), which is
-not cheap and is architecturally clumsy. Shape 3 in Rust commits
-to a counter-based PRF crate: `rand_philox`, `rand_threefry`, or an
-equivalent community crate in the `rand_distr`-adjacent ecosystem.
-These crates exist and are not hypothetical, but they are less
-battle-tested than `rand_chacha` and less widely audited. The
-magnitude of that cost depends on the use case: for a production or
-security context, "less audited" is a real risk; for a research
-codebase whose PRF output is fed through Gaussian transforms and
-consumed by an SDE integrator, "less audited" is a documentation-
-and-maintenance cost rather than a numerical-quality risk — a
+The cost shape 3 imposes is a PRF implementation. Three routes
+are available in Rust, each with its own cost profile.
+
+**Route 1: use `rand_chacha`'s existing seek API.** `rand_chacha
+0.9.0` (already in the workspace) exposes
+`ChaCha8Rng::set_word_pos(u128)` as a public method that seeks to
+an arbitrary position in the underlying cipher stream. Each apply
+call can seek to an encoded `(traj_id, step_index, dof_idx)`
+position and read one value, giving counter-based PRF semantics
+on top of the chassis PRNG with no new dependency. The cost is
+that `ChaCha8Rng` is not `Sync`, so the component still needs
+interior mutability (the mutex or equivalent), and the
+`set_word_pos` call itself costs roughly one ChaCha block
+computation per seek. A reader under this route sees
+`Mutex<ChaCha8Rng>` on the component and has to learn both the
+mutex-ceremony questions from shape 1 *and* the seek-based
+counter semantics — arguably more complicated than shape 1, not
+less.
+
+**Route 2: implement the ChaCha8 block function directly in the
+thermostat crate.** Roughly 50 to 100 lines of well-documented
+block cipher code, as a stateless pure function verifiable against
+`rand_chacha`'s output for correctness, and free of
+interior-mutability ceremony on the component because no RNG state
+is stored as a field. A reader sees `apply` calling a pure
+function and understands it in one read. The cost is that the
+thermostat crate owns a small cryptographic primitive that has to
+be maintained, tested, and kept consistent with the specification.
+
+**Route 3: depend on a counter-based PRF crate.** The Rust
+ecosystem does not have `rand_philox` or `rand_threefry` in active
+maintenance (both names return empty or abandoned results on
+crates.io); the candidates that do exist are `aprender-rand`
+(Philox 4x32-10 implementation, version 0.29.0, from the
+`paiml/trueno` repository) and `squares` (a smaller counter-RNG
+crate at version 0.1.1). Both are real and usable but neither is
+as widely adopted as `rand_chacha`. Taking on either amounts to
+depending on a less-battle-tested crate for a load-bearing piece
+of the chassis. For a production or security context the risk is
+real; for a research codebase whose PRF output is fed through
+Gaussian transforms and consumed by an SDE integrator, a
 defective PRF would surface as bias in the rematch's measured
-statistics, which the regression-test oracle from Ch 13 would catch
-before it reaches published numbers. Ch 14 does not recommend a
-specific crate — that is a Ch 15 or Part 4 decision — but names the
-dependency honestly as part of shape 3's cost, with the asymmetry
-between production-risk and research-risk surfaced for Ch 15's
-use.
+statistics — which the regression-test oracle from Ch 13 would
+catch before it reaches published numbers.
+
+Ch 14 does not pick among these routes — that is Ch 15's
+decision — but names them honestly so the grid in Section 3
+treats shape 3's cost as an implementation cost (one of the three
+routes above), not an unavoidable dependency on a niche crate.
 
 What shape 3 needs from the chassis, described independently of
 hosting: a way for `apply` to read the per-trajectory `traj_id` and
@@ -326,9 +353,9 @@ as co-equal.
 Shape 1 is the current code's shape, rewritten to own its stream
 properly. Shape 2 collapses (in two directions) into shapes 1 and
 3 in Rust. Shape 3 is a genuine second mechanism with different
-chassis demands and a PRF dependency cost. Shape 4 is an also-ran
-with real memory and flexibility costs that section 3's grid
-eliminates.
+chassis demands and a PRF implementation cost (one of three
+routes named above). Shape 4 is an also-ran with real memory and
+flexibility costs that section 3's grid eliminates.
 
 The mechanism axis has three live entries under the rest of this
 chapter: shape 1, shape 3, and shape 4 (with shape 4 kept for
@@ -673,13 +700,13 @@ structural work, not per-component logic changes.
 | Cell | Mechanism | Hosting | Chassis changes | Notes |
 |------|-----------|---------|-----------------|-------|
 | A-1  | Shape 1 (stateful stream) | On `Data`              | `Data` grows a per-component stream field; `&mut Data` trait change OR nested interior mutability inside `Data` | Couples `Data` to component internals; no natural shape |
-| A-3  | Shape 3 (counter + PRF)   | On `Data`              | `Data` grows `step_index: u64` (optionally `traj_id: u64`); PRF dependency | Trait signature intact; contested by strict reading of the `Data` invariant; live under the loose reading via the `time`-field precedent |
+| A-3  | Shape 3 (counter + PRF)   | On `Data`              | `Data` grows `step_index: u64` (optionally `traj_id: u64`); PRF implementation (Section 1, three routes) | Trait signature intact; contested by strict reading of the `Data` invariant; live under the loose reading via the `time`-field precedent |
 | A-4  | Shape 4 (pre-generated)   | On `Data`              | `Data` grows per-env tape plus read index; memory cost                     | Trait signature intact; memory scales with run length |
 | B-1  | Shape 1                   | On sibling `EnvMeta`   | `PassiveComponent::apply` signature change; new `EnvMeta` struct            | Stream still wrapped for `Send + Sync`; meta lives cleanly outside physics |
-| B-3  | Shape 3                   | On sibling `EnvMeta`   | Signature change; new struct; PRF dependency                                | Architecturally clean — separates physics (`Data`) from RL metadata (`EnvMeta`) — at the cost of the widest trait-level refactor on the grid |
+| B-3  | Shape 3                   | On sibling `EnvMeta`   | Signature change; new struct; PRF implementation (Section 1, three routes)  | Architecturally clean — separates physics (`Data`) from RL metadata (`EnvMeta`) — at the cost of the widest trait-level refactor on the grid |
 | B-4  | Shape 4                   | On sibling `EnvMeta`   | Signature change; new struct; memory cost                                   | Same memory problem as A-4 with an added signature-change cost |
 | C-1  | Shape 1                   | Per-env component instance (`install_per_env`) | `BatchSim::new` rewired to call `install_per_env`                           | Current code's shape with the stream properly per-env; mutex stays as ceremony |
-| C-3  | Shape 3                   | Per-env component instance                    | `BatchSim::new` rewired; PRF dependency                                      | Lock-free `AtomicU64` replaces `Mutex<ChaCha8Rng>`; no `Data` change; no trait change |
+| C-3  | Shape 3                   | Per-env component instance                    | `BatchSim::new` rewired; PRF implementation (Section 1, three routes)        | Lock-free `AtomicU64` replaces `Mutex<ChaCha8Rng>` under Route 2; no `Data` change; no trait change |
 | C-4  | Shape 4                   | Per-env component instance                    | `BatchSim::new` rewired; memory cost                                         | Tape lives on the component; per-env isolation structural |
 
 Collapses and eliminations:

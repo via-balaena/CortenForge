@@ -251,3 +251,106 @@ Chapter 14 is **ready for user review before gated commit**. All
 structural rework required. Per the Ch 01 protocol for gated
 chapters, the chapter pauses here for user review; the author
 does not commit autonomously.
+
+## Round 2: self-review post-commit patch (commit `7661f3d9`)
+
+A second round of small consistency edits applied after the user
+delegated the self-review. Caught two artifacts of the thinking-
+pass fixes that hadn't propagated cleanly: a duplicate "three
+live entries, not four" phrase in the shape 2 collapse section,
+and Section 3's intro using stale framings ("Shape 2 collapses
+into shape 1 in Rust, shape 4 is dominated by cost") that
+contradicted the corrected framings elsewhere in the chapter.
+Both fixed. No factual claims changed.
+
+## Round 3: Ch 15 recon triggered PRF-ecosystem correction (commit pending)
+
+The Ch 15 recon pass surfaced two factual and framing issues in
+Ch 14's shape 3 PRF-cost discussion that needed a narrow patch
+before Ch 15 could build on Ch 14 honestly. This follows the
+Ch 21 post-commit-patch precedent (commit `3e1ec0ff`) where a
+downstream chapter's recon revealed that an earlier chapter had
+stated something that did not hold up against the code.
+
+**What the Ch 15 recon found:**
+
+1. **Ch 14 asserted `rand_philox` and `rand_threefry` "exist and
+   are not hypothetical" as counter-based PRF crate candidates.**
+   `cargo search rand_philox` and `cargo search rand_threefry`
+   both return empty or abandoned results (`philox = "0.0.0"`
+   is a placeholder). The crates named in Ch 14 do not exist as
+   maintained entries in the Rust ecosystem. The factual claim
+   was wrong.
+
+2. **Ch 14 framed shape 3's cost as "a less-battle-tested PRF
+   dependency," which was incorrect in a way that affected the
+   shortlist analysis.** The Ch 15 recon verified that
+   `rand_chacha 0.9.0` (already in the workspace) exposes
+   `ChaCha8Rng::set_word_pos(u128)` as a public seeking API at
+   `rand_chacha-0.9.0/src/chacha.rs:213`. This means shape 3 can
+   be implemented either (a) on top of the chassis PRNG via
+   `set_word_pos` (no new dependency, but keeps the mutex
+   ceremony), (b) via a ~50-100 line manual ChaCha8 block
+   function as a stateless pure function in the thermostat crate
+   (no mutex, but owns a cryptographic primitive), or (c) via a
+   small community crate such as `aprender-rand` or `squares`
+   (both exist, both are real, both are less widely adopted
+   than `rand_chacha`). The honest cost framing is
+   "implementation cost, three routes," not "dependency cost."
+
+**What the patch changed:**
+
+- **Section 1 / Shape 3 / PRF-cost paragraph:** rewrote from one
+  long paragraph that named non-existent crates into three
+  explicit route descriptions. Route 1 is `set_word_pos` on
+  `rand_chacha`, Route 2 is a manual ChaCha8 implementation in
+  the thermostat crate, Route 3 is a counter-based PRF crate
+  (with `aprender-rand` and `squares` named accurately as the
+  live options). Each route has its own cost profile. Ch 14 does
+  not pick; it names them honestly so Section 3's grid treats
+  the cost accurately.
+- **Section 1 / Summary of the mechanism axis:** the shape 3
+  bullet changed from "a PRF dependency cost" to "a PRF
+  implementation cost (one of three routes named above)."
+- **Section 3 / grid rows A-3, B-3, C-3:** the "chassis changes"
+  column changed from "PRF dependency" to "PRF implementation
+  (Section 1, three routes)." The C-3 notes column was also
+  updated to clarify that the lock-free `AtomicU64` replacement
+  of `Mutex<ChaCha8Rng>` holds specifically under Route 2 (the
+  manual ChaCha8 implementation), since Routes 1 and 3 each
+  carry their own interior-mutability considerations.
+
+**What the patch did not change:**
+
+- The shortlist is unchanged: A-3, B-3, C-1, C-3.
+- No eliminations or collapses changed.
+- The shape 1, shape 2, and shape 4 discussions are unchanged.
+- The hosting-axis walk is unchanged.
+- The `Data` invariant discussion is unchanged.
+- All 24 previously-verified file:line citations remain valid
+  (none were touched).
+
+**Process notes for Round 3:**
+
+- Following the Ch 21 post-commit-patch pattern, this round did
+  not go through a full factual + thinking pass cycle. The
+  changes are narrow enough that this Round 3 log entry is the
+  review record. The `rand_chacha 0.9.0` `set_word_pos` claim
+  was verified against
+  `/Users/jonhillesheim/.cargo/registry/src/index.crates.io-*/rand_chacha-0.9.0/src/chacha.rs:213`
+  during the Ch 15 recon; the `cargo search` results for
+  `rand_philox` and `rand_threefry` were captured during the
+  same recon and are the basis for the factual correction.
+- The decision to patch Ch 14 rather than handle the drift
+  entirely in Ch 15 was taken because Ch 15 will cite Ch 14's
+  grid directly, and citing a grid whose "PRF dependency" column
+  contradicts Ch 15's argument would either force Ch 15 to
+  silently paper over the contradiction or to visibly correct
+  Ch 14 mid-argument. Cleaner to fix the foundation before
+  building on it.
+- The Ch 15 recon's other major finding — that C-3 (not B-3) is
+  the right shortlist pick once the gating-under-FD property is
+  accounted for — is a Ch 15 argument, not a Ch 14 correction.
+  Ch 14 laid out the shortlist neutrally and still does; Ch 15
+  is the place to argue the pick. No Ch 14 patch is needed for
+  that finding.
