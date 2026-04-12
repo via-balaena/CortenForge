@@ -17,6 +17,11 @@ pub enum Grade {
     F,
     /// Requires manual review
     Manual,
+    /// Criterion does not apply to this crate's profile (e.g., Bevy-free on
+    /// a Bevy visual example). Not a pass or fail — signals that the
+    /// criterion was deliberately skipped per `docs/STANDARDS.md`. Excluded
+    /// from the overall automated grade.
+    NotApplicable,
 }
 
 impl Grade {
@@ -28,6 +33,7 @@ impl Grade {
             Grade::C => "C",
             Grade::F => "F",
             Grade::Manual => "?",
+            Grade::NotApplicable => "—",
         }
     }
 
@@ -39,6 +45,7 @@ impl Grade {
             Grade::C => "C".red().to_string(),
             Grade::F => "F".red().bold().to_string(),
             Grade::Manual => "?".cyan().to_string(),
+            Grade::NotApplicable => "—".dimmed().to_string(),
         }
     }
 }
@@ -60,6 +67,10 @@ pub struct CriterionResult {
 #[derive(Debug)]
 pub struct GradeReport {
     pub crate_name: String,
+    /// Rubric profile used for grading. Determines which criteria are
+    /// applicable. Shown in the display header so the reader knows what
+    /// rubric produced the scores below.
+    pub profile: CrateProfile,
     pub criteria: Vec<CriterionResult>,
     pub automated_grade: Grade,
     #[allow(dead_code)]
@@ -70,7 +81,9 @@ impl GradeReport {
     fn overall_automated(&self) -> Grade {
         let mut worst = Grade::APlus;
         for c in &self.criteria {
-            if c.grade == Grade::Manual {
+            // Skip Manual (needs human review) and NotApplicable (criterion
+            // doesn't apply to this profile per docs/STANDARDS.md).
+            if c.grade == Grade::Manual || c.grade == Grade::NotApplicable {
                 continue;
             }
             // Worst-grade ordering: F < C < B < A < A+
@@ -86,15 +99,101 @@ impl GradeReport {
     }
 }
 
+/// Crate profile — what rubric applies to this crate.
+///
+/// CortenForge grades against seven criteria, but `docs/STANDARDS.md`
+/// explicitly scopes two of them to specific crate types:
+///
+/// - **Criterion 6 (Bevy-free)** — STANDARDS.md §6 titles it "Bevy-free
+///   (Layer 0)" and names only Layer 0 crate prefixes as subject to it.
+///   Bevy examples and Layer 1 (`sim-bevy`) are explicitly exempt.
+/// - **Criterion 4 (Safety)** — STANDARDS.md §4 "Allowed" block lists
+///   `unwrap()` in examples and `expect()` in `build.rs` as permitted.
+///   The strict unwrap/expect counter should only fire on library code.
+///
+/// Before this profile existed, the grader applied every criterion to
+/// every crate uniformly, producing false F grades on Bevy examples and
+/// obscuring real quality signal. The profile restores the written
+/// standard: each crate is classified, and inapplicable criteria return
+/// `Grade::NotApplicable` (excluded from the overall grade) rather than
+/// a misleading F.
+///
+/// Classification is path-based. A crate's manifest path (relative to
+/// the workspace root) maps to exactly one profile:
+///
+/// - `examples/`           → [`CrateProfile::Example`]
+/// - `xtask/`              → [`CrateProfile::Xtask`]
+/// - `sim/L1/`             → [`CrateProfile::BevyLayer1`]
+/// - anything else         → [`CrateProfile::Layer0`] (default; strictest)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrateProfile {
+    /// Layer 0 library crate — the strictest rubric applies. All seven
+    /// criteria including Bevy-free and strict Safety.
+    Layer0,
+    /// Layer 1 Bevy integration crate — all criteria except Bevy-free.
+    BevyLayer1,
+    /// Visual / demo example crate (`examples/**`). Coverage is N/A
+    /// (bin-only, no lib target); Safety relaxes the unwrap/expect
+    /// counting per STANDARDS.md §4 "Allowed" (unsafe and
+    /// todo!/unimplemented! still gated); Bevy-free is N/A.
+    Example,
+    /// Build tooling (`xtask`, build scripts). Coverage and Bevy-free
+    /// are N/A; Safety relaxed for the same reason as Example.
+    Xtask,
+}
+
+impl CrateProfile {
+    /// Human-readable label for display in the grade table header.
+    fn label(&self) -> &'static str {
+        match self {
+            CrateProfile::Layer0 => "Layer 0 library",
+            CrateProfile::BevyLayer1 => "Layer 1 (Bevy)",
+            CrateProfile::Example => "Example (visual/demo)",
+            CrateProfile::Xtask => "Build tooling",
+        }
+    }
+}
+
+/// Classify a crate by its workspace-relative manifest path.
+///
+/// See [`CrateProfile`] for the mapping rules. This function is
+/// deliberately simple — prefix-matching on path, no metadata lookups,
+/// no `[package.metadata]` requirement in Cargo.toml. The tradeoff is
+/// that a crate moved to a new directory gets a different profile
+/// automatically; any crate that needs to opt out of its path-default
+/// profile should be moved or an explicit override added to this
+/// function.
+pub(crate) fn classify_crate(crate_path: &str) -> CrateProfile {
+    // Normalize path separators for cross-platform matching.
+    let normalized = crate_path.replace('\\', "/");
+    if normalized.starts_with("examples/") || normalized.starts_with("examples\\") {
+        CrateProfile::Example
+    } else if normalized == "xtask" || normalized.starts_with("xtask/") {
+        CrateProfile::Xtask
+    } else if normalized.starts_with("sim/L1/") {
+        CrateProfile::BevyLayer1
+    } else {
+        CrateProfile::Layer0
+    }
+}
+
 /// Run all automated criteria and return structured results.
+///
+/// The crate's workspace path is classified into a [`CrateProfile`]
+/// before grading, and the profile is threaded through to each
+/// criterion function. Criteria that don't apply to the profile (per
+/// STANDARDS.md scoping) return [`Grade::NotApplicable`] instead of
+/// running their checks.
 pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
     let workspace_root = find_workspace_root(sh)?;
     sh.change_dir(&workspace_root);
 
     let crate_path = find_crate_path(sh, crate_name)?;
+    let profile = classify_crate(&crate_path);
 
     let mut report = GradeReport {
         crate_name: crate_name.to_string(),
+        profile,
         criteria: Vec::new(),
         automated_grade: Grade::A,
         needs_review: true,
@@ -103,7 +202,7 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
     // 1. Test Coverage
     report
         .criteria
-        .push(grade_coverage(sh, crate_name, &crate_path)?);
+        .push(grade_coverage(sh, crate_name, &crate_path, profile)?);
     // 2. Documentation
     report
         .criteria
@@ -113,11 +212,15 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
         .criteria
         .push(grade_clippy(sh, crate_name, &crate_path)?);
     // 4. Safety
-    report.criteria.push(grade_safety(sh, &crate_path)?);
+    report
+        .criteria
+        .push(grade_safety(sh, &crate_path, profile)?);
     // 5. Dependencies
     report.criteria.push(grade_dependencies(sh, crate_name)?);
     // 6. Bevy-free
-    report.criteria.push(grade_bevy_free(sh, crate_name)?);
+    report
+        .criteria
+        .push(grade_bevy_free(sh, crate_name, profile)?);
     // 7. API Design (manual)
     report.criteria.push(CriterionResult {
         name: "7. API Design",
@@ -147,6 +250,10 @@ fn display(report: &GradeReport) {
         format!("║{:^62}║", format!("GRADING: {}", report.crate_name))
             .bright_white()
             .bold()
+    );
+    println!(
+        "{}",
+        format!("║{:^62}║", format!("profile: {}", report.profile.label())).bright_white()
     );
     println!(
         "{}",
@@ -351,7 +458,30 @@ pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
 /// to only sum lines from files whose path contains the crate's source
 /// directory (e.g. `sim/L0/thermostat/`), giving the correct per-crate
 /// coverage.
-fn grade_coverage(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
+fn grade_coverage(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    profile: CrateProfile,
+) -> Result<CriterionResult> {
+    // Per STANDARDS.md §1 "Exceptions: None for Layer 0 crates" — the
+    // coverage gate is specifically scoped to Layer 0 library crates.
+    // Example (bin-only) and Xtask (build tooling) crates have no lib
+    // target, so `cargo llvm-cov --lib` errors out with "no library
+    // targets found". Treat that as N/A rather than a false F.
+    if matches!(profile, CrateProfile::Example | CrateProfile::Xtask) {
+        return Ok(CriterionResult {
+            name: "1. Coverage",
+            result: "(bin-only)".to_string(),
+            grade: Grade::NotApplicable,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: format!(
+                "coverage skipped: {} crates have no lib target per STANDARDS.md §1",
+                profile.label()
+            ),
+        });
+    }
+
     // Check if cargo-llvm-cov is installed
     let version_check = cmd!(sh, "cargo llvm-cov --version")
         .ignore_status()
@@ -654,7 +784,7 @@ fn glob_rs_files(dir: &str) -> Result<Vec<String>> {
 /// - Unsafe-without-SAFETY check
 /// - Blanket assert exclusion removed
 /// - Direct file reading (no grep shell-outs)
-fn grade_safety(_sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
+fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<CriterionResult> {
     let src_path = format!("{}/src", crate_path);
 
     if !Path::new(&src_path).exists() {
@@ -668,6 +798,16 @@ fn grade_safety(_sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
     }
 
     let files = glob_rs_files(&src_path)?;
+
+    // Per STANDARDS.md §4 "Allowed":
+    //   - `unwrap()` in tests
+    //   - `unwrap()` in examples
+    //   - `expect()` in `build.rs`
+    // Library crates get the strict rubric (unwrap/expect in prod code →
+    // violation). Example and Xtask profiles relax the counters for those
+    // patterns but still enforce the hard-fail gates (todo!/unimplemented!,
+    // unsafe without SAFETY) which are universal safety bars.
+    let relax_unwrap_expect = matches!(profile, CrateProfile::Example | CrateProfile::Xtask);
 
     let mut has_todo_or_unimplemented = false;
     let mut counted_violations = 0usize;
@@ -743,13 +883,15 @@ fn grade_safety(_sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
                 has_todo_or_unimplemented = true;
             }
 
-            // Counted: .unwrap()
-            if trimmed.contains(".unwrap()") {
+            // Counted: .unwrap() — skipped for Example/Xtask profiles
+            // per STANDARDS.md §4 "Allowed: unwrap() in examples".
+            if !relax_unwrap_expect && trimmed.contains(".unwrap()") {
                 counted_violations += 1;
             }
 
-            // Counted: .expect( — skip in build.rs
-            if !is_build_rs && trimmed.contains(".expect(") {
+            // Counted: .expect( — skip in build.rs, and skip for
+            // Example/Xtask profiles per STANDARDS.md §4 "Allowed".
+            if !is_build_rs && !relax_unwrap_expect && trimmed.contains(".expect(") {
                 counted_violations += 1;
             }
 
@@ -968,10 +1110,34 @@ fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
 
 /// Check that a crate has no Bevy dependencies.
 ///
-/// Layer 0 crates should not depend on Bevy or windowing libraries.
-/// `wgpu` is allowed — it's a standalone WebGPU implementation used
-/// independently for compute shaders (F6 decision).
-fn grade_bevy_free(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
+/// Per STANDARDS.md §6 "Criterion 6: Bevy-free (Layer 0)" — this
+/// criterion is explicitly and exclusively scoped to Layer 0 library
+/// crates. STANDARDS.md §6 names the Layer 0 prefixes (`mesh-*`,
+/// `cf-spatial`, `route-*`, `sensor-*`, `ml-*`, `sim-*` Layer 0) and
+/// explicitly allows Bevy in Layer 1 (`cortenforge`, `sim-bevy`).
+/// Example and Xtask crates are not part of the Layer 0 / Layer 1
+/// dichotomy at all — they're tooling and demos, and applying the
+/// Bevy-free rubric to them is a category error.
+///
+/// `wgpu` is allowed in Layer 0 — it's a standalone WebGPU
+/// implementation used independently for compute shaders (F6 decision).
+fn grade_bevy_free(sh: &Shell, crate_name: &str, profile: CrateProfile) -> Result<CriterionResult> {
+    // Scope: Layer 0 only, per STANDARDS.md §6. Every other profile
+    // gets N/A with a pointer to the standard.
+    if !matches!(profile, CrateProfile::Layer0) {
+        return Ok(CriterionResult {
+            name: "6. Bevy-free",
+            result: "(not layer 0)".to_string(),
+            grade: Grade::NotApplicable,
+            threshold: "no bevy/winit",
+            measured_detail: format!(
+                "Bevy-free criterion is Layer 0 only per STANDARDS.md §6; \
+                 {} is exempt",
+                profile.label()
+            ),
+        });
+    }
+
     // --prefix none --format "{p}" outputs one "pkg_name vX.Y.Z" per line
     let tree_format = "{p}";
     let output = cmd!(
