@@ -9,7 +9,7 @@
 
 - [The wrong arrangement](10-the-wrong-struct.md)
 - [BatchSim parallelism today](11-batchsim-parallelism-today.md)
-- [Stochastic component survey]()
+- [Stochastic component survey](12-stochastic-component-survey.md)
 - [Latent flakiness]()
 - [The new shape]()
 - [Design decisions]()
