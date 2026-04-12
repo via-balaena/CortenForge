@@ -34,8 +34,8 @@ verification and one re-read of upstream chapters.
   method and the regression test were absorbed in full. Ch 40
   inherits C-3 + Route 2 without re-litigation. One factual
   slip in Ch 15 §5.6 surfaced during recon and is flagged as
-  a post-commit patch candidate — see the "Ch 15 §5.6 + Ch 11
-  patch candidate" section below.
+  a post-commit patch candidate — see the "Ch 15 §5.6 patch
+  candidate" section below.
 - **Project memory — D1–D15 table.** The 15 decisions locked
   in session 4 were treated as inputs, not work-products. The
   D-table is reproduced as Ch 40's Table 1 for reader
@@ -112,7 +112,7 @@ Details below.
 | 19 | `batch.rs:61-63` — "All environments share the same Arc<Model>" invariant | Read :58-95 | DRIFT → corrected (draft said `:60-63`; tight range is `:61-63` starting at the `/// All environments share` line) |
 | 20 | `batch.rs:64-67` — current `BatchSim` struct | Read :58-95 | Verified |
 | 21 | `batch.rs:92-94` — `model()` accessor | Read :90-96 | Verified |
-| 22 | `batch_sim.rs:55` — `batch_matches_sequential_with_contacts` test location | Read :50-95 | Verified (and noted as correction to Ch 15 §5.6 + Ch 11 inherited citation — see "patch candidate" below) |
+| 22 | `batch_sim.rs:55` — `batch_matches_sequential_with_contacts` test location | Read :50-95 | Verified (and noted as correction to Ch 15 §5.6 — see "patch candidate" below. Ch 40 initial draft incorrectly claimed Ch 11 carried the same slip; session-8 follow-up recon confirmed Ch 11:267-269 cites the test at its correct location `sim/L0/tests/integration/batch_sim.rs` lines 54–91) |
 | 23 | `batch_sim.rs:59, :98, :131, :165` — four BatchSim::new call sites | Grep | Verified |
 | 24 | `vec_env.rs:391` — BatchSim::new call site in VecEnv | Grep | Verified |
 | 25 | `task.rs:480, :664, :944, :979, :1003` — 5 BatchSim::new call sites in ml-bridge tests | Grep | Verified |
@@ -278,33 +278,38 @@ chapters carrying more file-level diff tables and longer
 PR-description drafts than argument chapters — not a sign of
 rhetorical bloat.
 
-## Ch 15 §5.6 + Ch 11 patch candidate
+## Ch 15 §5.6 patch candidate
 
 During recon Ch 40 surfaced that Ch 15 §5.6 cites
 `batch_matches_sequential_with_contacts` as living at
 `sim/L0/thermostat/src/stack.rs`, when it actually lives at
 `sim/L0/tests/integration/batch_sim.rs:55` (recon-reported).
-Ch 11 — which Ch 15 §5.6 inherited the citation from — also
-carries the wrong location. This is a factual slip, not a
-decision error; the test exists and covers the non-stochastic
-case exactly as both chapters describe.
+This is a factual slip, not a decision error; the test
+exists and covers the non-stochastic case exactly as Ch 15
+describes.
+
+**Session-8 follow-up correction:** The Ch 40 draft and
+the initial version of this review log both claimed Ch 11
+carried the same slip as "inherited" source of the error.
+A second recon read during the immediate follow-up session
+confirmed that Ch 11:267-269 correctly cites the test at
+`sim/L0/tests/integration/batch_sim.rs` lines 54–91. Ch 11
+is fine. The Ch 15 §5.6 slip is self-inflicted, not
+inherited. The patch scope shrinks from "~4 lines across 2
+files" to "1 line in 1 file," and Ch 40 §5 + this review
+log are amended in the same commit as the Ch 15 fix to
+remove the Ch 11 mention.
 
 **Proposed patch sequencing** (following the `3e1ec0ff`
 precedent from session 4 where Ch 22's thinking pass
 surfaced a Ch 21 framing issue, and the `6b876bc5` precedent
 from session 7 where Ch 32's drafting surfaced a Ch 31 §4.4
 issue): Ch 40 commits first, then a narrow patch to Ch 15
-§5.6 and Ch 11's inherited citation lands as a separate
-follow-up commit. Ch 40 does not modify Ch 15 or Ch 11 in
-its own commit. The patch is approximately 4 lines of diff
-across 2 files, zero semantic change, pure citation fix.
-
-If a reviewer would prefer the patch to land immediately
-(either as part of Ch 40's commit or as a separate commit
-before Ch 40), say so before the gate is cleared and the
-sequencing will adjust accordingly. The §5 "what Ch 40 does
-not decide" list already names this patch candidate for the
-reader's awareness.
+§5.6 (bundled with the Ch 40 §5 / review log corrections
+noted above) lands as a separate follow-up commit. The patch
+is approximately 1 line of diff in Ch 15 plus the
+scope-narrowing amendments in Ch 40 §5 and this review log,
+all under zero semantic change in Ch 15 itself.
 
 ## Gate
 
@@ -323,7 +328,7 @@ Upon gate clearance, the commit sequence is:
 3. Commit with message: `docs(ml-chassis-study): Ch 40 PR 1
    Chassis reproducibility plan` (plus the usual co-author
    line per repo convention).
-4. Flag the Ch 15 §5.6 + Ch 11 patch candidate as the next
-   narrow commit after Ch 40 lands.
+4. Flag the Ch 15 §5.6 patch candidate as the next narrow
+   commit after Ch 40 lands.
 
 No other files are modified in the Ch 40 commit.

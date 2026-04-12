@@ -1123,9 +1123,9 @@ integration) by the property Ch 13 named.
 
 ### 5.6 Existing test coverage and what changes
 
-The current test at `sim/L0/thermostat/src/stack.rs` (the
-`batch_matches_sequential_with_contacts` test Ch 11 cited) is
-scoped to deterministic physics with contacts — no stochastic
+The current test at `sim/L0/tests/integration/batch_sim.rs:55`
+(the `batch_matches_sequential_with_contacts` test Ch 11 cited)
+is scoped to deterministic physics with contacts — no stochastic
 component installed. That test remains valid under C-3: it covers
 the "no stochastic component, parallel = sequential" case. The
 new test Ch 15 specifies covers the "with a stochastic component

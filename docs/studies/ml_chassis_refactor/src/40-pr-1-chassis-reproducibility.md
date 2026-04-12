@@ -1795,20 +1795,25 @@ forces the question. Flagging it here so the awkwardness
 is recognized as intentional deferral rather than an
 oversight.
 
-**Post-commit patch to Ch 15 §5.6 and Ch 11.** During recon
-Ch 40 surfaced that Ch 15 §5.6 (and Ch 11, which Ch 15
-inherited from) cite `batch_matches_sequential_with_contacts`
-as living at `sim/L0/thermostat/src/stack.rs`, when it
-actually lives at `sim/L0/tests/integration/batch_sim.rs:55`.
-This is a factual slip, not a decision error, and the fix is
-a one-line citation update. Following the `3e1ec0ff` and
-`6b876bc5` precedents (downstream chapter commits first,
-then a narrow patch to the upstream chapter lands as a
-separate follow-up commit), the correct sequencing is:
-Ch 40 commits, then a narrow Ch 15 + Ch 11 patch lands next
-to update the citation. Ch 40 does not modify Ch 15 or
-Ch 11 in its own commit. The patch is ~4 lines of diff and
-does not affect any argument in either chapter.
+**Post-commit patch to Ch 15 §5.6.** During recon Ch 40
+surfaced that Ch 15 §5.6 cites
+`batch_matches_sequential_with_contacts` as living at
+`sim/L0/thermostat/src/stack.rs`, when it actually lives at
+`sim/L0/tests/integration/batch_sim.rs:55`. This is a factual
+slip, not a decision error, and the fix is a one-line
+citation update. Following the `3e1ec0ff` and `6b876bc5`
+precedents (downstream chapter commits first, then a narrow
+patch to the upstream chapter lands as a separate follow-up
+commit), the correct sequencing is: Ch 40 commits, then a
+narrow Ch 15 §5.6 patch lands next to update the citation.
+Ch 40 does not modify Ch 15 in its own commit. The patch is
+a one-line citation update and does not affect any argument
+in the chapter. **Note:** the Ch 40 draft initially also
+named Ch 11 as needing the same patch, but a second recon
+read during the immediate follow-up session found Ch 11 at
+`:267-269` correctly cites the test at
+`sim/L0/tests/integration/batch_sim.rs` lines 54–91 — Ch 11
+is fine. The Ch 15 slip is self-inflicted, not inherited.
 
 **What Ch 40 does decide,** to close the chapter: the shape
 of PR 1a (additive `prf.rs` module with five functions, four
