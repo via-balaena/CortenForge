@@ -49,6 +49,7 @@ integration tests — they find bugs that unit tests miss.
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
 - SDF-CPU ladder: 8 working, 7 stubs, 1 blocked
+- sim-thermostat → 0 visual examples (6 phases + D1 + D2 numerically validated)
 
 ## Gap Analysis
 
@@ -154,6 +155,14 @@ integration tests — they find bugs that unit tests miss.
 - Half-GPU (enable_gpu_collision) → was in old hockey, now cleaned up
 - Mocap bodies on GPU → not yet implemented in orchestrator
 - Batch/multi-env → architecture ready, not exposed
+
+### Thermodynamic Computing (0% visual coverage — 9 domains)
+- sim-thermostat: 6 phases + D1 + D2 numerically validated (13 test files)
+- 6 PassiveComponents: LangevinThermostat, DoubleWellPotential, RatchetPotential, OscillatingField, ExternalField, PairwiseCoupling
+- 3 Ising modules: exact_distribution, GibbsSampler, IsingLearner
+- All validation lives in headless test fixtures — zero visual examples exist
+- sim-bevy infrastructure sufficient (gizmos for V(x) curves, TrailGizmo for trajectories, PhysicsHud for readouts)
+- **8 visual + 1 stress-test (~36 checks) → Track 6**
 
 ## Proposed Example Structure
 
@@ -1382,6 +1391,362 @@ TD3/SAC add ReplayBuffer, soft_update, and twin Q-networks from
 sim-ml-bridge. SAC's entropy regularization prevents DPG saturation,
 outperforming TD3 at level 0.
 
+### Track 6: sim-thermostat — Thermodynamic Computing Visual Examples
+
+No stone unturned. Every PassiveComponent, every Ising module, every physics
+concept in sim-thermostat gets visual or headless proof. 8 visual examples +
+1 stress-test (~36 checks). Each example adds exactly one new concept.
+
+```
+fundamentals/
+  sim-thermostat/
+    free-diffusion/           #1  LangevinThermostat only → Brownian motion
+    langevin-oscillator/      #2  + harmonic spring → equipartition
+    kramers-escape/           #3  + DoubleWellPotential → barrier crossing
+    biased-well/              #4  + ExternalField → symmetry breaking
+    brownian-ratchet/         #5  + RatchetPotential + ctrl → directed transport
+    stochastic-resonance/     #6  + OscillatingField + ctrl temperature → SR
+    coupled-chain/            #7  + PairwiseCoupling (multi-particle Ising)
+    ising-sampling/           #8  Gibbs vs Langevin vs exact distribution
+    stress-test/              #9  ~36 headless checks (all components + modules)
+```
+
+---
+
+#### Track 6 Example Descriptions
+
+##### 1. `free-diffusion/` — Brownian Motion
+
+The simplest possible thermo visual. A single particle on a 1D slide joint
+with no potential — just a `LangevinThermostat` injecting thermal noise and
+damping. The particle random-walks; mean-squared displacement grows linearly
+with time (Einstein relation MSD = 2Dt where D = kT/γ).
+
+**One concept:** Pure thermal noise produces Brownian motion.
+
+**New infrastructure proven here (reused by #2–#8):**
+- PassiveStack installs on Model, fires correctly in sim-bevy step loop
+- `TrailGizmo` shows position history as a fading line
+- PhysicsHud displays thermo-specific readouts
+
+**MJCF sketch:** Single particle (sphere, mass=1) on slide joint along X.
+`stiffness="0"`, `damping="0"`, no gravity, no contacts.
+
+**PassiveStack:** `LangevinThermostat(γ=0.1, kT=1.0, seed)`
+
+**Visual elements:**
+- Sphere slides along X rail
+- TrailGizmo: fading green line showing wandering trajectory
+- No V(x) curve (there is no potential)
+- HUD: Time, Position x, Velocity v, ⟨v²⟩ (running), kT/M (reference),
+  MSD x² (running), 2Dt (reference)
+
+**Pass/fail:**
+- ⟨v²⟩ converges to kT/M = 1.0 within 10%
+- MSD grows linearly: x²(t) / (2Dt) ∈ [0.5, 2.0] after 10 time units
+- No drift: |⟨x⟩| < 3σ
+
+**Source fixture:** `sim-thermostat/tests/langevin_thermostat.rs`
+
+##### 2. `langevin-oscillator/` — Thermal Equilibrium (Equipartition)
+
+A particle on a 1D slide joint with a harmonic spring (joint stiffness),
+driven by a `LangevinThermostat`. The thermostat owns all damping (joint
+damping = 0) and injects thermal noise calibrated to temperature kT. The
+equipartition theorem predicts ⟨½v²⟩ = ½kT.
+
+**One concept:** Langevin thermostat + harmonic potential → thermal
+equilibrium. The equipartition theorem in action.
+
+**New infrastructure:** V(x) potential curve drawn as gizmo polyline.
+
+**MJCF sketch:** Single particle (sphere, mass=1) on slide joint along X.
+`stiffness="1.0"`, `damping="0"` (thermostat owns damping), `springref="0"`.
+Euler integrator, timestep=0.001, no gravity.
+
+**PassiveStack:** `LangevinThermostat(γ=0.1, kT=1.0, seed)`
+
+**Visual elements:**
+- Sphere oscillates around origin with thermal jitter
+- V(x) = ½kx² parabola drawn as gizmo polyline
+- TrailGizmo: confined Gaussian cloud around x=0
+- HUD: Temperature kT, KE ½v², Equipartition ratio ⟨½v²⟩/(½kT),
+  Position, Velocity, Time
+
+**Pass/fail:**
+- Equipartition ratio converges to 1.0 ± 10% after 50,000 steps (5× τ_eq)
+- KE is always non-negative
+- Particle stays within ±5σ of origin (σ = √(kT/k) = 1.0)
+
+**Source fixture:** `sim-thermostat/tests/langevin_thermostat.rs`
+
+##### 3. `kramers-escape/` — Thermal Barrier Crossing
+
+A particle in a quartic double-well potential with thermal noise. Most of
+the time the particle rattles in one well. Occasionally, a thermal fluctuation
+kicks it over the barrier into the other well. The transition rate is predicted
+by Kramers' formula.
+
+**One concept:** DoubleWellPotential — a custom potential energy landscape
+producing thermally activated barrier crossings at a rate predicted by theory.
+
+**MJCF sketch:** Single particle (sphere, mass=1) on slide joint along X.
+`stiffness="0"` (potential from PassiveStack), `damping="0"`.
+Euler integrator, timestep=0.001, no gravity.
+
+**PassiveStack:**
+- `DoubleWellPotential(ΔV=3.0, x₀=1.0, dof=0)` — quartic U(x) = ΔV·(x²/x₀² − 1)²
+- `LangevinThermostat(γ=10.0, kT=1.0, seed)` — overdamped regime
+
+**Visual elements:**
+- Sphere hops between wells at x = ±1
+- V(x) double-well curve drawn as gizmo polyline
+- TrailGizmo on particle showing dwell time in each well
+- Well-state color: blue (left) / red (right)
+- HUD: Temperature, Well state (L/R), Transition count, Kramers rate
+  (theory ≈ 0.013), Measured rate (running), Position, KE
+
+**Pass/fail:**
+- Particle spends most time near x = ±1.0 (well minima)
+- ≥1 transition observed within 1000 time units
+- V(x) curve renders with minima at ±1, barrier at x=0
+
+**Source fixture:** `sim-thermostat/tests/kramers_escape_rate.rs`
+
+##### 4. `biased-well/` — Symmetry Breaking
+
+Same double-well as kramers-escape, but with an ExternalField that tilts the
+potential, breaking left/right symmetry. The particle spends more time in the
+lower (right) well. The occupation ratio matches the Boltzmann prediction.
+
+**One concept:** ExternalField tilts a potential landscape — symmetry
+breaking in a bistable system.
+
+**MJCF sketch:** Same as kramers-escape.
+
+**PassiveStack:**
+- `DoubleWellPotential(ΔV=3.0, x₀=1.0, dof=0)`
+- `ExternalField(h=[0.3])` — biases toward right well
+- `LangevinThermostat(γ=10.0, kT=1.0, seed)`
+
+**Visual elements:**
+- Same scene as kramers-escape, but V(x) curve is visibly tilted
+- V_total(x) = V_dw(x) − h·x drawn as gizmo polyline
+- Right well deeper — particle prefers it
+- HUD: Field h, Occupation ratio R/(L+R), Expected ratio (Boltzmann),
+  Well state, Transition count, Time
+
+**Pass/fail:**
+- Right-well occupation > 60% over 500 time units
+- V(x) curve visibly asymmetric (right minimum lower)
+- With h=0 (no field), occupation ≈ 50% (sanity)
+
+**Source fixture:** `sim-thermostat/tests/boltzmann_learning.rs`
+(supporting_field_symmetry_breaking)
+
+##### 5. `brownian-ratchet/` — Directed Transport from Asymmetry
+
+A particle in an asymmetric ratchet potential that can be switched on/off
+via an actuator control signal. When always on or always off, detailed
+balance holds (zero net transport). When flashed periodically, the asymmetry
+breaks detailed balance and the particle drifts — a Brownian motor.
+
+**One concept:** RatchetPotential + ctrl-channel flashing breaks detailed
+balance, producing directed transport from thermal noise + asymmetry.
+
+**MJCF sketch:** Single particle on slide joint + actuator `<general joint="x"
+ctrlrange="0 1"/>` for duty cycle α. No gravity.
+
+**PassiveStack:**
+- `RatchetPotential(V1=1.0, V2=0.25, φ=π/4, period=1.0, dof=0, ctrl=0)`
+- `LangevinThermostat(γ=1.0, kT=1.0, seed)`
+
+**Visual elements:**
+- Sphere slides along X
+- V(x) ratchet curve (asymmetric) drawn as gizmo polyline, scaled by α
+- TrailGizmo: shows drift direction
+- Keyboard mode toggle: ON (α=1) / OFF (α=0) / FLASH (oscillating)
+- HUD: Mode (ON/OFF/FLASH), α, Net displacement, Velocity, Temperature, Time
+
+**Pass/fail:**
+- ON: |mean displacement| small (detailed balance)
+- OFF: free diffusion, MSD grows linearly
+- FLASH: positive net displacement visible after 100 time units
+- V(x) visibly asymmetric
+
+**Source fixture:** `sim-thermostat/tests/d1a_ratchet_potential.rs`,
+`sim-thermostat/tests/d1b_brownian_ratchet_baselines.rs`
+
+##### 6. `stochastic-resonance/` — Noise-Enhanced Signal Detection
+
+The headline result: noise HELPS signal detection. A particle in a
+double-well is driven by a weak periodic signal (OscillatingField). At low
+noise, the particle is trapped. At high noise, switching is random. At
+intermediate noise, switching synchronizes with the drive — stochastic
+resonance.
+
+**One concept:** OscillatingField + controlled temperature — the SR
+phenomenon where intermediate noise maximizes signal detection.
+
+**MJCF sketch:** Single particle on slide joint + actuator `<general joint="x"
+ctrlrange="0 10"/>` for temperature multiplier. No gravity.
+
+**PassiveStack:**
+- `DoubleWellPotential(ΔV=3.0, x₀=1.0, dof=0)`
+- `OscillatingField(A₀=0.3, ω=2π·0.01214, phase=0, dof=0)`
+- `LangevinThermostat(γ=10.0, kT=1.0, seed).with_ctrl_temperature(0)`
+
+**Visual elements:**
+- Sphere hops between wells
+- V(x) curve tilts with oscillating field (updates each frame)
+- Synchrony indicator: green (in phase) / red (out of phase)
+- Keyboard: up/down to adjust noise multiplier
+- HUD: Noise level (kT × mult), Well state, Signal phase,
+  Synchrony score (running), Transition count, Time
+
+**Pass/fail:**
+- Low noise (mult=0.1): particle trapped, zero transitions
+- High noise (mult=5.0): random switching, |synchrony| < 0.1
+- Optimal noise (mult≈1.0): synchrony > 0.2, visible phase-locking
+
+**Source fixture:** `sim-thermostat/tests/d2a_stochastic_resonance_components.rs`,
+`sim-thermostat/tests/d2b_stochastic_resonance_baselines.rs`
+
+##### 7. `coupled-chain/` — Ising-Like Ordering
+
+First multi-particle example. Four bistable particles on parallel slide
+joints, coupled by nearest-neighbor PairwiseCoupling (J > 0, ferromagnetic).
+At low temperature, all particles align in the same well (ordered). At high
+temperature, they're random (disordered). Keyboard toggles temperature to
+show the thermal phase transition.
+
+**One concept:** PairwiseCoupling creates Ising-like cooperative behavior
+in coupled bistable systems — temperature controls order vs disorder.
+
+**MJCF sketch:** 4 bodies, each with slide joint along X, Y-offset to avoid
+contacts. No springs, no gravity.
+
+**PassiveStack:**
+- `DoubleWellPotential(ΔV=3.0, x₀=1.0, dof=i)` × 4
+- `PairwiseCoupling::chain(4, J=0.5)` — ferromagnetic NN coupling
+- `LangevinThermostat(γ=10.0, kT=1.0, seed)`
+
+**Visual elements:**
+- 4 spheres on parallel slide rails
+- Each color-coded by well state (blue=left, red=right)
+- Keyboard: T/Y to increase/decrease temperature
+- Low T: all same color (ferromagnetic order)
+- High T: random colors (thermal disorder)
+- HUD: Temperature kT, NN correlation (running), tanh(βJ) reference,
+  Per-particle well state, Time
+
+**Pass/fail:**
+- Low T (kT=0.3): NN correlation > 0.7 (strong ordering)
+- High T (kT=5.0): NN correlation < 0.2 (disorder)
+- At kT=1.0: NN correlation ≈ tanh(0.5) ≈ 0.46 within 30%
+
+**Source fixture:** `sim-thermostat/tests/coupled_bistable_array.rs`
+
+##### 8. `ising-sampling/` — Distribution Comparison
+
+Three-way comparison: exact Boltzmann enumeration vs Gibbs sampler vs
+physical Langevin simulation, all on the same 4-spin Ising model. Shows
+that continuous Langevin physics reproduces the discrete Ising distribution.
+
+**One concept:** Continuous-to-discrete equivalence — Langevin dynamics on
+coupled bistable particles samples the same distribution as the exact Ising
+model (within sampling error).
+
+**MJCF:** Same 4-body chain as coupled-chain.
+
+**Method:**
+1. At startup: exact distribution (2⁴=16 configs) via `exact_distribution()`
+2. Gibbs sampler (1k burn-in + 100k samples) via `GibbsSampler::sample()`
+3. Langevin trajectories, classify to configs via `WellState::from_position()`
+4. Display all three as overlaid bar charts
+
+**Visual elements:**
+- 16 vertical bars along X, one per spin configuration
+- Three colors: white (exact), cyan (Gibbs), orange (Langevin)
+- Langevin bars update live as samples accumulate
+- HUD: TV(Gibbs, exact), TV(Langevin, exact), KL(exact‖Langevin),
+  Sample count, Time
+
+**Pass/fail:**
+- TV(Gibbs, exact) < 0.05
+- TV(Langevin, exact) < 0.15
+- Gibbs bars visually match exact; Langevin close but not identical
+- All 16 configs have non-zero probability
+
+**Source fixture:** `sim-thermostat/tests/gibbs_sampler.rs`
+
+##### 9. `stress-test/` — Headless Comprehensive (~36 checks)
+
+Everything the 8 visual examples don't isolate: parameter sweeps, multi-DOF,
+anti-ferromagnetic coupling, ring/FC topologies, IsingLearner convergence,
+stochastic gating, reproducibility, finite-difference force checks.
+
+**Langevin/Equipartition (6):** 1-DOF equipartition, γ-sweep, T-sweep,
+stochastic gating, reproducibility, callback firing count.
+
+**Multi-DOF (4):** 6-DOF free body per-DOF KE, total KE = 3kT;
+2-DOF hinge chain total KE = kT, generalized per-DOF equipartition.
+
+**Kramers/Double-Well (4):** Kramers rate (30% tol), Arrhenius slope (10%),
+Boltzmann distribution shape, force = −dV/dx (FD check).
+
+**ExternalField (3):** Force = h_i, positive h biases right, zero h symmetric.
+
+**Ratchet (4):** Always-ON zero current, always-OFF MSD, random-flash positive
+current, force = −dV/dx (FD check).
+
+**Stochastic Resonance (3):** Low noise poor synchrony, high noise poor
+synchrony, SR peak synchrony > 0.1.
+
+**PairwiseCoupling (6):** Chain J=0.5 NN correlation, anti-ferromagnetic
+J=−0.5, NNN correlation, ring topology, fully-connected, coupling energy
+FD check.
+
+**Ising/Gibbs/Learning (6):** exact_distribution sums to 1, Gibbs TV < 0.05,
+Langevin TV < 0.15, IsingLearner KL decreases, IsingLearner final KL < 0.15,
+tv/kl symmetry properties.
+
+---
+
+#### Track 6 Build Order and Dependencies
+
+Each example builds on proven infrastructure from the previous:
+
+```
+#1 free-diffusion
+ │  New: PassiveStack + sim-bevy wiring, TrailGizmo, thermo HUD
+ │
+ ├─► #2 langevin-oscillator
+ │    New: V(x) gizmo curve drawing
+ │
+ ├─► #3 kramers-escape
+ │    New: DoubleWellPotential, well-state tracking, transition counting
+ │
+ ├─► #4 biased-well
+ │    New: ExternalField (one component on top of #3)
+ │
+ ├─► #5 brownian-ratchet
+ │    New: RatchetPotential, actuator ctrl channel
+ │
+ └─► #6 stochastic-resonance
+      New: OscillatingField, ctrl temperature, synchrony metric
+
+ #7 coupled-chain (first multi-particle)
+  │  New: multi-body MJCF, PairwiseCoupling, per-particle well-state
+  │
+  └─► #8 ising-sampling
+       New: GibbsSampler, exact_distribution, distribution bar chart
+
+ #9 stress-test — built last, validates everything headlessly
+```
+
+Two-pass review (numbers + visuals) after each visual example.
+
 ## Priority
 
 Build from the ground up — the foundation must be bulletproof before moving
@@ -1392,9 +1757,11 @@ to GPU or advanced features:
    No stone unturned — every implemented subsystem gets dedicated coverage.
    **14/20 subdirectories done.**
 3. **Track 5** — sim-ml-bridge. Phase 4 COMPLETE (17 examples, 5 algorithms).
-4. **Track 3** after Track 1B proves the engine — GPU ladder
-5. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
-6. **Track 4** as needed — design + mesh
+4. **Track 6** — sim-thermostat visual examples (8 visual + 1 stress-test).
+   Blocks Layer 3 (thermo visuals at scale). Build #1→#9 in order.
+5. **Track 3** after Track 1B proves the engine — GPU ladder
+6. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
+7. **Track 4** as needed — design + mesh
 
 ## Notes
 

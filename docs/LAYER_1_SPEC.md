@@ -39,7 +39,7 @@ Layer 1 has 4 tracks, ordered by priority:
 
 | # | Track | Items | Blocking |
 |---|-------|-------|----------|
-| T1 | Thermo visual examples | 4 new domains | Layer 3 |
+| T1 | Thermo visual examples | 8 visual + 1 stress-test | Layer 3 |
 | T2 | Actuator visual review | 9 polish passes | — |
 | T3 | Track 1B remaining domains | 3 clean + 1 investigate + 2 defer | Coverage 100% |
 | T4 | README + SDF polish | ~25 READMEs + SDF docs | — |
@@ -52,82 +52,59 @@ Layer 1 has 4 tracks, ordered by priority:
 proof. These are the first examples using sim-thermostat. Layer 3 builds
 directly on this work.
 
+**Full spec:** `examples/COVERAGE_SPEC.md` → Track 6
+
 **Integration path:** Examples depend on `sim-thermostat` directly (sim-bevy
 does NOT depend on sim-thermostat). Forces install via
 `PassiveStack::builder().with(...).install(&mut model)`. sim-bevy handles
 visualization of the underlying sim-core Model/Data.
 
-**All systems are 1-DOF** (particle on slide joint). Visuals should show:
-- The particle moving in its potential landscape
-- Real-time statistics via PhysicsHud (temperature, transition rate, KE)
-- The potential function as a background curve or surface
+### Recon — COMPLETE
 
-**Recon needed before building:**
-- How does `PassiveStack` interact with sim-bevy's step loop? Does the
-  `cb_passive` hook fire correctly when Bevy drives stepping?
-- Can existing Bevy gizmos draw a potential landscape curve, or do we need
-  a new primitive?
-- What's the right camera setup for a 1-DOF system? Side view? Top-down?
-- Trail/trajectory drawing — does sim-bevy have this, or do we build it?
+All 4 infrastructure questions answered:
 
-### T1a — Langevin Oscillator
+- [x] PassiveStack + sim-bevy step loop — **works**. Linear call chain:
+  `step_model_data` → `Data::step()` → `forward()` → `mj_fwd_passive()` →
+  `cb_passive`. Phase 1 §8 test proves 1 callback per step.
+- [x] Potential landscape visualization — **existing gizmos suffice**.
+  `gizmos.line()` segments compose into V(x) polylines.
+- [x] Camera for 1-DOF — **side view**. `OrbitCamera` with azimuth=π/2,
+  elevation=0. Same as motor and slide-joint examples.
+- [x] Trail/trajectory drawing — **built-in**. `TrailGizmo` component
+  (ring buffer, fading alpha, configurable sample interval).
 
-Simplest thermo visual. 1-DOF damped harmonic oscillator with thermal noise.
+No new sim-bevy infrastructure needed. No blockers.
 
-- **Physics:** `LangevinThermostat` on a spring-mass system
-- **Shows:** Stochastic wiggling superimposed on deterministic oscillation
-- **HUD:** Temperature, KE, equipartition ratio (should approach 1.0)
-- **Validation:** KE converges to ½k_BT (equipartition theorem)
-- **Source fixture:** `tests/langevin_thermostat.rs`
+### Examples (8 visual + 1 stress-test)
 
-### T1b — Kramers Escape (Bistable Double-Well)
+| # | Example | One concept | Component(s) |
+|---|---------|-------------|-------------|
+| 1 | `free-diffusion` | Brownian motion, MSD = 2Dt | LangevinThermostat |
+| 2 | `langevin-oscillator` | Equipartition ⟨½v²⟩ = ½kT | + harmonic spring |
+| 3 | `kramers-escape` | Thermal barrier crossing | + DoubleWellPotential |
+| 4 | `biased-well` | Symmetry breaking | + ExternalField |
+| 5 | `brownian-ratchet` | Directed transport | + RatchetPotential + ctrl |
+| 6 | `stochastic-resonance` | Noise-enhanced detection | + OscillatingField + ctrl T |
+| 7 | `coupled-chain` | Ising-like ordering | + PairwiseCoupling (4 particles) |
+| 8 | `ising-sampling` | Continuous ↔ discrete | GibbsSampler + exact_distribution |
+| 9 | `stress-test` | ~36 headless checks | All components + modules |
 
-First non-trivial demo. Particle trapped in one well, occasionally thermally
-activated over the barrier into the other well.
+Covers: all 6 PassiveComponents, GibbsSampler, exact_distribution,
+IsingLearner (stress-test), multi-DOF (stress-test), anti-ferro (stress-test).
 
-- **Physics:** `DoubleWellPotential` + `LangevinThermostat`
-- **Shows:** Particle position trajectory + potential landscape + transitions
-- **HUD:** Temperature, transition count, Kramers rate, well residence time
-- **Validation:** Transition rate matches Kramers formula
-- **Source fixture:** `tests/kramers_escape_rate.rs`
-
-### T1c — Brownian Ratchet Motor
-
-Directed transport from asymmetric potential + noise. D1 result visualized.
-
-- **Physics:** `RatchetPotential` + `LangevinThermostat` + actuator ctrl
-- **Shows:** Ratchet potential shape, particle drift, control signal on/off
-- **HUD:** Net current, control state, position, temperature
-- **Validation:** Flashing ratchet produces positive net current
-- **Source fixture:** `tests/d1b_brownian_ratchet_baselines.rs`
-
-### T1d — Stochastic Resonance
-
-The D2 headline result: noise HELPS signal detection. Suboptimal noise =
-no transitions. Optimal noise = transitions sync with drive. Too much noise =
-random transitions.
-
-- **Physics:** `DoubleWellPotential` + `OscillatingField` + `LangevinThermostat`
-- **Shows:** Drive signal + particle position + transition synchrony
-- **HUD:** Temperature, synchrony metric, drive frequency, SNR
-- **Validation:** Synchrony peaks at intermediate noise (SR curve)
-- **Source fixture:** `tests/d2b_stochastic_resonance_baselines.rs`
-
-### T1 infrastructure needs (discovered during recon)
-
-- [ ] Potential landscape visualization (draw V(x) as a curve behind the particle)
-- [ ] Trail/trajectory drawing (position history as fading line)
-- [ ] Determine if these need new sim-bevy infrastructure or can use existing gizmos
-- [ ] Verify `PassiveStack` + sim-bevy step loop interaction
-
-### T1 directory structure
+### Directory structure
 
 ```
 examples/fundamentals/sim-thermostat/
+├── free-diffusion/
 ├── langevin-oscillator/
 ├── kramers-escape/
+├── biased-well/
 ├── brownian-ratchet/
-└── stochastic-resonance/
+├── stochastic-resonance/
+├── coupled-chain/
+├── ising-sampling/
+└── stress-test/
 ```
 
 ---
