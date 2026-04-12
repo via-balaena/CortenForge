@@ -255,6 +255,10 @@ members = [
     # Examples — fundamentals / sim-ml / persistence
     "examples/fundamentals/sim-ml/persistence/train-then-replay",
 
+    # Examples — fundamentals / sim-ml / 6dof
+    "examples/fundamentals/sim-ml/6dof/stress-test",
+    "examples/fundamentals/sim-ml/6dof/cem-linear",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",
