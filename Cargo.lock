@@ -3705,6 +3705,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-vec-env-terminal-obs"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-mocap-bodies-drag-target"
 version = "0.7.0"
 dependencies = [

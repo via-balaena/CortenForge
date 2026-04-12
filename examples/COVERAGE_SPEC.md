@@ -1359,19 +1359,20 @@ fundamentals/
 
 ### Track 5: sim-ml-bridge — ML boundary layer + learning algorithms
 
-The ML bridge (111 tests, 6 phases) gets its own example track covering
-spaces, SimEnv, VecEnv, and a learning algorithm ladder. Full spec:
+The ML bridge (342 tests, 6 crate phases) gets its own example track covering
+spaces, SimEnv, VecEnv, learning algorithms, architecture ladder, obstacle
+avoidance, persistence, and competition. Full spec:
 `fundamentals/sim-ml/SIM_ML_EXAMPLES_SPEC.md`.
 
 **Phases 1–3 (spaces, sim-env, vec-env basics — 13 examples):**
 ```
 fundamentals/sim-ml/
-  spaces/          #1–5   observation/action space demos
-  sim-env/         #6–9   episode lifecycle, sub-stepping, domain randomization
-  vec-env/         #10–13 parallel environments (stress-test, parallel-step, auto-reset, terminal-obs)
+  spaces/          #1–5   observation/action space demos — DONE
+  sim-env/         #6–9   episode lifecycle, sub-stepping, domain randomization — DONE
+  vec-env/         #10–13 parallel environments — DONE except #13 terminal-obs
 ```
 
-**Phase 4: Learning algorithm ladder (#12, #14–#17) — COMPLETE:**
+**Phase 4: 2-DOF algorithm ladder (#12, #14–#17) — COMPLETE:**
 
 Same 2-link reaching arm, same target, same VecEnv — five different
 optimizers. All use shared building blocks from sim-ml-bridge; only
@@ -1390,6 +1391,33 @@ Gradients analytically computable via chain rule through tanh.
 TD3/SAC add ReplayBuffer, soft_update, and twin Q-networks from
 sim-ml-bridge. SAC's entropy regularization prevents DPG saturation,
 outperforming TD3 at level 0.
+
+**Phase 5: 6-DOF architecture ladder (#18–#21):**
+
+Same reaching task scaled to 6-DOF (3-segment arm), with escalating
+network architectures. Each step adds one variable.
+
+| # | Algorithm | Network | One new variable |
+|---|-----------|---------|------------------|
+| 18 | — | — | stress-test (headless 6-DOF integration) |
+| 19 | CEM | Linear (78 params) | Task complexity (2→6 DOF) |
+| 20 | PPO | MLP hidden=32 (614 params) | Network architecture |
+| 21 | SAC | Autograd [64,64] ReLU | Autograd + entropy |
+
+**Phase 6: Obstacle avoidance (#22–#23):**
+
+Ghost sphere between rest and target. Non-convex reward landscape.
+SAC + autograd 2-layer. Headless stress-test + visual example.
+
+**Phase 7: Persistence depth (#24):**
+
+Checkpoint resume: train 15 epochs → save `TrainingCheckpoint` → reload
+→ train 15 more. Best-policy tracking visible in HUD across the boundary.
+
+**Phase 8: Competition dashboard (#25):**
+
+Train all 5 algorithms headlessly on 6-DOF, replay best policies side
+by side in Bevy. Color-coded arms, per-algorithm reward/epoch/time HUD.
 
 ### Track 6: sim-thermostat — Thermodynamic Computing Visual Examples
 
@@ -1756,7 +1784,7 @@ to GPU or advanced features:
 2. **Track 1B** IN PROGRESS — sim-core foundation layer 2 (~70 examples).
    No stone unturned — every implemented subsystem gets dedicated coverage.
    **14/20 subdirectories done.**
-3. **Track 5** — sim-ml-bridge. Phase 4 COMPLETE (17 examples, 5 algorithms).
+3. **Track 5** — sim-ml-bridge. Phases 1–4 COMPLETE (17 examples). Phases 5–8 specified (8 new examples).
 4. **Track 6** — sim-thermostat visual examples (8 visual + 1 stress-test).
    Blocks Layer 3 (thermo visuals at scale). Build #1→#9 in order.
 5. **Track 3** after Track 1B proves the engine — GPU ladder
