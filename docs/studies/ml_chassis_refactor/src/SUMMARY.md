@@ -26,7 +26,7 @@
 
 - [The scientific question](30-the-scientific-question.md)
 - [Failure modes](31-failure-modes.md)
-- [Hyperparameter sensitivity]()
+- [Hyperparameter sensitivity](32-hyperparameter-sensitivity.md)
 
 # Part 4 — Execution
 
