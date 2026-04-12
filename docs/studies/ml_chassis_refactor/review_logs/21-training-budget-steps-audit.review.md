@@ -176,3 +176,84 @@ Drafted, factual pass run with 22/24 verified + 1 path drift +
 1 discrepancy resolved, thinking pass run with eight edits
 applied (six substantive + two soft-word), no second round
 triggered. Ready for commit (pending user permission).
+
+## Round 2 — post-commit patch from chapter 22 thinking pass
+
+**Triggered:** Yes. During chapter 22's thinking pass, a cold
+reader pushed back on chapter 22's dismissal of the recon's
+option (a) for `total_steps` reconciliation. The pushback sent
+the chapter 22 author back to `td3.rs:260–310` and surfaced that
+off-policy's inner loop steps *all* `n_envs` envs unconditionally
+every iteration, including envs that have already completed an
+episode during the current epoch (which get auto-reset and then
+continue being stepped). The practical consequence is that at
+the same `Steps(N)` budget, on-policy and off-policy perform
+*different amounts of actual env work per epoch*, not just
+report the same work in different units. Chapter 21's original
+"reporting divergence" framing understated the finding.
+
+**Impact on chapter 21.** The audit's factual claims are
+unchanged — every citation still verifies, every grep result
+still holds, and the uniform Steps-to-epochs formula finding is
+untouched. What changes is the framing of the `total_steps`
+semantics split: the two counters are honestly counting the
+same metric (actual `env.step()` call count), and the reason
+the reported numbers differ is that the two families genuinely
+do different amounts of work per epoch. The original section
+treated the divergence as a reporting issue downstream of the
+budget formula; the revised framing makes clear that the work
+disparity is upstream of the reporting and the counters are
+both honest.
+
+**Revisions applied:**
+
+1. The paragraph in `total_steps` section stating "off-policy
+   reports inner-loop work expressed as (iterations × `n_envs`),
+   which systematically over-counts individual envs that
+   completed early and were reset mid-inner-loop" was wrong —
+   the counter is not over-counting, it is honestly counting
+   the actual `env.step()` calls off-policy performs. Rewrote
+   the paragraph to drop the "over-counts" framing and describe
+   the divergence as "at identical `Steps(N)` budgets the two
+   families produce different numbers under the same field name."
+2. Phrase "an off-policy algorithm doing the same amount of
+   inner-loop work" was factually wrong — the two families do
+   *different* amounts of inner-loop work. Removed.
+3. Added a forward-reference paragraph at the end of the
+   `total_steps` section pointing chapter 22 readers at the
+   deeper treatment: "the divergence goes deeper than the
+   reporting-level framing of this section suggests, and chapter
+   22 unpacks it. Both counters honestly count actual
+   `env.step()` calls, but the two families do different amounts
+   of actual env work per epoch." This naming change keeps Ch 21
+   a correct audit of the current code while pointing readers
+   at the deeper finding Ch 22 establishes.
+4. The "What the audit establishes" summary paragraph was
+   updated for the same reason: the old version said off-policy
+   "systematically over-counts individual envs that reset
+   mid-inner-loop," which is wrong. The new version says "both
+   are honest counts of actual `env.step()` calls, and at the
+   same epoch budget the two families do different amounts of
+   actual env work per epoch" and forwards the deeper reading
+   to chapter 22.
+
+**Why the patch is a post-commit amendment rather than a
+re-review.** The factual content of chapter 21 is unchanged
+— every citation still holds, the uniform formula finding is
+untouched, and the `total_steps` section still correctly
+describes what each algorithm's counter does. The patch is a
+framing correction that brings Ch 21's characterization in
+line with Ch 22's deeper reading. A full re-review would not
+turn up new findings; the thinking pass that caught the issue
+was chapter 22's, not a re-reading of chapter 21, and chapter
+22 is where the deeper argument lives. Chapter 21's job is to
+audit the current code, which it still does faithfully; the
+amendment only removes two factually-wrong phrasings ("over-
+counts," "same amount of inner-loop work") and adds a forward
+reference to where the deeper reading gets worked through.
+
+No second round of the full protocol was run on the patched
+chapter; the amendment is narrow, the factual pass on the
+original draft still holds, and the thinking-pass concern that
+motivated the patch was resolved in chapter 22's own revision
+cycle.

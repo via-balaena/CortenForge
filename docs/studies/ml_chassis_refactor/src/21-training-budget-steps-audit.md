@@ -141,13 +141,10 @@ relative to an on-policy sum of actual trajectory lengths.
 The two reporting definitions are not subtly different. On-policy
 reports the literal sum of this epoch's trajectory lengths;
 off-policy reports inner-loop work expressed as
-(iterations × `n_envs`), which systematically over-counts
-individual envs that completed early and were reset mid-inner-loop.
-At identical `Steps(N)` budgets an on-policy algorithm whose
-episodes terminate early will report a smaller `total_steps` than
-an off-policy algorithm doing the same amount of inner-loop work,
-and a comparison that reads those numbers side-by-side without
-knowing the counting conventions will mis-rank them.
+(iterations × `n_envs`). At identical `Steps(N)` budgets the two
+families produce different numbers under the same field name,
+and a comparison that reads them side-by-side without knowing
+the counting conventions will mis-rank the algorithms.
 
 The important distinction here is that this is **not a
 budget-enforcement bug**. The budget formula uses
@@ -155,10 +152,22 @@ budget-enforcement bug**. The budget formula uses
 ceiling — and all five algorithms run the computed number of
 epochs. What each algorithm reports about the *work inside an
 epoch* is what differs. Chapter 22 is where the design call for
-how to reconcile the two reporting conventions gets made. The
-audit's job is to establish that the divergence exists, name
-where it comes from, and leave the reconciliation to the chapter
-that has the standing to decide.
+how to reconcile the two conventions gets made. One note for
+readers reaching chapter 22 in sequence: the divergence goes
+deeper than the reporting-level framing of this section
+suggests, and chapter 22 unpacks it. Both counters honestly
+count actual `env.step()` calls, but the two families do
+different amounts of actual env work per epoch — off-policy's
+inner loop steps all envs unconditionally every iteration,
+including post-completion envs that have been auto-reset, while
+on-policy stops each rollout at `done`. Chapter 22 renames its
+treatment of this as "the work inside an epoch is not uniform"
+and decides the rematch should report per-family actual step
+counts explicitly rather than rely on the shared `total_steps`
+field to carry a comparable number. Chapter 21's audit
+establishes the divergence at the reporting-field level;
+chapter 22's decision chapter is where the deeper reading is
+worked through.
 
 ## PPO's `k_passes` is a wall-clock factor, not a budget factor
 
@@ -242,11 +251,13 @@ budget-enforcement level. The primary complication is the
 on-policy versus off-policy `total_steps` divergence: on-policy
 reports an exact sum of this epoch's trajectory lengths, and
 off-policy reports inner-loop iterations-until-all-complete
-times `n_envs`, which systematically over-counts individual
-envs that reset mid-inner-loop. A writeup that reads the
-numbers side-by-side without knowing the counting conventions
-will draw conclusions that neither convention licenses. The
-PPO `k_passes` observation and the TD3/SAC warmup overhead are
+times `n_envs`. Both are honest counts of actual `env.step()`
+calls, and at the same epoch budget the two families do
+different amounts of actual env work per epoch — chapter 22
+unpacks the deeper reading and decides the rematch should
+report per-family actual step counts rather than rely on the
+shared field name to carry a comparable number. The PPO
+`k_passes` observation and the TD3/SAC warmup overhead are
 smaller findings that interact with the `total_steps` problem.
 All three are chapter 22 design calls. None of them invalidates
 the uniform formula, and none of them is an implementation bug
