@@ -12,7 +12,7 @@
 - [Stochastic component survey](12-stochastic-component-survey.md)
 - [Latent flakiness](13-latent-flakiness.md)
 - [The new shape](14-the-new-shape.md)
-- [Design decisions]()
+- [Design decisions](15-design-decisions.md)
 
 # Part 2 — Algorithm Layer: Competition and Replicates
 
