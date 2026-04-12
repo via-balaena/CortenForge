@@ -31,7 +31,7 @@
 # Part 4 — Execution
 
 - [PR sequence and rationale]()
-- [PR 1: Chassis reproducibility]()
+- [PR 1: Chassis reproducibility](40-pr-1-chassis-reproducibility.md)
 - [PR 2: Competition replicates and algorithm surface fixes]()
 - [PR 3: sim-opt split and rematch]()
 
