@@ -4,13 +4,11 @@
 
 - [Why this study exists](00-why-this-study-exists.md)
 - [How this study is produced](01-how-this-study-is-produced.md)
-- [How we got here]()
-- [Inventory as it stands today]()
 
 # Part 1 — Foundation: Stochastic State
 
 - [The wrong arrangement](10-the-wrong-struct.md)
-- [BatchSim parallelism today]()
+- [BatchSim parallelism today](11-batchsim-parallelism-today.md)
 - [Stochastic component survey]()
 - [Latent flakiness]()
 - [The new shape]()
