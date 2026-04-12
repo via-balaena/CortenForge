@@ -637,10 +637,9 @@ Ch 32 owns three things Ch 24 explicitly deferred: the
 statistical test the rematch uses to classify its outcome into
 one of Ch 30's three buckets, the replicate count `N`, and the
 pilot design itself. The replicate count depends on measured
-per-replicate variance, which depends on running a pilot, which
-does not yet exist. The statistical test depends on the
-distributional shape of the replicate values, which also depends
-on pilot data.
+per-replicate variance, which depends on running a pilot. The
+statistical test depends on the distributional shape of the
+replicate values, which also depends on pilot data.
 
 The failure mode if Ch 32 has not landed before the rematch
 runs: the rematch picks an `N` and a test ad hoc, the picked `N`
@@ -656,20 +655,45 @@ distinguish them if Ch 32's pilot work has not been done.
 
 The failure shape shows up as bucket 3 (effect-size-vs-noise),
 specifically §3.2's seed-variance envelope. The protective
-mechanism is "Ch 32 lands first," and Ch 32's landing means the
-pilot has been run, the variance has been measured, the test
-has been picked with eyes open, and the replicate count has
-been justified against the measured variance.
+mechanism is a two-part conjunction: "Ch 32 has landed" AND
+"the rematch protocol implements the initial-batch read with
+its pre-registered escalation rule." Ch 32's landing means the
+test has been picked with eyes open (bootstrap CI on the
+difference of means, per Ch 32's Decision 1), the significance
+threshold has been chosen (95 percent CI with the three-bucket
+Ch 30 mapping, per Ch 32's Decision 2), the replicate count
+protocol has been specified (`N = 10` initial with a
+pre-registered single expansion to `N = 20` iff the initial-
+batch CI is ambiguous, per Ch 32's Decision 3), the initial-
+batch composition has been fixed (D2c task, both `{CEM, SA}` at
+matched complexity, full `Steps(16M)` per replicate, seeds
+derived via `splitmix64(MASTER.wrapping_add(i))` with
+pre-registered `MASTER = 20_260_412`, per Ch 32's Decision 4),
+and the bimodality contingency has been pre-registered (median
+substitution if the Pearson-based bimodality coefficient
+strictly exceeds `5/9`, per Ch 32's Section 6).
 
 A subtlety worth naming: Ch 32's prerequisite is satisfied by
 the chapter being drafted and its decisions carried into the
 rematch protocol, not by a separate execution PR merging into
-`main`. Ch 32 is a study chapter, not an execution PR chapter,
-and the pilot it specifies will be run as part of the rematch's
-preparation rather than as a separate landing event. The
-prerequisite is conceptual (Ch 32's decisions exist and have
-been read into the rematch protocol) rather than code-level (a
-PR has merged into `main`).
+`main`. Ch 32 is a study chapter, not an execution PR chapter.
+Ch 32 went further than this §4.4 entry originally anticipated
+and specified a *folded* pilot — the rematch's first ten
+replicates serve as both the pilot (measuring variance and
+distributional shape via the bimodality coefficient) and the
+first half of the rematch's data, with a pre-registered single
+expansion to twenty replicates iff the initial-batch CI is
+ambiguous. There is no separate pilot event. What Ch 32's
+landing does *not* do on its own is run the rematch — it
+specifies the protocol, and the protocol is executed at
+rematch time by Ch 42's implementation. The prerequisite is
+therefore two-part: Ch 32's decisions exist (satisfied by the
+chapter's commit), and the rematch implementation honors the
+initial-batch read with its escalation rule (enforced at
+rematch execution time by Ch 42). A rematch implementation
+that ignores the expansion rule and runs at a fixed `N` would
+satisfy "Ch 32 has landed" but not the protective mechanism
+this entry requires.
 
 This is the only bucket-4 entry whose prerequisite is a study
 chapter rather than an execution PR. Ch 31 includes it because
