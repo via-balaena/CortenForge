@@ -379,3 +379,91 @@ three-option counterfactual with Ch 22 rejection of the
 extend-the-inner-loop alternative) read cleanly, and whether
 Section 4.7's contingency note on Ch 41 is the right level of
 commitment for a dependency that spans two chapters.
+
+## Round 2 — Ch 41 §3.1/§3.3 post-commit patch
+
+Ch 41's recon established that the factual claim "The D2c
+rematch test at `sim/L0/thermostat/tests/d2c_cem_training.rs`
+compares `best_reward()` values across algorithms and passes
+or fails the test based on those comparisons" is incorrect at
+the source level. The test file does not import `Competition`,
+does not call `best_reward()` or `final_reward()` anywhere,
+and consists of four independent `#[test]` functions (`d2c_cem`
+at `:276`, `d2c_td3` at `:295`, `d2c_ppo` at `:331`, `d2c_sac`
+at `:356`, all recon-reported) that each train one algorithm
+and assert per-algorithm Gate A (synchrony t-stat) and Gate B
+(`best_last_10 > first_5_mean` on the algorithm's own
+`mean_reward` trajectory). No cross-algorithm comparison lives
+in any assertion. The cross-algorithm comparison exists in two
+places, neither of them inside the test file: the D2 SR
+findings memo, and the human-read eprintln output a reader
+reconstructs from running all four tests.
+
+The overclaim appears in three Ch 24 sites:
+
+- **§1.9 (at `:428-433` in the pre-patch version).** The
+  strongest form of the overclaim: "The D2c rematch test at
+  `sim/L0/thermostat/tests/d2c_cem_training.rs` (recon-reported,
+  exact line range deferred to factual pass) compares
+  `best_reward()` values across algorithms and passes or fails
+  the test based on those comparisons."
+- **§2.2 (at `:492-505` in the pre-patch version).** A softer
+  form embedded in the supporting-observation argument: "The
+  D2c rematch test compared them directly." Implies a
+  `best_reward()` cross-algorithm read in the test file.
+- **§5 (at `:1094-1100` in the pre-patch version).** The
+  deferred item: "It does — the test is unit-broken against
+  CEM versus any of the other four algorithms — but rewriting
+  the test is a Chapter 41 execution-layer concern." Commits
+  Ch 41 to a rewrite that is not warranted by the source.
+
+The Round 2 patch amends each site in place. The amendments
+correct the test-file attribution to name the memo and eprintln
+output as the actual locus of the cross-algorithm comparison;
+the supporting-observation axis of §2.2 (two independent
+mechanisms by which the D2c PPO number fails to mean what its
+name suggests) survives unchanged. Ch 24 Decision 1 and
+Decision 2 are untouched; Decision 1's "fix the algorithms"
+pick is correct and load-bearing regardless of where the
+unit-mismatch observable is — the unit uniformity matters for
+the rematch's cross-algorithm comparisons whether those
+comparisons live in a test gate or in the memo's narrative
+table. Ch 24's file:line citations are not altered.
+
+Each amended passage carries an inline "**(Ch 41 §3.1/§3.3
+post-commit patch)**" marker naming the source of the
+correction, matching the inline-marker pattern Ch 22 used
+when its thinking-pass findings were backpropagated into Ch
+21 (commit `3e1ec0ff`) and Ch 32 used when its folded-pilot
+findings were backpropagated into Ch 31 §4.4 (commit
+`6b876bc5`).
+
+The patch is bundled into the Ch 41 commit rather than
+landing as a separate follow-up commit because Ch 41 §3
+depends on the corrected Ch 24 framing for the doc-only
+narrowing of `d2c_cem_training.rs` scope to make sense. A
+reader who sees the Ch 41 commit first and then has to chase
+a separate Ch 24 patch commit to understand why PR 2b's scope
+is narrow is reading in a harder order than the one-commit
+bundle allows. The precedent is `b5cb3f6c` (session 8), which
+bundled a Ch 15 §5.6 citation fix with a Ch 40 §5 scope
+correction in the same commit for the same reason.
+
+The verifying evidence is Ch 41's full-file read of
+`d2c_cem_training.rs:1-386` (the file is 386 lines total and
+ends at the closing `}` of `fn d2c_sac`, with no post-fn
+cross-algorithm comparison code), plus grep censuses showing
+zero `best_reward` / `final_reward` / `Competition` references
+in the file. Both are recon-reported in Ch 41's review log's
+"Recon" section and in Ch 41 §3.1.
+
+A minor related note: Ch 24's initial recon also missed two
+smaller line-range drifts that Ch 41's recon surfaced but that
+this Round 2 patch does not address (they are cosmetic and
+do not affect any Ch 24 conclusion): (i) `algorithm.rs:32-43`
+for `EpochMetrics` actually ends at `:45`; (ii) `td3.rs:489`
+for `done_count` is actually the `0.0` empty-branch fallback
+of the if/else, with `done_count` being populated in the inner
+loop at `:341` and surfaced in the `EpochMetrics` struct
+construction later. Both are left unpatched because neither
+is load-bearing on any Ch 24 argument.

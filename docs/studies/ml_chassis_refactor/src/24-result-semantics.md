@@ -425,12 +425,21 @@ holds reward near 1 per step for the full episode reports:
 | SAC | ≈ 500.0 | reward-per-episode |
 
 The CEM-versus-rest gap is ~2 to 3 orders of magnitude by
-design. The D2c rematch test at
-`sim/L0/thermostat/tests/d2c_cem_training.rs` (recon-reported,
-exact line range deferred to factual pass) compares
-`best_reward()` values across algorithms and passes or fails
-the test based on those comparisons. Whatever that test was
-measuring, it was not what the name suggested it was measuring.
+design. The D2c experiment's cross-algorithm comparison lives
+in the D2 SR findings memo and in the human-read eprintln
+output produced by the four `#[test]` functions at
+`sim/L0/thermostat/tests/d2c_cem_training.rs` — the test file
+does not import `Competition` and does not call `best_reward()`
+or `final_reward()` anywhere (Ch 41 §3.1 walks the source
+evidence). The test file's `#[test]` gates are per-algorithm
+and within-algorithm: Gate A asserts a synchrony t-stat on
+the deterministic evaluation for the single algorithm being
+trained, and Gate B asserts `best_last_10 > first_5_mean` on
+that same algorithm's `mean_reward` trajectory, a
+within-algorithm monotonicity check. Whatever the cross-
+algorithm comparison in the memo and the eprintln output
+was measuring, it was not what the name suggested it was
+measuring. **(Ch 41 §3.1/§3.3 post-commit patch.)**
 
 The gap is not a fixed scaling factor. It depends on episode
 length. Episode length varies across tasks (different
@@ -489,20 +498,28 @@ direction and neither changes Ch 23's pool-composition call; the
 point is that there are two independent mechanisms by which the
 D2c PPO number fails to mean what its name suggests, not that
 Ch 24 has found a new reason to exclude PPO that Ch 23 missed.
-PPO's D2c `best_reward` was in reward-per-episode units. CEM's
-D2c `best_reward` was in reward-per-step units. The D2c rematch
-test compared them
-directly. The number PPO was scoring "against" was off by
-roughly two orders of magnitude in units alone, before any
-question of whether PPO had actually learned anything.
+PPO's D2c `mean_reward` (and by extension its `best_reward`
+helper when called at any epoch) was in reward-per-episode
+units. CEM's was in reward-per-step units. The D2c
+experiment's cross-algorithm comparison in the D2 SR findings
+memo treated those numbers as directly comparable and reported
+them side-by-side. The number PPO was scoring "against" in
+the memo's comparison was off by roughly two orders of
+magnitude in units alone, before any question of whether PPO
+had actually learned anything. **(Ch 41 §3.1/§3.3 post-commit
+patch: this paragraph originally framed the cross-algorithm
+comparison as happening inside the `d2c_cem_training.rs` test
+file; Ch 41's recon established that the test file's gates
+are per-algorithm and that the cross-algorithm comparison
+lives in the memo, not in test assertions.)**
 
-The same observation applies to TD3 and SAC — they were also
-comparing reward-per-episode numbers to CEM's reward-per-step
-number in D2c. Ch 30 excluded TD3 and SAC on linear-$Q$
-expressiveness grounds; Ch 24 adds the unit-mismatch
-observation as additional corroboration. The D2c test was
-apples-to-oranges against all three off-policy algorithms at
-once.
+The same observation applies to TD3 and SAC — the memo also
+compared their reward-per-episode numbers against CEM's
+reward-per-step number. Ch 30 excluded TD3 and SAC on
+linear-$Q$ expressiveness grounds; Ch 24 adds the unit-mismatch
+observation as additional corroboration for the D2 SR memo's
+narrative comparison. The D2c memo was apples-to-oranges
+against all three off-policy algorithms at once.
 
 This does not change Ch 23's pool composition. The rematch pool
 is still `{CEM, SA}`, PPO is still out, TD3 and SAC are still
@@ -1091,13 +1108,25 @@ declines the following:
   Section 4.5 rejected these as speculative for this chapter.
   They can be added later in Chapter 32 if the data demands
   them.
-- **Whether the D2c test gate at
+- **Whether the D2c test file at
   `sim/L0/thermostat/tests/d2c_cem_training.rs` needs to be
-  rewritten.** It does — the test is unit-broken against CEM
-  versus any of the other four algorithms — but rewriting the
-  test is a Chapter 41 execution-layer concern. The test lives
-  in ml-bridge's test suite, not in the chassis, and Chapter 41
-  owns ml-bridge's surface fixes.
+  rewritten.** Its per-algorithm `#[test]` gates do not —
+  they are within-algorithm monotonicity and significance
+  checks that are robust to Decision 1's rescaling. The
+  cross-algorithm comparison in the D2 SR findings memo is
+  unit-broken against CEM versus any of the other four
+  algorithms, but the memo is not an ml-bridge test file.
+  Chapter 41's execution-layer scope for this file is doc-
+  only (a module-level comment naming the post-Decision-1
+  unit, and an eprintln format string that includes the
+  unit inline). Chapter 42's PR 3 ships the unit-correct
+  cross-algorithm gate in a new test fixture under
+  `sim-opt/tests/`, not as a rewrite of the existing file.
+  **(Ch 41 §3.1/§3.3 post-commit patch: this bullet
+  originally claimed the test was "unit-broken against CEM
+  versus any of the other four algorithms" and committed Ch
+  41 to rewriting it; Ch 41's recon narrowed both the
+  diagnosis and the scope.)**
 - **Whether CEM's internal elite-selection fitness should
   eventually be reconciled with the reporting change.**
   Section 3.5 argued to leave it alone for now. A future
