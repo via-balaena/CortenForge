@@ -25,7 +25,7 @@
 # Part 3 — The Rematch
 
 - [The scientific question](30-the-scientific-question.md)
-- [Failure modes]()
+- [Failure modes](31-failure-modes.md)
 - [Hyperparameter sensitivity]()
 
 # Part 4 — Execution
