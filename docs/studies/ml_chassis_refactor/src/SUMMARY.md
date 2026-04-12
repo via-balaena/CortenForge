@@ -11,7 +11,7 @@
 - [BatchSim parallelism today](11-batchsim-parallelism-today.md)
 - [Stochastic component survey](12-stochastic-component-survey.md)
 - [Latent flakiness](13-latent-flakiness.md)
-- [The new shape]()
+- [The new shape](14-the-new-shape.md)
 - [Design decisions]()
 
 # Part 2 — Algorithm Layer: Competition and Replicates
