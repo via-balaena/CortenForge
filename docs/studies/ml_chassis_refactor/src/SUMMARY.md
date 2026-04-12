@@ -9,7 +9,7 @@
 
 # Part 1 — Foundation: Stochastic State
 
-- [The wrong struct]()
+- [The wrong struct](10-the-wrong-struct.md)
 - [BatchSim parallelism today]()
 - [Stochastic component survey]()
 - [Latent flakiness]()
@@ -18,7 +18,7 @@
 
 # Part 2 — Algorithm Layer: Competition and Replicates
 
-- [Single-seed is broken]()
+- [Single-seed is broken](20-single-seed-is-broken.md)
 - [TrainingBudget::Steps audit]()
 - [Fair compute parity]()
 - [Competition API v2]()
@@ -26,7 +26,7 @@
 
 # Part 3 — The Rematch
 
-- [The scientific question]()
+- [The scientific question](30-the-scientific-question.md)
 - [Failure modes]()
 - [Hyperparameter sensitivity]()
 
