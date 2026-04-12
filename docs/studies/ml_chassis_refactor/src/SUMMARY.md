@@ -19,7 +19,7 @@
 - [Single-seed is broken](20-single-seed-is-broken.md)
 - [TrainingBudget::Steps audit](21-training-budget-steps-audit.md)
 - [Fair compute parity](22-fair-compute-parity.md)
-- [Competition API v2]()
+- [Competition API v2](23-competition-api-v2.md)
 - [Result semantics]()
 
 # Part 3 — The Rematch
