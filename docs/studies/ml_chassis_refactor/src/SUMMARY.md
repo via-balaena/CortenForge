@@ -17,7 +17,7 @@
 # Part 2 — Algorithm Layer: Competition and Replicates
 
 - [Single-seed is broken](20-single-seed-is-broken.md)
-- [TrainingBudget::Steps audit]()
+- [TrainingBudget::Steps audit](21-training-budget-steps-audit.md)
 - [Fair compute parity]()
 - [Competition API v2]()
 - [Result semantics]()
