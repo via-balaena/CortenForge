@@ -359,26 +359,18 @@ impl BatchSim {
         &mut self.envs
     }
 
-    /// Clone of the shared model Arc.
+    /// Reference to the shared model `Arc`, or `None` for per-env batches.
     ///
     /// Used by GPU backend to pass model to parallel `forward()` calls.
-    /// Only valid on shared-model batches (constructed via
-    /// [`BatchSim::new`]). Per-env batches have no single `Arc<Model>`
-    /// to hand out.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called on a per-env batch.
+    /// Returns `Some(&Arc<Model>)` for shared-model batches (constructed
+    /// via [`BatchSim::new`]) and `None` for per-env batches (constructed
+    /// via [`BatchSim::new_per_env`]), which have no single `Arc<Model>`
+    /// to hand out — each env carries its own.
     #[cfg(feature = "gpu-internals")]
     #[doc(hidden)]
     #[must_use]
-    // The panic on per-env batches is the method contract — `model_arc`
-    // is a GPU-internals accessor whose shape assumes one shared Arc.
-    #[allow(clippy::expect_used)]
-    pub fn model_arc(&self) -> &Arc<Model> {
-        self.shared_model
-            .as_ref()
-            .expect("model_arc: only valid on shared-model batches")
+    pub const fn model_arc(&self) -> Option<&Arc<Model>> {
+        self.shared_model.as_ref()
     }
 }
 
