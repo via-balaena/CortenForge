@@ -151,13 +151,18 @@ update from 3-arg to 4-arg, per [Ch 40 §3.4 (b)](
 40-pr-1-chassis-reproducibility.md). This is not a test
 addition — it is a mechanical test-file update — but any
 site that is itself inside a `#[test]` function is part of
-the PR 1b diff and a reviewer should see the pattern. Three
-sites deserve manual attention rather than mechanical
-replacement: `tests/langevin_thermostat.rs:282` (the custom
-passive wrapper), `tests/multi_dof_equipartition.rs:346-357`
-(two thermostats in the same test, both need distinct
-`traj_id`s), and `src/ising_learner.rs:198` (production
-caller, `traj_id` threaded from outer context).
+the PR 1b diff and a reviewer should see the pattern. The
+non-mechanical sites (per Ch 40 §3.4 (b), session-13
+revision): `tests/multi_dof_equipartition.rs:188, :263`
+(per-trajectory loops — `seed_base + i` splits into
+`(master_seed, traj_id = i)`); `tests/multi_dof_equipartition
+.rs:346, :357` and `tests/langevin_thermostat.rs:323, :334`
+(reproducibility helpers — two parallel builds asserting
+bit-identity, both get identical `traj_id = 0`); and
+`src/ising_learner.rs:198` (production caller, `traj_id`
+threaded from outer context). `tests/langevin_thermostat.rs
+:282` (the `CountingWrapper`) is mechanical `traj_id = 0`
+despite the initial-draft flag.
 
 ## PR 2a — Competition replicates (additive API)
 

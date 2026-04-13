@@ -621,8 +621,9 @@ files. Table 2 enumerates them:
 | `sim/L0/thermostat/tests/boltzmann_learning.rs` | call-site update | 1 | Mechanical. |
 | `sim/L0/thermostat/tests/gibbs_sampler.rs` | call-site update | 1 | Mechanical. |
 | `sim/L0/core/src/batch.rs` | additive constructor + field growth | — | §3.3's additive `new_per_env` constructor. Existing `new(model, n)` retained. |
-| `sim/L0/tests/integration/batch_sim.rs` | new regression test | — | `parallel_matches_sequential_with_langevin` lives here, alongside the existing `batch_matches_sequential_with_contacts` at `:55` (recon-reported). D9 + D10 + D11 + D15. |
-| `sim/L0/thermostat/Cargo.toml` | dependency removal | — | `rand_chacha` and `rand_distr` drop from runtime deps. Still dev-deps for the `prf.rs` cross-verification test shipped in PR 1a. |
+| `sim/L0/tests/integration/batch_sim.rs` | new regression test | — | `parallel_matches_sequential_with_langevin` lives here, alongside the existing `batch_matches_sequential_with_contacts` at `:55` (recon-reported). The owning crate is `sim-conformance-tests` (per `sim/L0/tests/Cargo.toml:2`), not the informal name "sim-integration" used elsewhere. D9 + D10 + D11 + D15. |
+| `sim/L0/tests/Cargo.toml` | dev-dep + feature addition | — | Adds `sim-thermostat` as a dev-dependency (absent today) and adds a `parallel` feature forwarding to `sim-core/parallel`, both required to build the new regression test. Session-13 recon drift fix — Ch 40 initial draft assumed both were already present. |
+| `sim/L0/thermostat/Cargo.toml` | dependency demotion | — | `rand_distr` moves from runtime deps to `[dev-dependencies]` (after the Langevin rewrite its only `src/` consumer is gone; `d1b` / `d1c` test files still use it). `rand_chacha` STAYS in runtime deps because `gibbs.rs` is a second runtime consumer of `ChaCha8Rng` — `GibbsSampler` is a discrete sampler with legal `&mut self`, not a `PassiveComponent`, and is out of C-3's scope. Session-13 recon drift fix — Ch 40 initial draft assumed `langevin.rs` was `rand_chacha`'s only `src/` consumer. |
 
 The call-site column totals **56** `LangevinThermostat::new`
 sites across 18 files. Most are mechanical (a 3-arg call
@@ -1272,7 +1273,7 @@ impl BatchSim {
 /// needs. Lives in `sim-core::batch` so sim-core owns the
 /// trait definition; implemented externally in `sim-thermostat`.
 pub trait PerEnvStack: Send + Sync + 'static {
-    fn install_per_env<F>(self: &Arc<Self>, n: usize, build_one: F) -> EnvBatch
+    fn install_per_env<F>(self: &Arc<Self>, n: usize, build_one: F) -> EnvBatch<Self>
     where
         F: FnMut(usize) -> (Model, Arc<Self>);
 }
@@ -1476,15 +1477,30 @@ matching its logical index in the test's own loop.
 A handful of call sites deserve manual attention rather than
 mechanical replacement:
 
-- `tests/langevin_thermostat.rs:282` (the custom passive
-  wrapper that holds a `LangevinThermostat` inside another
-  struct, recon-reported): the wrapper's constructor needs
-  the `traj_id` threaded through explicitly.
-- `tests/multi_dof_equipartition.rs:346-357` (two
-  thermostats in the same test, coupled to a single
-  simulation, recon-reported): both need distinct
-  `traj_id`s to avoid noise correlation, even though the
-  test's current intent is a single simulation.
+- `tests/multi_dof_equipartition.rs:188, :263` (per-trajectory
+  `for i in 0..n_traj` loops that build one fresh thermostat
+  per trajectory with `seed_base + i as u64`): these are the
+  genuine "distinct `traj_id` matching loop index" case. The
+  mechanical rendering splits `seed_base + i` into
+  `(master_seed = seed_base, traj_id = i as u64)`, preserving
+  per-trajectory decorrelation.
+- `tests/multi_dof_equipartition.rs:346, :357` (the
+  `assert_multi_dof_reproducibility` helper — two SEPARATE
+  simulations built with identical parameters, asserting
+  bit-for-bit `qpos` / `qvel` agreement after N steps): both
+  thermostats must receive IDENTICAL `(master_seed, traj_id)`
+  pairs — `traj_id = 0` for both is fine and correct.
+  Distinct `traj_id`s would break the reproducibility
+  assertion. (Session-13 drift fix: Ch 40 initial draft
+  misread these as "two thermostats in the same test coupled
+  to a single simulation." They are two parallel builds of
+  the same simulation, not one coupled simulation.)
+- `tests/langevin_thermostat.rs:323, :334` (the
+  `test_reproducibility_from_seed` test — same structure as
+  the `:346/:357` pair above, two parallel builds asserting
+  bit-identity): both get identical `(master_seed, traj_id
+  = 0)`. This pair was not flagged in the initial draft;
+  session-13 recon added it.
 - `src/ising_learner.rs:198` (the production caller,
   recon-reported): `ising_learner.rs` is itself under the
   thermostat crate and its caller is whatever code
@@ -1493,6 +1509,12 @@ mechanical replacement:
   `traj_id = 0` is the default during construction and the
   learner gains a setter or builder method for cases where
   it matters.
+
+(`tests/langevin_thermostat.rs:282`, the `CountingWrapper`
+custom passive wrapper, was listed as non-mechanical in the
+initial draft but is actually a single-thermostat wrapper
+in a callback-firing-count test — the mechanical rendering
+is `traj_id = 0`. Session-13 drift fix.)
 
 **(c) The FD-invariant test update.** The existing
 `apply_does_not_advance_rng_when_stochastic_inactive` at
@@ -1563,9 +1585,14 @@ Collateral:
 - sim-core::batch gains a small PerEnvStack trait (dependency
   direction preserved: sim-core does not import
   sim-thermostat). PassiveStack implements it in stack.rs.
-- Langevin runtime dependencies on rand_chacha and rand_distr
-  are dropped; both remain dev-dependencies for the
-  prf.rs cross-verification test shipped in PR 1a.
+- langevin.rs's runtime use of rand_distr is dropped
+  (replaced by prf::box_muller_from_block). rand_distr
+  moves from [dependencies] to [dev-dependencies]; the
+  d1b / d1c test files still use it for Uniform action
+  sampling. rand_chacha STAYS in [dependencies] because
+  gibbs.rs is a separate runtime consumer of ChaCha8Rng
+  (out of C-3 scope — GibbsSampler is a discrete sampler
+  with legal &mut self, not a PassiveComponent).
 
 References:
 - ML chassis refactor study, Ch 15 (C-3 pick + Route 2)
@@ -1577,10 +1604,14 @@ Test plan:
   updates applied, plus ~3 updated FD-invariant tests)
 - cargo test -p sim-core (BatchSim existing tests unchanged
   + new tests for BatchSim::new_per_env construction)
-- cargo test -p sim-integration (batch_sim integration tests
-  including new parallel_matches_sequential_with_langevin)
-- cargo test -p sim-integration --features parallel (second
-  pass for strategy A trace comparison)
+- cargo test -p sim-conformance-tests --test integration
+  batch_sim (the integration-test crate is
+  sim-conformance-tests per sim/L0/tests/Cargo.toml, not
+  sim-integration — session-13 drift fix)
+- cargo test -p sim-conformance-tests --test integration
+  --features parallel batch_sim (second pass for strategy
+  A trace comparison; the parallel feature is added to
+  sim-conformance-tests' Cargo.toml by PR 1b itself)
 - cargo xtask grade sim-thermostat (7-criterion bar)
 - cargo xtask grade sim-core (7-criterion bar)
 
@@ -1847,3 +1878,93 @@ run and pass all 10 prf tests. Both fixes land as a single
 narrow post-commit patch, matching the `b5cb3f6c`/`3e1ec0ff`
 precedent. Both are prose drifts, not argument changes —
 Ch 40's decisions stand.
+
+**Session 13 pre-work patches to §3.1, §3.3, §3.4, §3.5, and
+Appendix B.** During the session-13 recon pass that followed
+PR 1a's landing — the read-Ch 40-§3-end-to-end + recon-the-
+current-state step before any PR 1b code was written — six
+prose drifts surfaced. All are rendering mistakes from the
+session-8 drafting of §3; none change the load-bearing
+decisions in §4's in-chapter sub-decision table. They were
+patched pre-work (before PR 1b's first code commit) rather
+than post-commit so the spec would be accurate for the
+session-13 implementation pass. The six:
+
+1. **§3.1 Table 2 — `rand_chacha` cannot be fully demoted.**
+   `gibbs.rs` imports `rand_chacha::ChaCha8Rng` as a runtime
+   consumer (`GibbsSampler` struct field at
+   `thermostat/src/gibbs.rs:34`). Ch 40's initial draft
+   assumed `langevin.rs` was the only `src/` user. The
+   corrected row: `rand_distr` moves to `[dev-dependencies]`;
+   `rand_chacha` stays in `[dependencies]` because gibbs
+   still needs it. An alternative — migrating `GibbsSampler`
+   to a prf-based Bernoulli — is out of PR 1b's scope
+   (`GibbsSampler` is not a `PassiveComponent` and the mutex
+   argument does not apply; `&mut self` is legal there).
+
+2. **§3.1 Table 2 — integration-test crate is
+   `sim-conformance-tests`, not "sim-integration".** The
+   informal name matched no actual crate. The new regression
+   test lives in `sim-conformance-tests` (per
+   `sim/L0/tests/Cargo.toml:2`), and PR 1b must add
+   `sim-thermostat` as a dev-dep plus a `parallel` feature
+   forwarding to `sim-core/parallel` to that crate's
+   `Cargo.toml` because neither exists today. Table 2 grows
+   by one row to name this work.
+
+3. **§3.3 trait return type — `-> EnvBatch` should be
+   `-> EnvBatch<Self>`.** The trait definition block and the
+   `EnvBatch<S>` struct definition immediately after were
+   inconsistent within §3.3 itself (return type was
+   non-generic; struct was generic). The rendered code in PR
+   1b uses `EnvBatch<Self>` as the return type, threading
+   through `S` at the `BatchSim::new_per_env` call site.
+
+4. **§3.4 (b) non-mechanical call-site list was partly
+   wrong.** The initial draft listed
+   `tests/langevin_thermostat.rs:282` (the `CountingWrapper`)
+   and `tests/multi_dof_equipartition.rs:346-357` as
+   non-mechanical, and described `:346/:357` as "two
+   thermostats coupled to a single simulation" needing
+   distinct `traj_id`s. The session-13 recon re-read both
+   files and found that `:346/:357` is actually the
+   `assert_multi_dof_reproducibility` helper — two SEPARATE
+   parallel simulations built with identical seeds,
+   asserting bit-identity after N steps. Distinct `traj_id`s
+   would break the reproducibility assertion. Both get
+   `traj_id = 0`. Similarly, `tests/langevin_thermostat.rs
+   :323/:334` (the `test_reproducibility_from_seed` test) is
+   the same shape and also needs identical `traj_id = 0` at
+   both sites, but was not flagged in the initial draft.
+   `:282` is a single-thermostat wrapper — mechanical
+   `traj_id = 0`. The genuine "distinct `traj_id` = i" case
+   is `multi_dof_equipartition.rs:188, :263` (per-trajectory
+   loops with `seed_base + i as u64`), which the initial
+   draft placed inside the mechanical bucket but should be
+   called out because the `seed_base + i` → `(master_seed,
+   traj_id = i)` split is a non-trivial semantic rendering.
+
+5. **§3.5 Collateral dependency bullet — same `rand_chacha`
+   drift as §3.1.** Bullet rewritten to match the corrected
+   Table 2 row: only `rand_distr` demotes; `rand_chacha`
+   stays in runtime deps for `gibbs.rs`.
+
+6. **§3.5 test plan bullets — same `sim-integration` →
+   `sim-conformance-tests` rename as §3.1.** Both test-plan
+   lines updated to the correct crate name and the correct
+   `--test integration batch_sim` selector.
+
+7. **Appendix B (`91-test-inventory.md`) carries the same
+   non-mechanical-site misread as §3.4 (b).** Lines 154-160
+   of Appendix B duplicate the `:282` / `:346-357` framing
+   from the §3.4 initial draft. Appendix B is patched in the
+   same pre-work commit to stay consistent with §3.4's
+   corrected list.
+
+All seven fixes land as a single pre-work drift patch before
+PR 1b's first code commit, matching the `b5cb3f6c` /
+`3e1ec0ff` / `eefa7842` narrow-patch precedent at a new
+position (pre-work rather than post-commit). None change any
+in-chapter sub-decision in §4. Ch 40's decisions stand; the
+recon pass just caught the rendering before the code was
+written against it.
