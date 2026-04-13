@@ -1154,6 +1154,27 @@ four artifacts). The amendment is a narrow patch in the same
 precedent family as the prior bundled amendments, not a
 larger-scale revision.
 
+**Post-implementation note (session 17).** The seven-site
+ripple above covers the *signature* extension and the
+*stock-task* call sites, and PR 2a shipped exactly those. The
+`TaskConfigBuilder::build()` path's internal closure at
+`task.rs:241` (now `:257`) was updated to the two-argument form
+but intentionally kept the `_seed: u64` accept-and-ignore shape
+for deterministic custom tasks, with an explicit "a future
+custom-builder API surface for stochastic tasks would consume
+the seed here" comment in-line. That future surface did not
+land in PR 2a; PR 3b's rematch fixture surfaced the gap at
+implementation time and closed it as PR 3b's commit 1 (a new
+additive constructor `TaskConfig::from_build_fn(name, obs_dim,
+act_dim, obs_scale, build_fn)`, not a new method on the
+builder). See §6.5 for the rendering and §8.3 for PR 3b's
+revised contents list. The gap is not a scope-discipline
+violation of the amendment — PR 2a's chassis ripple was
+correct as scoped, and the custom-builder surface is a
+separable additive change — but it is a correction to the
+"PR 2a is end-to-end for stochastic-task seed threading"
+implication a reader of the original §2.5 could take away.
+
 ### 2.6 The bundled-commit case
 
 The amendment could in principle land as a separate commit
@@ -3622,19 +3643,17 @@ a per-replicate `TaskConfig` rebuild.
 
 ```rust
 fn rematch_task() -> TaskConfig {
-    TaskConfig::builder()
-        .name(REMATCH_TASK_NAME)
-        .obs_dim(OBS_DIM)
-        .act_dim(ACT_DIM)
-        .obs_scale(obs_scale())
-        .build_fn(|n_envs, seed| {
-            Ok(make_training_vecenv(seed, n_envs))
-        })
-        .build()
+    TaskConfig::from_build_fn(
+        REMATCH_TASK_NAME,
+        OBS_DIM,
+        ACT_DIM,
+        obs_scale(),
+        |n_envs, seed| Ok(make_training_vecenv(seed, n_envs)),
+    )
 }
 ```
 
-The closure is ~3 lines: it takes `(n_envs, seed)` and calls
+The closure is one line: it takes `(n_envs, seed)` and calls
 `make_training_vecenv(seed, n_envs)` to produce the `VecEnv`.
 The `seed` parameter is the per-replicate master seed that
 `Competition::run_replicates` threads through from its seeds
@@ -3643,6 +3662,46 @@ uses it to construct the `LangevinThermostat` with the
 correct `master_seed` (matching the `d2c_cem_training.rs:91`
 pattern but with the per-replicate value instead of the
 fixture-global `SEED_BASE`).
+
+**A note on the `TaskConfig::from_build_fn` rendering
+(session 17 audit).** The original §6.5 rendering of
+`rematch_task()` used a `TaskConfig::builder()....build_fn(...)
+.build()` chain. That rendering was aspirational: the live
+`TaskConfigBuilder` at `sim/L0/ml-bridge/src/task.rs:146-281`
+has no `.name()`, `.obs_dim()`, `.act_dim()`, or `.build_fn()`
+setters — its public API requires a pre-parsed `Arc<Model>` at
+`TaskConfig::builder(name, model)` plus
+`.observation_space()` / `.action_space()` / `.reward()` /
+`.done()` / `.truncated()` / `.sub_steps()` setters, and its
+`.build()` method *synthesizes* the `build_fn` closure
+internally with a `_seed: u64` accept-and-ignore shape (see
+§2.5's post-implementation note). A rendering that went
+through `TaskConfig::builder()` would therefore collapse the
+per-replicate seed channel and malform the bootstrap CI.
+
+PR 3b commit 1 (`feat(sim-ml-bridge): add
+TaskConfig::from_build_fn for custom seeded tasks`) adds a
+new additive constructor on `TaskConfig` that accepts a
+custom seeded `build_fn` closure of shape `Fn(usize, u64) ->
+Result<VecEnv, EnvError> + Send + Sync + 'static` directly,
+bypassing the builder's synthesized-closure path. The
+constructor is ~25 lines of additive surface with three
+unit tests (`from_build_fn_metadata_roundtrip`,
+`from_build_fn_threads_seed_into_closure`, and
+`from_build_fn_propagates_env_error`); the middle test
+captures an `Arc<Mutex<Vec<u64>>>` into the closure and
+asserts the recorded seeds match the seeds passed to
+`build_vec_env`, which is the load-bearing invariant that
+makes the rematch's per-replicate physics variance work.
+
+Stock deterministic tasks (`reaching_2dof`, `reaching_6dof`,
+`obstacle_reaching_6dof`, and any future custom deterministic
+tasks) continue to use `TaskConfig::builder()`. Custom
+stochastic tasks — the rematch fixture today, and future Ch
+30 null follow-ups or thermo-RL training tasks tomorrow —
+use `TaskConfig::from_build_fn`. The two paths are orthogonal
+and the builder's internal accept-and-ignore shape is
+unchanged.
 
 A subtlety worth naming: under §2's patched
 `TaskConfig::build_fn`, each call to `build_vec_env` inside
@@ -4018,9 +4077,14 @@ two PRs, or three PRs. Three shapes are worth naming:
   module and `src/analysis.rs`'s test module). PR 3a is
   purely additive — it creates a new crate and has no
   consumers in ml-bridge, thermostat, sim-core, or any
-  existing test fixture at merge time. PR 3b ships
-  `sim-opt/tests/d2c_sr_rematch.rs` (the rematch fixture)
-  and depends on PR 1b, PR 2b, and PR 3a all merged.
+  existing test fixture at merge time. PR 3b ships as a
+  two-commit shape: the additive `TaskConfig::from_build_fn`
+  constructor in sim-ml-bridge (closing the deferred
+  custom-stochastic-task surface from §2.5's
+  post-implementation note) plus
+  `sim-opt/tests/d2c_sr_rematch.rs` (the rematch fixture
+  that consumes the new constructor). PR 3b depends on PR
+  1b, PR 2b, and PR 3a all merged.
 - **Shape (iii): three PRs.** PR 3a = sim-opt crate + SA only.
   PR 3b = analysis module. PR 3c = rematch fixture. Three
   review cycles, finest-grained rollback capability, maximum
@@ -4141,15 +4205,40 @@ other crate imports from `sim-opt`.
 
 ### 8.3 PR 3b contents and risk
 
-PR 3b ships:
+PR 3b ships as a two-commit shape. The original §8.3 draft
+described PR 3b as tests-only; session 17's implementation
+audit revised the shape after the custom-stochastic-task
+gap surfaced in `TaskConfigBuilder` (see §2.5's
+post-implementation note and §6.5's audit paragraph).
 
-- `sim/L0/opt/tests/d2c_sr_rematch.rs` — the rematch test
-  fixture per §6, ~350 lines.
-- (No source-file changes.) PR 3b is tests-only.
+**Commit 1: `feat(sim-ml-bridge): add TaskConfig::from_build_fn
+for custom seeded tasks`.** Adds the `TaskConfig::from_build_fn(
+name, obs_dim, act_dim, obs_scale, build_fn)` constructor to
+`sim/L0/ml-bridge/src/task.rs`, where `build_fn` is
+`Fn(usize, u64) -> Result<VecEnv, EnvError> + Send + Sync +
+'static`. Purely additive — no existing call sites change, the
+`TaskConfigBuilder` path is unchanged, no breaking changes.
+Three unit tests: `from_build_fn_metadata_roundtrip` (name,
+obs_dim, act_dim, obs_scale survive construction and a real
+VecEnv resets cleanly), `from_build_fn_threads_seed_into_closure`
+(the load-bearing invariant — an `Arc<Mutex<Vec<u64>>>`
+captured by the closure records every seed passed to
+`build_vec_env`), and `from_build_fn_propagates_env_error`
+(error-propagation contract matches `TaskConfigBuilder::build()`'s
+synthesized closure). ~123 lines added, one file.
 
-**Total diff size estimate:** ~350 lines added. One file.
+**Commit 2: `test(sim-opt): add D2c SR rematch fixture`.**
+Adds `sim/L0/opt/tests/d2c_sr_rematch.rs` per §6, ~346 lines,
+one file, marked `#[ignore = "requires --release (~30-60
+min)"]`. Consumes `TaskConfig::from_build_fn` from commit 1
+to build the rematch's single `TaskConfig` with the
+per-replicate seed threading through to
+`LangevinThermostat::master_seed`.
 
-**Risk profile:** medium, driven by two concerns.
+**Total diff size estimate:** ~470 lines added across two
+files (~123 in `task.rs`, ~346 in `d2c_sr_rematch.rs`).
+
+**Risk profile:** medium, driven by three concerns.
 
 **First, the rematch fixture depends on the full chassis
 stack.** PR 1a, PR 1b, PR 2a, PR 2b, and PR 3a must all be
@@ -4172,11 +4261,31 @@ Ch 32's specification (`MASTER = 20_260_412`,
 `N_INITIAL = 10`, etc.). These are necessary but not
 sufficient for rematch correctness; actual rematch
 correctness is exercised only when someone runs the
-ignored test on hardware that can afford the compute.
+ignored test on hardware that can afford the compute. As
+of session 17's landing of PR 3b, *the ignored test has
+not yet been run* — see §9's "The rematch has not yet been
+run" entry.
 
-**Rollback path:** PR 3b is tests-only, so a rollback is a
-`git revert` of the test file only, with no effect on any
-production code.
+**Third, commit 1 lives in sim-ml-bridge, not sim-opt.**
+PR 3b is no longer a single-crate PR. A reviewer evaluating
+PR 3b reads diffs in two crates: the ml-bridge constructor
++ its tests, and the sim-opt fixture. The constructor is a
+small well-scoped surface (one public method + doc comment,
+24 lines of tests) and the review load is dominated by the
+fixture's compliance with Ch 32's rematch protocol — not
+by the new ml-bridge method — but the two-crate shape is
+worth naming so the reviewer knows to look at both.
+
+**Rollback path:** PR 3b ships as two commits, so a
+rollback is a `git revert` of both commits (in reverse
+order: fixture first, then constructor). Reverting only the
+fixture commit would leave `TaskConfig::from_build_fn` in
+sim-ml-bridge as dead code with no in-tree consumers —
+harmless but architecturally odd — so the clean rollback is
+both commits together. No production code is affected
+(the constructor is additive, no call sites changed), and
+no other crate is affected (sim-ml-bridge's
+`TaskConfigBuilder` path is unchanged).
 
 ### 8.4 Merge-order alternatives
 
@@ -4278,9 +4387,16 @@ Each PR has its own rollback path:
   the sim-opt crate and the workspace Cargo.toml lines. No
   effect on ml-bridge, thermostat, sim-core, or any existing
   test fixture. Clean.
-- **PR 3b rollback.** `git revert` the merge commit. Removes
-  the `d2c_sr_rematch.rs` file. No effect on any other file.
-  Clean.
+- **PR 3b rollback.** `git revert` of both PR 3b commits in
+  reverse order: the fixture commit (removes
+  `d2c_sr_rematch.rs`), then the constructor commit (removes
+  `TaskConfig::from_build_fn` from `sim/L0/ml-bridge/src/task.rs`).
+  No effect on any other file. The `TaskConfigBuilder` path
+  is unchanged through both reverts. Reverting only the
+  fixture commit would leave the constructor as dead code in
+  ml-bridge with no in-tree consumer — harmless but odd —
+  so the clean rollback reverts both. See §8.3 for the
+  two-commit shape.
 - **Ch 42 commit rollback (Ch 41 amendment).** The Ch 42
   commit is a documentation commit affecting only the
   ml-chassis-refactor study book's source and review-log
@@ -4540,6 +4656,34 @@ patch (`seven` → `eight`) following the `b5cb3f6c` /
 `3e1ec0ff` narrow-post-commit-patch pattern. No argument
 in the chapter changes — the drift is a simple off-by-one
 in the count, not a structural issue.
+
+**The rematch has not yet been run.** As of session 17's
+landing of PR 3b (commits `2adaa372` and `3ad13c0e` on
+`feature/ml-chassis-study`), the `d2c_sr_rematch` test
+fixture exists, compiles cleanly under `cargo test -p
+sim-opt`, registers as `ignored, requires --release (~30-60
+min)`, and has *not* been executed. The Ch 42 commit, the
+PR 3a commits, and both PR 3b commits all ship the
+machinery to run the rematch; nobody has run it yet. The
+eprintln verdict block, the bootstrap CI bounds, the
+bimodality coefficients, and the classification outcome
+(Positive / Null / Ambiguous) are unknown until someone
+with appropriate hardware invokes:
+
+```text
+cargo test -p sim-opt --release --ignored d2c_sr_rematch
+```
+
+at a tree state with PR 1a, PR 1b, PR 2a, PR 2b, PR 3a, and
+both PR 3b commits all in scope. The session-17 user
+explicitly chose to defer the run rather than burn 30-60
+minutes of session wall clock on it, since the test's
+correctness is reviewable from compile-time + sub-decision
+(g)'s "protocol-completes-cleanly" gate without needing
+to see a successful outcome. The actual rematch run, the
+eprintln capture, and the writeup all remain post-PR-3b
+work — see the writeup deferral above and Ch 42 §6
+sub-decision (j).
 
 ---
 

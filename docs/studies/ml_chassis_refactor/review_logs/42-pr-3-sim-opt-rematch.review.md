@@ -950,3 +950,236 @@ fixture can read Ch 42 §5.5's updated rendering and know
 that the public `run_rematch` signature and the rematch
 protocol's behavior are exactly as the fixture needs, with
 the crate-private helper invisible to the fixture code.
+
+## Session 17 post-implementation audit (PR 3b)
+
+After session 17's two PR 3b source commits landed
+(`2adaa372` adding `TaskConfig::from_build_fn` to
+sim-ml-bridge, and `3ad13c0e` adding the rematch fixture
+at `sim/L0/opt/tests/d2c_sr_rematch.rs`), a spec-vs-shipped
+audit against Ch 42 §6 + §7 + §8 surfaced four narrative
+drifts. None of them require source-code fixes; all four
+ship as Ch 42 narrative updates in this audit commit.
+
+### Drift A (spec update) — `TaskConfigBuilder` rendering mismatch in §6.5
+
+Ch 42 §6.5's original `rematch_task()` rendering wrote:
+
+```rust
+TaskConfig::builder()
+    .name(REMATCH_TASK_NAME)
+    .obs_dim(OBS_DIM)
+    .act_dim(ACT_DIM)
+    .obs_scale(obs_scale())
+    .build_fn(|n_envs, seed| Ok(make_training_vecenv(seed, n_envs)))
+    .build()
+```
+
+The live `TaskConfigBuilder` at
+`sim/L0/ml-bridge/src/task.rs:146-281` has *none* of those
+setters. Its public API is `TaskConfig::builder(name: impl
+Into<String>, model: Arc<Model>) -> TaskConfigBuilder`
+(name and a pre-parsed model are required positional args)
+plus `.observation_space(...)`, `.action_space(...)`,
+`.obs_scale(...)`, `.reward(...)`, `.done(...)`,
+`.truncated(...)`, and `.sub_steps(...)` setters; there is
+no `.name()`, no `.obs_dim()`, no `.act_dim()`, and no
+`.build_fn()` setter. The `.build()` method *synthesizes* its
+own `build_fn` closure with a `_seed: u64` accept-and-ignore
+shape (`task.rs:253-258`), with an in-line comment naming
+"a future custom-builder API surface for stochastic tasks
+would consume the seed here." The original §6.5 rendering
+was aspirational — it described an API that would have
+been the natural shape but was not what PR 2a actually
+shipped.
+
+A rendering of `rematch_task()` that went through the live
+`TaskConfigBuilder` would *compile* but would silently drop
+the per-replicate seed at the closure body's `_seed`
+parameter, collapsing the per-replicate physics-noise
+variation that the rematch's bootstrap CI depends on. The
+rematch would still run, but every replicate would carry
+the same `LangevinThermostat::master_seed` and the bootstrap
+distribution would be malformed. This is a real
+correctness blocker, not a stylistic mismatch.
+
+**Fix:** PR 3b commit 1 (`2adaa372` —
+`feat(sim-ml-bridge): add TaskConfig::from_build_fn for
+custom seeded tasks`) adds an additive constructor:
+
+```rust
+pub fn from_build_fn<F>(
+    name: impl Into<String>,
+    obs_dim: usize,
+    act_dim: usize,
+    obs_scale: Vec<f64>,
+    build_fn: F,
+) -> Self
+where
+    F: Fn(usize, u64) -> Result<VecEnv, EnvError> + Send + Sync + 'static,
+{
+    Self {
+        name: name.into(),
+        obs_dim,
+        act_dim,
+        obs_scale,
+        build_fn: Arc::new(build_fn),
+    }
+}
+```
+
+24 lines (function + doc comment) plus three unit tests
+(99 more lines: a shared `build_trivial_2dof_vec_env`
+helper, `from_build_fn_metadata_roundtrip`,
+`from_build_fn_threads_seed_into_closure` — the
+load-bearing one — and `from_build_fn_propagates_env_error`).
+Total commit 1: +123 lines, one file. fmt + clippy clean.
+404/404 sim-ml-bridge unit tests green (3 new + 401
+existing) in 226 seconds debug.
+
+The audit patch updates Ch 42 §6.5 to render the live
+`TaskConfig::from_build_fn(REMATCH_TASK_NAME, OBS_DIM,
+ACT_DIM, obs_scale(), |n_envs, seed| Ok(make_training_
+vecenv(seed, n_envs)))` shape that PR 3b commit 2 actually
+ships, and adds an explanatory paragraph naming the
+deferred-builder gap, the `from_build_fn` constructor's
+addition in PR 3b commit 1, and the orthogonal
+`builder()` / `from_build_fn` paths (stock deterministic
+tasks vs. custom stochastic tasks).
+
+### Drift B (spec update) — PR 2a's chassis ripple was not end-to-end for stochastic tasks
+
+Ch 42 §2.5 originally listed seven source-file ripple sites
+in ml-bridge that the PR 2a chassis ripple covers
+(`task.rs:43`, `task.rs:108`, `task.rs:241`, the three
+stock-task closures at `task.rs:362-444 / :445-617 /
+:619-~725`, and `competition.rs:330`), framing the
+amendment as "the seed extension lands end-to-end in PR 2a."
+The actual PR 2a commit (`153bad3c`) shipped exactly those
+seven sites. But the seventh (`task.rs:241`, the
+`TaskConfigBuilder::build()` internal closure) was updated
+to the two-argument form *with the seed accepted-and-ignored*,
+matching the deterministic stock-task pattern. The
+custom-stochastic-task path was deferred at PR 2a time with
+an explicit in-line comment, and PR 3b's rematch fixture
+was the trigger that surfaced the gap and motivated PR 3b
+commit 1's `from_build_fn` constructor.
+
+The drift is a misframing rather than a factual error:
+PR 2a's chassis ripple was correct as scoped (every site
+that the stock-task path touches is updated), but a reader
+of Ch 42 §2.5 could reasonably conclude that "stochastic
+tasks now have a public seed-threading API after PR 2a
+merges" — which is true for stock stochastic tasks (none
+exist) and false for custom stochastic tasks (the rematch
+fixture is the first one).
+
+**Fix:** Ch 42 §2.5 gains a "Post-implementation note
+(session 17)" paragraph at the end of the section, naming
+the deferred custom-builder surface, citing the in-line
+comment in `task.rs`, and pointing forward to §6.5 and
+§8.3 for the closing-the-gap rendering and the revised
+PR 3b contents list.
+
+### Drift C (spec update) — PR 3b is no longer tests-only
+
+Ch 42 §8.1 (the 2-PR split tagline) and §8.3 (PR 3b
+contents and risk) both described PR 3b as
+"`sim-opt/tests/d2c_sr_rematch.rs` (the rematch fixture)"
+— a tests-only PR with no source-file changes. Drift A's
+fix (the additive `TaskConfig::from_build_fn` constructor)
+ships in PR 3b commit 1, which is a sim-ml-bridge
+source-file change. PR 3b is therefore a two-commit shape
+spanning two crates, not a one-commit tests-only PR.
+
+**Fix:** Ch 42 §8.1's PR 3b tagline is updated to name the
+two-commit shape. Ch 42 §8.3 is rewritten to:
+
+- Open with a paragraph naming the original "tests-only"
+  framing and the session 17 audit revision.
+- Describe **commit 1** (the constructor + 3 unit tests in
+  sim-ml-bridge, ~123 lines, one file).
+- Describe **commit 2** (the rematch fixture in sim-opt,
+  ~346 lines, one file).
+- Update the total-diff estimate from ~350 lines / one file
+  to ~470 lines / two files across two crates.
+- Add a **third risk concern** ("commit 1 lives in
+  sim-ml-bridge, not sim-opt") to the existing two-concern
+  risk profile, noting that the two-crate review surface
+  is small but worth naming so the reviewer reads both
+  diffs.
+- Cross-reference §9's "the rematch has not yet been run"
+  note in the second risk concern about the `#[ignore]`d
+  test.
+
+Ch 42 §8.6 (rollback paths) is updated for PR 3b: a
+rollback now reverts both PR 3b commits in reverse order
+(fixture first, then constructor), with a note that
+reverting only the fixture would leave the constructor as
+dead code in ml-bridge with no in-tree consumer (harmless
+but architecturally odd).
+
+Ch 42 §8.4 (merge-order alternatives) is left unchanged.
+The two-commit PR 3b shape does not change the partial
+order — both commits land together as one PR — and the
+ordering arguments at §8.4 are unaffected.
+
+### Drift D (spec update) — the rematch has not yet been run
+
+Ch 42 §9 ("What Chapter 42 does not decide") originally
+named "the rematch writeup" as a deferred artifact ("a
+future commit, possibly in a new Part 5 of this study
+book") but did not name the *prior* deferral: that the
+test fixture itself, once landed, has not been executed.
+The user's session-17 explicit choice was to skip the
+~30-60 minute `--release --ignored` run rather than burn
+session wall clock on an unattended invocation, on the
+grounds that the test's correctness is reviewable from
+compile-time + sub-decision (g)'s "protocol-completes-cleanly"
+gate without needing to see a successful outcome.
+
+This is a real artifact-state fact a future reader of Ch 42
+should know without having to grep the git log: PR 3b's
+two commits ship the fixture, but the eprintln verdict and
+the actual `RematchOutcome` are not part of the chapter's
+output. The fixture is *runnable*, not *run*.
+
+**Fix:** Ch 42 §9 gains a new "**The rematch has not yet
+been run.**" entry naming the session-17 landing commits,
+the invocation command, the prerequisite tree state, and
+the user's explicit choice to defer the run. The entry
+sits adjacent to the existing "rematch writeup" deferral
+and the "re-running the rematch" deferral, both of which
+implicitly assumed the rematch had already produced its
+first run.
+
+### Ch 42 is shipped as amended (session 17)
+
+After this audit commit lands, Ch 42 §2.5, §6.5, §8.1,
+§8.3, §8.6, and §9 render in alignment with the shipped
+PR 3b code. A reader of Ch 42 sees:
+
+- The rendering of `rematch_task()` matches the live
+  fixture (`from_build_fn`, not the aspirational
+  `builder().build_fn()`).
+- The PR split's contents description matches the shipped
+  two-commit PR 3b shape.
+- The PR 3b risk profile names the two-crate review
+  surface.
+- The deferred-execution status of the rematch is named
+  explicitly in §9.
+- The chassis amendment story in §2.5 names both the
+  PR 2a-shipped seven-site ripple *and* the PR 3b
+  commit-1 follow-on closing the deferred custom-builder
+  surface.
+
+This is the third post-implementation audit of Ch 42
+(after the session 16 audit for Drifts A/B/C/D from PR 3a
+and the session 12 prose patch). The pattern matches
+sessions 13-16's recon → leans → commit-by-commit →
+post-impl audit → bundle-narrative-drift-into-one-commit
+rhythm. PR 3b is the final implementation PR in the study
+plan, so this is the final Ch 42 post-implementation audit
+under the current scope; future audits would only fire if
+the rematch's actual run surfaces a chapter-level drift
+that needs its own commit.
