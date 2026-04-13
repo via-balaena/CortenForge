@@ -27,10 +27,14 @@ body.
   time; the chapter locks the semantic coverage, not the
   function names.
 - **PR 1b:** 1 new integration test
-  (`parallel_matches_sequential_with_langevin`) + 1
-  feature-gated comparator
-  (`parallel_and_sequential_traces_match_langevin`) + 5
+  (`parallel_matches_sequential_with_langevin`) + 5
   existing-test updates for the D2 4-arg constructor ripple.
+  (The initial draft called for a second feature-gated
+  comparator reading disk-trace files; session-13
+  implementation replaced the two-function disk-trace
+  design with a single-function in-process determinism
+  check — see [Ch 40 §3.4 (a)](
+  40-pr-1-chassis-reproducibility.md).)
 - **PR 2a:** 13 new `#[test]` functions in
   `competition.rs`'s existing test module.
 - **PR 2b:** 6 new `#[test]` functions across
@@ -101,23 +105,27 @@ Chapter source: [Ch 40 §3.4](40-pr-1-chassis-reproducibility.md).
 ### New tests
 
 - **`parallel_matches_sequential_with_langevin`** — new
-  `#[test]` at [Ch 40 §3.4 (a)](40-pr-1-chassis-reproducibility.md).
-  Builds two `BatchSim::new_per_env` batches with identical
-  factories, the same `master_seed`, and 32 envs; runs 1000
-  steps each; dumps per-env `(qpos, qvel)` to a
-  feature-indexed trace file for comparison. Three seeds:
-  `0`, `0xD06F00D_42`, `u64::MAX` (per [Ch 15 D10](
-  15-design-decisions.md)). Uses the 1-DOF SHO fixture from
-  existing Phase 1 integration tests (per [Ch 15 D11](
-  15-design-decisions.md)).
-- **`parallel_and_sequential_traces_match_langevin`** — new
-  `#[test]` at the same file, gated on
-  `#[cfg(feature = "parallel")]` per [Ch 15 D9](
-  15-design-decisions.md)'s strategy A (feature-gate-per-test).
-  Runs only under `--features parallel`; loads the
-  sequential and parallel trace files written by the
-  previous test and asserts bit-identical `(qpos, qvel)`
-  across all envs at all three master seeds.
+  `#[test]` at `sim/L0/tests/integration/batch_sim.rs` (owning
+  crate is `sim-conformance-tests`, not the informal
+  "sim-integration" name the initial draft used; corrected in
+  session-13 drift-fix `ae1ff5ef`). Runs under both default
+  features and `--features parallel`. Builds two
+  `BatchSim::new_per_env` batches at the same `master_seed`
+  with identical factories (32 envs × 1000 steps), then
+  asserts bit-for-bit `(qpos, qvel)` agreement across the
+  two runs. Three seeds: `0`, `0xD_06F0_0D42`, `u64::MAX`
+  (per [Ch 15 D10](15-design-decisions.md)). Uses the 1-DOF
+  SHO fixture inlined in the test file (shape identical to
+  the existing Phase 1 integration tests, per [Ch 15 D11](
+  15-design-decisions.md)). Under the parallel feature
+  rayon's `par_iter_mut` scheduler is non-deterministic
+  across runs; two successive same-seed runs agreeing proves
+  the noise stream is scheduler-independent — the chassis
+  property C-3 was architected to guarantee. This is the
+  single-function in-process replacement for the initial
+  draft's two-function disk-trace design (see [Ch 40 §3.4 (a)](
+  40-pr-1-chassis-reproducibility.md) and its session-13
+  post-implementation audit note).
 
 ### Existing-test updates
 

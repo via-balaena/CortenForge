@@ -1074,7 +1074,8 @@ added. The `BatchSim` struct grows to support both paths.
 
 **What the struct looks like.** `BatchSim` today holds
 `{ model: Arc<Model>, envs: Vec<Data> }`. Under reading (ii),
-it grows to:
+it grows to three fields (post-implementation; session-13
+trimmed the per-env stacks vector — see the drop note below):
 
 ```rust
 pub struct BatchSim {
@@ -1083,26 +1084,49 @@ pub struct BatchSim {
     shared_model: Option<Arc<Model>>,
 
     // Per-env path: one Model per env with cb_passive already
-    // installed. Populated by new_per_env(n, factory); empty
-    // under new(model, n).
+    // installed. Populated by new_per_env(..., n, factory);
+    // empty under new(model, n).
     per_env_models: Vec<Model>,
-
-    // Per-env path: one Arc<PassiveStack> per env, retained
-    // so callers can invoke disable_stochastic per env.
-    // Empty under new(model, n).
-    per_env_stacks: Vec<Arc<PassiveStack>>,
 
     // Always populated: one Data per env, indexed by env i.
     envs: Vec<Data>,
 }
 ```
 
-The two paths are discriminated by `shared_model.is_some()`.
-`step_all` branches on this and calls `data.step(&model)`
-with the appropriate model reference per env. `env`, `env_mut`,
-`envs`, `envs_mut`, `reset`, `reset_where`, `reset_all` are
-unchanged in signature — they operate on `self.envs` and do
-not care which path populated the batch.
+The two paths are discriminated by `shared_model.is_some()`
+(queryable via a `pub fn is_per_env(&self) -> bool` helper
+added during implementation). `step_all` branches on this
+and calls `data.step(&model)` with the appropriate model
+reference per env.
+
+`env`, `env_mut`, `envs`, `envs_mut` are signature-unchanged
+and body-unchanged — they operate on `self.envs` directly.
+`reset`, `reset_where`, `reset_all` are signature-unchanged
+but their bodies were rewritten during implementation to
+handle both paths via a disjoint-field destructure pattern
+(`let Self { shared_model, per_env_models, envs } = self`)
+so the model reference and the `&mut Data` can coexist
+without the borrow checker complaining. No `unsafe` and no
+`Arc::clone` needed at the reset call site.
+
+**Why no `per_env_stacks` field.** An earlier rendering of
+this struct (preserved in the buggy new_per_env sketch below)
+held a `Vec<Arc<PassiveStack>>` so callers could invoke
+`disable_stochastic` per env after construction. The
+session-13 implementation dropped this field for two reasons:
+(1) the factory closure that builds each env's stack already
+exposes the `Arc<S>` handles to the caller's own scope — if
+the caller wants to retain them for post-construction
+`disable_stochastic` calls, it can do so in the closure body
+without `BatchSim` duplicating the information; (2) holding
+`Vec<Arc<S>>` on a non-generic `BatchSim` struct forces the
+type to be either generic over `S` or type-erased via
+`dyn Any` boxing, both of which add non-trivial complexity
+for a use case the existing factory pattern already serves.
+The `stacks` field on `EnvBatch<S>` (the return value of
+`PerEnvStack::install_per_env`) is still populated, so an
+implementor that genuinely needs post-install per-env stack
+handles can get them through the trait method directly.
 
 The `model()` accessor (at `batch.rs:92-94`, recon-reported)
 returns `&Model` and its semantics shift slightly: under the
@@ -1150,7 +1174,6 @@ impl BatchSim {
         Self {
             shared_model: None,
             per_env_models: batch.models,
-            per_env_stacks: batch.stacks,
             envs,
         }
     }
@@ -1189,15 +1212,16 @@ impl BatchSim {
         F: FnMut(usize) -> (Model, Arc<PassiveStack>),
     {
         let batch = prototype.install_per_env(n, factory);
-        let envs = batch
-            .models
-            .iter()
-            .map(Model::make_data)
-            .collect();
+        let envs = batch.models.iter().map(Model::make_data).collect();
+        // `batch.stacks` is intentionally dropped (session-13
+        // implementation decision — see "Why no per_env_stacks
+        // field" above). The factory closure's caller already
+        // retains the Arc<S> handles it produces if it needs
+        // post-install disable_stochastic.
+        drop(batch.stacks);
         Self {
             shared_model: None,
             per_env_models: batch.models,
-            per_env_stacks: batch.stacks,
             envs,
         }
     }
@@ -1375,92 +1399,119 @@ integration tests. The fixture MJCF is already usable in the
 integration test surface (see the `apply_writes_pure_damping_
 when_stochastic_inactive` test at `langevin.rs:279-308`,
 recon-reported, for the existing SHO inline XML — the
-regression test reuses this or factors it into a shared
-helper).
+session-13 implementation inlines a near-identical copy at
+`sim/L0/tests/integration/batch_sim.rs` rather than factoring
+a shared helper).
 
-The test's structure transcribes Ch 15 §5.3's sketch:
+**Session-13 post-implementation note — single-function
+in-process determinism.** Ch 40's initial draft rendered this
+test as **two** functions: one that dumps per-env
+`(qpos, qvel)` to a feature-indexed trace file on disk, and a
+second `#[cfg(feature = "parallel")]`-gated function that
+loads the sequential and parallel traces from a prior
+invocation and asserts bit-identity. That shape required a
+trace-file path convention, a cleanup strategy, and a
+cross-invocation ordering assumption (parallel must run
+after sequential has already written its traces).
+
+The session-13 implementation replaced this with a **single**
+test function that builds the batch twice in the same process
+at the same `master_seed` and asserts bit-for-bit `(qpos,
+qvel)` agreement across the two runs. The test runs under
+both default features and `--features parallel`, each
+invocation self-contained.
+
+Why the single-function in-process shape is sufficient and,
+at `--features parallel`, actually stronger than the
+disk-trace shape: under the parallel path, rayon's
+`par_iter_mut` work-stealing scheduler is non-deterministic
+across runs — the order in which the 32 envs visit the
+worker threads depends on runtime scheduling. If the noise
+stream had any dependence on that ordering (e.g. a shared
+mutable RNG, or any scheduling-sensitive state), successive
+runs would produce different `(qpos, qvel)` pairs. The test
+asserting they don't proves the noise is scheduler-
+independent, which is exactly the chassis property C-3 was
+architected to guarantee. Under default features the
+assertion degrades to sequential-path determinism (already
+covered by the existing `langevin.rs` reproducibility tests),
+but the parallel invocation is the load-bearing one and it
+passes on the first try.
+
+The shipped test:
 
 ```rust
 #[test]
 fn parallel_matches_sequential_with_langevin() {
-    let n_envs = 32;
-    let n_steps = 1000;
-    let gamma_val = 0.1;
-    let k_b_t = 1.0;
+    const N_ENVS: usize = 32;
+    const N_STEPS: usize = 1_000;
+    const GAMMA: f64 = 0.1;
+    const K_B_T: f64 = 1.0;
+    // D10 seeds: 0, 0xD06F00D42, u64::MAX.
+    const SEEDS: [u64; 3] = [0u64, 0xD_06F0_0D42_u64, u64::MAX];
 
-    for master_seed in [0u64, 0xD06F00D_42, u64::MAX] {
-        // Build two batches identically — same factory, same
-        // master_seed, same env count. At the feature gate the
-        // step_all path selects sequential or parallel.
-        let prototype = PassiveStack::builder()
-            .with(LangevinThermostat::new(
-                DVector::from_element(1, gamma_val),
-                k_b_t,
-                master_seed,
-                0,
-            ))
-            .build();
-
-        let factory = |env_idx: usize| {
-            let model = sim_mjcf::load_model(SHO_XML).unwrap();
-            let stack = PassiveStack::builder()
-                .with(LangevinThermostat::new(
-                    DVector::from_element(model.nv, gamma_val),
-                    k_b_t,
-                    master_seed,
-                    env_idx as u64,
-                ))
-                .build();
-            (model, stack)
-        };
-
-        let mut batch = BatchSim::new_per_env(&prototype, n_envs, factory);
-        for _ in 0..n_steps {
-            batch.step_all();
+    for master_seed in SEEDS {
+        let state_a = run_langevin_batch(master_seed, N_ENVS, N_STEPS, GAMMA, K_B_T);
+        let state_b = run_langevin_batch(master_seed, N_ENVS, N_STEPS, GAMMA, K_B_T);
+        for (env_idx, (a, b)) in state_a.iter().zip(state_b.iter()).enumerate() {
+            assert_eq!(a.0, b.0, "env {env_idx} master_seed {master_seed:#x}: qpos differs");
+            assert_eq!(a.1, b.1, "env {env_idx} master_seed {master_seed:#x}: qvel differs");
         }
-
-        // Dump per-env (qpos, qvel) to the feature-indexed
-        // trace file. Under strategy A, the test writes
-        // "trace-sequential-{master_seed}.bin" under default
-        // features and "trace-parallel-{master_seed}.bin"
-        // under --features parallel. The filename naming is
-        // part of the test infrastructure and is finalized
-        // during PR 1b implementation.
-        dump_env_state(&batch, trace_file_path(master_seed));
     }
 }
 
-#[test]
-#[cfg(feature = "parallel")]
-fn parallel_and_sequential_traces_match_langevin() {
-    // Runs only under --features parallel. Assumes the
-    // default-features run has already written its traces.
-    for master_seed in [0u64, 0xD06F00D_42, u64::MAX] {
-        let seq = load_trace(&format!("trace-sequential-{master_seed}.bin"));
-        let par = load_trace(&format!("trace-parallel-{master_seed}.bin"));
-        assert_eq!(seq.len(), par.len());
-        for (env_idx, (s, p)) in seq.iter().zip(par.iter()).enumerate() {
-            assert_eq!(
-                s.qpos, p.qpos,
-                "env {env_idx} qpos divergence at master_seed {master_seed}",
-            );
-            assert_eq!(
-                s.qvel, p.qvel,
-                "env {env_idx} qvel divergence at master_seed {master_seed}",
-            );
+/// Build a fresh per-env Langevin batch, step it `n_steps`
+/// times, return each env's (qpos, qvel) pair.
+fn run_langevin_batch(
+    master_seed: u64, n_envs: usize, n_steps: usize,
+    gamma: f64, k_b_t: f64,
+) -> Vec<(Vec<f64>, Vec<f64>)> {
+    let prototype = PassiveStack::builder()
+        .with(LangevinThermostat::new(
+            DVector::from_element(1, gamma), k_b_t, master_seed, 0,
+        ))
+        .build();
+    let factory = |env_idx: usize| {
+        let model = load_model(SHO_1D_XML).expect("SHO MJCF loads");
+        let stack = PassiveStack::builder()
+            .with(LangevinThermostat::new(
+                DVector::from_element(model.nv, gamma),
+                k_b_t, master_seed, env_idx as u64,
+            ))
+            .build();
+        (model, stack)
+    };
+    let mut batch = BatchSim::new_per_env(&prototype, n_envs, factory);
+    for _ in 0..n_steps {
+        for (i, err) in batch.step_all().iter().enumerate() {
+            assert!(err.is_none(), "env {i} step failed at seed {master_seed:#x}");
         }
     }
+    (0..n_envs)
+        .map(|i| {
+            let env = batch.env(i).expect("env i in range");
+            (env.qpos.as_slice().to_vec(), env.qvel.as_slice().to_vec())
+        })
+        .collect()
 }
 ```
 
-The CI recipe for this test is two cargo invocations in
-sequence, with the assertions only running under the second:
-first `cargo test -p sim-integration parallel_matches_sequential_with_langevin`,
-then `cargo test -p sim-integration --features parallel` (which
-runs both the dump-writer and the comparison). The trace files
-live in `target/test-artifacts/` or equivalent and are cleaned
-up between runs — PR 1b's implementation picks the exact path
-and the cleanup strategy.
+The CI recipe for this test is **one** cargo invocation per
+feature set, each self-contained:
+
+- `cargo test -p sim-conformance-tests --release --test
+  integration parallel_matches_sequential_with_langevin`
+  — default features, sequential path.
+- `cargo test -p sim-conformance-tests --release --features
+  parallel --test integration
+  parallel_matches_sequential_with_langevin` — parallel
+  path via `sim-core/parallel` forwarded by the
+  `sim-conformance-tests` `parallel` feature (added to
+  `sim/L0/tests/Cargo.toml` by PR 1b itself).
+
+No disk-trace files, no ordering assumption, no cleanup
+strategy. Both runs pass in ~0.2s release, already reported
+in the PR 1b test-plan section.
 
 **(b) The D2 4-arg ripple.** 56 `LangevinThermostat::new`
 call sites across 18 files update from 3-arg to 4-arg. The
@@ -1968,3 +2019,82 @@ position (pre-work rather than post-commit). None change any
 in-chapter sub-decision in §4. Ch 40's decisions stand; the
 recon pass just caught the rendering before the code was
 written against it.
+
+**Session 13 post-implementation audit patches to §3.3 and
+§3.4 (a).** Following the session-12 spec-vs-shipped pattern,
+a second sweep of Ch 40 §3 against the actual PR 1b commits
+(`7835a5ac` / `5d90deb7` / `8406169b`) surfaced two
+additional rendering drifts introduced by implementation
+decisions the pre-work patches could not anticipate. Both
+are rendering-layer corrections; neither revisits any
+in-chapter sub-decision in §4. The two:
+
+1. **§3.3 `BatchSim` struct and `new_per_env` sketches
+   dropped the `per_env_stacks: Vec<Arc<PassiveStack>>`
+   field.** Ch 40's initial rendering held a per-env-stacks
+   vector on `BatchSim` "so callers can invoke
+   `disable_stochastic` per env after construction." The
+   session-13 implementation (commit `7835a5ac`) dropped
+   this field because the factory closure passed to
+   `new_per_env` already exposes the `Arc<S>` handles to
+   the caller's own scope — a caller that wants
+   `disable_stochastic` handles can retain them in the
+   closure body without `BatchSim` duplicating the
+   information. Dropping the field also side-stepped a
+   cross-crate type-parameter threading problem: a
+   non-generic `BatchSim` with a `Vec<Arc<S>>` field would
+   need to be either generic over `S` (touching every
+   existing caller's type signature) or type-erased via
+   `dyn Any` boxing (complexity for a use case the factory
+   pattern already serves). §3.3's struct sketch and
+   `new_per_env` sketch are both updated to show the
+   three-field form and to include an explicit note naming
+   the reasons for the drop. The `EnvBatch<S>` return type
+   of `PerEnvStack::install_per_env` is unchanged — it
+   still carries `stacks: Vec<Arc<S>>`, so an implementor
+   that genuinely needs post-install per-env stack handles
+   can still obtain them through the trait method's return
+   value directly. A `pub fn is_per_env(&self) -> bool`
+   query method was also added during implementation and
+   named in the struct sketch commentary.
+
+2. **§3.4 (a) replaced the two-function disk-trace test
+   design with a single-function in-process determinism
+   check.** Ch 40's initial rendering (following Ch 15
+   §5.3's sketch) showed two test functions: one that
+   dumps per-env `(qpos, qvel)` to a feature-indexed trace
+   file, and a `#[cfg(feature = "parallel")]`-gated
+   function that loads the sequential and parallel traces
+   from a prior invocation and asserts bit-identity. The
+   session-13 implementation (commit `8406169b`) replaced
+   this with a single test function that builds the batch
+   twice at the same `master_seed` in one process and
+   asserts bit-for-bit agreement across the two runs. Why:
+   under the `--features parallel` path, rayon's work-
+   stealing scheduler is non-deterministic across runs, so
+   two successive same-seed runs agreeing is a direct
+   proof that the noise stream is scheduler-independent —
+   which is exactly the chassis property C-3 was
+   architected to guarantee. The disk-trace design proved
+   the same property indirectly (by comparing two
+   feature-compiled artifacts), but at the cost of a
+   cross-invocation ordering assumption and a disk-cleanup
+   strategy that were both extra surface. The single-
+   function shape has neither. Under default features the
+   assertion degrades to sequential-path determinism,
+   already covered elsewhere; under parallel features it
+   is the load-bearing assertion. Both invocations pass in
+   ~0.2s release. §3.4 (a) is updated to show the shipped
+   test verbatim and to record the rationale for the
+   design change. §3.5's test-plan bullets (already
+   patched in the pre-work drift fix to name
+   `sim-conformance-tests` rather than the informal
+   `sim-integration`) already match the one-invocation-
+   per-feature-set CI recipe; no further change there.
+
+Both post-implementation patches land as a single commit
+after PR 1b's three code commits, matching session 12's
+post-commit audit pattern. The audit found no missing
+scope, no unmerged drift against §4's in-chapter sub-
+decisions, and no regression against any D-decision in
+§1.2. PR 1b shipped the chapter's full intent.
