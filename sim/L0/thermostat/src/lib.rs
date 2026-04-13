@@ -73,6 +73,7 @@ mod ising_learner;
 mod langevin;
 mod oscillating_field;
 mod pairwise_coupling;
+pub mod prf;
 mod ratchet;
 mod stack;
 
