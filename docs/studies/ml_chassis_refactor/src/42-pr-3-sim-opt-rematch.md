@@ -2463,6 +2463,40 @@ deterministic). They exercise the `Algorithm` trait
 implementation surface and the hyperparameter defaults;
 that is the scope PR 3a is reviewable for.
 
+The test config is *reduced* from `cem_smoke_2dof`'s pattern
+at `ml-bridge/src/cem.rs:291-329` (recon-reported). CEM's
+smoke test uses `n_envs = 10` and `max_episode_steps = 300`,
+running in about 20 seconds under debug mode. SA's
+`sa_best_tracker_monotone` at 10 epochs with those same
+parameters would take roughly 40 seconds; the three
+physics-touching tests combined would hit ~80 seconds of
+debug-mode wall clock, which is on the slow end for a new
+crate's unit-test suite iterated during active development.
+PR 3a instead uses `TEST_N_ENVS = 4` and `max_episode_steps
+= 50` for all three physics-touching tests, which brings
+the full sim-opt test suite (14 tests including the 10
+analysis tests) to about 2.6 seconds total under debug mode.
+
+This is a deliberate rendering choice, not a corner-cut.
+The reduced config still exercises every piece of SA's
+`Algorithm` trait surface: the Metropolis accept/reject,
+the Gaussian proposal generation, the Box-Muller randn
+helper, the multi-env fitness averaging, the geometric
+cooling, the inline best-tracker, the checkpoint
+serialization round-trip, and the 7-step `EpochMetrics`
+emission. What it does *not* exercise — realistic
+`n_envs = 32`, `max_episode_steps = 5000`, stochastic
+physics, a real `LangevinThermostat` at the D2c config, and
+SA's documented hyperparameter defaults
+(`initial_temperature = 50.0`, `proposal_std = 0.5`,
+`cooling_decay = 0.955`) — is exactly the surface PR 3b's
+`sim-opt/tests/d2c_sr_rematch.rs` integration test covers
+under `#[ignore = "requires --release (~30-60 min)"]`. The
+PR 3a unit tests and the PR 3b integration test together
+form a layered coverage story matching the precedent
+sim-ml-bridge sets with `src/*.rs` debug unit tests plus
+`tests/competition.rs` release-mode integration tests.
+
 ## Section 5 — The analysis module (sub-decision (f))
 
 ### 5.1 Placement: library module, not inline in the test fixture
@@ -3042,7 +3076,7 @@ fn test_and_classify(
 }
 ```
 
-Two implementation notes worth naming at the rendering layer.
+Three implementation notes worth naming at the rendering layer.
 
 **First, the single `run_replicates` call matches Ch 32 §4.8's
 skeleton literally.** The driver passes the full 10-element
@@ -3063,7 +3097,79 @@ skeleton renders directly. The code is shorter, the chassis
 API is properly used, and future stochastic-physics
 experiments get the same pattern for free.
 
-**Second, the `test_and_classify` function argument order
+**Second, the folded-pilot control flow is split into a
+public wrapper and a crate-private runner-parameterized
+helper, for testability.** The public `run_rematch(competition,
+task, algorithm_builders, bootstrap_rng)` signature renders
+verbatim from the spec above and matches the way a rematch
+fixture caller wants to read the API — it takes a `&Competition`
+and threads the task / builders / rng through. Internally, the
+body is a 3-line delegation:
+
+```rust
+pub fn run_rematch(
+    competition: &Competition,
+    task: &TaskConfig,
+    algorithm_builders: &[&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>],
+    bootstrap_rng: &mut impl Rng,
+) -> Result<RematchOutcome, EnvError> {
+    run_rematch_with_runner(
+        |seeds| competition.run_replicates(
+            std::slice::from_ref(task), algorithm_builders, seeds,
+        ),
+        bootstrap_rng,
+    )
+}
+```
+
+The real folded-pilot logic — seed derivation via
+`splitmix64`, the initial-batch call, the `test_and_classify`
+dispatch, the `if Ambiguous then expand` branch, the
+re-classification at `N = 20` — all lives in the private
+`run_rematch_with_runner<F>` helper:
+
+```rust
+fn run_rematch_with_runner<F>(
+    mut run_replicates_fn: F,
+    bootstrap_rng: &mut impl Rng,
+) -> Result<RematchOutcome, EnvError>
+where
+    F: FnMut(&[u64]) -> Result<CompetitionResult, EnvError>,
+{
+    // ... initial batch, classify, expand if ambiguous,
+    //     re-classify, return.
+}
+```
+
+The helper takes a single `FnMut(&[u64]) -> Result<...>`
+closure — the task, builders, and Competition are all
+captured by the outer `run_rematch`'s wrapping closure, so
+the helper's signature stays minimal. Tests (9) and (10) in
+§5.6 call `run_rematch_with_runner` directly with a mock
+closure that ignores the seeds and returns a hand-crafted
+`CompetitionResult` built from `RunResult` struct literals;
+this exercises the folded-pilot branching with *zero*
+`Competition` construction, *zero* `VecEnv` builds, and
+*zero* physics, running in low-millisecond time per test.
+The alternative — a test-mode `Competition` + a
+`MockAlgorithm` struct + real `task.build_vec_env(n_envs,
+seed)` calls — would add 30-50 lines of scaffolding and
+several seconds of wall-clock per test for env
+construction, while testing less (the extra infrastructure
+adds no coverage beyond what the component tests for
+`bootstrap_diff_means`, `bimodality_coefficient`, and
+`classify_outcome` already provide). The
+`run_rematch_with_runner` split is the narrowest rendering
+refinement that makes the folded-pilot branching directly
+testable.
+
+The split is invisible to PR 3b's rematch fixture: the
+fixture calls `run_rematch(&competition, &task, &[&cem_builder,
+&sa_builder], &mut rng)` exactly as §5.5's spec shows. The
+helper is crate-private and does not appear in sim-opt's
+public API.
+
+**Third, the `test_and_classify` function argument order
 is `(r_cem, r_sa)` but the bootstrap call is
 `bootstrap_diff_means(r_sa, r_cem, rng)`, producing
 `mean(r_sa) - mean(r_cem)`.** The difference is "SA minus
@@ -3110,8 +3216,30 @@ PR 3a ships unit tests for each analysis function in
    `[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5]`
    (symmetric linear), asserts `BC < 5/9`. ~15 lines.
 6. **`bimodality_coefficient_bimodal`.** Input
-   `[1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0, 5.0]`
-   (two clusters at 1 and 5), asserts `BC > 5/9`. ~15 lines.
+   `[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 5.0]`
+   (asymmetric bimodal: eight ones, two fives), asserts
+   `BC > 5/9`. ~15 lines. The input is *asymmetric* rather
+   than symmetric because Pearson's coefficient at the SAS
+   small-sample correction does not cross `5/9` for a
+   symmetric bimodal sample at `n = 10`: symmetric
+   `[1,1,1,1,1,5,5,5,5,5]` has skewness `g = 0` exactly and
+   excess kurtosis `kappa = -2` (short tails), giving
+   numerator `g² + 1 = 1` and denominator
+   `kappa + 3(n-1)²/((n-2)(n-3)) = -2 + 243/56 ≈ 2.34`, so
+   `BC ≈ 0.428 < 5/9`. The asymmetric eight-two split shifts
+   the distribution's mean, produces `g ≈ 1.5`, and pushes
+   `BC ≈ 0.708 > 5/9`. This is a real statistical property of
+   Pearson's coefficient at small `n` (the threshold was
+   derived for large-sample asymptotics), not a spec glitch
+   or an implementation bug; the rematch's actual
+   seed-varied-training inputs are plausibly asymmetric under
+   any realistic scenario, so the asymmetric test input
+   matches the shape the contingency is meant to catch. A
+   future Parallel Tempering or richer-proposal SA follow-up
+   that produces exactly symmetric seed distributions would
+   simply not trip the bimodality contingency at `n = 10`
+   and would run the mean-based bootstrap — an accurate
+   outcome for the Ch 32 §6.3 test family's semantics.
 7. **`bimodality_coefficient_requires_n_geq_4`.** Input of
    length 3, asserts the call panics with the documented
    error message. Uses `#[should_panic]`. ~10 lines.
@@ -3122,16 +3250,41 @@ PR 3a ships unit tests for each analysis function in
    match Ch 32 §3.3's table. ~30 lines with multiple
    assertions.
 9. **`run_rematch_ambiguous_triggers_expansion`.** Uses a
-   mock `Competition` with a `MockAlgorithm` that produces
-   deterministic replicate values engineered to classify as
-   `Ambiguous` at N=10. Asserts that `run_rematch` runs the
-   expansion phase (detectable via a call counter on the
-   mock). ~50 lines. This test is the one that exercises
-   the folded-pilot driver's control flow directly.
+   mock replicate-runner closure that returns pre-built
+   `CompetitionResult` values with hand-crafted per-replicate
+   rewards engineered to classify as `Ambiguous` at `N = 10`,
+   then cleanly `Positive` at the `N = 20` expansion. Asserts
+   that the folded-pilot driver called the runner *twice*
+   (detectable via a `Cell<usize>` call counter the closure
+   captures) and that the expansion batch's verdict becomes
+   the headline outcome. ~35 lines. The test calls
+   `run_rematch_with_runner` (a crate-private helper — see
+   §5.5 for the helper shape) rather than the public
+   `run_rematch` so that no `Competition` and no real
+   `VecEnv` constructions are needed; the test exercises the
+   folded-pilot branching directly.
 10. **`run_rematch_positive_short_circuits`.** Similar to
-    (9) but with replicate values engineered to classify as
-    `Positive` at N=10. Asserts `run_rematch` does *not*
-    run the expansion phase. ~40 lines.
+    (9) but with a mock runner closure returning replicate
+    values that classify as `Positive` at `N = 10`. Asserts
+    that the folded-pilot driver called the runner *exactly
+    once* — the expansion phase must not run on unambiguous
+    initial batches. ~30 lines. Also calls
+    `run_rematch_with_runner`.
+
+Tests (9) and (10) require small mock-factory helpers: a
+private `mock_policy_artifact()` producing a minimal
+`PolicyArtifact` with a `PolicyDescriptor { kind:
+NetworkKind::Linear, obs_dim: 1, act_dim: 1, hidden_dims:
+vec![], activation: Activation::Tanh, obs_scale: vec![1.0],
+stochastic: false }` and `params: vec![0.0, 0.0]`; a
+`mock_run_result(algo, replicate, reward)` producing a
+`RunResult` with one `EpochMetrics` whose `mean_reward`
+equals `reward`; and a `mock_competition_result(cem_rewards,
+sa_rewards)` helper zipping both slices into a
+`CompetitionResult { runs: Vec<RunResult> }`. ~25 lines
+total. The `PolicyArtifact` struct literal construction
+exercises the `pub`-field design at `ml-bridge/src/artifact.rs:
+233-243` that Ch 40 §3.3 landed.
 
 Ten tests total. Test (9) and (10) are the load-bearing
 driver-level tests; tests (1) through (8) are unit-level

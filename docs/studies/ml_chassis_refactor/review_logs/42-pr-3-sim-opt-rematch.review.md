@@ -752,3 +752,201 @@ enough to implement verbatim. The three PR 3a commits
 (crate skeleton, algorithm.rs, analysis.rs) can proceed
 without re-opening Ch 42's sub-decisions or re-deriving any
 cross-crate surface.
+
+## Session 16 post-implementation audit
+
+After the three PR 3a source commits landed (3977c556 crate
+skeleton, 83111d23 Sa algorithm, 60128ab2 analysis module),
+a spec-vs-shipped audit against Ch 42 §3-§6 surfaced four
+additional drifts beyond the four caught at pre-work time.
+Two of them ship as a narrow source-code fix (commit 4:
+re-export block); three ship as Ch 42 narrative updates in
+this audit commit.
+
+### Drift A (source fix) — `pub use` re-exports missing
+
+Ch 42 §3.2's `lib.rs` skeleton enumerates a `pub use` block
+re-exporting `algorithm::{Sa, SaHyperparams}` and
+`analysis::{BootstrapCi, RematchOutcome, ...}` at the crate
+root so consumers can say `sim_opt::Sa` and
+`sim_opt::run_rematch` rather than threading module paths.
+
+Session 16's commit-1 recon-to-leans explicitly deferred
+these re-exports to commit 3 so the skeleton commit could
+ship with empty stub modules (`sim_opt::algorithm::Sa`
+doesn't exist yet, so a re-export in commit 1 would fail
+to resolve). Commit 3 then landed the types but I missed
+adding the re-export block back.
+
+**Fix:** commit 4 (`13a70c4c` — `feat(sim-opt): add
+pub-use re-exports at crate root`) adds the 7-line re-export
+block to `lib.rs`. PR 3b's rematch fixture reads the shipped
+API as §3.2 specs — `use sim_opt::{Sa, SaHyperparams,
+run_rematch, ...}`. Zero behavior change, pure API surface
+addition, clippy + tests clean.
+
+### Drift B (spec update) — `run_rematch_with_runner<F>` helper
+
+Ch 42 §5.5's original rendering held the folded-pilot
+control flow inline in `run_rematch`'s body: derive initial
+seeds, call `competition.run_replicates(...)` with the
+10-element seeds slice, classify via `test_and_classify`,
+branch on `Ambiguous` to run the expansion call, return
+the final outcome.
+
+Shipped code keeps the public `run_rematch(&Competition,
+&TaskConfig, &[builders], &mut rng)` signature verbatim from
+spec, but splits the body: the public function is a 3-line
+wrapper that constructs a `|seeds| competition.run_replicates(
+slice::from_ref(task), builders, seeds)` closure and
+delegates to a crate-private
+`run_rematch_with_runner<F: FnMut(&[u64]) -> Result<
+CompetitionResult, EnvError>>(run_fn, rng)` helper that
+holds the actual folded-pilot logic.
+
+**Motivation:** tests (9) and (10) in §5.6 need to verify
+`run_rematch`'s folded-pilot branching — "if Ambiguous at
+N=10, call runner again at N=20" — without constructing a
+real `Competition` and without running real `VecEnv` builds.
+The helper's single `FnMut(&[u64])` parameter lets the
+tests pass a mock closure that returns a hand-crafted
+`CompetitionResult { runs: Vec<RunResult> }` with pre-cooked
+per-replicate rewards, and use a `Cell<usize>` call counter
+to observe whether the runner was invoked once (Positive
+short-circuit) or twice (Ambiguous expansion).
+
+The alternative would be to use a real `Competition` + a
+`MockAlgorithm` struct implementing `Algorithm` + real
+`task.build_vec_env(n_envs, seed)` calls that construct real
+`VecEnv`s without stepping them. That approach would add
+30-50 lines of `MockAlgorithm` scaffolding and several
+seconds of wall-clock per test for env construction, in
+exchange for testing exactly the same folded-pilot branching
+the mock-closure approach tests. The `run_rematch_with_runner`
+split is the narrowest rendering refinement that makes
+branching-level tests feasible.
+
+The split is invisible to PR 3b's rematch fixture — the
+public `run_rematch` signature is byte-identical to §5.5's
+spec rendering — and the helper is crate-private, not
+appearing in sim-opt's public API.
+
+**Fix:** Ch 42 §5.5's "Two implementation notes worth
+naming" subsection is rewritten to "Three implementation
+notes", and the new second note documents the helper shape
+with both the public wrapper and the helper signature
+rendered inline. The helper rationale (mock-closure
+testability, alternative rejected) is included.
+
+### Drift C (spec update) — §5.6 test 6 input should be asymmetric
+
+Ch 42 §5.6 test 6 `bimodality_coefficient_bimodal` used
+the input `[1, 1, 1, 1, 1, 5, 5, 5, 5, 5]` (five ones,
+five fives — symmetric bimodal) with assertion `BC > 5/9`.
+The shipped code as first drafted used that exact input;
+the test failed with `BC = 0.4275 < 5/9`.
+
+Walk-through of why symmetric bimodal at `n = 10` does not
+cross Pearson's threshold under the SAS small-sample
+correction:
+
+```
+n = 10, mean = 3, m2 = 4, m3 = 0 (symmetric), m4 = 16
+g  (skewness)          = m3 / m2^(3/2) = 0 / 8 = 0
+kappa (excess kurt.)   = m4 / m2² - 3  = 1 - 3 = -2
+numerator              = g² + 1 = 1
+correction             = 3(n-1)² / ((n-2)(n-3))
+                       = 3 · 81 / (8 · 7)
+                       ≈ 4.339
+denominator            = kappa + correction
+                       ≈ 2.339
+BC                     = numerator / denominator
+                       ≈ 0.4275
+5/9                    ≈ 0.5556
+```
+
+The formula detects *asymmetric-bimodal-or-skewed*
+distributions, not symmetric-bimodal-at-small-n. Symmetric
+bimodal has zero skewness by construction and the
+short-tailed kurtosis signal (`kappa = -2`) is not strong
+enough to drag the denominator below what the `1/denom`
+inversion needs for `BC > 5/9` at `n = 10`.
+
+The shipped asymmetric input `[1, 1, 1, 1, 1, 1, 1, 1, 5,
+5]` (eight ones, two fives) produces `g ≈ 1.5`, numerator
+`= g² + 1 = 3.25`, denominator ≈ `4.589`, and `BC ≈ 0.708`
+— cleanly above the threshold.
+
+**Fix:** Ch 42 §5.6 test 6 is updated to use the asymmetric
+eight-two input, with a ~20-line explanatory block
+documenting why symmetric bimodal fails at small `n` and
+why asymmetric is what the test is meant to test. The
+explanatory block ends by naming the Pearson-at-small-n
+edge case as a real statistical property — the rematch's
+actual seed-varied-training inputs are plausibly asymmetric
+under any realistic scenario, so the asymmetric test input
+matches the shape the bimodality contingency is meant to
+catch in production.
+
+This is the rare case where the spec rendering was
+factually wrong on the underlying statistics and the
+shipped code corrects it; the audit patch brings the spec
+into alignment with the correct math.
+
+### Drift D (spec update) — SA test config is reduced from cem_smoke_2dof pattern
+
+Ch 42 §4.8's original framing said the SA unit tests
+"match CEM's `cem_smoke_2dof` pattern at `cem.rs:291-329`"
+— which uses `n_envs = 10` and `max_episode_steps = 300`,
+running in about 20 seconds under debug mode.
+
+Shipped code uses `TEST_N_ENVS = 4` and
+`max_episode_steps = 50` for all three physics-touching
+tests (`sa_smoke_2dof`, `sa_best_tracker_monotone`,
+`sa_checkpoint_roundtrip`). Measured: all 14 sim-opt tests
+run in about 2.6 seconds total under debug mode. A
+full-CEM-parity config would bring the SA physics-touching
+tests alone to roughly 80 seconds of debug wall clock,
+which is on the slow end for a new crate's unit test
+suite iterated during active development.
+
+**Motivation:** PR 3b's `sim-opt/tests/d2c_sr_rematch.rs`
+integration test covers SA at the realistic physics surface
+(`n_envs = 32`, `max_episode_steps = 5000`, real
+`LangevinThermostat`, the D2c SR task, and SA's documented
+hyperparameter defaults) under `#[ignore = "requires
+--release (~30-60 min)"]`. The layered coverage story is:
+
+| Layer | Scope | Runtime | Mode |
+|---|---|---|---|
+| PR 3a unit tests (src/algorithm.rs) | Algorithm trait surface, train loop shape, checkpoint round-trip, best-tracker monotone invariant | ~2.6s | debug |
+| PR 3b integration test (tests/d2c_sr_rematch.rs) | Full D2c physics, realistic SA hyperparams, folded-pilot end-to-end with real `Competition::run_replicates` | ~30-60 min | `--release --ignored` |
+
+This matches the precedent sim-ml-bridge sets: `src/*.rs`
+inline unit tests run in debug with smaller-scale configs,
+and `tests/competition.rs` integration tests carry the
+realistic-physics coverage with `#[ignore]`. The gap that
+matching CEM's full smoke-test config would close is
+"SA on `reaching_2dof` at 10/300 in debug" — a reduced
+version of what PR 3b already covers with *real physics*
+at the full D2c config, which is higher-value realism.
+
+**Fix:** Ch 42 §4.8's tail is extended with a paragraph
+explicitly naming the reduced debug config, citing the
+approximate debug-mode runtimes at both the shipped config
+and the full-CEM-parity config, and pointing at PR 3b's
+integration test as the full-physics coverage layer. The
+"A-grade or it doesn't ship" bar is preserved: the reduced
+config still exercises every piece of SA's Algorithm trait
+surface, and the realistic case has its own release-mode
+test file waiting in the next PR.
+
+### Ch 42 is shipped as amended
+
+After commits 4 (source fix for Drift A) and 5 (this audit
+patch for Drifts B/C/D) land, Ch 42 §3-§6 render in
+alignment with the shipped PR 3a code. PR 3b's rematch
+fixture can read Ch 42 §5.5's updated rendering and know
+that the public `run_rematch` signature and the rematch
+protocol's behavior are exactly as the fixture needs, with
+the crate-private helper invisible to the fixture code.
