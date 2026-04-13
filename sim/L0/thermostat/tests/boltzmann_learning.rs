@@ -264,6 +264,7 @@ fn external_field_breaks_symmetry() {
             DVector::from_element(1, GAMMA),
             K_B_T,
             42,
+            0,
         ))
         .build()
         .install(&mut model);

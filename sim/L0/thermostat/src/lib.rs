@@ -46,6 +46,7 @@
 //!         DVector::from_element(model.nv, 0.1),
 //!         1.0,
 //!         42,
+//!         0,
 //!     ))
 //!     .build()
 //!     .install(&mut model);
@@ -89,4 +90,4 @@ pub use langevin::LangevinThermostat;
 pub use oscillating_field::OscillatingField;
 pub use pairwise_coupling::PairwiseCoupling;
 pub use ratchet::RatchetPotential;
-pub use stack::{EnvBatch, PassiveStack, PassiveStackBuilder, StochasticGuard};
+pub use stack::{PassiveStack, PassiveStackBuilder, StochasticGuard};

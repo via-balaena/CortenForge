@@ -103,6 +103,7 @@ fn setup(coupling_j: f64, seed: u64) -> (sim_core::Model, sim_core::Data) {
         DVector::from_element(N, GAMMA),
         K_B_T,
         seed,
+        0,
     ));
     builder.build().install(&mut model);
 

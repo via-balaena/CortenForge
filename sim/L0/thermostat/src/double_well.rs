@@ -44,6 +44,7 @@ use crate::diagnose::Diagnose;
 ///     DVector::from_element(1, 10.0),
 ///     1.0,
 ///     42,
+///     0,
 /// );
 ///
 /// PassiveStack::builder()

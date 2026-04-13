@@ -62,7 +62,8 @@ fn ratchet_on_produces_bounded_motion() {
     assert_eq!(model.nv, 1, "expected 1 DOF");
     assert_eq!(model.nu, 1, "expected 1 actuator");
 
-    let thermostat = LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, SEED);
+    let thermostat =
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, SEED, 0);
     let ratchet = RatchetPotential::new(V1, V2, PHI, PERIOD, 0, 0);
 
     let stack = PassiveStack::builder()
@@ -111,7 +112,8 @@ fn ratchet_on_produces_bounded_motion() {
 fn ratchet_off_produces_diffusion() {
     let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
 
-    let thermostat = LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, SEED);
+    let thermostat =
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, SEED, 0);
     let ratchet = RatchetPotential::new(V1, V2, PHI, PERIOD, 0, 0);
 
     let stack = PassiveStack::builder()
@@ -148,7 +150,8 @@ fn ratchet_off_produces_diffusion() {
         let thermostat_i = LangevinThermostat::new(
             DVector::from_element(model_i.nv, GAMMA),
             K_B_T,
-            SEED + seed_offset,
+            SEED,
+            seed_offset,
         );
         let ratchet_i = RatchetPotential::new(V1, V2, PHI, PERIOD, 0, 0);
         let stack_i = PassiveStack::builder()

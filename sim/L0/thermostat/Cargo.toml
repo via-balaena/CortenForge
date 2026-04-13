@@ -13,18 +13,23 @@ rust-version.workspace = true
 sim-core    = { workspace = true }
 # Linear algebra — DVector for per-DOF damping/noise
 nalgebra    = { workspace = true }
-# RNG traits — Rng trait used by LangevinThermostat
+# RNG traits — Rng/SeedableRng used by GibbsSampler
 rand        = { workspace = true }
-# Deterministic CSPRNG — reproducible noise sequences
+# Deterministic CSPRNG — used by GibbsSampler (LangevinThermostat
+# under C-3 reaches ChaCha8 through its own `prf` module rather than
+# `rand_chacha`, but gibbs.rs is an independent runtime consumer).
 rand_chacha = { workspace = true }
-# Normal distribution — Gaussian noise for fluctuation force
-rand_distr  = { workspace = true }
 
 [dev-dependencies]
 # MJCF model loading — test fixtures for integration tests
 sim-mjcf = { workspace = true }
 # ML bridge — RL environment + algorithms for D1+ integration tests
 sim-ml-bridge = { workspace = true }
+# Normal/Uniform distributions — used by d1b/d1c test files for
+# Uniform action sampling and by prf.rs cross-verification tests.
+# After the C-3 rewrite of LangevinThermostat, no src/ target uses
+# rand_distr.
+rand_distr = { workspace = true }
 
 [lints]
 workspace = true

@@ -188,7 +188,8 @@ fn test_free_body_equipartition() {
             .with(LangevinThermostat::new(
                 DVector::from_element(model.nv, gamma_value),
                 k_b_t,
-                seed_base + i as u64,
+                seed_base,
+                i as u64,
             ))
             .build()
             .install(&mut model);
@@ -263,7 +264,8 @@ fn test_hinge_chain_equipartition() {
             .with(LangevinThermostat::new(
                 DVector::from_element(model.nv, gamma_value),
                 k_b_t,
-                seed_base + i as u64,
+                seed_base,
+                i as u64,
             ))
             .build()
             .install(&mut model);
@@ -340,6 +342,9 @@ fn assert_multi_dof_reproducibility(xml: &str, nv: usize, nq: usize, n_steps: us
     let gamma_value = 0.1;
     let k_b_t = 1.0;
 
+    // Both thermostats use IDENTICAL (master_seed, traj_id) — the test
+    // asserts bit-for-bit reproducibility after N steps, so distinct
+    // traj_id values would break the assertion (Ch 40 §3.4 (b)).
     let mut model1 = sim_mjcf::load_model(xml).expect("load 1");
     let mut data1 = model1.make_data();
     PassiveStack::builder()
@@ -347,6 +352,7 @@ fn assert_multi_dof_reproducibility(xml: &str, nv: usize, nq: usize, n_steps: us
             DVector::from_element(model1.nv, gamma_value),
             k_b_t,
             seed,
+            0,
         ))
         .build()
         .install(&mut model1);
@@ -358,6 +364,7 @@ fn assert_multi_dof_reproducibility(xml: &str, nv: usize, nq: usize, n_steps: us
             DVector::from_element(model2.nv, gamma_value),
             k_b_t,
             seed,
+            0,
         ))
         .build()
         .install(&mut model2);

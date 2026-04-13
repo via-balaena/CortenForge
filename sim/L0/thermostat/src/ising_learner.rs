@@ -199,6 +199,10 @@ impl IsingLearner {
             DVector::from_element(n, self.config.gamma),
             self.config.k_b_t,
             seed,
+            // traj_id: ising_learner is single-env today (no batched
+            // caller); use 0 as the default per-trajectory slot. A
+            // future batched caller would thread its env index here.
+            0,
         ));
         builder.build().install(&mut self.model);
     }

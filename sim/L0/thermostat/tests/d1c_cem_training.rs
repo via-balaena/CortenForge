@@ -87,7 +87,8 @@ const N_EVAL_EPISODES: usize = 50;
 fn make_training_vecenv(seed: u64) -> VecEnv {
     let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
 
-    let thermostat = LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, seed);
+    let thermostat =
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, seed, 0);
     let ratchet = RatchetPotential::new(V1, V2, PHI, PERIOD, 0, 0);
 
     let stack = PassiveStack::builder()
@@ -122,7 +123,8 @@ fn make_training_vecenv(seed: u64) -> VecEnv {
 fn make_eval_env(seed: u64) -> SimEnv {
     let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
 
-    let thermostat = LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, seed);
+    let thermostat =
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, seed, 0);
     let ratchet = RatchetPotential::new(V1, V2, PHI, PERIOD, 0, 0);
 
     let stack = PassiveStack::builder()

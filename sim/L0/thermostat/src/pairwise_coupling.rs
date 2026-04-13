@@ -52,7 +52,7 @@ use crate::diagnose::Diagnose;
 /// }
 /// builder = builder.with(PairwiseCoupling::chain(4, 0.5));
 /// builder = builder.with(LangevinThermostat::new(
-///     DVector::from_element(4, 10.0), 1.0, 42,
+///     DVector::from_element(4, 10.0), 1.0, 42, 0,
 /// ));
 /// builder.build().install(&mut model);
 /// ```

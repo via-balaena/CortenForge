@@ -66,7 +66,7 @@ fn three_component_stack_installs() {
     let mut model = sim_mjcf::load_model(SR_XML).unwrap();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)
             .with_ctrl_temperature(0);
 
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
@@ -94,7 +94,7 @@ fn bounded_bistable_motion_with_signal() {
     let mut model = sim_mjcf::load_model(SR_XML).unwrap();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)
             .with_ctrl_temperature(0);
 
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
@@ -156,7 +156,7 @@ fn signal_force_present_in_stack() {
     let mut model = sim_mjcf::load_model(SR_XML).unwrap();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)
             .with_ctrl_temperature(0);
 
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
@@ -200,7 +200,7 @@ fn ctrl_zero_is_deterministic() {
     let mut model = sim_mjcf::load_model(SR_XML).unwrap();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)
             .with_ctrl_temperature(0);
 
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);

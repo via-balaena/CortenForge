@@ -35,12 +35,6 @@
 //! silent reproducibility drift in downstream stochastic
 //! components.
 
-// PR 1a lands this module additively with zero runtime consumers;
-// PR 1b (LangevinThermostat rewrite) is the first caller. The
-// allow is removed when PR 1b wires the four `pub(crate)`
-// functions into `langevin.rs::apply`.
-#![allow(dead_code)]
-
 /// Compute one `ChaCha8` block keyed by `key` at block counter
 /// `block_counter`. Returns 64 bytes (one `ChaCha` block) of
 /// uniform pseudorandom output. Pure function: same inputs

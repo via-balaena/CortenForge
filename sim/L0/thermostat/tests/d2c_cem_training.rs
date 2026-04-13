@@ -88,7 +88,7 @@ fn make_training_vecenv(seed: u64) -> VecEnv {
     let omega = signal_omega();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed, 0)
             .with_ctrl_temperature(0);
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
     let signal = OscillatingField::new(A_0, omega, 0.0, 0);
@@ -124,7 +124,7 @@ fn make_eval_env(seed: u64) -> SimEnv {
     let omega = signal_omega();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed, 0)
             .with_ctrl_temperature(0);
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
     let signal = OscillatingField::new(A_0, omega, 0.0, 0);
