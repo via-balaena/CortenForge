@@ -7521,6 +7521,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-opt"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "rand 0.9.2",
+ "serde",
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-bridge",
+ "sim-thermostat",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sim-simd"
 version = "0.7.0"
 dependencies = [
