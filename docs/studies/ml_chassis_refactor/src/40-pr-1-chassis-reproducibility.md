@@ -188,13 +188,14 @@ touches exactly two files:
 The thermostat crate's `Cargo.toml` is unchanged. No new
 dependencies are taken — `prf.rs` is self-contained,
 implementing the ChaCha8 block function over the `u32`/`u64`
-primitives that `core` already provides. The only new
-dev-dependency interaction is with `rand_chacha`, which is
-already a dev-dependency of the crate (used by
-`LangevinThermostat` at `langevin.rs:49`, recon-reported) and
-will remain one after PR 1b removes the runtime dependency on
-it — the cross-verification test in PR 1a needs it as a
-reference implementation.
+primitives that `core` already provides. The cross-verification
+test imports `rand_chacha`, which is already a runtime
+dependency of the crate at `thermostat/Cargo.toml:19`
+(workspace-pinned at `rand_chacha = "0.9"`, used by
+`LangevinThermostat` at `langevin.rs:49`, recon-reported).
+PR 1b demotes it to a dev-dependency once the mutex-bearing
+`LangevinThermostat` shape is replaced and the only remaining
+consumer is PR 1a's cross-verification test.
 
 ### 2.2 Public surface and the 32/32 bit-layout pickup
 
@@ -547,9 +548,12 @@ References:
 Test plan:
 - cargo test -p sim-thermostat (all existing tests plus the 10
   new inline tests in prf.rs)
-- the cross-verification tests must pass under both default
-  features and --features parallel (the test surface is
-  feature-independent, so both runs should agree)
+- cargo test -p sim-thermostat --features sim-core/parallel
+  --lib prf:: (the cross-verification tests must also pass
+  with sim-core's parallel feature enabled; propagation uses
+  sim-core/parallel because sim-thermostat has no local
+  `parallel` feature). The test surface is feature-independent,
+  so both runs produce identical results.
 ```
 
 **Landing notes:**
@@ -1824,3 +1828,22 @@ new regression test alongside the existing contacts test +
 56-call-site ripple), the order in which they land (1a
 first, 1b second), and the rollback plan if either has to
 back out. Part 4's execution layer begins here.
+
+**Session 12 post-commit patches to §2.1 and §2.6.** During
+the spec-vs-shipped audit that followed PR 1a's landing at
+`e6ff35e4`, two narrow prose drifts in Ch 40 surfaced. §2.1
+claimed `rand_chacha` was "already a dev-dependency of the
+crate" — it is actually a runtime dependency at
+`thermostat/Cargo.toml:19` (workspace-pinned at
+`rand_chacha = "0.9"`), and PR 1b will be the commit that
+demotes it. §2.6's second test-plan bullet specified
+`--features parallel` as the dual-run invocation, but the
+literal command errors with "package does not contain this
+feature: parallel" because `parallel` is a feature on
+`sim-core`, not on `sim-thermostat`; the correct propagation
+syntax is `cargo test -p sim-thermostat --features
+sim-core/parallel --lib prf::`, verified during the audit to
+run and pass all 10 prf tests. Both fixes land as a single
+narrow post-commit patch, matching the `b5cb3f6c`/`3e1ec0ff`
+precedent. Both are prose drifts, not argument changes —
+Ch 40's decisions stand.
