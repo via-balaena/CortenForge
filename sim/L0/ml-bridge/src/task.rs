@@ -136,6 +136,38 @@ impl TaskConfig {
             sub_steps: 1,
         }
     }
+
+    /// Construct a [`TaskConfig`] from a custom seeded `build_fn` closure.
+    ///
+    /// Use this when the task carries stochastic physics that must vary
+    /// per replicate — the closure receives the per-replicate seed from
+    /// [`Competition::run_replicates`](crate::Competition::run_replicates)
+    /// and threads it into e.g. a `LangevinThermostat`'s `master_seed`.
+    ///
+    /// Stock deterministic tasks should use [`TaskConfig::builder()`]
+    /// instead; that path synthesizes its own `build_fn` and ignores
+    /// the seed via `_seed: u64`.  This constructor is the
+    /// custom-stochastic-task surface deferred from PR 2a in
+    /// [Ch 42](../../../../docs/studies/ml_chassis_refactor/src/42-pr-3-sim-opt-rematch.md)
+    /// §2 sub-decision (a).
+    pub fn from_build_fn<F>(
+        name: impl Into<String>,
+        obs_dim: usize,
+        act_dim: usize,
+        obs_scale: Vec<f64>,
+        build_fn: F,
+    ) -> Self
+    where
+        F: Fn(usize, u64) -> Result<VecEnv, EnvError> + Send + Sync + 'static,
+    {
+        Self {
+            name: name.into(),
+            obs_dim,
+            act_dim,
+            obs_scale,
+            build_fn: Arc::new(build_fn),
+        }
+    }
 }
 
 // ── TaskConfigBuilder ───────────────────────────────────────────────────────
@@ -1042,5 +1074,96 @@ mod tests {
         assert!((fingertip.x - 0.75).abs() < 0.001);
         assert!(fingertip.y.abs() < 0.001);
         assert!(fingertip.z.abs() < 0.001);
+    }
+
+    // ── from_build_fn (custom seeded constructor) ─────────────────────
+
+    /// Helper for `from_build_fn` tests: construct a trivial 2-DOF
+    /// `VecEnv` for the given `n_envs`, ignoring the seed.  The seed
+    /// is recorded into an outer channel by the closure that wraps
+    /// this helper, not by the helper itself.
+    fn build_trivial_2dof_vec_env(n_envs: usize) -> Result<VecEnv, EnvError> {
+        let model = Arc::new(sim_mjcf::load_model(MJCF_2DOF).unwrap());
+        let obs = ObservationSpace::builder()
+            .all_qpos()
+            .all_qvel()
+            .build(&model)
+            .unwrap();
+        let act = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+        VecEnv::builder(model, n_envs)
+            .observation_space(obs)
+            .action_space(act)
+            .reward(|_, _| 0.0)
+            .done(|_, _| false)
+            .truncated(|_m, d| d.time > 1.0)
+            .sub_steps(1)
+            .build()
+    }
+
+    #[test]
+    fn from_build_fn_metadata_roundtrip() {
+        let task = TaskConfig::from_build_fn(
+            "custom-seeded",
+            4,
+            2,
+            vec![0.5, 0.5, 0.1, 0.1],
+            |n_envs, _seed| build_trivial_2dof_vec_env(n_envs),
+        );
+
+        assert_eq!(task.name(), "custom-seeded");
+        assert_eq!(task.obs_dim(), 4);
+        assert_eq!(task.act_dim(), 2);
+        assert_eq!(task.obs_scale(), &[0.5, 0.5, 0.1, 0.1]);
+
+        // The closure builds a real VecEnv that resets cleanly.
+        let mut env = task.build_vec_env(2, 0).unwrap();
+        let obs = env.reset_all().unwrap();
+        assert_eq!(obs.shape(), &[2, 4]);
+    }
+
+    #[test]
+    fn from_build_fn_threads_seed_into_closure() {
+        use std::sync::Mutex;
+
+        // The closure captures an Arc<Mutex<Vec<u64>>> and pushes each
+        // observed seed into it.  The test then checks that the seeds
+        // recorded match the seeds passed to `build_vec_env`, proving
+        // the per-replicate seed actually reaches the closure body —
+        // which is the load-bearing invariant that the synthesized
+        // `TaskConfigBuilder::build()` path violates.
+        let observed_seeds: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_closure = Arc::clone(&observed_seeds);
+
+        let task = TaskConfig::from_build_fn(
+            "seed-recorder",
+            4,
+            2,
+            vec![1.0, 1.0, 1.0, 1.0],
+            move |n_envs, seed| {
+                observed_for_closure.lock().unwrap().push(seed);
+                build_trivial_2dof_vec_env(n_envs)
+            },
+        );
+
+        let _env_a = task.build_vec_env(2, 12_345).unwrap();
+        let _env_b = task.build_vec_env(2, 67_890).unwrap();
+        let _env_c = task.build_vec_env(4, 0).unwrap();
+
+        let recorded: Vec<u64> = observed_seeds.lock().unwrap().clone();
+        assert_eq!(recorded, vec![12_345, 67_890, 0]);
+    }
+
+    #[test]
+    fn from_build_fn_propagates_env_error() {
+        // A closure that always returns an EnvError should surface
+        // that error through `build_vec_env`, matching the
+        // `TaskConfigBuilder::build()` synthesized closure's error
+        // propagation contract.
+        let task = TaskConfig::from_build_fn("always-fails", 1, 1, vec![1.0], |_n_envs, _seed| {
+            Err(EnvError::ZeroSubSteps)
+        });
+
+        let result = task.build_vec_env(2, 0);
+        assert!(matches!(result, Err(EnvError::ZeroSubSteps)));
     }
 }
