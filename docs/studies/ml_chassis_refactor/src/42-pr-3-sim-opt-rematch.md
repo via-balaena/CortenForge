@@ -1631,7 +1631,7 @@ pub struct Sa {
 }
 ```
 
-Five fields on `SaHyperparams`, seven fields on `Sa`. The
+Five fields on `SaHyperparams`, eight fields on `Sa`. The
 struct shape matches CEM's at `ml-bridge/src/cem.rs:58-65`
 (recon-reported) in spirit: a boxed policy, a hyperparams
 copy, a running state variable (temperature instead of
@@ -4362,6 +4362,20 @@ the fixture and easy to cross-reference) and for reader
 amusement. A future writeup that finds the literal
 distracting can substitute any other fixed `u64` in a
 narrow post-Ch-42 patch with no downstream effect.
+
+**Session 12 post-commit patch to §4.1.** During session
+11's Appendix A factual pass a prose drift surfaced in
+Ch 42 §4.1: line 1634 originally said "seven fields on
+`Sa`" while the struct block at lines 1612–1631 enumerates
+eight (`policy`, `hyperparams`, `current_params`,
+`current_fitness`, `temperature`, `best_params`,
+`best_fitness`, `best_epoch`). The appendix's inventory
+row had the correct count. Session 11 deferred the
+in-chapter fix; session 12 lands it as a one-word prose
+patch (`seven` → `eight`) following the `b5cb3f6c` /
+`3e1ec0ff` narrow-post-commit-patch pattern. No argument
+in the chapter changes — the drift is a simple off-by-one
+in the count, not a structural issue.
 
 ---
 
