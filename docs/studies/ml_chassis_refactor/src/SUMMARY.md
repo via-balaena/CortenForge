@@ -37,4 +37,4 @@
 # Appendices
 
 - [API inventory](90-api-inventory.md)
-- [Test inventory]()
+- [Test inventory](91-test-inventory.md)
