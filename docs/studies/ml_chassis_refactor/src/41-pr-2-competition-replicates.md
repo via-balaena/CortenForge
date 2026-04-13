@@ -98,6 +98,24 @@ wrap calls externally at the callsite, and Ch 22's
 compute-parity argument cares about honest env-step counts
 rather than wall-clock.
 
+**Ch 42 amendment (bundled into the Ch 42 commit per the
+`843dc21c` precedent).** Ch 42's recon-to-leans surfaced
+that the original Ch 41 rendering of `run_replicates` was
+seed-blind at the `TaskConfig::build_vec_env` call site —
+the seed threaded through to `algorithm.train` but not to
+the `VecEnv` construction, meaning stochastic-physics tasks
+(specifically the rematch's D2c SR task with its
+`LangevinThermostat`) could not vary their physics noise
+sequence per replicate. Ch 42 §2 walks four rendering
+alternatives and picks extending `TaskConfig::build_fn`
+from `Fn(usize) -> Result<VecEnv, EnvError>` to
+`Fn(usize, u64) -> Result<VecEnv, EnvError>`. The
+amendment adds a `u64` seed parameter to `build_fn` and
+threads it through `run_replicates`'s inner body; §2.1
+below renders the updated `build_vec_env` call and the
+stock-task ripple. See Ch 42 §2 for the full argument and
+the counterfactual walk.
+
 Ch 23 §1.3 also recommended but did not specify a new helper
 on `CompetitionResult`: `find_replicate(task, algorithm,
 replicate_index) -> Option<&RunResult>` addresses the
@@ -469,6 +487,12 @@ pub fn run_replicates(
     for (replicate_index, &seed) in seeds.iter().enumerate() {
         for task in tasks {
             for builder in builders {
+                // Ch 42 amendment: build_vec_env takes the
+                // per-replicate seed so stochastic-physics
+                // tasks can vary their LangevinThermostat
+                // master_seed per replicate.
+                let mut env = task.build_vec_env(self.n_envs, seed)?;
+
                 // ... existing per-pair body, with `seed` replacing `self.seed`
                 // ... and `replicate_index` recorded on the RunResult
 
@@ -487,6 +511,55 @@ pub fn run_replicates(
     Ok(CompetitionResult { runs })
 }
 ```
+
+**Ch 42 amendment: `TaskConfig::build_fn` signature
+extension.** The `build_vec_env(self.n_envs, seed)` call in
+the skeleton above is the amended form — under Ch 42 §2's
+bundled amendment, `TaskConfig::build_fn` takes a `u64`
+seed as its second parameter, and `run_replicates` threads
+the per-replicate seed through at the `build_vec_env` call
+site. The ripple across `task.rs` touches seven sites, all
+recon-reported against the current source tree:
+
+- `task.rs:43` — `build_fn: Arc<dyn Fn(usize) -> Result<
+  VecEnv, EnvError> + Send + Sync>` becomes `build_fn:
+  Arc<dyn Fn(usize, u64) -> Result<VecEnv, EnvError> + Send
+  + Sync>`.
+- `task.rs:108` — `pub fn build_vec_env(&self, n_envs:
+  usize)` becomes `pub fn build_vec_env(&self, n_envs:
+  usize, seed: u64)`, with its body `(self.build_fn)(n_envs)`
+  at `:109` becoming `(self.build_fn)(n_envs, seed)`.
+- `task.rs:241` — the `TaskConfigBuilder`'s internal
+  `let build_fn = Arc::new(move |n_envs: usize| ...)`
+  declaration updates to the two-argument closure form.
+- `task.rs:362, :396` — `pub fn reaching_2dof` and its
+  internal `build_fn` closure: closure gains an ignored
+  `_seed: u64` parameter.
+- `task.rs:445, :500` — `pub fn reaching_6dof` and its
+  closure: same ignored-parameter addition.
+- `task.rs:619, :687` — `pub fn obstacle_reaching_6dof` and
+  its closure: same.
+
+The `_seed: u64` ignored parameter on each stock task
+reflects that deterministic-physics tasks have no reason
+to consume a per-replicate seed — only stochastic-physics
+tasks (the rematch's D2c SR task at Ch 42 §6.5) use the
+parameter. The convention matches the existing Rust idiom
+of underscore-prefix for unused parameters.
+
+`sim/L0/ml-bridge/src/vec_env.rs:391` (the `BatchSim::new`
+call inside `VecEnvBuilder::build()`) is unchanged because
+the seed does not flow through `VecEnv::builder` at all —
+the `TaskConfig` closure captures the seed (or receives it
+as a parameter and passes it down into the
+`LangevinThermostat` construction) *before* calling
+`VecEnv::builder.build()`. The rematch fixture at Ch 42 §6
+is where the seed consumption happens.
+
+See Ch 42 §2.5 for the full amendment scope and Ch 42 §2.4
+for the pick-defense against R1 (sim-opt owns the outer
+loop), R3 (bypass `run_replicates`), and R4 (`AtomicU64`
+in the closure).
 
 The ordering is `seeds → tasks → builders`, outermost to
 innermost, matching Ch 23 §1.4's pick: "seeds-outermost
@@ -1848,7 +1921,9 @@ Ch 41 made six in-chapter sub-decisions — the calls Ch 23,
 Ch 24, and Ch 31 §4.2 did not lock and Ch 41 had to pick.
 Table 1 names them, records the pick, and summarizes the
 reasoning in one line. A reader can use this table as a
-quick index into the chapter's sections.
+quick index into the chapter's sections. Row (g) was added
+during Ch 42 drafting as a bundled amendment per the
+`843dc21c` precedent — see the note after the table.
 
 | # | Sub-decision | Pick | One-line rationale |
 |---|---|---|---|
@@ -1858,6 +1933,7 @@ quick index into the chapter's sections.
 | (d) | REINFORCE/PPO zero-fallback cleanup | Shape (i): drop the `EpochMetrics` construction, `on_epoch` call, and `metrics.push` from the `n_samples == 0` branch; leave bare `continue` | Minimum-diff form; closes Ch 24 §4.7's silent-filter-out contingency; safe against all existing `metrics.len() == N` assertions per census |
 | (e) | `d2c_cem_training.rs` scope in PR 2b | Doc-only — module-level comment + eprintln format string update at `:216-222` | The test file does not use `Competition` or `best_reward()`; its gates are within-algorithm and robust to Decision 1's rescaling. Full rewrite is Ch 42 territory |
 | (f) | PR structure | Shape (ii): 2-PR split — PR 2a additive API, PR 2b semantic fix + cleanup + doc update | Additive/semantic is the natural fracture line; PR 2a unblocks Ch 42 drafting; PR 2b's risk profile is different; 3-PR split (shape iii) is overbuild |
+| (g) | `TaskConfig::build_fn` seed extension | Extend signature from `Fn(usize) -> Result<VecEnv, EnvError>` to `Fn(usize, u64) -> Result<VecEnv, EnvError>`; thread seed through `run_replicates`'s inner `build_vec_env` call; stock tasks accept-and-ignore the seed | Added during Ch 42 drafting after recon surfaced the gap at the rematch layer: `run_replicates` could not thread a per-replicate seed to stochastic-physics tasks, collapsing half the rematch's seed-population variance. See Ch 42 §2 for the full argument; bundled per the `843dc21c` precedent |
 
 Sub-decision (e) is the one worth the most reader
 attention. Ch 24 §1.9, §2.2, and §5 overclaim the structural

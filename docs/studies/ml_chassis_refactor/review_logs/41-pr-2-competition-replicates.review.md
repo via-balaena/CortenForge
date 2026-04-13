@@ -717,3 +717,104 @@ here for human review. The user's review should focus on:
 Ch 41 is 1914 lines at commit time, landing in the same
 band as Ch 40's 1821. The branch is `feature/ml-chassis-study`
 and stays there for Phase 4 (Ch 42 remains next session).
+
+## Round 2 — Ch 42 bundled amendment (session 10)
+
+Following the `843dc21c` precedent from session 9, Ch 42's
+drafting in session 10 surfaced a real gap in Ch 41's
+original rendering of `run_replicates`, and Ch 42 bundles a
+narrow amendment to Ch 41 §1.1, §2.1, and §5 (the
+sub-decisions table) in the Ch 42 commit.
+
+**The finding.** Ch 41 §2.1 rendered the `run_replicates`
+body with seeds flowing to `algorithm.train(..., seed, ...)`
+at `competition.rs:341` (recon-reported) but not to
+`task.build_vec_env(self.n_envs)` at `competition.rs:330`
+(recon-reported) — the `TaskConfig::build_fn` signature at
+`task.rs:43` (recon-reported) is `Fn(usize) -> Result<
+VecEnv, EnvError>`, seed-blind. For deterministic-physics
+tasks like `reaching_2dof` / `reaching_6dof` /
+`obstacle_reaching_6dof`, this is fine — the per-replicate
+variation comes entirely from the algorithm's exploration
+RNG, and the physics is identical across replicates. For
+stochastic-physics tasks like the rematch's D2c SR task
+with its `LangevinThermostat`, this is a gap: the
+`LangevinThermostat`'s `master_seed` is captured at
+`TaskConfig` construction time and cannot vary per
+replicate, which collapses half the seed-population
+variance Ch 32's bootstrap CI is supposed to measure.
+
+**The verifying evidence.** Ch 42's recon read
+`sim/L0/ml-bridge/src/task.rs` in full and confirmed that
+the current `build_fn` signature at `:43` takes only
+`usize` (the env count) and has no seed channel. It also
+read `competition.rs:321-407` for the `run` body (which
+`run_replicates` reuses), confirming that the inner
+`task.build_vec_env(self.n_envs)` call at `:330` is the
+single point where the seed would need to thread through
+to reach the `TaskConfig` closure. Ch 42 then walked four
+rendering alternatives for resolving the gap (R1 sim-opt
+owns the replicate loop with fresh TaskConfig per
+replicate, R2 extend `TaskConfig::build_fn` signature
+bundled as Ch 41 amendment, R3 sim-opt bypasses
+`run_replicates`, R4 `AtomicU64` inside the TaskConfig
+closure) and picked R2 on six grounds: four structural
+(fix-gaps-before-continuing preference, breaking-change-
+over-hacks preference, R34 chassis-overbuild philosophy,
+future reuse for Ch 30's pre-committed null follow-ups)
+and two polish (readability, A-grade discipline). The
+user explicitly delegated the R1/R2 call to Ch 42's
+author judgment; the pick is R2.
+
+**The amendment.** Ch 42 §2 argues R2 in full. The Ch 41
+source file gains the following changes, all bundled into
+the Ch 42 commit:
+
+- **§1.1 paragraph addition** after the "replicates API
+  shape" bullet at `:77-99`, naming the Ch 42 amendment,
+  pointing at §2.1 for the rendered change, and pointing
+  at Ch 42 §2 for the full argument. Approximately 15 new
+  lines.
+- **§2.1 code block update** at `:458-489` — the skeleton's
+  inner body gains `let mut env = task.build_vec_env(
+  self.n_envs, seed)?;` with an inline comment citing the
+  Ch 42 amendment. Approximately 3 modified lines.
+- **§2.1 new paragraph after the code block** rendering
+  the seven-site `task.rs` ripple: `:43` (field type),
+  `:108` (method signature), `:241` (builder plumbing),
+  `:362`/`:396` (reaching_2dof fn and closure), `:445`/`:500`
+  (reaching_6dof fn and closure), `:619`/`:687`
+  (obstacle_reaching_6dof fn and closure). Plus a note on
+  `vec_env.rs:391` being unchanged. Approximately 60 new
+  lines.
+- **§5 sub-decisions table row (g)** added as the seventh
+  sub-decision, naming the extension, the pick, and the
+  one-line rationale. Approximately 1 new table row.
+
+The amendment is a scope extension of PR 2a's plan, not a
+decision revision. Ch 41's existing sub-decisions (a)–(f)
+are unchanged. The additive/semantic 2-PR split structure
+is unchanged. PR 2a's source-code diff becomes slightly
+larger than the pre-amendment plan (~7 more sites in
+`task.rs`), but PR 2a's merge dependencies are unchanged
+and its landing sequence in §4.4 is unchanged.
+
+**The bundled-commit form.** The amendment lands in the
+Ch 42 commit alongside Ch 42's own chapter and review log,
+matching the `843dc21c` (Ch 24 patch bundled into the Ch 41
+commit) and `b5cb3f6c` (Ch 15 §5.6 patch bundled into the
+Ch 40 commit) precedents. The Ch 42 commit message names
+the bundle as a three-artifact edit: Ch 42 draft + Ch 41
+amendment + review logs. A reader of the Ch 42 commit sees
+the amendment scope in one diff and can verify the
+bundled pattern against the review log.
+
+**Verdict: amendment applied.** The round-2 section of this
+review log documents the bundling state. Ch 41's final
+state post-amendment is ~60 lines larger than the commit
+state at session 9; the amendment does not affect Ch 41's
+Round 1 factual or thinking-pass findings.
+
+Post-Round-2 line count is roughly 2122 lines (up from 1914
+at the session-9 commit). The branch stays on
+`feature/ml-chassis-study`.
