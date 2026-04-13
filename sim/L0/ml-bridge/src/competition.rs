@@ -221,6 +221,127 @@ impl CompetitionResult {
         }
         eprintln!();
     }
+
+    // ── Replicate aggregation (Ch 24 Decision 2, PR 2a) ───────────────
+
+    /// Find the specific replicate for `(task, algorithm, replicate_index)`.
+    ///
+    /// Returns `None` if no [`RunResult`] matches all three fields.
+    /// Useful for pulling out a single replicate's artifact after a
+    /// [`Competition::run_replicates`] call.
+    #[must_use]
+    pub fn find_replicate(
+        &self,
+        task: &str,
+        algorithm: &str,
+        replicate_index: usize,
+    ) -> Option<&RunResult> {
+        self.runs.iter().find(|r| {
+            r.task_name == task
+                && r.algorithm_name == algorithm
+                && r.replicate_index == replicate_index
+        })
+    }
+
+    /// Collect the per-replicate best-reward values for one
+    /// `(task, algorithm)` pair.
+    ///
+    /// Silently filters out replicates whose
+    /// [`RunResult::best_reward()`] returns `None` (zero-epoch runs or
+    /// runs where every `mean_reward` was non-finite).  Callers that
+    /// need to detect missing replicates compare the returned
+    /// `Vec<f64>`'s length against the seed-slice length at the call
+    /// site.  Ch 24 §4.7 picked the silent-filter-out shape contingent
+    /// on PR 2b's REINFORCE/PPO zero-fallback cleanup.
+    #[must_use]
+    pub fn replicate_best_rewards(&self, task: &str, algorithm: &str) -> Vec<f64> {
+        self.runs
+            .iter()
+            .filter(|r| r.task_name == task && r.algorithm_name == algorithm)
+            .filter_map(RunResult::best_reward)
+            .collect()
+    }
+
+    /// Summarize the per-replicate best-reward distribution for one
+    /// `(task, algorithm)` pair as a [`SeedSummary`].
+    ///
+    /// Returns `None` if no replicates survive the filter (see
+    /// [`Self::replicate_best_rewards`]).  For `n == 1`, `std_dev` is
+    /// returned as `0.0` with the understanding that sample standard
+    /// deviation is undefined for a single observation; callers that
+    /// need a strict `n >= 2` guard should check the `.n` field
+    /// directly.
+    #[must_use]
+    pub fn describe(&self, task: &str, algorithm: &str) -> Option<SeedSummary> {
+        let rewards = self.replicate_best_rewards(task, algorithm);
+        SeedSummary::from_rewards(&rewards)
+    }
+}
+
+// ── SeedSummary ─────────────────────────────────────────────────────────────
+
+/// Across-replicate summary statistics for one `(task, algorithm)` pair.
+///
+/// Constructed via [`SeedSummary::from_rewards`] from a slice of
+/// per-replicate best rewards — typically the output of
+/// [`CompetitionResult::replicate_best_rewards`].
+///
+/// Ch 24 Decision 2's Option M (medium) aggregation surface: just the
+/// three fields, sample standard deviation with Bessel's correction.
+/// Richer summaries (percentiles, bootstrap CIs) are caller-side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SeedSummary {
+    /// Number of replicates contributing to `mean` / `std_dev`.
+    pub n: usize,
+    /// Arithmetic mean of the rewards slice.
+    pub mean: f64,
+    /// Sample standard deviation (`n-1` denominator, Bessel's
+    /// correction).  Returns `0.0` for `n == 1` with the caveat that
+    /// sample std is undefined for a single observation.
+    pub std_dev: f64,
+}
+
+impl SeedSummary {
+    /// Build a summary from a slice of per-replicate rewards.
+    ///
+    /// Returns `None` for an empty slice.  For `n == 1`, returns
+    /// `Some(SeedSummary { n: 1, mean: rewards[0], std_dev: 0.0 })`;
+    /// sample standard deviation is mathematically undefined but
+    /// returning zero is the least-surprising default for pipeline
+    /// code that aggregates many pairs and would otherwise have to
+    /// special-case every single-replicate result.
+    #[must_use]
+    pub fn from_rewards(rewards: &[f64]) -> Option<Self> {
+        if rewards.is_empty() {
+            return None;
+        }
+        let n = rewards.len();
+        // `n` is `usize` bounded by the length of a Rust slice; the
+        // usize→f64 cast is lossy only for n > 2^53, which would
+        // require the caller to build a ~petabyte-sized rewards slice
+        // first.  The `f64` cast is fine here.
+        #[allow(clippy::cast_precision_loss)]
+        let n_f64 = n as f64;
+        let mean = rewards.iter().sum::<f64>() / n_f64;
+        let std_dev = if n == 1 {
+            0.0
+        } else {
+            // Sample standard deviation with Bessel's correction
+            // (denominator = n - 1), matching RL-literature convention.
+            #[allow(clippy::cast_precision_loss)]
+            let denom = (n - 1) as f64;
+            let variance: f64 = rewards
+                .iter()
+                .map(|r| {
+                    let d = r - mean;
+                    d * d
+                })
+                .sum::<f64>()
+                / denom;
+            variance.sqrt()
+        };
+        Some(Self { n, mean, std_dev })
+    }
 }
 
 // ── Timestamp helper ───────────────────────────────────────────────────────
@@ -1042,9 +1163,6 @@ mod tests {
 
     #[test]
     fn find_replicate_returns_specific_seed() {
-        // Minimal sanity check on find_replicate wiring; the helper itself
-        // is added in the next commit, but its consumer shape (searching
-        // runs by (task, algo, idx)) is already achievable via a filter.
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
         let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
@@ -1053,28 +1171,194 @@ mod tests {
         let result = comp
             .run_replicates(&tasks, &[builder], &[10, 20, 30])
             .unwrap();
-        // Second replicate by explicit filter.
-        let r1_count = result
-            .runs
-            .iter()
-            .filter(|r| {
-                r.task_name == "reaching-2dof"
-                    && r.algorithm_name == "Finder"
-                    && r.replicate_index == 1
-            })
-            .count();
-        assert_eq!(r1_count, 1);
-        // No replicate 99.
-        let r99_count = result
-            .runs
-            .iter()
-            .filter(|r| {
-                r.task_name == "reaching-2dof"
-                    && r.algorithm_name == "Finder"
-                    && r.replicate_index == 99
-            })
-            .count();
-        assert_eq!(r99_count, 0);
+        // Specific replicate lookup.
+        let r1 = result.find_replicate("reaching-2dof", "Finder", 1);
+        assert!(r1.is_some());
+        assert_eq!(r1.unwrap().replicate_index, 1);
+        // Missing replicate.
+        assert!(
+            result
+                .find_replicate("reaching-2dof", "Finder", 99)
+                .is_none()
+        );
+        // Missing (task, algo) pair.
+        assert!(result.find_replicate("no-such-task", "Finder", 0).is_none());
+    }
+
+    // ── PR 2a: SeedSummary + aggregation helpers ─────────────────────
+
+    #[test]
+    fn replicate_best_rewards_flat_filter() {
+        let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
+        let tasks = [reaching_2dof()];
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("Rwd"));
+
+        let result = comp.run_replicates(&tasks, &[builder], &[1, 2, 3]).unwrap();
+        let rewards = result.replicate_best_rewards("reaching-2dof", "Rwd");
+        // MockAlgorithm always produces finite rewards, so every
+        // replicate survives the silent filter-out.
+        assert_eq!(rewards.len(), 3);
+        for r in &rewards {
+            assert!(r.is_finite(), "reward should be finite: {r}");
+        }
+    }
+
+    #[test]
+    fn describe_returns_seed_summary() {
+        let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
+        let tasks = [reaching_2dof()];
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("Desc"));
+
+        let result = comp.run_replicates(&tasks, &[builder], &[1, 2, 3]).unwrap();
+        let summary = result
+            .describe("reaching-2dof", "Desc")
+            .expect("describe should return Some for a 3-replicate set");
+        assert_eq!(summary.n, 3);
+        assert!(summary.mean.is_finite());
+        assert!(summary.std_dev >= 0.0);
+    }
+
+    #[test]
+    fn describe_none_for_missing_pair() {
+        let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
+        let tasks = [reaching_2dof()];
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("Present"));
+
+        let result = comp.run_replicates(&tasks, &[builder], &[0]).unwrap();
+        assert!(result.describe("no-such-task", "Present").is_none());
+        assert!(result.describe("reaching-2dof", "no-such-algo").is_none());
+    }
+
+    #[test]
+    fn seed_summary_from_rewards_n1_returns_zero_stddev() {
+        let summary =
+            SeedSummary::from_rewards(&[1.0]).expect("single-element slice should return Some");
+        assert_eq!(summary.n, 1);
+        assert!((summary.mean - 1.0).abs() < 1e-12);
+        // `from_rewards` explicitly returns `0.0` for the `n == 1`
+        // case — a hard-coded literal, not a computed value — so a
+        // bit-equality check against `0.0_f64` is the right shape.
+        assert_eq!(summary.std_dev.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn seed_summary_from_rewards_empty_returns_none() {
+        assert!(SeedSummary::from_rewards(&[]).is_none());
+    }
+
+    #[test]
+    fn seed_summary_from_rewards_bessel_correction() {
+        // [1, 2, 3]: mean = 2.0, variance = ((-1)^2 + 0 + 1^2) / (3-1)
+        //          = 2 / 2 = 1.0, std_dev = 1.0.  Sample std (Bessel's
+        // correction, n-1 denominator), not population std (which would
+        // give sqrt(2/3) ≈ 0.8165).
+        let summary = SeedSummary::from_rewards(&[1.0, 2.0, 3.0]).unwrap();
+        assert_eq!(summary.n, 3);
+        assert!((summary.mean - 2.0).abs() < 1e-12);
+        assert!(
+            (summary.std_dev - 1.0).abs() < 1e-12,
+            "expected sample std = 1.0 (Bessel), got {}",
+            summary.std_dev
+        );
+    }
+
+    #[test]
+    fn replicate_best_rewards_silent_filter_out() {
+        // ZeroEpochAlgorithm produces an empty metrics Vec, which makes
+        // RunResult::best_reward() return None — the replicate is
+        // silently filtered out by replicate_best_rewards per Ch 24
+        // §4.7.  FiniteAlgorithm produces MockAlgorithm's usual finite
+        // rewards.  Alternating the two across three seeds gives two
+        // surviving rewards out of three seeds.
+        //
+        // Scoped allows are required because MockAlgorithm's test-only
+        // `unwrap_used`/`expect_used` allows extend to our variant.
+        struct ZeroEpochAlgorithm {
+            policy: Box<dyn Policy>,
+            best: crate::best_tracker::BestTracker,
+        }
+
+        impl Algorithm for ZeroEpochAlgorithm {
+            fn name(&self) -> &'static str {
+                "Mixed"
+            }
+
+            fn train(
+                &mut self,
+                _env: &mut VecEnv,
+                _budget: TrainingBudget,
+                _seed: u64,
+                _on_epoch: &dyn Fn(&EpochMetrics),
+            ) -> Vec<EpochMetrics> {
+                // Empty metrics → RunResult::best_reward() is None.
+                Vec::new()
+            }
+
+            fn policy_artifact(&self) -> PolicyArtifact {
+                PolicyArtifact::from_policy(&*self.policy)
+            }
+
+            fn best_artifact(&self) -> PolicyArtifact {
+                self.best.to_artifact(self.policy.descriptor())
+            }
+
+            fn checkpoint(&self) -> TrainingCheckpoint {
+                let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
+                TrainingCheckpoint {
+                    algorithm_name: self.name().into(),
+                    policy_artifact: self.policy_artifact(),
+                    critics: vec![],
+                    optimizer_states: vec![],
+                    algorithm_state: BTreeMap::new(),
+                    best_params: Some(best_params),
+                    best_reward,
+                    best_epoch,
+                }
+            }
+        }
+
+        // Seed 0 and seed 2 produce the finite-reward variant; seed 1
+        // produces the zero-epoch variant.  The factory dispatches on
+        // `self.seed` — but Competition's builder closure only sees
+        // the `TaskConfig`, not the seed, so we dispatch via a
+        // RefCell-backed counter instead.
+        let call_count = std::cell::RefCell::new(0usize);
+        let comp = Competition::new(1, TrainingBudget::Epochs(2), 0);
+        let tasks = [reaching_2dof()];
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> = &|_task| {
+            let i = {
+                let mut c = call_count.borrow_mut();
+                let v = *c;
+                *c += 1;
+                v
+            };
+            if i == 1 {
+                // Middle replicate: zero-epoch, gets filtered out.
+                let policy: Box<dyn Policy> = Box::new(LinearPolicy::new(1, 1, &[1.0]));
+                let best = crate::best_tracker::BestTracker::new(policy.params());
+                Box::new(ZeroEpochAlgorithm { policy, best })
+            } else {
+                Box::new(MockAlgorithm::new("Mixed"))
+            }
+        };
+
+        let result = comp
+            .run_replicates(&tasks, &[builder], &[10, 20, 30])
+            .unwrap();
+        let rewards = result.replicate_best_rewards("reaching-2dof", "Mixed");
+        // 3 seeds × 1 empty = 2 surviving rewards.
+        assert_eq!(
+            rewards.len(),
+            2,
+            "silent filter-out should drop the zero-epoch replicate; got {} rewards",
+            rewards.len()
+        );
+        // And describe should report `n == 2`, not `n == 3`.
+        let summary = result.describe("reaching-2dof", "Mixed").unwrap();
+        assert_eq!(summary.n, 2);
     }
 
     #[test]
