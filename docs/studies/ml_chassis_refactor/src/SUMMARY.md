@@ -30,12 +30,11 @@
 
 # Part 4 — Execution
 
-- [PR sequence and rationale]()
 - [PR 1: Chassis reproducibility](40-pr-1-chassis-reproducibility.md)
 - [PR 2: Competition replicates and algorithm surface fixes](41-pr-2-competition-replicates.md)
 - [PR 3: sim-opt split and rematch](42-pr-3-sim-opt-rematch.md)
 
 # Appendices
 
-- [API inventory]()
+- [API inventory](90-api-inventory.md)
 - [Test inventory]()
