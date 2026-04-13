@@ -24,6 +24,16 @@
 //! shape 3 + Route 2 is the right chassis primitive, and Ch 32
 //! §4.6 for the argument that splitmix64 is the right
 //! seed-derivation primitive.
+//!
+//! ## Version pin
+//!
+//! The cross-verification tests below pin this module against
+//! `rand_chacha 0.9` (workspace-pinned at the repo root
+//! `Cargo.toml`). A future `rand_chacha` version bump that
+//! changes the `seed_from_u64` expansion rule or the `ChaCha8`
+//! block output order will fail these tests loudly, preventing
+//! silent reproducibility drift in downstream stochastic
+//! components.
 
 // PR 1a lands this module additively with zero runtime consumers;
 // PR 1b (LangevinThermostat rewrite) is the first caller. The
