@@ -19,7 +19,8 @@
 //!    accumulator. Mutable access to `Data` is **uncompilable**, not just
 //!    discouraged.
 //! 2. **Composition** ([`PassiveStack`], [`PassiveStackBuilder`],
-//!    [`StochasticGuard`], [`EnvBatch`]) — a builder-style stack that
+//!    [`StochasticGuard`], plus `sim_core::batch::EnvBatch`) — a
+//!    builder-style stack that
 //!    `install`s as a single `cb_passive` callback. The stack drives the
 //!    split-borrow dance between `Fn(&Model, &mut Data)` (the real
 //!    `cb_passive` shape) and the trait's `&Data + &mut DVector<f64>` shape,

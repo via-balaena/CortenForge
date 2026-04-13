@@ -3,9 +3,9 @@
 //!
 //! Two kinds of primitives live here:
 //!
-//! 1. **Per-step noise generation.** [`chacha8_block`] +
-//!    [`expand_master_seed`] + [`encode_block_counter`] +
-//!    [`box_muller_from_block`] form the Route 2 PRF chain that
+//! 1. **Per-step noise generation.** The private helpers
+//!    `chacha8_block`, `expand_master_seed`, `encode_block_counter`,
+//!    and `box_muller_from_block` form the Route 2 PRF chain that
 //!    C-3 stochastic components (starting with
 //!    [`LangevinThermostat`](crate::LangevinThermostat)) call
 //!    from their `apply` method. These replace the per-component

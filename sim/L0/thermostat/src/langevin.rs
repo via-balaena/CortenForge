@@ -117,7 +117,8 @@ impl LangevinThermostat {
     /// is responsible for matching them.
     ///
     /// `master_seed` is expanded once at construction into a 32-byte
-    /// `ChaCha8` key via [`prf::expand_master_seed`]; the thermostat's
+    /// `ChaCha8` key via `prf::expand_master_seed` (a private helper
+    /// in this crate's `prf` module); the thermostat's
     /// noise stream at step `s` for DOF `d` is a pure function of
     /// `(master_key, traj_id, s, d)`. `traj_id` is typically the env
     /// index under an `install_per_env` factory, but it can be any

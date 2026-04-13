@@ -54,7 +54,7 @@ use crate::types::{Data, Model, StepError};
 ///    its own [`Model`] built from a factory closure, with a per-env
 ///    stack installed via [`PerEnvStack::install_per_env`]. This is the
 ///    right choice for batches whose stochastic components (e.g.
-///    [`LangevinThermostat`] in `sim-thermostat`) need per-env state to
+///    `LangevinThermostat` in `sim-thermostat`) need per-env state to
 ///    avoid cross-env noise aliasing.
 ///
 /// Each environment owns a full [`Data`] instance with its own heap
