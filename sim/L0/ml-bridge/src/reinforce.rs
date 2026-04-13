@@ -211,16 +211,6 @@ impl Algorithm for Reinforce {
 
             let n_samples = all_returns.len();
             if n_samples == 0 {
-                let em = EpochMetrics {
-                    epoch,
-                    mean_reward: 0.0,
-                    done_count: 0,
-                    total_steps: 0,
-                    wall_time_ms: t0.elapsed().as_millis() as u64,
-                    extra: BTreeMap::new(),
-                };
-                on_epoch(&em);
-                metrics.push(em);
                 continue;
             }
 
