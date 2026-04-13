@@ -400,7 +400,7 @@ no human judgment at the expansion point.
 `{CEM, SA}` at matched complexity, full `Steps(16M)` per
 replicate, seeds derived as `splitmix64(MASTER.wrapping_add(
 i))` with `MASTER = 20_260_412` matching
-`d2c_cem_training.rs:62`'s `SEED_BASE` literal and Ch 23
+`d2c_cem_training.rs:69`'s `SEED_BASE` literal and Ch 23
 §1.2's recommended splitmix64 convention. Ch 42's rematch
 fixture hard-codes the `MASTER` literal (at `§6.3`) and uses
 `sim_thermostat::prf::splitmix64` (shipped by PR 1a) to derive
@@ -1806,7 +1806,7 @@ impl Algorithm for Sa {
                 true
             } else if self.temperature > 0.0 {
                 let accept_prob = (delta / self.temperature).exp();
-                rng.gen::<f64>() < accept_prob
+                rng.random::<f64>() < accept_prob
             } else {
                 false
             };
@@ -1867,13 +1867,16 @@ impl Algorithm for Sa {
     }
 
     fn policy_artifact(&self) -> PolicyArtifact {
-        let mut policy = self.policy_clone_with_params(&self.current_params);
-        PolicyArtifact::from_policy(&*policy)
+        PolicyArtifact::from_policy(&*self.policy)
     }
 
     fn best_artifact(&self) -> PolicyArtifact {
-        let policy = self.policy_clone_with_params(&self.best_params);
-        PolicyArtifact::from_policy(&*policy)
+        PolicyArtifact {
+            version: sim_ml_bridge::CURRENT_VERSION,
+            descriptor: self.policy.descriptor(),
+            params: self.best_params.clone(),
+            provenance: None,
+        }
     }
 
     fn checkpoint(&self) -> TrainingCheckpoint {
@@ -1935,64 +1938,66 @@ fn evaluate_fitness(
 }
 ```
 
-The `train` method is 80 lines of body plus the
+The `train` method is ~80 lines of body plus the
 `evaluate_fitness` helper at ~25 lines. Comparable in size to
 CEM's `train` at `ml-bridge/src/cem.rs:132-234` (recon-
 reported), which is ~100 lines of body.
 
 One implementation note worth flagging at the rendering
-level: the `policy_clone_with_params` helper is a small
-utility that clones the policy's current shape and overrides
-its params to the given vector, without mutating `self.policy`.
-It is a ~5-line helper defined in `algorithm.rs` below the
-`impl Algorithm for Sa` block:
+level: neither `policy_artifact` nor `best_artifact` clones
+the policy. A reader might wonder how they produce artifacts
+for two different parameter vectors (current vs best) without
+a clone. The answer is structural.
 
-```rust
-impl Sa {
-    fn policy_clone_with_params(&self, params: &[f64]) -> Box<dyn Policy> {
-        // The existing Policy trait does not support a clone
-        // method; we reconstruct the policy from its descriptor
-        // + params via the same from_descriptor path
-        // PolicyArtifact::to_policy uses. This is a modest
-        // workaround for the trait shape and is flagged in §9
-        // as a future-cleanup item.
-        let descriptor = self.policy.descriptor();
-        let mut rebuilt = PolicyArtifact::bare(descriptor, params.to_vec())
-            .to_policy()
-            .expect("policy rebuild must succeed for same-shape params");
-        rebuilt
-    }
-}
-```
+`policy_artifact` delegates directly to
+`PolicyArtifact::from_policy(&*self.policy)`. This works
+because step 7 of the train loop
+(`self.policy.set_params(&self.current_params)`) keeps
+`self.policy` in sync with the Metropolis chain's accepted
+state at all times, so `from_policy` reads
+`self.policy.params()` and returns an artifact holding the
+current chain state. No helper is needed.
 
-This works because `PolicyArtifact::to_policy` at
-`ml-bridge/src/artifact.rs:400` (recon-reported via the
-`pub use` at `lib.rs:102-105`) rebuilds a concrete policy
-from a descriptor and a parameter vector, and the descriptor
-is available via `self.policy.descriptor()`. The round-trip
-is mildly wasteful (allocating a new policy each time
-`policy_artifact` or `best_artifact` is called), but the
-calls happen at most twice per `train` invocation, so the
-overhead is negligible. A cleaner shape would be a `Policy::
-clone_with_params` method on the trait, which is a future-
-cleanup item §9 names.
+`best_artifact` constructs a `PolicyArtifact` struct literal
+directly: `version = sim_ml_bridge::CURRENT_VERSION`,
+`descriptor = self.policy.descriptor()`,
+`params = self.best_params.clone()`, `provenance = None`.
+This works because `PolicyArtifact` at
+`ml-bridge/src/artifact.rs:233-302` (recon-reported) has all
+four fields declared `pub`, and the descriptor returned by
+`self.policy.descriptor()` is identical to the descriptor the
+best_params would produce (same policy shape, different
+weights). No policy clone, no round-trip through
+`PolicyArtifact::to_policy`, no helper.
 
-The expect call is allowed here because `expect_used` is
-denied at the crate root — the code that calls expect is
-inside a helper where the invariant (same-shape params
-always rebuild successfully) is load-bearing. The workspace
-lint at `Cargo.toml:336` sets `expect_used = "warn"` and the
-crate-level `#![deny(clippy::expect_used)]` would fail this.
-PR 3a's implementation either (a) uses an explicit panic
-with a clear message, or (b) propagates the error via
-`Result<Box<dyn Policy>, ArtifactError>` and the callers
-unwrap at the trait-method boundary where `Algorithm::
-policy_artifact` is `-> PolicyArtifact` (infallible). The
-cleanest rendering is (a): replace `.expect(...)` with an
-explicit `unreachable!()` on the impossible error branch
-after asserting the descriptor matches. PR 3a's reviewer
-should prefer (a) — the descriptor equality is a real
-invariant, not a "probably won't fail" hope.
+This shape matches CEM's own `best_artifact` at
+`ml-bridge/src/cem.rs:249-251` (recon-reported) in spirit:
+CEM's implementation is `self.best.to_artifact(self.policy
+.descriptor())`, which also produces a new artifact holding
+different params without cloning the policy — the
+`BestTracker::to_artifact` helper is `pub(crate)` and
+unavailable to sim-opt, so SA constructs the struct literal
+inline instead.
+
+An earlier drafting of Ch 42 carried a
+`policy_clone_with_params` helper that rebuilt a separate
+`Box<dyn Policy>` via a non-existent `PolicyArtifact::bare`
+constructor plus `PolicyArtifact::to_policy`. Recon against
+the live source found (a) no `::bare` constructor exists
+(see `artifact.rs:285-302` for the full `impl PolicyArtifact`
+block — only `from_policy`, `with_provenance`, and `validate`
+are constructors on the type), and (b) the helper would have
+required `.expect(...)` at a site denied by the crate root's
+`#![deny(clippy::expect_used)]`. The direct-struct-literal
+form is both simpler and lint-clean; it is the PR 3a
+rendering.
+
+A future `Policy::clone_with_params` trait method could be
+useful for other callers who want a fully-owned
+`Box<dyn Policy>` with overridden params, but neither of
+SA's two `Algorithm` trait-method impls needs one. §9 carries
+this as a deferred future-cleanup item for other potential
+consumers, not as a PR 3a blocker.
 
 ### 4.3 `mean_reward` in the Ch 24 Decision 1 unit
 
@@ -2663,11 +2668,11 @@ pub fn bootstrap_diff_means(
     let mut diffs = Vec::with_capacity(B);
     for _ in 0..B {
         let resample_mean_a: f64 = (0..n_a)
-            .map(|_| r_a[rng.gen_range(0..n_a)])
+            .map(|_| r_a[rng.random_range(0..n_a)])
             .sum::<f64>()
             / (n_a as f64);
         let resample_mean_b: f64 = (0..n_b)
-            .map(|_| r_b[rng.gen_range(0..n_b)])
+            .map(|_| r_b[rng.random_range(0..n_b)])
             .sum::<f64>()
             / (n_b as f64);
         diffs.push(resample_mean_a - resample_mean_b);
@@ -2732,10 +2737,10 @@ pub fn bootstrap_diff_medians(
     let mut resample_b = vec![0.0; n_b];
     for _ in 0..B {
         for slot in resample_a.iter_mut() {
-            *slot = r_a[rng.gen_range(0..n_a)];
+            *slot = r_a[rng.random_range(0..n_a)];
         }
         for slot in resample_b.iter_mut() {
-            *slot = r_b[rng.gen_range(0..n_b)];
+            *slot = r_b[rng.random_range(0..n_b)];
         }
         diffs.push(median(&resample_a) - median(&resample_b));
     }
@@ -2911,7 +2916,7 @@ use sim_ml_bridge::{
 use sim_thermostat::prf::splitmix64;
 
 /// Pre-registered master seed from Ch 32 Decision 4. Matches
-/// `d2c_cem_training.rs:62`'s `SEED_BASE` literal and Ch 23
+/// `d2c_cem_training.rs:69`'s `SEED_BASE` literal and Ch 23
 /// §1.2's example master value.
 pub const REMATCH_MASTER_SEED: u64 = 20_260_412;
 
@@ -3325,7 +3330,7 @@ const A_0: f64 = 0.3;
 // Note: SEED_BASE / REMATCH_MASTER_SEED are the same literal
 // (20_260_412) by design — Ch 32 Decision 4 matched the rematch's
 // master to the D2c legacy test's SEED_BASE for three-way
-// consistency (Ch 23 §1.2, Ch 32 §4.6, d2c_cem_training.rs:62).
+// consistency (Ch 23 §1.2, Ch 32 §4.6, d2c_cem_training.rs:69).
 // The rematch fixture imports REMATCH_MASTER_SEED from sim_opt.
 
 const KRAMERS_RATE: f64 = 0.01214;
@@ -3604,7 +3609,7 @@ fn d2c_sr_rematch() {
 
     // ── Run the rematch ──
     eprintln!("\n--- D2c SR rematch: folded-pilot protocol ---");
-    eprintln!("Master seed: {REMATCH_MASTER_SEED} (matches d2c_cem_training.rs:62)");
+    eprintln!("Master seed: {REMATCH_MASTER_SEED} (matches d2c_cem_training.rs:69)");
     eprintln!("Initial N: 10, expanded N (iff ambiguous): 20");
     eprintln!("Budget per replicate: Steps({REMATCH_BUDGET_STEPS})");
 
@@ -3809,7 +3814,7 @@ a reader should *not* read them as in-chapter calls:
 - The folded-pilot protocol (N_initial = 10, N_expanded = 20
   iff ambiguous, no intermediate stops) — Ch 32 Decision 3.
 - The master seed `20_260_412` and splitmix64 derivation —
-  Ch 32 Decision 4, matching `d2c_cem_training.rs:62` and
+  Ch 32 Decision 4, matching `d2c_cem_training.rs:69` and
   Ch 23 §1.2.
 - The Pearson-based bimodality coefficient with `BC > 5/9`
   threshold and median-based escalation — Ch 32 §6.
@@ -3942,8 +3947,8 @@ PR 3a ships:
 - `sim/L0/opt/src/lib.rs` — crate root with `pub mod`
   declarations and re-exports per §3.2.
 - `sim/L0/opt/src/algorithm.rs` — `Sa`, `SaHyperparams`,
-  `Algorithm` trait impl, the `evaluate_fitness` helper,
-  the `policy_clone_with_params` helper, and ~120 lines of
+  `Algorithm` trait impl, the `evaluate_fitness` helper, the
+  `randn` Box-Muller helper, and ~120 lines of
   `#[cfg(test)] mod tests` with four SA unit tests per §4.8.
 - `sim/L0/opt/src/analysis.rs` — `BootstrapCi`,
   `RematchOutcome`, `bootstrap_diff_means`,
@@ -4231,14 +4236,20 @@ rematch fixture and its policy construction would
 change.
 
 **The `Policy::clone_with_params` trait method.** §4.2
-named the current policy cloning workaround (going through
-`PolicyArtifact::bare` + `PolicyArtifact::to_policy`) as a
-modest inefficiency. A cleaner shape would be a
+notes that SA does not need to clone the policy — its
+`policy_artifact` and `best_artifact` implementations use
+direct `PolicyArtifact` construction (the first via
+`from_policy` on the always-synced `self.policy`, the second
+via a struct literal with `params = self.best_params.clone()`).
+A future caller that *does* want a fully-owned
+`Box<dyn Policy>` holding a different parameter vector — for
+example, a batch SA variant that evaluates multiple policies
+in parallel without destructively mutating `self.policy` —
+would benefit from a
 `Policy::clone_with_params(&self, params: &[f64]) -> Box<dyn
 Policy>` method on the `Policy` trait in ml-bridge. Adding
-this method is a future ml-bridge PR, not PR 3a's scope.
-PR 3a uses the workaround; a future refactor can adopt the
-trait method.
+this method is a future ml-bridge PR, not PR 3a's scope; SA
+as shipped has no need for it.
 
 **The `BestTracker::pub` visibility.** §4.1 noted that
 `ml-bridge/src/best_tracker.rs`'s `BestTracker` struct is

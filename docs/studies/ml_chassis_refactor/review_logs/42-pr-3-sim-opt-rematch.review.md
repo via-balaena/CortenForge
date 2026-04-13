@@ -606,3 +606,149 @@ placeholders in `SUMMARY.md`). The one-chapter-per-session
 cadence holds through session 10 (this session, Ch 42); the
 appendices are a different genre and may use a different
 cadence.
+
+## Session 16 pre-work drift fix (PR 3a recon)
+
+Session 16's recon against the live source before starting
+PR 3a surfaced four rendering drifts, all of which land as a
+single pre-work drift-fix commit ahead of PR 3a's three
+source commits. This matches the session-13 pre-work pattern
+(commit `ae1ff5ef` for Ch 40 §3 + App B recon drifts before
+PR 1b code landed).
+
+### Drift 1: rand 0.8 API snippets should be rand 0.9
+
+The §4.2 SA train loop and §5.2 / §5.3 bootstrap functions
+all carry snippets using rand 0.8's method names
+(`rng.gen::<f64>()`, `rng.gen_range(0..n)`), but the
+workspace uses `rand = "0.9"` at `Cargo.toml:381` and the
+live CEM source at `ml-bridge/src/cem.rs:117` already uses
+the rand 0.9 form (`rng.random::<f64>()`). Compiling the
+spec's snippets verbatim would produce deprecation warnings
+at best and hard errors at worst.
+
+**Fix:** five renames across `42-pr-3-sim-opt-rematch.md`:
+- Line 1809 (`Sa::train` Metropolis accept): `rng.gen::<f64>()`
+  → `rng.random::<f64>()`.
+- Lines 2666, 2670 (`bootstrap_diff_means` resample draws):
+  `rng.gen_range(0..n_a)` / `rng.gen_range(0..n_b)` →
+  `rng.random_range(0..n_a)` / `rng.random_range(0..n_b)`.
+- Lines 2735, 2738 (`bootstrap_diff_medians` resample
+  draws): same substitution.
+
+The `randn` Box-Muller helper at §4.2's bottom already uses
+the correct rand 0.9 form (lines 1903-1907, matching
+`cem.rs:115-119`), so no change is needed there. The drift
+was only in the `train` body and the two bootstrap bodies.
+
+### Drift 2: `PolicyArtifact::bare` constructor does not exist
+
+The §4.2 `policy_clone_with_params` helper at the drafted
+lines 1952-1965 called
+`PolicyArtifact::bare(descriptor, params.to_vec()).to_policy()
+.expect(...)` to rebuild a fresh `Box<dyn Policy>` with an
+overridden parameter vector. Recon against the live source
+at `ml-bridge/src/artifact.rs:285-302` (the full `impl
+PolicyArtifact` block) found that no `::bare` constructor
+exists — the impl carries only `from_policy`,
+`with_provenance`, and `validate`. The helper as drafted
+would not compile.
+
+The drafting context at §4.2's tail (lines 1966-1995) also
+flagged the `.expect(...)` as a lint problem against the
+`#![deny(clippy::expect_used)]` at the crate root and
+hedged by proposing `unreachable!()` after asserting the
+descriptor matches. But with `::bare` absent, the whole
+round-trip framing is structurally broken, not just the
+`.expect` terminal.
+
+**Fix:** drop the `policy_clone_with_params` helper
+entirely. The realization that makes the drop possible:
+`self.policy` is already kept in sync with the Metropolis
+chain's accepted state via step 7 of the train loop
+(`self.policy.set_params(&self.current_params)`), so the
+`policy_artifact` impl is simply
+`PolicyArtifact::from_policy(&*self.policy)`. And
+`best_artifact` can construct a `PolicyArtifact` struct
+literal directly, using `self.policy.descriptor()` for the
+descriptor (the shape is identical between
+`current_params` and `best_params`, same policy) and
+`self.best_params.clone()` for the overridden params.
+`PolicyArtifact`'s four fields are all declared `pub` at
+`artifact.rs:233-243`, so the struct literal compiles
+without needing an intermediate helper or a reconstructor.
+
+The fix rewrites §4.2's `policy_artifact` / `best_artifact`
+impl blocks at lines 1869-1878 to the direct-struct form,
+rewrites the surrounding prose at lines 1938-1996 to
+explain the direct approach and record the historical
+`::bare` gap as a rendering refinement caught at recon
+time, and rewrites §9's "future `Policy::clone_with_params`
+trait method" note at lines 4233-4241 to reflect that PR
+3a's two `Algorithm` impls no longer use any workaround —
+the future trait-method cleanup is framed as benefiting
+future *other* callers, not as a deferred PR 3a cleanup.
+
+The shape SA uses for `best_artifact` matches CEM's
+`best_artifact` at `ml-bridge/src/cem.rs:249-251` in spirit:
+CEM delegates to `self.best.to_artifact(self.policy
+.descriptor())`, which also produces a new artifact holding
+different params without cloning the policy. SA's path is
+slightly more verbose (struct literal instead of a helper
+call) because CEM's `BestTracker::to_artifact` is
+`pub(crate)` and unavailable across the sim-opt crate
+boundary. This is the same `BestTracker` visibility
+observation §9 already carries as a deferred future-cleanup
+item.
+
+### Drift 3: `d2c_cem_training.rs:62` is really `:69`
+
+Five citations in Ch 42 point at line 62 of
+`d2c_cem_training.rs` for `SEED_BASE = 20_260_412`. Live
+source has the constant at line 69 (±7 drift).
+
+**Fix:** five `:62` → `:69` substitutions across the chapter
+body — §1's task-infrastructure reference, §5.5's
+`REMATCH_MASTER_SEED` constant doc comment, §6.3's inline
+comment in the fixture rendering, §6.4's fixture eprintln
+verdict block, and §7's sub-decision row reference.
+
+### Drift 4: §8.2 PR 3a contents enumeration
+
+§8.2's bullet listing the contents of PR 3a (at the drafted
+line 3946) named `policy_clone_with_params` as one of the
+helpers shipped by `algorithm.rs`. With Drift 2's fix that
+helper no longer exists; the bullet would misrepresent PR
+3a's actual contents.
+
+**Fix:** replace the `policy_clone_with_params helper`
+phrase with `randn Box-Muller helper`, which is what
+`algorithm.rs` actually ships alongside `evaluate_fitness`.
+The `randn` helper was always shipped (session 10's Round 1
+thinking pass caught the `rand_distr` dependency issue and
+added the inlined Box-Muller), it was just never enumerated
+in §8.2's PR 3a contents list. The drift fix both removes
+the phantom `policy_clone_with_params` and adds the real
+`randn`.
+
+### Drifts not caught pre-work
+
+Other Ch 42 citations (cem.rs:38, :58-65, :89-115, :132-234,
+:265-..., :291-329, :209; ml-bridge/src/algorithm.rs:77-120;
+Cargo.toml:296-306, :336, :367, :381; ml-bridge/Cargo.toml:25;
+policy.rs:30; artifact.rs:400; vec_env.rs:76;
+d2c_cem_training.rs:73, :87, :91, :114, :278, :283) were
+spot-checked via `grep` against the live source at recon
+time. Most are within ±2 of the drafted line and a few are
+within ±5. None affect the spec's renderable code, only its
+cross-references. They are not patched pre-work; if any
+matters during PR 3a implementation, a post-impl audit
+bundle commit handles them (session 14/15 pattern).
+
+### Ch 42 is PR-ready after the pre-work patch
+
+After the four drift fixes land, Ch 42 §3-§5 render cleanly
+enough to implement verbatim. The three PR 3a commits
+(crate skeleton, algorithm.rs, analysis.rs) can proceed
+without re-opening Ch 42's sub-decisions or re-deriving any
+cross-crate surface.
