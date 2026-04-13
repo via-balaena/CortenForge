@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn ppo_smoke_2dof() {
         let (mut algo, task) = make_ppo();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn ppo_extra_metrics_finite() {
         let (mut algo, task) = make_ppo();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(2), 0, &|_| {});
         for m in &metrics {
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn ppo_clip_fraction_in_range() {
         let (mut algo, task) = make_ppo();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
         for m in &metrics {
@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn ppo_checkpoint_round_trip() {
         let (mut algo, task) = make_ppo();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         let cp = algo.checkpoint();

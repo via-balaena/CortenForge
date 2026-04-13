@@ -567,7 +567,7 @@ mod tests {
             max_grad_norm: MAX_GRAD_NORM,
         }
         .build(n_params);
-        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build_vec_env");
+        let mut vec_env = task.build_vec_env(NUM_ENVS, 0).expect("build_vec_env");
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut sigma = SIGMA_INIT;
 
@@ -731,7 +731,7 @@ mod tests {
         let params = [0.1, -0.2, 0.3, 0.15, -0.1, 0.25, -0.05, 0.2, 0.1, -0.1];
         policy.set_params(&params);
 
-        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build");
+        let mut vec_env = task.build_vec_env(NUM_ENVS, 0).expect("build");
         let mut current_obs = vec_env.reset_all().expect("reset");
         let mut actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
 
@@ -779,7 +779,7 @@ mod tests {
 
         let task = reaching_2dof();
         let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build");
+        let mut vec_env = task.build_vec_env(NUM_ENVS, 0).expect("build");
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let sigma = SIGMA_INIT;
         let noise = Normal::new(0.0, sigma).unwrap();

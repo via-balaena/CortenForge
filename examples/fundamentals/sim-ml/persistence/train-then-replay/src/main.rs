@@ -136,7 +136,9 @@ fn main() {
         max_episode_steps: 300,
     };
     let mut cem = Cem::new(policy, hp);
-    let mut env = task.build_vec_env(NUM_ENVS_TRAIN).expect("build_vec_env");
+    let mut env = task
+        .build_vec_env(NUM_ENVS_TRAIN, 0)
+        .expect("build_vec_env");
 
     let t0 = std::time::Instant::now();
     let metrics = cem.train(&mut env, TrainingBudget::Epochs(NUM_EPOCHS), SEED, &|m| {

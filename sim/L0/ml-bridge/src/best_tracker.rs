@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn best_artifact_after_training_has_best_epoch_weights() {
         let task = reaching_2dof();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         let policy = Box::new(LinearPolicy::new(
             task.obs_dim(),
             task.act_dim(),
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn checkpoint_round_trip_preserves_best_across_resume() {
         let task = reaching_2dof();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         let hp = CemHyperparams {
             elite_fraction: 0.2,
             noise_std: 0.3,
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn resume_training_preserves_best_from_previous_session() {
         let task = reaching_2dof();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         let hp = CemHyperparams {
             elite_fraction: 0.2,
             noise_std: 0.3,

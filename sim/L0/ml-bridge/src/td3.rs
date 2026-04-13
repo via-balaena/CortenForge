@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn td3_smoke_2dof() {
         let (mut algo, task) = make_td3();
-        let mut env = task.build_vec_env(5).unwrap();
+        let mut env = task.build_vec_env(5, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn td3_buffer_grows() {
         let (mut algo, task) = make_td3();
-        let mut env = task.build_vec_env(5).unwrap();
+        let mut env = task.build_vec_env(5, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(2), 42, &|_| {});
 
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn td3_checkpoint_round_trip() {
         let (mut algo, task) = make_td3();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         let cp = algo.checkpoint();

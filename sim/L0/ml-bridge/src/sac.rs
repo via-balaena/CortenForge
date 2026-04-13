@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn sac_smoke_2dof() {
         let (mut algo, task) = make_sac();
-        let mut env = task.build_vec_env(5).unwrap();
+        let mut env = task.build_vec_env(5, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn sac_alpha_adjusts() {
         let (mut algo, task) = make_sac();
-        let mut env = task.build_vec_env(5).unwrap();
+        let mut env = task.build_vec_env(5, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
@@ -757,7 +757,7 @@ mod tests {
     #[test]
     fn sac_checkpoint_round_trip() {
         let (mut algo, task) = make_sac();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         let cp = algo.checkpoint();

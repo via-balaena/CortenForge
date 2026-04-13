@@ -327,7 +327,7 @@ impl Competition {
 
         for task in tasks {
             for builder in builders {
-                let mut env = task.build_vec_env(self.n_envs)?;
+                let mut env = task.build_vec_env(self.n_envs, self.seed)?;
                 let mut algorithm = builder(task);
                 let name = algorithm.name();
 

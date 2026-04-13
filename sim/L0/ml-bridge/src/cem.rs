@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn cem_smoke_2dof() {
         let task = reaching_2dof();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         let policy = Box::new(LinearPolicy::new(
             task.obs_dim(),
             task.act_dim(),
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn cem_extra_metrics_populated() {
         let task = reaching_2dof();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         let policy = Box::new(LinearPolicy::new(
             task.obs_dim(),
             task.act_dim(),
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn cem_checkpoint_round_trip() {
         let (mut cem, task) = make_cem();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         cem.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         let cp = cem.checkpoint();
