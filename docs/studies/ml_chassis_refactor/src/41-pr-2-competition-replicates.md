@@ -1761,9 +1761,14 @@ PR 2a's diff, in summary:
   `CompetitionResult` (`find_replicate`,
   `replicate_best_rewards`, `describe`); one new struct
   `SeedSummary` with its `from_rewards` constructor, inline
-  below `CompetitionResult`; ~4 new inline unit tests
-  covering the additive contract. Total diff: approximately
-  +200 / −30 lines.
+  below `CompetitionResult`; thirteen new inline unit tests
+  covering the additive contract (enumerated at §2.6; the
+  count below the `~4` estimate in prior drafts, which was
+  stale against the authoritative §2.6 enumeration). Total
+  diff: approximately +310 / −30 lines in `competition.rs`
+  across two commits (commit 2 adds `run_replicates` +
+  `replicate_index` + six tests, commit 3 adds
+  `SeedSummary` + aggregation helpers + seven tests).
 - `sim/L0/ml-bridge/src/lib.rs` — one `pub use` line for
   `SeedSummary` if the new struct is not re-exported through
   the module root already (recon during drafting confirms
