@@ -7,6 +7,13 @@
 //! All tests require `--release` (~10 min each, ~40 min total if serial).
 //!
 //! Spec: `docs/thermo_computing/03_phases/d2_stochastic_resonance.md` §11 D2c
+//!
+//! Post-Ch 41 §2.2 Decision 1: every algorithm's reported `mean_reward`
+//! is in per-episode-total units (sum of rewards across `n_envs`
+//! trajectories, divided by `n_envs`). The per-step mean is no longer
+//! directly reported. Gate B's within-algorithm monotonicity check
+//! (`best_last_10 > first_5_mean`) is robust to the rescaling by
+//! construction — a positive scalar factor preserves the `>` ordering.
 
 #![allow(
     clippy::expect_used,
@@ -216,7 +223,7 @@ fn train_and_evaluate(
     let metrics = algo.train(&mut env, TrainingBudget::Epochs(N_EPOCHS), seed, &|m| {
         if m.epoch % 10 == 0 || m.epoch == N_EPOCHS - 1 {
             eprintln!(
-                "  {name} epoch {:3}: mean_reward = {:+.6}",
+                "  {name} epoch {:3}: mean_reward = {:+.6} (per-episode total across n_envs trajectories)",
                 m.epoch, m.mean_reward,
             );
         }
