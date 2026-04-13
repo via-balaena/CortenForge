@@ -206,7 +206,16 @@ impl Algorithm for Cem {
 
             // Epoch stats.
             let epoch_steps: usize = rollout.trajectories.iter().map(Trajectory::len).sum();
-            let mean_reward: f64 = fitness.iter().map(|(_, f)| f).sum::<f64>() / n_envs as f64;
+            // Per-episode total across the n_envs trajectories (Ch 24 Decision 1).
+            // The length-normalized `fitness` above is CEM's internal elite-selection
+            // metric and remains in per-step units; the reported `mean_reward` unit
+            // is per-episode-total to match REINFORCE/PPO/TD3/SAC.
+            let total_reward: f64 = rollout
+                .trajectories
+                .iter()
+                .map(|t| t.rewards.iter().sum::<f64>())
+                .sum();
+            let mean_reward = total_reward / n_envs as f64;
             let done_count = rollout.trajectories.iter().filter(|t| t.done).count();
 
             self.best
@@ -216,7 +225,7 @@ impl Algorithm for Cem {
 
             let mut extra = BTreeMap::new();
             extra.insert("noise_std".into(), self.noise_std);
-            extra.insert("elite_mean_reward".into(), elite_mean_reward);
+            extra.insert("elite_mean_reward_per_step".into(), elite_mean_reward);
 
             let em = EpochMetrics {
                 epoch,
@@ -316,7 +325,7 @@ mod tests {
             assert!(m.total_steps > 0);
             assert!(m.wall_time_ms < 60_000, "epoch took too long");
             assert!(m.extra.contains_key("noise_std"));
-            assert!(m.extra.contains_key("elite_mean_reward"));
+            assert!(m.extra.contains_key("elite_mean_reward_per_step"));
         }
 
         // Reward should not get worse over epochs (elite selection drives it up).
@@ -351,7 +360,7 @@ mod tests {
         let metrics = cem.train(&mut env, TrainingBudget::Epochs(2), 0, &|_| {});
         for m in &metrics {
             assert!(m.extra["noise_std"] >= 0.0);
-            assert!(m.extra["elite_mean_reward"].is_finite());
+            assert!(m.extra["elite_mean_reward_per_step"].is_finite());
         }
     }
 
@@ -410,5 +419,80 @@ mod tests {
         let cem2 = Cem::from_checkpoint(&cp, hp).unwrap();
         assert_eq!(cem2.noise_std, cp.algorithm_state["noise_std"]);
         assert_eq!(cem2.policy.params(), cem.policy.params());
+    }
+
+    // ── Ch 24 Decision 1 regression guards ──────────────────────────────
+
+    /// CEM's reported `mean_reward` is in per-episode-total units, not
+    /// per-step units. A reaching task with ~-1/step rewards over
+    /// ~100-300 steps produces per-episode totals with |value| in the
+    /// hundreds; a per-step mean would be bounded by a small constant.
+    /// The `> 10.0` gate sits in the gap between the two semantics.
+    #[test]
+    fn cem_mean_reward_is_per_episode_total() {
+        let task = reaching_2dof();
+        let mut env = task.build_vec_env(10, 0).unwrap();
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let mut cem = Cem::new(
+            policy,
+            CemHyperparams {
+                elite_fraction: 0.2,
+                noise_std: 0.3,
+                noise_decay: 0.95,
+                noise_min: 0.01,
+                max_episode_steps: 300,
+            },
+        );
+
+        let metrics = cem.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+        let last = metrics.last().unwrap();
+        assert!(
+            last.mean_reward.abs() > 10.0,
+            "CEM mean_reward should be per-episode-total (|.| > 10 for reaching_2dof at max 300 steps), got {}",
+            last.mean_reward
+        );
+    }
+
+    /// CEM carries two reward concepts under Decision 1: the internal
+    /// length-normalized `fitness` drives elite selection in per-step
+    /// units and is surfaced as `extra.elite_mean_reward_per_step`; the
+    /// reported `mean_reward` is per-episode-total. The per-episode
+    /// magnitude must exceed the per-step magnitude by an order of
+    /// magnitude for any reasonable episode length. A future refactor
+    /// that accidentally folds the reporting site back into the fitness
+    /// loop would fail this gate.
+    #[test]
+    fn cem_dual_reward_concept_split() {
+        let task = reaching_2dof();
+        let mut env = task.build_vec_env(10, 0).unwrap();
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let mut cem = Cem::new(
+            policy,
+            CemHyperparams {
+                elite_fraction: 0.2,
+                noise_std: 0.3,
+                noise_decay: 0.95,
+                noise_min: 0.01,
+                max_episode_steps: 300,
+            },
+        );
+
+        let metrics = cem.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+        let last = metrics.last().unwrap();
+        let per_step = last.extra["elite_mean_reward_per_step"];
+        assert!(
+            last.mean_reward.abs() > per_step.abs() * 10.0,
+            "per-episode-total |mean_reward|={} must exceed per-step |elite_mean_reward_per_step|={} by >10x",
+            last.mean_reward.abs(),
+            per_step.abs()
+        );
     }
 }
