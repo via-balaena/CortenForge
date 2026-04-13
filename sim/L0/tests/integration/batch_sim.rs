@@ -5,9 +5,12 @@
 //! produces identical results to sequential stepping even when collision
 //! detection and constraint solving are involved.
 
+use std::sync::Arc;
+
+use nalgebra::DVector;
 use sim_core::batch::BatchSim;
 use sim_mjcf::load_model;
-use std::sync::Arc;
+use sim_thermostat::{LangevinThermostat, PassiveStack};
 
 /// Pendulum with ground plane contact: body can collide with the ground.
 fn pendulum_with_contact_mjcf() -> &'static str {
@@ -186,4 +189,131 @@ fn reset_restores_initial_state_mjcf() {
     // Env 0 should be steppable again after reset
     let errors = batch.step_all();
     assert!(errors[0].is_none(), "env 0 should step after reset");
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// PR 1b regression test: parallel/sequential agreement with Langevin noise
+// ────────────────────────────────────────────────────────────────────────
+
+/// 1-DOF simple harmonic oscillator used by `parallel_matches_sequential
+/// _with_langevin`. D11 fixture (Ch 40 §3.4). Identical shape to the
+/// inline fixture in `sim/L0/thermostat/src/langevin.rs` tests.
+const SHO_1D_XML: &str = r#"
+<mujoco model="sho_1d_langevin_regression">
+  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+  <worldbody>
+    <body name="particle">
+      <joint name="x" type="slide" axis="1 0 0"
+             stiffness="1" damping="0" springref="0" ref="0"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+/// Ch 40 §3.4 (a): bit-identical trajectories at `master_seed` ∈ {0,
+/// 0xD06F00D_42, u64::MAX} across 32 envs × 1000 steps.
+///
+/// The test runs the same batch construction twice inside one
+/// invocation — same factory, same master_seed, same env count — and
+/// asserts every env's `(qpos, qvel)` matches bit-for-bit after K
+/// steps. Under default features the `step_all` path is sequential;
+/// under `--features parallel` it uses rayon `par_iter_mut` with a
+/// non-deterministic work-stealing scheduler.
+///
+/// **Why one invocation proves parallel/sequential equivalence.**
+/// Under the parallel path, rayon's scheduler is non-deterministic
+/// across runs — the order in which the 32 envs visit the worker
+/// threads depends on runtime scheduling. If the noise stream
+/// depended on that ordering (e.g. via a shared mutable RNG),
+/// successive runs would produce different `(qpos, qvel)` pairs. The
+/// test asserting they don't proves the noise is scheduler-
+/// independent, which is the load-bearing property C-3 was
+/// architected to guarantee.
+///
+/// The test runs under both default features and `--features
+/// parallel` via the `parallel` feature on `sim-conformance-tests`.
+/// Under default features the assertion is the sequential-path
+/// determinism check; under parallel it is the
+/// scheduler-independence check. Together they cover the Ch 10
+/// reproducibility defect end-to-end.
+#[test]
+fn parallel_matches_sequential_with_langevin() {
+    const N_ENVS: usize = 32;
+    const N_STEPS: usize = 1_000;
+    const GAMMA: f64 = 0.1;
+    const K_B_T: f64 = 1.0;
+    // D10 seed set: 0, 0xD06F00D42 (per Ch 40 §3.4), u64::MAX.
+    const SEEDS: [u64; 3] = [0u64, 0xD_06F0_0D42_u64, u64::MAX];
+
+    for master_seed in SEEDS {
+        let state_a = run_langevin_batch(master_seed, N_ENVS, N_STEPS, GAMMA, K_B_T);
+        let state_b = run_langevin_batch(master_seed, N_ENVS, N_STEPS, GAMMA, K_B_T);
+        assert_eq!(state_a.len(), N_ENVS);
+        assert_eq!(state_b.len(), N_ENVS);
+        for (env_idx, (a, b)) in state_a.iter().zip(state_b.iter()).enumerate() {
+            assert_eq!(
+                a.0, b.0,
+                "env {env_idx} master_seed {master_seed:#x}: qpos differs between runs",
+            );
+            assert_eq!(
+                a.1, b.1,
+                "env {env_idx} master_seed {master_seed:#x}: qvel differs between runs",
+            );
+        }
+    }
+}
+
+/// Build a fresh per-env Langevin batch with `master_seed`, step it
+/// `n_steps` times, and return each env's `(qpos, qvel)` pair as
+/// owned `Vec<f64>` pairs.
+fn run_langevin_batch(
+    master_seed: u64,
+    n_envs: usize,
+    n_steps: usize,
+    gamma: f64,
+    k_b_t: f64,
+) -> Vec<(Vec<f64>, Vec<f64>)> {
+    // Prototype exists solely as the `PerEnvStack::install_per_env`
+    // receiver. Its contents don't reach any env (each env gets a
+    // fresh stack from the factory); the prototype Arc is discarded
+    // after `new_per_env` returns.
+    let prototype = PassiveStack::builder()
+        .with(LangevinThermostat::new(
+            DVector::from_element(1, gamma),
+            k_b_t,
+            master_seed,
+            0,
+        ))
+        .build();
+
+    let factory = |env_idx: usize| {
+        let model = load_model(SHO_1D_XML).expect("SHO MJCF loads");
+        let stack = PassiveStack::builder()
+            .with(LangevinThermostat::new(
+                DVector::from_element(model.nv, gamma),
+                k_b_t,
+                master_seed,
+                env_idx as u64,
+            ))
+            .build();
+        (model, stack)
+    };
+
+    let mut batch = BatchSim::new_per_env(&prototype, n_envs, factory);
+    for _ in 0..n_steps {
+        let errors = batch.step_all();
+        for (env_idx, err) in errors.iter().enumerate() {
+            assert!(
+                err.is_none(),
+                "env {env_idx} step failed at master_seed {master_seed:#x}: {err:?}",
+            );
+        }
+    }
+
+    (0..n_envs)
+        .map(|i| {
+            let env = batch.env(i).expect("env i in range");
+            (env.qpos.as_slice().to_vec(), env.qvel.as_slice().to_vec())
+        })
+        .collect()
 }

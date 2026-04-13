@@ -7447,6 +7447,7 @@ dependencies = [
  "nalgebra",
  "sim-core",
  "sim-mjcf",
+ "sim-thermostat",
  "sim-types",
  "sim-urdf",
 ]
