@@ -7,6 +7,13 @@
 //! All tests require `--release` (~10 min each, ~40 min total if serial).
 //!
 //! Spec: `docs/thermo_computing/03_phases/d2_stochastic_resonance.md` §11 D2c
+//!
+//! Post-Ch 41 §2.2 Decision 1: every algorithm's reported `mean_reward`
+//! is in per-episode-total units (sum of rewards across `n_envs`
+//! trajectories, divided by `n_envs`). The per-step mean is no longer
+//! directly reported. Gate B's within-algorithm monotonicity check
+//! (`best_last_10 > first_5_mean`) is robust to the rescaling by
+//! construction — a positive scalar factor preserves the `>` ordering.
 
 #![allow(
     clippy::expect_used,
@@ -88,7 +95,7 @@ fn make_training_vecenv(seed: u64) -> VecEnv {
     let omega = signal_omega();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed, 0)
             .with_ctrl_temperature(0);
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
     let signal = OscillatingField::new(A_0, omega, 0.0, 0);
@@ -124,7 +131,7 @@ fn make_eval_env(seed: u64) -> SimEnv {
     let omega = signal_omega();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed, 0)
             .with_ctrl_temperature(0);
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
     let signal = OscillatingField::new(A_0, omega, 0.0, 0);
@@ -216,7 +223,7 @@ fn train_and_evaluate(
     let metrics = algo.train(&mut env, TrainingBudget::Epochs(N_EPOCHS), seed, &|m| {
         if m.epoch % 10 == 0 || m.epoch == N_EPOCHS - 1 {
             eprintln!(
-                "  {name} epoch {:3}: mean_reward = {:+.6}",
+                "  {name} epoch {:3}: mean_reward = {:+.6} (per-episode total across n_envs trajectories)",
                 m.epoch, m.mean_reward,
             );
         }

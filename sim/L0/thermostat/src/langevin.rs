@@ -25,33 +25,40 @@
 //!
 //! ## RNG and `cb_passive`
 //!
-//! The struct holds an owned `ChaCha8Rng` behind a `std::sync::Mutex`
-//! because `cb_passive` is `Fn` (not `FnMut`), so the closure can
-//! only call `&self` methods on the components it captures and any
-//! mutable state must use interior mutability. `ChaCha8Rng` is the
-//! chassis-mandated PRNG choice from recon log part 6 (Scheme B):
-//! bit-stable across `rand`/`rand_chacha` versions, no silent
-//! reproducibility hazard.
+//! Under the C-3 chassis refactor (study Ch 15), the thermostat holds
+//! no mutable RNG state. Noise at step `s` for DOF `d` is computed as
 //!
-//! Mutex poisoning is structurally impossible in this codebase
-//! because the only thread that ever holds the lock is the
-//! single-threaded simulation step's `cb_passive` callback, and the
-//! only operation under the lock is `StandardNormal.sample`, which
-//! does not panic on any input. The `unwrap_or_else(PoisonError::into_inner)`
-//! recovery in `apply` is the std idiom for "poison cannot occur, but
-//! if it somehow did, the inner state is still valid — keep going."
+//! ```text
+//! block = chacha8_block(master_key, encode_block_counter(traj_id, s) + group)
+//! z_d   = box_muller_from_block(block)[d - group*8]
+//! ```
+//!
+//! where `master_key` is expanded once at construction from the
+//! user-supplied `master_seed: u64`, `traj_id` is set per env by an
+//! `install_per_env` factory, `s` is the component's own `AtomicU64`
+//! counter (advanced once per `apply` call, gated by
+//! `stochastic_active`), and `group = d / 8` handles DOF counts above
+//! 8.
+//!
+//! Because the PRF is a pure function of integers, the thermostat is
+//! structurally immune to the parallel-vs-sequential reproducibility
+//! defect Ch 10 named: two runs at the same `(master_seed, traj_id)`
+//! at the same step index produce bit-identical noise regardless of
+//! thread scheduling. The `parallel_matches_sequential_with_langevin`
+//! regression test at `sim/L0/tests/integration/batch_sim.rs` asserts
+//! this by construction.
+//!
+//! See [`crate::prf`] for the primitive module and the study's Ch 15
+//! §2 for the argument that Route 2 (the manual `ChaCha8` implementation
+//! used by `prf.rs`) is the right PRF-implementation choice.
 
-use std::sync::Mutex;
-use std::sync::PoisonError;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 use sim_core::{DVector, Data, Model};
 
 use crate::component::{PassiveComponent, Stochastic};
 use crate::diagnose::Diagnose;
+use crate::prf;
 
 /// Explicit Langevin thermostat implementing the
 /// fluctuation–dissipation pair `(−γ·v, σ·z)` via Euler-Maruyama.
@@ -72,8 +79,24 @@ use crate::diagnose::Diagnose;
 pub struct LangevinThermostat {
     gamma: DVector<f64>,
     k_b_t: f64,
-    seed: u64,
-    rng: Mutex<ChaCha8Rng>,
+    /// User-facing seed (D7). Retained alongside `master_key` for
+    /// display in `diagnostic_summary` — the key space is larger than
+    /// the seed space, so reconstructing `u64` from `[u8; 32]` would
+    /// be lossy.
+    master_seed: u64,
+    /// 32-byte `ChaCha8` key, expanded once at construction from
+    /// `master_seed` via [`crate::prf::expand_master_seed`] (D7).
+    master_key: [u8; 32],
+    /// Per-env trajectory identifier (D2). Typically the env index
+    /// under a `PassiveStack::install_per_env` factory; any distinct
+    /// `u64` value produces a disjoint noise stream at the same
+    /// `master_seed`.
+    traj_id: u64,
+    /// Step index, advanced once per `apply` call (gated by
+    /// `stochastic_active`). Atomic so the containing stack's
+    /// `cb_passive` closure can hold `&self` — not for cross-thread
+    /// contention (per-env stacks give each env its own instance).
+    counter: AtomicU64,
     stochastic_active: AtomicBool,
     /// Optional ctrl index for runtime temperature modulation (D2).
     /// When `Some(idx)`, `apply` reads `data.ctrl[idx]` as a multiplier
@@ -83,28 +106,33 @@ pub struct LangevinThermostat {
 
 impl LangevinThermostat {
     /// Construct a thermostat with per-DOF damping coefficients
-    /// `gamma`, bath temperature `k_b_t`, and PRNG `seed`.
+    /// `gamma`, bath temperature `k_b_t`, master seed `master_seed`,
+    /// and trajectory id `traj_id`.
     ///
     /// `gamma.len()` must match the simulation's `model.nv` at
-    /// install time; the apply method indexes `qvel` and the seeded
-    /// PRNG draws by `i in 0..gamma.len()`. Mismatches between
-    /// `gamma.len()` and `model.nv` are not detected at construction
-    /// time (the thermostat doesn't see the model until install), so
-    /// the caller is responsible for matching them. Phase 1's
-    /// integration test fixture (spec §6) verifies this against the
-    /// loaded MJCF.
+    /// install time; the apply method indexes `qvel` and the PRF
+    /// draws by `i in 0..gamma.len()`. Mismatches between `gamma.len()`
+    /// and `model.nv` are not detected at construction time (the
+    /// thermostat doesn't see the model until install), so the caller
+    /// is responsible for matching them.
     ///
-    /// `seed` is retained on the struct for `diagnostic_summary` but
-    /// is otherwise consumed only at construction time — the
-    /// underlying `ChaCha8Rng` advances with each `apply` call and
-    /// the seed value itself is never re-read at apply-time.
+    /// `master_seed` is expanded once at construction into a 32-byte
+    /// `ChaCha8` key via `prf::expand_master_seed` (a private helper
+    /// in this crate's `prf` module); the thermostat's
+    /// noise stream at step `s` for DOF `d` is a pure function of
+    /// `(master_key, traj_id, s, d)`. `traj_id` is typically the env
+    /// index under an `install_per_env` factory, but it can be any
+    /// `u64` — distinct `traj_id` values at the same `master_seed`
+    /// produce disjoint noise streams by the PRF's construction.
     #[must_use]
-    pub fn new(gamma: DVector<f64>, k_b_t: f64, seed: u64) -> Self {
+    pub fn new(gamma: DVector<f64>, k_b_t: f64, master_seed: u64, traj_id: u64) -> Self {
         Self {
             gamma,
             k_b_t,
-            seed,
-            rng: Mutex::new(ChaCha8Rng::seed_from_u64(seed)),
+            master_seed,
+            master_key: prf::expand_master_seed(master_seed),
+            traj_id,
+            counter: AtomicU64::new(0),
             stochastic_active: AtomicBool::new(true),
             k_b_t_ctrl: None,
         }
@@ -131,19 +159,11 @@ impl LangevinThermostat {
 }
 
 impl PassiveComponent for LangevinThermostat {
-    // The MutexGuard is intentionally held for the entire noise loop:
-    // we want exactly one lock acquisition per apply call, not one
-    // per DOF. cb_passive is single-threaded so the lock is always
-    // uncontended, and re-locking per DOF would be slower than the
-    // current pattern. clippy::significant_drop_tightening assumes a
-    // contention regime that does not apply here.
-    #[allow(clippy::significant_drop_tightening)]
     fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
         // Read h fresh per step (recon log part 8): cost is one f64
         // load + one sqrt per DOF, robust to mid-simulation timestep
         // mutation.
         let h = model.timestep;
-        let active = self.stochastic_active.load(Ordering::Relaxed);
         let n_dofs = self.gamma.len();
 
         // Effective temperature: base kT scaled by ctrl multiplier
@@ -164,32 +184,40 @@ impl PassiveComponent for LangevinThermostat {
             qfrc_out[i] += -self.gamma[i] * data.qvel[i];
         }
 
-        if !active {
-            // Stochastic disabled — do not advance the RNG. This is
-            // load-bearing for the Phase 5 finite-difference path:
-            // two FD evaluations under disable_stochastic must
-            // produce identical deterministic forces, which means
-            // the RNG must not advance between them.
+        // Gating early-return BEFORE the counter advance. Load-bearing
+        // for the FD invariant: no counter advance under
+        // disable_stochastic ⇒ post-re-enable PRF coordinate equals
+        // pre-disable PRF coordinate.
+        if !self.stochastic_active.load(Ordering::Relaxed) {
             return;
         }
 
-        // Lock the RNG once for the whole apply call. cb_passive is
-        // single-threaded so contention does not exist; install_per_env
-        // gives each parallel env its own thermostat instance per
-        // chassis Decision 3 so cross-env contention does not exist
-        // either. Mutex poisoning is structurally impossible (see
-        // module-level doc) — unwrap_or_else(PoisonError::into_inner)
-        // is the std idiom for "recover the inner value if poisoned,
-        // proceed anyway."
-        let mut rng = self.rng.lock().unwrap_or_else(PoisonError::into_inner);
+        // Counter advance (one per apply call). Relaxed ordering is
+        // sufficient because per-env stacks give each env its own
+        // instance — cross-thread visibility of this counter is never
+        // observed by another thread within the same env.
+        let step_index = self.counter.fetch_add(1, Ordering::Relaxed);
+        let base_counter = prf::encode_block_counter(self.traj_id, step_index);
 
-        for i in 0..n_dofs {
-            let gamma_i = self.gamma[i];
-            // σ² = 2·γ·k_B·T_eff / h. Uses the effective temperature
-            // (ctrl-modulated when with_ctrl_temperature is active).
-            let sigma = (2.0 * gamma_i * k_b_t / h).sqrt();
-            let z: f64 = StandardNormal.sample(&mut *rng);
-            qfrc_out[i] += sigma * z;
+        // D5 general case: iterate DOFs in groups of 8 (one ChaCha8
+        // block yields 64 bytes = 8 f64 Box-Muller samples). The
+        // common path (n_dofs ≤ 8) does exactly one iteration. The
+        // `wrapping_add` is defensive against `u64::MAX` wraparound
+        // at the extreme high end of the 32/32 layout — not a live
+        // concern for any realistic DOF count.
+        let n_groups = n_dofs.div_ceil(8);
+        for group in 0..n_groups {
+            let block =
+                prf::chacha8_block(&self.master_key, base_counter.wrapping_add(group as u64));
+            let gaussians = prf::box_muller_from_block(&block);
+            let dof_start = group * 8;
+            let dof_end = (dof_start + 8).min(n_dofs);
+            for dof in dof_start..dof_end {
+                let gamma_i = self.gamma[dof];
+                // σ² = 2·γ·k_B·T_eff / h.
+                let sigma = (2.0 * gamma_i * k_b_t / h).sqrt();
+                qfrc_out[dof] += sigma * gaussians[dof - dof_start];
+            }
         }
     }
 
@@ -210,21 +238,27 @@ impl Stochastic for LangevinThermostat {
 
 impl Diagnose for LangevinThermostat {
     fn diagnostic_summary(&self) -> String {
+        // D8: static-only tuple. The runtime `counter` is deliberately
+        // excluded — `diagnostic_summary` reports the configuration
+        // that identifies this thermostat instance, not its running
+        // state.
         self.k_b_t_ctrl.map_or_else(
             || {
                 format!(
-                    "LangevinThermostat(kT={:.6}, n_dofs={}, seed={})",
+                    "LangevinThermostat(kT={:.6}, n_dofs={}, master_seed={}, traj_id={})",
                     self.k_b_t,
                     self.gamma.len(),
-                    self.seed,
+                    self.master_seed,
+                    self.traj_id,
                 )
             },
             |idx| {
                 format!(
-                    "LangevinThermostat(kT={:.6}, n_dofs={}, seed={}, ctrl_temp={})",
+                    "LangevinThermostat(kT={:.6}, n_dofs={}, master_seed={}, traj_id={}, ctrl_temp={})",
                     self.k_b_t,
                     self.gamma.len(),
-                    self.seed,
+                    self.master_seed,
+                    self.traj_id,
                     idx,
                 )
             },
@@ -239,13 +273,13 @@ mod tests {
 
     #[test]
     fn new_initializes_stochastic_active_to_true() {
-        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42);
+        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42, 0);
         assert!(t.is_stochastic_active());
     }
 
     #[test]
     fn set_stochastic_active_roundtrips() {
-        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42);
+        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42, 0);
         t.set_stochastic_active(false);
         assert!(!t.is_stochastic_active());
         t.set_stochastic_active(true);
@@ -254,7 +288,7 @@ mod tests {
 
     #[test]
     fn as_stochastic_returns_some_self() {
-        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42);
+        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42, 0);
         let view = t.as_stochastic();
         assert!(view.is_some());
         // Round-trip the flag through the dyn Stochastic view to
@@ -267,11 +301,12 @@ mod tests {
 
     #[test]
     fn diagnostic_summary_format_matches_spec() {
-        let t = LangevinThermostat::new(DVector::from_element(3, 0.5), 1.25, 0x00C0_FFEE);
-        // Spec §4.3 format: "LangevinThermostat(kT={:.6}, n_dofs={}, seed={})"
+        let t = LangevinThermostat::new(DVector::from_element(3, 0.5), 1.25, 0x00C0_FFEE, 0);
+        // D8: static-only tuple (kT, n_dofs, master_seed, traj_id).
+        // Runtime counter is deliberately excluded.
         assert_eq!(
             t.diagnostic_summary(),
-            "LangevinThermostat(kT=1.250000, n_dofs=3, seed=12648430)",
+            "LangevinThermostat(kT=1.250000, n_dofs=3, master_seed=12648430, traj_id=0)",
         );
     }
 
@@ -293,7 +328,7 @@ mod tests {
         let mut data = model.make_data();
         data.qvel[0] = 1.0;
 
-        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42);
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0);
         t.set_stochastic_active(false);
 
         let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
@@ -330,7 +365,7 @@ mod tests {
         let mut data = model.make_data();
         data.qvel[0] = 0.5;
 
-        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42);
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0);
         t.set_stochastic_active(false);
 
         // Two passes — both should hit the early-return before the
@@ -350,7 +385,7 @@ mod tests {
         let mut q_active: DVector<f64> = DVector::zeros(model.nv);
         t.apply(&model, &data, &mut q_active);
 
-        let t_fresh = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42);
+        let t_fresh = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0);
         let mut q_fresh: DVector<f64> = DVector::zeros(model.nv);
         t_fresh.apply(&model, &data, &mut q_fresh);
 
@@ -383,7 +418,7 @@ mod tests {
         let mut data = model.make_data();
         data.qvel[0] = 1.0;
 
-        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42);
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0);
         t.set_stochastic_active(false);
 
         // Pre-load qfrc_out with a sentinel value.
@@ -402,7 +437,7 @@ mod tests {
 
     #[test]
     fn default_has_no_ctrl_temperature() {
-        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42);
+        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42, 0);
         let s = t.diagnostic_summary();
         assert!(
             !s.contains("ctrl_temp"),
@@ -412,7 +447,7 @@ mod tests {
 
     #[test]
     fn with_ctrl_temperature_shows_in_diagnostic() {
-        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42)
+        let t = LangevinThermostat::new(DVector::from_element(1, 0.1), 1.0, 42, 0)
             .with_ctrl_temperature(0);
         let s = t.diagnostic_summary();
         assert!(
@@ -445,7 +480,7 @@ mod tests {
         data.qvel[0] = 1.0;
         data.ctrl[0] = 5.0; // 5× multiplier
 
-        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
             .with_ctrl_temperature(0);
         t.set_stochastic_active(false);
 
@@ -482,7 +517,7 @@ mod tests {
         let model = sim_mjcf::load_model(xml).unwrap();
 
         // Thermostat A: kT=2.0, no ctrl
-        let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 2.0, 42);
+        let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 2.0, 42, 0);
         let data_a = model.make_data();
         // qvel already 0 from make_data → zero damping
 
@@ -490,7 +525,7 @@ mod tests {
         t_a.apply(&model, &data_a, &mut q_a);
 
         // Thermostat B: kT=1.0, ctrl=2.0 → effective kT=2.0
-        let t_b = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+        let t_b = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
             .with_ctrl_temperature(0);
         let mut data_b = model.make_data();
         data_b.qvel[0] = 0.0;
@@ -527,7 +562,7 @@ mod tests {
         let mut data = model.make_data();
         data.ctrl[0] = -5.0; // negative → clamped to 0
 
-        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
             .with_ctrl_temperature(0);
 
         let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
@@ -561,13 +596,13 @@ mod tests {
         let model = sim_mjcf::load_model(xml).unwrap();
 
         // Thermostat A: kT=10, no ctrl
-        let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 10.0, 42);
+        let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 10.0, 42, 0);
         let data_a = model.make_data();
         let mut q_a: DVector<f64> = DVector::zeros(model.nv);
         t_a.apply(&model, &data_a, &mut q_a);
 
         // Thermostat B: kT=1.0, ctrl=20 → clamped to 10 → effective kT=10
-        let t_b = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+        let t_b = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
             .with_ctrl_temperature(0);
         let mut data_b = model.make_data();
         data_b.ctrl[0] = 20.0;
@@ -603,7 +638,7 @@ mod tests {
         data.qvel[0] = 1.0;
         data.ctrl[0] = 0.0;
 
-        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42)
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
             .with_ctrl_temperature(0);
 
         let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);

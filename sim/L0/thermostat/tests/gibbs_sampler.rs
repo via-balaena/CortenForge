@@ -119,6 +119,7 @@ fn langevin_trajectory_histogram(topology: &Topology, seed: u64) -> [usize; N_CO
         DVector::from_element(N, GAMMA),
         K_B_T,
         seed,
+        0,
     ));
     builder.build().install(&mut model);
 

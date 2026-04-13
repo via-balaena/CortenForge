@@ -110,7 +110,7 @@ pub use autograd_layers::{
 pub use autograd_policy::{AutogradPolicy, AutogradStochasticPolicy};
 pub use autograd_value::{AutogradQ, AutogradValue};
 pub use cem::{Cem, CemHyperparams};
-pub use competition::{Competition, CompetitionResult, RunResult};
+pub use competition::{Competition, CompetitionResult, RunResult, SeedSummary};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
 pub use gae::compute_gae;

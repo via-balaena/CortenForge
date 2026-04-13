@@ -570,7 +570,7 @@ mod tests {
     /// through this so the test path matches production.
     fn build_headless_env() -> VecEnv {
         let task = reaching_6dof();
-        let throwaway = task.build_vec_env(1).expect("throwaway vec_env");
+        let throwaway = task.build_vec_env(1, 0).expect("throwaway vec_env");
         let model = throwaway.model().clone();
         drop(throwaway);
 
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn fk_tip_is_deterministic() {
         let task = reaching_6dof();
-        let vec_env = task.build_vec_env(1).expect("build");
+        let vec_env = task.build_vec_env(1, 0).expect("build");
         let model = vec_env.model();
         let zeros = [0.0f64; 6];
         let a = fk_tip(model, &zeros);
@@ -790,7 +790,7 @@ mod tests {
     #[test]
     fn fk_tip_at_target_within_arm_reach() {
         let task = reaching_6dof();
-        let vec_env = task.build_vec_env(1).expect("build");
+        let vec_env = task.build_vec_env(1, 0).expect("build");
         let model = vec_env.model();
         let tip = fk_tip(model, &TARGET_JOINTS);
         assert!(

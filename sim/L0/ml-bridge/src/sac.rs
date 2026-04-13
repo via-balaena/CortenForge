@@ -537,11 +537,23 @@ impl Algorithm for Sac {
 
             // ── Epoch metrics ────────────────────────────────────────────
 
-            let mean_reward = if epoch_rewards.is_empty() {
-                0.0
-            } else {
-                epoch_rewards.iter().sum::<f64>() / epoch_rewards.len() as f64
-            };
+            // Include any envs that did not complete an episode within the
+            // epoch step budget: their partial accumulated reward counts at
+            // full weight, matching REINFORCE/PPO's treatment of truncated
+            // trajectories (Ch 24 Decision 1). The `debug_assert_eq!` guards
+            // against a future inner-loop edit breaking the one-push-per-env
+            // invariant.
+            for i in 0..n_envs {
+                if !env_complete[i] {
+                    epoch_rewards.push(env_episode_reward[i]);
+                }
+            }
+            debug_assert_eq!(
+                epoch_rewards.len(),
+                n_envs,
+                "epoch_rewards / n_envs invariant violated"
+            );
+            let mean_reward = epoch_rewards.iter().sum::<f64>() / n_envs as f64;
 
             self.best
                 .maybe_update(epoch, mean_reward, self.policy.params());
@@ -671,7 +683,7 @@ mod tests {
     #[test]
     fn sac_smoke_2dof() {
         let (mut algo, task) = make_sac();
-        let mut env = task.build_vec_env(5).unwrap();
+        let mut env = task.build_vec_env(5, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
@@ -687,7 +699,7 @@ mod tests {
     #[test]
     fn sac_alpha_adjusts() {
         let (mut algo, task) = make_sac();
-        let mut env = task.build_vec_env(5).unwrap();
+        let mut env = task.build_vec_env(5, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
@@ -757,7 +769,7 @@ mod tests {
     #[test]
     fn sac_checkpoint_round_trip() {
         let (mut algo, task) = make_sac();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         let cp = algo.checkpoint();
@@ -780,5 +792,61 @@ mod tests {
         assert_eq!(algo2.q1.params(), algo.q1.params());
         assert_eq!(algo2.q2.params(), algo.q2.params());
         assert_eq!(algo2.log_alpha, algo.log_alpha);
+    }
+
+    // ── Ch 24 Decision 1 regression guards ──────────────────────────────
+
+    /// SAC's reported `mean_reward` is in per-episode-total units post
+    /// Decision 1. Same semantics gate as `td3_mean_reward_is_per_episode_total`.
+    #[test]
+    fn sac_mean_reward_is_per_episode_total() {
+        let (mut algo, task) = make_sac();
+        let mut env = task.build_vec_env(5, 0).unwrap();
+
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+        let last = metrics.last().unwrap();
+        assert!(
+            last.mean_reward.abs() > 10.0,
+            "SAC mean_reward should be per-episode-total (|.| > 10 for reaching_2dof), got {}",
+            last.mean_reward
+        );
+    }
+
+    /// Exercises the `debug_assert_eq!(epoch_rewards.len(), n_envs)`
+    /// invariant with a deliberately short per-epoch step budget so envs
+    /// under random-action warmup remain `env_complete = false` at the
+    /// cutoff. Mirror of `td3_epoch_rewards_invariant_holds`.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn sac_epoch_rewards_invariant_holds() {
+        let task = reaching_2dof();
+        let od = task.obs_dim();
+        let ad = task.act_dim();
+        let sc = task.obs_scale();
+
+        let mut algo = Sac::new(
+            Box::new(LinearStochasticPolicy::new(od, ad, sc, -0.5)),
+            Box::new(LinearQ::new(od, ad, sc)),
+            Box::new(LinearQ::new(od, ad, sc)),
+            Box::new(LinearQ::new(od, ad, sc)),
+            Box::new(LinearQ::new(od, ad, sc)),
+            OptimizerConfig::adam(3e-4),
+            SacHyperparams {
+                gamma: 0.99,
+                tau: 0.005,
+                alpha_init: 0.2,
+                auto_alpha: true,
+                target_entropy: -(ad as f64),
+                alpha_lr: 3e-4,
+                batch_size: 32,
+                buffer_capacity: 10_000,
+                warmup_steps: 10_000,
+                max_episode_steps: 20,
+            },
+        );
+        let mut env = task.build_vec_env(5, 0).unwrap();
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(2), 42, &|_| {});
+        assert_eq!(metrics.len(), 2);
+        assert!(metrics.iter().all(|m| m.mean_reward.is_finite()));
     }
 }

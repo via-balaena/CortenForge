@@ -14,6 +14,11 @@ sim-types = { path = "../types" }
 nalgebra = { workspace = true }
 approx = { workspace = true }
 
+[dev-dependencies]
+# PR 1b regression test — parallel_matches_sequential_with_langevin
+# exercises BatchSim::new_per_env with a LangevinThermostat stack.
+sim-thermostat = { path = "../thermostat" }
+
 [[test]]
 name = "mujoco_conformance"
 path = "mujoco_conformance/mod.rs"
@@ -24,3 +29,7 @@ path = "integration/mod.rs"
 
 [features]
 default = []
+# Forwards to sim-core's parallel feature so the PR 1b regression
+# test can exercise both the rayon par_iter_mut step_all path and
+# the sequential fallback from a single test-crate invocation.
+parallel = ["sim-core/parallel"]

@@ -747,7 +747,7 @@ mod tests {
         let mut q2_optimizer = make_optimizer(q2.n_params(), LR_CRITIC);
         let mut log_alpha = INIT_LOG_ALPHA;
 
-        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build");
+        let mut vec_env = task.build_vec_env(NUM_ENVS, 0).expect("build");
         let mut replay_buffer = ReplayBuffer::new(BUFFER_CAPACITY, task.obs_dim(), act_dim);
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let std_normal = Normal::new(0.0, 1.0).unwrap();

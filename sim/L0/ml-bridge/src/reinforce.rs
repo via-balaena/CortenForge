@@ -211,16 +211,6 @@ impl Algorithm for Reinforce {
 
             let n_samples = all_returns.len();
             if n_samples == 0 {
-                let em = EpochMetrics {
-                    epoch,
-                    mean_reward: 0.0,
-                    done_count: 0,
-                    total_steps: 0,
-                    wall_time_ms: t0.elapsed().as_millis() as u64,
-                    extra: BTreeMap::new(),
-                };
-                on_epoch(&em);
-                metrics.push(em);
                 continue;
             }
 
@@ -357,7 +347,7 @@ mod tests {
     #[test]
     fn reinforce_smoke_2dof() {
         let (mut algo, task) = make_reinforce();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(5), 42, &|_| {});
 
@@ -373,7 +363,7 @@ mod tests {
     #[test]
     fn reinforce_reward_improves() {
         let (mut algo, task) = make_reinforce();
-        let mut env = task.build_vec_env(20).unwrap();
+        let mut env = task.build_vec_env(20, 0).unwrap();
 
         let metrics = algo.train(&mut env, TrainingBudget::Epochs(10), 42, &|_| {});
 
@@ -407,7 +397,7 @@ mod tests {
     #[test]
     fn reinforce_checkpoint_round_trip() {
         let (mut algo, task) = make_reinforce();
-        let mut env = task.build_vec_env(10).unwrap();
+        let mut env = task.build_vec_env(10, 0).unwrap();
         algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         let cp = algo.checkpoint();

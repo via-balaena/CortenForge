@@ -56,6 +56,7 @@
 
 use std::sync::Arc;
 
+use sim_core::batch::{EnvBatch, PerEnvStack};
 use sim_core::{DVector, Data, Model};
 
 use crate::component::PassiveComponent;
@@ -135,69 +136,6 @@ impl PassiveStack {
         });
     }
 
-    /// Build N independent `(Model, Arc<PassiveStack>)` pairs by
-    /// invoking `build_one(i)` for each `i in 0..n`, and `install`
-    /// the resulting stack onto each model. Returns an [`EnvBatch`]
-    /// holding the N models and stacks for downstream parallel
-    /// execution.
-    ///
-    /// This is the chassis Decision-3 entry point for `BatchSim`-style
-    /// parallel-env runs: each env gets its own fresh stack with its
-    /// own RNG state, so per-env independence is guaranteed by
-    /// construction (no aliased `Mutex<RNG>` shared across envs).
-    ///
-    /// # N4 defensive clear
-    ///
-    /// `build_one` is expected to return a freshly-constructed `Model`
-    /// with no `cb_passive` already set. If a previous `cb_passive`
-    /// is detected on the returned model:
-    ///
-    /// 1. In debug builds, a `debug_assert!` panics with a diagnostic
-    ///    message — the user is misusing the API and should fix the
-    ///    factory function.
-    /// 2. In release builds (where `debug_assert!` is a no-op), the
-    ///    prior callback is silently `clear_passive_callback`'d before
-    ///    the new stack is installed. This is the "fail loud in dev,
-    ///    behave correctly in release" pattern.
-    ///
-    /// # Receiver shape
-    ///
-    /// `self: &Arc<Self>` is unused inside the function — the
-    /// prototype is the API discovery anchor (so the call reads as
-    /// `prototype.install_per_env(...)` rather than
-    /// `PassiveStack::install_per_env(...)`) and a future-extensibility
-    /// marker for additional `PassiveStack`-level configuration that
-    /// `build_one` could read. Today the prototype carries no such
-    /// state, so `clippy::unused_self` is allowed below.
-    // Prototype carries no per-stack state yet; self is for future extensibility.
-    #[allow(clippy::unused_self)]
-    pub fn install_per_env<F>(self: &Arc<Self>, n: usize, mut build_one: F) -> EnvBatch
-    where
-        F: FnMut(usize) -> (Model, Arc<Self>),
-    {
-        let mut models = Vec::with_capacity(n);
-        let mut stacks = Vec::with_capacity(n);
-        for i in 0..n {
-            let (mut model, stack) = build_one(i);
-            // N4: catch misuse loud in dev, fix correctness in release.
-            // The order matters — assert FIRST (so it can fire), then
-            // defensive clear (so release builds stay correct).
-            debug_assert!(
-                model.cb_passive.is_none(),
-                "install_per_env: build_one returned a Model that already has \
-                 a cb_passive set. install_per_env will overwrite it (silently \
-                 dropping the prior callback's captured state, including any \
-                 Mutex<RNG>). Construct the Model fresh inside build_one and \
-                 let install_per_env be the only callback installer.",
-            );
-            model.clear_passive_callback();
-            stack.install(&mut model);
-            models.push(model);
-            stacks.push(stack);
-        }
-        EnvBatch { models, stacks }
-    }
-
     /// Set every stochastic component's active flag to `active`.
     /// Deterministic components (those that don't override
     /// `as_stochastic`) are left untouched.
@@ -257,17 +195,69 @@ impl PassiveStack {
     }
 }
 
-/// A batch of N independent `(Model, PassiveStack)` pairs produced by
-/// [`PassiveStack::install_per_env`].
+/// `PassiveStack` implements the sim-core chassis entry point for
+/// per-env batch construction.
 ///
-/// Each model has its own `cb_passive` already installed, and the
-/// matching stacks are retained so the caller can later call
-/// `disable_stochastic` per env.
-pub struct EnvBatch {
-    /// One Model per env, with `cb_passive` already installed.
-    pub models: Vec<Model>,
-    /// One `Arc<PassiveStack>` per env, in the same order as `models`.
-    pub stacks: Vec<Arc<PassiveStack>>,
+/// `install_per_env` builds N independent `(Model, Arc<PassiveStack>)`
+/// pairs by invoking `build_one(i)` for each `i in 0..n`, installs the
+/// resulting stack onto each model via [`PassiveStack::install`], and
+/// returns an [`EnvBatch<PassiveStack>`] holding the N installed
+/// models and retained stack handles.
+///
+/// This is the chassis Decision-3 entry point for `BatchSim`-style
+/// parallel-env runs: each env gets its own fresh stack with its own
+/// step counter, so per-env independence is guaranteed by construction
+/// (no aliased mutable state shared across envs; under C-3 the
+/// `LangevinThermostat` counter lives on the per-env thermostat
+/// instance).
+///
+/// # N4 defensive clear
+///
+/// `build_one` is expected to return a freshly-constructed `Model`
+/// with no `cb_passive` already set. If a previous `cb_passive` is
+/// detected on the returned model:
+///
+/// 1. In debug builds, a `debug_assert!` panics with a diagnostic
+///    message — the user is misusing the API and should fix the
+///    factory function.
+/// 2. In release builds (where `debug_assert!` is a no-op), the prior
+///    callback is silently `clear_passive_callback`'d before the new
+///    stack is installed. This is the "fail loud in dev, behave
+///    correctly in release" pattern.
+impl PerEnvStack for PassiveStack {
+    fn install_per_env<F>(self: &Arc<Self>, n: usize, mut build_one: F) -> EnvBatch<Self>
+    where
+        F: FnMut(usize) -> (Model, Arc<Self>),
+    {
+        // The prototype receiver (`&Arc<Self>`) is unused inside the
+        // body: the per-env stacks are built by `build_one`, not by
+        // cloning the prototype. The receiver exists so the call
+        // reads as `prototype.install_per_env(...)` at the call site
+        // and so future per-stack configuration can route through
+        // the prototype without breaking the signature.
+        let _ = self;
+        let mut models = Vec::with_capacity(n);
+        let mut stacks = Vec::with_capacity(n);
+        for i in 0..n {
+            let (mut model, stack) = build_one(i);
+            // N4: catch misuse loud in dev, fix correctness in release.
+            // The order matters — assert FIRST (so it can fire), then
+            // defensive clear (so release builds stay correct).
+            debug_assert!(
+                model.cb_passive.is_none(),
+                "install_per_env: build_one returned a Model that already has \
+                 a cb_passive set. install_per_env will overwrite it (silently \
+                 dropping the prior callback's captured state). Construct the \
+                 Model fresh inside build_one and let install_per_env be the \
+                 only callback installer.",
+            );
+            model.clear_passive_callback();
+            stack.install(&mut model);
+            models.push(model);
+            stacks.push(stack);
+        }
+        EnvBatch { models, stacks }
+    }
 }
 
 /// RAII guard returned by [`PassiveStack::disable_stochastic`].

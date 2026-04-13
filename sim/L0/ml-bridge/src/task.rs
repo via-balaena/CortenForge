@@ -40,7 +40,15 @@ pub struct TaskConfig {
     obs_dim: usize,
     act_dim: usize,
     obs_scale: Vec<f64>,
-    build_fn: Arc<dyn Fn(usize) -> Result<VecEnv, EnvError> + Send + Sync>,
+    // Seeded closure: accepts `(n_envs, seed)`.  Deterministic-physics stock
+    // tasks ignore the seed via `_seed: u64`; stochastic-physics tasks
+    // (e.g. those carrying a `LangevinThermostat`) consume it as their
+    // per-replicate `master_seed` so `Competition::run_replicates` can vary
+    // the physics noise sequence across replicates.  The seed parameter is
+    // non-optional at the signature level so the "every stochastic task gets
+    // a fresh per-replicate seed" invariant is enforced at compile time at
+    // every call site, not by convention — see Ch 42 §2.4.
+    build_fn: Arc<dyn Fn(usize, u64) -> Result<VecEnv, EnvError> + Send + Sync>,
 }
 
 // Manual Debug — build_fn doesn't implement Debug.
@@ -98,15 +106,19 @@ impl TaskConfig {
     /// Construct a fresh [`VecEnv`] with `n_envs` parallel environments.
     ///
     /// Each call returns a new, independently resettable environment batch.
-    /// The [`Competition`](crate::Competition) runner calls this once per
-    /// (task, algorithm) pair.
+    /// [`Competition::run_replicates`](crate::Competition::run_replicates)
+    /// calls this once per `(task, builder, seed)` triple, threading the
+    /// per-replicate seed through so stochastic-physics tasks can vary
+    /// their physics noise sequence across replicates.  Deterministic stock
+    /// tasks ignore the `seed` parameter; pass `0` from deterministic call
+    /// sites that do not carry a replicate seed.
     ///
     /// # Errors
     ///
     /// Returns [`EnvError`] if the internal `VecEnv` builder fails (should not
     /// happen for stock tasks).
-    pub fn build_vec_env(&self, n_envs: usize) -> Result<VecEnv, EnvError> {
-        (self.build_fn)(n_envs)
+    pub fn build_vec_env(&self, n_envs: usize, seed: u64) -> Result<VecEnv, EnvError> {
+        (self.build_fn)(n_envs, seed)
     }
 
     /// Start building a custom [`TaskConfig`] from a pre-parsed model.
@@ -122,6 +134,38 @@ impl TaskConfig {
             done_fn: None,
             truncated_fn: None,
             sub_steps: 1,
+        }
+    }
+
+    /// Construct a [`TaskConfig`] from a custom seeded `build_fn` closure.
+    ///
+    /// Use this when the task carries stochastic physics that must vary
+    /// per replicate — the closure receives the per-replicate seed from
+    /// [`Competition::run_replicates`](crate::Competition::run_replicates)
+    /// and threads it into e.g. a `LangevinThermostat`'s `master_seed`.
+    ///
+    /// Stock deterministic tasks should use [`TaskConfig::builder()`]
+    /// instead; that path synthesizes its own `build_fn` and ignores
+    /// the seed via `_seed: u64`.  This constructor is the
+    /// custom-stochastic-task surface deferred from PR 2a in
+    /// [Ch 42](../../../../docs/studies/ml_chassis_refactor/src/42-pr-3-sim-opt-rematch.md)
+    /// §2 sub-decision (a).
+    pub fn from_build_fn<F>(
+        name: impl Into<String>,
+        obs_dim: usize,
+        act_dim: usize,
+        obs_scale: Vec<f64>,
+        build_fn: F,
+    ) -> Self
+    where
+        F: Fn(usize, u64) -> Result<VecEnv, EnvError> + Send + Sync + 'static,
+    {
+        Self {
+            name: name.into(),
+            obs_dim,
+            act_dim,
+            obs_scale,
+            build_fn: Arc::new(build_fn),
         }
     }
 }
@@ -238,19 +282,25 @@ impl TaskConfigBuilder {
         let model = self.model;
         let sub_steps = self.sub_steps;
 
-        let build_fn = Arc::new(move |n_envs: usize| -> Result<VecEnv, EnvError> {
-            let r = Arc::clone(&reward_fn);
-            let d = Arc::clone(&done_fn);
-            let t = Arc::clone(&truncated_fn);
-            VecEnv::builder(Arc::clone(&model), n_envs)
-                .observation_space(obs_space.clone())
-                .action_space(act_space.clone())
-                .reward(move |m, data| r(m, data))
-                .done(move |m, data| d(m, data))
-                .truncated(move |m, data| t(m, data))
-                .sub_steps(sub_steps)
-                .build()
-        });
+        // Custom tasks built via `TaskConfigBuilder` inherit the seeded-
+        // closure shape.  The `_seed` parameter is accept-and-ignore for
+        // deterministic custom tasks; a future custom-builder API surface
+        // for stochastic tasks would consume the seed here.
+        let build_fn = Arc::new(
+            move |n_envs: usize, _seed: u64| -> Result<VecEnv, EnvError> {
+                let r = Arc::clone(&reward_fn);
+                let d = Arc::clone(&done_fn);
+                let t = Arc::clone(&truncated_fn);
+                VecEnv::builder(Arc::clone(&model), n_envs)
+                    .observation_space(obs_space.clone())
+                    .action_space(act_space.clone())
+                    .reward(move |m, data| r(m, data))
+                    .done(move |m, data| d(m, data))
+                    .truncated(move |m, data| t(m, data))
+                    .sub_steps(sub_steps)
+                    .build()
+            },
+        );
 
         Ok(TaskConfig {
             name: self.name,
@@ -393,27 +443,29 @@ pub fn reaching_2dof() -> TaskConfig {
 
     let sub_steps: usize = 5;
 
-    let build_fn = Arc::new(move |n_envs: usize| -> Result<VecEnv, EnvError> {
-        let tq = target_joints;
-        let gp = target_tip;
-        VecEnv::builder(Arc::clone(&model), n_envs)
-            .observation_space(obs_space.clone())
-            .action_space(act_space.clone())
-            .reward(move |_m, d| {
-                let e0 = d.qpos[0] - tq[0];
-                let e1 = d.qpos[1] - tq[1];
-                -e0.mul_add(e0, e1 * e1)
-            })
-            .done(move |_m, d| {
-                let tip = d.site_xpos[0];
-                let dist = (tip.x - gp[0]).hypot(tip.z - gp[2]);
-                let vel = d.qvel[0].hypot(d.qvel[1]);
-                dist < 0.05 && vel < 0.5
-            })
-            .truncated(|_m, d| d.time > 3.0)
-            .sub_steps(sub_steps)
-            .build()
-    });
+    let build_fn = Arc::new(
+        move |n_envs: usize, _seed: u64| -> Result<VecEnv, EnvError> {
+            let tq = target_joints;
+            let gp = target_tip;
+            VecEnv::builder(Arc::clone(&model), n_envs)
+                .observation_space(obs_space.clone())
+                .action_space(act_space.clone())
+                .reward(move |_m, d| {
+                    let e0 = d.qpos[0] - tq[0];
+                    let e1 = d.qpos[1] - tq[1];
+                    -e0.mul_add(e0, e1 * e1)
+                })
+                .done(move |_m, d| {
+                    let tip = d.site_xpos[0];
+                    let dist = (tip.x - gp[0]).hypot(tip.z - gp[2]);
+                    let vel = d.qvel[0].hypot(d.qvel[1]);
+                    dist < 0.05 && vel < 0.5
+                })
+                .truncated(|_m, d| d.time > 3.0)
+                .sub_steps(sub_steps)
+                .build()
+        },
+    );
 
     TaskConfig {
         name: "reaching-2dof".into(),
@@ -497,36 +549,38 @@ pub fn reaching_6dof() -> TaskConfig {
 
     let sub_steps: usize = 5;
 
-    let build_fn = Arc::new(move |n_envs: usize| -> Result<VecEnv, EnvError> {
-        let tq = target_joints;
-        let gp = target_tip;
-        VecEnv::builder(Arc::clone(&model), n_envs)
-            .observation_space(obs_space.clone())
-            .action_space(act_space.clone())
-            .reward(move |_m, d| {
-                let mut err_sq = 0.0;
-                for (tq_i, &q) in tq.iter().enumerate() {
-                    let e = d.qpos[tq_i] - q;
-                    err_sq = e.mul_add(e, err_sq);
-                }
-                -err_sq
-            })
-            .done(move |_m, d| {
-                let tip = d.site_xpos[0];
-                let dx = tip.x - gp[0];
-                let dy = tip.y - gp[1];
-                let dz = tip.z - gp[2];
-                let dist = dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt();
-                let mut vel_sq = 0.0;
-                for j in 0..6 {
-                    vel_sq = d.qvel[j].mul_add(d.qvel[j], vel_sq);
-                }
-                dist < 0.05 && vel_sq.sqrt() < 1.0
-            })
-            .truncated(|_m, d| d.time > 5.0)
-            .sub_steps(sub_steps)
-            .build()
-    });
+    let build_fn = Arc::new(
+        move |n_envs: usize, _seed: u64| -> Result<VecEnv, EnvError> {
+            let tq = target_joints;
+            let gp = target_tip;
+            VecEnv::builder(Arc::clone(&model), n_envs)
+                .observation_space(obs_space.clone())
+                .action_space(act_space.clone())
+                .reward(move |_m, d| {
+                    let mut err_sq = 0.0;
+                    for (tq_i, &q) in tq.iter().enumerate() {
+                        let e = d.qpos[tq_i] - q;
+                        err_sq = e.mul_add(e, err_sq);
+                    }
+                    -err_sq
+                })
+                .done(move |_m, d| {
+                    let tip = d.site_xpos[0];
+                    let dx = tip.x - gp[0];
+                    let dy = tip.y - gp[1];
+                    let dz = tip.z - gp[2];
+                    let dist = dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt();
+                    let mut vel_sq = 0.0;
+                    for j in 0..6 {
+                        vel_sq = d.qvel[j].mul_add(d.qvel[j], vel_sq);
+                    }
+                    dist < 0.05 && vel_sq.sqrt() < 1.0
+                })
+                .truncated(|_m, d| d.time > 5.0)
+                .sub_steps(sub_steps)
+                .build()
+        },
+    );
 
     TaskConfig {
         name: "reaching-6dof".into(),
@@ -684,34 +738,36 @@ pub fn obstacle_reaching_6dof() -> TaskConfig {
 
     let sub_steps: usize = 5;
 
-    let build_fn = Arc::new(move |n_envs: usize| -> Result<VecEnv, EnvError> {
-        let target = target_tip;
-        let lam = lambda;
-        let rs = r_safe;
-        VecEnv::builder(Arc::clone(&model), n_envs)
-            .observation_space(obs_space.clone())
-            .action_space(act_space.clone())
-            .reward(move |_m, d| {
-                let fingertip = d.site_xpos[1];
-                let obstacle = d.xpos[4];
-                let dist_target = (fingertip - target).norm();
-                let dist_obstacle = (fingertip - obstacle).norm();
-                let penalty = lam * (rs - dist_obstacle).max(0.0);
-                -dist_target - penalty
-            })
-            .done(move |_m, d| {
-                let fingertip = d.site_xpos[1];
-                let dist = (fingertip - target).norm();
-                let mut vel_sq = 0.0;
-                for j in 0..6 {
-                    vel_sq = d.qvel[j].mul_add(d.qvel[j], vel_sq);
-                }
-                dist < 0.05 && vel_sq.sqrt() < 1.0
-            })
-            .truncated(|_m, d| d.time > 5.0)
-            .sub_steps(sub_steps)
-            .build()
-    });
+    let build_fn = Arc::new(
+        move |n_envs: usize, _seed: u64| -> Result<VecEnv, EnvError> {
+            let target = target_tip;
+            let lam = lambda;
+            let rs = r_safe;
+            VecEnv::builder(Arc::clone(&model), n_envs)
+                .observation_space(obs_space.clone())
+                .action_space(act_space.clone())
+                .reward(move |_m, d| {
+                    let fingertip = d.site_xpos[1];
+                    let obstacle = d.xpos[4];
+                    let dist_target = (fingertip - target).norm();
+                    let dist_obstacle = (fingertip - obstacle).norm();
+                    let penalty = lam * (rs - dist_obstacle).max(0.0);
+                    -dist_target - penalty
+                })
+                .done(move |_m, d| {
+                    let fingertip = d.site_xpos[1];
+                    let dist = (fingertip - target).norm();
+                    let mut vel_sq = 0.0;
+                    for j in 0..6 {
+                        vel_sq = d.qvel[j].mul_add(d.qvel[j], vel_sq);
+                    }
+                    dist < 0.05 && vel_sq.sqrt() < 1.0
+                })
+                .truncated(|_m, d| d.time > 5.0)
+                .sub_steps(sub_steps)
+                .build()
+        },
+    );
 
     TaskConfig {
         name: "obstacle-reaching-6dof".into(),
@@ -765,7 +821,7 @@ mod tests {
     #[test]
     fn reaching_2dof_build_and_reset() {
         let task = reaching_2dof();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         let obs = env.reset_all().unwrap();
         assert_eq!(obs.shape(), &[4, 4]);
     }
@@ -773,7 +829,7 @@ mod tests {
     #[test]
     fn reaching_2dof_step() {
         let task = reaching_2dof();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         let _ = env.reset_all().unwrap();
 
         let actions = Tensor::zeros(&[4, 2]);
@@ -788,8 +844,8 @@ mod tests {
     fn reaching_2dof_multiple_builds() {
         let task = reaching_2dof();
         // build_vec_env can be called multiple times (Arc closure).
-        let mut env1 = task.build_vec_env(2).unwrap();
-        let mut env2 = task.build_vec_env(8).unwrap();
+        let mut env1 = task.build_vec_env(2, 0).unwrap();
+        let mut env2 = task.build_vec_env(8, 0).unwrap();
         assert_eq!(env1.reset_all().unwrap().shape(), &[2, 4]);
         assert_eq!(env2.reset_all().unwrap().shape(), &[8, 4]);
     }
@@ -808,7 +864,7 @@ mod tests {
     #[test]
     fn reaching_6dof_build_and_reset() {
         let task = reaching_6dof();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         let obs = env.reset_all().unwrap();
         assert_eq!(obs.shape(), &[4, 12]);
     }
@@ -816,7 +872,7 @@ mod tests {
     #[test]
     fn reaching_6dof_step() {
         let task = reaching_6dof();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         let _ = env.reset_all().unwrap();
 
         let actions = Tensor::zeros(&[4, 6]);
@@ -886,7 +942,7 @@ mod tests {
         assert_eq!(task.obs_dim(), 4);
         assert_eq!(task.act_dim(), 2);
 
-        let mut env = task.build_vec_env(2).unwrap();
+        let mut env = task.build_vec_env(2, 0).unwrap();
         let obs = env.reset_all().unwrap();
         assert_eq!(obs.shape(), &[2, 4]);
     }
@@ -905,7 +961,7 @@ mod tests {
     #[test]
     fn obstacle_reaching_6dof_build_and_reset() {
         let task = obstacle_reaching_6dof();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         let obs = env.reset_all().unwrap();
         assert_eq!(obs.shape(), &[4, 21]);
     }
@@ -913,7 +969,7 @@ mod tests {
     #[test]
     fn obstacle_reaching_6dof_step() {
         let task = obstacle_reaching_6dof();
-        let mut env = task.build_vec_env(4).unwrap();
+        let mut env = task.build_vec_env(4, 0).unwrap();
         let _ = env.reset_all().unwrap();
 
         let actions = Tensor::zeros(&[4, 6]);
@@ -928,7 +984,7 @@ mod tests {
     fn obstacle_reaching_6dof_reward_is_negative() {
         // At rest, fingertip is far from target — reward should be negative.
         let task = obstacle_reaching_6dof();
-        let mut env = task.build_vec_env(1).unwrap();
+        let mut env = task.build_vec_env(1, 0).unwrap();
         let _ = env.reset_all().unwrap();
         let actions = Tensor::zeros(&[1, 6]);
         let result = env.step(&actions).unwrap();
@@ -1018,5 +1074,96 @@ mod tests {
         assert!((fingertip.x - 0.75).abs() < 0.001);
         assert!(fingertip.y.abs() < 0.001);
         assert!(fingertip.z.abs() < 0.001);
+    }
+
+    // ── from_build_fn (custom seeded constructor) ─────────────────────
+
+    /// Helper for `from_build_fn` tests: construct a trivial 2-DOF
+    /// `VecEnv` for the given `n_envs`, ignoring the seed.  The seed
+    /// is recorded into an outer channel by the closure that wraps
+    /// this helper, not by the helper itself.
+    fn build_trivial_2dof_vec_env(n_envs: usize) -> Result<VecEnv, EnvError> {
+        let model = Arc::new(sim_mjcf::load_model(MJCF_2DOF).unwrap());
+        let obs = ObservationSpace::builder()
+            .all_qpos()
+            .all_qvel()
+            .build(&model)
+            .unwrap();
+        let act = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+        VecEnv::builder(model, n_envs)
+            .observation_space(obs)
+            .action_space(act)
+            .reward(|_, _| 0.0)
+            .done(|_, _| false)
+            .truncated(|_m, d| d.time > 1.0)
+            .sub_steps(1)
+            .build()
+    }
+
+    #[test]
+    fn from_build_fn_metadata_roundtrip() {
+        let task = TaskConfig::from_build_fn(
+            "custom-seeded",
+            4,
+            2,
+            vec![0.5, 0.5, 0.1, 0.1],
+            |n_envs, _seed| build_trivial_2dof_vec_env(n_envs),
+        );
+
+        assert_eq!(task.name(), "custom-seeded");
+        assert_eq!(task.obs_dim(), 4);
+        assert_eq!(task.act_dim(), 2);
+        assert_eq!(task.obs_scale(), &[0.5, 0.5, 0.1, 0.1]);
+
+        // The closure builds a real VecEnv that resets cleanly.
+        let mut env = task.build_vec_env(2, 0).unwrap();
+        let obs = env.reset_all().unwrap();
+        assert_eq!(obs.shape(), &[2, 4]);
+    }
+
+    #[test]
+    fn from_build_fn_threads_seed_into_closure() {
+        use std::sync::Mutex;
+
+        // The closure captures an Arc<Mutex<Vec<u64>>> and pushes each
+        // observed seed into it.  The test then checks that the seeds
+        // recorded match the seeds passed to `build_vec_env`, proving
+        // the per-replicate seed actually reaches the closure body —
+        // which is the load-bearing invariant that the synthesized
+        // `TaskConfigBuilder::build()` path violates.
+        let observed_seeds: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_closure = Arc::clone(&observed_seeds);
+
+        let task = TaskConfig::from_build_fn(
+            "seed-recorder",
+            4,
+            2,
+            vec![1.0, 1.0, 1.0, 1.0],
+            move |n_envs, seed| {
+                observed_for_closure.lock().unwrap().push(seed);
+                build_trivial_2dof_vec_env(n_envs)
+            },
+        );
+
+        let _env_a = task.build_vec_env(2, 12_345).unwrap();
+        let _env_b = task.build_vec_env(2, 67_890).unwrap();
+        let _env_c = task.build_vec_env(4, 0).unwrap();
+
+        let recorded: Vec<u64> = observed_seeds.lock().unwrap().clone();
+        assert_eq!(recorded, vec![12_345, 67_890, 0]);
+    }
+
+    #[test]
+    fn from_build_fn_propagates_env_error() {
+        // A closure that always returns an EnvError should surface
+        // that error through `build_vec_env`, matching the
+        // `TaskConfigBuilder::build()` synthesized closure's error
+        // propagation contract.
+        let task = TaskConfig::from_build_fn("always-fails", 1, 1, vec![1.0], |_n_envs, _seed| {
+            Err(EnvError::ZeroSubSteps)
+        });
+
+        let result = task.build_vec_env(2, 0);
+        assert!(matches!(result, Err(EnvError::ZeroSubSteps)));
     }
 }

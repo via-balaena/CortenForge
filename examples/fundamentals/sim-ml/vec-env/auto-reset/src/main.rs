@@ -482,7 +482,7 @@ mod tests {
         let task = reaching_2dof();
         let mut policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
         let n_params = policy.n_params();
-        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build_vec_env");
+        let mut vec_env = task.build_vec_env(NUM_ENVS, 0).expect("build_vec_env");
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
         let mut mu = vec![0.0f64; n_params];
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn site_xpos_populated_after_forward() {
         let task = reaching_2dof();
-        let vec_env = task.build_vec_env(1).expect("build");
+        let vec_env = task.build_vec_env(1, 0).expect("build");
         let model = vec_env.model().clone();
         let mut data = model.make_data();
         data.reset(&model);
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn reset_restores_qpos_to_zero() {
         let task = reaching_2dof();
-        let vec_env = task.build_vec_env(1).expect("build");
+        let vec_env = task.build_vec_env(1, 0).expect("build");
         let model = vec_env.model().clone();
         let mut data = model.make_data();
         data.ctrl[0] = 1.0;
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn gravity_makes_arm_fall() {
         let task = reaching_2dof();
-        let vec_env = task.build_vec_env(1).expect("build");
+        let vec_env = task.build_vec_env(1, 0).expect("build");
         let model = vec_env.model().clone();
         let mut data = model.make_data();
         data.reset(&model);
@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn sub_steps_give_100hz_control() {
         let task = reaching_2dof();
-        let mut vec_env = task.build_vec_env(1).expect("build");
+        let mut vec_env = task.build_vec_env(1, 0).expect("build");
         vec_env.reset_all().expect("reset");
         let actions = Tensor::zeros(&[1, task.act_dim()]);
         vec_env.step(&actions).expect("step");

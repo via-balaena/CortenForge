@@ -303,6 +303,7 @@ members = [
     "sim/L0/gpu",
     "sim/L0/ml-bridge",
     "sim/L0/thermostat",
+    "sim/L0/opt",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -479,6 +480,7 @@ sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
 sim-ml-bridge = { path = "sim/L0/ml-bridge" }
 sim-thermostat = { path = "sim/L0/thermostat" }
+sim-opt = { path = "sim/L0/opt" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 

@@ -19,7 +19,8 @@
 //!    accumulator. Mutable access to `Data` is **uncompilable**, not just
 //!    discouraged.
 //! 2. **Composition** ([`PassiveStack`], [`PassiveStackBuilder`],
-//!    [`StochasticGuard`], [`EnvBatch`]) — a builder-style stack that
+//!    [`StochasticGuard`], plus `sim_core::batch::EnvBatch`) — a
+//!    builder-style stack that
 //!    `install`s as a single `cb_passive` callback. The stack drives the
 //!    split-borrow dance between `Fn(&Model, &mut Data)` (the real
 //!    `cb_passive` shape) and the trait's `&Data + &mut DVector<f64>` shape,
@@ -46,6 +47,7 @@
 //!         DVector::from_element(model.nv, 0.1),
 //!         1.0,
 //!         42,
+//!         0,
 //!     ))
 //!     .build()
 //!     .install(&mut model);
@@ -73,6 +75,7 @@ mod ising_learner;
 mod langevin;
 mod oscillating_field;
 mod pairwise_coupling;
+pub mod prf;
 mod ratchet;
 mod stack;
 
@@ -88,4 +91,4 @@ pub use langevin::LangevinThermostat;
 pub use oscillating_field::OscillatingField;
 pub use pairwise_coupling::PairwiseCoupling;
 pub use ratchet::RatchetPotential;
-pub use stack::{EnvBatch, PassiveStack, PassiveStackBuilder, StochasticGuard};
+pub use stack::{PassiveStack, PassiveStackBuilder, StochasticGuard};

@@ -1,0 +1,24 @@
+[package]
+name = "sim-opt"
+description = "Gradient-free optimization algorithms and rematch analysis machinery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rand = { workspace = true }
+serde = { workspace = true }
+sim-ml-bridge = { workspace = true }
+sim-thermostat = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
+
+[lints]
+workspace = true

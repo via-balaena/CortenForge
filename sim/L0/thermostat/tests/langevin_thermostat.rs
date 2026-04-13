@@ -135,7 +135,8 @@ fn test_equipartition_central_parameter_set() {
             .with(LangevinThermostat::new(
                 DVector::from_element(model.nv, gamma_value),
                 k_b_t,
-                seed_base + i as u64,
+                seed_base,
+                i as u64,
             ))
             .build();
         stack.install(&mut model);
@@ -221,7 +222,8 @@ fn test_equipartition_sweep_gamma_t() {
                     .with(LangevinThermostat::new(
                         DVector::from_element(model.nv, gamma_value),
                         k_b_t,
-                        seed_base + i as u64,
+                        seed_base,
+                        i as u64,
                     ))
                     .build();
                 stack.install(&mut model);
@@ -283,6 +285,7 @@ fn test_callback_firing_count() {
                 DVector::from_element(model.nv, 0.1),
                 1.0,
                 0x00C0_FFEE_u64,
+                0,
             ),
         })
         .build();
@@ -320,10 +323,13 @@ fn test_reproducibility_from_seed() {
     let mut model1 = sim_mjcf::load_model(SHO_1D_XML).expect("load 1");
     let mut data1 = model1.make_data();
     let stack1 = PassiveStack::builder()
+        // Reproducibility pair: both thermostats use identical
+        // (master_seed, traj_id) — Ch 40 §3.4 (b).
         .with(LangevinThermostat::new(
             DVector::from_element(model1.nv, 0.1),
             1.0,
             seed,
+            0,
         ))
         .build();
     stack1.install(&mut model1);
@@ -335,6 +341,7 @@ fn test_reproducibility_from_seed() {
             DVector::from_element(model2.nv, 0.1),
             1.0,
             seed,
+            0,
         ))
         .build();
     stack2.install(&mut model2);
@@ -378,6 +385,7 @@ fn test_stochastic_gating_sanity() {
             DVector::from_element(model.nv, 0.1),
             1.0,
             0x00C0_FFEE_u64,
+            0,
         ))
         .build();
     stack.install(&mut model);

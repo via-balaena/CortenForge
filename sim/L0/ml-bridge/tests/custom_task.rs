@@ -93,7 +93,7 @@ fn custom_task_cem_trains() {
         },
     );
 
-    let mut env = task.build_vec_env(4).expect("vec env");
+    let mut env = task.build_vec_env(4, 0).expect("vec env");
     let metrics = cem.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
     assert_eq!(metrics.len(), 3, "expected 3 epochs");

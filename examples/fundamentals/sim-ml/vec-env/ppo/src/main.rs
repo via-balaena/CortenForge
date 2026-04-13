@@ -697,7 +697,7 @@ mod tests {
         let mut policy_optimizer = make_optimizer(policy.n_params(), lr_actor);
         let mut value_optimizer = make_optimizer(value_fn.n_params(), LR_CRITIC);
 
-        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build_vec_env");
+        let mut vec_env = task.build_vec_env(NUM_ENVS, 0).expect("build_vec_env");
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut sigma = SIGMA_INIT;
 

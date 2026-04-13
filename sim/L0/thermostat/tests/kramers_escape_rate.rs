@@ -85,6 +85,7 @@ fn run_trajectory(k_b_t: f64, seed: u64) -> (usize, WelfordOnline) {
             DVector::from_element(model.nv, GAMMA),
             k_b_t,
             seed,
+            0,
         ))
         .build()
         .install(&mut model);
@@ -294,6 +295,7 @@ fn supporting_boltzmann_distribution() {
             DVector::from_element(model.nv, GAMMA),
             K_B_T,
             SEED_BASE + 9999,
+            0,
         ))
         .build()
         .install(&mut model);
@@ -437,6 +439,7 @@ fn supporting_reproducibility() {
                 DVector::from_element(model.nv, GAMMA),
                 K_B_T,
                 s,
+                0,
             ))
             .build()
             .install(&mut model);

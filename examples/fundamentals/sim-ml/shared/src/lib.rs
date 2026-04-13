@@ -50,7 +50,7 @@ pub fn setup_reaching_arms(
 ) -> (VecEnv, PhysicsScenes) {
     // 1. Build VecEnv from task config
     let vec_env = task
-        .build_vec_env(n_envs)
+        .build_vec_env(n_envs, 0)
         .expect("build_vec_env from TaskConfig");
 
     // 2. Create PhysicsScenes
@@ -142,7 +142,7 @@ pub fn setup_reaching_6dof_arms(
     materials: &mut ResMut<Assets<StandardMaterial>>,
 ) -> (VecEnv, PhysicsScenes) {
     let vec_env = task
-        .build_vec_env(n_envs)
+        .build_vec_env(n_envs, 0)
         .expect("build_vec_env from TaskConfig");
 
     let mut scenes = PhysicsScenes::default();

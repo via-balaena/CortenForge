@@ -95,7 +95,7 @@ fn make_sr_env(seed: u64) -> SimEnv {
     let omega = signal_omega();
 
     let thermostat =
-        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed)
+        LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed, 0)
             .with_ctrl_temperature(0);
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
     let signal = OscillatingField::new(A_0, omega, 0.0, 0);
@@ -182,6 +182,7 @@ fn vecenv_construction() {
         DVector::from_element(model.nv, GAMMA),
         K_B_T_BASE,
         SEED_BASE,
+        0,
     )
     .with_ctrl_temperature(0);
     let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
@@ -406,7 +407,7 @@ fn control_no_signal_zero_synchrony() {
         let mut model = sim_mjcf::load_model(SR_XML).unwrap();
 
         let thermostat =
-            LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed)
+            LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed, 0)
                 .with_ctrl_temperature(0);
         let double_well = DoubleWellPotential::new(DELTA_V, X_0, 0);
         // Zero-amplitude signal — the OscillatingField still runs (ω > 0)

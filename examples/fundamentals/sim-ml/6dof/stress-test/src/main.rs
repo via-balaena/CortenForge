@@ -33,7 +33,7 @@ fn check_vec_env_parity() -> Check {
     let task = reaching_6dof();
     let n = 50;
 
-    let mut vec_env = task.build_vec_env(n).expect("build vec_env");
+    let mut vec_env = task.build_vec_env(n, 0).expect("build vec_env");
     vec_env.reset_all().expect("reset vec_env");
 
     // Build N sequential SimEnvs with identical config.
@@ -116,7 +116,7 @@ fn check_vec_env_parity() -> Check {
 
 fn check_obs_scaling() -> Check {
     let task = reaching_6dof();
-    let mut env = task.build_vec_env(4).expect("build");
+    let mut env = task.build_vec_env(4, 0).expect("build");
     env.reset_all().expect("reset");
 
     // Step 100 times with random actions
@@ -163,7 +163,7 @@ fn check_obs_scaling() -> Check {
 
 fn check_done_reachable() -> Check {
     let task = reaching_6dof();
-    let mut env = task.build_vec_env(1).expect("build");
+    let mut env = task.build_vec_env(1, 0).expect("build");
 
     // Set qpos to target_joints via data_mut on the batch
     let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
@@ -194,7 +194,7 @@ fn check_done_reachable() -> Check {
 
 fn check_truncated_timing() -> Check {
     let task = reaching_6dof();
-    let mut env = task.build_vec_env(1).expect("build");
+    let mut env = task.build_vec_env(1, 0).expect("build");
     env.reset_all().expect("reset");
 
     // Step until truncated fires. dt=0.002, sub_steps=5, so 0.01s/step.
@@ -226,13 +226,13 @@ fn check_reward_gradient() -> Check {
     let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
 
     // Reward at qpos=0 (far from target)
-    let mut env_far = task.build_vec_env(1).expect("build");
+    let mut env_far = task.build_vec_env(1, 0).expect("build");
     env_reset_with_qpos(&mut env_far, &[0.0; 6]);
     let actions = Tensor::zeros(&[1, 6]);
     let r_far = env_far.step(&actions).expect("step").rewards[0];
 
     // Reward at qpos=target (at target)
-    let mut env_near = task.build_vec_env(1).expect("build");
+    let mut env_near = task.build_vec_env(1, 0).expect("build");
     env_reset_with_qpos(&mut env_near, &target_joints);
     let r_near = env_near.step(&actions).expect("step").rewards[0];
 
@@ -262,7 +262,7 @@ fn env_reset_with_qpos(env: &mut VecEnv, qpos: &[f64; 6]) {
 
 fn check_terminal_obs() -> Check {
     let task = reaching_6dof();
-    let mut env = task.build_vec_env(1).expect("build");
+    let mut env = task.build_vec_env(1, 0).expect("build");
     env.reset_all().expect("reset");
 
     // Step until truncated at step 500
@@ -372,7 +372,7 @@ fn check_autograd_policy() -> Check {
 
 fn check_endurance() -> Check {
     let task = reaching_6dof();
-    let mut env = task.build_vec_env(4).expect("build");
+    let mut env = task.build_vec_env(4, 0).expect("build");
     env.reset_all().expect("reset");
 
     let mut rng = StdRng::seed_from_u64(42);
