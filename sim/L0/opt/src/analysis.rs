@@ -286,7 +286,15 @@ pub fn bimodality_coefficient(values: &[f64]) -> f64 {
 ///
 /// The returned outcome is in **SA-vs-CEM orientation**:
 /// positive means SA's statistic exceeds CEM's statistic.
-fn test_and_classify(r_cem: &[f64], r_sa: &[f64], rng: &mut impl Rng) -> RematchOutcome {
+///
+/// Returns both the [`BootstrapCi`] and the classified
+/// [`RematchOutcome`] so the driver can emit the CI alongside the
+/// verdict in the run-end summary without recomputing the bootstrap.
+fn test_and_classify(
+    r_cem: &[f64],
+    r_sa: &[f64],
+    rng: &mut impl Rng,
+) -> (BootstrapCi, RematchOutcome) {
     let bc_cem = bimodality_coefficient(r_cem);
     let bc_sa = bimodality_coefficient(r_sa);
     let ci = if bc_cem > 5.0 / 9.0 || bc_sa > 5.0 / 9.0 {
@@ -294,7 +302,45 @@ fn test_and_classify(r_cem: &[f64], r_sa: &[f64], rng: &mut impl Rng) -> Rematch
     } else {
         bootstrap_diff_means(r_sa, r_cem, rng)
     };
-    ci.classify()
+    let outcome = ci.classify();
+    (ci, outcome)
+}
+
+/// Emit the rematch's per-replicate summary to stderr.
+///
+/// Printed once at the end of [`run_rematch_with_runner`], after the
+/// folded-pilot path has settled on its final `r_cem` / `r_sa` vectors.
+/// Gives a reader skimming the end of the log the exact data the
+/// bootstrap saw (max-across-epochs per replicate, per algorithm)
+/// alongside the classification CI, so the verdict is interpretable
+/// without re-parsing the 2,000+ per-epoch heartbeat lines above.
+///
+/// The note in the header names the peak-vs-final distinction
+/// explicitly to catch readers who might otherwise conflate these
+/// values with the `final=` field from the per-training `[ALG] done`
+/// lines. See Ch 50 for the case study.
+fn emit_rematch_summary(r_cem: &[f64], r_sa: &[f64], ci: &BootstrapCi) {
+    eprintln!("\n--- Rematch summary: per-replicate best_reward values the bootstrap saw ---");
+    eprintln!("Note: values below are max-across-epochs (RunResult::best_reward()), which is what");
+    eprintln!("the bootstrap consumes. They match the `best=` values from the [ALG] done lines");
+    eprintln!("above, NOT the `final=` values. See Ch 50 for why this distinction matters.");
+    eprintln!();
+    eprintln!(
+        "{:>3}  {:>12}  {:>12}  {:>14}",
+        "rep", "CEM best", "SA best", "SA-CEM diff"
+    );
+    for (i, (c, s)) in r_cem.iter().zip(r_sa.iter()).enumerate() {
+        eprintln!("{:>3}  {:>12.2}  {:>12.2}  {:>+14.2}", i, c, s, s - c);
+    }
+    let cem_mean = mean(r_cem);
+    let sa_mean = mean(r_sa);
+    eprintln!();
+    eprintln!("mean(CEM) = {cem_mean:.4}");
+    eprintln!("mean(SA)  = {sa_mean:.4}");
+    eprintln!(
+        "bootstrap CI on mean(SA) - mean(CEM): point={:+.4}, [{:+.4}, {:+.4}], B={}",
+        ci.point_estimate, ci.lower, ci.upper, ci.n_resamples
+    );
 }
 
 // ── run_rematch: the folded-pilot driver ─────────────────────────────────
@@ -368,20 +414,23 @@ where
     let mut r_cem = initial_result.replicate_best_rewards(REMATCH_TASK_NAME, "CEM");
     let mut r_sa = initial_result.replicate_best_rewards(REMATCH_TASK_NAME, "SA");
 
-    let initial_outcome = test_and_classify(&r_cem, &r_sa, bootstrap_rng);
-    if initial_outcome != RematchOutcome::Ambiguous {
-        return Ok(initial_outcome);
-    }
+    let (initial_ci, initial_outcome) = test_and_classify(&r_cem, &r_sa, bootstrap_rng);
+    let (final_ci, final_outcome) = if initial_outcome == RematchOutcome::Ambiguous {
+        let expansion_seeds: Vec<u64> = (N_INITIAL..N_EXPANDED)
+            .map(|i| splitmix64(REMATCH_MASTER_SEED.wrapping_add(i as u64)))
+            .collect();
+        let expansion_result = run_replicates_fn(&expansion_seeds)?;
 
-    let expansion_seeds: Vec<u64> = (N_INITIAL..N_EXPANDED)
-        .map(|i| splitmix64(REMATCH_MASTER_SEED.wrapping_add(i as u64)))
-        .collect();
-    let expansion_result = run_replicates_fn(&expansion_seeds)?;
+        r_cem.extend_from_slice(&expansion_result.replicate_best_rewards(REMATCH_TASK_NAME, "CEM"));
+        r_sa.extend_from_slice(&expansion_result.replicate_best_rewards(REMATCH_TASK_NAME, "SA"));
 
-    r_cem.extend_from_slice(&expansion_result.replicate_best_rewards(REMATCH_TASK_NAME, "CEM"));
-    r_sa.extend_from_slice(&expansion_result.replicate_best_rewards(REMATCH_TASK_NAME, "SA"));
+        test_and_classify(&r_cem, &r_sa, bootstrap_rng)
+    } else {
+        (initial_ci, initial_outcome)
+    };
 
-    Ok(test_and_classify(&r_cem, &r_sa, bootstrap_rng))
+    emit_rematch_summary(&r_cem, &r_sa, &final_ci);
+    Ok(final_outcome)
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────

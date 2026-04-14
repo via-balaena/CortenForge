@@ -506,10 +506,20 @@ impl Competition {
                     });
 
                     if self.verbose {
+                        // Print `best` (max mean_reward across epochs) alongside `final`
+                        // (last epoch's mean_reward). The rematch's statistical pipeline
+                        // consumes `best_reward()`, not the final, so a reader watching
+                        // the live log must see both to interpret the run correctly.
+                        // See `docs/studies/ml_chassis_refactor/src/50-d2c-sr-rematch-writeup.md`
+                        // for the case study where reading only `final` misled the author.
                         let final_reward = metrics.last().map_or(f64::NAN, |m| m.mean_reward);
+                        let best_reward = metrics
+                            .iter()
+                            .map(|m| m.mean_reward)
+                            .fold(f64::NEG_INFINITY, f64::max);
                         let total_dones: usize = metrics.iter().map(|m| m.done_count).sum();
                         eprintln!(
-                            "[{name}] done — reward={final_reward:.2}, {total_dones} dones, {:.1}s",
+                            "[{name}] done — best={best_reward:.2}, final={final_reward:.2}, {total_dones} dones, {:.1}s",
                             t0.elapsed().as_secs_f64()
                         );
                     }
