@@ -244,7 +244,8 @@ fn d2c_sr_rematch() {
     // `sim_opt::analysis::run_rematch_with_runner`).  The stored
     // seed only matters for `Competition::run()`, which the rematch
     // does not call.
-    let competition = Competition::new(N_ENVS, TrainingBudget::Steps(REMATCH_BUDGET_STEPS), 0);
+    let competition =
+        Competition::new_verbose(N_ENVS, TrainingBudget::Steps(REMATCH_BUDGET_STEPS), 0);
 
     // ── CEM builder ──
     //
