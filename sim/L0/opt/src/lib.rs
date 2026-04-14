@@ -42,6 +42,6 @@ pub mod analysis;
 pub use algorithm::{Sa, SaHyperparams};
 pub use analysis::{
     BootstrapCi, N_EXPANDED, N_INITIAL, REMATCH_MASTER_SEED, REMATCH_TASK_NAME, RematchOutcome,
-    bimodality_coefficient, bootstrap_diff_means, bootstrap_diff_medians, classify_outcome,
-    run_rematch,
+    TwoMetricOutcome, bimodality_coefficient, bootstrap_diff_means, bootstrap_diff_medians,
+    classify_outcome, run_rematch,
 };
