@@ -337,6 +337,27 @@ impl Algorithm for RicherSa {
             //    of whether the Metropolis RNG ended up accepting
             //    a downhill proposal.  The 1/5 rule adapts on
             //    *finding improvements*, not on raw accept rate.
+            //
+            //    `was_finite` gates the uphill counter past epoch
+            //    0's forced-accept baseline: at epoch 0,
+            //    `current_fitness` is still `NEG_INFINITY` from
+            //    construction, so `delta = finite - NEG_INF = +INF`
+            //    and `is_uphill` is trivially true.  Without the
+            //    gate, the first adaptation window would count
+            //    that non-sample as a real uphill move, inflating
+            //    the rate by one unit and making the first
+            //    adaptation decision unable to *shrink*
+            //    `proposal_std` regardless of landscape.  Gating
+            //    keeps the Metropolis accept branch unchanged (so
+            //    epoch 0's forced-accept shape is preserved, same
+            //    as basic SA) while excluding the non-sample from
+            //    the Rechenberg rate numerator.  The denominator
+            //    stays at `adaptation_window`, so the first window
+            //    has at most `window - 1` countable samples — a
+            //    small bias toward shrink in the first update,
+            //    which is the safer failure mode if the initial
+            //    proposal_std was badly sized.
+            let was_finite = self.current_fitness.is_finite();
             let delta = proposed_fitness - self.current_fitness;
             let is_uphill = delta > 0.0;
             let accept = if is_uphill {
@@ -348,7 +369,7 @@ impl Algorithm for RicherSa {
                 false
             };
 
-            if is_uphill {
+            if was_finite && is_uphill {
                 self.uphill_count_in_window += 1;
             }
 
@@ -399,7 +420,16 @@ impl Algorithm for RicherSa {
             extra.insert("accepted".into(), accepted_count as f64);
             extra.insert("proposed_fitness".into(), proposed_fitness);
             extra.insert("proposal_std".into(), self.current_proposal_std);
-            extra.insert("uphill".into(), f64::from(u8::from(is_uphill)));
+            // `uphill` reports the *counted* Rechenberg sample —
+            // the same boolean the 1/5 rule aggregates — so
+            // post-hoc diagnostics sum this column to reconstruct
+            // the counter.  Epoch 0's forced-accept baseline
+            // reports 0 under this convention; see the was_finite
+            // gate in step 3.
+            extra.insert(
+                "uphill".into(),
+                f64::from(u8::from(was_finite && is_uphill)),
+            );
 
             let em = EpochMetrics {
                 epoch,
@@ -567,6 +597,35 @@ mod tests {
             assert!(s >= hp.proposal_std_min - 1e-12);
             assert!(s <= hp.proposal_std_max + 1e-12);
         }
+    }
+
+    #[test]
+    fn richer_sa_epoch_0_not_counted_as_uphill() {
+        // Regression gate for the was_finite gate on the
+        // Rechenberg uphill counter: epoch 0's forced-accept
+        // baseline must NOT be counted as a real uphill sample,
+        // even though its delta is `+INF` against the
+        // `NEG_INFINITY` starting fitness.  Without the gate, the
+        // first adaptation window would see uphill_count >= 1
+        // trivially, and the first update could never shrink
+        // proposal_std regardless of landscape.
+        let (mut rsa, task) = make_richer_sa();
+        let mut env = task.build_vec_env(TEST_N_ENVS, 0).unwrap();
+        let metrics = rsa.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+
+        // Epoch 0's `uphill` extra reports the *counted* flag
+        // (post-gate), so it must be 0.0 under the fix.
+        assert_eq!(
+            metrics[0].extra["uphill"], 0.0,
+            "epoch 0 must not count as a Rechenberg uphill sample"
+        );
+        // Sanity: the Metropolis `accepted` flag at epoch 0 is
+        // still 1 (force-accept preserved), confirming the fix
+        // only gates the counter, not the accept branch.
+        assert_eq!(
+            metrics[0].extra["accepted"], 1.0,
+            "epoch 0 must still be force-accepted"
+        );
     }
 
     #[test]
