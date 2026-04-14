@@ -37,6 +37,7 @@
 # Part 5 — Execution Results
 
 - [The D2c SR rematch: results](50-d2c-sr-rematch-writeup.md)
+- [Metric-sensitivity amendment](51-metric-sensitivity-amendment.md)
 
 # Appendices
 
