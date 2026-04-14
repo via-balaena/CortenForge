@@ -38,6 +38,7 @@
 
 - [The D2c SR rematch: results](50-d2c-sr-rematch-writeup.md)
 - [Metric-sensitivity amendment](51-metric-sensitivity-amendment.md)
+- [Amended re-run digest](52-amended-rerun-digest.md)
 
 # Appendices
 
