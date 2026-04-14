@@ -38,6 +38,7 @@
 
 pub mod algorithm;
 pub mod analysis;
+pub mod parallel_tempering;
 pub mod richer_sa;
 
 pub use algorithm::{Sa, SaHyperparams};
@@ -46,4 +47,5 @@ pub use analysis::{
     TwoMetricOutcome, bimodality_coefficient, bootstrap_diff_means, bootstrap_diff_medians,
     classify_outcome, run_rematch,
 };
+pub use parallel_tempering::{Pt, PtHyperparams};
 pub use richer_sa::{RicherSa, RicherSaHyperparams};
