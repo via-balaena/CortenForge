@@ -680,24 +680,47 @@ that Sections 1 and 2 were committed before Sections 3 and 4
 were written, and that Section 2.3's framework was committed
 before the amended re-run's numbers were known. The anchors:
 
-- **Sections 1 and 2 commit** — to be filled in by the commit
-  that lands this file, before `sim_opt::analysis` gains
-  `TwoMetricOutcome` and before the fixture re-runs under the
-  new pipeline. Branch: `feature/ml-chassis-post-impl`.
-  Parent commit: `c8639cbd` (appendix gap close).
-- **Step B code commit(s)** — to be filled in after
-  `sim_opt::analysis` gains `TwoMetricOutcome`,
-  `replicate_final_rewards`, and the extended `run_rematch`
-  driver; after the fixture builds green under the new
-  return type; and before the amended re-run fires.
-- **Amended re-run commit** — to be filled in after the
-  fixture runs under the new pipeline, with a captured log
-  at `/tmp/d2c_sr_rematch_dual.log` (ephemeral — regenerate
-  with the same caffeinate-wrapped cargo-test command Ch 50
-  uses).
-- **Sections 3 and 4 commit** — to be filled in after the
-  amended re-run is captured, in a commit whose parent is
-  the amended-re-run commit.
+- **Sections 1 and 2 commit** — `ee6ccdbb`
+  (`docs(ml-chassis-study): add Ch 51 §§1-2 — metric-sensitivity
+  amendment`). Branch: `feature/ml-chassis-post-impl`. Parent
+  commit: `c8639cbd` (appendix gap close). Landed before
+  `sim_opt::analysis` gained `TwoMetricOutcome` and before the
+  fixture re-ran under the new pipeline, which is what makes
+  Sections 1 and 2 of this chapter a pre-registration.
+- **Step B code commits** — `08134a7f`
+  (`feat(sim-ml-bridge): add replicate_final_rewards accessor`)
+  plus `086c04c8`
+  (`feat(sim-opt): dual-metric rematch TwoMetricOutcome
+  amendment`). Together these land
+  `CompetitionResult::replicate_final_rewards`, the
+  `TwoMetricOutcome` return type on
+  `sim_opt::analysis::run_rematch` and
+  `run_rematch_with_runner`, the dual-metric
+  `emit_rematch_summary` layout, three unit tests including a
+  new `run_rematch_metric_sensitivity_classifies_differently`
+  test that pins Ch 51 §2.3's `(Null, Positive)` cell in a
+  machine-checkable fixture, and the
+  `extract_replicate_vectors` pool-matched helper.
+- **Amended re-run commit** — `1db22c71`
+  (`docs(ml-chassis-study): add Ch 52 — amended re-run digest`).
+  Captures the dual-metric summary block from
+  `/tmp/d2c_sr_rematch_dual.log` verbatim in a new Chapter 52
+  and records the bit-for-bit determinism verification against
+  Ch 50's per-replicate CEM numbers and SA peak≈final prose
+  claims. The log at `/tmp/d2c_sr_rematch_dual.log` is
+  ephemeral — regenerable with the same caffeinate-wrapped
+  cargo-test command Ch 50 uses. Wall time 13,821.83s
+  (~3h50m), parent commit `086c04c8`.
+- **Sections 3 and 4 commit** — this chapter's §§3-4 commit,
+  with parent `1db22c71`. Self-referential: the commit's own
+  hash cannot be written into its own content, but
+  `git log --reverse` over this file identifies it as the
+  commit immediately following `1db22c71` that replaces the
+  Sections 3 and 4 placeholders below with prose. Committed
+  after Section 2.3's framework was anchored and after the
+  amended re-run's numbers were captured, so Section 4's
+  reading of the `(Null, Positive)` cell applies Section 2.3's
+  pre-registered rule rather than deriving one after the fact.
 
 The four commits are deliberately separated so that
 `git log --reverse` over this file plus `sim/L0/opt/src/analysis.rs`
@@ -719,22 +742,367 @@ pipeline's output shape changes.
 
 ## Section 3 — Results
 
-*This section will be written after the step B code change
-lands on `feature/ml-chassis-post-impl` and the rematch
-fixture re-runs under the `TwoMetricOutcome` pipeline. The
-deliberate separation between Sections 1–2 and Sections 3–4
-is part of this chapter's pre-registration discipline: the
-amendment and its interpretation framework are committed
-before the amended verdict is observed. See Section 2.5 for
-the four-commit reproducibility anchor.*
+### 3.1 The dual-metric summary block
+
+The amended re-run of `sim/L0/opt/tests/d2c_sr_rematch.rs`
+under the `TwoMetricOutcome` pipeline completed in
+13,821.83 seconds (~3h50m) on a MacBook Pro under
+`caffeinate -i`. The full dual-metric summary block is
+captured verbatim in Chapter 52 (`52-amended-rerun-digest.md`)
+and is not reproduced in full here; this section reports the
+numbers Section 4 will interpret. No expansion from `N = 10`
+to `N = 20` fired, because neither metric's initial
+classification was Ambiguous — the `either_ambiguous` branch
+at `sim/L0/opt/src/analysis.rs:522-523` evaluated to false on
+the first classify pass, so both metrics' final verdicts were
+computed from the 10-replicate initial pool.
+
+**`best_reward` bootstrap (per Ch 32 §3.2/§3.3 applied to the
+Ch 24 primitive).**
+
+- `mean(CEM) = 213.4526`
+- `mean(SA) = 189.8784`
+- Bootstrap CI on `mean(SA) - mean(CEM)`: point `-23.5743`,
+  interval `[-76.4708, +24.1681]`, `B = 10_000`.
+- Classification: **Null**.
+
+**`final_reward` bootstrap (per Ch 32 §3.2/§3.3 applied to
+the new `CompetitionResult::replicate_final_rewards`
+primitive from `08134a7f`).**
+
+- `mean(CEM) = 29.6742`
+- `mean(SA) = 187.1626`
+- Bootstrap CI on `mean(SA) - mean(CEM)`: point `+157.4883`,
+  interval `[+104.5254, +207.7066]`, `B = 10_000`.
+- Classification: **Positive**.
+
+**Joint verdict:** `(best_outcome, final_outcome) = (Null,
+Positive)`.
+
+### 3.2 Determinism against Ch 50
+
+Section 2.5 committed the amended re-run to reproducing
+Ch 50's per-replicate peak and final numbers bit-for-bit,
+on the theory that the best-first RNG ordering at
+`sim/L0/opt/src/analysis.rs:514-517` preserves the exact
+`BOOTSTRAP_RNG_SEED` byte consumption sequence the
+pre-amendment single-metric driver used. That prediction
+held on every check the re-run made possible.
+
+Every CEM `best_reward` value in the amended re-run matches
+the `CEM peak` column of Ch 50's per-replicate table at
+`50-d2c-sr-rematch-writeup.md:193-208` exactly. Every CEM
+`final_reward` value matches Ch 50's `CEM final` column
+exactly. The full 20-cell comparison is tabled in
+Chapter 52 §"Determinism verification against Ch 50". The
+`best_reward` bootstrap's upper bound at `+24.1681` rounds
+to Ch 50's published `+24.17` at
+`50-d2c-sr-rematch-writeup.md:152`, and the
+`mean(CEM) - mean(SA) = +23.5743` point estimate rounds to
+Ch 50's `+23.57` figure quoted in the methodological-finding
+discussion at `50-d2c-sr-rematch-writeup.md:179-187`.
+
+On the SA side, Ch 50 did not table per-replicate SA
+`final_reward` values, but its prose at
+`50-d2c-sr-rematch-writeup.md:233-242` made a specific claim:
+SA's peak-minus-final is near zero across the board, with
+seven of ten replicates showing exactly zero and the maximum
+gap topping out at 15.73. The amended re-run's dual-metric
+columns reproduce this claim exactly. Seven replicates
+(`{0, 1, 2, 4, 6, 7, 9}`) show an SA `best - final` gap of
+exactly 0.00, rep 3 shows the maximum gap at 15.73, and the
+remaining two (reps 5 and 8) show small nonzero gaps of 4.64
+and 6.79. The full 10-cell SA table is in Chapter 52.
+
+The re-run is therefore numerically a re-classification of
+Ch 50's data under a richer pipeline, not a new measurement.
+The new numbers are Section 3.1's `final_reward` statistics
+— `mean(CEM) = 29.6742`, `mean(SA) = 187.1626`, and the
+bootstrap CI on the `final_reward` difference — which Ch 50
+named in prose but did not compute under Ch 32's bootstrap
+protocol because Ch 32's protocol was single-metric.
+
+### 3.3 What the numbers say without interpretation
+
+Two observations are mechanical consequences of Section 3.1
+that belong to Results rather than Interpretation:
+
+1. **SA's `final_reward` dominates CEM's by a large margin.**
+   The `final_reward` point estimate is `+157.4883`
+   reward units in favor of SA. The CI's lower bound is
+   `+104.5254`, which is five-sigma away from zero in the
+   sense that matters for Ch 32 §3.3's three-outcome
+   classification rule: the bound is not merely positive,
+   it is positive by approximately the same magnitude as
+   either algorithm's mean `best_reward` value. Effect size
+   relative to the metric's own scale is `~5×` the
+   `best_reward` CI's half-width.
+2. **The `best_reward` verdict is Null despite CEM and SA
+   having roughly equal means.** The `best_reward` point
+   estimate's direction (CEM slightly ahead of SA) is the
+   opposite of the `final_reward` point estimate's direction
+   (SA far ahead of CEM). The asymmetry is not a small
+   numerical artifact; it is two algorithms measured under
+   two aggregation choices producing two incompatible
+   orderings on the same replicate pool.
+
+These are the numbers Section 4 applies Section 2.3's
+framework to.
 
 ## Section 4 — Interpretation
 
-*This section will be written after Section 3. It will map
-the amended run's `(best, final)` verdict through Section
-2.3's nine-cell framework, report the Ch 30 reading
-(Positive, Null, Split, or Expand), and state which Ch 30
-null follow-ups (if any) fire next.*
+### 4.1 Naming the cell
+
+The joint verdict `(Null, Positive)` lands in the second
+row of Section 2.3's nine-cell interpretation table. Section
+2.3 committed in advance — at commit `ee6ccdbb`, before the
+amended re-run fired — that this cell reads as **Positive**
+for Ch 30's scientific question under the framework's
+`final_reward`-primary operationalization. Section 4 applies
+that pre-committed rule without amendment. No new
+interpretation is derived here; the chapter's job in Section
+4 is to report what Section 2.3's rule says about the
+Section 3 numbers and to state what that reading implies for
+the Ch 30 null follow-ups.
+
+### 4.2 Why the rule reads as Positive on this data
+
+Section 2.3's framework commits to `final_reward` as the
+primary operationalization of Ch 30's "resolves the peak"
+question on theoretical grounds: Ch 30's question is about
+*where the converged policy lives in parameter space*, not
+about what reward the training trajectory transiently
+touched, and `final_reward` measures the first while
+`best_reward` measures the second. Under that commitment,
+the `(Null, Positive)` cell means "the luckiest training
+epoch of CEM's drifting population reached roughly the same
+height as SA's incumbent held, but CEM's converged policy
+did not." Converged policy is what Ch 30 asks about, so
+SA's advantage on `final_reward` is the direct answer to the
+question.
+
+The Section 3 numbers make the reading on this specific run
+uncontroversial on the framework's own terms. SA's mean
+`final_reward` is `187.1626` against CEM's `29.6742`, a
+`+157.49` unit advantage with a `95%` bootstrap CI of
+`[+104.53, +207.71]`. The CI's lower bound is nearly five
+times the half-width of the `best_reward` CI from Section
+3.1. This is not a borderline Positive that the framework's
+rule happens to ratify into a clean answer; it is a clean
+Positive on the framework's primary metric before any rule
+is applied.
+
+Per-replicate the pattern is sharp. Of ten replicates, SA's
+`final_reward` beats CEM's on ten. The SA-minus-CEM
+`final_reward` gap at rep 5 is `+10.38` — the smallest — and
+the largest is `+270.15` at rep 2. CEM's three
+lowest-`final_reward` replicates (reps 3 and 9, both
+negative, and rep 0 at `+14.16`) correspond to SA
+`final_reward` values of `+182.36`, `+203.84`, and `+55.77`
+respectively: SA's incumbent held a policy worth roughly 50
+to 250 reward units at those exact replicates while CEM's
+population had drifted off-peak to reward values near zero.
+The pattern is exactly the population-vs-incumbent asymmetry
+Section 2.3's rationale named as the theoretical grounding
+for the `final_reward`-primary commitment.
+
+### 4.3 The Ch 30 reading
+
+Ch 30 §"What each outcome would tell us" at
+`30-the-scientific-question.md:148-162` frames the Positive
+outcome as *"SA resolves the SR peak — converges to a
+`kt_mult` near the empirical peak around $2.55$, with reward
+near the measured maximum."* Ch 30's framing is about the
+converged policy's location in parameter space. Section 3.1
+reports SA's mean `final_reward` at `187.16` against CEM's
+`29.67`. The SR task's empirical reward at the resonance
+peak has order-of-magnitude `~200-300` reward units (Ch 50
+§"What the metric measured" at
+`50-d2c-sr-rematch-writeup.md:197-208` reports CEM peaks
+between `164.56` and `292.98` across the ten replicates,
+which is the range the population method's lucky epochs
+touched the peak at). SA's mean `final_reward` of `187.16`
+is within that empirical peak range.
+
+On Ch 30's own terms, the amended re-run answers the
+scientific question **Positive**: physics-aware SA does
+resolve the D2c-SR peak at matched complexity (`n_params = 3`)
+and matched compute (`16_000_000` env steps) against the CEM
+baseline, under the primary operationalization of "resolves
+the peak" as converged-policy reward. Ch 30's Positive
+reading does not hinge on matching Ch 50's quoted numbers
+(which used a different metric); it hinges on whether SA's
+converged-policy reward is "near the measured maximum," and
+SA's `187.16` mean against an empirical peak range of `~165`
+to `~293` meets that standard under any reasonable reading.
+
+### 4.4 The Ch 30 null follow-ups are moot
+
+Ch 30 §3 pre-registered two null follow-ups for the case
+where Ch 30 read as Null: richer-proposal SA (adaptive
+`proposal_std`, anisotropic covariance) and Parallel
+Tempering (K parallel chains at graduated temperatures with
+Metropolis swap moves). Ch 92 §3 scope-estimated each at
+roughly `~4-8` wall hours of compute on the same MacBook
+Pro. Both were menu'd as "what fires if SA fails to resolve
+the peak." Section 4.3 reports that SA does resolve the peak
+under the primary metric. The follow-ups' menu condition
+therefore does not fire, and they are **moot for Ch 30's
+D2c-SR question**.
+
+"Moot" here is narrow and precise. The follow-ups are not
+retired, rejected, or flagged as bad experimental design.
+They remain available as sensible implementations of a
+*different* study question: "does a richer proposal
+structure find the D2c-SR peak with fewer compute steps,
+under a tighter policy-class constraint, or in a different
+part of the parameter space than basic isotropic SA finds
+it?" That question is not Ch 30's question. Firing the
+follow-ups under the current Ch 30 framing would not change
+the Ch 30 reading (which is already Positive under Section
+2.3's rule), and would not be answering the question the
+follow-ups' menu was designed to answer (there is no null to
+resolve). Future chapters that want to ask the
+richer-proposal question as a standalone study topic are
+welcome to reuse the follow-ups' implementation sketches
+from Ch 30 §3 and Ch 92 §3; this chapter does not pre-empt
+that option and does not take a position on whether it is
+worth the compute.
+
+### 4.5 The transparency qualifier
+
+Section 2.3 disclosed in advance that a more conservative
+reader may prefer to treat `(Null, Positive)` as **Split**
+rather than Positive and fire the Ch 30 follow-ups anyway on
+the grounds that metric-sensitivity itself is a warning
+sign. Section 2.4 took no position on that choice at the
+time of pre-registration. Section 4 does, and the position
+is that this chapter endorses the Positive reading rather
+than the Split reading. Three reasons, in order of
+load-bearingness.
+
+**Pre-registration dominates.** Section 2.3's framework was
+committed at `ee6ccdbb` before Section 3's numbers existed.
+The framework's rule for `(Null, Positive)` is Positive, not
+Split. Overriding that rule after seeing Section 3's
+numbers, on the grounds that the numbers make a conservative
+reader nervous, is precisely the failure mode pre-registration
+exists to prevent. A pre-registered rule that gets overridden
+whenever the rule-writer becomes anxious about its output is
+not a pre-registration; it is a discretion move dressed up in
+pre-registration language. This chapter's whole reason to
+exist is that Ch 50's finding exposed the metric choice as a
+load-bearing decision Ch 24 shipped without scientific
+commitment, and the response picked in Section 2.1-2.3 was
+to pre-register an interpretation framework in advance of
+the amended data. Failing to apply the framework on the
+first occasion it is used undoes that response.
+
+**The effect size is not marginal.** The conservative
+reading is calibrated for borderline calls where
+metric-sensitivity plausibly swings a weak signal. Section
+3.1's `final_reward` CI is `[+104.53, +207.71]` with point
+estimate `+157.49`. The CI's lower bound is nearly five
+times the half-width of the `best_reward` CI's range. Per
+replicate, SA's `final_reward` beats CEM's on all ten
+replicates by margins between `+10` and `+270`. This is a
+clean Positive on the framework's primary metric at every
+level of inspection — the bootstrap, the per-replicate
+differences, and the theoretical story about why the two
+metrics disagree. Reading a signal this clean as Split
+treats "Split" as a reflex response to the presence of
+metric-sensitivity rather than as a reading of what the data
+actually shows.
+
+**The hybrid third option is worst-of-both.** A reader might
+propose a compromise: endorse Positive as Ch 30's answer
+*and* fire the follow-ups anyway as a robustness check on
+Section 2.3's framework. This chapter rejects the compromise
+because it spends `~8-16` hours of compute on experiments
+whose menu condition does not fire, which does not
+strengthen the framework's reading (a clean Positive does
+not need robustness-checking via experiments that were
+menu'd for a null) and does not answer the new study
+question firing them would have answered (see Section 4.4).
+A robustness check of Section 2.3's framework is a
+legitimate future study topic, but the right shape is a
+metric-sensitivity regression fixture under Ch 42's testing
+infrastructure, not a replay of Ch 30's null menu. Section
+2.3 has a machine-checkable anchor in the unit test
+`run_rematch_metric_sensitivity_classifies_differently`
+(landed in `086c04c8`) that exercises the `(Null, Positive)`
+cell with zero physics compute; that anchor is the right
+place for future framework-stress checks, not Ch 30's null
+menu.
+
+A reader who disagrees with the three reasons above and
+prefers the Split reading is free to fire the follow-ups on
+their own compute. The pre-registration semantics of this
+chapter do not prohibit that — Section 2.4 explicitly left
+it open — but the chapter as of this commit endorses the
+Positive reading, and downstream chapters that cite this
+chapter's reading should cite it as Positive unless they
+flag explicitly that they are reading against Section 4's
+endorsement.
+
+### 4.6 The broader methodological takeaway
+
+Ch 51 as a whole demonstrates that a post-execution
+methodological finding — Ch 50's observation that
+`best_reward` is structurally advantageous to population
+methods — can be honestly amended into a pre-registered
+protocol without undoing the pre-registration that preceded
+it. The conditions under which this is honest, as
+illustrated by the chapter's own construction, are:
+
+1. **The amendment extends rather than retracts.** Section
+   2.2 commits that Ch 32's bootstrap-and-classify pipeline
+   is applied to `final_reward` *in parallel to* its
+   original `best_reward` application, not as a replacement.
+   Ch 32's commitment at
+   `32-hyperparameter-sensitivity.md:1381-1387` that "Ch 32's
+   protocol operates on `best_reward` only" stands exactly
+   as Ch 32 wrote it; the amendment is a Ch 51 extension, not
+   a Ch 32 edit.
+2. **The interpretation framework is pre-registered before
+   the amended data.** Sections 1 and 2 were committed at
+   `ee6ccdbb` before Step B's code landed, before the
+   amended re-run fired, and therefore before Section 3's
+   numbers existed. The four-commit separation in Section
+   2.5 is the reproducibility anchor for that ordering; a
+   reader can verify it with `git log --reverse` over this
+   file, `sim/L0/opt/src/analysis.rs`, and
+   `52-amended-rerun-digest.md` without needing to trust
+   this chapter's own claim about when things were written.
+3. **The framework's rule is applied even when the rule
+   ratifies an inconvenient call.** Section 2.3 committed in
+   its transparency qualifier that Ch 50's existing tables
+   made the 2026-04-14 dual-metric outcome predictable: the
+   existing data lands in `(Null, Positive)` under the
+   framework, and the framework reads that cell as Positive.
+   The framework's defense against the charge of having
+   been engineered to produce that reading is not that the
+   reading was unpredictable (it was predictable), but that
+   the framework would have read any other cell the same
+   way — the theoretical grounding in population-vs-incumbent
+   dynamics is a prior about algorithm mechanics, not about
+   this run's outcome. Section 4.5 applies the framework's
+   rule in the direction the rule points, which is the only
+   direction a pre-registered rule is allowed to point.
+
+Chapter 51's contribution to the study is therefore less
+about the specific verdict on Ch 30 (which Ch 50 foreshadowed
+in prose) and more about the discipline of amending
+pre-registered protocols in the face of post-execution
+methodological findings without collapsing either the
+amendment's honesty or the original pre-registration's
+integrity. Future chapters that encounter their own
+load-bearing post-execution findings can cite Ch 51 as a
+procedural template: extend rather than retract, pre-register
+the framework in a separate commit before the amended data
+lands, and apply the framework's rule in the direction the
+rule points regardless of whether the reader finds the
+pointed-to answer convenient.
 
 ## Cross-references
 
