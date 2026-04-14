@@ -38,6 +38,7 @@
 
 pub mod algorithm;
 pub mod analysis;
+pub mod richer_sa;
 
 pub use algorithm::{Sa, SaHyperparams};
 pub use analysis::{
@@ -45,3 +46,4 @@ pub use analysis::{
     TwoMetricOutcome, bimodality_coefficient, bootstrap_diff_means, bootstrap_diff_medians,
     classify_outcome, run_rematch,
 };
+pub use richer_sa::{RicherSa, RicherSaHyperparams};
