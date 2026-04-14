@@ -42,17 +42,25 @@ body.
 - **PR 3a:** 4 new SA tests in `sim-opt/src/algorithm.rs` +
   10 new analysis tests in `sim-opt/src/analysis.rs` = 14
   new unit tests.
-- **PR 3b:** 1 new `#[test] #[ignore]` integration test at
-  `sim-opt/tests/d2c_sr_rematch.rs`.
+- **PR 3b commit 1:** 3 new inline `#[test]` functions in
+  `sim-ml-bridge/src/task.rs` for the `TaskConfig::from_build_fn`
+  constructor (the custom-stochastic-task path deferred from
+  PR 2a, closed in commit `2adaa372`).
+- **PR 3b commit 2:** 1 new `#[test] #[ignore]` integration
+  test at `sim-opt/tests/d2c_sr_rematch.rs`.
 
-**Total: ≈46 new runtime tests** (36 concretely named + ~10
+**Total: ≈48 new runtime tests** (38 concretely named + ~10
 inline prf tests whose names are not chapter-locked), **1
 in-place rename, 5 existing-test updates**, plus two tests
 the plans **explicitly dropped** (see the closing "Tests the
 plans dropped" subsection).
 
-Concretely named breakdown: 2 (PR 1b) + 13 (PR 2a) + 6 (PR 2b)
-+ 14 (PR 3a) + 1 (PR 3b) = 36.
+Concretely named breakdown: 1 (PR 1b) + 13 (PR 2a) + 6 (PR 2b)
++ 14 (PR 3a) + 3 (PR 3b commit 1) + 1 (PR 3b commit 2) = 38.
+(The stale `2 (PR 1b)` in earlier drafts of this appendix was
+a session-13 drift: the initial two-function disk-trace test
+design was replaced with a single-function in-process
+determinism check — see [Ch 40 §3.4 (a)](40-pr-1-chassis-reproducibility.md).)
 
 ## PR 1a — `prf.rs` inline unit tests
 
@@ -384,20 +392,70 @@ hyperparameter defaults.
     `run_rematch` does **not** run the expansion phase.
     ~40 lines.
 
-## PR 3b — Rematch integration test fixture
+## PR 3b commit 1 — `TaskConfig::from_build_fn` unit tests
+
+**Location:** three new `#[test]` functions in
+`sim/L0/ml-bridge/src/task.rs`'s existing `#[cfg(test)] mod
+tests` block, appended after the stock-task metadata tests
+at a `// ── from_build_fn (custom seeded constructor) ──`
+section divider. Chapter source: [Ch 42 §2 sub-decision
+(a)](42-pr-3-sim-opt-rematch.md) named the custom-builder
+surface as the deferred post-PR-2a follow-up; the tests were
+added alongside the constructor in commit `2adaa372`.
+
+The three tests share a private `build_trivial_2dof_vec_env`
+helper at `task.rs:1085` that constructs a minimal 2-DOF
+`VecEnv` with a zero reward function, `always-false` done
+predicate, and a `time > 1.0` truncation gate. The helper is
+test-local and is not itself `#[test]`-annotated.
+
+35. **`from_build_fn_metadata_roundtrip`** — calls
+    `TaskConfig::from_build_fn("custom-seeded", 4, 2,
+    vec![0.5, 0.5, 0.1, 0.1], |n_envs, _seed|
+    build_trivial_2dof_vec_env(n_envs))` and asserts the
+    four metadata accessors (`name`, `obs_dim`, `act_dim`,
+    `obs_scale`) round-trip the constructor arguments
+    verbatim. Then calls `build_vec_env(2, 0)` and
+    `reset_all()` and asserts the observation tensor has
+    shape `[2, 4]`. Covers the constructor's happy path.
+    ~25 lines.
+36. **`from_build_fn_threads_seed_into_closure`** — the
+    load-bearing test for the entire from_build_fn surface.
+    Constructs an `Arc<Mutex<Vec<u64>>>` that the closure
+    pushes each observed seed into, then calls
+    `build_vec_env` three times with distinct seeds
+    (`12_345`, `67_890`, `0`) and asserts the recorded
+    sequence matches. Proves that the per-replicate seed
+    actually reaches the closure body — the invariant the
+    synthesized `TaskConfigBuilder::build()` path
+    deliberately does not satisfy. A refactor that silently
+    dropped the seed parameter on the custom-builder path
+    would fail this test. ~30 lines.
+37. **`from_build_fn_propagates_env_error`** — constructs a
+    task whose closure always returns
+    `Err(EnvError::ZeroSubSteps)`; calls `build_vec_env(2, 0)`
+    and asserts the error surfaces as `Err(ZeroSubSteps)`.
+    Matches the error-propagation contract of the
+    synthesized `TaskConfigBuilder::build()` closure. ~10
+    lines.
+
+## PR 3b commit 2 — Rematch integration test fixture
 
 **Location:** one new integration test file at
 `sim/L0/opt/tests/d2c_sr_rematch.rs`. Single `#[test]`
 function. Chapter source: [Ch 42 §6.6](42-pr-3-sim-opt-rematch.md).
 
-35. **`d2c_sr_rematch`** — single `#[test]` annotated with
+38. **`d2c_sr_rematch`** — single `#[test]` annotated with
     `#[ignore = "requires --release (~30-60 min)"]` per
     the `d2c_cem_training.rs` precedent. The function is
     ~90 lines: (1) matched-complexity gate assertion
     (`assert_eq!(cem_policy.n_params(), sa_policy.n_params())`
-    plus both equal 3), (2) `Competition::new` with
+    plus both equal 3), (2) `Competition::new_verbose` with
     `TrainingBudget::Steps(REMATCH_BUDGET_STEPS)` and
-    `N_ENVS = 32`, (3) CEM and SA algorithm builders with
+    `N_ENVS = 32` (the `_verbose` constructor is a post-merge
+    change at commit `a28dca05`, documented in Ch 50; the
+    original draft used `Competition::new` and produced a
+    silent run), (3) CEM and SA algorithm builders with
     hyperparameters inherited from `d2c_cem_training.rs:283`
     (CEM: `elite_fraction = 0.2`, `noise_std = 2.5`,
     `noise_decay = 0.98`, `noise_min = 0.1`) and [Ch 42
@@ -474,6 +532,17 @@ not that PR, and Ch 41 names the deferral explicitly.
   `BrownianThermostat`, `IsingLearner`, `Ratchet`,
   `DoubleWell`, and others. None of them are listed here
   unless the plans explicitly modify them.
+- **`sim/L0/thermostat/tests/d2c_cem_training.rs`**
+  specifically — the pre-existing D2c CEM training fixture
+  that the study references throughout Part 3 and Part 4 as
+  the scientific precedent for the rematch. It is the
+  structural pattern the new `d2c_sr_rematch.rs` fixture was
+  modeled on (same task name, same `SEED_BASE`, same
+  matched-complexity anchor, same `eprintln!`-verdict-block
+  gate shape). References live at Ch 32 §3.4, Ch 42 §4.5,
+  Ch 42 §6.6, and test entry 38's hyperparameter citations.
+  The test itself predates the study and is out of scope for
+  this inventory, which covers only plans-added tests.
 - **Test fixtures and helpers.** The `MockAlgorithm`
   variants used by PR 2a and PR 3a's analysis tests, the
   `rematch_task()` helper function at PR 3b's fixture,
