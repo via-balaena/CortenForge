@@ -74,6 +74,8 @@ impl ModelBuilder {
 
         self.geom_condim
             .push(validate_condim(geom.condim, geom.name.as_ref()));
+        // `contype`/`conaffinity` are MuJoCo bitmask attributes accepted as
+        // i32 from XML but always non-negative by spec.
         #[allow(clippy::cast_sign_loss)]
         {
             self.geom_contype.push(geom.contype.unwrap_or(1) as u32);
@@ -765,6 +767,7 @@ fn gauss_legendre_mapped(n: usize, lo: f64, hi: f64) -> (Vec<f64>, Vec<f64>) {
 }
 
 /// Compute Gauss-Legendre nodes and weights on [-1, 1] via Newton iteration.
+// `n` is the quadrature order (typically <= 64); `as f64` is exact below 2^52.
 #[allow(clippy::cast_precision_loss)]
 fn gauss_legendre_standard(n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut nodes = vec![0.0; n];
@@ -794,6 +797,7 @@ fn gauss_legendre_standard(n: usize) -> (Vec<f64>, Vec<f64>) {
 }
 
 /// Evaluate Legendre polynomial P_n(x) and its derivative P'_n(x).
+// Recurrence index `k` is the quadrature order, well below 2^52.
 #[allow(clippy::cast_precision_loss)]
 fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
     let mut p0 = 1.0;

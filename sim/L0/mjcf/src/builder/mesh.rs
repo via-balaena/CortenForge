@@ -178,10 +178,13 @@ pub fn load_mesh_file(
 /// MuJoCo elevation formula: `vertex_z = elevation[i] × size[2]`.
 /// MuJoCo vertex positions: centered at origin, x ∈ `[−size[0], +size[0]]`, y ∈ `[−size[1], +size[1]]`.
 /// `HeightFieldData` uses corner-origin `(0,0)` with uniform `cell_size`.
+// nrow/ncol are small grid extents (well within f64 mantissa); f64→usize
+// truncations sit behind explicit bounds checks; sign-loss casts apply to
+// values already proven non-negative upstream.
 #[allow(
-    clippy::cast_precision_loss,   // nrow/ncol are small ints, well within f64 mantissa
-    clippy::cast_possible_truncation, // f64→usize for grid indices after bounds checks
-    clippy::cast_sign_loss,        // values are guaranteed non-negative in this context
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
 )]
 pub fn convert_mjcf_hfield(
     hfield: &MjcfHfield,
@@ -277,6 +280,7 @@ pub fn convert_mjcf_hfield(
 /// - `nrow` = image height, `ncol` = image width
 ///
 /// Returns `(ncol, nrow, elevation)`.
+// 8-bit/16-bit pixel intensities and grid dimensions are far below 2^52.
 #[allow(clippy::cast_precision_loss)]
 fn load_hfield_png(
     file_path: &str,
@@ -559,6 +563,9 @@ pub fn compute_mesh_inertia(mesh: &TriangleMeshData) -> (f64, Vector3<f64>, Matr
 /// - `inertia_at_com` is the inertia tensor about COM at unit surface density
 ///
 /// MuJoCo ref: `ComputeInertia()` in `user_mesh.cc`, shell path.
+// Inertia-tensor cross-product expansions intentionally mix axes within
+// each accumulator (xx/yy/zz/xy/xz/yz) — this matches the published
+// formula and any reordering would introduce bugs.
 #[allow(clippy::suspicious_operation_groupings)]
 pub fn compute_mesh_inertia_shell(mesh: &TriangleMeshData) -> MeshProps {
     let vertices = mesh.vertices();
@@ -659,6 +666,8 @@ pub fn compute_mesh_inertia_shell(mesh: &TriangleMeshData) -> MeshProps {
 /// non-convex regions where tetrahedra have negative signed volume.
 ///
 /// MuJoCo ref: `ComputeInertia()` legacy path in `user_mesh.cc`.
+// Inertia-tensor expansions mix axes intentionally — see
+// `compute_mesh_inertia_shell` above for the same reasoning.
 #[allow(clippy::suspicious_operation_groupings)]
 pub fn compute_mesh_inertia_legacy(mesh: &TriangleMeshData) -> MeshProps {
     let vertices = mesh.vertices();
@@ -765,6 +774,8 @@ pub fn compute_mesh_inertia_on_hull(mesh: &TriangleMeshData) -> MeshProps {
 ///
 /// Same signed-tetrahedron algorithm as `compute_mesh_inertia()` but
 /// operates on raw arrays instead of `TriangleMeshData`.
+// Inertia-tensor expansions mix axes intentionally — see
+// `compute_mesh_inertia_shell` above for the same reasoning.
 #[allow(clippy::suspicious_operation_groupings)]
 fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[u32; 3]]) -> MeshProps {
     let mut total_volume = 0.0;

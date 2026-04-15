@@ -12,6 +12,8 @@ use crate::types::FluidShape;
 
 /// 15-point Gauss-Kronrod integration constants from MuJoCo `user_objects.cc`.
 /// Pre-transformed integration nodes: l_i = x_i³ / (1 - x_i)²
+// Verbatim from MuJoCo's reference table; underscores would diverge from the
+// upstream source and obscure cross-checking against `user_objects.cc`.
 #[allow(clippy::unreadable_literal)]
 const KRONROD_L: [f64; 15] = [
     7.865151709349917e-08,
@@ -32,6 +34,7 @@ const KRONROD_L: [f64; 15] = [
 ];
 
 /// Gauss-Kronrod integration weights.
+// Verbatim from MuJoCo's reference table — see `KRONROD_L` above.
 #[allow(clippy::unreadable_literal)]
 const KRONROD_W: [f64; 15] = [
     0.01146766, 0.03154605, 0.05239501, 0.07032663, 0.08450236, 0.09517529, 0.10221647, 0.10474107,
@@ -39,6 +42,7 @@ const KRONROD_W: [f64; 15] = [
 ];
 
 /// Jacobian dl/dx evaluated at each node: x²(3-x)/(1-x)³
+// Verbatim from MuJoCo's reference table — see `KRONROD_L` above.
 #[allow(clippy::unreadable_literal)]
 const KRONROD_D: [f64; 15] = [
     5.538677720489877e-05,

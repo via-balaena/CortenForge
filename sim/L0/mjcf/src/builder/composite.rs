@@ -181,6 +181,8 @@ fn generate_vertices(composite: &MjcfComposite) -> Vec<[f64; 3]> {
             .collect();
     }
 
+    // `composite.count[0]` is a small non-negative element count from the
+    // parsed `<composite count="...">` attribute (validated >= 0 upstream).
     #[allow(clippy::cast_possible_wrap)]
     let n = composite.count[0] as usize;
     let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(

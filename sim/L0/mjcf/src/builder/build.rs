@@ -59,6 +59,9 @@ impl ModelBuilder {
     /// Moves all accumulated builder data into a fresh `Model`, performing only
     /// the minimal pre-computations needed before the struct literal (nuser
     /// resolution, flex address/count tables, element adjacency).
+    // The `len() as i32` casts on nuser_* fields are bounded by user-data
+    // sizes (< 100 in practice, MuJoCo-spec capped well below i32::MAX).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn assemble_model(self) -> Model {
         let njnt = self.jnt_type.len();
         let nbody = self.body_parent.len();
@@ -70,20 +73,12 @@ impl ModelBuilder {
 
         // Compute resolved nuser_* values before moving raw arrays.
         // After finalize_user_data, all inner vecs have uniform length per type.
-        // User data lengths are always small (< 100 typically), so truncation is safe.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let nuser_body = self.body_user_raw.first().map_or(0, |v| v.len()) as i32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let nuser_jnt = self.jnt_user_raw.first().map_or(0, |v| v.len()) as i32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let nuser_geom = self.geom_user_raw.first().map_or(0, |v| v.len()) as i32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let nuser_site = self.site_user_raw.first().map_or(0, |v| v.len()) as i32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let nuser_tendon = self.tendon_user_raw.first().map_or(0, |v| v.len()) as i32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let nuser_actuator = self.actuator_user_raw.first().map_or(0, |v| v.len()) as i32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let nuser_sensor = self.sensor_user_raw.first().map_or(0, |v| v.len()) as i32;
 
         // Pre-compute flex address/count/crosssection tables before self is consumed.
@@ -553,6 +548,7 @@ fn compute_history_addresses(model: &mut Model) {
     }
     model.sensor_historyadr = sens_historyadr;
 
+    // `offset` is a non-negative running history-buffer count by construction.
     #[allow(clippy::cast_sign_loss)]
     {
         model.nhistory = offset as usize;
