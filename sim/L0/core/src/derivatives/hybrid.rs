@@ -1771,6 +1771,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 ///
 /// Returns `StepError` if any simulation step during FD perturbation fails.
 #[allow(non_snake_case, clippy::similar_names, clippy::unwrap_used)]
+#[allow(clippy::unreachable)] // RK4 integrator uses a separate transition path before reaching this code
 pub fn mjd_transition_hybrid(
     model: &Model,
     data: &Data,

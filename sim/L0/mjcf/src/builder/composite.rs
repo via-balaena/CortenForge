@@ -280,6 +280,7 @@ fn update_frame(
 
 /// Generate cable body chain from a composite definition.
 /// Matches `MakeCable()` + `AddCableBody()` in `user_composite.cc`.
+#[allow(clippy::unreachable)] // unwrap_or_else fallback: bodies is non-empty after first push
 fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfContactExclude>)> {
     validate_cable(composite)?;
 
@@ -445,6 +446,7 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
 
 /// Append a body to the deepest leaf of a body chain.
 /// Produces linear chain: B_first → B_1 → ... → B_last.
+#[allow(clippy::unreachable)] // unwrap_or_else fallback: children is non-empty in else branch
 fn append_to_chain(parent: &mut MjcfBody, child: MjcfBody) {
     if parent.children.is_empty() {
         parent.children.push(child);
@@ -459,6 +461,7 @@ fn append_to_chain(parent: &mut MjcfBody, child: MjcfBody) {
 
 /// Build an `MjcfGeom` from the composite's geom template.
 /// Matches `AddCableBody:392-403` in `user_composite.cc`.
+#[allow(clippy::unreachable)] // unwrap_or_else fallback: geom presence validated by validate_cable() upstream
 fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfGeom {
     // geom presence validated by validate_cable() before this point
     let template = composite

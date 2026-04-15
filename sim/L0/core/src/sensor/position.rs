@@ -65,6 +65,7 @@ fn get_ref_quat(
 /// - Rangefinder: distance measurement
 /// - Touch: contact detection
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::unreachable)] // position-stage sensor dispatch; velocity/acceleration sensors handled in separate stages
 pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
     // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
     if disabled(model, DISABLE_SENSOR) {

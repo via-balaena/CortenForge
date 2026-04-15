@@ -324,6 +324,7 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
+    #[allow(clippy::unreachable)] // Planar variant dispatched to convert_planar_joint above
     fn convert_joint(&mut self, joint: &UrdfJoint) -> Result<()> {
         // Planar joints decompose into 2 slides + 1 hinge (3 DOF)
         if joint.joint_type == UrdfJointType::Planar {

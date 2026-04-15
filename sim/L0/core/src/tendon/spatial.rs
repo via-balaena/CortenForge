@@ -18,6 +18,7 @@ use nalgebra::{DVector, UnitQuaternion, Vector3};
 /// Algorithm follows MuJoCo's pairwise loop over the wrap array
 /// (`engine_core_smooth.c`, function `mj_tendon`).
 #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)] // geom_id as i32: safe for any practical model size (< i32::MAX geoms)
+#[allow(clippy::unreachable)] // wrap-type invariants enforced by model build validation
 pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount: &mut usize) {
     let adr = model.tendon_adr[t];
     let num = model.tendon_num[t];

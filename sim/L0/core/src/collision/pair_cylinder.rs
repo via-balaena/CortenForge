@@ -255,6 +255,7 @@ enum CapsuleBoxFeature {
 /// Phase 1: face test, Phase 2: 12-edge test, Phase 3: second contact search,
 /// Phase 4: sphere-box delegation. Returns up to 2 contacts.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::unreachable)] // match on CapsuleBoxFeature::Face subtypes; Edge variant handled in else branch
 pub fn collide_capsule_box(
     model: &Model,
     geom1: usize,

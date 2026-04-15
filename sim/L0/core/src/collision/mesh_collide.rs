@@ -120,6 +120,7 @@ fn gjk_epa_shape_pair(
 /// Sphere, capsule, and box pairs use dedicated triangle-level functions.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
+#[allow(clippy::unreachable)] // exhaustiveness guards; mesh/sdf/hfield pairs dispatched before reaching this code
 pub fn collide_with_mesh(
     model: &Model,
     geom1: usize,
