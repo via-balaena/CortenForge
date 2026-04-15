@@ -38,6 +38,8 @@ pub struct TraceParams {
     /// Normal convention: 0 = A→B (negate), 1 = B→A (keep).
     pub flip_normal: u32,
     /// Padding for 16-byte alignment.
+    // Mirrors the WGSL struct's 16-byte stride; must be `pub` so
+    // `bytemuck::Zeroable`/`Pod` can construct the struct.
     #[allow(clippy::pub_underscore_fields)]
     pub _pad: f32,
 }
@@ -55,6 +57,8 @@ pub struct GpuContact {
     /// World-space surface normal.
     pub normal: [f32; 3],
     /// Padding.
+    // Mirrors the WGSL `GpuContact` struct's 32-byte stride; must be `pub`
+    // so `bytemuck::Pod` can construct the struct.
     #[allow(clippy::pub_underscore_fields)]
     pub _pad: f32,
 }
@@ -221,6 +225,9 @@ impl GpuTracer {
     /// Returns deduplicated contacts in world space. Uses persistent
     /// buffers — no per-step GPU allocation.
     #[must_use]
+    // Single-function staging → bind → dispatch → readback pipeline; splitting
+    // would force shared mutable buffer state across helpers without making
+    // the data flow more legible.
     #[allow(clippy::too_many_lines)]
     pub fn trace_contacts(
         &self,
