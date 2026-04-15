@@ -63,11 +63,12 @@ space.rs               task.rs                tensor.rs
 value.rs               vec_env.rs
 ```
 
-Three targeted content edits during the move (commit 2):
+Two targeted content edits during the move (commit 2):
 
 1. **`best_tracker.rs` visibility bump** — `pub(crate) mod` → `pub mod` at lib.rs level. See §3.5.
 2. **`autograd.rs:77` docstring** — rewrite `sim_ml_bridge::autograd::` → `sim_ml_chassis::autograd::`.
-3. **`task.rs` gains `TaskConfig::from_build_fn`** (plus its two unit tests). See §6.4 and §6.4.1.
+
+Note: `TaskConfig::from_build_fn` already exists upstream (added during the ml-chassis-refactor study, PR #190, with signature `fn from_build_fn<F>(name, obs_dim, act_dim, obs_scale, build_fn) -> Self where F: Fn(usize, u64) -> Result<VecEnv, EnvError> + Send + Sync + 'static`). No new signature work in this split — the function moves with `task.rs` unchanged.
 
 Plus `sim/L0/ml-bridge/benches/bridge_benchmarks.rs` → `sim/L0/ml-chassis/benches/bridge_benchmarks.rs`. Grep-verified as chassis-only (no algorithm usage).
 
@@ -138,9 +139,7 @@ longer compiles. They have to be rewritten in the same commit.
 | File | Change |
 |---|---|
 | `Cargo.toml` (root) | workspace members + `[workspace.dependencies]` aliases — see §9 |
-| `sim/L0/thermostat/Cargo.toml` | promote `sim-ml-chassis` to regular dep; replace `sim-ml-bridge` dev-dep with `sim-rl` dev-dep |
-| `sim/L0/thermostat/src/lib.rs` | add `pub mod tasks;` |
-| `sim/L0/thermostat/src/tasks.rs` | **new file** — `stochastic_resonance() -> TaskConfig`; see §6 |
+| `sim/L0/thermostat/Cargo.toml` | replace `sim-ml-bridge` dev-dep with `sim-rl` dev-dep |
 | `sim/L0/thermostat/tests/d1c_cem_training.rs` | import rewrite per §4 |
 | `sim/L0/thermostat/tests/d1d_reinforce_comparison.rs` | import rewrite per §4 |
 | `sim/L0/thermostat/tests/d2b_stochastic_resonance_baselines.rs` | import rewrite per §4 |
@@ -162,7 +161,7 @@ sim/L0/
 ├── urdf/               (unchanged)
 ├── gpu/                (unchanged)
 ├── tests/              (unchanged)
-├── thermostat/         (modified — new tasks.rs, Cargo.toml dep bump)
+├── thermostat/         (modified — Cargo.toml dev-dep rename only)
 ├── ml-chassis/         (new, populated from ml-bridge split)
 ├── rl/                 (new, renamed from ml-bridge)
 └── opt/                (new)
@@ -281,6 +280,10 @@ pub use tensor::{Tensor, TensorSpec};
 pub use value::{QFunction, ValueFn, soft_update, soft_update_policy, soft_update_value};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};
 ```
+
+Note: `TaskConfig::from_build_fn` already exists upstream (added during the
+ml-chassis-refactor study, PR #190). It moves with `task.rs` unchanged —
+no new constructor work in this split.
 
 Deliberately **not** re-exported (they move to `sim-rl`):
 `Cem`, `CemHyperparams`, `Reinforce`, `ReinforceHyperparams`,
@@ -1142,476 +1145,14 @@ PT and CMA-ES builders are **not** written in this PR.
 
 ---
 
-## 6. `sim-thermostat::tasks::stochastic_resonance`
+## 6. SR task packaging — deferred
 
-### 6.1 Dependency promotion
-
-In `sim/L0/thermostat/Cargo.toml`:
-
-```toml
-[dependencies]
-sim-core       = { workspace = true }
-sim-ml-chassis = { workspace = true }   # NEW — needed for pub TaskConfig API
-sim-mjcf       = { workspace = true }   # NEW — moved from dev to regular
-nalgebra       = { workspace = true }
-rand           = { workspace = true }
-rand_chacha    = { workspace = true }
-rand_distr     = { workspace = true }
-
-[dev-dependencies]
-# sim-mjcf removed (now a regular dep above).
-sim-rl         = { workspace = true }   # replaces sim-ml-bridge
-approx         = { workspace = true }
-```
-
-**Rationale for promoting `sim-mjcf`.** `tasks::stochastic_resonance()`
-loads an MJCF string via `sim_mjcf::load_model`. That needs to be in the
-regular dep set, not dev-only. This is the same pattern `sim-ml-chassis`
-already uses (regular dep on `sim-mjcf`).
-
-**Rationale for the new `sim-ml-chassis` dep.** `TaskConfig` lives in
-`sim-ml-chassis`. For `sim-thermostat` to expose a task factory that
-returns `TaskConfig`, it has to depend on the chassis. This is a one-way
-edge (`sim-thermostat → sim-ml-chassis`); the chassis does not depend on
-thermostat, so no cycle.
-
-### 6.2 `sim/L0/thermostat/src/lib.rs`
-
-Add:
-
-```rust
-pub mod tasks;
-```
-
-No other changes to this file.
-
-### 6.3 `sim/L0/thermostat/src/tasks.rs`
-
-New file. Packages the SR environment that `d2c_cem_training.rs:86-120`
-(`make_training_vecenv`) builds inline. Constants
-(`d2c_cem_training.rs:57-73`: `DELTA_V`, `X_0`, `GAMMA`, `K_B_T_BASE`,
-`A_0`, `KRAMERS_RATE`, `SUB_STEPS`, `EPISODE_STEPS`) and MJCF
-(`d2c_cem_training.rs:37-53`) are copied verbatim. `SEED_BASE` (line
-62) is **not** copied — see the physics-seed note on
-`stochastic_resonance()` below. The eval-time `make_eval_env`
-(`d2c_cem_training.rs:122-156`) is irrelevant here; D2c's ad-hoc eval
-protocol is replaced by the epoch-level mean_reward from
-`collect_episodic_rollout`, which is what every other algorithm on the
-chassis already reports.
-
-```rust
-//! Benchmark tasks exposed as [`TaskConfig`]s for the
-//! `sim_ml_chassis::Competition` runner.
-//!
-//! These task factories wrap physics environments that would otherwise
-//! be built inline in integration tests. Using the same `TaskConfig`
-//! shape as the stock reaching tasks in `sim-ml-chassis` means every
-//! algorithm across `sim-rl` and `sim-opt` can be plugged into the same
-//! competition runner without custom glue.
-
-use std::f64::consts::PI;
-use std::sync::Arc;
-
-use sim_core::DVector;
-use sim_ml_chassis::error::EnvError;
-use sim_ml_chassis::space::{ActionSpace, ObservationSpace};
-use sim_ml_chassis::task::TaskConfig;
-use sim_ml_chassis::vec_env::VecEnv;
-
-use crate::double_well::DoubleWellPotential;
-use crate::langevin::LangevinThermostat;
-use crate::oscillating_field::OscillatingField;
-use crate::stack::PassiveStack;
-
-// ── Stochastic resonance (D2) constants ──────────────────────────────────
-// Verbatim from sim/L0/thermostat/tests/d2c_cem_training.rs:57-79.
-
-const SR_DELTA_V: f64     = 3.0;
-const SR_X_0: f64         = 1.0;
-const SR_GAMMA: f64       = 10.0;
-const SR_K_B_T_BASE: f64  = 1.0;
-const SR_A_0: f64         = 0.3;
-/// Kramers escape rate used to set the driving frequency.
-/// See `docs/thermo_computing/03_phases/d2_stochastic_resonance.md` §6.
-const SR_KRAMERS_RATE: f64 = 0.012_14;
-const SR_SUB_STEPS: usize  = 100;
-const SR_EPISODE_STEPS: usize = 5_000;
-
-// Verbatim from sim/L0/thermostat/tests/d2c_cem_training.rs:37-53.
-const SR_MJCF: &str = r#"
-<mujoco model="stochastic-resonance">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 10"/>
-  </actuator>
-</mujoco>
-"#;
-
-/// The D2 stochastic-resonance benchmark wrapped as a [`TaskConfig`].
-///
-/// - Observation: `[qpos[0], qvel[0]]` (2-dim)
-/// - Action: `[temperature_ctrl]` (1-dim, clamped to `[0, 10]` in the MJCF)
-/// - Reward: `sign(qpos[0]) * cos(ω · t)` — positive when the particle
-///   is on the driven side of the well at the driving-signal peak.
-/// - Truncated at `SR_EPISODE_STEPS * SR_SUB_STEPS * dt` seconds.
-///
-/// Each call to [`TaskConfig::build_vec_env`] produces a **fresh**
-/// `Model` with a **fresh** `PassiveStack` installed. This is load-bearing:
-/// `LangevinThermostat` owns RNG state, and `PassiveStack::install`
-/// mutates the `Model`'s `cb_passive` slot. Sharing one pre-installed
-/// `Arc<Model>` across multiple `build_vec_env` calls would give every
-/// algorithm in a `Competition::run` correlated noise from a shared RNG
-/// — a silent correctness bug. Loading the MJCF inside the closure costs
-/// ~microseconds and is paid once per algorithm per task.
-///
-/// **Physics seed is hardcoded to 0 — deliberate deviation from D2c.**
-/// The original D2c protocol (`d2c_cem_training.rs:86,91`) threads
-/// the per-test seed through `LangevinThermostat::new(..., seed)`, so
-/// each algorithm gets its own physics realization (`SEED_BASE` for
-/// CEM, `SEED_BASE + 100` for TD3, etc.). The rematch trades that for
-/// a **paired comparison**: every algorithm in one `Competition::run`
-/// sees a Langevin chain constructed with the same seed, so between-
-/// algorithm score differences cannot be attributed to which tape they
-/// happened to draw. This is strictly lower-variance for the question
-/// "does algorithm A beat algorithm B on SR" and is the whole reason
-/// `build_fn` re-loads the MJCF fresh on every call (each algorithm
-/// gets an independent Langevin thermostat with the same seed, so
-/// their streams start from the same state; they are not correlated
-/// at the mutex level across algorithms in one process).
-///
-/// What this costs: the rematch answers "which algorithm is best on
-/// this one physics tape," not "which algorithm is most robust across
-/// tapes." If the flagship SA-vs-CEM finding turns out to hinge on a
-/// single tape, a follow-up experiment can sweep the physics seed
-/// and report variance. That experiment is explicitly out of scope
-/// for this PR.
-///
-/// The [`Competition`] seed passed to `comp.run(...)` still controls
-/// algorithm RNG (proposal perturbations, exploration noise, elite
-/// sampling), as in D2c.
-///
-/// # Panics
-///
-/// Panics if the hardcoded MJCF fails to parse or the observation/action
-/// spaces fail to build. Both are code bugs — the MJCF and space
-/// definitions are constants, so either the first call succeeds and all
-/// subsequent calls succeed, or the first call panics and you fix it.
-#[allow(clippy::panic, clippy::missing_panics_doc)]
-#[must_use]
-pub fn stochastic_resonance() -> TaskConfig {
-    let omega = 2.0 * PI * SR_KRAMERS_RATE;
-
-    // Measure obs/act dims once at task-construction time, using a
-    // pristine (no-PassiveStack) model. This gives us the metadata
-    // TaskConfig::from_build_fn needs without holding any state that
-    // would get shared across build_vec_env calls.
-    let probe_model = match sim_mjcf::load_model(SR_MJCF) {
-        Ok(m) => m,
-        Err(e) => panic!("SR MJCF failed to parse (probe): {e}"),
-    };
-    let probe_obs = ObservationSpace::builder()
-        .all_qpos()
-        .all_qvel()
-        .build(&probe_model)
-        .unwrap_or_else(|e| panic!("SR obs probe build failed: {e}"));
-    let probe_act = ActionSpace::builder()
-        .all_ctrl()
-        .build(&probe_model)
-        .unwrap_or_else(|e| panic!("SR act probe build failed: {e}"));
-    let obs_dim = probe_obs.dim();
-    let act_dim = probe_act.dim();
-    // D2c obs_scale (`d2c_cem_training.rs:201-202`): `[1.0 / X_0, 1.0]`.
-    // With SR_X_0 = 1.0 this evaluates to `[1.0, 1.0]`.
-    let obs_scale = vec![1.0 / SR_X_0, 1.0];
-    drop((probe_model, probe_obs, probe_act)); // probe is done with
-
-    let build_fn: Arc<
-        dyn Fn(usize) -> Result<VecEnv, EnvError> + Send + Sync,
-    > = Arc::new(move |n_envs: usize| -> Result<VecEnv, EnvError> {
-        // Fresh model, fresh stack install, fresh thermostat RNG.
-        // Load failure would indicate the hardcoded MJCF is broken
-        // (would have panicked at task-construction time already), so
-        // panic-in-closure is tolerable.
-        let mut model = sim_mjcf::load_model(SR_MJCF)
-            .unwrap_or_else(|e| panic!("SR MJCF load failed inside build_fn: {e}"));
-
-        let thermostat = LangevinThermostat::new(
-            DVector::from_element(model.nv, SR_GAMMA),
-            SR_K_B_T_BASE,
-            /*seed=*/ 0,
-        )
-        .with_ctrl_temperature(0);
-        let double_well = DoubleWellPotential::new(SR_DELTA_V, SR_X_0, 0);
-        let signal = OscillatingField::new(SR_A_0, omega, 0.0, 0);
-
-        PassiveStack::builder()
-            .with(thermostat)
-            .with(double_well)
-            .with(signal)
-            .build()
-            .install(&mut model);
-
-        let model = Arc::new(model);
-        let obs_space = ObservationSpace::builder()
-            .all_qpos()
-            .all_qvel()
-            .build(&model)
-            .unwrap_or_else(|e| panic!("SR obs rebuild failed: {e}"));
-        let act_space = ActionSpace::builder()
-            .all_ctrl()
-            .build(&model)
-            .unwrap_or_else(|e| panic!("SR act rebuild failed: {e}"));
-
-        VecEnv::builder(model, n_envs)
-            .observation_space(obs_space)
-            .action_space(act_space)
-            .reward(move |_m, data| data.qpos[0].signum() * (omega * data.time).cos())
-            .done(|_m, _d| false)
-            .truncated(|_m, data| {
-                data.time > (SR_EPISODE_STEPS as f64) * (SR_SUB_STEPS as f64) * 0.001
-            })
-            .sub_steps(SR_SUB_STEPS)
-            .build()
-    });
-
-    TaskConfig::from_build_fn(
-        "stochastic-resonance",
-        obs_dim,
-        act_dim,
-        obs_scale,
-        build_fn,
-    )
-    .unwrap_or_else(|e| panic!("SR TaskConfig::from_build_fn failed: {e}"))
-}
-```
-
-### 6.4 `TaskConfig` privacy resolution
-
-**`TaskConfig` has private fields (`sim-ml-chassis/src/task.rs:38-44`).**
-The stock factory `reaching_2dof` constructs `TaskConfig { name, obs_dim,
-act_dim, obs_scale, build_fn }` *directly* because it lives in the same
-crate. `sim_thermostat::tasks::stochastic_resonance` does not have that
-privilege. Two paths were considered:
-
-1. **Extend `TaskConfig::builder`** to accept a deferred model
-   constructor (`Fn() -> Result<Model, _>`) and add an install hook.
-   Requires refactoring the builder to thread state from
-   model-construction through space-building through reward/done
-   closures, plus a new hook API. Out of scope for this PR.
-2. **Add a public `TaskConfig::from_build_fn` constructor** that takes
-   pre-built metadata and an `Arc<dyn Fn>` closure. Minimal shim.
-
-**Decision (spec commitment):** take option 2. Add a public
-`TaskConfig::from_build_fn` constructor to `sim-ml-chassis/src/task.rs`
-with the signature below. Return type, error variant, and validation
-were chosen to match the existing `TaskConfigBuilder::build()` pattern
-verified at `sim/L0/ml-bridge/src/task.rs:204-262`:
-
-```rust
-impl TaskConfig {
-    /// Construct a [`TaskConfig`] from pre-built metadata and a custom
-    /// environment factory.
-    ///
-    /// Prefer [`TaskConfig::builder`] for simple tasks. Use this only
-    /// when your environment construction needs to mutate the `Model`
-    /// (e.g., install a passive-force stack from `sim-thermostat`)
-    /// *before* wrapping it in an `Arc` — the builder's closure-based
-    /// reward/done/truncated shape cannot express pre-`Arc` mutation.
-    ///
-    /// The caller is responsible for ensuring `build_fn` returns a
-    /// [`VecEnv`] whose observation and action dimensions match
-    /// `obs_dim` and `act_dim`. That invariant cannot be checked at
-    /// construction time without running `build_fn`, so it is trusted
-    /// here and enforced downstream by [`VecEnv`] itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EnvError::ObsScaleMismatch`] if `obs_scale.len() !=
-    /// obs_dim`. All other shape errors surface from `build_fn` when
-    /// [`TaskConfig::build_vec_env`] is first called.
-    pub fn from_build_fn(
-        name: impl Into<String>,
-        obs_dim: usize,
-        act_dim: usize,
-        obs_scale: Vec<f64>,
-        build_fn: Arc<dyn Fn(usize) -> Result<VecEnv, EnvError> + Send + Sync>,
-    ) -> Result<Self, EnvError> {
-        if obs_scale.len() != obs_dim {
-            return Err(EnvError::ObsScaleMismatch {
-                expected: obs_dim,
-                actual: obs_scale.len(),
-            });
-        }
-        Ok(Self {
-            name: name.into(),
-            obs_dim,
-            act_dim,
-            obs_scale,
-            build_fn,
-        })
-    }
-}
-```
-
-Design notes baked into the signature above:
-
-- **`Result` not panic.** The existing `TaskConfigBuilder::build()`
-  returns `Result<TaskConfig, EnvError>`. Cross-crate consumers deserve
-  the same discipline; stock tasks inside the chassis keep their
-  `panic!`-on-bad-hardcoded-input style because they build from
-  constants, not user input.
-- **Reuses `EnvError::ObsScaleMismatch`.** Already defined for the same
-  check inside `TaskConfigBuilder::build()` at
-  `sim/L0/ml-bridge/src/task.rs:231-236`. No new error variant.
-- **Only `obs_scale` is validated.** The builder also validates
-  `sub_steps != 0`, missing-field presence, etc. Those checks don't
-  apply here because the caller passes an already-constructed
-  `build_fn`. Shape mismatch between `build_fn`'s output and the
-  declared `obs_dim` / `act_dim` can't be caught without actually
-  running `build_fn` — which is exactly what `build_vec_env` does, so
-  the first call from `Competition::run` will surface it immediately.
-
-This is the only substantive change to chassis source code in the whole
-PR. Add it in commit 2 (§10) alongside the file moves so it ships with
-the rest of the chassis work.
-
-**Stock tasks do not change.** `reaching_2dof`, `reaching_6dof`, and
-`obstacle_reaching_6dof` keep their current crate-private struct-literal
-construction path (see `sim-ml-bridge/src/task.rs:418-424,531-538`).
-The public `from_build_fn` is a cross-crate bypass, not a replacement
-for the internal one. Two code paths is fine; consolidating is churn
-without benefit.
-
-The `tasks.rs` module in §6.3 calls `TaskConfig::from_build_fn(...)`
-at the end (with a `?` on the Result — propagate to caller, or
-`unwrap_or_else(|e| panic!(...))` inside `stochastic_resonance()` since
-its inputs are constants and any mismatch is a code bug). The execution
-session does not have to invent this shim — it's pre-decided.
-
-### 6.4.1 Chassis unit tests for `from_build_fn`
-
-Add to the existing `#[cfg(test)] mod tests` block in
-`sim-ml-chassis/src/task.rs`. Keeps the test next to the code it
-exercises — the chassis already has task tests there (see the bottom of
-`sim-ml-bridge/src/task.rs`).
-
-```rust
-#[test]
-fn from_build_fn_happy_path() {
-    // Construct a trivial TaskConfig from a known-good stock task's
-    // internals, verify it can build a VecEnv and step once.
-    let stock = reaching_2dof();
-    let obs_dim = stock.obs_dim();
-    let act_dim = stock.act_dim();
-    let obs_scale: Vec<f64> = stock.obs_scale().to_vec();
-
-    // Reuse the stock task's build_fn via a thin indirection.
-    let stock_clone = stock.clone();
-    let build_fn: Arc<
-        dyn Fn(usize) -> Result<VecEnv, EnvError> + Send + Sync,
-    > = Arc::new(move |n| stock_clone.build_vec_env(n));
-
-    let task = TaskConfig::from_build_fn(
-        "from-build-fn-happy",
-        obs_dim,
-        act_dim,
-        obs_scale,
-        build_fn,
-    )
-    .expect("from_build_fn should succeed with matching metadata");
-
-    assert_eq!(task.name(), "from-build-fn-happy");
-    assert_eq!(task.obs_dim(), obs_dim);
-    assert_eq!(task.act_dim(), act_dim);
-
-    let mut env = task.build_vec_env(2).expect("build_vec_env");
-    env.reset_all().expect("reset_all");
-    let actions = crate::tensor::Tensor::zeros(&[2, act_dim]);
-    env.step(&actions).expect("step");
-}
-
-#[test]
-fn from_build_fn_rejects_obs_scale_mismatch() {
-    let stock = reaching_2dof();
-    let obs_dim = stock.obs_dim();
-    let act_dim = stock.act_dim();
-    // Deliberately wrong length: obs_dim + 1.
-    let bad_scale = vec![1.0_f64; obs_dim + 1];
-
-    let stock_clone = stock.clone();
-    let build_fn: Arc<
-        dyn Fn(usize) -> Result<VecEnv, EnvError> + Send + Sync,
-    > = Arc::new(move |n| stock_clone.build_vec_env(n));
-
-    let result = TaskConfig::from_build_fn(
-        "from-build-fn-bad-scale",
-        obs_dim,
-        act_dim,
-        bad_scale,
-        build_fn,
-    );
-
-    match result {
-        Err(EnvError::ObsScaleMismatch { expected, actual }) => {
-            assert_eq!(expected, obs_dim);
-            assert_eq!(actual, obs_dim + 1);
-        }
-        Err(other) => panic!("expected ObsScaleMismatch, got {other:?}"),
-        Ok(_) => panic!("expected error, got Ok"),
-    }
-}
-```
-
-Both tests use `reaching_2dof()` as a fixture — it's already in scope
-inside `sim-ml-chassis/src/task.rs` and its `build_fn` is known to
-work. No new MJCF strings, no new setup. The tests run in debug mode
-in well under a second and are part of commit 2's grading checkpoint.
-
-### 6.5 Regression test
-
-Add `sim/L0/thermostat/tests/stochastic_resonance_task.rs`:
-
-```rust
-//! Regression: sim_thermostat::tasks::stochastic_resonance() produces a
-//! VecEnv that exposes the same obs/act/step shape as the inline SR build
-//! used in d2c_cem_training.rs.
-
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
-use sim_thermostat::tasks::stochastic_resonance;
-
-#[test]
-fn sr_task_builds() {
-    let task = stochastic_resonance();
-    assert_eq!(task.name(), "stochastic-resonance");
-    assert_eq!(task.obs_dim(), 2);
-    assert_eq!(task.act_dim(), 1);
-    assert_eq!(task.obs_scale().len(), 2);
-    approx::assert_relative_eq!(task.obs_scale()[0], 1.0);
-    approx::assert_relative_eq!(task.obs_scale()[1], 1.0);
-}
-
-#[test]
-fn sr_task_steps_without_error() {
-    let task = stochastic_resonance();
-    let mut env = task.build_vec_env(4).expect("build_vec_env");
-    env.reset_all().expect("reset");
-    let actions = sim_ml_chassis::Tensor::zeros(&[4, 1]);
-    env.step(&actions).expect("step");
-}
-```
-
-Not the D2c rematch — just a "the task builds and steps" smoke test.
-Runs in debug mode in under a second, lives in `sim-thermostat/tests/`.
+The construction spec originally proposed extracting `stochastic_resonance()`
+into `sim_thermostat::tasks`. Ch 42 §6 sub-decision (f) intentionally kept the
+SR MJCF + constants duplicated in the three rematch fixtures under
+`sim/L0/opt/tests/`. The chassis/rl split does not revisit that decision. If a
+future PR wants SR-as-`TaskConfig`, see `project_thermo_rl_loop_vision.md` for
+the motivation.
 
 ---
 
@@ -1811,6 +1352,32 @@ algorithm struct is `persistence/train-then-replay` (imports `Cem`).
   No other edits. Low priority; the banner is a one-line commit and
   can be folded into the step 4 find-and-replace commit.
 
+### 8.4 sim-opt sites
+
+sim-opt currently imports `sim-ml-bridge` as its chassis-in-disguise. The
+split forces a rewrite of every source file and test fixture in the crate.
+These rewrites land in commit 5 of §10, not commit 4, because the diff is
+mechanically distinct (sim-opt is its own crate re-homing, not an external
+consumer) and benefits from its own grading checkpoint.
+
+| File | Actual imports (verified 2026-04-15) | Target |
+|---|---|---|
+| `sim/L0/opt/Cargo.toml` | `sim-ml-bridge` dep | `sim-ml-chassis` regular + `sim-rl` dev-dep (the rematch fixtures need `Cem` and `CemHyperparams`) |
+| `sim/L0/opt/src/lib.rs` | module doc mentions `sim-ml-bridge` at lines 7, 27, 29, 32 | rewrite prose to `sim-ml-chassis` / `sim-rl` as appropriate |
+| `sim/L0/opt/src/algorithm.rs:20` | `Algorithm, ArtifactError, CURRENT_VERSION, EpochMetrics, Policy, PolicyArtifact, TrainingBudget, TrainingCheckpoint, VecEnv, collect_episodic_rollout` | `sim_ml_chassis::` (all chassis types) |
+| `sim/L0/opt/src/algorithm.rs:375` (test mod) | `LinearPolicy, reaching_2dof` | `sim_ml_chassis::` |
+| `sim/L0/opt/src/richer_sa.rs:50,492,511` | same chassis-type shape as algorithm.rs | `sim_ml_chassis::` |
+| `sim/L0/opt/src/parallel_tempering.rs:64,484,499` | same shape | `sim_ml_chassis::` |
+| `sim/L0/opt/src/analysis.rs:17` | `Algorithm, Competition, CompetitionResult, EnvError, TaskConfig` | `sim_ml_chassis::` |
+| `sim/L0/opt/src/analysis.rs:634` (test mod) | mixed — primitives + algorithm structs | chassis for primitives, `sim_rl::` for any algorithm struct it references |
+| `sim/L0/opt/tests/d2c_sr_rematch.rs:42` | `ActionSpace, Algorithm, Cem, CemHyperparams, Competition, LinearPolicy, ObservationSpace, Policy, TaskConfig, TrainingBudget, VecEnv` | `sim_rl::` (Cem + CemHyperparams force the sim-rl route; sim-rl's re-exports cover the chassis types in the same import) |
+| `sim/L0/opt/tests/d2c_sr_rematch_richer_sa.rs:61` | same shape | `sim_rl::` |
+| `sim/L0/opt/tests/d2c_sr_rematch_pt.rs:52` | same shape | `sim_rl::` |
+
+Verification: `cargo xtask grade sim-opt` = A; `cargo test -p sim-opt --release`
+on non-ignored tests stays green; the three `#[ignore]`'d rematch fixtures
+still compile (they don't need to be re-run — the study is closed).
+
 ---
 
 ## 9. Workspace `Cargo.toml` edits
@@ -1856,18 +1423,17 @@ amended *within its own step*, never across steps).
 | # | Commit message | What it does | Verification |
 |---|---|---|---|
 | 1 | `feat(sim-ml-chassis): scaffold empty crate` | New `sim/L0/ml-chassis/{Cargo.toml, src/lib.rs}` (empty lib). Workspace member + dep alias. | `cargo build -p sim-ml-chassis` green |
-| 2 | `refactor(sim-ml-chassis): move primitives from sim-ml-bridge` | Move the 23 files from §1.2 plus `benches/bridge_benchmarks.rs`. Promote `best_tracker` to `pub`. Add `TaskConfig::from_build_fn` per §6.4 with the two unit tests from §6.4.1. Create `sim-ml-chassis/src/stats.rs` per §3.6 (with the two unit tests inside it). Update `sim-ml-chassis/src/lib.rs` per §3.2 and §3.3 (module + `pub use` for `stats::gaussian_log_prob`). Fix the `autograd.rs:77` docstring per §3.5. **`tests/custom_task.rs` and `tests/competition.rs` do NOT move here** — they stay with the soon-to-be-renamed sim-rl. **sim-ml-bridge still exists** at this commit — the algorithm files are all that's left. Update `sim-ml-bridge/src/lib.rs` to drop the moved modules and keep only `cem`, `ppo`, `reinforce`, `sac`, `td3` with `use sim_ml_chassis::*` as needed. Also delete the local `pub fn gaussian_log_prob` in `sim-ml-bridge/src/sac.rs:226-242` and redirect its two internal callers at `sac.rs:397,519` to `sim_ml_chassis::stats::gaussian_log_prob`. | `cargo build -p sim-ml-chassis` green; `cargo test -p sim-ml-chassis task::tests::from_build_fn_happy_path task::tests::from_build_fn_rejects_obs_scale_mismatch stats::tests` green; `cargo build -p sim-ml-bridge` green; `cargo xtask grade sim-ml-chassis` = A |
+| 2 | `refactor(sim-ml-chassis): move primitives from sim-ml-bridge` | Move the 23 files from §1.2 plus `benches/bridge_benchmarks.rs`. Promote `best_tracker` to `pub`. Create `sim-ml-chassis/src/stats.rs` per §3.6 (with the two unit tests inside it). Update `sim-ml-chassis/src/lib.rs` per §3.2 and §3.3 (module + `pub use` for `stats::gaussian_log_prob`). Fix the `autograd.rs:77` docstring per §3.5. `TaskConfig::from_build_fn` already exists upstream and moves with `task.rs` unchanged — no new constructor code. **`tests/custom_task.rs` and `tests/competition.rs` do NOT move here** — they stay with the soon-to-be-renamed sim-rl. **sim-ml-bridge still exists** at this commit — the algorithm files are all that's left. Update `sim-ml-bridge/src/lib.rs` to drop the moved modules and keep only `cem`, `ppo`, `reinforce`, `sac`, `td3` with `use sim_ml_chassis::*` as needed. Also delete the local `pub fn gaussian_log_prob` in `sim-ml-bridge/src/sac.rs:226-242` and redirect its two internal callers at `sac.rs:397,519` to `sim_ml_chassis::stats::gaussian_log_prob`. | `cargo build -p sim-ml-chassis` green; `cargo test -p sim-ml-chassis stats::tests` green; `cargo build -p sim-ml-bridge` green; `cargo xtask grade sim-ml-chassis` = A |
 | 3 | `refactor(sim-rl): rename sim-ml-bridge and re-export chassis types` | Rename `sim/L0/ml-bridge/` → `sim/L0/rl/`. Replace the Cargo.toml contents per §4.1 (drops the transitional `sim-ml-chassis` dep line from commit 2, adds `approx` + `sim-mjcf` dev-deps, changes package name to `sim-rl`). Rewrite `src/lib.rs` per §4.2 (re-exports include `TrainingProvenance`, `PolicyArtifact`, `TrainingCheckpoint`). Create `builders.rs` per §4.4. The two integration tests travel with the rename (they live at `sim/L0/rl/tests/custom_task.rs` and `sim/L0/rl/tests/competition.rs`); rewrite their `sim_ml_bridge::` imports to `sim_rl::`. Update workspace member list and dep alias per §9. **No intra-`src/` import rewrites** — those already happened in commit 2 per §1.4. | `cargo build -p sim-rl` green; `cargo test -p sim-rl --test custom_task` green; `cargo xtask grade sim-rl` = A |
-| 4 | `refactor: rewrite sim_ml_bridge:: imports across tree` | Apply §8 table. Docs too. No crate structure changes. | `cargo build --workspace` green (or per-crate builds for every touched crate); `cargo test -p <crate>` where applicable. `cargo xtask grade sim-ml-chassis` and `cargo xtask grade sim-rl` still = A |
-| 5 | `feat(sim-thermostat): expose stochastic_resonance as TaskConfig` | Add `sim_thermostat::tasks::stochastic_resonance`, promote `sim-mjcf` to regular dep, add `sim-ml-chassis` regular dep, replace `sim-ml-bridge` dev-dep with `sim-rl` dev-dep. Add regression test `tests/stochastic_resonance_task.rs`. | `cargo test -p sim-thermostat --test stochastic_resonance_task` green; `cargo xtask grade sim-thermostat` = A |
-| 6 | `feat(sim-opt): scaffold crate with SA implementation` | Create `sim/L0/opt/` per §5. Annealing skeleton leaves the `train()` body as `todo!()` but ships cooling-schedule unit tests. PT / CMA-ES / MH stubs. Builders for SA only. | `cargo build -p sim-opt` green; `cargo test -p sim-opt` green (cooling-schedule tests pass); `cargo xtask grade sim-opt` = A **with** the `todo!()` still present — grade tool must not require the ignored test to pass |
-| 7 | `feat(sim-opt): implement SimulatedAnnealing::train` | Replace the `todo!()` with the real inner loop per the TODO block in §5.3. No other changes. | `cargo test -p sim-opt` green. If the loop touches new surface, re-run `cargo xtask grade sim-opt` |
-| 8 | `test(sim-opt): d2c rematch — SA vs linear-RL baselines` | Add `sim/L0/opt/tests/d2c_rematch.rs` per §7. Runs under `#[ignore]`; execution session runs it manually with `cargo test -p sim-opt --release --test d2c_rematch -- --ignored --nocapture`. | Test compiles. Manual release run produces a ranked table. Gate outcome is recorded in the commit message, not baked into CI. |
+| 4 | `refactor: rewrite sim_ml_bridge:: imports across tree` | Apply §8.1–§8.3 tables. Docs too. No crate structure changes. Does **not** touch sim-opt — that lands in commit 5. | `cargo build -p <crate>` per touched crate; `cargo test -p <crate>` where applicable. `cargo xtask grade sim-ml-chassis` and `cargo xtask grade sim-rl` still = A |
+| 5 | `refactor(sim-opt): re-home on sim-ml-chassis + sim-rl` | Apply §8.4. Update `sim-opt/Cargo.toml` (regular dep `sim-ml-chassis`, dev-dep `sim-rl`). Rewrite `src/{algorithm,richer_sa,parallel_tempering,analysis}.rs` and `tests/d2c_sr_rematch{,_richer_sa,_pt}.rs` from `sim_ml_bridge::` → `sim_ml_chassis::` / `sim_rl::`. Update `src/lib.rs` module-doc prose. | `cargo build -p sim-opt` green; `cargo test -p sim-opt --release` on non-ignored tests green; the three `#[ignore]`'d rematch fixtures still compile; `cargo xtask grade sim-opt` = A |
 
-**Commits 1-6 must all land in the same PR.** Commit 7 and 8 can either
-be in the same PR or a follow-up — the author's call based on how long
-the SA implementation takes. The R34 principle says ship the chassis
-work before the algorithm polish; the same applies here.
+**All five commits must land in the same PR.** The chassis/rl split is one
+breaking change; partial merges would leave the tree in a half-renamed state
+that no downstream branch could rebase cleanly on. Commits 6-8 from earlier
+drafts of this spec (scaffold sim-opt, SA `train()` body, D2c rematch test)
+shipped separately via the sim-opt path (PRs #187/#188/#190) and are not
+part of this PR.
 
 ---
 
@@ -1878,8 +1444,7 @@ Per-crate A-grade is required. Run each of these before moving on:
 ```
 cargo xtask grade sim-ml-chassis    # after commit 2
 cargo xtask grade sim-rl            # after commit 3
-cargo xtask grade sim-thermostat    # after commit 5 (dep-bumped crate)
-cargo xtask grade sim-opt           # after commit 6 and again after 7
+cargo xtask grade sim-opt           # after commit 5
 ```
 
 **If a crate drops from A.** Fix the criterion that dropped before the
