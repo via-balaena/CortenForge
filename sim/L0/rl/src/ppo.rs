@@ -205,6 +205,11 @@ impl Algorithm for Ppo {
         "PPO"
     }
 
+    // PPO's training loop is intentionally inlined as a single function so
+    // the rollout / GAE / minibatch / clipped-objective stages stay readable
+    // top-to-bottom; cast lints are usize → f64 for advantage normalization
+    // and minibatch counts (well below 2^52); panics guard internal
+    // invariants documented on the trait's `# Panics` section.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

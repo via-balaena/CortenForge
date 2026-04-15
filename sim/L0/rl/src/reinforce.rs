@@ -147,6 +147,10 @@ impl Algorithm for Reinforce {
         "REINFORCE"
     }
 
+    // REINFORCE's training loop stays inlined for the same reason as PPO:
+    // the rollout → return computation → policy-gradient update sequence is
+    // most readable as a single linear pass. Cast lints are usize → f64 for
+    // baseline normalization; panics guard documented internal invariants.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

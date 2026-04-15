@@ -231,6 +231,11 @@ impl Algorithm for Sac {
         "SAC"
     }
 
+    // SAC's training loop is inlined for end-to-end readability: replay
+    // sampling → twin Q updates → policy update → entropy temperature update
+    // are easier to follow as one pass than fragmented across helpers. Cast
+    // lints are usize → f64 for batch math (batch sizes far below 2^52);
+    // panics guard documented internal invariants.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
