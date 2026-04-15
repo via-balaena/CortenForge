@@ -14,7 +14,7 @@
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sim_ml_bridge::{Algorithm, Competition, CompetitionResult, EnvError, TaskConfig};
+use sim_ml_chassis::{Algorithm, Competition, CompetitionResult, EnvError, TaskConfig};
 use sim_thermostat::prf::splitmix64;
 
 // ── Rematch constants ────────────────────────────────────────────────────
@@ -123,6 +123,10 @@ pub struct TwoMetricOutcome {
 /// The arms are kept separate (rather than merged via `|`) so
 /// each `(lower_pos, upper_pos, point_pos)` boolean triple can
 /// carry its own semantic comment in-line with the verdict.
+// match_same_arms: each arm is deliberately spelled out so the
+// per-arm `(lower_pos, upper_pos, point_pos)` comment stays
+// adjacent to the outcome it maps to; collapsing them via `|`
+// would fuse comments that describe distinct cases.
 #[must_use]
 #[allow(clippy::match_same_arms)]
 pub fn classify_outcome(lower: f64, upper: f64, point_estimate: f64) -> RematchOutcome {
@@ -274,6 +278,9 @@ pub fn bootstrap_diff_medians(r_a: &[f64], r_b: &[f64], rng: &mut impl Rng) -> B
 /// Panics if `values.len() < 4`. The denominator has a
 /// `(n - 2) * (n - 3)` factor, and the rematch protocol
 /// guarantees `n = 10` or `n = 20` at every call site.
+// cast_precision_loss: `n = values.len() as f64` is at most 20 at
+// every call site (Ch 32 Decision 3); f64 is exact for all such
+// integer magnitudes.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn bimodality_coefficient(values: &[f64]) -> f64 {
@@ -631,7 +638,7 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use sim_ml_bridge::{
+    use sim_ml_chassis::{
         Activation, CURRENT_VERSION, EpochMetrics, NetworkKind, PolicyArtifact, PolicyDescriptor,
         RunResult,
     };

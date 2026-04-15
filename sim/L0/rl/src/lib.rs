@@ -33,6 +33,7 @@ pub use td3::{Td3, Td3Hyperparams};
 // with a single find-and-replace.
 pub use sim_ml_chassis::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use sim_ml_chassis::artifact::{PolicyArtifact, TrainingCheckpoint, TrainingProvenance};
+pub use sim_ml_chassis::competition::Competition;
 pub use sim_ml_chassis::env::{Environment, SimEnv, StepResult};
 pub use sim_ml_chassis::linear::{LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue};
 pub use sim_ml_chassis::mlp::{MlpPolicy, MlpQ, MlpValue};
