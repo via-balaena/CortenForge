@@ -148,7 +148,7 @@ algorithm files no longer compile until their imports are rewritten.
 | File | Change |
 |---|---|
 | `Cargo.toml` (root) | workspace members + `[workspace.dependencies]` aliases — see §9 |
-| `sim/L0/thermostat/Cargo.toml` | replace `sim-ml-bridge` dev-dep with `sim-rl` dev-dep |
+| `sim/L0/thermostat/Cargo.toml` | replace `sim-ml-bridge` dev-dep with **both** `sim-rl` (for d1c/d1d/d2c per §8.2) **and** `sim-ml-chassis` (for d1b/d2b per §8.1) dev-deps. d1b/d2b need `rollout::collect_episodic_rollout`, which §4.2's sim-rl re-export list does not surface, so chassis is required even though sim-rl re-exports most other primitives |
 | `sim/L0/thermostat/tests/d1b_brownian_ratchet_baselines.rs` | import rewrite per §4 (chassis-only) |
 | `sim/L0/thermostat/tests/d1c_cem_training.rs` | import rewrite per §4 |
 | `sim/L0/thermostat/tests/d1d_reinforce_comparison.rs` | import rewrite per §4 |
@@ -434,17 +434,18 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nalgebra         = { workspace = true }
+# RNG traits — StdRng + SeedableRng for per-epoch sampling in all 5 algorithms
 rand             = { workspace = true }
-serde            = { workspace = true }
-serde_json       = { workspace = true }
-sim-core         = { workspace = true }
+# Algorithm chassis — Algorithm trait, VecEnv, Policy, BestTracker, ArtifactError, ...
 sim-ml-chassis   = { workspace = true }
-thiserror        = { workspace = true }
 
 [dev-dependencies]
-approx           = { workspace = true }   # for tests/competition.rs assertions
-sim-mjcf         = { workspace = true }   # loads MJCF fixtures in tests/{custom_task,competition}.rs
+# Float tolerance assertions in tests/competition.rs
+approx           = { workspace = true }
+# JSON round-trip checkpoint test in tests/best_tracker_cem_integration.rs
+serde_json       = { workspace = true }
+# MJCF model loading for tests/{custom_task,competition}.rs fixtures
+sim-mjcf         = { workspace = true }
 
 [lints]
 workspace = true
@@ -454,6 +455,19 @@ workspace = true
 `bevy_ecs` (grep-verified: the feature was carried by
 `sim-ml-bridge` for chassis-level consumers, which are now in
 `sim-ml-chassis`).
+
+**Trimmed against pre-execution draft.** The original §4.1 listed
+`nalgebra`, `serde`, `serde_json`, `sim-core`, and `thiserror` as
+regular deps, copied from `sim-ml-bridge/Cargo.toml`. Commit-3
+execution grep-verified that none of the five algorithm source files
+(`cem.rs`/`ppo.rs`/`td3.rs`/`sac.rs`/`reinforce.rs`) reference any of
+them post-extraction — those crates were pulled in by chassis files
+(`task.rs`, `tensor.rs`, `error.rs`, `artifact.rs`, …) that have since
+moved to `sim-ml-chassis`. `serde_json` survived as a dev-dep because
+`tests/best_tracker_cem_integration.rs` round-trips a checkpoint
+through `serde_json::to_string`/`from_str`. Final regular deps:
+`rand` + `sim-ml-chassis`. Each entry carries a `# justification`
+comment per the grade tool's hard gate (see §11).
 
 **`sim-mjcf` is a dev-dep only.** The algorithm source files (`cem.rs`,
 `ppo.rs`, `td3.rs`, `sac.rs`, `reinforce.rs`) do not reference `sim-mjcf`
@@ -715,9 +729,22 @@ algorithm struct is `persistence/train-then-replay` (imports `Cem`).
 
 sim-opt currently imports `sim-ml-bridge` as its chassis-in-disguise. The
 split forces a rewrite of every source file and test fixture in the crate.
-These rewrites land in commit 5 of §10, not commit 4, because the diff is
-mechanically distinct (sim-opt is its own crate re-homing, not an external
-consumer) and benefits from its own grading checkpoint.
+The source-file rewrites land in commit 5 because the diff is mechanically
+distinct (sim-opt is its own crate re-homing, not an external consumer)
+and benefits from its own grading checkpoint.
+
+> **Cargo.toml moved up to commit 3 (post-execution correction).**
+> The `sim/L0/opt/Cargo.toml` row of the table below — **only the
+> Cargo.toml row** — actually lands in the merged commit 3 (see §10),
+> not commit 5. Reason: deleting `sim-ml-bridge = { path = "..." }`
+> from `[workspace.dependencies]` while sim-opt's manifest still
+> inherits it via `workspace = true` blocks workspace manifest parse
+> for every crate in the tree, including sim-rl. The fix is one-line
+> in commit 3; sim-opt's `src/*.rs` and `tests/d2c_sr_rematch*.rs`
+> source files keep their stale `use sim_ml_bridge::` lines and
+> remain temporarily uncompilable until commit 5 finishes the
+> re-home. This doesn't block sim-rl/sim-ml-chassis/sim-thermostat
+> builds because none of them depend on sim-opt.
 
 | File | Actual imports (verified 2026-04-15) | Target |
 |---|---|---|
@@ -789,6 +816,30 @@ enclosing #[allow(clippy::panic)] as panic justification`) ahead of
 commit 2 in this PR. Commits 2, 3, and 5's grading checkpoints all
 depend on it.
 
+> **Commits 3 and 4 collapsed (post-execution correction).** The
+> earlier draft split commit 3 (chassis/rl rename) from commit 4
+> (tree-wide `sim_ml_bridge::` → `sim_rl::` / `sim_ml_chassis::`
+> rewrites). Commit-3 execution discovered that the spec's
+> commit-3 verification (`cargo build -p sim-rl`) cannot pass in
+> isolation: §9.2 deletes `sim-ml-bridge` from
+> `[workspace.dependencies]`, but 23 downstream Cargo.tomls still
+> inherit it via `workspace = true`. Workspace manifest parse fails
+> for every member the moment §9.2 lands, so `cargo build -p sim-rl`
+> is unreachable until §8.1–§8.3's downstream Cargo.toml + `.rs`
+> rewrites also land. The fix is to fold commits 3 and 4 into a
+> single commit. Commit 5 (sim-opt re-home) stays separate; the
+> commit-5 *number* is preserved for stability across MEMORY.md
+> references and the four-commit table below leaves the slot for
+> commit 4 deliberately blank.
+>
+> The general lesson — load-bearing for any future workspace-rename
+> split — is that the `[workspace.dependencies]` rename is atomic: you
+> cannot checkpoint between "deleted from workspace.deps" and
+> "downstream rewritten." §11's "each commit leaves the tree in a
+> buildable, gradable state" invariant only holds *if* every commit
+> that touches `[workspace.dependencies]` also rewrites every
+> `workspace = true` consumer in the same diff.
+
 Each numbered step is one commit. Run the listed grading command before
 moving on; if grade drops from A, fix before proceeding (commit may be
 amended *within its own step*, never across steps).
@@ -797,16 +848,16 @@ amended *within its own step*, never across steps).
 |---|---|---|---|
 | 1 | `feat(sim-ml-chassis): scaffold empty crate` | New `sim/L0/ml-chassis/{Cargo.toml, src/lib.rs}` (empty lib). Workspace member + dep alias. | `cargo build -p sim-ml-chassis` green |
 | 2 | `refactor(sim-ml-chassis): move primitives from sim-ml-bridge` | Move the 23 files from §1.2 plus `benches/bridge_benchmarks.rs`. Promote `best_tracker` to `pub`. Create `sim-ml-chassis/src/stats.rs` per §3.6 (with the two unit tests inside it). Update `sim-ml-chassis/src/lib.rs` per §3.2 and §3.3 (module + `pub use` for `stats::gaussian_log_prob`). Fix the `autograd.rs:77` docstring per §3.5. `TaskConfig::from_build_fn` already exists upstream and moves with `task.rs` unchanged — no new constructor code. **`tests/custom_task.rs` and `tests/competition.rs` do NOT move here** — they stay with the soon-to-be-renamed sim-rl. **sim-ml-bridge still exists** at this commit — the algorithm files are all that's left. Update `sim-ml-bridge/src/lib.rs` to drop the moved modules and keep only `cem`, `ppo`, `reinforce`, `sac`, `td3` with `use sim_ml_chassis::*` as needed. Also delete the local `pub fn gaussian_log_prob` in `sim-ml-bridge/src/sac.rs:226-242` and redirect its two internal callers at `sac.rs:397,519` to `sim_ml_chassis::stats::gaussian_log_prob`. | `cargo build -p sim-ml-chassis` green; `cargo test -p sim-ml-chassis stats::tests` green; `cargo build -p sim-ml-bridge` green; `cargo xtask grade sim-ml-chassis` = A |
-| 3 | `refactor(sim-rl): rename sim-ml-bridge and re-export chassis types` | Rename `sim/L0/ml-bridge/` → `sim/L0/rl/`. Replace the Cargo.toml contents per §4.1 (drops the transitional `sim-ml-chassis` dep line from commit 2, adds `approx` + `sim-mjcf` dev-deps, changes package name to `sim-rl`). Rewrite `src/lib.rs` per §4.2 (re-exports include `TrainingProvenance`, `PolicyArtifact`, `TrainingCheckpoint`). **Four** integration tests travel with the rename (they live at `sim/L0/rl/tests/{custom_task,competition,best_tracker_cem_integration,autograd_policy_reinforce_integration}.rs`); rewrite their `sim_ml_bridge::` imports to `sim_rl::`. Per §1.3, all four files have split imports at commit-3 start (pre-existing pair fixed up in commit 2 drift #5, new pair written that way from the start); flip **only** the `sim_ml_bridge::` line in each, leaving `sim_ml_chassis::` lines untouched. Update workspace member list and dep alias per §9. **No intra-`src/` import rewrites** — those already happened in commit 2 per §1.4. | `cargo build -p sim-rl` green; `cargo build -p sim-rl --tests` green (all four integration tests compile); `cargo test -p sim-rl --test custom_task` green; `cargo xtask grade sim-rl` = A |
-| 4 | `refactor: rewrite sim_ml_bridge:: imports across tree` | Apply §8.1–§8.3 tables. Docs too. No crate structure changes. Does **not** touch sim-opt — that lands in commit 5. | `cargo build -p <crate>` per touched crate; `cargo test -p <crate>` where applicable. `cargo xtask grade sim-ml-chassis` and `cargo xtask grade sim-rl` still = A |
-| 5 | `refactor(sim-opt): re-home on sim-ml-chassis + sim-rl` | Apply §8.4. Update `sim-opt/Cargo.toml` (regular dep `sim-ml-chassis`, dev-dep `sim-rl`). Rewrite `src/{algorithm,richer_sa,parallel_tempering,analysis}.rs` and `tests/d2c_sr_rematch{,_richer_sa,_pt}.rs` from `sim_ml_bridge::` → `sim_ml_chassis::` / `sim_rl::`. Update `src/lib.rs` module-doc prose. | `cargo build -p sim-opt` green; `cargo test -p sim-opt --release` on non-ignored tests green; the three `#[ignore]`'d rematch fixtures still compile; `cargo xtask grade sim-opt` = A |
+| 3 | `refactor(sim-rl): rename sim-ml-bridge and rehome downstream` | **Merged commit 3 + 4.** Rename `sim/L0/ml-bridge/` → `sim/L0/rl/` via `git mv`; expect 9 of 11 files to preserve rename detection and Cargo.toml + src/lib.rs to land as delete+add (full rewrites per §4.1/§4.2). Replace `sim/L0/rl/Cargo.toml` per §4.1's trimmed dep set (regular: `rand` + `sim-ml-chassis`; dev: `approx` + `serde_json` + `sim-mjcf`). Rewrite `sim/L0/rl/src/lib.rs` per §4.2. Flip the `sim_ml_bridge::` line in all four `sim/L0/rl/tests/{custom_task,competition,best_tracker_cem_integration,autograd_policy_reinforce_integration}.rs` integration tests, leaving `sim_ml_chassis::` lines untouched per §1.3. Update workspace member list and dep alias per §9. Apply §8.1 (22 chassis-only `.rs` rewrites) + §8.2 (4 sim-rl `.rs` rewrites) + §8.3 (ML_COMPETITION_SPEC.md banner + 5 in-file prose fixes in moved files). Update 23 downstream Cargo.tomls in lockstep: 21 example crates (20 → `sim-ml-chassis`, 1 persistence/train-then-replay → `sim-rl`), `sim-thermostat` per §1.5 (both deps), and **`sim-opt` Cargo.toml only** to its §8.4 final shape (regular dep `sim-ml-chassis`, dev-dep `sim-rl`) so workspace manifest parses; sim-opt's `src/*.rs` + `tests/d2c_sr_rematch*.rs` source files stay broken until commit 5. The 7 bevy-flagged downstream consumers move to `sim-ml-chassis = { workspace = true, features = ["bevy"] }` because §4.1 drops the bevy feature from sim-rl. **A-grade fixes folded in:** add `// ` justification comments above two non-test `#[allow(clippy::...)]` attributes in `sim/L0/rl/src/{td3.rs:108, cem.rs:131}` (the grade tool's clippy criterion only accepts `//`, not `///` rustdoc, as preceding-line justification); delete `assert!(m.wall_time_ms < 60_000, "epoch took too long")` at `sim/L0/rl/src/cem.rs:329` in `cem_smoke_2dof` (wall-clock unit-test assertions crash under `cargo llvm-cov`'s ~10× instrumentation overhead — the test ran 976s before panicking, producing the grade tool's "(parse error)" coverage result). | Per-criterion checks instead of full xtask grade per `feedback_xtask_grade_opacity.md`: `cargo build -p sim-rl` green; `cargo build -p sim-rl --tests` green; `cargo test -p sim-rl --test custom_task` 1/1 green; `cargo test -p sim-rl --lib --release` 37/37 green; `cargo clippy -p sim-rl --tests --all-targets` 0 warnings; `cargo doc -p sim-rl --no-deps` 0 warnings; `cargo build -p sim-thermostat --tests` green; spot-check ≥5 downstream consumers (bevy + non-bevy + sim-rl + chassis-only + shared lib) compile green. Final `cargo xtask grade sim-rl` = A as a single confirmation pass before commit (not iterated). |
+| 4 | *(merged into commit 3 — see commit 3 row)* | | |
+| 5 | `refactor(sim-opt): re-home on sim-ml-chassis + sim-rl` | Apply the source-file half of §8.4 only — sim-opt's Cargo.toml already moved in commit 3. Rewrite `src/{algorithm,richer_sa,parallel_tempering,analysis}.rs` and `tests/d2c_sr_rematch{,_richer_sa,_pt}.rs` from `sim_ml_bridge::` → `sim_ml_chassis::` / `sim_rl::`. Update `src/lib.rs` module-doc prose. | `cargo build -p sim-opt` green; `cargo test -p sim-opt --release` on non-ignored tests green; the three `#[ignore]`'d rematch fixtures still compile; `cargo xtask grade sim-opt` = A |
 
-**All five commits must land in the same PR.** The chassis/rl split is one
-breaking change; partial merges would leave the tree in a half-renamed state
-that no downstream branch could rebase cleanly on. Commits 6-8 from earlier
-drafts of this spec (scaffold sim-opt, SA `train()` body, D2c rematch test)
-shipped separately via the sim-opt path (PRs #187/#188/#190) and are not
-part of this PR.
+**All commits must land in the same PR.** The chassis/rl split is one
+breaking change; partial merges would leave the tree in a half-renamed
+state that no downstream branch could rebase cleanly on. Commits 6-8
+from earlier drafts of this spec (scaffold sim-opt, SA `train()` body,
+D2c rematch test) shipped separately via the sim-opt path (PRs
+#187/#188/#190) and are not part of this PR.
 
 ---
 
@@ -816,13 +867,34 @@ Per-crate A-grade is required. Run each of these before moving on:
 
 ```
 cargo xtask grade sim-ml-chassis    # after commit 2
-cargo xtask grade sim-rl            # after commit 3
+cargo xtask grade sim-rl            # after merged commit 3 (was 3 + 4)
 cargo xtask grade sim-opt           # after commit 5
 ```
 
 **If a crate drops from A.** Fix the criterion that dropped before the
 next commit — do not batch fixes across commits. The commits above are
 structured so each one leaves the tree in a buildable, gradable state.
+
+**Iterate per-criterion, not per-grade.** `cargo xtask grade <crate>`
+runs `cargo llvm-cov` twice and takes 10–20+ minutes per invocation
+under instrumentation, with no progress logging. Don't loop on the
+full grade tool while debugging A-grade misses; instead run targeted
+checks (`cargo test -p X --lib --release`, `cargo clippy -p X --tests`,
+`cargo doc -p X --no-deps`, manual `Cargo.toml` dep-comment scan,
+manual `#[allow(clippy::...)]` `//` preceding-line scan) and reserve
+the full grade for **one** final confirmation pass before commit. See
+`feedback_xtask_grade_opacity.md` and the grader internals at
+`xtask/src/grade.rs:660-748` (clippy) and `:1016-1135` (deps).
+
+**Coverage and wall-clock asserts.** The grader's coverage criterion
+runs unit tests under `cargo llvm-cov` instrumentation, which adds
+~10× wall time. Any unit test that asserts an upper bound on
+`wall_time_ms` (or `elapsed`/`Duration`) will trip under instrumentation
+even when the assertion is reasonable for plain `--release`. These are
+flaky-test anti-patterns regardless of grading; delete them when you
+find them, don't widen the threshold. Commit 3 hit one of these in
+`sim/L0/rl/src/cem.rs:329` (`cem_smoke_2dof`), inherited from
+`sim-ml-bridge`.
 
 **Do not run.** `cargo xtask check` or `cargo test` (workspace-level).
 Both are explicitly forbidden by CLAUDE.md.
