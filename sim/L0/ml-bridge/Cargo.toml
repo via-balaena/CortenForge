@@ -18,16 +18,13 @@ rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sim-core = { workspace = true }
+sim-ml-chassis = { workspace = true }
 sim-mjcf = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
-
-[[bench]]
-name = "bridge_benchmarks"
-harness = false
 
 [lints]
 workspace = true

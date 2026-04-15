@@ -7517,6 +7517,7 @@ dependencies = [
  "serde_json",
  "sim-core",
  "sim-mjcf",
+ "sim-ml-chassis",
  "thiserror 2.0.18",
 ]
 

@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
-use sim_ml_bridge::{
-    ActionSpace, Algorithm, Cem, CemHyperparams, LinearPolicy, ObservationSpace, TaskConfig,
-    TrainingBudget,
+use sim_ml_bridge::{Cem, CemHyperparams};
+use sim_ml_chassis::{
+    ActionSpace, Algorithm, LinearPolicy, ObservationSpace, TaskConfig, TrainingBudget,
 };
 
 const MJCF: &str = r#"

@@ -69,6 +69,7 @@ impl Extractor {
     }
 
     /// Extract values from `data` into `buf`, which must have length == `self.dim()`.
+    // f64 → f32 at the sim/ML boundary — the sim is f64, ML tensors are f32.
     #[allow(clippy::cast_possible_truncation)]
     fn extract(&self, data: &Data, buf: &mut [f32]) {
         match self {
@@ -123,6 +124,7 @@ impl Extractor {
             }
 
             Self::ContactCount => {
+                // ncon is a small usize (bounded by contact capacity, ~hundreds).
                 #[allow(clippy::cast_precision_loss)]
                 {
                     buf[0] = data.ncon as f32;
@@ -140,6 +142,7 @@ impl Extractor {
 }
 
 /// Copy a range from a flat `f64` slice (`DVector` backing) to `f32` buf.
+// f64 → f32 at the sim/ML boundary.
 #[allow(clippy::cast_possible_truncation)]
 fn copy_dvec(src: &[f64], range: &Range<usize>, dst: &mut [f32]) {
     for (d, &s) in dst.iter_mut().zip(&src[range.clone()]) {
@@ -148,6 +151,7 @@ fn copy_dvec(src: &[f64], range: &Range<usize>, dst: &mut [f32]) {
 }
 
 /// Copy a range from a `Vec<f64>` to `f32` buf.
+// f64 → f32 at the sim/ML boundary.
 #[allow(clippy::cast_possible_truncation)]
 fn copy_vec_f64(src: &[f64], range: &Range<usize>, dst: &mut [f32]) {
     for (d, &s) in dst.iter_mut().zip(&src[range.clone()]) {
@@ -629,6 +633,7 @@ impl Injector {
     }
 
     /// Inject values from `action_slice` (f32) into `data`, clamping Ctrl.
+    // f32 → f64 on the inbound action path; ctrl-range comparisons then narrow back.
     #[allow(clippy::cast_possible_truncation)]
     fn inject(&self, action_slice: &[f32], data: &mut Data, model: &Model) {
         match self {
@@ -718,6 +723,7 @@ impl ActionSpace {
     ///
     /// For `Ctrl` injectors the bounds come from `model.actuator_ctrlrange`.
     /// Other injectors are unbounded (`-inf..inf`).
+    // f64 ctrl ranges → f32 TensorSpec bounds at the sim/ML boundary.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn spec(&self, model: &Model) -> TensorSpec {

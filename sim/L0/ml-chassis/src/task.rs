@@ -407,6 +407,7 @@ const MJCF_6DOF: &str = r#"
 /// # Panics
 ///
 /// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
+// MJCF_2DOF is a compile-time constant; parse failure = author bug, not runtime input.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_2dof() -> TaskConfig {
@@ -492,6 +493,7 @@ pub fn reaching_2dof() -> TaskConfig {
 /// # Panics
 ///
 /// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
+// MJCF_6DOF is a compile-time constant; parse failure = author bug, not runtime input.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_6dof() -> TaskConfig {
@@ -668,6 +670,7 @@ const MJCF_6DOF_OBSTACLE: &str = r#"
 /// # Panics
 ///
 /// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
+// MJCF_6DOF_OBSTACLE is a compile-time constant; parse failure = author bug, not runtime input.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn obstacle_reaching_6dof() -> TaskConfig {

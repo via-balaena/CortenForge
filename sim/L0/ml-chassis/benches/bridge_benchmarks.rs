@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use sim_core::{BatchSim, Model};
-use sim_ml_bridge::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv};
+use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

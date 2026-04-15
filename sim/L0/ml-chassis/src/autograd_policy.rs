@@ -72,6 +72,7 @@ fn randn(rng: &mut impl rand::Rng) -> f64 {
 ///   `limit = √(6 / (fan_in + fan_out))`.
 /// - `Activation::Relu` → He normal: `W ~ N(0, √(2 / fan_in))`.
 /// - Biases: always zero.
+// fan_in/fan_out are usize → f64 for sqrt; widths are << 2^52 in practice.
 #[allow(clippy::cast_precision_loss)]
 fn xavier_init(
     params: &mut [f64],
@@ -1022,50 +1023,5 @@ mod tests {
         // Weights should be non-zero.
         let any_nonzero = p.params().iter().any(|&v| v.abs() > 1e-12);
         assert!(any_nonzero, "Xavier init should produce non-zero weights");
-    }
-
-    // ── Convergence with 2-layer ReLU + Xavier ───────────────────
-
-    #[test]
-    fn relu_xavier_convergence_2dof() {
-        use crate::algorithm::{Algorithm, TrainingBudget};
-        use crate::optimizer::OptimizerConfig;
-        use crate::reaching_2dof;
-        use crate::reinforce::{Reinforce, ReinforceHyperparams};
-        use rand::SeedableRng;
-
-        let task = reaching_2dof();
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-
-        let policy = Box::new(AutogradPolicy::new_xavier(
-            task.obs_dim(),
-            &[32, 32],
-            task.act_dim(),
-            task.obs_scale(),
-            crate::Activation::Relu,
-            &mut rng,
-        ));
-
-        let mut algo = Reinforce::new(
-            policy,
-            OptimizerConfig::adam(0.05),
-            ReinforceHyperparams {
-                gamma: 0.99,
-                sigma_init: 0.5,
-                sigma_decay: 0.95,
-                sigma_min: 0.05,
-                max_episode_steps: 300,
-            },
-        );
-
-        let mut env = task.build_vec_env(20, 0).unwrap();
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(20), 42, &|_| {});
-
-        let first = metrics[0].mean_reward;
-        let last = metrics[19].mean_reward;
-        assert!(
-            last > first,
-            "2-layer ReLU+Xavier should improve: first={first:.1}, last={last:.1}",
-        );
     }
 }

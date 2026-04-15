@@ -63,6 +63,7 @@ fn randn(rng: &mut impl rand::Rng) -> f64 {
 }
 
 /// Initialize weights using Xavier (Glorot) or He initialization.
+// fan_in/fan_out are usize → f64 for sqrt; widths are << 2^52 in practice.
 #[allow(clippy::cast_precision_loss)]
 fn xavier_init(
     params: &mut [f64],
