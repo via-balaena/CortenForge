@@ -367,12 +367,13 @@ pattern.
 
 ---
 
-#### ☐ 3. Non-test `#[allow(clippy::...)]` justification audit
+#### ☑ 3. Non-test `#[allow(clippy::...)]` justification audit
 
 Every non-test `#[allow(clippy::...)]` under `sim/L0/*/src/` should have a
-`//` (not `///`) preceding-line comment within 1–3 lines. PR #192 added 8
-such comments across the chassis/rl split; others may still be missing in
-crates the grader hasn't touched recently.
+`//` (not `///`) preceding-line comment within 1–3 lines, OR a same-line
+trailing `//` after the attribute. PR #192 added 8 such comments across
+the chassis/rl split; others may still be missing in crates the grader
+hasn't touched recently.
 
 **Recon prompt sketch:** "Grep for `#[allow(clippy::` under `sim/L0/*/src/`
 excluding `#[cfg(test)]` blocks and `tests/` directories. For each hit,
@@ -382,7 +383,169 @@ not blank). Output as a punch list grouped by crate."
 **Time:** ~15min recon + fixes are 1 line each.
 
 **Findings:**
-_(none yet)_
+
+Recon strategy followed `feedback_ground_truth_via_tool.md`'s second-best
+option (clippy/rustc don't enforce comment-justification — that's a
+grader-local rule) by writing a Python script that mirrored
+`grade_clippy`'s file-scan state machine verbatim. First pass returned
+**171 UNJUSTIFIED hits** workspace-wide, but spot-checking revealed two
+distinct false positives the grader was contributing to the count:
+
+**Adjacent grader gap A — test-module-attribute stack (58 sites).**
+`grade_clippy`'s `pending_test_attr → in_test` transition only fires when
+it sees `{`, so an `#[allow(...)]` stacked between `#[cfg(test)]` and the
+`mod tests {` opening is scanned as library code:
+
+```rust
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]   // ← scanned as lib
+mod tests { ... }
+```
+
+This is the test-module house pattern across the repo. 58 sites across 7
+of 8 Layer 0 crates (sim-types, sim-urdf, sim-mjcf, sim-thermostat,
+sim-core, etc.).
+
+**Adjacent grader gap B — multi-line attribute form (51 sites).**
+`grade_clippy` only matched `#[allow(clippy::` as a single-line substring,
+so the formatted form
+```rust
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+)]
+```
+was silently ignored — neither flagged nor justification-checked. 51
+occurrences workspace-wide, of which **25 were in library code** in the
+just-refactored chassis/rl/opt crates (`sim-rl/cem.rs`, `ppo.rs`,
+`reinforce.rs`, `sac.rs`, `td3.rs`; `sim-opt/algorithm.rs`,
+`analysis.rs`, `parallel_tempering.rs`, `richer_sa.rs`;
+`sim-ml-chassis/competition.rs`; etc.) — exactly the post-PR-#192
+staleness this audit exists to catch. The other 26 were in test modules.
+
+**Both gaps closed in commit 1 (grader fix).** `count_unjustified_clippy_allows`
+extracted into a tested helper; the state machine now (a) skips attribute
+lines when `pending_test_attr` is true, and (b) walks `#[allow(`
+openings forward to the matching `)]` (single- or multi-line), checking
+whether the joined span contains `clippy::`. 13 new unit tests cover the
+interesting cases: same-line, multi-line, doc-comment-doesn't-justify,
+test-mod-attr stack, multi-line test-mod-attr stack, multi-line
+unjustified, multi-line justified, non-clippy allow ignored, after-test-
+module still scanned, block comment skipped. Total grader unit tests:
+10 → 23.
+
+**Post-grader-fix true-positive count: 146 sites** (113 visible to the
+old grader minus the 58 false-positive test-mod-attrs, plus the 25 newly-
+visible chassis/rl/opt library multi-line sites + the 33 single-line
+chassis/rl/opt allows the audit had missed pre-fix).
+
+| Crate | Pre-fix REAL-LIB | Post-fix true total |
+|---|---|---|
+| sim-core | 83 | **104** |
+| sim-mjcf | 21 | **22** |
+| sim-gpu | 6 | **6** |
+| sim-thermostat | 3 | **3** |
+| sim-opt | (hidden) | **5** |
+| sim-rl | (hidden) | **5** |
+| sim-ml-chassis | (hidden) | **1** |
+| sim-types, sim-urdf, sim-simd, sim-tests | 0 | **0** |
+| **TOTAL** | 113 | **146** |
+
+**Fixes shipped — per-crate `chore` commits:**
+
+- **sim-ml-chassis (1 site).** `competition.rs::now_iso8601`: Hinnant
+  civil-date single-letter symbols + epoch-arithmetic cast bounds.
+- **sim-thermostat (3 sites).** `prf.rs`: ChaCha8 state-word truncation
+  + PCG32-XSH-RR algorithm-defined output width + power-of-2 mantissa
+  exactness for the uniform-`(0,1]` map.
+- **sim-opt (5 sites).** `algorithm.rs`/`richer_sa.rs`/`parallel_tempering.rs`
+  multi-line cast bundles for cooling/swap math; `analysis.rs`
+  bootstrap-CI cast bundles (B = 10 000, slice lengths far below 2^52).
+- **sim-rl (5 sites).** `cem.rs`/`ppo.rs`/`reinforce.rs`/`sac.rs`/`td3.rs`
+  multi-line cast + `too_many_lines` + `panic` bundles on each
+  `Algorithm::train`; comments lead with the inlined-pipeline
+  readability rationale and the panic-as-internal-invariant contract.
+- **sim-gpu (6 sites).** `pub_underscore_fields` on three WGSL-mirroring
+  padding fields (must be `pub` for `bytemuck::Pod`/`Zeroable`);
+  `too_many_lines` on the dispatch pipeline; `too_many_arguments` on the
+  per-dispatch builder.
+- **sim-mjcf (22 sites).** Lifted the `cast_possible_truncation,
+  cast_possible_wrap` allow stack on `assemble_model`'s seven `nuser_*`
+  computations to a function-level allow with a single justification
+  (deleting six redundant attribute lines in the process); added
+  upstream-table justifications to the three Gauss-Kronrod / Gauss-
+  Legendre constant blocks; justified mesh-inertia
+  `suspicious_operation_groupings` once with cross-references for the
+  three call sites; bounds-check / branch-guard reasons for the parser
+  bitmask casts; upstream-schema reasons for the two `struct_excessive_bools`.
+- **sim-core (104 sites).** Largest sweep. Categories:
+  - Collision-pair dispatchers (`pair_convex`, `pair_cylinder`, `plane`,
+    `mesh_collide`, `narrow`, `sdf_collide`, `hfield`, `flex_self`,
+    `flex_narrow`): full-per-geom-context reason.
+  - Constraint solvers (`assembly`, `contact_assembly`, `equality`,
+    `pgs`, `primal`, `qcqp`, `hessian`, `newton`, `cg`, `noslip`,
+    `mod`): full-per-iteration-state reason + published-notation
+    single-letter-name reason.
+  - Dynamics (`crba`, `rne`, `spatial`): Featherstone-notation reason +
+    inlined-as-single-function reason for the forward/backward passes.
+  - Derivatives (`fd`, `hybrid`, `integration`): MuJoCo analytical-
+    derivatives notation reason.
+  - Casts (`island/sleep`, `forward/check`, `forward/muscle`, `validation`,
+    `gjk_epa`, `model_init`, `constraint/mod`, `constraint/solver/cg`,
+    `constraint/solver/pgs`): bounds-check / model-dimension-bounded /
+    branch-guard reasons.
+  - Indexed loops (`hessian`, `linalg`, `model_init`, multiple in
+    `derivatives/hybrid`): parallel-array-update reason.
+  - Math/notation (`linalg`, `mesh`, `forward/position`, `joint_visitor`,
+    `dynamics/spatial`, `sensor/geom_distance`): published-notation +
+    paired-identifier reasons.
+  - One-offs: `clippy::panic` on `model_init::make_data` (plugin init
+    failures are unrecoverable load errors, contract documented in
+    `# Panics`); `island::mj_island` and `mj_flood_fill` inlined-pipeline
+    + i32-storage-bounded reasons.
+
+  Bulk-applied via a Python `insert.py` script (in `/tmp/item3-audit/`)
+  that takes a `(file, line, comment)` TSV and inserts indentation-matched
+  `// <comment>` lines bottom-up per file. The script kept the diff
+  mechanical and made it possible to land 104 site-specific comments
+  without 104 individual `Edit` round-trips.
+
+**Recon-script reuse note.** The Python audit script
+(`/tmp/item3-audit/audit-v2.py`) mirrors the new `count_unjustified_clippy_allows`
+helper line-for-line. If items 4–5 want to do the same "is the grader
+seeing the current state of crate X" check on dependencies / wall-clock
+asserts, this is the second-time-confirmed pattern for those audits too.
+
+**Verification:** `cargo clippy -p {sim-core,sim-mjcf,sim-gpu,sim-thermostat,sim-ml-chassis,sim-rl,sim-opt} --tests --all-features -- -D warnings`
+clean. `cargo test -p xtask` 23 grader unit tests pass (was 10 pre-item-3).
+
+**Dispositions:**
+
+- Grader test-mod-attr fix → **(a)**, shipped in commit 1.
+- Grader multi-line-form fix → **(a)**, shipped in commit 1 (revised
+  from initial (b)-defer instinct after recon showed 25 of 51 multi-line
+  sites were library code in chassis/rl/opt — the audit-coverage hole
+  this audit exists to catch, not a hypothetical edge case).
+- 146 site fixes → **(a)**, shipped in 7 per-crate commits (2-8).
+- `count_unjustified_clippy_allows` helper extraction with 13 new unit
+  tests → **(a)**, shipped in commit 1. Closes item 1's earlier (b)
+  follow-up on adding `#[cfg(test)]` coverage to `grade_clippy`.
+- Refactoring `assemble_model`'s nuser_* allow stack to a function-level
+  allow with a single justification (sim-mjcf) → **(a)**, shipped inline
+  with the per-crate sweep. Touches a load-bearing build pipeline
+  function but the change is purely attribute hygiene.
+- Trailing `//` comments inside multi-line allow bodies (e.g.,
+  `sim-mjcf/builder/mesh.rs:181`'s `clippy::cast_precision_loss,   //
+  nrow/ncol are small ints` form) — grader does NOT recognize these as
+  justification (the inline-`//` check anchors on the opening line
+  only). Could harden the helper to walk trailing `//` comments inside
+  the body too → **(b)**, file as follow-up. Not shipping inline; the
+  workaround (preceding `// reason:` line) lands the same information
+  at the same review distance.
+- Promoting the `audit-v2.py` mirror script to an xtask subcommand
+  (`cargo xtask audit-clippy-allows`) → **(b)**, file as follow-up.
+  Same disposition as item 2's `audit-panics` candidate; group with that
+  if either becomes a recurring need.
 
 ---
 
