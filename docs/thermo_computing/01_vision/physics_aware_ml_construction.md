@@ -1,12 +1,14 @@
 # Physics-Aware ML Pivot — Construction Spec
 
 This is the mechanical "what" to accompany `physics_aware_ml_pivot.md`'s
-strategic "why." Every file, signature, and test assertion is spelled out
-so the execution session makes **no design calls** on the fly — only
-implementation choices inside `SimulatedAnnealing::train()` and the other
-algorithm bodies.
+strategic "why." Every file move, import rewrite, and grading checkpoint
+is spelled out so the execution session makes **no design calls** on the
+fly. Scope is the `sim-ml-bridge` → `sim-ml-chassis` + `sim-rl` split;
+sim-opt's algorithms and rematch fixtures already shipped via PRs
+#187/#188/#190 and are not part of this PR.
 
-Read this document top to bottom. Each numbered section maps to one commit.
+Read this document top to bottom. Each numbered section in §10 maps to
+one commit.
 
 ---
 
@@ -37,15 +39,8 @@ Read this document top to bottom. Each numbered section maps to one commit.
 | `sim/L0/ml-chassis/src/stats.rs` | **new** — `gaussian_log_prob` f64 helper, relocated from `sac.rs`. One pub function, ~15 lines. See §3.6. |
 | `sim/L0/rl/Cargo.toml` | package = `sim-rl` (rename of `sim-ml-bridge`) |
 | `sim/L0/rl/src/lib.rs` | algorithm crate root with re-exports |
-| `sim/L0/rl/src/builders.rs` | `build_*` factories for `Competition` |
-| `sim/L0/opt/Cargo.toml` | package = `sim-opt` |
-| `sim/L0/opt/src/lib.rs` | opt crate root |
-| `sim/L0/opt/src/annealing.rs` | `SimulatedAnnealing` + `AnnealingHyperparams` |
-| `sim/L0/opt/src/tempering.rs` | stub — `todo!()` body, types only |
-| `sim/L0/opt/src/cma_es.rs` | stub — `todo!()` body, types only |
-| `sim/L0/opt/src/metropolis.rs` | stub — `todo!()` body, types only |
-| `sim/L0/opt/src/builders.rs` | `build_simulated_annealing`, stubs for the rest |
-| `sim/L0/opt/tests/d2c_rematch.rs` | integration test, §7 |
+
+`sim/L0/opt/` already exists and is not created by this PR. See §5.
 
 ### 1.2 Moved files (`sim/L0/ml-bridge/src/*.rs` → `sim/L0/ml-chassis/src/`)
 
@@ -79,7 +74,7 @@ remain in `sim/L0/rl/src/`:
 
 ```
 cem.rs         reinforce.rs   ppo.rs         td3.rs         sac.rs
-lib.rs         builders.rs (new)
+lib.rs
 ```
 
 And under `sim/L0/rl/tests/` — the two integration tests that exercise
@@ -100,19 +95,14 @@ Content edit on the move: rewrite their `sim_ml_bridge::` imports to
 
 ### 1.4 Content edits inside existing algorithm files (commit 2)
 
-These edits happen in commit 2, **while the package is still named
-`sim-ml-bridge` on disk**. Commit 3 is a pure rename + directory move;
-by then the algorithm files already compile against `sim-ml-chassis`.
-This is a sequencing requirement, not a stylistic choice: after commit
-2 physically moves `algorithm.rs`, `best_tracker.rs`, `vec_env.rs`, etc.
-out of `sim-ml-bridge/src/`, the remaining algorithm files' `use
-crate::algorithm::Algorithm` lines stop resolving and the crate no
-longer compiles. They have to be rewritten in the same commit.
+These edits happen in commit 2, while the package is still named
+`sim-ml-bridge` on disk — commit 3 is a pure rename. Once commit 2
+moves `algorithm.rs`, `best_tracker.rs`, etc. out, the remaining
+algorithm files no longer compile until their imports are rewritten.
 
 - **`sim-ml-bridge/Cargo.toml`** — add `sim-ml-chassis = { workspace = true }`
-  as a regular dep. (It will be dropped in commit 3 and replaced by
-  the new `sim-rl` Cargo.toml per §4.1, so this is a one-commit-lifetime
-  edit.)
+  as a regular dep (one-commit lifetime; dropped in commit 3 when the
+  new `sim-rl` Cargo.toml replaces it per §4.1).
 - **All five algorithm files** (`cem.rs`, `ppo.rs`, `td3.rs`, `sac.rs`,
   `reinforce.rs`) — mechanical rewrite of `use crate::X` to
   `use sim_ml_chassis::X` for every chassis module (`algorithm`,
@@ -394,21 +384,14 @@ mod tests {
 }
 ```
 
-**Why this relocation is load-bearing.** `vec-env/sac/src/main.rs:45`
-imports `gaussian_log_prob` from `sim_ml_bridge`. Grep-verified: the
-visual SAC example builds SAC from chassis primitives (no `Sac` struct
-used), so it is a **chassis-only consumer** per §8's classification. If
-`gaussian_log_prob` stayed in `sim-rl::sac`, the example would need
-`sim-rl` as a dependency for a single math helper — breaking the clean
-"chassis for pedagogy, sim-rl for headless baselines" split. Moving the
-function to `sim-ml-chassis::stats` makes the example's existing
-import path (after the `sim_ml_bridge` → `sim_ml_chassis` rewrite in §8)
-work without pulling in `sim-rl`.
-
-`sim-rl`'s `sac.rs` internally also calls `gaussian_log_prob` at lines
-`sac.rs:397,519` — those imports also get redirected to
-`sim_ml_chassis::stats::gaussian_log_prob`. No behavior change; the
-function body is bit-identical.
+**Why this relocation is load-bearing.** The visual SAC example
+(`vec-env/sac/src/main.rs:45`) builds SAC from chassis primitives — no
+`Sac` struct — so it's a chassis-only consumer. Leaving
+`gaussian_log_prob` in `sim-rl::sac` would force the example to pull
+`sim-rl` in for a single math helper. Moving it to
+`sim-ml-chassis::stats` keeps the example on a single-crate dependency.
+`sim-rl`'s `sac.rs` also calls this function internally at lines 397
+and 519; those imports redirect to chassis in the same commit.
 
 ---
 
@@ -537,611 +520,37 @@ each of: `artifact`, `best_tracker`, `gae`, `optimizer`, `policy`,
 `replay_buffer`, `rollout`, `tensor`, `value`, `vec_env`. Do not rewrite
 `crate::cem`, `crate::ppo`, etc. — those remain intra-crate.
 
-### 4.4 `sim-rl/src/builders.rs`
-
-New file. Each builder takes a `&TaskConfig`, reads its `obs_dim`,
-`act_dim`, `obs_scale`, and returns a `Box<dyn Algorithm>` constructed
-with task-matched hyperparams. The hyperparam defaults match the working
-D2c test (`sim/L0/thermostat/tests/d2c_cem_training.rs:274-386`).
-
-```rust
-//! Competition-ready builders for the RL baselines.
-//!
-//! Each builder takes a [`TaskConfig`] and returns a [`Box<dyn Algorithm>`]
-//! sized for that task. Hyperparameter defaults are tuned for the D2c
-//! stochastic-resonance rematch; override by calling the underlying
-//! `::new()` directly in custom tests.
-
-use sim_ml_chassis::algorithm::Algorithm;
-use sim_ml_chassis::linear::{LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue};
-use sim_ml_chassis::optimizer::OptimizerConfig;
-use sim_ml_chassis::task::TaskConfig;
-
-use crate::cem::{Cem, CemHyperparams};
-use crate::ppo::{Ppo, PpoHyperparams};
-use crate::sac::{Sac, SacHyperparams};
-use crate::td3::{Td3, Td3Hyperparams};
-
-const MAX_EPISODE_STEPS: usize = 5_000;
-
-/// CEM with a linear policy. Matches the D2c CEM baseline.
-#[must_use]
-pub fn build_cem_linear(task: &TaskConfig) -> Box<dyn Algorithm> {
-    let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    Box::new(Cem::new(
-        Box::new(policy),
-        CemHyperparams {
-            elite_fraction: 0.2,
-            noise_std: 2.5,
-            noise_decay: 0.98,
-            noise_min: 0.1,
-            max_episode_steps: MAX_EPISODE_STEPS,
-        },
-    ))
-}
-
-/// PPO with a linear policy + linear value fn. Matches the D2c PPO baseline.
-#[must_use]
-pub fn build_ppo_linear(task: &TaskConfig) -> Box<dyn Algorithm> {
-    let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let value_fn = LinearValue::new(task.obs_dim(), task.obs_scale());
-    Box::new(Ppo::new(
-        Box::new(policy),
-        Box::new(value_fn),
-        OptimizerConfig::adam(3e-4),
-        PpoHyperparams {
-            clip_eps: 0.2,
-            k_passes: 4,
-            gamma: 0.99,
-            gae_lambda: 0.95,
-            sigma_init: 1.0,
-            sigma_decay: 0.995,
-            sigma_min: 0.1,
-            max_episode_steps: MAX_EPISODE_STEPS,
-        },
-    ))
-}
-
-/// TD3 with linear policy + twin linear Q. Matches the D2c TD3 baseline.
-#[must_use]
-pub fn build_td3_linear(task: &TaskConfig) -> Box<dyn Algorithm> {
-    let policy        = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let target_policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let q1            = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let q2            = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let target_q1     = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let target_q2     = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    Box::new(Td3::new(
-        Box::new(policy),
-        Box::new(target_policy),
-        Box::new(q1),
-        Box::new(q2),
-        Box::new(target_q1),
-        Box::new(target_q2),
-        OptimizerConfig::adam(3e-4),
-        Td3Hyperparams {
-            gamma: 0.99,
-            tau: 0.005,
-            policy_noise: 0.2,
-            noise_clip: 0.5,
-            exploration_noise: 0.5,
-            policy_delay: 2,
-            batch_size: 256,
-            buffer_capacity: 100_000,
-            warmup_steps: 1_000,
-            max_episode_steps: MAX_EPISODE_STEPS,
-        },
-    ))
-}
-
-/// SAC with linear stochastic policy + twin linear Q. Matches the D2c SAC baseline.
-#[must_use]
-pub fn build_sac_linear(task: &TaskConfig) -> Box<dyn Algorithm> {
-    let policy    = LinearStochasticPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale(), 0.0);
-    let q1        = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let q2        = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let target_q1 = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    let target_q2 = LinearQ::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    Box::new(Sac::new(
-        Box::new(policy),
-        Box::new(q1),
-        Box::new(q2),
-        Box::new(target_q1),
-        Box::new(target_q2),
-        OptimizerConfig::adam(3e-4),
-        SacHyperparams {
-            gamma: 0.99,
-            tau: 0.005,
-            alpha_init: 0.2,
-            auto_alpha: true,
-            target_entropy: -(task.act_dim() as f64),
-            alpha_lr: 3e-4,
-            batch_size: 256,
-            buffer_capacity: 100_000,
-            warmup_steps: 1_000,
-            max_episode_steps: MAX_EPISODE_STEPS,
-        },
-    ))
-}
-```
-
-**Note on CEM init.** The D2c test (`d2c_cem_training.rs:278`) calls
-`policy.set_params(&[0.0, 0.0, 2.0])` before handing the policy to CEM —
-a task-specific prior that pushes the initial temperature mean near the
-SR peak. Do **not** bake this into `build_cem_linear`; it's overfitting
-to SR. The rematch test (§7) can apply the same prior inline before
-calling the builder's output if parity with D2c is required.
-
-**MLP / autograd builders are deferred** — the spec's decision is "linear
-RL vs physics-aware first; MLP follow-up later." Do not write
-`build_ppo_mlp` / `build_sac_autograd` in this PR.
-
 ---
 
-## 5. `sim-opt` — public surface and SA skeleton
+## 5. `sim-opt` — already shipped
 
-### 5.1 Cargo.toml
+sim-opt shipped via PRs #187/#188/#190 (2026-04-12 through 2026-04-15).
+The crate exists at `sim/L0/opt/` with four source modules and three
+rematch fixtures:
 
-```toml
-[package]
-name = "sim-opt"
-description = "Physics-aware optimization algorithms (SA, PT, CMA-ES, MH) — the custom-skate family for thermodynamic computing"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
-rust-version.workspace = true
+- `src/algorithm.rs::Sa` — basic Simulated Annealing implementing
+  `Algorithm` (PR #188, commit `3d6f9ad8`).
+- `src/richer_sa.rs::RicherSa` — SA with Rechenberg 1/5 success rule
+  (PR #190, commit `c7aabcc7` + self-review fix `abf0f3aa`).
+- `src/parallel_tempering.rs::Pt` — K=4 geometric-ladder Parallel
+  Tempering, swap-every-epoch (PR #190, commit `8f8e006f`).
+- `src/analysis.rs` — dual-metric `TwoMetricOutcome` rematch analysis
+  pipeline with bootstrap CIs and the Ch 30 three-outcome classifier
+  (PR #190, commit `086c04c8`).
+- `tests/d2c_sr_rematch{,_richer_sa,_pt}.rs` — three `#[ignore]`'d
+  integration fixtures, each ~4h on an MBP under `--release`.
 
-[dependencies]
-nalgebra        = { workspace = true }
-rand            = { workspace = true }
-serde           = { workspace = true }
-serde_json      = { workspace = true }
-sim-core        = { workspace = true }
-sim-ml-chassis  = { workspace = true }
-sim-thermostat  = { workspace = true }
-thiserror       = { workspace = true }
+28 unit tests green under `cargo test -p sim-opt --release`. The D2c-SR
+rematch is closed at the study level per Ch 53 §6.4.
 
-[dev-dependencies]
-approx          = { workspace = true }
-sim-mjcf        = { workspace = true }
-sim-rl          = { workspace = true }   # baseline comparisons only
+**The chassis/rl split does not touch sim-opt's algorithms or tests** — it
+only re-homes the crate's `sim_ml_bridge::` imports onto
+`sim_ml_chassis::` and `sim_rl::`. That rewrite is commit 5 of §10. The
+file-by-file rewrite table is §8.4.
 
-[lints]
-workspace = true
-```
-
-### 5.2 `sim-opt/src/lib.rs`
-
-```rust
-//! # sim-opt
-//!
-//! Physics-aware optimization algorithms for CortenForge. Peers with
-//! `sim-rl` — both bolt onto `sim-ml-chassis`. `sim-opt` is where
-//! algorithms whose structure matches the physics of thermodynamic
-//! computing live: Simulated Annealing, Parallel Tempering, CMA-ES,
-//! Metropolis-Hastings.
-
-#![deny(clippy::unwrap_used, clippy::expect_used)]
-
-pub mod annealing;
-pub mod builders;
-pub mod cma_es;
-pub mod metropolis;
-pub mod tempering;
-
-pub use annealing::{AnnealingHyperparams, CoolingSchedule, SimulatedAnnealing};
-pub use cma_es::{CmaEs, CmaEsHyperparams};
-pub use metropolis::{MetropolisHastings, MhHyperparams};
-pub use tempering::{ParallelTempering, TemperingHyperparams};
-
-// Re-export the chassis `Algorithm` trait so downstream users can import
-// everything through `sim_opt::` for symmetry with `sim_rl::`.
-pub use sim_ml_chassis::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
-pub use sim_ml_chassis::task::TaskConfig;
-pub use sim_ml_chassis::vec_env::VecEnv;
-```
-
-### 5.3 `sim-opt/src/annealing.rs` — full skeleton
-
-This is the one file that gets a real implementation in this PR. The
-skeleton below compiles and satisfies `Algorithm`; the body of the inner
-loop is where the author does the real work.
-
-```rust
-//! Simulated Annealing (Kirkpatrick, Gelatt, Vecchi — Science 1983).
-//!
-//! Each epoch: propose a perturbation of the current candidate params,
-//! evaluate fitness via episodic rollout on `VecEnv`, accept or reject via
-//! the Metropolis criterion at the current temperature, then step the
-//! cooling schedule.
-//!
-//! Fits `sim_ml_chassis::Algorithm` as-is — SA treats the policy parameter
-//! vector as its state and the mean episodic return as its objective.
-
-use std::collections::BTreeMap;
-use std::time::Instant;
-
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-
-use sim_ml_chassis::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
-use sim_ml_chassis::artifact::{PolicyArtifact, TrainingCheckpoint};
-use sim_ml_chassis::best_tracker::BestTracker;
-use sim_ml_chassis::policy::Policy;
-use sim_ml_chassis::rollout::collect_episodic_rollout;
-use sim_ml_chassis::vec_env::VecEnv;
-
-// ── Cooling schedules ────────────────────────────────────────────────────
-
-/// Temperature schedule for the annealing loop.
-///
-/// `Geometric` is the canonical choice from Kirkpatrick et al. `Linear`
-/// is offered for debugging and short runs.
-#[derive(Debug, Clone, Copy)]
-pub enum CoolingSchedule {
-    /// `T(t+1) = T(t) * factor`. Classic Kirkpatrick.
-    Geometric { factor: f64 },
-    /// `T(t+1) = max(min, T(t) - step)`. For linear-cooldown debugging.
-    Linear { step: f64, min: f64 },
-}
-
-// ── Hyperparameters ──────────────────────────────────────────────────────
-
-/// Simulated Annealing hyperparameters.
-#[derive(Debug, Clone, Copy)]
-pub struct AnnealingHyperparams {
-    /// Initial temperature (in units of fitness per parameter perturbation).
-    pub t_init: f64,
-    /// Minimum temperature floor. Below this the algorithm becomes greedy.
-    pub t_min: f64,
-    /// Cooling schedule applied once per epoch.
-    pub schedule: CoolingSchedule,
-    /// Standard deviation of Gaussian proposal perturbations. One shared σ
-    /// across all policy parameters; tune if parameters have different scales.
-    pub proposal_std: f64,
-    /// Maximum environment steps per episode (evaluation budget per candidate).
-    pub max_episode_steps: usize,
-}
-
-// ── SimulatedAnnealing ───────────────────────────────────────────────────
-
-/// Simulated Annealing algorithm.
-///
-/// # Parts
-///
-/// - [`Policy`] — SA operates on the policy's parameter vector directly.
-///   No gradients, no autograd. Any `Box<dyn Policy>` works.
-///
-/// # Constructor
-///
-/// ```ignore
-/// let sa = SimulatedAnnealing::new(
-///     Box::new(LinearPolicy::new(obs_dim, act_dim, &obs_scale)),
-///     AnnealingHyperparams {
-///         t_init: 1.0,
-///         t_min: 0.01,
-///         schedule: CoolingSchedule::Geometric { factor: 0.95 },
-///         proposal_std: 0.3,
-///         max_episode_steps: 5_000,
-///     },
-/// );
-/// ```
-pub struct SimulatedAnnealing {
-    policy: Box<dyn Policy>,
-    hyperparams: AnnealingHyperparams,
-    /// Current temperature. Decayed by `hyperparams.schedule` each epoch.
-    temperature: f64,
-    /// Best-epoch policy snapshot.
-    best: BestTracker,
-}
-
-impl SimulatedAnnealing {
-    /// Create a new Simulated Annealing instance.
-    #[must_use]
-    pub fn new(policy: Box<dyn Policy>, hyperparams: AnnealingHyperparams) -> Self {
-        let temperature = hyperparams.t_init;
-        let best = BestTracker::new(policy.params());
-        Self { policy, hyperparams, temperature, best }
-    }
-
-    /// Advance the cooling schedule one step.
-    fn cool(&mut self) {
-        self.temperature = match self.hyperparams.schedule {
-            CoolingSchedule::Geometric { factor } => {
-                (self.temperature * factor).max(self.hyperparams.t_min)
-            }
-            CoolingSchedule::Linear { step, min } => {
-                (self.temperature - step).max(min.max(self.hyperparams.t_min))
-            }
-        };
-    }
-}
-
-impl Algorithm for SimulatedAnnealing {
-    fn name(&self) -> &'static str { "SA" }
-
-    fn train(
-        &mut self,
-        env: &mut VecEnv,
-        budget: TrainingBudget,
-        seed: u64,
-        on_epoch: &dyn Fn(&EpochMetrics),
-    ) -> Vec<EpochMetrics> {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let n_epochs = match budget {
-            TrainingBudget::Epochs(n) => n,
-            // SA is inherently epoch-based (one candidate per epoch) and
-            // each epoch runs TWO rollouts (curr + cand — see the
-            // "stochastic env handling" note below). Map Steps → Epochs
-            // by dividing by `2 * max_episode_steps`, with a floor of 1.
-            TrainingBudget::Steps(s) => {
-                (s / (2 * self.hyperparams.max_episode_steps).max(1)).max(1)
-            }
-        };
-        let mut metrics = Vec::with_capacity(n_epochs);
-
-        // Execution-session inner loop. Every design decision is
-        // written down — no hidden choices.
-        //
-        // ── Fitness metric ──────────────────────────────────────────
-        // Same as CEM (`cem.rs:177-184` on the current tree): per-
-        // trajectory mean reward `sum(rewards) / len.max(1)`, averaged
-        // over all `n_envs` trajectories. SR episodes run for 5 000
-        // steps, so per-step mean keeps the fitness on the same scale
-        // as the raw Langevin reward signal. **Do not** use `sum` — it
-        // rewards longer episodes, which skews SA's accept/reject rule
-        // when episodes truncate at slightly different times.
-        //
-        // ── Stochastic-env handling ─────────────────────────────────
-        // SR is Langevin-driven; every rollout is noisy. SA
-        // **re-evaluates curr every epoch** rather than caching its
-        // score, so each Metropolis comparison is between two freshly
-        // drawn samples of the same process. Cost: 2× rollouts/epoch.
-        // Benefit: the accept/reject decision is unbiased against
-        // whichever candidate happened to draw a lucky early sample.
-        // The n_epochs mapping above accounts for this.
-        //
-        // ── Borrow-checker shape ────────────────────────────────────
-        // `Policy::set_params` is `&mut self`; `Policy::forward` is
-        // `&self`. The `act_fn` closure passed to
-        // `collect_episodic_rollout` only needs `forward`, so
-        // `set_params` happens *outside* the closure. CEM nests
-        // set_params *inside* the closure because it has one candidate
-        // per env; SA has one candidate per epoch, so it doesn't.
-        //
-        // ── Imports to add at the top of this file ──────────────────
-        //   use sim_ml_chassis::rollout::{Trajectory, EpisodicRollout};
-        // (already importing `collect_episodic_rollout` — Trajectory is
-        // needed for the `.len()` method reference below.)
-        //
-        // ── Skeleton ────────────────────────────────────────────────
-        //
-        //   fn mean_fitness(rollout: &EpisodicRollout) -> f64 {
-        //       let n = rollout.trajectories.len().max(1) as f64;
-        //       rollout
-        //           .trajectories
-        //           .iter()
-        //           .map(|t| t.rewards.iter().sum::<f64>()
-        //                    / t.len().max(1) as f64)
-        //           .sum::<f64>() / n
-        //   }
-        //
-        //   for epoch in 0..n_epochs {
-        //       let t0 = Instant::now();
-        //       let curr: Vec<f64> = self.policy.params().to_vec();
-        //
-        //       // Evaluate curr (fresh sample, not a cache).
-        //       self.policy.set_params(&curr);
-        //       let rollout_curr = collect_episodic_rollout(
-        //           env,
-        //           &mut |_env_idx, obs| self.policy.forward(obs),
-        //           self.hyperparams.max_episode_steps,
-        //       );
-        //       let score_curr = mean_fitness(&rollout_curr);
-        //
-        //       // Propose: cand = curr + Normal(0, proposal_std).
-        //       let proposal_std = self.hyperparams.proposal_std;
-        //       let cand: Vec<f64> = curr
-        //           .iter()
-        //           .map(|&p| proposal_std.mul_add(randn(&mut rng), p))
-        //           .collect();
-        //       self.policy.set_params(&cand);
-        //       let rollout_cand = collect_episodic_rollout(
-        //           env,
-        //           &mut |_env_idx, obs| self.policy.forward(obs),
-        //           self.hyperparams.max_episode_steps,
-        //       );
-        //       let score_cand = mean_fitness(&rollout_cand);
-        //
-        //       // Metropolis acceptance (max problem — higher = better).
-        //       let delta = score_cand - score_curr;
-        //       let accepted = delta >= 0.0
-        //           || rng.random::<f64>() < (delta / self.temperature).exp();
-        //       if !accepted {
-        //           self.policy.set_params(&curr); // restore
-        //       }
-        //
-        //       let score_after = if accepted { score_cand } else { score_curr };
-        //       self.best.maybe_update(
-        //           epoch, score_after, self.policy.params(),
-        //       );
-        //
-        //       let total_steps: usize = rollout_curr
-        //           .trajectories
-        //           .iter()
-        //           .chain(rollout_cand.trajectories.iter())
-        //           .map(Trajectory::len)
-        //           .sum();
-        //       let done_count = rollout_cand
-        //           .trajectories
-        //           .iter()
-        //           .filter(|t| t.done)
-        //           .count();
-        //
-        //       self.cool();
-        //
-        //       let mut extra = BTreeMap::new();
-        //       extra.insert("temperature".into(), self.temperature);
-        //       extra.insert(
-        //           "accepted".into(), if accepted { 1.0 } else { 0.0 },
-        //       );
-        //       extra.insert("delta".into(), delta);
-        //
-        //       let em = EpochMetrics {
-        //           epoch,
-        //           mean_reward: score_after,
-        //           done_count,
-        //           total_steps,
-        //           wall_time_ms: t0.elapsed().as_millis() as u64,
-        //           extra,
-        //       };
-        //       on_epoch(&em);
-        //       metrics.push(em);
-        //   }
-        //
-        // ── randn helper ────────────────────────────────────────────
-        // Copy the Box-Muller at `cem.rs:115-119` verbatim into this
-        // file (four lines, plus doc comment). Do not re-export it
-        // across crates — it is private in `sim-rl` by design.
-        let _ = (env, &mut rng, on_epoch, &mut metrics, n_epochs);
-        todo!("SA inner loop — fill in per the skeleton above")
-    }
-
-    fn policy_artifact(&self) -> PolicyArtifact {
-        PolicyArtifact::from_policy(&*self.policy)
-    }
-
-    fn best_artifact(&self) -> PolicyArtifact {
-        self.best.to_artifact(self.policy.descriptor())
-    }
-
-    fn checkpoint(&self) -> TrainingCheckpoint {
-        let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
-        let mut state = BTreeMap::new();
-        state.insert("temperature".into(), self.temperature);
-        TrainingCheckpoint {
-            algorithm_name: "SA".into(),
-            policy_artifact: self.policy_artifact(),
-            critics: vec![],
-            optimizer_states: vec![],
-            algorithm_state: state,
-            best_params: Some(best_params),
-            best_reward,
-            best_epoch,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn geometric_schedule_cools_and_clamps() {
-        // Construct with a dummy zero-param policy so we can test cooling
-        // in isolation without touching an env.
-        let hyp = AnnealingHyperparams {
-            t_init: 1.0,
-            t_min: 0.1,
-            schedule: CoolingSchedule::Geometric { factor: 0.5 },
-            proposal_std: 0.1,
-            max_episode_steps: 10,
-        };
-        // Use LinearPolicy with 1-dim obs, 1-dim act — dev-dep on sim-rl
-        // for the type, or re-export from chassis (already done).
-        let policy = Box::new(sim_ml_chassis::LinearPolicy::new(1, 1, &[1.0]));
-        let mut sa = SimulatedAnnealing::new(policy, hyp);
-
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.5);
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.25);
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.125);
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.1); // clamped
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.1); // stays
-    }
-
-    #[test]
-    fn linear_schedule_cools_and_clamps() {
-        let hyp = AnnealingHyperparams {
-            t_init: 1.0,
-            t_min: 0.05,
-            schedule: CoolingSchedule::Linear { step: 0.3, min: 0.05 },
-            proposal_std: 0.1,
-            max_episode_steps: 10,
-        };
-        let policy = Box::new(sim_ml_chassis::LinearPolicy::new(1, 1, &[1.0]));
-        let mut sa = SimulatedAnnealing::new(policy, hyp);
-
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.7);
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.4);
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.1);
-        sa.cool(); approx::assert_relative_eq!(sa.temperature, 0.05); // clamped
-    }
-}
-```
-
-### 5.4 Stub files
-
-`tempering.rs`, `cma_es.rs`, `metropolis.rs` each contain just the type
-definitions needed for `sim-opt/src/lib.rs` to compile. Every method body
-is `todo!("sim-opt phase 2")`. Example:
-
-```rust
-//! Parallel Tempering (Geyer 1991; Hukushima & Nemoto 1996). Stub.
-
-pub struct ParallelTempering { /* fields TBD */ }
-
-#[derive(Debug, Clone, Copy)]
-pub struct TemperingHyperparams {
-    pub n_replicas: usize,
-    pub t_min: f64,
-    pub t_max: f64,
-    pub swap_interval: usize,
-    pub max_episode_steps: usize,
-}
-
-impl ParallelTempering {
-    #[must_use]
-    pub fn new(_hyp: TemperingHyperparams) -> Self { todo!("sim-opt phase 2") }
-}
-```
-
-These stubs exist so `sim-opt` has a coherent public surface after the
-first PR. They do not implement `Algorithm` yet; they are not exposed
-via `sim_opt::builders::*` until phase 2.
-
-### 5.5 `sim-opt/src/builders.rs`
-
-```rust
-//! Competition-ready builders for the sim-opt algorithm family.
-
-use sim_ml_chassis::algorithm::Algorithm;
-use sim_ml_chassis::linear::LinearPolicy;
-use sim_ml_chassis::task::TaskConfig;
-
-use crate::annealing::{AnnealingHyperparams, CoolingSchedule, SimulatedAnnealing};
-
-const MAX_EPISODE_STEPS: usize = 5_000;
-
-/// Simulated Annealing with a linear policy. The SA baseline for the D2c rematch.
-#[must_use]
-pub fn build_simulated_annealing(task: &TaskConfig) -> Box<dyn Algorithm> {
-    let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
-    Box::new(SimulatedAnnealing::new(
-        Box::new(policy),
-        AnnealingHyperparams {
-            t_init: 1.0,
-            t_min: 0.01,
-            schedule: CoolingSchedule::Geometric { factor: 0.95 },
-            proposal_std: 0.5,
-            max_episode_steps: MAX_EPISODE_STEPS,
-        },
-    ))
-}
-```
-
-PT and CMA-ES builders are **not** written in this PR.
+sim-opt's `Cargo.toml`, `src/lib.rs` module doc, and the `use` lines in
+the four source files + three test fixtures are the only diff surface in
+commit 5. The crate keeps its A grade across the re-home.
 
 ---
 
@@ -1156,108 +565,19 @@ the motivation.
 
 ---
 
-## 7. D2c rematch — `sim/L0/opt/tests/d2c_rematch.rs`
+## 7. D2c rematch — shipped
 
-New integration test. Mirrors the D2c experiment structure (32 envs, 100
-epochs, 5000-step episodes) but uses `Competition::run` to pool RL
-baselines against Simulated Annealing. Runs only in release mode.
+Shipped via `sim/L0/opt/tests/d2c_sr_rematch{,_richer_sa,_pt}.rs` under
+PRs #187/#188/#190. The rematch ran three times (basic SA, richer-SA with
+Rechenberg 1/5, Parallel Tempering K=4) on the same MacBook Pro; Ch 53 §6.4
+of the ml-chassis-refactor study closes the D2c-SR question at the study
+level. See `physics_aware_ml_pivot.md` "D2c rematch — shipped and closed"
+and `docs/studies/ml_chassis_refactor/src/53-robustness-check-prereg.md`
+§§5-6 for the honest-reading asymmetry (richer-SA weak corroborator, PT
+carries the differential signal).
 
-```rust
-//! D2c rematch — Simulated Annealing vs linear-RL baselines on
-//! stochastic resonance.
-//!
-//! Protocol: `Competition::run` with the same 32-env / 100-epoch / 5000-step
-//! budget the original D2c tests used. Evaluation is the `best_reward`
-//! reported by the Competition runner (max mean-reward across epochs).
-//!
-//! Gate: SA's best reward must match or exceed the best of the three
-//! linear-RL baselines (CEM, PPO, TD3). SAC is excluded because its D2c
-//! result (Gate A FAIL, `kT=-0.78`) has no reasonable way to be a "baseline"
-//! — include it later if we want the full ranking.
-//!
-//! Expected runtime: ~40-60 minutes on release. Gated behind `#[ignore]`
-//! unless explicitly requested.
-//!
-//! Spec: `docs/thermo_computing/01_vision/physics_aware_ml_construction.md` §7
-
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
-use sim_ml_chassis::algorithm::{Algorithm, TrainingBudget};
-use sim_ml_chassis::competition::Competition;
-use sim_ml_chassis::task::TaskConfig;
-
-use sim_opt::builders::build_simulated_annealing;
-use sim_rl::builders::{build_cem_linear, build_ppo_linear, build_td3_linear};
-use sim_thermostat::tasks::stochastic_resonance;
-
-const N_ENVS: usize = 32;
-const N_EPOCHS: usize = 100;
-const SEED: u64 = 20_260_412;
-
-#[test]
-#[ignore = "requires --release (~45 min)"]
-fn d2c_rematch_sa_vs_linear_rl() {
-    let tasks = [stochastic_resonance()];
-    let comp = Competition::new_verbose(N_ENVS, TrainingBudget::Epochs(N_EPOCHS), SEED);
-
-    let builders: &[&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>] = &[
-        &build_cem_linear,
-        &build_ppo_linear,
-        &build_td3_linear,
-        &build_simulated_annealing,
-    ];
-
-    let result = comp.run(&tasks, builders).expect("competition.run");
-    result.print_ranked("stochastic-resonance", "D2c rematch");
-    for run in &result.runs {
-        run.assert_finite();
-    }
-
-    let sa  = result.find("stochastic-resonance", "SA").expect("SA result");
-    let cem = result.find("stochastic-resonance", "CEM").expect("CEM result");
-    let ppo = result.find("stochastic-resonance", "PPO").expect("PPO result");
-    let td3 = result.find("stochastic-resonance", "TD3").expect("TD3 result");
-
-    let sa_best  = sa.best_reward().expect("SA best");
-    let cem_best = cem.best_reward().expect("CEM best");
-    let ppo_best = ppo.best_reward().expect("PPO best");
-    let td3_best = td3.best_reward().expect("TD3 best");
-
-    let best_rl = cem_best.max(ppo_best).max(td3_best);
-
-    eprintln!("D2c rematch:");
-    eprintln!("  SA  best reward = {sa_best:>10.4}");
-    eprintln!("  CEM best reward = {cem_best:>10.4}");
-    eprintln!("  PPO best reward = {ppo_best:>10.4}");
-    eprintln!("  TD3 best reward = {td3_best:>10.4}");
-    eprintln!("  best_linear_rl  = {best_rl:>10.4}");
-
-    // Primary gate: SA >= best linear-RL baseline.
-    // Weak form — a tie is acceptable for a first rematch. If SA barely
-    // matches, open an issue to investigate proposal-std / schedule tuning
-    // before claiming the physics-aware pivot is vindicated.
-    assert!(
-        sa_best >= best_rl,
-        "D2c rematch FAILED: SA best ({sa_best:.4}) < best linear-RL ({best_rl:.4}). \
-         Physics-aware did not beat matched-complexity RL on SR."
-    );
-}
-```
-
-**Acceptance criterion.** The test passes if `SA.best_reward ≥
-max(CEM, PPO, TD3).best_reward`. The test does **not** try to replicate
-the Gate A t-statistic from the original D2c — that's a downstream
-analysis the author runs after the competition completes. Keeping the
-gate simple minimises the number of things that can flake.
-
-**What a failing rematch looks like.** SA loses. The user memory
-`project_d2_sr_findings.md` notes that SR has a broad, flat fitness
-landscape that CEM couldn't navigate within. SA with a Gaussian proposal
-is structurally similar to CEM's perturbation — it may hit the same
-ceiling. If that happens, the PR still lands (the infrastructure is
-correct), the test stays `#[ignore]` and green, and the next session is
-"tune SA proposal_std / schedule, or skip to PT." Don't block the PR on
-the rematch result.
+The chassis/rl split does not re-derive any of this; it only rewrites
+sim-opt's `sim_ml_bridge::` imports per §8.4.
 
 ---
 
@@ -1424,7 +744,7 @@ amended *within its own step*, never across steps).
 |---|---|---|---|
 | 1 | `feat(sim-ml-chassis): scaffold empty crate` | New `sim/L0/ml-chassis/{Cargo.toml, src/lib.rs}` (empty lib). Workspace member + dep alias. | `cargo build -p sim-ml-chassis` green |
 | 2 | `refactor(sim-ml-chassis): move primitives from sim-ml-bridge` | Move the 23 files from §1.2 plus `benches/bridge_benchmarks.rs`. Promote `best_tracker` to `pub`. Create `sim-ml-chassis/src/stats.rs` per §3.6 (with the two unit tests inside it). Update `sim-ml-chassis/src/lib.rs` per §3.2 and §3.3 (module + `pub use` for `stats::gaussian_log_prob`). Fix the `autograd.rs:77` docstring per §3.5. `TaskConfig::from_build_fn` already exists upstream and moves with `task.rs` unchanged — no new constructor code. **`tests/custom_task.rs` and `tests/competition.rs` do NOT move here** — they stay with the soon-to-be-renamed sim-rl. **sim-ml-bridge still exists** at this commit — the algorithm files are all that's left. Update `sim-ml-bridge/src/lib.rs` to drop the moved modules and keep only `cem`, `ppo`, `reinforce`, `sac`, `td3` with `use sim_ml_chassis::*` as needed. Also delete the local `pub fn gaussian_log_prob` in `sim-ml-bridge/src/sac.rs:226-242` and redirect its two internal callers at `sac.rs:397,519` to `sim_ml_chassis::stats::gaussian_log_prob`. | `cargo build -p sim-ml-chassis` green; `cargo test -p sim-ml-chassis stats::tests` green; `cargo build -p sim-ml-bridge` green; `cargo xtask grade sim-ml-chassis` = A |
-| 3 | `refactor(sim-rl): rename sim-ml-bridge and re-export chassis types` | Rename `sim/L0/ml-bridge/` → `sim/L0/rl/`. Replace the Cargo.toml contents per §4.1 (drops the transitional `sim-ml-chassis` dep line from commit 2, adds `approx` + `sim-mjcf` dev-deps, changes package name to `sim-rl`). Rewrite `src/lib.rs` per §4.2 (re-exports include `TrainingProvenance`, `PolicyArtifact`, `TrainingCheckpoint`). Create `builders.rs` per §4.4. The two integration tests travel with the rename (they live at `sim/L0/rl/tests/custom_task.rs` and `sim/L0/rl/tests/competition.rs`); rewrite their `sim_ml_bridge::` imports to `sim_rl::`. Update workspace member list and dep alias per §9. **No intra-`src/` import rewrites** — those already happened in commit 2 per §1.4. | `cargo build -p sim-rl` green; `cargo test -p sim-rl --test custom_task` green; `cargo xtask grade sim-rl` = A |
+| 3 | `refactor(sim-rl): rename sim-ml-bridge and re-export chassis types` | Rename `sim/L0/ml-bridge/` → `sim/L0/rl/`. Replace the Cargo.toml contents per §4.1 (drops the transitional `sim-ml-chassis` dep line from commit 2, adds `approx` + `sim-mjcf` dev-deps, changes package name to `sim-rl`). Rewrite `src/lib.rs` per §4.2 (re-exports include `TrainingProvenance`, `PolicyArtifact`, `TrainingCheckpoint`). The two integration tests travel with the rename (they live at `sim/L0/rl/tests/custom_task.rs` and `sim/L0/rl/tests/competition.rs`); rewrite their `sim_ml_bridge::` imports to `sim_rl::`. Update workspace member list and dep alias per §9. **No intra-`src/` import rewrites** — those already happened in commit 2 per §1.4. | `cargo build -p sim-rl` green; `cargo test -p sim-rl --test custom_task` green; `cargo xtask grade sim-rl` = A |
 | 4 | `refactor: rewrite sim_ml_bridge:: imports across tree` | Apply §8.1–§8.3 tables. Docs too. No crate structure changes. Does **not** touch sim-opt — that lands in commit 5. | `cargo build -p <crate>` per touched crate; `cargo test -p <crate>` where applicable. `cargo xtask grade sim-ml-chassis` and `cargo xtask grade sim-rl` still = A |
 | 5 | `refactor(sim-opt): re-home on sim-ml-chassis + sim-rl` | Apply §8.4. Update `sim-opt/Cargo.toml` (regular dep `sim-ml-chassis`, dev-dep `sim-rl`). Rewrite `src/{algorithm,richer_sa,parallel_tempering,analysis}.rs` and `tests/d2c_sr_rematch{,_richer_sa,_pt}.rs` from `sim_ml_bridge::` → `sim_ml_chassis::` / `sim_rl::`. Update `src/lib.rs` module-doc prose. | `cargo build -p sim-opt` green; `cargo test -p sim-opt --release` on non-ignored tests green; the three `#[ignore]`'d rematch fixtures still compile; `cargo xtask grade sim-opt` = A |
 
@@ -1460,42 +780,46 @@ Both are explicitly forbidden by CLAUDE.md.
 
 Listed so the execution session doesn't wander:
 
-- **Parallel Tempering implementation.** Stub only.
-- **CMA-ES implementation.** Stub only.
-- **Metropolis-Hastings wrapper.** Stub only.
-- **Differential Evolution.** Not even a stub — add to `sim-opt` later.
-- **MLP/autograd RL baselines for the rematch.** Linear-only.
-- **Bevy visualization for SA or any `sim-opt` algorithm.** Headless.
+- **New algorithms in sim-opt.** CMA-ES, Metropolis-Hastings, Differential
+  Evolution — not in this PR. SA, richer-SA, and PT already shipped; this
+  PR only re-homes their imports.
+- **MLP/autograd RL baselines for the rematch.** Linear-only. The MLP
+  rematch remains a deferred follow-up per `project_sim_ml_pivot.md`.
+- **Bevy visualization for sim-opt algorithms.** Headless.
 - **`sim-ml-bridge` backwards-compat shim.** Gone means gone. No
   re-export crate, no `#[deprecated]` aliases.
 - **Moving `GibbsSampler` out of `sim-thermostat`.** Stays where it is.
 - **Changes to stock reaching tasks** (`reaching_2dof`,
   `reaching_6dof`, `obstacle_reaching_6dof`). They move into
   `sim-ml-chassis` as-is.
-- **Refactoring stock tasks to use the new `TaskConfig::from_build_fn`
-  constructor.** The private struct-literal path stays; the public
-  `from_build_fn` is a cross-crate bypass, not a replacement. See §6.4.
-- **Tuning SA hyperparameters past the defaults in §5.5.** That's a
-  follow-up if the rematch comes back flat.
-- **Writing `build_ppo_mlp`, `build_sac_autograd`, etc.** Linear-only
-  builders in this PR.
+- **Refactoring stock tasks to use `TaskConfig::from_build_fn`.** The
+  private struct-literal path stays; the public `from_build_fn` (shipped
+  in PR #190) is a cross-crate bypass, not a replacement.
+- **Tuning SA / richer-SA / PT hyperparameters.** Frozen as of
+  Chs 50-55 of the ml-chassis-refactor study.
+- **New builder factories for `Competition`.** Every fixture in the
+  tree constructs algorithms with direct `::new` calls; no `build_*`
+  functions exist or are needed.
 
 ---
 
 ## 13. Memory updates after merge
 
 After the PR lands, update these memory files in a separate commit
-(`chore(memory): sync with sim-ml-renovation split`):
+(`chore(memory): sync with chassis/rl split`):
 
-- `MEMORY.md` — update the `sim-ml-bridge` line in "Codebase Structure"
-  to list `sim-ml-chassis`, `sim-rl`, `sim-opt`.
+- `MEMORY.md` — update the `sim/L0/ml-bridge/` line in "Codebase
+  Structure" to list `sim-ml-chassis` + `sim-rl` (sim-opt is already
+  listed).
+- `project_sim_ml_pivot.md` — flip the "chassis/rl split is pending"
+  paragraph to "shipped", record the PR number, note any surprises
+  from commits 1-5.
 - `project_sim_ml_bridge.md` → **rename** to `project_sim_ml_split.md`,
-  record the split outcome and current grade status of all three crates.
-- `project_sim_ml_renovation.md` — note that the three-crate split
-  closed the renovation work; keep the doc for context on how we got
-  here.
-- `project_thermo_rl_loop_vision.md` — add a line noting that
-  `sim-opt` is now the home for custom thermo-RL algorithms.
+  record the final three-crate grade status.
+- `project_sim_ml_renovation.md` — close out with a pointer to the
+  split PR; keep the doc for historical context.
 
 No memory edits during the PR itself. Point-in-time observations get
-recorded once the facts stabilise.
+recorded once the facts stabilise. The checklist at
+`construction_spec_review_checklist.md` also gets deleted in the same
+`chore(memory)` commit.
