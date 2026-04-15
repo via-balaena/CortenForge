@@ -455,7 +455,6 @@ two integration tests under `tests/` load MJCF fixtures.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-pub mod builders;
 pub mod cem;
 pub mod ppo;
 pub mod reinforce;
