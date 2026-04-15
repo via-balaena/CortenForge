@@ -77,21 +77,40 @@ cem.rs         reinforce.rs   ppo.rs         td3.rs         sac.rs
 lib.rs
 ```
 
-And under `sim/L0/rl/tests/` — the two integration tests that exercise
-algorithm structs:
+And under `sim/L0/rl/tests/` — the **four** integration tests that
+exercise algorithm structs:
 
 ```
-custom_task.rs    (uses Cem::new directly — verified at
-                   sim/L0/ml-bridge/tests/custom_task.rs:11,85)
-competition.rs    (Phases 3+6 Cem/Ppo/Sac/Td3 comparison runs)
+custom_task.rs                          (uses Cem::new directly — pre-existing)
+competition.rs                          (Phases 3+6 Cem/Ppo/Sac/Td3 comparison — pre-existing)
+best_tracker_cem_integration.rs         (NEW — 5 tests extracted from
+                                         best_tracker.rs's mod tests during
+                                         commit 2; cycle-avoidance)
+autograd_policy_reinforce_integration.rs  (NEW — 1 test extracted from
+                                         autograd_policy.rs's mod tests during
+                                         commit 2; cycle-avoidance)
 ```
 
 These **cannot** move to chassis: they import algorithm structs, and
 putting them under `sim-ml-chassis/tests/` would require a
 `sim-ml-chassis → sim-rl` dev-dep, creating a dev-dep cycle.
-Content edit on the move: rewrite their `sim_ml_bridge::` imports to
-`sim_rl::` (everything they need is already re-exported via sim-rl per
-§4.2).
+
+**Import shape at commit 3's start** (differs between pre-existing and new
+files because commit 2's drift #5 fix split their imports to keep the
+test build green across commit 2's transient state):
+
+- **`custom_task.rs` and `competition.rs` (pre-existing):** now have **split
+  imports** — one `use sim_ml_bridge::{Cem, Ppo, Reinforce, Sac, Td3, …}` line
+  for algorithm types + one `use sim_ml_chassis::{Algorithm, LinearPolicy,
+  VecEnv, …}` line for chassis types. Commit 3's rewrite flips **only the
+  `sim_ml_bridge::` line** to `sim_rl::`; the `sim_ml_chassis::` line stays.
+- **`best_tracker_cem_integration.rs` and `autograd_policy_reinforce_integration.rs`
+  (new):** already written in the final two-line shape from the start —
+  `sim_ml_bridge::{Cem, CemHyperparams}` or `{Reinforce, ReinforceHyperparams}`
+  + `sim_ml_chassis::{chassis types}`. Commit 3 flips only the
+  `sim_ml_bridge::` line.
+
+Net: commit 3's rewrite is 4 files × 1 line each, purely mechanical.
 
 ### 1.4 Content edits inside existing algorithm files (commit 2)
 
@@ -757,6 +776,19 @@ at 482) are unchanged. `approx = "0.5"` at line 443 is already in
 
 ## 10. Execution commit sequence (one PR, multiple commits)
 
+**Prerequisite commit 2a (xtask grading-tool fix).** Before commit 2's
+grade checkpoint can reach A on this codebase, `xtask/src/grade.rs`
+needs a small extension: its safety-criterion scanner must accept an
+enclosing `#[allow(clippy::panic)]` / `#[allow(clippy::unreachable)]`
+attribute as valid justification for panic/unreachable sites, matching
+Rust's idiomatic pattern. Without this fix, `task.rs`, `rollout.rs`,
+and several other files inherit F-grades on ~17 pre-existing panic
+sites that already have function-level `#[allow]` and `# Panics`
+rustdoc. The fix landed as commit `529e5a50` (`fix(xtask): accept
+enclosing #[allow(clippy::panic)] as panic justification`) ahead of
+commit 2 in this PR. Commits 2, 3, and 5's grading checkpoints all
+depend on it.
+
 Each numbered step is one commit. Run the listed grading command before
 moving on; if grade drops from A, fix before proceeding (commit may be
 amended *within its own step*, never across steps).
@@ -765,7 +797,7 @@ amended *within its own step*, never across steps).
 |---|---|---|---|
 | 1 | `feat(sim-ml-chassis): scaffold empty crate` | New `sim/L0/ml-chassis/{Cargo.toml, src/lib.rs}` (empty lib). Workspace member + dep alias. | `cargo build -p sim-ml-chassis` green |
 | 2 | `refactor(sim-ml-chassis): move primitives from sim-ml-bridge` | Move the 23 files from §1.2 plus `benches/bridge_benchmarks.rs`. Promote `best_tracker` to `pub`. Create `sim-ml-chassis/src/stats.rs` per §3.6 (with the two unit tests inside it). Update `sim-ml-chassis/src/lib.rs` per §3.2 and §3.3 (module + `pub use` for `stats::gaussian_log_prob`). Fix the `autograd.rs:77` docstring per §3.5. `TaskConfig::from_build_fn` already exists upstream and moves with `task.rs` unchanged — no new constructor code. **`tests/custom_task.rs` and `tests/competition.rs` do NOT move here** — they stay with the soon-to-be-renamed sim-rl. **sim-ml-bridge still exists** at this commit — the algorithm files are all that's left. Update `sim-ml-bridge/src/lib.rs` to drop the moved modules and keep only `cem`, `ppo`, `reinforce`, `sac`, `td3` with `use sim_ml_chassis::*` as needed. Also delete the local `pub fn gaussian_log_prob` in `sim-ml-bridge/src/sac.rs:226-242` and redirect its two internal callers at `sac.rs:397,519` to `sim_ml_chassis::stats::gaussian_log_prob`. | `cargo build -p sim-ml-chassis` green; `cargo test -p sim-ml-chassis stats::tests` green; `cargo build -p sim-ml-bridge` green; `cargo xtask grade sim-ml-chassis` = A |
-| 3 | `refactor(sim-rl): rename sim-ml-bridge and re-export chassis types` | Rename `sim/L0/ml-bridge/` → `sim/L0/rl/`. Replace the Cargo.toml contents per §4.1 (drops the transitional `sim-ml-chassis` dep line from commit 2, adds `approx` + `sim-mjcf` dev-deps, changes package name to `sim-rl`). Rewrite `src/lib.rs` per §4.2 (re-exports include `TrainingProvenance`, `PolicyArtifact`, `TrainingCheckpoint`). The two integration tests travel with the rename (they live at `sim/L0/rl/tests/custom_task.rs` and `sim/L0/rl/tests/competition.rs`); rewrite their `sim_ml_bridge::` imports to `sim_rl::`. Update workspace member list and dep alias per §9. **No intra-`src/` import rewrites** — those already happened in commit 2 per §1.4. | `cargo build -p sim-rl` green; `cargo test -p sim-rl --test custom_task` green; `cargo xtask grade sim-rl` = A |
+| 3 | `refactor(sim-rl): rename sim-ml-bridge and re-export chassis types` | Rename `sim/L0/ml-bridge/` → `sim/L0/rl/`. Replace the Cargo.toml contents per §4.1 (drops the transitional `sim-ml-chassis` dep line from commit 2, adds `approx` + `sim-mjcf` dev-deps, changes package name to `sim-rl`). Rewrite `src/lib.rs` per §4.2 (re-exports include `TrainingProvenance`, `PolicyArtifact`, `TrainingCheckpoint`). **Four** integration tests travel with the rename (they live at `sim/L0/rl/tests/{custom_task,competition,best_tracker_cem_integration,autograd_policy_reinforce_integration}.rs`); rewrite their `sim_ml_bridge::` imports to `sim_rl::`. Per §1.3, all four files have split imports at commit-3 start (pre-existing pair fixed up in commit 2 drift #5, new pair written that way from the start); flip **only** the `sim_ml_bridge::` line in each, leaving `sim_ml_chassis::` lines untouched. Update workspace member list and dep alias per §9. **No intra-`src/` import rewrites** — those already happened in commit 2 per §1.4. | `cargo build -p sim-rl` green; `cargo build -p sim-rl --tests` green (all four integration tests compile); `cargo test -p sim-rl --test custom_task` green; `cargo xtask grade sim-rl` = A |
 | 4 | `refactor: rewrite sim_ml_bridge:: imports across tree` | Apply §8.1–§8.3 tables. Docs too. No crate structure changes. Does **not** touch sim-opt — that lands in commit 5. | `cargo build -p <crate>` per touched crate; `cargo test -p <crate>` where applicable. `cargo xtask grade sim-ml-chassis` and `cargo xtask grade sim-rl` still = A |
 | 5 | `refactor(sim-opt): re-home on sim-ml-chassis + sim-rl` | Apply §8.4. Update `sim-opt/Cargo.toml` (regular dep `sim-ml-chassis`, dev-dep `sim-rl`). Rewrite `src/{algorithm,richer_sa,parallel_tempering,analysis}.rs` and `tests/d2c_sr_rematch{,_richer_sa,_pt}.rs` from `sim_ml_bridge::` → `sim_ml_chassis::` / `sim_rl::`. Update `src/lib.rs` module-doc prose. | `cargo build -p sim-opt` green; `cargo test -p sim-opt --release` on non-ignored tests green; the three `#[ignore]`'d rematch fixtures still compile; `cargo xtask grade sim-opt` = A |
 
