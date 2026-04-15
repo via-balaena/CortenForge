@@ -688,27 +688,64 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
     }
 
     // Unjustified #[allow(clippy:: check (F-ext-3)
-    // Simple heuristic: skip lines after #[cfg(test)] to EOF (brace-depth tracker in Step 5)
+    // Brace-depth tracked test exclusion (mirrors grade_safety state machine).
     let mut allow_count = 0;
     let src_path = format!("{}/src", crate_path);
     if let Ok(entries) = glob_rs_files(&src_path) {
         for file_path in entries {
             if let Ok(content) = std::fs::read_to_string(&file_path) {
                 let lines: Vec<&str> = content.lines().collect();
+
                 let mut in_test = false;
+                let mut test_brace_depth: usize = 0;
+                let mut pending_test_attr = false;
+                let mut in_block_comment = false;
+
                 for (i, line) in lines.iter().enumerate() {
-                    let trimmed_line = line.trim();
-                    if !trimmed_line.starts_with("//") && trimmed_line.contains("#[cfg(test)]") {
-                        in_test = true;
+                    let trimmed = line.trim();
+
+                    if !in_block_comment && trimmed.contains("/*") {
+                        in_block_comment = true;
                     }
-                    if in_test {
+                    if in_block_comment {
+                        if trimmed.contains("*/") {
+                            in_block_comment = false;
+                        }
                         continue;
                     }
-                    let trimmed = line.trim();
+
+                    if trimmed.starts_with("//") {
+                        continue;
+                    }
+
+                    if trimmed.contains("#[cfg(test)]") {
+                        pending_test_attr = true;
+                    }
+
+                    if pending_test_attr && trimmed.contains('{') {
+                        in_test = true;
+                        test_brace_depth = 0;
+                        pending_test_attr = false;
+                    }
+
+                    if in_test {
+                        for ch in trimmed.chars() {
+                            if ch == '{' {
+                                test_brace_depth += 1;
+                            } else if ch == '}' {
+                                test_brace_depth = test_brace_depth.saturating_sub(1);
+                                if test_brace_depth == 0 {
+                                    in_test = false;
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     if !trimmed.contains("#[allow(clippy::") {
                         continue;
                     }
-                    // Check preceding 1-3 lines for a justification comment
                     let has_justification = (1..=3).any(|offset| {
                         i.checked_sub(offset).is_some_and(|j| {
                             let prev = lines[j].trim();
@@ -718,7 +755,6 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
                         })
                     });
                     if !has_justification {
-                        // Also check same-line trailing comment
                         let has_inline = trimmed.contains("//") && {
                             let comment_pos = trimmed.rfind("//").unwrap_or(0);
                             comment_pos > trimmed.find("#[allow(clippy::").unwrap_or(0)
