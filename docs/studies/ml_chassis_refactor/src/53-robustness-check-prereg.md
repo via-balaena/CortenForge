@@ -389,12 +389,44 @@ digest commits land *between* §§1-3 and §§5-6, and the §§5-6
 interpretation commit lands *last* with parents including
 both digest commits.
 
-### 4.1 Ch 53 anchor fill-ins (to be filled at §§5-6 commit time)
+### 4.1 Ch 53 anchor fill-ins
 
-- **§§1-3 pre-registration commit** — (to be filled)
-- **Richer-SA digest commit** — (to be filled)
-- **PT digest commit** — (to be filled)
-- **§§5-6 interpretation commit** — (self-reference)
+- **§§1-3 pre-registration commit** — `cde92f8c`
+  (`docs(ml-chassis-study): add Ch 53 §§1-4 — robustness-check
+  pre-registration`). Branch: `feature/ml-chassis-post-impl`.
+  Parent commit: `867b0b93` (Ch 51 §§3-4 + §2.5 anchor fill-in).
+  Landed before any richer-SA or PT code or run existed, which
+  is what makes §§1-3 of this chapter a pre-registration.
+- **Richer-SA digest commit** — `002d056a`
+  (`docs(ml-chassis-study): Ch 54 richer-SA digest`). Captures
+  the Ch 53 §2.2 follow-up run's dual-metric summary in a new
+  Chapter 54 and records the per-replicate comparison against
+  Ch 52's basic-SA numbers on the shared replicate seed pool.
+  The richer-SA code (Rechenberg 1/5 success rule) landed in
+  `c7aabcc7` with a self-review fix at `abf0f3aa`, both prior
+  to this digest and prior to the production run at
+  `/tmp/ch53_richer_sa.log`. Wall time 13,598.48s (~3h46m).
+- **PT digest commit** — `7745d25b`
+  (`docs(ml-chassis-study): Ch 55 PT digest`). Captures the
+  Ch 53 §2.3 Parallel Tempering follow-up run's dual-metric
+  summary in a new Chapter 55 and records the per-replicate
+  comparison against Ch 52's basic-SA numbers on the shared
+  replicate seed pool. The PT code (`K = 4` geometric ladder
+  `0.5 → 50.0`, swap every epoch, total-compute parity) landed
+  in `8f8e006f`, prior to this digest and prior to the
+  production run at `/tmp/ch53_pt.log`. Wall time 13,342.65s
+  (~3h42m).
+- **§§5-6 interpretation commit** — this chapter's §§5-6
+  commit, with parent `7745d25b`. Self-referential: the
+  commit's own hash cannot be written into its own content,
+  but `git log --reverse` over this file identifies it as the
+  commit immediately following `7745d25b` that replaces the
+  §§5-6 placeholders below with prose. Committed after §§1-3's
+  decision rule was anchored and after both digest commits'
+  numbers were captured, so §5's case classification applies
+  §3.2's pre-registered rule rather than deriving one after
+  the fact, and §6's interpretation applies §3.3's
+  pre-registered response in the direction §3.3 points.
 
 ### 4.2 Hardware note
 
@@ -411,25 +443,283 @@ for context but not asserted.
 
 ## Section 5 — Results
 
-*This section will be written after the richer-SA and PT
-follow-up runs complete and their digests land as the second
-and third anchor commits of §4's four-commit sequence. At
-that time, §5 will report each variant's `TwoMetricOutcome`
-summary (mirroring Ch 51 §3.1's shape), the joint
-`(C_rich, C_pt)` classification pair, and the case named by
-§3.2.*
+The richer-SA follow-up ran for 13,598.48s (~3h46m) and
+landed its dual-metric digest at commit `002d056a` (Ch 54).
+The PT follow-up ran for 13,342.65s (~3h42m) and landed its
+dual-metric digest at commit `7745d25b` (Ch 55). Both ran on
+the same MacBook Pro as Ch 52's basic-SA baseline —
+§4.2's hardware note anticipated a second-machine execution,
+but in practice both runs fired on the Ch 52 host, so the
+§4.2 cross-machine reproducibility claim is not exercised
+here and remains an untested inheritance from Ch 23 §3.
+
+§3.1 defines `C_rich` as richer-SA's `final_reward`
+classification and `C_pt` as PT's, with the `best_reward`
+classifications reported as context. Extracting those values
+from the Ch 54 and Ch 55 digest summary blocks:
+
+### 5.1 Richer-SA decision variables
+
+- `best_reward` bootstrap CI on `mean(SA) - mean(CEM)`:
+  point = `−28.0207`, CI = `[−70.5583, +10.8916]`,
+  `B = 10_000`
+- `best_reward` classification: **Null**
+- `final_reward` bootstrap CI on `mean(SA) - mean(CEM)`:
+  point = `+155.2862`, CI = `[+110.3305, +197.1795]`,
+  `B = 10_000`
+- `final_reward` classification: **Positive**
+- Joint `(best, final)` pair: `(Null, Positive)`
+- `C_rich = Positive` (from the `final_reward` row per §3.1)
+
+Folded-pilot expansion did not fire — the initial `N = 10`
+bootstrap produced a decisive Null / Positive pair with
+neither metric classifying Ambiguous, so `N` stayed at 10.
+
+### 5.2 PT decision variables
+
+- `best_reward` bootstrap CI on `mean(SA) - mean(CEM)`:
+  point = `−3.2947`, CI = `[−35.1893, +26.1591]`,
+  `B = 10_000`
+- `best_reward` classification: **Null**
+- `final_reward` bootstrap CI on `mean(SA) - mean(CEM)`:
+  point = `+180.3329`, CI = `[+146.1572, +212.3541]`,
+  `B = 10_000`
+- `final_reward` classification: **Positive**
+- Joint `(best, final)` pair: `(Null, Positive)`
+- `C_pt = Positive` (from the `final_reward` row per §3.1)
+
+Folded-pilot expansion did not fire for PT either — same
+reason as richer-SA.
+
+The `best_reward` Null classification on both variants
+mirrors Ch 52 basic-SA's Null on `best_reward` (point =
+`−23.5743`, CI = `[−76.4708, +24.1681]`). The robustness
+check preserves basic SA's `best_reward` Null exactly as
+§2.3's framework would predict: all three SA variants'
+single-seed incumbents face the same population-vs-incumbent
+asymmetry against CEM's `best_reward`, and all three land
+in the same classification on the secondary metric. This
+is not load-bearing for §3.1's decision (which operates on
+`final_reward` only), but it is a consistency check that
+the three SA variants are behaving as §2.3's framework
+expects them to behave on the metric §2.3 declared
+structurally disadvantageous to them.
+
+### 5.3 Joint classification and case
+
+`(C_rich, C_pt) = (Positive, Positive)`.
+
+Applying §3.2's Case Corroborate preconditions
+mechanically:
+
+1. `C_rich == Positive` AND `C_pt == Positive` — yes, both
+   classifications from §§5.1-5.2 are `Positive`.
+2. Both `final_reward` CI lower bounds strictly positive —
+   yes, `+110.3305` (richer-SA) and `+146.1572` (PT) are
+   both strictly greater than zero.
+3. Both `final_reward` point estimates ≥ `+50` — yes,
+   `+155.2862` (richer-SA) and `+180.3329` (PT) are both
+   well above the `+50` floor. PT's point estimate is in
+   fact higher than Ch 52 basic-SA's `+157.4883` point
+   estimate by `+22.84` units, and richer-SA's is within
+   `−2.20` units of basic SA's.
+
+All three preconditions are met. The joint outcome is
+**Case Corroborate** per §3.2.
+
+For symmetry-checking purposes, observe that neither
+variant triggers the Case Contradict precondition
+`C_rich == Null OR C_pt == Null` (both are Positive), and
+neither lands in Case Mixed (no Ambiguous classifications;
+no point estimate below `+50`; no Positive classification
+with a CI spanning zero on the lower bound). The case
+resolution is unambiguous under §3.2's rule.
 
 ## Section 6 — Interpretation
 
-*This section will be written after §5. It will apply §3.3's
-rule mechanically and state which of the three responses
-(Corroborate / Mixed / Contradict) the case triggers. If
-Corroborate: a paragraph strengthening Ch 51 §4.6's
-methodological takeaway. If Mixed: specific hypotheses for
-what could drive the weaker signal and a pointer to a future
-chapter for investigation. If Contradict: the explicit
-open question about whether Ch 51 §4's Positive endorsement
-should be retracted by a future chapter.*
+§3.3 commits that under Case Corroborate, Ch 51 §4's
+Positive endorsement is strengthened, Ch 53 §5 reports the
+corroboration, and Ch 53 §6 adds a paragraph to Ch 51 §4.6's
+methodological takeaway noting that the framework's
+class-level claim was independently verified by two SA
+variants at matched compute, with no retraction of any prior
+chapter and with the Ch 30 null follow-ups remaining moot as
+they were under Ch 51 §4.4. This section does that
+mechanically; no interpretive discretion beyond what §3.3
+pre-committed is permitted.
+
+### 6.1 What Corroborate means for Ch 51 §4
+
+Ch 51 §4.3 read the amended re-run's `(Null, Positive)`
+joint as Positive on Ch 30's "resolves the peak" question,
+grounded in §2.3's commitment that `final_reward` is the
+primary operationalization of Ch 30's converged-policy
+language. Ch 51 §4.4 declared the Ch 30 null follow-ups
+moot for Ch 30's question because the menu condition — a
+Null classification on the primary metric — did not fire
+for basic SA. Ch 51 §4.5 defended the Positive reading
+over the Split alternative on three grounds (theoretical
+asymmetry, §2.3's pre-registered rule, and §1.1's
+consistency test that the same framework would have read
+any other cell the same way). Ch 51 §4.6 stepped back and
+named the broader procedural template Ch 51 as a whole
+embodies.
+
+Under Corroborate, none of those readings is retracted.
+Ch 51 §4.3's Positive stands. Ch 51 §4.4's mootness
+declaration stands — Ch 53 reused the Ch 30 follow-up
+algorithms for a *different* question than Ch 30's, and
+both variants' `final_reward` classifications coming back
+Positive does not change the fact that basic SA's Ch 52
+`final_reward` classification was also Positive and
+therefore the Ch 30 menu condition never fired. Ch 51
+§4.5's three-reason defense of Positive over Split is
+unaffected — the defense was always independent of
+compute availability and of other-variant results. Ch 51
+§4.6's procedural template stands too, and §6.2 below
+extends it.
+
+The strengthening under Corroborate is evidential, not
+procedural: §2.3's framework made a class-level claim
+(the `final_reward`-primary reading holds for the SA
+family against CEM on problems where the peak is above the
+empirical peak range and CEM's population never resolves
+to the incumbent), and Ch 53 provides independent
+evidence for that class-level claim by running the framework's rule
+on two additional SA variants under matched seeds,
+matched compute, and matched measurement. Both variants
+came back with `final_reward` CIs strictly above zero and
+point estimates well above the `+50` floor. The
+framework's class-level grounding is therefore not an
+artifact of basic SA's specific per-replicate dynamics on
+D2c-SR — it holds for richer-proposal SA under a
+Rechenberg 1/5 adaptive controller *and* for PT chain 1
+under a 4-way tempering split. Both variants' evidence
+would have been enough to clear §3.2's Corroborate floor
+on their own; having both clears it simultaneously is
+the strongest evidence Ch 53's rule permits.
+
+### 6.2 Strengthening Ch 51 §4.6's methodological takeaway
+
+Ch 51 §4.6 named three conditions under which a
+post-execution methodological finding can be honestly
+amended into a pre-registered protocol: (1) the amendment
+extends rather than retracts, (2) the interpretation
+framework is pre-registered before the amended data, and
+(3) the framework's rule is applied even when the rule
+ratifies an inconvenient call. Ch 53 adds a fourth
+condition, which the Corroborate outcome makes
+demonstrable rather than aspirational:
+
+4. **The framework's class-level grounding admits
+   independent robustness-checking, and the
+   robustness check is pre-committed to a decision rule
+   before any follow-up run fires.** Ch 51 §2.3's
+   framework grounds the `final_reward`-primary reading
+   in a theoretical claim about the SA family as a
+   *class* — population-vs-incumbent asymmetry under
+   CEM's per-epoch `mean_reward` semantics — not in an
+   empirical observation specific to basic isotropic SA.
+   A class-level claim is a testable commitment: it
+   predicts that other members of the class should behave
+   the same way under the same framework. Ch 53 tested
+   that commitment on two variants (richer-proposal SA
+   under Rechenberg 1/5 adaptation, and Parallel
+   Tempering chain 1 under a K=4 geometric ladder with
+   Metropolis swap moves) chosen in advance for their
+   mechanical distance from basic SA: richer-SA changes
+   the proposal distribution's time-dependence, and PT
+   changes the chain topology itself. Both variants
+   returned `final_reward` classifications `Positive`
+   with CI lower bounds and point estimates that cleared
+   §3.2's pre-committed Corroborate preconditions. The
+   framework's class-level claim is therefore not a rhetorical
+   frame the framework wraps around a single-variant
+   result; it is a predictive commitment that survived
+   contact with two variants whose implementation details
+   have nothing in common beyond belonging to the same
+   class.
+
+   This is the test Ch 51 §4.6 could not by itself
+   perform: §4.6 could argue the framework's rule was
+   applied honestly to basic SA's data, but could not
+   demonstrate that the framework's *class-level*
+   grounding was empirically sound. Ch 53 supplies that
+   demonstration by pre-committing to a decision rule
+   under which each of three outcomes (Corroborate,
+   Mixed, Contradict) would have required a specific
+   §3.3 response, then running the two variants, then
+   applying the rule in the direction the rule points —
+   which in this case happened to be Corroborate, but
+   §3.2's rule would have been applied mechanically in
+   any of the three directions. The pre-commitment is
+   what distinguishes this robustness check from a
+   post-hoc validation exercise, and is what makes the
+   Corroborate outcome usable as evidence for §2.3's
+   class-level grounding rather than as a self-fulfilling
+   confirmation.
+
+Future chapters that encounter their own load-bearing
+post-execution methodological findings can cite Ch 51 §4.6
+as the three-condition procedural template and Ch 53
+§6.2 as the fourth-condition extension: when the framework
+admits a class-level test, pre-commit to a robustness-check
+decision rule before running the test, so that the test's
+result is interpretable regardless of which direction it
+lands in.
+
+### 6.3 What Ch 53 does not do
+
+Ch 53 does not retract anything. §3.3's "Ch 51 §4 is never
+retracted by Ch 53 alone" clause is binding under Case
+Corroborate for a stronger reason than under the other two
+cases: there is nothing to retract because the evidence
+strengthens rather than weakens the original reading. The
+Ch 30 null follow-ups remain moot for Ch 30's question, as
+they were under Ch 51 §4.4 — Ch 53 reused their algorithms
+for a different question than Ch 30's and answered that
+different question with a Corroborate verdict, which does
+not reopen Ch 30's menu condition.
+
+Ch 53 does not open a new research question. Under
+Mixed or Contradict, §3.3 would have required §6 to propose
+hypotheses or open the retraction question; under
+Corroborate, §3.3 requires neither. The next chapter in
+the study is not constrained to address anything Ch 53
+raised, because Ch 53's outcome raises nothing that needs
+addressing.
+
+Ch 53 does not exhaust the robustness-check space. The
+framework's class-level claim could be tested against
+further variants (CMA-ES, adaptive-temperature PT,
+population-annealing SA, etc.), against different
+fixtures, or against different compute budgets. Ch 53
+tested it against the two variants Ch 30 §3 had already
+named, under the compute parity Ch 32 already committed
+to, on the D2c-SR fixture already in the study. A future
+author who wants a stronger corroborate-or-contradict
+signal against a broader class definition is welcome to
+pre-commit their own robustness check under Ch 53's
+template.
+
+### 6.4 Study-level endpoint on Ch 30's D2c-SR question
+
+Per §3.3's "Ch 51 §4 and Ch 53 §6 together constitute the
+chapter-level endpoint for Ch 30's D2c-SR question for
+the ml-chassis-refactor study" clause, this section closes
+the question. The study's answer to Ch 30's "does SA
+resolve the peak at `kt_mult ≈ 2.55`?" is **Positive**,
+grounded in Ch 51 §2.3's `final_reward`-primary framework,
+applied through Ch 51 §4 to basic SA's `(Null, Positive)`
+joint in Ch 52, and corroborated through Ch 53 by two
+additional SA variants at matched compute whose
+`final_reward` classifications independently meet §3.2's
+Corroborate preconditions. Any future chapter that wants
+to revisit the answer is welcome to do so, but it will
+need to introduce a new mechanism (variant, fixture,
+framework revision, or other) rather than re-derive a
+different answer from the evidence Chs 51-55 already
+established.
 
 ## Cross-references
 
@@ -451,6 +741,12 @@ should be retracted by a future chapter.*
 - Ch 52 (`52-amended-rerun-digest.md`) — the basic-SA run
   whose dual-metric data Ch 53's variants are compared
   against on the same replicate seed pool
+- Ch 54 (`54-richer-sa-digest.md`) — the richer-SA anchor-2
+  digest whose `final_reward` classification feeds §5.1's
+  `C_rich` decision variable
+- Ch 55 (`55-pt-digest.md`) — the PT anchor-3 digest whose
+  `final_reward` classification feeds §5.2's `C_pt` decision
+  variable
 - Ch 92 §3 — the Ch 30 null follow-ups scope estimates,
   which Ch 53 §2 inherits byte-level parameters from in
   spirit (the code commits pick specifics)
