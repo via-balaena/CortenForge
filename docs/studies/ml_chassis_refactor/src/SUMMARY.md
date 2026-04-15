@@ -41,6 +41,7 @@
 - [Amended re-run digest](52-amended-rerun-digest.md)
 - [Robustness check: Ch 30 follow-ups under §2.3's framework](53-robustness-check-prereg.md)
 - [Richer-SA digest](54-richer-sa-digest.md)
+- [Parallel Tempering digest](55-pt-digest.md)
 
 # Appendices
 
