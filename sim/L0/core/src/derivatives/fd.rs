@@ -56,6 +56,7 @@ use nalgebra::{DMatrix, DVector};
 /// Takes `&Data` (shared reference) and immediately clones to a scratch
 /// buffer. Multiple callers can compute derivatives from the same nominal
 /// state concurrently.
+// Mathematical symbols (A, B, C, D, J, M) follow MuJoCo's analytical derivatives notation; paired identifiers (q/qpos, v/qvel) are intentionally similar; the unwrap is a defensive guard on a length-known-at-construction slice.
 #[allow(non_snake_case, clippy::similar_names, clippy::unwrap_used)]
 pub fn mjd_transition_fd(
     model: &Model,
@@ -313,6 +314,7 @@ pub fn mjd_transition_fd(
 /// Warmstart is restored to prevent leakage between perturbation columns.
 /// MuJoCo's `mjd_stepFD` saves/restores `mjSTATE_WARMSTART` across each
 /// perturbation for the same reason.
+// Finite-difference helper takes the full per-call context (model, data, perturbation step, output Jacobian buffers).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_state_perturbation(
     model: &Model,
@@ -469,6 +471,7 @@ pub struct InverseDynamicsDerivatives {
 /// # Errors
 ///
 /// Returns `StepError` if any `forward_skip()` call fails.
+// Mathematical symbols (J, M, K, qfrc) follow MuJoCo's inverse-dynamics-derivatives notation.
 #[allow(non_snake_case, clippy::similar_names)]
 pub fn mjd_inverse_fd(
     model: &Model,

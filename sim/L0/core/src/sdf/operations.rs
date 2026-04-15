@@ -195,6 +195,7 @@ pub fn stabilize_direction(dir: Vector3<f64>) -> Vector3<f64> {
 /// threshold filter). All distance and gradient queries go through the
 /// `PhysicsShape` trait — giving exact evaluation for analytical shapes
 /// and grid delegation for grid-only shapes.
+// SDF CSG operation takes both operand grids plus the output grid and shared transforms.
 #[allow(clippy::too_many_arguments)]
 fn trace_surface_into_other(
     src_grid: &SdfGrid,

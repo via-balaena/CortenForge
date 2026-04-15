@@ -144,6 +144,7 @@ pub fn compute_body_spatial_inertia(
 ///
 /// Convention: rows 0-2 = angular, rows 3-5 = linear.
 /// Off-diagonal coupling block (upper-right 3x3) = m * skew(h).
+// Paired spatial-vector identifiers (pos_a/pos_b, twist_a/twist_b) are intentionally similar.
 #[allow(clippy::similar_names)]
 pub fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f64> {
     // Extract mass from lower-right diagonal

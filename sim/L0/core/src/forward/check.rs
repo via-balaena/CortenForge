@@ -17,6 +17,7 @@ use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, Model};
 /// Position validation scans ALL `nq` elements because: (1) externally-set bad
 /// qpos can appear on sleeping bodies, (2) sleep indexing is per-DOF (nv), not
 /// per-position-element (nq).
+// `nq`/`nv` model dimensions are i32 in MuJoCo's spec but always non-negative and bounded by realistic model sizes.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub fn mj_check_pos(model: &Model, data: &mut Data) {
     for i in 0..model.nq {
@@ -36,6 +37,7 @@ pub fn mj_check_pos(model: &Model, data: &mut Data) {
 /// Validate velocity coordinates (sleep-aware — only checks awake DOFs).
 ///
 /// On bad value: fires `Warning::BadQvel`, auto-resets unless `DISABLE_AUTORESET`.
+// `nq`/`nv` model dimensions are i32 in MuJoCo's spec but always non-negative and bounded by realistic model sizes.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub fn mj_check_vel(model: &Model, data: &mut Data) {
     let sleep_filter = enabled(model, ENABLE_SLEEP) && data.nv_awake < model.nv;
@@ -68,6 +70,7 @@ pub fn mj_check_vel(model: &Model, data: &mut Data) {
 /// On bad value: fires `Warning::BadQacc`, auto-resets unless `DISABLE_AUTORESET`.
 /// Unlike check_pos/check_vel, this re-runs `forward()` after reset because it
 /// executes AFTER the forward pass — derived quantities need recomputation.
+// `nq`/`nv` model dimensions are i32 in MuJoCo's spec but always non-negative and bounded by realistic model sizes.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub fn mj_check_acc(model: &Model, data: &mut Data) {
     let sleep_filter = enabled(model, ENABLE_SLEEP) && data.nv_awake < model.nv;

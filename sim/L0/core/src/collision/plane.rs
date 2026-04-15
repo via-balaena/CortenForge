@@ -9,6 +9,7 @@ use nalgebra::{Matrix3, Vector3};
 /// Dispatches to specialized implementations based on the other geometry's type.
 /// The plane is always treated as an infinite half-space with normal along its
 /// local Z-axis.
+// Plane-mesh dispatcher takes the full per-geom context; inlined as a single function so the SAT loop and contact emission read top-to-bottom.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 #[inline]
 pub fn collide_with_plane(
@@ -246,6 +247,7 @@ pub fn collide_with_plane(
 /// # Returns
 /// `Vec` with 0–4 contacts.
 #[inline]
+// Plane-cylinder pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
 #[allow(clippy::too_many_arguments)]
 fn collide_cylinder_plane_impl(
     model: &Model,
@@ -410,6 +412,7 @@ const SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
 /// # Returns
 /// `Vec` with one contact if ellipsoid penetrates plane, empty otherwise.
 #[inline]
+// Plane-capsule pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
 #[allow(clippy::too_many_arguments)]
 fn collide_ellipsoid_plane_impl(
     model: &Model,

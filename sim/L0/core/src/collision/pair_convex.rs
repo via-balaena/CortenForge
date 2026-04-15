@@ -9,6 +9,7 @@ use nalgebra::{Matrix3, Vector3};
 ///
 /// This is a simple analytical calculation that's more robust than GJK/EPA
 /// for the sphere-sphere case.
+// Sphere-sphere takes the full per-geom pair context (poses, sizes, friction, margin) so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_sphere_sphere(
     model: &Model,
@@ -63,6 +64,7 @@ pub fn collide_sphere_sphere(
 /// tests both endpoints of each capsule against the other's segment,
 /// returning 1–2 contacts for stable support. For non-parallel capsules,
 /// returns 1 contact from the closest-points-on-segments algorithm.
+// Sphere-capsule takes the full per-geom pair context (poses, sizes, friction, margin) so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_capsule_capsule(
     model: &Model,
@@ -186,6 +188,7 @@ pub fn collide_capsule_capsule(
 const PARALLEL_THRESHOLD: f64 = 0.999;
 
 /// Sphere-capsule collision detection.
+// Capsule-capsule takes the full per-geom pair context so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_sphere_capsule(
     model: &Model,
@@ -276,6 +279,7 @@ pub fn collide_sphere_capsule(
 /// Sphere-box collision detection.
 ///
 /// Uses the closest point on box surface to sphere center algorithm.
+// Capsule-box takes the full per-geom pair context so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_sphere_box(
     model: &Model,

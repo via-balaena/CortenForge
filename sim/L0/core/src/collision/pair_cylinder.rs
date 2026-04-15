@@ -13,6 +13,7 @@ use nalgebra::{Matrix3, Vector3};
 /// - Edge collision: sphere near rim of cylinder cap
 ///
 /// Cylinder axis is local Z.
+// Cylinder-cylinder pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
 #[allow(clippy::too_many_arguments)]
 pub fn collide_cylinder_sphere(
     model: &Model,
@@ -143,6 +144,7 @@ pub fn collide_cylinder_sphere(
 /// above/below cylinder), returns empty `Vec` to fall through to GJK/EPA.
 ///
 /// Both shapes have their axis along local Z.
+// Cylinder-sphere pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
 #[allow(clippy::too_many_arguments)]
 pub fn collide_cylinder_capsule(
     model: &Model,
@@ -254,6 +256,7 @@ enum CapsuleBoxFeature {
 ///
 /// Phase 1: face test, Phase 2: 12-edge test, Phase 3: second contact search,
 /// Phase 4: sphere-box delegation. Returns up to 2 contacts.
+// Cylinder-capsule pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::unreachable)] // match on CapsuleBoxFeature::Face subtypes; Edge variant handled in else branch
 pub fn collide_capsule_box(
@@ -571,6 +574,7 @@ pub fn collide_capsule_box(
 ///
 /// Tests 15 potential separating axes: 3 face normals from each box
 /// and 9 edge-edge cross products.
+// Cylinder-box pair dispatcher takes the full per-geom context; inlined as a single function so the close-form geometry math reads top-to-bottom.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn collide_box_box(
     model: &Model,

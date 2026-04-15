@@ -215,6 +215,7 @@ pub(crate) fn mj_jac_geom(model: &Model, data: &Data, geom_id: usize) -> DMatrix
 /// chain from `body_id` to root, accumulating per-DOF contributions without
 /// materializing the full Jacobian. Follows the same chain-walk and axis conventions
 /// as `accumulate_point_jacobian()`.
+// Jacobian assembly takes the full per-row context (model, data, body/site indices, output buffers).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mj_apply_ft(
     model: &Model,

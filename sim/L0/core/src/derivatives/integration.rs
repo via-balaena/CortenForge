@@ -252,6 +252,7 @@ pub(super) fn compute_integration_derivatives(
 ///   at θ = 2π but `subquat` wraps to `[-π, π]`, so this returns the
 ///   limiting form at θ → π.
 #[must_use]
+// `qa`/`qb` quaternion-pair identifiers are intentionally similar; non-snake-case follows the analytical-derivatives notation.
 #[allow(non_snake_case, clippy::similar_names)]
 pub fn mjd_sub_quat(qa: &[f64; 4], qb: &[f64; 4]) -> (Matrix3<f64>, Matrix3<f64>) {
     // Compute the relative quaternion: dq = qb^{-1} * qa

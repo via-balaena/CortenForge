@@ -116,6 +116,7 @@ impl SparseHessian {
     /// 2. Numeric values
     /// 3. Symbolic factorization (elimination tree + L structure)
     /// 4. Numeric LDL^T factorization
+    // Indexed loop mutates parallel arrays at the same index; iterator forms would obscure the per-row update.
     #[allow(clippy::needless_range_loop)]
     pub fn assemble(
         model: &Model,
@@ -377,6 +378,7 @@ impl SparseHessian {
     /// off-diagonal non-zero row in column j of L.
     ///
     /// Also computes the symbolic structure of L (l_col_ptr, l_row_idx).
+    // Indexed loop mutates parallel arrays at the same index; iterator forms would obscure the per-row update.
     #[allow(clippy::needless_range_loop)]
     fn symbolic_factor(&mut self) {
         let n = self.nv;
@@ -613,6 +615,7 @@ impl SparseHessian {
 /// - Old state == Quadratic AND new state != Quadratic → rank-1 downdate (remove D_i · J_i^T · J_i)
 ///
 /// Falls back to full `assemble_hessian` if a downdate fails (would make H non-PD).
+// Indexed loop mutates parallel arrays at the same index; iterator forms would obscure the per-row update.
 #[allow(clippy::needless_range_loop)]
 pub fn hessian_incremental(
     data: &Data,

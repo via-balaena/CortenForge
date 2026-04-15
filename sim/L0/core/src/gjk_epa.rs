@@ -295,6 +295,7 @@ pub fn support_face_points(
                 let n_f64 = N_CAP_POINTS as f64;
                 (0..N_CAP_POINTS)
                     .map(|i| {
+                        // Simplex/polytope vertex counts are usize → f64 for support-direction normalization; bounded by EPA iteration cap, far below 2^52.
                         #[allow(clippy::cast_precision_loss)]
                         let angle = 2.0 * std::f64::consts::PI * (i as f64) / n_f64;
                         let local_pt =

@@ -49,6 +49,7 @@ enum NoslipRowKind {
 ///
 /// All noslip processing uses the UNREGULARIZED Delassus matrix A (without R).
 /// This matches MuJoCo's flg_subR=1 in ARdiaginv() and residual().
+// Single-letter names follow the Delassus-matrix notation; cast lints are usize → f64 for residual norms; indexed loops mutate parallel multiplier arrays at the same row index.
 #[allow(
     clippy::many_single_char_names,
     clippy::cast_precision_loss,

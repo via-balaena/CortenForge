@@ -38,6 +38,7 @@ pub enum NewtonResult {
 /// DT-35: `m_eff` is the effective mass matrix — `M_impl` when
 /// `ImplicitSpringDamper` is active, `data.qM` otherwise. All M·v products,
 /// Hessian assembly, and cost evaluation use `m_eff`.
+// Newton solver inlined as a single function so the search-direction → line-search → update sequence reads end-to-end; cast lints are usize → f64 for residual diagnostics.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub fn newton_solve(
     model: &Model,

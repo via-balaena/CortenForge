@@ -432,6 +432,7 @@ pub fn extract_distance_jacobian(
 /// Traverses the kinematic chain from `body_id` to root, adding the
 /// contribution of each joint's DOF to the Jacobian row. The row
 /// corresponds to a 3D direction projected onto the body's DOF space.
+// Equality assembly takes the full per-constraint context (model, data, J/M, equality records, output buffers).
 #[allow(clippy::too_many_arguments)]
 pub fn add_body_point_jacobian_row(
     j: &mut DMatrix<f64>,

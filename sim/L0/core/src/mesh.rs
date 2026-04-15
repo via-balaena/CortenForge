@@ -98,6 +98,7 @@ impl TriangleMeshData {
     ///
     /// Panics if `indices.len()` is not a multiple of 3 or if any index is out of bounds.
     #[must_use]
+    // Builder takes ownership by value to consume the input geometry; cast happens after explicit vertex-count bounds check.
     #[allow(clippy::needless_pass_by_value, clippy::cast_possible_truncation)]
     pub fn new(vertices: Vec<Point3<f64>>, indices: Vec<usize>) -> Self {
         assert!(
@@ -469,6 +470,7 @@ fn triangle_aabbs_overlap(tri_a: &[Point3<f64>; 3], tri_b: &[Point3<f64>; 3]) ->
 ///
 /// Returns `Some((penetration, normalized_axis))` if there is overlap,
 /// or `None` if this is a valid separating axis (no intersection).
+// Paired vertex/edge identifiers (v0/v1, e0/e1) are intentionally similar.
 #[allow(clippy::similar_names)]
 fn test_separating_axis(
     axis: &Vector3<f64>,
@@ -508,6 +510,7 @@ fn test_separating_axis(
 }
 
 /// Compute the contact point based on the axis type.
+// Paired vertex/edge identifiers (v0/v1, e0/e1) are intentionally similar.
 #[allow(clippy::similar_names)]
 fn compute_contact_point(
     tri_a: &[Point3<f64>; 3],
@@ -569,6 +572,7 @@ fn compute_contact_point(
 /// Segment B: `start_b + s * dir_b` for s in [0, 1]
 ///
 /// Returns the closest points (`point_on_a`, `point_on_b`).
+// Single-letter names follow the published mesh-inertia formula; cross-axis groupings in the inertia-tensor expansion match the reference.
 #[allow(clippy::many_single_char_names, clippy::suspicious_operation_groupings)]
 fn closest_points_on_segments(
     start_a: Point3<f64>,

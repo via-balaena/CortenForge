@@ -22,6 +22,7 @@ use super::assembly::finalize_constraint_row;
 ///
 /// Returns pyramidal ranges `(start_row, n_facets, contact_idx)` for R-scaling
 /// post-processing.
+// Contact assembly takes the full per-iteration contact state (model, data, J/M, contact lists, output buffers).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn assemble_contact_rows(
     model: &Model,
@@ -223,6 +224,7 @@ fn compute_contact_bodyweight(model: &Model, contact: &Contact) -> [f64; 2] {
 /// §32: Emits 2*(dim-1) facet rows. Each friction direction d produces two facets:
 ///   J_pos = J_normal + μ_d · J_friction_d
 ///   J_neg = J_normal - μ_d · J_friction_d
+// Contact assembly takes the full per-iteration contact state; bundling would obscure the math against the published references.
 #[allow(clippy::too_many_arguments)]
 fn assemble_pyramidal_contact(
     model: &Model,

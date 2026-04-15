@@ -441,6 +441,7 @@ impl Model {
     /// # Panics
     /// Panics if any plugin's `init()` callback returns an error.
     #[must_use]
+    // Plugin init failures are unrecoverable model-load errors and propagate via panic; the `# Panics` doc above documents the contract.
     #[allow(clippy::panic)]
     pub fn make_data(&self) -> Data {
         let mut data = Data {
@@ -647,6 +648,7 @@ impl Model {
                 let mut v = vec![-(1 + MIN_AWAKE); self.ntree];
                 for t in 0..self.ntree {
                     if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        // `t < ntree ≤ nbody`, well below `i32::MAX`, so the wrap/truncation casts are exact.
                         #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
                         {
                             v[t] = t as i32; // Start asleep (ntree ≤ nbody ≪ i32::MAX)
@@ -655,6 +657,7 @@ impl Model {
                 }
                 v
             },
+            // Indexed loop reads `tree_sleep_policy[t]` and writes `v[t]` at the same index; iterator forms would obscure the parallel-array update.
             #[allow(clippy::needless_range_loop)]
             tree_awake: {
                 let mut v = vec![true; self.ntree];
@@ -665,6 +668,7 @@ impl Model {
                 }
                 v
             },
+            // Indexed loop reads `tree_sleep_policy[tree]` and writes `v[body_id]` after a tree-id lookup; iterator forms would obscure the indirect indexing.
             #[allow(clippy::needless_range_loop)]
             body_sleep_state: {
                 let mut v = vec![SleepState::Awake; self.nbody];
@@ -1146,6 +1150,7 @@ impl Model {
         for i in 0..self.nv {
             trace += data.qM[(i, i)];
         }
+        // `nbody`/`nv` model dimensions are usize → f64 for diagnostic averaging; bounded by realistic model sizes.
         #[allow(clippy::cast_precision_loss)]
         let mean = if self.nv > 0 {
             trace / self.nv as f64

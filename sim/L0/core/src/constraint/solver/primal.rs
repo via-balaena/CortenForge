@@ -143,6 +143,7 @@ pub struct PrimalPoint {
 /// Called once per Newton iteration before entering the line search. The
 /// precomputed coefficients allow O(nefc) cost+derivative evaluation at each
 /// trial alpha without any matrix-vector products.
+// Primal step takes the full per-iteration state (J, M, b, lambda, x, work buffers); single-letter names follow the published primal-method notation.
 #[allow(clippy::many_single_char_names, clippy::too_many_arguments)]
 pub fn primal_prepare(
     data: &Data,
@@ -250,6 +251,7 @@ pub fn primal_prepare(
 ///
 /// Uses precomputed `PrimalQuad` coefficients for O(nefc) evaluation without
 /// matrix-vector products. This is the inner loop of `PrimalSearch`.
+// Single-letter names (a, b, c, x, y, z) follow the published primal-method notation.
 #[allow(clippy::many_single_char_names)]
 pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> PrimalPoint {
     let nefc = data.efc_type.len();
@@ -392,6 +394,7 @@ pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> Prim
 ///    midpoint). Pick the best converged candidate, or tighten the bracket.
 ///
 /// Returns the optimal alpha, or 0.0 if no improvement is possible.
+// Single-letter names follow the published primal-method notation.
 #[allow(clippy::many_single_char_names)]
 pub fn primal_search(
     data: &Data,
@@ -554,6 +557,7 @@ pub fn primal_search(
 /// Does not modify any data fields — purely evaluative.
 /// Used by warmstart comparison in `newton_solve`.
 /// DT-35: `m_eff` is `M_impl` when `ImplicitSpringDamper` is active.
+// Single-letter names follow the published primal-method notation.
 #[allow(clippy::many_single_char_names)]
 pub fn evaluate_cost_at(
     data: &Data,

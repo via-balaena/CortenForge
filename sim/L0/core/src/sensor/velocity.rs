@@ -47,6 +47,7 @@ fn get_ref_pos_mat(
 /// - `FrameAngVel`: site/body angular velocity
 /// - `TendonVel`: tendon velocity
 /// - `ActuatorVel`: actuator velocity
+// Velocity sensor pipeline inlined as a single function so the per-sensor-type branching reads end-to-end.
 #[allow(clippy::too_many_lines)]
 pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
     // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).

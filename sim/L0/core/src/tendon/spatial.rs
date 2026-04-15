@@ -335,6 +335,7 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
 ///
 /// Uses body-frame axes (`R*e_i`) for free joint angular DOFs, matching
 /// MuJoCo's `cdof` convention.
+// Spatial tendon segment update takes the full per-segment context (sites, wraps, output buffers).
 #[allow(clippy::too_many_arguments)]
 pub fn accumulate_point_jacobian(
     model: &Model,

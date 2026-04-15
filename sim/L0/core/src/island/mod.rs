@@ -25,6 +25,7 @@ pub(crate) use sleep::{
 /// Works directly from raw data sources (contacts, model equality constraints,
 /// tendon limits, joint limits) rather than from `efc_*` arrays, so it is
 /// independent of which solver path (Newton vs PGS/CG) is active.
+// Island discovery inlined as a single function so the edge extraction → flood fill → array population phases read end-to-end; tree/body indices are usize stored as i32 in mjData and bounded by realistic model sizes.
 #[allow(
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
@@ -435,6 +436,7 @@ pub(super) fn equality_trees(model: &Model, eq_id: usize) -> (usize, usize) {
 ///
 /// Used for assigning constraint rows to islands. Returns `usize::MAX`
 /// if the tree cannot be determined.
+// Island assembly inlined as a single function so the body/joint/contact partitioning reads end-to-end.
 #[allow(clippy::too_many_lines)]
 fn constraint_tree(model: &Model, data: &Data, row: usize) -> usize {
     let sentinel = usize::MAX;
@@ -551,6 +553,7 @@ fn constraint_tree(model: &Model, data: &Data, row: usize) -> usize {
 ///
 /// Uses DFS with an explicit stack. Trees with no edges (`rownnz[t] == 0`) get
 /// `island[t] = -1` (singletons). Returns the number of islands found.
+// Tree/island indices are usize stored as i32 in mjData; the explicit-stack DFS uses a `continue` after singleton detection that reads more clearly than restructuring the loop.
 #[allow(
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,

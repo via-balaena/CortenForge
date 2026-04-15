@@ -36,6 +36,7 @@ use crate::types::{DISABLE_GRAVITY, Data, ENABLE_SLEEP, MIN_VAL, MjJointType, Mo
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 5
 ///
 /// Reference: MuJoCo Computation docs - mj_rne section
+// RNE inlined as a single function so the forward/backward Featherstone passes read end-to-end; paired body/parent identifiers are intentionally similar; indexed loops mutate parallel per-body force/acceleration buffers.
 #[allow(
     clippy::too_many_lines,
     clippy::similar_names,

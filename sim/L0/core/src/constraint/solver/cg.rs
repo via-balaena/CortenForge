@@ -30,6 +30,7 @@ use crate::types::{ConstraintState, Data, Model, SolverStat};
 ///
 /// Returns `true` if the solver converged, `false` otherwise (caller should
 /// fall back to PGS).
+// `nv` (DOF count) is usize → f64 for residual norm computation; well below 2^52.
 #[allow(clippy::cast_precision_loss)]
 pub fn cg_solve_unified(model: &Model, data: &mut Data) -> bool {
     let nv = model.nv;
