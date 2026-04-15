@@ -102,7 +102,7 @@ Status legend: ☐ pending · ◐ in progress · ☑ done · ⊘ skipped (with r
 
 ### Tier A — grader self-consistency (high-value, tightly coupled)
 
-#### ☐ 1. Grader criterion correctness sweep
+#### ☑ 1. Grader criterion correctness sweep
 
 Re-read all 7 criteria in `xtask/src/grade.rs` against their docstrings and
 `docs/STANDARDS.md`. Goal: catch gaps beyond the four already known.
@@ -124,7 +124,54 @@ read budget. Output as a 7-row table."
 **Time:** ~1h recon + ~30min triage. Findings likely feed items 2–4.
 
 **Findings:**
-_(none yet)_
+
+Recon ran 2026-04-15 via an Explore agent reading `docs/STANDARDS.md` and
+every `grade_*` function body end-to-end. Delta table:
+
+| # | Criterion | Standard | grade.rs implementation | Delta |
+|---|-----------|----------|-------------------------|-------|
+| 1 | Test Coverage | ≥75% (A), ≥90% (A+) via llvm-cov | Two-tier 75/90 with two-pass (unit-only for coverage, all for correctness), per-crate path filtering. `grade.rs:461–600` | None |
+| 2 | Documentation | Zero warnings under `-D warnings` | Runs `cargo doc -D warnings`, gates on exit code + stderr `warning:`/`error:` count. `grade.rs:606–653` | None |
+| 3 | Clippy | Zero warnings; `#[allow(clippy::...)]` must be justified | JSON-parses clippy diagnostics; separate scan for unjustified `#[allow(clippy::…)]`, accepts `//` (not `///`/`//!`) within 1–3 lines. Test-exclusion used a one-way `in_test` flag without brace tracking. `grade.rs:660–758` | **NEW — MED**: test-exclusion latch never reset, silently skipping every `#[allow(clippy::...)]` in library code textually after the first `#[cfg(test)]` module in a file. Plus the known `///` asymmetry. |
+| 4 | Safety | Zero unwrap/expect/panic/unreachable/todo/unimplemented in lib; `// SAFETY:` on unsafe | Brace-depth-correct test exclusion (824–877); hard-fail on `todo!`/`unimplemented!`; counts the rest; case-insensitive `// SAFETY:` check; profile-relaxed for Examples/Xtask. `grade.rs:787–968` | Known loose `has_enclosing_allow` (line 995); no new findings |
+| 5 | Dependencies | Each dep has `#`-comment justification | Scans `[dependencies]`/`[dev-dependencies]`/`[build-dependencies]`; inline-`#` or 1–3 preceding-line `#`, halts on blank/section header. `grade.rs:1021–1139` | None — reframed: earlier "silently incomplete" claim was wrong, the grader would have flagged sim-opt on any run |
+| 6 | Bevy-free (Layer 0) | `cargo tree` shows no bevy/winit | Profile-gated to Layer 0 only; runs `cargo tree --prefix none --format "{p}"`, exact-match `starts_with("bevy")` / `== "winit"`. `grade.rs:1154–1214` | None |
+| 7 | API Design | Manual review | Always returns `Grade::Manual`. `grade.rs:225–231` | None (intentional) |
+
+**New finding — clippy test-exclusion latch (MED):** `grade_clippy` set
+`in_test = true` on the first `#[cfg(test)]` encountered in a file and
+never reset it, so every `#[allow(clippy::...)]` in library code
+appearing textually *after* the first test module in the same file was
+silently skipped. The inline comment at line 691 explicitly acknowledged
+the gap (`"brace-depth tracker in Step 5"`) but Step 5 never landed.
+Fixed by mirroring `grade_safety`'s brace-depth state machine
+(lines 824–877) into `grade_clippy`. Commit `b7ef1c73`.
+
+**Reframing of earlier premises (doc-only fix):** two of the four bullets
+in "Why this audit, why now" §2 were inflated:
+- Wall-clock asserts (bullet c) are a test-side pattern incompatible with
+  llvm-cov, not a bug in a `grade_*` function. Item 5 still covers the
+  sweep; framing corrected.
+- `grade_dependencies` (bullet d) is correct — sim-opt's missing
+  justifications were a real miss the grader would have flagged on any
+  run. The gap is that the grader hadn't been run against sim-opt's
+  current dep set, not that the checker is broken. Item 4 still covers
+  the sweep; framing corrected.
+
+Only 2 of the 4 originally-listed bullets are real grader bugs:
+`has_enclosing_allow` looseness and `//`-vs-`///` asymmetry. Both remain
+open (item 2 addresses the former; item 3 addresses the latter). Commit
+`ab38945b`.
+
+**Dispositions:**
+- Clippy latch fix — **(a)**, shipped as `b7ef1c73`.
+- Framing correction — **(a)**, shipped as `ab38945b`.
+- State-machine deduplication between `grade_clippy` and `grade_safety`
+  (two near-identical ~50-line brace-depth machines) — **(b)**, filed as
+  a follow-up. Not shipping inline to keep this item's diff bounded.
+- Unit tests for the grader's state machines — **(b)**, filed as a
+  follow-up. The grader currently has no `#[cfg(test)]` coverage and
+  adding tests just for this fix would be inconsistent.
 
 ---
 
