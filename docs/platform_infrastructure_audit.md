@@ -24,21 +24,28 @@ Three reasons, all pointing the same direction:
    clearest it will ever be. This is the cheapest possible moment to audit;
    miss it and latent issues compound through thermo-RL spec work.
 
-2. **The grader is self-contradictory with the standard.** "A-grade or it
+2. **The grader doesn't match the standard it enforces.** "A-grade or it
    doesn't ship" is enforced by `cargo xtask grade`, but PR #192 surfaced
-   four concrete gaps in the grader itself:
+   four concrete issues — two real gaps in `grade_*` functions, one
+   test-pattern incompatibility, and one coverage gap where the grader
+   hadn't been run against current state:
    - `xtask/src/grade.rs::has_enclosing_allow` (line ~995) uses a loose
      300-line backward substring scan that can false-negative on panic
      justification.
    - `grade_clippy` (line ~660) accepts `//` but not `///` as preceding-line
      justification for `#[allow(clippy::...)]`.
-   - Wall-clock assertions (`assert!(m.wall_time_ms < N)`) crash under
-     llvm-cov instrumentation. Four were deleted from sim-opt during PR #192
-     alone; more may exist elsewhere.
-   - `grade_dependencies` (line ~1021) requires `#`-comment justification on
-     each dep line, but sim-opt's Cargo.toml was silently incomplete until
-     mid-PR. Other crates may be too because the grader has never graded
-     them under their current dep set.
+   - Wall-clock assertions (`assert!(m.wall_time_ms < N)`) in test code
+     crash under llvm-cov's ~10× instrumentation overhead, breaking the
+     grader's coverage pass on any crate that holds them. Not a bug in a
+     `grade_*` function, but a test-side anti-pattern the grader can't
+     currently tolerate — four were deleted from sim-opt during PR #192
+     alone; more may exist elsewhere. (Item 5 sweeps for stragglers.)
+   - sim-opt's `Cargo.toml` had unjustified deps that were only caught
+     mid-PR. `grade_dependencies` (line ~1021) would have flagged them on
+     any run — the gap isn't that the checker is broken, it's that the
+     grader hadn't been run against sim-opt's current dep set. Other crates
+     may be in the same state for the same reason. (Item 4 sweeps for
+     stragglers.)
 
    The grader should be as tight as the discipline it enforces. Anything
    less is self-contradictory.
@@ -249,9 +256,8 @@ _(none yet)_
 
 Every `Cargo.toml` under `sim/L0/`, `sim/L1/`, and `examples/fundamentals/`
 has each dep prefixed by a `#`-comment justification per `grade_dependencies`
-(line ~1021). sim-opt was silently incomplete until mid-PR #192; others may
-be too because the grader has never graded them under their current dep
-sets.
+(line ~1021). sim-opt had unjustified deps caught mid-PR #192; other crates
+may too because the grader hasn't been run against their current dep sets.
 
 **Recon prompt sketch:** "For each `Cargo.toml` under `sim/L0/`, `sim/L1/`,
 and `examples/fundamentals/` (skipping the workspace root), report any dep
