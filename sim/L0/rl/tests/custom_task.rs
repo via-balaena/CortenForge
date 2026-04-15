@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use sim_ml_bridge::{Cem, CemHyperparams};
 use sim_ml_chassis::{
     ActionSpace, Algorithm, LinearPolicy, ObservationSpace, TaskConfig, TrainingBudget,
 };
+use sim_rl::{Cem, CemHyperparams};
 
 const MJCF: &str = r#"
 <mujoco model="custom-2dof">

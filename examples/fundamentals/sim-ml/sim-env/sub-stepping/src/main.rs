@@ -21,7 +21,7 @@ use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{PhysicsAccumulator, sync_rendering_data};
 use sim_bevy::multi_scene::{PhysicsScenes, spawn_scene_geoms, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
+use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 

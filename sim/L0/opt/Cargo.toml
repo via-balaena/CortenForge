@@ -11,7 +11,7 @@ rust-version.workspace = true
 [dependencies]
 rand = { workspace = true }
 serde = { workspace = true }
-sim-ml-bridge = { workspace = true }
+sim-ml-chassis = { workspace = true }
 sim-thermostat = { workspace = true }
 thiserror = { workspace = true }
 
@@ -19,6 +19,8 @@ thiserror = { workspace = true }
 approx = { workspace = true }
 sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
+# RL baselines — d2c rematch fixtures use Cem/CemHyperparams as the control arm.
+sim-rl = { workspace = true }
 
 [lints]
 workspace = true

@@ -33,7 +33,7 @@ use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{PhysicsHud, ValidationHarness, render_physics_hud, validation_system};
 use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{
+use sim_ml_chassis::{
     DifferentiablePolicy, LinearPolicy, LinearValue, Optimizer, OptimizerConfig, Policy, Tensor,
     Trajectory, ValueFn, VecEnv, compute_gae, reaching_2dof,
 };

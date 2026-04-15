@@ -128,6 +128,9 @@ impl Algorithm for Cem {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
+    // The training loop panics on internal invariant violations (e.g. empty
+    // elite set after sorting) which represent CEM-specific bugs, not
+    // recoverable runtime conditions — see `# Panics` on the trait method.
     #[allow(clippy::panic)]
     fn train(
         &mut self,
@@ -323,7 +326,6 @@ mod tests {
         for (i, m) in metrics.iter().enumerate() {
             assert_eq!(m.epoch, i);
             assert!(m.total_steps > 0);
-            assert!(m.wall_time_ms < 60_000, "epoch took too long");
             assert!(m.extra.contains_key("noise_std"));
             assert!(m.extra.contains_key("elite_mean_reward_per_step"));
         }

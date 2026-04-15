@@ -22,7 +22,7 @@ use std::sync::Arc;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{
+use sim_ml_chassis::{
     Activation, AutogradStochasticPolicy, Environment, LinearPolicy, MlpPolicy, Policy, SimEnv,
     StochasticPolicy, Tensor, VecEnv, reaching_6dof,
 };
@@ -38,12 +38,12 @@ fn check_vec_env_parity() -> Check {
 
     // Build N sequential SimEnvs with identical config.
     let model = Arc::new(vec_env.model().clone());
-    let _obs = sim_ml_bridge::ObservationSpace::builder()
+    let _obs = sim_ml_chassis::ObservationSpace::builder()
         .all_qpos()
         .all_qvel()
         .build(&model)
         .expect("obs");
-    let _act = sim_ml_bridge::ActionSpace::builder()
+    let _act = sim_ml_chassis::ActionSpace::builder()
         .all_ctrl()
         .build(&model)
         .expect("act");
@@ -52,12 +52,12 @@ fn check_vec_env_parity() -> Check {
 
     let mut sim_envs: Vec<SimEnv> = (0..n)
         .map(|_| {
-            let o = sim_ml_bridge::ObservationSpace::builder()
+            let o = sim_ml_chassis::ObservationSpace::builder()
                 .all_qpos()
                 .all_qvel()
                 .build(&model)
                 .expect("obs");
-            let a = sim_ml_bridge::ActionSpace::builder()
+            let a = sim_ml_chassis::ActionSpace::builder()
                 .all_ctrl()
                 .build(&model)
                 .expect("act");

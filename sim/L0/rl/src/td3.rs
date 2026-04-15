@@ -106,6 +106,9 @@ impl Td3 {
     ///
     /// Target networks are hard-synced to their primary counterparts.
     #[must_use]
+    // TD3 needs all six networks (policy + 2 critics + 3 targets) plus the
+    // optimizer config and hyperparams as constructor args by design — there
+    // is no narrower signature without a builder, which the chassis avoids.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         policy: Box<dyn DifferentiablePolicy>,

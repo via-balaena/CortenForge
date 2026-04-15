@@ -7,7 +7,7 @@
 //!
 //! All tests are `#[ignore]` — they take minutes, not seconds.  Run via:
 //! ```text
-//! cargo test -p sim-ml-bridge --test competition -- --ignored --nocapture
+//! cargo test -p sim-rl --test competition -- --ignored --nocapture
 //! ```
 //!
 //! ## Level 0-1 (Tests 1-7): Hand-coded gradients
@@ -33,15 +33,15 @@
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use sim_ml_bridge::{
-    Cem, CemHyperparams, Ppo, PpoHyperparams, Reinforce, ReinforceHyperparams, Sac, SacHyperparams,
-    Td3, Td3Hyperparams,
-};
 use sim_ml_chassis::{
     Activation, Algorithm, AutogradPolicy, AutogradQ, AutogradStochasticPolicy, AutogradValue,
     Competition, LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue, MlpPolicy, MlpQ,
     MlpValue, OptimizerConfig, RunResult, TaskConfig, TrainingBudget, obstacle_reaching_6dof,
     reaching_2dof, reaching_6dof,
+};
+use sim_rl::{
+    Cem, CemHyperparams, Ppo, PpoHyperparams, Reinforce, ReinforceHyperparams, Sac, SacHyperparams,
+    Td3, Td3Hyperparams,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────

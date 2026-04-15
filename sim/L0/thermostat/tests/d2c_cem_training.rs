@@ -31,7 +31,7 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use sim_core::DVector;
-use sim_ml_bridge::{
+use sim_rl::{
     ActionSpace, Algorithm, Cem, CemHyperparams, Environment, LinearPolicy, LinearQ,
     LinearStochasticPolicy, LinearValue, ObservationSpace, OptimizerConfig, Policy, Ppo,
     PpoHyperparams, Sac, SacHyperparams, SimEnv, Td3, Td3Hyperparams, Tensor, TrainingBudget,

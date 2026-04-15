@@ -37,7 +37,7 @@ use sim_bevy::multi_scene::{
     PhysicsScenes, spawn_scene_geoms, sync_batch_geoms, sync_scene_geom_transforms,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, ObservationSpace, Tensor, VecEnv};
+use sim_ml_chassis::{ActionSpace, ObservationSpace, Tensor, VecEnv};
 
 // ── Config ───────────────────────────────────────────────────────────────
 

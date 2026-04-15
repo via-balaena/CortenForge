@@ -20,7 +20,7 @@ use sim_bevy::model_data::{
     sync_geom_transforms,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::ObservationSpace;
+use sim_ml_chassis::ObservationSpace;
 
 // ── MJCF Model ─────────────────────────────────────────────────────────────
 

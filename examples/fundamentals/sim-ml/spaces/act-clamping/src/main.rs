@@ -21,7 +21,7 @@ use sim_bevy::model_data::{
     sync_geom_transforms,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, Tensor};
+use sim_ml_chassis::{ActionSpace, Tensor};
 
 #[derive(Resource, Default)]
 struct LastAction(f32);

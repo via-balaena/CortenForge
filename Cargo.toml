@@ -301,8 +301,8 @@ members = [
     "sim/L0/urdf",
     "sim/L0/tests",
     "sim/L0/gpu",
-    "sim/L0/ml-bridge",
     "sim/L0/ml-chassis",
+    "sim/L0/rl",
     "sim/L0/thermostat",
     "sim/L0/opt",
 
@@ -479,8 +479,8 @@ sim-core = { path = "sim/L0/core" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
-sim-ml-bridge = { path = "sim/L0/ml-bridge" }
 sim-ml-chassis = { path = "sim/L0/ml-chassis" }
+sim-rl = { path = "sim/L0/rl" }
 sim-thermostat = { path = "sim/L0/thermostat" }
 sim-opt = { path = "sim/L0/opt" }
 # Sim domain - Layer 1 (Bevy integration)

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use sim_core::Model;
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{
+use sim_ml_chassis::{
     ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv, VecStepError,
 };
 

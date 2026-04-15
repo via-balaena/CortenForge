@@ -24,7 +24,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Uniform};
 use sim_core::DVector;
-use sim_ml_bridge::{
+use sim_ml_chassis::{
     ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv,
     rollout::collect_episodic_rollout,
 };
@@ -292,7 +292,7 @@ fn diffusion_calibration() {
 /// Verify `VecEnv` construction works with the ratchet environment.
 ///
 /// This doesn't run a full baseline — it just confirms that the
-/// sim-thermostat + sim-ml-bridge bridge builds and resets successfully.
+/// sim-thermostat + sim-ml-chassis bridge builds and resets successfully.
 /// Full `VecEnv` training is D1c.
 #[test]
 fn vecenv_construction() {

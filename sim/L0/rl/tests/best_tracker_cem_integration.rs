@@ -10,10 +10,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sim_ml_bridge::{Cem, CemHyperparams};
 use sim_ml_chassis::{
     Algorithm, LinearPolicy, Policy, TrainingBudget, TrainingCheckpoint, reaching_2dof,
 };
+use sim_rl::{Cem, CemHyperparams};
 
 #[test]
 fn best_artifact_before_train_returns_initial_policy() {
