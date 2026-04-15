@@ -219,6 +219,9 @@ impl Algorithm for Sa {
         "SA"
     }
 
+    // SA's epoch counters and step indices are usize/i64 cast to f64 for
+    // cooling-schedule math; n_epochs and n_steps stay well below 2^52 in
+    // every realistic budget.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
