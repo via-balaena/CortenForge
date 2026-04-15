@@ -552,17 +552,93 @@ clean. `cargo test -p xtask` 23 grader unit tests pass (was 10 pre-item-3).
 #### ☐ 4. Dep justification coverage
 
 Every `Cargo.toml` under `sim/L0/`, `sim/L1/`, and `examples/fundamentals/`
-has each dep prefixed by a `#`-comment justification per `grade_dependencies`
-(line ~1021). sim-opt had unjustified deps caught mid-PR #192; other crates
-may too because the grader hasn't been run against their current dep sets.
+has each dep prefixed by a `#`-comment justification per
+`grade_dependencies` (post-`bc119f08` line `xtask/src/grade.rs:1124–1247`).
+sim-opt had unjustified deps caught mid-PR #192; other crates may too
+because the grader hasn't been run against their current dep sets.
 
 **Recon prompt sketch:** "For each `Cargo.toml` under `sim/L0/`, `sim/L1/`,
 and `examples/fundamentals/` (skipping the workspace root), report any dep
 line that lacks a `#`-comment justification on the line(s) immediately
-above it. Use `xtask/src/grade.rs::grade_dependencies` (line ~1021) as the
-spec for what counts as a justification."
+above it. Use `xtask/src/grade.rs::grade_dependencies` (post-`bc119f08`
+line 1124) as the spec for what counts as a justification."
 
 **Time:** ~15min recon + 1-line fixes.
+
+**Methodology intel from items 2 + 3** (this is the third item that
+benefits from the same shape, so the pattern is now battle-tested):
+
+1. **`grade_dependencies`'s exact helper logic** (mirror this verbatim
+   in the recon script, no paraphrasing — see
+   `feedback_ground_truth_via_tool.md`):
+   - Walk `Cargo.toml` line by line.
+   - Track three section headers as "in dep section": `[dependencies]`,
+     `[dev-dependencies]`, `[build-dependencies]`. Other `[...]` headers
+     exit the dep section.
+   - Inside a dep section, skip blank lines, `#`-only lines, and lines
+     without `=`.
+   - A dep line is **justified** if (a) it contains an inline `#`
+     comment, OR (b) one of the preceding 1–3 lines starts with `#`,
+     stopping the backward scan at any blank line or `[` section header
+     (the chain is "broken" by either).
+   - Note: pure-TOML scan, no nesting/multi-line attribute handling.
+     Simpler than `grade_clippy` — no state machine needed.
+
+2. **Recon script.** Adapt `/tmp/item3-audit/audit-v2.py` to walk
+   `Cargo.toml` files instead of `.rs` files. Mirror the rule above.
+   Output a per-crate punch list grouped by `sim/L0/`, `sim/L1/`, and
+   `examples/fundamentals/`. Don't reuse audit-v2.py wholesale — write
+   `/tmp/item4-audit/audit.py` from scratch with the simpler rule.
+
+3. **Crate scope.** Walk these `Cargo.toml` paths:
+   - `sim/L0/{types,simd,core,thermostat,gpu,mjcf,urdf,tests,ml-chassis,rl,opt}/Cargo.toml`
+   - `sim/L1/sim-bevy/Cargo.toml`
+   - `examples/fundamentals/**/Cargo.toml` (find via glob)
+   - **Skip the workspace root `Cargo.toml`** — it's not graded by
+     `grade_dependencies` (it has no `[package]` section).
+
+4. **Adjacent grader gaps to watch for.** Items 2 and 3 both surfaced
+   grader bugs while running their narrow recon. For item 4, the
+   things to check:
+   - Does `grade_dependencies` correctly handle multi-line dep
+     specifications (`name = { version = "...", features = [...] }`
+     spanning lines)? Spot-check by looking at a known multi-line dep
+     in any current `Cargo.toml`. If the grader scans the second line
+     as a separate "dep" entry without `=`, fine. If it false-positives
+     on the second line, that's an adjacent gap to fix inline.
+   - Does it handle workspace-inherited deps (`name = { workspace = true }`)?
+     The justification rule should still apply — verify the helper
+     doesn't special-case these.
+   - Are `[target.'cfg(...)'.dependencies]` sections covered? The
+     current `in_dep_section` check uses exact-string equality on
+     `[dependencies]`/`[dev-dependencies]`/`[build-dependencies]`, so
+     target-conditional dep sections are silently skipped. If any Layer
+     0 crate has them, that's an adjacent gap.
+
+5. **Bulk-edit script.** Reuse `/tmp/item3-audit/insert.py` — it's
+   indentation-aware and works on any text file. The TSV format is
+   `<file>\t<line>\t<comment>` and inserts `<indent># <comment>` (TOML
+   uses `#` for comments — adjust the script's hardcoded `// ` prefix
+   to `# ` for item 4, or write a sibling `insert_toml.py`).
+
+6. **Per-crate commit pattern.** `chore(<crate>): justify dependencies
+   in Cargo.toml`. Pre-commit hook will run rustfmt on staged `.rs`
+   files (none here) and clippy on changed crates. `Cargo.toml` edits
+   don't trigger rustfmt — but **may trigger a `cargo check` rebuild**
+   in the hook if it's wired to run on Cargo.toml changes. Verify
+   nothing surprising trips the hook before staging.
+
+7. **rustfmt watch-out (does not apply).** Item 3 hit a near-miss where
+   rustfmt rewrapped a same-line `// justification` comment after a
+   nearby insertion. TOML doesn't have this risk — there's no auto-
+   formatter wrapping comment lines. Skip this concern for item 4.
+
+8. **Adjacent grader-bug fix-or-defer rubric** (carried from item 3).
+   If recon surfaces a `grade_dependencies` gap, default to **fix
+   inline** unless: (a) the fix is genuinely scope creep (>200 LOC),
+   (b) it requires adding new state machinery (TOML parser, etc.) that
+   warrants its own PR. Item 3 set the precedent that "same recon,
+   different gap" → fix inline.
 
 **Findings:**
 _(none yet)_
