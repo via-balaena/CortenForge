@@ -43,9 +43,7 @@ use sim_ml_bridge::{
     ActionSpace, Algorithm, Cem, CemHyperparams, Competition, LinearPolicy, ObservationSpace,
     Policy, TaskConfig, TrainingBudget, VecEnv,
 };
-use sim_opt::{
-    REMATCH_MASTER_SEED, REMATCH_TASK_NAME, RematchOutcome, Sa, SaHyperparams, run_rematch,
-};
+use sim_opt::{REMATCH_MASTER_SEED, REMATCH_TASK_NAME, Sa, SaHyperparams, run_rematch};
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
 
 // ─── MJCF model (duplicated from d2c_cem_training.rs:44-60) ────────────────
@@ -244,7 +242,8 @@ fn d2c_sr_rematch() {
     // `sim_opt::analysis::run_rematch_with_runner`).  The stored
     // seed only matters for `Competition::run()`, which the rematch
     // does not call.
-    let competition = Competition::new(N_ENVS, TrainingBudget::Steps(REMATCH_BUDGET_STEPS), 0);
+    let competition =
+        Competition::new_verbose(N_ENVS, TrainingBudget::Steps(REMATCH_BUDGET_STEPS), 0);
 
     // ── CEM builder ──
     //
@@ -318,29 +317,26 @@ fn d2c_sr_rematch() {
     let outcome = run_rematch(&competition, &task, &algorithm_builders, &mut bootstrap_rng)
         .expect("rematch protocol should complete without env errors");
 
-    eprintln!("\n--- Rematch outcome: {outcome:?} ---");
-
     // ── Test gate: protocol completes cleanly (Ch 42 §6 sub-decision g) ──
     //
     // The test does NOT assert a specific outcome (Positive / Null
-    // / Ambiguous).  Ch 30 names all three as scientifically
-    // informative, and asserting one would bake in a prior about
-    // which outcome is expected — which contradicts the rematch's
-    // purpose as the experiment that reveals the answer.  Instead,
-    // the test passes if the protocol ran to completion and
-    // produced some `RematchOutcome`.  The verdict is emitted via
-    // `eprintln!` so a reader of the test log sees it, matching
-    // `d2c_cem_training.rs`'s within-algorithm-gate +
-    // cross-algorithm-eprintln pattern.
-    match outcome {
-        RematchOutcome::Positive => {
-            eprintln!("CLASSIFICATION: positive (SA reliably outperforms CEM)");
-        }
-        RematchOutcome::Null => {
-            eprintln!("CLASSIFICATION: null (SA does not outperform CEM)");
-        }
-        RematchOutcome::Ambiguous => {
-            eprintln!("CLASSIFICATION: ambiguous (folded expansion to N=20 still inconclusive)");
-        }
-    }
+    // / Ambiguous) on either metric.  Ch 30 names all three as
+    // scientifically informative, and asserting one would bake in
+    // a prior about which outcome is expected — which contradicts
+    // the rematch's purpose as the experiment that reveals the
+    // answer.  Under the Ch 51 dual-metric amendment the test also
+    // does not assert the joint `(best, final)` pair; Ch 51 §2.3
+    // commits the nine-cell interpretation framework to the
+    // chapter, applied by a human reader, not to the fixture.  The
+    // gate shape is still Ch 42 §6 sub-decision (g) α:
+    // protocol-completes-cleanly on a non-error `TwoMetricOutcome`.
+    eprintln!("\n--- Rematch outcome (dual metric, Ch 51 §2) ---");
+    eprintln!("best_reward classification:  {:?}", outcome.best_outcome);
+    eprintln!("final_reward classification: {:?}", outcome.final_outcome);
+    eprintln!(
+        "joint (best, final):         ({:?}, {:?})",
+        outcome.best_outcome, outcome.final_outcome
+    );
+    eprintln!("Apply Ch 51 §2.3's nine-cell framework to read the verdict.  final_reward is the");
+    eprintln!("primary operationalization of Ch 30's \"resolves the peak\" question.");
 }

@@ -34,6 +34,15 @@
 - [PR 2: Competition replicates and algorithm surface fixes](41-pr-2-competition-replicates.md)
 - [PR 3: sim-opt split and rematch](42-pr-3-sim-opt-rematch.md)
 
+# Part 5 — Execution Results
+
+- [The D2c SR rematch: results](50-d2c-sr-rematch-writeup.md)
+- [Metric-sensitivity amendment](51-metric-sensitivity-amendment.md)
+- [Amended re-run digest](52-amended-rerun-digest.md)
+- [Robustness check: Ch 30 follow-ups under §2.3's framework](53-robustness-check-prereg.md)
+- [Richer-SA digest](54-richer-sa-digest.md)
+- [Parallel Tempering digest](55-pt-digest.md)
+
 # Appendices
 
 - [API inventory](90-api-inventory.md)

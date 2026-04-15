@@ -146,6 +146,21 @@ The stock deterministic-physics tasks (`reaching_2dof`,
 matches the existing Rust underscore-prefix idiom for unused
 parameters.
 
+**`task.rs` custom-builder constructor (PR 3b commit 1).**
+The stock-task path in `TaskConfigBuilder::build()` synthesizes
+a `Fn(usize, u64) -> ...` closure that ignores the seed. Custom
+stochastic tasks — those that want to thread the per-replicate
+seed into, e.g., a `LangevinThermostat::master_seed` — need a
+second constructor that accepts a user-provided seeded closure
+directly. Ch 42 §2 sub-decision (a) named this as the "future
+custom-builder API surface" and deferred it from PR 2a. The
+deferral was closed in PR 3b commit 1 (`2adaa372`) as an
+additive ~25-line constructor.
+
+| Symbol | Kind | Specified in | Description |
+|---|---|---|---|
+| `TaskConfig::from_build_fn<F>(name: impl Into<String>, obs_dim: usize, act_dim: usize, obs_scale: Vec<f64>, build_fn: F) -> Self where F: Fn(usize, u64) -> Result<VecEnv, EnvError> + Send + Sync + 'static` | fn (`pub`) | [Ch 42 §2 sub-decision (a)](42-pr-3-sim-opt-rematch.md) | Public constructor that accepts a custom seeded `build_fn` closure directly, bypassing the `TaskConfigBuilder` synthesis path. Used by custom stochastic tasks that need to route the per-replicate seed into their physics (e.g., a `LangevinThermostat::master_seed`). Additive; does not change `TaskConfigBuilder::build()`. |
+
 **Contract changes (PR 2b semantic fixes).** These are
 not new symbols — they are semantic tightenings of existing
 items — but the study's specification of their post-PR-2

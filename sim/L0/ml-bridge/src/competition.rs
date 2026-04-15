@@ -262,6 +262,33 @@ impl CompetitionResult {
             .collect()
     }
 
+    /// Collect the per-replicate final-epoch-reward values for one
+    /// `(task, algorithm)` pair.
+    ///
+    /// Parallel to [`Self::replicate_best_rewards`] in shape and
+    /// filtering contract: silently filters out replicates whose
+    /// [`RunResult::final_reward()`] returns `None` (zero-epoch
+    /// runs).  Since `best_reward` and `final_reward` are both
+    /// `None` iff the replicate ran zero epochs, the two accessors
+    /// always return vectors of the same length for the same
+    /// `(task, algorithm)` pair, and their indices line up 1:1.
+    ///
+    /// Added for the ml-chassis-refactor study's Ch 51 dual-metric
+    /// amendment — the rematch driver plumbs this through
+    /// `sim_opt::analysis::TwoMetricOutcome` so Ch 32's
+    /// bootstrap-and-classify pipeline runs once on
+    /// `best_reward` and once on `final_reward` per run.  See
+    /// Ch 51 §2.1 for the amendment's scope and Ch 51 §2.3 for
+    /// the joint-verdict interpretation framework.
+    #[must_use]
+    pub fn replicate_final_rewards(&self, task: &str, algorithm: &str) -> Vec<f64> {
+        self.runs
+            .iter()
+            .filter(|r| r.task_name == task && r.algorithm_name == algorithm)
+            .filter_map(RunResult::final_reward)
+            .collect()
+    }
+
     /// Summarize the per-replicate best-reward distribution for one
     /// `(task, algorithm)` pair as a [`SeedSummary`].
     ///
@@ -506,10 +533,20 @@ impl Competition {
                     });
 
                     if self.verbose {
+                        // Print `best` (max mean_reward across epochs) alongside `final`
+                        // (last epoch's mean_reward). The rematch's statistical pipeline
+                        // consumes `best_reward()`, not the final, so a reader watching
+                        // the live log must see both to interpret the run correctly.
+                        // See `docs/studies/ml_chassis_refactor/src/50-d2c-sr-rematch-writeup.md`
+                        // for the case study where reading only `final` misled the author.
                         let final_reward = metrics.last().map_or(f64::NAN, |m| m.mean_reward);
+                        let best_reward = metrics
+                            .iter()
+                            .map(|m| m.mean_reward)
+                            .fold(f64::NEG_INFINITY, f64::max);
                         let total_dones: usize = metrics.iter().map(|m| m.done_count).sum();
                         eprintln!(
-                            "[{name}] done — reward={final_reward:.2}, {total_dones} dones, {:.1}s",
+                            "[{name}] done — best={best_reward:.2}, final={final_reward:.2}, {total_dones} dones, {:.1}s",
                             t0.elapsed().as_secs_f64()
                         );
                     }
@@ -1201,6 +1238,30 @@ mod tests {
         assert_eq!(rewards.len(), 3);
         for r in &rewards {
             assert!(r.is_finite(), "reward should be finite: {r}");
+        }
+    }
+
+    #[test]
+    fn replicate_final_rewards_flat_filter() {
+        // Parallel to `replicate_best_rewards_flat_filter`.  Ch 51 §2.1
+        // added `replicate_final_rewards` for the dual-metric rematch
+        // amendment; the shape contract matches the best variant.
+        let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
+        let tasks = [reaching_2dof()];
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("Rwd"));
+
+        let result = comp.run_replicates(&tasks, &[builder], &[1, 2, 3]).unwrap();
+        let finals = result.replicate_final_rewards("reaching-2dof", "Rwd");
+        let bests = result.replicate_best_rewards("reaching-2dof", "Rwd");
+        assert_eq!(finals.len(), 3);
+        assert_eq!(
+            finals.len(),
+            bests.len(),
+            "best and final accessors must return the same length for a given (task, algo) pair",
+        );
+        for r in &finals {
+            assert!(r.is_finite(), "final reward should be finite: {r}");
         }
     }
 

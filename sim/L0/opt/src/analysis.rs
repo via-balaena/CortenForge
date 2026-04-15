@@ -80,6 +80,38 @@ pub enum RematchOutcome {
     Ambiguous,
 }
 
+/// Dual-metric verdict returned by [`run_rematch`] under the
+/// Ch 51 metric-sensitivity amendment.
+///
+/// Both metrics pass through the same Ch 32 §3.2/§3.3
+/// bootstrap-and-classify pipeline: one pair of
+/// `(BootstrapCi, RematchOutcome)` for `RunResult::best_reward`
+/// (the chassis primitive Ch 24 shipped) and one pair for
+/// `RunResult::final_reward` (the converged-policy signal Ch 51
+/// §2.3's interpretation framework treats as the primary
+/// operationalization of Ch 30's "resolves the peak" question).
+///
+/// The `best_reward` side of the struct has exactly the shape
+/// and semantics the old `RematchOutcome` return value had
+/// before Ch 51; the amendment is additive — it extends the
+/// protocol to run the same pipeline a second time in parallel
+/// on `final_reward`, not to replace `best_reward` as
+/// `Competition::run_replicates`'s default surface.  See
+/// Ch 51 §2.1 for the amendment's scope and Ch 51 §2.3 for the
+/// nine-cell interpretation framework a human reader applies to
+/// the `(best_outcome, final_outcome)` pair.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TwoMetricOutcome {
+    /// Bootstrap CI on `mean(SA best) - mean(CEM best)`.
+    pub best_ci: BootstrapCi,
+    /// Ch 30 classification derived from `best_ci`.
+    pub best_outcome: RematchOutcome,
+    /// Bootstrap CI on `mean(SA final) - mean(CEM final)`.
+    pub final_ci: BootstrapCi,
+    /// Ch 30 classification derived from `final_ci`.
+    pub final_outcome: RematchOutcome,
+}
+
 // ── Classification ───────────────────────────────────────────────────────
 
 /// Ch 30's three-outcome classifier per Ch 32 §3.3's table.
@@ -286,7 +318,15 @@ pub fn bimodality_coefficient(values: &[f64]) -> f64 {
 ///
 /// The returned outcome is in **SA-vs-CEM orientation**:
 /// positive means SA's statistic exceeds CEM's statistic.
-fn test_and_classify(r_cem: &[f64], r_sa: &[f64], rng: &mut impl Rng) -> RematchOutcome {
+///
+/// Returns both the [`BootstrapCi`] and the classified
+/// [`RematchOutcome`] so the driver can emit the CI alongside the
+/// verdict in the run-end summary without recomputing the bootstrap.
+fn test_and_classify(
+    r_cem: &[f64],
+    r_sa: &[f64],
+    rng: &mut impl Rng,
+) -> (BootstrapCi, RematchOutcome) {
     let bc_cem = bimodality_coefficient(r_cem);
     let bc_sa = bimodality_coefficient(r_sa);
     let ci = if bc_cem > 5.0 / 9.0 || bc_sa > 5.0 / 9.0 {
@@ -294,7 +334,103 @@ fn test_and_classify(r_cem: &[f64], r_sa: &[f64], rng: &mut impl Rng) -> Rematch
     } else {
         bootstrap_diff_means(r_sa, r_cem, rng)
     };
-    ci.classify()
+    let outcome = ci.classify();
+    (ci, outcome)
+}
+
+/// Emit the rematch's dual-metric per-replicate summary to stderr.
+///
+/// Printed once at the end of [`run_rematch_with_runner`], after the
+/// folded-pilot path has settled on its four final replicate vectors.
+/// The layout stacks two tables — one for `best_reward`, one for
+/// `final_reward` — each followed by its means, CI, and
+/// classification, then prints a joint footer naming the
+/// `(best_outcome, final_outcome)` pair.  A reader skimming the
+/// end of the log sees the exact data both bootstraps saw and the
+/// two verdicts side-by-side.
+///
+/// The header paragraph points the reader at Ch 51 §2.3's
+/// nine-cell interpretation framework, which is where the joint
+/// verdict is actually read.  Per Ch 51 §2, this code deliberately
+/// does not emit a Ch 30 reading (Positive / Null / Split /
+/// Expand) derived from the pair — the framework lives in the
+/// chapter, applied by a human reader, not in the machine output.
+fn emit_rematch_summary(
+    outcome: &TwoMetricOutcome,
+    r_cem_best: &[f64],
+    r_sa_best: &[f64],
+    r_cem_final: &[f64],
+    r_sa_final: &[f64],
+) {
+    eprintln!("\n--- Rematch summary: dual-metric (Ch 51 §2) ---");
+    eprintln!(
+        "Per Ch 51 §2.3, final_reward is the primary operationalization of \"resolves the peak\";"
+    );
+    eprintln!(
+        "best_reward is retained as a complementary signal about exploration reach.  A human"
+    );
+    eprintln!(
+        "reader applies Ch 51 §2.3's nine-cell framework to the (best, final) pair printed below."
+    );
+
+    emit_metric_block(
+        "best_reward",
+        "max-across-epochs",
+        r_cem_best,
+        r_sa_best,
+        &outcome.best_ci,
+        outcome.best_outcome,
+    );
+    emit_metric_block(
+        "final_reward",
+        "last-epoch mean_reward",
+        r_cem_final,
+        r_sa_final,
+        &outcome.final_ci,
+        outcome.final_outcome,
+    );
+
+    eprintln!();
+    eprintln!(
+        "Joint (best, final) = ({:?}, {:?}) — see Ch 51 §2.3 for the reading.",
+        outcome.best_outcome, outcome.final_outcome,
+    );
+}
+
+/// One metric's slice of the dual-metric summary.
+///
+/// Prints a titled per-replicate table, followed by means, the
+/// bootstrap CI on `mean(SA) - mean(CEM)`, and the Ch 30
+/// classification.  Called once per metric by
+/// [`emit_rematch_summary`].
+fn emit_metric_block(
+    metric: &str,
+    shape_hint: &str,
+    r_cem: &[f64],
+    r_sa: &[f64],
+    ci: &BootstrapCi,
+    outcome: RematchOutcome,
+) {
+    eprintln!();
+    eprintln!("[{metric} — {shape_hint} per replicate]");
+    eprintln!(
+        "{:>3}  {:>12}  {:>12}  {:>14}",
+        "rep",
+        format!("CEM {metric}"),
+        format!("SA {metric}"),
+        "SA-CEM diff",
+    );
+    for (i, (c, s)) in r_cem.iter().zip(r_sa.iter()).enumerate() {
+        eprintln!("{:>3}  {:>12.2}  {:>12.2}  {:>+14.2}", i, c, s, s - c);
+    }
+    eprintln!();
+    eprintln!("mean(CEM) = {:.4}", mean(r_cem));
+    eprintln!("mean(SA)  = {:.4}", mean(r_sa));
+    eprintln!(
+        "bootstrap CI on mean(SA) - mean(CEM): point={:+.4}, [{:+.4}, {:+.4}], B={}",
+        ci.point_estimate, ci.lower, ci.upper, ci.n_resamples,
+    );
+    eprintln!("classification: {outcome:?}");
 }
 
 // ── run_rematch: the folded-pilot driver ─────────────────────────────────
@@ -332,7 +468,7 @@ pub fn run_rematch(
     task: &TaskConfig,
     algorithm_builders: &[&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>],
     bootstrap_rng: &mut impl Rng,
-) -> Result<RematchOutcome, EnvError> {
+) -> Result<TwoMetricOutcome, EnvError> {
     run_rematch_with_runner(
         |seeds| competition.run_replicates(std::slice::from_ref(task), algorithm_builders, seeds),
         bootstrap_rng,
@@ -356,32 +492,117 @@ pub fn run_rematch(
 fn run_rematch_with_runner<F>(
     mut run_replicates_fn: F,
     bootstrap_rng: &mut impl Rng,
-) -> Result<RematchOutcome, EnvError>
+) -> Result<TwoMetricOutcome, EnvError>
 where
     F: FnMut(&[u64]) -> Result<CompetitionResult, EnvError>,
 {
+    // Ch 51 §2.1 / §2.2: the amendment runs Ch 32's
+    // bootstrap-and-classify pipeline twice in parallel, once on
+    // best_reward and once on final_reward.  The order in which
+    // the two classify passes consume the bootstrap RNG is
+    // deliberately best-first so that the best_reward call burns
+    // the same random bits in the same order the pre-amendment
+    // single-metric driver did, keeping the amended re-run's
+    // best_reward numbers bit-for-bit comparable to Ch 50.
     let initial_seeds: Vec<u64> = (0..N_INITIAL)
         .map(|i| splitmix64(REMATCH_MASTER_SEED.wrapping_add(i as u64)))
         .collect();
     let initial_result = run_replicates_fn(&initial_seeds)?;
+    let (mut r_cem_best, mut r_sa_best, mut r_cem_final, mut r_sa_final) =
+        extract_replicate_vectors(&initial_result);
 
-    let mut r_cem = initial_result.replicate_best_rewards(REMATCH_TASK_NAME, "CEM");
-    let mut r_sa = initial_result.replicate_best_rewards(REMATCH_TASK_NAME, "SA");
+    let (initial_best_ci, initial_best_outcome) =
+        test_and_classify(&r_cem_best, &r_sa_best, bootstrap_rng);
+    let (initial_final_ci, initial_final_outcome) =
+        test_and_classify(&r_cem_final, &r_sa_final, bootstrap_rng);
 
-    let initial_outcome = test_and_classify(&r_cem, &r_sa, bootstrap_rng);
-    if initial_outcome != RematchOutcome::Ambiguous {
-        return Ok(initial_outcome);
-    }
+    // Ch 51 §2.2: expansion fires if *either* metric classifies
+    // as Ambiguous.  Both metrics expand together so the
+    // replicate pool stays matched.
+    let either_ambiguous = initial_best_outcome == RematchOutcome::Ambiguous
+        || initial_final_outcome == RematchOutcome::Ambiguous;
+    let (best_ci, best_outcome, final_ci, final_outcome) = if either_ambiguous {
+        let expansion_seeds: Vec<u64> = (N_INITIAL..N_EXPANDED)
+            .map(|i| splitmix64(REMATCH_MASTER_SEED.wrapping_add(i as u64)))
+            .collect();
+        let expansion_result = run_replicates_fn(&expansion_seeds)?;
+        let (exp_cem_best, exp_sa_best, exp_cem_final, exp_sa_final) =
+            extract_replicate_vectors(&expansion_result);
 
-    let expansion_seeds: Vec<u64> = (N_INITIAL..N_EXPANDED)
-        .map(|i| splitmix64(REMATCH_MASTER_SEED.wrapping_add(i as u64)))
-        .collect();
-    let expansion_result = run_replicates_fn(&expansion_seeds)?;
+        r_cem_best.extend_from_slice(&exp_cem_best);
+        r_sa_best.extend_from_slice(&exp_sa_best);
+        r_cem_final.extend_from_slice(&exp_cem_final);
+        r_sa_final.extend_from_slice(&exp_sa_final);
 
-    r_cem.extend_from_slice(&expansion_result.replicate_best_rewards(REMATCH_TASK_NAME, "CEM"));
-    r_sa.extend_from_slice(&expansion_result.replicate_best_rewards(REMATCH_TASK_NAME, "SA"));
+        let (best_ci, best_outcome) = test_and_classify(&r_cem_best, &r_sa_best, bootstrap_rng);
+        let (final_ci, final_outcome) = test_and_classify(&r_cem_final, &r_sa_final, bootstrap_rng);
+        (best_ci, best_outcome, final_ci, final_outcome)
+    } else {
+        (
+            initial_best_ci,
+            initial_best_outcome,
+            initial_final_ci,
+            initial_final_outcome,
+        )
+    };
 
-    Ok(test_and_classify(&r_cem, &r_sa, bootstrap_rng))
+    let outcome = TwoMetricOutcome {
+        best_ci,
+        best_outcome,
+        final_ci,
+        final_outcome,
+    };
+    emit_rematch_summary(&outcome, &r_cem_best, &r_sa_best, &r_cem_final, &r_sa_final);
+    Ok(outcome)
+}
+
+/// Pull the four paired replicate vectors out of a single
+/// `run_replicates_fn` call's result and verify the pool is
+/// aligned index-by-index.
+///
+/// Returns `(r_cem_best, r_sa_best, r_cem_final, r_sa_final)`.
+///
+/// The defensive length checks are in service of a silent
+/// invariant: `CompetitionResult::replicate_best_rewards` and
+/// `replicate_final_rewards` both drop replicates whose
+/// `metrics` Vec is empty (Ch 24 §4.7's silent-None-filter
+/// contract), and they drop *the same* replicates because
+/// `best_reward()` and `final_reward()` are both `None` iff
+/// `metrics.last()` is `None`.  CEM and SA also ought to retain
+/// the same set of replicates because `run_replicates_fn`
+/// threads a shared seed slice through both algorithms.  If any
+/// of those invariants slip in a future refactor the bootstrap
+/// downstream would silently operate on a misaligned pool; the
+/// asserts turn that failure mode into a loud panic instead.
+fn extract_replicate_vectors(
+    result: &CompetitionResult,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    let r_cem_best = result.replicate_best_rewards(REMATCH_TASK_NAME, "CEM");
+    let r_sa_best = result.replicate_best_rewards(REMATCH_TASK_NAME, "SA");
+    let r_cem_final = result.replicate_final_rewards(REMATCH_TASK_NAME, "CEM");
+    let r_sa_final = result.replicate_final_rewards(REMATCH_TASK_NAME, "SA");
+    assert_eq!(
+        r_cem_best.len(),
+        r_cem_final.len(),
+        "CEM replicate pool misaligned: best={}, final={}",
+        r_cem_best.len(),
+        r_cem_final.len(),
+    );
+    assert_eq!(
+        r_sa_best.len(),
+        r_sa_final.len(),
+        "SA replicate pool misaligned: best={}, final={}",
+        r_sa_best.len(),
+        r_sa_final.len(),
+    );
+    assert_eq!(
+        r_cem_best.len(),
+        r_sa_best.len(),
+        "CEM/SA replicate pools unequal: cem={}, sa={}",
+        r_cem_best.len(),
+        r_sa_best.len(),
+    );
+    (r_cem_best, r_sa_best, r_cem_final, r_sa_final)
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────
@@ -554,26 +775,42 @@ mod tests {
     }
 
     fn mock_run_result(algo: &str, replicate: usize, reward: f64) -> RunResult {
-        RunResult {
-            task_name: REMATCH_TASK_NAME.to_string(),
-            algorithm_name: algo.to_string(),
-            replicate_index: replicate,
-            metrics: vec![EpochMetrics {
-                epoch: 0,
-                mean_reward: reward,
+        mock_run_result_with_epochs(algo, replicate, &[reward])
+    }
+
+    /// Build a multi-epoch mock `RunResult`.  `best_reward()`
+    /// returns `max(rewards)`; `final_reward()` returns
+    /// `*rewards.last()`.  The single-epoch `mock_run_result`
+    /// helper is a thin wrapper whose best and final are equal,
+    /// which is why the pre-Ch 51 tests produce the same
+    /// verdict on both metrics.
+    fn mock_run_result_with_epochs(algo: &str, replicate: usize, rewards: &[f64]) -> RunResult {
+        let metrics = rewards
+            .iter()
+            .enumerate()
+            .map(|(epoch, &r)| EpochMetrics {
+                epoch,
+                mean_reward: r,
                 done_count: 0,
                 total_steps: 1,
                 wall_time_ms: 0,
                 extra: BTreeMap::new(),
-            }],
+            })
+            .collect();
+        RunResult {
+            task_name: REMATCH_TASK_NAME.to_string(),
+            algorithm_name: algo.to_string(),
+            replicate_index: replicate,
+            metrics,
             artifact: mock_policy_artifact(),
             best_artifact: mock_policy_artifact(),
         }
     }
 
-    /// Build a `CompetitionResult` with one run per (algorithm,
-    /// replicate) pair. `cem_rewards.len()` must equal
-    /// `sa_rewards.len()`.
+    /// Build a `CompetitionResult` with one single-epoch run per
+    /// (algorithm, replicate) pair.  Best and final rewards are
+    /// equal for every replicate under this shape.
+    /// `cem_rewards.len()` must equal `sa_rewards.len()`.
     fn mock_competition_result(cem_rewards: &[f64], sa_rewards: &[f64]) -> CompetitionResult {
         assert_eq!(cem_rewards.len(), sa_rewards.len());
         let mut runs = Vec::with_capacity(cem_rewards.len() * 2);
@@ -584,13 +821,34 @@ mod tests {
         CompetitionResult { runs }
     }
 
+    /// Build a `CompetitionResult` from per-replicate per-epoch
+    /// reward trajectories.  `cem_epochs[i]` is the `mean_reward`
+    /// history for CEM replicate `i`; the same for SA.  This
+    /// lets tests exercise the `best_reward` / `final_reward`
+    /// gap that Ch 50 documented for population-vs-incumbent
+    /// algorithms, which single-epoch mocks cannot express.
+    fn mock_competition_result_multi_epoch(
+        cem_epochs: &[&[f64]],
+        sa_epochs: &[&[f64]],
+    ) -> CompetitionResult {
+        assert_eq!(cem_epochs.len(), sa_epochs.len());
+        let mut runs = Vec::with_capacity(cem_epochs.len() * 2);
+        for (i, (cem_traj, sa_traj)) in cem_epochs.iter().zip(sa_epochs.iter()).enumerate() {
+            runs.push(mock_run_result_with_epochs("CEM", i, cem_traj));
+            runs.push(mock_run_result_with_epochs("SA", i, sa_traj));
+        }
+        CompetitionResult { runs }
+    }
+
     #[test]
     fn run_rematch_positive_short_circuits() {
         // Initial batch classifies as Positive: all 10 SA
         // rewards are ~1.0 above all 10 CEM rewards, so the
         // bootstrap CI on the diff is tight and strictly
         // positive. run_rematch should NOT call the runner
-        // a second time.
+        // a second time.  Under the Ch 51 amendment both
+        // metrics classify as Positive because the single-epoch
+        // mocks have best == final for every replicate.
         let initial = mock_competition_result(
             &[0.0, 0.05, -0.05, 0.02, -0.02, 0.01, -0.01, 0.0, 0.03, -0.03],
             &[1.0, 1.05, 0.95, 1.02, 0.98, 1.01, 0.99, 1.0, 1.03, 0.97],
@@ -605,7 +863,8 @@ mod tests {
             &mut rng,
         )
         .unwrap();
-        assert_eq!(outcome, RematchOutcome::Positive);
+        assert_eq!(outcome.best_outcome, RematchOutcome::Positive);
+        assert_eq!(outcome.final_outcome, RematchOutcome::Positive);
         assert_eq!(
             call_count.get(),
             1,
@@ -619,17 +878,18 @@ mod tests {
         // slightly above CEM's but the within-sample variance
         // straddles zero with a positive point estimate.
         // run_rematch must run the runner a second time with
-        // the expansion seeds.
+        // the expansion seeds.  Under the Ch 51 amendment both
+        // metrics are ambiguous in the initial batch (best ==
+        // final for single-epoch mocks), so the expansion rule
+        // fires on either metric alone just as it did pre-Ch 51.
         let initial = mock_competition_result(
             &[0.0, 1.0, -1.0, 0.5, -0.5, 0.2, -0.2, 0.1, -0.1, 0.0],
             &[0.3, 1.3, -0.7, 0.8, -0.2, 0.5, 0.1, 0.4, 0.2, 0.3],
         );
         // Expansion batch: SA now clearly exceeds CEM with
-        // tight within-sample variance. Post-extension, the
-        // 20-replicate means should still straddle zero on
-        // the low side or tighten to Positive — either way,
-        // the test only checks that the runner was called
-        // twice, not the final outcome.
+        // tight within-sample variance. Post-extension, both
+        // metrics should classify as Positive (the expansion
+        // batch's verdict is the headline).
         let expansion = mock_competition_result(
             &[0.0, 0.05, -0.05, 0.02, -0.02, 0.01, -0.01, 0.0, 0.03, -0.03],
             &[1.0, 1.05, 0.95, 1.02, 0.98, 1.01, 0.99, 1.0, 1.03, 0.97],
@@ -650,9 +910,104 @@ mod tests {
             2,
             "run_rematch must call the runner twice when the initial batch is Ambiguous"
         );
-        // Expansion result is cleanly Positive; final outcome
-        // should therefore be Positive (the expansion batch's
-        // verdict is the headline).
-        assert_eq!(outcome, RematchOutcome::Positive);
+        assert_eq!(outcome.best_outcome, RematchOutcome::Positive);
+        assert_eq!(outcome.final_outcome, RematchOutcome::Positive);
+    }
+
+    #[test]
+    fn run_rematch_metric_sensitivity_classifies_differently() {
+        // Ch 51 §2 is motivated by a concrete pattern: a
+        // population method that transiently touches high
+        // rewards and then regresses off-peak (CEM in Ch 50's
+        // per-replicate table) vs an incumbent tracker where
+        // best ≈ final by construction (SA under the Metropolis
+        // accept rule).  Under best_reward the population
+        // method's peaks push mean(CEM_best) above mean(SA_best);
+        // under final_reward the incumbent tracker's held
+        // rewards push mean(SA_final) above mean(CEM_final).
+        // The same replicate set therefore classifies as `Null`
+        // under best_reward (SA-CEM diff negative) and
+        // `Positive` under final_reward (SA-CEM diff positive).
+        //
+        // This is the `(Null, Positive)` cell of Ch 51 §2.3's
+        // nine-cell table — exactly the cell the 2026-04-14
+        // data is predicted to land in and the cell the
+        // amendment's interpretation framework reads as
+        // `Positive` for Ch 30's scientific question.  Having
+        // a unit test that lands in this cell gives the
+        // framework a machine-checkable anchor independent of
+        // the fixture.
+        //
+        // CEM trajectory per replicate: [300.0, 100.0] —
+        // best = 300 (peak on epoch 0), final = 100 (regresses
+        // on epoch 1).
+        // SA trajectory per replicate:  [200.0, 200.0] —
+        // best = 200, final = 200 (monotone incumbent).
+        //
+        // Slight per-replicate jitter on each scalar so the
+        // bootstrap doesn't collapse to a point mass.
+        let cem_trajs: Vec<[f64; 2]> = (0..10i32)
+            .map(|i| {
+                let jitter = f64::from(i) * 0.1;
+                [300.0 + jitter, 100.0 + jitter]
+            })
+            .collect();
+        let sa_trajs: Vec<[f64; 2]> = (0..10i32)
+            .map(|i| {
+                let jitter = f64::from(i) * 0.1;
+                [200.0 + jitter, 200.0 + jitter]
+            })
+            .collect();
+        let cem_refs: Vec<&[f64]> = cem_trajs.iter().map(<[f64; 2]>::as_slice).collect();
+        let sa_refs: Vec<&[f64]> = sa_trajs.iter().map(<[f64; 2]>::as_slice).collect();
+        let initial = mock_competition_result_multi_epoch(&cem_refs, &sa_refs);
+
+        let call_count = std::cell::Cell::new(0);
+        let mut rng = StdRng::seed_from_u64(42);
+        let outcome = run_rematch_with_runner(
+            |_seeds| {
+                call_count.set(call_count.get() + 1);
+                Ok(initial.clone())
+            },
+            &mut rng,
+        )
+        .unwrap();
+
+        // Headline assertion: the two metrics must disagree.
+        assert_ne!(
+            outcome.best_outcome, outcome.final_outcome,
+            "metric-sensitivity fixture should produce different classifications under best_reward vs final_reward"
+        );
+        // And specifically, the `(Null, Positive)` cell.
+        assert_eq!(
+            outcome.best_outcome,
+            RematchOutcome::Null,
+            "best_reward: CEM's peak touches push mean(CEM_best) above mean(SA_best)"
+        );
+        assert_eq!(
+            outcome.final_outcome,
+            RematchOutcome::Positive,
+            "final_reward: SA's held rewards push mean(SA_final) above mean(CEM_final)"
+        );
+        // Point-estimate signs must bracket zero in opposite
+        // directions.  best_ci is SA-CEM ≈ 200 - 300 = -100;
+        // final_ci is SA-CEM ≈ 200 - 100 = +100.
+        assert!(
+            outcome.best_ci.point_estimate < 0.0,
+            "best_ci point estimate should be negative, got {}",
+            outcome.best_ci.point_estimate
+        );
+        assert!(
+            outcome.final_ci.point_estimate > 0.0,
+            "final_ci point estimate should be positive, got {}",
+            outcome.final_ci.point_estimate
+        );
+        // Neither metric is Ambiguous, so the expansion rule
+        // does not fire and the runner is called exactly once.
+        assert_eq!(
+            call_count.get(),
+            1,
+            "metric-sensitivity fixture should not trigger the N=20 expansion"
+        );
     }
 }
