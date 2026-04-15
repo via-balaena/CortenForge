@@ -45,6 +45,8 @@
 /// first); state words 14 and 15 are zero. This matches
 /// `rand_chacha 0.9`'s `ChaCha8Rng::set_word_pos(counter * 16)`
 /// convention, verified by the cross-check tests in this file.
+// Truncating `block_counter` and `block_counter >> 32` to u32 is the
+// intended split into ChaCha state words 12 and 13.
 #[allow(clippy::cast_possible_truncation)]
 pub(crate) fn chacha8_block(key: &[u8; 32], block_counter: u64) -> [u8; 64] {
     // ChaCha constants: "expand 32-byte k" as four little-endian u32s.
@@ -115,6 +117,8 @@ const fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: u
 /// end-to-end pipeline
 /// `chacha8_block(&expand_master_seed(s), n)` matches
 /// `ChaCha8Rng::seed_from_u64(s)` advanced to block `n`.
+// PCG32-XSH-RR's xorshifted and rotation values are intentionally
+// truncated to u32 — this is the algorithm's defined output width.
 #[allow(clippy::cast_possible_truncation)]
 pub(crate) fn expand_master_seed(master_seed: u64) -> [u8; 32] {
     // PCG32-XSH-RR constants, matching rand_core 0.9's default
@@ -176,6 +180,8 @@ const fn read_u64_le(block: &[u8; 64], offset: usize) -> u64 {
     ])
 }
 
+// `1u64 << 53` is exactly representable in f64 (2^53 is the mantissa
+// boundary); the `as f64` cast is lossless by construction.
 #[allow(clippy::cast_precision_loss)]
 fn u64_to_uniform_open(bits: u64) -> f64 {
     // Map 64 random bits to a uniform in (0, 1]. Take the top 53
