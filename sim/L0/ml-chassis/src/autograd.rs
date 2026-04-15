@@ -74,7 +74,7 @@ enum BackwardOp {
 /// # Usage
 ///
 /// ```
-/// use sim_ml_bridge::autograd::{Tape, Var};
+/// use sim_ml_chassis::autograd::{Tape, Var};
 ///
 /// let mut tape = Tape::new();
 /// let x = tape.param(3.0);

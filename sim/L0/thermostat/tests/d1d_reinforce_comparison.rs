@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use sim_core::DVector;
-use sim_ml_bridge::{
+use sim_rl::{
     ActionSpace, Algorithm, Environment, LinearPolicy, ObservationSpace, OptimizerConfig, Policy,
     Reinforce, ReinforceHyperparams, SimEnv, Tensor, TrainingBudget, VecEnv,
 };

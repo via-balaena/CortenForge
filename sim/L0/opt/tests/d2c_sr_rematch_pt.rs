@@ -49,11 +49,11 @@ use std::sync::Arc;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sim_core::DVector;
-use sim_ml_bridge::{
+use sim_opt::{Pt, PtHyperparams, REMATCH_MASTER_SEED, REMATCH_TASK_NAME, run_rematch};
+use sim_rl::{
     ActionSpace, Algorithm, Cem, CemHyperparams, Competition, LinearPolicy, ObservationSpace,
     Policy, TaskConfig, TrainingBudget, VecEnv,
 };
-use sim_opt::{Pt, PtHyperparams, REMATCH_MASTER_SEED, REMATCH_TASK_NAME, run_rematch};
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
 
 // ─── MJCF model (duplicated from d2c_sr_rematch.rs) ───────────────────────

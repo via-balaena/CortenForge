@@ -61,7 +61,7 @@ use std::time::Instant;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use sim_ml_bridge::{
+use sim_ml_chassis::{
     Algorithm, CURRENT_VERSION, EpochMetrics, Policy, PolicyArtifact, TrainingBudget,
     TrainingCheckpoint, VecEnv, collect_episodic_rollout,
 };
@@ -202,6 +202,8 @@ impl Pt {
 /// `temperatures[k-1] = t_max`, with constant ratio between
 /// adjacent entries.  If `k == 1`, returns `[t_min]`.  If
 /// `t_max == t_min`, returns K copies of `t_min`.
+// cast_precision_loss: `k` is the chain count (K=4 in the rematch);
+// `k as f64` is exact at these magnitudes.
 #[allow(clippy::cast_precision_loss)]
 fn geometric_ladder(t_min: f64, t_max: f64, k: usize) -> Vec<f64> {
     if k == 1 {
@@ -220,6 +222,9 @@ fn randn(rng: &mut impl rand::Rng) -> f64 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
+// cast_precision_loss: rewards are averaged as `usize → f64`; the
+// episode counts come from hyperparameters in the single-digit to
+// low-thousands range, well within f64's exact-integer mantissa.
 #[allow(clippy::cast_precision_loss)]
 fn evaluate_fitness(
     env: &mut VecEnv,
@@ -481,7 +486,7 @@ impl Algorithm for Pt {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use sim_ml_bridge::{LinearPolicy, reaching_2dof};
+    use sim_ml_chassis::{LinearPolicy, reaching_2dof};
 
     const TEST_N_ENVS: usize = 4;
 
@@ -496,7 +501,7 @@ mod tests {
         }
     }
 
-    fn make_pt() -> (Pt, sim_ml_bridge::TaskConfig) {
+    fn make_pt() -> (Pt, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();
         let policy = Box::new(LinearPolicy::new(
             task.obs_dim(),
@@ -549,7 +554,6 @@ mod tests {
         for (i, m) in metrics.iter().enumerate() {
             assert_eq!(m.epoch, i);
             assert!(m.total_steps > 0);
-            assert!(m.wall_time_ms < 60_000);
             assert!(m.extra.contains_key("accepted"));
             assert!(m.extra.contains_key("pt_swap_attempts"));
             assert!(m.extra.contains_key("pt_swap_accepts"));

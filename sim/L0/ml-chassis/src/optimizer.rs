@@ -186,6 +186,8 @@ impl Adam {
 ///
 /// Operates on borrowed slices so the same math works whether params
 /// live inside the optimizer or are owned by the caller.
+// Adam signature matches the formal algorithm's hyperparameter set; names
+// (m, v, t, lr, beta1, beta2, eps) mirror the paper notation exactly.
 #[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
 fn adam_update(
     params: &mut [f64],

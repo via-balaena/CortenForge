@@ -1,0 +1,43 @@
+[package]
+name = "sim-ml-chassis"
+description = "Algorithm chassis: traits, primitives, Competition runner — the foundation every CortenForge algorithm crate bolts onto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+bevy = ["dep:bevy_ecs"]
+
+[dependencies]
+# ECS integration for Bevy consumers (gated behind `bevy` feature)
+bevy_ecs    = { version = "0.18", optional = true }
+# Linear algebra — DVector / DMatrix used throughout policy forward passes
+nalgebra    = { workspace = true }
+# RNG traits — Gaussian noise, Xavier init, stochastic policy sampling
+rand        = { workspace = true }
+# Serialization for PolicyArtifact and TrainingCheckpoint
+serde       = { workspace = true }
+# JSON format for checkpoint/artifact persistence round-trips
+serde_json  = { workspace = true }
+# Core sim types — BatchSim, Model, Data bridged into SimEnv / VecEnv
+sim-core    = { workspace = true }
+# MJCF loading for stock task fixtures (reaching_2dof, reaching_6dof, ...)
+sim-mjcf    = { workspace = true }
+# Error types for env / space / tensor / artifact error enums
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+# Float tolerance assertions in tests (assert_relative_eq!)
+approx      = { workspace = true }
+# Benchmark harness for benches/bridge_benchmarks.rs
+criterion   = { workspace = true }
+
+[[bench]]
+name = "bridge_benchmarks"
+harness = false
+
+[lints]
+workspace = true

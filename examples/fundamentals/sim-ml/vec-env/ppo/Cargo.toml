@@ -12,7 +12,7 @@ rand = { workspace = true }
 rand_distr = { workspace = true }
 sim-bevy = { workspace = true }
 sim-core = { workspace = true }
-sim-ml-bridge = { workspace = true }
+sim-ml-chassis = { workspace = true }
 
 [lints]
 workspace = true

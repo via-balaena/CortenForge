@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use sim_core::Model;
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, ObservationSpace, SpaceError, Tensor};
+use sim_ml_chassis::{ActionSpace, ObservationSpace, SpaceError, Tensor};
 
 // ── MJCF Models ─────────────────────────────────────────────────────────────
 

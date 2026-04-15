@@ -1,5 +1,12 @@
 # ML Competition Framework Spec
 
+> **Pre-split historical record.** This spec was written when the
+> ML layer was a single `sim-ml-bridge` crate. It has since been
+> split into `sim-ml-chassis` + `sim-rl` + `sim-opt` — see
+> `docs/thermo_computing/01_vision/physics_aware_ml_construction.md`
+> for the current shape. The `sim-ml-bridge` references below are
+> historical; do not use them as import paths.
+
 > **Status**: Phases 1–4 complete. Phase 5+ (future levels) pending.
 > **Crate**: sim-ml-bridge (extensions)
 > **Branch**: feature/competition-tests

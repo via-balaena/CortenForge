@@ -1,4 +1,4 @@
-//! Error types for the sim-ml-bridge crate.
+//! Error types for the sim-ml-chassis crate.
 
 use std::ops::Range;
 

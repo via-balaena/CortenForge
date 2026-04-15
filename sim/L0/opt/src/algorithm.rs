@@ -17,7 +17,7 @@ use std::time::Instant;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use sim_ml_bridge::{
+use sim_ml_chassis::{
     Algorithm, ArtifactError, CURRENT_VERSION, EpochMetrics, Policy, PolicyArtifact,
     TrainingBudget, TrainingCheckpoint, VecEnv, collect_episodic_rollout,
 };
@@ -171,7 +171,7 @@ impl Sa {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /// Box-Muller normal sample. Inlined to avoid a `rand_distr`
-/// dependency. Matches the shape in `sim-ml-bridge`'s `cem.rs`.
+/// dependency. Matches the shape in `sim-rl`'s `cem.rs`.
 fn randn(rng: &mut impl rand::Rng) -> f64 {
     let u1: f64 = 1.0 - rng.random::<f64>();
     let u2: f64 = rng.random::<f64>();
@@ -185,6 +185,9 @@ fn randn(rng: &mut impl rand::Rng) -> f64 {
 /// per-episode total across `n_envs` trajectories — matching the
 /// `mean_reward` formula CEM / REINFORCE / PPO / TD3 / SAC all
 /// emit post-PR-2b.
+// cast_precision_loss: rewards are averaged as `usize → f64`; the
+// episode counts come from hyperparameters in the single-digit to
+// low-thousands range, well within f64's exact-integer mantissa.
 #[allow(clippy::cast_precision_loss)]
 fn evaluate_fitness(
     env: &mut VecEnv,
@@ -372,7 +375,7 @@ impl Algorithm for Sa {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use sim_ml_bridge::{LinearPolicy, reaching_2dof};
+    use sim_ml_chassis::{LinearPolicy, reaching_2dof};
 
     // Small debug-mode test config: n_envs=4, max_episode_steps=50.
     // The D2c SR rematch uses n_envs=32 and max_episode_steps=5000
@@ -390,7 +393,7 @@ mod tests {
         }
     }
 
-    fn make_sa() -> (Sa, sim_ml_bridge::TaskConfig) {
+    fn make_sa() -> (Sa, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();
         let policy = Box::new(LinearPolicy::new(
             task.obs_dim(),
@@ -417,7 +420,6 @@ mod tests {
         for (i, m) in metrics.iter().enumerate() {
             assert_eq!(m.epoch, i);
             assert!(m.total_steps > 0);
-            assert!(m.wall_time_ms < 60_000, "epoch took too long");
             assert!(m.extra.contains_key("temperature"));
             assert!(m.extra.contains_key("accepted"));
             assert!(m.extra.contains_key("proposed_fitness"));

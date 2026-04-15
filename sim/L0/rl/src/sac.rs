@@ -19,14 +19,17 @@ use std::time::Instant;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
-use crate::artifact::{ArtifactError, NetworkSnapshot, PolicyArtifact, TrainingCheckpoint};
-use crate::optimizer::OptimizerConfig;
-use crate::policy::StochasticPolicy;
-use crate::replay_buffer::ReplayBuffer;
-use crate::tensor::Tensor;
-use crate::value::{QFunction, soft_update};
-use crate::vec_env::VecEnv;
+use sim_ml_chassis::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use sim_ml_chassis::artifact::{
+    ArtifactError, NetworkSnapshot, PolicyArtifact, TrainingCheckpoint,
+};
+use sim_ml_chassis::optimizer::OptimizerConfig;
+use sim_ml_chassis::policy::StochasticPolicy;
+use sim_ml_chassis::replay_buffer::ReplayBuffer;
+use sim_ml_chassis::stats::gaussian_log_prob;
+use sim_ml_chassis::tensor::Tensor;
+use sim_ml_chassis::value::{QFunction, soft_update};
+use sim_ml_chassis::vec_env::VecEnv;
 
 // ── Hyperparameters ──────────────────────────────────────────────────────
 
@@ -94,15 +97,15 @@ pub struct Sac {
     optimizer_config: OptimizerConfig,
     hyperparams: SacHyperparams,
     /// Actor optimizer (momentum persists across `train()` calls).
-    actor_opt: Box<dyn crate::optimizer::Optimizer>,
+    actor_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
     /// Q1 optimizer.
-    q1_opt: Box<dyn crate::optimizer::Optimizer>,
+    q1_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
     /// Q2 optimizer.
-    q2_opt: Box<dyn crate::optimizer::Optimizer>,
+    q2_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
     /// Log of entropy temperature α (for gradient stability).
     log_alpha: f64,
     /// Best-epoch policy snapshot.
-    best: crate::best_tracker::BestTracker,
+    best: sim_ml_chassis::best_tracker::BestTracker,
 }
 
 impl Sac {
@@ -127,7 +130,7 @@ impl Sac {
         let q1_opt = optimizer_config.build(q1.n_params());
         let q2_opt = optimizer_config.build(q2.n_params());
         let log_alpha = hyperparams.alpha_init.ln();
-        let best = crate::best_tracker::BestTracker::new(policy.params());
+        let best = sim_ml_chassis::best_tracker::BestTracker::new(policy.params());
 
         Self {
             policy,
@@ -193,7 +196,7 @@ impl Sac {
             .copied()
             .unwrap_or_else(|| hyperparams.alpha_init.ln());
 
-        let best = crate::best_tracker::BestTracker::from_checkpoint(
+        let best = sim_ml_chassis::best_tracker::BestTracker::from_checkpoint(
             checkpoint.best_params.clone(),
             checkpoint.best_reward,
             checkpoint.best_epoch,
@@ -221,24 +224,6 @@ fn randn(rng: &mut impl rand::Rng) -> f64 {
     let u1: f64 = 1.0 - rng.random::<f64>();
     let u2: f64 = rng.random::<f64>();
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
-/// Log probability of action under a diagonal Gaussian.
-///
-/// Computes `log N(action | mu, diag(exp(log_std)²))`.
-#[must_use]
-pub fn gaussian_log_prob(action: &[f64], mu: &[f64], log_std: &[f64]) -> f64 {
-    let mut lp = 0.0;
-    for i in 0..action.len() {
-        let std = log_std[i].exp();
-        let var = std * std;
-        let diff = action[i] - mu[i];
-        lp += 0.5f64.mul_add(
-            -(2.0 * std::f64::consts::PI).ln(),
-            -0.5 * diff * diff / var - log_std[i],
-        );
-    }
-    lp
 }
 
 impl Algorithm for Sac {
@@ -643,9 +628,9 @@ impl Algorithm for Sac {
 #[allow(clippy::unwrap_used, clippy::cast_precision_loss, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use crate::{LinearQ, LinearStochasticPolicy, reaching_2dof};
+    use sim_ml_chassis::{LinearQ, LinearStochasticPolicy, reaching_2dof};
 
-    fn make_sac() -> (Sac, crate::TaskConfig) {
+    fn make_sac() -> (Sac, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();
         let od = task.obs_dim();
         let ad = task.act_dim();

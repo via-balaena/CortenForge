@@ -27,7 +27,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Uniform};
 use sim_core::DVector;
-use sim_ml_bridge::{
+use sim_rl::{
     ActionSpace, Algorithm, Cem, CemHyperparams, Environment, LinearPolicy, ObservationSpace,
     Policy, SimEnv, Tensor, TrainingBudget, VecEnv,
 };

@@ -71,6 +71,7 @@ impl Tensor {
     /// # Panics
     ///
     /// Panics if `data.len() != product(shape)`.
+    // f64 → f32 at the sim/ML boundary — `Tensor` is f32-backed by design.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn from_f64_slice(data: &[f64], shape: &[usize]) -> Self {
@@ -113,6 +114,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns [`TensorError::ShapeMismatch`] if `data.len() != product(shape)`.
+    // f64 → f32 at the sim/ML boundary — `Tensor` is f32-backed by design.
     #[allow(clippy::cast_possible_truncation)]
     pub fn try_from_f64_slice(data: &[f64], shape: &[usize]) -> Result<Self, TensorError> {
         let expected = shape_numel(shape);

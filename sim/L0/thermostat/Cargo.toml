@@ -23,8 +23,10 @@ rand_chacha = { workspace = true }
 [dev-dependencies]
 # MJCF model loading — test fixtures for integration tests
 sim-mjcf = { workspace = true }
-# ML bridge — RL environment + algorithms for D1+ integration tests
-sim-ml-bridge = { workspace = true }
+# ML chassis — RL environment primitives for D1b/D2b baseline tests
+sim-ml-chassis = { workspace = true }
+# RL baselines — Cem/Reinforce/Ppo/Sac/Td3 for D1c/D1d/D2c training tests
+sim-rl = { workspace = true }
 # Normal/Uniform distributions — used by d1b/d1c test files for
 # Uniform action sampling and by prf.rs cross-verification tests.
 # After the C-3 rewrite of LangevinThermostat, no src/ target uses

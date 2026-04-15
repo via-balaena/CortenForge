@@ -9,7 +9,7 @@ publish = false
 rand = { workspace = true }
 sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
-sim-ml-bridge = { workspace = true }
+sim-ml-chassis = { workspace = true }
 
 [lints]
 workspace = true

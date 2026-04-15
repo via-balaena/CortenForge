@@ -36,7 +36,7 @@ use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{PhysicsHud, ValidationHarness, render_physics_hud, validation_system};
 use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{LinearPolicy, Policy, Tensor, VecEnv, reaching_2dof};
+use sim_ml_chassis::{LinearPolicy, Policy, Tensor, VecEnv, reaching_2dof};
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -459,7 +459,7 @@ fn update_hud(res: Res<CemResource>, mut hud: ResMut<PhysicsHud>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_ml_bridge::reaching_2dof;
+    use sim_ml_chassis::reaching_2dof;
 
     // ── Headless CEM runner for tests ──
 

@@ -78,6 +78,8 @@ pub struct EpisodicRollout {
 ///
 /// Panics if `env.reset_all()` or `env.step()` fails (physics errors in
 /// the environment setup are programming errors, not runtime conditions).
+// env errors surface construction bugs (bad MJCF, malformed model); the
+// rollout loop has no sensible recovery path mid-episode.
 #[allow(clippy::panic)]
 pub fn collect_episodic_rollout(
     env: &mut VecEnv,
@@ -112,6 +114,7 @@ pub fn collect_episodic_rollout(
 
     let mut action_data = vec![0.0_f32; n_envs * act_dim];
     for (j, &a) in first_action.iter().enumerate() {
+        // f64 → f32 at the sim/ML boundary (see module doc).
         #[allow(clippy::cast_possible_truncation)]
         {
             action_data[j] = a as f32;
@@ -124,6 +127,7 @@ pub fn collect_episodic_rollout(
         trajectories[i].obs.push(obs.to_vec());
         let action = act_fn(i, obs);
         for (j, &a) in action.iter().enumerate() {
+            // f64 → f32 at the sim/ML boundary (see module doc).
             #[allow(clippy::cast_possible_truncation)]
             {
                 action_data[i * act_dim + j] = a as f32;
@@ -164,6 +168,7 @@ pub fn collect_episodic_rollout(
                 trajectories[i].obs.push(obs.to_vec());
                 let action = act_fn(i, obs);
                 for (j, &a) in action.iter().enumerate() {
+                    // f64 → f32 at the sim/ML boundary (see module doc).
                     #[allow(clippy::cast_possible_truncation)]
                     {
                         action_data[i * act_dim + j] = a as f32;

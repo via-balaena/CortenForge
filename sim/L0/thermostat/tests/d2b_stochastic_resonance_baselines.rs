@@ -25,7 +25,7 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use sim_core::DVector;
-use sim_ml_bridge::{
+use sim_ml_chassis::{
     ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv,
     rollout::collect_episodic_rollout,
 };
@@ -170,7 +170,7 @@ fn log_spaced_kt_values() -> Vec<f64> {
 
 /// Verify `VecEnv` construction works with the SR environment.
 ///
-/// Confirms that the sim-thermostat + sim-ml-bridge bridge builds with the
+/// Confirms that the sim-thermostat + sim-ml-chassis bridge builds with the
 /// synchrony reward, resets successfully, and can step + run an episodic
 /// rollout. Does NOT run a full baseline — that's the `#[ignore]` tests.
 #[test]

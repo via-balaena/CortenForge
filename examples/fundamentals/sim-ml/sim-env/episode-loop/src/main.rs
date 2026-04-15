@@ -23,7 +23,7 @@ use sim_bevy::model_data::{
     sync_rendering_data,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
+use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 

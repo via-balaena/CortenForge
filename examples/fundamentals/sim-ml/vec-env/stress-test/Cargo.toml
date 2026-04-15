@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
-sim-ml-bridge = { workspace = true }
+sim-ml-chassis = { workspace = true }
 
 [lints]
 workspace = true

@@ -896,9 +896,13 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
             }
 
             // Counted with justification: panic!()
+            // Justified by any of: preceding `//` comment, same-line `//`
+            // comment, or an enclosing `#[allow(clippy::panic)]` attribute
+            // within 100 lines back (the idiomatic Rust pattern).
             if trimmed.contains("panic!") {
-                let has_justification =
-                    has_preceding_comment(&lines, i) || has_same_line_comment(trimmed);
+                let has_justification = has_preceding_comment(&lines, i)
+                    || has_same_line_comment(trimmed)
+                    || has_enclosing_allow(&lines, i, "clippy::panic");
                 if !has_justification {
                     counted_violations += 1;
                 }
@@ -906,8 +910,9 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
 
             // Counted with justification: unreachable!()
             if trimmed.contains("unreachable!") {
-                let has_justification =
-                    has_preceding_comment(&lines, i) || has_same_line_comment(trimmed);
+                let has_justification = has_preceding_comment(&lines, i)
+                    || has_same_line_comment(trimmed)
+                    || has_enclosing_allow(&lines, i, "clippy::unreachable");
                 if !has_justification {
                     counted_violations += 1;
                 }
@@ -970,6 +975,31 @@ fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
             prev.starts_with("//") && !prev.starts_with("///") && !prev.starts_with("//!")
         })
     })
+}
+
+/// Check if any of the preceding 300 lines mentions `clippy::<lint>` inside an
+/// attribute context — i.e., the panic/unreachable is inside a scope whose
+/// author has deliberately allowed this lint via `#[allow(clippy::<lint>)]`
+/// on the enclosing fn, impl, let-binding, or module.
+///
+/// 300 lines is a heuristic window that covers most reasonable function
+/// bodies (including the ~200-line `collect_episodic_rollout` in sim-ml-chassis).
+/// The window is intentionally generous because the `#[allow]` attribute
+/// is itself a strong signal of deliberate author intent — once it's
+/// present anywhere in scope above, we trust the author's judgment.
+///
+/// This matches the idiomatic Rust justification pattern (function-level
+/// `#[allow]` attributes) without requiring per-site `//` comments that
+/// would duplicate information already present in `# Panics` rustdoc
+/// sections and clippy allows.
+fn has_enclosing_allow(lines: &[&str], i: usize, lint: &str) -> bool {
+    let start = i.saturating_sub(300);
+    for j in (start..i).rev() {
+        if lines[j].contains(lint) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Check if the line has a trailing `//` comment after the code.

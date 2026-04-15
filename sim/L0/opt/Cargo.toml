@@ -9,16 +9,26 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# RNG traits — StdRng + SeedableRng for SA/richer-SA/PT per-epoch sampling
 rand = { workspace = true }
+# Derive macros for PolicyArtifact + BootstrapCi + RematchOutcome serialization
 serde = { workspace = true }
-sim-ml-bridge = { workspace = true }
+# Algorithm chassis — Algorithm trait, VecEnv, Policy, Competition, ArtifactError, ...
+sim-ml-chassis = { workspace = true }
+# SR task primitives used by analysis.rs (REMATCH_TASK_NAME, prf::splitmix64 helpers)
 sim-thermostat = { workspace = true }
+# Error types for ArtifactError construction in SA/richer-SA/PT
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Float tolerance assertions across analysis.rs unit tests
 approx = { workspace = true }
+# DVector for rematch fixtures' MJCF model state threading
 sim-core = { workspace = true }
+# MJCF model loading for d2c_sr_rematch* fixtures
 sim-mjcf = { workspace = true }
+# RL baselines — d2c rematch fixtures use Cem/CemHyperparams as the control arm.
+sim-rl = { workspace = true }
 
 [lints]
 workspace = true

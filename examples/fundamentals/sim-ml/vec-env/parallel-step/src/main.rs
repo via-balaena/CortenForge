@@ -33,7 +33,7 @@ use sim_bevy::multi_scene::{
     PhysicsScenes, spawn_scene_geoms, sync_batch_geoms, sync_scene_geom_transforms,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv};
+use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv};
 
 // ── Config ───────────────────────────────────────────────────────────────
 
@@ -91,7 +91,7 @@ fn tip_color(i: usize) -> Color {
 struct VecEnvResource {
     vec_env: VecEnv,
     actions: Tensor,
-    last_result: Option<sim_ml_bridge::VecStepResult>,
+    last_result: Option<sim_ml_chassis::VecStepResult>,
     accumulator: f64,
     sim_time: f64,
     /// Sequential SimEnvs for bit-exact parity check.

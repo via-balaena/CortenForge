@@ -16,14 +16,16 @@ use std::time::Instant;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
-use crate::artifact::{ArtifactError, NetworkSnapshot, PolicyArtifact, TrainingCheckpoint};
-use crate::optimizer::OptimizerConfig;
-use crate::policy::DifferentiablePolicy;
-use crate::replay_buffer::ReplayBuffer;
-use crate::tensor::Tensor;
-use crate::value::{QFunction, soft_update};
-use crate::vec_env::VecEnv;
+use sim_ml_chassis::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use sim_ml_chassis::artifact::{
+    ArtifactError, NetworkSnapshot, PolicyArtifact, TrainingCheckpoint,
+};
+use sim_ml_chassis::optimizer::OptimizerConfig;
+use sim_ml_chassis::policy::DifferentiablePolicy;
+use sim_ml_chassis::replay_buffer::ReplayBuffer;
+use sim_ml_chassis::tensor::Tensor;
+use sim_ml_chassis::value::{QFunction, soft_update};
+use sim_ml_chassis::vec_env::VecEnv;
 
 // ── Hyperparameters ──────────────────────────────────────────────────────
 
@@ -90,13 +92,13 @@ pub struct Td3 {
     optimizer_config: OptimizerConfig,
     hyperparams: Td3Hyperparams,
     /// Actor optimizer (momentum persists across `train()` calls).
-    actor_opt: Box<dyn crate::optimizer::Optimizer>,
+    actor_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
     /// Q1 optimizer.
-    q1_opt: Box<dyn crate::optimizer::Optimizer>,
+    q1_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
     /// Q2 optimizer.
-    q2_opt: Box<dyn crate::optimizer::Optimizer>,
+    q2_opt: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
     /// Best-epoch policy snapshot.
-    best: crate::best_tracker::BestTracker,
+    best: sim_ml_chassis::best_tracker::BestTracker,
 }
 
 impl Td3 {
@@ -104,6 +106,9 @@ impl Td3 {
     ///
     /// Target networks are hard-synced to their primary counterparts.
     #[must_use]
+    // TD3 needs all six networks (policy + 2 critics + 3 targets) plus the
+    // optimizer config and hyperparams as constructor args by design — there
+    // is no narrower signature without a builder, which the chassis avoids.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         policy: Box<dyn DifferentiablePolicy>,
@@ -123,7 +128,7 @@ impl Td3 {
         let actor_opt = optimizer_config.build(policy.n_params());
         let q1_opt = optimizer_config.build(q1.n_params());
         let q2_opt = optimizer_config.build(q2.n_params());
-        let best = crate::best_tracker::BestTracker::new(policy.params());
+        let best = sim_ml_chassis::best_tracker::BestTracker::new(policy.params());
 
         Self {
             policy,
@@ -184,7 +189,7 @@ impl Td3 {
             }
         }
 
-        let best = crate::best_tracker::BestTracker::from_checkpoint(
+        let best = sim_ml_chassis::best_tracker::BestTracker::from_checkpoint(
             checkpoint.best_params.clone(),
             checkpoint.best_reward,
             checkpoint.best_epoch,
@@ -587,9 +592,9 @@ impl Algorithm for Td3 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::{LinearPolicy, LinearQ, reaching_2dof};
+    use sim_ml_chassis::{LinearPolicy, LinearQ, reaching_2dof};
 
-    fn make_td3() -> (Td3, crate::TaskConfig) {
+    fn make_td3() -> (Td3, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();
         let od = task.obs_dim();
         let ad = task.act_dim();

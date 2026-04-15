@@ -19,7 +19,7 @@ use sim_bevy::examples::{
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::multi_scene::{PhysicsScenes, spawn_scene_geoms};
-use sim_ml_bridge::{TaskConfig, VecEnv};
+use sim_ml_chassis::{TaskConfig, VecEnv};
 
 // Re-export for callers' sync systems.
 pub use sim_bevy::multi_scene::sync_batch_geoms;

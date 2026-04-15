@@ -16,12 +16,12 @@ use std::time::Instant;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
-use crate::artifact::{ArtifactError, PolicyArtifact, TrainingCheckpoint};
-use crate::optimizer::OptimizerConfig;
-use crate::policy::DifferentiablePolicy;
-use crate::rollout::collect_episodic_rollout;
-use crate::vec_env::VecEnv;
+use sim_ml_chassis::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use sim_ml_chassis::artifact::{ArtifactError, PolicyArtifact, TrainingCheckpoint};
+use sim_ml_chassis::optimizer::OptimizerConfig;
+use sim_ml_chassis::policy::DifferentiablePolicy;
+use sim_ml_chassis::rollout::collect_episodic_rollout;
+use sim_ml_chassis::vec_env::VecEnv;
 
 // ── Hyperparameters ──────────────────────────────────────────────────────
 
@@ -64,11 +64,11 @@ pub struct Reinforce {
     optimizer_config: OptimizerConfig,
     hyperparams: ReinforceHyperparams,
     /// Optimizer instance (momentum persists across `train()` calls).
-    optimizer: Box<dyn crate::optimizer::Optimizer>,
+    optimizer: Box<dyn sim_ml_chassis::optimizer::Optimizer>,
     /// Current exploration noise σ (decayed each epoch).
     sigma: f64,
     /// Best-epoch policy snapshot.
-    best: crate::best_tracker::BestTracker,
+    best: sim_ml_chassis::best_tracker::BestTracker,
 }
 
 impl Reinforce {
@@ -81,7 +81,7 @@ impl Reinforce {
     ) -> Self {
         let optimizer = optimizer_config.build(policy.n_params());
         let sigma = hyperparams.sigma_init;
-        let best = crate::best_tracker::BestTracker::new(policy.params());
+        let best = sim_ml_chassis::best_tracker::BestTracker::new(policy.params());
         Self {
             policy,
             optimizer_config,
@@ -118,7 +118,7 @@ impl Reinforce {
             .get("sigma")
             .copied()
             .unwrap_or(hyperparams.sigma_init);
-        let best = crate::best_tracker::BestTracker::from_checkpoint(
+        let best = sim_ml_chassis::best_tracker::BestTracker::from_checkpoint(
             checkpoint.best_params.clone(),
             checkpoint.best_reward,
             checkpoint.best_epoch,
@@ -254,7 +254,7 @@ impl Algorithm for Reinforce {
             let epoch_steps: usize = rollout
                 .trajectories
                 .iter()
-                .map(crate::rollout::Trajectory::len)
+                .map(sim_ml_chassis::rollout::Trajectory::len)
                 .sum();
             let total_reward: f64 = rollout
                 .trajectories
@@ -315,9 +315,9 @@ impl Algorithm for Reinforce {
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use crate::{LinearPolicy, reaching_2dof};
+    use sim_ml_chassis::{LinearPolicy, reaching_2dof};
 
-    fn make_reinforce() -> (Reinforce, crate::TaskConfig) {
+    fn make_reinforce() -> (Reinforce, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();
         let policy = Box::new(LinearPolicy::new(
             task.obs_dim(),
