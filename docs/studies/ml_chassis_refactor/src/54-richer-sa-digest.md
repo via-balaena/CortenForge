@@ -180,10 +180,17 @@ last 20 epochs of each replicate:
 - Rep 4: `237.51` held unchanged from ≤ epoch 80 through 99.
 - Rep 5: `55.77` held unchanged from ≤ epoch 80 through 99.
 - Rep 6: `146.40` held ~11 epochs, stepped to `146.32` at
-  epoch 91 (an unusual *negative* step — either an accepted
-  downward proposal or a rare physics-noise artifact; the
-  `final_reward` column records 146.32 per `mean_reward`
-  semantics).
+  epoch 91.  Richer-SA's `mean_reward` field is
+  `self.current_fitness` (cached on accept — see
+  `sim/L0/opt/src/richer_sa.rs:436`), so a per-epoch
+  change implies a Metropolis accept on a new proposal.
+  A re-evaluation against fresh physics noise is not a
+  possible explanation, because the cached fitness is not
+  re-evaluated between epochs.  The 0.08-unit drop is
+  therefore an accepted downhill proposal under the
+  cooling temperature at epoch 91.  `best_reward`
+  (max-across-epochs) stays at the earlier 146.40 peak;
+  `final_reward` records 146.32 at epoch 99.
 - Rep 7: `197.33` held unchanged from ≤ epoch 80 through 99.
 - Rep 8: `263.86` held unchanged from ≤ epoch 80 through 99.
 - Rep 9: `172.41` held ~11 epochs, stepped to `190.50` at

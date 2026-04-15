@@ -584,20 +584,51 @@ procedural: §2.3's framework made a class-level claim
 (the `final_reward`-primary reading holds for the SA
 family against CEM on problems where the peak is above the
 empirical peak range and CEM's population never resolves
-to the incumbent), and Ch 53 provides independent
-evidence for that class-level claim by running the framework's rule
-on two additional SA variants under matched seeds,
-matched compute, and matched measurement. Both variants
-came back with `final_reward` CIs strictly above zero and
-point estimates well above the `+50` floor. The
-framework's class-level grounding is therefore not an
-artifact of basic SA's specific per-replicate dynamics on
-D2c-SR — it holds for richer-proposal SA under a
-Rechenberg 1/5 adaptive controller *and* for PT chain 1
-under a 4-way tempering split. Both variants' evidence
-would have been enough to clear §3.2's Corroborate floor
-on their own; having both clears it simultaneously is
-the strongest evidence Ch 53's rule permits.
+to the incumbent), and Ch 53 runs the framework's rule on
+two additional SA variants under matched seeds, matched
+compute, and matched measurement.  Both variants came back
+with `final_reward` CIs strictly above zero and point
+estimates well above the `+50` floor, so §3.2's rule
+clears mechanically.
+
+The two variants do not carry equal epistemic weight,
+though, and the honest reading of the Corroborate verdict
+has to say so out loud.  Ch 54's per-replicate comparison
+shows richer-SA's `final_reward` point estimate (`+155.29`)
+landing within `2.20` units of basic SA's (`+157.49`), with
+Rep 5 bit-for-bit identical between the two variants, 8 of
+10 replicates having `peak == final` exactly (mirroring
+basic SA's 7 of 10), and the remaining `peak - final` gaps
+tracking basic SA's on the same seed.  On this fixture at
+this compute budget, the Rechenberg 1/5 adaptation did not
+meaningfully move richer-SA off basic SA's trajectory —
+the richer variant is effectively basic SA with a
+cosmetic proposal-width perturbation, and its Corroborate
+clearance is a near-duplicate of basic SA's Ch 52 result,
+not a mechanically independent corroboration of the
+class-level claim.  Ch 55's PT variant by contrast reaches
+a `final_reward` point estimate `+22.84` units above
+basic SA's, with observed swap-driven chain dynamics that
+Ch 55's qualitative note documents at Rep 7 epoch 16
+(an accepted downhill Metropolis step that is the
+signature of a hot-chain state being swapped into
+chain 1 — basic SA could not have produced that step
+under its single-chain Metropolis criterion).  PT is the
+variant actually exercising the class-level test.
+
+Under that more honest reading, §3.2's rule still clears
+— both variants meet its mechanical preconditions — and
+the Corroborate verdict stands as the pre-committed
+response.  But the *evidential* strength is substantially
+weighted toward PT: richer-SA demonstrates that the
+framework does not break when a variant is near-identical
+to basic SA on this fixture (a weak form of corroboration,
+i.e. "the framework is robust to a near-absent
+perturbation"), and PT demonstrates that it holds under a
+variant whose chain topology genuinely differs from basic
+SA's single-chain trajectory (the stronger form).  The
+class-level claim is corroborated by one strong and one
+weak signal, not by two independent strong signals.
 
 ### 6.2 Strengthening Ch 51 §4.6's methodological takeaway
 
@@ -633,31 +664,48 @@ demonstrable rather than aspirational:
    returned `final_reward` classifications `Positive`
    with CI lower bounds and point estimates that cleared
    §3.2's pre-committed Corroborate preconditions. The
-   framework's class-level claim is therefore not a rhetorical
-   frame the framework wraps around a single-variant
-   result; it is a predictive commitment that survived
-   contact with two variants whose implementation details
-   have nothing in common beyond belonging to the same
-   class.
+   framework's class-level claim is therefore not a
+   rhetorical frame the framework wraps around a
+   single-variant result; it is a predictive commitment
+   that survived contact with two variants varied from
+   basic SA along orthogonal axes — proposal-width
+   time-dependence in richer-SA, and chain topology in
+   PT — while still sharing the Metropolis/Gaussian/
+   single-incumbent-per-chain structure the framework's
+   class-level grounding rests on.  The robustness check
+   is therefore a test that the framework's
+   `final_reward`-primary reading persists under two
+   specific class-level perturbations Ch 30 §3's
+   null-follow-ups menu pre-committed, not a test
+   against mechanically unrelated algorithms.  §6.1's
+   epistemic-weight reading applies here: richer-SA's
+   corroboration is weak because its trajectory was
+   near-identical to basic SA's on this fixture, and PT
+   carries most of the differential signal.
 
-   This is the test Ch 51 §4.6 could not by itself
-   perform: §4.6 could argue the framework's rule was
-   applied honestly to basic SA's data, but could not
-   demonstrate that the framework's *class-level*
-   grounding was empirically sound. Ch 53 supplies that
-   demonstration by pre-committing to a decision rule
-   under which each of three outcomes (Corroborate,
-   Mixed, Contradict) would have required a specific
-   §3.3 response, then running the two variants, then
-   applying the rule in the direction the rule points —
-   which in this case happened to be Corroborate, but
-   §3.2's rule would have been applied mechanically in
-   any of the three directions. The pre-commitment is
-   what distinguishes this robustness check from a
-   post-hoc validation exercise, and is what makes the
-   Corroborate outcome usable as evidence for §2.3's
-   class-level grounding rather than as a self-fulfilling
-   confirmation.
+   This is a test Ch 51 §4.6 could not by itself perform:
+   §4.6 could argue the framework's rule was applied
+   honestly to basic SA's data, but could not test the
+   framework's *class-level* grounding empirically.  Ch 53
+   supplies a partial test by pre-committing to a decision
+   rule under which each of three outcomes (Corroborate,
+   Mixed, Contradict) would have required a specific §3.3
+   response, then running the two variants, then applying
+   the rule in the direction the rule points — which in
+   this case happened to be Corroborate, but §3.2's rule
+   would have been applied mechanically in any of the
+   three directions.  The pre-commitment is what
+   distinguishes this robustness check from a post-hoc
+   validation exercise.  The test is *partial* rather
+   than complete because, per §6.1 and the §6.2 caveat
+   above, only one of the two variants (PT) carries
+   mechanically independent evidence against basic SA;
+   richer-SA's corroboration is a weak "the framework
+   does not break under a near-absent perturbation"
+   signal.  A stronger class-level test would require a
+   future variant whose implementation diverges from
+   basic SA more substantially on this fixture than
+   richer-SA happened to on this budget.
 
 Future chapters that encounter their own load-bearing
 post-execution methodological findings can cite Ch 51 §4.6
