@@ -1,0 +1,29 @@
+[package]
+name = "sim-ml-chassis"
+description = "Algorithm chassis: traits, primitives, Competition runner — the foundation every CortenForge algorithm crate bolts onto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+bevy = ["dep:bevy_ecs"]
+
+[dependencies]
+bevy_ecs    = { version = "0.18", optional = true }
+nalgebra    = { workspace = true }
+rand        = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sim-core    = { workspace = true }
+sim-mjcf    = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+approx      = { workspace = true }
+criterion   = { workspace = true }
+
+[lints]
+workspace = true
