@@ -173,6 +173,64 @@ The goal of the protocol is to make the chapters as reliable as a
 careful review process can make them, while being clear about the
 remaining uncertainty. That is the honest standard.
 
+## Preserving pre-registration anchors across squash merges
+
+Some chapters in this study anchor reproducibility to individual
+commit hashes on the feature branch — Ch 51 §2.5 and Ch 53 §4
+both tell the reader "check the ordering with `git log --reverse`
+over these files," and the pre-registration claim is backed by
+the chronological fact that the pre-commit landed before the
+code commit it constrains. Six sections across Chs 51-53 make
+that kind of verifiability claim explicitly.
+
+The repo's merge convention is squash-merge: every PR collapses
+to a single commit on main. That is fine for routine feature
+work, where pre-merge history is a convenience rather than an
+artifact. It is not fine for pre-registration chapters.
+Squash-merging collapses `cde92f8c`, `086c04c8`, `ee6ccdbb`, and
+every other hash referenced by those chapters into one merge
+commit whose log entry reads "study PR #N". The individual
+hashes still exist in git's object store as long as some ref
+points to them, but if the only ref is the feature branch and
+the branch is deleted after merge, they eventually get
+garbage-collected and the pre-registration claims become
+unverifiable retroactively.
+
+The fix is a pre-squash tag. Before merging a PR that contains
+pre-registration content, tag the feature branch HEAD, push the
+tag to origin, and then squash-merge normally. Tags are
+permanent refs, so the referenced hashes stay alive indefinitely
+and the chapter's `git log --reverse` claim remains exercisable
+against the tag.
+
+**Trigger.** Not every PR needs this. Most feature work has no
+pre-registration content, and collapsing its history is exactly
+what squash-merge is for. The mechanical trigger is: does the
+PR's diff add or modify study chapters that reference specific
+commit hashes or that use `git log --reverse` verifiability
+language? Self-check with `grep -rn "git log --reverse"
+docs/studies/*/src/` over the PR's changes, plus a scan for
+short-hash references in any added or modified chapter. If
+either hit lands inside the PR's diff, the PR is a pre-squash-tag
+PR.
+
+**Procedure.**
+
+1. Wait for CI to go green on the feature branch.
+2. `git tag <branch-name>-pre-squash <branch-name>` at HEAD.
+3. `git push origin <branch-name>-pre-squash`.
+4. Squash-merge via the GitHub UI as normal.
+5. Do not delete the tag, ever. Pre-squash tags are load-bearing
+   refs; a cleanup pass that deletes them silently unverifies
+   every chapter that references a hash they anchor.
+
+The `<branch-name>-pre-squash` naming is deliberately mechanical
+so a future reader who finds a hash in a chapter can derive the
+tag name from the branch name without guessing. If a branch
+happens to get merged more than once (rare, possible under
+rebase-and-reopen workflows), append a short suffix like
+`-pre-squash-2`.
+
 ## A note on the sub-agents
 
 The "sub-agent" pattern referenced above uses Claude Code's
