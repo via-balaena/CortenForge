@@ -175,7 +175,7 @@ open (item 2 addresses the former; item 3 addresses the latter). Commit
 
 ---
 
-#### ☐ 2. Panic / unreachable span audit
+#### ☑ 2. Panic / unreachable span audit
 
 (Absorbed from former `project_grader_safety_hardening.md`.)
 
@@ -276,7 +276,94 @@ mul_add satisfies clippy `suboptimal_flops`. Ignore.
 exposed sites + tests) = ~2–3h total.
 
 **Findings:**
-_(none yet)_
+
+Recon strategy: a first-pass Explore agent returned results the main
+thread couldn't trust after spot-checking (the agent applied a "is this
+comment semantically related to the panic?" filter while `grade_safety`
+applies a looser "any `//` comment within 1–3 preceding lines" filter).
+Re-ran with **rustc itself** as the strict-check ground truth: enabling
+`clippy::panic` and `clippy::unreachable` (both in `restriction`, off by
+default) via `-W` flags on every Layer 0 crate, then parsing the warnings
+with a Python script that mirrored `grade_safety`'s exact preceding-
+comment / same-line-comment / 300-line loose-scan / brace-depth test
+exclusion / `src/`-scope logic. This sidestepped the reimplement-rustc
+problem by letting rustc answer "does a strict enclosing `#[allow]` exist
+here?" natively.
+
+**Classification of the 27 clippy warning sites** (all `unreachable!`,
+zero `panic!`):
+
+| Verdict | Count | Meaning |
+|---------|-------|---------|
+| TEST — inside `#[cfg(test)]` | 2 | Grader skips (flex_self.rs:1096, 1156) |
+| OUT-OF-SCOPE — not under `<crate>/src/` | 1 | `sim/L0/tests/integration/sensors_phase4.rs` not scanned by `grade_safety` |
+| CMT — grader accepts via preceding `//` comment | 10 | Grader's comment path is more permissive than clippy itself — not item 2's concern |
+| **DELTA** — grader accepts via loose 300-line scan only | **0** | **Item 2's false-negative window is empty** |
+| **HARD** — grader rejects today | **14** | Three crates silently fail `grade_safety` criterion 4 |
+
+**Headline 1 — item 2's narrow question: no false-negatives.**
+`has_enclosing_allow`'s 300-line loose substring scan is doing zero
+false-negative work today. Every site that relies on it has a real
+enclosing `#[allow]` that clippy agrees with. The planned span-aware
+rewrite is purely preventive — not closing any active hole.
+
+**Headline 2 — bigger finding: 14 HARD sites across sim-core, sim-mjcf,
+sim-urdf.** These are naked `unreachable!()` calls in match arms and
+`.unwrap_or_else(|| unreachable!(...))` fallbacks, lacking both a
+justifying `//` comment and an enclosing `#[allow(clippy::unreachable)]`.
+All three crates would currently fail `grade_safety` on criterion 4:
+
+- **sim-core (10):** `collide_with_mesh` ×3 (mesh_collide.rs), `collide_capsule_box` (pair_cylinder.rs), `mjd_transition_hybrid` ×3 (derivatives/hybrid.rs), `mj_sensor_pos` (sensor/position.rs), `mj_fwd_tendon_spatial` ×2 (tendon/spatial.rs)
+- **sim-mjcf (3):** `make_cable`, `append_to_chain`, `build_cable_geom` (builder/composite.rs)
+- **sim-urdf (1):** `convert_joint` (converter.rs)
+
+Phase-5/6 work (derivatives, mesh_collide SDF dispatch, composite cable
+bodies, URDF conversion) accumulated these after the grader last ran on
+these crates. Exactly the audit-coverage gap "Why this audit" anticipates.
+
+**Fixes shipped:**
+
+- **14 HARD sites → closed.** Added function-level
+  `#[allow(clippy::unreachable)]` attributes to the 9 enclosing functions
+  with same-line `//` justifications naming the specific invariant that
+  makes each arm unreachable (dispatch ordering, validation upstream,
+  variant guarantees from enclosing if-branches). Verified via clippy
+  `-W clippy::unreachable` re-run on the three crates: HARD count dropped
+  from 14 to 0. Standard `cargo clippy -- -D warnings` still clean.
+  Commit `3e799bbd`.
+
+- **Span-aware `has_enclosing_allow` (preventive).** Replaced the 300-line
+  substring scan with a span-aware parser that finds each `#[allow(` /
+  `#![allow(` opening in the window, walks to the matching `)]` (possibly
+  multi-line for formatted attribute blocks), and checks whether the lint
+  appears inside that span. A stray mention of the lint name in a
+  comment, string literal, or unrelated allow attribute for a different
+  lint no longer matches. Added the grader's first unit-test module with
+  10 cases covering the interesting variants (same-line, multi-line,
+  different-lint-negative, comment-mention-negative, string-literal-
+  negative, inner `#![...]` attribute, 300-line window boundary both
+  sides, multiple-allows-one-matches). Closes item 1's (b)-follow-up on
+  grader unit tests. Commit `9438d8e2`.
+
+**Recon methodology reusable for items 3–5.** The "clippy with `-W` +
+Python mirror of grader logic" pipeline is the durable artifact of this
+item. Script at `/tmp/panic-audit/` during this session — worth promoting
+to an xtask subcommand in the future if items 3–5 exercise the same
+pattern.
+
+**Dispositions:**
+
+- Clippy recon + Python classification → **(a)**, session-local tooling.
+- 14 HARD fixes → **(a)**, shipped as `3e799bbd`.
+- Span-aware helper + 10 unit tests → **(a)**, shipped as `9438d8e2`.
+- Promoting the clippy-based audit pipeline to an xtask subcommand
+  (`cargo xtask audit-panics` or similar) → **(b)**, file as follow-up if
+  items 3–5 want the same methodology. Not shipping inline.
+- Systemic coverage gap (crates accumulating criterion-4 violations
+  because the grader hasn't been run against their current state) →
+  **absorbed by item 10** (per-crate grade verification). Item 10 will
+  re-verify the three fixed crates and catch any stragglers across the
+  other 8 Layer 0 members.
 
 ---
 
