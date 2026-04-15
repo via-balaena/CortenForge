@@ -130,11 +130,12 @@ algorithm files no longer compile until their imports are rewritten.
 |---|---|
 | `Cargo.toml` (root) | workspace members + `[workspace.dependencies]` aliases — see §9 |
 | `sim/L0/thermostat/Cargo.toml` | replace `sim-ml-bridge` dev-dep with `sim-rl` dev-dep |
+| `sim/L0/thermostat/tests/d1b_brownian_ratchet_baselines.rs` | import rewrite per §4 (chassis-only) |
 | `sim/L0/thermostat/tests/d1c_cem_training.rs` | import rewrite per §4 |
 | `sim/L0/thermostat/tests/d1d_reinforce_comparison.rs` | import rewrite per §4 |
 | `sim/L0/thermostat/tests/d2b_stochastic_resonance_baselines.rs` | import rewrite per §4 |
 | `sim/L0/thermostat/tests/d2c_cem_training.rs` | import rewrite per §4 |
-| 17 example crates under `examples/fundamentals/sim-ml/` | import rewrite per §4 |
+| 21 example crates under `examples/fundamentals/sim-ml/` | import rewrite per §4 |
 | `docs/` grep hits | import rewrite per §4 |
 | `docs/thermo_computing/01_vision/physics_aware_ml_pivot.md` | no further edits; already revised |
 
@@ -249,7 +250,7 @@ pub use autograd_layers::{
 };
 pub use autograd_policy::{AutogradPolicy, AutogradStochasticPolicy};
 pub use autograd_value::{AutogradQ, AutogradValue};
-pub use competition::{Competition, CompetitionResult, RunResult};
+pub use competition::{Competition, CompetitionResult, RunResult, SeedSummary};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
 pub use gae::compute_gae;
@@ -519,6 +520,25 @@ each of: `artifact`, `best_tracker`, `gae`, `optimizer`, `policy`,
 `replay_buffer`, `rollout`, `tensor`, `value`, `vec_env`. Do not rewrite
 `crate::cem`, `crate::ppo`, etc. — those remain intra-crate.
 
+**Test-mod bare-identifier imports.** Every algorithm file's
+`#[cfg(test)] mod tests` block has a convenience import using the
+crate-root re-exports that no longer exist after commit 2. Rewrite
+each of these too:
+
+- `cem.rs:277` — `use crate::{LinearPolicy, reaching_2dof};` →
+  `use sim_ml_chassis::{LinearPolicy, reaching_2dof};`
+- `reinforce.rs:318` — `use crate::{LinearPolicy, reaching_2dof};` →
+  `use sim_ml_chassis::{LinearPolicy, reaching_2dof};`
+- `ppo.rs:488` — `use crate::{LinearPolicy, LinearValue, reaching_2dof};`
+  → `use sim_ml_chassis::{LinearPolicy, LinearValue, reaching_2dof};`
+- `td3.rs:590` — `use crate::{LinearPolicy, LinearQ, reaching_2dof};`
+  → `use sim_ml_chassis::{LinearPolicy, LinearQ, reaching_2dof};`
+- `sac.rs:646` — `use crate::{LinearQ, LinearStochasticPolicy, reaching_2dof};`
+  → `use sim_ml_chassis::{LinearQ, LinearStochasticPolicy, reaching_2dof};`
+
+Also: `cem.rs:269` has `use crate::rollout::Trajectory;` — this is
+already covered by the `crate::rollout::` rule above.
+
 ---
 
 ## 5. `sim-opt` — already shipped
@@ -625,6 +645,7 @@ algorithm struct is `persistence/train-then-replay` (imports `Cem`).
 | `examples/fundamentals/sim-ml/6dof/cem-linear/src/main.rs` | `ActionSpace, LinearPolicy, ObservationSpace, Policy, Tensor, VecEnv, reaching_6dof` | `sim_ml_chassis::` |
 | `examples/fundamentals/sim-ml/6dof/stress-test/src/main.rs` | `Activation, AutogradStochasticPolicy, Environment, LinearPolicy, MlpPolicy, Policy, SimEnv, StochasticPolicy, Tensor, VecEnv, reaching_6dof` | `sim_ml_chassis::` |
 | `examples/fundamentals/sim-ml/shared/src/lib.rs` | `TaskConfig, VecEnv` | `sim_ml_chassis::` |
+| `sim/L0/thermostat/tests/d1b_brownian_ratchet_baselines.rs` | `ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv, rollout::collect_episodic_rollout` | `sim_ml_chassis::` |
 | `sim/L0/thermostat/tests/d2b_stochastic_resonance_baselines.rs` | `ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv, rollout::collect_episodic_rollout` | `sim_ml_chassis::` |
 
 ### 8.2 sim-rl sites (rewrite to `sim_rl::`)
@@ -681,7 +702,7 @@ consumer) and benefits from its own grading checkpoint.
 
 | File | Actual imports (verified 2026-04-15) | Target |
 |---|---|---|
-| `sim/L0/opt/Cargo.toml` | `sim-ml-bridge` dep | `sim-ml-chassis` regular + `sim-rl` dev-dep (the rematch fixtures need `Cem` and `CemHyperparams`) |
+| `sim/L0/opt/Cargo.toml` | `sim-ml-bridge` regular dep; dev-deps: `approx, sim-core, sim-mjcf` | Replace `sim-ml-bridge` with `sim-ml-chassis` regular dep; **add** `sim-rl` as dev-dep (rematch fixtures need `Cem` and `CemHyperparams`); **keep** existing `approx, sim-core, sim-mjcf` dev-deps unchanged (rematch fixtures use `DVector` and `load_model`) |
 | `sim/L0/opt/src/lib.rs` | module doc mentions `sim-ml-bridge` at lines 7, 27, 29, 32 | rewrite prose to `sim-ml-chassis` / `sim-rl` as appropriate |
 | `sim/L0/opt/src/algorithm.rs:20` | `Algorithm, ArtifactError, CURRENT_VERSION, EpochMetrics, Policy, PolicyArtifact, TrainingBudget, TrainingCheckpoint, VecEnv, collect_episodic_rollout` | `sim_ml_chassis::` (all chassis types) |
 | `sim/L0/opt/src/algorithm.rs:375` (test mod) | `LinearPolicy, reaching_2dof` | `sim_ml_chassis::` |
@@ -705,29 +726,30 @@ still compile (they don't need to be re-run — the study is closed).
 
 In `Cargo.toml`, `[workspace] members = [ ... ]`:
 
-- Line 304 (`"sim/L0/ml-bridge",`) → `"sim/L0/rl",`.
-- Insert new entries before/after as preferred:
+- `sim-opt` already exists as a workspace member (currently line 306).
+  Do not add a duplicate.
+- Line 304 (`"sim/L0/ml-bridge",`) → replace with the two new entries:
   ```
   "sim/L0/ml-chassis",
   "sim/L0/rl",
-  "sim/L0/opt",
   ```
 
 ### 9.2 Workspace dependencies
 
 In `[workspace.dependencies]`:
 
+- `sim-opt = { path = "sim/L0/opt" }` already exists (currently line
+  483). Do not duplicate.
 - Delete `sim-ml-bridge = { path = "sim/L0/ml-bridge" }` (currently
-  line 480).
+  line 481).
 - Insert in its place:
   ```toml
   sim-ml-chassis = { path = "sim/L0/ml-chassis" }
   sim-rl         = { path = "sim/L0/rl" }
-  sim-opt        = { path = "sim/L0/opt" }
   ```
 
-Adjacent entries (`sim-core` at 476, `sim-mjcf` at 477, `sim-thermostat`
-at 481) are unchanged. `approx = "0.5"` at line 442 is already in
+Adjacent entries (`sim-core` at 477, `sim-mjcf` at 478, `sim-thermostat`
+at 482) are unchanged. `approx = "0.5"` at line 443 is already in
 `[workspace.dependencies]`, so every new crate's `approx = { workspace
 = true }` dev-dep resolves without further edits.
 
