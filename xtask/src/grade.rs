@@ -1013,25 +1013,46 @@ fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
     })
 }
 
-/// Check if any of the preceding 300 lines mentions `clippy::<lint>` inside an
-/// attribute context — i.e., the panic/unreachable is inside a scope whose
-/// author has deliberately allowed this lint via `#[allow(clippy::<lint>)]`
-/// on the enclosing fn, impl, let-binding, or module.
+/// Check whether `lint` (e.g. `clippy::panic`) appears inside a real
+/// `#[allow(...)]` or `#![allow(...)]` attribute in the 300 lines
+/// preceding line `i`.
 ///
-/// 300 lines is a heuristic window that covers most reasonable function
-/// bodies (including the ~200-line `collect_episodic_rollout` in sim-ml-chassis).
-/// The window is intentionally generous because the `#[allow]` attribute
-/// is itself a strong signal of deliberate author intent — once it's
-/// present anywhere in scope above, we trust the author's judgment.
+/// Span-aware: finds each `#[allow(` / `#![allow(` opening in the window,
+/// walks forward across lines to the matching `)]`, and checks whether the
+/// lint name appears inside that span. A stray mention of the lint name in
+/// a comment or string literal no longer counts.
 ///
-/// This matches the idiomatic Rust justification pattern (function-level
-/// `#[allow]` attributes) without requiring per-site `//` comments that
-/// would duplicate information already present in `# Panics` rustdoc
-/// sections and clippy allows.
+/// Still a heuristic — does not distinguish an allow on a sibling struct
+/// field 250 lines up from one on the enclosing function. Both match.
+/// For AST-correct scope resolution the grader would need syn; this check
+/// is the tightest available without that dependency.
 fn has_enclosing_allow(lines: &[&str], i: usize, lint: &str) -> bool {
     let start = i.saturating_sub(300);
-    for j in (start..i).rev() {
-        if lines[j].contains(lint) {
+    for open_idx in start..i {
+        let open_line = lines[open_idx];
+        let (open_col, prefix_len) = if let Some(col) = open_line.find("#![allow(") {
+            (col, "#![allow(".len())
+        } else if let Some(col) = open_line.find("#[allow(") {
+            (col, "#[allow(".len())
+        } else {
+            continue;
+        };
+
+        // Accumulate the attribute body from the opening across subsequent
+        // lines until the matching `)]` closes the attribute. Bounded by
+        // the panic line itself — a well-formed attribute can never extend
+        // onto or past the code it applies to.
+        let mut body = String::from(&open_line[open_col + prefix_len..]);
+        let mut close_idx = open_idx;
+        while !body.contains(")]") && close_idx + 1 < i {
+            close_idx += 1;
+            body.push('\n');
+            body.push_str(lines[close_idx]);
+        }
+        let Some(close_pos) = body.find(")]") else {
+            continue;
+        };
+        if body[..close_pos].contains(lint) {
             return true;
         }
     }
@@ -1290,4 +1311,93 @@ pub fn status() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn split(s: &str) -> Vec<&str> {
+        s.lines().collect()
+    }
+
+    #[test]
+    fn enclosing_allow_same_line() {
+        let lines = split("#[allow(clippy::panic)]\nfn foo() { panic!(); }\n");
+        assert!(has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_multi_line_attribute() {
+        let src =
+            "#[allow(\n    clippy::panic,\n    clippy::unwrap_used,\n)]\nfn foo() { panic!(); }\n";
+        let lines = split(src);
+        assert!(has_enclosing_allow(&lines, 4, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_different_lint_does_not_match() {
+        // Loose substring scan used to match this. Span-aware must not.
+        let lines = split("#[allow(clippy::unwrap_used)]\nfn foo() { panic!(); }\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_comment_mentioning_lint_does_not_match() {
+        let lines = split("// TODO: consider clippy::panic here\nfn foo() { panic!(); }\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_string_literal_does_not_match() {
+        let lines = split("let s = \"clippy::panic\";\nfn foo() { panic!(); }\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_no_allow_at_all() {
+        let lines = split("fn foo() {\n    panic!();\n}\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_inner_attribute() {
+        let lines = split("#![allow(clippy::panic)]\n\nfn foo() { panic!(); }\n");
+        assert!(has_enclosing_allow(&lines, 2, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_window_just_inside() {
+        // Allow 300 lines back (distance 300, window [i-300, i-1]).
+        let mut src = String::from("// header\n#[allow(clippy::panic)]\n");
+        for _ in 0..299 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic is at index 301. Allow is at index 1. start = 1. Loop includes line 1.
+        assert!(has_enclosing_allow(&lines, 301, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_window_boundary_excluded() {
+        // Allow at distance 301: out of the 300-line window.
+        let mut src = String::from("#[allow(clippy::panic)]\n");
+        for _ in 0..300 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic at index 301. Allow at index 0. start = 1. Line 0 excluded.
+        assert!(!has_enclosing_allow(&lines, 301, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_multiple_allows_one_matches() {
+        let src =
+            "#[allow(clippy::unwrap_used)]\n#[allow(clippy::panic)]\nfn foo() { panic!(); }\n";
+        let lines = split(src);
+        assert!(has_enclosing_allow(&lines, 2, "clippy::panic"));
+        assert!(has_enclosing_allow(&lines, 2, "clippy::unwrap_used"));
+    }
 }
