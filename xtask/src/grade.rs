@@ -688,82 +688,13 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
     }
 
     // Unjustified #[allow(clippy:: check (F-ext-3)
-    // Brace-depth tracked test exclusion (mirrors grade_safety state machine).
     let mut allow_count = 0;
     let src_path = format!("{}/src", crate_path);
     if let Ok(entries) = glob_rs_files(&src_path) {
         for file_path in entries {
             if let Ok(content) = std::fs::read_to_string(&file_path) {
                 let lines: Vec<&str> = content.lines().collect();
-
-                let mut in_test = false;
-                let mut test_brace_depth: usize = 0;
-                let mut pending_test_attr = false;
-                let mut in_block_comment = false;
-
-                for (i, line) in lines.iter().enumerate() {
-                    let trimmed = line.trim();
-
-                    if !in_block_comment && trimmed.contains("/*") {
-                        in_block_comment = true;
-                    }
-                    if in_block_comment {
-                        if trimmed.contains("*/") {
-                            in_block_comment = false;
-                        }
-                        continue;
-                    }
-
-                    if trimmed.starts_with("//") {
-                        continue;
-                    }
-
-                    if trimmed.contains("#[cfg(test)]") {
-                        pending_test_attr = true;
-                    }
-
-                    if pending_test_attr && trimmed.contains('{') {
-                        in_test = true;
-                        test_brace_depth = 0;
-                        pending_test_attr = false;
-                    }
-
-                    if in_test {
-                        for ch in trimmed.chars() {
-                            if ch == '{' {
-                                test_brace_depth += 1;
-                            } else if ch == '}' {
-                                test_brace_depth = test_brace_depth.saturating_sub(1);
-                                if test_brace_depth == 0 {
-                                    in_test = false;
-                                    break;
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    if !trimmed.contains("#[allow(clippy::") {
-                        continue;
-                    }
-                    let has_justification = (1..=3).any(|offset| {
-                        i.checked_sub(offset).is_some_and(|j| {
-                            let prev = lines[j].trim();
-                            prev.starts_with("//")
-                                && !prev.starts_with("///")
-                                && !prev.starts_with("//!")
-                        })
-                    });
-                    if !has_justification {
-                        let has_inline = trimmed.contains("//") && {
-                            let comment_pos = trimmed.rfind("//").unwrap_or(0);
-                            comment_pos > trimmed.find("#[allow(clippy::").unwrap_or(0)
-                        };
-                        if !has_inline {
-                            allow_count += 1;
-                        }
-                    }
-                }
+                allow_count += count_unjustified_clippy_allows(&lines);
             }
         }
     }
@@ -1068,6 +999,121 @@ fn has_same_line_comment(trimmed: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Count library `#[allow(clippy::...)]` attributes that lack a justifying
+/// comment, mirroring `grade_clippy`'s file-scan rule.
+///
+/// - `#[cfg(test)]` modules are excluded via brace-depth tracking.
+/// - Attributes between `#[cfg(test)]` and the opening `{` of the test
+///   item (e.g. `#[cfg(test)]\n#[allow(...)]\nmod tests { ... }`) are
+///   treated as part of the test attribute stack and excluded.
+/// - Block comments and line comments are skipped.
+/// - Multi-line attribute forms such as `#[allow(\n    clippy::lint,\n)]`
+///   are parsed by walking forward from `#[allow(` to the matching `)]`.
+/// - Justification: any of the 1-3 preceding lines is a `//` comment
+///   (not `///`, not `//!`), or the same line has a trailing `//` comment
+///   after the `#[allow(`.
+fn count_unjustified_clippy_allows(lines: &[&str]) -> usize {
+    let mut count = 0usize;
+    let mut in_test = false;
+    let mut test_brace_depth: usize = 0;
+    let mut pending_test_attr = false;
+    let mut in_block_comment = false;
+    let mut skip_until: usize = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        if i < skip_until {
+            continue;
+        }
+        let trimmed = line.trim();
+
+        if !in_block_comment && trimmed.contains("/*") {
+            in_block_comment = true;
+        }
+        if in_block_comment {
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        if trimmed.contains("#[cfg(test)]") {
+            pending_test_attr = true;
+        }
+
+        if pending_test_attr && trimmed.contains('{') {
+            in_test = true;
+            test_brace_depth = 0;
+            pending_test_attr = false;
+        }
+
+        if in_test {
+            for ch in trimmed.chars() {
+                if ch == '{' {
+                    test_brace_depth += 1;
+                } else if ch == '}' {
+                    test_brace_depth = test_brace_depth.saturating_sub(1);
+                    if test_brace_depth == 0 {
+                        in_test = false;
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Attributes stacked between `#[cfg(test)]` and the test item's
+        // opening `{` belong to the test stack and must not be flagged.
+        if pending_test_attr {
+            continue;
+        }
+
+        if !trimmed.contains("#[allow(") {
+            continue;
+        }
+
+        // Walk forward across lines to the matching `)]`. Single-line
+        // attributes close immediately on the opening line.
+        let mut body = String::from(trimmed);
+        let mut close_idx = i;
+        while !body.contains(")]") && close_idx + 1 < lines.len() {
+            close_idx += 1;
+            body.push('\n');
+            body.push_str(lines[close_idx].trim());
+        }
+
+        if !body.contains("clippy::") {
+            skip_until = close_idx + 1;
+            continue;
+        }
+
+        let has_justification = (1..=3).any(|offset| {
+            i.checked_sub(offset).is_some_and(|j| {
+                let prev = lines[j].trim();
+                prev.starts_with("//") && !prev.starts_with("///") && !prev.starts_with("//!")
+            })
+        });
+
+        if !has_justification {
+            let has_inline = trimmed.contains("//") && {
+                let comment_pos = trimmed.rfind("//").unwrap_or(0);
+                let allow_pos = trimmed.find("#[allow(").unwrap_or(0);
+                comment_pos > allow_pos
+            };
+            if !has_inline {
+                count += 1;
+            }
+        }
+
+        skip_until = close_idx + 1;
+    }
+
+    count
 }
 
 /// Grade dependencies: justification check (hard gate) + dep count (informational).
@@ -1399,5 +1445,108 @@ mod tests {
         let lines = split(src);
         assert!(has_enclosing_allow(&lines, 2, "clippy::panic"));
         assert!(has_enclosing_allow(&lines, 2, "clippy::unwrap_used"));
+    }
+
+    // === count_unjustified_clippy_allows ===
+
+    #[test]
+    fn count_allows_unjustified_single_line() {
+        let src = "#[allow(clippy::cast_precision_loss)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_justified_by_preceding_comment() {
+        let src = "// cast count to f64 for averaging\n#[allow(clippy::cast_precision_loss)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_justified_by_inline_comment() {
+        let src = "#[allow(clippy::cast_precision_loss)] // cast count to f64\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_doc_comment_does_not_justify() {
+        let src =
+            "/// doc, not justification\n#[allow(clippy::cast_precision_loss)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_inside_test_module_excluded() {
+        let src =
+            "#[cfg(test)]\nmod tests {\n    #[allow(clippy::unwrap_used)]\n    fn t() {}\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_test_mod_attr_stack_excluded() {
+        // The house pattern: #[allow] stacked between #[cfg(test)] and the
+        // mod opening `{`. Pre-fix this scanned as library code.
+        let src = "#[cfg(test)]\n#[allow(clippy::unwrap_used, clippy::expect_used)]\nmod tests {\n    fn t() {}\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_test_mod_attr_stack_multi_line_excluded() {
+        let src = "#[cfg(test)]\n#[allow(\n    clippy::unwrap_used,\n    clippy::expect_used,\n)]\nmod tests {\n    fn t() {}\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_multi_line_unjustified() {
+        // Pre-fix this was silently ignored because the substring scan only
+        // matched `#[allow(clippy::` on a single line.
+        let src = "#[allow(\n    clippy::cast_precision_loss,\n    clippy::cast_possible_truncation,\n)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_multi_line_justified() {
+        let src = "// cast indices to f64\n#[allow(\n    clippy::cast_precision_loss,\n    clippy::cast_possible_truncation,\n)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_non_clippy_allow_ignored() {
+        // grade_clippy only audits `clippy::` allows; non-clippy allows are
+        // not in scope for this criterion.
+        let src = "#[allow(dead_code)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_multi_line_non_clippy_ignored() {
+        let src = "#[allow(\n    dead_code,\n    unused_variables,\n)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_after_test_module_still_scanned() {
+        // Regression for the latch bug fixed in b7ef1c73: library code
+        // appearing textually after a test module must still be scanned.
+        let src = "#[cfg(test)]\nmod tests {\n    #[allow(clippy::unwrap_used)]\n    fn t() {}\n}\n\n#[allow(clippy::cast_precision_loss)]\nfn lib_fn() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_block_comment_skipped() {
+        let src = "/*\n#[allow(clippy::cast_precision_loss)]\n*/\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
     }
 }
