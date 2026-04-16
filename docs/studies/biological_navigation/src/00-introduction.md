@@ -1,14 +1,16 @@
 # Introduction
 
-> Via Balaena LLC / CortenForge — Foundational Research Document v1
+> Via Balaena LLC / CortenForge
 >
-> Status: Pre-experimental hypothesis generation
+> Status: Three principles validated, two boundary conditions established
 > Date: April 2026
 > Classification: Open research — intended for public release
 
-This document records the intellectual origin of a research program connecting biological locomotion control theory to the unsolved x-encoding problem in thermodynamic computing. It is written as a living document: a record of where the reasoning started, what has been established, and what remains open. It is not a paper. It is the foundation from which papers will be written.
+This document connects biological locomotion control theory to the unsolved x-encoding problem in thermodynamic computing. It is a living document: hypothesis, experiment, result, and open questions in one place. The code that produced every result is in the same repository.
 
-The central claim is this: the full spectrum of biological strategies for navigating chaotic physical media — from bacteria to peregrine falcons — constitutes a map of design principles for injecting logical inputs into nonequilibrium stochastic physical systems. Each regime of the biological spectrum corresponds to a distinct engineering strategy. The map is not complete. But enough of it has been identified to constitute a serious research program.
+The central claim: biological strategies for navigating chaotic physical media encode design principles for thermodynamic circuits. We tested five of these principles on Ising chain models under Langevin dynamics. Three produced quantitative design rules. Two failed — and the pattern of failure reveals a sharp boundary on which biological inspiration transfers and which does not.
+
+The validated design rules are actionable: an engineer building a coupled bistable circuit can read the tables in Chapters 1–3 and change what they build tomorrow. The boundary conditions are equally actionable: they tell the same engineer which biological literature to ignore.
 
 ## Thermodynamic Computing and the Y Problem
 

@@ -36,13 +36,23 @@ The minimum sensory requirement is also remarkable: two local observables — ve
 
 **Principle 9:** Minimum observables sufficiency. Two local scalar cues are sufficient for full trajectory guidance. The X-encoder instrumentation can therefore be minimal: local energy gradient and local curvature (or equivalent observable pair) fed into a PN-style feedback law. This is a tractable instrumentation problem, not a global state estimation problem.
 
+## Hypothesis Given Current Results
+
+Principles 7 (predictive forward model) and 9 (minimum observables) are **statistical-mechanical** in character — they ask how to use noise statistics to calibrate a model, and how few observables suffice for control. Based on the pattern from Chapters 1–3, these should transfer to the Langevin domain.
+
+Principle 8 (pre-selection / regime commitment) is also stat-mech: it's a gate check on operating conditions before committing to a strategy. This should transfer.
+
+**Prediction:** P7 and P9 will validate. The PN guidance law with N ≈ 3 should emerge from Langevin dynamics. Minimum observables (2 local cues) should suffice. These are noise-exploitation strategies, which is what the Langevin framework handles natively.
+
+**Status:** Not yet tested. Infrastructure exists (`experiment_4.rs`).
+
 ## Experiment 4 — Dragonfly PN Guidance in Langevin Noise
 
 Implement proportional navigation with N as a free parameter in a simulated Langevin particle navigating a 2D energy landscape toward a target basin. Vary N across [1, 5] and measure convergence speed and convergence fidelity as a function of noise level. Verify the N ~ 3 optimum and characterize its robustness to noise floor variations. Extend to the forward-model variant: precompute the target basin's future position using the Langevin drift term, and measure the improvement in convergence.
 
 > **Platform readiness:** High — [`ThermCircuitEnv`](80-therm-circuit-env.md) builder, `DoubleWellPotential`, `LangevinThermostat`, and all 8 RL/optimization algorithms exist.
 >
-> **Status:** Plumbing validated — CEM learns state-dependent temperature control, beating a constant-temperature baseline by ~2x. See the [infrastructure chapter](80-therm-circuit-env.md#phase-4--experiment-4-validation) for implementation details and honest assessment of what the test does and does not prove. The full PN guidance experiment (N sweep across [1, 5], noise-level sweep, forward-model variant) is not yet started.
+> **Status:** Plumbing validated — CEM learns state-dependent temperature control. The full PN guidance experiment (N sweep, noise sweep, forward-model variant) is not yet started.
 >
 > **Code:** [`sim/L0/therm-env/tests/experiment_4.rs`](../../../sim/L0/therm-env/tests/experiment_4.rs)
 

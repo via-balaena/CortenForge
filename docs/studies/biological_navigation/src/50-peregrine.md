@@ -51,13 +51,23 @@ The critical discovery: a counter-rotating vortex pair interacts with the main w
 
 **Principle 12:** The logarithmic spiral as a scale-invariant approach geometry. Peregrine falcons resolve the conflict between aerodynamic streamlining (head straight) and maximum visual acuity (head turned 40°) by flying a logarithmic spiral path — a constant-angle curve that is self-similar at every scale. A scale-invariant X-injection trajectory would not require re-tuning as the circuit scales, which is the central engineering requirement for thermodynamic computing to become a manufacturable technology.
 
+## Hypothesis Given Current Results
+
+Principle 11 (deliberate instability) has been **tested and failed** — the Ising chain shows a broad sensitivity plateau, not a sharp bifurcation point. The ΔV axis is forgiving, not critical. See Chapter 1, Operating Envelope.
+
+Principles 10 (paired perturbation structures) and 12 (logarithmic spiral) are **dynamical-systems** concepts — they require spatial vortex geometry and scale-invariant trajectory topology respectively. Based on the pattern from Chapters 1–3, these are unlikely to transfer to the Langevin domain. The Langevin framework doesn't have the vocabulary for structured spatial perturbations or topological trajectory invariants.
+
+**Prediction:** P10 and P12 will not validate in the Langevin domain. They require physics (spatial vortex structure, trajectory topology) that the 1D coupled double-well model does not contain. Testing them properly requires at minimum a 2D/3D fluid simulation with vortex dynamics.
+
+**Status:** P11 tested and failed. P10 and P12 not tested (would need CFD or soft-body physics).
+
 ## Experiment 5 — Peregrine M-Shape Vortex Coupling Simulation
 
-Simulate the M-shape vortex field in CortenForge's fluid simulation domain. Quantify the counter-rotating vortex pair's drag-cancellation ratio as a function of injection speed (analogous to dive speed). Verify the predicted monotonic increase in drag cancellation with speed. Translate the vortex geometry into a parameterized description of structured perturbation pairs for circuit injection.
+Simulate the M-shape vortex field in a fluid simulation domain. Quantify the counter-rotating vortex pair's drag-cancellation ratio as a function of injection speed. Translate the vortex geometry into a parameterized description of structured perturbation pairs for circuit injection.
 
-> **Platform readiness:** Low — needs reformulation to the Langevin domain. The vortex-coupling principle maps to paired perturbation structures in stochastic dynamics, but the concrete simulation setup has not been designed.
+> **Platform readiness:** Low — needs reformulation to the Langevin domain or a fluid simulation.
 >
-> **Status:** Not started
+> **Status:** Not started. P11 (deliberate instability) tested and failed in Langevin domain — see Chapter 1.
 >
 > **Code:** —
 

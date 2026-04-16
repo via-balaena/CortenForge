@@ -1,48 +1,86 @@
-# Synthesis: The Unified Framework
+# Synthesis: What Transfers and What Doesn't
 
-## The Complete Spectrum
+## The Results
 
-| Regime | Re Range | Exemplar | Dominant Strategy | X-Encoding Analog |
-|--------|----------|----------|-------------------|-------------------|
-| Viscosity-dominated | < 1 | E. coli | Topological encoding; geometric phase; stochastic resonance | Encode in injection sequence topology, not amplitude; exploit optimal noise level |
-| Intermediate | 1-1,000 | Ctenophores, water boatmen | Temporal asymmetry; metachronal coordination; mode switching | Asymmetric injection phases; distributed phase-lagged coordination; adaptive mode switching |
-| Inertial distributed | 10³-10⁵ | Octopus | Compressed central command; distributed local decoding; propagating wave | Compressed X-specification; local circuit-level decoding; scale-invariant bend propagation |
-| Predictive inertial | 10⁵-10⁷ | Dragonfly | Predictive internal model; PN guidance; minimum observable sufficiency | Forward-model-guided injection; PN-style feedback; two local cues sufficient |
-| High-inertial turbulent | > 10⁷ | Peregrine falcon | Vortex-noise coupling; constructive counter-rotation; deliberate instability | Paired perturbation structures; counter-rotating noise coupling; bifurcation-point operation |
+We tested five biological navigation principles on Ising chain models under Langevin dynamics. Three validated. Two failed.
 
-## What Varies Across the Spectrum
+| Principle | Regime | Question Type | Result |
+|-----------|--------|---------------|--------|
+| P2 — Stochastic resonance | E. coli | Statistical mechanics | **Validated** |
+| P4 — Metachronal coordination | Ctenophore | Statistical mechanics | **Validated** |
+| P6 — Scale-invariant encoding | Octopus | Statistical mechanics | **Validated** |
+| P1 — Topological encoding | E. coli | Dynamical systems | **Failed** |
+| P11 — Deliberate instability | Peregrine | Dynamical systems | **Failed** |
 
-What actually changes as one moves from low to high Re is not simply "speed." The underlying variable is the ratio of signal timescale to noise timescale (τ_signal / τ_noise):
+The pattern is not random. It divides cleanly along a line.
 
-- **Low Re:** τ_signal ~ τ_noise. They are indistinguishable. Encode in topology.
-- **Intermediate Re:** τ_signal and τ_noise are both relevant but different. Exploit both via multimodal switching.
-- **Inertial distributed Re:** τ_signal > τ_noise. You have time for local computation. Distribute the decoding.
-- **Predictive inertial Re:** τ_signal < τ_noise for reactive control but > τ_noise for predictive control. Precompute.
-- **High inertial turbulent Re:** τ_noise generates coherent structures on timescales accessible to the controller. Couple constructively.
+## The Boundary
 
-This framing suggests that the correct axis for thermodynamic circuit design is not "throughput" but the dimensionless ratio τ_circuit / τ_noise — a circuit-level analog of the Reynolds number. Computing this ratio for a given circuit architecture and operating condition determines which encoding regime applies and which strategy should be deployed.
+**What transfers:** Principles that ask statistical-mechanical questions — optimal noise level (P2), injection timing coordination (P4), extensivity at scale (P6). These are questions about how to exploit the statistics of a stochastic system. The Langevin framework is statistical mechanics, so it speaks this language natively.
 
-## The Common Thread
+**What doesn't transfer:** Principles that ask dynamical-systems questions — topological invariants of motion sequences (P1), sharp bifurcation sensitivity (P11). These require mathematical structures the Langevin domain does not have: time-reversibility (for the scallop theorem) and sharp phase transitions at finite system size (for bifurcation amplification).
 
-Despite their apparent diversity, all five strategies share a single underlying principle: **the environment's stochastic character is not an obstacle to be overcome but a resource to be exploited.** Every biological exemplar either uses noise to amplify sensitivity (E. coli), harvests noise as a phase-coordination mechanism (ctenophores), treats noise as the medium through which a compressed command propagates (octopus), uses noise statistics to calibrate a forward model (dragonfly), or couples constructively with noise to generate control force (peregrine).
+This is not a weakness of the framework. It is the framework's boundary condition — and knowing the boundary is as valuable as knowing the interior.
 
-This is the deepest lesson for thermodynamic computing: the designers of thermodynamic circuits should not be trying to suppress Langevin noise. They should be designing X-encoders that make the noise work for them.
+## The Design Rules
 
-## What Is Novel About This Program
+Three quantitative rules emerged, each tested with statistical gates and reproducible code:
 
-The individual biological phenomena described in this document are established science. The engineering applications to specific domains (aeronautics, robotics) are well-explored. What is novel is:
+**Rule 1 (Noise tuning — P2):** For an Ising-coupled bistable circuit with coupling J:
+- J < 1.5: operate at kT ≈ 2.3
+- J ≥ 2.0: operate at kT ≈ 4.3
+- Keep ΔV/kT < 3.0 (hard trapping cutoff above this)
+- The kT axis is sharp (±30% degrades to noise floor). The ΔV axis is forgiving.
 
-1. **The formal mapping** from Reynolds number regimes to thermodynamic circuit encoding regimes. This connection has not been made in the literature.
-2. **The identification of five distinct biological strategies** — not three, not a continuum — as a design basis for X-encoding. The prior art in bio-inspired computing tends to pick one or two biological exemplars; a systematic spectrum has not been proposed.
-3. **The specific hypothesis** that constructive vortex-noise coupling (Regime 5) produces an inversion of the precision-throughput tradeoff. This is a falsifiable prediction with direct engineering implications.
-4. **The formalization of CortenForge** as the simulation infrastructure for extracting quantitative design parameters from these biological systems. The biological exemplars are not metaphors here — they are simulatable.
+**Rule 2 (Injection timing — P4):** For coupled circuits at moderate coupling:
+- J < 2: inject with phase lag δ ≈ π/5 between adjacent nodes (18–37% improvement)
+- J ≥ 2: synchronize injection (coupling handles coordination)
+- The two knobs (temperature and phase lag) are independent
+
+**Rule 3 (Scale-invariance — P6):** The noise tuning rule holds from N=4 to N=16 without retuning:
+- Optimal kT ≈ 2.5 at J=1.0 regardless of circuit size
+- Preliminary data suggests synchrony may *increase* with N (under investigation)
+
+## What the Failures Tell Us
+
+**P1 (topology fails):** In the Stokes regime (Re < 1), the scallop theorem guarantees amplitude is irrelevant — only sequence topology matters. In the Langevin domain, there is no scallop theorem. Amplitude is a direct lever: synchrony scales linearly with signal strength. An engineer should use amplitude modulation freely.
+
+**P11 (bifurcation fails):** The peregrine exploits pitch instability near a bifurcation point for sensitivity amplification. In the Ising chain, the ΔV axis shows a broad plateau, not a sharp transition. Langevin systems at finite N have smooth crossovers. An engineer should tune kT carefully (sharp peak) and not worry about ΔV (forgiving axis).
+
+Both failures trace to the same root: the Langevin domain is nonlinear and time-irreversible, with smooth crossovers instead of sharp transitions. The mathematical structures that make topology and instability powerful in biology — geometric phase, bifurcation sensitivity — simply don't exist in this physics.
+
+## The Complete Spectrum (Updated)
+
+| Regime | Exemplar | Dominant Strategy | Langevin Transfer? |
+|--------|----------|-------------------|--------------------|
+| Viscosity-dominated (Re < 1) | E. coli | Noise exploitation (P2 ✓), topology (P1 ✗) | Partial — stat-mech yes, topology no |
+| Intermediate (Re 1–1000) | Ctenophore | Phase coordination (P4 ✓) | **Yes** |
+| Inertial distributed (Re 10³–10⁵) | Octopus | Scale-invariant encoding (P6 ✓) | **Yes** |
+| Predictive inertial (Re 10⁵–10⁷) | Dragonfly | Forward model, min observables | Predicted yes (stat-mech questions) |
+| High-inertial turbulent (Re > 10⁷) | Peregrine | Instability (P11 ✗), vortex coupling | Partial — instability no, vortex needs CFD |
+
+The middle of the Reynolds number axis transfers cleanly. The extremes require physics the Langevin model doesn't contain.
+
+## Implications for Thermodynamic Circuit Design
+
+An engineer reading this document should take away three things:
+
+1. **Tune noise, don't suppress it.** There is an optimal operating temperature for your circuit. It depends on coupling strength. The rules are in Chapter 1.
+
+2. **Coordinate injection timing at moderate coupling.** Phase-lagged injection at δ ≈ π/5 gives 18–37% better fidelity than synchronized injection. At strong coupling, synchronize instead. The rules are in Chapter 2.
+
+3. **These rules hold at scale.** You do not need to retune when scaling from 4 to 16 nodes. The rules are in Chapter 3.
+
+And two things NOT to do:
+
+4. **Don't try to operate near a bifurcation point.** The sensitivity-amplification story from biology doesn't apply. The design surface is smooth, not critical.
+
+5. **Don't optimize sequence topology.** Use amplitude instead. It works linearly and doesn't require the time-reversibility constraint that makes topology powerful in Stokes flow.
 
 ## Relationship to Current Thermodynamic Computing Research
 
-The companies currently leading thermodynamic computing development (Extropic, Normal Computing) are focused on chip fabrication and algorithm development. The X-encoding problem is acknowledged but not yet formally addressed in the published literature. The biological spectrum framework is therefore complementary rather than competitive — it addresses the foundational theory question that enables the next generation of chip and algorithm design.
+Extropic and Normal Computing are focused on chip fabrication and algorithm development. The X-encoding problem — how to inject inputs into a stochastic physical system — is acknowledged but not yet formally addressed in their published work. These design rules are complementary: they address the theory gap that enables the next generation of circuit design.
 
 ## Open Source Philosophy
 
-This research is released openly. The reasoning is straightforward: the value created by becoming the foundational reference for biological-inspired X-encoding theory exceeds the value of any IP protection that could be applied to the theoretical framework. The simulation infrastructure (CortenForge) is the durable asset. The research program generates citations, partnerships, and positioning that makes CortenForge indispensable to the thermodynamic computing ecosystem.
-
-The precedent is clear: PyTorch, TensorFlow, LLVM. Open infrastructure that became the standard captured far more value than closed alternatives.
+This research is released openly. The code that produced every result is in the same repository. The reasoning: becoming the foundational reference for noise-exploiting thermodynamic circuit design creates more value than any IP protection could. The simulation infrastructure (CortenForge) is the durable asset.
