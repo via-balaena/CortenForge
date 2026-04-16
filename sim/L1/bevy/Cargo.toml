@@ -11,21 +11,24 @@ keywords = ["physics", "simulation", "visualization", "bevy", "robotics"]
 categories = ["simulation", "visualization", "game-development"]
 
 [dependencies]
-# Shared geometry kernel
+# Shared geometry kernel — SDF primitives and AABBs for debug rendering
 cf-geometry = { path = "../../../design/cf-geometry" }
 
-# Layer 0 simulation crates
+# BodyId / Pose primitives threaded from Layer 0 into Bevy ECS components
 sim-types = { path = "../../L0/types" }
+# Physics Model / Data stepped by the Bevy app's simulation system
 sim-core = { path = "../../L0/core" }
+# MJCF scene loader that seeds the Bevy scene tree
 sim-mjcf = { path = "../../L0/mjcf" }
+# URDF scene loader reused alongside sim-mjcf for robot description files
 sim-urdf = { path = "../../L0/urdf" }
 
-# Math
+# Matrix / vector / rotation primitives converted into Bevy Transform
 nalgebra = { workspace = true }
 
-# Bevy 0.18 - use feature collections for clean compilation
-# Note: Window backend features (x11, wayland) are optional - enable via features.
-# This allows CI to build without system library dependencies.
+# Bevy 0.18 engine — rendering, ECS, input, windowing. Window backend
+# features (x11, wayland) are optional — enable via this crate's features
+# so CI can build without system library dependencies.
 bevy = { workspace = true, default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
