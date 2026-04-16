@@ -79,14 +79,17 @@ Peak synchrony *appears* to increase with N on this 3-size sweep. However, the e
 
 An expanded sweep tested 8 chain sizes with finer kT resolution to determine whether the apparent sync increase with N was a real scaling law.
 
-| Parameter | Value |
-|-----------|-------|
-| Chain sizes N | 4, 8, 12, 16, 24, 32, 48, 64 |
-| Coupling J | 1.0 (fixed) |
-| kT range | [1.0, 5.0], 40 points log-spaced |
-| Episodes per point | 40 |
-| Total episodes | 12,800 |
-| Runtime | 7.5 hours (release) |
+| Parameter | Original P6 Sweep | N-Scaling Expansion |
+|-----------|-------------------|---------------------|
+| Chain sizes N | 4, 8, 16 | 4, 8, 12, 16, 24, 32, 48, 64 |
+| Coupling J | 1.0 | 1.0 |
+| kT range | [0.1, 15.0], 25 points log-spaced | [1.0, 5.0], 40 points log-spaced |
+| Episodes per point | 40 | 40 |
+| Seed offset | 1,000,000 | 2,000,000 |
+| Total episodes | 3,000 | 12,800 |
+| Runtime | 38 min | 7.5 hours |
+
+The kT range was narrowed and the grid density increased: 40 points focused in [1.0, 5.0] (where all peaks fall) versus 25 points spread across [0.1, 15.0]. This resolves higher peak sync values at all chain sizes — the original grid undersampled the true peak. Different seed offsets ensure independent noise realizations. All other physics parameters (ΔV, x₀, γ, k_BT, A₀, timestep, sub-steps, episode length) are identical.
 
 | N | peak kT | peak sync | \|t\| |
 |---|---------|-----------|-------|
