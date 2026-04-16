@@ -132,7 +132,7 @@ Particle 0 ←J→ Particle 1 ←J→ Particle 2 ←J→ Particle 3
 | `DoubleWellPotential(ΔV=3, x₀=1, dof=i)` per particle | Bistable states |
 | `OscillatingField(A₀=0.3, ω=2π·k_Kramers, dof=i)` per particle | Periodic signal (same as Level 2) |
 | `PairwiseCoupling::chain(4, J)` | Inter-cell coupling (sweep variable) |
-| `LangevinThermostat(γ=10, kT=5).with_ctrl_temperature()` | Noise, kT range [0, 5] via RL |
+| `LangevinThermostat(γ=10, kT=15).with_ctrl_temperature()` | Noise, kT range [0, 15] via RL |
 
 **Reward:** Average synchrony across all particles: `(1/N) × Σ sign(qpos[i]) × cos(ωt)`
 
@@ -140,21 +140,39 @@ Particle 0 ←J→ Particle 1 ←J→ Particle 2 ←J→ Particle 3
 
 #### The Experiment
 
-**Phase 1 — Temperature sweep at 5 coupling strengths:** For each J ∈ {0.0, 0.1, 0.5, 1.0, 2.0}, sweep 15 temperatures log-spaced in [0.1, 5.0], 15 episodes each. Maps the SR curve at each coupling strength.
+**Phase 0 — Scout (~30 sec):** J=2 only, 8 kT points in [1, 15], 10 episodes. Validates that the kT=15 ceiling captures the strongest-coupling peak.
 
-**Phase 2 — Multi-algorithm training at each J:** CEM, PPO, and SA each train a `LinearPolicy(8, 1)` for 100 epochs on 32-env VecEnv. Tests whether RL agents independently discover the SR-optimal temperature at each coupling strength.
+**Phase 1 — Temperature sweep at 5 coupling strengths (~35 min):** For each J ∈ {0.0, 0.5, 1.0, 1.5, 2.0}, sweep 25 temperatures log-spaced in [0.1, 15.0], 40 episodes each. Maps the SR curve at each coupling strength. Gates: every J must have a significant (|t| > 2.708, df=39, α=0.01) interior peak.
 
-**Controls (same pattern as Level 2):** Low noise (kT × 0.1), high noise (kT × 5), no signal (A₀=0) — all must show zero synchrony.
+**Phase 2 — Multi-algorithm training at each J:** CEM, SA, and RicherSA each train a `LinearPolicy(8, 1)` for 100 epochs on 32-env VecEnv. Tests whether gradient-free agents independently discover the SR-optimal temperature at each coupling strength. PPO was dropped — policy gradient methods compute per-timestep advantages, fundamentally wrong when the optimal policy is a constant temperature.
 
-**Key design decision:** Training env uses `k_b_t = 5.0` (the max of the sweep range) so that the policy's tanh output [0, 1] maps to kT ∈ [0, 5.0]. This ensures the SR peak (kT ≈ 1.7 for uncoupled) is reachable at ctrl ≈ 0.34. Earlier versions with `k_b_t = 1.0` capped agents at kT ≤ 1.0, making it impossible to reach the peak.
+**Controls (same pattern as Level 2):** Low noise (kT × 0.1), high noise (kT × 10), no signal (A₀=0) — all must show zero synchrony.
+
+**Key design decisions:**
+
+- **kT range [0.1, 15.0]:** Coupling raises the effective barrier for individual particle switching (interior: ΔV_eff = 3 + 4J, end: 3 + 2J). Using the calibration ratio ΔV/kT_peak ≈ 1.39, the J=2 peak is predicted at kT ≈ 6.5. Range of 15 gives 2.3× headroom.
+- **Training env `k_b_t = 15.0`:** The policy's tanh output [0, 1] maps to kT ∈ [0, 15.0], letting agents reach all predicted peaks (kT 2–7) at ctrl ≈ 0.13–0.47.
+- **40 episodes/point:** For the weakest signals (sync ≈ 0.04, σ ≈ 0.06), stderr = 0.06/√40 = 0.0095, giving |t| = 4.2. Well above the 2.708 threshold.
 
 #### Results
 
-> **Status:** Coupling sweep running (~4 hours total). Phase 1 sweep results will appear first (~90 min), followed by Phase 2 training (~2.5 hours).
->
-> **Preliminary (J=0 sweep, in progress):** The uncoupled 4-particle system reproduces the Level 2 SR curve — zero synchrony at low kT, rising through kT ≈ 1.0-1.6, with the peak expected near kT ≈ 1.7. This confirms that 4 independent particles averaging their synchrony produces the same SR phenomenon as 1 particle.
+**Scout (validated):**
 
-Results will be recorded here when the sweep completes.
+Peak at kT=6.5 (interior, |t|=4.17), exactly matching the effective-barrier prediction. Range [0.1, 15.0] confirmed safe.
+
+**v1 sweep (invalid — range too narrow):**
+
+| J | peak kT | peak sync | |t| | Status |
+|---|---|---|---|---|
+| 0.00 | 2.16 | 0.075 ± 0.014 | 5.47 | Valid (interior) |
+| 0.10 | 5.00 | 0.043 ± 0.010 | 4.50 | **Boundary** |
+| 0.50 | 1.64 | 0.039 ± 0.020 | 1.95 | Not significant |
+| 1.00 | 5.00 | 0.054 ± 0.008 | 6.74 | **Boundary** |
+| 2.00 | 3.78 | 0.049 ± 0.018 | 2.68 | Not significant |
+
+Only J=0 was valid. Peaks for J≥0.1 hit the kT=5 ceiling or were below significance with 15 episodes.
+
+**v2 sweep:** Pending — Phase 1 ready to run.
 
 #### What This Will Tell Us
 

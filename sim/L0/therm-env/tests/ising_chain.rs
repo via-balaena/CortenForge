@@ -568,7 +568,7 @@ fn ising_sr_coupled() {
 /// Scout: fast diagnostic at J=2 only. Validates that the kT=15 ceiling
 /// captures the strongest-coupling peak before committing to the full sweep.
 #[test]
-#[ignore = "requires --release (~7 min)"]
+#[ignore = "requires --release (~30 sec)"]
 fn ising_sr_scout() {
     let kt_points = [1.0, 2.0, 3.5, 5.0, 6.5, 8.5, 11.0, 15.0];
     let n_episodes = 10;
@@ -616,7 +616,7 @@ fn ising_sr_scout() {
 ///
 /// Run the scout first to validate the kT range.
 #[test]
-#[ignore = "requires --release (~1-2 hours)"]
+#[ignore = "requires --release (~35 min)"]
 #[allow(clippy::items_after_statements)]
 fn ising_sr_coupling_sweep() {
     let j_values = [0.0, 0.5, 1.0, 1.5, 2.0];

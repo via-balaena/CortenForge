@@ -20,12 +20,12 @@ A design rule that says: *for a circuit with τ_circuit / τ_noise = X, use enco
 |------|----------|-------------|
 | 1. Framework | **Done** | 12 X-encoding principles across 5 Reynolds number regimes, derived from biological navigation strategies |
 | 2. 1-particle simulation | **Done** | SR peak validated (kT=1.70, \|t\|=4.52), controls pass, infrastructure works |
-| 3. Multi-particle simulation | **Running** | 4-cell Ising chain with coupling sweep J={0, 0.1, 0.5, 1.0, 2.0} |
+| 3. Multi-particle simulation | **Running** | 4-cell Ising chain with coupling sweep J={0, 0.5, 1.0, 1.5, 2.0} |
 | 4. τ_circuit / τ_noise mapping | **Running** | Same experiment — coupling strength J is the proxy for τ_circuit / τ_noise |
 | 5. Paper | Not started | Framework + principle validation + regime characterization |
 | 6. Hardware validation | Needs collaboration | Test predictions on Extropic / Normal Computing hardware |
 
-**Current position:** Steps 3 and 4 are running simultaneously — the coupling sweep *is* the τ_circuit / τ_noise characterization. The 4-cell Ising chain with oscillating fields tests whether SR scales to coupled systems, and sweeping J maps how the optimal noise temperature shifts with coupling strength. Results expected within hours.
+**Current position:** Steps 3 and 4 are running simultaneously — the coupling sweep *is* the τ_circuit / τ_noise characterization. The 4-cell Ising chain with oscillating fields tests whether SR scales to coupled systems, and sweeping J maps how the optimal noise temperature shifts with coupling strength. Scout validated J=2 peak at kT=6.5 (matching effective-barrier prediction). Phase 1 sweep (v2) ready to run (~35 min).
 
 ## The Path
 
