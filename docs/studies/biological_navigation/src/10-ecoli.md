@@ -172,13 +172,40 @@ Peak at kT=6.5 (interior, |t|=4.17), exactly matching the effective-barrier pred
 
 Only J=0 was valid. Peaks for J≥0.1 hit the kT=5 ceiling or were below significance with 15 episodes.
 
-**v2 sweep:** Pending — Phase 1 ready to run.
+**v2 sweep (validated):**
 
-#### What This Will Tell Us
+All 5 coupling strengths produce significant interior peaks. 5,000 episodes, 35 minutes, single run.
 
-If the SR peak **persists** across all J values, coupling doesn't destroy stochastic resonance — it scales to multi-cell circuits. If the peak **shifts** with J (higher J → different optimal kT), that's the τ_circuit / τ_noise mapping — coupling strength controls which noise regime is optimal. If the peak **disappears** at high J, coupling overwhelms the signal and SR breaks down — a concrete failure mode for thermodynamic circuit design.
+| J | peak kT | peak sync | |t| | Status |
+|---|---|---|---|---|
+| 0.00 | 2.29 | 0.043 ± 0.008 | 5.55 | PASS |
+| 0.50 | 2.29 | 0.057 ± 0.008 | 7.63 | PASS |
+| 1.00 | 2.82 | 0.065 ± 0.008 | 8.55 | PASS |
+| 1.50 | 2.29 | 0.057 ± 0.012 | 4.89 | PASS |
+| 2.00 | 4.29 | 0.053 ± 0.007 | 7.23 | PASS |
 
-After Phase 2, if RL agents track the peak across J values, that validates that temperature modulation can be learned from observation alone — the agent doesn't need to know J, it discovers the optimal noise from the dynamics.
+**Two-regime behavior:** Coupling does not simply shift the SR peak — it reveals two switching modes with a crossover:
+
+- **Weak coupling (J ≤ 1.0):** The SR peak stays near kT ≈ 2.3 (same as uncoupled) but synchrony *increases* with coupling (0.043 → 0.065). Coupling enhances the existing resonance. Individual particle switching dominates — each particle crosses the barrier independently, and coupling merely coordinates them.
+- **Strong coupling (J = 2.0):** The peak shifts to kT ≈ 4.3. The higher effective barrier (ΔV_eff = 3 + 2J to 3 + 4J for end/interior particles) requires more noise to drive transitions. The collective switching mode — where coupling forces particles to flip together — takes over.
+
+The crossover between these regimes lies between J = 1.5 and J = 2.0. At J = 1.5, the data shows a primary peak at kT = 2.29 with a secondary bump near kT = 4.3–5.3, suggesting both modes are active and competing.
+
+The effective-barrier model predicted the J = 2 peak at kT ≈ 6.5. The actual peak is at kT ≈ 4.3 — correct direction, right order of magnitude, but the simple model overestimates the barrier because cooperative switching lowers the effective barrier relative to independent switching.
+
+#### Design Rule (Principle 2)
+
+For an N=4 Ising-coupled bistable circuit with coupling strength J:
+
+- **J < 1.5:** Operate at kT ≈ 2.3. Coupling enhances SR without shifting it. Stronger coupling gives better signal fidelity (up to ~50% improvement at J = 1.0).
+- **J ≥ 2.0:** Operate at kT ≈ 4.3. The collective switching mode dominates and requires higher noise.
+- **J ≈ 1.5–2.0:** Transition zone. Both modes active. Operating at either kT ≈ 2.3 or kT ≈ 4.3 gives similar fidelity.
+
+Operating at the wrong temperature degrades synchrony to noise-floor levels.
+
+#### What Remains
+
+Phase 2 (CEM, SA, RicherSA training at each J) would validate that the optimal temperature can be *learned* from dynamics alone — the agent doesn't need to know J. This is a supplementary result; the sweep data above is the primary contribution.
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs)
 
