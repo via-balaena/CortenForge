@@ -1,17 +1,25 @@
 # Open Questions
 
-The following are the highest-priority open questions identified by this research program, ordered by tractability:
+## Answered by This Work
 
-1. **What is the correct dimensionless ratio for thermodynamic circuits?** We proposed τ_circuit / τ_noise as the analog of the Reynolds number. Is this the right formulation? What are τ_circuit and τ_noise precisely in terms of circuit parameters (resistance, inductance, capacitance, temperature)?
+1. **Does stochastic resonance scale from single particles to coupled circuits?** Yes. The SR peak persists across coupling strengths J = 0–2 and circuit sizes N = 4–16. Two regimes emerge: weak coupling (J < 1.5, peak kT ≈ 2.3) and strong coupling (J ≥ 2, peak kT ≈ 4.3). See Chapter 1, Level 3.
 
-2. **Are the five regimes discrete or continuous?** The biological spectrum suggests discrete transitions, but this may be because biological organisms specialize rather than operate across regimes. A thermodynamic circuit might be engineered to have a smooth transition — or the transitions might be genuinely discontinuous (phase transitions in the physics sense).
+2. **Does the optimal noise level require retuning at larger circuit sizes?** No. Peak kT ≈ 2.5 holds from N=4 to N=16 at J=1.0, within one grid step on a 25-point log-spaced sweep. See Chapter 3, Experiment 6.
 
-3. **What is the minimum encoding sequence length for topological encoding?** The scallop theorem says you need at least two degrees of freedom sweeping a nonzero area. What is the minimum area required for a given encoding fidelity? How does this scale with circuit noise temperature?
+3. **Does phase-lagged injection improve fidelity in coupled chains?** Yes, at weak coupling. Optimal δ ≈ π/5 gives 18–37% improvement over synchronized injection at J = 0.5–1.0. At J ≥ 2, coupling handles coordination and synchronized is optimal. See Chapter 2.
 
-4. **Does the counter-rotating vortex pair principle have a direct electrical/stochastic analog?** The peregrine's mechanism relies on specific vortex geometry. What is the equivalent concept in Langevin dynamics — two perturbation modes with opposite "rotation" in the energy landscape that cancel each other's dissipation while preserving their net drift?
+4. **Does topological encoding dominate amplitude in the Langevin domain?** No. The scallop theorem requires time-reversible dynamics. Langevin dynamics are time-irreversible, so amplitude is a direct lever. Synchrony scales linearly with signal amplitude. See Chapter 1, Level 4.
 
-5. **How does the optimal noise level (stochastic resonance optimum) scale across the spectrum?** In Regime 1 (E. coli), there is an optimal CheY-P noise level. Is there an analogous optimal noise temperature for each regime? Does it increase or decrease as throughput increases?
+5. **Is there a sharp bifurcation point for sensitivity amplification?** No. The ΔV axis shows a broad sensitivity plateau (ΔV/kT ∈ [0.25, 2.75]) with a gradual trapping cutoff, not a sharp transition. See Chapter 1, Operating Envelope.
 
-6. **What are the failure modes at regime transitions?** When a circuit running a Regime 3 strategy is pushed into the Regime 4 throughput range, what specifically breaks? Does the encoding fail gradually or catastrophically?
+## Still Open
 
-7. **Can the fish lateral line be implemented as an X-encoder feedback system?** Specifically: can a distributed array of local circuit observables (the lateral line analog) provide sufficient information for real-time X-encoder adjustment without requiring a global measurement step?
+6. **Does synchrony improve with circuit size?** Preliminary data shows sync increasing from 0.041 (N=4) to 0.063 (N=16). If confirmed, this would mean larger circuits are inherently better at signal following — not just equivalent. The N-scaling experiment (Chapter 8, Next Experiment 1) will resolve this.
+
+7. **Is the weak/strong coupling crossover a phase transition?** The current data shows two discrete modes with a transition between J = 1.5 and J = 2.0. Whether this is smooth or sharp (and whether it has the character of a thermodynamic phase transition) is unknown. See Next Experiment 2.
+
+8. **What is the correct dimensionless ratio for thermodynamic circuits?** We proposed τ_circuit / τ_noise as the analog of the Reynolds number. The experiments used kT as the control variable and J as the coupling parameter, but the fundamental dimensionless group that governs the behavior remains to be identified. The ratio ΔV/kT ≈ 1.39 at the SR peak may be part of it.
+
+9. **Which biological principles transfer and which don't — is there a general rule?** This work found that statistical-mechanical questions (noise tuning, phase coordination, extensivity) transfer to the Langevin domain, while dynamical-systems questions (topological invariants, bifurcation sensitivity) do not. Is this boundary precise? Does it hold for other Langevin systems beyond Ising chains?
+
+10. **How do these design rules map to real thermodynamic computing hardware?** The experiments use idealized double-well potentials with nearest-neighbor coupling. Real circuits (Josephson junctions, molecular switches, optical bistable elements) have different noise statistics, coupling topologies, and operating timescales. Connecting the design rules to specific hardware parameters is the next major step.

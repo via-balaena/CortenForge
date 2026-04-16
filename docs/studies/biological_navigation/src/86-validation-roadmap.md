@@ -1,49 +1,46 @@
 # Validation Roadmap
 
-Which principles can we validate now, which need new physics, and in what order.
-
 ## The Key Insight
 
 The biological organisms need fluid dynamics. The thermodynamic circuit analogs mostly don't. A particle in a double well coupled to its neighbors under Langevin noise IS a thermodynamic circuit — it doesn't need a fluid around it. Most principles translate directly to this domain.
 
-The exceptions are principles where the fluid structure itself IS the mechanism (vortex coupling, hydrodynamic drag asymmetry). Those need either soft-body simulation (intermediate viscosity) or full CFD (turbulent flows).
+The exceptions are principles where the fluid structure itself IS the mechanism (vortex coupling, hydrodynamic drag asymmetry) — or where the mathematics requires constraints the Langevin domain doesn't have (time-reversibility for the scallop theorem, sharp phase transitions for bifurcation sensitivity).
 
-## Langevin-Ready Principles
+## Completed Validations
 
-These can be validated with the existing `ThermCircuitEnv` infrastructure: double wells, pairwise coupling, oscillating fields, Langevin thermostat, and the CEM/SA/RicherSA algorithm suite.
+| Principle | Regime | Result | Key Finding |
+|-----------|--------|--------|-------------|
+| **P2 — Stochastic resonance** | E. coli | **Validated** | Two-regime behavior: kT ≈ 2.3 (J < 1.5), kT ≈ 4.3 (J ≥ 2). ΔV axis forgiving. |
+| **P4 — Metachronal coordination** | Ctenophore | **Validated** | δ ≈ π/5 for J < 2, 18–37% improvement. Synchronized optimal for J ≥ 2. |
+| **P6 — Scale-invariant encoding** | Octopus | **Validated** | kT ≈ 2.5 holds at N=4, 8, 16. Peak indices span 1 on 25-point grid. |
+| **P1 — Topological encoding** | E. coli | **Failed** | Amplitude dominates in Langevin domain. Scallop theorem doesn't transfer. |
+| **P11 — Deliberate instability** | Peregrine | **Failed** | No sharp bifurcation. Broad plateau, not critical point. |
 
-| Priority | Principle | Regime | Circuit Experiment | Effort |
-|----------|-----------|--------|-------------------|--------|
-| **1** | P2 — Stochastic resonance | E. coli | Coupling sweep: how SR-optimal kT shifts with J | **Running** |
-| **2** | P4 — Metachronal coordination | Ctenophore | Phase-lagged injection: sweep phase offset δ between coupled particles | Trivial — one parameter change |
-| **3** | P1 — Topological encoding | E. coli | Sequence structure matters, amplitude doesn't: compare phase orderings at matched amplitude | Small |
-| **4** | P11 — Deliberate instability | Peregrine | Near-bifurcation sensitivity: tune ΔV near critical point, show sensitivity amplification | Small |
-| **5** | P7 — Predictive forward model | Dragonfly | PN guidance in Langevin noise: N sweep, noise sweep, forward-model variant | Medium (experiment_4.rs exists) |
-| **6** | P9 — Minimum observables | Dragonfly | Observation ablation: train with subsets of obs, show 2 local cues suffice | Medium |
-| **7** | P5 — Compressed command | Octopus | Single ctrl-temperature for heterogeneous circuit (different ΔV per particle) | Medium |
-| **8** | P6 — Scale-invariant encoding | Octopus | Same encoding program works at N=4, 8, 16 without retuning | Medium |
-| **9** | P8 — Pre-selection | Dragonfly | Gate check: verify noise/relaxation regime before committing to encoding strategy | Small |
+## The Boundary
 
-### Why this order
+**What transfers:** Statistical-mechanical questions — noise tuning (P2), phase coordination (P4), extensivity (P6). The Langevin framework speaks this language natively.
 
-P2 first because it's the simplest test of noise-as-resource — the foundational claim.
+**What doesn't transfer:** Dynamical-systems questions — topological invariants (P1, requires time-reversibility), bifurcation sensitivity (P11, requires sharp phase transitions). The model doesn't have the vocabulary.
 
-P4 second because it's the cheapest additional principle to validate (one parameter change to the existing Ising chain experiment) and it crosses into a different regime (Intermediate), which makes the framework look like a general lens rather than a single observation.
+## Remaining Langevin-Ready Principles
 
-P1 third because together with P2 it completes Regime 1 — both E. coli principles validated.
+These could be tested with the existing `ThermCircuitEnv` infrastructure but are lower priority than the micro-experiments on validated results:
 
-P11 fourth because it's the most surprising claim in the framework (instability is a feature) and maps cleanly onto double-well bifurcation physics we already have.
-
-P7 fifth because the infrastructure exists (experiment_4.rs) and it opens Regime 4.
+| Principle | Regime | Circuit Experiment | Effort |
+|-----------|--------|-------------------|--------|
+| P7 — Predictive forward model | Dragonfly | PN guidance in Langevin noise | Medium (experiment_4.rs exists) |
+| P9 — Minimum observables | Dragonfly | Observation ablation: train with subsets of obs | Medium |
+| P5 — Compressed command | Octopus | Single ctrl-temperature for heterogeneous circuit | Medium |
+| P8 — Pre-selection | Dragonfly | Gate check: verify noise/relaxation regime | Small |
 
 ## Needs Soft-Body / Viscous Coupling
 
-These principles involve drag asymmetry or hydrodynamic interactions between moving elements. MuJoCo's soft-body capabilities could approximate viscous coupling for the intermediate regime without full CFD.
+These principles involve drag asymmetry or hydrodynamic interactions. Not testable with current infrastructure.
 
 | Principle | Regime | What's needed |
 |-----------|--------|--------------|
-| P3 — Multimodal switching (temporal asymmetry part) | Ctenophore | Asymmetric power/recovery strokes need drag model |
-| P10 — Paired perturbation structures | Peregrine | Correlated noise injection could approximate in Langevin, but vortex structure needs spatial physics |
+| P3 — Multimodal switching | Ctenophore | Asymmetric power/recovery strokes need drag model |
+| P10 — Paired perturbation structures | Peregrine | Vortex structure needs spatial physics |
 
 ## Needs CFD
 
@@ -52,17 +49,15 @@ These principles require turbulent flow structures that only exist in 2D/3D flui
 | Principle | Regime | What's needed |
 |-----------|--------|--------------|
 | P12 — Logarithmic spiral approach | Peregrine | Scale-invariant trajectory in a flow field |
-| Experiment 2 — Ctene metachronal wave | Ctenophore | Hydrodynamic coupling between beating cilia |
-| Experiment 5 — M-shape vortex coupling | Peregrine | LES-validated counter-rotating vortex pairs |
 
-## Design Rules
+## Design Rules Summary
 
-Each validated principle should produce a concrete, quantitative design rule — something an engineer building a thermodynamic circuit can use directly.
+Each validated principle produced a concrete, quantitative design rule:
 
-| Principle | Expected design rule form |
-|-----------|--------------------------|
-| P2 — SR | "For coupling strength J, optimal noise kT ≈ f(J). Operating outside this band degrades fidelity by X%." |
-| P4 — Metachronal | "For an N-cell chain with coupling J, optimal injection phase lag δ* ≈ g(J, N)." |
-| P1 — Topological | "Injection sequence topology determines encoding fidelity; amplitude modulation has no effect below threshold A_c." |
-| P11 — Instability | "Operating at ΔV within ε of the bifurcation point amplifies sensitivity by factor S(ε)." |
-| P7 — Predictive | "Forward-model injection with navigation constant N ≈ 3 reduces convergence time by factor F relative to reactive control." |
+| Principle | Design Rule |
+|-----------|-------------|
+| P2 — SR | For J < 1.5, operate at kT ≈ 2.3. For J ≥ 2.0, operate at kT ≈ 4.3. ΔV/kT must stay below 3.0 (trapping cutoff). |
+| P4 — Metachronal | For J < 2, inject with phase lag δ ≈ π/5. For J ≥ 2, synchronize. |
+| P6 — Scale-invariant | For J=1.0, optimal kT ≈ 2.5 regardless of N (tested 4–16). |
+| P1 — Topological | Not applicable in Langevin domain. Use amplitude modulation freely. |
+| P11 — Instability | Not applicable. ΔV axis is forgiving — tune kT carefully instead. |
