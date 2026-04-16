@@ -279,7 +279,7 @@ fn evaluate_policy(
 
         for _ in 0..EPISODE_STEPS {
             let action = policy.forward(&obs_vec);
-            total_temp += action[0] * CTRL_RANGE_HI;
+            total_temp += (action[0] * CTRL_RANGE_HI).clamp(0.0, CTRL_RANGE_HI);
             let action_tensor = Tensor::from_f64_slice(&action, &[1]);
             let result = env.step(&action_tensor).unwrap();
             total_sync += result.reward;
@@ -578,7 +578,7 @@ fn ising_sr_scout() {
     eprintln!("  Predicted peak: kT ~ 6.5 (ΔV_eff/1.39)");
     eprintln!("  Testing {} kT points in [1, 15]\n", kt_points.len());
 
-    let (kts, means, stderrs) = temperature_sweep(coupling_j, &kt_points, n_episodes, 0);
+    let (kts, means, stderrs) = temperature_sweep(coupling_j, &kt_points, n_episodes, 100_000);
 
     eprintln!("\n  kT_mult  |  synchrony   |  stderr");
     eprintln!("  ---------|--------------|--------");
