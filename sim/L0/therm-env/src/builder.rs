@@ -19,7 +19,12 @@ use crate::error::ThermCircuitError;
 /// actuators exist only to allocate `data.ctrl` slots — they produce zero
 /// force regardless of the control input.
 #[must_use]
-pub fn generate_mjcf(n_particles: usize, n_ctrl: usize, timestep: f64) -> String {
+pub fn generate_mjcf(
+    n_particles: usize,
+    n_ctrl: usize,
+    timestep: f64,
+    ctrl_range: (f64, f64),
+) -> String {
     let mut xml = format!(
         r#"<mujoco model="therm-circuit-{n_particles}">
   <option timestep="{timestep}" gravity="0 0 0" integrator="Euler">
@@ -49,7 +54,9 @@ pub fn generate_mjcf(n_particles: usize, n_ctrl: usize, timestep: f64) -> String
                 xml,
                 r#"
     <general name="ctrl_{i}" joint="x{i}" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 10"/>"#
+             ctrllimited="true" ctrlrange="{lo} {hi}"/>"#,
+                lo = ctrl_range.0,
+                hi = ctrl_range.1
             )
             .ok();
         }
@@ -75,6 +82,7 @@ pub struct ThermCircuitEnvBuilder {
     seed: u64,
     landscape: Vec<Arc<dyn PassiveComponent>>,
     ctrl_temperature: bool,
+    ctrl_range: (f64, f64),
     sub_steps: usize,
     episode_steps: usize,
     reward_fn: Option<Box<dyn Fn(&Model, &Data) -> f64 + Send + Sync>>,
@@ -94,6 +102,7 @@ impl ThermCircuitEnvBuilder {
             seed: 0,
             landscape: Vec::new(),
             ctrl_temperature: false,
+            ctrl_range: (0.0, 10.0),
             sub_steps: 1,
             episode_steps: 1000,
             reward_fn: None,
@@ -148,6 +157,19 @@ impl ThermCircuitEnvBuilder {
     #[must_use]
     pub const fn with_ctrl_temperature(mut self) -> Self {
         self.ctrl_temperature = true;
+        self
+    }
+
+    /// Set the MJCF `ctrlrange` for all actuators (default: `(0.0, 10.0)`).
+    ///
+    /// Controls the range of `data.ctrl` values that the physics engine accepts.
+    /// With `LinearPolicy` (tanh output ∈ [-1, 1]), the effective range
+    /// is approximately `[max(lo, -1), min(hi, 1)]`.  Set a tighter range
+    /// (e.g., `(0.0, 5.0)`) when the policy needs to reach specific
+    /// temperature multipliers.
+    #[must_use]
+    pub const fn ctrl_range(mut self, lo: f64, hi: f64) -> Self {
+        self.ctrl_range = (lo, hi);
         self
     }
 
@@ -271,7 +293,7 @@ impl ThermCircuitEnvBuilder {
         let n_ctrl = usize::from(self.ctrl_temperature);
 
         // 2. Generate MJCF
-        let xml = generate_mjcf(self.n_particles, n_ctrl, self.timestep);
+        let xml = generate_mjcf(self.n_particles, n_ctrl, self.timestep, self.ctrl_range);
 
         // 3. Parse model
         let mut model = sim_mjcf::load_model(&xml)?;

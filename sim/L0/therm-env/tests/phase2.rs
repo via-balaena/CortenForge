@@ -319,25 +319,25 @@ mod mjcf {
 
     #[test]
     fn mjcf_parses_1_particle() {
-        let xml = generate_mjcf(1, 1, 0.001);
+        let xml = generate_mjcf(1, 1, 0.001, (0.0, 10.0));
         sim_mjcf::load_model(&xml).unwrap();
     }
 
     #[test]
     fn mjcf_parses_2_particles() {
-        let xml = generate_mjcf(2, 1, 0.001);
+        let xml = generate_mjcf(2, 1, 0.001, (0.0, 10.0));
         sim_mjcf::load_model(&xml).unwrap();
     }
 
     #[test]
     fn mjcf_parses_8_particles() {
-        let xml = generate_mjcf(8, 4, 0.001);
+        let xml = generate_mjcf(8, 4, 0.001, (0.0, 10.0));
         sim_mjcf::load_model(&xml).unwrap();
     }
 
     #[test]
     fn dimensions_1_particle_1_ctrl() {
-        let xml = generate_mjcf(1, 1, 0.001);
+        let xml = generate_mjcf(1, 1, 0.001, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         assert_eq!(model.nq, 1, "nq");
         assert_eq!(model.nv, 1, "nv");
@@ -346,7 +346,7 @@ mod mjcf {
 
     #[test]
     fn dimensions_2_particles_1_ctrl() {
-        let xml = generate_mjcf(2, 1, 0.001);
+        let xml = generate_mjcf(2, 1, 0.001, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         assert_eq!(model.nq, 2, "nq");
         assert_eq!(model.nv, 2, "nv");
@@ -355,7 +355,7 @@ mod mjcf {
 
     #[test]
     fn dimensions_8_particles_4_ctrl() {
-        let xml = generate_mjcf(8, 4, 0.001);
+        let xml = generate_mjcf(8, 4, 0.001, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         assert_eq!(model.nq, 8, "nq");
         assert_eq!(model.nv, 8, "nv");
@@ -364,7 +364,7 @@ mod mjcf {
 
     #[test]
     fn dimensions_no_actuators() {
-        let xml = generate_mjcf(3, 0, 0.001);
+        let xml = generate_mjcf(3, 0, 0.001, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         assert_eq!(model.nq, 3, "nq");
         assert_eq!(model.nv, 3, "nv");
@@ -373,7 +373,7 @@ mod mjcf {
 
     #[test]
     fn joint_names() {
-        let xml = generate_mjcf(3, 0, 0.001);
+        let xml = generate_mjcf(3, 0, 0.001, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         let names: Vec<Option<&str>> = model.jnt_name.iter().map(|n| n.as_deref()).collect();
         assert_eq!(names, vec![Some("x0"), Some("x1"), Some("x2")]);
@@ -381,7 +381,7 @@ mod mjcf {
 
     #[test]
     fn actuator_names() {
-        let xml = generate_mjcf(3, 2, 0.001);
+        let xml = generate_mjcf(3, 2, 0.001, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         let names: Vec<Option<&str>> = model.actuator_name.iter().map(|n| n.as_deref()).collect();
         assert_eq!(names, vec![Some("ctrl_0"), Some("ctrl_1")]);
@@ -389,7 +389,7 @@ mod mjcf {
 
     #[test]
     fn zero_gain_actuator_produces_zero_force() {
-        let xml = generate_mjcf(1, 1, 0.001);
+        let xml = generate_mjcf(1, 1, 0.001, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         let mut data = model.make_data();
         data.ctrl[0] = 5.0;
@@ -401,7 +401,7 @@ mod mjcf {
 
     #[test]
     fn custom_timestep() {
-        let xml = generate_mjcf(1, 0, 0.005);
+        let xml = generate_mjcf(1, 0, 0.005, (0.0, 10.0));
         let model = sim_mjcf::load_model(&xml).unwrap();
         assert_abs_diff_eq!(model.timestep, 0.005, epsilon = 1e-15);
     }
