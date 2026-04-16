@@ -1,0 +1,123 @@
+   Compiling sim-therm-env v0.7.0 (/Users/jonhillesheim/forge/cortenforge/sim/L0/therm-env)
+    Finished `release` profile [optimized] target(s) in 0.99s
+     Running unittests src/lib.rs (target/release/deps/sim_therm_env-61618b6bef8aa1ee)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/experiment_1.rs (target/release/deps/experiment_1-b59e4d7fbbc12141)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/experiment_4.rs (target/release/deps/experiment_4-14c33d83b6e6e05d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/ising_chain.rs (target/release/deps/ising_chain-49eed57df7eb14f8)
+
+running 1 test
+
+=== Bifurcation Sensitivity Scout (Principle 11) ===
+  N=4 uncoupled particles (J=0), kT=2, sweep dV from 0.5 to 10.0
+  Two amplitudes: A0=0.3 (strong), A0=0.1 (weak)
+  Predicted critical dV/kT ~ 1.31 -> dV ~ 2.62
+
+  --- Strong signal (A0=0.3) ---
+    dV= 0.50  A0=0.3  sync=+0.049529 +/- 0.006011  (40/40 eps)  [1/20]
+    dV= 1.00  A0=0.3  sync=+0.043862 +/- 0.006881  (40/40 eps)  [2/20]
+    dV= 1.50  A0=0.3  sync=+0.041927 +/- 0.007336  (40/40 eps)  [3/20]
+test ising_bifurcation_scout has been running for over 60 seconds
+    dV= 2.00  A0=0.3  sync=+0.042820 +/- 0.007587  (40/40 eps)  [4/20]
+    dV= 2.50  A0=0.3  sync=+0.051840 +/- 0.009554  (40/40 eps)  [5/20]
+    dV= 3.00  A0=0.3  sync=+0.038893 +/- 0.007608  (40/40 eps)  [6/20]
+    dV= 3.50  A0=0.3  sync=+0.052533 +/- 0.008582  (40/40 eps)  [7/20]
+    dV= 4.00  A0=0.3  sync=+0.048150 +/- 0.007710  (40/40 eps)  [8/20]
+    dV= 4.50  A0=0.3  sync=+0.028270 +/- 0.007833  (40/40 eps)  [9/20]
+    dV= 5.00  A0=0.3  sync=+0.039017 +/- 0.009430  (40/40 eps)  [10/20]
+    dV= 5.50  A0=0.3  sync=+0.027833 +/- 0.006988  (40/40 eps)  [11/20]
+    dV= 6.00  A0=0.3  sync=-0.002144 +/- 0.007942  (40/40 eps)  [12/20]
+    dV= 6.50  A0=0.3  sync=+0.011582 +/- 0.008594  (40/40 eps)  [13/20]
+    dV= 7.00  A0=0.3  sync=+0.019663 +/- 0.008754  (40/40 eps)  [14/20]
+    dV= 7.50  A0=0.3  sync=+0.006988 +/- 0.007479  (40/40 eps)  [15/20]
+    dV= 8.00  A0=0.3  sync=+0.008673 +/- 0.005853  (40/40 eps)  [16/20]
+    dV= 8.50  A0=0.3  sync=+0.005743 +/- 0.006635  (40/40 eps)  [17/20]
+    dV= 9.00  A0=0.3  sync=-0.004004 +/- 0.004739  (40/40 eps)  [18/20]
+    dV= 9.50  A0=0.3  sync=-0.002833 +/- 0.005593  (40/40 eps)  [19/20]
+    dV=10.00  A0=0.3  sync=+0.002054 +/- 0.004450  (40/40 eps)  [20/20]
+
+  --- Weak signal (A0=0.1) ---
+    dV= 0.50  A0=0.1  sync=+0.016333 +/- 0.005907  (40/40 eps)  [1/20]
+    dV= 1.00  A0=0.1  sync=+0.017478 +/- 0.008986  (40/40 eps)  [2/20]
+    dV= 1.50  A0=0.1  sync=+0.008820 +/- 0.008199  (40/40 eps)  [3/20]
+    dV= 2.00  A0=0.1  sync=+0.015022 +/- 0.008212  (40/40 eps)  [4/20]
+    dV= 2.50  A0=0.1  sync=+0.015949 +/- 0.007008  (40/40 eps)  [5/20]
+    dV= 3.00  A0=0.1  sync=+0.000310 +/- 0.009531  (40/40 eps)  [6/20]
+    dV= 3.50  A0=0.1  sync=-0.010922 +/- 0.007248  (40/40 eps)  [7/20]
+    dV= 4.00  A0=0.1  sync=+0.013883 +/- 0.008133  (40/40 eps)  [8/20]
+    dV= 4.50  A0=0.1  sync=+0.003157 +/- 0.009455  (40/40 eps)  [9/20]
+    dV= 5.00  A0=0.1  sync=+0.008873 +/- 0.009428  (40/40 eps)  [10/20]
+    dV= 5.50  A0=0.1  sync=+0.008735 +/- 0.008699  (40/40 eps)  [11/20]
+    dV= 6.00  A0=0.1  sync=+0.003963 +/- 0.008824  (40/40 eps)  [12/20]
+    dV= 6.50  A0=0.1  sync=+0.005258 +/- 0.006122  (40/40 eps)  [13/20]
+    dV= 7.00  A0=0.1  sync=-0.002574 +/- 0.006455  (40/40 eps)  [14/20]
+    dV= 7.50  A0=0.1  sync=+0.003815 +/- 0.007055  (40/40 eps)  [15/20]
+    dV= 8.00  A0=0.1  sync=+0.002205 +/- 0.005725  (40/40 eps)  [16/20]
+    dV= 8.50  A0=0.1  sync=+0.011627 +/- 0.005773  (40/40 eps)  [17/20]
+    dV= 9.00  A0=0.1  sync=+0.014929 +/- 0.006203  (40/40 eps)  [18/20]
+    dV= 9.50  A0=0.1  sync=+0.002297 +/- 0.004751  (40/40 eps)  [19/20]
+    dV=10.00  A0=0.1  sync=-0.000025 +/- 0.004201  (40/40 eps)  [20/20]
+
+  dV     |  sync(strong)    |  sync(weak)      |  ratio  |  amp
+  -------|-----------------|-----------------|---------|------
+   0.50  |  +0.049529 +/- 0.006011  |  +0.016333 +/- 0.005907  |  0.330  |  0.989
+   1.00  |  +0.043862 +/- 0.006881  |  +0.017478 +/- 0.008986  |  0.398  |  1.195
+   1.50  |  +0.041927 +/- 0.007336  |  +0.008820 +/- 0.008199  |  0.210  |  0.631
+   2.00  |  +0.042820 +/- 0.007587  |  +0.015022 +/- 0.008212  |  0.351  |  1.052
+   2.50  |  +0.051840 +/- 0.009554  |  +0.015949 +/- 0.007008  |  0.308  |  0.923
+   3.00  |  +0.038893 +/- 0.007608  |  +0.000310 +/- 0.009531  |  0.008  |  0.024
+   3.50  |  +0.052533 +/- 0.008582  |  -0.010922 +/- 0.007248  |  -0.208  |  -0.624
+   4.00  |  +0.048150 +/- 0.007710  |  +0.013883 +/- 0.008133  |  0.288  |  0.865
+   4.50  |  +0.028270 +/- 0.007833  |  +0.003157 +/- 0.009455  |  0.112  |  0.335
+   5.00  |  +0.039017 +/- 0.009430  |  +0.008873 +/- 0.009428  |  0.227  |  0.682
+   5.50  |  +0.027833 +/- 0.006988  |  +0.008735 +/- 0.008699  |  0.314  |  0.941
+   6.00  |  -0.002144 +/- 0.007942  |  +0.003963 +/- 0.008824  |  -1.848  |  -5.545
+   6.50  |  +0.011582 +/- 0.008594  |  +0.005258 +/- 0.006122  |  0.454  |  1.362
+   7.00  |  +0.019663 +/- 0.008754  |  -0.002574 +/- 0.006455  |  -0.131  |  -0.393
+   7.50  |  +0.006988 +/- 0.007479  |  +0.003815 +/- 0.007055  |  0.546  |  1.638
+   8.00  |  +0.008673 +/- 0.005853  |  +0.002205 +/- 0.005725  |  0.254  |  0.763
+   8.50  |  +0.005743 +/- 0.006635  |  +0.011627 +/- 0.005773  |  2.025  |  6.074
+   9.00  |  -0.004004 +/- 0.004739  |  +0.014929 +/- 0.006203  |  -3.729  |  -11.186
+   9.50  |  -0.002833 +/- 0.005593  |  +0.002297 +/- 0.004751  |  -0.811  |  -2.432
+  10.00  |  +0.002054 +/- 0.004450  |  -0.000025 +/- 0.004201  |  -0.012  |  -0.036
+
+  Strong peak: dV=3.50, sync=0.052533 +/- 0.008582 (idx 6)
+  Weak peak:   dV=1.00, sync=0.017478 +/- 0.008986 (idx 1)
+  Interior peaks: strong=true, weak=true
+  Amplification factor at strong peak: -0.624 (>1 = superlinear)
+test ising_bifurcation_scout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 689.14s
+
+     Running tests/phase2.rs (target/release/deps/phase2-9ac562afbd55460b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+     Running tests/phase3.rs (target/release/deps/phase3-3a06bc8bec8ddac6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+   Doc-tests sim_therm_env
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

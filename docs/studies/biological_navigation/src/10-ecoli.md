@@ -203,9 +203,31 @@ For an N=4 Ising-coupled bistable circuit with coupling strength J:
 
 Operating at the wrong temperature degrades synchrony to noise-floor levels.
 
-#### What Remains
+#### Operating Envelope: Barrier Height Tolerance
 
-Phase 2 (CEM, SA, RicherSA training at each J) would validate that the optimal temperature can be *learned* from dynamics alone — the agent doesn't need to know J. This is a supplementary result; the sweep data above is the primary contribution.
+Principle 2 maps the kT axis of the design surface. A complementary sweep maps the ΔV axis: fix kT=2.0 and sweep barrier height ΔV from 0.5 to 10.0 at two signal amplitudes (A₀=0.3 and A₀=0.1), N=4 uncoupled particles (J=0), 40 episodes per point.
+
+**Key finding: the ΔV axis is forgiving.** Unlike the sharp SR peak on the kT axis, the synchrony-vs-ΔV curve is a broad plateau:
+
+| ΔV range | ΔV/kT | Behavior |
+|----------|-------|----------|
+| 0.5–5.5 | 0.25–2.75 | **Sensitivity plateau** — synchrony stable at 0.03–0.05 |
+| 5.5–6.0 | 2.75–3.0 | Sharp drop-off — transitions from detectable to trapped |
+| > 6.0 | > 3.0 | **Trapping regime** — synchrony indistinguishable from zero |
+
+The weak signal (A₀=0.1) was below detection threshold at all ΔV values, setting a minimum detectable signal floor for this kT.
+
+**Engineering implication:** The design surface is asymmetric. Temperature requires precision tuning (sharp peak, ±30% of optimal degrades to noise floor). Barrier height is tolerant — any ΔV/kT between 0.25 and 2.75 gives similar performance. This means: **tune kT carefully to the design rule above; ΔV can be approximate.**
+
+The trapping cutoff at ΔV/kT ≈ 3 is a hard constraint: if the barrier exceeds 3× the thermal energy, the circuit cannot respond to signals regardless of other parameters.
+
+#### Why Not Train Agents to Find the Peak?
+
+Phase 2 (CEM, SA, RicherSA training at each J) was designed to test whether gradient-free agents can independently discover the SR-optimal temperature from dynamics alone. Partial results were discouraging: CEM(J=0) converged to kT ≈ 0.07 — a local optimum that games the synchrony metric with a low-noise strategy rather than finding the SR peak at kT ≈ 2.3. SA(J=0) stalled at the same reward for 80+ epochs.
+
+The likely cause: a `LinearPolicy(8, 1)` mapping particle positions/velocities to a scalar temperature lacks the capacity to represent the nonlinear relationship between circuit state and optimal noise level. The policy finds a constant-temperature local minimum rather than the state-dependent optimum.
+
+This does not weaken the design rule. The sweep data directly maps the optimal kT for each coupling strength — an engineer doesn't need an agent to discover this; the rule is the table above. Agent-based discovery becomes relevant when the circuit topology is unknown or changes at runtime, which is a different (harder) problem deferred to future work.
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs)
 

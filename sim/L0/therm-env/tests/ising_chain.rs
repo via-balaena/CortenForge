@@ -64,6 +64,9 @@ const T_CRITICAL_DF9: f64 = 3.250;
 /// t-critical for df=39, two-tailed α=0.01.
 const T_CRITICAL_DF39: f64 = 2.708;
 
+/// t-critical for df=79, two-tailed α=0.01.
+const T_CRITICAL_DF79: f64 = 2.640;
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 fn signal_omega() -> f64 {
@@ -518,6 +521,91 @@ fn make_richer_sa() -> RicherSa {
         Box::new(LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale())),
         RicherSaHyperparams::ch53_defaults(EPISODE_STEPS),
     )
+}
+
+// ─── Principle 11 helpers ────────────────────────────────────────────────
+
+/// Build an N=4 uncoupled env with variable barrier height and signal amplitude.
+/// J=0: particles are independent replicates, providing spatial averaging.
+/// For P11: sweep ΔV at fixed kT to find the sensitivity-amplification point.
+fn make_bifurcation_env(delta_v: f64, kt: f64, a0: f64, seed: u64) -> ThermCircuitEnv {
+    let omega = signal_omega();
+    let mut builder = ThermCircuitEnv::builder(N)
+        .gamma(GAMMA)
+        .k_b_t(kt)
+        .timestep(TIMESTEP)
+        .sub_steps(SUB_STEPS)
+        .episode_steps(EPISODE_STEPS)
+        .seed(seed);
+
+    for i in 0..N {
+        builder = builder
+            .with(DoubleWellPotential::new(delta_v, X_0, i))
+            .with(OscillatingField::new(a0, omega, 0.0, i));
+    }
+    // No coupling (J=0) — particles are independent replicates.
+
+    builder
+        .reward(move |_m, d| {
+            let signal = (omega * d.time).cos();
+            let mut sync = 0.0;
+            for i in 0..N {
+                sync += d.qpos[i].signum() * signal;
+            }
+            sync / N as f64
+        })
+        .build()
+        .unwrap()
+}
+
+/// Run one bifurcation episode at fixed kT, ΔV, A₀. Returns mean synchrony per step.
+fn run_bifurcation_episode(delta_v: f64, kt: f64, a0: f64, seed: u64) -> f64 {
+    let mut env = make_bifurcation_env(delta_v, kt, a0, seed);
+    let _obs = env.reset().unwrap();
+    let action = Tensor::from_f64_slice(&[], &[0]);
+
+    let mut total = 0.0;
+    let mut steps = 0;
+    loop {
+        let result = env.step(&action).unwrap();
+        total += result.reward;
+        steps += 1;
+        if result.truncated || result.done {
+            break;
+        }
+    }
+    total / f64::from(steps)
+}
+
+/// Barrier-height sweep at fixed kT and signal amplitude. Returns (delta_vs, means, stderrs).
+fn bifurcation_sweep(
+    kt: f64,
+    delta_vs: &[f64],
+    a0: f64,
+    n_episodes: usize,
+    seed_offset: u64,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut means = Vec::with_capacity(delta_vs.len());
+    let mut stderrs = Vec::with_capacity(delta_vs.len());
+
+    for (i, &dv) in delta_vs.iter().enumerate() {
+        let mut episodes = Vec::with_capacity(n_episodes);
+        for ep in 0..n_episodes {
+            let seed = SEED_BASE + seed_offset + (i * 1000 + ep) as u64;
+            episodes.push(run_bifurcation_episode(dv, kt, a0, seed));
+        }
+        let (m, s) = mean_stderr(&episodes);
+        eprintln!(
+            "    dV={dv:5.2}  A0={a0}  sync={m:+.6} +/- {s:.6}  ({}/{n_episodes} eps)  [{}/{}]",
+            n_episodes,
+            i + 1,
+            delta_vs.len()
+        );
+        means.push(m);
+        stderrs.push(s);
+    }
+
+    (delta_vs.to_vec(), means, stderrs)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1020,6 +1108,7 @@ fn ising_metachronal_sweep() {
         peak_stderr: f64,
         peak_t: f64,
         sync_at_zero: f64,
+        stderr_at_zero: f64,
         means: Vec<f64>,
     }
     let mut results: Vec<MetaResult> = Vec::new();
@@ -1036,6 +1125,7 @@ fn ising_metachronal_sweep() {
         };
         eprintln!("    peak: δ={peak_delta:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, |t|={t:.2}");
         let sync_at_zero = means[0];
+        let stderr_at_zero = stderrs[0];
         results.push(MetaResult {
             j,
             peak_idx,
@@ -1044,12 +1134,15 @@ fn ising_metachronal_sweep() {
             peak_stderr: peak_se,
             peak_t: t,
             sync_at_zero,
+            stderr_at_zero,
             means,
         });
     }
 
     // ── Gate 0 (Sanity): δ=0 must reproduce Phase 1 synchrony values ─
-    // Different seeds, so not exact — but means must be within 3×stderr.
+    // Different seeds, so not exact.  Use a two-sample threshold:
+    // Phase 1 used 40 episodes → its stderr ≈ sqrt(n_episodes/40) × stderr_at_zero.
+    // Combined threshold = 3 × sqrt(stderr_δ0² + stderr_p1²).
     let phase1_sync: [(f64, f64); 4] = [
         (0.0, 0.043), // J=0, kT=2.29
         (0.5, 0.057), // J=0.5, kT=2.29
@@ -1060,7 +1153,10 @@ fn ising_metachronal_sweep() {
     let mut gate0_pass = true;
     for (r, &(j, expected)) in results.iter().zip(&phase1_sync) {
         let diff = (r.sync_at_zero - expected).abs();
-        let threshold = 3.0 * r.peak_stderr;
+        // Estimate Phase 1 stderr: same per-episode variance, 40 episodes.
+        let phase1_stderr_est = r.stderr_at_zero * (n_episodes as f64 / 40.0).sqrt();
+        let combined_stderr = r.stderr_at_zero.hypot(phase1_stderr_est);
+        let threshold = 3.0 * combined_stderr;
         let ok = diff < threshold;
         if !ok {
             gate0_pass = false;
@@ -1220,4 +1316,281 @@ fn ising_metachronal_sweep() {
              beats synchronized injection."
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRINCIPLE 11 — DELIBERATE INSTABILITY NEAR BIFURCATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Scout: quick check that barrier-height sweep shows structure at two amplitudes.
+/// N=4 uncoupled particles (J=0) for spatial averaging.
+/// P11 prediction: sensitivity peaks at a critical ΔV/kT ratio (~1.31).
+#[test]
+#[ignore = "requires --release (~2 min)"]
+fn ising_bifurcation_scout() {
+    let delta_vs: [f64; 8] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0];
+    let kt = 2.0;
+    let a0_strong = 0.3;
+    let a0_weak = 0.1;
+    let n_episodes = 20;
+
+    eprintln!("\n=== Bifurcation Sensitivity Scout (Principle 11) ===");
+    eprintln!(
+        "  N={N} uncoupled particles (J=0), kT={kt}, sweep dV from {:.1} to {:.1}",
+        delta_vs[0],
+        delta_vs[delta_vs.len() - 1]
+    );
+    eprintln!("  Two amplitudes: A0={a0_strong} (strong), A0={a0_weak} (weak)");
+    eprintln!(
+        "  Predicted critical dV/kT ~ 1.31 -> dV ~ {:.2}\n",
+        1.31 * kt
+    );
+
+    eprintln!("  --- Strong signal (A0={a0_strong}) ---");
+    let (_, means_s, stderrs_s) = bifurcation_sweep(kt, &delta_vs, a0_strong, n_episodes, 500_000);
+
+    eprintln!("\n  --- Weak signal (A0={a0_weak}) ---");
+    let (_, means_w, stderrs_w) = bifurcation_sweep(kt, &delta_vs, a0_weak, n_episodes, 600_000);
+
+    eprintln!("\n  dV     |  sync(strong)    |  sync(weak)      |  ratio  |  amp");
+    eprintln!("  -------|-----------------|-----------------|---------|------");
+    for i in 0..delta_vs.len() {
+        let ratio = if means_s[i].abs() > 1e-6 {
+            means_w[i] / means_s[i]
+        } else {
+            f64::NAN
+        };
+        let amp = ratio * (a0_strong / a0_weak);
+        eprintln!(
+            "  {:5.2}  |  {:+.6} +/- {:.6}  |  {:+.6} +/- {:.6}  |  {:.3}  |  {:.3}",
+            delta_vs[i], means_s[i], stderrs_s[i], means_w[i], stderrs_w[i], ratio, amp
+        );
+    }
+
+    let (s_idx, s_dv, s_sync, s_se) = find_peak(&delta_vs, &means_s, &stderrs_s);
+    let (w_idx, w_dv, w_sync, w_se) = find_peak(&delta_vs, &means_w, &stderrs_w);
+
+    eprintln!("\n  Strong peak: dV={s_dv:.2}, sync={s_sync:.6} +/- {s_se:.6} (idx {s_idx})");
+    eprintln!("  Weak peak:   dV={w_dv:.2}, sync={w_sync:.6} +/- {w_se:.6} (idx {w_idx})");
+
+    let s_interior = s_idx > 0 && s_idx < delta_vs.len() - 1;
+    let w_interior = w_idx > 0 && w_idx < delta_vs.len() - 1;
+    eprintln!("  Interior peaks: strong={s_interior}, weak={w_interior}");
+
+    if means_s[s_idx].abs() > 1e-6 {
+        let ratio = means_w[s_idx] / means_s[s_idx];
+        let amp = ratio * (a0_strong / a0_weak);
+        eprintln!("  Amplification factor at strong peak: {amp:.3} (>1 = superlinear)");
+    }
+}
+
+/// Principle 11 validation: bifurcation sensitivity sweep.
+/// Tests whether operating near the critical barrier height amplifies
+/// signal sensitivity, especially for weak signals.
+///
+/// The experiment: fix kT=2.0, sweep ΔV from 0.5 to 6.0, N=4 uncoupled
+/// particles (J=0, independent replicates for spatial averaging).
+/// Two signal amplitudes (A₀=0.3 strong, A₀=0.1 weak).
+///
+/// Key distinction from P2: P2 says "there's an optimal noise level."
+/// P11 says "there's an optimal operating point (barrier height), and
+/// weak signals REQUIRE being at that point — the instability near
+/// bifurcation is a necessary amplifier."
+///
+/// Run the bifurcation scout first.
+#[test]
+#[ignore = "requires --release (~20 min)"]
+#[allow(clippy::items_after_statements)]
+fn ising_bifurcation_sweep() {
+    let delta_vs = lin_spaced(0.5, 10.0, 20);
+    let kt = 2.0;
+    let a0_strong = 0.3;
+    let a0_weak = 0.1;
+    let n_episodes = 80;
+
+    eprintln!("\n=== BIFURCATION SENSITIVITY SWEEP (Principle 11) ===");
+    eprintln!("  Does operating near the bifurcation point amplify sensitivity?");
+    eprintln!("  N={N} uncoupled particles (J=0), kT={kt}");
+    eprintln!(
+        "  dV range: [{:.1}, {:.1}], {} points linearly spaced",
+        0.5,
+        10.0,
+        delta_vs.len()
+    );
+    eprintln!("  Episodes per point: {n_episodes}");
+    eprintln!("  Two amplitudes: A0={a0_strong} (strong), A0={a0_weak} (weak)");
+    eprintln!(
+        "  Predicted critical dV/kT ~ 1.31 -> dV ~ {:.2}\n",
+        1.31 * kt
+    );
+
+    eprintln!("  --- Strong signal (A0={a0_strong}) ---");
+    let (_, means_s, stderrs_s) = bifurcation_sweep(kt, &delta_vs, a0_strong, n_episodes, 700_000);
+
+    eprintln!("\n  --- Weak signal (A0={a0_weak}) ---");
+    let (_, means_w, stderrs_w) = bifurcation_sweep(kt, &delta_vs, a0_weak, n_episodes, 800_000);
+
+    // ── Summary table ────────────────────────────────────────────────
+    eprintln!("\n  ======================================================================");
+    eprintln!("  BIFURCATION SWEEP RESULTS");
+    eprintln!("  ======================================================================\n");
+    eprintln!("  dV     |  sync(strong)    |  sync(weak)      |  ratio  |  amp");
+    eprintln!("  -------|-----------------|-----------------|---------|------");
+    for i in 0..delta_vs.len() {
+        let ratio = if means_s[i].abs() > 1e-6 {
+            means_w[i] / means_s[i]
+        } else {
+            f64::NAN
+        };
+        let amp = ratio * (a0_strong / a0_weak);
+        eprintln!(
+            "  {:5.2}  |  {:+.6} +/- {:.6}  |  {:+.6} +/- {:.6}  |  {:.3}  |  {:.3}",
+            delta_vs[i], means_s[i], stderrs_s[i], means_w[i], stderrs_w[i], ratio, amp
+        );
+    }
+
+    let (s_idx, s_dv, s_sync, s_se) = find_peak(&delta_vs, &means_s, &stderrs_s);
+    let (w_idx, w_dv, w_sync, w_se) = find_peak(&delta_vs, &means_w, &stderrs_w);
+    let s_t = if s_se > 1e-15 { s_sync / s_se } else { 0.0 };
+    let w_t = if w_se > 1e-15 { w_sync / w_se } else { 0.0 };
+
+    eprintln!(
+        "\n  Strong peak: dV={s_dv:.2}, sync={s_sync:.6} +/- {s_se:.6}, |t|={:.2}",
+        s_t.abs()
+    );
+    eprintln!(
+        "  Weak peak:   dV={w_dv:.2}, sync={w_sync:.6} +/- {w_se:.6}, |t|={:.2}",
+        w_t.abs()
+    );
+
+    // ── Gates ────────────────────────────────────────────────────────
+    eprintln!("\n  Gates:");
+
+    // Gate 0 (Sanity): high-dV extreme shows zero synchrony.
+    // Only the high end is checked — at low dV the barrier is shallow,
+    // so the signal can bias fast switching (nonzero sync is correct physics).
+    // At high dV, the barrier traps the particle and sync must vanish.
+    let last = delta_vs.len() - 1;
+    let s_last_ok = means_s[last].abs() < 3.0 * stderrs_s[last];
+    let w_last_ok = means_w[last].abs() < 3.0 * stderrs_w[last];
+    let gate0 = s_last_ok && w_last_ok;
+    eprintln!("    Gate 0 (Sanity): high-dV extreme ~ 0?");
+    eprintln!(
+        "      strong: dV={:.2} {}",
+        delta_vs[last],
+        if s_last_ok { "PASS" } else { "FAIL" },
+    );
+    eprintln!(
+        "      weak:   dV={:.2} {}",
+        delta_vs[last],
+        if w_last_ok { "PASS" } else { "FAIL" },
+    );
+    eprintln!("      -> {}", if gate0 { "PASS" } else { "FAIL" });
+
+    // Gate 1 (Strong peak): interior + significant.
+    let s_interior = s_idx > 0 && s_idx < delta_vs.len() - 1;
+    let s_sig = s_t.abs() > T_CRITICAL_DF79;
+    let gate1 = s_interior && s_sig;
+    eprintln!(
+        "    Gate 1 (Strong peak): interior={s_interior}, \
+         |t|={:.2} {} {T_CRITICAL_DF79:.3} -> {}",
+        s_t.abs(),
+        if s_sig { ">" } else { "<" },
+        if gate1 { "PASS" } else { "FAIL" },
+    );
+
+    // Gate 2 (Weak peak): interior + significant.
+    let w_interior = w_idx > 0 && w_idx < delta_vs.len() - 1;
+    let w_sig = w_t.abs() > T_CRITICAL_DF79;
+    let gate2 = w_interior && w_sig;
+    eprintln!(
+        "    Gate 2 (Weak peak): interior={w_interior}, \
+         |t|={:.2} {} {T_CRITICAL_DF79:.3} -> {}",
+        w_t.abs(),
+        if w_sig { ">" } else { "<" },
+        if gate2 { "PASS" } else { "FAIL" },
+    );
+
+    // Gate 3 (Co-location): peaks within 2 grid steps.
+    let peak_gap = s_idx.abs_diff(w_idx);
+    let gate3 = peak_gap <= 2;
+    eprintln!(
+        "    Gate 3 (Co-location): |s_idx - w_idx| = {peak_gap} {} 2 -> {}",
+        if gate3 { "<=" } else { ">" },
+        if gate3 { "PASS" } else { "FAIL" },
+    );
+
+    // Gate 4 (Narrower window): weak signal has significant synchrony
+    // at fewer dV points than the strong signal.  This means weak signals
+    // REQUIRE near-bifurcation operation — the instability is a necessary
+    // amplifier for weak inputs.
+    let t_loose = 2.0;
+    let s_sig_count = (0..delta_vs.len())
+        .filter(|&i| {
+            let t = if stderrs_s[i] > 1e-15 {
+                means_s[i] / stderrs_s[i]
+            } else {
+                0.0
+            };
+            t.abs() > t_loose
+        })
+        .count();
+    let w_sig_count = (0..delta_vs.len())
+        .filter(|&i| {
+            let t = if stderrs_w[i] > 1e-15 {
+                means_w[i] / stderrs_w[i]
+            } else {
+                0.0
+            };
+            t.abs() > t_loose
+        })
+        .count();
+    let gate4 = w_sig_count <= s_sig_count;
+    eprintln!(
+        "    Gate 4 (Narrower window): strong sig pts={s_sig_count}, \
+         weak sig pts={w_sig_count} -> {}",
+        if gate4 { "PASS" } else { "FAIL" },
+    );
+
+    // ── Diagnostic: amplification factor ─────────────────────────────
+    eprintln!("\n  Diagnostic:");
+    if means_s[s_idx].abs() > 1e-6 {
+        let ratio = means_w[s_idx] / means_s[s_idx];
+        let amp = ratio * (a0_strong / a0_weak);
+        eprintln!("    Amplification factor R at peak dV: {amp:.3}");
+        eprintln!("      R > 1: superlinear (bifurcation concentrates sensitivity)");
+        eprintln!("      R = 1: linear response (peak still matters for detection)");
+        eprintln!("      R < 1: sublinear (strong signal saturating)");
+    }
+
+    // ── Verdict ──────────────────────────────────────────────────────
+    let all_pass = gate0 && gate1 && gate2 && gate3 && gate4;
+    if all_pass {
+        eprintln!(
+            "\n  All gates PASS. Principle 11 VALIDATED: \
+             operating near bifurcation maximizes sensitivity."
+        );
+    } else {
+        eprintln!("\n  Principle 11 NOT fully validated.");
+        if !gate0 {
+            eprintln!("    - Sanity: extremes not zero");
+        }
+        if !gate1 {
+            eprintln!("    - Strong signal: no interior peak");
+        }
+        if !gate2 {
+            eprintln!("    - Weak signal: no interior peak");
+        }
+        if !gate3 {
+            eprintln!("    - Peaks not co-located");
+        }
+        if !gate4 {
+            eprintln!("    - Weak window not narrower than strong");
+        }
+    }
+
+    assert!(
+        all_pass,
+        "Principle 11 gates failed — see diagnostics above"
+    );
 }
