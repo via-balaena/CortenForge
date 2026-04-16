@@ -9,20 +9,33 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Foundation types (BodyId, Pose) assembled into the Model
 sim-types = { workspace = true }
+# Physics Model / Data the MJCF loader populates
 sim-core = { workspace = true }
+# OBJ / STL / PLY mesh file loaders referenced from <mesh> tags
 mesh-io = { workspace = true }
+# Matrix / vector / rotation primitives for transform composition
 nalgebra = { workspace = true }
+# Streaming XML parser for the MJCF document tree
 quick-xml = { workspace = true }
+# Derive macros for the MJCF parse / validation error enum
 thiserror = { workspace = true }
+# Structured logging spans across MJCF parse / build stages
 tracing = { workspace = true }
+# PNG / JPEG decoding for <texture file="..."> references
 image = { workspace = true }
+# Optional Serialize / Deserialize used by the `mjb` binary-format path
 serde = { workspace = true, optional = true }
+# Optional MJB binary-format (de)serialization, gated on the `mjb` feature
 bincode = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Float-tolerance assertions for transform / inertia unit tests
 approx = { workspace = true }
+# Mesh container types used when round-tripping mesh fixtures
 mesh-types = { workspace = true }
+# Scratch directories for MJCF / MJB file round-trip tests
 tempfile = { workspace = true }
 
 [features]
