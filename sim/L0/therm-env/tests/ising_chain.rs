@@ -202,6 +202,12 @@ fn temperature_sweep(
             episodes.push(run_episode(coupling_j, kt, seed));
         }
         let (m, s) = mean_stderr(&episodes);
+        eprintln!(
+            "    kT={kt:7.4}  sync={m:+.6} +/- {s:.6}  ({}/{n_episodes} eps)  [{}/{}]",
+            n_episodes,
+            i + 1,
+            kt_mults.len()
+        );
         means.push(m);
         stderrs.push(s);
     }
