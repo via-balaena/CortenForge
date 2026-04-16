@@ -3,7 +3,7 @@
 > Via Balaena LLC / CortenForge
 >
 > Status: Three principles validated, two boundary conditions established
-> Date: April 2026
+> Date: April 16, 2026
 > Classification: Open research — intended for public release
 
 This document connects biological locomotion control theory to the unsolved x-encoding problem in thermodynamic computing. The code that produced every result is in the same repository.

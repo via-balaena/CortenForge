@@ -6,7 +6,7 @@ language = "en"
 src = "src"
 
 [output.html]
-default-theme = "navy"
+default-theme = "light"
 preferred-dark-theme = "navy"
 git-repository-url = ""
 edit-url-template = ""
