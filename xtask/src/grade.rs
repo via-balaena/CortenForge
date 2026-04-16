@@ -1116,6 +1116,135 @@ fn count_unjustified_clippy_allows(lines: &[&str]) -> usize {
     count
 }
 
+/// Count `Cargo.toml` dependency entries that lack a justifying comment,
+/// mirroring `grade_dependencies`'s text-scan rule.
+///
+/// - Tracked sections: `[dependencies]`, `[dev-dependencies]`,
+///   `[build-dependencies]`, plus the target-conditional forms
+///   `[target.<spec>.dependencies]` / `.dev-dependencies]` /
+///   `.build-dependencies]`.
+/// - Inside a dep section, a dep entry is a line containing `=` at brace
+///   depth 0. Continuation lines of a multi-line inline-table dep spec
+///   (`name = {\n    version = "...",\n    ...\n}`) are at brace depth
+///   > 0 and are skipped so they are not mis-scanned as fresh deps.
+/// - Justification: the line has an inline `#` comment, or one of the
+///   1-3 preceding lines starts with `#`. The backward scan stops at
+///   blank lines and section headers.
+fn count_unjustified_deps(lines: &[&str]) -> usize {
+    let mut unjustified = 0usize;
+    let mut in_dep_section = false;
+    let mut brace_depth: usize = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Section headers are only recognized at brace depth 0. A `[`
+        // inside a nested inline table is not a section header.
+        if brace_depth == 0 && trimmed.starts_with('[') {
+            in_dep_section = is_dep_section_header(trimmed);
+            continue;
+        }
+
+        // Continuation line inside a multi-line inline table: skip the
+        // dep check but still walk the line for brace updates.
+        if brace_depth > 0 {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        if !in_dep_section {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        // Blank line or full-line comment: not a dep entry.
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // A dep entry is a line with `name = ...`.
+        if !trimmed.contains('=') {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        // Inline `#` comment anywhere on the dep line justifies it.
+        if trimmed.contains('#') {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        // Check preceding 1-3 lines for a `#` comment. Stop at blank
+        // lines and section headers (they break the chain).
+        let mut has_justification = false;
+        for offset in 1..=3 {
+            let Some(j) = i.checked_sub(offset) else {
+                break;
+            };
+            let prev = lines[j].trim();
+            if prev.is_empty() || prev.starts_with('[') {
+                break;
+            }
+            if prev.starts_with('#') {
+                has_justification = true;
+                break;
+            }
+        }
+
+        if !has_justification {
+            unjustified += 1;
+        }
+
+        brace_depth = update_brace_depth(line, brace_depth);
+    }
+
+    unjustified
+}
+
+/// Is `trimmed` a dep section header the grader should track?
+fn is_dep_section_header(trimmed: &str) -> bool {
+    if trimmed == "[dependencies]"
+        || trimmed == "[dev-dependencies]"
+        || trimmed == "[build-dependencies]"
+    {
+        return true;
+    }
+    if trimmed.starts_with("[target.") {
+        return trimmed.ends_with(".dependencies]")
+            || trimmed.ends_with(".dev-dependencies]")
+            || trimmed.ends_with(".build-dependencies]");
+    }
+    false
+}
+
+/// Update brace depth across a `Cargo.toml` line, counting `{` and `}`
+/// outside string literals and inline `#` comments.
+fn update_brace_depth(line: &str, mut depth: usize) -> usize {
+    let mut in_string = false;
+    let mut escape = false;
+    for c in line.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            // Rest of line is an inline comment.
+            '#' => break,
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth
+}
+
 /// Grade dependencies: justification check (hard gate) + dep count (informational).
 ///
 /// Per chassis ss2.5: every dependency in Cargo.toml must have a `#` comment
@@ -1162,63 +1291,8 @@ fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         }
     };
 
-    let mut unjustified = 0;
-    let mut in_dep_section = false;
     let lines: Vec<&str> = cargo_content.lines().collect();
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-
-        // Track dependency sections
-        if trimmed.starts_with('[') {
-            in_dep_section = trimmed == "[dependencies]"
-                || trimmed == "[dev-dependencies]"
-                || trimmed == "[build-dependencies]";
-            continue;
-        }
-
-        if !in_dep_section {
-            continue;
-        }
-
-        // Skip blank lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // A dependency entry is a line with `name = ...` in a dep section
-        if !trimmed.contains('=') {
-            continue;
-        }
-
-        // Check for inline comment
-        if trimmed.contains('#') {
-            continue; // has inline justification
-        }
-
-        // Check preceding 1-3 lines for a # comment.
-        // Stop at blank lines or section headers (they break the chain).
-        let has_justification = {
-            let mut found = false;
-            for offset in 1..=3 {
-                if let Some(j) = i.checked_sub(offset) {
-                    let prev = lines[j].trim();
-                    if prev.is_empty() || prev.starts_with('[') {
-                        break;
-                    }
-                    if prev.starts_with('#') {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            found
-        };
-
-        if !has_justification {
-            unjustified += 1;
-        }
-    }
+    let unjustified = count_unjustified_deps(&lines);
 
     // Binary A/F
     let grade = if unjustified == 0 { Grade::A } else { Grade::F };
@@ -1548,5 +1622,176 @@ mod tests {
         let src = "/*\n#[allow(clippy::cast_precision_loss)]\n*/\nfn foo() {}\n";
         let lines = split(src);
         assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    // === count_unjustified_deps ===
+
+    #[test]
+    fn count_deps_basic_unjustified() {
+        let src = "[dependencies]\nserde = \"1.0\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_basic_justified_by_preceding_comment() {
+        let src = "[dependencies]\n# serialization for cache files\nserde = \"1.0\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_justified_by_inline_comment() {
+        let src = "[dependencies]\nserde = \"1.0\" # serialization\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_preceding_comment_three_lines_back() {
+        let src = "[dependencies]\n# justification\nfoo = \"1\"\nbar = \"1\"\nbaz = \"1\"\n";
+        let lines = split(src);
+        // foo: offset 1 -> `#` ok. bar: offset 2 -> `#` ok. baz: offset 3 -> `#` ok.
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_preceding_comment_four_lines_back_rejected() {
+        let src =
+            "[dependencies]\n# justification\nfoo = \"1\"\nbar = \"1\"\nbaz = \"1\"\nqux = \"1\"\n";
+        let lines = split(src);
+        // qux is 4 lines from `# justification` -> outside window -> unjustified.
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_blank_line_breaks_chain() {
+        let src = "[dependencies]\n# justification\n\nfoo = \"1\"\n";
+        let lines = split(src);
+        // Blank at offset 1 breaks backward scan before reaching the `#`.
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_non_dep_section_ignored() {
+        let src = "[features]\ndefault = []\nparallel = [\"dep:rayon\"]\n\n[profile.dev]\nopt-level = 0\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_dev_dependencies_section_scanned() {
+        let src = "[dev-dependencies]\napprox = \"0.5\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_build_dependencies_section_scanned() {
+        let src = "[build-dependencies]\ncc = \"1\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_patch_section_ignored() {
+        // `[patch.crates-io]` is not a dep section.
+        let src = "[patch.crates-io]\nserde = { git = \"https://example.com\" }\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_workspace_inherited_single_line() {
+        let src = "[dependencies]\nnalgebra = { workspace = true }\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_workspace_inherited_with_features_single_line() {
+        // The `bevy = { workspace = true, features = [...] }` single-line form.
+        let src = "[dependencies]\nbevy = { workspace = true, features = [\"bevy_pbr\"] }\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    // --- GAP-A regression: multi-line inline-table dep specs ---
+
+    #[test]
+    fn count_deps_multi_line_inline_table_opening_counts_once() {
+        // Pre-fix, the continuation lines `version = "0.8",` and
+        // `features = ["x"],` would be mis-scanned as two additional dep
+        // entries, yielding unjustified == 3. Post-fix, only the opening
+        // line is counted.
+        let src = "[dependencies]\nrand = {\n    version = \"0.8\",\n    features = [\"small_rng\"],\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_multi_line_inline_table_justified() {
+        let src = "[dependencies]\n# justification\nrand = {\n    version = \"0.8\",\n    features = [\"small_rng\"],\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_multi_line_features_array_no_false_positive() {
+        // The common house form: `bevy = { workspace = true, features = [`
+        // opening, quoted feature strings, `] }` closing. Continuation
+        // lines have no `=` so were never false-positives, but brace-depth
+        // tracking must still close correctly so the next dep is scanned.
+        let src = "[dependencies]\nbevy = { workspace = true, features = [\n    \"bevy_pbr\",\n    \"bevy_ui\",\n] }\nserde = \"1\"\n";
+        let lines = split(src);
+        // Both `bevy` and `serde` lines are unjustified dep entries.
+        assert_eq!(count_unjustified_deps(&lines), 2);
+    }
+
+    #[test]
+    fn count_deps_dep_after_multi_line_inline_table_still_scanned() {
+        // Regression for "brace depth must close": if the closing `}` is
+        // not handled, subsequent deps would be treated as continuations.
+        let src = "[dependencies]\nfoo = {\n    version = \"0.8\",\n}\nbar = \"0.1\"\n";
+        let lines = split(src);
+        // Both foo (opening) and bar (scanned after brace closes) flagged.
+        assert_eq!(count_unjustified_deps(&lines), 2);
+    }
+
+    // --- GAP-C regression: target-cfg dependency sections ---
+
+    #[test]
+    fn count_deps_target_cfg_dependencies_scanned() {
+        let src = "[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_cfg_dev_dependencies_scanned() {
+        let src = "[target.'cfg(windows)'.dev-dependencies]\nwindows = \"0.5\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_cfg_build_dependencies_scanned() {
+        let src = "[target.'cfg(target_os = \"linux\")'.build-dependencies]\ncc = \"1\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_triple_dependencies_scanned() {
+        let src = "[target.x86_64-unknown-linux-gnu.dependencies]\nopenssl = \"0.10\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_cfg_justified() {
+        let src = "[target.'cfg(unix)'.dependencies]\n# unix-only POSIX APIs\nlibc = \"0.2\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
     }
 }
