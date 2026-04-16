@@ -553,72 +553,159 @@ fn ising_sa_encoding() {
 
 // ─── Coupling strength sweep (Step 4) ────────────────────────────────────
 
+/// Create a PPO instance with standard hyperparameters for Ising chain tests.
+fn make_ppo() -> Ppo {
+    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
+    let value_fn = LinearValue::new(OBS_DIM, &obs_scale());
+    Ppo::new(
+        Box::new(policy),
+        Box::new(value_fn),
+        OptimizerConfig::adam(3e-4),
+        PpoHyperparams {
+            clip_eps: 0.2,
+            k_passes: 4,
+            gamma: 0.99,
+            gae_lambda: 0.95,
+            sigma_init: 1.0,
+            sigma_decay: 0.995,
+            sigma_min: 0.1,
+            max_episode_steps: EPISODE_STEPS,
+        },
+    )
+}
+
+/// Create an SA instance with standard hyperparameters for Ising chain tests.
+fn make_sa() -> Sa {
+    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
+    Sa::new(
+        Box::new(policy),
+        SaHyperparams {
+            initial_temperature: 50.0,
+            proposal_std: 1.0,
+            cooling_decay: 0.955,
+            temperature_min: 0.1,
+            max_episode_steps: EPISODE_STEPS,
+        },
+    )
+}
+
+/// Row in the coupling sweep results table.
+struct SweepRow {
+    j: f64,
+    algo: &'static str,
+    overlap: f64,
+    stderr: f64,
+    learned_kt: f64,
+}
+
 #[test]
-#[ignore = "requires --release (~40 min)"]
+#[ignore = "requires --release (~2 hours)"]
 fn ising_coupling_sweep() {
     let j_values = [0.1, 0.5, 1.0, 2.0];
 
-    eprintln!("\n=== Ising chain: Coupling sweep on hard target [+1,-1,+1,-1] ===");
-    eprintln!("  Sweeping J to characterize encoding difficulty vs coupling strength.\n");
+    eprintln!("\n=== COUPLING SWEEP: 3 algorithms x 4 coupling strengths ===");
+    eprintln!("  Target: [+1, -1, +1, -1] (anti-aligned, fights ferromagnetic coupling)");
+    eprintln!("  Algorithms: CEM (evolutionary), PPO (policy gradient), SA (gradient-free opt)");
+    eprintln!("  J values: {j_values:?}\n");
 
-    let mut results: Vec<(f64, f64, f64, f64)> = Vec::new(); // (J, overlap, stderr, kT)
+    let mut rows: Vec<SweepRow> = Vec::new();
 
     for (i, &j) in j_values.iter().enumerate() {
         eprintln!("\n  ============================================================");
-        eprintln!("  J = {j} (coupling {i}/{} )", j_values.len());
+        eprintln!("  J = {j}  ({}/{})", i + 1, j_values.len());
         eprintln!("  ============================================================");
 
-        let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-        policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let base_seed = SEED_BASE + 400 + i as u64 * 1000;
+        let base_eval = 100_000 + i as u64 * 30_000;
 
-        let mut cem = Cem::new(
-            Box::new(policy),
-            CemHyperparams {
-                elite_fraction: 0.2,
-                noise_std: 2.0,
-                noise_decay: 0.97,
-                noise_min: 0.1,
-                max_episode_steps: EPISODE_STEPS,
-            },
-        );
-
-        let seed = SEED_BASE + 400 + i as u64 * 100;
-        let eval_offset = 90_000 + i as u64 * 10_000;
+        // CEM
+        let mut cem = make_cem();
         let (ov, se, kt) = train_and_report(
             &format!("CEM(J={j})"),
             &mut cem,
             j,
             &TARGET_ANTI,
-            seed,
-            eval_offset,
+            base_seed,
+            base_eval,
         );
-        results.push((j, ov, se, kt));
+        rows.push(SweepRow {
+            j,
+            algo: "CEM",
+            overlap: ov,
+            stderr: se,
+            learned_kt: kt,
+        });
+
+        // PPO
+        let mut ppo = make_ppo();
+        let (ov, se, kt) = train_and_report(
+            &format!("PPO(J={j})"),
+            &mut ppo,
+            j,
+            &TARGET_ANTI,
+            base_seed + 100,
+            base_eval + 10_000,
+        );
+        rows.push(SweepRow {
+            j,
+            algo: "PPO",
+            overlap: ov,
+            stderr: se,
+            learned_kt: kt,
+        });
+
+        // SA
+        let mut sa = make_sa();
+        let (ov, se, kt) = train_and_report(
+            &format!("SA(J={j})"),
+            &mut sa,
+            j,
+            &TARGET_ANTI,
+            base_seed + 200,
+            base_eval + 20_000,
+        );
+        rows.push(SweepRow {
+            j,
+            algo: "SA",
+            overlap: ov,
+            stderr: se,
+            learned_kt: kt,
+        });
     }
 
     // ── Summary table ────────────────────────────────────────────────
-    eprintln!("\n\n=== COUPLING SWEEP RESULTS ===");
-    eprintln!("  Target: [+1, -1, +1, -1] (anti-aligned, fights ferromagnetic coupling)\n");
-    eprintln!("  J      |  overlap       |  learned kT");
-    eprintln!("  -------|----------------|------------");
-    for &(j, ov, se, kt) in &results {
-        eprintln!("  {j:5.2}  |  {ov:+.4} +/- {se:.4}  |  {kt:.4}");
+    eprintln!("\n\n  ======================================================================");
+    eprintln!("  COUPLING SWEEP RESULTS");
+    eprintln!("  Target: [+1, -1, +1, -1]");
+    eprintln!("  ======================================================================\n");
+    eprintln!("  J      | Algo |  overlap       |  learned kT");
+    eprintln!("  -------|------|----------------|------------");
+    for r in &rows {
+        eprintln!(
+            "  {:5.2}  | {:4} |  {:+.4} +/- {:.4}  |  {:.4}",
+            r.j, r.algo, r.overlap, r.stderr, r.learned_kt,
+        );
     }
-    eprintln!();
 
-    // ── Gate: monotonic decrease in overlap with increasing J ─────
-    // Stronger coupling should make the anti-aligned target harder.
-    let first_overlap = results[0].1;
-    let last_overlap = results[results.len() - 1].1;
-    eprintln!(
-        "  Monotonicity: J={:.1} overlap={first_overlap:.4}, J={:.1} overlap={last_overlap:.4}",
-        results[0].0,
-        results[results.len() - 1].0,
-    );
-
-    // Don't hard-assert monotonicity (CEM is noisy), but report it.
-    if first_overlap > last_overlap {
-        eprintln!("  Trend: stronger coupling -> harder encoding (expected)");
-    } else {
-        eprintln!("  Trend: UNEXPECTED — overlap increased with coupling strength");
+    // ── Per-algorithm trend ──────────────────────────────────────────
+    eprintln!("\n  Per-algorithm trend (J=0.1 vs J=2.0):");
+    for algo in &["CEM", "PPO", "SA"] {
+        let first = rows
+            .iter()
+            .find(|r| r.algo == *algo && (r.j - 0.1).abs() < 0.01);
+        let last = rows
+            .iter()
+            .find(|r| r.algo == *algo && (r.j - 2.0).abs() < 0.01);
+        if let (Some(f), Some(l)) = (first, last) {
+            let trend = if f.overlap > l.overlap {
+                "decreasing (expected)"
+            } else {
+                "UNEXPECTED"
+            };
+            eprintln!(
+                "    {algo}: {:.4} -> {:.4}  [{trend}]",
+                f.overlap, l.overlap
+            );
+        }
     }
 }
