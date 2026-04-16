@@ -909,7 +909,7 @@ panic-in-if straggers) confirms the audit's narrow scope was correctly drawn.
 
 ---
 
-#### ☐ 6. Doc + post-split hygiene
+#### ☑ 6. Doc + post-split hygiene
 
 Stale `sim_ml_bridge` / `sim-ml-bridge` references outside historical
 git-commit quotes; dead file-path pointers in rustdoc; outdated module-doc
@@ -926,7 +926,82 @@ left over from sim-bevy work and check they still resolve."
 **Time:** ~20min recon + 1-line fixes per hit.
 
 **Findings:**
-_(none yet)_
+
+Recon used text-and-judgment direct grep — DEPARTURE from items 2-4's
+script-mirror pattern and from item 5's direct-grep-for-anti-patterns.
+Item 6 is the third methodology shape in this audit: workspace-wide grep
+to find candidates, then generous context reads (≥10 lines) to classify
+each hit as historical-record vs current-state-claim. No Python mirror —
+the triage decision ("is this describing what the split did, or implying
+the crate still exists?") requires human/AI judgment, not a state machine.
+
+Three sub-targets scanned in parallel:
+
+**(A) sim_ml_bridge / sim-ml-bridge references** — workspace-wide grep
+excluding `archive/`. 24 hits across 10 files. Classification:
+
+| Classification | Count | Files |
+|---|---|---|
+| Historical — audit doc, migration comment, commit quote, construction-spec chapter | 5 files | `platform_infrastructure_audit.md`, `sim-rl/lib.rs` (migration guide), `sim-opt/tests/d2c_sr_rematch.rs` (commit quote), `docs/studies/ml_chassis_refactor/src/42-pr-3-sim-opt-rematch.md` (frozen chapter with pre-squash tag audit trail — same ruling as `docs/thermo_computing/`), `ML_COMPETITION_SPEC.md` (already annotated as pre-split historical record) |
+| **Current-state claim — stale** | **4 files** | `docs/SKELETON.md` (tree map + section), `SIM_ML_EXAMPLES_SPEC.md`, `PHASE_4_SPEC.md`, `COMPETITION_TESTS_SPEC.md` |
+
+**(B) lib.rs module-doc drift** — read module-level docs across all 11
+sim/L0 crates + sim/L1/bevy. Every named symbol verified against the
+current tree. One stale finding:
+
+- `sim/L0/thermostat/src/lib.rs` line 65: link to
+  `docs/thermo_computing/03_phases/01_langevin_thermostat.md` — the
+  `03_phases/` directory was deleted in the 2026-04-11 repo audit
+  (647→344 md files). The companion link at line 63
+  (`02_foundations/chassis_design.md`) is valid. All other 11 crates
+  clean.
+
+**(C) bevy feature flags** — grep for `feature = "bevy"`,
+`cfg(feature = "bevy")`, `cfg_attr.*feature.*bevy` workspace-wide, plus
+`[features]` section scan in all `Cargo.toml` files under `sim/` and
+`examples/`. **Zero issues.** `sim-ml-chassis` is the only crate
+declaring a `bevy` feature; it's properly used in 3 `cfg_attr` sites
+(`env.rs` SimEnv, `space.rs` ObservationSpace + ActionSpace — all
+`derive(bevy_ecs::prelude::Resource)`) and correctly consumed by 7
+example crates. No broken (used-not-declared) or dead (declared-not-used)
+patterns anywhere.
+
+**Fixes shipped:**
+
+- **`docs/SKELETON.md`** — tree map: `ml-bridge/` → `ml-chassis/` +
+  `rl/` + `opt/` (3 lines). Domain status section: rewrote the
+  `sim/L0/ml-bridge — ML/RL Bridge` block to `sim/L0/ml-chassis + rl +
+  opt — ML Stack (3-crate split)` with per-crate descriptions. Deleted
+  stale branch reference.
+
+- **`sim/L0/thermostat/src/lib.rs`** — deleted stale `See also` link to
+  non-existent `03_phases/01_langevin_thermostat.md`. Verified via
+  `cargo doc -p sim-thermostat --no-deps`: zero warnings.
+
+- **Spec file deletions** — deleted 3 completed specs with stale
+  `sim-ml-bridge` current-state claims:
+  - `examples/fundamentals/sim-ml/SIM_ML_EXAMPLES_SPEC.md` (Phases 1-4
+    complete, 5-8 specified but initiative CLOSED and crate name wrong)
+  - `examples/fundamentals/sim-ml/PHASE_4_SPEC.md` ("Status: Complete,
+    all 6 steps done")
+  - `examples/fundamentals/sim-ml/COMPETITION_TESTS_SPEC.md` (Phases 3,
+    6, 6b complete; 6c planned but initiative CLOSED)
+
+  Per `feedback_code_speaks.md`: the code is the spec for completed work.
+  Memory file already notes "Phase 5-8 example spec still valid as
+  followup" as the durable pointer if that work revives — a fresh spec
+  reflecting the 3-crate structure would be needed anyway.
+  `ML_COMPETITION_SPEC.md` kept — already has pre-split historical-record
+  annotation and contains R34 GT-R vision framing (architecture rationale,
+  a "keep" category per code-speaks).
+
+**Dispositions:**
+
+- SKELETON.md update → **(a)**, shipped inline.
+- Thermostat rustdoc stale link → **(a)**, shipped inline.
+- 3 spec deletions → **(a)**, shipped inline (per code-speaks).
+- 5 historical-record files → **keep**, no action.
+- Sub-target C (bevy feature flags) → **clean**, no action.
 
 ---
 
