@@ -95,6 +95,12 @@ fn log_spaced(lo: f64, hi: f64, n: usize) -> Vec<f64> {
         .collect()
 }
 
+fn lin_spaced(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    (0..n)
+        .map(|i| lo + (hi - lo) * i as f64 / (n - 1) as f64)
+        .collect()
+}
+
 /// Build an Ising chain with oscillating field at fixed kT (no ctrl-temperature).
 /// Each particle gets its own double well + oscillating field.
 fn make_sweep_env(coupling_j: f64, kt_mult: f64, seed: u64) -> sim_therm_env::ThermCircuitEnv {
@@ -184,6 +190,93 @@ fn run_episode(coupling_j: f64, kt_mult: f64, seed: u64) -> f64 {
         }
     }
     total / f64::from(steps)
+}
+
+/// Build an Ising chain with phase-lagged oscillating fields for metachronal experiments.
+/// Each particle gets phase φ_i = -i × delta, creating a traveling wave from particle 0 → N-1.
+/// Reward uses local synchrony: each particle measured against its own phase-shifted signal.
+fn make_metachronal_env(coupling_j: f64, kt_mult: f64, delta: f64, seed: u64) -> ThermCircuitEnv {
+    let omega = signal_omega();
+    let mut builder = ThermCircuitEnv::builder(N)
+        .gamma(GAMMA)
+        .k_b_t(K_B_T * kt_mult)
+        .timestep(TIMESTEP)
+        .sub_steps(SUB_STEPS)
+        .episode_steps(EPISODE_STEPS)
+        .seed(seed);
+
+    for i in 0..N {
+        let phase = -(i as f64) * delta;
+        builder = builder
+            .with(DoubleWellPotential::new(DELTA_V, X_0, i))
+            .with(OscillatingField::new(A_0, omega, phase, i));
+    }
+    if coupling_j.abs() > 1e-15 {
+        builder = builder.with(PairwiseCoupling::chain(N, coupling_j));
+    }
+
+    // Local synchrony: each particle measured against its own signal phase.
+    builder
+        .reward(move |_m, d| {
+            let mut sync = 0.0;
+            for i in 0..N {
+                let local_signal = omega.mul_add(d.time, -(i as f64) * delta).cos();
+                sync += d.qpos[i].signum() * local_signal;
+            }
+            sync / N as f64
+        })
+        .build()
+        .unwrap()
+}
+
+/// Run one metachronal episode at fixed kT and phase lag, return mean local synchrony per step.
+fn run_metachronal_episode(coupling_j: f64, kt_mult: f64, delta: f64, seed: u64) -> f64 {
+    let mut env = make_metachronal_env(coupling_j, kt_mult, delta, seed);
+    let _obs = env.reset().unwrap();
+    let action = Tensor::from_f64_slice(&[], &[0]);
+
+    let mut total = 0.0;
+    let mut steps = 0;
+    loop {
+        let result = env.step(&action).unwrap();
+        total += result.reward;
+        steps += 1;
+        if result.truncated || result.done {
+            break;
+        }
+    }
+    total / f64::from(steps)
+}
+
+/// Phase-lag sweep at fixed coupling and temperature. Returns (deltas, means, stderrs).
+fn phase_lag_sweep(
+    coupling_j: f64,
+    kt_mult: f64,
+    deltas: &[f64],
+    n_episodes: usize,
+    seed_offset: u64,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut means = Vec::with_capacity(deltas.len());
+    let mut stderrs = Vec::with_capacity(deltas.len());
+
+    for (i, &delta) in deltas.iter().enumerate() {
+        let mut episodes = Vec::with_capacity(n_episodes);
+        for ep in 0..n_episodes {
+            let seed = SEED_BASE + seed_offset + (i * 1000 + ep) as u64;
+            episodes.push(run_metachronal_episode(coupling_j, kt_mult, delta, seed));
+        }
+        let (m, s) = mean_stderr(&episodes);
+        eprintln!(
+            "    δ={delta:6.4}  sync={m:+.6} +/- {s:.6}  ({}/{n_episodes} eps)  [{}/{}]",
+            n_episodes,
+            i + 1,
+            deltas.len()
+        );
+        means.push(m);
+        stderrs.push(s);
+    }
+
+    (deltas.to_vec(), means, stderrs)
 }
 
 /// Temperature sweep. Returns (kt_mults, means, stderrs).
@@ -808,4 +901,177 @@ fn ising_sr_training() {
     }
 
     eprintln!("\n  Key question: does learned kT track the sweep peak across J values?");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRINCIPLE 4 — METACHRONAL PHASE-LAG EXPERIMENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Scout: quick check that phase lag produces non-trivial structure at J=1.0.
+/// If the synchrony-vs-δ curve is flat, the full sweep won't help.
+#[test]
+#[ignore = "requires --release (~40 sec)"]
+fn ising_metachronal_scout() {
+    let coupling_j = 1.0;
+    let kt_mult = 2.82; // Phase 1 optimal for J=1.0
+    let deltas = lin_spaced(0.0, PI, 5);
+    let n_episodes = 20;
+
+    eprintln!("\n=== Metachronal Scout (J=1.0, kT=2.82) ===");
+    eprintln!("  Does phase lag δ affect synchrony in a coupled chain?");
+    eprintln!("  Testing {} δ points in [0, π]\n", deltas.len());
+
+    let (ds, means, stderrs) = phase_lag_sweep(coupling_j, kt_mult, &deltas, n_episodes, 300_000);
+
+    eprintln!("\n  δ        |  synchrony   |  stderr");
+    eprintln!("  ---------|--------------|--------");
+    for i in 0..ds.len() {
+        eprintln!(
+            "  {:7.4}  |  {:+.6}   |  {:.6}",
+            ds[i], means[i], stderrs[i]
+        );
+    }
+
+    let (peak_idx, peak_delta, peak_sync, peak_se) = find_peak(&ds, &means, &stderrs);
+    eprintln!("\n  Peak: δ={peak_delta:.4}, synchrony={peak_sync:.6} +/- {peak_se:.6}");
+
+    // Scout just reports — no hard gates. We want to see if there's structure.
+    let sync_range = means.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+        - means.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    eprintln!("  Sync range across δ: {sync_range:.6}");
+    eprintln!(
+        "  Peak at boundary? {}",
+        if peak_idx == 0 || peak_idx == ds.len() - 1 {
+            "YES (δ=0 or δ=π)"
+        } else {
+            "NO (interior)"
+        }
+    );
+}
+
+/// Principle 4 validation: metachronal phase-lag sweep.
+/// Tests whether phase-lagged injection produces higher per-node synchrony
+/// than synchronized injection in a coupled Ising chain.
+///
+/// Run the metachronal scout first.
+#[test]
+#[ignore = "requires --release (~43 min)"]
+#[allow(clippy::items_after_statements)]
+fn ising_metachronal_sweep() {
+    // Phase 1 SR-optimal kT for each coupling strength.
+    let j_kt_pairs: [(f64, f64); 4] = [
+        (0.0, 2.29), // uncoupled control
+        (0.5, 2.29), // weak coupling
+        (1.0, 2.82), // medium coupling
+        (2.0, 4.29), // strong coupling
+    ];
+    let deltas = lin_spaced(0.0, PI, 20);
+    let n_episodes = 80;
+
+    eprintln!("\n=== METACHRONAL PHASE-LAG SWEEP (Principle 4) ===");
+    eprintln!("  Does phase-lagged injection beat synchronized injection?");
+    eprintln!("  δ range: [0, π], {} points linearly spaced", deltas.len());
+    eprintln!("  Episodes per point: {n_episodes}");
+    eprintln!("  J values and kT (from Phase 1 optima):");
+    for &(j, kt) in &j_kt_pairs {
+        eprintln!("    J={j:.1}, kT={kt:.2}");
+    }
+    eprintln!();
+
+    struct MetaResult {
+        j: f64,
+        peak_idx: usize,
+        peak_delta: f64,
+        peak_sync: f64,
+        peak_stderr: f64,
+        peak_t: f64,
+        sync_at_zero: f64,
+    }
+    let mut results: Vec<MetaResult> = Vec::new();
+
+    for (i, &(j, kt)) in j_kt_pairs.iter().enumerate() {
+        eprintln!("  --- J={j}, kT={kt} ---");
+        let (ds, means, stderrs) =
+            phase_lag_sweep(j, kt, &deltas, n_episodes, (400_000 + i * 50_000) as u64);
+        let (peak_idx, peak_delta, peak_sync, peak_se) = find_peak(&ds, &means, &stderrs);
+        let t = if peak_se > 1e-15 {
+            peak_sync / peak_se
+        } else {
+            0.0
+        };
+        eprintln!("    peak: δ={peak_delta:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, |t|={t:.2}");
+        results.push(MetaResult {
+            j,
+            peak_idx,
+            peak_delta,
+            peak_sync,
+            peak_stderr: peak_se,
+            peak_t: t,
+            sync_at_zero: means[0],
+        });
+    }
+
+    // ── Summary table ────────────────────────────────────────────────
+    eprintln!("\n  ======================================================================");
+    eprintln!("  METACHRONAL SWEEP RESULTS");
+    eprintln!("  ======================================================================\n");
+    eprintln!("  J      |  peak δ   |  peak sync     |  sync(δ=0)  |  improvement  |  |t|");
+    eprintln!("  -------|-----------|----------------|-------------|---------------|------");
+    for r in &results {
+        let improvement = if r.sync_at_zero.abs() > 1e-15 {
+            (r.peak_sync - r.sync_at_zero) / r.sync_at_zero * 100.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "  {:5.2}  |  {:7.4}  |  {:.6} +/- {:.6}  |  {:+.6}  |  {:+8.1}%     |  {:.2}",
+            r.j, r.peak_delta, r.peak_sync, r.peak_stderr, r.sync_at_zero, improvement, r.peak_t,
+        );
+    }
+
+    // ── Gates ────────────────────────────────────────────────────────
+    eprintln!("\n  Gates:");
+
+    // Gate 1: J=0 control must be flat (peak δ should not matter).
+    let j0 = &results[0];
+    let j0_flat = (j0.peak_sync - j0.sync_at_zero).abs() < 2.0 * j0.peak_stderr;
+    eprintln!(
+        "    J=0 control: peak_sync={:.6}, sync(δ=0)={:.6}, diff={:.6}, flat={}",
+        j0.peak_sync,
+        j0.sync_at_zero,
+        (j0.peak_sync - j0.sync_at_zero).abs(),
+        if j0_flat { "YES (PASS)" } else { "NO (FAIL)" }
+    );
+
+    // Gate 2: at least one J>0 shows improvement over δ=0.
+    let any_improvement = results[1..].iter().any(|r| {
+        let interior = r.peak_idx > 0 && r.peak_idx < deltas.len() - 1;
+        let better = r.peak_sync > r.sync_at_zero + r.peak_stderr;
+        interior && better
+    });
+    eprintln!(
+        "    Any J>0 with interior peak beating δ=0: {}",
+        if any_improvement {
+            "YES (PASS)"
+        } else {
+            "NO (FAIL)"
+        }
+    );
+
+    for r in &results[1..] {
+        let interior = r.peak_idx > 0 && r.peak_idx < deltas.len() - 1;
+        let better = r.peak_sync > r.sync_at_zero + r.peak_stderr;
+        eprintln!(
+            "      J={:.1}: peak δ={:.4}, interior={interior}, beats δ=0={}",
+            r.j, r.peak_delta, better
+        );
+    }
+
+    if j0_flat && any_improvement {
+        eprintln!("\n  Principle 4 VALIDATED: phase-lagged injection improves fidelity.");
+    } else if j0_flat && !any_improvement {
+        eprintln!("\n  Principle 4 NOT SUPPORTED: no phase lag beats synchronized injection.");
+    } else {
+        eprintln!("\n  METRIC ISSUE: J=0 control is not flat — investigate before interpreting.");
+    }
 }
