@@ -59,9 +59,17 @@ enum Commands {
         #[arg(name = "CRATE")]
         crate_name: String,
 
-        /// Output format
-        #[arg(long, default_value = "pretty")]
-        format: String,
+        /// Suppress progress logging; show only the final report
+        #[arg(long, conflicts_with = "verbose")]
+        quiet: bool,
+
+        /// Enable heartbeat during long-running stages (every 30s)
+        #[arg(long, conflicts_with = "quiet")]
+        verbose: bool,
+
+        /// Emit the grade report as JSON instead of the Unicode table
+        #[arg(long)]
+        json: bool,
     },
 
     /// Record A-grade completion for a crate
@@ -93,7 +101,19 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Check { ci } => check::run(ci),
-        Commands::Grade { crate_name, format } => grade::run(&crate_name, &format),
+        Commands::Grade {
+            crate_name,
+            quiet,
+            verbose,
+            json,
+        } => grade::run(
+            &crate_name,
+            grade::Verbosity {
+                quiet,
+                verbose,
+                json,
+            },
+        ),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),

@@ -5,7 +5,18 @@
 use anyhow::{bail, Context, Result};
 use owo_colors::OwoColorize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use xshell::{cmd, Shell};
+
+/// Controls progress logging and output format for `cargo xtask grade`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Verbosity {
+    pub quiet: bool,
+    pub verbose: bool,
+    pub json: bool,
+}
 
 /// Grade for a single criterion
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +165,51 @@ impl CrateProfile {
     }
 }
 
+/// Background heartbeat thread for long-running subprocess stages.
+///
+/// Prints a `"    … still running (Ns elapsed)"` line to stderr every
+/// `interval` seconds. The thread is stopped automatically when the
+/// `Heartbeat` value is dropped — callers just let it fall out of scope.
+struct Heartbeat {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Heartbeat {
+    fn start(interval_secs: u64) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            let mut next = interval_secs;
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                if stop_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let secs = start.elapsed().as_secs();
+                if secs >= next {
+                    eprintln!("    … still running ({}s elapsed)", secs);
+                    next += interval_secs;
+                }
+            }
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 /// Classify a crate by its workspace-relative manifest path.
 ///
 /// See [`CrateProfile`] for the mapping rules. This function is
@@ -177,6 +233,28 @@ pub(crate) fn classify_crate(crate_path: &str) -> CrateProfile {
     }
 }
 
+/// Run a single criterion with progress logging on stderr.
+fn run_criterion<F>(index: usize, name: &str, quiet: bool, f: F) -> Result<CriterionResult>
+where
+    F: FnOnce() -> Result<CriterionResult>,
+{
+    if !quiet {
+        eprintln!("  criterion {}/7: {} — running…", index, name);
+    }
+    let start = Instant::now();
+    let result = f()?;
+    if !quiet {
+        eprintln!(
+            "  criterion {}/7: {} — {} ({:.1}s)",
+            index,
+            name,
+            result.grade.as_str(),
+            start.elapsed().as_secs_f64(),
+        );
+    }
+    Ok(result)
+}
+
 /// Run all automated criteria and return structured results.
 ///
 /// The crate's workspace path is classified into a [`CrateProfile`]
@@ -184,12 +262,19 @@ pub(crate) fn classify_crate(crate_path: &str) -> CrateProfile {
 /// criterion function. Criteria that don't apply to the profile (per
 /// STANDARDS.md scoping) return [`Grade::NotApplicable`] instead of
 /// running their checks.
-pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
+pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<GradeReport> {
+    let overall_start = Instant::now();
     let workspace_root = find_workspace_root(sh)?;
     sh.change_dir(&workspace_root);
 
     let crate_path = find_crate_path(sh, crate_name)?;
     let profile = classify_crate(&crate_path);
+
+    if !verbosity.quiet {
+        eprintln!();
+        eprintln!("  grading {} (profile: {})…", crate_name, profile.label());
+        eprintln!();
+    }
 
     let mut report = GradeReport {
         crate_name: crate_name.to_string(),
@@ -199,29 +284,36 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
         needs_review: true,
     };
 
-    // 1. Test Coverage
     report
         .criteria
-        .push(grade_coverage(sh, crate_name, &crate_path, profile)?);
-    // 2. Documentation
+        .push(run_criterion(1, "Coverage", verbosity.quiet, || {
+            grade_coverage(sh, crate_name, &crate_path, profile, verbosity)
+        })?);
     report
         .criteria
-        .push(grade_documentation(sh, crate_name, &crate_path)?);
-    // 3. Clippy
+        .push(run_criterion(2, "Documentation", verbosity.quiet, || {
+            grade_documentation(sh, crate_name, &crate_path)
+        })?);
     report
         .criteria
-        .push(grade_clippy(sh, crate_name, &crate_path)?);
-    // 4. Safety
+        .push(run_criterion(3, "Clippy", verbosity.quiet, || {
+            grade_clippy(sh, crate_name, &crate_path)
+        })?);
     report
         .criteria
-        .push(grade_safety(sh, &crate_path, profile)?);
-    // 5. Dependencies
-    report.criteria.push(grade_dependencies(sh, crate_name)?);
-    // 6. Bevy-free
+        .push(run_criterion(4, "Safety", verbosity.quiet, || {
+            grade_safety(sh, &crate_path, profile)
+        })?);
     report
         .criteria
-        .push(grade_bevy_free(sh, crate_name, profile)?);
-    // 7. API Design (manual)
+        .push(run_criterion(5, "Dependencies", verbosity.quiet, || {
+            grade_dependencies(sh, crate_name)
+        })?);
+    report
+        .criteria
+        .push(run_criterion(6, "Bevy-free", verbosity.quiet, || {
+            grade_bevy_free(sh, crate_name, profile)
+        })?);
     report.criteria.push(CriterionResult {
         name: "7. API Design",
         result: "(manual review)".to_string(),
@@ -231,6 +323,14 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
     });
 
     report.automated_grade = report.overall_automated();
+
+    if !verbosity.quiet {
+        eprintln!();
+        eprintln!(
+            "  grading complete — {:.1}s total",
+            overall_start.elapsed().as_secs_f64()
+        );
+    }
 
     Ok(report)
 }
@@ -317,41 +417,75 @@ fn display(report: &GradeReport) {
     );
 }
 
+/// Emit the grade report as JSON to stdout.
+fn json_output(report: &GradeReport) {
+    let criteria: Vec<serde_json::Value> = report
+        .criteria
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "result": c.result,
+                "grade": c.grade.as_str(),
+                "threshold": c.threshold,
+                "measured_detail": c.measured_detail,
+            })
+        })
+        .collect();
+
+    let json = serde_json::json!({
+        "crate_name": report.crate_name,
+        "profile": report.profile.label(),
+        "automated_grade": report.automated_grade.as_str(),
+        "criteria": criteria,
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json).unwrap_or_default()
+    );
+}
+
 /// Run grading for a specific crate
-pub fn run(crate_name: &str, _format: &str) -> Result<()> {
+pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
     let sh = Shell::new()?;
-    let report = evaluate(&sh, crate_name)?;
-    display(&report);
-    println!();
+    let report = evaluate(&sh, crate_name, verbosity)?;
 
-    match report.automated_grade {
-        Grade::A | Grade::APlus => {
-            println!(
-                "{}",
-                "✓ All automated criteria pass. Ready for API review.".green()
-            );
-            println!();
-            println!("Next step: Review against API checklist in docs/STANDARDS.md");
-            println!("Then run: cargo xtask complete {}", report.crate_name);
+    if verbosity.json {
+        json_output(&report);
+    } else {
+        display(&report);
+        println!();
+
+        match report.automated_grade {
+            Grade::A | Grade::APlus => {
+                println!(
+                    "{}",
+                    "✓ All automated criteria pass. Ready for API review.".green()
+                );
+                println!();
+                println!("Next step: Review against API checklist in docs/STANDARDS.md");
+                println!("Then run: cargo xtask complete {}", report.crate_name);
+            }
+            _ => {
+                println!(
+                    "{}",
+                    format!(
+                        "✗ Automated grade: {}. Refactor required before completion.",
+                        report.automated_grade.as_str()
+                    )
+                    .red()
+                );
+                println!();
+                println!(
+                    "Fix failing criteria and run: cargo xtask grade {}",
+                    report.crate_name
+                );
+            }
         }
-        _ => {
-            println!(
-                "{}",
-                format!(
-                    "✗ Automated grade: {}. Refactor required before completion.",
-                    report.automated_grade.as_str()
-                )
-                .red()
-            );
-            println!();
-            println!(
-                "Fix failing criteria and run: cargo xtask grade {}",
-                report.crate_name
-            );
-        }
+
+        println!();
     }
-
-    println!();
 
     Ok(())
 }
@@ -463,6 +597,7 @@ fn grade_coverage(
     crate_name: &str,
     crate_path: &str,
     profile: CrateProfile,
+    verbosity: Verbosity,
 ) -> Result<CriterionResult> {
     // Per STANDARDS.md §1 "Exceptions: None for Layer 0 crates" — the
     // coverage gate is specifically scoped to Layer 0 library crates.
@@ -516,18 +651,57 @@ fn grade_coverage(
     // Pass 1: coverage from unit tests only (--lib). Integration tests
     // run millions of physics steps; llvm-cov instrumentation adds ~10×
     // overhead making them impractical for coverage measurement.
-    // Unit tests cover all source modules except ising_learner.rs.
-    println!("    Pass 1: coverage (unit tests only)...");
+    if !verbosity.quiet {
+        eprintln!(
+            "    pass 1/2: cargo llvm-cov --lib --release (~5-10 min for instrumented test runs)"
+        );
+    }
+    let pass_start = Instant::now();
+    let heartbeat = if verbosity.verbose {
+        Some(Heartbeat::start(30))
+    } else {
+        None
+    };
     let output = cmd!(sh, "cargo llvm-cov --json --release -p {crate_name} --lib")
         .ignore_status()
         .read()
         .unwrap_or_default();
+    drop(heartbeat);
+    if !verbosity.quiet {
+        eprintln!(
+            "    pass 1/2: done ({:.1}s)",
+            pass_start.elapsed().as_secs_f64()
+        );
+    }
 
     // Pass 2: run ALL tests without instrumentation for correctness.
-    println!("    Pass 2: all tests (no instrumentation)...");
-    let heavy_passed = cmd!(sh, "cargo test --release -p {crate_name}")
-        .run()
-        .is_ok();
+    if !verbosity.quiet {
+        eprintln!("    pass 2/2: cargo test --release (~1-5 min depending on integration tests)");
+    }
+    let pass_start = Instant::now();
+    let heartbeat = if verbosity.verbose {
+        Some(Heartbeat::start(30))
+    } else {
+        None
+    };
+    let heavy_passed = if verbosity.json || verbosity.quiet {
+        cmd!(sh, "cargo test --release -p {crate_name}")
+            .ignore_status()
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    } else {
+        cmd!(sh, "cargo test --release -p {crate_name}")
+            .run()
+            .is_ok()
+    };
+    drop(heartbeat);
+    if !verbosity.quiet {
+        eprintln!(
+            "    pass 2/2: done ({:.1}s)",
+            pass_start.elapsed().as_secs_f64()
+        );
+    }
     if !heavy_passed {
         eprintln!("    ⚠ Tests failed — see output above");
     }

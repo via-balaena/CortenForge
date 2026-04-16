@@ -25,7 +25,15 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
 
     // Run the rebuilt grade tool internally (ss5.1)
     println!("{}", "Step 1: Verifying automated criteria...".cyan());
-    let report = grade::evaluate(&sh, crate_name)?;
+    let report = grade::evaluate(
+        &sh,
+        crate_name,
+        grade::Verbosity {
+            quiet: false,
+            verbose: false,
+            json: false,
+        },
+    )?;
 
     // Check automated grade
     let passes = matches!(
