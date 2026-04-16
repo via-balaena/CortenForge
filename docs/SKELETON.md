@@ -10,7 +10,9 @@ cortenforge/
 │   ├── L0/                # Layer 0 — Bevy-free simulation crates
 │   │   ├── core/          # Physics engine (90K LOC)
 │   │   ├── thermostat/    # Langevin + thermo-computing (Phases 1-6, D1, D2)
-│   │   ├── ml-bridge/     # RL algorithms + autograd (6 phases, 5 algorithms)
+│   │   ├── ml-chassis/    # Algorithm chassis: traits, VecEnv, networks, autograd
+│   │   ├── rl/            # Generic RL baselines (CEM, PPO, TD3, SAC, REINFORCE)
+│   │   ├── opt/           # Gradient-free optimization (SA, richer-SA, PT)
 │   │   ├── gpu/           # GPU physics pipeline (wgpu compute)
 │   │   ├── mjcf/          # MJCF parser
 │   │   ├── urdf/          # URDF parser
@@ -71,10 +73,12 @@ cortenforge/
 - **Tests:** 18 `#[ignore]` tests (all legitimate: Gate B verification + release-only)
 - **Docs:** Best-organized initiative — `docs/thermo_computing/` (54+ files)
 
-### sim/L0/ml-bridge — ML/RL Bridge
-- **Status:** 6 phases complete. 5 algorithms (CEM, TD3, SAC, PPO, REINFORCE). Autograd engine.
-- **Tests:** 13 `#[ignore]` competition tests (multi-minute scientific experiments)
-- **Branch:** feature/sim-ml-bridge (49 commits ahead of main)
+### sim/L0/ml-chassis + rl + opt — ML Stack (3-crate split)
+- **Status:** Split from former `sim-ml-bridge` in PR #192 (`2835b4f4`, 2026-04-15).
+- **sim-ml-chassis:** Algorithm trait, VecEnv, Policy, Competition, networks, autograd, stats.
+- **sim-rl:** 5 generic RL baselines (CEM, REINFORCE, PPO, TD3, SAC) on the chassis.
+- **sim-opt:** Gradient-free optimization (SA, richer-SA, PT) + dual-metric rematch analysis.
+- **Tests:** 13 `#[ignore]` competition tests + 3 `#[ignore]` D2c-SR rematch fixtures (~4h each).
 
 ### sim/L1/bevy — Bevy Integration
 - **Status:** All 6 API changes done (accessors, validation harness, sensor viz, HUD, multi-scene).
