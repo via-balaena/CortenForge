@@ -95,6 +95,40 @@ fn log_spaced(lo: f64, hi: f64, n: usize) -> Vec<f64> {
         .collect()
 }
 
+/// Simple linear regression: returns (slope, slope_stderr).
+/// Used to test whether a curve has a significant trend.
+fn lin_regress_slope(xs: &[f64], ys: &[f64]) -> (f64, f64) {
+    let n = xs.len() as f64;
+    let x_bar = xs.iter().sum::<f64>() / n;
+    let y_bar = ys.iter().sum::<f64>() / n;
+    let sum_dx2: f64 = xs.iter().map(|&x| (x - x_bar).powi(2)).sum();
+    let sum_dxdy: f64 = xs
+        .iter()
+        .zip(ys)
+        .map(|(&x, &y)| (x - x_bar) * (y - y_bar))
+        .sum();
+    let slope = if sum_dx2 > 1e-15 {
+        sum_dxdy / sum_dx2
+    } else {
+        0.0
+    };
+    let resid_var: f64 = xs
+        .iter()
+        .zip(ys)
+        .map(|(&x, &y)| {
+            let predicted = slope.mul_add(x - x_bar, y_bar);
+            (y - predicted).powi(2)
+        })
+        .sum::<f64>()
+        / (n - 2.0);
+    let slope_se = if sum_dx2 > 1e-15 {
+        (resid_var / sum_dx2).sqrt()
+    } else {
+        0.0
+    };
+    (slope, slope_se)
+}
+
 fn lin_spaced(lo: f64, hi: f64, n: usize) -> Vec<f64> {
     (0..n)
         .map(|i| lo + (hi - lo) * i as f64 / (n - 1) as f64)
@@ -986,13 +1020,14 @@ fn ising_metachronal_sweep() {
         peak_stderr: f64,
         peak_t: f64,
         sync_at_zero: f64,
+        means: Vec<f64>,
     }
     let mut results: Vec<MetaResult> = Vec::new();
 
     for (i, &(j, kt)) in j_kt_pairs.iter().enumerate() {
         eprintln!("  --- J={j}, kT={kt} ---");
         let (ds, means, stderrs) =
-            phase_lag_sweep(j, kt, &deltas, n_episodes, (400_000 + i * 50_000) as u64);
+            phase_lag_sweep(j, kt, &deltas, n_episodes, 400_000 + i as u64 * 50_000);
         let (peak_idx, peak_delta, peak_sync, peak_se) = find_peak(&ds, &means, &stderrs);
         let t = if peak_se > 1e-15 {
             peak_sync / peak_se
@@ -1000,6 +1035,7 @@ fn ising_metachronal_sweep() {
             0.0
         };
         eprintln!("    peak: δ={peak_delta:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, |t|={t:.2}");
+        let sync_at_zero = means[0];
         results.push(MetaResult {
             j,
             peak_idx,
@@ -1007,8 +1043,39 @@ fn ising_metachronal_sweep() {
             peak_sync,
             peak_stderr: peak_se,
             peak_t: t,
-            sync_at_zero: means[0],
+            sync_at_zero,
+            means,
         });
+    }
+
+    // ── Gate 0 (Sanity): δ=0 must reproduce Phase 1 synchrony values ─
+    // Different seeds, so not exact — but means must be within 3×stderr.
+    let phase1_sync: [(f64, f64); 4] = [
+        (0.0, 0.043), // J=0, kT=2.29
+        (0.5, 0.057), // J=0.5, kT=2.29
+        (1.0, 0.065), // J=1.0, kT=2.82
+        (2.0, 0.053), // J=2.0, kT=4.29
+    ];
+    eprintln!("\n  Gate 0 (Sanity): δ=0 reproduces Phase 1?");
+    let mut gate0_pass = true;
+    for (r, &(j, expected)) in results.iter().zip(&phase1_sync) {
+        let diff = (r.sync_at_zero - expected).abs();
+        let threshold = 3.0 * r.peak_stderr;
+        let ok = diff < threshold;
+        if !ok {
+            gate0_pass = false;
+        }
+        eprintln!(
+            "    J={j:.1}: sync(δ=0)={:.6}, Phase 1={expected:.3}, diff={diff:.6}, 3σ={threshold:.6} → {}",
+            r.sync_at_zero,
+            if ok { "PASS" } else { "FAIL" }
+        );
+    }
+    if !gate0_pass {
+        eprintln!(
+            "    GATE 0 FAILED — δ=0 baseline inconsistent with Phase 1. \
+             Investigate before trusting results."
+        );
     }
 
     // ── Summary table ────────────────────────────────────────────────
@@ -1032,46 +1099,125 @@ fn ising_metachronal_sweep() {
     // ── Gates ────────────────────────────────────────────────────────
     eprintln!("\n  Gates:");
 
-    // Gate 1: J=0 control must be flat (peak δ should not matter).
+    // Gate 1 (Control): J=0 curve must be flat — no trend across the full δ range.
+    // Linear regression of sync vs δ; slope must be indistinguishable from zero.
     let j0 = &results[0];
-    let j0_flat = (j0.peak_sync - j0.sync_at_zero).abs() < 2.0 * j0.peak_stderr;
+    let (slope, slope_se) = lin_regress_slope(&deltas, &j0.means);
+    let slope_t = if slope_se > 1e-15 {
+        slope / slope_se
+    } else {
+        0.0
+    };
+    // df = n-2 = 18 for 20 points; t_critical(α=0.05, df=18) ≈ 2.101.
+    // Use α=0.05 (not 0.01) because we WANT to detect even mild trends.
+    let t_crit_df18 = 2.101;
+    let j0_flat = slope_t.abs() < t_crit_df18;
+    let cmp = if j0_flat { "<" } else { ">" };
+    let verdict = if j0_flat {
+        "FLAT (PASS)"
+    } else {
+        "TREND (FAIL)"
+    };
     eprintln!(
-        "    J=0 control: peak_sync={:.6}, sync(δ=0)={:.6}, diff={:.6}, flat={}",
-        j0.peak_sync,
-        j0.sync_at_zero,
-        (j0.peak_sync - j0.sync_at_zero).abs(),
-        if j0_flat { "YES (PASS)" } else { "NO (FAIL)" }
+        "    Gate 1 (Control): J=0 slope={slope:.6} +/- {slope_se:.6}, \
+         |t|={:.2} {cmp} {t_crit_df18:.3} → {verdict}",
+        slope_t.abs(),
     );
 
-    // Gate 2: at least one J>0 shows improvement over δ=0.
-    let any_improvement = results[1..].iter().any(|r| {
-        let interior = r.peak_idx > 0 && r.peak_idx < deltas.len() - 1;
-        let better = r.peak_sync > r.sync_at_zero + r.peak_stderr;
-        interior && better
+    // Gate 2 (Effect exists): at least one J>0 has peak sync significantly above sync(δ=0).
+    // Significance: peak must exceed δ=0 by more than 2×stderr (approximate two-sample test).
+    let any_significant = results[1..].iter().any(|r| {
+        let diff = r.peak_sync - r.sync_at_zero;
+        diff > 2.0 * r.peak_stderr
     });
     eprintln!(
-        "    Any J>0 with interior peak beating δ=0: {}",
-        if any_improvement {
+        "    Gate 2 (Effect): any J>0 peak significantly > sync(δ=0): {}",
+        if any_significant {
             "YES (PASS)"
         } else {
             "NO (FAIL)"
         }
     );
-
     for r in &results[1..] {
-        let interior = r.peak_idx > 0 && r.peak_idx < deltas.len() - 1;
-        let better = r.peak_sync > r.sync_at_zero + r.peak_stderr;
+        let diff = r.peak_sync - r.sync_at_zero;
+        let sig = diff > 2.0 * r.peak_stderr;
         eprintln!(
-            "      J={:.1}: peak δ={:.4}, interior={interior}, beats δ=0={}",
-            r.j, r.peak_delta, better
+            "      J={:.1}: sync(δ*)={:.6}, sync(δ=0)={:.6}, diff={:.6}, sig={}",
+            r.j, r.peak_sync, r.sync_at_zero, diff, sig
         );
     }
 
-    if j0_flat && any_improvement {
-        eprintln!("\n  Principle 4 VALIDATED: phase-lagged injection improves fidelity.");
-    } else if j0_flat && !any_improvement {
-        eprintln!("\n  Principle 4 NOT SUPPORTED: no phase lag beats synchronized injection.");
+    // Gate 3 (Interior peak): at least one J>0 has its peak at an interior δ (not boundary).
+    // Boundary peaks (δ=0 or δ=π) mean the effect is monotonic, not a resonance.
+    let any_interior = results[1..]
+        .iter()
+        .any(|r| r.peak_idx > 0 && r.peak_idx < deltas.len() - 1);
+    eprintln!(
+        "    Gate 3 (Interior): any J>0 with interior peak: {}",
+        if any_interior {
+            "YES (PASS)"
+        } else {
+            "NO (FAIL)"
+        }
+    );
+    for r in &results[1..] {
+        let interior = r.peak_idx > 0 && r.peak_idx < deltas.len() - 1;
+        eprintln!(
+            "      J={:.1}: peak δ={:.4} (idx {}), interior={}",
+            r.j, r.peak_delta, r.peak_idx, interior
+        );
+    }
+
+    // ── Diagnostic: coupling dependence ────────────────────────────
+    // Does the optimal δ* vary with J? If so, the design rule needs
+    // both coupling strength and phase lag — two knobs, not one.
+    eprintln!("\n  Diagnostic (coupling dependence of δ*):");
+    let coupled_results: Vec<_> = results[1..].iter().collect();
+    if coupled_results.len() >= 2 {
+        let delta_range = coupled_results
+            .iter()
+            .map(|r| r.peak_delta)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - coupled_results
+                .iter()
+                .map(|r| r.peak_delta)
+                .fold(f64::INFINITY, f64::min);
+        let delta_step = deltas[1] - deltas[0];
+        let varies = delta_range > delta_step;
+        for r in &coupled_results {
+            eprintln!("    J={:.1}: δ*={:.4}", r.j, r.peak_delta);
+        }
+        eprintln!(
+            "    δ* range across J: {delta_range:.4} (grid step={delta_step:.4}) → {}",
+            if varies {
+                "VARIES (design rule needs J-dependent δ*)"
+            } else {
+                "STABLE (single δ* may suffice)"
+            }
+        );
+    }
+
+    // ── Verdict ──────────────────────────────────────────────────────
+    let all_pass = gate0_pass && j0_flat && any_significant && any_interior;
+    if all_pass {
+        eprintln!(
+            "\n  All gates PASS. Principle 4 VALIDATED: \
+             phase-lagged injection improves fidelity."
+        );
+    } else if !gate0_pass {
+        eprintln!(
+            "\n  SANITY FAILURE: δ=0 doesn't reproduce Phase 1 — \
+             investigate env construction."
+        );
+    } else if !j0_flat {
+        eprintln!(
+            "\n  METRIC ISSUE: J=0 control is not flat — \
+             investigate before interpreting."
+        );
     } else {
-        eprintln!("\n  METRIC ISSUE: J=0 control is not flat — investigate before interpreting.");
+        eprintln!(
+            "\n  Principle 4 NOT SUPPORTED: no phase lag significantly \
+             beats synchronized injection."
+        );
     }
 }
