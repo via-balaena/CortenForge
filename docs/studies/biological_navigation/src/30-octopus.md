@@ -73,15 +73,45 @@ N=4 and N=8 peak at exactly the same grid point (kT=2.29). N=16 peaks one grid s
 
 The slight upward shift at N=16 is consistent with the effective-barrier model: a 16-particle chain has proportionally more interior particles (14/16 vs 2/4), each feeling coupling from both neighbors. The average effective barrier rises by ~8%, shifting the optimal noise temperature by a corresponding amount. This is a predictable, small correction — not a breakdown of the design rule.
 
-Peak synchrony *increases* with N (0.041 → 0.049 → 0.063), which is counterintuitive — more particles should mean more independent noise and lower average synchrony. The likely explanation: larger chains have more coupled pairs, and at J=1.0 coupling enhances SR (as shown in the Noise Tuning coupling sweep). The averaging over more SR-enhanced particles produces a tighter, higher peak. This is within the Gate 2 tolerance (3σ) and does not violate the scale-invariance claim.
+Peak synchrony *appears* to increase with N on this 3-size sweep. However, the expanded N-scaling sweep (below) reveals this was a discretization artifact.
+
+### N-Scaling Expansion (N=4 to N=64)
+
+An expanded sweep tested 8 chain sizes with finer kT resolution to determine whether the apparent sync increase with N was a real scaling law.
+
+| Parameter | Value |
+|-----------|-------|
+| Chain sizes N | 4, 8, 12, 16, 24, 32, 48, 64 |
+| Coupling J | 1.0 (fixed) |
+| kT range | [1.0, 5.0], 40 points log-spaced |
+| Episodes per point | 40 |
+| Total episodes | 12,800 |
+| Runtime | 7.5 hours (release) |
+
+| N | peak kT | peak sync | \|t\| |
+|---|---------|-----------|-------|
+| 4 | 2.28 | 0.071 ± 0.009 | 8.15 |
+| 8 | 2.92 | 0.060 ± 0.007 | 8.97 |
+| 12 | 2.48 | 0.058 ± 0.008 | 7.14 |
+| 16 | 2.81 | 0.061 ± 0.007 | 9.46 |
+| 24 | 3.18 | 0.058 ± 0.008 | 7.24 |
+| 32 | 2.38 | 0.062 ± 0.007 | 9.28 |
+| 48 | 3.18 | 0.064 ± 0.007 | 8.97 |
+| 64 | 2.81 | 0.058 ± 0.006 | 9.59 |
+
+**Power law test:** α = -0.037 ± 0.027, |t| = 1.38 (not significant at p < 0.01). There is no scaling law — peak synchrony is flat across a 16× range of circuit sizes.
+
+**Peak kT stability:** The peak kT bounces between 2.28 and 3.18 without systematic drift (17.6% total variation around a mean of 2.75). The SR peak is broad and flat-topped; the exact optimum is noise-dominated, but the operating band is wide enough that this doesn't matter.
+
+**Interpretation:** The system is approximately extensive. The preliminary increase from 0.041 to 0.063 in the 3-size sweep was a discretization artifact — the coarse 25-point grid over [0.1, 15.0] undersampled the peak, and the finer 40-point grid over [1.0, 5.0] resolves higher peak sync values at all chain sizes. The design rules hold without degrading across a 16× scale range, but fidelity does not improve for free. This is the expected behavior of a well-behaved statistical mechanical system.
 
 ### Design Rule (Principle 6)
 
-For coupling J=1.0, the SR-optimal temperature is kT ≈ 2.5, holding from N=4 through N=16 without retuning.
+For coupling J=1.0, the SR-optimal temperature is kT ≈ 2.8 (mean across 8 chain sizes), holding from N=4 through N=64 without retuning.
 
-Combined with the Noise Tuning Rule: **For J < 1.5, operate at kT ≈ 2.3. For J ≥ 2.0, operate at kT ≈ 4.3. These rules apply regardless of circuit size in the range N=4–16.**
+Combined with the Noise Tuning Rule: **For J < 1.5, operate at kT ≈ 2.3–2.8. For J ≥ 2.0, operate at kT ≈ 4.3. These rules apply regardless of circuit size in the range N=4–64.**
 
-An engineer scaling a thermodynamic circuit from a 4-node prototype to a 16-node production system can use the same noise temperature. The only correction needed is the ~8% per-octave shift from the end/interior particle ratio, which is predictable from the coupling topology.
+An engineer scaling a thermodynamic circuit from a 4-node prototype to a 64-node production system can use the same noise temperature. No retuning required.
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs) — `ising_scale_invariant_sweep`
 

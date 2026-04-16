@@ -12,9 +12,9 @@
 
 5. **Is there a sharp bifurcation point for sensitivity amplification?** No. The ΔV axis shows a broad sensitivity plateau (ΔV/kT ∈ [0.25, 2.75]) with a gradual trapping cutoff, not a sharp transition. See the Noise Tuning chapter, Operating Envelope.
 
-## Still Open
+6. **Does synchrony improve with circuit size?** No. An expanded sweep across N = 4, 8, 12, 16, 24, 32, 48, 64 (40 kT points in [1.0, 5.0], 40 episodes) shows peak synchrony is flat at ~0.058–0.071 with no significant trend (power law α = -0.037, |t| = 1.38, not significant). The preliminary increase from the 3-size sweep was a discretization artifact on the coarse 25-point grid. The system is approximately extensive — the design rules hold without retuning across a 16× scale range, but fidelity does not improve for free. See the Scale-Invariance chapter.
 
-6. **Does synchrony improve with circuit size?** Preliminary data shows sync increasing from 0.041 (N=4) to 0.063 (N=16). If confirmed, this would mean larger circuits are inherently better at signal following — not just equivalent. The N-scaling experiment will resolve this.
+## Still Open
 
 7. **Is the weak/strong coupling crossover a phase transition?** The current data shows two discrete modes with a transition between J = 1.5 and J = 2.0. Whether this is smooth or sharp (and whether it has the character of a thermodynamic phase transition) is unknown. See Next Experiment 2.
 

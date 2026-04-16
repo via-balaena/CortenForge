@@ -18,7 +18,7 @@ All experiments run on CortenForge's simulation stack:
 |-----------|--------|--------|-------------|
 | **Noise Tuning (P2)** | E. coli | **Validated** | kT ≈ 2.3 for J < 1.5, kT ≈ 4.3 for J ≥ 2.0. ΔV/kT < 3.0 (trapping cutoff). |
 | **Injection Timing (P4)** | Ctenophore | **Validated** | δ ≈ π/5 for J < 2 (18–37% improvement). Synchronized for J ≥ 2. |
-| **Scale-Invariance (P6)** | Octopus | **Validated** | kT ≈ 2.5 holds at N=4, 8, 16 without retuning. |
+| **Scale-Invariance (P6)** | Octopus | **Validated** | kT ≈ 2.8 holds at N=4–64 without retuning. Approximately extensive (no superlinear improvement). |
 | **Topological Encoding (P1)** | E. coli | **Failed** | Amplitude dominates in Langevin domain. Use freely. |
 | **Deliberate Instability (P11)** | Peregrine | **Failed** | No sharp bifurcation. ΔV axis is forgiving. |
 
@@ -51,18 +51,11 @@ These could be tested with the existing `ThermCircuitEnv` infrastructure:
 
 Four follow-on experiments that deepen the validated results, ordered by impact:
 
-### 1. N-Scaling Law (high priority)
+### 1. N-Scaling Law — COMPLETED
 
-Peak synchrony *increased* with circuit size: 0.041 (N=4) → 0.049 (N=8) → 0.063 (N=16). If this is a real scaling law, bigger circuits are *better* at signal following. This would be the strongest possible result for thermodynamic circuit engineering: scale up and fidelity improves for free.
+**Result:** No scaling law. Peak synchrony is flat (~0.058–0.071) across N = 4–64 with no significant trend (α = -0.037, |t| = 1.38). The preliminary increase from the 3-size sweep was a discretization artifact. The system is approximately extensive — design rules hold without retuning across a 16× scale range, but fidelity does not improve for free. Peak kT is stable (mean 2.75, 17.6% drift). Closes open question 6.
 
-**Experiment:** Sweep N = 4, 8, 12, 16, 24, 32, 48, 64 at J=1.0 with 40 log-spaced kT points in [1.0, 5.0], 40 episodes per point. Fit sync_peak vs N to a power law and validate effective barrier model for kT drift. ~6 hours runtime.
-
-**Gates:**
-- sync_peak ∝ N^α with α significantly > 0 (two-tailed t-test on log-log regression slope, df=6, α=0.01)
-- Peak kT drift < 50% across N range (scale invariance sanity check)
-- Effective barrier model peak_kT = a + b·(N−2)/N achieves R² > 0.80
-
-**Code:** `ising_scale_law_sweep` in `ising_chain.rs`.
+**Code:** `ising_scale_law_sweep` in `ising_chain.rs`. Runtime: 7.5 hours.
 
 ### 2. Coupling Crossover Mapping
 
@@ -76,9 +69,9 @@ The Noise Tuning rule showed two regimes: weak coupling (J < 1.5, peak kT ≈ 2.
 
 A finer mesh would map the full optimal phase-lag surface: 8 J values × 30 δ values × 80 episodes. ~6 hours.
 
-### 4. Effective Barrier Model Validation
+### 4. Effective Barrier Model Validation — COMPLETED
 
-Merged into experiment 1 (N-Scaling Law) as Gate 3. The effective-barrier model peak_kT = a + b·(N−2)/N is validated against 8 chain sizes.
+Merged into experiment 1 as Gate 3. Result: the effective-barrier model (R² = 0.29) does not fit — peak kT bounces without systematic drift, indicating the SR peak is broad enough that the exact optimum is noise-dominated rather than barrier-determined.
 
 ## All Experiment Code
 
