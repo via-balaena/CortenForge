@@ -2118,7 +2118,7 @@ fn ising_scale_law_sweep() {
         );
     }
 
-    // Gate 1 (kT stability): peak kT drift from N=4 to N=64 < 30% of mean.
+    // Gate 1 (kT stability): peak kT drift from N=4 to N=64 < 50% of mean.
     let (kt_slope, kt_slope_se) = lin_regress_slope(&log_ns, &peak_kts);
     let mean_peak_kt = peak_kts.iter().sum::<f64>() / peak_kts.len() as f64;
     let total_drift = kt_slope * ((64.0_f64).ln() - (4.0_f64).ln());
