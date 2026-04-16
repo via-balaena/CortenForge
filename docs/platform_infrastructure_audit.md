@@ -774,20 +774,29 @@ section-level comment.
   continues accumulating `#[cfg(test)]` coverage as state machines are
   touched.
 - 790 site fixes → **(a)**, shipped in 10 per-bucket commits.
-- Promoting `audit.py` + `fix_examples.py` to an xtask subcommand
-  (`cargo xtask audit-deps` or `cargo xtask fix-deps`) → **(b)**, file
-  as follow-up. Same disposition as items 2 and 3's analogous scripts;
-  group with those if any becomes recurring need.
+- Promoting `audit.py` + `fix_examples.py` (and items 2-3's analogous
+  scripts) to `cargo xtask audit-*` subcommands → **(d)**, decline.
+  The scripts are one-shot recon aids that answer "is the grader
+  seeing the current state of crate X?" for a specific audit item.
+  Once this audit closes and item 10 runs `cargo xtask grade` on every
+  crate, the audit-script layer has no remaining purpose — the grader
+  itself is the steady-state check. Promoting them to xtask would
+  create a second layer of the same analysis that needs to be
+  maintained in lockstep with every `grade_*` helper change. Keeping
+  them at `/tmp/` is correct: they're session scratch for audit
+  sessions, not durable tooling.
 - Intel-block path drift (`sim/L1/sim-bevy/Cargo.toml` →
   `sim/L1/bevy/Cargo.toml`) → **(a)**, doc-only, correct inline on
   close.
-- Pre-commit hook skipping clippy on Cargo.toml-only changes (observed
-  on every site-fix commit: "→ No Rust/Cargo files staged — skipping
-  clippy") → **(b)**, file as follow-up for `.git/hooks/pre-commit`
-  hardening. TOML changes CAN affect compilation (version bumps,
-  feature renames, new deps), so clippy should run when any
-  `Cargo.toml` is staged. Out of scope for this item; noted for future
-  hook tightening.
+- Pre-commit hook pathspec skipping clippy on Cargo.toml-only changes
+  (observed on every site-fix commit: "→ No Rust/Cargo files staged —
+  skipping clippy") → **(a)**, shipped as `82bcfec3`. The hook's
+  `'Cargo.toml'` pathspec without wildcards was anchored to the tree
+  root, so every nested `sim/L0/**/Cargo.toml` /
+  `examples/**/Cargo.toml` was silently skipped. Fixed in both sources
+  of truth (`xtask/build.rs` PRE_COMMIT_HOOK + `xtask/src/setup.rs`
+  hook literal) by switching to `'*Cargo.toml'`. Rebuilding xtask
+  auto-reinstalls the fixed hook via `build.rs::install_hook_if_needed`.
 
 ---
 
