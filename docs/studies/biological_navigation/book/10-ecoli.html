@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b6b2d2b6.js";
+            window.path_to_searchindex_js = "searchindex-b182f8f7.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-ee05a8be.js"></script>
+        <script src="toc-534ce819.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -259,7 +259,21 @@ $$</p>
 </tbody>
 </table>
 </div>
-<p><strong>Baseline SR sweep:</strong> In progress.</p>
+<p><strong>Baseline SR sweep (validated):</strong></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>Value</th></tr>
+</thead>
+<tbody>
+<tr><td>Peak kT multiplier</td><td>1.70</td></tr>
+<tr><td>Peak synchrony</td><td>0.090 ± 0.020</td></tr>
+<tr><td>t-statistic</td><td>4.52 (critical = 2.861, p &lt; 0.01)</td></tr>
+<tr><td>Peak location</td><td>Interior (not at boundary) — true resonance</td></tr>
+</tbody>
+</table>
+</div>
+<p>The SR curve shows the predicted bell shape: zero synchrony at low noise (particle trapped), rising to a clear peak at kT ≈ 1.7 (noise-driven switching matches signal frequency), falling back to zero at high noise (random switching destroys correlation).</p>
 <p><strong>Multi-algorithm training:</strong> Not yet run.</p>
 <blockquote>
 <p><strong>Platform readiness:</strong> High — all components exist. <code>ThermCircuitEnv</code> builder, <code>DoubleWellPotential</code>, <code>OscillatingField</code>, <code>ExternalField</code>, and all 8 algorithms via <code>Algorithm</code> trait.</p>

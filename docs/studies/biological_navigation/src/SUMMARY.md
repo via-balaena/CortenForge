@@ -1,5 +1,7 @@
 # Summary
 
+- [Roadmap](roadmap.md)
+
 # Part 0 — The Problem
 
 - [Introduction](00-introduction.md)
