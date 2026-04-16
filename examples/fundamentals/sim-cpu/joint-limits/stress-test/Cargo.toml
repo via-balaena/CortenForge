@@ -6,7 +6,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# MJCF scene loader for the example physics scene
 sim-mjcf = { workspace = true }
 
 [lints]

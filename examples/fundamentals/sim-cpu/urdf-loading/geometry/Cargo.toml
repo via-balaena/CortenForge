@@ -6,9 +6,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# URDF scene loader for robot-description examples
 sim-urdf = { workspace = true }
+# Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
+# Bevy engine: rendering, ECS, input, windowing
 bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_core_pipeline",

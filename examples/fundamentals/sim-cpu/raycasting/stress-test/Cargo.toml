@@ -6,9 +6,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# BodyId / Pose primitives shared with sim-core
 sim-types = { workspace = true }
+# Shared geometry kernel: SDF primitives and AABBs
 cf-geometry = { workspace = true }
+# Matrix / vector / rotation primitives for pose math
 nalgebra = { workspace = true }
 
 [lints]

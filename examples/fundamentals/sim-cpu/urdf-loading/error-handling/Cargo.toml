@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# URDF scene loader for robot-description examples
 sim-urdf = { workspace = true }
 
 [lints]
