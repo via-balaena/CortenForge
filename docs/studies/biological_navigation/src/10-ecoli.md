@@ -36,7 +36,7 @@ Furthermore, E. coli achieves signal amplification of more than 50-fold: a 2% ch
 
 Does an intermediate noise temperature maximize a Langevin particle's ability to follow a periodic signal in a biased double-well potential? Does the optimal noise level shift predictably with gradient strength?
 
-This directly tests Principle 2 (stochastic resonance enhances encoding fidelity) and extends the D2 SR study by adding a symmetry-breaking chemical gradient via `ExternalField`.
+This directly tests Principle 2 (stochastic resonance enhances encoding fidelity) and extends prior single-particle SR validation by adding a symmetry-breaking chemical gradient via `ExternalField`.
 
 ### Langevin Model of Chemotaxis
 
@@ -54,7 +54,7 @@ The particle "runs" (stays in one well) and "tumbles" (crosses the barrier). Sto
 
 ### Experimental Design
 
-**Synchrony metric** (same as D2):
+**Synchrony metric:**
 
 ```
 synchrony = sign(qpos[0]) · cos(ω·t)
@@ -193,7 +193,7 @@ The crossover between these regimes lies between J = 1.5 and J = 2.0. At J = 1.5
 
 The effective-barrier model predicted the J = 2 peak at kT ≈ 6.5. The actual peak is at kT ≈ 4.3 — correct direction, right order of magnitude, but the simple model overestimates the barrier because cooperative switching lowers the effective barrier relative to independent switching.
 
-#### Design Rule (Principle 2)
+#### Design Rule (Noise Tuning)
 
 For an N=4 Ising-coupled bistable circuit with coupling strength J:
 
@@ -205,7 +205,7 @@ Operating at the wrong temperature degrades synchrony to noise-floor levels.
 
 #### Operating Envelope: Barrier Height Tolerance
 
-Principle 2 maps the kT axis of the design surface. A complementary sweep maps the ΔV axis: fix kT=2.0 and sweep barrier height ΔV from 0.5 to 10.0 at two signal amplitudes (A₀=0.3 and A₀=0.1), N=4 uncoupled particles (J=0), 40 episodes per point.
+The Noise Tuning Rule maps the kT axis of the design surface. A complementary sweep maps the ΔV axis: fix kT=2.0 and sweep barrier height ΔV from 0.5 to 10.0 at two signal amplitudes (A₀=0.3 and A₀=0.1), N=4 uncoupled particles (J=0), 40 episodes per point.
 
 **Key finding: the ΔV axis is forgiving.** Unlike the sharp SR peak on the kT axis, the synchrony-vs-ΔV curve is a broad plateau:
 
@@ -278,7 +278,7 @@ Additionally: sweep synchronized amplitude from A₀=0.3 to 2.0 to find the cros
 
 The scallop theorem applies at Re < 1 where the governing equations are linear and time-reversible. In that regime, amplitude literally cancels out of the physics. The Langevin domain has no such constraint: the oscillating field directly biases the particle's switching rate, and a stronger field produces proportionally more switching. Synchrony scales nearly linearly with amplitude (0.051 → 0.088 → 0.290 across the 0.3–2.0 range).
 
-At matched amplitude (A₀=0.3), metachronal and synchronized injection produce identical synchrony (0.050 vs 0.051). The P4 metachronal advantage (18–37% at certain J values) is a coupling-coordination effect that emerges from specific parameter combinations, not a universal topology-dominance principle.
+At matched amplitude (A₀=0.3), metachronal and synchronized injection produce identical synchrony (0.050 vs 0.051). The Injection Timing metachronal advantage (18–37% at certain J values) is a coupling-coordination effect that emerges from specific parameter combinations, not a universal topology-dominance principle.
 
 **What this means for thermodynamic circuit design:**
 

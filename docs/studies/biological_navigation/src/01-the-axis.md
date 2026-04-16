@@ -18,6 +18,6 @@ The Re spectrum spans roughly 13 orders of magnitude in biology, from bacteria a
 
 ## Why Three Is Not the Golden Number
 
-The initial framing identified three exemplars: octopus (inertial, distributed computation), dragonfly (predictive internal models), peregrine (vortex-noise coupling). The full spectrum contains at least five qualitatively distinct regimes, each with a different dominant strategy. Three of the five have been experimentally validated on Ising chain models (Chapters 1–3); the other two are hypothesized but untested.
+The initial framing identified three exemplars: octopus (inertial, distributed computation), dragonfly (predictive internal models), peregrine (vortex-noise coupling). The full spectrum contains at least five qualitatively distinct regimes, each with a different dominant strategy. Three of the five have been experimentally validated on Ising chain models (see the Validated Results section); the other two are hypothesized but untested.
 
 The transition zones between regimes may be as important as the regimes themselves — real thermodynamic circuits will operate across throughput ranges, and failure modes will likely occur at the transitions.

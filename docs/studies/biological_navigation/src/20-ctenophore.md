@@ -36,7 +36,7 @@ Does phase-lagged injection produce higher per-node synchrony than synchronized 
 
 ### The Setup
 
-The same N=4 Ising chain from Principle 2, but with phase-shifted oscillating fields:
+The same N=4 Ising chain from the Noise Tuning experiment, but with phase-shifted oscillating fields:
 
 ```
 Particle 0 ←J→ Particle 1 ←J→ Particle 2 ←J→ Particle 3
@@ -45,13 +45,13 @@ Particle 0 ←J→ Particle 1 ←J→ Particle 2 ←J→ Particle 3
 
 Each particle's signal has phase φᵢ = -i × δ, creating a traveling wave from particle 0 → 3. The reward measures *local* synchrony: each particle is scored against its own phase-shifted signal, then averaged.
 
-**Sweep:** 20 phase lags δ ∈ [0, π] at 4 coupling strengths (J = 0, 0.5, 1.0, 2.0), each at its Phase 1 SR-optimal kT. 80 episodes per point. Total: 6,400 episodes, 46 minutes.
+**Sweep:** 20 phase lags δ ∈ [0, π] at 4 coupling strengths (J = 0, 0.5, 1.0, 2.0), each at its SR-optimal kT from the Noise Tuning temperature sweep. 80 episodes per point. Total: 6,400 episodes, 46 minutes.
 
 **Gate system:**
 
 | Gate | Test | Result |
 |------|------|--------|
-| **0** (Sanity) | δ=0 reproduces Phase 1 synchrony | PASS (3/4); J=1.0 shows a 2σ cross-run discrepancy — statistical, not methodological |
+| **0** (Sanity) | δ=0 reproduces Noise Tuning synchrony | PASS (3/4); J=1.0 shows a 2σ cross-run discrepancy — statistical, not methodological |
 | **1** (Control) | J=0 curve is flat (uncoupled particles ignore phase lag) | PASS (slope |t|=1.49 < 2.10) |
 | **2** (Effect) | At least one J>0 has peak sync significantly above δ=0 | PASS (J=1.0: +15.1 above 2×stderr) |
 | **3** (Interior) | At least one J>0 peaks at interior δ (not boundary) | PASS (J=0.5 and J=1.0 at δ≈0.66) |
@@ -73,7 +73,7 @@ Each particle's signal has phase φᵢ = -i × δ, creating a traveling wave fro
 
 This mirrors the biological pattern: ctenophores (intermediate regime, moderate hydrodynamic coupling) use metachronal waves, while organisms with stronger coupling mechanisms don't need them.
 
-**Note on Gate 0 (J=1.0):** The δ=0 baseline (0.041) fell below the Phase 1 value (0.065) by 0.024 — a ~2σ discrepancy between independent runs with different seeds. This is within expected cross-run variance (proper two-sample threshold: 0.034) but tripped the conservative single-sample gate. The within-sweep comparison (δ=0 vs δ*) remains valid since both share the same random process.
+**Note on Gate 0 (J=1.0):** The δ=0 baseline (0.041) fell below the Noise Tuning value (0.065) by 0.024 — a ~2σ discrepancy between independent runs with different seeds. This is within expected cross-run variance (proper two-sample threshold: 0.034) but tripped the conservative single-sample gate. The within-sweep comparison (δ=0 vs δ*) remains valid since both share the same random process.
 
 ### Design Rule (Principle 4)
 
@@ -83,7 +83,7 @@ For an N=4 Ising-coupled bistable circuit with coupling strength J:
 - **J ≥ 2:** Use synchronized injection — the coupling already coordinates the particles. Phase lag hurts.
 - **δ* is coupling-independent** in the moderate range (J=0.5–1.0 both give δ* ≈ 0.66).
 
-Combined with Principle 2: first tune kT to the SR optimum for your coupling strength, then apply phase-lagged injection at δ ≈ π/5. The two knobs are independent — temperature controls noise level, phase lag controls injection timing.
+Combined with the Noise Tuning Rule: first tune kT to the SR optimum for your coupling strength, then apply phase-lagged injection at δ ≈ π/5. The two knobs are independent — temperature controls noise level, phase lag controls injection timing.
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs)
 

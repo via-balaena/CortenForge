@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
+            window.path_to_searchindex_js = "searchindex-6eab1008.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-271e92e9.js"></script>
@@ -192,10 +192,10 @@
 <p><strong>Principle 6:</strong> Scale-invariance of the encoding program. A parametric injection wave that can be scaled in amplitude and velocity to cover a range of target states (analogous to the octopus’s invariant velocity profile) is more powerful than a lookup table of specific injection sequences for each target. Scale-invariance is also a prerequisite for scaling the circuit itself — an encoding strategy that must be re-tuned for each circuit size is not an engineering tool.</p>
 <h2 id="experiment-6--scale-invariant-encoding-principle-6"><a class="header" href="#experiment-6--scale-invariant-encoding-principle-6">Experiment 6 — Scale-Invariant Encoding (Principle 6)</a></h2>
 <h3 id="scientific-question"><a class="header" href="#scientific-question">Scientific Question</a></h3>
-<p>Does the SR-optimal temperature hold at larger circuit sizes? If the design rules from Principle 2 require retuning for each circuit size, they’re lab curiosities. If they hold from N=4 to N=16 without adjustment, they’re engineering tools.</p>
+<p>Does the SR-optimal temperature hold at larger circuit sizes? If the Noise Tuning Rule requires retuning for each circuit size, they’re lab curiosities. If they hold from N=4 to N=16 without adjustment, they’re engineering tools.</p>
 <p>This is the most important result for practical thermodynamic circuit design: <strong>design rules hold at scale without retuning.</strong></p>
 <h3 id="experimental-design"><a class="header" href="#experimental-design">Experimental Design</a></h3>
-<p>Fix coupling J=1.0. Repeat the Principle 2 temperature sweep at three chain sizes:</p>
+<p>Fix coupling J=1.0. Repeat the Noise Tuning temperature sweep at three chain sizes:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -211,7 +211,7 @@
 </tbody>
 </table>
 </div>
-<p>Same Ising chain setup as Level 3: double wells, nearest-neighbor coupling, oscillating field, synchrony metric.</p>
+<p>Same Ising chain setup as the Noise Tuning chapter’s multi-particle experiment: double wells, nearest-neighbor coupling, oscillating field, synchrony metric.</p>
 <h3 id="results"><a class="header" href="#results">Results</a></h3>
 <p><strong>Principle 6: VALIDATED.</strong> The SR-optimal temperature holds across a 4× range of circuit sizes.</p>
 <p>| N | peak kT | peak sync | |t| | Interior? |
@@ -235,21 +235,13 @@
 <p><strong>Analysis:</strong></p>
 <p>N=4 and N=8 peak at exactly the same grid point (kT=2.29). N=16 peaks one grid step higher (kT=2.82) — a 23% shift across a 4× increase in circuit size. On the 25-point log-spaced grid, this is within one step of the reference.</p>
 <p>The slight upward shift at N=16 is consistent with the effective-barrier model: a 16-particle chain has proportionally more interior particles (14/16 vs 2/4), each feeling coupling from both neighbors. The average effective barrier rises by ~8%, shifting the optimal noise temperature by a corresponding amount. This is a predictable, small correction — not a breakdown of the design rule.</p>
-<p>Peak synchrony <em>increases</em> with N (0.041 → 0.049 → 0.063), which is counterintuitive — more particles should mean more independent noise and lower average synchrony. The likely explanation: larger chains have more coupled pairs, and at J=1.0 coupling enhances SR (as shown in the P2 coupling sweep). The averaging over more SR-enhanced particles produces a tighter, higher peak. This is within the Gate 2 tolerance (3σ) and does not violate the scale-invariance claim.</p>
+<p>Peak synchrony <em>increases</em> with N (0.041 → 0.049 → 0.063), which is counterintuitive — more particles should mean more independent noise and lower average synchrony. The likely explanation: larger chains have more coupled pairs, and at J=1.0 coupling enhances SR (as shown in the Noise Tuning coupling sweep). The averaging over more SR-enhanced particles produces a tighter, higher peak. This is within the Gate 2 tolerance (3σ) and does not violate the scale-invariance claim.</p>
 <h3 id="design-rule-principle-6"><a class="header" href="#design-rule-principle-6">Design Rule (Principle 6)</a></h3>
 <p>For coupling J=1.0, the SR-optimal temperature is kT ≈ 2.5, holding from N=4 through N=16 without retuning.</p>
-<p>Combined with Principle 2: <strong>For J &lt; 1.5, operate at kT ≈ 2.3. For J ≥ 2.0, operate at kT ≈ 4.3. These rules apply regardless of circuit size in the range N=4–16.</strong></p>
+<p>Combined with the Noise Tuning Rule: <strong>For J &lt; 1.5, operate at kT ≈ 2.3. For J ≥ 2.0, operate at kT ≈ 4.3. These rules apply regardless of circuit size in the range N=4–16.</strong></p>
 <p>An engineer scaling a thermodynamic circuit from a 4-node prototype to a 16-node production system can use the same noise temperature. The only correction needed is the ~8% per-octave shift from the end/interior particle ratio, which is predictable from the coupling topology.</p>
 <blockquote>
 <p><strong>Code:</strong> <a href="../../../sim/L0/therm-env/tests/ising_chain.rs"><code>sim/L0/therm-env/tests/ising_chain.rs</code></a> — <code>ising_scale_invariant_sweep</code></p>
-</blockquote>
-<hr>
-<h2 id="experiment-3--octopus-bend-propagation-compression-ratio"><a class="header" href="#experiment-3--octopus-bend-propagation-compression-ratio">Experiment 3 — Octopus Bend Propagation Compression Ratio</a></h2>
-<p>Simulate octopus arm reaching using CortenForge’s Hill-type muscle model with the 4,000:380,000 efferent compression architecture. Measure the minimum central command dimensionality required to achieve a given reaching accuracy in a stochastic fluid environment. Characterize how this compression ratio scales with arm length and noise level.</p>
-<blockquote>
-<p><strong>Platform readiness:</strong> Medium — Hill muscles exist in the sim crate, but needs an MJCF tentacle model with the appropriate compression architecture.</p>
-<p><strong>Status:</strong> Not started</p>
-<p><strong>Code:</strong> —</p>
 </blockquote>
 <h2 id="key-references"><a class="header" href="#key-references">Key References</a></h2>
 <ul>

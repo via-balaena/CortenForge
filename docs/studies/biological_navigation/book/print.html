@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
+            window.path_to_searchindex_js = "searchindex-6eab1008.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-271e92e9.js"></script>
@@ -248,7 +248,7 @@ $$</p>
 <p>Crucially for our purposes: the ratio of signal timescale to noise timescale changes across the Re spectrum in a way that maps directly onto the thermodynamic X-encoding problem. At low Re, signal and noise are on the same timescale — you cannot separate them and must encode in the topology of motion. At intermediate Re, both are relevant simultaneously — you need multimodal switching. At high Re, noise generates coherent structures that can be exploited — speed itself becomes a source of control authority.</p>
 <p>The Re spectrum spans roughly 13 orders of magnitude in biology, from bacteria at Re ~ 10⁻⁵ to blue whales at Re ~ 10⁸. The locomotion strategies are not a continuum — they are discrete regimes separated by qualitative phase transitions in the physics.</p>
 <h2 id="why-three-is-not-the-golden-number"><a class="header" href="#why-three-is-not-the-golden-number">Why Three Is Not the Golden Number</a></h2>
-<p>The initial framing identified three exemplars: octopus (inertial, distributed computation), dragonfly (predictive internal models), peregrine (vortex-noise coupling). The full spectrum contains at least five qualitatively distinct regimes, each with a different dominant strategy. Three of the five have been experimentally validated on Ising chain models (Chapters 1–3); the other two are hypothesized but untested.</p>
+<p>The initial framing identified three exemplars: octopus (inertial, distributed computation), dragonfly (predictive internal models), peregrine (vortex-noise coupling). The full spectrum contains at least five qualitatively distinct regimes, each with a different dominant strategy. Three of the five have been experimentally validated on Ising chain models (see the Validated Results section); the other two are hypothesized but untested.</p>
 <p>The transition zones between regimes may be as important as the regimes themselves — real thermodynamic circuits will operate across throughput ranges, and failure modes will likely occur at the transitions.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="noise-tuning-e-coli-stochastic-resonance"><a class="header" href="#noise-tuning-e-coli-stochastic-resonance">Noise Tuning: E. coli Stochastic Resonance</a></h1>
@@ -271,7 +271,7 @@ $$</p>
 <h2 id="experiment-1--e-coli-stochastic-resonance-in-chemotactic-navigation"><a class="header" href="#experiment-1--e-coli-stochastic-resonance-in-chemotactic-navigation">Experiment 1 — E. coli Stochastic Resonance in Chemotactic Navigation</a></h2>
 <h3 id="scientific-question"><a class="header" href="#scientific-question">Scientific Question</a></h3>
 <p>Does an intermediate noise temperature maximize a Langevin particle’s ability to follow a periodic signal in a biased double-well potential? Does the optimal noise level shift predictably with gradient strength?</p>
-<p>This directly tests Principle 2 (stochastic resonance enhances encoding fidelity) and extends the D2 SR study by adding a symmetry-breaking chemical gradient via <code>ExternalField</code>.</p>
+<p>This directly tests Principle 2 (stochastic resonance enhances encoding fidelity) and extends prior single-particle SR validation by adding a symmetry-breaking chemical gradient via <code>ExternalField</code>.</p>
 <h3 id="langevin-model-of-chemotaxis"><a class="header" href="#langevin-model-of-chemotaxis">Langevin Model of Chemotaxis</a></h3>
 <p>The experiment maps E. coli chemotaxis onto the Langevin framework:</p>
 <div class="table-wrapper">
@@ -290,7 +290,7 @@ $$</p>
 </div>
 <p>The particle “runs” (stays in one well) and “tumbles” (crosses the barrier). Stochastic resonance occurs when the noise-driven switching rate matches the signal frequency — the Kramers rate (the thermally activated barrier-crossing rate, which scales as exp(−ΔV/kT)) at <code>kT ≈ 1.0</code> equals the signal angular frequency <code>ω = 2π × 0.01214</code>.</p>
 <h3 id="experimental-design"><a class="header" href="#experimental-design">Experimental Design</a></h3>
-<p><strong>Synchrony metric</strong> (same as D2):</p>
+<p><strong>Synchrony metric:</strong></p>
 <pre><code>synchrony = sign(qpos[0]) · cos(ω·t)
 </code></pre>
 <p>Positive when the particle occupies the correct well at the correct phase of the signal. Averaged per step over an episode.</p>
@@ -418,7 +418,7 @@ $$</p>
 </ul>
 <p>The crossover between these regimes lies between J = 1.5 and J = 2.0. At J = 1.5, the data shows a primary peak at kT = 2.29 with a secondary bump near kT = 4.3–5.3, suggesting both modes are active and competing.</p>
 <p>The effective-barrier model predicted the J = 2 peak at kT ≈ 6.5. The actual peak is at kT ≈ 4.3 — correct direction, right order of magnitude, but the simple model overestimates the barrier because cooperative switching lowers the effective barrier relative to independent switching.</p>
-<h4 id="design-rule-principle-2"><a class="header" href="#design-rule-principle-2">Design Rule (Principle 2)</a></h4>
+<h4 id="design-rule-noise-tuning"><a class="header" href="#design-rule-noise-tuning">Design Rule (Noise Tuning)</a></h4>
 <p>For an N=4 Ising-coupled bistable circuit with coupling strength J:</p>
 <ul>
 <li><strong>J &lt; 1.5:</strong> Operate at kT ≈ 2.3. Coupling enhances SR without shifting it. Stronger coupling gives better signal fidelity (up to ~50% improvement at J = 1.0).</li>
@@ -427,7 +427,7 @@ $$</p>
 </ul>
 <p>Operating at the wrong temperature degrades synchrony to noise-floor levels.</p>
 <h4 id="operating-envelope-barrier-height-tolerance"><a class="header" href="#operating-envelope-barrier-height-tolerance">Operating Envelope: Barrier Height Tolerance</a></h4>
-<p>Principle 2 maps the kT axis of the design surface. A complementary sweep maps the ΔV axis: fix kT=2.0 and sweep barrier height ΔV from 0.5 to 10.0 at two signal amplitudes (A₀=0.3 and A₀=0.1), N=4 uncoupled particles (J=0), 40 episodes per point.</p>
+<p>The Noise Tuning Rule maps the kT axis of the design surface. A complementary sweep maps the ΔV axis: fix kT=2.0 and sweep barrier height ΔV from 0.5 to 10.0 at two signal amplitudes (A₀=0.3 and A₀=0.1), N=4 uncoupled particles (J=0), 40 episodes per point.</p>
 <p><strong>Key finding: the ΔV axis is forgiving.</strong> Unlike the sharp SR peak on the kT axis, the synchrony-vs-ΔV curve is a broad plateau:</p>
 <div class="table-wrapper">
 <table>
@@ -498,7 +498,7 @@ $$</p>
 </div>
 <p><strong>Why it fails — and why that’s informative:</strong></p>
 <p>The scallop theorem applies at Re &lt; 1 where the governing equations are linear and time-reversible. In that regime, amplitude literally cancels out of the physics. The Langevin domain has no such constraint: the oscillating field directly biases the particle’s switching rate, and a stronger field produces proportionally more switching. Synchrony scales nearly linearly with amplitude (0.051 → 0.088 → 0.290 across the 0.3–2.0 range).</p>
-<p>At matched amplitude (A₀=0.3), metachronal and synchronized injection produce identical synchrony (0.050 vs 0.051). The P4 metachronal advantage (18–37% at certain J values) is a coupling-coordination effect that emerges from specific parameter combinations, not a universal topology-dominance principle.</p>
+<p>At matched amplitude (A₀=0.3), metachronal and synchronized injection produce identical synchrony (0.050 vs 0.051). The Injection Timing metachronal advantage (18–37% at certain J values) is a coupling-coordination effect that emerges from specific parameter combinations, not a universal topology-dominance principle.</p>
 <p><strong>What this means for thermodynamic circuit design:</strong></p>
 <p>In the Langevin domain, amplitude IS a design lever. Engineers can — and should — use signal strength to improve encoding fidelity. The topological encoding principle from Stokes-regime biology does not transfer to systems where the dynamics are nonlinear and time-irreversible. This is a boundary condition on the biological analogy, not a weakness: it tells us precisely where the analogy holds (noise tuning, phase coordination) and where it breaks (amplitude scaling).</p>
 <h4 id="design-rule-principle-1"><a class="header" href="#design-rule-principle-1">Design Rule (Principle 1)</a></h4>
@@ -534,12 +534,12 @@ $$</p>
 <h3 id="scientific-question-1"><a class="header" href="#scientific-question-1">Scientific Question</a></h3>
 <p>Does phase-lagged injection produce higher per-node synchrony than synchronized injection in a coupled Ising chain? This directly tests Principle 4: whether distributed coordination across multiple control points produces emergent efficiency beyond what simultaneous injection achieves.</p>
 <h3 id="the-setup-1"><a class="header" href="#the-setup-1">The Setup</a></h3>
-<p>The same N=4 Ising chain from Principle 2, but with phase-shifted oscillating fields:</p>
+<p>The same N=4 Ising chain from the Noise Tuning experiment, but with phase-shifted oscillating fields:</p>
 <pre><code>Particle 0 ←J→ Particle 1 ←J→ Particle 2 ←J→ Particle 3
   signal(φ₀)    signal(φ₁)    signal(φ₂)    signal(φ₃)
 </code></pre>
 <p>Each particle’s signal has phase φᵢ = -i × δ, creating a traveling wave from particle 0 → 3. The reward measures <em>local</em> synchrony: each particle is scored against its own phase-shifted signal, then averaged.</p>
-<p><strong>Sweep:</strong> 20 phase lags δ ∈ [0, π] at 4 coupling strengths (J = 0, 0.5, 1.0, 2.0), each at its Phase 1 SR-optimal kT. 80 episodes per point. Total: 6,400 episodes, 46 minutes.</p>
+<p><strong>Sweep:</strong> 20 phase lags δ ∈ [0, π] at 4 coupling strengths (J = 0, 0.5, 1.0, 2.0), each at its SR-optimal kT from the Noise Tuning temperature sweep. 80 episodes per point. Total: 6,400 episodes, 46 minutes.</p>
 <p><strong>Gate system:</strong></p>
 <div class="table-wrapper">
 <table>
@@ -547,7 +547,7 @@ $$</p>
 <tr><th>Gate</th><th>Test</th><th>Result</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>0</strong> (Sanity)</td><td>δ=0 reproduces Phase 1 synchrony</td><td>PASS (3/4); J=1.0 shows a 2σ cross-run discrepancy — statistical, not methodological</td></tr>
+<tr><td><strong>0</strong> (Sanity)</td><td>δ=0 reproduces Noise Tuning synchrony</td><td>PASS (3/4); J=1.0 shows a 2σ cross-run discrepancy — statistical, not methodological</td></tr>
 <tr><td><strong>1</strong> (Control)</td><td>J=0 curve is flat (uncoupled particles ignore phase lag)</td><td>PASS (slope</td></tr>
 <tr><td><strong>2</strong> (Effect)</td><td>At least one J&gt;0 has peak sync significantly above δ=0</td><td>PASS (J=1.0: +15.1 above 2×stderr)</td></tr>
 <tr><td><strong>3</strong> (Interior)</td><td>At least one J&gt;0 peaks at interior δ (not boundary)</td><td>PASS (J=0.5 and J=1.0 at δ≈0.66)</td></tr>
@@ -568,7 +568,7 @@ $$</p>
 <li><strong>J=2.0 (strong coupling):</strong> Synchronized injection (δ=0) is optimal. Strong coupling already coordinates the particles into collective switching; phase lag disrupts the coordination rather than enhancing it.</li>
 </ul>
 <p>This mirrors the biological pattern: ctenophores (intermediate regime, moderate hydrodynamic coupling) use metachronal waves, while organisms with stronger coupling mechanisms don’t need them.</p>
-<p><strong>Note on Gate 0 (J=1.0):</strong> The δ=0 baseline (0.041) fell below the Phase 1 value (0.065) by 0.024 — a ~2σ discrepancy between independent runs with different seeds. This is within expected cross-run variance (proper two-sample threshold: 0.034) but tripped the conservative single-sample gate. The within-sweep comparison (δ=0 vs δ*) remains valid since both share the same random process.</p>
+<p><strong>Note on Gate 0 (J=1.0):</strong> The δ=0 baseline (0.041) fell below the Noise Tuning value (0.065) by 0.024 — a ~2σ discrepancy between independent runs with different seeds. This is within expected cross-run variance (proper two-sample threshold: 0.034) but tripped the conservative single-sample gate. The within-sweep comparison (δ=0 vs δ*) remains valid since both share the same random process.</p>
 <h3 id="design-rule-principle-4"><a class="header" href="#design-rule-principle-4">Design Rule (Principle 4)</a></h3>
 <p>For an N=4 Ising-coupled bistable circuit with coupling strength J:</p>
 <ul>
@@ -576,7 +576,7 @@ $$</p>
 <li><strong>J ≥ 2:</strong> Use synchronized injection — the coupling already coordinates the particles. Phase lag hurts.</li>
 <li><em><em>δ</em> is coupling-independent</em>* in the moderate range (J=0.5–1.0 both give δ* ≈ 0.66).</li>
 </ul>
-<p>Combined with Principle 2: first tune kT to the SR optimum for your coupling strength, then apply phase-lagged injection at δ ≈ π/5. The two knobs are independent — temperature controls noise level, phase lag controls injection timing.</p>
+<p>Combined with the Noise Tuning Rule: first tune kT to the SR optimum for your coupling strength, then apply phase-lagged injection at δ ≈ π/5. The two knobs are independent — temperature controls noise level, phase lag controls injection timing.</p>
 <blockquote>
 <p><strong>Code:</strong> <a href="../../../sim/L0/therm-env/tests/ising_chain.rs"><code>sim/L0/therm-env/tests/ising_chain.rs</code></a></p>
 </blockquote>
@@ -604,10 +604,10 @@ $$</p>
 <p><strong>Principle 6:</strong> Scale-invariance of the encoding program. A parametric injection wave that can be scaled in amplitude and velocity to cover a range of target states (analogous to the octopus’s invariant velocity profile) is more powerful than a lookup table of specific injection sequences for each target. Scale-invariance is also a prerequisite for scaling the circuit itself — an encoding strategy that must be re-tuned for each circuit size is not an engineering tool.</p>
 <h2 id="experiment-6--scale-invariant-encoding-principle-6"><a class="header" href="#experiment-6--scale-invariant-encoding-principle-6">Experiment 6 — Scale-Invariant Encoding (Principle 6)</a></h2>
 <h3 id="scientific-question-2"><a class="header" href="#scientific-question-2">Scientific Question</a></h3>
-<p>Does the SR-optimal temperature hold at larger circuit sizes? If the design rules from Principle 2 require retuning for each circuit size, they’re lab curiosities. If they hold from N=4 to N=16 without adjustment, they’re engineering tools.</p>
+<p>Does the SR-optimal temperature hold at larger circuit sizes? If the Noise Tuning Rule requires retuning for each circuit size, they’re lab curiosities. If they hold from N=4 to N=16 without adjustment, they’re engineering tools.</p>
 <p>This is the most important result for practical thermodynamic circuit design: <strong>design rules hold at scale without retuning.</strong></p>
 <h3 id="experimental-design-1"><a class="header" href="#experimental-design-1">Experimental Design</a></h3>
-<p>Fix coupling J=1.0. Repeat the Principle 2 temperature sweep at three chain sizes:</p>
+<p>Fix coupling J=1.0. Repeat the Noise Tuning temperature sweep at three chain sizes:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -623,7 +623,7 @@ $$</p>
 </tbody>
 </table>
 </div>
-<p>Same Ising chain setup as Level 3: double wells, nearest-neighbor coupling, oscillating field, synchrony metric.</p>
+<p>Same Ising chain setup as the Noise Tuning chapter’s multi-particle experiment: double wells, nearest-neighbor coupling, oscillating field, synchrony metric.</p>
 <h3 id="results-4"><a class="header" href="#results-4">Results</a></h3>
 <p><strong>Principle 6: VALIDATED.</strong> The SR-optimal temperature holds across a 4× range of circuit sizes.</p>
 <p>| N | peak kT | peak sync | |t| | Interior? |
@@ -647,21 +647,13 @@ $$</p>
 <p><strong>Analysis:</strong></p>
 <p>N=4 and N=8 peak at exactly the same grid point (kT=2.29). N=16 peaks one grid step higher (kT=2.82) — a 23% shift across a 4× increase in circuit size. On the 25-point log-spaced grid, this is within one step of the reference.</p>
 <p>The slight upward shift at N=16 is consistent with the effective-barrier model: a 16-particle chain has proportionally more interior particles (14/16 vs 2/4), each feeling coupling from both neighbors. The average effective barrier rises by ~8%, shifting the optimal noise temperature by a corresponding amount. This is a predictable, small correction — not a breakdown of the design rule.</p>
-<p>Peak synchrony <em>increases</em> with N (0.041 → 0.049 → 0.063), which is counterintuitive — more particles should mean more independent noise and lower average synchrony. The likely explanation: larger chains have more coupled pairs, and at J=1.0 coupling enhances SR (as shown in the P2 coupling sweep). The averaging over more SR-enhanced particles produces a tighter, higher peak. This is within the Gate 2 tolerance (3σ) and does not violate the scale-invariance claim.</p>
+<p>Peak synchrony <em>increases</em> with N (0.041 → 0.049 → 0.063), which is counterintuitive — more particles should mean more independent noise and lower average synchrony. The likely explanation: larger chains have more coupled pairs, and at J=1.0 coupling enhances SR (as shown in the Noise Tuning coupling sweep). The averaging over more SR-enhanced particles produces a tighter, higher peak. This is within the Gate 2 tolerance (3σ) and does not violate the scale-invariance claim.</p>
 <h3 id="design-rule-principle-6"><a class="header" href="#design-rule-principle-6">Design Rule (Principle 6)</a></h3>
 <p>For coupling J=1.0, the SR-optimal temperature is kT ≈ 2.5, holding from N=4 through N=16 without retuning.</p>
-<p>Combined with Principle 2: <strong>For J &lt; 1.5, operate at kT ≈ 2.3. For J ≥ 2.0, operate at kT ≈ 4.3. These rules apply regardless of circuit size in the range N=4–16.</strong></p>
+<p>Combined with the Noise Tuning Rule: <strong>For J &lt; 1.5, operate at kT ≈ 2.3. For J ≥ 2.0, operate at kT ≈ 4.3. These rules apply regardless of circuit size in the range N=4–16.</strong></p>
 <p>An engineer scaling a thermodynamic circuit from a 4-node prototype to a 16-node production system can use the same noise temperature. The only correction needed is the ~8% per-octave shift from the end/interior particle ratio, which is predictable from the coupling topology.</p>
 <blockquote>
 <p><strong>Code:</strong> <a href="../../../sim/L0/therm-env/tests/ising_chain.rs"><code>sim/L0/therm-env/tests/ising_chain.rs</code></a> — <code>ising_scale_invariant_sweep</code></p>
-</blockquote>
-<hr>
-<h2 id="experiment-3--octopus-bend-propagation-compression-ratio"><a class="header" href="#experiment-3--octopus-bend-propagation-compression-ratio">Experiment 3 — Octopus Bend Propagation Compression Ratio</a></h2>
-<p>Simulate octopus arm reaching using CortenForge’s Hill-type muscle model with the 4,000:380,000 efferent compression architecture. Measure the minimum central command dimensionality required to achieve a given reaching accuracy in a stochastic fluid environment. Characterize how this compression ratio scales with arm length and noise level.</p>
-<blockquote>
-<p><strong>Platform readiness:</strong> Medium — Hill muscles exist in the sim crate, but needs an MJCF tentacle model with the appropriate compression architecture.</p>
-<p><strong>Status:</strong> Not started</p>
-<p><strong>Code:</strong> —</p>
 </blockquote>
 <h2 id="key-references-2"><a class="header" href="#key-references-2">Key References</a></h2>
 <ul>
@@ -785,7 +777,7 @@ $$</p>
 <p><strong>Principle 8:</strong> Pre-selection and operating regime commitment. Before entering high-throughput operation, the X-encoder should verify that the circuit’s current noise profile and relaxation rate are within the regime for which the encoding strategy was designed (analogous to the dragonfly’s pre-takeoff assessment). Attempting to encode outside the designed regime is the primary failure mode.</p>
 <p><strong>Principle 9:</strong> Minimum observables sufficiency. Two local scalar cues are sufficient for full trajectory guidance. The X-encoder instrumentation can therefore be minimal: local energy gradient and local curvature (or equivalent observable pair) fed into a PN-style feedback law. This is a tractable instrumentation problem, not a global state estimation problem.</p>
 <h2 id="hypothesis-given-current-results"><a class="header" href="#hypothesis-given-current-results">Hypothesis Given Current Results</a></h2>
-<p>Principles 7 (predictive forward model) and 9 (minimum observables) are <strong>statistical-mechanical</strong> in character — they ask how to use noise statistics to calibrate a model, and how few observables suffice for control. Based on the pattern from Chapters 1–3, these should transfer to the Langevin domain.</p>
+<p>Principles 7 (predictive forward model) and 9 (minimum observables) are <strong>statistical-mechanical</strong> in character — they ask how to use noise statistics to calibrate a model, and how few observables suffice for control. Based on the pattern from the validated results, these should transfer to the Langevin domain.</p>
 <p>Principle 8 (pre-selection / regime commitment) is also stat-mech: it’s a gate check on operating conditions before committing to a strategy. This should transfer.</p>
 <p><strong>Prediction:</strong> P7 and P9 will validate. The PN guidance law with N ≈ 3 should emerge from Langevin dynamics. Minimum observables (2 local cues) should suffice. These are noise-exploitation strategies, which is what the Langevin framework handles natively.</p>
 <p><strong>Status:</strong> Not yet tested. Infrastructure exists (<code>experiment_4.rs</code>).</p>
@@ -843,15 +835,15 @@ $$</p>
 <p><strong>Principle 11:</strong> Deliberate instability as a sensitivity amplifier. A circuit operating near a phase transition (bifurcation) in its energy landscape is pitch-unstable in the analogy — highly sensitive to perturbations. The X-encoder should target this operating point and use a minimal stabilization mechanism (the circuit analog of elevon primaries) to prevent divergence while preserving the high-sensitivity regime.</p>
 <p><strong>Principle 12:</strong> The logarithmic spiral as a scale-invariant approach geometry. Peregrine falcons resolve the conflict between aerodynamic streamlining (head straight) and maximum visual acuity (head turned 40°) by flying a logarithmic spiral path — a constant-angle curve that is self-similar at every scale. A scale-invariant X-injection trajectory would not require re-tuning as the circuit scales, which is the central engineering requirement for thermodynamic computing to become a manufacturable technology.</p>
 <h2 id="hypothesis-given-current-results-1"><a class="header" href="#hypothesis-given-current-results-1">Hypothesis Given Current Results</a></h2>
-<p>Principle 11 (deliberate instability) has been <strong>tested and failed</strong> — the Ising chain shows a broad sensitivity plateau, not a sharp bifurcation point. The ΔV axis is forgiving, not critical. See Chapter 1, Operating Envelope.</p>
-<p>Principles 10 (paired perturbation structures) and 12 (logarithmic spiral) are <strong>dynamical-systems</strong> concepts — they require spatial vortex geometry and scale-invariant trajectory topology respectively. Based on the pattern from Chapters 1–3, these are unlikely to transfer to the Langevin domain. The Langevin framework doesn’t have the vocabulary for structured spatial perturbations or topological trajectory invariants.</p>
+<p>Principle 11 (deliberate instability) has been <strong>tested and failed</strong> — the Ising chain shows a broad sensitivity plateau, not a sharp bifurcation point. The ΔV axis is forgiving, not critical. See the Noise Tuning chapter, Operating Envelope.</p>
+<p>Principles 10 (paired perturbation structures) and 12 (logarithmic spiral) are <strong>dynamical-systems</strong> concepts — they require spatial vortex geometry and scale-invariant trajectory topology respectively. Based on the pattern from the validated results, these are unlikely to transfer to the Langevin domain. The Langevin framework doesn’t have the vocabulary for structured spatial perturbations or topological trajectory invariants.</p>
 <p><strong>Prediction:</strong> P10 and P12 will not validate in the Langevin domain. They require physics (spatial vortex structure, trajectory topology) that the 1D coupled double-well model does not contain. Testing them properly requires at minimum a 2D/3D fluid simulation with vortex dynamics.</p>
 <p><strong>Status:</strong> P11 tested and failed. P10 and P12 not tested (would need CFD or soft-body physics).</p>
 <h2 id="experiment-5--peregrine-m-shape-vortex-coupling-simulation"><a class="header" href="#experiment-5--peregrine-m-shape-vortex-coupling-simulation">Experiment 5 — Peregrine M-Shape Vortex Coupling Simulation</a></h2>
 <p>Simulate the M-shape vortex field in a fluid simulation domain. Quantify the counter-rotating vortex pair’s drag-cancellation ratio as a function of injection speed. Translate the vortex geometry into a parameterized description of structured perturbation pairs for circuit injection.</p>
 <blockquote>
 <p><strong>Platform readiness:</strong> Low — needs reformulation to the Langevin domain or a fluid simulation.</p>
-<p><strong>Status:</strong> Not started. P11 (deliberate instability) tested and failed in Langevin domain — see Chapter 1.</p>
+<p><strong>Status:</strong> Not started. P11 (deliberate instability) tested and failed in Langevin domain — see the Noise Tuning chapter.</p>
 <p><strong>Code:</strong> —</p>
 </blockquote>
 <h2 id="key-references-4"><a class="header" href="#key-references-4">Key References</a></h2>

@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
+            window.path_to_searchindex_js = "searchindex-6eab1008.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-271e92e9.js"></script>
@@ -200,7 +200,7 @@ $$</p>
 <p><strong>Principle 8:</strong> Pre-selection and operating regime commitment. Before entering high-throughput operation, the X-encoder should verify that the circuit’s current noise profile and relaxation rate are within the regime for which the encoding strategy was designed (analogous to the dragonfly’s pre-takeoff assessment). Attempting to encode outside the designed regime is the primary failure mode.</p>
 <p><strong>Principle 9:</strong> Minimum observables sufficiency. Two local scalar cues are sufficient for full trajectory guidance. The X-encoder instrumentation can therefore be minimal: local energy gradient and local curvature (or equivalent observable pair) fed into a PN-style feedback law. This is a tractable instrumentation problem, not a global state estimation problem.</p>
 <h2 id="hypothesis-given-current-results"><a class="header" href="#hypothesis-given-current-results">Hypothesis Given Current Results</a></h2>
-<p>Principles 7 (predictive forward model) and 9 (minimum observables) are <strong>statistical-mechanical</strong> in character — they ask how to use noise statistics to calibrate a model, and how few observables suffice for control. Based on the pattern from Chapters 1–3, these should transfer to the Langevin domain.</p>
+<p>Principles 7 (predictive forward model) and 9 (minimum observables) are <strong>statistical-mechanical</strong> in character — they ask how to use noise statistics to calibrate a model, and how few observables suffice for control. Based on the pattern from the validated results, these should transfer to the Langevin domain.</p>
 <p>Principle 8 (pre-selection / regime commitment) is also stat-mech: it’s a gate check on operating conditions before committing to a strategy. This should transfer.</p>
 <p><strong>Prediction:</strong> P7 and P9 will validate. The PN guidance law with N ≈ 3 should emerge from Langevin dynamics. Minimum observables (2 local cues) should suffice. These are noise-exploitation strategies, which is what the Langevin framework handles natively.</p>
 <p><strong>Status:</strong> Not yet tested. Infrastructure exists (<code>experiment_4.rs</code>).</p>

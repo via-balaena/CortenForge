@@ -40,7 +40,7 @@ The minimum sensory requirement is also remarkable: two local observables — ve
 
 ## Hypothesis Given Current Results
 
-Principles 7 (predictive forward model) and 9 (minimum observables) are **statistical-mechanical** in character — they ask how to use noise statistics to calibrate a model, and how few observables suffice for control. Based on the pattern from Chapters 1–3, these should transfer to the Langevin domain.
+Principles 7 (predictive forward model) and 9 (minimum observables) are **statistical-mechanical** in character — they ask how to use noise statistics to calibrate a model, and how few observables suffice for control. Based on the pattern from the validated results, these should transfer to the Langevin domain.
 
 Principle 8 (pre-selection / regime commitment) is also stat-mech: it's a gate check on operating conditions before committing to a strategy. This should transfer.
 

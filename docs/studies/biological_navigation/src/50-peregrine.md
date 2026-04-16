@@ -55,9 +55,9 @@ The critical discovery: a counter-rotating vortex pair interacts with the main w
 
 ## Hypothesis Given Current Results
 
-Principle 11 (deliberate instability) has been **tested and failed** — the Ising chain shows a broad sensitivity plateau, not a sharp bifurcation point. The ΔV axis is forgiving, not critical. See Chapter 1, Operating Envelope.
+Principle 11 (deliberate instability) has been **tested and failed** — the Ising chain shows a broad sensitivity plateau, not a sharp bifurcation point. The ΔV axis is forgiving, not critical. See the Noise Tuning chapter, Operating Envelope.
 
-Principles 10 (paired perturbation structures) and 12 (logarithmic spiral) are **dynamical-systems** concepts — they require spatial vortex geometry and scale-invariant trajectory topology respectively. Based on the pattern from Chapters 1–3, these are unlikely to transfer to the Langevin domain. The Langevin framework doesn't have the vocabulary for structured spatial perturbations or topological trajectory invariants.
+Principles 10 (paired perturbation structures) and 12 (logarithmic spiral) are **dynamical-systems** concepts — they require spatial vortex geometry and scale-invariant trajectory topology respectively. Based on the pattern from the validated results, these are unlikely to transfer to the Langevin domain. The Langevin framework doesn't have the vocabulary for structured spatial perturbations or topological trajectory invariants.
 
 **Prediction:** P10 and P12 will not validate in the Langevin domain. They require physics (spatial vortex structure, trajectory topology) that the 1D coupled double-well model does not contain. Testing them properly requires at minimum a 2D/3D fluid simulation with vortex dynamics.
 
@@ -69,7 +69,7 @@ Simulate the M-shape vortex field in a fluid simulation domain. Quantify the cou
 
 > **Platform readiness:** Low — needs reformulation to the Langevin domain or a fluid simulation.
 >
-> **Status:** Not started. P11 (deliberate instability) tested and failed in Langevin domain — see Chapter 1.
+> **Status:** Not started. P11 (deliberate instability) tested and failed in Langevin domain — see the Noise Tuning chapter.
 >
 > **Code:** —
 
