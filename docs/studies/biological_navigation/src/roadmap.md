@@ -19,13 +19,13 @@ A design rule that says: *for a circuit with τ_circuit / τ_noise = X, use enco
 | Step | Progress | Description |
 |------|----------|-------------|
 | 1. Framework | **Done** | 12 X-encoding principles across 5 Reynolds number regimes, derived from biological navigation strategies |
-| 2. 1-particle simulation | **In progress** | Stochastic resonance validated (peak kT=1.70, \|t\|=4.52). Multi-algorithm training running |
-| 3. Multi-particle simulation | Not started | Coupled Ising-like models as thermodynamic circuit proxies |
-| 4. τ_circuit / τ_noise mapping | Not started | The scientific headline — which regime, which strategy, quantified |
+| 2. 1-particle simulation | **Done** | SR peak validated (kT=1.70, \|t\|=4.52), controls pass, infrastructure works |
+| 3. Multi-particle simulation | **Running** | 4-cell Ising chain with coupling sweep J={0, 0.1, 0.5, 1.0, 2.0} |
+| 4. τ_circuit / τ_noise mapping | **Running** | Same experiment — coupling strength J is the proxy for τ_circuit / τ_noise |
 | 5. Paper | Not started | Framework + principle validation + regime characterization |
 | 6. Hardware validation | Needs collaboration | Test predictions on Extropic / Normal Computing hardware |
 
-**The honest gap:** We're still at 1-particle toy models. A 1D particle in a double well is not a thermodynamic circuit. Extropic's chips have coupled multi-cell architectures. The jump from step 2 to step 3 is where the research gets real.
+**Current position:** Steps 3 and 4 are running simultaneously — the coupling sweep *is* the τ_circuit / τ_noise characterization. The 4-cell Ising chain with oscillating fields tests whether SR scales to coupled systems, and sweeping J maps how the optimal noise temperature shifts with coupling strength. Results expected within hours.
 
 ## The Path
 

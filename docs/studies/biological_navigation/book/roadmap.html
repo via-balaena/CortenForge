@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-34768b58.js";
+            window.path_to_searchindex_js = "searchindex-284bb910.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-534ce819.js"></script>
@@ -190,15 +190,15 @@
 </thead>
 <tbody>
 <tr><td>1. Framework</td><td><strong>Done</strong></td><td>12 X-encoding principles across 5 Reynolds number regimes, derived from biological navigation strategies</td></tr>
-<tr><td>2. 1-particle simulation</td><td><strong>In progress</strong></td><td>Stochastic resonance validated (peak kT=1.70, |t|=4.52). Multi-algorithm training running</td></tr>
-<tr><td>3. Multi-particle simulation</td><td>Not started</td><td>Coupled Ising-like models as thermodynamic circuit proxies</td></tr>
-<tr><td>4. τ_circuit / τ_noise mapping</td><td>Not started</td><td>The scientific headline — which regime, which strategy, quantified</td></tr>
+<tr><td>2. 1-particle simulation</td><td><strong>Done</strong></td><td>SR peak validated (kT=1.70, |t|=4.52), controls pass, infrastructure works</td></tr>
+<tr><td>3. Multi-particle simulation</td><td><strong>Running</strong></td><td>4-cell Ising chain with coupling sweep J={0, 0.1, 0.5, 1.0, 2.0}</td></tr>
+<tr><td>4. τ_circuit / τ_noise mapping</td><td><strong>Running</strong></td><td>Same experiment — coupling strength J is the proxy for τ_circuit / τ_noise</td></tr>
 <tr><td>5. Paper</td><td>Not started</td><td>Framework + principle validation + regime characterization</td></tr>
 <tr><td>6. Hardware validation</td><td>Needs collaboration</td><td>Test predictions on Extropic / Normal Computing hardware</td></tr>
 </tbody>
 </table>
 </div>
-<p><strong>The honest gap:</strong> We’re still at 1-particle toy models. A 1D particle in a double well is not a thermodynamic circuit. Extropic’s chips have coupled multi-cell architectures. The jump from step 2 to step 3 is where the research gets real.</p>
+<p><strong>Current position:</strong> Steps 3 and 4 are running simultaneously — the coupling sweep <em>is</em> the τ_circuit / τ_noise characterization. The 4-cell Ising chain with oscillating fields tests whether SR scales to coupled systems, and sweeping J maps how the optimal noise temperature shifts with coupling strength. Results expected within hours.</p>
 <h2 id="the-path"><a class="header" href="#the-path">The Path</a></h2>
 <h3 id="step-1-finish-experiment-1-cleanly"><a class="header" href="#step-1-finish-experiment-1-cleanly">Step 1: Finish Experiment 1 cleanly</a></h3>
 <p>One complete, statistically rigorous result. Stochastic resonance in a gradient-biased double well, validated with controls, confirmed across multiple algorithm classes (CEM, PPO, SA). This is the table stake — it proves the simulation infrastructure works and produces quantitative predictions.</p>

@@ -113,83 +113,54 @@ The SR curve shows the predicted bell shape: zero synchrony at low noise (partic
 
 ---
 
-### Level 3 — 4-Cell Ising Chain X-Encoding
+### Level 3 — Ising Chain Stochastic Resonance
 
-The same stochastic resonance physics, scaled from 1 particle to a coupled multi-cell circuit proxy. This is the jump from toy model to something that maps onto real thermodynamic hardware.
+Does stochastic resonance scale from 1 particle to coupled multi-cell systems? This is the direct test of Principle 2 on a thermodynamic circuit proxy.
 
-#### The Circuit Proxy
+#### The Setup
 
-Four particles in double wells with nearest-neighbor ferromagnetic coupling:
+Four particles, each in a double well with its own oscillating field, connected by nearest-neighbor coupling:
 
 ```
 Particle 0 ←J→ Particle 1 ←J→ Particle 2 ←J→ Particle 3
   [±x₀]          [±x₀]          [±x₀]          [±x₀]
+  + signal       + signal       + signal       + signal
 ```
 
 | Component | Role |
 |-----------|------|
-| `DoubleWellPotential(ΔV=3, x₀=1, dof=i)` per particle | Binary states per cell |
-| `PairwiseCoupling::chain(4, J=0.5)` | Ferromagnetic inter-cell coupling |
-| `LangevinThermostat(γ=10, kT=1).with_ctrl_temperature()` | Noise modulation via RL |
-| `ctrl_range(0, 5)` | Effective kT range [0, 5] |
+| `DoubleWellPotential(ΔV=3, x₀=1, dof=i)` per particle | Bistable states |
+| `OscillatingField(A₀=0.3, ω=2π·k_Kramers, dof=i)` per particle | Periodic signal (same as Level 2) |
+| `PairwiseCoupling::chain(4, J)` | Inter-cell coupling (sweep variable) |
+| `LangevinThermostat(γ=10, kT=5).with_ctrl_temperature()` | Noise, kT range [0, 5] via RL |
 
-**Reward:** Configuration overlap `(1/N) × Σ sign(qpos[i]) × target[i]` — ranges from -1 (all wrong) to +1 (all correct).
+**Reward:** Average synchrony across all particles: `(1/N) × Σ sign(qpos[i]) × cos(ωt)`
 
-**Observation:** 8D: [qpos₀..₃, qvel₀..₃]. **Action:** scalar temperature multiplier.
+**Scientific question:** How does coupling strength J shift the SR-optimal noise temperature? This is the τ_circuit / τ_noise characterization.
 
-#### Controls (validated)
+#### The Experiment
 
-| Condition | Mean overlap | Interpretation |
-|-----------|-------------|----------------|
-| Uncoupled (J=0, kT=1) | -0.035 ± 0.159 | Random — no preference |
-| Frozen (J=0.5, kT=0.1) | +0.002 ± 0.182 | Stuck in starting config |
-| Randomized (J=0.5, kT=5) | +0.018 ± 0.028 | Too hot — random switching |
-| Coupled (J=0.5, kT=1) | +0.045 ± 0.196 | Weak alignment bias from coupling |
+**Phase 1 — Temperature sweep at 5 coupling strengths:** For each J ∈ {0.0, 0.1, 0.5, 1.0, 2.0}, sweep 15 temperatures log-spaced in [0.1, 5.0], 15 episodes each. Maps the SR curve at each coupling strength.
 
-#### Easy Target: [+1, +1, +1, +1]
+**Phase 2 — Multi-algorithm training at each J:** CEM, PPO, and SA each train a `LinearPolicy(8, 1)` for 100 epochs on 32-env VecEnv. Tests whether RL agents independently discover the SR-optimal temperature at each coupling strength.
 
-Three algorithm classes, `LinearPolicy(8, 1)`, 100 epochs, 32-env VecEnv:
+**Controls (same pattern as Level 2):** Low noise (kT × 0.1), high noise (kT × 5), no signal (A₀=0) — all must show zero synchrony.
 
-| Algorithm | Class | Eval overlap | Learned kT | State-dependent? |
-|-----------|-------|-------------|------------|------------------|
-| **CEM** | Evolutionary | 1.000 ± 0.000 | ~0 | Yes (norm=7.48) |
-| **SA** | Gradient-free opt | 1.000 ± 0.000 | ~0 | Yes (norm=24.40) |
-| **PPO** | Policy gradient | 1.000 ± 0.000 | ~0 | No (norm=0.02) |
+**Key design decision:** Training env uses `k_b_t = 5.0` (the max of the sweep range) so that the policy's tanh output [0, 1] maps to kT ∈ [0, 5.0]. This ensures the SR peak (kT ≈ 1.7 for uncoupled) is reachable at ctrl ≈ 0.34. Earlier versions with `k_b_t = 1.0` capped agents at kT ≤ 1.0, making it impossible to reach the peak.
 
-**All three algorithms independently achieved perfect X-encoding** and independently converged on the same strategy: **turn off noise, let the ferromagnetic coupling relax to the aligned ground state.**
+#### Results
 
-This is physically correct. The all-aligned state is the ground state of a ferromagnetic chain — it minimizes V = -J·Σ xᵢxⱼ. At zero temperature, the system relaxes there deterministically. No active noise modulation needed.
+> **Status:** Coupling sweep running (~4 hours total). Phase 1 sweep results will appear first (~90 min), followed by Phase 2 training (~2.5 hours).
+>
+> **Preliminary (J=0 sweep, in progress):** The uncoupled 4-particle system reproduces the Level 2 SR curve — zero synchrony at low kT, rising through kT ≈ 1.0-1.6, with the peak expected near kT ≈ 1.7. This confirms that 4 independent particles averaging their synchrony produces the same SR phenomenon as 1 particle.
 
-PPO found the cleanest solution: constant policy, near-zero weights. CEM and SA found state-dependent policies that happen to produce the same net output — their large qpos weights are an artifact of the search process, not a functional requirement.
+Results will be recorded here when the sweep completes.
 
-**Interpretation:** The easy target validates the infrastructure but doesn't test X-encoding. The coupling does the work. This is the analog of a thermodynamic circuit where the input is trivially aligned with the energy landscape.
+#### What This Will Tell Us
 
-#### Hard Target: [+1, -1, +1, -1]
+If the SR peak **persists** across all J values, coupling doesn't destroy stochastic resonance — it scales to multi-cell circuits. If the peak **shifts** with J (higher J → different optimal kT), that's the τ_circuit / τ_noise mapping — coupling strength controls which noise regime is optimal. If the peak **disappears** at high J, coupling overwhelms the signal and SR breaks down — a concrete failure mode for thermodynamic circuit design.
 
-The anti-aligned pattern fights the ferromagnetic coupling. At zero temperature, the coupling pushes *away* from this configuration. Cooling won't work — the agent *must* use noise strategically. This is genuine X-encoding: injecting a target that opposes the circuit's natural dynamics.
-
-CEM results on the hard target:
-
-| Metric | Easy target | Hard target |
-|--------|-------------|-------------|
-| Eval overlap | 1.000 ± 0.000 | 0.211 ± 0.073 |
-| Learned kT | ~0 (noise off) | ~0 (but state-dependent) |
-| Best training reward | 1000 | 268 |
-| qpos weight norm | 7.48 | 9.14 |
-
-The hard target achieves **positive overlap** (0.211) — the agent does better than random (0.0) — but far from perfect. The learned kT is still near zero on average, but the bias is now *positive* (+2.39 vs -4.67 for easy), and the qpos weights are asymmetric: particle 3 has weight +8.15 while particles 0 and 2 have weights around -2.4. The policy is genuinely state-dependent — it modulates temperature based on particle positions.
-
-**Interpretation:** Scalar temperature control can partially encode an anti-aligned target into a ferromagnetic chain, but it can't achieve perfect fidelity. The coupling is too strong for a single global temperature knob to overcome. This suggests that encoding against the circuit's natural dynamics requires either:
-
-- **Per-particle temperature control** (one ctrl channel per cell), or
-- **Weaker coupling** (reducing J makes it easier to fight), or
-- **A more expressive policy** (MLP instead of linear)
-
-This is a real finding: **the encoding difficulty depends on the relationship between the target and the energy landscape.** When they align (easy target), zero noise is optimal. When they oppose (hard target), noise helps but a single global control channel has limited authority.
-
-#### What Comes Next
-
-**Step 4: Coupling strength sweep.** Repeat at J ∈ {0.1, 0.5, 1.0, 2.0}. Different coupling strengths produce different optimal noise strategies. Mapping this relationship is the τ_circuit / τ_noise characterization — the scientific headline.
+After Phase 2, if RL agents track the peak across J values, that validates that temperature modulation can be learned from observation alone — the agent doesn't need to know J, it discovers the optimal noise from the dynamics.
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs)
 
