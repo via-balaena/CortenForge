@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use sim_core::{DVector, Data, Model};
-use sim_ml_chassis::{ActionSpace, ObservationSpace, SimEnv};
+use sim_ml_chassis::{ActionSpace, ObservationSpace, SimEnv, VecEnv};
 use sim_thermostat::{LangevinThermostat, PassiveComponent, PassiveStack};
 
 use crate::env::ThermCircuitEnv;
@@ -65,7 +65,8 @@ pub fn generate_mjcf(n_particles: usize, n_ctrl: usize, timestep: f64) -> String
 /// Builder for [`ThermCircuitEnv`].
 ///
 /// Construct via [`ThermCircuitEnv::builder(n_particles)`](ThermCircuitEnv::builder),
-/// configure physics and RL parameters, then call [`.build()`](Self::build).
+/// configure physics and RL parameters, then call [`.build()`](Self::build)
+/// or [`.build_vec(n_envs)`](Self::build_vec).
 pub struct ThermCircuitEnvBuilder {
     n_particles: usize,
     timestep: f64,
@@ -203,6 +204,62 @@ impl ThermCircuitEnvBuilder {
     /// Returns [`ThermCircuitError`] if `n_particles` is zero or `reward`
     /// was not set.
     pub fn build(self) -> Result<ThermCircuitEnv, ThermCircuitError> {
+        let p = self.prepare()?;
+
+        let mut sim_builder = SimEnv::builder(p.model)
+            .observation_space(p.obs_space)
+            .action_space(p.act_space)
+            .reward(p.reward_fn)
+            .done(p.done_fn)
+            .truncated(p.truncated_fn)
+            .sub_steps(p.sub_steps);
+
+        if let Some(on_reset) = p.on_reset_fn {
+            sim_builder = sim_builder.on_reset(on_reset);
+        }
+
+        let inner = sim_builder.build()?;
+
+        Ok(ThermCircuitEnv {
+            inner,
+            n_particles: p.n_particles,
+            k_b_t: p.k_b_t,
+            ctrl_temperature_idx: p.ctrl_temperature_idx,
+        })
+    }
+
+    /// Validate and build a [`VecEnv`] with `n_envs` parallel environments.
+    ///
+    /// Same physics/thermostat/space setup as [`build()`](Self::build), but
+    /// produces a batched [`VecEnv`] instead of a single [`ThermCircuitEnv`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThermCircuitError`] if `n_particles` is zero or `reward`
+    /// was not set.
+    pub fn build_vec(self, n_envs: usize) -> Result<VecEnv, ThermCircuitError> {
+        let p = self.prepare()?;
+
+        let mut vec_builder = VecEnv::builder(p.model, n_envs)
+            .observation_space(p.obs_space)
+            .action_space(p.act_space)
+            .reward(p.reward_fn)
+            .done(p.done_fn)
+            .truncated(p.truncated_fn)
+            .sub_steps(p.sub_steps);
+
+        if let Some(mut on_reset) = p.on_reset_fn {
+            vec_builder = vec_builder.on_reset(move |m, d, _idx| on_reset(m, d));
+        }
+
+        Ok(vec_builder.build()?)
+    }
+
+    // ── Private ───────────────────────────────────────────────────────
+
+    /// Validate config and execute shared setup (MJCF, model, thermostat,
+    /// passive stack, obs/act spaces, closure defaults).
+    fn prepare(self) -> Result<PreparedCircuit, ThermCircuitError> {
         if self.n_particles == 0 {
             return Err(ThermCircuitError::ZeroParticles);
         }
@@ -259,27 +316,37 @@ impl ThermCircuitEnvBuilder {
             .truncated_fn
             .unwrap_or_else(|| Box::new(move |_m, d| d.time > max_time));
 
-        // 10. Build SimEnv
-        let mut sim_builder = SimEnv::builder(Arc::clone(&model))
-            .observation_space(obs_space)
-            .action_space(act_space)
-            .reward(reward_fn)
-            .done(done_fn)
-            .truncated(truncated_fn)
-            .sub_steps(self.sub_steps);
-
-        if let Some(on_reset) = self.on_reset_fn {
-            sim_builder = sim_builder.on_reset(on_reset);
-        }
-
-        let inner = sim_builder.build()?;
-
-        // 11. Return ThermCircuitEnv
-        Ok(ThermCircuitEnv {
-            inner,
+        Ok(PreparedCircuit {
+            model,
+            obs_space,
+            act_space,
+            reward_fn,
+            done_fn,
+            truncated_fn,
+            on_reset_fn: self.on_reset_fn,
             n_particles: self.n_particles,
             k_b_t: self.k_b_t,
             ctrl_temperature_idx: if self.ctrl_temperature { Some(0) } else { None },
+            sub_steps: self.sub_steps,
         })
     }
+}
+
+// ─── PreparedCircuit ──────────────────────────────────────────────────────
+
+/// Intermediate state from shared validation + physics setup.
+/// Consumed by [`ThermCircuitEnvBuilder::build`] and
+/// [`ThermCircuitEnvBuilder::build_vec`].
+struct PreparedCircuit {
+    model: Arc<Model>,
+    obs_space: ObservationSpace,
+    act_space: ActionSpace,
+    reward_fn: Box<dyn Fn(&Model, &Data) -> f64 + Send + Sync>,
+    done_fn: Box<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
+    truncated_fn: Box<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
+    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data) + Send + Sync>>,
+    n_particles: usize,
+    k_b_t: f64,
+    ctrl_temperature_idx: Option<usize>,
+    sub_steps: usize,
 }

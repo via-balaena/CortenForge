@@ -408,14 +408,37 @@ Status: Complete (2026-04-15)
 
 ### Phase 3
 
-Status: Not started
+Status: Complete (2026-04-15)
 
-**Deviations:** (updated after implementation)
-**Discoveries:** (updated after implementation)
-**Confirmed:** (updated after implementation)
+**Deviations:**
+- Extracted shared steps 1-8 from `build()` into a private
+  `prepare() -> Result<PreparedCircuit, ThermCircuitError>` method.
+  Both `build()` and `build_vec()` call it, eliminating ~50 lines of
+  duplication. `PreparedCircuit` is a private struct at module scope.
+- `build()` no longer clones the `Arc<Model>` — passes it directly to
+  `SimEnv::builder()` since it's not used afterward. Functionally identical.
+
+**Discoveries:**
+- `VecEnvBuilder::on_reset` takes 3 args `(&Model, &mut Data, usize)` —
+  the extra `env_index` parameter is not exposed through the
+  ThermCircuitEnvBuilder's 2-arg `on_reset`. Wrapped with
+  `move |m, d, _idx| on_reset(m, d)`. Per-env seeding via index is
+  already listed as deferred in §8.
+- VecEnvBuilder stores closures as `Arc` (vs SimEnvBuilder's `Box`),
+  so passing `Box<dyn Fn>` to its methods produces `Arc<Box<dyn Fn>>`.
+  Same double-indirection as Phase 2, negligible overhead.
+
+**Confirmed:**
+- VecEnvBuilder requires ALL 5 closures, same as SimEnvBuilder.
+- `ThermCircuitError`'s `#[from] EnvError` handles `?` from
+  `VecEnvBuilder::build()` without any error type changes.
+- All 26 Phase 1-2 tests pass unchanged with the refactored `build()`
+  path (no regressions from `prepare()` extraction).
+- 5 new Phase 3 tests all pass: step+reset, batch shape (1p and 2p),
+  per-env reward, truncation + auto-reset.
 
 **Next-session prompt (Phase 4):**
-(written at end of Phase 3 session)
+(written below)
 
 ### Phase 4
 
