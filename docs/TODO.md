@@ -7,9 +7,9 @@
 | 1 | **P2 — Stochastic resonance** (E. coli) — coupling sweep + ΔV operating envelope | **Validated** |
 | 2 | **P4 — Metachronal phase-lag** (Ctenophore) — phase-lag sweep at 4 coupling strengths | **Validated** |
 | 3 | **P11 — Deliberate instability** (Peregrine) — bifurcation sensitivity sweep | Failed (no sharp peak); data reframed as P2 envelope |
-| 4 | **P6 — Scale-invariant encoding** (Octopus) — SR sweep at N=4, 8, 16 | **Next** |
-| 5 | **P1 — Topological encoding** (E. coli) — phase ordering vs amplitude test | **Next** (parallel with P6) |
-| 6 | Tighten chapter prose for publication | After P6+P1 |
+| 4 | **P6 — Scale-invariant encoding** (Octopus) — SR sweep at N=4, 8, 16 | **Validated** |
+| 5 | **P1 — Topological encoding** (E. coli) — phase ordering vs amplitude test | Failed (amplitude dominates in Langevin domain) |
+| 6 | Tighten chapter prose for publication | **Next** |
 | 7 | Contact Extropic / Normal Computing with mdbook link | After prose pass |
 
 ## Parallel Track (not blocking paper)

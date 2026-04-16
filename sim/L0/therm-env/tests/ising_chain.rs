@@ -608,6 +608,163 @@ fn bifurcation_sweep(
     (delta_vs.to_vec(), means, stderrs)
 }
 
+// ─── Principle 6 helpers (N-parameterized) ──────────────────────────────
+
+/// Build an Ising chain at fixed kT, parameterized by chain size N.
+fn make_sweep_env_n(
+    n_particles: usize,
+    coupling_j: f64,
+    kt_mult: f64,
+    seed: u64,
+) -> ThermCircuitEnv {
+    let omega = signal_omega();
+    let n = n_particles;
+    let mut builder = ThermCircuitEnv::builder(n)
+        .gamma(GAMMA)
+        .k_b_t(K_B_T * kt_mult)
+        .timestep(TIMESTEP)
+        .sub_steps(SUB_STEPS)
+        .episode_steps(EPISODE_STEPS)
+        .seed(seed);
+
+    for i in 0..n {
+        builder = builder
+            .with(DoubleWellPotential::new(DELTA_V, X_0, i))
+            .with(OscillatingField::new(A_0, omega, 0.0, i));
+    }
+    if coupling_j.abs() > 1e-15 {
+        builder = builder.with(PairwiseCoupling::chain(n, coupling_j));
+    }
+
+    builder
+        .reward(move |_m, d| {
+            let signal = (omega * d.time).cos();
+            let mut sync = 0.0;
+            for i in 0..n {
+                sync += d.qpos[i].signum() * signal;
+            }
+            sync / n as f64
+        })
+        .build()
+        .unwrap()
+}
+
+/// Run one episode with variable chain size, return mean synchrony per step.
+fn run_episode_n(n_particles: usize, coupling_j: f64, kt_mult: f64, seed: u64) -> f64 {
+    let mut env = make_sweep_env_n(n_particles, coupling_j, kt_mult, seed);
+    let _obs = env.reset().unwrap();
+    let action = Tensor::from_f64_slice(&[], &[0]);
+
+    let mut total = 0.0;
+    let mut steps = 0;
+    loop {
+        let result = env.step(&action).unwrap();
+        total += result.reward;
+        steps += 1;
+        if result.truncated || result.done {
+            break;
+        }
+    }
+    total / f64::from(steps)
+}
+
+/// Temperature sweep with variable chain size. Returns (kt_mults, means, stderrs).
+fn temperature_sweep_n(
+    n_particles: usize,
+    coupling_j: f64,
+    kt_mults: &[f64],
+    n_episodes: usize,
+    seed_offset: u64,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut means = Vec::with_capacity(kt_mults.len());
+    let mut stderrs = Vec::with_capacity(kt_mults.len());
+
+    for (i, &kt) in kt_mults.iter().enumerate() {
+        let mut episodes = Vec::with_capacity(n_episodes);
+        for ep in 0..n_episodes {
+            let seed = SEED_BASE + seed_offset + (i * 1000 + ep) as u64;
+            episodes.push(run_episode_n(n_particles, coupling_j, kt, seed));
+        }
+        let (m, s) = mean_stderr(&episodes);
+        eprintln!(
+            "    N={n_particles} kT={kt:7.4}  sync={m:+.6} +/- {s:.6}  ({n_episodes} eps)  [{}/{}]",
+            i + 1,
+            kt_mults.len()
+        );
+        means.push(m);
+        stderrs.push(s);
+    }
+
+    (kt_mults.to_vec(), means, stderrs)
+}
+
+// ─── Principle 1 helpers (amplitude-parameterized) ──────────────────────
+
+/// Build a metachronal env with variable amplitude.
+fn make_metachronal_env_amp(
+    coupling_j: f64,
+    kt_mult: f64,
+    delta: f64,
+    amplitude: f64,
+    seed: u64,
+) -> ThermCircuitEnv {
+    let omega = signal_omega();
+    let mut builder = ThermCircuitEnv::builder(N)
+        .gamma(GAMMA)
+        .k_b_t(K_B_T * kt_mult)
+        .timestep(TIMESTEP)
+        .sub_steps(SUB_STEPS)
+        .episode_steps(EPISODE_STEPS)
+        .seed(seed);
+
+    for i in 0..N {
+        let phase = -(i as f64) * delta;
+        builder = builder
+            .with(DoubleWellPotential::new(DELTA_V, X_0, i))
+            .with(OscillatingField::new(amplitude, omega, phase, i));
+    }
+    if coupling_j.abs() > 1e-15 {
+        builder = builder.with(PairwiseCoupling::chain(N, coupling_j));
+    }
+
+    builder
+        .reward(move |_m, d| {
+            let mut sync = 0.0;
+            for i in 0..N {
+                let local_signal = omega.mul_add(d.time, -(i as f64) * delta).cos();
+                sync += d.qpos[i].signum() * local_signal;
+            }
+            sync / N as f64
+        })
+        .build()
+        .unwrap()
+}
+
+/// Run one metachronal episode with variable amplitude.
+fn run_metachronal_episode_amp(
+    coupling_j: f64,
+    kt_mult: f64,
+    delta: f64,
+    amplitude: f64,
+    seed: u64,
+) -> f64 {
+    let mut env = make_metachronal_env_amp(coupling_j, kt_mult, delta, amplitude, seed);
+    let _obs = env.reset().unwrap();
+    let action = Tensor::from_f64_slice(&[], &[0]);
+
+    let mut total = 0.0;
+    let mut steps = 0;
+    loop {
+        let result = env.step(&action).unwrap();
+        total += result.reward;
+        steps += 1;
+        if result.truncated || result.done {
+            break;
+        }
+    }
+    total / f64::from(steps)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1593,4 +1750,482 @@ fn ising_bifurcation_sweep() {
         all_pass,
         "Principle 11 gates failed — see diagnostics above"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRINCIPLE 6 — SCALE-INVARIANT ENCODING
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Scout: quick check that SR peak location is stable across N=4, 8, 16 at J=1.0.
+#[test]
+#[ignore = "requires --release (~3 min)"]
+fn ising_scale_invariant_scout() {
+    let n_sizes: [usize; 3] = [4, 8, 16];
+    let coupling_j = 1.0;
+    let kt_points = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.5, 8.0];
+    let n_episodes = 10;
+
+    eprintln!("\n=== Scale-Invariant Scout (J=1.0) ===");
+    eprintln!("  Does the SR peak stay near kT≈2.82 for N=4, 8, 16?");
+    eprintln!(
+        "  Testing {} kT points in [{}, {}], {} episodes\n",
+        kt_points.len(),
+        kt_points[0],
+        kt_points[kt_points.len() - 1],
+        n_episodes
+    );
+
+    for (ni, &n) in n_sizes.iter().enumerate() {
+        eprintln!("  --- N={n} ---");
+        let (kts, means, stderrs) = temperature_sweep_n(
+            n,
+            coupling_j,
+            &kt_points,
+            n_episodes,
+            900_000 + ni as u64 * 10_000,
+        );
+        let (peak_idx, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+        let t = if peak_se > 1e-15 {
+            peak_sync / peak_se
+        } else {
+            0.0
+        };
+        let interior = peak_idx > 0 && peak_idx < kts.len() - 1;
+        eprintln!(
+            "    peak: kT={peak_kt:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, \
+             |t|={:.2}, interior={interior}",
+            t.abs()
+        );
+    }
+    eprintln!("\n  Scout complete. Check that peaks cluster near kT≈2.5–3.0 for all N.");
+}
+
+/// Principle 6 validation: scale-invariant SR encoding.
+/// Tests whether the SR-optimal temperature holds across circuit sizes N=4, 8, 16
+/// at fixed coupling J=1.0.
+///
+/// The key result: optimal kT should be the same regardless of N.
+/// "Design rules hold at scale without retuning."
+///
+/// Run the scale-invariant scout first.
+#[test]
+#[ignore = "requires --release (~40 min)"]
+#[allow(clippy::items_after_statements)]
+fn ising_scale_invariant_sweep() {
+    let n_sizes: [usize; 3] = [4, 8, 16];
+    let coupling_j = 1.0;
+    let kt_mults = log_spaced(0.1, 15.0, 25);
+    let n_episodes = 40;
+
+    eprintln!("\n=== SCALE-INVARIANT SR SWEEP (Principle 6) ===");
+    eprintln!("  Does the SR-optimal kT hold at N=4, 8, 16 for J=1.0?");
+    eprintln!(
+        "  kT range: [0.1, 15.0], {} points log-spaced",
+        kt_mults.len()
+    );
+    eprintln!("  Episodes per point: {n_episodes}");
+    eprintln!("  t-critical: {T_CRITICAL_DF39:.3} (df=39, α=0.01)\n");
+
+    struct ScaleResult {
+        n: usize,
+        peak_idx: usize,
+        peak_kt: f64,
+        peak_sync: f64,
+        peak_stderr: f64,
+        peak_t: f64,
+    }
+    let mut results: Vec<ScaleResult> = Vec::new();
+
+    for (ni, &n) in n_sizes.iter().enumerate() {
+        eprintln!("  --- N={n} ---");
+        let (kts, means, stderrs) = temperature_sweep_n(
+            n,
+            coupling_j,
+            &kt_mults,
+            n_episodes,
+            1_000_000 + ni as u64 * 100_000,
+        );
+        let (peak_idx, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+        let t = if peak_se > 1e-15 {
+            peak_sync / peak_se
+        } else {
+            0.0
+        };
+        eprintln!(
+            "    peak: kT={peak_kt:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, |t|={:.2}",
+            t.abs()
+        );
+        results.push(ScaleResult {
+            n,
+            peak_idx,
+            peak_kt,
+            peak_sync,
+            peak_stderr: peak_se,
+            peak_t: t,
+        });
+    }
+
+    // ── Summary table ────────────────────────────────────────────────
+    eprintln!("\n  ======================================================================");
+    eprintln!("  SCALE-INVARIANT SWEEP RESULTS (J=1.0)");
+    eprintln!("  ======================================================================\n");
+    eprintln!("  N    |  peak kT  |  peak sync     |  |t|    |  interior?");
+    eprintln!("  -----|-----------|----------------|--------|----------");
+    for r in &results {
+        let interior = r.peak_idx > 0 && r.peak_idx < kt_mults.len() - 1;
+        eprintln!(
+            "  {:4}  |  {:7.4}  |  {:.6} +/- {:.6}  |  {:5.2}  |  {}",
+            r.n,
+            r.peak_kt,
+            r.peak_sync,
+            r.peak_stderr,
+            r.peak_t.abs(),
+            if interior { "YES" } else { "BOUNDARY" }
+        );
+    }
+
+    // ── Gates ────────────────────────────────────────────────────────
+    eprintln!("\n  Gates:");
+
+    // Gate 0 (Sanity): all peaks significant and interior.
+    let mut gate0 = true;
+    for r in &results {
+        let interior = r.peak_idx > 0 && r.peak_idx < kt_mults.len() - 1;
+        let significant = r.peak_t.abs() > T_CRITICAL_DF39;
+        let pass = interior && significant;
+        if !pass {
+            gate0 = false;
+        }
+        eprintln!(
+            "    Gate 0: N={}: interior={interior}, |t|={:.2} {} {T_CRITICAL_DF39:.3} → {}",
+            r.n,
+            r.peak_t.abs(),
+            if significant { ">" } else { "<" },
+            if pass { "PASS" } else { "FAIL" }
+        );
+    }
+
+    // Gate 1 (Scale-invariance): peak indices span ≤ 2 on the 25-point grid.
+    let peak_indices: Vec<usize> = results.iter().map(|r| r.peak_idx).collect();
+    let idx_max = *peak_indices.iter().max().unwrap();
+    let idx_min = *peak_indices.iter().min().unwrap();
+    let idx_span = idx_max - idx_min;
+    let gate1 = idx_span <= 2;
+    eprintln!(
+        "    Gate 1 (Scale-invariance): peak indices {:?}, span={idx_span} {} 2 → {}",
+        peak_indices,
+        if gate1 { "≤" } else { ">" },
+        if gate1 { "PASS" } else { "FAIL" }
+    );
+    for r in &results {
+        eprintln!(
+            "      N={}: peak kT={:.4} (idx {})",
+            r.n, r.peak_kt, r.peak_idx
+        );
+    }
+
+    // Gate 2 (Monotone): peak sync should not increase with N.
+    // More particles → more averaging → flat or decreasing.
+    let sync_4 = results[0].peak_sync;
+    let sync_16 = results[2].peak_sync;
+    let combined_se = results[0].peak_stderr.hypot(results[2].peak_stderr);
+    let gate2 = sync_16 <= 3.0f64.mul_add(combined_se, sync_4);
+    eprintln!(
+        "    Gate 2 (Monotone): sync(N=4)={sync_4:.6}, sync(N=16)={sync_16:.6}, \
+         3σ={:.6} → {}",
+        3.0 * combined_se,
+        if gate2 { "PASS" } else { "FAIL" }
+    );
+
+    // ── Design rule ─────────────────────────────────────────────────
+    let mean_peak_kt = results.iter().map(|r| r.peak_kt).sum::<f64>() / results.len() as f64;
+
+    // ── Verdict ─────────────────────────────────────────────────────
+    let all_pass = gate0 && gate1 && gate2;
+    if all_pass {
+        eprintln!(
+            "\n  All gates PASS. Principle 6 VALIDATED: \
+             SR-optimal kT ≈ {mean_peak_kt:.1} holds at N=4, 8, 16 without retuning."
+        );
+    } else {
+        eprintln!("\n  Principle 6 NOT fully validated.");
+        if !gate0 {
+            eprintln!("    - Not all peaks significant/interior");
+        }
+        if !gate1 {
+            eprintln!("    - Peak kTs not co-located (scale-dependent)");
+        }
+        if !gate2 {
+            eprintln!("    - Synchrony anomalously increases with N");
+        }
+    }
+
+    assert!(all_pass, "Principle 6 gates failed — see diagnostics above");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRINCIPLE 1 — TOPOLOGICAL ENCODING
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Scout: quick check that topology beats doubled amplitude at J=1.0, kT=2.82.
+#[test]
+#[ignore = "requires --release (~2 min)"]
+fn ising_topological_scout() {
+    let coupling_j = 1.0;
+    let kt_mult = 2.82;
+    let delta_optimal = 0.66;
+    let a0_normal = A_0;
+    let a0_doubled = 2.0 * A_0;
+    let n_episodes = 20;
+
+    eprintln!("\n=== Topological Encoding Scout (P1) ===");
+    eprintln!("  J=1.0, kT=2.82 (P2 optimal)");
+    eprintln!("  Condition A: metachronal δ=0.66, A₀={a0_normal}");
+    eprintln!("  Condition B: synchronized δ=0, A₀={a0_doubled}");
+    eprintln!("  If A > B: topology beats doubled amplitude\n");
+
+    eprintln!("  --- Condition A (metachronal δ=0.66, A₀={a0_normal}) ---");
+    let mut sync_a = Vec::with_capacity(n_episodes);
+    for ep in 0..n_episodes {
+        let seed = SEED_BASE + 1_100_000 + ep as u64;
+        sync_a.push(run_metachronal_episode_amp(
+            coupling_j,
+            kt_mult,
+            delta_optimal,
+            a0_normal,
+            seed,
+        ));
+    }
+    let (mean_a, se_a) = mean_stderr(&sync_a);
+    eprintln!("    sync = {mean_a:+.6} +/- {se_a:.6}");
+
+    eprintln!("  --- Condition B (synchronized δ=0, A₀={a0_doubled}) ---");
+    let mut sync_b = Vec::with_capacity(n_episodes);
+    for ep in 0..n_episodes {
+        let seed = SEED_BASE + 1_200_000 + ep as u64;
+        sync_b.push(run_metachronal_episode_amp(
+            coupling_j, kt_mult, 0.0, a0_doubled, seed,
+        ));
+    }
+    let (mean_b, se_b) = mean_stderr(&sync_b);
+    eprintln!("    sync = {mean_b:+.6} +/- {se_b:.6}");
+
+    let diff = mean_a - mean_b;
+    let diff_se = se_a.hypot(se_b);
+    let t = if diff_se > 1e-15 { diff / diff_se } else { 0.0 };
+    eprintln!("\n  Diff (A - B) = {diff:+.6} +/- {diff_se:.6}, t = {t:.2}");
+    eprintln!(
+        "  A {} B → topology {} amplitude",
+        if diff > 0.0 { ">" } else { "<" },
+        if diff > 0.0 { "beats" } else { "loses to" }
+    );
+}
+
+/// Principle 1 validation: topological encoding.
+/// Tests whether injection sequence topology (phase ordering) matters more
+/// than amplitude in a coupled Ising chain.
+///
+/// Fix J=1.0, kT=2.82 (P2 optimal). Compare:
+/// - Reference: metachronal δ=0.66 (P4 optimal) at A₀=0.3
+/// - Sweep: synchronized δ=0 at A₀ from 0.3 to 2.0
+///
+/// Core gate: metachronal at A₀=0.3 beats synchronized at A₀=0.6.
+/// Crossover: find the amplitude where synchronized catches up.
+///
+/// Run the topological scout first.
+#[test]
+#[ignore = "requires --release (~10 min)"]
+#[allow(clippy::items_after_statements)]
+fn ising_topological_sweep() {
+    let coupling_j = 1.0;
+    let kt_mult = 2.82;
+    let delta_optimal = 0.66;
+    let a0_base = A_0;
+    let sync_amplitudes = [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0];
+    let n_episodes = 80;
+
+    eprintln!("\n=== TOPOLOGICAL ENCODING SWEEP (Principle 1) ===");
+    eprintln!("  Does phase ordering matter more than amplitude?");
+    eprintln!("  J=1.0, kT=2.82 (P2 optimal)");
+    eprintln!("  Reference: metachronal δ=0.66, A₀={a0_base}");
+    eprintln!(
+        "  Sweep: synchronized δ=0, A₀ from {} to {}",
+        sync_amplitudes[0],
+        sync_amplitudes[sync_amplitudes.len() - 1]
+    );
+    eprintln!("  Episodes per condition: {n_episodes}\n");
+
+    // Reference: metachronal at base amplitude
+    eprintln!("  --- Reference: metachronal (δ=0.66, A₀={a0_base}) ---");
+    let mut ref_episodes = Vec::with_capacity(n_episodes);
+    for ep in 0..n_episodes {
+        let seed = SEED_BASE + 1_300_000 + ep as u64;
+        ref_episodes.push(run_metachronal_episode_amp(
+            coupling_j,
+            kt_mult,
+            delta_optimal,
+            a0_base,
+            seed,
+        ));
+    }
+    let (ref_mean, ref_se) = mean_stderr(&ref_episodes);
+    let ref_t = if ref_se > 1e-15 {
+        ref_mean / ref_se
+    } else {
+        0.0
+    };
+    eprintln!(
+        "    sync = {ref_mean:+.6} +/- {ref_se:.6}  (|t|={:.2})",
+        ref_t.abs()
+    );
+
+    // Synchronized amplitude sweep
+    struct AmpResult {
+        amplitude: f64,
+        mean: f64,
+        stderr: f64,
+    }
+    let mut amp_results: Vec<AmpResult> = Vec::new();
+
+    for (i, &a0) in sync_amplitudes.iter().enumerate() {
+        eprintln!("  --- Synchronized (δ=0, A₀={a0}) ---");
+        let mut episodes = Vec::with_capacity(n_episodes);
+        for ep in 0..n_episodes {
+            let seed = SEED_BASE + 1_400_000 + (i * 1000 + ep) as u64;
+            episodes.push(run_metachronal_episode_amp(
+                coupling_j, kt_mult, 0.0, a0, seed,
+            ));
+        }
+        let (m, s) = mean_stderr(&episodes);
+        eprintln!(
+            "    sync = {m:+.6} +/- {s:.6}  [{}/{}]",
+            i + 1,
+            sync_amplitudes.len()
+        );
+        amp_results.push(AmpResult {
+            amplitude: a0,
+            mean: m,
+            stderr: s,
+        });
+    }
+
+    // ── Summary table ────────────────────────────────────────────────
+    eprintln!("\n  ======================================================================");
+    eprintln!("  TOPOLOGICAL ENCODING RESULTS (J=1.0, kT=2.82)");
+    eprintln!("  ======================================================================\n");
+    eprintln!(
+        "  Reference (metachronal δ=0.66, A₀={a0_base}): \
+         sync = {ref_mean:+.6} +/- {ref_se:.6}\n"
+    );
+    eprintln!("  Synchronized (δ=0):   |  sync           |  vs metachronal");
+    eprintln!("  ----------------------|-----------------|----------------");
+    for r in &amp_results {
+        let diff = ref_mean - r.mean;
+        let diff_se = ref_se.hypot(r.stderr);
+        let sig = diff.abs() > 2.0 * diff_se;
+        eprintln!(
+            "    A₀={:4.1}              |  {:+.6} +/- {:.6}  |  diff={:+.6}{}",
+            r.amplitude,
+            r.mean,
+            r.stderr,
+            diff,
+            if sig {
+                if diff > 0.0 {
+                    " * topo wins"
+                } else {
+                    " * amp wins"
+                }
+            } else {
+                ""
+            }
+        );
+    }
+
+    // ── Gates ────────────────────────────────────────────────────────
+    eprintln!("\n  Gates:");
+
+    // Gate 0: metachronal reference must be significantly positive.
+    let gate0 = ref_t.abs() > T_CRITICAL_DF79;
+    eprintln!(
+        "    Gate 0 (Baseline): metachronal |t|={:.2} {} {T_CRITICAL_DF79:.3} → {}",
+        ref_t.abs(),
+        if gate0 { ">" } else { "<" },
+        if gate0 { "PASS" } else { "FAIL" }
+    );
+
+    // Gate 1 (Core claim): metachronal at A₀ beats synchronized at 2×A₀.
+    let a06 = amp_results
+        .iter()
+        .find(|r| (r.amplitude - 0.6).abs() < 0.01)
+        .unwrap();
+    let diff_06 = ref_mean - a06.mean;
+    let diff_06_se = ref_se.hypot(a06.stderr);
+    let diff_06_t = if diff_06_se > 1e-15 {
+        diff_06 / diff_06_se
+    } else {
+        0.0
+    };
+    let gate1 = diff_06 > 0.0 && diff_06_t.abs() > 2.0;
+    eprintln!(
+        "    Gate 1 (Core): meta(0.3) - sync(0.6) = {diff_06:+.6}, t={diff_06_t:.2} → {}",
+        if gate1 {
+            "PASS (topology > 2× amplitude)"
+        } else {
+            "FAIL"
+        }
+    );
+
+    // Gate 2: synchronized improves with amplitude (sanity — amplitude does help).
+    let a03 = &amp_results[0];
+    let diff_amp = a06.mean - a03.mean;
+    let gate2 = diff_amp > 0.0;
+    eprintln!(
+        "    Gate 2 (Amp effect): sync(0.6) - sync(0.3) = {diff_amp:+.6} → {}",
+        if gate2 {
+            "PASS (amplitude helps)"
+        } else {
+            "NOTE (amplitude doesn't help)"
+        }
+    );
+
+    // ── Diagnostic: crossover amplitude ─────────────────────────────
+    eprintln!("\n  Diagnostic (crossover):");
+    let mut crossover = None;
+    for r in &amp_results {
+        if r.mean >= ref_mean {
+            crossover = Some(r.amplitude);
+            break;
+        }
+    }
+    if let Some(a) = crossover {
+        let factor = a / a0_base;
+        eprintln!("    Synchronized catches up at A₀≈{a:.1} ({factor:.1}× baseline)");
+        eprintln!("    → Metachronal phase lag is worth {factor:.1}× in signal amplitude");
+    } else {
+        let max_a = sync_amplitudes[sync_amplitudes.len() - 1];
+        eprintln!("    Synchronized never catches up (tested up to A₀={max_a})");
+        eprintln!(
+            "    → Metachronal phase lag is worth >{:.1}× in signal amplitude",
+            max_a / a0_base
+        );
+    }
+
+    // ── Verdict ─────────────────────────────────────────────────────
+    let all_pass = gate0 && gate1;
+    if all_pass {
+        eprintln!(
+            "\n  All gates PASS. Principle 1 VALIDATED: \
+             topological encoding (phase ordering) beats doubled amplitude."
+        );
+    } else {
+        eprintln!("\n  Principle 1 NOT fully validated.");
+        if !gate0 {
+            eprintln!("    - Metachronal reference not significant");
+        }
+        if !gate1 {
+            eprintln!("    - Doubled amplitude matches or beats metachronal");
+        }
+    }
+
+    assert!(all_pass, "Principle 1 gates failed — see diagnostics above");
 }

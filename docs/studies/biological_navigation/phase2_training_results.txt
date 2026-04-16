@@ -1,0 +1,102 @@
+    Finished `release` profile [optimized] target(s) in 0.16s
+     Running unittests src/lib.rs (target/release/deps/sim_therm_env-61618b6bef8aa1ee)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/experiment_1.rs (target/release/deps/experiment_1-b59e4d7fbbc12141)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/experiment_4.rs (target/release/deps/experiment_4-14c33d83b6e6e05d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/ising_chain.rs (target/release/deps/ising_chain-49eed57df7eb14f8)
+
+running 1 test
+
+=== ISING SR TRAINING (Phase 2) ===
+  CEM, SA, RicherSA at each J
+  CTRL_RANGE_HI = 15 (policy tanh → kT ∈ [0, 15])
+  100 epochs, 32 envs, 20 eval episodes
+
+
+  ============================================================
+  J = 0  (1/5)
+  ============================================================
+
+--- CEM(J=0): training (100 epochs, 32 envs) ---
+  CEM(J=0) epoch   0: mean_reward = +23.7536
+test ising_sr_training has been running for over 60 seconds
+  CEM(J=0) epoch  20: mean_reward = +51.4618
+  CEM(J=0) epoch  40: mean_reward = +70.6331
+  CEM(J=0) epoch  60: mean_reward = +70.5601
+  CEM(J=0) epoch  80: mean_reward = +68.2532
+  CEM(J=0) epoch  99: mean_reward = +70.0596
+  CEM(J=0) Gate B: first_5=39.0372, best_last_10=76.4759 -> PASS
+  CEM(J=0) eval: synchrony = 0.013329 +/- 0.001071
+  CEM(J=0) eval: kT = 0.0704
+  CEM(J=0) Gate A: |t| = 12.44
+  CEM(J=0) params: qpos=[0.5978998747059624, 0.8371673932190081, -1.1876675179976717, 6.271492701562874]
+  CEM(J=0) params: qvel=[-6.7394917539530255, 2.546843630373964, -7.67103815908776, -7.348805385675942]
+  CEM(J=0) params: bias=-3.9803
+
+--- SA(J=0): training (100 epochs, 32 envs) ---
+  SA(J=0) epoch   0: mean_reward = +52.6585
+  SA(J=0) epoch  20: mean_reward = +55.7716
+  SA(J=0) epoch  40: mean_reward = +55.7716
+  SA(J=0) epoch  60: mean_reward = +55.7716
+  SA(J=0) epoch  80: mean_reward = +55.7716
+  SA(J=0) epoch  99: mean_reward = +55.7716
+  SA(J=0) Gate B: first_5=57.5466, best_last_10=55.7716 -> FAIL
+  SA(J=0) eval: synchrony = 0.012113 +/- 0.000761
+  SA(J=0) eval: kT = 0.0470
+  SA(J=0) Gate A: |t| = 15.93
+  SA(J=0) params: qpos=[1.1643792009321203, 1.8560215881846138, 0.04961874858818788, -0.7400275557058267]
+  SA(J=0) params: qvel=[0.23442084656285678, -0.46127627876032984, -0.34663995588243773, -1.2088102826567648]
+  SA(J=0) params: bias=-1.6013
+
+--- RSA(J=0): training (100 epochs, 32 envs) ---
+  RSA(J=0) epoch   0: mean_reward = +55.7716
+  RSA(J=0) epoch  20: mean_reward = +29.8709
+  RSA(J=0) epoch  40: mean_reward = +55.7716
+  RSA(J=0) epoch  60: mean_reward = +55.7716
+  RSA(J=0) epoch  80: mean_reward = +55.7716
+  RSA(J=0) epoch  99: mean_reward = +55.7716
+  RSA(J=0) Gate B: first_5=45.9704, best_last_10=55.7716 -> PASS
+  RSA(J=0) eval: synchrony = 0.011154 +/- 0.000000
+  RSA(J=0) eval: kT = 0.0000
+  RSA(J=0) Gate A: |t| = 0.00
+  RSA(J=0) params: qpos=[-0.6769104823532202, 0.2215829397502863, 0.9243080536626677, 0.18131377064168047]
+  RSA(J=0) params: qvel=[0.4803174186444872, -0.18107073106447202, 0.3698793259151987, 0.12939371232704283]
+  RSA(J=0) params: bias=-0.9315
+
+  ============================================================
+  J = 0.5  (2/5)
+  ============================================================
+
+--- CEM(J=0.5): training (100 epochs, 32 envs) ---
+  CEM(J=0.5) epoch   0: mean_reward = +19.2672
+  CEM(J=0.5) epoch  20: mean_reward = +61.9387
+  CEM(J=0.5) epoch  40: mean_reward = +56.8538
+  CEM(J=0.5) epoch  60: mean_reward = +64.2965
+  CEM(J=0.5) epoch  80: mean_reward = +75.3738
+  CEM(J=0.5) epoch  99: mean_reward = +77.3995
+  CEM(J=0.5) Gate B: first_5=34.2739, best_last_10=77.3995 -> PASS
+  CEM(J=0.5) eval: synchrony = 0.014327 +/- 0.001264
+  CEM(J=0.5) eval: kT = 0.1151
+  CEM(J=0.5) Gate A: |t| = 11.34
+  CEM(J=0.5) params: qpos=[0.9374738115500234, 1.5902463089164545, 3.6211986116721637, 3.617666459607537]
+  CEM(J=0.5) params: qvel=[-2.893431566498599, -8.190272754430048, -12.158909142050154, -2.99785270374376]
+  CEM(J=0.5) params: bias=-1.3353
+
+--- SA(J=0.5): training (100 epochs, 32 envs) ---
+  SA(J=0.5) epoch   0: mean_reward = +55.7716
+  SA(J=0.5) epoch  20: mean_reward = +65.5197
+  SA(J=0.5) epoch  40: mean_reward = +63.6435

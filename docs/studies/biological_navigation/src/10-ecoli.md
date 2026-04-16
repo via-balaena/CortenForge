@@ -231,6 +231,67 @@ This does not weaken the design rule. The sweep data directly maps the optimal k
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs)
 
+---
+
+### Level 4 — Topological Encoding Test (Principle 1)
+
+Does injection sequence topology matter more than amplitude? In the biological E. coli regime (Re < 1), the scallop theorem guarantees that amplitude and rate are irrelevant — only the topology of the motion sequence determines net displacement. Principle 1 claims this extends to thermodynamic circuits: information must be encoded in sequence structure, not amplitude.
+
+#### The Test
+
+Fix J=1.0, kT=2.82 (P2 optimal). Compare two conditions:
+
+- **Condition A (topology):** Metachronal injection δ=0.66 (P4 optimal phase lag) at baseline amplitude A₀=0.3
+- **Condition B (amplitude):** Synchronized injection δ=0 at doubled amplitude A₀=0.6
+
+If topology beats doubled amplitude, Principle 1 transfers to the Langevin domain.
+
+Additionally: sweep synchronized amplitude from A₀=0.3 to 2.0 to find the crossover point where brute-force amplitude matches the topological advantage.
+
+#### Results
+
+**Principle 1: NOT VALIDATED.** Amplitude dominates in the Langevin domain.
+
+| Condition | δ | A₀ | Synchrony | Stderr |
+|-----------|---|-----|-----------|--------|
+| Metachronal (reference) | 0.66 | 0.3 | +0.050 | 0.007 |
+| Synchronized | 0 | 0.3 | +0.051 | 0.006 |
+| Synchronized | 0 | 0.4 | +0.067 | 0.007 |
+| Synchronized | 0 | 0.5 | +0.073 | 0.007 |
+| Synchronized | 0 | 0.6 | +0.088 | 0.007 |
+| Synchronized | 0 | 0.8 | +0.127 | 0.008 |
+| Synchronized | 0 | 1.0 | +0.154 | 0.006 |
+| Synchronized | 0 | 1.5 | +0.228 | 0.007 |
+| Synchronized | 0 | 2.0 | +0.290 | 0.006 |
+
+80 episodes per condition.
+
+**Gates:**
+
+| Gate | Test | Result |
+|------|------|--------|
+| 0 (Baseline) | Metachronal reference significant | PASS (\|t\|=7.23) |
+| 1 (Core claim) | Metachronal(0.3) > Synchronized(0.6) | **FAIL** (t=−3.81, amplitude wins) |
+| 2 (Amp effect) | Synchronized(0.6) > Synchronized(0.3) | PASS (amplitude helps) |
+
+**Why it fails — and why that's informative:**
+
+The scallop theorem applies at Re < 1 where the governing equations are linear and time-reversible. In that regime, amplitude literally cancels out of the physics. The Langevin domain has no such constraint: the oscillating field directly biases the particle's switching rate, and a stronger field produces proportionally more switching. Synchrony scales nearly linearly with amplitude (0.051 → 0.088 → 0.290 across the 0.3–2.0 range).
+
+At matched amplitude (A₀=0.3), metachronal and synchronized injection produce identical synchrony (0.050 vs 0.051). The P4 metachronal advantage (18–37% at certain J values) is a coupling-coordination effect that emerges from specific parameter combinations, not a universal topology-dominance principle.
+
+**What this means for thermodynamic circuit design:**
+
+In the Langevin domain, amplitude IS a design lever. Engineers can — and should — use signal strength to improve encoding fidelity. The topological encoding principle from Stokes-regime biology does not transfer to systems where the dynamics are nonlinear and time-irreversible. This is a boundary condition on the biological analogy, not a weakness: it tells us precisely where the analogy holds (noise tuning, phase coordination) and where it breaks (amplitude scaling).
+
+#### Design Rule (Principle 1)
+
+**Not applicable in the Langevin domain.** Amplitude modulation is effective and scales linearly with synchrony. Use it.
+
+For topology-sensitive encoding, the physics must constrain amplitude from the equations — the Stokes-regime scallop theorem does this, but Langevin dynamics do not. Principle 1 remains valid for systems where the scallop theorem applies (low Re fluids, certain linear circuit topologies), but does not generalize to the broader thermodynamic circuit architecture.
+
+> **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs) — `ising_topological_sweep`
+
 ## Key References
 
 - Purcell, E.M. "Life at Low Reynolds Number." *American Journal of Physics* 45 (1977)

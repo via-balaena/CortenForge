@@ -1,0 +1,23 @@
+   Compiling sim-therm-env v0.7.0 (/Users/jonhillesheim/forge/cortenforge/sim/L0/therm-env)
+    Finished `release` profile [optimized] target(s) in 1.33s
+     Running unittests src/lib.rs (target/release/deps/sim_therm_env-61618b6bef8aa1ee)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/experiment_1.rs (target/release/deps/experiment_1-b59e4d7fbbc12141)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/experiment_4.rs (target/release/deps/experiment_4-14c33d83b6e6e05d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/ising_chain.rs (target/release/deps/ising_chain-49eed57df7eb14f8)
+
+running 1 test
