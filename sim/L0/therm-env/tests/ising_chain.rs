@@ -19,8 +19,10 @@
     clippy::doc_markdown
 )]
 
+use sim_opt::{Sa, SaHyperparams};
 use sim_rl::{
-    Algorithm, Cem, CemHyperparams, Environment, LinearPolicy, Policy, Tensor, TrainingBudget,
+    Algorithm, Cem, CemHyperparams, Environment, LinearPolicy, LinearValue, OptimizerConfig,
+    Policy, Ppo, PpoHyperparams, Tensor, TrainingBudget,
 };
 use sim_therm_env::ThermCircuitEnv;
 use sim_thermostat::{DoubleWellPotential, PairwiseCoupling};
@@ -522,4 +524,134 @@ fn ising_hard_target() {
     // This is exploratory — we report results but don't hard-gate.
     // The anti-aligned target fights the coupling, so lower overlap is expected.
     eprintln!("  Hard target: overlap={ov_mean:.4} (vs. easy target for comparison)");
+}
+
+// ─── Shared train-and-report ─────────────────────────────────────────────
+
+/// Train an algorithm on the Ising chain, evaluate, report gates.
+fn train_and_report(
+    name: &str,
+    algo: &mut dyn Algorithm,
+    target: &'static [f64; N],
+    seed: u64,
+    eval_offset: u64,
+) {
+    let mut env = make_training_vecenv(J, target, N_ENVS, seed);
+
+    eprintln!("\n--- {name}: training ({N_EPOCHS} epochs, {N_ENVS} envs) ---");
+
+    let metrics = algo.train(&mut env, TrainingBudget::Epochs(N_EPOCHS), seed, &|m| {
+        if m.epoch % 20 == 0 || m.epoch == N_EPOCHS - 1 {
+            eprintln!(
+                "  {name} epoch {:3}: mean_reward = {:+.4}",
+                m.epoch, m.mean_reward,
+            );
+        }
+    });
+
+    // Gate B: learning monotonicity
+    let first_5_mean: f64 = metrics[..5].iter().map(|m| m.mean_reward).sum::<f64>() / 5.0;
+    let best_last_10 = metrics[metrics.len().saturating_sub(10)..]
+        .iter()
+        .map(|m| m.mean_reward)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let gate_b = best_last_10 > first_5_mean;
+    eprintln!(
+        "  {name} Gate B: first_5={first_5_mean:.4}, best_last_10={best_last_10:.4} -> {}",
+        if gate_b { "PASS" } else { "FAIL" }
+    );
+
+    // Evaluate
+    let trained = algo.policy_artifact().to_policy().unwrap();
+    let (overlaps, temps) =
+        evaluate_policy(trained.as_ref(), J, target, N_EVAL_EPISODES, eval_offset);
+    let (ov_mean, ov_stderr) = mean_stderr(&overlaps);
+    let (temp_mean, _temp_stderr) = mean_stderr(&temps);
+
+    eprintln!("  {name} eval: overlap = {ov_mean:.4} +/- {ov_stderr:.4}");
+    eprintln!("  {name} eval: kT = {temp_mean:.4}");
+
+    // Gate A: significant positive overlap
+    let t_stat = if ov_stderr > 1e-15 {
+        ov_mean / ov_stderr
+    } else {
+        0.0
+    };
+    eprintln!("  {name} Gate A: |t| = {:.2}", t_stat.abs());
+
+    // Gate D: report learned weights
+    let params = trained.params();
+    if params.len() <= 20 {
+        eprintln!("  {name} params ({} total):", params.len());
+        eprintln!("    qpos weights: {:?}", &params[..N]);
+        eprintln!("    qvel weights: {:?}", &params[N..2 * N]);
+        eprintln!("    bias:         {:.4}", params[2 * N]);
+    }
+
+    let qpos_weight_norm: f64 = params[..N].iter().map(|w| w * w).sum::<f64>().sqrt();
+    eprintln!(
+        "  {name} Gate D: qpos weight norm = {qpos_weight_norm:.4} -> {}",
+        if qpos_weight_norm > 0.1 {
+            "state-dependent"
+        } else {
+            "constant policy"
+        }
+    );
+
+    assert!(gate_b, "{name} Gate B FAILED: no learning improvement");
+    assert!(
+        ov_mean > 0.0,
+        "{name} should achieve positive overlap, got {ov_mean:.4}"
+    );
+    eprintln!("  {name}: PASS");
+}
+
+// ─── PPO training ────────────────────────────────────────────────────────
+
+#[test]
+#[ignore = "requires --release (~10 min)"]
+fn ising_ppo_encoding() {
+    eprintln!("\n=== Ising chain: PPO X-encoding (target=[+1,+1,+1,+1]) ===");
+
+    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
+    let value_fn = LinearValue::new(OBS_DIM, &obs_scale());
+    let mut algo = Ppo::new(
+        Box::new(policy),
+        Box::new(value_fn),
+        OptimizerConfig::adam(3e-4),
+        PpoHyperparams {
+            clip_eps: 0.2,
+            k_passes: 4,
+            gamma: 0.99,
+            gae_lambda: 0.95,
+            sigma_init: 1.0,
+            sigma_decay: 0.995,
+            sigma_min: 0.1,
+            max_episode_steps: EPISODE_STEPS,
+        },
+    );
+
+    train_and_report("PPO", &mut algo, &TARGET_ALIGNED, SEED_BASE + 100, 70_000);
+}
+
+// ─── SA training (sim-opt) ───────────────────────────────────────────────
+
+#[test]
+#[ignore = "requires --release (~10 min)"]
+fn ising_sa_encoding() {
+    eprintln!("\n=== Ising chain: SA X-encoding (target=[+1,+1,+1,+1]) ===");
+
+    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
+    let mut algo = Sa::new(
+        Box::new(policy),
+        SaHyperparams {
+            initial_temperature: 50.0,
+            proposal_std: 1.0,
+            cooling_decay: 0.955,
+            temperature_min: 0.1,
+            max_episode_steps: EPISODE_STEPS,
+        },
+    );
+
+    train_and_report("SA", &mut algo, &TARGET_ALIGNED, SEED_BASE + 200, 80_000);
 }
