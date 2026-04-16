@@ -1083,7 +1083,7 @@ update alone.**
 
 ---
 
-#### ☐ 8. Memory system hygiene
+#### ☑ 8. Memory system hygiene
 
 Stale `project_*.md` files in the memory dir; duplicate coverage between
 project files; MEMORY.md index entries pointing at closed initiatives;
@@ -1103,7 +1103,102 @@ line-count budget against the 200-line truncation limit (currently ~87).
 **Time:** ~30min total. Likely all (a) fixes.
 
 **Findings:**
-_(none yet)_
+
+Recon methodology DEPARTURE from all prior items: this is the one audit
+item that modifies the memory directory itself, not the repo tree. Recon
+is a cross-reference exercise — read every `.md` file in the memory dir,
+cross-reference against MEMORY.md's index, classify each file as
+keep/delete per the code-speaks rule and the memory system's own "what
+NOT to save" guidelines.
+
+**Inventory:** 65 files on disk (34 `project_*`, 27 `feedback_*`, 2
+`user_*`, 1 `reference_*`, 1 `MEMORY.md`). MEMORY.md at 91 lines (200
+budget). Every file read end-to-end. Cross-reference against the 34-file
+`project_*.md` disk listing identified:
+
+**Check 1 — Broken links in MEMORY.md:** zero. All linked files exist.
+
+**Check 2 — MEMORY.md line count:** 91 → 87 post-cleanup. Healthy.
+
+**Check 3 — Orphaned files** (on disk, no MEMORY.md entry): **21 files**
+(15 `project_*`, 5 `feedback_*`, 1 `user_*`). Of the 15 orphaned
+project files: 14 were completed initiatives or session-prep docs whose
+content is derivable from code/git history — deleted. 1
+(`project_thermo_rl_bridge_architecture.md`) carries non-obvious "why"
+context about the ctrl-channel architectural decision — kept and indexed.
+All 5 orphaned feedback files carry valid, non-redundant guidance — kept
+and indexed. The orphaned user file (`user_ml_bridge_inspiration.md`)
+captures timeless user motivation — kept and indexed.
+
+**Check 4 — Active Initiatives for completed work:** 9 entries in the
+Active Initiatives section pointed at files for shipped/closed
+initiatives:
+- `project_repo_audit.md` — COMPLETE 2026-04-11
+- `project_sim_bevy_api_spec.md` — All 6 changes COMPLETE
+- `project_sim_ml_pivot.md` — FULLY SHIPPED
+- `project_ml_chassis_refactor_study.md` — COMPLETE at study level
+- `project_sim_ml_split.md` — Shipped
+- `project_sim_ml_renovation.md` — CLOSED 2026-04-15
+- `project_grade_tool_audit.md` — COMPLETE 2026-04-10
+- `project_d2_sr_findings.md` — D2 COMPLETE
+- `project_sensor_examples.md` — 9 examples COMPLETE
+
+All 9 files deleted (content derivable from code/docs/git history per
+code-speaks). Their key conclusions already appear inline in MEMORY.md's
+Completed Work section. Active Initiatives trimmed from 13 to 4 entries.
+
+**Check 5 — Resolved Blockers section:** all 3 files
+(`project_connect_constraint_bug.md`, `project_sdf_sdf_stacking_blocker.md`,
+`project_convex_plane_dispatch.md`) deleted — fixes are in the code,
+commit messages have context. Section removed from MEMORY.md.
+
+**Check 6 — Duplicate coverage:** the ML cluster (11 files across
+`project_sim_ml_pivot`, `project_sim_ml_split`,
+`project_sim_ml_renovation`, `project_ml_chassis_refactor_study`,
+`project_autograd_engine`, `project_best_policy_tracking`,
+`project_competition_findings`, `project_policy_persistence`,
+`project_policy_visualization`, `project_reinforce_findings`,
+`project_ml_bridge_bench_revisit`) all described the same completed
+initiative from different angles. All 11 deleted. The crate split's
+architecture decisions live in code rustdoc; the study's execution
+record lives in the mdbook; the key conclusions live inline in
+MEMORY.md's Completed Work entries.
+
+**Check 7 — Feedback file review:** all 27 `feedback_*.md` files
+reviewed. None redundant with another or with default behavior. All
+kept. 5 previously orphaned files added to MEMORY.md's User Preferences
+index.
+
+**Net result:**
+
+| Metric | Before | After |
+|---|---|---|
+| Total files | 65 | 39 |
+| `project_*.md` | 34 | 8 |
+| `feedback_*.md` | 27 | 27 |
+| `user_*.md` | 2 | 2 |
+| `reference_*.md` | 1 | 1 |
+| MEMORY.md lines | 91 | 87 |
+| Orphaned files | 21 | 0 |
+| Broken links | 0 | 0 |
+| Active Initiatives entries | 13 | 4 |
+| Tokens freed (estimate) | — | ~60K+ (`project_ml_chassis_refactor_study.md` alone was 41K) |
+
+The single largest win is deleting `project_ml_chassis_refactor_study.md`
+(41K tokens) — a session-to-session handoff document that loaded into
+every conversation context but whose content is preserved in the mdbook
+and in MEMORY.md's inline Completed Work entries.
+
+**Dispositions:**
+
+- 26 file deletions → **(a)**, fix-inline (memory dir, not repo tree).
+- 7 orphaned file index additions → **(a)**, fix-inline (MEMORY.md).
+- MEMORY.md structural rewrite (remove Resolved Blockers section, trim
+  Active Initiatives from 13 to 4, add 5 feedback + 1 user + 1 project
+  entries to their respective sections) → **(a)**, fix-inline.
+- Feedback files — all 27 kept, none deleted. Conservative per audit
+  methodology note 6.
+- Vision/philosophy files — all kept per audit methodology note 7.
 
 ---
 
