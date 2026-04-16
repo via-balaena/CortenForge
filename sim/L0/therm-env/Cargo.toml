@@ -11,6 +11,9 @@ rust-version.workspace = true
 [dependencies]
 sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
+sim-thermostat = { workspace = true }
+sim-ml-chassis = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }

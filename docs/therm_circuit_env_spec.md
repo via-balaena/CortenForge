@@ -360,14 +360,51 @@ Status: Complete (2026-04-15)
 
 ### Phase 2
 
-Status: Not started
+Status: Complete (2026-04-15)
 
-**Deviations:** (updated after implementation)
-**Discoveries:** (updated after implementation)
-**Confirmed:** (updated after implementation)
+**Deviations:**
+- Error type gained `Space(#[from] SpaceError)` variant (spec only had
+  `MissingField`, `ZeroParticles`, `Env`, `Mjcf`). Needed for `?` on
+  obs/act space construction.
+- `PassiveStackBuilder` gained `with_arc(Arc<dyn PassiveComponent>)`
+  method in sim-thermostat (4-line addition). Needed because the
+  ThermCircuitEnvBuilder stores landscape components as
+  `Vec<Arc<dyn PassiveComponent>>` and the existing `with()` takes
+  `impl PassiveComponent` (would double-wrap).
+- Builder stores landscape as `Vec<Arc<dyn PassiveComponent>>` rather
+  than `Vec<Arc<dyn PassiveComponent>>` with a separate `Arc` wrapper —
+  same semantic, slightly different internal type.
+- Added manual `Debug` impl for `ThermCircuitEnv` (SimEnv has one;
+  needed for `unwrap_err()` in tests).
+
+**Discoveries:**
+- `SimEnvBuilder` requires ALL of `obs_space`, `act_space`, `reward`,
+  `done`, AND `truncated` — all five are mandatory. The
+  ThermCircuitEnvBuilder must supply defaults for `done` (always false)
+  and `truncated` (time-based) before passing to SimEnvBuilder.
+- `ObservationSpace::builder().all_qpos().all_qvel().build()` returns
+  `Result<_, SpaceError>`, not `EnvError`. Need separate `#[from]` in
+  the error enum.
+- `Box<dyn Fn(...)>` passed to `SimEnvBuilder::reward(impl Fn)` causes
+  double-boxing. Negligible overhead, but worth noting for Phase 3 if
+  VecEnv builder has the same shape.
+- No ctrl channels → `nu = 0` → `ActionSpace::all_ctrl()` produces
+  dim-0 action space → tests pass `Tensor::zeros(&[0])` for actions.
+
+**Confirmed:**
+- `PassiveStack::builder().with(thermostat).with(well).build()` +
+  `stack.install(&mut model)` works exactly as in the D2c reference.
+- `LangevinThermostat::new(gamma_vec, k_b_t, seed, 0)
+  .with_ctrl_temperature(0)` wires ctrl[0] as temperature multiplier.
+- Damping at gamma=10 over 100 sub-steps at h=0.001 produces visible
+  velocity decay (v ≈ 0.37 from exp(-1)), confirming thermostat is
+  active in the composed env.
+- Double-well restoring force at x=0.5 pushes particle toward x=+1.0
+  well, confirming landscape components are wired through cb_passive.
+- Default truncation `d.time > max_time` fires at the right step count.
 
 **Next-session prompt (Phase 3):**
-(written at end of Phase 2 session)
+(written to terminal output at end of Phase 2 session)
 
 ### Phase 3
 

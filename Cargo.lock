@@ -7564,6 +7564,9 @@ dependencies = [
  "approx 0.5.1",
  "sim-core",
  "sim-mjcf",
+ "sim-ml-chassis",
+ "sim-thermostat",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
