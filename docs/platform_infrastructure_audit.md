@@ -1204,7 +1204,7 @@ and in MEMORY.md's inline Completed Work entries.
 
 ### Tier D — capstone
 
-#### ☐ 9. xtask progress logging
+#### ☑ 9. xtask progress logging
 
 Implement progress logging on long-running xtask commands — `cargo xtask
 grade` especially. Per `feedback_xtask_grade_opacity.md`, the full grade
@@ -1238,7 +1238,124 @@ deeper refactor, file it as (b) and ship the minimum-viable logging only.
 **Time:** ~20min recon + ~1h implementation + ~20min testing = ~1.5–2h.
 
 **Findings:**
-_(none yet)_
+
+Recon methodology DEPARTURE from items 2–8: this is the first item that
+writes new Rust code in xtask. Items 1–4 modified existing `grade_*`
+helpers; item 9 adds logging infrastructure around the grade pipeline.
+Recon was a code read of `grade.rs` identifying every subprocess
+invocation, the criterion sequencing flow, existing output style, and
+the two-pass coverage structure. No script mirror, no grep sweep.
+
+**Subprocess inventory (9 calls):** `cargo locate-project` (instant),
+`cargo metadata` ×2 (fast, ~2s), `cargo llvm-cov --version` (instant),
+**`cargo llvm-cov --json --release --lib`** (~5-10 min, longest stage),
+**`cargo test --release`** (~1-5 min, second longest), `cargo doc`
+(seconds), `cargo clippy` (seconds), `cargo tree` (instant).
+
+**Existing output:** two bare `println!` lines in `grade_coverage`
+(`"    Pass 1: coverage (unit tests only)..."` and
+`"    Pass 2: all tests (no instrumentation)..."`). No timing, no
+criterion-level progress, no structured output. `owo_colors` for the
+final Unicode table. `eprintln!` used only once (test-failure warning).
+
+**Implementation — minimum bar + all three stretch goals shipped:**
+
+All progress logging goes to stderr; the final report (table or JSON)
+goes to stdout. This separation means `--json | jq .` works cleanly.
+
+1. **`Verbosity` struct** (`quiet`, `verbose`, `json`) threaded through
+   `run()` → `evaluate()` → `grade_coverage()`.
+
+2. **`run_criterion` helper** — wraps each criterion with
+   `"  criterion N/7: <name> — running…"` before and
+   `"  criterion N/7: <name> — <grade> (<elapsed>s)"` after, both on
+   stderr. Suppressed by `--quiet`.
+
+3. **`evaluate()` overall timing** — prints
+   `"  grading <crate> (profile: <label>)…"` at start and
+   `"  grading complete — <elapsed>s total"` at end, on stderr.
+
+4. **`grade_coverage()` pass messages** — enhanced with time estimates
+   (`"pass 1/2: cargo llvm-cov --lib --release (~5-10 min for
+   instrumented test runs)"`) and per-pass elapsed timing
+   (`"pass 1/2: done (342.1s)"`), both on stderr. Subprocess stdout
+   captured via `.output()` in `--json`/`--quiet` modes to keep stdout
+   clean.
+
+5. **`Heartbeat` struct** (~30 lines) — background thread printing
+   `"    … still running (Ns elapsed)"` every 30s on stderr. Stops
+   automatically on `Drop`. Activated by `--verbose` during the two
+   coverage passes. Polls the stop flag every 1s so the thread exits
+   within 1s of the subprocess completing.
+
+6. **CLI flags** — replaced the unused `--format` (was `_format: &str`)
+   with three clap flags: `--quiet` (suppress progress, conflicts with
+   `--verbose`), `--verbose` (enable heartbeat, conflicts with
+   `--quiet`), `--json` (structured JSON on stdout). `--quiet --verbose`
+   gives a clean clap error.
+
+7. **`json_output()`** (~20 lines) — builds JSON via `serde_json::json!`
+   (already a dep) and prints to stdout. Called in `run()` instead of
+   `display()` when `--json`.
+
+8. **`complete.rs` call site** — updated `evaluate()` call to pass
+   default `Verbosity` (non-quiet, non-verbose, non-json).
+
+**Diff shape:** 3 files, +257/−55 lines. All additive output
+infrastructure — zero changes to grading logic, zero changes to any
+`grade_*` helper, zero changes to pass/fail thresholds.
+
+**Verification:**
+
+- `cargo test -p xtask`: 44 passed, 0 failed (unchanged from pre-item-9).
+- `cargo clippy -p xtask --tests --all-features -- -D warnings`: clean.
+- `cargo xtask grade sim-types`: progress output readable, grade
+  unchanged (A). Sample output:
+  ```
+    grading sim-types (profile: Layer 0 library)…
+
+    criterion 1/7: Coverage — running…
+      pass 1/2: cargo llvm-cov --lib --release (~5-10 min for instrumented test runs)
+      pass 1/2: done (6.6s)
+      pass 2/2: cargo test --release (~1-5 min depending on integration tests)
+      pass 2/2: done (5.4s)
+    criterion 1/7: Coverage — A (12.1s)
+    criterion 2/7: Documentation — A (0.9s)
+    criterion 3/7: Clippy — A (0.4s)
+    criterion 4/7: Safety — A (0.0s)
+    criterion 5/7: Dependencies — A (0.1s)
+    criterion 6/7: Bevy-free — A (0.1s)
+
+    grading complete — 13.8s total
+
+  ╔══════════════════════════════════════════════════════════════╗
+  ║                      GRADING: sim-types                      ║
+  ...
+  ```
+- `cargo xtask grade sim-types --json 2>/dev/null | python3 -m json.tool`:
+  parses clean.
+- `cargo xtask grade sim-types --quiet`: progress suppressed, table only.
+- `cargo xtask grade sim-types --quiet --verbose`: clap error
+  (`the argument '--quiet' cannot be used with '--verbose'`).
+
+**Dispositions:**
+
+- Minimum bar (criterion progress + pass messages + elapsed timing) →
+  **(a)**, shipped in `a9fc7c45`.
+- Heartbeat (stretch goal, optional in spec) → **(a)**, shipped inline.
+  ~30 lines, self-contained, directly relevant to item 10's 12-crate
+  sweep.
+- `--quiet` / `--verbose` toggles (stretch goal) → **(a)**, shipped
+  inline. Clean three-tier design (quiet/normal/verbose). `--quiet` also
+  suppresses subprocess stdout for `cargo test` pass via `.output()`
+  capture.
+- JSON output mode (stretch goal) → **(a)**, shipped inline. Uses
+  existing `serde_json` dep, no new dependencies. stdout/stderr
+  separation makes it pipe-friendly.
+- The unused `--format` flag (was `_format: &str`, default `"pretty"`,
+  never read) → deleted, replaced by `--json`. Breaking change for
+  anyone typing `--format pretty` (nobody — the parameter was literally
+  unused).
 
 ---
 
