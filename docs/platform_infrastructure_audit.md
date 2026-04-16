@@ -1007,7 +1007,7 @@ patterns anywhere.
 
 ### Tier C — broader cleanup
 
-#### ☐ 7. Test organization audit
+#### ☑ 7. Test organization audit
 
 Overlapping coverage between sim-ml-chassis unit tests and sim-rl
 integration tests; dead fixtures; misplaced integration tests (e.g.,
@@ -1026,7 +1026,60 @@ as a per-file table."
 **Time:** ~30min recon + ~30min triage. Most findings likely (b)/(c).
 
 **Findings:**
-_(none yet)_
+
+Recon methodology DEPARTURE from items 2–6: pure reading audit — read
+each integration test file end-to-end, catalog its `use` imports, identify
+what crate's symbols it exercises, cross-reference against inline
+`#[cfg(test)]` modules in all three crates (22 in ml-chassis, 5 in rl,
+4 in opt). No grep sweep, no script mirror. The question is structural
+("is this test in the right crate?"), not pattern-based.
+
+**Per-file classification:**
+
+| File | Crate | Cross-crate imports | Placement | Duplication |
+|------|-------|---------------------|-----------|-------------|
+| `rl/tests/autograd_policy_reinforce_integration.rs` (54 lines, 1 test) | sim-rl | chassis (`AutogradPolicy`) + rl (`Reinforce`) | CORRECT | None — chassis inline tests cover forward/gradient parity via FD, not training convergence |
+| `rl/tests/best_tracker_cem_integration.rs` (207 lines, 5 tests) | sim-rl | chassis (`BestTracker`, `TrainingCheckpoint`) + rl (`Cem`) | CORRECT | None — chassis inline tests cover pure `BestTracker` unit logic (8 tests) |
+| `rl/tests/custom_task.rs` (110 lines, 1 test) | sim-rl | chassis (`TaskConfig::builder()`) + rl (`Cem`) + `sim_mjcf` | CORRECT | None |
+| `rl/tests/competition.rs` (1857 lines, 13 `#[ignore]` tests) | sim-rl | chassis (`Competition`, all policy/value types) + rl (all 5 algorithms) | CORRECT | None — chassis inline uses `MockAlgorithm` for API mechanics (28 unit tests); integration tests run real scientific experiments |
+| `opt/tests/d2c_sr_rematch.rs` (342 lines, 1 `#[ignore]` test) | sim-opt | opt (`Sa`, `run_rematch`) + rl (re-exported chassis types + `Cem`) + core + thermostat | CORRECT | None |
+| `opt/tests/d2c_sr_rematch_richer_sa.rs` (334 lines, 1 smoke + 1 `#[ignore]`) | sim-opt | opt (`RicherSa`, `run_rematch`) + rl + core + thermostat | CORRECT | Intentional within-crate MJCF/param duplication per Ch 42 §6(f) |
+| `opt/tests/d2c_sr_rematch_pt.rs` (313 lines, 1 smoke + 1 `#[ignore]`) | sim-opt | opt (`Pt`, `run_rematch`) + rl + core + thermostat | CORRECT | Same intentional duplication |
+
+**Structural findings:**
+
+1. **ml-chassis/tests/ does not exist** — correct. Chassis can't have
+   integration tests using rl algorithms without a `sim-ml-chassis →
+   sim-rl` dev-dep cycle. The 22 inline `#[cfg(test)]` modules provide
+   complete chassis-level unit coverage.
+
+2. **All 4 sim-rl integration tests cross the chassis/rl boundary** —
+   every file imports from both `sim_ml_chassis` and `sim_rl`. The two
+   relocated files (`autograd_policy_reinforce_integration.rs` and
+   `best_tracker_cem_integration.rs`) have module docstrings documenting
+   why they moved during the split.
+
+3. **All 3 sim-opt integration tests correctly placed** — they test
+   sim-opt's SA/RicherSa/PT algorithms, using sim-rl as a dev-dep for
+   the CEM control arm and chassis re-exports.
+
+4. **No orphaned fixtures, test data, or helper modules** — no
+   `testdata/`, `fixtures/`, or loose files in any test directory.
+
+5. **No duplicate coverage** — inline `#[cfg(test)]` modules and
+   integration tests operate at different layers. Chassis inline tests
+   use mocks/FD checks; integration tests use real algorithms through
+   real physics. Zero overlap.
+
+6. **Within-crate MJCF/parameter duplication in sim-opt** (~100 lines
+   across three rematch fixtures) — explicitly documented and declined
+   per Ch 42 §6(f): frozen task, self-contained fixtures, readability
+   preference. **(d) decline.**
+
+**Verdict:** Clean bill of health. No misplaced tests, no duplicate
+coverage, no orphaned fixtures, no gaps. The three-crate split landed
+tests in the right places. **Zero code changes; item closes on doc
+update alone.**
 
 ---
 
