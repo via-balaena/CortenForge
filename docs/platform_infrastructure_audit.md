@@ -549,7 +549,7 @@ clean. `cargo test -p xtask` 23 grader unit tests pass (was 10 pre-item-3).
 
 ---
 
-#### ☐ 4. Dep justification coverage
+#### ☑ 4. Dep justification coverage
 
 Every `Cargo.toml` under `sim/L0/`, `sim/L1/`, and `examples/fundamentals/`
 has each dep prefixed by a `#`-comment justification per
@@ -641,7 +641,153 @@ benefits from the same shape, so the pattern is now battle-tested):
    different gap" → fix inline.
 
 **Findings:**
-_(none yet)_
+
+Recon ran the script-mirror pattern from items 2-3, this time against
+`grade_dependencies:1169–1221` (line 1124 post-`bc119f08`, now extracted
+as `count_unjustified_deps` post-this-item). Script:
+`/tmp/item4-audit/audit.py` walks 188 `Cargo.toml` files (11 `sim/L0`,
+1 `sim/L1`, 176 `examples/fundamentals`). A second script
+`/tmp/item4-audit/gap_a_check.py` refined GAP-A detection from "any
+unclosed `name = {` line" (133 files) to "unclosed lines whose
+continuations actually contain `=`" (0 files) — the second pass is the
+one that answers whether the grader is currently false-positiving.
+
+**Path drift noted:** the intel block from `7b2c442b` referenced
+`sim/L1/sim-bevy/Cargo.toml`; actual path is `sim/L1/bevy/Cargo.toml`.
+Cosmetic — the recon script scans directories so no impact.
+
+**Classification of the 790 total unjustified sites:**
+
+| Bucket | Sites | Files | Notes |
+|---|---|---|---|
+| sim/L0 | 58 | 8 | `core` 12, `mjcf` 13, `urdf` 9, `gpu` 9, `tests` 6, `simd` 5, `types` 4. Clean: `thermostat`, `ml-chassis`, `rl`, `opt` (all justified in prior commits) |
+| sim/L1 | 1 | 1 | `sim-bevy` L21 `sim-urdf` — the 4th dep under a `# Layer 0 simulation crates` header, outside the grader's 3-line backward-scan window |
+| examples/fundamentals | 731 | 176 | 595 across `sim-cpu/` (151 crates) + 136 across `design/` + `mesh/` + `sim-ml/` (25 crates) |
+| **TOTAL** | **790** | **185** | |
+
+**Headline 1 — item 4's narrow question: 790 real sites.**
+`grade_dependencies` hadn't been run against 7 of 11 Layer 0 crates or
+any example crate since PR #192's chassis/rl split. Sim-opt-style
+audit-coverage hole exactly like the one item 4 exists to sweep.
+
+**Headline 2 — adjacent grader gaps: both latent, both closed inline.**
+Recon surfaced two `grade_dependencies` holes with zero active impact
+on this tree but both are real TOML forms the grader should handle:
+
+- **GAP-A — multi-line inline-table dep specs.** The old line-by-line
+  scanner processes each line independently. A legal TOML form like
+  `rand = {\n    version = "0.8",\n    features = ["x"],\n}` would have
+  its `version` and `features` continuation lines scanned as fresh dep
+  entries (both contain `=`), triple-counting the one real dep.
+  Zero active sites in tree (133 multi-line openings exist, all in the
+  `bevy = { workspace = true, features = [` + quoted-feature-string +
+  `] }` form, whose continuation lines have no `=` and were already
+  being skipped by the old `if !trimmed.contains('=')` branch).
+
+- **GAP-C — `[target.'cfg(...)'.dependencies]` sections.** The old
+  section-header check used exact-string equality on
+  `[dependencies]`/`[dev-dependencies]`/`[build-dependencies]`, so
+  target-conditional dep sections were silently skipped — the grader
+  would never see them, so any unjustified dep inside one would hold a
+  false-pass. Zero target-cfg sections in tree today.
+
+Both gaps closed by a brace-depth-aware `count_unjustified_deps` helper
+(extracted from the inline `grade_dependencies` loop, matching item 3's
+`count_unjustified_clippy_allows` precedent) plus an
+`is_dep_section_header` helper that accepts `[target.<spec>.dependencies]`
+and its dev-/build- variants, plus 21 new unit tests. Grader test count
+23 → 44. Commit `4623d7bd`.
+
+**Sanity checks of other forms:**
+
+- **GAP-B — workspace-inherited deps.** `name = { workspace = true }`
+  is the common form (810 occurrences workspace-wide). All single-line,
+  so the existing rule applies cleanly. Non-gap.
+- Comment-only lines, blank-line chain-breaking, section-header
+  chain-breaking, and `[patch.crates-io]`-style non-dep sections all
+  behave correctly under both old and new helper. Regression-tested.
+
+**Fixes shipped — per-crate `chore` commits:**
+
+| Crate / Bucket | Sites | Commit |
+|---|---|---|
+| Grader hardening (GAP-A + GAP-C + 21 unit tests) | — | `4623d7bd` |
+| sim-types | 4 | `d86df059` |
+| sim-simd | 5 | `94ba4416` |
+| sim-core | 12 | `049fdabb` |
+| sim-gpu | 9 | `0b5e1bd3` |
+| sim-mjcf | 13 | `aca8ec59` |
+| sim-urdf | 9 | `989c8080` |
+| sim-conformance-tests | 6 | `ae02602e` |
+| sim-bevy | 1 (grader-flagged) + restructured all deps for consistency | `97c9dd44` |
+| examples/fundamentals/sim-cpu/** (151 crates) | 595 | `ee281546` |
+| examples/fundamentals/{design,mesh,sim-ml}/** (25 crates) | 136 | `bd463940` |
+| **Total site fixes** | **790** | 10 per-bucket commits |
+
+**Bulk-edit tooling.** sim/L0 and sim/L1 crates edited by hand with
+`Edit` — low volume (1-13 sites each), high per-dep nuance (domain-
+specific justification). Example-crate sites swept by a
+`/tmp/item4-audit/fix_examples.py` script built around a static
+dep-name → justification map (20 unique names covered the full 731-site
+space). The script reads each `Cargo.toml`, runs `grade_dependencies_mirror`
+to get the unjustified line list, and inserts `<indent># <comment>`
+lines bottom-up per file so earlier inserts don't shift later line
+numbers — the same pattern validated in item 3 but with `# ` comment
+prefix for TOML instead of `// ` for Rust.
+
+**Recon-script reuse note.** `/tmp/item4-audit/audit.py` plus the
+static justification map in `fix_examples.py` generalize to any
+future dep-justification sweep. If item 5 (wall-clock assertions) uses
+a different helper-logic mirror, the repository-walking scaffolding can
+be cloned.
+
+**sim-bevy restructuring.** sim-bevy's pre-existing section-style
+comments (`# Shared geometry kernel`, `# Layer 0 simulation crates`,
+`# Math`, `# Bevy 0.18 - ...`) were replaced with per-dep comments so
+every dep falls inside the grader's 3-line backward-scan window. Pre-
+restructure, only `sim-urdf` (the 4th dep after `# Layer 0 simulation
+crates`) was flagged; the other three benefited incidentally from
+falling within 1-3 lines of the header. The new form is consistent with
+every other L0/L1 crate and doesn't rely on positional proximity to a
+section-level comment.
+
+**Verification:**
+- `cargo test -p xtask`: 44 passed, 0 failed (was 23 pre-item-4).
+- `cargo clippy -p xtask --tests --all-features -- -D warnings`: clean.
+- `/tmp/item4-audit/audit.py` post-item-4: **0 unjustified sites**
+  across all 188 in-scope Cargo.toml files.
+- TOML-comment-only edits cannot break crate compilation; no per-crate
+  `cargo check` run.
+- Full `cargo xtask grade` sweep deferred to item 10 per `feedback_xtask_grade_opacity.md`.
+
+**Dispositions:**
+
+- GAP-A fix → **(a)**, shipped in commit `4623d7bd`. No active sites
+  today, but the form is legal TOML and a known grader hole — fix
+  inline per item 3's precedent ("same recon, different gap") and the
+  user's explicit direction not to defer.
+- GAP-C fix → **(a)**, shipped in commit `4623d7bd`. Same rationale as
+  GAP-A.
+- `count_unjustified_deps` helper extraction + 21 new unit tests →
+  **(a)**, shipped in commit `4623d7bd`. Matches item 3's
+  `count_unjustified_clippy_allows` extraction pattern — grader
+  continues accumulating `#[cfg(test)]` coverage as state machines are
+  touched.
+- 790 site fixes → **(a)**, shipped in 10 per-bucket commits.
+- Promoting `audit.py` + `fix_examples.py` to an xtask subcommand
+  (`cargo xtask audit-deps` or `cargo xtask fix-deps`) → **(b)**, file
+  as follow-up. Same disposition as items 2 and 3's analogous scripts;
+  group with those if any becomes recurring need.
+- Intel-block path drift (`sim/L1/sim-bevy/Cargo.toml` →
+  `sim/L1/bevy/Cargo.toml`) → **(a)**, doc-only, correct inline on
+  close.
+- Pre-commit hook skipping clippy on Cargo.toml-only changes (observed
+  on every site-fix commit: "→ No Rust/Cargo files staged — skipping
+  clippy") → **(b)**, file as follow-up for `.git/hooks/pre-commit`
+  hardening. TOML changes CAN affect compilation (version bumps,
+  feature renames, new deps), so clippy should run when any
+  `Cargo.toml` is staged. Out of scope for this item; noted for future
+  hook tightening.
 
 ---
 
