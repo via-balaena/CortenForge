@@ -87,18 +87,6 @@ Combined with Principle 2: first tune kT to the SR optimum for your coupling str
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs)
 
----
-
-## Experiment 2 — Ctenophore Metachronal Phase-Lag Optimization (Full Hydrodynamic)
-
-Simulate a row of N ctenes beating with a variable phase lag δ in both the viscous and intermediate Re regime with full hydrodynamic coupling. The Ising chain experiment above validates the principle in the Langevin domain; this experiment would validate it in the fluid domain.
-
-> **Platform readiness:** Low — needs a simplified drag model (no CFD).
->
-> **Status:** Not started (Langevin validation complete above)
->
-> **Code:** —
-
 ## Key References
 
 - Byron, M.L. "Moving in the In-Between: Locomotion Strategies at Intermediate Reynolds Numbers." *Princeton MAE Seminar* (2022)

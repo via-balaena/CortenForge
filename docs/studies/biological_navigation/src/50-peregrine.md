@@ -4,9 +4,9 @@
 
 ## The Physics
 
-At very high Re, the flow is turbulent. Vortices are generated spontaneously and persistently. The swimmer is not avoiding or suppressing turbulence — it is immersed in a chaotic vortex field of its own and the environment's making. The conventional engineering assumption — that noise degrades control authority at high speed — breaks down entirely. A new physics emerges: vortex-induced lift. At high enough speeds, deliberately shaped vortices generate aerodynamic forces larger than those available from conventional attached flow. Speed generates control authority rather than destroying it.
+At very high Re, the flow is turbulent. Vortices are generated spontaneously and persistently. The swimmer is immersed in a chaotic vortex field of its own and the environment's making. In the peregrine's case, a new physics emerges: vortex-induced lift. Deliberately shaped vortices generate aerodynamic forces larger than those from conventional attached flow. Speed generates control authority rather than destroying it.
 
-This is the most counterintuitive regime for engineers trained in digital systems, where noise is always the enemy. It is also where the most powerful and unexpected biological principle lives.
+This is the most counterintuitive regime in the biological spectrum. It is also where the gap between the biology and the Langevin analog is widest — the principles here rely on spatial vortex structure and sharp bifurcation sensitivity, neither of which exists in 1D coupled double-well models. See the hypothesis section below for what this means.
 
 ## What the Peregrine Falcon Does
 

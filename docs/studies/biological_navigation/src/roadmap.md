@@ -12,54 +12,47 @@ No formal theory exists. Chip engineers currently tune empirically at every scal
 
 ## What a Solution Looks Like
 
-A design rule that says: *for a circuit with τ_circuit / τ_noise = X, use encoding strategy Y, expect fidelity Z.* Quantitative, testable, generalizable.
+A design rule that says: *for a circuit with coupling J, use noise temperature kT ≈ X, inject with phase lag δ ≈ Y, expect Z% fidelity improvement.* Quantitative, testable, generalizable.
 
 ## Where We Are
 
-| Step | Progress | Description |
-|------|----------|-------------|
-| 1. Framework | **Done** | 12 X-encoding principles across 5 Reynolds number regimes, derived from biological navigation strategies |
-| 2. 1-particle simulation | **Done** | SR peak validated (kT=1.70, \|t\|=4.52), controls pass, infrastructure works |
-| 3. Multi-particle simulation | **Running** | 4-cell Ising chain with coupling sweep J={0, 0.5, 1.0, 1.5, 2.0} |
-| 4. τ_circuit / τ_noise mapping | **Running** | Same experiment — coupling strength J is the proxy for τ_circuit / τ_noise |
-| 5. Paper | Not started | Framework + principle validation + regime characterization |
+| Step | Status | Description |
+|------|--------|-------------|
+| 1. Framework | **Done** | 12 X-encoding principles across 5 Reynolds number regimes |
+| 2. 1-particle simulation | **Done** | SR peak validated (kT=1.70, \|t\|=4.52), controls pass |
+| 3. Multi-particle validation | **Done** | 4-cell Ising chain: P2 coupling sweep (5 J values), P4 metachronal sweep (4 J × 20 δ), P6 scale sweep (N=4,8,16) |
+| 4. Boundary mapping | **Done** | P1 (topology) and P11 (bifurcation) tested and failed — stat-mech transfers, dynamical-systems doesn't |
+| 5. Publication | **In progress** | mdbook with three design rules, two boundary conditions, reproducible code |
 | 6. Hardware validation | Needs collaboration | Test predictions on Extropic / Normal Computing hardware |
 
-**Current position:** Steps 3 and 4 are running simultaneously — the coupling sweep *is* the τ_circuit / τ_noise characterization. The 4-cell Ising chain with oscillating fields tests whether SR scales to coupled systems, and sweeping J maps how the optimal noise temperature shifts with coupling strength. Scout validated J=2 peak at kT=6.5 (matching effective-barrier prediction). Phase 1 sweep (v2) ready to run (~35 min).
+## Three Design Rules (Validated)
 
-## The Path
+1. **Noise tuning (P2):** kT ≈ 2.3 for J < 1.5, kT ≈ 4.3 for J ≥ 2.0. ΔV/kT must stay below 3.0.
+2. **Injection timing (P4):** Phase lag δ ≈ π/5 for J < 2 (18–37% improvement). Synchronize for J ≥ 2.
+3. **Scale-invariance (P6):** Rules hold from N=4 to N=16 without retuning.
 
-### Step 1: Finish Experiment 1 cleanly
+## Two Boundary Conditions (Informative Negatives)
 
-One complete, statistically rigorous result. Stochastic resonance in a gradient-biased double well, validated with controls, confirmed across multiple algorithm classes (CEM, PPO, SA). This is the table stake — it proves the simulation infrastructure works and produces quantitative predictions.
+1. **Topology doesn't transfer (P1):** Amplitude dominates in Langevin domain. Use it freely.
+2. **Bifurcation doesn't transfer (P11):** No sharp critical point. ΔV axis is forgiving.
 
-### Step 2: Scale to coupled multi-particle systems
+## What's Next
 
-The infrastructure already supports this. `PairwiseCoupling` provides chain, ring, and fully-connected topologies. `ExternalField` provides per-particle bias. `ThermCircuitEnv` supports N particles. An Ising-like model with N coupled particles in double wells *is* a reasonable proxy for a thermodynamic circuit. This is where the 1-particle toy becomes a real circuit model.
+### Immediate: Publish the mdbook
 
-### Step 3: Define a concrete X → Y task
+The three-pillar story (P2+P4+P6) with boundary conditions is complete. Prose is tightened. Code is in the repo. Ship it.
 
-Not just "maximize synchrony" but something a chip engineer would recognize: *given a 4-cell coupled circuit, learn an injection protocol that steers the system from initial state X to target configuration Y.* The injection protocol is the X-encoding. The target configuration is the computation result. The fidelity is measurable.
+### Short-term: N-scaling experiment (~2 hours)
 
-### Step 4: Measure τ_circuit / τ_noise
+Peak synchrony increased with circuit size (0.041 → 0.049 → 0.063 for N=4→8→16). If real, bigger circuits are *better*. A targeted sweep at N=4–32 would confirm or refute this. This could upgrade the P6 result from "rules hold at scale" to "circuits improve at scale."
 
-This is the scientific headline. Compute the dimensionless ratio τ_circuit / τ_noise for the coupled model. Sweep it by varying coupling strength, noise temperature, and injection rate. Show that different ratios produce different optimal encoding strategies. Show that the boundaries between strategies correspond to the 5 biological regimes. This is the direct test of the framework.
+### Medium-term: Hardware collaboration
 
-### Step 5: One paper
-
-*"Biology-inspired X-encoding design rules for thermodynamic circuits, validated in Langevin simulation."*
-
-Contents: the framework (5 regimes, 12 principles), one principle validated end-to-end on a multi-cell model, the τ_circuit / τ_noise characterization with regime boundaries, and concrete design rules with quantitative predictions.
-
-### Step 6: Hardware collaboration
-
-Take the paper and predictions to Extropic and Normal Computing. "Here are design rules derived from biological navigation principles. Here are the quantitative predictions. Test them on your chip." Both companies have explicit partnership programs seeking exactly this kind of cross-domain theoretical contribution.
+Take the design rules and predictions to Extropic and Normal Computing. "Here are three quantitative rules derived from biological navigation principles. Here's where they hold. Here's where they break. Test them on your chip."
 
 ## What's NOT on the Path
 
-- Running all 7 biological experiments before any one is publication-ready
-- Building infrastructure for experiments that need physics models we don't have (CFD for ctenophores, tentacle MJCF for octopus)
-- Testing all 8 algorithms on every setup — 2-3 algorithm classes is sufficient for validation
-- Polishing simulation results beyond what's needed for the paper
-
-The bottleneck isn't more experiments. It's step 3 — moving from a toy model to something that maps onto real hardware.
+- Running all 12 biological principles before publishing
+- Building CFD infrastructure for principles that need fluid physics
+- Testing every algorithm variant on every setup
+- Waiting for perfect results before shipping

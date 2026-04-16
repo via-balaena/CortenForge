@@ -47,7 +47,7 @@ Three quantitative rules emerged, each tested with statistical gates and reprodu
 
 **P11 (bifurcation fails):** The peregrine exploits pitch instability near a bifurcation point for sensitivity amplification. In the Ising chain, the ΔV axis shows a broad plateau, not a sharp transition. Langevin systems at finite N have smooth crossovers. An engineer should tune kT carefully (sharp peak) and not worry about ΔV (forgiving axis).
 
-Both failures trace to the same root: the Langevin domain is nonlinear and time-irreversible, with smooth crossovers instead of sharp transitions. The mathematical structures that make topology and instability powerful in biology — geometric phase, bifurcation sensitivity — simply don't exist in this physics.
+Both failures trace to the same root: Langevin systems are **time-irreversible** and have **smooth energy landscapes** at finite system size. The biological principles relied on time-reversibility (for topology to dominate) and bifurcation sharpness (for instability to amplify). Neither constraint exists in thermodynamic circuits.
 
 ## The Complete Spectrum (Updated)
 

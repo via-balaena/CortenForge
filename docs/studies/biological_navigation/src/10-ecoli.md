@@ -26,7 +26,7 @@ Furthermore, E. coli achieves signal amplification of more than 50-fold: a 2% ch
 
 **Principle 1:** In the viscosity-dominated regime, amplitude and rate are irrelevant. Information must be encoded in the sequence structure — the topology — of the injection. A closed loop in the injection parameter space that encloses nonzero area produces net displacement in the output state; a reciprocal sequence produces nothing.
 
-*Applied to thermodynamic circuits:* At very low throughput rates where the circuit is effectively at quasi-static equilibrium, X-encoding cannot rely on amplitude modulation. The injection must trace a non-reciprocal path in parameter space. The geometric phase associated with that path determines the encoding fidelity. This is a formal statement that connects X-encoding theory to the mathematics of holonomy and gauge theory.
+*Applied to thermodynamic circuits:* This principle predicts that at very low throughput rates, X-encoding must rely on injection sequence topology rather than amplitude. **However, testing showed this does NOT transfer to the Langevin domain** — amplitude is a direct lever in time-irreversible systems (see Level 4 below). The scallop theorem requires time-reversibility, which Langevin dynamics lack.
 
 **Principle 2:** Stochastic resonance is available. An optimal noise level enhances encoding fidelity by improving sensitivity near the bifurcation point. The circuit should be tuned to operate in this regime rather than attempting to minimize noise.
 
@@ -107,7 +107,7 @@ Controls use the 3σ threshold: `|mean| < 3·stderr`.
 
 The SR curve shows the predicted bell shape: zero synchrony at low noise (particle trapped), rising to a clear peak at kT ≈ 1.7 (noise-driven switching matches signal frequency), falling back to zero at high noise (random switching destroys correlation).
 
-**1-particle multi-algorithm training:** Not yet run on the 1-particle setup (superseded by Level 3 below).
+**1-particle multi-algorithm training:** Skipped (superseded by Level 3 multi-particle validation below).
 
 > **Code:** [`sim/L0/therm-env/tests/experiment_1.rs`](../../../sim/L0/therm-env/tests/experiment_1.rs)
 

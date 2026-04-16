@@ -103,8 +103,8 @@ The test validates that the plumbing works end-to-end. The scientific claims of 
 
 ## Open Infrastructure Questions
 
-1. **Effective ctrl range:** The tanh → [0, 1] limitation means experiments needing kT > 1 will require either a rescaling layer, a different activation, or a wider ctrlrange in the MJCF. This is a design decision that should be made before Experiment 1.
+1. **Effective ctrl range:** Resolved. The Ising chain experiments use `k_b_t = CTRL_RANGE_HI = 15.0` so the tanh output [0,1] maps to kT ∈ [0, 15], covering all predicted SR peaks.
 
-2. **Per-env thermostat seeding:** Currently all VecEnv environments share the same thermostat seed. Per-env seeding via the `env_index` parameter in `on_reset` is deferred but will matter for statistical rigor.
+2. **Per-env thermostat seeding:** Currently all VecEnv environments share the same thermostat seed. Per-env seeding via the `env_index` parameter in `on_reset` is deferred — the sweep experiments (which use single-env episodes with explicit per-episode seeds) are not affected.
 
-3. **Multi-algorithm validation:** The platform supports all 8 algorithms via the `Algorithm` trait. Experiment 1 tests three algorithm classes (CEM, PPO, SA) on the same gradient-biased SR task — the first cross-algorithm validation on `ThermCircuitEnv`.
+3. **Multi-algorithm validation:** Partially complete. CEM, SA, and RicherSA were tested on the Ising chain training task. Results were mixed — CEM converged to a local optimum rather than the SR peak. The sweep data directly maps the optimal kT, making agent-based discovery a secondary concern. See Chapter 1, "Why Not Train Agents to Find the Peak?"
