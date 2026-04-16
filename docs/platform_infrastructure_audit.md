@@ -802,7 +802,7 @@ section-level comment.
 
 ### Tier B — anti-pattern sweeps (fast, repo-wide grep)
 
-#### ☐ 5. Wall-clock assertion sweep
+#### ☑ 5. Wall-clock assertion sweep
 
 Grep for `assert!(...)` patterns matching `wall_time_ms`, `elapsed`,
 `Duration::as_*`, `Instant::elapsed`, etc., across all workspace test files.
@@ -815,16 +815,97 @@ Four were deleted from sim-opt during PR #192:
 These crash under llvm-cov's ~10× instrumentation overhead and are a flaky
 anti-pattern even outside grading. Survey for stragglers.
 
-**Recon prompt sketch:** "Grep workspace-wide for `assert!` / `assert_*`
-calls that compare wall-clock measurements (`wall_time_ms`, `elapsed`,
-`Duration::as_*`, `Instant::elapsed`, `start.elapsed()`). Include both
-`tests/` directories and `#[cfg(test)]` blocks. Report file:line + the
-asserted threshold. Exclude historical-record files under `archive/`."
+**Recon methodology — DEPARTURE from items 2-4's script-mirror pattern.**
+Item 5 is a test-side anti-pattern sweep, not a grader-discipline audit. There's
+no `grade_*` helper to mirror — wall-clock asserts are flaky-under-instrumentation
+because they encode an assumption the grader's coverage criterion can't satisfy,
+not because the grader is missing a check. Direct grep is the authoritative
+tool for this question. Workspace-wide multi-line `assert!` regex over `*.rs`
+files covering `elapsed`, `wall_time`, `speedup`, `steps_per_sec(_ond)`, `ratio`,
+`secs_f`, `as_millis`, `as_micros`, `as_nanos`. Cross-referenced the 21 files
+containing `.elapsed()` to separate test-side gates from production timing
+emission and from `eprintln!`-only diagnostics. Multi-line `if elapsed > X
+{ panic! }` pattern: zero hits — only the `assert!`-form exists in this tree.
 
-**Time:** ~10min recon + delete-on-sight fixes.
+**Classification of timing-derived assertions:**
 
-**Findings:**
-_(none yet)_
+| Verdict | Count | Meaning |
+|---|---|---|
+| HARD-CRASH active — pure throughput gate | 8 | `assert!(steps_per_sec >= N)` where N is an absolute threshold; throughput drops ~10× under llvm-cov, crash guaranteed; on default grader path |
+| HARD-CRASH but `#[ignore]`'d | 3 | Same anti-pattern, gated behind `#[ignore = "benchmark"]`; not on default grader path but still anti-pattern by the same logic. Deleted under sharpen-the-axe. |
+| BORDERLINE — same-test ratio gate, kept and flagged for item 10 | 2 | Both halves run in same test under same instrumentation; ratio bounds are generous: `runtime_flags.rs:2820` AC32 `ratio < 0.5` (BVH < 50% brute), `collision_performance.rs:534` scaling `ratio < 10.0` (5×→10× bodies). If item 10's grade run crashes here, delete then. |
+| DIAGNOSTIC ONLY (kept) | many | `eprintln!`/`println!` of elapsed; production `wall_time_ms` field emission in rl/opt training loops; `print_report` Check entries with discarded result in non-test example mains; `profile_steps`/`profile_split_steps` whose returned timings feed only `eprintln!`s; `timed`/`benchmark_steps_per_second` helpers with zero callers (dead code, left as-is). |
+
+**Recon-fidelity note.** Initial classification put `derivatives.rs:test_pos_deriv_performance` in the BORDERLINE bucket; spot-check during verification revealed it's already `#[ignore]`'d (`#[ignore = "benchmark — run with --release --ignored for meaningful timing"]` at line 1965), making it a HARD-CRASH-#[ignore]'d site, not a borderline-active. The deletion decision stands (sharpen-the-axe deletes #[ignore]'d sites of the same shape), but the better-than-expected outcome is that **zero borderline asserts were touched** — the two ratio asserts that survive (AC32 mesh midphase, scaling_collision_bodies) are explicitly kept and flagged for item 10. Methodological fix: future recon should `grep -B 5` for `#[ignore]` immediately above any candidate site, not infer it from line context.
+
+**Headline — 11 deletions across 4 files:**
+
+| File | Function | Line | Form | Status |
+|---|---|---|---|---|
+| `sim/L0/tests/integration/collision_performance.rs` | `perf_simple_pendulum` | 121 | `steps_per_sec >= threshold` | DELETED |
+| same | `perf_double_pendulum` | 161 | `steps_per_sec >= threshold` | DELETED |
+| same | `perf_ball_stack` | 211 | `steps_per_sec >= threshold` | DELETED |
+| same | `perf_falling_boxes` (`#[ignore]`) | 265 | `steps_per_sec >= threshold` | DELETED |
+| same | `perf_capsule_pile` | 310 | `steps_per_sec >= threshold` | DELETED |
+| same | `perf_humanoid_simplified` | 392 | `steps_per_sec >= threshold` | DELETED |
+| same | `perf_robot_arm` | 451 | `steps_per_sec >= threshold` | DELETED |
+| `sim/L0/tests/integration/validation.rs` | `test_performance_humanoid` | 1686 | `steps_per_second > min_threshold` | DELETED |
+| same | `test_performance_simple_pendulum` | 1756 | `steps_per_second > 3_000.0` | DELETED |
+| `sim/L0/tests/integration/derivatives.rs` | `test_pos_deriv_performance` (`#[ignore]`) | 2011 | `speedup >= 1.5` | DELETED |
+| `design/cf-design/src/solid.rs` | `mesh_to_tolerance_perf_50mm_sphere` (`#[ignore]`) | 3564 | `elapsed < 5.0` | DELETED |
+
+**Cleanup of orphaned dead code (collision_performance.rs):** removed
+`SIMPLE_DEBUG_THRESHOLD`, `SIMPLE_RELEASE_THRESHOLD`, `CONTACT_DEBUG_THRESHOLD`,
+`CONTACT_RELEASE_THRESHOLD`, `COMPLEX_DEBUG_THRESHOLD`, `COMPLEX_RELEASE_THRESHOLD`
+constants and the `get_threshold` helper function — orphaned by the assert
+deletions. Module-level docstring rewritten from "establishes hard performance
+thresholds" to "throughput observation and scaling validation". Net diff:
+−136 lines, +9 lines.
+
+**Cleanup of orphaned dead code (validation.rs):** in `test_performance_humanoid`
+removed the `#[cfg(debug_assertions)]` / `#[cfg(not(debug_assertions))]`
+`min_threshold` + `is_ci` machinery, the multi-line threshold-strategy comment,
+and the `else if is_ci { ... }` branch of the spec-tracking output. Same in
+`test_performance_simple_pendulum`. Spec-tracking `MEETS SPEC` / `BELOW SPEC`
+print preserved (simplified to `if > 10_000 / else`). Throughput `println!`
+preserved. Net diff: −49 lines, +2 lines.
+
+**Verification:** `cargo test -p sim-conformance-tests --release` and
+`cargo test -p cf-design --release` (per-crate per `feedback_xtask_grade_opacity.md`,
+not `cargo xtask grade`). Both pass post-fix. Full `cargo xtask grade` sweep
+deferred to item 10.
+
+**Dispositions:**
+
+- 8 hard-crash active deletes → **(a)** fix-inline.
+- 3 `#[ignore]`'d HARD sites (collision_performance.rs `perf_falling_boxes`,
+  derivatives.rs `test_pos_deriv_performance`, cf-design solid.rs
+  `mesh_to_tolerance_perf_50mm_sphere`) → **(a)** fix-inline. Same anti-pattern;
+  sharpen-the-axe closes them inline rather than waiting for someone to run
+  `--ignored` and hit the same crash. Throughput is still observable via the
+  preserved `eprintln!`/`println!` lines in each.
+- `runtime_flags.rs:2820` AC32 `ratio < 0.5` → **kept**, flagged for item 10
+  verification. Both halves run in the same test under the same instrumentation
+  overhead, only 5 iterations per path; mesh-mesh contact code is symmetric
+  across both paths; bound is generous. Delete only if item 10's grade run
+  crashes here.
+- `collision_performance.rs:534` scaling `ratio < 10.0` → **kept**, flagged
+  for item 10. Same-test ratio with very generous bound (O(n³) Cholesky already
+  eats most of the headroom; instrumentation drift on top is unlikely to push
+  past 10×).
+- Orphaned `THRESHOLD` constants and `get_threshold` helper cleanup →
+  **(a)** fix-inline. Per CLAUDE.md ("avoid backwards-compat hacks like
+  renaming unused `_var`"), the right move when assertions become dead is
+  to delete the dead code, not silence the warnings.
+- `min_threshold` / `is_ci` cleanup in `validation.rs` → **(a)** fix-inline.
+  Same rationale.
+
+**Methodology takeaway:** item 5 confirms the items 2-4 script-mirror pattern
+is not the only audit shape that fits this tier. When the grader doesn't have
+a helper to mirror — when the question is "does any test contain anti-pattern
+X?" rather than "does the grader correctly check rule Y?" — direct grep with
+careful triage is the right tool. The `assert!`-form-only result (zero
+panic-in-if straggers) confirms the audit's narrow scope was correctly drawn.
 
 ---
 
