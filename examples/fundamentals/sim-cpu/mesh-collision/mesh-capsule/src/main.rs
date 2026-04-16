@@ -116,7 +116,7 @@ fn setup(
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let data = model.make_data();
 
-    println!("  Model: {} bodies, {} geoms\n", model.nbody, model.ngeom,);
+    println!("  Model: {} bodies, {} geoms\n", model.nbody, model.ngeom);
 
     let mat_ground = materials.add(MetalPreset::BrushedMetal.material());
     let mat_capsule =

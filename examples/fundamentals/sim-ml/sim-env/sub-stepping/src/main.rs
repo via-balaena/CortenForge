@@ -357,11 +357,9 @@ fn sub_step_diagnostics(
                 "left={}, right={}, ratio={}",
                 envs.left_act_steps,
                 envs.right_act_steps,
-                if envs.right_act_steps > 0 {
-                    envs.left_act_steps / envs.right_act_steps
-                } else {
-                    0
-                }
+                envs.left_act_steps
+                    .checked_div(envs.right_act_steps)
+                    .unwrap_or(0)
             ),
         },
         Check {

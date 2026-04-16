@@ -702,7 +702,7 @@ fn check_10_dynamic_equivalence_qpos() -> (u32, u32) {
     let p = check(
         "Dynamic equivalence (qpos)",
         pass,
-        &format!("max |qpos_urdf - qpos_mjcf| = {max_diff:.2e} (need <1e-6)",),
+        &format!("max |qpos_urdf - qpos_mjcf| = {max_diff:.2e} (need <1e-6)"),
     );
     (u32::from(p), 1)
 }
@@ -735,7 +735,7 @@ fn check_11_dynamic_equivalence_qvel() -> (u32, u32) {
     let p = check(
         "Dynamic equivalence (qvel)",
         pass,
-        &format!("max |qvel_urdf - qvel_mjcf| = {max_diff:.2e} (need <1e-6)",),
+        &format!("max |qvel_urdf - qvel_mjcf| = {max_diff:.2e} (need <1e-6)"),
     );
     (u32::from(p), 1)
 }

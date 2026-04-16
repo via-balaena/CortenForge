@@ -325,19 +325,15 @@ impl PolicyArtifact {
         }
         // 3. hidden_dims consistency with kind
         match self.descriptor.kind {
-            NetworkKind::Linear => {
-                if !self.descriptor.hidden_dims.is_empty() {
-                    return Err(ArtifactError::LinearHiddenDims(
-                        self.descriptor.hidden_dims.len(),
-                    ));
-                }
+            NetworkKind::Linear if !self.descriptor.hidden_dims.is_empty() => {
+                return Err(ArtifactError::LinearHiddenDims(
+                    self.descriptor.hidden_dims.len(),
+                ));
             }
-            NetworkKind::Mlp | NetworkKind::Autograd => {
-                if self.descriptor.hidden_dims.is_empty() {
-                    return Err(ArtifactError::MissingHiddenDims {
-                        kind: self.descriptor.kind,
-                    });
-                }
+            NetworkKind::Mlp | NetworkKind::Autograd if self.descriptor.hidden_dims.is_empty() => {
+                return Err(ArtifactError::MissingHiddenDims {
+                    kind: self.descriptor.kind,
+                });
             }
             // Future kinds — can't validate structure, but to_policy()
             // will return UnknownKind if it can't reconstruct.

@@ -94,47 +94,45 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
         let objid = model.sensor_objid[sensor_id];
 
         match model.sensor_type[sensor_id] {
-            MjSensorType::JointPos => {
+            MjSensorType::JointPos if objid < model.njnt => {
                 // Scalar joint position (hinge/slide only).
                 // Ball joints use BallQuat, free joints use FramePos + FrameQuat.
-                if objid < model.njnt {
-                    let qpos_adr = model.jnt_qpos_adr[objid];
-                    match model.jnt_type[objid] {
-                        MjJointType::Hinge | MjJointType::Slide => {
-                            sensor_write(&mut data.sensordata, adr, 0, data.qpos[qpos_adr]);
-                        }
-                        _ => {} // Ball/Free not supported by JointPos; use BallQuat/FramePos
+                let qpos_adr = model.jnt_qpos_adr[objid];
+                match model.jnt_type[objid] {
+                    MjJointType::Hinge | MjJointType::Slide => {
+                        sensor_write(&mut data.sensordata, adr, 0, data.qpos[qpos_adr]);
                     }
+                    _ => {} // Ball/Free not supported by JointPos; use BallQuat/FramePos
                 }
             }
 
-            MjSensorType::BallQuat => {
+            MjSensorType::BallQuat
+                if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball =>
+            {
                 // Ball joint quaternion [w, x, y, z]
-                if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball {
-                    let qpos_adr = model.jnt_qpos_adr[objid];
-                    // Read quaternion from qpos and normalize in locals
-                    // (MuJoCo does mju_normalize4). Use 1e-10 threshold and
-                    // identity reset to match our normalize_quaternion() convention.
-                    let (w, x, y, z) = (
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                        data.qpos[qpos_adr + 3],
+                let qpos_adr = model.jnt_qpos_adr[objid];
+                // Read quaternion from qpos and normalize in locals
+                // (MuJoCo does mju_normalize4). Use 1e-10 threshold and
+                // identity reset to match our normalize_quaternion() convention.
+                let (w, x, y, z) = (
+                    data.qpos[qpos_adr],
+                    data.qpos[qpos_adr + 1],
+                    data.qpos[qpos_adr + 2],
+                    data.qpos[qpos_adr + 3],
+                );
+                let norm = (w * w + x * x + y * y + z * z).sqrt();
+                if norm > 1e-10 {
+                    sensor_write4(
+                        &mut data.sensordata,
+                        adr,
+                        w / norm,
+                        x / norm,
+                        y / norm,
+                        z / norm,
                     );
-                    let norm = (w * w + x * x + y * y + z * z).sqrt();
-                    if norm > 1e-10 {
-                        sensor_write4(
-                            &mut data.sensordata,
-                            adr,
-                            w / norm,
-                            x / norm,
-                            y / norm,
-                            z / norm,
-                        );
-                    } else {
-                        // Degenerate — reset to identity [w=1, x=0, y=0, z=0]
-                        sensor_write4(&mut data.sensordata, adr, 1.0, 0.0, 0.0, 0.0);
-                    }
+                } else {
+                    // Degenerate — reset to identity [w=1, x=0, y=0, z=0]
+                    sensor_write4(&mut data.sensordata, adr, 1.0, 0.0, 0.0, 0.0);
                 }
             }
 
@@ -240,11 +238,9 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 }
             }
 
-            MjSensorType::SubtreeCom => {
+            MjSensorType::SubtreeCom if objid < model.nbody => {
                 // Read from persistent subtree_com field (computed in position stage)
-                if objid < model.nbody {
-                    sensor_write3(&mut data.sensordata, adr, &data.subtree_com[objid]);
-                }
+                sensor_write3(&mut data.sensordata, adr, &data.subtree_com[objid]);
             }
 
             MjSensorType::Rangefinder => {
@@ -304,39 +300,32 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 sensor_write3(&mut data.sensordata, adr, &b_sensor);
             }
 
-            MjSensorType::ActuatorPos => {
+            MjSensorType::ActuatorPos if objid < model.nu => {
                 // Actuator position: transmission length = gear * joint_position.
                 // For joint-type transmissions, this is gear[0] * qpos[qpos_adr].
-                if objid < model.nu {
-                    match model.actuator_trntype[objid] {
-                        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
-                            let jnt_id = model.actuator_trnid[objid][0];
-                            if jnt_id < model.njnt {
-                                let qpos_adr = model.jnt_qpos_adr[jnt_id];
-                                let gear = model.actuator_gear[objid][0];
-                                sensor_write(
-                                    &mut data.sensordata,
-                                    adr,
-                                    0,
-                                    gear * data.qpos[qpos_adr],
-                                );
-                            }
+                match model.actuator_trntype[objid] {
+                    ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                        let jnt_id = model.actuator_trnid[objid][0];
+                        if jnt_id < model.njnt {
+                            let qpos_adr = model.jnt_qpos_adr[jnt_id];
+                            let gear = model.actuator_gear[objid][0];
+                            sensor_write(&mut data.sensordata, adr, 0, gear * data.qpos[qpos_adr]);
                         }
-                        ActuatorTransmission::Tendon => {
-                            let tendon_id = model.actuator_trnid[objid][0];
-                            let value = if tendon_id < model.ntendon {
-                                data.ten_length[tendon_id] * model.actuator_gear[objid][0]
-                            } else {
-                                0.0
-                            };
-                            sensor_write(&mut data.sensordata, adr, 0, value);
-                        }
-                        ActuatorTransmission::Site
-                        | ActuatorTransmission::Body
-                        | ActuatorTransmission::SliderCrank => {
-                            // Length set by transmission function (runs before this).
-                            sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]);
-                        }
+                    }
+                    ActuatorTransmission::Tendon => {
+                        let tendon_id = model.actuator_trnid[objid][0];
+                        let value = if tendon_id < model.ntendon {
+                            data.ten_length[tendon_id] * model.actuator_gear[objid][0]
+                        } else {
+                            0.0
+                        };
+                        sensor_write(&mut data.sensordata, adr, 0, value);
+                    }
+                    ActuatorTransmission::Site
+                    | ActuatorTransmission::Body
+                    | ActuatorTransmission::SliderCrank => {
+                        // Length set by transmission function (runs before this).
+                        sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]);
                     }
                 }
             }
@@ -352,11 +341,11 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             // DT-79: User-defined sensors at position stage
-            MjSensorType::User => {
-                if model.sensor_datatype[sensor_id] == MjSensorDataType::Position {
-                    if let Some(ref cb) = model.cb_sensor {
-                        (cb.0)(model, data, sensor_id, SensorStage::Pos);
-                    }
+            MjSensorType::User
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Position =>
+            {
+                if let Some(ref cb) = model.cb_sensor {
+                    (cb.0)(model, data, sensor_id, SensorStage::Pos);
                 }
             }
 

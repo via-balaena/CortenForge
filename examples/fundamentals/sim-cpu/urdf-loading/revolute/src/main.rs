@@ -122,7 +122,7 @@ fn main() {
                 .display(|m, d| {
                     let angle = d.joint_qpos(m, 0)[0];
                     let vel = d.joint_qvel(m, 0)[0];
-                    format!("angle={:+6.1}°  vel={vel:+.2} rad/s", angle.to_degrees(),)
+                    format!("angle={:+6.1}°  vel={vel:+.2} rad/s", angle.to_degrees())
                 })
                 .track_period(
                     "Period",

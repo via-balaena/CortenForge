@@ -91,28 +91,24 @@ fn load_obj_from_reader<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
         }
 
         match parts[0] {
-            "v" => {
+            "v" if parts.len() >= 4 => {
                 // Vertex: v x y z [w]
-                if parts.len() >= 4 {
-                    let x: f64 = parts[1].parse()?;
-                    let y: f64 = parts[2].parse()?;
-                    let z: f64 = parts[3].parse()?;
-                    mesh.vertices.push(Point3::new(x, y, z));
-                }
+                let x: f64 = parts[1].parse()?;
+                let y: f64 = parts[2].parse()?;
+                let z: f64 = parts[3].parse()?;
+                mesh.vertices.push(Point3::new(x, y, z));
             }
-            "f" => {
+            "f" if parts.len() >= 4 => {
                 // Face: f v1 v2 v3 ... or f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3 ...
-                if parts.len() >= 4 {
-                    let indices: Result<Vec<u32>, _> =
-                        parts[1..].iter().map(|s| parse_face_vertex(s)).collect();
-                    let indices = indices?;
+                let indices: Result<Vec<u32>, _> =
+                    parts[1..].iter().map(|s| parse_face_vertex(s)).collect();
+                let indices = indices?;
 
-                    // Triangulate polygon (fan triangulation)
-                    if indices.len() >= 3 {
-                        let first = indices[0];
-                        for i in 1..(indices.len() - 1) {
-                            mesh.faces.push([first, indices[i], indices[i + 1]]);
-                        }
+                // Triangulate polygon (fan triangulation)
+                if indices.len() >= 3 {
+                    let first = indices[0];
+                    for i in 1..(indices.len() - 1) {
+                        mesh.faces.push([first, indices[i], indices[i + 1]]);
                     }
                 }
             }

@@ -300,7 +300,7 @@ fn sensor_diagnostics(
             Check {
                 name: "|gyro| == Ω",
                 pass: val.gyro_mag_max_err < 1e-4,
-                detail: format!("max |err|={:.2e} (Ω={omega:.3})", val.gyro_mag_max_err,),
+                detail: format!("max |err|={:.2e} (Ω={omega:.3})", val.gyro_mag_max_err),
             },
             Check {
                 name: "|veloc| == Ω·L·sin(θ)",

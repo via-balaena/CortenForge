@@ -143,7 +143,7 @@ fn setup(
     data.qpos[0] = std::f64::consts::FRAC_PI_6; // 30°
     let _ = data.forward(&model);
 
-    println!("  URDF: 3 links, 2 joints (1 fixed, 1 revolute)",);
+    println!("  URDF: 3 links, 2 joints (1 fixed, 1 revolute)");
     println!(
         "  Model: {} bodies, {} joints, {} DOFs (fixed joint eliminated)\n",
         model.nbody, model.njnt, model.nv

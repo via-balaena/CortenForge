@@ -299,7 +299,7 @@ fn reinforce_learns_ratchet_flashing() {
         .fold(f64::NEG_INFINITY, f64::max);
     eprintln!("\nTraining/evaluation gap:");
     eprintln!("  peak training mean_reward = {training_peak:.2}");
-    eprintln!("  deterministic eval displacement = {trained_mean:.2}",);
+    eprintln!("  deterministic eval displacement = {trained_mean:.2}");
     eprintln!(
         "  gap ratio = {:.1}× (training inflated by exploration noise)",
         training_peak / trained_mean.abs().max(0.01),

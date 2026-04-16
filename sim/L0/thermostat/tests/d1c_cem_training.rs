@@ -277,7 +277,7 @@ fn cem_discovers_ratchet_flashing() {
     let trained_disps = evaluate_displacement(trained_policy.as_ref(), N_EVAL_EPISODES, 5000);
     let (trained_mean, trained_stderr) = mean_stderr(&trained_disps);
 
-    eprintln!("\ntrained policy: mean displacement = {trained_mean:.4} ± {trained_stderr:.4}",);
+    eprintln!("\ntrained policy: mean displacement = {trained_mean:.4} ± {trained_stderr:.4}");
 
     // ── 4. Gate A: ratchet effect (displacement ≠ 0, p < 0.01) ─────────
 
@@ -301,7 +301,7 @@ fn cem_discovers_ratchet_flashing() {
     let random_disps = random_baseline_displacements(N_EVAL_EPISODES, 6000);
     let (random_mean, random_stderr) = mean_stderr(&random_disps);
 
-    eprintln!("random baseline: mean displacement = {random_mean:.4} ± {random_stderr:.4}",);
+    eprintln!("random baseline: mean displacement = {random_mean:.4} ± {random_stderr:.4}");
 
     // Both displacements are negative (drift in -x). The trained policy
     // should have MORE negative displacement (stronger ratchet current).
