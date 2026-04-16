@@ -7558,6 +7558,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-therm-env"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "sim-thermostat"
 version = "0.7.0"
 dependencies = [
