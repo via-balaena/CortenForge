@@ -8,8 +8,8 @@
 
 repository:
   name: cortenforge
-  description: "Industrial-grade mesh processing, simulation, and bio-inspired design. A-grade or it doesn't ship."
-  homepage: https://cortenforge.dev
+  description: "Extracting and applying engineering principles from biological systems. Pure Rust simulation platform."
+  homepage: https://cortenforge.com
   topics:
     - rust
     - mesh-processing

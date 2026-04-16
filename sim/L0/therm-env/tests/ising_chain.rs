@@ -67,6 +67,9 @@ const T_CRITICAL_DF39: f64 = 2.708;
 /// t-critical for df=79, two-tailed α=0.01.
 const T_CRITICAL_DF79: f64 = 2.640;
 
+/// t-critical for df=6, two-tailed α=0.01.
+const T_CRITICAL_DF6: f64 = 3.707;
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 fn signal_omega() -> f64 {
@@ -130,6 +133,35 @@ fn lin_regress_slope(xs: &[f64], ys: &[f64]) -> (f64, f64) {
         0.0
     };
     (slope, slope_se)
+}
+
+/// R-squared for a linear regression of ys on xs.
+fn lin_regress_r_squared(xs: &[f64], ys: &[f64]) -> f64 {
+    let n = xs.len() as f64;
+    let y_bar = ys.iter().sum::<f64>() / n;
+    let ss_tot: f64 = ys.iter().map(|&y| (y - y_bar).powi(2)).sum();
+    if ss_tot < 1e-15 {
+        return 1.0;
+    }
+    let x_bar = xs.iter().sum::<f64>() / n;
+    let sum_dx2: f64 = xs.iter().map(|&x| (x - x_bar).powi(2)).sum();
+    let sum_dxdy: f64 = xs
+        .iter()
+        .zip(ys)
+        .map(|(&x, &y)| (x - x_bar) * (y - y_bar))
+        .sum();
+    let slope = if sum_dx2 > 1e-15 {
+        sum_dxdy / sum_dx2
+    } else {
+        0.0
+    };
+    let intercept = y_bar - slope * x_bar;
+    let ss_res: f64 = xs
+        .iter()
+        .zip(ys)
+        .map(|(&x, &y)| (y - slope.mul_add(x, intercept)).powi(2))
+        .sum();
+    1.0 - ss_res / ss_tot
 }
 
 fn lin_spaced(lo: f64, hi: f64, n: usize) -> Vec<f64> {
@@ -1961,6 +1993,242 @@ fn ising_scale_invariant_sweep() {
     }
 
     assert!(all_pass, "Principle 6 gates failed — see diagnostics above");
+}
+
+/// N-scaling law sweep: does peak synchrony follow sync_peak ~ N^α, α > 0?
+/// Extended from the 3-size scale-invariant sweep to 8 sizes with finer kT
+/// resolution. Tests the headline result: larger thermodynamic circuits exhibit
+/// better signal-following for free.
+///
+/// Also validates the effective-barrier model: end particles (1 neighbor) vs
+/// interior particles (2 neighbors) predict peak kT ~ a + b·(N−2)/N.
+#[test]
+#[ignore = "requires --release (~6 hours)"]
+#[allow(clippy::items_after_statements)]
+fn ising_scale_law_sweep() {
+    let n_sizes: [usize; 8] = [4, 8, 12, 16, 24, 32, 48, 64];
+    let coupling_j = 1.0;
+    let kt_mults = log_spaced(1.0, 5.0, 40);
+    let n_episodes = 40;
+
+    eprintln!("\n=== N-SCALING LAW SWEEP ===");
+    eprintln!("  Does peak synchrony scale as sync ~ N^alpha (alpha > 0)?");
+    eprintln!("  N = {n_sizes:?}");
+    eprintln!(
+        "  J = {coupling_j:.1}, kT range: [1.0, 5.0], {} points log-spaced",
+        kt_mults.len()
+    );
+    eprintln!("  Episodes per point: {n_episodes}");
+    eprintln!("  t-critical (per-point): {T_CRITICAL_DF39:.3} (df=39, α=0.01)");
+    eprintln!("  t-critical (regression): {T_CRITICAL_DF6:.3} (df=6, α=0.01)\n");
+
+    struct ScaleResult {
+        n: usize,
+        peak_idx: usize,
+        peak_kt: f64,
+        peak_sync: f64,
+        peak_stderr: f64,
+        peak_t: f64,
+    }
+    let mut results: Vec<ScaleResult> = Vec::new();
+
+    let sweep_start = std::time::Instant::now();
+
+    for (ni, &n) in n_sizes.iter().enumerate() {
+        let size_start = std::time::Instant::now();
+        eprintln!("  --- N={n} ({}/{}) ---", ni + 1, n_sizes.len());
+        let (kts, means, stderrs) = temperature_sweep_n(
+            n,
+            coupling_j,
+            &kt_mults,
+            n_episodes,
+            2_000_000 + ni as u64 * 100_000,
+        );
+        let (peak_idx, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+        let t = if peak_se > 1e-15 {
+            peak_sync / peak_se
+        } else {
+            0.0
+        };
+        let elapsed = size_start.elapsed();
+        let total = sweep_start.elapsed();
+        eprintln!(
+            "    peak: kT={peak_kt:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, |t|={:.2}",
+            t.abs()
+        );
+        eprintln!(
+            "    N={n} done in {:.0}m{:.0}s (total elapsed: {:.0}m{:.0}s)",
+            elapsed.as_secs() / 60,
+            elapsed.as_secs() % 60,
+            total.as_secs() / 60,
+            total.as_secs() % 60,
+        );
+        results.push(ScaleResult {
+            n,
+            peak_idx,
+            peak_kt,
+            peak_sync,
+            peak_stderr: peak_se,
+            peak_t: t,
+        });
+    }
+
+    // ── Summary table ────────────────────────────────────────────────
+    eprintln!("\n  ======================================================================");
+    eprintln!("  N-SCALING LAW RESULTS (J=1.0)");
+    eprintln!("  ======================================================================\n");
+    eprintln!("  N     |  peak kT  |  peak sync             |  |t|    |  interior?");
+    eprintln!("  ------|-----------|------------------------|--------|----------");
+    for r in &results {
+        let interior = r.peak_idx > 0 && r.peak_idx < kt_mults.len() - 1;
+        eprintln!(
+            "  {:4}  |  {:7.4}  |  {:.6} +/- {:.6}  |  {:5.2}  |  {}",
+            r.n,
+            r.peak_kt,
+            r.peak_sync,
+            r.peak_stderr,
+            r.peak_t.abs(),
+            if interior { "YES" } else { "BOUNDARY" }
+        );
+    }
+
+    // ── Derived quantities for gates ─────────────────────────────────
+    let log_ns: Vec<f64> = results.iter().map(|r| (r.n as f64).ln()).collect();
+    let peak_kts: Vec<f64> = results.iter().map(|r| r.peak_kt).collect();
+    let log_syncs: Vec<f64> = results.iter().map(|r| r.peak_sync.ln()).collect();
+
+    // ── Gates ────────────────────────────────────────────────────────
+    eprintln!("\n  Gates:");
+
+    // Gate 0 (Sanity): all peaks significant and interior.
+    let mut gate0 = true;
+    for r in &results {
+        let interior = r.peak_idx > 0 && r.peak_idx < kt_mults.len() - 1;
+        let significant = r.peak_t.abs() > T_CRITICAL_DF39;
+        let pass = interior && significant;
+        if !pass {
+            gate0 = false;
+        }
+        eprintln!(
+            "    Gate 0: N={}: interior={interior}, |t|={:.2} {} {T_CRITICAL_DF39:.3} → {}",
+            r.n,
+            r.peak_t.abs(),
+            if significant { ">" } else { "<" },
+            if pass { "PASS" } else { "FAIL" }
+        );
+    }
+
+    // Gate 1 (kT stability): peak kT drift from N=4 to N=64 < 50% of mean.
+    let (kt_slope, kt_slope_se) = lin_regress_slope(&log_ns, &peak_kts);
+    let mean_peak_kt = peak_kts.iter().sum::<f64>() / peak_kts.len() as f64;
+    let total_drift = kt_slope * ((64.0_f64).ln() - (4.0_f64).ln());
+    let drift_frac = total_drift.abs() / mean_peak_kt;
+    let gate1 = drift_frac < 0.50;
+    eprintln!(
+        "    Gate 1 (kT stability): slope={kt_slope:.4} +/- {kt_slope_se:.4}, \
+         total drift={total_drift:.4} ({:.1}% of mean {mean_peak_kt:.2}) → {}",
+        drift_frac * 100.0,
+        if gate1 { "PASS" } else { "FAIL" }
+    );
+    for r in &results {
+        eprintln!("      N={}: peak kT={:.4}", r.n, r.peak_kt);
+    }
+
+    // Gate 2 (Power law): sync_peak ∝ N^α, α > 0 with significance.
+    let (alpha, alpha_se) = lin_regress_slope(&log_ns, &log_syncs);
+    let alpha_t = if alpha_se > 1e-15 {
+        alpha / alpha_se
+    } else {
+        0.0
+    };
+    let gate2 = alpha > 0.0 && alpha_t.abs() > T_CRITICAL_DF6;
+    let r_sq_power = lin_regress_r_squared(&log_ns, &log_syncs);
+    eprintln!(
+        "    Gate 2 (Power law): α={alpha:.4} +/- {alpha_se:.4}, \
+         |t|={:.2} {} {T_CRITICAL_DF6:.3} → {}",
+        alpha_t.abs(),
+        if alpha_t.abs() > T_CRITICAL_DF6 {
+            ">"
+        } else {
+            "<"
+        },
+        if gate2 { "PASS" } else { "FAIL" }
+    );
+    eprintln!("      R²(power law) = {r_sq_power:.4}");
+    eprintln!("      Interpretation: sync_peak ~ N^{alpha:.3}");
+
+    // Gate 3 (Barrier model): peak_kT = a + b·(N−2)/N, R² > 0.80.
+    let frac_interior: Vec<f64> = results
+        .iter()
+        .map(|r| (r.n as f64 - 2.0) / r.n as f64)
+        .collect();
+    let r_sq_barrier = lin_regress_r_squared(&frac_interior, &peak_kts);
+    let (barrier_slope, barrier_slope_se) = lin_regress_slope(&frac_interior, &peak_kts);
+    let gate3 = r_sq_barrier > 0.80;
+    eprintln!(
+        "    Gate 3 (Barrier model): peak_kT = a + b·(N−2)/N, \
+         b={barrier_slope:.4} +/- {barrier_slope_se:.4}, \
+         R²={r_sq_barrier:.4} {} 0.80 → {}",
+        if gate3 { ">" } else { "<" },
+        if gate3 { "PASS" } else { "FAIL" }
+    );
+
+    // ── Design rules ─────────────────────────────────────────────────
+    if gate2 {
+        let ratio = (64.0_f64 / 4.0).powf(alpha);
+        eprintln!(
+            "\n  Design rule: sync_peak ~ N^{alpha:.3}. \
+             Going from N=4 to N=64 improves synchrony by {ratio:.1}x."
+        );
+    }
+
+    // ── Verdict ─────────────────────────────────────────────────────
+    //
+    // Result (April 2026): No power law. System is approximately extensive.
+    // Peak sync flat at ~0.058–0.071 across N=4–64. Gates 0+1 pass (peaks
+    // are real and kT is stable). Gate 2 fails (α not significant). Gate 3
+    // fails (peak kT bounces, no systematic drift to model).
+    //
+    // The sanity gates (0+1) are the reproducibility assertion — if these
+    // fail, the physics changed. Gates 2+3 are scientific hypotheses that
+    // were honestly tested and rejected.
+
+    eprintln!("\n  Verdict:");
+    eprintln!(
+        "    Gate 0 (Sanity):        {}",
+        if gate0 { "PASS" } else { "FAIL" }
+    );
+    eprintln!(
+        "    Gate 1 (kT stability):  {}",
+        if gate1 { "PASS" } else { "FAIL" }
+    );
+    eprintln!(
+        "    Gate 2 (Power law):     {}",
+        if gate2 {
+            "PASS"
+        } else {
+            "FAIL — no scaling law"
+        }
+    );
+    eprintln!(
+        "    Gate 3 (Barrier model): {}",
+        if gate3 {
+            "PASS"
+        } else {
+            "FAIL — peak kT noise-dominated"
+        }
+    );
+
+    if gate0 && gate1 {
+        eprintln!(
+            "\n  CONCLUSION: System is approximately extensive. \
+             Design rules hold from N=4 to N=64 without retuning. \
+             Fidelity neither improves nor degrades with scale."
+        );
+    }
+
+    assert!(gate0, "Gate 0 failed — not all peaks significant/interior");
+    assert!(gate1, "Gate 1 failed — peak kT drifts too much with N");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

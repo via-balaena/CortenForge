@@ -210,7 +210,7 @@ fn gate_b_parameter_recovery() {
     let kl_final = curve.last().unwrap().kl_divergence;
     eprintln!("Gate B: KL_final = {kl_final:.4}");
 
-    assert!(kl_final < 0.05, "Gate B KL FAILED: {kl_final:.4} > 0.05",);
+    assert!(kl_final < 0.05, "Gate B KL FAILED: {kl_final:.4} > 0.05");
 
     let learned_j = learner.coupling_j();
     let learned_h = learner.field_h();

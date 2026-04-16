@@ -514,11 +514,7 @@ pub fn simplify_mesh_tolerance(
     let mut sm = SimplMesh::from_indexed(mesh);
     let mut heap = sm.build_queue();
 
-    loop {
-        let Some(candidate) = heap.pop() else {
-            break;
-        };
-
+    while let Some(candidate) = heap.pop() {
         let current_gen = sm.edge_gen.get(&candidate.edge).copied();
         if current_gen != Some(candidate.generation) {
             continue;

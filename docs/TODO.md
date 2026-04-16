@@ -11,7 +11,7 @@
 | 5 | **P1 — Topological encoding** (E. coli) — phase ordering vs amplitude test | Failed (amplitude dominates in Langevin domain) |
 | 6 | Tighten chapter prose for publication | **Done** (two passes + staleness audit) |
 | 7 | Publicist review + outreach planning | **Next** |
-| 8 | N-scaling experiment (sync increases with N?) | After publish (~2 hrs) |
+| 8 | N-scaling experiment (sync increases with N?) | **Done** — approximately extensive, no power law |
 | 9 | Contact Extropic / Normal Computing with mdbook link | After review |
 
 ## Parallel Track (not blocking paper)

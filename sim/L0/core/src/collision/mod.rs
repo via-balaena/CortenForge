@@ -643,8 +643,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // MuJoCo assigns contact IDs in geom-pair order; our SAP may produce pairs
     // in a different traversal order. Stable sort preserves per-pair insertion
     // order (relevant for multi-contact geom pairs like heightfields).
-    data.contacts
-        .sort_by(|a, b| (a.geom1, a.geom2).cmp(&(b.geom1, b.geom2)));
+    data.contacts.sort_by_key(|a| (a.geom1, a.geom2));
 }
 
 /// Compute local-frame AABB from geom type and size (fallback for programmatic models).

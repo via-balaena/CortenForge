@@ -192,28 +192,22 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 sensor_write(&mut data.sensordata, adr, 0, total_force);
             }
 
-            MjSensorType::ActuatorFrc => {
+            MjSensorType::ActuatorFrc if objid < model.nu => {
                 // Scalar actuator force (transmission-independent).
                 // Matches MuJoCo: actuatorfrc sensor = actuator_force[objid].
-                if objid < model.nu {
-                    sensor_write(&mut data.sensordata, adr, 0, data.actuator_force[objid]);
-                }
+                sensor_write(&mut data.sensordata, adr, 0, data.actuator_force[objid]);
             }
 
-            MjSensorType::JointLimitFrc => {
+            MjSensorType::JointLimitFrc if objid < data.jnt_limit_frc.len() => {
                 // Joint limit force: read cached constraint force magnitude.
                 // objid is the joint index (resolved by model builder).
-                if objid < data.jnt_limit_frc.len() {
-                    sensor_write(&mut data.sensordata, adr, 0, data.jnt_limit_frc[objid]);
-                }
+                sensor_write(&mut data.sensordata, adr, 0, data.jnt_limit_frc[objid]);
             }
 
-            MjSensorType::TendonLimitFrc => {
+            MjSensorType::TendonLimitFrc if objid < data.ten_limit_frc.len() => {
                 // Tendon limit force: read cached constraint force magnitude.
                 // objid is the tendon index (resolved by model builder).
-                if objid < data.ten_limit_frc.len() {
-                    sensor_write(&mut data.sensordata, adr, 0, data.ten_limit_frc[objid]);
-                }
+                sensor_write(&mut data.sensordata, adr, 0, data.ten_limit_frc[objid]);
             }
 
             MjSensorType::FrameLinAcc => {
@@ -255,11 +249,11 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
             }
 
             // DT-79: User-defined sensors at acceleration stage
-            MjSensorType::User => {
-                if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration {
-                    if let Some(ref cb) = model.cb_sensor {
-                        (cb.0)(model, data, sensor_id, SensorStage::Acc);
-                    }
+            MjSensorType::User
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
+            {
+                if let Some(ref cb) = model.cb_sensor {
+                    (cb.0)(model, data, sensor_id, SensorStage::Acc);
                 }
             }
 

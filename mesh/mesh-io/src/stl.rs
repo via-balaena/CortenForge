@@ -205,19 +205,15 @@ fn load_stl_ascii<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
                 in_facet = true;
                 // Normal follows but we ignore it (recompute if needed)
             }
-            "outer" => {
-                if parts.len() >= 2 && parts[1].eq_ignore_ascii_case("loop") {
-                    in_loop = true;
-                    vertices_in_face.clear();
-                }
+            "outer" if parts.len() >= 2 && parts[1].eq_ignore_ascii_case("loop") => {
+                in_loop = true;
+                vertices_in_face.clear();
             }
-            "vertex" => {
-                if in_loop && parts.len() >= 4 {
-                    let x: f64 = parts[1].parse()?;
-                    let y: f64 = parts[2].parse()?;
-                    let z: f64 = parts[3].parse()?;
-                    vertices_in_face.push(Point3::new(x, y, z));
-                }
+            "vertex" if in_loop && parts.len() >= 4 => {
+                let x: f64 = parts[1].parse()?;
+                let y: f64 = parts[2].parse()?;
+                let z: f64 = parts[3].parse()?;
+                vertices_in_face.push(Point3::new(x, y, z));
             }
             "endloop" => {
                 in_loop = false;

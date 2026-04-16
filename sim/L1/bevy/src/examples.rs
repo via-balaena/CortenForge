@@ -686,7 +686,7 @@ impl PhysicsHud {
     pub fn quat(&mut self, label: &str, q: &[f64]) {
         self.lines.push(HudLine {
             label: label.to_string(),
-            value: format!("({:+.4}, {:+.4}, {:+.4}, {:+.4})", q[0], q[1], q[2], q[3],),
+            value: format!("({:+.4}, {:+.4}, {:+.4}, {:+.4})", q[0], q[1], q[2], q[3]),
         });
     }
 

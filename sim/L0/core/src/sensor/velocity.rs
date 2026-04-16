@@ -76,31 +76,29 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
         let objid = model.sensor_objid[sensor_id];
 
         match model.sensor_type[sensor_id] {
-            MjSensorType::JointVel => {
+            MjSensorType::JointVel if objid < model.njnt => {
                 // Scalar joint velocity (hinge/slide only).
                 // Ball joints use BallAngVel, free joints use FrameLinVel + FrameAngVel.
-                if objid < model.njnt {
-                    let dof_adr = model.jnt_dof_adr[objid];
-                    match model.jnt_type[objid] {
-                        MjJointType::Hinge | MjJointType::Slide => {
-                            sensor_write(&mut data.sensordata, adr, 0, data.qvel[dof_adr]);
-                        }
-                        _ => {} // Ball/Free not supported by JointVel; use BallAngVel/FrameLinVel
+                let dof_adr = model.jnt_dof_adr[objid];
+                match model.jnt_type[objid] {
+                    MjJointType::Hinge | MjJointType::Slide => {
+                        sensor_write(&mut data.sensordata, adr, 0, data.qvel[dof_adr]);
                     }
+                    _ => {} // Ball/Free not supported by JointVel; use BallAngVel/FrameLinVel
                 }
             }
 
-            MjSensorType::BallAngVel => {
+            MjSensorType::BallAngVel
+                if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball =>
+            {
                 // Ball joint angular velocity [wx, wy, wz] in local (child body) frame
-                if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball {
-                    let dof_adr = model.jnt_dof_adr[objid];
-                    let omega = Vector3::new(
-                        data.qvel[dof_adr],
-                        data.qvel[dof_adr + 1],
-                        data.qvel[dof_adr + 2],
-                    );
-                    sensor_write3(&mut data.sensordata, adr, &omega);
-                }
+                let dof_adr = model.jnt_dof_adr[objid];
+                let omega = Vector3::new(
+                    data.qvel[dof_adr],
+                    data.qvel[dof_adr + 1],
+                    data.qvel[dof_adr + 2],
+                );
+                sensor_write3(&mut data.sensordata, adr, &omega);
             }
 
             MjSensorType::Gyro => {
@@ -300,14 +298,14 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
 
             // DT-79: User-defined sensors at velocity stage.
             // Conservative: trigger mj_subtree_vel for opaque user callbacks.
-            MjSensorType::User => {
-                if model.sensor_datatype[sensor_id] == MjSensorDataType::Velocity {
-                    if !data.flg_subtreevel {
-                        mj_subtree_vel(model, data);
-                    }
-                    if let Some(ref cb) = model.cb_sensor {
-                        (cb.0)(model, data, sensor_id, SensorStage::Vel);
-                    }
+            MjSensorType::User
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Velocity =>
+            {
+                if !data.flg_subtreevel {
+                    mj_subtree_vel(model, data);
+                }
+                if let Some(ref cb) = model.cb_sensor {
+                    (cb.0)(model, data, sensor_id, SensorStage::Vel);
                 }
             }
 

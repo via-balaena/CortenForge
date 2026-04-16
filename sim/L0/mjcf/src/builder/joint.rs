@@ -52,7 +52,7 @@ impl ModelBuilder {
             MjcfJointType::Free => MjJointType::Free,
             MjcfJointType::Cylindrical | MjcfJointType::Planar => {
                 return Err(ModelConversionError {
-                    message: format!("Joint type {joint_type:?} not yet supported in Model",),
+                    message: format!("Joint type {joint_type:?} not yet supported in Model"),
                 });
             }
         };

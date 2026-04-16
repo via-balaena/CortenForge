@@ -156,27 +156,19 @@ fn parse_3mf_model(content: &str) -> IoResult<IndexedMesh> {
                             current_vertex_offset = mesh.vertices.len() as u32;
                         }
                     }
-                    b"vertices" => {
-                        if in_mesh {
-                            in_vertices = true;
-                        }
+                    b"vertices" if in_mesh => {
+                        in_vertices = true;
                     }
-                    b"triangles" => {
-                        if in_mesh {
-                            in_triangles = true;
-                        }
+                    b"triangles" if in_mesh => {
+                        in_triangles = true;
                     }
-                    b"vertex" => {
-                        if in_vertices {
-                            let vertex = parse_vertex_element(e)?;
-                            mesh.vertices.push(vertex);
-                        }
+                    b"vertex" if in_vertices => {
+                        let vertex = parse_vertex_element(e)?;
+                        mesh.vertices.push(vertex);
                     }
-                    b"triangle" => {
-                        if in_triangles {
-                            let face = parse_triangle_element(e, current_vertex_offset)?;
-                            mesh.faces.push(face);
-                        }
+                    b"triangle" if in_triangles => {
+                        let face = parse_triangle_element(e, current_vertex_offset)?;
+                        mesh.faces.push(face);
                     }
                     _ => {}
                 }
