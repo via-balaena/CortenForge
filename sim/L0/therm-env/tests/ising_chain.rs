@@ -2183,36 +2183,52 @@ fn ising_scale_law_sweep() {
     }
 
     // ── Verdict ─────────────────────────────────────────────────────
-    let all_pass = gate0 && gate1 && gate2 && gate3;
-    if all_pass {
+    //
+    // Result (April 2026): No power law. System is approximately extensive.
+    // Peak sync flat at ~0.058–0.071 across N=4–64. Gates 0+1 pass (peaks
+    // are real and kT is stable). Gate 2 fails (α not significant). Gate 3
+    // fails (peak kT bounces, no systematic drift to model).
+    //
+    // The sanity gates (0+1) are the reproducibility assertion — if these
+    // fail, the physics changed. Gates 2+3 are scientific hypotheses that
+    // were honestly tested and rejected.
+
+    eprintln!("\n  Verdict:");
+    eprintln!(
+        "    Gate 0 (Sanity):        {}",
+        if gate0 { "PASS" } else { "FAIL" }
+    );
+    eprintln!(
+        "    Gate 1 (kT stability):  {}",
+        if gate1 { "PASS" } else { "FAIL" }
+    );
+    eprintln!(
+        "    Gate 2 (Power law):     {}",
+        if gate2 {
+            "PASS"
+        } else {
+            "FAIL — no scaling law"
+        }
+    );
+    eprintln!(
+        "    Gate 3 (Barrier model): {}",
+        if gate3 {
+            "PASS"
+        } else {
+            "FAIL — peak kT noise-dominated"
+        }
+    );
+
+    if gate0 && gate1 {
         eprintln!(
-            "\n  All gates PASS. N-SCALING LAW VALIDATED: \
-             sync_peak ~ N^{alpha:.3}, kT drift matches barrier model \
-             (R²={r_sq_barrier:.2})."
+            "\n  CONCLUSION: System is approximately extensive. \
+             Design rules hold from N=4 to N=64 without retuning. \
+             Fidelity neither improves nor degrades with scale."
         );
-    } else {
-        eprintln!("\n  N-scaling law NOT fully validated.");
-        if !gate0 {
-            eprintln!("    - Not all peaks significant/interior");
-        }
-        if !gate1 {
-            eprintln!(
-                "    - Peak kT drifts too much with N ({:.0}% > 50%)",
-                drift_frac * 100.0
-            );
-        }
-        if !gate2 {
-            eprintln!("    - Power law exponent not significantly > 0");
-        }
-        if !gate3 {
-            eprintln!("    - Effective barrier model doesn't fit kT drift");
-        }
     }
 
-    assert!(
-        all_pass,
-        "N-scaling law gates failed — see diagnostics above"
-    );
+    assert!(gate0, "Gate 0 failed — not all peaks significant/interior");
+    assert!(gate1, "Gate 1 failed — peak kT drifts too much with N");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

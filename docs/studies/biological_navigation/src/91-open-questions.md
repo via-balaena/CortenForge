@@ -4,7 +4,7 @@
 
 1. **Does stochastic resonance scale from single particles to coupled circuits?** Yes. The SR peak persists across coupling strengths J = 0–2 and circuit sizes N = 4–16. Two regimes emerge: weak coupling (J < 1.5, peak kT ≈ 2.3) and strong coupling (J ≥ 2, peak kT ≈ 4.3). See the Noise Tuning chapter.
 
-2. **Does the optimal noise level require retuning at larger circuit sizes?** No. Peak kT ≈ 2.5 holds from N=4 to N=16 at J=1.0, within one grid step on a 25-point log-spaced sweep. See the Scale-Invariance chapter.
+2. **Does the optimal noise level require retuning at larger circuit sizes?** No. Peak kT ≈ 2.8 holds from N=4 to N=64 at J=1.0. Confirmed by both the original 3-size sweep and the expanded 8-size sweep with finer kT resolution. See the Scale-Invariance chapter.
 
 3. **Does phase-lagged injection improve fidelity in coupled chains?** Yes, at weak coupling. Optimal δ ≈ π/5 gives 18–37% improvement over synchronized injection at J = 0.5–1.0. At J ≥ 2, coupling handles coordination and synchronized is optimal. See the Injection Timing chapter.
 

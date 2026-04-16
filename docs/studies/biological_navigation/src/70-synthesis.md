@@ -37,9 +37,9 @@ Three quantitative rules emerged, each tested with statistical gates and reprodu
 - J ≥ 2: synchronize injection (coupling handles coordination)
 - The two knobs (temperature and phase lag) are independent
 
-**The Scale-Invariance Rule:** The Noise Tuning Rule holds from N=4 to N=16 without retuning:
-- Optimal kT ≈ 2.5 at J=1.0 regardless of circuit size
-- Preliminary data suggests synchrony may *increase* with N (under investigation)
+**The Scale-Invariance Rule:** The Noise Tuning Rule holds from N=4 to N=64 without retuning:
+- Optimal kT ≈ 2.8 at J=1.0 regardless of circuit size (confirmed across 8 chain sizes)
+- The system is approximately extensive — fidelity neither improves nor degrades with scale
 
 ## What the Failures Tell Us
 

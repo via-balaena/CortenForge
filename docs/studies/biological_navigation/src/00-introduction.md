@@ -18,7 +18,7 @@ We tested five biological navigation principles on Ising chain models under Lang
 |------|-----------|--------|
 | **Noise Tuning** | Operate at kT ≈ 2.3 (weak coupling J < 1.5) or kT ≈ 4.3 (strong coupling J ≥ 2). ΔV/kT must stay below 3.0. | Wrong temperature → noise floor. The kT axis is sharp (±30% kills performance). |
 | **Injection Timing** | Phase-lag injection at δ ≈ π/5 between adjacent nodes for J < 2. Synchronize for J ≥ 2. | 18–37% fidelity improvement over synchronized injection. |
-| **Scale-Invariance** | Both rules hold from N=4 to N=16 without retuning. | An engineer scaling a prototype does not need to re-derive the operating point. |
+| **Scale-Invariance** | Both rules hold from N=4 to N=64 without retuning. Approximately extensive. | An engineer scaling a prototype does not need to re-derive the operating point. |
 
 **Two boundary conditions — what NOT to try:**
 
