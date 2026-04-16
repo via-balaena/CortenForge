@@ -7565,6 +7565,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-opt",
  "sim-rl",
  "sim-thermostat",
  "thiserror 2.0.18",

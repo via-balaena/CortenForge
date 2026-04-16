@@ -1,0 +1,784 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Biological Navigation Spectrum — X-Encoding Design Framework</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Biological locomotion strategies across the Reynolds number spectrum as a design framework for X-encoding in thermodynamic computing.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "navy";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-b6b2d2b6.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-ee05a8be.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Biological Navigation Spectrum — X-Encoding Design Framework</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<blockquote>
+<p>Via Balaena LLC / CortenForge — Foundational Research Document v1</p>
+<p>Status: Pre-experimental hypothesis generation
+Date: April 2026
+Classification: Open research — intended for public release</p>
+</blockquote>
+<p>This document records the intellectual origin of a research program connecting biological locomotion control theory to the unsolved x-encoding problem in thermodynamic computing. It is written as a living document: a record of where the reasoning started, what has been established, and what remains open. It is not a paper. It is the foundation from which papers will be written.</p>
+<p>The central claim is this: the full spectrum of biological strategies for navigating chaotic physical media — from bacteria to peregrine falcons — constitutes a map of design principles for injecting logical inputs into nonequilibrium stochastic physical systems. Each regime of the biological spectrum corresponds to a distinct engineering strategy. The map is not complete. But enough of it has been identified to constitute a serious research program.</p>
+<h2 id="thermodynamic-computing-and-the-y-problem"><a class="header" href="#thermodynamic-computing-and-the-y-problem">Thermodynamic Computing and the Y Problem</a></h2>
+<p>Thermodynamic computing is a paradigm in which computation is performed not by enforcing deterministic logic states, but by allowing a physical system to relax toward thermodynamic equilibrium, reading the resulting probability distribution as the output. The key entities are:</p>
+<ul>
+<li><strong>The energy function F</strong>: defines the shape of the target probability distribution over output states</li>
+<li><strong>Y</strong>: the target distribution itself — the answer the system is supposed to produce</li>
+<li><strong>The physical substrate</strong>: a stochastic system (resistor-inductor-capacitor networks, analog probabilistic circuits, or future purpose-built thermodynamic chips) whose natural dynamics under Langevin noise are governed by F</li>
+</ul>
+<p>The state of the art as of 2025-2026 includes Normal Computing’s CN101 — the world’s first taped-out thermodynamic semiconductor chip — and Extropic’s XTR-0 development platform, both of which demonstrate that thermodynamic sampling units (TSUs) can perform AI inference tasks including matrix inversion and Gaussian sampling at energy efficiencies orders of magnitude beyond conventional GPUs.</p>
+<p>The Y problem, to first approximation, is solved. Energy-based models provide a formal language for defining Y. Boltzmann statistics guarantee that a system in thermal equilibrium will sample from Y. The physics of the output is understood.</p>
+<h2 id="the-x-problem--the-unsolved-root"><a class="header" href="#the-x-problem--the-unsolved-root">The X Problem — The Unsolved Root</a></h2>
+<p>The unsolved problem is X: the input encoding.</p>
+<p>In a classical digital computer, encoding an input X is trivial — you set a voltage high or low. The physical act of encoding is decoupled from the physics of computation. In a thermodynamic computer, there is no such decoupling. The input X must be encoded as the initial conditions or boundary conditions of a physical stochastic system. The system then relaxes — through a nonequilibrium trajectory governed by Langevin dynamics — toward (hopefully) the correct distribution Y.</p>
+<p>The problem is that this relaxation trajectory is sensitive to how X is injected. An imperfect encoding perturbs the energy landscape, potentially steering the system toward the wrong basin of attraction. At small scale, this can be managed empirically. At scale — as the circuit grows in size and the noise profile shifts — there is no formal theory telling an engineer how to inject X such that the relaxation remains correct. Every scaling step requires empirical re-tuning.</p>
+<p>This is not a materials problem or a fabrication problem. It is a theory problem: we lack a formal design language for X-encoding in nonequilibrium stochastic systems. Until that language exists, thermodynamic computing cannot be engineered the way digital computing is engineered — from first principles, with predictable scaling behavior.</p>
+<h2 id="the-deeper-root-the-gap-in-nonequilibrium-statistical-physics"><a class="header" href="#the-deeper-root-the-gap-in-nonequilibrium-statistical-physics">The Deeper Root: The Gap in Nonequilibrium Statistical Physics</a></h2>
+<p>The theory problem traces to a gap in physics. Equilibrium statistical physics is well-understood. Landauer’s bound gives the minimum energy cost of erasing a bit. Boltzmann statistics describe the equilibrium distribution. But thermodynamic computers operate far from equilibrium — they must complete a computation quickly, which means they cannot afford to wait for true equilibrium to be reached.</p>
+<p>The stochastic thermodynamics of far-from-equilibrium systems is a field in active development. Thermodynamic uncertainty relations now provide bounds on computation speed, noise level, and energy cost. But a constructive theory — one that tells you how to build a nonequilibrium system that reliably encodes X and converges to Y — does not yet exist.</p>
+<p>The analogy: we know the speed limit (Landauer’s bound, uncertainty relations), but we have no road map.</p>
+<h2 id="the-core-hypothesis"><a class="header" href="#the-core-hypothesis">The Core Hypothesis</a></h2>
+<p>The hypothesis is that biological evolution has already solved versions of the X-encoding problem across a continuous spectrum of operating regimes, and that the biological solutions can be formally mapped to engineering principles for thermodynamic circuit design.</p>
+<p>Specifically: every organism that navigates a chaotic physical medium — fluid, air, a stochastic chemical gradient — is solving a version of the same problem. It must inject “intent” (a direction, a target, a behavioral goal) into a noisy physical system (its own body in a turbulent medium) and achieve reliable convergence to the desired output state, at some throughput level, with finite energy. The physics of the problem is structurally isomorphic to X-encoding in thermodynamic computing.</p>
+<p>The biological world has explored this design space for hundreds of millions of years. We should read the solutions it found.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-axis-reynolds-number"><a class="header" href="#the-axis-reynolds-number">The Axis: Reynolds Number</a></h1>
+<h2 id="why-reynolds-number-is-the-right-axis"><a class="header" href="#why-reynolds-number-is-the-right-axis">Why Reynolds Number Is the Right Axis</a></h2>
+<p>The Reynolds number (Re) is a dimensionless ratio of inertial to viscous forces in a fluid:</p>
+<p>$$
+\text{Re} = \frac{\rho U L}{\mu}
+$$</p>
+<p>where ρ is fluid density, U is velocity, L is characteristic length, and μ is dynamic viscosity.</p>
+<p>It is the natural organizing axis for biological locomotion strategies because it determines what physics dominates at a given scale and speed. At low Re, viscosity dominates — the fluid has no memory of past motion, and every perturbation is immediately damped. At high Re, inertia dominates — perturbations persist as vortices, wakes, and turbulent structures that interact with the swimmer on timescales longer than the swimmer’s own motion.</p>
+<p>Crucially for our purposes: the ratio of signal timescale to noise timescale changes across the Re spectrum in a way that maps directly onto the thermodynamic X-encoding problem. At low Re, signal and noise are on the same timescale — you cannot separate them and must encode in the topology of motion. At intermediate Re, both are relevant simultaneously — you need multimodal switching. At high Re, noise generates coherent structures that can be exploited — speed itself becomes a source of control authority.</p>
+<p>The Re spectrum spans roughly 13 orders of magnitude in biology, from bacteria at Re ~ 10⁻⁵ to blue whales at Re ~ 10⁸. The locomotion strategies are not a continuum — they are discrete regimes separated by qualitative phase transitions in the physics.</p>
+<h2 id="why-three-is-not-the-golden-number"><a class="header" href="#why-three-is-not-the-golden-number">Why Three Is Not the Golden Number</a></h2>
+<p>The initial framing of this research identified three biological exemplars: the octopus (low speed, distributed local computation), the dragonfly (medium speed, predictive internal models), and the peregrine falcon (high speed, vortex-noise coupling). These three are real and important. But three is not the complete picture.</p>
+<p>The full spectrum contains at least five qualitatively distinct regimes, each with a different dominant strategy, and the transition zones between regimes may be as important as the regimes themselves. This is because real thermodynamic circuits will not sit cleanly in one regime — they will operate across throughput ranges, and the failure modes will likely occur at the transitions.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="regime-1-e-coli--topological-encoding"><a class="header" href="#regime-1-e-coli--topological-encoding">Regime 1: E. coli — Topological Encoding</a></h1>
+<p><strong>Re &lt; 1 — The Viscosity-Dominated Regime</strong></p>
+<h2 id="the-physics"><a class="header" href="#the-physics">The Physics</a></h2>
+<p>At Re &lt; 1, the Navier-Stokes equations simplify to the Stokes equations — linear, time-reversible, with no inertial terms. The fluid has no memory. A swimmer moving forward and then backward through the exact same sequence of shapes returns to exactly its starting position. This is Purcell’s scallop theorem (1977): in a time-reversible fluid, any reciprocal motion (one that looks the same played forward and backward) produces zero net displacement. It does not matter how fast or slow the motion is performed — speed is irrelevant.</p>
+<p>The implication is profound: at low Re, you cannot encode information in the amplitude or timing of a perturbation. Amplitude scales out. Timing scales out. The only thing that survives is the topology of the motion sequence — whether it traces a closed loop in configuration space that encloses a nonzero area. This is geometric phase, formalized by Shapere and Wilczek (1989) using the language of gauge theory and fiber bundles.</p>
+<h2 id="what-e-coli-does"><a class="header" href="#what-e-coli-does">What E. coli Does</a></h2>
+<p>E. coli navigates chemical gradients (chemotaxis) at Re ~ 10⁻⁵ using the run-and-tumble strategy. Multiple flagellar motors rotate counter-clockwise to bundle the flagella into a helical propeller (a “run” — straight motion). When one or more motors switch to clockwise rotation, the bundle unbundles and the cell reorients randomly (a “tumble”). By extending runs when moving up a chemical gradient and shortening them when moving down, the cell executes a biased random walk toward attractants.</p>
+<p>The critical insight: the CheY-P signaling molecule that controls motor switching follows Langevin dynamics — it has intrinsic stochastic fluctuations described by:</p>
+<p>$$
+\frac{dY}{dt} = -\frac{Y - Y_0}{\tau_Y} + \eta(t)
+$$</p>
+<p>where η(t) is Gaussian white noise. Crucially, signaling noise enhances chemotactic drift. An intermediate level of noise in the slow methylation dynamics improves gradient-climbing performance — not despite the noise, but because of it. The noise is not a contaminant to be suppressed; it is a functional component of the control strategy.</p>
+<p>Furthermore, E. coli achieves signal amplification of more than 50-fold: a 2% change in receptor occupancy produces a 100% change in motor output. This nonlinear amplification emerges from the cooperative structure of the receptor-kinase complex operating near a phase transition — a bifurcation point at which sensitivity is maximized.</p>
+<h2 id="the-x-encoding-principle"><a class="header" href="#the-x-encoding-principle">The X-Encoding Principle</a></h2>
+<p><strong>Principle 1:</strong> In the viscosity-dominated regime, amplitude and rate are irrelevant. Information must be encoded in the sequence structure — the topology — of the injection. A closed loop in the injection parameter space that encloses nonzero area produces net displacement in the output state; a reciprocal sequence produces nothing.</p>
+<p><em>Applied to thermodynamic circuits:</em> At very low throughput rates where the circuit is effectively at quasi-static equilibrium, X-encoding cannot rely on amplitude modulation. The injection must trace a non-reciprocal path in parameter space. The geometric phase associated with that path determines the encoding fidelity. This is a formal statement that connects X-encoding theory to the mathematics of holonomy and gauge theory.</p>
+<p><strong>Principle 2:</strong> Stochastic resonance is available. An optimal noise level enhances encoding fidelity by improving sensitivity near the bifurcation point. The circuit should be tuned to operate in this regime rather than attempting to minimize noise.</p>
+<h2 id="experiment-1--e-coli-stochastic-resonance-in-chemotactic-navigation"><a class="header" href="#experiment-1--e-coli-stochastic-resonance-in-chemotactic-navigation">Experiment 1 — E. coli Stochastic Resonance in Chemotactic Navigation</a></h2>
+<h3 id="scientific-question"><a class="header" href="#scientific-question">Scientific Question</a></h3>
+<p>Does an intermediate noise temperature maximize a Langevin particle’s ability to follow a periodic signal in a biased double-well potential? Does the optimal noise level shift predictably with gradient strength?</p>
+<p>This directly tests Principle 2 (stochastic resonance enhances encoding fidelity) and extends the D2 SR study by adding a symmetry-breaking chemical gradient via <code>ExternalField</code>.</p>
+<h3 id="langevin-model-of-chemotaxis"><a class="header" href="#langevin-model-of-chemotaxis">Langevin Model of Chemotaxis</a></h3>
+<p>The experiment maps E. coli chemotaxis onto the Langevin framework:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Biology</th><th>Langevin Model</th><th>Component</th></tr>
+</thead>
+<tbody>
+<tr><td>Run/tumble states</td><td>Bistable wells at ±x₀</td><td><code>DoubleWellPotential(ΔV=3, x₀=1)</code></td></tr>
+<tr><td>Periodic chemical signal</td><td>Sub-threshold oscillating force</td><td><code>OscillatingField(A₀=0.3, ω=2π·k_Kramers)</code></td></tr>
+<tr><td>Chemotactic gradient</td><td>Linear bias toward one well</td><td><code>ExternalField([h])</code></td></tr>
+<tr><td>CheY-P signaling noise</td><td>Langevin thermal noise</td><td><code>LangevinThermostat(γ=10, kT=1)</code></td></tr>
+<tr><td>Noise-modulated switching</td><td>Temperature as RL action</td><td><code>.with_ctrl_temperature()</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The particle “runs” (stays in one well) and “tumbles” (crosses the barrier). Stochastic resonance occurs when the noise-driven switching rate matches the signal frequency — the Kramers rate at <code>kT ≈ 1.0</code> equals the signal angular frequency <code>ω = 2π × 0.01214</code>.</p>
+<h3 id="experimental-design"><a class="header" href="#experimental-design">Experimental Design</a></h3>
+<p><strong>Synchrony metric</strong> (same as D2):</p>
+<pre><code>synchrony = sign(qpos[0]) · cos(ω·t)
+</code></pre>
+<p>Positive when the particle occupies the correct well at the correct phase of the signal. Averaged per step over an episode.</p>
+<p><strong>Part A — Baseline temperature sweep:</strong> 30 kT multipliers log-spaced in [0.1, 5.0], 20 episodes each. Establishes the SR curve and locates the peak. Repeated at gradient strengths h ∈ {0.0, 0.3} to test whether the gradient shifts the optimum.</p>
+<p><strong>Part B — Scientific controls:</strong></p>
+<ul>
+<li>Low noise (kT × 0.1): particle trapped in one well, no switching → zero synchrony</li>
+<li>High noise (kT × 5.0): random switching, no correlation with signal → zero synchrony</li>
+<li>No signal (A₀ = 0): metric validates to zero even at the SR-optimal temperature</li>
+</ul>
+<p><strong>Part C — Multi-algorithm training:</strong> Three algorithm classes on the gradient-biased setup (h = 0.3):</p>
+<ul>
+<li><strong>CEM</strong> (evolutionary, gradient-free) — sim-rl</li>
+<li><strong>PPO</strong> (policy gradient) — sim-rl</li>
+<li><strong>SA</strong> (simulated annealing) — sim-opt</li>
+</ul>
+<p>Each trains a <code>LinearPolicy(2, 1)</code> for 100 epochs on 32-env VecEnv with ctrl-temperature. Evaluation: 20 deterministic episodes with the trained policy.</p>
+<h3 id="gate-system"><a class="header" href="#gate-system">Gate System</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Gate</th><th>Test</th><th>Threshold</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>A</strong></td><td>Significant synchrony on eval</td><td>One-sample t-test, |t| &gt; 2.861 (df=19, α=0.01)</td></tr>
+<tr><td><strong>B</strong></td><td>Learning monotonicity</td><td>best(last 10 epochs) &gt; mean(first 5 epochs)</td></tr>
+<tr><td><strong>C</strong></td><td>Learned kT near SR peak</td><td>|learned_kT - peak_kT| / peak_kT &lt; 0.5</td></tr>
+</tbody>
+</table>
+</div>
+<p>Controls use the 3σ threshold: <code>|mean| &lt; 3·stderr</code>.</p>
+<h3 id="results"><a class="header" href="#results">Results</a></h3>
+<p><strong>Controls (validated):</strong></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Control</th><th>Synchrony</th><th>Stderr</th><th>Result</th></tr>
+</thead>
+<tbody>
+<tr><td>Low noise (kT × 0.1)</td><td>0.002</td><td>0.004</td><td>PASS (indistinguishable from zero)</td></tr>
+<tr><td>High noise (kT × 5.0)</td><td>-0.012</td><td>0.022</td><td>PASS (indistinguishable from zero)</td></tr>
+<tr><td>No signal (A₀ = 0)</td><td>-0.031</td><td>0.028</td><td>PASS (indistinguishable from zero)</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Baseline SR sweep:</strong> In progress.</p>
+<p><strong>Multi-algorithm training:</strong> Not yet run.</p>
+<blockquote>
+<p><strong>Platform readiness:</strong> High — all components exist. <code>ThermCircuitEnv</code> builder, <code>DoubleWellPotential</code>, <code>OscillatingField</code>, <code>ExternalField</code>, and all 8 algorithms via <code>Algorithm</code> trait.</p>
+<p><strong>Status:</strong> Controls validated. Baseline sweep and training in progress.</p>
+<p><strong>Code:</strong> <a href="../../../sim/L0/therm-env/tests/experiment_1.rs"><code>sim/L0/therm-env/tests/experiment_1.rs</code></a></p>
+</blockquote>
+<h2 id="key-references"><a class="header" href="#key-references">Key References</a></h2>
+<ul>
+<li>Purcell, E.M. “Life at Low Reynolds Number.” <em>American Journal of Physics</em> 45 (1977)</li>
+<li>Shapere, A. &amp; Wilczek, F. “Geometry of Self-Propulsion at Low Reynolds Number.” <em>Journal of Fluid Mechanics</em> 198 (1989)</li>
+<li>Flores, M. et al. “Signalling Noise Enhances Chemotactic Drift of E. coli.” <em>Physical Review Letters</em> 109 (2012)</li>
+<li>Mattingly, H.H. et al. “Escherichia coli Chemotaxis is Information Limited.” <em>Nature Physics</em> 17 (2021)</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="regime-2-ctenophore--multimodal-switching"><a class="header" href="#regime-2-ctenophore--multimodal-switching">Regime 2: Ctenophore — Multimodal Switching</a></h1>
+<p><strong>Re ~ 1-1000 — The Intermediate Regime</strong></p>
+<h2 id="the-physics-1"><a class="header" href="#the-physics-1">The Physics</a></h2>
+<p>This is the most neglected and arguably most important regime. Both inertia and viscosity play significant and comparable roles simultaneously. There is no clean simplification. The governing equations are the full nonlinear Navier-Stokes, but at scales where both viscous and inertial terms contribute non-negligibly to thrust and drag. Crucially: thrust and drag are governed by different forces — at Re ~ 10², thrust is generated primarily by inertial forces while drag is still significantly viscous. No single strategy dominates.</p>
+<p>The scallop theorem still technically applies (reciprocal motion produces no net displacement), but the breakdown of the theorem begins in this regime as inertial effects introduce memory into the fluid. A swimmer leaving a wake disturbs the flow it will encounter on its return, breaking exact time-reversibility.</p>
+<h2 id="what-ctenophores-do"><a class="header" href="#what-ctenophores-do">What Ctenophores Do</a></h2>
+<p>Ctenophores are among the oldest animals on Earth and the largest animals that use cilia to swim. Their ctene rows (arrays of fused cilia) beat in a metachronal wave — sequential, coordinated beating with a phase lag between adjacent appendages, creating the appearance of a traveling wave moving down each row. This strategy is notably distinct from either the purely viscous strategy of small ciliates or the inertial undulation of fish.</p>
+<p>The metachronal wave achieves several things simultaneously: it creates non-reciprocal motion (satisfying the kinematic constraint of the scallop theorem while inertia begins to provide memory), it generates hydrodynamic interactions between adjacent paddles that increase efficiency beyond what any single paddle could achieve alone, and it provides omnidirectional maneuverability by independently modulating different ctene rows.</p>
+<p>Critically: ctenophores can perform tight turns while maintaining forward swimming speeds close to 70% of their maximum — a performance metric comparable to or exceeding vertebrates with far more complex locomotor systems. This is multimodal switching in action: the system does not stop and reorient, it redistributes effort across different control surfaces in real time.</p>
+<h2 id="what-water-boatmen-do"><a class="header" href="#what-water-boatmen-do">What Water Boatmen Do</a></h2>
+<p>Water boatmen (Corixidae, Re ~ 10-200) operate in the most confused part of the intermediate regime. They use drag-based paddling with asymmetric power and recovery strokes — a direct application of temporal asymmetry to break time-reversibility. Their energetic efficiency is lower than fish of comparable size, but they are trimodal: they can swim, walk, and fly, transitioning rapidly between locomotor modes as the physical environment demands. This mode switching is the characteristic strategy of the intermediate regime.</p>
+<h2 id="the-x-encoding-principle-1"><a class="header" href="#the-x-encoding-principle-1">The X-Encoding Principle</a></h2>
+<p><strong>Principle 3:</strong> In the intermediate regime, no single encoding strategy dominates. The optimal approach combines temporal asymmetry (power and recovery phases at different rates) with distributed spatial coordination (metachronal waves) and mode switching (dynamically selecting between encoding strategies as local conditions shift).</p>
+<p><em>Applied to thermodynamic circuits:</em> At intermediate throughput rates — fast enough that purely topological encoding is insufficient, slow enough that inertial coupling effects haven’t emerged — the X-encoder must operate as a multimodal adaptive system. It should maintain multiple encoding strategies simultaneously and switch between them based on local observables of the circuit’s stochastic state. This is the regime where a Kalman filter architecture is most directly applicable: continuously estimating which encoding mode is appropriate given the observed noise floor and relaxation rate.</p>
+<p><strong>Principle 4:</strong> Distributed coordination across multiple control points (metachronal wave) produces emergent efficiency that no single control point could achieve. Applied to multi-cell thermodynamic circuits: coordinating injection timing across circuit nodes with a phase lag (analogous to a metachronal wave) may produce higher encoding fidelity than simultaneous or independent injection.</p>
+<h2 id="experiment-2--ctenophore-metachronal-phase-lag-optimization"><a class="header" href="#experiment-2--ctenophore-metachronal-phase-lag-optimization">Experiment 2 — Ctenophore Metachronal Phase-Lag Optimization</a></h2>
+<p>Simulate a row of N ctenes beating with a variable phase lag δ in both the viscous and intermediate Re regime. Measure thrust and encoding efficiency as a function of δ and Re. Identify whether there is a characteristic phase lag that maximizes efficiency at the viscous-inertial crossover. This translates directly to a design parameter for multi-node injection timing in thermodynamic circuits.</p>
+<blockquote>
+<p><strong>Platform readiness:</strong> Low — needs a simplified drag model (no CFD). The multi-particle <code>ThermCircuitEnv</code> supports N particles, but there is no hydrodynamic coupling between them.</p>
+<p><strong>Status:</strong> Not started</p>
+<p><strong>Code:</strong> —</p>
+</blockquote>
+<h2 id="key-references-1"><a class="header" href="#key-references-1">Key References</a></h2>
+<ul>
+<li>Byron, M.L. “Moving in the In-Between: Locomotion Strategies at Intermediate Reynolds Numbers.” <em>Princeton MAE Seminar</em> (2022)</li>
+<li>McHenry, M.J. et al. “The Hydrodynamics of Locomotion at Intermediate Reynolds Numbers.” <em>Journal of Experimental Biology</em> 206 (2003)</li>
+<li>Daniels, J. et al. “The Hydrodynamics of Swimming at Intermediate Reynolds Numbers in the Water Boatman.” <em>Journal of Experimental Biology</em> 217 (2014)</li>
+<li>Hoover, A.P. et al. “Omnidirectional Propulsion in a Metachronal Swimmer.” <em>PLOS Computational Biology</em> (2023)</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="regime-3-octopus--compressed-command"><a class="header" href="#regime-3-octopus--compressed-command">Regime 3: Octopus — Compressed Command</a></h1>
+<p><strong>Re ~ 10³-10⁵ — The Inertial Distributed Regime</strong></p>
+<h2 id="the-physics-2"><a class="header" href="#the-physics-2">The Physics</a></h2>
+<p>Inertia dominates. Viscosity still contributes to drag but does not govern the locomotion strategy. The fluid has memory — perturbations persist and propagate. The swimmer generates wakes that interact with the environment on relevant timescales. But this is also the regime of high degrees of freedom: the control problem is not underdetermined (as at low Re where everything scales out) but overdetermined — there are more controllable degrees of freedom than there are dimensions of the desired output, and the control architecture must manage this redundancy efficiently.</p>
+<h2 id="what-the-octopus-does"><a class="header" href="#what-the-octopus-does">What the Octopus Does</a></h2>
+<p>The octopus has eight arms with virtually infinite degrees of freedom. Each arm is a muscular hydrostat — no rigid skeleton, with muscles providing both structural support and actuation. The arm contains approximately 380,000 motor neurons distributed along its length, yet the brain controls all of them via only ~4,000 efferent nerve fibers — a compression ratio of roughly 100:1.</p>
+<p>This is the key insight. The central brain does not specify each muscle’s activation individually. It sends a compressed command that specifies the goal (reach toward target at location X), and the arm’s own distributed neural circuitry handles the decomposition of that command into the specific muscle activations required to execute the motion in the specific stochastic fluid environment the arm is currently in.</p>
+<p>The primary locomotion primitive is bend propagation: the brain initiates a bend at the base of the arm, which travels as a wave from base to tip. Different reaching movements vary in speed and distance but maintain a basic invariant velocity profile scaled appropriately. The same motor program, scaled, generates all reaches. This scale-invariance is fundamental — it means the encoding strategy does not need to be re-designed for every target; one parametric program covers the full range.</p>
+<p>Sensory information flows back in the opposite direction: ~2.3 million receptors distributed along the arm send information to the brain via only ~17,500 afferent fibers. Most sensory processing happens locally in the arm’s peripheral nervous system. The brain receives a summary, not raw data.</p>
+<p>The architecture: compressed high-level command → distributed local decoding → precise physical execution → compressed sensory summary → updated command.</p>
+<h2 id="the-x-encoding-principle-2"><a class="header" href="#the-x-encoding-principle-2">The X-Encoding Principle</a></h2>
+<p><strong>Principle 5:</strong> In the inertial distributed regime, the optimal architecture separates the encoding problem into two layers: a compressed high-level specification of the desired output (what state to reach) and a distributed local computation layer that translates that specification into physical actions appropriate to local noise conditions. The central controller does not need to know the noise floor at every circuit node; the local layer adapts.</p>
+<p><em>Applied to thermodynamic circuits:</em> The X-encoder broadcasts a compressed description of the target energy basin to all circuit nodes. Each node runs a local computation (analogous to the arm’s ganglion) that determines how to modulate its local Langevin dynamics to steer toward that basin, given the local noise statistics it observes. The circuit’s distributed neural computation — its local stochastic dynamics — handles the translation. This is the thermodynamic analog of bend propagation.</p>
+<p><strong>Principle 6:</strong> Scale-invariance of the encoding program. A parametric injection wave that can be scaled in amplitude and velocity to cover a range of target states (analogous to the octopus’s invariant velocity profile) is more powerful than a lookup table of specific injection sequences for each target. Scale-invariance is also a prerequisite for scaling the circuit itself — an encoding strategy that must be re-tuned for each circuit size is not an engineering tool.</p>
+<h2 id="experiment-3--octopus-bend-propagation-compression-ratio"><a class="header" href="#experiment-3--octopus-bend-propagation-compression-ratio">Experiment 3 — Octopus Bend Propagation Compression Ratio</a></h2>
+<p>Simulate octopus arm reaching using CortenForge’s Hill-type muscle model with the 4,000:380,000 efferent compression architecture. Measure the minimum central command dimensionality required to achieve a given reaching accuracy in a stochastic fluid environment. Characterize how this compression ratio scales with arm length and noise level.</p>
+<blockquote>
+<p><strong>Platform readiness:</strong> Medium — Hill muscles exist in the sim crate, but needs an MJCF tentacle model with the appropriate compression architecture.</p>
+<p><strong>Status:</strong> Not started</p>
+<p><strong>Code:</strong> —</p>
+</blockquote>
+<h2 id="key-references-2"><a class="header" href="#key-references-2">Key References</a></h2>
+<ul>
+<li>Gutfreund, Y. et al. “Organization of Octopus Arm Movements: A Model System for Studying the Control of Flexible Arms.” <em>Journal of Neuroscience</em> 16 (1996)</li>
+<li>Sumbre, G. et al. “Octopuses Use a Human-like Strategy to Control Precise Point-to-Point Arm Movements.” <em>Current Biology</em> 16 (2006)</li>
+<li>Levy, G. et al. “Motor Control in Soft-Bodied Animals.” <em>Current Biology</em> 25 (2015)</li>
+<li>Davenport, J.S. et al. “Lessons for Robotics from the Control Architecture of the Octopus.” <em>Frontiers in Robotics and AI</em> (2022)</li>
+<li>Mischiati, M. et al. “Neural Models and Algorithms for Sensorimotor Control of an Octopus Arm.” <em>arXiv</em> (2024)</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="regime-4-dragonfly--predictive-guidance"><a class="header" href="#regime-4-dragonfly--predictive-guidance">Regime 4: Dragonfly — Predictive Guidance</a></h1>
+<p><strong>Re ~ 10⁵-10⁷ — The Predictive Inertial Regime</strong></p>
+<h2 id="the-physics-3"><a class="header" href="#the-physics-3">The Physics</a></h2>
+<p>Full inertial regime. Viscosity contributes to drag but not meaningfully to the locomotion control problem. The fluid generates persistent wakes and vortices. The key physical constraint is latency: at these speeds, the time for a reactive signal to propagate through the nervous system and execute a motor command is comparable to or longer than the time in which the target moves a significant fraction of the control distance. A pure reactive strategy fails — by the time the correction executes, it is already wrong.</p>
+<p>This is the latency gap regime: you are moving fast enough to lose the distributed local computation advantage (the arm can’t adapt fast enough), but not fast enough to generate the vortex-lift control authority that defines the next regime up. It is the most computationally demanding regime for a biological or engineered controller.</p>
+<h2 id="what-the-dragonfly-does"><a class="header" href="#what-the-dragonfly-does">What the Dragonfly Does</a></h2>
+<p>Dragonflies achieve a prey capture success rate of 90-95% in the wild — the highest of any known predator. They do this while intercepting aerobatic prey in mid-air at speeds up to several meters per second, in turbulent air, with a nervous system containing roughly 1 million neurons total.</p>
+<p>The mechanism was established by Mischiati et al. (Nature, 2015): dragonfly interception steering is driven by forward and inverse internal models of the dragonfly’s own body dynamics and of the prey’s predicted trajectory. Predictive rotations of the head continuously track the prey’s angular position. The head-body angle thereby established guides systematic rotations of the body to align with the prey’s predicted flight path. Model-driven control underlies the bulk of maneuvers; reactive control is reserved specifically for unexpected prey movements.</p>
+<p>The guidance law was characterized by Brighton et al. (PNAS, 2017, working with peregrine falcons but confirmed analogously for dragonflies): proportional navigation (PN). Under PN, turning rate is commanded proportional to the angular rate of the line-of-sight to target:</p>
+<p>$$
+\omega_{\text{commanded}} = N \times \frac{d\lambda}{dt}
+$$</p>
+<p>where λ is the line-of-sight angle and N is the navigation constant (feedback gain). This is the same guidance law used by most visually guided missiles. For dragonflies, N ~ 3, which coincides with the classical linear-quadratic optimal guidance result: PN with N = 3 minimizes control effort to intercept a non-maneuvering target.</p>
+<p>Before takeoff, the dragonfly performs a critical pre-selection step: it assesses whether the prey’s angular size and velocity co-vary within a privileged range, and times its takeoff to predict when the prey will cross its zenith. The behavioral decision embeds the computational constraints — the dragonfly only pursues prey it has pre-verified it can intercept given its own body dynamics.</p>
+<p>The minimum sensory requirement is also remarkable: two local observables — vertical wind acceleration and torque (body rotation rate) — are sufficient to implement the PN guidance law. Global knowledge of the flow field is not required.</p>
+<h2 id="the-x-encoding-principle-3"><a class="header" href="#the-x-encoding-principle-3">The X-Encoding Principle</a></h2>
+<p><strong>Principle 7:</strong> In the latency-gap regime, the X-encoder must operate predictively. It cannot react to observed drift in the circuit’s state because the signal propagation latency is too long for reactive correction to be useful. Instead, it maintains a forward model of the circuit’s own relaxation dynamics — predicting where the system will be at time t+Δ and injecting X at the predicted future state rather than the current observed state. The injection leads the relaxation rather than chasing it.</p>
+<p><em>Applied to thermodynamic circuits:</em> A forward model of the Langevin dynamics, calibrated from observed circuit statistics, predicts the evolution of the energy landscape for the next several time steps. X-injection is computed against the predicted state. When prediction error exceeds a threshold (unexpected stochastic events), the system falls back to reactive injection temporarily, then returns to model-driven control.</p>
+<p><strong>Principle 8:</strong> Pre-selection and operating regime commitment. Before entering high-throughput operation, the X-encoder should verify that the circuit’s current noise profile and relaxation rate are within the regime for which the encoding strategy was designed (analogous to the dragonfly’s pre-takeoff assessment). Attempting to encode outside the designed regime is the primary failure mode.</p>
+<p><strong>Principle 9:</strong> Minimum observables sufficiency. Two local scalar cues are sufficient for full trajectory guidance. The X-encoder instrumentation can therefore be minimal: local energy gradient and local curvature (or equivalent observable pair) fed into a PN-style feedback law. This is a tractable instrumentation problem, not a global state estimation problem.</p>
+<h2 id="experiment-4--dragonfly-pn-guidance-in-langevin-noise"><a class="header" href="#experiment-4--dragonfly-pn-guidance-in-langevin-noise">Experiment 4 — Dragonfly PN Guidance in Langevin Noise</a></h2>
+<p>Implement proportional navigation with N as a free parameter in a simulated Langevin particle navigating a 2D energy landscape toward a target basin. Vary N across [1, 5] and measure convergence speed and convergence fidelity as a function of noise level. Verify the N ~ 3 optimum and characterize its robustness to noise floor variations. Extend to the forward-model variant: precompute the target basin’s future position using the Langevin drift term, and measure the improvement in convergence.</p>
+<blockquote>
+<p><strong>Platform readiness:</strong> High — <a href="#thermcircuitenv-building-the-experiment-platform"><code>ThermCircuitEnv</code></a> builder, <code>DoubleWellPotential</code>, <code>LangevinThermostat</code>, and all 8 RL/optimization algorithms exist.</p>
+<p><strong>Status:</strong> Plumbing validated — CEM learns state-dependent temperature control, beating a constant-temperature baseline by ~2x. See the <a href="#phase-4--experiment-4-validation">infrastructure chapter</a> for implementation details and honest assessment of what the test does and does not prove. The full PN guidance experiment (N sweep across [1, 5], noise-level sweep, forward-model variant) is not yet started.</p>
+<p><strong>Code:</strong> <a href="../../../sim/L0/therm-env/tests/experiment_4.rs"><code>sim/L0/therm-env/tests/experiment_4.rs</code></a></p>
+</blockquote>
+<h2 id="key-references-3"><a class="header" href="#key-references-3">Key References</a></h2>
+<ul>
+<li>Mischiati, M. et al. “Internal Models Direct Dragonfly Interception Steering.” <em>Nature</em> 517 (2015)</li>
+<li>Brighton, C.H. et al. “Terminal Attack Trajectories of Peregrine Falcons are Described by the Proportional Navigation Guidance Law of Missiles.” <em>PNAS</em> 114 (2017)</li>
+<li>Mills, R. et al. “Physics-Based Simulations of Aerial Attacks by Peregrine Falcons Reveal that Stooping at High Speed Maximizes Catch Success.” <em>PLOS Computational Biology</em> 14 (2018)</li>
+<li>Combes, S.A. “Neuroscience: Dragonflies Predict and Plan Their Hunts.” <em>Nature</em> 517 (2015)</li>
+<li>Gonzalez-Bellido, P.T. et al. “Eight Pairs of Descending Visual Neurons in the Dragonfly Give Wing Motor Centers Accurate Population Vector of Prey Direction.” <em>PNAS</em> 110 (2013)</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="regime-5-peregrine--vortex-noise-coupling"><a class="header" href="#regime-5-peregrine--vortex-noise-coupling">Regime 5: Peregrine — Vortex-Noise Coupling</a></h1>
+<p><strong>Re &gt; 10⁷ — The High-Inertial Turbulent Regime</strong></p>
+<h2 id="the-physics-4"><a class="header" href="#the-physics-4">The Physics</a></h2>
+<p>At very high Re, the flow is turbulent. Vortices are generated spontaneously and persistently. The swimmer is not avoiding or suppressing turbulence — it is immersed in a chaotic vortex field of its own and the environment’s making. The conventional engineering assumption — that noise degrades control authority at high speed — breaks down entirely. A new physics emerges: vortex-induced lift. At high enough speeds, deliberately shaped vortices generate aerodynamic forces larger than those available from conventional attached flow. Speed generates control authority rather than destroying it.</p>
+<p>This is the most counterintuitive regime for engineers trained in digital systems, where noise is always the enemy. It is also where the most powerful and unexpected biological principle lives.</p>
+<h2 id="what-the-peregrine-falcon-does"><a class="header" href="#what-the-peregrine-falcon-does">What the Peregrine Falcon Does</a></h2>
+<p>The peregrine is the fastest animal on Earth — exceeding 380 km/h in a stoop (hunting dive). At these speeds, it maintains not merely stable flight but precise, active maneuvering sufficient to intercept aerobatic prey. The mechanism was established by Gowree et al. (Communications Biology, 2018) and extended by Brucker and Gowree (AIAA Journal, 2021).</p>
+<p>The stoop is a four-phase morphological sequence:</p>
+<p><strong>Phase I (Teardrop — T-shape):</strong> Wings folded completely, feathers tucked, legs retracted. Drag minimized. The falcon converts gravitational potential energy to kinetic energy with near-zero energy expenditure. Angle of attack maintained at ~5° — the equilibrium point where aerodynamic and gravitational forces balance. This phase is passive.</p>
+<p><strong>Phase II (Cupped wing — C-shape):</strong> Wings open slightly with primary feathers aligned vertically. Substantial lateral (side) forces generated — up to 3x body weight — enabling pure yaw control. Asymmetric morphing allows roll and heading correction. The strong vortices produced are aligned laterally, providing steering authority without significant deceleration.</p>
+<p><strong>Phase III (M-shape — terminal phase):</strong> The defining configuration. Wings deploy into a forward-swept M-shape. This is where the core physics lives.</p>
+<p>The M-shape vortex field: Wind tunnel experiments and Large Eddy Simulations (LES) revealed a rich set of interacting vortex structures:</p>
+<ul>
+<li>Horn / Werle-Legendre vortices emanating from the frontal region due to strong spanwise flow promoted by the forward sweep of the radiale (wrist bone)</li>
+<li>Dorsal vortex (DV) interacting with the horseshoe vortex (HSV) of the body</li>
+<li>Wing vortex (WV) and tail vortex (TV) enhanced by M-shape geometry</li>
+<li>Primary feather vortex (PFV) at the wingtip primaries</li>
+</ul>
+<p>The critical discovery: a counter-rotating vortex pair interacts with the main wing vortex to reduce induced drag, which would otherwise decelerate the bird significantly during pullout. The vortices do not merely provide lift — they actively cancel each other’s drag penalty. The chaos is not fought; it is structured so that one layer cancels another.</p>
+<p><strong>Deliberate pitch instability:</strong> LES analysis confirmed that the falcon is flying unstably in pitch during the M-shape phase — positive pitching moment slope at trim angle of attack ~5°. This is a feature, not a flaw. Pitch instability maximizes responsiveness: a small input produces a large output change. The hand wings (primaries) act as “elevons” — stabilizing the intentionally unstable configuration while preserving its high-sensitivity property.</p>
+<p><strong>The guidance law:</strong> Brighton et al. (PNAS, 2017) confirmed using GPS loggers and onboard cameras that terminal attack trajectories follow the proportional navigation guidance law (shared with the dragonfly) but with a lower navigation constant N &lt; 3, appropriate to the lower flight speed relative to missiles and accounting for higher biological sensor latency. Monte Carlo simulation confirmed N ~ 3 as the optimum for high-speed stoops against agile prey.</p>
+<p><strong>Physiological substrate supporting high-throughput precision:</strong></p>
+<ul>
+<li>Nasal tubercles regulate respiratory pressure at &gt;200 mph</li>
+<li>Visual acuity ~4x human density; 150 fps processing rate; dual fovea (forward shallow + lateral deep)</li>
+<li>Nictitating membrane clears debris without interrupting vision</li>
+<li>Reinforced arm skeleton and shoulder girdle (~2-3x bone mass of comparable raptors) to sustain 3g+ load factors</li>
+<li>Talon reflex arc bypassing conscious processing: impact → grip in ~15ms (vs. 200ms human reaction time)</li>
+</ul>
+<h2 id="the-x-encoding-principle-4"><a class="header" href="#the-x-encoding-principle-4">The X-Encoding Principle</a></h2>
+<p><strong>Principle 10:</strong> In the high-inertial turbulent regime, speed itself generates control authority. The appropriate strategy is not to suppress noise but to deliberately inject structured perturbations that generate counter-rotating vortex pairs whose mutual interaction cancels drag while preserving lift (control force). Higher throughput produces more vortex-induced force available for steering — the precision-throughput relationship inverts.</p>
+<p><em>Applied to thermodynamic circuits:</em> At high injection rates, the X-encoder should deliberately introduce paired perturbation structures into the circuit’s Langevin noise field — perturbations designed so that their stochastic cross-correlation produces net drift toward the target energy basin, while their self-canceling structure minimizes the energy dissipation (entropy production) associated with the injection. This is the thermodynamic analog of the counter-rotating vortex pair.</p>
+<p><strong>Principle 11:</strong> Deliberate instability as a sensitivity amplifier. A circuit operating near a phase transition (bifurcation) in its energy landscape is pitch-unstable in the analogy — highly sensitive to perturbations. The X-encoder should target this operating point and use a minimal stabilization mechanism (the circuit analog of elevon primaries) to prevent divergence while preserving the high-sensitivity regime.</p>
+<p><strong>Principle 12:</strong> The logarithmic spiral as a scale-invariant approach geometry. Peregrine falcons resolve the conflict between aerodynamic streamlining (head straight) and maximum visual acuity (head turned 40°) by flying a logarithmic spiral path — a constant-angle curve that is self-similar at every scale. A scale-invariant X-injection trajectory would not require re-tuning as the circuit scales, which is the central engineering requirement for thermodynamic computing to become a manufacturable technology.</p>
+<h2 id="experiment-5--peregrine-m-shape-vortex-coupling-simulation"><a class="header" href="#experiment-5--peregrine-m-shape-vortex-coupling-simulation">Experiment 5 — Peregrine M-Shape Vortex Coupling Simulation</a></h2>
+<p>Simulate the M-shape vortex field in CortenForge’s fluid simulation domain. Quantify the counter-rotating vortex pair’s drag-cancellation ratio as a function of injection speed (analogous to dive speed). Verify the predicted monotonic increase in drag cancellation with speed. Translate the vortex geometry into a parameterized description of structured perturbation pairs for circuit injection.</p>
+<blockquote>
+<p><strong>Platform readiness:</strong> Low — needs reformulation to the Langevin domain. The vortex-coupling principle maps to paired perturbation structures in stochastic dynamics, but the concrete simulation setup has not been designed.</p>
+<p><strong>Status:</strong> Not started</p>
+<p><strong>Code:</strong> —</p>
+</blockquote>
+<h2 id="key-references-4"><a class="header" href="#key-references-4">Key References</a></h2>
+<ul>
+<li>Gowree, E.R. et al. “Vortices Enable the Complex Aerobatics of Peregrine Falcons.” <em>Communications Biology</em> 1 (2018)</li>
+<li>Brucker, C. &amp; Gowree, E.R. “Peregrine Falcon’s Dive: Pullout Maneuver and Flight Control Through Wing Morphing.” <em>AIAA Journal</em> 59 (2021)</li>
+<li>Brighton, C.H. et al. “Terminal Attack Trajectories of Peregrine Falcons are Described by the Proportional Navigation Guidance Law of Missiles.” <em>PNAS</em> 114 (2017)</li>
+<li>Tucker, V.A. “Curved Flight Paths and Sideways Vision in Peregrine Falcons.” <em>Journal of Experimental Biology</em> 203 (2000)</li>
+<li>Mills, R. et al. “Physics-Based Simulations of Aerial Attacks by Peregrine Falcons.” <em>PLOS Computational Biology</em> 14 (2018)</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="transition-zones-and-the-lateral-line"><a class="header" href="#transition-zones-and-the-lateral-line">Transition Zones and the Lateral Line</a></h1>
+<p>The five regimes and their principles are the main result. But the transition zones between them are arguably the most important research target, because:</p>
+<ol>
+<li>Real thermodynamic circuits will operate across a range of throughput levels, necessarily crossing multiple regime boundaries.</li>
+<li>The biological exemplars suggest that transitions between regimes are discontinuous — there is no smooth interpolation of strategies, and performance degrades sharply in the transition zone before a new strategy takes over.</li>
+<li>The intermediate regime (Regime 2) exists precisely because neither low-Re nor high-Re strategies work there, and the organisms that inhabit it (ctenophores, water boatmen) are notably less efficient than those that specialize in either adjacent regime.</li>
+</ol>
+<p><strong>The transition zone hypothesis:</strong> In thermodynamic computing, as injection throughput increases from the regime of one strategy to the next, there will be a characteristic throughput range where neither strategy works well — analogous to the intermediate Reynolds number regime. Identifying these critical throughput values for a given circuit architecture, and designing the mode-switching logic that handles the transitions, is a specific and tractable engineering problem that this research program can address through simulation.</p>
+<h2 id="the-fish-lateral-line"><a class="header" href="#the-fish-lateral-line">The Fish Lateral Line</a></h2>
+<p>There is a sixth organism that deserves dedicated study for its unique role at the boundary between Regimes 3 and 4: the fish with lateral line. The lateral line is an array of mechanosensory organs distributed along the fish’s body that detects local pressure gradients and vortex shedding frequencies with remarkable precision. Fish use the lateral line to perform Karman gaiting — holding station in a turbulent vortex street behind a cylinder by passively synchronizing their body kinematics to the oscillating flow. This is energy harvesting from chaos: exploiting the environmental noise field as a source of free locomotion rather than fighting it. The lateral line provides the sensing architecture that makes this possible. The engineering analog is an in-situ noise characterization system embedded in the circuit itself, providing real-time observables to the X-encoder without interrupting computation.</p>
+<h2 id="experiment-6--regime-transition-characterization"><a class="header" href="#experiment-6--regime-transition-characterization">Experiment 6 — Regime Transition Characterization</a></h2>
+<p>For each pair of adjacent regimes, simulate a Langevin circuit operating at the strategy of the lower regime and systematically increase the injection rate. Measure when performance begins to degrade and what the transition regime looks like. Identify the critical τ_circuit / τ_noise ratio at each transition. Map these to concrete circuit parameters (injection rate, noise floor, relaxation time) to provide actionable design guidance for where to switch encoding strategies.</p>
+<blockquote>
+<p><strong>Platform readiness:</strong> Low — this is a meta-experiment that requires 2-3 regime-specific strategies to be working first. It depends on Experiments 1, 4, and ideally 3 or 5.</p>
+<p><strong>Status:</strong> Not started</p>
+<p><strong>Code:</strong> —</p>
+</blockquote>
+<h2 id="experiment-7--fish-lateral-line-in-situ-sensing"><a class="header" href="#experiment-7--fish-lateral-line-in-situ-sensing">Experiment 7 — Fish Lateral Line In-Situ Sensing</a></h2>
+<p>Implement a lateral-line-style sensor array in the simulated circuit: distributed local pressure sensors (equivalent to neuromasts) providing real-time vortex shedding frequency and local gradient information. Test whether this in-situ sensing reduces the number of pre-measurement calibration steps required before the X-encoder can operate effectively. Quantify the steady-state sensing accuracy as a function of array density and sensor placement.</p>
+<blockquote>
+<p><strong>Platform readiness:</strong> Low — needs a distributed pressure-gradient sensor plugin. The sim sensor infrastructure exists but does not include the specific sensor type needed.</p>
+<p><strong>Status:</strong> Not started</p>
+<p><strong>Code:</strong> —</p>
+</blockquote>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="synthesis-the-unified-framework"><a class="header" href="#synthesis-the-unified-framework">Synthesis: The Unified Framework</a></h1>
+<h2 id="the-complete-spectrum"><a class="header" href="#the-complete-spectrum">The Complete Spectrum</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Regime</th><th>Re Range</th><th>Exemplar</th><th>Dominant Strategy</th><th>X-Encoding Analog</th></tr>
+</thead>
+<tbody>
+<tr><td>Viscosity-dominated</td><td>&lt; 1</td><td>E. coli</td><td>Topological encoding; geometric phase; stochastic resonance</td><td>Encode in injection sequence topology, not amplitude; exploit optimal noise level</td></tr>
+<tr><td>Intermediate</td><td>1-1,000</td><td>Ctenophores, water boatmen</td><td>Temporal asymmetry; metachronal coordination; mode switching</td><td>Asymmetric injection phases; distributed phase-lagged coordination; adaptive mode switching</td></tr>
+<tr><td>Inertial distributed</td><td>10³-10⁵</td><td>Octopus</td><td>Compressed central command; distributed local decoding; propagating wave</td><td>Compressed X-specification; local circuit-level decoding; scale-invariant bend propagation</td></tr>
+<tr><td>Predictive inertial</td><td>10⁵-10⁷</td><td>Dragonfly</td><td>Predictive internal model; PN guidance; minimum observable sufficiency</td><td>Forward-model-guided injection; PN-style feedback; two local cues sufficient</td></tr>
+<tr><td>High-inertial turbulent</td><td>&gt; 10⁷</td><td>Peregrine falcon</td><td>Vortex-noise coupling; constructive counter-rotation; deliberate instability</td><td>Paired perturbation structures; counter-rotating noise coupling; bifurcation-point operation</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="what-varies-across-the-spectrum"><a class="header" href="#what-varies-across-the-spectrum">What Varies Across the Spectrum</a></h2>
+<p>What actually changes as one moves from low to high Re is not simply “speed.” The underlying variable is the ratio of signal timescale to noise timescale (τ_signal / τ_noise):</p>
+<ul>
+<li><strong>Low Re:</strong> τ_signal ~ τ_noise. They are indistinguishable. Encode in topology.</li>
+<li><strong>Intermediate Re:</strong> τ_signal and τ_noise are both relevant but different. Exploit both via multimodal switching.</li>
+<li><strong>Inertial distributed Re:</strong> τ_signal &gt; τ_noise. You have time for local computation. Distribute the decoding.</li>
+<li><strong>Predictive inertial Re:</strong> τ_signal &lt; τ_noise for reactive control but &gt; τ_noise for predictive control. Precompute.</li>
+<li><strong>High inertial turbulent Re:</strong> τ_noise generates coherent structures on timescales accessible to the controller. Couple constructively.</li>
+</ul>
+<p>This framing suggests that the correct axis for thermodynamic circuit design is not “throughput” but the dimensionless ratio τ_circuit / τ_noise — a circuit-level analog of the Reynolds number. Computing this ratio for a given circuit architecture and operating condition determines which encoding regime applies and which strategy should be deployed.</p>
+<h2 id="the-common-thread"><a class="header" href="#the-common-thread">The Common Thread</a></h2>
+<p>Despite their apparent diversity, all five strategies share a single underlying principle: <strong>the environment’s stochastic character is not an obstacle to be overcome but a resource to be exploited.</strong> Every biological exemplar either uses noise to amplify sensitivity (E. coli), harvests noise as a phase-coordination mechanism (ctenophores), treats noise as the medium through which a compressed command propagates (octopus), uses noise statistics to calibrate a forward model (dragonfly), or couples constructively with noise to generate control force (peregrine).</p>
+<p>This is the deepest lesson for thermodynamic computing: the designers of thermodynamic circuits should not be trying to suppress Langevin noise. They should be designing X-encoders that make the noise work for them.</p>
+<h2 id="what-is-novel-about-this-program"><a class="header" href="#what-is-novel-about-this-program">What Is Novel About This Program</a></h2>
+<p>The individual biological phenomena described in this document are established science. The engineering applications to specific domains (aeronautics, robotics) are well-explored. What is novel is:</p>
+<ol>
+<li><strong>The formal mapping</strong> from Reynolds number regimes to thermodynamic circuit encoding regimes. This connection has not been made in the literature.</li>
+<li><strong>The identification of five distinct biological strategies</strong> — not three, not a continuum — as a design basis for X-encoding. The prior art in bio-inspired computing tends to pick one or two biological exemplars; a systematic spectrum has not been proposed.</li>
+<li><strong>The specific hypothesis</strong> that constructive vortex-noise coupling (Regime 5) produces an inversion of the precision-throughput tradeoff. This is a falsifiable prediction with direct engineering implications.</li>
+<li><strong>The formalization of CortenForge</strong> as the simulation infrastructure for extracting quantitative design parameters from these biological systems. The biological exemplars are not metaphors here — they are simulatable.</li>
+</ol>
+<h2 id="relationship-to-current-thermodynamic-computing-research"><a class="header" href="#relationship-to-current-thermodynamic-computing-research">Relationship to Current Thermodynamic Computing Research</a></h2>
+<p>The companies currently leading thermodynamic computing development (Extropic, Normal Computing) are focused on chip fabrication and algorithm development. The X-encoding problem is acknowledged but not yet formally addressed in the published literature. The biological spectrum framework is therefore complementary rather than competitive — it addresses the foundational theory question that enables the next generation of chip and algorithm design.</p>
+<h2 id="open-source-philosophy"><a class="header" href="#open-source-philosophy">Open Source Philosophy</a></h2>
+<p>This research is released openly. The reasoning is straightforward: the value created by becoming the foundational reference for biological-inspired X-encoding theory exceeds the value of any IP protection that could be applied to the theoretical framework. The simulation infrastructure (CortenForge) is the durable asset. The research program generates citations, partnerships, and positioning that makes CortenForge indispensable to the thermodynamic computing ecosystem.</p>
+<p>The precedent is clear: PyTorch, TensorFlow, LLVM. Open infrastructure that became the standard captured far more value than closed alternatives.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="thermcircuitenv-building-the-experiment-platform"><a class="header" href="#thermcircuitenv-building-the-experiment-platform">ThermCircuitEnv: Building the Experiment Platform</a></h1>
+<p>All 7 experiments in this research program share the same core loop: configure a Langevin particle system with an energy landscape, wire it into an RL environment, train a policy to modulate temperature or other control channels, and measure the result. The <code>ThermCircuitEnv</code> crate eliminates the ~35 lines of boilerplate that each experiment would otherwise repeat.</p>
+<p>This chapter documents how the platform was built — what worked, what surprised us, and what the infrastructure tells us about the experiments it will support.</p>
+<h2 id="foundations-what-we-built-on"><a class="header" href="#foundations-what-we-built-on">Foundations: What We Built On</a></h2>
+<p><code>ThermCircuitEnv</code> sits on top of two layers of infrastructure that were already in place:</p>
+<p><strong>The ML chassis</strong> (<a href="../../../sim/L0/ml-chassis"><code>sim-ml-chassis</code></a>) provides the <code>Algorithm</code> trait, <code>VecEnv</code>, <code>SimEnv</code>, <code>Policy</code>, observation/action spaces, and the rollout machinery. This layer was the subject of a <a href="../ml_chassis_refactor/book">prior study</a> that refactored the original <code>sim-ml-bridge</code> into a clean chassis/algorithm split. The key outcome of that study: every algorithm (CEM, REINFORCE, PPO, TD3, SAC from <a href="../../../sim/L0/rl"><code>sim-rl</code></a>; SA, Richer-SA, PT from <a href="../../../sim/L0/opt"><code>sim-opt</code></a>) bolts onto the same <code>Algorithm</code> trait and accepts a <code>&amp;mut VecEnv</code>. This means any experiment built on <code>ThermCircuitEnv</code> automatically gets access to all 8 algorithms with zero additional wiring.</p>
+<p><strong>The thermostat layer</strong> (<a href="../../../sim/L0/thermostat"><code>sim-thermostat</code></a>) provides <code>LangevinThermostat</code>, <code>PassiveComponent</code> (double-well potentials, oscillating fields, pairwise coupling, ratchets, external fields), and <code>PassiveStack</code>. The D2 stochastic resonance study validated this layer end-to-end with 4-algorithm comparison tests.</p>
+<p><code>ThermCircuitEnv</code> is the bridge: it takes a circuit description (particle count, energy landscape, control channels) and produces a ready-to-train <code>VecEnv</code> or a single <code>ThermCircuitEnv</code> for evaluation.</p>
+<h2 id="the-build-four-phases"><a class="header" href="#the-build-four-phases">The Build: Four Phases</a></h2>
+<h3 id="phase-1--mjcf-generation"><a class="header" href="#phase-1--mjcf-generation">Phase 1 — MJCF Generation</a></h3>
+<p>The first problem: MuJoCo needs an XML model. Every experiment has N particles as 1D slide joints, zero-gravity Euler integration, contact disabled, and zero-gain actuators that exist only to allocate <code>data.ctrl</code> slots.</p>
+<p><code>generate_mjcf(n_particles, n_ctrl, timestep)</code> produces this XML programmatically. The key design decisions:</p>
+<ul>
+<li><strong>Slide joints</strong> give nq = nv = 1 per particle. No quaternion headaches.</li>
+<li><strong>Zero-gain actuators</strong> (<code>gainprm="0" biasprm="0 0 0"</code>) produce zero force regardless of ctrl value. All physics comes from the thermostat and landscape components via <code>cb_passive</code>. The actuators are ctrl-slot allocators, nothing more.</li>
+<li><strong>Mass = 1</strong> simplifies the fluctuation-dissipation relation. Configurable later if needed.</li>
+</ul>
+<h3 id="phase-2--builder-and-single-environment"><a class="header" href="#phase-2--builder-and-single-environment">Phase 2 — Builder and Single Environment</a></h3>
+<p>The builder composes 9 steps into a fluent API:</p>
+<pre><code>ThermCircuitEnv::builder(n_particles)
+    .gamma(10.0).k_b_t(1.0).timestep(0.001)
+    .with(DoubleWellPotential::new(3.0, 1.0, 0))
+    .with_ctrl_temperature()
+    .reward(|_m, d| -(d.qpos[0] - 1.0).powi(2))
+    .sub_steps(100).episode_steps(1000)
+    .build()
+</code></pre>
+<p><strong>What we learned:</strong></p>
+<ul>
+<li><code>SimEnvBuilder</code> requires all 5 closures (obs_space, act_space, reward, done, truncated) — no optional fields. <code>ThermCircuitEnvBuilder</code> supplies sensible defaults for <code>done</code> (always false) and <code>truncated</code> (time-based from <code>episode_steps</code>). Only <code>reward</code> is mandatory.</li>
+<li>The thermostat is constructed internally from <code>gamma</code> and <code>k_b_t</code>. The user never touches <code>LangevinThermostat</code> directly. Landscape components (double wells, fields, couplings) are added via <code>.with()</code> and the builder wraps them in <code>Arc</code> for the <code>PassiveStack</code>.</li>
+<li>We had to add <code>PassiveStackBuilder::with_arc()</code> to sim-thermostat — a 4-line method to accept pre-erased <code>Arc&lt;dyn PassiveComponent&gt;</code> without double-wrapping.</li>
+<li>No ctrl channels → <code>nu = 0</code> → dim-0 action space. This works: tests pass <code>Tensor::zeros(&amp;[0])</code> for actions. Experiments that don’t need ctrl-temperature can omit it entirely.</li>
+</ul>
+<p><strong>Physics validation:</strong> Damping at γ=10 over 100 sub-steps at h=0.001 produces velocity decay v ~ 0.37 (from exp(-γ·Δt) = exp(-1)), confirming the thermostat is active. Double-well restoring force at x=0.5 pushes the particle toward x=+1.0, confirming landscape components are wired through <code>cb_passive</code>.</p>
+<h3 id="phase-3--vecenv-batched-training"><a class="header" href="#phase-3--vecenv-batched-training">Phase 3 — VecEnv (Batched Training)</a></h3>
+<p><code>build_vec(n_envs)</code> produces a <code>VecEnv</code> for parallel training. The implementation extracted shared setup into a private <code>prepare() -&gt; PreparedCircuit</code> method, eliminating ~50 lines of duplication between <code>build()</code> and <code>build_vec()</code>.</p>
+<p><strong>What we learned:</strong></p>
+<ul>
+<li><code>VecEnvBuilder::on_reset</code> takes 3 args <code>(model, data, env_index)</code> vs the builder’s 2-arg closure. Wrapped with <code>move |m, d, _idx| on_reset(m, d)</code>. Per-env seeding via index is deferred.</li>
+<li>VecEnvBuilder stores closures as <code>Arc</code> (vs SimEnvBuilder’s <code>Box</code>), so passing <code>Box&lt;dyn Fn&gt;</code> produces <code>Arc&lt;Box&lt;dyn Fn&gt;&gt;</code>. Double indirection, negligible overhead.</li>
+<li>All 26 Phase 1-2 tests passed unchanged after the <code>prepare()</code> extraction — no regressions.</li>
+</ul>
+<h3 id="phase-4--experiment-4-validation"><a class="header" href="#phase-4--experiment-4-validation">Phase 4 — Experiment 4 Validation</a></h3>
+<p>The first end-to-end test: can CEM learn state-dependent temperature control in a double-well landscape?</p>
+<p><strong>Setup:</strong> 1 particle, double well (ΔV=3, x₀=1), ctrl-temperature, γ=10, kT=1, h=0.001, 100 sub-steps, 1000 episode steps. Reward: -(qpos[0] - x₀)². CEM with LinearPolicy(2, 1), 50 epochs, 16-env VecEnv.</p>
+<p><strong>Baseline:</strong> Constant temperature (ctrl=1.0 → kT=1.0) gives episode-total reward of -876.</p>
+<p><strong>Result:</strong> CEM best-epoch reward = -431. Roughly 2x improvement over baseline.</p>
+<p><strong>What we learned:</strong></p>
+<ul>
+<li><code>LinearPolicy</code> outputs <code>tanh(W·x_scaled + b)</code> ∈ [-1, 1]. With <code>ctrlrange="0 10"</code> and <code>ctrllimited="true"</code>, MuJoCo clamps the ctrl to [0, ~1.0]. The policy can only <em>reduce</em> temperature from baseline, never increase it. Despite this, the PN guidance strategy works: higher ctrl when in the wrong well (more noise → hopping), lower ctrl when in the right well (less noise → staying).</li>
+<li>CEM is noisy epoch-to-epoch. The gate uses best-epoch reward, not final-epoch. This is standard practice for evolutionary methods — the last perturbation batch can be unlucky.</li>
+<li>The test was tuned after initial failure: bias initialization (1.0), noise_std (1.5), and best-epoch gate were all decisions made after seeing the first run fail. This is honest but not ideal — future experiments should define gates before running.</li>
+</ul>
+<p><strong>What this test does NOT prove:</strong></p>
+<ul>
+<li>It does not verify that the learned policy is genuinely state-dependent (the weights were never inspected).</li>
+<li>It uses a single seed.</li>
+<li>It tests only one algorithm (CEM) when 8 are available.</li>
+<li>It does not implement actual proportional navigation — there is no N parameter sweep, no noise-level sweep, no forward-model variant.</li>
+</ul>
+<p>The test validates that the plumbing works end-to-end. The scientific claims of the dragonfly regime remain untested.</p>
+<h2 id="the-crate"><a class="header" href="#the-crate">The Crate</a></h2>
+<p><strong>Location:</strong> <a href="../../../sim/L0/therm-env"><code>sim/L0/therm-env/</code></a></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>File</th><th>Contents</th></tr>
+</thead>
+<tbody>
+<tr><td><code>src/lib.rs</code></td><td>Re-exports</td></tr>
+<tr><td><code>src/builder.rs</code></td><td><code>ThermCircuitEnvBuilder</code>, <code>generate_mjcf</code>, <code>PreparedCircuit</code></td></tr>
+<tr><td><code>src/env.rs</code></td><td><code>ThermCircuitEnv</code>, <code>Environment</code> impl</td></tr>
+<tr><td><code>src/error.rs</code></td><td><code>ThermCircuitError</code></td></tr>
+<tr><td><code>tests/phase2.rs</code></td><td>26 tests (MJCF + builder + single env)</td></tr>
+<tr><td><code>tests/phase3.rs</code></td><td>5 tests (VecEnv batch)</td></tr>
+<tr><td><code>tests/experiment_4.rs</code></td><td>1 <code>#[ignore]</code> test (CEM training, ~30s release)</td></tr>
+<tr><td><code>tests/experiment_1.rs</code></td><td>6 <code>#[ignore]</code> tests (SR sweep, controls, CEM/PPO/SA training)</td></tr>
+</tbody>
+</table>
+</div>
+<p>38 tests total. 31 run in debug mode, 7 require <code>--release</code>.</p>
+<h2 id="open-infrastructure-questions"><a class="header" href="#open-infrastructure-questions">Open Infrastructure Questions</a></h2>
+<ol>
+<li>
+<p><strong>Effective ctrl range:</strong> The tanh → [0, 1] limitation means experiments needing kT &gt; 1 will require either a rescaling layer, a different activation, or a wider ctrlrange in the MJCF. This is a design decision that should be made before Experiment 1.</p>
+</li>
+<li>
+<p><strong>Per-env thermostat seeding:</strong> Currently all VecEnv environments share the same thermostat seed. Per-env seeding via the <code>env_index</code> parameter in <code>on_reset</code> is deferred but will matter for statistical rigor.</p>
+</li>
+<li>
+<p><strong>Multi-algorithm validation:</strong> The platform supports all 8 algorithms via the <code>Algorithm</code> trait. Experiment 1 tests three algorithm classes (CEM, PPO, SA) on the same gradient-biased SR task — the first cross-algorithm validation on <code>ThermCircuitEnv</code>.</p>
+</li>
+</ol>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="simulation-experiments-and-status"><a class="header" href="#simulation-experiments-and-status">Simulation Experiments and Status</a></h1>
+<h2 id="why-cortenforge"><a class="header" href="#why-cortenforge">Why CortenForge</a></h2>
+<p>CortenForge’s simulation infrastructure — Langevin-capable physics simulation, Hill-type muscles, XPBD deformables, RL training loops, sensor fusion — provides the tools to simulate the biological exemplars directly and extract quantitative design parameters. The organisms are not analogies to be reasoned about abstractly; they are simulatable physical systems from which specific numbers can be extracted.</p>
+<h2 id="infrastructure-mapping"><a class="header" href="#infrastructure-mapping">Infrastructure Mapping</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Simulation Need</th><th>CortenForge Module</th></tr>
+</thead>
+<tbody>
+<tr><td>Langevin dynamics</td><td>sim-core with Euler integrator</td></tr>
+<tr><td>Thermodynamic circuit environments</td><td>sim-therm-env (<code>ThermCircuitEnv</code> builder)</td></tr>
+<tr><td>Passive energy landscapes</td><td>sim-thermostat (<code>PassiveComponent</code> trait)</td></tr>
+<tr><td>RL algorithm suite</td><td>sim-rl (CEM, REINFORCE, PPO, TD3, SAC)</td></tr>
+<tr><td>Gradient-free optimization</td><td>sim-opt (SA, Richer-SA, PT)</td></tr>
+<tr><td>Hill-type muscle for octopus</td><td>sim-physics Hill-type muscle models</td></tr>
+<tr><td>Sensor array (lateral line)</td><td>sensor-fusion hardware-agnostic sensor types</td></tr>
+<tr><td>GPU-batched simulations</td><td>sim-gpu (not yet implemented)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="experiment-status"><a class="header" href="#experiment-status">Experiment Status</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>#</th><th>Experiment</th><th>Regime</th><th>Readiness</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>E. coli SR in chemotaxis</td><td>Viscosity-dominated</td><td><strong>High</strong></td><td>Controls validated, sweep in progress</td></tr>
+<tr><td>2</td><td>Ctenophore metachronal phase-lag</td><td>Intermediate</td><td>Low</td><td>Not started</td></tr>
+<tr><td>3</td><td>Octopus bend propagation</td><td>Inertial distributed</td><td>Medium</td><td>Not started</td></tr>
+<tr><td>4</td><td>Dragonfly PN guidance</td><td>Predictive inertial</td><td><strong>High</strong></td><td>Phase 4 validation complete</td></tr>
+<tr><td>5</td><td>Peregrine vortex coupling</td><td>High-inertial turbulent</td><td>Low</td><td>Not started</td></tr>
+<tr><td>6</td><td>Regime transitions</td><td>Cross-regime</td><td>Low</td><td>Not started</td></tr>
+<tr><td>7</td><td>Fish lateral line sensing</td><td>Regime 3-4 boundary</td><td>Low</td><td>Not started</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="critical-path"><a class="header" href="#critical-path">Critical Path</a></h2>
+<p>The critical path runs through <strong>Experiment 1</strong> and <strong>Experiment 4</strong> — the two experiments with high platform readiness.</p>
+<p><strong>Experiment 4</strong> (Dragonfly PN guidance) has a Phase 4 validation test demonstrating that CEM can learn state-dependent temperature modulation in a double-well landscape. The full experiment — sweeping navigation constant N across [1, 5], varying noise level, and testing the forward-model variant — builds directly on this infrastructure.</p>
+<p><strong>Experiment 1</strong> (E. coli SR) connects directly to the D2 stochastic resonance findings already established in the codebase. The core claim — that an intermediate noise level maximizes encoding fidelity — is a concrete, falsifiable, quantitative prediction.</p>
+<p>Experiments 3, 6, and 7 depend on infrastructure that does not yet exist (MJCF tentacle models, distributed sensor plugins, multiple working regime strategies). Experiments 2 and 5 need domain-specific physics models (simplified drag, vortex coupling reformulation).</p>
+<h2 id="connections-to-existing-results"><a class="header" href="#connections-to-existing-results">Connections to Existing Results</a></h2>
+<p>The D2 stochastic resonance study (<code>sim/L0/thermostat/tests/d2c_cem_training.rs</code> and related) established that:</p>
+<ul>
+<li>CEM finds the SR band in a double-well + oscillating field setup</li>
+<li>Linear Q is insufficient for TD3/SAC on this task</li>
+<li>Exploration-noise inflation generalizes from D1d</li>
+</ul>
+<p>These findings directly inform Experiment 1 (E. coli SR) and provide the baseline infrastructure that Experiment 4 builds on.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="glossary"><a class="header" href="#glossary">Glossary</a></h1>
+<p><strong>Chemotaxis:</strong> Navigation by a chemical gradient, characteristic of bacteria including E. coli.</p>
+<p><strong>CheY-P:</strong> Phosphorylated CheY protein in E. coli; the signaling molecule that controls flagellar motor switching between run and tumble states. Follows Langevin dynamics with intrinsic noise that enhances gradient sensitivity.</p>
+<p><strong>Energy-based model (EBM):</strong> A machine learning model that defines the shape of a probability distribution via an energy function. The foundational mathematical object in thermodynamic computing.</p>
+<p><strong>Geometric phase / holonomy:</strong> In the context of low-Re locomotion, the net displacement achieved by a closed loop in configuration space. Formally equivalent to the holonomy of a connection on a fiber bundle (Shapere-Wilczek formalism).</p>
+<p><strong>Karman gait:</strong> A swimming behavior in fish involving synchronization to the oscillating flow of a Karman vortex street behind a cylinder; allows passive energy harvesting from environmental turbulence.</p>
+<p><strong>Karman vortex street:</strong> Alternating, periodic vortices shed downstream of a bluff body in steady flow.</p>
+<p><strong>Langevin dynamics:</strong> A stochastic differential equation describing the evolution of a system subject to deterministic drift plus Gaussian noise:</p>
+<p>$$
+dX = -\nabla U(X),dt + \sqrt{2kT},dW
+$$</p>
+<p>where U is the energy function and dW is Wiener process noise.</p>
+<p><strong>Lateral line:</strong> An array of mechanosensory organs distributed along the body of fish and aquatic amphibians, detecting local pressure gradients and flow velocity. Enables vortex detection and Karman gaiting.</p>
+<p><strong>Metachronal wave:</strong> Sequential, coordinated beating of an array of appendages (cilia, pleopods, etc.) with a phase lag between adjacent elements, producing a traveling wave appearance. Characteristic of ctenophores, krill, and many other invertebrates.</p>
+<p><strong>Muscular hydrostat:</strong> A muscular structure with no rigid skeleton (e.g., octopus arm, elephant trunk, human tongue) in which muscles provide both structural support and actuation, enabling infinite degrees of freedom.</p>
+<p><strong>Proportional navigation (PN):</strong> A guidance law in which turning rate is commanded proportional to the angular rate of the line-of-sight to target. Used by most guided missiles; proven in peregrine falcon and dragonfly prey capture. Optimal navigation constant N ~ 3 minimizes control effort to intercept a non-maneuvering target.</p>
+<p><strong>Purcell’s scallop theorem:</strong> At low Reynolds number (Re &lt; 1), any reciprocal body motion (time-reversible) produces zero net displacement. Net locomotion requires non-reciprocal motion — sequences that trace a closed loop enclosing nonzero area in configuration space.</p>
+<p><strong>Reynolds number (Re):</strong> Dimensionless ratio of inertial to viscous forces in fluid flow: Re = ρUL/μ. The fundamental organizing parameter for fluid dynamics and biological locomotion strategies.</p>
+<p><strong>Run-and-tumble:</strong> E. coli’s primary locomotion strategy. “Run” = all flagella rotating CCW, forming a bundle → straight motion. “Tumble” = one or more flagella switching to CW rotation → random reorientation.</p>
+<p><strong>Stochastic Processing Unit (SPU):</strong> Normal Computing’s first prototype thermodynamic computer; an 8-cell stochastic circuit on a PCB using RLC elements.</p>
+<p><strong>Stochastic resonance:</strong> The phenomenon by which an intermediate level of noise improves signal detection or transmission performance in a nonlinear system, beyond what is possible with either no noise or excessive noise.</p>
+<p><strong>Thermodynamic Sampling Unit (TSU):</strong> Extropic’s hardware unit; a probabilistic circuit that produces samples from a programmable energy-based distribution. The thermodynamic computing analog of the GPU.</p>
+<p><strong>X-encoding:</strong> The problem of translating a logical input X into the initial or boundary conditions of a physical stochastic system such that the system’s relaxation toward equilibrium produces the correct output distribution Y. The primary unsolved problem in thermodynamic computing hardware design.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="open-questions"><a class="header" href="#open-questions">Open Questions</a></h1>
+<p>The following are the highest-priority open questions identified by this research program, ordered by tractability:</p>
+<ol>
+<li>
+<p><strong>What is the correct dimensionless ratio for thermodynamic circuits?</strong> We proposed τ_circuit / τ_noise as the analog of the Reynolds number. Is this the right formulation? What are τ_circuit and τ_noise precisely in terms of circuit parameters (resistance, inductance, capacitance, temperature)?</p>
+</li>
+<li>
+<p><strong>Are the five regimes discrete or continuous?</strong> The biological spectrum suggests discrete transitions, but this may be because biological organisms specialize rather than operate across regimes. A thermodynamic circuit might be engineered to have a smooth transition — or the transitions might be genuinely discontinuous (phase transitions in the physics sense).</p>
+</li>
+<li>
+<p><strong>What is the minimum encoding sequence length for topological encoding?</strong> The scallop theorem says you need at least two degrees of freedom sweeping a nonzero area. What is the minimum area required for a given encoding fidelity? How does this scale with circuit noise temperature?</p>
+</li>
+<li>
+<p><strong>Does the counter-rotating vortex pair principle have a direct electrical/stochastic analog?</strong> The peregrine’s mechanism relies on specific vortex geometry. What is the equivalent concept in Langevin dynamics — two perturbation modes with opposite “rotation” in the energy landscape that cancel each other’s dissipation while preserving their net drift?</p>
+</li>
+<li>
+<p><strong>How does the optimal noise level (stochastic resonance optimum) scale across the spectrum?</strong> In Regime 1 (E. coli), there is an optimal CheY-P noise level. Is there an analogous optimal noise temperature for each regime? Does it increase or decrease as throughput increases?</p>
+</li>
+<li>
+<p><strong>What are the failure modes at regime transitions?</strong> When a circuit running a Regime 3 strategy is pushed into the Regime 4 throughput range, what specifically breaks? Does the encoding fail gradually or catastrophically?</p>
+</li>
+<li>
+<p><strong>Can the fish lateral line be implemented as an X-encoder feedback system?</strong> Specifically: can a distributed array of local circuit observables (the lateral line analog) provide sufficient information for real-time X-encoder adjustment without requiring a global measurement step?</p>
+</li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>
