@@ -75,6 +75,7 @@ cobertura.xml
 
 # mdBook output
 /docs/book/book/
+**/book/
 
 # =============================================================================
 # Testing
