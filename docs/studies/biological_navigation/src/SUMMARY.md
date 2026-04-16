@@ -1,35 +1,29 @@
 # Summary
 
-- [Roadmap](roadmap.md)
-
-# Part 0 — The Problem
+# The Problem
 
 - [Introduction](00-introduction.md)
 - [The Axis: Reynolds Number](01-the-axis.md)
 
-# Part 1 — The Five Regimes
+# Validated Results
 
-- [Regime 1: E. coli — Topological Encoding](10-ecoli.md)
-- [Regime 2: Ctenophore — Multimodal Switching](20-ctenophore.md)
-- [Regime 3: Octopus — Compressed Command](30-octopus.md)
-- [Regime 4: Dragonfly — Predictive Guidance](40-dragonfly.md)
-- [Regime 5: Peregrine — Vortex-Noise Coupling](50-peregrine.md)
+- [Noise Tuning: E. coli Stochastic Resonance](10-ecoli.md)
+- [Injection Timing: Ctenophore Metachronal Coordination](20-ctenophore.md)
+- [Scale-Invariance: Octopus Compressed Command](30-octopus.md)
+- [Synthesis: What Transfers and What Doesn't](70-synthesis.md)
 
-# Part 2 — Transitions and Synthesis
+# Open Hypotheses
 
+- [Dragonfly — Predictive Guidance](40-dragonfly.md)
+- [Peregrine — Vortex-Noise Coupling](50-peregrine.md)
 - [Transition Zones and the Lateral Line](60-transitions.md)
-- [Synthesis: The Unified Framework](70-synthesis.md)
 
-# Part 3 — Infrastructure
+# Research Program
 
-- [ThermCircuitEnv: Building the Experiment Platform](80-therm-circuit-env.md)
-
-# Part 4 — Research Program
-
-- [Simulation Experiments and Status](85-research-program.md)
-- [Validation Roadmap](86-validation-roadmap.md)
+- [Experiments, Status, and Next Steps](85-research-program.md)
 
 # Appendices
 
+- [Experiment Platform (ThermCircuitEnv)](80-therm-circuit-env.md)
 - [Glossary](90-glossary.md)
 - [Open Questions](91-open-questions.md)

@@ -6,11 +6,30 @@
 > Date: April 2026
 > Classification: Open research — intended for public release
 
-This document connects biological locomotion control theory to the unsolved x-encoding problem in thermodynamic computing. It is a living document: hypothesis, experiment, result, and open questions in one place. The code that produced every result is in the same repository.
+This document connects biological locomotion control theory to the unsolved x-encoding problem in thermodynamic computing. The code that produced every result is in the same repository.
 
-The central claim: biological strategies for navigating chaotic physical media encode design principles for thermodynamic circuits. We tested five of these principles on Ising chain models under Langevin dynamics. Three produced quantitative design rules. Two failed — and the pattern of failure reveals a sharp boundary on which biological inspiration transfers and which does not.
+We tested five biological navigation principles on Ising chain models under Langevin dynamics. Three produced quantitative design rules. Two failed — and the failure pattern reveals a sharp boundary on which biological inspiration transfers and which does not.
 
-The validated design rules are actionable: an engineer building a coupled bistable circuit can read the tables in Chapters 1–3 and change what they build tomorrow. The boundary conditions are equally actionable: they tell the same engineer which biological literature to ignore.
+## Results at a Glance
+
+**Three design rules for coupled bistable circuits under Langevin noise:**
+
+| Rule | What to do | Effect |
+|------|-----------|--------|
+| **Noise Tuning** | Operate at kT ≈ 2.3 (weak coupling J < 1.5) or kT ≈ 4.3 (strong coupling J ≥ 2). ΔV/kT must stay below 3.0. | Wrong temperature → noise floor. The kT axis is sharp (±30% kills performance). |
+| **Injection Timing** | Phase-lag injection at δ ≈ π/5 between adjacent nodes for J < 2. Synchronize for J ≥ 2. | 18–37% fidelity improvement over synchronized injection. |
+| **Scale-Invariance** | Both rules hold from N=4 to N=16 without retuning. | An engineer scaling a prototype does not need to re-derive the operating point. |
+
+**Two boundary conditions — what NOT to try:**
+
+| Boundary | Why it fails |
+|----------|-------------|
+| **Topology-based encoding** | Amplitude dominates in the Langevin domain. The scallop theorem requires time-reversible dynamics. Use amplitude modulation freely. |
+| **Bifurcation-point sensitivity** | The design surface is smooth, not critical. ΔV axis is forgiving — tune kT carefully instead. |
+
+**The dividing line:** Statistical-mechanical questions (noise tuning, phase coordination, extensivity) transfer from biology to thermodynamic circuits. Dynamical-systems questions (topological invariants, bifurcation sensitivity) do not. This boundary tells an engineer which biological literature to mine and which to ignore.
+
+The validated design rules are actionable: an engineer building a coupled bistable circuit can read the tables above and change what they build tomorrow. The boundary conditions are equally actionable: they tell the same engineer which approaches to skip.
 
 ## Thermodynamic Computing and the Y Problem
 

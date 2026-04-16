@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>ThermCircuitEnv: Building the Experiment Platform - Biological Navigation Spectrum — X-Encoding Design Framework</title>
+        <title>Experiment Platform (ThermCircuitEnv) - Biological Navigation Spectrum — X-Encoding Design Framework</title>
 
 
         <!-- Custom HTML head -->
@@ -29,16 +29,18 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-284bb910.js";
+            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-534ce819.js"></script>
+        <script src="toc-271e92e9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,110 +176,37 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="thermcircuitenv-building-the-experiment-platform"><a class="header" href="#thermcircuitenv-building-the-experiment-platform">ThermCircuitEnv: Building the Experiment Platform</a></h1>
-<p>All 7 experiments in this research program share the same core loop: configure a Langevin particle system with an energy landscape, wire it into an RL environment, train a policy to modulate temperature or other control channels, and measure the result. The <code>ThermCircuitEnv</code> crate eliminates the ~35 lines of boilerplate that each experiment would otherwise repeat.</p>
-<p>This chapter documents how the platform was built — what worked, what surprised us, and what the infrastructure tells us about the experiments it will support.</p>
-<h2 id="foundations-what-we-built-on"><a class="header" href="#foundations-what-we-built-on">Foundations: What We Built On</a></h2>
-<p><code>ThermCircuitEnv</code> sits on top of two layers of infrastructure that were already in place:</p>
-<p><strong>The ML chassis</strong> (<a href="../../../sim/L0/ml-chassis/"><code>sim-ml-chassis</code></a>) provides the <code>Algorithm</code> trait, <code>VecEnv</code>, <code>SimEnv</code>, <code>Policy</code>, observation/action spaces, and the rollout machinery. This layer was the subject of a <a href="../ml_chassis_refactor/book/">prior study</a> that refactored the original <code>sim-ml-bridge</code> into a clean chassis/algorithm split. The key outcome of that study: every algorithm (CEM, REINFORCE, PPO, TD3, SAC from <a href="../../../sim/L0/rl/"><code>sim-rl</code></a>; SA, Richer-SA, PT from <a href="../../../sim/L0/opt/"><code>sim-opt</code></a>) bolts onto the same <code>Algorithm</code> trait and accepts a <code>&amp;mut VecEnv</code>. This means any experiment built on <code>ThermCircuitEnv</code> automatically gets access to all 8 algorithms with zero additional wiring.</p>
-<p><strong>The thermostat layer</strong> (<a href="../../../sim/L0/thermostat/"><code>sim-thermostat</code></a>) provides <code>LangevinThermostat</code>, <code>PassiveComponent</code> (double-well potentials, oscillating fields, pairwise coupling, ratchets, external fields), and <code>PassiveStack</code>. The D2 stochastic resonance study validated this layer end-to-end with 4-algorithm comparison tests.</p>
-<p><code>ThermCircuitEnv</code> is the bridge: it takes a circuit description (particle count, energy landscape, control channels) and produces a ready-to-train <code>VecEnv</code> or a single <code>ThermCircuitEnv</code> for evaluation.</p>
-<h2 id="the-build-four-phases"><a class="header" href="#the-build-four-phases">The Build: Four Phases</a></h2>
-<h3 id="phase-1--mjcf-generation"><a class="header" href="#phase-1--mjcf-generation">Phase 1 — MJCF Generation</a></h3>
-<p>The first problem: MuJoCo needs an XML model. Every experiment has N particles as 1D slide joints, zero-gravity Euler integration, contact disabled, and zero-gain actuators that exist only to allocate <code>data.ctrl</code> slots.</p>
-<p><code>generate_mjcf(n_particles, n_ctrl, timestep)</code> produces this XML programmatically. The key design decisions:</p>
-<ul>
-<li><strong>Slide joints</strong> give nq = nv = 1 per particle. No quaternion headaches.</li>
-<li><strong>Zero-gain actuators</strong> (<code>gainprm="0" biasprm="0 0 0"</code>) produce zero force regardless of ctrl value. All physics comes from the thermostat and landscape components via <code>cb_passive</code>. The actuators are ctrl-slot allocators, nothing more.</li>
-<li><strong>Mass = 1</strong> simplifies the fluctuation-dissipation relation. Configurable later if needed.</li>
-</ul>
-<h3 id="phase-2--builder-and-single-environment"><a class="header" href="#phase-2--builder-and-single-environment">Phase 2 — Builder and Single Environment</a></h3>
-<p>The builder composes 9 steps into a fluent API:</p>
-<pre><code>ThermCircuitEnv::builder(n_particles)
+                        <h1 id="experiment-platform-thermcircuitenv"><a class="header" href="#experiment-platform-thermcircuitenv">Experiment Platform: ThermCircuitEnv</a></h1>
+<p>All experiments in this research program share the same core loop: configure a Langevin particle system with an energy landscape, wire it into a training environment, run a gradient-free optimizer or RL algorithm to modulate temperature or other control channels, and measure the result. The <code>ThermCircuitEnv</code> crate eliminates the boilerplate that each experiment would otherwise repeat.</p>
+<h2 id="what-it-provides"><a class="header" href="#what-it-provides">What It Provides</a></h2>
+<p><code>ThermCircuitEnv</code> sits on top of two layers of infrastructure:</p>
+<p><strong>The ML chassis</strong> (<code>sim-ml-chassis</code>) provides the <code>Algorithm</code> trait, batched environments, policy representations, and rollout machinery. Every algorithm (CEM, REINFORCE, PPO, TD3, SAC from <code>sim-rl</code>; SA, Richer-SA, PT from <code>sim-opt</code>) bolts onto the same trait. Any experiment built on <code>ThermCircuitEnv</code> automatically gets access to all 8 algorithms with zero additional wiring.</p>
+<p><strong>The thermostat layer</strong> (<code>sim-thermostat</code>) provides <code>LangevinThermostat</code> and passive energy landscape components: double-well potentials, oscillating fields, pairwise coupling, ratchets, and external fields.</p>
+<p><code>ThermCircuitEnv</code> bridges these: it takes a circuit description (particle count, energy landscape, control channels) and produces a ready-to-train environment.</p>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>ThermCircuitEnv::builder(n_particles)
     .gamma(10.0).k_b_t(1.0).timestep(0.001)
     .with(DoubleWellPotential::new(3.0, 1.0, 0))
     .with_ctrl_temperature()
     .reward(|_m, d| -(d.qpos[0] - 1.0).powi(2))
     .sub_steps(100).episode_steps(1000)
     .build()
-</code></pre>
-<p><strong>What we learned:</strong></p>
-<ul>
-<li><code>SimEnvBuilder</code> requires all 5 closures (obs_space, act_space, reward, done, truncated) — no optional fields. <code>ThermCircuitEnvBuilder</code> supplies sensible defaults for <code>done</code> (always false) and <code>truncated</code> (time-based from <code>episode_steps</code>). Only <code>reward</code> is mandatory.</li>
-<li>The thermostat is constructed internally from <code>gamma</code> and <code>k_b_t</code>. The user never touches <code>LangevinThermostat</code> directly. Landscape components (double wells, fields, couplings) are added via <code>.with()</code> and the builder wraps them in <code>Arc</code> for the <code>PassiveStack</code>.</li>
-<li>We had to add <code>PassiveStackBuilder::with_arc()</code> to sim-thermostat — a 4-line method to accept pre-erased <code>Arc&lt;dyn PassiveComponent&gt;</code> without double-wrapping.</li>
-<li>No ctrl channels → <code>nu = 0</code> → dim-0 action space. This works: tests pass <code>Tensor::zeros(&amp;[0])</code> for actions. Experiments that don’t need ctrl-temperature can omit it entirely.</li>
-</ul>
-<p><strong>Physics validation:</strong> Damping at γ=10 over 100 sub-steps at h=0.001 produces velocity decay v ~ 0.37 (from exp(-γ·Δt) = exp(-1)), confirming the thermostat is active. Double-well restoring force at x=0.5 pushes the particle toward x=+1.0, confirming landscape components are wired through <code>cb_passive</code>.</p>
-<h3 id="phase-3--vecenv-batched-training"><a class="header" href="#phase-3--vecenv-batched-training">Phase 3 — VecEnv (Batched Training)</a></h3>
-<p><code>build_vec(n_envs)</code> produces a <code>VecEnv</code> for parallel training. The implementation extracted shared setup into a private <code>prepare() -&gt; PreparedCircuit</code> method, eliminating ~50 lines of duplication between <code>build()</code> and <code>build_vec()</code>.</p>
-<p><strong>What we learned:</strong></p>
-<ul>
-<li><code>VecEnvBuilder::on_reset</code> takes 3 args <code>(model, data, env_index)</code> vs the builder’s 2-arg closure. Wrapped with <code>move |m, d, _idx| on_reset(m, d)</code>. Per-env seeding via index is deferred.</li>
-<li>VecEnvBuilder stores closures as <code>Arc</code> (vs SimEnvBuilder’s <code>Box</code>), so passing <code>Box&lt;dyn Fn&gt;</code> produces <code>Arc&lt;Box&lt;dyn Fn&gt;&gt;</code>. Double indirection, negligible overhead.</li>
-<li>All 26 Phase 1-2 tests passed unchanged after the <code>prepare()</code> extraction — no regressions.</li>
-</ul>
-<h3 id="phase-4--experiment-4-validation"><a class="header" href="#phase-4--experiment-4-validation">Phase 4 — Experiment 4 Validation</a></h3>
-<p>The first end-to-end test: can CEM learn state-dependent temperature control in a double-well landscape?</p>
-<p><strong>Setup:</strong> 1 particle, double well (ΔV=3, x₀=1), ctrl-temperature, γ=10, kT=1, h=0.001, 100 sub-steps, 1000 episode steps. Reward: -(qpos[0] - x₀)². CEM with LinearPolicy(2, 1), 50 epochs, 16-env VecEnv.</p>
-<p><strong>Baseline:</strong> Constant temperature (ctrl=1.0 → kT=1.0) gives episode-total reward of -876.</p>
-<p><strong>Result:</strong> CEM best-epoch reward = -431. Roughly 2x improvement over baseline.</p>
-<p><strong>What we learned:</strong></p>
-<ul>
-<li><code>LinearPolicy</code> outputs <code>tanh(W·x_scaled + b)</code> ∈ [-1, 1]. With <code>ctrlrange="0 10"</code> and <code>ctrllimited="true"</code>, MuJoCo clamps the ctrl to [0, ~1.0]. The policy can only <em>reduce</em> temperature from baseline, never increase it. Despite this, the PN guidance strategy works: higher ctrl when in the wrong well (more noise → hopping), lower ctrl when in the right well (less noise → staying).</li>
-<li>CEM is noisy epoch-to-epoch. The gate uses best-epoch reward, not final-epoch. This is standard practice for evolutionary methods — the last perturbation batch can be unlucky.</li>
-<li>The test was tuned after initial failure: bias initialization (1.0), noise_std (1.5), and best-epoch gate were all decisions made after seeing the first run fail. This is honest but not ideal — future experiments should define gates before running.</li>
-</ul>
-<p><strong>What this test does NOT prove:</strong></p>
-<ul>
-<li>It does not verify that the learned policy is genuinely state-dependent (the weights were never inspected).</li>
-<li>It uses a single seed.</li>
-<li>It tests only one algorithm (CEM) when 8 are available.</li>
-<li>It does not implement actual proportional navigation — there is no N parameter sweep, no noise-level sweep, no forward-model variant.</li>
-</ul>
-<p>The test validates that the plumbing works end-to-end. The scientific claims of the dragonfly regime remain untested.</p>
-<h2 id="the-crate"><a class="header" href="#the-crate">The Crate</a></h2>
-<p><strong>Location:</strong> <a href="../../../sim/L0/therm-env/"><code>sim/L0/therm-env/</code></a></p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>File</th><th>Contents</th></tr>
-</thead>
-<tbody>
-<tr><td><code>src/lib.rs</code></td><td>Re-exports</td></tr>
-<tr><td><code>src/builder.rs</code></td><td><code>ThermCircuitEnvBuilder</code>, <code>generate_mjcf</code>, <code>PreparedCircuit</code></td></tr>
-<tr><td><code>src/env.rs</code></td><td><code>ThermCircuitEnv</code>, <code>Environment</code> impl</td></tr>
-<tr><td><code>src/error.rs</code></td><td><code>ThermCircuitError</code></td></tr>
-<tr><td><code>tests/phase2.rs</code></td><td>26 tests (MJCF + builder + single env)</td></tr>
-<tr><td><code>tests/phase3.rs</code></td><td>5 tests (VecEnv batch)</td></tr>
-<tr><td><code>tests/experiment_4.rs</code></td><td>1 <code>#[ignore]</code> test (CEM training, ~30s release)</td></tr>
-<tr><td><code>tests/experiment_1.rs</code></td><td>6 <code>#[ignore]</code> tests (SR sweep, controls, CEM/PPO/SA training)</td></tr>
-</tbody>
-</table>
-</div>
-<p>38 tests total. 31 run in debug mode, 7 require <code>--release</code>.</p>
-<h2 id="open-infrastructure-questions"><a class="header" href="#open-infrastructure-questions">Open Infrastructure Questions</a></h2>
-<ol>
-<li>
-<p><strong>Effective ctrl range:</strong> The tanh → [0, 1] limitation means experiments needing kT &gt; 1 will require either a rescaling layer, a different activation, or a wider ctrlrange in the MJCF. This is a design decision that should be made before Experiment 1.</p>
-</li>
-<li>
-<p><strong>Per-env thermostat seeding:</strong> Currently all VecEnv environments share the same thermostat seed. Per-env seeding via the <code>env_index</code> parameter in <code>on_reset</code> is deferred but will matter for statistical rigor.</p>
-</li>
-<li>
-<p><strong>Multi-algorithm validation:</strong> The platform supports all 8 algorithms via the <code>Algorithm</code> trait. Experiment 1 tests three algorithm classes (CEM, PPO, SA) on the same gradient-biased SR task — the first cross-algorithm validation on <code>ThermCircuitEnv</code>.</p>
-</li>
-</ol>
+<span class="boring">}</span></code></pre>
+<h2 id="validation"><a class="header" href="#validation">Validation</a></h2>
+<p>The platform was validated with a CEM training test: one particle in a double well with ctrl-temperature. CEM learned state-dependent temperature control, achieving roughly 2x improvement over a constant-temperature baseline. This confirms the plumbing is correct end-to-end but does not test the scientific claims of any specific biological regime.</p>
+<p><strong>Location:</strong> <code>sim/L0/therm-env/</code> — 38 tests total (31 debug, 7 require <code>--release</code>).</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="70-synthesis.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="85-research-program.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="85-research-program.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="90-glossary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -287,11 +216,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="70-synthesis.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="85-research-program.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="85-research-program.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="90-glossary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

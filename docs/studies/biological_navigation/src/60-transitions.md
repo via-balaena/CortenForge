@@ -1,6 +1,8 @@
 # Transition Zones and the Lateral Line
 
-The five regimes and their principles are the theoretical framework. The experimental results (Chapters 1–3) validated three principles and identified the statistical-mechanics / dynamical-systems boundary. The transition zones between regimes remain an important open question, because:
+> **Status: Open hypothesis.** No experiments have been run on regime transitions. This depends on having 2–3 regime-specific strategies working first.
+
+The five regimes and their principles are the theoretical framework. The experimental results in the Validated Results section validated three principles and identified the statistical-mechanics / dynamical-systems boundary. The transition zones between regimes remain an important open question, because:
 
 1. Real thermodynamic circuits will operate across a range of throughput levels, necessarily crossing multiple regime boundaries.
 2. The biological exemplars suggest that transitions between regimes are discontinuous — there is no smooth interpolation of strategies, and performance degrades sharply in the transition zone before a new strategy takes over.

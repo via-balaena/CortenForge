@@ -1,4 +1,4 @@
-# Regime 3: Octopus — Compressed Command
+# Scale-Invariance: Octopus Compressed Command
 
 **Re ~ 10³-10⁵ — The Inertial Distributed Regime**
 

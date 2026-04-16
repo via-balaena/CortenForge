@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Regime 3: Octopus — Compressed Command - Biological Navigation Spectrum — X-Encoding Design Framework</title>
+        <title>Scale-Invariance: Octopus Compressed Command - Biological Navigation Spectrum — X-Encoding Design Framework</title>
 
 
         <!-- Custom HTML head -->
@@ -29,16 +29,18 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-284bb910.js";
+            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-534ce819.js"></script>
+        <script src="toc-271e92e9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,7 +176,7 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="regime-3-octopus--compressed-command"><a class="header" href="#regime-3-octopus--compressed-command">Regime 3: Octopus — Compressed Command</a></h1>
+                        <h1 id="scale-invariance-octopus-compressed-command"><a class="header" href="#scale-invariance-octopus-compressed-command">Scale-Invariance: Octopus Compressed Command</a></h1>
 <p><strong>Re ~ 10³-10⁵ — The Inertial Distributed Regime</strong></p>
 <h2 id="the-physics"><a class="header" href="#the-physics">The Physics</a></h2>
 <p>Inertia dominates. Viscosity still contributes to drag but does not govern the locomotion strategy. The fluid has memory — perturbations persist and propagate. The swimmer generates wakes that interact with the environment on relevant timescales. But this is also the regime of high degrees of freedom: the control problem is not underdetermined (as at low Re where everything scales out) but overdetermined — there are more controllable degrees of freedom than there are dimensions of the desired output, and the control architecture must manage this redundancy efficiently.</p>
@@ -188,6 +190,60 @@
 <p><strong>Principle 5:</strong> In the inertial distributed regime, the optimal architecture separates the encoding problem into two layers: a compressed high-level specification of the desired output (what state to reach) and a distributed local computation layer that translates that specification into physical actions appropriate to local noise conditions. The central controller does not need to know the noise floor at every circuit node; the local layer adapts.</p>
 <p><em>Applied to thermodynamic circuits:</em> The X-encoder broadcasts a compressed description of the target energy basin to all circuit nodes. Each node runs a local computation (analogous to the arm’s ganglion) that determines how to modulate its local Langevin dynamics to steer toward that basin, given the local noise statistics it observes. The circuit’s distributed neural computation — its local stochastic dynamics — handles the translation. This is the thermodynamic analog of bend propagation.</p>
 <p><strong>Principle 6:</strong> Scale-invariance of the encoding program. A parametric injection wave that can be scaled in amplitude and velocity to cover a range of target states (analogous to the octopus’s invariant velocity profile) is more powerful than a lookup table of specific injection sequences for each target. Scale-invariance is also a prerequisite for scaling the circuit itself — an encoding strategy that must be re-tuned for each circuit size is not an engineering tool.</p>
+<h2 id="experiment-6--scale-invariant-encoding-principle-6"><a class="header" href="#experiment-6--scale-invariant-encoding-principle-6">Experiment 6 — Scale-Invariant Encoding (Principle 6)</a></h2>
+<h3 id="scientific-question"><a class="header" href="#scientific-question">Scientific Question</a></h3>
+<p>Does the SR-optimal temperature hold at larger circuit sizes? If the design rules from Principle 2 require retuning for each circuit size, they’re lab curiosities. If they hold from N=4 to N=16 without adjustment, they’re engineering tools.</p>
+<p>This is the most important result for practical thermodynamic circuit design: <strong>design rules hold at scale without retuning.</strong></p>
+<h3 id="experimental-design"><a class="header" href="#experimental-design">Experimental Design</a></h3>
+<p>Fix coupling J=1.0. Repeat the Principle 2 temperature sweep at three chain sizes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Parameter</th><th>Value</th></tr>
+</thead>
+<tbody>
+<tr><td>Chain sizes N</td><td>4, 8, 16</td></tr>
+<tr><td>Coupling J</td><td>1.0 (fixed)</td></tr>
+<tr><td>kT range</td><td>[0.1, 15.0], 25 points log-spaced</td></tr>
+<tr><td>Episodes per point</td><td>40</td></tr>
+<tr><td>Total episodes</td><td>3,000</td></tr>
+<tr><td>Runtime</td><td>38 minutes (release)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Same Ising chain setup as Level 3: double wells, nearest-neighbor coupling, oscillating field, synchrony metric.</p>
+<h3 id="results"><a class="header" href="#results">Results</a></h3>
+<p><strong>Principle 6: VALIDATED.</strong> The SR-optimal temperature holds across a 4× range of circuit sizes.</p>
+<p>| N | peak kT | peak sync | |t| | Interior? |
+|—|———|———–|—–|———–|
+| 4 | 2.29 | 0.041 ± 0.011 | 3.77 | YES |
+| 8 | 2.29 | 0.049 ± 0.008 | 5.82 | YES |
+| 16 | 2.82 | 0.063 ± 0.009 | 7.15 | YES |</p>
+<p><strong>Gates:</strong></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Gate</th><th>Test</th><th>Result</th></tr>
+</thead>
+<tbody>
+<tr><td>0 (Sanity)</td><td>All peaks significant and interior</td><td>PASS (all |t| &gt; 2.708)</td></tr>
+<tr><td>1 (Scale-invariance)</td><td>Peak indices span ≤ 2 on 25-point grid</td><td>PASS (span = 1)</td></tr>
+<tr><td>2 (Monotone)</td><td>sync(N=16) ≤ sync(N=4) + 3σ</td><td>PASS</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Analysis:</strong></p>
+<p>N=4 and N=8 peak at exactly the same grid point (kT=2.29). N=16 peaks one grid step higher (kT=2.82) — a 23% shift across a 4× increase in circuit size. On the 25-point log-spaced grid, this is within one step of the reference.</p>
+<p>The slight upward shift at N=16 is consistent with the effective-barrier model: a 16-particle chain has proportionally more interior particles (14/16 vs 2/4), each feeling coupling from both neighbors. The average effective barrier rises by ~8%, shifting the optimal noise temperature by a corresponding amount. This is a predictable, small correction — not a breakdown of the design rule.</p>
+<p>Peak synchrony <em>increases</em> with N (0.041 → 0.049 → 0.063), which is counterintuitive — more particles should mean more independent noise and lower average synchrony. The likely explanation: larger chains have more coupled pairs, and at J=1.0 coupling enhances SR (as shown in the P2 coupling sweep). The averaging over more SR-enhanced particles produces a tighter, higher peak. This is within the Gate 2 tolerance (3σ) and does not violate the scale-invariance claim.</p>
+<h3 id="design-rule-principle-6"><a class="header" href="#design-rule-principle-6">Design Rule (Principle 6)</a></h3>
+<p>For coupling J=1.0, the SR-optimal temperature is kT ≈ 2.5, holding from N=4 through N=16 without retuning.</p>
+<p>Combined with Principle 2: <strong>For J &lt; 1.5, operate at kT ≈ 2.3. For J ≥ 2.0, operate at kT ≈ 4.3. These rules apply regardless of circuit size in the range N=4–16.</strong></p>
+<p>An engineer scaling a thermodynamic circuit from a 4-node prototype to a 16-node production system can use the same noise temperature. The only correction needed is the ~8% per-octave shift from the end/interior particle ratio, which is predictable from the coupling topology.</p>
+<blockquote>
+<p><strong>Code:</strong> <a href="../../../sim/L0/therm-env/tests/ising_chain.rs"><code>sim/L0/therm-env/tests/ising_chain.rs</code></a> — <code>ising_scale_invariant_sweep</code></p>
+</blockquote>
+<hr>
 <h2 id="experiment-3--octopus-bend-propagation-compression-ratio"><a class="header" href="#experiment-3--octopus-bend-propagation-compression-ratio">Experiment 3 — Octopus Bend Propagation Compression Ratio</a></h2>
 <p>Simulate octopus arm reaching using CortenForge’s Hill-type muscle model with the 4,000:380,000 efferent compression architecture. Measure the minimum central command dimensionality required to achieve a given reaching accuracy in a stochastic fluid environment. Characterize how this compression ratio scales with arm length and noise level.</p>
 <blockquote>
@@ -212,7 +268,7 @@
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="40-dragonfly.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="70-synthesis.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -226,7 +282,7 @@
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="40-dragonfly.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="70-synthesis.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

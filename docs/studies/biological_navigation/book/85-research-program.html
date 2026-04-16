@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Simulation Experiments and Status - Biological Navigation Spectrum — X-Encoding Design Framework</title>
+        <title>Experiments, Status, and Next Steps - Biological Navigation Spectrum — X-Encoding Design Framework</title>
 
 
         <!-- Custom HTML head -->
@@ -29,16 +29,18 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-284bb910.js";
+            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-534ce819.js"></script>
+        <script src="toc-271e92e9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,67 +176,97 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="simulation-experiments-and-status"><a class="header" href="#simulation-experiments-and-status">Simulation Experiments and Status</a></h1>
-<h2 id="why-cortenforge"><a class="header" href="#why-cortenforge">Why CortenForge</a></h2>
-<p>CortenForge’s simulation infrastructure — Langevin-capable physics simulation, Hill-type muscles, XPBD deformables, RL training loops, sensor fusion — provides the tools to simulate the biological exemplars directly and extract quantitative design parameters. The organisms are not analogies to be reasoned about abstractly; they are simulatable physical systems from which specific numbers can be extracted.</p>
-<h2 id="infrastructure-mapping"><a class="header" href="#infrastructure-mapping">Infrastructure Mapping</a></h2>
+                        <h1 id="experiments-status-and-next-steps"><a class="header" href="#experiments-status-and-next-steps">Experiments, Status, and Next Steps</a></h1>
+<h2 id="infrastructure"><a class="header" href="#infrastructure">Infrastructure</a></h2>
+<p>All experiments run on CortenForge’s simulation stack:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Simulation Need</th><th>CortenForge Module</th></tr>
+<tr><th>Component</th><th>Module</th></tr>
 </thead>
 <tbody>
-<tr><td>Langevin dynamics</td><td>sim-core with Euler integrator</td></tr>
+<tr><td>Langevin dynamics</td><td>sim-core (Euler integrator)</td></tr>
 <tr><td>Thermodynamic circuit environments</td><td>sim-therm-env (<code>ThermCircuitEnv</code> builder)</td></tr>
 <tr><td>Passive energy landscapes</td><td>sim-thermostat (<code>PassiveComponent</code> trait)</td></tr>
-<tr><td>RL algorithm suite</td><td>sim-rl (CEM, REINFORCE, PPO, TD3, SAC)</td></tr>
+<tr><td>RL algorithms</td><td>sim-rl (CEM, REINFORCE, PPO, TD3, SAC)</td></tr>
 <tr><td>Gradient-free optimization</td><td>sim-opt (SA, Richer-SA, PT)</td></tr>
-<tr><td>Hill-type muscle for octopus</td><td>sim-physics Hill-type muscle models</td></tr>
-<tr><td>Sensor array (lateral line)</td><td>sensor-fusion hardware-agnostic sensor types</td></tr>
-<tr><td>GPU-batched simulations</td><td>sim-gpu (not yet implemented)</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="experiment-status"><a class="header" href="#experiment-status">Experiment Status</a></h2>
+<h2 id="completed-validations"><a class="header" href="#completed-validations">Completed Validations</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>#</th><th>Experiment</th><th>Regime</th><th>Readiness</th><th>Status</th></tr>
+<tr><th>Principle</th><th>Regime</th><th>Result</th><th>Design Rule</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td>E. coli SR in chemotaxis</td><td>Viscosity-dominated</td><td><strong>High</strong></td><td>Controls validated, sweep in progress</td></tr>
-<tr><td>2</td><td>Ctenophore metachronal phase-lag</td><td>Intermediate</td><td>Low</td><td>Not started</td></tr>
-<tr><td>3</td><td>Octopus bend propagation</td><td>Inertial distributed</td><td>Medium</td><td>Not started</td></tr>
-<tr><td>4</td><td>Dragonfly PN guidance</td><td>Predictive inertial</td><td><strong>High</strong></td><td>Phase 4 validation complete</td></tr>
-<tr><td>5</td><td>Peregrine vortex coupling</td><td>High-inertial turbulent</td><td>Low</td><td>Not started</td></tr>
-<tr><td>6</td><td>Regime transitions</td><td>Cross-regime</td><td>Low</td><td>Not started</td></tr>
-<tr><td>7</td><td>Fish lateral line sensing</td><td>Regime 3-4 boundary</td><td>Low</td><td>Not started</td></tr>
+<tr><td><strong>Noise Tuning (P2)</strong></td><td>E. coli</td><td><strong>Validated</strong></td><td>kT ≈ 2.3 for J &lt; 1.5, kT ≈ 4.3 for J ≥ 2.0. ΔV/kT &lt; 3.0 (trapping cutoff).</td></tr>
+<tr><td><strong>Injection Timing (P4)</strong></td><td>Ctenophore</td><td><strong>Validated</strong></td><td>δ ≈ π/5 for J &lt; 2 (18–37% improvement). Synchronized for J ≥ 2.</td></tr>
+<tr><td><strong>Scale-Invariance (P6)</strong></td><td>Octopus</td><td><strong>Validated</strong></td><td>kT ≈ 2.5 holds at N=4, 8, 16 without retuning.</td></tr>
+<tr><td><strong>Topological Encoding (P1)</strong></td><td>E. coli</td><td><strong>Failed</strong></td><td>Amplitude dominates in Langevin domain. Use freely.</td></tr>
+<tr><td><strong>Deliberate Instability (P11)</strong></td><td>Peregrine</td><td><strong>Failed</strong></td><td>No sharp bifurcation. ΔV axis is forgiving.</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="critical-path"><a class="header" href="#critical-path">Critical Path</a></h2>
-<p>The critical path runs through <strong>Experiment 1</strong> and <strong>Experiment 4</strong> — the two experiments with high platform readiness.</p>
-<p><strong>Experiment 4</strong> (Dragonfly PN guidance) has a Phase 4 validation test demonstrating that CEM can learn state-dependent temperature modulation in a double-well landscape. The full experiment — sweeping navigation constant N across [1, 5], varying noise level, and testing the forward-model variant — builds directly on this infrastructure.</p>
-<p><strong>Experiment 1</strong> (E. coli SR) connects directly to the D2 stochastic resonance findings already established in the codebase. The core claim — that an intermediate noise level maximizes encoding fidelity — is a concrete, falsifiable, quantitative prediction.</p>
-<p>Experiments 3, 6, and 7 depend on infrastructure that does not yet exist (MJCF tentacle models, distributed sensor plugins, multiple working regime strategies). Experiments 2 and 5 need domain-specific physics models (simplified drag, vortex coupling reformulation).</p>
-<h2 id="connections-to-existing-results"><a class="header" href="#connections-to-existing-results">Connections to Existing Results</a></h2>
-<p>The D2 stochastic resonance study (<code>sim/L0/thermostat/tests/d2c_cem_training.rs</code> and related) established that:</p>
-<ul>
-<li>CEM finds the SR band in a double-well + oscillating field setup</li>
-<li>Linear Q is insufficient for TD3/SAC on this task</li>
-<li>Exploration-noise inflation generalizes from D1d</li>
-</ul>
-<p>These findings directly inform Experiment 1 (E. coli SR) and provide the baseline infrastructure that Experiment 4 builds on.</p>
+<h2 id="the-boundary"><a class="header" href="#the-boundary">The Boundary</a></h2>
+<p><strong>What transfers:</strong> Statistical-mechanical questions — noise tuning, phase coordination, extensivity. The Langevin framework speaks this language natively.</p>
+<p><strong>What doesn’t:</strong> Dynamical-systems questions — topological invariants (requires time-reversibility), bifurcation sensitivity (requires sharp phase transitions at finite N). The model doesn’t have the vocabulary.</p>
+<h2 id="remaining-langevin-ready-principles"><a class="header" href="#remaining-langevin-ready-principles">Remaining Langevin-Ready Principles</a></h2>
+<p>These could be tested with the existing <code>ThermCircuitEnv</code> infrastructure:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Principle</th><th>Regime</th><th>Experiment</th><th>Effort</th></tr>
+</thead>
+<tbody>
+<tr><td>P7 — Predictive forward model</td><td>Dragonfly</td><td>PN guidance in Langevin noise</td><td>Medium</td></tr>
+<tr><td>P9 — Minimum observables</td><td>Dragonfly</td><td>Observation ablation study</td><td>Medium</td></tr>
+<tr><td>P5 — Compressed command</td><td>Octopus</td><td>Single ctrl for heterogeneous circuit</td><td>Medium</td></tr>
+<tr><td>P8 — Pre-selection</td><td>Dragonfly</td><td>Regime gate check</td><td>Small</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="principles-needing-different-physics"><a class="header" href="#principles-needing-different-physics">Principles Needing Different Physics</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Principle</th><th>Regime</th><th>What’s needed</th></tr>
+</thead>
+<tbody>
+<tr><td>P3 — Multimodal switching</td><td>Ctenophore</td><td>Asymmetric power/recovery strokes need drag model</td></tr>
+<tr><td>P10 — Paired perturbation structures</td><td>Peregrine</td><td>Spatial vortex physics</td></tr>
+<tr><td>P12 — Logarithmic spiral approach</td><td>Peregrine</td><td>2D/3D flow field (CFD)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="next-experiments"><a class="header" href="#next-experiments">Next Experiments</a></h2>
+<p>Four follow-on experiments that deepen the validated results, ordered by impact:</p>
+<h3 id="1-n-scaling-law-high-priority"><a class="header" href="#1-n-scaling-law-high-priority">1. N-Scaling Law (high priority)</a></h3>
+<p>Peak synchrony <em>increased</em> with circuit size: 0.041 (N=4) → 0.049 (N=8) → 0.063 (N=16). If this is a real scaling law, bigger circuits are <em>better</em> at signal following. This would be the strongest possible result for thermodynamic circuit engineering: scale up and fidelity improves for free.</p>
+<p><strong>Experiment:</strong> Sweep N = 4, 8, 12, 16, 24, 32 at J=1.0 with fine kT resolution around the peak (kT 1.5–4.0, 20 points, 40 episodes). Fit sync_peak vs N to a power law. ~2 hours runtime.</p>
+<p><strong>Gate:</strong> sync_peak ∝ N^α with α significantly &gt; 0 (two-tailed t-test on log-log regression slope).</p>
+<h3 id="2-coupling-crossover-mapping"><a class="header" href="#2-coupling-crossover-mapping">2. Coupling Crossover Mapping</a></h3>
+<p>The Noise Tuning rule showed two regimes: weak coupling (J &lt; 1.5, peak kT ≈ 2.3) and strong coupling (J ≥ 2.0, peak kT ≈ 4.3). Where exactly is the crossover? Is it smooth or sharp?</p>
+<p><strong>Experiment:</strong> Sweep J = 1.0, 1.25, 1.5, 1.75, 2.0 with 25 kT points, 40 episodes each. ~3 hours.</p>
+<p><strong>Gate:</strong> If the crossover occupies less than ΔJ = 0.25, it’s sharp — potentially a phase transition in the coupled system.</p>
+<h3 id="3-optimal-j-δ-surface"><a class="header" href="#3-optimal-j-δ-surface">3. Optimal (J, δ) Surface</a></h3>
+<p>A finer mesh would map the full optimal phase-lag surface: 8 J values × 30 δ values × 80 episodes. ~6 hours.</p>
+<h3 id="4-effective-barrier-model-validation"><a class="header" href="#4-effective-barrier-model-validation">4. Effective Barrier Model Validation</a></h3>
+<p>N=16 peaked one grid step higher than N=4/N=8. The effective-barrier model predicts an ~8% shift from the changing end/interior particle ratio. Does the model hold? Overlaps with experiment 1.</p>
+<h2 id="all-experiment-code"><a class="header" href="#all-experiment-code">All Experiment Code</a></h2>
+<blockquote>
+<p><strong>Code:</strong> <a href="../../../sim/L0/therm-env/tests/ising_chain.rs"><code>sim/L0/therm-env/tests/ising_chain.rs</code></a></p>
+</blockquote>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="80-therm-circuit-env.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="60-transitions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="90-glossary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="80-therm-circuit-env.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -244,11 +276,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="80-therm-circuit-env.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="60-transitions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="90-glossary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="80-therm-circuit-env.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

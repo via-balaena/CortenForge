@@ -1,4 +1,6 @@
-# Regime 4: Dragonfly — Predictive Guidance
+# Dragonfly — Predictive Guidance
+
+> **Status: Open hypothesis.** The principles below are derived from biology but have not yet been tested on Ising chain models. Based on the stat-mech / dynamical-systems boundary established in the Synthesis chapter, we predict P7 and P9 will validate.
 
 **Re ~ 10⁵-10⁷ — The Predictive Inertial Regime**
 

@@ -1,4 +1,4 @@
-# Regime 2: Ctenophore — Multimodal Switching
+# Injection Timing: Ctenophore Metachronal Coordination
 
 **Re ~ 1-1000 — The Intermediate Regime**
 

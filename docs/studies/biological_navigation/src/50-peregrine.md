@@ -1,4 +1,6 @@
-# Regime 5: Peregrine — Vortex-Noise Coupling
+# Peregrine — Vortex-Noise Coupling
+
+> **Status: Partially tested.** P11 (deliberate instability) was tested and failed — see the Noise Tuning chapter. P10 and P12 require spatial physics (CFD or soft-body simulation) not available in the current infrastructure.
 
 **Re > 10⁷ — The High-Inertial Turbulent Regime**
 

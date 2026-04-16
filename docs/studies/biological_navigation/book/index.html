@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Roadmap - Biological Navigation Spectrum — X-Encoding Design Framework</title>
+        <title>Introduction - Biological Navigation Spectrum — X-Encoding Design Framework</title>
 
 
         <!-- Custom HTML head -->
@@ -29,16 +29,18 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-284bb910.js";
+            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-534ce819.js"></script>
+        <script src="toc-271e92e9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,60 +176,72 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
-<h2 id="mission"><a class="header" href="#mission">Mission</a></h2>
-<p><strong>Solve X-encoding through biology-inspired simulation: from Langevin models to hardware design rules.</strong></p>
-<h2 id="the-root-problem"><a class="header" href="#the-root-problem">The Root Problem</a></h2>
-<p>Given a thermodynamic circuit with energy function F, how do you choose the injection protocol so the system relaxes to the correct output distribution Y?</p>
-<p>No formal theory exists. Chip engineers currently tune empirically at every scale. This is the bottleneck blocking thermodynamic computing from becoming an engineered technology.</p>
-<h2 id="what-a-solution-looks-like"><a class="header" href="#what-a-solution-looks-like">What a Solution Looks Like</a></h2>
-<p>A design rule that says: <em>for a circuit with τ_circuit / τ_noise = X, use encoding strategy Y, expect fidelity Z.</em> Quantitative, testable, generalizable.</p>
-<h2 id="where-we-are"><a class="header" href="#where-we-are">Where We Are</a></h2>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<blockquote>
+<p>Via Balaena LLC / CortenForge</p>
+<p>Status: Three principles validated, two boundary conditions established
+Date: April 2026
+Classification: Open research — intended for public release</p>
+</blockquote>
+<p>This document connects biological locomotion control theory to the unsolved x-encoding problem in thermodynamic computing. The code that produced every result is in the same repository.</p>
+<p>We tested five biological navigation principles on Ising chain models under Langevin dynamics. Three produced quantitative design rules. Two failed — and the failure pattern reveals a sharp boundary on which biological inspiration transfers and which does not.</p>
+<h2 id="results-at-a-glance"><a class="header" href="#results-at-a-glance">Results at a Glance</a></h2>
+<p><strong>Three design rules for coupled bistable circuits under Langevin noise:</strong></p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Step</th><th>Progress</th><th>Description</th></tr>
+<tr><th>Rule</th><th>What to do</th><th>Effect</th></tr>
 </thead>
 <tbody>
-<tr><td>1. Framework</td><td><strong>Done</strong></td><td>12 X-encoding principles across 5 Reynolds number regimes, derived from biological navigation strategies</td></tr>
-<tr><td>2. 1-particle simulation</td><td><strong>Done</strong></td><td>SR peak validated (kT=1.70, |t|=4.52), controls pass, infrastructure works</td></tr>
-<tr><td>3. Multi-particle simulation</td><td><strong>Running</strong></td><td>4-cell Ising chain with coupling sweep J={0, 0.1, 0.5, 1.0, 2.0}</td></tr>
-<tr><td>4. τ_circuit / τ_noise mapping</td><td><strong>Running</strong></td><td>Same experiment — coupling strength J is the proxy for τ_circuit / τ_noise</td></tr>
-<tr><td>5. Paper</td><td>Not started</td><td>Framework + principle validation + regime characterization</td></tr>
-<tr><td>6. Hardware validation</td><td>Needs collaboration</td><td>Test predictions on Extropic / Normal Computing hardware</td></tr>
+<tr><td><strong>Noise Tuning</strong></td><td>Operate at kT ≈ 2.3 (weak coupling J &lt; 1.5) or kT ≈ 4.3 (strong coupling J ≥ 2). ΔV/kT must stay below 3.0.</td><td>Wrong temperature → noise floor. The kT axis is sharp (±30% kills performance).</td></tr>
+<tr><td><strong>Injection Timing</strong></td><td>Phase-lag injection at δ ≈ π/5 between adjacent nodes for J &lt; 2. Synchronize for J ≥ 2.</td><td>18–37% fidelity improvement over synchronized injection.</td></tr>
+<tr><td><strong>Scale-Invariance</strong></td><td>Both rules hold from N=4 to N=16 without retuning.</td><td>An engineer scaling a prototype does not need to re-derive the operating point.</td></tr>
 </tbody>
 </table>
 </div>
-<p><strong>Current position:</strong> Steps 3 and 4 are running simultaneously — the coupling sweep <em>is</em> the τ_circuit / τ_noise characterization. The 4-cell Ising chain with oscillating fields tests whether SR scales to coupled systems, and sweeping J maps how the optimal noise temperature shifts with coupling strength. Results expected within hours.</p>
-<h2 id="the-path"><a class="header" href="#the-path">The Path</a></h2>
-<h3 id="step-1-finish-experiment-1-cleanly"><a class="header" href="#step-1-finish-experiment-1-cleanly">Step 1: Finish Experiment 1 cleanly</a></h3>
-<p>One complete, statistically rigorous result. Stochastic resonance in a gradient-biased double well, validated with controls, confirmed across multiple algorithm classes (CEM, PPO, SA). This is the table stake — it proves the simulation infrastructure works and produces quantitative predictions.</p>
-<h3 id="step-2-scale-to-coupled-multi-particle-systems"><a class="header" href="#step-2-scale-to-coupled-multi-particle-systems">Step 2: Scale to coupled multi-particle systems</a></h3>
-<p>The infrastructure already supports this. <code>PairwiseCoupling</code> provides chain, ring, and fully-connected topologies. <code>ExternalField</code> provides per-particle bias. <code>ThermCircuitEnv</code> supports N particles. An Ising-like model with N coupled particles in double wells <em>is</em> a reasonable proxy for a thermodynamic circuit. This is where the 1-particle toy becomes a real circuit model.</p>
-<h3 id="step-3-define-a-concrete-x--y-task"><a class="header" href="#step-3-define-a-concrete-x--y-task">Step 3: Define a concrete X → Y task</a></h3>
-<p>Not just “maximize synchrony” but something a chip engineer would recognize: <em>given a 4-cell coupled circuit, learn an injection protocol that steers the system from initial state X to target configuration Y.</em> The injection protocol is the X-encoding. The target configuration is the computation result. The fidelity is measurable.</p>
-<h3 id="step-4-measure-τ_circuit--τ_noise"><a class="header" href="#step-4-measure-τ_circuit--τ_noise">Step 4: Measure τ_circuit / τ_noise</a></h3>
-<p>This is the scientific headline. Compute the dimensionless ratio τ_circuit / τ_noise for the coupled model. Sweep it by varying coupling strength, noise temperature, and injection rate. Show that different ratios produce different optimal encoding strategies. Show that the boundaries between strategies correspond to the 5 biological regimes. This is the direct test of the framework.</p>
-<h3 id="step-5-one-paper"><a class="header" href="#step-5-one-paper">Step 5: One paper</a></h3>
-<p><em>“Biology-inspired X-encoding design rules for thermodynamic circuits, validated in Langevin simulation.”</em></p>
-<p>Contents: the framework (5 regimes, 12 principles), one principle validated end-to-end on a multi-cell model, the τ_circuit / τ_noise characterization with regime boundaries, and concrete design rules with quantitative predictions.</p>
-<h3 id="step-6-hardware-collaboration"><a class="header" href="#step-6-hardware-collaboration">Step 6: Hardware collaboration</a></h3>
-<p>Take the paper and predictions to Extropic and Normal Computing. “Here are design rules derived from biological navigation principles. Here are the quantitative predictions. Test them on your chip.” Both companies have explicit partnership programs seeking exactly this kind of cross-domain theoretical contribution.</p>
-<h2 id="whats-not-on-the-path"><a class="header" href="#whats-not-on-the-path">What’s NOT on the Path</a></h2>
+<p><strong>Two boundary conditions — what NOT to try:</strong></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Boundary</th><th>Why it fails</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Topology-based encoding</strong></td><td>Amplitude dominates in the Langevin domain. The scallop theorem requires time-reversible dynamics. Use amplitude modulation freely.</td></tr>
+<tr><td><strong>Bifurcation-point sensitivity</strong></td><td>The design surface is smooth, not critical. ΔV axis is forgiving — tune kT carefully instead.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>The dividing line:</strong> Statistical-mechanical questions (noise tuning, phase coordination, extensivity) transfer from biology to thermodynamic circuits. Dynamical-systems questions (topological invariants, bifurcation sensitivity) do not. This boundary tells an engineer which biological literature to mine and which to ignore.</p>
+<p>The validated design rules are actionable: an engineer building a coupled bistable circuit can read the tables above and change what they build tomorrow. The boundary conditions are equally actionable: they tell the same engineer which approaches to skip.</p>
+<h2 id="thermodynamic-computing-and-the-y-problem"><a class="header" href="#thermodynamic-computing-and-the-y-problem">Thermodynamic Computing and the Y Problem</a></h2>
+<p>Thermodynamic computing is a paradigm in which computation is performed not by enforcing deterministic logic states, but by allowing a physical system to relax toward thermodynamic equilibrium, reading the resulting probability distribution as the output. The key entities are:</p>
 <ul>
-<li>Running all 7 biological experiments before any one is publication-ready</li>
-<li>Building infrastructure for experiments that need physics models we don’t have (CFD for ctenophores, tentacle MJCF for octopus)</li>
-<li>Testing all 8 algorithms on every setup — 2-3 algorithm classes is sufficient for validation</li>
-<li>Polishing simulation results beyond what’s needed for the paper</li>
+<li><strong>The energy function F</strong>: defines the shape of the target probability distribution over output states</li>
+<li><strong>Y</strong>: the target distribution itself — the answer the system is supposed to produce</li>
+<li><strong>The physical substrate</strong>: a stochastic system (resistor-inductor-capacitor networks, analog probabilistic circuits, or future purpose-built thermodynamic chips) whose natural dynamics under Langevin noise are governed by F</li>
 </ul>
-<p>The bottleneck isn’t more experiments. It’s step 3 — moving from a toy model to something that maps onto real hardware.</p>
+<p>The state of the art as of 2025-2026 includes Normal Computing’s CN101 — the world’s first taped-out thermodynamic semiconductor chip — and Extropic’s XTR-0 development platform, both of which demonstrate that thermodynamic sampling units (TSUs) can perform AI inference tasks including matrix inversion and Gaussian sampling at energy efficiencies orders of magnitude beyond conventional GPUs.</p>
+<p>The Y problem, to first approximation, is solved. Energy-based models provide a formal language for defining Y. Boltzmann statistics guarantee that a system in thermal equilibrium will sample from Y. The physics of the output is understood.</p>
+<h2 id="the-x-problem--the-unsolved-root"><a class="header" href="#the-x-problem--the-unsolved-root">The X Problem — The Unsolved Root</a></h2>
+<p>The unsolved problem is X: the input encoding.</p>
+<p>In a classical digital computer, encoding an input X is trivial — you set a voltage high or low. The physical act of encoding is decoupled from the physics of computation. In a thermodynamic computer, there is no such decoupling. The input X must be encoded as the initial conditions or boundary conditions of a physical stochastic system. The system then relaxes — through a nonequilibrium trajectory governed by Langevin dynamics — toward (hopefully) the correct distribution Y.</p>
+<p>The problem is that this relaxation trajectory is sensitive to how X is injected. An imperfect encoding perturbs the energy landscape, potentially steering the system toward the wrong basin of attraction. At small scale, this can be managed empirically. At scale — as the circuit grows in size and the noise profile shifts — there is no formal theory telling an engineer how to inject X such that the relaxation remains correct. Every scaling step requires empirical re-tuning.</p>
+<p>This is not a materials problem or a fabrication problem. It is a theory problem: we lack a formal design language for X-encoding in nonequilibrium stochastic systems. Until that language exists, thermodynamic computing cannot be engineered the way digital computing is engineered — from first principles, with predictable scaling behavior.</p>
+<h2 id="the-deeper-root-the-gap-in-nonequilibrium-statistical-physics"><a class="header" href="#the-deeper-root-the-gap-in-nonequilibrium-statistical-physics">The Deeper Root: The Gap in Nonequilibrium Statistical Physics</a></h2>
+<p>The theory problem traces to a gap in physics. Equilibrium statistical physics is well-understood. Landauer’s bound gives the minimum energy cost of erasing a bit. Boltzmann statistics describe the equilibrium distribution. But thermodynamic computers operate far from equilibrium — they must complete a computation quickly, which means they cannot afford to wait for true equilibrium to be reached.</p>
+<p>The stochastic thermodynamics of far-from-equilibrium systems is a field in active development. Thermodynamic uncertainty relations now provide bounds on computation speed, noise level, and energy cost. But a constructive theory — one that tells you how to build a nonequilibrium system that reliably encodes X and converges to Y — does not yet exist.</p>
+<p>The analogy: we know the speed limit (Landauer’s bound, uncertainty relations), but we have no road map.</p>
+<h2 id="the-core-hypothesis"><a class="header" href="#the-core-hypothesis">The Core Hypothesis</a></h2>
+<p>The hypothesis is that biological evolution has already solved versions of the X-encoding problem across a continuous spectrum of operating regimes, and that the biological solutions can be formally mapped to engineering principles for thermodynamic circuit design.</p>
+<p>Specifically: every organism that navigates a chaotic physical medium — fluid, air, a stochastic chemical gradient — is solving a version of the same problem. It must inject “intent” (a direction, a target, a behavioral goal) into a noisy physical system (its own body in a turbulent medium) and achieve reliable convergence to the desired output state, at some throughput level, with finite energy. The physics of the problem is structurally isomorphic to X-encoding in thermodynamic computing.</p>
+<p>The biological world has explored this design space for hundreds of millions of years. We should read the solutions it found.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
 
-                            <a rel="next prefetch" href="00-introduction.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="01-the-axis.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -238,7 +252,7 @@
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
 
-                    <a rel="next prefetch" href="00-introduction.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="01-the-axis.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

@@ -10,6 +10,7 @@ default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = ""
 edit-url-template = ""
+mathjax-support = true
 
 [output.html.fold]
 enable = true

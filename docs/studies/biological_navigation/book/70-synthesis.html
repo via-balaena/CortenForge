@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Synthesis: The Unified Framework - Biological Navigation Spectrum — X-Encoding Design Framework</title>
+        <title>Synthesis: What Transfers and What Doesn&#x27;t - Biological Navigation Spectrum — X-Encoding Design Framework</title>
 
 
         <!-- Custom HTML head -->
@@ -29,16 +29,18 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-284bb910.js";
+            window.path_to_searchindex_js = "searchindex-575bfeb3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-534ce819.js"></script>
+        <script src="toc-271e92e9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,58 +176,104 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="synthesis-the-unified-framework"><a class="header" href="#synthesis-the-unified-framework">Synthesis: The Unified Framework</a></h1>
-<h2 id="the-complete-spectrum"><a class="header" href="#the-complete-spectrum">The Complete Spectrum</a></h2>
+                        <h1 id="synthesis-what-transfers-and-what-doesnt"><a class="header" href="#synthesis-what-transfers-and-what-doesnt">Synthesis: What Transfers and What Doesn’t</a></h1>
+<h2 id="the-results"><a class="header" href="#the-results">The Results</a></h2>
+<p>We tested five biological navigation principles on Ising chain models under Langevin dynamics. Three validated. Two failed.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Regime</th><th>Re Range</th><th>Exemplar</th><th>Dominant Strategy</th><th>X-Encoding Analog</th></tr>
+<tr><th>Principle</th><th>Regime</th><th>Question Type</th><th>Result</th></tr>
 </thead>
 <tbody>
-<tr><td>Viscosity-dominated</td><td>&lt; 1</td><td>E. coli</td><td>Topological encoding; geometric phase; stochastic resonance</td><td>Encode in injection sequence topology, not amplitude; exploit optimal noise level</td></tr>
-<tr><td>Intermediate</td><td>1-1,000</td><td>Ctenophores, water boatmen</td><td>Temporal asymmetry; metachronal coordination; mode switching</td><td>Asymmetric injection phases; distributed phase-lagged coordination; adaptive mode switching</td></tr>
-<tr><td>Inertial distributed</td><td>10³-10⁵</td><td>Octopus</td><td>Compressed central command; distributed local decoding; propagating wave</td><td>Compressed X-specification; local circuit-level decoding; scale-invariant bend propagation</td></tr>
-<tr><td>Predictive inertial</td><td>10⁵-10⁷</td><td>Dragonfly</td><td>Predictive internal model; PN guidance; minimum observable sufficiency</td><td>Forward-model-guided injection; PN-style feedback; two local cues sufficient</td></tr>
-<tr><td>High-inertial turbulent</td><td>&gt; 10⁷</td><td>Peregrine falcon</td><td>Vortex-noise coupling; constructive counter-rotation; deliberate instability</td><td>Paired perturbation structures; counter-rotating noise coupling; bifurcation-point operation</td></tr>
+<tr><td>Noise Tuning (stochastic resonance)</td><td>E. coli</td><td>Statistical mechanics</td><td><strong>Validated</strong></td></tr>
+<tr><td>Injection Timing (metachronal coordination)</td><td>Ctenophore</td><td>Statistical mechanics</td><td><strong>Validated</strong></td></tr>
+<tr><td>Scale-Invariance (extensivity)</td><td>Octopus</td><td>Statistical mechanics</td><td><strong>Validated</strong></td></tr>
+<tr><td>Topological Encoding</td><td>E. coli</td><td>Dynamical systems</td><td><strong>Failed</strong></td></tr>
+<tr><td>Deliberate Instability</td><td>Peregrine</td><td>Dynamical systems</td><td><strong>Failed</strong></td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="what-varies-across-the-spectrum"><a class="header" href="#what-varies-across-the-spectrum">What Varies Across the Spectrum</a></h2>
-<p>What actually changes as one moves from low to high Re is not simply “speed.” The underlying variable is the ratio of signal timescale to noise timescale (τ_signal / τ_noise):</p>
+<p>The pattern is not random. It divides cleanly along a line.</p>
+<h2 id="the-boundary"><a class="header" href="#the-boundary">The Boundary</a></h2>
+<p><strong>What transfers:</strong> Principles that ask statistical-mechanical questions — optimal noise level (Noise Tuning), injection timing coordination (Injection Timing), extensivity at scale (Scale-Invariance). These are questions about how to exploit the statistics of a stochastic system. The Langevin framework is statistical mechanics, so it speaks this language natively.</p>
+<p><strong>What doesn’t transfer:</strong> Principles that ask dynamical-systems questions — topological invariants of motion sequences (Topological Encoding), sharp bifurcation sensitivity (Deliberate Instability). These require mathematical structures the Langevin domain does not have: time-reversibility (for the scallop theorem) and sharp phase transitions at finite system size (for bifurcation amplification).</p>
+<p>This is not a weakness of the framework. It is the framework’s boundary condition — and knowing the boundary is as valuable as knowing the interior.</p>
+<h2 id="the-design-rules"><a class="header" href="#the-design-rules">The Design Rules</a></h2>
+<p>Three quantitative rules emerged, each tested with statistical gates and reproducible code:</p>
+<p><strong>The Noise Tuning Rule:</strong> For an Ising-coupled bistable circuit with coupling J:</p>
 <ul>
-<li><strong>Low Re:</strong> τ_signal ~ τ_noise. They are indistinguishable. Encode in topology.</li>
-<li><strong>Intermediate Re:</strong> τ_signal and τ_noise are both relevant but different. Exploit both via multimodal switching.</li>
-<li><strong>Inertial distributed Re:</strong> τ_signal &gt; τ_noise. You have time for local computation. Distribute the decoding.</li>
-<li><strong>Predictive inertial Re:</strong> τ_signal &lt; τ_noise for reactive control but &gt; τ_noise for predictive control. Precompute.</li>
-<li><strong>High inertial turbulent Re:</strong> τ_noise generates coherent structures on timescales accessible to the controller. Couple constructively.</li>
+<li>J &lt; 1.5: operate at kT ≈ 2.3</li>
+<li>J ≥ 2.0: operate at kT ≈ 4.3</li>
+<li>Keep ΔV/kT &lt; 3.0 (hard trapping cutoff above this)</li>
+<li>The kT axis is sharp (±30% degrades to noise floor). The ΔV axis is forgiving.</li>
 </ul>
-<p>This framing suggests that the correct axis for thermodynamic circuit design is not “throughput” but the dimensionless ratio τ_circuit / τ_noise — a circuit-level analog of the Reynolds number. Computing this ratio for a given circuit architecture and operating condition determines which encoding regime applies and which strategy should be deployed.</p>
-<h2 id="the-common-thread"><a class="header" href="#the-common-thread">The Common Thread</a></h2>
-<p>Despite their apparent diversity, all five strategies share a single underlying principle: <strong>the environment’s stochastic character is not an obstacle to be overcome but a resource to be exploited.</strong> Every biological exemplar either uses noise to amplify sensitivity (E. coli), harvests noise as a phase-coordination mechanism (ctenophores), treats noise as the medium through which a compressed command propagates (octopus), uses noise statistics to calibrate a forward model (dragonfly), or couples constructively with noise to generate control force (peregrine).</p>
-<p>This is the deepest lesson for thermodynamic computing: the designers of thermodynamic circuits should not be trying to suppress Langevin noise. They should be designing X-encoders that make the noise work for them.</p>
-<h2 id="what-is-novel-about-this-program"><a class="header" href="#what-is-novel-about-this-program">What Is Novel About This Program</a></h2>
-<p>The individual biological phenomena described in this document are established science. The engineering applications to specific domains (aeronautics, robotics) are well-explored. What is novel is:</p>
+<p><strong>The Injection Timing Rule:</strong> For coupled circuits at moderate coupling:</p>
+<ul>
+<li>J &lt; 2: inject with phase lag δ ≈ π/5 between adjacent nodes (18–37% improvement)</li>
+<li>J ≥ 2: synchronize injection (coupling handles coordination)</li>
+<li>The two knobs (temperature and phase lag) are independent</li>
+</ul>
+<p><strong>The Scale-Invariance Rule:</strong> The Noise Tuning Rule holds from N=4 to N=16 without retuning:</p>
+<ul>
+<li>Optimal kT ≈ 2.5 at J=1.0 regardless of circuit size</li>
+<li>Preliminary data suggests synchrony may <em>increase</em> with N (under investigation)</li>
+</ul>
+<h2 id="what-the-failures-tell-us"><a class="header" href="#what-the-failures-tell-us">What the Failures Tell Us</a></h2>
+<p><strong>Topological Encoding fails:</strong> In the Stokes regime (Re &lt; 1), the scallop theorem guarantees amplitude is irrelevant — only sequence topology matters. In the Langevin domain, there is no scallop theorem. Amplitude is a direct lever: synchrony scales linearly with signal strength. An engineer should use amplitude modulation freely.</p>
+<p><strong>Deliberate Instability fails:</strong> The peregrine exploits pitch instability near a bifurcation point for sensitivity amplification. In the Ising chain, the ΔV axis shows a broad plateau, not a sharp transition. Langevin systems at finite N have smooth crossovers. An engineer should tune kT carefully (sharp peak) and not worry about ΔV (forgiving axis).</p>
+<p>Both failures trace to the same root: Langevin systems are <strong>time-irreversible</strong> and have <strong>smooth energy landscapes</strong> at finite system size. The biological principles relied on time-reversibility (for topology to dominate) and bifurcation sharpness (for instability to amplify). Neither constraint exists in thermodynamic circuits.</p>
+<h2 id="the-complete-spectrum-updated"><a class="header" href="#the-complete-spectrum-updated">The Complete Spectrum (Updated)</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Regime</th><th>Exemplar</th><th>Dominant Strategy</th><th>Langevin Transfer?</th></tr>
+</thead>
+<tbody>
+<tr><td>Viscosity-dominated (Re &lt; 1)</td><td>E. coli</td><td>Noise tuning ✓, topology ✗</td><td>Partial — stat-mech yes, topology no</td></tr>
+<tr><td>Intermediate (Re 1–1000)</td><td>Ctenophore</td><td>Injection timing ✓</td><td><strong>Yes</strong></td></tr>
+<tr><td>Inertial distributed (Re 10³–10⁵)</td><td>Octopus</td><td>Scale-invariance ✓</td><td><strong>Yes</strong></td></tr>
+<tr><td>Predictive inertial (Re 10⁵–10⁷)</td><td>Dragonfly</td><td>Forward model, min observables</td><td>Predicted yes (stat-mech questions)</td></tr>
+<tr><td>High-inertial turbulent (Re &gt; 10⁷)</td><td>Peregrine</td><td>Instability ✗, vortex coupling</td><td>Partial — instability no, vortex needs CFD</td></tr>
+</tbody>
+</table>
+</div>
+<p>The middle of the Reynolds number axis transfers cleanly. The extremes require physics the Langevin model doesn’t contain.</p>
+<h2 id="implications-for-thermodynamic-circuit-design"><a class="header" href="#implications-for-thermodynamic-circuit-design">Implications for Thermodynamic Circuit Design</a></h2>
+<p>An engineer reading this document should take away three things:</p>
 <ol>
-<li><strong>The formal mapping</strong> from Reynolds number regimes to thermodynamic circuit encoding regimes. This connection has not been made in the literature.</li>
-<li><strong>The identification of five distinct biological strategies</strong> — not three, not a continuum — as a design basis for X-encoding. The prior art in bio-inspired computing tends to pick one or two biological exemplars; a systematic spectrum has not been proposed.</li>
-<li><strong>The specific hypothesis</strong> that constructive vortex-noise coupling (Regime 5) produces an inversion of the precision-throughput tradeoff. This is a falsifiable prediction with direct engineering implications.</li>
-<li><strong>The formalization of CortenForge</strong> as the simulation infrastructure for extracting quantitative design parameters from these biological systems. The biological exemplars are not metaphors here — they are simulatable.</li>
+<li>
+<p><strong>Tune noise, don’t suppress it.</strong> There is an optimal operating temperature for your circuit. It depends on coupling strength. See the Noise Tuning chapter.</p>
+</li>
+<li>
+<p><strong>Coordinate injection timing at moderate coupling.</strong> Phase-lagged injection at δ ≈ π/5 gives 18–37% better fidelity than synchronized injection. At strong coupling, synchronize instead. See the Injection Timing chapter.</p>
+</li>
+<li>
+<p><strong>These rules hold at scale.</strong> You do not need to retune when scaling from 4 to 16 nodes. See the Scale-Invariance chapter.</p>
+</li>
+</ol>
+<p>And two things NOT to do:</p>
+<ol start="4">
+<li>
+<p><strong>Don’t try to operate near a bifurcation point.</strong> The sensitivity-amplification story from biology doesn’t apply. The design surface is smooth, not critical.</p>
+</li>
+<li>
+<p><strong>Don’t optimize sequence topology.</strong> Use amplitude instead. It works linearly and doesn’t require the time-reversibility constraint that makes topology powerful in Stokes flow.</p>
+</li>
 </ol>
 <h2 id="relationship-to-current-thermodynamic-computing-research"><a class="header" href="#relationship-to-current-thermodynamic-computing-research">Relationship to Current Thermodynamic Computing Research</a></h2>
-<p>The companies currently leading thermodynamic computing development (Extropic, Normal Computing) are focused on chip fabrication and algorithm development. The X-encoding problem is acknowledged but not yet formally addressed in the published literature. The biological spectrum framework is therefore complementary rather than competitive — it addresses the foundational theory question that enables the next generation of chip and algorithm design.</p>
+<p>Extropic and Normal Computing are focused on chip fabrication and algorithm development. The X-encoding problem — how to inject inputs into a stochastic physical system — is acknowledged but not yet formally addressed in their published work. These design rules are complementary: they address the theory gap that enables the next generation of circuit design.</p>
 <h2 id="open-source-philosophy"><a class="header" href="#open-source-philosophy">Open Source Philosophy</a></h2>
-<p>This research is released openly. The reasoning is straightforward: the value created by becoming the foundational reference for biological-inspired X-encoding theory exceeds the value of any IP protection that could be applied to the theoretical framework. The simulation infrastructure (CortenForge) is the durable asset. The research program generates citations, partnerships, and positioning that makes CortenForge indispensable to the thermodynamic computing ecosystem.</p>
-<p>The precedent is clear: PyTorch, TensorFlow, LLVM. Open infrastructure that became the standard captured far more value than closed alternatives.</p>
+<p>This research is released openly. The code that produced every result is in the same repository. The reasoning: becoming the foundational reference for noise-exploiting thermodynamic circuit design creates more value than any IP protection could. The simulation infrastructure (CortenForge) is the durable asset.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="60-transitions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="30-octopus.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="80-therm-circuit-env.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="40-dragonfly.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -235,11 +283,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="60-transitions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="30-octopus.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="80-therm-circuit-env.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="40-dragonfly.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

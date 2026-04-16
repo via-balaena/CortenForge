@@ -1,4 +1,4 @@
-# Regime 1: E. coli — Topological Encoding
+# Noise Tuning: E. coli Stochastic Resonance
 
 **Re < 1 — The Viscosity-Dominated Regime**
 
@@ -50,7 +50,7 @@ The experiment maps E. coli chemotaxis onto the Langevin framework:
 | CheY-P signaling noise | Langevin thermal noise | `LangevinThermostat(γ=10, kT=1)` |
 | Noise-modulated switching | Temperature as RL action | `.with_ctrl_temperature()` |
 
-The particle "runs" (stays in one well) and "tumbles" (crosses the barrier). Stochastic resonance occurs when the noise-driven switching rate matches the signal frequency — the Kramers rate at `kT ≈ 1.0` equals the signal angular frequency `ω = 2π × 0.01214`.
+The particle "runs" (stays in one well) and "tumbles" (crosses the barrier). Stochastic resonance occurs when the noise-driven switching rate matches the signal frequency — the Kramers rate (the thermally activated barrier-crossing rate, which scales as exp(−ΔV/kT)) at `kT ≈ 1.0` equals the signal angular frequency `ω = 2π × 0.01214`.
 
 ### Experimental Design
 
@@ -74,7 +74,7 @@ Positive when the particle occupies the correct well at the correct phase of the
 - **PPO** (policy gradient) — sim-rl
 - **SA** (simulated annealing) — sim-opt
 
-Each trains a `LinearPolicy(2, 1)` for 100 epochs on 32-env VecEnv with ctrl-temperature. Evaluation: 20 deterministic episodes with the trained policy.
+Each trains a linear policy (2 inputs → 1 output, mapping particle position and velocity to a temperature control signal) for 100 epochs on a 32-environment parallel batch with ctrl-temperature. Evaluation: 20 deterministic episodes with the trained policy.
 
 ### Gate System
 
@@ -144,7 +144,7 @@ Particle 0 ←J→ Particle 1 ←J→ Particle 2 ←J→ Particle 3
 
 **Phase 1 — Temperature sweep at 5 coupling strengths (~35 min):** For each J ∈ {0.0, 0.5, 1.0, 1.5, 2.0}, sweep 25 temperatures log-spaced in [0.1, 15.0], 40 episodes each. Maps the SR curve at each coupling strength. Gates: every J must have a significant (|t| > 2.708, df=39, α=0.01) interior peak.
 
-**Phase 2 — Multi-algorithm training at each J:** CEM, SA, and RicherSA each train a `LinearPolicy(8, 1)` for 100 epochs on 32-env VecEnv. Tests whether gradient-free agents independently discover the SR-optimal temperature at each coupling strength. PPO was dropped — policy gradient methods compute per-timestep advantages, fundamentally wrong when the optimal policy is a constant temperature.
+**Phase 2 — Multi-algorithm training at each J:** CEM, SA (simulated annealing), and Richer-SA (SA with adaptive neighborhood) each train a linear policy (8 inputs → 1 output) for 100 epochs on a 32-environment parallel batch. Tests whether gradient-free agents independently discover the SR-optimal temperature at each coupling strength. PPO was dropped — policy gradient methods compute per-timestep advantages, fundamentally wrong when the optimal policy is a constant temperature.
 
 **Controls (same pattern as Level 2):** Low noise (kT × 0.1), high noise (kT × 10), no signal (A₀=0) — all must show zero synchrony.
 
@@ -223,11 +223,11 @@ The trapping cutoff at ΔV/kT ≈ 3 is a hard constraint: if the barrier exceeds
 
 #### Why Not Train Agents to Find the Peak?
 
-Phase 2 (CEM, SA, RicherSA training at each J) was designed to test whether gradient-free agents can independently discover the SR-optimal temperature from dynamics alone. Partial results were discouraging: CEM(J=0) converged to kT ≈ 0.07 — a local optimum that games the synchrony metric with a low-noise strategy rather than finding the SR peak at kT ≈ 2.3. SA(J=0) stalled at the same reward for 80+ epochs.
+Phase 2 trained gradient-free agents to discover the SR-optimal temperature from dynamics alone. CEM(J=0) converged to kT ≈ 0.07 — a local optimum that games the synchrony metric rather than finding the SR peak at kT ≈ 2.3. SA(J=0) stalled for 80+ epochs.
 
-The likely cause: a `LinearPolicy(8, 1)` mapping particle positions/velocities to a scalar temperature lacks the capacity to represent the nonlinear relationship between circuit state and optimal noise level. The policy finds a constant-temperature local minimum rather than the state-dependent optimum.
+The likely cause: a linear policy mapping 8 particle observables to a scalar temperature lacks the capacity to represent the nonlinear relationship between circuit state and optimal noise level.
 
-This does not weaken the design rule. The sweep data directly maps the optimal kT for each coupling strength — an engineer doesn't need an agent to discover this; the rule is the table above. Agent-based discovery becomes relevant when the circuit topology is unknown or changes at runtime, which is a different (harder) problem deferred to future work.
+This does not weaken the design rule. The sweep data directly maps the optimal kT for each coupling strength — an engineer doesn't need an agent to discover this; the rule is the table above. Agent-based discovery becomes relevant when the circuit topology is unknown or changes at runtime, a harder problem deferred to future work.
 
 > **Code:** [`sim/L0/therm-env/tests/ising_chain.rs`](../../../sim/L0/therm-env/tests/ising_chain.rs)
 
