@@ -55,9 +55,14 @@ Four follow-on experiments that deepen the validated results, ordered by impact:
 
 Peak synchrony *increased* with circuit size: 0.041 (N=4) → 0.049 (N=8) → 0.063 (N=16). If this is a real scaling law, bigger circuits are *better* at signal following. This would be the strongest possible result for thermodynamic circuit engineering: scale up and fidelity improves for free.
 
-**Experiment:** Sweep N = 4, 8, 12, 16, 24, 32 at J=1.0 with fine kT resolution around the peak (kT 1.5–4.0, 20 points, 40 episodes). Fit sync_peak vs N to a power law. ~2 hours runtime.
+**Experiment:** Sweep N = 4, 8, 12, 16, 24, 32, 48, 64 at J=1.0 with 40 log-spaced kT points in [1.0, 5.0], 40 episodes per point. Fit sync_peak vs N to a power law and validate effective barrier model for kT drift. ~6 hours runtime.
 
-**Gate:** sync_peak ∝ N^α with α significantly > 0 (two-tailed t-test on log-log regression slope).
+**Gates:**
+- sync_peak ∝ N^α with α significantly > 0 (two-tailed t-test on log-log regression slope, df=6, α=0.01)
+- Peak kT drift < 50% across N range (scale invariance sanity check)
+- Effective barrier model peak_kT = a + b·(N−2)/N achieves R² > 0.80
+
+**Code:** `ising_scale_law_sweep` in `ising_chain.rs`.
 
 ### 2. Coupling Crossover Mapping
 
@@ -73,7 +78,7 @@ A finer mesh would map the full optimal phase-lag surface: 8 J values × 30 δ v
 
 ### 4. Effective Barrier Model Validation
 
-N=16 peaked one grid step higher than N=4/N=8. The effective-barrier model predicts an ~8% shift from the changing end/interior particle ratio. Does the model hold? Overlaps with experiment 1.
+Merged into experiment 1 (N-Scaling Law) as Gate 3. The effective-barrier model peak_kT = a + b·(N−2)/N is validated against 8 chain sizes.
 
 ## All Experiment Code
 
