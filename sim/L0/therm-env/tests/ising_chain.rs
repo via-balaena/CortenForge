@@ -25,10 +25,9 @@
 
 use std::f64::consts::PI;
 
-use sim_opt::{Sa, SaHyperparams};
+use sim_opt::{RicherSa, RicherSaHyperparams, Sa, SaHyperparams};
 use sim_rl::{
-    Algorithm, Cem, CemHyperparams, Environment, LinearPolicy, LinearValue, OptimizerConfig,
-    Policy, Ppo, PpoHyperparams, Tensor, TrainingBudget,
+    Algorithm, Cem, CemHyperparams, Environment, LinearPolicy, Policy, Tensor, TrainingBudget,
 };
 use sim_therm_env::ThermCircuitEnv;
 use sim_thermostat::{DoubleWellPotential, OscillatingField, PairwiseCoupling};
@@ -47,7 +46,7 @@ const SUB_STEPS: usize = 100;
 const EPISODE_STEPS: usize = 5_000;
 const SEED_BASE: u64 = 20_260_416;
 
-const CTRL_RANGE_HI: f64 = 5.0;
+const CTRL_RANGE_HI: f64 = 15.0;
 
 const OBS_DIM: usize = 2 * N;
 const ACT_DIM: usize = 1;
@@ -60,8 +59,10 @@ const N_EVAL_EPISODES: usize = 20;
 const T_CRITICAL_DF19: f64 = 2.861;
 
 /// t-critical for df=9, two-tailed α=0.01.
-#[allow(dead_code)]
 const T_CRITICAL_DF9: f64 = 3.250;
+
+/// t-critical for df=39, two-tailed α=0.01.
+const T_CRITICAL_DF39: f64 = 2.708;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -135,7 +136,7 @@ fn make_training_vecenv(coupling_j: f64, n_envs: usize, seed: u64) -> sim_rl::Ve
     let mut builder = ThermCircuitEnv::builder(N)
         .gamma(GAMMA)
         // Base kT = CTRL_RANGE_HI so tanh output [0,1] maps to kT [0, CTRL_RANGE_HI].
-        // This lets the agent reach the SR peak (kT~1.7) at ctrl ≈ 0.34.
+        // At CTRL_RANGE_HI=15, the agent reaches predicted SR peaks (kT 2-7) at ctrl ≈ 0.13-0.47.
         .k_b_t(CTRL_RANGE_HI)
         .timestep(TIMESTEP)
         .sub_steps(SUB_STEPS)
@@ -240,7 +241,7 @@ fn evaluate_policy(
         let seed = SEED_BASE + seed_offset + ep as u64;
         let mut builder = ThermCircuitEnv::builder(N)
             .gamma(GAMMA)
-            // Match training env: k_b_t = CTRL_RANGE_HI so tanh [0,1] → kT [0, 5].
+            // Match training env: k_b_t = CTRL_RANGE_HI so tanh [0,1] → kT [0, CTRL_RANGE_HI].
             .k_b_t(CTRL_RANGE_HI)
             .timestep(TIMESTEP)
             .sub_steps(SUB_STEPS)
@@ -330,7 +331,7 @@ fn train_and_report(
         }
     );
 
-    let trained = algo.policy_artifact().to_policy().unwrap();
+    let trained = algo.best_artifact().to_policy().unwrap();
     let (syncs, temps) =
         evaluate_policy(trained.as_ref(), coupling_j, N_EVAL_EPISODES, eval_offset);
     let (sync_mean, sync_stderr) = mean_stderr(&syncs);
@@ -358,8 +359,8 @@ fn train_and_report(
 
 fn make_cem() -> Cem {
     let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    // Bias 0.35: tanh(0.35)≈0.34 → kT = 5.0*0.34 ≈ 1.7 (near SR peak).
-    policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35]);
+    // Bias 0.27: tanh(0.27)≈0.264 → kT = 15.0*0.264 ≈ 4.0 (midpoint of predicted SR peaks).
+    policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.27]);
     Cem::new(
         Box::new(policy),
         CemHyperparams {
@@ -367,24 +368,6 @@ fn make_cem() -> Cem {
             noise_std: 2.5,
             noise_decay: 0.98,
             noise_min: 0.1,
-            max_episode_steps: EPISODE_STEPS,
-        },
-    )
-}
-
-fn make_ppo() -> Ppo {
-    Ppo::new(
-        Box::new(LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale())),
-        Box::new(LinearValue::new(OBS_DIM, &obs_scale())),
-        OptimizerConfig::adam(3e-4),
-        PpoHyperparams {
-            clip_eps: 0.2,
-            k_passes: 4,
-            gamma: 0.99,
-            gae_lambda: 0.95,
-            sigma_init: 1.0,
-            sigma_decay: 0.995,
-            sigma_min: 0.1,
             max_episode_steps: EPISODE_STEPS,
         },
     )
@@ -400,6 +383,13 @@ fn make_sa() -> Sa {
             temperature_min: 0.1,
             max_episode_steps: EPISODE_STEPS,
         },
+    )
+}
+
+fn make_richer_sa() -> RicherSa {
+    RicherSa::new(
+        Box::new(LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale())),
+        RicherSaHyperparams::ch53_defaults(EPISODE_STEPS),
     )
 }
 
@@ -430,11 +420,11 @@ fn ising_sr_controls() {
     );
     eprintln!("  PASS");
 
-    // High noise (kT x 5): random switching, zero synchrony
-    eprintln!("\n--- High noise (kT x 5.0) ---");
+    // High noise (kT x 10): random switching, zero synchrony
+    eprintln!("\n--- High noise (kT x 10.0) ---");
     let mut high = Vec::with_capacity(n_episodes);
     for ep in 0..n_episodes {
-        high.push(run_episode(0.5, 5.0, SEED_BASE + 1000 + ep as u64));
+        high.push(run_episode(0.5, 10.0, SEED_BASE + 1000 + ep as u64));
     }
     let (high_mean, high_stderr) = mean_stderr(&high);
     eprintln!("  synchrony = {high_mean:.6} +/- {high_stderr:.6}");
@@ -501,7 +491,7 @@ fn ising_sr_controls() {
 #[test]
 #[ignore = "requires --release (~10 min)"]
 fn ising_sr_uncoupled_baseline() {
-    let kt_mults = log_spaced(0.1, 5.0, 20);
+    let kt_mults = log_spaced(0.1, 15.0, 20);
     let n_episodes = 20;
 
     eprintln!("\n=== Ising SR: Uncoupled baseline (J=0) ===");
@@ -544,7 +534,7 @@ fn ising_sr_uncoupled_baseline() {
 #[test]
 #[ignore = "requires --release (~10 min)"]
 fn ising_sr_coupled() {
-    let kt_mults = log_spaced(0.1, 5.0, 20);
+    let kt_mults = log_spaced(0.1, 15.0, 20);
     let n_episodes = 20;
 
     eprintln!("\n=== Ising SR: Coupled chain (J=0.5) ===");
@@ -575,27 +565,77 @@ fn ising_sr_coupled() {
     eprintln!("  Compare to uncoupled baseline: run ising_sr_uncoupled_baseline");
 }
 
-/// Full sweep: SR peak at J={0.0, 0.1, 0.5, 1.0, 2.0}.
-/// Maps how coupling strength shifts the optimal noise temperature.
-/// Then trains CEM, PPO, SA at each J to see if RL discovers the peak.
+/// Scout: fast diagnostic at J=2 only. Validates that the kT=15 ceiling
+/// captures the strongest-coupling peak before committing to the full sweep.
 #[test]
-#[ignore = "requires --release (~2 hours)"]
+#[ignore = "requires --release (~7 min)"]
+fn ising_sr_scout() {
+    let kt_points = [1.0, 2.0, 3.5, 5.0, 6.5, 8.5, 11.0, 15.0];
+    let n_episodes = 10;
+    let coupling_j = 2.0;
+
+    eprintln!("\n=== Ising SR: Scout (J=2.0) ===");
+    eprintln!("  Predicted peak: kT ~ 6.5 (ΔV_eff/1.39)");
+    eprintln!("  Testing {} kT points in [1, 15]\n", kt_points.len());
+
+    let (kts, means, stderrs) = temperature_sweep(coupling_j, &kt_points, n_episodes, 0);
+
+    eprintln!("\n  kT_mult  |  synchrony   |  stderr");
+    eprintln!("  ---------|--------------|--------");
+    for i in 0..kts.len() {
+        eprintln!(
+            "  {:7.4}  |  {:+.6}   |  {:.6}",
+            kts[i], means[i], stderrs[i]
+        );
+    }
+
+    let (peak_idx, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+    let t = if peak_se > 1e-15 {
+        peak_sync / peak_se
+    } else {
+        0.0
+    };
+    eprintln!("\n  Peak: kT={peak_kt:.4}, synchrony={peak_sync:.6} +/- {peak_se:.6}");
+    eprintln!("  |t| = {:.2} (critical = {T_CRITICAL_DF9:.3})", t.abs());
+
+    assert!(
+        peak_idx > 0 && peak_idx < kts.len() - 1,
+        "Scout: peak at boundary (idx={peak_idx}, kT={peak_kt:.4}), range too narrow"
+    );
+    assert!(
+        t.abs() > T_CRITICAL_DF9,
+        "Scout: peak not significant (|t|={:.2})",
+        t.abs()
+    );
+    eprintln!("  Scout: PASS (peak interior, significant)");
+}
+
+/// Phase 1: Temperature sweep at 5 coupling strengths.
+/// Maps how coupling shifts the SR-optimal noise temperature.
+/// This is the τ_circuit / τ_noise characterization.
+///
+/// Run the scout first to validate the kT range.
+#[test]
+#[ignore = "requires --release (~1-2 hours)"]
 #[allow(clippy::items_after_statements)]
 fn ising_sr_coupling_sweep() {
-    let j_values = [0.0, 0.1, 0.5, 1.0, 2.0];
-    let kt_mults = log_spaced(0.1, 5.0, 15);
-    let n_sweep_episodes = 15;
+    let j_values = [0.0, 0.5, 1.0, 1.5, 2.0];
+    let kt_mults = log_spaced(0.1, 15.0, 25);
+    let n_sweep_episodes = 40;
 
-    eprintln!("\n=== ISING SR COUPLING SWEEP ===");
+    eprintln!("\n=== ISING SR COUPLING SWEEP (Phase 1) ===");
     eprintln!("  Does the SR peak shift with coupling strength?");
     eprintln!("  J values: {j_values:?}");
-    eprintln!("  Then: CEM, PPO, SA training at each J\n");
-
-    // ── Phase 1: Temperature sweeps ──────────────────────────────────
-    eprintln!("  Phase 1: Temperature sweeps\n");
+    eprintln!(
+        "  kT range: [0.1, 15.0], {} points log-spaced",
+        kt_mults.len()
+    );
+    eprintln!("  Episodes per point: {n_sweep_episodes}");
+    eprintln!("  t-critical: {T_CRITICAL_DF39:.3} (df=39, α=0.01)\n");
 
     struct SweepResult {
         j: f64,
+        peak_idx: usize,
         peak_kt: f64,
         peak_sync: f64,
         peak_stderr: f64,
@@ -607,7 +647,7 @@ fn ising_sr_coupling_sweep() {
         eprintln!("  --- J={j} sweep ---");
         let (kts, means, stderrs) =
             temperature_sweep(j, &kt_mults, n_sweep_episodes, i as u64 * 20_000);
-        let (_, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+        let (peak_idx, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
         let t = if peak_se > 1e-15 {
             peak_sync / peak_se
         } else {
@@ -616,6 +656,7 @@ fn ising_sr_coupling_sweep() {
         eprintln!("    peak: kT={peak_kt:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, |t|={t:.2}");
         sweep_results.push(SweepResult {
             j,
+            peak_idx,
             peak_kt,
             peak_sync,
             peak_stderr: peak_se,
@@ -623,18 +664,63 @@ fn ising_sr_coupling_sweep() {
         });
     }
 
-    eprintln!("\n  Sweep summary:");
-    eprintln!("  J      |  peak kT  |  peak sync     |  |t|");
-    eprintln!("  -------|-----------|----------------|------");
+    // ── Summary table ────────────────────────────────────────────────
+    eprintln!("\n  ======================================================================");
+    eprintln!("  COUPLING SWEEP RESULTS");
+    eprintln!("  ======================================================================\n");
+    eprintln!("  J      |  peak kT  |  peak sync     |  |t|    |  interior?");
+    eprintln!("  -------|-----------|----------------|--------|----------");
     for r in &sweep_results {
+        let interior = r.peak_idx > 0 && r.peak_idx < kt_mults.len() - 1;
         eprintln!(
-            "  {:5.2}  |  {:7.4}  |  {:.6} +/- {:.6}  |  {:.2}",
-            r.j, r.peak_kt, r.peak_sync, r.peak_stderr, r.peak_t
+            "  {:5.2}  |  {:7.4}  |  {:.6} +/- {:.6}  |  {:5.2}  |  {}",
+            r.j,
+            r.peak_kt,
+            r.peak_sync,
+            r.peak_stderr,
+            r.peak_t,
+            if interior { "YES" } else { "BOUNDARY" }
         );
     }
 
-    // ── Phase 2: Multi-algorithm training at each J ──────────────────
-    eprintln!("\n\n  Phase 2: Multi-algorithm training\n");
+    // ── Gates ────────────────────────────────────────────────────────
+    eprintln!("\n  Gates:");
+    let mut all_pass = true;
+    for r in &sweep_results {
+        let interior = r.peak_idx > 0 && r.peak_idx < kt_mults.len() - 1;
+        let significant = r.peak_t.abs() > T_CRITICAL_DF39;
+        let pass = interior && significant;
+        if !pass {
+            all_pass = false;
+        }
+        eprintln!(
+            "    J={:.2}: interior={interior}, |t|={:.2} {} {T_CRITICAL_DF39:.3} → {}",
+            r.j,
+            r.peak_t.abs(),
+            if significant { ">" } else { "<" },
+            if pass { "PASS" } else { "FAIL" }
+        );
+    }
+
+    assert!(all_pass, "Not all J values have significant interior peaks");
+    eprintln!("\n  All gates PASS. Phase 2 (training) can proceed.");
+}
+
+/// Phase 2: CEM, SA, RicherSA training at each coupling strength.
+/// Tests whether gradient-free agents independently discover the SR-optimal
+/// temperature from dynamics alone.
+///
+/// Run Phase 1 (coupling sweep) first to validate the sweep results.
+#[test]
+#[ignore = "requires --release (~2-3 hours)"]
+#[allow(clippy::items_after_statements)]
+fn ising_sr_training() {
+    let j_values = [0.0, 0.5, 1.0, 1.5, 2.0];
+
+    eprintln!("\n=== ISING SR TRAINING (Phase 2) ===");
+    eprintln!("  CEM, SA, RicherSA at each J");
+    eprintln!("  CTRL_RANGE_HI = {CTRL_RANGE_HI} (policy tanh → kT ∈ [0, {CTRL_RANGE_HI}])");
+    eprintln!("  {N_EPOCHS} epochs, {N_ENVS} envs, {N_EVAL_EPISODES} eval episodes\n");
 
     struct TrainResult {
         j: f64,
@@ -664,29 +750,13 @@ fn ising_sr_coupling_sweep() {
             learned_kt: kt,
         });
 
-        let mut ppo = make_ppo();
-        let (s, se, kt) = train_and_report(
-            &format!("PPO(J={j})"),
-            &mut ppo,
-            j,
-            base_seed + 100,
-            base_eval + 10_000,
-        );
-        train_results.push(TrainResult {
-            j,
-            algo: "PPO",
-            sync: s,
-            stderr: se,
-            learned_kt: kt,
-        });
-
         let mut sa = make_sa();
         let (s, se, kt) = train_and_report(
             &format!("SA(J={j})"),
             &mut sa,
             j,
-            base_seed + 200,
-            base_eval + 20_000,
+            base_seed + 100,
+            base_eval + 10_000,
         );
         train_results.push(TrainResult {
             j,
@@ -695,30 +765,45 @@ fn ising_sr_coupling_sweep() {
             stderr: se,
             learned_kt: kt,
         });
+
+        let mut rsa = make_richer_sa();
+        let (s, se, kt) = train_and_report(
+            &format!("RSA(J={j})"),
+            &mut rsa,
+            j,
+            base_seed + 200,
+            base_eval + 20_000,
+        );
+        train_results.push(TrainResult {
+            j,
+            algo: "RSA",
+            sync: s,
+            stderr: se,
+            learned_kt: kt,
+        });
     }
 
     // ── Final summary ────────────────────────────────────────────────
     eprintln!("\n\n  ======================================================================");
-    eprintln!("  FINAL RESULTS: SR peak vs learned temperature");
+    eprintln!("  TRAINING RESULTS: learned temperature vs SR peak");
     eprintln!("  ======================================================================\n");
 
-    eprintln!("  Baseline sweep peaks:");
-    eprintln!("  J      |  peak kT  |  peak sync");
-    eprintln!("  -------|-----------|----------");
-    for r in &sweep_results {
-        eprintln!(
-            "  {:5.2}  |  {:7.4}  |  {:+.6}",
-            r.j, r.peak_kt, r.peak_sync
-        );
-    }
-
-    eprintln!("\n  Algorithm training results:");
-    eprintln!("  J      | Algo |  synchrony      |  learned kT");
-    eprintln!("  -------|------|-----------------|------------");
+    eprintln!("  J      | Algo |  synchrony      |  learned kT  |  |t|");
+    eprintln!("  -------|------|-----------------|-------------|------");
     for r in &train_results {
+        let t = if r.stderr > 1e-15 {
+            r.sync / r.stderr
+        } else {
+            0.0
+        };
         eprintln!(
-            "  {:5.2}  | {:4} |  {:+.6} +/- {:.6}  |  {:.4}",
-            r.j, r.algo, r.sync, r.stderr, r.learned_kt
+            "  {:5.2}  | {:4} |  {:+.6} +/- {:.6}  |  {:10.4}  |  {:.2}",
+            r.j,
+            r.algo,
+            r.sync,
+            r.stderr,
+            r.learned_kt,
+            t.abs()
         );
     }
 
