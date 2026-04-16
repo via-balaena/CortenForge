@@ -6,9 +6,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# RNG for randomized initial states and exploration
 rand = { workspace = true }
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# MJCF scene loader for the example physics scene
 sim-mjcf = { workspace = true }
+# ML algorithm chassis: Algorithm, VecEnv, Policy traits
 sim-ml-chassis = { workspace = true }
 
 [lints]

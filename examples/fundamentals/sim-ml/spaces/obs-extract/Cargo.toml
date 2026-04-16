@@ -6,10 +6,15 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# MJCF scene loader for the example physics scene
 sim-mjcf = { workspace = true }
+# ML algorithm chassis: Algorithm, VecEnv, Policy traits
 sim-ml-chassis = { workspace = true, features = ["bevy"] }
+# Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
+# Bevy engine: rendering, ECS, input, windowing
 bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_core_pipeline",

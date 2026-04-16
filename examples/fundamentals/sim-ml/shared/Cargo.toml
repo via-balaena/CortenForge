@@ -6,9 +6,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Bevy engine: rendering, ECS, input, windowing
 bevy = { workspace = true }
+# Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# ML algorithm chassis: Algorithm, VecEnv, Policy traits
 sim-ml-chassis = { workspace = true }
 
 [lints]
