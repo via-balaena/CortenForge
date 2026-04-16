@@ -134,7 +134,9 @@ fn make_training_vecenv(coupling_j: f64, n_envs: usize, seed: u64) -> sim_rl::Ve
     let omega = signal_omega();
     let mut builder = ThermCircuitEnv::builder(N)
         .gamma(GAMMA)
-        .k_b_t(K_B_T)
+        // Base kT = CTRL_RANGE_HI so tanh output [0,1] maps to kT [0, CTRL_RANGE_HI].
+        // This lets the agent reach the SR peak (kT~1.7) at ctrl ≈ 0.34.
+        .k_b_t(CTRL_RANGE_HI)
         .timestep(TIMESTEP)
         .sub_steps(SUB_STEPS)
         .episode_steps(EPISODE_STEPS)
@@ -232,7 +234,8 @@ fn evaluate_policy(
         let seed = SEED_BASE + seed_offset + ep as u64;
         let mut builder = ThermCircuitEnv::builder(N)
             .gamma(GAMMA)
-            .k_b_t(K_B_T)
+            // Match training env: k_b_t = CTRL_RANGE_HI so tanh [0,1] → kT [0, 5].
+            .k_b_t(CTRL_RANGE_HI)
             .timestep(TIMESTEP)
             .sub_steps(SUB_STEPS)
             .episode_steps(EPISODE_STEPS)
@@ -269,7 +272,7 @@ fn evaluate_policy(
 
         for _ in 0..EPISODE_STEPS {
             let action = policy.forward(&obs_vec);
-            total_temp += action[0] * K_B_T;
+            total_temp += action[0] * CTRL_RANGE_HI;
             let action_tensor = Tensor::from_f64_slice(&action, &[1]);
             let result = env.step(&action_tensor).unwrap();
             total_sync += result.reward;
@@ -349,7 +352,8 @@ fn train_and_report(
 
 fn make_cem() -> Cem {
     let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0]);
+    // Bias 0.35: tanh(0.35)≈0.34 → kT = 5.0*0.34 ≈ 1.7 (near SR peak).
+    policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35]);
     Cem::new(
         Box::new(policy),
         CemHyperparams {
@@ -574,7 +578,7 @@ fn ising_sr_coupled() {
 fn ising_sr_coupling_sweep() {
     let j_values = [0.0, 0.1, 0.5, 1.0, 2.0];
     let kt_mults = log_spaced(0.1, 5.0, 15);
-    let n_sweep_episodes = 10;
+    let n_sweep_episodes = 15;
 
     eprintln!("\n=== ISING SR COUPLING SWEEP ===");
     eprintln!("  Does the SR peak shift with coupling strength?");
