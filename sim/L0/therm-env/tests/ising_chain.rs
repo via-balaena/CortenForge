@@ -365,16 +365,11 @@ fn ising_sr_sweep() {
     eprintln!("  SR sweep: PASS (peak is positive and interior)");
 }
 
-#[test]
-#[ignore = "requires --release (~10 min)"]
-fn ising_cem_encoding() {
-    eprintln!("\n=== Ising chain: CEM X-encoding (target=[+1,+1,+1,+1]) ===");
-
+/// Create a CEM instance with standard hyperparameters for Ising chain tests.
+fn make_cem() -> Cem {
     let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    // Initialize bias so ctrl ≈ tanh(1.0) ≈ 0.76 → kT ≈ 0.76
     policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-
-    let mut cem = Cem::new(
+    Cem::new(
         Box::new(policy),
         CemHyperparams {
             elite_fraction: 0.2,
@@ -383,83 +378,15 @@ fn ising_cem_encoding() {
             noise_min: 0.1,
             max_episode_steps: EPISODE_STEPS,
         },
-    );
+    )
+}
 
-    let mut env = make_training_vecenv(J, &TARGET_ALIGNED, N_ENVS, SEED_BASE);
-
-    let metrics = cem.train(
-        &mut env,
-        TrainingBudget::Epochs(N_EPOCHS),
-        SEED_BASE,
-        &|m| {
-            if m.epoch % 20 == 0 || m.epoch == N_EPOCHS - 1 {
-                eprintln!(
-                    "  CEM epoch {:3}: mean_reward = {:+.4}",
-                    m.epoch, m.mean_reward,
-                );
-            }
-        },
-    );
-
-    // Gate B: learning monotonicity
-    let first_5_mean: f64 = metrics[..5].iter().map(|m| m.mean_reward).sum::<f64>() / 5.0;
-    let best_last_10 = metrics[metrics.len().saturating_sub(10)..]
-        .iter()
-        .map(|m| m.mean_reward)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let gate_b = best_last_10 > first_5_mean;
-    eprintln!(
-        "  Gate B: first_5={first_5_mean:.4}, best_last_10={best_last_10:.4} -> {}",
-        if gate_b { "PASS" } else { "FAIL" }
-    );
-
-    // Evaluate
-    let trained = cem.policy_artifact().to_policy().unwrap();
-    let (overlaps, temps) = evaluate_policy(
-        trained.as_ref(),
-        J,
-        &TARGET_ALIGNED,
-        N_EVAL_EPISODES,
-        50_000,
-    );
-    let (ov_mean, ov_stderr) = mean_stderr(&overlaps);
-    let (temp_mean, temp_stderr) = mean_stderr(&temps);
-
-    eprintln!("  eval: overlap = {ov_mean:.4} +/- {ov_stderr:.4}");
-    eprintln!("  eval: kT = {temp_mean:.4} +/- {temp_stderr:.4}");
-
-    // Gate A: significant positive overlap
-    let t_stat = if ov_stderr > 1e-15 {
-        ov_mean / ov_stderr
-    } else {
-        0.0
-    };
-    eprintln!("  Gate A: |t| = {:.2}", t_stat.abs());
-
-    // Gate D: report learned weights
-    let params = trained.params();
-    eprintln!("  Learned params ({} total):", params.len());
-    eprintln!("    qpos weights: {:?}", &params[..N]);
-    eprintln!("    qvel weights: {:?}", &params[N..2 * N]);
-    eprintln!("    bias:         {:.4}", params[2 * N]);
-
-    let qpos_weight_norm: f64 = params[..N].iter().map(|w| w * w).sum::<f64>().sqrt();
-    let is_state_dependent = qpos_weight_norm > 0.1;
-    eprintln!(
-        "  Gate D: qpos weight norm = {qpos_weight_norm:.4} -> {}",
-        if is_state_dependent {
-            "state-dependent"
-        } else {
-            "constant policy"
-        }
-    );
-
-    assert!(gate_b, "Gate B FAILED: no learning improvement");
-    assert!(
-        ov_mean > 0.0,
-        "CEM should achieve positive overlap, got {ov_mean:.4}"
-    );
-    eprintln!("  CEM X-encoding: PASS");
+#[test]
+#[ignore = "requires --release (~10 min)"]
+fn ising_cem_encoding() {
+    eprintln!("\n=== Ising chain: CEM X-encoding (target=[+1,+1,+1,+1]) ===");
+    let mut cem = make_cem();
+    train_and_report("CEM", &mut cem, J, &TARGET_ALIGNED, SEED_BASE, 50_000);
 }
 
 #[test]
@@ -467,76 +394,30 @@ fn ising_cem_encoding() {
 fn ising_hard_target() {
     eprintln!("\n=== Ising chain: CEM hard target (target=[+1,-1,+1,-1]) ===");
     eprintln!("  (Anti-aligned pattern fights ferromagnetic coupling J={J})");
-
-    let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-
-    let mut cem = Cem::new(
-        Box::new(policy),
-        CemHyperparams {
-            elite_fraction: 0.2,
-            noise_std: 2.0,
-            noise_decay: 0.97,
-            noise_min: 0.1,
-            max_episode_steps: EPISODE_STEPS,
-        },
-    );
-
-    let mut env = make_training_vecenv(J, &TARGET_ANTI, N_ENVS, SEED_BASE + 300);
-
-    let metrics = cem.train(
-        &mut env,
-        TrainingBudget::Epochs(N_EPOCHS),
+    let mut cem = make_cem();
+    train_and_report(
+        "CEM(hard)",
+        &mut cem,
+        J,
+        &TARGET_ANTI,
         SEED_BASE + 300,
-        &|m| {
-            if m.epoch % 20 == 0 || m.epoch == N_EPOCHS - 1 {
-                eprintln!(
-                    "  CEM epoch {:3}: mean_reward = {:+.4}",
-                    m.epoch, m.mean_reward,
-                );
-            }
-        },
+        60_000,
     );
-
-    // Evaluate
-    let trained = cem.policy_artifact().to_policy().unwrap();
-    let (overlaps, temps) =
-        evaluate_policy(trained.as_ref(), J, &TARGET_ANTI, N_EVAL_EPISODES, 60_000);
-    let (ov_mean, ov_stderr) = mean_stderr(&overlaps);
-    let (temp_mean, temp_stderr) = mean_stderr(&temps);
-
-    eprintln!("  eval: overlap = {ov_mean:.4} +/- {ov_stderr:.4}");
-    eprintln!("  eval: kT = {temp_mean:.4} +/- {temp_stderr:.4}");
-
-    // Report comparison
-    let best_reward = metrics
-        .iter()
-        .map(|m| m.mean_reward)
-        .fold(f64::NEG_INFINITY, f64::max);
-    eprintln!("  best training reward = {best_reward:.4}");
-
-    let params = trained.params();
-    eprintln!("  Learned params:");
-    eprintln!("    qpos weights: {:?}", &params[..N]);
-    eprintln!("    qvel weights: {:?}", &params[N..2 * N]);
-    eprintln!("    bias:         {:.4}", params[2 * N]);
-
-    // This is exploratory — we report results but don't hard-gate.
-    // The anti-aligned target fights the coupling, so lower overlap is expected.
-    eprintln!("  Hard target: overlap={ov_mean:.4} (vs. easy target for comparison)");
 }
 
 // ─── Shared train-and-report ─────────────────────────────────────────────
 
 /// Train an algorithm on the Ising chain, evaluate, report gates.
+/// Returns `(overlap_mean, overlap_stderr, learned_kT)`.
 fn train_and_report(
     name: &str,
     algo: &mut dyn Algorithm,
+    coupling_j: f64,
     target: &'static [f64; N],
     seed: u64,
     eval_offset: u64,
-) {
-    let mut env = make_training_vecenv(J, target, N_ENVS, seed);
+) -> (f64, f64, f64) {
+    let mut env = make_training_vecenv(coupling_j, target, N_ENVS, seed);
 
     eprintln!("\n--- {name}: training ({N_EPOCHS} epochs, {N_ENVS} envs) ---");
 
@@ -563,8 +444,13 @@ fn train_and_report(
 
     // Evaluate
     let trained = algo.policy_artifact().to_policy().unwrap();
-    let (overlaps, temps) =
-        evaluate_policy(trained.as_ref(), J, target, N_EVAL_EPISODES, eval_offset);
+    let (overlaps, temps) = evaluate_policy(
+        trained.as_ref(),
+        coupling_j,
+        target,
+        N_EVAL_EPISODES,
+        eval_offset,
+    );
     let (ov_mean, ov_stderr) = mean_stderr(&overlaps);
     let (temp_mean, _temp_stderr) = mean_stderr(&temps);
 
@@ -604,6 +490,8 @@ fn train_and_report(
         "{name} should achieve positive overlap, got {ov_mean:.4}"
     );
     eprintln!("  {name}: PASS");
+
+    (ov_mean, ov_stderr, temp_mean)
 }
 
 // ─── PPO training ────────────────────────────────────────────────────────
@@ -631,7 +519,14 @@ fn ising_ppo_encoding() {
         },
     );
 
-    train_and_report("PPO", &mut algo, &TARGET_ALIGNED, SEED_BASE + 100, 70_000);
+    train_and_report(
+        "PPO",
+        &mut algo,
+        J,
+        &TARGET_ALIGNED,
+        SEED_BASE + 100,
+        70_000,
+    );
 }
 
 // ─── SA training (sim-opt) ───────────────────────────────────────────────
@@ -653,5 +548,77 @@ fn ising_sa_encoding() {
         },
     );
 
-    train_and_report("SA", &mut algo, &TARGET_ALIGNED, SEED_BASE + 200, 80_000);
+    train_and_report("SA", &mut algo, J, &TARGET_ALIGNED, SEED_BASE + 200, 80_000);
+}
+
+// ─── Coupling strength sweep (Step 4) ────────────────────────────────────
+
+#[test]
+#[ignore = "requires --release (~40 min)"]
+fn ising_coupling_sweep() {
+    let j_values = [0.1, 0.5, 1.0, 2.0];
+
+    eprintln!("\n=== Ising chain: Coupling sweep on hard target [+1,-1,+1,-1] ===");
+    eprintln!("  Sweeping J to characterize encoding difficulty vs coupling strength.\n");
+
+    let mut results: Vec<(f64, f64, f64, f64)> = Vec::new(); // (J, overlap, stderr, kT)
+
+    for (i, &j) in j_values.iter().enumerate() {
+        eprintln!("\n  ============================================================");
+        eprintln!("  J = {j} (coupling {i}/{} )", j_values.len());
+        eprintln!("  ============================================================");
+
+        let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
+        policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+
+        let mut cem = Cem::new(
+            Box::new(policy),
+            CemHyperparams {
+                elite_fraction: 0.2,
+                noise_std: 2.0,
+                noise_decay: 0.97,
+                noise_min: 0.1,
+                max_episode_steps: EPISODE_STEPS,
+            },
+        );
+
+        let seed = SEED_BASE + 400 + i as u64 * 100;
+        let eval_offset = 90_000 + i as u64 * 10_000;
+        let (ov, se, kt) = train_and_report(
+            &format!("CEM(J={j})"),
+            &mut cem,
+            j,
+            &TARGET_ANTI,
+            seed,
+            eval_offset,
+        );
+        results.push((j, ov, se, kt));
+    }
+
+    // ── Summary table ────────────────────────────────────────────────
+    eprintln!("\n\n=== COUPLING SWEEP RESULTS ===");
+    eprintln!("  Target: [+1, -1, +1, -1] (anti-aligned, fights ferromagnetic coupling)\n");
+    eprintln!("  J      |  overlap       |  learned kT");
+    eprintln!("  -------|----------------|------------");
+    for &(j, ov, se, kt) in &results {
+        eprintln!("  {j:5.2}  |  {ov:+.4} +/- {se:.4}  |  {kt:.4}");
+    }
+    eprintln!();
+
+    // ── Gate: monotonic decrease in overlap with increasing J ─────
+    // Stronger coupling should make the anti-aligned target harder.
+    let first_overlap = results[0].1;
+    let last_overlap = results[results.len() - 1].1;
+    eprintln!(
+        "  Monotonicity: J={:.1} overlap={first_overlap:.4}, J={:.1} overlap={last_overlap:.4}",
+        results[0].0,
+        results[results.len() - 1].0,
+    );
+
+    // Don't hard-assert monotonicity (CEM is noisy), but report it.
+    if first_overlap > last_overlap {
+        eprintln!("  Trend: stronger coupling -> harder encoding (expected)");
+    } else {
+        eprintln!("  Trend: UNEXPECTED — overlap increased with coupling strength");
+    }
 }
