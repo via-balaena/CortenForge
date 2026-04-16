@@ -224,6 +224,10 @@ impl Algorithm for Td3 {
         "TD3"
     }
 
+    // TD3's training loop is inlined for end-to-end readability: replay
+    // sampling → twin Q updates → delayed policy update sequence is most
+    // legible as a single pass. Cast lints are usize → f64 for batch math
+    // (batch sizes far below 2^52); panics guard documented invariants.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

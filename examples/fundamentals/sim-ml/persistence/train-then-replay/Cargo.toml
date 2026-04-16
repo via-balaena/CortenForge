@@ -6,10 +6,15 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Bevy engine: rendering, ECS, input, windowing
 bevy = { workspace = true }
+# Shared example harness for ML fixtures
 example-ml-shared = { path = "../../shared" }
+# Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# Generic RL baselines: CEM, REINFORCE, PPO, TD3, SAC
 sim-rl = { workspace = true }
 
 [lints]

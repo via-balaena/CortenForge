@@ -367,6 +367,7 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
         for token in groups_str.split_whitespace() {
             if let Ok(group) = token.parse::<i32>() {
                 if (0..=30).contains(&group) {
+                    // `group` is bound to 0..=30 by the contains check above.
                     #[allow(clippy::cast_sign_loss)]
                     {
                         option.actuatorgroupdisable |= 1u32 << (group as u32);
@@ -3558,6 +3559,7 @@ fn parse_maxhullvert(n: i32) -> Result<Option<usize>> {
     if n == -1 {
         Ok(None)
     } else if n >= 4 {
+        // `n >= 4` from the branch guard.
         #[allow(clippy::cast_sign_loss)]
         Ok(Some(n as usize))
     } else {

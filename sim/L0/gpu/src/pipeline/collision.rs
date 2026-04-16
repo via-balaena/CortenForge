@@ -474,6 +474,9 @@ impl GpuCollisionPipeline {
 
 /// Create a per-dispatch uniform buffer with pre-written params and its
 /// bind group. Called once per dispatch during `new()`.
+// Each argument is a distinct GPU resource (device, layout, params, label,
+// dispatch-shape config); bundling them into a struct would just move the
+// long argument list one level up without reducing it.
 #[allow(clippy::too_many_arguments)]
 fn make_dispatch(
     device: &wgpu::Device,

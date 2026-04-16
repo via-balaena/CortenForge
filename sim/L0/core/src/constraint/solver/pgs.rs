@@ -178,6 +178,7 @@ fn compute_ar_block(
 ///
 /// AR subblocks for elliptic contacts are computed on-the-fly from
 /// `J_block × minv_jt_block` (O(dim² × nv) per block).
+// PGS solver inlined as a single function so the elliptic / pyramidal / friction-loss branching and the per-row update loop read end-to-end; single-letter names follow the published PGS notation.
 #[allow(
     clippy::many_single_char_names,
     clippy::needless_range_loop,
@@ -243,6 +244,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
     };
 
     let max_iters = model.solver_iterations;
+    // `niter` and `nv` are usize → f64 for convergence diagnostics; bounded by solver budget, far below 2^52.
     #[allow(clippy::cast_precision_loss)]
     let scale = 1.0 / (data.stat_meaninertia * 1.0_f64.max(nv as f64));
     let tolerance = model.solver_tolerance;
@@ -510,7 +512,9 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
 /// * `qacc` - Current acceleration estimate
 /// * `qacc_smooth` - Unconstrained smooth acceleration (M⁻¹ · qfrc_smooth)
 /// * `qfrc_smooth` - Smooth force (excluding friction loss)
+// Friction pyramid update takes the full per-contact state (normal/tangent/multipliers/work buffers).
 #[allow(clippy::too_many_arguments)]
+// Single-letter names (a, b, c, p, q, r) follow the standard PGS friction-pyramid notation.
 #[allow(clippy::many_single_char_names)]
 pub fn classify_constraint_states(
     model: &Model,

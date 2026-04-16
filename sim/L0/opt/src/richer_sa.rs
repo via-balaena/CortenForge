@@ -285,6 +285,8 @@ impl Algorithm for RicherSa {
         "SA"
     }
 
+    // Same cast reasoning as `Sa::train`: epoch counters and step indices
+    // are usize/i64 → f64 for adaptive sigma + cooling math, far below 2^52.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

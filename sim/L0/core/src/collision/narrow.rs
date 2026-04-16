@@ -49,8 +49,11 @@ pub const CAP_COLLISION_THRESHOLD: f64 = 0.7;
 // ============================================================================
 
 /// Narrow-phase collision between two geometries.
-#[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
-#[allow(clippy::items_after_statements)] // use statement placed after special cases for readability
+#[allow(clippy::similar_names)]
+// pos1/pose1, pos2/pose2 are intentionally related
+// use statement placed after special cases for readability
+#[allow(clippy::items_after_statements)]
+// Narrowphase dispatcher takes the full per-pair geometry context plus the contact output sink.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_geoms(
     model: &Model,

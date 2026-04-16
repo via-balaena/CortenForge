@@ -377,6 +377,9 @@ impl SeedSummary {
 ///
 /// Uses a standard civil-date algorithm (Howard Hinnant) to convert epoch
 /// seconds to year/month/day. No external crate needed.
+// Hinnant civil-date algorithm uses single-letter names (y/m/d/era/doe/doy/mp)
+// from the published reference; epoch arithmetic round-trips through i64/u32 so
+// wrap/sign losses are bounded by realistic Unix-epoch ranges.
 #[allow(
     clippy::many_single_char_names,
     clippy::cast_possible_wrap,

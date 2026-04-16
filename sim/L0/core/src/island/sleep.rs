@@ -64,6 +64,7 @@ impl Data {
 /// 3. Singleton sleep: unconstrained trees (no island) that are ready
 ///
 /// Returns the number of trees that were put to sleep.
+// `island_id` and contact-island indices are i32 in MuJoCo's spec but always non-negative.
 #[allow(clippy::cast_sign_loss)]
 pub fn mj_sleep(model: &Model, data: &mut Data) -> usize {
     if model.enableflags & ENABLE_SLEEP == 0 {
@@ -169,6 +170,7 @@ fn tree_velocity_below_threshold(model: &Model, data: &Data, tree: usize) -> boo
 /// Creates a circular sleep cycle among the given trees, zeros all DOF-level
 /// and body-level arrays, and syncs xpos/xquat with post-integration qpos.
 /// For a single tree, this creates a self-link (Phase A compatible).
+// `nbody`/`nv` model dimensions are usize but stored as i32 in mjData; bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap)]
 fn sleep_trees(model: &Model, data: &mut Data, trees: &[usize]) {
     let n = trees.len();
@@ -582,6 +584,7 @@ pub fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
 /// Return the canonical (minimum) tree index in a sleep cycle (§16.10.3).
 ///
 /// Used to identify whether two sleeping trees belong to the same cycle.
+// Body/joint indices stored as i32 in mjData are non-negative by construction.
 #[allow(clippy::cast_sign_loss)]
 fn mj_sleep_cycle(tree_asleep: &[i32], start: usize) -> usize {
     if tree_asleep[start] < 0 {
@@ -614,6 +617,7 @@ fn tendon_limit_active(model: &Model, data: &Data, t: usize) -> bool {
 /// Wake sleeping trees coupled by multi-tree tendons with active limits (§16.13.2).
 ///
 /// Returns `true` if any tree was woken.
+// Body/joint indices stored as i32 in mjData are non-negative by construction.
 #[allow(clippy::cast_sign_loss)]
 pub fn mj_wake_tendon(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
@@ -665,6 +669,7 @@ pub fn mj_wake_tendon(model: &Model, data: &mut Data) -> bool {
 /// Wake sleeping trees coupled by active equality constraints (§16.13.3).
 ///
 /// Returns `true` if any tree was woken.
+// Body/joint indices stored as i32 in mjData are non-negative by construction.
 #[allow(clippy::cast_sign_loss)]
 pub fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
@@ -715,6 +720,7 @@ pub fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
 /// Traverses the circular linked list to wake all trees in the sleeping
 /// island. Eagerly updates `tree_awake` and `body_sleep_state` so
 /// subsequent wake functions in the same pass see the updated state.
+// Body/joint indices stored as i32 in mjData are non-negative by construction.
 #[allow(clippy::cast_sign_loss)]
 fn mj_wake_tree(model: &Model, data: &mut Data, tree: usize) {
     if data.tree_awake[tree] {

@@ -163,6 +163,8 @@ impl MjcfJacobianType {
 /// Note: This struct intentionally has many boolean fields to match MuJoCo's flag element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+// Mirrors MuJoCo's `<flag>` element 1:1; field count is fixed by upstream
+// schema, not a Rust modeling choice.
 #[allow(clippy::struct_excessive_bools)]
 pub struct MjcfFlag {
     /// Enable constraint force computation.
@@ -311,6 +313,8 @@ pub enum InertiaFromGeom {
 /// All attributes use MuJoCo defaults.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+// Mirrors MuJoCo's `<compiler>` element 1:1; field count is fixed by
+// upstream schema.
 #[allow(clippy::struct_excessive_bools)]
 pub struct MjcfCompiler {
     /// Angular unit for all angle-valued attributes.

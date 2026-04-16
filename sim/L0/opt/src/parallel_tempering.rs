@@ -257,6 +257,10 @@ impl Algorithm for Pt {
         "SA"
     }
 
+    // Chain index iteration uses needless_range_loop because each iteration
+    // mutates state at multiple indices (`chains[k]`, `temps[k]`, swap with
+    // `k+1`); a windowed iterator would obscure the swap pattern. Cast lints
+    // mirror SA: counters are usize/i64 → f64 for cooling/acceptance math.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

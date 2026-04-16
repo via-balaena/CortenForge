@@ -115,6 +115,7 @@ impl PeriodTracker {
         }
         let periods: Vec<f64> = self.crossings.windows(2).map(|w| w[1] - w[0]).collect();
         let sum: f64 = periods.iter().sum();
+        // `nbody`/`nv` model dimensions are usize → f64 for diagnostic averaging; bounded by realistic model sizes.
         #[allow(clippy::cast_precision_loss)]
         Some(sum / periods.len() as f64)
     }
@@ -456,6 +457,7 @@ impl EquilibriumTracker {
         if self.samples.is_empty() {
             return None;
         }
+        // `nbody`/`nv` model dimensions are usize → f64 for diagnostic averaging; bounded by realistic model sizes.
         #[allow(clippy::cast_precision_loss)]
         let mean = self.samples.iter().map(|&(_, v)| v).sum::<f64>() / self.samples.len() as f64;
         Some(mean)

@@ -1,0 +1,17 @@
+[book]
+title = "Biological Navigation Spectrum — X-Encoding Design Framework"
+authors = ["CortenForge"]
+description = "Biological locomotion strategies across the Reynolds number spectrum as a design framework for X-encoding in thermodynamic computing."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+mathjax-support = true
+
+[output.html.fold]
+enable = true
+level = 1

@@ -49,8 +49,11 @@ if ! cargo fmt --all -- --check 2>/dev/null; then
 fi
 echo "✓ Formatting OK"
 
-# Determine which crates have staged Rust changes
-staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' 'Cargo.toml')
+# Determine which crates have staged Rust or Cargo.toml changes.
+# Pathspec `'*Cargo.toml'` matches nested manifests (sim/L0/**/Cargo.toml,
+# examples/**/Cargo.toml, etc.) as well as the workspace root. A plain
+# `'Cargo.toml'` pathspec would only match the workspace root.
+staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' '*Cargo.toml')
 
 if [ -z "$staged_rs_files" ]; then
     echo "→ No Rust/Cargo files staged — skipping clippy."

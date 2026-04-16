@@ -9,11 +9,15 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Vector / matrix / isometry primitives for Pose, Transform, etc.
 nalgebra = { workspace = true }
+# Derive macros for SimConfigError and body-identity error types
 thiserror = { workspace = true }
+# Optional Serialize / Deserialize for persisted Model / Data snapshots
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Float-tolerance assertions for Pose / Transform unit tests
 approx = { workspace = true }
 
 [features]

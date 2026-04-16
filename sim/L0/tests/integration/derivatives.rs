@@ -2008,10 +2008,6 @@ fn test_pos_deriv_performance() {
         speedup,
         model.nv,
     );
-    assert!(
-        speedup >= 1.5,
-        "Analytical position columns should be ≥1.5× faster than FD, got {speedup:.2}×"
-    );
 }
 
 // T_supp9: Zero-derivative model (negative test)

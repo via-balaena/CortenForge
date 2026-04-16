@@ -7,11 +7,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# MJCF loader under test in the conformance suite
 sim-mjcf = { path = "../mjcf" }
+# URDF loader under test in the conformance suite
 sim-urdf = { path = "../urdf" }
+# Physics Model / Data being stepped and compared against MuJoCo
 sim-core = { path = "../core" }
+# BodyId / Pose primitives shared by fixtures and assertions
 sim-types = { path = "../types" }
+# Matrix / vector primitives for state comparison and fixture construction
 nalgebra = { workspace = true }
+# Float-tolerance assertions for conformance deltas vs MuJoCo reference
 approx = { workspace = true }
 
 [dev-dependencies]

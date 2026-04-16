@@ -64,7 +64,9 @@ fn get_ref_quat(
 /// - `ActuatorPos`: actuator length
 /// - Rangefinder: distance measurement
 /// - Touch: contact detection
+// Position sensor pipeline (joint/site/body/camera dispatch) inlined as a single function so the per-sensor-type branching reads end-to-end.
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::unreachable)] // position-stage sensor dispatch; velocity/acceleration sensors handled in separate stages
 pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
     // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
     if disabled(model, DISABLE_SENSOR) {

@@ -44,6 +44,7 @@ use crate::island::populate_efc_island;
 /// Currently routes directly to [`mj_fwd_constraint`] — island decomposition
 /// is not yet implemented; the unified solvers handle all constraint types
 /// globally.
+// Solver dispatch is inlined as a single function so the per-mode branching (CG / Newton / PGS / primal) reads end-to-end; cast lints are usize/i32 indexing already validated upstream.
 #[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
 pub(crate) fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     // §29: ALL solver types now route through unified constraint assembly + solver.
@@ -68,6 +69,7 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
         for i in 0..nv {
             trace += data.qM[(i, i)];
         }
+        // `nconmax` and constraint counts are usize → f64 for diagnostic averaging; far below 2^52.
         #[allow(clippy::cast_precision_loss)]
         let mi = trace / nv as f64;
         data.stat_meaninertia = if mi > 0.0 { mi } else { model.stat_meaninertia };

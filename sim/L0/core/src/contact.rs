@@ -583,6 +583,7 @@ impl ContactPoint {
     /// * `body_a` - Body ID of capsule A
     /// * `body_b` - Body ID of capsule B
     #[must_use]
+    // Contact emission takes the full per-pair context (geom indices, poses, normal, depth, friction, output sink).
     #[allow(clippy::too_many_arguments)]
     pub fn capsule_capsule(
         start_a: Point3<f64>,
@@ -974,6 +975,7 @@ impl ContactForce {
 /// Find the closest points between two line segments.
 ///
 /// Returns the closest point on segment A and the closest point on segment B.
+// Single-letter names (a, b, e, f, s, t) and the determinant-style cross terms follow the standard segment-segment closest-point formulation.
 #[allow(
     clippy::many_single_char_names,          // a,b,e,f,s,t are standard math notation
     clippy::suspicious_operation_groupings   // a*e - b*b is the correct determinant

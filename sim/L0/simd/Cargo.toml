@@ -9,12 +9,17 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Matrix / vector types that SIMD kernels accelerate on hot paths
 nalgebra = { workspace = true }
 
 [dev-dependencies]
+# Float-tolerance assertions comparing scalar vs SIMD kernel outputs
 approx = { workspace = true }
+# Microbenchmarks for SIMD vs scalar kernel throughput
 criterion = { workspace = true }
+# Property-based tests exercising SIMD kernels against random inputs
 proptest = { workspace = true }
+# Random input generation for SIMD kernel correctness fuzzing
 rand = { workspace = true }
 
 [[bench]]

@@ -5,7 +5,18 @@
 use anyhow::{bail, Context, Result};
 use owo_colors::OwoColorize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use xshell::{cmd, Shell};
+
+/// Controls progress logging and output format for `cargo xtask grade`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Verbosity {
+    pub quiet: bool,
+    pub verbose: bool,
+    pub json: bool,
+}
 
 /// Grade for a single criterion
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +165,51 @@ impl CrateProfile {
     }
 }
 
+/// Background heartbeat thread for long-running subprocess stages.
+///
+/// Prints a `"    … still running (Ns elapsed)"` line to stderr every
+/// `interval` seconds. The thread is stopped automatically when the
+/// `Heartbeat` value is dropped — callers just let it fall out of scope.
+struct Heartbeat {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Heartbeat {
+    fn start(interval_secs: u64) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            let mut next = interval_secs;
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                if stop_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                let secs = start.elapsed().as_secs();
+                if secs >= next {
+                    eprintln!("    … still running ({}s elapsed)", secs);
+                    next += interval_secs;
+                }
+            }
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 /// Classify a crate by its workspace-relative manifest path.
 ///
 /// See [`CrateProfile`] for the mapping rules. This function is
@@ -177,6 +233,28 @@ pub(crate) fn classify_crate(crate_path: &str) -> CrateProfile {
     }
 }
 
+/// Run a single criterion with progress logging on stderr.
+fn run_criterion<F>(index: usize, name: &str, quiet: bool, f: F) -> Result<CriterionResult>
+where
+    F: FnOnce() -> Result<CriterionResult>,
+{
+    if !quiet {
+        eprintln!("  criterion {}/7: {} — running…", index, name);
+    }
+    let start = Instant::now();
+    let result = f()?;
+    if !quiet {
+        eprintln!(
+            "  criterion {}/7: {} — {} ({:.1}s)",
+            index,
+            name,
+            result.grade.as_str(),
+            start.elapsed().as_secs_f64(),
+        );
+    }
+    Ok(result)
+}
+
 /// Run all automated criteria and return structured results.
 ///
 /// The crate's workspace path is classified into a [`CrateProfile`]
@@ -184,12 +262,19 @@ pub(crate) fn classify_crate(crate_path: &str) -> CrateProfile {
 /// criterion function. Criteria that don't apply to the profile (per
 /// STANDARDS.md scoping) return [`Grade::NotApplicable`] instead of
 /// running their checks.
-pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
+pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<GradeReport> {
+    let overall_start = Instant::now();
     let workspace_root = find_workspace_root(sh)?;
     sh.change_dir(&workspace_root);
 
     let crate_path = find_crate_path(sh, crate_name)?;
     let profile = classify_crate(&crate_path);
+
+    if !verbosity.quiet {
+        eprintln!();
+        eprintln!("  grading {} (profile: {})…", crate_name, profile.label());
+        eprintln!();
+    }
 
     let mut report = GradeReport {
         crate_name: crate_name.to_string(),
@@ -199,29 +284,36 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
         needs_review: true,
     };
 
-    // 1. Test Coverage
     report
         .criteria
-        .push(grade_coverage(sh, crate_name, &crate_path, profile)?);
-    // 2. Documentation
+        .push(run_criterion(1, "Coverage", verbosity.quiet, || {
+            grade_coverage(sh, crate_name, &crate_path, profile, verbosity)
+        })?);
     report
         .criteria
-        .push(grade_documentation(sh, crate_name, &crate_path)?);
-    // 3. Clippy
+        .push(run_criterion(2, "Documentation", verbosity.quiet, || {
+            grade_documentation(sh, crate_name, &crate_path)
+        })?);
     report
         .criteria
-        .push(grade_clippy(sh, crate_name, &crate_path)?);
-    // 4. Safety
+        .push(run_criterion(3, "Clippy", verbosity.quiet, || {
+            grade_clippy(sh, crate_name, &crate_path)
+        })?);
     report
         .criteria
-        .push(grade_safety(sh, &crate_path, profile)?);
-    // 5. Dependencies
-    report.criteria.push(grade_dependencies(sh, crate_name)?);
-    // 6. Bevy-free
+        .push(run_criterion(4, "Safety", verbosity.quiet, || {
+            grade_safety(sh, &crate_path, profile)
+        })?);
     report
         .criteria
-        .push(grade_bevy_free(sh, crate_name, profile)?);
-    // 7. API Design (manual)
+        .push(run_criterion(5, "Dependencies", verbosity.quiet, || {
+            grade_dependencies(sh, crate_name)
+        })?);
+    report
+        .criteria
+        .push(run_criterion(6, "Bevy-free", verbosity.quiet, || {
+            grade_bevy_free(sh, crate_name, profile)
+        })?);
     report.criteria.push(CriterionResult {
         name: "7. API Design",
         result: "(manual review)".to_string(),
@@ -231,6 +323,14 @@ pub fn evaluate(sh: &Shell, crate_name: &str) -> Result<GradeReport> {
     });
 
     report.automated_grade = report.overall_automated();
+
+    if !verbosity.quiet {
+        eprintln!();
+        eprintln!(
+            "  grading complete — {:.1}s total",
+            overall_start.elapsed().as_secs_f64()
+        );
+    }
 
     Ok(report)
 }
@@ -317,41 +417,75 @@ fn display(report: &GradeReport) {
     );
 }
 
+/// Emit the grade report as JSON to stdout.
+fn json_output(report: &GradeReport) {
+    let criteria: Vec<serde_json::Value> = report
+        .criteria
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "result": c.result,
+                "grade": c.grade.as_str(),
+                "threshold": c.threshold,
+                "measured_detail": c.measured_detail,
+            })
+        })
+        .collect();
+
+    let json = serde_json::json!({
+        "crate_name": report.crate_name,
+        "profile": report.profile.label(),
+        "automated_grade": report.automated_grade.as_str(),
+        "criteria": criteria,
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json).unwrap_or_default()
+    );
+}
+
 /// Run grading for a specific crate
-pub fn run(crate_name: &str, _format: &str) -> Result<()> {
+pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
     let sh = Shell::new()?;
-    let report = evaluate(&sh, crate_name)?;
-    display(&report);
-    println!();
+    let report = evaluate(&sh, crate_name, verbosity)?;
 
-    match report.automated_grade {
-        Grade::A | Grade::APlus => {
-            println!(
-                "{}",
-                "✓ All automated criteria pass. Ready for API review.".green()
-            );
-            println!();
-            println!("Next step: Review against API checklist in docs/STANDARDS.md");
-            println!("Then run: cargo xtask complete {}", report.crate_name);
+    if verbosity.json {
+        json_output(&report);
+    } else {
+        display(&report);
+        println!();
+
+        match report.automated_grade {
+            Grade::A | Grade::APlus => {
+                println!(
+                    "{}",
+                    "✓ All automated criteria pass. Ready for API review.".green()
+                );
+                println!();
+                println!("Next step: Review against API checklist in docs/STANDARDS.md");
+                println!("Then run: cargo xtask complete {}", report.crate_name);
+            }
+            _ => {
+                println!(
+                    "{}",
+                    format!(
+                        "✗ Automated grade: {}. Refactor required before completion.",
+                        report.automated_grade.as_str()
+                    )
+                    .red()
+                );
+                println!();
+                println!(
+                    "Fix failing criteria and run: cargo xtask grade {}",
+                    report.crate_name
+                );
+            }
         }
-        _ => {
-            println!(
-                "{}",
-                format!(
-                    "✗ Automated grade: {}. Refactor required before completion.",
-                    report.automated_grade.as_str()
-                )
-                .red()
-            );
-            println!();
-            println!(
-                "Fix failing criteria and run: cargo xtask grade {}",
-                report.crate_name
-            );
-        }
+
+        println!();
     }
-
-    println!();
 
     Ok(())
 }
@@ -463,6 +597,7 @@ fn grade_coverage(
     crate_name: &str,
     crate_path: &str,
     profile: CrateProfile,
+    verbosity: Verbosity,
 ) -> Result<CriterionResult> {
     // Per STANDARDS.md §1 "Exceptions: None for Layer 0 crates" — the
     // coverage gate is specifically scoped to Layer 0 library crates.
@@ -516,18 +651,57 @@ fn grade_coverage(
     // Pass 1: coverage from unit tests only (--lib). Integration tests
     // run millions of physics steps; llvm-cov instrumentation adds ~10×
     // overhead making them impractical for coverage measurement.
-    // Unit tests cover all source modules except ising_learner.rs.
-    println!("    Pass 1: coverage (unit tests only)...");
+    if !verbosity.quiet {
+        eprintln!(
+            "    pass 1/2: cargo llvm-cov --lib --release (~5-10 min for instrumented test runs)"
+        );
+    }
+    let pass_start = Instant::now();
+    let heartbeat = if verbosity.verbose {
+        Some(Heartbeat::start(30))
+    } else {
+        None
+    };
     let output = cmd!(sh, "cargo llvm-cov --json --release -p {crate_name} --lib")
         .ignore_status()
         .read()
         .unwrap_or_default();
+    drop(heartbeat);
+    if !verbosity.quiet {
+        eprintln!(
+            "    pass 1/2: done ({:.1}s)",
+            pass_start.elapsed().as_secs_f64()
+        );
+    }
 
     // Pass 2: run ALL tests without instrumentation for correctness.
-    println!("    Pass 2: all tests (no instrumentation)...");
-    let heavy_passed = cmd!(sh, "cargo test --release -p {crate_name}")
-        .run()
-        .is_ok();
+    if !verbosity.quiet {
+        eprintln!("    pass 2/2: cargo test --release (~1-5 min depending on integration tests)");
+    }
+    let pass_start = Instant::now();
+    let heartbeat = if verbosity.verbose {
+        Some(Heartbeat::start(30))
+    } else {
+        None
+    };
+    let heavy_passed = if verbosity.json || verbosity.quiet {
+        cmd!(sh, "cargo test --release -p {crate_name}")
+            .ignore_status()
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    } else {
+        cmd!(sh, "cargo test --release -p {crate_name}")
+            .run()
+            .is_ok()
+    };
+    drop(heartbeat);
+    if !verbosity.quiet {
+        eprintln!(
+            "    pass 2/2: done ({:.1}s)",
+            pass_start.elapsed().as_secs_f64()
+        );
+    }
     if !heavy_passed {
         eprintln!("    ⚠ Tests failed — see output above");
     }
@@ -688,46 +862,13 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
     }
 
     // Unjustified #[allow(clippy:: check (F-ext-3)
-    // Simple heuristic: skip lines after #[cfg(test)] to EOF (brace-depth tracker in Step 5)
     let mut allow_count = 0;
     let src_path = format!("{}/src", crate_path);
     if let Ok(entries) = glob_rs_files(&src_path) {
         for file_path in entries {
             if let Ok(content) = std::fs::read_to_string(&file_path) {
                 let lines: Vec<&str> = content.lines().collect();
-                let mut in_test = false;
-                for (i, line) in lines.iter().enumerate() {
-                    let trimmed_line = line.trim();
-                    if !trimmed_line.starts_with("//") && trimmed_line.contains("#[cfg(test)]") {
-                        in_test = true;
-                    }
-                    if in_test {
-                        continue;
-                    }
-                    let trimmed = line.trim();
-                    if !trimmed.contains("#[allow(clippy::") {
-                        continue;
-                    }
-                    // Check preceding 1-3 lines for a justification comment
-                    let has_justification = (1..=3).any(|offset| {
-                        i.checked_sub(offset).is_some_and(|j| {
-                            let prev = lines[j].trim();
-                            prev.starts_with("//")
-                                && !prev.starts_with("///")
-                                && !prev.starts_with("//!")
-                        })
-                    });
-                    if !has_justification {
-                        // Also check same-line trailing comment
-                        let has_inline = trimmed.contains("//") && {
-                            let comment_pos = trimmed.rfind("//").unwrap_or(0);
-                            comment_pos > trimmed.find("#[allow(clippy::").unwrap_or(0)
-                        };
-                        if !has_inline {
-                            allow_count += 1;
-                        }
-                    }
-                }
+                allow_count += count_unjustified_clippy_allows(&lines);
             }
         }
     }
@@ -977,25 +1118,46 @@ fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
     })
 }
 
-/// Check if any of the preceding 300 lines mentions `clippy::<lint>` inside an
-/// attribute context — i.e., the panic/unreachable is inside a scope whose
-/// author has deliberately allowed this lint via `#[allow(clippy::<lint>)]`
-/// on the enclosing fn, impl, let-binding, or module.
+/// Check whether `lint` (e.g. `clippy::panic`) appears inside a real
+/// `#[allow(...)]` or `#![allow(...)]` attribute in the 300 lines
+/// preceding line `i`.
 ///
-/// 300 lines is a heuristic window that covers most reasonable function
-/// bodies (including the ~200-line `collect_episodic_rollout` in sim-ml-chassis).
-/// The window is intentionally generous because the `#[allow]` attribute
-/// is itself a strong signal of deliberate author intent — once it's
-/// present anywhere in scope above, we trust the author's judgment.
+/// Span-aware: finds each `#[allow(` / `#![allow(` opening in the window,
+/// walks forward across lines to the matching `)]`, and checks whether the
+/// lint name appears inside that span. A stray mention of the lint name in
+/// a comment or string literal no longer counts.
 ///
-/// This matches the idiomatic Rust justification pattern (function-level
-/// `#[allow]` attributes) without requiring per-site `//` comments that
-/// would duplicate information already present in `# Panics` rustdoc
-/// sections and clippy allows.
+/// Still a heuristic — does not distinguish an allow on a sibling struct
+/// field 250 lines up from one on the enclosing function. Both match.
+/// For AST-correct scope resolution the grader would need syn; this check
+/// is the tightest available without that dependency.
 fn has_enclosing_allow(lines: &[&str], i: usize, lint: &str) -> bool {
     let start = i.saturating_sub(300);
-    for j in (start..i).rev() {
-        if lines[j].contains(lint) {
+    for open_idx in start..i {
+        let open_line = lines[open_idx];
+        let (open_col, prefix_len) = if let Some(col) = open_line.find("#![allow(") {
+            (col, "#![allow(".len())
+        } else if let Some(col) = open_line.find("#[allow(") {
+            (col, "#[allow(".len())
+        } else {
+            continue;
+        };
+
+        // Accumulate the attribute body from the opening across subsequent
+        // lines until the matching `)]` closes the attribute. Bounded by
+        // the panic line itself — a well-formed attribute can never extend
+        // onto or past the code it applies to.
+        let mut body = String::from(&open_line[open_col + prefix_len..]);
+        let mut close_idx = open_idx;
+        while !body.contains(")]") && close_idx + 1 < i {
+            close_idx += 1;
+            body.push('\n');
+            body.push_str(lines[close_idx]);
+        }
+        let Some(close_pos) = body.find(")]") else {
+            continue;
+        };
+        if body[..close_pos].contains(lint) {
             return true;
         }
     }
@@ -1011,6 +1173,250 @@ fn has_same_line_comment(trimmed: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Count library `#[allow(clippy::...)]` attributes that lack a justifying
+/// comment, mirroring `grade_clippy`'s file-scan rule.
+///
+/// - `#[cfg(test)]` modules are excluded via brace-depth tracking.
+/// - Attributes between `#[cfg(test)]` and the opening `{` of the test
+///   item (e.g. `#[cfg(test)]\n#[allow(...)]\nmod tests { ... }`) are
+///   treated as part of the test attribute stack and excluded.
+/// - Block comments and line comments are skipped.
+/// - Multi-line attribute forms such as `#[allow(\n    clippy::lint,\n)]`
+///   are parsed by walking forward from `#[allow(` to the matching `)]`.
+/// - Justification: any of the 1-3 preceding lines is a `//` comment
+///   (not `///`, not `//!`), or the same line has a trailing `//` comment
+///   after the `#[allow(`.
+fn count_unjustified_clippy_allows(lines: &[&str]) -> usize {
+    let mut count = 0usize;
+    let mut in_test = false;
+    let mut test_brace_depth: usize = 0;
+    let mut pending_test_attr = false;
+    let mut in_block_comment = false;
+    let mut skip_until: usize = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        if i < skip_until {
+            continue;
+        }
+        let trimmed = line.trim();
+
+        if !in_block_comment && trimmed.contains("/*") {
+            in_block_comment = true;
+        }
+        if in_block_comment {
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        if trimmed.contains("#[cfg(test)]") {
+            pending_test_attr = true;
+        }
+
+        if pending_test_attr && trimmed.contains('{') {
+            in_test = true;
+            test_brace_depth = 0;
+            pending_test_attr = false;
+        }
+
+        if in_test {
+            for ch in trimmed.chars() {
+                if ch == '{' {
+                    test_brace_depth += 1;
+                } else if ch == '}' {
+                    test_brace_depth = test_brace_depth.saturating_sub(1);
+                    if test_brace_depth == 0 {
+                        in_test = false;
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Attributes stacked between `#[cfg(test)]` and the test item's
+        // opening `{` belong to the test stack and must not be flagged.
+        if pending_test_attr {
+            continue;
+        }
+
+        if !trimmed.contains("#[allow(") {
+            continue;
+        }
+
+        // Walk forward across lines to the matching `)]`. Single-line
+        // attributes close immediately on the opening line.
+        let mut body = String::from(trimmed);
+        let mut close_idx = i;
+        while !body.contains(")]") && close_idx + 1 < lines.len() {
+            close_idx += 1;
+            body.push('\n');
+            body.push_str(lines[close_idx].trim());
+        }
+
+        if !body.contains("clippy::") {
+            skip_until = close_idx + 1;
+            continue;
+        }
+
+        let has_justification = (1..=3).any(|offset| {
+            i.checked_sub(offset).is_some_and(|j| {
+                let prev = lines[j].trim();
+                prev.starts_with("//") && !prev.starts_with("///") && !prev.starts_with("//!")
+            })
+        });
+
+        if !has_justification {
+            let has_inline = trimmed.contains("//") && {
+                let comment_pos = trimmed.rfind("//").unwrap_or(0);
+                let allow_pos = trimmed.find("#[allow(").unwrap_or(0);
+                comment_pos > allow_pos
+            };
+            if !has_inline {
+                count += 1;
+            }
+        }
+
+        skip_until = close_idx + 1;
+    }
+
+    count
+}
+
+/// Count `Cargo.toml` dependency entries that lack a justifying comment,
+/// mirroring `grade_dependencies`'s text-scan rule.
+///
+/// - Tracked sections: `[dependencies]`, `[dev-dependencies]`,
+///   `[build-dependencies]`, plus the target-conditional forms
+///   `[target.<spec>.dependencies]` / `.dev-dependencies]` /
+///   `.build-dependencies]`.
+/// - Inside a dep section, a dep entry is a line containing `=` at brace
+///   depth 0. Continuation lines of a multi-line inline-table dep spec
+///   (`name = {\n    version = "...",\n    ...\n}`) are at brace depth
+///   > 0 and are skipped so they are not mis-scanned as fresh deps.
+/// - Justification: the line has an inline `#` comment, or one of the
+///   1-3 preceding lines starts with `#`. The backward scan stops at
+///   blank lines and section headers.
+fn count_unjustified_deps(lines: &[&str]) -> usize {
+    let mut unjustified = 0usize;
+    let mut in_dep_section = false;
+    let mut brace_depth: usize = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Section headers are only recognized at brace depth 0. A `[`
+        // inside a nested inline table is not a section header.
+        if brace_depth == 0 && trimmed.starts_with('[') {
+            in_dep_section = is_dep_section_header(trimmed);
+            continue;
+        }
+
+        // Continuation line inside a multi-line inline table: skip the
+        // dep check but still walk the line for brace updates.
+        if brace_depth > 0 {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        if !in_dep_section {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        // Blank line or full-line comment: not a dep entry.
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // A dep entry is a line with `name = ...`.
+        if !trimmed.contains('=') {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        // Inline `#` comment anywhere on the dep line justifies it.
+        if trimmed.contains('#') {
+            brace_depth = update_brace_depth(line, brace_depth);
+            continue;
+        }
+
+        // Check preceding 1-3 lines for a `#` comment. Stop at blank
+        // lines and section headers (they break the chain).
+        let mut has_justification = false;
+        for offset in 1..=3 {
+            let Some(j) = i.checked_sub(offset) else {
+                break;
+            };
+            let prev = lines[j].trim();
+            if prev.is_empty() || prev.starts_with('[') {
+                break;
+            }
+            if prev.starts_with('#') {
+                has_justification = true;
+                break;
+            }
+        }
+
+        if !has_justification {
+            unjustified += 1;
+        }
+
+        brace_depth = update_brace_depth(line, brace_depth);
+    }
+
+    unjustified
+}
+
+/// Is `trimmed` a dep section header the grader should track?
+fn is_dep_section_header(trimmed: &str) -> bool {
+    if trimmed == "[dependencies]"
+        || trimmed == "[dev-dependencies]"
+        || trimmed == "[build-dependencies]"
+    {
+        return true;
+    }
+    if trimmed.starts_with("[target.") {
+        return trimmed.ends_with(".dependencies]")
+            || trimmed.ends_with(".dev-dependencies]")
+            || trimmed.ends_with(".build-dependencies]");
+    }
+    false
+}
+
+/// Update brace depth across a `Cargo.toml` line, counting `{` and `}`
+/// outside string literals and inline `#` comments.
+fn update_brace_depth(line: &str, mut depth: usize) -> usize {
+    let mut in_string = false;
+    let mut escape = false;
+    for c in line.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            // Rest of line is an inline comment.
+            '#' => break,
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth
 }
 
 /// Grade dependencies: justification check (hard gate) + dep count (informational).
@@ -1059,63 +1465,8 @@ fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         }
     };
 
-    let mut unjustified = 0;
-    let mut in_dep_section = false;
     let lines: Vec<&str> = cargo_content.lines().collect();
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-
-        // Track dependency sections
-        if trimmed.starts_with('[') {
-            in_dep_section = trimmed == "[dependencies]"
-                || trimmed == "[dev-dependencies]"
-                || trimmed == "[build-dependencies]";
-            continue;
-        }
-
-        if !in_dep_section {
-            continue;
-        }
-
-        // Skip blank lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // A dependency entry is a line with `name = ...` in a dep section
-        if !trimmed.contains('=') {
-            continue;
-        }
-
-        // Check for inline comment
-        if trimmed.contains('#') {
-            continue; // has inline justification
-        }
-
-        // Check preceding 1-3 lines for a # comment.
-        // Stop at blank lines or section headers (they break the chain).
-        let has_justification = {
-            let mut found = false;
-            for offset in 1..=3 {
-                if let Some(j) = i.checked_sub(offset) {
-                    let prev = lines[j].trim();
-                    if prev.is_empty() || prev.starts_with('[') {
-                        break;
-                    }
-                    if prev.starts_with('#') {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            found
-        };
-
-        if !has_justification {
-            unjustified += 1;
-        }
-    }
+    let unjustified = count_unjustified_deps(&lines);
 
     // Binary A/F
     let grade = if unjustified == 0 { Grade::A } else { Grade::F };
@@ -1254,4 +1605,367 @@ pub fn status() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn split(s: &str) -> Vec<&str> {
+        s.lines().collect()
+    }
+
+    #[test]
+    fn enclosing_allow_same_line() {
+        let lines = split("#[allow(clippy::panic)]\nfn foo() { panic!(); }\n");
+        assert!(has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_multi_line_attribute() {
+        let src =
+            "#[allow(\n    clippy::panic,\n    clippy::unwrap_used,\n)]\nfn foo() { panic!(); }\n";
+        let lines = split(src);
+        assert!(has_enclosing_allow(&lines, 4, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_different_lint_does_not_match() {
+        // Loose substring scan used to match this. Span-aware must not.
+        let lines = split("#[allow(clippy::unwrap_used)]\nfn foo() { panic!(); }\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_comment_mentioning_lint_does_not_match() {
+        let lines = split("// TODO: consider clippy::panic here\nfn foo() { panic!(); }\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_string_literal_does_not_match() {
+        let lines = split("let s = \"clippy::panic\";\nfn foo() { panic!(); }\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_no_allow_at_all() {
+        let lines = split("fn foo() {\n    panic!();\n}\n");
+        assert!(!has_enclosing_allow(&lines, 1, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_inner_attribute() {
+        let lines = split("#![allow(clippy::panic)]\n\nfn foo() { panic!(); }\n");
+        assert!(has_enclosing_allow(&lines, 2, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_window_just_inside() {
+        // Allow 300 lines back (distance 300, window [i-300, i-1]).
+        let mut src = String::from("// header\n#[allow(clippy::panic)]\n");
+        for _ in 0..299 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic is at index 301. Allow is at index 1. start = 1. Loop includes line 1.
+        assert!(has_enclosing_allow(&lines, 301, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_window_boundary_excluded() {
+        // Allow at distance 301: out of the 300-line window.
+        let mut src = String::from("#[allow(clippy::panic)]\n");
+        for _ in 0..300 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic at index 301. Allow at index 0. start = 1. Line 0 excluded.
+        assert!(!has_enclosing_allow(&lines, 301, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_multiple_allows_one_matches() {
+        let src =
+            "#[allow(clippy::unwrap_used)]\n#[allow(clippy::panic)]\nfn foo() { panic!(); }\n";
+        let lines = split(src);
+        assert!(has_enclosing_allow(&lines, 2, "clippy::panic"));
+        assert!(has_enclosing_allow(&lines, 2, "clippy::unwrap_used"));
+    }
+
+    // === count_unjustified_clippy_allows ===
+
+    #[test]
+    fn count_allows_unjustified_single_line() {
+        let src = "#[allow(clippy::cast_precision_loss)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_justified_by_preceding_comment() {
+        let src = "// cast count to f64 for averaging\n#[allow(clippy::cast_precision_loss)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_justified_by_inline_comment() {
+        let src = "#[allow(clippy::cast_precision_loss)] // cast count to f64\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_doc_comment_does_not_justify() {
+        let src =
+            "/// doc, not justification\n#[allow(clippy::cast_precision_loss)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_inside_test_module_excluded() {
+        let src =
+            "#[cfg(test)]\nmod tests {\n    #[allow(clippy::unwrap_used)]\n    fn t() {}\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_test_mod_attr_stack_excluded() {
+        // The house pattern: #[allow] stacked between #[cfg(test)] and the
+        // mod opening `{`. Pre-fix this scanned as library code.
+        let src = "#[cfg(test)]\n#[allow(clippy::unwrap_used, clippy::expect_used)]\nmod tests {\n    fn t() {}\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_test_mod_attr_stack_multi_line_excluded() {
+        let src = "#[cfg(test)]\n#[allow(\n    clippy::unwrap_used,\n    clippy::expect_used,\n)]\nmod tests {\n    fn t() {}\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_multi_line_unjustified() {
+        // Pre-fix this was silently ignored because the substring scan only
+        // matched `#[allow(clippy::` on a single line.
+        let src = "#[allow(\n    clippy::cast_precision_loss,\n    clippy::cast_possible_truncation,\n)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_multi_line_justified() {
+        let src = "// cast indices to f64\n#[allow(\n    clippy::cast_precision_loss,\n    clippy::cast_possible_truncation,\n)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_non_clippy_allow_ignored() {
+        // grade_clippy only audits `clippy::` allows; non-clippy allows are
+        // not in scope for this criterion.
+        let src = "#[allow(dead_code)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_multi_line_non_clippy_ignored() {
+        let src = "#[allow(\n    dead_code,\n    unused_variables,\n)]\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    #[test]
+    fn count_allows_after_test_module_still_scanned() {
+        // Regression for the latch bug fixed in b7ef1c73: library code
+        // appearing textually after a test module must still be scanned.
+        let src = "#[cfg(test)]\nmod tests {\n    #[allow(clippy::unwrap_used)]\n    fn t() {}\n}\n\n#[allow(clippy::cast_precision_loss)]\nfn lib_fn() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    #[test]
+    fn count_allows_block_comment_skipped() {
+        let src = "/*\n#[allow(clippy::cast_precision_loss)]\n*/\nfn foo() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 0);
+    }
+
+    // === count_unjustified_deps ===
+
+    #[test]
+    fn count_deps_basic_unjustified() {
+        let src = "[dependencies]\nserde = \"1.0\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_basic_justified_by_preceding_comment() {
+        let src = "[dependencies]\n# serialization for cache files\nserde = \"1.0\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_justified_by_inline_comment() {
+        let src = "[dependencies]\nserde = \"1.0\" # serialization\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_preceding_comment_three_lines_back() {
+        let src = "[dependencies]\n# justification\nfoo = \"1\"\nbar = \"1\"\nbaz = \"1\"\n";
+        let lines = split(src);
+        // foo: offset 1 -> `#` ok. bar: offset 2 -> `#` ok. baz: offset 3 -> `#` ok.
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_preceding_comment_four_lines_back_rejected() {
+        let src =
+            "[dependencies]\n# justification\nfoo = \"1\"\nbar = \"1\"\nbaz = \"1\"\nqux = \"1\"\n";
+        let lines = split(src);
+        // qux is 4 lines from `# justification` -> outside window -> unjustified.
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_blank_line_breaks_chain() {
+        let src = "[dependencies]\n# justification\n\nfoo = \"1\"\n";
+        let lines = split(src);
+        // Blank at offset 1 breaks backward scan before reaching the `#`.
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_non_dep_section_ignored() {
+        let src = "[features]\ndefault = []\nparallel = [\"dep:rayon\"]\n\n[profile.dev]\nopt-level = 0\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_dev_dependencies_section_scanned() {
+        let src = "[dev-dependencies]\napprox = \"0.5\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_build_dependencies_section_scanned() {
+        let src = "[build-dependencies]\ncc = \"1\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_patch_section_ignored() {
+        // `[patch.crates-io]` is not a dep section.
+        let src = "[patch.crates-io]\nserde = { git = \"https://example.com\" }\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_workspace_inherited_single_line() {
+        let src = "[dependencies]\nnalgebra = { workspace = true }\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_workspace_inherited_with_features_single_line() {
+        // The `bevy = { workspace = true, features = [...] }` single-line form.
+        let src = "[dependencies]\nbevy = { workspace = true, features = [\"bevy_pbr\"] }\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    // --- GAP-A regression: multi-line inline-table dep specs ---
+
+    #[test]
+    fn count_deps_multi_line_inline_table_opening_counts_once() {
+        // Pre-fix, the continuation lines `version = "0.8",` and
+        // `features = ["x"],` would be mis-scanned as two additional dep
+        // entries, yielding unjustified == 3. Post-fix, only the opening
+        // line is counted.
+        let src = "[dependencies]\nrand = {\n    version = \"0.8\",\n    features = [\"small_rng\"],\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_multi_line_inline_table_justified() {
+        let src = "[dependencies]\n# justification\nrand = {\n    version = \"0.8\",\n    features = [\"small_rng\"],\n}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    #[test]
+    fn count_deps_multi_line_features_array_no_false_positive() {
+        // The common house form: `bevy = { workspace = true, features = [`
+        // opening, quoted feature strings, `] }` closing. Continuation
+        // lines have no `=` so were never false-positives, but brace-depth
+        // tracking must still close correctly so the next dep is scanned.
+        let src = "[dependencies]\nbevy = { workspace = true, features = [\n    \"bevy_pbr\",\n    \"bevy_ui\",\n] }\nserde = \"1\"\n";
+        let lines = split(src);
+        // Both `bevy` and `serde` lines are unjustified dep entries.
+        assert_eq!(count_unjustified_deps(&lines), 2);
+    }
+
+    #[test]
+    fn count_deps_dep_after_multi_line_inline_table_still_scanned() {
+        // Regression for "brace depth must close": if the closing `}` is
+        // not handled, subsequent deps would be treated as continuations.
+        let src = "[dependencies]\nfoo = {\n    version = \"0.8\",\n}\nbar = \"0.1\"\n";
+        let lines = split(src);
+        // Both foo (opening) and bar (scanned after brace closes) flagged.
+        assert_eq!(count_unjustified_deps(&lines), 2);
+    }
+
+    // --- GAP-C regression: target-cfg dependency sections ---
+
+    #[test]
+    fn count_deps_target_cfg_dependencies_scanned() {
+        let src = "[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_cfg_dev_dependencies_scanned() {
+        let src = "[target.'cfg(windows)'.dev-dependencies]\nwindows = \"0.5\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_cfg_build_dependencies_scanned() {
+        let src = "[target.'cfg(target_os = \"linux\")'.build-dependencies]\ncc = \"1\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_triple_dependencies_scanned() {
+        let src = "[target.x86_64-unknown-linux-gnu.dependencies]\nopenssl = \"0.10\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    #[test]
+    fn count_deps_target_cfg_justified() {
+        let src = "[target.'cfg(unix)'.dependencies]\n# unix-only POSIX APIs\nlibc = \"0.2\"\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 0);
+    }
 }

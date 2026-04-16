@@ -24,6 +24,7 @@ pub const MAX_CONTACTS_PER_PAIR: usize = 50;
 /// each prism against the geom using GJK/EPA penetration.
 ///
 /// Returns 0..50 contacts.
+// Pair dispatcher takes the full per-geom heightfield context; cast lints are usize → f64 for grid-cell math (grid extents far below 2^52); paired pose identifiers are intentionally similar.
 #[allow(
     clippy::too_many_arguments,
     clippy::cast_precision_loss,
@@ -210,6 +211,7 @@ pub fn collide_hfield_multi(
 ///
 /// `i=0`: lower-left triangle (vertices at (c,r), (c+1,r), (c,r+1))
 /// `i=1`: upper-right triangle (vertices at (c+1,r), (c+1,r+1), (c,r+1))
+// Prism builder takes the full per-cell context (grid handle, indices, cell extents, margin); usize → f64 casts for cell coordinates are exact below 2^52.
 #[allow(
     clippy::cast_precision_loss,
     clippy::too_many_arguments,

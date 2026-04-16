@@ -21,6 +21,7 @@ const QCQP_MAX_ITER: usize = 20;
 /// `b`: 2-element bias vector.
 /// `d`: 2-element friction coefficients (mu).
 /// `r`: cone radius (normal force).
+// Single-letter names (a, b, c) follow the published QCQP notation; cross-axis groupings in the quadratic-form expansion match the closed-form solution.
 #[allow(clippy::many_single_char_names, clippy::suspicious_operation_groupings)]
 pub fn qcqp2(a: [[f64; 2]; 2], b: [f64; 2], d: [f64; 2], r: f64) -> ([f64; 2], bool) {
     // Scale to unit sphere
@@ -74,6 +75,7 @@ pub fn qcqp2(a: [[f64; 2]; 2], b: [f64; 2], d: [f64; 2], r: f64) -> ([f64; 2], b
 /// 3D QCQP solver (condim=4, 3 friction DOFs).
 ///
 /// Matches `mju_QCQP3` in `engine_util_solve.c`. Uses 3×3 cofactor inverse.
+// Single-letter names follow the published QCQP notation.
 #[allow(clippy::many_single_char_names)]
 pub fn qcqp3(a: [[f64; 3]; 3], b: [f64; 3], d: [f64; 3], r: f64) -> ([f64; 3], bool) {
     // Scale to unit sphere
@@ -149,6 +151,7 @@ pub fn qcqp3(a: [[f64; 3]; 3], b: [f64; 3], d: [f64; 3], r: f64) -> ([f64; 3], b
 /// `d`: n-element friction coefficients.
 /// `r`: cone radius.
 /// `n`: dimension (number of friction DOFs).
+// Single-letter names follow the published QCQP notation.
 #[allow(clippy::many_single_char_names)]
 pub fn qcqp_nd(a: &[f64], b: &[f64], d: &[f64], r: f64, n: usize) -> (Vec<f64>, bool) {
     // Scale to unit sphere

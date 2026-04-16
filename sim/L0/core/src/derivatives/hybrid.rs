@@ -374,6 +374,7 @@ fn skew(a: &Vector3<f64>) -> nalgebra::Matrix3<f64> {
 /// The bias force `qfrc_bias = C(q)·v + g(q)` has:
 /// - Gravity `g(q)`: ∂/∂qvel = 0 (position-only)
 /// - Coriolis/centrifugal: quadratic in velocity, differentiated here
+// Mathematical symbols (J, C, M) follow Featherstone's chain-rule notation; indexed loops mutate parallel per-body arrays at the same body index.
 #[allow(non_snake_case, clippy::similar_names, clippy::needless_range_loop)]
 pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
     let nv = model.nv;
@@ -995,6 +996,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
 ///
 /// Critical difference from `mjd_rne_vel`: position derivatives are evaluated
 /// at ACTUAL acceleration qacc (not zero), capturing the (∂M/∂q)·qacc term.
+// Mathematical symbols (J, M, S, X, qfrc) follow Featherstone's RNE-derivatives notation; indexed loops mutate parallel per-body Jacobian buffers; inlined as a single function so the forward / backward / projection phases read end-to-end.
 #[allow(
     non_snake_case,
     clippy::similar_names,
@@ -1770,7 +1772,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 /// # Errors
 ///
 /// Returns `StepError` if any simulation step during FD perturbation fails.
+// Mathematical symbols follow MuJoCo's transition-derivatives notation; the unwrap is a defensive guard on length-known matrices.
 #[allow(non_snake_case, clippy::similar_names, clippy::unwrap_used)]
+#[allow(clippy::unreachable)] // RK4 integrator uses a separate transition path before reaching this code
 pub fn mjd_transition_hybrid(
     model: &Model,
     data: &Data,
@@ -2820,6 +2824,7 @@ fn add_to_quadrant(b: &mut [[f64; 6]; 6], d: &[f64; 9], row_block: usize, col_bl
 
 /// Compute inertia-box fluid velocity derivatives for a single body.
 /// 6 diagonal B scalars → 6 rank-1 updates.
+// `B`, `bx`, `by`, `bz` follow MuJoCo's inertia-box notation; indexed loops mutate parallel rank-1 buffers at the same body index.
 #[allow(non_snake_case, clippy::needless_range_loop)]
 fn mjd_inertia_box_fluid(model: &Model, data: &mut Data, body_id: usize) {
     let rho = model.density;
@@ -2968,6 +2973,7 @@ fn mjd_magnus_force(
 
 /// Component 3: Kutta lift derivative → Q(1,1).
 /// Returns 3×3 row-major. Guard: zero at `|v| < MJ_MINVAL`.
+// Single-letter names (x, y, z, a, b, c) and paired (xx, yy, zz) follow the Kutta-lift expansion in MuJoCo's fluid model.
 #[allow(
     clippy::similar_names,
     clippy::many_single_char_names,
@@ -3041,6 +3047,7 @@ fn mjd_kutta_lift(coef: &[f64; 3], c_k: f64, rho: f64, v: &[f64; 3]) -> [f64; 9]
 
 /// Component 4: Combined linear drag derivative → Q(1,1).
 /// Three contributions: quadratic drag, area gradient, Stokes drag.
+// Single-letter names follow the viscous-drag expansion in MuJoCo's fluid model; paired (s, c, x, y, z) terms are intentionally similar.
 #[allow(
     clippy::similar_names,
     clippy::many_single_char_names,
@@ -3128,6 +3135,7 @@ fn mjd_viscous_drag(
 
 /// Component 5: Combined angular drag derivative → Q(0,0).
 /// Anisotropic: guarded by `|mom_visc| < MJ_MINVAL` for quadratic term.
+// Paired derivative identifiers (J_q/J_v, M_qq/M_qv) are intentionally similar.
 #[allow(clippy::similar_names)]
 fn mjd_viscous_torque(
     s: &[f64; 3],
@@ -3193,6 +3201,7 @@ fn mjd_viscous_torque(
 
 /// Compute ellipsoid fluid velocity derivatives for a single body.
 /// Per-geom loop: assemble B from 5 components, project via J^T·B·J.
+// Mathematical symbols (J, B, S) follow MuJoCo's ellipsoid-fluid notation; indexed loops mutate parallel per-geom buffers.
 #[allow(non_snake_case, clippy::similar_names, clippy::needless_range_loop)]
 fn mjd_ellipsoid_fluid(model: &Model, data: &mut Data, body_id: usize) {
     let rho = model.density;

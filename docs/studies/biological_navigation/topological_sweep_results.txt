@@ -1,0 +1,28 @@
+P1 Topological Encoding Sweep Results
+======================================
+Date: 2026-04-16
+Test: ising_topological_sweep (ising_chain.rs)
+Parameters: J=1.0, kT=2.82, N=4, 80 episodes per condition
+
+Reference (metachronal δ=0.66, A₀=0.3):
+  sync = +0.050397 +/- 0.006970  (|t|=7.23)
+
+Synchronized amplitude sweep (δ=0):
+  A₀=0.3  sync = +0.051454 +/- 0.005783
+  A₀=0.4  sync = +0.067486 +/- 0.006984
+  A₀=0.5  sync = +0.072622 +/- 0.007094
+  A₀=0.6  sync = +0.088145 +/- 0.007046
+  A₀=0.8  sync = +0.126984 +/- 0.007736
+  A₀=1.0  sync = +0.153671 +/- 0.005715
+  A₀=1.5  sync = +0.227598 +/- 0.006645
+  A₀=2.0  sync = +0.289985 +/- 0.005734
+
+Gates:
+  Gate 0 (Baseline): PASS  metachronal |t|=7.23 > 2.640
+  Gate 1 (Core):     FAIL  meta(0.3) - sync(0.6) = -0.037748, t=-3.81
+  Gate 2 (Amp):      PASS  sync(0.6) - sync(0.3) = +0.036690
+
+Verdict: Principle 1 NOT VALIDATED.
+  Amplitude dominates topology in the Langevin domain.
+  Scallop theorem does not apply — amplitude is a lever.
+  Synchrony scales nearly linearly with signal amplitude.

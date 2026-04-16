@@ -121,6 +121,7 @@ pub(crate) fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
 /// The vector `v` is used as workspace and modified.
 ///
 /// Returns `Err(StepError::CholeskyFailed)` if the diagonal becomes non-positive.
+// Single-letter names (a, b, c, x, y) follow the standard linear-algebra notation; the multiply-add expression is left as `a*b + c` for clarity against the published formula.
 #[allow(clippy::many_single_char_names, clippy::imprecise_flops)]
 pub(crate) fn cholesky_rank1_update(l: &mut DMatrix<f64>, v: &mut [f64]) -> Result<(), StepError> {
     let n = l.nrows();
@@ -154,6 +155,7 @@ pub(crate) fn cholesky_rank1_update(l: &mut DMatrix<f64>, v: &mut [f64]) -> Resu
 /// The vector `v` is used as workspace and modified.
 ///
 /// Returns `Err(StepError::CholeskyFailed)` if the result would be indefinite.
+// Single-letter names follow the standard linear-algebra notation; the multiply-add form is left as `a*b + c` for clarity against the published formula. (`dead_code` retained for symmetry with the active variant.)
 #[allow(dead_code, clippy::many_single_char_names, clippy::imprecise_flops)]
 pub(crate) fn cholesky_rank1_downdate(
     l: &mut DMatrix<f64>,
@@ -386,6 +388,7 @@ pub(crate) fn lu_factor_in_place(a: &mut DMatrix<f64>, piv: &mut [usize]) -> Res
 
 /// Solve P·L·U·x = b using pre-computed factors. Non-destructive on `a`/`piv`.
 /// Can be called multiple times for different RHS vectors.
+// Indexed loop mutates parallel matrix entries at the same `(i, j)`; iterator forms would obscure the per-element update.
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn lu_solve_factored(a: &DMatrix<f64>, piv: &[usize], x: &mut DVector<f64>) {
     let n = a.nrows();

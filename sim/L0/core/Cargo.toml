@@ -9,19 +9,31 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Shared geometry kernel: AABBs, SDFs, convex hulls used by collision
 cf-geometry = { workspace = true }
+# Foundation types: BodyId, Pose, SimConfig
 sim-types = { workspace = true }
+# SIMD kernels for hot-path math (contact, integration)
 sim-simd = { workspace = true }
+# Model / Data matrices, spatial algebra, collision primitives
 nalgebra = { workspace = true }
+# Derive macros for solver / collision error enums
 thiserror = { workspace = true }
+# Structured logging spans across the MuJoCo pipeline stages
 tracing = { workspace = true }
+# Optional Serialize / Deserialize for Model / Data snapshots
 serde = { workspace = true, optional = true }
+# Optional data-parallel solvers behind the `parallel` feature
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Float-tolerance assertions across solver / integration / collision tests
 approx = { workspace = true }
+# Microbenchmarks for collision and batch pipelines (benches/*.rs)
 criterion = { workspace = true }
+# Random input generation for collision and solver stress tests
 rand = { workspace = true }
+# JSON fixtures and golden files for integration tests
 serde_json = { workspace = true }
 
 

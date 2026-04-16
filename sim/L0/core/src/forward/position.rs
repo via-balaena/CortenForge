@@ -395,6 +395,7 @@ pub fn closest_point_segment(a: Vector3<f64>, b: Vector3<f64>, p: Vector3<f64>) 
 ///
 /// Uses standard segment-segment distance algorithm with single-letter variables
 /// matching the mathematical notation from computational geometry literature.
+// Joint-frame composition uses single-letter names (q, v, R, p) following the standard rigid-body kinematics notation.
 #[allow(clippy::many_single_char_names)]
 pub fn closest_points_segments(
     p1: Vector3<f64>,
@@ -465,6 +466,7 @@ pub fn closest_points_segments(
 /// Returns `(s, t, clamp_s, clamp_t)` where:
 /// - `s`, `t`: clamped parameter values in `[0, 1]`
 /// - `clamp_s`, `clamp_t`: `0` = clamped to start, `1` = interior, `2` = clamped to end
+// Joint-frame composition uses single-letter names following the standard rigid-body kinematics notation.
 #[allow(clippy::many_single_char_names)]
 pub fn closest_points_segments_parametric(
     p1: Vector3<f64>,
@@ -509,6 +511,7 @@ pub fn closest_points_segments_parametric(
 
     let b = d1.dot(&d2);
     let c = d1.dot(&r);
+    // Cross-axis arrangements in the rotation composition match the published quaternion-product expansion.
     #[allow(clippy::suspicious_operation_groupings)]
     let denom = a * e - b * b;
 

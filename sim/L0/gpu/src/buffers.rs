@@ -32,6 +32,8 @@ pub struct GridMeta {
     /// Grid origin Z.
     pub origin_z: f32,
     /// Padding for 16-byte alignment.
+    // `_pad` is required to mirror the WGSL struct's 16-byte stride; it must
+    // be `pub` so `bytemuck::Zeroable`/`Pod` can construct the struct.
     #[allow(clippy::pub_underscore_fields)]
     pub _pad: f32,
 }

@@ -22,6 +22,7 @@ use tracing::warn;
 /// manual negation.
 ///
 /// Returns `Contact`(s) directly — no `MeshContact` intermediate.
+// Pair dispatcher takes the full per-geom collision context (model handle, geom indices, poses, sizes, friction, output sink); bundling would just move the long argument list one level up.
 #[allow(clippy::too_many_arguments)]
 fn gjk_epa_shape_pair(
     model: &Model,
@@ -118,8 +119,10 @@ fn gjk_epa_shape_pair(
 /// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
 /// Cylinder and ellipsoid pairs use GJK/EPA on the mesh's convex hull.
 /// Sphere, capsule, and box pairs use dedicated triangle-level functions.
+// Pair dispatcher takes the full per-geom collision context (poses, sizes, output sink); bundling would just move the argument list one level up.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
+#[allow(clippy::unreachable)] // exhaustiveness guards; mesh/sdf/hfield pairs dispatched before reaching this code
 pub fn collide_with_mesh(
     model: &Model,
     geom1: usize,

@@ -130,6 +130,7 @@ impl Model {
 /// v_spatial = S * qdot
 ///
 /// Format: rows 0-2 = angular velocity, rows 3-5 = linear velocity
+// Paired joint-frame identifiers (pos_a/pos_b, axis_a/axis_b) are intentionally similar.
 #[allow(clippy::similar_names)]
 #[allow(clippy::inline_always)] // Hot path in CRBA/RNE - profiling shows inlining improves debug performance
 #[inline(always)]

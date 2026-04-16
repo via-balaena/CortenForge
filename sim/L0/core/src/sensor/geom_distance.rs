@@ -22,6 +22,7 @@ use sim_types::Pose;
 /// geoms beyond cutoff are not computed.
 ///
 /// MuJoCo ref: `mj_geomDistance()` in `engine_support.c`.
+// Paired geom identifiers (geom1/geom2, pos1/pos2) are intentionally similar.
 #[allow(clippy::similar_names)]
 pub fn geom_distance(
     model: &Model,

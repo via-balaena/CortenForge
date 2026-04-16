@@ -1,0 +1,24 @@
+[package]
+name = "sim-therm-env"
+description = "ThermCircuitEnv: typed builder producing SimEnv/VecEnv from thermodynamic circuit descriptions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
+sim-thermostat = { workspace = true }
+sim-ml-chassis = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+sim-rl = { workspace = true }
+sim-opt = { workspace = true }
+
+[lints]
+workspace = true

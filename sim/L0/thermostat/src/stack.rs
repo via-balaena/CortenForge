@@ -76,6 +76,16 @@ impl PassiveStackBuilder {
         self
     }
 
+    /// Append a pre-wrapped `Arc<dyn PassiveComponent>` to the stack.
+    ///
+    /// Use this when the component is already type-erased (e.g. stored
+    /// in a `Vec<Arc<dyn PassiveComponent>>` by a higher-level builder).
+    #[must_use]
+    pub fn with_arc(mut self, component: Arc<dyn PassiveComponent>) -> Self {
+        self.components.push(component);
+        self
+    }
+
     /// Finalize the builder into an `Arc<PassiveStack>` ready to be
     /// `install`ed onto a `Model`.
     #[must_use]

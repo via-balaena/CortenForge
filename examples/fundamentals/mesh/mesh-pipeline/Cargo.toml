@@ -6,14 +6,23 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Design-time primitives: implicit surfaces and parameters
 cf-design = { workspace = true }
+# Shared geometry kernel: SDF primitives and AABBs
 cf-geometry = { workspace = true }
+# Mesh repair pass for the mesh pipeline example
 mesh-repair = { workspace = true }
+# Mesh shelling for hollow-print examples
 mesh-shell = { workspace = true }
+# Lattice infill generation for the mesh pipeline example
 mesh-lattice = { workspace = true }
+# Printability checks for the mesh pipeline example
 mesh-printability = { workspace = true }
+# Mesh metrology: volume, area, genus checks
 mesh-measure = { workspace = true }
+# Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
+# Bevy engine: rendering, ECS, input, windowing
 bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_core_pipeline",
@@ -25,7 +34,9 @@ bevy = { workspace = true, features = [
     "tonemapping_luts",
     "zstd_rust",
 ] }
+# Matrix / vector / rotation primitives for pose math
 nalgebra = { workspace = true }
+# anyhow error reporting for the example main() return type
 anyhow = { workspace = true }
 
 [lints]

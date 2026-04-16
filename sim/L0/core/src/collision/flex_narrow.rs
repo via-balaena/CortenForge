@@ -438,6 +438,7 @@ pub fn sphere_triangle_contact(
     let d11 = e2.dot(&e2);
     let d20 = v0p.dot(&e1);
     let d21 = v0p.dot(&e2);
+    // Cross-axis arrangements in the contact-normal expansion intentionally mix tangent/bitangent components — this matches the published flexbody contact formulation.
     #[allow(clippy::suspicious_operation_groupings)]
     let denom = d00 * d11 - d01 * d01; // cross-product magnitude squared, correct formula
     if denom.abs() < 1e-12 {

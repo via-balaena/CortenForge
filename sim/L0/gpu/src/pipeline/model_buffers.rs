@@ -66,6 +66,9 @@ impl GpuModelBuffers {
     /// Computes `body_depth` and `max_depth` from `body_parent`, packs
     /// all per-element fields into struct arrays, and uploads.
     #[must_use]
+    // One-shot static-data upload: each body/joint/geom/dof field array is
+    // packed and uploaded in one linear pass. Splitting into per-field
+    // helpers would just spread the bytemuck calls without simplifying.
     #[allow(clippy::too_many_lines)]
     pub fn upload(ctx: &GpuContext, model: &Model) -> Self {
         let nbody = model.nbody;

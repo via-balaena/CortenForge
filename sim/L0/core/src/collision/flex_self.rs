@@ -230,6 +230,7 @@ fn collide_edges(
 /// Uses the standard segment-segment closest-point algorithm with
 /// degenerate-case handling. Variable names follow the canonical
 /// formulation (Ericson, "Real-Time Collision Detection").
+// Single-letter names (a, b, s, t, e, f) and the determinant-style cross terms follow Ericson's "Real-Time Collision Detection" segment-segment formulation.
 #[allow(
     clippy::many_single_char_names,
     clippy::suspicious_operation_groupings,
@@ -440,6 +441,7 @@ pub fn mj_collide_flex_self_sap(model: &Model, data: &mut Data, f: usize) {
 }
 
 /// Find axis (0=x, 1=y, 2=z) of maximum AABB centroid variance.
+// Vertex/edge/face indices are usize cast to f64 for distance-weighted accumulation; counts are bounded by the flexbody mesh size, far below 2^52.
 #[allow(clippy::cast_precision_loss)]
 fn axis_of_max_variance(aabbs: &[(usize, Aabb)]) -> usize {
     let n = aabbs.len() as f64;

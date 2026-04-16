@@ -34,6 +34,7 @@ pub const DEFAULT_MASS_FALLBACK: f64 = 1.0;
 /// 3. For each joint, compute M elements from Ic and joint motion subspace
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 6
+// Single-letter names (M, I, S, X) follow Featherstone's CRBA notation; inlined as a single function so the forward/backward composite-inertia passes read end-to-end; indexed loops mutate parallel per-body inertia buffers; `op_ref` accepts `&I + I` style for matrix accumulation against the published formula.
 #[allow(
     clippy::many_single_char_names,
     clippy::too_many_lines,

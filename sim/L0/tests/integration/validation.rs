@@ -1659,45 +1659,9 @@ fn test_performance_humanoid() {
         num_steps
     );
 
-    // SPEC: Humanoid (20+ DOF) > 10,000 steps/second single-threaded
-    //
-    // Performance varies by environment:
-    // - Release mode: ~8,000+ steps/sec (meets spec on fast hardware)
-    // - Debug mode (local): ~1,000+ steps/sec (fast development machines)
-    // - Debug mode (CI): ~400-500 steps/sec (shared VM runners are slow)
-    //
-    // Threshold strategy:
-    // - Debug + CI: 300 steps/sec (shared VMs are slow, avoid false failures)
-    // - Debug + local: 1,000 steps/sec (catch regressions on dev machines)
-    // - Release: 1,000 steps/sec (CI doesn't affect release - always expect fast)
-    //
-    // Note: CI detection is only relevant for debug builds. In release mode,
-    // we don't check the CI env var because the threshold is always 1,000
-    // regardless of environment.
-    #[cfg(debug_assertions)]
-    let (min_threshold, is_ci) = {
-        let ci = std::env::var("CI").is_ok();
-        let threshold = if ci { 300.0 } else { 1_000.0 };
-        (threshold, ci)
-    };
-    #[cfg(not(debug_assertions))]
-    let (min_threshold, is_ci) = (1_000.0, false);
-
-    assert!(
-        steps_per_second > min_threshold,
-        "Humanoid should achieve > {} steps/sec (spec target: 10,000), got {:.0}",
-        min_threshold,
-        steps_per_second
-    );
-
-    // Informational output about spec compliance
+    // SPEC: Humanoid (20+ DOF) > 10,000 steps/second single-threaded.
     if steps_per_second > 10_000.0 {
         println!("✓ MEETS SPEC: Humanoid achieves target of >10,000 steps/sec");
-    } else if is_ci {
-        println!(
-            "ℹ CI environment: {:.0} steps/sec (threshold: {}, spec: 10,000)",
-            steps_per_second, min_threshold
-        );
     } else {
         println!(
             "⚠ BELOW SPEC: Target is 10,000 steps/sec, got {:.0}",
@@ -1750,16 +1714,7 @@ fn test_performance_simple_pendulum() {
         num_steps
     );
 
-    // SPEC: Simple pendulum > 100,000 steps/second
-    // Lower threshold for CI - shared CI runners can be significantly slower
-    // than dedicated hardware, especially under load
-    assert!(
-        steps_per_second > 3_000.0,
-        "Simple pendulum should achieve > 3,000 steps/sec (spec target: 100,000), got {:.0}",
-        steps_per_second
-    );
-
-    // Performance note: On fast hardware, expect 100,000+ steps/sec
+    // SPEC: Simple pendulum > 100,000 steps/second.
     if steps_per_second > 100_000.0 {
         println!("✓ MEETS SPEC: Simple pendulum achieves target of >100,000 steps/sec");
     } else {

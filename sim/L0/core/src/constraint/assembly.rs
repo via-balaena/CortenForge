@@ -48,6 +48,7 @@ pub fn tendon_deadband_displacement(length: f64, range: [f64; 2]) -> f64 {
 /// computes impedance and regularization, then writes `efc_aref` and `efc_b`.
 ///
 /// Increments `*row` by 1 on completion.
+// Assembly takes the full per-iteration constraint state (model, data, J/M/b/lambda buffers, output sink); bundling would obscure the math against the analytical references.
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_constraint_row(
     model: &Model,

@@ -123,6 +123,8 @@ impl Algorithm for Cem {
         "CEM"
     }
 
+    // Population size, elite count, and epoch indices are usize → f64 for
+    // CEM's distribution updates; population sizes stay far below 2^52.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

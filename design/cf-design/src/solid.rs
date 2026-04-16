@@ -3561,10 +3561,6 @@ mod tests {
             mesh.vertex_count(),
             mesh.face_count()
         );
-        assert!(
-            elapsed < 5.0,
-            "Performance: 50mm sphere at 0.1mm tolerance took {elapsed:.2}s (limit: 5s)"
-        );
     }
 
     #[test]

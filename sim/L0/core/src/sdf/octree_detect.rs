@@ -97,6 +97,7 @@ pub fn octree_contact_detect(
 /// At each node, transforms the world-space cell to each shape's local frame,
 /// evaluates interval bounds, and prunes if contact is impossible. Leaf cells
 /// extract contacts via Newton iteration.
+// Octree traversal takes the full per-call context (grids, poses, voxel bounds, contact sink).
 #[allow(clippy::too_many_arguments)]
 fn octree_recurse(
     cell: &Aabb,
@@ -373,6 +374,7 @@ pub fn octree_contact_detect_with_stats(
 }
 
 /// Recursive octree with statistics collection.
+// Octree traversal takes the full per-call context (grids, poses, voxel bounds, contact sink).
 #[allow(clippy::too_many_arguments)]
 fn octree_recurse_stats(
     cell: &Aabb,
@@ -631,6 +633,7 @@ pub fn octree_plane_detect(
 }
 
 /// Recursive octree for shape-vs-plane contact detection.
+// Octree traversal takes the full per-call context (grids, poses, voxel bounds, contact sink).
 #[allow(clippy::too_many_arguments)]
 fn octree_plane_recurse(
     cell: &Aabb,

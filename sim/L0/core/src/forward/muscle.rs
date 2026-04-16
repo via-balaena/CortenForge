@@ -142,11 +142,13 @@ fn eval_length_range(
         let sign: f64 = if side == 0 { -1.0 } else { 1.0 };
 
         let mut updated = false;
+        // Muscle activation samples are clamped to a finite LUT range upstream; the f64 → usize cast sits behind the bounds check.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let total_steps = (opt.inttotal / opt.timestep).ceil() as usize;
         let measure_start = opt.inttotal - opt.interval;
 
         for step_idx in 0..total_steps {
+            // LUT length is a small compile-time constant; usize → f64 is exact.
             #[allow(clippy::cast_precision_loss)]
             let time = step_idx as f64 * opt.timestep;
 

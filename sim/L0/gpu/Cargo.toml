@@ -9,16 +9,25 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# GPU device, buffers, and compute pipelines for SDF collision dispatch
 wgpu = { workspace = true }
+# Pod / Zeroable derives for WGSL-mirroring uniform / storage structs
 bytemuck = { workspace = true }
+# block_on executor so CPU-side code can await wgpu futures synchronously
 pollster = { workspace = true }
+# SDF primitives and bounds reused between CPU and GPU narrow-phase paths
 cf-geometry = { workspace = true }
+# BodyId / Pose types shared with sim-core
 sim-types = { workspace = true }
+# Engine-side collision dispatch reusing sim-core's internal helpers
 sim-core = { workspace = true, features = ["gpu-internals"] }
+# Matrix / vector primitives used in GPU buffer layouts and transforms
 nalgebra = { workspace = true }
+# Log facade used by wgpu and adapter / device selection diagnostics
 log = "0.4"
 
 [dev-dependencies]
+# Float-tolerance assertions for GPU vs CPU SDF collision parity tests
 approx = { workspace = true }
 
 [lints]

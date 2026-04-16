@@ -40,6 +40,7 @@ fn cap_sdf_contacts(contacts: &mut Vec<SdfContact>, max: usize) {
         })
         .fold(0.0_f64, f64::max);
     let extent = extent_sq.sqrt();
+    // `grid_size` and voxel coordinates are usize, well below f64's 2^52 mantissa boundary.
     #[allow(clippy::cast_precision_loss)]
     let min_dist = extent / (max as f64).sqrt();
     let min_dist_sq = min_dist * min_dist;
@@ -63,6 +64,7 @@ fn cap_sdf_contacts(contacts: &mut Vec<SdfContact>, max: usize) {
 ///
 /// Dispatches to the appropriate `sdf_*_contact()` function from `sdf.rs`.
 /// Handles all `GeomType` pairings including Mesh, Hfield, Plane, and SDF↔SDF.
+// SDF-SDF pair dispatcher takes the full per-geom context (grids, poses, transforms, contact sink).
 #[allow(clippy::too_many_arguments)]
 pub fn collide_with_sdf(
     model: &Model,

@@ -238,6 +238,7 @@ impl Contact {
     /// * `condim` - Contact dimension (1, 3, 4, or 6)
     #[must_use]
     #[inline]
+    // Contact builder takes the full contact context (geom indices, poses, normal, depth, friction).
     #[allow(clippy::too_many_arguments)]
     pub fn with_condim(
         pos: Vector3<f64>,

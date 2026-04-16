@@ -169,6 +169,9 @@ const B: usize = 10_000;
 /// at `run_rematch` guarantees non-empty inputs at every call
 /// site, so the panic is a defensive guard rather than a runtime
 /// condition.
+// `B` (bootstrap iterations) and slice lengths are usize cast to f64 for
+// percentile indexing; B = 10_000 and rematch slices are <= a few hundred,
+// far below f64's 2^52 mantissa ceiling.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
@@ -220,6 +223,8 @@ pub fn bootstrap_diff_means(r_a: &[f64], r_b: &[f64], rng: &mut impl Rng) -> Boo
 /// # Panics
 ///
 /// Panics if either input slice is empty (defensive guard).
+// Same precision-loss reasoning as `bootstrap_diff_means`: B = 10_000 and
+// slice lengths stay far below f64's 2^52 mantissa ceiling.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,

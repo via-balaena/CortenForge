@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# MJCF scene loader for the example physics scene
 sim-mjcf = { workspace = true }
 
 [lints]

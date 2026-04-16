@@ -6,10 +6,15 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Design-time primitives: implicit surfaces and parameters
 cf-design = { workspace = true }
+# Shared geometry kernel: SDF primitives and AABBs
 cf-geometry = { workspace = true }
+# Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
+# Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
+# Bevy engine: rendering, ECS, input, windowing
 bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_core_pipeline",
@@ -21,6 +26,7 @@ bevy = { workspace = true, features = [
     "tonemapping_luts",
     "zstd_rust",
 ] }
+# Matrix / vector / rotation primitives for pose math
 nalgebra = { workspace = true }
 
 [lints]

@@ -1,6 +1,11 @@
 //! Tests for SIMD operations.
 
-#![allow(clippy::unwrap_used, clippy::float_cmp)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss
+)]
 
 use approx::assert_relative_eq;
 use nalgebra::Vector3;
@@ -452,5 +457,731 @@ proptest! {
             prop_assert!(dot_v.abs() < 1e-6);
             prop_assert!(dot_d.abs() < 1e-6);
         }
+    }
+}
+
+// =============================================================================
+// Vec3x4 — uncovered methods
+// =============================================================================
+
+#[test]
+fn test_vec3x4_from_slice() {
+    let vecs = vec![
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+        Vector3::new(99.0, 99.0, 99.0),
+    ];
+    let batch = Vec3x4::from_slice(&vecs);
+    for i in 0..4 {
+        assert_eq!(batch.get(i), vecs[i]);
+    }
+}
+
+#[test]
+fn test_vec3x4_from_slice_padded() {
+    let vecs = vec![Vector3::new(1.0, 2.0, 3.0), Vector3::new(4.0, 5.0, 6.0)];
+    let batch = Vec3x4::from_slice_padded(&vecs);
+    assert_eq!(batch.get(0), vecs[0]);
+    assert_eq!(batch.get(1), vecs[1]);
+    assert_eq!(batch.get(2), Vector3::zeros());
+    assert_eq!(batch.get(3), Vector3::zeros());
+}
+
+#[test]
+fn test_vec3x4_to_vectors() {
+    let vectors = [
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+    ];
+    let batch = Vec3x4::from_vectors(vectors);
+    let out = batch.to_vectors();
+    for i in 0..4 {
+        assert_eq!(out[i], vectors[i]);
+    }
+}
+
+#[test]
+fn test_vec3x4_dot_pairwise() {
+    let a = Vec3x4::from_vectors([
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(1.0, 1.0, 0.0),
+        Vector3::new(2.0, 3.0, 4.0),
+    ]);
+    let b = Vec3x4::from_vectors([
+        Vector3::new(5.0, 0.0, 0.0),
+        Vector3::new(0.0, 7.0, 0.0),
+        Vector3::new(2.0, 3.0, 0.0),
+        Vector3::new(1.0, 1.0, 1.0),
+    ]);
+    let dots = a.dot_pairwise(&b);
+    assert_eq!(dots[0], 5.0);
+    assert_eq!(dots[1], 7.0);
+    assert_eq!(dots[2], 5.0);
+    assert_eq!(dots[3], 9.0);
+}
+
+#[test]
+fn test_vec3x4_scale() {
+    let batch = Vec3x4::from_vectors([
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+    ]);
+    let scaled = batch.scale(2.0);
+    assert_eq!(scaled.get(0), Vector3::new(2.0, 4.0, 6.0));
+    assert_eq!(scaled.get(3), Vector3::new(20.0, 22.0, 24.0));
+}
+
+#[test]
+fn test_vec3x4_scale_each() {
+    let batch = Vec3x4::from_vectors([
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+    ]);
+    let scaled = batch.scale_each([1.0, 2.0, 0.0, -1.0]);
+    assert_eq!(scaled.get(0), Vector3::new(1.0, 2.0, 3.0));
+    assert_eq!(scaled.get(1), Vector3::new(8.0, 10.0, 12.0));
+    assert_eq!(scaled.get(2), Vector3::zeros());
+    assert_eq!(scaled.get(3), Vector3::new(-10.0, -11.0, -12.0));
+}
+
+#[test]
+fn test_vec3x4_neg() {
+    let batch = Vec3x4::from_vectors([
+        Vector3::new(1.0, -2.0, 3.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(-5.0, 6.0, -7.0),
+        Vector3::new(8.0, 9.0, 10.0),
+    ]);
+    let neg = batch.neg();
+    assert_eq!(neg.get(0), Vector3::new(-1.0, 2.0, -3.0));
+    assert_eq!(neg.get(1), Vector3::zeros());
+    assert_eq!(neg.get(2), Vector3::new(5.0, -6.0, 7.0));
+}
+
+#[test]
+fn test_vec3x4_clamp() {
+    let batch = Vec3x4::from_vectors([
+        Vector3::new(5.0, -5.0, 0.0),
+        Vector3::new(0.5, 0.5, 0.5),
+        Vector3::new(-10.0, 10.0, -10.0),
+        Vector3::new(1.0, 1.0, 1.0),
+    ]);
+    let clamped = batch.clamp(-1.0, 1.0);
+    assert_eq!(clamped.get(0), Vector3::new(1.0, -1.0, 0.0));
+    assert_eq!(clamped.get(1), Vector3::new(0.5, 0.5, 0.5));
+    assert_eq!(clamped.get(2), Vector3::new(-1.0, 1.0, -1.0));
+}
+
+#[test]
+fn test_vec3x4_argmin_dot() {
+    let vectors = [
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(-2.0, 0.0, 0.0),
+        Vector3::new(0.5, 0.0, 0.0),
+        Vector3::new(1.5, 0.0, 0.0),
+    ];
+    let batch = Vec3x4::from_vectors(vectors);
+    let direction = Vector3::new(1.0, 0.0, 0.0);
+    let (idx, val) = batch.argmin_dot(&direction);
+    assert_eq!(idx, 1);
+    assert_eq!(val, -2.0);
+}
+
+#[test]
+fn test_vec3x4_mul_add() {
+    let batch = Vec3x4::from_vectors([
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(-1.0, -2.0, -3.0),
+    ]);
+    let offset = Vec3x4::splat(Vector3::new(10.0, 20.0, 30.0));
+    let result = batch.mul_add(2.0, &offset);
+    assert_eq!(result.get(0), Vector3::new(12.0, 24.0, 36.0));
+    assert_eq!(result.get(2), Vector3::new(10.0, 20.0, 30.0));
+    assert_eq!(result.get(3), Vector3::new(8.0, 16.0, 24.0));
+}
+
+#[test]
+fn test_vec3x4_cross_pairwise() {
+    let a = Vec3x4::from_vectors([
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(1.0, 1.0, 0.0),
+    ]);
+    let b = Vec3x4::from_vectors([
+        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+    ]);
+    let c = a.cross_pairwise(&b);
+    assert_eq!(c.get(0), Vector3::new(0.0, 0.0, 1.0));
+    assert_eq!(c.get(1), Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(c.get(2), Vector3::zeros());
+    assert_eq!(c.get(3), Vector3::new(1.0, -1.0, 0.0));
+}
+
+#[test]
+fn test_vec3x4_norm() {
+    let batch = Vec3x4::from_vectors([
+        Vector3::new(3.0, 4.0, 0.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 2.0),
+    ]);
+    let norms = batch.norm();
+    assert_relative_eq!(norms[0], 5.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[1], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[2], 1.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[3], 2.0, epsilon = 1e-10);
+}
+
+#[test]
+fn test_vec3x4_default() {
+    let batch = Vec3x4::default();
+    for i in 0..4 {
+        assert_eq!(batch.get(i), Vector3::zeros());
+    }
+}
+
+#[test]
+fn test_vec3x4_operator_mul() {
+    let batch = Vec3x4::from_vectors([
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+    ]);
+    let result = batch * 3.0;
+    assert_eq!(result.get(0), Vector3::new(3.0, 6.0, 9.0));
+    assert_eq!(result.get(1), Vector3::new(12.0, 15.0, 18.0));
+}
+
+// =============================================================================
+// Vec3x8 — comprehensive coverage
+// =============================================================================
+
+#[test]
+fn test_vec3x8_zeros() {
+    let batch = Vec3x8::zeros();
+    for i in 0..8 {
+        assert_eq!(batch.get(i), Vector3::zeros());
+    }
+}
+
+#[test]
+fn test_vec3x8_default() {
+    let batch = Vec3x8::default();
+    for i in 0..8 {
+        assert_eq!(batch.get(i), Vector3::zeros());
+    }
+}
+
+#[test]
+fn test_vec3x8_from_vectors() {
+    let vectors = [
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+        Vector3::new(13.0, 14.0, 15.0),
+        Vector3::new(16.0, 17.0, 18.0),
+        Vector3::new(19.0, 20.0, 21.0),
+        Vector3::new(22.0, 23.0, 24.0),
+    ];
+    let batch = Vec3x8::from_vectors(vectors);
+    for i in 0..8 {
+        assert_eq!(batch.get(i), vectors[i]);
+    }
+}
+
+#[test]
+fn test_vec3x8_from_slice() {
+    let vecs: Vec<Vector3<f64>> = (0..10)
+        .map(|i| Vector3::new(i as f64, (i * 2) as f64, (i * 3) as f64))
+        .collect();
+    let batch = Vec3x8::from_slice(&vecs);
+    for i in 0..8 {
+        assert_eq!(batch.get(i), vecs[i]);
+    }
+}
+
+#[test]
+fn test_vec3x8_from_slice_padded() {
+    let vecs = vec![
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+    ];
+    let batch = Vec3x8::from_slice_padded(&vecs);
+    assert_eq!(batch.get(0), vecs[0]);
+    assert_eq!(batch.get(1), vecs[1]);
+    assert_eq!(batch.get(2), vecs[2]);
+    for i in 3..8 {
+        assert_eq!(batch.get(i), Vector3::zeros());
+    }
+}
+
+#[test]
+fn test_vec3x8_to_vectors() {
+    let vectors = [
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+        Vector3::new(13.0, 14.0, 15.0),
+        Vector3::new(16.0, 17.0, 18.0),
+        Vector3::new(19.0, 20.0, 21.0),
+        Vector3::new(22.0, 23.0, 24.0),
+    ];
+    let batch = Vec3x8::from_vectors(vectors);
+    let out = batch.to_vectors();
+    for i in 0..8 {
+        assert_eq!(out[i], vectors[i]);
+    }
+}
+
+#[test]
+fn test_vec3x8_dot_pairwise() {
+    let a = Vec3x8::from_vectors([
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        Vector3::new(1.0, 1.0, 1.0),
+        Vector3::new(2.0, 0.0, 0.0),
+        Vector3::new(0.0, 3.0, 0.0),
+        Vector3::new(0.0, 0.0, 4.0),
+        Vector3::new(1.0, 2.0, 3.0),
+    ]);
+    let b = Vec3x8::splat(Vector3::new(1.0, 1.0, 1.0));
+    let dots = a.dot_pairwise(&b);
+    assert_eq!(dots[0], 1.0);
+    assert_eq!(dots[1], 1.0);
+    assert_eq!(dots[2], 1.0);
+    assert_eq!(dots[3], 3.0);
+    assert_eq!(dots[4], 2.0);
+    assert_eq!(dots[5], 3.0);
+    assert_eq!(dots[6], 4.0);
+    assert_eq!(dots[7], 6.0);
+}
+
+#[test]
+fn test_vec3x8_norm_squared() {
+    let batch = Vec3x8::from_vectors([
+        Vector3::new(3.0, 4.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(1.0, 1.0, 1.0),
+        Vector3::new(2.0, 0.0, 0.0),
+        Vector3::new(0.0, 3.0, 0.0),
+        Vector3::new(0.0, 0.0, 5.0),
+        Vector3::new(1.0, 2.0, 2.0),
+    ]);
+    let ns = batch.norm_squared();
+    assert_eq!(ns[0], 25.0);
+    assert_eq!(ns[1], 1.0);
+    assert_eq!(ns[2], 0.0);
+    assert_eq!(ns[3], 3.0);
+    assert_eq!(ns[4], 4.0);
+    assert_eq!(ns[5], 9.0);
+    assert_eq!(ns[6], 25.0);
+    assert_eq!(ns[7], 9.0);
+}
+
+#[test]
+fn test_vec3x8_norm() {
+    let batch = Vec3x8::from_vectors([
+        Vector3::new(3.0, 4.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 2.0),
+        Vector3::new(0.0, 5.0, 0.0),
+        Vector3::new(6.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 7.0),
+        Vector3::new(0.0, 8.0, 0.0),
+    ]);
+    let norms = batch.norm();
+    assert_relative_eq!(norms[0], 5.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[1], 1.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[2], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[3], 2.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[4], 5.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[5], 6.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[6], 7.0, epsilon = 1e-10);
+    assert_relative_eq!(norms[7], 8.0, epsilon = 1e-10);
+}
+
+#[test]
+fn test_vec3x8_add() {
+    let a = Vec3x8::splat(Vector3::new(1.0, 2.0, 3.0));
+    let b = Vec3x8::splat(Vector3::new(10.0, 20.0, 30.0));
+    let sum = a.add(&b);
+    for i in 0..8 {
+        assert_eq!(sum.get(i), Vector3::new(11.0, 22.0, 33.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_sub() {
+    let a = Vec3x8::splat(Vector3::new(10.0, 20.0, 30.0));
+    let b = Vec3x8::splat(Vector3::new(1.0, 2.0, 3.0));
+    let diff = a.sub(&b);
+    for i in 0..8 {
+        assert_eq!(diff.get(i), Vector3::new(9.0, 18.0, 27.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_scale() {
+    let batch = Vec3x8::splat(Vector3::new(1.0, 2.0, 3.0));
+    let scaled = batch.scale(5.0);
+    for i in 0..8 {
+        assert_eq!(scaled.get(i), Vector3::new(5.0, 10.0, 15.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_scale_each() {
+    let batch = Vec3x8::splat(Vector3::new(1.0, 1.0, 1.0));
+    let scalars = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let result = batch.scale_each(scalars);
+    for i in 0..8 {
+        let s = (i + 1) as f64;
+        assert_eq!(result.get(i), Vector3::new(s, s, s));
+    }
+}
+
+#[test]
+fn test_vec3x8_neg() {
+    let batch = Vec3x8::splat(Vector3::new(1.0, -2.0, 3.0));
+    let neg = batch.neg();
+    for i in 0..8 {
+        assert_eq!(neg.get(i), Vector3::new(-1.0, 2.0, -3.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_cross() {
+    let batch = Vec3x8::splat(Vector3::new(1.0, 0.0, 0.0));
+    let dir = Vector3::new(0.0, 1.0, 0.0);
+    let crosses = batch.cross(&dir);
+    for i in 0..8 {
+        assert_eq!(crosses.get(i), Vector3::new(0.0, 0.0, 1.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_cross_pairwise() {
+    let a = Vec3x8::splat(Vector3::new(1.0, 0.0, 0.0));
+    let b = Vec3x8::splat(Vector3::new(0.0, 0.0, 1.0));
+    let c = a.cross_pairwise(&b);
+    for i in 0..8 {
+        assert_eq!(c.get(i), Vector3::new(0.0, -1.0, 0.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_normalize() {
+    let batch = Vec3x8::from_vectors([
+        Vector3::new(3.0, 4.0, 0.0),
+        Vector3::new(0.0, 0.0, 5.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(6.0, 0.0, 0.0),
+        Vector3::new(0.0, 7.0, 0.0),
+        Vector3::new(0.0, 0.0, 8.0),
+        Vector3::new(10.0, 0.0, 0.0),
+    ]);
+    let normalized = batch.normalize();
+    assert_relative_eq!(normalized.get(0).norm(), 1.0, epsilon = 1e-10);
+    assert_relative_eq!(normalized.get(1).norm(), 1.0, epsilon = 1e-10);
+    assert_relative_eq!(normalized.get(2).norm(), 1.0, epsilon = 1e-10);
+    assert_relative_eq!(normalized.get(4).norm(), 1.0, epsilon = 1e-10);
+    assert_relative_eq!(normalized.get(5).norm(), 1.0, epsilon = 1e-10);
+    assert_relative_eq!(normalized.get(6).norm(), 1.0, epsilon = 1e-10);
+    assert_relative_eq!(normalized.get(7).norm(), 1.0, epsilon = 1e-10);
+}
+
+#[test]
+fn test_vec3x8_argmax_dot() {
+    let batch = Vec3x8::from_vectors([
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(2.0, 0.0, 0.0),
+        Vector3::new(0.5, 0.0, 0.0),
+        Vector3::new(1.5, 0.0, 0.0),
+        Vector3::new(3.0, 0.0, 0.0),
+        Vector3::new(0.1, 0.0, 0.0),
+        Vector3::new(2.5, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 0.0),
+    ]);
+    let (idx, val) = batch.argmax_dot(&Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(idx, 4);
+    assert_eq!(val, 3.0);
+}
+
+#[test]
+fn test_vec3x8_argmin_dot() {
+    let batch = Vec3x8::from_vectors([
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(-5.0, 0.0, 0.0),
+        Vector3::new(0.5, 0.0, 0.0),
+        Vector3::new(1.5, 0.0, 0.0),
+        Vector3::new(3.0, 0.0, 0.0),
+        Vector3::new(-2.0, 0.0, 0.0),
+        Vector3::new(2.5, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 0.0),
+    ]);
+    let (idx, val) = batch.argmin_dot(&Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(idx, 1);
+    assert_eq!(val, -5.0);
+}
+
+#[test]
+fn test_vec3x8_mul_add() {
+    let batch = Vec3x8::splat(Vector3::new(1.0, 2.0, 3.0));
+    let offset = Vec3x8::splat(Vector3::new(10.0, 20.0, 30.0));
+    let result = batch.mul_add(3.0, &offset);
+    for i in 0..8 {
+        assert_eq!(result.get(i), Vector3::new(13.0, 26.0, 39.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_operator_add() {
+    let a = Vec3x8::splat(Vector3::new(1.0, 2.0, 3.0));
+    let b = Vec3x8::splat(Vector3::new(4.0, 5.0, 6.0));
+    let sum = a + b;
+    for i in 0..8 {
+        assert_eq!(sum.get(i), Vector3::new(5.0, 7.0, 9.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_operator_sub() {
+    let a = Vec3x8::splat(Vector3::new(10.0, 20.0, 30.0));
+    let b = Vec3x8::splat(Vector3::new(1.0, 2.0, 3.0));
+    let diff = a - b;
+    for i in 0..8 {
+        assert_eq!(diff.get(i), Vector3::new(9.0, 18.0, 27.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_operator_neg() {
+    let batch = Vec3x8::splat(Vector3::new(1.0, -2.0, 3.0));
+    let neg = -batch;
+    for i in 0..8 {
+        assert_eq!(neg.get(i), Vector3::new(-1.0, 2.0, -3.0));
+    }
+}
+
+#[test]
+fn test_vec3x8_operator_mul() {
+    let batch = Vec3x8::splat(Vector3::new(1.0, 2.0, 3.0));
+    let result = batch * 4.0;
+    for i in 0..8 {
+        assert_eq!(result.get(i), Vector3::new(4.0, 8.0, 12.0));
+    }
+}
+
+// =============================================================================
+// Batch Operations — uncovered functions
+// =============================================================================
+
+#[test]
+fn test_batch_dot_product_slice() {
+    let vectors: Vec<Vector3<f64>> = (0..7).map(|i| Vector3::new(i as f64, 0.0, 0.0)).collect();
+    let direction = Vector3::new(1.0, 0.0, 0.0);
+    let dots = batch_dot_product_slice(&vectors, &direction);
+    assert_eq!(dots.len(), 7);
+    for (i, &d) in dots.iter().enumerate() {
+        assert_eq!(d, i as f64);
+    }
+}
+
+#[test]
+fn test_batch_dot_product_slice_exact_chunk() {
+    let vectors: Vec<Vector3<f64>> = (0..8).map(|i| Vector3::new(0.0, i as f64, 0.0)).collect();
+    let direction = Vector3::new(0.0, 2.0, 0.0);
+    let dots = batch_dot_product_slice(&vectors, &direction);
+    assert_eq!(dots.len(), 8);
+    for (i, &d) in dots.iter().enumerate() {
+        assert_eq!(d, (i * 2) as f64);
+    }
+}
+
+#[test]
+fn test_find_max_dot_empty() {
+    let vectors: Vec<Vector3<f64>> = vec![];
+    let (idx, val) = find_max_dot(&vectors, &Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(idx, 0);
+    assert_eq!(val, f64::NEG_INFINITY);
+}
+
+#[test]
+fn test_find_max_dot_uses_4wide_remainder() {
+    let mut vectors: Vec<Vector3<f64>> = (0..8).map(|_| Vector3::new(1.0, 0.0, 0.0)).collect();
+    vectors.extend((0..5).map(|i| Vector3::new(i as f64 + 10.0, 0.0, 0.0)));
+    let (idx, val) = find_max_dot(&vectors, &Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(idx, 12);
+    assert_eq!(val, 14.0);
+}
+
+#[test]
+fn test_find_min_dot() {
+    let vectors = vec![
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(-3.0, 0.0, 0.0),
+        Vector3::new(2.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 0.0),
+    ];
+    let (idx, val) = find_min_dot(&vectors, &Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(idx, 1);
+    assert_eq!(val, -3.0);
+}
+
+#[test]
+fn test_find_min_dot_empty() {
+    let vectors: Vec<Vector3<f64>> = vec![];
+    let (idx, val) = find_min_dot(&vectors, &Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(idx, 0);
+    assert_eq!(val, f64::INFINITY);
+}
+
+#[test]
+fn test_find_min_dot_large() {
+    let mut vectors: Vec<Vector3<f64>> =
+        (0..10).map(|i| Vector3::new(i as f64, 0.0, 0.0)).collect();
+    vectors[5] = Vector3::new(-100.0, 0.0, 0.0);
+    let (idx, val) = find_min_dot(&vectors, &Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(idx, 5);
+    assert_eq!(val, -100.0);
+}
+
+#[test]
+fn test_aabb4_from_pairs() {
+    use nalgebra::Point3;
+    let mins = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 1.0, 1.0),
+        Point3::new(2.0, 2.0, 2.0),
+        Point3::new(3.0, 3.0, 3.0),
+    ];
+    let maxs = [
+        Point3::new(1.0, 1.0, 1.0),
+        Point3::new(2.0, 2.0, 2.0),
+        Point3::new(3.0, 3.0, 3.0),
+        Point3::new(4.0, 4.0, 4.0),
+    ];
+    let aabb = Aabb4::from_pairs(mins, maxs);
+    assert_eq!(aabb.mins.get(0), Vector3::new(0.0, 0.0, 0.0));
+    assert_eq!(aabb.maxs.get(3), Vector3::new(4.0, 4.0, 4.0));
+}
+
+#[test]
+fn test_aabb4_overlaps_single() {
+    use nalgebra::Point3;
+    let mins = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(5.0, 5.0, 5.0),
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(10.0, 10.0, 10.0),
+    ];
+    let maxs = [
+        Point3::new(2.0, 2.0, 2.0),
+        Point3::new(7.0, 7.0, 7.0),
+        Point3::new(1.0, 1.0, 1.0),
+        Point3::new(12.0, 12.0, 12.0),
+    ];
+    let aabb = Aabb4::from_pairs(mins, maxs);
+    let query_min = Point3::new(1.0, 1.0, 1.0);
+    let query_max = Point3::new(3.0, 3.0, 3.0);
+    let overlaps = aabb.overlaps_single(&query_min, &query_max);
+    assert!(overlaps[0]);
+    assert!(!overlaps[1]);
+    assert!(overlaps[2]);
+    assert!(!overlaps[3]);
+}
+
+#[test]
+fn test_aabb4_expanded() {
+    use nalgebra::Point3;
+    let mins = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 1.0, 1.0),
+        Point3::new(2.0, 2.0, 2.0),
+        Point3::new(3.0, 3.0, 3.0),
+    ];
+    let maxs = [
+        Point3::new(1.0, 1.0, 1.0),
+        Point3::new(2.0, 2.0, 2.0),
+        Point3::new(3.0, 3.0, 3.0),
+        Point3::new(4.0, 4.0, 4.0),
+    ];
+    let aabb = Aabb4::from_pairs(mins, maxs);
+    let expanded = aabb.expanded(0.5);
+    assert_eq!(expanded.mins.get(0), Vector3::new(-0.5, -0.5, -0.5));
+    assert_eq!(expanded.maxs.get(0), Vector3::new(1.5, 1.5, 1.5));
+}
+
+#[test]
+fn test_batch_axpy_4() {
+    let x = Vec3x4::splat(Vector3::new(1.0, 2.0, 3.0));
+    let mut y = Vec3x4::splat(Vector3::new(10.0, 20.0, 30.0));
+    batch_axpy_4(2.0, &x, &mut y);
+    for i in 0..4 {
+        assert_eq!(y.get(i), Vector3::new(12.0, 24.0, 36.0));
+    }
+}
+
+#[test]
+fn test_batch_dot_sum_4() {
+    let a = Vec3x4::from_vectors([
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        Vector3::new(1.0, 1.0, 1.0),
+    ]);
+    let b = Vec3x4::splat(Vector3::new(1.0, 1.0, 1.0));
+    let sum = batch_dot_sum_4(&a, &b);
+    assert_eq!(sum, 6.0);
+}
+
+#[test]
+fn test_batch_mat3_vec3_4() {
+    let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    let scale2 = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0];
+    let matrices = [identity, scale2, identity, scale2];
+    let vectors = Vec3x4::from_vectors([
+        Vector3::new(1.0, 2.0, 3.0),
+        Vector3::new(4.0, 5.0, 6.0),
+        Vector3::new(7.0, 8.0, 9.0),
+        Vector3::new(10.0, 11.0, 12.0),
+    ]);
+    let result = batch_mat3_vec3_4(&matrices, &vectors);
+    assert_eq!(result.get(0), Vector3::new(1.0, 2.0, 3.0));
+    assert_eq!(result.get(1), Vector3::new(8.0, 10.0, 12.0));
+    assert_eq!(result.get(2), Vector3::new(7.0, 8.0, 9.0));
+    assert_eq!(result.get(3), Vector3::new(20.0, 22.0, 24.0));
+}
+
+#[test]
+fn test_batch_integrate_velocity_4() {
+    let mut velocities = Vec3x4::splat(Vector3::new(0.0, 0.0, 0.0));
+    let accelerations = Vec3x4::splat(Vector3::new(0.0, -9.81, 0.0));
+    batch_integrate_velocity_4(&mut velocities, &accelerations, 0.1);
+    for i in 0..4 {
+        assert_relative_eq!(velocities.get(i).y, -0.981, epsilon = 1e-10);
     }
 }

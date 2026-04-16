@@ -62,8 +62,6 @@
 //!
 //! - [`docs/thermo_computing/02_foundations/chassis_design.md`](https://github.com/bigmark222/cortenforge/blob/main/docs/thermo_computing/02_foundations/chassis_design.md)
 //!   — the seven bolt-pattern decisions this crate inherits.
-//! - [`docs/thermo_computing/03_phases/01_langevin_thermostat.md`](https://github.com/bigmark222/cortenforge/blob/main/docs/thermo_computing/03_phases/01_langevin_thermostat.md)
-//!   — the Phase 1 spec this crate implements.
 
 mod component;
 mod diagnose;
