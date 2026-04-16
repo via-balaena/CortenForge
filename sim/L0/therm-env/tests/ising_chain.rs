@@ -1,10 +1,14 @@
-//! 4-cell Ising chain X-encoding experiment (Level 3).
+//! Ising chain stochastic resonance — does SR scale from 1 particle to coupled systems?
 //!
-//! A 4-particle chain with nearest-neighbor coupling is a direct proxy for
-//! a thermodynamic sampling unit.  The X-encoding task: learn a temperature
-//! modulation protocol that steers the system to a target spin configuration.
+//! The 1-particle experiment established an SR peak at kT=1.70 (|t|=4.52).
+//! This experiment adds nearest-neighbor coupling and tests whether the
+//! SR phenomenon persists, shifts, or disappears in a coupled multi-cell
+//! circuit proxy.
 //!
-//! This is step 3 on the roadmap — the jump from toy models to circuit proxies.
+//! Scientific question: how does inter-cell coupling affect the optimal
+//! noise temperature for signal following?  This is the direct test of
+//! whether Principle 2 (stochastic resonance) scales to thermodynamic
+//! circuit architectures.
 //!
 //! All tests require `--release`.
 
@@ -19,50 +23,55 @@
     clippy::doc_markdown
 )]
 
+use std::f64::consts::PI;
+
 use sim_opt::{Sa, SaHyperparams};
 use sim_rl::{
     Algorithm, Cem, CemHyperparams, Environment, LinearPolicy, LinearValue, OptimizerConfig,
     Policy, Ppo, PpoHyperparams, Tensor, TrainingBudget,
 };
 use sim_therm_env::ThermCircuitEnv;
-use sim_thermostat::{DoubleWellPotential, PairwiseCoupling};
+use sim_thermostat::{DoubleWellPotential, OscillatingField, PairwiseCoupling};
 
-// ─── Parameters ──────────────────────────────────────────────────────────
+// ─── Parameters (matching D2 / Experiment 1) ─────────────────────────────
 
-const N: usize = 4; // particles
+const N: usize = 4;
 const DELTA_V: f64 = 3.0;
 const X_0: f64 = 1.0;
-const J: f64 = 0.5; // ferromagnetic coupling
 const GAMMA: f64 = 10.0;
 const K_B_T: f64 = 1.0;
+const A_0: f64 = 0.3;
+const KRAMERS_RATE: f64 = 0.01214;
 const TIMESTEP: f64 = 0.001;
 const SUB_STEPS: usize = 100;
-const EPISODE_STEPS: usize = 1000;
+const EPISODE_STEPS: usize = 5_000;
 const SEED_BASE: u64 = 20_260_416;
 
-const CTRL_RANGE_HI: f64 = 5.0; // kT ∈ [0, 5]
+const CTRL_RANGE_HI: f64 = 5.0;
 
-const OBS_DIM: usize = 2 * N; // [qpos; qvel]
-const ACT_DIM: usize = 1; // ctrl_temperature
+const OBS_DIM: usize = 2 * N;
+const ACT_DIM: usize = 1;
 
 const N_ENVS: usize = 32;
 const N_EPOCHS: usize = 100;
 const N_EVAL_EPISODES: usize = 20;
 
 /// t-critical for df=19, two-tailed α=0.01.
+const T_CRITICAL_DF19: f64 = 2.861;
+
+/// t-critical for df=9, two-tailed α=0.01.
 #[allow(dead_code)]
-const T_CRITICAL: f64 = 2.861;
-
-// ─── Target configurations ──────────────────────────────────────────────
-
-const TARGET_ALIGNED: [f64; N] = [1.0, 1.0, 1.0, 1.0];
-const TARGET_ANTI: [f64; N] = [1.0, -1.0, 1.0, -1.0];
+const T_CRITICAL_DF9: f64 = 3.250;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
+fn signal_omega() -> f64 {
+    2.0 * PI * KRAMERS_RATE
+}
+
 fn obs_scale() -> Vec<f64> {
-    let mut s = vec![1.0 / X_0; N]; // qpos scaling
-    s.extend(vec![1.0; N]); // qvel scaling
+    let mut s = vec![1.0 / X_0; N];
+    s.extend(vec![1.0; N]);
     s
 }
 
@@ -74,23 +83,21 @@ fn mean_stderr(values: &[f64]) -> (f64, f64) {
     (mean, stderr)
 }
 
-/// Configuration overlap: (1/N) × Σ sign(qpos[i]) × target[i].
-/// Returns +1 when all particles match, -1 when all are wrong.
-fn overlap(qpos: &[f64], target: &[f64; N]) -> f64 {
-    let mut sum = 0.0;
-    for i in 0..N {
-        sum += qpos[i].signum() * target[i];
-    }
-    sum / N as f64
+fn log_spaced(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    let log_lo = lo.ln();
+    let log_hi = hi.ln();
+    (0..n)
+        .map(|i| {
+            let frac = i as f64 / (n - 1) as f64;
+            (log_lo + frac * (log_hi - log_lo)).exp()
+        })
+        .collect()
 }
 
-/// Build an Ising chain env (no ctrl-temperature) at fixed kT for sweeps.
-fn make_sweep_env(
-    coupling_j: f64,
-    kt_mult: f64,
-    target: &'static [f64; N],
-    seed: u64,
-) -> sim_therm_env::ThermCircuitEnv {
+/// Build an Ising chain with oscillating field at fixed kT (no ctrl-temperature).
+/// Each particle gets its own double well + oscillating field.
+fn make_sweep_env(coupling_j: f64, kt_mult: f64, seed: u64) -> sim_therm_env::ThermCircuitEnv {
+    let omega = signal_omega();
     let mut builder = ThermCircuitEnv::builder(N)
         .gamma(GAMMA)
         .k_b_t(K_B_T * kt_mult)
@@ -100,25 +107,31 @@ fn make_sweep_env(
         .seed(seed);
 
     for i in 0..N {
-        builder = builder.with(DoubleWellPotential::new(DELTA_V, X_0, i));
+        builder = builder
+            .with(DoubleWellPotential::new(DELTA_V, X_0, i))
+            .with(OscillatingField::new(A_0, omega, 0.0, i));
     }
     if coupling_j.abs() > 1e-15 {
         builder = builder.with(PairwiseCoupling::chain(N, coupling_j));
     }
 
+    // Synchrony reward: average across all particles
     builder
-        .reward(move |_m, d| overlap(d.qpos.as_slice(), target))
+        .reward(move |_m, d| {
+            let signal = (omega * d.time).cos();
+            let mut sync = 0.0;
+            for i in 0..N {
+                sync += d.qpos[i].signum() * signal;
+            }
+            sync / N as f64
+        })
         .build()
         .unwrap()
 }
 
-/// Build a VecEnv for training with ctrl-temperature.
-fn make_training_vecenv(
-    coupling_j: f64,
-    target: &'static [f64; N],
-    n_envs: usize,
-    seed: u64,
-) -> sim_rl::VecEnv {
+/// Build a VecEnv with ctrl-temperature for training.
+fn make_training_vecenv(coupling_j: f64, n_envs: usize, seed: u64) -> sim_rl::VecEnv {
+    let omega = signal_omega();
     let mut builder = ThermCircuitEnv::builder(N)
         .gamma(GAMMA)
         .k_b_t(K_B_T)
@@ -130,21 +143,30 @@ fn make_training_vecenv(
         .ctrl_range(0.0, CTRL_RANGE_HI);
 
     for i in 0..N {
-        builder = builder.with(DoubleWellPotential::new(DELTA_V, X_0, i));
+        builder = builder
+            .with(DoubleWellPotential::new(DELTA_V, X_0, i))
+            .with(OscillatingField::new(A_0, omega, 0.0, i));
     }
     if coupling_j.abs() > 1e-15 {
         builder = builder.with(PairwiseCoupling::chain(N, coupling_j));
     }
 
     builder
-        .reward(move |_m, d| overlap(d.qpos.as_slice(), target))
+        .reward(move |_m, d| {
+            let signal = (omega * d.time).cos();
+            let mut sync = 0.0;
+            for i in 0..N {
+                sync += d.qpos[i].signum() * signal;
+            }
+            sync / N as f64
+        })
         .build_vec(n_envs)
         .unwrap()
 }
 
-/// Run one episode at fixed kT, return mean overlap per step.
-fn run_episode(coupling_j: f64, kt_mult: f64, target: &'static [f64; N], seed: u64) -> f64 {
-    let mut env = make_sweep_env(coupling_j, kt_mult, target, seed);
+/// Run one episode at fixed kT, return mean synchrony per step.
+fn run_episode(coupling_j: f64, kt_mult: f64, seed: u64) -> f64 {
+    let mut env = make_sweep_env(coupling_j, kt_mult, seed);
     let _obs = env.reset().unwrap();
     let action = Tensor::from_f64_slice(&[], &[0]);
 
@@ -161,31 +183,53 @@ fn run_episode(coupling_j: f64, kt_mult: f64, target: &'static [f64; N], seed: u
     total / f64::from(steps)
 }
 
-/// Log-spaced values.
-fn log_spaced(lo: f64, hi: f64, n: usize) -> Vec<f64> {
-    let log_lo = lo.ln();
-    let log_hi = hi.ln();
-    (0..n)
-        .map(|i| {
-            let frac = i as f64 / (n - 1) as f64;
-            (log_lo + frac * (log_hi - log_lo)).exp()
-        })
-        .collect()
+/// Temperature sweep. Returns (kt_mults, means, stderrs).
+fn temperature_sweep(
+    coupling_j: f64,
+    kt_mults: &[f64],
+    n_episodes: usize,
+    seed_offset: u64,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut means = Vec::with_capacity(kt_mults.len());
+    let mut stderrs = Vec::with_capacity(kt_mults.len());
+
+    for (i, &kt) in kt_mults.iter().enumerate() {
+        let mut episodes = Vec::with_capacity(n_episodes);
+        for ep in 0..n_episodes {
+            let seed = SEED_BASE + seed_offset + (i * 1000 + ep) as u64;
+            episodes.push(run_episode(coupling_j, kt, seed));
+        }
+        let (m, s) = mean_stderr(&episodes);
+        means.push(m);
+        stderrs.push(s);
+    }
+
+    (kt_mults.to_vec(), means, stderrs)
 }
 
-/// Evaluate a trained policy on single-env episodes. Returns overlap per episode.
+/// Find peak in a sweep. Returns (index, kt, mean, stderr).
+fn find_peak(kt_mults: &[f64], means: &[f64], stderrs: &[f64]) -> (usize, f64, f64, f64) {
+    let (idx, &peak) = means
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .unwrap();
+    (idx, kt_mults[idx], peak, stderrs[idx])
+}
+
+/// Evaluate a trained policy. Returns (synchrony_per_episode, kT_per_episode).
 fn evaluate_policy(
     policy: &dyn Policy,
     coupling_j: f64,
-    target: &'static [f64; N],
     n_episodes: usize,
     seed_offset: u64,
 ) -> (Vec<f64>, Vec<f64>) {
-    let mut overlaps = Vec::with_capacity(n_episodes);
+    let omega = signal_omega();
+    let mut synchronies = Vec::with_capacity(n_episodes);
     let mut temperatures = Vec::with_capacity(n_episodes);
 
-    for i in 0..n_episodes {
-        let seed = SEED_BASE + seed_offset + i as u64;
+    for ep in 0..n_episodes {
+        let seed = SEED_BASE + seed_offset + ep as u64;
         let mut builder = ThermCircuitEnv::builder(N)
             .gamma(GAMMA)
             .k_b_t(K_B_T)
@@ -196,21 +240,30 @@ fn evaluate_policy(
             .with_ctrl_temperature()
             .ctrl_range(0.0, CTRL_RANGE_HI);
 
-        for j in 0..N {
-            builder = builder.with(DoubleWellPotential::new(DELTA_V, X_0, j));
+        for i in 0..N {
+            builder = builder
+                .with(DoubleWellPotential::new(DELTA_V, X_0, i))
+                .with(OscillatingField::new(A_0, omega, 0.0, i));
         }
         if coupling_j.abs() > 1e-15 {
             builder = builder.with(PairwiseCoupling::chain(N, coupling_j));
         }
 
         let mut env = builder
-            .reward(move |_m, d| overlap(d.qpos.as_slice(), target))
+            .reward(move |_m, d| {
+                let signal = (omega * d.time).cos();
+                let mut sync = 0.0;
+                for i in 0..N {
+                    sync += d.qpos[i].signum() * signal;
+                }
+                sync / N as f64
+            })
             .build()
             .unwrap();
 
         let obs = env.reset().unwrap();
         let mut obs_vec: Vec<f32> = obs.as_slice().to_vec();
-        let mut total_overlap = 0.0;
+        let mut total_sync = 0.0;
         let mut total_temp = 0.0;
         let mut steps = 0;
 
@@ -219,205 +272,28 @@ fn evaluate_policy(
             total_temp += action[0] * K_B_T;
             let action_tensor = Tensor::from_f64_slice(&action, &[1]);
             let result = env.step(&action_tensor).unwrap();
-            total_overlap += result.reward;
+            total_sync += result.reward;
             obs_vec = result.observation.as_slice().to_vec();
             steps += 1;
             if result.truncated {
                 break;
             }
         }
-        overlaps.push(total_overlap / steps as f64);
+        synchronies.push(total_sync / steps as f64);
         temperatures.push(total_temp / steps as f64);
     }
-    (overlaps, temperatures)
+    (synchronies, temperatures)
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// TESTS
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[test]
-#[ignore = "requires --release (~3 min)"]
-fn ising_controls() {
-    let n_episodes = 10;
-
-    eprintln!("\n=== Ising chain: Controls ===");
-
-    // ── Control 1: No coupling (J=0), moderate kT ────────────────────
-    // Particles are independent — each settles randomly. Mean overlap ≈ 0.
-    eprintln!("\n--- Control 1: J=0 (uncoupled), kT=1.0 ---");
-    let mut uncoupled = Vec::with_capacity(n_episodes);
-    for ep in 0..n_episodes {
-        uncoupled.push(run_episode(
-            0.0,
-            1.0,
-            &TARGET_ALIGNED,
-            SEED_BASE + ep as u64,
-        ));
-    }
-    let (uc_mean, uc_stderr) = mean_stderr(&uncoupled);
-    eprintln!("  overlap = {uc_mean:.4} +/- {uc_stderr:.4}");
-
-    // ── Control 2: With coupling (J=0.5), kT=0.1 (frozen) ───────────
-    // System frozen in whatever configuration it starts in.
-    eprintln!("\n--- Control 2: J=0.5, kT=0.1 (frozen) ---");
-    let mut frozen = Vec::with_capacity(n_episodes);
-    for ep in 0..n_episodes {
-        frozen.push(run_episode(
-            J,
-            0.1,
-            &TARGET_ALIGNED,
-            SEED_BASE + 1000 + ep as u64,
-        ));
-    }
-    let (fr_mean, fr_stderr) = mean_stderr(&frozen);
-    eprintln!("  overlap = {fr_mean:.4} +/- {fr_stderr:.4}");
-
-    // ── Control 3: With coupling (J=0.5), kT=5.0 (randomized) ───────
-    // System too hot — random switching, overlap ≈ 0.
-    eprintln!("\n--- Control 3: J=0.5, kT=5.0 (randomized) ---");
-    let mut hot = Vec::with_capacity(n_episodes);
-    for ep in 0..n_episodes {
-        hot.push(run_episode(
-            J,
-            5.0,
-            &TARGET_ALIGNED,
-            SEED_BASE + 2000 + ep as u64,
-        ));
-    }
-    let (hot_mean, hot_stderr) = mean_stderr(&hot);
-    eprintln!("  overlap = {hot_mean:.4} +/- {hot_stderr:.4}");
-
-    // ── Control 4: Ferromagnetic coupling favors alignment ───────────
-    // At moderate kT with J>0, the aligned target should have positive
-    // overlap (coupling biases toward all-same-sign states).
-    eprintln!("\n--- Control 4: J=0.5, kT=1.0, target=[+1,+1,+1,+1] ---");
-    let mut coupled = Vec::with_capacity(n_episodes);
-    for ep in 0..n_episodes {
-        coupled.push(run_episode(
-            J,
-            1.0,
-            &TARGET_ALIGNED,
-            SEED_BASE + 3000 + ep as u64,
-        ));
-    }
-    let (cp_mean, cp_stderr) = mean_stderr(&coupled);
-    eprintln!("  overlap = {cp_mean:.4} +/- {cp_stderr:.4}");
-
-    // Print summary
-    eprintln!("\n  Summary:");
-    eprintln!("    Uncoupled (J=0):     {uc_mean:+.4} +/- {uc_stderr:.4}");
-    eprintln!("    Frozen (kT=0.1):     {fr_mean:+.4} +/- {fr_stderr:.4}");
-    eprintln!("    Randomized (kT=5):   {hot_mean:+.4} +/- {hot_stderr:.4}");
-    eprintln!("    Coupled (J=0.5):     {cp_mean:+.4} +/- {cp_stderr:.4}");
-    eprintln!("  Controls: PASS (manual inspection)");
-}
-
-#[test]
-#[ignore = "requires --release (~10 min)"]
-fn ising_sr_sweep() {
-    let kt_mults = log_spaced(0.1, 5.0, 20);
-    let n_episodes = 10;
-
-    eprintln!("\n=== Ising chain: SR sweep (target=[+1,+1,+1,+1]) ===");
-
-    eprintln!("\n  kT_mult  |  overlap   |  stderr");
-    eprintln!("  ---------|------------|--------");
-
-    let mut means = Vec::with_capacity(kt_mults.len());
-    let mut stderrs = Vec::with_capacity(kt_mults.len());
-
-    for (i, &kt) in kt_mults.iter().enumerate() {
-        let mut episodes = Vec::with_capacity(n_episodes);
-        for ep in 0..n_episodes {
-            let seed = SEED_BASE + 10_000 + (i * 1000 + ep) as u64;
-            episodes.push(run_episode(J, kt, &TARGET_ALIGNED, seed));
-        }
-        let (m, s) = mean_stderr(&episodes);
-        means.push(m);
-        stderrs.push(s);
-        eprintln!("  {kt:7.4}  |  {m:+.6}  |  {s:.6}");
-    }
-
-    // Find peak
-    let (peak_idx, &peak_mean) = means
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        .unwrap();
-    let peak_kt = kt_mults[peak_idx];
-    let peak_stderr = stderrs[peak_idx];
-
-    eprintln!("\n  Peak: kT={peak_kt:.4}, overlap={peak_mean:.4} +/- {peak_stderr:.4}");
-
-    let t_stat = if peak_stderr > 1e-15 {
-        peak_mean / peak_stderr
-    } else {
-        0.0
-    };
-    eprintln!("  |t| = {:.2}", t_stat.abs());
-
-    // Gate: peak is significant and positive
-    assert!(
-        peak_mean > 0.0,
-        "SR peak overlap should be positive, got {peak_mean:.4}"
-    );
-    eprintln!("  SR sweep: PASS (peak is positive and interior)");
-}
-
-/// Create a CEM instance with standard hyperparameters for Ising chain tests.
-fn make_cem() -> Cem {
-    let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-    Cem::new(
-        Box::new(policy),
-        CemHyperparams {
-            elite_fraction: 0.2,
-            noise_std: 2.0,
-            noise_decay: 0.97,
-            noise_min: 0.1,
-            max_episode_steps: EPISODE_STEPS,
-        },
-    )
-}
-
-#[test]
-#[ignore = "requires --release (~10 min)"]
-fn ising_cem_encoding() {
-    eprintln!("\n=== Ising chain: CEM X-encoding (target=[+1,+1,+1,+1]) ===");
-    let mut cem = make_cem();
-    train_and_report("CEM", &mut cem, J, &TARGET_ALIGNED, SEED_BASE, 50_000);
-}
-
-#[test]
-#[ignore = "requires --release (~10 min)"]
-fn ising_hard_target() {
-    eprintln!("\n=== Ising chain: CEM hard target (target=[+1,-1,+1,-1]) ===");
-    eprintln!("  (Anti-aligned pattern fights ferromagnetic coupling J={J})");
-    let mut cem = make_cem();
-    train_and_report(
-        "CEM(hard)",
-        &mut cem,
-        J,
-        &TARGET_ANTI,
-        SEED_BASE + 300,
-        60_000,
-    );
-}
-
-// ─── Shared train-and-report ─────────────────────────────────────────────
-
-/// Train an algorithm on the Ising chain, evaluate, report gates.
-/// Returns `(overlap_mean, overlap_stderr, learned_kT)`.
+/// Train, evaluate, report. Returns (sync_mean, sync_stderr, learned_kT).
 fn train_and_report(
     name: &str,
     algo: &mut dyn Algorithm,
     coupling_j: f64,
-    target: &'static [f64; N],
     seed: u64,
     eval_offset: u64,
 ) -> (f64, f64, f64) {
-    let mut env = make_training_vecenv(coupling_j, target, N_ENVS, seed);
+    let mut env = make_training_vecenv(coupling_j, N_ENVS, seed);
 
     eprintln!("\n--- {name}: training ({N_EPOCHS} epochs, {N_ENVS} envs) ---");
 
@@ -430,136 +306,66 @@ fn train_and_report(
         }
     });
 
-    // Gate B: learning monotonicity
-    let first_5_mean: f64 = metrics[..5].iter().map(|m| m.mean_reward).sum::<f64>() / 5.0;
+    // Gate B
+    let first_5: f64 = metrics[..5].iter().map(|m| m.mean_reward).sum::<f64>() / 5.0;
     let best_last_10 = metrics[metrics.len().saturating_sub(10)..]
         .iter()
         .map(|m| m.mean_reward)
         .fold(f64::NEG_INFINITY, f64::max);
-    let gate_b = best_last_10 > first_5_mean;
     eprintln!(
-        "  {name} Gate B: first_5={first_5_mean:.4}, best_last_10={best_last_10:.4} -> {}",
-        if gate_b { "PASS" } else { "FAIL" }
+        "  {name} Gate B: first_5={first_5:.4}, best_last_10={best_last_10:.4} -> {}",
+        if best_last_10 > first_5 {
+            "PASS"
+        } else {
+            "FAIL"
+        }
     );
 
-    // Evaluate
     let trained = algo.policy_artifact().to_policy().unwrap();
-    let (overlaps, temps) = evaluate_policy(
-        trained.as_ref(),
-        coupling_j,
-        target,
-        N_EVAL_EPISODES,
-        eval_offset,
-    );
-    let (ov_mean, ov_stderr) = mean_stderr(&overlaps);
-    let (temp_mean, _temp_stderr) = mean_stderr(&temps);
+    let (syncs, temps) =
+        evaluate_policy(trained.as_ref(), coupling_j, N_EVAL_EPISODES, eval_offset);
+    let (sync_mean, sync_stderr) = mean_stderr(&syncs);
+    let (temp_mean, _) = mean_stderr(&temps);
 
-    eprintln!("  {name} eval: overlap = {ov_mean:.4} +/- {ov_stderr:.4}");
+    eprintln!("  {name} eval: synchrony = {sync_mean:.6} +/- {sync_stderr:.6}");
     eprintln!("  {name} eval: kT = {temp_mean:.4}");
 
-    // Gate A: significant positive overlap
-    let t_stat = if ov_stderr > 1e-15 {
-        ov_mean / ov_stderr
+    let t_stat = if sync_stderr > 1e-15 {
+        sync_mean / sync_stderr
     } else {
         0.0
     };
     eprintln!("  {name} Gate A: |t| = {:.2}", t_stat.abs());
 
-    // Gate D: report learned weights
     let params = trained.params();
     if params.len() <= 20 {
-        eprintln!("  {name} params ({} total):", params.len());
-        eprintln!("    qpos weights: {:?}", &params[..N]);
-        eprintln!("    qvel weights: {:?}", &params[N..2 * N]);
-        eprintln!("    bias:         {:.4}", params[2 * N]);
+        eprintln!("  {name} params: qpos={:?}", &params[..N]);
+        eprintln!("  {name} params: qvel={:?}", &params[N..2 * N]);
+        eprintln!("  {name} params: bias={:.4}", params[2 * N]);
     }
 
-    let qpos_weight_norm: f64 = params[..N].iter().map(|w| w * w).sum::<f64>().sqrt();
-    eprintln!(
-        "  {name} Gate D: qpos weight norm = {qpos_weight_norm:.4} -> {}",
-        if qpos_weight_norm > 0.1 {
-            "state-dependent"
-        } else {
-            "constant policy"
-        }
-    );
-
-    assert!(gate_b, "{name} Gate B FAILED: no learning improvement");
-    assert!(
-        ov_mean > 0.0,
-        "{name} should achieve positive overlap, got {ov_mean:.4}"
-    );
-    eprintln!("  {name}: PASS");
-
-    (ov_mean, ov_stderr, temp_mean)
+    (sync_mean, sync_stderr, temp_mean)
 }
 
-// ─── PPO training ────────────────────────────────────────────────────────
-
-#[test]
-#[ignore = "requires --release (~10 min)"]
-fn ising_ppo_encoding() {
-    eprintln!("\n=== Ising chain: PPO X-encoding (target=[+1,+1,+1,+1]) ===");
-
-    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    let value_fn = LinearValue::new(OBS_DIM, &obs_scale());
-    let mut algo = Ppo::new(
+fn make_cem() -> Cem {
+    let mut policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
+    policy.set_params(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0]);
+    Cem::new(
         Box::new(policy),
-        Box::new(value_fn),
-        OptimizerConfig::adam(3e-4),
-        PpoHyperparams {
-            clip_eps: 0.2,
-            k_passes: 4,
-            gamma: 0.99,
-            gae_lambda: 0.95,
-            sigma_init: 1.0,
-            sigma_decay: 0.995,
-            sigma_min: 0.1,
+        CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 2.5,
+            noise_decay: 0.98,
+            noise_min: 0.1,
             max_episode_steps: EPISODE_STEPS,
         },
-    );
-
-    train_and_report(
-        "PPO",
-        &mut algo,
-        J,
-        &TARGET_ALIGNED,
-        SEED_BASE + 100,
-        70_000,
-    );
+    )
 }
 
-// ─── SA training (sim-opt) ───────────────────────────────────────────────
-
-#[test]
-#[ignore = "requires --release (~10 min)"]
-fn ising_sa_encoding() {
-    eprintln!("\n=== Ising chain: SA X-encoding (target=[+1,+1,+1,+1]) ===");
-
-    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    let mut algo = Sa::new(
-        Box::new(policy),
-        SaHyperparams {
-            initial_temperature: 50.0,
-            proposal_std: 1.0,
-            cooling_decay: 0.955,
-            temperature_min: 0.1,
-            max_episode_steps: EPISODE_STEPS,
-        },
-    );
-
-    train_and_report("SA", &mut algo, J, &TARGET_ALIGNED, SEED_BASE + 200, 80_000);
-}
-
-// ─── Coupling strength sweep (Step 4) ────────────────────────────────────
-
-/// Create a PPO instance with standard hyperparameters for Ising chain tests.
 fn make_ppo() -> Ppo {
-    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
-    let value_fn = LinearValue::new(OBS_DIM, &obs_scale());
     Ppo::new(
-        Box::new(policy),
-        Box::new(value_fn),
+        Box::new(LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale())),
+        Box::new(LinearValue::new(OBS_DIM, &obs_scale())),
         OptimizerConfig::adam(3e-4),
         PpoHyperparams {
             clip_eps: 0.2,
@@ -574,11 +380,9 @@ fn make_ppo() -> Ppo {
     )
 }
 
-/// Create an SA instance with standard hyperparameters for Ising chain tests.
 fn make_sa() -> Sa {
-    let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale());
     Sa::new(
-        Box::new(policy),
+        Box::new(LinearPolicy::new(OBS_DIM, ACT_DIM, &obs_scale())),
         SaHyperparams {
             initial_temperature: 50.0,
             proposal_std: 1.0,
@@ -589,123 +393,324 @@ fn make_sa() -> Sa {
     )
 }
 
-/// Row in the coupling sweep results table.
-struct SweepRow {
-    j: f64,
-    algo: &'static str,
-    overlap: f64,
-    stderr: f64,
-    learned_kt: f64,
+// ═══════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Controls: validate the coupled SR system behaves correctly at extremes.
+#[test]
+#[ignore = "requires --release (~3 min)"]
+fn ising_sr_controls() {
+    let n_episodes = 10;
+
+    eprintln!("\n=== Ising SR: Controls ===");
+
+    // Low noise (kT x 0.1): particles trapped, no switching, zero synchrony
+    eprintln!("\n--- Low noise (kT x 0.1) ---");
+    let mut low = Vec::with_capacity(n_episodes);
+    for ep in 0..n_episodes {
+        low.push(run_episode(0.5, 0.1, SEED_BASE + ep as u64));
+    }
+    let (low_mean, low_stderr) = mean_stderr(&low);
+    eprintln!("  synchrony = {low_mean:.6} +/- {low_stderr:.6}");
+    assert!(
+        low_mean.abs() < 3.0 * low_stderr,
+        "Low noise: |mean|={:.6} >= 3*stderr",
+        low_mean.abs()
+    );
+    eprintln!("  PASS");
+
+    // High noise (kT x 5): random switching, zero synchrony
+    eprintln!("\n--- High noise (kT x 5.0) ---");
+    let mut high = Vec::with_capacity(n_episodes);
+    for ep in 0..n_episodes {
+        high.push(run_episode(0.5, 5.0, SEED_BASE + 1000 + ep as u64));
+    }
+    let (high_mean, high_stderr) = mean_stderr(&high);
+    eprintln!("  synchrony = {high_mean:.6} +/- {high_stderr:.6}");
+    assert!(
+        high_mean.abs() < 3.0 * high_stderr,
+        "High noise: |mean|={:.6} >= 3*stderr",
+        high_mean.abs()
+    );
+    eprintln!("  PASS");
+
+    // No signal (A₀=0): metric validates to zero
+    eprintln!("\n--- No signal (A0=0) ---");
+    let omega = signal_omega();
+    let mut nosig = Vec::with_capacity(n_episodes);
+    for ep in 0..n_episodes {
+        let seed = SEED_BASE + 2000 + ep as u64;
+        let mut builder = ThermCircuitEnv::builder(N)
+            .gamma(GAMMA)
+            .k_b_t(K_B_T * 1.5)
+            .timestep(TIMESTEP)
+            .sub_steps(SUB_STEPS)
+            .episode_steps(EPISODE_STEPS)
+            .seed(seed);
+        for i in 0..N {
+            builder = builder
+                .with(DoubleWellPotential::new(DELTA_V, X_0, i))
+                .with(OscillatingField::new(0.0, omega, 0.0, i)); // A₀=0
+        }
+        builder = builder.with(PairwiseCoupling::chain(N, 0.5));
+        let mut env = builder
+            .reward(move |_m, d| {
+                let sig = (omega * d.time).cos();
+                (0..N).map(|i| d.qpos[i].signum() * sig).sum::<f64>() / N as f64
+            })
+            .build()
+            .unwrap();
+
+        let _obs = env.reset().unwrap();
+        let action = Tensor::from_f64_slice(&[], &[0]);
+        let mut total = 0.0;
+        let mut steps = 0;
+        loop {
+            let r = env.step(&action).unwrap();
+            total += r.reward;
+            steps += 1;
+            if r.truncated || r.done {
+                break;
+            }
+        }
+        nosig.push(total / f64::from(steps));
+    }
+    let (nosig_mean, nosig_stderr) = mean_stderr(&nosig);
+    eprintln!("  synchrony = {nosig_mean:.6} +/- {nosig_stderr:.6}");
+    assert!(
+        nosig_mean.abs() < 3.0 * nosig_stderr,
+        "No signal: |mean|={:.6} >= 3*stderr",
+        nosig_mean.abs()
+    );
+    eprintln!("  PASS");
 }
 
+/// Baseline: SR peak on uncoupled 4-particle system (J=0).
+/// Should reproduce the 1-particle result (kT≈1.70) since particles are independent.
+#[test]
+#[ignore = "requires --release (~10 min)"]
+fn ising_sr_uncoupled_baseline() {
+    let kt_mults = log_spaced(0.1, 5.0, 20);
+    let n_episodes = 20;
+
+    eprintln!("\n=== Ising SR: Uncoupled baseline (J=0) ===");
+    eprintln!("  Should reproduce 1-particle SR peak at kT~1.70\n");
+
+    let (kts, means, stderrs) = temperature_sweep(0.0, &kt_mults, n_episodes, 0);
+
+    eprintln!("  kT_mult  |  synchrony   |  stderr");
+    eprintln!("  ---------|--------------|--------");
+    for i in 0..kts.len() {
+        eprintln!(
+            "  {:7.4}  |  {:+.6}   |  {:.6}",
+            kts[i], means[i], stderrs[i]
+        );
+    }
+
+    let (peak_idx, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+    eprintln!("\n  Peak: kT={peak_kt:.4}, synchrony={peak_sync:.6} +/- {peak_se:.6}");
+
+    let t = if peak_se > 1e-15 {
+        peak_sync / peak_se
+    } else {
+        0.0
+    };
+    eprintln!("  |t| = {t:.2} (critical = {T_CRITICAL_DF19:.3})");
+
+    assert!(
+        t.abs() > T_CRITICAL_DF19,
+        "Peak not significant: |t|={t:.2}"
+    );
+    assert!(
+        peak_idx > 0 && peak_idx < kts.len() - 1,
+        "Peak at boundary (idx={peak_idx})"
+    );
+    eprintln!("  Uncoupled baseline: PASS");
+}
+
+/// Core result: SR peak on coupled 4-particle chain (J=0.5).
+/// Does coupling shift, enhance, or destroy the SR peak?
+#[test]
+#[ignore = "requires --release (~10 min)"]
+fn ising_sr_coupled() {
+    let kt_mults = log_spaced(0.1, 5.0, 20);
+    let n_episodes = 20;
+
+    eprintln!("\n=== Ising SR: Coupled chain (J=0.5) ===");
+    eprintln!("  Does coupling shift the SR peak?\n");
+
+    let (kts, means, stderrs) = temperature_sweep(0.5, &kt_mults, n_episodes, 10_000);
+
+    eprintln!("  kT_mult  |  synchrony   |  stderr");
+    eprintln!("  ---------|--------------|--------");
+    for i in 0..kts.len() {
+        eprintln!(
+            "  {:7.4}  |  {:+.6}   |  {:.6}",
+            kts[i], means[i], stderrs[i]
+        );
+    }
+
+    let (_idx, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+    eprintln!("\n  Peak: kT={peak_kt:.4}, synchrony={peak_sync:.6} +/- {peak_se:.6}");
+
+    let t = if peak_se > 1e-15 {
+        peak_sync / peak_se
+    } else {
+        0.0
+    };
+    eprintln!("  |t| = {t:.2} (critical = {T_CRITICAL_DF19:.3})");
+
+    eprintln!("  Compare to 1-particle: peak kT=1.70, synchrony=0.090");
+    eprintln!("  Compare to uncoupled baseline: run ising_sr_uncoupled_baseline");
+}
+
+/// Full sweep: SR peak at J={0.0, 0.1, 0.5, 1.0, 2.0}.
+/// Maps how coupling strength shifts the optimal noise temperature.
+/// Then trains CEM, PPO, SA at each J to see if RL discovers the peak.
 #[test]
 #[ignore = "requires --release (~2 hours)"]
-fn ising_coupling_sweep() {
-    let j_values = [0.1, 0.5, 1.0, 2.0];
+#[allow(clippy::items_after_statements)]
+fn ising_sr_coupling_sweep() {
+    let j_values = [0.0, 0.1, 0.5, 1.0, 2.0];
+    let kt_mults = log_spaced(0.1, 5.0, 15);
+    let n_sweep_episodes = 10;
 
-    eprintln!("\n=== COUPLING SWEEP: 3 algorithms x 4 coupling strengths ===");
-    eprintln!("  Target: [+1, -1, +1, -1] (anti-aligned, fights ferromagnetic coupling)");
-    eprintln!("  Algorithms: CEM (evolutionary), PPO (policy gradient), SA (gradient-free opt)");
-    eprintln!("  J values: {j_values:?}\n");
+    eprintln!("\n=== ISING SR COUPLING SWEEP ===");
+    eprintln!("  Does the SR peak shift with coupling strength?");
+    eprintln!("  J values: {j_values:?}");
+    eprintln!("  Then: CEM, PPO, SA training at each J\n");
 
-    let mut rows: Vec<SweepRow> = Vec::new();
+    // ── Phase 1: Temperature sweeps ──────────────────────────────────
+    eprintln!("  Phase 1: Temperature sweeps\n");
+
+    struct SweepResult {
+        j: f64,
+        peak_kt: f64,
+        peak_sync: f64,
+        peak_stderr: f64,
+        peak_t: f64,
+    }
+    let mut sweep_results: Vec<SweepResult> = Vec::new();
+
+    for (i, &j) in j_values.iter().enumerate() {
+        eprintln!("  --- J={j} sweep ---");
+        let (kts, means, stderrs) =
+            temperature_sweep(j, &kt_mults, n_sweep_episodes, i as u64 * 20_000);
+        let (_, peak_kt, peak_sync, peak_se) = find_peak(&kts, &means, &stderrs);
+        let t = if peak_se > 1e-15 {
+            peak_sync / peak_se
+        } else {
+            0.0
+        };
+        eprintln!("    peak: kT={peak_kt:.4}, sync={peak_sync:.6} +/- {peak_se:.6}, |t|={t:.2}");
+        sweep_results.push(SweepResult {
+            j,
+            peak_kt,
+            peak_sync,
+            peak_stderr: peak_se,
+            peak_t: t,
+        });
+    }
+
+    eprintln!("\n  Sweep summary:");
+    eprintln!("  J      |  peak kT  |  peak sync     |  |t|");
+    eprintln!("  -------|-----------|----------------|------");
+    for r in &sweep_results {
+        eprintln!(
+            "  {:5.2}  |  {:7.4}  |  {:.6} +/- {:.6}  |  {:.2}",
+            r.j, r.peak_kt, r.peak_sync, r.peak_stderr, r.peak_t
+        );
+    }
+
+    // ── Phase 2: Multi-algorithm training at each J ──────────────────
+    eprintln!("\n\n  Phase 2: Multi-algorithm training\n");
+
+    struct TrainResult {
+        j: f64,
+        algo: &'static str,
+        sync: f64,
+        stderr: f64,
+        learned_kt: f64,
+    }
+    let mut train_results: Vec<TrainResult> = Vec::new();
 
     for (i, &j) in j_values.iter().enumerate() {
         eprintln!("\n  ============================================================");
         eprintln!("  J = {j}  ({}/{})", i + 1, j_values.len());
         eprintln!("  ============================================================");
 
-        let base_seed = SEED_BASE + 400 + i as u64 * 1000;
-        let base_eval = 100_000 + i as u64 * 30_000;
+        let base_seed = SEED_BASE + 500 + i as u64 * 1000;
+        let base_eval = 200_000 + i as u64 * 30_000;
 
-        // CEM
         let mut cem = make_cem();
-        let (ov, se, kt) = train_and_report(
-            &format!("CEM(J={j})"),
-            &mut cem,
-            j,
-            &TARGET_ANTI,
-            base_seed,
-            base_eval,
-        );
-        rows.push(SweepRow {
+        let (s, se, kt) =
+            train_and_report(&format!("CEM(J={j})"), &mut cem, j, base_seed, base_eval);
+        train_results.push(TrainResult {
             j,
             algo: "CEM",
-            overlap: ov,
+            sync: s,
             stderr: se,
             learned_kt: kt,
         });
 
-        // PPO
         let mut ppo = make_ppo();
-        let (ov, se, kt) = train_and_report(
+        let (s, se, kt) = train_and_report(
             &format!("PPO(J={j})"),
             &mut ppo,
             j,
-            &TARGET_ANTI,
             base_seed + 100,
             base_eval + 10_000,
         );
-        rows.push(SweepRow {
+        train_results.push(TrainResult {
             j,
             algo: "PPO",
-            overlap: ov,
+            sync: s,
             stderr: se,
             learned_kt: kt,
         });
 
-        // SA
         let mut sa = make_sa();
-        let (ov, se, kt) = train_and_report(
+        let (s, se, kt) = train_and_report(
             &format!("SA(J={j})"),
             &mut sa,
             j,
-            &TARGET_ANTI,
             base_seed + 200,
             base_eval + 20_000,
         );
-        rows.push(SweepRow {
+        train_results.push(TrainResult {
             j,
             algo: "SA",
-            overlap: ov,
+            sync: s,
             stderr: se,
             learned_kt: kt,
         });
     }
 
-    // ── Summary table ────────────────────────────────────────────────
+    // ── Final summary ────────────────────────────────────────────────
     eprintln!("\n\n  ======================================================================");
-    eprintln!("  COUPLING SWEEP RESULTS");
-    eprintln!("  Target: [+1, -1, +1, -1]");
+    eprintln!("  FINAL RESULTS: SR peak vs learned temperature");
     eprintln!("  ======================================================================\n");
-    eprintln!("  J      | Algo |  overlap       |  learned kT");
-    eprintln!("  -------|------|----------------|------------");
-    for r in &rows {
+
+    eprintln!("  Baseline sweep peaks:");
+    eprintln!("  J      |  peak kT  |  peak sync");
+    eprintln!("  -------|-----------|----------");
+    for r in &sweep_results {
         eprintln!(
-            "  {:5.2}  | {:4} |  {:+.4} +/- {:.4}  |  {:.4}",
-            r.j, r.algo, r.overlap, r.stderr, r.learned_kt,
+            "  {:5.2}  |  {:7.4}  |  {:+.6}",
+            r.j, r.peak_kt, r.peak_sync
         );
     }
 
-    // ── Per-algorithm trend ──────────────────────────────────────────
-    eprintln!("\n  Per-algorithm trend (J=0.1 vs J=2.0):");
-    for algo in &["CEM", "PPO", "SA"] {
-        let first = rows
-            .iter()
-            .find(|r| r.algo == *algo && (r.j - 0.1).abs() < 0.01);
-        let last = rows
-            .iter()
-            .find(|r| r.algo == *algo && (r.j - 2.0).abs() < 0.01);
-        if let (Some(f), Some(l)) = (first, last) {
-            let trend = if f.overlap > l.overlap {
-                "decreasing (expected)"
-            } else {
-                "UNEXPECTED"
-            };
-            eprintln!(
-                "    {algo}: {:.4} -> {:.4}  [{trend}]",
-                f.overlap, l.overlap
-            );
-        }
+    eprintln!("\n  Algorithm training results:");
+    eprintln!("  J      | Algo |  synchrony      |  learned kT");
+    eprintln!("  -------|------|-----------------|------------");
+    for r in &train_results {
+        eprintln!(
+            "  {:5.2}  | {:4} |  {:+.6} +/- {:.6}  |  {:.4}",
+            r.j, r.algo, r.sync, r.stderr, r.learned_kt
+        );
     }
+
+    eprintln!("\n  Key question: does learned kT track the sweep peak across J values?");
 }
