@@ -1,3 +1,16 @@
 # Contact-driven micro-wrinkles
 
-> _stub — overview of: Normal maps from contact pressure, Displacement mapping_
+When a silicone surface bends tightly around an external feature — a probe's rim, a finger joint, a ridge — the surface develops micro-scale wrinkles that are finer than the simulation mesh can resolve. A 30k-tet mesh at canonical scale has edge lengths of ≈0.3 mm; wrinkles on silicone in tight contact are 10–100 μm in spacing. Capturing them via mesh refinement would require a 300k-tet mesh that exceeds Phase E's budget. The alternative, and `sim-soft`'s commitment, is to derive wrinkles from **contact pressure** at shader time rather than at simulation time.
+
+| Section | What it covers |
+|---|---|
+| [Normal maps from contact pressure](02-micro-wrinkles/00-contact-normals.md) | Per-pixel normal perturbation driven by the contact-pressure gradient. Pressure peaks produce local normal variation at the shader level, giving the wrinkled appearance without refining the mesh |
+| [Displacement mapping](02-micro-wrinkles/01-displacement.md) | Optional displacement for silhouette-level wrinkles (tangent to the surface, not just normal). Phase I+ feature; costs an extra subdivision pass; enabled for close-up shots |
+
+Three claims.
+
+**Wrinkles are physics, rendered with shader math.** The contact pressure field is a quantity `sim-soft` already produces — [IPC's barrier energy](../40-contact/01-ipc-internals/03-energy.md) gives per-contact-pair force, which integrates to per-surface-vertex contact pressure via [`readout/`](../110-crate/00-module-layout/09-readout.md). A shader reads this per-vertex pressure, computes its spatial gradient, and perturbs the normal perpendicular to the gradient direction. High-gradient zones (contact edges, tight wrapping) develop visible normal variation; uniform-pressure zones (flat resting contact) stay smooth. The result visually matches what silicone does physically under tight contact — not because the simulation resolved the wrinkles, but because the shader algorithmically reconstructs them from the physics signal.
+
+**Not a normal-map bakery.** Games-industry micro-wrinkle pipelines typically bake normal maps at authoring time (artist paints the wrinkle pattern, or a script generates it from a reference photo). `sim-soft` rejects this because the wrinkle pattern is a function of the *current deformation* and the *current contact pressure* — both runtime values. A baked map would be wrong for any deformation different from the one it was baked against; a procedural-from-pressure shader is correct for any configuration the physics produces. The thesis commitment [from Part 1 Ch 03](../10-physical/03-thesis.md) that there is no normal-map bakery layer is exactly this decision.
+
+**Displacement is optional, Phase I+ polish.** Normal-map-based wrinkles look correct when viewed from non-grazing angles but fail at silhouette edges — the silhouette is determined by the coarse mesh, not by the displacement pattern. Displacement mapping (vertex-level or tessellation-stage perturbation) fixes the silhouette at extra GPU cost (one pass of subdivision + displacement before the main shader). Phase I's SSS + anisotropic + normal-wrinkle shader ships without displacement; displacement lands as a polish feature once the core visual is validated, and is gated behind a quality-tier config.
