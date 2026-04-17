@@ -1,3 +1,17 @@
 # Active learning — what to print next
 
-> _stub — overview of: Information-theoretic criteria, Cost-aware active learning_
+[Ch 02's BayesOpt](02-bayesopt.md) answers "what $\theta$ should the simulator evaluate next?" Active learning answers a strictly harder question: "what $\theta$ should the *physical printer* fabricate next, given that printing takes hours and costs real money, and simulating takes milliseconds and costs effectively nothing?" The two questions have the same shape — pick the next sample to maximize expected information about the reward surface — but the cost asymmetry between simulation (sub-second, essentially free compute) and physical printing (hours of machine time, material and labor cost per part) changes every acquisition design choice.
+
+This chapter is a standard parent. The two sub-chapters walk the information-theoretic foundation and the cost-aware extension.
+
+| Section | What it covers |
+|---|---|
+| [Information-theoretic criteria](04-active-learning/00-info-criteria.md) | Expected information gain — choose $\theta$ that maximally reduces posterior entropy of the reward-surface GP, equivalently the GP posterior over the sim-to-real residual. Max-value entropy search (Wang & Jegelka 2017), predictive entropy search, BALD (Houlsby et al. 2011) |
+| [Cost-aware active learning](04-active-learning/01-cost-aware.md) | Normalize information gain by evaluation cost: argmax $\text{IG}(\theta) / \text{cost}(\theta)$. Cost depends on edit classification (50 ms vs 1500 ms for sim) and batching structure (one print job amortizes fixed setup cost across ≈4–8 designs) |
+
+Two claims Ch 04 rests on:
+
+1. **Active learning is not optional at the physical-print layer.** A typical consumer SLA-printed design in silicone-like material takes 2–8 hours of machine time plus post-processing; a batch of 4–8 designs is roughly a day's work. Per [Ch 06's budget](06-full-loop.md), the designer produces 1–2 such batches per week, totaling 5–20 physical samples per week. At that sample rate, each print has to be informative about the *posterior* over the reward surface, not just an independent fitness evaluation — otherwise the sim-to-real loop in [Ch 05](05-sim-to-real.md) converges at a rate the weeks-long clock cannot sustain. Passive random printing would need several times more prints for the same residual-GP convergence, which blows past the wall-clock budget.
+2. **The cost-aware formulation is load-bearing, not an optimization.** Cost-aware information gain — maximize $\text{IG}(\theta) / c(\theta)$ rather than $\text{IG}(\theta)$ alone — is what makes it coherent to mix sim evaluations (50 ms, essentially free) and print evaluations (hours, expensive, ground-truth) in the same acquisition loop. Without the cost normalization the algorithm would exclusively propose prints; with it, the algorithm mostly proposes sim evaluations and proposes a print only when the sim posterior has saturated the available cheap information. The cost-aware BayesOpt literature (multi-fidelity BayesOpt, cost-weighted EI) supplies the acquisition machinery; [Ch 05](05-sim-to-real.md) supplies the residual-GP the acquisitions are computed against.
+
+This chapter scopes with [Ch 05's sim-to-real loop](05-sim-to-real.md): active learning chooses prints, sim-to-real uses the print outcomes to update the residual GP. The two are the two halves of the outer-loop of [Ch 06's full design-print-rate loop](06-full-loop.md); neither works without the other.
