@@ -5,7 +5,7 @@ Adaptive refinement is the taxonomy — three ways to increase local mesh fideli
 | Section | What it covers |
 |---|---|
 | [Stress-driven h-refinement](02-adaptive/00-h-refinement.md) | Subdivide tets where stress gradient across neighbors exceeds a threshold; see [Part 7 Ch 03](../70-sdf-pipeline/03-adaptive-refine.md) for the `sim-soft` commitment and implementation |
-| [p-refinement](02-adaptive/01-p-refinement.md) | Upgrade specific elements from Tet4 to Tet10 (one order higher shape functions). Complementary to h-refinement, not an alternative; Phase H's Tet10-in-contact-band pattern is a manual p-refinement. Fully adaptive p-refinement is deferred |
+| [p-refinement](02-adaptive/01-p-refinement.md) | Upgrade specific elements from Tet4 to Tet10 (one order higher shape functions). Complementary to h-refinement, not an alternative; Phase H's Tet10-in-contact-band pattern is a manual p-refinement. Fully adaptive p-refinement is a post-Phase-I concern (per Ch 00 Claim 4) |
 | [Contact-driven refinement](02-adaptive/02-contact-driven.md) | Refine tets near active IPC contact pairs regardless of stress magnitude. Rejected as default (refines too aggressively on glancing contact, not enough on internal stress concentrations); could be available as a debug flag |
 
 Two claims.
