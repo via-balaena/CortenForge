@@ -1,3 +1,17 @@
 # wgpu compute kernel layout
 
-> _stub — overview of: Kernel types, Bind group design, Async scheduling_
+`sim-soft`'s GPU path is a wgpu compute-kernel pipeline, not a CUDA or ROCm native one. This is a cross-vendor commitment: wgpu runs on Metal (Apple), Vulkan (Linux/Windows NVIDIA/AMD/Intel), DirectX 12 (Windows), and WebGPU (browsers). The engineering cost of vendor-native code is not worth the ≈20–30% single-vendor performance ceiling for a design-tool-class simulator; web and mobile reachability matter more than the gap to CUDA-tuned peak.
+
+| Section | What it covers |
+|---|---|
+| [Kernel types](00-wgpu-layout/00-kernel-types.md) | Per-element (neo-Hookean assembly, IPC barrier eval, stress extraction), per-contact (broadphase, CCD), per-DOF (SpMV, CG inner products), per-tet (state transfer, readout). Four workload shapes, each with a different thread-count and memory-access pattern |
+| [Bind group design](00-wgpu-layout/01-bind-groups.md) | Two tiers: scene-static (mesh topology, material fields, connectivity) bound once per frame; per-step (positions, velocities, Hessian workspace) bound per compute pass. The split is what keeps state-management tractable as kernel count grows |
+| [Async scheduling](00-wgpu-layout/02-async.md) | Command-buffer batching across a full Newton step; explicit `wgpu::Queue::submit()` boundaries where GPU↔CPU readback happens (convergence check, line-search decision); how async integrates with [Part 5 Ch 00's Newton loop](../50-time-integration/00-backward-euler.md) |
+
+Three claims Ch 00 rests on.
+
+**Portable first, vendor-tuned as upgrade.** wgpu is the default backend and the only backend shipped in Phase E. Vendor-native paths (CUDA on NVIDIA, Metal/MPS on Apple) are not on the Phase A–I roadmap. If benchmarks after Phase E show a specific hot kernel losing >50% to a vendor-optimized implementation, a targeted replacement for that kernel is considered as a Phase-I-or-later addition; the rest of the stack stays on wgpu.
+
+**Per-element is the default workload shape.** The Newton Hessian assembly, the neo-Hookean stress evaluation, the IPC barrier per-contact-pair evaluation, and the stress-extraction readout all thread-parallel over elements (tets or contact pairs) and have predictable memory access via connectivity tables. GPU thread counts match element counts; occupancy is set by per-thread register pressure (≈30–60 registers for hyperelastic evaluation, well within modern hardware). Workloads that don't fit this shape — global reductions for CG inner products, sparse-triangular solves for preconditioning — are handled differently (see [Ch 02](02-sparse-solvers.md)) and named explicitly, not shoehorned.
+
+**Async is the convergence-check boundary.** Newton's inner loop requires computing $\|g\|$ to decide convergence; that reduction lands on the CPU via readback of a single `f64`. Each Newton iterate consists of one assembly pass, many CG inner-iteration passes (all batched into one command buffer before submit), and one line-search pass, followed by one submit and one readback of the convergence-check scalar. The pipeline is not fully async — there are O(Newton-iters) CPU roundtrips per timestep — but the per-roundtrip cost is small compared to the GPU work, and attempting to eliminate readbacks (e.g., running convergence check as a GPU kernel) complicates the [adaptive-$\Delta t$ failure path](../50-time-integration/02-adaptive-dt.md) that needs CPU-side decision-making. The honest trade is: ≤2% of wall-time on readback, keep the control flow on the CPU.
