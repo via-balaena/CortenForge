@@ -1,3 +1,14 @@
 # Thermal coupling
 
-> _stub — overview of: Temperature-dependent modulus, Thermal expansion, Dissipative heating_
+This chapter materializes the [`sim-thermostat` coupling boundary](../110-crate/02-coupling/01-thermostat.md) on the material side. Temperature enters the material in two ways — as a modulator of stiffness parameters (silicone softens when warm) and as a driver of geometric change (thermal expansion). Mechanical work dissipated as heat, via viscoelastic loss and plastic rearrangement, leaves the material back into the temperature field. The coupling is bidirectional: temperature in, heating rate out.
+
+| Section | Topic | Direction | Role |
+|---|---|---|---|
+| [Temperature-dependent modulus](08-thermal-coupling/00-modulus-T.md) | Young's modulus and Lamé parameters vary with $T$; typical silicones soften at ≈0.5–2% per °C above 20 °C | sim-thermostat → sim-soft | Modifies the elastic response without changing the constitutive form |
+| [Thermal expansion](08-thermal-coupling/01-expansion.md) | Multiplicative split of deformation $F = F_\text{mech} F_\text{therm}$ with $F_\text{therm} = (1 + \alpha(T - T_0)) I$ where $\alpha$ is the thermal expansion coefficient | sim-thermostat → sim-soft | Equilibrium geometry changes with temperature, independent of mechanical load |
+| [Dissipative heating](08-thermal-coupling/02-dissipation.md) | Viscoelastic hysteresis converts mechanical work to heat at a rate $\dot q = \sigma : \dot\varepsilon_\text{visc}$; written back to `sim-thermostat`'s temperature field | sim-soft → sim-thermostat | Closes the bidirectional coupling |
+
+Two claims Ch 08 rests on:
+
+1. **Temperature is a material parameter, not a kinematic one.** The temperature field modulates the `Material`'s stored Lamé parameters and triggers a multiplicative thermal-expansion term; the constitutive form (neo-Hookean, Ogden, HGO) is unchanged. In `sim-soft`, this is implemented as a `Thermal<M: Material>` decorator ([Ch 00 sub-chapter 01](00-trait-hierarchy/01-composition.md)) that reads the local temperature from `sim-thermostat` and passes temperature-adjusted parameters to the wrapped core `M`. Because temperature is sampled per-element per-step, the Newton solver's tangent picks up an extra term $\partial P / \partial T$ that must be included whenever the thermal coupling is live; this is handled by the tangent composition rules in [Ch 00](00-trait-hierarchy.md) and verified by [gradcheck](../110-crate/04-testing/03-gradcheck.md).
+2. **Dissipative heating closes the loop.** Without writing heat back into `sim-thermostat`, long simulations drift — a viscoelastic silicone pulsed at 1 Hz for 1000 seconds warms measurably in reality but stays at its initial temperature in a one-way thermal model. For the [canonical problem](../10-physical/00-canonical.md)'s short transient runs this is negligible; for the [design loop](../100-optimization/06-full-loop.md)'s extended-load analyses it is material. The coupling is bidirectional by default; one-way thermal (temperature in, no heating out) is an opt-in for cold-regime simulations where dissipative heating is provably small.

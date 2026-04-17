@@ -1,3 +1,14 @@
 # Anisotropic hyperelasticity
 
-> _stub — overview of: Fiber-reinforced models, Holzapfel-Gasser-Ogden, Spatial fiber direction fields_
+Real soft parts are rarely isotropic. Textured silicones have preferred directions from the molding process; fiber-loaded composites have embedded glass or carbon fibers with specific orientations; biological analogs (muscle, vessel wall, skin) are famously anisotropic along explicit fiber axes. `sim-soft` handles this as an add-on to the hyperelastic family from [Ch 04](04-hyperelastic.md), not as a separate constitutive family.
+
+| Section | Topic | Role |
+|---|---|---|
+| [Fiber-reinforced models](06-anisotropic/00-fiber-reinforced.md) | Add a fiber-direction invariant $I_4 = a \cdot C\, a$ where $a$ is the local fiber direction; append a fiber-strain energy term to the isotropic hyperelastic base | The general form that HGO and similar laws specialize |
+| [Holzapfel-Gasser-Ogden](06-anisotropic/01-hgo.md) | The canonical anisotropic hyperelastic law for fibrous materials — exponential fiber-strain energy $\psi_\text{fiber} = \tfrac{k_1}{2k_2}(e^{k_2 (I_4 - 1)^2} - 1)$; two-fiber-family version for materials with orthogonal fiber networks | The default for directional materials in `sim-soft` |
+| [Spatial fiber direction fields](06-anisotropic/02-direction-fields.md) | Fiber direction $a$ is a unit-vector-valued SDF over the reference configuration, sampled per-element; direction may vary smoothly (braided sleeves) or discontinuously (layered composites) | The bridge to [Ch 09's SDF material fields](09-spatial-fields.md) for the directional case |
+
+Two claims Ch 06 rests on:
+
+1. **Anisotropy is an extra invariant, not a new trait.** The [Material trait](00-trait-hierarchy.md) gets an associated type for fiber direction (`type Fiber = Option<UnitVec3>` in the isotropic case; `type Fiber = UnitVec3` for single-fiber laws; `type Fiber = [UnitVec3; 2]` for two-fiber HGO). The energy function picks up an $I_4$ term; nothing else changes in the solver, contact, or autograd pipeline. This is what makes [composition](00-trait-hierarchy/01-composition.md) pay — an anisotropic viscoelastic thermally-coupled material is a composition of four decorators over one hyperelastic core, not a four-times-larger constitutive law.
+2. **Fiber direction is a field, not a parameter.** A realistic soft part has spatially varying fiber orientation — molded silicone has flow-aligned directions, woven textiles have orthogonal families that rotate around curved surfaces, biological tissue follows anatomical axes. `sim-soft` represents this as a unit-vector-valued SDF over the reference mesh, sampled per-element at the centroid, matching the scalar SDF approach from [Ch 09](09-spatial-fields.md) but with a normalize-to-unit-length constraint. The fiber direction participates in [Part 7](../70-sdf-pipeline/00-sdf-primitive.md)'s [cf-design](../110-crate/02-coupling/04-cf-design.md) authoring path like any other material field.
