@@ -14,3 +14,6 @@ edit-url-template = ""
 [output.html.fold]
 enable = true
 level = 1
+
+[preprocessor.katex]
+after = ["links"]
