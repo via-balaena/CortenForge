@@ -10,7 +10,7 @@ Linear elasticity makes three assumptions, each of which breaks at finite strain
 
 $$ \varepsilon = \tfrac{1}{2}\left(\nabla u + (\nabla u)^T\right) $$
 
-where $u = x - X$ is the displacement from reference to deformed. This is linear in $u$. The full nonlinear strain measure from [Ch 01](01-strain-measures.md) — Green strain $E = \tfrac{1}{2}(F^T F - I)$ — equals $\varepsilon$ plus a term $\tfrac{1}{2}(\nabla u)^T (\nabla u)$ that linear elasticity drops.
+where $u = x - X$ is the displacement from reference to deformed. This is linear in $u$. The full nonlinear strain measure from [Ch 01](01-strain-measures.md) — Green strain $\mathbf{E} = \tfrac{1}{2}(F^T F - I)$ — equals $\varepsilon$ plus a term $\tfrac{1}{2}(\nabla u)^T (\nabla u)$ that linear elasticity drops. (Green strain is bolded $\mathbf{E}$ in this chapter's neighbourhood of Young's modulus $E$ to disambiguate; elsewhere the book follows the italic-$E$ convention disambiguated by context — see [`appendices/03-notation.md`](../appendices/03-notation.md).)
 
 **Assumption 2 — linear stress–strain relation (Hooke's law).** Stress is a linear function of strain through the fourth-order elasticity tensor $\mathbb{C}$:
 

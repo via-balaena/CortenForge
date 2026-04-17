@@ -77,7 +77,7 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 
 Several letters carry multiple meanings across Parts — the book disambiguates by context:
 
-- $E$ is Young's modulus in Part 1 Ch 04 and the material-property tables; Green strain in Part 2 Ch 01's strain-measure discussion.
+- $E$ is Young's modulus in Part 1 Ch 04 and the material-property tables; Green strain in Part 2 Ch 01's strain-measure discussion. Where both appear in close neighbourhood — notably [Part 2 Ch 02](../20-materials/02-linear.md) — the Green strain tensor is written bolded $\mathbf{E}$ to disambiguate.
 - $\alpha$ is Ogden's principal-stretch exponent $\alpha_i$, the thermal expansion coefficient in Part 2 Ch 08, the anisotropic-GGX roughness in Part 9 Ch 01, the XPBD compliance in the Part 5 Ch 01 rejection discussion, and the BayesOpt acquisition-function name in Part 10 Ch 02. Subscripts and surrounding context disambiguate.
 - $d$ is the design-space dimension in Part 10 and the contact-proximity gap in Part 4. Disambiguated by neighbourhood — `$d \in \mathbb{R}^d$` is avoided; where both appear near each other, the former is written as $n_\theta$.
 - $\mu$ is the neo-Hookean Lamé parameter in Part 2 and the Coulomb friction coefficient in Part 4. Friction always carries the subscript $\mu_c$ in `sim-soft`'s prose to avoid collision.

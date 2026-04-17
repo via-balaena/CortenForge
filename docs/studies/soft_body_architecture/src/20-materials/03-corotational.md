@@ -8,7 +8,7 @@ Corotational elasticity is the middle step between [linear elasticity](02-linear
 
 $$ F = R\, U $$
 
-where $R \in SO(3)$ is the rotation and $U$ is the symmetric positive-definite stretch tensor. $U$ can be computed as $U = \sqrt{F^T F}$ directly or by one of several iterative methods — Higham's Newton iteration on $F\, F^{-T}$ is the standard cheap choice, converging to 5 digits in ≈3 iterations from an identity start.
+where $R \in SO(3)$ is the rotation and $U$ is the symmetric positive-definite stretch tensor. $U$ can be computed as $U = \sqrt{F^T F}$ directly or by one of several iterative methods — Higham's Newton iteration on $F\, F^{-T}$ is the standard cheap choice; it converges quadratically, and in the small-rotation regime typical of FEM a handful of iterations reaches the precision the tangent derivation needs.
 
 **Apply linear elasticity in the un-rotated frame.** Define the corotational strain as the linear strain measured against the un-rotated configuration:
 
@@ -22,7 +22,7 @@ $$ \sigma_R = \lambda\, (\mathrm{tr}\, \varepsilon_R)\, I + 2\mu\, \varepsilon_R
 
 $$ P = R\, \sigma_R $$
 
-and the stiffness tangent $\partial P / \partial F$ combines the tangent of the linear Hooke map with the derivative of the polar decomposition. The tangent derivation is in [Part 2 Ch 00 sub-chapter 00](00-trait-hierarchy/00-trait-surface.md)'s `Material` trait's default `tangent()` method for corotational implementations; the math is ≈20 lines and verifiable against finite differences.
+and the stiffness tangent $\partial P / \partial F$ combines the tangent of the linear Hooke map with the derivative of the polar decomposition. The tangent derivation is in [Part 2 Ch 00 sub-chapter 00](00-trait-hierarchy/00-trait-surface.md)'s `Material` trait's `tangent()` method for the corotational implementation; the math is ≈20 lines and verifiable against finite differences.
 
 ## What this fixes
 

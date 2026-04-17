@@ -1,6 +1,6 @@
 # Hyperelastic family
 
-Hyperelasticity is `sim-soft`'s default constitutive family, per the [Ch 03 thesis commitment](../10-physical/03-thesis.md). This chapter covers the three named hyperelastic laws `sim-soft` ships, each one an `impl Material` over the trait surface from [Ch 00](00-trait-hierarchy.md), composable into the same mesh via [spatial material fields](09-spatial-fields.md). The three are not in competition; they cover different strain regimes and different calibration-data situations, and the right choice depends on the [material data](../10-physical/04-material-data.md) available for the part being simulated.
+Hyperelasticity is `sim-soft`'s default constitutive family, per the [Part 1 Ch 03 thesis commitment](../10-physical/03-thesis.md). This chapter covers the three named hyperelastic laws `sim-soft` ships, each one an `impl Material` over the trait surface from [Ch 00](00-trait-hierarchy.md), composable into the same mesh via [spatial material fields](09-spatial-fields.md). The three are not in competition; they cover different strain regimes and different calibration-data situations, and the right choice depends on the [material data](../10-physical/04-material-data.md) available for the part being simulated.
 
 | Section | Parameters | Best for |
 |---|---|---|
