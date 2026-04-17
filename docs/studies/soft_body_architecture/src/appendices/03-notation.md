@@ -29,6 +29,7 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $\alpha$ (thermal) | Thermal expansion coefficient. Distinguished from Ogden $\alpha_i$ by subscript context | [Part 2 Ch 08](../20-materials/08-thermal-coupling/01-expansion.md) |
 | $T, T_0$ | Temperature, reference temperature | [Part 2 Ch 08](../20-materials/08-thermal-coupling.md) |
 | $\rho$ | Mass density | [Part 1 Ch 04](../10-physical/04-material-data.md) |
+| $\sigma_e$ | Electrical conductivity, S/m. Subscripted to avoid collision with Cauchy stress $\sigma$ | [Part 1 Ch 04 — carbon-black conductivity](../10-physical/04-material-data/02-carbon-black/01-conductivity.md) |
 
 ## Stress, energy, and contact
 
@@ -82,6 +83,7 @@ Several letters carry multiple meanings across Parts — the book disambiguates 
 - $d$ is the design-space dimension in Part 10 and the contact-proximity gap in Part 4. Disambiguated by neighbourhood — `$d \in \mathbb{R}^d$` is avoided; where both appear near each other, the former is written as $n_\theta$.
 - $\mu$ is the neo-Hookean Lamé parameter in Part 2 and the Coulomb friction coefficient in Part 4. Friction always carries the subscript $\mu_c$ in `sim-soft`'s prose to avoid collision.
 - $\lambda$ is the neo-Hookean Lamé parameter, the time-adjoint variable $\lambda(t)$, and occasionally a Lagrange multiplier in XPBD-rejection contexts. Context and function notation disambiguate.
+- $\sigma$ is Cauchy stress everywhere in Parts 2–6 ($\sigma = \mathbb{C}:\varepsilon$ in [Part 2 Ch 02](../20-materials/02-linear.md), $\sigma = P F^T / J$ in the hyperelastic family). Electrical conductivity in the Part 1 Ch 04 carbon-black family and any downstream Part 2 Ch 09 spatial-field that assigns it always carries the subscript $\sigma_e$. The Part 9 rendering coefficients $\sigma_s$ (scattering) and $\sigma_a$ (absorption) are already subscripted per the SSS literature and do not collide with stress.
 
 ## Pass 3 scope
 
