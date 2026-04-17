@@ -95,7 +95,7 @@ The design: **only the converged Newton iterate is recorded**, via a checkpoint-
 
 This pattern matches [Part 6 Ch 02's IFT](../60-differentiability/02-implicit-function.md): the backward pass differentiates the equilibrium condition, not the path to equilibrium. The Newton iteration is the path; the IFT operates on the converged state. The checkpoint-and-replay pattern is the GPU concrete form of that claim — the tape represents the equilibrium, not the solve.
 
-The exception is time-integrated trajectories, where [Part 6 Ch 03's time adjoint](../60-differentiability/03-time-adjoint.md) differentiates across multiple timesteps. That path records one checkpoint per timestep (not per Newton iterate) and replays them in reverse; [Ch 04 checkpointing sub-chapter](../60-differentiability/04-checkpointing.md) specifies the memory/compute tradeoff. Pass 1 does not deep-dive the time adjoint; it is named and scoped.
+The exception is time-integrated trajectories, where [Part 6 Ch 03's time adjoint](../60-differentiability/03-time-adjoint.md) differentiates across multiple timesteps. That path records one checkpoint per timestep (not per Newton iterate) and replays them in reverse; [Part 6 Ch 04 — checkpointing sub-chapter](../60-differentiability/04-checkpointing.md) specifies the memory/compute tradeoff. Pass 1 does not deep-dive the time adjoint; it is named and scoped.
 
 ## What this commits downstream
 

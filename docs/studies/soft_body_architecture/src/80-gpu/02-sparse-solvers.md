@@ -29,6 +29,7 @@ use sim_ml_chassis::gpu::{GpuTensor, GpuSparseMatrix, CgSolver, Preconditioner};
 pub struct GpuNewtonStep {
     pub x_n: GpuTensor<f64>,                 // converged position
     pub precond: Box<dyn Preconditioner>,    // cached, re-applied in backward
+    pub prev_solution: GpuTensor<f64>,       // warm-start for next backward solve
     pub dr_dtheta: GpuSparseMatrix<f64>,     // residual Jacobian w.r.t. theta
     pub hessian: GpuSparseMatrix<f64>,       // the operator, matrix-free-capable
 }

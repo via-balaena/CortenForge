@@ -1,6 +1,6 @@
 # sim-ml-chassis GPU extension
 
-[Part 6 Ch 00 Claim 2](../60-differentiability/00-what-autograd-needs.md) commits: *extend `sim-ml-chassis` with a GPU tensor backend and a VJP registration API, do not import Burn*. This chapter names the concrete shape of that extension — what the chassis looks like before, what it looks like after, and what the three sub-chapters specify.
+[Part 6 Ch 00 Claim 3](../60-differentiability/00-what-autograd-needs.md) commits: *extend `sim-ml-chassis` with a GPU tensor backend and a VJP registration API, do not import Burn*. This chapter names the concrete shape of that extension — what the chassis looks like before, what it looks like after, and what the three sub-chapters specify.
 
 | Section | What it covers |
 |---|---|
