@@ -1,3 +1,18 @@
 # Tetrahedralization strategies
 
-> _stub — overview of: fTetWild, Delaunay tetrahedralization, GPU tet generation, Quality comparison_
+Given an `SdfField` from [Ch 00](00-sdf-primitive.md), something has to produce a tet mesh that `sim-soft`'s FEM solver can consume. This chapter surveys the three tet-generation paths `sim-soft` supports and names which is default for which regime.
+
+| Section | What it covers |
+|---|---|
+| [fTetWild](01-tet-strategies/00-ftetwild.md) | Hu et al. 2020's robust tet-meshing-from-mesh pipeline, adapted to SDF input via iso-surface extraction. Default for design-mode (~30k tets, 1–5 s meshing time) |
+| [Delaunay tetrahedralization](01-tet-strategies/01-delaunay.md) | Classical Delaunay with mesh-quality post-processing. Used for small experience-mode scenes (≤5k tets) where meshing time is not a bottleneck |
+| [GPU tet generation](01-tet-strategies/02-gpu-tet.md) | Parallel tet generation on wgpu compute kernels. [Phase E+](../110-crate/03-build-order.md#the-committed-order) target for interactive-rate re-meshing under design edits |
+| [Quality comparison](01-tet-strategies/03-quality-compare.md) | Aspect ratio, dihedral-angle distribution, conditioning of the resulting stiffness matrix across the three strategies |
+
+Three claims.
+
+**fTetWild is the default.** Its guarantee — envelope-based validity on arbitrary input surfaces, including self-intersecting and non-manifold meshes, with mesh-improvement passes that bring aspect ratio and dihedral angle into a usable band — is the property that matters most for `sim-soft`, where SDF inputs can produce iso-surfaces with any pathology. Meshing time (1–5 s on the canonical scene) is acceptable for design-mode where meshing runs only when topology changes, not every frame. Delaunay is faster but does not handle non-manifold input cleanly; GPU tet is the Phase E+ upgrade path, not a Phase B–D default.
+
+**Experience-mode and design-mode may use different generators.** Experience-mode runs at 60 FPS on a frozen geometry and benefits from a coarser, cheaper tet mesh (Delaunay on 3–5k tets, 50–200 ms one-shot). Design-mode runs at interactive rates across design edits and benefits from fTetWild's robustness (30k tets, re-meshed only on [topology-changing edits per Ch 04](04-live-remesh.md); parameter-only edits reuse the existing mesh). The [`sdf_bridge/`](../110-crate/00-module-layout/08-sdf-bridge.md) module selects based on the `resolution_hint` field of `SdfField`.
+
+**Mesh quality determines solver conditioning.** A tet with aspect ratio >50 or dihedral angle near 0 or π causes the elastic-tangent matrix to be badly conditioned, which inflates Newton's inner iteration count and can cause [line-search failures](../50-time-integration/00-backward-euler/02-line-search.md) that trigger [adaptive-$\Delta t$ shrinks](../50-time-integration/02-adaptive-dt.md) for reasons unrelated to contact or dynamics. The [quality comparison sub-chapter](01-tet-strategies/03-quality-compare.md) benchmarks the three generators on the canonical problem and sets the aspect-ratio / dihedral-angle bounds `sim-soft` enforces at ingest.
