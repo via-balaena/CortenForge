@@ -6,9 +6,9 @@ This is the book's honest chapter. Every other chapter in Part 6 names a solved 
 
 The [thesis](../10-physical/03-thesis.md) commits `sim-soft` to two things that do not compose for free.
 
-**Commitment 1 — differentiability is first-class.** Every design parameter $\theta$ — material stiffness, fiber direction, contact friction coefficient, boundary traction, reward-term weight — must admit a gradient $\partial L / \partial \theta$ that the optimization loop in [Part 10](../100-optimization/00-forward.md) consumes. The book has paid for that commitment in the previous four chapters.
+**Commitment 1 — differentiability is first-class.** Every design parameter $\theta$ — material stiffness, fiber direction, contact friction coefficient, boundary traction, reward-term weight — must admit a gradient $\partial L / \partial \theta$ that the optimization loop in [Part 10 Ch 00 — forward](../100-optimization/00-forward.md) consumes. The book has paid for that commitment in the previous four chapters.
 
-**Commitment 2 — geometry is authored as SDFs, live-remeshed.** [Part 7](../70-sdf-pipeline/00-sdf-primitive.md) commits to SDF-valued geometry as the universal design primitive; [Part 7 Ch 04](../70-sdf-pipeline/04-live-remesh.md) commits to live re-meshing under design edits. The designer edits an SDF, the tet mesh re-derives, the solve continues from the warm-started previous state.
+**Commitment 2 — geometry is authored as SDFs, live-remeshed.** [Part 7 Ch 00 — SDF as primitive](../70-sdf-pipeline/00-sdf-primitive.md) commits to SDF-valued geometry as the universal design primitive; [Part 7 Ch 04](../70-sdf-pipeline/04-live-remesh.md) commits to live re-meshing under design edits. The designer edits an SDF, the tet mesh re-derives, the solve continues from the warm-started previous state.
 
 The problem is at their intersection. If the SDF parameters $\theta_{\text{sdf}}$ are design variables — SDF blend radii, control-point positions of a spline-based boundary, SDF-valued material-field parameters — then the mesh is a *function* of $\theta_{\text{sdf}}$, and computing $\partial L / \partial \theta_{\text{sdf}}$ requires propagating gradients *through* the meshing step. That step is, for every meshing algorithm that ships today, not differentiable.
 

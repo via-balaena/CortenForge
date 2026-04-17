@@ -6,7 +6,7 @@ A vector-Jacobian product (VJP) is the unit of work reverse-mode autograd actual
 |---|---|
 | [VJP registration API](01-custom-vjps/00-registration.md) | The `CustomVjp` trait extension to [`sim-ml-chassis`'s tape](../110-crate/00-module-layout/07-autograd.md) — a solver kernel declares its forward and its hand-derived backward; the tape records an opaque node that fires the backward during `tape.backward()` |
 | [FEM assembly VJP](01-custom-vjps/01-fem-assembly.md) | The per-element stiffness matrix assembly $K = \sum_e B_e^T\, C_e\, B_e\, V_e$ — why autodiffing through it element-by-element produces a pathologically large tape, and the hand-derived adjoint that replaces it with a single reverse pass over the connectivity |
-| [Contact barrier VJP](01-custom-vjps/02-contact-barrier.md) | The IPC barrier $b(d) = -(d - \hat d)^2 \ln(d/\hat d)$ near $d \to 0^+$ — the naive chain-rule derivative through $\ln$ is numerically pathological; the hand-stabilized VJP recenters around $\log_1 p$ and clamps for $d$ well above $\hat d$ |
+| [Contact barrier VJP](01-custom-vjps/02-contact-barrier.md) | The IPC barrier $b(d) = -(d - \hat d)^2 \ln(d/\hat d)$ near $d \to 0^+$ — the naive chain-rule derivative through $\ln$ is numerically pathological; the hand-stabilized VJP recenters around $\mathrm{log1p}$ and clamps for $d$ well above $\hat d$ |
 
 Three claims Ch 01 rests on:
 
