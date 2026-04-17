@@ -1,6 +1,6 @@
 # Live re-meshing under design edits
 
-The [Ch 00 thesis](00-sdf-primitive.md) commits `sim-soft` to an SDF-valued design surface, and [the canonical thesis](../10-physical/03-thesis.md) commits to `cf-design`-driven interactive authoring where the designer edits geometry and sees the simulation respond. This chapter names the machinery that closes the loop: **SDF edit → change detection → re-mesh decision → warm-started re-solve**, run at interactive rates inside a single design-mode session. Phase G's build-order deliverable is this chapter's machinery working end-to-end on the canonical problem.
+The [Ch 00 thesis](00-sdf-primitive.md) commits `sim-soft` to an SDF-valued design surface, and [the Part 1 Ch 03 thesis](../10-physical/03-thesis.md) commits to `cf-design`-driven interactive authoring where the designer edits geometry and sees the simulation respond. This chapter names the machinery that closes the loop: **SDF edit → change detection → re-mesh decision → warm-started re-solve**, run at interactive rates inside a single design-mode session. Phase G's build-order deliverable is this chapter's machinery working end-to-end on the canonical problem.
 
 | Section | What it covers |
 |---|---|
@@ -32,7 +32,7 @@ Structural change detection (walking the composition tree and diffing node-by-no
 
 ## 3. Warm-starting is where the interactive-rate story lives
 
-A parameter-only edit reuses the previous mesh and previous converged position $x^\ast_\text{old}$. The new equilibrium $x^\ast_\text{new}$ is close to $x^\ast_\text{old}$ when the edit is small, and Newton converges in 1–3 iterations from the warm-started initial guess rather than 5–15 from a cold start. The hot-path pattern:
+A parameter-only edit reuses the previous mesh and previous converged position $x^\ast_\text{old}$. The new equilibrium $x^\ast_\text{new}$ is close to $x^\ast_\text{old}$ when the edit is small, and Newton converges in a handful of iterations from the warm-started initial guess rather than from a cold start — the gap is large enough to be what makes the interactive-rate budget feasible. The hot-path pattern:
 
 ```rust
 use faer::sparse::linalg::solvers::Cholesky;
@@ -85,9 +85,9 @@ Topology-changing edits interpolate state from the old mesh to the new mesh via 
 
 Concretely: consider a design-parameter sweep that gradually moves a primitive until its boundary crosses through a tet. At the crossing, the enclosing-tet assignment for any new-mesh vertex near the boundary flips discontinuously. State transfer at that design parameter is therefore not differentiable by a smooth operator.
 
-[Part 6 Ch 05's FD wrapper](../60-differentiability/05-diff-meshing.md) addresses this. Gradients w.r.t. design parameters that trigger topology changes are computed by finite difference across the change, with the resulting noise reported via `GradientEstimate::Noisy { variance }`. Parameter-only and material-changing edits do not cross this boundary and retain exact IFT gradients through [Part 6 Ch 02's machinery](../60-differentiability/02-implicit-function.md). In practice:
+[Part 6 Ch 05's FD wrapper](../60-differentiability/05-diff-meshing.md) addresses this. Gradients w.r.t. design parameters that trigger topology changes are computed by finite difference across the change, with the resulting noise reported via `GradientEstimate::Noisy { variance }`. Replacing the FD wrapper with a proper stochastic-adjoint treatment is scheduled alongside the other stochastic-adjoint work in [Phase H](../110-crate/03-build-order.md#the-committed-order) (per [Part 6 Ch 03](../60-differentiability/03-time-adjoint.md)); the deferral is explicit and tied to a phase, not indefinite. Parameter-only and material-changing edits do not cross this boundary and retain exact IFT gradients through [Part 6 Ch 02's machinery](../60-differentiability/02-implicit-function.md). In practice:
 
-- **Design-mode gradient-based optimizers** (BayesOpt, gradient descent, [Part 10](../100-optimization/00-forward.md)) get exact gradients for ≈95% of steps (parameter-only ≈90% + material-changing ≈5%) and noisy gradients for the remaining ≈5% that cross topology changes. The noise is flagged, and the optimizer handles it by falling back to a FD-noise-tolerant acquisition (e.g., UCB with inflated variance on noisy samples).
+- **Design-mode gradient-based optimizers** (BayesOpt, gradient descent, [Part 10 Ch 00 — forward](../100-optimization/00-forward.md)) get exact gradients for ≈95% of steps (parameter-only ≈90% + material-changing ≈5%) and noisy gradients for the remaining ≈5% that cross topology changes. The noise is flagged, and the optimizer handles it by falling back to a FD-noise-tolerant acquisition (e.g., UCB with inflated variance on noisy samples).
 - **Active-learning loops** (information-theoretic acquisitions) weight noisy samples lower, so the `GradientEstimate::Noisy` flag propagates naturally into the acquisition function.
 
 The overall design consequence: `sim-soft` does not deliver end-to-end smooth differentiability across arbitrary design edits — that is the [Part 6 Ch 05 open problem](../60-differentiability/05-diff-meshing.md), unsolved at the platform level. What it does deliver is exact gradients on the common case (parameter edits within a fixed topology, 90%+ of sweeps) and flagged-noisy gradients on the rare case (topology crossings), with the division between the two determined by the change detector rather than by the optimizer guessing.
@@ -95,7 +95,7 @@ The overall design consequence: `sim-soft` does not deliver end-to-end smooth di
 ## What this commits downstream
 
 - [Part 6 Ch 05 (diff-meshing open problem)](../60-differentiability/05-diff-meshing.md)'s FD wrapper is applied specifically at the state-transfer boundary inside `TopologyChanging` edits. The `GradientEstimate::Noisy` flag is raised exactly when the change detector classifies an edit as topology-changing.
-- [Part 10 (optimization loop)](../100-optimization/00-forward.md) consumes the `EditResult` + `GradientEstimate` pair to choose acquisition functions that tolerate noise on topology-crossing samples.
+- [Part 10 Ch 00 — forward](../100-optimization/00-forward.md) consumes the `EditResult` + `GradientEstimate` pair to choose acquisition functions that tolerate noise on topology-crossing samples.
 - [Part 11 Ch 02 sub-chapter 04 (cf-design coupling)](../110-crate/02-coupling/04-cf-design.md) closes the authoring-side API: `cf-design` emits `SdfField` + `MaterialField` pairs and consumes `EditResult`s; the protocol is specified there.
 - [Phase G of build-order](../110-crate/03-build-order.md#the-committed-order) names the deliverable: designer edits SDF in `cf-design`, mesh re-derives, solve warm-starts, reward updates, visible within ≤500 ms for topology-changing edits, ≤50 ms for parameter-only.
 
