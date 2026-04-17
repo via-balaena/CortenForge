@@ -1,3 +1,48 @@
 # Why this is a good canonical test case
 
-> _stub_
+The [canonical formulation](00-formulation.md) pinned down the geometry and loading; the [related-problems sibling](01-related-problems.md) named which real engineering problems it abstracts. This leaf asks the harder question: whether the canonical problem is load-bearing enough to justify the subsystem commitments the rest of the book makes. A canonical problem that is too narrow lets the book escape hard cases through specificity; a canonical problem that is too broad means no single subsystem claim is testable on it. The argument below is that this one is sized right.
+
+## Subsystems it exercises
+
+Every major subsystem `sim-soft` ships is exercised by the canonical problem in steady-state at design-mode resolution. The table below names where each subsystem shows up and what the canonical problem's run would fail to produce without it.
+
+| Subsystem | How the canonical problem exercises it | What fails without it |
+|---|---|---|
+| Hyperelastic constitutive law ([Part 2 Ch 04](../../20-materials/04-hyperelastic.md)) | Cavity wall under radial squeeze sees finite strain — radial compression on the contact side paired with circumferential and axial stretch on the other two principal axes, well outside the small-strain linear regime | Linear FEM over-softens ([Part 1 Ch 02 volume-loss failure](../02-what-goes-wrong/00-volume-loss.md)); the solver converges to the wrong deformed configuration |
+| Near-incompressibility ([Part 2 Ch 05](../../20-materials/05-incompressibility.md)) | Silicone at Poisson $\nu \approx 0.499$ under bulk squeeze | Volumetric locking on $\lambda / \mu \gg 1$ meshes; displacement under-predicted by factors |
+| IPC contact ([Part 4](../../40-contact/00-why-ipc.md)) | Cavity inner surface against rigid probe across millions of active pairs during an insertion sweep | Penalty contact stores energy in overlap and pops ([Part 1 Ch 02 popping](../02-what-goes-wrong/02-popping.md)); contact-pressure field is aliased |
+| Smoothed Coulomb friction ([Part 4 Ch 02](../../40-contact/02-friction.md)) | Axial force control mode relies on friction to hold engagement | Frictionless contact lets the cavity slide off the probe; no steady state reached ([Part 1 Ch 02 missing friction](../02-what-goes-wrong/03-no-friction.md)) |
+| Adaptive mesh refinement ([Part 3 Ch 02](../../30-discretization/02-adaptive.md)) | Rim deformation at the cavity mouth needs finer resolution than the bulk | Coarse-mesh rim artefacts ([Part 1 Ch 02 rim failure](../02-what-goes-wrong/04-rim.md)); peak-pressure reward spikes at mesh-induced corners |
+| Backward Euler + Newton on total potential energy ([Part 5 Ch 00](../../50-time-integration/00-backward-euler.md)) | Quasi-static engagement sweeps take per-step displacements that are a significant fraction of the cavity scale and need unconditional stability at that step size | Explicit integrators wobble; energy not conserved; steady state not reached in finite time ([Part 1 Ch 02 wobble](../02-what-goes-wrong/01-wobble.md)) |
+| Differentiable steady state ([Part 6 Ch 02 IFT](../../60-differentiability/02-implicit-function.md)) | Optimizing cavity thickness / probe-radius ratio requires gradient of reward w.r.t. geometric parameters | Gradient-free optimization scales poorly in parameter count; Part 10's BayesOpt and gradient-augmented GP ([Part 10 Ch 02](../../100-optimization/02-bayesopt.md)) lose their advantage |
+| Multi-material support ([Part 2 Ch 09](../../20-materials/09-spatial-fields.md)) | Shore-graded cavity walls (softer near rim, stiffer near base) are a natural design variable | Uniform-stiffness sleeves can't match the Pareto front on conformity-vs-stiffness that graded sleeves reach ([Part 1 Ch 02 material poverty](../02-what-goes-wrong/05-material-poverty.md)) |
+| Viscoelasticity ([Part 2 Ch 07](../../20-materials/07-viscoelastic.md)) | Transient-load mode's rate dependence, optional for steady-state runs | Silicone's storage-and-loss-modulus curve not represented; dynamic experiments misread |
+
+Every failure in [Ch 02](../02-what-goes-wrong.md) maps to at least one subsystem in the table above — volume loss to hyperelasticity and near-incompressibility, wobble to backward Euler and viscoelasticity, popping to IPC, missing friction to smoothed Coulomb, rim deformation to adaptive refinement, and material poverty to multi-material spatial fields. The one subsystem in the table whose failure Ch 02 does not single out is IFT differentiability — an exercise visible on the optimizer's side rather than in a visible defect of the forward simulation. The correspondence is deliberate: the Ch 02 failure catalog was written to cover the canonical problem's exercise surface, so every listed failure has a corresponding subsystem the canonical problem reproduces.
+
+## Subsystems it does not exercise
+
+The canonical problem is silent on several subsystems the book discusses elsewhere. Reading the absence of these subsystems from the canonical exercise list as a completeness gap is a category error — the canonical problem is a regression test, not a whole-book demonstration.
+
+- **Large-deformation bending dominated problems.** The cavity's deformation is compression-and-shear-dominated; there is no long slender beam bending. Bending-dominated regimes (a long soft tentacle, a flexural actuator) are not part of the canonical default. Part 2's constitutive-law machinery handles them without modification, but the canonical reward does not score them.
+- **Fracture and yielding.** The reward's peak-pressure barrier treats tensile strength as a soft ceiling, but the canonical problem does not load the material past failure. Fracture mechanics is out of scope for the whole book; the peak-pressure barrier is the downstream failure-avoidance surrogate.
+- **Active actuation.** Embedded thermal actuators ([Part 2 Ch 08 thermal coupling](../../20-materials/08-thermal-coupling.md)), shape-memory polymers, pneumatic channels. The canonical cavity is passive — its only loading is the probe's motion. Actuated cavities are a straightforward extension, but they change the reward (an actuated gripper's reward includes the actuation energy) and are left to domain users.
+- **Rendering regression.** [Part 9's visual layer](../../90-visual/05-sim-bevy.md) is exercised by the canonical problem in the sense that the mesh-IS-render-mesh commitment is testable — the solver's deformed mesh is the shader input — but the canonical reward does not score visual fidelity. The [Part 11 Ch 04 visual regression suite](../../110-crate/04-testing/02-visual.md) is a separate test.
+
+## Why this problem, not another
+
+Four alternatives were considered as canonical problems and rejected; each clarifies a different property the chosen problem has.
+
+**Cantilever beam under tip load.** The standard FEM textbook problem. Rejected because it has no contact — the solver's contact path goes untested on every run. The canonical problem exercises contact on every run by construction, which is where the bulk of `sim-soft`'s novelty lives.
+
+**Unconfined uniaxial compression of a soft cube.** Simple geometry, exercises hyperelasticity and near-incompressibility. Rejected because it has no "intended contact surface" — pressure uniformity and coverage are undefined without a surface the probe is supposed to conform to. The reward framework would degenerate to single-objective compression, which does not represent the multi-objective character of real conformity design.
+
+**Soft gripper closing around a rigid object.** Closer to the real use case for many domain users, and it includes contact. Rejected because the geometry is too specific: a two-finger gripper has a load-bearing symmetry plane, specific fingertip pad curvature, and specific object shape, any of which could hide a subsystem failure behind the geometry's particulars. The canonical problem strips to the minimal shape that exercises the same subsystems — one open-ended sleeve over one rigid probe — so a subsystem failure cannot hide behind geometric complexity.
+
+**A full sim-to-real pipeline with a specific printed part.** The right test for [Part 10 Ch 05](../../100-optimization/05-sim-to-real.md), not for the whole book. Rejected as a canonical problem because the measurement-and-correction loop lives downstream of every subsystem the book recommends; using it as the test case would fold every intermediate subsystem failure into one compound test that is hard to isolate.
+
+## What this commits the book to
+
+- **Every subsystem claim in Parts 2–12 is testable on a canonical-problem run.** A subsystem the book includes but the canonical problem does not exercise is flagged as such — in the "subsystems it does not exercise" section above for active actuation, fracture, and bending-dominated regimes, or in the corresponding Part's text. There are no silent untested subsystems.
+- **The six Ch 02 failure modes are the regression suite.** Each failure is an alarm the canonical problem trips if the corresponding subsystem is absent or buggy. The regression suite runs against a canonical-problem reference configuration at whichever [Phase](../../110-crate/03-build-order.md#the-committed-order) the subsystems under test have landed in — Tet4-on-CPU after Phase D, Tet10 after Phase H, GPU after Phase E — so the same six-point failure list is the target at every validation milestone.
+- **Scale and shape are fixed enough to be reproducible across passes.** A Pass-3 reader, a downstream domain user, and a reviewer evaluating a subsystem improvement all reproduce the same canonical run — same geometry template (`SdfField` + default parameters), same material (Ecoflex 00-50), same load mode (prescribed engagement sweep), same reward weights (equal-weight baseline per [Part 12 Ch 06](../../120-roadmap/06-optimization.md)).
