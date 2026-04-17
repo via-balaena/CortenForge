@@ -1,0 +1,16 @@
+[book]
+title = "Soft-Body Simulation — A Study in the Ceiling"
+authors = ["CortenForge"]
+description = "A durable investigation of the soft-body simulation frontier and a ground-up plan for building a Rust + Bevy + GPU + differentiable + SDF-driven hyperelastic + IPC solver."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+
+[output.html.fold]
+enable = true
+level = 1
