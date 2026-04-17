@@ -92,7 +92,7 @@ The entire rest of the `sim-soft` ↔ Bevy pipeline is plugin-managed. From the 
 - [Part 11 Ch 02 sub-chapter 02 (`sim-bevy` coupling)](../110-crate/02-coupling/02-bevy.md) specifies the full `SimSoftPlugin` API and the `MeshSnapshot` protocol.
 - [Phase I of build-order](../110-crate/03-build-order.md#the-committed-order) is this chapter's machinery end-to-end on the canonical problem at 60 FPS, with SSS + anisotropic + wrinkle + (optional) thermal overlay composited per frame.
 - [Part 11 Ch 04 (testing)](../110-crate/04-testing.md)'s [visual-regression suite](../110-crate/04-testing/02-visual.md) compares per-frame rendered output against golden images at Phase I.
-- `readout/` ([Part 11 Ch 00](../110-crate/00-module-layout/09-readout.md)) produces the per-vertex attribute buffers the snapshot carries; any new attribute added to the snapshot requires a corresponding readout extension.
+- `readout/` ([Part 11 Ch 00 — readout sub-chapter](../110-crate/00-module-layout/09-readout.md)) produces the per-vertex attribute buffers the snapshot carries; any new attribute added to the snapshot requires a corresponding readout extension.
 
 ## What this does NOT commit
 

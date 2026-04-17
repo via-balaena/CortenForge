@@ -1,6 +1,6 @@
 # Contact-driven micro-wrinkles
 
-When a silicone surface bends tightly around an external feature — a probe's rim, a finger joint, a ridge — the surface develops micro-scale wrinkles that are finer than the simulation mesh can resolve. A 30k-tet mesh at canonical scale has edge lengths of ≈0.3 mm; wrinkles on silicone in tight contact are 10–100 μm in spacing. Capturing them via mesh refinement would require a 300k-tet mesh that exceeds Phase E's budget. The alternative, and `sim-soft`'s commitment, is to derive wrinkles from **contact pressure** at shader time rather than at simulation time.
+When a silicone surface bends tightly around an external feature — a probe's rim, a finger joint, a ridge — the surface develops micro-scale wrinkles that are finer than the simulation mesh can resolve. A 30k-tet mesh at canonical scale has edge lengths of ≈0.3 mm; wrinkles on silicone in tight contact are 10–100 μm in spacing. Capturing them via mesh refinement would require a much finer mesh that exceeds Phase E's budget. The alternative, and `sim-soft`'s commitment, is to derive wrinkles from **contact pressure** at shader time rather than at simulation time.
 
 | Section | What it covers |
 |---|---|
