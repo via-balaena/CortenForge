@@ -1,6 +1,6 @@
 # How this study is produced
 
-This chapter names the process the book is written under, because the process is part of the thesis. A soft-body study written in the received review-paper form would be a taxonomy: list the solvers, list the papers, list the open problems, stop. That is not this book. This book is an engineering study written to be *executed* — every decision in Parts 2–12 is a decision the book expects to make, or to surface (unresolved, named) as a research question. The process below is what makes that execution credible.
+This chapter names the process the book is written under, because the process is part of the thesis. A soft-body study written in the received review-paper form would be a taxonomy: list the solvers, list the papers, list the open problems, stop. That is not this book. This book is an engineering study written to be *executed* — every decision in Parts 1–12 is a decision the book expects to make, or to surface (unresolved, named) as a research question. The process below is what makes that execution credible.
 
 ## Three passes
 
@@ -24,9 +24,9 @@ This is not an automation story. A book written by an LLM from a prompt that say
 
 ## No hallucinated citations
 
-Claude does not cite papers from memory. Every paper named in the book (see the [reference list](../appendices/00-references.md)) is a paper that was fetched, whose abstract or relevant section was read, and in some cases traced into for a specific claim. Where a numeric claim is drawn from a paper — e.g. "Warp's neo-Hookean benchmark on a 4090 clears ~100k tets at 60 FPS" — that claim is cited to its source and the source is fetched as of the date the chapter is written. Where a claim is Jon's or Claude's opinion rather than a cited finding, the chapter marks it as such.
+Claude does not cite papers from memory. Every paper named in the book (see the [reference list](../appendices/00-references.md)) is a paper that was fetched, whose abstract or relevant section was read, and in some cases traced into for a specific claim. Where a numeric claim is drawn from a paper, that claim is cited to its source and the source is fetched as of the date the chapter is written. Where a claim is Jon's or Claude's opinion rather than a cited finding, the chapter marks it as such.
 
-This is a ground rule, not a nice-to-have. A book whose citations drift is strictly worse than the primary literature; a book whose citations hold up becomes a navigable index into that literature. The referencing convention ([inline name-year links into the appendix](./#citations), per Pass 1 conventions) is designed so broken references are visible, not hidden.
+This is a ground rule, not a nice-to-have. A book whose citations drift is strictly worse than the primary literature; a book whose citations hold up becomes a navigable index into that literature. The referencing convention — inline name-year links into the appendix, per Pass 1 conventions — is designed so broken references are visible, not hidden.
 
 ## No timeline
 
@@ -42,6 +42,6 @@ Each chapter is graded before it is considered finished. The criteria translate 
 
 - **Exhaustive derivations of every equation.** Derivations are cited and the book trusts the reader to follow the citation when it matters. Re-deriving known results in 300-line appendix sections inflates the book without improving it.
 - **A beginner's intro to FEM.** The [reading guide](04-reading-guide.md) points at external resources for readers who need one. The book assumes working familiarity with continuum mechanics, FEM, and the basic ML autograd machinery.
-- **Benchmarks of `sim-soft` against the Ch 02 solvers.** Those are [Part 12 milestone](../120-roadmap/02-first-working.md) work, executed after the code exists. Writing benchmarks against an unimplemented stack would be fiction.
+- **Benchmarks of `sim-soft` against the Ch 02 solvers.** Those are [Part 12 Ch 02 — first-working milestone](../120-roadmap/02-first-working.md) work, executed after the code exists. Writing benchmarks against an unimplemented stack would be fiction.
 
 The book is honest about what it is: a ground-up design study for a soft-body stack that does not yet exist, written by its designers.
