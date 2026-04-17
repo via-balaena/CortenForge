@@ -4,8 +4,8 @@ Friction is the [missing-friction failure mode](../10-physical/02-what-goes-wron
 
 | Section | What it covers |
 |---|---|
-| [Standard Coulomb and its limits](02-friction/00-coulomb.md) | $|t| \le \mu |n|$ with a stick regime ($t$ arbitrary, $\dot u = 0$) and a slip regime ($|t| = \mu |n|$, $\dot u$ parallel to $t$); the stick–slip transition is non-smooth and has no gradient |
-| [Smoothed Coulomb](02-friction/01-smoothed.md) | Replace the discontinuous stick regime with a smooth energy $E_\text{fric}(u) = \mu |n| f(\|\dot u\| / \epsilon_v)$ for $f$ a $C^2$ function that is approximately linear for small argument and approximately $\| \cdot \|$ for large. Gradients exist everywhere |
+| [Standard Coulomb and its limits](02-friction/00-coulomb.md) | $|t| \le \mu_c |n|$ with a stick regime ($t$ arbitrary, $\dot u = 0$) and a slip regime ($|t| = \mu_c |n|$, $\dot u$ parallel to $t$); the stick–slip transition is non-smooth and has no gradient |
+| [Smoothed Coulomb](02-friction/01-smoothed.md) | Replace the discontinuous stick regime with a smooth energy $E_\text{fric}(u) = \mu_c |n| f(\|\dot u\| / \epsilon_v)$ for $f$ a $C^2$ function that is approximately linear for small argument and approximately $\| \cdot \|$ for large. Gradients exist everywhere |
 | [Integration with IPC](02-friction/02-ipc-friction.md) | The friction energy is added alongside the barrier energy in the total potential; its coefficient is tied to the local contact normal force, which is itself computed from the barrier. Warm-started within a timestep, lagged across timesteps |
 
 Two claims Ch 02 rests on:

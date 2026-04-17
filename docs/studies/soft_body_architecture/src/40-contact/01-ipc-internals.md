@@ -1,6 +1,6 @@
 # IPC internals
 
-This chapter covers how IPC actually works, one sub-chapter per named component. The high-level shape is: IPC adds a contact term to the total potential energy the solver already minimizes, so contact becomes one more energy in the Newton loop from [Part 5](../50-time-integration/00-backward-euler.md). The four components below are what make that one sentence correct.
+This chapter covers how IPC actually works, one sub-chapter per named component. The high-level shape is: IPC adds a contact term to the total potential energy the solver already minimizes, so contact becomes one more energy in the Newton loop from [Part 5 Ch 00 — Backward Euler](../50-time-integration/00-backward-euler.md). The four components below are what make that one sentence correct.
 
 | Section | Component | Role |
 |---|---|---|

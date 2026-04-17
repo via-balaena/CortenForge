@@ -1,12 +1,12 @@
 # Multi-layer contact
 
-Realistic soft parts are often layered — a soft outer shell bonded to a stiffer core, a stacked pair of sleeves sliding on a lubricated interface, a biological analog with skin over subcutaneous tissue over muscle. Each layer is its own mesh with its own material parameters ([Ch 09](../20-materials/09-spatial-fields.md) covers multi-material fields within one mesh; this chapter covers inter-mesh contact between separately meshed layers). IPC handles the contact at every inter-layer interface, but the real engineering question is stability: can the solver converge when the layers are much thinner than the canonical contact tolerance, and what happens when ten of them stack?
+Realistic soft parts are often layered — a soft outer shell bonded to a stiffer core, a stacked pair of sleeves sliding on a lubricated interface, a biological analog with skin over subcutaneous tissue over muscle. Each layer is its own mesh with its own material parameters ([Part 2 Ch 09](../20-materials/09-spatial-fields.md) covers multi-material fields within one mesh; this chapter covers inter-mesh contact between separately meshed layers). IPC handles the contact at every inter-layer interface, but the real engineering question is stability: can the solver converge when the layers are much thinner than the canonical contact tolerance, and what happens when ten of them stack?
 
 | Section | What it covers |
 |---|---|
 | [Layer-to-layer sliding](04-multi-layer/00-sliding.md) | Bonded, frictional, and free-sliding inter-layer conditions; how each maps to an IPC pair type (bonded = zero-gap constraint, frictional = barrier + smoothed Coulomb, free-sliding = barrier only) |
 | [No-penetration between stacked sleeves](04-multi-layer/01-no-penetration.md) | CCD extension for three-or-more-layer stacks where the middle layer can only move when both adjacent layers yield — sometimes requires simultaneous time-stepping of all layers rather than layer-by-layer |
-| [Thin-material stability](04-multi-layer/02-thin-material.md) | Barrier width $\hat d$ must be smaller than the thinnest layer; below ~1 mm layer thickness the barrier width becomes the dominant numerical parameter; adaptive $\hat d$ per layer discussed in [Ch 05](05-real-time.md#adaptive-barrier-width) |
+| [Thin-material stability](04-multi-layer/02-thin-material.md) | Barrier width $\hat d$ must be smaller than the thinnest layer; below ~1 mm layer thickness the barrier width becomes the dominant numerical parameter; adaptive $\hat d$ per layer discussed in [Part 4 Ch 05 sub-chapter 01](05-real-time/01-barrier-width.md) |
 
 Two claims Ch 04 rests on:
 
