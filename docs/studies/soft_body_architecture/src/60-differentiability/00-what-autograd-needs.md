@@ -1,3 +1,17 @@
 # What autograd actually needs to do
 
-> _stub — overview of: What generic autograd does, What physics-specific autograd needs beyond that, Why importing Burn was the wrong call_
+[Part 1 Ch 03's thesis](../10-physical/03-thesis.md) commits to differentiability as a first-class property of `sim-soft`, not a retrofit. This chapter names what that commitment actually demands of the autograd machinery — and why the deep-learning-shaped autograd toolchain the Rust ecosystem offers today ([Burn](https://burn.dev), [`candle`](https://github.com/huggingface/candle), [`dfdx`](https://github.com/coreylowman/dfdx)) solves a different problem than the one `sim-soft` has.
+
+The three sub-chapters below take the argument in three steps: what generic reverse-mode autograd does well, what a physics solver needs beyond that, and why importing Burn was considered and rejected.
+
+| Section | What it covers |
+|---|---|
+| [What generic autograd does](00-what-autograd-needs/00-generic.md) | Tape-based reverse mode over elementary ops; the DL hot path (matmul, conv, activation) and why [`sim-ml-chassis`'s existing CPU tape](../110-crate/00-module-layout/07-autograd.md) is sufficient for policy networks |
+| [What physics-specific autograd needs beyond that](00-what-autograd-needs/01-physics-specific.md) | Gradients through implicit solves ([IFT](02-implicit-function.md)), backward-in-time [adjoints](03-time-adjoint.md), [checkpointing](04-checkpointing.md), hand-written VJPs for fused assembly kernels, discontinuity handling at [mesh-topology changes](05-diff-meshing.md) |
+| [Why importing Burn was the wrong call](00-what-autograd-needs/02-why-not-burn.md) | Burn is a DL framework optimizing batched matmul/conv; its VJP rules are for tensor ops, not FEM stiffness assembly or IPC barrier evaluation; extending `sim-ml-chassis` is less total code than porting the solver onto Burn's tensor |
+
+Three claims Ch 00 rests on:
+
+1. **Generic autograd is necessary but insufficient.** The chain rule over elementary ops is required — it is how the *policy* side of the RL loop learns. But FEM assembly, IPC barrier accumulation, implicit Newton iteration, and backward-in-time integration are not chains of elementary ops. They are fused kernels with hand-derived adjoints, or they are algorithmic processes whose gradient is a theorem (IFT, adjoint state equation), not a graph traversal. Autograd that only knows elementary ops would either fail to differentiate these or would record tapes so deep that the memory blows up before the solve finishes.
+2. **The physics gradient is mostly structure, not autodiff.** `sim-soft`'s equilibrium-configuration gradient $\partial x^\ast / \partial \theta$ is [one sparse solve](02-implicit-function.md) using the same factorization the forward Newton already computed — not a reverse traversal over every per-element multiply. The gradient through a 1000-step rollout is a backward ODE, not a million-node tape. Autograd's job is to glue these structured adjoints into the chain rule at the boundary, not to own the physics derivative itself.
+3. **Own every line.** The thesis commits to the integrated-stack simplification that a deep framework dependency would erode. [`sim-ml-chassis`'s tape](../110-crate/00-module-layout/07-autograd.md) is the minimum surface transparent enough to audit in an afternoon, and will gain two additions: a [VJP registration API](01-custom-vjps/00-registration.md) and a [wgpu tensor backend](../80-gpu/04-chassis-extension.md) for Phase E. Both are strictly additive. The alternative — a framework dependency whose internals are not ours — makes the cost of a solver-level bug unbounded.
