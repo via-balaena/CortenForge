@@ -1,0 +1,17 @@
+# Multi-material interfaces
+
+A soft-body part rarely consists of one material. A silicone sleeve over a rigid mount has a bonded interface between the two. A layered cavity has sliding interfaces between stacked sleeves. A carbon-black-loaded stiff skin over a softer core has a graded-material interface with no topological discontinuity but a stiffness ratio of 10–100×. This chapter names the three interface classes, the `sim-soft` default for each, and where the machinery lives.
+
+| Section | What it covers |
+|---|---|
+| [Bonded interfaces](03-interfaces/00-bonded.md) | Two materials, no relative motion allowed: the mesh is continuous across the interface, vertices on the boundary are shared, materials differ per-tet. Default for silicone-on-mount; Phase B |
+| [Frictional sliding interfaces](03-interfaces/01-sliding.md) | Two materials with tangential relative motion: the mesh has a double-layer of vertices on the interface, IPC with friction handles the contact between them. Phase H; uses [IPC's friction treatment from Part 4 Ch 02](../40-contact/02-friction.md) |
+| [Sharp material transitions](03-interfaces/02-sharp-transitions.md) | Graded stiffness (e.g., skin-over-core) where SDF-weighted blending produces a continuous transition across tets. Handled by interface-band flagging + [adaptive h-refinement](02-adaptive.md). Phase H |
+
+Three claims.
+
+**Bonded is the Phase B default; sliding is Phase H.** Bonded interfaces are simpler — the mesh is continuous, the [per-tet material assignment from Part 7 Ch 02](../70-sdf-pipeline/02-material-assignment.md) handles the material discontinuity without any special interface-element machinery. The silicone-sleeve-on-rigid-mount scenario in the canonical problem is bonded. Sliding interfaces require a double-layer mesh (two sets of vertices on the interface with IPC contact between them), which is a non-trivial mesh-generation and solver change; it lands in Phase H alongside the layered-sleeve fidelity upgrades.
+
+**Sharp material transitions are not a separate solver path; they are a refinement trigger.** SDF-weighted blending produces a continuous stiffness field — there is no topological discontinuity the solver has to special-case. The stiffness *gradient* is sharp, and the [interface-band flagging from Part 7 Ch 02](../70-sdf-pipeline/02-material-assignment.md) identifies tets that straddle the transition. If the per-tet stiffness averaging inside these tets produces unacceptable stress smearing, adaptive h-refinement ([Part 7 Ch 03](../70-sdf-pipeline/03-adaptive-refine.md)) subdivides them; if not, the solver handles them as ordinary multi-material tets. The handling is smooth, and the Phase H trigger is quantitative (refinement-criterion threshold), not a switch the user sets.
+
+**Multi-material composability is handled at the trait layer.** [`Material::tangent()`](../20-materials/00-trait-hierarchy/00-trait-surface.md) takes the per-tet material parameters from [Part 7 Ch 02's assignment](../70-sdf-pipeline/02-material-assignment.md). The interface-chapter's machinery lives in the mesh and contact layers, not the material layer — materials do not need to know they are at an interface. Composability through the same trait surface is the architectural simplification; sharp transitions, bonded interfaces, and graded fields are all handled by varying the material parameters per tet while the trait contract stays constant.

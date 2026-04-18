@@ -1,0 +1,3 @@
+# coupling/
+
+> _stub_
