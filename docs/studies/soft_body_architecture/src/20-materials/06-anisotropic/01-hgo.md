@@ -1,6 +1,6 @@
 # Holzapfel-Gasser-Ogden
 
-The Holzapfel-Gasser-Ogden (HGO) law is the canonical specialization of [Ch 06's fiber-reinforced template](00-fiber-reinforced.md) to an exponential fiber-stiffening form. It dominates the regime where reinforcing fibers — collagen, textile yarns, embedded glass or carbon — exhibit J-shaped stress-stretch behaviour: low compliance at small strain, sharp stiffening at moderate-to-large strain. `sim-soft` ships HGO as the default `Anisotropic<M, R>` specialization, with `Hgo<R>` aliased to `Anisotropic<NeoHookean, R>` per the [Ch 00 composition leaf](../00-trait-hierarchy/01-composition.md).
+The [Holzapfel-Gasser-Ogden (HGO) law](../../appendices/00-references/01-hyperelastic.md#holzapfel-gasser-ogden-2000) is the canonical specialization of [Ch 06's fiber-reinforced template](00-fiber-reinforced.md) to an exponential fiber-stiffening form. It dominates the regime where reinforcing fibers — collagen, textile yarns, embedded glass or carbon — exhibit J-shaped stress-stretch behaviour: low compliance at small strain, sharp stiffening at moderate-to-large strain. `sim-soft` ships HGO as the default `Anisotropic<M, R>` specialization, with `Hgo<R>` aliased to `Anisotropic<NeoHookean, R>` per the [Ch 00 composition leaf](../00-trait-hierarchy/01-composition.md).
 
 ## Energy form
 

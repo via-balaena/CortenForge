@@ -16,7 +16,7 @@ $$ \overset{\nabla}{T} = \dot T - L\, T - T\, L^T $$
 
 where $L = \dot F\, F^{-1}$ is the spatial velocity gradient. The construction subtracts the part of $\dot T$ that comes from the material configuration's rotation and stretch, leaving only the intrinsic constitutive rate. Under any superposed rigid rotation $R(t)$, $\overset{\nabla}{T}$ transforms tensorially the same way $T$ does — it is objective by construction, which is the property Prony's $\dot Q_i$ lacks.
 
-The lower-convected derivative $\overset{\Delta}{T} = \dot T + L^T T + T L$ is the dual choice for covariant tensors; the Oldroyd-A model uses the lower-convected derivative directly, and the Johnson-Segalman model parameterizes the interpolation between upper- and lower-convected. Oldroyd-B is the upper-convected case and is the standard for tensor stresses that transform contravariantly under stretch.
+The lower-convected derivative $\overset{\Delta}{T} = \dot T + L^T T + T L$ is the dual choice for covariant tensors; the Oldroyd-A model ([Oldroyd 1950](../../appendices/00-references/01-hyperelastic.md#oldroyd-1950)) uses the lower-convected derivative directly, and the [Johnson-Segalman model](../../appendices/00-references/01-hyperelastic.md#johnson-segalman-1977) parameterizes the interpolation between upper- and lower-convected. Oldroyd-B is the upper-convected case from the same [Oldroyd 1950](../../appendices/00-references/01-hyperelastic.md#oldroyd-1950) paper and is the standard for tensor stresses that transform contravariantly under stretch.
 
 ## The Oldroyd-B-style stress evolution
 
@@ -28,7 +28,7 @@ where $D = (L + L^T)/2$ is the symmetric rate-of-deformation tensor and $G_i$ is
 
 The UCD term is what makes this frame-indifferent: under a superposed rotation, $L$ picks up the rotation rate, $D$ stays symmetric, and $\overset{\nabla}{Q}_i$ transforms tensorially with $Q_i$ — the equation rotates with the configuration without injecting spurious stress. This is the property the Prony convolution loses at large deformation.
 
-The exact form `sim-soft` ships is the standard Oldroyd-B model from the polymer-rheology literature, generalized to $N$ modes; alternative UCD-family choices (Oldroyd-A, Johnson-Segalman, Phan-Thien–Tanner) exist for specific material classes but are not on the Phase A–I roadmap.
+The exact form `sim-soft` ships is the standard Oldroyd-B model from the polymer-rheology literature, generalized to $N$ modes; alternative UCD-family choices (Oldroyd-A, Johnson-Segalman, [Phan-Thien–Tanner](../../appendices/00-references/01-hyperelastic.md#phan-thien-tanner-1977)) exist for specific material classes but are not on the Phase A–I roadmap.
 
 ## Implementation as a parallel decorator
 

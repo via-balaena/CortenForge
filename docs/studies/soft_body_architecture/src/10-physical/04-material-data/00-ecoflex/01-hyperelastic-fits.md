@@ -18,7 +18,7 @@ Parameters are fit by nonlinear least-squares against the published $\sigma(\lam
 
 ## Measured data
 
-Two silicone-characterization studies anchor the Ecoflex curve fits in the book. The anchors in [the hyperelasticity reference leaf](../../../appendices/00-references/01-hyperelastic.md) receive their one-line bibliographic entries at Pass 3 ([`#marechal`](../../../appendices/00-references/01-hyperelastic.md#marechal) for the 00-30 source, [`#liao`](../../../appendices/00-references/01-hyperelastic.md#liao) for the 00-50 source).
+Two silicone-characterization studies anchor the Ecoflex curve fits in the book. The studies are reserved as Pass-3 source-fetch deliverables in [the hyperelasticity reference leaf](../../../appendices/00-references/01-hyperelastic.md) — one published 00-30 curve-fit study and one published 00-50 curve-fit study — with the specific paper identifications landing at Pass 3 rather than being guessed from surname alone per the [Part 0 Ch 03 "no hallucinated citations" commitment](../../../00-context/03-how-produced.md).
 
 - **Ecoflex 00-30** — uniaxial tensile tests at quasi-static strain rate, stretch range $\lambda \in [1, \;\approx 4]$, reported Ogden $N = 3$ coefficients, reported Mooney-Rivlin coefficients, raw stress–stretch points tabulated.
 - **Ecoflex 00-50** — uniaxial tensile tests at the same rate, stretch range $\lambda \in [1, \;\approx 4]$, reported Ogden $N = 2$ and $N = 3$ coefficients.

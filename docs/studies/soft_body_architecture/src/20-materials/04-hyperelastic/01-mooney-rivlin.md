@@ -1,6 +1,6 @@
 # Mooney-Rivlin
 
-Mooney-Rivlin is `sim-soft`'s two-parameter hyperelastic law, the middle tier in the [Part 2 Ch 04 — hyperelastic family](../04-hyperelastic.md) selector table. Where [neo-Hookean](00-neo-hookean.md) depends on the first invariant $I_1$ only, Mooney-Rivlin adds a $C_{01}(I_2 - 3)$ term — a linear combination of the first two invariants of $C = F^T F$ (per [Part 2 Ch 01 — strain measures](../01-strain-measures.md)). The three sub-chapters below walk the canonical two-parameter form (Mooney 1940; Rivlin 1948), the calibration procedure against silicone data, and the criteria that decide when the extra parameter is worth the extra calibration burden.
+Mooney-Rivlin is `sim-soft`'s two-parameter hyperelastic law, the middle tier in the [Part 2 Ch 04 — hyperelastic family](../04-hyperelastic.md) selector table. Where [neo-Hookean](00-neo-hookean.md) depends on the first invariant $I_1$ only, Mooney-Rivlin adds a $C_{01}(I_2 - 3)$ term — a linear combination of the first two invariants of $C = F^T F$ (per [Part 2 Ch 01 — strain measures](../01-strain-measures.md)). The three sub-chapters below walk the canonical two-parameter form ([Mooney 1940](../../appendices/00-references/01-hyperelastic.md#mooney-1940); [Rivlin 1948](../../appendices/00-references/01-hyperelastic.md#rivlin-1948)), the calibration procedure against silicone data, and the criteria that decide when the extra parameter is worth the extra calibration burden.
 
 | Section | What it covers |
 |---|---|
