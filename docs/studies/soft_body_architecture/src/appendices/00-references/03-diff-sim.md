@@ -26,6 +26,12 @@ Differentiable Delaunay triangulation. Pass 3 will fill in the full title and ve
 
 Formulates Delaunay triangulation as the limit of a regularized linear-programming problem; gradients flow through the LP's dual variables. Mathematically clean, scales poorly — the LP is re-solved on every geometry update, and constants are prohibitive at the tet counts `sim-soft` targets. Cited inline from [Part 6 Ch 05](../../60-differentiability/05-diff-meshing.md) as the third published angle of attack on differentiable meshing; the book's assessment is that production deployment in FEM has not been demonstrated.
 
+## Hu et al. 2020 (fTetWild) {#hu-2020}
+
+*Fast Tetrahedral Meshing in the Wild.* ACM Transactions on Graphics 39(4), Article 117 (2020). Authors: Yixin Hu, Teseo Schneider, Bolun Wang, Denis Zorin, Daniele Panozzo.
+
+The robust tet-meshing-from-mesh pipeline with envelope-based validity guarantees — handles arbitrary input surfaces including self-intersecting and non-manifold meshes, with mesh-improvement passes that drive aspect ratio and dihedral angle into a usable band. Cited inline from [Part 7 Ch 01 — tetrahedralization strategies](../../70-sdf-pipeline/01-tet-strategies.md) as the default design-mode tet-generation pipeline in `sim-soft` (adapted to SDF input via iso-surface extraction); the SDF-pathology robustness is the property that makes it the right fit for `sim-soft`'s `SdfField`-driven design flow where the iso-surface of an arbitrary cf-design SDF can exhibit any surface pathology. The predecessor paper (Hu, Zhou, Gao, Jacobson, Zorin, Panozzo 2018 — "Tetrahedral Meshing in the Wild") is not anchored here because no inline citation currently references it; the `sim-soft` pipeline consumes the 2020 fast-variant.
+
 ## Pass 3 anchors (not yet inline-cited)
 
-Reserved slots the Pass 3 bibliography will populate: DiffTaichi (Hu et al.), NVIDIA Warp (Warp paper), Genesis (Tsinghua), and the Hu et al. 2020 fTetWild paper [Part 7 Ch 01 mentions](../../70-sdf-pipeline/01-tet-strategies.md) in prose without anchor. None is anchored here yet because no inline citation currently references them by anchor.
+Reserved slots the Pass 3 bibliography will populate: DiffTaichi (Hu et al.), NVIDIA Warp (Warp paper), Genesis (Tsinghua), and the 2018 predecessor to fTetWild if later chapters reference it. None is anchored here yet because no inline citation currently references them by anchor.

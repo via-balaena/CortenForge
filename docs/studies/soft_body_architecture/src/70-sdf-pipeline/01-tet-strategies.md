@@ -4,7 +4,7 @@ Given an `SdfField` from [Ch 00](00-sdf-primitive.md), something has to produce 
 
 | Section | What it covers |
 |---|---|
-| [fTetWild](01-tet-strategies/00-ftetwild.md) | Hu et al. 2020's robust tet-meshing-from-mesh pipeline, adapted to SDF input via iso-surface extraction. Default for design-mode on canonical-scale (~30k-tet) meshes |
+| [fTetWild](01-tet-strategies/00-ftetwild.md) | [Hu et al. 2020](../appendices/00-references/03-diff-sim.md#hu-2020)'s robust tet-meshing-from-mesh pipeline, adapted to SDF input via iso-surface extraction. Default for design-mode on canonical-scale (~30k-tet) meshes |
 | [Delaunay tetrahedralization](01-tet-strategies/01-delaunay.md) | Classical Delaunay with mesh-quality post-processing. Used for small experience-mode scenes (≤5k tets) where meshing time is not a bottleneck |
 | [GPU tet generation](01-tet-strategies/02-gpu-tet.md) | Parallel tet generation on wgpu compute kernels. [Phase E+](../110-crate/03-build-order.md#the-committed-order) target for interactive-rate re-meshing under design edits |
 | [Quality comparison](01-tet-strategies/03-quality-compare.md) | Aspect ratio, dihedral-angle distribution, conditioning of the resulting stiffness matrix across the three strategies |
