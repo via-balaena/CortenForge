@@ -15,7 +15,7 @@ The book commits to nine phases, A through I. They are a total order — no over
 | C | IPC contact integrated into solver | Phase D |
 | D | Readout + `sim-ml-chassis` boundary closed | **First working sim-soft** ([Ch 02](02-first-working.md)); optimizer phase 1 ([Ch 06](06-optimization.md)) |
 | E | GPU port of hot paths | **Interactive rates** ([Ch 03](03-gpu.md)) |
-| F | `sim-mjcf` + `sim-thermostat` coupling | Phase G |
+| F | `sim-core` + `sim-thermostat` coupling | Phase G |
 | G | SDF bridge + `cf-design` live | **Live design edits** ([Ch 04](04-sdf.md)); optimizer phase 2 ([Ch 06](06-optimization.md)) |
 | H | Tet10, mixed u-p, Prony, HGO, adaptive refinement | Feeds Phase I fidelity |
 | I | Visual layer via `sim-bevy` | **Visual ceiling** ([Ch 05](05-visual.md)); optimizer phase 3 ([Ch 06](06-optimization.md)) |
@@ -44,7 +44,7 @@ The book commits to nine phases, A through I. They are a total order — no over
               ★ Ch 03 — interactive rates
                                │
                                ▼
-                    Phase F — sim-mjcf + sim-thermostat
+                    Phase F — sim-core + sim-thermostat
                                │
                                ▼
                     Phase G — SDF bridge + cf-design

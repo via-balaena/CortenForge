@@ -307,7 +307,7 @@
     - [Core traits](110-crate/01-traits/00-core.md)
     - [Composition rules](110-crate/01-traits/01-composition.md)
 - [Coupling boundaries](110-crate/02-coupling.md)
-    - [With sim-mjcf](110-crate/02-coupling/00-mjcf.md)
+    - [With sim-core and sim-mjcf](110-crate/02-coupling/00-mjcf.md)
     - [With sim-thermostat](110-crate/02-coupling/01-thermostat.md)
     - [With sim-bevy](110-crate/02-coupling/02-bevy.md)
     - [With sim-ml-chassis](110-crate/02-coupling/03-ml-chassis.md)

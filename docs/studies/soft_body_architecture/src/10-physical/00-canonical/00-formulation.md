@@ -7,7 +7,7 @@ Pin down the canonical problem: a compliant elastomeric cavity — an open-ended
 The canonical shape at design-mode scale:
 
 - **Cavity.** Thick-walled cylindrical sleeve of elastomer. Inner radius $r_c$ set near the probe radius $r_p$ (interference fit), wall thickness $t_c$ of roughly one-third to one-half of $r_c$, axial length $L_c$ several times $r_c$. Closed at the base, open at the mouth. The rim is rounded rather than sharp.
-- **Probe.** Rigid cylinder of radius $r_p$, optionally with a tapered or rounded tip. Treated as a contact partner from [`sim-mjcf`](../../110-crate/02-coupling/00-mjcf.md), moved axially along the cavity axis.
+- **Probe.** Rigid cylinder of radius $r_p$, optionally with a tapered or rounded tip. Treated as a contact partner from [`sim-core`](../../110-crate/02-coupling/00-mjcf.md), moved axially along the cavity axis.
 
 Absolute length is intentionally not pinned at this leaf — the steady-state, body-force-free limit of the primal solve is scale-invariant under geometric similarity (see nondimensional groups below). The [material-data chapter](../04-material-data.md) and the [Phase E GPU budgets](../../110-crate/03-build-order.md#the-committed-order) pin the absolute scale by fixing tet counts at roughly centimeter-scale parts: ~30k tets in design mode, ~5k tets in experience mode.
 

@@ -106,7 +106,7 @@ The coupling is tight: Newton's line search is where contact and time integratio
 ## What this commits downstream
 
 - [Ch 02 (adaptive dt)](02-adaptive-dt.md) is triggered by Newton failures, not by an independent a-priori stability analysis. Failed-line-search ⇒ halve $\Delta t$ ⇒ retry-step. Energy-monitor backstop exists but is not the primary path.
-- [Ch 03 (coupling)](03-coupling.md)'s fixed-point iteration with `sim-mjcf` treats each substep as a full Newton-converged solve on the current rigid state; iteration is across the sibling-simulator boundary, not within the Newton loop.
+- [Ch 03 (coupling)](03-coupling.md)'s fixed-point iteration with `sim-core` treats each substep as a full Newton-converged solve on the current rigid state; iteration is across the sibling-simulator boundary, not within the Newton loop.
 - [Part 6 Ch 02 (IFT)](../60-differentiability/02-implicit-function.md) re-uses the forward `Llt<f64>` factor from this chapter, stored on the tape. Forward and backward share one factorization; backward is one back-substitution.
 - [Part 11 Ch 04 — gradcheck sub-chapter](../110-crate/04-testing/03-gradcheck.md)'s gradcheck suite validates this by comparing IFT-derived gradients against finite-difference gradients on a small static-equilibrium test problem — which is the test for "did we wire the factor into the tape correctly," not a test of the IFT derivation itself.
 
