@@ -29,14 +29,14 @@ for a twice-differentiable kernel $k$. The Matérn-5/2 kernel is twice different
 The payoff: gradient-augmented GPs converge to the optimum in 2–5× fewer scalar-reward evaluations than gradient-free GPs on smooth problems (Wu et al. 2017 reports these ratios on synthetic testbeds; the ratio depends on the smoothness of the target). For the canonical problem where the forward-map gradient is close-to-free relative to the forward-map evaluation, this is strictly a gain.
 
 ```rust
-use faer::sparse::linalg::solvers::Cholesky;
+use faer::sparse::linalg::solvers::Llt;
 use sim_ml_chassis::Tensor;
 
 pub struct GradientEnhancedGP {
     pub samples: Vec<GpSample>,             // (theta, r, grad_r, noise_estimate)
     pub length_scales: Tensor<f64>,         // ARD, per-dimension
     pub signal_variance: f64,
-    pub factor: Option<Cholesky<f64>>,      // Cholesky of augmented kernel matrix
+    pub factor: Option<Llt<f64>>,           // Cholesky factor of augmented kernel matrix
 }
 
 pub struct GpSample {

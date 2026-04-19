@@ -35,7 +35,7 @@ Structural change detection (walking the composition tree and diffing node-by-no
 A parameter-only edit reuses the previous mesh and previous converged position $x^\ast_\text{old}$. The new equilibrium $x^\ast_\text{new}$ is close to $x^\ast_\text{old}$ when the edit is small, and Newton converges in a handful of iterations from the warm-started initial guess rather than from a cold start — the gap is large enough to be what makes the interactive-rate budget feasible. The hot-path pattern:
 
 ```rust
-use faer::sparse::linalg::solvers::Cholesky;
+use faer::sparse::linalg::solvers::Llt;
 use sim_ml_chassis::Tape;
 
 pub fn apply_design_edit(

@@ -43,7 +43,7 @@ Each stage is explicit about what it produces and what it caches for the backwar
 
 1. **`cf-design` → `SdfField` + `MaterialField`.** Authoring layer only. No solver state. The boundary is the `SdfField` and `MaterialField` trait objects from [Part 7 Ch 00](../70-sdf-pipeline/00-sdf-primitive.md); `sim-soft` does not inspect the composition tree.
 2. **Change detection → `EditResult`.** The [Part 7 Ch 04 classifier](../70-sdf-pipeline/04-live-remesh.md) labels the edit as `ParameterOnly`, `MaterialChanging`, or `TopologyChanging`. Cost regime is selected here, not downstream.
-3. **Mesh + materials → equilibrium $x^\ast$.** The [Part 5 Ch 00 Newton loop](../50-time-integration/00-backward-euler.md) minimizes $U_n(x; \theta)$. At convergence, stores $x^\ast$, the `faer::sparse::linalg::solvers::Cholesky<f64>` factor, and $\partial r / \partial \theta$ on the autograd tape — the [factor-on-tape pattern](../50-time-integration/00-backward-euler.md) Part 5 commits to.
+3. **Mesh + materials → equilibrium $x^\ast$.** The [Part 5 Ch 00 Newton loop](../50-time-integration/00-backward-euler.md) minimizes $U_n(x; \theta)$. At convergence, stores $x^\ast$, the `faer::sparse::linalg::solvers::Llt<f64>` factor, and $\partial r / \partial \theta$ on the autograd tape — the [factor-on-tape pattern](../50-time-integration/00-backward-euler.md) Part 5 commits to.
 4. **Readout $R(x^\ast; \theta)$.** The scalar reward is the composition of pressure uniformity, coverage, peak-pressure barrier, and effective-stiffness-bound terms from [Part 1 Ch 01](../10-physical/01-reward.md), all smooth, all autograd-traceable.
 
 The trait-level signature the optimizer sees is:
