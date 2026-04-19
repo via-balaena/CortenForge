@@ -341,6 +341,7 @@
     - [Differentiable sim papers](appendices/00-references/03-diff-sim.md)
     - [Rendering papers](appendices/00-references/04-rendering.md)
     - [Time-integration papers](appendices/00-references/05-time-integration.md)
+    - [Co-simulation papers](appendices/00-references/06-co-simulation.md)
 - [Glossary](appendices/01-glossary.md)
 - [Material property database](appendices/02-material-db.md)
 - [Notation reference](appendices/03-notation.md)
