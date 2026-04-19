@@ -56,6 +56,6 @@ The [Hex8 sub-leaf's upstream-meshing argument](02-hex8.md) is the concrete inst
 ## What this sub-leaf commits the book to
 
 - **The cost/accuracy comparison is multi-axis, not single-number.** No single metric ("FLOPs per element", "DOFs per element") justifies the element commitments — wall-clock-to-target-fidelity-on-canonical-problem is the figure of merit.
-- **Per-element FLOPs ratios are a 3–5× Tet10 / 1.0 Tet4 spread on the canonical-problem regime.** The 4–6× Hex8-full ratio and 1.5–2× Hex8-reduced ratio are documented for completeness, not for selection.
+- **Per-element FLOPs ratios are a 3–5× Tet10 / 1.0 Tet4 spread on the canonical-problem regime.** The 4–6× Hex8-full and the Hex8-reduced row (comparable per-call to Tet4 plus 4× assembly arithmetic plus hourglass-control overhead) are documented for completeness, not for selection.
 - **Per-DOF energy-error ranking inverts the cost ranking on the canonical problem.** Tet10's 3–5× per-element penalty is overcome by the several-fold-fewer-elements-needed to match contact-band fidelity; this is the Phase H Tet10-in-band justification. The exact crossover ratio is a Phase D measurement deliverable.
 - **Specific benchmark numbers are Phase D regression-suite output.** This leaf is the comparison framework; the [Part 11 Ch 04 regression-test sub-leaf](../../../110-crate/04-testing/01-regression.md) populates it with measurements against MuJoCo flex.

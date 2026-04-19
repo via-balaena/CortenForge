@@ -10,7 +10,7 @@ A mixed mesh is the same vertex array, edge graph, and tet array as a homogeneou
 enum ElementType { Tet4, Tet10 }
 struct MixedTetMesh {
     vertices: Vec<Position>,
-    tets: Vec<TetId>,                  // 4-vertex per tet (corner indices)
+    tets: Vec<[VertexId; 4]>,          // 4 corner vertex indices per tet
     midpoint_nodes: Vec<EdgeId>,       // populated only for Tet10-tagged tets
     element_type: Vec<ElementType>,    // one tag per tet
 }

@@ -23,14 +23,14 @@ A tet with $\theta_\text{min} \to 0°$ has different solver pathology than a tet
 - **$\theta_\text{min} \to 0°$ (acute sliver).** The tet has at least one needle-like edge configuration. The shape function gradient $\nabla_X N_i$ for one of the corner nodes opposite this edge becomes very large in magnitude (the gradient is inversely proportional to the perpendicular distance from the corner to the opposite face, which approaches zero as the dihedral collapses). Large gradients inflate the assembled stiffness magnitude on a per-element basis, distorting the global conditioning toward modes that should not be stiff.
 - **$\theta_\text{max} \to 180°$ (cap sliver).** The tet has two faces nearly coplanar across an edge. The edge's outward normal direction is poorly defined; numerical issues in any per-edge geometric computation propagate (face-normal-dependent quadrature on Tet10, IPC-edge proximity tests, mesh-improvement edge-flip decisions). The tet itself may have moderate $\nabla_X N_i$ magnitudes but downstream geometric machinery degrades.
 
-Both failure modes can co-occur in the same tet (and frequently do in pure sliver-tets), but a tet can fail one bound and pass the other (e.g., a "needle" tet with all small dihedrals on three edges and one moderate dihedral). Single-bound gates miss the asymmetric failure modes; two-bound gates catch all of them.
+Both failure modes can co-occur in the same tet (and frequently do in pure sliver-tets), but a tet's $\theta_\text{min}$ and $\theta_\text{max}$ across its 6 dihedrals are independent: a tet can have a bad minimum (one or more dihedrals near 0°) without a bad maximum (no dihedral near 180°), or vice versa. Single-bound gates miss the asymmetric failure modes; two-bound gates catch all of them.
 
 ## What dihedral catches that radius ratio does not
 
 Radius ratio $\rho = r_\text{ins}/r_\text{circ}$ is the [aspect-ratio sub-leaf](00-aspect-ratio.md)'s primary metric. Dihedral angles add diagnostic dimensions $\rho$ does not separate:
 
-- A "needle" tet (one very long edge, three short edges all roughly equal) has small $\rho$ *and* small $\theta_\text{min}$. Both gates fire; either alone catches it.
-- A "cap" or "wedge" tet (one very flat dihedral, others moderate) can have $\rho$ near the threshold (still small but not minimal) yet $\theta_\text{max} \to 180°$. The dihedral gate fires; the radius-ratio gate may not.
+- Strongly-degenerate sliver tets (small $r_\text{ins}$, near-coplanar vertices) typically fail both gates — small $\rho$ *and* asymmetric dihedrals. Either alone catches them.
+- Asymmetric-skew tets — where the radius-ratio shape metric averages out a localized dihedral pathology over the whole-tet sphere geometry — can pass the radius-ratio gate while failing one of the dihedral bounds. The dihedral gate is what catches these.
 - A regular-but-rotated tet has $\rho = 1/3$ (regular) and dihedrals all at $70.53°$ (regular). Both gates pass; rotation does not affect either.
 
 Because the gates catch overlapping but distinct failure regions, `sim-soft` uses both — not because either is insufficient on its own for the average bad tet, but because bad-tet shape distributions in the wild include the asymmetric cases where one metric registers and the other does not.

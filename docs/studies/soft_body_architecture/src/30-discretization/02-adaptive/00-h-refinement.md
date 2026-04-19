@@ -4,11 +4,13 @@ The [adaptive parent](../02-adaptive.md) deferred the `sim-soft` commitment for 
 
 ## What h-refinement does to the mesh data structures
 
-A red subdivision of a parent tet (the operation [Part 7 Ch 03](../../../70-sdf-pipeline/03-adaptive-refine.md) names) inserts vertices at the midpoints of the parent's 6 edges and replaces the parent with 8 child tets. From the [`mesh/`](../../../110-crate/00-module-layout/02-mesh.md) module's perspective:
+A red subdivision of a parent tet (the operation [Part 7 Ch 03](../../../70-sdf-pipeline/03-adaptive-refine.md) names) inserts vertices at the midpoints of the parent's 6 edges and replaces the parent with 8 child tets. From the [`mesh/`](../../../110-crate/00-module-layout/02-mesh.md) module's perspective, for the **Tet4 → Tet4 refinement case**:
 
-- **Vertex count grows by 6 per refined parent** (the new midpoint vertices). The vertex array is an append-only list; existing vertices retain their indices.
+- **Vertex count grows by up to 6 per refined parent** (the new corner-edge midpoint vertices). Fewer if any of the 6 parent edges already has a midpoint vertex from a previously refined neighbor — those midpoints are shared. The vertex array is an append-only list; existing vertices retain their indices.
 - **Tet count grows by 7 per refined parent** (1 parent → 8 children, net +7). Parent tet IDs are released or marked invalid; child tet IDs are appended.
-- **Per-tet `ElementType` tags** ([Ch 00 mixed sub-leaf](../../00-element-choice/03-mixed.md)): each child inherits its parent's tag. A Tet10-tagged parent yields 8 Tet10-tagged children, with new midpoint nodes added for each child Tet10's edges.
+- **Per-tet `ElementType` tags** ([mixed-element sibling](../../00-element-choice/03-mixed.md)): each child inherits its parent's tag.
+
+Refinement of a **Tet10-tagged parent** is more expensive in vertex bookkeeping: in addition to the up-to-6 corner-edge midpoints (which become the children's corners, since a Tet10 parent's edges already have midpoints), each of the 8 Tet10 children needs its own 6 edge midpoints — most of which are new vertices at quarter-positions of the parent's edges or on parent face/interior. The `mesh/` module amortizes this through bulk allocation, but the per-event cost is higher than the Tet4 case. Phase H production usage applies refinement primarily to the Tet4 region; Tet10-region refinement is supported by the data structures but not the typical case.
 
 The [`mesh/`](../../../110-crate/00-module-layout/02-mesh.md) module's data layout is amenable to this — the vertex and tet arrays are append-only lists with indirection through ID maps, so refinement inserts new entries without invalidating the IDs of unrefined elements. The cost is per-refinement-event re-allocation if the underlying `Vec` capacity is exceeded; production usage pre-allocates with a refinement-budget margin.
 
