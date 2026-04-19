@@ -4,9 +4,9 @@ This chapter is an inherent leaf — no sub-chapters — because adaptive refine
 
 ## The trigger: stress, not strain, not geometry
 
-After a Newton solve converges, `sim-soft::readout/` produces a per-tet stress tensor $\sigma_e$ (see [Part 11 Ch 00 readout](../110-crate/00-module-layout/09-readout.md)). The refinement criterion is a scalar derived from the stress gradient across tet edges:
+After a Newton solve converges, `sim-soft::readout/` produces a per-tet stress tensor $\sigma^e$ (see [Part 11 Ch 00 readout](../110-crate/00-module-layout/09-readout.md)). The superscript $e$ is the element index, paralleling the per-element notation convention $K^e, V^e, f^e_\text{int}$ from [Part 3 Ch 00](../30-discretization/00-element-choice/00-tet4.md); subscripted $\sigma_e$ is reserved for electrical conductivity in the [Part 1 Ch 04 carbon-black material-data leaf](../10-physical/04-material-data/02-carbon-black/01-conductivity.md). The refinement criterion is a scalar derived from the stress gradient across tet edges:
 
-$$ r_e = \max_{e' \in \mathcal{N}(e)} \frac{\|\sigma_e - \sigma_{e'}\|_F}{\|\sigma_e\|_F + \epsilon} $$
+$$ r_e = \max_{e' \in \mathcal{N}(e)} \frac{\|\sigma^e - \sigma^{e'}\|_F}{\|\sigma^e\|_F + \epsilon} $$
 
 where $\mathcal{N}(e)$ is the set of face-neighbors of tet $e$ and $\|\cdot\|_F$ is Frobenius norm. A tet is marked for refinement if $r_e > r_\text{threshold}$ (default 0.3). The $\epsilon$ floor prevents division-by-zero in low-stress regions and picks up a natural "ignore tets in the resting region" behavior.
 

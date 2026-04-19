@@ -27,7 +27,7 @@ The [`mesh/`](../../../110-crate/00-module-layout/02-mesh.md) module supports bo
 
 The [Part 7 Ch 03 chapter](../../../70-sdf-pipeline/03-adaptive-refine.md) covers — without duplication here:
 
-- The stress-gradient trigger criterion $r_e = \max_{e' \in \mathcal{N}(e)} \|\sigma_e - \sigma_{e'}\|_F / (\|\sigma_e\|_F + \epsilon)$
+- The stress-gradient trigger criterion $r_e = \max_{e' \in \mathcal{N}(e)} \|\sigma^e - \sigma^{e'}\|_F / (\|\sigma^e\|_F + \epsilon)$
 - The red-green subdivision operation (Bey 1995)
 - The unrefinement hysteresis ($r_e < r_\text{threshold}/4$)
 - The integration with the [Part 6 differentiability](../../../60-differentiability/02-implicit-function.md) gradient API
