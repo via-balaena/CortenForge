@@ -4,9 +4,15 @@
 
 ## Li et al. 2018 {#li-2018}
 
-*Differentiable Monte Carlo Ray Tracing through Edge Sampling.* ACM Transactions on Graphics (SIGGRAPH Asia 2018).
+*Differentiable Monte Carlo Ray Tracing through Edge Sampling.* ACM Transactions on Graphics Vol. 37, No. 6, Article 222 (SIGGRAPH Asia 2018), pp. 222:1–222:11. DOI [10.1145/3272127.3275109](https://doi.org/10.1145/3272127.3275109). [Author project page](https://people.csail.mit.edu/tzumao/diffrt/). Authors: Tzu-Mao Li, Miika Aittala, Frédo Durand, Jaakko Lehtinen.
 
-The foundational paper on differentiable rendering through visibility discontinuities. Treats the Dirac contribution at silhouette edges — where the pixel colour jumps as a scene parameter crosses a visibility boundary — as an analytically-integrated boundary integral plus a Monte-Carlo estimator that samples along edges. Cited inline from [Part 6 Ch 05 (research frontier — Option B)](../../60-differentiability/05-diff-meshing.md) as the closest published parallel for a topology-aware FEM gradient: if the Dirac contribution at a mesh-topology-change boundary can be integrated analytically in the same style, the FD wrapper at topology boundaries can be replaced by an unbiased estimator. The extension to FEM is unpublished; [Part 12 Ch 07's Option B](../../120-roadmap/07-open-questions.md) names it as research frontier.
+The foundational paper on differentiable rendering through visibility discontinuities. Formulates the pixel-colour derivative as an interior smooth integral plus an explicit boundary integral along silhouette edges, with the boundary integral absorbing the Dirac contribution from the discontinuous visibility function, and a Monte-Carlo estimator that samples along edges via spatial-hierarchy importance sampling. Cited inline from [Part 6 Ch 05 (research frontier — Option B)](../../60-differentiability/05-diff-meshing.md) as the closest published parallel for a topology-aware FEM gradient: if the Dirac contribution at a mesh-topology-change boundary can be integrated analytically in the same style, the FD wrapper at topology boundaries can be replaced by an unbiased estimator. The extension to FEM topology changes is unpublished for volumetric FEM to the book's knowledge; [Part 12 Ch 07's Option B](../../120-roadmap/07-open-questions.md) names it as research frontier.
+
+## Bangaru, Li & Durand 2020 {#bangaru-2020}
+
+*Unbiased Warped-Area Sampling for Differentiable Rendering.* ACM Transactions on Graphics Vol. 39, No. 6, Article 245 (SIGGRAPH Asia 2020), pp. 245:1–245:18. DOI [10.1145/3414685.3417833](https://doi.org/10.1145/3414685.3417833). [Author project page](https://people.csail.mit.edu/sbangaru/projects/was-2020/). Authors: Sai Bangaru, Tzu-Mao Li, Frédo Durand.
+
+Applies the divergence theorem to convert [Li et al. 2018](#li-2018)'s edge-boundary integral into an area integral via a warped-area reparameterization, giving an unbiased estimator without explicit silhouette detection. Cited inline from [Part 6 Ch 05 (research frontier — Option B)](../../60-differentiability/05-diff-meshing.md) as the canonical unbiased generalization of the visibility-boundary treatment — the book's Option B invokes unbiased estimation explicitly, and Bangaru 2020 is the rendering-side reference point for what a working unbiased boundary-integral estimator looks like. The FEM topology-change analog would need its own warped-area formulation; the rendering-side precedent shows the mathematical structure is tractable.
 
 ## Pass 3 anchors (not yet inline-cited)
 

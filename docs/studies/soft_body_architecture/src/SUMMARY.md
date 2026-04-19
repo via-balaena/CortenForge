@@ -197,7 +197,7 @@
     - [Memory-vs-compute tradeoff](60-differentiability/04-checkpointing/02-tradeoff.md)
 - [Differentiability through meshing — the open problem](60-differentiability/05-diff-meshing.md)
     - [Why marching cubes isn't differentiable](60-differentiability/05-diff-meshing/00-why-not-mc.md)
-    - [Neural marching cubes / DiffMC](60-differentiability/05-diff-meshing/01-diff-mc.md)
+    - [Differentiable marching cubes — Deep MC and Neural MC](60-differentiability/05-diff-meshing/01-diff-mc.md)
     - [Differentiable Delaunay](60-differentiability/05-diff-meshing/02-diff-delaunay.md)
     - [Finite-difference wrappers](60-differentiability/05-diff-meshing/03-fd-wrappers.md)
     - [The research frontier](60-differentiability/05-diff-meshing/04-frontier.md)
