@@ -1,6 +1,8 @@
 # Time-integration papers
 
-Projective Dynamics, Position-Based Dynamics, and their extensions — the alternative time-integration schemes [Part 5 Ch 01](../../50-time-integration/01-projective.md) works through and rejects. PD and PBD are parallel lineages with overlapping intuitions but architecturally distinct solvers; the 2017 extensions (Liu quasi-Newton, Overby ADMM) close PD's expressiveness gap for hyperelastic at an architectural cost. Each anchor below is traced to the specific claim [Part 5 Ch 01](../../50-time-integration/01-projective.md) uses it for.
+Two clusters of prior art. The first is the alternative time-integration schemes [Part 5 Ch 01](../../50-time-integration/01-projective.md) works through and rejects — Projective Dynamics, Position-Based Dynamics, and their extensions. PD and PBD are parallel lineages with overlapping intuitions but architecturally distinct solvers; the 2017 extensions (Liu quasi-Newton, Overby ADMM) close PD's expressiveness gap for hyperelastic at an architectural cost. The second is the adaptive-stepping control-theory literature [Part 5 Ch 02](../../50-time-integration/02-adaptive-dt.md) draws on for the halve-on-failure asymmetry discussion. Each anchor below is traced to the specific claim the cluster uses it for.
+
+## PD, PBD, and extensions
 
 ## Bouaziz et al. 2014 {#bouaziz-2014}
 
@@ -31,6 +33,34 @@ Reinterprets Projective Dynamics as a **quasi-Newton method** on the true hypere
 *ADMM ⊇ Projective Dynamics: Fast Simulation of Hyperelastic Models with Dynamic Constraints.* IEEE Transactions on Visualization and Computer Graphics 23(10), pp. 2222–2234, 2017. Authors: Matthew Overby, George E. Brown, Jie Li, Rahul Narain (U Minnesota). DOI [10.1109/TVCG.2017.2730875](https://doi.org/10.1109/TVCG.2017.2730875). Extended journal version of the 2016 SCA paper (*ADMM ⊇ Projective Dynamics: Fast Simulation of General Constitutive Models*).
 
 Shows that Projective Dynamics is a **special case of ADMM** (Alternating Direction Method of Multipliers), and that the generalization to full ADMM recovers general hyperelastic energies including neo-Hookean. ADMM's standard convergence theory (Boyd et al. 2011) then applies: convergence to the true energy's minimizer under mild conditions, including for non-separable hyperelastic. The architectural cost is the ADMM outer loop, which for general constitutive models adds per-step work beyond vanilla PD's "one prefactored matrix, back-sub forever" accounting. Complementary to [Liu 2017](#liu-2017) rather than competing — both papers independently extend PD to hyperelastic, via different optimization-theoretic reframings. Cited inline from [Part 5 Ch 01 §02 convergence](../../50-time-integration/01-projective/02-convergence.md) as the ADMM reframing.
+
+## Adaptive stepping
+
+## Gustafsson, Lundh, Söderlind 1988 {#gustafsson-soderlind-1988}
+
+*A PI Stepsize Control for the Numerical Solution of Ordinary Differential Equations.* BIT Numerical Mathematics 28(2), pp. 270–287, June 1988. Authors: Kjell Gustafsson, Michael Lundh, Gustaf Söderlind (Lund University). DOI [10.1007/BF01934091](https://doi.org/10.1007/BF01934091).
+
+The origin of the **PI (proportional-integral) step-size controller** for ODE solvers. Treats adaptive step-size selection as a feedback-control problem: the predicted step size for iterate $n+1$ combines the current local-error ratio with the previous iterate's ratio, smoothing the noise that the simpler single-ratio step-size schemes exhibit on stiff and near-stiff problems. The control-theoretic framing is the contribution; the specific tuning of the PI gains is not load-bearing. Cited inline from [Part 5 Ch 02 §01 ccd-shrink](../../50-time-integration/02-adaptive-dt/01-ccd-shrink.md) in the alternatives-rejected discussion of smooth step controllers — `sim-soft` rejects PI/PID in favor of binary halve-on-failure because the contact-dominated failure mode is categorical (CCD-clipping) rather than a smoothly-varying error norm.
+
+## Söderlind 2002 {#soderlind-2002}
+
+*Automatic Control and Adaptive Time-Stepping.* Numerical Algorithms 31(1–4), pp. 281–310, 2002. Author: Gustaf Söderlind (Lund University). DOI [10.1023/A:1021160023092](https://doi.org/10.1023/A:1021160023092).
+
+Extended control-theoretic treatment of adaptive stepping for ODE and DAE solvers. Builds on [Gustafsson-Söderlind 1988](#gustafsson-soderlind-1988) with stability analysis of the coupled discretization-controller system, applicability to stiff and A-stable schemes, and a design-of-controllers framework. Söderlind's 2003 follow-up in ACM TOMS extends this to PID controllers and digital-filter-based step-size selection (not separately anchored here; referenced inline if needed). The 2002 paper is the most comprehensive single-source reference for the control-theoretic perspective on adaptive stepping; cited inline from [Part 5 Ch 02 §01 ccd-shrink](../../50-time-integration/02-adaptive-dt/01-ccd-shrink.md) as the secondary framework reference.
+
+## Hairer, Nørsett, Wanner (Vol I) and Hairer, Wanner (Vol II) {#hairer-wanner}
+
+*Solving Ordinary Differential Equations I: Nonstiff Problems.* Springer Series in Computational Mathematics 8, 2nd revised ed. 2009. Authors: Ernst Hairer, Syvert P. Nørsett, Gerhard Wanner. ISBN 978-3-642-05163-0.
+
+*Solving Ordinary Differential Equations II: Stiff and Differential-Algebraic Problems.* Springer Series in Computational Mathematics 14, 2nd revised ed. 1996. Authors: Ernst Hairer, Gerhard Wanner. ISBN 978-3-540-60452-5. (Nørsett is not a Vol-II author.)
+
+The canonical textbook treatment of Runge-Kutta methods, embedded pairs, automatic step-size control, and — in Vol II — stiff-solver adaptive stepping via stage-based error estimators (Radau IIA and related implicit RK families). Referenced as the canonical background for adaptive step-size control broadly; the specific "safety factor" terminology (typically 0.8–0.9 in implementations) is widespread across the adaptive-stepping literature without a single coined-term origin, and this anchor stands in for the textbook family in which that heuristic is at home. Cited inline from [Part 5 Ch 02 §01 ccd-shrink](../../50-time-integration/02-adaptive-dt/01-ccd-shrink.md) as the textbook background, distinct from the specific `sim-soft` binary-halving scheme.
+
+## Fehlberg 1969 {#fehlberg-1969}
+
+*Low-Order Classical Runge-Kutta Formulas with Stepsize Control and Their Application to Some Heat Transfer Problems.* NASA Technical Report R-315, July 1969. Author: Erwin Fehlberg (NASA Marshall Space Flight Center). [NTRS 19690021375](https://ntrs.nasa.gov/citations/19690021375).
+
+The canonical RKF4(5) paper. Introduces the embedded-RK idea: two Runge-Kutta solutions of different orders (4 and 5) share the same stage evaluations, so their difference gives a cheap local-truncation-error estimate that drives adaptive step selection. Explicit method, applicable only to non-stiff IVPs with smooth right-hand sides. A precursor 1968 NASA TR R-287 covers higher-order Fehlberg variants (5-8); the 1969 R-315 is the RKF4(5) reference proper. Cited inline from [Part 5 Ch 02 §01 ccd-shrink](../../50-time-integration/02-adaptive-dt/01-ccd-shrink.md) as a rejected-alternative example — the embedded-error-estimation framework does not extend to the contact-barrier-dominated regime where accuracy is limited by contact geometry and CCD topology, not by elasticity-side truncation error.
 
 ## Pass 3 anchors (not yet inline-cited)
 
