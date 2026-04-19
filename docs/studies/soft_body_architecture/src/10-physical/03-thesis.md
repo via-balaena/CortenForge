@@ -59,7 +59,7 @@ pub struct SoftScene {
     pub geometry: SdfField,          // from cf-design, tetrahedralized by sim-soft
     pub material: MaterialField,     // SDF-valued: stiffness, density, fiber direction, Prony terms
     pub boundary: Vec<Boundary>,     // displacements, tractions, pin constraints
-    pub partners: Vec<ContactBody>,  // rigid probes from sim-mjcf, self-contact enabled
+    pub partners: Vec<ContactBody>,  // rigid probes from sim-core, self-contact enabled
 }
 ```
 

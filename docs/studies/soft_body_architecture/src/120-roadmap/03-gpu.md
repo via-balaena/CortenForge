@@ -23,7 +23,7 @@ The targets shape the kernel design and the caching strategy in [Part 4 Ch 05](.
 ## What Phase E does not yet include
 
 - **SDF authoring loop.** The GPU solver accepts meshes produced by a one-shot tetrahedralization of the SDF; live re-meshing is Phase G. Experience-mode previews at 30 FPS assume the mesh is fixed for the duration of the preview.
-- **`sim-mjcf` and `sim-thermostat` coupling.** Phase F. At Phase E close, the rigid probe is still a hardcoded SDF rather than a `sim-mjcf` body.
+- **`sim-core` and `sim-thermostat` coupling.** Phase F. At Phase E close, the rigid probe is still a hardcoded SDF rather than a `sim-core` body.
 - **Visual layer beyond diagnostic.** Phase I. A Phase E demo shows a flat-shaded tet mesh deforming at 30 FPS, not subsurface-scattered silicone.
 - **Tet10 elements.** Phase H. Phase E's GPU port targets Tet4 only; the kernel design accommodates Tet10 in principle, but the correctness regression covers Tet4 until Phase H flips the switch.
 

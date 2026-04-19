@@ -11,7 +11,7 @@ The ten modules and their responsibilities:
 | [`mesh/`](00-module-layout/02-mesh.md) | Tet and hex meshes, adjacency, adaptive refinement, quality metrics | Standalone |
 | [`contact/`](00-module-layout/03-contact.md) | IPC barrier, CCD, smoothed Coulomb friction, self-contact, broad-phase BVH | `mesh/` |
 | [`solver/`](00-module-layout/04-solver.md) | Backward-Euler Newton loop, line-search, sparse linear solve on total potential energy (faer on CPU, wgpu-native on GPU) | All above |
-| [`coupling/`](00-module-layout/05-coupling.md) | Co-simulation with `sim-mjcf` rigid bodies and `sim-thermostat` temperature field | `solver/`, plus sibling crates |
+| [`coupling/`](00-module-layout/05-coupling.md) | Co-simulation with `sim-core` rigid bodies and `sim-thermostat` temperature field | `solver/`, plus sibling crates |
 | [`gpu/`](00-module-layout/06-gpu.md) | wgpu compute kernels, sparse matrix layouts, GPU autograd tape | `material/`, `element/`, `solver/` |
 | [`autograd/`](00-module-layout/07-autograd.md) | VJP registration, implicit-function-theorem bridge, time adjoint, checkpointing | `solver/`, `gpu/` |
 | [`sdf_bridge/`](00-module-layout/08-sdf-bridge.md) | SDF → tet mesh tetrahedralization, material field sampling, live re-mesh | `mesh/`, plus `cf-design` |
