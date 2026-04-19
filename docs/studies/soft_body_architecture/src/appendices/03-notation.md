@@ -69,10 +69,11 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $\text{Wi}$ | Weissenberg number, $\text{Wi} = \tau\,\dot\gamma$; ratio of relaxation time to shear rate | [Part 2 Ch 07 — Oldroyd-B](../20-materials/07-viscoelastic/01-oldroyd.md) |
 | $U(x; \theta)$ | Total potential energy | [Part 5 Ch 00](../50-time-integration/00-backward-euler.md) |
 | $b(d)$ | IPC barrier energy, $b(d) = -(d - \hat d)^2 \ln(d/\hat d)$ | [Part 4 Ch 01](../40-contact/01-ipc-internals/00-barrier.md) |
-| $\hat d$ | IPC barrier-width tolerance (per-pair, adaptive) | [Part 4 Ch 05](../40-contact/05-real-time/01-barrier-width.md) |
+| $\hat d$ | IPC barrier-width tolerance. Appears as $\hat d_k$ (per-pair), $\hat d_v$ (per-primitive — vertex, edge, face), or $\hat d_\text{global}$ (scene-level default upper bound); `sim-soft` aggregates $\hat d_k = \min(\hat d_{v_a}, \hat d_{v_b})$. Adaptive schedule in [Ch 05 §01](../40-contact/05-real-time/01-barrier-width.md) | [Part 4 Ch 01 barrier](../40-contact/01-ipc-internals/00-barrier.md) |
 | $d$ | Proximity gap between primitives | [Part 4 Ch 01](../40-contact/01-ipc-internals.md) |
 | $\kappa$ | IPC adaptive barrier stiffness | [Part 4 Ch 01](../40-contact/01-ipc-internals/01-adaptive-kappa.md) |
 | $\mu_c$ | Coulomb friction coefficient | [Part 4 Ch 02](../40-contact/02-friction.md) |
+| $\ell$ | Layer thickness in multi-layer contact configurations; per-layer subscripted as $\ell_k$ | [Part 4 Ch 04 — thin-material](../40-contact/04-multi-layer/02-thin-material.md) |
 
 ## Discretization and mesh quality (Part 3)
 
