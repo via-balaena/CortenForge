@@ -92,6 +92,13 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $\theta_e$ | Dihedral angle on tetrahedron edge $e$; $\theta_\text{min}, \theta_\text{max}$ are the per-tet min/max across the 6 edges | [Part 3 Ch 01 — dihedral](../30-discretization/01-mesh-quality/01-dihedral.md) |
 | $V_\text{min}$ | Volume-consistency lower bound at mesh ingest; expressed as a fraction of median tet volume | [Part 3 Ch 01 — volume](../30-discretization/01-mesh-quality/02-volume.md) |
 
+## SDF pipeline (Part 7)
+
+| Symbol | Meaning | Introduced |
+|---|---|---|
+| $\phi(p)$ | Signed distance field — scalar function with $\phi < 0$ inside the shape, $\phi > 0$ outside. Subscripted $\phi_a, \phi_b$ for operand SDFs; $\phi_\cup^k, \phi_\cap^k$ for smoothed-union/intersection with blend radius $k$; $\phi_T, \phi_\text{disp}$ for transformed and displacement-perturbed variants | [Part 7 Ch 00 §01 operations](../70-sdf-pipeline/00-sdf-primitive/01-operations.md) |
+| $k$ (blend radius) | Smoothed-CSG blend radius in Part 7 Ch 00 §01. Disambiguated from HGO $k_1, k_2$ and stiffness-bound $k_\text{eff}, k_\text{min}$ by unit (length) and surrounding context (SDF composition) | [Part 7 Ch 00 §01 operations](../70-sdf-pipeline/00-sdf-primitive/01-operations.md) |
+
 ## Solver, time integration, and optimization
 
 | Symbol | Meaning | Introduced |
@@ -140,6 +147,7 @@ Several letters carry multiple meanings across Parts — the book disambiguates 
 - $\rho$ is mass density everywhere except [Part 3 Ch 01 mesh-quality](../30-discretization/01-mesh-quality.md), where it is the radius ratio $r_\text{ins}/r_\text{circ}$. The two meanings do not co-occur in any chapter; mass-density discussions are about material properties (Part 1 Ch 04 and downstream) and radius-ratio discussions are about discretization-mesh topology (Part 3 Ch 01). Where they co-occur in a future cross-reference, the radius ratio gets the local subscript $\rho_\text{aspect}$.
 - $\theta$ is the design-parameter vector (Part 10) without subscripts; $\theta_e$ is a dihedral angle on tet edge $e$ in [Part 3 Ch 01 — dihedral](../30-discretization/01-mesh-quality/01-dihedral.md). The subscripted edge-index disambiguates from the design-vector usage. Per-tet aggregates $\theta_\text{min}, \theta_\text{max}$ are clearly local to the mesh-quality chapter.
 - $K$ is the global sparse stiffness matrix; $K^e$ is the per-element stiffness matrix from [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md). The superscript $e$ marks the per-element scope; assembly is the standard $K = \sum_e A^{eT} K^e A^e$ scatter-and-add.
+- $k$ without subscript is the SDF smoothed-CSG blend radius from [Part 7 Ch 00 §01 operations](../70-sdf-pipeline/00-sdf-primitive/01-operations.md) (units of length). Subscripted $k$-family symbols are reserved for distinct concepts: $k_1, k_2$ are HGO fiber parameters, $k_\text{eff}$ is effective cavity stiffness, $k_\text{min}$ is the stiffness-bound floor. The blend radius and HGO parameters appear in different Parts (7 vs. 2); where they would co-occur in a cross-reference, the blend radius is local to an SDF-composition expression and the HGO parameters local to an anisotropic-material expression.
 - $\mathbb{C}$ (blackboard-bold C) is the 4th-order material tangent stiffness $\partial P / \partial F$; $C$ (plain) is the right Cauchy-Green tensor $F^T F$. The two are visually distinct in rendered math and never substituted; LaTeX `\mathbb{C}` for the tangent and `C` for the strain measure.
 
 ## Pass 3 scope

@@ -1,6 +1,12 @@
 # Differentiable sim papers
 
-[Part 6 Ch 05 (differentiability through meshing — the open problem)](../../60-differentiability/05-diff-meshing.md) is the book's densest single chapter for anchor-linked citations. This leaf indexes the differentiable-meshing works that chapter names and the two named differentiable-XPBD implementations (DiffXPBD, NVIDIA Warp) cited from [Part 5 Ch 01](../../50-time-integration/01-projective.md). Pass 3 will add the broader differentiable-physics-framework literature (DiffTaichi, Genesis, JAX-MD) as anchors once prose references them.
+[Part 6 Ch 05 (differentiability through meshing — the open problem)](../../60-differentiability/05-diff-meshing.md) is the book's densest single chapter for anchor-linked citations. This leaf indexes the differentiable-meshing works that chapter names, the two named differentiable-XPBD implementations (DiffXPBD, NVIDIA Warp) cited from [Part 5 Ch 01](../../50-time-integration/01-projective.md), and the FRep / implicit-composition foundation cited from [Part 7 Ch 00 §01 operations](../../70-sdf-pipeline/00-sdf-primitive/01-operations.md). Pass 3 will add the broader differentiable-physics-framework literature (DiffTaichi, Genesis, JAX-MD) as anchors once prose references them.
+
+## Pasko, Adzhiev, Sourin & Savchenko 1995 (FRep) {#pasko-1995}
+
+*Function representation in geometric modeling: concepts, implementation and applications.* The Visual Computer 11(6):429–446, 1995. DOI [10.1007/BF02464333](https://doi.org/10.1007/BF02464333). Authors: Alexander Pasko, Valery Adzhiev, Alexei Sourin, Vladimir Savchenko.
+
+Foundational paper for the Function Representation (FRep) framework: geometric objects defined as the zero-level-set (or sublevel-set) of real-valued defining functions, composed via transformations that act directly on the defining functions — set-theoretic operations, blending, offsetting, bijective mapping, projection, Cartesian products, metamorphosis. Cited inline from [Part 7 Ch 00 §01 operations](../../70-sdf-pipeline/00-sdf-primitive/01-operations.md) for the algebraic structure of SDF composition: `sim-soft`'s operator set (sharp CSG via $\min$/$\max$, smoothed variants, transforms, displacement) follows this framework. The concrete log-sum-exp smooth-min formula `sim-soft` ships as default is not from Pasko 1995 (it is the softmin idiom from optimization literature); the FRep paper grounds the framework, not the specific smoothed-operator formula.
 
 ## Liao, Donné & Geiger 2018 {#liao-2018}
 
