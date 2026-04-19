@@ -42,7 +42,25 @@ Refines the Rakotosaona soft-relaxation direction using the geometric power-diag
 
 *Fast Tetrahedral Meshing in the Wild.* ACM Transactions on Graphics 39(4), Article 117 (2020). Authors: Yixin Hu, Teseo Schneider, Bolun Wang, Denis Zorin, Daniele Panozzo.
 
-The robust tet-meshing-from-mesh pipeline with envelope-based validity guarantees — handles arbitrary input surfaces including self-intersecting and non-manifold meshes, with mesh-improvement passes that drive aspect ratio and dihedral angle into a usable band. Cited inline from [Part 7 Ch 01 — tetrahedralization strategies](../../70-sdf-pipeline/01-tet-strategies.md) as the default design-mode tet-generation pipeline in `sim-soft` (adapted to SDF input via iso-surface extraction); the SDF-pathology robustness is the property that makes it the right fit for `sim-soft`'s `SdfField`-driven design flow where the iso-surface of an arbitrary cf-design SDF can exhibit any surface pathology. The predecessor paper (Hu, Zhou, Gao, Jacobson, Zorin, Panozzo 2018 — "Tetrahedral Meshing in the Wild") is not anchored here because no inline citation currently references it; the `sim-soft` pipeline consumes the 2020 fast-variant.
+The robust tet-meshing-from-mesh pipeline with envelope-based validity guarantees — handles arbitrary input surfaces including self-intersecting and non-manifold meshes, with mesh-improvement passes that drive aspect ratio and dihedral angle into a usable band. Cited inline from [Part 7 Ch 01 — tetrahedralization strategies](../../70-sdf-pipeline/01-tet-strategies.md) and [§00 fTetWild](../../70-sdf-pipeline/01-tet-strategies/00-ftetwild.md) as the default design-mode tet-generation pipeline in `sim-soft` (adapted to SDF input via iso-surface extraction); the SDF-pathology robustness is the property that makes it the right fit for `sim-soft`'s `SdfField`-driven design flow where the iso-surface of an arbitrary cf-design SDF can exhibit any surface pathology. The predecessor paper (Hu, Zhou, Gao, Jacobson, Zorin, Panozzo 2018 — "Tetrahedral Meshing in the Wild") is not anchored here because no inline citation currently references it; the `sim-soft` pipeline consumes the 2020 fast-variant.
+
+## Si 2015 (TetGen) {#si-2015}
+
+*TetGen, a Delaunay-Based Quality Tetrahedral Mesh Generator.* ACM Transactions on Mathematical Software 41(2), Article 11, pp. 1–36 (February 2015). DOI [10.1145/2629697](https://doi.org/10.1145/2629697). Author: Hang Si. Project homepage: [wias-berlin.de/software/tetgen](https://www.wias-berlin.de/software/tetgen/).
+
+Delaunay-based quality tet mesher with configurable edge-length and aspect-ratio constraints; accepts a closed, manifold, non-self-intersecting surface mesh as input and emits an interior constrained-Delaunay tetrahedralization with post-processing for quality targets. Cited inline from [Part 7 Ch 01 §01 Delaunay](../../70-sdf-pipeline/01-tet-strategies/01-delaunay.md) as the library `sim-soft` consumes for the experience-mode default meshing pipeline and the design-mode fTetWild-timeout fallback. Delaunay's hard-failure on non-manifold input is a structural limitation, not a TetGen-specific one.
+
+## Geuzaine & Remacle 2009 (gmsh) {#geuzaine-2009}
+
+*Gmsh: A 3-D finite element mesh generator with built-in pre- and post-processing facilities.* International Journal for Numerical Methods in Engineering 79:1309–1331 (2009). DOI [10.1002/nme.2579](https://doi.org/10.1002/nme.2579). Authors: Christophe Geuzaine, Jean-François Remacle. Project homepage: [gmsh.info](https://gmsh.info/).
+
+General-purpose open-source FEM mesh generator with Delaunay and frontal-Delaunay kernels, boolean geometry operators, and a scripting language for parameterized meshes. Named inline from [Part 7 Ch 01 §01 Delaunay](../../70-sdf-pipeline/01-tet-strategies/01-delaunay.md) as a second-order option for cases where TetGen's limitations bite; not the default because its dependency surface is larger than the experience-mode use case warrants.
+
+## Labelle & Shewchuk 2007 (isosurface stuffing) {#labelle-shewchuk-2007}
+
+*Isosurface Stuffing: Fast Tetrahedral Meshes with Good Dihedral Angles.* ACM Transactions on Graphics 26(3), Article 57 (SIGGRAPH 2007 proceedings, August 2007). DOI [10.1145/1275808.1276448](https://doi.org/10.1145/1275808.1276448). Authors: François Labelle, Jonathan Richard Shewchuk.
+
+Algorithm that generates tet meshes directly from an isosurface input (evaluating the implicit function at grid points, then applying a body-centered-cubic (BCC) lattice template with per-cell stencils) with a proven minimum-dihedral-angle lower bound of approximately $5.71°$. CPU-only in its original formulation; the per-cell locality of the stencil application suggests GPU parallelism would work, but a production-ready FEM-quality GPU port is not available at the time of writing. Cited inline from [Part 7 Ch 01 §02 GPU tet](../../70-sdf-pipeline/01-tet-strategies/02-gpu-tet.md) as the CPU baseline most amenable to a future `sim-soft` GPU port if `cf-design` outputs allow the algorithm's topology assumptions.
 
 ## Stuyck & Chen 2023 (DiffXPBD) {#stuyck-2023}
 
