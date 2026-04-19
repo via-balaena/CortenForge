@@ -1,3 +1,33 @@
 # Adaptive stiffness schedule
 
-> _stub_
+The [barrier function](00-barrier.md) gives the shape of the contact energy as a function of the gap. The scalar $\kappa$ multiplies it to produce the contact contribution to the total potential, $E_\text{contact}(x) = \kappa \sum_i b(d_i(x), \hat d)$. Too-small $\kappa$ lets Newton steps close the gap unopposed; too-large $\kappa$ ill-conditions the Hessian and slows the inner linear solve. The right value depends on the scene — on element masses, the elastic moduli, the loading forces, and the number of active contact pairs — and in general cannot be set ahead of time. This sub-leaf describes the adaptive schedule Li et al. 2020 introduced for choosing $\kappa$ at runtime.
+
+## Initialization at simulation start
+
+At the first timestep of a simulation, $\kappa$ is set to a value $\kappa_0$ derived from scene properties — specifically, from the bounding-box diagonal of the scene, the barrier's derivative magnitude at the typical initial gap, the average element mass, and the gradient magnitudes of the elastic and barrier potentials at the first residual evaluation. The intuition is that $\kappa_0$ should produce a barrier force of the same order as the elastic restoring force at typical operating strain — neither negligible (which would let penetration happen during early Newton iterates before the schedule catches up) nor dominant (which would over-stiffen the Newton tangent).
+
+The exact initialization formula involves several scene quantities; the [IPC Toolkit](../../appendices/00-references/00-ipc.md#ipc-toolkit) reference implementation computes it from an `initial_barrier_stiffness` helper that takes the element-level gradient norms as input. `sim-soft` will port an equivalent computation during [Part 11 Ch 03 Phase E](../../110-crate/03-build-order.md) rather than re-deriving it from first principles.
+
+## Growth rule during Newton iteration
+
+During a single timestep's Newton loop, $\kappa$ starts at its stored value from the previous timestep (warm-start, see below) and is increased if the minimum gap across all active pairs closes faster than a target rate. The rule, per Li et al. 2020, is approximately: after each Newton iteration, compute the minimum gap $d_\text{min}$ across all active pairs; if $d_\text{min}$ has decreased below a threshold relative to its previous-iterate value, multiply $\kappa$ by a growth factor. The threshold and growth factor are implementation constants — not differentiable parameters — chosen so that a geometric rate of $\kappa$ growth matches the empirical rate at which an under-stiff barrier allows gap closure.
+
+Under-stiff $\kappa$ manifests as a monotonic decrease of $d_\text{min}$ across Newton iterations toward zero; the growth rule fires, $\kappa$ is scaled up, and the next Newton iterate with the increased $\kappa$ reverses the gap-closure trend. Over-stiff $\kappa$ does not manifest as an observable trajectory-level artefact — the barrier just dominates the Newton tangent and the inner CG solver takes more iterations to converge. The adaptive schedule is therefore conservatively biased toward increasing $\kappa$ only when under-stiffness is observed, accepting a small over-stiffness cost in exchange for the robust gap-closure response.
+
+## The $\kappa_\text{max}$ bound
+
+$\kappa$ does not grow without bound. The [IPC Toolkit](../../appendices/00-references/00-ipc.md#ipc-toolkit) reference implementation clamps $\kappa$ at approximately two orders of magnitude above a scene-dependent floor — if the growth rule fires with $\kappa$ already at the cap, the growth is suppressed. In practice the cap is reached only in near-degenerate contact configurations (self-contact in a highly wrinkled mesh, contact under extreme loading); the typical operating range is one order of magnitude of adaptation across a simulation's duration.
+
+The cap exists because ever-growing $\kappa$ would eventually make the Hessian condition number arbitrarily large and the inner linear solve fail; the cap trades off this pathology for an explicit failure mode — if the scene genuinely needs $\kappa$ above the cap to stay penetration-free, the cap is hit, and the diagnosis is that something else (timestep too large, mesh too coarse at contact, barrier-width $\hat d$ miscalibrated) is the real problem.
+
+## Warm-start across timesteps
+
+At the end of each timestep, the final $\kappa$ is stored. The next timestep starts Newton iteration with this same value rather than re-initializing from $\kappa_0$. This is a key efficiency property: in a scene where contact is steadily active (the canonical sleeve-on-probe is an example — once the probe engages, contact pairs persist for many timesteps), the initial $\kappa_0$ computed at step 0 is typically under-stiff for steady-state loading, and re-initializing every timestep would force the adaptive schedule to re-discover the appropriate value at every step.
+
+Warm-starting $\kappa$ is one of the three [Part 4 Ch 05 real-time levers](../05-real-time.md) — specifically, it falls under [the caching-strategies sub-chapter](../05-real-time/02-caching.md), not the GPU lever or the adaptive-barrier-width lever. The warm-start is valid because $\kappa$ is a scalar: no sparsity or pair-list invalidation is needed, and the scalar can be persisted directly across timesteps alongside the BVH and the persistent-pair list.
+
+## What this sub-leaf commits the book to
+
+- **$\kappa$ is adaptive, not user-tunable.** `sim-soft`'s contact API does not expose $\kappa$ as a parameter on `SoftScene`. The initialization formula and growth schedule are implementation internals; the only exposed barrier parameter is $\hat d$ (the tolerance), which is also adaptive but can be user-configured per contact pair when needed.
+- **The $\kappa$ cap is ported from the [IPC Toolkit](../../appendices/00-references/00-ipc.md#ipc-toolkit) reference.** `sim-soft` does not re-derive the cap constant; it inherits the two-orders-of-magnitude bound from the reference implementation. A different cap would require an empirical re-calibration against the canonical problem's loading envelope, which is a [Part 12 Ch 07 open question](../../120-roadmap/07-open-questions.md)-class task — not undertaken in the current build.
+- **Warm-start across timesteps is a correctness-preserving optimization.** Starting the Newton loop with the previous timestep's $\kappa$ does not change the converged equilibrium $x^\ast$; it only changes the trajectory of Newton iterates. This is what makes the warm-start safe — if the stored $\kappa$ is wrong for the new timestep, the growth rule detects it and corrects at the cost of extra Newton iterations, not at the cost of a wrong solution.
