@@ -14,7 +14,7 @@ Three claims Ch 02 rests on:
 
    $$ \frac{\partial r}{\partial x}\, \frac{\partial x^\ast}{\partial \theta} + \frac{\partial r}{\partial \theta} = 0 \quad \Longrightarrow \quad \frac{\partial x^\ast}{\partial \theta} = -A^{-1}\, \frac{\partial r}{\partial \theta} $$
 
-   where $A = \partial r / \partial x$ is *the same stiffness-and-contact Jacobian the forward Newton already assembled and factored to compute the last Newton step.* The gradient is therefore a back-substitution on an already-paid-for factorization, not a rebuild. For the canonical-problem-sized scene (~30k DOFs), that is a 10–30× speedup over re-assembling the tangent from scratch in backward.
+   where $A = \partial r / \partial x$ is *the same stiffness-and-contact Jacobian the forward Newton already assembled and factored to compute the last Newton step.* The gradient is therefore a back-substitution on an already-paid-for factorization, not a rebuild — asymptotically cheaper than the forward solve, with the concrete ratio a Phase-B benchmarking deliverable per [§01 linear solve](02-implicit-function/01-linear-solve.md).
 
 2. **faer's re-usable factorization is load-bearing.** [Phase B](../110-crate/03-build-order.md#the-committed-order) committed to [faer](https://github.com/sarah-quinones/faer-rs) for the CPU sparse path specifically because its factorizations are first-class objects that survive the forward solve and can be applied to arbitrary RHSes in backward. The concrete pattern is:
 

@@ -1,3 +1,47 @@
 # Memory cost
 
-> _stub_
+The IFT adjoint replaces "record every Newton iterate on an autograd tape" with "store the converged factor and the residual-$\theta$-Jacobian, throw away everything else." This sub-leaf writes out what that means concretely: which objects have to live in memory across the forward-to-backward boundary, which do not, and how the total scales with the canonical-problem scene size. The number of interest is not an absolute footprint — that is scene-dependent and Phase-B benchmarks will pin it — but the *scaling* relative to the naive reverse-mode-unroll alternative and to the forward-only solve itself.
+
+## What lives across the forward/backward boundary
+
+Three objects, each with a defined scaling behavior.
+
+**(1) The `Llt<f64>` factor.** Sparse Cholesky of the PSD-projected Hessian $H = K + H_\text{contact} + M/\Delta t^2$. Memory footprint is dominated by $\text{nnz}(L)$, the nonzeros in the $L$ factor after fill-in. For 3D FEM stencils under a reasonable fill-reducing ordering (AMD-class or better), fill-in is substantially larger than $\text{nnz}(H)$ but sub-quadratic in $n$. On the canonical-problem scene of $\sim 30$k DOFs, a well-ordered sparse Cholesky factor occupies on the order of hundreds of megabytes — the specific number depends on the mesh, the contact pattern at $x^\ast$, and the ordering; Phase-B benchmarking measures it on the reference scene. What matters architecturally is that this is "forward-solve scale" memory (the same factor the forward step just computed), not "trajectory-length scale" memory.
+
+**(2) The sparse residual-$\theta$-Jacobian `dr_dtheta`.** One row per residual component, one column per $\theta$ component, sparse with the pattern determined by which residual rows each $\theta$ entry touches. For per-element material parameters $\mathbf{p}_e$ (one $\theta$ group per element), the sparsity is element-local: $\partial r/\partial \mathbf{p}_e$ has nonzeros only in the rows corresponding to element $e$'s nodes. For global-boundary parameters (a uniformly-applied actuation-force magnitude, a globally-applied Young's modulus when all elements share the same material), the column is denser but still bounded by the residual's dependence structure — a uniform-actuation column is nonzero only on the boundary-loaded nodes. Total footprint scales as the sum of per-parameter local-residual-support sizes; for a scene with $N_e \sim 10^4$ elements and a handful of scalar parameters per element, the matrix is many times sparser than $H$ and its memory is a small fraction of the factor's.
+
+**(3) Auxiliary residual-Jacobian blocks for $x_{n-1}$ and $v_{n-1}$.** The inertial term in $r$ depends linearly on the previous step's state, so $\partial r/\partial x_{n-1} = -M/\Delta t^2$ and $\partial r/\partial v_{n-1} = -M/\Delta t$ are closed-form operators — the engine already holds $M$ at the solver scope, and the step's tape node holds only the scalar $\Delta t$ the step converged under (which adaptive-dt makes per-step state). No per-step sparse matrix for either Jacobian lives on the tape. [Ch 03 time-adjoint](../03-time-adjoint.md) consumes these operators to propagate gradients back through the trajectory.
+
+None of the three scales with the number of Newton iterations the forward took. The tape node stores "converged state," not "path to convergence."
+
+## What does not live in memory
+
+The point of the IFT is what it lets the tape *not* store.
+
+- **Newton iterate history.** The forward Newton loop's iterates $\{x^{(k)}\}$, per-iterate gradients $\{g^{(k)}\}$, per-iterate Hessian factors, per-iterate line-search backtracking scratch — none of it persists past the step's convergence. The single object that survives is the final factor at $x^\ast$.
+- **Line-search scratch.** Armijo backtracking and CCD step-length clipping evaluate $U_n$ at candidate step lengths; those evaluations are transient and released as soon as the step is accepted.
+- **Per-element tape entries.** The per-element adjoint machinery of the [FEM assembly VJP](../01-custom-vjps/01-fem-assembly.md) is an internal utility of the step's forward and backward — the step's `residual_jacobian_theta` call shares the same per-element formulas that the assembly VJP's own backward uses — but neither usage spawns per-element nodes on the chassis tape. The per-element $B_e$ matrices are mesh-load-time caches owned by the engine, not by the tape, and are shared across steps.
+- **Contact-pair barrier iterates.** The barrier evaluation is a closed-form scalar per active pair at $x^\ast$ (not a per-iteration trail), and the active-set indicator is captured by the forward as metadata on the step's tape node — not as a sequence of active-set deltas across Newton iterations.
+
+## Comparison to the naive reverse-mode unroll
+
+The concrete comparison that justifies the IFT architecture is with a hypothetical alternative where the Newton loop *is* recorded on the chassis tape — every Newton iterate is a chain of scalar ops (`ln`, `exp`, `mul`, `sum`, `affine`) composing the FEM assembly and the barrier evaluation and the line-search, and the tape's backward walks that chain in reverse. The memory cost of such an unroll would include:
+
+- Per-element assembly tape entries per Newton iterate: roughly $10^7$-node tape per assembly at canonical-problem scene sizes, per the [Ch 01 §01 assembly-VJP analysis](../01-custom-vjps/01-fem-assembly.md)'s back-of-envelope. A single step's Newton loop runs that assembly multiple times — once per iterate, plus additional times inside the line-search backtracking — so the recorded-assembly tape alone is a constant-factor multiple of $10^7$ nodes per step.
+- Per-pair barrier evaluations per iterate: hundreds to low thousands of active pairs, each evaluated at least once per iterate (more under line-search backtracking), each contributing $\ln$-and-arithmetic tape entries.
+- Per-iterate sparse-Cholesky recording: impossible to record at scalar-op granularity in any reasonable sense; the factor's supernodal structure, permutation, and triangular-solve kernels are not compositions of the chassis's elementary ops. A batched-tensor tape like Burn or PyTorch could represent the linear solve as one node — with a hand-derived VJP of the linear solve, which *reduces to this chapter's IFT construction at the linear-solve level anyway*.
+
+The unroll would also change the *answer*: the gradient of a fixed-iteration-count unroll is not the same as the gradient of the converged equilibrium. The convergence criterion in the forward (tolerance on $\|g\|$) produces a data-dependent iteration count; the unroll's gradient differentiates through that tolerance-triggered stopping point, which captures a path-to-convergence artifact rather than an implicit-function-of-$\theta$ relationship. Early termination makes the unrolled gradient wrong — the Newton-unroll failure is the first bullet in [Ch 00 §00's "What this does not do" list](../00-what-autograd-needs/00-generic.md) and the first section of [Ch 00 §01](../00-what-autograd-needs/01-physics-specific.md). The IFT-based construction delivers the true implicit gradient at any converged iterate, regardless of how many iterations got it there.
+
+## Tape-scoped lifetime
+
+The factor and `dr/dtheta` live for the lifetime of the tape that owns the step's node. When the tape is dropped — at the end of an episode, between RL updates, or when the outer optimization loop releases its autograd context — the captured `State` drops with it, and faer's RAII releases the factor's backing storage. Nothing persists across tape lifetimes. A rollout across multiple steps stacks multiple step-nodes onto the same tape, each carrying its own factor and residual Jacobian; the total memory scales linearly in the number of recorded steps. That linear scaling in $T$ is the motivation for [Ch 04 checkpointing](../04-checkpointing.md), which trades memory for re-forward compute.
+
+For the non-rollout case — a single equilibrium solve whose gradient is consumed by an outer optimizer ([Part 10](../../100-optimization/00-forward.md)) — one step's factor is all that lives. The tape memory is then within a small multiple of the forward's factor footprint, not a function of any trajectory length.
+
+## What this sub-leaf commits the book to
+
+- **Two matrices and one scalar survive the forward-to-backward boundary per Newton step.** The $L L^T$ factor and the sparse $\partial r/\partial \theta$ matrix are held in the tape node's captured `State`; the step's $\Delta t$ scalar is held alongside them so the closed-form $\partial r/\partial x_{n-1}, \partial r/\partial v_{n-1}$ operators can be applied against the engine's mass matrix $M$ at backward time. Nothing from the Newton iterate history persists.
+- **Memory scales with the forward factor's fill-in, not with Newton iteration count.** For 3D FEM stencils with a reasonable ordering, the factor's memory is "forward-solve scale" — the same order of magnitude as the solver itself, not multiplied by the number of Newton steps.
+- **Multi-step rollouts scale linearly in $T$.** Each step contributes one factor-and-Jacobian pair; the [Ch 04 Revolve](../04-checkpointing.md) layer turns that linear scaling into $O(\log T)$ at the cost of $O(T \log T)$ re-forward compute when the rollout length demands it.
+- **The tape owns the lifetime.** Every captured `State` is tape-scoped; RAII releases storage when the tape drops. No manual free, no reference-counted handoff to the outer optimizer.

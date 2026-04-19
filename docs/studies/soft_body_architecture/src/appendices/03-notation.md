@@ -100,6 +100,8 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $x^\ast$ | Converged equilibrium state | [Part 5 Ch 00](../50-time-integration/00-backward-euler.md) |
 | $r(x, x_{t-1}; \theta)$ | Residual of the step-$t$ energy-minimization problem | [Part 6 Ch 03](../60-differentiability/03-time-adjoint.md) |
 | $K$ | Global sparse stiffness matrix | [Part 5 Ch 00](../50-time-integration/00-backward-euler.md) |
+| $H$ | Newton Hessian of the step objective, $H = K + H_\text{contact} + M/\Delta t^2$ — the object the forward Newton factors, the SPD object the IFT adjoint inverts | [Part 5 Ch 00 §01 Newton](../50-time-integration/00-backward-euler/01-newton.md) |
+| $A$ | Residual Jacobian $A \equiv \partial r/\partial x$ in the implicit-function-theorem derivation. For the backward-Euler step, $A = H$ identically; the symbol choice is local to IFT exposition | [Part 6 Ch 02 §00 derivation](../60-differentiability/02-implicit-function/00-derivation.md) |
 | $B$ | Strain-displacement matrix (per element) | [Part 6 Ch 01](../60-differentiability/01-custom-vjps.md) |
 | $\Delta t$ | Timestep | [Part 5 Ch 02](../50-time-integration/02-adaptive-dt.md) |
 | $\lambda(t)$ | Time-adjoint state variable | [Part 6 Ch 03](../60-differentiability/03-time-adjoint/01-adjoint-state.md) |
