@@ -22,6 +22,22 @@ The reference for backward-in-time adjoint integration through an SDE, deliverin
 
 Companion reference on the Stratonovich vs. Itô choice for SDE adjoints and the resulting estimator-variance implications. Cited inline from [Part 6 Ch 03 (time adjoint)](../../60-differentiability/03-time-adjoint.md) alongside Li et al. 2020 SDE as the pair the book points at for stochastic-adjoint background. Relevant to `sim-soft` specifically because the [custom thermo-RL project's](../../10-physical/00-canonical.md) exploration noise sits inside the forward trajectory.
 
+## Implicit differentiation through fixed points
+
+Two anchor references for the "differentiate through an implicit solve by implicit-function theorem rather than by unrolling" pattern, cited inline from [Part 6 Ch 00 (what physics-specific autograd needs)](../../60-differentiability/00-what-autograd-needs/01-physics-specific.md) as the differentiable-programming community's landing of the same construction `sim-soft`'s [Ch 02 IFT derivation](../../60-differentiability/02-implicit-function.md) uses at the backward-Euler-step level.
+
+### Bai et al. 2019 {#bai-2019}
+
+*Deep Equilibrium Models.* NeurIPS 2019. arXiv:1909.01377.
+
+Introduces the deep-equilibrium (DEQ) architecture — an infinite-depth weight-tied network whose forward pass is a fixed-point solve $z^\ast = f_\theta(z^\ast, x)$ and whose backward pass uses the implicit function theorem to compute $\partial z^\ast / \partial \theta$ with a single linear solve rather than by unrolling the fixed-point iteration. The algebraic form matches the backward-Euler IFT gradient `sim-soft` uses, modulo the replacement of the neural-network fixed-point operator by the energy-minimization residual.
+
+### Blondel et al. 2022 {#blondel-2022}
+
+*Efficient and Modular Implicit Differentiation.* NeurIPS 2022. arXiv:2105.15183.
+
+Generalizes DEQ-style implicit differentiation into a modular JAX library ([JAXopt](https://jaxopt.github.io)) that composes arbitrary forward solvers with IFT-derived backward passes. The relevance to `sim-soft` is architectural, not library-level: Blondel et al. name "solver and backward are separate concerns, glued by one linear solve" as the core pattern, which is the same architectural claim [Ch 02](../../60-differentiability/02-implicit-function.md) makes for sim-soft's Newton-plus-IFT composition. `sim-soft` does not import JAXopt; it writes the composition directly on `sim-ml-chassis`'s tape.
+
 ## Pass 3 anchors (not yet inline-cited)
 
 Reserved slots the Pass 3 bibliography will populate: the original Pontryagin derivation (for completeness), Giles & Pierce's review of the adjoint approach in CFD, modern neural-ODE adjoint papers (Chen et al. 2018), and control-theory-community IFT adjoint work from the shape-optimization literature. None is anchored here yet because no inline citation currently references them.

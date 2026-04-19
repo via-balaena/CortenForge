@@ -109,6 +109,7 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $\mathbf{p}_e$ | Per-element material-parameter vector (the scalar-valued sampling of `MaterialField` at element $e$'s Gauss point) | [Part 2 Ch 09](../20-materials/09-spatial-fields.md) |
 | $R(\theta)$ | Scalar reward — the forward-map output | [Part 1 Ch 01](../10-physical/01-reward.md), formalized in [Part 10 Ch 00](../100-optimization/00-forward.md) |
 | $L$ | Loss used in autograd-facing sections; equal to $-R$ when minimizing | [Part 6 Ch 00](../60-differentiability/00-what-autograd-needs.md) |
+| $\bar x$ | Adjoint / upstream gradient in reverse-mode autograd — $\bar x = \partial L / \partial x$; the quantity a tape node's backward propagates backward through the graph | [Part 6 Ch 00](../60-differentiability/00-what-autograd-needs/00-generic.md) |
 | $w_i$ | Reward-composition weights | [Part 1 Ch 01 — composition](../10-physical/01-reward/04-composition.md) |
 | $\Phi$ | Terminal cost in trajectory-adjoint discussions | [Part 6 Ch 03](../60-differentiability/03-time-adjoint.md) |
 

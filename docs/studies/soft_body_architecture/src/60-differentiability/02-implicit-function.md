@@ -5,7 +5,7 @@ The implicit function theorem (IFT) is the single load-bearing theorem of Part 6
 | Section | What it covers |
 |---|---|
 | [Derivation $\partial x/\partial \theta = -A^{-1}\, \partial r/\partial \theta$](02-implicit-function/00-derivation.md) | The two-line theorem: at equilibrium $r(x^\ast; \theta) = 0$, implicit differentiation gives $\partial_\theta r + A\, \partial_\theta x^\ast = 0$, where $A = \partial_x r$ is the Jacobian of the residual; solve for $\partial_\theta x^\ast$ directly |
-| [Linear solve for gradients](02-implicit-function/01-linear-solve.md) | How the forward [Newton iteration's factored matrix](../50-time-integration/00-backward-euler/01-newton.md) — faer's `Cholesky<f64>` — is re-applied to backward RHSes, one per downstream adjoint vector; cost is back-substitution, not factorization |
+| [Linear solve for gradients](02-implicit-function/01-linear-solve.md) | How the forward [Newton iteration's factored matrix](../50-time-integration/00-backward-euler/01-newton.md) — faer's `Llt<f64>` — is re-applied to backward RHSes, one per downstream adjoint vector; cost is back-substitution, not factorization |
 | [Memory cost](02-implicit-function/02-memory.md) | What lives in memory during backward: the factorization itself (computed once per converged Newton step), the residual Jacobian w.r.t. $\theta$ (sparse, computed lazily per downstream adjoint); what does *not* live in memory: the Newton iterate history |
 
 Three claims Ch 02 rests on:
@@ -19,8 +19,11 @@ Three claims Ch 02 rests on:
 2. **faer's re-usable factorization is load-bearing.** [Phase B](../110-crate/03-build-order.md#the-committed-order) committed to [faer](https://github.com/sarah-quinones/faer-rs) for the CPU sparse path specifically because its factorizations are first-class objects that survive the forward solve and can be applied to arbitrary RHSes in backward. The concrete pattern is:
 
    ```rust
+   use faer::sparse::linalg::solvers::Llt;
+   use faer::linalg::solvers::Solve;
+
    // forward: factor once, re-apply many times
-   let factor: Cholesky<f64> = stiffness.factor_cholesky()?;
+   let factor: Llt<f64> = Llt::try_new_with_symbolic(&stiffness)?;
    for _ in 0..newton_iters {
        factor.solve_in_place(&mut rhs);
        // ... line search, convergence check ...
