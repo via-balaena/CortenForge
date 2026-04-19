@@ -8,7 +8,7 @@ Pass 1 populates only anchors referenced inline by the book. Pass 3 will expand 
 
 *Algorithm 799: Revolve — An Implementation of Checkpointing for the Reverse or Adjoint Mode of Computational Differentiation.* ACM Transactions on Mathematical Software.
 
-The original Revolve algorithm — binomial checkpoint placement that achieves $O(\log T)$ memory and $O(T \log T)$ compute with provably optimal constants for fixed checkpoint budgets. Cited inline from the [Part 6 Ch 04 table of revolve-algorithm techniques](../../60-differentiability/04-checkpointing.md). The algorithm is the standard reference that adolC, Dolfin-adjoint, and JAX's `jax.checkpoint` multi-level scheduling descend from; `sim-soft` uses it at the time-adjoint layer to recover linear-in-$T$ memory at the price of $\log T$ extra forward re-solves.
+The original Revolve algorithm — binomial checkpoint placement that achieves $O(\log T)$ memory and $O(T \log T)$ compute with provably optimal constants for fixed checkpoint budgets. Cited inline from the [Part 6 Ch 04 table of revolve-algorithm techniques](../../60-differentiability/04-checkpointing.md). The algorithm is the standard reference that adolC, Dolfin-adjoint, and JAX's `jax.checkpoint` multi-level scheduling descend from; `sim-soft` uses it at the time-adjoint layer to reduce the naive $O(T)$ trajectory storage to $O(\log T)$ memory at the price of $O(T \log T)$ extra forward re-solves.
 
 ## Li et al. 2020 (SDE adjoint) {#li-2020-sde}
 
@@ -37,6 +37,16 @@ Introduces the deep-equilibrium (DEQ) architecture — an infinite-depth weight-
 *Efficient and Modular Implicit Differentiation.* NeurIPS 2022. arXiv:2105.15183.
 
 Generalizes DEQ-style implicit differentiation into a modular JAX library ([JAXopt](https://jaxopt.github.io)) that composes arbitrary forward solvers with IFT-derived backward passes. The relevance to `sim-soft` is architectural, not library-level: Blondel et al. name "solver and backward are separate concerns, glued by one linear solve" as the core pattern, which is the same architectural claim [Ch 02](../../60-differentiability/02-implicit-function.md) makes for sim-soft's Newton-plus-IFT composition. `sim-soft` does not import JAXopt; it writes the composition directly on `sim-ml-chassis`'s tape.
+
+## Discrete-time adjoint
+
+One anchor reference for the "discretize-then-adjoint" versus "adjoint-then-discretize" distinction, cited inline from [Part 6 Ch 03 §01 adjoint-state](../../60-differentiability/03-time-adjoint/01-adjoint-state.md) as the foundation for `sim-soft`'s commitment to taking the adjoint of the backward-Euler Newton step rather than integrating the continuous adjoint ODE with an independently-chosen scheme.
+
+### Sirkes & Tziperman 1997 {#sirkes-tziperman-1997}
+
+*Finite difference of adjoint or adjoint of finite difference?* Monthly Weather Review 125(12):3373–3378. DOI [10.1175/1520-0493(1997)125<3373:FDOAOA>2.0.CO;2](https://doi.org/10.1175/1520-0493(1997)125%3C3373:FDOAOA%3E2.0.CO;2).
+
+The canonical reference for the two options the title names — computing the adjoint of an already-discretized forward model versus discretizing the adjoint of the continuous dynamics with a scheme of the adjoint-computation's own choice. The two give different numerical answers at finite $\Delta t$ and converge to the same continuous gradient only in the limit; the paper surveys when each is preferred for data-assimilation gradients in atmospheric and oceanic models. `sim-soft` follows the discretize-then-adjoint path specifically because reusing the forward Newton's factored Hessian at each backward step requires the adjoint-iteration structure to match the forward-iteration structure exactly.
 
 ## FEM assembly adjoint
 
