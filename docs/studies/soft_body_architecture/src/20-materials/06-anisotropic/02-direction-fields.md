@@ -42,20 +42,20 @@ pub struct AxisymmetricFiber {
 
 The `at(x_ref)` evaluation computes the radial offset from the axis (the component of $x_\text{ref} - \text{axis\_origin}$ perpendicular to `axis_direction`), takes the cross product of the axis with the radial direction to get the local circumferential vector, then mixes the circumferential vector with the axis direction by `helix_angle`. The result is a unit vector tangent to the helical path through the point.
 
-**SDF-valued.** A general `Sdf<UnitVec3>` field authored in [`cf-design`](../../110-crate/02-coupling/04-cf-design.md), evaluated at the per-element sample point. Useful for arbitrary patterns — non-axisymmetric weaves, anatomical fiber paths from imaging, designed gradients. This is the resolver that makes fiber direction a first-class design variable:
+**SDF-valued.** A general `Box<dyn Field<Output = Vec3>>` field authored in [`cf-design`](../../110-crate/02-coupling/04-cf-design.md), evaluated at the per-element sample point. Useful for arbitrary patterns — non-axisymmetric weaves, anatomical fiber paths from imaging, designed gradients. This is the resolver that makes fiber direction a first-class design variable:
 
 ```rust
-pub struct SdfFiber(pub Sdf<UnitVec3>);
+pub struct SdfFiber(pub Box<dyn Field<Output = Vec3>>);
 
 impl FiberDirection for SdfFiber {
     type Output = UnitVec3;
     fn at(&self, x_ref: Vec3) -> UnitVec3 {
-        self.0.sample(x_ref).normalize()
+        UnitVec3::new_normalize(self.0.sample(x_ref))
     }
 }
 ```
 
-The defensive normalization protects against floating-point drift in the underlying SDF representation; the SDF authoring layer should produce near-unit vectors but the resolver does not assume it.
+The field produces a raw `Vec3` (per the [`Field<Output = T>` trait](../09-spatial-fields/00-sdf-valued.md) convention of returning the typed value without enforcing unit length at the field boundary); `SdfFiber` normalizes at the resolver boundary, where unit-length is part of the `FiberDirection::Output` contract. The authoring layer should produce near-unit vectors but the resolver does not assume it.
 
 Two-fiber resolvers follow the same patterns with `type Output = [UnitVec3; 2]`. For an axisymmetric two-fiber HGO (e.g., $\pm 45°$ helical winding around an axis), the resolver returns the two helically-rotated vectors as a pair from a single `at(x_ref)` call.
 
@@ -86,4 +86,4 @@ For uniform and axisymmetric resolvers the parameters are scalars (axis origin, 
 - **Per-element sampling at the rule [Ch 09 sampling](../09-spatial-fields/01-sampling.md) commits to.** Resolved once at element construction and refreshed on warm-restart from re-mesh; constant per element within a Newton step.
 - **Reference-frame convention is non-negotiable.** Fiber direction does not rotate with deformation. $I_4 = a \cdot C\, a$ remains rotation-invariant per the [Ch 01 invariants leaf](../01-strain-measures/03-invariants.md).
 - **Discontinuous fiber transitions require mesh-aligned interfaces.** The fiber resolver does not handle the discontinuity; the meshing step does, via [Part 3 multi-material interface alignment](../../30-discretization/03-interfaces.md).
-- **SDF-valued resolvers make fiber direction a first-class design variable.** Gradients flow through `Sdf<UnitVec3>` parameters at optimization time, identical to Ch 09's scalar-field path. No meshing-gradient barrier unless the SDF itself drives topology change.
+- **SDF-valued resolvers make fiber direction a first-class design variable.** Gradients flow through `Field<Output = Vec3>` parameters at optimization time, identical to Ch 09's scalar-field path. No meshing-gradient barrier unless the SDF itself drives topology change.
