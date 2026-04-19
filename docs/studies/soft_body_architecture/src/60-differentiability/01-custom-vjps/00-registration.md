@@ -64,7 +64,7 @@ Four kernels across [Part 6](../00-what-autograd-needs.md) use the registration 
 | Backward-Euler step ([Ch 02](../02-implicit-function.md)) | Newton loop to $x^\ast$ with $\|r(x^\ast)\| < \varepsilon$ | IFT solve: $\bar x_\text{prev}, \bar\theta = -J^{-T}\,\bar x_\text{next}$ reusing the forward's factor | `Llt<f64>` handle + residual-Jacobian sparsity |
 | FEM assembly ([§01](01-fem-assembly.md)) | $K^e = B_e^T \mathbb{C}_e B_e V^e$ per element | One pass over connectivity with per-element adjoint composition | $B_e$ matrices, element connectivity |
 | IPC barrier ([§02](02-contact-barrier.md)) | $b(d, \hat d)$ per contact pair | Closed-form $b'(d), b''(d)$ with barrier-variant-specific stabilization | Barrier-variant tag, per-pair $\hat d$ |
-| Time-adjoint wrapper ([Ch 03](../03-time-adjoint.md)) | Forward trajectory $\{x_t\}_{t=0}^T$ from initial state and parameters | Backward integration of $\dot\lambda = -J^T\lambda - (\partial g/\partial x)^T$ | Checkpoint schedule handle (uniform in Phase D, [Revolve](../04-checkpointing.md) in Phase E) |
+| Time-adjoint wrapper ([Ch 03](../03-time-adjoint.md)) | Forward trajectory $\{x_t\}_{t=0}^T$ from initial state and parameters | Backward integration of $\dot\lambda = -J^T\lambda - (\partial g/\partial x)^T$ | Checkpoint schedule handle (uniform primal-only in Phase D, [Revolve](../04-checkpointing.md) as Phase E candidate per [Ch 04 §02 tradeoff](../04-checkpointing/02-tradeoff.md)) |
 
 The table is the spec for what the registration surface has to support. Every row needs a different `State` shape, a different fan-in, and a different output-vector size. The `CustomVjp` trait plus `register_custom_vjp` method handle all four with one registration pattern.
 

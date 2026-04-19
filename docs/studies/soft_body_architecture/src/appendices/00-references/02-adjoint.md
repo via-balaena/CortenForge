@@ -8,7 +8,7 @@ Pass 1 populates only anchors referenced inline by the book. Pass 3 will expand 
 
 *Algorithm 799: Revolve — An Implementation of Checkpointing for the Reverse or Adjoint Mode of Computational Differentiation.* ACM Transactions on Mathematical Software.
 
-The original Revolve algorithm — binomial checkpoint placement that achieves $O(\log T)$ memory and $O(T \log T)$ compute with provably optimal constants for fixed checkpoint budgets. Cited inline from the [Part 6 Ch 04 table of revolve-algorithm techniques](../../60-differentiability/04-checkpointing.md). The algorithm is the standard reference that adolC, Dolfin-adjoint, and JAX's `jax.checkpoint` multi-level scheduling descend from; `sim-soft` uses it at the time-adjoint layer to reduce the naive $O(T)$ trajectory storage to $O(\log T)$ memory at the price of $O(T \log T)$ extra forward re-solves.
+The original Revolve algorithm — binomial checkpoint placement that achieves $O(\log T)$ memory and $O(T \log T)$ compute with provably optimal constants for fixed checkpoint budgets. Cited inline from the [Part 6 Ch 04 checkpointing table](../../60-differentiability/04-checkpointing.md) and [§01 Revolve](../../60-differentiability/04-checkpointing/01-revolve.md). The algorithm is the standard reference that adolC, Dolfin-adjoint, and JAX's `jax.checkpoint` multi-level scheduling descend from; `sim-soft` names it as a Phase E candidate for replacing Phase D's uniform-every-$k$-step checkpointing when the GPU VRAM budget at long trajectory lengths forces the tighter memory schedule.
 
 ## Li et al. 2020 (SDE adjoint) {#li-2020-sde}
 
