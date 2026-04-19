@@ -73,6 +73,22 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $\kappa$ | IPC adaptive barrier stiffness | [Part 4 Ch 01](../40-contact/01-ipc-internals/01-adaptive-kappa.md) |
 | $\mu_c$ | Coulomb friction coefficient | [Part 4 Ch 02](../40-contact/02-friction.md) |
 
+## Discretization and mesh quality (Part 3)
+
+| Symbol | Meaning | Introduced |
+|---|---|---|
+| $N_i$ | FEM shape function for node $i$ | [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md) |
+| $\xi, \eta, \zeta$ | Barycentric / reference-element coordinates on the unit tetrahedron | [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md) |
+| $V^e$ | Element reference volume (signed; positive-orientation convention) | [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md) |
+| $K^e$ | Per-element stiffness matrix; $4 \times 4$ block of $3 \times 3$ blocks for Tet4, $10 \times 10$ for Tet10 | [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md) |
+| $\mathbb{C}$ | Material tangent stiffness — 4th-order tensor, $\mathbb{C} = \partial P / \partial F$ | [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md) |
+| $f^e_\text{int}$ | Per-element internal force vector contribution to the global Newton residual | [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md) |
+| $w_q$ | Gauss-quadrature weight at quadrature point $q$ | [Part 3 Ch 00 — Tet10](../30-discretization/00-element-choice/01-tet10.md) |
+| $\rho$ (radius ratio) | Per-tet shape-quality metric, $\rho = r_\text{ins}/r_\text{circ}$. Distinguished from mass density $\rho$ by context — mesh-quality discussions never mention mass density | [Part 3 Ch 01 — aspect ratio](../30-discretization/01-mesh-quality/00-aspect-ratio.md) |
+| $r_\text{ins}, r_\text{circ}$ | Inscribed-sphere and circumscribed-sphere radii of a tet | [Part 3 Ch 01 — aspect ratio](../30-discretization/01-mesh-quality/00-aspect-ratio.md) |
+| $\theta_e$ | Dihedral angle on tetrahedron edge $e$; $\theta_\text{min}, \theta_\text{max}$ are the per-tet min/max across the 6 edges | [Part 3 Ch 01 — dihedral](../30-discretization/01-mesh-quality/01-dihedral.md) |
+| $V_\text{min}$ | Volume-consistency lower bound at mesh ingest; expressed as a fraction of median tet volume | [Part 3 Ch 01 — volume](../30-discretization/01-mesh-quality/02-volume.md) |
+
 ## Solver, time integration, and optimization
 
 | Symbol | Meaning | Introduced |
@@ -115,6 +131,10 @@ Several letters carry multiple meanings across Parts — the book disambiguates 
 - $\sigma$ is Cauchy stress everywhere in Parts 2–6 ($\sigma = \mathbb{C}:\varepsilon$ in [Part 2 Ch 02](../20-materials/02-linear.md), $\sigma = P F^T / J$ in the hyperelastic family). Electrical conductivity in the Part 1 Ch 04 carbon-black family and any downstream Part 2 Ch 09 spatial-field that assigns it always carries the subscript $\sigma_e$. The Part 9 rendering coefficients $\sigma_s$ (scattering) and $\sigma_a$ (absorption) are already subscripted per the SSS literature and do not collide with stress.
 - $c_\mu$ and $c_\lambda$ are the Part 2 Ch 08 modulus-temperature coefficients (dimensionless, per kelvin) — distinct from $\beta(T)$ (the multiplicative thermal stretch factor, also in Ch 08), which carries temperature as a function argument rather than as a coefficient. The letter $c$ here is local to the modulus-curve formula and does not collide with any other $c$ in the book (no free $c$ introduced elsewhere).
 - $G$ appears as $G^\ast, G', G'', G_\infty, G_i$ in the DMA / Oldroyd-B machinery of Part 2 Ch 07. $G$ without subscript is not used in the book; all $G$-symbols carry a subscript or superscript. The equilibrium relationship $G_\infty = \mu_\text{base}$ at the small-strain limit is the cross-notation bridge between the rheology and elastic-Lamé conventions.
+- $\rho$ is mass density everywhere except [Part 3 Ch 01 mesh-quality](../30-discretization/01-mesh-quality.md), where it is the radius ratio $r_\text{ins}/r_\text{circ}$. The two meanings do not co-occur in any chapter; mass-density discussions are about material properties (Part 1 Ch 04 and downstream) and radius-ratio discussions are about discretization-mesh topology (Part 3 Ch 01). Where they co-occur in a future cross-reference, the radius ratio gets the local subscript $\rho_\text{aspect}$.
+- $\theta$ is the design-parameter vector (Part 10) without subscripts; $\theta_e$ is a dihedral angle on tet edge $e$ in [Part 3 Ch 01 — dihedral](../30-discretization/01-mesh-quality/01-dihedral.md). The subscripted edge-index disambiguates from the design-vector usage. Per-tet aggregates $\theta_\text{min}, \theta_\text{max}$ are clearly local to the mesh-quality chapter.
+- $K$ is the global sparse stiffness matrix; $K^e$ is the per-element stiffness matrix from [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md). The superscript $e$ marks the per-element scope; assembly is the standard $K = \sum_e A^{eT} K^e A^e$ scatter-and-add.
+- $\mathbb{C}$ (blackboard-bold C) is the 4th-order material tangent stiffness $\partial P / \partial F$; $C$ (plain) is the right Cauchy-Green tensor $F^T F$. The two are visually distinct in rendered math and never substituted; LaTeX `\mathbb{C}` for the tangent and `C` for the strain measure.
 
 ## Pass 3 scope
 
