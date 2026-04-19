@@ -38,6 +38,28 @@ Introduces the deep-equilibrium (DEQ) architecture — an infinite-depth weight-
 
 Generalizes DEQ-style implicit differentiation into a modular JAX library ([JAXopt](https://jaxopt.github.io)) that composes arbitrary forward solvers with IFT-derived backward passes. The relevance to `sim-soft` is architectural, not library-level: Blondel et al. name "solver and backward are separate concerns, glued by one linear solve" as the core pattern, which is the same architectural claim [Ch 02](../../60-differentiability/02-implicit-function.md) makes for sim-soft's Newton-plus-IFT composition. `sim-soft` does not import JAXopt; it writes the composition directly on `sim-ml-chassis`'s tape.
 
+## FEM assembly adjoint
+
+Three anchor references for the "analytical adjoint of FEM assembly is a single pass over the connectivity list" result, cited inline from [Part 6 Ch 01 §01 FEM assembly VJP](../../60-differentiability/01-custom-vjps/01-fem-assembly.md). The composition itself is not a named theorem — it is the chain rule applied to a standard FEM assembly forward — so the references cover the forward structure (Hughes) and the adjoint-method tradition in which the discrete composition sits (Plessix; Mitusch et al. for its automated-AD embodiment in Firedrake/FEniCS).
+
+### Hughes 2000 {#hughes-2000}
+
+*The Finite Element Method: Linear Static and Dynamic Finite Element Analysis.* Dover reprint of the 1987 Prentice Hall original. Thomas J. R. Hughes.
+
+Standard reference for the FEM forward that the Part 6 Ch 01 §01 adjoint composes against. Covers shape functions, the strain-displacement matrix $B$, element stiffness $K^e = B^T \mathbb{C} B V^e$, and the scatter-and-add assembly over element connectivity. The adjoint in sim-soft follows by the chain rule applied to this forward; Hughes does not discuss the adjoint explicitly but anchors the notation and the discrete structure the adjoint uses.
+
+### Plessix 2006 {#plessix-2006}
+
+*A review of the adjoint-state method for computing the gradient of a functional with geophysical applications.* Geophysical Journal International, 167:495–503. DOI [10.1111/j.1365-246X.2006.03006.x](https://doi.org/10.1111/j.1365-246X.2006.03006.x).
+
+Review of the discrete-adjoint method as practised in geophysical inverse problems. Section 3 documents the per-element-assembly adjoint composition as the standard discretization of the continuous adjoint equations, with explicit treatment of the scatter-and-add structure's adjoint (a gather-and-sum). Cited inline from Part 6 Ch 01 §01 as the closest published reference for the per-element adjoint composition the sub-leaf writes out.
+
+### Mitusch, Funke, Dokken 2019 {#mitusch-2019}
+
+*dolfin-adjoint 2018.1: automated adjoints for FEniCS and Firedrake.* Journal of Open Source Software, 4(38):1292. DOI [10.21105/joss.01292](https://doi.org/10.21105/joss.01292).
+
+The pyadjoint library (Python front-end for Firedrake/FEniCS) that automates the per-element-assembly adjoint composition over FEM variational forms. Cited inline from Part 6 Ch 01 §01 as a representative of the automated-FEM-adjoint library class; sim-soft's hand-written per-element adjoint is the same composition, implemented per element type rather than JIT-compiled per variational form.
+
 ## Pass 3 anchors (not yet inline-cited)
 
 Reserved slots the Pass 3 bibliography will populate: the original Pontryagin derivation (for completeness), Giles & Pierce's review of the adjoint approach in CFD, modern neural-ODE adjoint papers (Chen et al. 2018), and control-theory-community IFT adjoint work from the shape-optimization literature. None is anchored here yet because no inline citation currently references them.
