@@ -36,27 +36,32 @@ The inner loop is classical Newton. At iterate $x^{(k)}$, compute
 
 $$ g^{(k)} = \nabla U_n(x^{(k)}), \qquad H^{(k)} = \nabla^2 U_n(x^{(k)}) $$
 
-solve $H^{(k)}\, \Delta x^{(k)} = -g^{(k)}$, line-search along $\Delta x^{(k)}$, update. The Hessian $H$ is the sum of the elastic tangent (per-element, assembled via the [`Material::tangent()`](../20-materials/00-trait-hierarchy/00-trait-surface.md) trait method), the contact Hessian (barrier second derivatives, sparse in the active-contact pattern), and the inertial block $M/\Delta t^2$. It is symmetric positive-definite within the basin of attraction (the barrier term guarantees SPD even when the elastic tangent is indefinite at large strain — see [Part 4 Ch 01 adaptive stiffness](../40-contact/01-ipc-internals/01-adaptive-kappa.md)), so the factorization is Cholesky, not LU — [faer](https://github.com/sarah-quinones/faer-rs) provides both.
+solve $H^{(k)}\, \Delta x^{(k)} = -g^{(k)}$, line-search along $\Delta x^{(k)}$, update. Decompose the Hessian block-by-block:
+
+$$ H = K + H_\text{contact} + M/\Delta t^2 $$
+
+where $K = \nabla^2_{xx} \Psi_\text{elastic}$ is the global sparse stiffness matrix, per-element-assembled via the [`Material::tangent()`](../20-materials/00-trait-hierarchy/00-trait-surface.md) trait method (elastic tangent only — no contact, no inertia); $H_\text{contact} = \nabla^2_{xx} \Psi_\text{contact}$ is the barrier second derivative, sparse in the active-contact pattern; and $M/\Delta t^2$ is the constant inertial block. Sum-SPD is not automatic — per-element elastic tangents $K^e$ can go indefinite under large compression — so the assembly step applies a per-element PSD projection (eigendecompose $K^e$, clamp negative eigenvalues to zero before assembly) in the style of [Li 2020](../40-contact/01-ipc-internals/00-barrier.md), which plus the always-PD inertial block plus the contact block's rank-1-per-pair positive contributions yields an SPD $H$ across the iteration. The [adaptive-$\kappa$ mechanism](../40-contact/01-ipc-internals/01-adaptive-kappa.md) is a separate concern: it keeps $H_\text{contact}$ well-conditioned under narrow gaps, not the global SPD-ification. Factor with sparse Cholesky via [faer](https://github.com/sarah-quinones/faer-rs).
 
 **Quasi-Newton variants are rejected.** L-BFGS, Broyden, and other Hessian-approximation schemes trade tangent-assembly cost for an increased outer iteration count and a loss of the exact local quadratic convergence rate. On scenes where the tangent *is* expensive — dense contact, near-incompressible material with mixed u-p — the tradeoff can pay off; on `sim-soft`'s typical scene it does not. Two reasons.
 
 First, the Hessian $H$ is the object Part 6 Ch 02 re-uses in backward. A quasi-Newton iteration produces a Hessian *approximation* in the L-BFGS two-loop recursion sense, not a factorized sparse matrix; the backward-pass cost model ("one factor, many RHSes") breaks. Keeping the true Hessian is not a forward-only choice — it is what makes the adjoint cheap.
 
-Second, `sim-soft`'s elastic-tangent assembly is not the bottleneck. For a 30k-tet mesh, per-element tangent evaluation is ≈3% of the per-Newton-iteration time; the sparse factorization is ≈60%; the line search and residual-norm computations are the rest. Cutting 3% by switching to L-BFGS at the cost of 2–5× more outer iterations is a bad trade. Numbers here come from single-threaded faer benchmarks on the Phase B target scene (~30k DOFs, neo-Hookean); they will be revised when the Phase E GPU path lands and the relative costs shift.
+Second, `sim-soft`'s elastic-tangent assembly is not the per-iteration bottleneck at Phase B scales — the sparse factorization dominates, tangent assembly is a small fraction, and the line search and residual-norm computations are the remainder. Switching to L-BFGS trades the small tangent-assembly cost for more outer iterations from the loss of the true Hessian, and in the nominal Phase B regime this is a bad trade. The concrete percentage breakdown is scheduled as a [Phase B benchmarking deliverable](../110-crate/03-build-order.md#the-committed-order); the cost balance will shift when the Phase E GPU path lands, at which point this claim gets revisited.
 
 ## 3. The factorization is a captured first-class object
 
-Per Newton step, the Hessian is assembled once and factored once. The factorization handle — a `faer::sparse::linalg::solvers::Cholesky<f64>` instance — is then re-applied to multiple right-hand-sides *within* the Newton iteration (if iterative refinement is needed for the primal step), *across* the Newton iteration (in the next iterate's line search, if the Hessian is cached rather than re-assembled when $\|g\|$ is already small), and *into the backward pass* when Part 6 Ch 02's IFT needs it. The handle is not discarded when the timestep finishes. It is stored in the autograd tape entry for this step and re-used by every downstream VJP that consumes the step's output.
+Per Newton step, the Hessian is assembled once and factored once. The factorization handle — a `faer::sparse::linalg::solvers::Llt<f64>` instance — is then re-applied to multiple right-hand-sides *within* the Newton iteration (if iterative refinement is needed for the primal step), *across* the Newton iteration (in the next iterate's line search, if the Hessian is cached rather than re-assembled when $\|g\|$ is already small), and *into the backward pass* when Part 6 Ch 02's IFT needs it. The handle is not discarded when the timestep finishes. It is stored in the autograd tape entry for this step and re-used by every downstream VJP that consumes the step's output.
 
 Concretely, the per-step forward/backward pattern is:
 
 ```rust
-use faer::sparse::{SparseColMat, linalg::solvers::Cholesky};
+use faer::sparse::{SparseColMat, linalg::solvers::Llt};
+use faer::linalg::solvers::Solve;
 use sim_ml_chassis::{Tape, Tensor};
 
 pub struct NewtonStep {
     pub x_n: Tensor<f64>,               // converged position
-    pub factor: Cholesky<f64>,          // captured Hessian factor at x_n
+    pub factor: Llt<f64>,               // captured Hessian factor at x_n
     pub dr_dtheta: SparseColMat<f64>,   // residual Jacobian w.r.t. design params
 }
 
@@ -70,8 +75,8 @@ pub fn step(
     let mut x = predictor(x_prev, v_prev, dt);
     let factor = loop {
         let g = grad_U_n(&x, x_prev, v_prev, theta, dt);
-        let h = hessian_U_n(&x, theta);          // SparseColMat<f64>
-        let factor: Cholesky<f64> = h.factor_cholesky()?;
+        let h = hessian_U_n(&x, theta);              // SparseColMat<f64>, PSD-projected
+        let factor: Llt<f64> = Llt::try_new_with_symbolic(&h)?;
         let mut dx = -g.clone();
         factor.solve_in_place(&mut dx);
         let alpha = line_search(&x, &dx, x_prev, v_prev, theta, dt);
@@ -88,13 +93,13 @@ pub fn step(
 
 This is the forward-side code for the pattern [Part 6 Ch 02](../60-differentiability/02-implicit-function.md) already shows on the backward side. The two code blocks read from the same object: forward stores `factor` and `dr_dtheta` on the tape; backward calls `factor.solve_in_place(&mut (-dr_dtheta.transpose() * upstream))` to get the gradient. No second factorization, no re-assembly.
 
-That re-usability is why [Phase B commits to faer](../110-crate/03-build-order.md#the-committed-order) specifically — a solver whose factorizations were private-by-API, discarded after the primal solve, or tangled into an abstract `Solver` trait that hid the factor behind `solve(rhs) -> x` would fail this pattern. The adjoint cost would jump from "one back-substitution" to "one full factorization," the 10–30× speedup the Ch 03 thesis ("differentiability came for free") is built on would disappear, and Part 6's claims would have to weaken. Time integration is where the factor is *produced*; Part 6 Ch 02 is where it is *re-used*. Both chapters reference the same `Cholesky<f64>` instance living in the tape.
+That re-usability is why [Phase B commits to faer](../110-crate/03-build-order.md#the-committed-order) specifically — a solver whose factorizations were private-by-API, discarded after the primal solve, or tangled into an abstract `Solver` trait that hid the factor behind `solve(rhs) -> x` would fail this pattern. The adjoint cost would jump from "one back-substitution" to "one full factorization," the speedup the Ch 03 thesis ("differentiability came for free") is built on would collapse by the ratio of full-factorization-to-back-substitution cost, and Part 6's claims would have to weaken. Time integration is where the factor is *produced*; Part 6 Ch 02 is where it is *re-used*. Both chapters reference the same `Llt<f64>` instance living in the tape.
 
 ## 4. Line search is also an IPC safety mechanism
 
 Armijo backtracking is the generic reason line search exists: ensure monotone decrease of $U_n$, reject Newton steps that overshoot. In an energy-based solver with IPC, line search does a second job: **it prevents any iterate from crossing a contact barrier.** The sub-chapter [02-line-search.md](00-backward-euler/02-line-search.md) derives the step-length clip; the top-level claim is that a single line-search routine handles both concerns, and a failed line search is a specific signal about which concern failed.
 
-When the Armijo condition fails on $U_n$ alone (contact remains safe, elasticity overshoots), halve and retry. When the [CCD-computed contact-toi](../40-contact/01-ipc-internals/02-ccd.md) rejects the full step (some contact pair's time-of-impact is less than $\alpha = 1$), clip to $\alpha \le 0.5\, \mathrm{toi}$ and retry — the 0.5 factor is IPC's standard safety margin. When both conditions keep failing after 8 halvings, the Newton iteration gives up on the current $\Delta t$ and signals upstream to the adaptive-timestep layer ([Ch 02](02-adaptive-dt.md)), which shrinks $\Delta t$ by a factor of 2 and restarts the step. That fallback path is the *only* way the timestep shrinks — energy-monitor-triggered shrinking is a backstop for cases where CCD is disabled for debugging, not a primary mechanism.
+When the Armijo condition fails on $U_n$ alone (contact remains safe, elasticity overshoots), halve and retry. When the [CCD-computed contact-toi](../40-contact/01-ipc-internals/02-ccd.md) rejects the full step (some contact pair's time-of-impact is less than $\alpha = 1$), clip to $\alpha \le 0.5\, \mathrm{toi}$ and retry — the 0.5 factor is IPC's standard safety margin. When either condition keeps failing after the backtracking retry budget is exhausted, the Newton iteration gives up on the current $\Delta t$ and signals upstream to the adaptive-timestep layer ([Ch 02](02-adaptive-dt.md)), which shrinks $\Delta t$ by a factor of 2 and restarts the step. That fallback path is the *only* way the timestep shrinks — energy-monitor-triggered shrinking is a backstop for cases where CCD is disabled for debugging, not a primary mechanism.
 
 The coupling is tight: Newton's line search is where contact and time integration actually negotiate. If `sim-soft` ever considered a split scheme where contact and elasticity had separate solvers (e.g., elasticity Newton then IPC projection), this coupling would fragment and the [popping failure from Part 1 Ch 02](../10-physical/02-what-goes-wrong/02-popping.md) would leak back in. The thesis commitment to one energy is also a commitment to one line search.
 
@@ -102,8 +107,8 @@ The coupling is tight: Newton's line search is where contact and time integratio
 
 - [Ch 02 (adaptive dt)](02-adaptive-dt.md) is triggered by Newton failures, not by an independent a-priori stability analysis. Failed-line-search ⇒ halve $\Delta t$ ⇒ retry-step. Energy-monitor backstop exists but is not the primary path.
 - [Ch 03 (coupling)](03-coupling.md)'s fixed-point iteration with `sim-mjcf` treats each substep as a full Newton-converged solve on the current rigid state; iteration is across the sibling-simulator boundary, not within the Newton loop.
-- [Part 6 Ch 02 (IFT)](../60-differentiability/02-implicit-function.md) re-uses the forward `Cholesky<f64>` factor from this chapter, stored on the tape. Forward and backward share one factorization; backward is one back-substitution.
-- [Part 11 Ch 04 — gradcheck sub-chapter](../110-crate/04-testing/03-gradcheck.md)'s gradcheck suite validates this by comparing IFT-derived gradients to finite-difference gradients on a 100-tet static-equilibrium problem to 5 digits — which is the test for "did we wire the factor into the tape correctly," not a test of the IFT derivation itself.
+- [Part 6 Ch 02 (IFT)](../60-differentiability/02-implicit-function.md) re-uses the forward `Llt<f64>` factor from this chapter, stored on the tape. Forward and backward share one factorization; backward is one back-substitution.
+- [Part 11 Ch 04 — gradcheck sub-chapter](../110-crate/04-testing/03-gradcheck.md)'s gradcheck suite validates this by comparing IFT-derived gradients against finite-difference gradients on a small static-equilibrium test problem — which is the test for "did we wire the factor into the tape correctly," not a test of the IFT derivation itself.
 
 ## Alternatives rejected
 

@@ -4,8 +4,8 @@ A sleeve folded on itself, a compliant gripper closing until its fingers touch, 
 
 | Section | What it covers |
 |---|---|
-| [Bounding volume hierarchies](03-self-contact/00-bvh.md) | Axis-aligned bounding box tree over the deformed surface mesh; rebuilt or refit each timestep; pruning ratio typically 100×–10000× at the canonical problem's resolution |
-| [Proximity pair generation](03-self-contact/01-proximity.md) | Point-triangle and edge-edge pair enumeration inside the BVH-identified candidate set; excluding same-triangle and adjacent-triangle pairs to avoid spurious zero-distance reports |
+| [Bounding volume hierarchies](03-self-contact/00-bvh.md) | Axis-aligned bounding box tree over the deformed surface mesh; refit across Newton iterations within a solve and rebuilt on topology change; pruning spans several orders of magnitude at the canonical problem's resolution |
+| [Proximity pair generation](03-self-contact/01-proximity.md) | Point-triangle and edge-edge pair enumeration inside the BVH-identified candidate set; excluding point-triangle pairs where the point is a vertex of the triangle and edge-edge pairs sharing a vertex, to avoid spurious zero-distance reports from adjacency rather than contact |
 
 Two claims Ch 03 rests on:
 

@@ -11,5 +11,6 @@ The [Part 0 Ch 03 "no hallucinated citations" commitment](../00-context/03-how-p
 | [Adjoint method papers](00-references/02-adjoint.md) | The implicit-function-theorem adjoint, Revolve checkpointing, SDE adjoints for stochastic forward trajectories; the machinery [Part 6](../60-differentiability/00-what-autograd-needs.md) consumes |
 | [Differentiable sim papers](00-references/03-diff-sim.md) | Differentiable meshing (DiffMC, neural marching cubes, DMTet, differentiable Delaunay) and differentiable-physics frameworks. [Part 6 Ch 05](../60-differentiability/05-diff-meshing.md)'s open-problem references live here |
 | [Rendering papers](00-references/04-rendering.md) | Subsurface scattering, anisotropic BRDFs, differentiable rendering. [Part 9](../90-visual/00-sss.md)'s visual-layer commitments trace back to these |
+| [Time-integration papers](00-references/05-time-integration.md) | Projective Dynamics, Position-Based Dynamics, XPBD, and the 2017 extensions (quasi-Newton, ADMM). The alternatives [Part 5 Ch 01](../50-time-integration/01-projective.md) rejects |
 
 The anchor convention is `{#lastname-year}` for single-author or first-author-plus-al works, `{#lastname-lastname-year}` for two-author works. Disambiguation suffixes (e.g. `li-2020-sde` vs. `li-2020`) distinguish separate works by the same author in the same year.
