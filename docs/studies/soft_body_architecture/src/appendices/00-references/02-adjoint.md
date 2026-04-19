@@ -8,7 +8,7 @@ Pass 1 populates only anchors referenced inline by the book. Pass 3 will expand 
 
 *Algorithm 799: Revolve — An Implementation of Checkpointing for the Reverse or Adjoint Mode of Computational Differentiation.* ACM Transactions on Mathematical Software.
 
-The original Revolve algorithm — binomial checkpoint placement that achieves $O(\log T)$ memory and $O(T \log T)$ compute with provably optimal constants for fixed checkpoint budgets. Cited inline from the [Part 6 Ch 04 table of revolve-algorithm techniques](../../60-differentiability/04-checkpointing.md). The algorithm is the standard reference that adolC, Dolfin-adjoint, and JAX's `jax.checkpoint` multi-level scheduling descend from; `sim-soft` uses it at the time-adjoint layer to recover linear-in-$T$ memory at the price of $\log T$ extra forward re-solves.
+The original Revolve algorithm — binomial checkpoint placement that achieves $O(\log T)$ memory and $O(T \log T)$ compute with provably optimal constants for fixed checkpoint budgets. Cited inline from the [Part 6 Ch 04 checkpointing table](../../60-differentiability/04-checkpointing.md) and [§01 Revolve](../../60-differentiability/04-checkpointing/01-revolve.md). The algorithm is the standard reference that adolC, Dolfin-adjoint, and JAX's `jax.checkpoint` multi-level scheduling descend from; `sim-soft` names it as a Phase E candidate for replacing Phase D's uniform-every-$k$-step checkpointing when the GPU VRAM budget at long trajectory lengths forces the tighter memory schedule.
 
 ## Li et al. 2020 (SDE adjoint) {#li-2020-sde}
 
@@ -21,6 +21,54 @@ The reference for backward-in-time adjoint integration through an SDE, deliverin
 *Efficient and Accurate Gradients for Neural SDEs.* NeurIPS 2021.
 
 Companion reference on the Stratonovich vs. Itô choice for SDE adjoints and the resulting estimator-variance implications. Cited inline from [Part 6 Ch 03 (time adjoint)](../../60-differentiability/03-time-adjoint.md) alongside Li et al. 2020 SDE as the pair the book points at for stochastic-adjoint background. Relevant to `sim-soft` specifically because the [custom thermo-RL project's](../../10-physical/00-canonical.md) exploration noise sits inside the forward trajectory.
+
+## Implicit differentiation through fixed points
+
+Two anchor references for the "differentiate through an implicit solve by implicit-function theorem rather than by unrolling" pattern, cited inline from [Part 6 Ch 00 (what physics-specific autograd needs)](../../60-differentiability/00-what-autograd-needs/01-physics-specific.md) as the differentiable-programming community's landing of the same construction `sim-soft`'s [Ch 02 IFT derivation](../../60-differentiability/02-implicit-function.md) uses at the backward-Euler-step level.
+
+### Bai et al. 2019 {#bai-2019}
+
+*Deep Equilibrium Models.* NeurIPS 2019. arXiv:1909.01377.
+
+Introduces the deep-equilibrium (DEQ) architecture — an infinite-depth weight-tied network whose forward pass is a fixed-point solve $z^\ast = f_\theta(z^\ast, x)$ and whose backward pass uses the implicit function theorem to compute $\partial z^\ast / \partial \theta$ with a single linear solve rather than by unrolling the fixed-point iteration. The algebraic form matches the backward-Euler IFT gradient `sim-soft` uses, modulo the replacement of the neural-network fixed-point operator by the energy-minimization residual.
+
+### Blondel et al. 2022 {#blondel-2022}
+
+*Efficient and Modular Implicit Differentiation.* NeurIPS 2022. arXiv:2105.15183.
+
+Generalizes DEQ-style implicit differentiation into a modular JAX library ([JAXopt](https://jaxopt.github.io)) that composes arbitrary forward solvers with IFT-derived backward passes. The relevance to `sim-soft` is architectural, not library-level: Blondel et al. name "solver and backward are separate concerns, glued by one linear solve" as the core pattern, which is the same architectural claim [Ch 02](../../60-differentiability/02-implicit-function.md) makes for sim-soft's Newton-plus-IFT composition. `sim-soft` does not import JAXopt; it writes the composition directly on `sim-ml-chassis`'s tape.
+
+## Discrete-time adjoint
+
+One anchor reference for the "discretize-then-adjoint" versus "adjoint-then-discretize" distinction, cited inline from [Part 6 Ch 03 §01 adjoint-state](../../60-differentiability/03-time-adjoint/01-adjoint-state.md) as the foundation for `sim-soft`'s commitment to taking the adjoint of the backward-Euler Newton step rather than integrating the continuous adjoint ODE with an independently-chosen scheme.
+
+### Sirkes & Tziperman 1997 {#sirkes-tziperman-1997}
+
+*Finite difference of adjoint or adjoint of finite difference?* Monthly Weather Review 125(12):3373–3378. DOI [10.1175/1520-0493(1997)125<3373:FDOAOA>2.0.CO;2](https://doi.org/10.1175/1520-0493(1997)125%3C3373:FDOAOA%3E2.0.CO;2).
+
+The canonical reference for the two options the title names — computing the adjoint of an already-discretized forward model versus discretizing the adjoint of the continuous dynamics with a scheme of the adjoint-computation's own choice. The two give different numerical answers at finite $\Delta t$ and converge to the same continuous gradient only in the limit; the paper surveys when each is preferred for data-assimilation gradients in atmospheric and oceanic models. `sim-soft` follows the discretize-then-adjoint path specifically because reusing the forward Newton's factored Hessian at each backward step requires the adjoint-iteration structure to match the forward-iteration structure exactly.
+
+## FEM assembly adjoint
+
+Three anchor references for the "analytical adjoint of FEM assembly is a single pass over the connectivity list" result, cited inline from [Part 6 Ch 01 §01 FEM assembly VJP](../../60-differentiability/01-custom-vjps/01-fem-assembly.md). The composition itself is not a named theorem — it is the chain rule applied to a standard FEM assembly forward — so the references cover the forward structure (Hughes) and the adjoint-method tradition in which the discrete composition sits (Plessix; Mitusch et al. for its automated-AD embodiment in Firedrake/FEniCS).
+
+### Hughes 2000 {#hughes-2000}
+
+*The Finite Element Method: Linear Static and Dynamic Finite Element Analysis.* Dover reprint of the 1987 Prentice Hall original. Thomas J. R. Hughes.
+
+Standard reference for the FEM forward that the Part 6 Ch 01 §01 adjoint composes against. Covers shape functions, the strain-displacement matrix $B$, element stiffness $K^e = B^T \mathbb{C} B V^e$, and the scatter-and-add assembly over element connectivity. The adjoint in sim-soft follows by the chain rule applied to this forward; Hughes does not discuss the adjoint explicitly but anchors the notation and the discrete structure the adjoint uses.
+
+### Plessix 2006 {#plessix-2006}
+
+*A review of the adjoint-state method for computing the gradient of a functional with geophysical applications.* Geophysical Journal International, 167:495–503. DOI [10.1111/j.1365-246X.2006.03006.x](https://doi.org/10.1111/j.1365-246X.2006.03006.x).
+
+Review of the discrete-adjoint method as practised in geophysical inverse problems. Section 3 documents the per-element-assembly adjoint composition as the standard discretization of the continuous adjoint equations, with explicit treatment of the scatter-and-add structure's adjoint (a gather-and-sum). Cited inline from Part 6 Ch 01 §01 as the closest published reference for the per-element adjoint composition the sub-leaf writes out.
+
+### Mitusch, Funke, Dokken 2019 {#mitusch-2019}
+
+*dolfin-adjoint 2018.1: automated adjoints for FEniCS and Firedrake.* Journal of Open Source Software, 4(38):1292. DOI [10.21105/joss.01292](https://doi.org/10.21105/joss.01292).
+
+The pyadjoint library (Python front-end for Firedrake/FEniCS) that automates the per-element-assembly adjoint composition over FEM variational forms. Cited inline from Part 6 Ch 01 §01 as a representative of the automated-FEM-adjoint library class; sim-soft's hand-written per-element adjoint is the same composition, implemented per element type rather than JIT-compiled per variational form.
 
 ## Pass 3 anchors (not yet inline-cited)
 

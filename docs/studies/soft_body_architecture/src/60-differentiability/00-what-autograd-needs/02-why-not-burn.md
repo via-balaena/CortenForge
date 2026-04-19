@@ -1,3 +1,46 @@
 # Why importing Burn was the wrong call
 
-> _stub_
+[Burn](https://burn.dev) is one of Rust's most mature deep-learning frameworks as of this writing — a tape-based autograd engine with GPU backends (Wgpu, CUDA, Metal, ROCm), tensor-op-level backward rules, active roughly-monthly release cadence ([latest 0.20.1, January 2026](https://crates.io/crates/burn)), and a growing model zoo. Adopting it as `sim-soft`'s autograd substrate was the obvious candidate when the study opened. This sub-chapter is the record of why that candidate was rejected. It is not a critique of Burn — Burn is solving deep learning; `sim-soft` is solving physics; the two problems have different derivative shapes, and adopting a framework optimized for one to do the other would have cost more than extending what `sim-ml-chassis` already owns.
+
+## What Burn is, precisely
+
+Three architectural facts are load-bearing for the rejection argument, drawn from Burn's public documentation, repository structure, and release notes as of 0.20.1.
+
+- **Autograd is backend-decorator + tensor-op granularity.** Burn's `Autodiff<B>` wraps any base backend `B` and records a tape at the *tensor-op level* — `matmul`, `conv2d`, `softmax`, elementwise activation. Tape entries carry operation state for backward; the framework ships built-in backward rules for its tensor vocabulary. [Source: `burn-autodiff` crate README](https://github.com/tracel-ai/burn/blob/main/crates/burn-autodiff/README.md).
+- **GPU kernels route through [CubeCL](https://github.com/tracel-ai/cubecl).** Burn's own GPU backends compile through CubeCL, Tracel's multi-platform compute-kernel language that targets CUDA, ROCm, Metal, Vulkan, WebGPU from a single Rust-DSL source. Wgpu, CUDA, Metal, and ROCm are the GPU-capable backends; the `burn-tch` backend wraps the LibTorch C++ engine as an interop path.
+- **Primary focus is DL.** The framework's model zoo, tutorials, and benchmark suite center on transformers, vision networks, RL, and audio models. No physics/scientific-computing deployment is listed in the public-facing release notes or users section as of 0.20.1; the framework is framed around training models by backpropagation.
+
+That framing is what makes Burn a great DL framework. It is also what makes it the wrong shape for `sim-soft`'s autograd needs.
+
+## Three architectural frictions if adopted
+
+The previous sub-chapter named five gradient constructions `sim-soft` requires beyond generic reverse-mode. Mapping those onto Burn surfaces three concrete frictions: one at the VJP-registration layer (blocking the IFT wrapper, the adjoint-ODE wrapper, and the hand-written kernel VJPs), one at checkpointing (blocking the long-horizon adjoint rollout), and one at the GPU kernel boundary (blocking the Phase-E port of all of the above).
+
+**No documented public VJP registration API.** [`sim-soft`'s custom VJPs](../01-custom-vjps.md) — the FEM-assembly adjoint, the IPC barrier's stabilized backward, the Newton-step-as-atomic-node IFT wrapper — require a way to register user-defined `(forward, backward)` pairs with the tape as single opaque nodes. Burn's internals handle backward rules for the framework's own ops; what Burn 0.20.1 does not currently publish is a documented, stability-guaranteed *public* VJP registration surface aimed at user code. Adopting Burn for this use case means either working against internal APIs without stability guarantees or waiting on upstream to add such a surface, which is not on Burn's publicly announced roadmap as of 0.20.1. `sim-ml-chassis` has no such obstacle — [Ch 01's `CustomVjp` trait](../01-custom-vjps.md) extends the tape we already own.
+
+**Gradient checkpointing is planned, not shipped.** Burn's tracking issue [#936](https://github.com/tracel-ai/burn/issues/936) names checkpointing as a future optimization; as of 0.20.1, the framework has no checkpointed-backward machinery. `sim-soft`'s time-adjoint chapter ([Ch 04](../04-checkpointing.md)) commits checkpointing as *blocking* for Phase D — the design-mode 1000-step rollout cannot backward-pass without it at workstation memory budgets. Adopting Burn would pin `sim-soft`'s Phase D completion to an upstream feature that is not yet in the release schedule. Building checkpointing into the chassis directly is additive work over a surface we already read end-to-end.
+
+**GPU kernel-language mismatch.** [Part 8](../../80-gpu/00-wgpu-layout.md) commits `sim-soft`'s GPU path to wgpu-native WGSL compute kernels, matching the repo's wgpu-first posture (`sim-bevy`'s render graph, future sensor-visualization compute passes). Burn's Wgpu backend routes through CubeCL, which is one additional Rust-DSL compilation layer between our WGSL intent and the driver. CubeCL is a solid engineering choice for Burn — it is what lets Burn target five GPU backends from one kernel source — but it adds a dependency chain (`sim-soft` → Burn → CubeCL → wgpu) and a code-path that we would not own at the kernel level. The [chassis GPU extension](../../80-gpu/04-chassis-extension.md) instead compiles WGSL directly on top of wgpu, staying on the same base layer every other GPU-touching crate in the repo already uses.
+
+None of these is a bug in Burn. All three are consequences of Burn optimizing for the deep-learning workload; none of them is optimizing toward a soft-body FEM solver's VJP surface.
+
+## What porting onto Burn would actually cost
+
+The implicit alternative was "adopt Burn, rewrite `sim-ml-chassis`'s CPU tape as a Burn tensor workload, get GPU autograd for free." Concretely, that plan breaks into four load-bearing tasks:
+
+- Port `sim-rl`'s REINFORCE/PPO/TD3/SAC policies to Burn tensors — rewriting policy-network construction and rollout loops for a framework whose tensor abstractions are not aligned with the current scalar tape.
+- Extend Burn's internals (or maintain an out-of-tree patch) to expose a registration surface that `sim-soft`'s fused kernels — the FEM assembly and IPC barrier [Ch 01](../01-custom-vjps.md) names concretely, plus the per-step Newton wrapper and time-adjoint wrapper the IFT and adjoint-ODE constructions require — can register against. Owning a fork, carrying out-of-tree VJPs, or waiting on upstream are the three options; none is free.
+- Commit to CubeCL as our GPU kernel language, re-expressing the [Part 8](../../80-gpu/00-wgpu-layout.md) WGSL compute plan in CubeCL and tying `sim-soft`'s long-term GPU path to CubeCL's evolution.
+- Wait for gradient checkpointing to land in Burn before `sim-soft`'s Phase D can finish — a scheduling dependency we do not control.
+
+What extending `sim-ml-chassis` costs, in contrast: a `VjpRegistry` that the chassis owns (additive to the existing tape surface); a `GpuTensor<f64>`/`GpuTape` pair on wgpu (specified in [Part 8 Ch 04](../../80-gpu/04-chassis-extension.md) as strictly parallel to the CPU path, not a replacement); the specific GPU compute kernels [Part 8 Ch 02](../../80-gpu/02-sparse-solvers.md) names for Phase E. The existing CPU tape is not deprecated; the GPU extension is an addition, not a rewrite. Every line is in a crate this project owns.
+
+The LOC accounting comes out in favor of the chassis extension on both ends — less code to write and, more importantly, less code to inherit.
+
+## Own every line
+
+The deeper reason is architectural. The thesis in [Part 1 Ch 03](../../10-physical/03-thesis.md) commits to the integrated-stack simplification — the solver, the chassis, and the visual layer each owned by the project, each with boundary surfaces legible to a new contributor. A framework dependency whose internals we do not own does not fit that constraint. When a gradient disagrees with finite differences in the [gradcheck suite](../../110-crate/04-testing.md), the debugging loop has to stay inside our codebase. When the Phase E GPU port needs a kernel-authoring convention shared between `sim-soft` and `sim-bevy`, that convention has to be ours. When a future user extends the chassis with a custom op, the extension surface has to be the same one we used to ship the canonical VJPs.
+
+`sim-ml-chassis` as it stands is twelve op kinds (nine scalar primitives and three fused ops), scalar CPU `f64`, one `Vec<Node>` tape — small enough to read in one sitting, small enough to own indefinitely, small enough that the extensions [Part 8 Ch 04](../../80-gpu/04-chassis-extension.md) specifies can be reviewed with the same rigor every `sim-soft` kernel gets. That is the budget the study spends on autograd. Burn's budget is much larger and carries a different architectural commitment. The two budgets are not interchangeable; importing Burn would have collapsed the transparency that motivates `sim-ml-chassis`'s existence in the first place.
+
+The [`candle`](https://github.com/huggingface/candle) and [`dfdx`](https://github.com/coreylowman/dfdx) frameworks are in the same category — capable, mature, centered on DL tensor ops, each with their own GPU-backend abstraction. Neither positions itself around user-registered custom VJPs for physics kernels in its public documentation. The argument above applies to either; the conclusion is the same. Extending the chassis we already own is the smaller total commitment and the only one that keeps the book's "own every line" thesis honest.

@@ -14,11 +14,11 @@ with $\mathbf{p}_e$ the per-element scalar parameter vector ($\mu_e, \lambda_e, 
 
 For each element $e$ at sample point $x_\text{ref}^{(e)}$ ([per-element sampling sibling](01-sampling.md)), the per-element parameter $p_e$ is:
 
-$$ p_e = \texttt{Sdf::sample}(x_\text{ref}^{(e)};\, \theta) $$
+$$ p_e = \texttt{Field::sample}(x_\text{ref}^{(e)};\, \theta) $$
 
-The gradient $\partial p_e / \partial \theta$ flows through the SDF's internal computation by reverse-mode autograd. SDF evaluation is a pipeline of scalar arithmetic operations (CSG min/max, smooth blends, distance computations) on the SDF parameters $\theta$ — every one of those operations is differentiable except at the measure-zero seams of `min`/`max`, which are smoothed in the [Part 7 Ch 00 SDF primitive operations](../../70-sdf-pipeline/00-sdf-primitive/01-operations.md). The reverse-mode pass through the SDF evaluation is plain autograd; no custom VJP is needed.
+The gradient $\partial p_e / \partial \theta$ flows through the field's internal computation by reverse-mode autograd. Field evaluation is a pipeline of scalar arithmetic operations (CSG min/max, smooth blends, distance computations) on the field parameters $\theta$ — every one of those operations is differentiable except at the measure-zero seams of `min`/`max`, which are smoothed per the [Part 7 Ch 00 SDF primitive operations](../../70-sdf-pipeline/00-sdf-primitive/01-operations.md) (the same operator algebra grounds both the geometric `Sdf` trait and the typed `Field<Output = T>` trait). The reverse-mode pass through field evaluation is plain autograd; no custom VJP is needed.
 
-For unit-vector SDFs ([HGO fiber direction](../06-anisotropic/02-direction-fields.md)), the gradient picks up the normalization step ($\partial(\hat v / \|v\|) / \partial v$ projects out the radial component); for tensor-valued SDFs, the gradient picks up the symmetric-or-PSD projection. The chain at each typed `Sdf<T>` instance handles the per-type Jacobian; the consumer-side gradient flow is uniform.
+For vector-valued fields feeding [HGO fiber direction](../06-anisotropic/02-direction-fields.md), the gradient picks up the normalization step ($\partial(\hat v / \|v\|) / \partial v$ projects out the radial component) at the `FiberDirection::at` consumer boundary rather than at the field boundary; for tensor-valued fields, the gradient picks up the symmetric-or-PSD projection at the constitutive-law boundary. The chain at each typed `Field<Output = T>` instance handles the per-type Jacobian; the consumer-side gradient flow is uniform.
 
 ## Easy part versus hard part
 

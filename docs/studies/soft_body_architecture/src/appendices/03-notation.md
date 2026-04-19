@@ -92,6 +92,13 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $\theta_e$ | Dihedral angle on tetrahedron edge $e$; $\theta_\text{min}, \theta_\text{max}$ are the per-tet min/max across the 6 edges | [Part 3 Ch 01 — dihedral](../30-discretization/01-mesh-quality/01-dihedral.md) |
 | $V_\text{min}$ | Volume-consistency lower bound at mesh ingest; expressed as a fraction of median tet volume | [Part 3 Ch 01 — volume](../30-discretization/01-mesh-quality/02-volume.md) |
 
+## SDF pipeline (Part 7)
+
+| Symbol | Meaning | Introduced |
+|---|---|---|
+| $\phi(p)$ | Signed distance field — scalar function with $\phi < 0$ inside the shape, $\phi > 0$ outside. Subscripted $\phi_a, \phi_b$ for operand SDFs; $\phi_\cup^k, \phi_\cap^k$ for smoothed-union/intersection with blend radius $k$; $\phi_T, \phi_\text{disp}$ for transformed and displacement-perturbed variants | [Part 7 Ch 00 §01 operations](../70-sdf-pipeline/00-sdf-primitive/01-operations.md) |
+| $k$ (blend radius) | Smoothed-CSG blend radius in Part 7 Ch 00 §01. Disambiguated from HGO $k_1, k_2$ and stiffness-bound $k_\text{eff}, k_\text{min}$ by unit (length) and surrounding context (SDF composition) | [Part 7 Ch 00 §01 operations](../70-sdf-pipeline/00-sdf-primitive/01-operations.md) |
+
 ## Solver, time integration, and optimization
 
 | Symbol | Meaning | Introduced |
@@ -100,6 +107,8 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $x^\ast$ | Converged equilibrium state | [Part 5 Ch 00](../50-time-integration/00-backward-euler.md) |
 | $r(x, x_{t-1}; \theta)$ | Residual of the step-$t$ energy-minimization problem | [Part 6 Ch 03](../60-differentiability/03-time-adjoint.md) |
 | $K$ | Global sparse stiffness matrix | [Part 5 Ch 00](../50-time-integration/00-backward-euler.md) |
+| $H$ | Newton Hessian of the step objective, $H = K + H_\text{contact} + M/\Delta t^2$ — the object the forward Newton factors, the SPD object the IFT adjoint inverts | [Part 5 Ch 00 §01 Newton](../50-time-integration/00-backward-euler/01-newton.md) |
+| $A$ | Residual Jacobian $A \equiv \partial r/\partial x$ in the implicit-function-theorem derivation. For the backward-Euler step, $A = H$ identically; the symbol choice is local to IFT exposition | [Part 6 Ch 02 §00 derivation](../60-differentiability/02-implicit-function/00-derivation.md) |
 | $B$ | Strain-displacement matrix (per element) | [Part 6 Ch 01](../60-differentiability/01-custom-vjps.md) |
 | $\Delta t$ | Timestep | [Part 5 Ch 02](../50-time-integration/02-adaptive-dt.md) |
 | $\lambda(t)$ | Time-adjoint state variable | [Part 6 Ch 03](../60-differentiability/03-time-adjoint/01-adjoint-state.md) |
@@ -109,8 +118,14 @@ Symbol table for the notation used across Parts 1–12. One line per symbol — 
 | $\mathbf{p}_e$ | Per-element material-parameter vector (the scalar-valued sampling of `MaterialField` at element $e$'s Gauss point) | [Part 2 Ch 09](../20-materials/09-spatial-fields.md) |
 | $R(\theta)$ | Scalar reward — the forward-map output | [Part 1 Ch 01](../10-physical/01-reward.md), formalized in [Part 10 Ch 00](../100-optimization/00-forward.md) |
 | $L$ | Loss used in autograd-facing sections; equal to $-R$ when minimizing | [Part 6 Ch 00](../60-differentiability/00-what-autograd-needs.md) |
+| $\bar x$ | Adjoint / upstream gradient in reverse-mode autograd — $\bar x = \partial L / \partial x$; the quantity a tape node's backward propagates backward through the graph | [Part 6 Ch 00](../60-differentiability/00-what-autograd-needs/00-generic.md) |
 | $w_i$ | Reward-composition weights | [Part 1 Ch 01 — composition](../10-physical/01-reward/04-composition.md) |
 | $\Phi$ | Terminal cost in trajectory-adjoint discussions | [Part 6 Ch 03](../60-differentiability/03-time-adjoint.md) |
+| $M$ (preconditioner) | Preconditioner matrix, $M \approx H^{-1}$; applied per CG/MINRES iteration. Distinguished from the mass matrix $M$ in [Part 5 Ch 00 §01 Newton](../50-time-integration/00-backward-euler/01-newton.md) by context — preconditioner discussions are inside the iterative-solver inner loop, mass-matrix discussions are in the Newton-step objective | [Part 8 Ch 02 §00](../80-gpu/02-sparse-solvers/00-cg.md) |
+| $\kappa$ (cond. #) | Matrix condition number, $\kappa = \lambda_\text{max}/\lambda_\text{min}$; CG iteration count is $O(\sqrt{\kappa})$. Distinguished from IPC adaptive barrier stiffness $\kappa$ (in Part 4 Ch 01) by context — solver-side discussions use κ for the matrix conditioning, contact-side for barrier stiffness | [Part 8 Ch 02 §00](../80-gpu/02-sparse-solvers/00-cg.md) |
+| $\alpha_k, \beta_k$ (CG) | Hestenes-Stiefel CG scalar coefficients at iteration $k$; $\alpha_k$ is the step length, $\beta_k$ is the conjugation coefficient. Distinguished from the other $\alpha/\beta$ uses in the book (Ogden, thermal, logistic, XPBD) by iteration subscript and local-to-the-inner-loop context | [Part 8 Ch 02 §00](../80-gpu/02-sparse-solvers/00-cg.md) |
+| $\theta$ (AMG) | Ruge-Stüben strong-connection threshold, $\theta \in [0.25, 0.5]$ typical; DOF $i$ is strongly connected to $j$ if $|A_{ij}| \geq \theta \max_{k \neq i} |A_{ik}|$. Distinguished from the design-parameter $\theta$ (Part 10) and the dihedral angle $\theta_e$ (Part 3) by local context and the accompanying absolute-value formulation | [Part 8 Ch 02 §02](../80-gpu/02-sparse-solvers/02-amg.md) |
+| $\nu_\text{pre}, \nu_\text{post}$ | Pre- and post-smoothing iteration counts per AMG level; typically 2 for soft-body Hessians | [Part 8 Ch 02 §02](../80-gpu/02-sparse-solvers/02-amg.md) |
 
 ## Rendering and visualization
 
@@ -137,7 +152,10 @@ Several letters carry multiple meanings across Parts — the book disambiguates 
 - $\rho$ is mass density everywhere except [Part 3 Ch 01 mesh-quality](../30-discretization/01-mesh-quality.md), where it is the radius ratio $r_\text{ins}/r_\text{circ}$. The two meanings do not co-occur in any chapter; mass-density discussions are about material properties (Part 1 Ch 04 and downstream) and radius-ratio discussions are about discretization-mesh topology (Part 3 Ch 01). Where they co-occur in a future cross-reference, the radius ratio gets the local subscript $\rho_\text{aspect}$.
 - $\theta$ is the design-parameter vector (Part 10) without subscripts; $\theta_e$ is a dihedral angle on tet edge $e$ in [Part 3 Ch 01 — dihedral](../30-discretization/01-mesh-quality/01-dihedral.md). The subscripted edge-index disambiguates from the design-vector usage. Per-tet aggregates $\theta_\text{min}, \theta_\text{max}$ are clearly local to the mesh-quality chapter.
 - $K$ is the global sparse stiffness matrix; $K^e$ is the per-element stiffness matrix from [Part 3 Ch 00 — Tet4](../30-discretization/00-element-choice/00-tet4.md). The superscript $e$ marks the per-element scope; assembly is the standard $K = \sum_e A^{eT} K^e A^e$ scatter-and-add.
+- $k$ without subscript is the SDF smoothed-CSG blend radius from [Part 7 Ch 00 §01 operations](../70-sdf-pipeline/00-sdf-primitive/01-operations.md) (units of length). Subscripted $k$-family symbols are reserved for distinct concepts: $k_1, k_2$ are HGO fiber parameters, $k_\text{eff}$ is effective cavity stiffness, $k_\text{min}$ is the stiffness-bound floor. The blend radius and HGO parameters appear in different Parts (7 vs. 2); where they would co-occur in a cross-reference, the blend radius is local to an SDF-composition expression and the HGO parameters local to an anisotropic-material expression.
 - $\mathbb{C}$ (blackboard-bold C) is the 4th-order material tangent stiffness $\partial P / \partial F$; $C$ (plain) is the right Cauchy-Green tensor $F^T F$. The two are visually distinct in rendered math and never substituted; LaTeX `\mathbb{C}` for the tangent and `C` for the strain measure.
+- $M$ is the mass matrix in [Part 5 Ch 00's Newton-step Hessian decomposition](../50-time-integration/00-backward-euler.md) ($H = K + H_\text{contact} + M/\Delta t^2$) and the preconditioner $M \approx H^{-1}$ in [Part 8 Ch 02's iterative solver inner loop](../80-gpu/02-sparse-solvers/00-cg.md). The two usages do not co-occur in any single passage — the mass matrix appears in the Newton-step-objective derivation, the preconditioner appears inside the CG/MINRES inner loop that runs on that Hessian. Where they would need to co-occur in a future cross-reference, the preconditioner gets the local subscript $M_P$.
+- $\kappa$ is the IPC adaptive barrier stiffness in [Part 4 Ch 01](../40-contact/01-ipc-internals/01-adaptive-kappa.md) and the matrix condition number in [Part 8 Ch 02](../80-gpu/02-sparse-solvers.md). Disambiguation is fully by context: barrier stiffness appears in contact/friction derivations, condition number appears in iterative-solver convergence analysis. Where they co-occur in a future Newton-step-cost discussion, the condition number gets the local name $\text{cond}(H)$ written out.
 
 ## Pass 3 scope
 
