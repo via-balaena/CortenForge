@@ -44,24 +44,32 @@ Each stage is explicit about what it produces and what it caches for the backwar
 1. **`cf-design` → `SdfField` + `MaterialField`.** Authoring layer only. No solver state. The boundary is the `SdfField` and `MaterialField` trait objects from [Part 7 Ch 00](../70-sdf-pipeline/00-sdf-primitive.md); `sim-soft` does not inspect the composition tree.
 2. **Change detection → `EditResult`.** The [Part 7 Ch 04 classifier](../70-sdf-pipeline/04-live-remesh.md) labels the edit as `ParameterOnly`, `MaterialChanging`, or `TopologyChanging`. Cost regime is selected here, not downstream.
 3. **Mesh + materials → equilibrium $x^\ast$.** The [Part 5 Ch 00 Newton loop](../50-time-integration/00-backward-euler.md) minimizes $U_n(x; \theta)$. At convergence, stores $x^\ast$, the `faer::sparse::linalg::solvers::Llt<f64>` factor, and $\partial r / \partial \theta$ on the autograd tape — the [factor-on-tape pattern](../50-time-integration/00-backward-euler.md) Part 5 commits to.
-4. **Readout $R(x^\ast; \theta)$.** The scalar reward is the composition of pressure uniformity, coverage, peak-pressure barrier, and effective-stiffness-bound terms from [Part 1 Ch 01](../10-physical/01-reward.md), all smooth, all autograd-traceable.
+4. **Readout $R(x^\ast; \theta)$.** The scalar reward is the composition of pressure uniformity, coverage, peak-pressure barrier, and effective-stiffness-bound terms from [Part 1 Ch 01](../10-physical/01-reward.md), all smooth, all autograd-traceable. The four per-term contributions are surfaced as a `RewardBreakdown` struct — the structured carrier that [Ch 05's sim-to-real correction](05-sim-to-real.md) applies per-component residuals against and that [Ch 06's inner loop](06-full-loop.md) scores into the scalar `R` via `breakdown.score_with(&weights)` under the [Part 1 Ch 01 composition rule](../10-physical/01-reward/04-composition.md). Downstream optimizers that only want a scalar read the score directly; Ch 03 preference learning and Ch 05 sim-to-real read the per-term breakdown.
 
 The trait-level signature the optimizer sees is:
 
 ```rust
 use sim_ml_chassis::{Tape, Tensor};
-use sim_soft::{SoftScene, EditResult, GradientEstimate};
+use sim_soft::{SoftScene, EditResult, GradientEstimate, RewardBreakdown};
 
 pub trait ForwardMap {
     /// One evaluation. Populates the tape with the IFT-ready factor if the
     /// edit class admitted smooth gradients; otherwise tape-recorded as opaque.
+    /// Deterministic in theta: repeated calls at the same theta produce the
+    /// same `RewardBreakdown` modulo cache state — no stochastic sim parameters
+    /// update between calls. This invariant is what keeps the BayesOpt GP's
+    /// cached training data from [Ch 02 §00](02-bayesopt/00-gp.md) valid across
+    /// residual-GP updates in [Ch 05 §01](05-sim-to-real/01-online.md).
     fn evaluate(
         &mut self,
         theta: &Tensor<f64>,
         tape: &mut Tape,
-    ) -> (Tensor<f64>, EditResult);
+    ) -> (RewardBreakdown, EditResult);
 
-    /// Gradient, pulled from the tape when possible, FD-wrapped otherwise.
+    /// Gradient of the composed scalar reward with respect to theta, pulled
+    /// from the tape when possible, FD-wrapped otherwise. The composition uses
+    /// the current reward weights held on `self`; a weight update invalidates
+    /// the cached tape and forces the next `gradient` call to re-trace.
     fn gradient(
         &mut self,
         theta: &Tensor<f64>,

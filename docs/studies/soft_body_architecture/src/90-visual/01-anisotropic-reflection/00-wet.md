@@ -6,7 +6,7 @@ When the rigid probe from the canonical problem presses against a silicone cavit
 
 A rendered silicone cavity without any wet-look shader reads as dry-looking even under load — a designer who has squeezed silicone recognises the mismatch. The effect to reproduce is that the pressed region's specular lobe *tightens* relative to the surrounding dry surface, and the tightening scales with contact pressure. After contact releases, the tightening relaxes back to the dry-surface baseline over a short timescale.
 
-[Jensen, Legakis & Dorsey 1999](../../appendices/00-references/04-rendering.md)'s "Rendering of Wet Materials" is the canonical reference in the rendering literature: a layered BRDF with an interfacial film that produces darkening, specular-shift, and a secondary reflection. `sim-soft`'s case is simpler — no moisture film, and the specular tightening is the only perceived shift Phase I commits to — so we inherit the structural reading from Jensen but drop the moisture-film layer.
+[Jensen, Legakis & Dorsey 1999](../../appendices/00-references/04-rendering.md#jensen-legakis-dorsey-1999)'s "Rendering of Wet Materials" is the canonical reference in the rendering literature: a layered BRDF with an interfacial film that produces darkening, specular-shift, and a secondary reflection. `sim-soft`'s case is simpler — no moisture film, and the specular tightening is the only perceived shift Phase I commits to — so we inherit the structural reading from Jensen but drop the moisture-film layer.
 
 ## The shader model
 
