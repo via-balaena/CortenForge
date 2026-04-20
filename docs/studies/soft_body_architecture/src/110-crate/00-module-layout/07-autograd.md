@@ -1,3 +1,37 @@
 # autograd/
 
-> _stub_
+The `autograd/` module is the bridge between the chassis's generic reverse-mode tape and `sim-soft`'s physics gradients. It registers [`element/`](01-element.md)'s FEM assembly VJP, [`contact/`](03-contact.md)'s IPC barrier VJP, and [`solver/`](04-solver.md)'s implicit-function-theorem adjoint against the chassis's VJP API; it consumes the factor-on-tape pattern from [Part 5 Ch 00 Claim 3](../../50-time-integration/00-backward-euler.md) and replays it backward; it owns the time-adjoint loop for rollouts and the checkpointing policy that keeps memory bounded. [Part 6](../../60-differentiability/00-what-autograd-needs.md) carries the full derivation; this module is where those derivations run.
+
+## What the module owns
+
+| Sub-area | Responsibility | Where it is specified |
+|---|---|---|
+| VJP registration API | Chassis-side hook for registering hand-written VJPs; `sim-soft` supplies the VJPs, the chassis owns the registry | [Part 6 Ch 01 §00](../../60-differentiability/01-custom-vjps/00-registration.md) |
+| FEM assembly VJP | Fused gradient of per-element stress / stiffness assembly w.r.t. nodal positions and material parameters | [Part 6 Ch 01 §01](../../60-differentiability/01-custom-vjps/01-fem-assembly.md) |
+| IPC barrier VJP | Fused gradient of the contact energy w.r.t. active-pair geometry | [Part 6 Ch 01 §02](../../60-differentiability/01-custom-vjps/02-contact-barrier.md) |
+| IFT adjoint | $\partial x^\ast / \partial \theta = -A^{-1} \partial r / \partial \theta$ via the cached `Llt<f64>` factor from [`solver/`](04-solver.md) | [Part 6 Ch 02](../../60-differentiability/02-implicit-function.md) |
+| Time adjoint | Backward-in-time state equation for multi-step rollouts; stochastic variant opt-in | [Part 6 Ch 03](../../60-differentiability/03-time-adjoint.md) |
+| Checkpointing | Uniform and Revolve strategies for balancing memory against forward re-computation | [Part 6 Ch 04](../../60-differentiability/04-checkpointing.md) |
+| FD wrappers | Topology-edit gradients via finite differences, flagged as `GradientEstimate::Noisy { variance }` | [Part 6 Ch 05](../../60-differentiability/05-diff-meshing.md), [Part 7 Ch 04](../../70-sdf-pipeline/04-live-remesh.md) |
+
+## Four claims
+
+**1. The tape is the chassis's. This module registers against it.** [Part 6 Ch 00 Claim 3](../../60-differentiability/00-what-autograd-needs.md) commits to `sim-ml-chassis` owning the generic reverse-mode tape ("own every line"); `sim-soft::autograd/` is a consumer. Every VJP here is registered against the chassis's `Tape` API, keyed by a `TapeNodeId` that the chassis issues when the forward pass records an opaque physics-fused node. The same pattern governs `gpu/`'s VJP registration against the chassis's GPU-extension tape ([Part 8 Ch 04 §02](../../80-gpu/04-chassis-extension/02-vjp-api.md)). No autograd framework dependency: the chassis is ours, the VJPs are ours, the tape surface is narrow enough to audit in an afternoon.
+
+**2. The forward factor is the backward work.** [Part 5 Ch 00 Claim 3](../../50-time-integration/00-backward-euler.md) stores a `faer::sparse::linalg::solvers::Llt<f64>` on the tape at the end of each converged Newton step; this module's IFT pass retrieves it, applies `factor.solve_in_place(&mut (-dr_dtheta.transpose() * upstream))`, and returns the upstream-gradient-pullback in one back-substitution. No second factorization. This is the mechanism that makes [Part 1 Ch 03's "differentiability came for free" thesis](../../10-physical/03-thesis.md) numerically honest — the backward pass per step costs $O(\text{nnz}(A))$ for back-substitution, a small multiple of the forward Newton cost per iteration, and bounded independently of design-space dimension $d$.
+
+**3. [`ForwardMap`](../../100-optimization/00-forward.md)'s determinism-in-θ contract is preserved by this module.** The [Part 10 Ch 00 `ForwardMap` trait](../../100-optimization/00-forward.md) commits that `evaluate` at a fixed `theta` returns the same `RewardBreakdown` modulo cache state — no stochastic sim-parameter updates between calls. This is load-bearing for [Part 10 Ch 02's cached GP training data](../../100-optimization/02-bayesopt/00-gp.md) and [Part 10 Ch 05's residual-GP updates](../../100-optimization/05-sim-to-real/01-online.md). `autograd/`'s `gradient` call on the same tape at the same $\theta$ must also be deterministic — the tape's recorded physics nodes replay to the same numerical gradient on every call. Checkpointed re-computation of intermediate states ([Part 6 Ch 04](../../60-differentiability/04-checkpointing.md)) is deterministic by construction (same state, same step, same stress — no RNG inside `sim-soft`). Any future addition of stochastic sim physics — stochastic adjoints ([Part 6 Ch 03 §02](../../60-differentiability/03-time-adjoint/02-stochastic.md)), random-field materials — must either be keyed off an explicit seed on `theta` (preserving determinism conditional on seed) or must update the `ForwardMap` contract.
+
+**4. FD wrappers are the exception, flagged explicitly.** Topology-crossing edits break the smoothness assumption IFT needs; [Part 7 Ch 04 §04](../../70-sdf-pipeline/04-live-remesh.md)'s `TopologyChanging` `EditClass` triggers an FD wrapper in this module. The wrapper computes central-difference gradients (two forward solves, one per perturbation sign), returns a `GradientEstimate::Noisy { variance }` annotation, and lets downstream [optimizers](../../100-optimization/00-forward.md) weight the evaluation accordingly. The FD wrapper is not a fallback for solver bugs — if IFT gives a wrong answer on a smooth edit, that is a bug, not an FD-fallback trigger. The 95/5 exact/noisy split from [Part 10 Ch 00](../../100-optimization/00-forward.md) names the exception fraction precisely; staying inside that envelope is a `sim-soft` property, not a wishful hope.
+
+## What the module does not carry
+
+- **No generic elementary-op VJPs.** Matmul, add, broadcast — those are `sim-ml-chassis`'s hot path. This module carries the *physics-fused* VJPs and the solver-level adjoint; anything op-by-op already works because the chassis's tape already records it.
+- **No mesh-topology-preserving diff-meshing.** [Part 6 Ch 05](../../60-differentiability/05-diff-meshing.md) names diff-meshing as an open research problem; the FD wrapper is the Phase A–I answer, not a placeholder for a differentiable-meshing implementation that does not yet exist.
+- **No policy/RL-specific machinery.** Reward composition, preference updates, acquisition-function scoring — all [`sim-opt`](../../110-crate/02-coupling/03-ml-chassis.md)'s concern, not `autograd/`'s. This module provides the gradient; how the gradient is used is not its scope.
+
+## What this commits downstream
+
+- **[`gpu/`](06-gpu.md)'s GPU VJP registration calls this module's API.** Same `TapeNodeId` flow, same VJP shape, same chassis tape — only the kernel that produces the gradient changes from CPU closed-form to GPU compute.
+- **[Part 11 Ch 04 gradcheck](../04-testing/03-gradcheck.md)** regresses IFT gradients against finite-difference gradients on the static-equilibrium canonical test — the specific assertion is "`autograd/`'s IFT agrees with FD to 5 digits on 100-tet neo-Hookean cubes."
+- **[Part 10's optimizer stack](../../100-optimization/00-forward.md)** consumes the `(Tensor<f64>, GradientEstimate)` pair this module produces on every `ForwardMap::gradient` call. The exact/noisy flag is authored here; every downstream acquisition function reads it.
