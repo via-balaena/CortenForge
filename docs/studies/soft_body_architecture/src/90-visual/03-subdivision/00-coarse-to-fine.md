@@ -1,3 +1,33 @@
 # Coarse sim mesh → smooth render mesh
 
-> _stub_
+The `sim-soft` tet mesh is optimized for the Newton solver, not for visual rendering. At canonical scale (30k tets) the surface triangulation is roughly 12k boundary triangles — enough to capture the overall shape, but faceted on curved features like the probe rim and cavity interior. The [Part 1 Ch 03 thesis](../../10-physical/03-thesis.md) commits the physics mesh to also being the render mesh, which means the coarse-for-solve triangulation is the starting point for rendering; subdivision refines it without breaking that commitment. This sub-leaf specifies the pipeline: surface extraction, subdivision, per-vertex attribute interpolation, caching.
+
+## The pipeline
+
+Four stages run in sequence, once per physics step whose output actually changes:
+
+1. **Surface extraction.** Walk the tet mesh's boundary faces — each tet has four triangular faces, and a face is a boundary face iff it is shared by exactly one tet (as opposed to two, for interior faces). The result is a triangle list with the per-vertex physics attributes (stress, temperature, thickness, contact pressure, layer ID, anisotropy direction) from [`readout/`](../../110-crate/00-module-layout/09-readout.md) carried through from the tet-vertex data. Output is ≈12k triangles for a 30k-tet scene; cost is $O(N_\text{tet})$ and subdominant to the solve.
+2. **Subdivision.** One or two levels of [Loop subdivision](01-loop-vs-cc.md), producing ≈48k or ≈192k triangles respectively. Each level inserts a new vertex at each edge (with a stencil-weighted position drawn from the edge's two endpoints plus the two adjacent triangles' opposite vertices), then reconnects: every input triangle becomes four output triangles sharing the new per-edge vertices with their neighbours. Old vertices are also repositioned, via a separate stencil over their ring neighbors.
+3. **Attribute interpolation.** Loop subdivision uses two stencils — one for new edge-midpoint vertices, one for repositioning old vertices. Both are weighted averages, applied identically to position and to each scalar physics attribute. For vector attributes (anisotropy direction), the stencil is applied componentwise and the result is re-normalized. For enum attributes (layer ID), the subdivision inherits the parent vertex's layer ID directly; [Part 3 Ch 03's interface-respecting meshing](../../30-discretization/03-interfaces.md) ensures no edge crosses a layer interface, so no tie-breaking is required for edge-midpoint vertices.
+4. **Shader dispatch.** The subdivided mesh is uploaded to the GPU-side `MeshSnapshot` buffer of [Ch 05](../05-sim-bevy.md) and consumed by the shader pipeline from that same chapter. Rasterization interpolates per-vertex attributes across triangle faces at standard per-fragment granularity; the subdivided-mesh density, not fragment-shader interpolation, is what produces the smooth render.
+
+The subdivided mesh is cached across render frames when the physics mesh has not changed. The physics runs at its own rate (1–16 ms per step depending on design vs experience mode); the renderer runs at vsync. Between two consecutive physics steps, the renderer reads the same cached subdivided mesh and re-rasterizes it (possibly from a new camera pose) without re-subdividing. This is a straightforward application of the [Ch 05 double-buffered streaming pattern](../05-sim-bevy.md) at the subdivided-mesh level.
+
+## Differentiability through subdivision
+
+[Part 6 Ch 02 IFT gradients](../../60-differentiability/02-implicit-function.md) and [Part 6 Ch 03 time-adjoint](../../60-differentiability/03-time-adjoint.md) both care whether gradients flow smoothly through subdivision when downstream losses (shader-output reward, visual-match preference per [Part 10 Ch 03](../../100-optimization/03-preference.md)) are evaluated on the rendered mesh. The answer is yes: the subdivision stencil is linear in vertex positions and in attribute values, so $\partial (\text{subdivided vertex}_i) / \partial (\text{parent vertex}_j) = $ stencil weight, with no branches, and this Jacobian composes cleanly in reverse-mode autograd. Gradients of a rendered-pixel loss with respect to a physics-side design parameter pass through subdivision without special handling; the chassis-level tape from [Part 8 Ch 03](../../80-gpu/03-gpu-autograd.md) records the subdivision matrix-vector product and replays it in reverse.
+
+For exact point-evaluation of the limit surface (needed only by niche gradient applications that integrate against the infinitely-subdivided form rather than a finite-level approximation), [Stam 1998](../../appendices/00-references/04-rendering.md) gives a closed-form eigenbasis evaluation. `sim-soft` ships the finite-level form as its default — it is what the rasterizer wants anyway — and falls back to Stam's evaluation only for regression tests and research-frontier experiments like [Part 12 Ch 07's differentiable-meshing open-question](../../120-roadmap/07-open-questions.md).
+
+## When subdivision runs
+
+The subdivision pass is triggered by a change in the physics mesh *topology* or a change in any vertex's physics attributes. Since the topology is [fixed-per-episode](../../60-differentiability/05-diff-meshing.md) and most steps only update attribute values (stress, contact pressure), the common case reuses the cached subdivision-level-1-or-2 topology and only updates the subdivided attribute values via the same stencil. Pure attribute updates are ≈$O(N_\text{tri}^\text{subdivided})$ memory writes with no connectivity work — cheap.
+
+On the rare physics-step that invokes a re-mesh ([Part 7 Ch 04 `TopologyChanging` class](../../70-sdf-pipeline/04-live-remesh.md)), the subdivision cache invalidates and the full pipeline re-runs. This lands a one-time cost at each re-mesh event; between events, subdivision is an attribute-broadcast operation, not a full mesh construction.
+
+## What this sub-leaf commits the book to
+
+- **Subdivision happens after the physics, before the rasterizer.** The tet mesh stays the physics-solver artifact; the subdivided triangle mesh is the renderer's input. No round-trip back into the physics.
+- **Attribute interpolation reuses Loop's position stencils.** Loop's two stencils (new edge-midpoint vertices; old repositioned vertices) apply identically to scalar and vector attributes; vector results are re-normalized. Enum attributes inherit directly, with no tie-breaking needed because [interface-respecting meshing](../../30-discretization/03-interfaces.md) keeps layer boundaries on mesh edges rather than across them.
+- **Gradients pass through subdivision cleanly.** The stencil is linear and branch-free; the Jacobian composes in reverse-mode autograd.
+- **Subdivision is cached across physics steps.** Pure attribute updates reuse the topology; only topology-changing re-meshes force a rebuild.
