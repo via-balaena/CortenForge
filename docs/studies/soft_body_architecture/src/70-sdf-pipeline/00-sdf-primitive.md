@@ -86,12 +86,16 @@ pub struct MaterialField {
     pub fiber_dir: Option<Box<dyn Field<Output = Vec3>>>,
     pub prony_terms: Vec<Box<dyn Field<Output = f64>>>,
     pub thermal_conductivity: Option<Box<dyn Field<Output = f64>>>,
+    pub layer_id: Option<Box<dyn Field<Output = u8>>>,                      // multi-material layer ID — see [Part 9 Ch 00](../90-visual/00-sss.md)
+    pub diffusion_profile: Option<Box<dyn Field<Output = DiffusionProfile>>>, // SSS — see [Part 9 Ch 00](../90-visual/00-sss.md); renderer-only, no solver consumers
 }
 ```
 
 The handshake is in-memory because the design loop runs at interactive rates (design-mode: one re-solve per parameter edit, target ≤50 ms on the parameter-only hot path; [Ch 04](04-live-remesh.md) breaks down the cost regimes), and a file-format round-trip would blow the budget. Serialization to disk exists for persistence but is not on the hot path of the interactive loop.
 
 The `Field<Output = T>` trait lets the material fields be any composition the SDF algebra supports — constant, primitive-based, SDF-distance-interpolated, sampled from volume data. The trait is defined in [Part 2 Ch 09](../20-materials/09-spatial-fields.md) and shared across material and SDF abstractions, which is the one-abstraction-for-scalar-fields payoff from §1.
+
+Two of the fields — `layer_id` and `diffusion_profile` — are renderer-facing and do not feed the FEM solver. They are introduced in [Part 9 Ch 00](../90-visual/00-sss.md); `layer_id` partitions multi-material bodies for per-pixel SSS composition, and `diffusion_profile` stores the per-channel scattering-coefficient-vs-distance curve. Both are optional; single-material bodies and physics-only runs leave them `None` and pay no cost for their presence in the struct.
 
 ## What this commits downstream
 
