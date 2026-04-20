@@ -5,7 +5,7 @@ The `sim-soft` tet mesh is optimized for the solver, not the renderer. A 30k-tet
 | Section | What it covers |
 |---|---|
 | [Coarse sim mesh → smooth render mesh](03-subdivision/00-coarse-to-fine.md) | The pipeline: extract surface triangulation from the tet mesh, subdivide 1–2 levels, interpolate per-vertex physics attributes (stress, temperature, thickness, contact pressure) onto the subdivided mesh, shade |
-| [Loop vs Catmull-Clark](03-subdivision/01-loop-vs-cc.md) | Loop (Charles Loop 1987) for triangle meshes, Catmull-Clark (Catmull and Clark 1978) for quad meshes. `sim-soft`'s surface extraction is triangle-based, so Loop is the default; Catmull-Clark is available if a surface is re-tessellated to quads |
+| [Loop vs Catmull-Clark](03-subdivision/01-loop-vs-cc.md) | Loop ([Charles Loop 1987](../appendices/00-references/04-rendering.md#loop-1987)) for triangle meshes, Catmull-Clark ([Catmull & Clark 1978](../appendices/00-references/04-rendering.md#catmull-clark-1978)) for quad meshes. `sim-soft`'s surface extraction is triangle-based, so Loop is the default; Catmull-Clark is available if a surface is re-tessellated to quads |
 
 Three claims.
 
