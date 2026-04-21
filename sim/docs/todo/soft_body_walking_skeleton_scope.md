@@ -1,5 +1,7 @@
 # `sim-soft` Walking-Skeleton Scope
 
+> **SUPERSEDED — 2026-04-21 evening.** This memo was drafted before we identified that the L0 platform needs a refactor pass first. The six invariants, crate layout, and green-skeleton checklist below all assume a soft-body-ready platform that does not currently exist. See [`platform_refactor_soft_body_ready.md`](platform_refactor_soft_body_ready.md) for the audit that must complete first. This memo will be rewritten after that refactor audit lands.
+
 **Status:** Scope memo — authored before any Rust.
 **Date:** 2026-04-21, post PR #210 (`be022f9e`).
 **Follows:** [`project_soft_body_walking_skeleton_pivot.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_walking_skeleton_pivot.md) — user directive to close the spec-to-code ratio after Pass 3 δ.
