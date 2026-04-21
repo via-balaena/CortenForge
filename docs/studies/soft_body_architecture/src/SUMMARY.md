@@ -344,6 +344,7 @@
     - [Co-simulation papers](appendices/00-references/06-co-simulation.md)
     - [Sparse-solver papers](appendices/00-references/07-solvers.md)
     - [Optimization-loop papers](appendices/00-references/08-optimization.md)
+    - [SOTA tool references](appendices/00-references/09-sota-tools.md)
 - [Glossary](appendices/01-glossary.md)
 - [Material property database](appendices/02-material-db.md)
 - [Notation reference](appendices/03-notation.md)
