@@ -2,6 +2,12 @@
 
 `sim-thermostat` owns the temperature field. It advances thermal diffusion on its own grid with its own native timestep, and it is the other per-step-coupled sibling `sim-soft` sees (alongside [`sim-core`](00-mjcf.md)). The physical coupling is material-layer ([Part 2 Ch 08](../../20-materials/08-thermal-coupling.md)) — temperature modulates stiffness and drives thermal expansion; viscoelastic loss and plastic rearrangement deposit heat back into the thermostat's field. This sub-leaf specifies the cross-crate architecture; [`coupling/` §05](../00-module-layout/05-coupling.md) implements the `sim-soft` side, [Part 2 Ch 08](../../20-materials/08-thermal-coupling.md) commits the constitutive-law side, and [Part 5 Ch 03 §01](../../50-time-integration/03-coupling/01-fixed-point.md) commits the time-integration side.
 
+## The shared framework — Langevin at different noise regimes
+
+`sim-soft` and `sim-thermostat` are both Langevin solvers on potential-energy landscapes, operating at different ratios of $k_B T$ to the potential's characteristic scale. `sim-soft` is Langevin in the $k_B T \to 0$ limit — thermal fluctuations are many orders of magnitude below elastic restoring forces at operating strain, so the stochastic term drops out and what remains is deterministic implicit Newton on $U = \Psi_\text{elastic} + \Psi_\text{contact} + \Psi_\text{inertia}$ with [Prony-series dissipation](../../20-materials/07-viscoelastic.md). `sim-thermostat` operates at $k_B T \sim U_\text{barrier}$ — the stochastic-dominated regime where thermal noise drives the physics, integrated with explicit Euler-Maruyama or BAOAB on bistable potentials.
+
+The two sibling crates therefore share a mathematical framework (Langevin SDE on an energy landscape) but implement different integration schemes (implicit for stiff elastic forces in `sim-soft`; explicit for soft stochastic dynamics in `sim-thermostat`) and different mesh structures (tet-mesh continuum vs graph-node discrete). The coupling below is **field-level** (temperature, dissipative heat) rather than **solver-state-level** precisely because the two crates operate in different regimes of the same underlying SDE — sharing solver state would require the same integration scheme, which the stiffness-vs-noise regime difference forbids. The thin-boundary discipline this sub-leaf commits to is the architectural consequence of that regime split.
+
 ## What crosses the boundary
 
 | Field | Direction | Representation | Required when |
