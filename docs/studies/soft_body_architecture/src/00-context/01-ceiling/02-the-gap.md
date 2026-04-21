@@ -12,7 +12,8 @@ The specific thing nobody has shipped is this combination:
 - With [full differentiability](../../60-differentiability/00-what-autograd-needs.md) via the implicit function theorem and the time-adjoint method, on the same tape that records the forward kernel calls,
 - Driven by [SDF-authored geometry and material fields](../../70-sdf-pipeline/00-sdf-primitive.md) from `cf-design`, with [live re-meshing under design edits](../../70-sdf-pipeline/04-live-remesh.md),
 - Using [hyperelastic constitutive laws](../../20-materials/04-hyperelastic.md) (neo-Hookean + Mooney-Rivlin + Ogden + anisotropy + viscoelasticity) calibrated to measured material data,
-- With [IPC-grade non-penetration contact](../../40-contact/00-why-ipc.md) and smoothed friction integrated into the same energy minimization as the elastic solve.
+- With [IPC-grade non-penetration contact](../../40-contact/00-why-ipc.md) and smoothed friction integrated into the same energy minimization as the elastic solve,
+- With **skin, cloth, and hair coexisting in one integrated solver** — shared energy, shared contact formulation, shared differentiable tape — rather than a heterogeneous stack of specialized solvers wired together.
 
 Every line of the list is a capability [Ch 02](../02-sota.md) finds demonstrated in at least one existing solver. No line is net-new or requires an undiscovered algorithm. The *combination* is the gap.
 
@@ -20,8 +21,8 @@ Every line of the list is a capability [Ch 02](../02-sota.md) finds demonstrated
 
 Each category of existing stack stopped at a different side of the 2015-era tradeoff:
 
-- **Games-branch stacks** ([Flex](../02-sota/05-nvidia-flex.md), [Jelly](../02-sota/06-houdini-jelly.md), [MuJoCo flex](../02-sota/08-mujoco-flex.md)) chose real-time first and accepted a loss on physical correctness: PBD or penalty contact over IPC-grade non-penetration, no hyperelastic default, no differentiability.
-- **Science-branch stacks** ([PolyFEM](../02-sota/00-polyfem.md), [FEBio](../02-sota/07-febio.md), [IPC Toolkit](../02-sota/03-ipc-toolkit.md)) chose physical correctness first and accepted offline CPU execution with limited-to-no differentiability and no real-time path.
+- **Games-branch stacks** ([Flex](../02-sota/05-nvidia-flex.md), [MuJoCo flex](../02-sota/08-mujoco-flex.md)) chose real-time first and accepted a loss on physical correctness: PBD or penalty contact over IPC-grade non-penetration, no hyperelastic default, no differentiability.
+- **Offline-correctness FEM stacks** ([PolyFEM](../02-sota/00-polyfem.md), [FEBio](../02-sota/07-febio.md), [Houdini FEM Solver](../02-sota/06-houdini-jelly.md), [IPC Toolkit](../02-sota/03-ipc-toolkit.md)) chose physical correctness first and accepted offline CPU execution with limited-to-no differentiability and no real-time path.
 - **Differentiable-physics stacks** ([Warp](../02-sota/01-warp.md), [Genesis](../02-sota/02-genesis.md), [DiffTaichi](../02-sota/04-difftaichi.md)) chose GPU throughput and differentiability but stopped short of IPC-grade contact, or hedged on fully-bundled hyperelastic + friction + near-incompressible material coverage.
 
 These three categories exhaust the design space as historically occupied. The gap is not a slice any one category is close to crossing on its own — it requires picking up the pieces each category left behind and building one stack that carries all three. That is what [`sim-soft`](../../110-crate/00-module-layout.md) is.
@@ -31,7 +32,7 @@ These three categories exhaust the design space as historically occupied. The ga
 Each axis from [§00](00-definitions.md) has at least one reference implementation:
 
 - **Physically correct:** [PolyFEM](../02-sota/00-polyfem.md) demonstrates the full four-component combination (hyperelastic + IPC + implicit + measured-data); [FEBio](../02-sota/07-febio.md) demonstrates a biomechanics variant (hyperelastic + viscoelastic + implicit + measured-data, with mortar/penalty contact in place of IPC). The physical-correctness axis is demonstrated.
-- **Visually great:** Houdini Jelly is the production proof of what per-vertex-attribute + shader integration looks like at the ceiling; the technique is demonstrated even though Jelly itself is offline and closed-source.
+- **Visually great:** Houdini's FEM Solver is the production proof of per-vertex-attribute + shader integration at the ceiling; the technique is demonstrated even though the solver itself is offline and closed-source.
 - **Real-time:** NVIDIA Warp's published neo-Hookean benchmarks demonstrate GPU FEM at 60+ FPS on tens-of-thousands-of-tets scenes; NVIDIA Flex demonstrates GPU soft-body at production game-engine frame rates. Real-time is solved.
 - **Differentiable:** Warp, Genesis, and DiffTaichi each demonstrate end-to-end differentiable physics with adjoint-via-IFT or adjoint-state on the tape.
 

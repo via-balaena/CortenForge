@@ -14,7 +14,7 @@
     - [IPC Toolkit — contact only](00-context/02-sota/03-ipc-toolkit.md)
     - [DiffTaichi — differentiable DSL](00-context/02-sota/04-difftaichi.md)
     - [NVIDIA Flex — position-based, GPU](00-context/02-sota/05-nvidia-flex.md)
-    - [Houdini Jelly — production offline](00-context/02-sota/06-houdini-jelly.md)
+    - [Houdini FEM Solver — production offline](00-context/02-sota/06-houdini-jelly.md)
     - [FEBio — biomechanics FEM](00-context/02-sota/07-febio.md)
     - [MuJoCo flex — where we start from](00-context/02-sota/08-mujoco-flex.md)
     - [Cross-compare table](00-context/02-sota/09-cross-compare.md)
