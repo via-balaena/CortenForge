@@ -20,5 +20,3 @@ Houdini FEM Solver is the reference for **axis 2 (visually great)** at the produ
 - Source: SideFX Houdini documentation. No primary research paper — the FEM Solver is in-house SideFX engineering. Cite the Solid Object DOP / Finite Element Solver docs page.
 - Specific contact-formulation algorithm in Houdini FEM — soft-deferred to Pass 2 (documented as constraint-based but the specific method — penalty, augmented Lagrangian, or other — not independently verified).
 - Houdini version citation — current documentation is for Houdini 21.0 (Vellum available since Houdini 17.0; FEM Solver lineage older); exact FEM Solver version history soft-deferred to Pass 2.
-
-**Scoring-table tension (tracked for Ch 02-close):** this leaf scores Physical `partial`; the parent [SOTA survey table](../02-sota.md) shows `✓` (for the former "Jelly" row). Sub-leaf framing is more honest: missing IPC component disqualifies a full axis-1 `✓`. Parent table to be updated at Ch 02-close — both the row title rename ("Jelly" → "Houdini FEM Solver") and the Physical score adjustment.

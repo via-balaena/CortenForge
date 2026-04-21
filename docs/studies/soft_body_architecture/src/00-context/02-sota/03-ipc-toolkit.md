@@ -18,5 +18,3 @@ IPC Toolkit is the algorithmic reference for **axis 1's IPC-grade-contact compon
 - Repo + license + release cadence (v1.5.0 on 2026-02-06) confirmed from README.
 - Primary paper: Li et al. 2020 ACM TOG 39(4) art. 49 — confirmed.
 - AD exposure of barrier derivatives beyond Newton gradient/Hessian role — soft-deferred to Pass 2.
-
-**Scoring-table tension (tracked for Ch 02-close):** this leaf scores Physical `partial`; the parent [SOTA survey table](../02-sota.md) shows `✓`. Sub-leaf framing is more honest: IPC Toolkit contributes to axis 1 but does not cover it as a standalone library. Parent to be updated at Ch 02-close.

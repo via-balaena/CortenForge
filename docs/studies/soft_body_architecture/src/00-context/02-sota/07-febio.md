@@ -19,5 +19,3 @@ FEBio is the biomechanics reference for **axis 1's material-model breadth**. [Pa
 - Primary paper: Maas, Ellis, Ateshian, Weiss 2012 "FEBio: Finite Elements for Biomechanics" — author + title + year per common citation; *J. Biomech. Eng.* 134(1):011005 venue + page numbers **soft-deferred to Pass 2** (not independently fetched).
 - Contact-formulation specific method — soft-deferred to Pass 2 (section titles "Sliding Interfaces / Tied Interfaces / Rigid Wall Interfaces" confirmed; algorithmic-method body — mortar vs penalty vs augmented Lagrangian — not fetched).
 - Hyperelastic catalog — confirmed from User Manual v4.9 §4 (extensive list cross-checked).
-
-**Scoring-table tension (tracked for Ch 02-close):** this leaf scores Physical `partial`; the parent [SOTA survey table](../02-sota.md) shows `✓`. Sub-leaf framing is more honest: FEBio has the biomechanics variant of axis 1 (hyperelastic + implicit + measured-data + viscoelastic) but lacks IPC-grade contact. Parent table to be updated at Ch 02-close.
