@@ -15,7 +15,7 @@ Four fields cross at each handshake tick; the tick period is set by the coarser 
 | Pin-constraint reactions | `sim-soft` → `sim-core` | same `xfrc_applied` channel, summed with contact wrench before export | opt-in per scene config |
 | Temperature / heat flux at interface | via [`sim-thermostat`](01-thermostat.md) | out-of-band; not on the `sim-core` handshake | opt-in per scene config |
 
-The parent Ch 02 spine's summary table lists "constraint Jacobians for `sim-core`'s solver" on the out direction. That phrasing predates the Part 5 Ch 03 architecture commitment and is narrowed by [Part 5 Ch 03 §00](../../50-time-integration/03-coupling/00-mujoco.md)'s explicit "no intermediate Newton residuals, Hessian blocks, or constraint Jacobians are shared": the committed surface is wrench-only on `xfrc_applied`, plus the optional pin-reaction contribution on the same channel. Constraint Jacobians stay inside each simulator's own solver; nothing that looks like a shared constraint representation crosses the boundary. The parent spine will be adjusted at Part-11-close to match this narrowing; the authoritative surface is this sub-leaf.
+The committed surface is wrench-only on `xfrc_applied`, plus the optional pin-reaction contribution on the same channel. [Part 5 Ch 03 §00](../../50-time-integration/03-coupling/00-mujoco.md) commits explicitly that "no intermediate Newton residuals, Hessian blocks, or constraint Jacobians are shared" — constraint Jacobians stay inside each simulator's own solver, and nothing that looks like a shared constraint representation crosses the boundary.
 
 ## The coupling is bidirectional at the handshake, one-way inside each solver
 
@@ -76,7 +76,7 @@ Any future coupling change that introduces stochastic partner kinematics — for
 
 ## What this sub-leaf commits the crate to
 
-- **`sim-core` coupling is a wrench-only bidirectional handshake via `xfrc_applied`.** No constraint Jacobians, no Hessian blocks, no shared Newton residuals. The parent Ch 02 spine table's "constraint Jacobians" phrasing is narrowed to match [Part 5 Ch 03 §00](../../50-time-integration/03-coupling/00-mujoco.md); the parent will be updated at Part-11-close.
+- **`sim-core` coupling is a wrench-only bidirectional handshake via `xfrc_applied`.** No constraint Jacobians, no Hessian blocks, no shared Newton residuals; each simulator keeps its own, per [Part 5 Ch 03 §00](../../50-time-integration/03-coupling/00-mujoco.md).
 - **`sim-mjcf` is a setup-time loader and nothing else.** No per-step state touches `sim-mjcf`; its contract is `(CoreScene, ParticipantBodyIds)` at scene construction.
 - **`coupling/`'s `MjcfHandshake` trait is the only `sim-core`-adjacent surface `sim-soft` exposes.** `solver/`, `contact/`, `readout/` do not include `sim-core` types. Swapping out the rigid-body runtime is a `coupling/`-only edit.
 - **Timestep subcycling is `coupling/`'s responsibility.** 8–32 `sim-core` steps per `sim-soft` handshake in experience mode; one step per handshake in design mode. Neither crate encodes the other's rate.

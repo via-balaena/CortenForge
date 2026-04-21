@@ -5,7 +5,7 @@
 | Test kind | What it catches | When it runs |
 |---|---|---|
 | [Unit tests](04-testing/00-unit.md) | Per-module correctness on small inputs — constitutive law stress values, element stiffness matrices, IPC barrier evaluations, mesh quality metrics | Every `cargo test`, every PR |
-| [Regression vs. MuJoCo flex](04-testing/01-regression.md) | Cross-solver drift on shared scenes — Tet4 + neo-Hookean against flex's PBD-on-tets at matched parameters, on scenes both can express | Weekly in CI, and before any merge that touches `solver/`, `element/`, or `contact/` |
+| [Regression vs. MuJoCo flex](04-testing/01-regression.md) | Cross-solver drift on shared scenes — Tet4 + neo-Hookean against flex's Newton + constraint-projection + penalty-contact at matched parameters, on scenes both can express | Weekly in CI, and before any merge that touches `solver/`, `element/`, or `contact/` |
 | [Visual regression](04-testing/02-visual.md) | Rendering-pipeline drift — deformed mesh topology, per-vertex attribute values, shader output on a small fixed screenshot set | Every PR that touches `readout/` or `sim-bevy` coupling |
 | [Differentiability — gradcheck](04-testing/03-gradcheck.md) | Analytic gradients matching finite differences to 5–6 digits on each module and on the full forward + adjoint composition | Every PR that touches `autograd/`, `material/`, `contact/`, or `solver/` |
 
