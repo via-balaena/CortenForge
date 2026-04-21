@@ -24,6 +24,6 @@ Phase G closes when:
 
 1. The canonical design-mode loop from [Part 10 Ch 06](../100-optimization/06-full-loop.md) closes against a *real* `cf-design` authoring session, not a scripted parameter sweep. The designer changes a geometric parameter in `cf-design`, and `sim-soft` re-evaluates within the per-`EditClass` budget.
 2. The three-class `EditResult` classifier passes its accuracy regression suite (misclassification under 1%).
-3. The [`sim-ml-chassis` coupling](../110-crate/02-coupling/03-ml-chassis.md) remains closed — the scalar reward and its gradient are consumable by the optimizer regardless of which `EditClass` produced them. Noisy gradients are explicit in the API, not silently substituted for exact ones.
+3. The [`sim-ml-chassis` coupling](../110-crate/02-coupling/03-ml-chassis.md) remains closed — the γ-locked `RewardBreakdown` and its scalar-composed gradient are consumable by the optimizer regardless of which `EditClass` produced them. Noisy gradients are explicit in the API, not silently substituted for exact ones.
 
 Phase G is the first phase where the platform's headline user experience — *design in `cf-design`, evaluate in `sim-soft`, repeat* — actually exists. Phases A–F build the substrate; Phase G is where the substrate becomes a workflow.
