@@ -20,7 +20,7 @@ No single published pipeline meets all three requirements: (a) accepts an implic
 
 ## `sim-soft`'s position
 
-Through [Phase E](../../110-crate/03-build-order.md), meshing runs on CPU via [fTetWild](00-ftetwild.md) (design-mode default) or [Delaunay + TetGen](01-delaunay.md) (experience-mode default). The mesh is transferred to GPU for simulation as a one-time per-mesh upload; the transfer cost is amortized across the many simulation steps between re-meshes.
+Through [Phase E](../../110-crate/03-build-order.md), meshing runs on CPU via [the fTetWild-lineage Rust pipeline](00-ftetwild.md) (design-mode default) or [the TetGen-lineage Rust Delaunay pipeline](01-delaunay.md) (experience-mode default). The mesh is transferred to GPU for simulation as a one-time per-mesh upload; the transfer cost is amortized across the many simulation steps between re-meshes.
 
 For Phase F and later, two candidate paths are on the table:
 
