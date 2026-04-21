@@ -2,6 +2,8 @@
 
 This chapter is the book's table of contents sorted by who is reading it. The canonical [`SUMMARY`](../SUMMARY.md) is sorted by subject — materials, contact, time integration, and so on — which is the right order for depth-first reading. But most readers do not read the book depth-first; they read it looking for a specific thing. The paths below are suggested orders for the most common kinds of reader.
 
+Regardless of role, readers wanting the design-study framing first can start with [Part 0 Ch 01 — ceiling](01-ceiling.md) and [Ch 02 — SOTA survey](02-sota.md); every reader-type path below traces back to the four ceiling axes and the integration gap those two chapters define.
+
 ## If you are a Rust engineer building something soft
 
 Start with the [thesis](../10-physical/03-thesis.md) (Part 1 Ch 03) for why the stack is shaped the way it is — the whole book's design decisions trace back to that chapter, and without it the module layout in Part 11 looks arbitrary.
@@ -14,15 +16,15 @@ Likely skip on the first pass: Parts 3 (discretization), 7 (SDF pipeline), 9 (vi
 
 Start with [Part 6 — Differentiability](../60-differentiability/00-what-autograd-needs.md) for the specific things differentiable FEM needs that generic autograd does not do. Then [Part 4 — Contact](../40-contact/00-why-ipc.md), because IPC's smoothness is what makes the whole stack differentiable in the first place. Then [Part 10 — Optimization Loop](../100-optimization/00-forward.md) for how the gradient is consumed by a design optimizer.
 
-The [Part 1 Ch 03 thesis](../10-physical/03-thesis.md) is worth reading at some point but is less central for this reader; the ML reader's question is usually *is this stack differentiable in the way I need, and how fast,* and the answer to both is in Parts 6 and 8.
+The [Part 1 Ch 03 thesis](../10-physical/03-thesis.md) is worth reading at some point but is less central for this reader; the ML reader's question is usually *is this stack differentiable in the way I need, and how fast,* and the answer to both is in Parts 6 and 8. For the operational proof that the stack actually is differentiable in practice — the harness that gates every PR — see [Part 11 Ch 04 §03 — gradcheck](../110-crate/04-testing/03-gradcheck.md); [Part 12 Ch 02 §01 — gradcheck milestone](../120-roadmap/02-first-working/01-gradcheck.md) is where it lands at the first-working-`sim-soft` gate.
 
-Likely skip: Parts 1 (canonical problem), 9 (visual), 11 (crate architecture), unless implementation is on the table.
+Likely skip on a first pass: Part 1 (canonical problem), Part 9 (visual), most of Part 11 outside Ch 04 §03 unless implementation is on the table.
 
 ## If you are a game developer interested in real-time soft body
 
 Start with [Part 1 Ch 03 — the thesis](../10-physical/03-thesis.md) for the claim that games physics and science physics have stopped being separate branches — this is the part most likely to read as contrarian from a games-industry vantage, and Ch 03 makes the case.
 
-Then [Part 4 Ch 05 — Making IPC real-time](../40-contact/05-real-time.md) for the specific techniques (adaptive barrier width, GPU-parallel CCD, warm-started friction) that bring IPC into the frame budget. [Part 8 — GPU Implementation](../80-gpu/00-wgpu-layout.md) is central. [Part 9 — Visual Layer](../90-visual/00-sss.md) will be the most natively familiar. The SOTA survey's [NVIDIA Flex](02-sota/05-nvidia-flex.md) and [Houdini Jelly](02-sota/06-houdini-jelly.md) entries are where the comparison to the current games state of the art lives.
+Then [Part 4 Ch 05 — Making IPC real-time](../40-contact/05-real-time.md) for the specific techniques (adaptive barrier width, GPU-parallel CCD, warm-started friction) that bring IPC into the frame budget. [Part 8 — GPU Implementation](../80-gpu/00-wgpu-layout.md) is central. [Part 9 — Visual Layer](../90-visual/00-sss.md) will be the most natively familiar. The SOTA survey's [NVIDIA Flex](02-sota/05-nvidia-flex.md) and [Houdini FEM Solver](02-sota/06-houdini-jelly.md) entries are where the comparison to the current games state of the art lives. For the Warp-derived target envelope that `sim-soft` commits to — ≥ 30 FPS at ~5 k tets, ≥ 5 Hz at ~30 k tets on a consumer GPU — see [Part 11 Ch 03 Phase E](../110-crate/03-build-order.md#the-committed-order); [Part 12 Ch 03 — GPU milestone](../120-roadmap/03-gpu.md) is the shipping criterion.
 
 Likely skip: Part 6 (differentiability) unless the game uses learned behaviors; Part 7 (SDF pipeline) unless the game is procedural.
 
@@ -30,7 +32,7 @@ Likely skip: Part 6 (differentiability) unless the game uses learned behaviors; 
 
 Start with [Part 2 — Material Models](../20-materials/00-trait-hierarchy.md), then [Part 3 — Discretization](../30-discretization/00-element-choice.md), then [Part 5 — Time Integration](../50-time-integration/00-backward-euler.md). This is closest to a graduate-course FEM trajectory and will read as familiar.
 
-[Part 4 — Contact](../40-contact/00-why-ipc.md) is where the book may diverge from a biomech reader's expectation — `sim-soft` commits to IPC rather than the mortar / penalty / augmented-Lagrangian contact formulations common in biomech FEM. The [Part 1 Ch 03 thesis](../10-physical/03-thesis.md) and [Part 4 Ch 00 — Why IPC beats penalty and impulse](../40-contact/00-why-ipc.md) are where the reasoning lives.
+[Part 4 — Contact](../40-contact/00-why-ipc.md) is where the book may diverge from a biomech reader's expectation — `sim-soft` commits to IPC rather than the mortar / penalty / augmented-Lagrangian contact formulations common in biomech FEM. The [Part 1 Ch 03 thesis](../10-physical/03-thesis.md) and [Part 4 Ch 00 — Why IPC beats penalty and impulse](../40-contact/00-why-ipc.md) are where the reasoning lives. For how `sim-soft` regression-tests against [MuJoCo flex](02-sota/08-mujoco-flex.md) and FEBio-class solvers, see [Part 11 Ch 04 §02 — regression](../110-crate/04-testing/01-regression.md); [Part 12 Ch 01 — Track 1B](../120-roadmap/01-track-1b.md) names the platform-coverage baseline that regression runs against.
 
 Likely skip on a first pass: Part 8 (GPU) and Part 9 (visual) — the physics is solver-agnostic and biomech researchers typically come from CPU-implicit-backward-Euler backgrounds.
 
@@ -38,11 +40,11 @@ Likely skip on a first pass: Part 8 (GPU) and Part 9 (visual) — the physics is
 
 Start with [Part 1 — The Physical Problem](../10-physical/00-canonical.md) because the canonical problem is a generic soft-robotics setup and the language will be familiar. Then [Part 2 Ch 06 — Anisotropic hyperelasticity](../20-materials/06-anisotropic.md) for fiber-reinforced and textured elastomer materials, which is where soft robotics tends to want expressiveness the received engineering-grade FEM lacks.
 
-Then [Part 10 — Optimization Loop](../100-optimization/00-forward.md) for the design-print-rate loop that soft robotics typically lacks on the simulation side. [Part 11 Ch 00 — module layout](../110-crate/00-module-layout.md) for the module architecture; [Part 7 Ch 00 — SDF as primitive](../70-sdf-pipeline/00-sdf-primitive.md) for the SDF authoring path that connects [`cf-design`](../110-crate/02-coupling/04-cf-design.md) to `sim-soft`.
+Then [Part 10 — Optimization Loop](../100-optimization/00-forward.md) for the design-print-rate loop that soft robotics typically lacks on the simulation side. [Part 11 Ch 00 — module layout](../110-crate/00-module-layout.md) for the module architecture; [Part 7 Ch 00 — SDF as primitive](../70-sdf-pipeline/00-sdf-primitive.md) for the SDF authoring path that connects [`cf-design`](../110-crate/02-coupling/04-cf-design.md) to `sim-soft`, with [Part 11 Ch 02 §04 — cf-design coupling](../110-crate/02-coupling/04-cf-design.md) for the trait-level handshake and [Part 12 Ch 04 — SDF-pipeline milestone](../120-roadmap/04-sdf.md) for when live re-meshing under design edits goes live.
 
 ## If you are a sim-to-real researcher
 
-Start with [Part 10 Ch 05 — Sim-to-real bias correction](../100-optimization/05-sim-to-real.md) for how this stack handles the gap. Then [Part 1 Ch 04 — Real material data](../10-physical/04-material-data.md) for the constitutive data provenance — sim-to-real accuracy is bounded by the quality of the constitutive parameters fit to real materials, and the book is explicit about where those numbers come from. [Part 2 Ch 07 — Viscoelasticity](../20-materials/07-viscoelastic.md) and [Part 2 Ch 08 — Thermal coupling](../20-materials/08-thermal-coupling.md) are where the rate-dependent and thermal-drift corrections live.
+Start with [Part 10 Ch 05 — Sim-to-real bias correction](../100-optimization/05-sim-to-real.md) for how this stack handles the gap. Then [Part 1 Ch 04 — Real material data](../10-physical/04-material-data.md) for the constitutive data provenance — sim-to-real accuracy is bounded by the quality of the constitutive parameters fit to real materials, and the book is explicit about where those numbers come from. [Part 2 Ch 07 — Viscoelasticity](../20-materials/07-viscoelastic.md) and [Part 2 Ch 08 — Thermal coupling](../20-materials/08-thermal-coupling.md) are where the rate-dependent and thermal-drift corrections live. For how sim-to-real data feeds back into the optimizer — the `SimToRealCorrection` ingestion path through [`sim-ml-chassis`](../110-crate/02-coupling/03-ml-chassis.md) to [Part 10 Ch 05 §01 — online updating](../100-optimization/05-sim-to-real/01-online.md) — see [Part 11 Ch 02 §03 — ml-chassis coupling](../110-crate/02-coupling/03-ml-chassis.md); [Part 12 Ch 06 — optimization milestone](../120-roadmap/06-optimization.md) is where the printed-artifact loop closes (deferred post-Phase-I per [Part 12 Ch 07](../120-roadmap/07-open-questions.md)).
 
 ## If you want the one-chapter summary
 
@@ -50,4 +52,4 @@ Read [Part 1 Ch 03 — the thesis](../10-physical/03-thesis.md) and stop. Every 
 
 ## If you disagree with the thesis
 
-[Part 12 Ch 07 — Open research questions](../120-roadmap/07-open-questions.md) lists the places where the book's commitments are most contestable — differentiable meshing, IPC real-time at large scale, the SDF-to-FEM pipeline under live design edits. Reading that chapter first will tell you whether the book's disagreements are already the same as yours, or whether there is a new argument for you to make.
+[Part 12 Ch 07 — Open research questions](../120-roadmap/07-open-questions.md) lists the places where the book's commitments are most contestable — differentiable meshing, IPC real-time at large scale, the SDF-to-FEM pipeline under live design edits. Reading that chapter first will tell you whether the book's disagreements are already the same as yours, or whether there is a new argument for you to make. For disagreement at the framing level — whether the integration-vs-research split that underpins the book's thesis is even the right cut — [Part 0 Ch 01 §02 — the-gap](01-ceiling/02-the-gap.md) is where that split is named, and it is a better starting point than Part 12 Ch 07 for challenging the book's thesis at the framing level.
