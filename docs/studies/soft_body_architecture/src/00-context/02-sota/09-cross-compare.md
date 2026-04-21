@@ -1,6 +1,6 @@
 # Cross-compare table
 
-The full side-by-side of the nine SOTA tools against the [four ceiling axes from §00](../01-ceiling/00-definitions.md). Scoring per each sub-leaf's §00-rubric judgment, which may differ from the parent [SOTA survey table](../02-sota.md) — the sub-leaves are authoritative; the parent will be reconciled at Ch 02-close. Accessed: 2026-04-20.
+The full side-by-side of the nine SOTA tools against the [four ceiling axes from §00](../01-ceiling/00-definitions.md). Scoring per each sub-leaf's §00-rubric judgment; the parent [SOTA survey table](../02-sota.md) was reconciled at δ merge so its cell entries match this cross-compare. Accessed: 2026-04-20.
 
 ## The synthesis row
 
@@ -46,6 +46,6 @@ The cross-product of axes tells the gap story:
 ## Caveats on this snapshot
 
 - Scoring is per each sub-leaf's 2026-04-20 verification pass. Citation soft-defers (contact-formulation specifics, benchmark citations, FEBio and PolyFEM material-catalog completeness, MJX-flex differentiability) are tracked per-leaf and will be reconciled in Pass 2.
-- The parent [SOTA survey table](../02-sota.md) currently has different `✓`/partial/— entries in several cells — notably Physical `✓` for Warp, Genesis, IPC Toolkit, Houdini FEM, and FEBio; Diff `partial` for PolyFEM; Real-time `✓` for Genesis. Sub-leaf scoring is authoritative per the [§00 rubric](../01-ceiling/00-definitions.md); the parent table will be updated at Ch 02-close to match.
+- Scoring authority sits with the sub-leaves per the [§00 rubric](../01-ceiling/00-definitions.md); the parent [SOTA survey table](../02-sota.md) was reconciled at δ merge to reflect that authority, so its cell entries match this cross-compare table.
 - Genesis scores `partial` across all four axes not because it fails each, but because each was unverified in the 2026-04-20 fetch. Pass 2 may upgrade some of Genesis's axes to `✓` once specific capabilities are confirmed via a deeper README + examples walk.
 - The skin + cloth + hair unified-solver dimension from [§02 the-gap](../01-ceiling/02-the-gap.md)'s missing-combination list is orthogonal to the four-axis scoring and is not represented in the table above; no tool unifies those primitives in one integrated solver, which is a separate gap from the four-axis coverage.

@@ -20,5 +20,3 @@ PolyFEM is the reference implementation for **axis 1 (physically correct)** — 
 - Material-model coverage beyond the three Python-API-listed constitutive laws — soft-deferred to Pass 2 (Mooney-Rivlin / Ogden availability in C++ core unverified from fetched sources).
 - Implicit integration scheme (backward Euler vs. other) — soft-deferred to Pass 2 (time-dependent simulations documented; exact scheme not fetched).
 - Differentiability add-ons — soft-deferred to Pass 2 (no AD or inverse-design documentation surfaced in 2026-04-20 fetch; possible recent add-ons should be re-checked in Pass 2).
-
-**Scoring-table tension (tracked for Ch 02-close):** this leaf scores PolyFEM `Differentiable: —` based on fetched sources; the parent [SOTA survey table](../02-sota.md) currently shows `partial`. Sub-leaf is authoritative per [§00 rubric](../01-ceiling/00-definitions.md). Parent table to be updated at Ch 02-close unless Pass 2 surfaces a documented AD path.
