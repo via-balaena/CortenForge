@@ -39,6 +39,7 @@ Nor does fTetWild guarantee the *runtime* of its pipeline. Worst-case pathologic
 ## What this sub-leaf commits the book to
 
 - **fTetWild is the default meshing pipeline for design-mode.** Its envelope-based validity guarantee on arbitrary input surfaces is the property that matters for SDF-driven meshing where iso-surface topology defects are routine.
+- **fTetWild is re-implemented in pure Rust**, following Hu et al. 2020's envelope-based pipeline. Per the [Ch 01 parent's pure-Rust commitment](../01-tet-strategies.md), `sdf_bridge/` ships a Rust implementation rather than a C++ sys-wrapper; there is no FFI dependency, not even Cargo-feature-gated.
 - **The adapter is iso-surface extract → fTetWild → material sample.** Three stages, one grid evaluation of the SDF, one call into the fTetWild pipeline, one walk of the output mesh.
 - **Envelope tolerance is a named `sdf_bridge/` hint.** Defaulted to a fraction of `resolution_hint`; designers can tighten or loosen per primitive. Carried alongside `SdfField` through the boundary rather than embedded in the struct.
 - **fTetWild runs with a timeout.** Pathological SDFs that push meshing time beyond the design-mode budget fall back to Delaunay on a coarser mesh; the interactive loop never stalls on fTetWild.

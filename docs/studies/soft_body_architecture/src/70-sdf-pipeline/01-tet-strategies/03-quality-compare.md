@@ -16,7 +16,7 @@ The ingest check catches degeneracies early, but a mesh can pass ingest and stil
 
 Without running the comparison yet (Phase B benchmark deliverable), the expected qualitative ranking based on generator design:
 
-| Metric | fTetWild | Delaunay + TetGen | GPU (future) |
+| Metric | fTetWild (Rust) | Delaunay / TetGen-lineage (Rust) | GPU (future) |
 |---|---|---|---|
 | Aspect ratio (median) | Best — post-improvement passes target uniformity | Acceptable — Delaunay's shape-quality post-pass | Depends on algorithm choice ([§02](02-gpu-tet.md)) |
 | Aspect ratio (minimum) | Best — explicit lower-bound enforcement | Worse — Delaunay admits slivers near concave input features | Algorithm-dependent |
@@ -31,7 +31,7 @@ The qualitative pattern: fTetWild wins on quality at the cost of meshing time; D
 
 The specific numerical bounds `sim-soft` enforces at ingest are set by the Phase-B benchmark against the [MuJoCo flex regression baseline](../../110-crate/04-testing.md) on the canonical compliant-cavity-plus-probe problem. The benchmark protocol:
 
-1. Mesh the canonical geometry (cylindrical cavity, wall thickness $t_c$, length $L_c$, probe radius $r_p$) at three resolutions — ~3k, ~12k, ~30k tets — using each shipping generator (fTetWild, Delaunay+TetGen).
+1. Mesh the canonical geometry (cylindrical cavity, wall thickness $t_c$, length $L_c$, probe radius $r_p$) at three resolutions — ~3k, ~12k, ~30k tets — using each shipping generator (the fTetWild-lineage and TetGen-lineage Rust pipelines).
 2. Run the canonical step — probe inserted to engagement depth $\delta$, Newton-converged equilibrium — and record Newton iteration count, final residual, stiffness-matrix condition number, wall-time.
 3. Compare the reward ([Part 1 Ch 01](../../10-physical/01-reward.md)) against the MuJoCo flex baseline at the same geometry.
 4. Set per-phase quality bounds as the loosest values across the three resolutions that still produce Newton convergence in ≤ the [Phase-B target iterate budget](../../50-time-integration/00-backward-euler.md) and reward-parity with the baseline.

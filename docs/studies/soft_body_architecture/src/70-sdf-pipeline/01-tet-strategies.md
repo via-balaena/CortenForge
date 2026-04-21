@@ -9,7 +9,9 @@ Given an `SdfField` from [Ch 00](00-sdf-primitive.md), something has to produce 
 | [GPU tet generation](01-tet-strategies/02-gpu-tet.md) | Parallel tet generation on wgpu compute kernels. [Phase E+](../110-crate/03-build-order.md#the-committed-order) target for interactive-rate re-meshing under design edits |
 | [Quality comparison](01-tet-strategies/03-quality-compare.md) | Aspect ratio, dihedral-angle distribution, conditioning of the resulting stiffness matrix across the three strategies |
 
-Three claims.
+Four claims.
+
+**All tet generators are pure-Rust implementations, not FFI wrappers.** The `sim-soft` build graph never adds a C/C++ compile step, not even behind a Cargo feature flag. [TetGen](01-tet-strategies/01-delaunay.md), [fTetWild](01-tet-strategies/00-ftetwild.md), and libigl are cited as the algorithmic references for Delaunay tetrahedralization, envelope-based validity on pathological input, and surface repair respectively — `sdf_bridge/` ships Rust implementations of those algorithms rather than linking to the C++ originals. The reimplementation cost is accepted in service of the [Part 6 Ch 00 Claim 3 "own every line"](../60-differentiability/00-what-autograd-needs.md) commitment and the default-build purity the rest of the crate (faer, nalgebra, wgpu) already commits to. Scope is precedented: `sim-core` is itself a pure-Rust reimplementation of MuJoCo, and the tet-meshing libraries are each smaller and less integrated than MuJoCo.
 
 **fTetWild is the default.** Its guarantee — envelope-based validity on arbitrary input surfaces, including self-intersecting and non-manifold meshes, with mesh-improvement passes that bring aspect ratio and dihedral angle into a usable band — is the property that matters most for `sim-soft`, where SDF inputs can produce iso-surfaces with any pathology. Meshing time is acceptable for design-mode where meshing runs only when topology changes, not every frame. Delaunay is faster but does not handle non-manifold input cleanly; GPU tet is the Phase E+ upgrade path, not a Phase B–D default.
 
