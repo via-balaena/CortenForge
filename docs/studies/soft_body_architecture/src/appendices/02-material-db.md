@@ -68,6 +68,18 @@ The "relative modulus factor" and "thermal conductivity factor" columns multiply
 
 See [Part 1 Ch 04 — Carbon-black](../10-physical/04-material-data/02-carbon-black.md) for the narrative on the percolation transition, sensing and Joule-heating applications, and the thermal-coupling bridge to [`sim-thermostat`](../20-materials/08-thermal-coupling.md).
 
+## Diffusion profile schema (γ-locked)
+
+The "Diffusion profile reference" row in each table above points at the γ-locked `DiffusionProfile` type fixed during Phase γ on `MaterialField` ([Part 7 Ch 00 §04](../70-sdf-pipeline/00-sdf-primitive.md); [Part 9 Ch 00 §01 BSSRDF](../90-visual/00-sss/01-bssrdf.md); [Part 11 Ch 02 §04 cf-design coupling](../110-crate/02-coupling/04-cf-design.md)). Pass 1 pins the schema; Pass 3 fills in per-material measured values.
+
+**Default representation.** Christensen-Burley 2015 sum-of-exponentials: three-channel (R, G, B) scattering curves expressed as the sum of two exponential terms $A_i \exp(-d / \ell_i)$ per channel, fit to integrating-sphere spectrophotometer data on reference coupons. The two-term form is the minimum needed to capture both the shallow-penetration shoulder and the deep-penetration tail of real silicone at millimeter-scale scattering lengths.
+
+**Multi-layer refit.** Scene-ingest refits the sum-of-exponentials to a sum-of-Gaussians when the `MaterialField`'s `layer_id` channel is populated. The reason is variance-addition: under the sum-of-Gaussians representation, a multi-layer compound's effective scattering curve is the convolution of per-layer curves, which under Gaussian basis collapses to additive variances. Sum-of-exponentials does not compose this way; sum-of-Gaussians does. Single-layer or physics-only runs leave `layer_id = None` and skip the refit.
+
+**Per-material Pass 3 slot.** Each "Diffusion profile reference: Pass 3 measured" cell in the tables above will be replaced in Pass 3 by a measured-curve entry: the per-channel sum-of-exponentials coefficients $(A_{r,1}, \ell_{r,1}, A_{r,2}, \ell_{r,2}, A_{g,\ldots}, A_{b,\ldots})$ fit to integrating-sphere data on a reference coupon from the relevant material batch. Pass 3 also adds the measurement source (coupon geometry, spectrophotometer make and serial, fit residual, operator). Schema is fixed now so downstream tooling can wire against the appendix and fill in the measured values per batch without a schema migration.
+
+**Calibration consumer.** [Part 10 Ch 05](../100-optimization/05-sim-to-real.md)'s `diffusion_gp` consumes the appendix profile as a starting point and ingests per-batch residual measurements from the [`MeasurementReport::diffusion` field](../100-optimization/05-sim-to-real/01-online.md) as the [residual-GP update machinery](../100-optimization/05-sim-to-real/01-online.md) collects coupon re-measurements post-print. Per-batch drift from the appendix nominal enters the sim-to-real correction as `diffusion_gp`'s posterior-mean residual per color channel.
+
 ## Calibration note
 
 Every value in this appendix is a *starting point*, not a calibrated per-print value. The [Part 10 Ch 05 sim-to-real machinery](../100-optimization/05-sim-to-real.md) expects per-batch refinement: the designer prints a reference coupon, runs the measurement protocol, and the residual GPs adjust the simulation's effective parameters toward the specific batch's realized behaviour. The table here is the anchor the calibration loop starts from; it is not the final number the optimizer consumes.

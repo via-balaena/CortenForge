@@ -4,7 +4,7 @@
 
 | Boundary | Direction | What crosses |
 |---|---|---|
-| [With `sim-core`](02-coupling/00-mjcf.md) | bidirectional | **In:** rigid contact partners (probes, mandrels), pin constraints. **Out:** reaction forces from the soft body, constraint Jacobians for `sim-core`'s solver |
+| [With `sim-core`](02-coupling/00-mjcf.md) | bidirectional | **In:** rigid pose + spatial velocity for contact partners (probes, mandrels). **Out:** contact wrench on rigid bodies via MuJoCo-convention `xfrc_applied`; pin-constraint reactions summed on the same channel (opt-in). No constraint Jacobians or Hessian blocks cross the boundary — each solver keeps its own |
 | [With `sim-thermostat`](02-coupling/01-thermostat.md) | bidirectional | **In:** temperature field, temperature-dependent material parameter modulation. **Out:** dissipative heating rate from viscoelastic deformation |
 | [With `sim-bevy`](02-coupling/02-bevy.md) | out only | Deformed mesh + per-vertex attributes (stress, temperature, thickness, contact pressure) for shader consumption — no state flows back into physics |
 | [With `sim-ml-chassis`](02-coupling/03-ml-chassis.md) | bidirectional | **In:** design parameters $\theta$ from the optimizer. **Out:** scalar reward + gradient $\partial R / \partial \theta$. Chassis is extended with a GPU tensor backend and a VJP registration API to support custom solver-level gradients |

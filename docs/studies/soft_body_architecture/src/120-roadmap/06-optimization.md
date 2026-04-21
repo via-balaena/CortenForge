@@ -1,6 +1,6 @@
 # Milestone — optimization loop
 
-The optimizer is the only Part 12 milestone that is not a single phase close. It matures in three stages across Phases D, G, and I, cashing out in a post-Phase-I physical-print loop that [Ch 07](07-open-questions.md) names as the roadmap's highest-priority off-roadmap item. [Part 10 Ch 06](../100-optimization/06-full-loop.md) is the capability specification; this chapter is the milestone schedule — what subset of that spec is live at each phase close.
+The optimizer is the only Part 12 milestone that is not a single phase close. It matures in three stages across Phases D, G, and I, cashing out in a post-Phase-I physical-print loop that [Ch 07](07-open-questions.md) names as the roadmap's highest-priority post-Phase-I engineering item. [Part 10 Ch 06](../100-optimization/06-full-loop.md) is the capability specification; this chapter is the milestone schedule — what subset of that spec is live at each phase close.
 
 The maturation mirrors [Part 10 Ch 06's phase-staged rollout](../100-optimization/06-full-loop.md) and honors [Part 11 Ch 03](../110-crate/03-build-order.md#the-committed-order): phase 1 at Phase D, phase 2 at Phase G, phase 3 at Phase I, and the physical-print loop post-Phase-I.
 
@@ -24,7 +24,7 @@ Still no physical printing. Sim-to-real correction remains dormant; a printer, s
 
 ## Post-Phase-I — off the roadmap
 
-The [physical-print loop from Part 10 Ch 06](../100-optimization/06-full-loop.md) — `MeasurementReport` ingestion, residual GP online updates per [Part 10 Ch 05](../100-optimization/05-sim-to-real.md), batch-rating workflow, cross-print drift detection — is the platform's transition from a simulator into the engineering-workflow tool the thesis promised. It is named as post-Phase-I and explicitly *not on the Phase A–I roadmap* because it requires a specific printer, sensors, and measurement protocol that the simulation crate does not commit to acquiring. [Ch 07](07-open-questions.md) carries this as the roadmap's highest-priority off-roadmap item.
+The [physical-print loop from Part 10 Ch 06](../100-optimization/06-full-loop.md) — `MeasurementReport` ingestion, residual GP online updates per [Part 10 Ch 05](../100-optimization/05-sim-to-real.md), batch-rating workflow, cross-print drift detection — is the platform's transition from a simulator into the engineering-workflow tool the thesis promised. It is named as post-Phase-I and explicitly *not on the Phase A–I roadmap* because it requires a specific printer, sensors, and measurement protocol that the simulation crate does not commit to acquiring. [Ch 07](07-open-questions.md) carries this as the roadmap's highest-priority post-Phase-I engineering item.
 
 ## Cross-phase invariants
 

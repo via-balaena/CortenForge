@@ -1,3 +1,38 @@
 # sdf_bridge/
 
-> _stub_
+The `sdf_bridge/` module is the front door `sim-soft` presents to [`cf-design`](../02-coupling/04-cf-design.md): it consumes a resolved `SdfField` + `MaterialField` pair ([Part 7 Ch 00](../../70-sdf-pipeline/00-sdf-primitive.md)), tetrahedralizes the SDF into a tet mesh ([Part 7 Ch 01](../../70-sdf-pipeline/01-tet-strategies.md)), samples the material field into per-tet (or per-Gauss-point) constitutive parameters ([Part 7 Ch 02](../../70-sdf-pipeline/02-material-assignment.md)), classifies incoming design edits as `ParameterOnly` / `MaterialChanging` / `TopologyChanging` ([Part 7 Ch 04](../../70-sdf-pipeline/04-live-remesh.md)), and produces `sim-soft`'s [`mesh/`](02-mesh.md) + [`material/`](00-material.md) inputs. It is the module where SDFs become tets.
+
+## What the module owns
+
+| Sub-area | Responsibility | Where it is specified |
+|---|---|---|
+| SDF ingest | Consume `SdfField` + `MaterialField`, resolve `bbox` and `resolution_hint`, hand off to tet generator | [Part 7 Ch 00 §04](../../70-sdf-pipeline/00-sdf-primitive.md) |
+| Tetrahedralization | fTetWild as default; Delaunay and GPU-tet paths named but not shipped in Phase A–I | [Part 7 Ch 01](../../70-sdf-pipeline/01-tet-strategies.md) |
+| Material sampling | Per-tet centroid sampling for Tet4, per-Gauss-point sampling for Tet10; works through the `Field` trait | [Part 7 Ch 02](../../70-sdf-pipeline/02-material-assignment.md) |
+| Change classifier | `EditResult { class: EditClass, wall_time_ms: f64 }`; classifier keyed on `SdfField` + `MaterialField` hashes plus mesh-equality predicate from [`mesh/`](02-mesh.md) | [Part 7 Ch 04](../../70-sdf-pipeline/04-live-remesh.md) |
+| Warm-start / state transfer | Per-tet interpolation of $(x, v)$ across topology-preserving edits; cold restart across `TopologyChanging` | [Part 7 Ch 04 §01](../../70-sdf-pipeline/04-live-remesh/01-warm-start.md), [Part 7 Ch 04 §02](../../70-sdf-pipeline/04-live-remesh/02-state-transfer.md) |
+| FD wrapper trigger | Topology edits flip the [`autograd/`](07-autograd.md) gradient path to finite differences with `GradientEstimate::Noisy { variance }` | [Part 6 Ch 05](../../60-differentiability/05-diff-meshing.md), [Part 10 Ch 00](../../100-optimization/00-forward.md) |
+
+## Four claims
+
+**1. fTetWild is the default. Alternatives are named, not shipped in Phase A–I.** [Part 7 Ch 01 §00](../../70-sdf-pipeline/01-tet-strategies/00-ftetwild.md) commits fTetWild as the Phase G tet generator because it is the only SDF-to-tet pipeline with production-grade robustness on arbitrary input SDFs. Delaunay-based tetrahedralization ([Part 7 Ch 01 §01](../../70-sdf-pipeline/01-tet-strategies/01-delaunay.md)) and GPU-native tet generation ([Part 7 Ch 01 §02](../../70-sdf-pipeline/01-tet-strategies/02-gpu-tet.md)) are documented as post-Phase-I concerns; the module exposes a plug point for them but ships with a single backend implementation in the Phase A–I roadmap.
+
+**2. Change classification is the whole cost-model pivot.** [Part 7 Ch 04](../../70-sdf-pipeline/04-live-remesh.md)'s `ParameterOnly` / `MaterialChanging` / `TopologyChanging` classifier is what makes the [Part 10 Ch 00 cost table](../../100-optimization/00-forward.md) — ≤50 ms vs ≤200 ms vs ≤500 ms per evaluation — actually separable per edit class. The classifier runs before the expensive work, not after: hash the SDF composition tree, hash the material-field parameters, compare against the last-seen hashes, decide. A miss-classified edit costs an optimizer step; a missing classifier would force every edit onto the `TopologyChanging` path, which is the most expensive one. [Part 11 Ch 04 unit-test sub-chapter](../04-testing/00-unit.md) tests the classifier's correctness as a standalone invariant.
+
+**3. State transfer across topology edits is interpolation, not re-solve.** When `TopologyChanging` fires, the previous mesh is gone; the new one has different tets. [Part 7 Ch 04 §02](../../70-sdf-pipeline/04-live-remesh/02-state-transfer.md) commits to per-tet interpolation of the old $(x, v)$ field onto the new tets — a spatial interpolation, not a re-solve from rest pose. The downstream consequence: [`solver/`](04-solver.md) starts the new mesh's first Newton step from the interpolated state, not from rest; the first few iterations of that Newton loop repair the interpolation's artifacts while making progress toward equilibrium. Cold starts (from rest pose) are a backstop when interpolation fails (e.g., topology change that removes the region containing a tet's stress state), not the primary path.
+
+**4. This module triggers FD wrappers; it does not compute them.** The `TopologyChanging` `EditClass` is a signal to [`autograd/`](07-autograd.md) that IFT's smoothness assumption does not hold and a finite-difference path is needed. `sdf_bridge/` flags it via `EditResult`; `autograd/` does the FD work. The separation keeps each module narrow: `sdf_bridge/` is the authority on whether an edit crossed a topology; `autograd/` is the authority on how to differentiate. The FD wrapper is [Part 6 Ch 05](../../60-differentiability/05-diff-meshing.md)'s Phase A–I compromise, and the compromise's localization at this module is what keeps the non-differentiable step contained.
+
+## What the module does not carry
+
+- **No SDF primitives or composition operators.** Those live in [`cf-design`](../02-coupling/04-cf-design.md)'s authoring layer, and arrive here as a resolved `Box<dyn Sdf>`. This module queries the SDF, does not compose it.
+- **No mesh storage.** The tet mesh it produces is handed to [`mesh/`](02-mesh.md); the bridge module keeps references for change detection but does not own the mesh memory.
+- **No FD computation.** Finite-difference gradient evaluation is [`autograd/`](07-autograd.md)'s work; this module only raises the flag.
+- **No gradient flow through SDF sampling during smooth edits.** Smooth-edit gradients flow through the composition-tree parameters [`cf-design`](../02-coupling/04-cf-design.md) exposes, not through the SDF-to-tet non-differentiable step; [Part 7 Ch 02 §00](../../70-sdf-pipeline/02-material-assignment/00-sampling.md) explains the clean separation.
+
+## What this commits downstream
+
+- **[`mesh/`](02-mesh.md) is the bridge module's consumer.** The tet mesh produced here is what the solver runs on. The mesh-equality predicate [`mesh/`](02-mesh.md) exports is what this module's change classifier depends on.
+- **[`material/`](00-material.md) receives sampled-field parameters per-tet / per-Gauss-point via the shared `Field` trait.** Multi-material bodies compose without mesh-attached material state because both modules sit behind the same trait.
+- **[Part 11 Ch 02 §04 cf-design](../02-coupling/04-cf-design.md)** describes the wider `sim-soft` ↔ `cf-design` handshake; this module is the `sim-soft`-side implementation of that handshake, and the only `sim-soft` module that `cf-design` talks to directly.
+- **[Part 11 Ch 03 Phase G deliverable](../03-build-order.md#the-committed-order)** — the SDF bridge landing — is when this module closes. Phase A–F run `sim-soft` against hand-authored meshes or MJCF imports; Phase G is when live SDF-driven design becomes the primary workflow.
