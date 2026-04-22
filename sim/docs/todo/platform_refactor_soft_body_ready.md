@@ -678,7 +678,7 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 
 ### Group F
 
-**Status:** F.1, F.2, F.3 locked (2026-04-22). Workspace hygiene placement, implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
+**Status:** F.1, F.2, F.3, workspace hygiene placement locked (2026-04-22). Implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
 
 **F.1 — grader package-scoping fix (2026-04-22).** `grade_clippy` at `xtask/src/grade.rs:834-898` filters JSON `compiler-message + warning|error + non-empty-spans` diagnostics without checking whether any span originates in the target crate. Structural fix: add a disjunctive `any_in_crate` filter immediately after the empty-spans check at line 858, matching the `grade_coverage` line-721 convention (`if !filename.contains(crate_path) { continue; }`). **Scope locked; implementation ships on the new implementation branch after the audit PR merges**, not as a commit on the audit branch itself — the three precursor code commits already on this branch (`d12a5e73` / `f614cd77` / `3a45d50f`) were state-cleanup-to-enable-decisions; F.1 is new tooling with grader unit tests + Option-B sweep, appropriately scoped to its own implementation-branch work. Shape (standalone PR vs. part of a larger implementation bundle) is governed by the implementation-PR-shipping-strategy sub-item, still pending.
 
@@ -739,6 +739,21 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 - Path-prefix auto-detection fallback — explicit opt-in preferred; no silent behavior change on `src/` reorganization.
 - Future all-integration-test crates' opt-in — annotate if/when they emerge.
 - A.4 §1 compliance sweep scope — separate queued item (post-E / pre-skeleton PR); incidentally lifts sim-therm-env's measurable coverage when it ships, but doesn't change F.3's mechanism.
+
+**F — workspace hygiene placement (2026-04-22).** Three remaining workspace crates carry own-src clippy warnings (verified via `cargo clippy --workspace --all-targets --all-features` post-F.1-design and filtered by own-src file_name per F.1's proposed filter semantics): **mesh-lattice** (16 × `missing_const_for_fn`), **mesh-measure** (2 × `missing_const_for_fn`), **sim-gpu** (3 × `manual_is_multiple_of` + 2 × `missing_const_for_fn`). Total 23 warnings, all `cargo clippy --fix`-auto-fixable. **Placement: audit-branch hygiene commit, matching `d12a5e73` + `f614cd77` precedent.**
+
+**sim-gpu expansion vs. pickup prediction.** Pickup memo at `project_next_session_pickup.md:63` predicted "mesh-measure + mesh-lattice + likely others outside sim-opt/sim-therm-env/sim-ml-chassis/sim-rl dep chain." Workspace sweep confirmed mesh-* counts (pickup's 1×/8× were stale; live 2×/16× per post-F.1 sanity-sweep `d7e31f25`) and surfaced **sim-gpu as a new case**: in L0, not in any E-series walk's dep chain (sim-opt/sim-therm-env/sim-ml-chassis/sim-rl don't depend on sim-gpu). Pre-fix: sim-gpu grades F on clippy. Post-fix: A. Same hygiene class, previously hidden from audit-walk visibility.
+
+**Placement rationale (risk-averse, matches precedent with one notable difference).** Both existing audit-branch hygiene commits were **precursor hygiene** — `d12a5e73` cleaned state so D.4's sim-urdf grade-A baseline could be established; `f614cd77` cleaned state so E.1's sim-opt grade-A baseline could be established. The current fix is **not precursor** — Group F is the last group, no future walks need a baseline. It's workspace-quality-cleanup-at-audit-close, same commit shape with different motivation. Recording the distinction explicitly rather than treating the precedent as unconditional.
+
+- *Single audit squash captures it.* User locked "one big PR" for audit close; audit-branch commit rolls into the squash rather than forcing a separate post-audit hygiene PR.
+- *Mechanical and bounded.* All 23 warnings auto-fix via `cargo clippy --fix --allow-dirty --workspace`; no judgment calls. Reversible by single-commit revert.
+- *Reset the baseline.* Workspace hygiene items accumulate when deferred. Post-fix state = "all workspace crates clippy-clean on own-src warnings, verified against the F.1-proposed filter semantics."
+
+**Does not lock:**
+- F.1 grader filter implementation — still ships post-audit; the F.1 filter will re-verify this hygiene-clean state on the implementation branch.
+- Other workspace-quality audits (rustc lints beyond clippy, dep-justification sweeps, etc.) — out of F scope; separate audit items if surfaced later.
+- Auto-fix review burden — `cargo clippy --fix` output reviewed pre-commit for any unexpected refactors; if autofix surfaces non-mechanical suggestions, manual review per-file.
 
 ### Cross-cutting determinism audit
 
