@@ -676,6 +676,27 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 - Any sim-rl internal refactoring beyond A.1's potential 2-turbofish — Grade A + 97.7% Coverage A+ + 44 passing tests is a clean baseline; no architectural changes indicated.
 - B.1 implementation-path choice (scalar sugar preserved vs. Tensor-first per E.3 recommendation). Independent of sim-rl; sim-rl is gradient-free at tape level either way.
 
+### Group F
+
+**Status:** F.1 locked (2026-04-22). F.2, F.3, workspace hygiene placement, implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
+
+**F.1 — grader package-scoping fix (2026-04-22).** `grade_clippy` at `xtask/src/grade.rs:834-898` filters JSON `compiler-message + warning|error + non-empty-spans` diagnostics without checking whether any span originates in the target crate. Structural fix: add a disjunctive `any_in_crate` filter immediately after the empty-spans check at line 858, matching the `grade_coverage` line-721 convention (`if !filename.contains(crate_path) { continue; }`). **Scope locked; implementation ships on the new implementation branch after the audit PR merges**, not as a commit on the audit branch itself — the three precursor code commits already on this branch (`d12a5e73` / `f614cd77` / `3a45d50f`) were state-cleanup-to-enable-decisions; F.1 is new tooling with grader unit tests + Option-B sweep, appropriately scoped to its own implementation-branch work. Shape (standalone PR vs. part of a larger implementation bundle) is governed by the implementation-PR-shipping-strategy sub-item, still pending.
+
+**Filter design (three calibration axes).**
+
+1. *Include-not-exclude.* The existing bug surfaces as false positives (transitive warnings inflate graded counts) — visible pressure. The opposite failure (real warnings in graded-crate code silently filtered out) is harder to detect because grades look clean while issues persist. Risk-averse design errs toward including ambiguous diagnostics: a macro-generated warning with one span inside the crate + one outside gets counted, not dropped. Matches `grade_coverage` summing-loop semantics (any file with `filename.contains(crate_path)` contributes).
+2. *Substring match.* `crate_path` is workspace-relative like `sim/L0/opt`; llvm-cov and rustc emit absolute paths. `.contains()` handles both without a normalization pass. Same choice as line 721.
+3. *No expansion-tree recursion.* `message.spans[*].expansion` can nest further spans through macro expansions; recursing adds complexity without a current concrete failure case. YAGNI until a false-positive surfaces; widen then.
+
+**Verification.** Three grader unit tests (positive: spans inside crate / negative: spans outside / mixed: 2 spans, one each) on synthesized JSON lines, sibling to the existing 44 grader unit tests. Plus an Option-B re-grade sweep across every L0 crate post-F.1 — each graded-crate's own-source clippy count must equal today's post-hygiene baseline (F.1 affects transitive bleed, not own-source warnings). Any delta = filter-semantics bug.
+
+**Bundling.** F.1 commit is grader code + tests only. Workspace hygiene auto-fixes (`mesh-measure` 1 × `missing_const_for_fn`, `mesh-lattice` 8 × `missing_const_for_fn`, likely others outside the L0 dep chain) are a separate Group F sub-item (workspace hygiene placement, pending decision). Bundling them into F.1 would complicate review, revert, and grade-delta attribution. Risk-averse: unbundle.
+
+**F.1 does not lock:**
+- Workspace hygiene placement — separate Group F sub-item (fold into F.1 PR, separate post-audit hygiene PR, or additional audit-branch hygiene commit following the `f614cd77` precedent).
+- sim-conformance-tests Coverage F resolution — structurally distinct from F.3 sim-therm-env scope (sim-conformance-tests has no lib target at all; sim-therm-env has a lib target but zero `#[cfg(test)]` modules in `src/`). Flag as F.3-adjacent; decided at F.3.
+- Expansion-tree recursion widening — deferred pending a concrete false-positive case.
+
 ### Cross-cutting determinism audit
 
 Cross-cutting pass over each group's locked decisions against `ForwardMap`'s determinism-in-θ contract (`110-crate/02-coupling/03-ml-chassis.md` §"Determinism-in-θ and the cached-tape contract") and A.4 §4 ("algorithm-output, not bit-exact; same θ on same machine on sequential path bit-reproducible; parallel paths accept non-associativity; cross-platform libm divergence within 5-digit gradcheck tolerance"). Each entry lands in one of two authorized categories: *preserves determinism because X* or *weakens within tolerance Y*. No silent weakening; no third "may weaken later" category.
