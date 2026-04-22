@@ -690,7 +690,7 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 
 **Verification.** Three grader unit tests (positive: spans inside crate / negative: spans outside / mixed: 2 spans, one each) on synthesized JSON lines, sibling to the existing 44 grader unit tests. Plus an Option-B re-grade sweep across every L0 crate post-F.1 — each graded-crate's own-source clippy count must equal today's post-hygiene baseline (F.1 affects transitive bleed, not own-source warnings). Any delta = filter-semantics bug.
 
-**Bundling.** F.1 commit is grader code + tests only. Workspace hygiene auto-fixes (`mesh-measure` 1 × `missing_const_for_fn`, `mesh-lattice` 8 × `missing_const_for_fn`, likely others outside the L0 dep chain) are a separate Group F sub-item (workspace hygiene placement, pending decision). Bundling them into F.1 would complicate review, revert, and grade-delta attribution. Risk-averse: unbundle.
+**Bundling.** F.1 commit is grader code + tests only. Workspace hygiene auto-fixes (`mesh-measure` 2 × `missing_const_for_fn`, `mesh-lattice` 16 × `missing_const_for_fn`, likely others outside the L0 dep chain) are a separate Group F sub-item (workspace hygiene placement, pending decision). Bundling them into F.1 would complicate review, revert, and grade-delta attribution. Risk-averse: unbundle.
 
 **F.1 does not lock:**
 - Workspace hygiene placement — separate Group F sub-item (fold into F.1 PR, separate post-audit hygiene PR, or additional audit-branch hygiene commit following the `f614cd77` precedent).
