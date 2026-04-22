@@ -569,11 +569,21 @@ geometry (box, sphere, cylinder; mesh parsed but not converted), dynamics
 (damping; friction parsed but not converted), limits. **Planar joints are
 lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 
-### GPU Acceleration (Removed)
+### sim-gpu (GPU Acceleration)
 
-The `sim-gpu` crate was removed in workspace trim (2026-03-19) — zero
-consumers outside the workspace. GPU acceleration will be rebuilt against
-the architecture as it exists when needed. See `sim/L0/gpu/` for current state.
+The `sim-gpu` crate was removed in workspace trim (2026-03-19), then
+re-introduced via PR #143 with the GPU physics pipeline scaffold
+(Sessions 1–6: FK / CRBA / RNE / smooth / integrate / constraint /
+collision orchestrator). Two subsystems today: **SDF collision** —
+GPU-accelerated rigid-body SDF narrowphase implementing `sim-core`'s
+`GpuSdfCollision` trait (trait-in-core / impl-in-companion, parallel to
+sim-mjcf and sim-urdf); **physics pipeline** — full GPU rigid-body
+physics scaffold per `GPU_PHYSICS_PIPELINE_SPEC.md`. Owns its own
+`wgpu::Device` separate from any rendering Device to avoid Bevy
+contention. No autograd surface, no chassis dependency — orthogonal to
+the future `sim_ml_chassis::gpu` autograd substrate (Phase E) and the
+future `sim_soft::gpu` soft-body kernels (Phase E). See `sim/L0/gpu/`
+for current state.
 
 ### sim-bevy (Layer 1)
 

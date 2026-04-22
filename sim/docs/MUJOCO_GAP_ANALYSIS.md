@@ -981,12 +981,15 @@ which uses rayon's `par_iter_mut` to step multiple simulation environments concu
 
 **Files:** `sim-core/src/batch.rs` (BatchSim), `sim-types/src/config.rs` (ParallelConfig)
 
-### Implementation Notes: GPU Acceleration (Removed)
+### Implementation Notes: GPU Acceleration
 
-The `sim-gpu` crate was removed in workspace trim (2026-03-19) — zero consumers
-outside the workspace. The `gpu-internals` feature flag remains in sim-core for
-future GPU backends. GPU acceleration will be rebuilt against the current
-architecture when needed. See `sim/L0/gpu/` and `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`.
+The `sim-gpu` crate was removed in workspace trim (2026-03-19), then
+re-introduced via PR #143 with the GPU physics pipeline scaffold
+(Sessions 1–6). The `gpu-internals` feature flag in sim-core remains the
+integration seam. Two subsystems today: SDF-collision narrowphase
+(`GpuSdfCollider` implementing `sim-core::sdf::gpu::GpuSdfCollision`) and
+the GPU physics pipeline scaffold (FK / CRBA / RNE / smooth / integrate /
+constraint). See `sim/L0/gpu/` and `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`.
 
 ### Implementation Notes: Sleeping / Body Deactivation ✅ COMPLETE (Phases A/B/C — 93 tests)
 
