@@ -265,6 +265,24 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 - Whether `VjpRegistry` itself (type-level, not method-level) carries a docstring. Leaning against; revisit if Rust-surface navigation feedback surfaces a gap at Phase E.
 - Phase E gradcheck §03 GPU-variant deliverable — already flagged in B.5 queued edit #8 as a candidate Phase E deliverable, not a C.1 decision.
 
+**C.2 — Preconditioner cross-call cache scope (2026-04-22).** Trait docstring on `sim_ml_chassis::gpu::Preconditioner` forbids output-affecting cross-call mutation. Intra-call state (AMG pattern cache across Newton iterations within one timestep, book-committed at `03-preconditioning.md` line 57 + line 106) is allowed and expected. State readable in a later `evaluate(θ)` call is forbidden; Phase-E cross-call cache wrapper is the escape hatch (separate `PatternCachedPreconditioner<P>` type, separate contract, own determinism argument).
+
+- **Why not idempotent-re-setup (earlier recommendation, self-revised).** Initial recommend-first call allowed cross-call state conditional on "`setup(opA)` then `setup(opB)` is output-equivalent to fresh-construct-and-`setup(opB)`." Self-stress-test under user's "prioritize risk mitigation" steer surfaced three risks: (a) pattern-cache-drift in an impl that claims idempotent-re-setup but fails (cache keyed on nnz instead of sparsity pattern, invalidation misses a topology-change case) lands within §03's 5-digit band and is not caught — silent weakening; (b) third-category leakage toward "preserves conditional on impl discipline," adjacent to the banned "may weaken later" category; (c) departs from B.3/B.4's uniform "forbid cross-call output-affecting mutation" discipline without load-bearing reason beyond performance pre-admission.
+- **Why not allow, rely on §03 gradcheck as safety net.** §03 compares CPU-vs-GPU at 5-digit tolerance; cannot distinguish "fresh rebuild per call" from "cached pattern that's mostly right." Blind spot at the correctness-vs-performance boundary. Contract-level enforcement closes the blind spot.
+- **Why not defer to Phase E.** B.5.a pre-load flagged the temptation explicitly; deferring reintroduces the silent-footgun risk the pre-load was raised to surface.
+- **Book commits intra-call only.** Line 57 "across Newton iterations within a timestep" + line 106 "pattern cached across Newton iterations, rebuilt on re-mesh" both scope to one `evaluate()` call. Cross-call pattern reuse is NOT book-committed — Phase-E temptation only. Forbidding at the trait contract preserves book as-is, no walk-back.
+- **Escape hatch:** `PatternCachedPreconditioner<P>` wrapper — if Phase-E scene-scale benchmarks show per-`evaluate` full AMG rebuild unworkable, a wrapper type concentrates cross-call state in one auditable location with its own determinism argument. Pass 1 doesn't ship it; the trait contract holds pending Phase E benchmark. Same escape-hatch template as B.4's Phase-H Brownian extension — future extension, not pre-ratified.
+- **Audit-habit symmetry.** B.3 `Differentiable` forbade cross-call mutation; B.4 `Solver::step` forbade output-affecting cross-call mutation; C.2 `Preconditioner` forbids output-affecting cross-call mutation. Uniform mutation-discipline pattern across chassis-owned + sim-soft-owned impl-side traits at trait-contract level.
+
+**C.2 → Queued Rust-side docstring commitment.** `sim_ml_chassis::gpu::Preconditioner` trait docstring lands with chassis GPU module creation PR at Phase E per B.5's build sequence. Not a new separate PR.
+
+**C.2 → One queued book edit (landed inline as part of C.2 decision).** §80 Ch 02 §03 `03-preconditioning.md` — new "Cross-call discipline" subsection between "The preconditioner contract" and "What this sub-leaf commits the book to," plus one summary bullet in the commitment list.
+
+**C.2 does not lock:**
+- Existence of a `PatternCachedPreconditioner<P>` wrapper at Phase E — benchmark-driven decision, not locked now. If built, wrapper carries its own determinism argument and this C.2 decision doesn't pre-ratify it.
+- Specific AMG pattern-cache keying (on `op.pattern()`, on `(nnz, row_ptr_hash)`, etc.) — Phase-E implementation detail. Trait contract commits only to "intra-call pattern reuse is book-committed and allowed" without specifying cache structure.
+- Whether other B.4 cross-cutting-audit-predicted "likely no docstring needed" traits (`Observable`, `SdfField`) actually need docstrings — per audit habit, surface findings per trait on its walk.
+
 ### Cross-cutting determinism audit
 
 Cross-cutting pass over each group's locked decisions against `ForwardMap`'s determinism-in-θ contract (`110-crate/02-coupling/03-ml-chassis.md` §"Determinism-in-θ and the cached-tape contract") and A.4 §4 ("algorithm-output, not bit-exact; same θ on same machine on sequential path bit-reproducible; parallel paths accept non-associativity; cross-platform libm divergence within 5-digit gradcheck tolerance"). Each entry lands in one of two authorized categories: *preserves determinism because X* or *weakens within tolerance Y*. No silent weakening; no third "may weaken later" category.
@@ -352,6 +370,14 @@ All three pre-loads (B.5 GPU VJP author contract + these two) fall under "GPU cr
 **B.5 / C.1 — GPU VJP author contract.** Preserves `ForwardMap` determinism contract contractually, same model as B.1.a/B.2 (CPU `VjpOp` trait docstring) and B.3 (`Differentiable` trait docstring). Chassis cannot enforce kernel-internal determinism at the type level on GPU any more than on CPU; discipline is trait-contract-and-gradcheck, not runtime-checked. A.4 §4's tolerance band (≤2 ULP transcendentals inside band; vendor-lane-dependent subgroup shuffle outside band, forbidden) carries over from CPU to GPU. §110 Ch 04 §03 CPU-vs-GPU gradcheck is the operational oracle per B.5's walk.
 
 Dual-surface placement (Rust docstring + book paragraph, §02 canonical, cross-references from §01 and from `VjpRegistry::register` docstring) matches the B.3 pattern: canonical source + cross-references, no duplication. Layer 3 runtime self-check was considered and declined at B.1.a/B.2 walk for CPU; same rationale applies on GPU (scope-creep risk + book-mandated gradcheck already catches high-magnitude failures). **No silent weakening.**
+
+**C.2 — Preconditioner cross-call cache scope.** Preserves `ForwardMap` determinism contractually by forbidding output-affecting cross-call mutation at the trait level. Intra-call state (AMG pattern cache across Newton iterations, book-committed) is allowed and expected; state readable in a later `evaluate()` call is forbidden. Same mutation-discipline pattern as B.3 `Differentiable` and B.4 `Solver::step` at chassis-owned trait level — audit-habit symmetry preserved.
+
+Pattern-cache-drift silent-weakening risk (a buggy impl claiming idempotent-re-setup but failing within §03's 5-digit band) is closed at contract level rather than impl discipline: a correct impl satisfies by construction (fresh instance per `evaluate()`); a drifting impl violates a simple contract that is catchable in code review. §03 gradcheck's correctness-vs-performance blind spot is not load-bearing — contract is.
+
+Phase-E `PatternCachedPreconditioner<P>` wrapper is a *future* extension carrying its own determinism argument per the B.4 Phase-H Brownian extension template — extension, not re-litigation. Pass 1 does not ship; does not pre-ratify.
+
+A.4 §4 tolerance band unchanged. §110 Ch 04 §03 CPU-vs-GPU gradcheck is the operational oracle for the trait contract, not for impl-level pattern-cache equivalence. **No silent weakening.**
 
 ## Tomorrow's gameplan
 
