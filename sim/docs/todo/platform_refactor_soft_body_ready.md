@@ -116,6 +116,65 @@ Book edits emerge naturally from step 2:
 
 7. **Float ordering: per-site, prefer `total_cmp`.** Where total ordering is needed (RL reward ranking, best-tracker, fitness sorting), use `f64::total_cmp` with a one-line comment naming why total ordering is load-bearing (NaN sorting, ties, etc.).
 
+### Group B
+
+**Status:** Partial — B.1, B.1.a, B.2, B.3 locked (2026-04-22). B.4 (checkpointing + time adjoints), B.5 (GPU-tape readiness), and the cross-cutting determinism audit remain — picking up next session.
+
+**Cadence shift mid-walk.** User flagged that Group B's autograd-internals depth exceeds their reps; switched to recommend-first cadence (Claude makes the call + compact why + alternatives, user checks against principles). Recorded as `feedback_recommend_first_deep_specialist.md`. Design-philosophy-adjacent calls (crate boundaries, what-belongs-where) stayed interactive.
+
+**B.1 — Tape shape: vector-aware (2026-04-22).** `Tape` nodes carry `Tensor<f64>` values; custom VJPs handle non-primitive ops. Current 9 scalar primitives stay as the same nine, generalized to `Tensor<f64>` (a "scalar" is shape `[]`).
+
+- **Why not scalar-only:** book's `faer::Llt<f64>` factor-on-tape requires representing a factorization as a tape node; no way to do that in a scalar tape without fabricating an opaque-node escape hatch (violates "own every line"). Hessian-vector cost also blows up scalarized.
+- **Why not two tapes (scalar for RL, vector for sim-soft):** scope memo explicitly names this as leaky. Two sets of VJPs, two determinism contracts, `Differentiable` straddles. Rejected.
+- **Compound with A.1:** A.1's `Tensor<T>` becomes structurally load-bearing — tape speaks Tensor, Tensor speaks precision-generic, decisions compound.
+
+**B.1.a — `BackwardOp` representation (2026-04-22, amended during B.2).** Sum-type for built-in primitives + trait object for custom ops:
+
+```rust
+enum BackwardOp {
+    Leaf,
+    Unary { parent: u32, rule: UnaryRule },   // Neg, Tanh, Relu, Square, Ln, Exp
+    Binary { lhs: u32, rhs: u32, rule: BinaryRule }, // Add, Sub, Mul
+    Custom(Box<dyn VjpOp>),
+}
+
+pub trait VjpOp: Send + Sync {
+    fn op_id(&self) -> &'static str;  // stable identity, futureproofs serialization
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]);
+    fn parents(&self) -> &[u32];
+}
+```
+
+- **Why hybrid beats pure-`Box<dyn>`:** primitives stay allocation-free and inspectable; only custom ops pay one allocation per node.
+- **Why hybrid beats pure-sum-type:** every future sim-soft op would force codebase-wide enum expansion; hybrid lets sim-soft add ops orthogonally.
+- **Amendments from B.2 overbuild:** `name()` → `op_id()` (intent: stable identity), `Send + Sync` bounds added. Both are expensive to retrofit later across every op impl; adding now is ~free (sim-soft's custom ops carry tensors and faer factors that are Send+Sync naturally).
+
+**B.2 — Custom VJP registration (2026-04-22).** Direct method on tape:
+
+```rust
+impl Tape {
+    pub fn push_custom(&mut self, value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var { ... }
+}
+```
+
+- **No registry.** Mirrors existing API shape (every primitive is already a `Tape` method). Standard registry justifications don't apply: fusion/optimization explicitly rejected by chassis lib doc, cross-tape op sharing handled by `Arc<dyn VjpOp>` if ever needed.
+- **Overbuild (post-user-pushback on R34 principle):** chassis carries `op_id` + `Send+Sync` now; everything else — global registry, serde bounds, wire protocol — is additive and bolts on later when concrete. "Serviceable for future pivots" ≠ "build speculatively."
+- **Serialization flag:** chassis already serializes `PolicyArtifact` / `TrainingCheckpoint` (parameters + optimizer state, `sim-ml-chassis/src/artifact.rs`); tape is transient by design. No current need for tape graph serialization; `op_id` + Send/Sync leave the door open.
+
+**B.3 — `Differentiable` trait placement (2026-04-22).** Placed in `sim-soft::autograd` per the book. No deferral to Group D needed.
+
+- **Why not chassis:** trait methods reference sim-soft types (`NewtonStep<Self::Tape>`) and sim-soft semantics (IFT adjoints, time-adjoints, gradcheck); chassis placement would force chassis to know about soft-body physics (wrong direction of dependency).
+- **Why not a `sim-autograd-traits` shim crate:** single-trait shim is premature abstraction (own-every-line).
+- **Why not `sim-core`:** core is rigid-body; `Differentiable`'s IFT/time-adjoint are soft-body variational-dynamics concerns.
+- **No rename of existing `DifferentiablePolicy`** (`sim-ml-chassis/src/policy.rs:80`): RL-specific, different crate, different purpose; the `Policy` suffix disambiguates. Brief doc note in both trait comments when the sim-soft crate lands.
+- **Book edit queued** (pure spec change, lands inline at Group B close): `Differentiable::register_vjp` signature changes from closure-based (`vjp: F where F: Fn(&Self::Tape, &Tensor<f64>) -> Tensor<f64>`) to `Box<dyn VjpOp>`-based per B.2. Location: `docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md` ~line 106.
+
+**B.3 sub-decision — `CpuTape` as type alias (2026-04-22).** `pub type CpuTape = sim_ml_chassis::Tape;` in sim-soft (not a newtype wrapper).
+
+- **Why not newtype:** concrete benefits (enforced invariants via types, orphan-rule escape for external traits, inherent methods) are all hypothetical. External sim-soft consumers interact via `Differentiable`/`ForwardMap`/`Observable`, not the tape type directly — curation has no audience. No real invariants to enforce; no external traits we need to impl on the tape; candidate "inherent methods" fit better as free functions or methods on physics-orchestrator types.
+- **Why not direct-use (no alias):** alias gives sim-soft a vocabulary word. `&mut CpuTape` reads cleaner than `&mut sim_ml_chassis::Tape` in sim-soft contexts, and makes `CpuTape`/`GpuTape` parallelism at `Solver` impl sites legible.
+- **Migration acknowledged:** alias → newtype is a focused PR (~200–500 lines, mostly mechanical) if a concrete trigger surfaces later. Migration cost scales with sim-soft size, so prompt migration on real triggers — not deferred-indefinitely.
+
 ## Tomorrow's gameplan
 
 1. **Start with Group A (numerical/type foundations + numerical policy).** Smallest domain; establishes the walk rhythm before harder groups. Expected coverage:
