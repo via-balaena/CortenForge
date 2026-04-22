@@ -118,7 +118,7 @@ Book edits emerge naturally from step 2:
 
 ### Group B
 
-**Status:** Partial — B.1, B.1.a, B.2, B.3 locked (2026-04-22). B.4 (checkpointing + time adjoints), B.5 (GPU-tape readiness), and the cross-cutting determinism audit remain — picking up next session.
+**Status:** Partial — B.1, B.1.a, B.2, B.3, B.4 locked (B.4 2026-04-22). B.5 (GPU-tape readiness) and the cross-cutting determinism audit remain. B.4 carries one queued dependency for Group D (`Solver` replay-method signature).
 
 **Cadence shift mid-walk.** User flagged that Group B's autograd-internals depth exceeds their reps; switched to recommend-first cadence (Claude makes the call + compact why + alternatives, user checks against principles). Recorded as `feedback_recommend_first_deep_specialist.md`. Design-philosophy-adjacent calls (crate boundaries, what-belongs-where) stayed interactive.
 
@@ -174,6 +174,22 @@ impl Tape {
 - **Why not newtype:** concrete benefits (enforced invariants via types, orphan-rule escape for external traits, inherent methods) are all hypothetical. External sim-soft consumers interact via `Differentiable`/`ForwardMap`/`Observable`, not the tape type directly — curation has no audience. No real invariants to enforce; no external traits we need to impl on the tape; candidate "inherent methods" fit better as free functions or methods on physics-orchestrator types.
 - **Why not direct-use (no alias):** alias gives sim-soft a vocabulary word. `&mut CpuTape` reads cleaner than `&mut sim_ml_chassis::Tape` in sim-soft contexts, and makes `CpuTape`/`GpuTape` parallelism at `Solver` impl sites legible.
 - **Migration acknowledged:** alias → newtype is a focused PR (~200–500 lines, mostly mechanical) if a concrete trigger surfaces later. Migration cost scales with sim-soft size, so prompt migration on real triggers — not deferred-indefinitely.
+
+**B.4 — Checkpointing + time adjoints (2026-04-22).** Mechanism locked; one downstream dependency queued for Group D. Checkpointing + time-adjoint machinery lives entirely in `sim-soft::autograd` — chassis `Tape` gains no rollout-awareness, no segment orchestrator, no checkpoint-schedule API.
+
+Mechanism: each converged Newton step is one chassis `push_custom` node whose `VjpOp` impl is `CheckpointedStepVjp` — holds primal only (`(x_prev, v_prev, Δt)`); rebuilds the factor inside `vjp` via side-effect-free Newton replay (exact replay-capability surface queued to Group D), applies back-substitution, releases the factor before returning. RAII pushes the book's "tape drops → factor released" contract from tape-lifetime scope down to per-vjp-call scope. Phase D default matches the book's $k{=}1$ commitment (`60-differentiability/04-checkpointing/00-uniform.md`: "asymmetry drives optimum to $k{=}1$"). Adaptive-Δt, contact active-set determinism, and Brownian-path storage (Phase H only) are already covered by the book's primal-only payload contract — no B.4 surface additions.
+
+`Differentiable::time_adjoint` consumes the chassis reverse walk at the per-step `VjpOp` boundary; the exact orchestration surface (direct `tape.backward` call vs. manual walk over the rollout slice vs. mix) pins at implementation time once B.5 clarifies tape semantics for the GPU variant. A future eager-step variant (holds `BackwardEulerState` across the forward→backward boundary) is additive if a short-rollout benchmark ever wants one — not shipped in Phase D.
+
+- **Why not chassis-owned checkpointing.** Generic-activation-checkpointing (à la `jax.checkpoint`) is a different problem from Newton-replay: sim-soft's replay re-runs the physics Newton loop, not a feedforward pass. Bundling would force chassis to learn about physics (B.3's "wrong direction of dependency"). Book commits `autograd/` as the owner (`110-crate/00-module-layout/07-autograd.md` ¶1).
+- **Why not tape-of-tapes / sub-tape per segment.** Doubles tape machinery for $k{=}1$'s zero benefit; re-introduces the two-tape anti-pattern B.1 rejected. Reopen only if Phase-E benchmarks show the single-tape reverse walk is a bottleneck at large $k$.
+- **Phase-E Revolve extends, does not replace.** Revolve's $k>1$ segment replay needs a sim-soft orchestrator spanning multiple `CheckpointedStepVjp` nodes — cross-step coordination, not "pick a different `VjpOp`." Still above chassis `backward`, still no chassis changes. Benchmark-gated per `04-checkpointing/02-tradeoff.md`.
+
+**B.4 → Group D dependency (queued).** `CheckpointedStepVjp::vjp` takes `&self` (per B.1.a). Current `Solver::step(&mut self, tape: &mut Self::Tape, ...)` (`docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md` ~line 88) is `&mut self` — can't be called through a `VjpOp`'s `&self` handle. Candidate refinement: `replay_step(&self, x_prev, v_prev, theta, dt) -> BackwardEulerState` alongside `step`, matching "replay is deterministic given stored primal + Δt" (`04-checkpointing/02-tradeoff.md` §contact-active-set). Exact signature deferred to Group D, where the `Solver` trait's full consumer surface (including Phase-E GPU variant, B.5) gets walked. Book edit to Part 11 Ch 01 lands with Group D close.
+
+**B.4 does not lock:**
+- The `Solver` replay-method signature, `StepPrimal` layout, or solver-handle lifetime contract — all queued to Group D.
+- Phase-E Revolve specifics beyond "still in sim-soft, still doesn't touch chassis."
 
 ## Tomorrow's gameplan
 
