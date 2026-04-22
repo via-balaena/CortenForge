@@ -330,7 +330,7 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 
 ### Group D
 
-**Status:** D.1 locked. Groups D.2–D.5 remaining.
+**Status:** D.1, D.2 locked. Groups D.3–D.5 remaining.
 
 **D.1 — `Solver` trait docstring + `replay_step` signature (2026-04-22).** Substance pre-locked by B.4; D.1 closes the signature and determinism-contract commitments as a single book edit at §110 Ch 01 `00-core.md`.
 
@@ -363,6 +363,28 @@ fn replay_step(
 - `BackwardEulerState` drift at `03-time-adjoint/01-adjoint-state.md:55` — separate finding; post-D sweep candidate.
 - `NewtonStep<Self::Tape>` (trait surface, generic) vs `NewtonStep` (struct at `01-newton.md:55`, non-generic) drift — pre-existing book-internal inconsistency; post-D sweep candidate.
 - Phase-E GPU `replay_step` variant details (GPU-resident factor handle vs on-device back-substitution before returning) — implementation detail, Phase E decision.
+
+**D.2 — Trait-placement + mutation-discipline walk across remaining trait surfaces (2026-04-22).** Six trait surfaces walked; one book edit (D.2.a `ForwardMap` docstring); five no-docstring-needed findings (D.2.b–d).
+
+**D.2.a — `ForwardMap` trait docstring (landed inline).** Book edit at `110-crate/02-coupling/03-ml-chassis.md` inserts two docstring paragraphs between the trait code block and the existing `EditResult` prose — same audit-habit pattern as B.3 `Differentiable`, D.1 `Solver`, C.2 `Preconditioner`. Paragraph 1 admits intra-call mutation (impl-field scratch, per-call tape-recording hooks, physics-rollout state; concrete "Solver / scene / Observable" example flagged as Phase D implementation choice, not trait-level commitment). Paragraph 2 forbids output-affecting cross-call mutation (warm-starts across θ evaluations, adaptive reward-scaling, accumulated per-call statistics); cites γ-locked determinism-in-θ contract + BayesOpt GP cache invariant + audit-habit symmetry across the four impl-side traits.
+
+- **Closes a pre-existing book-vs-code gap, not just adds a new docstring.** `03-ml-chassis.md:61` already commits *"The chassis boundary surfaces this contract verbatim in the `ForwardMap` docstring."* — but the docstring did not exist until D.2.a. Fulfills a previously-unfulfilled book commitment.
+- **Placement after line 41, not in §"Determinism-in-θ and the cached-tape contract" at line 57.** §"Determinism-in-θ" is the book-layer narrative contract; the new paragraphs are the rustdoc-layer type-surface commitment. Two different levels; §57 continues to elaborate (via the `(elaborated §below)` pointer).
+- **Cross-references use file-level, no anchor fragments** per C.1's precedent (sidesteps mdbook em-dash anchor uncertainty).
+- **Concrete impl example is illustrative, not ratified.** Paragraph 1 names "active `Solver`, scene/mesh, `Observable` readout" as expected impl fields; explicitly flagged as Phase D implementation choice, not a trait-level struct-layout commitment.
+
+**D.2.b — `Observable` (no docstring needed).** `&self` only on all four methods (`stress_field`, `pressure_field`, `temperature_field`, `reward_breakdown`). Trait signature does not admit cross-call mutation. Interior-mutability-via-`RefCell` is a general Rust-idiom concern, not Observable-specific; catchable at the enclosing `ForwardMap` contract (D.2.a) because Observable is called from inside `ForwardMap::evaluate`. **Subtlety noted:** Observable is also consumed by `sim-bevy` (visualization) per `03-ml-chassis.md:67`; visualization has no determinism-in-θ requirement. If a future non-optimization consumer of Observable needs its own determinism contract, that's their concern — not Observable's trait-level contract. Finding holds: determinism-in-θ is an optimization-pipeline concern, transitively enforced at ForwardMap's boundary.
+
+**D.2.c — `Material` / `Element` / `Mesh` / `ContactModel` (no docstring needed).** All four are `&self`-only data-evaluation traits (constitutive eval, shape-function eval, mesh connectivity queries, contact-pair eval). `Send + Sync` bounds signal immutable consumption. Same argument as Observable per B.4's audit-habit-not-template rule.
+
+**D.2.d — `SdfField` (not a Rust trait; no placement decision).** Per `04-cf-design.md:9` + `:82`: `SdfField` is a struct composed of `Box<dyn Sdf>` + `Aabb3` + `f64`. The trait pair `Sdf` + `Field<Output = T>` lives in cf-design / cf-geometry, not sim-soft. Sim-soft consumes the boxed trait object; no D.2 trait-placement question.
+
+**D.2 → Book edit (landed inline as part of D.2 decision).** `110-crate/02-coupling/03-ml-chassis.md` — two `ForwardMap` docstring paragraphs inserted between the trait code block (lines 22-38) and the existing `EditResult` prose (line 43, pre-edit).
+
+**D.2 does not lock:**
+- Concrete `ForwardMap` impl struct layout in sim-soft — Phase D implementation choice.
+- Whether Observable's docstring needs strengthening if a future non-optimization consumer surfaces a determinism requirement. Per B.4 audit-habit-not-template rule, revisit per trait on its own walk, not pre-commit now.
+- Whether `sim-soft::sdf_bridge/` introduces its own trait surface (distinct from cf-geometry's `Sdf`) — reserved to Phase G's `sdf_bridge/` impl scope, not a D.2 decision.
 
 ### Cross-cutting determinism audit
 
@@ -477,6 +499,14 @@ A.4 §4 tolerance band unchanged on the sim-gpu surface. Multi-Device design (si
 2. *`replay_step` as pure function.* `&self` signature combined with docstring commitment that any `&self`-state reads are constructor-only (solver config, scene references) — nothing that depends on prior call history. Given the same `(x_prev, v_prev, theta, dt)`, `replay_step` produces the same `NewtonStep<Self::Tape>` as the forward `step` modulo A.4 §4 tolerance. The checkpointed-step VJP from B.4 rests on this purity; `02-tradeoff.md:49`'s bit-reproducibility commitment is the operational contract, and it transits through D.1 at the trait-surface level.
 
 A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational oracle for `replay_step` vs `step` bit-reproducibility divergence within tolerance (per `00-uniform.md:37`'s "replay reproduces the same trajectory byte-for-byte from the stored primal state"); trait-contract is the contractual enforcement. **No silent weakening.**
+
+**D.2 — Trait-placement + mutation-discipline walk across remaining trait surfaces.** Preserves `ForwardMap` determinism contract at two layers.
+
+1. *ForwardMap trait-surface commitment (D.2.a).* New trait-level docstring at `03-ml-chassis.md` forbids output-affecting cross-call `&mut self` mutation on `evaluate` and `gradient`; admits intra-call mutation conditional on non-persistence past the call. Audit-habit symmetry completes the four-trait pattern: B.3 `Differentiable` (sim-soft), D.1 `Solver` (sim-soft), C.2 `Preconditioner` (chassis), D.2.a `ForwardMap` (sim-soft) — uniform mutation discipline across chassis-owned + sim-soft-owned impl-side traits at trait-contract level. Closes the pre-existing book-vs-code gap at `03-ml-chassis.md:61` ("surfaces this contract verbatim in the `ForwardMap` docstring"), previously unfulfilled.
+
+2. *`&self`-only traits surface no determinism leak via trait signature (D.2.b–d).* Observable / Material / Element / Mesh / ContactModel all `&self`-only; trait signatures do not admit cross-call mutation. Interior mutability via `RefCell` / `Mutex` is a general Rust-idiom concern catchable at the enclosing `ForwardMap` contract (now trait-docstring-enforced per D.2.a), not requiring per-trait docstrings. `SdfField` is a struct, not a trait — no trait-placement question. Matches B.4's audit-habit-not-template prediction ("Observable is read-only by design, likely no docstring needed"; "SdfField is likely `&self`-only"); finding confirmed per-trait rather than pre-committed.
+
+A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational oracle for violations of the `ForwardMap` determinism-in-θ contract; trait-surface docstring is the contractual enforcement. Observable's transitivity subtlety (sim-bevy consumer has no determinism-in-θ requirement; optimization-pipeline consumer does) does not introduce a new determinism surface — the requirement follows the consumer, not the trait. **No silent weakening.**
 
 ## Tomorrow's gameplan
 
