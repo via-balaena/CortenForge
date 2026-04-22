@@ -330,7 +330,7 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 
 ### Group D
 
-**Status:** D.1, D.2 locked. Groups D.3–D.5 remaining.
+**Status:** D.1, D.2, D.3 locked. Groups D.4–D.5 remaining.
 
 **D.1 — `Solver` trait docstring + `replay_step` signature (2026-04-22).** Substance pre-locked by B.4; D.1 closes the signature and determinism-contract commitments as a single book edit at §110 Ch 01 `00-core.md`.
 
@@ -385,6 +385,27 @@ fn replay_step(
 - Concrete `ForwardMap` impl struct layout in sim-soft — Phase D implementation choice.
 - Whether Observable's docstring needs strengthening if a future non-optimization consumer surfaces a determinism requirement. Per B.4 audit-habit-not-template rule, revisit per trait on its own walk, not pre-commit now.
 - Whether `sim-soft::sdf_bridge/` introduces its own trait surface (distinct from cf-geometry's `Sdf`) — reserved to Phase G's `sdf_bridge/` impl scope, not a D.2 decision.
+
+**D.3 — Coupling patterns walk across sim-soft ↔ sim-core and sim-soft ↔ sim-thermostat (2026-04-22).** Both couplings audit-correct as written; no book edits. Three findings + one post-D sweep candidate + one Phase E flag.
+
+**D.3.a — `MjcfHandshake` no mutation-discipline docstring needed.** Trait signature at `02-coupling/00-mjcf.md:43-46` is asymmetric: `import_rigid_state(&mut self, &[RigidBoundary])` admits per-handshake-tick mutation by design (stores rigid BC for the next Newton solve); `export_contact_reactions(&self) -> Vec<ContactReaction>` is `&self`-only. The `&mut self` mutation is load-bearing across handshake ticks *within one `ForwardMap::evaluate(θ)` call* — not a candidate for "forbid cross-call mutation" phrasing because "cross-call" at method level (per-handshake-tick) is *allowed*, and "cross-call" at `evaluate` level is `ForwardMap`'s contract (D.2.a), not `MjcfHandshake`-local. Transitively inherits discipline per D.2.b's Observable argument. Book commits (line 28 + line 81 + Phase F commitment) that the handshake consumer is the ForwardMap-orchestrated outer coupling loop; no Phase A–I standalone consumer.
+
+**D.3.b — `ThermostatHandshake` no mutation-discipline docstring needed.** Same shape as MjcfHandshake at `02-coupling/01-thermostat.md:36-40`: one `&mut self` importer (`import_temperature(TemperatureView)`) + one `&self` exporter (`export_dissipation() -> DissipationReport`). Same transitivity argument.
+
+**D.3.c — Multi-Device CPU-sync claim from C.4 verified across both couplings.** Both coupling surfaces exchange CPU-resident boundary data at handshake ticks:
+- MjcfHandshake: `RigidBoundary` (Pose + SpatialVec, CPU struct) in; `ContactReaction` (Wrench + centroid, CPU struct) out.
+- ThermostatHandshake: `TemperatureView<'a>` (trait object `&'a dyn Field<Output = f64>`, CPU-resident) in; `DissipationReport` (`Vec<f64>`, CPU) out.
+
+sim-thermostat is CPU-only today (no wgpu dep per inventory Cargo.toml verification, pattern #8 discipline). sim-core's rigid pipeline consumes sim-gpu's `wgpu::Device` when GPU-accelerated; sim-soft's Phase-E Newton consumes chassis-gpu's `wgpu::Device`. All cross-crate transit is CPU-resident. C.4's "hot Newton loop stays single-Device per crate" extends cleanly — no D.3 amendment to C.4.
+
+**D.3 → Post-D sweep candidate (not a D.3 fix).** Part 5 Ch 03 §00 (`50-time-integration/03-coupling/00-mujoco.md:45-51`) has method-level `///` lifecycle docstrings on `MjcfHandshake` ("Called by the outer coupling loop before sim-soft advances"; "Called after sim-soft's Newton step converges..."). Part 11 Ch 02 §00 (`02-coupling/00-mjcf.md:43-46`) has none on the same trait. Book-internal docstring drift; candidate for the post-D sweep alongside `BackwardEulerState` drift (D.1) and `NewtonStep<Self::Tape>` generic-vs-non-generic drift (D.1). Not a D.3 fix because D.3 scope is mutation-discipline, not lifecycle-docstring consistency.
+
+**D.3 → Phase E flag (not a D.3 concern).** `01-thermostat.md:42` commits "lazily per-Gauss-point during the `Thermal<M>` decorator's call chain" — a CPU access pattern. Phase-E GPU Newton needs a material-eval strategy for getting `Field` samples onto GPU (likely pre-sample at handshake time, upload scratch to GPU for the Newton loop). sim-soft material-eval concern, not coupling-trait concern; D.3 does not block.
+
+**D.3 does not lock:**
+- `sim-bevy` coupling walk — not in D.3 scope per audit doc's "sim-core / sim-thermostat" primary-crate naming. sim-bevy is an Observable-consumer (D.2.b), not a handshake partner; no coupling trait to audit. If a future sim-bevy surface surfaces a new cross-crate concern, walk then.
+- Whether subcycling bookkeeping inside `coupling/` (time-averaging for faster-thermostat, time-integration for faster-soft-body) needs its own mutation-discipline audit at the sub-module level. Not a trait-level concern; module-level discipline enforced by code review during Phase F implementation.
+- Fixed-point retry-cap behavior at `00-mjcf.md:24` (`handshake-uncontracted` signal triggering adaptive-Δt escape). Determinism preserved per line 74; behavior audit is a Phase F implementation concern.
 
 ### Cross-cutting determinism audit
 
@@ -507,6 +528,16 @@ A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational 
 2. *`&self`-only traits surface no determinism leak via trait signature (D.2.b–d).* Observable / Material / Element / Mesh / ContactModel all `&self`-only; trait signatures do not admit cross-call mutation. Interior mutability via `RefCell` / `Mutex` is a general Rust-idiom concern catchable at the enclosing `ForwardMap` contract (now trait-docstring-enforced per D.2.a), not requiring per-trait docstrings. `SdfField` is a struct, not a trait — no trait-placement question. Matches B.4's audit-habit-not-template prediction ("Observable is read-only by design, likely no docstring needed"; "SdfField is likely `&self`-only"); finding confirmed per-trait rather than pre-committed.
 
 A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational oracle for violations of the `ForwardMap` determinism-in-θ contract; trait-surface docstring is the contractual enforcement. Observable's transitivity subtlety (sim-bevy consumer has no determinism-in-θ requirement; optimization-pipeline consumer does) does not introduce a new determinism surface — the requirement follows the consumer, not the trait. **No silent weakening.**
+
+**D.3 — Coupling patterns walk.** Preserves `ForwardMap` determinism contract at two levels.
+
+1. *Handshake-trait mutation discipline is ForwardMap-transitive (D.3.a, D.3.b).* Both `MjcfHandshake::import_rigid_state(&mut self)` and `ThermostatHandshake::import_temperature(&mut self)` admit per-handshake-tick mutation by design (store boundary data for the next Newton solve). Cross-evaluate-call mutation discipline is ForwardMap's contract (D.2.a); handshake traits inherit transitively. Same structural argument as Observable (D.2.b). Book commits (line 28 of `00-mjcf.md` + line 81 + Phase F; line 23 of `01-thermostat.md` + line 83) that handshake consumers are the ForwardMap-orchestrated outer coupling loop; no Phase A–I standalone consumer opens a leak path.
+
+2. *Multi-Device CPU-sync claim extends cleanly (D.3.c).* All cross-crate data transit between sim-soft ↔ sim-core and sim-soft ↔ sim-thermostat is CPU-resident boundary data (plain Rust structs or CPU trait objects). sim-thermostat is CPU-only per Cargo.toml verification (pattern #8); sim-core's GPU acceleration and sim-soft's Phase-E GPU Newton each use their own `wgpu::Device`; no hot-loop cross-Device traffic. C.4's "hot Newton loop stays single-Device per crate" holds across both couplings without amendment.
+
+Each crate's own deterministic integrator composed with deterministic fixed-point-iterate-count-from-initial-partner-state plus deterministic subcycled boundary-data reductions (time-averaging for thermostat-faster, time-integration for sim-soft-faster) equals composed determinism. `00-mjcf.md:73-75` and `01-thermostat.md:66-67` both commit this explicitly. No RNG enters either coupling loop. Fixed-point retry-cap behavior (`00-mjcf.md:24`'s adaptive-Δt escape hatch) is deterministic in initial partner state per line 74.
+
+A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck transitively covers coupled evaluations (the ForwardMap oracle doesn't distinguish single-crate from multi-crate evaluations). **No silent weakening.**
 
 ## Tomorrow's gameplan
 
