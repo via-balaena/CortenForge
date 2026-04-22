@@ -434,7 +434,7 @@ Symptom fix (separate hygiene commit): workspace clippy auto-fixes across 4 crat
 
 ### Group E
 
-**Status:** E.1 locked. E.2–E.5 remaining (sim-therm-env, autograd_policy, autograd_layers, sim-rl, then Group E close). Recommend-first cadence held; broader chassis-export inventory grep applied before lock per Option B risk-mitigation walk; D.4.b hygiene-commit precedent reused for sim-opt's dep-chain clippy bleed.
+**Status:** E.1, E.2 locked. E.3–E.5 remaining (autograd_policy / autograd_layers, sim-rl, then Group E close). Recommend-first cadence held across both walks; Option-B verification cadence (grade + broader chassis-export grep) applied before each lock; hygiene-commit-then-decision pattern reused in both (E.1 for sim-opt's dep-chain clippy bleed, E.2 for sim-therm-env's own Cargo.toml dep-justification gap).
 
 **E.1 — sim-opt breaking-change walk (2026-04-22).** sim-opt is **not affected by any locked A/B/C/D decision at its public API surface.** Zero code changes required for migration; ships independently of any future chassis refactor PR.
 
@@ -477,6 +477,56 @@ Symptom fix (separate hygiene commit): workspace clippy auto-fixes across 4 crat
 - F.1 grader-scoping fix — Group F.
 - F.2 chassis-refactor pre-merge fixture-regression validation — queued for Group F per the heads-up above.
 - Any sim-opt internal refactoring (the crate is grade-A and the dual-metric pipeline shipped per memory PR #190; out of scope).
+
+**E.2 — sim-therm-env breaking-change walk (2026-04-22).** sim-therm-env is **affected by A.1 only — mechanical rename at 4 prod `Tensor` sites + ~28 test-site references.** All other locked A/B/C/D/E.1 decisions: no. Migration bundles with the chassis A.1 refactor PR (compile-boundary forced). Two new audit-item findings surfaced during the walk (Coverage F structural, A.4 §1 builder-setter compliance gap); both queued as separate items outside E.2 decision scope.
+
+**Inventory** (Cargo.toml dep direction verified per pattern #8):
+- Prod deps: `sim-core`, `sim-mjcf`, `sim-thermostat`, `sim-ml-chassis`, `thiserror`.
+- Dev deps: `approx`, `sim-rl`, `sim-opt`.
+- Chassis surfaces consumed (prod): `Environment`, `SimEnv`, `VecEnv`, `ActionSpace`, `ObservationSpace`, `Tensor`, `StepResult`, `ResetError`, `EnvError`, `SpaceError`. Dev-only adds (via `sim-rl` + chassis directly + `sim-opt` fixtures): `Algorithm`, `TrainingBudget`, `Policy`, `LinearPolicy`, `LinearValue`, `OptimizerConfig`, `Cem`/`CemHyperparams`, `Ppo`/`PpoHyperparams`, `Sa`/`SaHyperparams`, `RicherSa`/`RicherSaHyperparams`. Non-chassis prod surfaces: `sim_core::{DVector, Data, Model, StepError}`, `sim_mjcf::{load_model, MjcfError}`, `sim_thermostat::{LangevinThermostat, PassiveComponent, PassiveStack}`.
+
+**Breaking-change intersection (explicit yes/no per locked decision):**
+
+| Locked decision | Touches sim-therm-env? | Why |
+|---|---|---|
+| A.1 `Tensor<T>` generic | **Yes — mechanical.** | 4 prod `Tensor` sites in `env.rs` (the `impl Environment for ThermCircuitEnv` block — `observe() -> Tensor`, `step(&Tensor) -> ...`, `reset() -> Result<Tensor, _>`) + ~28 test-site references across `tests/{phase2,phase3,experiment_1,experiment_4,ising_chain}.rs`. All become `Tensor<f32>` per A.1 sub-decision B-2 (chassis `Environment` trait stays f32-concrete; consumer impl signatures rename mechanically). No shape change, no new generics threaded through `ThermCircuitEnv`'s builder API. |
+| A.2 faer | No | No linear-algebra factoring; no faer dep candidate. |
+| A.3 nalgebra | No | nalgebra consumed only transitively via `sim_core::DVector` (one call site in `builder.prepare()` for `gamma_vec`); no direct nalgebra import. |
+| A.4 IEEE754 / NaN / tolerances | No E.2-scope surface changes | Internal arithmetic (Langevin dynamics, reward/done/truncated closures) is within A.4 §1's "propagate internally" rule. Builder-setter `.is_finite()` compliance is a **separate** finding, queued below — not an E.2 migration-path change. |
+| B.1 vector-aware tape | No | Zero `Tape` / `Var` usage. sim-therm-env is gradient-free at the env surface; tape concerns live at upstream RL/opt consumers. |
+| B.1.a / B.2 `VjpOp` / `push_custom` | No | Zero custom-VJP surface. |
+| B.3 `Differentiable` placement | No | Zero `Differentiable` / `DifferentiablePolicy` / `CpuTape` usage. |
+| B.4 checkpointing / time adjoints | No | No time-adjoint surface; env is one-step-at-a-time via `Environment::step`. |
+| B.5 / B.5.a GPU tape / `GpuScalar` | No | CPU-only; zero wgpu in prod or dev deps (verified via Cargo.toml, pattern #8). |
+| C.1–C.4 GPU cross-call state | No | CPU-only (same as B.5). sim-thermostat also CPU-only per D.3.c verification; no C-surface propagates through the builder's physics wiring. |
+| D.1 `Solver::replay_step` | No | Zero `Solver` usage. |
+| D.2.a `ForwardMap` purity | No direct surface | sim-therm-env does not impl `ForwardMap`. Its `Environment::step`/`observe`/`reset` is consumed transitively inside `collect_episodic_rollout` called from sim-opt's `evaluate_fitness` and sim-rl's training loops (same transitive pattern as E.1 sim-opt). D.2.a's trait-surface commitment is enforced at upstream ForwardMap impl sites, not at the Environment impl. |
+| D.2.b `Observable` | No | sim-therm-env does not impl `Observable`. If future visualization support adds one, that's its own walk. |
+| D.3 coupling traits (`MjcfHandshake` / `ThermostatHandshake`) | No | sim-therm-env uses sim-thermostat's **internal** physics-wiring surfaces (`LangevinThermostat`, `PassiveComponent`, `PassiveStack`) inside its own env construction — distinct from the `ThermostatHandshake` sim-soft↔sim-thermostat coupling trait. Zero handshake-trait usage (grep). |
+| D.4 IO ingress (URDF / MJCF NaN/Inf) | No direct | MJCF ingress is sim-mjcf's boundary; sim-therm-env is a user of `sim_mjcf::load_model`. D.4's URDF fix (shipped) + the queued post-D MjcfGeom sweep candidate cover the ingress-side. sim-therm-env's own user-facing builder setters are a **separate** finding, queued below. |
+| E.1 sim-opt zero-changes | No | sim-opt is dev-only in sim-therm-env; sim-opt's own zero-change walk means zero propagated impact. |
+
+**Migration path: mechanical rename only.** 4 prod sites in `src/env.rs` + ~28 test sites rename `Tensor` → `Tensor<f32>`. Builder API (`timestep`, `gamma`, `k_b_t`, `seed`, `with`, `with_ctrl_temperature`, `ctrl_range`, `sub_steps`, `episode_steps`, `reward`, `done`, `truncated`, `on_reset`, `build`, `build_vec`) untouched — no Tensor exposure. Internal `PreparedCircuit` struct untouched. No new generics threaded. No error-type changes. No closure-signature changes.
+
+**PR sequencing: bundled with the chassis A.1 refactor PR (compile-boundary forced).** `impl Environment for ThermCircuitEnv`'s method signatures are pinned to chassis's `Environment` trait signature at the compile boundary. Splitting into separate PRs requires staged compat aliases on chassis that pay coordination cost for mechanical-rename gain. Contrast with E.1 sim-opt (independent, zero-change). E.3/E.4 RL walks likely face the same bundle-forced constraint if they impl chassis traits.
+
+**Pre-decision verification (Option B, E.1-established cadence).**
+- **Ground-truth grade baseline** via `cargo xtask grade sim-therm-env` (per `feedback_ground_truth_via_tool.md`): pre-hygiene F on Dependencies (8 deps unjustified — sim-therm-env-own Cargo.toml gap, not F.1 transitive bleed) + F on Coverage (0.0%, structural; see finding below). Post-hygiene `3a45d50f` re-grade: Dependencies A, Documentation A, Clippy A, Safety A, Bevy-free A. Coverage remains F (queued).
+- **Broader inventory grep** against the full `sim_ml_chassis::lib.rs` re-export list (~50 identifiers) + sim-core/sim-mjcf/sim-thermostat export lists: **zero additional locked-decision surfaces beyond A.1's Tensor sites.** 10 chassis surfaces consumed in prod src total (`Environment`, `SimEnv`, `VecEnv`, `ActionSpace`, `ObservationSpace`, `Tensor`, `StepResult`, `ResetError`, `EnvError`, `SpaceError`); 9 of the 10 are infrastructure (envs, spaces, errors, step results) that don't intersect any locked A/B/C/D decision. Additional chassis surfaces in dev-test fixture suites (`Algorithm`, `TrainingBudget`, `Policy`, `LinearPolicy`, `LinearValue`, `OptimizerConfig`) are fixture-scoped, not prod; they don't widen the breaking-change intersection because sim-therm-env's prod migration path stays isolated from test-only consumption. `LinearPolicy` prod-src hit at `builder.rs:166` is a docstring reference, not a code import.
+
+**E.2 → Two new audit-item findings (outside E.2 decision scope; queued).**
+
+- **Coverage F structural (Group F candidate).** sim-therm-env has zero `#[cfg(test)]` modules in `src/` — unique among L0 crates (sim-core 50, sim-mjcf 23, sim-ml-chassis 22, sim-thermostat 16, sim-urdf 6, sim-rl 5, sim-opt 4, sim-types 4, **sim-therm-env 0**). All 31 passing tests live in `tests/*.rs` (integration). Grader uses `cargo llvm-cov --lib --release` by design per its own docstring at `xtask/src/grade.rs:640-642` (integration tests cost ~10× with instrumentation), so Coverage reports 0.0%. **Not an F.1-class grader bug** — grader behaves as documented; the gap is that sim-therm-env's test-organization pattern does not match the grader's assumptions. Candidate fix paths: (a) add inline unit tests to `src/env.rs` / `src/builder.rs` (~200–500 LOC code-authoring work); (b) relax grader to also count integration-test-derived coverage on a per-crate opt-in basis; (c) accept F-coverage structurally with an explicit carve-out for all-integration-test crates. Group F decision point (alongside F.1 grader package-scoping and F.2 fixture-regression validation).
+- **A.4 §1 compliance gap at sim-therm-env builder setters.** `ThermCircuitEnvBuilder` setters (`timestep(f64)`, `gamma(f64)`, `k_b_t(f64)`, `ctrl_range(f64, f64)`) accept user-supplied floats without `.is_finite()` checks. These ARE A.4 §1 "user-facing constructors" per the locked policy. Same class as D.4 (URDF geometry NaN/Inf, fixed inline at D.4 close) and the queued post-D MjcfGeom sweep candidate. Scope: additive validation in `ThermCircuitEnvBuilder::prepare()` (already `Result`-returning via `build()`/`build_vec()`), new typed-error variants on `ThermCircuitError`, zero-API-break (setters stay `const fn`). ~50–100 LOC including unit tests. Natural home: post-E / pre-skeleton A.4 §1 compliance sweep PR, bundling sim-therm-env's builder gap with the MjcfGeom ingress gap. **Not** clustered with URDF's inline fix — URDF was D.4's primary decision scope; sim-therm-env + MjcfGeom are adjacent findings each with their own scope.
+
+**E.2 → Audit-doc line-78 prediction update (A.1 downstream work).** A.1's "Downstream work (Group E)" paragraph named sim-therm-env among the consumers gaining a type parameter at `Tensor` sites. E.2 confirms: **prediction holds for sim-therm-env** (4 prod + ~28 test sites; mechanical). E.1 caught the overstatement for sim-opt specifically. Inline edit to line 78 still deferred to E.5 close (footnote clarification that the prediction is per-consumer, with sim-opt at zero sites and sim-therm-env at ~32 mechanical sites).
+
+**E.2 does not lock:**
+- Coverage F resolution path (a / b / c options above) — Group F decision; new-crate onboarding + grader-convention conversation.
+- A.4 §1 builder-setter fix timing and scope bundling — queued as audit item; candidate PR is post-E / pre-skeleton A.4 §1 compliance sweep alongside MjcfGeom.
+- E.3 `autograd_policy` / `autograd_layers` walk — likely heavier Tensor exposure than sim-therm-env (forward signatures named in A.1 line 78); recommend-first cadence per `feedback_recommend_first_deep_specialist.md`.
+- E.4 sim-rl baselines walk — RL algos (Cem / REINFORCE / PPO / TD3 / SAC) have richer chassis-surface consumption than sim-therm-env; A.1 intersection expected wider; bundle-forced PR sequencing likely holds.
+- Any sim-therm-env internal refactoring beyond the A.1 mechanical rename — the crate is architecturally sound; builder pattern is proven (31 fast-passing + 22 `#[ignore]`-gated heavy integration tests; 4 experiments validated per memory `project_therm_circuit_env.md`).
 
 ### Cross-cutting determinism audit
 
@@ -619,6 +669,20 @@ A.4 §4 tolerance band unchanged. D.4.b's workspace clippy hygiene (const-fn pro
 E.1's hygiene commit `f614cd77` (workspace clippy: 5 × `missing_const_for_fn` in sim-ml-chassis, 1 × `manual_is_multiple_of` in sim-rl, 1 × `manual_is_multiple_of` in sim-opt) is determinism-neutral by the same argument as D.4.b's parallel hygiene at `d12a5e73` — `const fn` is compile-time-evaluability, and `n.is_multiple_of(k)` ≡ `n % k == 0` for nonzero usize divisors (sim-opt's median uses constant `k = 2`; sim-rl's td3 policy-delay check uses `hp.policy_delay`, where `% policy_delay` would already be UB if `policy_delay == 0` so the carry-over preserves the existing precondition).
 
 A.4 §4 tolerance band unchanged. **No silent weakening.**
+
+**E.2 — sim-therm-env as env-surface consumer.** Preserves `ForwardMap` determinism contract transitively, same template as E.1.
+
+1. *Non-participation in the ForwardMap contract directly.* sim-therm-env implements chassis `Environment`, not sim-soft `ForwardMap`. Its own determinism surface is the chassis `Environment::step` contract (deterministic-in-`(model, data, action, rng-seed)` via sim-core's integrator + sim-thermostat's `LangevinThermostat`). sim-therm-env is structurally upstream of ForwardMap participation; any RL consumer's ForwardMap-adjacent determinism story ratifies at its own walk (E.3 / E.4), not at sim-therm-env's Environment-impl surface.
+
+2. *Transitive consumption via VecEnv/SimEnv opacity.* sim-therm-env's `Environment` impl is called from inside `VecEnv::step` (when built via `build_vec`) or via chassis `SimEnv` wrapping (when built via `build`) — both paths route through `collect_episodic_rollout` in upstream RL consumers. Tensor boundary stays f32-concrete per A.1 sub-decision B-2; no new cross-call-state surface is introduced by sim-therm-env's integration heaviness — the heaviness is compositional (wiring sim-core + sim-mjcf + sim-thermostat), not autograd-stateful.
+
+3. *A.1 mechanical rename is determinism-neutral.* `Tensor<f32>` is bit-identical to today's `Tensor` at every operational level; rename is type-level only, zero arithmetic or control-flow change across the 4 prod + ~28 test sites.
+
+4. *E.2 hygiene commit `3a45d50f` is determinism-neutral.* Cargo.toml `#`-comment additions only; zero code change, zero build-system change beyond grader-visible dep-justification compliance.
+
+5. *Queued A.4 §1 builder-setter gap, when fixed, strengthens rather than weakens.* Rejecting NaN/Inf `timestep`/`gamma`/`k_b_t`/`ctrl_range` at construction replaces silent propagation (NaN flows into the MJCF text via `format!` → sim-mjcf parse → physics state → observation/reward, surfacing only as algorithm-level NaN failures in upstream consumers) with typed-error rejection at the A.4 §1 boundary. Closing an earlier boundary, per D.4's precedent framing.
+
+A.4 §4 tolerance band unchanged. Queued Coverage F finding is a grader-visibility concern, orthogonal to determinism (grader measures line coverage; coverage is not a determinism property). **No silent weakening.**
 
 ## Tomorrow's gameplan
 
