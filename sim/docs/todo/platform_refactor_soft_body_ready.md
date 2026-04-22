@@ -328,6 +328,42 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 - Whether sim-gpu's `GpuContext` and chassis-gpu's `GpuDevice` ever share infrastructure. Separate crates, separate concerns; unify only if Phase E or later benchmarks demand it. No pre-ratification.
 - Future renames at Phase E if user-side disambiguation pain materializes — Option (B) revisit-trigger is not pre-ratified; if it fires, that PR carries its own naming-convention argument.
 
+### Group D
+
+**Status:** D.1 locked. Groups D.2–D.5 remaining.
+
+**D.1 — `Solver` trait docstring + `replay_step` signature (2026-04-22).** Substance pre-locked by B.4; D.1 closes the signature and determinism-contract commitments as a single book edit at §110 Ch 01 `00-core.md`.
+
+Signature:
+
+```rust
+fn replay_step(
+    &self,
+    x_prev: &Tensor<f64>,
+    v_prev: &Tensor<f64>,
+    theta: &Tensor<f64>,
+    dt: f64,
+) -> NewtonStep<Self::Tape>;
+```
+
+- **Why `NewtonStep<Self::Tape>` and not a new `BackwardEulerState`** (per B.4's sketched name). `NewtonStep` already carries `{x_n, factor, dr_dtheta}` per `50-time-integration/00-backward-euler/01-newton.md:55-59` — exactly the three fields a `CheckpointedStepVjp::vjp` back-substitutes against. Introducing a new named struct duplicates surface without payload difference; B.4's sketched name was "sketched", not canonical. The adjacent book reference at `03-time-adjoint/01-adjoint-state.md:55` to a non-canonical `BackwardEulerState` is pre-existing drift — separate post-D sweep candidate.
+- **Why the `Tape` associated type parameter stays on the return type.** Keeps `step` / `replay_step` return type surface uniform. `replay_step`'s impl does not write a tape (no `&mut Tape` parameter), but the `NewtonStep<Tape>` return type nominally matches `step`'s for consumer ergonomics.
+- **Trait docstring lands in three paragraphs matching `Differentiable`'s structure** (concrete-impls paragraph + `step` intra/cross-call mutation discipline + `replay_step` pure-function semantics). Cross-references: mutation-discipline symmetry with `Differentiable` (§below) and chassis `Preconditioner` (C.2); replay contract citation to `04-checkpointing/02-tradeoff.md`'s verbatim "Replay is bit-reproducible given the stored primal $(x, v, \Delta t)$"; RAII-scope framing to `02-implicit-function/01-linear-solve.md` tape-drop contract, refined to per-VJP-call scope per B.4's "tape-lifetime DOWN TO per-vjp-call" framing.
+
+**D.1 → Revision-pass findings caught pre-commit (pattern #8 discipline).** Three technical-claim drift findings in the draft, all fixed before commit:
+1. Quoted phrase `"replay is deterministic given stored primal + Δt"` was synthesized, not verbatim. Fixed to `02-tradeoff.md:49`'s "Replay is bit-reproducible given the stored primal $(x, v, \Delta t)$" + corrected path from `00-uniform.md` to `02-tradeoff.md`.
+2. RAII-scope claim originally said replay's release "matches" `step`'s tape-drop. B.4 framed this as scope *refinement* (tape-lifetime → per-VJP-call), not matching. Fixed: "refined to per-VJP-call scope."
+3. Tape-drop cite path originally pointed at `01-newton.md`; verbatim "released when the tape is dropped" lives at `01-linear-solve.md:30`. Fixed: redirected cite.
+
+**D.1 → Book edit (landed inline as part of D.1 decision).** §110 Ch 01 `00-core.md`:
+- Line 13 table entry (Solver row) updated to name `replay_step`.
+- Solver section: `replay_step` added to trait code block; three new docstring paragraphs (two-impls retained + `step` mutation discipline + `replay_step` pure-function semantics).
+
+**D.1 does not lock:**
+- `BackwardEulerState` drift at `03-time-adjoint/01-adjoint-state.md:55` — separate finding; post-D sweep candidate.
+- `NewtonStep<Self::Tape>` (trait surface, generic) vs `NewtonStep` (struct at `01-newton.md:55`, non-generic) drift — pre-existing book-internal inconsistency; post-D sweep candidate.
+- Phase-E GPU `replay_step` variant details (GPU-resident factor handle vs on-device back-substitution before returning) — implementation detail, Phase E decision.
+
 ### Cross-cutting determinism audit
 
 Cross-cutting pass over each group's locked decisions against `ForwardMap`'s determinism-in-θ contract (`110-crate/02-coupling/03-ml-chassis.md` §"Determinism-in-θ and the cached-tape contract") and A.4 §4 ("algorithm-output, not bit-exact; same θ on same machine on sequential path bit-reproducible; parallel paths accept non-associativity; cross-platform libm divergence within 5-digit gradcheck tolerance"). Each entry lands in one of two authorized categories: *preserves determinism because X* or *weakens within tolerance Y*. No silent weakening; no third "may weaken later" category.
@@ -433,6 +469,14 @@ A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational 
 **C.4 — Current sim-gpu crate fate.** Preserves `ForwardMap` determinism contract trivially: sim-gpu does not participate in the contract at all. Its determinism surface is sim-core-step-deterministic (mujoco-equivalent rigid-body integration), not per-`evaluate(θ)` autograd-deterministic. The three GPU-cross-call-state pre-loads resolved at C.1/C.2/C.3 (chassis `VjpRegistry::register` author contract, chassis `Preconditioner` trait contract, chassis `GpuTensorPool::acquire`/`acquire_uninit` API contract) live on `sim_ml_chassis::gpu`'s future surface; sim-gpu's surface is orthogonal — different crate, different consumers, different oracle (CPU-vs-GPU parity tests at `sim-gpu/src/collision.rs::trace_contacts_match_cpu` for narrowphase and `sim-gpu/src/pipeline/tests.rs::t31_gpu_vs_cpu_trajectory` for full pipeline, scoped to A.4 §4 tolerance band locally; not §110 Ch 04 §03 which is the soft-body autograd gradcheck).
 
 A.4 §4 tolerance band unchanged on the sim-gpu surface. Multi-Device design (sim-gpu's own `wgpu::Device` separate from Bevy-render and from chassis-gpu) is intentional per `sim-gpu/src/context.rs:5-7` and per `01-gpu-backend.md:107` (chassis ships its own `GpuDevice`); cross-Device coordination happens at the MJCF coupling boundary (CPU sync) per `110-crate/02-coupling/00-mjcf.md`, not in the hot Newton loop, so the multi-Device structure does not introduce new determinism surfaces beyond what each Device already satisfies independently. **No silent weakening.**
+
+**D.1 — `Solver` trait docstring + `replay_step` signature.** Preserves `ForwardMap` determinism contract at two layers.
+
+1. *`step` mutation discipline at the trait level.* Trait docstring forbids output-affecting cross-call mutation on `step(&mut self, ...)`; admits intra-call logging / diagnostic / telemetry mutation conditional on "must not affect returned `NewtonStep`." Audit-habit symmetry preserved with B.3 `Differentiable`, B.4 `Solver::step` (substance moved here from B.4 pre-load), C.2 `Preconditioner`.
+
+2. *`replay_step` as pure function.* `&self` signature combined with docstring commitment that any `&self`-state reads are constructor-only (solver config, scene references) — nothing that depends on prior call history. Given the same `(x_prev, v_prev, theta, dt)`, `replay_step` produces the same `NewtonStep<Self::Tape>` as the forward `step` modulo A.4 §4 tolerance. The checkpointed-step VJP from B.4 rests on this purity; `02-tradeoff.md:49`'s bit-reproducibility commitment is the operational contract, and it transits through D.1 at the trait-surface level.
+
+A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational oracle for `replay_step` vs `step` bit-reproducibility divergence within tolerance (per `00-uniform.md:37`'s "replay reproduces the same trajectory byte-for-byte from the stored primal state"); trait-contract is the contractual enforcement. **No silent weakening.**
 
 ## Tomorrow's gameplan
 
