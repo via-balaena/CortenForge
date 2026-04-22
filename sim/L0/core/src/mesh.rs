@@ -102,7 +102,7 @@ impl TriangleMeshData {
     #[allow(clippy::needless_pass_by_value, clippy::cast_possible_truncation)]
     pub fn new(vertices: Vec<Point3<f64>>, indices: Vec<usize>) -> Self {
         assert!(
-            indices.len() % 3 == 0,
+            indices.len().is_multiple_of(3),
             "Triangle indices must be a multiple of 3"
         );
 

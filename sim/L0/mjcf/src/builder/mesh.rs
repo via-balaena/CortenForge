@@ -358,7 +358,7 @@ pub fn convert_embedded_mesh(
     verts: &[f64],
 ) -> std::result::Result<TriangleMeshData, ModelConversionError> {
     // Validate vertex data
-    if verts.len() % 3 != 0 {
+    if !verts.len().is_multiple_of(3) {
         return Err(ModelConversionError {
             message: format!(
                 "mesh '{}': vertex count ({}) not divisible by 3",

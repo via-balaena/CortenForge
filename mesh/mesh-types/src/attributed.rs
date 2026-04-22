@@ -81,21 +81,21 @@ impl AttributedMesh {
     /// Returns the number of vertices.
     #[inline]
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.geometry.vertex_count()
     }
 
     /// Returns the number of faces.
     #[inline]
     #[must_use]
-    pub fn face_count(&self) -> usize {
+    pub const fn face_count(&self) -> usize {
         self.geometry.face_count()
     }
 
     /// Returns `true` if the geometry has no vertices or faces.
     #[inline]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.geometry.is_empty()
     }
 

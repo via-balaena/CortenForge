@@ -87,7 +87,7 @@ impl IndexedMesh {
     /// Returns an empty mesh if either array length is not divisible by 3.
     #[must_use]
     pub fn from_raw(positions: &[f64], indices: &[u32]) -> Self {
-        if positions.len() % 3 != 0 || indices.len() % 3 != 0 {
+        if !positions.len().is_multiple_of(3) || !indices.len().is_multiple_of(3) {
             return Self::new();
         }
 
@@ -113,21 +113,21 @@ impl IndexedMesh {
     /// Returns the number of vertices.
     #[inline]
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.vertices.len()
     }
 
     /// Returns the number of faces.
     #[inline]
     #[must_use]
-    pub fn face_count(&self) -> usize {
+    pub const fn face_count(&self) -> usize {
         self.faces.len()
     }
 
     /// Returns `true` if the mesh has no vertices or no faces.
     #[inline]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.vertices.is_empty() || self.faces.is_empty()
     }
 
