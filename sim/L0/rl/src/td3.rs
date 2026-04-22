@@ -437,7 +437,7 @@ impl Algorithm for Td3 {
                     epoch_updates += 1;
 
                     // Delayed policy update + target soft updates.
-                    if total_critic_updates % hp.policy_delay == 0 {
+                    if total_critic_updates.is_multiple_of(hp.policy_delay) {
                         // Actor gradient: dJ/dθ = (1/N) Σ dQ1/da · dμ/dθ
                         // Compute current actions for the batch observations.
                         let mut batch_actions = Vec::with_capacity(hp.batch_size * act_dim);

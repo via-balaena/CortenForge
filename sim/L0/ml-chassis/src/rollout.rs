@@ -35,13 +35,13 @@ pub struct Trajectory {
 impl Trajectory {
     /// Number of recorded steps.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.rewards.len()
     }
 
     /// Whether the trajectory has zero steps.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.rewards.is_empty()
     }
 }
