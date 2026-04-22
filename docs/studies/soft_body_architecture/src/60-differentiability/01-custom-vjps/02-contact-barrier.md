@@ -35,21 +35,20 @@ The IPC ecosystem has three distinct stabilization strategies; `sim-soft` picks 
 The registration shape per the [§00 trait](00-registration.md):
 
 ```rust
-struct BarrierVjp { variant: BarrierVariant }
-
-struct BarrierState {
-    dhat: f64,          // per-pair tolerance (adaptive per Part 4 Ch 05 §01)
+struct BarrierVjp {
+    parents: Vec<u32>,      // parent Var index for d
+    d:       f64,           // captured forward value (distance)
+    dhat:    f64,           // per-pair tolerance (adaptive per Part 4 Ch 05 §01)
     variant: BarrierVariant,
 }
 
-impl CustomVjp for BarrierVjp {
-    type State = BarrierState;
-    fn forward(&self, state: &BarrierState, inputs: &[f64]) -> Vec<f64> {
-        // inputs = [d]; compute b(d, state.dhat) per state.variant; return [b].
-    }
-    fn backward(&self, state: &BarrierState, inputs: &[f64],
-                _outputs: &[f64], grad_outputs: &[f64]) -> Vec<f64> {
-        // return [grad_outputs[0] * b_prime(inputs[0], state.dhat, state.variant)].
+impl VjpOp for BarrierVjp {
+    fn op_id(&self) -> &'static str { "ipc_barrier" }
+    fn parents(&self) -> &[u32] { &self.parents }
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        // cotangent = bar_b (scalar upstream on the barrier output).
+        // parent_cotans[0] = bar_d slot (scalar).
+        // bar_d += bar_b * b_prime(self.d, self.dhat, self.variant).
     }
 }
 ```

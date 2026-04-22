@@ -16,11 +16,12 @@ pub struct NewtonStep {
 
 The `factor` field is the output of `Llt::try_new_with_symbolic(&h)?` applied to the PSD-projected Hessian at convergence. It carries the sparse Cholesky decomposition $H = L L^T$ as an owned object — not a boolean "was factored," not a borrow of the matrix, but the $L$ factor itself with its supernodal structure, permutation, and back-substitution kernels. The faer type `faer::sparse::linalg::solvers::Llt<f64>` implements the `Solve` trait from `faer::linalg::solvers`, which exposes both a `solve` method (returning an owned solution) and a `solve_in_place` method (writing back-substitution output over the RHS buffer); both can be called any number of times on the same factor against different right-hand sides.
 
-The step's tape node owns the `factor` and `dr_dtheta` fields via the [Ch 01 §00 registration API](../01-custom-vjps/00-registration.md)'s `State` — concretely:
+The step's tape node owns the `factor` and `dr_dtheta` as struct fields on the [Ch 01 §00 registration API](../01-custom-vjps/00-registration.md)'s `VjpOp` impl — concretely:
 
 ```rust
-struct BackwardEulerState {
-    factor: Llt<f64>,                   // forward's last factorization
+struct BackwardEulerStepVjp {
+    parents:   Vec<u32>,                // parent Var indices (x_prev, v_prev, theta)
+    factor:    Llt<f64>,                // forward's last factorization
     dr_dtheta: SparseColMat<f64>,       // residual Jacobian w.r.t. theta
     // ... enough state for dr/dx_{n-1}, dr/dv_{n-1} composition ...
 }
@@ -30,38 +31,34 @@ captured at the time the forward step finishes and released when the tape is dro
 
 ## Backward: one solve per upstream adjoint
 
-The backward closure fires once per tape backward pass per step. It receives an upstream adjoint $\bar x^\ast$ on the step's output and produces gradients flowing back into the step's inputs — a back-substitution followed by a sparse-matrix contraction per input group:
+The `vjp` method fires once per tape backward pass per step. It receives an upstream cotangent $\bar x^\ast$ on the step's output and writes gradients into the parent cotangent slots — a back-substitution followed by a sparse-matrix contraction per parent:
 
 ```rust
-impl CustomVjp for BackwardEulerStepVjp {
-    type State = BackwardEulerState;
+impl VjpOp for BackwardEulerStepVjp {
+    fn op_id(&self) -> &'static str { "backward_euler_step" }
+    fn parents(&self) -> &[u32] { &self.parents }
 
-    fn backward(
-        &self,
-        state: &BackwardEulerState,
-        _inputs: &[f64],        // x_prev, v_prev, theta flattened
-        _outputs: &[f64],       // x^*
-        grad_outputs: &[f64],   // upstream adjoint bar_x_star
-    ) -> Vec<f64> {
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
+        // cotangent = upstream bar_x_star on the post-step state, shape [n_dof].
+        // parent_cotans = [bar_x_prev, bar_v_prev, bar_theta] — slots to accumulate into.
+
         // (1) back-substitution: lambda = A^{-1} bar_x_star.
-        let mut lambda = grad_outputs.to_vec();
-        state.factor.solve_in_place(&mut lambda);
+        let mut lambda = cotangent.clone();
+        self.factor.solve_in_place(&mut lambda);
 
-        // (2) contract lambda with -(dr/dtheta)^T -> bar_theta.
-        let bar_theta = -state.dr_dtheta.transpose() * &lambda;
+        // (2) accumulate -(dr/dtheta)^T * lambda into bar_theta slot.
+        parent_cotans[2].sub_assign(&(self.dr_dtheta.transpose() * &lambda));
 
-        // (3) parallel contractions compute bar_x_prev and bar_v_prev
-        //     from lambda against the inertial-block Jacobians (omitted).
-
-        // Return concatenated [bar_x_prev, bar_v_prev, bar_theta] as
-        //     the gradient slice aligned to the flattened `inputs`.
+        // (3) accumulate bar_x_prev and bar_v_prev from lambda against
+        //     the inertial-block Jacobians into parent_cotans[0], parent_cotans[1]
+        //     (omitted).
     }
 }
 ```
 
 Line 1 is the back-substitution — `solve_in_place` applies $L^{-T} L^{-1}$ to the RHS in place against the already-factored matrix. Line 2 is a sparse-matrix-transpose-vector product: the forward stored `dr_dtheta` directly at convergence via the `residual_jacobian_theta` assembly call in [Ch 00 §01](../../50-time-integration/00-backward-euler/01-newton.md)'s `NewtonStep` pattern, so the backward closure consumes the pre-assembled matrix without re-running any adjoint machinery. The per-element material-parameter columns come out of the same closed-form per-element $\partial f^e_\text{int}/\partial \mathbf{p}_e$ expressions that the [FEM assembly VJP](../01-custom-vjps/01-fem-assembly.md) uses for its own backward; the contact-parameter columns (if any $\theta$ component adjusts contact parameters like per-pair $\hat d_k$) come out of the barrier-derivative formulas the [contact-barrier VJP](../01-custom-vjps/02-contact-barrier.md) uses. The matrix is sparse because the residual's dependence on each $\theta$ component is local — one material-parameter entry per element touches only that element's rows; one contact-pair $\hat d_k$ touches only the rows of that pair's endpoints.
 
-If the same tape node's output is consumed by more than one downstream path (a rollout objective summed across timesteps is the canonical case), the chassis backward traversal accumulates every upstream into a single $\bar x^\ast$ before firing this closure, per the [§00 registration API](../01-custom-vjps/00-registration.md)'s group semantics. One closure invocation, one back-substitution, regardless of how many downstream paths contributed.
+If the same tape node's output is consumed by more than one downstream path (a rollout objective summed across timesteps is the canonical case), the chassis backward traversal accumulates every upstream into a single $\bar x^\ast$ before firing the `vjp` method, per the [§00 registration API](../01-custom-vjps/00-registration.md)'s cotangent-accumulation semantics. One `vjp` invocation per tape backward, one back-substitution, regardless of how many downstream paths contributed.
 
 ## Cost: backward pays for back-substitution, not factorization
 

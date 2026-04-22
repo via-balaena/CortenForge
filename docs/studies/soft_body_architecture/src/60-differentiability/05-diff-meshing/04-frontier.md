@@ -37,7 +37,7 @@ Porting the visibility-boundary treatment from rendering to FEM topology changes
 
 Both options are multi-year research engagements. The book commits to neither in Phase A–I. What the book does commit to is the architectural posture that makes either option a *drop-in extension* rather than a rewrite:
 
-- **The [chassis VJP registration API](../01-custom-vjps/00-registration.md) is extensible.** A volumetric-DMTet VJP (Option A) or a boundary-integral VJP (Option B) both land as new `CustomVjp` implementations on the existing `register_custom_vjp` surface. No chassis refactor.
+- **The [chassis VJP registration API](../01-custom-vjps/00-registration.md) is extensible.** A volumetric-DMTet VJP (Option A) or a boundary-integral VJP (Option B) both land as new `VjpOp` implementations on the existing `push_custom` surface. No chassis refactor.
 - **The [`GradientEstimate` handshake](../../appendices/01-glossary.md#gradientestimatenoisy-variance) is variance-aware.** A successful Option B deployment returns `Exact` on topology crossings where the FD wrapper previously returned `Noisy { variance }`; the outer optimizer sees the transition as a noise-floor reduction, not as an API change.
 - **The [topology-fixed-per-episode framework](../05-diff-meshing.md) is option-agnostic.** Inside an episode, gradients flow through fixed-topology IFT and time-adjoint; between episodes, state transfer and re-mesh happen. Whichever research option closes the topology-crossing gap, the episode framework around it is unchanged.
 
