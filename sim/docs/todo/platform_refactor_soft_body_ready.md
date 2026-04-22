@@ -432,6 +432,52 @@ Symptom fix (separate hygiene commit): workspace clippy auto-fixes across 4 crat
 - MJCF `MjcfGeom` NaN/Inf gap — post-D sweep candidate; orthogonal-crate.
 - F.1 grader package-scoping fix implementation — queued for Group F proper.
 
+### Group E
+
+**Status:** E.1 locked. E.2–E.5 remaining (sim-therm-env, autograd_policy, autograd_layers, sim-rl, then Group E close). Recommend-first cadence held; broader chassis-export inventory grep applied before lock per Option B risk-mitigation walk; D.4.b hygiene-commit precedent reused for sim-opt's dep-chain clippy bleed.
+
+**E.1 — sim-opt breaking-change walk (2026-04-22).** sim-opt is **not affected by any locked A/B/C/D decision at its public API surface.** Zero code changes required for migration; ships independently of any future chassis refactor PR.
+
+**Inventory** (Cargo.toml dep direction verified per pattern #8):
+- Prod deps: `sim-ml-chassis`, `sim-thermostat`, `rand`, `serde`, `thiserror`.
+- Dev deps: `sim-core`, `sim-mjcf`, `sim-rl`, `approx`.
+- Chassis surfaces consumed (prod): `Algorithm`, `ArtifactError`, `Competition`, `CompetitionResult`, `CURRENT_VERSION`, `EnvError`, `EpochMetrics`, `Policy`, `PolicyArtifact`, `TaskConfig`, `TrainingBudget`, `TrainingCheckpoint`, `VecEnv`, `collect_episodic_rollout`. Dev-only adds (via sim-rl re-exports + chassis directly): `Activation`, `NetworkKind`, `PolicyDescriptor`, `RunResult`, `LinearPolicy`, `reaching_2dof`, `ActionSpace`, `ObservationSpace`, `Cem`, `CemHyperparams`. `sim-thermostat::prf::splitmix64` is the only non-chassis prod surface.
+
+**Breaking-change intersection (explicit yes/no per locked decision):**
+
+| Locked decision | Touches sim-opt? | Why |
+|---|---|---|
+| A.1 `Tensor<T>` generic | **No.** | Zero `Tensor` sites in sim-opt src + tests (narrow + broader grep against full chassis export list). All Tensor contact hidden behind `VecEnv` opacity + `collect_episodic_rollout`'s `&[f32] → Vec<f64>` closure boundary. A.1's sub-decision B-2 keeps `VecEnv`/`Policy`/`TensorSpec` f32-concrete (no type-parameter threading); insulation is structural, not coincidental. |
+| A.2 faer | No | Gradient-free; no factor-on-tape; no faer dep candidate. |
+| A.3 nalgebra | No | Zero nalgebra usage in sim-opt. |
+| A.4 IEEE754 / NaN / tolerances | No surface changes | sim-opt already compliant: fitness = f64 scalar reductions, no NaN/Inf system boundary, no centralized tolerance leak. |
+| B.1 vector-aware tape | No | Zero `Tape` usage (grep). Gradient-free. |
+| B.1.a / B.2 `VjpOp` / `push_custom` | No | Zero `register_vjp` / `push_custom` usage. |
+| B.3 `Differentiable` placement | No | Zero `Differentiable` / `DifferentiablePolicy` usage; SA / richer-SA / PT operate on `Policy` base trait only. |
+| B.4 checkpointing / time adjoints | No | SA / PT have no time-adjoint surface; gradient-free Metropolis loop. |
+| B.5 / B.5.a GPU tape / `GpuScalar` | No | CPU-only (no wgpu in deps). |
+| C.1–C.4 GPU cross-call state | No | CPU-only. |
+| D.1 `Solver::replay_step` | No | Zero `Solver` usage. |
+| D.2.a `ForwardMap` purity | No | Zero `ForwardMap` usage. |
+
+**Migration path:** zero code changes. Public API unchanged.
+
+**PR sequencing:** independent. sim-opt does not require bundling with any chassis refactor PR. Can ship before, during, or after upstream A.1 refactor without consumer-side intervention.
+
+**Pre-decision verification (Option B per E.1 risk-mitigation walk).**
+- **Ground-truth grade baseline** via `cargo xtask grade sim-opt` (per `feedback_ground_truth_via_tool.md`): pre-hygiene F on Clippy (8 warnings — 2 sim-opt-own at `sim/L0/opt/src/analysis.rs:631` `manual_is_multiple_of` + 6 transitive-bleed via F.1 grader-scoping bug: `sim-ml-chassis/rollout.rs` len/is_empty `missing_const_for_fn`, `sim-ml-chassis/tensor.rs` ndim/len/is_empty `missing_const_for_fn`, `sim-rl/td3.rs:440` `manual_is_multiple_of`). Post-hygiene `f614cd77` re-grade: A across all automated criteria (Coverage 94.2% A+, Documentation A, Clippy A, Safety A, Dependencies A, Bevy-free A).
+- **Broader inventory grep** against the full `sim_ml_chassis::lib.rs` re-export list (~50 identifiers): zero additional surfaces beyond the locked-decision keyword sweep. `Activation` and `NetworkKind` confirmed pure-enum (no Tensor/Tape exposure); used in `analysis.rs` `mock_run_result` test helper only. `ActionSpace` / `ObservationSpace` consumed via builder pattern in test fixtures; the Tensor-typed `.apply()` / `.extract()` methods are not called from sim-opt.
+
+**E.1 → Group F queued item (F.2 candidate, audit-driven).** Chassis refactor PR pre-merge validation. When chassis A.1 (or any change touching `VecEnv` / `Policy` / `Algorithm` internals) ships, re-run sim-opt's `#[ignore]`-gated `d2c_sr_rematch{,_richer_sa,_pt}.rs` fixtures with `--release` to verify `(best_outcome, final_outcome)` classifications against the published Ch 51-55 study's pre-squash tag (`ml-chassis-post-impl-pre-squash`). Cost: ~30-60 min per fixture × 3 = ~1.5-3h on MBP. Catches silent RNG-consumption reorder that mechanical-rename refactor shouldn't introduce but could; option C from the E.1 risk-mitigation walk, deferred to natural validation timing rather than paid pre-emptively. Natural home: Group F build/test/CI infrastructure scope.
+
+**E.1 → Audit-doc revision-pass finding (caught pre-commit, pattern #8 discipline).** A.1's "Downstream work (Group E)" paragraph at `platform_refactor_soft_body_ready.md` line 78 reads "every RL consumer gains a type parameter at `Tensor` sites (`sim-rl`, `sim-opt`, `sim-therm-env`, `AutogradPolicy`/`AutogradValue` forward signatures)." Overstates for sim-opt specifically: zero Tensor sites in sim-opt src + tests means the "type parameter at Tensor sites" claim has zero applicable sites in sim-opt. The remaining named consumers (sim-rl, sim-therm-env, `AutogradPolicy`/`AutogradValue`) are walked at E.2–E.4; A.1's prediction stands for those (TBD per their walks). Inline edit deferred to Group E close (E.5) — annotating one consumer's audit entry inline at A.1 is awkward; a single E-close clarification footnote is cleaner.
+
+**E.1 does not lock:**
+- E.2 sim-therm-env walk — separate; ThermCircuitEnv is integration-heavy with a different breaking-change profile.
+- F.1 grader-scoping fix — Group F.
+- F.2 chassis-refactor pre-merge fixture-regression validation — queued for Group F per the heads-up above.
+- Any sim-opt internal refactoring (the crate is grade-A and the dual-metric pipeline shipped per memory PR #190; out of scope).
+
 ### Cross-cutting determinism audit
 
 Cross-cutting pass over each group's locked decisions against `ForwardMap`'s determinism-in-θ contract (`110-crate/02-coupling/03-ml-chassis.md` §"Determinism-in-θ and the cached-tape contract") and A.4 §4 ("algorithm-output, not bit-exact; same θ on same machine on sequential path bit-reproducible; parallel paths accept non-associativity; cross-platform libm divergence within 5-digit gradcheck tolerance"). Each entry lands in one of two authorized categories: *preserves determinism because X* or *weakens within tolerance Y*. No silent weakening; no third "may weaken later" category.
@@ -567,6 +613,12 @@ A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck transitively covers
 **D.4 — IO ingress: URDF geometry NaN/Inf validation.** Preserves `ForwardMap` determinism contract trivially by closing an earlier boundary. `validate_geometry` is a pure function of `&UrdfRobot` with zero cross-call state — no new determinism surface introduced. The gap it closes was not itself a determinism leak (NaN-propagating geometry would produce NaN gradients, catchable by gradcheck at the 5-digit bar) but an earlier-boundary hygiene win; rejecting at URDF ingress gives clearer error messages before downstream mesh/collision code produces confusing failures. Matches A.4 §1's validate-at-system-boundary commitment directly.
 
 A.4 §4 tolerance band unchanged. D.4.b's workspace clippy hygiene (const-fn promotions, `is_multiple_of` substitutions) is determinism-neutral — `const fn` is a compile-time-evaluability assertion, no runtime semantic change; `n.is_multiple_of(3)` and `n % 3 == 0` are semantically equivalent for `usize` inputs with a nonzero divisor, which is all the hygiene sites satisfy. **No silent weakening.**
+
+**E.1 — sim-opt as gradient-free consumer.** Preserves `ForwardMap` determinism contract trivially: sim-opt does not participate in the contract at all. Its determinism surface is Metropolis-accept/reject deterministic-in-RNG-seed (per chain, per epoch); fitness evaluation flows through `evaluate_fitness(env, policy, params, max_episode_steps)` (`sim/L0/opt/src/algorithm.rs:192-213`) which calls `collect_episodic_rollout` after `env.reset_all()`. Purity-in-θ at sim-opt's fitness-function level rests on `VecEnv::reset_all` being deterministic-for-seed and `Policy::set_params` + `Policy::forward` being pure-in-(params, obs) — both upstream-consumer contracts ratified at E.2/E.4 (sim-rl, sim-therm-env), not new sim-opt surface. sim-opt's pass-through consumption of chassis introduces no determinism surface of its own.
+
+E.1's hygiene commit `f614cd77` (workspace clippy: 5 × `missing_const_for_fn` in sim-ml-chassis, 1 × `manual_is_multiple_of` in sim-rl, 1 × `manual_is_multiple_of` in sim-opt) is determinism-neutral by the same argument as D.4.b's parallel hygiene at `d12a5e73` — `const fn` is compile-time-evaluability, and `n.is_multiple_of(k)` ≡ `n % k == 0` for nonzero usize divisors (sim-opt's median uses constant `k = 2`; sim-rl's td3 policy-delay check uses `hp.policy_delay`, where `% policy_delay` would already be UB if `policy_delay == 0` so the carry-over preserves the existing precondition).
+
+A.4 §4 tolerance band unchanged. **No silent weakening.**
 
 ## Tomorrow's gameplan
 
