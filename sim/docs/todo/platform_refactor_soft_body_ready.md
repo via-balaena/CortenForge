@@ -1,6 +1,6 @@
 # Platform refactor — soft-body readiness
 
-**Status:** Scoping phase. Contents tonight are the **audit gameplan only** — the actual inventory, book-vs-code diff, breaking-change enumeration, and sequencing work begins next session. This memo is the parking position.
+**Status:** **Audit closed 2026-04-22** — six groups walked (A–F); all sub-decisions locked. Exit product: a PR-sized-chunk dependency graph captured under Group F shipping-strategy as **one big implementation PR** bundling chassis refactor (A.1 + B.1 + E.1/E.2/E.3/E.4 consumer migrations) + grader infrastructure (F.1 + F.3) + A.4 §1 compliance sweep. User sequence next: audit branch squash-PR → merge to main → pull main → new implementation branch → implement per F shipping-strategy internal commit ordering.
 
 **Branch:** `feature/platform-refactor-audit`.
 
@@ -678,7 +678,7 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 
 ### Group F
 
-**Status:** F.1, F.2, F.3, workspace hygiene placement, implementation-PR-shipping-strategy locked (2026-04-22). Group F close + Audit close — remaining.
+**Status:** F.1, F.2, F.3, workspace hygiene placement, implementation-PR-shipping-strategy locked. Group F close ratified (2026-04-22). **Group F closed.**
 
 **F.1 — grader package-scoping fix (2026-04-22).** `grade_clippy` at `xtask/src/grade.rs:834-898` filters JSON `compiler-message + warning|error + non-empty-spans` diagnostics without checking whether any span originates in the target crate. Structural fix: add a disjunctive `any_in_crate` filter immediately after the empty-spans check at line 858, matching the `grade_coverage` line-721 convention (`if !filename.contains(crate_path) { continue; }`). **Scope locked; implementation ships on the new implementation branch after the audit PR merges**, not as a commit on the audit branch itself — the three precursor code commits already on this branch (`d12a5e73` / `f614cd77` / `3a45d50f`) were state-cleanup-to-enable-decisions; F.1 is new tooling with grader unit tests + Option-B sweep, appropriately scoped to its own implementation-branch work. Shape (standalone PR vs. part of a larger implementation bundle) is governed by the implementation-PR-shipping-strategy sub-item, still pending.
 
@@ -782,6 +782,8 @@ Squash-merge collapses the feature-branch commits into a single main-line commit
 - A.4 §1 compliance-sweep scope growth — if builder-setter audit surfaces additional gaps beyond sim-therm-env + MjcfGeom, those fold into the same PR.
 - Further splitting if the PR exceeds reviewer-tolerable size — if during implementation the PR grows beyond comfortable single-review size, split at chassis / non-chassis boundary is the clean cut. Revisit at implementation time.
 - Post-impl follow-up work (walking-skeleton memo rewrite + skeleton code) — explicit post-impl-PR work per user sequence lock; not part of this PR.
+
+**Close-out summary.** Five Group F sub-decisions placed: F.1 grader package-scoping fix (structural; disjunctive `any_in_crate` filter in `grade_clippy`, matches `grade_coverage` line-721 convention; ships as first post-audit impl-branch work); F.2 three-tier chassis-refactor pre-merge validation protocol (documentation-primarily placement; tier outputs pasted in PR description per commitment ritual; tier (c) runs pre-merge + post-squash against fresh pre-squash tag); F.3 `CrateProfile::IntegrationOnly` via Cargo.toml metadata opt-in (sim-therm-env + sim-conformance-tests Coverage → NotApplicable; matches Example / Xtask profile precedent); workspace hygiene placement (audit-branch auto-fix commit `b72caf4c` clearing 23 warnings across mesh-lattice + mesh-measure + sim-gpu; sim-gpu was pickup-prediction expansion not previously surfaced in E-series walks); implementation-PR-shipping-strategy (one big implementation PR bundling chassis + grader + A.4 sweep per CI-cost arithmetic: 40-min savings vs. three-PR split). **Hygiene-then-decision pattern: 0 of 5 Group F sub-decisions triggered it** — F.1 grader fix itself is the meta-cause of the pattern, so Group F addressing F.1 eliminates the trigger going forward. Workspace hygiene commit `b72caf4c` is distinct: workspace-quality-cleanup-at-audit-close, not precursor-to-a-walk (recorded as explicit distinction from `d12a5e73` + `f614cd77` precursor-hygiene precedents). Cadence held pickup-memo prediction ("longer than E.5, possibly shorter than E.1-E.4") — 7 commits this session; 5 decisions + 1 drift-fix + 1 hygiene fix; no specialist-depth detours. **Group F closed.**
 
 ### Cross-cutting determinism audit
 
@@ -968,6 +970,29 @@ A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck not in play at E.3 
 5. *Non-participation in custom-VJP surface.* Zero `push_custom` / custom `VjpOp` calls in sim-rl. ppo.rs's local scalar `gaussian_log_prob` helper (line 188) is a fold of f64 `log` + `mul` + `add` — pure scalar function, no Tape contact. sac.rs's `sim_ml_chassis::stats::gaussian_log_prob` import is the scalar-flavored chassis helper (distinct from `autograd_layers::gaussian_log_prob` which is tape-flavored per E.3's separation finding). B.1.a/B.2's custom-VJP author contract (chassis `VjpOp` docstring, Group B close queued) is a new-surface contract with zero sim-rl-side users; it does not apply to sim-rl migration determinism.
 
 A.4 §4 tolerance band unchanged. **No silent weakening.**
+
+## Audit close (2026-04-22)
+
+Six groups walked, all decisions locked:
+- **Group A** (numerical/type foundations + numerical policy) — A.1 `Tensor<T>` generic with f32/f64 split; A.2 faer adoption deferred to sim-soft creation; A.3 nalgebra status-quo confirmed; A.4 IEEE754/NaN/tolerances four-section policy.
+- **Group B** (autograd platform) — B.1 vector-aware tape (scalar-sugar-preserved implementation path); B.1.a/B.2 `VjpOp` + `push_custom` custom-VJP surface; B.3 `Differentiable` + `CpuTape` placement (sim-soft side); B.4 checkpointing + time-adjoint placement (sim-soft); B.5/B.5.a GPU tape + `GpuScalar` deferred.
+- **Group C** (GPU backends) — C.1 GPU VJP author contract; C.2 Preconditioner cross-call cache; C.3 `GpuTensorPool` acquire-use; C.4 sim-gpu crate stays separate.
+- **Group D** (cross-crate contracts) — D.1 `Solver::replay_step`; D.2.a `ForwardMap` purity + D.2.b-d `Observable`/Material/Element/Mesh placement; D.3 coupling handshakes; D.4 IO ingress (URDF inline fix + MJCF queued); D.5 cross-cutting determinism ratified.
+- **Group E** (consumer compatibility) — E.1 sim-opt zero-changes (independent); E.2 sim-therm-env A.1-only mechanical (bundled-consumer); E.3 autograd modules bundled-internal (B.1 scalar-sugar preserves zero-change); E.4 sim-rl independent type-inference; E.5 consolidation footnote at A.1 line 78 + close-out.
+- **Group F** (build/test/CI infrastructure) — F.1 grader package-scoping; F.2 three-tier pre-merge validation; F.3 IntegrationOnly profile; workspace hygiene; shipping-strategy.
+
+**Exit product: one big implementation PR.** All platform-refactor work bundles into a single implementation PR per Group F shipping-strategy:
+- Chassis A.1 `Tensor<T>` generic + B.1 vector-aware tape
+- E.1/E.2/E.3/E.4 consumer migrations (E.2 mechanical rename is the only non-zero code surface)
+- F.1 grader clippy filter + 3 unit tests
+- F.3 `CrateProfile::IntegrationOnly` + 2 unit tests + 2 Cargo.toml annotations
+- A.4 §1 compliance sweep (sim-therm-env builder setters + MjcfGeom NaN/Inf)
+- F.2 tier outputs pasted in PR description
+- Pre-squash tag per `feedback_pre_squash_tag.md` convention
+
+**User sequence next.** Audit branch squash-PR → merge to main → pull main → new implementation branch → implement per F shipping-strategy internal commit ordering → F.2 tier (c) run twice (pre-merge + post-squash against pre-squash tag) → squash-merge implementation PR → walking-skeleton memo rewrite + skeleton code as downstream post-implementation work.
+
+**Cross-walk statistics.** 17+ real findings flagged across walks (bug audit + line-78 prediction reconciliations + F.1 grader-scoping root cause + A.4 §1 compliance gaps + Coverage F structural cases + sim-gpu hygiene expansion). Hygiene-then-decision pattern: 3 of 5 D-and-E walks applied (D.4.b + E.1 + E.2); 0 of 5 F sub-decisions applied (Group F eliminated the trigger via F.1). Pattern #8 drift-catches pre-commit: consistent across walk-close cycles (line-cite drifts + mesh-count drifts). Revision-pass + post-commit-sanity-sweep discipline held throughout.
 
 ## Tomorrow's gameplan
 
