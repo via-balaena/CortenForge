@@ -330,7 +330,7 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 
 ### Group D
 
-**Status:** D.1, D.2, D.3, D.4 locked. D.5 (close) remaining.
+**Status:** D.1, D.2, D.3, D.4 locked. D.5 close ratified (2026-04-22). Cross-cutting determinism audit complete across all D sub-decisions; post-commit sanity sweep for URDF API renames returned zero stale references. **Group D closed.**
 
 **D.1 — `Solver` trait docstring + `replay_step` signature (2026-04-22).** Substance pre-locked by B.4; D.1 closes the signature and determinism-contract commitments as a single book edit at §110 Ch 01 `00-core.md`.
 
