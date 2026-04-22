@@ -244,9 +244,30 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 - Phase E build-sequence ordering beyond book-committed (chassis GPU → sim-rl adoption → sim-soft consumption → sim-opt Phase F) — Group E/F.
 - Whether sim-rl picks up `gpu` feature in Phase A–I — Group E migration timing. User has flagged it should land sooner rather than later.
 
+### Group C
+
+**Status:** C.1 locked. C.2, C.3, C.4 pending.
+
+**C.1 — GPU VJP author contract placement (2026-04-22).** Dual-surface: Rust-side docstring on `sim_ml_chassis::gpu::VjpRegistry::register` + canonical book paragraph at §80 Ch 04 §02 `02-vjp-api.md` (already live per Group B close commit `3f3b3463`) + one-line cross-reference from §80 Ch 04 §01 `01-gpu-backend.md` → §02. Substance pre-locked by B.5 walk: deterministic within A.4 §4 tolerance; forbidden modes on GPU = non-deterministic subgroup shuffle (vendor-lane-dependent), vendor-state readback, uninitialized workgroup-shared reads, non-IEEE-deterministic intrinsics beyond the A.4 §4 tolerance band.
+
+- **Why §02 is canonical and not §01.** §02's leaf topic is VJP registration at the chassis level; the author-determinism contract is a VJP-authoring concern, not a module-surface concern. Keeping canonical substance in §02 and cross-referencing from §01 avoids the duplication-drift failure mode that bit the canonical `00-registration.md` leaf pre-`5f94df22`.
+- **Why a Rust-side docstring as well as the book paragraph.** Symmetry with CPU B.1.a/B.2: CPU `VjpOp` trait gets a Rust-side trait docstring (queued to chassis tape refactor PR); GPU `VjpRegistry::register` gets the parallel Rust-side anchor. A user browsing `cargo doc` on the chassis crate sees the same determinism contract on both backends — preserves "one conceptual API" (B.5 locked) at the `rustdoc` surface, not just the book surface. Rust docstring is a signpost (~4 lines: one-sentence contract + 4-bullet GPU-forbidden-modes compact list + cross-ref to §02 canonical); full enumeration stays in §02.
+- **Why the §01 cross-reference.** §01's "No per-tape-instance `VjpOp` registration on GPU" callout points readers at Ch 03 §00 (recording mechanics) but not at §02 (author contract). One-sentence addition preserves navigation from the GPU-module-surface leaf to the VJP-authoring-contract leaf. Matches the existing §110 Ch 02 `03-ml-chassis.md:51` cross-reference convention (leaf-level link, no anchor fragment — sidesteps mdbook em-dash anchor uncertainty).
+- **Pre-load location note.** B.5's pre-load phrased the candidate book location as §80 Ch 04 §01; substance actually landed in §80 Ch 04 §02 during Group B close. §02 is the right home (leaf topic match); the pre-load's §01 reference was imprecise.
+- **Stress-test: does a Rust docstring on `register()` reach the right audience?** Partial — the register call site lives inside `register_builtin_vjps()`, touched briefly when a physics-op author adds a new `(KernelId, VjpKernelHandle)` pair alongside their WGSL kernel. Narrow but real audience; `cargo doc` broadens it. Recommendation stands at "both" with the Rust docstring framed as a signpost, not the canonical substance.
+- **Stress-test declined:** docstring on `VjpRegistry` type itself (not just `::register`). Mild case; duplicates signpost without adding context. Revisit if Rust-surface navigation feedback surfaces a gap at Phase E.
+
+**C.1 → Queued Rust-side docstring commitment.** `sim_ml_chassis::gpu::VjpRegistry::register` ships its determinism-contract docstring when the chassis GPU module is created (Phase E per B.5's build sequence). Not a new separate PR — lands with the module creation.
+
+**C.1 → One queued book edit (lands at Group C close).** §80 Ch 04 §01 `01-gpu-backend.md` — suffix the existing "per-tape-instance `VjpOp` registration" callout with a one-sentence cross-reference to §02. **Landed inline as part of C.1 decision** (not deferred).
+
+**C.1 does not lock:**
+- Whether `VjpRegistry` itself (type-level, not method-level) carries a docstring. Leaning against; revisit if Rust-surface navigation feedback surfaces a gap at Phase E.
+- Phase E gradcheck §03 GPU-variant deliverable — already flagged in B.5 queued edit #8 as a candidate Phase E deliverable, not a C.1 decision.
+
 ### Cross-cutting determinism audit
 
-Final pass over locked B decisions against `ForwardMap`'s determinism-in-θ contract (`110-crate/02-coupling/03-ml-chassis.md` §"Determinism-in-θ and the cached-tape contract") and A.4 §4 ("algorithm-output, not bit-exact; same θ on same machine on sequential path bit-reproducible; parallel paths accept non-associativity; cross-platform libm divergence within 5-digit gradcheck tolerance"). Each entry lands in one of two authorized categories: *preserves determinism because X* or *weakens within tolerance Y*. No silent weakening; no third "may weaken later" category.
+Cross-cutting pass over each group's locked decisions against `ForwardMap`'s determinism-in-θ contract (`110-crate/02-coupling/03-ml-chassis.md` §"Determinism-in-θ and the cached-tape contract") and A.4 §4 ("algorithm-output, not bit-exact; same θ on same machine on sequential path bit-reproducible; parallel paths accept non-associativity; cross-platform libm divergence within 5-digit gradcheck tolerance"). Each entry lands in one of two authorized categories: *preserves determinism because X* or *weakens within tolerance Y*. No silent weakening; no third "may weaken later" category.
 
 **B.1 — vector-aware tape.** Preserves determinism on three axes.
 
@@ -327,6 +348,10 @@ Final pass over locked B decisions against `ForwardMap`'s determinism-in-θ cont
 All three pre-loads (B.5 GPU VJP author contract + these two) fall under "GPU cross-call state" — impl-side concerns (`Differentiable` / `ForwardMap`) handled by trait-contract-primary defense per B.3 audit; infrastructure-side concerns (these three) handled by Group-C-specified acquire-use / trait-contract patterns. Per queued book edit #8's framing: trait contract for impl-side, Group C specifies for infrastructure-side.
 
 **B.5.a does not surface new queued edits for Group B close.** Book edit #4 (B.5 locked) already carries the `GpuScalar` spec + CPU-f64→GPU-f32 cast note.
+
+**B.5 / C.1 — GPU VJP author contract.** Preserves `ForwardMap` determinism contract contractually, same model as B.1.a/B.2 (CPU `VjpOp` trait docstring) and B.3 (`Differentiable` trait docstring). Chassis cannot enforce kernel-internal determinism at the type level on GPU any more than on CPU; discipline is trait-contract-and-gradcheck, not runtime-checked. A.4 §4's tolerance band (≤2 ULP transcendentals inside band; vendor-lane-dependent subgroup shuffle outside band, forbidden) carries over from CPU to GPU. §110 Ch 04 §03 CPU-vs-GPU gradcheck is the operational oracle per B.5's walk.
+
+Dual-surface placement (Rust docstring + book paragraph, §02 canonical, cross-references from §01 and from `VjpRegistry::register` docstring) matches the B.3 pattern: canonical source + cross-references, no duplication. Layer 3 runtime self-check was considered and declined at B.1.a/B.2 walk for CPU; same rationale applies on GPU (scope-creep risk + book-mandated gradcheck already catches high-magnitude failures). **No silent weakening.**
 
 ## Tomorrow's gameplan
 
