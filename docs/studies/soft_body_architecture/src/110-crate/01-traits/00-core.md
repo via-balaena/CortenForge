@@ -106,8 +106,7 @@ Two concrete impls: `CpuNewtonSolver<Tape = CpuTape>` (Phase B) and `GpuNewtonSo
 pub trait Differentiable {
     type Tape;
 
-    fn register_vjp<F>(&mut self, forward_key: TapeNodeKey, vjp: F)
-        where F: Fn(&Self::Tape, &Tensor<f64>) -> Tensor<f64> + Send + Sync;
+    fn register_vjp(&mut self, forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>);
 
     fn ift_adjoint(
         &self,
@@ -123,6 +122,10 @@ pub trait Differentiable {
 ```
 
 `Differentiable` is a registry, not a hot-path trait. It hands out `TapeNodeKey`s that `Material`, `Element`, and `ContactModel` VJPs register against; it replays them in `ift_adjoint` and `time_adjoint`. The associated `Tape` type matches the `Solver::Tape` type so forward and backward share one tape representation.
+
+`Differentiable`'s `&mut self` on `forward` / `backward` admits *intra-call* mutability: the expected pattern is `forward` factoring the Hessian and stashing it in impl fields, `backward` reusing the factor for the IFT back-substitute, the tape dropping the whole chain at end of scope. Impl-field state that is scratch-across-one-call — factor stash, cached Jacobian pattern, line-search diagnostics, [time-adjoint checkpoint payloads](../../60-differentiability/03-time-adjoint.md) — is expected and load-bearing.
+
+*Cross-call* state — anything readable in a later `evaluate` call and affecting output — is forbidden. A preconditioner cached across calls "for performance," a warm-start iterate persisting from a previous θ, per-call statistics accumulating into output-affecting decisions: all violate the [γ-locked `ForwardMap` determinism-in-θ contract](../../100-optimization/00-forward.md) and invalidate the [BayesOpt cache from Part 10 Ch 02](../../100-optimization/02-bayesopt.md). The `Differentiable` trait docstring carries this distinction as canonical contract — the chassis [`VjpOp` docstring](../../80-gpu/04-chassis-extension/02-vjp-api.md) covers below-the-tape purity; `Differentiable` impls live *above* the tape, where cross-call state is admitted by the `&mut self` signature but forbidden by contract.
 
 ## `Observable` — readout surface
 

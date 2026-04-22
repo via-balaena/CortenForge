@@ -2,7 +2,7 @@
 
 The [Ch 04 parent's Claim 1](../04-chassis-extension.md) commits the Phase E GPU extension to *extension, not replacement* — the existing `sim-ml-chassis` CPU types keep working unchanged while a new `sim_ml_chassis::gpu` module lands alongside. This leaf describes what the existing CPU autograd actually looks like today, so the GPU-extension shape of [§01](01-gpu-backend.md) is grounded in the real API surface rather than an idealized one, and [§02](02-vjp-api.md)'s backend-polymorphic VJP API is a defensible widening rather than a redesign.
 
-## The tape is f64-scalar, tape-per-forward-pass, discarded after backward
+## The tape is `Tensor<f64>`-valued, tape-per-forward-pass, discarded after backward
 
 `sim-ml-chassis::autograd` implements a minimal reverse-mode tape:
 
@@ -14,27 +14,27 @@ pub struct Tape {
 pub struct Var(u32);                   // handle into Tape::nodes, Copy, 4 bytes
 
 struct Node {
-    value:    f64,                      // forward value at this node
-    backward: BackwardOp,               // how gradients propagate to parents
+    value:    Tensor<f64>,             // forward value at this node (shape [] = scalar)
+    backward: BackwardOp,              // how gradients propagate to parents
 }
 
 enum BackwardOp {
     Leaf,                              // parameter or constant
-    Unary  { parent: u32, local: f64 },
-    Binary { lhs: u32, rhs: u32, dl: f64, dr: f64 },
-    Tanh   { parent: u32, out: f64 },  // local = 1 - out² (computed during backward)
+    Unary  { parent: u32, rule: UnaryRule },    // Neg, Tanh, Relu, Square, Ln, Exp
+    Binary { lhs: u32, rhs: u32, rule: BinaryRule }, // Add, Sub, Mul
+    Custom(Box<dyn VjpOp>),            // user-registered per Part 6 Ch 01
 }
 ```
 
 Four design properties that matter for the GPU extension:
 
-**Scalar-only `f64` values.** Every `Node::value` is one `f64`. A tensor (a policy network's weight matrix, a rollout's reward) is represented as many `Node`s, one per scalar element. This sounds inefficient versus a tensor-valued tape but pays off via simplicity: the backward rule per op is a scalar formula, not a matrix-calculus dispatch, and the whole module audits in under an hour. The scalar-per-node choice is load-bearing for the ≈3k-LOC audit surface that [Part 1 Ch 03's thesis](../../10-physical/03-thesis.md) protects.
+**`Tensor<f64>` values per node.** Every `Node::value` is a `Tensor<f64>` whose shape can be `[]` (scalar — how RL policy gradients stay) or arbitrary (vector / matrix — how sim-soft represents per-DOF residuals and per-tet stiffness blocks). Built-in primitives are element-wise on shape-matched tensors; no broadcasting or reduction inside primitives. The audit surface stays tight: each built-in op's backward rule is a closed-form element-wise formula; non-element-wise operations (Hessian factorization, SVD) route through `Custom(Box<dyn VjpOp>)` where the impl's per-invocation state carries the complexity. The ≈3k-LOC audit-surface constraint from [Part 1 Ch 03's thesis](../../10-physical/03-thesis.md) holds — tensor-valued nodes are simpler than per-element flattening for tape-heavy sim-soft workloads, not more complex.
 
 **Topologically sorted by construction.** Every `Node` only references parents already pushed to the tape. No sort pass, no cycle-detection — `backward()` is a single reverse-iterator sweep that unconditionally propagates $\bar y_\text{parent} \mathrel{+}= \text{local} \cdot \bar y_\text{self}$ via scalar add. Simpler than PyTorch's dynamic-DAG / JAX's `jit`-traced staged graph, which is the point.
 
 **Tape-per-forward-pass.** A `Tape` is constructed at the start of a forward pass, populated via method calls on `&mut Tape`, consumed by `tape.backward()`, dropped. No amortization across forward passes, no tape reuse, no pooling. Every episode's rollout builds a fresh tape.
 
-**Twelve public operations.** Nine scalar primitives (`add`, `sub`, `mul`, `neg`, `tanh`, `relu`, `square`, `ln`, `exp`) plus three fused (`sum`, `mean`, `affine`, the last being matrix-vector-plus-bias for policy MLP forward passes). The `push` method that creates a `Node` is private — users cannot extend the tape without going through one of the twelve public ops, and `sim-ml-chassis`'s CI rejects any patch that adds a new public op without the corresponding backward rule tested.
+**Twelve built-in operations plus `push_custom` for user extension.** Nine element-wise primitives (`add`, `sub`, `mul`, `neg`, `tanh`, `relu`, `square`, `ln`, `exp`) plus three fused (`sum`, `mean`, `affine`, the last being matrix-vector-plus-bias for policy MLP forward passes). User-defined ops land via `Tape::push_custom(value, Box::new(impl_of_VjpOp))` per [§02](02-vjp-api.md). The `push_basic` method that creates a primitive `Node` is private; the built-in ops are the only way to add a primitive entry, and `sim-ml-chassis`'s CI rejects any patch that adds a new built-in without the corresponding backward rule tested. `push_custom` is public because that's where sim-soft's Newton-step / IFT / IPC-barrier VJPs land.
 
 ## `Tensor` and `Var` are different types
 
@@ -47,26 +47,23 @@ The two types compose via policy layers ([chassis `autograd` module](../../110-c
 
 For the GPU extension, this separation survives: [§01 GPU backend](01-gpu-backend.md) ships a `GpuTensor<f32>` (mirror of CPU `Tensor`) and `GpuTape` (mirror of CPU `Tape`), keeping the two-type split.
 
-## The `CustomVjp` extension from Part 6 Ch 01
+## The `VjpOp` + `push_custom` extension from Part 6 Ch 01
 
-[Part 6 Ch 01 §00 registration](../../60-differentiability/01-custom-vjps/00-registration.md) commits to three additions on the CPU tape: a `BackwardOp::Custom` variant, a `CustomVjp` trait, and a `Tape::register_custom_vjp` method. These land before Phase E's GPU extension because the physics kernels ([FEM assembly](../../60-differentiability/01-custom-vjps/01-fem-assembly.md), [IPC barrier](../../60-differentiability/01-custom-vjps/02-contact-barrier.md), [IFT backward-Euler wrapper](../../60-differentiability/02-implicit-function.md), [time-adjoint wrapper](../../60-differentiability/03-time-adjoint.md)) need them on the CPU path at Phase D:
+[Part 6 Ch 01 §00 registration](../../60-differentiability/01-custom-vjps/00-registration.md) commits to two additions on the CPU tape: a `BackwardOp::Custom(Box<dyn VjpOp>)` variant and a `Tape::push_custom` method. The `VjpOp` trait itself is chassis-owned (defined alongside `Tape`), with hybrid-representation per [§02](02-vjp-api.md): built-in primitives use the sum-type variants of `BackwardOp`; user ops use `Custom(Box<dyn VjpOp>)`. These land before Phase E's GPU extension because the physics kernels ([FEM assembly](../../60-differentiability/01-custom-vjps/01-fem-assembly.md), [IPC barrier](../../60-differentiability/01-custom-vjps/02-contact-barrier.md), [IFT backward-Euler wrapper](../../60-differentiability/02-implicit-function.md), [time-adjoint wrapper](../../60-differentiability/03-time-adjoint.md)) need them on the CPU path at Phase D:
 
 ```rust
-pub trait CustomVjp {
-    type State;
-    fn forward (&self, state: &Self::State, inputs: &[f64]) -> Vec<f64>;
-    fn backward(&self, state: &Self::State, inputs: &[f64], outputs: &[f64],
-                grad_outputs: &[f64]) -> Vec<f64>;
+pub trait VjpOp: Send + Sync {
+    fn op_id(&self) -> &'static str;
+    fn parents(&self) -> &[u32];
+    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]);
 }
 
 impl Tape {
-    pub fn register_custom_vjp<V: CustomVjp>(
-        &mut self, vjp: V, state: V::State, inputs: &[Var]
-    ) -> Vec<Var>;
+    pub fn push_custom(&mut self, value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var;
 }
 ```
 
-The key property for Phase E: this API is per-tape-instance (a `CustomVjp` instance owns its `State`, gets registered into one specific `Tape` at forward time, fires its backward closure on that tape's `backward()`). The GPU analog in [Ch 03 §00 recording](../03-gpu-autograd/00-recording.md) is different — it registers pre-compiled `wgpu::ComputePipeline` handles into a *global* `VjpRegistry` at chassis init, and the tape entries reference those handles. Two different models, unified at the conceptual level by [§02](02-vjp-api.md).
+The key property for Phase E: this API is per-tape-instance — a `VjpOp` impl holds its per-invocation state as struct fields (a `faer::Llt<f64>` factor, a cached Jacobian pattern, etc.), gets boxed and pushed into one specific `Tape` at forward time, fires its `vjp` method on that tape's `backward()`, and drops with the tape. The GPU analog in [Ch 03 §00 recording](../03-gpu-autograd/00-recording.md) is different — it registers pre-compiled `wgpu::ComputePipeline` handles into a *global* `VjpRegistry` at chassis init, and the tape entries reference those handles. Two different models, unified at the conceptual level by [§02](02-vjp-api.md).
 
 ## Dependencies: nalgebra only, no ndarray
 
@@ -95,7 +92,7 @@ Four properties that the [§01 GPU backend](01-gpu-backend.md) spec carries forw
 
 ## What this sub-leaf commits the book to
 
-- **Scalar-f64 tape with 12 public ops, plus the `CustomVjp` extension from Part 6 Ch 01.** The CPU autograd implementation is ≈3k LOC on nalgebra (no ndarray); every op's backward rule is a closed-form scalar formula.
+- **`Tensor<f64>`-valued tape with 12 built-in ops plus `Custom(Box<dyn VjpOp>)` extension from Part 6 Ch 01.** The CPU autograd implementation is ≈3k LOC on nalgebra (no ndarray); every built-in op's backward rule is a closed-form element-wise formula, and user-extension VJPs land via `Tape::push_custom` with per-invocation state held as `VjpOp` impl fields.
 - **`Tensor` and `Var`/`Tape` are different types.** `Tensor` is the framework-interop data type with no autograd; `Var`/`Tape` is the autograd machinery for `DifferentiablePolicy`. The GPU extension preserves this split as `GpuTensor<f32>` + `GpuTape`.
 - **Tape-per-forward-pass, dropped after backward.** No amortization, no pooling. Simple lifetime that composes with `rayon` parallel rollouts at the rollout level, not the node level.
 - **No framework dependency.** `sim-ml-chassis` imports nalgebra, rand, serde, thiserror, sim-core, sim-mjcf, optionally bevy_ecs — nothing tensor-framework-shaped. The GPU extension keeps the same discipline (wgpu yes; Burn/candle/dfdx no).

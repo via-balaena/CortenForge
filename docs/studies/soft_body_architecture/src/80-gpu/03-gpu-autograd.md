@@ -59,9 +59,9 @@ The registration is part of `sim-soft`'s library init. New physics ops — added
 The backward pass dispatches kernels via:
 
 ```rust
-pub fn backward_pass(tape: &GpuTape, seed: GpuTensor<f64>) -> GradientMap {
+pub fn backward(tape: &GpuTape, loss_seed: GpuTensor<f32>) -> GradientMap {
     let mut grads = GradientMap::new();
-    grads.insert(tape.output_tensor_id(), seed);
+    grads.insert(tape.output_root().unwrap(), loss_seed);  // seed ∂L/∂L = 1
     // VJP kernels atomicAdd their contributions into the grad buffers
     // referenced by `grads`; no separate CPU-side accumulation.
     for entry in tape.entries().iter().rev() {
