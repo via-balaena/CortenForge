@@ -283,6 +283,24 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 - Specific AMG pattern-cache keying (on `op.pattern()`, on `(nnz, row_ptr_hash)`, etc.) — Phase-E implementation detail. Trait contract commits only to "intra-call pattern reuse is book-committed and allowed" without specifying cache structure.
 - Whether other B.4 cross-cutting-audit-predicted "likely no docstring needed" traits (`Observable`, `SdfField`) actually need docstrings — per audit habit, surface findings per trait on its walk.
 
+**C.3 — GpuTensorPool acquire-use contract (2026-04-22).** Hybrid API: `GpuTensorPool::acquire` is the default-safe zero-on-alloc path; `GpuTensorPool::acquire_uninit` is the explicit opt-out with a write-before-read kernel-author contract. Closes the B.5.a-flagged cross-call content-leakage risk at the API level — safe by default, explicit opt-in for hot-path write-every-element kernels.
+
+- **Why not pure zero-on-alloc (Option A).** Real perf cost at scene scale: peak resident set × ≈50 acquires/Newton × 5–15 iter → 25–75% of Newton-step wall-clock at 300k-DOF scenes. Pure-write-output kernels (`copy`, fresh-output elementwise transforms, explicit `zero`) are trivially safe for uninit reuse; forcing them through zero-fill burns perf for no correctness gain.
+- **Why not pure write-before-read (Option B).** Silent-footgun risk: a kernel reading uninitialized slot returns previous call's tenant data — if numerically small/zero-ish, gradcheck passes and the bug surfaces later when a high-magnitude previous value shows up. Gradcheck blind spot exactly parallel to C.2's pattern-cache-drift concern. Distributing safety-critical discipline across every kernel author fails the same "prioritize risk mitigation" steer that revised C.2.
+- **Why not debug-build poison-pattern fill (Option D).** Re-opens the Layer 3 pattern-precedent risk declined at B.1.a/B.2 walk (chassis-runtime-checks-kernel-impls scope creep); NaN/0xDEADBEEF poison can mask real numerical issues if the pattern is not carefully chosen.
+- **Why hybrid (Option C) wins.** Safe default closes the blind spot by construction; explicit opt-out is grep-able at the call site (`acquire_uninit` occurrences are the audit surface, not kernel internals). Matches Rust-idiomatic safe-default-plus-opt-out pattern (`Vec::new` / `Vec::with_capacity`, `MaybeUninit`). Two APIs map onto natural kernel taxonomy: accumulator / read-modify-write kernels (scatter-add, gradient buffers, atomic-add reductions, in-place `axpy`) use `acquire` (zeroed); pure-write-output kernels (`copy`, fresh-output elementwise transforms) use `acquire_uninit`.
+- **Placement of the write-before-read kernel-author contract.** Lives alongside C.1's GPU VJP author contract at §80 Ch 04 §02 `02-vjp-api.md` — kernel authors read one location for all GPU determinism discipline. Pool API semantics documented at §80 Ch 03 §00 `00-recording.md`. Two-location placement symmetric to C.1's dual-surface approach (substance in one canonical location, cross-reference from the other).
+
+**C.3 → Queued Rust-side docstring commitments.** Both acquire methods land with chassis GPU module creation PR at Phase E. `GpuTensorPool::acquire` — short docstring, default-safe semantics. `GpuTensorPool::acquire_uninit` — explicit write-before-read contract, cross-reference §80 Ch 04 §02.
+
+**C.3 → Two queued book edits (landed inline as part of C.3 decision).**
+- §80 Ch 03 §00 `00-recording.md` — new "Acquire-use contract" subsection between the existing "Tensor lifetime" section and "Dynamic-size tensors" section + one summary bullet in the commitment list.
+- §80 Ch 04 §02 `02-vjp-api.md` — new GPU-specific bullet under the existing "author contract — determinism across calls" section, naming `acquire_uninit` reads without write-before-read as a forbidden mode.
+
+**C.3 does not lock:**
+- Whether `acquire_uninit`'s Rust API uses an `unsafe fn` signature (safety via runtime verification not possible; discipline is contract-documented). Leaning against `unsafe` — the contract is a determinism concern, not a memory-safety concern; conflating with Rust's `unsafe` semantics would dilute the meaning. Revisit if kernel-author misuse patterns surface at Phase E.
+- Whether the pool's zero-fill is implemented via `wgpu::Queue::write_buffer` (CPU→GPU staging) or a compute-pass `zero` kernel dispatch. Phase-E implementation detail; latter is likely cheaper on device, former is simpler.
+
 ### Cross-cutting determinism audit
 
 Cross-cutting pass over each group's locked decisions against `ForwardMap`'s determinism-in-θ contract (`110-crate/02-coupling/03-ml-chassis.md` §"Determinism-in-θ and the cached-tape contract") and A.4 §4 ("algorithm-output, not bit-exact; same θ on same machine on sequential path bit-reproducible; parallel paths accept non-associativity; cross-platform libm divergence within 5-digit gradcheck tolerance"). Each entry lands in one of two authorized categories: *preserves determinism because X* or *weakens within tolerance Y*. No silent weakening; no third "may weaken later" category.
@@ -378,6 +396,12 @@ Pattern-cache-drift silent-weakening risk (a buggy impl claiming idempotent-re-s
 Phase-E `PatternCachedPreconditioner<P>` wrapper is a *future* extension carrying its own determinism argument per the B.4 Phase-H Brownian extension template — extension, not re-litigation. Pass 1 does not ship; does not pre-ratify.
 
 A.4 §4 tolerance band unchanged. §110 Ch 04 §03 CPU-vs-GPU gradcheck is the operational oracle for the trait contract, not for impl-level pattern-cache equivalence. **No silent weakening.**
+
+**C.3 — GpuTensorPool acquire-use contract.** Preserves `ForwardMap` determinism at the pool API level via a hybrid safe-default-plus-opt-out split. `acquire` returns bit-identical-to-zero buffers regardless of pool history — cross-call content leakage closed by construction. `acquire_uninit` returns undefined content with a write-before-read kernel-author contract documented at §80 Ch 04 §02; violations are kernel-author bugs, catchable in gradcheck when stale content is numerically non-zero, *explicit at the acquire call site* (grep-able audit surface).
+
+Same risk-mitigation pattern as C.2: safety-critical discipline moved from kernel-author-attention (distributed, gradcheck-blind-spot-prone) to API choice (concentrated, grep-able). Pure Option A (zero everything) declined for perf cost at scene scale; pure Option B (write-before-read always) declined for silent-footgun risk; Option D (debug-build poison-pattern) declined for Layer-3-pattern-precedent scope creep. Hybrid is the Rust-idiomatic safe-default-plus-opt-out pattern.
+
+A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational oracle for kernel-contract violations that produce within-5-digit drift; explicit `acquire_uninit` audit surface catches API-level misuse in code review. **No silent weakening.**
 
 ## Tomorrow's gameplan
 

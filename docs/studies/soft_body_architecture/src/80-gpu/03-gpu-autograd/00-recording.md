@@ -59,6 +59,23 @@ The common case — intermediate tensors in the Newton iteration are consumed by
 
 The pool implementation borrows from PyTorch's caching allocator — specifically the shape-keyed free list that avoids re-allocation on the steady-state hot path — but the tensor-lifecycle semantics are simpler because `sim-soft` does not need PyTorch's broadcast-and-strides machinery. Every `sim-soft` tensor is contiguous, its shape is known at kernel-registration time, and the backward-pass reference graph is a topologically-sorted DAG with no dynamic consumers.
 
+## Acquire-use contract
+
+The pool exposes two acquire methods: one safe-by-default, one opt-out for kernels that write every element they read.
+
+```rust
+impl GpuTensorPool {
+    pub fn acquire<T: GpuScalar>(&mut self, shape: TensorShape) -> GpuTensor<T>;         // zeroed, default
+    pub fn acquire_uninit<T: GpuScalar>(&mut self, shape: TensorShape) -> GpuTensor<T>;  // undefined content, write-before-read contract
+}
+```
+
+**`acquire` is the default path and zeros the buffer.** Kernels that scatter-add, accumulate partial contributions, or read slots they don't write (IPC barrier active-pair gradient accumulation, per-vertex residual assembly, CG inner-product reductions via atomic-add) use this path. Output buffer contents are bit-identical (all-zeros) regardless of pool history; determinism-preserving by construction. Cost is one zero-fill pass over the buffer at acquire time, paid on every reuse from the free list.
+
+**`acquire_uninit` is the opt-out for write-every-element kernels.** Kernels whose output indexing covers every slot in the buffer with a pure write — `copy` (`y = x`), fresh-output elementwise transforms (`output[i] = f(a[i], b[i])`), `zero` initialization itself — can use `acquire_uninit` to skip the zero-fill. Write-before-read is the kernel-author contract: every slot the kernel reads must first have been written by the kernel (or by a predecessor in the same command-buffer submit). Accumulator-style kernels that read-modify-write (in-place `axpy` `y += αx`, BSR SpMV output with all-zero rows, any atomic-add reduction) are NOT safe for `acquire_uninit` and use the default `acquire` path instead. Violations produce non-deterministic content leakage from the previous call's buffer tenant — a gradcheck-catchable silent-determinism hazard when the stale content is numerically non-zero. `acquire_uninit` call sites are grep-able in code review; that is the audit surface for the write-before-read contract.
+
+The kernel-author contract for `acquire_uninit` lives alongside [Ch 04 §02's `VjpOp` author contract](../04-chassis-extension/02-vjp-api.md); cross-call determinism contracts unify at one location.
+
 ## Dynamic-size tensors — the contact-pair case
 
 The IPC active-pair list ([Part 4 Ch 01](../../40-contact/01-ipc-internals/01-adaptive-kappa.md)) has a size that changes across Newton iterations — a new contact region activating can double the pair count within one step. The tape has to handle this without re-allocating the bind-group layout per iteration:
@@ -115,6 +132,7 @@ A future extension could support branching by adding a `GpuTapeEntry::Branch { c
 
 - **`GpuTapeEntry` records handles + captured scalars + dispatch size, not tensor contents.** ≈100 ns CPU recording cost per entry; zero GPU synchronization during recording.
 - **The `GpuTensorPool` ref-counts intermediate tensors and reuses buffers.** Steady-state resident set is ≈3× naive recording, matching the "≈3× steady-state not ≈50×" figure from [Ch 03 parent Claim 1](../03-gpu-autograd.md).
+- **Acquire-use contract: `acquire` (zeroed, default-safe) + `acquire_uninit` (write-before-read kernel-author contract).** Zero-fill by default closes cross-call content leakage; write-every-element kernels opt into the uninit path for a zero-fill-pass saving. Contract for `acquire_uninit` lives alongside [Ch 04 §02's `VjpOp` author contract](../04-chassis-extension/02-vjp-api.md).
 - **Dynamic-size tensors (contact pairs) are handled via per-dispatch bind-group re-creation.** The layout is stable; the binding size updates per dispatch. ≈2 μs extra driver cost per dynamic binding.
 - **Checkpoint-and-replay is the Newton-integration pattern.** Forward Newton runs in tape-off mode; one replay after convergence produces a tape of ≈50 entries representing the equilibrium evaluation (not the Newton path). Replay cost is ≈1–2 ms, negligible versus the Newton solve itself.
 - **Time-adjoint recording chains per-timestep tapes; Pass 1 scopes the chain as Phase-F implementation detail.** The primitive this sub-leaf specifies is the single-timestep tape.

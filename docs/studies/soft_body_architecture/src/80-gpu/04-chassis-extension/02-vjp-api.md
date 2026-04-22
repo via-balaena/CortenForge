@@ -149,6 +149,7 @@ Both CPU `VjpOp` impls and GPU VJP kernels must satisfy the `ForwardMap` determi
 - Readback of vendor-state or driver-internal state via extension intrinsics.
 - Uninitialized workgroup-shared-memory reads.
 - Non-IEEE-deterministic intrinsics beyond the A.4 §4 tolerance band (transcendentals at ≤2 ULP are inside the band; operations not covered by the band are not admitted).
+- Buffer-storage reads from a [`GpuTensorPool::acquire_uninit`](../03-gpu-autograd/00-recording.md) allocation without the kernel having written that slot first (or without a predecessor in the same command-buffer submit having written it). Stale content from the previous call's buffer tenant is non-deterministic; the `acquire_uninit` opt-out path trades the zero-fill pass for a write-before-read kernel-author obligation.
 
 The book-mandated [gradcheck discipline](../../110-crate/04-testing/03-gradcheck.md) catches high-magnitude failures; lower-magnitude drift within the 5-digit band is accepted per A.4 §4's parallel-path tolerance clause and does not require runtime assertion. See [§110 Ch 02 ml-chassis coupling](../../110-crate/02-coupling/03-ml-chassis.md) for the determinism-in-θ contract that grounds this.
 
