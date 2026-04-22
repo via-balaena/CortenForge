@@ -678,7 +678,7 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 
 ### Group F
 
-**Status:** F.1 locked (2026-04-22). F.2, F.3, workspace hygiene placement, implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
+**Status:** F.1, F.2 locked (2026-04-22). F.3, workspace hygiene placement, implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
 
 **F.1 — grader package-scoping fix (2026-04-22).** `grade_clippy` at `xtask/src/grade.rs:834-898` filters JSON `compiler-message + warning|error + non-empty-spans` diagnostics without checking whether any span originates in the target crate. Structural fix: add a disjunctive `any_in_crate` filter immediately after the empty-spans check at line 858, matching the `grade_coverage` line-721 convention (`if !filename.contains(crate_path) { continue; }`). **Scope locked; implementation ships on the new implementation branch after the audit PR merges**, not as a commit on the audit branch itself — the three precursor code commits already on this branch (`d12a5e73` / `f614cd77` / `3a45d50f`) were state-cleanup-to-enable-decisions; F.1 is new tooling with grader unit tests + Option-B sweep, appropriately scoped to its own implementation-branch work. Shape (standalone PR vs. part of a larger implementation bundle) is governed by the implementation-PR-shipping-strategy sub-item, still pending.
 
@@ -696,6 +696,27 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 - Workspace hygiene placement — separate Group F sub-item (fold into F.1 PR, separate post-audit hygiene PR, or additional audit-branch hygiene commit following the `f614cd77` precedent).
 - sim-conformance-tests Coverage F resolution — structurally distinct from F.3 sim-therm-env scope (sim-conformance-tests has no lib target at all; sim-therm-env has a lib target but zero `#[cfg(test)]` modules in `src/`). Flag as F.3-adjacent; decided at F.3.
 - Expansion-tree recursion widening — deferred pending a concrete false-positive case.
+
+**F.2 — chassis A.1+B.1 refactor PR pre-merge validation protocol (2026-04-22).** Three-tier validation mechanism lives in this audit doc as a runnable protocol, reproduced in the implementation PR's description at merge time (tier outputs pasted as a commitment ritual). Not a CI gate, not a new xtask subcommand. Each tier catches a distinct regression class at a distinct compute cost.
+
+**Per-tier protocol.**
+
+1. **Tier (a) — sim-ml-chassis library tests.** `cargo test --release -p sim-ml-chassis` — 362 inline `src/#[cfg(test)]` tests (zero files in tests/, confirmed inventory). Minutes. Catches intra-chassis regressions: RNG-reorder, API-shape breakage, scalar-autograd FD gradcheck at `PARITY_TOL = 1e-10` / `FD_TOL = 1e-5`. Runs locally on any PR touching `sim/L0/ml-chassis/src/`.
+
+2. **Tier (b) — consumer test suites.** `cargo test --release -p sim-rl` (44 fast tests; 13 `#[ignore]`-gated competition fixtures excluded per E.4 walk) + `cargo test --release -p sim-therm-env` (~31 fast tests across `phase2.rs` / `phase3.rs` / `experiment_1.rs` / `experiment_4.rs` / `ising_chain.rs` per E.2 walk). Minutes each. Catches consumer-side propagation through chassis trait surfaces: `VecEnv`/`Policy`/`Environment` impl signatures, `Tensor<T>` generics propagation per A.1 sub-decision B-2, `impl Environment for ThermCircuitEnv` mechanical rename at ~32 sites per E.2. Runs locally before opening any PR that touches chassis trait signatures.
+
+3. **Tier (c) — sim-opt d2c_sr_rematch fixtures.** `cargo test --release -p sim-opt --ignored d2c_sr_rematch` — 3 `#[ignore]`-gated fixtures (`tests/d2c_sr_rematch.rs` uses `#[ignore = "..."]` attribute form; `_richer_sa.rs` / `_pt.rs` use bare `#[ignore]`). ~1.5-3h total on MBP. Catches silent numerical drift vs. the post-squash `ml-chassis-post-impl-pre-squash` tag baseline from PR #190. Runs **twice**: once pre-merge against the implementation-PR HEAD to confirm `Ok(outcome)` and the matched-complexity gate holds for all 3 fixtures; once post-squash against a fresh `<implementation-branch>-pre-squash` tag (per `feedback_pre_squash_tag.md` convention) to lock the determinism anchor for future reference.
+
+**Placement decision: documentation-primarily (risk-averse call).** Protocol lives in this audit-doc entry; reproduced in implementation-PR description at merge time, including tier outputs as PR-description paste commitment. Rationale:
+- *Single-use window.* Validation exists for the chassis A.1+B.1 refactor PR specifically. After that refactor lands, future chassis changes carry different risk profiles. New CI gate or xtask subcommand outlives its narrow-use window. YAGNI.
+- *Tier (c) forces docs-primarily anyway.* ~1.5-3h compute can't cheaply run under GitHub free-tier CI; dedicated long-running-runner infrastructure is out of scope. Symmetry: keep all three tiers in the same place.
+- *PR-description paste is the ritual record.* Engineer discipline + audit-doc protocol + PR-description paste is the enforcement mechanism. Visible commitment to reviewers: "tier (c) ran, here's the output." Reviewable at merge time.
+
+**F.2 does not lock:**
+- Tier (a) CI gating — coupled to the implementation-PR-shipping-strategy decision. If shipping is "one big implementation PR," tier (a) runs once and CI-gating adds little; if shipping splits by group, tier (a) runs per-PR and CI gating is material. Revisit when shipping-strategy resolves.
+- xtask convenience wrapper (`cargo xtask validate-chassis-refactor` chaining all three tiers) — YAGNI; add trivially if implementation-PR author finds copy-paste friction material.
+- Exact pre-squash tag name — implementation-branch-specific; decided when the branch is created.
+- Tier-output artifact storage — implementation-PR author's discretion (PR-description paste is the minimum; additional artifact upload is optional).
 
 ### Cross-cutting determinism audit
 
