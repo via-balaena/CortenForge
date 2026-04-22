@@ -880,7 +880,7 @@ pollster = "0.4"
 cf-geometry = { path = "../../../design/cf-geometry" }
 sim-types = { path = "../types" }
 sim-core = { path = "../core" }
-nalgebra = "0.33"
+nalgebra = "0.34"
 log = "0.4"
 ```
 

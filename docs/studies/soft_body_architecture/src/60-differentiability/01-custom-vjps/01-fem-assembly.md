@@ -36,20 +36,20 @@ A tensor-level tape (Burn, PyTorch, JAX) compresses many scalar ops into one blo
 
 ## Registration shape
 
-The assembly VJP fits the [§00 `CustomVjp` trait](00-registration.md) with a `State` that captures the per-element $B_e$ matrices (shape-function-gradient derivatives; reference-geometry-fixed; computed once at mesh-load time and reused across the episode), the element connectivity, and the material-tangent callback $\partial P / \partial F$ that the [hyperelastic trait](../../20-materials/00-trait-hierarchy.md) already exposes:
+The assembly VJP fits the [§00 `VjpOp` trait](00-registration.md). All per-invocation state lives as struct fields on the impl — the per-element $B_e$ matrices (shape-function-gradient derivatives; reference-geometry-fixed; computed once at mesh-load time and reused across the episode), the element connectivity, the material-tangent callback $\partial P / \partial F$ that the [hyperelastic trait](../../20-materials/00-trait-hierarchy.md) already exposes, and the parent `Var` indices the tape routes cotangents to:
 
 ```rust
-struct FemAssemblyVjp { elements: ElementType }
-
-struct FemAssemblyState {
-    b_matrices: Vec<BMatrix>,               // shape per element-type + material convention
+struct FemAssemblyVjp {
+    parents:      Vec<u32>,                   // parent Var indices on the tape
+    elements:     ElementType,
+    b_matrices:   Vec<BMatrix>,               // shape per element-type + material convention
     connectivity: Arc<[ElementConnectivity]>,
-    volumes: Arc<[f64]>,                    // per-element reference volume V^e
-    material: Arc<dyn HyperelasticTangent>, // trait from Part 2 Ch 00
+    volumes:      Arc<[f64]>,                 // per-element reference volume V^e
+    material:     Arc<dyn HyperelasticTangent>, // trait from Part 2 Ch 00
 }
 ```
 
-`forward` computes $K$ from the current $x$ and $\mathbf{p}$ using the cached $B_e$'s (no tape recording). `backward` receives $\bar K$ as the upstream and returns $\bar x$ and $\bar{\mathbf{p}}$ by the single-pass composition above. The captured state is tape-lifetime-scoped per [§00](00-registration.md); the closure drops when the tape drops.
+The caller computes $K$ externally from the current $x$ and $\mathbf{p}$ using the cached $B_e$'s (no tape recording) and passes the result to `Tape::push_custom` as the forward value. The `VjpOp::vjp` method receives $\bar K$ as the upstream cotangent and writes $\bar x$ and $\bar{\mathbf{p}}$ into the parent cotangent slots via the single-pass composition above. The captured state is tape-lifetime-scoped per [§00](00-registration.md); the `Box<dyn VjpOp>` drops when the tape drops.
 
 In practice, the assembly VJP is rarely the outermost tape node. It is called from *inside* the [backward-Euler step's IFT wrapper](../02-implicit-function.md), which itself is the opaque tape node the outer graph sees. The FEM assembly adjoint is a utility that the IFT backward invokes when it needs $\partial r / \partial x$ or $\partial r / \partial \theta$ to close the adjoint linear system. The registration surface supports both usage shapes — a standalone tape-visible assembly node, or an internal utility — with the same trait and the same composition pattern.
 
@@ -58,4 +58,4 @@ In practice, the assembly VJP is rarely the outermost tape node. It is called fr
 - **Per-element adjoint formulas are hand-written, per element type.** Tet4 ships in Phase A; Tet10 in Phase C (per the [build order](../../110-crate/03-build-order.md)); Hex8 or higher-order is deferred to post-Phase-E. Each type gets an `ElementAdjoint::backward` method that owns its closed-form composition; none of them route through the chassis tape's per-scalar ops.
 - **Shape-function derivatives $B_e$ are cached at mesh-load, not recomputed per step.** Reference-geometry-fixed for Tet4; for higher-order elements with quadrature-point evaluation the $B_e$ *family* is cached (one matrix per quadrature point), not the full-reference-matrix-per-current-configuration. This matches the material-tangent API the [hyperelastic trait surface](../../20-materials/00-trait-hierarchy.md) uses.
 - **Cost commitment: backward is same-order as forward.** Regression-tested by the [gradcheck suite](../../110-crate/04-testing/03-gradcheck.md) against central finite differences at each supported element type, and benchmarked in Phase B as a ratio of wall-clock-backward to wall-clock-forward. Divergence in that ratio by more than a small constant factor is a regression that fails the release gate.
-- **The assembly VJP is an internal utility by default.** Tape-registration is optional: the IFT wrapper ([Ch 02](../02-implicit-function.md)) invokes it as a function, not as a tape-visible op. External callers who want the standalone assembly gradient (material-identification workflows in [Part 10 Ch 04](../../100-optimization/04-active-learning.md), for instance) can register it directly through [`register_custom_vjp`](00-registration.md). Both entry points use the same closed-form composition.
+- **The assembly VJP is an internal utility by default.** Tape-registration is optional: the IFT wrapper ([Ch 02](../02-implicit-function.md)) invokes it as a function, not as a tape-visible op. External callers who want the standalone assembly gradient (material-identification workflows in [Part 10 Ch 04](../../100-optimization/04-active-learning.md), for instance) can register it directly through [`push_custom`](00-registration.md). Both entry points use the same closed-form composition.

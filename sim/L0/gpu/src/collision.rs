@@ -419,7 +419,7 @@ fn log_timing(
     use std::sync::atomic::{AtomicU64, Ordering};
     static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
     let n = CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    if n % 200 == 0 {
+    if n.is_multiple_of(200) {
         let total = setup + readback + dedup;
         eprintln!(
             "  GPU trace #{n}: total={total:.1?}  setup={setup:.1?}  readback={readback:.1?}  dedup={dedup:.1?}  contacts={n_contacts}"

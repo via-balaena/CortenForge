@@ -573,19 +573,19 @@ impl Bvh {
 
     /// Returns the number of internal + leaf nodes.
     #[must_use]
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
     /// Returns the number of primitives stored.
     #[must_use]
-    pub fn primitive_count(&self) -> usize {
+    pub const fn primitive_count(&self) -> usize {
         self.primitives.len()
     }
 
     /// Returns `true` if the BVH contains no primitives.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.primitives.is_empty()
     }
 
@@ -629,7 +629,7 @@ pub fn bvh_from_mesh(mesh: &IndexedMesh) -> Bvh {
 #[must_use]
 pub fn bvh_from_triangle_mesh(vertices: &[Point3<f64>], indices: &[usize]) -> Bvh {
     assert!(
-        indices.len() % 3 == 0,
+        indices.len().is_multiple_of(3),
         "indices.len() must be a multiple of 3"
     );
 

@@ -89,6 +89,15 @@ pub enum UrdfError {
         mass: f64,
     },
 
+    /// Invalid geometry (non-finite numeric field).
+    #[error("invalid geometry for link {link_name}: {message}")]
+    InvalidGeometry {
+        /// The link with invalid geometry.
+        link_name: String,
+        /// Description of why the geometry is invalid.
+        message: String,
+    },
+
     /// File I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -149,6 +158,14 @@ impl UrdfError {
         Self::InvalidMass {
             link_name: link_name.into(),
             mass,
+        }
+    }
+
+    /// Create an invalid geometry error.
+    pub fn invalid_geometry(link_name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidGeometry {
+            link_name: link_name.into(),
+            message: message.into(),
         }
     }
 }

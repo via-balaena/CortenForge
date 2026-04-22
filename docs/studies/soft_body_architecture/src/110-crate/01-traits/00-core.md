@@ -10,7 +10,7 @@ The table lists each trait with the minimal associated-type surface the [parent 
 | `Element` | [`element/`](../00-module-layout/01-element.md) | `N(xi)`, `grad_N(xi)`, `gauss_points`, `n_dof` | generic `E: Element` per-tet | n/a — always generic |
 | `Mesh` | [`mesh/`](../00-module-layout/02-mesh.md) | `n_tets`, `tet_vertices`, `adjacency`, `quality`, `equals_structurally` | concrete `TetMesh` on hot path | `dyn Mesh` on change-detection path |
 | `ContactModel` | [`contact/`](../00-module-layout/03-contact.md) | `active_pairs`, `energy`, `gradient`, `hessian`, `ccd_toi` | generic `C: ContactModel` per-pair | `dyn ContactModel` at scene construction |
-| `Solver` | [`solver/`](../00-module-layout/04-solver.md) | `step(tape, x_prev, v_prev, theta, dt) -> NewtonStep`, associated `type Tape` | n/a — always `dyn` on the public boundary | `dyn Solver` for CPU/GPU runtime selection |
+| `Solver` | [`solver/`](../00-module-layout/04-solver.md) | `step(tape, ...) -> NewtonStep`, `replay_step(...) -> NewtonStep`, associated `type Tape` | n/a — always `dyn` on the public boundary | `dyn Solver` for CPU/GPU runtime selection |
 | `Differentiable` | [`autograd/`](../00-module-layout/07-autograd.md) | `register_vjp`, `ift_adjoint`, `time_adjoint`, `fd_wrapper` | generic hooks at VJP registration | n/a — registry, no hot path |
 | `Observable` | [`readout/`](../00-module-layout/09-readout.md) | `stress_field`, `pressure_field`, `temperature_field`, `reward_breakdown` | closed-form per-tet / per-pair / per-vertex | n/a — closed-form |
 
@@ -93,6 +93,14 @@ pub trait Solver: Send + Sync {
         dt: f64,
     ) -> NewtonStep<Self::Tape>;
 
+    fn replay_step(
+        &self,
+        x_prev: &Tensor<f64>,
+        v_prev: &Tensor<f64>,
+        theta: &Tensor<f64>,
+        dt: f64,
+    ) -> NewtonStep<Self::Tape>;
+
     fn current_dt(&self) -> f64;
     fn convergence_tol(&self) -> f64;
 }
@@ -100,14 +108,17 @@ pub trait Solver: Send + Sync {
 
 Two concrete impls: `CpuNewtonSolver<Tape = CpuTape>` (Phase B) and `GpuNewtonSolver<Tape = GpuTape>` (Phase E). Both are selectable at scene construction via `Box<dyn Solver<Tape = _>>`; the runtime dispatch cost is paid once per step, not once per Newton inner iteration. The associated `Tape` type is what lets CPU and GPU solvers each use the tape representation their VJPs are registered against — [`autograd/`](../00-module-layout/07-autograd.md) carries separate registrations for CPU closed-form and GPU compute-kernel VJPs, and the `Solver` impl picks one.
 
+`Solver::step`'s `&mut self` admits *intra-call* mutability for logging, diagnostic accumulation, and internal scratch — line-search iteration counts, Newton residual histories, per-step telemetry that does not affect the returned `NewtonStep`. *Cross-call* output-affecting state — adaptive tolerance learning from previous steps, warm-start iterates persisting across `step` invocations, cached line-search history influencing backtracking decisions — is forbidden. A `step(&mut self, ...)` impl whose return value at the same `(x_prev, v_prev, theta, dt)` depends on prior calls violates the [γ-locked `ForwardMap` determinism-in-θ contract](../../100-optimization/00-forward.md) and breaks the [checkpointed-step replay pattern from Part 6 Ch 04](../../60-differentiability/04-checkpointing.md) that the time-adjoint machinery rests on. Same mutation-discipline template as `Differentiable` (§below) and the chassis [`Preconditioner`](../../80-gpu/02-sparse-solvers/03-preconditioning.md) trait — uniform across every impl-side trait the autograd substrate consumes.
+
+`Solver::replay_step` is the pure-function counterpart called from the [checkpointed-step VJP](../../60-differentiability/04-checkpointing/00-uniform.md)'s `&self` context during backward-pass replay. Given the same `(x_prev, v_prev, theta, dt)`, `replay_step` produces the same `NewtonStep<Self::Tape>` as the original forward `step` — this is the [checkpointed-step replay contract](../../60-differentiability/04-checkpointing/02-tradeoff.md)'s "Replay is bit-reproducible given the stored primal $(x, v, \Delta t)$" commitment. No tape is written; `replay_step` has no `&mut Tape` parameter. The `factor` and `dr_dtheta` fields in the returned `NewtonStep` are the artifacts the VJP back-substitutes against; they are released by end-of-scope RAII before the VJP returns — the [tape-lifetime factor-release contract from Part 6 Ch 02 §01](../../60-differentiability/02-implicit-function/01-linear-solve.md) refined to per-VJP-call scope, since `replay_step`'s rebuilt factor is not persisted on any tape. Any `&self`-state on the impl that `replay_step` reads is constructor-state (solver config, scene references) — nothing that depends on prior call history.
+
 ## `Differentiable` — VJP registration
 
 ```rust
 pub trait Differentiable {
     type Tape;
 
-    fn register_vjp<F>(&mut self, forward_key: TapeNodeKey, vjp: F)
-        where F: Fn(&Self::Tape, &Tensor<f64>) -> Tensor<f64> + Send + Sync;
+    fn register_vjp(&mut self, forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>);
 
     fn ift_adjoint(
         &self,
@@ -123,6 +134,10 @@ pub trait Differentiable {
 ```
 
 `Differentiable` is a registry, not a hot-path trait. It hands out `TapeNodeKey`s that `Material`, `Element`, and `ContactModel` VJPs register against; it replays them in `ift_adjoint` and `time_adjoint`. The associated `Tape` type matches the `Solver::Tape` type so forward and backward share one tape representation.
+
+`Differentiable`'s `&mut self` on `forward` / `backward` admits *intra-call* mutability: the expected pattern is `forward` factoring the Hessian and stashing it in impl fields, `backward` reusing the factor for the IFT back-substitute, the tape dropping the whole chain at end of scope. Impl-field state that is scratch-across-one-call — factor stash, cached Jacobian pattern, line-search diagnostics, [time-adjoint checkpoint payloads](../../60-differentiability/03-time-adjoint.md) — is expected and load-bearing.
+
+*Cross-call* state — anything readable in a later `evaluate` call and affecting output — is forbidden. A preconditioner cached across calls "for performance," a warm-start iterate persisting from a previous θ, per-call statistics accumulating into output-affecting decisions: all violate the [γ-locked `ForwardMap` determinism-in-θ contract](../../100-optimization/00-forward.md) and invalidate the [BayesOpt cache from Part 10 Ch 02](../../100-optimization/02-bayesopt.md). The `Differentiable` trait docstring carries this distinction as canonical contract — the chassis [`VjpOp` docstring](../../80-gpu/04-chassis-extension/02-vjp-api.md) covers below-the-tape purity; `Differentiable` impls live *above* the tape, where cross-call state is admitted by the `&mut self` signature but forbidden by contract.
 
 ## `Observable` — readout surface
 

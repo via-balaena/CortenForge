@@ -9,15 +9,23 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Model/Data/DVector/StepError for builder thermostat wiring + Environment impl
 sim-core = { workspace = true }
+# MJCF parsing: load_model in builder.prepare() + MjcfError in ThermCircuitError
 sim-mjcf = { workspace = true }
+# LangevinThermostat + PassiveComponent/PassiveStack for the builder's physics wiring
 sim-thermostat = { workspace = true }
+# Environment/SimEnv/VecEnv/ActionSpace/ObservationSpace/Tensor for the env wrapper + builder
 sim-ml-chassis = { workspace = true }
+# Derive macro for ThermCircuitError (error.rs)
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Float tolerance assertions across phase2/phase3 unit tests
 approx = { workspace = true }
+# RL baselines — Cem/Ppo/LinearPolicy/TrainingBudget for experiment_1/experiment_4/ising_chain fixtures
 sim-rl = { workspace = true }
+# Gradient-free optimizers — Sa/RicherSa for experiment_1 + ising_chain fixtures
 sim-opt = { workspace = true }
 
 [lints]

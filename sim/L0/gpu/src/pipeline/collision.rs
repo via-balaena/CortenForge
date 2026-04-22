@@ -465,7 +465,7 @@ impl GpuCollisionPipeline {
 
     /// Number of pre-built narrowphase dispatches.
     #[must_use]
-    pub fn num_pairs(&self) -> usize {
+    pub const fn num_pairs(&self) -> usize {
         self.dispatches.len()
     }
 }

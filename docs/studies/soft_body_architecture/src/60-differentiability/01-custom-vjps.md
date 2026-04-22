@@ -4,7 +4,7 @@ A vector-Jacobian product (VJP) is the unit of work reverse-mode autograd actual
 
 | Section | What it covers |
 |---|---|
-| [VJP registration API](01-custom-vjps/00-registration.md) | The `CustomVjp` trait extension to [`sim-ml-chassis`'s tape](../110-crate/00-module-layout/07-autograd.md) — a solver kernel declares its forward and its hand-derived backward; the tape records an opaque node that fires the backward during `tape.backward()` |
+| [VJP registration API](01-custom-vjps/00-registration.md) | The `VjpOp` trait + `Tape::push_custom` extension to [`sim-ml-chassis`'s tape](../110-crate/00-module-layout/07-autograd.md) — a solver kernel passes its forward value and a boxed VJP impl; the tape records an opaque node that fires `VjpOp::vjp` during `tape.backward()` |
 | [FEM assembly VJP](01-custom-vjps/01-fem-assembly.md) | The per-element stiffness matrix assembly $K = \sum_e B_e^T\, \mathbb{C}_e\, B_e\, V^e$ — why autodiffing through it element-by-element produces a pathologically large tape, and the hand-derived adjoint that replaces it with a single reverse pass over the connectivity |
 | [Contact barrier VJP](01-custom-vjps/02-contact-barrier.md) | The IPC barrier $b(d) = -(d - \hat d)^2 \ln(d/\hat d)$ — fragile in two regimes (catastrophic cancellation at $d = \hat d$, Hessian ill-conditioning as $d \to 0^+$); the VJP evaluates the closed-form derivatives directly, per [IPC Toolkit](../appendices/00-references/00-ipc.md#ipc-toolkit), and leaves the barrier-variant choice (clamped log, quadratic log, cubic, two-stage) to a Phase B decision |
 

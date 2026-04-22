@@ -98,6 +98,14 @@ pub trait Preconditioner {
 
 CG ([§00](00-cg.md)) and MINRES ([§01](01-minres.md)) both consume `&dyn Preconditioner`; the solver doesn't care which tier is in use. Adding a new preconditioner tier (block Jacobi, polynomial, domain-decomposition, etc.) is implementing the trait plus adding a selector branch — the existing solver and solver-caller code is unchanged.
 
+## Cross-call discipline
+
+`Preconditioner` impls forbid output-affecting cross-call mutation. Intra-call state — the AMG pattern cache across Newton iterations within one timestep, per the "pattern cached, numerical rebuild cheap" commitment above — is allowed and expected. State readable in a *later* `evaluate(θ)` call is forbidden: the physics-orchestrator constructs a fresh `Box<dyn Preconditioner>` per `evaluate()` call, calls `setup(op)`, passes `&dyn Preconditioner` to the solver, and drops when the tape drops.
+
+If a Phase E benchmark shows per-`evaluate` rebuild is unworkable at scene scale, the escape hatch is a separate `PatternCachedPreconditioner<P>` wrapper whose cross-call cache is its explicit contract and its own determinism argument; cross-call state stays concentrated in one auditable type rather than diffused across every `Preconditioner` impl. Pass 1 does not ship the wrapper.
+
+Matches the cross-call discipline on [Ch 04 §02's `VjpOp`](../04-chassis-extension/02-vjp-api.md) author contract and [Part 11 Ch 01's `Solver`](../../110-crate/01-traits/00-core.md) trait docstring (queued for Group D close). Trait-contract-and-gradcheck, not runtime-checked. A.4 §4 tolerance band carries; [§110 Ch 04 §03 gradcheck](../../110-crate/04-testing/03-gradcheck.md) is the operational oracle.
+
 ## What this sub-leaf commits the book to
 
 - **Three-tier preconditioner hierarchy.** Jacobi (< 30k DOFs or matrix-free), IC0 (30k–100k DOFs), AMG (≥ 100k DOFs). Breakpoints are tunable defaults, re-measured in Phase E benchmarks.
@@ -105,3 +113,4 @@ CG ([§00](00-cg.md)) and MINRES ([§01](01-minres.md)) both consume `&dyn Preco
 - **IC0 is serial-setup on GPU in Phase E.** Parallel IC0 variants (block-coloring, Anzt-style) exist and are considered for Phase H if the setup cost proves a bottleneck; Pass 1 ships the simpler serial setup.
 - **AMG is pattern-cached across Newton iterations**, rebuilt on re-mesh. Setup amortization pays via [Ch 02 parent Claim 2](../02-sparse-solvers.md)'s preconditioner-on-tape pattern.
 - **One `Preconditioner` trait covers all tiers.** Adding a new preconditioner is implementing the trait plus a selector branch; the solver code is unchanged.
+- **Cross-call discipline: impls forbid output-affecting cross-call mutation.** Intra-call state (AMG pattern cache across Newton iterations within one timestep) is allowed; state readable in a later `evaluate()` call is forbidden. Matches the cross-call pattern on `VjpOp` and `Solver`. Phase-E `PatternCachedPreconditioner<P>` wrapper is the escape hatch if full-rebuild benchmarks unworkable; Pass 1 does not ship.

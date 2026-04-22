@@ -732,10 +732,12 @@ semi-implicit and provides energy stability that plain Euler lacks.
 Muscle activations are clamped to `[0, 1]` after integration to enforce the
 physiological range.
 
-**GPU path (removed):** The `sim-gpu` crate was removed in workspace trim
-(2026-03-19). GPU acceleration will be rebuilt when needed. The `gpu-internals`
-feature flag and `Data::integrate_without_velocity()` remain in sim-core for
-future GPU backends.
+**GPU path:** The `sim-gpu` crate was removed in workspace trim
+(2026-03-19), then re-introduced via PR #143 with the GPU physics
+pipeline scaffold. The `gpu-internals` feature flag and
+`Data::integrate_without_velocity()` in sim-core remain the integration
+seam for `sim-gpu`'s GPU integrator. See `sim/L0/gpu/src/pipeline/` and
+`GPU_PHYSICS_PIPELINE_SPEC.md` for current state.
 
 **ImplicitSpringDamper (`Integrator::ImplicitSpringDamper`):**
 

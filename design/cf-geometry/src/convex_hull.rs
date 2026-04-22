@@ -50,13 +50,13 @@ pub struct ConvexHull {
 impl ConvexHull {
     /// Returns the number of hull vertices.
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.vertices.len()
     }
 
     /// Returns the number of hull faces.
     #[must_use]
-    pub fn face_count(&self) -> usize {
+    pub const fn face_count(&self) -> usize {
         self.faces.len()
     }
 

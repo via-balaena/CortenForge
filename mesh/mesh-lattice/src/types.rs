@@ -134,13 +134,13 @@ impl LatticeResult {
 
     /// Returns the number of vertices in the lattice mesh.
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.mesh.vertex_count()
     }
 
     /// Returns the number of triangles in the lattice mesh.
     #[must_use]
-    pub fn triangle_count(&self) -> usize {
+    pub const fn triangle_count(&self) -> usize {
         self.mesh.face_count()
     }
 }

@@ -146,13 +146,13 @@ impl BeamSet {
 
     /// Returns the number of beams in this set.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.beam_indices.len()
     }
 
     /// Returns true if this set is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.beam_indices.is_empty()
     }
 }
@@ -258,13 +258,13 @@ impl BeamLatticeData {
 
     /// Returns the number of vertices.
     #[must_use]
-    pub fn vertex_count(&self) -> usize {
+    pub const fn vertex_count(&self) -> usize {
         self.vertices.len()
     }
 
     /// Returns the number of beams.
     #[must_use]
-    pub fn beam_count(&self) -> usize {
+    pub const fn beam_count(&self) -> usize {
         self.beams.len()
     }
 

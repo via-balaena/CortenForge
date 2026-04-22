@@ -96,7 +96,7 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
     }
 
     // Uservert length must be a multiple of 3 (xyz triples)
-    if !composite.uservert.is_empty() && composite.uservert.len() % 3 != 0 {
+    if !composite.uservert.is_empty() && !composite.uservert.len().is_multiple_of(3) {
         return Err(MjcfError::Unsupported(
             "Composite vertex data must have length divisible by 3".to_string(),
         ));
