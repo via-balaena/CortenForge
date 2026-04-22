@@ -64,7 +64,7 @@ impl Default for CrossSection {
 impl CrossSection {
     /// Check if the cross-section is empty (no intersection with mesh).
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 

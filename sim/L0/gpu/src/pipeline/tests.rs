@@ -1572,7 +1572,7 @@ fn t23_constraint_assembly_produces_rows() {
 
     // condim=3 → 4 rows per contact
     assert!(
-        n_constraints % 4 == 0,
+        n_constraints.is_multiple_of(4),
         "Constraint count should be multiple of 4 (condim=3 pyramidal), got {n_constraints}"
     );
 
