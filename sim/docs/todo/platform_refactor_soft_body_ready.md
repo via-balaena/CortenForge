@@ -118,7 +118,7 @@ Book edits emerge naturally from step 2:
 
 ### Group B
 
-**Status:** Partial — B.1, B.1.a, B.2, B.3, B.4 locked (B.4 2026-04-22). B.5 (GPU-tape readiness) and the cross-cutting determinism audit remain. B.4 carries one queued dependency for Group D (`Solver` replay-method signature).
+**Status:** Partial — B.1, B.1.a, B.2, B.3, B.4, B.5, B.5.a locked (B.5 2026-04-22). Cross-cutting determinism audit remains. B.4 carries one queued dependency for Group D (`Solver` replay-method signature).
 
 **Cadence shift mid-walk.** User flagged that Group B's autograd-internals depth exceeds their reps; switched to recommend-first cadence (Claude makes the call + compact why + alternatives, user checks against principles). Recorded as `feedback_recommend_first_deep_specialist.md`. Design-philosophy-adjacent calls (crate boundaries, what-belongs-where) stayed interactive.
 
@@ -190,6 +190,59 @@ Mechanism: each converged Newton step is one chassis `push_custom` node whose `V
 **B.4 does not lock:**
 - The `Solver` replay-method signature, `StepPrimal` layout, or solver-handle lifetime contract — all queued to Group D.
 - Phase-E Revolve specifics beyond "still in sim-soft, still doesn't touch chassis."
+
+**B.5 — GPU-tape readiness (2026-04-22).** Chassis acquires a GPU module behind a `gpu` feature flag. `sim_ml_chassis::gpu` owns `GpuDevice`, `GpuTensor<T: GpuScalar>`, `GpuTape<'device>`, `GpuTapeEntry`, `GpuTensorPool`, and three registries (`BindGroupLayoutRegistry`, `PipelineCache`, `VjpRegistry`). wgpu enters chassis's `[dependencies]` gated behind `gpu`. No generic `Tape<Device>` parameter, no `TapeBackend` trait — backend polymorphism lives at `SpMvOp` / `Preconditioner` trait level per book §80 Ch 04 §01.
+
+- **Why chassis and not sim-soft** (Option A beats the sim-soft-owned Option C from scope memo). Initial recommend-first call leaned toward Option C; stress-test pushback established the "one conceptual API" architectural property the book fought for is a real regression target under Option C — sim-rl wanting GPU later would either inversely depend on sim-soft, duplicate machinery, or punt to CPU. User flipped the load-bearing assumption ("sim-rl should definitely be looking at using GPU sooner than later"), tipping EV from C to A. Also aligns with B.1's "chassis grows when shared concern justifies it" — cross-consumer substrate, not physics-domain machinery (the latter being what B.3/B.4 rightly kept out).
+- **Why not a `TapeBackend` trait** (option B from scope memo): book rejects, rightly — generics thread through every consumer call site, trait-object dispatch at the tape level defeats static dispatch in hot paths.
+- **Why feature-gated:** RL CI pipelines that don't need GPU don't pull wgpu's transitive graphics-driver load. `default-features = []` on chassis's `gpu`; consumers opt in with `features = ["gpu"]`.
+
+**B.5.a — `GpuScalar` trait shape (2026-04-22).** Sealed marker trait with enum-discriminant associated const:
+
+```rust
+mod sealed { pub trait Sealed {} }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GpuScalarKind { F32, F64 /* F16 when shader-f16 use case lands */ }
+
+pub trait GpuScalar:
+    sealed::Sealed + bytemuck::Pod + Copy + Send + Sync + 'static
+{
+    const KIND: GpuScalarKind;
+}
+
+impl sealed::Sealed for f32 {}
+impl GpuScalar for f32 { const KIND: GpuScalarKind = GpuScalarKind::F32; }
+impl sealed::Sealed for f64 {}
+impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
+```
+
+- **Why f64 admission at Phase E** (revised from f32-only-preimpl after book-wide grep surfaced `GpuTensor<f64>` in §80 Ch 02 sparse-solvers). f64 is a buffer-storage scalar for compensated-summation accumulators; arithmetic still happens at f32 per book §01 mixed-precision commitment. **Scalar admission ≠ kernel availability:** `PipelineCache::lookup` returning `None` for `(KernelId, F64)` is a runtime miss, not a type-system constraint. The trait defines which types can inhabit `GpuTensor<T>`; the registry defines which `(KernelId, GpuScalarKind)` pairs have dispatch support.
+- **Why enum discriminant over `&'static str`:** pipelines compiled at chassis init per book §80 Ch 04 §01; no runtime WGSL templating. `HashMap<(KernelId, GpuScalarKind), ComputePipeline>` key wants exhaustive-matchable discriminant, not string compare. Future `F16` variant addition produces compile errors at every dispatch match site — right failure mode.
+- **Why sealed:** new GPU scalars require chassis-level WGSL kernels shipping simultaneously; sealing reflects the workflow rather than creating a new restriction.
+- **Why `bytemuck::Pod` bound:** `GpuTensor<T>` uploads via bit-cast to `&[u8]`; `Pod` is the actual correctness contract. `bytemuck` is already transitive via wgpu — direct dep behind `gpu` feature is free.
+
+**B.5 also ratifies** (all per book, all implied by Option A):
+- Registries are `GpuDevice`-owned with `'device`-lifetime borrowed by every `GpuTape`; not global statics.
+- `vjp_coverage_test` in chassis asserts every registered forward `KernelId` has a matching `VjpKernelHandle`.
+- Cross-backend tape (`AnyTapeEntry`) lives in chassis; exact enum layout is Phase-E implementation detail per book.
+- Minimal chassis-shipped kernel set per book §01: `zero`, `copy`, `axpy`, `dot`, `elementwise_mul`. Physics / MLP kernels register on top from sim-soft / sim-rl at startup.
+- Grad-of-grad out of scope on both CPU and GPU in Pass 1.
+- wgpu version pin deferred to implementation PR (A.2-style "adopt latest at impl time").
+
+**Queued book edits from B.5** (land at Group B close, bundled with B.2/B.3 queue):
+- §80 Ch 04 §01 `01-gpu-backend.md` — spec `GpuScalar` trait with the shape above; document scalar-admission-vs-kernel-existence split.
+- §80 Ch 04 §01 "Cross-backend interop" — add note that CPU-f64 → GPU-f32 marshal requires explicit precision-change cast (`GpuTensor::from_cpu_f64_as_f32`), not polymorphic.
+- §80 Ch 03 `03-gpu-autograd.md:62` — reconcile `backward_pass` seed type with `01-playback.md:8` (parent says `GpuTensor<f64>`, sub-leaf says `GpuTensor<f32>`; sub-leaf is authoritative per Phase-E-f32-default commitment).
+- §80 Ch 04 §00 `00-current-cpu.md` (from B.1/B.2 queue) — refresh "scalar-only f64, 12 public ops" to post-B.1 vector-aware tape with `Custom(Box<dyn VjpOp>)`.
+- §80 Ch 04 §02 `02-vjp-api.md` (from B.2 queue) — CPU-side `CustomVjp` sketch → `Box<dyn VjpOp>` with `op_id`/`parents`/`vjp`.
+
+**B.5 does not lock:**
+- `AnyTapeEntry` exact enum layout — Phase E implementation.
+- `Solver::replay_step` signature — Group D (unchanged by B.5: GPU solver has same `&self` VJP constraint as CPU; see B.4's queued item).
+- wgpu version pin — implementation PR.
+- Phase E build-sequence ordering beyond book-committed (chassis GPU → sim-rl adoption → sim-soft consumption → sim-opt Phase F) — Group E/F.
+- Whether sim-rl picks up `gpu` feature in Phase A–I — Group E migration timing. User has flagged it should land sooner rather than later.
 
 ## Tomorrow's gameplan
 
