@@ -330,7 +330,7 @@ impl GpuScalar for f64 { const KIND: GpuScalarKind = GpuScalarKind::F64; }
 
 ### Group D
 
-**Status:** D.1, D.2, D.3 locked. Groups D.4–D.5 remaining.
+**Status:** D.1, D.2, D.3, D.4 locked. D.5 (close) remaining.
 
 **D.1 — `Solver` trait docstring + `replay_step` signature (2026-04-22).** Substance pre-locked by B.4; D.1 closes the signature and determinism-contract commitments as a single book edit at §110 Ch 01 `00-core.md`.
 
@@ -406,6 +406,31 @@ sim-thermostat is CPU-only today (no wgpu dep per inventory Cargo.toml verificat
 - `sim-bevy` coupling walk — not in D.3 scope per audit doc's "sim-core / sim-thermostat" primary-crate naming. sim-bevy is an Observable-consumer (D.2.b), not a handshake partner; no coupling trait to audit. If a future sim-bevy surface surfaces a new cross-crate concern, walk then.
 - Whether subcycling bookkeeping inside `coupling/` (time-averaging for faster-thermostat, time-integration for faster-soft-body) needs its own mutation-discipline audit at the sub-module level. Not a trait-level concern; module-level discipline enforced by code review during Phase F implementation.
 - Fixed-point retry-cap behavior at `00-mjcf.md:24` (`handshake-uncontracted` signal triggering adaptive-Δt escape). Determinism preserved per line 74; behavior audit is a Phase F implementation concern.
+
+**D.4 — IO ingress: URDF geometry NaN/Inf validation (2026-04-22).** A.4 §1's validate-at-system-boundary commitment reaffirmed; one code change inline per A.3 / A.4 §1 precedent. First code change of the audit (D.1–D.3 were all book edits). Substance pre-locked by Group D entry inventory.
+
+**D.4.a — URDF geometry NaN/Inf gap closed inline.** `sim/L0/urdf/src/validation.rs` systematically checked mass at L209 (`!inertial.mass.is_finite()`) and inertia at L223-228 (all six tensor components), but geometry numeric fields (`Box.size`, `Cylinder.radius`/`length`, `Sphere.radius`, `Mesh.scale`) parsed into `UrdfGeometry` variants bypassed `.is_finite()` post-parse. MJCF parser was the comparison baseline (validates more at the boundary); URDF was the odd one out.
+
+Pre-commit recon (run before inline-fix decision):
+- Existing URDF fixture corpus (`sim/L0/tests/assets/mujoco_menagerie/google_barkour_{v0,vb}.urdf`, Google-authored): zero `NaN|Inf` tokens. Zero false-positive risk on existing inputs.
+- Downstream coverage: `sim/L0/urdf/src/converter.rs` has no `.is_finite()` calls; `sim/L0/mjcf/src/validation.rs` checks option/mass/inertia fields but `validate_geom` / `geom.*finite` / `size.*finite` searches return zero matches. URDF geometry NaN today propagates past both validation boundaries unchecked.
+
+Fix (inline, committed): new `InvalidGeometry { link_name, message }` variant in `sim-urdf::error` matching the `InvalidMass` / `InvalidInertia` pattern (not `InvalidAttribute`, which is parse-time semantic); new `validate_geometry` + `check_geometry_finite` functions in `sim-urdf::validation`, called from `validate()` after `validate_mass_properties`. 6 new unit tests (one per variant + visual-path detection + valid-geometry passes). Grader A across all automated criteria (Coverage 78.7%, Documentation / Clippy / Safety / Dependencies / Bevy-free all A).
+
+Positivity (negative radius, zero box size) deferred per `validate_mass_properties` L239-242 leniency precedent: `if i.ixx + i.iyy < i.izz ... { /* This is a warning-level issue, not an error / Many URDFs have slightly invalid inertias */ }` — existing codebase consciously tolerates "technically invalid" geometry shapes in real-world URDFs. Bundling positivity risks newly-rejecting inputs that load today. Positivity becomes its own audit item if the fixture corpus grows to need it.
+
+**D.4.b — Grader package-scoping bug surfaced (symptom fixed inline; root cause queued as F.1).** Initial `cargo xtask grade sim-urdf` reported F on clippy with 14 warnings despite sim-urdf's own source being clippy-clean. Root cause: grader at `xtask/src/grade.rs:834` invokes `cargo clippy -p {crate_name} --all-targets --all-features --message-format=json` and the JSON filter at L844-862 counts `compiler-message + warning-level + non-empty-spans` without checking the diagnostic's originating package. Transitive workspace dep warnings (cf-geometry 11, sim-core 1, sim-mjcf 2 on sim-urdf's dep chain; mesh-types 3 surfaced after the first pass) count against `-p sim-urdf`'s clippy criterion. Every workspace-member warning breaks every dep-chain crate's grade — fragile.
+
+Symptom fix (separate hygiene commit): workspace clippy auto-fixes across 4 crates — `cf-geometry/src/{bvh,convex_hull,mesh}.rs` (11 × `missing_const_for_fn`), `sim-core/src/mesh.rs` (1 × `manual_is_multiple_of`), `sim-mjcf/src/builder/{composite,mesh}.rs` (2 × `manual_is_multiple_of`), `mesh-types/src/attributed.rs` (3 × `missing_const_for_fn`). Workspace compiles; 347 tests pass on affected crates. Adjacent-crate-flag fix per `feedback_adjacent_crate_flags.md`.
+
+**F.1 queued (audit-driven, Group F entry).** Filter `grade_clippy`'s JSON parse by `message.spans[*].file_name` against the target package's `src/` path, so only diagnostics originating in the graded crate count. Natural home: Group F "build/test/CI infrastructure" scope, specifically `xtask grade readiness for a new physics crate` per the group's table-row. Not D.4 scope — D.4 fix-inline was for symptoms; F.1 is structural.
+
+**D.4 → Post-D sweep candidate (MJCF sibling gap).** `sim-mjcf::validation` validates option / mass / inertia / gravity NaN/Inf systematically but NOT `MjcfGeom` size/radius/length numeric fields. Same class of gap as URDF's, one crate over. Candidate for follow-up PR or post-D sweep alongside the three already-queued book-internal drift items (`BackwardEulerState` cite drift, `NewtonStep<Self::Tape>` generic-vs-non-generic drift, `MjcfHandshake` lifecycle-docstring asymmetry).
+
+**D.4 does not lock:**
+- URDF geometry positivity (zero/negative radius etc.) — deferred per `validate_mass_properties` L239-242 leniency precedent; separate audit-item candidate if the fixture corpus grows.
+- MJCF `MjcfGeom` NaN/Inf gap — post-D sweep candidate; orthogonal-crate.
+- F.1 grader package-scoping fix implementation — queued for Group F proper.
 
 ### Cross-cutting determinism audit
 
@@ -538,6 +563,10 @@ A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck is the operational 
 Each crate's own deterministic integrator composed with deterministic fixed-point-iterate-count-from-initial-partner-state plus deterministic subcycled boundary-data reductions (time-averaging for thermostat-faster, time-integration for sim-soft-faster) equals composed determinism. `00-mjcf.md:73-75` and `01-thermostat.md:66-67` both commit this explicitly. No RNG enters either coupling loop. Fixed-point retry-cap behavior (`00-mjcf.md:24`'s adaptive-Δt escape hatch) is deterministic in initial partner state per line 74.
 
 A.4 §4 tolerance band unchanged. §110 Ch 04 §03 gradcheck transitively covers coupled evaluations (the ForwardMap oracle doesn't distinguish single-crate from multi-crate evaluations). **No silent weakening.**
+
+**D.4 — IO ingress: URDF geometry NaN/Inf validation.** Preserves `ForwardMap` determinism contract trivially by closing an earlier boundary. `validate_geometry` is a pure function of `&UrdfRobot` with zero cross-call state — no new determinism surface introduced. The gap it closes was not itself a determinism leak (NaN-propagating geometry would produce NaN gradients, catchable by gradcheck at the 5-digit bar) but an earlier-boundary hygiene win; rejecting at URDF ingress gives clearer error messages before downstream mesh/collision code produces confusing failures. Matches A.4 §1's validate-at-system-boundary commitment directly.
+
+A.4 §4 tolerance band unchanged. D.4.b's workspace clippy hygiene (const-fn promotions, `is_multiple_of` substitutions) is determinism-neutral — `const fn` is a compile-time-evaluability assertion, no runtime semantic change; `n.is_multiple_of(3)` and `n % 3 == 0` are semantically equivalent for `usize` inputs with a nonzero divisor, which is all the hygiene sites satisfy. **No silent weakening.**
 
 ## Tomorrow's gameplan
 

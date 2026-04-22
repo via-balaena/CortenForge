@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{Result, UrdfError};
-use crate::types::UrdfRobot;
+use crate::types::{UrdfGeometry, UrdfRobot};
 
 /// Validation result containing the root link and kinematic structure.
 #[derive(Debug)]
@@ -28,6 +28,7 @@ pub struct ValidationResult {
 /// - Exactly one root link (no parent)
 /// - No kinematic loops
 /// - Valid mass properties (if present)
+/// - Finite geometry dimensions on all visual and collision shapes
 ///
 /// # Errors
 ///
@@ -98,6 +99,9 @@ pub fn validate(robot: &UrdfRobot) -> Result<ValidationResult> {
 
     // Validate mass properties
     validate_mass_properties(robot)?;
+
+    // Validate geometry dimensions
+    validate_geometry(robot)?;
 
     Ok(ValidationResult {
         root_link,
@@ -246,11 +250,74 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
     Ok(())
 }
 
+/// Validate geometry dimensions on all visual and collision shapes.
+///
+/// Rejects non-finite (`NaN` or ±Inf) numeric fields at the URDF ingress
+/// boundary so that downstream mesh construction and collision code
+/// can assume finite geometry. Positivity is not checked here (some URDFs
+/// intentionally ship with degenerate shapes; see the triangle-inequality
+/// precedent in `validate_mass_properties`).
+fn validate_geometry(robot: &UrdfRobot) -> Result<()> {
+    for link in &robot.links {
+        for visual in &link.visuals {
+            check_geometry_finite(&visual.geometry, &link.name)?;
+        }
+        for collision in &link.collisions {
+            check_geometry_finite(&collision.geometry, &link.name)?;
+        }
+    }
+    Ok(())
+}
+
+/// Check that all numeric fields of a geometry are finite.
+fn check_geometry_finite(geom: &UrdfGeometry, link_name: &str) -> Result<()> {
+    match geom {
+        UrdfGeometry::Box { size } => {
+            if !size.x.is_finite() || !size.y.is_finite() || !size.z.is_finite() {
+                return Err(UrdfError::invalid_geometry(
+                    link_name,
+                    "box size must be finite",
+                ));
+            }
+        }
+        UrdfGeometry::Cylinder { radius, length } => {
+            if !radius.is_finite() || !length.is_finite() {
+                return Err(UrdfError::invalid_geometry(
+                    link_name,
+                    "cylinder radius and length must be finite",
+                ));
+            }
+        }
+        UrdfGeometry::Sphere { radius } => {
+            if !radius.is_finite() {
+                return Err(UrdfError::invalid_geometry(
+                    link_name,
+                    "sphere radius must be finite",
+                ));
+            }
+        }
+        UrdfGeometry::Mesh { scale: Some(s), .. } => {
+            if !s.x.is_finite() || !s.y.is_finite() || !s.z.is_finite() {
+                return Err(UrdfError::invalid_geometry(
+                    link_name,
+                    "mesh scale must be finite",
+                ));
+            }
+        }
+        UrdfGeometry::Mesh { scale: None, .. } => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::types::{UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointType, UrdfLink};
+    use crate::types::{
+        UrdfCollision, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointType, UrdfLink, UrdfOrigin,
+        UrdfVisual,
+    };
+    use nalgebra::Vector3;
 
     fn make_robot_with_chain() -> UrdfRobot {
         // base -> link1 -> link2
@@ -384,5 +451,112 @@ mod tests {
         // link1 and link2 order doesn't matter, both are children of base
         assert!(result.sorted_links.contains(&"link1".to_string()));
         assert!(result.sorted_links.contains(&"link2".to_string()));
+    }
+
+    fn make_link_with_collision(link_name: &str, geometry: UrdfGeometry) -> UrdfLink {
+        UrdfLink::new(link_name).with_collision(UrdfCollision {
+            name: None,
+            origin: UrdfOrigin::default(),
+            geometry,
+        })
+    }
+
+    #[test]
+    fn test_invalid_geometry_box_nan() {
+        let robot = UrdfRobot::new("test").with_link(make_link_with_collision(
+            "base",
+            UrdfGeometry::Box {
+                size: Vector3::new(1.0, f64::NAN, 1.0),
+            },
+        ));
+
+        let result = validate(&robot);
+        assert!(matches!(result, Err(UrdfError::InvalidGeometry { .. })));
+    }
+
+    #[test]
+    fn test_invalid_geometry_cylinder_inf() {
+        let robot = UrdfRobot::new("test").with_link(make_link_with_collision(
+            "base",
+            UrdfGeometry::Cylinder {
+                radius: f64::INFINITY,
+                length: 1.0,
+            },
+        ));
+
+        let result = validate(&robot);
+        assert!(matches!(result, Err(UrdfError::InvalidGeometry { .. })));
+    }
+
+    #[test]
+    fn test_invalid_geometry_sphere_nan() {
+        let robot = UrdfRobot::new("test").with_link(make_link_with_collision(
+            "base",
+            UrdfGeometry::Sphere { radius: f64::NAN },
+        ));
+
+        let result = validate(&robot);
+        assert!(matches!(result, Err(UrdfError::InvalidGeometry { .. })));
+    }
+
+    #[test]
+    fn test_invalid_geometry_mesh_scale_nan() {
+        let robot =
+            UrdfRobot::new("test").with_link(UrdfLink::new("base").with_collision(UrdfCollision {
+                name: None,
+                origin: UrdfOrigin::default(),
+                geometry: UrdfGeometry::Mesh {
+                    filename: "foo.obj".to_string(),
+                    scale: Some(Vector3::new(1.0, f64::NAN, 1.0)),
+                },
+            }));
+
+        let result = validate(&robot);
+        assert!(matches!(result, Err(UrdfError::InvalidGeometry { .. })));
+    }
+
+    #[test]
+    fn test_invalid_geometry_visual_detected() {
+        // Same NaN check applies to <visual> as to <collision>.
+        let robot =
+            UrdfRobot::new("test").with_link(UrdfLink::new("base").with_collision(UrdfCollision {
+                name: None,
+                origin: UrdfOrigin::default(),
+                geometry: UrdfGeometry::Sphere { radius: 1.0 },
+            }));
+        // Now mutate to add a bad visual alongside the good collision.
+        let mut robot = robot;
+        robot.links[0].visuals.push(UrdfVisual {
+            name: None,
+            origin: UrdfOrigin::default(),
+            geometry: UrdfGeometry::Box {
+                size: Vector3::new(f64::NAN, 1.0, 1.0),
+            },
+            material: None,
+        });
+
+        let result = validate(&robot);
+        assert!(matches!(result, Err(UrdfError::InvalidGeometry { .. })));
+    }
+
+    #[test]
+    fn test_valid_geometry_passes() {
+        // Mesh with no scale, sphere with finite radius — should validate.
+        let robot = UrdfRobot::new("test")
+            .with_link(make_link_with_collision(
+                "base",
+                UrdfGeometry::Sphere { radius: 0.5 },
+            ))
+            .with_link(make_link_with_collision(
+                "link1",
+                UrdfGeometry::Mesh {
+                    filename: "foo.obj".to_string(),
+                    scale: None,
+                },
+            ))
+            .with_joint(UrdfJoint::new("j1", UrdfJointType::Fixed, "base", "link1"));
+
+        let result = validate(&robot);
+        assert!(result.is_ok());
     }
 }
