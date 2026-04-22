@@ -678,7 +678,7 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 
 ### Group F
 
-**Status:** F.1, F.2, F.3, workspace hygiene placement locked (2026-04-22). Implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
+**Status:** F.1, F.2, F.3, workspace hygiene placement, implementation-PR-shipping-strategy locked (2026-04-22). Group F close + Audit close — remaining.
 
 **F.1 — grader package-scoping fix (2026-04-22).** `grade_clippy` at `xtask/src/grade.rs:834-898` filters JSON `compiler-message + warning|error + non-empty-spans` diagnostics without checking whether any span originates in the target crate. Structural fix: add a disjunctive `any_in_crate` filter immediately after the empty-spans check at line 858, matching the `grade_coverage` line-721 convention (`if !filename.contains(crate_path) { continue; }`). **Scope locked; implementation ships on the new implementation branch after the audit PR merges**, not as a commit on the audit branch itself — the three precursor code commits already on this branch (`d12a5e73` / `f614cd77` / `3a45d50f`) were state-cleanup-to-enable-decisions; F.1 is new tooling with grader unit tests + Option-B sweep, appropriately scoped to its own implementation-branch work. Shape (standalone PR vs. part of a larger implementation bundle) is governed by the implementation-PR-shipping-strategy sub-item, still pending.
 
@@ -754,6 +754,34 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 - F.1 grader filter implementation — still ships post-audit; the F.1 filter will re-verify this hygiene-clean state on the implementation branch.
 - Other workspace-quality audits (rustc lints beyond clippy, dep-justification sweeps, etc.) — out of F scope; separate audit items if surfaced later.
 - Auto-fix review burden — `cargo clippy --fix` output reviewed pre-commit for any unexpected refactors; if autofix surfaces non-mechanical suggestions, manual review per-file.
+
+**F — implementation-PR-shipping-strategy (2026-04-22).** **Ship the post-audit refactor as one big implementation PR** (symmetric with the audit-branch squash-PR convention). All three work concerns — chassis refactor (A.1 + B.1 + E.1/E.2/E.3/E.4 consumer migrations), grader infrastructure (F.1 + F.3 + Cargo.toml annotations), A.4 §1 compliance sweep (sim-therm-env builder setters + MjcfGeom ingress validation) — bundle into a single implementation PR with feature-branch commits preserving logical boundaries pre-squash.
+
+**Decision rationale (user-direction + CI-cost arithmetic).** User input at Group F walk: CI runs ~20 min per PR. Three-PR split ≈ 60 min of CI over the implementation lifecycle vs. ~20 min for one-big-PR. Review-focus benefit of splitting is nominal for solo-dev flow (self-review is not PR-boundary-gated; context-switch between concerns happens either way within a single review session). Rollback granularity at the PR level is rarely exercised and can be achieved at commit level within a feature branch. 40 min CI savings + simpler coordination outweighs the nominal split benefits.
+
+**Internal commit structure** on the implementation branch preserves logical boundaries for mid-development inspection / cherry-pick / reversion (suggested ordering, not locked):
+
+1. Chassis A.1 `Tensor<T>` generic
+2. Chassis B.1 vector-aware tape (scalar-sugar-preserved implementation path per E.3 recommendation)
+3. E.2 sim-therm-env mechanical rename (bundle-forced with A.1 per E.2 walk)
+4. E.3 autograd zero-change validation (rides with B.1 per E.3 walk)
+5. E.1 sim-opt + E.4 sim-rl type-inference validation (independent but zero source change)
+6. F.1 grader clippy filter + 3 unit tests
+7. F.3 `CrateProfile::IntegrationOnly` + 2 unit tests + 2 Cargo.toml metadata annotations
+8. A.4 §1 sim-therm-env builder-setter `.is_finite()` validation + unit tests
+9. A.4 §1 sim-mjcf MjcfGeom NaN/Inf validation + unit tests
+10. F.2 three-tier validation outputs (tier (a)/(b) + tier (c) pre-merge) pasted in PR description
+11. Pre-squash tag `<implementation-branch>-pre-squash` per `feedback_pre_squash_tag.md`
+
+Squash-merge collapses the feature-branch commits into a single main-line commit; pre-squash tag preserves granular history matching `ml-chassis-post-impl-pre-squash` precedent from PR #190.
+
+**F.2 tier (c) runs twice per F.2 protocol.** Once pre-merge against implementation-PR HEAD (pasted in PR description); once post-squash against the `<implementation-branch>-pre-squash` tag to lock the determinism anchor (follow-up note added either as a post-merge commit on main or directly referenced in the next downstream task memo).
+
+**Does not lock:**
+- Exact commit ordering within the implementation branch — engineer-discretion at impl time; above is a suggestion.
+- A.4 §1 compliance-sweep scope growth — if builder-setter audit surfaces additional gaps beyond sim-therm-env + MjcfGeom, those fold into the same PR.
+- Further splitting if the PR exceeds reviewer-tolerable size — if during implementation the PR grows beyond comfortable single-review size, split at chassis / non-chassis boundary is the clean cut. Revisit at implementation time.
+- Post-impl follow-up work (walking-skeleton memo rewrite + skeleton code) — explicit post-impl-PR work per user sequence lock; not part of this PR.
 
 ### Cross-cutting determinism audit
 
