@@ -678,7 +678,7 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 
 ### Group F
 
-**Status:** F.1, F.2 locked (2026-04-22). F.3, workspace hygiene placement, implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
+**Status:** F.1, F.2, F.3 locked (2026-04-22). Workspace hygiene placement, implementation-PR-shipping-strategy, Group F close + Audit close — remaining.
 
 **F.1 — grader package-scoping fix (2026-04-22).** `grade_clippy` at `xtask/src/grade.rs:834-898` filters JSON `compiler-message + warning|error + non-empty-spans` diagnostics without checking whether any span originates in the target crate. Structural fix: add a disjunctive `any_in_crate` filter immediately after the empty-spans check at line 858, matching the `grade_coverage` line-721 convention (`if !filename.contains(crate_path) { continue; }`). **Scope locked; implementation ships on the new implementation branch after the audit PR merges**, not as a commit on the audit branch itself — the three precursor code commits already on this branch (`d12a5e73` / `f614cd77` / `3a45d50f`) were state-cleanup-to-enable-decisions; F.1 is new tooling with grader unit tests + Option-B sweep, appropriately scoped to its own implementation-branch work. Shape (standalone PR vs. part of a larger implementation bundle) is governed by the implementation-PR-shipping-strategy sub-item, still pending.
 
@@ -717,6 +717,28 @@ Zero `Tensor` references in any signature. Referenced structs all use `Vec<f64>`
 - xtask convenience wrapper (`cargo xtask validate-chassis-refactor` chaining all three tiers) — YAGNI; add trivially if implementation-PR author finds copy-paste friction material.
 - Exact pre-squash tag name — implementation-branch-specific; decided when the branch is created.
 - Tier-output artifact storage — implementation-PR author's discretion (PR-description paste is the minimum; additional artifact upload is optional).
+
+**F.3 — sim-therm-env + sim-conformance-tests Coverage F resolution (2026-04-22).** Two structurally-F-gated crates under the current grader: **sim-therm-env** (E.2 finding — has `src/` lib target but zero `#[cfg(test)]` modules, `--lib` coverage reports 0.0%) and **sim-conformance-tests** (F.1 inventory finding — has no `src/` at all, integration-test-only with `[[test]]` paths and `publish = false`, `--lib` errors out). **Resolution: introduce `CrateProfile::IntegrationOnly` via Cargo.toml metadata opt-in; Coverage criterion returns `NotApplicable`. Other criteria apply normally.**
+
+**Three alternatives declined.**
+
+- **(a) Add inline `#[cfg(test)]` unit tests to sim-therm-env's `src/env.rs` / `src/builder.rs` (~200-500 LOC).** Environment impl and Builder wire sim-core / sim-thermostat / sim-mjcf physics; isolating wrapper code from the physics chain is artificial. Integration tests (5 files: `phase2.rs`, `phase3.rs`, `experiment_1.rs`, `experiment_4.rs`, `ising_chain.rs` — ~31 fast + 22 `#[ignore]`-gated heavy per memory `project_therm_circuit_env.md`) genuinely exercise the code paths. Forcing inline duplication adds maintenance burden without commensurate isolation benefit. **Partial exception:** the queued A.4 §1 compliance sweep for builder setters (`.is_finite()` checks) will naturally add ~50-100 LOC of unit-testable validation logic with accompanying tests; that lift is bonus coverage, not the F.3 mechanism.
+- **(b) Grader fallback to `--tests` mode for sim-therm-env.** Integration-test instrumentation overhead is ~10× per grader docstring at `xtask/src/grade.rs:637-648`; sim-therm-env's fast tests under instrumentation run substantially slower than the `--lib` baseline. More fundamentally: sim-conformance-tests has no `src/` to measure at all — option (b) handles sim-therm-env but not the second F-case. Splitting into two fixes complicates the audit narrative.
+- **(c) as originally stated — accept F with documentation carve-out.** Leaves a standing F on the automated grade table; reviewers have to remember which F is "real" vs. "structural." `NotApplicable` is the cleaner signal, consistent with how STANDARDS.md §1 already treats Example / Xtask crates (grader lines 607-618).
+
+**Chosen path — `IntegrationOnly` profile with metadata opt-in.** Scope:
+- New `CrateProfile::IntegrationOnly` variant at `xtask/src/grade.rs:139-154`, joining the existing Example / Xtask / BevyLayer1 / Layer0 set. Coverage returns `NotApplicable` for this profile (mirroring Example / Xtask behavior at lines 607-618). Other criteria untouched.
+- `classify_crate` at `xtask/src/grade.rs:222-234` grows a Cargo.toml metadata read: `[package.metadata.cortenforge] grading_profile = "integration-only"`. Self-documenting — the annotation lives in the crate's own Cargo.toml where any reader encounters it.
+- sim-therm-env and sim-conformance-tests add the opt-in annotation when the grader change ships. No other L0 crate needs the annotation today.
+- Estimated implementation: ~30-50 LOC grader diff + 2 Cargo.toml annotations + 2 grader unit tests (classifier resolves metadata correctly; Coverage returns `NotApplicable` for IntegrationOnly). Ships on the implementation branch, natural bundle with F.1 (both grader infrastructure changes).
+
+**sim-conformance-tests degenerate case.** No `src/` at all means Documentation (via `cargo doc --no-deps`) returns A trivially (nothing to warn about), Clippy post-F.1 returns A (no src/ warnings + transitive bleed filtered), Safety returns Manual with `"(no src/)"` at `grade.rs:931-938`. These are correct grader behaviors; IntegrationOnly only needs to address the Coverage criterion specifically. No additional special-casing required.
+
+**F.3 does not lock:**
+- Alternative metadata schema (per-criterion skip flags vs. profile enum) — chose profile enum for symmetry with Example / Xtask / BevyLayer1.
+- Path-prefix auto-detection fallback — explicit opt-in preferred; no silent behavior change on `src/` reorganization.
+- Future all-integration-test crates' opt-in — annotate if/when they emerge.
+- A.4 §1 compliance sweep scope — separate queued item (post-E / pre-skeleton PR); incidentally lifts sim-therm-env's measurable coverage when it ships, but doesn't change F.3's mechanism.
 
 ### Cross-cutting determinism audit
 
