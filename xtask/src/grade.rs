@@ -129,13 +129,18 @@ impl GradeReport {
 /// `Grade::NotApplicable` (excluded from the overall grade) rather than
 /// a misleading F.
 ///
-/// Classification is path-based. A crate's manifest path (relative to
-/// the workspace root) maps to exactly one profile:
+/// Classification is primarily path-based, with one Cargo.toml metadata
+/// opt-in (F.3). A crate's manifest path (relative to the workspace
+/// root) maps to exactly one profile:
 ///
 /// - `examples/`           → [`CrateProfile::Example`]
 /// - `xtask/`              → [`CrateProfile::Xtask`]
 /// - `sim/L1/`             → [`CrateProfile::BevyLayer1`]
 /// - anything else         → [`CrateProfile::Layer0`] (default; strictest)
+///
+/// A crate may opt into [`CrateProfile::IntegrationOnly`] by adding
+/// `[package.metadata.cortenforge] grading_profile = "integration-only"`
+/// to its `Cargo.toml`. The metadata read overrides path classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrateProfile {
     /// Layer 0 library crate — the strictest rubric applies. All seven
@@ -151,6 +156,11 @@ pub enum CrateProfile {
     /// Build tooling (`xtask`, build scripts). Coverage and Bevy-free
     /// are N/A; Safety relaxed for the same reason as Example.
     Xtask,
+    /// Crate whose source code is exercised exclusively by integration
+    /// tests (no inline `#[cfg(test)]` modules), or which has no `src/`
+    /// at all. Coverage is N/A; other criteria apply normally. Opt-in
+    /// via `[package.metadata.cortenforge] grading_profile = "integration-only"`.
+    IntegrationOnly,
 }
 
 impl CrateProfile {
@@ -161,6 +171,7 @@ impl CrateProfile {
             CrateProfile::BevyLayer1 => "Layer 1 (Bevy)",
             CrateProfile::Example => "Example (visual/demo)",
             CrateProfile::Xtask => "Build tooling",
+            CrateProfile::IntegrationOnly => "Integration-only",
         }
     }
 }
@@ -210,16 +221,32 @@ impl Drop for Heartbeat {
     }
 }
 
-/// Classify a crate by its workspace-relative manifest path.
+/// Classify a crate by its workspace-relative manifest path, with one
+/// Cargo.toml metadata opt-in.
 ///
-/// See [`CrateProfile`] for the mapping rules. This function is
-/// deliberately simple — prefix-matching on path, no metadata lookups,
-/// no `[package.metadata]` requirement in Cargo.toml. The tradeoff is
-/// that a crate moved to a new directory gets a different profile
-/// automatically; any crate that needs to opt out of its path-default
-/// profile should be moved or an explicit override added to this
-/// function.
-pub(crate) fn classify_crate(crate_path: &str) -> CrateProfile {
+/// See [`CrateProfile`] for the mapping rules. The metadata read
+/// (`[package.metadata.cortenforge] grading_profile = "integration-only"`)
+/// is the only override — every other classification is path-based and
+/// a crate moved to a new directory gets a different profile
+/// automatically. The opt-in is self-documenting: the annotation lives
+/// in the crate's own `Cargo.toml` where any reader encounters it.
+pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CrateProfile {
+    // F.3 metadata opt-in: explicit override for crates that have no
+    // testable lib target (no `src/` or no inline `#[cfg(test)]` modules)
+    // and are exercised by integration tests instead. Coverage criterion
+    // returns NotApplicable for this profile; other criteria apply normally.
+    if let Ok(value) = toml::from_str::<toml::Value>(cargo_toml_text) {
+        let grading_profile = value
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("cortenforge"))
+            .and_then(|c| c.get("grading_profile"))
+            .and_then(|g| g.as_str());
+        if grading_profile == Some("integration-only") {
+            return CrateProfile::IntegrationOnly;
+        }
+    }
+
     // Normalize path separators for cross-platform matching.
     let normalized = crate_path.replace('\\', "/");
     if normalized.starts_with("examples/") || normalized.starts_with("examples\\") {
@@ -268,7 +295,13 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     sh.change_dir(&workspace_root);
 
     let crate_path = find_crate_path(sh, crate_name)?;
-    let profile = classify_crate(&crate_path);
+    // F.3: read the crate's Cargo.toml so classify_crate can honor the
+    // [package.metadata.cortenforge] opt-in. Missing or unreadable falls
+    // through to path-based classification — find_crate_path already
+    // proved the crate exists in workspace metadata.
+    let cargo_toml_text =
+        std::fs::read_to_string(format!("{}/Cargo.toml", crate_path)).unwrap_or_default();
+    let profile = classify_crate(&crate_path, &cargo_toml_text);
 
     if !verbosity.quiet {
         eprintln!();
@@ -578,6 +611,30 @@ pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
     )
 }
 
+/// Return `Some((result_label, detail))` if Coverage should skip for the
+/// profile, or `None` if the crate must be measured.
+///
+/// Three profiles skip Coverage: Example and Xtask (no lib target per
+/// STANDARDS.md §1) and IntegrationOnly (F.3 metadata opt-in for crates
+/// exercised by integration tests). Layer0 and BevyLayer1 always run.
+fn coverage_skip_reason(profile: CrateProfile) -> Option<(&'static str, String)> {
+    match profile {
+        CrateProfile::Example | CrateProfile::Xtask => Some((
+            "(bin-only)",
+            format!(
+                "coverage skipped: {} crates have no lib target per STANDARDS.md §1",
+                profile.label()
+            ),
+        )),
+        CrateProfile::IntegrationOnly => Some((
+            "(integration-only)",
+            "coverage skipped: integration-only crate per [package.metadata.cortenforge]"
+                .to_string(),
+        )),
+        CrateProfile::Layer0 | CrateProfile::BevyLayer1 => None,
+    }
+}
+
 /// Grade test coverage using cargo-llvm-cov (F2 decision: replaces tarpaulin).
 ///
 /// Two-tier thresholds (F1 decision): >=90% = A+, >=75% = A.
@@ -603,17 +660,16 @@ fn grade_coverage(
     // coverage gate is specifically scoped to Layer 0 library crates.
     // Example (bin-only) and Xtask (build tooling) crates have no lib
     // target, so `cargo llvm-cov --lib` errors out with "no library
-    // targets found". Treat that as N/A rather than a false F.
-    if matches!(profile, CrateProfile::Example | CrateProfile::Xtask) {
+    // targets found". F.3 IntegrationOnly crates (per Cargo.toml
+    // metadata opt-in) are exercised by integration tests and have no
+    // testable lib surface. Treat all three as N/A rather than a false F.
+    if let Some((result, detail)) = coverage_skip_reason(profile) {
         return Ok(CriterionResult {
             name: "1. Coverage",
-            result: "(bin-only)".to_string(),
+            result: result.to_string(),
             grade: Grade::NotApplicable,
             threshold: "≥75%/≥90% A+",
-            measured_detail: format!(
-                "coverage skipped: {} crates have no lib target per STANDARDS.md §1",
-                profile.label()
-            ),
+            measured_detail: detail,
         });
     }
 
@@ -2016,5 +2072,40 @@ mod tests {
             serde_json::json!({ "file_name": "sim/L0/types/src/lib.rs" }),
         ];
         assert!(any_span_in_crate(&spans, "sim/L0/ml-chassis"));
+    }
+
+    // === F.3 IntegrationOnly profile + metadata opt-in ===
+
+    #[test]
+    fn classify_crate_metadata_opt_in_integration_only() {
+        // A crate sitting in a path that would otherwise classify as
+        // Layer0 opts into IntegrationOnly via the metadata block.
+        let cargo_toml = "\
+[package]
+name = \"sim-therm-env\"
+
+[package.metadata.cortenforge]
+grading_profile = \"integration-only\"
+
+[dependencies]
+serde = \"1\"
+";
+        assert_eq!(
+            classify_crate("sim/L0/therm-env", cargo_toml),
+            CrateProfile::IntegrationOnly,
+        );
+    }
+
+    #[test]
+    fn coverage_skip_reason_integration_only_is_skipped() {
+        // F.3: grade_coverage takes the early-return path for
+        // IntegrationOnly; result label is "(integration-only)" to
+        // distinguish it from Example/Xtask's "(bin-only)".
+        let (result, detail) =
+            coverage_skip_reason(CrateProfile::IntegrationOnly).expect("must skip");
+        assert_eq!(result, "(integration-only)");
+        assert!(detail.contains("[package.metadata.cortenforge]"));
+        // Sanity: Layer0 must NOT skip.
+        assert!(coverage_skip_reason(CrateProfile::Layer0).is_none());
     }
 }
