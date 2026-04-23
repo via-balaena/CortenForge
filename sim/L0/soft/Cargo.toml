@@ -1,0 +1,32 @@
+[package]
+name = "sim-soft"
+description = "Soft-body walking skeleton — seven-trait surface over faer + chassis tape. Phase B fills in bodies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Chassis tape, VjpOp, Tensor<f64> — shipped in PR #213.
+sim-ml-chassis = { workspace = true }
+# Dense small matrices for per-Gauss-point Material + per-element Tet4 locals
+# (5 existing L0 consumers at 0.34.2 — not greenfield).
+nalgebra = { workspace = true }
+# Sparse SPD factor-on-tape (Llt<I, f64>) + sparse CSR assembly.
+# Greenfield — this is the first workspace crate to depend on faer.
+# Round-6 determinism: disable `rayon` to keep solves single-threaded
+# (rayon work-stealing reorders floating-point reductions bit-non-
+# deterministically, violating γ Ch 00 determinism-in-θ on I-5). For
+# skeleton's 9-DOF system, rayon would provide no speedup anyway.
+# `std` + `sparse-linalg` is the minimum that exposes Llt<I, f64> +
+# solve_in_place_with_conj. All features remain pure Rust.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
+
+[dev-dependencies]
+# 5-digit gradcheck tolerance assertions (Phase-B tests).
+approx = { workspace = true }
+
+[lints]
+workspace = true

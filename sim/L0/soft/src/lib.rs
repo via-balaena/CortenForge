@@ -1,0 +1,61 @@
+//! `sim-soft` — soft-body walking-skeleton scaffold.
+//!
+//! This crate is the compile-check pre-flight of the walking-skeleton
+//! specification at `sim/docs/todo/soft_body_walking_skeleton_scope.md`
+//! (tip `01633283`). Seven traits are defined against chassis `Tape` /
+//! `VjpOp` and the γ-locked API names from
+//! [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md).
+//!
+//! Every method body is `unimplemented!("skeleton phase 2")`. Phase B
+//! fills them in one trait at a time per spec §7. This crate exists to
+//! validate the paper design compiles before semantics land.
+
+#![allow(
+    // Scaffold bodies are `unimplemented!(...)` by design. Override lifted
+    // in Phase B as each trait gets a real implementation.
+    clippy::unimplemented,
+    // Skeleton fields (e.g. `SingleTetMesh::vertices`) are held for spec
+    // fidelity per §14; Phase B's `Mesh::positions` will read them.
+    dead_code,
+    // Stub bodies panic via `unimplemented!`. Documenting this on every
+    // method adds noise without information.
+    clippy::missing_panics_doc
+)]
+
+pub mod contact;
+pub mod differentiable;
+pub mod element;
+pub mod material;
+pub mod mesh;
+pub mod observable;
+pub mod readout;
+pub mod solver;
+
+pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact};
+pub use differentiable::{CpuDifferentiable, Differentiable, TapeNodeKey};
+pub use element::{Element, Tet4};
+pub use material::{Material, NeoHookean, ValidityDomain};
+pub use mesh::{Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId};
+pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
+pub use readout::{
+    EditResult, ForwardMap, GradientEstimate, ResidualCorrections, RewardBreakdown, RewardWeights,
+    SceneInitial, SoftScene,
+};
+pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
+
+/// Three-component column vector in world space, `f64`. Matches
+/// `nalgebra::Vector3<f64>` so per-element locals can plug into
+/// nalgebra's dense small-matrix operations.
+pub type Vec3 = nalgebra::Vector3<f64>;
+
+/// Concrete skeleton solver type: backward-Euler Newton with
+/// `NeoHookean` material, `Tet4` element, `SingleTetMesh` mesh, and
+/// `NullContact` contact model. One hot-path monomorphization.
+pub type SkeletonSolver = solver::CpuNewtonSolver<
+    material::NeoHookean,
+    element::Tet4,
+    mesh::SingleTetMesh,
+    contact::NullContact,
+    4,
+    1,
+>;
