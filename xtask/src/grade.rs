@@ -853,9 +853,14 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
         if level != "warning" && level != "error" {
             continue;
         }
-        // Exclude summary lines (empty spans = "N warnings emitted")
-        let spans = &json["message"]["spans"];
-        if !spans.is_array() || spans.as_array().is_none_or(|a| a.is_empty()) {
+        // Exclude summary lines (empty spans = "N warnings emitted").
+        // F.1: also filter out transitive-dep diagnostics whose spans all
+        // point outside the target crate. Disjunctive — a diagnostic with
+        // even one span inside the crate is counted (include-not-exclude).
+        let Some(spans) = json["message"]["spans"].as_array() else {
+            continue;
+        };
+        if spans.is_empty() || !any_span_in_crate(spans, crate_path) {
             continue;
         }
         clippy_count += 1;
@@ -895,6 +900,23 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
         grade,
         threshold: "0 warnings",
         measured_detail,
+    })
+}
+
+/// Returns true if any span in the diagnostic refers to a file whose path
+/// contains `crate_path` — i.e., the warning originates in the target crate
+/// and not a transitive workspace-member dependency.
+///
+/// `.contains()` substring matching mirrors the convention in `grade_coverage`
+/// (line ~721); handles workspace-relative and absolute paths uniformly
+/// without normalization. Disjunctive semantics: ambiguous diagnostics (e.g.
+/// macro-generated with one span inside + one outside) are included, matching
+/// coverage's summing-loop behavior.
+fn any_span_in_crate(spans: &[serde_json::Value], crate_path: &str) -> bool {
+    spans.iter().any(|span| {
+        span["file_name"]
+            .as_str()
+            .is_some_and(|name| name.contains(crate_path))
     })
 }
 
@@ -1967,5 +1989,32 @@ mod tests {
         let src = "[target.'cfg(unix)'.dependencies]\n# unix-only POSIX APIs\nlibc = \"0.2\"\n";
         let lines = split(src);
         assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    // === any_span_in_crate (F.1 package-scoping filter) ===
+
+    #[test]
+    fn any_span_in_crate_single_span_inside() {
+        let spans = vec![serde_json::json!({ "file_name": "sim/L0/ml-chassis/src/lib.rs" })];
+        assert!(any_span_in_crate(&spans, "sim/L0/ml-chassis"));
+    }
+
+    #[test]
+    fn any_span_in_crate_single_span_outside() {
+        // Warning reported while compiling sim-ml-chassis but the span points
+        // into sim-types — the transitive-dep bleed F.1 filters out.
+        let spans = vec![serde_json::json!({ "file_name": "sim/L0/types/src/lib.rs" })];
+        assert!(!any_span_in_crate(&spans, "sim/L0/ml-chassis"));
+    }
+
+    #[test]
+    fn any_span_in_crate_mixed_spans_included() {
+        // Macro-generated case: one span in the target crate, one in a dep.
+        // Audit-locked semantics: disjunctive — include-not-exclude.
+        let spans = vec![
+            serde_json::json!({ "file_name": "sim/L0/ml-chassis/src/autograd.rs" }),
+            serde_json::json!({ "file_name": "sim/L0/types/src/lib.rs" }),
+        ];
+        assert!(any_span_in_crate(&spans, "sim/L0/ml-chassis"));
     }
 }
