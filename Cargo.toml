@@ -414,7 +414,11 @@ tracing = "0.1"
 # ---------------------------------------------------------------------------
 # Bevy Ecosystem (Layer 1 only - not used by Layer 0 crates)
 # ---------------------------------------------------------------------------
-bevy = { version = "0.18", default-features = false }
+# x11 feature required for examples to build on Linux. Without a platform
+# backend feature, winit hits `compile_error!("platform not supported")`
+# during its conditional compilation. macOS uses an unconditional backend
+# so local builds don't surface this; CI did until x11 was added.
+bevy = { version = "0.18", default-features = false, features = ["x11"] }
 
 # ---------------------------------------------------------------------------
 # Compression
