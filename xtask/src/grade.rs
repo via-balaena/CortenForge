@@ -528,6 +528,135 @@ pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
     Ok(())
 }
 
+/// Run grading across every workspace member.
+///
+/// Enumerates workspace crates via `cargo metadata --no-deps` — no
+/// hard-coded lists, automatically adapts when crates are added or
+/// removed. Each crate is graded via [`evaluate`]; failures are
+/// aggregated and reported in a compact summary. Exits non-zero if
+/// any crate's automated grade is below A.
+///
+/// Intended as the CI entry point for single-source-of-truth grading:
+/// CI runs `cargo xtask grade-all --skip-coverage --quiet`, checks the
+/// exit code, and surfaces the failure summary on red.
+pub fn run_all(verbosity: Verbosity) -> Result<()> {
+    let sh = Shell::new()?;
+    let workspace_root = find_workspace_root(&sh)?;
+    sh.change_dir(&workspace_root);
+
+    let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
+        .read()
+        .context("Failed to run `cargo metadata`")?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json)
+        .context("Failed to parse `cargo metadata` JSON output")?;
+
+    let packages = metadata["packages"]
+        .as_array()
+        .context("`cargo metadata`: missing 'packages' array")?;
+
+    // --no-deps scopes packages to workspace members only.
+    let mut crate_names: Vec<String> = packages
+        .iter()
+        .filter_map(|p| p["name"].as_str().map(String::from))
+        .collect();
+    crate_names.sort();
+
+    if !verbosity.quiet {
+        eprintln!();
+        eprintln!(
+            "  grade-all: evaluating {} workspace crates…",
+            crate_names.len()
+        );
+        if verbosity.skip_coverage {
+            eprintln!("  (coverage skipped via --skip-coverage)");
+        }
+        eprintln!();
+    }
+
+    let mut failures: Vec<(String, GradeReport)> = Vec::new();
+    let mut passes = 0usize;
+
+    for (idx, crate_name) in crate_names.iter().enumerate() {
+        // Force --quiet per-crate regardless of outer verbosity — grade-all
+        // prints its own compact one-line-per-crate progress so 190 crates
+        // of per-criterion chatter don't drown the aggregate report.
+        let per_crate_verbosity = Verbosity {
+            quiet: true,
+            verbose: false,
+            json: false,
+            skip_coverage: verbosity.skip_coverage,
+        };
+        let report = evaluate(&sh, crate_name, per_crate_verbosity)?;
+
+        let passed = matches!(report.automated_grade, Grade::A | Grade::APlus);
+        if passed {
+            passes += 1;
+            if !verbosity.quiet {
+                eprintln!(
+                    "  [{:>3}/{}] {} — {}",
+                    idx + 1,
+                    crate_names.len(),
+                    report.automated_grade.as_str().green(),
+                    crate_name
+                );
+            }
+        } else {
+            if !verbosity.quiet {
+                eprintln!(
+                    "  [{:>3}/{}] {} — {}",
+                    idx + 1,
+                    crate_names.len(),
+                    report.automated_grade.as_str().red(),
+                    crate_name
+                );
+            }
+            failures.push((crate_name.clone(), report));
+        }
+    }
+
+    println!();
+    if failures.is_empty() {
+        println!(
+            "{}",
+            format!(
+                "✓ grade-all: {}/{} workspace crates pass.",
+                passes,
+                crate_names.len()
+            )
+            .green()
+            .bold()
+        );
+        println!();
+        Ok(())
+    } else {
+        println!(
+            "{}",
+            format!(
+                "✗ grade-all: {}/{} workspace crates fail xtask grade.",
+                failures.len(),
+                crate_names.len()
+            )
+            .red()
+            .bold()
+        );
+        println!();
+        for (name, report) in &failures {
+            println!(
+                "  {} — {}",
+                name.bold(),
+                report.automated_grade.as_str().red()
+            );
+            for c in &report.criteria {
+                if matches!(c.grade, Grade::F | Grade::C) {
+                    println!("      {}: {} ({})", c.name, c.grade.as_str(), c.result);
+                }
+            }
+        }
+        println!();
+        bail!("{} workspace crate(s) failed xtask grade", failures.len())
+    }
+}
+
 /// Format grade for display in a fixed-width table cell (7 visible chars).
 fn grade_cell(grade: &Grade) -> String {
     match grade {

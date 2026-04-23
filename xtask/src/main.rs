@@ -7,6 +7,7 @@
 //!
 //! - `cargo xtask check` - Run all quality checks
 //! - `cargo xtask grade <crate>` - Grade a specific crate
+//! - `cargo xtask grade-all` - Grade every workspace crate (CI entry point)
 //! - `cargo xtask complete <crate>` - Record A-grade completion
 //! - `cargo xtask ci` - Full CI suite (same as GitHub Actions)
 //!
@@ -78,6 +79,22 @@ enum Commands {
         skip_coverage: bool,
     },
 
+    /// Grade every workspace crate and aggregate into a single summary
+    GradeAll {
+        /// Suppress per-crate progress; show only the final summary
+        #[arg(long, conflicts_with = "verbose")]
+        quiet: bool,
+
+        /// Enable heartbeat during long-running stages (every 30s)
+        #[arg(long, conflicts_with = "quiet")]
+        verbose: bool,
+
+        /// Skip the Coverage criterion across every crate. Required
+        /// for CI use — cargo llvm-cov is too slow at workspace scale.
+        #[arg(long)]
+        skip_coverage: bool,
+    },
+
     /// Record A-grade completion for a crate
     Complete {
         /// The crate to mark as complete
@@ -122,6 +139,16 @@ fn main() -> Result<()> {
                 skip_coverage,
             },
         ),
+        Commands::GradeAll {
+            quiet,
+            verbose,
+            skip_coverage,
+        } => grade::run_all(grade::Verbosity {
+            quiet,
+            verbose,
+            json: false,
+            skip_coverage,
+        }),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
