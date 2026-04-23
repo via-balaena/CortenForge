@@ -1,8 +1,9 @@
 //! One-tet mesh — `SoftScene::one_tet_cube()` constructs this.
 //!
 //! Four vertices hardcoded at the canonical decimeter-edge tet per
-//! spec §2. Phase B populates constructors and Phase A proper replaces
-//! with a general `TetMesh`.
+//! spec §2: `v_0 = (0, 0, 0)`, `v_1 = (0.1, 0, 0)`, `v_2 = (0, 0.1, 0)`,
+//! `v_3 = (0, 0, 0.1)`. Edge length `L = 0.1` m (soft-robotics scale).
+//! Phase A proper replaces this with a general `TetMesh`.
 
 use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId};
 use crate::Vec3;
@@ -15,32 +16,70 @@ pub struct SingleTetMesh {
     q: QualityMetrics,
 }
 
+impl SingleTetMesh {
+    /// Canonical decimeter-edge tet per walking-skeleton spec §2.
+    ///
+    /// Vertices in reference configuration; later Phase A proper
+    /// replaces this with an `SDF → TetMesh` pipeline.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            vertices: [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.1, 0.0, 0.0),
+                Vec3::new(0.0, 0.1, 0.0),
+                Vec3::new(0.0, 0.0, 0.1),
+            ],
+            adj: MeshAdjacency,
+            q: QualityMetrics,
+        }
+    }
+}
+
+impl Default for SingleTetMesh {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Mesh for SingleTetMesh {
     fn n_tets(&self) -> usize {
-        unimplemented!("skeleton phase 2")
+        1
     }
 
     fn n_vertices(&self) -> usize {
-        unimplemented!("skeleton phase 2")
+        4
     }
 
-    fn tet_vertices(&self, _tet: TetId) -> [VertexId; 4] {
-        unimplemented!("skeleton phase 2")
+    fn tet_vertices(&self, tet: TetId) -> [VertexId; 4] {
+        assert!(tet == 0, "SingleTetMesh has only tet 0, got {tet}");
+        [0, 1, 2, 3]
     }
 
     fn positions(&self) -> &[Vec3] {
-        unimplemented!("skeleton phase 2")
+        &self.vertices
     }
 
     fn adjacency(&self) -> &MeshAdjacency {
-        unimplemented!("skeleton phase 2")
+        &self.adj
     }
 
     fn quality(&self) -> &QualityMetrics {
-        unimplemented!("skeleton phase 2")
+        &self.q
     }
 
-    fn equals_structurally(&self, _other: &dyn Mesh) -> bool {
-        unimplemented!("skeleton phase 2")
+    // Ch 00 §02 mesh claim 3: same vertex count, same tet count, and
+    // same per-tet vertex indices. Positions deliberately excluded —
+    // those are the change-detection signal, not structural identity.
+    fn equals_structurally(&self, other: &dyn Mesh) -> bool {
+        if self.n_tets() != other.n_tets() {
+            return false;
+        }
+        if self.n_vertices() != other.n_vertices() {
+            return false;
+        }
+        // SingleTetMesh has exactly one tet; a general multi-tet
+        // `TetMesh` impl will iterate all tets in Phase A proper.
+        self.n_tets() == 0 || self.tet_vertices(0) == other.tet_vertices(0)
     }
 }
