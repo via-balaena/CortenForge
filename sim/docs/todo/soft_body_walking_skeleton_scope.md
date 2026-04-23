@@ -339,9 +339,9 @@ Open questions the user should push on or confirm — these are where the spec i
 
 If any "refactor needed" scenario fires, the skeleton PR stays open and the refactor is a prerequisite commit on the same branch.
 
-## 13. Book findings (Pass 2/3 feedback queue)
+## 13. Book findings (Pass 2/3 feedback queue) and scaffold deferrals
 
-Surprises the skeleton stress-test surfaced in the book spec. Each is a future book-iteration PR, tracked separately from the skeleton PR per §11 S-10.
+Surprises the skeleton stress-test surfaced in the book spec (BF-N) plus scaffold-phase deferrals (SD-N) where the scaffold commit intentionally stopped short of §4's final shape. Book findings become future book-iteration PRs tracked separately from the skeleton PR per §11 S-10; scaffold deferrals close inside the skeleton PR sequence at the step named in the entry.
 
 | # | Where | Finding | Class |
 |---|---|---|---|
@@ -350,8 +350,9 @@ Surprises the skeleton stress-test surfaced in the book spec. Each is a future b
 | BF-3 | Part 6 Ch 02:34 code sketch | `factor.solve_in_place(&mut minus_dr_dtheta.apply_t(&upstream))` is dimensionally inconsistent — $(\partial r / \partial \theta)^{\mathsf{T}}$ · upstream has shape $[n_\theta]$, cannot be RHS for $[n_\text{dof} \times n_\text{dof}]$ solve. Sketch's order of operations is inverted. Correct sequence: (1) λ = A^{-1} · upstream via `solve_in_place`, (2) result = ±(∂r/∂θ)^T · λ. The math at lines 13-15 is fine; only the code sketch needs fixing. | Pseudocode correctness |
 | BF-4 | Part 11 Ch 01 00-core.md:121 + 01-composition.md:66 | `Differentiable::register_vjp(forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>)` assumes a key-indexed VJP registry that doesn't match the chassis API shipped in PR #213. Chassis's model is `Tape::push_custom(value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var` — VJP is bundled with the node at forward-pass time, not registered-by-key-then-looked-up. No `TapeNodeKey` type exists in `sim-ml-chassis`. Also, register_vjp taking an `instance` (Box<dyn VjpOp>) rather than a factory/closure makes per-call primal-data capture awkward. **Fix options:** (a) drop `register_vjp` from the trait; Material/Element/ContactModel methods directly return configured `Box<dyn VjpOp>` instances that Solver::step passes to push_custom; (b) keep register_vjp but make it a factory registration with signature like `register_vjp(key: OpClassId, factory: Box<dyn Fn(&PrimalData) -> Box<dyn VjpOp>>)`. Skeleton picks (a) de facto by stubbing register_vjp and creating VJPs inline. | Trait-signature / platform-API mismatch |
 | BF-5 | Part 2 Ch 04 01-tangent.md + 03-impl.md:57 | 9×9 tangent flattening convention is underspecified. 01-tangent.md asserts the tangent is "flattened 9×9 symmetric" but does not state the `(i,j,k,l) → (row,col)` index mapping. 03-impl.md:57 pseudocode comment says "row-major into a 9x9," which is ambiguous between F-flattening (contradicting scope §14's "column-major F-flattening per spec") and 9×9 storage layout (contradicting nalgebra's column-major `SMatrix`). Skeleton commits the scope-§14 convention `row = i + 3j, col = k + 3l` (column-major F-flattening, nalgebra-native 9×9 storage) in `sim-soft`'s `Material` trait docstring + `NeoHookean::tangent`, verified by the FD-vs-analytic test at `h = 1.5e-8`. Book-edit pass should state the index mapping explicitly in 01-tangent.md §"Per-element block sizes" and rewrite the 03-impl.md:57 comment. | Pseudocode / spec-gap |
+| SD-1 | `sim/L0/soft/Cargo.toml` | Scaffold Cargo.toml omits §4's `[features]` table (`default = []`, `gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]`) and the three optional deps. Closes with §9 step 7's `tests/invariant_6_gpu_probe.rs` commit, where building the feature without a probe to gate would be meaningless infrastructure. Green-checklist item 2 (`cargo build --features gpu-probe`) unreachable until then — non-blocking for steps 3–6 which are CPU-only. | Scaffold deferral |
 
-None of the findings are skeleton-blocking — the skeleton implements from the underlying math + the verified faer/chassis APIs, stubbing book methods whose shape doesn't match shipped infrastructure. They're book-edit backlog for whenever Pass 2/3 touches these chapters.
+BF-1..BF-5 are not skeleton-blocking — the skeleton implements from the underlying math + the verified faer/chassis APIs, stubbing book methods whose shape doesn't match shipped infrastructure. They're book-edit backlog for whenever Pass 2/3 touches these chapters. SD-1 closes inside the skeleton PR sequence.
 
 ---
 

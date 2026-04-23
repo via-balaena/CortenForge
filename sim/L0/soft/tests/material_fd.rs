@@ -28,10 +28,7 @@ const MAX_RELATIVE: f64 = 1.0e-5;
 const EPSILON: f64 = 1.0e-3;
 
 const fn material() -> NeoHookean {
-    NeoHookean {
-        mu: 1.0e5,
-        lambda: 4.0e5,
-    }
+    NeoHookean::from_lame(1.0e5, 4.0e5)
 }
 
 // Small off-diagonal entries activate every term in the closed-form

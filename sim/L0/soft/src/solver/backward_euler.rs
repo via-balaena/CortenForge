@@ -40,16 +40,34 @@ where
     Msh: Mesh,
     C: ContactModel,
 {
-    /// Material model.
-    pub material: M,
-    /// Element shape.
-    pub element: E,
-    /// Mesh storage.
-    pub mesh: Msh,
-    /// Contact model.
-    pub contact: C,
-    /// Integration configuration.
-    pub config: SolverConfig,
+    material: M,
+    element: E,
+    mesh: Msh,
+    contact: C,
+    config: SolverConfig,
+}
+
+impl<M, E, Msh, C, const N: usize, const G: usize> CpuNewtonSolver<M, E, Msh, C, N, G>
+where
+    M: Material,
+    E: Element<N, G>,
+    Msh: Mesh,
+    C: ContactModel,
+{
+    /// Assemble a solver from its material, element, mesh, contact, and
+    /// integration configuration. `Box<dyn Solver<Tape = CpuTape>>` is
+    /// the intended public handle; direct access to the concrete type
+    /// is only needed for monomorphized benches (Phase E+).
+    #[must_use]
+    pub const fn new(material: M, element: E, mesh: Msh, contact: C, config: SolverConfig) -> Self {
+        Self {
+            material,
+            element,
+            mesh,
+            contact,
+            config,
+        }
+    }
 }
 
 impl<M, E, Msh, C, const N: usize, const G: usize> Solver for CpuNewtonSolver<M, E, Msh, C, N, G>

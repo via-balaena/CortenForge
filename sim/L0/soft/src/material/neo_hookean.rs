@@ -25,10 +25,36 @@ use super::{InversionHandling, Material, ValidityDomain};
 /// `ν ≈ 0.40`).
 #[derive(Clone, Debug)]
 pub struct NeoHookean {
-    /// Shear modulus `μ` (Pa).
-    pub mu: f64,
-    /// First Lamé parameter `λ` (Pa).
-    pub lambda: f64,
+    mu: f64,
+    lambda: f64,
+}
+
+impl NeoHookean {
+    /// Construct from Lamé parameters `(μ, λ)` directly.
+    #[must_use]
+    pub const fn from_lame(mu: f64, lambda: f64) -> Self {
+        Self { mu, lambda }
+    }
+
+    /// Construct from Young's modulus and Poisson ratio `(E, ν)` via the
+    /// isotropic-elasticity conversion `μ = E / 2(1+ν)`,
+    /// `λ = Eν / [(1+ν)(1−2ν)]`.
+    ///
+    /// # Panics
+    /// On `ν ≥ 0.45`. The standalone compressible law's validity domain
+    /// caps Poisson at 0.45 (Part 2 Ch 04 03-impl.md §67); higher ratios
+    /// require wrapping in the Ch 05 mixed-u-p or F-bar locking-fix
+    /// decorator, which widens the bound to 0.499.
+    #[must_use]
+    pub fn from_young_poisson(young: f64, nu: f64) -> Self {
+        assert!(
+            nu < 0.45,
+            "standalone NeoHookean requires nu < 0.45; use the Ch 05 locking-fix decorator for higher Poisson ratios"
+        );
+        let mu = young / (2.0 * (1.0 + nu));
+        let lambda = young * nu / ((1.0 + nu) * 2.0_f64.mul_add(-nu, 1.0));
+        Self { mu, lambda }
+    }
 }
 
 impl Material for NeoHookean {

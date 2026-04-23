@@ -21,8 +21,10 @@ pub trait Material: Send + Sync {
     /// First Piola stress in pascals.
     fn first_piola(&self, f: &Matrix3<f64>) -> Matrix3<f64>;
 
-    /// Material tangent flattened to a 9x9 row-major matrix, with
-    /// column-major flattening of the deformation gradient per spec.
+    /// Fourth-order material tangent `∂P/∂F` as a 9×9 matrix, with both
+    /// `P_ij` (rows) and `F_kl` (columns) flattened column-major:
+    /// `tangent[(i + 3j, k + 3l)] = ∂P_ij / ∂F_kl`. Convention ratified by
+    /// scope §13 BF-5 pending book edit of Part 2 Ch 04 01-tangent.md.
     fn tangent(&self, f: &Matrix3<f64>) -> SMatrix<f64, 9, 9>;
 
     /// Region of deformation-gradient space where the energy is
@@ -37,8 +39,12 @@ pub trait Material: Send + Sync {
 /// rotation, Poisson, temperature, strain-rate, and element-inversion
 /// handling. Decorators (`Thermal<M>`, `Viscoelastic<M>`, mixed-u-p,
 /// F-bar) fill in the `temperature_range` and `strain_rate_range` slots
-/// and widen the `poisson_range` bound.
+/// and widen the `poisson_range` bound. `#[non_exhaustive]` matches the
+/// `InversionHandling` precedent — future cross-domain concerns (e.g.
+/// residual stress, piezo coupling) land as additional slots without
+/// breaking downstream pattern matches.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ValidityDomain {
     /// Maximum principal-stretch deviation `|λ − 1|` at which the
     /// declared error bound against the next-more-accurate reference
