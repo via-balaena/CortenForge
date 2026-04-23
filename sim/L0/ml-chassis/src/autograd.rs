@@ -58,11 +58,11 @@ use crate::tensor::Tensor;
 /// [`Tape::push_custom`].
 ///
 /// Built-in primitives (add, mul, tanh, ...) do not use this trait — they
-/// dispatch through [`BackwardOp::Unary`] / [`BackwardOp::Binary`] for
-/// zero-allocation inspection and `Copy`-free storage. `VjpOp` is the
-/// extension point for ops chassis can't express as compositions of
-/// primitives — sim-soft physics-backed Newton replay, faer factorizations,
-/// sparse matvecs.
+/// dispatch through `BackwardOp::Unary` / `BackwardOp::Binary` for
+/// zero-allocation inspection and `Copy`-free storage (those variants are
+/// module-private implementation detail). `VjpOp` is the extension point
+/// for ops chassis can't express as compositions of primitives — sim-soft
+/// physics-backed Newton replay, faer factorizations, sparse matvecs.
 ///
 /// Implementors stash whatever primal data the VJP needs (input tensors,
 /// cached factorizations, integer tables) at construction time.
