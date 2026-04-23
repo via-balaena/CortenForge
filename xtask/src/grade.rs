@@ -981,8 +981,12 @@ fn grade_coverage(
 /// Captures stderr + exit code (B2 fix: `cargo doc` writes diagnostics
 /// to stderr, not stdout — the old gate read stdout and always saw 0).
 fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
+    // Force color off — CI sets CARGO_TERM_COLOR=always, which injects ANSI
+    // escape sequences into stderr (e.g. `error\x1b[0m:`) and breaks the
+    // `contains("error:")` / `matches("warning:")` substring counts below.
     let output = cmd!(sh, "cargo doc --no-deps -p {crate_name}")
         .env("RUSTDOCFLAGS", "-D warnings")
+        .env("CARGO_TERM_COLOR", "never")
         .ignore_status()
         .output()?;
 

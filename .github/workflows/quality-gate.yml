@@ -26,7 +26,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # RUSTFLAGS="-D warnings" intentionally NOT set globally. It bypasses rustc's
+  # cap-lints mechanism and promotes transitive-dependency warnings (e.g. from
+  # winit, nom, quick-xml) to hard errors. Per-tool flags are the correct scope:
+  # - Clippy enforces -D warnings via xtask grade_clippy's `cargo clippy`.
+  # - Rustdoc enforces -D warnings via RUSTDOCFLAGS (set per-invocation in
+  #   xtask grade_documentation).
   RUSTDOCFLAGS: "-D warnings"
 
 jobs:
