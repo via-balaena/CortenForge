@@ -21,16 +21,45 @@ pub use backward_euler::{CpuNewtonSolver, SolverConfig};
 /// named backend type. `GpuTape` (Phase E) lands as a separate alias.
 pub type CpuTape = Tape;
 
-/// The artifact of one Newton step: primal outputs, the converged
-/// factor, and any VJP-primal state the adjoint back-substitutes
-/// against. `T` is the tape type (`CpuTape` / `GpuTape`).
+/// The artifact of one converged Newton step: primal outputs, Newton
+/// iteration count, and final residual norm. `T` is the tape type
+/// (`CpuTape` / `GpuTape`).
 ///
-/// Skeleton carries no fields — the VJP's primal stash lives on the
-/// tape via `push_custom` per BF-4. Phase B expands this to a full
-/// record per Part 6 Ch 02 / Ch 04.
+/// Step 4 exposes `x_final`, `iter_count`, `final_residual_norm` so
+/// integration tests can assert convergence behavior. Step 5 adds the
+/// VJP's primal stash (factor, `∂r/∂θ`) via `Tape::push_custom` per
+/// BF-4 — those fields land when the VJP first needs them.
 #[derive(Debug)]
 pub struct NewtonStep<T> {
+    // Phantom tape — VJP registrations (step 5) use `T` to pin
+    // CPU-tape / GPU-tape adjoint paths to the matching backend.
     _tape: PhantomData<T>,
+    /// Converged primal position in 12-entry vertex-major + xyz-inner
+    /// DOF layout.
+    pub x_final: Vec<f64>,
+    /// Number of Newton iterations taken to reach `convergence_tol`.
+    pub iter_count: usize,
+    /// Final free-DOF residual norm at convergence.
+    pub final_residual_norm: f64,
+}
+
+impl<T> NewtonStep<T> {
+    /// Construct a converged-step record. Solver impls call this only
+    /// from within the Newton-convergence branch; non-convergence paths
+    /// panic rather than return partial data (scope §3 R-2 SPD contract).
+    #[must_use]
+    pub const fn new_converged(
+        x_final: Vec<f64>,
+        iter_count: usize,
+        final_residual_norm: f64,
+    ) -> Self {
+        Self {
+            _tape: PhantomData,
+            x_final,
+            iter_count,
+            final_residual_norm,
+        }
+    }
 }
 
 /// Mechanical solver surface. Two concrete impls: `CpuNewtonSolver`
