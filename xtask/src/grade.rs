@@ -1259,7 +1259,15 @@ fn scan_file_safety(
         // === Pattern checks on library code ===
 
         // Hard-fail: todo!() and unimplemented!()
-        if has_macro_call(trimmed, "todo!") || has_macro_call(trimmed, "unimplemented!") {
+        // Honors enclosing #[allow(clippy::todo)] or #[allow(clippy::unimplemented)]
+        // (consistent with the attribute-allowed policy applied to
+        // unwrap/expect/panic/unreachable).
+        if has_macro_call(trimmed, "todo!") && !has_enclosing_allow(&lines, i, "clippy::todo") {
+            has_todo_or_unimplemented = true;
+        }
+        if has_macro_call(trimmed, "unimplemented!")
+            && !has_enclosing_allow(&lines, i, "clippy::unimplemented")
+        {
             has_todo_or_unimplemented = true;
         }
 
@@ -2556,6 +2564,29 @@ serde = \"1\"
         let src = "#![allow(clippy::expect_used)]\n\nfn f() {\n    x.expect(\"bad\");\n}\n";
         let r = scan_file_safety(src, false, false);
         assert_eq!(r.counted_violations, 0);
+    }
+
+    #[test]
+    fn scan_safety_todo_with_enclosing_allow_skipped() {
+        // Intentional stub pattern: file-level #![allow(clippy::todo)]
+        // followed by todo!() in main. Not a real violation.
+        let src = "#![allow(clippy::todo)]\n\nfn main() {\n    todo!(\"blocked\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert!(!r.has_todo_or_unimplemented);
+    }
+
+    #[test]
+    fn scan_safety_todo_without_allow_flags() {
+        let src = "fn main() {\n    todo!();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert!(r.has_todo_or_unimplemented);
+    }
+
+    #[test]
+    fn scan_safety_unimplemented_with_enclosing_allow_skipped() {
+        let src = "#[allow(clippy::unimplemented)]\nfn f() {\n    unimplemented!();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert!(!r.has_todo_or_unimplemented);
     }
 
     #[test]
