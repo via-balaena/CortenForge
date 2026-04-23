@@ -1,5 +1,6 @@
 //! Tests for SIMD operations.
 
+#![cfg(test)]
 #![allow(
     clippy::unwrap_used,
     clippy::float_cmp,

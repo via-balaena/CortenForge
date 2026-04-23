@@ -1178,6 +1178,19 @@ fn scan_file_safety(
 ) -> SafetyScanResult {
     let lines: Vec<&str> = content.lines().collect();
 
+    // File-level inner `#![cfg(test)]` attribute: the whole file is test-only.
+    // Used by parent modules that declare `#[cfg(test)] mod tests;` to keep
+    // test helpers in a dedicated file. Skip the scan entirely — treating
+    // test-fixture .unwrap()/.expect() as library violations is a category
+    // error, same as for inline #[cfg(test)] modules.
+    if has_file_level_cfg_test(&lines) {
+        return SafetyScanResult {
+            counted_violations: 0,
+            unsafe_violations: 0,
+            has_todo_or_unimplemented: false,
+        };
+    }
+
     let mut has_todo_or_unimplemented = false;
     let mut counted_violations = 0usize;
     let mut unsafe_violations = 0usize;
@@ -1399,6 +1412,23 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
         threshold: "0 violations",
         measured_detail: result,
     })
+}
+
+/// True iff a file-level inner `#![cfg(test)]` attribute appears at the
+/// top of the file (skipping initial `//` and `//!` comments and blank
+/// lines). Marks an entire .rs file as test-only; standard pattern when
+/// a parent module declares `#[cfg(test)] mod tests;` and the tests live
+/// in their own file.
+fn has_file_level_cfg_test(lines: &[&str]) -> bool {
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        // First non-blank, non-comment line.
+        return trimmed.starts_with("#![cfg(test)]");
+    }
+    false
 }
 
 /// Returns true iff `trimmed` contains a real macro invocation of
@@ -2455,6 +2485,40 @@ serde = \"1\"
         let src = "/// clippy::expect_used is a thing\nfn f() {\n    x.expect(\"bad\");\n}\n";
         let r = scan_file_safety(src, false, false);
         assert_eq!(r.counted_violations, 1);
+    }
+
+    // === has_file_level_cfg_test ===
+
+    #[test]
+    fn file_level_cfg_test_detected_at_first_line() {
+        let src = "#![cfg(test)]\n\nfn t() {}\n";
+        let lines = split(src);
+        assert!(has_file_level_cfg_test(&lines));
+    }
+
+    #[test]
+    fn file_level_cfg_test_detected_after_module_docs() {
+        let src = "//! Module docs.\n//!\n//! More docs.\n\n#![cfg(test)]\n\nfn t() {}\n";
+        let lines = split(src);
+        assert!(has_file_level_cfg_test(&lines));
+    }
+
+    #[test]
+    fn file_level_cfg_test_not_present() {
+        // A regular library file — no inner attribute.
+        let src = "use std::fmt;\n\npub fn f() {}\n";
+        let lines = split(src);
+        assert!(!has_file_level_cfg_test(&lines));
+    }
+
+    #[test]
+    fn file_level_cfg_test_inline_test_mod_is_not_file_level() {
+        // An INLINE #[cfg(test)] mod tests { ... } doesn't mark the whole
+        // file as test-only; the scanner's brace-depth state machine
+        // handles that case separately.
+        let src = "pub fn f() {}\n\n#[cfg(test)]\nmod tests {}\n";
+        let lines = split(src);
+        assert!(!has_file_level_cfg_test(&lines));
     }
 
     // === strip_string_literals ===
