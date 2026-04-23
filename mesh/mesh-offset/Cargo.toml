@@ -9,10 +9,15 @@ keywords = ["mesh", "offset", "shell", "3d", "geometry"]
 categories = ["algorithms", "graphics", "game-development"]
 
 [dependencies]
+# Shared mesh data structures (workspace)
 mesh-types = { workspace = true }
+# Mesh signed-distance fields (workspace)
 mesh-sdf = { workspace = true }
+# Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
+# Derive error types
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Approximate equality for numeric tests
 approx = { workspace = true }

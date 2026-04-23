@@ -31,5 +31,7 @@ thiserror = { workspace = true }
 hashbrown = { workspace = true }
 
 [dev-dependencies]
+# Approximate equality for numeric tests
 approx = { workspace = true }
+# Random number generation
 rand = { workspace = true }

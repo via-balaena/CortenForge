@@ -21,12 +21,16 @@ workspace = true
 [dependencies]
 # Foundation
 mesh-types = { workspace = true }
+# Mesh file I/O (workspace)
 mesh-io = { workspace = true }
 
 # Core operations
 mesh-repair = { workspace = true }
+# Mesh signed-distance fields (workspace)
 mesh-sdf = { workspace = true }
+# Mesh offset operations (workspace)
 mesh-offset = { workspace = true }
+# Mesh shelling operations (workspace)
 mesh-shell = { workspace = true }
 
 # Analysis & measurement
@@ -34,9 +38,11 @@ mesh-measure = { workspace = true }
 
 # 3D printing
 mesh-printability = { workspace = true }
+# Lattice generation (workspace)
 mesh-lattice = { workspace = true }
 
 [dev-dependencies]
+# Temporary files/dirs for tests
 tempfile = { workspace = true }
 
 [package.metadata.docs.rs]
