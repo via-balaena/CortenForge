@@ -335,7 +335,7 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     report
         .criteria
         .push(run_criterion(3, "Clippy", verbosity.quiet, || {
-            grade_clippy(sh, crate_name, &crate_path)
+            grade_clippy(sh, crate_name, &crate_path, profile)
         })?);
     report
         .criteria
@@ -345,7 +345,7 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     report
         .criteria
         .push(run_criterion(5, "Dependencies", verbosity.quiet, || {
-            grade_dependencies(sh, crate_name)
+            grade_dependencies(sh, crate_name, profile)
         })?);
     report
         .criteria
@@ -1034,7 +1034,12 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
 /// Uses `--message-format=json` instead of `-- -D warnings` so we can
 /// count diagnostics directly from structured output (B1 fix: old gate
 /// read stdout but clippy wrote diagnostics to stderr).
-fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
+fn grade_clippy(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    profile: CrateProfile,
+) -> Result<CriterionResult> {
     let output = cmd!(
         sh,
         "cargo clippy -p {crate_name} --all-targets --all-features --message-format=json"
@@ -1069,14 +1074,22 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
         clippy_count += 1;
     }
 
-    // Unjustified #[allow(clippy:: check (F-ext-3)
+    // Unjustified #[allow(clippy:: check (F-ext-3).
+    //
+    // Relaxed for Example/Xtask profiles by the same STANDARDS.md §4
+    // "Allowed" theme that relaxes unwrap/expect counting for them:
+    // demo and tooling code is not prod-surface and shouldn't be held
+    // to the same justification-comment rubric as library code.
+    let relax_unjustified_allows = matches!(profile, CrateProfile::Example | CrateProfile::Xtask);
     let mut allow_count = 0;
-    let src_path = format!("{}/src", crate_path);
-    if let Ok(entries) = glob_rs_files(&src_path) {
-        for file_path in entries {
-            if let Ok(content) = std::fs::read_to_string(&file_path) {
-                let lines: Vec<&str> = content.lines().collect();
-                allow_count += count_unjustified_clippy_allows(&lines);
+    if !relax_unjustified_allows {
+        let src_path = format!("{}/src", crate_path);
+        if let Ok(entries) = glob_rs_files(&src_path) {
+            for file_path in entries {
+                if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    let lines: Vec<&str> = content.lines().collect();
+                    allow_count += count_unjustified_clippy_allows(&lines);
+                }
             }
         }
     }
@@ -1698,7 +1711,11 @@ fn update_brace_depth(line: &str, mut depth: usize) -> usize {
 /// Per chassis ss2.5: every dependency in Cargo.toml must have a `#` comment
 /// in the preceding 1-3 lines or inline. Dep count > 10 is flagged as "(heavy)"
 /// but does not affect grade.
-fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
+fn grade_dependencies(
+    sh: &Shell,
+    crate_name: &str,
+    profile: CrateProfile,
+) -> Result<CriterionResult> {
     // Step 1: dep count via cargo metadata (informational)
     let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
         .read()
@@ -1739,8 +1756,17 @@ fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         }
     };
 
+    // Relaxed for Example/Xtask profiles: justification comments are a
+    // library-crate rubric, not a demo/tooling one. Matches the
+    // STANDARDS.md §4 "Allowed" relaxation pattern (unwrap in examples,
+    // expect in build.rs) applied coherently to Dependencies.
+    let relax_unjustified_deps = matches!(profile, CrateProfile::Example | CrateProfile::Xtask);
     let lines: Vec<&str> = cargo_content.lines().collect();
-    let unjustified = count_unjustified_deps(&lines);
+    let unjustified = if relax_unjustified_deps {
+        0
+    } else {
+        count_unjustified_deps(&lines)
+    };
 
     // Binary A/F
     let grade = if unjustified == 0 { Grade::A } else { Grade::F };
@@ -2368,5 +2394,38 @@ serde = \"1\"
         let src = "/// clippy::expect_used is a thing\nfn f() {\n    x.expect(\"bad\");\n}\n";
         let r = scan_file_safety(src, false, false);
         assert_eq!(r.counted_violations, 1);
+    }
+
+    // === CrateProfile-aware relaxation: unjustified clippy allows ===
+    //
+    // The helper count_unjustified_clippy_allows is profile-agnostic by
+    // design (Layer 0 lib behavior). These tests document the profile
+    // gating at the grade_clippy call site by exercising the helper on
+    // the same input and verifying it returns the raw count — grade_clippy
+    // suppresses the count for Example/Xtask profiles, preserving it
+    // unchanged for Layer0/BevyLayer1/IntegrationOnly.
+
+    #[test]
+    fn unjustified_clippy_allows_counted_for_non_example() {
+        // Baseline: the scanner counts this as unjustified regardless of
+        // profile — the profile gate lives in grade_clippy.
+        let src = "#[allow(clippy::expect_used)]\nfn f() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    // === count_unjustified_deps is profile-agnostic by design ===
+
+    #[test]
+    fn unjustified_deps_counted_raw() {
+        // Baseline: the Cargo.toml scanner counts unjustified deps
+        // regardless of profile; the profile gate lives in
+        // grade_dependencies.
+        let src = "\
+[dependencies]
+serde = \"1\"
+";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
     }
 }
