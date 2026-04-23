@@ -994,6 +994,163 @@ fn glob_rs_files(dir: &str) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// Per-file result of [`scan_file_safety`].
+struct SafetyScanResult {
+    counted_violations: usize,
+    unsafe_violations: usize,
+    has_todo_or_unimplemented: bool,
+}
+
+/// Pure scan of one source file for safety violations.
+///
+/// Extracted from [`grade_safety`] so the scan logic is unit-testable
+/// without a filesystem fixture. `relax_unwrap_expect` mirrors the
+/// `Example`/`Xtask` profile allowance per STANDARDS.md §4 "Allowed";
+/// `is_build_rs` mirrors the `expect()` exemption for `build.rs`.
+///
+/// `.unwrap()` and `.expect(` honor an enclosing `#[allow(clippy::unwrap_used)]`
+/// or `#[allow(clippy::expect_used)]` attribute via [`has_enclosing_allow`]
+/// — matches the attribute-allowed policy applied to `panic!`/`unreachable!`.
+fn scan_file_safety(
+    content: &str,
+    is_build_rs: bool,
+    relax_unwrap_expect: bool,
+) -> SafetyScanResult {
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut has_todo_or_unimplemented = false;
+    let mut counted_violations = 0usize;
+    let mut unsafe_violations = 0usize;
+
+    // Brace-depth tracked test exclusion state machine (ss2.4)
+    let mut in_test = false;
+    let mut test_brace_depth: usize = 0;
+    let mut pending_test_attr = false;
+    let mut in_block_comment = false;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Track block comments
+        if !in_block_comment && trimmed.contains("/*") {
+            in_block_comment = true;
+        }
+        if in_block_comment {
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        // Skip line comments
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        // Test exclusion: #[cfg(test)] attribute detection
+        if !trimmed.starts_with("//") && trimmed.contains("#[cfg(test)]") {
+            pending_test_attr = true;
+        }
+
+        // Track braces for test region
+        if pending_test_attr && trimmed.contains('{') {
+            in_test = true;
+            test_brace_depth = 0;
+            pending_test_attr = false;
+        }
+
+        if in_test {
+            for ch in trimmed.chars() {
+                if ch == '{' {
+                    test_brace_depth += 1;
+                } else if ch == '}' {
+                    test_brace_depth = test_brace_depth.saturating_sub(1);
+                    if test_brace_depth == 0 {
+                        in_test = false;
+                        break;
+                    }
+                }
+            }
+            if in_test {
+                continue; // still inside test block
+            }
+            continue; // just exited test block on this line
+        }
+
+        // === Pattern checks on library code ===
+
+        // Hard-fail: todo!() and unimplemented!()
+        if trimmed.contains("todo!") || trimmed.contains("unimplemented!") {
+            has_todo_or_unimplemented = true;
+        }
+
+        // Counted: .unwrap() — skipped for Example/Xtask profiles
+        // per STANDARDS.md §4 "Allowed: unwrap() in examples".
+        // Honors enclosing #[allow(clippy::unwrap_used)] attribute.
+        if !relax_unwrap_expect
+            && trimmed.contains(".unwrap()")
+            && !has_enclosing_allow(&lines, i, "clippy::unwrap_used")
+        {
+            counted_violations += 1;
+        }
+
+        // Counted: .expect( — skip in build.rs, and skip for
+        // Example/Xtask profiles per STANDARDS.md §4 "Allowed".
+        // Honors enclosing #[allow(clippy::expect_used)] attribute.
+        if !is_build_rs
+            && !relax_unwrap_expect
+            && trimmed.contains(".expect(")
+            && !has_enclosing_allow(&lines, i, "clippy::expect_used")
+        {
+            counted_violations += 1;
+        }
+
+        // Counted with justification: panic!()
+        // Justified by any of: preceding `//` comment, same-line `//`
+        // comment, or an enclosing `#[allow(clippy::panic)]` attribute
+        // within 300 lines back (the idiomatic Rust pattern).
+        if trimmed.contains("panic!") {
+            let has_justification = has_preceding_comment(&lines, i)
+                || has_same_line_comment(trimmed)
+                || has_enclosing_allow(&lines, i, "clippy::panic");
+            if !has_justification {
+                counted_violations += 1;
+            }
+        }
+
+        // Counted with justification: unreachable!()
+        if trimmed.contains("unreachable!") {
+            let has_justification = has_preceding_comment(&lines, i)
+                || has_same_line_comment(trimmed)
+                || has_enclosing_allow(&lines, i, "clippy::unreachable");
+            if !has_justification {
+                counted_violations += 1;
+            }
+        }
+
+        // Unsafe-without-SAFETY check (F-ext-4)
+        if trimmed.contains("unsafe")
+            && (trimmed.contains("unsafe {") || trimmed.contains("unsafe fn"))
+        {
+            let has_safety_comment = (1..=3).any(|offset| {
+                i.checked_sub(offset).is_some_and(|j| {
+                    let prev = lines[j].trim().to_lowercase();
+                    prev.contains("// safety:")
+                })
+            });
+            if !has_safety_comment {
+                unsafe_violations += 1;
+            }
+        }
+    }
+
+    SafetyScanResult {
+        counted_violations,
+        unsafe_violations,
+        has_todo_or_unimplemented,
+    }
+}
+
 /// Grade safety: check for panic-capable patterns in library code.
 ///
 /// Full rewrite per chassis ss2.4. Fixes B3 bugs 1-5:
@@ -1038,119 +1195,11 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
             Ok(c) => c,
             Err(_) => continue,
         };
-        let lines: Vec<&str> = content.lines().collect();
-
-        // Brace-depth tracked test exclusion state machine (ss2.4)
-        let mut in_test = false;
-        let mut test_brace_depth: usize = 0;
-        let mut pending_test_attr = false;
-        let mut in_block_comment = false;
-
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-
-            // Track block comments
-            if !in_block_comment && trimmed.contains("/*") {
-                in_block_comment = true;
-            }
-            if in_block_comment {
-                if trimmed.contains("*/") {
-                    in_block_comment = false;
-                }
-                continue;
-            }
-
-            // Skip line comments
-            if trimmed.starts_with("//") {
-                continue;
-            }
-
-            // Test exclusion: #[cfg(test)] attribute detection
-            if !trimmed.starts_with("//") && trimmed.contains("#[cfg(test)]") {
-                pending_test_attr = true;
-            }
-
-            // Track braces for test region
-            if pending_test_attr && trimmed.contains('{') {
-                in_test = true;
-                test_brace_depth = 0;
-                pending_test_attr = false;
-            }
-
-            if in_test {
-                for ch in trimmed.chars() {
-                    if ch == '{' {
-                        test_brace_depth += 1;
-                    } else if ch == '}' {
-                        test_brace_depth = test_brace_depth.saturating_sub(1);
-                        if test_brace_depth == 0 {
-                            in_test = false;
-                            break;
-                        }
-                    }
-                }
-                if in_test {
-                    continue; // still inside test block
-                }
-                continue; // just exited test block on this line
-            }
-
-            // === Pattern checks on library code ===
-
-            // Hard-fail: todo!() and unimplemented!()
-            if trimmed.contains("todo!") || trimmed.contains("unimplemented!") {
-                has_todo_or_unimplemented = true;
-            }
-
-            // Counted: .unwrap() — skipped for Example/Xtask profiles
-            // per STANDARDS.md §4 "Allowed: unwrap() in examples".
-            if !relax_unwrap_expect && trimmed.contains(".unwrap()") {
-                counted_violations += 1;
-            }
-
-            // Counted: .expect( — skip in build.rs, and skip for
-            // Example/Xtask profiles per STANDARDS.md §4 "Allowed".
-            if !is_build_rs && !relax_unwrap_expect && trimmed.contains(".expect(") {
-                counted_violations += 1;
-            }
-
-            // Counted with justification: panic!()
-            // Justified by any of: preceding `//` comment, same-line `//`
-            // comment, or an enclosing `#[allow(clippy::panic)]` attribute
-            // within 100 lines back (the idiomatic Rust pattern).
-            if trimmed.contains("panic!") {
-                let has_justification = has_preceding_comment(&lines, i)
-                    || has_same_line_comment(trimmed)
-                    || has_enclosing_allow(&lines, i, "clippy::panic");
-                if !has_justification {
-                    counted_violations += 1;
-                }
-            }
-
-            // Counted with justification: unreachable!()
-            if trimmed.contains("unreachable!") {
-                let has_justification = has_preceding_comment(&lines, i)
-                    || has_same_line_comment(trimmed)
-                    || has_enclosing_allow(&lines, i, "clippy::unreachable");
-                if !has_justification {
-                    counted_violations += 1;
-                }
-            }
-
-            // Unsafe-without-SAFETY check (F-ext-4)
-            if trimmed.contains("unsafe")
-                && (trimmed.contains("unsafe {") || trimmed.contains("unsafe fn"))
-            {
-                let has_safety_comment = (1..=3).any(|offset| {
-                    i.checked_sub(offset).is_some_and(|j| {
-                        let prev = lines[j].trim().to_lowercase();
-                        prev.contains("// safety:")
-                    })
-                });
-                if !has_safety_comment {
-                    unsafe_violations += 1;
-                }
-            }
+        let scan = scan_file_safety(&content, is_build_rs, relax_unwrap_expect);
+        counted_violations += scan.counted_violations;
+        unsafe_violations += scan.unsafe_violations;
+        if scan.has_todo_or_unimplemented {
+            has_todo_or_unimplemented = true;
         }
     }
 
@@ -2107,5 +2156,70 @@ serde = \"1\"
         assert!(detail.contains("[package.metadata.cortenforge]"));
         // Sanity: Layer0 must NOT skip.
         assert!(coverage_skip_reason(CrateProfile::Layer0).is_none());
+    }
+
+    // === scan_file_safety — #[allow(clippy::{unwrap,expect}_used)] honoring ===
+
+    #[test]
+    fn scan_safety_unwrap_without_allow_counts() {
+        let src = "fn f() {\n    x.unwrap();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_unwrap_with_enclosing_allow_skipped() {
+        let src = "#[allow(clippy::unwrap_used)]\nfn f() {\n    x.unwrap();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 0);
+    }
+
+    #[test]
+    fn scan_safety_expect_without_allow_counts() {
+        let src = "fn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_expect_with_enclosing_allow_skipped() {
+        // Matches the canonical chassis pattern: `#[allow(clippy::expect_used)]`
+        // directly above a fn that makes a single localized expect call.
+        let src = "#[allow(clippy::expect_used)]\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 0);
+    }
+
+    #[test]
+    fn scan_safety_allow_different_lint_does_not_mask_expect() {
+        // #[allow(clippy::unwrap_used)] does not suppress an .expect(.
+        let src = "#[allow(clippy::unwrap_used)]\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_allow_different_lint_does_not_mask_unwrap() {
+        let src = "#[allow(clippy::expect_used)]\nfn f() {\n    x.unwrap();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_module_level_inner_allow_suppresses() {
+        // #![allow(clippy::expect_used)] at the top of a module suppresses
+        // expect in the whole module.
+        let src = "#![allow(clippy::expect_used)]\n\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 0);
+    }
+
+    #[test]
+    fn scan_safety_docstring_is_not_an_allow() {
+        // A /// docstring mentioning clippy::expect_used does NOT function as
+        // an allow — only real attributes do.
+        let src = "/// clippy::expect_used is a thing\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
     }
 }
