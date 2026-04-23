@@ -1004,6 +1004,21 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
     // Binary A/F: exit 0 = A (zero warnings), non-zero = F
     let grade = if exit_code == 0 { Grade::A } else { Grade::F };
 
+    // On F, surface stderr tail so CI logs show the actual failure, not just
+    // an opaque "0 warnings" verdict. Gated behind XTASK_GRADE_DEBUG to keep
+    // local-dev output clean; CI sets this env var to get signal.
+    if grade == Grade::F && std::env::var("XTASK_GRADE_DEBUG").is_ok() {
+        eprintln!(
+            "  [debug] {} cargo doc exit={} stderr tail:",
+            crate_name, exit_code
+        );
+        let stderr_lines: Vec<&str> = stderr.lines().collect();
+        let tail_start = stderr_lines.len().saturating_sub(30);
+        for line in &stderr_lines[tail_start..] {
+            eprintln!("    {}", line);
+        }
+    }
+
     // Informational: check if missing_docs lint is enabled in lib.rs
     let lib_path = format!("{}/src/lib.rs", crate_path);
     let has_missing_docs = if let Ok(content) = std::fs::read_to_string(&lib_path) {

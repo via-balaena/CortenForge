@@ -78,6 +78,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: cargo xtask grade-all --skip-coverage
+        env:
+          # Emit per-file safety debug + doc stderr tail on F so CI logs
+          # surface the actual failure cause rather than opaque counts.
+          XTASK_GRADE_DEBUG: "1"
         run: cargo run -p xtask --release -- grade-all --skip-coverage --quiet
 
   # ============================================================================
