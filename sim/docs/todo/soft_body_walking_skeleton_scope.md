@@ -1,143 +1,289 @@
 # `sim-soft` Walking-Skeleton Scope
 
-> **SUPERSEDED — 2026-04-21 evening.** This memo was drafted before we identified that the L0 platform needs a refactor pass first. The six invariants, crate layout, and green-skeleton checklist below all assume a soft-body-ready platform that does not currently exist. See [`platform_refactor_soft_body_ready.md`](platform_refactor_soft_body_ready.md) for the audit that must complete first. This memo will be rewritten after that refactor audit lands.
-
-**Status:** Scope memo — authored before any Rust.
-**Date:** 2026-04-21, post PR #210 (`be022f9e`).
+**Status:** Scope memo — post-refactor rewrite. Ready to stress-test before code lands.
+**Date:** 2026-04-23, post PR #213 (`77751866`) — platform refactor soft-body-readiness MERGED.
+**Supersedes:** the 2026-04-21 draft at commit `ee192303` (pre-refactor, marked SUPERSEDED at branch-tip).
 **Follows:** [`project_soft_body_walking_skeleton_pivot.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_walking_skeleton_pivot.md) — user directive to close the spec-to-code ratio after Pass 3 δ.
+**Book spec:** [`docs/studies/soft_body_architecture/`](../../../docs/studies/soft_body_architecture/) at tip `77751866`.
 **Target:** ~500–1500 LOC Rust, single long-running branch `feature/soft-body-walking-skeleton`.
 
-The book (`docs/studies/soft_body_architecture/`) is the spec. This memo does not re-argue architecture; it picks the minimum slice of that architecture required to operationally validate six load-bearing invariants, and it names the binary pass/fail criteria for a "green" skeleton.
+The book is the spec. This memo does not re-argue architecture; it picks the minimum slice required to operationally validate six load-bearing invariants, names binary pass/fail criteria, and flags stress-test hooks the user should refine before coding starts.
+
+## 0. Platform baseline — what PR #213 shipped
+
+Refactor commits on main at `77751866`:
+
+| Shipped | Not shipped |
+|---|---|
+| `Tensor<T>` generic, default `T = f32` (RL path), `Tensor<f64>` available for sim-soft | `sim_ml_chassis::gpu` submodule (B.5 ungated) |
+| Vector-aware `Tape` — nodes carry `Tensor<f64>`, scalar API still lifts/unwraps rank-0 | GPU tensor type, chassis-GPU VJP path |
+| `VjpOp` trait with `vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>])` | Any GPU solver or preconditioner |
+| `Tape::push_custom` — the extension point sim-soft uses | Warm-start tensor stashing beyond scalar Var cotangents |
+| 9 built-in elementwise primitives + 3 fused compositions (`add`/`sub`/`mul`/`neg`/`tanh`/`relu`/`square`/`ln`/`exp` + `affine`/`sum`/`mean`) | Broadcasting in primitive ops (strict same-shape) |
+
+Skeleton invariant consequences:
+- **I-4** ("chassis tape supports per-op VJPs") has the API it needs — the skeleton's job is to write a real physics VJP and verify it composes.
+- **I-6** splits into two sub-claims: (6a) CPU build graph, tested implicitly by `cargo build -p sim-soft`; (6b) wgpu build graph + round-trip, tested by a feature-gated probe. Chassis-GPU (B.5) is a Phase-E prerequisite, explicitly out of skeleton scope.
 
 ## 1. The six load-bearing invariants
 
-Each invariant is a claim the book makes that must be verified in code before further book expansion. Citations are to the book as it stands at `be022f9e`.
+Each invariant is a book claim that must be verified in code before further book expansion. Citations are to the book at `77751866`.
 
 | # | Invariant | Book anchor | What green looks like |
 |---|---|---|---|
-| I-1 | Seven-trait core surface composes without ceremony explosion | [`110-crate/01-traits/00-core.md`](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md) | All 7 traits (`Material`, `Element`, `Mesh`, `ContactModel`, `Solver`, `Differentiable`, `Observable`) defined with the pinned signatures; one concrete impl of each; the forward path compiles without phantom-type gymnastics, trait-object juggling, or `Box<dyn …>` ceremony beyond the one `dyn Solver` on the public boundary. |
-| I-2 | `ForwardMap::evaluate → (RewardBreakdown, EditResult)` works in practice | [`100-optimization/00-forward.md`](../../../docs/studies/soft_body_architecture/src/100-optimization/00-forward.md) (γ-locked) | A single `SoftScene::one_tet_cube()` constructs a `ForwardMap`; `fm.evaluate(&theta, &mut tape)` returns a populated `RewardBreakdown` and an `EditResult` tagged `ParameterOnly`; repeated calls at the same θ return bit-identical `RewardBreakdown` (§01 determinism-in-θ). |
-| I-3 | `faer::sparse::linalg::solvers::Llt<f64>` exposes factor-on-tape for IFT adjoint | [`50-time-integration/00-backward-euler.md`](../../../docs/studies/soft_body_architecture/src/50-time-integration/00-backward-euler.md), [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md) Phase B | Forward Newton solve factors once; the `Llt<f64>` factor is stored on the tape as a first-class object; `fm.gradient(&theta, &tape)` retrieves the factor, applies `solve_in_place` to $-\partial r / \partial \theta$, returns a scalar gradient; no re-factorization. |
-| I-4 | `sim-ml-chassis` autograd tape supports per-operation VJPs as Part 6 Ch 01 assumes | [`60-differentiability/01-custom-vjps/00-registration.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/01-custom-vjps/00-registration.md), [`60-differentiability/00-what-autograd-needs.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/00-what-autograd-needs.md) Claim 3 | `Differentiable::register_vjp` accepts a closure keyed on a `TapeNodeKey` from `sim-ml-chassis`'s existing CPU tape; forward-pass ops from `material/` / `element/` / `solver/` register VJPs once at construction; the IFT adjoint replays them against the cached factor. If `sim-ml-chassis`'s current tape cannot surface a `TapeNodeKey`-equivalent, the gap is flagged as a `sim-ml-chassis` amendment before skeleton code continues. |
-| I-5 | Determinism-in-θ holds under realistic Newton convergence | [`110-crate/04-testing/03-gradcheck.md`](../../../docs/studies/soft_body_architecture/src/110-crate/04-testing/03-gradcheck.md) §01 | `forward_map_is_deterministic_in_theta` passes as a `cargo test` target on the 1-tet scene. Assertion is bit-equal on every field of `RewardBreakdown`. The Newton loop must converge to the tolerance reported by `Solver::convergence_tol` with no timestamp, counter, or RNG leakage into the fixed-point. |
-| I-6 | Rust + wgpu build graph (no FFI) is tractable for soft-body FEM | Cross-cutting; foundational to [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md) Phase-B/E story | `cargo build -p sim-soft` succeeds on macOS-arm64 and a Linux CI runner; all deps are pure Rust or Rust-bindgen (no C/C++ compile step added to the graph); faer integrates via `Cargo.toml` alone; `sim-soft` compiles `--release` in under the workspace's existing compile-time budget. `wgpu` is **not** pulled in yet — its graph tractability is validated when Phase E's GPU port begins; I-6 at skeleton scope validates only the CPU build graph claim. |
+| I-1 | Seven-trait core surface composes without ceremony explosion | [`110-crate/01-traits/00-core.md`](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md) | All 7 traits (`Material`, `Element<const N, const G>`, `Mesh`, `ContactModel`, `Solver`, `Differentiable`, `Observable` with `type Step`) defined with pinned signatures; one concrete impl each; forward path composes without phantom-type gymnastics or `Box<dyn _>` beyond what the chassis already uses inside `BackwardOp::Custom`. |
+| I-2 | `ForwardMap::evaluate → (RewardBreakdown, EditResult)` works in practice | [`100-optimization/00-forward.md`](../../../docs/studies/soft_body_architecture/src/100-optimization/00-forward.md) (γ-locked) | `SoftScene::one_tet_cube()` constructs a `ForwardMap`; `fm.evaluate(&theta, &mut tape)` returns a populated `RewardBreakdown` (every field finite) and an `EditResult::ParameterOnly`; §01 determinism holds across repeated calls. |
+| I-3 | `faer::sparse::linalg::solvers::Llt<f64>` exposes factor-on-tape for IFT adjoint | [`50-time-integration/00-backward-euler.md`](../../../docs/studies/soft_body_architecture/src/50-time-integration/00-backward-euler.md), [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md) Phase B | Forward Newton factors once; `Llt<f64>` is stashed inside a `NewtonStepVjp: VjpOp`; `fm.gradient` retrieves it, applies `solve_in_place` to $-\partial r / \partial \theta$, returns a scalar gradient; zero re-factorization. |
+| I-4 | Chassis tape per-operation VJPs support sim-soft physics | [`60-differentiability/01-custom-vjps/00-registration.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/01-custom-vjps/00-registration.md), [`60-differentiability/00-what-autograd-needs.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/00-what-autograd-needs.md) Claim 3 | `NewtonStepVjp` registered via `Tape::push_custom`; composes with chassis primitives in the reward-composition path; `tape.backward(reward_scalar)` runs; `parent_cotans` accumulation works at physics-tensor scale (shape `[12]` displacement, `[>=4]` θ). |
+| I-5 | Determinism-in-θ holds under realistic Newton convergence | [`110-crate/04-testing/03-gradcheck.md`](../../../docs/studies/soft_body_architecture/src/110-crate/04-testing/03-gradcheck.md) §01 | Bit-equal `RewardBreakdown` (all fields `f64::to_bits`) across (a) two same-process `evaluate` calls at identical θ, (b) one same-process call + one cold-restart via a tiny `bin` helper. Armijo line-search selection, sparse-assembly accumulation order, and faer's solve all deterministic at fixed θ. |
+| I-6 | Rust + wgpu build graph (no FFI) tractable for soft-body FEM | Cross-cutting; [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md) Phase-B/E | (6a) `cargo build -p sim-soft --release` resolves cleanly on macOS-arm64 + Linux CI, no C/C++ compile step added to the graph, under workspace compile-time budget. (6b) `cargo test -p sim-soft --features gpu-probe -- gpu_probe` acquires adapter, round-trips a buffer through a trivial compute dispatch. |
 
-I-6 is intentionally narrowed from the pivot-memo version. Including wgpu in the skeleton conflates invariants and inflates LOC. The pivot memo's Phase-E blockers remain deferred; this skeleton validates *only* the CPU half of I-6, with the explicit note that the GPU half reactivates at Phase E start.
+**I-6 scope clarification:** the probe tests wgpu build-graph tractability and round-trip correctness only. It does NOT exercise `sim_ml_chassis::gpu` (B.5 ungated), GPU sparse linalg, GPU autograd, or any chassis↔GPU state sharing. Adding any of those mid-skeleton is out-of-scope creep — they are Phase E. If no adapter is available (headless CI), the probe test skips cleanly rather than failing.
 
 ## 2. Minimal scene
 
-**One tetrahedron.** Four vertices, one Tet4 element, one Gauss point, neo-Hookean material with hardcoded $(\mu, \lambda)$, Dirichlet boundary on one face (three fixed vertices), traction load on the fourth vertex via $\theta$.
+**One tetrahedron.** Four vertices, one Tet4 element, one Gauss point at the centroid, compressible neo-Hookean material with hardcoded $(\mu, \lambda)$, Dirichlet boundary on three vertices (fully pinned), traction load on the fourth vertex parameterized by $\theta$.
 
-Rationale:
-- Smallest scene that exercises the Jacobian assembly, the sparse factorization, and the IFT back-substitution — there is no "smaller" scene on which the book's physics claims are testable.
-- One Gauss point eliminates quadrature-weight bugs as a confound for I-5 determinism and I-3 factor-on-tape.
-- Four vertices × 3 DOF = 12-DOF system, 9 free after Dirichlet; faer's `Llt<f64>` factors it in microseconds, and finite differences on a 1-D θ can match IFT to 6 digits under double-precision catastrophic-cancellation budget.
-- No contact, no second element, no temperature coupling, no mesh topology — every deferral is citable to a specific book phase (below).
+| Component | Spec |
+|---|---|
+| Reference vertices | Unit tet: $v_0 = (0,0,0)$, $v_1 = (1,0,0)$, $v_2 = (0,1,0)$, $v_3 = (0,0,1)$ |
+| Element | one Tet4, $N = 4$, $G = 1$ (centroid Gauss point, weight = $V_{\text{ref}} = 1/6$) |
+| Material | compressible NH: $\Psi(F) = (\mu/2)(I_1 - 3) - \mu \ln J + (\lambda/2)(\ln J)^2$; hardcoded $\mu = 10^5$ Pa, $\lambda = 4 \times 10^5$ Pa (Ecoflex-class, $\nu \approx 0.40$) |
+| Density | $\rho = 1030 \ \text{kg/m}^3$ (silicone-class) |
+| Boundary | Dirichlet on $v_0, v_1, v_2$ (all 9 DOF fixed); $v_3$ free |
+| Load | Traction $\mathbf{t}(\theta) \in \mathbb{R}^3$ applied to $v_3$; $\theta \in \mathbb{R}^4$ parameterizes magnitude + 3-axis direction |
+| Initial state | Reference configuration; $\dot{\mathbf{x}}_0 = \mathbf{0}$ |
+| Time step | Single backward-Euler step, $\Delta t = 10^{-2}$ s (large enough that inertia is a real term, not so small that the problem collapses to quasi-static) |
+| System size | 12 DOF, 3 free after Dirichlet (only $v_3$ moves) |
 
-## 3. Material / contact / integrator combo
+**Reward scalar** — minimal `RewardBreakdown` for a 1-tet case (full γ-struct defined but not all fields meaningful on one element):
+
+| Field | 1-tet definition | Phase-A meaningful? |
+|---|---|---|
+| `pressure_uniformity` | not meaningful on 1 tet — set to NaN sentinel or `None` if Option | **gap** |
+| `coverage` | not meaningful — no contact pair | **gap** |
+| `peak_bound` | $\max$ principal Cauchy stress at the Gauss point, barrier-compared to $\sigma_{\max} = 10^6$ Pa | yes |
+| `stiffness_bound` | $\mu$ itself, barrier-compared to $k_{\min} = 5 \times 10^4$ | yes |
+| `composition` | scalar-composed via `RewardWeights` | yes |
+
+**Finding if this plays out:** two of five fields are 1-tet-indeterminate. Expected. Feed back to Part 1 Ch 01: either (a) document that single-element scenes under-specify `RewardBreakdown` (spec clarification), or (b) add a 1-tet-safe reduction for those fields (spec change). Not a skeleton failure — a skeleton finding.
+
+Rationale for scene choices:
+- Smallest scene that exercises Jacobian assembly, sparse factorization, and IFT back-substitution simultaneously.
+- One Gauss point eliminates quadrature-weight bugs as a confound.
+- 3-DOF free system keeps FD sweep trivial for 5-digit gradcheck.
+- Hand-rolled — no sim-mjcf / sim-core dependency, keeps (6a) dep-graph minimum per Part 11 Ch 02 §00 deferral.
+
+## 3. Material / contact / integrator combo — confirmed decisions
 
 | Axis | Chosen | Alternatives considered | Rationale |
 |---|---|---|---|
-| Material | Neo-Hookean, hardcoded $(\mu, \lambda)$, Phase A form | Mooney-Rivlin, corotational | Neo-Hookean is the book's Phase A baseline ([`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md)); closed-form `first_piola` and `tangent` derivations are already in Part 2; no viscoelastic time-history to confound I-5. |
-| Element | Tet4, $N=4$, $G=1$ | Tet10, Hex8 | Tet4 is Phase A; constant-strain element keeps the per-element stiffness 12×12 and analytic. Tet10 is Phase H. |
-| Contact | **None** — `NullContact` impl of `ContactModel` | IPC barrier, penalty | IPC is Phase C and is the hardest single module; penalty contact is explicitly rejected in `contact/` Ch 00 §03 claim 1. A `NullContact { active_pairs: [] }` impl proves I-1 without committing to any contact model. The 1-tet scene uses Dirichlet + traction, no contact. |
-| Integrator | Backward-Euler Newton, one time step | Forward-Euler, Runge-Kutta, static-equilibrium-only | Backward-Euler is the book's committed integrator ([`50-time-integration/00-backward-euler.md`](../../../docs/studies/soft_body_architecture/src/50-time-integration/00-backward-euler.md)); one step is sufficient to exercise the factor-on-tape and IFT adjoint. Static equilibrium alone would not force the time-stepping machinery to take shape; one step does, with $dt$ large enough that inertia is a real term. |
-| Linear solver | faer `Llt<f64>` on sparse CSR | nalgebra dense, Eigen-via-FFI, suitesparse | faer's `Llt<f64>` is the first-class factor-on-tape object the book stakes I-3 on; pure Rust (no FFI) keeps I-6 clean. |
-| Autograd tape | `sim-ml-chassis` CPU tape + VJP registration API | PyTorch via `tch-rs`, Burn, `dfdx` | `own every line` thesis ([`60-differentiability/00-what-autograd-needs.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/00-what-autograd-needs.md) Claim 3). Any gap in the existing chassis tape surfaces as an amendment PR to `sim-ml-chassis`, not a framework import. |
-| Gradcheck | §01 determinism + §02 FD-vs-IFT at 5 digits | §03 CPU-vs-GPU | §03 is Phase E; skeleton is CPU-only. §01 + §02 together validate I-2, I-3, I-4, I-5 in one test binary. |
+| Material | NH compressible (above) | Mooney-Rivlin, corotational, Ogden | NH is Phase A baseline; closed-form $P$ and $\partial P / \partial F$ in Part 2 Ch 04; no time-history to confound I-5. |
+| Element | Tet4, $N=4$, $G=1$ | Tet10, Hex8 | Tet4 is Phase A; Tet10 is Phase H per Part 3 Ch 00. |
+| Contact | **None** — `NullContact` impl | IPC, penalty | IPC is Phase C; penalty is explicitly rejected in `contact/` Ch 00. `NullContact { active_pairs: [] }` proves I-1 without scope creep. Dirichlet + traction stands in for contact at 1-tet scale. |
+| Integrator | Backward-Euler Newton + Armijo line-search, single step | Static equilibrium, Newton w/o line-search, strong-Wolfe | Backward-Euler is committed per Part 5 Ch 00; one step exercises the factor-on-tape pattern; Armijo is simplest compliant line-search. **Flag for I-5:** line-search selection branching is the leading determinism-risk source; test covers exactly this. |
+| Linear solver | faer `Llt<f64>` on sparse | nalgebra dense, LDLᵀ (`Lblt`) | faer `Llt<f64>` is the I-3 target type; sparse is forward-compatible with Phase-B 100-tet scaling. **Risk:** 3-DOF free system is SPD only if the tangent is SPD at equilibrium — NH is SPD near the reference configuration; verify at the chosen load magnitude before committing, fall back to `Lblt` if not. |
+| Autograd tape | chassis CPU tape + `VjpOp` + `Tape::push_custom` | `Burn`, `dfdx`, `tch-rs` | "Own every line" thesis. Refactor A.1/B.1 shipped the surface. |
+| Gradcheck | §01 determinism + §02 FD-vs-IFT at 5 digits, central FD, $h = 1.5 \times 10^{-8}$ | §03 CPU-vs-GPU, forward FD, one-sided | §03 is Phase E (skeleton is CPU-only). Central FD is optimal at 5-digit bar. |
+| GPU probe | minimal wgpu round-trip, feature-gated `gpu-probe` | full chassis-GPU path, no probe at all | Chassis-GPU is B.5-gated (not shipped). Minimal probe tests (6b) without committing to B.5 scope. |
+| Mesh fixture | hand-rolled 1-tet (4 vertices hardcoded in `Mesh` impl) | sim-mjcf ingest, MJCF file | Skeleton stays self-contained; sim-mjcf coupling is Phase F. |
 
 ## 4. Crate and module layout
 
-Proposed location: `sim/L0/soft/` — matches the existing `sim/L0/{types, simd, core, thermostat, gpu, mjcf, urdf, tests, ml-chassis, rl, opt}` sibling set.
+Location: `sim/L0/soft/` — sibling of `{types, simd, core, thermostat, gpu, mjcf, urdf, tests, ml-chassis, rl, opt}`.
 
 ```
 sim/L0/soft/
-├── Cargo.toml              # deps: sim-ml-chassis, sim-types, faer, nalgebra
+├── Cargo.toml              # deps: sim-ml-chassis, sim-types, faer, nalgebra; optional wgpu behind gpu-probe
 ├── src/
-│   ├── lib.rs              # re-exports public surface + forward_map module
+│   ├── lib.rs              # pub re-exports
 │   ├── material/
-│   │   ├── mod.rs          # Material trait (per 110-crate/01-traits/00-core.md)
-│   │   └── neo_hookean.rs  # hardcoded (μ, λ) impl + closed-form VJPs
+│   │   ├── mod.rs          # Material trait
+│   │   └── neo_hookean.rs  # NeoHookean impl + closed-form P, ∂P/∂F
 │   ├── element/
-│   │   ├── mod.rs          # Element<N, G> trait
+│   │   ├── mod.rs          # Element<const N, const G> trait
 │   │   └── tet4.rs         # impl Element<4, 1>
 │   ├── mesh/
 │   │   ├── mod.rs          # Mesh trait
-│   │   └── tet_mesh.rs     # minimal TetMesh storage
+│   │   └── single_tet.rs   # hand-rolled 1-tet, 4 vertices hardcoded
 │   ├── contact/
 │   │   ├── mod.rs          # ContactModel trait
-│   │   └── null.rs         # NullContact — empty active_pairs (validates I-1 without IPC)
+│   │   └── null.rs         # NullContact (empty active_pairs, zero potential)
 │   ├── solver/
 │   │   ├── mod.rs          # Solver trait (dyn-safe)
-│   │   └── cpu_newton.rs   # CpuNewtonSolver<Tape = CpuTape>, backward-Euler, faer Llt
-│   ├── autograd/
-│   │   ├── mod.rs          # Differentiable trait + VJP registry
-│   │   └── ift.rs          # ift_adjoint: factor.solve_in_place on cached Llt
+│   │   └── backward_euler.rs  # BackwardEulerNewton, Armijo LS, faer Llt
+│   ├── differentiable/
+│   │   ├── mod.rs          # Differentiable trait
+│   │   └── newton_vjp.rs   # NewtonStepVjp: VjpOp, stashes Llt<f64> + ∂r/∂θ
+│   ├── observable/
+│   │   ├── mod.rs          # Observable trait + type Step
+│   │   └── basic.rs        # BasicReadout impl
 │   ├── readout/
-│   │   ├── mod.rs          # Observable trait
-│   │   └── reward.rs       # minimal RewardBreakdown (one or two terms)
-│   └── forward_map/
-│       ├── mod.rs          # ForwardMap impl composing the above
-│       └── scene.rs        # SoftScene::one_tet_cube()
-└── tests/
-    ├── determinism.rs      # §01 gradcheck — bit-equal RewardBreakdown
-    └── gradcheck.rs        # §02 gradcheck — 5-digit FD-vs-IFT
+│   │   ├── mod.rs          # ForwardMap impl
+│   │   ├── reward_breakdown.rs  # RewardBreakdown struct + apply_residuals
+│   │   ├── edit_result.rs  # EditResult enum (3 variants)
+│   │   ├── reward_weights.rs   # RewardWeights
+│   │   ├── gradient_estimate.rs  # GradientEstimate { Exact, Noisy { variance } }
+│   │   └── scene.rs        # SoftScene::one_tet_cube()
+│   └── gpu_probe/          # #[cfg(feature = "gpu-probe")]
+│       ├── mod.rs          # adapter + buffer round-trip
+│       └── probe.wgsl      # trivial compute shader (buf[i] *= 2.0)
+├── tests/
+│   ├── invariant_1_compose.rs      # 7-trait composition smoke
+│   ├── invariant_2_forward.rs      # ForwardMap end-to-end
+│   ├── invariant_3_factor.rs       # Llt<f64> lifetime + solve
+│   ├── invariant_4_5_gradcheck.rs  # FD vs IFT, 5-digit, joint I-4 + I-5
+│   ├── invariant_5_determinism.rs  # bit-equal + cold-restart via bin helper
+│   └── invariant_6_gpu_probe.rs    # #[cfg(feature = "gpu-probe")]
+└── bin/
+    └── skeleton_run.rs             # cold-restart helper for I-5
 ```
 
-Seven traits, seven concrete impls (one per trait, with `NullContact` the one that has no work to do), one scene constructor, one `ForwardMap` impl, two tests. No `coupling/`, `gpu/`, or `sdf_bridge/` modules — those reactivate at Phase F / E / G respectively.
+**Dependency graph** (skeleton scope):
 
-Budget estimate: ~800 LOC without tests, ~1200 with tests. Sits in the middle of the pivot memo's 500–1500 band. Comes in lower if `sim-ml-chassis`'s tape already exposes enough of `TapeNodeKey`; comes in higher if I-4's amendment is needed.
+```
+sim-ml-chassis  ──── Tape, VjpOp, Tensor<f64>
+     │
+     ▼
+ sim-soft  ──┬── faer          (Llt<f64>, sparse CSR)
+             ├── nalgebra      (Tet4 local 12×12 dense)
+             └── wgpu (opt)    (probe, feature-gated)
+```
 
-## 5. Green-skeleton checklist
+Absent from skeleton (deferred by phase): `sim-core` (F), `sim-mjcf` (F), `sim-thermostat` (F/G), `sim-bevy` (I), `cf-design` (G), `sim-opt` (post-I).
 
-The skeleton is **green** when all of the following are true on `feature/soft-body-walking-skeleton`:
+**LOC budget:** ~800 production, ~400 tests, target total ~1200. Room at the top end (1500) for unavoidable growth in `NewtonStepVjp` + the Tet4 local-assembly routine if the closed-form NH derivatives expand beyond estimate.
 
-- [ ] `cargo build -p sim-soft` succeeds on macOS-arm64.
-- [ ] `cargo build -p sim-soft --release` succeeds and completes within the workspace's compile-time budget (no new multi-minute FFI step).
-- [ ] `cargo test -p sim-soft --release` runs two test binaries:
-  - [ ] `determinism::forward_map_is_deterministic_in_theta` — bit-equal `RewardBreakdown` across two `fm.evaluate` calls at the same θ (validates I-2, I-5).
-  - [ ] `gradcheck::ift_matches_central_difference_to_5_digits` — `assert_rel_err!(grad_ift, fd, rel_tol = 1e-5)` on the 1-tet scene (validates I-3, I-4).
-- [ ] `cargo xtask grade sim-soft` returns **A** across all seven criteria. (User standard: "A-grade or it doesn't ship.")
-- [ ] All seven traits from [`110-crate/01-traits/00-core.md`](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md) are defined in `sim-soft` with the pinned signatures and at least one concrete impl each (validates I-1).
-- [ ] Dependency audit: `cargo tree -p sim-soft` shows no C/C++ build step added to the workspace graph (validates I-6 CPU half).
-- [ ] If `sim-ml-chassis`'s tape needed amendment for I-4: a sibling PR against `sim-ml-chassis` lands first, with its own gradcheck regression; skeleton PR depends on it.
+## 5. Proposed new API — skeleton must define
 
-Each unchecked item is a load-bearing claim from the book that did not survive contact with code — each one is a book-iteration trigger per the pivot memo's "Let skeleton findings drive subsequent book iterations."
+Names locked by γ ([`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md)) but not yet in Rust. Skeleton writes these — first contact with code is expected to surface refinements feeding back into Part 10 Ch 00.
 
-## 6. What the skeleton does **not** validate
+- **`RewardBreakdown`** (γ) — struct with per-term fields per Part 1 Ch 01. 1-tet values: see §2 reward table. `apply_residuals(&self, residuals: &ResidualCorrections) -> Self` per δ Ch 00 readout §3.
+- **`EditResult`** (γ) — three-variant enum: `ParameterOnly`, `TopologyPreserving`, `TopologyChanging`. 1-tet θ-only variation always yields `ParameterOnly`.
+- **`GradientEstimate`** (γ) — `Exact` | `Noisy { variance: f64 }`. Skeleton always returns `Exact`; `Noisy` path activates at Phase G (stochastic adjoint).
+- **`RewardWeights`** (γ) — scalar composition weights matching `RewardBreakdown` fields.
+- **`ForwardMap` trait** (γ) — exactly the signature in `project_soft_body_gamma_apis.md`, including the determinism-in-θ docstring contract.
+- **`NewtonStepVjp: VjpOp`** — the numerical heart of the skeleton. Stashes: converged $\mathbf{x}^*$, $\theta$, `Llt<f64>` factor of $\partial r / \partial \mathbf{x} \big|_{\mathbf{x}^*, \theta}$, sparse $\partial r / \partial \theta \big|_{\mathbf{x}^*, \theta}$. VJP formula: given cotangent $\bar{\mathbf{x}}^*$ (gradient flowing in from downstream reward-composition path), compute adjoint $\lambda = -(\partial r / \partial \mathbf{x})^{-\mathsf{T}} \bar{\mathbf{x}}^*$ via `factor.solve_in_place` on the transposed system (Cholesky is symmetric so transpose is identity), then $\partial_\theta = (\partial r / \partial \theta)^{\mathsf{T}} \lambda$ — accumulated into `parent_cotans[θ]`. **Sign convention check:** assumes residual $r(\mathbf{x}, \theta) = 0$ at equilibrium; if the skeleton writes $r$ as "residual = inertia + internal − external," the gradient carries the sign as written. **Verify against Part 6 Ch 02:13–15 before coding.**
 
-Deferred to the phase that first requires each, per [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md):
+## 6. Test harness
 
-| Deferred invariant / capability | Deferred to | Why not in skeleton |
+| Inv | Test file | Kind | Fixture | Runtime target |
+|---|---|---|---|---|
+| I-1 | `invariant_1_compose.rs` | integration | Construct `BackwardEulerNewton<Tet4, NeoHookean, NullContact, CpuTape>` via type alias; call each trait's contract method once | < 1 s |
+| I-2 | `invariant_2_forward.rs` | integration | 1-tet scene, θ = `[f_magnitude, f_x, f_y, f_z]`, call `evaluate`; assert `peak_bound`/`stiffness_bound`/`composition` finite; flag `pressure_uniformity`/`coverage` gap; assert `EditResult::ParameterOnly` | < 2 s |
+| I-3 | `invariant_3_factor.rs` | unit-style integration | Assemble 12×12 synthetic SPD matrix, `Llt::new`, stash in `NewtonStepVjp`, drop source matrix, `solve_in_place` on two different RHSes, assert consistency | < 1 s |
+| I-4 + I-5 | `invariant_4_5_gradcheck.rs` | integration | Central FD with $h = 1.5 \times 10^{-8}$ vs IFT gradient; 4 θ components; relative error per component ≤ 1e-5 | < 10 s |
+| I-5 | `invariant_5_determinism.rs` | integration | Two same-process `evaluate` calls → `f64::to_bits` equal on every field; spawn `bin/skeleton_run` subprocess, parse stdout JSON, compare bits | < 5 s |
+| I-6a | (implicit) | build | `cargo build -p sim-soft --release` succeeds | — |
+| I-6b | `invariant_6_gpu_probe.rs` | integration, feature-gated | `#[cfg(feature = "gpu-probe")]`; request adapter (`LowPower`); upload `[f32; 16]`; dispatch probe.wgsl doubling each element; read back; assert equality; skip cleanly on `RequestAdapterError` | < 5 s |
+
+**Full skeleton test suite target:** `cargo test -p sim-soft --release` under 30 s; `cargo test -p sim-soft --release --features gpu-probe` under 35 s.
+
+**No benches** in skeleton. Performance is Phase E+.
+
+## 7. Green-skeleton checklist
+
+Skeleton is **green** when all of the following hold on `feature/soft-body-walking-skeleton`:
+
+- [ ] `cargo build -p sim-soft` + `cargo build -p sim-soft --release` succeed on macOS-arm64 + Linux CI.
+- [ ] `cargo build -p sim-soft --features gpu-probe` succeeds on both platforms.
+- [ ] `cargo test -p sim-soft --release` — all six non-GPU invariants green.
+- [ ] `cargo test -p sim-soft --release --features gpu-probe` — I-6b green on a machine with a wgpu-compatible adapter; skipped cleanly on CI if none.
+- [ ] `cargo xtask grade sim-soft` returns **A** across all 7 criteria. (User standard: A-grade or it doesn't ship.)
+- [ ] All 7 traits from [`110-crate/01-traits/00-core.md`](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md) defined with pinned signatures, one impl each (I-1).
+- [ ] `cargo tree -p sim-soft` — no C/C++ build step; wgpu + faer + nalgebra + sim-ml-chassis pure-Rust chain (I-6a).
+- [ ] No `unsafe` in sim-soft production code (grader enforces; sanity-check).
+- [ ] Gradcheck relative error ≤ 1e-5 per component on all 4 θ axes (I-4 + I-5).
+- [ ] `RewardBreakdown` 1-tet gap recorded as a book-iteration finding, not silently worked around.
+
+## 8. What the skeleton does NOT validate
+
+Deferred to the phase that first requires each:
+
+| Deferred | Phase | Why not in skeleton |
 |---|---|---|
-| IPC contact barrier, CCD, friction | Phase C | Hardest single module; deserves its own focus. `NullContact` proves the trait surface. |
-| Multiple materials / Mooney-Rivlin / viscoelasticity | Phase H | Additive to `Material` trait; does not affect skeleton invariants. |
-| Tet10, Hex8, mixed u-p, adaptive refinement | Phase H | Same — additive to `Element` / `Mesh`. |
-| GPU solver port, CpuTape-vs-GpuTape gradcheck (§03) | Phase E | wgpu build-graph claim is deferred with it per I-6 narrowing above. |
-| `sim-core` / `sim-thermostat` coupling | Phase F | Sibling-crate coupling lives in `coupling/`, not skeleton. |
-| `cf-design` / SDF → tet pipeline | Phase G | `sdf_bridge/` module is Phase G. |
-| Visual layer, `sim-bevy` integration | Phase I | Physics substrate must be stable before shaders commit. |
-| Time adjoint (multi-step rollout gradients) | Phase E+ | One-step Newton exercises I-3; multi-step exercises the time-adjoint machinery ([`60-differentiability/03-time-adjoint.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/03-time-adjoint.md)) which is not a skeleton invariant. |
-| 100-tet neo-Hookean cube (Phase B deliverable) | Phase B proper | Skeleton is 1 tet; scaling to 100 tets is a Phase-B acceptance milestone after skeleton confirms the architecture. |
-| Pass 2 / Pass 3 leaves not yet authored | Code-driven, JIT | Per pivot memo: "book iteration is code-driven post-skeleton, not spec-driven." |
+| IPC contact, CCD, friction | C | Hardest single module; `NullContact` proves the trait surface. |
+| Mooney-Rivlin / Ogden / corotational / viscoelasticity / anisotropy / thermal coupling / spatial fields | D/H | Additive to `Material`; no new trait surface needed. |
+| Tet10, Hex8, mixed u-p, adaptive refinement, F-bar | H | Additive to `Element` / `Mesh`. |
+| Chassis-GPU (`sim_ml_chassis::gpu`, B.5 ungated) | E | Refactor explicitly deferred; Part 8 Ch 04 Claim 3 prerequisite for Phase E. |
+| GPU sparse CG, preconditioner-on-tape | E | Part 8 Ch 02; requires B.5 first. |
+| `sim-core` / `sim-mjcf` coupling (wrench-only, `xfrc_applied`) | F | sim-soft is self-contained at skeleton scope per Part 11 Ch 02 §00. |
+| `sim-thermostat` coupling (Langevin stochastic forcing) | F/G | Would break determinism-in-θ; excluded deliberately per γ Ch 00 contract. |
+| `sim-bevy` visual layer (`MeshSnapshot`, `SimSoftPlugin`) | I | Physics substrate must be stable before shaders commit. |
+| `cf-design` / SDF→tet pipeline / `SdfField` | G | `sdf_bridge/` module is Phase G. |
+| Time adjoint (multi-step rollout gradients, Revolve checkpointing) | E+ | Single-step backward-Euler exercises I-3; multi-step is distinct machinery. |
+| `SimToRealCorrection`, `MeasurementReport`, residual GPs, preference GPs | post-I | Physical-print loop; explicitly post-Phase-I per γ Ch 03/04/05/06. |
+| `Acquisition` enum, `CostAwareAcquisition`, `DuelingBanditPolicy` | post-I | sim-opt / optimizer surface; not skeleton scope. |
+| 100-tet Phase-B deliverable | B proper | Skeleton is 1 tet; scaling is a Phase-B acceptance milestone. |
 
-## 7. Sequencing
+## 9. Sequencing
 
-1. **Memo review** (this document) — user reviews before any Rust lands.
-2. **`sim-ml-chassis` tape audit** — quick read of its existing autograd surface to confirm I-4's `TapeNodeKey` assumption. If confirmed, skip step 3. If not, step 3 comes first.
-3. (Conditional) **`sim-ml-chassis` amendment PR** — add `register_vjp` API surface, with its own regression. Must ship before skeleton PR touches `autograd/`.
-4. **Skeleton crate scaffold** — `sim/L0/soft/` with `Cargo.toml`, seven trait definitions, seven empty impls, scene constructor stub. `cargo build` must pass.
-5. **Material → Element → Mesh** — fill in neo-Hookean, Tet4, TetMesh. Each gets its own unit test before the next lands. `material/` and `mesh/` each ship their own isolated FD-vs-analytic gradient test per Phase A commitment.
-6. **Solver → Autograd** — Newton loop, faer `Llt<f64>` factor-on-tape, IFT adjoint. Gradcheck §02 turns green at the end of this step.
-7. **Readout → ForwardMap** — `RewardBreakdown` minimal (one or two terms), `ForwardMap::evaluate` composes the stack, `NullContact` locked in. Gradcheck §01 turns green.
-8. **Green checklist pass** — all items in §5 verified.
-9. **Book iteration pass** — every surprise encountered in steps 4–8 is recorded as a book-spec bug; fixes land as follow-up PRs to the book, not bundled into the skeleton PR.
+1. **Memo stress-test** (this document) — user reviews §10 + §11, approves / refines / pushes back before any Rust lands.
+2. **Crate scaffold** — `sim/L0/soft/` with `Cargo.toml`, seven trait definitions with pinned signatures, seven empty impls. `cargo build` passes. Validates I-1 compile layer.
+3. **Material → Element → Mesh** — NeoHookean closed-form $P$ + $\partial P / \partial F$; Tet4 local assembly; single-tet mesh. Unit FD-vs-analytic test per trait before moving on.
+4. **Solver** — Newton loop with Armijo, faer `Llt<f64>` on sparse assembly; convergence test at 1-tet scale. Verify SPD tangent at chosen load; fall back to `Lblt` if not.
+5. **Differentiable (`NewtonStepVjp`)** — stash primal data, write VJP, verify sign convention against Part 6 Ch 02:13–15. Register with `Tape::push_custom`. Gradcheck §02 (I-4 + I-5 joint) turns green.
+6. **Observable → readout → `ForwardMap`** — `RewardBreakdown`, `EditResult`, `RewardWeights`, `GradientEstimate` definitions; `ForwardMap::evaluate` composes the stack. Determinism test (I-5) turns green. `RewardBreakdown` 1-tet gap recorded as finding.
+7. **GPU probe** — feature-gated wgpu adapter + round-trip. I-6b turns green.
+8. **Green-checklist pass** — §7 verified end-to-end.
+9. **Book iteration pass** — every surprise encountered in 2–8 becomes a book-spec PR, separate from the skeleton PR.
 
-All steps on one long-running branch. No merge until the green checklist in §5 passes end-to-end.
+All steps on `feature/soft-body-walking-skeleton`. No merge until §7 passes.
 
-## 8. Open questions before coding starts
+## 10. Recommendations flagged for user check (recommend-first)
 
-None blocking. Two to confirm with the user after memo review:
+Per [`feedback_recommend_first_deep_specialist.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_recommend_first_deep_specialist.md): numerically-load-bearing choices below are Claude's call + rationale, flagged for user check against principles.
 
-- **Q1:** Is `NullContact` acceptable for the skeleton, or should we push penalty contact into the skeleton anyway to stress-test the full trait surface? (Recommendation: `NullContact`. Rationale in §3.)
-- **Q2:** One-step backward-Euler vs. static-equilibrium for the skeleton's canonical scene? (Recommendation: one-step backward-Euler with $dt$ large enough for inertia to be non-trivial. Rationale in §3.)
+| # | Call | Rationale | User-check hook |
+|---|---|---|---|
+| R-1 | Full Newton + Armijo line-search, single backward-Euler step, $\Delta t = 10^{-2}$ | Simplest compliant choice matching Part 5 Ch 00; inertia non-trivial at $\Delta t = 10^{-2}$ with $\rho = 1030$. | Confirm $\Delta t$ isn't so large that Newton divergence is the bottleneck; alternatively $\Delta t \in [10^{-3}, 10^{-2}]$. |
+| R-2 | faer `Llt<f64>` on sparse CSR | Directly tests I-3; forward-compatible with Phase-B 100-tet. | If NH tangent isn't SPD at the chosen load, fall back to `Lblt` (LDLᵀ) — verify at R-1 step. |
+| R-3 | Central FD, $h = 1.5 \times 10^{-8}$ ($\approx \sqrt{\varepsilon_{f64}}$), 5-digit relative bar | Optimal for f64 precision; matches Part 11 Ch 04 §02 commitment. | Hard fail at per-component rel error > 1e-4; warn at > 1e-5. 5/6 components passing is NOT "almost working" — treat as hard fail. |
+| R-4 | Minimal wgpu probe (~100–200 LOC, feature-gated) | Tests I-6b without committing to chassis-GPU (B.5 ungated). | User approved the probe; confirm scope guard (no chassis-GPU, no GPU solver, no shared tape state). |
+| R-5 | `NewtonStepVjp` sign convention per residual form "inertia + internal − external" | Part 6 Ch 02:13–15 derivation; gradient sign follows. | **Verify Part 6 Ch 02:13–15 residual sign before coding VJP.** Single cheapest check that saves the most debugging time. |
+| R-6 | θ = 4 scalars (traction magnitude + 3-axis direction) | Keeps FD sweep cheap; tests vector-cotangent accumulation at physics scale. | Is 4 the right count? Could narrow to 1 (magnitude only) for the very first gradcheck, widen to 4 after passing. |
+| R-7 | Hand-rolled 1-tet in `mesh/single_tet.rs`, no sim-mjcf | User-confirmed. | — |
+| R-8 | Crate name `sim-soft` at `sim/L0/soft/` | User-confirmed. | — |
+
+## 11. Stress-test / review hooks (refine before coding)
+
+Open questions the user should push on or confirm — these are where the spec is most likely wrong:
+
+- **S-1 — `RewardBreakdown` gap on 1 tet.** Two of five fields (`pressure_uniformity`, `coverage`) are structurally undefined on a single element with no contact. Skeleton flags this as a finding. Acceptable? Or do we want the skeleton to include a 2-tet or tet-plus-rigid-wall scene to exercise all five fields and remove the gap? (Recommendation: accept the gap. Rationale: 2 tets ≈ 1.5× LOC for no additional invariant coverage; the finding itself is the point.)
+- **S-2 — Determinism-under-line-search risk class.** Armijo's step-length selection branches on a sufficient-decrease inequality. If θ-perturbation changes the decrease quantity across the inequality threshold, the selected step length changes, propagating into non-smooth gradient. This would look like a gradcheck failure at 5 digits despite correct IFT. Is the skeleton gradcheck test the right place to expose this, or do we want a separate "line-search non-smoothness audit" test that holds θ fixed and varies the search-direction-norm to isolate the branch point? (Recommendation: the gradcheck test is sufficient; a failure maps to a book-level spec bug in Part 5 Ch 00 that deserves its own finding, and we don't need a dedicated test harness for it.)
+- **S-3 — `faer::sparse::linalg::solvers::Llt<f64>` lifetime shape.** 80% probability it clones/moves cleanly across the VJP boundary; 20% it holds a lifetime to the source matrix we'd need to route around. 10-minute `cargo doc` spike before writing `NewtonStepVjp` would convert this to a known fact. Do that spike as the first step of skeleton coding, or commit to it in the memo?
+- **S-4 — `parent_cotans` accumulation at physics scale.** Chassis contract says slots are "zero-initialized with shapes matching parent values." Refactor tests almost certainly exercised scalar + short-vector only. 1-tet θ is shape `[4]` or `[]+[3]`; displacement is shape `[12]` or `[4,3]`. Shape inference for custom VjpOps — does the tape actually know the parent's shape at `push_custom` time, or does it learn it at `backward` time? If the latter, the contract might not hold for shapes larger than scalar. Worth a code-read of `autograd.rs` push_custom path before writing the VJP.
+- **S-5 — Cold-restart determinism via bin helper.** Is a subprocess-spawn test the right mechanism, or should the cold-restart path be exercised in a separate CI job that actually restarts the process? (Recommendation: subprocess spawn is faster and sufficient for the invariant; full CI restart isn't worth the infrastructure.)
+- **S-6 — `EditResult` three-variant enum.** γ locked `ParameterOnly` / `TopologyPreserving` / `TopologyChanging` conceptually. Does the 1-tet θ-only case actually clarify the trichotomy, or does it just ever return `ParameterOnly` and leave the other two variants untested? (Answer: yes, only `ParameterOnly` fires. The other two reactivate at Phase G (SDF→mesh topology changes). Skeleton doesn't exercise them. Accept.)
+- **S-7 — Nalgebra vs faer for Tet4 locals.** `Tet4::local_stiffness` returns a 12×12 dense matrix before scatter to sparse global. Using nalgebra for the local and faer for the global is two dense libraries — one extra dep. Acceptable, or collapse to faer-only dense? (Recommendation: keep nalgebra. Small 12×12 locals are faster in nalgebra's stack-allocated `SMatrix`; faer's strength is sparse. Two libraries with one-each role is cleaner than one library wearing both hats.)
+- **S-8 — Feature-gate strategy for wgpu.** Should `gpu-probe` be the only wgpu entry, or should it also gate whatever Phase-E GPU code lands later? (Recommendation: `gpu-probe` is specifically the probe. Phase E adds `gpu` feature with its own gate for real GPU work. Two features. Keeps probe scope-locked.)
+- **S-9 — Skeleton PR merge strategy.** One big PR at green-checklist, or staged PRs per invariant? (Recommendation: one PR, matches soft-body study PR pattern; pre-squash tag per `feedback_pre_squash_tag.md`.)
+- **S-10 — Book-iteration cadence.** Every skeleton finding becomes a book-level PR (separate from the skeleton PR). Batched into one follow-up or dripped as each finding surfaces? (Recommendation: dripped. Surprise-finding at coding time produces freshest spec fix; batching loses context.)
+
+## 12. Known unknowns with probability estimates
+
+- **80% clean, 20% refactor needed:** faer `Llt<f64>` cleanly movable onto a VJP with owned lifetime. Mitigation: S-3 spike.
+- **70% clean, 30% edge case:** chassis `push_custom` + `parent_cotans` accumulation works at `Tensor<f64>` shape `[12]` and `[4]`. Mitigation: S-4 code-read.
+- **90% holds, 10% non-smooth:** Armijo line-search preserves determinism under θ-perturbation at gradcheck's $h = 1.5 \times 10^{-8}$ scale. Mitigation: the gradcheck test itself exposes this.
+- **95% SPD, 5% indefinite:** NH compressible tangent stays SPD at $\Delta t = 10^{-2}$ with the chosen $(\mu, \lambda, \rho)$ and traction magnitude. Mitigation: fall back to `Lblt`; flag if it triggers.
+- **99% clean, 1% surprise:** wgpu build graph resolves cross-platform (macOS-arm64 + Linux CI). Mitigation: the probe test is the check.
+
+If any "refactor needed" scenario fires, the skeleton PR stays open and the refactor is a prerequisite commit on the same branch.
+
+---
+
+## Appendix: γ-locked API name registry (skeleton must cite verbatim)
+
+From [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md):
+
+- `ForwardMap` (trait) — `evaluate(theta, tape) → (RewardBreakdown, EditResult)` + `gradient(theta, tape) → (Tensor<f64>, GradientEstimate)`
+- `RewardBreakdown` (struct) — per-term reward struct with `apply_residuals` method
+- `EditResult` (enum) — 3 variants
+- `RewardWeights` (struct) — scalar-composition weights
+- `GradientEstimate` (enum) — `Exact | Noisy { variance: f64 }`
+- `Material`, `Element<const N, const G>`, `Mesh`, `ContactModel`, `Solver`, `Differentiable`, `Observable` (with `type Step`) — the seven traits
+- `faer::sparse::linalg::solvers::Llt<f64>` — Cholesky factor type (factor-on-tape)
+- `VjpOp` (trait), `Tape::push_custom` (method) — chassis extension point (shipped in PR #213)
+- `Tensor<f64>` — sim-soft precision (chassis default is f32 for RL)
+
+Not cited in skeleton (post-skeleton API register for reference): `SimToRealCorrection`, `MeasurementReport`, `OnlineUpdateOutcome`, `PreferenceGP`, `BradleyTerryGP`, `GradientEnhancedGP`, `Acquisition` enum, `CostAwareAcquisition`, `DuelingBanditPolicy`, `MeasurementProtocol`, `DiffusionProfile`, `MjcfHandshake`, `ThermostatHandshake`, `MeshSnapshot`, `SimSoftPlugin`, `SdfField`, `MaterialField`.
