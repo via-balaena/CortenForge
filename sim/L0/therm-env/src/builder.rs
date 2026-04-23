@@ -279,9 +279,27 @@ impl ThermCircuitEnvBuilder {
 
     // ── Private ───────────────────────────────────────────────────────
 
+    /// Reject `NaN` or ±Inf on any user-supplied f64 parameter.
+    fn validate_finite_params(&self) -> Result<(), ThermCircuitError> {
+        let checks: [(&'static str, f64); 5] = [
+            ("timestep", self.timestep),
+            ("gamma", self.gamma),
+            ("k_b_t", self.k_b_t),
+            ("ctrl_range.lo", self.ctrl_range.0),
+            ("ctrl_range.hi", self.ctrl_range.1),
+        ];
+        for (field, value) in checks {
+            if !value.is_finite() {
+                return Err(ThermCircuitError::NonFiniteParameter { field, value });
+            }
+        }
+        Ok(())
+    }
+
     /// Validate config and execute shared setup (MJCF, model, thermostat,
     /// passive stack, obs/act spaces, closure defaults).
     fn prepare(self) -> Result<PreparedCircuit, ThermCircuitError> {
+        self.validate_finite_params()?;
         if self.n_particles == 0 {
             return Err(ThermCircuitError::ZeroParticles);
         }
@@ -371,4 +389,110 @@ struct PreparedCircuit {
     k_b_t: f64,
     ctrl_temperature_idx: Option<usize>,
     sub_steps: usize,
+}
+
+// ─── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn minimal_valid() -> ThermCircuitEnvBuilder {
+        ThermCircuitEnvBuilder::new(1).reward(|_, _| 0.0)
+    }
+
+    #[test]
+    fn timestep_nan_rejected() {
+        let err = minimal_valid().timestep(f64::NAN).build().unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "timestep", value }
+                if value.is_nan()
+        ));
+    }
+
+    #[test]
+    fn gamma_nan_rejected() {
+        let err = minimal_valid().gamma(f64::NAN).build().unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "gamma", value }
+                if value.is_nan()
+        ));
+    }
+
+    #[test]
+    fn k_b_t_nan_rejected() {
+        let err = minimal_valid().k_b_t(f64::NAN).build().unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "k_b_t", value }
+                if value.is_nan()
+        ));
+    }
+
+    #[test]
+    fn ctrl_range_lo_nan_rejected() {
+        let err = minimal_valid()
+            .ctrl_range(f64::NAN, 10.0)
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "ctrl_range.lo", value }
+                if value.is_nan()
+        ));
+    }
+
+    #[test]
+    fn ctrl_range_hi_nan_rejected() {
+        let err = minimal_valid()
+            .ctrl_range(0.0, f64::NAN)
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "ctrl_range.hi", value }
+                if value.is_nan()
+        ));
+    }
+
+    #[test]
+    fn timestep_pos_inf_rejected() {
+        let err = minimal_valid().timestep(f64::INFINITY).build().unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "timestep", value }
+                if value.is_infinite() && value.is_sign_positive()
+        ));
+    }
+
+    #[test]
+    fn gamma_neg_inf_rejected() {
+        let err = minimal_valid()
+            .gamma(f64::NEG_INFINITY)
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "gamma", value }
+                if value.is_infinite() && value.is_sign_negative()
+        ));
+    }
+
+    #[test]
+    fn minimal_valid_still_builds() {
+        minimal_valid().build().unwrap();
+    }
+
+    #[test]
+    fn build_vec_timestep_nan_rejected() {
+        let err = minimal_valid().timestep(f64::NAN).build_vec(1).unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NonFiniteParameter { field: "timestep", value }
+                if value.is_nan()
+        ));
+    }
 }
