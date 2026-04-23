@@ -33,6 +33,8 @@ Skeleton invariant consequences:
 
 **Round 4 stress-test results (2026-04-23):** book citation audit. **All 11 unique book-link paths resolve** — no dead links. Claim numbers cross-verified: Part 5 Ch 00 Claim 3 (`## 3. The factorization is a captured first-class object`), Part 6 Ch 00 Claim 3 ("Own every line" prose claim 3), Part 2 Ch 00 §00 4-item Material signature, Part 6 Ch 02:13–15 IFT derivation, Part 2 Ch 04 01-tangent.md:19–23 SPD + :41 LU fallback, Part 11 Ch 01 parent claims 1+2 — all present and correct. **Two spec-drift fixes** (not book bugs): (a) `RewardBreakdown` has **4 per-term fields**, not 5 per Part 10 Ch 00:47 — `composition` was described as a field but is actually a method call (`score_with(&weights)`); spec §2 + §5 + appendix corrected, 1-tet gap recounted from "two of five" to "two of four." (b) Line 218 "Part 8 Ch 04 Claim 3" was wrong — Part 8 Ch 04 cites "Part 6 Ch 00 Claim 3" as the upstream source; corrected to name both chapters with Part 6 Ch 00 as claim home. No new BF — the book is internally consistent; these were spec imprecision.
 
+**Round 5 stress-test results (2026-04-23):** module layout + dep-graph FFI-leak audit. **S-7 nalgebra/faer division is mandatory, not preference** — the seven-trait surface in Part 11 Ch 01 uses nalgebra types (`Matrix3<f64>`, `SMatrix<f64, 9, 9>`, `SVector<f64, N>`) in `Material::tangent`, `Element::shape_functions`, etc.; faer can't express those. Sparse globals + `Llt<I, f64>` can't be expressed in nalgebra. The division is forced by trait signatures. **S-8 feature gate pattern:** sim-gpu makes wgpu a required dep (it IS the GPU crate); sim-soft's wgpu is optional/probe-only, so `gpu-probe` uses `dep:wgpu` + `optional = true` pattern. Phase-E GPU work lands as a separate `gpu` feature — `gpu-probe` is scope-locked to the build-graph round-trip test. **FFI-leak audit passes:** zero C/C++ source files in skeleton's transitive dep graph — `nalgebra 0.34.2` (already workspace, pure Rust, BLAS bindings off), `faer 0.24` default features all pure Rust (`private-gemm-x86` is Rust+intrinsics not C-BLAS FFI), `sim-ml-chassis` pure Rust, `wgpu` uses system Metal/Vulkan backends (no cargo-compiled C). I-6a holds. Concrete `Cargo.toml` sketch now in §4.
+
 ## 1. The six load-bearing invariants
 
 Each invariant is a book claim that must be verified in code before further book expansion. Citations are to the book at `77751866`.
@@ -101,9 +103,48 @@ Rationale for scene choices:
 
 Location: `sim/L0/soft/` — sibling of `{types, simd, core, thermostat, gpu, mjcf, urdf, tests, ml-chassis, rl, opt}`.
 
+**Cargo.toml sketch (Round-5 verified):**
+
+```toml
+[package]
+name = "sim-soft"
+version.workspace = true
+edition.workspace = true
+# ... other workspace inheritances ...
+
+[features]
+default = []
+# I-6b probe: opt-in wgpu round-trip. NOT a Phase-E GPU feature flag.
+# (Phase-E will add a separate `gpu` feature for real GPU compute.)
+gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
+
+[dependencies]
+# Chassis tape, VjpOp, Tensor<f64> — shipped in PR #213
+sim-ml-chassis = { workspace = true }
+# Dense small matrices for per-Gauss-point Material + per-element Tet4 locals
+# (5 existing L0 consumers at 0.34.2 — not greenfield)
+nalgebra = { workspace = true }
+# Sparse SPD factor-on-tape (Llt<I, f64>) + sparse CSR assembly
+# Greenfield — this is the first workspace crate to depend on faer.
+# Default features: std, rayon, sparse-linalg, rand, npy — all pure Rust,
+# no C/C++ FFI, private-gemm-x86 is Rust+intrinsics not BLAS.
+faer = "0.24"
+
+# GPU probe deps — feature-gated, skeleton runs fine without them
+wgpu      = { workspace = true, optional = true }
+bytemuck  = { workspace = true, optional = true }
+pollster  = { workspace = true, optional = true }
+
+[dev-dependencies]
+approx = { workspace = true }  # 5-digit gradcheck tolerance assertions
+
+[lints]
+workspace = true
+```
+
 ```
 sim/L0/soft/
-├── Cargo.toml              # deps: sim-ml-chassis, sim-types, faer, nalgebra; optional wgpu behind gpu-probe
+├── Cargo.toml              # as above
 ├── src/
 │   ├── lib.rs              # pub re-exports
 │   ├── material/
@@ -154,10 +195,18 @@ sim/L0/soft/
 sim-ml-chassis  ──── Tape, VjpOp, Tensor<f64>
      │
      ▼
- sim-soft  ──┬── faer          (Llt<I, f64>, sparse CSR; **greenfield — not in workspace Cargo.toml as of `77751866`**; skeleton's first commit adds it at version 0.24+)
-             ├── nalgebra      (Tet4 local 12×12 dense)
-             └── wgpu (opt)    (probe, feature-gated)
+ sim-soft  ──┬── faer 0.24         (Llt<I, f64>, sparse CSR; **greenfield — skeleton's first commit adds it to workspace Cargo.toml**; default features all pure Rust)
+             ├── nalgebra 0.34.2   (Matrix3, SMatrix<9,9>, SVector<N>; already workspace, 5 existing L0 consumers)
+             └── wgpu (opt)        (probe, feature-gated behind `gpu-probe`)
 ```
+
+**Round-5 FFI-leak audit:** the skeleton compiles with **zero C/C++ source files** in its transitive dep graph.
+- `nalgebra 0.34.2` — pure Rust; optional BLAS bindings are off by default.
+- `faer 0.24` default features (`std`, `rayon`, `sparse-linalg`, `rand`, `npy`) — all pure Rust; `std` pulls `private-gemm-x86` which is Rust + platform intrinsics (not C-BLAS FFI); `sparse::linalg::solvers::Llt` is the Phase-B target type per Part 11 Ch 03 build-order.
+- `sim-ml-chassis` — pure Rust (verified Round 1; no external crates beyond num-traits).
+- `wgpu` (only when `gpu-probe` feature on) — system-library backends (Metal on macOS, Vulkan on Linux); no C source compiled by cargo.
+
+I-6a CPU build graph commitment holds.
 
 Absent from skeleton (deferred by phase): `sim-core` (F), `sim-mjcf` (F), `sim-thermostat` (F/G), `sim-bevy` (I), `cf-design` (G), `sim-opt` (post-I).
 
@@ -268,8 +317,8 @@ Open questions the user should push on or confirm — these are where the spec i
 - **S-4 — `parent_cotans` accumulation at physics scale.** **✓ RESOLVED 2026-04-23 (Round 1).** Read `sim/L0/ml-chassis/src/autograd.rs:769-782` (the `BackwardOp::Custom(op)` arm inside `Tape::backward`). Slots ARE zero-initialized with parent's stored shape via `Tensor::zeros(self.values[p as usize].shape())` — the tape looks up the parent's shape from the value it was pushed with, so `param_tensor` / `push_custom` / elementwise ops all get shape-correct cotangent slots. Accumulation is `ew_add_assign` (matches `+=` contract). Fan-in via duplicate parent indices works (each slot contribution accumulates independently before flush to `self.grads[p]`). Backward loop `for i in (0..=out_idx).rev()` is deterministic — no RNG, no parallelism, no clock. **Minor note:** line 750 skips nodes with all-zero cotangent — optimization, not correctness issue, but means a custom op whose upstream cotangent happens to be identically zero silently won't run its VJP. Not a skeleton concern.
 - **S-5 — Cold-restart determinism via bin helper.** Is a subprocess-spawn test the right mechanism, or should the cold-restart path be exercised in a separate CI job that actually restarts the process? (Recommendation: subprocess spawn is faster and sufficient for the invariant; full CI restart isn't worth the infrastructure.)
 - **S-6 — `EditResult` three-variant enum.** γ locked `ParameterOnly` / `TopologyPreserving` / `TopologyChanging` conceptually. Does the 1-tet θ-only case actually clarify the trichotomy, or does it just ever return `ParameterOnly` and leave the other two variants untested? (Answer: yes, only `ParameterOnly` fires. The other two reactivate at Phase G (SDF→mesh topology changes). Skeleton doesn't exercise them. Accept.)
-- **S-7 — Nalgebra vs faer for Tet4 locals.** `Tet4::local_stiffness` returns a 12×12 dense matrix before scatter to sparse global. Using nalgebra for the local and faer for the global is two dense libraries — one extra dep. Acceptable, or collapse to faer-only dense? (Recommendation: keep nalgebra. Small 12×12 locals are faster in nalgebra's stack-allocated `SMatrix`; faer's strength is sparse. Two libraries with one-each role is cleaner than one library wearing both hats.)
-- **S-8 — Feature-gate strategy for wgpu.** Should `gpu-probe` be the only wgpu entry, or should it also gate whatever Phase-E GPU code lands later? (Recommendation: `gpu-probe` is specifically the probe. Phase E adds `gpu` feature with its own gate for real GPU work. Two features. Keeps probe scope-locked.)
+- **S-7 — Nalgebra vs faer for Tet4 locals.** **✓ Round 5 — verified mandatory, not preference.** Trait signatures in Part 11 Ch 01 00-core.md pin nalgebra types (`Matrix3<f64>`, `SMatrix<f64, 9, 9>`, `SMatrix<f64, N, 3>`, `SVector<f64, N>`) — `Material::tangent`, `Element::shape_functions`, `Element::shape_gradients`. Faer can't express those. Sparse globals + `Llt<I, f64>` can't be expressed in nalgebra. Collapsing is impossible without editing the book's trait surface.
+- **S-8 — Feature-gate strategy for wgpu.** **✓ Round 5 — confirmed two-feature plan.** Sim-gpu makes wgpu a required dep (crate IS the GPU); sim-soft's wgpu is optional via `gpu-probe` feature (`dep:wgpu` + `optional = true`). Phase-E real-GPU work lands as a separate `gpu` feature with its own dep set. Two features, scope-locked. Concrete Cargo.toml sketch in §4.
 - **S-9 — Skeleton PR merge strategy.** One big PR at green-checklist, or staged PRs per invariant? (Recommendation: one PR, matches soft-body study PR pattern; pre-squash tag per `feedback_pre_squash_tag.md`.)
 - **S-10 — Book-iteration cadence.** Every skeleton finding becomes a book-level PR (separate from the skeleton PR). Batched into one follow-up or dripped as each finding surfaces? (Recommendation: dripped. Surprise-finding at coding time produces freshest spec fix; batching loses context.)
 
