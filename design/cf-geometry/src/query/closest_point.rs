@@ -30,6 +30,7 @@ fn safe_normalize(v: &Vector3<f64>, fallback: Vector3<f64>) -> Vector3<f64> {
 /// - For `TriangleMesh`, this performs a brute-force search over all triangles
 ///   (no BVH acceleration for closest-point yet).
 #[must_use]
+// Precision loss acceptable: used for approximate / visualization values.
 #[allow(clippy::cast_precision_loss)]
 pub fn closest_point(shape: &Shape, point: &Point3<f64>) -> Point3<f64> {
     match shape {
@@ -442,6 +443,7 @@ pub fn closest_point_segment(a: Point3<f64>, b: Point3<f64>, p: Point3<f64>) -> 
 /// segment–segment distance algorithm with proper clamping for all
 /// degenerate cases (zero-length segments, parallel segments).
 #[must_use]
+// Short names mirror textbook / paper notation (a, b, c, v, w, etc.).
 #[allow(clippy::many_single_char_names)]
 pub fn closest_points_segments(
     p1: Point3<f64>,

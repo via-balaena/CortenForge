@@ -300,6 +300,7 @@ impl IndexedMesh {
     // --- Combinators ---
 
     /// Merges another mesh into this one, adjusting face indices.
+    // Index/count conversion bounded by domain (mesh/grid size < 2^32).
     #[allow(clippy::cast_possible_truncation)]
     pub fn merge(&mut self, other: &Self) {
         let vertex_offset = self.vertices.len() as u32;

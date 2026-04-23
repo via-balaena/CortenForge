@@ -568,6 +568,7 @@ impl<T> VoxelGrid<T> {
     /// assert_eq!(neg_coord, VoxelCoord::new(-2, -3, -4));
     /// ```
     #[must_use]
+    // Index/count conversion bounded by domain (mesh/grid size < 2^32).
     #[allow(clippy::cast_possible_truncation)]
     pub fn world_to_grid(&self, point: Point3<f64>) -> VoxelCoord {
         let relative = point - self.origin;

@@ -316,6 +316,7 @@ impl SdfGrid {
     /// Uses trilinear interpolation for smooth distance queries.
     /// Returns `None` if the point is outside the grid bounds.
     #[must_use]
+    // Domain notation preserves geometric conventions (p0, p1, p2, etc.).
     #[allow(clippy::similar_names)]
     pub fn distance(&self, point: Point3<f64>) -> Option<f64> {
         let (gx, gy, gz) = self.local_to_grid(point);

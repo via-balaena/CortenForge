@@ -258,6 +258,7 @@ fn fix_face_orientations(vertices: &[MinkowskiPoint], faces: &mut [EpaFace]) {
         return;
     }
 
+    // Precision loss acceptable: used for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     let centroid: Vector3<f64> = vertices
         .iter()

@@ -228,6 +228,7 @@ impl OccupancyMap {
 
     /// Converts a world-space point to a grid coordinate.
     #[must_use]
+    // Index/count conversion bounded by domain (mesh/grid size < 2^32).
     #[allow(clippy::cast_possible_truncation)]
     pub fn world_to_grid(&self, point: Point3<f64>) -> VoxelCoord {
         let relative = point - self.origin;

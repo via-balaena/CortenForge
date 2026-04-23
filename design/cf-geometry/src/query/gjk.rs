@@ -430,6 +430,7 @@ fn closest_point_on_simplex_to_origin(simplex: &Simplex) -> (Vector3<f64>, Vec<(
 }
 
 /// Full Voronoi region analysis for triangle case.
+// Short names mirror textbook / paper notation (a, b, c, v, w, etc.).
 #[allow(clippy::many_single_char_names, clippy::suboptimal_flops)]
 fn closest_point_on_triangle_to_origin(simplex: &Simplex) -> (Vector3<f64>, Vec<(usize, f64)>) {
     let a = simplex.points[0].point.coords;
