@@ -10,12 +10,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use xshell::{cmd, Shell};
 
-/// Controls progress logging and output format for `cargo xtask grade`.
+/// Controls progress logging, output format, and criterion selection for
+/// `cargo xtask grade`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Verbosity {
     pub quiet: bool,
     pub verbose: bool,
     pub json: bool,
+    /// Skip the Coverage criterion. Coverage runs `cargo llvm-cov --release`
+    /// (5-10 min per crate) which is too expensive for per-PR CI. Reported
+    /// as [`Grade::NotApplicable`] when set.
+    pub skip_coverage: bool,
 }
 
 /// Grade for a single criterion
@@ -670,6 +675,19 @@ fn grade_coverage(
             grade: Grade::NotApplicable,
             threshold: "≥75%/≥90% A+",
             measured_detail: detail,
+        });
+    }
+
+    // `--skip-coverage` opt-out: CI runs want the other criteria without
+    // paying the ~5-10 min per-crate llvm-cov release build. Dedicated
+    // coverage jobs (nightly / manual) run without the flag.
+    if verbosity.skip_coverage {
+        return Ok(CriterionResult {
+            name: "1. Coverage",
+            result: "(skipped)".to_string(),
+            grade: Grade::NotApplicable,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: "coverage skipped via --skip-coverage flag".to_string(),
         });
     }
 

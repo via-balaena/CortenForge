@@ -70,6 +70,12 @@ enum Commands {
         /// Emit the grade report as JSON instead of the Unicode table
         #[arg(long)]
         json: bool,
+
+        /// Skip the Coverage criterion (reports N/A). Coverage runs
+        /// cargo llvm-cov in release (5-10 min per crate) — too slow
+        /// for per-PR CI. Dedicated coverage jobs run without the flag.
+        #[arg(long)]
+        skip_coverage: bool,
     },
 
     /// Record A-grade completion for a crate
@@ -106,12 +112,14 @@ fn main() -> Result<()> {
             quiet,
             verbose,
             json,
+            skip_coverage,
         } => grade::run(
             &crate_name,
             grade::Verbosity {
                 quiet,
                 verbose,
                 json,
+                skip_coverage,
             },
         ),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
