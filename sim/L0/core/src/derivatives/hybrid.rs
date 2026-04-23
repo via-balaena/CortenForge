@@ -1991,6 +1991,7 @@ pub fn mjd_transition_hybrid(
                         &mut dvdact,
                     );
                 }
+                // RK4 is dispatched via a separate transition path before reaching this code.
                 Integrator::RungeKutta4 => unreachable!(),
             }
 
@@ -2157,6 +2158,7 @@ pub fn mjd_transition_hybrid(
                 }
                 dvdq
             }
+            // RK4 is dispatched via a separate transition path before reaching this code.
             Integrator::RungeKutta4 => unreachable!(),
         };
 
@@ -2550,6 +2552,7 @@ pub fn mjd_transition_hybrid(
                         &mut dvdctrl,
                     );
                 }
+                // RK4 is dispatched via a separate transition path before reaching this code.
                 Integrator::RungeKutta4 => unreachable!(),
             }
 
