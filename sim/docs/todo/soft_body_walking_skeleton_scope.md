@@ -31,6 +31,8 @@ Skeleton invariant consequences:
 
 **Round 3 stress-test results (2026-04-23):** I-1 trait composition paper-sketched against [Part 11 Ch 01 00-core.md](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md) + [01-composition.md](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/01-composition.md). **Seven trait surfaces compose cleanly** — ≤4 lines of `where` clause per impl, no generic pile-up, object-safety holds for `Solver` / `Observable` in `Box<dyn … Tape = CpuTape>` form. Full skeleton type alias: `CpuNewtonSolver<NeoHookean, Tet4, SingleTetMesh, NullContact, 4, 1>` — 6 generic parameters (4 type + 2 const), verbose but contained via one alias. **One real book finding (BF-4):** book's `Differentiable::register_vjp(forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>)` assumes a key-based registry that doesn't match chassis's `Tape::push_custom(value, op)` model — `TapeNodeKey` isn't defined in chassis. Skeleton stubs `register_vjp` and creates VJPs at `push_custom` time instead. **Three skeleton implementation notes** (expected stub-on-trait-contract, not book bugs): `Solver::replay_step` is Phase-E checkpoint-replay infra (skeleton delegates to step without tape writes), `Differentiable::time_adjoint` + `fd_wrapper` are Phase E+/G respectively (`unimplemented!()`), `Observable::temperature_field` returns empty on skeleton's non-thermal scene. See §14 composition sketch + §13 BF-4.
 
+**Round 4 stress-test results (2026-04-23):** book citation audit. **All 11 unique book-link paths resolve** — no dead links. Claim numbers cross-verified: Part 5 Ch 00 Claim 3 (`## 3. The factorization is a captured first-class object`), Part 6 Ch 00 Claim 3 ("Own every line" prose claim 3), Part 2 Ch 00 §00 4-item Material signature, Part 6 Ch 02:13–15 IFT derivation, Part 2 Ch 04 01-tangent.md:19–23 SPD + :41 LU fallback, Part 11 Ch 01 parent claims 1+2 — all present and correct. **Two spec-drift fixes** (not book bugs): (a) `RewardBreakdown` has **4 per-term fields**, not 5 per Part 10 Ch 00:47 — `composition` was described as a field but is actually a method call (`score_with(&weights)`); spec §2 + §5 + appendix corrected, 1-tet gap recounted from "two of five" to "two of four." (b) Line 218 "Part 8 Ch 04 Claim 3" was wrong — Part 8 Ch 04 cites "Part 6 Ch 00 Claim 3" as the upstream source; corrected to name both chapters with Part 6 Ch 00 as claim home. No new BF — the book is internally consistent; these were spec imprecision.
+
 ## 1. The six load-bearing invariants
 
 Each invariant is a book claim that must be verified in code before further book expansion. Citations are to the book at `77751866`.
@@ -62,17 +64,18 @@ Each invariant is a book claim that must be verified in code before further book
 | Time step | Single backward-Euler step, $\Delta t = 10^{-2}$ s. **Inertia/stiffness balance (Round-2 verified):** lumped $M/\Delta t^2 \approx 430$ N/m/axis per free DOF; Tet4 diagonal $K$ scale $\sim \mu V L^{-2} \approx 1.67 \times 10^3$ N/m → ratio $\approx 0.26$, stiffness-dominated by ~4× — Newton sees both terms, gradcheck exercises NH nonlinearity genuinely. |
 | System size | 12 DOF, 3 free after Dirichlet (only $v_3$ moves) |
 
-**Reward scalar** — minimal `RewardBreakdown` for a 1-tet case (full γ-struct defined but not all fields meaningful on one element):
+**Reward scalar** — minimal `RewardBreakdown` for a 1-tet case. Per [Part 10 Ch 00 00-forward.md:47](../../../docs/studies/soft_body_architecture/src/100-optimization/00-forward.md) the struct carries **four** per-term contributions (not five); scalar composition is via the `score_with(&weights: &RewardWeights) -> f64` method, not an additional field.
 
-| Field | 1-tet definition | Phase-A meaningful? |
+| Per-term field | 1-tet definition | Phase-A meaningful? |
 |---|---|---|
 | `pressure_uniformity` | not meaningful on 1 tet — set to NaN sentinel or `None` if Option | **gap** |
 | `coverage` | not meaningful — no contact pair | **gap** |
 | `peak_bound` | $\max$ principal Cauchy stress at the Gauss point, barrier-compared to $\sigma_{\max} = 10^6$ Pa | yes |
 | `stiffness_bound` | $\mu$ itself, barrier-compared to $k_{\min} = 5 \times 10^4$ | yes |
-| `composition` | scalar-composed via `RewardWeights` | yes |
 
-**Finding if this plays out:** two of five fields are 1-tet-indeterminate. Expected. Feed back to Part 1 Ch 01: either (a) document that single-element scenes under-specify `RewardBreakdown` (spec clarification), or (b) add a 1-tet-safe reduction for those fields (spec change). Not a skeleton failure — a skeleton finding.
+Scalar composition: `breakdown.score_with(&RewardWeights { w_pu, w_cov, w_peak, w_stiff })` per [Part 1 Ch 01 composition rule](../../../docs/studies/soft_body_architecture/src/10-physical/01-reward.md). Skeleton sets weights with zeros on the gap fields so composed scalar only sees `peak_bound + stiffness_bound`.
+
+**Finding if this plays out:** two of four per-term fields are 1-tet-indeterminate. Expected. Feed back to Part 1 Ch 01: either (a) document that single-element scenes under-specify `RewardBreakdown` (spec clarification), or (b) add a 1-tet-safe reduction for those fields (spec change). Not a skeleton failure — a skeleton finding.
 
 Rationale for scene choices:
 - Smallest scene that exercises Jacobian assembly, sparse factorization, and IFT back-substitution simultaneously.
@@ -164,7 +167,7 @@ Absent from skeleton (deferred by phase): `sim-core` (F), `sim-mjcf` (F), `sim-t
 
 Names locked by γ ([`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md)) but not yet in Rust. Skeleton writes these — first contact with code is expected to surface refinements feeding back into Part 10 Ch 00.
 
-- **`RewardBreakdown`** (γ) — struct with per-term fields per Part 1 Ch 01. 1-tet values: see §2 reward table. `apply_residuals(&self, residuals: &ResidualCorrections) -> Self` per δ Ch 00 readout §3.
+- **`RewardBreakdown`** (γ) — struct with **four** per-term fields per [Part 10 Ch 00 00-forward.md:47](../../../docs/studies/soft_body_architecture/src/100-optimization/00-forward.md) + [Part 1 Ch 01](../../../docs/studies/soft_body_architecture/src/10-physical/01-reward.md): `pressure_uniformity`, `coverage`, `peak_bound`, `stiffness_bound`. 1-tet values: see §2 reward table. Two methods: `score_with(&weights: &RewardWeights) -> f64` for scalar composition (used by downstream optimizers consuming scalar reward); `apply_residuals(&self, residuals: &ResidualCorrections) -> Self` per δ Ch 00 readout §3 (consumed by `SimToRealCorrection::correct`, post-Phase-I).
 - **`EditResult`** (γ) — three-variant enum: `ParameterOnly`, `TopologyPreserving`, `TopologyChanging`. 1-tet θ-only variation always yields `ParameterOnly`.
 - **`GradientEstimate`** (γ) — `Exact` | `Noisy { variance: f64 }`. Skeleton always returns `Exact`; `Noisy` path activates at Phase G (stochastic adjoint).
 - **`RewardWeights`** (γ) — scalar composition weights matching `RewardBreakdown` fields.
@@ -215,7 +218,7 @@ Deferred to the phase that first requires each:
 | IPC contact, CCD, friction | C | Hardest single module; `NullContact` proves the trait surface. |
 | Mooney-Rivlin / Ogden / corotational / viscoelasticity / anisotropy / thermal coupling / spatial fields | D/H | Additive to `Material`; no new trait surface needed. |
 | Tet10, Hex8, mixed u-p, adaptive refinement, F-bar | H | Additive to `Element` / `Mesh`. |
-| Chassis-GPU (`sim_ml_chassis::gpu`, B.5 ungated) | E | Refactor explicitly deferred; Part 8 Ch 04 Claim 3 prerequisite for Phase E. |
+| Chassis-GPU (`sim_ml_chassis::gpu`, B.5 ungated) | E | Refactor explicitly deferred; [Part 6 Ch 00 Claim 3 "Own every line"](../../../docs/studies/soft_body_architecture/src/60-differentiability/00-what-autograd-needs.md) commits the extension; [Part 8 Ch 04](../../../docs/studies/soft_body_architecture/src/80-gpu/04-chassis-extension.md) names the concrete shape as Phase-E prerequisite. |
 | GPU sparse CG, preconditioner-on-tape | E | Part 8 Ch 02; requires B.5 first. |
 | `sim-core` / `sim-mjcf` coupling (wrench-only, `xfrc_applied`) | F | sim-soft is self-contained at skeleton scope per Part 11 Ch 02 §00. |
 | `sim-thermostat` coupling (Langevin stochastic forcing) | F/G | Would break determinism-in-θ; excluded deliberately per γ Ch 00 contract. |
@@ -301,7 +304,7 @@ None of the findings are skeleton-blocking — the skeleton implements from the 
 From [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md):
 
 - `ForwardMap` (trait) — `evaluate(theta, tape) → (RewardBreakdown, EditResult)` + `gradient(theta, tape) → (Tensor<f64>, GradientEstimate)`
-- `RewardBreakdown` (struct) — per-term reward struct with `apply_residuals` method
+- `RewardBreakdown` (struct) — per-term reward struct with 4 fields (`pressure_uniformity`, `coverage`, `peak_bound`, `stiffness_bound`) + two methods: `score_with(&weights) -> f64` (scalar composition per Part 1 Ch 01 composition rule) + `apply_residuals(&residuals) -> Self` (sim-to-real correction, post-Phase-I)
 - `EditResult` (enum) — 3 variants
 - `RewardWeights` (struct) — scalar-composition weights
 - `GradientEstimate` (enum) — `Exact | Noisy { variance: f64 }`
@@ -422,8 +425,9 @@ impl Observable for BasicObservable {
         TemperatureField::empty()  // no thermal coupling in skeleton
     }
     fn reward_breakdown(&self, step: &Self::Step, theta: &Tensor<f64>) -> RewardBreakdown {
-        // peak_bound + stiffness_bound + composition populated;
-        // pressure_uniformity + coverage NaN-sentinel per §2 1-tet gap
+        // peak_bound + stiffness_bound populated; pressure_uniformity +
+        // coverage NaN-sentinel per §2 1-tet gap; scalar composition via
+        // breakdown.score_with(&weights) is a separate call downstream
     }
 }
 ```
