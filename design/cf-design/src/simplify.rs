@@ -28,6 +28,7 @@ impl Quadric {
     };
 
     /// Build a quadric from a plane equation `ax + by + cz + d = 0`.
+    // Short names mirror textbook / paper notation.
     #[allow(clippy::many_single_char_names)]
     fn from_plane(plane_a: f64, plane_b: f64, plane_c: f64, plane_d: f64) -> Self {
         let vec = Vector4::new(plane_a, plane_b, plane_c, plane_d);
@@ -134,6 +135,7 @@ struct SimplMesh {
 }
 
 impl SimplMesh {
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation)]
     fn from_indexed(mesh: &IndexedMesh) -> Self {
         let n_verts = mesh.vertices.len();
@@ -288,6 +290,7 @@ impl SimplMesh {
     }
 
     /// Collapse an edge: merge v1 into v0, update adjacency.
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation)]
     fn collapse_edge(&mut self, edge: Edge, target: Point3<f64>) {
         let keep = edge.0;
@@ -384,6 +387,7 @@ impl SimplMesh {
     }
 
     /// Convert back to `IndexedMesh`, compacting unused vertices.
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation)]
     fn to_indexed_mesh(&self) -> IndexedMesh {
         let live_face_set: HashSet<usize> = (0..self.faces.len())

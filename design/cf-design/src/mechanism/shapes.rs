@@ -93,6 +93,7 @@ fn generate_sdf(mechanism: &Mechanism, cell_size: f64) -> Vec<(String, Shape)> {
             if longest <= 0.0 {
                 return None;
             }
+            // Index/count conversion bounded by domain (size well below 2^32).
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let grid_resolution = ((longest / cell_size).ceil() as usize + 1).max(2);
 

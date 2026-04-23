@@ -86,6 +86,7 @@ impl FieldNode {
     /// Results are identical to calling `evaluate` 4 times (within floating-point
     /// associativity — operations are in the same order).
     #[must_use]
+    // Procedural glue code; natural breakpoints are few.
     #[allow(clippy::too_many_lines)]
     pub(crate) fn evaluate_batch(&self, ps: &P4) -> F4 {
         match self {
@@ -457,6 +458,7 @@ impl FieldNode {
     /// For complex variants (`UserFn`, path-based primitives), falls back to 4x
     /// scalar gradient calls.
     #[must_use]
+    // Procedural glue code; natural breakpoints are few.
     #[allow(dead_code, clippy::too_many_lines)]
     pub(crate) fn gradient_batch(&self, ps: &P4) -> [Vector3<f64>; 4] {
         match self {

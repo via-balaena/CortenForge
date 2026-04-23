@@ -265,6 +265,7 @@ pub fn draw_trails(mut gizmos: Gizmos, query: Query<&TrailGizmo>) {
         }
         let base = trail.color.to_linear();
         for i in 0..len - 1 {
+            // Precision loss acceptable for approximate / visualization values.
             #[allow(clippy::cast_precision_loss)]
             let alpha = (i + 1) as f32 / len as f32;
             let color = Color::linear_rgba(base.red, base.green, base.blue, alpha);

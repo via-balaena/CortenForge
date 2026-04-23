@@ -178,6 +178,7 @@ fn mjcf_simulation_step() {
 ///
 /// Pipeline: define → build → MJCF → sim-mjcf parse → sim-core step → STL export.
 #[test]
+// Procedural glue code; natural breakpoints are few.
 #[allow(clippy::too_many_lines)]
 fn phase3_bio_gripper_full_integration() {
     let pla_e = Material::new("PLA", 1250.0).with_youngs_modulus(3.5e9);

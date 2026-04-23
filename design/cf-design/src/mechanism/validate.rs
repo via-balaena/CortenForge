@@ -168,10 +168,13 @@ fn check_wall_thickness(parts: &[Part], profile: &PrintProfile, warnings: &mut V
         let expanded = bounds.expanded(cell_size * 0.5);
         let size = expanded.size();
 
+        // Index/count conversion bounded by domain (size well below 2^32).
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let nx = (size.x / cell_size).ceil().max(1.0) as usize;
+        // Index/count conversion bounded by domain (size well below 2^32).
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ny = (size.y / cell_size).ceil().max(1.0) as usize;
+        // Index/count conversion bounded by domain (size well below 2^32).
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let nz = (size.z / cell_size).ceil().max(1.0) as usize;
 
@@ -180,14 +183,17 @@ fn check_wall_thickness(parts: &[Part], profile: &PrintProfile, warnings: &mut V
         let mut grid = vec![0.0_f64; nx * ny * nz];
 
         for iz in 0..nz {
+            // Precision loss acceptable for approximate / visualization values.
             #[allow(clippy::cast_precision_loss)]
             let pz = expanded.min.z + (iz as f64).mul_add(cell_size, half_step);
 
             for iy in 0..ny {
+                // Precision loss acceptable for approximate / visualization values.
                 #[allow(clippy::cast_precision_loss)]
                 let py = expanded.min.y + (iy as f64).mul_add(cell_size, half_step);
 
                 for ix in 0..nx {
+                    // Precision loss acceptable for approximate / visualization values.
                     #[allow(clippy::cast_precision_loss)]
                     let px = expanded.min.x + (ix as f64).mul_add(cell_size, half_step);
 
@@ -230,6 +236,7 @@ fn check_wall_thickness(parts: &[Part], profile: &PrintProfile, warnings: &mut V
                     if wall_estimate < profile.min_wall {
                         let is_thinner = thinnest_wall.is_none_or(|(_, prev)| wall_estimate < prev);
                         if is_thinner {
+                            // Precision loss acceptable for approximate / visualization values.
                             #[allow(clippy::cast_precision_loss)]
                             let point = Point3::new(
                                 expanded.min.x + (ix as f64).mul_add(cell_size, half_step),
@@ -481,6 +488,7 @@ fn build_position_map<'a>(parts: &'a [Part], joints: &[JointDef]) -> HashMap<&'a
 }
 
 /// Sample the overlap region between two parts and return the minimum gap.
+// Argument list mirrors the physical-simulation equation signature.
 #[allow(clippy::too_many_arguments)]
 fn sample_clearance(
     a: &Part,
@@ -512,10 +520,13 @@ fn sample_clearance(
     let cell_size = clearance.max(0.1); // floor to avoid extremely fine grids
     let size = o_max - o_min;
 
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let nx = (size.x / cell_size).ceil().max(1.0) as usize;
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let ny = (size.y / cell_size).ceil().max(1.0) as usize;
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let nz = (size.z / cell_size).ceil().max(1.0) as usize;
 
@@ -523,12 +534,15 @@ fn sample_clearance(
     let mut min_gap = f64::MAX;
 
     for iz in 0..nz {
+        // Precision loss acceptable for approximate / visualization values.
         #[allow(clippy::cast_precision_loss)]
         let pz = o_min.z + (iz as f64).mul_add(cell_size, half);
         for iy in 0..ny {
+            // Precision loss acceptable for approximate / visualization values.
             #[allow(clippy::cast_precision_loss)]
             let py = o_min.y + (iy as f64).mul_add(cell_size, half);
             for ix in 0..nx {
+                // Precision loss acceptable for approximate / visualization values.
                 #[allow(clippy::cast_precision_loss)]
                 let px = o_min.x + (ix as f64).mul_add(cell_size, half);
 

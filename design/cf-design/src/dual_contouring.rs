@@ -28,6 +28,7 @@ use crate::mesher::MeshStats;
 /// using the field gradient at edge-crossing points. Faces are generated
 /// from sign-changing grid edges shared by 4 cells, producing quads that
 /// are split into triangles with CCW winding (outward-facing normals).
+// Index/count conversion bounded by domain.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -277,6 +278,7 @@ fn interpolate_edge(p0: Point3<f64>, p1: Point3<f64>, v0: f64, v1: f64) -> Point
 /// The solution is biased toward the mass point (centroid of crossing
 /// points) to handle underdetermined systems, and clamped to the cell
 /// AABB to prevent vertices at infinity.
+// Precision loss acceptable for approximate / visualization values.
 #[allow(clippy::cast_precision_loss)]
 fn solve_qef(points: &[Point3<f64>], normals: &[Vector3<f64>], cell_aabb: &Aabb) -> Point3<f64> {
     if points.is_empty() {
@@ -535,6 +537,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn dc_sphere_regression() {
         let node = FieldNode::Sphere {
@@ -624,6 +627,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn dc_pruning_ratio() {
         let node = FieldNode::Sphere {

@@ -86,6 +86,7 @@ pub fn mass_properties(solid: &Solid, density: f64, cell_size: f64) -> Option<Ma
     let expanded = bounds.expanded(cell_size * 0.5);
     let grid_size = expanded.size();
 
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let grid_dims = [
         (grid_size.x / cell_size).ceil() as usize,
@@ -159,6 +160,7 @@ impl MassAccumulator {
     }
 
     /// Compute final mass properties from accumulated moments.
+    // Domain notation preserves geometric conventions.
     #[allow(clippy::similar_names)]
     fn finish(self) -> MassProperties {
         let com_x = self.moment_x / self.mass;
@@ -209,14 +211,17 @@ fn integrate_grid(
     let mut accum = MassAccumulator::new();
 
     for iz in 0..dims[2] {
+        // Precision loss acceptable for approximate / visualization values.
         #[allow(clippy::cast_precision_loss)]
         let pz = origin.z + (iz as f64).mul_add(cell_size, half_step);
 
         for iy in 0..dims[1] {
+            // Precision loss acceptable for approximate / visualization values.
             #[allow(clippy::cast_precision_loss)]
             let py = origin.y + (iy as f64).mul_add(cell_size, half_step);
 
             for ix in 0..dims[0] {
+                // Precision loss acceptable for approximate / visualization values.
                 #[allow(clippy::cast_precision_loss)]
                 let px = origin.x + (ix as f64).mul_add(cell_size, half_step);
 

@@ -36,6 +36,7 @@ pub struct AdaptiveStats {
 /// Builds an aligned octree where surface-crossing leaves are on a regular
 /// grid at `cell_size` resolution. Interior/exterior regions are pruned
 /// hierarchically by the octree, avoiding per-cell enumeration.
+// Index/count conversion bounded by domain.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -256,18 +257,21 @@ fn build_octree_recursive(
         *total_leaves += 1;
         *max_depth = (*max_depth).max(depth);
 
+        // Index/count conversion bounded by domain.
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             clippy::cast_precision_loss
         )]
         let ix = ((aabb.min.x - origin.x) / cell_size).round() as usize;
+        // Index/count conversion bounded by domain.
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             clippy::cast_precision_loss
         )]
         let iy = ((aabb.min.y - origin.y) / cell_size).round() as usize;
+        // Index/count conversion bounded by domain.
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -401,6 +405,7 @@ fn interpolate_edge(p0: Point3<f64>, p1: Point3<f64>, v0: f64, v1: f64) -> Point
     Point3::from(p0.coords * (1.0 - t) + p1.coords * t)
 }
 
+// Precision loss acceptable for approximate / visualization values.
 #[allow(clippy::cast_precision_loss)]
 #[must_use]
 fn solve_qef(points: &[Point3<f64>], normals: &[Vector3<f64>], cell_aabb: &Aabb) -> Point3<f64> {
@@ -489,6 +494,7 @@ const PAR_DEPTH_THRESHOLD: u32 = 3;
 /// 2. Phase 1 cell processing (parallel corner eval + gradient)
 ///
 /// Phase 2 (face generation) remains sequential (pure bookkeeping).
+// Index/count conversion bounded by domain.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -712,6 +718,7 @@ pub fn mesh_field_adaptive_par(
 }
 
 /// Build octree in parallel at top levels, sequential below threshold.
+// Argument list mirrors physics-simulation signature.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -917,6 +924,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn adaptive_sphere_cell_reduction() {
         // Use a finer resolution where the octree advantage is clear.
@@ -1031,6 +1039,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn adaptive_vs_uniform_dc_regression() {
         let node = FieldNode::Sphere {
@@ -1203,6 +1212,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn adaptive_smooth_union_cell_reduction() {
         let a = FieldNode::Sphere {
@@ -1226,8 +1236,10 @@ mod tests {
         // Uniform grid: ~66 × 42 × 42 ≈ 116k cells
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let nx = ((bounds.max.x - bounds.min.x) / cell).ceil() as usize;
+        // Index/count conversion bounded by domain (size well below 2^32).
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ny = ((bounds.max.y - bounds.min.y) / cell).ceil() as usize;
+        // Index/count conversion bounded by domain (size well below 2^32).
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let nz = ((bounds.max.z - bounds.min.z) / cell).ceil() as usize;
         let uniform_total = nx * ny * nz;
@@ -1246,6 +1258,7 @@ mod tests {
 
     #[test]
     #[ignore = "benchmark — run with --ignored"]
+    // Domain notation preserves geometric conventions.
     #[allow(clippy::similar_names)]
     fn bench_adaptive_sphere() {
         use std::time::Instant;

@@ -233,8 +233,10 @@ pub fn measure_cross_section(
     let u_min = u_center - u_half;
     let v_min = v_center - v_half;
 
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let nu = (2.0 * u_half / cell_size).ceil().max(1.0) as usize;
+    // Index/count conversion bounded by domain (size well below 2^32).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let nv = (2.0 * v_half / cell_size).ceil().max(1.0) as usize;
 
@@ -246,9 +248,11 @@ pub fn measure_cross_section(
     let mut interior: Vec<Point3<f64>> = Vec::new();
 
     for iv in 0..nv {
+        // Precision loss acceptable for approximate / visualization values.
         #[allow(clippy::cast_precision_loss)]
         let vc = v_min + (iv as f64).mul_add(cell_size, half_step);
         for iu in 0..nu {
+            // Precision loss acceptable for approximate / visualization values.
             #[allow(clippy::cast_precision_loss)]
             let uc = u_min + (iu as f64).mul_add(cell_size, half_step);
 
@@ -263,6 +267,7 @@ pub fn measure_cross_section(
         return empty;
     }
 
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     let area = interior.len() as f64 * cell_area;
 
@@ -271,6 +276,7 @@ pub fn measure_cross_section(
     for pt in &interior {
         sum += pt.coords;
     }
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     let n_pts = interior.len() as f64;
     let centroid = Point3::from(sum / n_pts);

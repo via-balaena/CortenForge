@@ -421,6 +421,7 @@ impl Default for SpringCoilParams {
 ///
 /// `usage` controls GPU/CPU asset residency (pass `RenderAssetUsages::default()`
 /// for typical use, or `RENDER_WORLD` for GPU-only).
+// Floating-point form chosen for numerical stability, not micro-optimization.
 #[allow(clippy::suboptimal_flops, clippy::cast_precision_loss)]
 #[must_use]
 pub fn spring_coil(params: &SpringCoilParams, length: f32, usage: RenderAssetUsages) -> Mesh {
@@ -516,6 +517,7 @@ mod tests {
     use bevy::ecs::world::CommandQueue;
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn spawn_design_mesh_converts_z_up_to_y_up() {
         // Minimal triangle mesh (single triangle)

@@ -29,6 +29,7 @@ pub struct MeshStats {
 ///
 /// Vertices on shared cell edges are deduplicated via an edge cache,
 /// producing a properly indexed manifold mesh.
+// Index/count conversion bounded by domain.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -660,6 +661,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn sphere_pruning_ratio() {
         let node = FieldNode::Sphere {

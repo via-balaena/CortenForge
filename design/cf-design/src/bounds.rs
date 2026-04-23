@@ -15,6 +15,7 @@ impl FieldNode {
     /// Returns `None` for infinite geometry (e.g., a bare `Plane`).
     /// Finite operations on infinite geometry (e.g., `Intersect(Sphere, Plane)`)
     /// inherit the finite child's bounds.
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     pub(crate) fn bounds(&self) -> Option<Aabb> {
         match self {
@@ -515,6 +516,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn log_spiral_bounds_contains_endpoints() {
         let node = FieldNode::LogSpiral {
@@ -569,6 +571,7 @@ mod tests {
     // ── Loft bounds tests ───────────────────────────────────────────
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn loft_constant_radius_bounds() {
         let node = FieldNode::Loft {
@@ -582,6 +585,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn loft_tapered_bounds_contains_max_radius() {
         let node = FieldNode::Loft {
@@ -601,6 +605,7 @@ mod tests {
     // ── Twist bounds tests ──────────────────────────────────────────
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn twist_bounds_expands_xy() {
         let node = FieldNode::Twist(
@@ -637,6 +642,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn repeat_bounded_bounds_single_copy() {
         let node = FieldNode::RepeatBounded {
@@ -653,6 +659,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn repeat_bounded_bounds_3x1x1() {
         let node = FieldNode::RepeatBounded {
@@ -673,6 +680,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn repeat_bounded_bounds_2x2x1() {
         let node = FieldNode::RepeatBounded {
@@ -695,6 +703,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn bend_bounds_expands_xz() {
         let node = FieldNode::Bend(

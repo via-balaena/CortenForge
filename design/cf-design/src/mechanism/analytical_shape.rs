@@ -95,6 +95,7 @@ impl PhysicsShape for AnalyticalShape {
 ///
 /// Same algorithm as `ShapeConvex::effective_radius` but uses the Solid's
 /// exact `evaluate()` instead of the grid's trilinear interpolation.
+// Justified: clippy::unnecessary_wraps.
 #[allow(clippy::unnecessary_wraps)] // Returns Option to match effective_radius() trait contract
 fn ray_march_solid(solid: &Solid, local_dir: &Vector3<f64>) -> Option<f64> {
     let Some(dir) = local_dir.try_normalize(1e-10) else {

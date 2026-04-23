@@ -695,6 +695,7 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Push a single geom entry to all Model geom arrays.
+// Argument list mirrors the physical-simulation equation signature.
 #[allow(clippy::too_many_arguments)]
 fn push_geom(
     model: &mut Model,
@@ -1192,6 +1193,7 @@ mod tests {
     /// - A remaining Model field diff causes late instability (~step 1400)
     /// - Next step: serialization-based exhaustive Model field diff
     #[test]
+    // Domain notation preserves geometric conventions.
     #[allow(
         clippy::similar_names,
         clippy::unreadable_literal,

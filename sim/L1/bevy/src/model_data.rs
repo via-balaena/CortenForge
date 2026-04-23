@@ -591,6 +591,7 @@ pub type GeomMaterialOverride<'a> = (&'a str, Handle<StandardMaterial>);
 /// spawn_model_geoms(&mut commands, &mut meshes, &mut materials,
 ///     &model, &data, &[("rod", steel)]);
 /// ```
+// Explicit index loop mirrors the index-based reference algorithm.
 #[allow(clippy::needless_range_loop)]
 pub fn spawn_model_geoms(
     commands: &mut Commands,
@@ -616,6 +617,7 @@ pub fn spawn_model_geoms(
 /// The callback receives `(entity_commands, geom_id, geom_name)` where
 /// `geom_name` is `""` for unnamed geoms. Use it to attach components like
 /// [`TrailGizmo`](crate::gizmos::TrailGizmo) without a separate system.
+// Explicit index loop mirrors the index-based reference algorithm.
 #[allow(clippy::needless_range_loop)]
 pub fn spawn_model_geoms_with<F>(
     commands: &mut Commands,
@@ -640,6 +642,7 @@ pub fn spawn_model_geoms_with<F>(
 }
 
 /// Shared implementation for `spawn_model_geoms` and `spawn_model_geoms_with`.
+// Explicit index loop mirrors the index-based reference algorithm.
 #[allow(clippy::needless_range_loop)]
 fn spawn_model_geoms_inner<F>(
     commands: &mut Commands,
@@ -705,6 +708,7 @@ fn spawn_model_geoms_inner<F>(
             ovr.clone()
         } else {
             let rgba = model.geom_rgba[geom_id];
+            // Index/count conversion bounded by domain (size well below 2^32).
             #[allow(clippy::cast_possible_truncation)]
             materials.add(StandardMaterial {
                 base_color: Color::srgba(
