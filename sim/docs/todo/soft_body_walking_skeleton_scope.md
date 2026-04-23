@@ -25,6 +25,8 @@ Skeleton invariant consequences:
 - **I-4** ("chassis tape supports per-op VJPs") has the API it needs — the skeleton's job is to write a real physics VJP and verify it composes.
 - **I-6** splits into two sub-claims: (6a) CPU build graph, tested implicitly by `cargo build -p sim-soft`; (6b) wgpu build graph + round-trip, tested by a feature-gated probe. Chassis-GPU (B.5) is a Phase-E prerequisite, explicitly out of skeleton scope.
 
+**Round 1 stress-test results (2026-04-23):** S-3 (faer `Llt` API), S-4 (chassis push_custom + backward at physics tensor scale), R-5 (NewtonStepVjp sign convention) all **CONFIRMED CLEAN**. Three book findings (BF-1, BF-2, BF-3) queued for Pass 2/3 — Cholesky type has two generic parameters not one, and Part 6 Ch 02 code sketches at lines 26 + 34 are pseudocode (correct math at lines 13-15). Skeleton implements from the math + verified faer 0.24 API. See §11 and §13 for details.
+
 ## 1. The six load-bearing invariants
 
 Each invariant is a book claim that must be verified in code before further book expansion. Citations are to the book at `77751866`.
@@ -33,7 +35,7 @@ Each invariant is a book claim that must be verified in code before further book
 |---|---|---|---|
 | I-1 | Seven-trait core surface composes without ceremony explosion | [`110-crate/01-traits/00-core.md`](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md) | All 7 traits (`Material`, `Element<const N, const G>`, `Mesh`, `ContactModel`, `Solver`, `Differentiable`, `Observable` with `type Step`) defined with pinned signatures; one concrete impl each; forward path composes without phantom-type gymnastics or `Box<dyn _>` beyond what the chassis already uses inside `BackwardOp::Custom`. |
 | I-2 | `ForwardMap::evaluate → (RewardBreakdown, EditResult)` works in practice | [`100-optimization/00-forward.md`](../../../docs/studies/soft_body_architecture/src/100-optimization/00-forward.md) (γ-locked) | `SoftScene::one_tet_cube()` constructs a `ForwardMap`; `fm.evaluate(&theta, &mut tape)` returns a populated `RewardBreakdown` (every field finite) and an `EditResult::ParameterOnly`; §01 determinism holds across repeated calls. |
-| I-3 | `faer::sparse::linalg::solvers::Llt<f64>` exposes factor-on-tape for IFT adjoint | [`50-time-integration/00-backward-euler.md`](../../../docs/studies/soft_body_architecture/src/50-time-integration/00-backward-euler.md), [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md) Phase B | Forward Newton factors once; `Llt<f64>` is stashed inside a `NewtonStepVjp: VjpOp`; `fm.gradient` retrieves it, applies `solve_in_place` to $-\partial r / \partial \theta$, returns a scalar gradient; zero re-factorization. |
+| I-3 | `faer::sparse::linalg::solvers::Llt<I, f64>` exposes factor-on-tape for IFT adjoint | [`50-time-integration/00-backward-euler.md`](../../../docs/studies/soft_body_architecture/src/50-time-integration/00-backward-euler.md), [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md) Phase B | Forward Newton factors once (symbolic + numeric, two-step per faer 0.24 API); `Llt<I, f64>` is stashed inside a `NewtonStepVjp: VjpOp` (owns its data, `Clone` + `Send + Sync` under `f64`); `fm.gradient` retrieves it, applies `solve_in_place_with_conj` to `-∂r/∂θ` via faer's `MatMut` bridging, returns a scalar gradient; zero re-factorization across backward. |
 | I-4 | Chassis tape per-operation VJPs support sim-soft physics | [`60-differentiability/01-custom-vjps/00-registration.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/01-custom-vjps/00-registration.md), [`60-differentiability/00-what-autograd-needs.md`](../../../docs/studies/soft_body_architecture/src/60-differentiability/00-what-autograd-needs.md) Claim 3 | `NewtonStepVjp` registered via `Tape::push_custom`; composes with chassis primitives in the reward-composition path; `tape.backward(reward_scalar)` runs; `parent_cotans` accumulation works at physics-tensor scale (shape `[12]` displacement, `[>=4]` θ). |
 | I-5 | Determinism-in-θ holds under realistic Newton convergence | [`110-crate/04-testing/03-gradcheck.md`](../../../docs/studies/soft_body_architecture/src/110-crate/04-testing/03-gradcheck.md) §01 | Bit-equal `RewardBreakdown` (all fields `f64::to_bits`) across (a) two same-process `evaluate` calls at identical θ, (b) one same-process call + one cold-restart via a tiny `bin` helper. Armijo line-search selection, sparse-assembly accumulation order, and faer's solve all deterministic at fixed θ. |
 | I-6 | Rust + wgpu build graph (no FFI) tractable for soft-body FEM | Cross-cutting; [`110-crate/03-build-order.md`](../../../docs/studies/soft_body_architecture/src/110-crate/03-build-order.md) Phase-B/E | (6a) `cargo build -p sim-soft --release` resolves cleanly on macOS-arm64 + Linux CI, no C/C++ compile step added to the graph, under workspace compile-time budget. (6b) `cargo test -p sim-soft --features gpu-probe -- gpu_probe` acquires adapter, round-trips a buffer through a trivial compute dispatch. |
@@ -82,7 +84,7 @@ Rationale for scene choices:
 | Element | Tet4, $N=4$, $G=1$ | Tet10, Hex8 | Tet4 is Phase A; Tet10 is Phase H per Part 3 Ch 00. |
 | Contact | **None** — `NullContact` impl | IPC, penalty | IPC is Phase C; penalty is explicitly rejected in `contact/` Ch 00. `NullContact { active_pairs: [] }` proves I-1 without scope creep. Dirichlet + traction stands in for contact at 1-tet scale. |
 | Integrator | Backward-Euler Newton + Armijo line-search, single step | Static equilibrium, Newton w/o line-search, strong-Wolfe | Backward-Euler is committed per Part 5 Ch 00; one step exercises the factor-on-tape pattern; Armijo is simplest compliant line-search. **Flag for I-5:** line-search selection branching is the leading determinism-risk source; test covers exactly this. |
-| Linear solver | faer `Llt<f64>` on sparse | nalgebra dense, LDLᵀ (`Lblt`) | faer `Llt<f64>` is the I-3 target type; sparse is forward-compatible with Phase-B 100-tet scaling. **Risk:** 3-DOF free system is SPD only if the tangent is SPD at equilibrium — NH is SPD near the reference configuration; verify at the chosen load magnitude before committing, fall back to `Lblt` if not. |
+| Linear solver | faer `Llt<I, f64>` on sparse (with index type `I` = `u32` default) | nalgebra dense, LDLᵀ variants | faer `Llt<I, f64>` is the I-3 target type; sparse is forward-compatible with Phase-B 100-tet scaling. **Risk:** 3-DOF free system is SPD only if the tangent is SPD at equilibrium — NH is SPD near the reference configuration; verify at the chosen load magnitude before committing, fall back to LDLᵀ if not (faer exposes LDLᵀ variants — exact type name Round-2 verification). **faer API pattern (Round 1 verified):** construct `SymbolicLlt` once at assembly-pattern finalization, then `Llt::try_new_with_symbolic(symbolic, mat, side)` per-step for numeric refactor; `solve_in_place_with_conj(Conj::No, rhs_matmut)` for both forward and backward solves. |
 | Autograd tape | chassis CPU tape + `VjpOp` + `Tape::push_custom` | `Burn`, `dfdx`, `tch-rs` | "Own every line" thesis. Refactor A.1/B.1 shipped the surface. |
 | Gradcheck | §01 determinism + §02 FD-vs-IFT at 5 digits, central FD, $h = 1.5 \times 10^{-8}$ | §03 CPU-vs-GPU, forward FD, one-sided | §03 is Phase E (skeleton is CPU-only). Central FD is optimal at 5-digit bar. |
 | GPU probe | minimal wgpu round-trip, feature-gated `gpu-probe` | full chassis-GPU path, no probe at all | Chassis-GPU is B.5-gated (not shipped). Minimal probe tests (6b) without committing to B.5 scope. |
@@ -114,7 +116,7 @@ sim/L0/soft/
 │   │   └── backward_euler.rs  # BackwardEulerNewton, Armijo LS, faer Llt
 │   ├── differentiable/
 │   │   ├── mod.rs          # Differentiable trait
-│   │   └── newton_vjp.rs   # NewtonStepVjp: VjpOp, stashes Llt<f64> + ∂r/∂θ
+│   │   └── newton_vjp.rs   # NewtonStepVjp: VjpOp, stashes Llt<I, f64> + ∂r/∂θ
 │   ├── observable/
 │   │   ├── mod.rs          # Observable trait + type Step
 │   │   └── basic.rs        # BasicReadout impl
@@ -131,7 +133,7 @@ sim/L0/soft/
 ├── tests/
 │   ├── invariant_1_compose.rs      # 7-trait composition smoke
 │   ├── invariant_2_forward.rs      # ForwardMap end-to-end
-│   ├── invariant_3_factor.rs       # Llt<f64> lifetime + solve
+│   ├── invariant_3_factor.rs       # Llt<I, f64> ownership + solve_in_place_with_conj
 │   ├── invariant_4_5_gradcheck.rs  # FD vs IFT, 5-digit, joint I-4 + I-5
 │   ├── invariant_5_determinism.rs  # bit-equal + cold-restart via bin helper
 │   └── invariant_6_gpu_probe.rs    # #[cfg(feature = "gpu-probe")]
@@ -145,7 +147,7 @@ sim/L0/soft/
 sim-ml-chassis  ──── Tape, VjpOp, Tensor<f64>
      │
      ▼
- sim-soft  ──┬── faer          (Llt<f64>, sparse CSR)
+ sim-soft  ──┬── faer          (Llt<I, f64>, sparse CSR; **greenfield — not in workspace Cargo.toml as of `77751866`**; skeleton's first commit adds it at version 0.24+)
              ├── nalgebra      (Tet4 local 12×12 dense)
              └── wgpu (opt)    (probe, feature-gated)
 ```
@@ -163,7 +165,11 @@ Names locked by γ ([`project_soft_body_gamma_apis.md`](../../../.claude/project
 - **`GradientEstimate`** (γ) — `Exact` | `Noisy { variance: f64 }`. Skeleton always returns `Exact`; `Noisy` path activates at Phase G (stochastic adjoint).
 - **`RewardWeights`** (γ) — scalar composition weights matching `RewardBreakdown` fields.
 - **`ForwardMap` trait** (γ) — exactly the signature in `project_soft_body_gamma_apis.md`, including the determinism-in-θ docstring contract.
-- **`NewtonStepVjp: VjpOp`** — the numerical heart of the skeleton. Stashes: converged $\mathbf{x}^*$, $\theta$, `Llt<f64>` factor of $\partial r / \partial \mathbf{x} \big|_{\mathbf{x}^*, \theta}$, sparse $\partial r / \partial \theta \big|_{\mathbf{x}^*, \theta}$. VJP formula: given cotangent $\bar{\mathbf{x}}^*$ (gradient flowing in from downstream reward-composition path), compute adjoint $\lambda = -(\partial r / \partial \mathbf{x})^{-\mathsf{T}} \bar{\mathbf{x}}^*$ via `factor.solve_in_place` on the transposed system (Cholesky is symmetric so transpose is identity), then $\partial_\theta = (\partial r / \partial \theta)^{\mathsf{T}} \lambda$ — accumulated into `parent_cotans[θ]`. **Sign convention check:** assumes residual $r(\mathbf{x}, \theta) = 0$ at equilibrium; if the skeleton writes $r$ as "residual = inertia + internal − external," the gradient carries the sign as written. **Verify against Part 6 Ch 02:13–15 before coding.**
+- **`NewtonStepVjp: VjpOp`** — the numerical heart of the skeleton. Stashes: converged $\mathbf{x}^*$, $\theta$, `Llt<I, f64>` factor of $A = \partial r / \partial \mathbf{x} \big|_{\mathbf{x}^*, \theta}$ (owned, `Clone`), sparse $\partial r / \partial \theta \big|_{\mathbf{x}^*, \theta}$. **Sign convention confirmed** against Part 6 Ch 02:13–15: IFT gives $\partial \mathbf{x}^* / \partial \theta = -A^{-1}\, \partial r / \partial \theta$ at equilibrium where $r(\mathbf{x}^*; \theta) = 0$, with residual written as "inertia + internal − external." **VJP formula** (equivalent forms, pick one):
+  - Form A (minus in the adjoint solve): $\lambda = -A^{-\mathsf{T}} \bar{\mathbf{x}}^* = -A^{-1} \bar{\mathbf{x}}^*$ (A symmetric SPD), then $\text{parent\_cotans}[\theta] \mathrel{+}= (\partial r / \partial \theta)^{\mathsf{T}} \lambda$.
+  - Form B (minus outside): $\lambda = A^{-1} \bar{\mathbf{x}}^*$, then $\text{parent\_cotans}[\theta] \mathrel{+}= -(\partial r / \partial \theta)^{\mathsf{T}} \lambda$.
+
+  Skeleton uses Form A for symmetry with the forward solve (same sign of RHS). **Book bug flagged (Pass 2/3):** Part 6 Ch 02 line 34's code sketch `factor.solve_in_place(&mut minus_dr_dtheta.apply_t(&upstream))` is dimensionally inconsistent — $(\partial r / \partial \theta)^{\mathsf{T}}$ · upstream has shape $[n_\theta]$, which cannot be a RHS for an $[n_\text{dof} \times n_\text{dof}]$ factor solve. Pseudocode, not executable. The math at lines 13–15 is correct; the skeleton implements that, not the sketch.
 
 ## 6. Test harness
 
@@ -240,7 +246,7 @@ Per [`feedback_recommend_first_deep_specialist.md`](../../../.claude/projects/-U
 | R-2 | faer `Llt<f64>` on sparse CSR | Directly tests I-3; forward-compatible with Phase-B 100-tet. | If NH tangent isn't SPD at the chosen load, fall back to `Lblt` (LDLᵀ) — verify at R-1 step. |
 | R-3 | Central FD, $h = 1.5 \times 10^{-8}$ ($\approx \sqrt{\varepsilon_{f64}}$), 5-digit relative bar | Optimal for f64 precision; matches Part 11 Ch 04 §02 commitment. | Hard fail at per-component rel error > 1e-4; warn at > 1e-5. 5/6 components passing is NOT "almost working" — treat as hard fail. |
 | R-4 | Minimal wgpu probe (~100–200 LOC, feature-gated) | Tests I-6b without committing to chassis-GPU (B.5 ungated). | User approved the probe; confirm scope guard (no chassis-GPU, no GPU solver, no shared tape state). |
-| R-5 | `NewtonStepVjp` sign convention per residual form "inertia + internal − external" | Part 6 Ch 02:13–15 derivation; gradient sign follows. | **Verify Part 6 Ch 02:13–15 residual sign before coding VJP.** Single cheapest check that saves the most debugging time. |
+| R-5 | `NewtonStepVjp` sign convention per residual form "inertia + internal − external" | Part 6 Ch 02:13–15 derivation; gradient sign follows. | **✓ Round 1 — verified.** Part 6 Ch 02:13–15 gives $\partial x^* / \partial \theta = -A^{-1}\, \partial r / \partial \theta$ at $r = 0$; spec §5 VJP formula is mathematically correct. Book code sketch at Ch 02:34 is pseudocode-only (see BF-3). |
 | R-6 | θ = 4 scalars (traction magnitude + 3-axis direction) | Keeps FD sweep cheap; tests vector-cotangent accumulation at physics scale. | Is 4 the right count? Could narrow to 1 (magnitude only) for the very first gradcheck, widen to 4 after passing. |
 | R-7 | Hand-rolled 1-tet in `mesh/single_tet.rs`, no sim-mjcf | User-confirmed. | — |
 | R-8 | Crate name `sim-soft` at `sim/L0/soft/` | User-confirmed. | — |
@@ -251,8 +257,8 @@ Open questions the user should push on or confirm — these are where the spec i
 
 - **S-1 — `RewardBreakdown` gap on 1 tet.** Two of five fields (`pressure_uniformity`, `coverage`) are structurally undefined on a single element with no contact. Skeleton flags this as a finding. Acceptable? Or do we want the skeleton to include a 2-tet or tet-plus-rigid-wall scene to exercise all five fields and remove the gap? (Recommendation: accept the gap. Rationale: 2 tets ≈ 1.5× LOC for no additional invariant coverage; the finding itself is the point.)
 - **S-2 — Determinism-under-line-search risk class.** Armijo's step-length selection branches on a sufficient-decrease inequality. If θ-perturbation changes the decrease quantity across the inequality threshold, the selected step length changes, propagating into non-smooth gradient. This would look like a gradcheck failure at 5 digits despite correct IFT. Is the skeleton gradcheck test the right place to expose this, or do we want a separate "line-search non-smoothness audit" test that holds θ fixed and varies the search-direction-norm to isolate the branch point? (Recommendation: the gradcheck test is sufficient; a failure maps to a book-level spec bug in Part 5 Ch 00 that deserves its own finding, and we don't need a dedicated test harness for it.)
-- **S-3 — `faer::sparse::linalg::solvers::Llt<f64>` lifetime shape.** 80% probability it clones/moves cleanly across the VJP boundary; 20% it holds a lifetime to the source matrix we'd need to route around. 10-minute `cargo doc` spike before writing `NewtonStepVjp` would convert this to a known fact. Do that spike as the first step of skeleton coding, or commit to it in the memo?
-- **S-4 — `parent_cotans` accumulation at physics scale.** Chassis contract says slots are "zero-initialized with shapes matching parent values." Refactor tests almost certainly exercised scalar + short-vector only. 1-tet θ is shape `[4]` or `[]+[3]`; displacement is shape `[12]` or `[4,3]`. Shape inference for custom VjpOps — does the tape actually know the parent's shape at `push_custom` time, or does it learn it at `backward` time? If the latter, the contract might not hold for shapes larger than scalar. Worth a code-read of `autograd.rs` push_custom path before writing the VJP.
+- **S-3 — `faer::sparse::linalg::solvers::Llt` lifetime shape.** **✓ RESOLVED 2026-04-23 (Round 1).** faer 0.24 API verified via docs.rs. Three findings: (a) type is `Llt<I, T>` with TWO generics (index + element), not `Llt<T>`; `I` defaults to `u32`-class, `T = f64` for us; spec updated. (b) `Llt` **owns its data** — no lifetime parameter on the struct — so stashing it on a `VjpOp: Send + Sync` works cleanly. `Clone` impl available. `Send + Sync` under `T: Send+Sync` + `I: Send+Sync`, which `f64` + `u32` both satisfy. (c) Constructor is two-step: `SymbolicLlt::try_new(pattern)` once (at assembly-pattern-finalization time), then `Llt::try_new_with_symbolic(symbolic, mat, side)` per re-factor. Book Ch 02 line 26's one-call `Llt::try_new_with_symbolic(&stiffness)` sketch is incomplete; flagged as Pass 2/3 finding. Solve API is `solve_in_place_with_conj(Conj::No, rhs: MatMut<'_, T>)` via the blanket `Solve` trait — takes faer's `MatMut` view, so `NewtonStepVjp` bridges `Tensor<f64>` → `MatMut` for RHS. **Net:** factor-on-tape pattern is viable, with two API clarifications over the book's pseudocode.
+- **S-4 — `parent_cotans` accumulation at physics scale.** **✓ RESOLVED 2026-04-23 (Round 1).** Read `sim/L0/ml-chassis/src/autograd.rs:769-782` (the `BackwardOp::Custom(op)` arm inside `Tape::backward`). Slots ARE zero-initialized with parent's stored shape via `Tensor::zeros(self.values[p as usize].shape())` — the tape looks up the parent's shape from the value it was pushed with, so `param_tensor` / `push_custom` / elementwise ops all get shape-correct cotangent slots. Accumulation is `ew_add_assign` (matches `+=` contract). Fan-in via duplicate parent indices works (each slot contribution accumulates independently before flush to `self.grads[p]`). Backward loop `for i in (0..=out_idx).rev()` is deterministic — no RNG, no parallelism, no clock. **Minor note:** line 750 skips nodes with all-zero cotangent — optimization, not correctness issue, but means a custom op whose upstream cotangent happens to be identically zero silently won't run its VJP. Not a skeleton concern.
 - **S-5 — Cold-restart determinism via bin helper.** Is a subprocess-spawn test the right mechanism, or should the cold-restart path be exercised in a separate CI job that actually restarts the process? (Recommendation: subprocess spawn is faster and sufficient for the invariant; full CI restart isn't worth the infrastructure.)
 - **S-6 — `EditResult` three-variant enum.** γ locked `ParameterOnly` / `TopologyPreserving` / `TopologyChanging` conceptually. Does the 1-tet θ-only case actually clarify the trichotomy, or does it just ever return `ParameterOnly` and leave the other two variants untested? (Answer: yes, only `ParameterOnly` fires. The other two reactivate at Phase G (SDF→mesh topology changes). Skeleton doesn't exercise them. Accept.)
 - **S-7 — Nalgebra vs faer for Tet4 locals.** `Tet4::local_stiffness` returns a 12×12 dense matrix before scatter to sparse global. Using nalgebra for the local and faer for the global is two dense libraries — one extra dep. Acceptable, or collapse to faer-only dense? (Recommendation: keep nalgebra. Small 12×12 locals are faster in nalgebra's stack-allocated `SMatrix`; faer's strength is sparse. Two libraries with one-each role is cleaner than one library wearing both hats.)
@@ -262,13 +268,25 @@ Open questions the user should push on or confirm — these are where the spec i
 
 ## 12. Known unknowns with probability estimates
 
-- **80% clean, 20% refactor needed:** faer `Llt<f64>` cleanly movable onto a VJP with owned lifetime. Mitigation: S-3 spike.
-- **70% clean, 30% edge case:** chassis `push_custom` + `parent_cotans` accumulation works at `Tensor<f64>` shape `[12]` and `[4]`. Mitigation: S-4 code-read.
+- ~~**80% clean, 20% refactor needed:** faer `Llt<f64>` cleanly movable onto a VJP with owned lifetime.~~ **✓ Round 1 — confirmed clean** (Llt owns data, Clone, Send+Sync under f64 + u32 index); spec updated to `Llt<I, f64>`.
+- ~~**70% clean, 30% edge case:** chassis `push_custom` + `parent_cotans` accumulation works at `Tensor<f64>` shape `[12]` and `[4]`.~~ **✓ Round 1 — confirmed clean** (autograd.rs:769-782).
 - **90% holds, 10% non-smooth:** Armijo line-search preserves determinism under θ-perturbation at gradcheck's $h = 1.5 \times 10^{-8}$ scale. Mitigation: the gradcheck test itself exposes this.
-- **95% SPD, 5% indefinite:** NH compressible tangent stays SPD at $\Delta t = 10^{-2}$ with the chosen $(\mu, \lambda, \rho)$ and traction magnitude. Mitigation: fall back to `Lblt`; flag if it triggers.
+- **95% SPD, 5% indefinite:** NH compressible tangent stays SPD at $\Delta t = 10^{-2}$ with the chosen $(\mu, \lambda, \rho)$ and traction magnitude. Mitigation: fall back to LDLᵀ; flag if it triggers. **Round-2 item:** verify faer's LDLᵀ variant type name.
 - **99% clean, 1% surprise:** wgpu build graph resolves cross-platform (macOS-arm64 + Linux CI). Mitigation: the probe test is the check.
 
 If any "refactor needed" scenario fires, the skeleton PR stays open and the refactor is a prerequisite commit on the same branch.
+
+## 13. Book findings (Pass 2/3 feedback queue)
+
+Surprises the skeleton stress-test surfaced in the book spec. Each is a future book-iteration PR, tracked separately from the skeleton PR per §11 S-10.
+
+| # | Where | Finding | Class |
+|---|---|---|---|
+| BF-1 | γ API register ([`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md)) + Part 6 Ch 02:8 + Part 5 Ch 00 + Part 8 Ch 02 + Part 10 Ch 02/03 | faer sparse Cholesky type is `Llt<I, T>` (generic over index + element), not `Llt<T>`. All book references to `Llt<f64>` should read `Llt<I, f64>` (or `Llt<u32, f64>` after fixing the default index). Affects: PreferenceGP, BradleyTerryGP, GradientEnhancedGP caches + backward-Euler factor-on-tape + sparse-solvers chapter. | API-signature drift |
+| BF-2 | Part 6 Ch 02:26 code sketch | `Llt::try_new_with_symbolic(&stiffness)?` is incomplete — faer 0.24's constructor is `try_new_with_symbolic(symbolic: SymbolicLlt<I>, mat: SparseColMatRef<'_, I, T>, side: Side)`, requiring a pre-computed `SymbolicLlt` + explicit `Side`. Book sketch should show the symbolic-then-numeric two-step pattern. | API-signature drift |
+| BF-3 | Part 6 Ch 02:34 code sketch | `factor.solve_in_place(&mut minus_dr_dtheta.apply_t(&upstream))` is dimensionally inconsistent — $(\partial r / \partial \theta)^{\mathsf{T}}$ · upstream has shape $[n_\theta]$, cannot be RHS for $[n_\text{dof} \times n_\text{dof}]$ solve. Sketch's order of operations is inverted. Correct sequence: (1) λ = A^{-1} · upstream via `solve_in_place`, (2) result = ±(∂r/∂θ)^T · λ. The math at lines 13-15 is fine; only the code sketch needs fixing. | Pseudocode correctness |
+
+None of the three findings are skeleton-blocking — the skeleton implements from the underlying math + the verified faer API. They're book-edit backlog for whenever the PM memos or Pass 2/3 touch these chapters.
 
 ---
 
@@ -282,7 +300,7 @@ From [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhil
 - `RewardWeights` (struct) — scalar-composition weights
 - `GradientEstimate` (enum) — `Exact | Noisy { variance: f64 }`
 - `Material`, `Element<const N, const G>`, `Mesh`, `ContactModel`, `Solver`, `Differentiable`, `Observable` (with `type Step`) — the seven traits
-- `faer::sparse::linalg::solvers::Llt<f64>` — Cholesky factor type (factor-on-tape)
+- `faer::sparse::linalg::solvers::Llt<I, f64>` — Cholesky factor type (factor-on-tape). Round-1 correction: faer 0.24 uses two type parameters `<I, T>`; `I` is the index type (u32 default), `T` is the element type (f64 for sim-soft). `SymbolicLlt<I>` is the prerequisite symbolic factor; construct once per assembly-pattern lifetime. `solve_in_place_with_conj(Conj::No, rhs: MatMut<'_, T>)` is the solve entry point.
 - `VjpOp` (trait), `Tape::push_custom` (method) — chassis extension point (shipped in PR #213)
 - `Tensor<f64>` — sim-soft precision (chassis default is f32 for RL)
 
