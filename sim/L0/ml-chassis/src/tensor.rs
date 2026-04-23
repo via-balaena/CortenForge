@@ -32,6 +32,7 @@ fn shape_numel(shape: &[usize]) -> usize {
 /// `f32`/`f64`; reachable only if a custom `Float` impl has a partial
 /// `NumCast` from `f64`.  Single localized `expect` escape for the whole
 /// module — all f64→T casts route through here.
+// Localized expect: invariant documented in the Panics section above.
 #[allow(clippy::expect_used)]
 fn numcast_f64<T: NumCast>(v: f64) -> T {
     <T as NumCast>::from(v).expect("NumCast::from::<f64> returned None")
