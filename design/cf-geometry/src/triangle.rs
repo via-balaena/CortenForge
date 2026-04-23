@@ -35,6 +35,7 @@ impl Triangle {
     /// Creates a triangle from coordinate arrays.
     #[inline]
     #[must_use]
+    // Body uses float ops / trait methods that are not yet const-stable.
     #[allow(clippy::missing_const_for_fn)]
     pub fn from_arrays(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3]) -> Self {
         Self {

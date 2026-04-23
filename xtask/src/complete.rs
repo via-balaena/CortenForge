@@ -32,6 +32,7 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
             quiet: false,
             verbose: false,
             json: false,
+            skip_coverage: false,
         },
     )?;
 

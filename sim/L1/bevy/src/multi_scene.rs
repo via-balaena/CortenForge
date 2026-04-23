@@ -234,6 +234,7 @@ pub fn sync_batch_geoms(batch: &BatchSim, scenes: &mut PhysicsScenes) {
 /// Tags each entity with [`PhysicsSceneId`]. The `offset` is stored on the
 /// scene automatically so [`sync_scene_geom_transforms`] applies it every
 /// frame. Does nothing if `scene_id` is out of range.
+// Explicit index loop mirrors the index-based reference algorithm.
 #[allow(clippy::needless_range_loop)]
 pub fn spawn_scene_geoms(
     commands: &mut Commands,
@@ -261,6 +262,7 @@ pub fn spawn_scene_geoms(
 /// The callback receives `(entity_commands, geom_id, geom_name)` where
 /// `geom_name` is `""` for unnamed geoms. Does nothing if `scene_id` is
 /// out of range.
+// Explicit index loop mirrors the index-based reference algorithm.
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 pub fn spawn_scene_geoms_with<F>(
     commands: &mut Commands,
@@ -290,6 +292,7 @@ pub fn spawn_scene_geoms_with<F>(
 ///
 /// Stores the offset on the scene, then spawns entities tagged with
 /// [`PhysicsSceneId`].
+// Explicit index loop mirrors the index-based reference algorithm.
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 fn spawn_scene_geoms_inner<F>(
     commands: &mut Commands,
@@ -363,6 +366,7 @@ fn spawn_scene_geoms_inner<F>(
             ovr.clone()
         } else {
             let rgba = model.geom_rgba[geom_id];
+            // Index/count conversion bounded by domain (size well below 2^32).
             #[allow(clippy::cast_possible_truncation)]
             materials.add(StandardMaterial {
                 base_color: Color::srgba(
@@ -460,6 +464,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn lockstep_identical_scenes_produce_identical_time() {
         // Two identical scenes with same timestep should produce identical
@@ -502,6 +507,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn three_scenes_spawn_tagged_entities() {
         use bevy::ecs::world::CommandQueue;
@@ -532,6 +538,7 @@ mod tests {
         {
             let mut commands = Commands::new(&mut queue, &world);
             for id in 0..3 {
+                // Precision loss acceptable for approximate / visualization values.
                 #[allow(clippy::cast_precision_loss)]
                 let offset = Vec3::new(id as f32 * 2.0, 0.0, 0.0);
                 spawn_scene_geoms(

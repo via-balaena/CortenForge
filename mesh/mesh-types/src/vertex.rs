@@ -48,8 +48,8 @@ impl VertexColor {
     /// ```
     #[inline]
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     // Truncation and sign loss are safe: values are clamped to [0.0, 1.0] before * 255.0
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn from_float(r: f32, g: f32, b: f32) -> Self {
         Self {
             r: (r.clamp(0.0, 1.0) * 255.0) as u8,

@@ -12,10 +12,13 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+# Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
+# Serialization for save/load and config
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Approximate equality for numeric tests
 approx = { workspace = true }
 
 [features]

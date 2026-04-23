@@ -34,6 +34,14 @@
 //! save_step(&mesh, "output.step").unwrap();
 //! ```
 
+// STEP→mesh conversion casts usize face/vertex counts to u32 mesh indices
+// and truck f64 coords to f32 — both bounded by format semantics.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -127,7 +135,6 @@ pub fn load_step<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
 }
 
 /// Append a truck `PolygonMesh` to our `IndexedMesh`.
-#[allow(clippy::cast_possible_truncation)]
 fn append_polymesh_to_indexed(poly: &PolygonMesh, mesh: &mut IndexedMesh) {
     let vertex_offset = mesh.vertices.len() as u32;
 

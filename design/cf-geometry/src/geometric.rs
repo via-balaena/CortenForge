@@ -71,6 +71,7 @@ impl Geometric for crate::SupportCapsule {
         crate::closest_point(&Shape::capsule(self.half_length, self.radius), point)
     }
 
+    // Floating-point form chosen for numerical stability, not micro-optimization.
     #[allow(clippy::suboptimal_flops)]
     fn contains(&self, point: &Point3<f64>) -> bool {
         // Closest point on axis segment, then check distance to that
@@ -95,6 +96,7 @@ impl Geometric for crate::SupportCylinder {
         crate::closest_point(&Shape::cylinder(self.half_length, self.radius), point)
     }
 
+    // Floating-point form chosen for numerical stability, not micro-optimization.
     #[allow(clippy::suboptimal_flops)]
     fn contains(&self, point: &Point3<f64>) -> bool {
         point.z.abs() <= self.half_length
@@ -115,6 +117,7 @@ impl Geometric for crate::SupportEllipsoid {
         crate::closest_point(&Shape::ellipsoid(self.radii), point)
     }
 
+    // Floating-point form chosen for numerical stability, not micro-optimization.
     #[allow(clippy::suboptimal_flops)]
     fn contains(&self, point: &Point3<f64>) -> bool {
         let rx = self.radii.x.max(1e-10);

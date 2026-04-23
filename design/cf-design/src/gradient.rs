@@ -21,6 +21,7 @@ impl FieldNode {
     /// Returns the zero vector at singular points (e.g., the center of a
     /// sphere) where the gradient is undefined.
     #[must_use]
+    // Procedural glue code; natural breakpoints are few.
     #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     pub(crate) fn gradient(&self, p: &Point3<f64>) -> Vector3<f64> {
         match self {
@@ -386,6 +387,7 @@ fn grad_torus(major: f64, p: &Point3<f64>) -> Vector3<f64> {
 }
 
 /// Cone: region-based gradient (above apex / below base / surface / inside).
+// Short names mirror textbook / paper notation.
 #[allow(clippy::many_single_char_names)]
 fn grad_cone(radius: f64, height: f64, p: &Point3<f64>) -> Vector3<f64> {
     let r = p.x.hypot(p.y);
@@ -485,6 +487,7 @@ fn grad_superellipsoid(radii: &Vector3<f64>, n1: f64, n2: f64, p: &Point3<f64>) 
 /// The eval function picks the nearest among candidates at `theta + 2πk`.
 /// Since `theta = atan2(y, x)` depends on `p`, the candidate angles shift
 /// as `p` moves, adding a correction term to the naive direction gradient.
+// Short names mirror textbook notation.
 #[allow(
     clippy::many_single_char_names,
     clippy::cast_possible_truncation,
@@ -604,6 +607,7 @@ fn grad_schwarz_p(scale: f64, p: &Point3<f64>) -> Vector3<f64> {
 }
 
 /// Helix: direction from nearest point on helix curve to query.
+// Short names mirror textbook notation.
 #[allow(
     clippy::many_single_char_names,
     clippy::cast_possible_truncation,
@@ -884,6 +888,7 @@ fn cr_deriv2(
 }
 
 /// 1D Catmull-Rom interpolation (same basis as 3D version).
+// Short names mirror textbook / paper notation.
 #[allow(clippy::many_single_char_names)]
 fn cr_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let t2 = t * t;
@@ -895,6 +900,7 @@ fn cr_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
 }
 
 /// 1D Catmull-Rom first derivative.
+// Short names mirror textbook / paper notation.
 #[allow(clippy::many_single_char_names)]
 fn cr_1d_deriv(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let t2 = t * t;

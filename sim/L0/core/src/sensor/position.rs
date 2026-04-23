@@ -413,6 +413,7 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     MjSensorType::GeomFromTo => {
                         sensor_write6(&mut data.sensordata, adr, &fromto);
                     }
+                    // Outer dispatch filters to position-sensor variants; other types never reach here.
                     _ => unreachable!(),
                 }
             }

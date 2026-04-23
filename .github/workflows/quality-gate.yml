@@ -5,6 +5,16 @@
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 #
 # "A-grade or it doesn't ship. No exceptions."
+#
+# Policy source of truth: `cargo xtask grade-all`. The Rust grader
+# (xtask/src/grade.rs) enforces Safety, Clippy (with unjustified-
+# #[allow] detection), Documentation (with -D warnings), Dependencies
+# (with justification scan), and Bevy-free (Layer 0). CI invokes it
+# directly — no parallel bash/awk reimplementations.
+#
+# Coverage is excluded from the CI gate via --skip-coverage because
+# llvm-cov in release mode is ~5-10 min per crate; it runs locally
+# via `cargo xtask grade <crate>` and in dedicated nightly jobs.
 
 name: Quality Gate
 
@@ -16,7 +26,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # RUSTFLAGS="-D warnings" intentionally NOT set globally. It bypasses rustc's
+  # cap-lints mechanism and promotes transitive-dependency warnings (e.g. from
+  # winit, nom, quick-xml) to hard errors. Per-tool flags are the correct scope:
+  # - Clippy enforces -D warnings via xtask grade_clippy's `cargo clippy`.
+  # - Rustdoc enforces -D warnings via RUSTDOCFLAGS (set per-invocation in
+  #   xtask grade_documentation).
   RUSTDOCFLAGS: "-D warnings"
 
 jobs:
@@ -38,10 +53,16 @@ jobs:
         run: cargo fmt --all -- --check
 
   # ============================================================================
-  # CLIPPY - Zero warnings
+  # XTASK GRADE - Single source of truth for Safety, Clippy, Docs, Deps, Bevy-free
   # ============================================================================
-  clippy:
-    name: Clippy
+  # Replaces four formerly-separate bash-reimplementation jobs (clippy, docs,
+  # safety, bevy-free) with one invocation of the Rust grader. Single source
+  # of truth at xtask/src/grade.rs — no parallel policy layers to drift.
+  #
+  # --skip-coverage: coverage runs cargo llvm-cov in release (5-10 min per
+  # crate); too slow for per-PR CI. It runs locally and in dedicated jobs.
+  grade:
+    name: xtask Grade
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -61,8 +82,12 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo xtask grade-all --skip-coverage
+        env:
+          # Emit per-file safety debug + doc stderr tail on F so CI logs
+          # surface the actual failure cause rather than opaque counts.
+          XTASK_GRADE_DEBUG: "1"
+        run: cargo run -p xtask --release -- grade-all --skip-coverage --quiet
 
   # ============================================================================
   # TESTS - All must pass on all platforms
@@ -150,94 +175,10 @@ jobs:
           done
 
   # ============================================================================
-  # DOCUMENTATION - Zero warnings, complete coverage
+  # DEPENDENCIES - License / source audit via cargo-deny
   # ============================================================================
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
-
-      - name: Build docs
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-
-  # ============================================================================
-  # SAFETY - Zero unwrap/expect in library code
-  # ============================================================================
-  safety:
-    name: Safety
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Check for unwrap/expect
-        run: |
-          # Find all library source files (exclude tests, examples, xtask)
-          # Also exclude doc comments (/// and //!) and test modules (#[cfg(test)])
-          FOUND_VIOLATIONS=false
-
-          for file in $(find . -name "*.rs" \
-            -not -path "./target/*" \
-            -not -path "./xtask/*" \
-            -not -path "*/tests/*" \
-            -not -path "*/examples/*" \
-            -not -path "*/benches/*" 2>/dev/null); do
-
-            # Use awk to find unwrap/expect outside of:
-            # - doc comments (lines starting with /// or //!)
-            # - test modules (from #[cfg(test)] to end of file)
-            VIOLATIONS=$(awk '
-              /^[ \t]*#\[cfg\(test\)\]/ { in_test = 1 }
-              !in_test && !/^[ \t]*\/\/[\/!]/ && /\.(unwrap|expect)\(/ { print NR": "$0 }
-            ' "$file" 2>/dev/null)
-
-            if [ -n "$VIOLATIONS" ]; then
-              if [ "$FOUND_VIOLATIONS" = false ]; then
-                echo "::error::Found unwrap/expect in library code:"
-                FOUND_VIOLATIONS=true
-              fi
-              echo "In $file:"
-              echo "$VIOLATIONS" | head -5
-            fi
-          done
-
-          if [ "$FOUND_VIOLATIONS" = true ]; then
-            exit 1
-          fi
-          echo "✓ No unwrap/expect found in library code"
-
-      - name: Check for panic!/todo!/unimplemented!
-        run: |
-          VIOLATIONS=$(find . -name "*.rs" \
-            -not -path "./target/*" \
-            -not -path "./xtask/*" \
-            -not -path "*/tests/*" \
-            -not -path "*/examples/*" \
-            -exec grep -l -E 'panic!\(|todo!\(|unimplemented!\(' {} \; 2>/dev/null || true)
-
-          if [ -n "$VIOLATIONS" ]; then
-            echo "::warning::Found panic!/todo!/unimplemented! (review required):"
-            echo "$VIOLATIONS"
-          fi
-
-  # ============================================================================
-  # DEPENDENCIES - Audit and policy (pre-built action, no cargo install)
-  # ============================================================================
+  # Complements the grade job's dep-justification scan with a cargo-deny
+  # licence + source audit (different concern; both layers run).
   dependencies:
     name: Dependencies
     runs-on: ubuntu-latest
@@ -273,54 +214,6 @@ jobs:
         continue-on-error: true  # Don't block PRs on semver for now
 
   # ============================================================================
-  # LAYER 0 - No Bevy in foundation crates
-  # ============================================================================
-  bevy-free:
-    name: Bevy-Free (Layer 0)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
-
-      - name: Check Layer 0 crates
-        run: |
-          # List of Layer 0 crates that must be Bevy-free
-          LAYER0_CRATES=(
-            "mesh-types"
-            "mesh-io"
-            "mesh-repair"
-            "mesh-sdf"
-            "mesh-offset"
-            "mesh-shell"
-            "mesh-measure"
-            "mesh-printability"
-            "mesh-lattice"
-            "sim-types"
-            "sim-core"
-            "sim-urdf"
-          )
-
-          FAILED=false
-          for crate in "${LAYER0_CRATES[@]}"; do
-            if cargo tree -p "$crate" 2>/dev/null | grep -qi "bevy"; then
-              echo "::error::$crate has Bevy in dependency tree"
-              FAILED=true
-            fi
-          done
-
-          if [ "$FAILED" = true ]; then
-            exit 1
-          fi
-          echo "✓ All Layer 0 crates are Bevy-free"
-
-  # ============================================================================
   # SBOM - Software Bill of Materials generation
   # ============================================================================
   sbom:
@@ -352,7 +245,7 @@ jobs:
   # ============================================================================
   quality-gate:
     name: Quality Gate
-    needs: [format, clippy, test, docs, safety, dependencies, bevy-free]
+    needs: [format, grade, test, dependencies]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

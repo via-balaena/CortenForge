@@ -1,11 +1,19 @@
 //! Tensor and `TensorSpec` — the core data types for the ML bridge.
 //!
-//! [`Tensor`] is a flat `f32` buffer with shape metadata. No autograd, no
+//! [`Tensor`] is a flat buffer over `T` with shape metadata. No autograd, no
 //! device placement, no strides. The simplest possible tensor that knows
 //! its shape.
 //!
+//! The `T = f32` default matches the RL contract (observations, actions,
+//! policies); `Tensor<f64>` is available for sim-soft physics consumers.
+//!
 //! [`TensorSpec`] describes the shape and bounds of an observation or action
 //! tensor, so that policies can be constructed with matching dimensions.
+//! `TensorSpec` is f32-only — it is an RL-environment-declaration concept.
+
+use std::fmt::Debug;
+
+use num_traits::{Float, One, Zero, cast::NumCast};
 
 use crate::error::TensorError;
 
@@ -16,20 +24,45 @@ fn shape_numel(shape: &[usize]) -> usize {
     shape.iter().copied().product::<usize>()
 }
 
+/// Cast `f64` → `T` via `NumCast`.
+///
+/// # Panics
+///
+/// Panics if `NumCast::from(v)` returns `None`.  Unreachable for stdlib
+/// `f32`/`f64`; reachable only if a custom `Float` impl has a partial
+/// `NumCast` from `f64`.  Single localized `expect` escape for the whole
+/// module — all f64→T casts route through here.
+// Localized expect: invariant documented in the Panics section above.
+#[allow(clippy::expect_used)]
+fn numcast_f64<T: NumCast>(v: f64) -> T {
+    <T as NumCast>::from(v).expect("NumCast::from::<f64> returned None")
+}
+
 // ─── Tensor ─────────────────────────────────────────────────────────────────
 
-/// A flat `f32` buffer with shape metadata.
+/// A flat buffer over `T` with shape metadata.
 ///
 /// No autograd, no device placement, no strides.  This is the simplest
-/// possible tensor — a typed `Vec<f32>` that knows its shape.  We will
+/// possible tensor — a typed `Vec<T>` that knows its shape.  We will
 /// grow it later (autodiff, GPU buffers) but the interface stays stable.
+///
+/// The default `T = f32` matches the RL contract; `Tensor<f64>` is used by
+/// sim-soft physics code per the workspace precision split.
+// Float bound precludes `Eq` — f32/f64 have NaN and do not impl `Eq`.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Tensor {
-    data: Vec<f32>,
+pub struct Tensor<T = f32>
+where
+    T: Copy + Default + PartialEq + Debug + Send + Sync + Zero + One + Float,
+{
+    data: Vec<T>,
     shape: Vec<usize>,
 }
 
-impl Tensor {
+impl<T> Tensor<T>
+where
+    T: Copy + Default + PartialEq + Debug + Send + Sync + Zero + One + Float,
+{
     // ── constructors (panicking — for internal / known-good paths) ───────
 
     /// Create a tensor filled with zeros.
@@ -37,12 +70,12 @@ impl Tensor {
     pub fn zeros(shape: &[usize]) -> Self {
         let n = shape_numel(shape);
         Self {
-            data: vec![0.0; n],
+            data: vec![T::zero(); n],
             shape: shape.to_vec(),
         }
     }
 
-    /// Create a tensor from an `f32` slice.
+    /// Create a tensor from a `T` slice.
     ///
     /// # Panics
     ///
@@ -50,7 +83,7 @@ impl Tensor {
     /// programming error — use [`try_from_slice`](Self::try_from_slice)
     /// when validating external input.
     #[must_use]
-    pub fn from_slice(data: &[f32], shape: &[usize]) -> Self {
+    pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
         let expected = shape_numel(shape);
         assert!(
             data.len() == expected,
@@ -63,17 +96,19 @@ impl Tensor {
         }
     }
 
-    /// Create a tensor from an `f64` slice, casting each element to `f32`.
+    /// Create a tensor from an `f64` slice, casting each element to `T`.
     ///
-    /// The `f64→f32` truncation is intentional — the sim is `f64` throughout,
-    /// but ML convention is `f32`.  The bridge owns this conversion.
+    /// For `T = f32` this is the explicit sim/ML boundary cast (the sim is
+    /// `f64` throughout, RL convention is `f32`). For `T = f64` it is an
+    /// identity conversion — a trivial generic-monomorphization artifact
+    /// per A.1 sub-decision.
     ///
     /// # Panics
     ///
-    /// Panics if `data.len() != product(shape)`.
-    // f64 → f32 at the sim/ML boundary — `Tensor` is f32-backed by design.
+    /// Panics if `data.len() != product(shape)`, or if `NumCast::from(v)`
+    /// fails for any element (unreachable for stdlib `f32`/`f64`; reachable
+    /// only if a custom `Float` impl has a partial `NumCast` from `f64`).
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn from_f64_slice(data: &[f64], shape: &[usize]) -> Self {
         let expected = shape_numel(shape);
         assert!(
@@ -82,19 +117,19 @@ impl Tensor {
             data.len(),
         );
         Self {
-            data: data.iter().map(|&v| v as f32).collect(),
+            data: data.iter().map(|&v| numcast_f64::<T>(v)).collect(),
             shape: shape.to_vec(),
         }
     }
 
     // ── constructors (fallible — for external / untrusted input) ─────────
 
-    /// Try to create a tensor from an `f32` slice.
+    /// Try to create a tensor from a `T` slice.
     ///
     /// # Errors
     ///
     /// Returns [`TensorError::ShapeMismatch`] if `data.len() != product(shape)`.
-    pub fn try_from_slice(data: &[f32], shape: &[usize]) -> Result<Self, TensorError> {
+    pub fn try_from_slice(data: &[T], shape: &[usize]) -> Result<Self, TensorError> {
         let expected = shape_numel(shape);
         if data.len() != expected {
             return Err(TensorError::ShapeMismatch {
@@ -109,13 +144,17 @@ impl Tensor {
         })
     }
 
-    /// Try to create a tensor from an `f64` slice, casting each element to `f32`.
+    /// Try to create a tensor from an `f64` slice, casting each element to `T`.
     ///
     /// # Errors
     ///
     /// Returns [`TensorError::ShapeMismatch`] if `data.len() != product(shape)`.
-    // f64 → f32 at the sim/ML boundary — `Tensor` is f32-backed by design.
-    #[allow(clippy::cast_possible_truncation)]
+    ///
+    /// # Panics
+    ///
+    /// Panics if `NumCast::from(v)` fails for any element (unreachable for
+    /// stdlib `f32`/`f64`; reachable only if a custom `Float` impl has a
+    /// partial `NumCast` from `f64`).
     pub fn try_from_f64_slice(data: &[f64], shape: &[usize]) -> Result<Self, TensorError> {
         let expected = shape_numel(shape);
         if data.len() != expected {
@@ -126,7 +165,7 @@ impl Tensor {
             });
         }
         Ok(Self {
-            data: data.iter().map(|&v| v as f32).collect(),
+            data: data.iter().map(|&v| numcast_f64::<T>(v)).collect(),
             shape: shape.to_vec(),
         })
     }
@@ -159,12 +198,12 @@ impl Tensor {
 
     /// View the raw data as a slice.
     #[must_use]
-    pub fn as_slice(&self) -> &[f32] {
+    pub fn as_slice(&self) -> &[T] {
         &self.data
     }
 
     /// View the raw data as a mutable slice.
-    pub fn as_mut_slice(&mut self) -> &mut [f32] {
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.data
     }
 
@@ -178,7 +217,7 @@ impl Tensor {
     ///
     /// Panics if `ndim != 2` or `i >= shape[0]`.
     #[must_use]
-    pub fn row(&self, i: usize) -> &[f32] {
+    pub fn row(&self, i: usize) -> &[T] {
         assert!(
             self.shape.len() == 2,
             "Tensor::row requires ndim == 2, got {}",
@@ -201,7 +240,7 @@ impl Tensor {
     /// # Panics
     ///
     /// Panics if `ndim != 2` or `i >= shape[0]`.
-    pub fn row_mut(&mut self, i: usize) -> &mut [f32] {
+    pub fn row_mut(&mut self, i: usize) -> &mut [T] {
         assert!(
             self.shape.len() == 2,
             "Tensor::row_mut requires ndim == 2, got {}",
@@ -247,7 +286,11 @@ pub struct TensorSpec {
     clippy::let_underscore_must_use
 )]
 mod tests {
-    use super::*;
+    use super::{Tensor as GenericTensor, TensorError, TensorSpec};
+
+    // These tests exercise the f32 monomorphization — the RL contract per A.1.
+    // Shadows the generic import so test bodies can use bare `Tensor::...`.
+    type Tensor = GenericTensor<f32>;
 
     // ── shape arithmetic ─────────────────────────────────────────────────
 

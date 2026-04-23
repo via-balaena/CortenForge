@@ -9,6 +9,7 @@
 //! Phase 2: Tube constrains pin (cylindrical constraint)
 //! Phase 3: Full hinge (socket + caps + flanged pin)
 
+#![cfg(test)]
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,

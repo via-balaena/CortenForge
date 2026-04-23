@@ -19,6 +19,7 @@ impl FieldNode {
     /// Chain rule: at each node, `∂f/∂θ = ∂f/∂v · ∂v/∂θ + Σ ∂f/∂child_j · ∂child_j/∂θ`,
     /// where `v` is the node's local `Val` (if any).
     #[must_use]
+    // Procedural glue code; natural breakpoints are few.
     #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     pub(crate) fn param_gradient(&self, p: &Point3<f64>, target_id: usize) -> f64 {
         match self {

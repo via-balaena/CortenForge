@@ -13,6 +13,7 @@ impl FieldNode {
     ///
     /// Returns the signed distance (exact or approximate depending on the
     /// primitive). Negative = inside, positive = outside, zero = on surface.
+    // Procedural glue code; natural breakpoints are few.
     #[allow(clippy::too_many_lines)]
     pub(crate) fn evaluate(&self, p: &Point3<f64>) -> f64 {
         match self {
@@ -353,6 +354,7 @@ fn eval_superellipsoid(radii: &nalgebra::Vector3<f64>, n1: f64, n2: f64, p: &Poi
 /// Gradient (for Session 19):
 ///   The gradient is the unit direction from the nearest point on the spiral
 ///   curve to the query point (Lipschitz = 1 for the distance part).
+// Short names mirror textbook / paper notation.
 #[allow(clippy::many_single_char_names, clippy::cast_possible_truncation)]
 fn eval_log_spiral(
     init_radius: f64,
@@ -444,6 +446,7 @@ fn eval_schwarz_p(scale: f64, thickness: f64, p: &Point3<f64>) -> f64 {
 /// Gradient (for Session 19):
 ///   `∇field = (p - H(t*)) / |p - H(t*)|` where `t*` is the closest parameter.
 ///   This is the unit direction from nearest helix point to the query point.
+// Index/count conversion bounded by domain (size well below 2^32).
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn eval_helix(radius: f64, pitch: f64, thickness: f64, turns: f64, p: &Point3<f64>) -> f64 {
     use std::f64::consts::TAU;
@@ -655,6 +658,7 @@ fn loft_radius_at(stations: &[[f64; 2]], z: f64) -> f64 {
 }
 
 /// 1D Catmull-Rom interpolation. Same basis as `catmull_rom_point`.
+// Short names mirror textbook / paper notation.
 #[allow(clippy::many_single_char_names)]
 fn catmull_rom_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let t2 = t * t;

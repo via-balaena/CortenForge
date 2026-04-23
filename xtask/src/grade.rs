@@ -10,12 +10,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use xshell::{cmd, Shell};
 
-/// Controls progress logging and output format for `cargo xtask grade`.
+/// Controls progress logging, output format, and criterion selection for
+/// `cargo xtask grade`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Verbosity {
     pub quiet: bool,
     pub verbose: bool,
     pub json: bool,
+    /// Skip the Coverage criterion. Coverage runs `cargo llvm-cov --release`
+    /// (5-10 min per crate) which is too expensive for per-PR CI. Reported
+    /// as [`Grade::NotApplicable`] when set.
+    pub skip_coverage: bool,
 }
 
 /// Grade for a single criterion
@@ -129,13 +134,18 @@ impl GradeReport {
 /// `Grade::NotApplicable` (excluded from the overall grade) rather than
 /// a misleading F.
 ///
-/// Classification is path-based. A crate's manifest path (relative to
-/// the workspace root) maps to exactly one profile:
+/// Classification is primarily path-based, with one Cargo.toml metadata
+/// opt-in (F.3). A crate's manifest path (relative to the workspace
+/// root) maps to exactly one profile:
 ///
 /// - `examples/`           → [`CrateProfile::Example`]
 /// - `xtask/`              → [`CrateProfile::Xtask`]
 /// - `sim/L1/`             → [`CrateProfile::BevyLayer1`]
 /// - anything else         → [`CrateProfile::Layer0`] (default; strictest)
+///
+/// A crate may opt into [`CrateProfile::IntegrationOnly`] by adding
+/// `[package.metadata.cortenforge] grading_profile = "integration-only"`
+/// to its `Cargo.toml`. The metadata read overrides path classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrateProfile {
     /// Layer 0 library crate — the strictest rubric applies. All seven
@@ -151,6 +161,11 @@ pub enum CrateProfile {
     /// Build tooling (`xtask`, build scripts). Coverage and Bevy-free
     /// are N/A; Safety relaxed for the same reason as Example.
     Xtask,
+    /// Crate whose source code is exercised exclusively by integration
+    /// tests (no inline `#[cfg(test)]` modules), or which has no `src/`
+    /// at all. Coverage is N/A; other criteria apply normally. Opt-in
+    /// via `[package.metadata.cortenforge] grading_profile = "integration-only"`.
+    IntegrationOnly,
 }
 
 impl CrateProfile {
@@ -161,6 +176,7 @@ impl CrateProfile {
             CrateProfile::BevyLayer1 => "Layer 1 (Bevy)",
             CrateProfile::Example => "Example (visual/demo)",
             CrateProfile::Xtask => "Build tooling",
+            CrateProfile::IntegrationOnly => "Integration-only",
         }
     }
 }
@@ -210,16 +226,32 @@ impl Drop for Heartbeat {
     }
 }
 
-/// Classify a crate by its workspace-relative manifest path.
+/// Classify a crate by its workspace-relative manifest path, with one
+/// Cargo.toml metadata opt-in.
 ///
-/// See [`CrateProfile`] for the mapping rules. This function is
-/// deliberately simple — prefix-matching on path, no metadata lookups,
-/// no `[package.metadata]` requirement in Cargo.toml. The tradeoff is
-/// that a crate moved to a new directory gets a different profile
-/// automatically; any crate that needs to opt out of its path-default
-/// profile should be moved or an explicit override added to this
-/// function.
-pub(crate) fn classify_crate(crate_path: &str) -> CrateProfile {
+/// See [`CrateProfile`] for the mapping rules. The metadata read
+/// (`[package.metadata.cortenforge] grading_profile = "integration-only"`)
+/// is the only override — every other classification is path-based and
+/// a crate moved to a new directory gets a different profile
+/// automatically. The opt-in is self-documenting: the annotation lives
+/// in the crate's own `Cargo.toml` where any reader encounters it.
+pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CrateProfile {
+    // F.3 metadata opt-in: explicit override for crates that have no
+    // testable lib target (no `src/` or no inline `#[cfg(test)]` modules)
+    // and are exercised by integration tests instead. Coverage criterion
+    // returns NotApplicable for this profile; other criteria apply normally.
+    if let Ok(value) = toml::from_str::<toml::Value>(cargo_toml_text) {
+        let grading_profile = value
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("cortenforge"))
+            .and_then(|c| c.get("grading_profile"))
+            .and_then(|g| g.as_str());
+        if grading_profile == Some("integration-only") {
+            return CrateProfile::IntegrationOnly;
+        }
+    }
+
     // Normalize path separators for cross-platform matching.
     let normalized = crate_path.replace('\\', "/");
     if normalized.starts_with("examples/") || normalized.starts_with("examples\\") {
@@ -268,7 +300,13 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     sh.change_dir(&workspace_root);
 
     let crate_path = find_crate_path(sh, crate_name)?;
-    let profile = classify_crate(&crate_path);
+    // F.3: read the crate's Cargo.toml so classify_crate can honor the
+    // [package.metadata.cortenforge] opt-in. Missing or unreadable falls
+    // through to path-based classification — find_crate_path already
+    // proved the crate exists in workspace metadata.
+    let cargo_toml_text =
+        std::fs::read_to_string(format!("{}/Cargo.toml", crate_path)).unwrap_or_default();
+    let profile = classify_crate(&crate_path, &cargo_toml_text);
 
     if !verbosity.quiet {
         eprintln!();
@@ -297,7 +335,7 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     report
         .criteria
         .push(run_criterion(3, "Clippy", verbosity.quiet, || {
-            grade_clippy(sh, crate_name, &crate_path)
+            grade_clippy(sh, crate_name, &crate_path, profile)
         })?);
     report
         .criteria
@@ -307,7 +345,7 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     report
         .criteria
         .push(run_criterion(5, "Dependencies", verbosity.quiet, || {
-            grade_dependencies(sh, crate_name)
+            grade_dependencies(sh, crate_name, profile)
         })?);
     report
         .criteria
@@ -490,6 +528,135 @@ pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
     Ok(())
 }
 
+/// Run grading across every workspace member.
+///
+/// Enumerates workspace crates via `cargo metadata --no-deps` — no
+/// hard-coded lists, automatically adapts when crates are added or
+/// removed. Each crate is graded via [`evaluate`]; failures are
+/// aggregated and reported in a compact summary. Exits non-zero if
+/// any crate's automated grade is below A.
+///
+/// Intended as the CI entry point for single-source-of-truth grading:
+/// CI runs `cargo xtask grade-all --skip-coverage --quiet`, checks the
+/// exit code, and surfaces the failure summary on red.
+pub fn run_all(verbosity: Verbosity) -> Result<()> {
+    let sh = Shell::new()?;
+    let workspace_root = find_workspace_root(&sh)?;
+    sh.change_dir(&workspace_root);
+
+    let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
+        .read()
+        .context("Failed to run `cargo metadata`")?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json)
+        .context("Failed to parse `cargo metadata` JSON output")?;
+
+    let packages = metadata["packages"]
+        .as_array()
+        .context("`cargo metadata`: missing 'packages' array")?;
+
+    // --no-deps scopes packages to workspace members only.
+    let mut crate_names: Vec<String> = packages
+        .iter()
+        .filter_map(|p| p["name"].as_str().map(String::from))
+        .collect();
+    crate_names.sort();
+
+    if !verbosity.quiet {
+        eprintln!();
+        eprintln!(
+            "  grade-all: evaluating {} workspace crates…",
+            crate_names.len()
+        );
+        if verbosity.skip_coverage {
+            eprintln!("  (coverage skipped via --skip-coverage)");
+        }
+        eprintln!();
+    }
+
+    let mut failures: Vec<(String, GradeReport)> = Vec::new();
+    let mut passes = 0usize;
+
+    for (idx, crate_name) in crate_names.iter().enumerate() {
+        // Force --quiet per-crate regardless of outer verbosity — grade-all
+        // prints its own compact one-line-per-crate progress so 190 crates
+        // of per-criterion chatter don't drown the aggregate report.
+        let per_crate_verbosity = Verbosity {
+            quiet: true,
+            verbose: false,
+            json: false,
+            skip_coverage: verbosity.skip_coverage,
+        };
+        let report = evaluate(&sh, crate_name, per_crate_verbosity)?;
+
+        let passed = matches!(report.automated_grade, Grade::A | Grade::APlus);
+        if passed {
+            passes += 1;
+            if !verbosity.quiet {
+                eprintln!(
+                    "  [{:>3}/{}] {} — {}",
+                    idx + 1,
+                    crate_names.len(),
+                    report.automated_grade.as_str().green(),
+                    crate_name
+                );
+            }
+        } else {
+            if !verbosity.quiet {
+                eprintln!(
+                    "  [{:>3}/{}] {} — {}",
+                    idx + 1,
+                    crate_names.len(),
+                    report.automated_grade.as_str().red(),
+                    crate_name
+                );
+            }
+            failures.push((crate_name.clone(), report));
+        }
+    }
+
+    println!();
+    if failures.is_empty() {
+        println!(
+            "{}",
+            format!(
+                "✓ grade-all: {}/{} workspace crates pass.",
+                passes,
+                crate_names.len()
+            )
+            .green()
+            .bold()
+        );
+        println!();
+        Ok(())
+    } else {
+        println!(
+            "{}",
+            format!(
+                "✗ grade-all: {}/{} workspace crates fail xtask grade.",
+                failures.len(),
+                crate_names.len()
+            )
+            .red()
+            .bold()
+        );
+        println!();
+        for (name, report) in &failures {
+            println!(
+                "  {} — {}",
+                name.bold(),
+                report.automated_grade.as_str().red()
+            );
+            for c in &report.criteria {
+                if matches!(c.grade, Grade::F | Grade::C) {
+                    println!("      {}: {} ({})", c.name, c.grade.as_str(), c.result);
+                }
+            }
+        }
+        println!();
+        bail!("{} workspace crate(s) failed xtask grade", failures.len())
+    }
+}
+
 /// Format grade for display in a fixed-width table cell (7 visible chars).
 fn grade_cell(grade: &Grade) -> String {
     match grade {
@@ -578,6 +745,30 @@ pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
     )
 }
 
+/// Return `Some((result_label, detail))` if Coverage should skip for the
+/// profile, or `None` if the crate must be measured.
+///
+/// Three profiles skip Coverage: Example and Xtask (no lib target per
+/// STANDARDS.md §1) and IntegrationOnly (F.3 metadata opt-in for crates
+/// exercised by integration tests). Layer0 and BevyLayer1 always run.
+fn coverage_skip_reason(profile: CrateProfile) -> Option<(&'static str, String)> {
+    match profile {
+        CrateProfile::Example | CrateProfile::Xtask => Some((
+            "(bin-only)",
+            format!(
+                "coverage skipped: {} crates have no lib target per STANDARDS.md §1",
+                profile.label()
+            ),
+        )),
+        CrateProfile::IntegrationOnly => Some((
+            "(integration-only)",
+            "coverage skipped: integration-only crate per [package.metadata.cortenforge]"
+                .to_string(),
+        )),
+        CrateProfile::Layer0 | CrateProfile::BevyLayer1 => None,
+    }
+}
+
 /// Grade test coverage using cargo-llvm-cov (F2 decision: replaces tarpaulin).
 ///
 /// Two-tier thresholds (F1 decision): >=90% = A+, >=75% = A.
@@ -603,17 +794,29 @@ fn grade_coverage(
     // coverage gate is specifically scoped to Layer 0 library crates.
     // Example (bin-only) and Xtask (build tooling) crates have no lib
     // target, so `cargo llvm-cov --lib` errors out with "no library
-    // targets found". Treat that as N/A rather than a false F.
-    if matches!(profile, CrateProfile::Example | CrateProfile::Xtask) {
+    // targets found". F.3 IntegrationOnly crates (per Cargo.toml
+    // metadata opt-in) are exercised by integration tests and have no
+    // testable lib surface. Treat all three as N/A rather than a false F.
+    if let Some((result, detail)) = coverage_skip_reason(profile) {
         return Ok(CriterionResult {
             name: "1. Coverage",
-            result: "(bin-only)".to_string(),
+            result: result.to_string(),
             grade: Grade::NotApplicable,
             threshold: "≥75%/≥90% A+",
-            measured_detail: format!(
-                "coverage skipped: {} crates have no lib target per STANDARDS.md §1",
-                profile.label()
-            ),
+            measured_detail: detail,
+        });
+    }
+
+    // `--skip-coverage` opt-out: CI runs want the other criteria without
+    // paying the ~5-10 min per-crate llvm-cov release build. Dedicated
+    // coverage jobs (nightly / manual) run without the flag.
+    if verbosity.skip_coverage {
+        return Ok(CriterionResult {
+            name: "1. Coverage",
+            result: "(skipped)".to_string(),
+            grade: Grade::NotApplicable,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: "coverage skipped via --skip-coverage flag".to_string(),
         });
     }
 
@@ -778,8 +981,12 @@ fn grade_coverage(
 /// Captures stderr + exit code (B2 fix: `cargo doc` writes diagnostics
 /// to stderr, not stdout — the old gate read stdout and always saw 0).
 fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
+    // Force color off — CI sets CARGO_TERM_COLOR=always, which injects ANSI
+    // escape sequences into stderr (e.g. `error\x1b[0m:`) and breaks the
+    // `contains("error:")` / `matches("warning:")` substring counts below.
     let output = cmd!(sh, "cargo doc --no-deps -p {crate_name}")
         .env("RUSTDOCFLAGS", "-D warnings")
+        .env("CARGO_TERM_COLOR", "never")
         .ignore_status()
         .output()?;
 
@@ -800,6 +1007,21 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
 
     // Binary A/F: exit 0 = A (zero warnings), non-zero = F
     let grade = if exit_code == 0 { Grade::A } else { Grade::F };
+
+    // On F, surface stderr tail so CI logs show the actual failure, not just
+    // an opaque "0 warnings" verdict. Gated behind XTASK_GRADE_DEBUG to keep
+    // local-dev output clean; CI sets this env var to get signal.
+    if grade == Grade::F && std::env::var("XTASK_GRADE_DEBUG").is_ok() {
+        eprintln!(
+            "  [debug] {} cargo doc exit={} stderr tail:",
+            crate_name, exit_code
+        );
+        let stderr_lines: Vec<&str> = stderr.lines().collect();
+        let tail_start = stderr_lines.len().saturating_sub(30);
+        for line in &stderr_lines[tail_start..] {
+            eprintln!("    {}", line);
+        }
+    }
 
     // Informational: check if missing_docs lint is enabled in lib.rs
     let lib_path = format!("{}/src/lib.rs", crate_path);
@@ -831,7 +1053,12 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
 /// Uses `--message-format=json` instead of `-- -D warnings` so we can
 /// count diagnostics directly from structured output (B1 fix: old gate
 /// read stdout but clippy wrote diagnostics to stderr).
-fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
+fn grade_clippy(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    profile: CrateProfile,
+) -> Result<CriterionResult> {
     let output = cmd!(
         sh,
         "cargo clippy -p {crate_name} --all-targets --all-features --message-format=json"
@@ -853,22 +1080,35 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
         if level != "warning" && level != "error" {
             continue;
         }
-        // Exclude summary lines (empty spans = "N warnings emitted")
-        let spans = &json["message"]["spans"];
-        if !spans.is_array() || spans.as_array().is_none_or(|a| a.is_empty()) {
+        // Exclude summary lines (empty spans = "N warnings emitted").
+        // F.1: also filter out transitive-dep diagnostics whose spans all
+        // point outside the target crate. Disjunctive — a diagnostic with
+        // even one span inside the crate is counted (include-not-exclude).
+        let Some(spans) = json["message"]["spans"].as_array() else {
+            continue;
+        };
+        if spans.is_empty() || !any_span_in_crate(spans, crate_path) {
             continue;
         }
         clippy_count += 1;
     }
 
-    // Unjustified #[allow(clippy:: check (F-ext-3)
+    // Unjustified #[allow(clippy:: check (F-ext-3).
+    //
+    // Relaxed for Example/Xtask profiles by the same STANDARDS.md §4
+    // "Allowed" theme that relaxes unwrap/expect counting for them:
+    // demo and tooling code is not prod-surface and shouldn't be held
+    // to the same justification-comment rubric as library code.
+    let relax_unjustified_allows = matches!(profile, CrateProfile::Example | CrateProfile::Xtask);
     let mut allow_count = 0;
-    let src_path = format!("{}/src", crate_path);
-    if let Ok(entries) = glob_rs_files(&src_path) {
-        for file_path in entries {
-            if let Ok(content) = std::fs::read_to_string(&file_path) {
-                let lines: Vec<&str> = content.lines().collect();
-                allow_count += count_unjustified_clippy_allows(&lines);
+    if !relax_unjustified_allows {
+        let src_path = format!("{}/src", crate_path);
+        if let Ok(entries) = glob_rs_files(&src_path) {
+            for file_path in entries {
+                if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    let lines: Vec<&str> = content.lines().collect();
+                    allow_count += count_unjustified_clippy_allows(&lines);
+                }
             }
         }
     }
@@ -898,6 +1138,23 @@ fn grade_clippy(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<Criter
     })
 }
 
+/// Returns true if any span in the diagnostic refers to a file whose path
+/// contains `crate_path` — i.e., the warning originates in the target crate
+/// and not a transitive workspace-member dependency.
+///
+/// `.contains()` substring matching mirrors the convention in `grade_coverage`
+/// (line ~721); handles workspace-relative and absolute paths uniformly
+/// without normalization. Disjunctive semantics: ambiguous diagnostics (e.g.
+/// macro-generated with one span inside + one outside) are included, matching
+/// coverage's summing-loop behavior.
+fn any_span_in_crate(spans: &[serde_json::Value], crate_path: &str) -> bool {
+    spans.iter().any(|span| {
+        span["file_name"]
+            .as_str()
+            .is_some_and(|name| name.contains(crate_path))
+    })
+}
+
 /// Collect all `.rs` files under a directory.
 fn glob_rs_files(dir: &str) -> Result<Vec<String>> {
     let mut files = Vec::new();
@@ -914,6 +1171,190 @@ fn glob_rs_files(dir: &str) -> Result<Vec<String>> {
         }
     }
     Ok(files)
+}
+
+/// Per-file result of [`scan_file_safety`].
+struct SafetyScanResult {
+    counted_violations: usize,
+    unsafe_violations: usize,
+    has_todo_or_unimplemented: bool,
+}
+
+/// Pure scan of one source file for safety violations.
+///
+/// Extracted from [`grade_safety`] so the scan logic is unit-testable
+/// without a filesystem fixture. `relax_unwrap_expect` mirrors the
+/// `Example`/`Xtask` profile allowance per STANDARDS.md §4 "Allowed";
+/// `is_build_rs` mirrors the `expect()` exemption for `build.rs`.
+///
+/// `.unwrap()` and `.expect(` honor an enclosing `#[allow(clippy::unwrap_used)]`
+/// or `#[allow(clippy::expect_used)]` attribute via [`has_enclosing_allow`]
+/// — matches the attribute-allowed policy applied to `panic!`/`unreachable!`.
+fn scan_file_safety(
+    content: &str,
+    is_build_rs: bool,
+    relax_unwrap_expect: bool,
+) -> SafetyScanResult {
+    let lines: Vec<&str> = content.lines().collect();
+
+    // File-level inner `#![cfg(test)]` attribute: the whole file is test-only.
+    // Used by parent modules that declare `#[cfg(test)] mod tests;` to keep
+    // test helpers in a dedicated file. Skip the scan entirely — treating
+    // test-fixture .unwrap()/.expect() as library violations is a category
+    // error, same as for inline #[cfg(test)] modules.
+    if has_file_level_cfg_test(&lines) {
+        return SafetyScanResult {
+            counted_violations: 0,
+            unsafe_violations: 0,
+            has_todo_or_unimplemented: false,
+        };
+    }
+
+    let mut has_todo_or_unimplemented = false;
+    let mut counted_violations = 0usize;
+    let mut unsafe_violations = 0usize;
+
+    // Brace-depth tracked test exclusion state machine (ss2.4)
+    let mut in_test = false;
+    let mut test_brace_depth: usize = 0;
+    let mut pending_test_attr = false;
+    let mut in_block_comment = false;
+
+    for (i, line) in lines.iter().enumerate() {
+        // Strip string-literal content before any pattern match, so the
+        // scanner doesn't false-positive on code that manipulates literal
+        // patterns like `"unsafe {"`, `"todo!("`, `"#[cfg(test)]"`. The
+        // original line is still available to other helpers (e.g.
+        // has_enclosing_allow's span-aware scan) that do their own masking.
+        let stripped_owned = strip_string_literals(line);
+        let trimmed = stripped_owned.trim();
+
+        // Track block comments
+        if !in_block_comment && trimmed.contains("/*") {
+            in_block_comment = true;
+        }
+        if in_block_comment {
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        // Skip line comments
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        // Test exclusion: #[cfg(test)] attribute detection.
+        if trimmed.starts_with("#[cfg(test)]") {
+            pending_test_attr = true;
+        }
+
+        // Track braces for test region
+        if pending_test_attr && trimmed.contains('{') {
+            in_test = true;
+            test_brace_depth = 0;
+            pending_test_attr = false;
+        }
+
+        if in_test {
+            for ch in trimmed.chars() {
+                if ch == '{' {
+                    test_brace_depth += 1;
+                } else if ch == '}' {
+                    test_brace_depth = test_brace_depth.saturating_sub(1);
+                    if test_brace_depth == 0 {
+                        in_test = false;
+                        break;
+                    }
+                }
+            }
+            if in_test {
+                continue; // still inside test block
+            }
+            continue; // just exited test block on this line
+        }
+
+        // === Pattern checks on library code ===
+
+        // Hard-fail: todo!() and unimplemented!()
+        // Honors enclosing #[allow(clippy::todo)] or #[allow(clippy::unimplemented)]
+        // (consistent with the attribute-allowed policy applied to
+        // unwrap/expect/panic/unreachable).
+        if has_macro_call(trimmed, "todo!") && !has_enclosing_allow(&lines, i, "clippy::todo") {
+            has_todo_or_unimplemented = true;
+        }
+        if has_macro_call(trimmed, "unimplemented!")
+            && !has_enclosing_allow(&lines, i, "clippy::unimplemented")
+        {
+            has_todo_or_unimplemented = true;
+        }
+
+        // Counted: .unwrap() — skipped for Example/Xtask profiles
+        // per STANDARDS.md §4 "Allowed: unwrap() in examples".
+        // Honors enclosing #[allow(clippy::unwrap_used)] attribute.
+        if !relax_unwrap_expect
+            && trimmed.contains(".unwrap()")
+            && !has_enclosing_allow(&lines, i, "clippy::unwrap_used")
+        {
+            counted_violations += 1;
+        }
+
+        // Counted: .expect( — skip in build.rs, and skip for
+        // Example/Xtask profiles per STANDARDS.md §4 "Allowed".
+        // Honors enclosing #[allow(clippy::expect_used)] attribute.
+        if !is_build_rs
+            && !relax_unwrap_expect
+            && trimmed.contains(".expect(")
+            && !has_enclosing_allow(&lines, i, "clippy::expect_used")
+        {
+            counted_violations += 1;
+        }
+
+        // Counted with justification: panic!()
+        // Justified by any of: preceding `//` comment, same-line `//`
+        // comment, or an enclosing `#[allow(clippy::panic)]` attribute
+        // within 300 lines back (the idiomatic Rust pattern).
+        if has_macro_call(trimmed, "panic!") {
+            let has_justification = has_preceding_comment(&lines, i)
+                || has_same_line_comment(trimmed)
+                || has_enclosing_allow(&lines, i, "clippy::panic");
+            if !has_justification {
+                counted_violations += 1;
+            }
+        }
+
+        // Counted with justification: unreachable!()
+        if has_macro_call(trimmed, "unreachable!") {
+            let has_justification = has_preceding_comment(&lines, i)
+                || has_same_line_comment(trimmed)
+                || has_enclosing_allow(&lines, i, "clippy::unreachable");
+            if !has_justification {
+                counted_violations += 1;
+            }
+        }
+
+        // Unsafe-without-SAFETY check (F-ext-4)
+        if trimmed.contains("unsafe")
+            && (trimmed.contains("unsafe {") || trimmed.contains("unsafe fn"))
+        {
+            let has_safety_comment = (1..=3).any(|offset| {
+                i.checked_sub(offset).is_some_and(|j| {
+                    let prev = lines[j].trim().to_lowercase();
+                    prev.contains("// safety:")
+                })
+            });
+            if !has_safety_comment {
+                unsafe_violations += 1;
+            }
+        }
+    }
+
+    SafetyScanResult {
+        counted_violations,
+        unsafe_violations,
+        has_todo_or_unimplemented,
+    }
 }
 
 /// Grade safety: check for panic-capable patterns in library code.
@@ -960,119 +1401,27 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
             Ok(c) => c,
             Err(_) => continue,
         };
-        let lines: Vec<&str> = content.lines().collect();
-
-        // Brace-depth tracked test exclusion state machine (ss2.4)
-        let mut in_test = false;
-        let mut test_brace_depth: usize = 0;
-        let mut pending_test_attr = false;
-        let mut in_block_comment = false;
-
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-
-            // Track block comments
-            if !in_block_comment && trimmed.contains("/*") {
-                in_block_comment = true;
-            }
-            if in_block_comment {
-                if trimmed.contains("*/") {
-                    in_block_comment = false;
-                }
-                continue;
-            }
-
-            // Skip line comments
-            if trimmed.starts_with("//") {
-                continue;
-            }
-
-            // Test exclusion: #[cfg(test)] attribute detection
-            if !trimmed.starts_with("//") && trimmed.contains("#[cfg(test)]") {
-                pending_test_attr = true;
-            }
-
-            // Track braces for test region
-            if pending_test_attr && trimmed.contains('{') {
-                in_test = true;
-                test_brace_depth = 0;
-                pending_test_attr = false;
-            }
-
-            if in_test {
-                for ch in trimmed.chars() {
-                    if ch == '{' {
-                        test_brace_depth += 1;
-                    } else if ch == '}' {
-                        test_brace_depth = test_brace_depth.saturating_sub(1);
-                        if test_brace_depth == 0 {
-                            in_test = false;
-                            break;
-                        }
-                    }
-                }
-                if in_test {
-                    continue; // still inside test block
-                }
-                continue; // just exited test block on this line
-            }
-
-            // === Pattern checks on library code ===
-
-            // Hard-fail: todo!() and unimplemented!()
-            if trimmed.contains("todo!") || trimmed.contains("unimplemented!") {
-                has_todo_or_unimplemented = true;
-            }
-
-            // Counted: .unwrap() — skipped for Example/Xtask profiles
-            // per STANDARDS.md §4 "Allowed: unwrap() in examples".
-            if !relax_unwrap_expect && trimmed.contains(".unwrap()") {
-                counted_violations += 1;
-            }
-
-            // Counted: .expect( — skip in build.rs, and skip for
-            // Example/Xtask profiles per STANDARDS.md §4 "Allowed".
-            if !is_build_rs && !relax_unwrap_expect && trimmed.contains(".expect(") {
-                counted_violations += 1;
-            }
-
-            // Counted with justification: panic!()
-            // Justified by any of: preceding `//` comment, same-line `//`
-            // comment, or an enclosing `#[allow(clippy::panic)]` attribute
-            // within 100 lines back (the idiomatic Rust pattern).
-            if trimmed.contains("panic!") {
-                let has_justification = has_preceding_comment(&lines, i)
-                    || has_same_line_comment(trimmed)
-                    || has_enclosing_allow(&lines, i, "clippy::panic");
-                if !has_justification {
-                    counted_violations += 1;
-                }
-            }
-
-            // Counted with justification: unreachable!()
-            if trimmed.contains("unreachable!") {
-                let has_justification = has_preceding_comment(&lines, i)
-                    || has_same_line_comment(trimmed)
-                    || has_enclosing_allow(&lines, i, "clippy::unreachable");
-                if !has_justification {
-                    counted_violations += 1;
-                }
-            }
-
-            // Unsafe-without-SAFETY check (F-ext-4)
-            if trimmed.contains("unsafe")
-                && (trimmed.contains("unsafe {") || trimmed.contains("unsafe fn"))
-            {
-                let has_safety_comment = (1..=3).any(|offset| {
-                    i.checked_sub(offset).is_some_and(|j| {
-                        let prev = lines[j].trim().to_lowercase();
-                        prev.contains("// safety:")
-                    })
-                });
-                if !has_safety_comment {
-                    unsafe_violations += 1;
-                }
-            }
+        let scan = scan_file_safety(&content, is_build_rs, relax_unwrap_expect);
+        // XTASK_GRADE_DEBUG env var: emit per-file violation breakdown to
+        // stderr when set. Used to pinpoint which files in a crate are
+        // dragging the Safety grade down without running cargo clippy etc.
+        if std::env::var("XTASK_GRADE_DEBUG").is_ok()
+            && (scan.counted_violations > 0
+                || scan.unsafe_violations > 0
+                || scan.has_todo_or_unimplemented)
+        {
+            eprintln!(
+                "  [debug] {} → counted={} unsafe={} todo_or_unimpl={}",
+                file_path,
+                scan.counted_violations,
+                scan.unsafe_violations,
+                scan.has_todo_or_unimplemented
+            );
+        }
+        counted_violations += scan.counted_violations;
+        unsafe_violations += scan.unsafe_violations;
+        if scan.has_todo_or_unimplemented {
+            has_todo_or_unimplemented = true;
         }
     }
 
@@ -1108,6 +1457,77 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
     })
 }
 
+/// True iff a file-level inner `#![cfg(test)]` attribute appears at the
+/// top of the file (skipping initial `//` and `//!` comments and blank
+/// lines). Marks an entire .rs file as test-only; standard pattern when
+/// a parent module declares `#[cfg(test)] mod tests;` and the tests live
+/// in their own file.
+fn has_file_level_cfg_test(lines: &[&str]) -> bool {
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        // First non-blank, non-comment line.
+        return trimmed.starts_with("#![cfg(test)]");
+    }
+    false
+}
+
+/// Returns true iff `trimmed` contains a real macro invocation of
+/// `{name_with_bang}(`, `{name_with_bang}{{`, or `{name_with_bang}[`
+/// — the three delimiters valid for Rust macro calls per the reference.
+///
+/// Tighter than a raw `trimmed.contains(name_with_bang)` substring check,
+/// which false-positives on string literals like `"todo!"` or identifiers
+/// containing the sequence. Pass `name_with_bang` as `"todo!"`, `"panic!"`
+/// etc. — the bang must be present so we don't accept e.g. `today!`.
+fn has_macro_call(trimmed: &str, name_with_bang: &str) -> bool {
+    // `contains(&str)` is O(n·m); the needles are tiny and we scan at most
+    // a handful of lines per file, so the format! allocations are fine.
+    trimmed.contains(&format!("{}(", name_with_bang))
+        || trimmed.contains(&format!("{}{{", name_with_bang))
+        || trimmed.contains(&format!("{}[", name_with_bang))
+}
+
+/// Replace the content of `"..."` string literals in a single Rust source
+/// line with spaces, preserving column positions. Pattern checks like
+/// `contains("unsafe {")` or `contains("todo!(")` would otherwise match
+/// code that manipulates those exact strings (classic self-graded grader
+/// false positive).
+///
+/// Handles standard escapes (`\"`, `\\`) so `"a\"b"` is skipped intact.
+/// Naive on raw strings (`r"..."`, `r#"..."#`) — treats the first `"` as
+/// an opener, which is good enough for the scanner's needs and matches
+/// the rest of the codebase's style.
+fn strip_string_literals(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_string = false;
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if in_string {
+            if ch == '\\' {
+                // Consume the escaped char; replace both with spaces.
+                out.push(' ');
+                if chars.next().is_some() {
+                    out.push(' ');
+                }
+            } else if ch == '"' {
+                in_string = false;
+                out.push(' ');
+            } else {
+                out.push(' ');
+            }
+        } else if ch == '"' {
+            in_string = true;
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Check if any of the preceding 1-3 lines is a `//` comment (not `///` or `//!`).
 fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
     (1..=3).any(|offset| {
@@ -1119,48 +1539,68 @@ fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
 }
 
 /// Check whether `lint` (e.g. `clippy::panic`) appears inside a real
-/// `#[allow(...)]` or `#![allow(...)]` attribute in the 300 lines
-/// preceding line `i`.
+/// `#[allow(...)]` or `#![allow(...)]` attribute that covers line `i`.
 ///
-/// Span-aware: finds each `#[allow(` / `#![allow(` opening in the window,
-/// walks forward across lines to the matching `)]`, and checks whether the
-/// lint name appears inside that span. A stray mention of the lint name in
-/// a comment or string literal no longer counts.
+/// Scans two windows:
+/// - **File-top** (first 50 lines): catches file-level inner attributes
+///   like `#![allow(clippy::panic)]` which Rust applies to the entire
+///   module regardless of distance.
+/// - **300-line back-window** from `i`: catches function-scope / item-
+///   scope `#[allow(...)]` attributes.
+///
+/// Span-aware: finds each `#[allow(` / `#![allow(` opening in either
+/// window, walks forward across lines to the matching `)]`, and checks
+/// whether the lint name appears inside that span. A stray mention of
+/// the lint name in a comment or string literal no longer counts.
 ///
 /// Still a heuristic — does not distinguish an allow on a sibling struct
 /// field 250 lines up from one on the enclosing function. Both match.
 /// For AST-correct scope resolution the grader would need syn; this check
 /// is the tightest available without that dependency.
 fn has_enclosing_allow(lines: &[&str], i: usize, lint: &str) -> bool {
-    let start = i.saturating_sub(300);
-    for open_idx in start..i {
+    // Returns true if the attribute opening at `open_idx` closes before `i`
+    // and its body contains `lint`.
+    let attr_covers = |open_idx: usize, prefix: &str| -> bool {
         let open_line = lines[open_idx];
-        let (open_col, prefix_len) = if let Some(col) = open_line.find("#![allow(") {
-            (col, "#![allow(".len())
-        } else if let Some(col) = open_line.find("#[allow(") {
-            (col, "#[allow(".len())
-        } else {
-            continue;
+        let Some(open_col) = open_line.find(prefix) else {
+            return false;
         };
-
-        // Accumulate the attribute body from the opening across subsequent
-        // lines until the matching `)]` closes the attribute. Bounded by
-        // the panic line itself — a well-formed attribute can never extend
-        // onto or past the code it applies to.
-        let mut body = String::from(&open_line[open_col + prefix_len..]);
+        let mut body = String::from(&open_line[open_col + prefix.len()..]);
         let mut close_idx = open_idx;
         while !body.contains(")]") && close_idx + 1 < i {
             close_idx += 1;
             body.push('\n');
             body.push_str(lines[close_idx]);
         }
-        let Some(close_pos) = body.find(")]") else {
-            continue;
-        };
-        if body[..close_pos].contains(lint) {
+        body.find(")]")
+            .is_some_and(|close_pos| body[..close_pos].contains(lint))
+    };
+
+    // Primary scan: 300-line back-window from `i`. Catches both outer
+    // `#[allow(...)]` (function/item scope) and inner `#![allow(...)]`
+    // (inline sub-module scope) attributes near the code.
+    let back_start = i.saturating_sub(300);
+    for open_idx in back_start..i {
+        if attr_covers(open_idx, "#![allow(") || attr_covers(open_idx, "#[allow(") {
             return true;
         }
     }
+
+    // Additive scan for file-level INNER attributes: if `i` is deep enough
+    // that the back-window doesn't reach the first 50 lines of the file,
+    // explicitly check those top lines for `#![allow(...)]` only. These
+    // are module-level attributes that cover the whole file regardless
+    // of distance. Outer `#[allow(...)]` at file-top is excluded here —
+    // it binds to the next item, not the whole file, so using it to
+    // suppress a violation far below would be a false positive.
+    if back_start > 50 {
+        for open_idx in 0..50 {
+            if attr_covers(open_idx, "#![allow(") {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
@@ -1216,7 +1656,8 @@ fn count_unjustified_clippy_allows(lines: &[&str]) -> usize {
             continue;
         }
 
-        if trimmed.contains("#[cfg(test)]") {
+        // starts_with — see note in scan_file_safety on the same rule.
+        if trimmed.starts_with("#[cfg(test)]") {
             pending_test_attr = true;
         }
 
@@ -1424,7 +1865,11 @@ fn update_brace_depth(line: &str, mut depth: usize) -> usize {
 /// Per chassis ss2.5: every dependency in Cargo.toml must have a `#` comment
 /// in the preceding 1-3 lines or inline. Dep count > 10 is flagged as "(heavy)"
 /// but does not affect grade.
-fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
+fn grade_dependencies(
+    sh: &Shell,
+    crate_name: &str,
+    profile: CrateProfile,
+) -> Result<CriterionResult> {
     // Step 1: dep count via cargo metadata (informational)
     let metadata_json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
         .read()
@@ -1465,8 +1910,17 @@ fn grade_dependencies(sh: &Shell, crate_name: &str) -> Result<CriterionResult> {
         }
     };
 
+    // Relaxed for Example/Xtask profiles: justification comments are a
+    // library-crate rubric, not a demo/tooling one. Matches the
+    // STANDARDS.md §4 "Allowed" relaxation pattern (unwrap in examples,
+    // expect in build.rs) applied coherently to Dependencies.
+    let relax_unjustified_deps = matches!(profile, CrateProfile::Example | CrateProfile::Xtask);
     let lines: Vec<&str> = cargo_content.lines().collect();
-    let unjustified = count_unjustified_deps(&lines);
+    let unjustified = if relax_unjustified_deps {
+        0
+    } else {
+        count_unjustified_deps(&lines)
+    };
 
     // Binary A/F
     let grade = if unjustified == 0 { Grade::A } else { Grade::F };
@@ -1693,6 +2147,50 @@ mod tests {
         let lines = split(src);
         assert!(has_enclosing_allow(&lines, 2, "clippy::panic"));
         assert!(has_enclosing_allow(&lines, 2, "clippy::unwrap_used"));
+    }
+
+    #[test]
+    fn enclosing_allow_file_top_inner_covers_deep_line() {
+        // File-level `#![allow(clippy::panic)]` at line 1 must suppress
+        // a panic!() on line 900 — file-top window always scanned for
+        // inner attributes.
+        let mut src = String::from("// copyright header\n#![allow(clippy::panic)]\n");
+        for _ in 0..900 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic at index 902. Inner allow at index 1 — way outside the
+        // 300-line back-window but inside the 50-line file-top window.
+        assert!(has_enclosing_allow(&lines, 902, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_file_top_outer_does_not_reach_deep_line() {
+        // An OUTER `#[allow(clippy::panic)]` at the top of the file does
+        // NOT suppress a panic far below — outer attributes bind to the
+        // next item only, and the file-top window intentionally ignores
+        // them to avoid that kind of false positive.
+        let mut src = String::from("#[allow(clippy::panic)]\n");
+        for _ in 0..900 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic at index 901. Outer allow at index 0 — outside back-window,
+        // and ignored in file-top scan.
+        assert!(!has_enclosing_allow(&lines, 901, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_file_top_wrong_lint_does_not_cover() {
+        let mut src = String::from("#![allow(clippy::unwrap_used)]\n");
+        for _ in 0..900 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        assert!(!has_enclosing_allow(&lines, 901, "clippy::panic"));
     }
 
     // === count_unjustified_clippy_allows ===
@@ -1967,5 +2465,305 @@ mod tests {
         let src = "[target.'cfg(unix)'.dependencies]\n# unix-only POSIX APIs\nlibc = \"0.2\"\n";
         let lines = split(src);
         assert_eq!(count_unjustified_deps(&lines), 0);
+    }
+
+    // === any_span_in_crate (F.1 package-scoping filter) ===
+
+    #[test]
+    fn any_span_in_crate_single_span_inside() {
+        let spans = vec![serde_json::json!({ "file_name": "sim/L0/ml-chassis/src/lib.rs" })];
+        assert!(any_span_in_crate(&spans, "sim/L0/ml-chassis"));
+    }
+
+    #[test]
+    fn any_span_in_crate_single_span_outside() {
+        // Warning reported while compiling sim-ml-chassis but the span points
+        // into sim-types — the transitive-dep bleed F.1 filters out.
+        let spans = vec![serde_json::json!({ "file_name": "sim/L0/types/src/lib.rs" })];
+        assert!(!any_span_in_crate(&spans, "sim/L0/ml-chassis"));
+    }
+
+    #[test]
+    fn any_span_in_crate_mixed_spans_included() {
+        // Macro-generated case: one span in the target crate, one in a dep.
+        // Audit-locked semantics: disjunctive — include-not-exclude.
+        let spans = vec![
+            serde_json::json!({ "file_name": "sim/L0/ml-chassis/src/autograd.rs" }),
+            serde_json::json!({ "file_name": "sim/L0/types/src/lib.rs" }),
+        ];
+        assert!(any_span_in_crate(&spans, "sim/L0/ml-chassis"));
+    }
+
+    // === F.3 IntegrationOnly profile + metadata opt-in ===
+
+    #[test]
+    fn classify_crate_metadata_opt_in_integration_only() {
+        // A crate sitting in a path that would otherwise classify as
+        // Layer0 opts into IntegrationOnly via the metadata block.
+        let cargo_toml = "\
+[package]
+name = \"sim-therm-env\"
+
+[package.metadata.cortenforge]
+grading_profile = \"integration-only\"
+
+[dependencies]
+serde = \"1\"
+";
+        assert_eq!(
+            classify_crate("sim/L0/therm-env", cargo_toml),
+            CrateProfile::IntegrationOnly,
+        );
+    }
+
+    #[test]
+    fn coverage_skip_reason_integration_only_is_skipped() {
+        // F.3: grade_coverage takes the early-return path for
+        // IntegrationOnly; result label is "(integration-only)" to
+        // distinguish it from Example/Xtask's "(bin-only)".
+        let (result, detail) =
+            coverage_skip_reason(CrateProfile::IntegrationOnly).expect("must skip");
+        assert_eq!(result, "(integration-only)");
+        assert!(detail.contains("[package.metadata.cortenforge]"));
+        // Sanity: Layer0 must NOT skip.
+        assert!(coverage_skip_reason(CrateProfile::Layer0).is_none());
+    }
+
+    // === scan_file_safety — #[allow(clippy::{unwrap,expect}_used)] honoring ===
+
+    #[test]
+    fn scan_safety_unwrap_without_allow_counts() {
+        let src = "fn f() {\n    x.unwrap();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_unwrap_with_enclosing_allow_skipped() {
+        let src = "#[allow(clippy::unwrap_used)]\nfn f() {\n    x.unwrap();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 0);
+    }
+
+    #[test]
+    fn scan_safety_expect_without_allow_counts() {
+        let src = "fn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_expect_with_enclosing_allow_skipped() {
+        // Matches the canonical chassis pattern: `#[allow(clippy::expect_used)]`
+        // directly above a fn that makes a single localized expect call.
+        let src = "#[allow(clippy::expect_used)]\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 0);
+    }
+
+    #[test]
+    fn scan_safety_allow_different_lint_does_not_mask_expect() {
+        // #[allow(clippy::unwrap_used)] does not suppress an .expect(.
+        let src = "#[allow(clippy::unwrap_used)]\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_allow_different_lint_does_not_mask_unwrap() {
+        let src = "#[allow(clippy::expect_used)]\nfn f() {\n    x.unwrap();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    #[test]
+    fn scan_safety_module_level_inner_allow_suppresses() {
+        // #![allow(clippy::expect_used)] at the top of a module suppresses
+        // expect in the whole module.
+        let src = "#![allow(clippy::expect_used)]\n\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 0);
+    }
+
+    #[test]
+    fn scan_safety_todo_with_enclosing_allow_skipped() {
+        // Intentional stub pattern: file-level #![allow(clippy::todo)]
+        // followed by todo!() in main. Not a real violation.
+        let src = "#![allow(clippy::todo)]\n\nfn main() {\n    todo!(\"blocked\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert!(!r.has_todo_or_unimplemented);
+    }
+
+    #[test]
+    fn scan_safety_todo_without_allow_flags() {
+        let src = "fn main() {\n    todo!();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert!(r.has_todo_or_unimplemented);
+    }
+
+    #[test]
+    fn scan_safety_unimplemented_with_enclosing_allow_skipped() {
+        let src = "#[allow(clippy::unimplemented)]\nfn f() {\n    unimplemented!();\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert!(!r.has_todo_or_unimplemented);
+    }
+
+    #[test]
+    fn scan_safety_docstring_is_not_an_allow() {
+        // A /// docstring mentioning clippy::expect_used does NOT function as
+        // an allow — only real attributes do.
+        let src = "/// clippy::expect_used is a thing\nfn f() {\n    x.expect(\"bad\");\n}\n";
+        let r = scan_file_safety(src, false, false);
+        assert_eq!(r.counted_violations, 1);
+    }
+
+    // === has_file_level_cfg_test ===
+
+    #[test]
+    fn file_level_cfg_test_detected_at_first_line() {
+        let src = "#![cfg(test)]\n\nfn t() {}\n";
+        let lines = split(src);
+        assert!(has_file_level_cfg_test(&lines));
+    }
+
+    #[test]
+    fn file_level_cfg_test_detected_after_module_docs() {
+        let src = "//! Module docs.\n//!\n//! More docs.\n\n#![cfg(test)]\n\nfn t() {}\n";
+        let lines = split(src);
+        assert!(has_file_level_cfg_test(&lines));
+    }
+
+    #[test]
+    fn file_level_cfg_test_not_present() {
+        // A regular library file — no inner attribute.
+        let src = "use std::fmt;\n\npub fn f() {}\n";
+        let lines = split(src);
+        assert!(!has_file_level_cfg_test(&lines));
+    }
+
+    #[test]
+    fn file_level_cfg_test_inline_test_mod_is_not_file_level() {
+        // An INLINE #[cfg(test)] mod tests { ... } doesn't mark the whole
+        // file as test-only; the scanner's brace-depth state machine
+        // handles that case separately.
+        let src = "pub fn f() {}\n\n#[cfg(test)]\nmod tests {}\n";
+        let lines = split(src);
+        assert!(!has_file_level_cfg_test(&lines));
+    }
+
+    // === strip_string_literals ===
+
+    #[test]
+    fn strip_strings_replaces_content_with_spaces() {
+        // Preserves column positions; quotes become spaces.
+        // Input: `let s = "todo!";`  — "todo!" is 7 chars (2 quotes + 5 body).
+        // Expected: `let s =        ;`  — 7 spaces where "todo!" was, plus the
+        // space before `=` and the one after = space both preserved.
+        let input = "let s = \"todo!\";";
+        let expected: String = format!("let s = {};", " ".repeat("\"todo!\"".len()));
+        assert_eq!(strip_string_literals(input), expected);
+    }
+
+    #[test]
+    fn strip_strings_handles_escapes() {
+        // \\" inside a string is an escaped quote, not a terminator.
+        let out = strip_string_literals("\"a\\\"b\"");
+        // 6 characters in, all become spaces.
+        assert_eq!(out, "      ");
+    }
+
+    #[test]
+    fn strip_strings_leaves_code_outside_strings() {
+        assert_eq!(
+            strip_string_literals("fn foo() { panic!(); }"),
+            "fn foo() { panic!(); }"
+        );
+    }
+
+    #[test]
+    fn strip_strings_multiple_literals_on_one_line() {
+        let out = strip_string_literals("contains(\"a\") && contains(\"b\")");
+        assert_eq!(out, "contains(   ) && contains(   )");
+    }
+
+    // === has_macro_call — string-literal false-positive fix ===
+
+    #[test]
+    fn has_macro_call_paren_form() {
+        assert!(has_macro_call("todo!()", "todo!"));
+        assert!(has_macro_call("todo!(\"not ready\")", "todo!"));
+        assert!(has_macro_call("    panic!();", "panic!"));
+    }
+
+    #[test]
+    fn has_macro_call_brace_form() {
+        assert!(has_macro_call("unimplemented!{}", "unimplemented!"));
+    }
+
+    #[test]
+    fn has_macro_call_bracket_form() {
+        // Less common but valid.
+        assert!(has_macro_call("todo![]", "todo!"));
+    }
+
+    #[test]
+    fn has_macro_call_string_literal_not_flagged() {
+        // The canonical false-positive: xtask's own grader scans itself,
+        // finds the string `"todo!"` in its source, must not flag.
+        assert!(!has_macro_call("let s = \"todo!\";", "todo!"));
+        assert!(!has_macro_call(
+            "result: \"F: found todo!/unimplemented!\".to_string(),",
+            "todo!"
+        ));
+        assert!(!has_macro_call(
+            "if trimmed.contains(\"panic!\") {",
+            "panic!"
+        ));
+    }
+
+    #[test]
+    fn has_macro_call_bare_mention_not_flagged() {
+        // Mentions of the macro name without delimiter should not trigger.
+        assert!(!has_macro_call("pub fn todo!foo() {}", "todo!"));
+        assert!(!has_macro_call("// todo! this later", "todo!"));
+    }
+
+    #[test]
+    fn has_macro_call_scan_detects_real_todo_in_mixed_line() {
+        // A real invocation mid-line still flags.
+        assert!(has_macro_call("    let x = todo!();", "todo!"));
+    }
+
+    // === CrateProfile-aware relaxation: unjustified clippy allows ===
+    //
+    // The helper count_unjustified_clippy_allows is profile-agnostic by
+    // design (Layer 0 lib behavior). These tests document the profile
+    // gating at the grade_clippy call site by exercising the helper on
+    // the same input and verifying it returns the raw count — grade_clippy
+    // suppresses the count for Example/Xtask profiles, preserving it
+    // unchanged for Layer0/BevyLayer1/IntegrationOnly.
+
+    #[test]
+    fn unjustified_clippy_allows_counted_for_non_example() {
+        // Baseline: the scanner counts this as unjustified regardless of
+        // profile — the profile gate lives in grade_clippy.
+        let src = "#[allow(clippy::expect_used)]\nfn f() {}\n";
+        let lines = split(src);
+        assert_eq!(count_unjustified_clippy_allows(&lines), 1);
+    }
+
+    // === count_unjustified_deps is profile-agnostic by design ===
+
+    #[test]
+    fn unjustified_deps_counted_raw() {
+        // Baseline: the Cargo.toml scanner counts unjustified deps
+        // regardless of profile; the profile gate lives in
+        // grade_dependencies.
+        let src = "\
+[dependencies]
+serde = \"1\"
+";
+        let lines = split(src);
+        assert_eq!(count_unjustified_deps(&lines), 1);
     }
 }

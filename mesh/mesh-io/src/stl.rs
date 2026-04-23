@@ -37,6 +37,14 @@
 //! endsolid name
 //! ```
 
+// STL uses u32 triangle counts per format spec; casting usize→u32 is safe
+// up to the format limit, and f32 coords are the STL native precision.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -159,8 +167,6 @@ fn load_stl_binary_from_header<R: Read>(header: &[u8], mut reader: R) -> IoResul
         let v0 = read_vertex(&triangle_buf[12..24]);
         let v1 = read_vertex(&triangle_buf[24..36]);
         let v2 = read_vertex(&triangle_buf[36..48]);
-
-        #[allow(clippy::cast_possible_truncation)]
         // Truncation: mesh indices are u32, meshes with >4B vertices are unsupported
         let base_idx = mesh.vertices.len() as u32;
         mesh.vertices.push(v0);
@@ -220,7 +226,6 @@ fn load_stl_ascii<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
             }
             "endfacet" => {
                 if in_facet && vertices_in_face.len() == 3 {
-                    #[allow(clippy::cast_possible_truncation)]
                     // Truncation: mesh indices are u32, meshes with >4B vertices unsupported
                     let base_idx = mesh.vertices.len() as u32;
                     mesh.vertices.append(&mut vertices_in_face);
@@ -282,7 +287,6 @@ fn save_stl_binary<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> 
     writer.write_all(&header)?;
 
     // Write face count
-    #[allow(clippy::cast_possible_truncation)]
     // Face count: mesh faces limited to u32 range by design
     let face_count = mesh.faces.len() as u32;
     writer.write_all(&face_count.to_le_bytes())?;
@@ -298,7 +302,6 @@ fn save_stl_binary<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> 
         let e2 = v2 - v0;
         let normal = e1.cross(&e2);
         let len = normal.norm();
-        #[allow(clippy::cast_possible_truncation)]
         // Truncation: f64 to f32 is intentional for STL format which uses f32
         let (nx, ny, nz) = if len > f64::EPSILON {
             (
@@ -329,7 +332,6 @@ fn save_stl_binary<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> 
 
 /// Write a vertex as 3 f32s in little-endian.
 fn write_vertex_binary<W: Write>(writer: &mut W, x: f64, y: f64, z: f64) -> IoResult<()> {
-    #[allow(clippy::cast_possible_truncation)]
     // Truncation: f64 to f32 is intentional for STL format
     {
         writer.write_all(&(x as f32).to_le_bytes())?;

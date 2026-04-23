@@ -263,6 +263,7 @@ pub fn draw_sensor_gizmos(
 /// world-frame passthrough for Frame* sensors, and dual-object geometry for
 /// GeomDist/GeomNormal/GeomFromTo.
 #[must_use]
+// Procedural glue code; natural breakpoints are few.
 #[allow(clippy::too_many_lines)]
 pub fn sensor_type_to_gizmo(
     model: &Model,

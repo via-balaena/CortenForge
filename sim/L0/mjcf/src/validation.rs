@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MjcfBody, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType, SpatialPathElement,
+    MjcfBody, MjcfGeom, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType, SpatialPathElement,
 };
 
 /// Validation result containing the flattened body tree structure.
@@ -167,6 +167,12 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
     let mut joint_to_body: HashMap<String, String> = HashMap::new();
     let mut all_joint_names = Vec::new();
 
+    // Validate geoms anchored directly on worldbody (e.g., ground planes).
+    // Descendant-body geoms are validated inside traverse_body.
+    for geom in &model.worldbody.geoms {
+        check_geom_finite(geom, "worldbody")?;
+    }
+
     // Traverse body tree
     fn traverse_body(
         body: &MjcfBody,
@@ -234,6 +240,11 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
                     ));
                 }
             }
+        }
+
+        // Validate geom dimensions
+        for geom in &body.geoms {
+            check_geom_finite(geom, &body.name)?;
         }
 
         // Recurse to children
@@ -353,6 +364,38 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         joint_to_body,
         actuator_names: all_actuator_names,
     })
+}
+
+/// Check that a geom's dimensional numeric fields are finite.
+///
+/// Rejects NaN or ±Inf in the user-supplied `size` vector and the optional
+/// `fromto` array at the validation boundary so that downstream mass/volume
+/// computation, mesh construction, and collision code can assume finite
+/// geometry. Other numeric fields (orientation, friction, density, solver
+/// params) are out of scope here; mass/inertia have separate validation
+/// paths via the inertial check, and the rest are deferred as a follow-up
+/// audit candidate.
+fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {
+    let geom_type_label = geom
+        .geom_type
+        .map(|t| t.as_str())
+        .unwrap_or("<unspecified>");
+
+    if !geom.size.iter().all(|v| v.is_finite()) {
+        return Err(MjcfError::invalid_geom_size(
+            geom_type_label,
+            format!("size values must be finite (body '{body_name}')"),
+        ));
+    }
+    if let Some(fromto) = geom.fromto {
+        if !fromto.iter().all(|v| v.is_finite()) {
+            return Err(MjcfError::invalid_geom_size(
+                geom_type_label,
+                format!("fromto values must be finite (body '{body_name}')"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Validate tendon definitions against model structure.
@@ -667,7 +710,7 @@ fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::types::{MjcfActuator, MjcfGeom, MjcfInertial, MjcfJoint};
+    use crate::types::{MjcfActuator, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint};
     use nalgebra::Vector3;
 
     fn make_simple_model() -> MjcfModel {
@@ -930,5 +973,116 @@ mod tests {
             validate_option(&option),
             Err(MjcfError::InvalidOption { option, .. }) if option == "friction_smoothing"
         ));
+    }
+
+    // ========================================================================
+    // Geom-finite validation tests
+    // ========================================================================
+
+    fn body_with_geom(name: &str, geom: MjcfGeom) -> MjcfBody {
+        MjcfBody::new(name).with_geom(geom)
+    }
+
+    #[test]
+    fn test_invalid_geom_sphere_nan() {
+        let model =
+            MjcfModel::new("test").with_body(body_with_geom("base", MjcfGeom::sphere(f64::NAN)));
+        assert!(matches!(
+            validate(&model),
+            Err(MjcfError::InvalidGeomSize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_invalid_geom_box_nan() {
+        let model = MjcfModel::new("test").with_body(body_with_geom(
+            "base",
+            MjcfGeom::box_shape(Vector3::new(1.0, f64::NAN, 1.0)),
+        ));
+        assert!(matches!(
+            validate(&model),
+            Err(MjcfError::InvalidGeomSize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_invalid_geom_capsule_pos_inf() {
+        let model = MjcfModel::new("test").with_body(body_with_geom(
+            "base",
+            MjcfGeom::capsule(f64::INFINITY, 0.5),
+        ));
+        assert!(matches!(
+            validate(&model),
+            Err(MjcfError::InvalidGeomSize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_invalid_geom_cylinder_neg_inf() {
+        // Build a cylinder via the size vec directly (no constructor sugar).
+        let cylinder = MjcfGeom {
+            geom_type: Some(MjcfGeomType::Cylinder),
+            size: vec![0.1, f64::NEG_INFINITY],
+            ..Default::default()
+        };
+        let model = MjcfModel::new("test").with_body(body_with_geom("base", cylinder));
+        assert!(matches!(
+            validate(&model),
+            Err(MjcfError::InvalidGeomSize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_invalid_geom_fromto_nan() {
+        let geom = MjcfGeom {
+            geom_type: Some(MjcfGeomType::Cylinder),
+            size: vec![0.1, 0.5],
+            fromto: Some([0.0, 0.0, 0.0, 1.0, f64::NAN, 0.0]),
+            ..Default::default()
+        };
+        let model = MjcfModel::new("test").with_body(body_with_geom("base", geom));
+        assert!(matches!(
+            validate(&model),
+            Err(MjcfError::InvalidGeomSize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_invalid_geom_in_nested_body() {
+        // Deep-nested body with a NaN geom is still caught.
+        let model = MjcfModel::new("test").with_body(MjcfBody::new("root").with_child(
+            MjcfBody::new("link1").with_child(body_with_geom("link2", MjcfGeom::sphere(f64::NAN))),
+        ));
+        assert!(matches!(
+            validate(&model),
+            Err(MjcfError::InvalidGeomSize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_invalid_geom_on_worldbody() {
+        // Worldbody-anchored geoms (e.g., ground planes) are also validated.
+        let mut model = MjcfModel::new("test");
+        model.worldbody.geoms.push(MjcfGeom::sphere(f64::NAN));
+        assert!(matches!(
+            validate(&model),
+            Err(MjcfError::InvalidGeomSize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_valid_geoms_pass() {
+        // Mixed geom types with finite dimensions across nested bodies + worldbody.
+        let mut model = MjcfModel::new("test").with_body(
+            MjcfBody::new("base")
+                .with_geom(MjcfGeom::sphere(0.1))
+                .with_geom(MjcfGeom::box_shape(Vector3::new(0.2, 0.3, 0.4)))
+                .with_child(MjcfBody::new("link1").with_geom(MjcfGeom::capsule(0.05, 0.5))),
+        );
+        model
+            .worldbody
+            .geoms
+            .push(MjcfGeom::box_shape(Vector3::new(10.0, 10.0, 0.01)));
+        assert!(validate(&model).is_ok());
     }
 }

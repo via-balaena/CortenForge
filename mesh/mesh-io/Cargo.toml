@@ -20,21 +20,32 @@ default = []
 step = ["truck-stepio", "truck-modeling", "truck-topology", "truck-polymesh", "truck-meshalgo"]
 
 [dependencies]
+# Shared mesh data structures (workspace)
 mesh-types = { workspace = true }
+# Derive error types
 thiserror = { workspace = true }
+# PLY format I/O
 ply-rs = { workspace = true }
+# XML parsing/writing
 quick-xml = { workspace = true }
+# ZIP archive reading/writing
 zip = { workspace = true }
 
 # STEP format support (feature-gated due to heavy dependencies)
 truck-stepio = { workspace = true, optional = true }
+# CAD B-rep modeling kernel
 truck-modeling = { workspace = true, optional = true }
+# truck-topology
 truck-topology = { workspace = true, optional = true }
+# Truck mesh utilities
 truck-polymesh = { workspace = true, optional = true }
+# truck-meshalgo
 truck-meshalgo = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Temporary files/dirs for tests
 tempfile = { workspace = true }
+# Microbenchmarks
 criterion = { workspace = true }
 
 [[bench]]

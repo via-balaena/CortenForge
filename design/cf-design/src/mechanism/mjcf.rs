@@ -199,6 +199,7 @@ fn build_site_map(tendons: &[TendonDef]) -> HashMap<&str, Vec<(String, [f64; 3])
 }
 
 /// Recursively write a `<body>` element and its child subtree.
+// Argument list mirrors the physical-simulation equation signature.
 #[allow(clippy::too_many_arguments)]
 fn write_body(
     xml: &mut String,

@@ -334,6 +334,7 @@ impl Bvh {
         results
     }
 
+    // Domain notation preserves geometric conventions (p0, p1, p2, etc.).
     #[allow(clippy::similar_names)]
     fn query_pairs_recursive<F>(
         &self,

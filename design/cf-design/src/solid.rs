@@ -1350,6 +1350,7 @@ impl Solid {
     ///
     /// Panics if `resolution < 2`.
     #[must_use]
+    // Precision loss acceptable for approximate values.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -1401,6 +1402,7 @@ impl Solid {
     ///
     /// Panics if `cell_size` is not positive and finite.
     #[must_use]
+    // Precision loss acceptable for approximate values.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -2427,6 +2429,7 @@ mod tests {
     // ── Interval pruning on composed trees ─────────────────────
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn pruning_ratio_union_translated_spheres() {
         let a = Solid::sphere(3.0).translate(Vector3::new(-3.0, 0.0, 0.0));
@@ -2443,6 +2446,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn pruning_ratio_subtract_spheres() {
         let big = Solid::sphere(5.0);
@@ -2459,6 +2463,7 @@ mod tests {
     }
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn pruning_ratio_smooth_union_all_3_spheres() {
         let solids = vec![
@@ -2480,6 +2485,7 @@ mod tests {
     // ── SdfGrid tests ─────────────────────────────────────────
 
     #[test]
+    // Precision loss acceptable for approximate / visualization values.
     #[allow(clippy::cast_precision_loss, clippy::unwrap_used)]
     fn sdf_grid_matches_evaluate() {
         let s = Solid::sphere(3.0);
@@ -2509,6 +2515,7 @@ mod tests {
     }
 
     #[test]
+    // Invariant: value is guaranteed Some by earlier check.
     #[allow(clippy::unwrap_used)]
     fn sdf_grid_resolution_dimensions() {
         // Cuboid half-extents (5,3,2) → full size (10,6,4). Longest axis = 10.
@@ -2583,6 +2590,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn superellipsoid_bounds() {
         let s = Solid::superellipsoid(Vector3::new(2.0, 3.0, 4.0), 2.0, 2.0);
@@ -2633,6 +2641,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn log_spiral_bounds() {
         let s = Solid::log_spiral(1.0, 0.1, 0.3, 1.0);
@@ -2814,6 +2823,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn helix_bounds() {
         let s = Solid::helix(3.0, 2.0, 0.5, 2.0);
@@ -2891,6 +2901,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn loft_bounds() {
         let s = Solid::loft(&[(-5.0, 2.0), (5.0, 2.0)]);
@@ -2960,6 +2971,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn twist_bounds() {
         let s = Solid::cuboid(Vector3::new(1.0, 2.0, 5.0)).twist(1.0);
@@ -3025,6 +3037,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn bend_bounds() {
         let s = Solid::cuboid(Vector3::new(1.0, 2.0, 5.0)).bend(0.5);
@@ -3509,6 +3522,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn threemf_round_trip() {
         let sphere = Solid::sphere(5.0);
@@ -3607,6 +3621,7 @@ mod tests {
     }
 
     #[test]
+    // Localized expect: invariant guarantees the value is present.
     #[allow(clippy::expect_used)]
     fn threemf_round_trip_composed_shape() {
         let body = Solid::cuboid(Vector3::new(3.0, 3.0, 3.0));

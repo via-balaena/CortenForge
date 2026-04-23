@@ -12,16 +12,25 @@ categories = ["graphics", "algorithms"]
 workspace = true
 
 [dependencies]
+# Shared mesh data structures (workspace)
 mesh-types = { workspace = true }
+# Mesh repair operations (workspace)
 mesh-repair = { workspace = true }
+# Mesh offset operations (workspace)
 mesh-offset = { workspace = true }
+# Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
+# Swiss-table hash map
 hashbrown = { workspace = true }
+# Derive error types
 thiserror = { workspace = true }
+# Structured diagnostics
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Approximate equality for numeric tests
 approx = { workspace = true }
+# Microbenchmarks
 criterion = { workspace = true }
 
 [[bench]]

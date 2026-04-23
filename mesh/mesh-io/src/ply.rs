@@ -23,6 +23,14 @@
 //! save_ply(&mesh, "output.ply", true).unwrap(); // Binary
 //! ```
 
+// PLY parsing converts between u32 mesh indices, i32 PLY header fields, and f32 coords;
+// cast lints fire for legitimate domain conversions that are bounded by spec/format.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
@@ -107,7 +115,6 @@ pub fn load_ply<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
             let indices = get_index_list(element);
             if indices.len() >= 3 {
                 // Triangulate if necessary (fan triangulation for convex polygons)
-                #[allow(clippy::cast_possible_truncation)]
                 for i in 1..indices.len() - 1 {
                     mesh.faces
                         .push([indices[0] as u32, indices[i] as u32, indices[i + 1] as u32]);
@@ -123,11 +130,7 @@ pub fn load_ply<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
 fn get_float_property(element: &DefaultElement, key: &str) -> Option<f32> {
     match element.get(key)? {
         Property::Float(v) => Some(*v),
-        Property::Double(v) =>
-        {
-            #[allow(clippy::cast_possible_truncation)]
-            Some(*v as f32)
-        }
+        Property::Double(v) => Some(*v as f32),
         _ => None,
     }
 }
@@ -138,23 +141,11 @@ fn get_index_list(element: &DefaultElement) -> Vec<usize> {
     for key in &["vertex_indices", "vertex_index"] {
         if let Some(prop) = element.get(*key) {
             return match prop {
-                Property::ListInt(v) =>
-                {
-                    #[allow(clippy::cast_sign_loss)]
-                    v.iter().map(|&i| i as usize).collect()
-                }
+                Property::ListInt(v) => v.iter().map(|&i| i as usize).collect(),
                 Property::ListUInt(v) => v.iter().map(|&i| i as usize).collect(),
                 Property::ListUChar(v) => v.iter().map(|&i| i as usize).collect(),
-                Property::ListChar(v) =>
-                {
-                    #[allow(clippy::cast_sign_loss)]
-                    v.iter().map(|&i| i as usize).collect()
-                }
-                Property::ListShort(v) =>
-                {
-                    #[allow(clippy::cast_sign_loss)]
-                    v.iter().map(|&i| i as usize).collect()
-                }
+                Property::ListChar(v) => v.iter().map(|&i| i as usize).collect(),
+                Property::ListShort(v) => v.iter().map(|&i| i as usize).collect(),
                 Property::ListUShort(v) => v.iter().map(|&i| i as usize).collect(),
                 _ => continue,
             };
@@ -214,7 +205,6 @@ fn save_ply_binary<W: std::io::Write>(mesh: &IndexedMesh, writer: &mut W) -> IoR
 
     // Write vertex data
     for v in &mesh.vertices {
-        #[allow(clippy::cast_possible_truncation)]
         {
             writer.write_all(&(v.x as f32).to_le_bytes())?;
             writer.write_all(&(v.y as f32).to_le_bytes())?;
@@ -227,7 +217,6 @@ fn save_ply_binary<W: std::io::Write>(mesh: &IndexedMesh, writer: &mut W) -> IoR
         // List count (3 vertices per face)
         writer.write_all(&[3u8])?;
         // Vertex indices as i32
-        #[allow(clippy::cast_possible_wrap)]
         {
             writer.write_all(&(i0 as i32).to_le_bytes())?;
             writer.write_all(&(i1 as i32).to_le_bytes())?;
@@ -277,7 +266,6 @@ fn save_ply_ascii<W: std::io::Write>(mesh: &IndexedMesh, writer: &mut W) -> IoRe
     let mut vertex_elements = Vec::with_capacity(mesh.vertices.len());
     for v in &mesh.vertices {
         let mut element = DefaultElement::new();
-        #[allow(clippy::cast_possible_truncation)]
         {
             element.insert("x".to_string(), Property::Float(v.x as f32));
             element.insert("y".to_string(), Property::Float(v.y as f32));
@@ -291,7 +279,6 @@ fn save_ply_ascii<W: std::io::Write>(mesh: &IndexedMesh, writer: &mut W) -> IoRe
     let mut face_elements = Vec::with_capacity(mesh.faces.len());
     for &[i0, i1, i2] in &mesh.faces {
         let mut element = DefaultElement::new();
-        #[allow(clippy::cast_possible_wrap)]
         let indices = vec![i0 as i32, i1 as i32, i2 as i32];
         element.insert("vertex_indices".to_string(), Property::ListInt(indices));
         face_elements.push(element);

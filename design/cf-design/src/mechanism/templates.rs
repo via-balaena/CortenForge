@@ -82,6 +82,7 @@ pub fn finger(
 
     let segments: Vec<Solid> = (0..n_phalanges)
         .map(|i| {
+            // Precision loss acceptable for approximate / visualization values.
             #[allow(clippy::cast_precision_loss)]
             let z_center = phalanx_length * (0.5 + i as f64);
             Solid::capsule(radius, seg_half_height).translate(Vector3::new(0.0, 0.0, z_center))
@@ -95,6 +96,7 @@ pub fn finger(
     let mut part = Part::new(name, solid, material);
 
     for i in 1..n_phalanges {
+        // Precision loss acceptable for approximate / visualization values.
         #[allow(clippy::cast_precision_loss)]
         let z = phalanx_length * i as f64;
         part = part.with_flex_zone(FlexZone::new(
@@ -437,6 +439,7 @@ mod tests {
         let mut has_inside = false;
         let mut has_outside = false;
         for i in 0..20 {
+            // Precision loss acceptable for approximate / visualization values.
             #[allow(clippy::cast_precision_loss)]
             let z = f64::from(i).mul_add(0.7, 3.0);
             let val = p.solid().evaluate(&Point3::new(0.0, 0.0, z));

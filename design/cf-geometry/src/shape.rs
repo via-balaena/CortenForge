@@ -423,6 +423,7 @@ impl Shape {
     /// Used for broad-phase culling and sphere-based bounding approximations.
     /// Returns [`f64::INFINITY`] for planes (infinite extent).
     #[must_use]
+    // Precision loss acceptable: used for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     pub fn bounding_radius(&self) -> f64 {
         match self {
@@ -481,6 +482,7 @@ impl Bounded for Shape {
     ///
     /// The AABB is computed in the shape's local coordinate frame (centered
     /// at origin). For planes, returns an infinite AABB.
+    // Precision loss acceptable: used for approximate / visualization values.
     #[allow(clippy::cast_precision_loss)]
     fn aabb(&self) -> Aabb {
         match self {

@@ -148,6 +148,7 @@ impl FieldNode {
     ///
     /// Only accounts for geometric distortion — not primitive-level non-SDF
     /// effects (which the mesher handles via interval arithmetic).
+    // Procedural glue code; natural breakpoints are few.
     #[allow(clippy::too_many_lines)]
     pub(crate) fn lipschitz_factor(&self) -> f64 {
         match self {
@@ -533,6 +534,7 @@ fn interval_smooth_intersect(a: &FieldNode, b: &FieldNode, k: f64, aabb: &Aabb) 
     (a_lo.max(b_lo), a_hi.max(b_hi) + k / 4.0)
 }
 
+// Precision loss acceptable for approximate values.
 #[allow(clippy::cast_precision_loss)] // n-ary child count is never > 2^52
 fn interval_smooth_union_all(children: &[FieldNode], k: f64, aabb: &Aabb) -> (f64, f64) {
     if children.is_empty() {

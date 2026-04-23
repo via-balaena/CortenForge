@@ -81,12 +81,14 @@ impl PhysicsDelay {
 }
 
 /// Bevy system: tick the [`PhysicsDelay`] timer each frame.
+// Callers typically move the value; taking &T would force a clone.
 #[allow(clippy::needless_pass_by_value)]
 pub fn tick_physics_delay(time: Res<Time>, mut delay: ResMut<PhysicsDelay>) {
     delay.elapsed += time.delta_secs();
 }
 
 /// Run condition: returns `true` once the [`PhysicsDelay`] has elapsed.
+// Callers typically move the value; taking &T would force a clone.
 #[allow(clippy::needless_pass_by_value, clippy::must_use_candidate)]
 pub fn physics_delay_elapsed(delay: Res<PhysicsDelay>) -> bool {
     delay.elapsed >= delay.duration
@@ -440,6 +442,7 @@ impl Default for ValidationHarness {
 /// ```ignore
 /// .add_systems(PostUpdate, (sync_geom_transforms, validation_system))
 /// ```
+// Callers typically move the value; taking &T would force a clone.
 #[allow(clippy::needless_pass_by_value)]
 pub fn validation_system(
     model: Res<PhysicsModel>,
@@ -610,6 +613,7 @@ impl ContactForceAccumulator {
 /// Bevy system: sample total contact force each timestep within the window.
 ///
 /// Add to `PostUpdate` (after `sync_geom_transforms`).
+// Callers typically move the value; taking &T would force a clone.
 #[allow(clippy::needless_pass_by_value)]
 pub fn accumulate_contact_force(data: Res<PhysicsData>, mut acc: ResMut<ContactForceAccumulator>) {
     let time = data.time;
@@ -790,6 +794,7 @@ pub fn insert_batch_validation_dummies(commands: &mut Commands, model: &Model) {
 /// ```ignore
 /// .add_systems(PostUpdate, (sync_geom_transforms, validation_system, render_physics_hud))
 /// ```
+// Callers typically move the value; taking &T would force a clone.
 #[allow(clippy::needless_pass_by_value)]
 pub fn render_physics_hud(
     hud: Res<PhysicsHud>,
@@ -917,6 +922,7 @@ pub fn draw_tendon_segments(
 /// Interpolates `arc_segments` steps via spherical linear interpolation (slerp)
 /// from `from` to `to` at distance `radius` from `center`. All positions are
 /// in physics coordinates (Z-up) and converted to Bevy (Y-up) for drawing.
+// Precision loss acceptable for approximate / visualization values.
 #[allow(clippy::cast_precision_loss)]
 pub fn draw_sphere_arc(
     gizmos: &mut Gizmos,
@@ -957,6 +963,7 @@ pub fn draw_sphere_arc(
 /// frame (XY = cross-section, Z = axis). `rotation` is the cylinder's 3×3
 /// orientation matrix (`geom_xmat`). All positions are in physics coordinates
 /// (Z-up) and converted to Bevy (Y-up) for drawing.
+// Precision loss acceptable for approximate / visualization values.
 #[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
 pub fn draw_cylinder_arc(
     gizmos: &mut Gizmos,

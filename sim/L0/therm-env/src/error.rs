@@ -16,6 +16,15 @@ pub enum ThermCircuitError {
     #[error("n_particles must be >= 1")]
     ZeroParticles,
 
+    /// A builder f64 parameter was `NaN` or infinite.
+    #[error("non-finite parameter `{field}`: {value}")]
+    NonFiniteParameter {
+        /// Name of the offending field.
+        field: &'static str,
+        /// The non-finite value that was supplied.
+        value: f64,
+    },
+
     /// Propagated from `SimEnv::builder().build()`.
     #[error(transparent)]
     Env(#[from] EnvError),

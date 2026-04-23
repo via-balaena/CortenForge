@@ -6,6 +6,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Coverage criterion N/A: this crate has no src/ at all — only [[test]]
+# integration targets (mujoco_conformance, integration). --lib errors
+# with "no library targets found".
+[package.metadata.cortenforge]
+grading_profile = "integration-only"
+
 [dependencies]
 # MJCF loader under test in the conformance suite
 sim-mjcf = { path = "../mjcf" }

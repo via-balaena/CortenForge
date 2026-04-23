@@ -12,13 +12,21 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+# Geometric primitives (workspace)
 cf-geometry = { workspace = true }
+# Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
+# Data-parallel iterators
 rayon = { workspace = true }
+# Core physics (workspace)
 sim-core = { workspace = true }
 
 [dev-dependencies]
+# Approximate equality for numeric tests
 approx = { workspace = true }
+# Mesh file I/O (workspace)
 mesh-io = { workspace = true }
+# MJCF loading (workspace)
 sim-mjcf = { workspace = true }
+# Temporary files/dirs for tests
 tempfile = { workspace = true }

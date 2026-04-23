@@ -6,6 +6,7 @@
 //! T19–T22: Collision — AABB, SDF-SDF, SDF-plane, full collision pipeline.
 //! T23–T27: Constraint solve — assembly, Newton solver, force mapping, stability.
 
+#![cfg(test)]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

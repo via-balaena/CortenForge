@@ -28,6 +28,14 @@
 //!
 //! Note: OBJ indices are 1-based (first vertex is 1, not 0).
 
+// OBJ parser indexes into a Vec<Point3> with usize then casts to u32 for mesh
+// face indices; mesh size is bounded well below 2^32.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -139,8 +147,6 @@ fn parse_face_vertex(s: &str) -> IoResult<u32> {
             "negative or zero vertex index not supported: {index}"
         )));
     }
-
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     // Safe: we checked index > 0, and meshes with >4B vertices are unsupported
     Ok((index - 1) as u32)
 }
