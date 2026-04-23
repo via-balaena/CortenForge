@@ -3,6 +3,7 @@
 //! These tests verify the full pipeline from mechanism definition through
 //! MJCF generation to simulation. Requires `sim-mjcf` dev-dependency.
 
+#![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use nalgebra::{Point3, Vector3};

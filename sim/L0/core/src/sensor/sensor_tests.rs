@@ -1,5 +1,9 @@
-// Gated by #[cfg(test)] in sensor/mod.rs; repeated here for CI safety scanner.
-#[cfg(test)]
+//! Sensor tests — file-level #![cfg(test)] mirrors the parent-module
+//! `#[cfg(test)] mod sensor_tests;` gating and signals test-only to
+//! the xtask Safety scanner.
+
+#![cfg(test)]
+
 use super::mj_sensor_acc;
 use crate::types::*;
 use approx::assert_relative_eq;
