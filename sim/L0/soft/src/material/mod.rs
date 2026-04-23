@@ -31,6 +31,53 @@ pub trait Material: Send + Sync {
 }
 
 /// Domain of deformation gradients on which the material's energy is
-/// well-defined. Unit stub; Phase B populates with bound predicates.
-#[derive(Clone, Debug, Default)]
-pub struct ValidityDomain;
+/// physically admissible.
+///
+/// Shape follows Part 2 Ch 00 02-validity.md: six slots covering stretch,
+/// rotation, Poisson, temperature, strain-rate, and element-inversion
+/// handling. Decorators (`Thermal<M>`, `Viscoelastic<M>`, mixed-u-p,
+/// F-bar) fill in the `temperature_range` and `strain_rate_range` slots
+/// and widen the `poisson_range` bound.
+#[derive(Clone, Debug)]
+pub struct ValidityDomain {
+    /// Maximum principal-stretch deviation `|λ − 1|` at which the
+    /// declared error bound against the next-more-accurate reference
+    /// law still holds.
+    pub max_stretch_deviation: f64,
+
+    /// Maximum rotation angle in radians. `f64::INFINITY` for
+    /// rotation-invariant laws.
+    pub max_rotation: f64,
+
+    /// Allowed Poisson ratio range. Upper bound below 0.5 for laws with
+    /// no near-incompressibility cure; widened when wrapped by a
+    /// mixed-u-p or F-bar locking-fix decorator from Part 2 Ch 05.
+    pub poisson_range: (f64, f64),
+
+    /// Allowed temperature range when wrapped by `Thermal<M>`. `None`
+    /// for isothermal laws.
+    pub temperature_range: Option<(f64, f64)>,
+
+    /// Strain-rate regime for rate-dependent laws. `None` for
+    /// rate-independent.
+    pub strain_rate_range: Option<(f64, f64)>,
+
+    /// Behavior under element inversion (`det F ≤ 0`).
+    pub inversion: InversionHandling,
+}
+
+/// How a `Material` impl responds to element inversion (`det F ≤ 0`).
+///
+/// Phase A names only `RequireOrientation`, the policy hyperelastic laws
+/// (`NeoHookean`, `MooneyRivlin`, `Ogden`) share per Part 2 Ch 04: rely
+/// on the IPC barrier to keep `det F > 0`, panic if an inversion reaches
+/// constitutive evaluation. Additional variants (`Barrier`, `OptIn`,
+/// etc.) land with the impls that first require them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InversionHandling {
+    /// Evaluation requires `det F > 0`; the impl panics on non-positive
+    /// `J` and surfaces as an IPC-barrier failure downstream rather
+    /// than a constitutive bug.
+    RequireOrientation,
+}
