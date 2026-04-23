@@ -29,6 +29,8 @@ Skeleton invariant consequences:
 
 **Round 2 stress-test results (2026-04-23):** R-1 (Δt + scene numerics) + R-2 (NH tangent SPD) + NH closed forms verified against [Part 2 Ch 04 NH sub-leaves](../../../docs/studies/soft_body_architecture/src/20-materials/04-hyperelastic/00-neo-hookean/). **One scene change:** tet edge 1 m → **0.1 m** — the 1-m unit tet was inertia-dominated by ~26× at $\Delta t = 10^{-2}$ (Newton would converge fast but NH nonlinearity wouldn't exercise); decimeter tet gives stiffness-dominated by ~4× with meaningful NH activation. Decimeter scale also matches canonical soft-robotics problem (compliant gripper / catheter sheath). **One API correction:** faer 0.24's `sparse::linalg::solvers` exposes only `Llt`, `Lu`, `Qr` — **no LDLᵀ variant**. Fallback for "NH tangent not SPD" is faer `Lu` (aligned with [Part 2 Ch 04 01-tangent.md:41](../../../docs/studies/soft_body_architecture/src/20-materials/04-hyperelastic/00-neo-hookean/01-tangent.md) already committing to LU fallback). Skeleton implements from the math + verified faer 0.24 API. See §11 and §13 for details.
 
+**Round 3 stress-test results (2026-04-23):** I-1 trait composition paper-sketched against [Part 11 Ch 01 00-core.md](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/00-core.md) + [01-composition.md](../../../docs/studies/soft_body_architecture/src/110-crate/01-traits/01-composition.md). **Seven trait surfaces compose cleanly** — ≤4 lines of `where` clause per impl, no generic pile-up, object-safety holds for `Solver` / `Observable` in `Box<dyn … Tape = CpuTape>` form. Full skeleton type alias: `CpuNewtonSolver<NeoHookean, Tet4, SingleTetMesh, NullContact, 4, 1>` — 6 generic parameters (4 type + 2 const), verbose but contained via one alias. **One real book finding (BF-4):** book's `Differentiable::register_vjp(forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>)` assumes a key-based registry that doesn't match chassis's `Tape::push_custom(value, op)` model — `TapeNodeKey` isn't defined in chassis. Skeleton stubs `register_vjp` and creates VJPs at `push_custom` time instead. **Three skeleton implementation notes** (expected stub-on-trait-contract, not book bugs): `Solver::replay_step` is Phase-E checkpoint-replay infra (skeleton delegates to step without tape writes), `Differentiable::time_adjoint` + `fd_wrapper` are Phase E+/G respectively (`unimplemented!()`), `Observable::temperature_field` returns empty on skeleton's non-thermal scene. See §14 composition sketch + §13 BF-4.
+
 ## 1. The six load-bearing invariants
 
 Each invariant is a book claim that must be verified in code before further book expansion. Citations are to the book at `77751866`.
@@ -288,8 +290,9 @@ Surprises the skeleton stress-test surfaced in the book spec. Each is a future b
 | BF-1 | γ API register ([`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md)) + Part 6 Ch 02:8 + Part 5 Ch 00 + Part 8 Ch 02 + Part 10 Ch 02/03 | faer sparse Cholesky type is `Llt<I, T>` (generic over index + element), not `Llt<T>`. All book references to `Llt<f64>` should read `Llt<I, f64>` (or `Llt<u32, f64>` after fixing the default index). Affects: PreferenceGP, BradleyTerryGP, GradientEnhancedGP caches + backward-Euler factor-on-tape + sparse-solvers chapter. | API-signature drift |
 | BF-2 | Part 6 Ch 02:26 code sketch | `Llt::try_new_with_symbolic(&stiffness)?` is incomplete — faer 0.24's constructor is `try_new_with_symbolic(symbolic: SymbolicLlt<I>, mat: SparseColMatRef<'_, I, T>, side: Side)`, requiring a pre-computed `SymbolicLlt` + explicit `Side`. Book sketch should show the symbolic-then-numeric two-step pattern. | API-signature drift |
 | BF-3 | Part 6 Ch 02:34 code sketch | `factor.solve_in_place(&mut minus_dr_dtheta.apply_t(&upstream))` is dimensionally inconsistent — $(\partial r / \partial \theta)^{\mathsf{T}}$ · upstream has shape $[n_\theta]$, cannot be RHS for $[n_\text{dof} \times n_\text{dof}]$ solve. Sketch's order of operations is inverted. Correct sequence: (1) λ = A^{-1} · upstream via `solve_in_place`, (2) result = ±(∂r/∂θ)^T · λ. The math at lines 13-15 is fine; only the code sketch needs fixing. | Pseudocode correctness |
+| BF-4 | Part 11 Ch 01 00-core.md:121 + 01-composition.md:66 | `Differentiable::register_vjp(forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>)` assumes a key-indexed VJP registry that doesn't match the chassis API shipped in PR #213. Chassis's model is `Tape::push_custom(value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var` — VJP is bundled with the node at forward-pass time, not registered-by-key-then-looked-up. No `TapeNodeKey` type exists in `sim-ml-chassis`. Also, register_vjp taking an `instance` (Box<dyn VjpOp>) rather than a factory/closure makes per-call primal-data capture awkward. **Fix options:** (a) drop `register_vjp` from the trait; Material/Element/ContactModel methods directly return configured `Box<dyn VjpOp>` instances that Solver::step passes to push_custom; (b) keep register_vjp but make it a factory registration with signature like `register_vjp(key: OpClassId, factory: Box<dyn Fn(&PrimalData) -> Box<dyn VjpOp>>)`. Skeleton picks (a) de facto by stubbing register_vjp and creating VJPs inline. | Trait-signature / platform-API mismatch |
 
-None of the three findings are skeleton-blocking — the skeleton implements from the underlying math + the verified faer API. They're book-edit backlog for whenever the PM memos or Pass 2/3 touch these chapters.
+None of the findings are skeleton-blocking — the skeleton implements from the underlying math + the verified faer/chassis APIs, stubbing book methods whose shape doesn't match shipped infrastructure. They're book-edit backlog for whenever Pass 2/3 touches these chapters.
 
 ---
 
@@ -308,3 +311,168 @@ From [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhil
 - `Tensor<f64>` — sim-soft precision (chassis default is f32 for RL)
 
 Not cited in skeleton (post-skeleton API register for reference): `SimToRealCorrection`, `MeasurementReport`, `OnlineUpdateOutcome`, `PreferenceGP`, `BradleyTerryGP`, `GradientEnhancedGP`, `Acquisition` enum, `CostAwareAcquisition`, `DuelingBanditPolicy`, `MeasurementProtocol`, `DiffusionProfile`, `MjcfHandshake`, `ThermostatHandshake`, `MeshSnapshot`, `SimSoftPlugin`, `SdfField`, `MaterialField`.
+
+## 14. Trait composition sketch (Round 3)
+
+Full paper-sketch of the skeleton's seven-trait composition. Goal: one monomorphized forward path + one `Box<dyn Solver<Tape = CpuTape>>` on the public boundary per Part 11 Ch 01 + 01-composition.md. All book signatures preserved except `Differentiable::register_vjp` (BF-4 — stubbed).
+
+**Seven concrete types:**
+
+```rust
+// sim-soft/src/material/neo_hookean.rs
+pub struct NeoHookean { pub mu: f64, pub lambda: f64 }
+impl Material for NeoHookean {
+    fn energy(&self, f: &Matrix3<f64>) -> f64 { /* Part 2 Ch 04 00-energy */ }
+    fn first_piola(&self, f: &Matrix3<f64>) -> Matrix3<f64> { /* μ(F - F⁻ᵀ) + λ(ln J) F⁻ᵀ */ }
+    fn tangent(&self, f: &Matrix3<f64>) -> SMatrix<f64, 9, 9> { /* Part 2 Ch 04 01-tangent */ }
+    fn validity(&self) -> ValidityDomain { /* J > 0, moderate stretch */ }
+}
+
+// sim-soft/src/element/tet4.rs
+pub struct Tet4;
+impl Element<4, 1> for Tet4 {
+    fn shape_functions(&self, xi: Vec3) -> SVector<f64, 4> { /* barycentric */ }
+    fn shape_gradients(&self, xi: Vec3) -> SMatrix<f64, 4, 3> { /* constant */ }
+    fn gauss_points(&self) -> [(Vec3, f64); 1] { [(Vec3::new(0.25, 0.25, 0.25), 1.0/6.0)] }
+}
+
+// sim-soft/src/mesh/single_tet.rs
+pub struct SingleTetMesh {
+    vertices: [Vec3; 4],    // hardcoded in SoftScene::one_tet_cube()
+    adj: MeshAdjacency,     // trivial: single tet, no neighbours
+    q: QualityMetrics,      // trivial: aspect ratio 1.0, etc.
+}
+impl Mesh for SingleTetMesh { /* 7 methods, mostly trivial on single-element mesh */ }
+
+// sim-soft/src/contact/null.rs
+pub struct NullContact;
+impl ContactModel for NullContact {
+    fn active_pairs(&self, _: &dyn Mesh, _: &[Vec3]) -> Vec<ContactPair> { vec![] }
+    fn energy(&self, _: &ContactPair, _: &[Vec3]) -> f64 { 0.0 }
+    fn gradient(&self, _: &ContactPair, _: &[Vec3]) -> ContactGradient { ContactGradient::zero() }
+    fn hessian(&self, _: &ContactPair, _: &[Vec3]) -> ContactHessian { ContactHessian::zero() }
+    fn ccd_toi(&self, _: &ContactPair, _: &[Vec3], _: &[Vec3]) -> f64 { f64::INFINITY }
+}
+
+// sim-soft/src/solver/backward_euler.rs
+pub struct CpuNewtonSolver<M, E, Msh, C, const N: usize, const G: usize>
+where
+    M: Material, E: Element<N, G>, Msh: Mesh, C: ContactModel,
+{
+    material: M, element: E, mesh: Msh, contact: C,
+    config: SolverConfig,
+    // scratch: F⁻ᵀ cache per Gauss point, sparse pattern, SymbolicLlt
+}
+
+impl<M, E, Msh, C, const N: usize, const G: usize> Solver
+    for CpuNewtonSolver<M, E, Msh, C, N, G>
+where
+    M: Material, E: Element<N, G>, Msh: Mesh, C: ContactModel,
+{
+    type Tape = CpuTape;
+    fn step(&mut self, tape: &mut Self::Tape, x_prev: &Tensor<f64>, v_prev: &Tensor<f64>,
+            theta: &Tensor<f64>, dt: f64) -> NewtonStep<Self::Tape> {
+        // assemble residual + tangent, factor with Llt, Newton + Armijo,
+        // push NewtonStepVjp onto tape via tape.push_custom, return NewtonStep
+    }
+    fn replay_step(&self, x_prev: &Tensor<f64>, v_prev: &Tensor<f64>,
+                   theta: &Tensor<f64>, dt: f64) -> NewtonStep<Self::Tape> {
+        // same as step but no &mut tape: rebuild factor on a scratch tape,
+        // return NewtonStep whose factor+dr_dtheta the VJP consumes
+        // (Phase-E checkpoint replay; skeleton implements as a thin wrapper
+        // so the I-3 test can verify factor-on-tape survives a fresh solve)
+    }
+    fn current_dt(&self) -> f64 { self.config.dt }
+    fn convergence_tol(&self) -> f64 { self.config.tol }
+}
+
+// sim-soft/src/differentiable/cpu.rs
+pub type TapeNodeKey = u32;  // skeleton-local alias; chassis uses Var(u32)
+pub struct CpuDifferentiable;
+impl Differentiable for CpuDifferentiable {
+    type Tape = CpuTape;
+    fn register_vjp(&mut self, _key: TapeNodeKey, _vjp: Box<dyn VjpOp>) {
+        // BF-4 stub: skeleton creates VJPs inline at push_custom time; this
+        // method is kept for trait-contract compliance only. Book's registry
+        // model is under-specified and doesn't match chassis's shipped API.
+    }
+    fn ift_adjoint(&self, tape: &CpuTape, step: &NewtonStep<CpuTape>,
+                   upstream: &Tensor<f64>) -> Tensor<f64> {
+        // Seed backward from upstream on the NewtonStep's output var, call
+        // tape.backward, read tape.grad_tensor(theta_var). The IFT math is
+        // inside NewtonStepVjp::vjp (Form A per §5).
+    }
+    fn time_adjoint(&self, _: &CpuTape, _: &[NewtonStep<CpuTape>],
+                    _: &Tensor<f64>) -> Tensor<f64> {
+        unimplemented!("time-adjoint is Phase E+ — single-step skeleton does not exercise")
+    }
+    fn fd_wrapper(&self, _: &dyn Fn(&Tensor<f64>) -> Tensor<f64>,
+                  _: &Tensor<f64>) -> (Tensor<f64>, GradientEstimate) {
+        unimplemented!("fd_wrapper is Phase G stochastic-adjoint path — skeleton is Exact-only")
+    }
+}
+
+// sim-soft/src/observable/basic.rs
+pub struct BasicObservable;
+impl Observable for BasicObservable {
+    type Step = NewtonStep<CpuTape>;
+    fn stress_field(&self, step: &Self::Step) -> StressField { /* per Tet4 Gauss point */ }
+    fn pressure_field(&self, step: &Self::Step) -> PressureField { /* -tr(σ)/3 */ }
+    fn temperature_field(&self, _: &Self::Step) -> TemperatureField {
+        TemperatureField::empty()  // no thermal coupling in skeleton
+    }
+    fn reward_breakdown(&self, step: &Self::Step, theta: &Tensor<f64>) -> RewardBreakdown {
+        // peak_bound + stiffness_bound + composition populated;
+        // pressure_uniformity + coverage NaN-sentinel per §2 1-tet gap
+    }
+}
+```
+
+**Skeleton type aliases:**
+
+```rust
+// sim-soft/src/lib.rs
+pub type Vec3 = nalgebra::Vector3<f64>;
+pub type SkeletonSolver = solver::CpuNewtonSolver<
+    material::NeoHookean, element::Tet4, mesh::SingleTetMesh, contact::NullContact, 4, 1,
+>;
+```
+
+**ForwardMap composition — the only `Box<dyn Solver<_>>`:**
+
+```rust
+// sim-soft/src/readout/mod.rs
+pub struct SkeletonForwardMap {
+    solver:       Box<dyn Solver<Tape = CpuTape>>,
+    differential: CpuDifferentiable,
+    observable:   BasicObservable,
+    initial:      SceneInitial,  // x_0, v_0, mesh refs
+}
+
+impl ForwardMap for SkeletonForwardMap {
+    fn evaluate(&mut self, theta: &Tensor<f64>, tape: &mut Tape) -> (RewardBreakdown, EditResult) {
+        let theta_var = tape.param_tensor(theta.clone());
+        let step = self.solver.step(tape, &self.initial.x_prev, &self.initial.v_prev,
+                                    theta, self.solver.current_dt());
+        let reward = self.observable.reward_breakdown(&step, theta);
+        (reward, EditResult::ParameterOnly)
+    }
+    fn gradient(&mut self, theta: &Tensor<f64>, tape: &Tape)
+        -> (Tensor<f64>, GradientEstimate) {
+        // call self.differential.ift_adjoint(...), return Exact
+    }
+}
+```
+
+**Composition summary:**
+
+- Public boundary: `Box<dyn Solver<Tape = CpuTape>>` — one runtime dispatch per step, per Part 11 Ch 01 §Solver.
+- Hot path: `CpuNewtonSolver<NeoHookean, Tet4, SingleTetMesh, NullContact, 4, 1>` monomorphized; per-Gauss-point and per-iteration calls fully inlined.
+- No `Box<dyn Material>` / `Box<dyn Element>` / `Box<dyn ContactModel>` on the hot path — all generic bounds.
+- `Mesh` stays concrete (`SingleTetMesh`) on hot path; `&dyn Mesh` appears only in `ContactModel::active_pairs`, which is cold for NullContact (returns empty vec).
+- `Observable::type Step = NewtonStep<CpuTape>` pins readout to the CPU backend type-level.
+- `Differentiable::type Tape = CpuTape` pins VJP registry to the CPU backend type-level.
+
+**`Box<dyn>` inventory for the full skeleton:** one — the public `Box<dyn Solver<Tape = CpuTape>>`. Plus the one that lives inside `sim-ml-chassis::Tape`'s `BackwardOp::Custom(Box<dyn VjpOp>)` per node. That's it. No additional type erasure.
+
+**Ceremony cost:** 6 generic parameters on `CpuNewtonSolver`, 4-line where-clause. One type alias (`SkeletonSolver`) hides the noise. The parent Ch 01 claim 1 "trait generics on hot paths, trait objects on cold paths" split holds cleanly.
