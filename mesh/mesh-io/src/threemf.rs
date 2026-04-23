@@ -30,6 +30,14 @@
 //! save_3mf(&mesh, "output.3mf").unwrap();
 //! ```
 
+// 3MF parsing converts u32 mesh indices ↔ XML text fields and f32 coords;
+// cast lints fire for format-bounded conversions.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Write};
 use std::path::Path;
@@ -151,7 +159,6 @@ fn parse_3mf_model(content: &str) -> IoResult<IndexedMesh> {
                     b"mesh" => {
                         in_mesh = true;
                         // Track vertex offset for this mesh object
-                        #[allow(clippy::cast_possible_truncation)]
                         {
                             current_vertex_offset = mesh.vertices.len() as u32;
                         }

@@ -240,6 +240,7 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
         if dot < 0.0 {
             let overhang_angle = std::f64::consts::PI - angle;
             if overhang_angle > max_angle_rad {
+                // Mesh face index i fits in u32 (mesh size bounded well below 2^32).
                 #[allow(clippy::cast_possible_truncation)]
                 overhang_faces.push(i as u32);
 

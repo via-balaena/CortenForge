@@ -185,6 +185,7 @@ pub fn distance_to_mesh(mesh: &IndexedMesh, point: Point3<f64>) -> Option<f64> {
 /// Compute the closest point on a triangle to a query point.
 ///
 /// Uses the barycentric coordinate method for robust computation.
+// a/b/c are triangle vertices, p is query point, v/w are barycentric coords — domain idioms.
 #[allow(clippy::many_single_char_names)]
 fn closest_point_on_triangle(
     p: Point3<f64>,
