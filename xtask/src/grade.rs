@@ -1512,48 +1512,68 @@ fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
 }
 
 /// Check whether `lint` (e.g. `clippy::panic`) appears inside a real
-/// `#[allow(...)]` or `#![allow(...)]` attribute in the 300 lines
-/// preceding line `i`.
+/// `#[allow(...)]` or `#![allow(...)]` attribute that covers line `i`.
 ///
-/// Span-aware: finds each `#[allow(` / `#![allow(` opening in the window,
-/// walks forward across lines to the matching `)]`, and checks whether the
-/// lint name appears inside that span. A stray mention of the lint name in
-/// a comment or string literal no longer counts.
+/// Scans two windows:
+/// - **File-top** (first 50 lines): catches file-level inner attributes
+///   like `#![allow(clippy::panic)]` which Rust applies to the entire
+///   module regardless of distance.
+/// - **300-line back-window** from `i`: catches function-scope / item-
+///   scope `#[allow(...)]` attributes.
+///
+/// Span-aware: finds each `#[allow(` / `#![allow(` opening in either
+/// window, walks forward across lines to the matching `)]`, and checks
+/// whether the lint name appears inside that span. A stray mention of
+/// the lint name in a comment or string literal no longer counts.
 ///
 /// Still a heuristic — does not distinguish an allow on a sibling struct
 /// field 250 lines up from one on the enclosing function. Both match.
 /// For AST-correct scope resolution the grader would need syn; this check
 /// is the tightest available without that dependency.
 fn has_enclosing_allow(lines: &[&str], i: usize, lint: &str) -> bool {
-    let start = i.saturating_sub(300);
-    for open_idx in start..i {
+    // Returns true if the attribute opening at `open_idx` closes before `i`
+    // and its body contains `lint`.
+    let attr_covers = |open_idx: usize, prefix: &str| -> bool {
         let open_line = lines[open_idx];
-        let (open_col, prefix_len) = if let Some(col) = open_line.find("#![allow(") {
-            (col, "#![allow(".len())
-        } else if let Some(col) = open_line.find("#[allow(") {
-            (col, "#[allow(".len())
-        } else {
-            continue;
+        let Some(open_col) = open_line.find(prefix) else {
+            return false;
         };
-
-        // Accumulate the attribute body from the opening across subsequent
-        // lines until the matching `)]` closes the attribute. Bounded by
-        // the panic line itself — a well-formed attribute can never extend
-        // onto or past the code it applies to.
-        let mut body = String::from(&open_line[open_col + prefix_len..]);
+        let mut body = String::from(&open_line[open_col + prefix.len()..]);
         let mut close_idx = open_idx;
         while !body.contains(")]") && close_idx + 1 < i {
             close_idx += 1;
             body.push('\n');
             body.push_str(lines[close_idx]);
         }
-        let Some(close_pos) = body.find(")]") else {
-            continue;
-        };
-        if body[..close_pos].contains(lint) {
+        body.find(")]")
+            .is_some_and(|close_pos| body[..close_pos].contains(lint))
+    };
+
+    // Primary scan: 300-line back-window from `i`. Catches both outer
+    // `#[allow(...)]` (function/item scope) and inner `#![allow(...)]`
+    // (inline sub-module scope) attributes near the code.
+    let back_start = i.saturating_sub(300);
+    for open_idx in back_start..i {
+        if attr_covers(open_idx, "#![allow(") || attr_covers(open_idx, "#[allow(") {
             return true;
         }
     }
+
+    // Additive scan for file-level INNER attributes: if `i` is deep enough
+    // that the back-window doesn't reach the first 50 lines of the file,
+    // explicitly check those top lines for `#![allow(...)]` only. These
+    // are module-level attributes that cover the whole file regardless
+    // of distance. Outer `#[allow(...)]` at file-top is excluded here —
+    // it binds to the next item, not the whole file, so using it to
+    // suppress a violation far below would be a false positive.
+    if back_start > 50 {
+        for open_idx in 0..50 {
+            if attr_covers(open_idx, "#![allow(") {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
@@ -2100,6 +2120,50 @@ mod tests {
         let lines = split(src);
         assert!(has_enclosing_allow(&lines, 2, "clippy::panic"));
         assert!(has_enclosing_allow(&lines, 2, "clippy::unwrap_used"));
+    }
+
+    #[test]
+    fn enclosing_allow_file_top_inner_covers_deep_line() {
+        // File-level `#![allow(clippy::panic)]` at line 1 must suppress
+        // a panic!() on line 900 — file-top window always scanned for
+        // inner attributes.
+        let mut src = String::from("// copyright header\n#![allow(clippy::panic)]\n");
+        for _ in 0..900 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic at index 902. Inner allow at index 1 — way outside the
+        // 300-line back-window but inside the 50-line file-top window.
+        assert!(has_enclosing_allow(&lines, 902, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_file_top_outer_does_not_reach_deep_line() {
+        // An OUTER `#[allow(clippy::panic)]` at the top of the file does
+        // NOT suppress a panic far below — outer attributes bind to the
+        // next item only, and the file-top window intentionally ignores
+        // them to avoid that kind of false positive.
+        let mut src = String::from("#[allow(clippy::panic)]\n");
+        for _ in 0..900 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic at index 901. Outer allow at index 0 — outside back-window,
+        // and ignored in file-top scan.
+        assert!(!has_enclosing_allow(&lines, 901, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_file_top_wrong_lint_does_not_cover() {
+        let mut src = String::from("#![allow(clippy::unwrap_used)]\n");
+        for _ in 0..900 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        assert!(!has_enclosing_allow(&lines, 901, "clippy::panic"));
     }
 
     // === count_unjustified_clippy_allows ===
