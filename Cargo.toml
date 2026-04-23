@@ -354,6 +354,11 @@ let_underscore_must_use = "deny"
 # ---------------------------------------------------------------------------
 # nalgebra: Linear algebra, matches parry3d and avian for compatibility
 nalgebra = "0.34.2"
+# num-traits: generic numeric traits (Float, Zero, One, NumCast) — promoted
+# to explicit workspace dep per platform refactor audit A.1 (Tensor<T> generic);
+# already transitive via nalgebra, this just gives us a direct import path.
+# Default "std" feature required — Float impls for f32/f64 are gated on it.
+num-traits = "0.2"
 # (glam removed — was only used by routing crates)
 
 # ---------------------------------------------------------------------------

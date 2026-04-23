@@ -7512,6 +7512,7 @@ dependencies = [
  "bevy_ecs",
  "criterion",
  "nalgebra",
+ "num-traits",
  "rand 0.9.2",
  "serde",
  "serde_json",
