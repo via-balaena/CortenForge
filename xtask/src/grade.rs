@@ -1189,7 +1189,13 @@ fn scan_file_safety(
     let mut in_block_comment = false;
 
     for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
+        // Strip string-literal content before any pattern match, so the
+        // scanner doesn't false-positive on code that manipulates literal
+        // patterns like `"unsafe {"`, `"todo!("`, `"#[cfg(test)]"`. The
+        // original line is still available to other helpers (e.g.
+        // has_enclosing_allow's span-aware scan) that do their own masking.
+        let stripped_owned = strip_string_literals(line);
+        let trimmed = stripped_owned.trim();
 
         // Track block comments
         if !in_block_comment && trimmed.contains("/*") {
@@ -1207,8 +1213,8 @@ fn scan_file_safety(
             continue;
         }
 
-        // Test exclusion: #[cfg(test)] attribute detection
-        if !trimmed.starts_with("//") && trimmed.contains("#[cfg(test)]") {
+        // Test exclusion: #[cfg(test)] attribute detection.
+        if trimmed.starts_with("#[cfg(test)]") {
             pending_test_attr = true;
         }
 
@@ -1240,7 +1246,7 @@ fn scan_file_safety(
         // === Pattern checks on library code ===
 
         // Hard-fail: todo!() and unimplemented!()
-        if trimmed.contains("todo!") || trimmed.contains("unimplemented!") {
+        if has_macro_call(trimmed, "todo!") || has_macro_call(trimmed, "unimplemented!") {
             has_todo_or_unimplemented = true;
         }
 
@@ -1269,7 +1275,7 @@ fn scan_file_safety(
         // Justified by any of: preceding `//` comment, same-line `//`
         // comment, or an enclosing `#[allow(clippy::panic)]` attribute
         // within 300 lines back (the idiomatic Rust pattern).
-        if trimmed.contains("panic!") {
+        if has_macro_call(trimmed, "panic!") {
             let has_justification = has_preceding_comment(&lines, i)
                 || has_same_line_comment(trimmed)
                 || has_enclosing_allow(&lines, i, "clippy::panic");
@@ -1279,7 +1285,7 @@ fn scan_file_safety(
         }
 
         // Counted with justification: unreachable!()
-        if trimmed.contains("unreachable!") {
+        if has_macro_call(trimmed, "unreachable!") {
             let has_justification = has_preceding_comment(&lines, i)
                 || has_same_line_comment(trimmed)
                 || has_enclosing_allow(&lines, i, "clippy::unreachable");
@@ -1395,6 +1401,60 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
     })
 }
 
+/// Returns true iff `trimmed` contains a real macro invocation of
+/// `{name_with_bang}(`, `{name_with_bang}{{`, or `{name_with_bang}[`
+/// — the three delimiters valid for Rust macro calls per the reference.
+///
+/// Tighter than a raw `trimmed.contains(name_with_bang)` substring check,
+/// which false-positives on string literals like `"todo!"` or identifiers
+/// containing the sequence. Pass `name_with_bang` as `"todo!"`, `"panic!"`
+/// etc. — the bang must be present so we don't accept e.g. `today!`.
+fn has_macro_call(trimmed: &str, name_with_bang: &str) -> bool {
+    // `contains(&str)` is O(n·m); the needles are tiny and we scan at most
+    // a handful of lines per file, so the format! allocations are fine.
+    trimmed.contains(&format!("{}(", name_with_bang))
+        || trimmed.contains(&format!("{}{{", name_with_bang))
+        || trimmed.contains(&format!("{}[", name_with_bang))
+}
+
+/// Replace the content of `"..."` string literals in a single Rust source
+/// line with spaces, preserving column positions. Pattern checks like
+/// `contains("unsafe {")` or `contains("todo!(")` would otherwise match
+/// code that manipulates those exact strings (classic self-graded grader
+/// false positive).
+///
+/// Handles standard escapes (`\"`, `\\`) so `"a\"b"` is skipped intact.
+/// Naive on raw strings (`r"..."`, `r#"..."#`) — treats the first `"` as
+/// an opener, which is good enough for the scanner's needs and matches
+/// the rest of the codebase's style.
+fn strip_string_literals(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_string = false;
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if in_string {
+            if ch == '\\' {
+                // Consume the escaped char; replace both with spaces.
+                out.push(' ');
+                if chars.next().is_some() {
+                    out.push(' ');
+                }
+            } else if ch == '"' {
+                in_string = false;
+                out.push(' ');
+            } else {
+                out.push(' ');
+            }
+        } else if ch == '"' {
+            in_string = true;
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Check if any of the preceding 1-3 lines is a `//` comment (not `///` or `//!`).
 fn has_preceding_comment(lines: &[&str], i: usize) -> bool {
     (1..=3).any(|offset| {
@@ -1503,7 +1563,8 @@ fn count_unjustified_clippy_allows(lines: &[&str]) -> usize {
             continue;
         }
 
-        if trimmed.contains("#[cfg(test)]") {
+        // starts_with — see note in scan_file_safety on the same rule.
+        if trimmed.starts_with("#[cfg(test)]") {
             pending_test_attr = true;
         }
 
@@ -2394,6 +2455,89 @@ serde = \"1\"
         let src = "/// clippy::expect_used is a thing\nfn f() {\n    x.expect(\"bad\");\n}\n";
         let r = scan_file_safety(src, false, false);
         assert_eq!(r.counted_violations, 1);
+    }
+
+    // === strip_string_literals ===
+
+    #[test]
+    fn strip_strings_replaces_content_with_spaces() {
+        // Preserves column positions; quotes become spaces.
+        // Input: `let s = "todo!";`  — "todo!" is 7 chars (2 quotes + 5 body).
+        // Expected: `let s =        ;`  — 7 spaces where "todo!" was, plus the
+        // space before `=` and the one after = space both preserved.
+        let input = "let s = \"todo!\";";
+        let expected: String = format!("let s = {};", " ".repeat("\"todo!\"".len()));
+        assert_eq!(strip_string_literals(input), expected);
+    }
+
+    #[test]
+    fn strip_strings_handles_escapes() {
+        // \\" inside a string is an escaped quote, not a terminator.
+        let out = strip_string_literals("\"a\\\"b\"");
+        // 6 characters in, all become spaces.
+        assert_eq!(out, "      ");
+    }
+
+    #[test]
+    fn strip_strings_leaves_code_outside_strings() {
+        assert_eq!(
+            strip_string_literals("fn foo() { panic!(); }"),
+            "fn foo() { panic!(); }"
+        );
+    }
+
+    #[test]
+    fn strip_strings_multiple_literals_on_one_line() {
+        let out = strip_string_literals("contains(\"a\") && contains(\"b\")");
+        assert_eq!(out, "contains(   ) && contains(   )");
+    }
+
+    // === has_macro_call — string-literal false-positive fix ===
+
+    #[test]
+    fn has_macro_call_paren_form() {
+        assert!(has_macro_call("todo!()", "todo!"));
+        assert!(has_macro_call("todo!(\"not ready\")", "todo!"));
+        assert!(has_macro_call("    panic!();", "panic!"));
+    }
+
+    #[test]
+    fn has_macro_call_brace_form() {
+        assert!(has_macro_call("unimplemented!{}", "unimplemented!"));
+    }
+
+    #[test]
+    fn has_macro_call_bracket_form() {
+        // Less common but valid.
+        assert!(has_macro_call("todo![]", "todo!"));
+    }
+
+    #[test]
+    fn has_macro_call_string_literal_not_flagged() {
+        // The canonical false-positive: xtask's own grader scans itself,
+        // finds the string `"todo!"` in its source, must not flag.
+        assert!(!has_macro_call("let s = \"todo!\";", "todo!"));
+        assert!(!has_macro_call(
+            "result: \"F: found todo!/unimplemented!\".to_string(),",
+            "todo!"
+        ));
+        assert!(!has_macro_call(
+            "if trimmed.contains(\"panic!\") {",
+            "panic!"
+        ));
+    }
+
+    #[test]
+    fn has_macro_call_bare_mention_not_flagged() {
+        // Mentions of the macro name without delimiter should not trigger.
+        assert!(!has_macro_call("pub fn todo!foo() {}", "todo!"));
+        assert!(!has_macro_call("// todo! this later", "todo!"));
+    }
+
+    #[test]
+    fn has_macro_call_scan_detects_real_todo_in_mixed_line() {
+        // A real invocation mid-line still flags.
+        assert!(has_macro_call("    let x = todo!();", "todo!"));
     }
 
     // === CrateProfile-aware relaxation: unjustified clippy allows ===
