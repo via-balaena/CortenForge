@@ -1375,6 +1375,22 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
             Err(_) => continue,
         };
         let scan = scan_file_safety(&content, is_build_rs, relax_unwrap_expect);
+        // XTASK_GRADE_DEBUG env var: emit per-file violation breakdown to
+        // stderr when set. Used to pinpoint which files in a crate are
+        // dragging the Safety grade down without running cargo clippy etc.
+        if std::env::var("XTASK_GRADE_DEBUG").is_ok()
+            && (scan.counted_violations > 0
+                || scan.unsafe_violations > 0
+                || scan.has_todo_or_unimplemented)
+        {
+            eprintln!(
+                "  [debug] {} → counted={} unsafe={} todo_or_unimpl={}",
+                file_path,
+                scan.counted_violations,
+                scan.unsafe_violations,
+                scan.has_todo_or_unimplemented
+            );
+        }
         counted_violations += scan.counted_violations;
         unsafe_violations += scan.unsafe_violations;
         if scan.has_todo_or_unimplemented {
