@@ -433,9 +433,11 @@ where
 {
     type Tape = CpuTape;
     fn step(&mut self, tape: &mut Self::Tape, x_prev: &Tensor<f64>, v_prev: &Tensor<f64>,
-            theta: &Tensor<f64>, dt: f64) -> NewtonStep<Self::Tape> {
-        // assemble residual + tangent, factor with Llt, Newton + Armijo,
-        // push NewtonStepVjp onto tape via tape.push_custom, return NewtonStep
+            theta_var: Var, dt: f64) -> NewtonStep<Self::Tape> {
+        // snapshot theta value via tape.value_tensor(theta_var), assemble
+        // residual + tangent, factor with Llt, Newton + Armijo, re-factor
+        // at x_final, push NewtonStepVjp onto tape via
+        // tape.push_custom(&[theta_var], ...), return NewtonStep
     }
     fn replay_step(&self, x_prev: &Tensor<f64>, v_prev: &Tensor<f64>,
                    theta: &Tensor<f64>, dt: f64) -> NewtonStep<Self::Tape> {
@@ -516,7 +518,7 @@ impl ForwardMap for SkeletonForwardMap {
     fn evaluate(&mut self, theta: &Tensor<f64>, tape: &mut Tape) -> (RewardBreakdown, EditResult) {
         let theta_var = tape.param_tensor(theta.clone());
         let step = self.solver.step(tape, &self.initial.x_prev, &self.initial.v_prev,
-                                    theta, self.solver.current_dt());
+                                    theta_var, self.solver.current_dt());
         let reward = self.observable.reward_breakdown(&step, theta);
         (reward, EditResult::ParameterOnly)
     }
@@ -536,7 +538,7 @@ impl ForwardMap for SkeletonForwardMap {
 - `Observable::type Step = NewtonStep<CpuTape>` pins readout to the CPU backend type-level.
 - `Differentiable::type Tape = CpuTape` pins VJP registry to the CPU backend type-level.
 
-**`Box<dyn>` inventory for the full skeleton:** one — the public `Box<dyn Solver<Tape = CpuTape>>`. Plus the one that lives inside `sim-ml-chassis::Tape`'s `BackwardOp::Custom(Box<dyn VjpOp>)` per node. That's it. No additional type erasure.
+**`Box<dyn>` inventory for the full skeleton:** one — the public `Box<dyn Solver<Tape = CpuTape>>`. Plus the one that lives inside `sim-ml-chassis::Tape`'s `BackwardOp::Custom { parents: Box<[Var]>, op: Box<dyn VjpOp> }` per node (post-`5f1cffba` refactor — parents tracked by the tape, not by the op). That's it. No additional type erasure.
 
 **Ceremony cost:** 6 generic parameters on `CpuNewtonSolver`, 4-line where-clause. One type alias (`SkeletonSolver`) hides the noise. The parent Ch 01 claim 1 "trait generics on hot paths, trait objects on cold paths" split holds cleanly.
 
