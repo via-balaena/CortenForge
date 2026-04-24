@@ -43,11 +43,19 @@ fn stage_1_traction_converges() {
         cfg,
     );
 
-    // Stage-1 θ: length-1 tensor = magnitude along +ẑ on v_3.
-    let theta = Tensor::from_slice(&[10.0], &[1]);
+    // Stage-1 θ: length-1 tensor = magnitude along +ẑ on v_3. Registered
+    // as a tape parameter so `Solver::step` can attach `NewtonStepVjp`
+    // with `theta_var` as parent (step 5 / scope §9 step 5).
     let mut tape = Tape::new();
+    let theta_var = tape.param_tensor(Tensor::from_slice(&[10.0], &[1]));
 
-    let step = solver.step(&mut tape, &initial.x_prev, &initial.v_prev, &theta, cfg.dt);
+    let step = solver.step(
+        &mut tape,
+        &initial.x_prev,
+        &initial.v_prev,
+        theta_var,
+        cfg.dt,
+    );
 
     // Convergence within Newton budget. Spec §3 R-1 predicts 3-5 iter
     // from rest at Stage-1 θ; loop exits via convergence return, so

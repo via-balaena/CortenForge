@@ -11,7 +11,7 @@
 
 use std::marker::PhantomData;
 
-use sim_ml_chassis::{Tape, Tensor};
+use sim_ml_chassis::{Tape, Tensor, Var};
 
 pub mod backward_euler;
 
@@ -21,18 +21,21 @@ pub use backward_euler::{CpuNewtonSolver, SolverConfig};
 /// named backend type. `GpuTape` (Phase E) lands as a separate alias.
 pub type CpuTape = Tape;
 
-/// The artifact of one converged Newton step: primal outputs, Newton
-/// iteration count, and final residual norm. `T` is the tape type
-/// (`CpuTape` / `GpuTape`).
+/// The artifact of one converged Newton step.
 ///
-/// Step 4 exposes `x_final`, `iter_count`, `final_residual_norm` so
-/// integration tests can assert convergence behavior. Step 5 adds the
-/// VJP's primal stash (factor, `∂r/∂θ`) via `Tape::push_custom` per
-/// BF-4 — those fields land when the VJP first needs them.
+/// Carries primal outputs (`x_final`, `iter_count`, `final_residual_norm`)
+/// plus — for tape-aware calls — the `Var` handle of `x_final` on the
+/// tape. `T` is the tape type (`CpuTape` / `GpuTape`).
+///
+/// Step 4 introduced `x_final`, `iter_count`, `final_residual_norm` so
+/// integration tests can assert convergence behavior. Step 5 adds
+/// `x_final_var`: `Some` when produced by `Solver::step` (which pushes
+/// `NewtonStepVjp` onto the tape), `None` when produced by
+/// `Solver::replay_step` (pure-function counterpart, tape-free).
 #[derive(Debug)]
 pub struct NewtonStep<T> {
-    // Phantom tape — VJP registrations (step 5) use `T` to pin
-    // CPU-tape / GPU-tape adjoint paths to the matching backend.
+    // Phantom tape — pins CPU-tape / GPU-tape adjoint paths to the
+    // matching backend at the type level.
     _tape: PhantomData<T>,
     /// Converged primal position in 12-entry vertex-major + xyz-inner
     /// DOF layout.
@@ -41,12 +44,18 @@ pub struct NewtonStep<T> {
     pub iter_count: usize,
     /// Final free-DOF residual norm at convergence.
     pub final_residual_norm: f64,
+    /// Tape handle of `x_final` when this step was produced by
+    /// `Solver::step` (which pushes `NewtonStepVjp` onto the tape with
+    /// `theta_var` as parent). `None` when produced by `replay_step`
+    /// (pure-function counterpart — no tape mutation).
+    pub x_final_var: Option<Var>,
 }
 
 impl<T> NewtonStep<T> {
-    /// Construct a converged-step record. Solver impls call this only
-    /// from within the Newton-convergence branch; non-convergence paths
-    /// panic rather than return partial data (scope §3 R-2 SPD contract).
+    /// Construct a converged-step record without a tape Var — the
+    /// `replay_step` / tape-free path. Solver impls call this only from
+    /// within the Newton-convergence branch; non-convergence paths panic
+    /// rather than return partial data (scope §3 R-2 SPD contract).
     #[must_use]
     pub const fn new_converged(
         x_final: Vec<f64>,
@@ -58,6 +67,7 @@ impl<T> NewtonStep<T> {
             x_final,
             iter_count,
             final_residual_norm,
+            x_final_var: None,
         }
     }
 }
@@ -68,21 +78,25 @@ pub trait Solver: Send + Sync {
     /// Tape representation the solver's VJPs register against.
     type Tape;
 
-    /// Advance one time step. Writes the forward trajectory and its
-    /// adjoint hooks onto `tape`. Must be deterministic in `(x_prev,
-    /// v_prev, theta, dt)` — no cross-call output-affecting state.
+    /// Advance one time step. Reads θ's current value from `tape` via
+    /// `theta_var`, runs Newton + Armijo to convergence, re-factors the
+    /// tangent at `x_final`, and pushes `NewtonStepVjp` onto the tape
+    /// with `theta_var` as parent. Deterministic in `(x_prev, v_prev,
+    /// theta_value, dt)` — no cross-call output-affecting state.
     fn step(
         &mut self,
         tape: &mut Self::Tape,
         x_prev: &Tensor<f64>,
         v_prev: &Tensor<f64>,
-        theta: &Tensor<f64>,
+        theta_var: Var,
         dt: f64,
     ) -> NewtonStep<Self::Tape>;
 
     /// Re-solve the same step for backward-pass replay. Pure-function
     /// counterpart to `step` — no `&mut tape`. Must be bit-reproducible
-    /// given the stored primal `(x, v, dt)` per Part 6 Ch 04.
+    /// given the stored primal `(x, v, dt)` per Part 6 Ch 04. Takes θ
+    /// as a bare tensor (not a `Var`) because replay does not compose
+    /// onto any tape.
     fn replay_step(
         &self,
         x_prev: &Tensor<f64>,

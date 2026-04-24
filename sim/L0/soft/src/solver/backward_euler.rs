@@ -14,8 +14,10 @@
 //! `Llt::try_new_with_symbolic` + `solve_in_place_with_conj` per Newton
 //! iteration (scope §11 S-3 Round-1-verified API shape).
 //!
-//! Step 5 (next commit) adds `Tape::push_custom` + `NewtonStepVjp`;
-//! this commit stubs the tape interaction per spec §9 step-4 scope.
+//! After convergence, `step` re-factors `A` at `x_final` via
+//! `factor_at_position` and pushes `NewtonStepVjp` onto the tape with
+//! `theta_var` as parent. The VJP solves the IFT adjoint `A · λ = g_free`
+//! and contracts against `∂r/∂θ` — see `NewtonStepVjp` for the math.
 //!
 //! [r]: ../../../../../../docs/studies/soft_body_architecture/src/60-differentiability/02-implicit-function.md
 //! [tet4]: ../../../../../../docs/studies/soft_body_architecture/src/30-discretization/00-element-choice/00-tet4.md
@@ -26,11 +28,12 @@ use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Conj, MatMut, Side};
 use nalgebra::{Matrix3, SMatrix};
-use sim_ml_chassis::Tensor;
+use sim_ml_chassis::{Tensor, Var};
 
 use super::{CpuTape, NewtonStep, Solver};
 use crate::Vec3;
 use crate::contact::ContactModel;
+use crate::differentiable::newton_vjp::NewtonStepVjp;
 use crate::element::Element;
 use crate::material::Material;
 use crate::mesh::Mesh;
@@ -178,6 +181,47 @@ where
         // Phase B multi-tet will replace with a safe-converted count.
         let mass_per_dof = mass_total / 4.0;
         (grad_x, volume, mass_per_dof)
+    }
+
+    /// Assemble and factor the condensed `A_free` SPD tangent at a
+    /// specific position `x` (post-Newton-convergence for the IFT
+    /// adjoint). Re-uses the solve-path pattern but discards the solve
+    /// — only the factor is needed.
+    //
+    // expect_used + panic: same rationale as `factor_and_solve_free_block`.
+    // Fixed-shape pattern; SPD failure is scope §3 R-2 contract violation.
+    #[allow(clippy::expect_used, clippy::panic)]
+    fn factor_at_position(&self, x_final: &[f64; N_DOF], dt: f64) -> Llt<usize, f64> {
+        let (grad_x_n, volume, mass_per_dof) = self.reference_geometry();
+        let mass_over_dt2 = mass_per_dof / (dt * dt);
+        let f = deformation_gradient(x_final, &grad_x_n);
+        let tangent = self.material.tangent(&f);
+        let a_free = assemble_free_tangent_block(&tangent, &grad_x_n, volume, mass_over_dt2);
+
+        let pattern_triplets = free_block_pattern_triplets();
+        let pattern_mat: SparseColMat<usize, f64> =
+            SparseColMat::try_new_from_triplets(N_FREE, N_FREE, &pattern_triplets)
+                .expect("malformed free-block triplet pattern");
+        let symbolic = SymbolicLlt::<usize>::try_new(pattern_mat.symbolic(), Side::Lower)
+            .expect("symbolic factorization of fixed free-block pattern failed");
+
+        let mut triplets: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(6);
+        for col in 0..N_FREE {
+            for row in col..N_FREE {
+                triplets.push(Triplet::new(row, col, a_free[(row, col)]));
+            }
+        }
+        let a_mat: SparseColMat<usize, f64> =
+            SparseColMat::try_new_from_triplets(N_FREE, N_FREE, &triplets)
+                .expect("malformed condensed-tangent triplet list");
+        Llt::<usize, f64>::try_new_with_symbolic(symbolic, a_mat.rb(), Side::Lower).unwrap_or_else(
+            |err| {
+                panic!(
+                    "condensed tangent not SPD at x_final (IFT adjoint factor): \
+                     {err:?}. Scope §3 R-2 asserts SPD on the skeleton θ-path."
+                )
+            },
+        )
     }
 
     /// Free-DOF residual norm (scope §5 R-1 convergence criterion).
@@ -361,18 +405,46 @@ where
 {
     type Tape = CpuTape;
 
+    // expect_used: `solve_impl` is contracted to return `x_final` with
+    //   exactly N_DOF entries (asserted at entry); the `try_into` here
+    //   is a type-level coercion `&[f64]` → `&[f64; N_DOF]` whose failure
+    //   mode is "solve_impl violated its own contract" — programmer bug,
+    //   not runtime input.
+    #[allow(clippy::expect_used)]
     fn step(
         &mut self,
-        _tape: &mut Self::Tape,
+        tape: &mut Self::Tape,
         x_prev: &Tensor<f64>,
         v_prev: &Tensor<f64>,
-        theta: &Tensor<f64>,
+        theta_var: Var,
         dt: f64,
     ) -> NewtonStep<Self::Tape> {
-        // Step 5 will push `NewtonStepVjp` onto `_tape` via
-        // `Tape::push_custom` after the Newton loop converges. For step
-        // 4 the primal solve is fully self-contained.
-        self.solve_impl(x_prev, v_prev, theta, dt)
+        // Snapshot θ's value off the tape so the forward Newton loop can
+        // proceed in pure-tensor space. The tape's role is reverse-mode
+        // bookkeeping; the primal solve is tape-free.
+        let theta_tensor = tape.value_tensor(theta_var).clone();
+        let mut step = self.solve_impl(x_prev, v_prev, &theta_tensor, dt);
+
+        // IFT adjoint factor: re-assemble A at x_final (post-convergence)
+        // and factor it. Scope §3 R-2 asserts SPD on the θ-path; factor
+        // ownership pattern (I-3) verified in tests/invariant_3_factor.rs.
+        let x_final_arr: [f64; N_DOF] = step
+            .x_final
+            .as_slice()
+            .try_into()
+            .expect("x_final must have exactly N_DOF entries");
+        let factor = self.factor_at_position(&x_final_arr, dt);
+
+        // Push `NewtonStepVjp` onto the tape with `theta_var` as parent.
+        // The VJP owns the factor; `Tape::backward` feeds the scalar-or-
+        // vector cotangent of `x_final` into `vjp` and we solve the
+        // adjoint `A · λ = g_free` in place, contracting against the
+        // Stage-1 ∂r/∂θ sparsity pattern. See `NewtonStepVjp::vjp`.
+        let vjp = NewtonStepVjp::new(factor);
+        let x_final_tensor = Tensor::from_slice(&step.x_final, &[N_DOF]);
+        let x_final_var = tape.push_custom(&[theta_var], x_final_tensor, Box::new(vjp));
+        step.x_final_var = Some(x_final_var);
+        step
     }
 
     fn replay_step(
@@ -385,6 +457,7 @@ where
         // Pure-function counterpart; no tape mutation. At skeleton scale
         // this is the same primal solve — Phase-E checkpoint replay will
         // diverge by reading a stored primal instead of re-solving.
+        // `x_final_var` stays `None` — no tape means no Var.
         self.solve_impl(x_prev, v_prev, theta, dt)
     }
 

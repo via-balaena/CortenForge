@@ -17,7 +17,7 @@ use crate::solver::NewtonStep;
 
 pub mod newton_vjp;
 
-pub use newton_vjp::CpuDifferentiable;
+pub use newton_vjp::{CpuDifferentiable, NewtonStepVjp};
 
 /// Lookup key for a forward-pass tape node. Skeleton-local alias;
 /// chassis uses `Var(u32)` and does not surface this name. BF-4 flags

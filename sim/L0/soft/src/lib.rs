@@ -32,7 +32,7 @@ pub mod readout;
 pub mod solver;
 
 pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact};
-pub use differentiable::{CpuDifferentiable, Differentiable, TapeNodeKey};
+pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
 pub use material::{InversionHandling, Material, NeoHookean, ValidityDomain};
 pub use mesh::{Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId};
