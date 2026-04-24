@@ -26,8 +26,6 @@ serde       = { workspace = true }
 serde_json  = { workspace = true }
 # Core sim types — BatchSim, Model, Data bridged into SimEnv / VecEnv
 sim-core    = { workspace = true }
-# MJCF loading for stock task fixtures (reaching_2dof, reaching_6dof, ...)
-sim-mjcf    = { workspace = true }
 # Error types for env / space / tensor / artifact error enums
 thiserror   = { workspace = true }
 
@@ -36,6 +34,14 @@ thiserror   = { workspace = true }
 approx      = { workspace = true }
 # Benchmark harness for benches/bridge_benchmarks.rs
 criterion   = { workspace = true }
+# MJCF loading for cfg(test) fixtures across env/vec_env/rollout/space/task/
+# competition tests. Moved to dev-deps as part of SD-5 (chassis → mjcf
+# severed from release graph): stock task factories now live in
+# `sim-rl::tasks`, keeping `sim-soft`'s transitive graph free of
+# `mesh-io → zip → zstd-sys → cc`. Chassis keeps its own trivial stock-
+# task fixtures under `#[cfg(test)] mod test_stock_tasks` (avoiding a
+# cyclic sim-rl dev-dep that would resolve TaskConfig to a distinct type).
+sim-mjcf    = { workspace = true }
 
 [[bench]]
 name = "bridge_benchmarks"

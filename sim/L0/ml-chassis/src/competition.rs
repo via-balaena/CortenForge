@@ -631,7 +631,7 @@ mod tests {
     use crate::artifact::{PolicyArtifact, TrainingCheckpoint};
     use crate::linear::LinearPolicy;
     use crate::policy::Policy;
-    use crate::task::reaching_2dof;
+    use crate::test_stock_tasks::{reaching_2dof, reaching_6dof};
     use crate::vec_env::VecEnv;
 
     /// Minimal artifact for tests that don't care about artifact content.
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn competition_multiple_tasks() {
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
-        let tasks = [reaching_2dof(), crate::task::reaching_6dof()];
+        let tasks = [reaching_2dof(), reaching_6dof()];
 
         let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
             &|_task| Box::new(MockAlgorithm::new("Mock"));
@@ -902,7 +902,7 @@ mod tests {
     #[test]
     fn competition_result_for_algorithm() {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
-        let tasks = [reaching_2dof(), crate::task::reaching_6dof()];
+        let tasks = [reaching_2dof(), reaching_6dof()];
 
         let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
             &|_| Box::new(MockAlgorithm::new("Mock"));
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn run_replicates_flat_shape() {
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
-        let tasks = [reaching_2dof(), crate::task::reaching_6dof()];
+        let tasks = [reaching_2dof(), reaching_6dof()];
 
         let b1: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
             &|_task| Box::new(MockAlgorithm::new("MockA"));

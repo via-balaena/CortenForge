@@ -633,7 +633,9 @@ impl Algorithm for Sac {
 #[allow(clippy::unwrap_used, clippy::cast_precision_loss, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use sim_ml_chassis::{LinearQ, LinearStochasticPolicy, reaching_2dof};
+    use sim_ml_chassis::{LinearQ, LinearStochasticPolicy};
+
+    use crate::tasks::reaching_2dof;
 
     fn make_sac() -> (Sac, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();

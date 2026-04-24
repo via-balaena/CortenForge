@@ -596,7 +596,9 @@ impl Algorithm for Td3 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use sim_ml_chassis::{LinearPolicy, LinearQ, reaching_2dof};
+    use sim_ml_chassis::{LinearPolicy, LinearQ};
+
+    use crate::tasks::reaching_2dof;
 
     fn make_td3() -> (Td3, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();

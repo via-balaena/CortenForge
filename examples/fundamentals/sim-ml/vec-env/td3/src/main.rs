@@ -40,8 +40,9 @@ use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
 use sim_ml_chassis::{
     DifferentiablePolicy, LinearPolicy, LinearQ, Optimizer, OptimizerConfig, Policy, QFunction,
-    ReplayBuffer, Tensor, VecEnv, reaching_2dof, soft_update, soft_update_policy,
+    ReplayBuffer, Tensor, VecEnv, soft_update, soft_update_policy,
 };
+use sim_rl::reaching_2dof;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 

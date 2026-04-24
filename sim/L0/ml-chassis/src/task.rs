@@ -1,4 +1,4 @@
-//! Task configuration and stock task factories.
+//! Task configuration — the surface every algorithm binds against.
 //!
 //! A [`TaskConfig`] is a complete task definition — environment metadata plus
 //! a [`VecEnv`] factory.  Algorithms use the metadata (dimensions, obs scales)
@@ -6,20 +6,22 @@
 //! calls [`build_vec_env`](TaskConfig::build_vec_env) to create fresh
 //! environments for each run.
 //!
-//! ## Stock tasks
-//!
-//! - [`reaching_2dof()`] — 2-link planar arm, 4-dim obs, 2-dim act.
-//! - [`reaching_6dof()`] — 3-segment arm with 6 joints, 12-dim obs, 6-dim act.
-//! - [`obstacle_reaching_6dof()`] — 6-DOF arm with obstacle avoidance, 21-dim obs, 6-dim act.
-//!
 //! ## Custom tasks
 //!
 //! Use [`TaskConfig::builder()`] to define new tasks from a pre-parsed
-//! [`Model`].
+//! [`Model`], or [`TaskConfig::from_build_fn()`] for custom seeded
+//! closures (stochastic-physics tasks).
+//!
+//! ## Stock tasks
+//!
+//! Stock MJCF-backed reaching arms (`reaching_2dof`, `reaching_6dof`,
+//! `obstacle_reaching_6dof`) live in `sim-rl::tasks` so the algorithm
+//! chassis stays free of the `sim-mjcf` → `mesh-io` → `zip` → `zstd-sys`
+//! compile chain. Depend on `sim-rl` to get them.
 
 use std::sync::Arc;
 
-use sim_core::{BatchSim, Data, Model};
+use sim_core::{Data, Model};
 
 use crate::error::EnvError;
 use crate::space::{ActionSpace, ObservationSpace};
@@ -33,8 +35,8 @@ use crate::vec_env::VecEnv;
 /// (2) provide the algorithm with task-specific metadata (dimensions, obs
 /// normalization scales).
 ///
-/// Stock tasks: [`reaching_2dof()`], [`reaching_6dof()`], [`obstacle_reaching_6dof()`].
-/// Custom tasks: use [`TaskConfig::builder()`].
+/// Custom tasks: use [`TaskConfig::builder()`] or [`TaskConfig::from_build_fn()`].
+/// Stock MJCF reaching arms are provided by `sim-rl::tasks`.
 pub struct TaskConfig {
     name: String,
     obs_dim: usize,
@@ -312,11 +314,23 @@ impl TaskConfigBuilder {
     }
 }
 
-// ── Stock tasks ─────────────────────────────────────────────────────────────
+// ── tests ───────────────────────────────────────────────────────────────────
 
-// 2-DOF MJCF — identical to CEM / REINFORCE / PPO examples.
-const MJCF_2DOF: &str = r#"
-<mujoco model="reaching-arm">
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::let_underscore_must_use
+)]
+mod tests {
+    use super::*;
+
+    // Small 2-DOF MJCF fixture — local to these tests so `sim-mjcf` can
+    // remain a dev-dep of `sim-ml-chassis` (the real stock factories
+    // live in `sim-rl::tasks`).
+    const TEST_MJCF_2DOF: &str = r#"
+<mujoco model="test-2dof">
   <compiler angle="radian" inertiafromgeom="true"/>
   <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
     <flag contact="disable"/>
@@ -329,478 +343,39 @@ const MJCF_2DOF: &str = r#"
       <joint name="shoulder" type="hinge" axis="0 -1 0"
              limited="true" range="-3.14159 3.14159" damping="2.0"/>
       <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
-            size="0.03" mass="0.5" rgba="0.3 0.5 0.85 1"/>
+            size="0.03" mass="0.5"/>
       <body name="forearm" pos="0.5 0 0">
         <joint name="elbow" type="hinge" axis="0 -1 0"
                limited="true" range="-2.6 2.6" damping="1.0"/>
         <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
-              size="0.025" mass="0.3" rgba="0.85 0.4 0.2 1"/>
+              size="0.025" mass="0.3"/>
         <site name="fingertip" pos="0.4 0 0" size="0.015"/>
       </body>
     </body>
   </worldbody>
   <actuator>
-    <motor name="shoulder_motor" joint="shoulder" gear="10"
-           ctrllimited="true" ctrlrange="-1 1"/>
-    <motor name="elbow_motor" joint="elbow" gear="5"
-           ctrllimited="true" ctrlrange="-1 1"/>
+    <motor joint="shoulder" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
+    <motor joint="elbow" gear="5" ctrllimited="true" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
 "#;
 
-// 6-DOF MJCF — from spec. 3-segment planar arm with 6 hinge joints.
-const MJCF_6DOF: &str = r#"
-<mujoco model="reaching-arm-6dof">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="seg1" pos="0 0 0">
-      <joint name="j1" type="hinge" axis="0 -1 0" damping="2.0"
-             limited="true" range="-3.14 3.14"/>
-      <joint name="j2" type="hinge" axis="0 0 1" damping="1.5"
-             limited="true" range="-1.57 1.57"/>
-      <geom name="seg1_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
-      <body name="seg2" pos="0.3 0 0">
-        <joint name="j3" type="hinge" axis="0 -1 0" damping="1.5"
-               limited="true" range="-2.6 2.6"/>
-        <joint name="j4" type="hinge" axis="0 0 1" damping="1.0"
-               limited="true" range="-1.57 1.57"/>
-        <geom name="seg2_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
-        <body name="seg3" pos="0.25 0 0">
-          <joint name="j5" type="hinge" axis="0 -1 0" damping="1.0"
-                 limited="true" range="-2.6 2.6"/>
-          <joint name="j6" type="hinge" axis="0 0 1" damping="0.5"
-                 limited="true" range="-1.57 1.57"/>
-          <geom name="seg3_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
-          <site name="fingertip" pos="0.2 0 0" size="0.015"/>
-        </body>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor joint="j1" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j2" gear="8"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j3" gear="6"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j4" gear="5"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j5" gear="4"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j6" gear="3"  ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-/// 2-DOF reaching arm task — the stock "easy" task.
-///
-/// Two-link planar arm with shoulder and elbow joints.
-/// - Observation: 4-dim (2 qpos + 2 qvel)
-/// - Action: 2-dim (2 motor torques)
-/// - Reward: negative squared joint-space error from target
-/// - Done: fingertip within 5 cm of target AND velocity < 0.5
-/// - Truncated: time > 3.0 s
-///
-/// Same arm as the CEM / REINFORCE / PPO examples.
-///
-/// # Panics
-///
-/// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-// MJCF_2DOF is a compile-time constant; parse failure = author bug, not runtime input.
-#[allow(clippy::panic)]
-#[must_use]
-pub fn reaching_2dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_2DOF) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded 2-DOF MJCF failed to parse: {e}"),
-    });
-
-    let obs_space = match ObservationSpace::builder()
-        .all_qpos()
-        .all_qvel()
-        .build(&model)
-    {
-        Ok(s) => s,
-        Err(e) => panic!("2-DOF obs space build failed: {e}"),
-    };
-
-    let act_space = match ActionSpace::builder().all_ctrl().build(&model) {
-        Ok(s) => s,
-        Err(e) => panic!("2-DOF act space build failed: {e}"),
-    };
-
-    let obs_dim = obs_space.dim();
-    let act_dim = act_space.dim();
-
-    let inv_pi = 1.0 / std::f64::consts::PI;
-    let obs_scale = vec![inv_pi, inv_pi, 0.1, 0.1];
-
-    // Target joint angles (IK solution for fingertip at [0.4, 0, 0.3]).
-    let target_joints: [f64; 2] = [-0.242, 1.982];
-
-    // Target end-effector position (for done condition — XZ plane only).
-    let target_tip: [f64; 3] = [0.4, 0.0, 0.3];
-
-    let sub_steps: usize = 5;
-
-    let build_fn = Arc::new(
-        move |n_envs: usize, _seed: u64| -> Result<VecEnv, EnvError> {
-            let tq = target_joints;
-            let gp = target_tip;
-            VecEnv::builder(Arc::clone(&model), n_envs)
-                .observation_space(obs_space.clone())
-                .action_space(act_space.clone())
-                .reward(move |_m, d| {
-                    let e0 = d.qpos[0] - tq[0];
-                    let e1 = d.qpos[1] - tq[1];
-                    -e0.mul_add(e0, e1 * e1)
-                })
-                .done(move |_m, d| {
-                    let tip = d.site_xpos[0];
-                    let dist = (tip.x - gp[0]).hypot(tip.z - gp[2]);
-                    let vel = d.qvel[0].hypot(d.qvel[1]);
-                    dist < 0.05 && vel < 0.5
-                })
-                .truncated(|_m, d| d.time > 3.0)
-                .sub_steps(sub_steps)
-                .build()
-        },
-    );
-
-    TaskConfig {
-        name: "reaching-2dof".into(),
-        obs_dim,
-        act_dim,
-        obs_scale,
-        build_fn,
+    fn test_model() -> Arc<Model> {
+        Arc::new(sim_mjcf::load_model(TEST_MJCF_2DOF).expect("valid 2-DOF test MJCF"))
     }
-}
-
-/// 6-DOF reaching arm task — the stock "hard" task.
-///
-/// Three-segment arm with alternating pitch/yaw joints.
-/// - Observation: 12-dim (6 qpos + 6 qvel)
-/// - Action: 6-dim (6 motor torques)
-/// - Reward: negative squared joint-space error from target
-/// - Done: fingertip within 5 cm of target AND velocity < 1.0
-/// - Truncated: time > 5.0 s
-///
-/// This task separates algorithms: CEM is sample-starved at 614 MLP params,
-/// REINFORCE has high-variance gradients, PPO's learned baseline helps,
-/// and off-policy methods (TD3/SAC) dominate via replay.
-///
-/// # Panics
-///
-/// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-// MJCF_6DOF is a compile-time constant; parse failure = author bug, not runtime input.
-#[allow(clippy::panic)]
-#[must_use]
-pub fn reaching_6dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_6DOF) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded 6-DOF MJCF failed to parse: {e}"),
-    });
-
-    let obs_space = match ObservationSpace::builder()
-        .all_qpos()
-        .all_qvel()
-        .build(&model)
-    {
-        Ok(s) => s,
-        Err(e) => panic!("6-DOF obs space build failed: {e}"),
-    };
-
-    let act_space = match ActionSpace::builder().all_ctrl().build(&model) {
-        Ok(s) => s,
-        Err(e) => panic!("6-DOF act space build failed: {e}"),
-    };
-
-    let obs_dim = obs_space.dim();
-    let act_dim = act_space.dim();
-
-    let inv_pi = 1.0 / std::f64::consts::PI;
-    let obs_scale = vec![
-        inv_pi, inv_pi, inv_pi, inv_pi, inv_pi, inv_pi, // qpos
-        0.1, 0.1, 0.1, 0.1, 0.1, 0.1, // qvel
-    ];
-
-    // Target joint configuration — moderate bend in all joints.
-    let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
-
-    // Compute target fingertip position via forward kinematics.
-    #[allow(clippy::panic)]
-    let target_tip = {
-        let mut batch = BatchSim::new(Arc::clone(&model), 1);
-        {
-            let data = batch
-                .env_mut(0)
-                .unwrap_or_else(|| panic!("6-DOF FK: no env 0"));
-            for (i, &q) in target_joints.iter().enumerate() {
-                data.qpos[i] = q;
-            }
-            data.forward(&model)
-                .unwrap_or_else(|e| panic!("6-DOF FK failed: {e}"));
-        }
-        let tip = batch
-            .env(0)
-            .unwrap_or_else(|| panic!("6-DOF FK: no env 0"))
-            .site_xpos[0];
-        [tip.x, tip.y, tip.z]
-    };
-
-    let sub_steps: usize = 5;
-
-    let build_fn = Arc::new(
-        move |n_envs: usize, _seed: u64| -> Result<VecEnv, EnvError> {
-            let tq = target_joints;
-            let gp = target_tip;
-            VecEnv::builder(Arc::clone(&model), n_envs)
-                .observation_space(obs_space.clone())
-                .action_space(act_space.clone())
-                .reward(move |_m, d| {
-                    let mut err_sq = 0.0;
-                    for (tq_i, &q) in tq.iter().enumerate() {
-                        let e = d.qpos[tq_i] - q;
-                        err_sq = e.mul_add(e, err_sq);
-                    }
-                    -err_sq
-                })
-                .done(move |_m, d| {
-                    let tip = d.site_xpos[0];
-                    let dx = tip.x - gp[0];
-                    let dy = tip.y - gp[1];
-                    let dz = tip.z - gp[2];
-                    let dist = dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt();
-                    let mut vel_sq = 0.0;
-                    for j in 0..6 {
-                        vel_sq = d.qvel[j].mul_add(d.qvel[j], vel_sq);
-                    }
-                    dist < 0.05 && vel_sq.sqrt() < 1.0
-                })
-                .truncated(|_m, d| d.time > 5.0)
-                .sub_steps(sub_steps)
-                .build()
-        },
-    );
-
-    TaskConfig {
-        name: "reaching-6dof".into(),
-        obs_dim,
-        act_dim,
-        obs_scale,
-        build_fn,
-    }
-}
-
-// 6-DOF obstacle-avoidance MJCF.
-//
-// Differences from MJCF_6DOF:
-// - `fusestatic="false"` — obstacle body keeps its own `xpos` entry
-// - `<site name="target">` on worldbody — target position observable via SiteXpos
-// - `<body name="obstacle">` — static ghost sphere at midpoint of rest→target path
-//
-// Body order: world(0), seg1(1), seg2(2), seg3(3), obstacle(4).
-// Site order: target(0, on worldbody), fingertip(1, on seg3).
-const MJCF_6DOF_OBSTACLE: &str = r#"
-<mujoco model="obstacle-reaching-6dof">
-  <compiler angle="radian" inertiafromgeom="true" fusestatic="false"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <site name="target" pos="0.681474 0.154033 0.101028" size="0.015"/>
-    <body name="seg1" pos="0 0 0">
-      <joint name="j1" type="hinge" axis="0 -1 0" damping="2.0"
-             limited="true" range="-3.14 3.14"/>
-      <joint name="j2" type="hinge" axis="0 0 1" damping="1.5"
-             limited="true" range="-1.57 1.57"/>
-      <geom name="seg1_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
-      <body name="seg2" pos="0.3 0 0">
-        <joint name="j3" type="hinge" axis="0 -1 0" damping="1.5"
-               limited="true" range="-2.6 2.6"/>
-        <joint name="j4" type="hinge" axis="0 0 1" damping="1.0"
-               limited="true" range="-1.57 1.57"/>
-        <geom name="seg2_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
-        <body name="seg3" pos="0.25 0 0">
-          <joint name="j5" type="hinge" axis="0 -1 0" damping="1.0"
-                 limited="true" range="-2.6 2.6"/>
-          <joint name="j6" type="hinge" axis="0 0 1" damping="0.5"
-                 limited="true" range="-1.57 1.57"/>
-          <geom name="seg3_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
-          <site name="fingertip" pos="0.2 0 0" size="0.015"/>
-        </body>
-      </body>
-    </body>
-    <body name="obstacle" pos="0.730 0.046 0.030">
-      <geom name="obstacle" type="sphere" size="0.06"
-            contype="0" conaffinity="0" mass="0"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor joint="j1" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j2" gear="8"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j3" gear="6"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j4" gear="5"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j5" gear="4"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j6" gear="3"  ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-/// 6-DOF obstacle-avoidance reaching task.
-///
-/// Same 3-segment arm as [`reaching_6dof()`], but a static obstacle sphere
-/// sits between the rest configuration and the target. The agent must curve
-/// around it.
-///
-/// - Observation: 21-dim (6 qpos + 6 qvel + 3 fingertip + 3 obstacle + 3 target)
-/// - Action: 6-dim (6 motor torques)
-/// - Reward: `-dist(fingertip, target) - λ * max(0, r_safe - dist(fingertip, obstacle))`
-///   where λ=10.0, `r_safe`=0.12
-/// - Done: fingertip within 5 cm of target AND velocity < 1.0
-/// - Truncated: time > 5.0 s
-///
-/// The obstacle is a distance-penalty ghost — no contacts. This isolates
-/// reward nonlinearity as the variable that breaks CEM dominance.
-///
-/// # Panics
-///
-/// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-// MJCF_6DOF_OBSTACLE is a compile-time constant; parse failure = author bug, not runtime input.
-#[allow(clippy::panic)]
-#[must_use]
-pub fn obstacle_reaching_6dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_6DOF_OBSTACLE) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded obstacle 6-DOF MJCF failed to parse: {e}"),
-    });
-
-    // Safety: verify expected body/site counts.
-    assert_eq!(model.nbody, 5, "obstacle MJCF: expected 5 bodies");
-    assert_eq!(model.nsite, 2, "obstacle MJCF: expected 2 sites");
-
-    // 21-dim obs: qpos(6) + qvel(6) + fingertip(3) + obstacle(3) + target(3).
-    let obs_space = match ObservationSpace::builder()
-        .all_qpos()
-        .all_qvel()
-        .site_xpos(1..2) // fingertip (site 1)
-        .xpos(4..5) // obstacle (body 4)
-        .site_xpos(0..1) // target (site 0)
-        .build(&model)
-    {
-        Ok(s) => s,
-        Err(e) => panic!("obstacle 6-DOF obs space build failed: {e}"),
-    };
-
-    let act_space = match ActionSpace::builder().all_ctrl().build(&model) {
-        Ok(s) => s,
-        Err(e) => panic!("obstacle 6-DOF act space build failed: {e}"),
-    };
-
-    let obs_dim = obs_space.dim();
-    let act_dim = act_space.dim();
-
-    let inv_pi = 1.0 / std::f64::consts::PI;
-    #[rustfmt::skip]
-    let obs_scale = vec![
-        inv_pi, inv_pi, inv_pi, inv_pi, inv_pi, inv_pi, // qpos
-        0.1, 0.1, 0.1, 0.1, 0.1, 0.1,                   // qvel
-        1.0, 1.0, 1.0,                                    // fingertip pos
-        1.0, 1.0, 1.0,                                    // obstacle pos
-        1.0, 1.0, 1.0,                                    // target pos
-    ];
-
-    // Compute target fingertip position via FK (same approach as reaching_6dof).
-    let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
-    #[allow(clippy::panic)]
-    let target_tip = {
-        let mut batch = BatchSim::new(Arc::clone(&model), 1);
-        {
-            let data = batch
-                .env_mut(0)
-                .unwrap_or_else(|| panic!("obstacle 6-DOF FK: no env 0"));
-            for (i, &q) in target_joints.iter().enumerate() {
-                data.qpos[i] = q;
-            }
-            data.forward(&model)
-                .unwrap_or_else(|e| panic!("obstacle 6-DOF FK failed: {e}"));
-        }
-        batch
-            .env(0)
-            .unwrap_or_else(|| panic!("obstacle 6-DOF FK: no env 0"))
-            .site_xpos[1] // fingertip is site 1 in obstacle MJCF
-    };
-
-    // Obstacle penalty parameters.
-    let lambda: f64 = 10.0;
-    let r_safe: f64 = 0.12;
-
-    let sub_steps: usize = 5;
-
-    let build_fn = Arc::new(
-        move |n_envs: usize, _seed: u64| -> Result<VecEnv, EnvError> {
-            let target = target_tip;
-            let lam = lambda;
-            let rs = r_safe;
-            VecEnv::builder(Arc::clone(&model), n_envs)
-                .observation_space(obs_space.clone())
-                .action_space(act_space.clone())
-                .reward(move |_m, d| {
-                    let fingertip = d.site_xpos[1];
-                    let obstacle = d.xpos[4];
-                    let dist_target = (fingertip - target).norm();
-                    let dist_obstacle = (fingertip - obstacle).norm();
-                    let penalty = lam * (rs - dist_obstacle).max(0.0);
-                    -dist_target - penalty
-                })
-                .done(move |_m, d| {
-                    let fingertip = d.site_xpos[1];
-                    let dist = (fingertip - target).norm();
-                    let mut vel_sq = 0.0;
-                    for j in 0..6 {
-                        vel_sq = d.qvel[j].mul_add(d.qvel[j], vel_sq);
-                    }
-                    dist < 0.05 && vel_sq.sqrt() < 1.0
-                })
-                .truncated(|_m, d| d.time > 5.0)
-                .sub_steps(sub_steps)
-                .build()
-        },
-    );
-
-    TaskConfig {
-        name: "obstacle-reaching-6dof".into(),
-        obs_dim,
-        act_dim,
-        obs_scale,
-        build_fn,
-    }
-}
-
-// ── tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::float_cmp,
-    clippy::let_underscore_must_use
-)]
-mod tests {
-    use super::*;
-    use crate::tensor::Tensor;
 
     // ── TaskConfig traits ─────────────────────────────────────────────
 
     #[test]
     fn task_config_debug_clone() {
-        let task = reaching_2dof();
+        // from_build_fn gives a TaskConfig without needing MJCF / VecEnv —
+        // build_fn is never called in this test.
+        let task: TaskConfig =
+            TaskConfig::from_build_fn("debug-clone", 4, 2, vec![1.0; 4], |_n_envs, _seed| {
+                Err(EnvError::ZeroSubSteps)
+            });
         let task2 = task.clone();
-        assert_eq!(task2.name(), "reaching-2dof");
+        assert_eq!(task2.name(), "debug-clone");
         assert!(!format!("{task:?}").is_empty());
     }
 
@@ -810,85 +385,11 @@ mod tests {
         require::<TaskConfig>();
     }
 
-    // ── 2-DOF ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn reaching_2dof_dims() {
-        let task = reaching_2dof();
-        assert_eq!(task.name(), "reaching-2dof");
-        assert_eq!(task.obs_dim(), 4);
-        assert_eq!(task.act_dim(), 2);
-        assert_eq!(task.obs_scale().len(), 4);
-    }
-
-    #[test]
-    fn reaching_2dof_build_and_reset() {
-        let task = reaching_2dof();
-        let mut env = task.build_vec_env(4, 0).unwrap();
-        let obs = env.reset_all().unwrap();
-        assert_eq!(obs.shape(), &[4, 4]);
-    }
-
-    #[test]
-    fn reaching_2dof_step() {
-        let task = reaching_2dof();
-        let mut env = task.build_vec_env(4, 0).unwrap();
-        let _ = env.reset_all().unwrap();
-
-        let actions = Tensor::zeros(&[4, 2]);
-        let result = env.step(&actions).unwrap();
-        assert_eq!(result.observations.shape(), &[4, 4]);
-        assert_eq!(result.rewards.len(), 4);
-        assert_eq!(result.dones.len(), 4);
-        assert_eq!(result.truncateds.len(), 4);
-    }
-
-    #[test]
-    fn reaching_2dof_multiple_builds() {
-        let task = reaching_2dof();
-        // build_vec_env can be called multiple times (Arc closure).
-        let mut env1 = task.build_vec_env(2, 0).unwrap();
-        let mut env2 = task.build_vec_env(8, 0).unwrap();
-        assert_eq!(env1.reset_all().unwrap().shape(), &[2, 4]);
-        assert_eq!(env2.reset_all().unwrap().shape(), &[8, 4]);
-    }
-
-    // ── 6-DOF ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn reaching_6dof_dims() {
-        let task = reaching_6dof();
-        assert_eq!(task.name(), "reaching-6dof");
-        assert_eq!(task.obs_dim(), 12);
-        assert_eq!(task.act_dim(), 6);
-        assert_eq!(task.obs_scale().len(), 12);
-    }
-
-    #[test]
-    fn reaching_6dof_build_and_reset() {
-        let task = reaching_6dof();
-        let mut env = task.build_vec_env(4, 0).unwrap();
-        let obs = env.reset_all().unwrap();
-        assert_eq!(obs.shape(), &[4, 12]);
-    }
-
-    #[test]
-    fn reaching_6dof_step() {
-        let task = reaching_6dof();
-        let mut env = task.build_vec_env(4, 0).unwrap();
-        let _ = env.reset_all().unwrap();
-
-        let actions = Tensor::zeros(&[4, 6]);
-        let result = env.step(&actions).unwrap();
-        assert_eq!(result.observations.shape(), &[4, 12]);
-        assert_eq!(result.rewards.len(), 4);
-    }
-
     // ── Builder ───────────────────────────────────────────────────────
 
     #[test]
     fn builder_missing_obs_space() {
-        let model = Arc::new(sim_mjcf::load_model(MJCF_2DOF).expect("MJCF"));
+        let model = test_model();
         let result = TaskConfig::builder("test", model)
             .obs_scale(vec![1.0])
             .reward(|_, _| 0.0)
@@ -900,7 +401,7 @@ mod tests {
 
     #[test]
     fn builder_obs_scale_mismatch() {
-        let model = Arc::new(sim_mjcf::load_model(MJCF_2DOF).expect("MJCF"));
+        let model = test_model();
         let obs = ObservationSpace::builder()
             .all_qpos()
             .all_qvel()
@@ -922,7 +423,7 @@ mod tests {
 
     #[test]
     fn builder_roundtrip() {
-        let model = Arc::new(sim_mjcf::load_model(MJCF_2DOF).expect("MJCF"));
+        let model = test_model();
         let obs = ObservationSpace::builder()
             .all_qpos()
             .all_qvel()
@@ -950,135 +451,6 @@ mod tests {
         assert_eq!(obs.shape(), &[2, 4]);
     }
 
-    // ── Obstacle 6-DOF ───────────────────────────────────────────────
-
-    #[test]
-    fn obstacle_reaching_6dof_dims() {
-        let task = obstacle_reaching_6dof();
-        assert_eq!(task.name(), "obstacle-reaching-6dof");
-        assert_eq!(task.obs_dim(), 21);
-        assert_eq!(task.act_dim(), 6);
-        assert_eq!(task.obs_scale().len(), 21);
-    }
-
-    #[test]
-    fn obstacle_reaching_6dof_build_and_reset() {
-        let task = obstacle_reaching_6dof();
-        let mut env = task.build_vec_env(4, 0).unwrap();
-        let obs = env.reset_all().unwrap();
-        assert_eq!(obs.shape(), &[4, 21]);
-    }
-
-    #[test]
-    fn obstacle_reaching_6dof_step() {
-        let task = obstacle_reaching_6dof();
-        let mut env = task.build_vec_env(4, 0).unwrap();
-        let _ = env.reset_all().unwrap();
-
-        let actions = Tensor::zeros(&[4, 6]);
-        let result = env.step(&actions).unwrap();
-        assert_eq!(result.observations.shape(), &[4, 21]);
-        assert_eq!(result.rewards.len(), 4);
-        assert_eq!(result.dones.len(), 4);
-        assert_eq!(result.truncateds.len(), 4);
-    }
-
-    #[test]
-    fn obstacle_reaching_6dof_reward_is_negative() {
-        // At rest, fingertip is far from target — reward should be negative.
-        let task = obstacle_reaching_6dof();
-        let mut env = task.build_vec_env(1, 0).unwrap();
-        let _ = env.reset_all().unwrap();
-        let actions = Tensor::zeros(&[1, 6]);
-        let result = env.step(&actions).unwrap();
-        assert!(result.rewards[0] < 0.0, "reward should be negative at rest");
-    }
-
-    #[test]
-    fn obstacle_penalty_fires_near_obstacle() {
-        // At rest (qpos=0), fingertip is at (0.75, 0, 0).
-        // Obstacle is at (0.730, 0.046, 0.030).
-        // Distance ≈ 0.058m, which is < r_safe (0.12) — penalty should fire.
-        let model = Arc::new(sim_mjcf::load_model(MJCF_6DOF_OBSTACLE).unwrap());
-        let mut batch = BatchSim::new(Arc::clone(&model), 1);
-        {
-            let data = batch.env_mut(0).unwrap();
-            data.forward(&model).unwrap();
-        }
-        let data = batch.env(0).unwrap();
-        let fingertip = data.site_xpos[1];
-        let obstacle = data.xpos[4];
-        let dist = (fingertip - obstacle).norm();
-        assert!(
-            dist < 0.12,
-            "rest-state fingertip should be within r_safe of obstacle, got {dist:.4}"
-        );
-
-        // Reward should include penalty (more negative than just -dist_target).
-        let target = data.site_xpos[0]; // target site
-        let dist_target = (fingertip - target).norm();
-        let penalty = 10.0 * (0.12 - dist).max(0.0);
-        let expected_reward = -dist_target - penalty;
-        assert!(
-            penalty > 0.0,
-            "penalty should be positive at rest, got {penalty:.4}"
-        );
-        assert!(
-            expected_reward < -dist_target,
-            "reward with penalty ({expected_reward:.4}) should be worse than without ({:.4})",
-            -dist_target
-        );
-    }
-
-    #[test]
-    fn obstacle_penalty_zero_when_far() {
-        // Set joints to target config — fingertip should be near target
-        // and far from obstacle (obstacle is between rest and target).
-        let model = Arc::new(sim_mjcf::load_model(MJCF_6DOF_OBSTACLE).unwrap());
-        let mut batch = BatchSim::new(Arc::clone(&model), 1);
-        {
-            let data = batch.env_mut(0).unwrap();
-            let target_joints = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
-            for (i, &q) in target_joints.iter().enumerate() {
-                data.qpos[i] = q;
-            }
-            data.forward(&model).unwrap();
-        }
-        let data = batch.env(0).unwrap();
-        let fingertip = data.site_xpos[1];
-        let obstacle = data.xpos[4];
-        let dist = (fingertip - obstacle).norm();
-        let penalty = 10.0_f64 * (0.12 - dist).max(0.0);
-        assert!(
-            penalty.abs() < 1e-10,
-            "penalty should be zero at target config, got {penalty:.6} (dist={dist:.4})"
-        );
-    }
-
-    #[test]
-    fn obstacle_site_ordering_verified() {
-        // Verify: site 0 = target (on worldbody), site 1 = fingertip (on seg3).
-        let model = Arc::new(sim_mjcf::load_model(MJCF_6DOF_OBSTACLE).unwrap());
-        let mut batch = BatchSim::new(Arc::clone(&model), 1);
-        {
-            let data = batch.env_mut(0).unwrap();
-            data.forward(&model).unwrap();
-        }
-        let data = batch.env(0).unwrap();
-
-        // Target site should be at the fixed position from the MJCF.
-        let target = data.site_xpos[0];
-        assert!((target.x - 0.681_474).abs() < 0.001);
-        assert!((target.y - 0.154_033).abs() < 0.001);
-        assert!((target.z - 0.101_028).abs() < 0.001);
-
-        // Fingertip at rest should be at (0.75, 0, 0).
-        let fingertip = data.site_xpos[1];
-        assert!((fingertip.x - 0.75).abs() < 0.001);
-        assert!(fingertip.y.abs() < 0.001);
-        assert!(fingertip.z.abs() < 0.001);
-    }
-
     // ── from_build_fn (custom seeded constructor) ─────────────────────
 
     /// Helper for `from_build_fn` tests: construct a trivial 2-DOF
@@ -1086,7 +458,7 @@ mod tests {
     /// is recorded into an outer channel by the closure that wraps
     /// this helper, not by the helper itself.
     fn build_trivial_2dof_vec_env(n_envs: usize) -> Result<VecEnv, EnvError> {
-        let model = Arc::new(sim_mjcf::load_model(MJCF_2DOF).unwrap());
+        let model = test_model();
         let obs = ObservationSpace::builder()
             .all_qpos()
             .all_qvel()
