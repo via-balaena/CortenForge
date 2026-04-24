@@ -35,9 +35,31 @@ pub struct ResidualCorrections;
 impl RewardBreakdown {
     /// Scalar composition per Part 1 Ch 01 composition rule. Consumed
     /// by downstream optimizers that need a scalar reward.
+    ///
+    /// **`NaN`-sentinel contract.** Fields carrying `f64::NAN` are
+    /// silently dropped from the sum (scope §2 1-tet gap: the skeleton
+    /// encodes "structurally undefined" as `NaN` on `pressure_uniformity`
+    /// and `coverage`). IEEE 754 makes `NaN × 0.0 = NaN`, so a plain
+    /// weighted sum would poison the output; this method branches on
+    /// `is_nan` instead. `SkeletonForwardMap::build_reward_on_tape`
+    /// mirrors the same branch at tape-build time so the on-tape
+    /// reward stays numerically consistent with `score_with`.
     #[must_use]
-    pub fn score_with(&self, _weights: &RewardWeights) -> f64 {
-        unimplemented!("skeleton phase 2")
+    pub fn score_with(&self, weights: &RewardWeights) -> f64 {
+        let mut acc = 0.0;
+        if !self.pressure_uniformity.is_nan() {
+            acc += weights.pressure_uniformity * self.pressure_uniformity;
+        }
+        if !self.coverage.is_nan() {
+            acc += weights.coverage * self.coverage;
+        }
+        if !self.peak_bound.is_nan() {
+            acc += weights.peak_bound * self.peak_bound;
+        }
+        if !self.stiffness_bound.is_nan() {
+            acc += weights.stiffness_bound * self.stiffness_bound;
+        }
+        acc
     }
 
     /// Sim-to-real correction composer per δ Ch 00 readout §3.

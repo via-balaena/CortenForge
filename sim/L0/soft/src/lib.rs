@@ -22,6 +22,7 @@
     clippy::missing_panics_doc
 )]
 
+pub mod autograd_ops;
 pub mod contact;
 pub mod differentiable;
 pub mod element;
@@ -31,6 +32,7 @@ pub mod observable;
 pub mod readout;
 pub mod solver;
 
+pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact};
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
@@ -39,7 +41,7 @@ pub use mesh::{Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, Vertex
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{
     EditResult, ForwardMap, GradientEstimate, ResidualCorrections, RewardBreakdown, RewardWeights,
-    SceneInitial, SoftScene,
+    SceneInitial, SkeletonForwardMap, SoftScene,
 };
 pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 

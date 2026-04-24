@@ -28,50 +28,21 @@
     clippy::similar_names
 )]
 
-use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
-    CpuNewtonSolver, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
+    CpuNewtonSolver, IndexOp, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver,
+    SolverConfig, Tet4,
 };
 
-// ── Test fixture: IndexOp ────────────────────────────────────────────────
-//
-// Scalarizes a 12-vector `Tensor<f64>` down to `x[idx]` — a shape-`[]`
-// `Tensor` — so `tape.backward` can seed with `1.0` at the scalar and
-// propagate back through `NewtonStepVjp`. Lives here because it is a
-// test-only concern (the production path composes via `Observable::
-// reward_breakdown` + `RewardWeights::score_with` in step 6).
+// Step-6 promoted `IndexOp` from a test-only fixture into production
+// (`sim_soft::autograd_ops::IndexOp`), so this test now imports the same
+// type that `SkeletonForwardMap::build_reward_on_tape` uses. Production
+// emits shape `[1]` (not `[]`) so it composes with chassis `mul` / `add`
+// against Stage-1 θ; `tape.backward` on a shape-`[1]` root still seeds
+// a single `1.0`, so the adjoint computed here is identical to the
+// step-5 baseline.
 
 const PARENT_LEN: usize = 12;
-
-#[derive(Debug)]
-struct IndexOp {
-    idx: usize,
-}
-
-impl VjpOp for IndexOp {
-    fn op_id(&self) -> &'static str {
-        "test::IndexOp"
-    }
-
-    fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
-        // Output is shape [] scalar; `tape.backward` seeds `ones(shape)`
-        // which is a length-1 buffer at shape [].
-        assert!(
-            cotangent.shape().is_empty(),
-            "IndexOp: cotangent must be shape [] scalar, got {:?}",
-            cotangent.shape()
-        );
-        assert!(parent_cotans.len() == 1);
-        assert!(
-            parent_cotans[0].shape() == [PARENT_LEN],
-            "IndexOp: parent must be shape [{PARENT_LEN}], got {:?}",
-            parent_cotans[0].shape()
-        );
-        let scalar_cot = cotangent.as_slice()[0];
-        parent_cotans[0].as_mut_slice()[self.idx] += scalar_cot;
-    }
-}
 
 // ── Shared scene builder ─────────────────────────────────────────────────
 
@@ -112,12 +83,17 @@ fn run_forward_backward(theta_val: f64) -> (f64, Vec<f64>, usize, f64) {
         .expect("Solver::step must populate x_final_var via push_custom");
 
     // L = x_final[11]. Push an IndexOp node that reduces the 12-vector
-    // x_final to the scalar `x_final[11]`; backward from the scalar seeds
-    // `1.0` at that node and propagates through IndexOp (→ one-hot [12])
-    // then NewtonStepVjp (→ scalar θ cotangent).
+    // x_final to the scalar `x_final[11]` (as a shape-`[1]` tensor);
+    // backward from the scalar seeds `1.0` at that node and propagates
+    // through IndexOp (→ one-hot [12]) then NewtonStepVjp (→ scalar θ
+    // cotangent).
     let l_val_scalar = tape.value_tensor(x_final_var).as_slice()[11];
-    let l_tensor = Tensor::from_slice(&[l_val_scalar], &[]);
-    let l_var = tape.push_custom(&[x_final_var], l_tensor, Box::new(IndexOp { idx: 11 }));
+    let l_tensor = Tensor::from_slice(&[l_val_scalar], &[1]);
+    let l_var = tape.push_custom(
+        &[x_final_var],
+        l_tensor,
+        Box::new(IndexOp::new(11, PARENT_LEN)),
+    );
 
     tape.backward(l_var);
     let grad_theta = tape.grad_tensor(theta_var).as_slice()[0];

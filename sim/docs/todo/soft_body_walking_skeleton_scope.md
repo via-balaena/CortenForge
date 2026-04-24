@@ -350,11 +350,12 @@ Surprises the skeleton stress-test surfaced in the book spec (BF-N) plus scaffol
 | BF-3 | Part 6 Ch 02:34 code sketch | `factor.solve_in_place(&mut minus_dr_dtheta.apply_t(&upstream))` is dimensionally inconsistent — $(\partial r / \partial \theta)^{\mathsf{T}}$ · upstream has shape $[n_\theta]$, cannot be RHS for $[n_\text{dof} \times n_\text{dof}]$ solve. Sketch's order of operations is inverted. Correct sequence: (1) λ = A^{-1} · upstream via `solve_in_place`, (2) result = ±(∂r/∂θ)^T · λ. The math at lines 13-15 is fine; only the code sketch needs fixing. | Pseudocode correctness |
 | BF-4 | Part 11 Ch 01 00-core.md:121 + 01-composition.md:66 | `Differentiable::register_vjp(forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>)` assumes a key-indexed VJP registry that doesn't match the chassis API shipped in PR #213. Chassis's model is `Tape::push_custom(value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var` — VJP is bundled with the node at forward-pass time, not registered-by-key-then-looked-up. No `TapeNodeKey` type exists in `sim-ml-chassis`. Also, register_vjp taking an `instance` (Box<dyn VjpOp>) rather than a factory/closure makes per-call primal-data capture awkward. **Fix options:** (a) drop `register_vjp` from the trait; Material/Element/ContactModel methods directly return configured `Box<dyn VjpOp>` instances that Solver::step passes to push_custom; (b) keep register_vjp but make it a factory registration with signature like `register_vjp(key: OpClassId, factory: Box<dyn Fn(&PrimalData) -> Box<dyn VjpOp>>)`. Skeleton picks (a) de facto by stubbing register_vjp and creating VJPs inline. | Trait-signature / platform-API mismatch |
 | BF-5 | Part 2 Ch 04 01-tangent.md + 03-impl.md:57 | 9×9 tangent flattening convention is underspecified. 01-tangent.md asserts the tangent is "flattened 9×9 symmetric" but does not state the `(i,j,k,l) → (row,col)` index mapping. 03-impl.md:57 pseudocode comment says "row-major into a 9x9," which is ambiguous between F-flattening (contradicting scope §14's "column-major F-flattening per spec") and 9×9 storage layout (contradicting nalgebra's column-major `SMatrix`). Skeleton commits the scope-§14 convention `row = i + 3j, col = k + 3l` (column-major F-flattening, nalgebra-native 9×9 storage) in `sim-soft`'s `Material` trait docstring + `NeoHookean::tangent`, verified by the FD-vs-analytic test at `h = 1.5e-8`. Book-edit pass should state the index mapping explicitly in 01-tangent.md §"Per-element block sizes" and rewrite the 03-impl.md:57 comment. | Pseudocode / spec-gap |
+| BF-6 | Part 11 Ch 01 00-core.md + 01-composition.md + [`Differentiable::ift_adjoint`](../../L0/soft/src/differentiable/mod.rs) | `Differentiable::ift_adjoint(&self, tape: &Tape, step, upstream: &Tensor) -> Tensor` is designed around a manual-VJP mental model (seed an intermediate cotangent at `x_final`, propagate back to θ). It does not fit the chassis `push_custom` + `tape.backward(scalar_root)` model: (a) `&Tape` is immutable so `tape.backward` cannot be called inside, (b) chassis exposes no primitive to seed cotangent at a non-root `Var` with arbitrary upstream, (c) the `push_custom` design already bundles IFT adjoint computation inside `NewtonStepVjp::vjp` — it fires automatically during `tape.backward`, not as a separate call site. Same root cause as BF-4: a book API predating PR #213's autograd model. Skeleton picks the same resolution: stub `ift_adjoint`, and have `SkeletonForwardMap::evaluate` drive `tape.backward(reward_var)` + `tape.grad_tensor(theta_var)` directly. Book-edit: either drop `ift_adjoint` from the trait (mirror of BF-4 fix option (a)), or repurpose with a signature matching the `push_custom` model (e.g. `ift_adjoint(&mut Tape, loss_var: Var, theta_var: Var)` — but that's already just `tape.backward + grad_tensor`, so arguably redundant). | Trait-signature / platform-API mismatch |
 | SD-1 | `sim/L0/soft/Cargo.toml` | Scaffold Cargo.toml omits §4's `[features]` table (`default = []`, `gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]`) and the three optional deps. Closes with §9 step 7's `tests/invariant_6_gpu_probe.rs` commit, where building the feature without a probe to gate would be meaningless infrastructure. Green-checklist item 2 (`cargo build --features gpu-probe`) unreachable until then — non-blocking for steps 3–6 which are CPU-only. | Scaffold deferral |
 | SD-2 | `sim/L0/soft/src/readout/scene.rs` | ~~Step-3b commit (`Tet4` + `SingleTetMesh`) did not add `SoftScene::one_tet_cube()` constructor.~~ **CLOSED by §9 step 4 Solver commit** — `SoftScene::one_tet_cube()` now returns `(SingleTetMesh, SceneInitial)` with rest-configuration flattened to 12-entry `Tensor<f64>` + zero `v_prev`. | Scaffold deferral — closed |
 | SD-3 | `sim/docs/todo/soft_body_walking_skeleton_scope.md §2` | "Reasonable magnitudes: $\|\mathbf{t}\| \sim 10$–$30$ N for ~5–15% strain per step" underestimates the condensed stiffness by ~5×. FE-derived: $A_{33}[2,2] = m/\Delta t^2 + (2\mu + \lambda)\,V/L^2 \approx 10^4$ N/m at rest, giving $\delta z \approx 10/10^4 = 10^{-3}$ m ≈ 1% strain at 10 N. Scope scaling `K ~ μV/L²` uses μ (shear modulus) where the constrained-modulus coefficient $(2\mu + \lambda) = 6\mu$ for our $\lambda = 4\mu$ would be accurate. Skeleton's `solver_convergence` test widens band to (0.5 mm, 1.5 mm) at 10 N — passing, no blocker. Book-iteration pass: either correct §2's strain estimate to ~1% at 10 N (≈7% at 70 N for 15% bar), or raise Stage-1 θ to ~100 N to preserve the 5-15% claim. | Scope-memo value drift |
 
-BF-1..BF-5 are not skeleton-blocking — the skeleton implements from the underlying math + the verified faer/chassis APIs, stubbing book methods whose shape doesn't match shipped infrastructure. They're book-edit backlog for whenever Pass 2/3 touches these chapters. SD-1 closes inside the skeleton PR sequence; SD-2 closed at §9 step 4; SD-3 is a scope-memo correction, to be resolved by book-iteration pass per §11 S-10.
+BF-1..BF-6 are not skeleton-blocking — the skeleton implements from the underlying math + the verified faer/chassis APIs, stubbing book methods whose shape doesn't match shipped infrastructure. They're book-edit backlog for whenever Pass 2/3 touches these chapters. SD-1 closes inside the skeleton PR sequence; SD-2 closed at §9 step 4; SD-3 is a scope-memo correction, to be resolved by book-iteration pass per §11 S-10.
 
 ---
 
@@ -506,28 +507,67 @@ pub type SkeletonSolver = solver::CpuNewtonSolver<
 **ForwardMap composition — the only `Box<dyn Solver<_>>`:**
 
 ```rust
-// sim-soft/src/readout/mod.rs
+// sim-soft/src/readout/skeleton_forward_map.rs
 pub struct SkeletonForwardMap {
-    solver:       Box<dyn Solver<Tape = CpuTape>>,
-    differential: CpuDifferentiable,
-    observable:   BasicObservable,
-    initial:      SceneInitial,  // x_0, v_0, mesh refs
+    solver:            Box<dyn Solver<Tape = CpuTape>>,
+    observable:        BasicObservable,
+    initial:           SceneInitial,     // x_0, v_0 flattened
+    weights:           RewardWeights,    // reward-composition coefficients
+    stashed_theta_var: Option<Var>,      // set by evaluate, read by gradient
 }
 
 impl ForwardMap for SkeletonForwardMap {
     fn evaluate(&mut self, theta: &Tensor<f64>, tape: &mut Tape) -> (RewardBreakdown, EditResult) {
         let theta_var = tape.param_tensor(theta.clone());
+        // Snapshot dt separately: &mut self.solver (step) + &self.solver (current_dt)
+        // cannot overlap; evaluating dt first sidesteps the double-borrow.
+        let dt = self.solver.current_dt();
         let step = self.solver.step(tape, &self.initial.x_prev, &self.initial.v_prev,
-                                    theta_var, self.solver.current_dt());
-        let reward = self.observable.reward_breakdown(&step, theta);
-        (reward, EditResult::ParameterOnly)
+                                    theta_var, dt);
+        let rb = self.observable.reward_breakdown(&step, theta);
+        let x_final_var = step.x_final_var
+            .expect("Solver::step must populate x_final_var via push_custom");
+        // Build on-tape reward scalar: mirrors RewardBreakdown::score_with
+        // using chassis mul/add + sim-soft IndexOp/DivOp (autograd_ops.rs)
+        // so tape.backward has a differentiable root.
+        let reward_var = self.build_reward_on_tape(tape, x_final_var, theta_var, &rb);
+        tape.backward(reward_var);
+        self.stashed_theta_var = Some(theta_var);
+        (rb, EditResult::ParameterOnly)
     }
-    fn gradient(&mut self, theta: &Tensor<f64>, tape: &Tape)
+    fn gradient(&mut self, _theta: &Tensor<f64>, tape: &Tape)
         -> (Tensor<f64>, GradientEstimate) {
-        // call self.differential.ift_adjoint(...), return Exact
+        // BF-6: Differentiable::ift_adjoint's signature doesn't fit
+        // push_custom's autograd model. This impl drives tape.backward
+        // inside evaluate instead; gradient just reads the stashed result.
+        let theta_var = self.stashed_theta_var
+            .expect("SkeletonForwardMap::gradient called before evaluate");
+        (tape.grad_tensor(theta_var).clone(), GradientEstimate::Exact)
     }
 }
 ```
+
+**On-tape reward composition.** `build_reward_on_tape` is private to
+`SkeletonForwardMap`; it mirrors `RewardBreakdown::score_with`'s branch
+logic but emits chassis autograd primitives so `tape.backward` has a
+differentiable scalar root. The two finite fields on the skeleton scene
+each flow through one sim-soft custom VJP:
+
+- `peak_bound = x_final[11]` — [`IndexOp`](../../L0/soft/src/autograd_ops.rs)
+  extracts one element of a `[12]` parent tensor as shape `[1]`.
+- `stiffness_bound = θ / x_final[11]` — [`DivOp`](../../L0/soft/src/autograd_ops.rs)
+  elementwise scalar divide on shape `[1]`.
+
+Both ops are promoted from the step-5 test fixture into production;
+chassis ships no `div` or index-extract primitive, so sim-soft owns them.
+`pressure_uniformity` and `coverage` stay NaN-sentinel per §2; the
+on-tape builder skips them the same way `score_with` does.
+
+**Evaluate/gradient split.** `gradient` takes `&Tape` (immutable), so it
+cannot drive `tape.backward`. Consequently `evaluate` does both forward
+**and** backward, stashing `theta_var` on `&mut self`; `gradient` only
+reads the populated cotangent. Caller contract: pass the same tape to
+`gradient` that `evaluate` wrote to, and never call `gradient` first.
 
 **Composition summary:**
 
