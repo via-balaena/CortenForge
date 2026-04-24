@@ -8,6 +8,14 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# I-6b probe: opt-in wgpu build-graph tractability + buffer round-trip test.
+# NOT a Phase-E GPU feature flag — real chassis-GPU work (B.5) will land
+# under a separate `gpu` feature. Locked to the round-trip test in
+# `tests/invariant_6_gpu_probe.rs`. See scope §1 I-6 clarification.
+gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
+
 [dependencies]
 # Chassis tape, VjpOp, Tensor<f64> — shipped in PR #213.
 sim-ml-chassis = { workspace = true }
@@ -23,6 +31,12 @@ nalgebra = { workspace = true }
 # `std` + `sparse-linalg` is the minimum that exposes Llt<I, f64> +
 # solve_in_place_with_conj. All features remain pure Rust.
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
+
+# GPU probe deps — feature-gated via `gpu-probe`. Skeleton default build
+# resolves with zero wgpu / bytemuck / pollster in the graph (scope §1 I-6a).
+wgpu = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [dev-dependencies]
 # 5-digit gradcheck tolerance assertions (Phase-B tests).

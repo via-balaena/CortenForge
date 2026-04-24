@@ -7954,9 +7954,12 @@ name = "sim-soft"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "bytemuck",
  "faer",
  "nalgebra",
+ "pollster",
  "sim-ml-chassis",
+ "wgpu",
 ]
 
 [[package]]
