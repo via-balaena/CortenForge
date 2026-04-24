@@ -3583,6 +3583,7 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-ml-chassis",
+ "sim-rl",
 ]
 
 [[package]]
@@ -3593,6 +3594,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-rl",
 ]
 
 [[package]]
@@ -3722,6 +3724,7 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-ml-chassis",
+ "sim-rl",
 ]
 
 [[package]]
@@ -3746,6 +3749,7 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-ml-chassis",
+ "sim-rl",
 ]
 
 [[package]]
@@ -3759,6 +3763,7 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-ml-chassis",
+ "sim-rl",
 ]
 
 [[package]]
@@ -3772,6 +3777,7 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-ml-chassis",
+ "sim-rl",
 ]
 
 [[package]]
@@ -3794,6 +3800,7 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-ml-chassis",
+ "sim-rl",
 ]
 
 [[package]]
@@ -7934,6 +7941,7 @@ dependencies = [
  "approx 0.5.1",
  "rand 0.9.2",
  "serde_json",
+ "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
 ]

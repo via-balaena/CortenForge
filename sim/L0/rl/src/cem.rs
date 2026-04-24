@@ -279,7 +279,9 @@ use sim_ml_chassis::rollout::Trajectory;
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use sim_ml_chassis::{LinearPolicy, reaching_2dof};
+    use sim_ml_chassis::LinearPolicy;
+
+    use crate::tasks::reaching_2dof;
 
     #[test]
     fn cem_name() {

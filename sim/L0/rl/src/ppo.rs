@@ -492,7 +492,9 @@ impl Algorithm for Ppo {
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use sim_ml_chassis::{LinearPolicy, LinearValue, reaching_2dof};
+    use sim_ml_chassis::{LinearPolicy, LinearValue};
+
+    use crate::tasks::reaching_2dof;
 
     fn make_ppo() -> (Ppo, sim_ml_chassis::TaskConfig) {
         let task = reaching_2dof();

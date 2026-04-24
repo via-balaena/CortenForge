@@ -36,12 +36,11 @@ use rand::rngs::StdRng;
 use sim_ml_chassis::{
     Activation, Algorithm, AutogradPolicy, AutogradQ, AutogradStochasticPolicy, AutogradValue,
     Competition, LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue, MlpPolicy, MlpQ,
-    MlpValue, OptimizerConfig, RunResult, TaskConfig, TrainingBudget, obstacle_reaching_6dof,
-    reaching_2dof, reaching_6dof,
+    MlpValue, OptimizerConfig, RunResult, TaskConfig, TrainingBudget,
 };
 use sim_rl::{
     Cem, CemHyperparams, Ppo, PpoHyperparams, Reinforce, ReinforceHyperparams, Sac, SacHyperparams,
-    Td3, Td3Hyperparams,
+    Td3, Td3Hyperparams, obstacle_reaching_6dof, reaching_2dof, reaching_6dof,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────

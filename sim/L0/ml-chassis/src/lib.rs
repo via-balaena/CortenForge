@@ -37,6 +37,9 @@ pub mod tensor;
 pub mod value;
 pub mod vec_env;
 
+#[cfg(test)]
+mod test_stock_tasks;
+
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use artifact::{
     ArtifactError, CURRENT_VERSION, NetworkDescriptor, NetworkKind, NetworkSnapshot,
@@ -63,9 +66,7 @@ pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };
 pub use stats::gaussian_log_prob;
-pub use task::{
-    TaskConfig, TaskConfigBuilder, obstacle_reaching_6dof, reaching_2dof, reaching_6dof,
-};
+pub use task::{TaskConfig, TaskConfigBuilder};
 pub use tensor::{Tensor, TensorSpec};
 pub use value::{QFunction, ValueFn, soft_update, soft_update_policy, soft_update_value};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};

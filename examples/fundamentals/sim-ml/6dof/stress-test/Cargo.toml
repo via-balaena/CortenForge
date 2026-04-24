@@ -14,6 +14,8 @@ sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
 # ML algorithm chassis: Algorithm, VecEnv, Policy traits
 sim-ml-chassis = { workspace = true }
+# MJCF-backed stock task factories (reaching_2dof, reaching_6dof, ...)
+sim-rl = { workspace = true }
 
 [lints]
 workspace = true

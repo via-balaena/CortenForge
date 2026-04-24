@@ -24,8 +24,9 @@ use rand::rngs::StdRng;
 use sim_core::validation::{Check, print_report};
 use sim_ml_chassis::{
     Activation, AutogradStochasticPolicy, Environment, LinearPolicy, MlpPolicy, Policy, SimEnv,
-    StochasticPolicy, Tensor, VecEnv, reaching_6dof,
+    StochasticPolicy, Tensor, VecEnv,
 };
+use sim_rl::reaching_6dof;
 
 // ── Check 1: VecEnv parity ──────────────────────────────────────────────
 

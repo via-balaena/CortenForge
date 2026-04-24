@@ -11,16 +11,18 @@ rust-version.workspace = true
 [dependencies]
 # RNG traits — StdRng + SeedableRng for per-epoch sampling in all 5 algorithms
 rand             = { workspace = true }
+# BatchSim for FK target computation in stock task factories (tasks.rs)
+sim-core         = { workspace = true }
 # Algorithm chassis — Algorithm trait, VecEnv, Policy, BestTracker, ArtifactError, ...
 sim-ml-chassis   = { workspace = true }
+# MJCF model loading for stock task factories (reaching_2dof, reaching_6dof, ...)
+sim-mjcf         = { workspace = true }
 
 [dev-dependencies]
 # Float tolerance assertions in tests/competition.rs
 approx           = { workspace = true }
 # JSON round-trip checkpoint test in tests/best_tracker_cem_integration.rs
 serde_json       = { workspace = true }
-# MJCF model loading for tests/{custom_task,competition}.rs fixtures
-sim-mjcf         = { workspace = true }
 
 [lints]
 workspace = true

@@ -11,10 +11,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use rand::SeedableRng;
-use sim_ml_chassis::{
-    Activation, Algorithm, AutogradPolicy, OptimizerConfig, TrainingBudget, reaching_2dof,
-};
-use sim_rl::{Reinforce, ReinforceHyperparams};
+use sim_ml_chassis::{Activation, Algorithm, AutogradPolicy, OptimizerConfig, TrainingBudget};
+use sim_rl::{Reinforce, ReinforceHyperparams, reaching_2dof};
 
 #[test]
 fn relu_xavier_convergence_2dof() {

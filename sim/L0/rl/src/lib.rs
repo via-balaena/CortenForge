@@ -14,6 +14,7 @@ pub mod cem;
 pub mod ppo;
 pub mod reinforce;
 pub mod sac;
+pub mod tasks;
 pub mod td3;
 
 // Algorithm exports.
@@ -21,6 +22,7 @@ pub use cem::{Cem, CemHyperparams};
 pub use ppo::{Ppo, PpoHyperparams};
 pub use reinforce::{Reinforce, ReinforceHyperparams};
 pub use sac::{Sac, SacHyperparams};
+pub use tasks::{obstacle_reaching_6dof, reaching_2dof, reaching_6dof};
 pub use td3::{Td3, Td3Hyperparams};
 // Note: `gaussian_log_prob` is NOT re-exported from sim-rl. It lives in
 // `sim_ml_chassis::stats` post-relocation (§3.6) and is imported from
@@ -40,7 +42,7 @@ pub use sim_ml_chassis::mlp::{MlpPolicy, MlpQ, MlpValue};
 pub use sim_ml_chassis::optimizer::OptimizerConfig;
 pub use sim_ml_chassis::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 pub use sim_ml_chassis::space::{ActionSpace, ObservationSpace};
-pub use sim_ml_chassis::task::{TaskConfig, reaching_2dof, reaching_6dof};
+pub use sim_ml_chassis::task::TaskConfig;
 pub use sim_ml_chassis::tensor::Tensor;
 pub use sim_ml_chassis::value::{QFunction, ValueFn};
 pub use sim_ml_chassis::vec_env::VecEnv;
