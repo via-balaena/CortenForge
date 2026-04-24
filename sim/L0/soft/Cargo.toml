@@ -8,6 +8,17 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+# Grader F.3 opt-in: the six load-bearing invariants (I-1..I-6) are all
+# tested in `tests/*.rs` per scope §6 test-harness commitment — the only
+# inline `#[cfg(test)] mod tests` covers two `autograd_ops` VJP helpers
+# (`IndexOp`, `DivOp`) which aren't on the invariant surface. `cargo llvm-cov
+# --lib` coverage is structurally pinned at ~12% because the unimplemented
+# Phase-B/C/E stubs are unreachable until their phases land. Coverage
+# re-enters when Phase B fills in non-stub bodies. Matches sim-therm-env /
+# sim-tests precedent. Full reasoning in scope §7 item 1 + §13 SD-5.
+[package.metadata.cortenforge]
+grading_profile = "integration-only"
+
 [features]
 default = []
 # I-6b probe: opt-in wgpu build-graph tractability + buffer round-trip test.

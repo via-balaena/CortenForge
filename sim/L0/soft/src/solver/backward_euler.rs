@@ -7,8 +7,8 @@
 //! Tangent \\(A = \partial r / \partial x = M / \Delta t^2 + K(x)\\) with
 //! \\(K = V \cdot B^{\mathsf{T}} \mathbb{C} B\\) assembled per
 //! [`Part 3 Ch 00 00-tet4.md`][tet4]. Only the free-DOF block (scope §2
-//! Dirichlet: `v_0`, `v_1`, `v_2` pinned) is factored — see
-//! [`FREE_OFFSET`].
+//! Dirichlet: `v_0`, `v_1`, `v_2` pinned) is factored — the free DOFs
+//! start at index `FREE_OFFSET = 9` (private module constant).
 //!
 //! Solve path: faer `SymbolicLlt::try_new` once per `step`-call, then
 //! `Llt::try_new_with_symbolic` + `solve_in_place_with_conj` per Newton
@@ -509,20 +509,31 @@ fn assemble_internal_force(
     f_int
 }
 
-/// External force in 12-DOF layout. Stage-1 θ parameterization
-/// (scope §2 R-6): θ is a length-1 tensor = traction magnitude along
-/// +ẑ applied to `v_3` (the only free vertex). Stage 2 (length-3 θ)
-/// will widen this to the full `(t_x, t_y, t_z)` vector.
+/// External force in 12-DOF layout. Scope §2 R-6 θ parameterization:
+///
+/// - **Stage 1** — `θ ∈ ℝ¹`, traction magnitude along `+ẑ` at `v_3`:
+///   `f_ext[11] = θ[0]`, else `0`.
+/// - **Stage 2** — `θ ∈ ℝ³`, full traction vector `(t_x, t_y, t_z)` at
+///   `v_3`: `f_ext[9..12] = θ[0..3]`, else `0`.
+///
+/// DOFs 9, 10, 11 are `v_3`'s x, y, z under vertex-major layout. The
+/// corresponding `∂r/∂θ` closed forms live in [`NewtonStepVjp::vjp`].
 fn external_force(theta: &Tensor<f64>) -> [f64; N_DOF] {
+    let theta_slice = theta.as_slice();
+    let n = theta_slice.len();
     assert!(
-        theta.as_slice().len() == 1,
-        "Stage-1 skeleton θ is a length-1 tensor (magnitude along +ẑ), got shape {:?}",
-        theta.shape()
+        n == 1 || n == 3,
+        "skeleton θ must have length 1 (Stage 1, +ẑ magnitude) or length 3 \
+         (Stage 2, full force vector); got length {n}"
     );
     let mut f_ext = [0.0; N_DOF];
-    // DOFs 9, 10, 11 are v_3's x, y, z under vertex-major layout.
-    // Stage 1 applies the magnitude along +ẑ: f_ext[11] = θ[0].
-    f_ext[FREE_OFFSET + 2] = theta.as_slice()[0];
+    if n == 1 {
+        f_ext[FREE_OFFSET + 2] = theta_slice[0];
+    } else {
+        f_ext[FREE_OFFSET] = theta_slice[0];
+        f_ext[FREE_OFFSET + 1] = theta_slice[1];
+        f_ext[FREE_OFFSET + 2] = theta_slice[2];
+    }
     f_ext
 }
 

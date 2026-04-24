@@ -21,16 +21,24 @@
 //!    factor the forward Newton step converged with).
 //! 2. Contract  `∂L/∂θ = -λ^T · (∂r/∂θ)_free`.
 //!
-//! **Stage-1 `∂r/∂θ`.** For the skeleton scene (scope §2 R-6), θ is a
-//! length-1 scalar = +ẑ traction magnitude at `v_3`. The external force
-//! is `f_ext[11] = θ`, else `0`, so
+//! **Stage-1 `∂r/∂θ`.** θ is a length-1 scalar = +ẑ traction magnitude
+//! at `v_3`. The external force is `f_ext[11] = θ`, else `0`, so
 //!
 //! ```text
 //!     ∂f_ext/∂θ  =  e_11     →     ∂r/∂θ  =  -e_11     →     (∂r/∂θ)_free = [0, 0, -1]
 //! ```
 //!
-//! Substituting: `grad_θ = -λ^T · [0, 0, -1] = +λ[2]`. Stage-2 (full force
-//! vector) widens `∂r/∂θ` to `-I_3` on free DOFs; deferred per SQ2.
+//! Substituting: `grad_θ = -λ^T · [0, 0, -1] = +λ[2]`.
+//!
+//! **Stage-2 `∂r/∂θ`.** θ is a length-3 full traction vector
+//! `(t_x, t_y, t_z)` at `v_3`. `f_ext[9..12] = θ[0..3]`, else `0`, so
+//!
+//! ```text
+//!     ∂f_ext/∂θ  =  I₃ on rows 9..12   →   (∂r/∂θ)_free = -I₃
+//! ```
+//!
+//! Substituting: `grad_θ = -λ^T · (-I₃) = +λ` (full 3-vector). Closed-form
+//! accumulation for both stages lives in `vjp`.
 //!
 //! **Factor reuse.** The `Llt<usize, f64>` stashed here comes from
 //! `CpuNewtonSolver::factor_at_position` at `x_final`, not from the last
@@ -39,6 +47,11 @@
 //! and adjoint-solve. A future asymmetric material would need
 //! `solve_transpose_in_place` here. I-3 (factor ownership) verified
 //! operationally in `tests/invariant_3_factor.rs`.
+
+// `register_vjp`, `ift_adjoint`, `time_adjoint`, `fd_wrapper` are all
+// `unimplemented!("skeleton phase 2 — ...")` by design (BF-4 / BF-6 +
+// Phase E+/G deferrals); real bodies land when their phases do.
+#![allow(clippy::unimplemented)]
 
 use std::fmt;
 
@@ -112,8 +125,11 @@ impl Differentiable for CpuDifferentiable {
 /// solves the adjoint system `A · λ = g_free` and contracts against
 /// Stage-1 `∂r/∂θ` in closed form.
 ///
-/// Stage-1 θ (length-1 scalar, +ẑ traction) → `∂r/∂θ` restricted to free
-/// DOFs is `[0, 0, -1]`; the closed-form accumulation lives in `vjp`.
+/// Handles both θ stages (scope §2 R-6):
+/// - Stage 1 (length-1 scalar, +ẑ traction) → `(∂r/∂θ)_free = [0, 0, -1]`,
+///   closed-form `grad_θ = +λ[2]`.
+/// - Stage 2 (length-3 full vector) → `(∂r/∂θ)_free = -I₃`, closed-form
+///   `grad_θ = +λ` as a 3-vector.
 pub struct NewtonStepVjp {
     factor: Llt<usize, f64>,
 }
@@ -158,9 +174,16 @@ impl VjpOp for NewtonStepVjp {
             "NewtonStepVjp: expected 1 parent (theta_var), got {}",
             parent_cotans.len(),
         );
+        let parent_len = parent_cotans[0].shape().len();
+        let parent_dim = if parent_len == 1 {
+            parent_cotans[0].shape()[0]
+        } else {
+            0
+        };
         assert!(
-            parent_cotans[0].shape() == [1],
-            "NewtonStepVjp: Stage-1 θ cotangent must have shape [1], got {:?}",
+            parent_len == 1 && (parent_dim == 1 || parent_dim == 3),
+            "NewtonStepVjp: θ cotangent must have shape [1] (Stage 1) or [3] \
+             (Stage 2), got {:?}",
             parent_cotans[0].shape(),
         );
 
@@ -177,12 +200,15 @@ impl VjpOp for NewtonStepVjp {
         self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
         // `rhs` now holds λ.
 
-        // Contract against (∂r/∂θ)_free = [0, 0, -1]:
-        //   grad_θ  =  -λ^T · (∂r/∂θ)_free
-        //          =  -( λ[0]·0 + λ[1]·0 + λ[2]·(-1) )
-        //          =  +λ[2]
-        //
-        // Accumulate (`+=` per VjpOp contract), not overwrite.
-        parent_cotans[0].as_mut_slice()[0] += rhs[2];
+        let parent_slice = parent_cotans[0].as_mut_slice();
+        if parent_dim == 1 {
+            // Stage 1: (∂r/∂θ)_free = [0, 0, -1] → grad_θ = +λ[2].
+            parent_slice[0] += rhs[2];
+        } else {
+            // Stage 2: (∂r/∂θ)_free = -I₃ → grad_θ = +λ (full 3-vector).
+            parent_slice[0] += rhs[0];
+            parent_slice[1] += rhs[1];
+            parent_slice[2] += rhs[2];
+        }
     }
 }

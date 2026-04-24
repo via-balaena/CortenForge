@@ -6,6 +6,11 @@
 //! `stiffness_bound` are populated from `StressField` + material
 //! tangent eigenspectrum.
 
+// `apply_residuals` is `unimplemented!("skeleton phase 2")` by design;
+// sim-to-real correction composition is post-Phase-I per γ Ch 03/04.
+// Module-level allow matches the `lib.rs` override.
+#![allow(clippy::unimplemented)]
+
 use super::RewardWeights;
 
 /// Per-term reward contributions. Scalar composition via `score_with`;

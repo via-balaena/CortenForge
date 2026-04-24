@@ -152,6 +152,8 @@ impl SkeletonForwardMap {
 }
 
 impl ForwardMap for SkeletonForwardMap {
+    // `x_final_var` is populated by `Solver::step`'s `push_custom` call —
+    // a missing Var here is a contract violation, not a runtime branch.
     #[allow(clippy::expect_used)]
     fn evaluate(&mut self, theta: &Tensor<f64>, tape: &mut Tape) -> (RewardBreakdown, EditResult) {
         let theta_var = tape.param_tensor(theta.clone());
@@ -180,6 +182,8 @@ impl ForwardMap for SkeletonForwardMap {
         (reward_breakdown, EditResult::ParameterOnly)
     }
 
+    // Caller must call `evaluate` before `gradient`; an unstashed theta_var
+    // here is a caller-contract violation, not runtime-recoverable state.
     #[allow(clippy::expect_used)]
     fn gradient(&mut self, _theta: &Tensor<f64>, tape: &Tape) -> (Tensor<f64>, GradientEstimate) {
         let theta_var = self

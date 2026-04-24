@@ -112,6 +112,8 @@ impl VjpOp for DivOp {
         "sim_soft::DivOp"
     }
 
+    // Shape / divide-by-zero assertions panic because they represent
+    // programmer bugs, not runtime-recoverable state.
     #[allow(clippy::panic)]
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
         assert!(
