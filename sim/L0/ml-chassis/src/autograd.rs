@@ -65,17 +65,22 @@ use crate::tensor::Tensor;
 /// physics-backed Newton replay, faer factorizations, sparse matvecs.
 ///
 /// Implementors stash whatever primal data the VJP needs (input tensors,
-/// cached factorizations, integer tables) at construction time.
+/// cached factorizations, integer tables) at construction time. Parent
+/// tape indices are tracked by the tape itself: callers pass parents as
+/// `&[Var]` to [`Tape::push_custom`], and the backward pass feeds
+/// `parent_cotans` to [`vjp`](Self::vjp) in the same order — matching
+/// JAX's `custom_vjp` and `PyTorch`'s `autograd.Function`, where the
+/// framework owns parent tracking rather than the op.
 ///
 /// # Contract
 ///
-/// - [`parents`](Self::parents) returns parent node indices in declaration
-///   order; duplicates are permitted (fan-in with shared parents).
 /// - [`vjp`](Self::vjp) receives a `cotangent` (the gradient flowing into
 ///   this node's output) and `parent_cotans`, a mutable slice of the same
-///   length as [`parents`](Self::parents). Slots are zero-initialized by
-///   the caller with shapes matching the parent values. Implementors
-///   accumulate (`+=`) their parent contributions into these slots.
+///   length as the `parents` slice passed to [`Tape::push_custom`]. Slot
+///   `k` corresponds to `parents[k]`; duplicates are permitted (fan-in
+///   with shared parents). Slots are zero-initialized by the caller with
+///   shapes matching the parent values. Implementors add (not overwrite)
+///   their contributions — `parent_cotans[k] += ∂f/∂x_k · cot`.
 /// - [`op_id`](Self::op_id) returns a stable string identity. Used today
 ///   for debug/logging; futureproofs potential tape serialization.
 ///
@@ -86,16 +91,13 @@ pub trait VjpOp: Send + Sync + Debug {
     /// string literal, e.g. `"sim_soft::autograd::CheckpointedStep"`.
     fn op_id(&self) -> &'static str;
 
-    /// Parent node indices on the tape, in declaration order. Duplicates
-    /// allowed (fan-in with shared parents).
-    fn parents(&self) -> &[u32];
-
     /// Compute parent cotangents and accumulate them into `parent_cotans`.
     ///
-    /// `parent_cotans.len() == self.parents().len()`; slot `k` corresponds
-    /// to `self.parents()[k]`. Slots are zero-initialized by the caller
-    /// with shapes matching the parent values. Implementors add (not
-    /// overwrite) their contributions — `parent_cotans[k] += ∂f/∂x_k · cot`.
+    /// `parent_cotans.len()` matches the `parents` slice passed to
+    /// [`Tape::push_custom`]; slot `k` corresponds to `parents[k]`. Slots
+    /// are zero-initialized by the caller with shapes matching the parent
+    /// values. Implementors add (not overwrite) their contributions —
+    /// `parent_cotans[k] += ∂f/∂x_k · cot`.
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]);
 }
 
@@ -159,8 +161,13 @@ enum BackwardOp {
         rule: BinaryRule,
     },
     /// Custom VJP. Used for ops that can't be expressed as primitive
-    /// compositions (e.g. sim-soft physics ops).
-    Custom(Box<dyn VjpOp>),
+    /// compositions (e.g. sim-soft physics ops). Parents are tracked by
+    /// the tape at [`Tape::push_custom`] time, not by the op — keeping
+    /// the two sources of truth merged.
+    Custom {
+        parents: Box<[Var]>,
+        op: Box<dyn VjpOp>,
+    },
 }
 
 /// The computation tape. One per forward pass, discarded after backward.
@@ -406,14 +413,21 @@ impl Tape {
 
     // ── custom VJP ───────────────────────────────────────────────────────
 
-    /// Append a custom op to the tape. `value` is the op's forward output;
-    /// `op` carries the VJP and parent indices.
+    /// Append a custom op to the tape.
+    ///
+    /// - `parents` — the tape nodes whose cotangents `op.vjp` will accumulate
+    ///   into, in declaration order. Duplicates are permitted (fan-in with
+    ///   shared parents). The slice is copied onto the tape, so callers do
+    ///   not need to keep it alive past this call.
+    /// - `value` — the op's forward output, any shape.
+    /// - `op` — the VJP implementation.
     ///
     /// The extension point for ops that can't be expressed as primitive
     /// compositions. See [`VjpOp`] for the contract.
     #[must_use]
-    pub fn push_custom(&mut self, value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var {
-        self.push(value, BackwardOp::Custom(op), false)
+    pub fn push_custom(&mut self, parents: &[Var], value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var {
+        let parents: Box<[Var]> = Box::from(parents);
+        self.push(value, BackwardOp::Custom { parents, op }, false)
     }
 }
 
@@ -766,18 +780,21 @@ impl Tape {
                     ew_add_assign(&mut self.grads[lhs_idx], &lhs_contrib);
                     ew_add_assign(&mut self.grads[rhs_idx], &rhs_contrib);
                 }
-                BackwardOp::Custom(op) => {
+                BackwardOp::Custom { parents, op } => {
+                    // Materialize parents into an owned vec so the final
+                    // flush loop can run after NLL releases the
+                    // self.backward[i] borrow following op.vjp.
+                    let parents: Vec<Var> = parents.to_vec();
                     // Allocate zero-initialized parent cotangent slots
                     // shape-matched to the parent values. The op fills
                     // them via its VJP; we then flush into grads[parent].
-                    let parents: Vec<u32> = op.parents().to_vec();
                     let mut parent_cotans: Vec<Tensor<f64>> = parents
                         .iter()
-                        .map(|&p| Tensor::zeros(self.values[p as usize].shape()))
+                        .map(|v| Tensor::zeros(self.values[v.0 as usize].shape()))
                         .collect();
                     op.vjp(&cot_i, &mut parent_cotans);
-                    for (k, &p) in parents.iter().enumerate() {
-                        ew_add_assign(&mut self.grads[p as usize], &parent_cotans[k]);
+                    for (k, v) in parents.iter().enumerate() {
+                        ew_add_assign(&mut self.grads[v.0 as usize], &parent_cotans[k]);
                     }
                 }
             }
@@ -1104,29 +1121,22 @@ mod tests {
 
     // ── Custom VjpOp test ─────────────────────────────────────────
 
-    /// Test op: `y = k · x`. ∂y/∂x = k (elementwise scale).
+    /// Test op: `y = k · x`. ∂y/∂x = k (elementwise scale). Parents are
+    /// tracked at `push_custom` time, not by the op itself.
     #[derive(Debug)]
     struct ScaleOp {
         k: f64,
-        parents_vec: Vec<u32>,
     }
 
     impl ScaleOp {
-        fn new(parent: u32, k: f64) -> Self {
-            Self {
-                k,
-                parents_vec: vec![parent],
-            }
+        fn new(k: f64) -> Self {
+            Self { k }
         }
     }
 
     impl VjpOp for ScaleOp {
         fn op_id(&self) -> &'static str {
             "test::Scale"
-        }
-
-        fn parents(&self) -> &[u32] {
-            &self.parents_vec
         }
 
         fn vjp(&self, cot: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
@@ -1153,16 +1163,15 @@ mod tests {
             .map(|&v| 3.0 * v)
             .collect();
         let y_val = Tensor::from_slice(&y_data, &[2]);
-        let y = tape.push_custom(y_val, Box::new(ScaleOp::new(x.0, 3.0)));
+        let y = tape.push_custom(&[x], y_val, Box::new(ScaleOp::new(3.0)));
         tape.backward(y);
         assert_eq!(tape.grad_tensor(x), &Tensor::from_slice(&[3.0, 3.0], &[2]));
     }
 
     #[test]
     fn custom_vjp_op_id() {
-        let op = ScaleOp::new(0, 2.0);
+        let op = ScaleOp::new(2.0);
         assert_eq!(op.op_id(), "test::Scale");
-        assert_eq!(op.parents(), &[0_u32]);
     }
 
     #[test]
@@ -1173,8 +1182,9 @@ mod tests {
         let x = tape.param_tensor(Tensor::from_slice(&[0.5], &[1]));
         let scaled_data = vec![2.0 * 0.5];
         let scaled = tape.push_custom(
+            &[x],
             Tensor::from_slice(&scaled_data, &[1]),
-            Box::new(ScaleOp::new(x.0, 2.0)),
+            Box::new(ScaleOp::new(2.0)),
         );
         let y = tape.tanh(scaled);
         tape.backward(y);

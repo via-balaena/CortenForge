@@ -1,0 +1,57 @@
+[package]
+name = "sim-soft"
+description = "Soft-body walking skeleton — seven-trait surface over faer + chassis tape. Phase B fills in bodies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# Grader F.3 opt-in: the six load-bearing invariants (I-1..I-6) are all
+# tested in `tests/*.rs` per scope §6 test-harness commitment — the only
+# inline `#[cfg(test)] mod tests` covers two `autograd_ops` VJP helpers
+# (`IndexOp`, `DivOp`) which aren't on the invariant surface. `cargo llvm-cov
+# --lib` coverage is structurally pinned at ~12% because the unimplemented
+# Phase-B/C/E stubs are unreachable until their phases land. Coverage
+# re-enters when Phase B fills in non-stub bodies. Matches sim-therm-env /
+# sim-tests precedent. Full reasoning in scope §7 item 1 + §13 SD-5.
+[package.metadata.cortenforge]
+grading_profile = "integration-only"
+
+[features]
+default = []
+# I-6b probe: opt-in wgpu build-graph tractability + buffer round-trip test.
+# NOT a Phase-E GPU feature flag — real chassis-GPU work (B.5) will land
+# under a separate `gpu` feature. Locked to the round-trip test in
+# `tests/invariant_6_gpu_probe.rs`. See scope §1 I-6 clarification.
+gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
+
+[dependencies]
+# Chassis tape, VjpOp, Tensor<f64> — shipped in PR #213.
+sim-ml-chassis = { workspace = true }
+# Dense small matrices for per-Gauss-point Material + per-element Tet4 locals
+# (5 existing L0 consumers at 0.34.2 — not greenfield).
+nalgebra = { workspace = true }
+# Sparse SPD factor-on-tape (Llt<I, f64>) + sparse CSR assembly.
+# Greenfield — this is the first workspace crate to depend on faer.
+# Round-6 determinism: disable `rayon` to keep solves single-threaded
+# (rayon work-stealing reorders floating-point reductions bit-non-
+# deterministically, violating γ Ch 00 determinism-in-θ on I-5). For
+# skeleton's 9-DOF system, rayon would provide no speedup anyway.
+# `std` + `sparse-linalg` is the minimum that exposes Llt<I, f64> +
+# solve_in_place_with_conj. All features remain pure Rust.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
+
+# GPU probe deps — feature-gated via `gpu-probe`. Skeleton default build
+# resolves with zero wgpu / bytemuck / pollster in the graph (scope §1 I-6a).
+wgpu = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+
+[dev-dependencies]
+# 5-digit gradcheck tolerance assertions (Phase-B tests).
+approx = { workspace = true }
+
+[lints]
+workspace = true
