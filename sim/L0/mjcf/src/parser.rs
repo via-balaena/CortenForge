@@ -1770,7 +1770,11 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
 
 /// Parse body attributes only.
 fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
-    let name = get_attribute_opt(e, "name").unwrap_or_else(|| "unnamed".to_string());
+    // Empty string for missing name; matches the builder's anonymous-body
+    // contract (body.rs:127, 200 — name lookup and Option<String> mapping
+    // both use is_empty() as the anonymous sentinel). The previous "unnamed"
+    // placeholder collided across multiple anonymous bodies.
+    let name = get_attribute_opt(e, "name").unwrap_or_default();
     let mut body = MjcfBody::new(name);
 
     if let Some(pos) = get_attribute_opt(e, "pos") {

@@ -185,8 +185,10 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         joint_to_body: &mut HashMap<String, String>,
         all_joint_names: &mut Vec<String>,
     ) -> Result<()> {
-        // Check for duplicate body name
-        if !body_names.insert(body.name.clone()) {
+        // Check for duplicate body name. Anonymous bodies (empty name) are
+        // exempt — mirrors the joint-name guard below and the builder's
+        // is_empty() contract for body name lookup.
+        if !body.name.is_empty() && !body_names.insert(body.name.clone()) {
             return Err(MjcfError::DuplicateBody(body.name.clone()));
         }
 

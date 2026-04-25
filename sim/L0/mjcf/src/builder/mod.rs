@@ -228,6 +228,13 @@ pub fn model_from_mjcf(
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
 
+    // Active ingress validation (Phase 0): full validate() promoted from
+    // defense-in-depth dead code. Fail-closed on any finding. Runs against
+    // user input as-parsed, before frame/composite expansion.
+    crate::validation::validate(&mjcf).map_err(|e| ModelConversionError {
+        message: format!("Model validation failed: {e}"),
+    })?;
+
     // Validate childclass references before frame expansion dissolves frames.
     // MuJoCo rejects undefined childclass at schema validation (S7).
     let pre_resolver = DefaultResolver::from_model(&mjcf);

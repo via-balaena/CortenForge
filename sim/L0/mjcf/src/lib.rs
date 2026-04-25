@@ -280,6 +280,25 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn test_validate_wired_into_model_from_mjcf() {
+        // Ingress gate test: duplicate body name should fail at load_model,
+        // not produce a corrupt Model. Uses the parsed-XML path end-to-end.
+        let mjcf = r#"
+            <mujoco model="dup">
+                <worldbody>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let result = load_model(mjcf);
+        assert!(matches!(
+            result,
+            Err(crate::error::MjcfError::Unsupported(msg)) if msg.contains("validation failed")
+        ));
+    }
+
     /// Test simple sphere body with Model/Data API.
     #[test]
     fn test_simple_sphere_model_data() {
