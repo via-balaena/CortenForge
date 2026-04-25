@@ -271,13 +271,13 @@ where
     F: FnOnce() -> Result<CriterionResult>,
 {
     if !quiet {
-        eprintln!("  criterion {}/7: {} — running…", index, name);
+        eprintln!("  criterion {}/8: {} — running…", index, name);
     }
     let start = Instant::now();
     let result = f()?;
     if !quiet {
         eprintln!(
-            "  criterion {}/7: {} — {} ({:.1}s)",
+            "  criterion {}/8: {} — {} ({:.1}s)",
             index,
             name,
             result.grade.as_str(),
@@ -353,8 +353,13 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
         verbosity.quiet,
         || grade_layer_integrity(sh, crate_name, &cargo_toml_text, verbosity.quiet),
     )?);
+    report
+        .criteria
+        .push(run_criterion(7, "WASM Compat", verbosity.quiet, || {
+            grade_wasm_compat(sh, crate_name, &cargo_toml_text, verbosity.quiet)
+        })?);
     report.criteria.push(CriterionResult {
-        name: "7. API Design",
+        name: "8. API Design",
         result: "(manual review)".to_string(),
         grade: Grade::Manual,
         threshold: "checklist",
@@ -2547,6 +2552,175 @@ fn grade_layer_integrity(
     })
 }
 
+/// True if `wasm32-unknown-unknown` is installed via rustup. Returns
+/// `false` if rustup is missing or the target isn't listed; the caller
+/// degrades to `Grade::Manual` rather than running an unwinnable check.
+fn wasm_target_installed(sh: &Shell) -> bool {
+    let installed = cmd!(sh, "rustup target list --installed")
+        .ignore_status()
+        .ignore_stderr()
+        .read()
+        .unwrap_or_default();
+    installed
+        .lines()
+        .any(|l| l.trim() == "wasm32-unknown-unknown")
+}
+
+/// Reduce a (possibly multi-page) `cargo check` stderr to a one-line
+/// summary fit for `measured_detail`. Picks the first `error:` or
+/// `error[Exxxx]:` rustc diagnostic; falls back to the last few stderr
+/// lines if none is present.
+fn extract_wasm_error_summary(stderr: &str) -> String {
+    for line in stderr.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("error:") || trimmed.starts_with("error[") {
+            return trimmed.to_string();
+        }
+    }
+    let tail: Vec<&str> = stderr
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(3)
+        .collect();
+    if tail.is_empty() {
+        "(no stderr output captured)".to_string()
+    } else {
+        tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
+    }
+}
+
+/// Implementation of Criterion 7: WASM Compatibility (L0 only).
+///
+/// Per plan §5.3: for every `tier == L0` crate, run
+/// `cargo check -p <crate> --target wasm32-unknown-unknown --no-default-features`
+/// and fail the criterion on non-zero exit. Other tiers (L0-io,
+/// L0-integration, L1) and out-of-scope crates report `NotApplicable`.
+///
+/// Phase 1 (current — warning mode): always returns `Grade::A`; failures
+/// surface via `result`, `measured_detail`, and stderr. Phase 2 (plan §8
+/// step 12) flips `warning_grade` to `Grade::F`-on-non-zero-exit alongside
+/// the Layer Integrity flip.
+fn grade_wasm_compat(
+    sh: &Shell,
+    crate_name: &str,
+    cargo_toml_text: &str,
+    quiet: bool,
+) -> Result<CriterionResult> {
+    let in_scope = applies_to_crate(crate_name);
+    let metadata = parse_tier_metadata(cargo_toml_text)?;
+
+    let metadata = match (metadata, in_scope) {
+        (Some(m), _) => m,
+        (None, false) => {
+            return Ok(CriterionResult {
+                name: "7. WASM Compat",
+                result: "(out of scope)".to_string(),
+                grade: Grade::NotApplicable,
+                threshold: "L0 wasm32",
+                measured_detail: format!(
+                    "WASM compatibility criterion does not apply to `{}` \
+                     (not in sim-*/mesh-*/cf-*/cortenforge* scope per plan §5.1)",
+                    crate_name
+                ),
+            });
+        }
+        (None, true) => {
+            // Missing tier metadata is Layer Integrity's domain (criterion 6
+            // already warns and will hard-fail at step 12). WASM Compat
+            // can't determine which tier the crate is, so it can't run the
+            // check — return NotApplicable rather than pretending the
+            // criterion ran. Worst-grade rule on Layer Integrity still
+            // produces an overall F at step 12 hard-gate.
+            return Ok(CriterionResult {
+                name: "7. WASM Compat",
+                result: "(no tier)".to_string(),
+                grade: Grade::NotApplicable,
+                threshold: "L0 wasm32",
+                measured_detail: format!(
+                    "WASM check skipped: in-scope crate `{}` missing \
+                     [package.metadata.cortenforge].tier (see Layer Integrity warning)",
+                    crate_name
+                ),
+            });
+        }
+    };
+
+    if metadata.tier != Tier::L0 {
+        return Ok(CriterionResult {
+            name: "7. WASM Compat",
+            result: format!("(tier {})", metadata.tier.label()),
+            grade: Grade::NotApplicable,
+            threshold: "L0 wasm32",
+            measured_detail: format!(
+                "WASM check is L0-only per plan §5.3; `{}` is tier {}",
+                crate_name,
+                metadata.tier.label()
+            ),
+        });
+    }
+
+    if !wasm_target_installed(sh) {
+        return Ok(CriterionResult {
+            name: "7. WASM Compat",
+            result: "(target n/a)".to_string(),
+            grade: Grade::Manual,
+            threshold: "L0 wasm32",
+            measured_detail: "wasm32-unknown-unknown target not installed; \
+                              run `rustup target add wasm32-unknown-unknown` \
+                              and re-grade for an automated check"
+                .to_string(),
+        });
+    }
+
+    let output = cmd!(
+        sh,
+        "cargo check -p {crate_name} --target wasm32-unknown-unknown --no-default-features"
+    )
+    .ignore_status()
+    .output()
+    .with_context(|| format!("failed to invoke `cargo check` for {}", crate_name))?;
+
+    // Phase 1 — warning mode. Always A regardless of exit code.
+    // Phase 2 (plan §8 step 12) flips this to:
+    //   let warning_grade = if output.status.success() { Grade::A } else { Grade::F };
+    let warning_grade = Grade::A;
+
+    if output.status.success() {
+        return Ok(CriterionResult {
+            name: "7. WASM Compat",
+            result: "✓ builds".to_string(),
+            grade: warning_grade,
+            threshold: "L0 wasm32",
+            measured_detail: format!(
+                "`{}` builds for wasm32-unknown-unknown (--no-default-features)",
+                crate_name
+            ),
+        });
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let summary = extract_wasm_error_summary(&stderr);
+    eprintln!(
+        "    wasm compat: WARN — `{}` does not build for wasm32-unknown-unknown",
+        crate_name
+    );
+    if !quiet {
+        eprintln!("      {}", summary);
+    }
+
+    Ok(CriterionResult {
+        name: "7. WASM Compat",
+        result: "warn: fails".to_string(),
+        grade: warning_grade,
+        threshold: "L0 wasm32",
+        measured_detail: format!(
+            "wasm32 build failed for `{}` (--no-default-features):\n  {}",
+            crate_name, summary
+        ),
+    })
+}
+
 /// Show status of all crates in the workspace
 pub fn status() -> Result<()> {
     let sh = Shell::new()?;
@@ -3745,5 +3919,86 @@ tier_up_features = { foo = "L99" }
             format_finding(&f),
             "[with-dev default, tier L0] banned `bevy` matched: bevy_ecs"
         );
+    }
+
+    // ---- WASM Compatibility criterion (Plan §5.3) -----------------------
+
+    #[test]
+    fn wasm_extract_error_summary_picks_first_error_line() {
+        // The canonical recon case: getrandom 0.3.4 surfaces a plain
+        // `error:` line followed by lots of context. Grab the diagnostic
+        // line, drop the rest.
+        let stderr = "   Compiling getrandom v0.3.4\n\
+                      error: The wasm32-unknown-unknown targets are not supported by default; you may need to enable the \"wasm_js\" configuration flag.\n\
+                          --> /some/path/backends.rs:194:17\n\
+                      \n\
+                      error: could not compile `getrandom` (lib) due to 1 previous error\n";
+        let summary = extract_wasm_error_summary(stderr);
+        assert!(
+            summary.starts_with("error: The wasm32-unknown-unknown targets"),
+            "expected first `error:` line, got: {}",
+            summary
+        );
+    }
+
+    #[test]
+    fn wasm_extract_error_summary_picks_first_error_with_code() {
+        // Many rustc errors take the `error[Exxxx]:` form (e.g., E0432
+        // "unresolved import"). Treat both forms equivalently.
+        let stderr = "   Compiling foo v0.1.0\n\
+                      error[E0432]: unresolved import `std::os::unix::fs`\n\
+                          --> src/lib.rs:1:5\n";
+        let summary = extract_wasm_error_summary(stderr);
+        assert!(
+            summary.starts_with("error[E0432]:"),
+            "expected `error[E…]:` line, got: {}",
+            summary
+        );
+    }
+
+    #[test]
+    fn wasm_extract_error_summary_falls_back_when_no_error_line() {
+        // If no `error:` / `error[…]:` marker is present (unusual but
+        // possible — e.g., toolchain-internal failure with only `warning:`
+        // lines), surface the last few non-empty lines so the user has
+        // *some* signal rather than a useless "(no stderr)".
+        let stderr = "   Compiling foo v0.1.0\n\
+                      warning: unused import\n\
+                      Bus error\n";
+        let summary = extract_wasm_error_summary(stderr);
+        assert!(summary.contains("Bus error"), "got: {}", summary);
+    }
+
+    #[test]
+    fn wasm_extract_error_summary_handles_empty_stderr() {
+        // Defensive: zero-output failure (rare but cargo can exit
+        // non-zero with empty stderr if the target itself is unusable).
+        // Don't return an empty measured_detail — give the reader a
+        // labelled fallback.
+        let summary = extract_wasm_error_summary("");
+        assert_eq!(summary, "(no stderr output captured)");
+    }
+
+    #[test]
+    fn wasm_extract_error_summary_strips_leading_whitespace_before_match() {
+        // rustc indents continuation lines but the first marker is at
+        // column 0; sometimes a wrapping process re-indents. Match
+        // `error:` even when leading whitespace is present.
+        let stderr = "    error: indented diagnostic line\n";
+        let summary = extract_wasm_error_summary(stderr);
+        assert_eq!(summary, "error: indented diagnostic line");
+    }
+
+    #[test]
+    fn wasm_extract_error_summary_skips_non_error_prefix_lines() {
+        // The first `error:` may be preceded by non-error lines that
+        // happen to contain the substring "error" (e.g., paths, comments,
+        // or `error_chain`-named crates). The match anchors on
+        // start-of-trimmed-line, not substring presence.
+        let stderr = "   Compiling error_chain v0.12.0\n\
+                      checking error_chain progress…\n\
+                      error: real diagnostic\n";
+        let summary = extract_wasm_error_summary(stderr);
+        assert_eq!(summary, "error: real diagnostic");
     }
 }
