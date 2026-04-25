@@ -1959,16 +1959,11 @@ fn grade_dependencies(
 // configurations, and reports findings against the tier's max-dep-count
 // and banned-prefix rules from `sim/docs/L0_architectural_plan.md` §5.2.
 //
-// Rolled out in two phases per the plan:
-//  Phase 1 (current) — WARNING MODE: findings are surfaced to the user but
-//                      the criterion always returns Grade::A (unless N/A).
-//                      Lets the four refactor surgeries land one at a time
-//                      without cascading PR breakage.
-//  Phase 2 (plan §8 step 12) — HARD GATE: the same code path returns
-//                                Grade::F when findings exist.
-//
-// The phase-2 flip is a single-line change in `grade_layer_integrity` near
-// the warning_grade local; see comments there.
+// HARD GATE per plan §8 step 12 (was WARNING MODE in step 3 commit
+// `1fb88e2f`). The criterion returns Grade::F when findings exist or when
+// an in-scope crate is missing tier metadata. Warning-mode rollout cleared
+// the way for hard-gate by absorbing the per-surgery interim states without
+// blocking PRs.
 
 /// One of the four architectural tiers from `L0_architectural_plan.md` §2.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2431,10 +2426,11 @@ fn format_finding(f: &Finding) -> String {
 /// Replaces the former Bevy-free criterion. See the module-level comment
 /// at the top of this section for rollout phases.
 ///
-/// Phase 1 (current — warning mode): always returns `Grade::A` for
-/// in-scope crates regardless of finding count; warnings surface via
-/// `result`, `measured_detail`, and stderr. Phase 2 flips `warning_grade`
-/// at the bottom of this fn to `Grade::F`-when-non-empty.
+/// Hard-gated per plan §8 step 12: returns `Grade::F` for in-scope crates
+/// when any finding is recorded (banned-prefix match or count exceeded),
+/// or when an in-scope crate is missing tier metadata. Warning-mode rollout
+/// in step 3 cleared the way for hard-gate by absorbing per-surgery interim
+/// states without blocking PRs.
 fn grade_layer_integrity(
     sh: &Shell,
     crate_name: &str,
@@ -2461,17 +2457,17 @@ fn grade_layer_integrity(
             });
         }
         (None, true) => {
-            // In-scope crate without tier metadata. Phase 1: warn but
-            // don't fail. Phase 2 (step 12) tightens this to a hard error.
+            // Hard-gated per plan §8 step 12: in-scope crate without
+            // tier metadata is a build error (was warn-only in step 3).
             let msg = format!(
                 "in-scope crate `{}` is missing [package.metadata.cortenforge].tier",
                 crate_name
             );
-            eprintln!("    layer integrity: WARN — {}", msg);
+            eprintln!("    layer integrity: FAIL — {}", msg);
             return Ok(CriterionResult {
                 name: "6. Layer Integrity",
-                result: "warn: no tier".to_string(),
-                grade: Grade::A,
+                result: "no tier".to_string(),
+                grade: Grade::F,
                 threshold: "tier metadata",
                 measured_detail: msg,
             });
@@ -2508,10 +2504,13 @@ fn grade_layer_integrity(
         }
     }
 
-    // Phase 1 — warning mode. Always A regardless of findings.
-    // Phase 2 (plan §8 step 12) flips this to:
-    //   let warning_grade = if all_findings.is_empty() { Grade::A } else { Grade::F };
-    let warning_grade = Grade::A;
+    // Hard-gated per plan §8 step 12 (was Grade::A unconditionally in
+    // step 3 warning-mode commit `1fb88e2f`).
+    let warning_grade = if all_findings.is_empty() {
+        Grade::A
+    } else {
+        Grade::F
+    };
 
     if all_findings.is_empty() {
         return Ok(CriterionResult {
@@ -2524,12 +2523,12 @@ fn grade_layer_integrity(
     }
 
     // Render findings to stderr and to measured_detail. Stderr emission
-    // is unconditional — warnings are the whole point of warning mode.
+    // is unconditional — failures are PR-blocking under hard gate.
     // Quiet (set by `grade-all`) only suppresses the per-finding lines;
     // the summary line remains so `grade-all` output stays scannable.
     let n = all_findings.len();
     eprintln!(
-        "    layer integrity: WARN — {} finding(s) for `{}` (tier {})",
+        "    layer integrity: FAIL — {} finding(s) for `{}` (tier {})",
         n,
         crate_name,
         metadata.tier.label(),
@@ -2545,7 +2544,7 @@ fn grade_layer_integrity(
 
     Ok(CriterionResult {
         name: "6. Layer Integrity",
-        result: format!("warn: {} leak{}", n, if n == 1 { "" } else { "s" }),
+        result: format!("{} leak{}", n, if n == 1 { "" } else { "s" }),
         grade: warning_grade,
         threshold: "tier rules",
         measured_detail: detail,
@@ -2597,10 +2596,11 @@ fn extract_wasm_error_summary(stderr: &str) -> String {
 /// and fail the criterion on non-zero exit. Other tiers (L0-io,
 /// L0-integration, L1) and out-of-scope crates report `NotApplicable`.
 ///
-/// Phase 1 (current — warning mode): always returns `Grade::A`; failures
-/// surface via `result`, `measured_detail`, and stderr. Phase 2 (plan §8
-/// step 12) flips `warning_grade` to `Grade::F`-on-non-zero-exit alongside
-/// the Layer Integrity flip.
+/// Hard-gated per plan §8 step 12: returns `Grade::F` when the wasm32
+/// build exits non-zero. Warning-mode rollout in step 4 cleared the way
+/// for hard-gate by absorbing the interim state (4 L0 crates failing
+/// getrandom 0.3.4 wasm) until P2 cleared them in step 12 commit
+/// `a99992a4` (workspace getrandom wasm_js backend).
 fn grade_wasm_compat(
     sh: &Shell,
     crate_name: &str,
@@ -2681,10 +2681,13 @@ fn grade_wasm_compat(
     .output()
     .with_context(|| format!("failed to invoke `cargo check` for {}", crate_name))?;
 
-    // Phase 1 — warning mode. Always A regardless of exit code.
-    // Phase 2 (plan §8 step 12) flips this to:
-    //   let warning_grade = if output.status.success() { Grade::A } else { Grade::F };
-    let warning_grade = Grade::A;
+    // Hard-gated per plan §8 step 12 (was Grade::A unconditionally in
+    // step 4 warning-mode commit `c03fdabc`).
+    let warning_grade = if output.status.success() {
+        Grade::A
+    } else {
+        Grade::F
+    };
 
     if output.status.success() {
         return Ok(CriterionResult {
@@ -2702,7 +2705,7 @@ fn grade_wasm_compat(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let summary = extract_wasm_error_summary(&stderr);
     eprintln!(
-        "    wasm compat: WARN — `{}` does not build for wasm32-unknown-unknown",
+        "    wasm compat: FAIL — `{}` does not build for wasm32-unknown-unknown",
         crate_name
     );
     if !quiet {
@@ -2711,7 +2714,7 @@ fn grade_wasm_compat(
 
     Ok(CriterionResult {
         name: "7. WASM Compat",
-        result: "warn: fails".to_string(),
+        result: "fails".to_string(),
         grade: warning_grade,
         threshold: "L0 wasm32",
         measured_detail: format!(
@@ -3886,9 +3889,8 @@ tier_up_features = { foo = "L99" }
     #[test]
     fn format_finding_count_exceeded_renders_full_context() {
         // The format_finding output is what the user sees in stderr and
-        // measured_detail; pin its shape so step 12's hard-gate flip
-        // (where this becomes the PR-blocking failure message) doesn't
-        // need to re-derive it.
+        // measured_detail; pin its shape since this is the PR-blocking
+        // failure message under step 12's hard gate.
         let f = Finding {
             feature_config: FeatureConfig::AllFeatures,
             graph_kind: GraphKind::Release,
