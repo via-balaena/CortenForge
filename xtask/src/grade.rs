@@ -347,11 +347,12 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
         .push(run_criterion(5, "Dependencies", verbosity.quiet, || {
             grade_dependencies(sh, crate_name, profile)
         })?);
-    report
-        .criteria
-        .push(run_criterion(6, "Bevy-free", verbosity.quiet, || {
-            grade_bevy_free(sh, crate_name, profile)
-        })?);
+    report.criteria.push(run_criterion(
+        6,
+        "Layer Integrity",
+        verbosity.quiet,
+        || grade_layer_integrity(sh, crate_name, &cargo_toml_text, verbosity.quiet),
+    )?);
     report.criteria.push(CriterionResult {
         name: "7. API Design",
         result: "(manual review)".to_string(),
@@ -672,10 +673,10 @@ fn print_criterion(c: &CriterionResult) {
         "{}",
         format!(
             "║ {:16} │ {:16} │{}│ {:14} ║",
-            c.name,
+            truncate(c.name, 16),
             truncate(&c.result, 16),
             grade_cell(&c.grade),
-            c.threshold
+            truncate(c.threshold, 14),
         )
         .bright_white()
     );
@@ -1943,78 +1944,606 @@ fn grade_dependencies(
     })
 }
 
-/// Check that a crate has no Bevy dependencies.
-///
-/// Per STANDARDS.md §6 "Criterion 6: Bevy-free (Layer 0)" — this
-/// criterion is explicitly and exclusively scoped to Layer 0 library
-/// crates. STANDARDS.md §6 names the Layer 0 prefixes (`mesh-*`,
-/// `cf-spatial`, `route-*`, `sensor-*`, `ml-*`, `sim-*` Layer 0) and
-/// explicitly allows Bevy in Layer 1 (`cortenforge`, `sim-bevy`).
-/// Example and Xtask crates are not part of the Layer 0 / Layer 1
-/// dichotomy at all — they're tooling and demos, and applying the
-/// Bevy-free rubric to them is a category error.
-///
-/// `wgpu` is allowed in Layer 0 — it's a standalone WebGPU
-/// implementation used independently for compute shaders (F6 decision).
-fn grade_bevy_free(sh: &Shell, crate_name: &str, profile: CrateProfile) -> Result<CriterionResult> {
-    // Scope: Layer 0 only, per STANDARDS.md §6. Every other profile
-    // gets N/A with a pointer to the standard.
-    if !matches!(profile, CrateProfile::Layer0) {
-        return Ok(CriterionResult {
-            name: "6. Bevy-free",
-            result: "(not layer 0)".to_string(),
-            grade: Grade::NotApplicable,
-            threshold: "no bevy/winit",
-            measured_detail: format!(
-                "Bevy-free criterion is Layer 0 only per STANDARDS.md §6; \
-                 {} is exempt",
-                profile.label()
-            ),
-        });
-    }
+// ============================================================================
+// Criterion 6: Layer Integrity
+// ============================================================================
+//
+// Replaces the former Bevy-free criterion. Reads tier metadata declared in
+// each crate's `[package.metadata.cortenforge]` block, runs `cargo tree`
+// across (no-default × default × all-features) × (release × with-dev) graph
+// configurations, and reports findings against the tier's max-dep-count
+// and banned-prefix rules from `sim/docs/L0_architectural_plan.md` §5.2.
+//
+// Rolled out in two phases per the plan:
+//  Phase 1 (current) — WARNING MODE: findings are surfaced to the user but
+//                      the criterion always returns Grade::A (unless N/A).
+//                      Lets the four refactor surgeries land one at a time
+//                      without cascading PR breakage.
+//  Phase 2 (plan §8 step 12) — HARD GATE: the same code path returns
+//                                Grade::F when findings exist.
+//
+// The phase-2 flip is a single-line change in `grade_layer_integrity` near
+// the warning_grade local; see comments there.
 
-    // --prefix none --format "{p}" outputs one "pkg_name vX.Y.Z" per line
-    let tree_format = "{p}";
-    let output = cmd!(
-        sh,
-        "cargo tree -p {crate_name} --prefix none --format {tree_format}"
-    )
-    .ignore_status()
-    .ignore_stderr()
-    .read()
-    .unwrap_or_default();
+/// One of the four architectural tiers from `L0_architectural_plan.md` §2.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    L0,
+    L0Io,
+    L0Integration,
+    L1,
+}
 
-    // Exact package-name prefix matching (not substring contains)
-    let mut violations: Vec<String> = Vec::new();
-    for line in output.lines() {
-        let pkg_name = line.split_whitespace().next().unwrap_or("");
-        if (pkg_name.starts_with("bevy") || pkg_name == "winit")
-            && !violations.contains(&pkg_name.to_string())
-        {
-            violations.push(pkg_name.to_string());
+impl Tier {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "L0" => Some(Tier::L0),
+            "L0-io" => Some(Tier::L0Io),
+            "L0-integration" => Some(Tier::L0Integration),
+            "L1" => Some(Tier::L1),
+            _ => None,
         }
     }
 
-    let grade = if violations.is_empty() {
-        Grade::A
-    } else {
-        Grade::F
+    fn label(&self) -> &'static str {
+        match self {
+            Tier::L0 => "L0",
+            Tier::L0Io => "L0-io",
+            Tier::L0Integration => "L0-integration",
+            Tier::L1 => "L1",
+        }
+    }
+
+    /// Tier ordering: stricter tiers have lower permissiveness scores.
+    /// Used by `effective_tier_for` to pick the most permissive tier when
+    /// multiple `tier_up_features` are simultaneously enabled.
+    fn permissiveness(&self) -> u8 {
+        match self {
+            Tier::L0 => 0,
+            Tier::L0Io => 1,
+            Tier::L0Integration => 2,
+            Tier::L1 => 3,
+        }
+    }
+}
+
+/// A banned-dep entry. `Prefix` matches `pkg_name.starts_with(pattern)`
+/// (so `bevy` matches `bevy`, `bevy_ecs`, `bevy_reflect`, …); `Exact`
+/// requires `pkg_name == pattern`. The asterisk-vs-no-asterisk
+/// distinction in plan §5.2's banned-prefix table determines which kind.
+#[derive(Debug, Clone, Copy)]
+struct BanPattern {
+    pattern: &'static str,
+    kind: BanKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BanKind {
+    Prefix,
+    Exact,
+}
+
+impl BanPattern {
+    fn matches(&self, pkg_name: &str) -> bool {
+        match self.kind {
+            BanKind::Prefix => pkg_name.starts_with(self.pattern),
+            BanKind::Exact => pkg_name == self.pattern,
+        }
+    }
+}
+
+/// Per-tier enforcement rules. `release_max` applies to the release graph
+/// (`-e normal`); `test_max` applies to the dev graph (`-e normal,dev`).
+#[derive(Debug, Clone, Copy)]
+struct TierConfig {
+    release_max: usize,
+    test_max: usize,
+    banned: &'static [BanPattern],
+}
+
+// Banned-prefix lists per plan §5.2. The L0-io/L0-integration list omits
+// `wgpu*`: plan §2.1 + §2.1a + §5.2's "why this works" example all
+// explicitly permit wgpu in L0-io (sim-gpu's GPU-accelerated SDF
+// collision; sim-soft's `gpu-probe` tier-up). The §5.2 table cell that
+// listed wgpu* there is a typo, fixed in this commit's plan-doc edit.
+const L0_BANNED: &[BanPattern] = &[
+    BanPattern {
+        pattern: "bevy",
+        kind: BanKind::Prefix,
+    },
+    BanPattern {
+        pattern: "winit",
+        kind: BanKind::Exact,
+    },
+    BanPattern {
+        pattern: "wgpu",
+        kind: BanKind::Prefix,
+    },
+    BanPattern {
+        pattern: "image",
+        kind: BanKind::Prefix,
+    },
+    BanPattern {
+        pattern: "zip",
+        kind: BanKind::Prefix,
+    },
+    BanPattern {
+        pattern: "zstd",
+        kind: BanKind::Prefix,
+    },
+    BanPattern {
+        pattern: "sim-mjcf",
+        kind: BanKind::Exact,
+    },
+    BanPattern {
+        pattern: "sim-urdf",
+        kind: BanKind::Exact,
+    },
+    BanPattern {
+        pattern: "mesh-io",
+        kind: BanKind::Exact,
+    },
+    BanPattern {
+        pattern: "criterion",
+        kind: BanKind::Exact,
+    },
+    BanPattern {
+        pattern: "plotters",
+        kind: BanKind::Prefix,
+    },
+];
+
+const L0_IO_BANNED: &[BanPattern] = &[
+    BanPattern {
+        pattern: "bevy",
+        kind: BanKind::Prefix,
+    },
+    BanPattern {
+        pattern: "winit",
+        kind: BanKind::Exact,
+    },
+];
+
+// L0-integration shares L0-io's banned list (plan §5.2).
+const L0_INTEGRATION_BANNED: &[BanPattern] = L0_IO_BANNED;
+
+const L1_BANNED: &[BanPattern] = &[];
+
+/// Look up the static `TierConfig` for a tier. Numbers track plan §5.2
+/// (release 80/200/200, test 100/220/220). Plan §2.1 proposes tighter
+/// numbers (60/180/180) post-Appendix-A; we'll re-tune at hard-gate flip
+/// (plan §8 step 12) once surgeries land and the actual headroom is known.
+fn tier_config(tier: Tier) -> TierConfig {
+    match tier {
+        Tier::L0 => TierConfig {
+            release_max: 80,
+            test_max: 100,
+            banned: L0_BANNED,
+        },
+        Tier::L0Io => TierConfig {
+            release_max: 200,
+            test_max: 220,
+            banned: L0_IO_BANNED,
+        },
+        Tier::L0Integration => TierConfig {
+            release_max: 200,
+            test_max: 220,
+            banned: L0_INTEGRATION_BANNED,
+        },
+        Tier::L1 => TierConfig {
+            release_max: usize::MAX,
+            test_max: usize::MAX,
+            banned: L1_BANNED,
+        },
+    }
+}
+
+/// Tier metadata read from a crate's Cargo.toml.
+#[derive(Debug, Clone)]
+struct TierMetadata {
+    tier: Tier,
+    /// `feature_name -> target_tier` declarations (plan §2.1a). When the
+    /// feature is enabled, the target tier's rules apply. Empty for the
+    /// vast majority of crates; sim-soft is the only current declarer
+    /// (`gpu-probe -> L0-io`).
+    tier_up_features: Vec<(String, Tier)>,
+}
+
+/// Which `--features`-style flag is active for a `cargo tree` invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeatureConfig {
+    NoDefault,
+    Default,
+    AllFeatures,
+}
+
+impl FeatureConfig {
+    fn label(&self) -> &'static str {
+        match self {
+            FeatureConfig::NoDefault => "no-default",
+            FeatureConfig::Default => "default",
+            FeatureConfig::AllFeatures => "all-features",
+        }
+    }
+}
+
+/// Which dep-graph kind: release-only or release + dev.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphKind {
+    /// `cargo tree -e normal`
+    Release,
+    /// `cargo tree -e normal,dev`
+    WithDev,
+}
+
+impl GraphKind {
+    fn label(&self) -> &'static str {
+        match self {
+            GraphKind::Release => "release",
+            GraphKind::WithDev => "with-dev",
+        }
+    }
+}
+
+/// A single Layer Integrity finding produced by `evaluate_dep_set`.
+#[derive(Debug, Clone)]
+struct Finding {
+    feature_config: FeatureConfig,
+    graph_kind: GraphKind,
+    effective_tier: Tier,
+    kind: FindingKind,
+}
+
+#[derive(Debug, Clone)]
+enum FindingKind {
+    /// The graph's unique-dep count exceeded the tier's max.
+    CountExceeded { actual: usize, max: usize },
+    /// A dep matched one of the tier's banned-prefix patterns.
+    BannedPrefix {
+        pattern: &'static str,
+        matched_pkg: String,
+    },
+}
+
+/// True if `crate_name` must declare tier metadata. Plan §5.1 scope:
+/// `sim-*`, `mesh-*`, `cf-*`, `cortenforge*`. The two no-hyphen umbrellas
+/// (`mesh`, `cortenforge`) are explicitly accepted; `examples/*` and
+/// `xtask` are out of scope.
+fn applies_to_crate(crate_name: &str) -> bool {
+    if matches!(crate_name, "mesh" | "cortenforge") {
+        return true;
+    }
+    let prefixes = ["sim-", "mesh-", "cf-", "cortenforge-"];
+    prefixes.iter().any(|p| crate_name.starts_with(p))
+}
+
+/// Parse `[package.metadata.cortenforge]` from Cargo.toml text.
+///
+/// Returns `Ok(None)` if no `cortenforge` metadata block exists or it has
+/// no `tier` key. Returns `Ok(Some(_))` for a parseable tier. Errors only
+/// on a present-but-malformed value (unknown tier name, malformed
+/// `tier_up_features`).
+fn parse_tier_metadata(cargo_toml_text: &str) -> Result<Option<TierMetadata>> {
+    let value: toml::Value =
+        toml::from_str(cargo_toml_text).context("failed to parse Cargo.toml as TOML")?;
+
+    let cf_meta = value
+        .get("package")
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("cortenforge"));
+    let Some(cf_meta) = cf_meta else {
+        return Ok(None);
     };
 
-    let result = if violations.is_empty() {
-        "✓ confirmed".to_string()
-    } else {
-        format!("has: {}", violations.join(", "))
+    let Some(tier_str) = cf_meta.get("tier").and_then(|t| t.as_str()) else {
+        return Ok(None);
     };
 
-    let measured_detail = result.clone();
+    let tier =
+        Tier::parse(tier_str).with_context(|| format!("unknown tier value: {:?}", tier_str))?;
+
+    let mut tier_up_features = Vec::new();
+    if let Some(tuf) = cf_meta.get("tier_up_features") {
+        let table = tuf
+            .as_table()
+            .with_context(|| format!("tier_up_features must be a table; got {:?}", tuf))?;
+        for (feat, target) in table {
+            let target_str = target.as_str().with_context(|| {
+                format!(
+                    "tier_up_features.{} must be a string; got {:?}",
+                    feat, target
+                )
+            })?;
+            let target_tier = Tier::parse(target_str).with_context(|| {
+                format!(
+                    "tier_up_features.{}: unknown tier value {:?}",
+                    feat, target_str
+                )
+            })?;
+            tier_up_features.push((feat.clone(), target_tier));
+        }
+    }
+
+    Ok(Some(TierMetadata {
+        tier,
+        tier_up_features,
+    }))
+}
+
+/// Compute the effective tier for a given feature config. Under
+/// `--all-features`, every declared `tier_up_feature` is enabled, so the
+/// effective tier is the most permissive of {declared} ∪ {tier_up
+/// targets}. Under default / no-default, only the declared tier applies.
+///
+/// Convention assumption: tier-up features are NOT in the default set.
+/// This matches sim-soft's gpu-probe (off by default, enabled under
+/// `--features gpu-probe` or `--all-features`). Crates that put tier-up
+/// features in defaults would slip through this check; the convention is
+/// documented in plan §2.1a as a deliberate choice for simplicity.
+fn effective_tier_for(metadata: &TierMetadata, fc: FeatureConfig) -> Tier {
+    if fc != FeatureConfig::AllFeatures {
+        return metadata.tier;
+    }
+    let mut effective = metadata.tier;
+    for (_feat, target) in &metadata.tier_up_features {
+        if target.permissiveness() > effective.permissiveness() {
+            effective = *target;
+        }
+    }
+    effective
+}
+
+/// Check a flat dep list against a tier's rules. Returns one Finding per
+/// banned-prefix match (no dedup — listing all matches is more
+/// informative for the warning-mode rollout) plus at most one
+/// CountExceeded.
+fn evaluate_dep_set(
+    deps: &[String],
+    config: TierConfig,
+    fc: FeatureConfig,
+    gk: GraphKind,
+    effective_tier: Tier,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    for dep in deps {
+        for ban in config.banned {
+            if ban.matches(dep) {
+                findings.push(Finding {
+                    feature_config: fc,
+                    graph_kind: gk,
+                    effective_tier,
+                    kind: FindingKind::BannedPrefix {
+                        pattern: ban.pattern,
+                        matched_pkg: dep.clone(),
+                    },
+                });
+                // One match per dep — a dep matched by `bevy` prefix
+                // shouldn't also match a hypothetical second pattern.
+                break;
+            }
+        }
+    }
+
+    let max = match gk {
+        GraphKind::Release => config.release_max,
+        GraphKind::WithDev => config.test_max,
+    };
+    if deps.len() > max {
+        findings.push(Finding {
+            feature_config: fc,
+            graph_kind: gk,
+            effective_tier,
+            kind: FindingKind::CountExceeded {
+                actual: deps.len(),
+                max,
+            },
+        });
+    }
+
+    findings
+}
+
+/// Run `cargo tree` and parse out the unique transitive dep list. Each
+/// output line is `pkg_name v1.2.3 [(path)]` — first whitespace-split
+/// token is the package name. Order preserved; duplicates dropped.
+fn read_tree_deps(
+    sh: &Shell,
+    crate_name: &str,
+    fc: FeatureConfig,
+    gk: GraphKind,
+) -> Result<Vec<String>> {
+    let edges = match gk {
+        GraphKind::Release => "normal",
+        GraphKind::WithDev => "normal,dev",
+    };
+    let tree_format = "{p}";
+
+    // Three feature-config arms because xshell's cmd! can't conditionally
+    // omit a token; building per-config is clearer than splice tricks.
+    let output = match fc {
+        FeatureConfig::NoDefault => cmd!(
+            sh,
+            "cargo tree -p {crate_name} -e {edges} --no-default-features --prefix none --format {tree_format}"
+        ),
+        FeatureConfig::Default => cmd!(
+            sh,
+            "cargo tree -p {crate_name} -e {edges} --prefix none --format {tree_format}"
+        ),
+        FeatureConfig::AllFeatures => cmd!(
+            sh,
+            "cargo tree -p {crate_name} -e {edges} --all-features --prefix none --format {tree_format}"
+        ),
+    }
+    .read()
+    .with_context(|| {
+        format!(
+            "cargo tree failed for {} ({} {})",
+            crate_name,
+            fc.label(),
+            gk.label()
+        )
+    })?;
+
+    let mut deps = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in output.lines() {
+        if let Some(name) = line.split_whitespace().next() {
+            if !name.is_empty() && seen.insert(name.to_string()) {
+                deps.push(name.to_string());
+            }
+        }
+    }
+    Ok(deps)
+}
+
+fn format_finding(f: &Finding) -> String {
+    match &f.kind {
+        FindingKind::CountExceeded { actual, max } => format!(
+            "[{} {}, tier {}] dep count {} exceeds max {}",
+            f.graph_kind.label(),
+            f.feature_config.label(),
+            f.effective_tier.label(),
+            actual,
+            max,
+        ),
+        FindingKind::BannedPrefix {
+            pattern,
+            matched_pkg,
+        } => format!(
+            "[{} {}, tier {}] banned `{}` matched: {}",
+            f.graph_kind.label(),
+            f.feature_config.label(),
+            f.effective_tier.label(),
+            pattern,
+            matched_pkg,
+        ),
+    }
+}
+
+/// Implementation of Criterion 6: Layer Integrity.
+///
+/// Replaces the former Bevy-free criterion. See the module-level comment
+/// at the top of this section for rollout phases.
+///
+/// Phase 1 (current — warning mode): always returns `Grade::A` for
+/// in-scope crates regardless of finding count; warnings surface via
+/// `result`, `measured_detail`, and stderr. Phase 2 flips `warning_grade`
+/// at the bottom of this fn to `Grade::F`-when-non-empty.
+fn grade_layer_integrity(
+    sh: &Shell,
+    crate_name: &str,
+    cargo_toml_text: &str,
+    quiet: bool,
+) -> Result<CriterionResult> {
+    let in_scope = applies_to_crate(crate_name);
+    let metadata = parse_tier_metadata(cargo_toml_text)?;
+
+    // Out-of-scope crate without metadata: not applicable.
+    let metadata = match (metadata, in_scope) {
+        (Some(m), _) => m,
+        (None, false) => {
+            return Ok(CriterionResult {
+                name: "6. Layer Integrity",
+                result: "(out of scope)".to_string(),
+                grade: Grade::NotApplicable,
+                threshold: "tier metadata",
+                measured_detail: format!(
+                    "Layer Integrity criterion does not apply to `{}` \
+                     (not in sim-*/mesh-*/cf-*/cortenforge* scope per plan §5.1)",
+                    crate_name
+                ),
+            });
+        }
+        (None, true) => {
+            // In-scope crate without tier metadata. Phase 1: warn but
+            // don't fail. Phase 2 (step 12) tightens this to a hard error.
+            let msg = format!(
+                "in-scope crate `{}` is missing [package.metadata.cortenforge].tier",
+                crate_name
+            );
+            eprintln!("    layer integrity: WARN — {}", msg);
+            return Ok(CriterionResult {
+                name: "6. Layer Integrity",
+                result: "warn: no tier".to_string(),
+                grade: Grade::A,
+                threshold: "tier metadata",
+                measured_detail: msg,
+            });
+        }
+    };
+
+    // L1 is unbounded by definition — skip the cargo-tree work entirely.
+    if metadata.tier == Tier::L1 {
+        return Ok(CriterionResult {
+            name: "6. Layer Integrity",
+            result: "(L1 tier)".to_string(),
+            grade: Grade::NotApplicable,
+            threshold: "tier rules",
+            measured_detail: "Layer Integrity criterion is N/A for L1 tier".to_string(),
+        });
+    }
+
+    // Run the 6 (config × graph) cargo-tree invocations and aggregate.
+    let configs = [
+        FeatureConfig::NoDefault,
+        FeatureConfig::Default,
+        FeatureConfig::AllFeatures,
+    ];
+    let graphs = [GraphKind::Release, GraphKind::WithDev];
+
+    let mut all_findings: Vec<Finding> = Vec::new();
+    for fc in configs {
+        for gk in graphs {
+            let deps = read_tree_deps(sh, crate_name, fc, gk)?;
+            let effective_tier = effective_tier_for(&metadata, fc);
+            let config = tier_config(effective_tier);
+            let findings = evaluate_dep_set(&deps, config, fc, gk, effective_tier);
+            all_findings.extend(findings);
+        }
+    }
+
+    // Phase 1 — warning mode. Always A regardless of findings.
+    // Phase 2 (plan §8 step 12) flips this to:
+    //   let warning_grade = if all_findings.is_empty() { Grade::A } else { Grade::F };
+    let warning_grade = Grade::A;
+
+    if all_findings.is_empty() {
+        return Ok(CriterionResult {
+            name: "6. Layer Integrity",
+            result: "✓ confirmed".to_string(),
+            grade: warning_grade,
+            threshold: "tier rules",
+            measured_detail: format!("tier {} — no findings", metadata.tier.label()),
+        });
+    }
+
+    // Render findings to stderr and to measured_detail. Stderr emission
+    // is unconditional — warnings are the whole point of warning mode.
+    // Quiet (set by `grade-all`) only suppresses the per-finding lines;
+    // the summary line remains so `grade-all` output stays scannable.
+    let n = all_findings.len();
+    eprintln!(
+        "    layer integrity: WARN — {} finding(s) for `{}` (tier {})",
+        n,
+        crate_name,
+        metadata.tier.label(),
+    );
+    let mut detail = format!("tier {} — {} finding(s):\n", metadata.tier.label(), n);
+    for f in &all_findings {
+        let line = format_finding(f);
+        detail.push_str(&format!("  {}\n", line));
+        if !quiet {
+            eprintln!("      {}", line);
+        }
+    }
 
     Ok(CriterionResult {
-        name: "6. Bevy-free",
-        result,
-        grade,
-        threshold: "no bevy/winit",
-        measured_detail,
+        name: "6. Layer Integrity",
+        result: format!("warn: {} leak{}", n, if n == 1 { "" } else { "s" }),
+        grade: warning_grade,
+        threshold: "tier rules",
+        measured_detail: detail,
     })
 }
 
@@ -2765,5 +3294,456 @@ serde = \"1\"
 ";
         let lines = split(src);
         assert_eq!(count_unjustified_deps(&lines), 1);
+    }
+
+    // === Layer Integrity (criterion 6) ===
+
+    #[test]
+    fn tier_parse_known_values() {
+        assert_eq!(Tier::parse("L0"), Some(Tier::L0));
+        assert_eq!(Tier::parse("L0-io"), Some(Tier::L0Io));
+        assert_eq!(Tier::parse("L0-integration"), Some(Tier::L0Integration));
+        assert_eq!(Tier::parse("L1"), Some(Tier::L1));
+    }
+
+    #[test]
+    fn tier_parse_rejects_unknown() {
+        assert_eq!(Tier::parse("L2"), None);
+        assert_eq!(Tier::parse("l0"), None);
+        assert_eq!(Tier::parse(""), None);
+    }
+
+    #[test]
+    fn tier_permissiveness_ordering() {
+        // L0 strictest → L1 most permissive. effective_tier_for relies
+        // on this monotonic ordering when picking the loosest tier among
+        // multiple tier_up_features.
+        assert!(Tier::L0.permissiveness() < Tier::L0Io.permissiveness());
+        assert!(Tier::L0Io.permissiveness() < Tier::L0Integration.permissiveness());
+        assert!(Tier::L0Integration.permissiveness() < Tier::L1.permissiveness());
+    }
+
+    #[test]
+    fn applies_to_crate_in_scope_prefixes() {
+        assert!(applies_to_crate("sim-types"));
+        assert!(applies_to_crate("sim-mjcf"));
+        assert!(applies_to_crate("mesh-io"));
+        assert!(applies_to_crate("mesh-types"));
+        assert!(applies_to_crate("cf-spatial"));
+        assert!(applies_to_crate("cf-design"));
+        assert!(applies_to_crate("cortenforge-cli"));
+    }
+
+    #[test]
+    fn applies_to_crate_in_scope_no_hyphen_umbrellas() {
+        // The two no-hyphen umbrellas are explicit exceptions: `mesh`
+        // (the umbrella crate) and `cortenforge` (the top-level crate
+        // name from plan §2.1, even though it doesn't currently exist).
+        assert!(applies_to_crate("mesh"));
+        assert!(applies_to_crate("cortenforge"));
+    }
+
+    #[test]
+    fn applies_to_crate_out_of_scope() {
+        assert!(!applies_to_crate("xtask"));
+        assert!(!applies_to_crate("anyhow"));
+        assert!(!applies_to_crate("serde"));
+        // Examples are out of scope (they have their own classification).
+        assert!(!applies_to_crate("phase_demo"));
+        // A crate whose name happens to start with `mes` (not `mesh-`,
+        // not `mesh`) is out of scope.
+        assert!(!applies_to_crate("messy"));
+    }
+
+    #[test]
+    fn ban_pattern_prefix_matches_subcrates() {
+        let ban = BanPattern {
+            pattern: "bevy",
+            kind: BanKind::Prefix,
+        };
+        assert!(ban.matches("bevy"));
+        assert!(ban.matches("bevy_ecs"));
+        assert!(ban.matches("bevy_reflect_derive"));
+        // Sanity: doesn't match unrelated crate.
+        assert!(!ban.matches("approx"));
+    }
+
+    #[test]
+    fn ban_pattern_exact_only_matches_exact_name() {
+        let ban = BanPattern {
+            pattern: "winit",
+            kind: BanKind::Exact,
+        };
+        assert!(ban.matches("winit"));
+        // The exact-vs-prefix distinction matters: `winit-glue` (a
+        // hypothetical fork) must NOT match the exact-kind ban for
+        // `winit`. This is why plan §5.2 distinguishes `bevy*` (prefix)
+        // from `winit` (exact).
+        assert!(!ban.matches("winit-glue"));
+        assert!(!ban.matches("winitfoo"));
+    }
+
+    #[test]
+    fn parse_tier_metadata_no_block_returns_none() {
+        let toml = r#"
+[package]
+name = "foo"
+version = "0.1.0"
+"#;
+        assert!(parse_tier_metadata(toml).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_tier_metadata_block_without_tier_returns_none() {
+        // Pre-existing `[package.metadata.cortenforge]` blocks (e.g.,
+        // for grading_profile) without a tier key must not error.
+        let toml = r#"
+[package]
+name = "foo"
+[package.metadata.cortenforge]
+grading_profile = "integration-only"
+"#;
+        assert!(parse_tier_metadata(toml).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_tier_metadata_valid_l0() {
+        let toml = r#"
+[package]
+name = "foo"
+[package.metadata.cortenforge]
+tier = "L0"
+"#;
+        let m = parse_tier_metadata(toml).unwrap().unwrap();
+        assert_eq!(m.tier, Tier::L0);
+        assert!(m.tier_up_features.is_empty());
+    }
+
+    #[test]
+    fn parse_tier_metadata_with_tier_up_features() {
+        // The sim-soft pattern: declared L0, with gpu-probe → L0-io.
+        let toml = r#"
+[package]
+name = "sim-soft"
+[package.metadata.cortenforge]
+tier = "L0"
+tier_up_features = { gpu-probe = "L0-io" }
+"#;
+        let m = parse_tier_metadata(toml).unwrap().unwrap();
+        assert_eq!(m.tier, Tier::L0);
+        assert_eq!(m.tier_up_features.len(), 1);
+        assert_eq!(m.tier_up_features[0].0, "gpu-probe");
+        assert_eq!(m.tier_up_features[0].1, Tier::L0Io);
+    }
+
+    #[test]
+    fn parse_tier_metadata_unknown_tier_errors() {
+        let toml = r#"
+[package]
+name = "foo"
+[package.metadata.cortenforge]
+tier = "L2"
+"#;
+        assert!(parse_tier_metadata(toml).is_err());
+    }
+
+    #[test]
+    fn parse_tier_metadata_unknown_tier_up_target_errors() {
+        let toml = r#"
+[package]
+name = "foo"
+[package.metadata.cortenforge]
+tier = "L0"
+tier_up_features = { foo = "L99" }
+"#;
+        assert!(parse_tier_metadata(toml).is_err());
+    }
+
+    #[test]
+    fn effective_tier_under_default_is_declared() {
+        let m = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: vec![("gpu-probe".to_string(), Tier::L0Io)],
+        };
+        assert_eq!(effective_tier_for(&m, FeatureConfig::Default), Tier::L0);
+        assert_eq!(effective_tier_for(&m, FeatureConfig::NoDefault), Tier::L0);
+    }
+
+    #[test]
+    fn effective_tier_under_all_features_with_tier_up_promotes() {
+        // The sim-soft semantics: under --all-features the gpu-probe
+        // feature is enabled, so the L0-io rules apply to the whole
+        // graph (which is why wgpu pulled by gpu-probe doesn't trip
+        // L0's wgpu* ban).
+        let m = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: vec![("gpu-probe".to_string(), Tier::L0Io)],
+        };
+        assert_eq!(
+            effective_tier_for(&m, FeatureConfig::AllFeatures),
+            Tier::L0Io
+        );
+    }
+
+    #[test]
+    fn effective_tier_under_all_features_picks_most_permissive() {
+        // Multiple tier_up_features → take the most permissive target
+        // (largest permissiveness). Under --all-features, all listed
+        // features are simultaneously enabled, so the loosest applies.
+        let m = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: vec![
+                ("a".to_string(), Tier::L0Io),
+                ("b".to_string(), Tier::L0Integration),
+            ],
+        };
+        assert_eq!(
+            effective_tier_for(&m, FeatureConfig::AllFeatures),
+            Tier::L0Integration
+        );
+    }
+
+    #[test]
+    fn effective_tier_no_tier_up_does_not_promote() {
+        // The sim-ml-chassis bevy_ecs leak case: bevy feature is opt-in
+        // but NOT declared as tier_up_features, so under --all-features
+        // the L0 rules still apply to the now-larger graph → leak fires.
+        let m = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: vec![],
+        };
+        assert_eq!(effective_tier_for(&m, FeatureConfig::AllFeatures), Tier::L0);
+    }
+
+    #[test]
+    fn evaluate_dep_set_clean_l0_no_findings() {
+        let deps: Vec<String> = ["sim-types", "nalgebra", "approx", "num-traits"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0),
+            FeatureConfig::Default,
+            GraphKind::Release,
+            Tier::L0,
+        );
+        assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn evaluate_dep_set_l0_bevy_leak() {
+        // The sim-ml-chassis --all-features leak: 9 bevy_* sub-crates
+        // each generate a finding. CountExceeded does not fire because
+        // we keep the input small for this unit test.
+        let deps: Vec<String> = [
+            "sim-ml-chassis",
+            "bevy_ecs",
+            "bevy_ecs_macros",
+            "bevy_reflect",
+            "approx",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0),
+            FeatureConfig::AllFeatures,
+            GraphKind::Release,
+            Tier::L0,
+        );
+        assert_eq!(findings.len(), 3);
+        for f in &findings {
+            match &f.kind {
+                FindingKind::BannedPrefix { pattern, .. } => assert_eq!(*pattern, "bevy"),
+                _ => panic!("expected BannedPrefix"),
+            }
+        }
+    }
+
+    #[test]
+    fn evaluate_dep_set_l0_count_over_max() {
+        // 81 release deps → exceeds L0's 80-release max → one
+        // CountExceeded finding.
+        let deps: Vec<String> = (0..81).map(|i| format!("dep-{}", i)).collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0),
+            FeatureConfig::Default,
+            GraphKind::Release,
+            Tier::L0,
+        );
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(
+            findings[0].kind,
+            FindingKind::CountExceeded {
+                actual: 81,
+                max: 80
+            }
+        ));
+    }
+
+    #[test]
+    fn evaluate_dep_set_l0_test_max_is_higher_than_release() {
+        // 81 deps in the dev graph → under the 100 test-max, no count
+        // finding. Same input over release max — the (release, test)
+        // distinction must thread through evaluate_dep_set.
+        let deps: Vec<String> = (0..81).map(|i| format!("dep-{}", i)).collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0),
+            FeatureConfig::Default,
+            GraphKind::WithDev,
+            Tier::L0,
+        );
+        assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn evaluate_dep_set_l0_io_permits_wgpu() {
+        // The sim-soft + gpu-probe target case: under L0-io rules, wgpu
+        // and its sub-crates are NOT banned. This is the load-bearing
+        // distinction the plan-§5.2 typo would have broken.
+        let deps: Vec<String> = ["sim-soft", "wgpu", "wgpu-core", "wgpu-hal", "naga"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0Io),
+            FeatureConfig::AllFeatures,
+            GraphKind::Release,
+            Tier::L0Io,
+        );
+        assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn evaluate_dep_set_l0_io_still_bans_bevy() {
+        // L0-io permits wgpu but still bans bevy. Confirms the typo-fix
+        // didn't accidentally also drop bevy.
+        let deps: Vec<String> = ["sim-mjcf", "bevy_ecs", "image"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0Io),
+            FeatureConfig::Default,
+            GraphKind::Release,
+            Tier::L0Io,
+        );
+        assert_eq!(findings.len(), 1);
+        match &findings[0].kind {
+            FindingKind::BannedPrefix {
+                pattern,
+                matched_pkg,
+            } => {
+                assert_eq!(*pattern, "bevy");
+                assert_eq!(matched_pkg, "bevy_ecs");
+            }
+            _ => panic!("expected BannedPrefix"),
+        }
+    }
+
+    #[test]
+    fn evaluate_dep_set_l1_no_constraints() {
+        // L1 tier has unbounded max and empty banned list → no findings
+        // even on intentionally noisy input.
+        let deps: Vec<String> = (0..1000)
+            .map(|i| format!("crate-{}", i))
+            .chain(["bevy_ecs", "winit", "wgpu"].iter().map(|s| s.to_string()))
+            .collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L1),
+            FeatureConfig::AllFeatures,
+            GraphKind::WithDev,
+            Tier::L1,
+        );
+        assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn evaluate_dep_set_l0_dev_graph_image_zip_chain() {
+        // The sim-thermostat dev-poison case: image, mesh-io, sim-mjcf,
+        // zip, zstd all get individually flagged in the dev graph.
+        let deps: Vec<String> = [
+            "sim-thermostat",
+            "sim-mjcf",
+            "image",
+            "image-webp",
+            "mesh-io",
+            "zip",
+            "zstd",
+            "zstd-safe",
+            "zstd-sys",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0),
+            FeatureConfig::Default,
+            GraphKind::WithDev,
+            Tier::L0,
+        );
+        // 1 sim-mjcf + 2 image* + 1 mesh-io + 1 zip + 3 zstd* = 8.
+        assert_eq!(findings.len(), 8);
+    }
+
+    #[test]
+    fn evaluate_dep_set_winit_exact_does_not_match_substring() {
+        // The exact-vs-prefix distinction in action: a hypothetical
+        // `winit-fork-name` should NOT trip the `winit` exact ban.
+        let deps: Vec<String> = vec!["winit-glue".to_string()];
+        let findings = evaluate_dep_set(
+            &deps,
+            tier_config(Tier::L0),
+            FeatureConfig::Default,
+            GraphKind::Release,
+            Tier::L0,
+        );
+        assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn format_finding_count_exceeded_renders_full_context() {
+        // The format_finding output is what the user sees in stderr and
+        // measured_detail; pin its shape so step 12's hard-gate flip
+        // (where this becomes the PR-blocking failure message) doesn't
+        // need to re-derive it.
+        let f = Finding {
+            feature_config: FeatureConfig::AllFeatures,
+            graph_kind: GraphKind::Release,
+            effective_tier: Tier::L0,
+            kind: FindingKind::CountExceeded {
+                actual: 95,
+                max: 80,
+            },
+        };
+        assert_eq!(
+            format_finding(&f),
+            "[release all-features, tier L0] dep count 95 exceeds max 80"
+        );
+    }
+
+    #[test]
+    fn format_finding_banned_prefix_includes_pattern_and_pkg() {
+        let f = Finding {
+            feature_config: FeatureConfig::Default,
+            graph_kind: GraphKind::WithDev,
+            effective_tier: Tier::L0,
+            kind: FindingKind::BannedPrefix {
+                pattern: "bevy",
+                matched_pkg: "bevy_ecs".to_string(),
+            },
+        };
+        assert_eq!(
+            format_finding(&f),
+            "[with-dev default, tier L0] banned `bevy` matched: bevy_ecs"
+        );
     }
 }

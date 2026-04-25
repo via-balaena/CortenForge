@@ -298,9 +298,18 @@ Replaces and subsumes the current `Bevy-free` criterion (criterion 6). Implement
      | Tier | Banned in any graph |
      |---|---|
      | L0 | `bevy*`, `winit`, `wgpu*`, `image*`, `zip*`, `zstd*`, `sim-mjcf`, `sim-urdf`, `mesh-io`, `criterion`, `plotters*` |
-     | L0-io | `bevy*`, `winit`, `wgpu*` |
-     | L0-integration | `bevy*`, `winit`, `wgpu*` |
+     | L0-io | `bevy*`, `winit` |
+     | L0-integration | `bevy*`, `winit` |
      | L1 | (none) |
+
+   *Note: this banned list for L0-io / L0-integration was corrected in the
+   step-3 commit to drop `wgpu*`. The original §5.2 table cell included
+   `wgpu*` as a typo: §2.1's tier definition, §2.1a's tier-up-feature
+   rationale, the sim-gpu reclassification rationale, and §5.2's own
+   "why this works" example all explicitly permit wgpu in L0-io
+   (sim-gpu's GPU-accelerated SDF collision and sim-soft's gpu-probe
+   tier-up). Banning wgpu in L0-io would contradict every other paragraph
+   in the plan and fail sim-gpu and sim-soft+gpu-probe by design.*
 
 5. Grade: A if all pass, F if any fail. Failure message names the violating dep + which config/graph it was found in.
 
