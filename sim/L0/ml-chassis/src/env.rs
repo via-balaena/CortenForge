@@ -76,7 +76,6 @@ pub trait Environment {
 /// and evaluates done once at the final state.
 ///
 /// Constructed via [`SimEnv::builder()`].
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct SimEnv {
     model: Arc<Model>,
     data: Data,

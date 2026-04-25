@@ -23,7 +23,8 @@ use sim_bevy::model_data::{
     sync_rendering_data,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
+use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv as ChassisSimEnv, Tensor};
+use sim_ml_chassis_bevy::SimEnv;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ fn main() {
     println!("  obs_dim={}, act_dim={}", obs.dim(), act.dim());
 
     let done_threshold = DONE_THRESHOLD;
-    let mut env = SimEnv::builder(model_arc.clone())
+    let mut env = ChassisSimEnv::builder(model_arc.clone())
         .observation_space(obs)
         .action_space(act)
         .reward(|_m, d| -d.qpos[0].powi(2))
@@ -159,7 +160,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .insert_resource(PhysicsModel(model_owned))
         .insert_resource(PhysicsData(data_owned))
-        .insert_resource(env)
+        .insert_resource(SimEnv::from(env))
         .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
         .init_resource::<EpisodeState>()

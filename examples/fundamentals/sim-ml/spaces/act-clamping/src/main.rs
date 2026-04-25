@@ -21,7 +21,8 @@ use sim_bevy::model_data::{
     sync_geom_transforms,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_chassis::{ActionSpace, Tensor};
+use sim_ml_chassis::{ActionSpace as ChassisActionSpace, Tensor};
+use sim_ml_chassis_bevy::ActionSpace;
 
 #[derive(Resource, Default)]
 struct LastAction(f32);
@@ -119,7 +120,7 @@ fn setup(
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let data = model.make_data();
 
-    let act_space = ActionSpace::builder()
+    let act_space = ChassisActionSpace::builder()
         .all_ctrl()
         .build(&model)
         .expect("act space build");
@@ -156,7 +157,7 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(act_space);
+    commands.insert_resource(ActionSpace::from(act_space));
 }
 
 // ── Control ────────────────────────────────────────────────────────────────

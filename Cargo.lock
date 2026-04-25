@@ -3627,6 +3627,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3638,6 +3639,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3669,6 +3671,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3680,6 +3683,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3691,6 +3695,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3702,6 +3707,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -7907,7 +7913,6 @@ name = "sim-ml-chassis"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
- "bevy_ecs",
  "criterion",
  "nalgebra",
  "num-traits",
@@ -7916,6 +7921,15 @@ dependencies = [
  "serde_json",
  "sim-core",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sim-ml-chassis-bevy"
+version = "0.7.0"
+dependencies = [
+ "bevy_ecs",
+ "sim-core",
+ "sim-ml-chassis",
 ]
 
 [[package]]

@@ -183,7 +183,6 @@ pub struct ObsSegment {
 ///
 /// Constructed via [`ObservationSpace::builder()`].
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct ObservationSpace {
     extractors: Vec<Extractor>,
     segments: Vec<ObsSegment>,
@@ -698,7 +697,6 @@ impl Injector {
 ///
 /// Constructed via [`ActionSpace::builder()`].
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct ActionSpace {
     injectors: Vec<(usize, Injector)>, // (offset_in_action, injector)
     dim: usize,

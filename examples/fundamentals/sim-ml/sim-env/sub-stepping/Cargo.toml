@@ -10,8 +10,11 @@ publish = false
 sim-core = { workspace = true }
 # MJCF scene loader for the example physics scene
 sim-mjcf = { workspace = true }
-# ML algorithm chassis: Algorithm, VecEnv, Policy traits
-sim-ml-chassis = { workspace = true, features = ["bevy"] }
+# ML algorithm chassis: Algorithm, VecEnv, Policy traits.
+# This example wraps SimEnv inside its own `SubStepEnvs` Resource (via
+# Bevy's #[derive(Resource)]) — chassis types only need Send+Sync+'static
+# to embed, so no sim-ml-chassis-bevy dep is required.
+sim-ml-chassis = { workspace = true }
 # Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
 # Bevy engine: rendering, ECS, input, windowing

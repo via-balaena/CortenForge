@@ -11,12 +11,7 @@ rust-version.workspace = true
 [package.metadata.cortenforge]
 tier = "L0"
 
-[features]
-bevy = ["dep:bevy_ecs"]
-
 [dependencies]
-# ECS integration for Bevy consumers (gated behind `bevy` feature)
-bevy_ecs    = { version = "0.18", optional = true }
 # Linear algebra — DVector / DMatrix used throughout policy forward passes
 nalgebra    = { workspace = true }
 # Generic numeric traits (Float, Zero, One, NumCast) — used by Tensor<T>
