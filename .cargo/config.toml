@@ -5,3 +5,11 @@
 
 [alias]
 xtask = "run --package xtask --"
+
+# getrandom 0.3.x requires both the `wasm_js` Cargo feature and this
+# `getrandom_backend` cfg flag to compile for wasm32-unknown-unknown.
+# Each L0 crate that needs wasm32 builds (sim-thermostat, sim-ml-chassis,
+# sim-opt, sim-soft) declares a target-conditional `getrandom` dep that
+# enables the feature; this rustflag selects the matching backend.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

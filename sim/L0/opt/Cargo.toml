@@ -39,5 +39,11 @@ sim-core = { workspace = true, features = ["test-fixtures"] }
 # mjcf chain transitively.
 sim-rl = { workspace = true }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# wasm_js backend opt-in for getrandom (transitively pulled via
+# rand_chacha → rand_core). Paired with the workspace `.cargo/config.toml`
+# rustflag; native builds are unaffected by the target-conditional block.
+getrandom = { workspace = true }
+
 [lints]
 workspace = true

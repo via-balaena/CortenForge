@@ -396,6 +396,13 @@ parry3d = "0.17"
 rand = "0.9"
 rand_chacha = "0.9"
 rand_distr = "0.5"
+# getrandom is not used directly anywhere in this workspace; it enters
+# transitively via rand_chacha → rand_core. It is registered here so
+# L0 crates that build for wasm32-unknown-unknown can opt the
+# transitive copy into the `wasm_js` backend (see each L0 crate's
+# `[target.'cfg(...)'.dependencies]` block + the workspace
+# `.cargo/config.toml` rustflag).
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 # ---------------------------------------------------------------------------
 # Parallelism
