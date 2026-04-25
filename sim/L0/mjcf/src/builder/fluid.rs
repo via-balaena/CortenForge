@@ -159,3 +159,116 @@ pub fn compute_geom_fluid(
         vm[0], vm[1], vm[2], vi[0], vi[1], vi[2],
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    fn assert_axes(got: [f64; 3], want: [f64; 3]) {
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert_relative_eq!(g, w, epsilon = 1e-12);
+        }
+    }
+
+    /// `geom_semi_axes` switches on `GeomType` per MuJoCo's
+    /// `mju_geomSemiAxes`: sphere collapses all axes to `r`, capsule
+    /// extends `dz` by `r`, cylinder uses `(r, r, hz)`, and the catch-all
+    /// (Box / Mesh / Ellipsoid) returns size verbatim.
+    #[test]
+    fn semi_axes_per_geom_type() {
+        let s = Vector3::new(0.3, 0.5, 0.7);
+        assert_axes(geom_semi_axes(GeomType::Sphere, s), [0.3, 0.3, 0.3]);
+        // Capsule: dz extended by r → (r, r, half_length + r).
+        assert_axes(geom_semi_axes(GeomType::Capsule, s), [0.3, 0.3, 0.5 + 0.3]);
+        assert_axes(geom_semi_axes(GeomType::Cylinder, s), [0.3, 0.3, 0.5]);
+        assert_axes(geom_semi_axes(GeomType::Box, s), [0.3, 0.5, 0.7]);
+        assert_axes(geom_semi_axes(GeomType::Ellipsoid, s), [0.3, 0.5, 0.7]);
+        assert_axes(geom_semi_axes(GeomType::Mesh, s), [0.3, 0.5, 0.7]);
+    }
+
+    /// `FluidShape::None` short-circuits to all zeros — the master switch
+    /// (element 0) stays off and no kappa quadrature runs.
+    #[test]
+    fn none_returns_all_zeros() {
+        let g = compute_geom_fluid(
+            FluidShape::None,
+            None,
+            GeomType::Sphere,
+            Vector3::new(1.0, 1.0, 1.0),
+        );
+        for &x in &g {
+            assert_relative_eq!(x, 0.0, epsilon = 1e-12);
+        }
+    }
+
+    /// Sphere ellipsoid: master switch on, the 5 default fluid coefficients
+    /// land at slots [1..6], and by symmetry vm and vi are equal across
+    /// all three axes (kappa is identical when dx=dy=dz). Locks the default
+    /// coefficient values too — they're a load-bearing physics defaults
+    /// constant per MuJoCo.
+    #[test]
+    fn sphere_default_coef_is_symmetric() {
+        let g = compute_geom_fluid(
+            FluidShape::Ellipsoid,
+            None,
+            GeomType::Sphere,
+            Vector3::new(0.5, 0.5, 0.5),
+        );
+        assert_relative_eq!(g[0], 1.0, epsilon = 1e-12);
+        // MuJoCo defaults [C_blunt, C_slender, C_ang, C_K, C_M].
+        for (got, want) in g[1..6].iter().zip([0.5, 0.25, 1.5, 1.0, 1.0].iter()) {
+            assert_relative_eq!(got, want, epsilon = 1e-12);
+        }
+        // Symmetry: equal kappa on all axes → equal virtual mass and inertia.
+        assert_relative_eq!(g[6], g[7], epsilon = 1e-12);
+        assert_relative_eq!(g[7], g[8], epsilon = 1e-12);
+        assert_relative_eq!(g[9], g[10], epsilon = 1e-12);
+        assert_relative_eq!(g[10], g[11], epsilon = 1e-12);
+        // For a sphere, vi components reduce to 0 because (dy²−dz²)=0 in
+        // the numerator of vi_fac — verify the sphere-symmetry invariant.
+        assert_relative_eq!(g[9], 0.0, epsilon = 1e-12);
+    }
+
+    /// Caller-supplied `fluidcoef` overrides the defaults verbatim at
+    /// slots [1..6]; the kappa-derived virtual mass/inertia values are
+    /// unaffected.
+    #[test]
+    fn custom_fluidcoef_overrides_defaults() {
+        let coef = [0.42, 0.13, 2.71, 1.62, 0.31];
+        let g = compute_geom_fluid(
+            FluidShape::Ellipsoid,
+            Some(coef),
+            GeomType::Sphere,
+            Vector3::new(0.5, 0.5, 0.5),
+        );
+        for (got, want) in g[1..6].iter().zip(coef.iter()) {
+            assert_relative_eq!(got, want, epsilon = 1e-12);
+        }
+    }
+
+    /// Anisotropic ellipsoid (distinct semi-axes via Box geom type) breaks
+    /// the sphere symmetry: virtual mass differs across axes, and the
+    /// virtual inertia about each axis is positive (vi_fac numerator
+    /// `(dy²−dz²)²` is nonzero). Locks the asymmetry behavior the kappa
+    /// quadrature is meant to capture.
+    #[test]
+    fn anisotropic_ellipsoid_breaks_symmetry() {
+        let g = compute_geom_fluid(
+            FluidShape::Ellipsoid,
+            None,
+            GeomType::Box,
+            Vector3::new(0.2, 0.4, 0.8),
+        );
+        // vm across axes must differ (anisotropic added-mass).
+        assert!((g[6] - g[7]).abs() > 1e-6);
+        assert!((g[7] - g[8]).abs() > 1e-6);
+        // All vm and vi must be finite and positive.
+        for &x in &g[6..12] {
+            assert!(
+                x.is_finite() && x > 0.0,
+                "expected positive finite, got {x}"
+            );
+        }
+    }
+}

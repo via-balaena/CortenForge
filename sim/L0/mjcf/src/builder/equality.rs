@@ -436,3 +436,361 @@ impl ModelBuilder {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use crate::builder::load_model;
+    use approx::assert_relative_eq;
+    use sim_core::EqualityType;
+
+    /// Connect with body2=world (omitted attribute) defaults `body2_id` to 0
+    /// and pushes one Connect equality with the named anchor in body1's frame.
+    #[test]
+    fn connect_with_world_body2() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a" pos="0 0 1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect name="c1" body1="a" anchor="0.2 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.neq, 1);
+        assert_eq!(model.eq_type[0], EqualityType::Connect);
+        assert_eq!(model.eq_obj2id[0], 0, "world body");
+        assert_relative_eq!(model.eq_data[0][0], 0.2, epsilon = 1e-12);
+        assert_eq!(model.eq_name[0].as_deref(), Some("c1"));
+        assert_eq!(model.eq_name_to_id.get("c1"), Some(&0));
+    }
+
+    /// Connect with explicit body2 auto-computes the body2 anchor so both
+    /// anchors map to the same world-space point at qpos0. The check rebuilds
+    /// world coordinates from each side independently and compares.
+    #[test]
+    fn connect_explicit_body2_autocomputes_anchor() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                    <body name="b" pos="0 1 0">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="a" body2="b" anchor="0.5 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.neq, 1);
+        let a = *model.body_name_to_id.get("a").unwrap();
+        let b = *model.body_name_to_id.get("b").unwrap();
+        assert_eq!(model.eq_obj1id[0], a);
+        assert_eq!(model.eq_obj2id[0], b);
+        let anchor1 = nalgebra::Vector3::new(
+            model.eq_data[0][0],
+            model.eq_data[0][1],
+            model.eq_data[0][2],
+        );
+        let anchor2 = nalgebra::Vector3::new(
+            model.eq_data[0][3],
+            model.eq_data[0][4],
+            model.eq_data[0][5],
+        );
+        // body a at (1,0,0), b at (0,1,0); anchor in a-frame is (0.5,0,0)
+        // → world = (1.5, 0, 0); anchor in b-frame = (1.5, -1, 0).
+        let world_via_a = nalgebra::Vector3::new(1.0, 0.0, 0.0) + anchor1;
+        let world_via_b = nalgebra::Vector3::new(0.0, 1.0, 0.0) + anchor2;
+        assert_relative_eq!((world_via_a - world_via_b).norm(), 0.0, epsilon = 1e-12);
+    }
+
+    /// Weld with explicit `relpose` packs the user-supplied quaternion into
+    /// `eq_data[6..10]` verbatim instead of computing one from world frames.
+    #[test]
+    fn weld_explicit_relpose_packed_verbatim() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld body1="a" body2="b" anchor="0 0 0"
+                          relpose="0 0 0 1 0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.eq_type[0], EqualityType::Weld);
+        // relpose attr layout is [x y z qw qx qy qz] → data[6..10] = [qw,qx,qy,qz]
+        assert_relative_eq!(model.eq_data[0][6], 1.0, epsilon = 1e-12);
+        assert_relative_eq!(model.eq_data[0][7], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(model.eq_data[0][8], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(model.eq_data[0][9], 0.0, epsilon = 1e-12);
+    }
+
+    /// Weld without `relpose` auto-computes `q1.inverse() * q2`. With both
+    /// bodies at identity orientation, the relpose is identity (1,0,0,0).
+    #[test]
+    fn weld_auto_relpose_identity_when_aligned() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                    <body name="b" pos="0 1 0">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld body1="a" body2="b" anchor="0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        // Both bodies at identity orientation → q1⁻¹·q2 = identity quat.
+        assert_relative_eq!(model.eq_data[0][6], 1.0, epsilon = 1e-12);
+        assert_relative_eq!(model.eq_data[0][7], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(model.eq_data[0][8], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(model.eq_data[0][9], 0.0, epsilon = 1e-12);
+    }
+
+    /// Joint equality packs polycoef into `eq_data[0..5]` and resolves both
+    /// joint names; coefficients beyond index 4 are dropped (5-element cap).
+    #[test]
+    fn joint_equality_polycoef_packed_into_data() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <body name="b">
+                            <joint name="j2" type="hinge" axis="0 0 1"/>
+                            <geom type="sphere" size="0.1" mass="1.0"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint joint1="j1" joint2="j2"
+                           polycoef="0.1 0.2 0.3 0.4 0.5"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.eq_type[0], EqualityType::Joint);
+        for (i, expect) in [0.1, 0.2, 0.3, 0.4, 0.5].iter().enumerate() {
+            assert_relative_eq!(model.eq_data[0][i], *expect, epsilon = 1e-12);
+        }
+    }
+
+    /// Joint equality with no `joint2` records `usize::MAX` as the second
+    /// object id (the sentinel for "no second joint" used downstream).
+    #[test]
+    fn joint_equality_omitted_joint2_sentinel() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint joint1="j1" polycoef="1 0 0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.eq_obj2id[0], usize::MAX);
+    }
+
+    /// Distance with no explicit `distance` attribute auto-computes the
+    /// target as the world-space distance between the two geom centers at
+    /// qpos0. With geoms at (1,0,0) and (0,1,0), expect √2.
+    #[test]
+    fn distance_auto_computed_from_geom_world_positions() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="ba" pos="1 0 0">
+                        <geom name="g1" type="sphere" size="0.05" mass="1.0"/>
+                    </body>
+                    <body name="bb" pos="0 1 0">
+                        <geom name="g2" type="sphere" size="0.05" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance geom1="g1" geom2="g2"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.eq_type[0], EqualityType::Distance);
+        let expected = (2.0_f64).sqrt();
+        assert_relative_eq!(model.eq_data[0][0], expected, epsilon = 1e-12);
+    }
+
+    /// Distance with an explicit negative target is clamped to 0 (the
+    /// `d.max(0.0)` guard at process_distance:311). Also covers the
+    /// `geom2`-omitted path which records `usize::MAX` as obj2id.
+    #[test]
+    fn distance_negative_clamped_and_geom2_world_origin() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="ba" pos="1 0 0">
+                        <geom name="g1" type="sphere" size="0.05" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance geom1="g1" distance="-3.0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_relative_eq!(model.eq_data[0][0], 0.0, epsilon = 1e-12);
+        assert_eq!(model.eq_obj2id[0], usize::MAX);
+    }
+
+    /// Tendon equality with a single fixed tendon resolves `tendon1` to its
+    /// id and packs polycoef into `eq_data[0..5]`. Also covers the
+    /// `tendon2`-omitted sentinel branch.
+    #[test]
+    fn tendon_equality_resolves_tendon_id_and_polycoef() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="t1">
+                        <joint joint="j1" coef="1.0"/>
+                    </fixed>
+                </tendon>
+                <equality>
+                    <tendon tendon1="t1" polycoef="2.0 0 0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.eq_type[0], EqualityType::Tendon);
+        assert_eq!(model.eq_obj1id[0], 0, "first tendon");
+        assert_eq!(model.eq_obj2id[0], usize::MAX, "no tendon2");
+        assert_relative_eq!(model.eq_data[0][0], 2.0, epsilon = 1e-12);
+    }
+
+    /// Equality constraints are stored in **document order** regardless of
+    /// type, matching MuJoCo's eq_id assignment. Class defaults from
+    /// `<default class="cl"><equality solref=…/></default>` are also
+    /// applied via `apply_eq_defaults` when the element doesn't override.
+    #[test]
+    fn equality_document_order_and_class_defaults() {
+        let xml = r#"
+            <mujoco model="m">
+                <default>
+                    <default class="cl">
+                        <equality solref="0.05 1.5"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="a">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="a" anchor="0 0 0"/>
+                    <joint joint1="j1" polycoef="1 0 0 0 0" class="cl"/>
+                    <weld body1="b" anchor="0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.neq, 3);
+        // Order: Connect (0) → Joint (1) → Weld (2).
+        assert_eq!(model.eq_type[0], EqualityType::Connect);
+        assert_eq!(model.eq_type[1], EqualityType::Joint);
+        assert_eq!(model.eq_type[2], EqualityType::Weld);
+        // Joint constraint inherits solref from class "cl".
+        assert_relative_eq!(model.eq_solref[1][0], 0.05, epsilon = 1e-12);
+        assert_relative_eq!(model.eq_solref[1][1], 1.5, epsilon = 1e-12);
+    }
+
+    /// Each `process_*` resolves names via `body_name_to_id`/
+    /// `joint_name_to_id`/`geom_name_to_id`/`tendon_name_to_id` and returns
+    /// a `ModelConversionError` containing the offending name if missing.
+    /// One test sweeps all four resolver branches by trying each in turn.
+    #[test]
+    fn equality_unknown_name_errors() {
+        let cases: &[(&str, &str)] = &[
+            (
+                r#"<mujoco model="m"><worldbody>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                </worldbody><equality>
+                    <connect body1="ghost" anchor="0 0 0"/>
+                </equality></mujoco>"#,
+                "ghost",
+            ),
+            (
+                r#"<mujoco model="m"><worldbody>
+                    <body name="a">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody><equality>
+                    <joint joint1="ghost" polycoef="1 0 0 0 0"/>
+                </equality></mujoco>"#,
+                "ghost",
+            ),
+            (
+                r#"<mujoco model="m"><worldbody>
+                    <body name="a"><geom name="g1" type="sphere" size="0.1" mass="1.0"/></body>
+                </worldbody><equality>
+                    <distance geom1="ghost"/>
+                </equality></mujoco>"#,
+                "ghost",
+            ),
+            (
+                r#"<mujoco model="m"><worldbody>
+                    <body name="a">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <tendon><fixed name="t1"><joint joint="j1" coef="1.0"/></fixed></tendon>
+                <equality>
+                    <tendon tendon1="ghost" polycoef="1 0 0 0 0"/>
+                </equality></mujoco>"#,
+                "ghost",
+            ),
+        ];
+        for (xml, needle) in cases {
+            let err = load_model(xml).expect_err("should reject unknown name");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(needle),
+                "error did not name the missing entity: {msg}"
+            );
+        }
+    }
+}
