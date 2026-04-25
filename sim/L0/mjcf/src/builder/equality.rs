@@ -568,8 +568,9 @@ mod tests {
         assert_relative_eq!(model.eq_data[0][9], 0.0, epsilon = 1e-12);
     }
 
-    /// Joint equality packs polycoef into `eq_data[0..5]` and resolves both
-    /// joint names; coefficients beyond index 4 are dropped (5-element cap).
+    /// Joint equality packs polycoef into `eq_data[0..5]` and resolves
+    /// both joint names. The 5-element cap (indices beyond 4 dropped) is
+    /// not exercised here — would need a 6+ coefficient input.
     #[test]
     fn joint_equality_polycoef_packed_into_data() {
         let xml = r#"

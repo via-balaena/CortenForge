@@ -199,22 +199,30 @@ mod tests {
         assert_relative_eq!(p.gap, 0.005, epsilon = 1e-12);
     }
 
-    /// `<pair>` with no overrides applies geom-combination fallbacks:
-    ///   condim = max(g1.condim, g2.condim)
-    ///   friction = sqrt(componentwise) expanded to 5-element form
-    ///   solref = elementwise min, solimp = elementwise max.
+    /// `<pair>` with no overrides applies geom-combination fallbacks per
+    /// `process_contact`: condim = max, friction = sqrt(componentwise) ×
+    /// 5-element expansion `[s,s,t,r,r]`, solref = elementwise min, solimp
+    /// = elementwise max. Each side carries distinct values so the asserts
+    /// fail under any other commutative combinator (e.g., max-vs-min swap).
     #[test]
     fn pair_geom_combination_fallbacks_applied() {
-        // Distinct per-geom friction so the geometric mean is meaningful:
-        // g1 friction (1, 0.04, 0.001) vs g2 (4, 0.16, 0.004) → mean (2, 0.08, 0.002).
-        // condim 3 vs 6 → max 6. solref/solimp use defaults (equal both sides).
+        // Distinct per-geom values that make the combination behavior
+        // observable: friction means are non-trivial; solref min picks
+        // [0.01, 1.0] from g1; solimp max picks [0.9, 0.95, 0.005, 0.6,
+        // 3.0] (componentwise across the two geoms — not all from one
+        // side, so a "first-wins" or "last-wins" implementation would
+        // fail too).
         let xml = r#"
             <mujoco model="m">
                 <worldbody>
                     <body name="a"><geom name="g1" type="sphere" size="0.1" mass="1.0"
-                        condim="3" friction="1 0.04 0.001"/></body>
+                        condim="3" friction="1 0.04 0.001"
+                        solref="0.01 1.0"
+                        solimp="0.7 0.8 0.005 0.4 1.0"/></body>
                     <body name="b"><geom name="g2" type="sphere" size="0.1" mass="1.0"
-                        condim="6" friction="4 0.16 0.004"/></body>
+                        condim="6" friction="4 0.16 0.004"
+                        solref="0.05 2.0"
+                        solimp="0.9 0.95 0.001 0.6 3.0"/></body>
                 </worldbody>
                 <contact>
                     <pair geom1="g1" geom2="g2"/>
@@ -223,11 +231,25 @@ mod tests {
         "#;
         let model = load_model(xml).expect("load");
         let p = &model.contact_pairs[0];
+        // condim: max(3, 6) = 6.
         assert_eq!(p.condim, 6);
+        // friction: geometric mean per component, then expand to [s,s,t,r,r].
         let s = (1.0_f64 * 4.0).sqrt(); // 2.0
         let t = (0.04_f64 * 0.16).sqrt(); // 0.08
         let r = (0.001_f64 * 0.004).sqrt(); // ≈0.002
         for (got, want) in p.friction.iter().zip([s, s, t, r, r].iter()) {
+            assert_relative_eq!(got, want, epsilon = 1e-12);
+        }
+        // solref: elementwise min. min(0.01, 0.05) = 0.01; min(1.0, 2.0) = 1.0.
+        // Both come from g1 — a swapped (max-instead-of-min) implementation
+        // would yield [0.05, 2.0] and fail the first assert.
+        for (got, want) in p.solref.iter().zip([0.01, 1.0].iter()) {
+            assert_relative_eq!(got, want, epsilon = 1e-12);
+        }
+        // solimp: elementwise max. Components 2 and 3 come from g1 (0.005,
+        // 0.6); components 0, 1, 4 come from g2 (0.9, 0.95, 3.0) —
+        // mixed-side outcome rules out any "single-side wins" alias.
+        for (got, want) in p.solimp.iter().zip([0.9, 0.95, 0.005, 0.6, 3.0].iter()) {
             assert_relative_eq!(got, want, epsilon = 1e-12);
         }
     }
