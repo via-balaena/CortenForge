@@ -375,6 +375,15 @@ The current CI has structural mismatches with both the grader (redundancy) and t
 
 The savings come specifically from **not paying the bevy_ecs/image/zip/criterion compile cost on every consumer's test build.** For crates whose default-features graph is small, the savings per-crate are large (sim-ml-chassis, sim-thermostat). For crates whose default == --all-features (most others), there's no savings — but no penalty either. Net: substantial.
 
+**Amendment 2026-04-25 (post-§8 step 13 first CI run):** the "23 × ~40s ≈ 15 min" math was **wrong by ~2×** for cold-cache CI. Two hidden costs the original math didn't capture:
+
+1. **Heavy stochastic-physics validators in default debug profile.** Five crates ship integration tests doing 90M–600M physics steps (`sim-thermostat::boltzmann_learning::gate_a_kl_convergence`, `sim-ml-chassis::autograd_policy_reinforce_integration`, `sim-rl` lib unittests, `sim-conformance-tests::integration/mod`, `sim-opt::d2c_sr_rematch_pt`). Measured warm-cache MBP: gate_a alone takes 10+ min in debug and didn't finish in a 27-min sweep; the same test in `--release` completes in 82s (5–10× speedup). The original "30–60s per crate" average came from xtask Grade's per-crate test timings (which run on already-compiled artifacts and don't include these gates' full step counts in --release). It dramatically under-counted the worst-case per-crate cost.
+2. **Cold cache on every PR.** GH Actions cache `save-if` is gated to main/develop pushes; PRs are always cold cache. The original math implicitly amortized the compile cost across runs.
+
+Observed CI run `24939726306` (post-step 13 yaml landed, pre-§6.5): `Tests (default features)` cancelled at 30+ min still in the heavy-test phase; `xtask Grade` ran 21m20s (was 14 min; +7 min for wasm32-target cold compile across 18 L0 crates added by §5.3). Quality Gate wall-time = max(jobs) ≈ 30+ min, blowing the 15–20 min budget by ~50%.
+
+See §6.5 below for the fix.
+
 ### 6.2 Slow-tier separation
 
 Some tests are inherently slow (sim-conformance-tests, anything with `#[ignore]`'d heavy fixtures). Move them to a separate `slow-tests` job with longer timeout, ubuntu-only (skip macos/windows for slow tests):
@@ -405,6 +414,25 @@ Currently `::warning::` only. After §5.3 lands, WASM compat for L0 is enforced 
 - (b) Stay as belt-and-suspenders, but flip to error (`exit 1`) on failure.
 
 Recommend (a) — grader is single source of truth.
+
+### 6.5 Split Tests into debug + release buckets (added 2026-04-25)
+
+Triggered by the post-§6.1 amendment above. Per `feedback_release_mode_heavy_tests.md` ("always `--release` for heavy tests") and the gate_a 5–10× measurement, the Tests job splits into two parallel ubuntu-latest runners:
+
+- **`tests-debug`** (default profile): 23 light crates whose default tests finish in seconds — `mesh-*` (10), `sim-types`/`simd`/`core`/`mjcf`/`urdf`/`gpu`/`soft`/`ml-chassis-bevy`/`therm-env` (9), `cf-geometry`/`spatial`/`design`/`design-tests` (4).
+- **`tests-release`** (--release): 5 crates whose default tests contain the heavy validators — `sim-ml-chassis`, `sim-thermostat`, `sim-rl`, `sim-conformance-tests`, `sim-opt`. Pays the --release compile once per cold-cache run; saves 5–10× on test execution.
+
+Why split rather than --release for everything: --release compile time on light crates is wasted (they don't benefit from the runtime speedup). Splitting lets the lighter bucket finish fast while the heavy bucket pays the --release tax in parallel on a separate runner. Wall-time = max(buckets), not sum.
+
+**Why not slow-tier separation alone (per §6.2):** moving the heavy tests to `--include-ignored` would require marking them `#[ignore]`, which contradicts their "must-pass on every PR" semantics. They are not "occasional/optional" tests — they are the primary correctness gates for the chassis/thermostat/rl/opt crates. The right fix is to run them faster (--release), not less often (#[ignore]).
+
+**Realistic budget post-§6.5:** to be remeasured on next CI run with the split applied. Expect:
+- `tests-debug` ≈ 8–12 min (cold-cache debug compile + fast tests),
+- `tests-release` ≈ 12–15 min (cold-cache --release compile + heavy tests at 5× speedup),
+- `xtask Grade` ≈ 21 min (unchanged; wasm32 cold compile dominates — the long pole),
+- Quality Gate wall-time = max ≈ **~21 min** (xtask Grade-dominated; tests jobs run in parallel beneath it).
+
+This still exceeds the original 15–20 min budget on free runners. The honest budget is **20–25 min** until either (a) cache save is enabled for PRs (10GB cache cap may not fit), (b) xtask Grade is split into fast-grade + wasm-grade parallel jobs (deferred — requires `xtask/src/grade.rs` to gate criteria via a new flag, scope TBD), or (c) we move to paid runners.
 
 ---
 
@@ -445,13 +473,14 @@ This branch (`feature/phase-0-track-a-bundle`, retitled) executes the work in th
 | 10 | Optional: §4.1 (sim-mjcf texture/HField gates) | sim-mjcf restructuring | Default behavior unchanged; `--no-default-features` builds lean | ~100 |
 | 11 | Optional: §4.2 (criterion benches extraction) | New -benches crates | sim-ml-chassis test compile drops criterion | ~80 |
 | 12 | **Flip Layer Integrity + WASM criteria to HARD GATE** | §5.2 phase 2 + §5.3 phase 2 | Run `cargo xtask grade-all`; all green | ~10 |
-| 13 | CI rework: §6 (drop --all-features matrix, slow-tier separation) | quality-gate.yml changes | One full CI run on this branch validates all surgeries + new CI architecture | ~80 (yaml) |
+| 13 | CI rework part 1: §6.1/§6.3/§6.4 (drop --all-features matrix, scope cross-OS, drop wasm job) | quality-gate.yml changes | First CI run on this branch surfaces the cold-cache cost the original §6.1 math missed | ~110 (yaml) |
+| 13.5 | CI rework part 2: §6.5 (split Tests into tests-debug + tests-release for heavy crates) | quality-gate.yml changes + plan §6 amendment | Quality Gate wall-time meets revised 20–25 min budget | ~100 (yaml + doc) |
 | 14 | Update STANDARDS.md to match new criteria | Doc | Manual review | ~150 |
 | 15 | Pre-squash tag (`feature/l0-foundation-pre-squash`), squash-merge PR | — | — | — |
 
-**Total work estimate:** ~1500–1700 LOC across ~15 commits. Realistic session-count: **5–8 focused sessions** depending on per-step depth. Step 6 (fixture authoring) and step 8 (example migration) are the largest individual steps; the rest are small.
+**Total work estimate:** ~1600–1800 LOC across ~16 commits. Realistic session-count: **5–8 focused sessions** depending on per-step depth. Step 6 (fixture authoring) and step 8 (example migration) are the largest individual steps; the rest are small.
 
-**CI cost estimate post-merge:** Test matrix drops from ~30–60 min to ~15–20 min (per §6.1). xtask Grade remains ~14 min. Total Quality Gate fast-tier ~20 min total vs current 60+ min worst case. **Roughly 2–3x faster, with stronger enforcement.**
+**CI cost estimate post-merge (revised 2026-04-25):** Quality Gate wall-time = max(jobs). Pre-§6.5 first CI run hit 30+ min on Tests (default debug profile, heavy validators not in --release). Post-§6.5 expected: tests-debug ~10 min, tests-release ~13 min, xtask Grade ~21 min, others <2 min — **wall-time ~21 min**. The honest budget on free GH runners is **20–25 min**, not the original 15–20 min. xtask Grade is the long pole; further reduction would require splitting fast-grade + wasm-grade into parallel jobs (deferred — separate change, not this branch).
 
 **Within-branch CI policy:** zero CI runs until step 13 lands. Local verification per step:
 - `cargo xtask grade <affected crate>` after each surgery to confirm no regression
@@ -500,7 +529,7 @@ Three claims that justify this plan over alternatives:
 
 **Claim 2: The tier expansion is honest, not arbitrary.** The current "L0 vs L1" binary forced a `sim-types` (22 deps) and a `sim-mjcf` (150 deps) into the same conceptual bin. The data shows two distinct populations; the architecture should reflect what's actually there. L0-io and L0-integration are not new constraints — they're labels for crates that already exist with their current weight. The L0 tier becomes meaningful by *removing* crates from it, not by adding new ones.
 
-**Claim 3: The sequence minimizes regression risk.** Grader extensions land in warning mode first, so each refactor has a green/red signal as it happens without blocking other PRs. Optional surgeries land late so the core fix doesn't depend on them. CI rework lands at end so a single CI run validates the whole branch. The hard-gate flip happens only after all warnings clear. This isn't novel pattern for this codebase — the soft-body architecture study used multi-PR sequencing with similar discipline (α/β.1/β.1-followup/β.2/γ/δ each merged separately). The branch-batched form here is dictated by the user's CI economics constraint (38+ min per push makes per-PR sequencing prohibitively expensive); the underlying discipline (incremental verification, fail-safe rollouts, late binding of optional work) is the same.
+**Claim 3: The sequence minimizes regression risk.** Grader extensions land in warning mode first, so each refactor has a green/red signal as it happens without blocking other PRs. Optional surgeries land late so the core fix doesn't depend on them. CI rework lands at end so a single CI run validates the whole branch. The hard-gate flip happens only after all warnings clear. This isn't novel pattern for this codebase — the soft-body architecture study used multi-PR sequencing with similar discipline (α/β.1/β.1-followup/β.2/γ/δ each merged separately). The branch-batched form here is dictated by the user's CI economics constraint (38+ min per push makes per-PR sequencing prohibitively expensive); the underlying discipline (incremental verification, fail-safe rollouts, late binding of optional work) is the same. **Caveat (2026-04-25):** Claim 3's "single CI run validates the whole branch" was empirically tested by step 13 part 1 and proved expensive — the first run on free GH runners hit 30+ min and required step 13.5 (§6.5) to bring wall-time back into a usable range. The discipline still holds; the cost-of-validation was higher than predicted.
 
 ---
 
