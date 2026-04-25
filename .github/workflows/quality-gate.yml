@@ -1,7 +1,7 @@
 # CortenForge Quality Gate
 #
 # This workflow enforces the A-grade standard on every push and PR.
-# See docs/STANDARDS.md for the seven criteria.
+# See docs/STANDARDS.md for the eight criteria.
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 #
 # "A-grade or it doesn't ship. No exceptions."

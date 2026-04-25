@@ -426,13 +426,16 @@ Why split rather than --release for everything: --release compile time on light 
 
 **Why not slow-tier separation alone (per §6.2):** moving the heavy tests to `--include-ignored` would require marking them `#[ignore]`, which contradicts their "must-pass on every PR" semantics. They are not "occasional/optional" tests — they are the primary correctness gates for the chassis/thermostat/rl/opt crates. The right fix is to run them faster (--release), not less often (#[ignore]).
 
-**Realistic budget post-§6.5:** to be remeasured on next CI run with the split applied. Expect:
-- `tests-debug` ≈ 8–12 min (cold-cache debug compile + fast tests),
-- `tests-release` ≈ 12–15 min (cold-cache --release compile + heavy tests at 5× speedup),
-- `xtask Grade` ≈ 21 min (unchanged; wasm32 cold compile dominates — the long pole),
-- Quality Gate wall-time = max ≈ **~21 min** (xtask Grade-dominated; tests jobs run in parallel beneath it).
+**Realistic budget post-§6.5 (measured on CI run `24942080560`, post-step-13.5 cold-cache PR run):**
+- `tests-debug` = **16m27s** (cold-cache debug compile + fast tests on 23 light crates).
+- `tests-release` = **22m28s** (cold-cache --release compile + 5 heavy validators; new long pole — slightly heavier than xtask Grade).
+- `xtask Grade` = **21m35s** (wasm32 cold compile dominates; consistent with the 21m20s on the prior run).
+- All other jobs (Format, Dependencies, Semver, Cross-OS macOS / Windows, SBOM, Feature Combos): under 4 min each.
+- Quality Gate wall-time = max(jobs) ≈ **22m37s** (tests-release-bounded, xtask Grade ~1 min behind).
 
-This still exceeds the original 15–20 min budget on free runners. The honest budget is **20–25 min** until either (a) cache save is enabled for PRs (10GB cache cap may not fit), (b) xtask Grade is split into fast-grade + wasm-grade parallel jobs (deferred — requires `xtask/src/grade.rs` to gate criteria via a new flag, scope TBD), or (c) we move to paid runners.
+Empirically the bucketing predictions undershot — `tests-debug` 16m vs predicted 8–12m, `tests-release` 22m vs predicted 12–15m. The original "expect" estimates were optimistic; the measured budget is what the doc should cite from here on. Wall-time still falls inside the **honest 20–25 min budget** for free runners.
+
+Tighten only if the budget breaks. Future levers (deferred until a real signal): (a) enable cache save for PRs (10GB cache cap may not fit; needs measurement), (b) split `xtask Grade` into fast-grade + wasm-grade parallel jobs (requires `xtask/src/grade.rs` to gate criteria via a new flag), (c) move to paid runners. None are foundation-blocking — 22–23 min cold-cache PR runs are acceptable post-foundation.
 
 ---
 
