@@ -15,6 +15,9 @@ description = "Complete mesh processing toolkit for 3D printing, CAD, and scan p
 keywords = ["mesh", "3d-printing", "geometry", "stl", "cad"]
 categories = ["graphics", "science", "algorithms"]
 
+[package.metadata.cortenforge]
+tier = "L0-io"
+
 [lints]
 workspace = true
 

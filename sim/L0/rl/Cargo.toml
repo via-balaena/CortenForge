@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0-integration"
+
 [dependencies]
 # RNG traits — StdRng + SeedableRng for per-epoch sampling in all 5 algorithms
 rand             = { workspace = true }

@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0-io"
+
 [dependencies]
 # Foundation types (BodyId, Pose) assembled into the Model
 sim-types = { workspace = true }

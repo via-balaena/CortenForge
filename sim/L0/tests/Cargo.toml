@@ -10,6 +10,7 @@ publish = false
 # integration targets (mujoco_conformance, integration). --lib errors
 # with "no library targets found".
 [package.metadata.cortenforge]
+tier = "L0-integration"
 grading_profile = "integration-only"
 
 [dependencies]

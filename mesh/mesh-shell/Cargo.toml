@@ -8,6 +8,9 @@ repository.workspace = true
 keywords = ["mesh", "3d", "shell", "offset", "printing"]
 categories = ["graphics", "algorithms"]
 
+[package.metadata.cortenforge]
+tier = "L0"
+
 [lints]
 workspace = true
 

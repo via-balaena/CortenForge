@@ -17,6 +17,8 @@ rust-version.workspace = true
 # re-enters when Phase B fills in non-stub bodies. Matches sim-therm-env /
 # sim-tests precedent. Full reasoning in scope §7 item 1 + §13 SD-5.
 [package.metadata.cortenforge]
+tier = "L0"
+tier_up_features = { gpu-probe = "L0-io" }
 grading_profile = "integration-only"
 
 [features]

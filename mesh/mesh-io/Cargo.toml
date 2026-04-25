@@ -12,6 +12,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0-io"
+
 [lints]
 workspace = true
 
