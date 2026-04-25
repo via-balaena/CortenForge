@@ -53,6 +53,12 @@ default = []
 parallel = ["dep:rayon"]
 serde = ["dep:serde", "serde/rc", "cf-geometry/serde", "sim-types/serde", "nalgebra/serde-serialize"]
 gpu-internals = []  # Exposes internal helpers for sim-gpu. No deps.
+# Canonical test-model fixtures (pendulums, particles, reaching arms, chains)
+# constructed in pure Rust via existing Model factory APIs + helpers in
+# `test_fixtures::builders`. Used by downstream L0-pure crates (sim-thermostat,
+# sim-ml-chassis, sim-opt) to keep their dev-graphs free of `sim-mjcf`. See
+# L0 plan §3.2.
+test-fixtures = []
 
 [lints]
 workspace = true

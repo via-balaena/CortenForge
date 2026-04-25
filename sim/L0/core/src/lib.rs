@@ -139,6 +139,11 @@ pub mod batch;
 // Validation framework for physics examples and integration tests
 pub mod validation;
 
+// Canonical test-model fixtures (gated). See module docs for the
+// `test-fixtures` feature contract.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;
+
 pub use batch::BatchSim;
 pub use cf_geometry::{Aabb, Axis, Bounded, Shape};
 pub use convex_hull::{ConvexHull, convex_hull, quickhull};
