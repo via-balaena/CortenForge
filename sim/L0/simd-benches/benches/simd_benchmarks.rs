@@ -1,6 +1,6 @@
 //! Benchmarks for SIMD operations.
 //!
-//! Run with: cargo bench -p sim-simd
+//! Run with: cargo bench -p sim-simd-benches
 
 #![allow(missing_docs, clippy::wildcard_imports)]
 

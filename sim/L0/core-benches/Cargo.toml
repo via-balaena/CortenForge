@@ -1,0 +1,34 @@
+[package]
+name = "sim-core-benches"
+description = "Criterion benchmarks for sim-core (collision detection + batched simulation throughput)"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L1"
+
+[dependencies]
+# Criterion harness for the bench targets below
+criterion = { workspace = true }
+# Vector / matrix types used by collision_benchmarks (Point3, UnitQuaternion, Vector3)
+nalgebra = { workspace = true }
+# Random input generation for collision pair stress tests
+rand = { workspace = true }
+# Crate under bench: Model, Aabb, Pose, batch::BatchSim, mesh::*, mid_phase::*
+sim-core = { workspace = true }
+
+[[bench]]
+name = "batch_benchmarks"
+harness = false
+
+[[bench]]
+name = "collision_benchmarks"
+harness = false
+
+[lints]
+workspace = true

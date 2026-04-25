@@ -15,9 +15,11 @@ members = [
     "mesh/mesh-types",
     "mesh/mesh-io",
     "mesh/mesh-repair",
+    "mesh/mesh-repair-benches",
     "mesh/mesh-sdf",
     "mesh/mesh-offset",
     "mesh/mesh-shell",
+    "mesh/mesh-shell-benches",
     "mesh/mesh-measure",
     "mesh/mesh-printability",
     "mesh/mesh-lattice",
@@ -296,12 +298,15 @@ members = [
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
     "sim/L0/simd",
+    "sim/L0/simd-benches",
     "sim/L0/core",
+    "sim/L0/core-benches",
     "sim/L0/mjcf",
     "sim/L0/urdf",
     "sim/L0/tests",
     "sim/L0/gpu",
     "sim/L0/ml-chassis",
+    "sim/L0/ml-chassis-benches",
     "sim/L0/rl",
     "sim/L0/thermostat",
     "sim/L0/opt",
@@ -465,9 +470,11 @@ tempfile = "3.27"
 mesh-types = { path = "mesh/mesh-types" }
 mesh-io = { path = "mesh/mesh-io" }
 mesh-repair = { path = "mesh/mesh-repair" }
+mesh-repair-benches = { path = "mesh/mesh-repair-benches" }
 mesh-sdf = { path = "mesh/mesh-sdf" }
 mesh-offset = { path = "mesh/mesh-offset" }
 mesh-shell = { path = "mesh/mesh-shell" }
+mesh-shell-benches = { path = "mesh/mesh-shell-benches" }
 mesh-measure = { path = "mesh/mesh-measure" }
 mesh-printability = { path = "mesh/mesh-printability" }
 mesh-lattice = { path = "mesh/mesh-lattice" }
@@ -487,11 +494,14 @@ cf-design = { path = "design/cf-design" }
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }
 sim-simd = { path = "sim/L0/simd" }
+sim-simd-benches = { path = "sim/L0/simd-benches" }
 sim-core = { path = "sim/L0/core" }
+sim-core-benches = { path = "sim/L0/core-benches" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
 sim-ml-chassis = { path = "sim/L0/ml-chassis" }
+sim-ml-chassis-benches = { path = "sim/L0/ml-chassis-benches" }
 sim-rl = { path = "sim/L0/rl" }
 sim-thermostat = { path = "sim/L0/thermostat" }
 sim-opt = { path = "sim/L0/opt" }

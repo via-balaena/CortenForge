@@ -1,6 +1,6 @@
 //! Benchmarks for the sim-ml-chassis crate.
 //!
-//! Run with: `cargo bench -p sim-ml-chassis`
+//! Run with: `cargo bench -p sim-ml-chassis-benches`
 //!
 //! ## Targets
 //!

@@ -33,9 +33,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 # Approximate equality for numeric tests
 approx = { workspace = true }
-# Microbenchmarks
-criterion = { workspace = true }
 
-[[bench]]
-name = "shell_benchmarks"
-harness = false
+# criterion benches live in the sibling `mesh-shell-benches` crate
+# (L0 plan §4.2: keeps criterion + plotters out of mesh-shell's dev-graph).

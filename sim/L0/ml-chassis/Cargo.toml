@@ -30,11 +30,9 @@ thiserror   = { workspace = true }
 [dev-dependencies]
 # Float tolerance assertions in tests (assert_relative_eq!)
 approx      = { workspace = true }
-# Benchmark harness for benches/bridge_benchmarks.rs
-criterion   = { workspace = true }
 # Enables sim-core's `test-fixtures` feature for cfg(test) Model factories
 # (pendulums, reaching arms, hinge chain, cart-pole, builder-test minimal)
-# used across env/vec_env/rollout/space/task/competition tests + benches.
+# used across env/vec_env/rollout/space/task/competition tests.
 # Replaces the prior sim-mjcf dev-dep per L0 plan §3.2 — keeps chassis's
 # dev-graph free of the sim-mjcf → mesh-io → zip chain so `sim-soft`'s
 # transitive graph stays pure-Rust. (Cargo unions features from regular
@@ -42,9 +40,8 @@ criterion   = { workspace = true }
 # still pulled in for release builds.)
 sim-core    = { workspace = true, features = ["test-fixtures"] }
 
-[[bench]]
-name = "bridge_benchmarks"
-harness = false
+# criterion benches live in the sibling `sim-ml-chassis-benches` crate
+# (L0 plan §4.2: keeps criterion + plotters out of chassis's dev-graph).
 
 [lints]
 workspace = true

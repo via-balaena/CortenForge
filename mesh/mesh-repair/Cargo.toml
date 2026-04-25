@@ -30,11 +30,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 # Approximate equality for numeric tests
 approx = { workspace = true }
-# Microbenchmarks
-criterion = { workspace = true }
 # Property-based testing
 proptest = { workspace = true }
 
-[[bench]]
-name = "repair_benchmarks"
-harness = false
+# criterion benches live in the sibling `mesh-repair-benches` crate
+# (L0 plan §4.2: keeps criterion + plotters out of mesh-repair's dev-graph).

@@ -1,0 +1,28 @@
+[package]
+name = "mesh-repair-benches"
+description = "Criterion benchmarks for mesh-repair (validate, weld, intersect)"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L1"
+
+[dependencies]
+# Criterion harness for repair_benchmarks
+criterion = { workspace = true }
+# Crate under bench: validate_mesh, weld_vertices, RepairParams, intersect::IntersectionParams
+mesh-repair = { workspace = true }
+# IndexedMesh + Point3 inputs to repair operations
+mesh-types = { workspace = true }
+
+[[bench]]
+name = "repair_benchmarks"
+harness = false
+
+[lints]
+workspace = true
