@@ -131,6 +131,8 @@ jobs:
             -p mesh-printability -p mesh-lattice -p mesh \
             -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
             -p sim-urdf -p sim-conformance-tests -p sim-gpu \
+            -p sim-soft -p sim-ml-chassis -p sim-rl \
+            -p sim-thermostat -p sim-opt -p sim-therm-env \
             -p cf-geometry -p cf-spatial -p cf-design
         shell: bash
 
