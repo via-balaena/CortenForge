@@ -176,7 +176,8 @@ pub fn load_mesh_file(
 ///
 /// Handles two data sources:
 /// 1. **File-based:** `file` attribute → load PNG, derive nrow/ncol/elevation
-/// 2. **Inline:** `nrow`/`ncol`/`elevation` attributes in XML
+///    (requires the `hfields` feature; otherwise returns a clear error)
+/// 2. **Inline:** `nrow`/`ncol`/`elevation` attributes in XML (always available)
 ///
 /// MuJoCo elevation formula: `vertex_z = elevation[i] × size[2]`.
 /// MuJoCo vertex positions: centered at origin, x ∈ `[−size[0], +size[0]]`, y ∈ `[−size[1], +size[1]]`.
@@ -212,8 +213,22 @@ pub fn convert_mjcf_hfield(
             })?;
             (nc, nr, elev.clone())
         }
-        // File-based loading
+        // File-based loading (requires `hfields` feature)
+        #[cfg(feature = "hfields")]
         (Some(file_path), None) => load_hfield_png(file_path, base_path, compiler, &hfield.name)?,
+        #[cfg(not(feature = "hfields"))]
+        (Some(file_path), None) => {
+            // Suppress unused-parameter warnings; load_hfield_png isn't compiled in.
+            let _ = (base_path, compiler);
+            return Err(ModelConversionError {
+                message: format!(
+                    "hfield '{}': file=\"{}\" requires the `hfields` feature \
+                     (currently disabled — enable `sim-mjcf/hfields` to load \
+                     PNG height fields, or use inline `elevation=\"...\"` data)",
+                    hfield.name, file_path,
+                ),
+            });
+        }
         // Neither (should not happen — parser validates)
         (None, None) => {
             return Err(ModelConversionError {
@@ -284,6 +299,7 @@ pub fn convert_mjcf_hfield(
 ///
 /// Returns `(ncol, nrow, elevation)`.
 // 8-bit/16-bit pixel intensities and grid dimensions are far below 2^52.
+#[cfg(feature = "hfields")]
 #[allow(clippy::cast_precision_loss)]
 fn load_hfield_png(
     file_path: &str,
