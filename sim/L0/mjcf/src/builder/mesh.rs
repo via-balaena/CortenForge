@@ -1,8 +1,9 @@
 //! Mesh and heightfield asset processing.
 //!
-//! Handles loading mesh data from files (STL, OBJ, PLY, 3MF), converting
-//! embedded vertex/face data, computing mesh inertia properties, and
-//! registering mesh/hfield assets in the builder's lookup tables.
+//! Handles loading mesh data from files (STL, OBJ, PLY; also 3MF when
+//! the `threemf` feature is enabled), converting embedded vertex/face
+//! data, computing mesh inertia properties, and registering mesh/hfield
+//! assets in the builder's lookup tables.
 
 use nalgebra::{Matrix3, Point3, Vector3};
 use sim_core::HeightFieldData;
@@ -107,7 +108,9 @@ impl ModelBuilder {
 
 /// Load mesh data from a file and convert to `TriangleMeshData`.
 ///
-/// Supports STL, OBJ, PLY, and 3MF formats (auto-detected from extension).
+/// Supports STL, OBJ, and PLY formats out of the box (auto-detected from
+/// extension). Enable the `threemf` feature to add 3MF; otherwise `.3mf`
+/// paths return an `UnknownFormat` error from mesh-io.
 /// Scale is applied to all vertices during conversion.
 ///
 /// # Arguments
@@ -319,7 +322,8 @@ fn load_hfield_png(
 ///
 /// Handles two sources of mesh data:
 /// 1. **Embedded data**: `vertex` and `face` attributes in MJCF
-/// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY/3MF
+/// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY (also
+///    3MF when the `threemf` feature is enabled)
 ///
 /// Scale is applied to all vertices. BVH is built automatically.
 pub fn convert_mjcf_mesh(

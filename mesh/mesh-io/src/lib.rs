@@ -5,7 +5,7 @@
 //! - **STL** (Stereolithography) - Binary and ASCII
 //! - **OBJ** (Wavefront) - ASCII only
 //! - **PLY** (Polygon File Format) - Binary and ASCII
-//! - **3MF** (3D Manufacturing Format) - ZIP-based XML format
+//! - **3MF** (3D Manufacturing Format) - Feature-gated (`threemf` feature)
 //! - **STEP** (CAD interchange) - Feature-gated (`step` feature)
 //!
 //! # Layer 0 Crate
@@ -62,6 +62,7 @@ mod ply;
 #[cfg(feature = "step")]
 mod step;
 mod stl;
+#[cfg(feature = "threemf")]
 mod threemf;
 
 pub use error::{IoError, IoResult};
@@ -70,6 +71,7 @@ pub use ply::{load_ply, save_ply};
 #[cfg(feature = "step")]
 pub use step::{load_step, save_step};
 pub use stl::{load_stl, save_stl};
+#[cfg(feature = "threemf")]
 pub use threemf::{load_3mf, save_3mf};
 
 use std::path::Path;
@@ -89,7 +91,8 @@ pub enum MeshFormat {
     /// Supports binary and ASCII variants.
     Ply,
     /// 3MF (3D Manufacturing Format).
-    /// ZIP-based XML format for 3D printing.
+    /// ZIP-based XML format for 3D printing (requires `threemf` feature).
+    #[cfg(feature = "threemf")]
     ThreeMf,
     /// STEP (Standard for the Exchange of Product Data).
     /// CAD interchange format (requires `step` feature).
@@ -114,6 +117,7 @@ impl MeshFormat {
             "stl" => Some(Self::Stl),
             "obj" => Some(Self::Obj),
             "ply" => Some(Self::Ply),
+            #[cfg(feature = "threemf")]
             "3mf" => Some(Self::ThreeMf),
             #[cfg(feature = "step")]
             "step" | "stp" => Some(Self::Step),
@@ -128,6 +132,7 @@ impl MeshFormat {
             Self::Stl => "stl",
             Self::Obj => "obj",
             Self::Ply => "ply",
+            #[cfg(feature = "threemf")]
             Self::ThreeMf => "3mf",
             #[cfg(feature = "step")]
             Self::Step => "step",
@@ -169,6 +174,7 @@ pub fn load_mesh<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
         MeshFormat::Stl => load_stl(path),
         MeshFormat::Obj => load_obj(path),
         MeshFormat::Ply => load_ply(path),
+        #[cfg(feature = "threemf")]
         MeshFormat::ThreeMf => load_3mf(path),
         #[cfg(feature = "step")]
         MeshFormat::Step => load_step(path),
@@ -210,6 +216,7 @@ pub fn save_mesh<P: AsRef<Path>>(mesh: &IndexedMesh, path: P) -> IoResult<()> {
         MeshFormat::Stl => save_stl(mesh, path, true), // Default to binary STL
         MeshFormat::Obj => save_obj(mesh, path),
         MeshFormat::Ply => save_ply(mesh, path, true), // Default to binary PLY
+        #[cfg(feature = "threemf")]
         MeshFormat::ThreeMf => save_3mf(mesh, path),
         #[cfg(feature = "step")]
         MeshFormat::Step => save_step(mesh, path),
@@ -246,6 +253,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "threemf")]
     #[test]
     fn format_from_path_3mf() {
         assert_eq!(
@@ -287,6 +295,11 @@ mod tests {
         assert_eq!(MeshFormat::Stl.extension(), "stl");
         assert_eq!(MeshFormat::Obj.extension(), "obj");
         assert_eq!(MeshFormat::Ply.extension(), "ply");
+    }
+
+    #[cfg(feature = "threemf")]
+    #[test]
+    fn format_extension_3mf() {
         assert_eq!(MeshFormat::ThreeMf.extension(), "3mf");
     }
 

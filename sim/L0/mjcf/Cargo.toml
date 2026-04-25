@@ -47,6 +47,10 @@ serde = ["dep:serde", "sim-types/serde", "sim-core/serde"]
 # mjb: opt-in MuJoCo binary format support (serialize/deserialize via bincode).
 # Unit-tested (15 tests in mjb.rs). Run: cargo test -p sim-mjcf --features mjb
 mjb = ["serde", "dep:bincode"]
+# threemf: opt-in 3MF asset support for `<mesh file="..."/>` tags. Forwards
+# to mesh-io's own `threemf` feature. Off by default to keep zip+zstd+cc
+# out of sim-mjcf's default graph.
+threemf = ["mesh-io/threemf"]
 
 [lints]
 workspace = true

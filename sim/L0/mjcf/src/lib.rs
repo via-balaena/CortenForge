@@ -90,7 +90,8 @@
 //!
 //! ## Mesh Assets
 //!
-//! - `<mesh name="..." file="path.stl"/>` - Load mesh from STL, OBJ, PLY, or 3MF file
+//! - `<mesh name="..." file="path.stl"/>` - Load mesh from STL, OBJ, or PLY
+//!   file (also 3MF when the `threemf` feature is enabled)
 //! - `<mesh name="..." vertex="x y z ..."/>` - Embedded vertex data
 //! - `<mesh name="..." scale="sx sy sz"/>` - Scale factor for mesh vertices
 //!

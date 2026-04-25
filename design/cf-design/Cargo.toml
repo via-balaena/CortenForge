@@ -27,8 +27,8 @@ sim-core = { workspace = true }
 [dev-dependencies]
 # Approximate equality for numeric tests
 approx = { workspace = true }
-# Mesh file I/O (workspace)
-mesh-io = { workspace = true }
+# Mesh file I/O (workspace) — `threemf` enabled for solid.rs round-trip tests
+mesh-io = { workspace = true, features = ["threemf"] }
 # MJCF loading (workspace)
 sim-mjcf = { workspace = true }
 # Temporary files/dirs for tests
