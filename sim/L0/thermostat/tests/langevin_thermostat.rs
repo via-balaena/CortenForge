@@ -16,29 +16,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use sim_core::test_fixtures::sho_1d;
 use sim_core::{DVector, Data, Integrator, Model};
 use sim_thermostat::test_utils::{WelfordOnline, assert_within_n_sigma};
 use sim_thermostat::{LangevinThermostat, PassiveComponent, PassiveStack};
-
-/// The Phase 1 1-DOF damped harmonic oscillator MJCF.
-///
-/// Single particle on a slide joint, unit mass, unit spring stiffness,
-/// zero damping (the thermostat owns damping per Q4 option (a) — the
-/// model's `dof_damping[0]` MUST be zero or the model damping would
-/// compound with the thermostat damping and silently shift the
-/// equilibrium temperature).
-const SHO_1D_XML: &str = r#"
-<mujoco model="sho_1d">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0"
-             stiffness="1" damping="0" springref="0" ref="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-</mujoco>
-"#;
 
 // ─── §6 model-invariants fixture ──────────────────────────────────────
 
@@ -48,7 +29,7 @@ const SHO_1D_XML: &str = r#"
 /// rather than silently miscompare downstream.
 #[test]
 fn test_sho_model_invariants() {
-    let model = sim_mjcf::load_model(SHO_1D_XML).expect("MJCF should load");
+    let model = sho_1d();
 
     assert_eq!(model.nv, 1, "model.nv must be 1");
     assert_eq!(model.nq, 1, "model.nq must be 1");
@@ -128,7 +109,7 @@ fn test_equipartition_central_parameter_set() {
     let mut across_trajectories = WelfordOnline::new();
 
     for i in 0..n_traj {
-        let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
+        let mut model = sho_1d();
         let mut data = model.make_data();
 
         let stack = PassiveStack::builder()
@@ -215,7 +196,7 @@ fn test_equipartition_sweep_gamma_t() {
             let mut across_trajectories = WelfordOnline::new();
 
             for i in 0..n_traj_per_combo {
-                let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
+                let mut model = sho_1d();
                 let mut data = model.make_data();
 
                 let stack = PassiveStack::builder()
@@ -274,7 +255,7 @@ impl PassiveComponent for CountingWrapper {
 /// consumers can copy this pattern.
 #[test]
 fn test_callback_firing_count() {
-    let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
+    let mut model = sho_1d();
     let mut data = model.make_data();
 
     let counter = Arc::new(AtomicUsize::new(0));
@@ -320,7 +301,7 @@ fn test_reproducibility_from_seed() {
     let seed = 0x00C0_FFEE_u64;
     let n_steps = 10_000;
 
-    let mut model1 = sim_mjcf::load_model(SHO_1D_XML).expect("load 1");
+    let mut model1 = sho_1d();
     let mut data1 = model1.make_data();
     let stack1 = PassiveStack::builder()
         // Reproducibility pair: both thermostats use identical
@@ -334,7 +315,7 @@ fn test_reproducibility_from_seed() {
         .build();
     stack1.install(&mut model1);
 
-    let mut model2 = sim_mjcf::load_model(SHO_1D_XML).expect("load 2");
+    let mut model2 = sho_1d();
     let mut data2 = model2.make_data();
     let stack2 = PassiveStack::builder()
         .with(LangevinThermostat::new(
@@ -377,7 +358,7 @@ fn test_reproducibility_from_seed() {
 ///    re-engaged FDT noise.
 #[test]
 fn test_stochastic_gating_sanity() {
-    let mut model = sim_mjcf::load_model(SHO_1D_XML).expect("load");
+    let mut model = sho_1d();
     let mut data = model.make_data();
 
     let stack = PassiveStack::builder()

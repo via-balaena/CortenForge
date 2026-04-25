@@ -41,25 +41,7 @@ use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor,
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 fn pendulum_model() -> Arc<Model> {
-    let xml = r#"
-    <mujoco>
-      <option timestep="0.002"/>
-      <worldbody>
-        <body name="pendulum" pos="0 0 1">
-          <joint name="hinge" type="hinge" axis="0 1 0"/>
-          <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-        </body>
-      </worldbody>
-      <actuator>
-        <motor joint="hinge" name="motor" ctrllimited="true" ctrlrange="-1 1"/>
-      </actuator>
-      <sensor>
-        <jointpos joint="hinge" name="angle"/>
-        <jointvel joint="hinge" name="angvel"/>
-      </sensor>
-    </mujoco>
-    "#;
-    Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"))
+    Arc::new(sim_core::test_fixtures::pendulum_bench())
 }
 
 fn pendulum_spaces(model: &Model) -> (ObservationSpace, ActionSpace) {
@@ -245,51 +227,7 @@ fn bench_sim_env_step(c: &mut Criterion) {
 /// This gives a much more realistic physics cost per env (~10–50 µs) so the
 /// bridge overhead % becomes meaningful.
 fn chain_model() -> Arc<Model> {
-    use std::fmt::Write;
-
-    // Programmatically build a 10-link chain with contacts.
-    let mut bodies = String::new();
-    let mut actuators = String::new();
-    let mut parent_close = String::new();
-
-    for i in 0..10 {
-        let name = format!("link{i}");
-        let jname = format!("j{i}");
-        let pos = if i == 0 {
-            "0 0 1.5".to_string()
-        } else {
-            "0 0 -0.2".to_string()
-        };
-        write!(
-            bodies,
-            r#"<body name="{name}" pos="{pos}">
-              <joint name="{jname}" type="hinge" axis="0 1 0" damping="0.5"/>
-              <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.15" mass="0.5"/>
-            "#
-        )
-        .unwrap();
-        write!(
-            actuators,
-            r#"<motor joint="{jname}" name="m{i}" gear="1" ctrllimited="true" ctrlrange="-1 1"/>"#
-        )
-        .unwrap();
-        parent_close.push_str("</body>");
-    }
-
-    let xml = format!(
-        r#"<mujoco>
-          <option timestep="0.002" gravity="0 0 -9.81"/>
-          <worldbody>
-            <geom type="plane" size="5 5 0.1" pos="0 0 0"/>
-            {bodies}
-            {parent_close}
-          </worldbody>
-          <actuator>
-            {actuators}
-          </actuator>
-        </mujoco>"#
-    );
-    Arc::new(sim_mjcf::load_model(&xml).expect("valid chain MJCF"))
+    Arc::new(sim_core::test_fixtures::hinge_chain(10))
 }
 
 fn chain_spaces(model: &Model) -> (ObservationSpace, ActionSpace) {

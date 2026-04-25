@@ -29,6 +29,7 @@
 )]
 
 use sim_core::DVector;
+use sim_core::test_fixtures::{bistable_chain, single_slide};
 use sim_thermostat::test_utils::WellState;
 use sim_thermostat::{
     DoubleWellPotential, ExternalField, IsingLearner, IsingTarget, LangevinThermostat,
@@ -43,30 +44,6 @@ const X_0: f64 = 1.0;
 const GAMMA: f64 = 10.0;
 const K_B_T: f64 = 1.0;
 const X_THRESH: f64 = X_0 / 2.0;
-
-const CHAIN_XML: &str = r#"
-<mujoco model="bistable_chain_4">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-  <worldbody>
-    <body name="p0" pos="0 0 0">
-      <joint name="x0" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p1" pos="0 1 0">
-      <joint name="x1" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p2" pos="0 2 0">
-      <joint name="x2" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p3" pos="0 3 0">
-      <joint name="x3" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-  </worldbody>
-</mujoco>
-"#;
 
 // Target parameters (spec §7.1)
 const TARGET_J: [f64; 6] = [0.8, -0.3, 0.1, 0.5, -0.2, 0.6];
@@ -87,7 +64,7 @@ fn make_target() -> IsingTarget {
 
 #[test]
 fn gate_a_kl_convergence() {
-    let model = sim_mjcf::load_model(CHAIN_XML).expect("load");
+    let model = bistable_chain(N);
     let target = make_target();
 
     let config = LearnerConfig {
@@ -186,7 +163,7 @@ fn gate_a_kl_convergence() {
 #[test]
 #[ignore = "600M steps — run with `cargo test -p sim-thermostat -- --ignored gate_b`"]
 fn gate_b_parameter_recovery() {
-    let model = sim_mjcf::load_model(CHAIN_XML).expect("load");
+    let model = bistable_chain(N);
     let target = make_target();
 
     let config = LearnerConfig {
@@ -242,20 +219,7 @@ fn gate_b_parameter_recovery() {
 
 #[test]
 fn external_field_breaks_symmetry() {
-    let mut model = sim_mjcf::load_model(
-        r#"
-        <mujoco model="single_slide">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="p0" pos="0 0 0">
-              <joint name="x0" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-              <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-            </body>
-          </worldbody>
-        </mujoco>
-        "#,
-    )
-    .expect("load");
+    let mut model = single_slide();
 
     PassiveStack::builder()
         .with(DoubleWellPotential::new(DELTA_V, X_0, 0))
@@ -315,7 +279,7 @@ fn learning_reproducibility() {
     let n_iter = 5;
 
     let run = || {
-        let model = sim_mjcf::load_model(CHAIN_XML).expect("load");
+        let model = bistable_chain(N);
         let target = make_target();
         let config = LearnerConfig {
             n: N,

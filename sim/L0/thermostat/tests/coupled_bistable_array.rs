@@ -34,40 +34,13 @@
 )]
 
 use sim_core::DVector;
+use sim_core::test_fixtures::bistable_chain;
 use sim_thermostat::test_utils::{WelfordOnline, WellState};
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PairwiseCoupling, PassiveStack};
 
-// ─── MJCF model ────────────────────────────────────────────────────────────
+// ─── Model ─────────────────────────────────────────────────────────────────
 
 const N: usize = 4;
-
-// NOTE: Each body is offset in Y so the geoms never overlap — prevents
-// spurious contact forces. The slide joints act along X, so the Y offset
-// does not affect qpos or the physics. contype="0" conaffinity="0"
-// explicitly disables contacts as a belt-and-suspenders measure.
-const CHAIN_XML: &str = r#"
-<mujoco model="bistable_chain_4">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-  <worldbody>
-    <body name="p0" pos="0 0 0">
-      <joint name="x0" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p1" pos="0 1 0">
-      <joint name="x1" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p2" pos="0 2 0">
-      <joint name="x2" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p3" pos="0 3 0">
-      <joint name="x3" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-  </worldbody>
-</mujoco>
-"#;
 
 // ─── Central parameter set (spec §7) ──────────────────────────────────────
 
@@ -91,7 +64,7 @@ const X_THRESH: f64 = X_0 / 2.0;
 
 /// Build model + data with the coupled bistable array installed.
 fn setup(coupling_j: f64, seed: u64) -> (sim_core::Model, sim_core::Data) {
-    let mut model = sim_mjcf::load_model(CHAIN_XML).expect("load");
+    let mut model = bistable_chain(N);
     let mut data = model.make_data();
 
     let mut builder = PassiveStack::builder();
@@ -241,7 +214,7 @@ fn ising_correlation(beta_j: f64, distance: usize) -> f64 {
 fn test_chain_model_invariants() {
     use sim_core::Integrator;
 
-    let model = sim_mjcf::load_model(CHAIN_XML).expect("load");
+    let model = bistable_chain(N);
     assert_eq!(model.nv, N, "chain model must have {N} velocity DOFs");
     assert_eq!(model.nq, N, "slide joints: nq = nv = {N}");
     assert_eq!(model.timestep, 0.001);

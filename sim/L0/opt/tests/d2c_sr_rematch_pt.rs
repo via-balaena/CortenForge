@@ -49,32 +49,13 @@ use std::sync::Arc;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sim_core::DVector;
+use sim_core::test_fixtures::stochastic_resonance;
 use sim_opt::{Pt, PtHyperparams, REMATCH_MASTER_SEED, REMATCH_TASK_NAME, run_rematch};
 use sim_rl::{
     ActionSpace, Algorithm, Cem, CemHyperparams, Competition, LinearPolicy, ObservationSpace,
     Policy, TaskConfig, TrainingBudget, VecEnv,
 };
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
-
-// ─── MJCF model (duplicated from d2c_sr_rematch.rs) ───────────────────────
-
-const SR_XML: &str = r#"
-<mujoco model="stochastic-resonance">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 10"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ─── Central parameters (duplicated) ───────────────────────────────────────
 
@@ -106,7 +87,7 @@ fn make_training_vecenv(
     episode_steps: usize,
     sub_steps: usize,
 ) -> VecEnv {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
     let omega = signal_omega();
 
     let thermostat = LangevinThermostat::new(

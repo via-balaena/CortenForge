@@ -7,105 +7,29 @@
 //! resolve `TaskConfig` to a distinct type at compile time).
 //!
 //! Production stock factories with richer docstrings live in `sim-rl`.
-//! Duplication here is bounded to test scope.
+//! Duplication here is bounded to test scope. Both halves now share the
+//! same underlying `sim_core::test_fixtures::reaching_*` Model fixtures
+//! so divergence is structurally bounded to the surrounding `TaskConfig`
+//! reward/done/truncated wiring.
 
 #![cfg(test)]
 
 use std::sync::Arc;
 
 use sim_core::BatchSim;
+use sim_core::test_fixtures::{reaching_2dof as fixture_2dof, reaching_6dof as fixture_6dof};
 
 use crate::error::EnvError;
 use crate::space::{ActionSpace, ObservationSpace};
 use crate::task::TaskConfig;
 use crate::vec_env::VecEnv;
 
-const MJCF_2DOF: &str = r#"
-<mujoco model="reaching-arm">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="upper_arm" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 -1 0"
-             limited="true" range="-3.14159 3.14159" damping="2.0"/>
-      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
-            size="0.03" mass="0.5" rgba="0.3 0.5 0.85 1"/>
-      <body name="forearm" pos="0.5 0 0">
-        <joint name="elbow" type="hinge" axis="0 -1 0"
-               limited="true" range="-2.6 2.6" damping="1.0"/>
-        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
-              size="0.025" mass="0.3" rgba="0.85 0.4 0.2 1"/>
-        <site name="fingertip" pos="0.4 0 0" size="0.015"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor name="shoulder_motor" joint="shoulder" gear="10"
-           ctrllimited="true" ctrlrange="-1 1"/>
-    <motor name="elbow_motor" joint="elbow" gear="5"
-           ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-const MJCF_6DOF: &str = r#"
-<mujoco model="reaching-arm-6dof">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="seg1" pos="0 0 0">
-      <joint name="j1" type="hinge" axis="0 -1 0" damping="2.0"
-             limited="true" range="-3.14 3.14"/>
-      <joint name="j2" type="hinge" axis="0 0 1" damping="1.5"
-             limited="true" range="-1.57 1.57"/>
-      <geom name="seg1_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
-      <body name="seg2" pos="0.3 0 0">
-        <joint name="j3" type="hinge" axis="0 -1 0" damping="1.5"
-               limited="true" range="-2.6 2.6"/>
-        <joint name="j4" type="hinge" axis="0 0 1" damping="1.0"
-               limited="true" range="-1.57 1.57"/>
-        <geom name="seg2_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
-        <body name="seg3" pos="0.25 0 0">
-          <joint name="j5" type="hinge" axis="0 -1 0" damping="1.0"
-                 limited="true" range="-2.6 2.6"/>
-          <joint name="j6" type="hinge" axis="0 0 1" damping="0.5"
-                 limited="true" range="-1.57 1.57"/>
-          <geom name="seg3_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
-          <site name="fingertip" pos="0.2 0 0" size="0.015"/>
-        </body>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor joint="j1" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j2" gear="8"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j3" gear="6"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j4" gear="5"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j5" gear="4"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j6" gear="3"  ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-// MJCF_2DOF is a compile-time constant; parse/build failures are author bugs,
-// so panic on Err is the right contract — matches sim-rl::tasks.
+// Fixture obs/act space builds use compile-time-fixed Model shapes; build
+// failures are author bugs, so panic on Err is the right contract.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_2dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_2DOF) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded 2-DOF MJCF failed to parse: {e}"),
-    });
+    let model = Arc::new(fixture_2dof());
 
     let obs_space = match ObservationSpace::builder()
         .all_qpos()
@@ -156,15 +80,12 @@ pub fn reaching_2dof() -> TaskConfig {
     TaskConfig::from_build_fn("reaching-2dof", obs_dim, act_dim, obs_scale, build_fn)
 }
 
-// MJCF_6DOF is a compile-time constant; parse/build failures are author bugs,
-// so panic on Err is the right contract — matches sim-rl::tasks.
+// Fixture obs/act space builds use compile-time-fixed Model shapes; build
+// failures are author bugs, so panic on Err is the right contract.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_6dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_6DOF) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded 6-DOF MJCF failed to parse: {e}"),
-    });
+    let model = Arc::new(fixture_6dof());
 
     let obs_space = match ObservationSpace::builder()
         .all_qpos()
@@ -190,8 +111,8 @@ pub fn reaching_6dof() -> TaskConfig {
 
     let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
 
-    // FK block runs on a fresh BatchSim built from a compile-time MJCF; every
-    // failure path here is an author bug, so panic is correct.
+    // FK block runs on a fresh BatchSim built from a compile-time fixture;
+    // every failure path here is an author bug, so panic is correct.
     #[allow(clippy::panic)]
     let target_tip = {
         let mut batch = BatchSim::new(Arc::clone(&model), 1);

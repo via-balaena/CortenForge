@@ -329,24 +329,7 @@ mod tests {
 
     /// Build a pendulum `SimEnv` with standard reward/done/truncated.
     fn make_pendulum_env(sub_steps: usize) -> SimEnv {
-        let xml = r#"
-        <mujoco>
-          <option timestep="0.01"/>
-          <worldbody>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor"/>
-          </actuator>
-          <sensor>
-            <jointpos joint="hinge" name="angle"/>
-          </sensor>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::pendulum_with_angle_sensor());
 
         let obs_space = ObservationSpace::builder()
             .all_qpos()
@@ -507,21 +490,7 @@ mod tests {
 
     #[test]
     fn on_reset_hook_modifies_state() {
-        let xml = r#"
-        <mujoco>
-          <option timestep="0.01"/>
-          <worldbody>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor"/>
-          </actuator>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::pendulum_basic());
 
         let obs_space = ObservationSpace::builder()
             .all_qpos()
@@ -549,24 +518,7 @@ mod tests {
 
     #[test]
     fn on_reset_forward_recomputes_derived() {
-        let xml = r#"
-        <mujoco>
-          <option timestep="0.01"/>
-          <worldbody>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor"/>
-          </actuator>
-          <sensor>
-            <jointpos joint="hinge" name="angle"/>
-          </sensor>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::pendulum_with_angle_sensor());
 
         // Observe sensordata (a derived quantity computed by forward())
         let obs_space = ObservationSpace::builder()
@@ -615,24 +567,7 @@ mod tests {
     fn step_recomputes_sensordata() {
         // forward() inside step() should refresh sensordata so that
         // sensor readings match the post-step qpos.
-        let xml = r#"
-        <mujoco>
-          <option timestep="0.01"/>
-          <worldbody>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor"/>
-          </actuator>
-          <sensor>
-            <jointpos joint="hinge" name="angle"/>
-          </sensor>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::pendulum_with_angle_sensor());
 
         let obs_space = ObservationSpace::builder()
             .all_qpos()
@@ -678,15 +613,7 @@ mod tests {
 
     #[test]
     fn builder_missing_obs_space() {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body><joint name="j" type="hinge"/><geom size="0.1"/></body>
-          </worldbody>
-          <actuator><motor joint="j"/></actuator>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::builder_test_minimal());
         let act_space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
 
         let err = SimEnv::builder(model)
@@ -706,15 +633,7 @@ mod tests {
 
     #[test]
     fn builder_missing_action_space() {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body><joint name="j" type="hinge"/><geom size="0.1"/></body>
-          </worldbody>
-          <actuator><motor joint="j"/></actuator>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::builder_test_minimal());
         let obs_space = ObservationSpace::builder()
             .all_qpos()
             .build(&model)
@@ -737,15 +656,7 @@ mod tests {
 
     #[test]
     fn builder_missing_reward() {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body><joint name="j" type="hinge"/><geom size="0.1"/></body>
-          </worldbody>
-          <actuator><motor joint="j"/></actuator>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::builder_test_minimal());
         let obs_space = ObservationSpace::builder()
             .all_qpos()
             .build(&model)
@@ -764,15 +675,7 @@ mod tests {
 
     #[test]
     fn builder_missing_done() {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body><joint name="j" type="hinge"/><geom size="0.1"/></body>
-          </worldbody>
-          <actuator><motor joint="j"/></actuator>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::builder_test_minimal());
         let obs_space = ObservationSpace::builder()
             .all_qpos()
             .build(&model)
@@ -791,15 +694,7 @@ mod tests {
 
     #[test]
     fn builder_missing_truncated() {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body><joint name="j" type="hinge"/><geom size="0.1"/></body>
-          </worldbody>
-          <actuator><motor joint="j"/></actuator>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::builder_test_minimal());
         let obs_space = ObservationSpace::builder()
             .all_qpos()
             .build(&model)
@@ -818,15 +713,7 @@ mod tests {
 
     #[test]
     fn builder_zero_sub_steps() {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body><joint name="j" type="hinge"/><geom size="0.1"/></body>
-          </worldbody>
-          <actuator><motor joint="j"/></actuator>
-        </mujoco>
-        "#;
-        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+        let model = Arc::new(sim_core::test_fixtures::builder_test_minimal());
         let obs_space = ObservationSpace::builder()
             .all_qpos()
             .build(&model)

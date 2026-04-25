@@ -18,27 +18,8 @@
 )]
 
 use sim_core::DVector;
+use sim_core::test_fixtures::ratchet as ratchet_model;
 use sim_thermostat::{LangevinThermostat, PassiveStack, RatchetPotential};
-
-// ─── MJCF model (spec §5) ─────────────────────────────────────────────────
-
-const RATCHET_XML: &str = r#"
-<mujoco model="brownian-ratchet">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="ratchet_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 1"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ─── Central parameters (spec §8) ─────────────────────────────────────────
 
@@ -58,7 +39,7 @@ const SEED: u64 = 20_260_410;
 /// of the origin, not drift to infinity.
 #[test]
 fn ratchet_on_produces_bounded_motion() {
-    let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let mut model = ratchet_model();
     assert_eq!(model.nv, 1, "expected 1 DOF");
     assert_eq!(model.nu, 1, "expected 1 actuator");
 
@@ -110,7 +91,7 @@ fn ratchet_on_produces_bounded_motion() {
 /// We just check it's in a reasonable range.
 #[test]
 fn ratchet_off_produces_diffusion() {
-    let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let mut model = ratchet_model();
 
     let thermostat =
         LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, SEED, 0);
@@ -146,7 +127,7 @@ fn ratchet_off_produces_diffusion() {
     let n_traj = 20;
     let mut sum_x2: f64 = 0.0;
     for seed_offset in 0..n_traj {
-        let mut model_i = sim_mjcf::load_model(RATCHET_XML).unwrap();
+        let mut model_i = ratchet_model();
         let thermostat_i = LangevinThermostat::new(
             DVector::from_element(model_i.nv, GAMMA),
             K_B_T,
@@ -187,7 +168,7 @@ fn ratchet_off_produces_diffusion() {
 /// remain at rest (no actuator force, no passive force).
 #[test]
 fn zero_gain_actuator_produces_no_force() {
-    let model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let model = ratchet_model();
 
     // No PassiveStack — just the bare model with the zero-gain actuator.
     let mut data = model.make_data();
@@ -213,7 +194,7 @@ fn zero_gain_actuator_produces_no_force() {
 /// forces are applied).
 #[test]
 fn ctrl_persists_across_steps() {
-    let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let mut model = ratchet_model();
 
     let ratchet = RatchetPotential::new(V1, V2, PHI, PERIOD, 0, 0);
     // No thermostat — deterministic test.

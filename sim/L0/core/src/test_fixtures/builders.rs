@@ -177,7 +177,31 @@ fn add_scalar_joint(
 
     model.dof_body.push(body_id);
     model.dof_jnt.push(jnt_id);
-    let dof_parent = if dof_id == 0 { None } else { Some(dof_id - 1) };
+    // dof_parent walks the kinematic ancestry (NOT just dof_id - 1, which
+    // is wrong for sibling-of-world topologies like bistable_chain where
+    // each body's parent is world and DOFs across siblings are independent).
+    // Algorithm: if this body already has DOFs (multi-joint body), parent
+    // is the previous DOF on this body; otherwise walk up body_parent until
+    // we find an ancestor with at least one DOF, and parent is its last
+    // DOF. World (body 0) has no DOFs, so siblings-of-world get None.
+    let dof_parent = {
+        let n_existing = model.body_dof_num[body_id];
+        if n_existing > 0 {
+            Some(model.body_dof_adr[body_id] + n_existing - 1)
+        } else {
+            let mut ancestor = model.body_parent[body_id];
+            loop {
+                if ancestor == 0 {
+                    break None;
+                }
+                let n = model.body_dof_num[ancestor];
+                if n > 0 {
+                    break Some(model.body_dof_adr[ancestor] + n - 1);
+                }
+                ancestor = model.body_parent[ancestor];
+            }
+        }
+    };
     model.dof_parent.push(dof_parent);
     model.dof_armature.push(0.0);
     model.dof_damping.push(damping);
@@ -278,12 +302,37 @@ pub(super) fn add_freejoint(model: &mut Model, body_id: usize, name: &str) -> us
         .qpos_spring
         .extend_from_slice(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
 
+    // First DOF of the free joint walks the kinematic ancestry; intra-joint
+    // DOFs 1..6 chain off the previous DOF on this body. Free bodies almost
+    // always attach to world (free_body_diag fixture matches), so the first
+    // DOF typically resolves to None — but the same ancestor walk used in
+    // add_scalar_joint applies for completeness.
+    let first_dof_parent = {
+        let n_existing = model.body_dof_num[body_id];
+        if n_existing > 0 {
+            Some(model.body_dof_adr[body_id] + n_existing - 1)
+        } else {
+            let mut ancestor = model.body_parent[body_id];
+            loop {
+                if ancestor == 0 {
+                    break None;
+                }
+                let n = model.body_dof_num[ancestor];
+                if n > 0 {
+                    break Some(model.body_dof_adr[ancestor] + n - 1);
+                }
+                ancestor = model.body_parent[ancestor];
+            }
+        }
+    };
     for i in 0..6 {
         model.dof_body.push(body_id);
         model.dof_jnt.push(jnt_id);
-        model
-            .dof_parent
-            .push(if i == 0 { None } else { Some(dof_adr + i - 1) });
+        model.dof_parent.push(if i == 0 {
+            first_dof_parent
+        } else {
+            Some(dof_adr + i - 1)
+        });
         model.dof_armature.push(0.0);
         model.dof_damping.push(0.0);
         model.dof_frictionloss.push(0.0);
@@ -681,4 +730,37 @@ pub(super) fn finalize(model: &mut Model) {
     model.compute_ancestors();
     model.compute_implicit_params();
     model.compute_qld_csr_metadata();
+    rebuild_name_indices(model);
+}
+
+/// Rebuild every `*_name_to_id` HashMap from its companion `*_name`
+/// Vec. Mirrors what `sim-mjcf` does after building a Model from XML
+/// — without these maps, `Model::name2id` and per-type accessors
+/// (`sensor_id`, etc.) all return `None` even though the `*_name` Vec
+/// entries are populated. Called from [`finalize`].
+fn rebuild_name_indices(model: &mut Model) {
+    fn collect_optional(names: &[Option<String>]) -> std::collections::HashMap<String, usize> {
+        names
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| n.as_ref().map(|s| (s.clone(), i)))
+            .collect()
+    }
+    fn collect_required(names: &[String]) -> std::collections::HashMap<String, usize> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), i))
+            .collect()
+    }
+    model.body_name_to_id = collect_optional(&model.body_name);
+    model.jnt_name_to_id = collect_optional(&model.jnt_name);
+    model.geom_name_to_id = collect_optional(&model.geom_name);
+    model.site_name_to_id = collect_optional(&model.site_name);
+    model.tendon_name_to_id = collect_optional(&model.tendon_name);
+    model.actuator_name_to_id = collect_optional(&model.actuator_name);
+    model.sensor_name_to_id = collect_optional(&model.sensor_name);
+    model.eq_name_to_id = collect_optional(&model.eq_name);
+    model.mesh_name_to_id = collect_required(&model.mesh_name);
+    model.hfield_name_to_id = collect_required(&model.hfield_name);
 }

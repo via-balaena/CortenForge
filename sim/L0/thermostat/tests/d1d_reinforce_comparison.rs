@@ -22,31 +22,12 @@
 use std::sync::Arc;
 
 use sim_core::DVector;
+use sim_core::test_fixtures::ratchet;
 use sim_rl::{
     ActionSpace, Algorithm, Environment, LinearPolicy, ObservationSpace, OptimizerConfig, Policy,
     Reinforce, ReinforceHyperparams, SimEnv, Tensor, TrainingBudget, VecEnv,
 };
 use sim_thermostat::{LangevinThermostat, PassiveStack, RatchetPotential};
-
-// ─── MJCF model (spec §5) ─────────────────────────────────────────────────
-
-const RATCHET_XML: &str = r#"
-<mujoco model="brownian-ratchet">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="ratchet_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 1"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ─── Central parameters (spec §8) ─────────────────────────────────────────
 
@@ -85,7 +66,7 @@ const CEM_MEAN_DISPLACEMENT: f64 = -40.08;
 
 /// Build a `VecEnv` for REINFORCE training with negated reward (spec §7.3).
 fn make_training_vecenv(seed: u64) -> VecEnv {
-    let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let mut model = ratchet();
 
     let thermostat = LangevinThermostat::new(
         DVector::from_element(model.nv, GAMMA_THERMO),
@@ -123,7 +104,7 @@ fn make_training_vecenv(seed: u64) -> VecEnv {
 
 /// Build a single `SimEnv` for evaluation.
 fn make_eval_env(seed: u64) -> SimEnv {
-    let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let mut model = ratchet();
 
     let thermostat = LangevinThermostat::new(
         DVector::from_element(model.nv, GAMMA_THERMO),

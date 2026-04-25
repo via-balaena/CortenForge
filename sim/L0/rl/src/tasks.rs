@@ -1,10 +1,12 @@
-//! Stock task factories — MJCF-backed reaching arms used across the RL
+//! Stock task factories — fixture-backed reaching arms used across the RL
 //! baselines and the `sim-ml` example suite.
 //!
-//! These live in `sim-rl` (not `sim-ml-chassis`) so the algorithm chassis
-//! itself stays free of the `sim-mjcf` → `mesh-io` → `zip` → `zstd-sys`
-//! (cc) compile chain. Consumers that use stock tasks depend on `sim-rl`
-//! directly and inherit mjcf from here.
+//! Models are constructed in pure Rust via `sim_core::test_fixtures`
+//! (enabled here through the `test-fixtures` feature on `sim-core`). This
+//! keeps `sim-rl`'s release graph free of the `sim-mjcf` → `mesh-io` →
+//! `zip` chain, which in turn keeps every downstream consumer that
+//! dev-deps `sim-rl` (sim-thermostat, sim-opt, examples) free of the
+//! same chain. See L0 plan §3.2.
 //!
 //! ## Stock tasks
 //!
@@ -21,146 +23,9 @@
 use std::sync::Arc;
 
 use sim_core::BatchSim;
+use sim_core::test_fixtures::reaching_6dof_obstacle as fixture_6dof_obstacle;
+use sim_core::test_fixtures::{reaching_2dof as fixture_2dof, reaching_6dof as fixture_6dof};
 use sim_ml_chassis::{ActionSpace, EnvError, ObservationSpace, TaskConfig, VecEnv};
-
-// ── Stock MJCF fixtures ─────────────────────────────────────────────────────
-
-/// 2-DOF MJCF — identical to the CEM / REINFORCE / PPO examples.
-const MJCF_2DOF: &str = r#"
-<mujoco model="reaching-arm">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="upper_arm" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 -1 0"
-             limited="true" range="-3.14159 3.14159" damping="2.0"/>
-      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
-            size="0.03" mass="0.5" rgba="0.3 0.5 0.85 1"/>
-      <body name="forearm" pos="0.5 0 0">
-        <joint name="elbow" type="hinge" axis="0 -1 0"
-               limited="true" range="-2.6 2.6" damping="1.0"/>
-        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
-              size="0.025" mass="0.3" rgba="0.85 0.4 0.2 1"/>
-        <site name="fingertip" pos="0.4 0 0" size="0.015"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor name="shoulder_motor" joint="shoulder" gear="10"
-           ctrllimited="true" ctrlrange="-1 1"/>
-    <motor name="elbow_motor" joint="elbow" gear="5"
-           ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-/// 6-DOF MJCF — 3-segment planar arm with 6 hinge joints.
-const MJCF_6DOF: &str = r#"
-<mujoco model="reaching-arm-6dof">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="seg1" pos="0 0 0">
-      <joint name="j1" type="hinge" axis="0 -1 0" damping="2.0"
-             limited="true" range="-3.14 3.14"/>
-      <joint name="j2" type="hinge" axis="0 0 1" damping="1.5"
-             limited="true" range="-1.57 1.57"/>
-      <geom name="seg1_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
-      <body name="seg2" pos="0.3 0 0">
-        <joint name="j3" type="hinge" axis="0 -1 0" damping="1.5"
-               limited="true" range="-2.6 2.6"/>
-        <joint name="j4" type="hinge" axis="0 0 1" damping="1.0"
-               limited="true" range="-1.57 1.57"/>
-        <geom name="seg2_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
-        <body name="seg3" pos="0.25 0 0">
-          <joint name="j5" type="hinge" axis="0 -1 0" damping="1.0"
-                 limited="true" range="-2.6 2.6"/>
-          <joint name="j6" type="hinge" axis="0 0 1" damping="0.5"
-                 limited="true" range="-1.57 1.57"/>
-          <geom name="seg3_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
-          <site name="fingertip" pos="0.2 0 0" size="0.015"/>
-        </body>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor joint="j1" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j2" gear="8"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j3" gear="6"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j4" gear="5"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j5" gear="4"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j6" gear="3"  ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-// 6-DOF obstacle-avoidance MJCF.
-//
-// Differences from MJCF_6DOF:
-// - `fusestatic="false"` — obstacle body keeps its own `xpos` entry
-// - `<site name="target">` on worldbody — target position observable via SiteXpos
-// - `<body name="obstacle">` — static ghost sphere at midpoint of rest→target path
-//
-// Body order: world(0), seg1(1), seg2(2), seg3(3), obstacle(4).
-// Site order: target(0, on worldbody), fingertip(1, on seg3).
-const MJCF_6DOF_OBSTACLE: &str = r#"
-<mujoco model="obstacle-reaching-6dof">
-  <compiler angle="radian" inertiafromgeom="true" fusestatic="false"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <site name="target" pos="0.681474 0.154033 0.101028" size="0.015"/>
-    <body name="seg1" pos="0 0 0">
-      <joint name="j1" type="hinge" axis="0 -1 0" damping="2.0"
-             limited="true" range="-3.14 3.14"/>
-      <joint name="j2" type="hinge" axis="0 0 1" damping="1.5"
-             limited="true" range="-1.57 1.57"/>
-      <geom name="seg1_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
-      <body name="seg2" pos="0.3 0 0">
-        <joint name="j3" type="hinge" axis="0 -1 0" damping="1.5"
-               limited="true" range="-2.6 2.6"/>
-        <joint name="j4" type="hinge" axis="0 0 1" damping="1.0"
-               limited="true" range="-1.57 1.57"/>
-        <geom name="seg2_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="0.3"/>
-        <body name="seg3" pos="0.25 0 0">
-          <joint name="j5" type="hinge" axis="0 -1 0" damping="1.0"
-                 limited="true" range="-2.6 2.6"/>
-          <joint name="j6" type="hinge" axis="0 0 1" damping="0.5"
-                 limited="true" range="-1.57 1.57"/>
-          <geom name="seg3_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
-          <site name="fingertip" pos="0.2 0 0" size="0.015"/>
-        </body>
-      </body>
-    </body>
-    <body name="obstacle" pos="0.730 0.046 0.030">
-      <geom name="obstacle" type="sphere" size="0.06"
-            contype="0" conaffinity="0" mass="0"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor joint="j1" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j2" gear="8"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j3" gear="6"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j4" gear="5"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j5" gear="4"  ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="j6" gear="3"  ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ── Stock task factories ────────────────────────────────────────────────────
 
@@ -177,15 +42,13 @@ const MJCF_6DOF_OBSTACLE: &str = r#"
 ///
 /// # Panics
 ///
-/// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-// MJCF_2DOF is a compile-time constant; parse failure = author bug, not runtime input.
+/// Panics if the hardcoded fixture's obs/act space build fails (indicates
+/// a code bug — the fixture's structural shape is fixed at compile time).
+// Fixture shape is compile-time fixed; obs/act build failure = author bug.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_2dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_2DOF) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded 2-DOF MJCF failed to parse: {e}"),
-    });
+    let model = Arc::new(fixture_2dof());
 
     let obs_space = match ObservationSpace::builder()
         .all_qpos()
@@ -255,15 +118,14 @@ pub fn reaching_2dof() -> TaskConfig {
 ///
 /// # Panics
 ///
-/// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-// MJCF_6DOF is a compile-time constant; parse failure = author bug, not runtime input.
+/// Panics if the hardcoded fixture's obs/act space or FK setup fails
+/// (indicates a code bug — the fixture's structural shape is fixed at
+/// compile time).
+// Fixture shape is compile-time fixed; obs/act/FK failure = author bug.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_6dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_6DOF) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded 6-DOF MJCF failed to parse: {e}"),
-    });
+    let model = Arc::new(fixture_6dof());
 
     let obs_space = match ObservationSpace::builder()
         .all_qpos()
@@ -366,19 +228,18 @@ pub fn reaching_6dof() -> TaskConfig {
 ///
 /// # Panics
 ///
-/// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-// MJCF_6DOF_OBSTACLE is a compile-time constant; parse failure = author bug, not runtime input.
+/// Panics if the hardcoded fixture's obs/act space or FK setup fails
+/// (indicates a code bug — the fixture's structural shape is fixed at
+/// compile time).
+// Fixture shape is compile-time fixed; obs/act/FK failure = author bug.
 #[allow(clippy::panic)]
 #[must_use]
 pub fn obstacle_reaching_6dof() -> TaskConfig {
-    let model = Arc::new(match sim_mjcf::load_model(MJCF_6DOF_OBSTACLE) {
-        Ok(m) => m,
-        Err(e) => panic!("hardcoded obstacle 6-DOF MJCF failed to parse: {e}"),
-    });
+    let model = Arc::new(fixture_6dof_obstacle());
 
     // Safety: verify expected body/site counts.
-    assert_eq!(model.nbody, 5, "obstacle MJCF: expected 5 bodies");
-    assert_eq!(model.nsite, 2, "obstacle MJCF: expected 2 sites");
+    assert_eq!(model.nbody, 5, "obstacle fixture: expected 5 bodies");
+    assert_eq!(model.nsite, 2, "obstacle fixture: expected 2 sites");
 
     // 21-dim obs: qpos(6) + qvel(6) + fingertip(3) + obstacle(3) + target(3).
     let obs_space = match ObservationSpace::builder()
@@ -413,8 +274,8 @@ pub fn obstacle_reaching_6dof() -> TaskConfig {
 
     // Compute target fingertip position via FK (same approach as reaching_6dof).
     let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
-    // FK block runs on a fresh BatchSim built from a compile-time MJCF; every
-    // failure path here is an author bug, so panic is correct.
+    // FK block runs on a fresh BatchSim built from a compile-time fixture;
+    // every failure path here is an author bug, so panic is correct.
     #[allow(clippy::panic)]
     let target_tip = {
         let mut batch = BatchSim::new(Arc::clone(&model), 1);
@@ -614,7 +475,7 @@ mod tests {
         // At rest (qpos=0), fingertip is at (0.75, 0, 0).
         // Obstacle is at (0.730, 0.046, 0.030).
         // Distance ≈ 0.058m, which is < r_safe (0.12) — penalty should fire.
-        let model = Arc::new(sim_mjcf::load_model(MJCF_6DOF_OBSTACLE).unwrap());
+        let model = Arc::new(fixture_6dof_obstacle());
         let mut batch = BatchSim::new(Arc::clone(&model), 1);
         {
             let data = batch.env_mut(0).unwrap();
@@ -649,7 +510,7 @@ mod tests {
     fn obstacle_penalty_zero_when_far() {
         // Set joints to target config — fingertip should be near target
         // and far from obstacle (obstacle is between rest and target).
-        let model = Arc::new(sim_mjcf::load_model(MJCF_6DOF_OBSTACLE).unwrap());
+        let model = Arc::new(fixture_6dof_obstacle());
         let mut batch = BatchSim::new(Arc::clone(&model), 1);
         {
             let data = batch.env_mut(0).unwrap();
@@ -673,7 +534,7 @@ mod tests {
     #[test]
     fn obstacle_site_ordering_verified() {
         // Verify: site 0 = target (on worldbody), site 1 = fingertip (on seg3).
-        let model = Arc::new(sim_mjcf::load_model(MJCF_6DOF_OBSTACLE).unwrap());
+        let model = Arc::new(fixture_6dof_obstacle());
         let mut batch = BatchSim::new(Arc::clone(&model), 1);
         {
             let data = batch.env_mut(0).unwrap();

@@ -39,40 +39,13 @@ use std::sync::Arc;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sim_core::DVector;
+use sim_core::test_fixtures::stochastic_resonance;
 use sim_opt::{REMATCH_MASTER_SEED, REMATCH_TASK_NAME, Sa, SaHyperparams, run_rematch};
 use sim_rl::{
     ActionSpace, Algorithm, Cem, CemHyperparams, Competition, LinearPolicy, ObservationSpace,
     Policy, TaskConfig, TrainingBudget, VecEnv,
 };
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
-
-// ─── MJCF model (duplicated from d2c_cem_training.rs:44-60) ────────────────
-//
-// Per Ch 42 §6 sub-decision (f), the SR task infrastructure is
-// duplicated rather than extracted to a shared test-support module.
-// The duplication is accepted because (1) integration tests are
-// siloed per crate; (2) the SR task is frozen post-D2c; (3) self-
-// contained fixtures serve the readability preference; (4) scope
-// discipline — premature cross-crate extraction is more workspace
-// machinery than the single sharing case justifies.
-
-const SR_XML: &str = r#"
-<mujoco model="stochastic-resonance">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 10"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ─── Central parameters (duplicated from d2c_cem_training.rs:64-69) ────────
 
@@ -145,7 +118,7 @@ fn obs_scale() -> Vec<f64> {
 // the per-env spec rendering.  When the per-env path lands, both
 // helpers (this one and the legacy D2c CEM one) update together.
 fn make_training_vecenv(master_seed: u64, n_envs: usize) -> VecEnv {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
     let omega = signal_omega();
 
     let thermostat = LangevinThermostat::new(

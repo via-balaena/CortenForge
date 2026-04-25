@@ -420,28 +420,8 @@ mod tests {
 
     const N_ENVS: usize = 4;
 
-    fn pendulum_xml() -> &'static str {
-        r#"
-        <mujoco>
-          <option timestep="0.01"/>
-          <worldbody>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor"/>
-          </actuator>
-          <sensor>
-            <jointpos joint="hinge" name="angle"/>
-          </sensor>
-        </mujoco>
-        "#
-    }
-
     fn make_model() -> Arc<Model> {
-        Arc::new(sim_mjcf::load_model(pendulum_xml()).expect("valid MJCF"))
+        Arc::new(sim_core::test_fixtures::pendulum_with_angle_sensor())
     }
 
     fn make_spaces(model: &Model) -> (ObservationSpace, ActionSpace) {

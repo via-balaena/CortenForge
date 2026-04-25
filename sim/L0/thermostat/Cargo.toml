@@ -24,11 +24,18 @@ rand        = { workspace = true }
 rand_chacha = { workspace = true }
 
 [dev-dependencies]
-# MJCF model loading — test fixtures for integration tests
-sim-mjcf = { workspace = true }
+# Enables sim-core's `test-fixtures` feature for cfg(test) Model factories
+# (sho_1d, ratchet, stochastic_resonance, bistable_chain, bistable_1dof,
+# free_body_diag, hinge_chain_2dof_inertial, ising_pair, single_slide).
+# Replaces the prior sim-mjcf dev-dep per L0 plan §3.2 — keeps the
+# dev-graph free of the sim-mjcf → mesh-io → zip chain.
+sim-core = { workspace = true, features = ["test-fixtures"] }
 # ML chassis — RL environment primitives for D1b/D2b baseline tests
 sim-ml-chassis = { workspace = true }
-# RL baselines — Cem/Reinforce/Ppo/Sac/Td3 for D1c/D1d/D2c training tests
+# RL baselines — Cem/Reinforce/Ppo/Sac/Td3 for D1c/D1d/D2c training tests.
+# sim-rl is now fixture-backed too (its release graph no longer pulls
+# sim-mjcf — see L0 plan §3.2), so this dev-dep doesn't reintroduce the
+# mjcf chain transitively.
 sim-rl = { workspace = true }
 # Normal/Uniform distributions — used by d1b/d1c test files for
 # Uniform action sampling and by prf.rs cross-verification tests.

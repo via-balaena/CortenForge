@@ -26,11 +26,17 @@ thiserror = { workspace = true }
 [dev-dependencies]
 # Float tolerance assertions across analysis.rs unit tests
 approx = { workspace = true }
-# DVector for rematch fixtures' MJCF model state threading
-sim-core = { workspace = true }
-# MJCF model loading for d2c_sr_rematch* fixtures
-sim-mjcf = { workspace = true }
+# DVector for rematch fixtures' Model state threading + the `test-fixtures`
+# feature, which backs the SR Model used by d2c_sr_rematch* fixtures
+# (replaces the prior sim-mjcf dev-dep per L0 plan §3.2 — keeps the
+# dev-graph free of the sim-mjcf → mesh-io → zip chain). Note: the
+# src/* test mods (algorithm.rs, richer_sa.rs, parallel_tempering.rs)
+# use sim_rl::reaching_2dof, which is itself fixture-backed now.
+sim-core = { workspace = true, features = ["test-fixtures"] }
 # RL baselines — d2c rematch fixtures use Cem/CemHyperparams as the control arm.
+# sim-rl is now fixture-backed (its release graph no longer pulls
+# sim-mjcf — see L0 plan §3.2), so this dev-dep doesn't reintroduce the
+# mjcf chain transitively.
 sim-rl = { workspace = true }
 
 [lints]

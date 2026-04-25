@@ -24,31 +24,12 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Uniform};
 use sim_core::DVector;
+use sim_core::test_fixtures::ratchet;
 use sim_ml_chassis::{
     ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv,
     rollout::collect_episodic_rollout,
 };
 use sim_thermostat::{LangevinThermostat, PassiveStack, RatchetPotential};
-
-// ─── MJCF model (spec §5) ─────────────────────────────────────────────────
-
-const RATCHET_XML: &str = r#"
-<mujoco model="brownian-ratchet">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="ratchet_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 1"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ─── Central parameters (spec §8) ─────────────────────────────────────────
 
@@ -70,7 +51,7 @@ const N_EPISODES: usize = 50;
 
 /// Build a `SimEnv` for the Brownian ratchet with a given seed.
 fn make_ratchet_env(seed: u64) -> SimEnv {
-    let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let mut model = ratchet();
 
     let thermostat =
         LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, seed, 0);
@@ -296,7 +277,7 @@ fn diffusion_calibration() {
 /// Full `VecEnv` training is D1c.
 #[test]
 fn vecenv_construction() {
-    let mut model = sim_mjcf::load_model(RATCHET_XML).unwrap();
+    let mut model = ratchet();
 
     let thermostat =
         LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T, SEED_BASE, 0);

@@ -7,42 +7,18 @@
 
 use std::sync::Arc;
 
+use sim_core::test_fixtures::reaching_2dof;
 use sim_ml_chassis::{
     ActionSpace, Algorithm, LinearPolicy, ObservationSpace, TaskConfig, TrainingBudget,
 };
 use sim_rl::{Cem, CemHyperparams};
 
-const MJCF: &str = r#"
-<mujoco model="custom-2dof">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="upper" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 -1 0"
-             limited="true" range="-3.14 3.14" damping="2.0"/>
-      <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.03" mass="0.5"/>
-      <body name="forearm" pos="0.5 0 0">
-        <joint name="elbow" type="hinge" axis="0 -1 0"
-               limited="true" range="-2.6 2.6" damping="1.0"/>
-        <geom type="capsule" fromto="0 0 0 0.4 0 0" size="0.025" mass="0.3"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor joint="shoulder" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="elbow" gear="5" ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
 #[test]
 fn custom_task_cem_trains() {
-    let model = Arc::new(sim_mjcf::load_model(MJCF).expect("valid MJCF"));
+    // Builder-path smoke test: same Model as sim_rl::reaching_2dof, but routed
+    // through TaskConfig::builder() with a custom reward to prove the bring-
+    // your-own-Model API works end-to-end through actual training.
+    let model = Arc::new(reaching_2dof());
 
     let obs = ObservationSpace::builder()
         .all_qpos()

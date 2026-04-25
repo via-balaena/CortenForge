@@ -26,23 +26,9 @@
 )]
 
 use sim_core::DVector;
+use sim_core::test_fixtures::bistable_1dof;
 use sim_thermostat::test_utils::{WelfordOnline, WellState};
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PassiveStack};
-
-// ─── MJCF model ───────────────────��────────────────────────────────────────
-
-const BISTABLE_XML: &str = r#"
-<mujoco model="bistable_1dof">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0"
-             stiffness="0" damping="0" springref="0" ref="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-</mujoco>
-"#;
 
 // ─── Central parameter set (spec §7) ───────────────────────────────────────
 
@@ -76,7 +62,7 @@ const X_THRESH: f64 = X_0 / 2.0; // 0.5
 /// Run a trajectory and count committed transitions using hysteresis.
 /// Returns (transition_count, ke_welford).
 fn run_trajectory(k_b_t: f64, seed: u64) -> (usize, WelfordOnline) {
-    let mut model = sim_mjcf::load_model(BISTABLE_XML).expect("load");
+    let mut model = bistable_1dof();
     let mut data = model.make_data();
 
     PassiveStack::builder()
@@ -133,7 +119,7 @@ fn run_trajectory(k_b_t: f64, seed: u64) -> (usize, WelfordOnline) {
 fn test_bistable_model_invariants() {
     use sim_core::types::Integrator;
 
-    let model = sim_mjcf::load_model(BISTABLE_XML).expect("load");
+    let model = bistable_1dof();
     assert_eq!(model.nv, 1, "bistable model must have 1 velocity DOF");
     assert_eq!(model.nq, 1, "slide joint: nq = nv = 1");
     assert_eq!(model.timestep, 0.001);
@@ -286,7 +272,7 @@ fn linear_regression(x: &[f64], y: &[f64]) -> (f64, f64) {
 /// 3. The peak width is consistent with the well curvature
 #[test]
 fn supporting_boltzmann_distribution() {
-    let mut model = sim_mjcf::load_model(BISTABLE_XML).expect("load");
+    let mut model = bistable_1dof();
     let mut data = model.make_data();
 
     PassiveStack::builder()
@@ -430,7 +416,7 @@ fn supporting_reproducibility() {
     // Also verify the trajectories produce identical position sequences
     // by running a shorter trajectory and checking final state
     let run_short = |s: u64| -> (f64, f64) {
-        let mut model = sim_mjcf::load_model(BISTABLE_XML).expect("load");
+        let mut model = bistable_1dof();
         let mut data = model.make_data();
 
         PassiveStack::builder()

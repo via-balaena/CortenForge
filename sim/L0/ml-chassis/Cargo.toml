@@ -37,14 +37,15 @@ thiserror   = { workspace = true }
 approx      = { workspace = true }
 # Benchmark harness for benches/bridge_benchmarks.rs
 criterion   = { workspace = true }
-# MJCF loading for cfg(test) fixtures across env/vec_env/rollout/space/task/
-# competition tests. Moved to dev-deps as part of SD-5 (chassis → mjcf
-# severed from release graph): stock task factories now live in
-# `sim-rl::tasks`, keeping `sim-soft`'s transitive graph free of
-# `mesh-io → zip → zstd-sys → cc`. Chassis keeps its own trivial stock-
-# task fixtures under `#[cfg(test)] mod test_stock_tasks` (avoiding a
-# cyclic sim-rl dev-dep that would resolve TaskConfig to a distinct type).
-sim-mjcf    = { workspace = true }
+# Enables sim-core's `test-fixtures` feature for cfg(test) Model factories
+# (pendulums, reaching arms, hinge chain, cart-pole, builder-test minimal)
+# used across env/vec_env/rollout/space/task/competition tests + benches.
+# Replaces the prior sim-mjcf dev-dep per L0 plan §3.2 — keeps chassis's
+# dev-graph free of the sim-mjcf → mesh-io → zip chain so `sim-soft`'s
+# transitive graph stays pure-Rust. (Cargo unions features from regular
+# and dev deps, so the regular sim-core dep above without the feature is
+# still pulled in for release builds.)
+sim-core    = { workspace = true, features = ["test-fixtures"] }
 
 [[bench]]
 name = "bridge_benchmarks"
