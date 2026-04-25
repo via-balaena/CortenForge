@@ -11,7 +11,9 @@ sim-core = { workspace = true }
 # MJCF scene loader for the example physics scene
 sim-mjcf = { workspace = true }
 # ML algorithm chassis: Algorithm, VecEnv, Policy traits
-sim-ml-chassis = { workspace = true, features = ["bevy"] }
+sim-ml-chassis = { workspace = true }
+# Bevy Resource newtype wrappers for SimEnv / ObservationSpace / ActionSpace
+sim-ml-chassis-bevy = { workspace = true }
 # Bevy <-> sim-core bridge: Transform sync and debug rendering
 sim-bevy = { workspace = true }
 # Bevy engine: rendering, ECS, input, windowing

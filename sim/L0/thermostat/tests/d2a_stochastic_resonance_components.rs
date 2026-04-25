@@ -19,27 +19,8 @@
 use std::f64::consts::PI;
 
 use sim_core::DVector;
+use sim_core::test_fixtures::stochastic_resonance;
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
-
-// ─── MJCF model (spec §6) ─────────────────────────────────────────────────
-
-const SR_XML: &str = r#"
-<mujoco model="stochastic-resonance">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 10"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ─── Central parameters (spec §9) ─────────────────────────────────────────
 
@@ -63,7 +44,7 @@ fn signal_omega() -> f64 {
 /// Three-component stack builds and installs without error.
 #[test]
 fn three_component_stack_installs() {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
 
     let thermostat =
         LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)
@@ -91,7 +72,7 @@ fn three_component_stack_installs() {
 /// both wells over 10k steps (bistable motion).
 #[test]
 fn bounded_bistable_motion_with_signal() {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
 
     let thermostat =
         LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)
@@ -153,7 +134,7 @@ fn bounded_bistable_motion_with_signal() {
 /// oscillating field. Verify the signal force appears.
 #[test]
 fn signal_force_present_in_stack() {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
 
     let thermostat =
         LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)
@@ -197,7 +178,7 @@ fn signal_force_present_in_stack() {
 /// (barrier top) with signal force should drift toward a well.
 #[test]
 fn ctrl_zero_is_deterministic() {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
 
     let thermostat =
         LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, SEED, 0)

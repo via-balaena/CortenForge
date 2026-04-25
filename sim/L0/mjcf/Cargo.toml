@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0-io"
+
 [dependencies]
 # Foundation types (BodyId, Pose) assembled into the Model
 sim-types = { workspace = true }
@@ -23,8 +26,11 @@ quick-xml = { workspace = true }
 thiserror = { workspace = true }
 # Structured logging spans across MJCF parse / build stages
 tracing = { workspace = true }
-# PNG / JPEG decoding for <texture file="..."> references
-image = { workspace = true }
+# PNG decoding for `<asset><hfield file="..."/>` PNG height fields. Optional
+# because not every consumer loads PNG-source heightfields (inline elevation
+# data requires no decoder); gated behind the default-on `hfields` feature
+# so embedded / WASM consumers can opt out via `default-features = false`.
+image = { workspace = true, optional = true }
 # Optional Serialize / Deserialize used by the `mjb` binary-format path
 serde = { workspace = true, optional = true }
 # Optional MJB binary-format (de)serialization, gated on the `mjb` feature
@@ -39,11 +45,22 @@ mesh-types = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
-default = []
+default = ["hfields"]
 serde = ["dep:serde", "sim-types/serde", "sim-core/serde"]
 # mjb: opt-in MuJoCo binary format support (serialize/deserialize via bincode).
 # Unit-tested (15 tests in mjb.rs). Run: cargo test -p sim-mjcf --features mjb
 mjb = ["serde", "dep:bincode"]
+# threemf: opt-in 3MF asset support for `<mesh file="..."/>` tags. Forwards
+# to mesh-io's own `threemf` feature. Off by default to keep zip+zstd+cc
+# out of sim-mjcf's default graph.
+threemf = ["mesh-io/threemf"]
+# hfields: PNG-source height fields for `<asset><hfield file="..."/>` tags.
+# Default-on (compat-preserving). Pulls the `image` crate plus its codec
+# chain; consumers that don't load PNG height fields can opt out via
+# `default-features = false` to drop the entire image-decoding subtree
+# from the build. Inline `elevation="..."` height fields work regardless
+# of this feature.
+hfields = ["dep:image"]
 
 [lints]
 workspace = true

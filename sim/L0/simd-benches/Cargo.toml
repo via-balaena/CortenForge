@@ -1,0 +1,30 @@
+[package]
+name = "sim-simd-benches"
+description = "Criterion benchmarks for sim-simd (SIMD vs scalar kernel throughput)"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L1"
+
+[dependencies]
+# Criterion harness for simd_benchmarks
+criterion = { workspace = true }
+# Vector3 inputs to SIMD kernels
+nalgebra = { workspace = true }
+# Random input generation for kernel throughput sweeps
+rand = { workspace = true }
+# Crate under bench
+sim-simd = { workspace = true }
+
+[[bench]]
+name = "simd_benchmarks"
+harness = false
+
+[lints]
+workspace = true

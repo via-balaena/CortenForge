@@ -8,12 +8,10 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
-[features]
-bevy = ["dep:bevy_ecs"]
+[package.metadata.cortenforge]
+tier = "L0"
 
 [dependencies]
-# ECS integration for Bevy consumers (gated behind `bevy` feature)
-bevy_ecs    = { version = "0.18", optional = true }
 # Linear algebra — DVector / DMatrix used throughout policy forward passes
 nalgebra    = { workspace = true }
 # Generic numeric traits (Float, Zero, One, NumCast) — used by Tensor<T>
@@ -32,20 +30,24 @@ thiserror   = { workspace = true }
 [dev-dependencies]
 # Float tolerance assertions in tests (assert_relative_eq!)
 approx      = { workspace = true }
-# Benchmark harness for benches/bridge_benchmarks.rs
-criterion   = { workspace = true }
-# MJCF loading for cfg(test) fixtures across env/vec_env/rollout/space/task/
-# competition tests. Moved to dev-deps as part of SD-5 (chassis → mjcf
-# severed from release graph): stock task factories now live in
-# `sim-rl::tasks`, keeping `sim-soft`'s transitive graph free of
-# `mesh-io → zip → zstd-sys → cc`. Chassis keeps its own trivial stock-
-# task fixtures under `#[cfg(test)] mod test_stock_tasks` (avoiding a
-# cyclic sim-rl dev-dep that would resolve TaskConfig to a distinct type).
-sim-mjcf    = { workspace = true }
+# Enables sim-core's `test-fixtures` feature for cfg(test) Model factories
+# (pendulums, reaching arms, hinge chain, cart-pole, builder-test minimal)
+# used across env/vec_env/rollout/space/task/competition tests.
+# Replaces the prior sim-mjcf dev-dep per L0 plan §3.2 — keeps chassis's
+# dev-graph free of the sim-mjcf → mesh-io → zip chain so `sim-soft`'s
+# transitive graph stays pure-Rust. (Cargo unions features from regular
+# and dev deps, so the regular sim-core dep above without the feature is
+# still pulled in for release builds.)
+sim-core    = { workspace = true, features = ["test-fixtures"] }
 
-[[bench]]
-name = "bridge_benchmarks"
-harness = false
+# criterion benches live in the sibling `sim-ml-chassis-benches` crate
+# (L0 plan §4.2: keeps criterion + plotters out of chassis's dev-graph).
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# wasm_js backend opt-in for getrandom (transitively pulled via
+# rand_chacha → rand_core). Paired with the workspace `.cargo/config.toml`
+# rustflag; native builds are unaffected by the target-conditional block.
+getrandom = { workspace = true }
 
 [lints]
 workspace = true

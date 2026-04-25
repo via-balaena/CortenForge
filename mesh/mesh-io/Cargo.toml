@@ -12,11 +12,21 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0-io"
+
 [lints]
 workspace = true
 
 [features]
 default = []
+# 3MF (3D Manufacturing Format) support — opt-in to keep zip+zstd+cc out
+# of the default mesh-io graph. Consumers needing 3MF (cf-design, mesh
+# umbrella, sim-mjcf via its own `threemf` passthrough) declare
+# `features = ["threemf"]`. The mesh-io-fuzz harness needs the same
+# opt-in; deferred until the pre-commit hook handles isolated-workspace
+# crates (the fuzz crate has its own [workspace] block).
+threemf = ["dep:zip"]
 step = ["truck-stepio", "truck-modeling", "truck-topology", "truck-polymesh", "truck-meshalgo"]
 
 [dependencies]
@@ -28,8 +38,8 @@ thiserror = { workspace = true }
 ply-rs = { workspace = true }
 # XML parsing/writing
 quick-xml = { workspace = true }
-# ZIP archive reading/writing
-zip = { workspace = true }
+# ZIP archive reading/writing — gated behind `threemf` feature
+zip = { workspace = true, optional = true }
 
 # STEP format support (feature-gated due to heavy dependencies)
 truck-stepio = { workspace = true, optional = true }

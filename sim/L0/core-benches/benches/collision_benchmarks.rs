@@ -1,6 +1,6 @@
 //! Benchmarks for collision detection operations.
 //!
-//! Run with: cargo bench -p sim-core
+//! Run with: cargo bench -p sim-core-benches
 //!
 //! Performance targets (from `MESH_MESH_COLLISION_PLAN.md`):
 //! - <5ms for 10k triangle pair test

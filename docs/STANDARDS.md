@@ -17,9 +17,9 @@ This document defines what "reliable" means, quantitatively.
 
 ---
 
-## The Seven Criteria
+## The Eight Criteria
 
-Every crate is graded on seven criteria. All must be A-grade before the crate is considered complete.
+Every crate is graded on eight criteria. All must be A-grade before the crate is considered complete.
 
 | # | Criterion | A Standard | Measurement |
 |---|-----------|------------|-------------|
@@ -28,8 +28,11 @@ Every crate is graded on seven criteria. All must be A-grade before the crate is
 | 3 | Clippy | Zero warnings | `cargo clippy -- -D warnings` |
 | 4 | Safety | Zero safety violations | grep (6 patterns) + review |
 | 5 | Dependencies | Minimal, justified | `cargo tree` + review |
-| 6 | Bevy-free (Layer 0) | No bevy in tree | `cargo tree \| grep bevy` |
-| 7 | API Design | Idiomatic, intuitive | Manual review |
+| 6 | Layer Integrity | Tier rules respected | `cargo tree` × 6 configs + tier rules |
+| 7 | WASM Compatibility | L0 builds for `wasm32-unknown-unknown` | `cargo check --target wasm32-unknown-unknown --no-default-features` |
+| 8 | API Design | Idiomatic, intuitive | Manual review |
+
+Criteria 1–7 are automated by `cargo xtask grade <crate>`. Criterion 8 (API Design) requires human review. Criteria 6 and 7 are tier-aware — every crate declares its tier in `Cargo.toml` (`[package.metadata.cortenforge] tier = "..."`); the grader enforces tier rules at PR time. See Criterion 6 for tier definitions.
 
 ---
 
@@ -355,50 +358,91 @@ advanced = ["heavy-dep"]
 
 ---
 
-## Criterion 6: Bevy-Free (Layer 0)
+## Criterion 6: Layer Integrity
 
-### A Standard: Zero Bevy Dependencies
+### A Standard: Tier Rules Respected (Banned-Prefix + Dep-Count Caps)
 
-**Measurement:**
-```bash
-cargo tree -p <crate> --prefix none --format "{p}" | grep -E "^(bevy|winit)"
-# Must return empty
+Replaces the prior "Bevy-free (Layer 0)" criterion (which only checked one prefix in one graph). Layer Integrity is tier-aware, checks six dep-graph configurations, and enforces both banned-prefix exclusions and dep-count maximums per tier.
+
+**Tier System.** Every workspace crate (under prefixes `sim-*`, `mesh-*`, `cf-*`, `cortenforge*`) declares its tier in `Cargo.toml`:
+
+```toml
+[package.metadata.cortenforge]
+tier = "L0"  # one of: "L0", "L0-io", "L0-integration", "L1"
+
+# Optional: features that promote this crate to a stricter (heavier) tier
+# when enabled. Distinguishes intentional opt-in from accidental leak.
+tier_up_features = { gpu-probe = "L0-io" }
 ```
+
+| Tier | Definition | Release max | Test max | Banned prefixes |
+|---|---|---:|---:|---|
+| **L0** | Pure compute substrate. Math, types, algorithms, in-memory data structures. No file I/O, no graphics, no GPU compute, no game-engine integration. WASM-buildable. | 80 | 100 | `bevy*`, `winit`, `wgpu*`, `image*`, `zip*`, `zstd*`, `sim-mjcf`, `sim-urdf`, `mesh-io`, `criterion`, `plotters*` |
+| **L0-io** | Format parsers, asset loaders, GPU compute kernels. Allowed format-specific heavy chains and `wgpu` compute (NOT bevy). WASM-buildable not required. | 200 | 220 | `bevy*`, `winit` |
+| **L0-integration** | Composes L0 + L0-io into higher-level abstractions. Bevy-free. Inherits L0-io weight legitimately. | 200 | 220 | `bevy*`, `winit` |
+| **L1** | Visualization, ECS integration, interactive runtime. Bevy/winit/wgpu allowed unconditionally. | unbounded | unbounded | (none) |
+
+Numbers track plan §5.2; the architectural rationale lives in `sim/docs/L0_architectural_plan.md` §2.1 and §5.2. Plan §2.1 proposes tighter caps (60/180/180) post-foundation; the grader will re-tune at the next foundation review.
+
+**Measurement (per crate, per PR):**
+```bash
+cargo run -p xtask --release -- grade <crate>
+```
+
+The grader runs `cargo tree` six times per in-scope crate — three feature configs (`--no-default-features`, default, `--all-features`) × two graph kinds (release `-e normal`, dev-test `-e normal,dev`) — then checks each config against the declared tier's banned-prefix list and dep-count cap. Findings name the violating dep + which config + which graph it appeared in.
 
 **Requirements:**
 
-- [ ] `cargo tree` shows no bevy or winit
-- [ ] No bevy types in public API
-- [ ] No bevy traits implemented directly (only in cortenforge crate)
-- [ ] Can be compiled for `--target wasm32-unknown-unknown` without bevy
+- [ ] `Cargo.toml` declares `[package.metadata.cortenforge].tier`
+- [ ] Release graph (no-default + default + all-features) contains no banned prefix for the declared tier
+- [ ] Dev graph (release + dev-deps, all three feature configs) contains no banned prefix for the declared tier
+- [ ] Release dep count ≤ tier's `release_max` across all three feature configs
+- [ ] Dev dep count ≤ tier's `test_max` across all three feature configs
+- [ ] Tier-up features (e.g. sim-soft's `gpu-probe → L0-io`) are explicitly declared in `tier_up_features` if a feature legitimately pulls heavier deps
 
 **Why This Matters:**
 
-Layer 0 crates must work in:
-- CLI tools
-- Web applications (WASM)
-- Servers
-- Embedded systems (future)
-- Other game engines (future)
-- Python bindings (future)
+L0-pure crates must work in CLI tools, web applications (WASM), servers, embedded systems, other game engines, and Python bindings. The four-tier system prevents architectural drift: a leak (bevy_ecs accidentally added to an L0 crate's `--all-features` graph) and an intentional tier-up (gpu-probe pulling wgpu) become structurally distinguishable. Without the tier-up declaration, the leak fails grading; with it, the heavier graph is permitted under the higher tier's rules.
 
-Bevy is an implementation detail of the cortenforge SDK, not the foundation.
+The dev-graph check specifically prevents the "+130 transitive deps in test compile" pattern that previously dominated CI test-compile times.
 
-**Layer 0 Crates:**
-- `mesh-*`
-- `cf-spatial`
-- `route-*`
-- `sensor-*`
-- `ml-*`
-- `sim-*` crates (Layer 0)
-
-**Layer 1 (Bevy allowed):**
-- `cortenforge`
-- `sim-bevy`
+**Tier Assignment:** Tier metadata lives in each crate's `Cargo.toml`. To find a crate's tier, look at its `[package.metadata.cortenforge]` block. The directory layout (`sim/L0/`) is historical and does not determine tier — multiple tiers coexist under that path.
 
 ---
 
-## Criterion 7: API Design
+## Criterion 7: WASM Compatibility (L0 only)
+
+### A Standard: L0 Crates Build Cleanly for `wasm32-unknown-unknown`
+
+L0 is the binary-clean foundation for embedded, web, and headless consumers. The grader enforces that every L0 crate (only) compiles for `wasm32-unknown-unknown` under `--no-default-features`. L0-io / L0-integration / L1 are NotApplicable (skipped, not graded on this criterion).
+
+**Measurement:**
+```bash
+cargo check -p <crate> --target wasm32-unknown-unknown --no-default-features
+# Must exit 0
+```
+
+The grader runs this automatically as part of `cargo xtask grade <crate>` when the declared tier is L0. If the wasm32 target is not installed locally, the criterion reports as `(target n/a)` (Manual grade, not a failure) — install with `rustup target add wasm32-unknown-unknown`.
+
+**Requirements:**
+
+- [ ] Tier == L0 (otherwise the criterion is NotApplicable)
+- [ ] `cargo check --target wasm32-unknown-unknown --no-default-features` exits 0
+- [ ] No use of `std::` items missing on wasm (e.g., `std::process`, `std::os::unix`)
+- [ ] Non-deterministic / system-time / RNG entry points work via wasm-compatible backends (the workspace registers `getrandom = { version = "0.3", features = ["wasm_js"] }` and a `.cargo/config.toml` rustflag selecting the wasm_js backend; affected crates inherit this via target-conditional dep blocks)
+
+**Why This Matters:**
+
+STANDARDS.md prior versions listed "compiles for wasm32-unknown-unknown" as an L0 requirement under the Bevy-free section, but enforcement was a CI warning, not a hard gate. The grader is now the single source of truth — CI no longer runs a standalone WASM job (plan §6.4).
+
+**Common Issues:**
+- `getrandom 0.3.x` requires both the rustflag (`getrandom_backend="wasm_js"`) and the cargo feature (`wasm_js`) — neither alone is sufficient.
+- `image`, `zip`, `mesh-io`, `sim-mjcf` and similar I/O-heavy deps are L0-banned anyway, so wasm-incompatibility there is moot at L0.
+- Float intrinsics or SIMD: nalgebra/simba's wasm story is solid under default features; no special action needed for typical L0 usage.
+
+---
+
+## Criterion 8: API Design
 
 ### A Standard: Idiomatic, Intuitive, Documented
 
@@ -526,20 +570,23 @@ $ cargo xtask grade mesh-types
 ╔══════════════════════════════════════════════════════════════╗
 ║                    GRADING: mesh-types                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║ Criterion        │ Result           │ Grade │ Threshold      ║
+║ Criterion          │ Result           │ Grade │ Threshold    ║
 ╠══════════════════════════════════════════════════════════════╣
-║ 1. Test Coverage │ 94.2%            │  A+   │ ≥75%(A),≥90%(A+) ║
-║ 2. Documentation │ 0 warnings       │   A   │ 0 warnings     ║
-║ 3. Clippy        │ 0 warnings       │   A   │ 0 warnings     ║
-║ 4. Safety        │ 0 violations     │   A   │ 0 violations   ║
-║ 5. Dependencies  │ 1 dep, all just. │   A   │ all justified  ║
-║ 6. Bevy-free     │ ✓ confirmed      │   A   │ no bevy/winit  ║
-║ 7. API Design    │ (manual review)  │   ?   │ checklist      ║
+║ 1. Coverage        │ 94.2%            │  A+   │ ≥75%(A),≥90%(A+) ║
+║ 2. Documentation   │ 0 warnings       │   A   │ 0 warnings   ║
+║ 3. Clippy          │ 0 warnings       │   A   │ 0 warnings   ║
+║ 4. Safety          │ 0 violations     │   A   │ 0 violations ║
+║ 5. Dependencies    │ 1 dep, all just. │   A   │ all justified║
+║ 6. Layer Integrity │ ✓ confirmed      │   A   │ tier rules   ║
+║ 7. WASM Compat     │ ✓ builds         │   A   │ wasm32 OK    ║
+║ 8. API Design      │ (manual review)  │   ?   │ checklist    ║
 ╠══════════════════════════════════════════════════════════════╣
-║ AUTOMATED        │                  │   A   │                ║
-║ OVERALL          │                  │   ?   │ needs review   ║
+║ AUTOMATED          │                  │   A   │              ║
+║ OVERALL            │                  │   ?   │ needs review ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
+
+`cargo xtask grade-all` runs the full sweep over all 232 workspace crates and reports a workspace-level pass/fail. It's the same gate CI runs (with `--skip-coverage` for runtime; coverage is a local-only gate per the note below).
 
 ---
 
@@ -555,25 +602,37 @@ cargo xtask complete X # Record A-grade completion
 
 ### CI: Quality Gate
 
-Every push to `main`/`develop` and every PR triggers independent
-quality jobs (`.github/workflows/quality-gate.yml`):
-- Format: `cargo fmt` strict check
-- Clippy: zero warnings, all targets
-- Tests: full test suite, 3-OS matrix
-- Documentation: zero warnings under `-D warnings`
-- Safety: awk-based scan for panic-capable patterns
-- Dependencies: `cargo-deny` license and source audit
-- Bevy-free: dependency tree check for Layer 0 crates
-- WASM: compilation check for select Layer 0 crates
+Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/workflows/quality-gate.yml`). The grader (`cargo xtask grade-all`) is the policy source of truth — CI invokes it directly rather than running parallel bash/awk reimplementations of the same checks.
 
-PR is blocked if any job fails. Note: CI does not run
-`cargo xtask grade`. The grade tool is a local per-crate
-diagnostic; CI enforces workspace-wide quality jobs.
-Coverage (criterion 1) is local-only — CI has no coverage gate.
+| Job | Purpose |
+|---|---|
+| Format | `cargo fmt --check` strict |
+| xtask Grade | `cargo xtask grade-all --skip-coverage --quiet` — runs Criteria 2–7 over every workspace crate. Coverage is excluded for runtime (see below). |
+| Tests (debug) | `cargo test` (default features, debug profile) on the ~23 light-weight workspace crates. |
+| Tests (release, heavy) | `cargo test --release` on the 5 crates whose default test suite contains heavy stochastic-physics validators (sim-ml-chassis, sim-thermostat, sim-rl, sim-conformance-tests, sim-opt). Per `feedback_release_mode_heavy_tests.md` and plan §6.5: these tests do 90M–600M physics steps each and run 5–10× slower in debug. |
+| Cross-OS Tests (macOS, Windows) | Default-features test on the 3 platform-sensitive crates (sim-core for FP determinism, sim-mjcf for XML/file paths, mesh-io for multi-format file paths). Other crates' cross-OS coverage is provided by ubuntu in the tests-debug + tests-release jobs. |
+| Feature Combos | Non-default feature paths. Currently sim-soft `gpu-probe` (the only `tier_up_features` declarer); add new combos here as features land. |
+| Dependencies | `cargo-deny` license + source audit. |
+| Semver | `cargo-semver-checks` against the prior published release. |
+| SBOM | Supply-chain manifest generation. |
+| Quality Gate | Aggregator job; `needs:` all of the above and gates merge. |
+
+**PR is blocked if any job fails.**
+
+**What CI does NOT run** (intentional, per plan §6):
+- `--all-features` test sweep — Layer Integrity in the grader enforces all-features cleanliness; re-running tests under all-features would just re-pay the bevy_ecs / image / zip / criterion compile cost on every consumer's test build for no additional signal.
+- Standalone WASM job — the WASM Compatibility criterion (#7) is the single source of truth.
+- Coverage gate — `cargo llvm-cov` is ~5–10 min per crate in release mode; running it on 232 crates exceeds the wall-time budget. Coverage is enforced locally via `cargo xtask grade <crate>` and in dedicated nightly jobs.
+
+### CI Wall-Time Budget
+
+Honest budget on free GitHub-hosted runners is **20–25 minutes**. Reference run (PR #216, post-foundation): **22m37s wall-time**, with the long-pole jobs being `xtask Grade` (≈21m, dominated by wasm32 cold-compile across 18 L0 crates) and `Tests (release, heavy)` (≈22m, cold-cache --release compile + 5 heavy-validator tests). Both run in parallel; wall-time = max(jobs).
+
+Plan §6.5 documents the bucketing rationale + when this budget gets revisited (e.g., if PR cache-restore lands, if xtask Grade gets split into fast-grade + wasm-grade parallel jobs, or if we move to paid runners).
 
 ### Review: Human Required
 
-Criterion 7 (API Design) requires human review. The `cargo xtask complete` command prompts for this.
+Criterion 8 (API Design) requires human review. The `cargo xtask complete` command prompts for this.
 
 ---
 

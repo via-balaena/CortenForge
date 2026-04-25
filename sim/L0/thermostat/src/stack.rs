@@ -482,18 +482,7 @@ mod tests {
         // covered by the §8 integration test. This unit test only
         // verifies that install registers SOMETHING — that the
         // model.cb_passive Option transitions from None to Some.
-        let xml = r#"
-        <mujoco model="install_test">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0"
-                     stiffness="1" damping="0" springref="0" ref="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-        </mujoco>"#;
-        let mut model = sim_mjcf::load_model(xml).unwrap();
+        let mut model = sim_core::test_fixtures::sho_1d();
         assert!(model.cb_passive.is_none());
 
         let stack = PassiveStack::builder().with(DummyDeterministic).build();
@@ -508,18 +497,7 @@ mod tests {
         // that calling data.forward(&model) once causes the counter
         // to advance. cb_passive is documented as firing once per
         // mj_fwd_passive call, which forward() invokes once.
-        let xml = r#"
-        <mujoco model="invoke_test">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0"
-                     stiffness="1" damping="0" springref="0" ref="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-        </mujoco>"#;
-        let mut model = sim_mjcf::load_model(xml).unwrap();
+        let mut model = sim_core::test_fixtures::sho_1d();
         let mut data = model.make_data();
 
         let counter = Arc::new(AtomicUsize::new(0));
@@ -539,24 +517,11 @@ mod tests {
 
     #[test]
     fn install_per_env_builds_n_envs_with_callbacks_set() {
-        let xml = r#"
-        <mujoco model="per_env_test">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0"
-                     stiffness="1" damping="0" springref="0" ref="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-        </mujoco>"#;
-
         // Prototype is unused (the chassis Decision-3 anchor pattern).
         let prototype = PassiveStack::builder().with(DummyDeterministic).build();
 
-        let xml_owned = xml.to_string();
         let batch = prototype.install_per_env(3, |_i| {
-            let model = sim_mjcf::load_model(&xml_owned).unwrap();
+            let model = sim_core::test_fixtures::sho_1d();
             let stack = PassiveStack::builder().with(DummyDeterministic).build();
             (model, stack)
         });

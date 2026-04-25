@@ -514,7 +514,14 @@ mod tests {
         );
     }
 
+    // The two zero-input panic tests below verify cf-geometry's `debug_assert!`
+    // contracts on `Shape::ellipsoid` / `Shape::plane`. `debug_assert!` is
+    // elided under `--release`, so these tests must be gated to debug-only —
+    // otherwise `cargo test --release` (and `cargo llvm-cov --release`) report
+    // them as failed `should_panic` cases. Re-running under `cargo test`
+    // (debug) still exercises them.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "all radii must be positive")]
     fn test_raycast_ellipsoid_zero_radius() {
         // Ellipsoid with zero radius panics at construction (cf-geometry invariant)
@@ -522,6 +529,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "normal must be non-zero")]
     fn test_raycast_plane_zero_normal() {
         // Plane with zero normal panics at construction (cf-geometry invariant)

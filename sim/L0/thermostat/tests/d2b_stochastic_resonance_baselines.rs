@@ -25,31 +25,12 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use sim_core::DVector;
+use sim_core::test_fixtures::stochastic_resonance;
 use sim_ml_chassis::{
     ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv,
     rollout::collect_episodic_rollout,
 };
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
-
-// ─── MJCF model (spec §6) ─────────────────────────────────────────────────
-
-const SR_XML: &str = r#"
-<mujoco model="stochastic-resonance">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
-    <flag contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="particle">
-      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-             ctrllimited="true" ctrlrange="0 10"/>
-  </actuator>
-</mujoco>
-"#;
 
 // ─── Central parameters (spec §9) ─────────────────────────────────────────
 
@@ -91,7 +72,7 @@ const N_BASELINE_EPISODES: usize = 20;
 /// The reward is the synchrony metric: `sign(qpos[0]) · cos(ω·t)`.
 /// The action is the kT multiplier written to `data.ctrl[0]`.
 fn make_sr_env(seed: u64) -> SimEnv {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
     let omega = signal_omega();
 
     let thermostat =
@@ -175,7 +156,7 @@ fn log_spaced_kt_values() -> Vec<f64> {
 /// rollout. Does NOT run a full baseline — that's the `#[ignore]` tests.
 #[test]
 fn vecenv_construction() {
-    let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+    let mut model = stochastic_resonance();
     let omega = signal_omega();
 
     let thermostat = LangevinThermostat::new(
@@ -404,7 +385,7 @@ fn control_no_signal_zero_synchrony() {
         let seed = SEED_BASE + 30_000 + i as u64;
 
         // Build env with A₀ = 0 (no signal force)
-        let mut model = sim_mjcf::load_model(SR_XML).unwrap();
+        let mut model = stochastic_resonance();
 
         let thermostat =
             LangevinThermostat::new(DVector::from_element(model.nv, GAMMA), K_B_T_BASE, seed, 0)

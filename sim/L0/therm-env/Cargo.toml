@@ -12,6 +12,7 @@ rust-version.workspace = true
 # (phase2.rs / phase3.rs / experiment_*.rs / ising_chain.rs); src/ has
 # no inline #[cfg(test)] modules so --lib coverage reports 0.0%.
 [package.metadata.cortenforge]
+tier = "L0-integration"
 grading_profile = "integration-only"
 
 [dependencies]

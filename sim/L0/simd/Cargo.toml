@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0"
+
 [dependencies]
 # Matrix / vector types that SIMD kernels accelerate on hot paths
 nalgebra = { workspace = true }
@@ -15,16 +18,13 @@ nalgebra = { workspace = true }
 [dev-dependencies]
 # Float-tolerance assertions comparing scalar vs SIMD kernel outputs
 approx = { workspace = true }
-# Microbenchmarks for SIMD vs scalar kernel throughput
-criterion = { workspace = true }
 # Property-based tests exercising SIMD kernels against random inputs
 proptest = { workspace = true }
 # Random input generation for SIMD kernel correctness fuzzing
 rand = { workspace = true }
 
-[[bench]]
-name = "simd_benchmarks"
-harness = false
+# criterion benches live in the sibling `sim-simd-benches` crate
+# (L0 plan §4.2: keeps criterion + plotters out of sim-simd's dev-graph).
 
 [lints]
 workspace = true

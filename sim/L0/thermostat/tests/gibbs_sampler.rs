@@ -28,6 +28,7 @@
 )]
 
 use sim_core::DVector;
+use sim_core::test_fixtures::bistable_chain;
 use sim_thermostat::ising::{exact_distribution, kl_divergence, tv_distance};
 use sim_thermostat::test_utils::WellState;
 use sim_thermostat::{
@@ -63,30 +64,6 @@ const LANGEVIN_N_BURN_IN: usize = 20_000;
 const GIBBS_N_BURN_IN: usize = 1_000;
 const GIBBS_N_SAMPLES: usize = 100_000;
 
-const CHAIN_XML: &str = r#"
-<mujoco model="bistable_chain_4">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-  <worldbody>
-    <body name="p0" pos="0 0 0">
-      <joint name="x0" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p1" pos="0 1 0">
-      <joint name="x1" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p2" pos="0 2 0">
-      <joint name="x2" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-    <body name="p3" pos="0 3 0">
-      <joint name="x3" type="slide" axis="1 0 0" stiffness="0" damping="0"/>
-      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
-    </body>
-  </worldbody>
-</mujoco>
-"#;
-
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /// Topology for the Langevin helper: either fully-connected with per-edge
@@ -99,7 +76,7 @@ enum Topology {
 /// Run a single Langevin trajectory and return the raw config histogram
 /// (counts per 2^N bin).
 fn langevin_trajectory_histogram(topology: &Topology, seed: u64) -> [usize; N_CONFIGS] {
-    let mut model = sim_mjcf::load_model(CHAIN_XML).expect("load");
+    let mut model = bistable_chain(N);
     let mut data = model.make_data();
 
     let mut builder = PassiveStack::builder();

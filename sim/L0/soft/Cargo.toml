@@ -17,6 +17,8 @@ rust-version.workspace = true
 # re-enters when Phase B fills in non-stub bodies. Matches sim-therm-env /
 # sim-tests precedent. Full reasoning in scope §7 item 1 + §13 SD-5.
 [package.metadata.cortenforge]
+tier = "L0"
+tier_up_features = { gpu-probe = "L0-io" }
 grading_profile = "integration-only"
 
 [features]
@@ -52,6 +54,13 @@ pollster = { workspace = true, optional = true }
 [dev-dependencies]
 # 5-digit gradcheck tolerance assertions (Phase-B tests).
 approx = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# wasm_js backend opt-in for getrandom (transitively pulled via
+# rand_chacha → rand_core through sim-ml-chassis). Paired with the
+# workspace `.cargo/config.toml` rustflag; native builds are unaffected
+# by the target-conditional block.
+getrandom = { workspace = true }
 
 [lints]
 workspace = true

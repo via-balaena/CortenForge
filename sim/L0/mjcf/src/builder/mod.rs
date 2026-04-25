@@ -228,6 +228,13 @@ pub fn model_from_mjcf(
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
 
+    // Active ingress validation (Phase 0): full validate() promoted from
+    // defense-in-depth dead code. Fail-closed on any finding. Runs against
+    // user input as-parsed, before frame/composite expansion.
+    crate::validation::validate(&mjcf).map_err(|e| ModelConversionError {
+        message: format!("Model validation failed: {e}"),
+    })?;
+
     // Validate childclass references before frame expansion dissolves frames.
     // MuJoCo rejects undefined childclass at schema validation (S7).
     let pre_resolver = DefaultResolver::from_model(&mjcf);
@@ -1128,8 +1135,14 @@ mod tests {
     }
 
     // -- Hfield PNG loading tests (DT-3) --
+    //
+    // Gated under the `hfields` feature: these tests fabricate / consume PNG
+    // assets via the `image` crate, which is only compiled in when the feature
+    // is enabled. The feature-off counterpart `test_hfield_file_with_feature_off`
+    // lives below and exercises the clear-error path.
 
     /// Create a minimal 3×3 grayscale PNG for testing.
+    #[cfg(feature = "hfields")]
     fn create_test_png(path: &std::path::Path, width: u32, height: u32) {
         use image::{GrayImage, Luma};
         let mut img = GrayImage::new(width, height);
@@ -1144,6 +1157,7 @@ mod tests {
         img.save(path).expect("Failed to save test PNG");
     }
 
+    #[cfg(feature = "hfields")]
     #[test]
     fn test_load_hfield_from_png_file() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1176,6 +1190,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "hfields")]
     #[test]
     fn test_load_hfield_from_png_with_meshdir() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1204,6 +1219,7 @@ mod tests {
         assert_eq!(model.nhfield, 1);
     }
 
+    #[cfg(feature = "hfields")]
     #[test]
     fn test_hfield_png_missing_file_error() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1269,6 +1285,7 @@ mod tests {
         assert!(result.is_err(), "should fail without file or elevation");
     }
 
+    #[cfg(feature = "hfields")]
     #[test]
     fn test_load_hfield_from_real_menagerie_png() {
         // Test with actual menagerie hfield PNG (166K, real-world terrain data)
@@ -1285,6 +1302,36 @@ mod tests {
         if let Ok(model) = result {
             assert!(model.nhfield >= 1, "should have at least 1 hfield");
         }
+    }
+
+    /// With the `hfields` feature off, file-source hfields surface a clear
+    /// feature-disabled error (not a panic, not a silent fallback). Inline
+    /// elevation height fields continue to work — covered by
+    /// `test_hfield_inline_elevation_still_works` above, which is not gated.
+    #[cfg(not(feature = "hfields"))]
+    #[test]
+    fn test_hfield_file_with_feature_off_returns_clear_error() {
+        let result = load_model(
+            r#"
+            <mujoco model="hfield_feature_off">
+                <asset>
+                    <hfield name="terrain" file="anywhere.png" size="1 1 0.5 0.1"/>
+                </asset>
+                <worldbody>
+                    <geom type="hfield" hfield="terrain"/>
+                </worldbody>
+            </mujoco>
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "file-source hfield must error with feature off"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hfields") && err.contains("feature"),
+            "error should name the disabled feature: {err}"
+        );
     }
 
     // ── DT-85: Flex contact runtime attributes ──────────────────────────

@@ -10,6 +10,9 @@ rust-version.workspace = true
 keywords = ["physics", "simulation", "visualization", "bevy", "robotics"]
 categories = ["simulation", "visualization", "game-development"]
 
+[package.metadata.cortenforge]
+tier = "L1"
+
 [dependencies]
 # Shared geometry kernel — SDF primitives and AABBs for debug rendering
 cf-geometry = { path = "../../../design/cf-geometry" }

@@ -326,42 +326,8 @@ impl TaskConfigBuilder {
 mod tests {
     use super::*;
 
-    // Small 2-DOF MJCF fixture — local to these tests so `sim-mjcf` can
-    // remain a dev-dep of `sim-ml-chassis` (the real stock factories
-    // live in `sim-rl::tasks`).
-    const TEST_MJCF_2DOF: &str = r#"
-<mujoco model="test-2dof">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="upper_arm" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 -1 0"
-             limited="true" range="-3.14159 3.14159" damping="2.0"/>
-      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
-            size="0.03" mass="0.5"/>
-      <body name="forearm" pos="0.5 0 0">
-        <joint name="elbow" type="hinge" axis="0 -1 0"
-               limited="true" range="-2.6 2.6" damping="1.0"/>
-        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
-              size="0.025" mass="0.3"/>
-        <site name="fingertip" pos="0.4 0 0" size="0.015"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor joint="shoulder" gear="10" ctrllimited="true" ctrlrange="-1 1"/>
-    <motor joint="elbow" gear="5" ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
     fn test_model() -> Arc<Model> {
-        Arc::new(sim_mjcf::load_model(TEST_MJCF_2DOF).expect("valid 2-DOF test MJCF"))
+        Arc::new(sim_core::test_fixtures::reaching_2dof())
     }
 
     // ── TaskConfig traits ─────────────────────────────────────────────

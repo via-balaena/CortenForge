@@ -394,22 +394,6 @@ impl IsingLearner {
 mod tests {
     use super::*;
 
-    /// Minimal 2-element MJCF model with slide joints and no gravity.
-    const MINIMAL_XML: &str = r#"
-    <mujoco model="ising_learner_test">
-      <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-      <worldbody>
-        <body name="e0">
-          <joint name="x0" type="slide" axis="1 0 0" damping="0"/>
-          <geom type="sphere" size="0.05" mass="1"/>
-        </body>
-        <body name="e1" pos="0.2 0 0">
-          <joint name="x1" type="slide" axis="1 0 0" damping="0"/>
-          <geom type="sphere" size="0.05" mass="1"/>
-        </body>
-      </worldbody>
-    </mujoco>"#;
-
     fn minimal_config() -> LearnerConfig {
         LearnerConfig {
             n: 2,
@@ -432,7 +416,7 @@ mod tests {
     }
 
     fn load_model() -> Model {
-        sim_mjcf::load_model(MINIMAL_XML).unwrap()
+        sim_core::test_fixtures::ising_pair()
     }
 
     // ── IsingTarget ────────────────────────────────────────────────────
@@ -461,18 +445,10 @@ mod tests {
     #[should_panic(expected = "model has")]
     #[allow(clippy::let_underscore_must_use)]
     fn new_panics_model_too_small() {
-        // 1-DOF model with n=2 config → should panic.
-        let xml = r#"
-        <mujoco model="small">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="e0">
-              <joint name="x0" type="slide" axis="1 0 0" damping="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        // 1-DOF model with n=2 config → should panic. Body name on the
+        // fixture is `p0` rather than `e0`; the test only asserts the
+        // "model has" panic message which is name-agnostic.
+        let model = sim_core::test_fixtures::single_slide();
         let _ = IsingLearner::new(minimal_config(), minimal_target(), model);
     }
 

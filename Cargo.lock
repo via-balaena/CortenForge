@@ -1807,9 +1807,18 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
- "mesh-io",
  "nalgebra",
  "rayon",
+ "sim-core",
+]
+
+[[package]]
+name = "cf-design-tests"
+version = "0.7.0"
+dependencies = [
+ "cf-design",
+ "mesh-io",
+ "nalgebra",
  "sim-core",
  "sim-mjcf",
  "tempfile",
@@ -3627,6 +3636,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3638,6 +3648,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3669,6 +3680,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3680,6 +3692,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3691,6 +3704,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -3702,6 +3716,7 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-ml-chassis-bevy",
 ]
 
 [[package]]
@@ -5069,9 +5084,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -6007,7 +6024,6 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
- "criterion",
  "hashbrown 0.16.1",
  "mesh-types",
  "nalgebra",
@@ -6015,6 +6031,15 @@ dependencies = [
  "rayon",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "mesh-repair-benches"
+version = "0.7.0"
+dependencies = [
+ "criterion",
+ "mesh-repair",
+ "mesh-types",
 ]
 
 [[package]]
@@ -6032,7 +6057,6 @@ name = "mesh-shell"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
- "criterion",
  "hashbrown 0.16.1",
  "mesh-offset",
  "mesh-repair",
@@ -6040,6 +6064,15 @@ dependencies = [
  "nalgebra",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "mesh-shell-benches"
+version = "0.7.0"
+dependencies = [
+ "criterion",
+ "mesh-shell",
+ "mesh-types",
 ]
 
 [[package]]
@@ -7856,7 +7889,6 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
- "criterion",
  "nalgebra",
  "rand 0.9.2",
  "rayon",
@@ -7866,6 +7898,16 @@ dependencies = [
  "sim-types",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "sim-core-benches"
+version = "0.7.0"
+dependencies = [
+ "criterion",
+ "nalgebra",
+ "rand 0.9.2",
+ "sim-core",
 ]
 
 [[package]]
@@ -7907,16 +7949,32 @@ name = "sim-ml-chassis"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
- "bevy_ecs",
- "criterion",
+ "getrandom 0.3.4",
  "nalgebra",
  "num-traits",
  "rand 0.9.2",
  "serde",
  "serde_json",
  "sim-core",
- "sim-mjcf",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sim-ml-chassis-benches"
+version = "0.7.0"
+dependencies = [
+ "criterion",
+ "sim-core",
+ "sim-ml-chassis",
+]
+
+[[package]]
+name = "sim-ml-chassis-bevy"
+version = "0.7.0"
+dependencies = [
+ "bevy_ecs",
+ "sim-core",
+ "sim-ml-chassis",
 ]
 
 [[package]]
@@ -7924,10 +7982,10 @@ name = "sim-opt"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "getrandom 0.3.4",
  "rand 0.9.2",
  "serde",
  "sim-core",
- "sim-mjcf",
  "sim-ml-chassis",
  "sim-rl",
  "sim-thermostat",
@@ -7942,7 +8000,6 @@ dependencies = [
  "rand 0.9.2",
  "serde_json",
  "sim-core",
- "sim-mjcf",
  "sim-ml-chassis",
 ]
 
@@ -7951,10 +8008,19 @@ name = "sim-simd"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
- "criterion",
  "nalgebra",
  "proptest",
  "rand 0.9.2",
+]
+
+[[package]]
+name = "sim-simd-benches"
+version = "0.7.0"
+dependencies = [
+ "criterion",
+ "nalgebra",
+ "rand 0.9.2",
+ "sim-simd",
 ]
 
 [[package]]
@@ -7964,6 +8030,7 @@ dependencies = [
  "approx 0.5.1",
  "bytemuck",
  "faer",
+ "getrandom 0.3.4",
  "nalgebra",
  "pollster",
  "sim-ml-chassis",
@@ -7988,12 +8055,12 @@ dependencies = [
 name = "sim-thermostat"
 version = "0.7.0"
 dependencies = [
+ "getrandom 0.3.4",
  "nalgebra",
  "rand 0.9.2",
  "rand_chacha 0.9.0",
  "rand_distr",
  "sim-core",
- "sim-mjcf",
  "sim-ml-chassis",
  "sim-rl",
 ]

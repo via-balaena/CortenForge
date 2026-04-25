@@ -183,7 +183,6 @@ pub struct ObsSegment {
 ///
 /// Constructed via [`ObservationSpace::builder()`].
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct ObservationSpace {
     extractors: Vec<Extractor>,
     segments: Vec<ObsSegment>,
@@ -698,7 +697,6 @@ impl Injector {
 ///
 /// Constructed via [`ActionSpace::builder()`].
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct ActionSpace {
     injectors: Vec<(usize, Injector)>, // (offset_in_action, injector)
     dim: usize,
@@ -916,24 +914,7 @@ mod tests {
     /// One hinge joint (nq=1, nv=1), one actuator, one sensor ("angle",
     /// dim=1 at sensordata[0]), two bodies (world + pendulum).
     fn pendulum() -> (Model, Data) {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-              <site name="tip" pos="0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor"/>
-          </actuator>
-          <sensor>
-            <jointpos joint="hinge" name="angle"/>
-          </sensor>
-        </mujoco>
-        "#;
-        let model = sim_mjcf::load_model(xml).expect("valid MJCF");
+        let model = sim_core::test_fixtures::pendulum_with_tip_site();
         let data = model.make_data();
         (model, data)
     }
@@ -1202,32 +1183,11 @@ mod tests {
 
     #[test]
     fn segments_labels_offsets_dims() {
-        // Build a cart-pole model with enough variety for 5 extractors.
-        let xml = r#"
-        <mujoco>
-          <option>
-            <flag energy="enable"/>
-          </option>
-          <worldbody>
-            <body name="cart" pos="0 0 0.5">
-              <joint name="slide" type="slide" axis="1 0 0"/>
-              <geom size="0.1"/>
-              <body name="pole" pos="0 0 0.1">
-                <joint name="hinge" type="hinge" axis="0 1 0"/>
-                <geom type="capsule" size="0.02" fromto="0 0 0 0 0 0.5"/>
-              </body>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="slide" name="force"/>
-          </actuator>
-          <sensor>
-            <jointpos joint="slide" name="cart_pos"/>
-            <jointvel joint="hinge" name="pole_vel"/>
-          </sensor>
-        </mujoco>
-        "#;
-        let model = sim_mjcf::load_model(xml).expect("valid MJCF");
+        // Cart-pole with 2 sensors. The cart_pole fixture mirrors the
+        // original MJCF's structure but doesn't enable energy tracking;
+        // the .energy() segment below needs ENABLE_ENERGY set explicitly.
+        let mut model = sim_core::test_fixtures::cart_pole();
+        model.enableflags |= sim_core::ENABLE_ENERGY;
 
         let space = ObservationSpace::builder()
             .all_qpos()                     // 1: qpos(0..2)
@@ -1482,20 +1442,7 @@ mod tests {
 
     /// Build a pendulum with ctrllimited motor for clamping tests.
     fn pendulum_clamped() -> (Model, Data) {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor" ctrllimited="true" ctrlrange="-1 1"/>
-          </actuator>
-        </mujoco>
-        "#;
-        let model = sim_mjcf::load_model(xml).expect("valid MJCF");
+        let model = sim_core::test_fixtures::pendulum_clamped();
         let data = model.make_data();
         (model, data)
     }
@@ -1570,23 +1517,7 @@ mod tests {
     // ── mocap_pos injection ─────────────────────────────────────────────��
 
     fn pendulum_mocap() -> (Model, Data) {
-        let xml = r#"
-        <mujoco>
-          <worldbody>
-            <body name="target" mocap="true" pos="0.5 0 0.5">
-              <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
-            </body>
-            <body name="pendulum" pos="0 0 1">
-              <joint name="hinge" type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <motor joint="hinge" name="motor"/>
-          </actuator>
-        </mujoco>
-        "#;
-        let model = sim_mjcf::load_model(xml).expect("valid MJCF");
+        let model = sim_core::test_fixtures::pendulum_mocap();
         let data = model.make_data();
         (model, data)
     }

@@ -8,6 +8,9 @@ repository = "https://github.com/cortenforge/cortenforge"
 keywords = ["mesh", "offset", "shell", "3d", "geometry"]
 categories = ["algorithms", "graphics", "game-development"]
 
+[package.metadata.cortenforge]
+tier = "L0"
+
 [dependencies]
 # Shared mesh data structures (workspace)
 mesh-types = { workspace = true }

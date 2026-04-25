@@ -8,15 +8,20 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0-integration"
+
 [dependencies]
 # RNG traits — StdRng + SeedableRng for per-epoch sampling in all 5 algorithms
 rand             = { workspace = true }
-# BatchSim for FK target computation in stock task factories (tasks.rs)
-sim-core         = { workspace = true }
+# BatchSim for FK target computation + canonical reaching-arm Model fixtures
+# backing the stock task factories in tasks.rs (test-fixtures feature). Per
+# L0 plan §3.2, fixture-backed task factories keep sim-rl's release graph
+# free of the sim-mjcf → mesh-io → zip chain so downstream dev-graphs stay
+# clean.
+sim-core         = { workspace = true, features = ["test-fixtures"] }
 # Algorithm chassis — Algorithm trait, VecEnv, Policy, BestTracker, ArtifactError, ...
 sim-ml-chassis   = { workspace = true }
-# MJCF model loading for stock task factories (reaching_2dof, reaching_6dof, ...)
-sim-mjcf         = { workspace = true }
 
 [dev-dependencies]
 # Float tolerance assertions in tests/competition.rs

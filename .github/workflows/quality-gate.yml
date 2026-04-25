@@ -1,7 +1,7 @@
 # CortenForge Quality Gate
 #
 # This workflow enforces the A-grade standard on every push and PR.
-# See docs/STANDARDS.md for the seven criteria.
+# See docs/STANDARDS.md for the eight criteria.
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 #
 # "A-grade or it doesn't ship. No exceptions."
@@ -9,12 +9,41 @@
 # Policy source of truth: `cargo xtask grade-all`. The Rust grader
 # (xtask/src/grade.rs) enforces Safety, Clippy (with unjustified-
 # #[allow] detection), Documentation (with -D warnings), Dependencies
-# (with justification scan), and Bevy-free (Layer 0). CI invokes it
-# directly — no parallel bash/awk reimplementations.
+# (with justification scan), Layer Integrity (tier-aware dep-graph
+# enforcement, hard-gated as of L0 plan §8 step 12), and WASM
+# Compatibility (L0-tier wasm32 build check, hard-gated). CI invokes
+# it directly — no parallel bash/awk reimplementations.
 #
 # Coverage is excluded from the CI gate via --skip-coverage because
 # llvm-cov in release mode is ~5-10 min per crate; it runs locally
 # via `cargo xtask grade <crate>` and in dedicated nightly jobs.
+#
+# Test execution structure (L0 plan §8 step 13 / §6):
+# - `tests-debug` (ubuntu, default features, debug profile): authoritative
+#   test gate for the 23 light-weight workspace lib/integration crates.
+# - `tests-release` (ubuntu, default features, --release): authoritative
+#   test gate for the 5 crates whose heavy stochastic-physics integration
+#   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
+#   slower in debug. Per `feedback_release_mode_heavy_tests.md` and plan
+#   §6.5: sim-ml-chassis, sim-thermostat, sim-rl, sim-conformance-tests,
+#   sim-opt. Runs in parallel with tests-debug on a separate runner.
+# - `cross-os` (macos + windows, 3 platform-sensitive crates): cross-OS
+#   validation for FP determinism + file-path handling concerns. Per
+#   plan §6.3 (b): sim-core (FP/physics), sim-mjcf (XML/file paths),
+#   mesh-io (multi-format file paths). Other crates' cross-OS coverage
+#   was admission-of-status-quo; ubuntu coverage is sufficient.
+# - `feature-combos` (ubuntu): explicit non-default-feature paths.
+#   Currently sim-soft `gpu-probe` (the only feature that flips a
+#   tier per `tier_up_features`). Add new combos here as features
+#   land.
+#
+# Dropped vs prior config:
+# - `--all-features` from the test matrix (plan §6.1): Layer Integrity
+#   now enforces all-features cleanliness in the grader; the test
+#   matrix doesn't need to verify the same property by recompilation.
+# - `wasm` job (plan §6.4): the WASM Compatibility criterion in
+#   `cargo xtask grade-all` is the single source of truth. The job
+#   was warning-only anyway.
 
 name: Quality Gate
 
@@ -53,11 +82,14 @@ jobs:
         run: cargo fmt --all -- --check
 
   # ============================================================================
-  # XTASK GRADE - Single source of truth for Safety, Clippy, Docs, Deps, Bevy-free
+  # XTASK GRADE - Single source of truth for the seven automated criteria
   # ============================================================================
   # Replaces four formerly-separate bash-reimplementation jobs (clippy, docs,
   # safety, bevy-free) with one invocation of the Rust grader. Single source
   # of truth at xtask/src/grade.rs — no parallel policy layers to drift.
+  #
+  # Post-L0-refactor, this also enforces Layer Integrity (tier-aware dep-graph
+  # checks, hard-gate) and WASM Compatibility (L0-tier wasm32 build, hard-gate).
   #
   # --skip-coverage: coverage runs cargo llvm-cov in release (5-10 min per
   # crate); too slow for per-PR CI. It runs locally and in dedicated jobs.
@@ -76,6 +108,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -90,20 +123,25 @@ jobs:
         run: cargo run -p xtask --release -- grade-all --skip-coverage --quiet
 
   # ============================================================================
-  # TESTS - All must pass on all platforms
+  # TESTS (DEBUG) - Default features, debug profile — light-crate gate
   # ============================================================================
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  # Runs `cargo test` (default features, debug) on the 23 workspace
+  # lib/integration crates whose tests finish quickly in debug mode. The
+  # grade job's `--skip-coverage` flag skips its Coverage criterion (which
+  # is what runs cargo test inside grade), so this job + tests-release are
+  # the SOLE test-execution gate in CI.
+  #
+  # `--all-features` is intentionally absent (plan §6.1): Layer Integrity in
+  # the grader enforces all-features cleanliness; running it again here would
+  # just re-pay the bevy_ecs / image / zip / criterion compile cost on every
+  # consumer's test build for no additional signal.
+  tests-debug:
+    name: Tests (debug)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
@@ -114,65 +152,141 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          # Only save cache on main/develop pushes — PR runs restore but skip
-          # the expensive save step (Windows cache save alone was taking 11 min).
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Run tests
         run: |
-          # Test only library crates (no Bevy, no examples).
-          # Examples are visual Bevy demos with main() binaries — they contain
-          # no #[test] functions, so `cargo test` would compile them for nothing.
-          # Clippy already verifies they compile. This avoids fragile system
-          # graphics deps on headless CI runners.
-          cargo test --all-features \
+          # Library + integration crates whose tests are fast in debug mode.
+          # Excluded by intent:
+          # - sim-bevy: tests would pull bevy graphics deps that are fragile
+          #   on headless CI runners; clippy in `grade` still verifies it
+          #   compiles cleanly.
+          # - examples (~197): demos with main() binaries, no #[test] fns.
+          # - -benches crates (5): bench-only, no #[test] fns.
+          # - xtask: graded by grade-all itself; its 114 unit tests run
+          #   locally via pre-commit, not in this matrix.
+          # - sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests
+          #   / sim-opt: heavy-physics validators move to tests-release below.
+          cargo test \
             -p mesh-types -p mesh-io -p mesh-repair -p mesh-sdf \
             -p mesh-offset -p mesh-shell -p mesh-measure \
             -p mesh-printability -p mesh-lattice -p mesh \
             -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
-            -p sim-urdf -p sim-conformance-tests -p sim-gpu \
-            -p cf-geometry -p cf-spatial -p cf-design
+            -p sim-urdf -p sim-gpu -p sim-soft -p sim-ml-chassis-bevy \
+            -p sim-therm-env -p cf-geometry -p cf-spatial -p cf-design \
+            -p cf-design-tests
         shell: bash
 
   # ============================================================================
-  # WASM - Layer 0 crates must compile to WebAssembly
+  # TESTS (RELEASE) - Default features, --release — heavy-physics gate
   # ============================================================================
-  wasm:
-    name: WASM Compatibility
+  # Runs `cargo test --release` on the 5 crates whose default test suite
+  # contains stochastic-physics validators (Boltzmann learning, CEM
+  # convergence, REINFORCE, SA/PT optimizers, MuJoCo conformance) doing
+  # 90M–600M physics steps each.
+  #
+  # Why --release here specifically (plan §6.5, `feedback_release_mode_heavy_tests.md`):
+  # in debug mode `gate_a_kl_convergence` (sim-thermostat::boltzmann_learning)
+  # measured 10+ min on warm-cache MBP and didn't complete in a 27-min sweep;
+  # the same test in --release completed in 82s — a 5–10× speedup. The
+  # --release compile cost is paid once per crate per cold-cache run; the
+  # test-execution savings dominate. Runs in parallel with tests-debug on a
+  # separate runner so the --release compile doesn't extend the wall time of
+  # the lighter crates.
+  tests-release:
+    name: Tests (release, heavy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
-      - name: Check WASM compatibility (Layer 0)
+      - name: Run tests (--release)
         run: |
-          # Layer 0 crates must build for WASM
-          # Note: Some crates may need --no-default-features to exclude std-only deps
-          WASM_CRATES=(
-            "mesh-types"
-            "mesh-measure"
-            "sim-types"
-            "sim-core"
-            "sim-urdf"
-          )
+          cargo test --release \
+            -p sim-ml-chassis -p sim-thermostat -p sim-rl \
+            -p sim-conformance-tests -p sim-opt
+        shell: bash
 
-          for crate in "${WASM_CRATES[@]}"; do
-            echo "Checking $crate for WASM..."
-            if cargo check -p "$crate" --target wasm32-unknown-unknown 2>/dev/null; then
-              echo "✓ $crate builds for WASM"
-            else
-              echo "::warning::$crate does not build for WASM (may need feature flags)"
-            fi
-          done
+  # ============================================================================
+  # CROSS-OS - Platform-sensitive crates only on macOS + Windows
+  # ============================================================================
+  # Per plan §6.3 (b): cross-OS coverage limited to crates with legitimate
+  # cross-OS concerns (FP determinism, mmap behavior, file-path handling).
+  # ubuntu coverage is provided by the `tests-debug` + `tests-release` jobs;
+  # this matrix adds macOS + Windows for the three crates where it actually
+  # matters.
+  #
+  # Selection rationale:
+  # - sim-core: physics integration, FP determinism is load-bearing
+  # - sim-mjcf: XML parsing + file-path resolution (textures, hfields, includes)
+  # - mesh-io: multi-format mesh I/O, file-path / endianness concerns
+  cross-os:
+    name: Cross-OS Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: Run tests (default features)
+        run: cargo test -p sim-core -p sim-mjcf -p mesh-io
+        shell: bash
+
+  # ============================================================================
+  # FEATURE COMBOS - Non-default feature paths
+  # ============================================================================
+  # Default-features tests run in `tests-debug` + `tests-release`; this job
+  # covers the feature paths that aren't the default. Add new combos here as
+  # features land.
+  #
+  # Currently:
+  # - sim-soft `gpu-probe`: tier-up feature pulling wgpu/bytemuck/pollster.
+  #   `tests/invariant_6_gpu_probe.rs` is `#![cfg(feature = "gpu-probe")]`-
+  #   gated and gracefully skips when no wgpu adapter is available
+  #   (headless CI), so this gate exercises the build graph + skip path.
+  feature-combos:
+    name: Feature Combos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: Test sim-soft with gpu-probe
+        run: cargo test --features gpu-probe -p sim-soft
 
   # ============================================================================
   # DEPENDENCIES - License / source audit via cargo-deny
@@ -245,7 +359,7 @@ jobs:
   # ============================================================================
   quality-gate:
     name: Quality Gate
-    needs: [format, grade, test, dependencies]
+    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

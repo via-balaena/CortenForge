@@ -1,14 +1,14 @@
 //! Integration tests: cf-design → sim-mjcf → sim-core.
 //!
 //! These tests verify the full pipeline from mechanism definition through
-//! MJCF generation to simulation. Requires `sim-mjcf` dev-dependency.
+//! MJCF generation to simulation. Held in `cf-design-tests` (L0-integration
+//! tier) so the sim-mjcf dev-dep stays out of cf-design's L0 dev-graph.
 
-#![cfg(test)]
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
 use nalgebra::{Point3, Vector3};
 
-use crate::{
+use cf_design::{
     ActuatorDef, ActuatorKind, InfillKind, JointDef, JointKind, Material, Mechanism, Part, Solid,
     TendonDef, TendonWaypoint, templates,
 };
@@ -325,8 +325,6 @@ fn phase3_bio_gripper_full_integration() {
     }
 }
 
-// ── Collision diagnostic ────────────────────────────────────────────
-
 // ── Phase 5: Design optimization through simulation ─────────────────
 
 /// Phase 5 exit criteria integration test.
@@ -345,8 +343,8 @@ fn phase3_bio_gripper_full_integration() {
 /// where each `J(θ)` = re-mesh → MJCF → `load_model` → simulate → measure force.
 #[test]
 fn phase5_parameterized_grasp_optimization() {
-    use crate::ParamStore;
-    use crate::optim::{OptimConfig, minimize_fd};
+    use cf_design::ParamStore;
+    use cf_design::optim::{OptimConfig, minimize_fd};
     use sim_core::ConstraintType;
 
     let store = ParamStore::new();

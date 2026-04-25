@@ -1,6 +1,6 @@
 //! Benchmarks for batched simulation throughput.
 //!
-//! Run with: `cargo bench -p sim-core --features parallel`
+//! Run with: `cargo bench -p sim-core-benches --features sim-core/parallel`
 //!
 //! Measures throughput (envs * steps / second) for varying batch sizes
 //! to verify scaling with CPU core count.

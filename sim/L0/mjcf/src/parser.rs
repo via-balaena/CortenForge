@@ -1670,8 +1670,12 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                     }
                     b"joint" => {
                         let mut joint = parse_joint(reader, e)?;
-                        // Auto-generate name if not specified
-                        if joint.name.is_empty() {
+                        // Auto-generate name only when the parent body has a
+                        // name. Anonymous joints in anonymous bodies stay
+                        // empty — mirrors the parser's anonymous-body fix
+                        // (commit `c7fa0c25`); validation.rs:211 exempts
+                        // empty joint names from the dedup check.
+                        if joint.name.is_empty() && !body.name.is_empty() {
                             joint.name = format!("{}_joint{}", body.name, joint_counter);
                             joint_counter += 1;
                         }
@@ -1692,7 +1696,7 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                     b"freejoint" => {
                         // <freejoint>...</freejoint> form (rare but valid)
                         let mut joint = parse_freejoint_attrs(e)?;
-                        if joint.name.is_empty() {
+                        if joint.name.is_empty() && !body.name.is_empty() {
                             joint.name = format!("{}_joint{}", body.name, joint_counter);
                             joint_counter += 1;
                         }
@@ -1719,7 +1723,7 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
             Ok(Event::Empty(ref e)) => match e.name().as_ref() {
                 b"joint" => {
                     let mut joint = parse_joint_attrs(e)?;
-                    if joint.name.is_empty() {
+                    if joint.name.is_empty() && !body.name.is_empty() {
                         joint.name = format!("{}_joint{}", body.name, joint_counter);
                         joint_counter += 1;
                     }
@@ -1729,7 +1733,7 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                 b"freejoint" => {
                     // <freejoint/> is MuJoCo shorthand for <joint type="free"/>
                     let mut joint = parse_freejoint_attrs(e)?;
-                    if joint.name.is_empty() {
+                    if joint.name.is_empty() && !body.name.is_empty() {
                         joint.name = format!("{}_joint{}", body.name, joint_counter);
                         joint_counter += 1;
                     }
@@ -1770,7 +1774,11 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
 
 /// Parse body attributes only.
 fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
-    let name = get_attribute_opt(e, "name").unwrap_or_else(|| "unnamed".to_string());
+    // Empty string for missing name; matches the builder's anonymous-body
+    // contract (body.rs:127, 200 — name lookup and Option<String> mapping
+    // both use is_empty() as the anonymous sentinel). The previous "unnamed"
+    // placeholder collided across multiple anonymous bodies.
+    let name = get_attribute_opt(e, "name").unwrap_or_default();
     let mut body = MjcfBody::new(name);
 
     if let Some(pos) = get_attribute_opt(e, "pos") {

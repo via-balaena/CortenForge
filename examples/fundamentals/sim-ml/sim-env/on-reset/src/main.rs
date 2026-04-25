@@ -23,7 +23,8 @@ use sim_bevy::model_data::{
     sync_rendering_data,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
+use sim_ml_chassis::{ActionSpace, Environment, ObservationSpace, SimEnv as ChassisSimEnv, Tensor};
+use sim_ml_chassis_bevy::SimEnv;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -107,7 +108,7 @@ fn main() {
     let mut cycle_index = 0_usize;
     let truncate_time = TRUNCATE_TIME;
 
-    let mut env = SimEnv::builder(model_arc.clone())
+    let mut env = ChassisSimEnv::builder(model_arc.clone())
         .observation_space(obs)
         .action_space(act)
         .reward(|_m, _d| 0.0)
@@ -140,7 +141,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .insert_resource(PhysicsModel(model_owned))
         .insert_resource(PhysicsData(data_owned))
-        .insert_resource(env)
+        .insert_resource(SimEnv::from(env))
         .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
         .insert_resource(OnResetState {

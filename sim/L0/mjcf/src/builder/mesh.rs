@@ -1,8 +1,9 @@
 //! Mesh and heightfield asset processing.
 //!
-//! Handles loading mesh data from files (STL, OBJ, PLY, 3MF), converting
-//! embedded vertex/face data, computing mesh inertia properties, and
-//! registering mesh/hfield assets in the builder's lookup tables.
+//! Handles loading mesh data from files (STL, OBJ, PLY; also 3MF when
+//! the `threemf` feature is enabled), converting embedded vertex/face
+//! data, computing mesh inertia properties, and registering mesh/hfield
+//! assets in the builder's lookup tables.
 
 use nalgebra::{Matrix3, Point3, Vector3};
 use sim_core::HeightFieldData;
@@ -107,7 +108,9 @@ impl ModelBuilder {
 
 /// Load mesh data from a file and convert to `TriangleMeshData`.
 ///
-/// Supports STL, OBJ, PLY, and 3MF formats (auto-detected from extension).
+/// Supports STL, OBJ, and PLY formats out of the box (auto-detected from
+/// extension). Enable the `threemf` feature to add 3MF; otherwise `.3mf`
+/// paths return an `UnknownFormat` error from mesh-io.
 /// Scale is applied to all vertices during conversion.
 ///
 /// # Arguments
@@ -173,7 +176,8 @@ pub fn load_mesh_file(
 ///
 /// Handles two data sources:
 /// 1. **File-based:** `file` attribute → load PNG, derive nrow/ncol/elevation
-/// 2. **Inline:** `nrow`/`ncol`/`elevation` attributes in XML
+///    (requires the `hfields` feature; otherwise returns a clear error)
+/// 2. **Inline:** `nrow`/`ncol`/`elevation` attributes in XML (always available)
 ///
 /// MuJoCo elevation formula: `vertex_z = elevation[i] × size[2]`.
 /// MuJoCo vertex positions: centered at origin, x ∈ `[−size[0], +size[0]]`, y ∈ `[−size[1], +size[1]]`.
@@ -209,8 +213,22 @@ pub fn convert_mjcf_hfield(
             })?;
             (nc, nr, elev.clone())
         }
-        // File-based loading
+        // File-based loading (requires `hfields` feature)
+        #[cfg(feature = "hfields")]
         (Some(file_path), None) => load_hfield_png(file_path, base_path, compiler, &hfield.name)?,
+        #[cfg(not(feature = "hfields"))]
+        (Some(file_path), None) => {
+            // Suppress unused-parameter warnings; load_hfield_png isn't compiled in.
+            let _ = (base_path, compiler);
+            return Err(ModelConversionError {
+                message: format!(
+                    "hfield '{}': file=\"{}\" requires the `hfields` feature \
+                     (currently disabled — enable `sim-mjcf/hfields` to load \
+                     PNG height fields, or use inline `elevation=\"...\"` data)",
+                    hfield.name, file_path,
+                ),
+            });
+        }
         // Neither (should not happen — parser validates)
         (None, None) => {
             return Err(ModelConversionError {
@@ -281,6 +299,7 @@ pub fn convert_mjcf_hfield(
 ///
 /// Returns `(ncol, nrow, elevation)`.
 // 8-bit/16-bit pixel intensities and grid dimensions are far below 2^52.
+#[cfg(feature = "hfields")]
 #[allow(clippy::cast_precision_loss)]
 fn load_hfield_png(
     file_path: &str,
@@ -319,7 +338,8 @@ fn load_hfield_png(
 ///
 /// Handles two sources of mesh data:
 /// 1. **Embedded data**: `vertex` and `face` attributes in MJCF
-/// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY/3MF
+/// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY (also
+///    3MF when the `threemf` feature is enabled)
 ///
 /// Scale is applied to all vertices. BVH is built automatically.
 pub fn convert_mjcf_mesh(

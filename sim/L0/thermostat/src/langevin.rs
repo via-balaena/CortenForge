@@ -313,18 +313,7 @@ mod tests {
     #[test]
     fn apply_writes_pure_damping_when_stochastic_inactive() {
         // Build a real 1-DOF SHO model so model.timestep is set.
-        let xml = r#"
-        <mujoco model="apply_test">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0"
-                     stiffness="1" damping="0" springref="0" ref="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        let model = sim_core::test_fixtures::sho_1d();
         let mut data = model.make_data();
         data.qvel[0] = 1.0;
 
@@ -350,18 +339,7 @@ mod tests {
         // running apply twice must NOT advance the underlying ChaCha
         // stream. This is the Phase 5 finite-difference invariant
         // (Decision 7).
-        let xml = r#"
-        <mujoco model="rng_advance_test">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0"
-                     stiffness="1" damping="0" springref="0" ref="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        let model = sim_core::test_fixtures::sho_1d();
         let mut data = model.make_data();
         data.qvel[0] = 0.5;
 
@@ -403,18 +381,7 @@ mod tests {
         // qfrc_out already has a value (e.g. from mj_passive's
         // spring/damper aggregation, or from an earlier component
         // in the stack), apply must ADD to it, not overwrite.
-        let xml = r#"
-        <mujoco model="accumulate_test">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0"
-                     stiffness="1" damping="0" springref="0" ref="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        let model = sim_core::test_fixtures::sho_1d();
         let mut data = model.make_data();
         data.qvel[0] = 1.0;
 
@@ -461,21 +428,7 @@ mod tests {
         // Damping (-γ·v) must NOT depend on the ctrl temperature
         // multiplier — damping is a bath-coupling property, not a
         // temperature property.
-        let xml = r#"
-        <mujoco model="ctrl_temp_damping">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-                     ctrllimited="true" ctrlrange="0 10"/>
-          </actuator>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        let model = sim_core::test_fixtures::stochastic_resonance();
         let mut data = model.make_data();
         data.qvel[0] = 1.0;
         data.ctrl[0] = 5.0; // 5× multiplier
@@ -500,21 +453,7 @@ mod tests {
         // Two thermostats, same seed: one with kT=2.0 (no ctrl),
         // one with kT=1.0 + ctrl=2.0. Both should produce identical
         // noise because effective kT is 2.0 in both cases.
-        let xml = r#"
-        <mujoco model="ctrl_temp_noise">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
-                     ctrllimited="true" ctrlrange="0 10"/>
-          </actuator>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        let model = sim_core::test_fixtures::stochastic_resonance();
 
         // Thermostat A: kT=2.0, no ctrl
         let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 2.0, 42, 0);
@@ -544,21 +483,11 @@ mod tests {
 
     #[test]
     fn ctrl_temperature_clamps_negative_to_zero() {
-        // Negative ctrl → clamped to 0.0 → effective kT = 0 → no noise
-        let xml = r#"
-        <mujoco model="ctrl_temp_clamp_neg">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"/>
-          </actuator>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        // Negative ctrl → clamped to 0.0 → effective kT = 0 → no noise.
+        // The fixture's actuator has ctrlrange (0, 10) but apply() reads
+        // data.ctrl[0] directly, bypassing actuator-level clamping —
+        // the clamping under test lives in LangevinThermostat itself.
+        let model = sim_core::test_fixtures::stochastic_resonance();
         let mut data = model.make_data();
         data.ctrl[0] = -5.0; // negative → clamped to 0
 
@@ -579,21 +508,11 @@ mod tests {
     #[test]
     fn ctrl_temperature_clamps_above_ten() {
         // ctrl=20 → clamped to 10 → effective kT = 10. Should match
-        // a thermostat with kT=10 directly.
-        let xml = r#"
-        <mujoco model="ctrl_temp_clamp_high">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"/>
-          </actuator>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        // a thermostat with kT=10 directly. The fixture's actuator has
+        // ctrlrange (0, 10) but apply() reads data.ctrl[0] directly,
+        // bypassing actuator-level clamping — the clamping under test
+        // lives in LangevinThermostat itself.
+        let model = sim_core::test_fixtures::stochastic_resonance();
 
         // Thermostat A: kT=10, no ctrl
         let t_a = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 10.0, 42, 0);
@@ -620,20 +539,7 @@ mod tests {
     #[test]
     fn ctrl_zero_produces_zero_noise() {
         // ctrl=0 → kT_eff=0 → σ=0 → pure damping (+ RNG advances)
-        let xml = r#"
-        <mujoco model="ctrl_temp_zero">
-          <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-          <worldbody>
-            <body name="particle">
-              <joint name="x" type="slide" axis="1 0 0" damping="0"/>
-              <geom type="sphere" size="0.05" mass="1"/>
-            </body>
-          </worldbody>
-          <actuator>
-            <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"/>
-          </actuator>
-        </mujoco>"#;
-        let model = sim_mjcf::load_model(xml).unwrap();
+        let model = sim_core::test_fixtures::stochastic_resonance();
         let mut data = model.make_data();
         data.qvel[0] = 1.0;
         data.ctrl[0] = 0.0;

@@ -20,7 +20,8 @@ use sim_bevy::model_data::{
     sync_geom_transforms,
 };
 use sim_core::validation::{Check, print_report};
-use sim_ml_chassis::ObservationSpace;
+use sim_ml_chassis::ObservationSpace as ChassisObservationSpace;
+use sim_ml_chassis_bevy::ObservationSpace;
 
 // ── MJCF Model ─────────────────────────────────────────────────────────────
 
@@ -112,7 +113,7 @@ fn setup(
     data.qpos[1] = 0.05;
     data.forward(&model).expect("forward");
 
-    let obs_space = ObservationSpace::builder()
+    let obs_space = ChassisObservationSpace::builder()
         .all_qpos()
         .all_qvel()
         .sensor("cart_pos")
@@ -157,7 +158,7 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(obs_space);
+    commands.insert_resource(ObservationSpace::from(obs_space));
 }
 
 // ── HUD ────────────────────────────────────────────────────────────────────

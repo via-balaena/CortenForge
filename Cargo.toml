@@ -15,9 +15,11 @@ members = [
     "mesh/mesh-types",
     "mesh/mesh-io",
     "mesh/mesh-repair",
+    "mesh/mesh-repair-benches",
     "mesh/mesh-sdf",
     "mesh/mesh-offset",
     "mesh/mesh-shell",
+    "mesh/mesh-shell-benches",
     "mesh/mesh-measure",
     "mesh/mesh-printability",
     "mesh/mesh-lattice",
@@ -292,16 +294,20 @@ members = [
 
     # Design kernel (active development)
     "design/cf-design",
+    "design/cf-design-tests",
 
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
     "sim/L0/simd",
+    "sim/L0/simd-benches",
     "sim/L0/core",
+    "sim/L0/core-benches",
     "sim/L0/mjcf",
     "sim/L0/urdf",
     "sim/L0/tests",
     "sim/L0/gpu",
     "sim/L0/ml-chassis",
+    "sim/L0/ml-chassis-benches",
     "sim/L0/rl",
     "sim/L0/thermostat",
     "sim/L0/opt",
@@ -310,6 +316,7 @@ members = [
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
+    "sim/L1/ml-chassis-bevy",
 ]
 
 # Exclude directories that aren't workspace members
@@ -390,6 +397,13 @@ parry3d = "0.17"
 rand = "0.9"
 rand_chacha = "0.9"
 rand_distr = "0.5"
+# getrandom is not used directly anywhere in this workspace; it enters
+# transitively via rand_chacha → rand_core. It is registered here so
+# L0 crates that build for wasm32-unknown-unknown can opt the
+# transitive copy into the `wasm_js` backend (see each L0 crate's
+# `[target.'cfg(...)'.dependencies]` block + the workspace
+# `.cargo/config.toml` rustflag).
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 # ---------------------------------------------------------------------------
 # Parallelism
@@ -464,9 +478,11 @@ tempfile = "3.27"
 mesh-types = { path = "mesh/mesh-types" }
 mesh-io = { path = "mesh/mesh-io" }
 mesh-repair = { path = "mesh/mesh-repair" }
+mesh-repair-benches = { path = "mesh/mesh-repair-benches" }
 mesh-sdf = { path = "mesh/mesh-sdf" }
 mesh-offset = { path = "mesh/mesh-offset" }
 mesh-shell = { path = "mesh/mesh-shell" }
+mesh-shell-benches = { path = "mesh/mesh-shell-benches" }
 mesh-measure = { path = "mesh/mesh-measure" }
 mesh-printability = { path = "mesh/mesh-printability" }
 mesh-lattice = { path = "mesh/mesh-lattice" }
@@ -482,15 +498,19 @@ cf-spatial = { path = "design/cf-spatial" }
 
 # Design kernel
 cf-design = { path = "design/cf-design" }
+cf-design-tests = { path = "design/cf-design-tests" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }
 sim-simd = { path = "sim/L0/simd" }
+sim-simd-benches = { path = "sim/L0/simd-benches" }
 sim-core = { path = "sim/L0/core" }
+sim-core-benches = { path = "sim/L0/core-benches" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
 sim-ml-chassis = { path = "sim/L0/ml-chassis" }
+sim-ml-chassis-benches = { path = "sim/L0/ml-chassis-benches" }
 sim-rl = { path = "sim/L0/rl" }
 sim-thermostat = { path = "sim/L0/thermostat" }
 sim-opt = { path = "sim/L0/opt" }
@@ -498,4 +518,5 @@ sim-therm-env = { path = "sim/L0/therm-env" }
 sim-soft = { path = "sim/L0/soft" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
+sim-ml-chassis-bevy = { path = "sim/L1/ml-chassis-bevy" }
 

@@ -15,83 +15,46 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 
-use sim_core::{DVector, ENABLE_ENERGY, Integrator};
+use sim_core::test_fixtures::{free_body_diag, hinge_chain_2dof_inertial};
+use sim_core::{DVector, ENABLE_ENERGY, Integrator, Model, Vector3};
 use sim_thermostat::test_utils::{WelfordOnline, assert_within_n_sigma};
 use sim_thermostat::{LangevinThermostat, PassiveStack};
 
-// ─── MJCF models ─────────────────────────────────────────────────────
+// ─── Model factories ─────────────────────────────────────────────────
+//
+// Model A — free body with asymmetric inertia (6 DOF). Mass matrix
+// `M = diag(1, 1, 1, 0.5, 1.0, 1.5)` — three distinct principal moments
+// so the three rotational DOFs have different equilibrium velocity
+// variances. A sphere (uniform `I`) would pass even if the thermostat
+// treated all DOFs identically; the asymmetric box is the informative
+// test. No gravity, no springs — pure thermal motion.
+fn free_body_model() -> Model {
+    free_body_diag(1.0, Vector3::new(0.5, 1.0, 1.5))
+}
 
-/// Model A — free body with asymmetric inertia (6 DOF).
-///
-/// Mass matrix is `M = diag(1, 1, 1, 0.5, 1.0, 1.5)` — three distinct
-/// principal moments so the three rotational DOFs have different
-/// equilibrium velocity variances. A sphere (uniform `I`) would pass
-/// even if the thermostat treated all DOFs identically; the asymmetric
-/// box is the informative test.
-///
-/// `contype="0" conaffinity="0"` disables collision.
-/// No gravity, no springs — pure thermal motion.
-const FREE_BODY_XML: &str = r#"
-<mujoco model="free_body_6dof">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-  <worldbody>
-    <body name="box" pos="0 0 1">
-      <freejoint name="free"/>
-      <inertial pos="0 0 0" mass="1" diaginertia="0.5 1.0 1.5"/>
-      <geom type="box" size="0.1 0.1 0.1" contype="0" conaffinity="0"/>
-    </body>
-  </worldbody>
-</mujoco>
-"#;
+fn hinge_chain_model() -> Model {
+    hinge_chain_2dof_inertial()
+}
 
-/// Model B — 2-link hinge chain (2 DOF).
-///
-/// Two links rotating around the y-axis (planar chain in x-z plane).
-/// Joint springs (`stiffness="20"`) provide a restoring potential that
-/// keeps joint angles in the small-angle regime (~0.22 rad). This is
-/// load-bearing: the Euler-Maruyama integrator introduces systematic
-/// bias when the configuration-dependent mass matrix M(q) changes
-/// significantly per step. At stiffness=1 (angles ~1.9 rad), the KE
-/// inflates to ~3.8× expected; at stiffness=20 (angles ~0.22 rad),
-/// both per-DOF tests pass within 1σ. This is an integrator
-/// limitation, not a thermostat limitation — the force-space FDT is
-/// correct. BAOAB or GJF integrators would remove this constraint
-/// (clear upgrade path, not Phase 2 work).
-///
-/// `damping="0"` — thermostat owns damping (Q4).
-///
-/// Mass and inertia come entirely from `<inertial>` elements;
-/// `geom mass="0"` prevents double-counting. The 2×2 mass matrix
-/// `M(q)` is non-diagonal and configuration-dependent (off-diagonal
-/// coupling via `cos(q₂)`).
-const HINGE_CHAIN_XML: &str = r#"
-<mujoco model="hinge_chain_2dof">
-  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
-  <worldbody>
-    <body name="link1">
-      <joint name="j1" type="hinge" axis="0 1 0"
-             stiffness="20" damping="0" springref="0"/>
-      <inertial pos="0.25 0 0" mass="1" diaginertia="0.01 0.1 0.1"/>
-      <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05"
-            contype="0" conaffinity="0" mass="0"/>
-      <body name="link2" pos="0.5 0 0">
-        <joint name="j2" type="hinge" axis="0 1 0"
-               stiffness="20" damping="0" springref="0"/>
-        <inertial pos="0.25 0 0" mass="1" diaginertia="0.01 0.1 0.1"/>
-        <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05"
-              contype="0" conaffinity="0" mass="0"/>
-      </body>
-    </body>
-  </worldbody>
-</mujoco>
-"#;
+// Model B — 2-link hinge chain (2 DOF). Two links rotating around the
+// y-axis (planar chain in x-z plane). Joint springs (`stiffness=20`)
+// provide a restoring potential that keeps joint angles in the small-
+// angle regime (~0.22 rad). This is load-bearing: the Euler-Maruyama
+// integrator introduces systematic bias when M(q) changes significantly
+// per step. At stiffness=1 (angles ~1.9 rad), the KE inflates ~3.8×
+// expected; at stiffness=20 (angles ~0.22 rad), both per-DOF tests pass
+// within 1σ. Integrator limitation, not thermostat limitation — the
+// force-space FDT is correct. BAOAB or GJF would remove this constraint
+// (clear upgrade path, not Phase 2 work). Thermostat owns damping (Q4).
+// 2×2 mass matrix M(q) is non-diagonal and configuration-dependent
+// (off-diagonal coupling via cos(q₂)).
 
 // ─── §5.1 free body model invariants ─────────────────────────────────
 
 /// Verifies Model A satisfies every property from spec §5.1.
 #[test]
 fn test_free_body_model_invariants() {
-    let model = sim_mjcf::load_model(FREE_BODY_XML).expect("MJCF should load");
+    let model = free_body_model();
 
     assert_eq!(model.nv, 6, "free body should have 6 velocity DOFs");
     assert_eq!(
@@ -121,7 +84,7 @@ fn test_free_body_model_invariants() {
 /// the non-trivial off-diagonal coupling in M(q) at non-zero angles.
 #[test]
 fn test_hinge_chain_model_invariants() {
-    let model = sim_mjcf::load_model(HINGE_CHAIN_XML).expect("MJCF should load");
+    let model = hinge_chain_model();
 
     assert_eq!(model.nv, 2, "hinge chain should have 2 velocity DOFs");
     assert_eq!(model.nq, 2, "hinge chain should have 2 position DOFs");
@@ -181,7 +144,7 @@ fn test_free_body_equipartition() {
     let mut across: Vec<WelfordOnline> = (0..6).map(|_| WelfordOnline::new()).collect();
 
     for i in 0..n_traj {
-        let mut model = sim_mjcf::load_model(FREE_BODY_XML).expect("load");
+        let mut model = free_body_model();
         let mut data = model.make_data();
 
         PassiveStack::builder()
@@ -256,7 +219,7 @@ fn test_hinge_chain_equipartition() {
     let mut across_gen: Vec<WelfordOnline> = (0..2).map(|_| WelfordOnline::new()).collect();
 
     for i in 0..n_traj {
-        let mut model = sim_mjcf::load_model(HINGE_CHAIN_XML).expect("load");
+        let mut model = hinge_chain_model();
         model.enableflags |= ENABLE_ENERGY;
         let mut data = model.make_data();
 
@@ -325,19 +288,19 @@ fn test_hinge_chain_equipartition() {
 /// Bit-for-bit reproducibility on the 6-DOF free body.
 #[test]
 fn test_reproducibility_free_body() {
-    assert_multi_dof_reproducibility(FREE_BODY_XML, 6, 7, 10_000);
+    assert_multi_dof_reproducibility(free_body_model, 6, 7, 10_000);
 }
 
 /// Bit-for-bit reproducibility on the 2-DOF hinge chain.
 #[test]
 fn test_reproducibility_hinge_chain() {
-    assert_multi_dof_reproducibility(HINGE_CHAIN_XML, 2, 2, 10_000);
+    assert_multi_dof_reproducibility(hinge_chain_model, 2, 2, 10_000);
 }
 
 /// Shared helper: two simulations with identical parameters and seed
 /// must produce bit-for-bit identical `qpos` and `qvel` after N steps.
 /// Hard f64 equality, no `assert_relative_eq!`.
-fn assert_multi_dof_reproducibility(xml: &str, nv: usize, nq: usize, n_steps: usize) {
+fn assert_multi_dof_reproducibility(factory: fn() -> Model, nv: usize, nq: usize, n_steps: usize) {
     let seed = 0x00C0_FFEE_u64;
     let gamma_value = 0.1;
     let k_b_t = 1.0;
@@ -345,7 +308,7 @@ fn assert_multi_dof_reproducibility(xml: &str, nv: usize, nq: usize, n_steps: us
     // Both thermostats use IDENTICAL (master_seed, traj_id) — the test
     // asserts bit-for-bit reproducibility after N steps, so distinct
     // traj_id values would break the assertion (Ch 40 §3.4 (b)).
-    let mut model1 = sim_mjcf::load_model(xml).expect("load 1");
+    let mut model1 = factory();
     let mut data1 = model1.make_data();
     PassiveStack::builder()
         .with(LangevinThermostat::new(
@@ -357,7 +320,7 @@ fn assert_multi_dof_reproducibility(xml: &str, nv: usize, nq: usize, n_steps: us
         .build()
         .install(&mut model1);
 
-    let mut model2 = sim_mjcf::load_model(xml).expect("load 2");
+    let mut model2 = factory();
     let mut data2 = model2.make_data();
     PassiveStack::builder()
         .with(LangevinThermostat::new(

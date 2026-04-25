@@ -7,6 +7,9 @@ description = "Print validation and manufacturing analysis for triangle meshes"
 keywords = ["mesh", "3d-printing", "validation", "manufacturing", "fdm"]
 categories = ["graphics", "game-development", "science"]
 
+[package.metadata.cortenforge]
+tier = "L0"
+
 [dependencies]
 # Shared mesh data structures (workspace)
 mesh-types = { workspace = true }

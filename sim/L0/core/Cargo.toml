@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cortenforge]
+tier = "L0"
+
 [dependencies]
 # Shared geometry kernel: AABBs, SDFs, convex hulls used by collision
 cf-geometry = { workspace = true }
@@ -29,27 +32,27 @@ rayon = { workspace = true, optional = true }
 [dev-dependencies]
 # Float-tolerance assertions across solver / integration / collision tests
 approx = { workspace = true }
-# Microbenchmarks for collision and batch pipelines (benches/*.rs)
-criterion = { workspace = true }
 # Random input generation for collision and solver stress tests
 rand = { workspace = true }
 # JSON fixtures and golden files for integration tests
 serde_json = { workspace = true }
 
-
-[[bench]]
-name = "collision_benchmarks"
-harness = false
-
-[[bench]]
-name = "batch_benchmarks"
-harness = false
+# criterion benches live in the sibling `sim-core-benches` crate
+# (L0 plan §4.2: keeps criterion + plotters out of sim-core's dev-graph).
 
 [features]
 default = []
 parallel = ["dep:rayon"]
 serde = ["dep:serde", "serde/rc", "cf-geometry/serde", "sim-types/serde", "nalgebra/serde-serialize"]
 gpu-internals = []  # Exposes internal helpers for sim-gpu. No deps.
+# Canonical test-model fixtures (pendulums, particles, reaching arms, chains)
+# constructed in pure Rust via existing Model factory APIs + helpers in
+# `test_fixtures::builders`. Used by downstream L0-pure crates
+# (sim-thermostat, sim-ml-chassis, sim-opt) as a dev-dep replacement for
+# `sim-mjcf`-loaded XML, and by `sim-rl` as a release-dep replacement so its
+# stock task factories (reaching_2dof, etc.) don't pull `sim-mjcf` into the
+# release graph. See L0 plan §3.2.
+test-fixtures = []
 
 [lints]
 workspace = true

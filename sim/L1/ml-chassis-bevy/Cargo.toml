@@ -1,0 +1,28 @@
+[package]
+name = "sim-ml-chassis-bevy"
+description = "Bevy ECS Resource adapters for sim-ml-chassis types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L1"
+
+[dependencies]
+# Algorithm chassis types being adapted as Bevy Resources
+sim-ml-chassis = { workspace = true }
+# Bevy ECS — the Resource trait newtyped onto chassis types. Pinned to
+# the same 0.18 line that the rest of the Bevy stack uses; pulling the
+# ecs sub-crate directly avoids dragging the full renderer/winit/wgpu
+# chain into this thin adapter.
+bevy_ecs = "0.18"
+
+[dev-dependencies]
+# Pendulum / cart-pole / arm fixtures for SimEnv smoke tests
+sim-core = { workspace = true, features = ["test-fixtures"] }
+
+[lints]
+workspace = true

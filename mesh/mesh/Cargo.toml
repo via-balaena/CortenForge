@@ -15,14 +15,18 @@ description = "Complete mesh processing toolkit for 3D printing, CAD, and scan p
 keywords = ["mesh", "3d-printing", "geometry", "stl", "cad"]
 categories = ["graphics", "science", "algorithms"]
 
+[package.metadata.cortenforge]
+tier = "L0-io"
+
 [lints]
 workspace = true
 
 [dependencies]
 # Foundation
 mesh-types = { workspace = true }
-# Mesh file I/O (workspace)
-mesh-io = { workspace = true }
+# Mesh file I/O (workspace) — umbrella always enables `threemf` so the
+# kitchen-sink crate retains its full advertised format coverage
+mesh-io = { workspace = true, features = ["threemf"] }
 
 # Core operations
 mesh-repair = { workspace = true }

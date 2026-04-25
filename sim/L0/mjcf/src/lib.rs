@@ -90,7 +90,8 @@
 //!
 //! ## Mesh Assets
 //!
-//! - `<mesh name="..." file="path.stl"/>` - Load mesh from STL, OBJ, PLY, or 3MF file
+//! - `<mesh name="..." file="path.stl"/>` - Load mesh from STL, OBJ, or PLY
+//!   file (also 3MF when the `threemf` feature is enabled)
 //! - `<mesh name="..." vertex="x y z ..."/>` - Embedded vertex data
 //! - `<mesh name="..." scale="sx sy sz"/>` - Scale factor for mesh vertices
 //!
@@ -125,6 +126,15 @@
 //!
 //! - Height fields (hfield) and signed distance fields (sdf) are parsed but fall back to Box geometry
 //! - Composite bodies: only `type="cable"` is supported (all other types are deprecated in MuJoCo 3.4.0)
+//!
+//! # Optional features
+//!
+//! - `hfields` (default-on): PNG-source `<asset><hfield file="..."/>` height fields. Pulls
+//!   the `image` crate. Disable via `default-features = false` for embedded / WASM
+//!   builds; inline `elevation="..."` height fields continue to work either way.
+//! - `threemf`: 3MF asset support for `<mesh file="..."/>` (forwards to `mesh-io/threemf`).
+//! - `mjb`: MuJoCo binary format (de)serialization.
+//! - `serde`: derive Serialize/Deserialize on the public types.
 //!
 //! # Coordinate System
 //!
@@ -278,6 +288,56 @@ mod tests {
         let model = MjcfModel::new("test");
         let result = validate(&model);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_wired_into_model_from_mjcf() {
+        // Ingress gate test: duplicate body name should fail at load_model,
+        // not produce a corrupt Model. Uses the parsed-XML path end-to-end.
+        let mjcf = r#"
+            <mujoco model="dup">
+                <worldbody>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let result = load_model(mjcf);
+        assert!(matches!(
+            result,
+            Err(crate::error::MjcfError::Unsupported(msg)) if msg.contains("validation failed")
+        ));
+    }
+
+    #[test]
+    fn test_anonymous_joint_in_anonymous_body_no_dup() {
+        // Pre-fix bug: parser auto-filled anonymous joint names as
+        // `{body.name}_joint{N}`. With multiple anonymous bodies (each
+        // resetting joint_counter to 0), all anonymous joints became
+        // `_joint0`, hitting validate()'s duplicate-joint guard and
+        // failing load. Fix mirrors the anonymous-body convention:
+        // when body.name is empty, leave joint.name empty too —
+        // validation.rs:211 already exempts empty joint names.
+        let mjcf = r#"
+            <mujoco model="anon-chain">
+                <worldbody>
+                    <body pos="0 0 1">
+                        <joint type="hinge" axis="0 1 0"/>
+                        <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+                        <body pos="0.3 0 0">
+                            <joint type="hinge" axis="0 1 0"/>
+                            <geom type="box" size="0.08 0.04 0.02" mass="0.5"/>
+                            <body pos="0.25 0 0">
+                                <joint type="hinge" axis="0 1 0"/>
+                                <geom type="box" size="0.06 0.03 0.015" mass="0.3"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let model = load_model(mjcf).expect("anonymous chain should load");
+        assert_eq!(model.nv, 3, "Expected 3 hinge DOFs");
     }
 
     /// Test simple sphere body with Model/Data API.

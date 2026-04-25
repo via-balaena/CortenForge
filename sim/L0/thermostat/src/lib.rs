@@ -36,10 +36,13 @@
 //! ## Quick start
 //!
 //! ```ignore
-//! use sim_core::DVector;
+//! use sim_core::{DVector, Model};
 //! use sim_thermostat::{LangevinThermostat, PassiveStack};
 //!
-//! let mut model = sim_mjcf::load_model(SHO_XML)?;
+//! // Bring your own Model — load via sim-mjcf, build a fixture from
+//! // sim_core::test_fixtures, or construct one through sim-core's Model
+//! // factory APIs. sim-thermostat doesn't care how you got it.
+//! let mut model: Model = /* ... */;
 //! let mut data  = model.make_data();
 //!
 //! PassiveStack::builder()
@@ -55,7 +58,6 @@
 //! for _ in 0..n_steps {
 //!     data.step(&model)?;
 //! }
-//! # Ok::<(), sim_mjcf::LoadError>(())
 //! ```
 //!
 //! ## See also

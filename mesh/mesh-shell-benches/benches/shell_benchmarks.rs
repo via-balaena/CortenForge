@@ -1,10 +1,10 @@
 //! Benchmarks for mesh-shell operations.
 //!
-//! Run with: cargo bench -p mesh-shell
+//! Run with: cargo bench -p mesh-shell-benches
 //!
 //! To compare against baseline:
-//! 1. First run: cargo bench -p mesh-shell -- --save-baseline main
-//! 2. After changes: cargo bench -p mesh-shell -- --baseline main
+//! 1. First run: cargo bench -p mesh-shell-benches -- --save-baseline main
+//! 2. After changes: cargo bench -p mesh-shell-benches -- --baseline main
 
 #![allow(
     missing_docs,

@@ -1,16 +1,27 @@
 //! Benchmarks for mesh-repair operations.
 //!
-//! Run with: cargo bench -p mesh-repair
+//! Run with: cargo bench -p mesh-repair-benches
 //!
 //! To compare against baseline:
-//! 1. First run: cargo bench -p mesh-repair -- --save-baseline main
-//! 2. After changes: cargo bench -p mesh-repair -- --baseline main
+//! 1. First run: cargo bench -p mesh-repair-benches -- --save-baseline main
+//! 2. After changes: cargo bench -p mesh-repair-benches -- --baseline main
 
+// Bench-only crate: file-level allows cover lints that are tolerable
+// in measurement code but workspace-policy-banned in library src/.
+// `let_underscore_must_use` is a workspace `deny`; benches intentionally
+// drop Result values during timed loops because the bench's purpose is
+// throughput, not error-handling. Unused-must-use would otherwise
+// require contortions (drop / .ok() / match) that distort timing.
 #![allow(
     missing_docs,
     clippy::cast_possible_truncation,
     clippy::assigning_clones,
-    clippy::significant_drop_tightening
+    clippy::significant_drop_tightening,
+    clippy::semicolon_if_nothing_returned,
+    clippy::manual_midpoint,
+    clippy::suboptimal_flops,
+    clippy::let_underscore_must_use,
+    unused_must_use
 )]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -231,7 +242,7 @@ fn bench_repair(c: &mut Criterion) {
             let mut m = mesh.clone();
             let params = RepairParams::default();
             b.iter(|| {
-                let _ = mesh_repair::repair_mesh(&mut m, &params);
+                let _ = black_box(mesh_repair::repair_mesh(&mut m, &params));
             })
         });
     }
@@ -254,7 +265,7 @@ fn bench_hole_filling(c: &mut Criterion) {
     group.bench_function("fill_holes_cube", |b| {
         let mut mesh = open_cube.clone();
         b.iter(|| {
-            let _ = mesh_repair::holes::fill_holes(&mut mesh, 100);
+            let _ = black_box(mesh_repair::holes::fill_holes(&mut mesh, 100));
         })
     });
 
