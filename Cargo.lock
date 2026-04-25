@@ -1807,9 +1807,18 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
- "mesh-io",
  "nalgebra",
  "rayon",
+ "sim-core",
+]
+
+[[package]]
+name = "cf-design-tests"
+version = "0.7.0"
+dependencies = [
+ "cf-design",
+ "mesh-io",
+ "nalgebra",
  "sim-core",
  "sim-mjcf",
  "tempfile",

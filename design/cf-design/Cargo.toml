@@ -27,9 +27,6 @@ sim-core = { workspace = true }
 [dev-dependencies]
 # Approximate equality for numeric tests
 approx = { workspace = true }
-# Mesh file I/O (workspace) — `threemf` enabled for solid.rs round-trip tests
-mesh-io = { workspace = true, features = ["threemf"] }
-# MJCF loading (workspace)
-sim-mjcf = { workspace = true }
-# Temporary files/dirs for tests
-tempfile = { workspace = true }
+# 3MF round-trip tests + sim-mjcf integration tests + sphere-diagnostic test
+# live in `design/cf-design-tests/` (tier L0-integration) so the heavier
+# mesh-io[threemf] + sim-mjcf chains stay out of cf-design's L0 dev-graph.

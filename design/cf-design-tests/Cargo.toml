@@ -1,0 +1,33 @@
+[package]
+name = "cf-design-tests"
+description = "Integration tests for cf-design — MJCF pipeline + 3MF round-trip + SDF sphere diagnostic. Holds the heavy dev-deps (sim-mjcf, mesh-io[threemf]) so they stay out of cf-design's L0 dev-graph."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Coverage criterion N/A: this crate has no src/ — only [[test]]
+# integration targets. --lib errors with "no library targets found".
+[package.metadata.cortenforge]
+tier = "L0-integration"
+grading_profile = "integration-only"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Crate under test — exercises cf-design's pub API end-to-end.
+cf-design = { workspace = true }
+# MJCF integration tests use sim-mjcf::load_model on cf-design's to_mjcf output
+# and the SDF-sphere diagnostic compares cf-design's to_model against an MJCF model.
+sim-mjcf = { workspace = true }
+# 3MF round-trip tests use mesh-io's threemf save/load on cf-design's mesh output.
+mesh-io = { workspace = true, features = ["threemf"] }
+# SdfGrid + ShapeSphere + ConstraintType + GeomType used by the integration tests.
+sim-core = { workspace = true }
+# Vector / Point primitives.
+nalgebra = { workspace = true }
+
+[dev-dependencies]
+# Temporary directories for 3MF round-trip tests.
+tempfile = { workspace = true }

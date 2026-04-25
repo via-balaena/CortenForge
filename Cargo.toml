@@ -294,6 +294,7 @@ members = [
 
     # Design kernel (active development)
     "design/cf-design",
+    "design/cf-design-tests",
 
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
@@ -497,6 +498,7 @@ cf-spatial = { path = "design/cf-spatial" }
 
 # Design kernel
 cf-design = { path = "design/cf-design" }
+cf-design-tests = { path = "design/cf-design-tests" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }
