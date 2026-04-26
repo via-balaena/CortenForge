@@ -40,8 +40,8 @@ pub use material::{InversionHandling, Material, NeoHookean, ValidityDomain};
 pub use mesh::{Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId};
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{
-    EditResult, ForwardMap, GradientEstimate, ResidualCorrections, RewardBreakdown, RewardWeights,
-    SceneInitial, SkeletonForwardMap, SoftScene,
+    BoundaryConditions, EditResult, ForwardMap, GradientEstimate, LoadAxis, ResidualCorrections,
+    RewardBreakdown, RewardWeights, SceneInitial, SkeletonForwardMap, SoftScene,
 };
 pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 

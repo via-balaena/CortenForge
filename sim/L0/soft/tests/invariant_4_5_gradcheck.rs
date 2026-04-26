@@ -59,7 +59,9 @@ const PARENT_LEN: usize = 12;
 /// no knobs so every test runs against the same geometry and tuning.
 fn build_solver() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConfig) {
     let cfg = SolverConfig::skeleton();
-    let (mesh, initial) = SoftScene::one_tet_cube();
+    // BoundaryConditions ignored at commit-1 scaffolding scope — solver
+    // doesn't consume it yet (Phase 2 commit 3 wires it through).
+    let (mesh, _bc, initial) = SoftScene::one_tet_cube();
     let solver: SkeletonSolver = CpuNewtonSolver::new(
         NeoHookean::from_lame(1e5, 4e5),
         Tet4,
