@@ -58,15 +58,14 @@ const fn gradcheck_weights() -> RewardWeights {
 /// the FD loop reuse the same builder without state leakage.
 fn build_forward_map() -> SkeletonForwardMap {
     let cfg = SolverConfig::skeleton();
-    // BoundaryConditions ignored at commit-1 scaffolding scope — solver
-    // doesn't consume it yet (Phase 2 commit 3 wires it through).
-    let (mesh, _bc, initial) = SoftScene::one_tet_cube();
+    let (mesh, bc, initial) = SoftScene::one_tet_cube();
     let solver: Box<dyn Solver<Tape = CpuTape>> = Box::new(CpuNewtonSolver::new(
         NeoHookean::from_lame(1e5, 4e5),
         Tet4,
         mesh,
         NullContact,
         cfg,
+        bc,
     ));
     SkeletonForwardMap::new(solver, BasicObservable, initial, gradcheck_weights())
 }

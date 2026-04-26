@@ -37,6 +37,7 @@ use crate::differentiable::newton_vjp::NewtonStepVjp;
 use crate::element::Element;
 use crate::material::Material;
 use crate::mesh::Mesh;
+use crate::readout::BoundaryConditions;
 
 /// Number of DOFs in the skeleton system (4 vertices × 3 spatial axes).
 const N_DOF: usize = 12;
@@ -110,6 +111,12 @@ where
     // IPC can slot in without a solver-level API break.
     _contact: C,
     config: SolverConfig,
+    // Phase 2 commit 3: stored at construction; assembly bodies still use
+    // the hardcoded N_DOF/N_FREE/FREE_OFFSET constants below. Commit 4
+    // wires this through `solve_impl` / `factor_at_position` /
+    // `external_force` to derive runtime DOF layout from the mesh +
+    // pinned-vertex set + load map.
+    boundary_conditions: BoundaryConditions,
 }
 
 impl<M, E, Msh, C, const N: usize, const G: usize> CpuNewtonSolver<M, E, Msh, C, N, G>
@@ -119,18 +126,33 @@ where
     Msh: Mesh,
     C: ContactModel,
 {
-    /// Assemble a solver from its material, element, mesh, contact, and
-    /// integration configuration. `Box<dyn Solver<Tape = CpuTape>>` is
-    /// the intended public handle; direct access to the concrete type
-    /// is only needed for monomorphized benches (Phase E+).
+    /// Assemble a solver from its material, element, mesh, contact,
+    /// integration configuration, and boundary conditions.
+    ///
+    /// `Box<dyn Solver<Tape = CpuTape>>` is the intended public handle;
+    /// direct access to the concrete type is only needed for
+    /// monomorphized benches (Phase E+). `boundary_conditions` is
+    /// stored but not yet read at this commit (Phase 2 commit 3
+    /// plumbing per scope §8); commit 4 wires it into the assembly
+    /// path. Stays `const fn` — `BoundaryConditions`'s `Vec` fields
+    /// are received by-value from a runtime caller, not constructed
+    /// inside this function, so const-context evaluation is preserved.
     #[must_use]
-    pub const fn new(material: M, element: E, mesh: Msh, contact: C, config: SolverConfig) -> Self {
+    pub const fn new(
+        material: M,
+        element: E,
+        mesh: Msh,
+        contact: C,
+        config: SolverConfig,
+        boundary_conditions: BoundaryConditions,
+    ) -> Self {
         Self {
             material,
             element,
             mesh,
             _contact: contact,
             config,
+            boundary_conditions,
         }
     }
 

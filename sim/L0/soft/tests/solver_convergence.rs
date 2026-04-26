@@ -33,9 +33,7 @@ use sim_soft::{
 #[test]
 fn stage_1_traction_converges() {
     let cfg = SolverConfig::skeleton();
-    // BoundaryConditions ignored at commit-1 scaffolding scope — solver
-    // doesn't consume it yet (Phase 2 commit 3 wires it through).
-    let (mesh, _bc, initial) = SoftScene::one_tet_cube();
+    let (mesh, bc, initial) = SoftScene::one_tet_cube();
 
     let mut solver: SkeletonSolver = CpuNewtonSolver::new(
         NeoHookean::from_lame(1e5, 4e5),
@@ -43,6 +41,7 @@ fn stage_1_traction_converges() {
         mesh,
         NullContact,
         cfg,
+        bc,
     );
 
     // Stage-1 θ: length-1 tensor = magnitude along +ẑ on v_3. Registered
