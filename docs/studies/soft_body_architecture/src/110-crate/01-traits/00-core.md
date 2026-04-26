@@ -89,7 +89,7 @@ pub trait Solver: Send + Sync {
         tape: &mut Self::Tape,
         x_prev: &Tensor<f64>,
         v_prev: &Tensor<f64>,
-        theta: &Tensor<f64>,
+        theta_var: Var,
         dt: f64,
     ) -> NewtonStep<Self::Tape>;
 
@@ -107,6 +107,8 @@ pub trait Solver: Send + Sync {
 ```
 
 Two concrete impls: `CpuNewtonSolver<Tape = CpuTape>` (Phase B) and `GpuNewtonSolver<Tape = GpuTape>` (Phase E). Both are selectable at scene construction via `Box<dyn Solver<Tape = _>>`; the runtime dispatch cost is paid once per step, not once per Newton inner iteration. The associated `Tape` type is what lets CPU and GPU solvers each use the tape representation their VJPs are registered against — [`autograd/`](../00-module-layout/07-autograd.md) carries separate registrations for CPU closed-form and GPU compute-kernel VJPs, and the `Solver` impl picks one.
+
+**Why `theta_var: Var` on `step`, `theta: &Tensor<f64>` on `replay_step`.** `step` composes into the autograd tape via [chassis `Tape::push_custom`](../../80-gpu/04-chassis-extension/02-vjp-api.md), which expects a `Var` handle for each parent node — `theta_var` is what lets the `NewtonStepVjp` bind θ as a parent and fire automatically during `tape.backward(reward_var)`. The shipped `CpuNewtonSolver::step` reads θ's primal value via `tape.value_tensor(theta_var)` then assembles the residual + tangent against that snapshot, then pushes `NewtonStepVjp` with `tape.push_custom(&[theta_var], x_final_tensor, ...)`. `replay_step` is the [checkpointed-step VJP](../../60-differentiability/04-checkpointing/00-uniform.md) entry point; it does not compose into a tape (no `&mut Tape` parameter) and rebuilds its own factor on a scratch context, so a bare tensor is the right shape. The asymmetry is intentional: tape-composing entry points take `Var`, pure-function entry points take `Tensor`.
 
 `Solver::step`'s `&mut self` admits *intra-call* mutability for logging, diagnostic accumulation, and internal scratch — line-search iteration counts, Newton residual histories, per-step telemetry that does not affect the returned `NewtonStep`. *Cross-call* output-affecting state — adaptive tolerance learning from previous steps, warm-start iterates persisting across `step` invocations, cached line-search history influencing backtracking decisions — is forbidden. A `step(&mut self, ...)` impl whose return value at the same `(x_prev, v_prev, theta, dt)` depends on prior calls violates the [γ-locked `ForwardMap` determinism-in-θ contract](../../100-optimization/00-forward.md) and breaks the [checkpointed-step replay pattern from Part 6 Ch 04](../../60-differentiability/04-checkpointing.md) that the time-adjoint machinery rests on. Same mutation-discipline template as `Differentiable` (§below) and the chassis [`Preconditioner`](../../80-gpu/02-sparse-solvers/03-preconditioning.md) trait — uniform across every impl-side trait the autograd substrate consumes.
 
