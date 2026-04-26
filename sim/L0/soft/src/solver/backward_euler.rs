@@ -22,6 +22,8 @@
 //! [r]: ../../../../../../docs/studies/soft_body_architecture/src/60-differentiability/02-implicit-function.md
 //! [tet4]: ../../../../../../docs/studies/soft_body_architecture/src/30-discretization/00-element-choice/00-tet4.md
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use faer::linalg::solvers::SolveCore;
 use faer::prelude::Reborrow;
 use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
@@ -36,8 +38,8 @@ use crate::contact::ContactModel;
 use crate::differentiable::newton_vjp::NewtonStepVjp;
 use crate::element::Element;
 use crate::material::Material;
-use crate::mesh::Mesh;
-use crate::readout::BoundaryConditions;
+use crate::mesh::{Mesh, TetId, VertexId};
+use crate::readout::{BoundaryConditions, LoadAxis};
 
 /// Number of DOFs in the skeleton system (4 vertices × 3 spatial axes).
 const N_DOF: usize = 12;
@@ -51,6 +53,20 @@ const FREE_OFFSET: usize = 9;
 
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
+
+/// Per-element reference-frame geometry, pre-computed at solver
+/// construction (Phase 2 commit 4a).
+///
+/// `grad_x_n` is the material-frame shape-function gradient
+/// (`SMatrix<f64, 4, 3>`, one row per node, constant across the
+/// element for Tet4); `volume` is the rest-configuration tet volume.
+/// One per tet in the mesh; cached so the per-iter assembly path
+/// doesn't recompute on every Newton step.
+#[derive(Clone, Debug)]
+struct ElementGeometry {
+    grad_x_n: SMatrix<f64, 4, 3>,
+    volume: f64,
+}
 
 /// Solver configuration — integration parameters the skeleton scene
 /// (spec §2) consumes. `skeleton()` returns the spec-§2 defaults.
@@ -111,12 +127,41 @@ where
     // IPC can slot in without a solver-level API break.
     _contact: C,
     config: SolverConfig,
-    // Phase 2 commit 3: stored at construction; assembly bodies still use
-    // the hardcoded N_DOF/N_FREE/FREE_OFFSET constants below. Commit 4
-    // wires this through `solve_impl` / `factor_at_position` /
-    // `external_force` to derive runtime DOF layout from the mesh +
-    // pinned-vertex set + load map.
     boundary_conditions: BoundaryConditions,
+
+    // ── Phase 2 commit 4a: assembly cache, populated by `new()`. ──
+    // The old solve path (commit 3) still uses the hardcoded N_DOF /
+    // N_FREE / FREE_OFFSET constants and recomputes per-element
+    // geometry per Newton iter via `reference_geometry`; commit 4b
+    // switches `solve_impl` / `factor_at_position` / `armijo_backtrack`
+    // over to the cache below and removes the redundant path.
+    /// One entry per mesh tet — material-frame shape gradients and
+    /// rest-configuration volume.
+    element_geometries: Vec<ElementGeometry>,
+    /// Lumped per-DOF mass (`length n_dof`). For each DOF `i` belonging
+    /// to vertex `v = i / 3`, the entry is `Σ_e (ρ V_e / 4)` over every
+    /// element `e` that contains `v`. Phase 2 reproduces the
+    /// walking-skeleton's "per-vertex mass = ρ `V_total` / 4" rule when
+    /// every vertex sits in exactly one tet.
+    mass_per_dof: Vec<f64>,
+    /// Full-DOF indices of the free DOFs, in ascending order. For the
+    /// 1-tet skeleton: `[9, 10, 11]` (`v_3`'s xyz). For multi-tet:
+    /// every non-pinned vertex's three DOFs.
+    free_dof_indices: Vec<usize>,
+    /// Inverse map of `free_dof_indices`: entry `i` is `Some(k)` when
+    /// full-DOF `i` is the k-th free DOF, else `None` (pinned). Used
+    /// for O(1) "is this DOF free?" lookups during sparse-pattern
+    /// build and tangent assembly.
+    dof_to_free: Vec<Option<usize>>,
+    /// Symbolic factor of the free-DOF Hessian sparsity pattern, built
+    /// once from element-vertex incidence per Decision J. Per-iter
+    /// numeric refactor consumes a `clone()` of this (cheap — faer
+    /// 0.24 wraps the symbolic in `Arc` internally).
+    symbolic: SymbolicLlt<usize>,
+    /// Total DOF count (`3 * n_vertices`), cached for slice indexing.
+    n_dof: usize,
+    /// Free DOF count (`free_dof_indices.len()`), cached.
+    n_free: usize,
 }
 
 impl<M, E, Msh, C, const N: usize, const G: usize> CpuNewtonSolver<M, E, Msh, C, N, G>
@@ -131,14 +176,33 @@ where
     ///
     /// `Box<dyn Solver<Tape = CpuTape>>` is the intended public handle;
     /// direct access to the concrete type is only needed for
-    /// monomorphized benches (Phase E+). `boundary_conditions` is
-    /// stored but not yet read at this commit (Phase 2 commit 3
-    /// plumbing per scope §8); commit 4 wires it into the assembly
-    /// path. Stays `const fn` — `BoundaryConditions`'s `Vec` fields
-    /// are received by-value from a runtime caller, not constructed
-    /// inside this function, so const-context evaluation is preserved.
+    /// monomorphized benches (Phase E+). Phase 2 commit 4a populates
+    /// an assembly cache (`element_geometries`, `mass_per_dof`,
+    /// `free_dof_indices`, `dof_to_free`, `symbolic`, `n_dof`,
+    /// `n_free`) at construction time; commit 4b's `solve_impl` /
+    /// `factor_at_position` / `armijo_backtrack` will consume the
+    /// cache. `const fn` was dropped here — the cache build runs
+    /// `mesh.tet_vertices`, sparse-pattern construction, and faer's
+    /// symbolic factorization, none of which are const-evaluable.
+    //
+    // expect_used + panic justifications:
+    //   • Singular reference Jacobian = malformed rest mesh, programmer
+    //     bug at construction time.
+    //   • SymbolicLlt failure = solver-pattern build is wrong (impossible
+    //     for any valid mesh + Dirichlet set), programmer bug.
+    //
+    // Lint allows: same Mesh-trait-API tax + Tet4 4-node iteration +
+    // per-element grad/grad_generic similar-name pair as the assembly
+    // methods below.
     #[must_use]
-    pub const fn new(
+    #[allow(
+        clippy::expect_used,
+        clippy::too_many_lines,
+        clippy::cast_possible_truncation,
+        clippy::needless_range_loop,
+        clippy::similar_names
+    )]
+    pub fn new(
         material: M,
         element: E,
         mesh: Msh,
@@ -146,6 +210,122 @@ where
         config: SolverConfig,
         boundary_conditions: BoundaryConditions,
     ) -> Self {
+        assert!(
+            N == 4,
+            "Phase 2 solver is pinned to Tet4 (N=4) per scope §3 Decision A; got N={N}"
+        );
+
+        // 1. Per-element reference geometry. Computed once; all per-iter
+        // assembly reads from this cache rather than recomputing.
+        let n_tets = mesh.n_tets();
+        let x_rest = mesh.positions();
+        let mut element_geometries = Vec::with_capacity(n_tets);
+        // Parametric gradients are constant for Tet4; pass centroid ξ.
+        let grad_xi_n = element.shape_gradients(Vec3::new(0.25, 0.25, 0.25));
+        for tet_id in 0..n_tets as TetId {
+            let verts = mesh.tet_vertices(tet_id);
+            let v0 = x_rest[verts[0] as usize];
+            let v1 = x_rest[verts[1] as usize];
+            let v2 = x_rest[verts[2] as usize];
+            let v3 = x_rest[verts[3] as usize];
+            let j_0 = Matrix3::from_columns(&[v1 - v0, v2 - v0, v3 - v0]);
+            let j_0_inv = j_0
+                .try_inverse()
+                .expect("singular reference Jacobian — malformed rest mesh");
+            let volume = j_0.determinant().abs() / 6.0;
+            // Chain rule: grad_X N_a = grad_ξ N_a · (∂ξ/∂X) = grad_ξ N_a · J_0⁻¹.
+            // Result is SMatrix<f64, N, 3>; copy first 4 rows out to the
+            // concrete 4-node matrix per Tet4 (N == 4 asserted above).
+            let grad_x_n_generic: SMatrix<f64, N, 3> = grad_xi_n * j_0_inv;
+            let mut grad_x_n = SMatrix::<f64, 4, 3>::zeros();
+            for a in 0..4 {
+                for j in 0..3 {
+                    grad_x_n[(a, j)] = grad_x_n_generic[(a, j)];
+                }
+            }
+            element_geometries.push(ElementGeometry { grad_x_n, volume });
+        }
+
+        // 2. Lumped per-DOF mass. For each element `e`, contribute
+        // `ρ V_e / 4` to every DOF of every vertex of `e`. Vertices
+        // shared by multiple elements accumulate.
+        let n_vertices = mesh.n_vertices();
+        let n_dof = 3 * n_vertices;
+        let mut mass_per_dof = vec![0.0; n_dof];
+        for tet_id in 0..n_tets as TetId {
+            let verts = mesh.tet_vertices(tet_id);
+            let mass_per_vertex_share =
+                config.density * element_geometries[tet_id as usize].volume / 4.0;
+            for a in 0..4 {
+                let v = verts[a] as usize;
+                mass_per_dof[3 * v] += mass_per_vertex_share;
+                mass_per_dof[3 * v + 1] += mass_per_vertex_share;
+                mass_per_dof[3 * v + 2] += mass_per_vertex_share;
+            }
+        }
+
+        // 3. Free-DOF index mapping. Walks vertices in natural order
+        // (deterministic per scope §15 D-3 + Decision M); pinned set
+        // stored as BTreeSet for `O(log n)` lookup with deterministic
+        // iteration (no HashMap on numeric paths per Decision M).
+        let pinned_set: BTreeSet<VertexId> = boundary_conditions
+            .pinned_vertices
+            .iter()
+            .copied()
+            .collect();
+        let mut free_dof_indices = Vec::with_capacity(n_dof);
+        for v in 0..n_vertices as VertexId {
+            if !pinned_set.contains(&v) {
+                let v_idx = v as usize;
+                free_dof_indices.push(3 * v_idx);
+                free_dof_indices.push(3 * v_idx + 1);
+                free_dof_indices.push(3 * v_idx + 2);
+            }
+        }
+        let n_free = free_dof_indices.len();
+        let mut dof_to_free: Vec<Option<usize>> = vec![None; n_dof];
+        for (free_idx, &full_idx) in free_dof_indices.iter().enumerate() {
+            dof_to_free[full_idx] = Some(free_idx);
+        }
+
+        // 4. Symbolic factor of the free-DOF Hessian sparsity pattern,
+        // built from element-vertex incidence (Decision J). For each
+        // element `e`, every (a, b) vertex pair contributes a 3×3
+        // block at the (free_idx_a, free_idx_b) location, IF both `a`
+        // and `b` are free. BTreeSet keyed by (col, row) gives sorted
+        // column-major lower-triangle iteration without a HashMap.
+        let mut triplet_set: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for tet_id in 0..n_tets as TetId {
+            let verts = mesh.tet_vertices(tet_id);
+            for a in 0..4 {
+                for b in 0..4 {
+                    let va = verts[a] as usize;
+                    let vb = verts[b] as usize;
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let row_full = 3 * va + i;
+                            let col_full = 3 * vb + j;
+                            if let (Some(row_free), Some(col_free)) =
+                                (dof_to_free[row_full], dof_to_free[col_full])
+                                && row_free >= col_free
+                            {
+                                triplet_set.insert((col_free, row_free));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set
+            .iter()
+            .map(|&(c, r)| Triplet::new(r, c, 1.0))
+            .collect();
+        let pattern_mat: SparseColMat<usize, f64> =
+            SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets)
+                .expect("malformed free-block triplet pattern");
+        let symbolic = SymbolicLlt::<usize>::try_new(pattern_mat.symbolic(), Side::Lower)
+            .expect("symbolic factorization of free-block pattern failed");
+
         Self {
             material,
             element,
@@ -153,6 +333,13 @@ where
             _contact: contact,
             config,
             boundary_conditions,
+            element_geometries,
+            mass_per_dof,
+            free_dof_indices,
+            dof_to_free,
+            symbolic,
+            n_dof,
+            n_free,
         }
     }
 
@@ -416,6 +603,195 @@ where
              or near-singular condensed system."
         );
     }
+
+    // ── Phase 2 commit 4a: cache-using assembly methods. ──
+    // Dead until commit 4b's substitution. Live for review now so the
+    // 4b diff is a pure rewire, not a wire + design.
+
+    /// Read θ via the load map and emit the global external-force
+    /// vector (Decision L). All-`AxisZ` BC (Stage 1) treats `theta` as
+    /// a length-1 magnitude broadcast to every loaded vertex's `+ẑ`
+    /// DOF; all-`FullVector` BC (Stage 2) consumes `theta` as
+    /// `[3 * n_loaded]` per-vertex traction triples. Mixed-axis
+    /// scenes are out of Phase 2 scope per `LoadAxis` doc.
+    //
+    // Shape mismatches (BC contradicting θ length) panic — programmer
+    // bug at scene wiring time, not runtime input.
+    #[allow(clippy::panic, dead_code)]
+    fn assemble_external_force(&self, theta: &Tensor<f64>, f_ext: &mut [f64]) {
+        debug_assert!(
+            f_ext.len() == self.n_dof,
+            "f_ext output buffer length {} ≠ n_dof {}",
+            f_ext.len(),
+            self.n_dof,
+        );
+        f_ext.fill(0.0);
+        let theta_slice = theta.as_slice();
+        let loaded = &self.boundary_conditions.loaded_vertices;
+
+        if loaded.is_empty() {
+            assert!(
+                theta_slice.is_empty(),
+                "θ has length {} but BC has no loaded vertices",
+                theta_slice.len(),
+            );
+            return;
+        }
+
+        let all_axis_z = loaded.iter().all(|(_, ax)| matches!(ax, LoadAxis::AxisZ));
+        let all_full_vec = loaded
+            .iter()
+            .all(|(_, ax)| matches!(ax, LoadAxis::FullVector));
+        assert!(
+            all_axis_z || all_full_vec,
+            "Mixed-axis loaded_vertices are out of Phase 2 scope; got {loaded:?}"
+        );
+
+        if all_axis_z {
+            // Stage-1 broadcast: one θ scalar drives `+ẑ` on every loaded vertex.
+            assert!(
+                theta_slice.len() == 1,
+                "AxisZ-loaded θ must have length 1 (broadcast magnitude), got {}",
+                theta_slice.len(),
+            );
+            let mag = theta_slice[0];
+            for &(vertex_id, _) in loaded {
+                f_ext[3 * vertex_id as usize + 2] = mag;
+            }
+        } else {
+            // Stage-2 per-vertex: θ supplies xyz for each loaded vertex in order.
+            let expected = 3 * loaded.len();
+            assert!(
+                theta_slice.len() == expected,
+                "FullVector-loaded θ must have length {expected} (3 × {}), got {}",
+                loaded.len(),
+                theta_slice.len(),
+            );
+            for (i, &(vertex_id, _)) in loaded.iter().enumerate() {
+                let v = vertex_id as usize;
+                f_ext[3 * v] = theta_slice[3 * i];
+                f_ext[3 * v + 1] = theta_slice[3 * i + 1];
+                f_ext[3 * v + 2] = theta_slice[3 * i + 2];
+            }
+        }
+    }
+
+    /// Walk every element, scatter per-vertex internal-force
+    /// contributions into the global `f_int` buffer.
+    ///
+    /// `f_int` is zeroed inside; caller need not pre-clear. Reads
+    /// `x_curr` (length `n_dof`), uses cached `element_geometries` and
+    /// the solver's `material`.
+    //
+    // Lint allows: see assemble_free_hessian_triplets justification.
+    #[allow(
+        dead_code,
+        clippy::cast_possible_truncation,
+        clippy::needless_range_loop
+    )]
+    fn assemble_global_int_force(&self, x_curr: &[f64], f_int: &mut [f64]) {
+        debug_assert!(x_curr.len() == self.n_dof);
+        debug_assert!(f_int.len() == self.n_dof);
+        f_int.fill(0.0);
+        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+            let verts = self.mesh.tet_vertices(tet_id as TetId);
+            let x_elem = extract_element_dof_values(x_curr, &verts);
+            let f = deformation_gradient_general(&x_elem, &geom.grad_x_n);
+            let piola = self.material.first_piola(&f);
+            // Per-vertex internal-force contribution `V · P · grad_X N_a`.
+            for a in 0..4 {
+                let v = verts[a] as usize;
+                for i in 0..3 {
+                    let mut sum = 0.0;
+                    for j in 0..3 {
+                        sum += piola[(i, j)] * geom.grad_x_n[(a, j)];
+                    }
+                    f_int[3 * v + i] += geom.volume * sum;
+                }
+            }
+        }
+    }
+
+    /// Assemble the lower-triangle triplets of the free-DOF Hessian
+    /// `A_free = M_free / Δt² + K_free(x_curr)` per Decision J.
+    ///
+    /// For each element + each (a, b) vertex pair, contributes the
+    /// 3×3 block from `B_a^T 𝕔 B_b` (using BF-5's flattening
+    /// convention) into the global free-DOF sparse matrix at
+    /// `(free_idx_a, free_idx_b)` whenever both DOFs are free.
+    /// Diagonal mass added at the end. `BTreeMap` accumulates with
+    /// deterministic (col, row) iteration order per Decision M.
+    //
+    // Lint allows: `as TetId` is the Mesh-trait-API tax (n_tets
+    // returns usize, tet_vertices takes u32) — same as commit 2's
+    // HandBuiltTetMesh. `for a/b in 0..4` iterates over Tet4's 4 nodes
+    // by index (used for both `verts[a]` AND `geom.grad_x_n[(a, l)]`
+    // — the lint flags the verts use only). `va`/`vb` similar-name
+    // pair mirrors the (a, b) symmetry of the per-element block math.
+    #[allow(
+        dead_code,
+        clippy::cast_possible_truncation,
+        clippy::needless_range_loop,
+        clippy::similar_names
+    )]
+    fn assemble_free_hessian_triplets(
+        &self,
+        x_curr: &[f64],
+        dt: f64,
+    ) -> Vec<Triplet<usize, usize, f64>> {
+        debug_assert!(x_curr.len() == self.n_dof);
+        let dt2_inv = 1.0 / (dt * dt);
+        // (col, row) → accumulated value. BTreeMap for sorted iteration
+        // (Decision M D-3); no HashMap on numeric paths.
+        let mut acc: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+
+        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+            let verts = self.mesh.tet_vertices(tet_id as TetId);
+            let x_elem = extract_element_dof_values(x_curr, &verts);
+            let f = deformation_gradient_general(&x_elem, &geom.grad_x_n);
+            let tangent_9x9 = self.material.tangent(&f);
+
+            for a in 0..4 {
+                let va = verts[a] as usize;
+                for b in 0..4 {
+                    let vb = verts[b] as usize;
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let row_full = 3 * va + i;
+                            let col_full = 3 * vb + j;
+                            if let (Some(row_free), Some(col_free)) =
+                                (self.dof_to_free[row_full], self.dof_to_free[col_full])
+                                && row_free >= col_free
+                            {
+                                // (B_a^T 𝕔 B_b)[i,j] = Σ_{l,l'} (grad_X N_a)_l ·
+                                //   𝕔[(i+3l), (j+3l')] · (grad_X N_b)_{l'}
+                                let mut block = 0.0;
+                                for l in 0..3 {
+                                    for lp in 0..3 {
+                                        block += geom.grad_x_n[(a, l)]
+                                            * tangent_9x9[(i + 3 * l, j + 3 * lp)]
+                                            * geom.grad_x_n[(b, lp)];
+                                    }
+                                }
+                                *acc.entry((col_free, row_free)).or_insert(0.0) +=
+                                    geom.volume * block;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mass diagonal: M_free / Δt² · I on (k, k).
+        for k in 0..self.n_free {
+            let mass_dof = self.mass_per_dof[self.free_dof_indices[k]];
+            *acc.entry((k, k)).or_insert(0.0) += mass_dof * dt2_inv;
+        }
+
+        acc.into_iter()
+            .map(|((c, r), v)| Triplet::new(r, c, v))
+            .collect()
+    }
 }
 
 impl<M, E, Msh, C, const N: usize, const G: usize> Solver for CpuNewtonSolver<M, E, Msh, C, N, G>
@@ -509,6 +885,41 @@ fn deformation_gradient(x_flat: &[f64; N_DOF], grad_x_n: &SMatrix<f64, 4, 3>) ->
         }
     }
     f
+}
+
+/// Per-element 4-node deformation gradient, taking element-local
+/// positions as a `[f64; 12]` (vertex-major, xyz-inner). Phase 2
+/// commit 4a counterpart to [`deformation_gradient`] that doesn't
+/// need to use the soon-to-be-removed `N_DOF` constant in its
+/// signature; identical math otherwise. Commit 4b will collapse to
+/// one of these.
+#[allow(dead_code)]
+fn deformation_gradient_general(x_elem: &[f64; 12], grad_x_n: &SMatrix<f64, 4, 3>) -> Matrix3<f64> {
+    let mut f = Matrix3::zeros();
+    for a in 0..4 {
+        for i in 0..3 {
+            let x_ai = x_elem[3 * a + i];
+            for j in 0..3 {
+                f[(i, j)] += x_ai * grad_x_n[(a, j)];
+            }
+        }
+    }
+    f
+}
+
+/// Extract one element's 12 vertex-DOF values from the global
+/// position vector. Vertex-major + xyz-inner layout: `x_elem[3 * a +
+/// k] = x_full[3 * verts[a] + k]`.
+#[allow(dead_code)]
+fn extract_element_dof_values(x_full: &[f64], verts: &[VertexId; 4]) -> [f64; 12] {
+    let mut x_elem = [0.0; 12];
+    for a in 0..4 {
+        let v = verts[a] as usize;
+        x_elem[3 * a] = x_full[3 * v];
+        x_elem[3 * a + 1] = x_full[3 * v + 1];
+        x_elem[3 * a + 2] = x_full[3 * v + 2];
+    }
+    x_elem
 }
 
 /// Per-node internal force `f_int_a = V · P · grad_X N_a`, flattened to
