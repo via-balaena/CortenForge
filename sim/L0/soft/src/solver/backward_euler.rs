@@ -151,8 +151,10 @@ where
     /// Inverse map of `free_dof_indices`: entry `i` is `Some(k)` when
     /// full-DOF `i` is the k-th free DOF, else `None` (pinned). Used
     /// for O(1) "is this DOF free?" lookups during sparse-pattern
-    /// build and tangent assembly.
-    dof_to_free: Vec<Option<usize>>,
+    /// build and tangent assembly. Field name pairs with
+    /// `free_dof_indices` (the forward direction: free idx → full
+    /// DOF) — `full_to_free_idx` is the inverse direction.
+    full_to_free_idx: Vec<Option<usize>>,
     /// Symbolic factor of the free-DOF Hessian sparsity pattern, built
     /// once from element-vertex incidence per Decision J. Per-iter
     /// numeric refactor consumes a `clone()` of this (cheap — faer
@@ -215,9 +217,49 @@ where
             "Phase 2 solver is pinned to Tet4 (N=4) per scope §3 Decision A; got N={N}"
         );
 
+        let n_tets = mesh.n_tets();
+        let n_vertices = mesh.n_vertices();
+        let n_dof = 3 * n_vertices;
+
+        // 0. BoundaryConditions validation. Catch misconfigured scenes
+        // at construction time rather than later as opaque
+        // out-of-bounds panics inside the cache build or first
+        // step()-call. Three checks: (a) pinned vertex IDs are in
+        // range, (b) loaded vertex IDs are in range, (c) no vertex
+        // appears in both pinned and loaded sets (load on a
+        // Dirichlet-clamped DOF is unphysical and would silently
+        // overwrite f_ext on a vertex that never moves).
+        let pinned_set: BTreeSet<VertexId> = boundary_conditions
+            .pinned_vertices
+            .iter()
+            .copied()
+            .collect();
+        let n_vertices_u32 =
+            VertexId::try_from(n_vertices).expect("n_vertices must fit in VertexId (u32)");
+        for &v in &boundary_conditions.pinned_vertices {
+            assert!(
+                v < n_vertices_u32,
+                "BoundaryConditions.pinned_vertices contains vertex ID {v}, \
+                 out of range for {n_vertices}-vertex mesh",
+            );
+        }
+        for &(v, _) in &boundary_conditions.loaded_vertices {
+            assert!(
+                v < n_vertices_u32,
+                "BoundaryConditions.loaded_vertices contains vertex ID {v}, \
+                 out of range for {n_vertices}-vertex mesh",
+            );
+            assert!(
+                !pinned_set.contains(&v),
+                "BoundaryConditions.loaded_vertices contains vertex ID {v}, \
+                 which is also in pinned_vertices — load on a Dirichlet-clamped \
+                 vertex is unphysical (f_ext is overwritten but the vertex \
+                 never moves)",
+            );
+        }
+
         // 1. Per-element reference geometry. Computed once; all per-iter
         // assembly reads from this cache rather than recomputing.
-        let n_tets = mesh.n_tets();
         let x_rest = mesh.positions();
         let mut element_geometries = Vec::with_capacity(n_tets);
         // Parametric gradients are constant for Tet4; pass centroid ξ.
@@ -249,8 +291,6 @@ where
         // 2. Lumped per-DOF mass. For each element `e`, contribute
         // `ρ V_e / 4` to every DOF of every vertex of `e`. Vertices
         // shared by multiple elements accumulate.
-        let n_vertices = mesh.n_vertices();
-        let n_dof = 3 * n_vertices;
         let mut mass_per_dof = vec![0.0; n_dof];
         for tet_id in 0..n_tets as TetId {
             let verts = mesh.tet_vertices(tet_id);
@@ -265,14 +305,9 @@ where
         }
 
         // 3. Free-DOF index mapping. Walks vertices in natural order
-        // (deterministic per scope §15 D-3 + Decision M); pinned set
-        // stored as BTreeSet for `O(log n)` lookup with deterministic
-        // iteration (no HashMap on numeric paths per Decision M).
-        let pinned_set: BTreeSet<VertexId> = boundary_conditions
-            .pinned_vertices
-            .iter()
-            .copied()
-            .collect();
+        // (deterministic per scope §15 D-3 + Decision M); reuses the
+        // `pinned_set` BTreeSet built at validation time (no HashMap
+        // on numeric paths per Decision M).
         let mut free_dof_indices = Vec::with_capacity(n_dof);
         for v in 0..n_vertices as VertexId {
             if !pinned_set.contains(&v) {
@@ -283,9 +318,9 @@ where
             }
         }
         let n_free = free_dof_indices.len();
-        let mut dof_to_free: Vec<Option<usize>> = vec![None; n_dof];
+        let mut full_to_free_idx: Vec<Option<usize>> = vec![None; n_dof];
         for (free_idx, &full_idx) in free_dof_indices.iter().enumerate() {
-            dof_to_free[full_idx] = Some(free_idx);
+            full_to_free_idx[full_idx] = Some(free_idx);
         }
 
         // 4. Symbolic factor of the free-DOF Hessian sparsity pattern,
@@ -306,7 +341,7 @@ where
                             let row_full = 3 * va + i;
                             let col_full = 3 * vb + j;
                             if let (Some(row_free), Some(col_free)) =
-                                (dof_to_free[row_full], dof_to_free[col_full])
+                                (full_to_free_idx[row_full], full_to_free_idx[col_full])
                                 && row_free >= col_free
                             {
                                 triplet_set.insert((col_free, row_free));
@@ -336,7 +371,7 @@ where
             element_geometries,
             mass_per_dof,
             free_dof_indices,
-            dof_to_free,
+            full_to_free_idx,
             symbolic,
             n_dof,
             n_free,
@@ -696,7 +731,7 @@ where
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
             let verts = self.mesh.tet_vertices(tet_id as TetId);
             let x_elem = extract_element_dof_values(x_curr, &verts);
-            let f = deformation_gradient_general(&x_elem, &geom.grad_x_n);
+            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
             let piola = self.material.first_piola(&f);
             // Per-vertex internal-force contribution `V · P · grad_X N_a`.
             for a in 0..4 {
@@ -718,9 +753,10 @@ where
     /// For each element + each (a, b) vertex pair, contributes the
     /// 3×3 block from `B_a^T 𝕔 B_b` (using BF-5's flattening
     /// convention) into the global free-DOF sparse matrix at
-    /// `(free_idx_a, free_idx_b)` whenever both DOFs are free.
-    /// Diagonal mass added at the end. `BTreeMap` accumulates with
-    /// deterministic (col, row) iteration order per Decision M.
+    /// `(free_idx_a, free_idx_b)` whenever both DOFs are free (looked
+    /// up via `full_to_free_idx`). Diagonal mass added at the end.
+    /// `BTreeMap` accumulates with deterministic (col, row) iteration
+    /// order per Decision M.
     //
     // Lint allows: `as TetId` is the Mesh-trait-API tax (n_tets
     // returns usize, tet_vertices takes u32) — same as commit 2's
@@ -748,7 +784,7 @@ where
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
             let verts = self.mesh.tet_vertices(tet_id as TetId);
             let x_elem = extract_element_dof_values(x_curr, &verts);
-            let f = deformation_gradient_general(&x_elem, &geom.grad_x_n);
+            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
             let tangent_9x9 = self.material.tangent(&f);
 
             for a in 0..4 {
@@ -759,9 +795,10 @@ where
                         for j in 0..3 {
                             let row_full = 3 * va + i;
                             let col_full = 3 * vb + j;
-                            if let (Some(row_free), Some(col_free)) =
-                                (self.dof_to_free[row_full], self.dof_to_free[col_full])
-                                && row_free >= col_free
+                            if let (Some(row_free), Some(col_free)) = (
+                                self.full_to_free_idx[row_full],
+                                self.full_to_free_idx[col_full],
+                            ) && row_free >= col_free
                             {
                                 // (B_a^T 𝕔 B_b)[i,j] = Σ_{l,l'} (grad_X N_a)_l ·
                                 //   𝕔[(i+3l), (j+3l')] · (grad_X N_b)_{l'}
@@ -870,31 +907,15 @@ where
 
 // ── free functions (assembly kernels) ──────────────────────────────────
 
-/// Deformation gradient `F_ij = Σ_a x_{a,i} · ∂N_a/∂X_j` (direct form).
-//
-// At rest (`x_a = X_a`), this returns `I` — the identity check on the
-// reference configuration doesn't need a separate `u = x - X` step.
-fn deformation_gradient(x_flat: &[f64; N_DOF], grad_x_n: &SMatrix<f64, 4, 3>) -> Matrix3<f64> {
-    let mut f = Matrix3::zeros();
-    for a in 0..4 {
-        for i in 0..3 {
-            let x_ai = x_flat[3 * a + i];
-            for j in 0..3 {
-                f[(i, j)] += x_ai * grad_x_n[(a, j)];
-            }
-        }
-    }
-    f
-}
-
-/// Per-element 4-node deformation gradient, taking element-local
-/// positions as a `[f64; 12]` (vertex-major, xyz-inner). Phase 2
-/// commit 4a counterpart to [`deformation_gradient`] that doesn't
-/// need to use the soon-to-be-removed `N_DOF` constant in its
-/// signature; identical math otherwise. Commit 4b will collapse to
-/// one of these.
-#[allow(dead_code)]
-fn deformation_gradient_general(x_elem: &[f64; 12], grad_x_n: &SMatrix<f64, 4, 3>) -> Matrix3<f64> {
+/// Per-element deformation gradient `F_ij = Σ_a x_{a,i} · ∂N_a/∂X_j`
+/// (direct form).
+///
+/// Takes 12 element-local position values (vertex-major, xyz-inner).
+/// At rest (`x_a = X_a`), returns the identity. Used by both the old
+/// `solve_impl` path (which sees a `[f64; N_DOF]` slice — type-
+/// compatible since `N_DOF == 12`) and the new cache-using methods
+/// (which pass element-extracted `[f64; 12]` directly).
+fn deformation_gradient(x_elem: &[f64; 12], grad_x_n: &SMatrix<f64, 4, 3>) -> Matrix3<f64> {
     let mut f = Matrix3::zeros();
     for a in 0..4 {
         for i in 0..3 {
@@ -1084,4 +1105,63 @@ fn factor_and_solve_free_block(
     let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs_buf, N_FREE, 1);
     llt.solve_in_place_with_conj(Conj::No, rhs_mat);
     rhs_buf
+}
+
+#[cfg(test)]
+mod tests {
+    //! Phase 2 commit 4a.1 — `BoundaryConditions` validation tests.
+    //!
+    //! `CpuNewtonSolver::new` validates BC against mesh dimensions
+    //! and the no-overlap-between-pinned-and-loaded contract before
+    //! the cache build runs. Three `#[should_panic]` cases here cover
+    //! the three validation branches; happy-path BC is covered by the
+    //! existing seven integration tests in `tests/`.
+
+    use crate::contact::NullContact;
+    use crate::material::NeoHookean;
+    use crate::mesh::SingleTetMesh;
+    use crate::readout::{BoundaryConditions, LoadAxis};
+    use crate::solver::{CpuNewtonSolver, SolverConfig};
+    use crate::{SkeletonSolver, element::Tet4};
+
+    fn build(bc: BoundaryConditions) -> SkeletonSolver {
+        CpuNewtonSolver::new(
+            NeoHookean::from_lame(1e5, 4e5),
+            Tet4,
+            SingleTetMesh::new(),
+            NullContact,
+            SolverConfig::skeleton(),
+            bc,
+        )
+    }
+
+    #[test]
+    #[should_panic(expected = "pinned_vertices contains vertex ID 99")]
+    fn pinned_vertex_out_of_range_panics() {
+        let bc = BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 99],
+            loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+        };
+        let _ = build(bc);
+    }
+
+    #[test]
+    #[should_panic(expected = "loaded_vertices contains vertex ID 42")]
+    fn loaded_vertex_out_of_range_panics() {
+        let bc = BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            loaded_vertices: vec![(42, LoadAxis::AxisZ)],
+        };
+        let _ = build(bc);
+    }
+
+    #[test]
+    #[should_panic(expected = "which is also in pinned_vertices")]
+    fn loaded_vertex_overlapping_pinned_panics() {
+        let bc = BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 3],
+            loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+        };
+        let _ = build(bc);
+    }
 }
