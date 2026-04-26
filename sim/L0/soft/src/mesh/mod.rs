@@ -7,8 +7,10 @@
 
 use crate::Vec3;
 
+pub mod hand_built;
 pub mod single_tet;
 
+pub use hand_built::HandBuiltTetMesh;
 pub use single_tet::SingleTetMesh;
 
 /// Tetrahedron index into a [`Mesh`]. `u32` caps at 4 B tets; skeleton

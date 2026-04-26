@@ -37,7 +37,9 @@ pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, Nu
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
 pub use material::{InversionHandling, Material, NeoHookean, ValidityDomain};
-pub use mesh::{Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId};
+pub use mesh::{
+    HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
+};
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{
     BoundaryConditions, EditResult, ForwardMap, GradientEstimate, LoadAxis, ResidualCorrections,
