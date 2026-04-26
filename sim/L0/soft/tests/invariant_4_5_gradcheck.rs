@@ -39,8 +39,8 @@
 
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
-    CpuNewtonSolver, IndexOp, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver,
-    SolverConfig, Tet4,
+    BoundaryConditions, CpuNewtonSolver, IndexOp, LoadAxis, NeoHookean, NullContact,
+    SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
 };
 
 // Step-6 promoted `IndexOp` from a test-only fixture into production
@@ -55,11 +55,35 @@ const PARENT_LEN: usize = 12;
 
 // ── Shared scene builder ─────────────────────────────────────────────────
 
-/// Build the Stage-1 skeleton scene. Pinned by the scope's §2 defaults —
-/// no knobs so every test runs against the same geometry and tuning.
-fn build_solver() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConfig) {
+/// Build the Stage-1 skeleton scene — `SoftScene::one_tet_cube`'s
+/// default BC has `loaded_vertices = [(3, AxisZ)]`, matching Stage-1's
+/// length-1 broadcast-magnitude θ.
+fn build_solver_stage_1() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConfig) {
     let cfg = SolverConfig::skeleton();
     let (mesh, bc, initial) = SoftScene::one_tet_cube();
+    let solver: SkeletonSolver = CpuNewtonSolver::new(
+        NeoHookean::from_lame(1e5, 4e5),
+        Tet4,
+        mesh,
+        NullContact,
+        cfg,
+        bc,
+    );
+    (solver, initial, cfg)
+}
+
+/// Build the Stage-2 skeleton scene — same mesh and material as
+/// Stage 1, but BC overridden to `loaded_vertices = [(3, FullVector)]`
+/// so the solver expects θ as a length-3 per-vertex traction triple.
+/// Per Phase 2 scope memo Decision L: Stage-1 BC is the
+/// `one_tet_cube` default; Stage-2 tests build their own BC inline.
+fn build_solver_stage_2() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConfig) {
+    let cfg = SolverConfig::skeleton();
+    let (mesh, _default_stage_1_bc, initial) = SoftScene::one_tet_cube();
+    let bc = BoundaryConditions {
+        pinned_vertices: vec![0, 1, 2],
+        loaded_vertices: vec![(3, LoadAxis::FullVector)],
+    };
     let solver: SkeletonSolver = CpuNewtonSolver::new(
         NeoHookean::from_lame(1e5, 4e5),
         Tet4,
@@ -75,7 +99,7 @@ fn build_solver() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConfig) {
 /// of `L = x_final[11]` w.r.t. Stage-1 θ along with all primal artifacts
 /// needed for the determinism check.
 fn run_forward_backward(theta_val: f64) -> (f64, Vec<f64>, usize, f64) {
-    let (mut solver, initial, cfg) = build_solver();
+    let (mut solver, initial, cfg) = build_solver_stage_1();
 
     let mut tape = Tape::new();
     let theta_var: Var = tape.param_tensor(Tensor::from_slice(&[theta_val], &[1]));
@@ -120,7 +144,7 @@ fn run_forward_backward(theta_val: f64) -> (f64, Vec<f64>, usize, f64) {
 /// where `replay_step` gives us a clean `NewtonStep` without any backward
 /// bookkeeping.
 fn forward_only(theta_val: f64) -> f64 {
-    let (solver, initial, cfg) = build_solver();
+    let (solver, initial, cfg) = build_solver_stage_1();
     let theta_tensor = Tensor::from_slice(&[theta_val], &[1]);
     let step = solver.replay_step(&initial.x_prev, &initial.v_prev, &theta_tensor, cfg.dt);
     step.x_final[11]
@@ -210,7 +234,7 @@ fn determinism_in_theta() {
 /// Forward + backward with Stage-2 θ. Returns the 3-component analytic
 /// gradient `∂L/∂θ` for `L = x_final[11]`.
 fn run_stage_2_forward_backward(theta_val: &[f64; 3]) -> [f64; 3] {
-    let (mut solver, initial, cfg) = build_solver();
+    let (mut solver, initial, cfg) = build_solver_stage_2();
 
     let mut tape = Tape::new();
     let theta_var: Var = tape.param_tensor(Tensor::from_slice(theta_val, &[3]));
@@ -246,7 +270,7 @@ fn run_stage_2_forward_backward(theta_val: &[f64; 3]) -> [f64; 3] {
 /// Primal-only Stage-2 forward. Uses `replay_step` to avoid allocating
 /// tape nodes for FD loops.
 fn stage_2_forward_only(theta_val: &[f64; 3]) -> f64 {
-    let (solver, initial, cfg) = build_solver();
+    let (solver, initial, cfg) = build_solver_stage_2();
     let theta_tensor = Tensor::from_slice(theta_val, &[3]);
     let step = solver.replay_step(&initial.x_prev, &initial.v_prev, &theta_tensor, cfg.dt);
     step.x_final[11]
