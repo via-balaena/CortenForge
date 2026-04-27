@@ -37,11 +37,13 @@ pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, Nu
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
 pub use material::{InversionHandling, Material, NeoHookean, ValidityDomain};
-pub use mesh::{Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId};
+pub use mesh::{
+    HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
+};
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{
-    EditResult, ForwardMap, GradientEstimate, ResidualCorrections, RewardBreakdown, RewardWeights,
-    SceneInitial, SkeletonForwardMap, SoftScene,
+    BoundaryConditions, EditResult, ForwardMap, GradientEstimate, LoadAxis, ResidualCorrections,
+    RewardBreakdown, RewardWeights, SceneInitial, SkeletonForwardMap, SoftScene,
 };
 pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 
@@ -50,14 +52,21 @@ pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 /// nalgebra's dense small-matrix operations.
 pub type Vec3 = nalgebra::Vector3<f64>;
 
-/// Concrete skeleton solver type: backward-Euler Newton with
-/// `NeoHookean` material, `Tet4` element, `SingleTetMesh` mesh, and
-/// `NullContact` contact model. One hot-path monomorphization.
-pub type SkeletonSolver = solver::CpuNewtonSolver<
-    material::NeoHookean,
-    element::Tet4,
-    mesh::SingleTetMesh,
-    contact::NullContact,
-    4,
-    1,
->;
+/// CPU backward-Euler Newton solver pinned to `NeoHookean` + `Tet4` +
+/// `NullContact`, generic over the mesh impl.
+///
+/// Phase 2's canonical solver type for any hand-built tet scene;
+/// specialize via the `Msh` parameter (e.g.,
+/// `CpuTet4NHSolver<HandBuiltTetMesh>` for the multi-tet gate scenes,
+/// `CpuTet4NHSolver<SingleTetMesh>` for the 1-tet skeleton).
+pub type CpuTet4NHSolver<Msh> =
+    solver::CpuNewtonSolver<material::NeoHookean, element::Tet4, Msh, contact::NullContact, 4, 1>;
+
+/// Walking-skeleton solver alias — `CpuTet4NHSolver` over `SingleTetMesh`.
+///
+/// Concrete backward-Euler Newton with `NeoHookean` + `Tet4` +
+/// `SingleTetMesh` + `NullContact`. One hot-path monomorphization, kept
+/// as a stable alias for the walking-skeleton tests post-Phase-2 —
+/// same behavior as before, now expressed as a [`CpuTet4NHSolver`]
+/// flavor per Phase 2 scope memo Decision H.
+pub type SkeletonSolver = CpuTet4NHSolver<mesh::SingleTetMesh>;

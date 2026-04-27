@@ -20,7 +20,7 @@ pub use edit_result::EditResult;
 pub use gradient_estimate::GradientEstimate;
 pub use reward_breakdown::{ResidualCorrections, RewardBreakdown};
 pub use reward_weights::RewardWeights;
-pub use scene::{SceneInitial, SoftScene};
+pub use scene::{BoundaryConditions, LoadAxis, SceneInitial, SoftScene};
 pub use skeleton_forward_map::SkeletonForwardMap;
 
 /// γ-locked forward-map trait.
