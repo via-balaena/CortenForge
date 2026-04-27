@@ -12,6 +12,7 @@
 //! private here so the API surface is closed until the placeholder
 //! mesher is wired through.
 
+mod lattice;
 mod sdf;
 
 use crate::Vec3;
