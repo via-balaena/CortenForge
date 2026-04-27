@@ -492,6 +492,9 @@ pub(super) fn dispatch_case(
 /// Stencil dispatch for the 6 mixed `(n_in, n_out, n_bd)` taxonomies.
 /// Pre-condition: `n_in ≥ 1` and `n_out ≥ 1`; trivial all-inside /
 /// all-outside / quadruple-zero are handled in [`dispatch_case`].
+// Stencil dispatch arg bundle (slot indices + tet vertex IDs + lattice +
+// position/SDF arrays + output buffers + cut cache); refactoring to a
+// context struct would obscure the per-case Labelle-Shewchuk Figure 3 mapping.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_mixed_case(
     tet_vids: [VertexId; 4],
@@ -623,6 +626,9 @@ fn collect_slots_by_sign(signs: [u8; 4]) -> ([usize; 3], [usize; 3], [usize; 3])
 /// `(1 inside, 1 outside, 2 boundary)`: 1 cut on the in-out edge.
 /// The inside polyhedron is `[in, bd_a, bd_b, cut(in, out)]` — a
 /// single sub-tet. Long-edge orientation is irrelevant.
+// Stencil dispatch arg bundle (slot indices + tet vertex IDs + lattice +
+// position/SDF arrays + output buffers + cut cache); refactoring to a
+// context struct would obscure the per-case Labelle-Shewchuk Figure 3 mapping.
 #[allow(clippy::too_many_arguments)]
 fn emit_one_one_two_bd(
     in_slot: usize,
@@ -661,6 +667,9 @@ fn emit_one_one_two_bd(
 /// `(1 inside, 2 outside, 1 boundary)`: 2 cuts on the in-out edges.
 /// The inside polyhedron is `[in, bd, cut(in, out_a), cut(in, out_b)]`
 /// — a single sub-tet.
+// Stencil dispatch arg bundle (slot indices + tet vertex IDs + lattice +
+// position/SDF arrays + output buffers + cut cache); refactoring to a
+// context struct would obscure the per-case Labelle-Shewchuk Figure 3 mapping.
 #[allow(clippy::too_many_arguments)]
 fn emit_one_two_one_bd(
     in_slot: usize,
@@ -703,6 +712,9 @@ fn emit_one_two_one_bd(
 /// `(1 inside, 3 outside)`: 3 cuts on the in-out edges. The inside
 /// polyhedron is the small pyramid `[in, cut₁, cut₂, cut₃]` — a
 /// single sub-tet.
+// Stencil dispatch arg bundle (slot indices + tet vertex IDs + lattice +
+// position/SDF arrays + output buffers + cut cache); refactoring to a
+// context struct would obscure the per-case Labelle-Shewchuk Figure 3 mapping.
 #[allow(clippy::too_many_arguments)]
 fn emit_one_three(
     in_slot: usize,
@@ -745,6 +757,9 @@ fn emit_one_three(
 /// [`super::lattice::BCC_TETS`], the long edges are slots `(0, 1)`
 /// and `(2, 3)`; whether `(in_a, in_b)` is long depends on which
 /// pair of slots they occupy.
+// Stencil dispatch arg bundle (slot indices + tet vertex IDs + lattice +
+// position/SDF arrays + output buffers + cut cache); refactoring to a
+// context struct would obscure the per-case Labelle-Shewchuk Figure 3 mapping.
 #[allow(clippy::too_many_arguments)]
 fn emit_two_one_one_bd(
     in_slots: [usize; 2],
@@ -985,28 +1000,28 @@ fn emit_two_two(
             (0, 1) => c01,
             (1, 0) => c10,
             (1, 1) => c11,
-            _ => unreachable!(),
+            _ => unreachable!(), // (i_a, o_a) ∈ {0, 1}² — 4 arms above are exhaustive
         };
         let cut_long_b = match (i_b, o_b) {
             (0, 0) => c00,
             (0, 1) => c01,
             (1, 0) => c10,
             (1, 1) => c11,
-            _ => unreachable!(),
+            _ => unreachable!(), // (i_b, o_b) ∈ {0, 1}² — 4 arms above are exhaustive
         };
         let cut_short_a = match (i_a, o_a) {
             (0, 0) => c01,
             (0, 1) => c00,
             (1, 0) => c11,
             (1, 1) => c10,
-            _ => unreachable!(),
+            _ => unreachable!(), // (i_a, o_a) ∈ {0, 1}² — 4 arms above are exhaustive
         };
         let cut_short_b = match (i_b, o_b) {
             (0, 0) => c01,
             (0, 1) => c00,
             (1, 0) => c11,
             (1, 1) => c10,
-            _ => unreachable!(),
+            _ => unreachable!(), // (i_b, o_b) ∈ {0, 1}² — 4 arms above are exhaustive
         };
         // The prism has triangular faces (in_slots[i_a], cut_long_a,
         // cut_short_a) and (in_slots[i_b], cut_long_b, cut_short_b);
