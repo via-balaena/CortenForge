@@ -14,6 +14,7 @@
 
 mod lattice;
 mod sdf;
+mod stuffing;
 
 use crate::Vec3;
 
