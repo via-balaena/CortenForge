@@ -58,9 +58,11 @@ impl SoftScene {
 /// (vertices that receive external traction, paired with the load axis
 /// describing which θ component drives which DOF).
 ///
-/// The solver consumes this at construction time (Phase 2 commit 3
-/// wires it through `CpuNewtonSolver::new`); commit 1 ships the type +
-/// scene emission only.
+/// `CpuNewtonSolver::new` consumes this at construction time —
+/// validates pinned/loaded vertex IDs and the no-overlap contract,
+/// then derives the cache (free-DOF index map, lumped per-DOF mass,
+/// sparse pattern) from `pinned_vertices`; the assembly path reads
+/// `loaded_vertices` per Newton iter via `assemble_external_force`.
 #[derive(Clone, Debug)]
 pub struct BoundaryConditions {
     /// Vertex IDs whose displacement is pinned to their rest position

@@ -105,9 +105,12 @@ fn run_two_isolated_tets() -> (Vec<f64>, usize, f64) {
     let cfg = SolverConfig::skeleton();
     let mesh = HandBuiltTetMesh::two_isolated_tets();
 
-    // Build SceneInitial inline — no `SoftScene` constructor for
-    // `HandBuiltTetMesh` yet (added in commit 9 if/when the
-    // observable generalization needs one).
+    // Build SceneInitial inline — `SoftScene` only ships the
+    // `one_tet_cube()` constructor; multi-tet scenes drive their
+    // own initial-state construction here and in
+    // `multi_element_grad_scaling.rs` / `shared_vertex_gradcheck.rs`
+    // (a `SoftScene::n_isolated_tets()` etc. would dedup ~10 lines
+    // across the 3 multi-tet test files; deferred — minor cleanup).
     let positions = mesh.positions();
     let n_dof = 3 * positions.len();
     let mut x_prev_flat = vec![0.0; n_dof];
