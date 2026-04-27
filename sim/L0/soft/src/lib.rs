@@ -40,12 +40,15 @@ pub use element::{Element, Tet4};
 pub use material::{InversionHandling, Material, NeoHookean, ValidityDomain};
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
+    referenced_vertices,
 };
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{
     BoundaryConditions, EditResult, ForwardMap, GradientEstimate, LoadAxis, ResidualCorrections,
     RewardBreakdown, RewardWeights, SceneInitial, SkeletonForwardMap, SoftScene,
+    pick_vertices_by_predicate,
 };
+pub use sdf_bridge::{Aabb3, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf};
 pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 
 /// Three-component column vector in world space, `f64`. Matches

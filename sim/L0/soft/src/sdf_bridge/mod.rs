@@ -10,11 +10,12 @@
 //! `sim/docs/todo/phase_3_sdf_tet_bridge_scope.md` §0 + BF-10.
 //!
 //! Crate-root re-exports of `Sdf`, `SphereSdf`, `Aabb3`, `MeshingHints`,
-//! `SdfMeshedTetMesh`, and `MeshingError` land at the public surface
-//! block of `lib.rs` in a later commit; this module re-exports them
-//! here so external tests can reach the SDF→tet API as
-//! `sim_soft::sdf_bridge::*` once the placeholder mesher is wired
-//! through.
+//! `SdfMeshedTetMesh`, and `MeshingError` are present at the public
+//! surface block of `lib.rs`; this module re-exports them here as well
+//! so external code can reach the SDF→tet API via either
+//! `sim_soft::*` (idiomatic crate-root path) or
+//! `sim_soft::sdf_bridge::*` (module path, kept for backward
+//! compatibility with the Phase 3 in-progress test files).
 
 mod lattice;
 mod sdf;

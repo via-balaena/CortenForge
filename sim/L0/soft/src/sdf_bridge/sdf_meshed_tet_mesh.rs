@@ -68,7 +68,7 @@ pub struct SdfMeshedTetMesh {
 /// Per scope memo §3 Decision H there is **no** `NegativeVolumeTet`
 /// variant: under correct BCC + warp + stuffing operation, sub-tets
 /// are emitted right-handed by construction, and the
-/// [`stuffing::EPSILON_VOLUME`] D-10 defensive backstop silently
+/// `stuffing::EPSILON_VOLUME` D-10 defensive backstop silently
 /// drops any sub-tet that emerges below the volume floor. Any
 /// surviving non-positive-volume tet is a structural algorithm bug
 /// surfaced by III-2's strict `signed_volume > 0` assertion, not by
@@ -108,7 +108,7 @@ impl SdfMeshedTetMesh {
     ///
     /// # Panics
     ///
-    /// Forwards [`BccLattice::new`]'s panics for invalid `hints` (non-
+    /// Forwards `BccLattice::new`'s panics for invalid `hints` (non-
     /// positive `cell_size`, ill-formed `bbox`, or a `bbox`
     /// degenerate enough to yield zero cubes along some axis). These
     /// are caller-supplied invariants, not runtime errors; the
