@@ -45,46 +45,63 @@ Quasi-Newton variants (L-BFGS, Broyden) are rejected; see the [spine page Claim 
 
 ## The per-step forward-backward pattern
 
-Per Newton step, the Hessian is assembled once, factored once, re-applied across the line-search retries within the step, and stored on the autograd tape for the backward pass to consume. The factor is a first-class `faer::sparse::linalg::solvers::Llt` handle — owned, reusable, and explicitly persisted:
+Per Newton step, the Hessian is assembled once, factored once, re-applied across the line-search retries within the step, and persisted to the autograd tape for the backward pass to consume. The factor is a first-class `faer::sparse::linalg::solvers::Llt<usize, f64>` handle — owned, reusable, and pushed onto the tape via the [chassis `Tape::push_custom`](../../110-crate/01-traits/00-core.md) API (which binds the factor to the tape node at forward-pass time, not via a separate post-hoc registration):
 
 ```rust
-use faer::sparse::{SparseColMat, linalg::solvers::Llt};
-use faer::linalg::solvers::Solve;
-use sim_ml_chassis::{Tape, Tensor};
+use faer::linalg::solvers::SolveCore;
+use faer::sparse::{SparseColMat, linalg::solvers::{Llt, SymbolicLlt}};
+use faer::{Conj, MatMut, Side};
+use sim_ml_chassis::{Tape, Tensor, Var};
 
 pub struct NewtonStep {
-    pub x_n: Tensor<f64>,               // converged position x^*
-    pub factor: Llt<f64>,               // captured Hessian factor at x^*
-    pub dr_dtheta: SparseColMat<f64>,   // residual Jacobian w.r.t. design params
+    pub x_n: Tensor<f64>,    // converged position x^*
+    pub x_n_var: Var,        // tape Var of x_n — parent of downstream cotangents
 }
 
 pub fn step(
     tape: &mut Tape,
     x_prev: &Tensor<f64>,
     v_prev: &Tensor<f64>,
-    theta: &Tensor<f64>,
-    dt: f64,
+    theta_var: Var,          // tape handle, not bare Tensor — the IFT VJP
+    dt: f64,                 // pushes itself with theta_var as parent (post-PR-#213
+                             // chassis API: Tape::push_custom binds parents at
+                             // forward-pass time; see Part 11 Ch 01)
 ) -> NewtonStep {
+    let theta = tape.value_tensor(theta_var).clone();   // primal value off the tape
     let mut x = predictor(x_prev, v_prev, dt);
     let factor = loop {
-        let g = grad_U_n(&x, x_prev, v_prev, theta, dt);
-        let h = hessian_U_n(&x, theta);              // SparseColMat<f64>, PSD-projected
-        let factor: Llt<f64> = Llt::try_new_with_symbolic(&h)?;
+        let g = grad_U_n(&x, x_prev, v_prev, &theta, dt);
+        let h: SparseColMat<usize, f64> = hessian_U_n(&x, &theta);   // PSD-projected
+        // Symbolic factorization is faer 0.24's two-step pattern:
+        // SymbolicLlt::try_new(symbolic_pattern, side) once per assembly-
+        // pattern lifetime; Llt::try_new_with_symbolic per numeric refactor.
+        // Production code caches the SymbolicLlt on the solver and reuses
+        // across Newton iters (the pattern doesn't change with x).
+        let symbolic = SymbolicLlt::<usize>::try_new(h.symbolic(), Side::Lower)?;
+        let factor: Llt<usize, f64> =
+            Llt::try_new_with_symbolic(symbolic, h.as_ref(), Side::Lower)?;
         let mut dx = -g.clone();
-        factor.solve_in_place(&mut dx);
-        let alpha = line_search(&x, &dx, x_prev, v_prev, theta, dt);
+        let dx_mat: MatMut<'_, f64> = dx.as_mat_mut();
+        factor.solve_in_place_with_conj(Conj::No, dx_mat);
+        let alpha = line_search(&x, &dx, x_prev, v_prev, &theta, dt);
         x += alpha * dx;
         if g.norm() < CONVERGE_TOL { break factor; }
     };
 
-    let dr_dtheta = residual_jacobian_theta(&x, theta);   // sparse
-    let step = NewtonStep { x_n: x, factor, dr_dtheta };
-    tape.record_ift_step(&step);   // Part 6 Ch 02's adjoint consumes (factor, dr_dtheta)
-    step
+    // Push the IFT VJP onto the tape with theta_var as parent. The VJP
+    // owns the factor; tape.backward feeds the cotangent of x_n into
+    // the VJP, which solves the adjoint A · λ = g_free in place via the
+    // owned factor and contracts against (∂r/∂θ)_free in closed form.
+    // See `NewtonStepVjp` in Part 11 Ch 01 for the production type.
+    let x_n = Tensor::from_slice(&x, &[x.len()]);
+    let vjp = NewtonStepVjp::new(factor /* + scene metadata: free-DOF
+                                          indices, loaded-vertex map, etc. */);
+    let x_n_var = tape.push_custom(&[theta_var], x_n.clone(), Box::new(vjp));
+    NewtonStep { x_n, x_n_var }
 }
 ```
 
-This is the forward-side code for the pattern [Part 6 Ch 02](../../60-differentiability/02-implicit-function.md) shows on the backward side. Forward stores `factor` and `dr_dtheta` on the tape; backward calls `factor.solve_in_place(&mut (-dr_dtheta.transpose() * upstream))` to get the gradient with respect to $\theta$. No second factorization, no re-assembly. The `Solve<T>` trait from faer exposes both `solve(&self, rhs)` (owned output) and `solve_in_place(&self, rhs)` (in-place back-substitution on the RHS), both of which can be called arbitrarily many times on the same factor object against different right-hand-sides.
+This is the forward-side code for the pattern [Part 6 Ch 02](../../60-differentiability/02-implicit-function.md) shows on the backward side. Both sides read from the same `NewtonStepVjp` object: forward pushes it onto the tape via `Tape::push_custom` (the VJP owns the factor); backward (when `tape.backward` walks back to this node) invokes the VJP, which solves `A · λ = g_free` in place using the owned factor and contracts against `(∂r/∂θ)_free` for the gradient with respect to $\theta$. No second factorization, no re-assembly, no re-registration call — the `push_custom` API binds the factor to the tape node at forward time. The `SolveCore` trait from faer 0.24 exposes `solve_in_place_with_conj(Conj::No, rhs)` for in-place back-substitution; the same factor object can be re-applied to multiple right-hand-sides through this method (within Newton iter for the primal step, and once per upstream cotangent at backward time).
 
 That reusability is the reason [Part 11 Ch 03 Phase B commits to faer specifically](../../110-crate/03-build-order.md#the-committed-order): a solver whose factorizations were private-by-API, discarded after the primal solve, or hidden behind a trait that only exposes `solve(rhs) -> x` would fail this pattern. Time integration is where the factor is *produced*; Part 6 Ch 02 is where it is *re-used*.
 
@@ -95,6 +112,6 @@ Newton's local convergence on a smooth scalar objective is quadratic within the 
 ## What this commits downstream
 
 - **[Ch 02 adaptive-dt](../02-adaptive-dt.md)** triggers on Newton failure, not on an independent a-priori criterion. Halving retry after convergence failure is the primary adaptive path.
-- **[Part 6 Ch 02 IFT](../../60-differentiability/02-implicit-function.md)** re-uses the `Llt<f64>` factor stored on the tape. The adjoint cost is one back-substitution per tape-step per upstream gradient, which is the property [Part 1 Ch 03 thesis](../../10-physical/03-thesis.md) calls "differentiability came for free."
+- **[Part 6 Ch 02 IFT](../../60-differentiability/02-implicit-function.md)** re-uses the `Llt<usize, f64>` factor owned by the `NewtonStepVjp` pushed onto the tape. The adjoint cost is one back-substitution per tape-step per upstream gradient, which is the property [Part 1 Ch 03 thesis](../../10-physical/03-thesis.md) calls "differentiability came for free."
 - **[Part 8 Ch 02 sparse solvers](../../80-gpu/02-sparse-solvers.md)** extends the CPU factor-on-tape pattern to GPU preconditioned-CG; the tape contract is the same (store a reusable solver handle), the solver internals shift.
 - **[Part 11 Ch 04 gradcheck](../../110-crate/04-testing/03-gradcheck.md)** validates the factor-on-tape wiring by comparing IFT-derived gradients against finite-difference gradients on a small static-equilibrium problem. The test verifies the wiring, not the IFT derivation itself.
