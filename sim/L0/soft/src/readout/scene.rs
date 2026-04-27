@@ -10,6 +10,7 @@
 
 use sim_ml_chassis::Tensor;
 
+use crate::Vec3;
 use crate::mesh::{Mesh, SingleTetMesh, VertexId};
 
 /// Scene constructors. Skeleton ships one constructor for the 1-tet
@@ -97,4 +98,35 @@ pub struct SceneInitial {
     pub x_prev: Tensor<f64>,
     /// Rest-configuration vertex velocities, flattened to shape `[3 * N]`.
     pub v_prev: Tensor<f64>,
+}
+
+/// Collect every vertex whose rest-configuration position satisfies
+/// `predicate`, ascending.
+///
+/// Walks `mesh.positions()` in `VertexId` order and returns the
+/// matching indices. Caller plugs the result into
+/// [`BoundaryConditions::pinned_vertices`] (or composes it with
+/// [`mesh::referenced_vertices`](crate::mesh::referenced_vertices) to
+/// pick a load vertex from a spatial predicate over a mesher-generated
+/// mesh whose vertex IDs aren't pinned by hand).
+///
+/// Free function rather than a method on [`BoundaryConditions`] or the
+/// [`Mesh`] trait per scope memo §3 Decision K — keeps both surfaces
+/// schema-stable and the helper composable across pinned / loaded use
+/// cases.
+//
+// `as VertexId` is the Mesh-trait API tax: enumerate yields `usize`
+// while `pinned_vertices` takes `Vec<VertexId = u32>`. Phase 3 meshes
+// stay well below `u32::MAX`.
+#[allow(clippy::cast_possible_truncation)]
+#[must_use]
+pub fn pick_vertices_by_predicate(
+    mesh: &dyn Mesh,
+    predicate: impl Fn(&Vec3) -> bool,
+) -> Vec<VertexId> {
+    mesh.positions()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, p)| predicate(p).then_some(idx as VertexId))
+        .collect()
 }

@@ -213,11 +213,14 @@ where
         // 0. BoundaryConditions validation. Catch misconfigured scenes
         // at construction time rather than later as opaque
         // out-of-bounds panics inside the cache build or first
-        // step()-call. Three checks: (a) pinned vertex IDs are in
+        // step()-call. Four checks: (a) pinned vertex IDs are in
         // range, (b) loaded vertex IDs are in range, (c) no vertex
         // appears in both pinned and loaded sets (load on a
         // Dirichlet-clamped DOF is unphysical and would silently
-        // overwrite f_ext on a vertex that never moves).
+        // overwrite f_ext on a vertex that never moves), (d) loaded
+        // vertices are referenced by some tet (load on an orphan is
+        // unphysical — no element receives the traction; checked
+        // below after the tet incidence walk).
         let pinned_set: BTreeSet<VertexId> = boundary_conditions
             .pinned_vertices
             .iter()
@@ -245,6 +248,50 @@ where
                  vertex is unphysical (f_ext is overwritten but the vertex \
                  never moves)",
             );
+        }
+
+        // Tet incidence walk. Used immediately below to (a) reject
+        // loads on unreferenced vertices and (b) auto-pin
+        // unreferenced vertices into `effective_pinned`. An orphan
+        // free DOF would have zero mass (no element contributes to
+        // `mass_per_dof` for that vertex) AND zero element
+        // contribution to its Hessian row/column, leaving a singular
+        // diagonal (`(k, k) == 0`) that faer's Cholesky would either
+        // panic on (slice-out-of-bounds during pattern permute) or
+        // silently produce garbage. Phase 2's hand-built meshes
+        // never tripped this because every vertex was referenced;
+        // Phase 3's `SdfMeshedTetMesh` retains the full BCC lattice
+        // in `positions()` including unreferenced corners outside
+        // the SDF zero set (per its module doc) and surfaces this
+        // gap via III-3.
+        let mut referenced: BTreeSet<VertexId> = BTreeSet::new();
+        for tet_id in 0..n_tets as TetId {
+            for v in mesh.tet_vertices(tet_id) {
+                referenced.insert(v);
+            }
+        }
+        for &(v, _) in &boundary_conditions.loaded_vertices {
+            assert!(
+                referenced.contains(&v),
+                "BoundaryConditions.loaded_vertices contains vertex ID {v}, \
+                 which is not referenced by any tet — load on an orphan \
+                 vertex is unphysical (no element receives the traction)",
+            );
+        }
+        // Effective pinned set: user-supplied pins UNION (vertices
+        // not referenced by any tet). Orphans pinned silently —
+        // their DOFs were unsolveable anyway, and exposing this as a
+        // hard error would force every mesher-generated-mesh test
+        // site to construct an orphan-aware BC. Per-iter assembly
+        // reads `full_to_free_idx` (built from `effective_pinned`
+        // below), so the auto-pin propagates without any other code
+        // change. The `boundary_conditions` field stored on the
+        // struct keeps the user's supplied form for transparency.
+        let mut effective_pinned: BTreeSet<VertexId> = pinned_set;
+        for v in 0..n_vertices_u32 {
+            if !referenced.contains(&v) {
+                effective_pinned.insert(v);
+            }
         }
 
         // 1. Per-element reference geometry. Computed once; all per-iter
@@ -294,12 +341,13 @@ where
         }
 
         // 3. Free-DOF index mapping. Walks vertices in natural order
-        // (deterministic per scope §15 D-3 + Decision M); reuses the
-        // `pinned_set` BTreeSet built at validation time (no HashMap
-        // on numeric paths per Decision M).
+        // (deterministic per scope §15 D-3 + Decision M); uses
+        // `effective_pinned` (user pins UNION auto-pinned orphans)
+        // built at validation time. No HashMap on numeric paths per
+        // Decision M.
         let mut free_dof_indices = Vec::with_capacity(n_dof);
         for v in 0..n_vertices as VertexId {
-            if !pinned_set.contains(&v) {
+            if !effective_pinned.contains(&v) {
                 let v_idx = v as usize;
                 free_dof_indices.push(3 * v_idx);
                 free_dof_indices.push(3 * v_idx + 1);

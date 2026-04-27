@@ -5,7 +5,7 @@
 //! `v_3 = (0, 0, 0.1)`. Edge length `L = 0.1` m (soft-robotics scale).
 //! Phase A proper replaces this with a general `TetMesh`.
 
-use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId};
+use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, quality};
 use crate::Vec3;
 
 /// Single-tetrahedron mesh. Four vertices, one tet, trivial adjacency.
@@ -22,16 +22,18 @@ impl SingleTetMesh {
     /// Vertices in reference configuration; later Phase A proper
     /// replaces this with an `SDF → TetMesh` pipeline.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let vertices = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.1, 0.0, 0.0),
+            Vec3::new(0.0, 0.1, 0.0),
+            Vec3::new(0.0, 0.0, 0.1),
+        ];
+        let q = quality::compute_metrics(&vertices, &[[0, 1, 2, 3]]);
         Self {
-            vertices: [
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(0.1, 0.0, 0.0),
-                Vec3::new(0.0, 0.1, 0.0),
-                Vec3::new(0.0, 0.0, 0.1),
-            ],
+            vertices,
             adj: MeshAdjacency,
-            q: QualityMetrics,
+            q,
         }
     }
 }

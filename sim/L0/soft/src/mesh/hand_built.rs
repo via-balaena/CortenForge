@@ -16,7 +16,7 @@
 //! off-diagonal coupling — open-decision constraint per Phase 2 scope
 //! §9.
 
-use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId};
+use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, quality};
 use crate::Vec3;
 
 /// Hand-built multi-tetrahedron mesh.
@@ -51,20 +51,23 @@ impl HandBuiltTetMesh {
     pub fn two_isolated_tets() -> Self {
         let l = 0.1;
         let dx = 0.5;
+        let vertices = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(l, 0.0, 0.0),
+            Vec3::new(0.0, l, 0.0),
+            Vec3::new(0.0, 0.0, l),
+            Vec3::new(dx, 0.0, 0.0),
+            Vec3::new(dx + l, 0.0, 0.0),
+            Vec3::new(dx, l, 0.0),
+            Vec3::new(dx, 0.0, l),
+        ];
+        let tets = vec![[0, 1, 2, 3], [4, 5, 6, 7]];
+        let q = quality::compute_metrics(&vertices, &tets);
         Self {
-            vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(l, 0.0, 0.0),
-                Vec3::new(0.0, l, 0.0),
-                Vec3::new(0.0, 0.0, l),
-                Vec3::new(dx, 0.0, 0.0),
-                Vec3::new(dx + l, 0.0, 0.0),
-                Vec3::new(dx, l, 0.0),
-                Vec3::new(dx, 0.0, l),
-            ],
-            tets: vec![[0, 1, 2, 3], [4, 5, 6, 7]],
+            vertices,
+            tets,
             adj: MeshAdjacency,
-            q: QualityMetrics,
+            q,
         }
     }
 
@@ -88,17 +91,20 @@ impl HandBuiltTetMesh {
     #[must_use]
     pub fn two_tet_shared_face() -> Self {
         let l = 0.1;
+        let vertices = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(l, 0.0, 0.0),
+            Vec3::new(0.0, l, 0.0),
+            Vec3::new(0.0, 0.0, l),
+            Vec3::new(0.08, 0.08, 0.08),
+        ];
+        let tets = vec![[0, 1, 2, 3], [1, 2, 3, 4]];
+        let q = quality::compute_metrics(&vertices, &tets);
         Self {
-            vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(l, 0.0, 0.0),
-                Vec3::new(0.0, l, 0.0),
-                Vec3::new(0.0, 0.0, l),
-                Vec3::new(0.08, 0.08, 0.08),
-            ],
-            tets: vec![[0, 1, 2, 3], [1, 2, 3, 4]],
+            vertices,
+            tets,
             adj: MeshAdjacency,
-            q: QualityMetrics,
+            q,
         }
     }
 }
