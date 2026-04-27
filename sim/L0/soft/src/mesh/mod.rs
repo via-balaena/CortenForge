@@ -8,6 +8,7 @@
 use crate::Vec3;
 
 pub mod hand_built;
+pub mod quality;
 pub mod single_tet;
 
 pub use hand_built::HandBuiltTetMesh;
