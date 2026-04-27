@@ -12,8 +12,42 @@
 //! fixed hardware/libm pair. No FP-fragile operations beyond `acos`
 //! of normalised dot products and `sqrt` in radii.
 
+use super::{QualityMetrics, VertexId};
 use crate::Vec3;
 use nalgebra::Matrix3;
+
+/// Compute per-tet [`QualityMetrics`] for a mesh.
+///
+/// Walks `tets` in index order, applying the closed-form per-tet
+/// primitives below and packing the results into the four `Vec<f64>`
+/// fields of [`QualityMetrics`]. Each output field has length
+/// `tets.len()` and is indexed by `TetId`.
+///
+/// # Panics
+///
+/// Panics if any `VertexId` in `tets` is out of range for `positions`.
+#[must_use]
+pub fn compute_metrics(positions: &[Vec3], tets: &[[VertexId; 4]]) -> QualityMetrics {
+    let n = tets.len();
+    let mut metrics = QualityMetrics {
+        aspect_ratio: Vec::with_capacity(n),
+        dihedral_min: Vec::with_capacity(n),
+        dihedral_max: Vec::with_capacity(n),
+        signed_volume: Vec::with_capacity(n),
+    };
+    for &[i0, i1, i2, i3] in tets {
+        let p0 = positions[i0 as usize];
+        let p1 = positions[i1 as usize];
+        let p2 = positions[i2 as usize];
+        let p3 = positions[i3 as usize];
+        metrics.signed_volume.push(signed_volume(p0, p1, p2, p3));
+        metrics.aspect_ratio.push(aspect_ratio(p0, p1, p2, p3));
+        let (d_min, d_max) = dihedral_min_max(p0, p1, p2, p3);
+        metrics.dihedral_min.push(d_min);
+        metrics.dihedral_max.push(d_max);
+    }
+    metrics
+}
 
 fn signed_volume(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3) -> f64 {
     let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
@@ -178,5 +212,46 @@ mod tests {
         let expected_max = std::f64::consts::FRAC_PI_2;
         assert_relative_eq!(min, expected_min, epsilon = 1e-12);
         assert_relative_eq!(max, expected_max, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn compute_metrics_packs_per_tet_primitives_into_quality_metrics() {
+        // Two-tet mesh: tet 0 is the canonical decimeter at the
+        // origin, tet 1 is the same shape translated 0.5 m in x.
+        // All four QualityMetrics fields should have length 2 and
+        // hold the same per-tet values for both (translation
+        // preserves shape).
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.1, 0.0, 0.0),
+            Vec3::new(0.0, 0.1, 0.0),
+            Vec3::new(0.0, 0.0, 0.1),
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::new(0.6, 0.0, 0.0),
+            Vec3::new(0.5, 0.1, 0.0),
+            Vec3::new(0.5, 0.0, 0.1),
+        ];
+        let tets: Vec<[VertexId; 4]> = vec![[0, 1, 2, 3], [4, 5, 6, 7]];
+        let q = compute_metrics(&positions, &tets);
+        assert_eq!(q.signed_volume.len(), 2);
+        assert_eq!(q.aspect_ratio.len(), 2);
+        assert_eq!(q.dihedral_min.len(), 2);
+        assert_eq!(q.dihedral_max.len(), 2);
+        let v_expected = 0.1_f64.powi(3) / 6.0;
+        let r_expected = (3.0_f64.sqrt() - 1.0) / 3.0;
+        for tet_id in 0..2 {
+            assert_relative_eq!(q.signed_volume[tet_id], v_expected, epsilon = 1e-15);
+            assert_relative_eq!(q.aspect_ratio[tet_id], r_expected, epsilon = 1e-12);
+            assert_relative_eq!(
+                q.dihedral_min[tet_id],
+                (1.0_f64 / 3.0_f64.sqrt()).acos(),
+                epsilon = 1e-12,
+            );
+            assert_relative_eq!(
+                q.dihedral_max[tet_id],
+                std::f64::consts::FRAC_PI_2,
+                epsilon = 1e-12,
+            );
+        }
     }
 }

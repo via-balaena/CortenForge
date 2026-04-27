@@ -27,10 +27,28 @@ pub type VertexId = u32;
 #[derive(Clone, Debug, Default)]
 pub struct MeshAdjacency;
 
-/// Per-tet quality metrics (aspect ratio, volume, inradius, etc.).
-/// Skeleton reports the trivial 1.0 values.
+/// Per-tet quality metrics. All four fields are indexed by [`TetId`]
+/// and have length equal to [`Mesh::n_tets`] for the owning mesh.
+///
+/// Populated at mesh construction time by
+/// [`quality::compute_metrics`].
 #[derive(Clone, Debug, Default)]
-pub struct QualityMetrics;
+pub struct QualityMetrics {
+    /// Inscribed-sphere-over-circumscribed-sphere ratio per tet.
+    /// Equals 1/3 for a regular tet (theoretical max); approaches 0
+    /// as tets degenerate to slivers.
+    pub aspect_ratio: Vec<f64>,
+    /// Minimum interior dihedral angle (radians) across the 6 edges,
+    /// per tet.
+    pub dihedral_min: Vec<f64>,
+    /// Maximum interior dihedral angle (radians) across the 6 edges,
+    /// per tet.
+    pub dihedral_max: Vec<f64>,
+    /// Signed tetrahedron volume per tet. Positive for right-handed
+    /// orientation, negative for left-handed; magnitude equals the
+    /// geometric volume.
+    pub signed_volume: Vec<f64>,
+}
 
 /// Tet-mesh storage surface — read-only view of topology, positions,
 /// and precomputed adjacency / quality.
