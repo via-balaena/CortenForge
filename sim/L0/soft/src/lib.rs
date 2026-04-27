@@ -30,6 +30,7 @@ pub mod material;
 pub mod mesh;
 pub mod observable;
 pub mod readout;
+mod sdf_bridge;
 pub mod solver;
 
 pub use autograd_ops::{DivOp, IndexOp};
