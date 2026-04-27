@@ -796,6 +796,10 @@ where
 {
     type Tape = CpuTape;
 
+    // expect_used: the loaded_free_xyz construction below `.expect`s on
+    // `full_to_free_idx[loaded_dof]`, which BC validation guarantees is
+    // `Some` (loaded ∩ pinned = ∅ asserted in `new()`).
+    #[allow(clippy::expect_used)]
     fn step(
         &mut self,
         tape: &mut Self::Tape,
@@ -818,9 +822,39 @@ where
         // Push `NewtonStepVjp` onto the tape with `theta_var` as parent.
         // The VJP owns the factor; `Tape::backward` feeds the scalar-or-
         // vector cotangent of `x_final` into `vjp` and we solve the
-        // adjoint `A · λ = g_free` in place, contracting against the
-        // Stage-1 ∂r/∂θ sparsity pattern. See `NewtonStepVjp::vjp`.
-        let vjp = NewtonStepVjp::new(factor);
+        // adjoint `A · λ = g_free` in place, contracting against
+        // (∂r/∂θ)_free per the per-stage closed forms in
+        // `NewtonStepVjp::vjp`. Pre-resolve loaded vertices' xyz
+        // free-DOF indices via `full_to_free_idx` so `vjp` doesn't
+        // need solver-side metadata at backward-pass time.
+        let loaded_free_xyz: Vec<[usize; 3]> = self
+            .boundary_conditions
+            .loaded_vertices
+            .iter()
+            .map(|&(vid, _)| {
+                let v = vid as usize;
+                [
+                    self.full_to_free_idx[3 * v]
+                        .expect("loaded vertex must be free (BC validation)"),
+                    self.full_to_free_idx[3 * v + 1]
+                        .expect("loaded vertex must be free (BC validation)"),
+                    self.full_to_free_idx[3 * v + 2]
+                        .expect("loaded vertex must be free (BC validation)"),
+                ]
+            })
+            .collect();
+        let stage_1 = self
+            .boundary_conditions
+            .loaded_vertices
+            .iter()
+            .all(|(_, ax)| matches!(ax, LoadAxis::AxisZ));
+        let vjp = NewtonStepVjp::new(
+            factor,
+            self.n_dof,
+            self.free_dof_indices.clone(),
+            loaded_free_xyz,
+            stage_1,
+        );
         let x_final_tensor = Tensor::from_slice(&step.x_final, &[self.n_dof]);
         let x_final_var = tape.push_custom(&[theta_var], x_final_tensor, Box::new(vjp));
         step.x_final_var = Some(x_final_var);

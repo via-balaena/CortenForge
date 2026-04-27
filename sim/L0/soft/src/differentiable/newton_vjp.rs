@@ -21,24 +21,38 @@
 //!    factor the forward Newton step converged with).
 //! 2. Contract  `∂L/∂θ = -λ^T · (∂r/∂θ)_free`.
 //!
-//! **Stage-1 `∂r/∂θ`.** θ is a length-1 scalar = +ẑ traction magnitude
-//! at `v_3`. The external force is `f_ext[11] = θ`, else `0`, so
+//! **Stage-1 `∂r/∂θ` (multi-loaded-vertex generalization).** θ is a
+//! length-1 scalar broadcast as `+ẑ` traction magnitude to every
+//! vertex in `BC.loaded_vertices`. For each loaded vertex `v` with
+//! `LoadAxis::AxisZ`, `f_ext[3v + 2] = θ`, so
 //!
 //! ```text
-//!     ∂f_ext/∂θ  =  e_11     →     ∂r/∂θ  =  -e_11     →     (∂r/∂θ)_free = [0, 0, -1]
+//!     ∂f_ext/∂θ = Σ_v e_{3v+2}     →     (∂r/∂θ)_free has -1 at each
+//!                                         loaded vertex's z free-DOF index
 //! ```
 //!
-//! Substituting: `grad_θ = -λ^T · [0, 0, -1] = +λ[2]`.
+//! Substituting: `grad_θ = -λ^T · (-Σ_v e_{free(v.z)}) = +Σ_v λ[free(v.z)]`.
+//! For the 1-tet skeleton (one loaded vertex `v_3`), this reduces to
+//! `+λ[free(v_3.z)]` — bit-equal to the pre-multi-element form.
 //!
-//! **Stage-2 `∂r/∂θ`.** θ is a length-3 full traction vector
-//! `(t_x, t_y, t_z)` at `v_3`. `f_ext[9..12] = θ[0..3]`, else `0`, so
+//! **Stage-2 `∂r/∂θ`.** θ is `[3 · n_loaded]` per-vertex traction
+//! triples. For loaded vertex `v` at θ-index `i`, `f_ext[3v + axis] =
+//! θ[3i + axis]` for axis ∈ 0..3, so
 //!
 //! ```text
-//!     ∂f_ext/∂θ  =  I₃ on rows 9..12   →   (∂r/∂θ)_free = -I₃
+//!     (∂r/∂θ)_free = -I_{3 · n_loaded} on the loaded-vertices' free DOFs
 //! ```
 //!
-//! Substituting: `grad_θ = -λ^T · (-I₃) = +λ` (full 3-vector). Closed-form
-//! accumulation for both stages lives in `vjp`.
+//! Substituting: `grad_θ[3i + axis] = +λ[free(v_i.axis)]` per loaded
+//! vertex per axis. For the 1-tet skeleton (one loaded vertex
+//! `v_3`), this reduces to `+λ` over `(v_3.x, v_3.y, v_3.z)` —
+//! bit-equal to the pre-multi-element form.
+//!
+//! **Stage discriminator.** Pre-computed `stage_1: bool` set at
+//! construction from `BC.loaded_vertices`'s `LoadAxis` variants (all
+//! `AxisZ` → Stage 1; all `FullVector` → Stage 2). Mixed-axis BCs are
+//! rejected at solver construction (per `assemble_external_force`),
+//! so `stage_1` is unambiguous.
 //!
 //! **Factor reuse.** The `Llt<usize, f64>` stashed here comes from
 //! `CpuNewtonSolver::factor_at_position` at `x_final`, not from the last
@@ -63,18 +77,6 @@ use sim_ml_chassis::{Tensor, autograd::VjpOp};
 use super::{Differentiable, TapeNodeKey};
 use crate::readout::GradientEstimate;
 use crate::solver::{CpuTape, NewtonStep};
-
-/// Number of DOFs in the skeleton system (4 vertices × 3 spatial axes).
-/// Local alias — duplicated from `solver::backward_euler` to keep the
-/// VJP self-contained without a cross-module constant export.
-const N_DOF: usize = 12;
-
-/// Number of free DOFs after Dirichlet condensation (only `v_3`'s xyz).
-const N_FREE: usize = 3;
-
-/// Offset of the first free DOF in the 12-vector layout — `v_3.x` at
-/// DOF 9 under vertex-major + xyz-inner ordering.
-const FREE_OFFSET: usize = 9;
 
 /// CPU-backend `Differentiable` impl. Stateless at type level;
 /// `NewtonStepVjp` holds primal data per tape node.
@@ -121,35 +123,75 @@ impl Differentiable for CpuDifferentiable {
 
 /// Custom VJP for one converged Newton step.
 ///
-/// Stashes the faer `Llt` factor of `A = ∂r/∂x` at `x_final`; `vjp`
-/// solves the adjoint system `A · λ = g_free` and contracts against
-/// Stage-1 `∂r/∂θ` in closed form.
+/// Stashes the faer `Llt` factor of `A = ∂r/∂x` at `x_final` plus the
+/// metadata needed to gather `g_free` from the cotangent and dispatch
+/// the per-stage closed-form contraction (Decision I generalization).
 ///
-/// Handles both θ stages (scope §2 R-6):
-/// - Stage 1 (length-1 scalar, +ẑ traction) → `(∂r/∂θ)_free = [0, 0, -1]`,
-///   closed-form `grad_θ = +λ[2]`.
-/// - Stage 2 (length-3 full vector) → `(∂r/∂θ)_free = -I₃`, closed-form
-///   `grad_θ = +λ` as a 3-vector.
+/// `vjp` solves the adjoint system `A · λ = g_free` and contracts
+/// against `(∂r/∂θ)_free` per the module-level math:
+/// - Stage 1 (all-AxisZ BC): `parent_cot[0] += Σ_v λ[free(v.z)]` over
+///   loaded vertices `v`.
+/// - Stage 2 (all-FullVector BC): per-loaded-vertex triplet
+///   `parent_cot[3i + axis] += λ[free(v_i.axis)]`.
 pub struct NewtonStepVjp {
     factor: Llt<usize, f64>,
+    /// Total DOF count, asserted on the cotangent shape.
+    n_dof: usize,
+    /// Full-DOF indices of the free DOFs, in ascending free-index
+    /// order. Used to gather `g_free` from the cotangent.
+    free_dof_indices: Vec<usize>,
+    /// For each loaded vertex (in `BC.loaded_vertices` order), the
+    /// free-DOF indices of its xyz components. Pre-computed at
+    /// construction so `vjp` doesn't need `full_to_free_idx` at
+    /// runtime. All loaded vertices are fully free per BC validation
+    /// (`loaded ∩ pinned = ∅`).
+    loaded_free_xyz: Vec<[usize; 3]>,
+    /// Stage discriminator: `true` when all loaded vertices have
+    /// `LoadAxis::AxisZ` (Stage 1, broadcast scalar θ); `false` when
+    /// all `LoadAxis::FullVector` (Stage 2, per-vertex triplet θ).
+    /// Mixed-axis BCs are rejected at solver-construction time.
+    stage_1: bool,
 }
 
 impl NewtonStepVjp {
     /// Construct a VJP for one converged Newton step.
+    ///
+    /// `factor` is the `Llt` of `A = ∂r/∂x` at `x_final`.
+    /// `free_dof_indices` is the full-DOF index list of free DOFs (in
+    /// ascending free-index order). `loaded_free_xyz` is per-loaded-
+    /// vertex xyz free indices, pre-computed via `full_to_free_idx`
+    /// from the solver. `stage_1` is the BC's load-axis
+    /// discriminator.
     #[must_use]
-    pub const fn new(factor: Llt<usize, f64>) -> Self {
-        Self { factor }
+    pub const fn new(
+        factor: Llt<usize, f64>,
+        n_dof: usize,
+        free_dof_indices: Vec<usize>,
+        loaded_free_xyz: Vec<[usize; 3]>,
+        stage_1: bool,
+    ) -> Self {
+        Self {
+            factor,
+            n_dof,
+            free_dof_indices,
+            loaded_free_xyz,
+            stage_1,
+        }
     }
 }
 
-// Llt<usize, f64> does not derive Debug; hand-roll a minimal impl so the
-// VjpOp `Debug` supertrait bound is satisfied without leaking factor
+// `Llt<usize, f64>` does not derive Debug; hand-roll a minimal impl so the
+// `VjpOp` `Debug` supertrait bound is satisfied without leaking factor
 // internals.
 impl fmt::Debug for NewtonStepVjp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NewtonStepVjp")
             .field("op_id", &"sim_soft::NewtonStepVjp")
             .field("factor", &"<Llt<usize, f64>>")
+            .field("n_dof", &self.n_dof)
+            .field("n_free", &self.free_dof_indices.len())
+            .field("n_loaded", &self.loaded_free_xyz.len())
+            .field("stage_1", &self.stage_1)
             .finish()
     }
 }
@@ -165,8 +207,9 @@ impl VjpOp for NewtonStepVjp {
     #[allow(clippy::panic)]
     fn vjp(&self, cotangent: &Tensor<f64>, parent_cotans: &mut [Tensor<f64>]) {
         assert!(
-            cotangent.shape() == [N_DOF],
-            "NewtonStepVjp: cotangent must have shape [{N_DOF}], got {:?}",
+            cotangent.shape() == [self.n_dof],
+            "NewtonStepVjp: cotangent must have shape [{}], got {:?}",
+            self.n_dof,
             cotangent.shape(),
         );
         assert!(
@@ -174,41 +217,47 @@ impl VjpOp for NewtonStepVjp {
             "NewtonStepVjp: expected 1 parent (theta_var), got {}",
             parent_cotans.len(),
         );
-        let parent_len = parent_cotans[0].shape().len();
-        let parent_dim = if parent_len == 1 {
-            parent_cotans[0].shape()[0]
-        } else {
-            0
-        };
+
+        let n_loaded = self.loaded_free_xyz.len();
+        let expected_parent_dim = if self.stage_1 { 1 } else { 3 * n_loaded };
         assert!(
-            parent_len == 1 && (parent_dim == 1 || parent_dim == 3),
-            "NewtonStepVjp: θ cotangent must have shape [1] (Stage 1) or [3] \
-             (Stage 2), got {:?}",
+            parent_cotans[0].shape() == [expected_parent_dim],
+            "NewtonStepVjp: θ cotangent must have shape [{expected_parent_dim}] \
+             ({} loaded vertex/vertices, stage_1 = {}); got {:?}",
+            n_loaded,
+            self.stage_1,
             parent_cotans[0].shape(),
         );
 
-        // Slice the upstream cotangent to free DOFs. Pinned DOFs contribute
-        // nothing to ∂L/∂θ (x_0, x_1, x_2 are Dirichlet-constant in θ).
+        // Gather `g_free` from the cotangent at the free DOF indices.
         let cot = cotangent.as_slice();
-        let mut rhs: [f64; N_FREE] = [cot[FREE_OFFSET], cot[FREE_OFFSET + 1], cot[FREE_OFFSET + 2]];
+        let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
+        let n_free = rhs.len();
 
         // Solve `A · λ = g_free` in place via the stashed Llt. `A` is
         // symmetric for `NeoHookean`, so we use the same factor shape
-        // the forward Newton step produced — no transpose needed today.
+        // the forward Newton step produced — no transpose needed.
         // (Asymmetric materials would need `solve_transpose_in_place`.)
-        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, N_FREE, 1);
+        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
         self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
-        // `rhs` now holds λ.
+        // `rhs` now holds λ (in free-DOF indexing).
 
         let parent_slice = parent_cotans[0].as_mut_slice();
-        if parent_dim == 1 {
-            // Stage 1: (∂r/∂θ)_free = [0, 0, -1] → grad_θ = +λ[2].
-            parent_slice[0] += rhs[2];
+        if self.stage_1 {
+            // Stage 1 (broadcast scalar θ): grad_θ = +Σ_v λ[free(v.z)]
+            // over loaded vertices. Each loaded vertex's z-axis free
+            // index lives at `loaded_free_xyz[v][2]`.
+            for xyz in &self.loaded_free_xyz {
+                parent_slice[0] += rhs[xyz[2]];
+            }
         } else {
-            // Stage 2: (∂r/∂θ)_free = -I₃ → grad_θ = +λ (full 3-vector).
-            parent_slice[0] += rhs[0];
-            parent_slice[1] += rhs[1];
-            parent_slice[2] += rhs[2];
+            // Stage 2 (per-vertex triplet θ): grad_θ[3i + axis] =
+            // +λ[free(v_i.axis)] for each loaded vertex i and axis 0..3.
+            for (i, xyz) in self.loaded_free_xyz.iter().enumerate() {
+                parent_slice[3 * i] += rhs[xyz[0]];
+                parent_slice[3 * i + 1] += rhs[xyz[1]];
+                parent_slice[3 * i + 2] += rhs[xyz[2]];
+            }
         }
     }
 }
