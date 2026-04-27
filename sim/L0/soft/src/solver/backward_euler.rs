@@ -414,6 +414,12 @@ where
     /// sorted order; produced by `assemble_free_hessian_triplets`.
     /// `r_full` is the full-DOF residual; the free-DOF subset is
     /// gathered via `self.free_dof_indices`.
+    //
+    // expect_used + panic: same SPD-contract / fixed-pattern rationale
+    // as `factor_at_position` above (sparse-pattern build can only fail
+    // on duplicate triplets, which the BTreeMap accumulator prevents;
+    // Llt factor failure = scope §3 R-2 SPD violation, programmer bug
+    // on the θ-path).
     #[allow(clippy::expect_used, clippy::panic)]
     fn factor_and_solve_free(
         &self,
@@ -460,6 +466,11 @@ where
     /// - Tangent factorization fails SPD (scope §3 R-2 asserts SPD on
     ///   the θ-path; failure is a path-violation bug, not a fallback
     ///   trigger).
+    //
+    // panic: scope §3 R-1 (3-5-iter convergence prediction) + R-2
+    // (SPD-contract on the θ-path) violations are book-level findings,
+    // not runtime-recoverable conditions; faer Lu fallback would land
+    // when an indefinite case actually surfaces.
     #[allow(clippy::panic)]
     fn solve_impl(
         &self,
@@ -544,6 +555,11 @@ where
     ///
     /// Panic-on-stall matches the `solve_impl` policy — scope §11 S-2
     /// treats stall as a book-level finding, not a recoverable error.
+    //
+    // panic: stall is a book-level finding, not a recoverable error
+    // (scope §11 S-2). too_many_arguments: 8 inputs mirror the residual
+    // formula's reads; bundling into a struct adds name-the-fields
+    // ceremony for one caller with no readability gain.
     #[allow(clippy::panic, clippy::too_many_arguments)]
     fn armijo_backtrack(
         &self,

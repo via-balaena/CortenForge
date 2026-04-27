@@ -24,8 +24,9 @@
 //!
 //! Sum-of-DOFs semantics chosen over max for differentiability (max
 //! is non-smooth at the argmax kink); the on-tape composition in
-//! [`SkeletonForwardMap::build_reward_on_tape`] mirrors the sum via
-//! chained [`IndexOp`](crate::autograd_ops::IndexOp) + `tape.add`.
+//! `SkeletonForwardMap`'s `build_reward_on_tape` (private) mirrors
+//! the sum via chained [`IndexOp`](crate::autograd_ops::IndexOp) +
+//! `tape.add`.
 
 // `stress_field`, `pressure_field`, `temperature_field` are
 // `unimplemented!("skeleton phase 2")` by design; they land in Phase C+
