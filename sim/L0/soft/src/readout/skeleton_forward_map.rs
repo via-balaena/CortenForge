@@ -55,14 +55,14 @@ use crate::autograd_ops::{DivOp, IndexOp};
 use crate::observable::{BasicObservable, Observable};
 use crate::solver::{CpuTape, Solver};
 
-/// Number of DOFs in the skeleton 1-tet scene — `x_final` shape.
-const N_DOF: usize = 12;
-
-/// Free-DOF index for `v_3.z`; the only DOF that moves on the skeleton
-/// scene and the one `BasicObservable` reports as `peak_bound`.
-const FREE_DOF_Z: usize = 11;
-
-/// γ-locked `ForwardMap` impl for the 1-tet skeleton scene.
+/// γ-locked `ForwardMap` impl over the 1-tet skeleton or multi-vertex
+/// scenes.
+///
+/// Generalized in Phase 2 commit 9 from 1-tet-specific to multi-vertex
+/// `peak_bound`: the on-tape sum is chained from `IndexOp` per DOF +
+/// `tape.add` per pair, mirroring `BasicObservable`'s primal-side
+/// `Σ x_final[dof]`. For 1-tet the chain reduces to a single
+/// `IndexOp` (no `add`), bit-equal to the pre-commit-9 form.
 ///
 /// Owns the dyn-boxed `Solver`, the `BasicObservable`, the scene initial
 /// state, the reward-composition `weights`, and the stashed `theta_var`
@@ -104,13 +104,22 @@ impl SkeletonForwardMap {
     /// Mirror of `RewardBreakdown::score_with` built on the tape so
     /// `tape.backward` has a differentiable scalar root.
     ///
-    /// Hardcoded to the skeleton scene's two finite fields: `peak_bound
-    /// = x_final[11]` (`IndexOp`) and `stiffness_bound = θ / x_final[11]`
-    /// (`DivOp`). `pressure_uniformity` + `coverage` are `NaN` on this
-    /// scene (scope §2) — the same `NaN`-skip branch that `score_with`
-    /// takes; they have no on-tape expression here.
+    /// Composition (Phase 2 commit 9 multi-vertex generalization):
+    /// - `peak_bound = Σ x_final[dof]` over `self.observable.peak_bound_dofs`,
+    ///   built on-tape via per-DOF `IndexOp` chained with `tape.add`.
+    ///   For 1-tet (single DOF), reduces to one `IndexOp`, no `add`.
+    /// - `stiffness_bound = θ[0] / peak_bound` via `DivOp`.
+    /// - `pressure_uniformity` + `coverage` are `NaN` on skeleton
+    ///   scenes — same `NaN`-skip branch that `score_with` takes;
+    ///   they have no on-tape expression here.
     ///
-    /// Returns the shape-`[1]` reward `Var` ready for `tape.backward`.
+    /// `n_dof` is read from `x_final_var`'s tensor shape (was a
+    /// hardcoded `12` pre-commit-9). Returns the shape-`[1]` reward
+    /// `Var` ready for `tape.backward`.
+    //
+    // Empty peak_bound_dofs is rejected at BasicObservable::new time;
+    // the `expect` here documents that contract for readers.
+    #[allow(clippy::expect_used)]
     fn build_reward_on_tape(
         &self,
         tape: &mut Tape,
@@ -118,13 +127,21 @@ impl SkeletonForwardMap {
         theta_var: Var,
         reward_breakdown: &RewardBreakdown,
     ) -> Var {
-        // peak_bound = x_final[FREE_DOF_Z]
-        let peak_val = reward_breakdown.peak_bound;
-        let peak_var = tape.push_custom(
-            &[x_final_var],
-            Tensor::from_slice(&[peak_val], &[1]),
-            Box::new(IndexOp::new(FREE_DOF_Z, N_DOF)),
-        );
+        // peak_bound = Σ x_final[dof] over self.observable.peak_bound_dofs
+        let n_dof = tape.value_tensor(x_final_var).as_slice().len();
+        let peak_dofs = self.observable.peak_bound_dofs();
+
+        let mut peak_var: Option<Var> = None;
+        for &dof in peak_dofs {
+            let val = tape.value_tensor(x_final_var).as_slice()[dof];
+            let dof_var = tape.push_custom(
+                &[x_final_var],
+                Tensor::from_slice(&[val], &[1]),
+                Box::new(IndexOp::new(dof, n_dof)),
+            );
+            peak_var = Some(peak_var.map_or(dof_var, |prev| tape.add(prev, dof_var)));
+        }
+        let peak_var = peak_var.expect("BasicObservable guarantees peak_bound_dofs is non-empty");
 
         // stiffness_bound = θ[0] / peak_bound
         // DivOp stashes (a_val, b_val) = (θ[0], peak_bound). Both primal
@@ -136,7 +153,7 @@ impl SkeletonForwardMap {
         let stiff_var = tape.push_custom(
             &[theta_var, peak_var],
             Tensor::from_slice(&[stiff_val], &[1]),
-            Box::new(DivOp::new(theta_val, peak_val)),
+            Box::new(DivOp::new(theta_val, reward_breakdown.peak_bound)),
         );
 
         // reward = w_peak · peak_var + w_stiff · stiff_var

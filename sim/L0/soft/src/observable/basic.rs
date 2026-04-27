@@ -1,10 +1,31 @@
 //! `BasicObservable` — CPU-backend readout impl.
 //!
-//! Associates `type Step = NewtonStep<CpuTape>` and closed-forms the
-//! four readout methods. Phase B step 6 filled in `reward_breakdown`
-//! with the 1-tet NaN-sentinel gap per spec §2; `stress_field`,
-//! `pressure_field`, and `temperature_field` remain Phase-C/+
-//! deferrals.
+//! Associates `type Step = NewtonStep<CpuTape>` and implements
+//! `reward_breakdown` over a configurable set of DOFs sampled from
+//! `step.x_final`. `stress_field`, `pressure_field`, and
+//! `temperature_field` remain Phase-C/+ deferrals.
+//!
+//! ## Multi-vertex `peak_bound` (Phase 2 commit 9)
+//!
+//! Phase 2 generalized the per-element machinery to N tets. The
+//! `peak_bound` per-term reward is now the **sum** of `x_final` at a
+//! caller-configured set of DOFs (`peak_bound_dofs`), set at
+//! construction:
+//!
+//! - 1-tet skeleton: `BasicObservable::new(vec![11])` →
+//!   `peak_bound = x_final[11]`. Bit-equal to the pre-Phase-2 form
+//!   (single DOF, single sum).
+//! - 2-isolated-tet (II-1 / II-2): `BasicObservable::new(vec![11, 23])`
+//!   → `peak_bound = x_final[11] + x_final[23]`. Sum of both tets'
+//!   `v_3`-equivalent z-displacements.
+//! - 2-tet shared-face (II-3): `BasicObservable::new(vec![11])` —
+//!   only the shared free vertex has a meaningful free-DOF
+//!   z-displacement.
+//!
+//! Sum-of-DOFs semantics chosen over max for differentiability (max
+//! is non-smooth at the argmax kink); the on-tape composition in
+//! [`SkeletonForwardMap::build_reward_on_tape`] mirrors the sum via
+//! chained [`IndexOp`](crate::autograd_ops::IndexOp) + `tape.add`.
 
 // `stress_field`, `pressure_field`, `temperature_field` are
 // `unimplemented!("skeleton phase 2")` by design; they land in Phase C+
@@ -18,15 +39,45 @@ use super::{Observable, PressureField, StressField, TemperatureField};
 use crate::readout::RewardBreakdown;
 use crate::solver::{CpuTape, NewtonStep};
 
-/// Free-DOF index of `v_3.z` — the only DOF that moves on the skeleton
-/// scene, and the one the reward bounds are anchored on. Duplicated
-/// from `solver::backward_euler` / `differentiable::newton_vjp` to keep
-/// readout self-contained.
-const FREE_DOF_Z: usize = 11;
+/// CPU-backend `Observable` impl. Holds the DOF list to sum for
+/// `peak_bound`; sums are computed over `step.x_final` at those
+/// indices in `reward_breakdown`.
+#[derive(Clone, Debug)]
+pub struct BasicObservable {
+    /// Full-DOF indices to sum for `peak_bound`. For typical scenes
+    /// these are the z-components of loaded vertices' free DOFs
+    /// (e.g., `[11]` for 1-tet `v_3`; `[11, 23]` for 2-isolated-tet
+    /// `v_3` + `v_7`). Phase 2 commit 9 made this configurable;
+    /// pre-commit-9 always used `[11]`.
+    peak_bound_dofs: Vec<usize>,
+}
 
-/// CPU-backend `Observable` impl.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct BasicObservable;
+impl BasicObservable {
+    /// Construct from the DOF list to sum for `peak_bound`. Must be
+    /// non-empty. Validation against the actual `x_final` shape
+    /// happens at `reward_breakdown` time (no `n_dof` knowledge at
+    /// construction).
+    ///
+    /// For the 1-tet skeleton: pass `vec![11]` (the z-DOF of
+    /// `v_3`). For multi-vertex Stage-1 scenes: pass the z-DOF of
+    /// each loaded vertex.
+    #[must_use]
+    pub fn new(peak_bound_dofs: Vec<usize>) -> Self {
+        assert!(
+            !peak_bound_dofs.is_empty(),
+            "BasicObservable: peak_bound_dofs must be non-empty"
+        );
+        Self { peak_bound_dofs }
+    }
+
+    /// Read-only access to the DOF list, primarily for
+    /// `SkeletonForwardMap::build_reward_on_tape` to mirror the
+    /// primal-side sum on-tape.
+    #[must_use]
+    pub fn peak_bound_dofs(&self) -> &[usize] {
+        &self.peak_bound_dofs
+    }
+}
 
 impl Observable for BasicObservable {
     type Step = NewtonStep<CpuTape>;
@@ -43,43 +94,44 @@ impl Observable for BasicObservable {
         unimplemented!("skeleton phase 2")
     }
 
-    /// Skeleton 1-tet `RewardBreakdown` per scope §2.
+    /// `RewardBreakdown` populated from the configured `peak_bound_dofs`:
     ///
-    /// - `pressure_uniformity` and `coverage`: `f64::NAN` sentinel —
-    ///   structurally undefined on a single tet with no contact pair.
+    /// - `pressure_uniformity` and `coverage`: `f64::NAN` sentinel
+    ///   (structurally undefined for skeleton scenes per scope §2 +
+    ///   Part 10 Ch 00 NaN-sentinel paragraph).
     ///   `RewardBreakdown::score_with` silently drops `NaN` fields.
-    /// - `peak_bound`: free-DOF peak displacement `x_final[11]`
-    ///   (SQ1 option α). Matches the step-5 gradcheck scalar directly,
-    ///   so the step-6 composition adds division-chain coverage on top
-    ///   without changing the leading term.
-    /// - `stiffness_bound`: `θ[0] / x_final[11]` — effective spring
-    ///   constant at the operating point. Exposes the `DivOp` chain to
-    ///   backward; sign follows `x_final[11]` (positive under tensile
-    ///   +ẑ traction at θ=10 N).
-    // Shape / length assertions panic because they represent programmer
-    // bugs (wrong scene wired into BasicObservable), not runtime input.
+    /// - `peak_bound`: `Σ x_final[dof]` over `self.peak_bound_dofs`.
+    ///   Smooth in θ; sum semantics chosen over max for
+    ///   differentiability.
+    /// - `stiffness_bound`: `θ[0] / peak_bound`. Stage-1 only (θ
+    ///   shape `[1]` asserted); Stage-2 callers don't use
+    ///   `BasicObservable`.
+    // Shape / length / DOF-bounds assertions panic because they
+    // represent programmer bugs (wrong DOF list passed, wrong θ
+    // shape), not runtime input.
     #[allow(clippy::panic)]
     fn reward_breakdown(&self, step: &Self::Step, theta: &Tensor<f64>) -> RewardBreakdown {
-        assert!(
-            step.x_final.len() > FREE_DOF_Z,
-            "BasicObservable: step.x_final has {} DOFs; skeleton scene must have at least {}",
-            step.x_final.len(),
-            FREE_DOF_Z + 1,
-        );
+        let n_dof = step.x_final.len();
+        for &d in &self.peak_bound_dofs {
+            assert!(
+                d < n_dof,
+                "BasicObservable: peak_bound_dof {d} out of range for {n_dof}-DOF x_final",
+            );
+        }
         assert!(
             theta.shape() == [1],
             "BasicObservable: Stage-1 θ must have shape [1], got {:?}",
             theta.shape(),
         );
 
-        let x_peak = step.x_final[FREE_DOF_Z];
+        let peak: f64 = self.peak_bound_dofs.iter().map(|&d| step.x_final[d]).sum();
         let theta_val = theta.as_slice()[0];
 
         RewardBreakdown {
             pressure_uniformity: f64::NAN,
             coverage: f64::NAN,
-            peak_bound: x_peak,
-            stiffness_bound: theta_val / x_peak,
+            peak_bound: peak,
+            stiffness_bound: theta_val / peak,
         }
     }
 }
