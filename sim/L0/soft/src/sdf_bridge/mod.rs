@@ -2,18 +2,23 @@
 //!
 //! Phase 3 ships exactly two of the six sub-areas named in the book's
 //! `08-sdf-bridge.md`: SDF ingest (via the [`Sdf`] trait + [`MeshingHints`])
-//! and tetrahedralization (placeholder mesher; lands in commit 5). The
-//! other four — material sampling, change classifier, warm-start
-//! state-transfer, FD-wrapper trigger — are Phase 4 / Phase G work. See
+//! and tetrahedralization (via [`SdfMeshedTetMesh`]). The other four —
+//! material sampling, change classifier, warm-start state-transfer,
+//! FD-wrapper trigger — are Phase 4 / Phase G work. See
 //! `sim/docs/todo/phase_3_sdf_tet_bridge_scope.md` §0 + BF-10.
 //!
-//! Public re-exports at the crate root land in commit 8; commit 1 keeps
-//! the module declaration private at `lib.rs` and the `sdf` submodule
-//! private here so the API surface is closed until the placeholder
-//! mesher is wired through.
+//! Module-level public re-exports of [`Sdf`] / [`SphereSdf`] /
+//! [`SdfMeshedTetMesh`] / [`MeshingError`] expose the placeholder
+//! mesher's surface so integration tests can drive it from outside
+//! the crate. Crate-root re-exports at `lib.rs` land in commit 8.
 
 mod lattice;
+mod marching_tet;
 mod sdf;
+mod sdf_meshed_tet_mesh;
+
+pub use sdf::{Sdf, SphereSdf};
+pub use sdf_meshed_tet_mesh::{MeshingError, SdfMeshedTetMesh};
 
 use crate::Vec3;
 

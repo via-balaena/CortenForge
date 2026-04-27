@@ -32,8 +32,10 @@ pub(super) struct LatticeCell {
 /// convention (`design/cf-design/src/mesher.rs:186-195`). Corner 0 →
 /// corner 6 is the canonical (0,0,0) → (1,1,1) space diagonal that all
 /// 6 Kuhn tets pivot around, so adjacent cells agree on face
-/// triangulations.
-const CORNER_OFFSETS: [(usize, usize, usize); 8] = [
+/// triangulations. Shared with the SDF mesher so the meshing path
+/// emits tets in the same per-cell vertex ordering as the lattice
+/// generator.
+pub(super) const CORNER_OFFSETS: [(usize, usize, usize); 8] = [
     (0, 0, 0), // corner 0
     (1, 0, 0), // corner 1
     (1, 1, 0), // corner 2
@@ -51,8 +53,9 @@ const CORNER_OFFSETS: [(usize, usize, usize); 8] = [
 /// right-handed (positive signed volume): for the three permutations
 /// of (x,y,z) with sign(σ) = -1, the two intermediate vertices are
 /// swapped to flip orientation back to right-handed without altering
-/// the per-cell tet decomposition.
-const KUHN_TETS: [[u8; 4]; 6] = [
+/// the per-cell tet decomposition. Shared with the SDF mesher so its
+/// MT-clip walks the same Kuhn tets in the same per-cell order.
+pub(super) const KUHN_TETS: [[u8; 4]; 6] = [
     // sign(σ) = +1, identity (x,y,z): 0 → +x → +xy → 6.
     [0, 1, 2, 6],
     // sign(σ) = -1, (x,z,y): 0 → +x → +xz → 6, intermediates swapped.
