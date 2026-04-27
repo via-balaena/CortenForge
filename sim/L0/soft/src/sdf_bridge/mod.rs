@@ -2,19 +2,27 @@
 //!
 //! Phase 3 ships exactly two of the six sub-areas named in the book's
 //! `08-sdf-bridge.md`: SDF ingest (via the [`Sdf`] trait + [`MeshingHints`])
-//! and tetrahedralization (placeholder mesher; lands in commit 5). The
-//! other four — material sampling, change classifier, warm-start
+//! and tetrahedralization (BCC + Labelle-Shewchuk Isosurface Stuffing
+//! placeholder mesher, spanning commits 4–6 — BCC lattice, warp +
+//! stencil dispatch, and `SdfMeshedTetMesh` constructor respectively).
+//! The other four — material sampling, change classifier, warm-start
 //! state-transfer, FD-wrapper trigger — are Phase 4 / Phase G work. See
 //! `sim/docs/todo/phase_3_sdf_tet_bridge_scope.md` §0 + BF-10.
 //!
-//! Public re-exports at the crate root land in commit 8; commit 1 keeps
-//! the module declaration private at `lib.rs` and the `sdf` submodule
-//! private here so the API surface is closed until the placeholder
-//! mesher is wired through.
+//! Crate-root re-exports of `Sdf`, `SphereSdf`, `Aabb3`, `MeshingHints`,
+//! `SdfMeshedTetMesh`, and `MeshingError` land at the public surface
+//! block of `lib.rs` in a later commit; this module re-exports them
+//! here so external tests can reach the SDF→tet API as
+//! `sim_soft::sdf_bridge::*` once the placeholder mesher is wired
+//! through.
 
 mod lattice;
 mod sdf;
+mod sdf_meshed_tet_mesh;
 mod stuffing;
+
+pub use sdf::{Sdf, SphereSdf};
+pub use sdf_meshed_tet_mesh::{MeshingError, SdfMeshedTetMesh};
 
 use crate::Vec3;
 
