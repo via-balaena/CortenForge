@@ -100,17 +100,18 @@ impl Default for SolverConfig {
 
 /// CPU backward-Euler Newton solver.
 ///
-/// Six generic parameters: material `M`, element `E<N, G>`, mesh `Msh`,
-/// contact `C`, and const-generic `(N, G)` for element shape.
+/// Five generic parameters: element `E<N, G>`, mesh `Msh`, contact `C`,
+/// and const-generic `(N, G)` for element shape. The constitutive law
+/// is fixed at `NeoHookean` per Phase 4 scope memo Decision G
+/// (monomorphization); per-tet `NeoHookean` instances live on the mesh
+/// and are read at the assembly hot points via `self.mesh.materials()`.
 /// Monomorphized per skeleton type alias `SkeletonSolver`.
-pub struct CpuNewtonSolver<M, E, Msh, C, const N: usize, const G: usize>
+pub struct CpuNewtonSolver<E, Msh, C, const N: usize, const G: usize>
 where
-    M: Material,
     E: Element<N, G>,
     Msh: Mesh,
     C: ContactModel,
 {
-    material: M,
     element: E,
     mesh: Msh,
     // NullContact carries no state, but the generic is held so Phase-C
@@ -155,15 +156,15 @@ where
     n_free: usize,
 }
 
-impl<M, E, Msh, C, const N: usize, const G: usize> CpuNewtonSolver<M, E, Msh, C, N, G>
+impl<E, Msh, C, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, N, G>
 where
-    M: Material,
     E: Element<N, G>,
     Msh: Mesh,
     C: ContactModel,
 {
-    /// Assemble a solver from its material, element, mesh, contact,
-    /// integration configuration, and boundary conditions.
+    /// Assemble a solver from its element, mesh, contact, integration
+    /// configuration, and boundary conditions. Per-tet `NeoHookean`
+    /// instances are read from `mesh.materials()` at assembly time.
     ///
     /// `Box<dyn Solver<Tape = CpuTape>>` is the intended public handle;
     /// direct access to the concrete type is only needed for
@@ -194,7 +195,6 @@ where
         clippy::similar_names
     )]
     pub fn new(
-        material: M,
         element: E,
         mesh: Msh,
         contact: C,
@@ -399,7 +399,6 @@ where
             .expect("symbolic factorization of free-block pattern failed");
 
         Self {
-            material,
             element,
             mesh,
             _contact: contact,
@@ -735,8 +734,10 @@ where
     /// contributions into the global `f_int` buffer.
     ///
     /// `f_int` is zeroed inside; caller need not pre-clear. Reads
-    /// `x_curr` (length `n_dof`), uses cached `element_geometries` and
-    /// the solver's `material`.
+    /// `x_curr` (length `n_dof`), cached `element_geometries`, and the
+    /// per-tet `NeoHookean` from `self.mesh.materials()` (Phase 4 commit
+    /// 5 — Newton hot path reads from the per-tet material cache per
+    /// Part 7 §02 §00).
     //
     // Lint allows: see assemble_free_hessian_triplets justification.
     #[allow(clippy::cast_possible_truncation, clippy::needless_range_loop)]
@@ -744,11 +745,12 @@ where
         debug_assert!(x_curr.len() == self.n_dof);
         debug_assert!(f_int.len() == self.n_dof);
         f_int.fill(0.0);
+        let materials = self.mesh.materials();
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
             let verts = self.mesh.tet_vertices(tet_id as TetId);
             let x_elem = extract_element_dof_values(x_curr, &verts);
             let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let piola = self.material.first_piola(&f);
+            let piola = materials[tet_id].first_piola(&f);
             // Per-vertex internal-force contribution `V · P · grad_X N_a`.
             for a in 0..4 {
                 let v = verts[a] as usize;
@@ -801,11 +803,12 @@ where
         // (Decision M D-3); no HashMap on numeric paths.
         let mut acc: BTreeMap<(usize, usize), f64> = BTreeMap::new();
 
+        let materials = self.mesh.materials();
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
             let verts = self.mesh.tet_vertices(tet_id as TetId);
             let x_elem = extract_element_dof_values(x_curr, &verts);
             let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let tangent_9x9 = self.material.tangent(&f);
+            let tangent_9x9 = materials[tet_id].tangent(&f);
 
             for a in 0..4 {
                 let va = verts[a] as usize;
@@ -851,9 +854,8 @@ where
     }
 }
 
-impl<M, E, Msh, C, const N: usize, const G: usize> Solver for CpuNewtonSolver<M, E, Msh, C, N, G>
+impl<E, Msh, C, const N: usize, const G: usize> Solver for CpuNewtonSolver<E, Msh, C, N, G>
 where
-    M: Material,
     E: Element<N, G>,
     Msh: Mesh,
     C: ContactModel,
@@ -1032,7 +1034,7 @@ mod tests {
     //! existing seven integration tests in `tests/`.
 
     use crate::contact::NullContact;
-    use crate::material::{MaterialField, NeoHookean};
+    use crate::material::MaterialField;
     use crate::mesh::SingleTetMesh;
     use crate::readout::{BoundaryConditions, LoadAxis};
     use crate::solver::{CpuNewtonSolver, SolverConfig};
@@ -1040,7 +1042,6 @@ mod tests {
 
     fn build(bc: BoundaryConditions) -> SkeletonSolver {
         CpuNewtonSolver::new(
-            NeoHookean::from_lame(1e5, 4e5),
             Tet4,
             SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
             NullContact,

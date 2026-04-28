@@ -27,7 +27,7 @@
 
 use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
-    CpuNewtonSolver, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
+    CpuNewtonSolver, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
 };
 
 #[test]
@@ -35,14 +35,7 @@ fn stage_1_traction_converges() {
     let cfg = SolverConfig::skeleton();
     let (mesh, bc, initial) = SoftScene::one_tet_cube();
 
-    let mut solver: SkeletonSolver = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let mut solver: SkeletonSolver = CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
 
     // Stage-1 θ: length-1 tensor = magnitude along +ẑ on v_3. Registered
     // as a tape parameter so `Solver::step` can attach `NewtonStepVjp`

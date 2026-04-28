@@ -50,8 +50,7 @@
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, IndexOp, LoadAxis,
-    MaterialField, Mesh, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig,
-    Tet4,
+    MaterialField, Mesh, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
 };
 
 /// Stage-1 θ magnitude shared by all helpers in this file.
@@ -101,14 +100,8 @@ fn build_two_tet_solver() -> (
         loaded_vertices: vec![(3, LoadAxis::AxisZ), (7, LoadAxis::AxisZ)],
     };
 
-    let solver: CpuTet4NHSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let solver: CpuTet4NHSolver<HandBuiltTetMesh> =
+        CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
 
     (solver, x_prev, v_prev, cfg)
 }
@@ -157,14 +150,7 @@ fn two_tet_loss_only(theta_val: f64, loss_dofs: &[usize]) -> f64 {
 fn one_tet_baseline_grad() -> f64 {
     let cfg = SolverConfig::skeleton();
     let (mesh, bc, initial) = SoftScene::one_tet_cube();
-    let mut solver: SkeletonSolver = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let mut solver: SkeletonSolver = CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
     let mut tape = Tape::new();
     let theta_var = tape.param_tensor(Tensor::from_slice(&[THETA], &[1]));
     let step = solver.step(

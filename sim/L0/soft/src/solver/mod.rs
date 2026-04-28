@@ -2,9 +2,9 @@
 //!
 //! One runtime dispatch per `step` via `Box<dyn Solver<Tape = CpuTape>>`.
 //! Per-Newton-iteration work monomorphizes behind the concrete solver
-//! (skeleton: `CpuNewtonSolver<NeoHookean, Tet4, SingleTetMesh,
-//! NullContact, 4, 1>`). Part 11 Ch 01 01-composition §Solver commits
-//! to this split.
+//! (skeleton: `CpuNewtonSolver<Tet4, SingleTetMesh, NullContact, 4, 1>`,
+//! constitutive law fixed at `NeoHookean` per Phase 4 Decision G).
+//! Part 11 Ch 01 01-composition §Solver commits to this split.
 //!
 //! The associated `Tape` type pins CPU / GPU VJPs to their own tape
 //! representation. Skeleton is CPU-only (`CpuTape`).
