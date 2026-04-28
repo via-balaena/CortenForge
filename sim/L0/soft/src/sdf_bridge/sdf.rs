@@ -14,7 +14,17 @@ use crate::Vec3;
 /// the SDF is well-formed, undefined at interior singularities (the
 /// concrete impl picks an arbitrary fallback there; see
 /// [`SphereSdf::grad`]).
-pub trait Sdf {
+///
+/// `Send + Sync` so trait objects (`Box<dyn Sdf>` inside Phase 4's
+/// [`LayeredScalarField`](crate::field::LayeredScalarField) +
+/// [`BlendedScalarField`](crate::field::BlendedScalarField), and the
+/// upcoming `MaterialField` / `MeshingHints::material_field` storage
+/// sites) satisfy the [`Field<T>: Send + Sync`](crate::field::Field)
+/// bound at every level of the typed-field composition tree without
+/// `+ Send + Sync` clutter at every storage site. Every reasonable Sdf
+/// impl is naturally Send + Sync (pure-function over Vec3, or a
+/// composition of the same); the supertrait documents the invariant.
+pub trait Sdf: Send + Sync {
     /// Signed distance from `p` to the surface.
     fn eval(&self, p: Vec3) -> f64;
 

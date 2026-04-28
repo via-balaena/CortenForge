@@ -27,8 +27,10 @@
 use crate::Vec3;
 
 pub mod constant;
+pub mod layered;
 
 pub use constant::ConstantField;
+pub use layered::{BlendedScalarField, LayeredScalarField};
 
 /// Typed spatial field over reference space.
 ///
