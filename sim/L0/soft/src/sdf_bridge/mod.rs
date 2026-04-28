@@ -17,11 +17,13 @@
 //! `sim_soft::sdf_bridge::*` (module path, kept for backward
 //! compatibility with the Phase 3 in-progress test files).
 
+mod difference;
 mod lattice;
 mod sdf;
 mod sdf_meshed_tet_mesh;
 mod stuffing;
 
+pub use difference::DifferenceSdf;
 pub use sdf::{Sdf, SphereSdf};
 pub use sdf_meshed_tet_mesh::{MeshingError, SdfMeshedTetMesh};
 
