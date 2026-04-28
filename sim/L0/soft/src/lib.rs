@@ -1,24 +1,34 @@
-//! `sim-soft` — soft-body walking-skeleton scaffold.
+//! `sim-soft` — soft-body FEM crate.
 //!
-//! This crate is the compile-check pre-flight of the walking-skeleton
-//! specification at `sim/docs/todo/soft_body_walking_skeleton_scope.md`
-//! (tip `01633283`). Seven traits are defined against chassis `Tape` /
-//! `VjpOp` and the γ-locked API names from
-//! [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md).
+//! Scope as of Phase 4: backward-Euler hyperelastic FEM on linear-
+//! tetrahedral (`Tet4`) meshes with per-element [`NeoHookean`] materials
+//! sourced from a per-mesh [`MaterialField`] aggregator (Phase 4) —
+//! multi-element assembly (Phase 2), pure-Rust SDF→tet bridge via
+//! BCC plus Labelle-Shewchuk Isosurface Stuffing (Phase 3), bonded
+//! multi-material via spatial field aggregation (Phase 4). Architecture
+//! follows the seven γ-locked API names from
+//! [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md);
+//! `MaterialField` is internal-API-shaped per Phase 4 scope memo
+//! Decision M.
 //!
-//! Every method body is `unimplemented!("skeleton phase 2")`. Phase B
-//! fills them in one trait at a time per spec §7. This crate exists to
-//! validate the paper design compiles before semantics land.
+//! Forward roadmap: Phase 5 penalty contact, Phase E GPU port; Phase H
+//! decorators (HGO anisotropy, viscoelasticity, thermal coupling), Tet10,
+//! interface-aware refinement, IPC.
 
 #![allow(
-    // Scaffold bodies are `unimplemented!(...)` by design. Override lifted
-    // in Phase B as each trait gets a real implementation.
+    // Placeholder bodies in `contact/null.rs`, `observable/basic.rs`,
+    // `readout/reward_breakdown.rs`, and `differentiable/newton_vjp.rs`
+    // (`time_adjoint`, `fd_wrapper`) are intentional `unimplemented!(...)`
+    // for Phase 5 / Phase C / Phase G / Phase E+ surfaces that bolt onto
+    // the trait shape but ship empty in Phase 4.
     clippy::unimplemented,
-    // Skeleton fields (e.g. `SingleTetMesh::vertices`) are held for spec
-    // fidelity per §14; Phase B's `Mesh::positions` will read them.
+    // Placeholder fields like `CpuNewtonSolver::element: E` and
+    // `BccLattice::position_of` ride the trait/struct shape forward for
+    // upcoming phases (Tet10 element variant, future BCC accessors)
+    // without bit-rotting the public surface in the meantime.
     dead_code,
-    // Stub bodies panic via `unimplemented!`. Documenting this on every
-    // method adds noise without information.
+    // Placeholder bodies panic via `unimplemented!`. Documenting it on
+    // every method's `# Panics` section adds noise without information.
     clippy::missing_panics_doc
 )]
 
