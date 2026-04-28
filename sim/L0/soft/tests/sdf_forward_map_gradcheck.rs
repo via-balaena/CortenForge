@@ -70,7 +70,7 @@ use sim_soft::readout::scene::pick_vertices_by_predicate;
 use sim_soft::sdf_bridge::{Aabb3, MeshingHints, SdfMeshedTetMesh, SphereSdf};
 use sim_soft::{
     BasicObservable, BoundaryConditions, CpuNewtonSolver, CpuTape, EditResult, ForwardMap,
-    GradientEstimate, LoadAxis, Mesh, NeoHookean, NullContact, RewardWeights, SceneInitial,
+    GradientEstimate, LoadAxis, MaterialField, Mesh, NullContact, RewardWeights, SceneInitial,
     SkeletonForwardMap, Solver, SolverConfig, Tet4, Vec3, VertexId,
 };
 
@@ -98,6 +98,7 @@ fn canonical_hints() -> MeshingHints {
             Vec3::new(BBOX_HALF_EXTENT, BBOX_HALF_EXTENT, BBOX_HALF_EXTENT),
         ),
         cell_size: CELL_SIZE,
+        material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
     }
 }
 
@@ -156,14 +157,8 @@ fn build_forward_map(
         loaded_vertices: vec![(load, LoadAxis::AxisZ)],
     };
 
-    let solver: Box<dyn Solver<Tape = CpuTape>> = Box::new(CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    ));
+    let solver: Box<dyn Solver<Tape = CpuTape>> =
+        Box::new(CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc));
 
     // Stage-1 peak_bound = x_final[load_z_dof] — the deflection of the
     // single load vertex along the +ẑ load axis. Mirrors walking-

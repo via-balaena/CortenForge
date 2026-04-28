@@ -39,8 +39,8 @@
 
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, IndexOp, LoadAxis, NeoHookean, NullContact,
-    SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
+    BoundaryConditions, CpuNewtonSolver, IndexOp, LoadAxis, NullContact, SkeletonSolver, SoftScene,
+    Solver, SolverConfig, Tet4,
 };
 
 // Step-6 promoted `IndexOp` from a test-only fixture into production
@@ -61,14 +61,7 @@ const PARENT_LEN: usize = 12;
 fn build_solver_stage_1() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConfig) {
     let cfg = SolverConfig::skeleton();
     let (mesh, bc, initial) = SoftScene::one_tet_cube();
-    let solver: SkeletonSolver = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let solver: SkeletonSolver = CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
     (solver, initial, cfg)
 }
 
@@ -84,14 +77,7 @@ fn build_solver_stage_2() -> (SkeletonSolver, sim_soft::SceneInitial, SolverConf
         pinned_vertices: vec![0, 1, 2],
         loaded_vertices: vec![(3, LoadAxis::FullVector)],
     };
-    let solver: SkeletonSolver = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let solver: SkeletonSolver = CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
     (solver, initial, cfg)
 }
 

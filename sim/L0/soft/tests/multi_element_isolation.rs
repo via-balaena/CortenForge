@@ -53,8 +53,8 @@
 
 use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, LoadAxis, Mesh,
-    NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
+    BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, LoadAxis,
+    MaterialField, Mesh, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
 };
 
 /// Stage-1 θ magnitude shared by all baseline + multi-tet runs in
@@ -76,14 +76,7 @@ const TET_1_TRANSLATION_X: f64 = 0.5;
 fn run_one_tet() -> (Vec<f64>, usize, f64) {
     let cfg = SolverConfig::skeleton();
     let (mesh, bc, initial) = SoftScene::one_tet_cube();
-    let mut solver: SkeletonSolver = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let mut solver: SkeletonSolver = CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
     let mut tape = Tape::new();
     let theta_var = tape.param_tensor(Tensor::from_slice(&[THETA], &[1]));
     let step = solver.step(
@@ -103,7 +96,7 @@ fn run_one_tet() -> (Vec<f64>, usize, f64) {
 /// broadcasts (Decision L all-AxisZ branch).
 fn run_two_isolated_tets() -> (Vec<f64>, usize, f64) {
     let cfg = SolverConfig::skeleton();
-    let mesh = HandBuiltTetMesh::two_isolated_tets();
+    let mesh = HandBuiltTetMesh::two_isolated_tets(&MaterialField::uniform(1.0e5, 4.0e5));
 
     // Build SceneInitial inline — `SoftScene` only ships the
     // `one_tet_cube()` constructor; multi-tet scenes drive their
@@ -127,14 +120,8 @@ fn run_two_isolated_tets() -> (Vec<f64>, usize, f64) {
         loaded_vertices: vec![(3, LoadAxis::AxisZ), (7, LoadAxis::AxisZ)],
     };
 
-    let mut solver: CpuTet4NHSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let mut solver: CpuTet4NHSolver<HandBuiltTetMesh> =
+        CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
 
     let mut tape = Tape::new();
     let theta_var = tape.param_tensor(Tensor::from_slice(&[THETA], &[1]));

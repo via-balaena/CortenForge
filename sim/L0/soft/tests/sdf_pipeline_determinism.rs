@@ -41,12 +41,18 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use sim_soft::sdf_bridge::{Aabb3, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf};
-use sim_soft::{Mesh, TetId, Vec3};
+use sim_soft::{MaterialField, Mesh, TetId, Vec3};
 
 const RADIUS: f64 = 0.1;
 const CELL_SIZE: f64 = 0.02;
 const BBOX_HALF_EXTENT: f64 = 0.12;
 
+/// Phase 4 IV-1 regression target — the same Ecoflex-class `(μ, λ)`
+/// the pre-Phase-4 SDF tests implicitly used through the solver's
+/// hardcoded `NeoHookean::from_lame(1e5, 4e5)`. Threading a uniform
+/// field via `MeshingHints::material_field` keeps the bit-equality
+/// determinism bar intact while exercising the commit-9 hint-carried
+/// material-field surface.
 fn canonical_hints() -> MeshingHints {
     MeshingHints {
         bbox: Aabb3::new(
@@ -54,6 +60,7 @@ fn canonical_hints() -> MeshingHints {
             Vec3::new(BBOX_HALF_EXTENT, BBOX_HALF_EXTENT, BBOX_HALF_EXTENT),
         ),
         cell_size: CELL_SIZE,
+        material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
     }
 }
 
@@ -254,6 +261,7 @@ fn empty_mesh_surfaces_when_bbox_is_far_from_sdf_support() {
     let hints = MeshingHints {
         bbox: Aabb3::new(Vec3::new(99.0, 99.0, 99.0), Vec3::new(100.0, 100.0, 100.0)),
         cell_size: 0.5,
+        material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
     };
     let result = SdfMeshedTetMesh::from_sdf(&SphereSdf { radius: 0.1 }, &hints);
     assert!(

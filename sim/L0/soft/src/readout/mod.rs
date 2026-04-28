@@ -21,7 +21,9 @@ pub use gradient_estimate::GradientEstimate;
 pub use reward_breakdown::{ResidualCorrections, RewardBreakdown};
 pub use reward_weights::RewardWeights;
 pub use scene::{
-    BoundaryConditions, LoadAxis, SceneInitial, SoftScene, pick_vertices_by_predicate,
+    BoundaryConditions, LAYERED_SPHERE_BBOX_HALF_EXTENT, LAYERED_SPHERE_R_CAVITY,
+    LAYERED_SPHERE_R_INNER_OUTER, LAYERED_SPHERE_R_OUTER, LAYERED_SPHERE_R_OUTER_INNER, LoadAxis,
+    SceneInitial, SoftScene, pick_vertices_by_predicate,
 };
 pub use skeleton_forward_map::SkeletonForwardMap;
 

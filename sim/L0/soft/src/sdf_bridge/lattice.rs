@@ -482,6 +482,7 @@ mod tests {
         let hints = MeshingHints {
             bbox: Aabb3::new(Vec3::zeros(), Vec3::new(2.0, 2.0, 2.0)),
             cell_size: 1.0,
+            material_field: None,
         };
         BccLattice::new(&hints)
     }
@@ -714,6 +715,7 @@ mod tests {
         let hints = MeshingHints {
             bbox: Aabb3::new(Vec3::new(-0.12, -0.12, -0.12), Vec3::new(0.12, 0.12, 0.12)),
             cell_size: 0.02,
+            material_field: None,
         };
         let l = BccLattice::new(&hints);
         // i_min = floor(-0.12/0.02) = -6; i_max = ceil(0.12/0.02) = 6.

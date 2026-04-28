@@ -42,7 +42,11 @@
 use std::collections::BTreeMap;
 
 use crate::Vec3;
-use crate::mesh::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, quality};
+use crate::material::{MaterialField, NeoHookean};
+use crate::mesh::{
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, interface_flags_from_field,
+    materials_from_field, quality,
+};
 
 use super::MeshingHints;
 use super::lattice::BccLattice;
@@ -61,6 +65,8 @@ pub struct SdfMeshedTetMesh {
     tets: Vec<[VertexId; 4]>,
     adj: MeshAdjacency,
     q: QualityMetrics,
+    material_cache: Vec<NeoHookean>,
+    interface_flags: Vec<bool>,
 }
 
 /// Errors returned by [`SdfMeshedTetMesh::from_sdf`].
@@ -114,6 +120,17 @@ impl SdfMeshedTetMesh {
     /// are caller-supplied invariants, not runtime errors; the
     /// canonical Phase 3 sphere parameters never trip them.
     pub fn from_sdf(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
+        // Per scope memo §0 + §8 commit 9: hints carry the canonical
+        // `(SdfField, MaterialField)` pair (book Part 7 §00). When
+        // `hints.material_field` is `None`, fall back to the IV-1
+        // baseline (Ecoflex 00-30 compressible regime, μ=1e5 / λ=4e5)
+        // — a single named constant via `MaterialField::skeleton_default`
+        // so consumers grep cleanly. Building the fallback unconditionally
+        // is two `Box<ConstantField<f64>>` allocations (microseconds);
+        // `from_sdf` is a one-shot per scene construction.
+        let fallback = MaterialField::skeleton_default();
+        let material_field = hints.material_field.as_ref().unwrap_or(&fallback);
+
         let lattice = BccLattice::new(hints);
         let n_lattice = lattice.positions.len();
 
@@ -176,11 +193,28 @@ impl SdfMeshedTetMesh {
         // (Decision I) so III-1 can assert bit-equality across runs.
         let q = quality::compute_metrics(&output_positions, &output_tets);
 
+        // Step 8: per-tet material cache. Centroid-sampled from
+        // `material_field` per Part 7 §02 §00 + scope memo Decision K.
+        // Walked in `tet_id` order via `materials_from_field`; orphan
+        // lattice vertices are unreferenced and contribute nothing.
+        let material_cache = materials_from_field(&output_positions, &output_tets, material_field);
+
+        // Step 9: per-tet interface-flag cache. `|φ(x_c)| < L_e`
+        // rule per Part 7 §02 §01 + scope memo Decision K (commit 12,
+        // IV-6); diagnostic-only — Newton hot path does not branch.
+        // All-`false` payload of length `n_tets` when
+        // `material_field` carries no interface SDF (uniform /
+        // `LayeredScalarField`-only fields go through this path).
+        let interface_flags =
+            interface_flags_from_field(&output_positions, &output_tets, material_field);
+
         Ok(Self {
             vertices: output_positions,
             tets: output_tets,
             adj: MeshAdjacency,
             q,
+            material_cache,
+            interface_flags,
         })
     }
 }
@@ -214,6 +248,14 @@ impl Mesh for SdfMeshedTetMesh {
 
     fn quality(&self) -> &QualityMetrics {
         &self.q
+    }
+
+    fn materials(&self) -> &[NeoHookean] {
+        &self.material_cache
+    }
+
+    fn interface_flags(&self) -> &[bool] {
+        &self.interface_flags
     }
 
     // Mirrors `HandBuiltTetMesh::equals_structurally`: same vertex

@@ -55,7 +55,7 @@
 use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, IndexOp, LoadAxis,
-    Mesh, NeoHookean, NullContact, Solver, SolverConfig, Tet4,
+    MaterialField, Mesh, NullContact, Solver, SolverConfig, Tet4,
 };
 
 /// Stage-1 θ magnitude shared by all helpers.
@@ -81,7 +81,7 @@ fn build_shared_face_solver() -> (
     SolverConfig,
 ) {
     let cfg = SolverConfig::skeleton();
-    let mesh = HandBuiltTetMesh::two_tet_shared_face();
+    let mesh = HandBuiltTetMesh::two_tet_shared_face(&MaterialField::uniform(1.0e5, 4.0e5));
 
     let positions = mesh.positions();
     let n_dof = 3 * positions.len();
@@ -99,14 +99,8 @@ fn build_shared_face_solver() -> (
         loaded_vertices: vec![(3, LoadAxis::AxisZ)],
     };
 
-    let solver: CpuTet4NHSolver<HandBuiltTetMesh> = CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    );
+    let solver: CpuTet4NHSolver<HandBuiltTetMesh> =
+        CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
 
     (solver, x_prev, v_prev, cfg)
 }

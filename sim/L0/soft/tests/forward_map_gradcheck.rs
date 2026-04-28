@@ -31,7 +31,7 @@
 use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
     BasicObservable, BoundaryConditions, CpuNewtonSolver, CpuTape, ForwardMap, GradientEstimate,
-    HandBuiltTetMesh, LoadAxis, Mesh, NeoHookean, NullContact, RewardWeights, SceneInitial,
+    HandBuiltTetMesh, LoadAxis, MaterialField, Mesh, NullContact, RewardWeights, SceneInitial,
     SkeletonForwardMap, SoftScene, Solver, SolverConfig, Tet4,
 };
 
@@ -60,14 +60,8 @@ const fn gradcheck_weights() -> RewardWeights {
 fn build_forward_map() -> SkeletonForwardMap {
     let cfg = SolverConfig::skeleton();
     let (mesh, bc, initial) = SoftScene::one_tet_cube();
-    let solver: Box<dyn Solver<Tape = CpuTape>> = Box::new(CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    ));
+    let solver: Box<dyn Solver<Tape = CpuTape>> =
+        Box::new(CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc));
     // 1-tet skeleton: peak_bound = x_final[11] (single DOF). Single
     // entry chain reduces to one IndexOp, no tape.add — bit-equal to
     // pre-Phase-2-commit-9 form.
@@ -80,7 +74,7 @@ fn build_forward_map() -> SkeletonForwardMap {
 /// scope §8 commit 9).
 fn build_forward_map_two_isolated() -> SkeletonForwardMap {
     let cfg = SolverConfig::skeleton();
-    let mesh = HandBuiltTetMesh::two_isolated_tets();
+    let mesh = HandBuiltTetMesh::two_isolated_tets(&MaterialField::uniform(1.0e5, 4.0e5));
 
     let positions = mesh.positions();
     let n_dof = 3 * positions.len();
@@ -98,14 +92,8 @@ fn build_forward_map_two_isolated() -> SkeletonForwardMap {
         pinned_vertices: vec![0, 1, 2, 4, 5, 6],
         loaded_vertices: vec![(3, LoadAxis::AxisZ), (7, LoadAxis::AxisZ)],
     };
-    let solver: Box<dyn Solver<Tape = CpuTape>> = Box::new(CpuNewtonSolver::new(
-        NeoHookean::from_lame(1e5, 4e5),
-        Tet4,
-        mesh,
-        NullContact,
-        cfg,
-        bc,
-    ));
+    let solver: Box<dyn Solver<Tape = CpuTape>> =
+        Box::new(CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc));
     // 2-isolated-tet: peak_bound = x_final[11] + x_final[23] (sum of
     // each tet's v_3-equivalent z-DOF). Multi-DOF chain exercises
     // commit 9's IndexOp + tape.add composition path.

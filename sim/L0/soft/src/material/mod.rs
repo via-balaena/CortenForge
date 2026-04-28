@@ -7,8 +7,10 @@
 
 use nalgebra::{Matrix3, SMatrix};
 
+pub mod material_field;
 pub mod neo_hookean;
 
+pub use material_field::MaterialField;
 pub use neo_hookean::NeoHookean;
 
 /// Constitutive-model surface: energy density and its first two
