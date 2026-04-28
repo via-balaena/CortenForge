@@ -39,7 +39,7 @@ pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, Nu
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
-pub use material::{InversionHandling, Material, NeoHookean, ValidityDomain};
+pub use material::{InversionHandling, Material, MaterialField, NeoHookean, ValidityDomain};
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
     referenced_vertices,

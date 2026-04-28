@@ -4,11 +4,11 @@
 //! parameters per Part 2 Ch 09 [`00-sdf-valued.md`][s] and Part 7 Ch 02
 //! [`00-sampling.md`][a]. The `Field<T>` trait is the consumer-side API
 //! that the per-tet centroid sample pass walks at mesh-build time;
-//! `MaterialField` (Phase 4 commit 3, `material/material_field.rs` —
-//! not yet implemented at this commit) aggregates one
-//! `Box<dyn Field<f64>>` per scalar material parameter slot. Phase 4
-//! ships `T = f64` only; `T = Vec3` for HGO fiber direction lands in
-//! Phase H per scope memo Decision A.
+//! [`MaterialField`](crate::MaterialField) (commit 3,
+//! `material/material_field.rs`) aggregates one `Box<dyn Field<f64>>`
+//! per scalar material parameter slot. Phase 4 ships `T = f64` only;
+//! `T = Vec3` for HGO fiber direction lands in Phase H per scope memo
+//! Decision A.
 //!
 //! The trait is parallel to (not a sub-trait of) the geometric
 //! [`Sdf`](crate::sdf_bridge::Sdf): `Sdf` is the signed-distance surface
