@@ -44,7 +44,8 @@ use std::collections::BTreeMap;
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
 use crate::mesh::{
-    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, materials_from_field, quality,
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, interface_flags_from_field,
+    materials_from_field, quality,
 };
 
 use super::MeshingHints;
@@ -65,6 +66,7 @@ pub struct SdfMeshedTetMesh {
     adj: MeshAdjacency,
     q: QualityMetrics,
     material_cache: Vec<NeoHookean>,
+    interface_flags: Vec<bool>,
 }
 
 /// Errors returned by [`SdfMeshedTetMesh::from_sdf`].
@@ -197,12 +199,22 @@ impl SdfMeshedTetMesh {
         // lattice vertices are unreferenced and contribute nothing.
         let material_cache = materials_from_field(&output_positions, &output_tets, material_field);
 
+        // Step 9: per-tet interface-flag cache. `|φ(x_c)| < L_e`
+        // rule per Part 7 §02 §01 + scope memo Decision K (commit 12,
+        // IV-6); diagnostic-only — Newton hot path does not branch.
+        // All-`false` payload of length `n_tets` when
+        // `material_field` carries no interface SDF (uniform /
+        // `LayeredScalarField`-only fields go through this path).
+        let interface_flags =
+            interface_flags_from_field(&output_positions, &output_tets, material_field);
+
         Ok(Self {
             vertices: output_positions,
             tets: output_tets,
             adj: MeshAdjacency,
             q,
             material_cache,
+            interface_flags,
         })
     }
 }
@@ -240,6 +252,10 @@ impl Mesh for SdfMeshedTetMesh {
 
     fn materials(&self) -> &[NeoHookean] {
         &self.material_cache
+    }
+
+    fn interface_flags(&self) -> &[bool] {
+        &self.interface_flags
     }
 
     // Mirrors `HandBuiltTetMesh::equals_structurally`: same vertex

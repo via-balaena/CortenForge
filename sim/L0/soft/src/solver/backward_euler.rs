@@ -37,7 +37,7 @@ use crate::Vec3;
 use crate::contact::ContactModel;
 use crate::differentiable::newton_vjp::NewtonStepVjp;
 use crate::element::Element;
-use crate::material::Material;
+use crate::material::{InversionHandling, Material};
 use crate::mesh::{Mesh, TetId, VertexId};
 use crate::readout::{BoundaryConditions, LoadAxis};
 
@@ -414,6 +414,100 @@ where
         }
     }
 
+    /// Check every per-tet [`Material::validity`] domain against the
+    /// deformation gradient `F` evaluated at `x_curr` (Phase 4 commit
+    /// 12, IV-7 per scope memo Decision Q).
+    ///
+    /// First-violator-wins: walks tets in ascending `tet_id` order,
+    /// computes `F = Σ_a x_{a,i} · ∂N_a/∂X_j` per element, and panics
+    /// at the first tet whose `F` falls outside the declared
+    /// [`crate::ValidityDomain`]. The two slots checkable from `F`
+    /// for every base [`Material`] impl Phase 4 ships are
+    /// `inversion` (`det F ≤ 0` under
+    /// [`InversionHandling::RequireOrientation`]) and
+    /// `max_stretch_deviation` (max `|σ_i − 1|` over the three
+    /// singular values `σ_i` of `F`). The other four
+    /// [`crate::ValidityDomain`] slots are construction-time
+    /// (`poisson_range`) or decorator-only (`temperature_range`,
+    /// `strain_rate_range`, `max_rotation` infinite for the
+    /// scalar-isotropic NH baseline) and not checked here.
+    ///
+    /// Diagnostic-only at the solver level — Decision K's "Newton
+    /// hot path does not branch on diagnostic metadata" framing
+    /// applies to the interface flag, not to validity; this check
+    /// runs once per [`Solver::step`] call before the Newton loop
+    /// starts (Decision Q "at step start"), and panics on first
+    /// violation rather than degrading silently. The book Part 2
+    /// §00 §02 prescription is a runtime warning; Decision Q
+    /// upgrades to panic for Phase 4 fail-closed semantics.
+    ///
+    /// # Panics
+    ///
+    /// On first violator, with structured message
+    /// `"validity violation at tet {id}: {slot} = {value:.3} ..."`
+    /// where `{slot}` is one of `max_stretch_deviation` or
+    /// `inversion`. The `{slot}` substring is the IV-7 contract per
+    /// Decision Q — tests pin on it via `#[should_panic(expected =
+    /// "max_stretch_deviation")]` etc.
+    //
+    // similar_names: `tet_id`/`tet` mirrors the assembly methods.
+    // cast_possible_truncation: same Mesh-trait API tax as the
+    // assembly methods.
+    #[allow(clippy::similar_names, clippy::cast_possible_truncation)]
+    fn check_validity_at_step_start(&self, x_curr: &[f64]) {
+        debug_assert!(x_curr.len() == self.n_dof);
+        let materials = self.mesh.materials();
+        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+            let verts = self.mesh.tet_vertices(tet_id as TetId);
+            let x_elem = extract_element_dof_values(x_curr, &verts);
+            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+            let validity = materials[tet_id].validity();
+
+            // Inversion check first: a non-positive `det F` makes the
+            // SVD-based stretch check below ambiguous (singular values
+            // are non-negative), so the orientation slot is the
+            // structurally prior gate. Programs that allow `det F <=
+            // 0` declare a non-`RequireOrientation` inversion handler,
+            // and Phase 4 has none — Phase H may add `Barrier` /
+            // `OptIn` variants when an impl needs them.
+            let det_f = f.determinant();
+            if matches!(validity.inversion, InversionHandling::RequireOrientation) {
+                assert!(
+                    det_f > 0.0,
+                    "validity violation at tet {tet_id}: inversion = det F = \
+                     {det_f:.3} violates RequireOrientation handler (must be \
+                     strictly positive). Phase 4 scope memo Decision Q \
+                     fail-closed semantics."
+                );
+            }
+
+            // Principal-stretch deviation: SVD `F = U Σ V^T` gives
+            // singular values `σ_i` which are the principal stretches.
+            // `max_i |σ_i - 1|` is the Part 2 §00 §02 stretch bound.
+            // `f.svd_unordered(false, false)` skips U/V computation
+            // (we only need singular values); cheap O(27) FLOPs per
+            // tet. Singular values are non-negative; a reflection-only
+            // F has σ_i ≥ 0 with `det F < 0`, already caught above.
+            let svd = f.svd_unordered(false, false);
+            let sigma = svd.singular_values;
+            let max_dev = sigma
+                .iter()
+                .map(|s| (s - 1.0).abs())
+                .fold(0.0_f64, f64::max);
+            let bound = validity.max_stretch_deviation;
+            assert!(
+                max_dev <= bound,
+                "validity violation at tet {tet_id}: max_stretch_deviation \
+                 = {max_dev:.3} exceeds bound {bound:.3} (singular values \
+                 of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                 Decision Q fail-closed semantics.",
+                s0 = sigma[0],
+                s1 = sigma[1],
+                s2 = sigma[2],
+            );
+        }
+    }
+
     /// Free-DOF residual norm (scope §5 R-1 convergence criterion).
     /// Reads only the entries at `self.free_dof_indices`; pinned-DOF
     /// residual entries are excluded from the convergence test.
@@ -549,6 +643,12 @@ where
 
         let mut f_ext = vec![0.0; self.n_dof];
         self.assemble_external_force(theta, &mut f_ext);
+
+        // Decision Q validity check (Phase 4 commit 12, IV-7) — runs
+        // once at step start against `x_curr = x_prev`, panics on the
+        // first per-tet `Material::validity()` violation. Diagnostic
+        // failure mode, not solver-affecting on the happy path.
+        self.check_validity_at_step_start(&x_curr);
 
         let mut f_int = vec![0.0; self.n_dof];
         let mut r_full = vec![0.0; self.n_dof];

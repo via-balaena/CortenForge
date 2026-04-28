@@ -84,6 +84,29 @@ pub trait Mesh: Send + Sync {
     /// the Newton hot path; not re-sampled per iteration.
     fn materials(&self) -> &[NeoHookean];
 
+    /// Per-tet interface flags, indexed by [`TetId`]. Length equals
+    /// [`Mesh::n_tets`].
+    ///
+    /// Populated at mesh-construction time by the `|φ(x_c)| < L_e`
+    /// rule per Part 7 §02 §01 — sub-leaf
+    /// `70-sdf-pipeline/02-material-assignment/01-composition.md`. A
+    /// tet whose centroid lands within one mean-edge-length of the
+    /// material-interface SDF's zero set carries `true`; all other
+    /// tets carry `false`. The flag tracks the optional
+    /// [`MaterialField::interface_sdf`] slot attached at field
+    /// construction; meshes built from a field with no interface SDF
+    /// (uniform / `LayeredScalarField`-only) carry an all-`false`
+    /// vector of length `n_tets`.
+    ///
+    /// Diagnostic-only per Phase 4 scope memo Decision K — the Newton
+    /// hot path
+    /// ([`assemble_global_int_force`](crate::CpuNewtonSolver) and
+    /// [`assemble_free_hessian_triplets`](crate::CpuNewtonSolver))
+    /// does NOT branch on this flag. Phase H adaptive refinement
+    /// (Part 7 Ch 03) is the eventual consumer; the Phase 4
+    /// consumer is Part 11 mesh-quality reporting.
+    fn interface_flags(&self) -> &[bool];
+
     /// Structural equality: two meshes are structurally equal when they
     /// share vertex count, tet count, and per-tet vertex indices (Ch 00
     /// §02 mesh claim 3).
@@ -111,6 +134,57 @@ pub(crate) fn materials_from_field(
             let v3 = positions[tv[3] as usize];
             let centroid = (v0 + v1 + v2 + v3) * 0.25;
             field.sample(centroid)
+        })
+        .collect()
+}
+
+/// Compute the per-tet interface-flag cache that backs
+/// [`Mesh::interface_flags`].
+///
+/// Implements the book Part 7 §02 §01 rule `|φ(x_c)| < L_e`, where
+/// `φ` is the SDF attached to `field` via
+/// [`MaterialField::with_interface_sdf`], `x_c` is the tet centroid,
+/// and `L_e` is the arithmetic mean of the tet's six edge lengths
+/// (book's "tet's representative edge length"). When `field` carries
+/// no interface SDF, every tet is flagged `false` — the natural
+/// answer for uniform fields and `LayeredScalarField`-only fields,
+/// and a clean grep target via the all-`false` payload.
+///
+/// Walked in `tet_id` order (single-threaded) for I-5 determinism
+/// carry-forward (sister of [`materials_from_field`]).
+//
+// `from_fn` over the SDF-`Some` arm needs the centroid-and-edge-length
+// math inline; the helper is small and tightly read by mesh
+// constructors, so factoring it into named inner helpers would add
+// noise without information.
+#[must_use]
+pub(crate) fn interface_flags_from_field(
+    positions: &[Vec3],
+    tets: &[[VertexId; 4]],
+    field: &MaterialField,
+) -> Vec<bool> {
+    let Some(sdf) = field.interface_sdf() else {
+        return vec![false; tets.len()];
+    };
+    tets.iter()
+        .map(|&tv| {
+            let v0 = positions[tv[0] as usize];
+            let v1 = positions[tv[1] as usize];
+            let v2 = positions[tv[2] as usize];
+            let v3 = positions[tv[3] as usize];
+            let centroid = (v0 + v1 + v2 + v3) * 0.25;
+            // Six-edge mean per Part 7 §02 §01: edges are the (4 choose 2)
+            // = 6 vertex pairs (0,1)(0,2)(0,3)(1,2)(1,3)(2,3). Dividing
+            // the sum by 6 once is one rounding instead of six per-edge
+            // accumulator-divides.
+            let l_e = ((v1 - v0).norm()
+                + (v2 - v0).norm()
+                + (v3 - v0).norm()
+                + (v2 - v1).norm()
+                + (v3 - v1).norm()
+                + (v3 - v2).norm())
+                / 6.0;
+            sdf.eval(centroid).abs() < l_e
         })
         .collect()
 }

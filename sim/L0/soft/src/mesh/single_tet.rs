@@ -5,7 +5,10 @@
 //! `v_3 = (0, 0, 0.1)`. Edge length `L = 0.1` m (soft-robotics scale).
 //! Phase A proper replaces this with a general `TetMesh`.
 
-use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, materials_from_field, quality};
+use super::{
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, interface_flags_from_field,
+    materials_from_field, quality,
+};
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
 
@@ -16,6 +19,7 @@ pub struct SingleTetMesh {
     adj: MeshAdjacency,
     q: QualityMetrics,
     material_cache: Vec<NeoHookean>,
+    interface_flags: Vec<bool>,
 }
 
 impl SingleTetMesh {
@@ -35,11 +39,13 @@ impl SingleTetMesh {
         let tets: [[VertexId; 4]; 1] = [[0, 1, 2, 3]];
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
+        let interface_flags = interface_flags_from_field(&vertices, &tets, field);
         Self {
             vertices,
             adj: MeshAdjacency,
             q,
             material_cache,
+            interface_flags,
         }
     }
 }
@@ -72,6 +78,10 @@ impl Mesh for SingleTetMesh {
 
     fn materials(&self) -> &[NeoHookean] {
         &self.material_cache
+    }
+
+    fn interface_flags(&self) -> &[bool] {
+        &self.interface_flags
     }
 
     // Ch 00 §02 mesh claim 3: same vertex count, same tet count, and

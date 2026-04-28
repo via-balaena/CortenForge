@@ -21,7 +21,10 @@
 //! block has non-zero off-diagonal coupling — open-decision
 //! constraint per Phase 2 scope §9.
 
-use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, materials_from_field, quality};
+use super::{
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, interface_flags_from_field,
+    materials_from_field, quality,
+};
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
 
@@ -40,6 +43,7 @@ pub struct HandBuiltTetMesh {
     adj: MeshAdjacency,
     q: QualityMetrics,
     material_cache: Vec<NeoHookean>,
+    interface_flags: Vec<bool>,
 }
 
 impl HandBuiltTetMesh {
@@ -72,12 +76,14 @@ impl HandBuiltTetMesh {
         let tets = vec![[0, 1, 2, 3], [4, 5, 6, 7]];
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
+        let interface_flags = interface_flags_from_field(&vertices, &tets, field);
         Self {
             vertices,
             tets,
             adj: MeshAdjacency,
             q,
             material_cache,
+            interface_flags,
         }
     }
 
@@ -112,12 +118,14 @@ impl HandBuiltTetMesh {
         let tets = vec![[0, 1, 2, 3], [1, 2, 3, 4]];
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
+        let interface_flags = interface_flags_from_field(&vertices, &tets, field);
         Self {
             vertices,
             tets,
             adj: MeshAdjacency,
             q,
             material_cache,
+            interface_flags,
         }
     }
 
@@ -259,12 +267,14 @@ impl HandBuiltTetMesh {
 
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
+        let interface_flags = interface_flags_from_field(&vertices, &tets, field);
         Self {
             vertices,
             tets,
             adj: MeshAdjacency,
             q,
             material_cache,
+            interface_flags,
         }
     }
 }
@@ -302,6 +312,10 @@ impl Mesh for HandBuiltTetMesh {
 
     fn materials(&self) -> &[NeoHookean] {
         &self.material_cache
+    }
+
+    fn interface_flags(&self) -> &[bool] {
+        &self.interface_flags
     }
 
     // Mirror of `SingleTetMesh::equals_structurally` generalized to N

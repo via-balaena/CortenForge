@@ -39,6 +39,7 @@
 use super::NeoHookean;
 use crate::Vec3;
 use crate::field::{ConstantField, Field};
+use crate::sdf_bridge::Sdf;
 
 /// Aggregator over the two scalar Lamé fields backing a per-element
 /// [`NeoHookean`].
@@ -57,9 +58,23 @@ use crate::field::{ConstantField, Field};
 ///   `Field<f64>` impl in either or both slots —
 ///   `LayeredScalarField`, `BlendedScalarField`, or a future Phase-H
 ///   impl).
+///
+/// **Interface SDF (commit 12, IV-6 per Part 7 §02 §01).** Optional
+/// slot carrying the SDF whose zero set drives the material blend
+/// (e.g., the `Box<dyn Sdf>` inside a
+/// [`BlendedScalarField`](crate::field::BlendedScalarField) used for
+/// the `mu` or `lambda` field). When set via
+/// [`MaterialField::with_interface_sdf`], mesh constructors flag tets
+/// whose centroid lands within one mean-edge-length of the SDF zero
+/// per the book's `|φ(x_c)| < L_e` rule, exposed via
+/// [`crate::Mesh::interface_flags`]. When not set, every mesh tet
+/// flag is `false` — uniform fields and `LayeredScalarField`-only
+/// fields go through this path. Diagnostic-only per scope memo
+/// Decision K: the Newton hot path never reads the flag.
 pub struct MaterialField {
     mu: Box<dyn Field<f64>>,
     lambda: Box<dyn Field<f64>>,
+    interface_sdf: Option<Box<dyn Sdf>>,
 }
 
 impl MaterialField {
@@ -73,6 +88,7 @@ impl MaterialField {
         Self {
             mu: Box::new(ConstantField::new(mu)),
             lambda: Box::new(ConstantField::new(lambda)),
+            interface_sdf: None,
         }
     }
 
@@ -97,7 +113,44 @@ impl MaterialField {
     /// impl.
     #[must_use]
     pub fn from_fields(mu: Box<dyn Field<f64>>, lambda: Box<dyn Field<f64>>) -> Self {
-        Self { mu, lambda }
+        Self {
+            mu,
+            lambda,
+            interface_sdf: None,
+        }
+    }
+
+    /// Attach an interface SDF to this field for IV-6 interface-tet
+    /// flagging (Part 7 §02 §01).
+    ///
+    /// The supplied SDF's zero set is the "material-interface"
+    /// boundary the [`crate::Mesh::interface_flags`] population pass
+    /// thresholds against per the book's `|φ(x_c)| < L_e` rule. For
+    /// the canonical "stiff skin over soft core" pattern this is the
+    /// `Box<dyn Sdf>` driving a [`crate::field::BlendedScalarField`]
+    /// used for `mu` or `lambda`; for other compositions the caller
+    /// passes the SDF whose zero set the flag should track.
+    ///
+    /// Builder method (`self`-by-value, returns `Self`) so existing
+    /// constructor call sites stay untouched: a graded-with-flag
+    /// scene reads
+    /// `MaterialField::from_fields(mu, lambda).with_interface_sdf(sdf)`.
+    #[must_use]
+    pub fn with_interface_sdf(mut self, sdf: Box<dyn Sdf>) -> Self {
+        self.interface_sdf = Some(sdf);
+        self
+    }
+
+    /// Borrow the interface SDF if one was attached via
+    /// [`MaterialField::with_interface_sdf`]; `None` otherwise.
+    ///
+    /// Read by the [`crate::Mesh`] impls' constructors at mesh-build
+    /// time to populate the per-tet [`crate::Mesh::interface_flags`]
+    /// vector. Not read by the Newton hot path (Decision K
+    /// diagnostic-only).
+    #[must_use]
+    pub fn interface_sdf(&self) -> Option<&dyn Sdf> {
+        self.interface_sdf.as_deref()
     }
 
     /// Sample both slots at `x_ref` and return a fresh per-element
