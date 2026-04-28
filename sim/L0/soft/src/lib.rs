@@ -26,6 +26,7 @@ pub mod autograd_ops;
 pub mod contact;
 pub mod differentiable;
 pub mod element;
+pub mod field;
 pub mod material;
 pub mod mesh;
 pub mod observable;
@@ -37,6 +38,7 @@ pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact};
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
+pub use field::{ConstantField, Field};
 pub use material::{InversionHandling, Material, NeoHookean, ValidityDomain};
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
