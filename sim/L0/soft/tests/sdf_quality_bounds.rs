@@ -106,13 +106,10 @@ fn build_sphere_mesh(radius: f64, cell_size: f64) -> SdfMeshedTetMesh {
     let hints = MeshingHints {
         bbox: Aabb3::new(Vec3::new(-half, -half, -half), Vec3::new(half, half, half)),
         cell_size,
+        material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
     };
-    SdfMeshedTetMesh::from_sdf(
-        &SphereSdf { radius },
-        &hints,
-        &MaterialField::uniform(1.0e5, 4.0e5),
-    )
-    .expect("sphere scene should mesh successfully")
+    SdfMeshedTetMesh::from_sdf(&SphereSdf { radius }, &hints)
+        .expect("sphere scene should mesh successfully")
 }
 
 /// One row of the `RADII × CELLS_PER_RADIUS` sweep — `(radius,

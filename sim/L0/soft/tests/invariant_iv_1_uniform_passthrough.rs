@@ -300,8 +300,8 @@ fn run_sdf_sphere_evaluate() -> (f64, f64) {
                 Vec3::new(SDF_BBOX_HALF, SDF_BBOX_HALF, SDF_BBOX_HALF),
             ),
             cell_size: SDF_CELL_SIZE,
+            material_field: Some(MaterialField::uniform(MU, LAMBDA)),
         },
-        &MaterialField::uniform(MU, LAMBDA),
     )
     .expect("canonical sphere scene should mesh successfully");
 

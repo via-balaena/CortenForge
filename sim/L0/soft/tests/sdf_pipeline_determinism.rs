@@ -43,19 +43,16 @@
 use sim_soft::sdf_bridge::{Aabb3, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf};
 use sim_soft::{MaterialField, Mesh, TetId, Vec3};
 
-/// Phase 4 IV-1 regression target — the same Ecoflex-class `(μ, λ)`
-/// the pre-Phase-4 SDF tests implicitly used through the solver's
-/// hardcoded `NeoHookean::from_lame(1e5, 4e5)`. Threading a uniform
-/// field here keeps the bit-equality determinism bar intact while the
-/// new mesh constructor surface explicitly takes a `MaterialField`.
-fn canonical_material_field() -> MaterialField {
-    MaterialField::uniform(1.0e5, 4.0e5)
-}
-
 const RADIUS: f64 = 0.1;
 const CELL_SIZE: f64 = 0.02;
 const BBOX_HALF_EXTENT: f64 = 0.12;
 
+/// Phase 4 IV-1 regression target — the same Ecoflex-class `(μ, λ)`
+/// the pre-Phase-4 SDF tests implicitly used through the solver's
+/// hardcoded `NeoHookean::from_lame(1e5, 4e5)`. Threading a uniform
+/// field via `MeshingHints::material_field` keeps the bit-equality
+/// determinism bar intact while exercising the commit-9 hint-carried
+/// material-field surface.
 fn canonical_hints() -> MeshingHints {
     MeshingHints {
         bbox: Aabb3::new(
@@ -63,16 +60,13 @@ fn canonical_hints() -> MeshingHints {
             Vec3::new(BBOX_HALF_EXTENT, BBOX_HALF_EXTENT, BBOX_HALF_EXTENT),
         ),
         cell_size: CELL_SIZE,
+        material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
     }
 }
 
 fn build() -> SdfMeshedTetMesh {
-    SdfMeshedTetMesh::from_sdf(
-        &SphereSdf { radius: RADIUS },
-        &canonical_hints(),
-        &canonical_material_field(),
-    )
-    .expect("canonical sphere scene should mesh successfully")
+    SdfMeshedTetMesh::from_sdf(&SphereSdf { radius: RADIUS }, &canonical_hints())
+        .expect("canonical sphere scene should mesh successfully")
 }
 
 #[test]
@@ -246,8 +240,7 @@ fn non_finite_sdf_value_surfaces_at_smallest_tripping_vertex_id() {
     // Sequential VertexId-order sampling makes the diagnostic
     // deterministic — every NaN trips, but the FIRST trip is the
     // smallest VertexId, namely 0 (the bbox lower corner).
-    let result =
-        SdfMeshedTetMesh::from_sdf(&NanSdf, &canonical_hints(), &canonical_material_field());
+    let result = SdfMeshedTetMesh::from_sdf(&NanSdf, &canonical_hints());
     match result {
         Err(MeshingError::NonFiniteSdfValue { vertex_id, value }) => {
             assert_eq!(vertex_id, 0, "expected smallest tripping VertexId");
@@ -268,12 +261,9 @@ fn empty_mesh_surfaces_when_bbox_is_far_from_sdf_support() {
     let hints = MeshingHints {
         bbox: Aabb3::new(Vec3::new(99.0, 99.0, 99.0), Vec3::new(100.0, 100.0, 100.0)),
         cell_size: 0.5,
+        material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
     };
-    let result = SdfMeshedTetMesh::from_sdf(
-        &SphereSdf { radius: 0.1 },
-        &hints,
-        &canonical_material_field(),
-    );
+    let result = SdfMeshedTetMesh::from_sdf(&SphereSdf { radius: 0.1 }, &hints);
     assert!(
         matches!(result, Err(MeshingError::EmptyMesh)),
         "expected EmptyMesh, got {result:?}",

@@ -38,10 +38,11 @@ fn baseline_field() -> MaterialField {
     MaterialField::uniform(MU_BASELINE, LAMBDA_BASELINE)
 }
 
-const fn canonical_sphere_hints() -> MeshingHints {
+const fn canonical_sphere_hints(field: MaterialField) -> MeshingHints {
     MeshingHints {
         bbox: Aabb3::new(Vec3::new(-0.12, -0.12, -0.12), Vec3::new(0.12, 0.12, 0.12)),
         cell_size: 0.02,
+        material_field: Some(field),
     }
 }
 
@@ -74,8 +75,7 @@ fn two_tet_shared_face_cache_has_length_two() {
 fn sdf_meshed_cache_length_matches_n_tets() {
     let mesh = SdfMeshedTetMesh::from_sdf(
         &SphereSdf { radius: 0.1 },
-        &canonical_sphere_hints(),
-        &baseline_field(),
+        &canonical_sphere_hints(baseline_field()),
     )
     .expect("canonical sphere should mesh successfully");
     assert_eq!(mesh.materials().len(), mesh.n_tets());
@@ -102,8 +102,7 @@ fn uniform_field_produces_uniform_cache_on_two_isolated_tets() {
 fn uniform_field_produces_uniform_cache_on_sdf_meshed() {
     let mesh = SdfMeshedTetMesh::from_sdf(
         &SphereSdf { radius: 0.1 },
-        &canonical_sphere_hints(),
-        &baseline_field(),
+        &canonical_sphere_hints(baseline_field()),
     )
     .expect("canonical sphere should mesh successfully");
     let expected = NeoHookean::from_lame(MU_BASELINE, LAMBDA_BASELINE);

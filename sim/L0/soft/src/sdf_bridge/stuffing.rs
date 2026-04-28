@@ -1202,6 +1202,7 @@ mod tests {
         let hints = MeshingHints {
             bbox: Aabb3::new(Vec3::zeros(), Vec3::new(2.0, 2.0, 2.0)),
             cell_size: 1.0,
+            material_field: None,
         };
         BccLattice::new(&hints)
     }

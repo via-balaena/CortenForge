@@ -98,16 +98,13 @@ fn canonical_hints() -> MeshingHints {
             Vec3::new(BBOX_HALF_EXTENT, BBOX_HALF_EXTENT, BBOX_HALF_EXTENT),
         ),
         cell_size: CELL_SIZE,
+        material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
     }
 }
 
 fn canonical_sphere_mesh() -> SdfMeshedTetMesh {
-    SdfMeshedTetMesh::from_sdf(
-        &SphereSdf { radius: RADIUS },
-        &canonical_hints(),
-        &MaterialField::uniform(1.0e5, 4.0e5),
-    )
-    .expect("canonical sphere scene should mesh successfully")
+    SdfMeshedTetMesh::from_sdf(&SphereSdf { radius: RADIUS }, &canonical_hints())
+        .expect("canonical sphere scene should mesh successfully")
 }
 
 /// Pick the bottom-hemisphere pin set and the single max-z load

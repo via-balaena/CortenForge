@@ -26,6 +26,7 @@ pub use sdf::{Sdf, SphereSdf};
 pub use sdf_meshed_tet_mesh::{MeshingError, SdfMeshedTetMesh};
 
 use crate::Vec3;
+use crate::material::MaterialField;
 
 /// Axis-aligned bounding box in world space.
 ///
@@ -54,13 +55,27 @@ impl Aabb3 {
 
 /// Knobs handed to the placeholder mesher's `from_sdf` constructor.
 ///
-/// Phase 3 ships `bbox` + `cell_size` only; `resolution_hint` and
-/// `envelope_tolerance` (book Ch 00 §04) land when fTetWild does.
-#[derive(Clone, Debug)]
+/// Phase 3 shipped `bbox` + `cell_size` only; Phase 4 commit 9 added
+/// the optional `material_field` slot per book Part 7 §00 — the SDF
+/// mesher's input is the in-memory `(SdfField, MaterialField)` pair.
+/// `resolution_hint` and `envelope_tolerance` (book Ch 00 §04) land
+/// when fTetWild does.
+///
+/// Neither `Clone` nor `Debug` is derived: `material_field` holds an
+/// `Option<MaterialField>`, and `MaterialField`'s two `Box<dyn
+/// Field<f64>>` slots aren't `Clone` (no `Field::clone_box` machinery)
+/// and don't carry a meaningful `Debug` projection. No callsite needs
+/// either today; if a need surfaces later, hand-roll the impls then.
 pub struct MeshingHints {
     /// Lattice extent — the mesher samples the SDF on a uniform cubic
     /// lattice spanning this box.
     pub bbox: Aabb3,
     /// Lattice spacing in world units (metres). Smaller is finer.
     pub cell_size: f64,
+    /// Optional per-tet [`MaterialField`] sampled at each emitted
+    /// tet's centroid (Tet4 default per Part 7 §02 §00). When `None`,
+    /// [`SdfMeshedTetMesh::from_sdf`] synthesizes
+    /// [`MaterialField::skeleton_default`] — the IV-1 baseline used
+    /// throughout the regression net.
+    pub material_field: Option<MaterialField>,
 }

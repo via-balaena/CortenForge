@@ -76,6 +76,21 @@ impl MaterialField {
         }
     }
 
+    /// IV-1 baseline material — `MaterialField::uniform(1.0e5, 4.0e5)`.
+    ///
+    /// Pinned Lamé pair: μ = 1.0×10⁵ Pa, λ = 4.0×10⁵ Pa (Ecoflex 00-30
+    /// compressible regime, ν = 0.4 — same constants the IV-1, IV-2,
+    /// and IV-3 invariant tests anchor on, and the implicit baseline
+    /// that pre-Phase-4 SDF tests ran through the solver's
+    /// hardcoded `NeoHookean::from_lame(1e5, 4e5)`). Constructor exists
+    /// so the SDF mesher's `MeshingHints::material_field = None` path
+    /// has a single named source of truth for the synthesized default
+    /// and so `grep skeleton_default` surfaces every consumer.
+    #[must_use]
+    pub fn skeleton_default() -> Self {
+        Self::uniform(1.0e5, 4.0e5)
+    }
+
     /// Construct from two heterogeneous [`Field<f64>`](crate::field::Field)
     /// impls. The two slots sample independently; either or both can
     /// be `LayeredScalarField`, `BlendedScalarField`, or a Phase-H

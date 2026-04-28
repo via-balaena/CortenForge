@@ -117,11 +117,18 @@ impl SdfMeshedTetMesh {
     /// degenerate enough to yield zero cubes along some axis). These
     /// are caller-supplied invariants, not runtime errors; the
     /// canonical Phase 3 sphere parameters never trip them.
-    pub fn from_sdf(
-        sdf: &dyn Sdf,
-        hints: &MeshingHints,
-        material_field: &MaterialField,
-    ) -> Result<Self, MeshingError> {
+    pub fn from_sdf(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
+        // Per scope memo §0 + §8 commit 9: hints carry the canonical
+        // `(SdfField, MaterialField)` pair (book Part 7 §00). When
+        // `hints.material_field` is `None`, fall back to the IV-1
+        // baseline (Ecoflex 00-30 compressible regime, μ=1e5 / λ=4e5)
+        // — a single named constant via `MaterialField::skeleton_default`
+        // so consumers grep cleanly. Building the fallback unconditionally
+        // is two `Box<ConstantField<f64>>` allocations (microseconds);
+        // `from_sdf` is a one-shot per scene construction.
+        let fallback = MaterialField::skeleton_default();
+        let material_field = hints.material_field.as_ref().unwrap_or(&fallback);
+
         let lattice = BccLattice::new(hints);
         let n_lattice = lattice.positions.len();
 
