@@ -42,7 +42,10 @@
 use std::collections::BTreeMap;
 
 use crate::Vec3;
-use crate::mesh::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, quality};
+use crate::material::{MaterialField, NeoHookean};
+use crate::mesh::{
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, materials_from_field, quality,
+};
 
 use super::MeshingHints;
 use super::lattice::BccLattice;
@@ -61,6 +64,7 @@ pub struct SdfMeshedTetMesh {
     tets: Vec<[VertexId; 4]>,
     adj: MeshAdjacency,
     q: QualityMetrics,
+    material_cache: Vec<NeoHookean>,
 }
 
 /// Errors returned by [`SdfMeshedTetMesh::from_sdf`].
@@ -113,7 +117,11 @@ impl SdfMeshedTetMesh {
     /// degenerate enough to yield zero cubes along some axis). These
     /// are caller-supplied invariants, not runtime errors; the
     /// canonical Phase 3 sphere parameters never trip them.
-    pub fn from_sdf(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
+    pub fn from_sdf(
+        sdf: &dyn Sdf,
+        hints: &MeshingHints,
+        material_field: &MaterialField,
+    ) -> Result<Self, MeshingError> {
         let lattice = BccLattice::new(hints);
         let n_lattice = lattice.positions.len();
 
@@ -176,11 +184,18 @@ impl SdfMeshedTetMesh {
         // (Decision I) so III-1 can assert bit-equality across runs.
         let q = quality::compute_metrics(&output_positions, &output_tets);
 
+        // Step 8: per-tet material cache. Centroid-sampled from
+        // `material_field` per Part 7 §02 §00 + scope memo Decision K.
+        // Walked in `tet_id` order via `materials_from_field`; orphan
+        // lattice vertices are unreferenced and contribute nothing.
+        let material_cache = materials_from_field(&output_positions, &output_tets, material_field);
+
         Ok(Self {
             vertices: output_positions,
             tets: output_tets,
             adj: MeshAdjacency,
             q,
+            material_cache,
         })
     }
 }
@@ -214,6 +229,10 @@ impl Mesh for SdfMeshedTetMesh {
 
     fn quality(&self) -> &QualityMetrics {
         &self.q
+    }
+
+    fn materials(&self) -> &[NeoHookean] {
+        &self.material_cache
     }
 
     // Mirrors `HandBuiltTetMesh::equals_structurally`: same vertex

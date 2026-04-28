@@ -69,7 +69,7 @@
 #![allow(clippy::expect_used)]
 
 use sim_soft::sdf_bridge::{Aabb3, MeshingHints, SdfMeshedTetMesh, SphereSdf};
-use sim_soft::{Mesh, Vec3};
+use sim_soft::{MaterialField, Mesh, Vec3};
 
 /// Sphere radii (m) — 4× span between smallest and largest.
 const RADII: [f64; 3] = [0.05, 0.1, 0.2];
@@ -107,8 +107,12 @@ fn build_sphere_mesh(radius: f64, cell_size: f64) -> SdfMeshedTetMesh {
         bbox: Aabb3::new(Vec3::new(-half, -half, -half), Vec3::new(half, half, half)),
         cell_size,
     };
-    SdfMeshedTetMesh::from_sdf(&SphereSdf { radius }, &hints)
-        .expect("sphere scene should mesh successfully")
+    SdfMeshedTetMesh::from_sdf(
+        &SphereSdf { radius },
+        &hints,
+        &MaterialField::uniform(1.0e5, 4.0e5),
+    )
+    .expect("sphere scene should mesh successfully")
 }
 
 /// One row of the `RADII × CELLS_PER_RADIUS` sweep — `(radius,

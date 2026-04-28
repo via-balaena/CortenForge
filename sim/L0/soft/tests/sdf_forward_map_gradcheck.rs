@@ -70,8 +70,8 @@ use sim_soft::readout::scene::pick_vertices_by_predicate;
 use sim_soft::sdf_bridge::{Aabb3, MeshingHints, SdfMeshedTetMesh, SphereSdf};
 use sim_soft::{
     BasicObservable, BoundaryConditions, CpuNewtonSolver, CpuTape, EditResult, ForwardMap,
-    GradientEstimate, LoadAxis, Mesh, NeoHookean, NullContact, RewardWeights, SceneInitial,
-    SkeletonForwardMap, Solver, SolverConfig, Tet4, Vec3, VertexId,
+    GradientEstimate, LoadAxis, MaterialField, Mesh, NeoHookean, NullContact, RewardWeights,
+    SceneInitial, SkeletonForwardMap, Solver, SolverConfig, Tet4, Vec3, VertexId,
 };
 
 // ── Canonical scene fixtures ─────────────────────────────────────────────
@@ -102,8 +102,12 @@ fn canonical_hints() -> MeshingHints {
 }
 
 fn canonical_sphere_mesh() -> SdfMeshedTetMesh {
-    SdfMeshedTetMesh::from_sdf(&SphereSdf { radius: RADIUS }, &canonical_hints())
-        .expect("canonical sphere scene should mesh successfully")
+    SdfMeshedTetMesh::from_sdf(
+        &SphereSdf { radius: RADIUS },
+        &canonical_hints(),
+        &MaterialField::uniform(1.0e5, 4.0e5),
+    )
+    .expect("canonical sphere scene should mesh successfully")
 }
 
 /// Pick the bottom-hemisphere pin set and the single max-z load

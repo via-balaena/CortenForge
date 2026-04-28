@@ -16,8 +16,9 @@
 //! off-diagonal coupling — open-decision constraint per Phase 2 scope
 //! §9.
 
-use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, quality};
+use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, materials_from_field, quality};
 use crate::Vec3;
+use crate::material::{MaterialField, NeoHookean};
 
 /// Hand-built multi-tetrahedron mesh.
 ///
@@ -33,10 +34,12 @@ pub struct HandBuiltTetMesh {
     tets: Vec<[VertexId; 4]>,
     adj: MeshAdjacency,
     q: QualityMetrics,
+    material_cache: Vec<NeoHookean>,
 }
 
 impl HandBuiltTetMesh {
-    /// Two isolated decimeter tets — II-1 / II-2 gate scene.
+    /// Two isolated decimeter tets — II-1 / II-2 gate scene, sampled
+    /// against `field` at each tet centroid (Decision K).
     ///
     /// 8 vertices, 2 tets, no shared vertices. Tet 0 is the canonical
     /// decimeter tet at the origin (matches
@@ -48,7 +51,7 @@ impl HandBuiltTetMesh {
     /// Per-tet connectivity: tet 0 = `[0, 1, 2, 3]`; tet 1 = `[4, 5,
     /// 6, 7]`. Both right-handed (positive signed volume).
     #[must_use]
-    pub fn two_isolated_tets() -> Self {
+    pub fn two_isolated_tets(field: &MaterialField) -> Self {
         let l = 0.1;
         let dx = 0.5;
         let vertices = vec![
@@ -63,15 +66,18 @@ impl HandBuiltTetMesh {
         ];
         let tets = vec![[0, 1, 2, 3], [4, 5, 6, 7]];
         let q = quality::compute_metrics(&vertices, &tets);
+        let material_cache = materials_from_field(&vertices, &tets, field);
         Self {
             vertices,
             tets,
             adj: MeshAdjacency,
             q,
+            material_cache,
         }
     }
 
-    /// Two tets sharing one face — II-3 gate scene.
+    /// Two tets sharing one face — II-3 gate scene, sampled against
+    /// `field` at each tet centroid (Decision K).
     ///
     /// 5 vertices, 2 tets. Tet 0 is the canonical decimeter tet at
     /// the origin (apex `v_0`, base face `{v_1, v_2, v_3}`); tet 1
@@ -89,7 +95,7 @@ impl HandBuiltTetMesh {
     /// Per-tet connectivity: tet 0 = `[0, 1, 2, 3]`; tet 1 = `[1, 2,
     /// 3, 4]`. Both right-handed.
     #[must_use]
-    pub fn two_tet_shared_face() -> Self {
+    pub fn two_tet_shared_face(field: &MaterialField) -> Self {
         let l = 0.1;
         let vertices = vec![
             Vec3::new(0.0, 0.0, 0.0),
@@ -100,11 +106,13 @@ impl HandBuiltTetMesh {
         ];
         let tets = vec![[0, 1, 2, 3], [1, 2, 3, 4]];
         let q = quality::compute_metrics(&vertices, &tets);
+        let material_cache = materials_from_field(&vertices, &tets, field);
         Self {
             vertices,
             tets,
             adj: MeshAdjacency,
             q,
+            material_cache,
         }
     }
 }
@@ -138,6 +146,10 @@ impl Mesh for HandBuiltTetMesh {
 
     fn quality(&self) -> &QualityMetrics {
         &self.q
+    }
+
+    fn materials(&self) -> &[NeoHookean] {
+        &self.material_cache
     }
 
     // Mirror of `SingleTetMesh::equals_structurally` generalized to N
@@ -193,16 +205,25 @@ mod tests {
         m.determinant() / 6.0
     }
 
+    /// Phase 2 IV-1 regression target: the Ecoflex-class `(μ, λ) =
+    /// (1e5, 4e5)` previously hardcoded in the skeleton solver, threaded
+    /// here as a uniform `MaterialField` so the topology/geometry tests
+    /// stay material-agnostic while the new constructors require an
+    /// explicit field per Decision P.
+    fn canonical_field() -> MaterialField {
+        MaterialField::uniform(1.0e5, 4.0e5)
+    }
+
     #[test]
     fn two_isolated_tets_has_8_vertices_and_2_tets() {
-        let mesh = HandBuiltTetMesh::two_isolated_tets();
+        let mesh = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
         assert_eq!(mesh.n_vertices(), 8);
         assert_eq!(mesh.n_tets(), 2);
     }
 
     #[test]
     fn two_isolated_tets_share_no_vertices() {
-        let mesh = HandBuiltTetMesh::two_isolated_tets();
+        let mesh = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
         let t0 = mesh.tet_vertices(0);
         let t1 = mesh.tet_vertices(1);
         for &v0 in &t0 {
@@ -215,7 +236,7 @@ mod tests {
 
     #[test]
     fn two_isolated_tets_are_right_handed() {
-        let mesh = HandBuiltTetMesh::two_isolated_tets();
+        let mesh = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
         for tet_id in 0..mesh.n_tets() as TetId {
             let vol = signed_volume(mesh.positions(), mesh.tet_vertices(tet_id));
             assert!(
@@ -230,7 +251,7 @@ mod tests {
         // Canonical decimeter tet: V = L^3 / 6 = 0.1^3 / 6 ≈ 1.667e-4 m^3.
         // Both tets are translated copies of the canonical, so both
         // must produce that exact volume (no nonlinear scaling).
-        let mesh = HandBuiltTetMesh::two_isolated_tets();
+        let mesh = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
         let expected = 0.1_f64.powi(3) / 6.0;
         for tet_id in 0..mesh.n_tets() as TetId {
             let vol = signed_volume(mesh.positions(), mesh.tet_vertices(tet_id));
@@ -243,14 +264,14 @@ mod tests {
 
     #[test]
     fn two_tet_shared_face_has_5_vertices_and_2_tets() {
-        let mesh = HandBuiltTetMesh::two_tet_shared_face();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
         assert_eq!(mesh.n_vertices(), 5);
         assert_eq!(mesh.n_tets(), 2);
     }
 
     #[test]
     fn two_tet_shared_face_shares_exactly_three_vertices() {
-        let mesh = HandBuiltTetMesh::two_tet_shared_face();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
         let t0 = mesh.tet_vertices(0);
         let t1 = mesh.tet_vertices(1);
         let shared: usize = t0.iter().filter(|v| t1.contains(v)).count();
@@ -262,7 +283,7 @@ mod tests {
 
     #[test]
     fn two_tet_shared_face_are_right_handed() {
-        let mesh = HandBuiltTetMesh::two_tet_shared_face();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
         for tet_id in 0..mesh.n_tets() as TetId {
             let vol = signed_volume(mesh.positions(), mesh.tet_vertices(tet_id));
             assert!(
@@ -281,7 +302,7 @@ mod tests {
         // constraint from Phase 2 scope §9 holds at the geometry
         // level. Future edits to the apex must keep this distance
         // non-trivial.
-        let mesh = HandBuiltTetMesh::two_tet_shared_face();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
         let apex = mesh.positions()[4];
         let mirror = Vec3::new(2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0) * 0.1;
         let dist = (apex - mirror).norm();
@@ -294,15 +315,15 @@ mod tests {
 
     #[test]
     fn equals_structurally_same_constructor() {
-        let a = HandBuiltTetMesh::two_isolated_tets();
-        let b = HandBuiltTetMesh::two_isolated_tets();
+        let a = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
+        let b = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
         assert!(a.equals_structurally(&b));
     }
 
     #[test]
     fn equals_structurally_different_topology() {
-        let isolated = HandBuiltTetMesh::two_isolated_tets();
-        let shared = HandBuiltTetMesh::two_tet_shared_face();
+        let isolated = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
+        let shared = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
         assert!(
             !isolated.equals_structurally(&shared),
             "isolated and shared-face meshes must NOT be structurally equal \
@@ -313,7 +334,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn tet_vertices_out_of_bounds_panics() {
-        let mesh = HandBuiltTetMesh::two_isolated_tets();
+        let mesh = HandBuiltTetMesh::two_isolated_tets(&canonical_field());
         let _ = mesh.tet_vertices(5);
     }
 }

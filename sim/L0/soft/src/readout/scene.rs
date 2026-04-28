@@ -11,6 +11,7 @@
 use sim_ml_chassis::Tensor;
 
 use crate::Vec3;
+use crate::material::MaterialField;
 use crate::mesh::{Mesh, SingleTetMesh, VertexId};
 
 /// Scene constructors. Skeleton ships one constructor for the 1-tet
@@ -31,9 +32,16 @@ impl SoftScene {
     /// (rest-configuration positions, zero velocity, flattened to
     /// length-12 `Tensor<f64>` in vertex-major + xyz-inner layout —
     /// DOF `i` is vertex `i / 3`'s `i % 3` component).
+    ///
+    /// Materials default to a uniform Ecoflex-class field
+    /// `(μ, λ) = (1e5, 4e5)` per `material/neo_hookean.rs`'s
+    /// skeleton-scene parameters — the Phase 4 IV-1 regression target
+    /// per scope memo Decision P. Phase 4+ scenes that exercise graded
+    /// fields construct their own `MaterialField` and call the new
+    /// mesh constructors directly rather than going through `SoftScene`.
     #[must_use]
     pub fn one_tet_cube() -> (SingleTetMesh, BoundaryConditions, SceneInitial) {
-        let mesh = SingleTetMesh::new();
+        let mesh = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
         let mut x_prev_flat = [0.0f64; 12];
         for (v, pos) in mesh.positions().iter().enumerate() {
             x_prev_flat[3 * v] = pos.x;

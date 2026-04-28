@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 use crate::Vec3;
+use crate::material::{MaterialField, NeoHookean};
 
 pub mod hand_built;
 pub mod quality;
@@ -73,10 +74,45 @@ pub trait Mesh: Send + Sync {
     /// Precomputed quality metrics for the mesh.
     fn quality(&self) -> &QualityMetrics;
 
+    /// Per-tet material parameters, indexed by [`TetId`]. Length equals
+    /// [`Mesh::n_tets`].
+    ///
+    /// Populated at mesh-construction time by sampling a
+    /// [`MaterialField`] at each tet's centroid (Tet4 default per Part 7
+    /// §02 §00 — sub-leaf
+    /// `70-sdf-pipeline/02-material-assignment/00-sampling.md`). Read by
+    /// the Newton hot path; not re-sampled per iteration.
+    fn materials(&self) -> &[NeoHookean];
+
     /// Structural equality: two meshes are structurally equal when they
     /// share vertex count, tet count, and per-tet vertex indices (Ch 00
     /// §02 mesh claim 3).
     fn equals_structurally(&self, other: &dyn Mesh) -> bool;
+}
+
+/// Sample a [`MaterialField`] at each tet's centroid, returning the
+/// per-tet [`NeoHookean`] cache that backs [`Mesh::materials`].
+///
+/// Pins the Tet4 evaluation point to the centroid `(v0 + v1 + v2 + v3) /
+/// 4` per Part 7 §02 §00 — Phase H Tet10 will sample at four Gauss
+/// points instead and bypass this helper. Walked in `tet_id` order
+/// (single-threaded) for I-5 determinism carry-forward.
+#[must_use]
+pub(crate) fn materials_from_field(
+    positions: &[Vec3],
+    tets: &[[VertexId; 4]],
+    field: &MaterialField,
+) -> Vec<NeoHookean> {
+    tets.iter()
+        .map(|&tv| {
+            let v0 = positions[tv[0] as usize];
+            let v1 = positions[tv[1] as usize];
+            let v2 = positions[tv[2] as usize];
+            let v3 = positions[tv[3] as usize];
+            let centroid = (v0 + v1 + v2 + v3) * 0.25;
+            field.sample(centroid)
+        })
+        .collect()
 }
 
 /// Collect every vertex referenced by at least one tet, ascending.

@@ -31,8 +31,8 @@
 use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
     BasicObservable, BoundaryConditions, CpuNewtonSolver, CpuTape, ForwardMap, GradientEstimate,
-    HandBuiltTetMesh, LoadAxis, Mesh, NeoHookean, NullContact, RewardWeights, SceneInitial,
-    SkeletonForwardMap, SoftScene, Solver, SolverConfig, Tet4,
+    HandBuiltTetMesh, LoadAxis, MaterialField, Mesh, NeoHookean, NullContact, RewardWeights,
+    SceneInitial, SkeletonForwardMap, SoftScene, Solver, SolverConfig, Tet4,
 };
 
 // ── Shared fixtures ──────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ fn build_forward_map() -> SkeletonForwardMap {
 /// scope §8 commit 9).
 fn build_forward_map_two_isolated() -> SkeletonForwardMap {
     let cfg = SolverConfig::skeleton();
-    let mesh = HandBuiltTetMesh::two_isolated_tets();
+    let mesh = HandBuiltTetMesh::two_isolated_tets(&MaterialField::uniform(1.0e5, 4.0e5));
 
     let positions = mesh.positions();
     let n_dof = 3 * positions.len();

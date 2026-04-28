@@ -53,8 +53,9 @@
 
 use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, LoadAxis, Mesh,
-    NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
+    BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, LoadAxis,
+    MaterialField, Mesh, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig,
+    Tet4,
 };
 
 /// Stage-1 θ magnitude shared by all baseline + multi-tet runs in
@@ -103,7 +104,7 @@ fn run_one_tet() -> (Vec<f64>, usize, f64) {
 /// broadcasts (Decision L all-AxisZ branch).
 fn run_two_isolated_tets() -> (Vec<f64>, usize, f64) {
     let cfg = SolverConfig::skeleton();
-    let mesh = HandBuiltTetMesh::two_isolated_tets();
+    let mesh = HandBuiltTetMesh::two_isolated_tets(&MaterialField::uniform(1.0e5, 4.0e5));
 
     // Build SceneInitial inline — `SoftScene` only ships the
     // `one_tet_cube()` constructor; multi-tet scenes drive their

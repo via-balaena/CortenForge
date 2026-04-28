@@ -1032,7 +1032,7 @@ mod tests {
     //! existing seven integration tests in `tests/`.
 
     use crate::contact::NullContact;
-    use crate::material::NeoHookean;
+    use crate::material::{MaterialField, NeoHookean};
     use crate::mesh::SingleTetMesh;
     use crate::readout::{BoundaryConditions, LoadAxis};
     use crate::solver::{CpuNewtonSolver, SolverConfig};
@@ -1042,7 +1042,7 @@ mod tests {
         CpuNewtonSolver::new(
             NeoHookean::from_lame(1e5, 4e5),
             Tet4,
-            SingleTetMesh::new(),
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
             NullContact,
             SolverConfig::skeleton(),
             bc,

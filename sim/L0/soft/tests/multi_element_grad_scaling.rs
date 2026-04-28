@@ -50,7 +50,8 @@
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, IndexOp, LoadAxis,
-    Mesh, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig, Tet4,
+    MaterialField, Mesh, NeoHookean, NullContact, SkeletonSolver, SoftScene, Solver, SolverConfig,
+    Tet4,
 };
 
 /// Stage-1 θ magnitude shared by all helpers in this file.
@@ -82,7 +83,7 @@ fn build_two_tet_solver() -> (
     SolverConfig,
 ) {
     let cfg = SolverConfig::skeleton();
-    let mesh = HandBuiltTetMesh::two_isolated_tets();
+    let mesh = HandBuiltTetMesh::two_isolated_tets(&MaterialField::uniform(1.0e5, 4.0e5));
 
     let positions = mesh.positions();
     let n_dof = 3 * positions.len();
