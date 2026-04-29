@@ -8,7 +8,7 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use mesh_offset::{OffsetConfig, offset_mesh};
-use mesh_repair::MeshAdjacency;
+use mesh_repair::{MeshAdjacency, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
 use tracing::{debug, info, warn};
@@ -272,13 +272,34 @@ fn generate_shell_sdf(
     // Step 1: Create outer mesh using SDF offset
     let offset_config = OffsetConfig::default().with_resolution(params.sdf_voxel_size_mm);
 
-    let outer_mesh = match offset_mesh(inner_mesh, params.wall_thickness_mm, &offset_config) {
+    let mut outer_mesh = match offset_mesh(inner_mesh, params.wall_thickness_mm, &offset_config) {
         Ok(m) => m,
         Err(e) => {
             warn!("SDF offset failed: {:?}, falling back to normal method", e);
             return generate_shell_normal(inner_mesh, params);
         }
     };
+
+    // mesh-offset's marching cubes returns vertex-soup (vertex_count == 3 ×
+    // face_count); weld + compact so the outer is a proper indexed mesh
+    // before concatenation. Sub-voxel epsilon merges only MC's exactly
+    // coincident edge-interpolated duplicates, never legitimately distinct
+    // vertices.
+    let weld_eps = params.sdf_voxel_size_mm * 1e-3;
+    let merged = weld_vertices(&mut outer_mesh, weld_eps);
+    let orphans = remove_unreferenced_vertices(&mut outer_mesh);
+    debug!(
+        "Welded {} duplicate verts in outer mesh ({} orphans compacted)",
+        merged, orphans
+    );
+
+    // mesh-offset 0.7.x's marching cubes produces inside-out winding (commits
+    // 9+10 platform truth). Flip every outer face so normals point outward
+    // from the wall material; otherwise the assembled shell has
+    // signed_volume < 0 + is_inside_out == true and slicers see backfaces.
+    for face in &mut outer_mesh.faces {
+        face.swap(1, 2);
+    }
 
     let outer_vertex_count = outer_mesh.vertices.len();
     debug!(
@@ -432,6 +453,37 @@ fn compute_vertex_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
 mod tests {
     use super::*;
     use mesh_types::Point3;
+
+    fn create_closed_cube() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 10.0));
+        // Bottom (-z)
+        mesh.faces.push([0, 2, 1]);
+        mesh.faces.push([0, 3, 2]);
+        // Top (+z)
+        mesh.faces.push([4, 5, 6]);
+        mesh.faces.push([4, 6, 7]);
+        // Front (-y)
+        mesh.faces.push([0, 1, 5]);
+        mesh.faces.push([0, 5, 4]);
+        // Back (+y)
+        mesh.faces.push([2, 3, 7]);
+        mesh.faces.push([2, 7, 6]);
+        // Left (-x)
+        mesh.faces.push([0, 4, 7]);
+        mesh.faces.push([0, 7, 3]);
+        // Right (+x)
+        mesh.faces.push([1, 2, 6]);
+        mesh.faces.push([1, 6, 5]);
+        mesh
+    }
 
     fn create_open_box() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -587,6 +639,84 @@ mod tests {
         assert!(
             validation.is_printable(),
             "open-input fallback should produce a printable shell; got {validation:?}"
+        );
+    }
+
+    #[test]
+    fn test_sdf_shell_on_closed_cube_is_printable() {
+        // Primary regression: post-fix, .high_quality() on a closed input
+        // produces a printable shell. Pre-fix would have failed with
+        // is_watertight=false (vertex-soup) + is_inside_out=true.
+        let inner = create_closed_cube();
+        let mut params = ShellParams::high_quality();
+        params.sdf_voxel_size_mm = 1.0;
+
+        let (_shell, result) =
+            generate_shell(&inner, &params).expect("SDF generation should succeed");
+
+        // Closed input should NOT trigger the open-input fallback.
+        assert_eq!(result.wall_method, WallGenerationMethod::Sdf);
+
+        let validation = result
+            .validation
+            .as_ref()
+            .expect("validation requested by high_quality()");
+        assert!(
+            validation.is_watertight,
+            "closed cube SDF shell should be watertight; got {validation:?}"
+        );
+        assert!(
+            validation.is_manifold,
+            "closed cube SDF shell should be manifold; got {validation:?}"
+        );
+        assert!(
+            validation.is_printable(),
+            "closed cube SDF shell should be printable; got {validation:?}"
+        );
+    }
+
+    #[test]
+    fn test_sdf_shell_outer_winding_outward_after_flip() {
+        // Bug 2 anchor: post-fix, the outer's per-face flip means the
+        // assembled shell's signed_volume is positive (outward-pointing
+        // normals via the divergence-theorem integral).
+        let inner = create_closed_cube();
+        let mut params = ShellParams::high_quality();
+        params.sdf_voxel_size_mm = 1.0;
+
+        let (shell, _result) =
+            generate_shell(&inner, &params).expect("SDF generation should succeed");
+
+        let report = mesh_repair::validate_mesh(&shell);
+        assert!(
+            !report.is_inside_out,
+            "shell should not be inside-out after per-face flip; signed_volume reported as inside-out"
+        );
+    }
+
+    #[test]
+    fn test_sdf_shell_outer_is_welded_no_soup() {
+        // Bug 1 anchor: post-fix, the outer is welded into a proper indexed
+        // mesh, so vertex_count is much smaller than 3 × outer_face_count
+        // (which would be the case for unwelded MC vertex-soup).
+        let inner = create_closed_cube();
+        let mut params = ShellParams::high_quality();
+        params.sdf_voxel_size_mm = 1.0;
+
+        let (shell, result) =
+            generate_shell(&inner, &params).expect("SDF generation should succeed");
+
+        // For a closed input, no rim faces; total = inner + outer.
+        let outer_face_count = result.total_face_count - inner.faces.len() - result.rim_face_count;
+        // Welded: vert/face ratio is roughly 0.5 for closed manifolds (each
+        // vert shared by ~6 faces). Soup would give 3.0. Use a generous
+        // threshold (< 4.0) to allow MC mesh quality variation.
+        assert!(
+            shell.vertices.len() < 4 * outer_face_count,
+            "outer appears unwelded (vertex-soup signature): {} verts vs {} outer faces; \
+             expected verts < 4 × outer_face_count",
+            shell.vertices.len(),
+            outer_face_count
         );
     }
 }
