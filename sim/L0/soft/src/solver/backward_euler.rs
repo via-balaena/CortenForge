@@ -114,9 +114,12 @@ where
 {
     element: E,
     mesh: Msh,
-    // NullContact carries no state, but the generic is held so Phase-C
-    // IPC can slot in without a solver-level API break.
-    _contact: C,
+    // Read once per Newton iter from `assemble_global_int_force` and
+    // `assemble_free_hessian_triplets` (scope memo Decision H —
+    // per-iter active-pair recompute). `NullContact`'s zero-stubs
+    // preserve pre-Phase-5 numerics on non-contact scenes; V-1
+    // (commit 7) is the regression-net spine.
+    contact: C,
     config: SolverConfig,
     boundary_conditions: BoundaryConditions,
 
@@ -401,7 +404,7 @@ where
         Self {
             element,
             mesh,
-            _contact: contact,
+            contact,
             config,
             boundary_conditions,
             element_geometries,
@@ -834,10 +837,12 @@ where
     /// contributions into the global `f_int` buffer.
     ///
     /// `f_int` is zeroed inside; caller need not pre-clear. Reads
-    /// `x_curr` (length `n_dof`), cached `element_geometries`, and the
-    /// per-tet `NeoHookean` from `self.mesh.materials()` (Phase 4 commit
-    /// 5 — Newton hot path reads from the per-tet material cache per
-    /// Part 7 §02 §00).
+    /// `x_curr` (length `n_dof`), cached `element_geometries`, the
+    /// per-tet `NeoHookean` from `self.mesh.materials()` (Phase 4
+    /// commit 5 — Newton hot path reads from the per-tet material
+    /// cache per Part 7 §02 §00), and `self.contact` for active-pair
+    /// gradient contributions (Phase 5 commit 5; scope memo
+    /// Decision H — per-iter active-pair recompute).
     //
     // Lint allows: see assemble_free_hessian_triplets justification.
     #[allow(clippy::cast_possible_truncation, clippy::needless_range_loop)]
@@ -863,18 +868,41 @@ where
                 }
             }
         }
+
+        // Contact gradient contributions. Sign convention per scope
+        // memo §6 R-5 lens (v): the gradient `∂E_pen/∂x` is scattered
+        // as `+force` into f_int, mirroring the elastic case where
+        // `∂Ψ_elastic/∂x` is the +`f_int` contribution above.
+        // `NullContact` returns an empty contributions Vec → empty
+        // for-loops → bit-equal to the pre-Phase-5 elastic-only path.
+        let positions = slice_to_vec3s(x_curr);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        for pair in &pairs {
+            let g = self.contact.gradient(pair, &positions);
+            for &(vid, force) in &g.contributions {
+                let v = vid as usize;
+                f_int[3 * v] += force.x;
+                f_int[3 * v + 1] += force.y;
+                f_int[3 * v + 2] += force.z;
+            }
+        }
     }
 
     /// Assemble the lower-triangle triplets of the free-DOF Hessian
-    /// `A_free = M_free / Δt² + K_free(x_curr)` per Decision J.
+    /// `A_free = M_free / Δt² + K_free(x_curr) + K_contact(x_curr)`
+    /// per Decision J + Phase 5 commit 5.
     ///
     /// For each element + each (a, b) vertex pair, contributes the
     /// 3×3 block from `B_a^T 𝕔 B_b` (using BF-5's flattening
     /// convention) into the global free-DOF sparse matrix at
     /// `(free_idx_a, free_idx_b)` whenever both DOFs are free (looked
-    /// up via `full_to_free_idx`). Diagonal mass added at the end.
-    /// `BTreeMap` accumulates with deterministic (col, row) iteration
-    /// order per Decision M.
+    /// up via `full_to_free_idx`). Contact Hessian contributions from
+    /// `self.contact.hessian` (rank-1 symmetric `κ·n⊗n` blocks for
+    /// `PenaltyRigidContact`; symmetry assumption matches the existing
+    /// lower-triangle filter) scatter through the same gate between
+    /// the elastic and mass-diagonal passes. Diagonal mass added at
+    /// the end. `BTreeMap` accumulates with deterministic (col, row)
+    /// iteration order per Decision M.
     //
     // Lint allows: `as TetId` is the Mesh-trait-API tax (n_tets
     // returns usize, tet_vertices takes u32) — same as commit 2's
@@ -936,6 +964,33 @@ where
                                 *acc.entry((col_free, row_free)).or_insert(0.0) +=
                                     geom.volume * block;
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Contact Hessian contributions. Scatter through the same
+        // free-DOF + lower-triangle filter as the elastic block above
+        // (scope memo §6 R-5 lens (v) — sign-consistent with the
+        // f_int gradient scatter in `assemble_global_int_force`).
+        // `NullContact` returns an empty contributions Vec → empty
+        // for-loops → acc unchanged → bit-equal Hessian.
+        let positions = slice_to_vec3s(x_curr);
+        let pairs = self.contact.active_pairs(&self.mesh, &positions);
+        for pair in &pairs {
+            let h = self.contact.hessian(pair, &positions);
+            for &(row_vid, col_vid, block) in &h.contributions {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        let row_full = 3 * (row_vid as usize) + i;
+                        let col_full = 3 * (col_vid as usize) + j;
+                        if let (Some(row_free), Some(col_free)) = (
+                            self.full_to_free_idx[row_full],
+                            self.full_to_free_idx[col_full],
+                        ) && row_free >= col_free
+                        {
+                            *acc.entry((col_free, row_free)).or_insert(0.0) += block[(i, j)];
                         }
                     }
                 }
@@ -1121,6 +1176,30 @@ fn residual_into(
         let mass_over_dt2 = mass_per_dof[i] / dt2;
         r[i] = mass_over_dt2.mul_add(x_curr[i] - x_hat, f_int[i]) - f_ext[i];
     }
+}
+
+/// Convert a flat `[f64]` DOF buffer (length `3·N`, vertex-major +
+/// xyz-inner) to a `Vec<Vec3>` of length `N`.
+///
+/// Bridges the solver's flat representation to
+/// [`crate::contact::ContactModel`]'s `&[Vec3]` argument shape
+/// (Phase 5 commit 5; trait surface unchanged per scope memo
+/// Decision E). Allocates per call site — `assemble_global_int_force`
+/// and `assemble_free_hessian_triplets` each build their own vec at
+/// the contact-dispatch step. Cost analysis at scope memo Decision H:
+/// negligible vs FEM assembly even at V-3 finest-level scale.
+fn slice_to_vec3s(x_flat: &[f64]) -> Vec<Vec3> {
+    debug_assert!(x_flat.len().is_multiple_of(3));
+    let n = x_flat.len() / 3;
+    let mut out = Vec::with_capacity(n);
+    for v in 0..n {
+        out.push(Vec3::new(
+            x_flat[3 * v],
+            x_flat[3 * v + 1],
+            x_flat[3 * v + 2],
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
