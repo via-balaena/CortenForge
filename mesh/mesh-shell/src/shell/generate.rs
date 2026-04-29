@@ -35,6 +35,11 @@ pub enum WallGenerationMethod {
     /// regardless of surface curvature.
     /// Pros: Consistent wall thickness, handles concave regions correctly.
     /// Cons: Slower, may change vertex count, requires additional memory.
+    ///
+    /// **Open inputs (with boundary edges) automatically fall back to the
+    /// `Normal` method.** The SDF level set of an open mesh has its own
+    /// boundary that cannot be reliably stitched to the inner mesh's boundary
+    /// — bowl semantics require the 1:1 vertex correspondence Normal provides.
     Sdf,
 }
 
@@ -247,6 +252,21 @@ fn generate_shell_sdf(
     inner_mesh: &IndexedMesh,
     params: &ShellParams,
 ) -> ShellResult<(IndexedMesh, ShellGenerationResult)> {
+    // Precondition: SDF wall generation requires a closed (watertight) input.
+    // An open input's SDF level set has its own boundary that cannot be reliably
+    // lidded against the inner mesh's boundary. Fall back to Normal method,
+    // which produces 1:1 inner/outer vertex correspondence + rim quads at the
+    // open boundary (bowl semantics).
+    let inner_boundary = MeshAdjacency::build(&inner_mesh.faces).boundary_edge_count();
+    if inner_boundary > 0 {
+        warn!(
+            "SDF wall generation: input has {} boundary edges (open mesh); \
+             falling back to Normal method since SDF level set cannot lid an open mesh",
+            inner_boundary
+        );
+        return generate_shell_normal(inner_mesh, params);
+    }
+
     let inner_vertex_count = inner_mesh.vertices.len();
 
     // Step 1: Create outer mesh using SDF offset
@@ -526,5 +546,47 @@ mod tests {
                 "Normal should be unit length, got {len}"
             );
         }
+    }
+
+    #[test]
+    fn test_sdf_shell_on_open_input_falls_back_to_normal() {
+        // The SDF code path's precondition: closed input only. Open inputs
+        // fall back to Normal because the SDF level set has its own boundary
+        // that can't be reliably lidded.
+        let inner = create_open_box();
+        let mut params = ShellParams::high_quality();
+        // Coarsen the voxel size so the test runs quickly even though the
+        // fallback short-circuits SDF computation entirely.
+        params.sdf_voxel_size_mm = 1.0;
+
+        let (_shell, result) = generate_shell(&inner, &params).expect("fallback should succeed");
+
+        // Fallback fired: result reports Normal, not Sdf.
+        assert_eq!(result.wall_method, WallGenerationMethod::Normal);
+        // Normal method gives 1:1 vertex correspondence on outer.
+        assert_eq!(result.outer_vertex_count, inner.vertices.len());
+        // Open box → 4 boundary edges at the top → rim quads close them.
+        assert!(result.rim_face_count > 0);
+    }
+
+    #[test]
+    fn test_sdf_shell_open_input_validation_is_printable() {
+        // Bug 3 fallback: an open input requesting SDF walls should still
+        // produce a printable shell (via the Normal-method fallback path)
+        // rather than the previous non-printable garbage.
+        let inner = create_open_box();
+        let mut params = ShellParams::high_quality();
+        params.sdf_voxel_size_mm = 1.0;
+
+        let (_shell, result) = generate_shell(&inner, &params).expect("fallback should succeed");
+
+        let validation = result
+            .validation
+            .as_ref()
+            .expect("validation requested by high_quality()");
+        assert!(
+            validation.is_printable(),
+            "open-input fallback should produce a printable shell; got {validation:?}"
+        );
     }
 }
