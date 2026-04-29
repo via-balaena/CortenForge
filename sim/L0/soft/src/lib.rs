@@ -45,7 +45,10 @@ pub mod sdf_bridge;
 pub mod solver;
 
 pub use autograd_ops::{DivOp, IndexOp};
-pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact};
+pub use contact::{
+    ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact, PenaltyRigidContact,
+    RigidPlane,
+};
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
@@ -94,3 +97,24 @@ pub type CpuTet4NHSolver<Msh> =
 /// same behavior as before, now expressed as a [`CpuTet4NHSolver`]
 /// flavor per Phase 2 scope memo Decision H.
 pub type SkeletonSolver = CpuTet4NHSolver<mesh::SingleTetMesh>;
+
+/// Contact-aware sibling of [`CpuTet4NHSolver`] — pinned to
+/// [`PenaltyRigidContact`] instead of [`NullContact`], generic over
+/// the mesh impl.
+///
+/// Phase 5 V-* invariant tests (V-3a compressive block, V-3 Hertzian
+/// sphere↔plane, V-5 drop-and-rest) drive this flavor; walking-skeleton
+/// plus Phase 2/3/4 invariants continue to use [`CpuTet4NHSolver`]
+/// (NullContact-pinned). Both flavors live parallel through Phase 5 per
+/// `phase_5_penalty_contact_scope.md` Decision F. Penalty contact
+/// itself is a stepping stone — a future contact upgrade replaces
+/// penalty as the production baseline (the Phase-5 commit-9 BF-12
+/// amendment narrows the book's "no penalty even as a baseline"
+/// commitment to "no penalty as a *production* baseline").
+///
+/// Specialize via the `Msh` parameter — e.g.,
+/// `PenaltyRigidContactSolver<HandBuiltTetMesh>` for the V-3a
+/// compressive-block scene, `PenaltyRigidContactSolver<SdfMeshedTetMesh>`
+/// for V-3 / V-5 sphere scenes.
+pub type PenaltyRigidContactSolver<Msh> =
+    solver::CpuNewtonSolver<element::Tet4, Msh, contact::PenaltyRigidContact, 4, 1>;

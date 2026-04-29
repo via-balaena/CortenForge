@@ -2,6 +2,8 @@
 
 Contact is where `sim-soft`'s [Part 1 Ch 03 thesis](../10-physical/03-thesis.md) has its sharpest commitment. IPC — the incremental potential contact method of [Li et al. 2020](../appendices/00-references/00-ipc.md#li-2020) — is the only formulation in the running. Penalty contact and impulse contact, which dominate the games and scientific-FEM branches respectively, both fail in specific ways that are structurally the same failure and that IPC is designed to eliminate. This chapter's sub-chapters walk each failure mode and the IPC guarantee that corresponds to it.
 
+Phase 5 ships a stepping-stone penalty contact (per `sim/docs/todo/phase_5_penalty_contact_scope.md`); IPC remains the destination.
+
 | Section | What it covers |
 |---|---|
 | [Penalty method failure modes](00-why-ipc/00-penalty.md) | Overlap-proportional force; non-energy-conservative snap-through; stiffness-vs-stability tradeoff that forces either penetration or oscillation |
