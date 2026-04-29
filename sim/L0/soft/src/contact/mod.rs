@@ -1,7 +1,7 @@
 //! `ContactModel` trait — contact energy-term interface.
 //!
 //! Five items: active-pair detection, energy, gradient, Hessian, and
-//! CCD time-of-impact. Skeleton ships `NullContact` (zero stubs,
+//! CCD time-of-impact. Default impl is `NullContact` (zero stubs,
 //! returns empty/zero) to exercise the trait surface without pulling
 //! in IPC machinery — IPC lands in Phase C per spec §8.
 
