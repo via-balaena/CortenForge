@@ -19,13 +19,15 @@ examples here.
 
 ## Examples
 
-*(none yet — first example lands in commit 5 of the mesh-ecosystem-to-par PR)*
+| Example | Concept |
+|---------|---------|
+| [`ply-with-custom-attributes`](ply-with-custom-attributes/) | Per-vertex custom-attribute PLY round-trip via `save_ply_attributed` |
 
 ## Tier 1 — first to land (validates new infrastructure)
 
 | Example | Concept |
 |---------|---------|
-| `ply-with-custom-attributes` | Per-vertex custom-attribute PLY round-trip via `save_ply_attributed` |
+| [`ply-with-custom-attributes`](ply-with-custom-attributes/) | Per-vertex custom-attribute PLY round-trip via `save_ply_attributed` |
 
 ## Tier 2 — alongside soft-body, foundation for sim-cast
 

@@ -1,0 +1,17 @@
+[package]
+name = "example-mesh-ply-with-custom-attributes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# AttributedMesh + unit_cube helper
+mesh-types = { workspace = true }
+# save_ply_attributed / load_ply_attributed
+mesh-io = { workspace = true }
+# anyhow error reporting for the example main() return type
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

@@ -288,6 +288,9 @@ members = [
     "examples/integration/sim-informed-design",
     "examples/integration/full-pipeline",
 
+    # Examples — mesh
+    "examples/mesh/ply-with-custom-attributes",
+
     # Foundation (active development)
     "design/cf-geometry",
     "design/cf-spatial",
