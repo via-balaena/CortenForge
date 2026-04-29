@@ -30,6 +30,9 @@ serde = { workspace = true, optional = true }
 # Approximate equality testing
 approx = { workspace = true }
 
+# JSON for serde round-trip tests (used only under `--features serde`).
+serde_json = { workspace = true }
+
 [features]
 default = []
 serde = ["dep:serde", "nalgebra/serde-serialize", "cf-geometry/serde"]
