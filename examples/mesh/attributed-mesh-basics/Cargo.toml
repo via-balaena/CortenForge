@@ -1,0 +1,16 @@
+[package]
+name = "example-mesh-attributed-mesh-basics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# AttributedMesh + VertexColor + unit_cube. No mesh-io: this example
+# demonstrates the type, not the wire format.
+mesh-types = { workspace = true }
+# anyhow error reporting for main()'s Result<()> return type.
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

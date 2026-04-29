@@ -23,6 +23,7 @@ examples here.
 |---------|---------|
 | [`ply-with-custom-attributes`](ply-with-custom-attributes/) | Per-vertex custom-attribute PLY round-trip via `save_ply_attributed` |
 | [`format-conversion`](format-conversion/) | STL ↔ PLY ↔ OBJ — what each format preserves (geometry vs topology) |
+| [`attributed-mesh-basics`](attributed-mesh-basics/) | The SoA attributed-mesh shape — built-in slots, extras, length validation (no I/O) |
 
 ## Tier 1 — first to land (validates new infrastructure)
 
@@ -35,7 +36,7 @@ examples here.
 | Example | Concept |
 |---------|---------|
 | [`format-conversion`](format-conversion/) | STL ↔ PLY ↔ OBJ — what each format preserves (geometry vs topology) |
-| `attributed-mesh-basics` | The SoA attributed-mesh shape (no I/O) |
+| [`attributed-mesh-basics`](attributed-mesh-basics/) | The SoA attributed-mesh shape (no I/O) |
 | `mesh-repair-walkthrough` | validate → repair → re-validate flow |
 | `mesh-offset-outward` | SDF-based outward offset (expansion) |
 | `mesh-offset-inward` | SDF-based inward offset (cavity prep) |
