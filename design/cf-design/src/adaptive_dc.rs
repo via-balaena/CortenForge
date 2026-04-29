@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cf_geometry::{Aabb, IndexedMesh};
+use mesh_types::AttributedMesh;
 use nalgebra::{Matrix3, Point3, Vector3};
 
 use crate::field_node::FieldNode;
@@ -47,7 +48,7 @@ pub fn mesh_field_adaptive(
     node: &FieldNode,
     bounds: &Aabb,
     cell_size: f64,
-) -> (IndexedMesh, AdaptiveStats) {
+) -> (AttributedMesh, AdaptiveStats) {
     // ── Align the root AABB to a power-of-2 grid ─────────────────────
     let size = bounds.size();
     let max_extent = size.x.max(size.y).max(size.z);
@@ -220,7 +221,7 @@ pub fn mesh_field_adaptive(
         interval_evals,
     };
 
-    (mesh, stats)
+    (AttributedMesh::new(mesh), stats)
 }
 
 // ── Octree construction ──────────────────────────────────────────────────
@@ -505,7 +506,7 @@ pub fn mesh_field_adaptive_par(
     node: &FieldNode,
     bounds: &Aabb,
     cell_size: f64,
-) -> (IndexedMesh, AdaptiveStats) {
+) -> (AttributedMesh, AdaptiveStats) {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -714,7 +715,7 @@ pub fn mesh_field_adaptive_par(
         interval_evals,
     };
 
-    (mesh, stats)
+    (AttributedMesh::new(mesh), stats)
 }
 
 /// Build octree in parallel at top levels, sequential below threshold.
@@ -867,9 +868,9 @@ mod tests {
     use crate::field_node::Val;
     use std::f64::consts::PI;
 
-    fn check_topology(mesh: &IndexedMesh) -> (bool, bool) {
+    fn check_topology(mesh: &AttributedMesh) -> (bool, bool) {
         let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
-        for face in &mesh.faces {
+        for face in &mesh.geometry.faces {
             for i in 0..3 {
                 *directed.entry((face[i], face[(i + 1) % 3])).or_insert(0) += 1;
             }
@@ -889,15 +890,15 @@ mod tests {
         (boundary == 0, non_manifold == 0)
     }
 
-    fn assert_mesh_valid(mesh: &IndexedMesh, label: &str) {
+    fn assert_mesh_valid(mesh: &AttributedMesh, label: &str) {
         assert!(!mesh.is_empty(), "{label}: mesh should not be empty");
         let (watertight, manifold) = check_topology(mesh);
         assert!(watertight, "{label}: mesh should be watertight");
         assert!(manifold, "{label}: mesh should be manifold");
         assert!(
-            mesh.signed_volume() > 0.0,
+            mesh.geometry.signed_volume() > 0.0,
             "{label}: mesh should have positive signed volume (CCW winding), got {}",
-            mesh.signed_volume()
+            mesh.geometry.signed_volume()
         );
     }
 
@@ -962,7 +963,7 @@ mod tests {
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, _) = mesh_field_adaptive(&node, &bounds, 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
-        let actual = mesh.volume();
+        let actual = mesh.geometry.volume();
         let error = (actual - expected).abs() / expected;
         assert!(
             error < 0.15,
@@ -1014,11 +1015,12 @@ mod tests {
         );
     }
 
-    fn max_corner_deviation(mesh: &IndexedMesh, true_corners: &[Point3<f64>]) -> f64 {
+    fn max_corner_deviation(mesh: &AttributedMesh, true_corners: &[Point3<f64>]) -> f64 {
         true_corners
             .iter()
             .map(|tc| {
-                mesh.vertices
+                mesh.geometry
+                    .vertices
                     .iter()
                     .map(|v| (v - tc).norm())
                     .fold(f64::MAX, f64::min)
@@ -1052,7 +1054,7 @@ mod tests {
         let (dc_mesh, _) = crate::dual_contouring::mesh_field_dc(&node, &bounds, cell);
 
         let expected = 4.0 / 3.0 * PI * 125.0;
-        let adaptive_error = (adaptive_mesh.volume() - expected).abs() / expected;
+        let adaptive_error = (adaptive_mesh.geometry.volume() - expected).abs() / expected;
 
         assert!(
             adaptive_error < 0.20,
@@ -1109,7 +1111,7 @@ mod tests {
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, _) = mesh_field_adaptive_par(&node, &bounds, 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
-        let actual = mesh.volume();
+        let actual = mesh.geometry.volume();
         let error = (actual - expected).abs() / expected;
         assert!(
             error < 0.15,
@@ -1129,8 +1131,8 @@ mod tests {
         let (seq_mesh, _) = mesh_field_adaptive(&node, &bounds, cell);
         let (par_mesh, _) = mesh_field_adaptive_par(&node, &bounds, cell);
 
-        let seq_vol = seq_mesh.volume();
-        let par_vol = par_mesh.volume();
+        let seq_vol = seq_mesh.geometry.volume();
+        let par_vol = par_mesh.geometry.volume();
         let rel_err = (par_vol - seq_vol).abs() / seq_vol;
         assert!(
             rel_err < 0.01,

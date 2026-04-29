@@ -67,7 +67,7 @@ mod threemf;
 
 pub use error::{IoError, IoResult};
 pub use obj::{load_obj, save_obj};
-pub use ply::{load_ply, save_ply};
+pub use ply::{load_ply, load_ply_attributed, save_ply, save_ply_attributed};
 #[cfg(feature = "step")]
 pub use step::{load_step, save_step};
 pub use stl::{load_stl, save_stl};

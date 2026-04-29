@@ -66,4 +66,4 @@ pub use holes::{BoundaryLoop, detect_holes, fill_holes};
 pub use intersect::{
     IntersectionParams, SelfIntersectionResult, detect_self_intersections, has_self_intersections,
 };
-pub use winding::{count_inconsistent_faces, fix_winding_order};
+pub use winding::{count_inconsistent_faces, fix_winding_order, flip_winding};

@@ -82,8 +82,8 @@ fn setup(
         let mesh_data = solid.mesh(tolerance);
         println!(
             "  {name}: {} vertices, {} faces",
-            mesh_data.vertices.len(),
-            mesh_data.faces.len()
+            mesh_data.geometry.vertices.len(),
+            mesh_data.geometry.faces.len()
         );
         let x = f64::from((i as f32).mul_add(spacing, -offset));
         spawn_design_mesh(

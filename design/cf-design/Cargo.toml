@@ -17,6 +17,8 @@ workspace = true
 [dependencies]
 # Geometric primitives (workspace)
 cf-geometry = { workspace = true }
+# Per-vertex attribute container (Solid::mesh* returns AttributedMesh)
+mesh-types = { workspace = true }
 # Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
 # Data-parallel iterators

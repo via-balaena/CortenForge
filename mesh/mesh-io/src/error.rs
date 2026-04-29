@@ -55,6 +55,20 @@ pub enum IoError {
         got: u32,
     },
 
+    /// Invalid per-vertex attribute name for the target file format.
+    ///
+    /// Returned by attributed writers (e.g., [`crate::save_ply_attributed`])
+    /// when an `extras` key collides with a format-reserved property name,
+    /// contains whitespace or non-printable bytes, is empty, or is a
+    /// format keyword.
+    #[error("invalid attribute name `{name}`: {reason}")]
+    InvalidAttributeName {
+        /// The attribute name that was rejected.
+        name: String,
+        /// Why the name was rejected.
+        reason: &'static str,
+    },
+
     /// I/O error from the standard library.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

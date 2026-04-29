@@ -1,0 +1,34 @@
+[package]
+name = "example-mesh-shell-generation-high-quality"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh + Point3 + Bounded trait (for aabb())
+mesh-types = { workspace = true }
+# save_ply / load_ply for the before/shell PLY artifacts
+mesh-io = { workspace = true }
+# ShellBuilder + .high_quality() preset + ShellGenerationResult — the
+# API under demonstration; the SDF-based outer is the headline.
+mesh-shell = { workspace = true }
+# validate_mesh — anchors topology flags + edge counts on closed-cube
+# input (watertight, 0 boundary edges) and shell (still watertight,
+# now wound outward in the face-normal sense).
+mesh-repair = { workspace = true }
+# SignedDistanceField on the outer-only mesh — measures perpendicular
+# wall thickness from inner-face sample points to the outer surface.
+# Brute-force closest-point is fine for ~24 samples × ~26k outer faces.
+mesh-sdf = { workspace = true }
+# cross_section for the z=5 mid-height annular slice (numerical
+# readout: 2 contours, inner + outer rings, perimeter difference =
+# 2π × wall_thickness ≈ 12.57mm — only the 4 corner quarter-arcs
+# differ between inner and outer). Vector3 (for plane normal) is
+# re-exported by mesh-types, so no direct nalgebra dep is needed.
+mesh-measure = { workspace = true }
+# anyhow error reporting for main()'s Result<()> return type
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

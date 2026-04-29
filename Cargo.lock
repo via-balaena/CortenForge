@@ -1807,6 +1807,7 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
+ "mesh-types",
  "nalgebra",
  "rayon",
  "sim-core",
@@ -3487,6 +3488,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-attributed-mesh-basics"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-mesh-collision-box"
 version = "0.7.0"
 dependencies = [
@@ -3565,6 +3574,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-format-conversion"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-offset-inward"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-offset",
+ "mesh-repair",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-offset-outward"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-offset",
+ "mesh-repair",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-repair-walkthrough"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-mesh-pipeline"
 version = "0.7.0"
 dependencies = [
@@ -3579,6 +3629,39 @@ dependencies = [
  "mesh-shell",
  "nalgebra",
  "sim-bevy",
+]
+
+[[package]]
+name = "example-mesh-ply-with-custom-attributes"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-shell-generation-fast"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-shell",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-shell-generation-high-quality"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-measure",
+ "mesh-repair",
+ "mesh-sdf",
+ "mesh-shell",
+ "mesh-types",
 ]
 
 [[package]]
@@ -6083,6 +6166,7 @@ dependencies = [
  "cf-geometry",
  "nalgebra",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7863,6 +7947,7 @@ version = "0.7.0"
 dependencies = [
  "bevy",
  "cf-geometry",
+ "mesh-types",
  "nalgebra",
  "sim-core",
  "sim-mjcf",

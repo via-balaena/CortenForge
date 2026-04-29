@@ -277,7 +277,7 @@ fn check(label: &str, ok: bool) -> bool {
 // ── Bevy visualization ──────────────────────────────────────────────────
 
 #[derive(Resource)]
-struct MeshDataRes(Vec<cf_design::IndexedMesh>);
+struct MeshDataRes(Vec<cf_design::AttributedMesh>);
 
 fn setup(
     mut commands: Commands,

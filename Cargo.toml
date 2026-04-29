@@ -288,6 +288,16 @@ members = [
     "examples/integration/sim-informed-design",
     "examples/integration/full-pipeline",
 
+    # Examples — mesh
+    "examples/mesh/ply-with-custom-attributes",
+    "examples/mesh/format-conversion",
+    "examples/mesh/attributed-mesh-basics",
+    "examples/mesh/mesh-repair-walkthrough",
+    "examples/mesh/mesh-offset-outward",
+    "examples/mesh/mesh-offset-inward",
+    "examples/mesh/shell-generation-fast",
+    "examples/mesh/shell-generation-high-quality",
+
     # Foundation (active development)
     "design/cf-geometry",
     "design/cf-spatial",

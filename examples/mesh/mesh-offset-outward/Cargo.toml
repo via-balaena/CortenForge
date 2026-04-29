@@ -1,0 +1,21 @@
+[package]
+name = "example-mesh-mesh-offset-outward"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# unit_cube + IndexedMesh + Bounded trait (for aabb())
+mesh-types = { workspace = true }
+# save_ply / load_ply for the before/after PLY artifacts
+mesh-io = { workspace = true }
+# offset_mesh + OffsetConfig (the SDF + marching-cubes pipeline)
+mesh-offset = { workspace = true }
+# validate_mesh — anchors topology flags + edge counts on MC output
+mesh-repair = { workspace = true }
+# anyhow error reporting for main()'s Result<()> return type
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

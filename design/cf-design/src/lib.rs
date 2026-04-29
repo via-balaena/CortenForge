@@ -54,5 +54,6 @@ pub use param::{ParamRef, ParamStore};
 pub use solid::{InfillKind, ShapeHint, Solid};
 
 // Re-export geometry types that appear in our public API
-// (Solid::bounds() → Aabb, Solid::sdf_grid_at() → SdfGrid, Solid::mesh() → IndexedMesh)
+// (Solid::bounds() → Aabb, Solid::sdf_grid_at() → SdfGrid, Solid::mesh() → AttributedMesh)
 pub use cf_geometry::{Aabb, IndexedMesh, SdfGrid};
+pub use mesh_types::AttributedMesh;

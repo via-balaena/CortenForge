@@ -1,0 +1,19 @@
+[book]
+title = "Mesh Architecture — A Study in the Geometric Foundation"
+authors = ["CortenForge"]
+description = "A durable investigation of the CortenForge mesh ecosystem — the 10-crate L0 foundation under soft-body simulation and casting/manufacturing — with retrospective design framing for what exists and forward-looking specifications for the gaps and extensions on the roadmap. Sibling to the soft-body and casting architecture books."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+
+[output.html.fold]
+enable = true
+level = 1
+
+[preprocessor.katex]
+after = ["links"]

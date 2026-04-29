@@ -1,0 +1,5 @@
+# Generated artifacts from example runs (PLY frames, intermediate meshes).
+# Each example writes to its own out/ directory under
+# examples/mesh/<name>/out/ — kept local for the visuals pass, never
+# committed. See README.md for the layout convention.
+*/out/

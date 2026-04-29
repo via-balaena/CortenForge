@@ -9,7 +9,8 @@
 
 use std::sync::Arc;
 
-use cf_geometry::{Aabb, IndexedMesh, SdfGrid};
+use cf_geometry::{Aabb, SdfGrid};
+use mesh_types::AttributedMesh;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn, Val};
@@ -1144,13 +1145,13 @@ impl Solid {
     ///
     /// Panics if `tolerance` is not positive and finite.
     #[must_use]
-    pub fn mesh(&self, tolerance: f64) -> IndexedMesh {
+    pub fn mesh(&self, tolerance: f64) -> AttributedMesh {
         assert!(
             tolerance > 0.0 && tolerance.is_finite(),
             "mesh tolerance must be positive and finite, got {tolerance}"
         );
         let Some(bounds) = self.node.bounds() else {
-            return IndexedMesh::new();
+            return AttributedMesh::default();
         };
         // Scale cell size by Lipschitz distortion factor to ensure thin
         // features in high-distortion regions (Twist, Bend) are captured.
@@ -1175,13 +1176,13 @@ impl Solid {
     ///
     /// Panics if `tolerance` is not positive and finite.
     #[must_use]
-    pub fn mesh_dc(&self, tolerance: f64) -> IndexedMesh {
+    pub fn mesh_dc(&self, tolerance: f64) -> AttributedMesh {
         assert!(
             tolerance > 0.0 && tolerance.is_finite(),
             "mesh tolerance must be positive and finite, got {tolerance}"
         );
         let Some(bounds) = self.node.bounds() else {
-            return IndexedMesh::new();
+            return AttributedMesh::default();
         };
         let lip = self.node.lipschitz_factor();
         let cell_size = tolerance / lip;
@@ -1203,13 +1204,13 @@ impl Solid {
     ///
     /// Panics if `tolerance` is not positive and finite.
     #[must_use]
-    pub fn mesh_adaptive(&self, tolerance: f64) -> IndexedMesh {
+    pub fn mesh_adaptive(&self, tolerance: f64) -> AttributedMesh {
         assert!(
             tolerance > 0.0 && tolerance.is_finite(),
             "mesh tolerance must be positive and finite, got {tolerance}"
         );
         let Some(bounds) = self.node.bounds() else {
-            return IndexedMesh::new();
+            return AttributedMesh::default();
         };
         let lip = self.node.lipschitz_factor();
         let cell_size = tolerance / lip;
@@ -1232,13 +1233,13 @@ impl Solid {
     ///
     /// Panics if `tolerance` is not positive and finite.
     #[must_use]
-    pub fn mesh_adaptive_par(&self, tolerance: f64) -> IndexedMesh {
+    pub fn mesh_adaptive_par(&self, tolerance: f64) -> AttributedMesh {
         assert!(
             tolerance > 0.0 && tolerance.is_finite(),
             "mesh tolerance must be positive and finite, got {tolerance}"
         );
         let Some(bounds) = self.node.bounds() else {
-            return IndexedMesh::new();
+            return AttributedMesh::default();
         };
         let lip = self.node.lipschitz_factor();
         let cell_size = tolerance / lip;
@@ -1262,13 +1263,13 @@ impl Solid {
     ///
     /// Panics if `max_deviation` is not positive and finite.
     #[must_use]
-    pub fn mesh_to_tolerance(&self, max_deviation: f64) -> IndexedMesh {
+    pub fn mesh_to_tolerance(&self, max_deviation: f64) -> AttributedMesh {
         assert!(
             max_deviation > 0.0 && max_deviation.is_finite(),
             "max_deviation must be positive and finite, got {max_deviation}"
         );
         let Some(bounds) = self.node.bounds() else {
-            return IndexedMesh::new();
+            return AttributedMesh::default();
         };
 
         let lip = self.node.lipschitz_factor();
@@ -1279,8 +1280,14 @@ impl Solid {
 
         // Only simplify when the mesh is small enough that QEM is fast.
         // Large meshes from fine tolerances are already well-resolved by DC.
+        // Simplification operates on geometry only — it changes vertex
+        // positions and counts, so any analytical normals we had become
+        // stale and are dropped. Renderers fall back to crease-angle
+        // splitting on the simplified mesh.
         if mesh.face_count() <= 50_000 {
-            crate::simplify::simplify_mesh_tolerance(&mesh, &self.node, max_deviation)
+            let simplified =
+                crate::simplify::simplify_mesh_tolerance(&mesh.geometry, &self.node, max_deviation);
+            AttributedMesh::from(simplified)
         } else {
             mesh
         }
@@ -1295,10 +1302,14 @@ impl Solid {
     /// # Panics
     ///
     /// Panics if `tolerance` is not positive and finite, or if `target_faces` is zero.
+    ///
+    /// Simplification operates on geometry only; analytical normals from
+    /// the underlying mesher are dropped (vertex count changes invalidate
+    /// them). The returned mesh has `normals = None`.
     #[must_use]
-    pub fn mesh_simplified(&self, tolerance: f64, target_faces: usize) -> IndexedMesh {
+    pub fn mesh_simplified(&self, tolerance: f64, target_faces: usize) -> AttributedMesh {
         let mesh = self.mesh_adaptive_par(tolerance);
-        crate::simplify::simplify_mesh(&mesh, target_faces)
+        AttributedMesh::from(crate::simplify::simplify_mesh(&mesh.geometry, target_faces))
     }
 
     /// Evaluate the field at a point.
@@ -2319,10 +2330,10 @@ mod tests {
 
     // ── Mesh validation helpers ────────────────────────────────────
 
-    fn check_topology(mesh: &IndexedMesh) -> (bool, bool) {
+    fn check_topology(mesh: &AttributedMesh) -> (bool, bool) {
         use std::collections::HashMap;
         let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
-        for face in &mesh.faces {
+        for face in &mesh.geometry.faces {
             for i in 0..3 {
                 *directed.entry((face[i], face[(i + 1) % 3])).or_insert(0) += 1;
             }
@@ -2340,7 +2351,7 @@ mod tests {
         (boundary == 0, non_manifold == 0)
     }
 
-    fn assert_mesh_valid(mesh: &IndexedMesh, label: &str) {
+    fn assert_mesh_valid(mesh: &AttributedMesh, label: &str) {
         assert!(!mesh.is_empty(), "{label}: mesh should not be empty");
         let (watertight, manifold) = check_topology(mesh);
         assert!(watertight, "{label}: mesh should be watertight");
@@ -2349,9 +2360,9 @@ mod tests {
         // floating-point edge cases. Check that the mesh has non-trivial volume;
         // consistent outward winding is already implied by watertight + manifold.
         assert!(
-            mesh.signed_volume().abs() > f64::EPSILON,
+            mesh.geometry.signed_volume().abs() > f64::EPSILON,
             "{label}: mesh should have non-zero volume, got {}",
-            mesh.signed_volume()
+            mesh.geometry.signed_volume()
         );
     }
 
@@ -2616,10 +2627,10 @@ mod tests {
         let s = Solid::superellipsoid(Vector3::new(2.0, 2.0, 2.0), 2.0, 2.0);
         let mesh = s.mesh(0.2);
         assert!(
-            mesh.vertices.len() > 10,
+            mesh.geometry.vertices.len() > 10,
             "mesh should have substantial geometry"
         );
-        assert!(mesh.faces.len() > 10, "mesh should have triangles");
+        assert!(mesh.geometry.faces.len() > 10, "mesh should have triangles");
     }
 
     // -- LogSpiral --
@@ -2671,7 +2682,7 @@ mod tests {
         let s = Solid::log_spiral(2.0, 0.15, 0.5, 1.5);
         let mesh = s.mesh(0.25);
         assert!(
-            mesh.vertices.len() > 10,
+            mesh.geometry.vertices.len() > 10,
             "mesh should have substantial geometry"
         );
     }
@@ -2725,9 +2736,9 @@ mod tests {
         let part = envelope.intersect(lattice);
         let mesh = part.mesh(0.3);
         assert!(
-            mesh.vertices.len() > 50,
+            mesh.geometry.vertices.len() > 50,
             "gyroid lattice should produce substantial mesh, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -2778,9 +2789,9 @@ mod tests {
         let part = envelope.intersect(lattice);
         let mesh = part.mesh(0.3);
         assert!(
-            mesh.vertices.len() > 50,
+            mesh.geometry.vertices.len() > 50,
             "schwarz_p lattice should produce substantial mesh, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -2853,9 +2864,9 @@ mod tests {
         let s = Solid::helix(3.0, 2.0, 0.5, 1.5);
         let mesh = s.mesh(0.25);
         assert!(
-            mesh.vertices.len() > 50,
+            mesh.geometry.vertices.len() > 50,
             "helix mesh should have substantial geometry, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -2934,9 +2945,9 @@ mod tests {
         let s = Solid::loft(&[(-3.0, 2.0), (0.0, 3.0), (3.0, 1.0)]);
         let mesh = s.mesh(0.25);
         assert!(
-            mesh.vertices.len() > 50,
+            mesh.geometry.vertices.len() > 50,
             "loft mesh should have substantial geometry, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -2994,9 +3005,9 @@ mod tests {
         let s = Solid::cuboid(Vector3::new(1.0, 0.5, 4.0)).twist(0.5);
         let mesh = s.mesh(0.2);
         assert!(
-            mesh.vertices.len() > 50,
+            mesh.geometry.vertices.len() > 50,
             "twisted cuboid mesh should have substantial geometry, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -3059,9 +3070,9 @@ mod tests {
         let s = Solid::cuboid(Vector3::new(1.0, 1.0, 5.0)).bend(0.15);
         let mesh = s.mesh(0.2);
         assert!(
-            mesh.vertices.len() > 50,
+            mesh.geometry.vertices.len() > 50,
             "bent cuboid mesh should have substantial geometry, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -3095,9 +3106,9 @@ mod tests {
             "repeated-hole plate should produce non-empty mesh"
         );
         assert!(
-            mesh.vertices.len() > 100,
+            mesh.geometry.vertices.len() > 100,
             "should have substantial geometry, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -3142,12 +3153,12 @@ mod tests {
             "bounded repeat should produce non-empty mesh"
         );
         assert!(
-            mesh.vertices.len() > 200,
+            mesh.geometry.vertices.len() > 200,
             "3x2 array of spheres should have many vertices, got {}",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
         // Volume check: 6 spheres of radius 0.8, expected ≈ 6 * 4/3 π 0.8³ ≈ 12.87
-        let vol = mesh.volume();
+        let vol = mesh.geometry.volume();
         let expected = 6.0 * 4.0 / 3.0 * PI * 0.8_f64.powi(3);
         let error = (vol - expected).abs() / expected;
         assert!(
@@ -3209,10 +3220,10 @@ mod tests {
         let mesh_base = base.mesh(0.5);
         let mesh_twisted = twisted.mesh(0.5);
         assert!(
-            mesh_twisted.vertices.len() > mesh_base.vertices.len(),
+            mesh_twisted.geometry.vertices.len() > mesh_base.geometry.vertices.len(),
             "Twisted mesh ({} verts) should have more vertices than base ({} verts) due to Lipschitz scaling",
-            mesh_twisted.vertices.len(),
-            mesh_base.vertices.len()
+            mesh_twisted.geometry.vertices.len(),
+            mesh_base.geometry.vertices.len()
         );
     }
 
@@ -3230,7 +3241,7 @@ mod tests {
         );
         // Volume should be positive (features captured, not lost)
         assert!(
-            mesh.volume() > 0.0,
+            mesh.geometry.volume() > 0.0,
             "Twisted shell mesh volume should be positive"
         );
     }
@@ -3243,9 +3254,9 @@ mod tests {
             Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).infill(InfillKind::Gyroid, 1.0, 0.4, 0.5);
         let mesh = s.mesh(0.4);
         assert!(
-            mesh.vertices.len() > 100,
+            mesh.geometry.vertices.len() > 100,
             "gyroid-infilled cuboid should produce substantial mesh, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -3254,9 +3265,9 @@ mod tests {
         let s = Solid::sphere(5.0).infill(InfillKind::SchwarzP, 1.0, 0.4, 0.5);
         let mesh = s.mesh(0.4);
         assert!(
-            mesh.vertices.len() > 100,
+            mesh.geometry.vertices.len() > 100,
             "schwarz_p-infilled sphere should produce substantial mesh, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -3311,8 +3322,8 @@ mod tests {
         let solid = Solid::cuboid(Vector3::new(5.0, 5.0, 5.0));
         let infilled =
             Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).infill(InfillKind::Gyroid, 1.0, 0.4, 0.5);
-        let vol_solid = solid.mesh(0.5).volume();
-        let vol_infill = infilled.mesh(0.4).volume();
+        let vol_solid = solid.mesh(0.5).geometry.volume();
+        let vol_infill = infilled.mesh(0.4).geometry.volume();
         assert!(
             vol_infill < vol_solid,
             "infilled volume ({vol_infill:.1}) should be less than solid volume ({vol_solid:.1})"
@@ -3428,9 +3439,9 @@ mod tests {
         let blended = a.smooth_union_variable(b, |p| p.x.abs().mul_add(0.1, 0.5), 2.0);
         let mesh = blended.mesh(0.5);
         assert!(
-            mesh.vertices.len() > 50,
+            mesh.geometry.vertices.len() > 50,
             "variable blended mesh should have substantial geometry, got {} verts",
-            mesh.vertices.len()
+            mesh.geometry.vertices.len()
         );
     }
 
@@ -3474,7 +3485,7 @@ mod tests {
         assert!(!mesh.is_empty(), "mesh_to_tolerance should produce a mesh");
 
         // All vertices should be within max_deviation of the true surface
-        for v in &mesh.vertices {
+        for v in &mesh.geometry.vertices {
             let field_val = sphere.evaluate(v).abs();
             assert!(
                 field_val <= max_dev + 1e-10,
@@ -3495,7 +3506,7 @@ mod tests {
         let sphere = Solid::sphere(5.0);
         let mesh = sphere.mesh_to_tolerance(0.3);
         let expected = 4.0 / 3.0 * std::f64::consts::PI * 125.0;
-        let actual = mesh.volume();
+        let actual = mesh.geometry.volume();
         let error = (actual - expected).abs() / expected;
         assert!(
             error < 0.10,
@@ -3560,7 +3571,7 @@ mod tests {
 
         // Verify vertex deviation bound: every vertex should be within
         // max_deviation of the true surface (field value ≈ 0).
-        for v in &mesh.vertices {
+        for v in &mesh.geometry.vertices {
             let field = shape.evaluate(v).abs();
             assert!(
                 field <= max_dev + 0.05, // small epsilon for meshing discretization
@@ -3584,9 +3595,9 @@ mod tests {
         // Verify the hole exists: volume should be less than full cuboid.
         let full_cuboid_vol = 10.0 * 10.0 * 10.0; // 1000 mm³
         assert!(
-            mesh.volume() < full_cuboid_vol,
+            mesh.geometry.volume() < full_cuboid_vol,
             "mesh volume ({:.1}) should be less than full cuboid ({full_cuboid_vol})",
-            mesh.volume()
+            mesh.geometry.volume()
         );
     }
 

@@ -55,7 +55,9 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, IndexedMesh, f64) {
         .round(3.0)
         .subtract(Solid::cylinder(4.0, 20.0).translate(Vector3::new(10.0, 0.0, 0.0)));
 
-    let mut design_mesh = solid.mesh(0.5);
+    // Strip the AttributedMesh wrapper at the cf-design boundary — repair /
+    // dimensions / shell / lattice / printability all consume IndexedMesh.
+    let mut design_mesh = solid.mesh(0.5).geometry;
     let repair_summary = repair_mesh(&mut design_mesh, &RepairParams::default());
     if repair_summary.had_changes() {
         println!("  Repaired: {repair_summary:?}");
@@ -120,7 +122,8 @@ fn spawn_stage(
         mesh_data.vertices.len(),
         mesh_data.faces.len()
     );
-    spawn_design_mesh(commands, meshes, materials, mesh_data, position, color);
+    let attributed = cf_design::AttributedMesh::from(mesh_data.clone());
+    spawn_design_mesh(commands, meshes, materials, &attributed, position, color);
 }
 
 fn setup(

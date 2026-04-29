@@ -69,8 +69,8 @@ fn main() {
     let mesh_data = solid.mesh(MESH_TOLERANCE);
     eprintln!(
         "  Visual mesh: {} vertices, {} faces",
-        mesh_data.vertices.len(),
-        mesh_data.faces.len()
+        mesh_data.geometry.vertices.len(),
+        mesh_data.geometry.faces.len()
     );
     eprintln!();
 
@@ -234,7 +234,7 @@ fn check(label: &str, ok: bool) -> bool {
 // ── Bevy visualization ──────────────────────────────────────────────────
 
 #[derive(Resource)]
-struct MeshDataRes(cf_design::IndexedMesh);
+struct MeshDataRes(cf_design::AttributedMesh);
 
 fn setup(
     mut commands: Commands,

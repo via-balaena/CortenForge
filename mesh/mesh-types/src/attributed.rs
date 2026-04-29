@@ -1,5 +1,7 @@
 //! Attributed mesh — geometry with per-vertex domain attributes (`SoA` layout).
 
+use std::collections::BTreeMap;
+
 use cf_geometry::{Aabb, Bounded, IndexedMesh};
 use nalgebra::Vector3;
 
@@ -7,6 +9,34 @@ use crate::VertexColor;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+/// Returned from [`AttributedMesh::insert_extra`] when the supplied value
+/// vector does not match the mesh's vertex count.
+///
+/// Marked `#[non_exhaustive]` so future variants of attribute-validation
+/// failure (e.g., reserved names) can be added additively.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AttributeMismatchError {
+    /// Name of the attribute being inserted.
+    pub name: String,
+    /// Expected length (`vertex_count()`).
+    pub expected: usize,
+    /// Actual length supplied.
+    pub actual: usize,
+}
+
+impl core::fmt::Display for AttributeMismatchError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "extra attribute `{}` has {} values but mesh has {} vertices",
+            self.name, self.actual, self.expected
+        )
+    }
+}
+
+impl std::error::Error for AttributeMismatchError {}
 
 /// A mesh with domain-specific per-vertex attributes.
 ///
@@ -33,13 +63,27 @@ use serde::{Deserialize, Serialize};
 /// mesh.compute_normals();
 /// assert!(mesh.normals.is_some());
 /// ```
+///
+/// Marked `#[non_exhaustive]` so future attribute slots can be added without
+/// breaking external struct-literal construction. Use [`Self::new`] /
+/// [`Self::default`] / `From<IndexedMesh>` to build, then mutate public
+/// fields.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
 pub struct AttributedMesh {
     /// The underlying geometry (positions + faces).
     pub geometry: IndexedMesh,
 
     /// Per-vertex unit normals. Length must equal `geometry.vertex_count()`.
+    ///
+    /// Single source of truth for per-vertex normals across the platform.
+    /// Populated either by [`Self::compute_normals`] (area-weighted from
+    /// triangle geometry) or directly by upstream meshers that have a
+    /// stronger signal — e.g. `cf-design`'s SDF mesher writes analytical
+    /// surface normals from the field gradient. Renderers that find this
+    /// slot populated use the normals directly without crease-angle
+    /// splitting; per-vertex unit normals are exactly what shading wants.
     pub normals: Option<Vec<Vector3<f64>>>,
 
     /// Per-vertex colors. Length must equal `geometry.vertex_count()`.
@@ -60,6 +104,17 @@ pub struct AttributedMesh {
     /// Per-vertex texture coordinates (U, V).
     /// Length must equal `geometry.vertex_count()`.
     pub uvs: Option<Vec<(f32, f32)>>,
+
+    /// Extensible per-vertex scalar attributes, keyed by name.
+    ///
+    /// Each value vector has length equal to `geometry.vertex_count()`.
+    /// Use [`Self::insert_extra`] for length-validated insertion; direct
+    /// mutation requires the caller to maintain that invariant.
+    ///
+    /// `BTreeMap` is used (over `HashMap`) so iteration order is
+    /// deterministic — important for serialization, golden-file tests,
+    /// and PLY field-data export.
+    pub extras: BTreeMap<String, Vec<f32>>,
 }
 
 impl AttributedMesh {
@@ -75,7 +130,36 @@ impl AttributedMesh {
             clearances: None,
             offsets: None,
             uvs: None,
+            extras: BTreeMap::new(),
         }
+    }
+
+    /// Insert a per-vertex extra attribute, validating its length.
+    ///
+    /// On success, the attribute is stored under `name` and any previous
+    /// value at that key is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttributeMismatchError`] if `values.len()` does not equal
+    /// `self.vertex_count()`. The mesh is left unchanged on error.
+    pub fn insert_extra(
+        &mut self,
+        name: impl Into<String>,
+        values: Vec<f32>,
+    ) -> Result<(), AttributeMismatchError> {
+        let name = name.into();
+        let expected = self.vertex_count();
+        let actual = values.len();
+        if actual != expected {
+            return Err(AttributeMismatchError {
+                name,
+                expected,
+                actual,
+            });
+        }
+        self.extras.insert(name, values);
+        Ok(())
     }
 
     /// Returns the number of vertices.
@@ -250,5 +334,68 @@ mod tests {
     fn default_is_empty() {
         let mesh = AttributedMesh::default();
         assert!(mesh.is_empty());
+    }
+
+    #[test]
+    fn extras_default_empty() {
+        let mesh = AttributedMesh::new(unit_cube());
+        assert!(mesh.extras.is_empty());
+    }
+
+    #[test]
+    fn insert_extra_rejects_length_mismatch() {
+        let mut mesh = AttributedMesh::new(unit_cube());
+        let too_short = vec![0.0_f32; 4];
+        let err = mesh.insert_extra("stress", too_short).unwrap_err();
+        assert_eq!(err.name, "stress");
+        assert_eq!(err.expected, 8);
+        assert_eq!(err.actual, 4);
+        assert!(mesh.extras.is_empty(), "mesh must be unchanged on error");
+    }
+
+    #[test]
+    fn insert_extra_stores_multiple_distinct_keys() {
+        let mut mesh = AttributedMesh::new(unit_cube());
+        let stress: Vec<f32> = (0_u8..8).map(f32::from).collect();
+        let temperature: Vec<f32> = (0_u8..8).map(|i| 100.0 + f32::from(i)).collect();
+        mesh.insert_extra("stress", stress.clone()).unwrap();
+        mesh.insert_extra("temperature", temperature.clone())
+            .unwrap();
+        assert_eq!(mesh.extras.len(), 2);
+        assert_eq!(mesh.extras.get("stress"), Some(&stress));
+        assert_eq!(mesh.extras.get("temperature"), Some(&temperature));
+    }
+
+    #[test]
+    fn insert_extra_overwrites_existing_key() {
+        let mut mesh = AttributedMesh::new(unit_cube());
+        mesh.insert_extra("stress", vec![0.0_f32; 8]).unwrap();
+        mesh.insert_extra("stress", vec![1.0_f32; 8]).unwrap();
+        assert_eq!(mesh.extras.len(), 1);
+        let stored = mesh.extras.get("stress").unwrap();
+        assert!(stored.iter().all(|&v| (v - 1.0).abs() < f32::EPSILON));
+    }
+
+    #[test]
+    fn insert_extra_accepts_empty_vec_on_zero_vertex_mesh() {
+        let mut mesh = AttributedMesh::default();
+        assert_eq!(mesh.vertex_count(), 0);
+        mesh.insert_extra("k", Vec::new()).unwrap();
+        assert_eq!(mesh.extras.len(), 1);
+        assert!(mesh.extras["k"].is_empty());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn extras_round_trip_through_serde() {
+        let mut mesh = AttributedMesh::new(unit_cube());
+        let stress: Vec<f32> = (0_u8..8).map(|i| f32::from(i) * 0.5).collect();
+        mesh.insert_extra("stress", stress.clone()).unwrap();
+
+        let json = serde_json::to_string(&mesh).unwrap();
+        let restored: AttributedMesh = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.extras.len(), 1);
+        assert_eq!(restored.extras.get("stress"), Some(&stress));
     }
 }

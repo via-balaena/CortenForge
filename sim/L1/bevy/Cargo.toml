@@ -16,6 +16,8 @@ tier = "L1"
 [dependencies]
 # Shared geometry kernel — SDF primitives and AABBs for debug rendering
 cf-geometry = { path = "../../../design/cf-geometry" }
+# Per-vertex attribute container — renderer consumes AttributedMesh
+mesh-types = { path = "../../../mesh/mesh-types" }
 
 # BodyId / Pose primitives threaded from Layer 0 into Bevy ECS components
 sim-types = { path = "../../L0/types" }

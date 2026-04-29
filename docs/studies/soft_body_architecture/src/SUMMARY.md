@@ -312,6 +312,7 @@
     - [With sim-bevy](110-crate/02-coupling/02-bevy.md)
     - [With sim-ml-chassis](110-crate/02-coupling/03-ml-chassis.md)
     - [With cf-design](110-crate/02-coupling/04-cf-design.md)
+    - [With sim-cast (casting domain)](110-crate/02-coupling/05-sim-cast.md)
 - [Build order](110-crate/03-build-order.md)
 - [Testing strategy](110-crate/04-testing.md)
     - [Unit tests](110-crate/04-testing/00-unit.md)

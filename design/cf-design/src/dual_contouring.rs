@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use cf_geometry::{Aabb, IndexedMesh};
+use mesh_types::AttributedMesh;
 use nalgebra::{Matrix3, Point3, Vector3};
 
 use crate::field_node::FieldNode;
@@ -28,6 +29,11 @@ use crate::mesher::MeshStats;
 /// using the field gradient at edge-crossing points. Faces are generated
 /// from sign-changing grid edges shared by 4 cells, producing quads that
 /// are split into triangles with CCW winding (outward-facing normals).
+///
+/// The returned [`AttributedMesh`] has `normals = None`. DC vertices come
+/// from QEF minimization, not directly from gradient evaluation at the
+/// emitted vertex, so analytical normals are not produced here. Renderers
+/// fall back to crease-angle splitting.
 // Index/count conversion bounded by domain.
 #[allow(
     clippy::cast_possible_truncation,
@@ -35,7 +41,11 @@ use crate::mesher::MeshStats;
     clippy::cast_precision_loss,
     clippy::too_many_lines
 )]
-pub fn mesh_field_dc(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (IndexedMesh, MeshStats) {
+pub fn mesh_field_dc(
+    node: &FieldNode,
+    bounds: &Aabb,
+    cell_size: f64,
+) -> (AttributedMesh, MeshStats) {
     let size = bounds.size();
     let nx = ((size.x / cell_size).ceil() as usize).max(1);
     let ny = ((size.y / cell_size).ceil() as usize).max(1);
@@ -197,7 +207,7 @@ pub fn mesh_field_dc(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (Indexe
     }
 
     (
-        mesh,
+        AttributedMesh::new(mesh),
         MeshStats {
             cells_total,
             cells_pruned,
@@ -372,9 +382,9 @@ mod tests {
     use std::f64::consts::PI;
 
     /// Validate mesh topology: check watertight + manifold.
-    fn check_topology(mesh: &IndexedMesh) -> (bool, bool) {
+    fn check_topology(mesh: &AttributedMesh) -> (bool, bool) {
         let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
-        for face in &mesh.faces {
+        for face in &mesh.geometry.faces {
             for i in 0..3 {
                 *directed.entry((face[i], face[(i + 1) % 3])).or_insert(0) += 1;
             }
@@ -394,15 +404,15 @@ mod tests {
         (boundary == 0, non_manifold == 0)
     }
 
-    fn assert_mesh_valid(mesh: &IndexedMesh, label: &str) {
+    fn assert_mesh_valid(mesh: &AttributedMesh, label: &str) {
         assert!(!mesh.is_empty(), "{label}: mesh should not be empty");
         let (watertight, manifold) = check_topology(mesh);
         assert!(watertight, "{label}: mesh should be watertight");
         assert!(manifold, "{label}: mesh should be manifold");
         assert!(
-            mesh.signed_volume() > 0.0,
+            mesh.geometry.signed_volume() > 0.0,
             "{label}: mesh should have positive signed volume (CCW winding), got {}",
-            mesh.signed_volume()
+            mesh.geometry.signed_volume()
         );
     }
 
@@ -424,7 +434,7 @@ mod tests {
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
-        let actual = mesh.volume();
+        let actual = mesh.geometry.volume();
         let error = (actual - expected).abs() / expected;
         assert!(
             error < 0.15,
@@ -479,11 +489,12 @@ mod tests {
     }
 
     /// Maximum distance from any true corner to its closest mesh vertex.
-    fn max_corner_deviation(mesh: &IndexedMesh, true_corners: &[Point3<f64>]) -> f64 {
+    fn max_corner_deviation(mesh: &AttributedMesh, true_corners: &[Point3<f64>]) -> f64 {
         true_corners
             .iter()
             .map(|tc| {
-                mesh.vertices
+                mesh.geometry
+                    .vertices
                     .iter()
                     .map(|v| (v - tc).norm())
                     .fold(f64::MAX, f64::min)
@@ -502,6 +513,7 @@ mod tests {
         // Check +x face: vertices near x=3 (and away from edges) should
         // have x very close to 3.0.
         let face_verts: Vec<&Point3<f64>> = mesh
+            .geometry
             .vertices
             .iter()
             .filter(|v| (v.x - 3.0).abs() < cell && v.y.abs() < 2.0 && v.z.abs() < 2.0)
@@ -561,7 +573,7 @@ mod tests {
 
         // Volume accuracy should be comparable
         let expected = 4.0 / 3.0 * PI * 125.0;
-        let dc_error = (dc_mesh.volume() - expected).abs() / expected;
+        let dc_error = (dc_mesh.geometry.volume() - expected).abs() / expected;
         assert!(
             dc_error < 0.20,
             "DC sphere volume error {:.1}% is too large",
@@ -590,11 +602,11 @@ mod tests {
         // Volume should be more than one sphere, less than two
         let one_sphere = 4.0 / 3.0 * PI * 27.0;
         assert!(
-            mesh.volume() > one_sphere,
+            mesh.geometry.volume() > one_sphere,
             "smooth union volume should exceed single sphere"
         );
         assert!(
-            mesh.volume() < 2.0 * one_sphere,
+            mesh.geometry.volume() < 2.0 * one_sphere,
             "smooth union volume should be less than two spheres"
         );
     }

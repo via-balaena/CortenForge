@@ -69,7 +69,7 @@ mod vertex;
 pub use cf_geometry::{Aabb, Bounded, IndexedMesh, Triangle};
 
 // Re-export mesh-types domain types
-pub use attributed::AttributedMesh;
+pub use attributed::{AttributeMismatchError, AttributedMesh};
 pub use mesh::{place_on_z_zero, unit_cube};
 pub use vertex::VertexColor;
 
