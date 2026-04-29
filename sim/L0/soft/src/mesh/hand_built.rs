@@ -277,6 +277,36 @@ impl HandBuiltTetMesh {
             interface_flags,
         }
     }
+
+    /// Uniform-material cube — Phase 5 V-3a compressive-block gate scene.
+    ///
+    /// Same `(n × n × n)` hex-grid + Coxeter-Freudenthal-Kuhn 6-tets-per-cell
+    /// decomposition as [`Self::cantilever_bilayer_beam`] with cube
+    /// dimensions `(edge_len, edge_len, edge_len)`. The bilayer-interface
+    /// constraint (`nz` even, interface aligns at `z = height/2`) is
+    /// preserved by delegation, but the V-3a invariant feeds a uniform
+    /// `MaterialField` so the would-be interface is invisible — both
+    /// halves carry the same `(μ, λ)` Lamé pair and centroid-sampling
+    /// produces an isotropic per-tet material cache.
+    ///
+    /// V-3a feeds three refinement levels at `edge_len = 0.01` m (1 cm
+    /// cube): `n = 2 / 4 / 8` for cell sizes `5 / 2.5 / 1.25` mm — all
+    /// even, satisfying the inherited constraint by construction. n=1
+    /// (single-cell cube) is rejected by the inherited assert; widening
+    /// it would require relaxing [`Self::cantilever_bilayer_beam`]'s
+    /// constraint and is out of Phase 5 scope (no V-* test exercises a
+    /// single-cell cube).
+    ///
+    /// # Panics
+    /// - `n_per_edge` is odd or zero (inherited from
+    ///   [`Self::cantilever_bilayer_beam`]'s `nz` constraint).
+    /// - `edge_len` is non-positive.
+    #[must_use]
+    pub fn uniform_block(n_per_edge: usize, edge_len: f64, field: &MaterialField) -> Self {
+        Self::cantilever_bilayer_beam(
+            n_per_edge, n_per_edge, n_per_edge, edge_len, edge_len, edge_len, field,
+        )
+    }
 }
 
 impl Mesh for HandBuiltTetMesh {
