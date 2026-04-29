@@ -1,0 +1,17 @@
+[package]
+name = "example-mesh-format-conversion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# unit_cube + IndexedMesh helpers (signed_volume, surface_area, aabb)
+mesh-types = { workspace = true }
+# save_stl / load_stl, save_ply / load_ply, save_obj / load_obj
+mesh-io = { workspace = true }
+# anyhow error reporting for the example main() return type
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

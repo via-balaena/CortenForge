@@ -290,6 +290,7 @@ members = [
 
     # Examples — mesh
     "examples/mesh/ply-with-custom-attributes",
+    "examples/mesh/format-conversion",
 
     # Foundation (active development)
     "design/cf-geometry",

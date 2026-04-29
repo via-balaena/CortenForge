@@ -3566,6 +3566,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-format-conversion"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-mesh-pipeline"
 version = "0.7.0"
 dependencies = [
