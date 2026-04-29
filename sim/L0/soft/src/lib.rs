@@ -45,7 +45,9 @@ pub mod sdf_bridge;
 pub mod solver;
 
 pub use autograd_ops::{DivOp, IndexOp};
-pub use contact::{ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact};
+pub use contact::{
+    ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact, RigidPlane,
+};
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};

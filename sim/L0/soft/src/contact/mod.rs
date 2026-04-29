@@ -8,8 +8,10 @@
 use crate::Vec3;
 
 pub mod null;
+pub mod rigid;
 
 pub use null::NullContact;
+pub use rigid::RigidPlane;
 
 /// A pair of geometric primitives active under the contact model (e.g.
 /// vertex-triangle, edge-edge). Unit stub; Phase C populates primitive
