@@ -10,35 +10,38 @@
 
 #![allow(clippy::cast_possible_truncation)] // f64 -> f32 is intentional for Bevy meshes
 
-use std::sync::Arc;
-
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use cf_geometry::{IndexedMesh, Shape};
+use mesh_types::AttributedMesh;
 
 use crate::convert::{
     dimensions_to_bevy, normal_to_bevy, transform_from_physics, vec3_from_point,
     vertex_positions_from_points,
 };
 
-/// Spawn a design mesh entity from an [`IndexedMesh`] positioned in physics space.
+/// Spawn a design mesh entity from an [`AttributedMesh`] positioned in physics space.
 ///
 /// Takes a **physics-space** position (`Point3<f64>`, Z-up) and handles the
 /// coordinate conversion to Bevy (Y-up) automatically. This eliminates manual
 /// Y↔Z swapping in example/application code.
+///
+/// If the mesh carries per-vertex normals (typical for SDF-meshed output via
+/// `cf_design::Solid::mesh*`), those normals are used directly for smooth
+/// shading. Otherwise the renderer falls back to crease-angle splitting on
+/// the underlying geometry.
 ///
 /// Returns the spawned [`Entity`] so callers can attach additional components.
 pub fn spawn_design_mesh(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
-    mesh_data: &IndexedMesh,
+    mesh_data: &AttributedMesh,
     position: nalgebra::Point3<f64>,
     color: Color,
 ) -> Entity {
-    let indexed = Arc::new(mesh_data.clone());
-    let bevy_mesh = triangle_mesh_from_indexed(&indexed);
+    let bevy_mesh = triangle_mesh_from_attributed(mesh_data);
 
     commands
         .spawn((
@@ -75,7 +78,7 @@ pub fn mesh_from_shape(shape: &Shape) -> Option<Mesh> {
         Shape::Ellipsoid { radii } => Some(ellipsoid_mesh(radii)),
         Shape::Plane { .. } => Some(plane_mesh()),
         Shape::ConvexMesh { hull } => Some(convex_mesh_from_vertices(&hull.vertices)),
-        Shape::TriangleMesh { mesh, .. } => Some(triangle_mesh_from_indexed(mesh)),
+        Shape::TriangleMesh { mesh, .. } => Some(triangle_mesh_from_indexed(mesh.as_ref())),
         Shape::HeightField { .. } => {
             // DT-178: Implement height field visualization
             None
@@ -237,15 +240,19 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
     mesh
 }
 
-/// Create a mesh from a cf-geometry [`IndexedMesh`].
+/// Create a Bevy mesh from a positions+faces [`IndexedMesh`].
 ///
-/// Converts the `IndexedMesh` to a Bevy mesh with proper vertices, indices,
-/// and normals.
+/// No per-vertex normals available: the renderer computes them from triangle
+/// geometry using a 30° crease-angle split — sharp edges get duplicated
+/// vertices with per-face normals; gentle edges share smoothed vertex
+/// normals. Use [`triangle_mesh_from_attributed`] when analytical
+/// per-vertex normals (e.g. SDF gradient normals from a marching-cubes pass)
+/// are available — that path skips the splitting and renders smoothly.
 ///
 /// Coordinates are converted from physics Z-up to Bevy Y-up using
 /// [`vertex_positions_from_points`] and [`normal_to_bevy`].
 #[must_use]
-pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
+pub fn triangle_mesh_from_indexed(mesh_data: &IndexedMesh) -> Mesh {
     // Crease-angle vertex splitting: sharp edges (> 30°) get split vertices
     // with per-face normals, gentle edges share vertices with smooth averaged
     // normals. This gives flat shading on cuboid faces and smooth shading on
@@ -265,40 +272,6 @@ pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
 
     // Pre-convert all positions to Bevy coordinates
     let bevy_positions = vertex_positions_from_points(vertices);
-
-    // Fast path: SDF gradient normals — use directly, no crease-angle splitting.
-    // The SDF gradient gives analytically smooth normals on curved surfaces and
-    // naturally sharp normals at edges (gradient is well-defined on each face).
-    if let Some(ref sdf_normals) = mesh_data.normals {
-        let positions: Vec<[f32; 3]> = bevy_positions;
-        let normals: Vec<[f32; 3]> = sdf_normals
-            .iter()
-            .map(|n| {
-                let len = n.norm();
-                if len > 1e-10 {
-                    normal_to_bevy(&(n / len))
-                } else {
-                    [0.0, 1.0, 0.0]
-                }
-            })
-            .collect();
-        // Winding fix: Y↔Z swap reverses handedness → emit (v0, v2, v1)
-        let indices: Vec<u32> = triangles
-            .iter()
-            .flat_map(|face| [face[0], face[2], face[1]])
-            .collect();
-
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-        return mesh;
-    }
-
-    // Slow path: no SDF normals — compute from triangle geometry with crease-angle splitting.
 
     // Compute unit face normals in physics space
     let face_normals: Vec<nalgebra::Vector3<f64>> = triangles
@@ -372,6 +345,60 @@ pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_indices(bevy::mesh::Indices::U32(indices));
 
+    mesh
+}
+
+/// Create a Bevy mesh from an [`AttributedMesh`].
+///
+/// If `mesh_data.normals` is `Some`, the per-vertex normals are used directly
+/// (the analytical-normals fast path: typical for SDF marching-cubes output
+/// where the normals come from the field gradient). The Y↔Z winding swap
+/// still applies. If `normals` is `None`, the renderer falls back to
+/// [`triangle_mesh_from_indexed`] on the underlying geometry, which derives
+/// smooth/flat normals via crease-angle splitting.
+#[must_use]
+pub fn triangle_mesh_from_attributed(mesh_data: &AttributedMesh) -> Mesh {
+    let vertices = &mesh_data.geometry.vertices;
+    let triangles = &mesh_data.geometry.faces;
+
+    if vertices.is_empty() || triangles.is_empty() {
+        return Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+    }
+
+    // No per-vertex normals: defer to the geometry-only path, which handles
+    // crease-angle splitting and Y↔Z winding.
+    let Some(ref vertex_normals) = mesh_data.normals else {
+        return triangle_mesh_from_indexed(&mesh_data.geometry);
+    };
+
+    let positions: Vec<[f32; 3]> = vertex_positions_from_points(vertices);
+    let normals: Vec<[f32; 3]> = vertex_normals
+        .iter()
+        .map(|n| {
+            let len = n.norm();
+            if len > 1e-10 {
+                normal_to_bevy(&(n / len))
+            } else {
+                [0.0, 1.0, 0.0]
+            }
+        })
+        .collect();
+    // Winding fix: Y↔Z swap reverses handedness → emit (v0, v2, v1)
+    let indices: Vec<u32> = triangles
+        .iter()
+        .flat_map(|face| [face[0], face[2], face[1]])
+        .collect();
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
     mesh
 }
 
@@ -521,15 +548,15 @@ mod tests {
     #[allow(clippy::expect_used)]
     fn spawn_design_mesh_converts_z_up_to_y_up() {
         // Minimal triangle mesh (single triangle)
-        let mesh_data = IndexedMesh {
+        let geometry = IndexedMesh {
             vertices: vec![
                 nalgebra::Point3::new(0.0, 0.0, 0.0),
                 nalgebra::Point3::new(1.0, 0.0, 0.0),
                 nalgebra::Point3::new(0.0, 1.0, 0.0),
             ],
             faces: vec![[0, 1, 2]],
-            normals: None,
         };
+        let mesh_data = AttributedMesh::from(geometry);
 
         let mut world = bevy::prelude::World::new();
         let mut meshes = Assets::<Mesh>::default();

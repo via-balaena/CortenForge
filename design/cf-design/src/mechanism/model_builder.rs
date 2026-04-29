@@ -175,8 +175,8 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
         ));
         shape_data.push(shape);
 
-        // Visual mesh: Solid::mesh → IndexedMesh → TriangleMeshData
-        let indexed = solid.mesh(visual_resolution);
+        // Visual mesh: Solid::mesh → AttributedMesh → IndexedMesh → TriangleMeshData
+        let indexed = solid.mesh(visual_resolution).geometry;
         let tri =
             sim_core::TriangleMeshData::from_faces(indexed.vertices.clone(), indexed.faces.clone());
         let mesh_id = mesh_data.len();
@@ -776,13 +776,13 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
 
     // Bbox-based alignment
     let mesh = part.solid().mesh(1.0);
-    if mesh.vertices.is_empty() {
+    if mesh.geometry.vertices.is_empty() {
         return Vector3::zeros();
     }
 
-    let mut min = mesh.vertices[0].coords;
-    let mut max = mesh.vertices[0].coords;
-    for v in &mesh.vertices {
+    let mut min = mesh.geometry.vertices[0].coords;
+    let mut max = mesh.geometry.vertices[0].coords;
+    for v in &mesh.geometry.vertices {
         min = min.inf(&v.coords);
         max = max.sup(&v.coords);
     }

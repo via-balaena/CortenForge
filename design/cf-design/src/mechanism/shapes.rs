@@ -108,7 +108,11 @@ fn generate_mesh(mechanism: &Mechanism, tolerance: f64) -> Vec<(String, Shape)> 
         .parts()
         .iter()
         .map(|part| {
-            let mesh = part.solid().mesh(tolerance);
+            // Shape::TriangleMesh consumes geometry only; analytical normals
+            // from the mesher live on the AttributedMesh wrapper which is
+            // not threaded into Shape today (no per-vertex attribute consumer
+            // downstream).
+            let mesh = part.solid().mesh(tolerance).geometry;
             let bvh = bvh_from_mesh(&mesh);
             let shape = Shape::triangle_mesh(Arc::new(mesh), Arc::new(bvh));
             (part.name().to_owned(), shape)

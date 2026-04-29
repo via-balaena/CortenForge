@@ -133,7 +133,9 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vector3<f64>, f32)>, f64) {
     println!("Stage 1: Design bracket");
     let (mechanism, solid) = build_bracket();
 
-    let mut bracket_mesh = solid.mesh(0.5);
+    // Strip the AttributedMesh wrapper at the cf-design boundary — repair /
+    // dimensions / lattice all consume IndexedMesh.
+    let mut bracket_mesh = solid.mesh(0.5).geometry;
     let _ = repair_mesh(&mut bracket_mesh, &RepairParams::default());
 
     let dims = dimensions(&bracket_mesh);
@@ -248,7 +250,8 @@ fn spawn_mesh(
         mesh_data.vertices.len(),
         mesh_data.faces.len()
     );
-    spawn_design_mesh(commands, meshes, materials, mesh_data, position, color);
+    let attributed = cf_design::AttributedMesh::from(mesh_data.clone());
+    spawn_design_mesh(commands, meshes, materials, &attributed, position, color);
 }
 
 fn setup(

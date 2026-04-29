@@ -599,7 +599,7 @@ mod tests {
         let original_faces = mesh.face_count();
         let target = original_faces / 2;
 
-        let simplified = simplify_mesh(&mesh, target);
+        let simplified = simplify_mesh(&mesh.geometry, target);
 
         let lo = target * 8 / 10;
         let hi = target * 12 / 10;
@@ -616,7 +616,7 @@ mod tests {
         let mesh = sphere.mesh_adaptive_par(0.5);
         let target = mesh.face_count() / 2;
 
-        let simplified = simplify_mesh(&mesh, target);
+        let simplified = simplify_mesh(&mesh.geometry, target);
 
         let (watertight, manifold) = check_topology(&simplified);
         assert!(watertight, "Simplified mesh should be watertight");
@@ -627,10 +627,10 @@ mod tests {
     fn simplify_sphere_preserves_volume() {
         let sphere = Solid::sphere(5.0);
         let mesh = sphere.mesh_adaptive_par(0.5);
-        let original_vol = mesh.volume();
+        let original_vol = mesh.geometry.volume();
         let target = mesh.face_count() / 2;
 
-        let simplified = simplify_mesh(&mesh, target);
+        let simplified = simplify_mesh(&mesh.geometry, target);
         let simplified_vol = simplified.volume();
 
         let error = (simplified_vol - original_vol).abs() / original_vol;
@@ -648,7 +648,7 @@ mod tests {
         let mesh = cube.mesh_adaptive_par(0.3);
         let target = mesh.face_count() * 2 / 3;
 
-        let simplified = simplify_mesh(&mesh, target);
+        let simplified = simplify_mesh(&mesh.geometry, target);
 
         let true_corners: Vec<Point3<f64>> = [
             (-2.0, -2.0, -2.0),
@@ -683,7 +683,7 @@ mod tests {
         let mesh = sphere.mesh_adaptive_par(0.3);
         let max_dev = 0.2;
 
-        let simplified = simplify_mesh_tolerance(&mesh, &sphere.node, max_dev);
+        let simplified = simplify_mesh_tolerance(&mesh.geometry, &sphere.node, max_dev);
 
         for v in &simplified.vertices {
             let field_val = sphere.node.evaluate(v).abs();
@@ -707,7 +707,7 @@ mod tests {
         let mesh = sphere.mesh_adaptive_par(0.3);
         let max_dev = 0.2;
 
-        let simplified = simplify_mesh_tolerance(&mesh, &sphere.node, max_dev);
+        let simplified = simplify_mesh_tolerance(&mesh.geometry, &sphere.node, max_dev);
 
         let (watertight, manifold) = check_topology(&simplified);
         assert!(watertight, "Tolerance-simplified mesh should be watertight");
@@ -720,7 +720,7 @@ mod tests {
         let mesh = sphere.mesh_adaptive_par(1.0);
         let original = mesh.face_count();
 
-        let simplified = simplify_mesh(&mesh, original + 100);
+        let simplified = simplify_mesh(&mesh.geometry, original + 100);
         assert_eq!(simplified.face_count(), original);
     }
 
@@ -730,7 +730,7 @@ mod tests {
         let mesh = sphere.mesh_adaptive_par(0.5);
         let target = mesh.face_count() / 10; // 90% reduction
 
-        let simplified = simplify_mesh(&mesh, target);
+        let simplified = simplify_mesh(&mesh.geometry, target);
 
         let (watertight, manifold) = check_topology(&simplified);
         assert!(
@@ -757,7 +757,7 @@ mod tests {
         let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(cf_geometry::Aabb::empty()), 0.5);
         let target = mesh.face_count() * 2 / 3;
 
-        let simplified = simplify_mesh(&mesh, target);
+        let simplified = simplify_mesh(&mesh.geometry, target);
 
         let true_corners: Vec<Point3<f64>> = [
             (-2.0, -2.0, -2.0),
@@ -794,7 +794,7 @@ mod tests {
         let mesh = shape.mesh_adaptive_par(0.4);
         let target = mesh.face_count() * 2 / 3;
 
-        let simplified = simplify_mesh(&mesh, target);
+        let simplified = simplify_mesh(&mesh.geometry, target);
 
         let (watertight, manifold) = check_topology(&simplified);
         assert!(watertight, "Simplified composed shape should be watertight");

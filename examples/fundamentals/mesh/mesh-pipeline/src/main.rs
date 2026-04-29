@@ -42,7 +42,9 @@ fn setup(
 ) {
     // ── 1. Generate source mesh ───────────────────────────────────────
     let shape = Solid::cuboid(Vector3::new(15.0, 10.0, 20.0)).round(2.0);
-    let mut mesh = shape.mesh(0.3);
+    // Strip the AttributedMesh wrapper at the cf-design boundary — repair /
+    // dimensions / shell / printability all consume IndexedMesh.
+    let mut mesh = shape.mesh(0.3).geometry;
 
     println!("=== CortenForge: Mesh Pipeline ===\n");
     println!(
@@ -120,11 +122,12 @@ fn setup(
     for (i, (name, mesh_data, color)) in stages.iter().enumerate() {
         println!("  Spawned: {name}");
         let x = f64::from((i as f32).mul_add(spacing, -offset));
+        let attributed = cf_design::AttributedMesh::from(mesh_data.clone());
         spawn_design_mesh(
             &mut commands,
             &mut meshes,
             &mut materials,
-            mesh_data,
+            &attributed,
             Point3::new(x, 0.0, 0.0),
             *color,
         );

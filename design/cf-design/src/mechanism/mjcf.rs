@@ -96,9 +96,9 @@ fn write_assets(xml: &mut String, mechanism: &Mechanism, resolution: f64) {
         let _ = write!(xml, "    <mesh name=\"{}_mesh\"", esc(part.name()));
 
         // Inline vertex data: flat x y z triplets.
-        if !mesh.vertices.is_empty() {
+        if !mesh.geometry.vertices.is_empty() {
             let _ = write!(xml, " vertex=\"");
-            for (i, v) in mesh.vertices.iter().enumerate() {
+            for (i, v) in mesh.geometry.vertices.iter().enumerate() {
                 if i > 0 {
                     let _ = write!(xml, " ");
                 }
@@ -108,9 +108,9 @@ fn write_assets(xml: &mut String, mechanism: &Mechanism, resolution: f64) {
         }
 
         // Inline face data: flat index triplets.
-        if !mesh.faces.is_empty() {
+        if !mesh.geometry.faces.is_empty() {
             let _ = write!(xml, " face=\"");
-            for (i, f) in mesh.faces.iter().enumerate() {
+            for (i, f) in mesh.geometry.faces.iter().enumerate() {
                 if i > 0 {
                     let _ = write!(xml, " ");
                 }
@@ -327,13 +327,13 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
 
     // Compute bounding box from a coarse mesh (just for extents).
     let mesh = part.solid().mesh(1.0);
-    if mesh.vertices.is_empty() {
+    if mesh.geometry.vertices.is_empty() {
         return Vector3::zeros();
     }
 
-    let mut min = mesh.vertices[0].coords;
-    let mut max = mesh.vertices[0].coords;
-    for v in &mesh.vertices {
+    let mut min = mesh.geometry.vertices[0].coords;
+    let mut max = mesh.geometry.vertices[0].coords;
+    for v in &mesh.geometry.vertices {
         min = min.inf(&v.coords);
         max = max.sup(&v.coords);
     }

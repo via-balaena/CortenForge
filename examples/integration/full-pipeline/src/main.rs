@@ -344,8 +344,7 @@ fn spawn_mesh_entity(
     transform: Transform,
     stage: PipelineStage,
 ) -> Entity {
-    let indexed = Arc::new(mesh_data.clone());
-    let bevy_mesh = triangle_mesh_from_indexed(&indexed);
+    let bevy_mesh = triangle_mesh_from_indexed(mesh_data);
 
     commands
         .spawn((

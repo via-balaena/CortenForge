@@ -63,13 +63,27 @@ impl std::error::Error for AttributeMismatchError {}
 /// mesh.compute_normals();
 /// assert!(mesh.normals.is_some());
 /// ```
+///
+/// Marked `#[non_exhaustive]` so future attribute slots can be added without
+/// breaking external struct-literal construction. Use [`Self::new`] /
+/// [`Self::default`] / `From<IndexedMesh>` to build, then mutate public
+/// fields.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
 pub struct AttributedMesh {
     /// The underlying geometry (positions + faces).
     pub geometry: IndexedMesh,
 
     /// Per-vertex unit normals. Length must equal `geometry.vertex_count()`.
+    ///
+    /// Single source of truth for per-vertex normals across the platform.
+    /// Populated either by [`Self::compute_normals`] (area-weighted from
+    /// triangle geometry) or directly by upstream meshers that have a
+    /// stronger signal — e.g. `cf-design`'s SDF mesher writes analytical
+    /// surface normals from the field gradient. Renderers that find this
+    /// slot populated use the normals directly without crease-angle
+    /// splitting; per-vertex unit normals are exactly what shading wants.
     pub normals: Option<Vec<Vector3<f64>>>,
 
     /// Per-vertex colors. Length must equal `geometry.vertex_count()`.

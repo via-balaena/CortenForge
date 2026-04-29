@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use cf_geometry::{Aabb, IndexedMesh};
+use mesh_types::AttributedMesh;
 use nalgebra::Point3;
 
 use crate::field_node::FieldNode;
@@ -28,7 +29,9 @@ pub struct MeshStats {
 /// the surface, skipping most of the grid.
 ///
 /// Vertices on shared cell edges are deduplicated via an edge cache,
-/// producing a properly indexed manifold mesh.
+/// producing a properly indexed manifold mesh. The returned
+/// [`AttributedMesh`] carries analytical surface normals (`normals = Some`)
+/// computed from the SDF gradient at each emitted vertex.
 // Index/count conversion bounded by domain.
 #[allow(
     clippy::cast_possible_truncation,
@@ -36,7 +39,7 @@ pub struct MeshStats {
     clippy::cast_precision_loss,
     clippy::too_many_lines
 )]
-pub fn mesh_field(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (IndexedMesh, MeshStats) {
+pub fn mesh_field(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (AttributedMesh, MeshStats) {
     let size = bounds.size();
     let nx = ((size.x / cell_size).ceil() as usize).max(1);
     let ny = ((size.y / cell_size).ceil() as usize).max(1);
@@ -158,10 +161,11 @@ pub fn mesh_field(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (IndexedMe
         }
     }
 
-    mesh.normals = Some(normals);
+    let mut attributed = AttributedMesh::new(mesh);
+    attributed.normals = Some(normals);
 
     (
-        mesh,
+        attributed,
         MeshStats {
             cells_total,
             cells_pruned,
@@ -543,9 +547,9 @@ mod tests {
     /// Validate mesh topology: check watertight + manifold.
     ///
     /// Returns `(is_watertight, is_manifold)`.
-    fn check_topology(mesh: &IndexedMesh) -> (bool, bool) {
+    fn check_topology(mesh: &AttributedMesh) -> (bool, bool) {
         let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
-        for face in &mesh.faces {
+        for face in &mesh.geometry.faces {
             for i in 0..3 {
                 *directed.entry((face[i], face[(i + 1) % 3])).or_insert(0) += 1;
             }
@@ -566,15 +570,15 @@ mod tests {
     }
 
     /// Full mesh validation: watertight, manifold, correct winding.
-    fn assert_mesh_valid(mesh: &IndexedMesh, label: &str) {
+    fn assert_mesh_valid(mesh: &AttributedMesh, label: &str) {
         assert!(!mesh.is_empty(), "{label}: mesh should not be empty");
         let (watertight, manifold) = check_topology(mesh);
         assert!(watertight, "{label}: mesh should be watertight");
         assert!(manifold, "{label}: mesh should be manifold");
         assert!(
-            mesh.signed_volume() > 0.0,
+            mesh.geometry.signed_volume() > 0.0,
             "{label}: mesh should have positive signed volume (CCW winding), got {}",
-            mesh.signed_volume()
+            mesh.geometry.signed_volume()
         );
     }
 
@@ -596,7 +600,7 @@ mod tests {
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (mesh, _) = mesh_field(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
-        let actual = mesh.volume();
+        let actual = mesh.geometry.volume();
         let error = (actual - expected).abs() / expected;
         assert!(
             error < 0.15,
@@ -623,7 +627,7 @@ mod tests {
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (mesh, _) = mesh_field(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         let expected = 8.0 * 2.0 * 3.0 * 4.0;
-        let actual = mesh.volume();
+        let actual = mesh.geometry.volume();
         let error = (actual - expected).abs() / expected;
         assert!(
             error < 0.15,

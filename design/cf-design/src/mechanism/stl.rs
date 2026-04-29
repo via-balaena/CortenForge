@@ -43,7 +43,9 @@ pub(super) fn generate(mechanism: &Mechanism, tolerance: f64) -> Vec<(String, In
                 let offset_solid = part.solid().clone().offset(clearance_offset);
                 offset_solid.mesh(tolerance)
             };
-            (part.name().to_owned(), mesh)
+            // STL is geometry-only (no per-vertex attributes) — strip the
+            // attributed wrapper at the kit boundary.
+            (part.name().to_owned(), mesh.geometry)
         })
         .collect()
 }
