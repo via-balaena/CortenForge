@@ -117,7 +117,7 @@ fn verify_initial(mesh: &IndexedMesh) {
 }
 
 /// Post-`repair_mesh`: adjacency is clean. The only remaining issues are
-/// the hole (3 boundary edges) and the hand-reversed face[5].
+/// the hole (3 boundary edges) and the hand-reversed `face[5]`.
 fn verify_post_repair(mesh: &IndexedMesh, summary: &RepairSummary) {
     assert_eq!(
         summary.vertices_welded, 1,
@@ -171,7 +171,7 @@ fn verify_post_fill(mesh: &IndexedMesh, filled: usize) {
 }
 
 /// Post-`fix_winding_order`: the BFS reaches all faces through the now-closed
-/// surface and produces globally-consistent winding (outward, since face[0] is
+/// surface and produces globally-consistent winding (outward, since `face[0]` is
 /// the BFS seed and `unit_cube` wound it outward).
 fn verify_final(mesh: &IndexedMesh) {
     let report = validate_mesh(mesh);
