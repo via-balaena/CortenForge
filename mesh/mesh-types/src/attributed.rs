@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 
 /// Returned from [`AttributedMesh::insert_extra`] when the supplied value
 /// vector does not match the mesh's vertex count.
+///
+/// Marked `#[non_exhaustive]` so future variants of attribute-validation
+/// failure (e.g., reserved names) can be added additively.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AttributeMismatchError {
     /// Name of the attribute being inserted.
     pub name: String,
@@ -346,6 +350,25 @@ mod tests {
         assert_eq!(mesh.extras.len(), 2);
         assert_eq!(mesh.extras.get("stress"), Some(&stress));
         assert_eq!(mesh.extras.get("temperature"), Some(&temperature));
+    }
+
+    #[test]
+    fn insert_extra_overwrites_existing_key() {
+        let mut mesh = AttributedMesh::new(unit_cube());
+        mesh.insert_extra("stress", vec![0.0_f32; 8]).unwrap();
+        mesh.insert_extra("stress", vec![1.0_f32; 8]).unwrap();
+        assert_eq!(mesh.extras.len(), 1);
+        let stored = mesh.extras.get("stress").unwrap();
+        assert!(stored.iter().all(|&v| (v - 1.0).abs() < f32::EPSILON));
+    }
+
+    #[test]
+    fn insert_extra_accepts_empty_vec_on_zero_vertex_mesh() {
+        let mut mesh = AttributedMesh::default();
+        assert_eq!(mesh.vertex_count(), 0);
+        mesh.insert_extra("k", Vec::new()).unwrap();
+        assert_eq!(mesh.extras.len(), 1);
+        assert!(mesh.extras["k"].is_empty());
     }
 
     #[cfg(feature = "serde")]
