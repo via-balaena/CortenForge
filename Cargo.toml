@@ -293,6 +293,7 @@ members = [
     "examples/mesh/format-conversion",
     "examples/mesh/attributed-mesh-basics",
     "examples/mesh/mesh-repair-walkthrough",
+    "examples/mesh/mesh-offset-outward",
 
     # Foundation (active development)
     "design/cf-geometry",
