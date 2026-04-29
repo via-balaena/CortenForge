@@ -148,30 +148,49 @@ fn sphere_on_plane_top_band_is_nonempty_and_loaded_axis_z() {
     let (_mesh, bc, _initial, _contact, theta) =
         SoftScene::sphere_on_plane(V3_RADIUS, V3_CELL_SIZE, V3_FORCE, ecoflex_field())
             .expect("sphere_on_plane should mesh at canonical V-3 cell size");
-    assert!(bc.pinned_vertices.is_empty());
+    // Four-pin equator set: deduplicated cardinal-direction equator
+    // vertices remove all 6 rigid-body modes (see scene.rs
+    // sphere_on_plane "Boundary conditions" docstring section). At
+    // generic BCC resolutions all four cardinal targets land on
+    // distinct vertices; we assert at least 3 distinct pins to allow
+    // for degenerate-resolution collapse where two cardinal targets
+    // share a vertex.
+    assert!(
+        bc.pinned_vertices.len() >= 3 && bc.pinned_vertices.len() <= 4,
+        "equator pin count {} outside expected [3, 4] range",
+        bc.pinned_vertices.len(),
+    );
     assert!(!bc.loaded_vertices.is_empty());
     for &(_, axis) in &bc.loaded_vertices {
         assert_eq!(axis, LoadAxis::AxisZ);
     }
-    assert_eq!(theta.shape(), &[bc.loaded_vertices.len()]);
+    // AxisZ convention: theta is length-1 broadcast magnitude
+    // (backward_euler.rs:807-817), not a per-vertex tensor.
+    assert_eq!(theta.shape(), &[1]);
 }
 
 #[test]
-fn sphere_on_plane_theta_sums_to_negative_force() {
-    // Each loaded vertex carries -force / N_loaded; total is -force.
+fn sphere_on_plane_theta_broadcast_magnitude_sums_to_negative_force() {
+    // AxisZ broadcast: theta is a length-1 tensor carrying
+    // `-force / N_loaded`; the solver applies this scalar to every
+    // loaded vertex's z-DOF (backward_euler.rs:807-817), so the total
+    // applied force is `theta[0] * N_loaded = -force`.
     let (_mesh, bc, _initial, _contact, theta) =
         SoftScene::sphere_on_plane(V3_RADIUS, V3_CELL_SIZE, V3_FORCE, ecoflex_field())
             .expect("sphere_on_plane should mesh at canonical V-3 cell size");
-    let total: f64 = theta.as_slice().iter().sum();
+    let theta_slice = theta.as_slice();
+    assert_eq!(theta_slice.len(), 1);
+    let mag = theta_slice[0];
+    let n_loaded = bc.loaded_vertices.len();
+    assert!(n_loaded > 0);
+    // `n_loaded` is a small mesh-vertex count; cast is loss-free.
+    #[allow(clippy::cast_precision_loss)]
+    let total = mag * n_loaded as f64;
     assert_relative_eq!(total, -V3_FORCE, epsilon = 1e-12);
-    // Sanity: every theta entry is identical.
-    let first = theta.as_slice()[0];
-    for &t in theta.as_slice() {
-        assert_relative_eq!(t, first, epsilon = 1e-15);
-    }
-    // Sanity: N_loaded > 0 (already covered by previous test, but
-    // pin the algebraic chain).
-    assert!(!bc.loaded_vertices.is_empty());
+    // Sanity: per-vertex magnitude matches the documented form.
+    #[allow(clippy::cast_precision_loss)]
+    let expected_mag = -V3_FORCE / n_loaded as f64;
+    assert_relative_eq!(mag, expected_mag, epsilon = 1e-15);
 }
 
 #[test]

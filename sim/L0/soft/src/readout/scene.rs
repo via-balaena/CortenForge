@@ -482,21 +482,43 @@ impl SoftScene {
     ///
     /// # Boundary conditions
     ///
-    /// `pinned_vertices` is empty — the sphere is constrained by
-    /// contact + traction balance, not by Dirichlet pinning. (Rigid-
-    /// body modes are damped by the contact penalty + the loaded-
-    /// vertex traction asymmetry; commit 9 will report the rigid-body
-    /// drift as a diagnostic and re-evaluate if a tangential pin
-    /// becomes necessary.)
+    /// `pinned_vertices` carries the **equator pin set** — the four
+    /// referenced vertices nearest the cardinal-direction equator
+    /// points `(±radius, 0, 0)` and `(0, ±radius, 0)` (deduplicated;
+    /// at coarse cell sizes the BCC lattice may collapse two cardinal
+    /// targets onto a single vertex). The four pins kill all six
+    /// rigid-body modes (three translation + three rotation) by
+    /// construction with `~90°` distribution around the equator,
+    /// preserving axial symmetry under the `+ẑ`-aligned axial load.
+    ///
+    /// **Why pinning is necessary** (resolved at commit 9 V-3
+    /// empirical surfacing): the helper's pre-commit-9 design assumed
+    /// contact-penalty damping plus loaded-vertex traction asymmetry
+    /// would damp rigid-body modes from an empty pinned set. At rest
+    /// configuration the south pole sits exactly at `sd = +d̂` (band
+    /// edge per the **Contact** section below), so the contact
+    /// active-set is empty and the contact tangent is zero —
+    /// providing no damping. The `LoadAxis::AxisZ` traction is
+    /// pure-`+ẑ` per loaded vertex, with no x/y component to break
+    /// the lateral rigid-body translation modes either. Newton's
+    /// first iteration produces a search direction along the
+    /// undamped rigid-body modes; Armijo line-search stalls (no
+    /// step length finds residual decrease). The four-pin equator
+    /// set fixes this with documented Saint-Venant distortion at
+    /// the pin points (order `ν · δ_Hertz`, e.g. `~130 μm` at V-3
+    /// commit-9 parameters where `δ_Hertz ≈ 316 μm`) — small
+    /// relative to `δ_Hertz` itself and far from the south contact
+    /// patch (Saint-Venant decay over `R = 1 cm`).
     ///
     /// `loaded_vertices` is the **top-of-sphere band** (every vertex
     /// within `0.5 × cell_size` of `z = +radius`, filtered to
     /// `referenced_vertices` to drop BCC lattice orphans), each paired
     /// with [`LoadAxis::AxisZ`] for a `−ẑ` (downward) per-vertex force.
-    /// `theta` is a length-`N_loaded` tensor with every entry equal to
-    /// `−force / N_loaded` — uniform per-vertex thrust summing to
-    /// `−force` total (the axial down force pressing the sphere onto
-    /// the plane).
+    /// `theta` is a length-`1` tensor carrying the broadcast magnitude
+    /// `−force / N_loaded` — under the [`LoadAxis::AxisZ`] convention
+    /// (`backward_euler.rs:807-817`) the single scalar is broadcast to
+    /// every loaded vertex's z-DOF, summing to `−force` total (the
+    /// axial down force pressing the sphere onto the plane).
     ///
     /// # Contact
     ///
@@ -511,9 +533,10 @@ impl SoftScene {
     ///
     /// # Returns
     ///
-    /// 5-tuple `(mesh, bc, initial, contact, theta)` — `theta` carries
-    /// the per-loaded-vertex `−ẑ` force magnitude (length `N_loaded`,
-    /// each entry `−force / N_loaded`).
+    /// 5-tuple `(mesh, bc, initial, contact, theta)` — `theta` is the
+    /// length-1 broadcast magnitude `−force / N_loaded` (the
+    /// [`LoadAxis::AxisZ`] solver convention applies this scalar to
+    /// every loaded vertex's z-DOF).
     ///
     /// # Errors
     ///
@@ -585,12 +608,64 @@ impl SoftScene {
              radius = {radius}",
         );
 
+        // Equator pin set: the four referenced vertices nearest the
+        // cardinal-direction equator points. Removes all six rigid-
+        // body modes (3 translation + 3 rotation) by construction;
+        // see the "Boundary conditions" section in the docstring above
+        // for the empirical motivation (Newton fails at iter 0 from
+        // rest under empty pinned_vertices because contact + traction
+        // asymmetry alone don't damp the modes).
+        let positions = mesh.positions();
+        let cardinal_targets = [
+            Vec3::new(radius, 0.0, 0.0),
+            Vec3::new(-radius, 0.0, 0.0),
+            Vec3::new(0.0, radius, 0.0),
+            Vec3::new(0.0, -radius, 0.0),
+        ];
+        let mut pinned: Vec<VertexId> = Vec::new();
+        for target in cardinal_targets {
+            // Walk referenced vertices, find argmin of squared distance
+            // to the target. `referenced` is BTreeSet<VertexId> so
+            // iteration is deterministic; argmin is unique under generic
+            // BCC lattice positioning.
+            //
+            // `referenced` is nonempty by mesh construction — already
+            // implied by the loaded-band assert above (loaded ⊆
+            // referenced and loaded nonempty). Convert the empty-set
+            // case to an `assert!` so clippy accepts the runtime check
+            // pattern used elsewhere in this helper.
+            let nearest_opt = referenced.iter().copied().min_by(|&a, &b| {
+                let da = (positions[a as usize] - target).norm_squared();
+                let db = (positions[b as usize] - target).norm_squared();
+                da.total_cmp(&db)
+            });
+            assert!(
+                nearest_opt.is_some(),
+                "sphere_on_plane: referenced vertex set must be nonempty by mesh \
+                 construction (already asserted via the loaded-band check above)",
+            );
+            // Cast safe: `is_some()` checked immediately above.
+            #[allow(clippy::unwrap_used)]
+            pinned.push(nearest_opt.unwrap());
+        }
+        pinned.sort_unstable();
+        pinned.dedup();
+        assert!(
+            pinned.len() >= 3,
+            "sphere_on_plane: equator pin set must contain at least 3 distinct vertices for \
+             rigid-body mode removal; got {} at cell_size = {cell_size} (mesh resolution may \
+             be too coarse to hit four distinct cardinal-equator points)",
+            pinned.len(),
+        );
+
         // `loaded.len()` fits f64 exactly for any sim-soft mesh size.
+        // AxisZ convention: theta is a length-1 broadcast magnitude
+        // (backward_euler.rs:807-817), NOT a per-vertex tensor. The
+        // single scalar is applied to every loaded vertex's z-DOF.
         #[allow(clippy::cast_precision_loss)]
         let force_per_vertex = -force / loaded.len() as f64;
-        let theta = Tensor::from_slice(&vec![force_per_vertex; loaded.len()], &[loaded.len()]);
+        let theta = Tensor::from_slice(&[force_per_vertex], &[1]);
 
-        let positions = mesh.positions();
         let n_dof = 3 * positions.len();
         let mut x_prev_flat = vec![0.0; n_dof];
         for (v, pos) in positions.iter().enumerate() {
@@ -604,7 +679,7 @@ impl SoftScene {
         };
 
         let bc = BoundaryConditions {
-            pinned_vertices: Vec::new(),
+            pinned_vertices: pinned,
             loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
         };
 
