@@ -1,18 +1,24 @@
 //! `ContactModel` trait — contact energy-term interface.
 //!
 //! Five items: active-pair detection, energy, gradient, Hessian, and
-//! CCD time-of-impact. Default impl is `NullContact` (zero stubs,
-//! returns empty/zero) to exercise the trait surface without pulling
-//! in IPC machinery — IPC lands in Phase C per spec §8.
+//! CCD time-of-impact. Two impls ship as of Phase 5 commit 4:
+//! [`NullContact`] is the zero-stub default (real zeros — `Vec::new()`
+//! / `0.0` / `f64::INFINITY`) for non-contact scenes, and
+//! [`PenaltyRigidContact`] is the first force-bearing impl — soft
+//! vertex against kinematic rigid primitives, one-way coupling.
+//! Penalty is a stepping stone to IPC at Phase H per BF-12 (Phase 5
+//! commit 9).
 
 use crate::Vec3;
 use crate::mesh::VertexId;
 use nalgebra::Matrix3;
 
 pub mod null;
+pub mod penalty;
 pub mod rigid;
 
 pub use null::NullContact;
+pub use penalty::PenaltyRigidContact;
 pub use rigid::RigidPlane;
 
 /// A pair of geometric primitives active under the contact model.
