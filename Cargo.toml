@@ -295,6 +295,7 @@ members = [
     "examples/mesh/mesh-repair-walkthrough",
     "examples/mesh/mesh-offset-outward",
     "examples/mesh/mesh-offset-inward",
+    "examples/mesh/shell-generation-fast",
 
     # Foundation (active development)
     "design/cf-geometry",

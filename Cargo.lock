@@ -3641,6 +3641,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-shell-generation-fast"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-shell",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-ml-6dof-cem-linear"
 version = "0.7.0"
 dependencies = [

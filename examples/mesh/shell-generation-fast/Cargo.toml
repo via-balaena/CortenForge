@@ -1,0 +1,25 @@
+[package]
+name = "example-mesh-shell-generation-fast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh + Point3 + Bounded trait (for aabb())
+mesh-types = { workspace = true }
+# save_ply / load_ply for the before/shell PLY artifacts
+mesh-io = { workspace = true }
+# ShellBuilder + WallGenerationMethod + ShellBuildResult — the API
+# under demonstration; the .fast() preset is the headline.
+mesh-shell = { workspace = true }
+# validate_mesh — anchors topology flags + edge counts on input
+# (open-topped box has 4 boundary edges) and shell (watertight, 0
+# boundary edges). Complementary to shell_stats.validation, which is
+# richer for shell-specific topology.
+mesh-repair = { workspace = true }
+# anyhow error reporting for main()'s Result<()> return type
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
