@@ -73,13 +73,23 @@ pub struct SolverConfig {
     pub max_newton_iter: usize,
     /// Maximum Armijo backtracks before declaring line-search stall.
     pub max_line_search_backtracks: usize,
+    /// Body-force gravitational acceleration along `+ẑ` (`m/s²`).
+    /// Pass a negative value for "downward" gravity (e.g. `-9.81`).
+    /// Phase 5 commit 10 wiring per `phase_5_penalty_contact_scope.md` §1
+    /// V-5; scalar (not `Vec3`) form preserves [`Self::skeleton`]'s
+    /// `const fn` signature. Default `0.0` keeps the pre-Phase-5
+    /// regression net bit-equal — `assemble_external_force` short-
+    /// circuits the body-force scatter when this is exactly zero.
+    pub gravity_z: f64,
 }
 
 impl SolverConfig {
     /// Scope §2 defaults for the walking-skeleton scene: `dt = 1e-2`,
     /// `tol = 1e-10` (five digits below gradcheck's 1e-5 bar),
     /// `density = 1030` (silicone-class), up to 10 Newton iterations +
-    /// 20 backtracks per iteration.
+    /// 20 backtracks per iteration. `gravity_z = 0` per Phase 5 commit
+    /// 10 — V-5 opts in by mutating the field on a constructed config
+    /// (mirrors V-3 / V-3a's `STATIC_DT` bumping pattern).
     #[must_use]
     pub const fn skeleton() -> Self {
         Self {
@@ -88,6 +98,7 @@ impl SolverConfig {
             density: 1030.0,
             max_newton_iter: 10,
             max_line_search_backtracks: 20,
+            gravity_z: 0.0,
         }
     }
 }
@@ -771,6 +782,11 @@ where
     /// DOF; all-`FullVector` BC (Stage 2) consumes `theta` as
     /// `[3 * n_loaded]` per-vertex traction triples. Mixed-axis
     /// scenes are out of Phase 2 scope per `LoadAxis` doc.
+    ///
+    /// Phase 5 commit 10: `config.gravity_z` adds a body-force `m_v ·
+    /// gravity_z` to every vertex's `+ẑ` DOF after the θ scatter.
+    /// Default `gravity_z = 0` short-circuits the loop — bit-equal
+    /// regression on V-1 / V-3a / V-3 (which set `gravity_z = 0`).
     //
     // Shape mismatches (BC contradicting θ length) panic — programmer
     // bug at scene wiring time, not runtime input.
@@ -792,43 +808,56 @@ where
                 "θ has length {} but BC has no loaded vertices",
                 theta_slice.len(),
             );
-            return;
+        } else {
+            let all_axis_z = loaded.iter().all(|(_, ax)| matches!(ax, LoadAxis::AxisZ));
+            let all_full_vec = loaded
+                .iter()
+                .all(|(_, ax)| matches!(ax, LoadAxis::FullVector));
+            assert!(
+                all_axis_z || all_full_vec,
+                "Mixed-axis loaded_vertices are out of Phase 2 scope; got {loaded:?}"
+            );
+
+            if all_axis_z {
+                // Stage-1 broadcast: one θ scalar drives `+ẑ` on every loaded vertex.
+                assert!(
+                    theta_slice.len() == 1,
+                    "AxisZ-loaded θ must have length 1 (broadcast magnitude), got {}",
+                    theta_slice.len(),
+                );
+                let mag = theta_slice[0];
+                for &(vertex_id, _) in loaded {
+                    f_ext[3 * vertex_id as usize + 2] = mag;
+                }
+            } else {
+                // Stage-2 per-vertex: θ supplies xyz for each loaded vertex in order.
+                let expected = 3 * loaded.len();
+                assert!(
+                    theta_slice.len() == expected,
+                    "FullVector-loaded θ must have length {expected} (3 × {}), got {}",
+                    loaded.len(),
+                    theta_slice.len(),
+                );
+                for (i, &(vertex_id, _)) in loaded.iter().enumerate() {
+                    let v = vertex_id as usize;
+                    f_ext[3 * v] = theta_slice[3 * i];
+                    f_ext[3 * v + 1] = theta_slice[3 * i + 1];
+                    f_ext[3 * v + 2] = theta_slice[3 * i + 2];
+                }
+            }
         }
 
-        let all_axis_z = loaded.iter().all(|(_, ax)| matches!(ax, LoadAxis::AxisZ));
-        let all_full_vec = loaded
-            .iter()
-            .all(|(_, ax)| matches!(ax, LoadAxis::FullVector));
-        assert!(
-            all_axis_z || all_full_vec,
-            "Mixed-axis loaded_vertices are out of Phase 2 scope; got {loaded:?}"
-        );
-
-        if all_axis_z {
-            // Stage-1 broadcast: one θ scalar drives `+ẑ` on every loaded vertex.
-            assert!(
-                theta_slice.len() == 1,
-                "AxisZ-loaded θ must have length 1 (broadcast magnitude), got {}",
-                theta_slice.len(),
-            );
-            let mag = theta_slice[0];
-            for &(vertex_id, _) in loaded {
-                f_ext[3 * vertex_id as usize + 2] = mag;
-            }
-        } else {
-            // Stage-2 per-vertex: θ supplies xyz for each loaded vertex in order.
-            let expected = 3 * loaded.len();
-            assert!(
-                theta_slice.len() == expected,
-                "FullVector-loaded θ must have length {expected} (3 × {}), got {}",
-                loaded.len(),
-                theta_slice.len(),
-            );
-            for (i, &(vertex_id, _)) in loaded.iter().enumerate() {
-                let v = vertex_id as usize;
-                f_ext[3 * v] = theta_slice[3 * i];
-                f_ext[3 * v + 1] = theta_slice[3 * i + 1];
-                f_ext[3 * v + 2] = theta_slice[3 * i + 2];
+        // Phase 5 commit 10: gravity body force `f_z += m_v · g_z` per
+        // vertex. The exact-zero short-circuit preserves bit-equality
+        // on the regression net (V-1 / V-3a / V-3 leave `gravity_z =
+        // 0`). For loaded AxisZ vertices the gravity term adds onto
+        // the θ-traction; orphan vertices are auto-pinned at `new()`'s
+        // `effective_pinned` step so their zero `mass_per_dof` never
+        // reaches a free DOF.
+        if self.config.gravity_z != 0.0 {
+            let n_vertices = self.n_dof / 3;
+            for v in 0..n_vertices {
+                f_ext[3 * v + 2] += self.mass_per_dof[3 * v + 2] * self.config.gravity_z;
             }
         }
     }
