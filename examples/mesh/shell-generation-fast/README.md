@@ -9,10 +9,11 @@ normals point inward, and connecting the inner and outer boundary
 edges with a rim. Fast — no marching cubes, no SDF — at the cost of
 **triangulation-dependent direction of the offset vector at each
 vertex**, plus a known rim-winding quirk in `mesh-shell` 0.7.x.
-Companion to `shell-generation-high-quality` (commit 12), which uses
-an SDF-based outer surface for triangulation-independent perpendicular
-thickness at the cost of vertex-soup output and chamfered MC artifacts
-at sharp creases.
+Companion to [`shell-generation-high-quality`](../shell-generation-high-quality/)
+(commit 12), which uses an SDF-based outer surface for
+triangulation-independent perpendicular thickness at the cost of
+vertex-soup-then-welded outer and Steiner-Minkowski rounding at
+sharp creases.
 
 ## What it does
 

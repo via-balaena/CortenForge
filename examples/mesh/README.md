@@ -28,6 +28,7 @@ examples here.
 | [`mesh-offset-outward`](mesh-offset-outward/) | SDF + marching cubes outward offset — corner rounding; vertex-soup MC output handled with per-face flip pattern |
 | [`mesh-offset-inward`](mesh-offset-inward/) | SDF + marching cubes inward offset — sharp polytope preservation (no Steiner-Minkowski rounding); pair-companion to `mesh-offset-outward` |
 | [`shell-generation-fast`](shell-generation-fast/) | Normal-based shell on an open-topped box — vertex correspondence preserved; perpendicular wall thickness varies as `1/√k` at corners |
+| [`shell-generation-high-quality`](shell-generation-high-quality/) | SDF-based shell on a closed cube — uniform perpendicular wall thickness; Steiner-Minkowski rounding at sharp creases |
 
 ## Tier 1 — first to land (validates new infrastructure)
 
@@ -45,7 +46,7 @@ examples here.
 | [`mesh-offset-outward`](mesh-offset-outward/) | SDF-based outward offset (expansion) |
 | [`mesh-offset-inward`](mesh-offset-inward/) | SDF-based inward offset (cavity prep) |
 | [`shell-generation-fast`](shell-generation-fast/) | Normal-based shell (varying wall thickness) |
-| `shell-generation-high-quality` | SDF-based shell (uniform wall thickness) |
+| [`shell-generation-high-quality`](shell-generation-high-quality/) | SDF-based shell (uniform wall thickness) |
 | `printability-fdm-validation` | Manufacturability constraint reporting |
 | `printability-orientation` | Auto-orientation reduces overhang |
 | `cross-section-sweep` | Slice-stack PLY contours along an axis |
