@@ -754,7 +754,7 @@ fn emit_one_three(
 /// in_b)` is a long BCC edge, else two truncated long edges (in
 /// which case we choose the diagonal adjoining whichever cut sits on
 /// a long-edge truncation). For BCC tets in the layout from
-/// [`super::lattice::BCC_TETS`], the long edges are slots `(0, 1)`
+/// `super::lattice::BCC_TETS`, the long edges are slots `(0, 1)`
 /// and `(2, 3)`; whether `(in_a, in_b)` is long depends on which
 /// pair of slots they occupy.
 // Stencil dispatch arg bundle (slot indices + tet vertex IDs + lattice +

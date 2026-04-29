@@ -99,8 +99,8 @@ pub type CpuTet4NHSolver<Msh> =
 pub type SkeletonSolver = CpuTet4NHSolver<mesh::SingleTetMesh>;
 
 /// Contact-aware sibling of [`CpuTet4NHSolver`] — pinned to
-/// [`PenaltyRigidContact`](contact::PenaltyRigidContact) instead of
-/// [`NullContact`](contact::NullContact), generic over the mesh impl.
+/// [`PenaltyRigidContact`] instead of [`NullContact`], generic over
+/// the mesh impl.
 ///
 /// Phase 5 V-* invariant tests (V-3a compressive block, V-3 Hertzian
 /// sphere↔plane, V-5 drop-and-rest) drive this flavor; walking-skeleton

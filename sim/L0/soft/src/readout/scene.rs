@@ -466,7 +466,7 @@ impl SoftScene {
     /// [`SdfMeshedTetMesh::from_sdf`] with [`SphereSdf`] (centered at
     /// origin), wrapped in a `[-radius - margin, radius + margin]³`
     /// bbox at `cell_size`. Margin pinned at
-    /// [`SPHERE_BBOX_MARGIN_RATIO`] × `cell_size` to give the BCC
+    /// `SPHERE_BBOX_MARGIN_RATIO` (crate-private) × `cell_size` to give the BCC
     /// lattice room to enclose the SDF zero set without surface
     /// clipping; mirrors Phase 4's `LAYERED_SPHERE_BBOX_HALF_EXTENT`
     /// design (Phase 3 / IV-4 `bbox_half_extent / cell_size = 6.0`
@@ -723,8 +723,9 @@ impl SoftScene {
     ///
     /// `pinned_vertices` and `loaded_vertices` are both empty — the
     /// sphere is in free flight, with gravity supplied at the solver
-    /// level (V-5 commit 10 will wire gravity onto [`SolverConfig`];
-    /// Phase 5 commit 6 builds the static scene only).
+    /// level via `SolverConfig.gravity_z` (wired at Phase 5 commit 10;
+    /// Phase 5 commit 6 built the static scene only, with gravity
+    /// defaulting to zero pre-commit-10).
     ///
     /// # Contact
     ///

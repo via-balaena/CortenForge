@@ -30,7 +30,7 @@
 //!    `mesh::referenced_vertices` per scope memo §3 Decision K
 //!    post-pivot revision.
 //! 7. Compute per-tet [`QualityMetrics`] via
-//!    [`mesh::quality::compute_metrics`].
+//!    `mesh::quality::compute_metrics`.
 //!
 //! Memo cite: scope memo §2 file plan + §3 Decision A (algorithm),
 //! Decision H (constructor signature + error variants — no

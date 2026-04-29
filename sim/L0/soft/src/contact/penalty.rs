@@ -1,5 +1,5 @@
 //! Penalty rigid↔soft contact — first force-bearing
-//! [`ContactModel`](super::ContactModel) impl on `sim-soft`.
+//! [`ContactModel`] impl on `sim-soft`.
 //!
 //! One-way coupling per `phase_5_penalty_contact_scope.md` Decision C
 //! (rigid kinematic; soft side feels the force). Penalty is a stepping
@@ -10,10 +10,9 @@
 //! stay valid; the BF-12 amendment narrows §00 §00's "even as a
 //! baseline" commitment to "as a *production* baseline." The scope
 //! memo authorizes penalty exactly for §00 §00's named validation
-//! scope: rigid↔soft co-sim plumbing, first-time
-//! [`ContactModel`](super::ContactModel) wiring into the Newton hot
-//! path (Phase 5 commit 5), and the Hertzian sphere↔plane analytic
-//! gate (Phase 5 commit 9 V-3).
+//! scope: rigid↔soft co-sim plumbing, first-time [`ContactModel`]
+//! wiring into the Newton hot path (Phase 5 commit 5), and the
+//! Hertzian sphere↔plane analytic gate (Phase 5 commit 9 V-3).
 //!
 //! ## Formula
 //!
@@ -78,11 +77,11 @@ pub struct PenaltyRigidContact {
 }
 
 impl PenaltyRigidContact {
-    /// Construct with default `(κ, d̂)` from
-    /// [`PENALTY_KAPPA_DEFAULT`] / [`PENALTY_DHAT_DEFAULT`]. Boxes the
+    /// Construct with default `(κ, d̂)` from `PENALTY_KAPPA_DEFAULT` /
+    /// `PENALTY_DHAT_DEFAULT` (crate-private; tunable only via
+    /// [`with_params`](Self::with_params) for V-* tests). Boxes the
     /// concrete planes into the trait-erased primitive list internally
-    /// — [`RigidPrimitive`](super::rigid) stays `pub(crate)` per scope
-    /// memo §0 row.
+    /// — `RigidPrimitive` stays `pub(crate)` per scope memo §0 row.
     #[must_use]
     pub fn new(planes: Vec<RigidPlane>) -> Self {
         Self::with_params(planes, PENALTY_KAPPA_DEFAULT, PENALTY_DHAT_DEFAULT)
@@ -113,14 +112,14 @@ impl ContactModel for PenaltyRigidContact {
     /// [`ContactPair::Vertex`] for every `(v, p)` whose signed
     /// distance is below the band `d̂`. Order is deterministic — no
     /// sort, no `HashMap`, no rayon — per scope memo Decision M.
+    // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
+    // in practice bounded by mesh / primitive counts that fit
+    // comfortably in `u32`. The `as` cast matches the convention used
+    // in `mesh/hand_built.rs` for `VertexId` packing. A theoretical
+    // overflow on a 64-bit pointer would surface as wrapped indices;
+    // not load-bearing for Phase 5 mesh sizes.
     #[allow(clippy::cast_possible_truncation)]
     fn active_pairs(&self, _mesh: &dyn Mesh, positions: &[Vec3]) -> Vec<ContactPair> {
-        // `vid` and `pid` are `Vec`-iteration indices; in practice
-        // bounded by mesh / primitive counts that fit comfortably in
-        // `u32`. The `as` cast matches the convention used in
-        // `mesh/hand_built.rs` for `VertexId` packing. A theoretical
-        // overflow on a 64-bit pointer would surface as wrapped
-        // indices; not load-bearing for Phase 5 mesh sizes.
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
             for (pid, prim) in self.primitives.iter().enumerate() {

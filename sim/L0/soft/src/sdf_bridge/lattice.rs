@@ -3,7 +3,7 @@
 //! Produces the Sommerville-tet tessellation of the BCC lattice
 //! `BCC = Z³ ∪ (Z³ + (½, ½, ½))` within a caller-supplied bounding
 //! box, scaled by [`MeshingHints::cell_size`]. References:
-//! Labelle-Shewchuk SIGGRAPH 2007 §3 and Figure 2; Sommerville [1923].
+//! Labelle-Shewchuk SIGGRAPH 2007 §3 and Figure 2; Sommerville (1923).
 //!
 //! Each cube of the cubic sublattice emits **12 owned Sommerville
 //! tetrahedra** toward its `+x`, `+y`, `+z` face-adjacent neighbours.
@@ -401,8 +401,8 @@ impl BccLattice {
         ))
     }
 
-    /// Inverse of [`vertex_id_of`]: recovers the [`BccVertexId`] for a
-    /// sequential `VertexId` in this lattice.
+    /// Inverse of [`vertex_id_of`](Self::vertex_id_of): recovers the
+    /// [`BccVertexId`] for a sequential `VertexId` in this lattice.
     ///
     /// # Panics
     ///

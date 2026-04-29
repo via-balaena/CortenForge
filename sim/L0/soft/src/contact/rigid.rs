@@ -77,8 +77,9 @@ impl RigidPlane {
     }
 
     /// Constant outward normal — independent of `_p` because the plane
-    /// is flat. The argument is part of the [`RigidPrimitive`] trait
-    /// contract for primitives whose normal varies with surface position.
+    /// is flat. The argument is part of the `RigidPrimitive`
+    /// (crate-private) trait contract for primitives whose normal
+    /// varies with surface position.
     #[must_use]
     pub const fn outward_normal(&self, _p: Vec3) -> Vec3 {
         self.normal
