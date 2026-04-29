@@ -3583,6 +3583,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-mesh-offset-inward"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-offset",
+ "mesh-repair",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-mesh-mesh-offset-outward"
 version = "0.7.0"
 dependencies = [

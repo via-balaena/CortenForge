@@ -29,6 +29,16 @@ A third section,
 documents the inline remediation the example uses to produce the
 `after_flipped.ply` artifact.
 
+> **Heads-up for `f3d` users:** `after.ply` and `after_flipped.ply`
+> look identical in `f3d` (and any viewer with two-sided lighting
+> and no backface culling). The inside-out winding only becomes
+> visible in viewers with single-sided rendering OR backface
+> culling — MeshLab solid mode, Blender solid mode with cull
+> backfaces enabled, glTF/PBR materials with `cullFace = back`.
+> This is **not** a bug in the example or the artifacts; it is a
+> property of the renderer's lighting model. See
+> [Visuals](#visuals) for the full pipeline-by-pipeline breakdown.
+
 ## API surface — `OffsetConfig` resolution dial
 
 The crate exposes three named presets and a builder method:
@@ -47,7 +57,8 @@ patches become visibly faceted. `with_resolution` is the right knob
 when none of the named presets fit the input's scale.
 
 The same `offset_mesh` function with a NEGATIVE `distance` performs
-erosion (cavity prep). See architecture book chapter 30 for the full
+erosion (cavity prep) — see [`mesh-offset-inward`](../mesh-offset-inward/)
+for the pair companion. See architecture book chapter 30 for the full
 SDF↔mesh bridge story.
 
 ## Numerical anchors
