@@ -69,11 +69,13 @@ Combined with bug 1 (no welding), the divergence-theorem integral for `signed_vo
 
 **Layer 1 (soup-induced)**: when outer is unwelded, `find_boundary_loops` on the soup returns one mini-loop per MC triangle. Each face has 3 edges, each edge appears in exactly one face (vertex-soup → no shared edges), `find_boundary_edges` (rim.rs:138-175) returns ALL edges as boundary, `find_boundary_loops` (rim.rs:178-246) traces 3-vertex loops one-per-MC-triangle. The "best match by centroid distance" inner→outer picks one arbitrary 3-vertex outer loop. `stitch_boundary_loops(4-vert inner, 3-vert outer)` enters the linear-interp branch (rim.rs:298-315) and emits 8 nonsense faces with a NonManifold edge + DegenerateTriangle.
 
-**Layer 2 (topological, post-weld)**: even with welding fixed, the SDF level set of an open mesh produces a **closed wrap-around** with curved caps over the open boundary — NOT a 1-sided offset surface.
+**Layer 2 (topological, post-weld)**: even with welding fixed, the SDF level set of an open mesh is **itself an open surface with its own boundary** — the level set terminates at the open boundary of the input mesh rather than capping over it.
 
-Reasoning for the 10mm open box (5-sided, top open) at +2.5mm offset: the level set wraps over the top opening as a quarter-cylinder of radius 2.5mm around each top edge, joined by quarter-sphere octants at the four top corners. The wrap is a closed manifold with no boundary loops. So `find_boundary_loops(welded_outer)` returns `[]` for any open input. `generate_rim_for_sdf_shell` early-returns at `rim.rs:93-95`. The combined shell has the inner's open boundary edges (4 in the open-box case) unstitched → not watertight.
+Empirical finding (stress test 2026-04-29): for the 10mm open box (5-sided, top open) at +2.5mm offset / 0.3mm voxels, the welded outer has **132 boundary edges** of its own (~the perimeter of the open top scaled to MC voxel resolution). Both inner (4 boundary edges) AND outer (132) have boundaries.
 
-**This means `WallGenerationMethod::Sdf` cannot produce bowl-semantics output for open inputs without additional lid-finding + cut-and-stitch machinery (~200-300 LOC of new geometry, out of scope for this fix).**
+The existing `generate_rim_for_sdf_shell` would attempt to stitch these via the linear-interp branch on mismatched-length loops. For 4-vert inner ↔ 132-vert outer: `ratio = 33`, the loop steps `j` by 33 each iteration → only 4 outer vertices used out of 132 → **124 outer-boundary edges unstitched**. The shell still ends up non-watertight even after bug 1+2 fixes. The rim algorithm cannot be salvaged for this case without significant geometric machinery.
+
+**This means `WallGenerationMethod::Sdf` cannot produce watertight bowl-semantics output for open inputs without lid-finding + cut-and-stitch machinery (~200-300 LOC of new geometry, out of scope for this fix). The right answer is to detect open inputs at the top of `generate_shell_sdf` and fall back to `generate_shell_normal` before any expensive SDF computation runs.**
 
 ## Contracts re-confirmed in mesh-repair
 
@@ -116,7 +118,38 @@ No `tests/` dir; all tests inline `#[cfg(test)] mod tests`.
 
 ### Engine changes (in `generate.rs::generate_shell_sdf` only — no public API changes)
 
-**Step 1 (bug 1 + bug 2)** — after `offset_mesh()` succeeds:
+**Step 1 (bug 3 fallback — TOP of `generate_shell_sdf`, before `offset_mesh()`)**:
+
+```rust
+fn generate_shell_sdf(
+    inner_mesh: &IndexedMesh,
+    params: &ShellParams,
+) -> ShellResult<(IndexedMesh, ShellGenerationResult)> {
+    use mesh_repair::MeshAdjacency;
+    let inner_adj = MeshAdjacency::build(&inner_mesh.faces);
+    let inner_boundary = inner_adj.boundary_edge_count();
+    if inner_boundary > 0 {
+        warn!(
+            "SDF wall generation: open input has {} boundary edges; \
+             SDF level set cannot lid an open mesh — falling back to Normal method",
+            inner_boundary
+        );
+        return generate_shell_normal(inner_mesh, params);
+    }
+    // ... continue with offset_mesh + weld + flip + concatenate
+}
+```
+
+Rationale (revised after stress-test): the fallback condition is a **single precondition check on the input mesh**, not on result-state. Reasons:
+
+- *Empirically* (stress test 2026-04-29), open-input outer is NOT a closed wrap — it has its own ~132 boundary edges. The original "inner has boundary AND outer has none" condition would not trigger.
+- *Algorithmically*, even with bugs 1+2 fixed, the rim-stitching algorithm on welded 4-vert ↔ 132-vert loops leaves ~124 outer-boundary edges unstitched (linear-interp skips most outer verts), so the shell stays non-watertight regardless. The ONLY robust answer for open inputs is fallback to Normal.
+- *Performance*, placing the check at the top short-circuits the expensive SDF computation entirely for open inputs.
+- *Consistency*, mirrors the existing fallback pattern at `generate.rs:257-261` for `offset_mesh` failures.
+
+`ShellGenerationResult.wall_method` ends up `Normal` after fallback (consistent with existing fallback path); consumers can detect the fallback via `result.wall_method`.
+
+**Step 2 (bug 1 + bug 2)** — after `offset_mesh()` succeeds:
 
 ```rust
 let mut outer_mesh = ...;  // existing offset_mesh call
@@ -131,26 +164,7 @@ for face in &mut outer_mesh.faces {
 
 Tolerance rationale: `voxel_size × 1e-3` keeps cell_size sub-voxel (3e-4 mm at 0.3 mm voxel), so we merge MC's exactly-coincident soup duplicates without merging legitimately-distinct vertices. MC interpolation is deterministic, so coincident duplicates are bit-identical — `1e-9` would suffice in theory, but `voxel_size × 1e-3` is more defensive against floating-point drift.
 
-Per-face flip (not `fix_winding_order` + signed-volume probe) per commit-9 platform truth and the canonical pattern. Unconditional because mesh-offset 0.7.x emits inside-out on every input we've tested across commits 9+10.
-
-**Step 2 (bug 3)** — after step 1, before concatenation:
-
-```rust
-use mesh_repair::MeshAdjacency;
-let inner_has_boundary = MeshAdjacency::build(&inner_mesh.faces).boundary_edge_count() > 0;
-let outer_has_boundary = MeshAdjacency::build(&outer_mesh.faces).boundary_edge_count() > 0;
-if inner_has_boundary && !outer_has_boundary {
-    warn!(
-        "SDF wall generation: open input wraps to closed level set; \
-         falling back to Normal method (constant-thickness SDF cannot lid an open mesh)"
-    );
-    return generate_shell_normal(inner_mesh, params);
-}
-```
-
-Rationale: fallback over error because (a) `generate_shell_sdf` already has a fallback pattern at `generate.rs:257-261` for `offset_mesh` failures — consistent with that; (b) user-facing "asked for high-quality, got something printable + a warning" beats "got an error and had to switch APIs"; (c) mathematically, SDF on open input produces a closed wrap that can't match the bowl semantics of Normal — fallback makes the semantic match the user's intent.
-
-`ShellGenerationResult.wall_method` ends up `Normal` after fallback (consistent with existing fallback path); consumers can detect the fallback via `result.wall_method`.
+Per-face flip (not `fix_winding_order` + signed-volume probe) per commit-9 platform truth and the canonical pattern. Unconditional because mesh-offset 0.7.x emits inside-out on every input we've tested across commits 9+10. **Confirmed empirically** (stress test 2026-04-29): closed-cube outer post-weld has `signed_volume = -3152`; post-flip `+3152` (exact arithmetic negation).
 
 ### Doc updates
 
@@ -168,10 +182,10 @@ Update `WallGenerationMethod::Sdf` doc string (`generate.rs:32-39`) to add: "Ope
 
 ### Suggested commit segmentation
 
-Two commits, both on `feature/examples-soft-body`:
+Two commits, both on `feature/examples-soft-body`. Order swapped vs. initial plan: **bug 3 fallback lands first** because it's a precondition guard at the top of `generate_shell_sdf` and is logically independent of bugs 1+2. Bugs 1+2 then ship within a function that's already been narrowed to closed inputs, simplifying the test fixtures.
 
-- **commit 11.5.1** — `fix(mesh-shell): weld and flip outer in SDF path` (bugs 1+2 together; tightly coupled, single atomic change). Includes tests 1, 2, 3.
-- **commit 11.5.2** — `fix(mesh-shell): SDF path falls back to Normal for open input` (bug 3). Includes tests 4, 5 + doc-string update.
+- **commit 11.5.1** — `fix(mesh-shell): SDF path falls back to Normal for open input` (bug 3). Includes tests 4, 5 + doc-string update.
+- **commit 11.5.2** — `fix(mesh-shell): weld and flip outer in SDF path` (bugs 1+2 together; tightly coupled, single atomic change). Includes tests 1, 2, 3.
 
 Per-commit verification: `cargo clippy -p mesh-shell --release --all-targets -- -D warnings` + `cargo test -p mesh-shell --release` + `cargo fmt -p mesh-shell -- --check`. Final `cargo xtask grade mesh-shell --skip-coverage` once both land.
 
@@ -189,11 +203,30 @@ Per-commit verification: `cargo clippy -p mesh-shell --release --all-targets -- 
 3. **Tolerance for `weld_eps`**: `voxel_size × 1e-3` (defensive sub-voxel) vs `1e-9` (tight, MC-determinism only)? Recommendation: defensive.
 4. **Commit 12 example input**: closed cube/torus as SDF anchor, or open box + fallback-as-pedagogy? Decide later when commit 12 resumes.
 
-## Stress-test status
+## Stress-test results (2026-04-29)
 
-- [ ] Reproduction: closed cube, `.high_quality()`, observe `is_printable() == false` + `is_inside_out == true` + `vertex_count == 3 × outer_face_count + inner_count`
-- [ ] Reproduction: open box, `.high_quality()`, observe additional 1 NonManifold edge + 1 DegenerateTriangle + 8 nonsense rim faces from `generate_rim_for_sdf_shell` collapse
-- [ ] Spike: weld outer alone (no flip), observe what changes
-- [ ] Spike: per-face flip alone (no weld), observe what changes
-- [ ] Spike: weld + flip on closed cube → does it become printable? (proves bugs 1+2 fix is sufficient for closed-input case)
-- [ ] Spike: weld + flip on open box → still 4 unstitched inner-boundary edges? (proves bug 3 needs separate handling)
+Stress-test harness: `mesh/mesh-shell/tests/sdf_stress_test.rs` (6 `#[ignore]` tests, run via `cargo test -p mesh-shell --release --test sdf_stress_test -- --ignored --nocapture`). Throwaway — delete after engine fix lands.
+
+Parameters: `WALL_THICKNESS_MM = 2.5`, `VOXEL_MM = 0.3` (matches `.high_quality()` defaults).
+
+- [x] Reproduction: closed cube, `.high_quality()` baseline. Observed: `outer_face_count=28424`, `outer_vert_count=85272` (ratio = 3.000 ✓ vertex-soup). `is_printable=false`, `is_watertight=false`, `is_inside_out=true`, `boundary_edges=85272`, `signed_volume=-4152.13`. Bug 1 + Bug 2 confirmed.
+- [x] Reproduction: open box, `.high_quality()` baseline. Same vertex-soup ratio. Plus: `rim_fc=8`, `non_manifold=1`, `degenerate=1`, `has_consistent_winding=false`. Bug 3's specific fingerprint (1 NonManifold + 1 DegenerateTriangle + 8 nonsense rim faces) matches user's pre-flight exactly.
+- [x] Spike: closed cube outer post-weld (no flip). Verts dropped 85272 → 14214 (71058 merged). `is_watertight=true` (soup closed), `is_inside_out=true` (winding unchanged), `signed_volume=-3152.13`. Confirms weld and flip are independent.
+- [x] Spike: closed cube outer post-weld + flip. `signed_volume=+3152.13` (exact arithmetic negation of pre-flip). Confirms per-face flip is the right remediation.
+- [x] Spike: closed cube — **bug 1+2 simulated fix, full shell assembly**. Result:
+  ```
+  shell verts=14222 faces=28436 vert/face=0.50
+  boundary_edges=0  non_manifold=0  is_inside_out=false
+  is_watertight=true  is_manifold=true  is_printable=true  has_consistent_winding=true
+  signed_volume = +2152.13
+  ```
+  🎯 **`is_printable=true`** + `has_consistent_winding=true` (bonus). Bug 1+2 fix is sufficient for closed-input case.
+- [x] Spike: open box — bug 1+2 fix simulated WITHOUT bug 3 fallback. **Outer post-weld has 132 boundary edges of its own** (revises plan's "closed wrap" claim). Combined shell has 136 boundary edges (4 inner + 132 outer, partially overlapping). `is_watertight=false`. Plus the existing rim-stitching algorithm on 4 ↔ 132 mismatched loops would only stitch 4 of 132 outer verts (linear-interp skipping). Confirms: **the only robust answer for open input is fallback to Normal at the top of `generate_shell_sdf`**. Plan revised accordingly.
+
+### Plan revisions surfaced by stress test
+
+1. **Bug 3 description** updated to remove the "closed wrap" claim. SDF level set on open input has its own boundary edges (~132 in the test case) that scale with MC voxel resolution.
+2. **Fallback condition simplified** to a single input-only precondition: `MeshAdjacency::build(&inner_mesh.faces).boundary_edge_count() > 0`. Replaces the original "inner has boundary AND outer has no boundary" two-side check (which would not have fired empirically).
+3. **Fallback location moved to top of `generate_shell_sdf`**, before `offset_mesh()`. Short-circuits expensive SDF computation for open inputs.
+4. **Commit ordering swapped**: 11.5.1 = bug 3 fallback (precondition guard), 11.5.2 = bugs 1+2 (close-the-loop on already-closed inputs). Cleaner narrative + simpler test fixtures.
+5. **`has_consistent_winding=true` is a bonus property** of the bug 1+2 fix on closed input (no rim → no edge-direction conflicts). Strict improvement over Normal-method shells which had `has_consistent_winding=false` per commit 11's quirk.
