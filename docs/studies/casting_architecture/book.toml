@@ -1,0 +1,19 @@
+[book]
+title = "Casting Architecture — A Study in Mold-Driven Manufacturing"
+authors = ["CortenForge"]
+description = "A durable investigation of the casting/molding fab path for soft-body parts authored in CortenForge — SDF-driven mold generation, parting strategy, multi-shot sequencing, and the manufacturability feedback loop into design optimization. Sibling to the soft-body architecture book."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+
+[output.html.fold]
+enable = true
+level = 1
+
+[preprocessor.katex]
+after = ["links"]
