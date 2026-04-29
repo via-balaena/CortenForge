@@ -14,7 +14,7 @@ The crate covers eight categories of mesh hygiene:
 4. **Duplicate-face removal** — strips faces that share the same vertex set, common in poorly-exported CAD meshes.
 5. **Unreferenced-vertex cleanup** — drops vertices that no face references.
 6. **Hole detection and filling** — `detect_holes` returns boundary loops; `fill_holes` triangulates them.
-7. **Winding-order correction** — `fix_winding_order` propagates consistent CCW winding from a seed face across the connected mesh.
+7. **Winding-order correction** — `fix_winding_order` propagates consistent CCW winding from a seed face across the connected mesh via adjacency BFS. `flip_winding` is the per-face counterpart that unconditionally reverses every triangle's winding (`[a,b,c] → [a,c,b]`); it's the right tool for soup meshes (every triangle disconnected) where adjacency BFS visits zero neighbors and `fix_winding_order` is a no-op. Marching-cubes producers like `mesh-offset` emit such soup output; `mesh-shell`'s SDF code path uses `flip_winding` internally to correct the inside-out convention before assembling the shell.
 8. **Component analysis and self-intersection** — `find_connected_components`, `keep_largest_component`, `detect_self_intersections`.
 
 `MeshAdjacency` is the supporting data structure — face-edge-vertex adjacency built on demand from `IndexedMesh`'s face list. Used internally by every operation that needs neighborhood queries; exposed publicly so callers can do their own adjacency-aware work.

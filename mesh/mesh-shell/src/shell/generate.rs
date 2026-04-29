@@ -8,7 +8,7 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use mesh_offset::{OffsetConfig, offset_mesh};
-use mesh_repair::{MeshAdjacency, remove_unreferenced_vertices, weld_vertices};
+use mesh_repair::{MeshAdjacency, flip_winding, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
 use tracing::{debug, info, warn};
@@ -297,9 +297,7 @@ fn generate_shell_sdf(
     // 9+10 platform truth). Flip every outer face so normals point outward
     // from the wall material; otherwise the assembled shell has
     // signed_volume < 0 + is_inside_out == true and slicers see backfaces.
-    for face in &mut outer_mesh.faces {
-        face.swap(1, 2);
-    }
+    flip_winding(&mut outer_mesh);
 
     let outer_vertex_count = outer_mesh.vertices.len();
     debug!(

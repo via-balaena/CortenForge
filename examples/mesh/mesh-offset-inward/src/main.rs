@@ -56,7 +56,7 @@ use std::path::Path;
 use anyhow::Result;
 use mesh_io::{load_ply, save_ply};
 use mesh_offset::{OffsetConfig, offset_mesh};
-use mesh_repair::validate_mesh;
+use mesh_repair::{flip_winding, validate_mesh};
 use mesh_types::{Bounded, IndexedMesh, unit_cube};
 
 /// Offset distance in mesh units. Negative = contraction (erosion).
@@ -136,22 +136,6 @@ fn main() -> Result<()> {
     println!("OK — inward offset verified");
 
     Ok(())
-}
-
-/// Reverse the winding of every triangle in place: `[a, b, c] → [a, c, b]`.
-///
-/// Works on any mesh regardless of adjacency, including marching-cubes
-/// soup output. Per-face operation, no vertex changes — positions and
-/// counts are preserved exactly; only triangle orientation flips.
-///
-/// Use this instead of `mesh_repair::fix_winding_order` when the input
-/// is a vertex-soup mesh (every triangle disconnected). The
-/// adjacency-based BFS in `fix_winding_order` is a no-op on soup
-/// meshes because no two faces share any edge by index.
-fn flip_winding(mesh: &mut IndexedMesh) {
-    for face in &mut mesh.faces {
-        face.swap(1, 2);
-    }
 }
 
 /// Print a labeled diagnostic block: counts, AABB, signed volume,

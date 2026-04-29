@@ -188,6 +188,52 @@ fn edge_direction_in_face(face: &[u32; 3], a: u32, b: u32) -> Option<bool> {
     None
 }
 
+/// Reverse the winding of every triangle in place: `[a, b, c] → [a, c, b]`.
+///
+/// Per-face operation that swaps indices 1 and 2 of every face. Vertex
+/// positions and counts are preserved exactly; only triangle orientation
+/// flips. The operation is its own inverse — calling `flip_winding` twice
+/// returns the mesh to its original state.
+///
+/// # When to use this vs `fix_winding_order`
+///
+/// `fix_winding_order` is adjacency-based: it builds the edge-to-face map
+/// and BFS-traverses each connected component, flipping individual faces
+/// to make shared edges traverse in opposite directions. It only works
+/// when faces share edges by index. On a **soup mesh** (every triangle
+/// disconnected, e.g. marching-cubes output before welding) it is a no-op
+/// because BFS visits zero neighbors from any starting face.
+///
+/// `flip_winding` is the right tool for soup meshes. It also works as a
+/// universal "reverse the orientation of every face" operation on any
+/// mesh — for example, when a producer emits inside-out output and the
+/// caller wants to flip the entire surface in one pass without first
+/// having to detect per-face inconsistency.
+///
+/// # Example
+///
+/// ```
+/// use mesh_repair::flip_winding;
+/// use mesh_types::{IndexedMesh, Point3};
+///
+/// let mut mesh = IndexedMesh::new();
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.faces.push([0, 1, 2]);
+///
+/// flip_winding(&mut mesh);
+/// assert_eq!(mesh.faces[0], [0, 2, 1]);
+///
+/// flip_winding(&mut mesh);
+/// assert_eq!(mesh.faces[0], [0, 1, 2]); // self-inverse
+/// ```
+pub fn flip_winding(mesh: &mut IndexedMesh) {
+    for face in &mut mesh.faces {
+        face.swap(1, 2);
+    }
+}
+
 /// Count the number of faces that would need to be flipped.
 ///
 /// This is a non-mutating version that just reports how many faces
@@ -398,5 +444,82 @@ mod tests {
 
         let count = count_inconsistent_faces(&mesh);
         assert_eq!(count, 1);
+    }
+
+    /// Anchor the per-face index swap on a single triangle. `[a, b, c]`
+    /// must become `[a, c, b]` exactly; vertex array must remain
+    /// byte-identical (positions are not touched).
+    #[test]
+    fn test_flip_winding_swaps_indices_one_and_two() {
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        let original_vertices = mesh.vertices.clone();
+        mesh.faces.push([0, 1, 2]);
+
+        flip_winding(&mut mesh);
+        assert_eq!(mesh.faces[0], [0, 2, 1]);
+        assert_eq!(mesh.vertices, original_vertices);
+    }
+
+    /// `flip_winding` is its own inverse — applying it twice returns the
+    /// mesh to its original state. Anchored as the load-bearing
+    /// idempotence-under-double-application property.
+    #[test]
+    fn test_flip_winding_is_self_inverse() {
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
+        // Tetrahedron, four faces with mixed winding so no symmetry hides
+        // the property.
+        mesh.faces.push([0, 1, 2]);
+        mesh.faces.push([0, 3, 1]);
+        mesh.faces.push([1, 3, 2]);
+        mesh.faces.push([2, 3, 0]);
+        let original_faces = mesh.faces.clone();
+
+        flip_winding(&mut mesh);
+        assert_ne!(mesh.faces, original_faces, "first flip should change faces");
+        flip_winding(&mut mesh);
+        assert_eq!(
+            mesh.faces, original_faces,
+            "double flip should restore original face order",
+        );
+    }
+
+    /// Empty mesh (no faces, no vertices) must not panic and must remain
+    /// empty. Edge case for the `for face in &mut mesh.faces` loop.
+    #[test]
+    fn test_flip_winding_empty_mesh() {
+        let mut mesh = IndexedMesh::new();
+        flip_winding(&mut mesh);
+        assert_eq!(mesh.vertices.len(), 0);
+        assert_eq!(mesh.faces.len(), 0);
+    }
+
+    /// Soup mesh (every triangle disconnected — no shared edges by index)
+    /// is the load-bearing use case `flip_winding` exists for.
+    /// `fix_winding_order` is a no-op on soup; `flip_winding` flips every
+    /// face independently. Anchored as the contract that distinguishes
+    /// the two operations.
+    #[test]
+    fn test_flip_winding_works_on_soup_mesh() {
+        let mut mesh = IndexedMesh::new();
+        // 3 disconnected triangles — 9 verts total, no shared indices.
+        for i in 0u32..3 {
+            let off = f64::from(i) * 10.0;
+            mesh.vertices.push(Point3::new(off, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(off + 1.0, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(off, 1.0, 0.0));
+            mesh.faces.push([3 * i, 3 * i + 1, 3 * i + 2]);
+        }
+
+        flip_winding(&mut mesh);
+        assert_eq!(mesh.faces[0], [0, 2, 1]);
+        assert_eq!(mesh.faces[1], [3, 5, 4]);
+        assert_eq!(mesh.faces[2], [6, 8, 7]);
     }
 }
