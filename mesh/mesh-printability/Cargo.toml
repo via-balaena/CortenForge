@@ -10,6 +10,9 @@ categories = ["graphics", "game-development", "science"]
 [package.metadata.cortenforge]
 tier = "L0"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Shared mesh data structures (workspace)
 mesh-types = { workspace = true }

@@ -28,7 +28,13 @@ impl OrientationResult {
     /// Create a new orientation result.
     #[must_use]
     pub fn new(rotation: UnitQuaternion<f64>, support_volume: f64, overhang_area: f64) -> Self {
-        // Score combines support volume and overhang area
+        // Score combines support volume and overhang area.
+        // FP-bit preserved: rewriting `a + b * c` to `b.mul_add(c, a)` would
+        // shift the final FP bit of the orientation-search score on cross-
+        // platform runs, changing which orientation is selected as optimal at
+        // tie-break boundaries. Bit-exactness deferred — see CHANGELOG.md
+        // `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let score = support_volume + overhang_area * 0.1;
         Self {
             rotation,
@@ -162,6 +168,11 @@ fn generate_sample_orientations(samples: usize) -> Vec<UnitQuaternion<f64>> {
     // Fibonacci sphere sampling for more orientations
     if samples > orientations.len() {
         let remaining = samples - orientations.len();
+        // FP-bit preserved: `f64::midpoint(a, b)` differs from `(a + b) / 2.0`
+        // in the final bit and would shift Fibonacci-sphere sample positions,
+        // changing the orientation-search optimum cross-platform. Bit-exactness
+        // deferred — see CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::manual_midpoint)]
         let golden_ratio = (1.0 + 5.0_f64.sqrt()) / 2.0;
 
         for i in 0..remaining {
@@ -220,6 +231,12 @@ fn evaluate_orientation(
         let edge2 = Vector3::new(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
         let normal = edge1.cross(&edge2);
 
+        // FP-bit preserved: rewriting `(x*x + y*y + z*z)` into nested
+        // `mul_add` calls would shift the normalized face-normal cross-
+        // platform and thereby shift which faces flag at the overhang
+        // threshold. Bit-exactness deferred — see CHANGELOG.md
+        // `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let len = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).sqrt();
         if len < 1e-10 {
             continue;
@@ -388,7 +405,12 @@ mod tests {
         let rotation = UnitQuaternion::identity();
         let result = OrientationResult::new(rotation, 100.0, 50.0);
 
-        // Score = support_volume + overhang_area * 0.1
+        // Score = support_volume + overhang_area * 0.1.
+        // FP-bit preserved to mirror the impl at `OrientationResult::new`;
+        // rewriting one without the other would silently mask cross-platform
+        // drift in the score formula. Bit-exactness deferred — see
+        // CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let expected = 100.0 + 50.0 * 0.1;
         assert!((result.score - expected).abs() < f64::EPSILON);
     }

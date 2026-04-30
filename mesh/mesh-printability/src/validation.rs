@@ -223,6 +223,12 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
         let edge2 = Vector3::new(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
         let normal = edge1.cross(&edge2);
 
+        // FP-bit preserved: rewriting `(x*x + y*y + z*z)` into nested
+        // `mul_add` calls would shift the normalized face-normal cross-
+        // platform and thereby shift which faces flag at the overhang
+        // threshold. Bit-exactness deferred — see CHANGELOG.md
+        // `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let len = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).sqrt();
         if len < 1e-10 {
             continue;
@@ -230,7 +236,12 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
 
         let normal = Vector3::new(normal.x / len, normal.y / len, normal.z / len);
 
-        // Check if face is pointing downward (overhang)
+        // FP-bit preserved: rewriting `(a*b + c*d + e*f)` into `mul_add`
+        // chains would shift the final FP bit of the overhang predicate's
+        // dot product, changing which faces flag at the threshold boundary
+        // cross-platform. Bit-exactness deferred — see CHANGELOG.md
+        // `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let dot = normal.x * up.x + normal.y * up.y + normal.z * up.z;
         let angle = dot.acos();
 
