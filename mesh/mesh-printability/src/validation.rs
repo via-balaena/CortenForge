@@ -392,15 +392,46 @@ fn partition_flagged_into_components(
     components
 }
 
+/// Classify `ExcessiveOverhang` severity per §4.3 of the v0.8 fix arc spec.
+///
+/// Maps the per-region max overhang angle (in degrees, tilt-from-vertical)
+/// to `IssueSeverity` via three bands relative to the printer's
+/// `max_overhang_angle` threshold (also in degrees):
+///
+/// - `observed > threshold + 30°` → `Critical` (e.g., 80° on a 45° FDM threshold)
+/// - `threshold + 15° < observed ≤ threshold + 30°` → `Warning`
+/// - `threshold < observed ≤ threshold + 15°` → `Info`
+///
+/// The lowest-band entry condition `observed > threshold` is the
+/// upstream `flag_overhang_faces` invariant — only faces that strictly
+/// exceed the threshold reach this classifier — but the explicit upper
+/// bounds stay for self-documentation and to centralize the policy in
+/// one place.
+///
+/// Boundary fixtures should bracket each band edge by ≥5° to absorb
+/// the ~ULP drift that `acos`-based normal-tilt computation accumulates
+/// near `π/2` (see §5.4 / §8.1 Gap E risk row 2). Single source of
+/// policy: the only call site is `emit_overhang_component`. Future
+/// detectors with their own bands declare their own classifiers.
+fn classify_overhang_severity(observed_angle_deg: f64, threshold_deg: f64) -> IssueSeverity {
+    if observed_angle_deg > threshold_deg + 30.0 {
+        IssueSeverity::Critical
+    } else if observed_angle_deg > threshold_deg + 15.0 {
+        IssueSeverity::Warning
+    } else {
+        IssueSeverity::Info
+    }
+}
+
 /// Aggregate one connected component's per-face metadata and emit an
 /// `OverhangRegion`, a `SupportRegion`, and an `ExcessiveOverhang`
 /// `PrintIssue` (§5.3 Gap D per-component emission).
 ///
 /// The component's reported `angle` is the per-component max
 /// `overhang_angle` (in degrees); `area` is the summed area; the
-/// `center` is the mean of per-face centroids. Severity is still
-/// area-based pre-Gap-E (commit #6 will replace with the §4.3
-/// angle-based classifier).
+/// `center` is the mean of per-face centroids. Severity is the
+/// §4.3 angle-based classification of the per-component max angle
+/// (see `classify_overhang_severity`).
 fn emit_overhang_component(
     mesh: &IndexedMesh,
     config: &PrinterConfig,
@@ -445,18 +476,16 @@ fn emit_overhang_component(
         SupportRegion::new(center, support_volume, 10.0).with_faces(component.clone());
     validation.support_regions.push(support_region);
 
-    let severity = if total_area > 1000.0 {
-        IssueSeverity::Warning
-    } else {
-        IssueSeverity::Info
-    };
+    let max_overhang_angle_deg = max_overhang_angle_rad.to_degrees();
+    let severity = classify_overhang_severity(max_overhang_angle_deg, config.max_overhang_angle);
 
     let issue = PrintIssue::new(
         PrintIssueType::ExcessiveOverhang,
         severity,
         format!(
-            "{} face(s) with overhangs exceeding {:.1}° (region area: {:.1} mm²)",
+            "{} face(s) with max overhang {:.1}° (threshold {:.1}°, region area: {:.1} mm²)",
             component.len(),
+            max_overhang_angle_deg,
             config.max_overhang_angle,
             total_area
         ),
@@ -1394,6 +1423,204 @@ mod tests {
             vertex_only.overhangs.len(),
             2,
             "two faces sharing only a vertex form two disjoint regions"
+        );
+    }
+
+    // ---- §5.4 Gap E severity classifier tests ---------------------------
+    //
+    // Lock in the post-§5.4 semantic: ExcessiveOverhang severity is
+    // classified by the per-region max overhang angle relative to
+    // `config.max_overhang_angle` per the §4.3 angle bands:
+    //
+    //   - observed > threshold + 30°               → Critical
+    //   - threshold + 15° < observed ≤ threshold + 30°   → Warning
+    //   - threshold       < observed ≤ threshold + 15°   → Info
+    //
+    // Pre-Gap-E v0.7 used an area-based ternary
+    // (`if total_area > 1000.0 { Warning } else { Info }`), capping
+    // severity at Warning even for near-90° roofs and silently allowing
+    // `is_printable()` to return true on slicer-rejected meshes.
+    // Post-v0.8 a Critical overhang flips `is_printable()` to false,
+    // matching FDM-slicer convention (PrusaSlicer / Cura).
+    //
+    // FP-fragility: the test fixtures bracket each band edge by ≥5° to
+    // stay clear of `make_overhang_fixture`'s acos-based ULP drift at
+    // exact boundaries (see §8.1 Gap E risk row 2). Per the
+    // `make_overhang_fixture` contract (§5.9), the test face's
+    // `overhang_angle` equals β by construction, so an 80° β produces
+    // an 80° flagged-face angle ± a few ULPs — well within any band's
+    // interior at the chosen 50° / 65° / 80° fixture set.
+
+    #[test]
+    fn test_overhang_severity_critical_at_steep() {
+        // 80° on FDM threshold 45°: 80 > 75 (= 45 + 30) → Critical.
+        let mesh = make_overhang_fixture(80.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 80° fixture");
+
+        #[allow(clippy::expect_used)]
+        let overhang_issue = result
+            .issues
+            .iter()
+            .find(|i| i.issue_type == PrintIssueType::ExcessiveOverhang)
+            .expect("80° overhang must produce an ExcessiveOverhang issue");
+        assert_eq!(overhang_issue.severity, IssueSeverity::Critical);
+    }
+
+    #[test]
+    fn test_overhang_severity_warning_at_medium() {
+        // 65° on FDM threshold 45°: 60 (= 45 + 15) < 65 ≤ 75 → Warning.
+        let mesh = make_overhang_fixture(65.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 65° fixture");
+
+        #[allow(clippy::expect_used)]
+        let overhang_issue = result
+            .issues
+            .iter()
+            .find(|i| i.issue_type == PrintIssueType::ExcessiveOverhang)
+            .expect("65° overhang must produce an ExcessiveOverhang issue");
+        assert_eq!(overhang_issue.severity, IssueSeverity::Warning);
+    }
+
+    #[test]
+    fn test_overhang_severity_info_at_borderline() {
+        // 50° on FDM threshold 45°: 45 < 50 ≤ 60 (= 45 + 15) → Info.
+        let mesh = make_overhang_fixture(50.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 50° fixture");
+
+        #[allow(clippy::expect_used)]
+        let overhang_issue = result
+            .issues
+            .iter()
+            .find(|i| i.issue_type == PrintIssueType::ExcessiveOverhang)
+            .expect("50° overhang must produce an ExcessiveOverhang issue");
+        assert_eq!(overhang_issue.severity, IssueSeverity::Info);
+    }
+
+    /// Build a closed (watertight, manifold) overhang fixture for the
+    /// §5.4 `is_printable()` polarity tests below. Cross-section is an
+    /// "L" extruded along +y; the L's underside-of-arm segment is
+    /// tilted to land at `target_overhang_angle_deg`
+    /// (tilt-from-vertical, FDM convention). The L's leg sits on the
+    /// build plate (z=0); the slanted underside of the arm hovers
+    /// above (`face_min_along_up` = 1.0 > `mesh_min` = 0.0), so the
+    /// build-plate filter does not block the overhang flag. The
+    /// remaining five side walls are vertical, horizontal-top, or on
+    /// the build plate, so the only flagged region is the slanted
+    /// underside (2 triangles forming one connected component).
+    ///
+    /// Construction rationale: a *closed* mesh is required for these
+    /// tests because the simpler 2-triangle `make_overhang_fixture`
+    /// emits a `NotWatertight` Critical issue (six open edges) that
+    /// would taint `is_printable()` independently of the overhang
+    /// severity under test.
+    fn make_closed_overhang_fixture(target_overhang_angle_deg: f64) -> IndexedMesh {
+        let theta_rad = target_overhang_angle_deg.to_radians();
+        let sin_t = theta_rad.sin();
+        let cos_t = theta_rad.cos();
+
+        let vertices = vec![
+            // Front cross-section (y = 0):
+            Point3::new(0.0, 0.0, 0.0), // 0  P1 — leg bottom-left
+            Point3::new(1.0, 0.0, 0.0), // 1  P2 — leg bottom-right
+            Point3::new(1.0, 0.0, 1.0), // 2  P3 — leg top-right (start of overhang)
+            Point3::new(1.0 + sin_t, 0.0, 1.0 + cos_t), // 3  P4 — overhang outer end
+            Point3::new(1.0 + sin_t, 0.0, 2.0 + cos_t), // 4  P5 — arm top-right
+            Point3::new(0.0, 0.0, 2.0 + cos_t), // 5  P6 — arm top-left
+            // Back cross-section (y = 1):
+            Point3::new(0.0, 1.0, 0.0),                 // 6  P1'
+            Point3::new(1.0, 1.0, 0.0),                 // 7  P2'
+            Point3::new(1.0, 1.0, 1.0),                 // 8  P3'
+            Point3::new(1.0 + sin_t, 1.0, 1.0 + cos_t), // 9  P4'
+            Point3::new(1.0 + sin_t, 1.0, 2.0 + cos_t), // 10 P5'
+            Point3::new(0.0, 1.0, 2.0 + cos_t),         // 11 P6'
+        ];
+        let faces = vec![
+            // Bottom of leg (outward -z; build-plate filtered):
+            [0, 6, 7],
+            [0, 7, 1],
+            // Right side of leg (outward +x; vertical wall, not flagged):
+            [1, 7, 8],
+            [1, 8, 2],
+            // Slanted underside of arm — the OVERHANG
+            // (outward (cos θ, 0, -sin θ); flagged at angle θ):
+            [2, 8, 9],
+            [2, 9, 3],
+            // Right side of arm (outward +x; vertical wall):
+            [3, 9, 10],
+            [3, 10, 4],
+            // Top of arm (outward +z; top face):
+            [4, 10, 11],
+            [4, 11, 5],
+            // Left side (outward -x; vertical wall):
+            [5, 11, 6],
+            [5, 6, 0],
+            // Front face (outward -y; hexagon fanned from P1):
+            [0, 1, 2],
+            [0, 2, 3],
+            [0, 3, 4],
+            [0, 4, 5],
+            // Back face (outward +y; hexagon fanned from P1'):
+            [6, 11, 10],
+            [6, 10, 9],
+            [6, 9, 8],
+            [6, 8, 7],
+        ];
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn test_is_printable_blocks_critical_overhang() {
+        // Gap E primary regression: an 80° single-region overhang on
+        // FDM threshold 45° must flip `is_printable()` to false. The
+        // closed L-prism keeps the only Critical-issue surface to the
+        // overhang itself (avoids the `NotWatertight` Critical that
+        // would taint the polarity check). Pre-Gap-E v0.7's area-based
+        // heuristic capped severity at Warning for small-area faces,
+        // so `is_printable()` was true even on near-roof overhangs —
+        // the bug Gap E fixes.
+        let mesh = make_closed_overhang_fixture(80.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the closed 80° fixture");
+
+        assert!(
+            !result.is_printable(),
+            "80° overhang on 45° FDM threshold must be Critical and block is_printable()"
+        );
+    }
+
+    #[test]
+    fn test_is_printable_allows_borderline_overhang() {
+        // 50° single-region overhang on FDM threshold 45°: Info
+        // severity, does not block `is_printable()` (only Critical
+        // does). Pairs with `test_is_printable_blocks_critical_overhang`
+        // to lock the band-to-printable mapping at both polarities;
+        // the closed L-prism keeps `NotWatertight` from clouding the
+        // result.
+        let mesh = make_closed_overhang_fixture(50.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the closed 50° fixture");
+
+        assert!(
+            result.is_printable(),
+            "50° overhang on 45° FDM threshold is Info; does not block is_printable()"
         );
     }
 }

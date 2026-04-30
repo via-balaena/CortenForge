@@ -81,6 +81,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Components emerge in min-face-idx order and faces within each
   region are sorted ascending for deterministic output across
   HashMap iteration permutations.
+- **`ExcessiveOverhang` severity is now angle-based per §4.3
+  (Gap E).** v0.7's severity heuristic capped at Warning even for
+  near-90° roofs (`if total_area > 1000.0 { Warning } else { Info }`)
+  — a small-area "scary" overhang couldn't flip `is_printable()` to
+  false. v0.8 classifies per-region severity from the per-region max
+  overhang angle (which the Gap D partition produces): observed
+  `angle > threshold + 30°` → Critical (e.g., 80° on a 45° threshold);
+  `threshold + 15° < observed ≤ threshold + 30°` → Warning (e.g., 65°);
+  `threshold < observed ≤ threshold + 15°` → Info (e.g., 50°).
+  Critical severities now cause `is_printable()` to return `false`,
+  matching FDM-slicer convention (PrusaSlicer's "support overhang
+  threshold" + Cura's "support angle" categorize roof faces as
+  block-the-print-equivalent). **SEMVER-significant behavioural
+  change** for callers depending on v0.7 `is_printable()` outputs on
+  meshes with > 75° flagged faces. Helper: new private
+  `classify_overhang_severity(observed_deg, threshold_deg)` is the
+  single source of policy.
 
 ### v0.9 candidates
 
