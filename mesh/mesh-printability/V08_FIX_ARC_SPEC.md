@@ -1945,6 +1945,304 @@ The v0.7.0 overhang flagging predicate is inverted from FDM convention; fix in v
 
 ---
 
-## §8 onwards — pending
+## §8. Risk inventory
 
-(Sections 8–13: risk inventory, stress-test gauntlet, grading & CI impact, open questions, implementation order, spec lifecycle.)
+This section applies `feedback_risk_mitigation_review`'s "what could go wrong" lens systematically. Three layers:
+
+- **§8.1 Per-gap implementation risks** — one entry per gap A–M plus DetectorSkipped + CHANGELOG, naming the failure mode + its mitigation already in §4–§7.
+- **§8.2 Cross-cutting risks** — risks that span multiple gaps: FP drift, ABI surface, perf cliffs, test-anchor fragility.
+- **§8.3 Per-commit blast radius** — for each commit in the locked order (§7.9, with cadence from §7.0), lists the files modified + downstream consumers affected + test-anchor risk.
+
+Risk-tier classification (used in the right-hand column of each table):
+
+- **High**: a defect would either silently produce wrong validation results or block the arc from progressing; pre-flight verification is mandatory.
+- **Medium**: a defect would surface as test failure or compile error; recoverable with a targeted fix in the same commit.
+- **Low**: a defect would be cosmetic or trivially diagnosed; rolling forward is fine.
+
+The §7-review-pass methodology (`project_mesh_printability_gaps.md`) — read each section, check math, verify cross-references, look for code-vs-prose inconsistencies, audit assertions for pass-by-coincidence — applies at every implementation commit, not just at spec-authoring time. This section pre-loads the lens.
+
+### §8.1 Per-gap implementation risks
+
+#### Gap A — Workspace lints
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Clippy fallout exceeds the 10-site cap, forcing a bundled src-cleanup that violates `feedback_pr_size_ci_economics` | §5.1 stop-and-raise gate; if heavy, revert lints flip and surface to user | Medium |
+| Workspace lint surface drifts after Gap A but before later commits (e.g. a new clippy lint promoted at a Rust-toolchain bump mid-arc) | Each post-Gap-A commit re-runs `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings` per §10's per-commit gate; toolchain pinning via `rust-toolchain.toml` (already in repo) prevents surprise upgrades | Low |
+| Fixing a clippy fallout site (e.g. unwrap → expect) silently changes panic message, breaking a test that asserts on panic strings | Pre-flight at Gap A commit: `grep -rn 'should_panic.*expected' mesh/mesh-printability/src/ mesh/mesh-printability/tests/` should return nothing; if not, the affected test gets its expected-string updated alongside the fallout fix | Low |
+
+#### Gap M — Overhang predicate fix + build-plate filter
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| New predicate flags faces the v0.7-using downstream consumers (umbrella, examples, regression test) didn't previously see, breaking their `is_printable()` assertions | §3 documents semver-significant behavioral change; CHANGELOG entry; §5.9's regression sweep checks every existing `validation.rs::tests` assertion that touches overhang-derived numerics | High |
+| Build-plate filter mis-fires due to FP drift in `face_min_along_up - mesh_min_along_up` calculation | EPS_GEOMETRIC = 1e-9 mm chosen well above f64 ULP for mm-scale geometry; `dot(&up)` with `up.normalize()` upstream guarantees normalized projection; cross-platform smoke via §10's CI matrix | Medium |
+| `mesh_min_along_up` accidentally placed inside the face loop instead of computed once before it → O(n × n_vertices) instead of O(n) | §5.9 code shape places the computation explicitly before the face loop; commit-time read-aloud check; §6.2 LongBridge has the same pattern, cross-reference verifies | Low |
+| `validation.rs` and `orientation.rs` predicates drift over time (one fixed, one missed) | §5.9 explicitly calls for symmetric edits in both files; commit message names both files; risk-mitigation review pass at commit time greps both for `dot < 0.0` to confirm both removed | Medium |
+| Cavity-ceiling co-flag confuses downstream users post-v0.8 (they didn't see overhang flags on sealed cavities pre-v0.8; now they do) | README docs in §7.1, §7.3, §7.7, §7.8 explicitly call this out; CHANGELOG `[0.8.0] / Fixed` section names the convention change; mesh-book §50 depth-pass migration | Medium |
+| Strict-greater-than vs greater-or-equal boundary disagreement (§5.9 specifies strict; an implementer flips it) | §5.9 test `test_overhang_45deg_tilt_borderline_not_flagged` locks in strict semantics with explicit failure message | Low |
+
+#### Gap B — Track actual maximum overhang angle
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| `max_overhang_angle_rad` reads the pre-Gap-M predicate in tests run before Gap M lands | Locked commit order: M lands before B (§7.9); §5.2 acceptance gates use post-Gap-M semantics by definition since they're tested after both land | Low |
+| Test fixture's "expected steepest face angle" computed by hand differs from FP result | All §5.2 tests use exact-representable trig values (e.g. 30°/45°/60°/90°) via `std::f64::consts`; tolerance via `approx::assert_relative_eq!(.., epsilon = 1e-6)` per §4.5 | Low |
+| Empty-overhang case (no flagged faces): `max_overhang_angle_rad` reads zero-init; downstream Gap E severity classifier sees angle=0 and emits Info | §5.2 spec: `OverhangRegion` is only created when `overhang_faces.is_empty() == false`; helper short-circuits before reading the max; §5.2 test `test_overhang_no_overhang_no_region` asserts no region in this case | Low |
+
+#### Gap D — Split overhangs into connected regions
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Refactor of edge-map building (extract `build_edge_to_faces`) silently changes `check_basic_manifold` semantics — open-edge or non-manifold counts shift | §5.3 refactor regression gate: existing `test_not_watertight_detection` + `test_watertight_mesh` + `test_validation_summary` + `test_issue_counts` + `test_sls_no_overhang_check` continue to pass without modification; refactor commit lands BEFORE Gap D so the diff is reviewable in isolation | Medium |
+| Union-find off-by-one → faces in the wrong cluster | Adversarial fixtures: `test_overhang_two_disjoint_regions` (asserts 2 regions, face-disjoint), `test_overhang_face_adjacency_via_shared_edge` (asserts vertex-only-shared faces are NOT adjacent) | Low |
+| Component centroid definition (mean-of-face-centroids vs mean-of-vertex-positions vs area-weighted) drifts from spec | §5.3 algorithm step 4: "centroid (average of face centroids)"; lock-in via `test_overhang_region_centroid_is_component_centroid` with a single-face fixture where mean-of-face-centroids equals mean-of-vertex-positions trivially; multi-face case verified by adversarial fixture | Low |
+| `support_regions.len()` 1:1 invariant vs `overhangs.len()` (existing test_support_volume_calculation) breaks once overhangs split into components | §5.3 acceptance criterion explicitly: "support_regions length matches overhangs length (one support region per overhang patch)"; existing test re-uses the cube-on-plate fixture which produces zero overhangs in either form | Medium |
+| `total_support_volume()` numerical anchor shifts because overhang_area sums differently across split components vs single region | Per §5.3 acceptance: "sum of per-region volumes equals total" — invariant preserved by construction (sum of areas across split components equals the unsplit total) | Low |
+
+#### Gap E — Tighten ExcessiveOverhang severity policy
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Existing test asserts `is_printable()` on a fixture with a moderate overhang and now flips to false | §5.4 spec: `test_sls_no_overhang_check` continues to pass (gating at function level, not severity); commit-time sweep of all `is_printable()` assertions in existing tests; any flip means a fixture's overhang is severe enough to be a real issue and the fixture should be updated to a milder slope | Medium |
+| Boundary cases at exactly threshold + 15° / threshold + 30° (= comparison) | §5.4 spec: strict-less-than semantics on the upper bound (`<= threshold + 15`), strict-greater on the lower (`> threshold`); §4.3 documents; tests `test_overhang_severity_*_at_*` cover each band including borderline | Low |
+| `classify_severity` central helper drift between `check_overhangs` and post-Gap-D region-emit code | §5.4 spec: helper is the single source of policy; both call sites consume it | Low |
+
+#### Gap F — Winding orientation in manifold check
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Existing `create_watertight_cube` fixture's winding is silently inconsistent — Gap F reveals it and breaks `test_watertight_mesh` | §5.5 explicit regression test: `test_winding_consistent_watertight_cube` asserts the fixture has consistent winding; pre-flight verification: read `create_watertight_cube` source pre-commit, confirm CCW-from-outside | Medium |
+| Two distinct issue descriptions ("N open edge(s)" + "N edge(s) traversed in same direction") collide on a single mesh, doubling the issue count and breaking existing `test_issue_counts` | §5.5 explicit: undirected edge-count + directed edge-count run side-by-side; existing fixtures with ≥1 open edge but consistent winding emit ONLY the open-edge issue, not both | Low |
+| HashMap iteration order non-determinism in directed-edge counting changes the descriptive count's tie-breaking on cross-platform | Counts are scalar (just `.values().filter(...).count()`); descriptions don't enumerate which edges; deterministic | Low |
+
+#### Gap L — `PrinterConfig::build_up_direction` parametrization
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| `with_build_up_direction(Vector3::zeros())` panics in release builds (no debug_assert in release) → caller crashes | §5.6 doc-comment on `with_build_up_direction`: "panics in debug builds; NaN propagates in release"; explicit responsibility on caller; covered by `test_build_up_direction_zero_panics_in_debug` | Medium |
+| `find_optimal_orientation` rotates mesh in mesh-frame; `config.build_up_direction` is dotted against rotated normals — sign conventions confusable | §5.6 spec: "rotation is applied in mesh-frame, so the rotated normals are dotted against `config.build_up_direction` (whatever frame the caller chose)"; `test_find_optimal_orientation_respects_build_up_direction` covers the cross-frame symmetry | Medium |
+| All four `*_default()` constructors update; one is missed | §5.6 spec lists all four; commit-time grep verifies; `test_build_up_direction_default_is_z` per-tech | Low |
+| Build-up direction not normalized → dot products yield non-unit projections, severities and angles inconsistent | `with_build_up_direction` calls `.normalize()` internally; `*_default()` constructors set `(0,0,1)` (already unit); `test_build_up_direction_normalized_in_builder` covers | Low |
+
+#### Gap K — COMPLETION.md rewrite
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| COMPLETION.md drifts from code (claims a detector is populated when it isn't, or vice versa) | §5.7 acceptance: "every public-API listing matches `pub use` in lib.rs; every detector listed populates its claimed type/severity in tests"; lands LAST so truth is settled | Low |
+| Test counts in COMPLETION.md become stale at next test add | Counts are pulled from `cargo test -p mesh-printability` output at the commit; a programmatic grep-and-assert against test count would over-couple the doc to test discovery — manual update is cheap; `cargo doc` lint catches malformed markdown but not stale numerics | Low |
+
+#### DetectorSkipped variant
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Workspace consumer matches exhaustively on `PrintIssueType` and breaks compile when the variant adds | §5.8 acceptance: `cargo build --workspace` post-commit verifies; only known consumers of the enum are within `mesh-printability` itself + the umbrella's regression test (no exhaustive match in either) | Medium |
+| Caller conflates DetectorSkipped with Other | §3 doc-comment + §5.8 doc-comment make the distinction explicit; `as_str()` returns "Detector Skipped" not "Other" | Low |
+| DetectorSkipped emitted twice for the same detector when it has multiple precondition fails (e.g. ThinWall: not watertight + winding inconsistent) | §6.1 spec: ThinWall checks "watertight AND consistent_winding" as a single combined precondition; emits one DetectorSkipped with both reasons in the description, not two issues | Low |
+
+#### CHANGELOG.md
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| CHANGELOG drifts from commits — features added without entries, or entries describe behavior that didn't ship | §5.10 per-commit append requirement; commit-time review pass includes "did the CHANGELOG line up with the diff?" | Low |
+| `[0.8.0]` date pin in final commit gets the wrong date if the arc spans multiple days | Final commit pins via `date -u +%Y-%m-%d` at commit-author time; user-visible commit message includes the date | Low |
+
+#### Gap C — `check_thin_walls`
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Möller-Trumbore self-hit on co-planar adjacent faces (ray exits face F's edge into face G that shares the edge) | EPS_RAY_OFFSET = 1e-6 mm offsets ray origin inward by 1µm; `tri-tri co-planarity` epsilon in M-T routine handles edge cases; `test_thin_wall_concave_z_shape` exercises | Medium |
+| O(n²) ray-cast is too slow on the 5k-tri budget — perf-cliff regression in CI | §6.1 documents <1s for 5k tris; CI tests-debug uses small fixtures (the §7.1 hollow-box has 24 triangles); 10k+ tri fixture would only appear if a §9 stress test introduces it (decided in §9) | Medium |
+| Ray-tri returns `Some(t)` for negative `t` (ray hit behind origin) → mis-flagged as thin wall | M-T returns `Some(t)` only when `t > 0` per §6.1; private helper signature: `Option<f64>` where `Some(t)` is `t > 0`; algorithm step 2 explicitly guards `t > 0 and t < min_dist` | Low |
+| Cluster split — adjacent thin-wall faces in different "shell layers" should be one cluster, get split because edge-adjacency is intra-layer only | §6.1 spec uses edge-adjacency on flagged faces only; §7.1 lock-in expects 2 clusters for the hollow-box (outer-top + inner-top) for exactly this topological reason; pre-flight verification in §7.1 main() asserts the 2-cluster outcome explicitly | High |
+| Watertight-precondition skip masks a genuine ThinWall in an open mesh | §4.1 + §6.1 documented: open meshes get DetectorSkipped, no `ThinWallRegion`s; user filters issues for DetectorSkipped to enumerate which detectors ran | Low |
+| Concave geometry: first hit is the nearest opposite face, but for thick → thin → thick layouts the wrong face is "opposite" (ray skips through the cavity) | §6.1 edge case + `test_thin_wall_concave_z_shape` covers the Z-shape geometry; pathological 3-shell case deferred to v0.9 | Medium |
+
+#### Gap G — `check_long_bridges`
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| `requires_supports()` semantic for `PrintTechnology::Other` — caller-extension hook; we return `true` (conservative) but this could surprise | Existing semantic (re-confirmed at commit time); §6.2 silently skips for SLS/MJF only; FDM/SLA/Other run | Low |
+| Diagonal-bridge underflagging (axis-aligned bbox vs true diagonal) | §6.2 documented as v0.9 OBB followup; `test_long_bridge_diagonal_underflagged_documented` locks in the v0.8 behavior | Low |
+| Cantilever flagged as bridge | §6.2 documented as v0.9 cantilever-detection followup; `test_long_bridge_cantilever_currently_flagged` locks in v0.8 behavior | Low |
+| Build-plate filter false-positive (face barely above plate excluded incorrectly) | EPS_GEOMETRIC = 1e-9 mm vs minimum bridge height of ~layer_height (0.2mm for FDM) — no overlap | Low |
+| ANGLE_TOL_HORIZONTAL = 30° classifies a 25° tilt as bridge candidate; user expected only ~horizontal | Documented tolerance; v0.9 candidate is "tighter classification per technology"; for v0.8, 30° tolerance is consistent with FDM-slicer convention (PrusaSlicer "support overhang" classifies bridges at ~80° from vertical = within 10° of horizontal, but our 30° tolerance is conservative for "near-horizontal") | Low |
+| Cluster contains both true-horizontal faces + ~30° tilted faces; bbox conservatively over-projects → false-positive bridge | §6.2 edge case documented; cluster comprises faces within tolerance, but bbox is over horizontal-plane-only of the projected vertices; in practice all near-horizontal faces project onto horizontal plane similarly | Low |
+
+#### Gap H — `check_trapped_volumes`
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Voxel inside-test cross-platform divergence — same input produces different `inside` flags on macOS/Linux/Windows due to FP drift in scanline ray-tri intersections (Phase 4 lesson on faer block-diagonal LDLᵀ) | §4.5 + §6.3: tolerance-based volume assertion `max_relative = 0.10` (10% voxel-discretization noise band); ROW_JITTER = 1e-5 mm offsets ray origin to break ties; CI matrix coverage (cross-os tests-debug) catches divergence | High |
+| Voxel grid memory blowup on > 100mm parts at FDM voxel size (~250³ ≈ 15.6 MB) → OOM in tight CI runners | §6.3 documents perf ceiling; §7.3 + §7.7 fixtures are 20-25 mm cubes (~200³ ≈ 8 MB, well below ceiling); §9 stress-test gauntlet decides whether to add a 100mm fixture | High |
+| Pinhole leak smaller than `voxel_size` voids trapped detection silently | §6.3 documented as intentional (features below printer resolution shouldn't false-flag); README of §7.3 calls this out | Low |
+| Scanline parity flips on a vertex hit (ray enters and exits at the same voxel boundary) | §6.3 edge-case: parity uses bottom-edge inclusive / top-edge exclusive standard convention; ROW_JITTER mitigates exact coincidences | Medium |
+| `voxel_size = (min_feature.min(layer_height)) / 2` produces a non-FP-exact value (e.g. min_feature=0.4, layer=0.2 → voxel=0.1) → `0.1` is FP-irrational, accumulating drift across grid steps | All grid coordinates derived as `i * voxel_size + grid.x_start`; `i * 0.1` for i up to 250 carries ULP drift but stays within 1e-13 cumulative — well below EPS_GEOMETRIC; verified by `test_trapped_volume_volume_within_10pct_of_analytical` tolerance | Medium |
+| Sphere fixture in §7.3 with reversed winding sphere accidentally watertight-but-orientation-inconsistent → ThinWall (post-Gap-F) flags winding inconsistency, blocking ThinWall but not affecting TrappedVolume | §6.3 precondition is watertight only (not winding); §7.3 verification at impl time checks `validation.issues` for absence of NonManifold/winding-inconsistency issues; if winding is wrong, fix the fixture not the detector | Medium |
+| Volume estimate via voxel-count × voxel_size³ has 10% noise band; assertion that test fixture's volume ≈ analytical 523.6 mm³ within 10% leaves room for a 50 mm³ off-by-one bug | 10% is the documented voxel-discretization noise band; tighter tolerance would over-constrain; an off-by-100% bug would still fail (`max_relative = 0.10` catches anything outside ±10%) | Low |
+
+#### Gap I — `check_self_intersecting`
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| `mesh-repair::detect_self_intersections` API surface drift mid-arc (mesh-repair has its own followup work in §10's CI matrix) | Pin via workspace dep `mesh-repair = { path = "../mesh-repair" }` (workspace-local, not crates.io); same workspace = same revision | Low |
+| `IntersectionParams::default()` semantics differ from what mesh-printability assumes (e.g., default changes to `max_reported = 1000` upstream) | §3 acceptance: `IntersectionParams::default()` documented inline as `max_reported = 100, epsilon = 1e-10, skip_adjacent = true`; if mesh-repair changes these defaults, the change surfaces in the v0.8 test count or behavior — §6.4 tests catch | Medium |
+| `mesh-repair` returns intersection pairs in non-canonical (a > b) order; we canonicalize but might miss a case | §6.4 explicit canonicalization; `test_self_intersecting_face_indices_unique_per_pair` asserts `face_a < face_b` for all reported | Low |
+| Spec assumes mesh-repair returns a `result.truncated` boolean field for max_reported overflow; mesh-repair's actual field name may differ (`is_truncated`, `was_truncated`, etc.) | Pre-flight at §6.4 commit: read `mesh-repair::intersect::SelfIntersectionResult` field list; update §6.4 spec + Gap I commit's truncation-description code inline if name differs | Medium |
+| `IntersectionResult::intersecting_pairs` could grow to 100 entries even on a clean mesh with adjacent triangles slightly miscoded | §6.4 spec uses `IntersectionParams::default()` which has `skip_adjacent = true`; clean watertight cube produces empty pairs (covered by `test_self_intersecting_clean_cube_no_issue`) | Low |
+| Adding mesh-repair as dep introduces a transitive dep that violates L0 dep-count cap (Tier::L0 release_max = 80, test_max = 100; checked via grader Criterion 6 Layer Integrity, see `xtask/src/grade.rs:2118`) | Pre-flight at Gap I commit: run `cargo xtask grade mesh-printability --skip-coverage` and confirm "6. Layer Integrity" criterion remains A. mesh-repair already grades A as L0 (its release count < 80); mesh-printability currently has 4 direct deps; combined unique-dep count post-merge stays comfortably under 80 (mesh-repair + mesh-printability share `nalgebra`/`hashbrown`/`mesh-types` transitively, so dedup keeps it tight). If grader fails Layer Integrity, this would block Gap I — stop and raise | High |
+
+#### Gap J — `check_small_features`
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| Single-component mesh entirely below threshold (e.g. user has unit-conversion error) → main body flagged as small feature, not a useful diagnostic | §6.5 documented edge case; surfaces as a signal, user decides; `feedback_no_reflexive_defer` — don't suppress the diagnostic | Low |
+| Vertex-only "adjacency" (two faces sharing only a vertex) treated as same component — drift from edge-adjacency definition | §6.5 spec: "edge-adjacency only"; `test_small_feature_face_adjacency_via_edge_only` asserts vertex-only-shared faces produce separate components | Low |
+| `signed_volume` returns negative on outward-winding (correct sign) but the abs() in §6.5 takes absolute value — a flipped-winding component reports same volume as correctly-wound | abs() is the documented choice for tolerance; "approximate for non-watertight inputs" doc-comment | Low |
+| Face indices in `region.faces` reference shared edge-map → if union-find IDs are reordered between runs, region face order changes | §4.4 sort policy: `small_features` sort by `face indices, smallest face index first`; deterministic | Low |
+| Spike (long thin protrusion) escapes detection because max_extent > threshold | §6.5 documented as v0.9 followup; volume-based criterion candidate | Low |
+| Open / non-watertight sub-component's signed_volume returns junk; user reads `region.volume` and treats it as authoritative | §6.5 documentation: "approximate for non-watertight inputs"; `region.face_count` + `region.max_extent` are the authoritative fields | Low |
+
+### §8.2 Cross-cutting risks
+
+These risks span multiple gaps. Each has at least one mitigation declared in §4 or earlier; this section consolidates the audit trail for risk-mitigation review.
+
+#### §8.2.1 Cross-platform FP drift (Phase 4 / faer-LDLᵀ lesson generalized)
+
+The Phase 4 work surfaced bit-exact assertion fragility in faer block-diagonal LDLᵀ: same input on macOS/Linux/Windows produced ULP-level different outputs, breaking frozen-baseline regression tests. mesh-printability does not invoke faer, but **ray-cast distances (Gap C), voxel scanline inside-tests (Gap H), and signed-volume integrals (Gap J)** all carry FP-drift potential.
+
+| Detector | Operation at risk | Mitigation |
+|----------|-------------------|------------|
+| Gap C (ThinWall) | Möller-Trumbore ray-tri intersection: `t` parameter sensitivity to vertex coordinates | Tolerance assertion `epsilon = 1e-6` per §4.5; exact-representable test vertex coords (1.0, 2.0, 0.5 — not 0.1) where possible |
+| Gap H (TrappedVolume) | Scanline ray-tri parity in voxel inside-test | ROW_JITTER = 1e-5 mm; tolerance-based volume assertion `max_relative = 0.10`; CI cross-os matrix runs (`cross-os` job in `quality-gate.yml`) catches divergence |
+| Gap J (SmallFeature) | `signed_volume` divergence-theorem sum across faces: cross-product accumulation | Tolerance `max_relative = 1e-3`; exact-representable fixture vertex coords for the unit-cube fragment in `test_small_feature_volume_via_divergence_theorem` |
+| Gap M (Overhang) | `dot(&up)` + `acos()` chain | Tolerance `epsilon = 1e-6`; `up.normalize()` upstream; cross-os matrix catches |
+
+**Recovery if a CI cross-os divergence does surface**: increase tolerance band, document the precision floor in the affected detector's doc-comment, file v0.9 followup. **Do NOT** add platform-specific code paths in v0.8.
+
+#### §8.2.2 ABI stability — `PrintValidation` field additions
+
+Strict semver: adding `pub` fields to `PrintValidation` is a breaking change because struct-update syntax (`PrintValidation { issues, ..existing }`) breaks. Practical: §2 audit (finding F14) confirmed no consumer uses struct-update — only `PrintValidation::new()` + field-mutation patterns.
+
+| Risk | Mitigation | Tier |
+|------|-----------|------|
+| A consumer added struct-update mid-arc (e.g. another team adds a new test using struct-update) | Pre-flight at the commit immediately after `PrintValidation` field additions: `cargo build --workspace`; `grep -r "PrintValidation {" src/ examples/ tests/` | Medium |
+| External (non-workspace) consumer breaks because we ship 0.8.0 to crates.io | mesh-printability not yet published per repo state; bump is workspace-local; revisit at first crates.io publish | Low |
+
+#### §8.2.3 Test-numerical-anchor cascade fragility
+
+Gap M alters the overhang-flagging predicate; Gap D splits regions; Gap E re-classifies severities; Gap B re-defines the reported angle. Cumulatively, **every test that asserts on `validation.overhangs[*].angle`, `validation.overhangs.len()`, `total_support_volume()`, `validation.issues.len()`, or `validation.is_printable()` may shift**.
+
+| Existing test name (validation.rs::tests) | Field touched | Risk |
+|--------------------------------------------|---------------|------|
+| `test_empty_mesh_error` | error path on empty input | Low (error path unchanged) |
+| `test_no_faces_error` | error path on faceless input | Low (error path unchanged) |
+| `test_build_volume_check` | `ExceedsBuildVolume` issue | Low (build-volume detector untouched) |
+| `test_build_volume_ok` | absence of `ExceedsBuildVolume` | Low (build-volume detector untouched) |
+| `test_not_watertight_detection` | NotWatertight issue | Low (open-edge logic unchanged) |
+| `test_watertight_mesh` | NonManifold absence + winding (Gap F) | Medium — Gap F may newly flag winding if fixture is wrong |
+| `test_validation_summary` | `validation.summary()` string | Medium — depends on overhang count |
+| `test_issue_counts` | `severity_counts` | Medium — Gap E severity tightening + Gap D splitting may change counts |
+| `test_sls_no_overhang_check` | overhang gate at function level | Low — gate at function level preserved |
+| `test_support_volume_calculation` | `total_support_volume()` | Medium — Gap D's split + Gap M's predicate change shift area sum, but `area * 5.0` heuristic is invariant under partition |
+
+**Mitigation cadence**: each commit's acceptance criteria runs `cargo test -p mesh-printability` post-edit. A failing existing test gets either (a) numerical-anchor refresh if the test exercises the new convention correctly, or (b) re-fixture if the test depended on the buggy convention's specific output. Gap M's commit (per §5.9) is the load-bearing sweep — most cascading anchor shifts happen there.
+
+**Strategy for `test_watertight_mesh`** specifically (Gap F): pre-flight read `create_watertight_cube` source; verify CCW-from-outside winding by inspection (cross product of edge vectors against face normal); if fixture is wrong, fix in Gap F's commit (one-line vertex-list reorder).
+
+#### §8.2.4 Performance cliffs
+
+| Detector | Cliff threshold | Symptom | Mitigation |
+|----------|-----------------|---------|-----------|
+| Gap C (ThinWall) | >10k tris | Validation runtime > 5 s on reference machine | §6.1 doc; v0.9 BVH followup; largest v0.8 example fixture is §7.8 showcase (~1100 tris) — well below cliff |
+| Gap H (TrappedVolume) | >100mm part extent at FDM voxel size | Memory > 64 MB; runtime > 5 s | §6.3 doc; v0.9 adaptive voxel; v0.8 examples ≤25mm |
+| Gap I (SelfIntersecting) | >10k tris with many intersections | Runtime > 5 s | §6.4 doc; mesh-repair already uses bounding-box culling + rayon |
+
+CI matrix (per `quality-gate.yml`): `tests-debug` runs on default features, debug build, 23 workspace crates. For mesh-printability, debug runtime can be 2-5x slower than release. The §7 examples use `--release` per `feedback_release_mode_heavy_tests`; v0.8 unit tests must complete in debug mode under typical 30-min CI matrix budget.
+
+#### §8.2.5 Fixture topology assumptions (transferred from §7-review-pass findings)
+
+The §7 review surfaced that hand-authored fixtures can have non-obvious topological consequences:
+
+| Fixture / Example | Risk | Mitigation |
+|-------------------|------|-----------|
+| §7.1 hollow box: outer + inner are topologically disjoint | ThinWall produces 2 clusters, not 1, due to edge-adjacency operating per-component | §7.1 lock-in: explicit 2-cluster assertion + cluster-z disambiguation |
+| §7.2 H-shape boolean union: shared vertices at pillar-slab junctions | Faces sharing only a vertex aren't edge-adjacent → split into 3 cantilever/bridge clusters | §7.2 lock-in: 1 LongBridge (only middle exceeds threshold) + 3 OverhangRegion (Gap-D split) |
+| §7.3 sphere-in-cube: reversed sphere winding for inward-facing normals | If winding is wrong, Gap F flags it post-arc; sphere is INSIDE solid material → cavity-ceiling fires under Gap M | §7.3 lock-in: pre-flight winding verification + cavity-ceiling explicit prediction |
+| §7.5 burr on plate: bottom-of-burr vs build-plate filter | If burr is off-plate, Gap M flags burr's bottom face → spurious Critical breaking the SmallFeature-only narrative | §7.5 burr at z=0.1 with bottom at z=0; build-plate filter applies |
+| §7.6 leaning cylinder: orientation-search sample set discrete (12 samples) | `find_optimal_orientation` may NOT pick the exact-perpendicular rotation; expected output computed against the closest-sample rotation | §7.6 lock-in: 45°-around-Y closest sample analysis |
+
+**Pattern**: hand-authored fixtures get a per-fixture topology audit before the example commit. This is the §7-review-pass methodology applied at impl time.
+
+### §8.3 Per-commit blast radius
+
+Each row corresponds to one commit. Order reconciles §7.9's gap-order with §7.0's cadence ("examples land after the corresponding detector commits") — detectors and their examples are interleaved, not batched. Blast radius = (files modified, downstream consumers affected, test-anchor risk).
+
+**Three §-internal inconsistencies that §12 must reconcile** (flagged for explicit commit-order spec in §12, not silently absorbed here):
+
+1. §5.3 says `build_edge_to_faces` extraction "happens as a separate commit before Gap D" but §7.9's locked-order summary doesn't list it. Row #4 below reflects §5.3's reading.
+2. §1 + §5.10 specify CHANGELOG creation in the Gap A commit; §7.9 lists CHANGELOG as a separate slot after DetectorSkipped. Row #1 below reflects §5.10's reading (creation at Gap A; subsequent commits append, no separate creation slot).
+3. §7.0 specifies interleaved detector → example → next-detector cadence; §7.9's "C → G → H → I → J → §7 examples in detector order" reads as batched-after. Rows #11–#22 below reflect §7.0's interleaved reading per `feedback_one_at_a_time`.
+
+§12 will produce the canonical commit-order list and resolve all three readings.
+
+| # | Commit | Files modified | Downstream affected | Test-anchor risk |
+|---|--------|----------------|---------------------|------------------|
+| 1 | Gap A workspace lints + CHANGELOG creation | `Cargo.toml`, `CHANGELOG.md` (new), per-clippy fallout sites | None (lints only) | None — clippy gate |
+| 2 | Gap M (overhang predicate + build-plate filter) | `validation.rs`, `orientation.rs`, `validation.rs::tests` | Umbrella regression test, 3 examples (mesh-pipeline, design-to-print, full-pipeline) — verify no overhang-derived numerical anchors | **High** — anchor sweep per §8.2.3 |
+| 3 | Gap B (max-angle tracking) | `validation.rs::check_overhangs` | None (region.angle field semantics) | Medium — `OverhangRegion.angle` value shifts |
+| 4 | Refactor: `build_edge_to_faces` helper | `validation.rs` (extract helper) | None | None per §5.3 regression gate |
+| 5 | Gap D (overhang region split) | `validation.rs::check_overhangs` (consume helper) | None at API level | Medium — `validation.overhangs.len()` shifts |
+| 6 | Gap E (severity tightening) | `validation.rs::check_overhangs`, `classify_overhang_severity` helper | None | Medium — `is_printable()` shifts on severe overhangs |
+| 7 | Gap F (winding orientation) | `validation.rs::check_basic_manifold` | None | Medium — `test_watertight_mesh` regression risk |
+| 8 | Gap L (build_up_direction) | `config.rs`, `validation.rs::check_overhangs`, `orientation.rs` | Umbrella + 3 examples — verify they still compile (PrinterConfig field add) | Low — defaults preserve existing behavior |
+| 9 | Gap K (COMPLETION.md rewrite) | `COMPLETION.md` | None | None — doc only |
+| 10 | DetectorSkipped variant | `issues.rs` | Umbrella regression test (cargo build --workspace) | Low — variant addition; non-exhaustive matches unchanged |
+| 11 | Gap C (ThinWall detector) | `validation.rs::check_thin_walls` (new), `regions.rs`, `lib.rs`, mesh-printability `Cargo.toml` (changelog entry) | Umbrella regression test (new types) | Low — new functionality |
+| 12 | §7.1 thin-wall example | `examples/mesh/printability-thin-wall/` (new), workspace `Cargo.toml` (new member) | None | Low — example assertions self-contained |
+| 13 | Gap G (LongBridge detector) | `validation.rs::check_long_bridges` (new), `regions.rs`, `lib.rs` | Umbrella regression test | Low — new functionality |
+| 14 | §7.2 long-bridge example | `examples/mesh/printability-long-bridge/` (new), workspace `Cargo.toml` | None | Low — example assertions self-contained |
+| 15 | Gap H (TrappedVolume detector) | `validation.rs::check_trapped_volumes` (new), `regions.rs`, `lib.rs` | Umbrella regression test | Low — new functionality |
+| 16 | §7.3 trapped-volume example | `examples/mesh/printability-trapped-volume/` (new), workspace `Cargo.toml` | None | Low — example assertions self-contained |
+| 17 | Gap I (SelfIntersecting detector) | `validation.rs::check_self_intersecting` (new), `regions.rs`, `lib.rs`, mesh-printability `Cargo.toml` (mesh-repair dep) | Workspace dep graph (rayon, tracing, cf-geometry transitive); umbrella regression test | **High (Layer Integrity)** — pre-flight `cargo xtask grade` per §8.4 |
+| 18 | §7.4 self-intersecting example | `examples/mesh/printability-self-intersecting/` (new), workspace `Cargo.toml` | None | Low — example assertions self-contained |
+| 19 | Gap J (SmallFeature detector) | `validation.rs::check_small_features` (new), `regions.rs`, `lib.rs` | Umbrella regression test | Low — new functionality |
+| 20 | §7.5 small-feature example | `examples/mesh/printability-small-feature/` (new), workspace `Cargo.toml` | None | Low — example assertions self-contained |
+| 21 | §7.6 orientation example | `examples/mesh/printability-orientation/` (new), workspace `Cargo.toml` | None | Low — orientation infra already in Gap L commit |
+| 22 | §7.7 technology-sweep example | `examples/mesh/printability-technology-sweep/` (new), workspace `Cargo.toml` | None | Low — exercise of existing detectors |
+| 23 | §7.8 showcase example | `examples/mesh/printability-showcase/` (new), workspace `Cargo.toml` | None | Low — exercise of existing detectors |
+| 24 | v0.8.0 release commit | mesh-printability `Cargo.toml` (`version = "0.7.0"` → `"0.8.0"`), `CHANGELOG.md` (close `[Unreleased]` → `[0.8.0]`) | Umbrella version (per §3 option 1: workspace umbrella stays at 0.7.0) | None — version pin only |
+| 25 | Spec deletion (final commit, `feedback_code_speaks`) | `mesh/mesh-printability/V08_FIX_ARC_SPEC.md` (deleted) | Memo updates: `project_mesh_printability_gaps.md` rewritten as "v0.8 closed + v0.9 backlog with triggers"; mesh book §50 depth-pass migration | None — doc only |
+
+**High-risk commits** (#2 Gap M, #17 Gap I): pre-flight verification mandated per §8.4. **Medium-risk commits** (#3, #5, #6, #7): test-anchor sweep at commit-time per §8.2.3. **All commits**: thorough re-read pass + risk-mitigation review pass per the cadence (`feedback_thorough_review_before_commit` + `feedback_risk_mitigation_review`).
+
+Per `feedback_one_at_a_time_review`, each example commit (#12, #14, #16, #18, #20, #21, #22, #23) pauses for the user's visuals-pass before the next commit. Eight pause-points across the arc.
+
+### §8.4 Risk-tier response policy
+
+Across §8.1's per-gap tables (15 sub-sections) plus §8.2.2's ABI table, ~67 individual risks are tier-tagged. Distribution:
+
+- **High (5)**: Gap M v0.7 anchor cascade; Gap C cluster-split topology; Gap H cross-platform voxel inside-test; Gap H grid memory blowup; Gap I Layer Integrity dep-count cap.
+- **Medium (~20)**: ABI updates, regression gates, manifold-precondition skip, severity boundary cases, refactor regressions, semver hygiene, M-T self-hit, fixture-topology audits.
+- **Low (~42)**: Cosmetic, documented v0.9 candidates, panic-message stability, FP-drift on exact-representable inputs, deterministic counts, minor variant handling.
+
+**Response by tier**:
+
+- **High**: pre-flight verification mandated before the commit lands; additional test fixtures if any uncertainty; if a high-risk issue surfaces during impl, stop-and-raise to user before proceeding.
+- **Medium**: test-anchor sweep at commit-time; recover via targeted fix in same commit; user not blocked.
+- **Low**: roll forward; address only if it surfaces.
+
+Pre-flight verifications consolidated for high-risk gaps:
+
+| Gap | Pre-flight verification |
+|-----|--------------------------|
+| Gap M | Read final `check_overhangs` + `evaluate_orientation` once more; compute predicate's true semantics; verify FDM-convention match (PrusaSlicer or Cura "support overhang threshold" semantic) |
+| Gap C | Pre-flight: §7.1 fixture topology audit; verify `validation.thin_walls.len() == 2` is the correct theoretical outcome before authoring main() assertion |
+| Gap H | Pre-flight: cross-os CI dry-run on the §7.3 fixture (manual `cargo test` on macOS + Linux + Windows local VMs if accessible; CI matrix coverage in worst case) |
+| Gap I | Pre-flight: run `cargo xtask grade mesh-printability --skip-coverage` after adding mesh-repair dep; verify "6. Layer Integrity" criterion remains A (Tier::L0 release_max=80, test_max=100 per `xtask/src/grade.rs:2118`) |
+
+---
+
+## §9 onwards — pending
+
+(Sections 9–13: stress-test gauntlet, grading & CI impact, open questions, implementation order, spec lifecycle.)
