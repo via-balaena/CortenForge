@@ -3132,4 +3132,289 @@ For audit clarity, items that look like they should be in §12 but aren't:
 
 ---
 
+## §13. Spec lifecycle
+
+This spec is a **working document**. It exists for the duration of the v0.8 fix arc, captures the design + reconciles in-flight decisions, and then **gets deleted in the final commit** of the arc per `feedback_code_speaks` ("delete completed specs; the code IS the documentation"). Durable narrative migrates to three locations at PR-close.
+
+### §13.0 Why delete?
+
+`feedback_code_speaks` captures the principle: completed specs decay into stale liabilities. They duplicate information that lives in code, tests, READMEs, CHANGELOG, and project memos — and they drift when those authoritative sources update. Keeping the v0.8 spec around after the arc closes would produce three failure modes:
+
+1. **Stale references**: a future contributor reads the spec, finds it referencing "the §6.3 1 GB voxel cap" — but maybe v1.1 raised it to 2 GB. Spec is wrong; code is right; reader gets confused.
+2. **Authority confusion**: someone debugging a Gap M edge case opens the spec for context. The spec describes the design intent; the code describes current behavior. Which wins? Code always wins, but the spec invites the question.
+3. **Decay incentive**: nobody is incentivized to update a spec for a closed arc. It gets stale fast.
+
+The mitigation is **delete + migrate**. Spec content that's still load-bearing post-arc moves into authoritative homes (code, tests, project memo, mesh book, CHANGELOG); spec content that was scaffolding (review-pass methodology notes, intermediate reasoning) gets dropped.
+
+### §13.1 Migration targets — three locations
+
+| # | Target | What it absorbs | Lifetime |
+|---|--------|-----------------|----------|
+| 1 | `project_mesh_printability_gaps.md` (auto-memory) | Rewritten as "v0.8 closed + v0.9 backlog with triggers". Re-open triggers per §11.5; lessons learned; cross-session continuity for v0.9 planning. | Persists across Claude conversations until v0.9 arc opens. |
+| 2 | `docs/studies/mesh_architecture/src/50-shell-and-print.md` (mesh book) | Depth-pass section on what's now implemented + what's deferred (v0.9 candidates with triggers). Rendered as part of the mesh architecture book. | Workspace doc; persists indefinitely. |
+| 3 | `mesh/mesh-printability/CHANGELOG.md` `[Unreleased]` block (after `[0.8.0]` is closed in commit #24) | Items already triple-tracked in §1 + §11.5 — BVH acceleration, tunable IntersectionParams, AttributedMesh face-attributes, cavity-aware overhang severity, drainage simulation, etc. | Code-adjacent; updates with each release. |
+
+Triple-tracking these v0.9 candidates in three places (memo + book + CHANGELOG) seems redundant but isn't — each location serves a different reader:
+
+- **Memo**: cross-session AI context for future Claude conversations on the v0.9 arc.
+- **Book**: human contributors browsing the mesh architecture for "what's missing".
+- **CHANGELOG**: downstream consumers reading the crate's own changelog file for "what's planned".
+
+The same fact (e.g., "BVH for ThinWall is v0.9 candidate; trigger: real mesh exceeds 10k tris") lives in all three with the same wording — drift between them is a regression that any of the three's edits can catch.
+
+### §13.2 Per-section migration map
+
+For each spec section, what migrates where (or doesn't migrate at all). "Drop" = scaffolding; not load-bearing post-arc.
+
+| Section | Topic | Migrates to |
+|---------|-------|-------------|
+| §1 Overview & gap inventory | Gap A–M definitions | Memo (one-line summary of "v0.8 closed gaps A–M"); CHANGELOG `[0.8.0]` Fixed/Added entries (already populated commit-by-commit). Detail dropped. |
+| §1 Out-of-scope (BVH, tunable params, etc.) | v0.9 candidates with triggers | Memo (re-open triggers table per §11.5); book (Known limitations subsection); CHANGELOG `[Unreleased]` block. **Triple-tracked**. |
+| §2 Pre-flight audit | Audit findings F1–F15 | Drop (scaffolding for arc planning; not consumed post-arc). |
+| §3 API surface diff | v0.7→v0.8 API changes | CHANGELOG `[0.8.0]` Added/Changed entries (already populated commit-by-commit); `COMPLETION.md` (Gap K rewrite) detector inventory + dependencies. |
+| §4 Cross-cutting policies | Tolerance constants, severity, determinism, FP-stability | Code (constants in `validation.rs` doc-comments); `COMPLETION.md` "Quality" section. |
+| §5 Per-fix specs (A, B, D, E, F, K, L, M + DetectorSkipped + CHANGELOG) | Implementation specs for in-place fixes | Code (the fixes themselves, with doc-comments); rustdoc on new types/methods. Detail dropped. |
+| §6 Per-detector specs (C, G, H, I, J) | Algorithm + edge-case specs for new detectors | Code (detector source); rustdoc on `check_*` fns + region types; `tests/` for the test suites. Detail dropped. |
+| §7 Example design | 8 example crates with main() assertions + READMEs | Each example's own `examples/mesh/printability-<name>/README.md` (museum-plaque per `feedback_museum_plaque_readmes`); the example crates themselves. Detail dropped. |
+| §8 Risk inventory | Per-gap + cross-cutting risk audit | Memo (cross-platform FP-drift lesson generalized; Phase-4-faer-LDLᵀ pattern continuity); book (Known limitations + edge cases). High-tier risks: pre-flight verifications already executed at commit-time. Detail dropped. |
+| §9 Stress-test gauntlet | 47 stress fixtures + §6.3 OOM amendment | Code (`tests/stress_inputs.rs` itself); §6.3 amendment baked into `validation.rs::check_trapped_volumes`. Detail dropped. |
+| §10 Grading & CI impact | Per-criterion grade impact + CI matrix changes | `.github/workflows/quality-gate.yml` edits; `COMPLETION.md` "Quality" section. End-of-arc grading checkpoint output recorded in commit #24's body. Detail dropped. |
+| §11 Open questions | Resolved decisions (umbrella, coverage baseline, tier) | Memo (rationale for v0.9 re-open triggers); for the umbrella+coverage+tier resolutions specifically, the rationale stays in commit #24's message body. Detail dropped. |
+| §12 Implementation order | 25-commit canonical order | Audit trail preserved via the 25-commit history at the **pre-squash tag** (§13.4). Detail dropped. |
+| §13 Spec lifecycle | Migration plan | This section — drops itself in the deletion commit. |
+
+The migration map ensures **every spec fact that's load-bearing post-arc has a durable home**. Scaffolding (review methodology, intermediate reasoning, planning artifacts) gets dropped — because it's already served its purpose.
+
+### §13.3 Memo migration content
+
+`project_mesh_printability_gaps.md` is rewritten in commit #24 to its post-arc form. Sketch:
+
+```markdown
+---
+name: mesh-printability v0.8 closed + v0.9 backlog
+description: v0.8 fix arc CLOSED 2026-XX-XX. 13 gaps A–M shipped + 5 detectors + 8 examples + 47 stress fixtures. v0.9 backlog with explicit re-open triggers.
+type: project
+---
+
+## v0.8 closed (2026-XX-XX)
+- Gaps A–M all shipped; release commit `<hash>`; PR #<num>
+- 5 new detectors populated (ThinWall + LongBridge + TrappedVolume + SelfIntersecting + SmallFeature)
+- 8 examples shipped under `examples/mesh/printability-*`
+- 47 stress fixtures in `tests/stress_inputs.rs`
+- Cross-os CI extended (Gap H FP-drift coverage); tests-release extended (release-only stress fixtures)
+- Pre-squash audit trail: tag `feature/mesh-printability-v0-8-pre-squash`
+
+## v0.9 backlog (with re-open triggers per §11.5)
+1. BVH for ThinWall + SelfIntersecting — trigger: real mesh exceeds 10k tris with >5 s validation runtime
+2. Tunable IntersectionParams from validate_for_printing — trigger: a caller asks for the overload
+3. AttributedMesh face-attributes for issue annotations — trigger: user reports centroid point-cloud insufficient
+4. Cavity-aware overhang severity (interior face detection) — trigger: user requests separating cavity ceilings from exterior overhangs
+5. Drainage simulation along build_up_direction — trigger: user reports cavity that drains in one orientation
+6. Adaptive voxel sizing for >100mm parts — trigger: user reports >100mm part being silently DetectorSkipped
+7. Cantilever distinction in LongBridge — trigger: user reports false positives on cantilevered geometry
+8. OBB-based bridge span — trigger: user reports diagonal bridges underflagged
+9. Volume-based threshold in SmallFeature — trigger: long thin spike (large extent, tiny volume) user-reported
+10. Curvature-based small-feature detection — trigger: user reports small bump on larger body not flagged
+11. Self-intersection auto-fix integration with mesh-repair — trigger: workflow asks for "validate-and-fix" semantics
+12. Mesh umbrella version decoupling from workspace.package — trigger: first workspace crate publishes to crates.io
+13. Per-detector coverage breakdown — trigger: user asks for it
+14. Tracing instrumentation in mesh-printability — trigger: structured-diagnostics demand
+15. Example main() in CI test gate — trigger: a regression on an example lands without local catch
+
+## Lessons learned (cross-session continuity)
+- Master-architect delegation worked. 5 high-tier risks pre-flight-verified; 4 inline scope expansions surfaced via risk-mitigation review (Gap M.2 build-plate filter, §6.3 OOM amendment, §10.4.1 cross-os, §10.4.2 tests-release).
+- §-internal inconsistency reconciliation: §12.0 absorbed 4 conflicts (build_edge_to_faces refactor placement; CHANGELOG creation slot; detector↔example interleave; Gap K placement). Pattern: when in doubt, prefer the more pragmatic of two readings + bake the rationale.
+- Cross-platform FP-drift lesson generalized from Phase 4 faer-LDLᵀ: tolerance bands + exact-representable inputs + cross-os CI matrix is the durable mitigation for any ray-casting/voxel-fill/divergence-theorem operation.
+- Commit cadence: 25 commits across the arc; ⏸ pause-for-visuals at 8 example commits per `feedback_one_at_a_time_review`. Internal commit segmentation (vs splitting PRs) aligns with `feedback_pr_size_ci_economics`.
+
+## Cross-references
+- Mesh architecture book Part 5: `docs/studies/mesh_architecture/src/50-shell-and-print.md`
+- CHANGELOG: `mesh/mesh-printability/CHANGELOG.md` (`[0.8.0]` + `[Unreleased]` block)
+- Pre-squash tag: `git checkout feature/mesh-printability-v0-8-pre-squash`
+```
+
+The memo's pre-arc form (`project_mesh_printability_gaps.md` as it stands 2026-04-30) is **deleted** as part of the rewrite — there's exactly one memo file at this location, before and after.
+
+### §13.4 Mesh book §50 depth-pass content
+
+`docs/studies/mesh_architecture/src/50-shell-and-print.md` is currently a skeleton (per the mesh-architecture-book memo). The depth-pass section on shell-and-print landing in commit #24 covers:
+
+- v0.8 inventory: 5 detectors populated; severity policy; technology mapping (FDM/SLA/SLS/MJF).
+- Worked example: a hollow box with thin walls — read through the validator's report (`validate_for_printing`).
+- Known limitations (mirroring v0.9 backlog above): BVH absent; pinhole leaks not detected; cavity-ceiling co-flag; etc.
+- Cross-references to the 8 example crates as runnable demos.
+
+The book section is **prose, not spec** — explains the architecture for a human reader. Distinct from the memo (AI cross-session context) and the CHANGELOG (versioned release log).
+
+### §13.5 CHANGELOG migration content
+
+By commit #24, `CHANGELOG.md` has accumulated 24 commit-by-commit `[Unreleased]` entries (one per arc commit, except #25 which deletes the spec). Commit #24 closes the section. Per `keepachangelog.com` convention, `[Unreleased]` stays at the top + new released sections nest below in descending date order:
+
+```markdown
+# Changelog
+
+All notable changes to mesh-printability will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### v0.9 candidates (with triggers)
+- BVH for ThinWall + SelfIntersecting — trigger: real mesh exceeds 10k tris with >5 s validation
+- Tunable IntersectionParams in validate_for_printing — trigger: caller-overload requested
+- AttributedMesh face-attributes for issue annotations — trigger: centroid PLY insufficient
+- Cavity-aware overhang severity (interior face detection) — trigger: user separates cavity ceilings
+- Drainage simulation along build_up_direction — trigger: orientation-dependent cavity drain
+- Adaptive voxel sizing — trigger: >100mm part silently DetectorSkipped
+- Cantilever distinction in LongBridge — trigger: false-positive on cantilevered geometry
+- OBB-based bridge span — trigger: diagonal bridges underflagged
+- Volume-based SmallFeature criterion — trigger: long thin spike not flagged
+- Curvature-based SmallFeature detection — trigger: small bump on larger body
+- Self-intersection auto-fix integration — trigger: validate-and-fix workflow request
+- Per-detector coverage breakdown — trigger: user asks
+- Tracing instrumentation — trigger: structured-diagnostics demand
+- Example main() in CI test gate — trigger: regression lands without local catch
+- Mesh umbrella version decoupling — trigger: first crates.io publication
+
+## [0.8.0] - YYYY-MM-DD
+
+### Added
+- ThinWall detector (Gap C) via inward ray-cast
+- LongBridge detector (Gap G) via boundary-edge span analysis
+- TrappedVolume detector (Gap H) via exterior flood-fill (1 GB voxel-grid memory cap; >cap → DetectorSkipped)
+- SelfIntersecting detector (Gap I) via mesh-repair re-use
+- SmallFeature detector (Gap J) via connected-component bbox extent
+- PrinterConfig.build_up_direction parametrization (Gap L)
+- PrintIssueType::DetectorSkipped variant
+- 4 new region types (LongBridgeRegion, TrappedVolumeRegion, SelfIntersectingRegion, SmallFeatureRegion)
+- 8 example crates (`examples/mesh/printability-*`)
+- 47 stress fixtures (`tests/stress_inputs.rs`)
+- mesh-repair as a workspace dep
+- Cross-OS CI coverage; release-mode CI for stress fixtures
+
+### Changed
+- Inherited workspace lints (Gap A)
+- ExcessiveOverhang severity policy: angle-graded with Critical for tilt > 75° on FDM (Gap E)
+- OverhangRegion.angle reports actual maximum observed (Gap B), not threshold + 10°
+- Overhang regions split by edge-adjacency component (Gap D), not collapsed to one
+- Build-up direction parametrized via PrinterConfig (default +Z preserved) (Gap L)
+- COMPLETION.md rewritten to reflect v0.8 truth (Gap K)
+
+### Fixed
+- check_overhangs predicate corrected to FDM convention (Gap M); pure roofs now flagged
+- Build-plate filter added to check_overhangs (Gap M.2); solid-on-plate bottoms no longer falsely flagged
+- check_basic_manifold detects winding-orientation inconsistency (Gap F)
+
+### Notes (semver-significant behavioral changes)
+- Callers asserting `is_printable()` on meshes with severe-but-pre-Gap-E-uncritical overhangs now see `false`. Correctness fix.
+- Callers asserting on `validation.overhangs.len()` may see a different count per Gap D split + Gap M predicate change.
+- Cavity-ceiling co-flag (sealed cavities flag overhang under Gap M) is documented behavior; v0.9 candidate for cavity-aware severity.
+
+## [0.7.0] - 2026-XX-XX
+- Initial release with build-volume, overhang, and basic manifold detectors.
+```
+
+The release date `YYYY-MM-DD` resolves at commit-author-time via `date -u +%Y-%m-%d`.
+
+### §13.6 Spec deletion procedure (commit #25)
+
+The arc's final commit:
+
+```
+git rm mesh/mesh-printability/V08_FIX_ARC_SPEC.md
+git commit -m "chore(mesh-printability): delete v0.8 fix arc spec (feedback_code_speaks)
+
+The v0.8 fix arc spec served as the implementation reference for 25
+commits. Per feedback_code_speaks, completed specs decay into stale
+liabilities; durable narrative migrated to:
+- project_mesh_printability_gaps.md (rewritten in commit #24 as v0.8
+  closed + v0.9 backlog)
+- docs/studies/mesh_architecture/src/50-shell-and-print.md (depth-
+  pass section authored in commit #24)
+- mesh/mesh-printability/CHANGELOG.md (per-commit + [0.8.0] release
+  pin in commit #24)
+
+The 25-commit audit trail is preserved at the pre-squash tag:
+  git checkout feature/mesh-printability-v0-8-pre-squash
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+```
+
+Acceptance: spec file no longer exists in the working tree post-commit; `git log --follow V08_FIX_ARC_SPEC.md` recovers full authoring history.
+
+### §13.7 Pre-squash tag procedure
+
+Per `feedback_pre_squash_tag`, before opening the PR:
+
+```
+# After commit #25 lands locally
+git tag -a feature/mesh-printability-v0-8-pre-squash \
+    -m "v0.8 fix arc — pre-squash 25-commit audit trail
+
+13 gaps A–M shipped; 5 detectors populated; 8 examples; 47 stress
+fixtures. §-internal inconsistencies reconciled in §12 (4 absorbed).
+Master-architect delegation cadence with 4 high-tier pre-flight
+verifications + 4 inline scope expansions surfaced via risk-mitigation
+review.
+
+Squash-merge will collapse this 25-commit history; this tag preserves
+the per-commit audit trail."
+
+git push origin feature/mesh-printability-v0-8-pre-squash
+```
+
+Then open the PR + squash-merge:
+
+```
+gh pr create --title "feat(mesh-printability): v0.8 fix arc — 13 gap fixes + 5 detectors + 8 examples" \
+    --body "$(cat <<'EOF'
+## Summary
+- Closes 13 v0.7→v0.8 gaps (A–M) including 5 new detectors (ThinWall, LongBridge, TrappedVolume, SelfIntersecting, SmallFeature)
+- 8 new example crates under examples/mesh/printability-*
+- 47 stress-test fixtures (3 release-only)
+- v0.8.0 release commit + COMPLETION.md rewrite (Gap K)
+
+## Test plan
+- [x] cargo xtask grade-all --skip-coverage: A across 7 criteria
+- [x] cargo test -p mesh-printability: ~233/~233 pass
+- [x] cargo test --release -p mesh-printability: 3/3 release-only stress pass
+- [x] cargo build --workspace --release: examples compile
+- [x] RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p mesh-printability: 0 warnings
+- [x] CI: format / grade / tests-debug / tests-release / cross-os / feature-combos / dependencies all green
+- [x] Coverage: <X>% (>= v0.7 baseline of <Y>%)
+
+## Notes
+- Audit trail preserved at tag `feature/mesh-printability-v0-8-pre-squash`
+- Semver-significant: ExcessiveOverhang severity tightening (Gap E) + overhang predicate fix (Gap M); CHANGELOG documents
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+Wait for CI green per `reference_ci_timing` (~25 min total). Squash-merge via `gh pr merge --squash --delete-branch` or web UI.
+
+### §13.8 Post-merge audit checklist
+
+After squash-merge lands on `main`, verify the migration succeeded:
+
+- [ ] `mesh/mesh-printability/V08_FIX_ARC_SPEC.md` no longer exists on `main`
+- [ ] `project_mesh_printability_gaps.md` exists in user-memory and reads as "v0.8 closed + v0.9 backlog"
+- [ ] `docs/studies/mesh_architecture/src/50-shell-and-print.md` has the v0.8 depth-pass section
+- [ ] `mesh/mesh-printability/CHANGELOG.md` has `[0.8.0] - YYYY-MM-DD` (dated) + `[Unreleased]` block populated
+- [ ] `mesh/mesh-printability/COMPLETION.md` reflects v0.8.0 truth (5 detectors populated, mesh-repair listed as dep)
+- [ ] Pre-squash tag `feature/mesh-printability-v0-8-pre-squash` resolves to a commit with all 25 commits visible via `git log`
+- [ ] `examples/mesh/printability-*` directories exist (8 examples) and each `cargo run -p example-mesh-printability-<name> --release` exits 0
+
+If any item fails, cherry-pick a fix on top of `main` (post-merge) — the migration is part of the arc's contract.
+
+### §13.9 Why §13 itself migrates / drops cleanly
+
+§13 is the only section where the migration plan IS the section content. Self-referential: §13 documents that §13 (along with the rest of the spec) is deleted in commit #25.
+
+The "drops cleanly" property is the test: after the spec deletion, every fact §13 referenced has a durable home. This section's existence ends with the arc; the action it describes (migration) leaves nothing behind that needs §13 to make sense.
+
+---
+
 
