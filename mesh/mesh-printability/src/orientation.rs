@@ -8,6 +8,11 @@ use nalgebra::{Unit, UnitQuaternion};
 
 use crate::config::PrinterConfig;
 
+/// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
+/// Used by the build-plate filter in `evaluate_orientation` to identify
+/// faces resting on the build plate after the candidate rotation is applied.
+const EPS_GEOMETRIC: f64 = 1e-9;
+
 /// Result of orientation analysis.
 #[derive(Debug, Clone)]
 pub struct OrientationResult {
@@ -210,6 +215,19 @@ fn evaluate_orientation(
     let mut total_overhang_area = 0.0;
     let rotation_matrix = rotation.to_rotation_matrix();
 
+    // Build-plate filter (M.2) symmetric with `validation::check_overhangs`:
+    // after rotation, the face's projection along world `up` is
+    // `(rotation_matrix * v.coords).dot(&up) == v.coords.dot(&up_in_mesh)`,
+    // where `up_in_mesh = rotation_matrix.transpose() * up`. The transpose
+    // form keeps each per-vertex projection a 3-dim inner product instead
+    // of a 3×3 mat-vec, matching `validation`'s O(n_vertices) hoist.
+    let up_in_mesh = rotation_matrix.transpose() * up;
+    let mesh_min_along_up = mesh
+        .vertices
+        .iter()
+        .map(|v| v.coords.dot(&up_in_mesh))
+        .fold(f64::INFINITY, f64::min);
+
     let num_triangles = mesh.face_count();
     for i in 0..num_triangles {
         let face = mesh.faces[i];
@@ -247,16 +265,26 @@ fn evaluate_orientation(
         // Rotate normal
         let rotated_normal = rotation_matrix * normal;
 
-        // Check if face is pointing downward (overhang)
+        // §5.9 FDM-convention overhang predicate: `overhang_angle` is the
+        // signed deviation of the rotated face normal from the build-plane
+        // plane. Mirrors `validation::check_overhangs`.
         let dot = rotated_normal.dot(&up);
-        let angle = dot.acos();
+        let angle_from_up = dot.acos();
+        let overhang_angle = angle_from_up - std::f64::consts::FRAC_PI_2;
 
-        if dot < 0.0 {
-            let overhang_angle = std::f64::consts::PI - angle;
-            if overhang_angle > max_angle_rad {
-                let area = len / 2.0;
-                total_overhang_area += area;
+        if overhang_angle > max_angle_rad {
+            // Build-plate filter (M.2): face touching the build plate
+            // (after rotation) is supported by the plate itself.
+            let face_min_along_up = [v0, v1, v2]
+                .iter()
+                .map(|v| v.coords.dot(&up_in_mesh))
+                .fold(f64::INFINITY, f64::min);
+            if (face_min_along_up - mesh_min_along_up) < EPS_GEOMETRIC {
+                continue;
             }
+
+            let area = len / 2.0;
+            total_overhang_area += area;
         }
     }
 

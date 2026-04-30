@@ -10,6 +10,11 @@ use crate::error::{PrintabilityError, PrintabilityResult};
 use crate::issues::{IssueSeverity, PrintIssue, PrintIssueType};
 use crate::regions::{OverhangRegion, SupportRegion, ThinWallRegion};
 
+/// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
+/// Used by the build-plate filter in `check_overhangs` to identify faces
+/// resting on the build plate.
+const EPS_GEOMETRIC: f64 = 1e-9;
+
 /// Result of validating a mesh for printing.
 ///
 /// Contains all issues found, their severity, and recommendations
@@ -199,6 +204,16 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
     let max_angle_rad = config.max_overhang_angle.to_radians();
     let up = Vector3::new(0.0, 0.0, 1.0);
 
+    // Build-plate filter (M.2): a face is "on the build plate" iff its
+    // minimum projection along `up` is within EPS_GEOMETRIC of the mesh
+    // minimum. Hoisted before the face loop so the O(n_vertices) reduction
+    // runs once, not per-face. Pattern shared with §6.2 LongBridge.
+    let mesh_min_along_up = mesh
+        .vertices
+        .iter()
+        .map(|v| v.coords.dot(&up))
+        .fold(f64::INFINITY, f64::min);
+
     let mut overhang_faces = Vec::new();
     let mut total_overhang_area = 0.0;
 
@@ -243,21 +258,32 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
         // `[Unreleased] / v0.9 candidates`.
         #[allow(clippy::suboptimal_flops)]
         let dot = normal.x * up.x + normal.y * up.y + normal.z * up.z;
-        let angle = dot.acos();
 
-        // Face is overhanging if normal points mostly downward
-        // and angle from vertical exceeds threshold
-        if dot < 0.0 {
-            let overhang_angle = std::f64::consts::PI - angle;
-            if overhang_angle > max_angle_rad {
-                // Mesh face index i fits in u32 (mesh size bounded well below 2^32).
-                #[allow(clippy::cast_possible_truncation)]
-                overhang_faces.push(i as u32);
+        // §5.9 FDM-convention overhang predicate: `overhang_angle` is the
+        // signed deviation of the face normal from the build-plane plane.
+        // Flags downward-tilted faces; vertical walls (dot=0) sit at the
+        // strict-greater-than boundary and are not flagged.
+        let angle_from_up = dot.acos();
+        let overhang_angle = angle_from_up - std::f64::consts::FRAC_PI_2;
 
-                // Compute triangle area
-                let area = len / 2.0;
-                total_overhang_area += area;
+        if overhang_angle > max_angle_rad {
+            // Build-plate filter (M.2): a face touching the build plate is
+            // supported by the plate itself; not an overhang concern.
+            let face_min_along_up = [v0, v1, v2]
+                .iter()
+                .map(|v| v.coords.dot(&up))
+                .fold(f64::INFINITY, f64::min);
+            if (face_min_along_up - mesh_min_along_up) < EPS_GEOMETRIC {
+                continue;
             }
+
+            // Mesh face index i fits in u32 (mesh size bounded well below 2^32).
+            #[allow(clippy::cast_possible_truncation)]
+            overhang_faces.push(i as u32);
+
+            // Compute triangle area
+            let area = len / 2.0;
+            total_overhang_area += area;
         }
     }
 
@@ -625,5 +651,246 @@ mod tests {
         ));
 
         assert!((validation.total_support_volume() - 300.0).abs() < f64::EPSILON);
+    }
+
+    // ---- §5.9 Gap M overhang predicate tests ----------------------------
+    //
+    // Each `validate_for_printing(...).expect(...)` site below carries an
+    // explicit per-site `#[allow(clippy::expect_used)]`. The fixtures are
+    // hand-built inline (no I/O, no fallible setup): an `expect` failure
+    // would indicate a regression in the detector itself, not a malformed
+    // fixture. The shared `panic!`-via-`let-else` pattern was avoided
+    // because the workspace lints `clippy::panic` at warn (which becomes
+    // an error under the `-D warnings` clippy gate), and the existing
+    // `validation.rs::tests` already uses the same per-site `expect_used`
+    // pattern as of commit #1b.
+    //
+    // TODO(commit #8 / Gap L §5.6): land
+    // `test_overhang_borderline_via_y_up_orientation` here. It exercises
+    // `PrinterConfig::with_build_up_direction(Vector3::new(0, 1, 0))`,
+    // which lands with Gap L (commit #8). The test slot is reserved at
+    // §5.9 of the v0.8 fix arc spec; the body lands once the API exists.
+    // Keeping the 9 §5.9 tests here in commit #2 is achieved by splitting
+    // the FP-fragile `test_overhang_45deg_tilt_borderline_not_flagged`
+    // into a `just_below_45deg_not_flagged` / `just_above_45deg_flagged`
+    // pair (1° margin on either side keeps both bit-stable across f64
+    // rounding of the strict-greater-than boundary).
+
+    /// Build a fixture for Gap-M unit tests: a top-facing ground-anchor
+    /// triangle at z=0 and a test face at z=`z_offset` tilted by
+    /// `beta_rad` from horizontal in the `+Y` / `-Z` plane. The test face
+    /// has normal `(0, cos(beta), -sin(beta))`, so it points
+    /// downward when `beta` > 0 (with `overhang_angle = beta`), is
+    /// horizontal at `beta` = 0 (vertical wall, `dot` = 0), and points
+    /// upward when `beta` < 0. The anchor at z=0 keeps
+    /// `mesh_min_along_up` < `face_min_along_up` so the build-plate
+    /// filter does not block the predicate's flag/not-flag decision for
+    /// any `beta` in (-π/2, π/2).
+    fn make_overhang_fixture(beta_rad: f64, z_offset: f64) -> IndexedMesh {
+        let vertices = vec![
+            // Ground anchor at z=0 (top-facing, normal = (0, 0, +1)):
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            // Test face at z_offset, tilted by beta in the Y-Z plane:
+            Point3::new(0.0, 0.0, z_offset),
+            Point3::new(1.0, 0.0, z_offset),
+            Point3::new(0.0, beta_rad.sin(), z_offset + beta_rad.cos()),
+        ];
+        let faces = vec![[0, 1, 2], [3, 5, 4]];
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn test_overhang_roof_flagged() {
+        // Pure roof: face normal = (0, 0, -1), overhang_angle = 90°.
+        // Anchor at z=0 ensures the build-plate filter does not apply.
+        let mesh = make_overhang_fixture(std::f64::consts::FRAC_PI_2, 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the roof fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            1,
+            "pure roof (overhang_angle = 90°) should flag under FDM max=45°"
+        );
+    }
+
+    #[test]
+    fn test_overhang_vertical_wall_not_flagged() {
+        // Vertical wall: face normal horizontal, dot = 0,
+        // overhang_angle = 0°. Strict-greater-than check rejects.
+        let mesh = make_overhang_fixture(0.0, 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the vertical-wall fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            0,
+            "vertical wall (overhang_angle = 0°) must not flag under any positive threshold"
+        );
+    }
+
+    #[test]
+    fn test_overhang_top_face_not_flagged() {
+        // Top-facing face: normal = (0, 0, +1), dot = +1,
+        // overhang_angle = -90°. Predicate rejects.
+        let mesh = make_overhang_fixture(-std::f64::consts::FRAC_PI_2, 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the top-face fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            0,
+            "top-facing face (overhang_angle = -90°) must not flag"
+        );
+    }
+
+    // The §5.9 boundary-case test was authored as a single test at exactly
+    // 45°, but the f64 subtraction `acos(dot) - FRAC_PI_2` carries ~2 ULP
+    // of upward rounding at exactly 45° tilt: a hand-rolled exact-45°
+    // fixture would actually flag, contradicting the test's intent. The
+    // pair below brackets the threshold at 44° / 46° (1° margin = ~17 orders
+    // of magnitude above f64 ULP), so both halves are bit-stable across
+    // platforms and bound the implementation's flag boundary in (44°, 46°).
+    // The strict-greater-than convention itself is locked in by the
+    // predicate's `>` operator and called out in the predicate's
+    // doc-comment in `check_overhangs`.
+
+    #[test]
+    fn test_overhang_just_below_45deg_not_flagged() {
+        // Tilt 44° (just below the FDM max=45° threshold).
+        let mesh = make_overhang_fixture(44.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 44° fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            0,
+            "44° tilt (just below max=45°) must not flag"
+        );
+    }
+
+    #[test]
+    fn test_overhang_just_above_45deg_flagged() {
+        // Tilt 46° (just above the FDM max=45° threshold).
+        let mesh = make_overhang_fixture(46.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 46° fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            1,
+            "46° tilt (just above max=45°) should flag"
+        );
+    }
+
+    #[test]
+    fn test_overhang_60deg_tilt_flagged() {
+        // 60° tilt: well above 45° threshold, robust to FP drift.
+        let mesh = make_overhang_fixture(60.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 60° fixture");
+
+        assert_eq!(result.overhangs.len(), 1, "60° tilt should flag");
+    }
+
+    #[test]
+    fn test_overhang_30deg_tilt_not_flagged() {
+        // 30° tilt: well below 45° threshold, robust to FP drift.
+        let mesh = make_overhang_fixture(30.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 30° fixture");
+
+        assert_eq!(result.overhangs.len(), 0, "30° tilt must not flag");
+    }
+
+    #[test]
+    fn test_overhang_build_plate_face_not_flagged() {
+        // Watertight cube on the build plate (z ∈ [0, 10]). The cube's
+        // bottom face has overhang_angle = 90° but face_min == mesh_min
+        // → build-plate filter applies → not flagged.
+        let mesh = create_watertight_cube();
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the cube-on-plate fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            0,
+            "cube-on-plate bottom must be filtered by the build-plate check"
+        );
+    }
+
+    #[test]
+    fn test_overhang_suspended_roof_flagged() {
+        // Locks in mesh-min-relativity of the build-plate filter via a
+        // contrast pair: the SAME roof face flags or does not flag based
+        // purely on whether a separate ground anchor is present at z=0.
+        let config = PrinterConfig::fdm_default();
+
+        // Variant A: roof alone at z=20, no anchor. mesh_min == face_min
+        // == 20 → build-plate filter applies → not flagged.
+        let mesh_no_anchor = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 20.0),
+                Point3::new(0.0, 1.0, 20.0),
+                Point3::new(1.0, 0.0, 20.0),
+            ],
+            vec![[0, 1, 2]],
+        );
+        #[allow(clippy::expect_used)]
+        let no_anchor = validate_for_printing(&mesh_no_anchor, &config)
+            .expect("validation should succeed for the no-anchor variant");
+        assert_eq!(
+            no_anchor.overhangs.len(),
+            0,
+            "roof alone (mesh_min == face_min) is filtered as build-plate"
+        );
+
+        // Variant B: same roof + small ground anchor at z=0. mesh_min = 0,
+        // face_min = 20. (20 - 0) ≫ EPS_GEOMETRIC → not filtered → flagged.
+        let mesh_anchored = IndexedMesh::from_parts(
+            vec![
+                Point3::new(-1.0, -1.0, 0.0),
+                Point3::new(-2.0, -1.0, 0.0),
+                Point3::new(-1.5, -2.0, 0.0),
+                Point3::new(0.0, 0.0, 20.0),
+                Point3::new(0.0, 1.0, 20.0),
+                Point3::new(1.0, 0.0, 20.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        #[allow(clippy::expect_used)]
+        let anchored = validate_for_printing(&mesh_anchored, &config)
+            .expect("validation should succeed for the anchored variant");
+        assert_eq!(
+            anchored.overhangs.len(),
+            1,
+            "anchored roof (mesh_min = 0, face_min = 20) flags — filter is mesh-min-relative, not face-z-absolute"
+        );
     }
 }
