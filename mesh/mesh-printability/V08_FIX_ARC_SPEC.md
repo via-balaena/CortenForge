@@ -1,6 +1,6 @@
 # mesh-printability v0.8 fix arc — specification
 
-**Status**: drafting (Sections 1–6 authored; Sections 7–13 pending)
+**Status**: drafting (Sections 1–7 authored; Sections 8–13 pending)
 **Working doc**: deleted in the final commit of the arc per `feedback_code_speaks`. Durable narrative migrates to `docs/studies/mesh_architecture/src/50-shell-and-print.md`.
 
 ---
@@ -27,6 +27,7 @@ mesh-printability v0.7.0 self-reports "Complete" in `COMPLETION.md` but is mater
 | **J** | Stub | `SmallFeature` — variant exposed, never populated | `validation.rs` (no `check_small_features`) |
 | **K** | Doc | `COMPLETION.md` claims "Complete" while every other gap in this table exists | `COMPLETION.md` |
 | **L** | Architecture | Build-up direction hardcoded `+Z` across `check_overhangs` + `evaluate_orientation`; new orientation-dependent detectors (TrappedVolume, LongBridge) would inherit the hidden global assumption | `validation.rs:201` + `orientation.rs:191` (recon-surfaced) |
+| **M** | Bug | `check_overhangs` flagging predicate algebraically reduces to flag-when-`dot ∈ (-cos(max_overhang_angle), 0)` — moderately-tilted only; pure roofs (`dot = -1`) NOT flagged; convention is inverse of standard FDM "tilt from vertical exceeds threshold". M.2 sub-fix: ALSO add a build-plate filter (matching §6.2 LongBridge pattern) since the corrected predicate would otherwise flag every solid-on-plate's bottom face as Critical overhang. No existing test covers either issue. | `validation.rs:234–251` + `orientation.rs:228–238` (§7-recon-surfaced 2026-04-30) |
 
 (The `Other` variant is intentional caller-extension catch-all per §3, not a gap.)
 
@@ -69,6 +70,7 @@ Read all six src files (`config.rs`, `error.rs`, `issues.rs`, `orientation.rs`, 
 | F12 | `IntersectionParams` has `default()/exhaustive()/quick_check()` constructors | re-use | wire `default()` (max_reported = 100) into `validate_for_printing`; re-export types for power users |
 | F13 | Adding mesh-repair pulls in transitive deps `rayon`, `tracing`, `cf-geometry` | acceptable | compile-only, no API leak; document in §3 |
 | F14 | All `PrintValidation` fields are `pub` (struct-init) | confirms 0.8.0 minor | note in §3 API diff |
+| F15 | Overhang flagging predicate inverted from FDM convention (surfaced during §7 example design) | in (Gap M) | new commit; §5.9 |
 
 ### Workspace-wide consumer enumeration
 
@@ -691,7 +693,114 @@ impl PrintIssueType {
 - All existing `issues.rs` tests continue to pass.
 - Match arm exhaustiveness: any external code matching on `PrintIssueType` (within the workspace) gets a compile error if it lacks a `DetectorSkipped` arm — verified via `cargo build --workspace` after the variant adds.
 
-### §5.9 CHANGELOG.md creation + per-commit updates
+### §5.9 Gap M — Fix overhang flagging predicate to FDM convention
+
+**Change**: The v0.7.0 `check_overhangs` predicate (`validation.rs:234–251`) and its mirror in `evaluate_orientation` (`orientation.rs:228–238`) flag faces with `dot ∈ (-cos(max_overhang_angle), 0)` — moderately-tilted faces between vertical and ~135° from up. Pure-roof faces (`dot = -1`, fully downward) are NOT flagged. This is inverse from the standard FDM convention where `max_overhang_angle = 45°` means "faces tilted more than 45° from vertical (i.e., normal-from-up exceeds 90° + 45° = 135°) need support". Replace the predicate so roofs are correctly flagged.
+
+**Convention lock-in (FDM standard)**:
+
+We define `overhang_angle` as the **signed deviation of the face normal from the build-plane plane** (= 90° minus the face normal's angle from build-up direction):
+
+```
+overhang_angle = acos(dot) - π/2     // dot = normal · up ∈ [-1, +1]
+              ∈ [-π/2, +π/2]
+```
+
+Sign convention: negative for upward-facing faces (no overhang concern), zero for vertical walls (horizontal normals), positive for downward-tilted faces (overhang). Specifically:
+
+- Top face (normal aligned with up, `dot = +1`): `overhang_angle = 0 - π/2 = -π/2 = -90°`. Face's normal points away from "down"; not an overhang.
+- Vertical wall (normal horizontal, `dot = 0`): `overhang_angle = π/2 - π/2 = 0`. Borderline — by convention not an overhang.
+- 45° downward-tilted face (normal at 135° from up, `dot = -sin(45°) = -0.7071`): `overhang_angle = 3π/4 - π/2 = π/4 = 45°`.
+- Roof (normal fully down, `dot = -1`): `overhang_angle = π - π/2 = π/2 = 90°`. Worst-case overhang.
+
+**New flagging predicate**: flag if `overhang_angle > max_overhang_angle_rad`. Strict greater-than (a vertical wall has `overhang_angle = 0`, which is not greater than any positive threshold; matches the "vertical walls are fine" intent).
+
+**Build-plate filter** (M.2): Gap M ALSO adds a build-plate filter to `check_overhangs`, matching the pattern §6.2 (LongBridge) uses. **Why**: under the new predicate, a solid object's bottom face has `dot = -1`, `overhang_angle = 90°` — flagged as Critical overhang. But a face TOUCHING the build plate is supported by the plate itself; flagging it as overhang is physically wrong and would cause every solid-on-plate fixture to fail `is_printable()`. The v0.7.0 buggy predicate accidentally avoided this case (it didn't flag `dot ≤ -0.707`); removing the bug without adding the build-plate filter would convert a correctness fix into a regression in user-visible behavior.
+
+The filter pattern: a face is "on the build plate" iff `(face_min_along_up - mesh_min_along_up) < EPS_GEOMETRIC`. Applied per-face inside the overhang loop (after computing `overhang_angle`, before flagging). Same pattern as `check_long_bridges` (§6.2).
+
+**Code shape** (`validation.rs::check_overhangs`):
+
+```rust
+// Compute mesh_min_along_up once before the face loop:
+let mesh_min_along_up = mesh.vertices.iter()
+    .map(|v| v.coords.dot(&up))
+    .fold(f64::INFINITY, f64::min);
+
+// In the face loop:
+let dot = normal.x * up.x + normal.y * up.y + normal.z * up.z;
+let angle_from_up = dot.acos();  // 0 to π
+let overhang_angle = angle_from_up - std::f64::consts::FRAC_PI_2;  // -π/2 to +π/2
+
+if overhang_angle > max_angle_rad {
+    // Build-plate filter: skip faces resting on the build plate (supported by
+    // the plate itself; not an overhang concern).
+    let face_min_along_up = [v0, v1, v2].iter()
+        .map(|v| v.coords.dot(&up))
+        .fold(f64::INFINITY, f64::min);
+    if (face_min_along_up - mesh_min_along_up) < EPS_GEOMETRIC {
+        continue;  // on build plate; not an overhang
+    }
+
+    overhang_faces.push(i as u32);
+    max_overhang_angle_rad = max_overhang_angle_rad.max(overhang_angle);
+    let area = len / 2.0;
+    total_overhang_area += area;
+}
+```
+
+`EPS_GEOMETRIC = 1e-9 mm` per §4.2.
+
+Symmetric change in `orientation.rs::evaluate_orientation` — same predicate replacement + build-plate filter (~10 LOC).
+
+**Removal of the `dot < 0.0` outer gate**: the new predicate `overhang_angle > max_angle_rad` already excludes upward-facing faces (their `overhang_angle ≤ 0`), so the explicit `if dot < 0.0` early-out is no longer needed. Removing it simplifies the structure; performance is comparable (one fewer branch).
+
+**Interaction with Gap B (§5.2)**: Gap B's "track actual maximum overhang angle" (`max_overhang_angle_rad.max(overhang_angle)`) reads the same `overhang_angle` that Gap M defines. After both fixes:
+- `overhang_angle = 0` for vertical walls.
+- `overhang_angle = 45° (in radians)` for 45°-tilted face.
+- `overhang_angle = 90° (in radians)` for pure roof.
+- `OverhangRegion.angle = max(observed)` in degrees.
+- This matches FDM-slicer conventions.
+
+**Interaction with Gap E (§5.4)**: Gap E's `classify_overhang_severity(observed_angle_deg, threshold_deg)` consumes `observed_angle_deg` (the post-Gap-B value). With Gap M:
+- `observed_angle_deg ∈ [0, 90]`.
+- Critical: `observed_angle > threshold_deg + 30` → e.g., for FDM threshold 45°, Critical when observed > 75°. Sensible (75°-tilted face is severely overhanging).
+- Warning: `threshold + 15 < observed ≤ threshold + 30` → 60° < observed ≤ 75°.
+- Info: `threshold < observed ≤ threshold + 15` → 45° < observed ≤ 60°.
+
+This makes physical sense: severity scales with how far past threshold the face leans. Pre-Gap-M severity-band boundaries were physically meaningless because the predicate flagged the wrong faces.
+
+**Interaction with Gap L (§5.6)**: parametrized `build_up_direction` flows through unchanged — `dot = normal.dot(&config.build_up_direction)` and the rest of the predicate is identical. Both fixes commute.
+
+**Tests** (in `validation.rs::tests`):
+- `test_overhang_roof_flagged`: face with normal=`(0,0,-1)` on default `+Z up`, `max_overhang_angle = 45°` → flagged with `overhang_angle ≈ 90°`.
+- `test_overhang_vertical_wall_not_flagged`: face with normal=`(1,0,0)` (horizontal) → not flagged (`overhang_angle = 0`).
+- `test_overhang_top_face_not_flagged`: face with normal=`(0,0,1)` (top) → not flagged (`overhang_angle = -90°`).
+- `test_overhang_45deg_tilt_borderline_not_flagged`: face with `dot = -sin(45°) = -0.7071`, `max=45°` → `overhang_angle = 45°` exactly; `45 > 45` is false, NOT flagged. Document the strict-greater-than convention.
+- `test_overhang_60deg_tilt_flagged`: face with `dot = -sin(60°) = -0.866`, `max=45°` → `overhang_angle ≈ 60°` > 45° → flagged.
+- `test_overhang_30deg_tilt_not_flagged`: face with `dot = -sin(30°) = -0.5`, `max=45°` → `overhang_angle ≈ 30°` < 45° → not flagged.
+- `test_overhang_borderline_via_y_up_orientation`: same predicate with `+Y up` config (cross-check that Gap L parametrization composes correctly with Gap M).
+- `test_overhang_build_plate_face_not_flagged`: solid cube on build plate (z=0); cube bottom face has `overhang_angle = 90° > 45°` but is filtered by the build-plate check; assert `validation.overhangs.len() == 0`.
+- `test_overhang_suspended_roof_flagged`: same cube but lifted to z ∈ [5, 25] (away from build plate); now bottom face is NOT on the build plate (mesh_min_along_up = 5; bottom face min = 5; equal → still filtered, since `0 < EPS_GEOMETRIC` is true). Lift to z ∈ [10, 30] WITH a separate small base touching z=0; the cube's bottom at z=10 is `(10 - 0) > EPS_GEOMETRIC` → NOT filtered → flagged. Validates that the filter is mesh-min-relative, not face-z-absolute.
+
+(Gap-B + Gap-M composition — `OverhangRegion.angle = max observed` in degrees — is exercised by §5.2's `test_overhang_angle_uses_steepest_face`; with Gap M landing first, that §5.2 test runs against Gap-M predicate semantics. No duplication needed here.)
+
+**Acceptance criteria**:
+- Nine tests pass with `approx::assert_relative_eq!(observed_angle, expected, epsilon = 1e-6)` where applicable.
+- `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings` clean.
+- **Test-numerical-anchor regression sweep**: existing tests `test_support_volume_calculation`, `test_validation_summary`, `test_issue_counts`, and any other test that invokes `validate_for_printing` and indirectly depends on `total_overhang_area` (via support volume estimate) may need numerical-anchor updates after Gap M lands — under the new predicate, more (and different) faces flag as overhangs, so `support_volume = overhang_area * 5.0` shifts. Sweep all `validation.rs::tests` for tests asserting overhang-derived numerics; update post-Gap-M values inline in the same commit. Verify at impl time via `cargo test -p mesh-printability` post-edit; any failing test gets either (a) numerical-anchor refresh if the test fixture exercises the new predicate correctly, or (b) re-fixture if the test depended on the buggy convention's specific output. None of the existing tests assert specific overhang flagging behavior directly (verified by inspection of `validation.rs::tests`), so no test logically conflicts with Gap M; only derived numerics shift.
+
+**Pre-flight verification**: before authoring the commit, confirm the convention by reading the final `check_overhangs` and `evaluate_orientation` once more in current code; compute the predicate's true semantics; verify the convention lock-in matches FDM industry convention (e.g., compare against PrusaSlicer's "support overhang threshold" or Cura's "support angle" semantics — both flag faces tilted > threshold from vertical, which is what Gap M produces).
+
+**Commit slot**: lands as commit immediately AFTER §5.1 (Gap A workspace lints) and BEFORE §5.2 (Gap B max-angle tracking). Sequence: A → M → B → D → E → F → L → K → DetectorSkipped → CHANGELOG. Detector sequence (§6): C → G → H → I → J. Then §7 examples in detector-order.
+
+**Cross-references at PR-close**:
+- Gap M's fix is documented in the `CHANGELOG.md` "Fixed" section + `COMPLETION.md` rewrite (Gap K).
+- The mesh book `docs/studies/mesh_architecture/src/50-shell-and-print.md` Part 5 depth-pass calls out "v0.8 corrected the overhang flagging convention to standard FDM tilt-from-vertical semantics; pre-v0.8 callers may see different `is_printable()` results on previously-near-roof meshes" — semver behavioral note for downstream consumers.
+
+---
+
+### §5.10 CHANGELOG.md creation + per-commit updates
 
 **Change**: create `mesh/mesh-printability/CHANGELOG.md` in the same commit as Gap A (workspace lints). Each subsequent commit appends to the `[Unreleased]` section. The final pre-spec-deletion commit closes `[Unreleased]` → `[0.8.0] - YYYY-MM-DD`.
 
@@ -1162,6 +1271,680 @@ fn classify_small_feature_severity(max_extent: f64, min_feature: f64) -> IssueSe
 
 ---
 
-## §7 onwards — pending
+## §7. Example design
 
-(Sections 7–13: example design, risk inventory, stress-test gauntlet, grading & CI impact, open questions, implementation order, spec lifecycle.)
+Eight examples ship with the v0.8 arc, one per detector plus orientation, technology-sweep, and a capstone showcase. Each lives at `examples/mesh/printability-<name>/` next to the existing `mesh-repair-walkthrough` / `shell-generation-*` / `mesh-offset-*` examples — same directory pattern, same `Cargo.toml` shape, same `out/*.ply` artifact layout. Each example demonstrates **one concept**, has a **museum-plaque README** (`feedback_museum_plaque_readmes`), is **self-contained** with no shared fixture helpers (`feedback_simplify_examples` ethos extends to per-example duplication), and is reviewed **one at a time** with two passes — numbers (Claude) + visuals (user) — before moving to the next (`feedback_one_at_a_time` + `feedback_one_at_a_time_review`).
+
+### §7.0 Cross-cutting pattern
+
+#### Directory shape
+
+```
+examples/mesh/printability-<name>/
+├── Cargo.toml
+├── README.md
+├── src/main.rs
+└── out/                  ← gitignored; regenerated each run
+    ├── mesh.ply          ← input mesh as authored (or post-construction)
+    ├── issues.ply        ← point-cloud of region centroids
+    └── ... (per-example extras, e.g. annotated.ply, voxels.ply)
+```
+
+The `out/` directory is created at runtime (`std::fs::create_dir_all`); produced PLYs are git-ignored via `examples/mesh/.gitignore` (line 5: `*/out/`), inherited by every example under `examples/mesh/`. The example owns its fixture: no shared `fixture_lib`, no `tests/common`. If two examples need similar geometry, each constructs its own — pedagogical clarity beats DRY for examples.
+
+#### Cargo.toml shape
+
+Each example is a workspace member with `publish = false`, named `example-mesh-printability-<name>`. Dependencies are minimal: `mesh-types`, `mesh-io`, `mesh-printability`, `anyhow` (for `main() -> Result<()>`), and per-example extras (e.g., `mesh-repair` for the self-intersection fixture, `mesh-shell` or `mesh-sdf` if a fixture needs a non-trivial implicit surface). The `[lints] workspace = true` block is required.
+
+#### `main()` shape — numbers-pass via assertions
+
+Each example's `main()` is structured:
+
+```rust
+fn main() -> anyhow::Result<()> {
+    // 1. Construct fixture mesh deterministically.
+    let mesh = build_fixture();
+
+    // 2. Configure printer.
+    let config = PrinterConfig::fdm_default();
+
+    // 3. Validate.
+    let validation = validate_for_printing(&mesh, &config);
+
+    // 4. Print summary to stdout (visible to the user reading terminal output).
+    println!("{}", validation.summary());
+
+    // 5. Numerical anchors: assert region/issue counts, severities, centroids
+    //    within FP tolerance. Failure → non-zero exit, breaking the
+    //    numbers-pass gate. Each assertion's failure message names the
+    //    invariant being checked.
+    assert_eq!(validation.<field>.len(), N, "expected exactly N regions");
+    // ... severity / centroid / volume assertions ...
+
+    // 6. Save mesh + issue artifacts to out/.
+    fs::create_dir_all("out")?;
+    save_ply(&mesh, "out/mesh.ply", false)?;        // ASCII PLY for human-readable diff
+    save_issue_centroids(&validation, "out/issues.ply")?;
+
+    Ok(())
+}
+```
+
+The numbers-pass gate is **the example exits 0 on a clean run**. Per `feedback_risk_mitigation_review` ("pass-by-correctness vs pass-by-coincidence"), each assertion's message names the bug it catches — `assert_eq!(severity, Critical, "0.4mm wall under min_wall=1.0 must be Critical, not Warning")` — so a regression that flips Warning→Critical can't pass under a loose `assert!(severity != Info)`.
+
+#### Issue-centroid point-cloud helper (per-example, copy-paste)
+
+Each example needs a small helper to write region centroids as a point-cloud PLY. Helper is duplicated per-example (not factored out — see `feedback_simplify_examples`):
+
+```rust
+fn save_issue_centroids(v: &PrintValidation, path: &str) -> anyhow::Result<()> {
+    let mut centroids: Vec<Point3<f64>> = Vec::new();
+    centroids.extend(v.thin_walls.iter().map(|r| r.center));
+    centroids.extend(v.long_bridges.iter().map(|r| {
+        Point3::new(
+            (r.start.x + r.end.x) * 0.5,
+            (r.start.y + r.end.y) * 0.5,
+            (r.start.z + r.end.z) * 0.5,
+        )
+    }));
+    centroids.extend(v.trapped_volumes.iter().map(|r| r.center));
+    centroids.extend(v.self_intersecting.iter().map(|r| r.approximate_location));
+    centroids.extend(v.small_features.iter().map(|r| r.center));
+    let mesh = IndexedMesh::from_parts(centroids, vec![]);  // points only
+    save_ply(&mesh, path, false)?;  // ASCII for inspectability
+    Ok(())
+}
+```
+
+`IndexedMesh::from_parts(verts, vec![])` produces a vertex-only mesh (verified in `cf-geometry/src/mesh.rs:61`); `save_ply(&mesh, path, false)` (signature verified in `mesh-io/src/ply.rs:179`) writes it as ASCII PLY with element `vertex` and zero `face`s, which MeshLab/ParaView/Blender open as a point-cloud. **Verification at impl time**: write a 2-vertex empty-face PLY in the first example's commit; if mesh-io rejects the empty-face case, fix it as a §5-prerequisite per `feedback_adjacent_crate_flags`.
+
+#### Annotated coloring — out of v0.8 scope
+
+Per-face severity coloring (red/orange/gray) on the annotated mesh would require either (a) face-color attributes (AttributedMesh currently only supports per-vertex attributes) or (b) vertex-duplication-per-face with vertex-colored PLY. v0.8 ships **point-cloud `issues.ply`** instead of face-colored mesh PLYs. Per-region locality is communicated through the centroid point-cloud + the README's "look for ..." prose. Triple-tracked as v0.9 followup: trigger for v0.9 work is "user reports the centroid point-cloud is not localizing enough for visual review" or "AttributedMesh gains face-attribute support and the change becomes ~30 LOC."
+
+#### README structure (museum plaque)
+
+```
+# printability-<name>
+
+**One-sentence summary** of what the example demonstrates.
+
+## What it does
+
+Paragraph: fixture geometry, the detector being demonstrated, why this
+fixture exposes the detector cleanly. End with the printer-config
+choice and rationale (FDM/SLA/SLS/MJF; threshold values that make the
+detector fire vs not).
+
+## The detector pipeline
+
+ASCII diagram or 3–5 bullets walking through the algorithm steps as
+applied to this fixture (e.g., "ray cast from face F's centroid;
+hits opposite face at t=0.4mm; flagged because 0.4 < min_wall=1.0").
+
+## Numerical anchors
+
+- Region count: N
+- Severity: Critical/Warning/Info
+- Centroid coordinates (within tolerance)
+- Volume / span / extent values
+- `is_printable() == false/true`
+
+All asserted in main() — a failed numerical anchor breaks the run.
+
+## Visuals
+
+- `out/mesh.ply` — the part. Open in MeshLab/ParaView/Blender.
+  (What to look for, e.g., "the upper face is 0.4mm thinner than the
+  others — visually a thin lip near the top.")
+- `out/issues.ply` — point-cloud of region centroids. Each point marks
+  the center of a flagged region.
+- (per-example extras, e.g., `out/voxels.ply` for TrappedVolume.)
+
+Camera notes: which axis is up; which face to look at first; what
+artifacts to expect (e.g., "f3d may render the trapped cavity sphere
+as a winding-pair artifact since SDF is two-sided" — apply the
+`feedback_f3d_winding_callout` callout near the top of the README
+when the artifact is load-bearing for visual interpretation).
+
+## Run
+
+cargo run -p example-mesh-printability-<name> --release
+
+## Notes
+
+Anything else load-bearing — e.g., why a particular FP tolerance was
+used; why this fixture doesn't trigger a different detector that
+might naively seem to fire.
+```
+
+#### FP-stability convention
+
+All numerical-anchor assertions use `approx::assert_relative_eq!(..., epsilon = 1e-6)` for derived geometric quantities; never `f64::EPSILON`. Per `feedback_release_mode_heavy_tests`, the README's run command always uses `--release`. Cross-platform smoke (macOS/Linux/Windows) — verify at impl time that the workspace's `cargo xtask grade-all` (current CI gate) actually compiles the new example crates; if not, examples are local-only smoke and v0.8 ships unchanged but visual regressions caught only by hand. Verification command: `cargo build --workspace --release` on the branch covers the example crate compilation; an example failing to compile blocks the corresponding §6 detector commit.
+
+#### Realistic-looking parts vs test fixtures
+
+Per `feedback_simplify_examples`, fixtures should look like real parts. Trade-offs:
+
+- **Hollow box with thinning side** (ThinWall) — looks like a real container with a tapered wall. Good.
+- **H-shape with horizontal lintel** (LongBridge) — looks like a doorway / chair frame. Good.
+- **Solid cube with internal sphere cavity** (TrappedVolume) — looks like a sealed sample chamber. Good.
+- **Two interpenetrating cylinders** (SelfIntersecting) — looks like a bad boolean union. Realistic failure mode. Good.
+- **Cube + small cylindrical burr** (SmallFeature) — looks like a CAD leftover from a boolean-cut operation. Good. Avoid "isolated triangle floating in space" — too synthetic.
+- **Leaning column** (Orientation) — looks like a part that prints way better lying down. Good.
+- **Hollow box with thin wall + sealed cavity** (Tech-sweep) — same fixture, different validators. Good.
+- **Small mounting bracket with overhang + thin lip + tiny hole** (Showcase) — looks like a real CAD part with multiple printability concerns. Good.
+
+#### Implementation cadence within the arc
+
+Examples land **after** the corresponding detector commits (§5, §6) so each example exercises the actually-shipped detector. Per `feedback_one_at_a_time` + `feedback_one_at_a_time_review`:
+
+1. Land the detector commit (§5/§6); confirm tests green via `cargo xtask grade mesh-printability --skip-coverage`.
+2. Author the example (one example per commit).
+3. Run `cargo run -p example-mesh-printability-<name> --release`; confirm assertions pass (numbers-pass).
+4. Commit example with message `feat(examples): mesh-printability-<name> visual demo for <gap>`.
+5. Pause for user visuals-pass. User opens PLYs in their viewer of choice; reports verdict.
+6. Address feedback if any; otherwise proceed to next example.
+
+This gives each example a clean numbers + visuals confirmation before the next one starts. Eight examples × (~30 min author + ~5 min user review) ≈ 4–5 hours of cadence; spread across the arc so a slip on one detector doesn't backlog the rest.
+
+---
+
+### §7.1 `printability-thin-wall` — Gap C demonstration
+
+**Detector**: ThinWall (`check_thin_walls`) via inward ray-cast.
+
+**Concept**: A hollow box with one face deliberately thinned exposes ThinWall detection — the thin face's inward ray hits the opposite face at less than `min_wall_thickness`, flagging the cluster.
+
+**Fixture geometry**:
+
+A double-walled hollow box. Outer cube 30×20×15 mm; inner cavity 27×17×13.1 mm with the inner cavity's top raised so the top wall thins to 0.4 mm. Watertight + consistently wound — the input precondition for ThinWall holds.
+
+**Construction approach** (impl-time choice; spec lists options in preference order):
+1. **Hand-author** 12 outer triangles + 12 inner-cavity triangles (24 triangles total, 16 unique vertices: 8 outer cube corners + 8 inner-cavity corners), vertex-list-driven. Each cube face is split along a diagonal into 2 triangles. Outer faces wound CCW-from-outside (normals point outward, away from solid material); inner-cavity faces wound CCW-from-cavity-side (normals point into the cavity, away from solid material — i.e., REVERSED from outer winding so each face's normal points away from the solid that surrounds the face). Concatenate with vertex-index offset; result is watertight (each edge shared by exactly 2 faces — both within outer, or both within inner) but topologically two disconnected components in the same `IndexedMesh`. Verification at impl time: confirm that `validate_for_printing` treats this as watertight (each edge appears exactly twice; component count is incidental to manifold check).
+2. **`mesh-sdf` + marching cubes** if mesh-sdf exposes a public MC entry point on a closed-form SDF (`max(box_sdf, -inner_box_sdf)` representing solid = outer ∩ ¬inner). Currently mesh-shell uses MC internally; if that's not exposed publicly, option 1 is canonical.
+3. **NOT mesh-shell directly** — mesh-shell is offset-based, not CSG-based; not the right tool for box-minus-box.
+
+Hand-author (option 1) is the recommended baseline; the example's deterministic 24-triangle construction is the kind of thing the spec can lock in.
+
+**FDM config**:
+- `PrinterConfig::fdm_default()` — `min_wall_thickness = 1.0 mm`, `max_overhang_angle = 45°`, `min_feature_size = 0.8 mm`.
+
+**Geometry math (lock-in)**:
+
+Outer cube: x ∈ [0, 30], y ∈ [0, 20], z ∈ [0, 15].
+Inner cavity (the void): x ∈ [1.5, 28.5], y ∈ [1.5, 18.5], z ∈ [1.5, 14.6].
+Side wall thicknesses: x walls = 1.5 mm, y walls = 1.5 mm, bottom wall = 1.5 mm.
+Top wall thickness: 15 − 14.6 = 0.4 mm.
+Inner cavity dimensions: 27 × 17 × 13.1 mm.
+Inner cavity volume: 6011.7 mm³.
+Inner cavity centroid: ((1.5+28.5)/2, (1.5+18.5)/2, (1.5+14.6)/2) = **(15, 10, 8.05)**.
+
+**ThinWall clustering analysis** (load-bearing for `thin_walls.len()` prediction):
+
+`check_thin_walls` (§6.1) clusters flagged faces by **edge-adjacency** using `build_edge_to_faces`. Two faces are in the same cluster iff they share an edge. In this fixture:
+
+- The outer top face's 2 triangles share their diagonal edge (and share their 4 other edges with the unflagged outer side faces).
+- The inner top face's 2 triangles likewise share their diagonal edge among themselves.
+- The outer top face and the inner top face are **topologically disjoint** — they share no vertices or edges (separate components per the construction approach).
+
+Therefore: **2 clusters** — one outer-top cluster (2 triangles, 600 mm² area, centroid at (15, 10, 15)), one inner-top cluster (2 triangles, 459 mm² area, centroid at (15, 10, 14.6)). Both clusters report `thickness = 0.4 mm` (their respective ray-cast distances to the opposing top face).
+
+**Expected output**:
+- `validation.thin_walls.len() == 2` — outer top cluster + inner top cluster.
+- Both clusters: `thickness ≈ 0.4 mm` within `1e-6`.
+- Outer cluster centroid: `(15, 10, 15)` within `1e-6`. Inner cluster centroid: `(15, 10, 14.6)` within `1e-6`.
+- Outer cluster area: 600 mm² (within triangulation tolerance). Inner cluster area: 459 mm².
+- Both clusters emit `PrintIssue` with `issue_type == ThinWall`, severity `Critical` (0.4 < 1.0/2 = 0.5). So `validation.issues` has at least 2 ThinWall issues + 1 TrappedVolume issue.
+- `validation.is_printable() == false` (driven by the Critical ThinWall issues).
+- Co-flag: the cavity is watertight + sealed, so TrappedVolume also fires on FDM as Info severity. ThinWall is the load-bearing concept, TrappedVolume is the documented co-flag.
+
+**Assertion list** (numbers-pass, in main()):
+1. `validation.thin_walls.len() == 2` — "expected outer-top and inner-top clusters; topologically disjoint via edge-adjacency"
+2. For each `region` in `validation.thin_walls`: `approx::assert_relative_eq!(region.thickness, 0.4, epsilon = 1e-6)` — "both clusters must report 0.4mm thickness"
+3. **Cluster identification**: locate the outer cluster (centroid z = 15) and inner cluster (centroid z = 14.6) by z-coordinate; assert one of each. Specifically: `(walls[0].center.z, walls[1].center.z)` sorted ascending must be `(14.6, 15.0)` within `1e-6`.
+4. Outer cluster area ∈ `[599, 601]`; inner cluster area ∈ `[458, 460]` (FP-stable on exact-representable inputs).
+5. `validation.issues.iter().filter(|i| matches!(i.issue_type, ThinWall) && matches!(i.severity, Critical)).count() == 2` — "two Critical ThinWall issues, one per cluster"
+6. `!validation.is_printable()` — "0.4mm wall under min_wall=1.0 blocks printability"
+7. `validation.trapped_volumes.len() == 1` — "sealed inner cavity must flag as TrappedVolume on FDM (Info)"
+8. `approx::assert_relative_eq!(validation.trapped_volumes[0].volume, 6011.7, max_relative = 0.10)` — analytical interior volume; voxel-discretization tolerance per §6.3.
+9. `validation.trapped_volumes[0].center` within `voxel_size` (= 0.1 mm at FDM defaults) of `(15, 10, 8.05)`.
+10. `validation.overhangs.len() >= 1` — "cavity-ceiling co-flag: the inner top face's normal points down into cavity, `overhang_angle = 90°`, flagged Critical under FDM `max=45°`". The example documents this co-flag in the README.
+11. The pedagogically-load-bearing flag is the ThinWall Critical (which drives `is_printable()` independently). The cavity-ceiling overhang is a documented structural-detector co-flag that the user learns to read alongside ThinWall.
+
+**Visuals**:
+- `out/mesh.ply` — the hollow box. Camera: from the +Y side, looking along −Y at the X-Z plane; the thin top face should be visually distinguishable as a much thinner lip than the side walls (cross-section view in MeshLab is the cleanest rendering). f3d-callout near the top of the README: the inner-cavity surface and outer surface are wound in opposite directions, so f3d may render only one (winding-pair artifact); MeshLab's two-sided rendering shows both.
+- `out/issues.ply` — three points: outer ThinWall cluster center at (15, 10, 15), inner ThinWall cluster center at (15, 10, 14.6), TrappedVolume centroid at (15, 10, 8.05).
+
+**README pitfalls**:
+- "Wait, the cavity is sealed — won't FDM TrappedVolume Info also fire?" Yes; document it in README so the user isn't surprised by two issues. The example demonstrates ThinWall as **the load-bearing concept**, with TrappedVolume as a documented co-flag.
+- "Why not use a single-walled thin box?" A single-walled thin box is open (5-of-6 face), so ThinWall is **skipped** via the watertight-or-skip precondition (§4.1 + §6.1). The double-walled construction is necessary for ThinWall to actually run.
+
+**Implementation slot**: lands as commit immediately after the §6.1 ThinWall detector commit.
+
+---
+
+### §7.2 `printability-long-bridge` — Gap G demonstration
+
+**Detector**: LongBridge (`check_long_bridges`) via boundary-edge span analysis.
+
+**Concept**: An H-shape — two pillars + a horizontal lintel — with a lintel longer than `max_bridge_span`. The lintel's downward-facing face is flagged as a bridge.
+
+**Fixture geometry (H-shape, watertight manifold)**:
+
+- **Pillar 1**: x ∈ [0, 5], y ∈ [0, 5], z ∈ [0, 18]. (5×5×18 mm.)
+- **Pillar 2**: x ∈ [25, 30], y ∈ [0, 5], z ∈ [0, 18]. (5×5×18 mm.)
+- **Slab (lintel)**: x ∈ [-2.5, 32.5], y ∈ [0, 5], z ∈ [18, 20]. (35×5×2 mm.)
+
+Pillar tops at z=18 are **covered** by the slab and become interior (not part of the boundary surface). The slab's bottom face is exposed in three regions, separated by the pillar-attachment cutouts:
+- **Left cantilever**: x ∈ [-2.5, 0], y ∈ [0, 5]. 2.5 × 5 = 12.5 mm². Span: 2.5 mm.
+- **Middle bridge**: x ∈ [5, 25], y ∈ [0, 5]. 20 × 5 = 100 mm². Span: 20 mm. ← bridge target.
+- **Right cantilever**: x ∈ [30, 32.5], y ∈ [0, 5]. 2.5 × 5 = 12.5 mm². Span: 2.5 mm.
+
+These three regions are topologically disconnected (separated by the pillar-attachment holes in the slab bottom), so they form three independent edge-adjacency clusters per §6.2.
+
+**Construction approach**: hand-authored as a single watertight manifold solid (the boolean union of the 3 boxes) using a deterministic vertex list with shared vertices at the pillar-slab junctions. Approximately 16 unique vertices and 28 triangles total. The pillar top faces (5×5 at z=18) are NOT part of the boundary; the slab bottom is a 35×5 rectangle with two 5×5 rectangular holes (over the pillars), triangulated as a polygon-with-holes.
+
+Verification at impl time: confirm `check_basic_manifold` reports zero open edges + zero non-manifold edges + zero winding inconsistencies (post-Gap-F detector); confirm `mesh_repair::detect_self_intersections` returns empty pairs.
+
+**FDM config**:
+- `PrinterConfig::fdm_default()` — `max_bridge_span = 10 mm`. Middle bridge span 20 mm > 1.5 × 10 = 15 mm → Critical.
+
+**Expected output**:
+- `validation.long_bridges.len() == 1` — only the middle bridge (20 mm span) exceeds threshold; the two cantilevers (2.5 mm each) are below threshold and not flagged.
+- Middle bridge `region.span ≈ 20.0 mm` within `1e-6` (bbox extent along x of the middle bridge cluster).
+- `region.start.x ≈ 5.0, region.end.x ≈ 25.0` — endpoints back-projected from the cluster's bbox.
+- One `PrintIssue` of type `LongBridge` with severity `Critical` (20 > 15).
+- `validation.is_printable() == false` (LongBridge Critical drives this, plus ExcessiveOverhang per Gap M).
+- ExcessiveOverhang **also fires** for the slab's downward-facing bottom regions (and any cantilevers/middle bridge — all 100% downward-facing). Under post-Gap-M convention, all 3 bottom regions have `overhang_angle = 90°`, well past the 45° threshold + 30° Critical band → severity Critical. The Gap-D region-splitting (§5.3) means each connected downward-region is a separate `OverhangRegion`. So `validation.overhangs.len() == 3` — left cantilever, middle bridge, right cantilever — each as a separate Critical cluster.
+- `validation.trapped_volumes.len() == 0` — H-shape has no sealed cavity.
+
+**Assertion list**:
+1. `validation.long_bridges.len() == 1` — "only the middle bridge exceeds 10mm threshold; cantilevers do not"
+2. `approx::assert_relative_eq!(region.span, 20.0, epsilon = 1e-6)` — "middle bridge span must match the inter-pillar gap"
+3. LongBridge issue severity `Critical` (20 > 1.5 × 10 = 15)
+4. `region.start.x` within `1e-6` of `5.0` and `region.end.x` within `1e-6` of `25.0` (bbox-derived endpoints; FP-stable on exact-representable fixture)
+5. `validation.overhangs.len() == 3` — "Gap-D-split overhang clusters: left cantilever + middle bridge + right cantilever"
+6. All three ExcessiveOverhang issues severity `Critical` (90° tilt > 45° + 30°)
+7. `validation.trapped_volumes.len() == 0` — no sealed cavity in H-shape
+8. **Tech-skip regression**: re-run with `PrinterConfig::sls_default()`, assert `validation.long_bridges.len() == 0` AND no `DetectorSkipped` issue from LongBridge (silent skip per §6.2). SLS has `max_overhang_angle = 90°`, so the slab's downward faces still have `overhang_angle = 90°` which is NOT > 90° → no overhang flag under SLS either. Asserting `validation.overhangs.len() == 0` under SLS is a clean tech-skip cross-check.
+9. `!validation.is_printable()` under FDM (driven by LongBridge Critical + ExcessiveOverhang Critical).
+
+**Visuals**:
+- `out/mesh.ply` — the H-shape, hand-authored boolean-union solid. Camera: from the +Y side looking at the X-Z plane. Visual: two pillars at the bottom, slab on top, slab cantilevers slightly past each pillar's outside edge.
+- `out/issues.ply` — 4 points: middle bridge centroid at (15, 2.5, 18), three overhang centroids — left cantilever (-1.25, 2.5, 18), middle bridge (15, 2.5, 18), right cantilever (31.25, 2.5, 18). The middle-bridge centroid coincides with the LongBridge midpoint (so two centroids overlap; that's expected — a multi-detector co-flag).
+
+**README pitfalls**:
+- "Why does ExcessiveOverhang also fire?" The lintel's bottom face is 100% overhang — both detectors see it. They're complementary signals, not duplicate.
+- f3d-equivalence callout: the lintel's bottom face is visible from below; if a viewer's culling discards back-faces, it may appear missing. Note prominently in README.
+
+**Implementation slot**: lands after the §6.2 LongBridge detector commit.
+
+---
+
+### §7.3 `printability-trapped-volume` — Gap H demonstration
+
+**Detector**: TrappedVolume (`check_trapped_volumes`) via exterior flood-fill.
+
+**Concept**: A solid cube with a sealed spherical cavity inside. The example demonstrates technology-aware **TrappedVolume severity divergence**: SLA/SLS/MJF flag Critical (uncured-material trap), FDM flags Info (sealed cavity prints fine for FDM). A separate co-flag also surfaces — the cavity ceiling fires ExcessiveOverhang Critical under all techs (any sealed cavity inherently has a face whose normal tilts downward; Gap M correctly flags it). The README documents the co-flag as a design-pattern: "validators see surface geometry, not interior intent — sealed-cavity ceilings flag as overhang regardless of designer intent."
+
+**Fixture geometry**:
+
+A solid 20×20×20 mm cube containing a sealed sphere cavity of radius 5 mm centered at (10, 10, 10). Watertight + consistently wound.
+
+**Construction approach** (impl-time choice, in preference order):
+1. **Hand-author** 12 outer cube triangles + a tessellated sphere (32 segments × 16 stacks ≈ 1024 triangles) with REVERSED winding so sphere normals point INTO the cavity. Concatenate. Total ~1036 triangles. Tractable; deterministic; bounded ray-tri budget for §6.3 scanline.
+2. **mesh-sdf + MC** if mesh-sdf exposes a public MC entry point on a closed-form `max(box_sdf, -sphere_sdf)`. Currently unverified.
+
+Hand-author (option 1) recommended; cap sphere tessellation at ≤32 segments to keep §6.3's ray-tri scanline budget under 2 s on the reference machine (200³ voxel grid × ~1000 triangles → ~ 4×10⁷ ray-tri tests; well within target).
+
+**Multi-config**: validate at FDM, SLA, SLS, MJF and assert each technology's severity policy.
+
+**Expected output (all four techs)**:
+- `validation.trapped_volumes.len() == 1`. Cavity centroid ≈ (10, 10, 10) within `voxel_size`. Volume ≈ 523.6 mm³ ± 10%.
+- TrappedVolume severity: **Info** for FDM (sealed cavity prints fine for FDM); **Critical** for SLA/SLS/MJF (uncured-material trap).
+- ExcessiveOverhang Critical (cavity ceiling co-flag) — fires for all 4 techs since the sphere has a face whose normal points downward (`dot ≈ -1`, `overhang_angle ≈ 90°`, well past 75° Critical band for any tech with `max_overhang_angle ≤ 60°`). For SLS (`max=90°`) and MJF (`max=90°`), the predicate `overhang_angle > 90°` is false (90 NOT strictly > 90) → NOT flagged.
+
+| Tech | `max_overhang` | Cavity ceiling overhang | TrappedVolume severity | `is_printable()` |
+|------|----------------|--------------------------|-------------------------|------------------|
+| FDM | 45° | Critical (90 > 75) | Info | `false` (overhang Critical) |
+| SLA | 30° | Critical (90 > 60) | Critical | `false` (both Critical) |
+| SLS | 90° | NOT flagged (90 NOT > 90) | Critical | `false` (TrappedVolume Critical) |
+| MJF | 90° | NOT flagged (90 NOT > 90) | Critical | `false` (TrappedVolume Critical) |
+
+**Pedagogical takeaway**: each tech fails the validation, but for different reasons. FDM fails on overhang (cavity ceiling unsupported during print); SLA/SLS/MJF fail primarily on trapped uncured material; SLS+MJF have lenient overhang policy so the cavity ceiling escapes overhang-flagging there.
+
+**Assertion list** (4 sub-runs):
+1. For each tech in `[FDM, SLA, SLS, MJF]`:
+   - `validation.trapped_volumes.len() == 1`
+   - Region center within `voxel_size` of `(10, 10, 10)`
+   - `approx::assert_relative_eq!(volume, 523.6, max_relative = 0.10)`
+2. **FDM**: TrappedVolume severity `Info`; ExcessiveOverhang severity `Critical`; `is_printable() == false` (driven by overhang).
+3. **SLA**: TrappedVolume severity `Critical`; ExcessiveOverhang severity `Critical`; `is_printable() == false` (both Critical).
+4. **SLS**: TrappedVolume severity `Critical`; `validation.overhangs.len() == 0` (lenient `max=90°`); `is_printable() == false` (TrappedVolume).
+5. **MJF**: TrappedVolume severity `Critical`; `validation.overhangs.len() == 0`; `is_printable() == false` (TrappedVolume).
+
+Voxel-size note (documentation, not an assertion): `voxel_size = min(min_feature_size, layer_height) / 2` per §6.3. For FDM defaults that's `min(0.8, 0.2)/2 = 0.1 mm` → 200³ grid (~8 MB) for the 20mm cube; <2 s on reference machine.
+
+**Visuals**:
+- `out/mesh.ply` — solid cube with internal cavity. Outer surface: cube. Inner cavity surface: sphere (only visible in cross-section). f3d may render only the outer cube (the inner sphere's normals point inward, so are back-facing from the camera). MeshLab's "show edges" + slice plane reveals the internal sphere clearly. **f3d-callout near top of README** per `feedback_f3d_winding_callout`.
+- `out/issues.ply` — single point at (10, 10, 10) (cavity centroid).
+- `out/voxels.ply` — point-cloud of trapped voxel centers (one point per trapped voxel; ~4200 voxels for the sphere at FDM voxel size). Useful for visualizing the discretized cavity shape; demonstrates the voxel-fill algorithm.
+
+**README pitfalls**:
+- The voxel grid in `out/voxels.ply` is tens of thousands of points. Render as point-cloud (small point size); too many for face-coloring.
+- The chamfered-vs-filleted distinction (per `feedback_chamfered_not_rounded`): the SDF-derived sphere surface, when MC-tessellated coarsely, looks **chamfered** (planar facets), not **smooth/filleted**. Use that wording in the README.
+
+**Implementation slot**: lands after the §6.3 TrappedVolume detector commit.
+
+---
+
+### §7.4 `printability-self-intersecting` — Gap I demonstration
+
+**Detector**: SelfIntersecting (`check_self_intersecting`) via mesh-repair re-use.
+
+**Concept**: Two cylinders intersecting like a plus sign, **without** running boolean union — they overlap geometrically without sharing topology. mesh-repair flags every face pair where one cylinder's surface punches through the other's. Demonstrates `validate_for_printing` re-using mesh-repair's intersection routine.
+
+**Fixture geometry**:
+
+Cylinder A: axis along +X, length 30 mm, radius 5 mm, centered at origin (oriented from x=-15 to x=15).
+Cylinder B: axis along +Y, length 30 mm, radius 5 mm, centered at origin.
+The two cylinders interpenetrate at the origin — every face pair where A's lateral surface crosses B's lateral surface is a self-intersection. **Each cylinder is independently watertight + consistently wound**, but the union (without boolean cleanup) has dozens of intersecting face pairs.
+
+Constructed via two independent `mesh_types::cylinder(radius, length, segments)`-style helpers concatenated with vertex-index offset (no welding, no boolean union — that's the point of the fixture).
+
+**FDM config**:
+- `PrinterConfig::fdm_default()` — params don't affect SelfIntersecting; severity is always Critical.
+
+**Expected output**:
+- `validation.self_intersecting.len() >= 4` (lower bound; exact count depends on cylinder tessellation; with 16-segment cylinders, expect 8–24 intersection pairs near the four interpenetration "rings" where A and B's surfaces cross).
+- `validation.self_intersecting.len() <= 100` (mesh-repair's `max_reported = 100` cap; if the cylinder tessellation is fine enough to exceed 100, the description says "(search truncated; total may be higher)" and the cap is hit — assert the description string).
+- All SelfIntersecting issues are `Critical`.
+- `validation.is_printable() == false`.
+- **ExcessiveOverhang co-flag**: each cylinder's lateral surface has a "downhill arc" of faces that flag under Gap M (cylinders are placed with axes horizontal = perpendicular to up; lateral normals span all directions perpendicular to axis, so the bottommost lateral arc has `overhang_angle > 45°`). The bottom-most ring of lateral faces (touching `mesh_min_along_up`) is build-plate-filtered; faces just above it are not. Result: `validation.overhangs.len() >= 1` per cylinder. The example documents this as a co-flag (cylinders printed flat have unavoidable overhang on the underside).
+
+**Assertion list**:
+1. `validation.self_intersecting.len() >= 4` — "interpenetrating cylinders must produce at least 4 face-pair intersections"
+2. All entries' `face_a < face_b` (canonical ordering per §6.4)
+3. All entries' `approximate_location` is within ±5 mm of origin (the actual intersection region is a 3D cross at origin, post-`place_on_build_plate` shifted up so origin maps to (0, 0, 5))
+4. All SelfIntersecting issues are `Critical`; `validation.is_printable() == false`
+5. `validation.overhangs.len() >= 1` (cylinder lateral overhang co-flag, post-Gap-M); not the load-bearing assertion but documented to keep the example's expected output complete.
+6. **Cleaned-up regression**: re-run after removing cylinder B entirely (single cylinder = no self-intersections); assert `validation.self_intersecting.len() == 0`. This shows the validator's role as an upstream gate for boolean repair, and demonstrates that the lateral-overhang co-flag is a separate concern (still present on a single cylinder).
+
+**Visuals**:
+- `out/mesh.ply` — two interpenetrating cylinders. Camera: from above (+Z); two crossed cylinders form a plus sign. Render with edges visible to see the interpenetration.
+- `out/issues.ply` — ≥4 points clustered around the four interpenetration "rings" near the origin (where each cylinder's lateral surface crosses the other's).
+
+**README pitfalls**:
+- "Couldn't I just call `mesh_repair::detect_self_intersections` directly?" Yes — and the validator does internally. The example shows it's available through the higher-level `validate_for_printing` API. Cite the §3 re-export of `IntersectionParams` for power users.
+
+**Implementation slot**: lands after the §6.4 SelfIntersecting detector commit.
+
+---
+
+### §7.5 `printability-small-feature` — Gap J demonstration
+
+**Detector**: SmallFeature (`check_small_features`) via connected-component bbox extent.
+
+**Concept**: A main body (a 30 mm cube) plus a tiny isolated cylindrical burr (0.2 mm diameter × 0.2 mm height) floating 1 mm away — a CAD leftover from an imperfect boolean cut. The burr is a separate connected component below `min_feature_size`; the main body passes. Realistic CAD failure mode.
+
+**Fixture geometry**:
+
+Component 1: a 30×30×30 mm solid cube at origin, z ∈ [0, 30] (sits on build plate). 12 triangles. Watertight, consistent winding.
+Component 2: a tiny **hexagonal prism** (6-segment "cylinder") representing a CAD burr left from a cut at z=0, with bottom hexagon vertices on a circle of radius 0.1 mm at z=0, height 0.2 mm so top hex is at z=0.2. **Burr sits on the build plate** alongside the cube but topologically disjoint. Burr center at (35, 15, 0.1). Authored via 6 lateral quads (= 12 triangles) + 2 hex caps fan-triangulated from each cap centroid (6 + 6 = 12 triangles). Total: **24 triangles, 14 vertices** (12 outer hex vertices + 2 cap centroids). Watertight, consistent winding.
+
+The two components share **no vertices, no edges, no faces** — they're geometrically and topologically disjoint. Concatenated with vertex-index offset; the resulting mesh has 2 connected components (per the §6.5 union-find).
+
+**Why on-plate placement matters**: under post-Gap-M, a floating burr's bottom face would flag as ExcessiveOverhang Critical (downward-facing, not on build plate). Placing the burr ON the build plate (`z_min = 0`, matching the cube's `z_min = 0` so `mesh_min_along_up = 0`) ensures the burr's bottom face is build-plate-filtered → no overhang. The example's load-bearing concept stays clean (only SmallFeature Warning fires; `is_printable() == true`).
+
+**Hexagonal-prism volume (lock-in)**: a regular hexagon with circumradius `r = 0.1 mm` has area `A = (3√3/2)·r² ≈ 2.5981 × 10⁻² mm²`. Volume = `A × h = 2.5981e-2 × 0.2 ≈ 5.196 × 10⁻³ mm³`. The cylinder formula `π r² h ≈ 6.283 × 10⁻³ mm³` is the smooth-cylinder limit; for a 6-segment polygon it's an over-estimate. Use the **prism volume** for the assertion.
+
+**FDM config**:
+- `PrinterConfig::fdm_default()` — `min_feature_size = 0.8 mm`. Burr's `max_extent = 0.2 mm < 0.8/2 = 0.4 mm` → severity Warning. (`max_extent` is the longest bbox side; for the prism that's `max(2r, h) = max(0.2, 0.2) = 0.2 mm`.)
+
+**Expected output**:
+- `validation.small_features.len() == 1` — main cube (30 mm extent) is too big to flag; only the burr.
+- `region.center ≈ (35, 15, 0.1)` within `1e-6` (FP-exact: vertex positions are exact-representable).
+- `region.max_extent` ∈ `[0.199, 0.201]` (exact-representable in principle; range tolerates triangulation artifacts).
+- `region.face_count == 24` (locked-in by the construction approach above).
+- `approx::assert_relative_eq!(region.volume, 5.196e-3, max_relative = 1e-3)` — divergence-theorem volume of the hex prism. (Tolerance reflects FP roundoff in the cross-product sum, not the cylinder-formula approximation.)
+- One `PrintIssue` of type `SmallFeature` with severity `Warning` (0.2 < 0.8/2 = 0.4).
+- `validation.overhangs.len() == 0` — both cube bottom and burr bottom are build-plate-filtered; no other downward faces in the fixture.
+- `validation.is_printable() == true` — SmallFeature Warning ≠ Critical, so `is_printable()` is **not** blocked. Document this in README (helps users distinguish "warning to inspect" from "blocking error").
+
+**Assertion list**:
+1. `validation.small_features.len() == 1` — "exactly one small-feature region (the burr; main cube must NOT flag)"
+2. Centroid within `1e-6` of `(35, 15, 0.1)`
+3. `region.face_count == 24` — "hex prism face count locked in by construction"
+4. `region.max_extent` within tolerance of 0.2
+5. `region.volume` within `1e-3 max_relative` of `5.196e-3`
+6. Severity `Warning`
+7. `validation.overhangs.len() == 0` — "build-plate filter excludes both component bottoms"
+8. `validation.is_printable() == true` — "Warning severity does not block is_printable"
+
+**Visuals**:
+- `out/mesh.ply` — large cube + tiny burr sitting next to it on the build plate. Camera: from above and slightly to the side; the cube fills most of the view; the burr is barely visible at default zoom (it's only 0.2 mm tall vs the cube's 30 mm). Zoom to (35, 15, 0.1) at 100× to see it. README camera notes call out this scale ratio.
+- `out/issues.ply` — one point at (35, 15, 0.1).
+
+**README pitfalls**:
+- "Why doesn't the main cube flag?" Its `max_extent` = 30 mm >> `min_feature_size` = 0.8 mm. The detector is bbox-extent-based.
+- "What if I scale the model 1000× by mistake (mm vs m)?" The main cube becomes 30 m and the burr becomes 0.2 m — neither flags as small. Different detector concern (build-volume-exceeded would fire instead). Note this as a v0.9 followup for a unit-detection heuristic.
+
+**Implementation slot**: lands after the §6.5 SmallFeature detector commit.
+
+---
+
+### §7.6 `printability-orientation` — Gap L demonstration
+
+**Detector**: orientation infrastructure (`find_optimal_orientation` + `evaluate_orientation`) parametrized by `PrinterConfig::build_up_direction`.
+
+**Concept**: A leaning column — a tilted cylinder oriented at 60° from vertical. Validating with default `+Z up` flags massive overhang (the column's "leaning" direction is 60° from vertical, well past 45° threshold). Validating after running `find_optimal_orientation` rotates the column to lay flat → minimal overhang. Then validating with `with_build_up_direction(Vector3::new(0,1,0))` (+Y up) on the original mesh reproduces the same rotated result without rotating the mesh — demonstrating that build-up direction parametrization is equivalent to mesh rotation.
+
+**Fixture geometry**:
+
+A cylinder of radius 5 mm, length 30 mm, axis aligned along the direction `(sin(60°), 0, cos(60°))` ≈ `(0.866, 0, 0.5)`, base centered at origin so the column "leans" 60° from vertical in the +X direction. Watertight, consistent winding.
+
+**Three runs** (in main()):
+
+1. **Default `+Z up`** with original mesh — large overhang area along the lateral cylinder surface (60° tilt > 45° threshold).
+2. **`find_optimal_orientation`** + apply rotation — cylinder lies flat; overhang area drops to near-zero (laterally none; only the two circular end caps which are 90° from the new "up" — but those are wholly above the build plate after `place_on_build_plate`, so they don't flag as overhang either).
+3. **`with_build_up_direction(Vector3::new(0.866, 0, 0.5))`** with original mesh — equivalent to "the +(0.866, 0, 0.5) direction is 'up'" — overhang area drops to near-zero (the cylinder's lateral surface is now parallel to the build-up direction, no overhang).
+
+Cross-check: runs 2 and 3 should produce **the same overhang area within 1e-6** — same physical setup, two equivalent ways to express it (rotate the mesh OR rotate the up-vector).
+
+**FDM config**:
+- `PrinterConfig::fdm_default()` for run 1.
+- `PrinterConfig::fdm_default()` (default `+Z up`) for run 2 after rotation.
+- `PrinterConfig::fdm_default().with_build_up_direction(...)` for run 3.
+
+**Expected output (post-Gap-M convention with build-plate filter)**:
+
+Each Run applies `place_on_build_plate` to the validated mesh so `mesh_min_along_up = 0`; this is the canonical evaluation frame.
+
+**Run 1 (default `+Z up`, no rotation)**: Lateral cylinder normals span `dot ∈ [-0.866, 0.866]` (per the convention derivation; max-downward dot = -sin(60°) = -0.866). Under Gap M predicate `overhang_angle > 45°`:
+- Lateral normal at `dot = -0.866`: `overhang_angle = 60°` → flagged.
+- Lateral normal at `dot = -0.707` (= -sin(45°)): `overhang_angle = 45°` → NOT flagged (strict-greater-than).
+- Lateral normals with `dot > -0.707` (the upward-leaning half of the lateral surface): NOT flagged.
+- Bottom end cap (normal = -axis ≈ (-0.866, 0, -0.5), `dot = -0.5`): `overhang_angle = 30°` → NOT flagged. (Also irrelevant: any face on the build plate would be filtered.)
+- Top end cap (normal = +axis = (0.866, 0, 0.5), `dot = +0.5`): `overhang_angle = -30°` → NOT flagged.
+
+For 32-segment cylinder lateral tessellation (~64 lateral triangles): roughly 12 of them flag (the strip on the downhill side). Each lateral triangle area ≈ (2π·r·length / 64) = (2π·5·30 / 64) ≈ 14.7 mm². Flagged area ≈ 12 × 14.7 ≈ 176 mm². Build-plate filter: lateral faces' min vertex z > 0 in general (lateral faces span the full cylinder; their lowest vertex is at z=0 only for faces immediately at the base ring). Conservatively, ~10 lateral faces touch z=0 (bottom ring); these get filtered. Net flagged: ~10 × 14.7 ≈ 150 mm² (post-filter estimate; exact count depends on tessellation).
+
+**Run 2** (`find_optimal_orientation` + `apply_orientation` + `place_on_build_plate`): the orientation search includes a 45°-rotation around Y (in `generate_sample_orientations`'s 12-sample default), which maps the cylinder's leaning axis (0.866, 0, 0.5) close to +Z (post-rotation axis ≈ (0.259, 0, 0.966)). The exact -60°-around-Y is NOT in the sample set, but the closest sample (45°-around-Y) gets axis 15°-from-up. Under Gap M with FDM `max=45°`:
+- Lateral normals (after 45° rotation) span `dot ∈ [-sin(15°), +sin(15°)] = [-0.259, +0.259]`. Max `overhang_angle ≈ 15°`. NOT flagged.
+- Top end cap (post-rotation): dot ≈ +0.966, NOT flagged.
+- Bottom end cap (post-rotation): dot ≈ -0.966. `overhang_angle = 75°` → 75 > 45 → flagged → BUT on build plate after `place_on_build_plate` → filtered.
+- Run 2 overhang area = **0**, `validation.overhangs.len() == 0`.
+
+(Caveat: which rotation `find_optimal_orientation` picks depends on the score function `support_volume + overhang_area*0.1`. Multiple rotations give score 0 if they reduce overhang to 0; the implementation picks the FIRST in the sample list with min score. The 45°-around-Y rotation is one such; identity is not. Verified at impl time by inspecting `result.rotation`.)
+
+**Run 3** (`PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.866, 0, 0.5).normalize())` on original mesh, `place_on_build_plate` first): the up-vector aligns with the cylinder's leaning axis. Lateral normals are perpendicular to axis = perpendicular to new up: `dot = 0`, `overhang_angle = 0`, NOT flagged. Top cap normal aligned with new up: `dot = +1`, NOT flagged. Bottom cap normal anti-aligned with new up: `dot = -1`, `overhang_angle = 90°`, flagged → BUT bottom cap is at minimum-along-new-up (axis-pos 0), so `face_min_along_up - mesh_min_along_up = 0` → filtered.
+- Run 3 overhang area = **0**, `validation.overhangs.len() == 0`.
+
+**Severity reasoning** (Run 1, downhill faces): the maximum observed `overhang_angle` is ~60° (faces with `dot ≈ -0.866`). Per §4.3:
+- Critical: angle > 75°. 60 > 75? No.
+- Warning: 60° < angle ≤ 75°. 60 > 60? Strict-greater-than. No.
+- Info: 45° < angle ≤ 60°. 60 ≤ 60 → yes. **Info severity** for Run 1's lateral-arc cluster.
+
+So Run 1's overhang issue is Info, not Critical. `is_printable()` is NOT blocked by Run 1's overhang alone. The example documents this — `is_printable()` is **printed but not asserted** for Run 1.
+
+**Assertion list (lock-in)**:
+1. Run 1: `validation.overhangs.len() >= 1`; total overhang area ∈ `[100, 250]` mm² (analytical "downhill arc" minus build-plate-filtered ring ≈ 150 mm²).
+2. Run 1: ExcessiveOverhang severity `Info` (per §4.3 boundary calculation above).
+3. Run 1: print `is_printable()` to stdout but do NOT assert (depends on whether other detectors fire; a cylinder has no thin walls, no cavity, no self-intersections, no small features, so `is_printable() == true` is expected — confirm by print, not by assertion).
+4. Run 2: `validation.overhangs.len() == 0`; total overhang area = 0 within `1e-6` mm².
+5. Run 3: `validation.overhangs.len() == 0`; total overhang area = 0 within `1e-6` mm².
+6. **The Gap L invariant**: `assert_relative_eq!(run2_overhang_area, run3_overhang_area, epsilon = 1e-6)` — trivially 0 = 0; semantically Gap-L's load-bearing claim.
+7. Run 2 overhang area STRICTLY LESS than Run 1 overhang area (`assert!(run2_area < run1_area)`; orientation search reduces support need; 0 < ~150 holds).
+8. All three Runs print `overhangs.len()` and total overhang area to stdout.
+
+**Visuals**:
+- `out/mesh_original.ply` — leaning cylinder pre-validation (post-`place_on_build_plate`; min_z = 0).
+- `out/mesh_rotated.ply` — cylinder after `find_optimal_orientation.rotation` applied + `place_on_build_plate`. Axis-up (or near-axis-up post-search); cylinder stands on its bottom end-cap.
+- `out/issues_run1.ply` — point cloud of overhang-region centers from Run 1 (likely 1–2 points on the downhill strip).
+- `out/issues_run2.ply`, `out/issues_run3.ply` — empty point-clouds (zero overhang); demonstrates the "no issues = no points" rendering.
+
+**README pitfalls**:
+- "Run 2 and Run 3 give the same answer — why have both?" Because they're **architecturally different**: Run 2 modifies the mesh; Run 3 modifies the config. For workflows that don't want to rotate the mesh (preserves authoring frame, allows comparing orientations without rebuilding the mesh), Run 3 is the right tool. The example demonstrates both equivalence and the use-case difference.
+- The chamfered note (`feedback_chamfered_not_rounded`): the cylinder is tessellated with 32 segments; lateral surface looks **chamfered** at coarse zoom, not smooth-curved. Use that wording in README.
+
+**Implementation slot**: lands after the §5.6 Gap L parametrization commit (and after `find_optimal_orientation` is verified to consume `config.build_up_direction` — F10 in §2 of the spec).
+
+---
+
+### §7.7 `printability-technology-sweep` — cross-tech behavior on same mesh
+
+**Detector**: all detectors, exercised with four different `PrinterConfig`s on the same mesh.
+
+**Concept**: A part with both a **thin wall** AND a **sealed cavity** is validated under FDM, SLA, SLS, MJF. The output diverges — same geometry, four different printability verdicts — demonstrating technology-aware severity (TrappedVolume tech mapping in §4.3) and threshold differences (`min_wall_thickness` is 1.0 for FDM vs 0.4 for SLA vs 0.7 for SLS vs 0.5 for MJF).
+
+**Fixture geometry (simplified — single box-cavity serves both ThinWall and TrappedVolume)**:
+
+A double-walled hollow box at outer dimensions 25×20×15 mm; inner cavity 22×17×13.1 mm with the inner cavity's top raised so the top wall thins to **0.4 mm** (same construction as §7.1, scaled). Side wall thicknesses 1.5 mm; bottom wall 1.5 mm; top wall 0.4 mm. The inner box-cavity is itself the trapped volume — one cavity serves both detector demos. Watertight, consistent winding.
+
+Construction approach: hand-author 12 outer triangles + 12 inner triangles (24 total, 16 unique vertices), per §7.1 pattern.
+
+**Wall-thickness lock-in: 0.4 mm** — chosen so each technology's threshold lands on a different severity band per §4.3.
+
+**Expected output (per technology)** — the inner top face IS the cavity ceiling, so the ThinWall cluster on inner top and the cavity-ceiling overhang share that face. Each is a SEPARATE detector flag (different `validation.<field>`):
+
+| Tech | `min_wall` | `max_overhang` | ThinWall (wall=0.4) | TrappedVolume | Cavity-ceiling overhang | `is_printable()` |
+|------|-----------|----------------|---------------------|---------------|--------------------------|------------------|
+| FDM | 1.0 mm | 45° | 2× **Critical** (0.4 < 0.5) | Info | **Critical** (90 > 75) | `false` |
+| SLA | 0.4 mm | 30° | 2× NOT flagged (0.4 ≥ 0.4) | **Critical** | **Critical** (90 > 60) | `false` |
+| SLS | 0.7 mm | 90° | 2× **Warning** (0.35 ≤ 0.4 < 0.7) | **Critical** | NOT flagged (90 NOT > 90) | `false` |
+| MJF | 0.5 mm | 90° | 2× **Warning** (0.25 ≤ 0.4 < 0.5) | **Critical** | NOT flagged (90 NOT > 90) | `false` |
+
+(The "2×" notation reflects the §7.1-analyzed two-cluster outcome from edge-adjacency: outer-top and inner-top clusters. Cavity-ceiling overhang is a single cluster on the inner-top face.)
+
+**Each tech flags differently — none give a green check, but each blocks for a different reason.** The example's load-bearing surface is the per-tech severity matrix, not a single "FDM-vs-SLA" binary outcome.
+
+**Assertion list (4 sub-runs)**:
+1. **FDM**: `thin_walls.len() == 2` with severity `Critical` each; `trapped_volumes.len() == 1` with severity `Info`; `validation.overhangs.len() == 1` (inner-top cluster as cavity ceiling) with severity `Critical`; `is_printable() == false`.
+2. **SLA**: `thin_walls.len() == 0` (strict-less-than boundary); `trapped_volumes.len() == 1` with severity `Critical`; `validation.overhangs.len() == 1` (inner-top cavity ceiling) with severity `Critical`; `is_printable() == false`.
+3. **SLS**: `thin_walls.len() == 2` with severity `Warning` each; `trapped_volumes.len() == 1` with severity `Critical`; `validation.overhangs.len() == 0` (lenient `max=90°`); `is_printable() == false` (TrappedVolume).
+4. **MJF**: `thin_walls.len() == 2` with severity `Warning` each; `trapped_volumes.len() == 1` with severity `Critical`; `validation.overhangs.len() == 0`; `is_printable() == false` (TrappedVolume).
+
+**Visuals**:
+- `out/mesh.ply` — the part.
+- `out/issues_fdm.ply`, `out/issues_sla.ply`, `out/issues_sls.ply`, `out/issues_mjf.ply` — region centroids per tech. The visual story: same mesh, different point-cloud overlays per tech. (Aspirational v0.9: render them as a single multi-layered PLY with per-point tech-tag attribute. Out of v0.8 scope.)
+
+**README pitfalls**:
+- The boundary cases (e.g., wall=0.4 with SLA min_wall=0.4 → not flagged because the comparison is strict-less-than): document the strict-less-than convention; the README's table reproduces the lock-in.
+- "Why does every tech fail this part?" Because the cavity (Critical for SLA/SLS/MJF) and the thin wall (Critical for FDM) make this part unprintable on every common technology. Note that this is a **deliberate fixture choice** to demonstrate divergence — a real CAD pipeline would design around these constraints.
+
+**Implementation slot**: lands after **all** detectors are landed (§7.7 exercises ThinWall + TrappedVolume together; both must be shipped first).
+
+---
+
+### §7.8 `printability-showcase` — capstone with multi-issue mesh
+
+**Detector**: all six detectors (incl. existing overhang/manifold), in one fixture.
+
+**Concept**: A small mounting bracket — a realistic CAD part — with deliberately-introduced printability concerns: a 60° overhang on a side wing, a 0.4 mm thin lip near the mounting hole, a small isolated burr from a boolean cut, and a sealed internal cavity. Demonstrates the "summary report" capability — shows all the detectors firing at once on a realistic part, and how the user reads the multi-detector output (severity-sorted issues list).
+
+**Fixture geometry**:
+
+A simplified bracket — kept tractable to hand-author + minimize fixture complexity, while still feeling like a real CAD part:
+
+- **Body**: 50×30×10 mm rectangular base.
+- **Wing**: an attached L-extension 30 mm tall, leaning at 60° from vertical (overhang concern).
+- **Thin lip**: a 0.4 mm thin top wall on the base (same construction technique as §7.1; scaled to bracket dimensions).
+- **Burr**: a tiny isolated hexagonal-prism component (≈ 0.2 mm extent) placed 5 mm from the bracket — same as §7.5's burr fixture.
+- **Sealed cavity**: a 4 mm-radius sphere cavity inside the base — acknowledged as not physically realistic for a bracket; document as a fixture contrivance to exercise TrappedVolume in the showcase.
+
+**Construction approach**: hand-author each component (~120 triangles total: 12 base + 12 wing + 24 thin-lip extras + 24 burr + ~1024 sphere), concatenate. NOT via mesh-shell (which is offset-based, not CSG). Total fixture build is ~1100 triangles; deterministic and reproducible.
+
+**FDM config**:
+- `PrinterConfig::fdm_default()`.
+
+**Expected output**: multiple issues, mixed severities. The example's main() walks `validation.issues`, prints them sorted by severity (per §4.4), and asserts:
+
+**Assertion list**:
+1. `validation.thin_walls.len() >= 1` — "thin top wall must flag"
+2. `validation.small_features.len() >= 1` — "burr must flag"
+3. `validation.trapped_volumes.len() >= 1` — "sealed cavity must flag"
+4. `validation.overhangs.len() >= 2` — "expect at least: (a) leaning wing at 60° tilt (Info severity, 60° NOT > 60° strict so Info-band per §4.3), (b) cavity ceiling at 90° tilt (Critical severity, 90° > 75° Critical band)".
+5. `validation.issues.len() >= 5` — sum of typed-issue records (≥5 covers 1 ThinWall + 1 SmallFeature + 1 TrappedVolume + 2 ExcessiveOverhang).
+6. At least 2 `Critical` issues → `is_printable() == false`. Sources of Critical: (i) ThinWall on the 0.4mm lip (0.4 < 1.0/2 = 0.5); (ii) ExcessiveOverhang on cavity ceiling (90° > 45°+30° Critical band).
+7. Issues sorted: validate first issue's severity ≥ second's, etc. (per §4.4 sort policy).
+8. `println!("{}", validation.summary())` to stdout — visible to the user reading the terminal.
+9. The bracket's main body itself is **not flagged** as a SmallFeature (50mm extent >> min_feature_size).
+
+**Visuals**:
+- `out/mesh.ply` — the bracket. Camera: 3/4 view from above-front. Look for the leaning wing, the thin lip near mounting holes, the burr.
+- `out/issues.ply` — point-cloud of all region centroids (one point per region, all detectors). Density of points ≈ 4–6.
+
+**README pitfalls**:
+- "Why is the cavity in a bracket?" Acknowledged as fixture-contrivance. The example demonstrates multi-detector reporting; a real bracket would not have an internal cavity. Documented.
+- The chamfered note: the SDF-composed bracket has chamfered features at every boolean edge (per `feedback_chamfered_not_rounded`); call out in README.
+
+**Implementation slot**: lands LAST in the v0.8 example sequence, after all detectors and the orientation example. Acts as the "everything works together" smoke test.
+
+---
+
+### §7.9 Resolved decisions
+
+User confirmed master-architect call on Q1–Q7 (2026-04-30). Resolutions captured below; the body of §7 reflects each resolution.
+
+#### Q1 (resolved): "Cross-section-sweep" → renamed to "technology-sweep"
+
+**Resolution**: §7.7 named **`printability-technology-sweep`** (interpretation c — same mesh, four technologies, demonstrates tech-aware severity divergence). The "cross-section-sweep" naming is dropped. Geometry-sweep and orientation-sweep alternatives are deferred (orientation-sweep is partially covered by §7.6; geometry-sweep is v0.9 candidate if a user wants severity-band visualization).
+
+#### Q2 (resolved): AttributedMesh face-attributes deferred to v0.9
+
+`AttributedMesh` currently supports per-vertex attributes only. v0.8 ships with point-cloud `issues.ply` (region centroids only); README prose carries the visual story. Triple-tracked at PR-close. Trigger for v0.9 work: (i) user reports the centroid point-cloud is insufficient for visual review, or (ii) a non-printability use case for face-attributes lands and the same plumbing serves both.
+
+#### Q3 (resolved): showcase included in v0.8
+
+§7.8 (`printability-showcase`) ships in v0.8. Realistic-part fixture is the strongest counter-evidence to "the detector examples are all toy fixtures". Cost is ~1 hour of authoring; if v0.8 scope ever needs to slip, drop the showcase first — per-detector examples are non-negotiable.
+
+#### Q4 (resolved): eight examples is the right scope
+
+Five detectors → five examples (one-concept-per-example per `feedback_simplify_examples` + `feedback_museum_plaque_readmes`). Gap L → orientation example. Tech-sweep → cross-tech severity divergence. Showcase → integration semantics. Cutting any would either skip a detector or hide a load-bearing v0.8 surface. Pause-for-visuals-pass cadence at ~10 min/example × 8 = ~80 min of user attention; sustainable per `feedback_patience_track_record`.
+
+#### Q5 (resolved): f3d-callout placement
+
+Top-of-README callout in §7.1, §7.3, §7.6, §7.8 (load-bearing for visual interpretation). Inline note in Visuals section for §7.2, §7.4. None for §7.5, §7.7 (no load-bearing winding-pair concern).
+
+#### Q6 (resolved): per-commit workspace-members updates
+
+Each example's commit adds its `examples/mesh/printability-<name>` to the workspace `[workspace.members]` list AND lands the example as one atomic commit. `cargo build --workspace` post-commit confirms.
+
+#### Q7 (resolved): Gap M added to v0.8 scope (with M.2 build-plate filter sub-fix)
+
+The v0.7.0 overhang flagging predicate is inverted from FDM convention; fix in v0.8 as **Gap M** (specced in §5.9). Convention lock-in: `overhang_angle = acos(dot) - π/2` (signed deviation of normal from build-plane); flag if `overhang_angle > max_overhang_angle_rad`. Pure roofs (`dot=-1`) → `overhang_angle = 90°` → flagged. Vertical walls (`dot=0`) → `overhang_angle = 0` → not flagged.
+
+**M.2 build-plate filter**: §7 review surfaced a follow-on consequence — under the corrected predicate, every solid object's bottom face (`dot=-1`) would flag as Critical overhang, including the cube-on-plate of §7.3/§7.5/§7.7/§7.8. The v0.7.0 buggy predicate accidentally avoided this by not flagging fully-downward faces. Gap M adds a build-plate filter (matching §6.2 LongBridge pattern: `(face_min_along_up - mesh_min_along_up) < EPS_GEOMETRIC`) so faces resting on the build plate are excluded — they're supported by the plate, not overhangs. Without M.2, every example in §7 would fail with spurious Critical overhangs.
+
+**Cavity-ceiling co-flag**: a separate behavioral consequence — any sealed internal cavity inherently has a "ceiling" face whose normal points downward (`dot ≈ -1`, `overhang_angle ≈ 90°`). Under Gap M this fires Critical overhang for techs with `max_overhang_angle ≤ 60°` (FDM, SLA), regardless of designer intent. §7.1, §7.3, §7.7, §7.8 each document this as a multi-detector co-flag in the README rather than try to suppress it. v0.9 followup (triple-tracked at PR-close): "interior face detection — distinguish cavity-internal faces from exterior faces". Trigger: a user requests cavity-aware overhang severity.
+
+§7.2, §7.6, §7.8 overhang predictions are specific (post-Gap-M with build-plate filter) rather than soft-landed. The Run-2 ≡ Run-3 invariant in §7.6 is the load-bearing claim regardless.
+
+§1 gap inventory updated with Gap M (incl. M.2 sub-fix in description); §2 added F15 finding; §5.9 holds the per-fix spec including build-plate filter logic; §5.10 holds CHANGELOG creation; commit-order is A → M → B → D → E → F → L → K → DetectorSkipped → CHANGELOG → C → G → H → I → J → §7 examples in detector order.
+
+---
+
+## §8 onwards — pending
+
+(Sections 8–13: risk inventory, stress-test gauntlet, grading & CI impact, open questions, implementation order, spec lifecycle.)
