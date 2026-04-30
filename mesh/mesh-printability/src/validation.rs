@@ -459,11 +459,18 @@ mod tests {
         assert!(matches!(result, Err(PrintabilityError::NoFaces)));
     }
 
+    // The five `validate_for_printing(...).expect("Should succeed")` calls in the
+    // tests below operate on fixtures constructed inline (no I/O, no fallible
+    // setup): an `expect` failure here would indicate a regression in the
+    // detector itself, not a malformed fixture. Each site is annotated
+    // individually so the lint stays active for any future statements added
+    // inside these test bodies.
     #[test]
     fn test_build_volume_check() {
         let mesh = create_cube_mesh();
         let config = PrinterConfig::fdm_default().with_build_volume(5.0, 5.0, 5.0);
 
+        #[allow(clippy::expect_used)]
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
         assert!(
             result
@@ -479,6 +486,7 @@ mod tests {
         let mesh = create_watertight_cube();
         let config = PrinterConfig::fdm_default().with_build_volume(100.0, 100.0, 100.0);
 
+        #[allow(clippy::expect_used)]
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
         assert!(
             !result
@@ -493,6 +501,7 @@ mod tests {
         let mesh = create_cube_mesh(); // Incomplete cube
         let config = PrinterConfig::fdm_default();
 
+        #[allow(clippy::expect_used)]
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
         assert!(
             result
@@ -507,6 +516,7 @@ mod tests {
         let mesh = create_watertight_cube();
         let config = PrinterConfig::fdm_default();
 
+        #[allow(clippy::expect_used)]
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
         assert!(
             !result
@@ -576,6 +586,7 @@ mod tests {
         let mesh = create_watertight_cube();
         let config = PrinterConfig::sls_default();
 
+        #[allow(clippy::expect_used)]
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
         // SLS doesn't check overhangs
         assert!(
