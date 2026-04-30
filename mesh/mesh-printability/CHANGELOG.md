@@ -30,6 +30,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authored later in v0.8 (`TrappedVolume`, `LongBridge`, and any
   successors) consume `config.build_up_direction` from day one — never
   a hardcoded `(0, 0, 1)`.
+- **`PrintIssueType::DetectorSkipped` variant added (§5.8).**
+  Detectors with precondition skip behaviour (`ThinWall` §6.1,
+  `TrappedVolume` §6.2, and any successors per §4.1) need a typed
+  issue to push when they early-return because their preconditions
+  (e.g. watertight mesh, consistent winding) are not met. v0.7 had no
+  typed slot for "this detector did not run because its preconditions
+  weren't met"; the existing `Other` variant is a caller-extension
+  hook that mesh-printability itself never emits, so re-using `Other`
+  would muddle that contract. The new variant gives detectors a
+  single, type-safe way to signal a precondition skip with severity
+  contract `IssueSeverity::Info` (`as_str() == "Detector Skipped"`);
+  the issue's description string names the detector + the missing
+  precondition. **SEMVER note**: pure addition at the variant level,
+  but `PrintIssueType` is not `#[non_exhaustive]`, so downstream
+  callers performing exhaustive `match` on the enum without a
+  wildcard arm will need to add a `DetectorSkipped => …` arm. All
+  workspace consumers (`mesh-printability` internal sites,
+  `mesh`, `mesh-shell`, examples) compare via `==` equality and are
+  unaffected. **Future-detector commitment**: detectors authored
+  later in v0.8 (`ThinWall` §6.1, `TrappedVolume` §6.2, and any
+  successors) emit `DetectorSkipped` on precondition failure rather
+  than silently returning.
 
 ### Changed
 

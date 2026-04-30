@@ -90,6 +90,12 @@ pub enum PrintIssueType {
     SelfIntersecting,
     /// Other issue.
     Other,
+    /// Emitted when a detector's preconditions (e.g. watertight mesh,
+    /// consistent winding) are not met. Severity is always Info.
+    /// The issue's description names the detector + missing precondition.
+    /// Distinct from `Other`, which is a caller-extension hook that
+    /// mesh-printability never emits.
+    DetectorSkipped,
 }
 
 impl PrintIssueType {
@@ -107,6 +113,7 @@ impl PrintIssueType {
             Self::NonManifold => "Non-Manifold",
             Self::SelfIntersecting => "Self-Intersecting",
             Self::Other => "Other",
+            Self::DetectorSkipped => "Detector Skipped",
         }
     }
 }
@@ -195,5 +202,23 @@ mod tests {
     fn test_severity_ordering() {
         assert!(IssueSeverity::Info < IssueSeverity::Warning);
         assert!(IssueSeverity::Warning < IssueSeverity::Critical);
+    }
+
+    // -- §5.8: DetectorSkipped variant ----------------------------------------
+
+    #[test]
+    fn test_detector_skipped_as_str() {
+        assert_eq!(PrintIssueType::DetectorSkipped.as_str(), "Detector Skipped");
+    }
+
+    #[test]
+    fn test_detector_skipped_is_info_severity_when_emitted() {
+        let pi = PrintIssue::new(
+            PrintIssueType::DetectorSkipped,
+            IssueSeverity::Info,
+            "ThinWall: requires watertight mesh",
+        );
+        assert!(!pi.is_warning());
+        assert!(!pi.is_critical());
     }
 }
