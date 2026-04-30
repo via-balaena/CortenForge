@@ -1553,7 +1553,7 @@ Therefore: **2 clusters** — one outer-top cluster (2 triangles, 600 mm² area,
 - "Wait, the cavity is sealed — won't FDM TrappedVolume Info also fire?" Yes; document it in README so the user isn't surprised by two issues. The example demonstrates ThinWall as **the load-bearing concept**, with TrappedVolume as a documented co-flag.
 - "Why not use a single-walled thin box?" A single-walled thin box is open (5-of-6 face), so ThinWall is **skipped** via the watertight-or-skip precondition (§4.1 + §6.1). The double-walled construction is necessary for ThinWall to actually run.
 
-**Implementation slot**: lands as commit immediately after the §6.1 ThinWall detector commit.
+**Implementation slot**: split across two commits. Row #11 (`feat(examples): mesh-printability-thin-wall visual demo (Gap C)`) lands immediately after the §6.1 ThinWall detector commit (row #10) and asserts the 8 in-scope anchors — assertions #1–6 + #10 + the prose anchor #11. Row #14b (`feat(examples): backfill TrappedVolume assertions in printability-thin-wall (deferred from row #11)`) lands immediately after row #14 (when the §6.3 TrappedVolume detector first ships) and backfills assertions #7–9 (sealed-cavity count + volume + centroid). See §12.1 for the split rationale: row #14 is HIGH-tier (detector + cross-os CI + voxel-grid memory cap); keeping the example backfill off it preserves §8.4 pre-flight focus and closes the row #11 deferral loop visibly in `git log`.
 
 ---
 
@@ -2859,7 +2859,7 @@ This section is the **canonical commit-order spec**. Three §-internal inconsist
 
 ### §12.1 Canonical commit order
 
-**27 commits total** (Gap A 3-commit split per §5.1 lifts the count from 25 to 27; subsequent commit numbers preserved via letter-suffix sub-numbering on the Gap A slot, so existing #2..#25 references throughout the spec stay valid). Each row names the commit, its scope, the affected files, and the v0.8.0 baseline target it advances. **Pause-for-visuals-pass** rows (per `feedback_one_at_a_time_review`) are flagged with ⏸︎ — implementation pauses there for user review before the next commit starts.
+**28 commits total** (Gap A 3-commit split per §5.1 lifts the count from 25 to 27; row #14b inserted post-row-#14 closes the §7.1 TrappedVolume-assertion deferral from row #11 — kept off row #14 so that high-tier commit's scope stays focused on the detector + cross-os CI + voxel-grid memory cap, and visible in `git log` so the deferral loop closes by name rather than buried in a high-tier commit body. Subsequent commit numbers preserved via letter-suffix sub-numbering, so existing #2..#25 references throughout the spec stay valid). Each row names the commit, its scope, the affected files, and the v0.8.0 baseline target it advances. **Pause-for-visuals-pass** rows (per `feedback_one_at_a_time_review`) are flagged with ⏸︎ — implementation pauses there for user review before the next commit starts.
 
 | # | Commit | Scope | Files | High-tier? | Pause? |
 |---|--------|-------|-------|------------|--------|
@@ -2879,6 +2879,7 @@ This section is the **canonical commit-order spec**. Three §-internal inconsist
 | 12 | `feat(mesh-printability): LongBridge detector via boundary-edge span analysis (Gap G)` | §6.2 + §9.2.4 | `validation.rs::check_long_bridges` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `CHANGELOG.md` | — | — |
 | 13 | `feat(examples): mesh-printability-long-bridge visual demo (Gap G)` | §7.2 | `examples/mesh/printability-long-bridge/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
 | 14 | `feat(mesh-printability): TrappedVolume detector via exterior flood-fill (Gap H) + cross-os CI + voxel-grid memory cap` | §6.3 (incl. OOM amendment from §9.2.5) + §9.2.5 + §10.4.1 CI extension | `validation.rs::check_trapped_volumes` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `.github/workflows/quality-gate.yml` (append `-p mesh-printability` to cross-os), `CHANGELOG.md` | **High** (§8.4 FP drift + grid memory) | — |
+| 14b | `feat(examples): backfill TrappedVolume assertions in printability-thin-wall (deferred from row #11)` | §7.1 deferred-from-#11 (assertions #7–9: `trapped_volumes.len() == 1`, volume ≈ 6011.7 mm³, centroid `(15, 10, 8.05)`) | `examples/mesh/printability-thin-wall/src/main.rs` (3 assertions + remove deferral comment + update doc-comment references), `CHANGELOG.md` | — | — |
 | 15 | `feat(examples): mesh-printability-trapped-volume visual demo (Gap H)` | §7.3 | `examples/mesh/printability-trapped-volume/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
 | 16 | `feat(mesh-printability): SelfIntersecting detector via mesh-repair re-use (Gap I)` | §6.4 + §9.2.6 + dep add | `validation.rs::check_self_intersecting` (new), `regions.rs`, `lib.rs`, `Cargo.toml` (mesh-repair dep), `tests/stress_inputs.rs` (append), `CHANGELOG.md` | **High** (§8.4 Layer Integrity dep cap) | — |
 | 17 | `feat(examples): mesh-printability-self-intersecting visual demo (Gap I)` | §7.4 | `examples/mesh/printability-self-intersecting/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
