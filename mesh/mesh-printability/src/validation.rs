@@ -531,6 +531,21 @@ fn build_edge_to_faces(mesh: &IndexedMesh) -> HashMap<(u32, u32), Vec<u32>> {
 }
 
 /// Basic manifold check (edge usage).
+///
+/// Two passes run side-by-side:
+/// 1. **Undirected edge sharing** — each edge `(min, max)` should be incident
+///    on exactly 2 faces; deviations emit `NonManifold` (>2 faces) or
+///    `NotWatertight` (1 face) `Critical` issues.
+/// 2. **Directed edge orientation (Gap F, §5.5)** — for each face, record
+///    the three traversals `(face[0], face[1])`, `(face[1], face[2])`,
+///    `(face[2], face[0])`. In a consistently-wound surface, each directed
+///    pair appears at most once: shared edges are traversed in opposite
+///    directions by the two incident faces. Any directed pair appearing
+///    more than once means two faces traverse that edge in the *same*
+///    direction (one is "inside out" relative to the other) — flagged as
+///    `NonManifold` `Critical` with description containing
+///    "winding inconsistency" so callers can discriminate from open-edge
+///    and non-manifold-edge cases by description string.
 fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
     let edge_to_faces = build_edge_to_faces(mesh);
 
@@ -561,6 +576,26 @@ fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
             );
             validation.issues.push(issue);
         }
+    }
+
+    // §5.5 Gap F — directed-edge winding-orientation pass.
+    let mut directed_edges: HashMap<(u32, u32), u32> = HashMap::new();
+    for face in &mesh.faces {
+        let edges = [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])];
+        for edge in &edges {
+            *directed_edges.entry(*edge).or_insert(0) += 1;
+        }
+    }
+    let inconsistent_count = directed_edges.values().filter(|&&c| c > 1).count();
+    if inconsistent_count > 0 {
+        let issue = PrintIssue::new(
+            PrintIssueType::NonManifold,
+            IssueSeverity::Critical,
+            format!(
+                "{inconsistent_count} edge(s) traversed in same direction by multiple faces (winding inconsistency)"
+            ),
+        );
+        validation.issues.push(issue);
     }
 }
 
@@ -1621,6 +1656,143 @@ mod tests {
         assert!(
             result.is_printable(),
             "50° overhang on 45° FDM threshold is Info; does not block is_printable()"
+        );
+    }
+
+    // §5.5 Gap F — directed-edge winding-orientation cluster.
+    //
+    // `check_basic_manifold` runs two side-by-side passes: the undirected
+    // edge-sharing pass (existing v0.7 logic) and the directed-edge pass
+    // (Gap F). Both push under `PrintIssueType::NonManifold` with distinct
+    // descriptions, so these tests discriminate the new winding-inconsistency
+    // signal by string-matching `"winding inconsistency"` in the issue
+    // description — the load-bearing anchor convention from §5.5.
+    //
+    // Fixture polarity:
+    // - `test_winding_inconsistent_two_same_direction_faces` is the positive
+    //   case (issue must fire).
+    // - `test_winding_consistent_watertight_cube` is the regression-guard
+    //   that pre-flight verified `create_watertight_cube` has consistent
+    //   CCW-from-outside winding (§8.1 Gap F risk row 1 mitigation).
+    // - `test_winding_consistent_disjoint_faces` confirms the detector
+    //   doesn't false-positive on faces that share only a vertex.
+    // - `test_winding_inconsistent_does_not_break_open_edge_check` verifies
+    //   the directed-edge pass doesn't perturb the existing open-edge
+    //   detector when winding is consistent.
+
+    #[test]
+    fn test_winding_inconsistent_two_same_direction_faces() {
+        // Two triangles sharing edge (0,1), both traversing it in the same
+        // direction: face [0,1,2] has directed edge (0,1); face [0,1,3]
+        // also has directed edge (0,1). One face is "inside out" relative
+        // to the other — Gap F's positive case.
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, 1.0),
+        ];
+        let faces = vec![[0, 1, 2], [0, 1, 3]];
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the same-direction-faces fixture");
+
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::NonManifold
+                    && i.description.contains("winding inconsistency")),
+            "directed-edge pass must flag NonManifold Critical with 'winding inconsistency' description on a same-direction shared edge"
+        );
+    }
+
+    #[test]
+    fn test_winding_consistent_watertight_cube() {
+        // Regression guard: the existing `create_watertight_cube` fixture
+        // is wound CCW-from-outside (verified by directed-edge inspection
+        // in §8.1 Gap F risk row 1 pre-flight). The directed pass must NOT
+        // emit a winding-inconsistency issue on it. If this test fails,
+        // the cube fixture has a silent winding defect that v0.7 missed —
+        // surface as plan-contradicting evidence.
+        let mesh = create_watertight_cube();
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the watertight cube");
+
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::NonManifold
+                    && i.description.contains("winding inconsistency")),
+            "watertight cube has consistent CCW-from-outside winding; no winding-inconsistency issue should fire"
+        );
+    }
+
+    #[test]
+    fn test_winding_consistent_disjoint_faces() {
+        // Two triangles sharing only a single vertex (vertex 2): no shared
+        // edge exists, so no directed-edge collision is possible. The
+        // detector must not false-positive on vertex-only adjacency.
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+        ];
+        let faces = vec![[0, 1, 2], [2, 3, 4]];
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the disjoint-faces fixture");
+
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::NonManifold
+                    && i.description.contains("winding inconsistency")),
+            "two faces sharing only a vertex have no shared edge; no winding-inconsistency issue should fire"
+        );
+    }
+
+    #[test]
+    fn test_winding_inconsistent_does_not_break_open_edge_check() {
+        // `create_cube_mesh` is an incomplete cube (bottom + top only)
+        // with consistent winding within each face. The directed-edge
+        // pass must not perturb the undirected open-edge check: result
+        // still reports `NotWatertight` Critical, and no winding-
+        // inconsistency issue fires.
+        let mesh = create_cube_mesh();
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the incomplete-cube fixture");
+
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::NotWatertight),
+            "incomplete cube must still flag NotWatertight (open edges)"
+        );
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::NonManifold
+                    && i.description.contains("winding inconsistency")),
+            "incomplete cube has consistent winding; no winding-inconsistency issue should fire"
         );
     }
 }

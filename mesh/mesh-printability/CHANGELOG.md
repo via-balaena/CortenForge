@@ -98,6 +98,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meshes with > 75° flagged faces. Helper: new private
   `classify_overhang_severity(observed_deg, threshold_deg)` is the
   single source of policy.
+- **Manifold check now detects inconsistent winding orientation
+  (Gap F).** v0.7's `check_basic_manifold` treated edges as undirected
+  `(min, max)`-normalized pairs and only counted sharing — silently
+  passing meshes where two faces share an edge but traverse it in the
+  *same* direction (one face is "inside out" relative to the other).
+  FDM slicers reject such meshes in practice. v0.8 adds a directed-edge
+  pass alongside the existing undirected pass: for each face, the three
+  traversals `(face[0], face[1])`, `(face[1], face[2])`,
+  `(face[2], face[0])` are recorded; any directed pair appearing more
+  than once is a winding-orientation defect. Both detectors push under
+  `PrintIssueType::NonManifold`; the new issue's description contains
+  "winding inconsistency" so callers can discriminate from open-edge
+  ("open edge(s)") and non-manifold-edge ("non-manifold edge(s)") cases
+  by string-matching. **SEMVER-significant behavioural change** for
+  callers depending on v0.7 `is_printable()` outputs on meshes with
+  inconsistent face orientations — they now see a Critical issue and
+  `is_printable()` returns `false`.
 
 ### v0.9 candidates
 
