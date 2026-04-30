@@ -2806,4 +2806,330 @@ Each trigger is verifiable from outside the spec (memo backlog + CHANGELOG `[Unr
 
 ---
 
+## §12. Implementation order + commit boundaries
+
+This section is the **canonical commit-order spec**. Three §-internal inconsistencies surfaced in §8.3 are reconciled here; §12 supersedes §8.3's working-state best-guess.
+
+### §12.0 Reconciliation of §-internal inconsistencies
+
+| # | Conflict | Reconciled to | Rationale |
+|---|----------|---------------|-----------|
+| 1 | `build_edge_to_faces` refactor placement: §5.3 says "separate commit before Gap D" vs §7.9's locked-order doesn't list it | **Separate commit between Gap B and Gap D** (slot #4 in §12.1) | §5.3's reading. Extracting the helper from `check_basic_manifold` is a refactor that benefits from isolated diff review + the §5.3 regression-gate sweep. Bundling with Gap D would conflate "refactor" with "behavior change". |
+| 2 | CHANGELOG creation slot: §1+§5.10 say "at Gap A" vs §7.9 lists it post-DetectorSkipped | **Created in Gap A commit; every subsequent commit appends entries** | §5.10's reading. There's no separate "CHANGELOG creation" commit. §7.9's slot was a stale artifact of an earlier ordering. The CHANGELOG-as-living-document pattern is what's standard for `keepachangelog.com` workflows. |
+| 3 | Detector↔example interleave: §7.0 says "interleaved" vs §7.9 reads as "batched-after" | **Interleaved** (detector → its example → next detector) | §7.0's reading. Per `feedback_one_at_a_time` + `feedback_one_at_a_time_review`: each detector commit is followed by its example commit + user visuals-pass before the next detector lands. This is the slow-cadence pattern the user's `feedback_patience_track_record` calls out as historically successful. |
+| 4 | Gap K (COMPLETION.md rewrite) slot: §1 says "late (rewrite when truth is settled)" vs §7.9 places it at slot 8 (after L, before DetectorSkipped) | **Bundled into the v0.8.0 release commit** (§12.1 row #24) | §1's reading. "Truth is settled" only after all detectors + examples land. Authoring COMPLETION.md early forces partial-then-fill across many commits, drifting the document at every detector add. Bundling into release ships one clean rewrite with the full v0.8 inventory. Surfaced during §12 risk-mitigation review pass. |
+
+### §12.1 Canonical commit order
+
+25 commits total. Each row names the commit, its scope, the affected files, and the v0.8.0 baseline target it advances. **Pause-for-visuals-pass** rows (per `feedback_one_at_a_time_review`) are flagged with ⏸︎ — implementation pauses there for user review before the next commit starts.
+
+| # | Commit | Scope | Files | High-tier? | Pause? |
+|---|--------|-------|-------|------------|--------|
+| 1 | `chore(mesh-printability): inherit workspace lints + create CHANGELOG (Gap A)` | §5.1 + §5.10 + §11.2 v0.7 coverage baseline capture | `Cargo.toml`, `CHANGELOG.md` (new), per-clippy fallout in src or tests | — | — |
+| 2 | `fix(mesh-printability): correct overhang predicate to FDM convention + build-plate filter (Gap M)` | §5.9 (M) + §9.2.1 + §9.2.2 stress fixtures + `tests/stress_inputs.rs` (new file) | `validation.rs`, `orientation.rs`, `validation.rs::tests`, `tests/stress_inputs.rs` (new), `CHANGELOG.md` | **High** (§8.4 anchor cascade) | — |
+| 3 | `fix(mesh-printability): track actual maximum overhang angle (Gap B)` | §5.2 | `validation.rs::check_overhangs`, `validation.rs::tests`, `CHANGELOG.md` | — | — |
+| 4 | `refactor(mesh-printability): extract build_edge_to_faces helper` | §5.3 sub-step (helper extraction) + §5.3 regression gate | `validation.rs` (new helper module / fn), `CHANGELOG.md` | — | — |
+| 5 | `feat(mesh-printability): split overhangs into connected regions (Gap D)` | §5.3 (Gap D consumes helper from #4) | `validation.rs::check_overhangs`, `validation.rs::tests`, `CHANGELOG.md` | — | — |
+| 6 | `feat(mesh-printability): tighten ExcessiveOverhang severity policy (Gap E)` | §5.4 | `validation.rs::check_overhangs`, `validation.rs::tests`, `CHANGELOG.md` | — | — |
+| 7 | `feat(mesh-printability): detect inconsistent winding orientation (Gap F)` | §5.5 | `validation.rs::check_basic_manifold`, `validation.rs::tests`, `CHANGELOG.md` | — | — |
+| 8 | `feat(mesh-printability): parametrize build_up_direction (Gap L)` | §5.6 | `config.rs`, `validation.rs::check_overhangs`, `orientation.rs`, `config.rs::tests`, `CHANGELOG.md` | — | — |
+| 9 | `feat(mesh-printability): add DetectorSkipped issue variant (§5.8)` | §5.8 | `issues.rs`, `issues.rs::tests`, `lib.rs` (re-export), `CHANGELOG.md` | — | — |
+| 10 | `feat(mesh-printability): ThinWall detector via inward ray-cast (Gap C) + tests-release CI for stress fixtures` | §6.1 + §9.2.3 + §10.4.2 CI extension | `validation.rs::check_thin_walls` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `.github/workflows/quality-gate.yml` (append `-p mesh-printability` to tests-release), `CHANGELOG.md` | **High** (§8.4 cluster-split topology) | — |
+| 11 | `feat(examples): mesh-printability-thin-wall visual demo (Gap C)` | §7.1 | `examples/mesh/printability-thin-wall/{Cargo.toml, README.md, src/main.rs}` (new), workspace `Cargo.toml` (member add), `CHANGELOG.md` | — | ⏸︎ |
+| 12 | `feat(mesh-printability): LongBridge detector via boundary-edge span analysis (Gap G)` | §6.2 + §9.2.4 | `validation.rs::check_long_bridges` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `CHANGELOG.md` | — | — |
+| 13 | `feat(examples): mesh-printability-long-bridge visual demo (Gap G)` | §7.2 | `examples/mesh/printability-long-bridge/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
+| 14 | `feat(mesh-printability): TrappedVolume detector via exterior flood-fill (Gap H) + cross-os CI + voxel-grid memory cap` | §6.3 (incl. OOM amendment from §9.2.5) + §9.2.5 + §10.4.1 CI extension | `validation.rs::check_trapped_volumes` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `.github/workflows/quality-gate.yml` (append `-p mesh-printability` to cross-os), `CHANGELOG.md` | **High** (§8.4 FP drift + grid memory) | — |
+| 15 | `feat(examples): mesh-printability-trapped-volume visual demo (Gap H)` | §7.3 | `examples/mesh/printability-trapped-volume/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
+| 16 | `feat(mesh-printability): SelfIntersecting detector via mesh-repair re-use (Gap I)` | §6.4 + §9.2.6 + dep add | `validation.rs::check_self_intersecting` (new), `regions.rs`, `lib.rs`, `Cargo.toml` (mesh-repair dep), `tests/stress_inputs.rs` (append), `CHANGELOG.md` | **High** (§8.4 Layer Integrity dep cap) | — |
+| 17 | `feat(examples): mesh-printability-self-intersecting visual demo (Gap I)` | §7.4 | `examples/mesh/printability-self-intersecting/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
+| 18 | `feat(mesh-printability): SmallFeature detector via connected-component bbox extent (Gap J)` | §6.5 + §9.2.7 | `validation.rs::check_small_features` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `CHANGELOG.md` | — | — |
+| 19 | `feat(examples): mesh-printability-small-feature visual demo (Gap J)` | §7.5 | `examples/mesh/printability-small-feature/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
+| 20 | `test(mesh-printability): cross-detector stress fixtures (§9.3)` | §9.3 (6 cross-detector fixtures) | `tests/stress_inputs.rs` (append), `CHANGELOG.md` | — | — |
+| 21 | `feat(examples): mesh-printability-orientation visual demo (Gap L)` | §7.6 | `examples/mesh/printability-orientation/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
+| 22 | `feat(examples): mesh-printability-technology-sweep visual demo (cross-tech)` | §7.7 | `examples/mesh/printability-technology-sweep/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
+| 23 | `feat(examples): mesh-printability-showcase visual demo (capstone)` | §7.8 | `examples/mesh/printability-showcase/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
+| 24 | `release(mesh-printability): v0.8.0 + COMPLETION.md rewrite (Gap K)` | version bump + Gap K rewrite + CHANGELOG release pin + end-of-arc grading checkpoint (§10.6) + memo + book migration per §13 | `Cargo.toml` (`0.7.0` → `0.8.0`), `COMPLETION.md` (Gap K rewrite per §5.7), `CHANGELOG.md` (close `[Unreleased]` → `[0.8.0]`), `project_mesh_printability_gaps.md` (memo rewrite), `docs/studies/mesh_architecture/src/50-shell-and-print.md` (depth-pass section) | — | — |
+| 25 | `chore(mesh-printability): delete v0.8 fix arc spec (feedback_code_speaks)` | spec deletion (final commit) | `mesh/mesh-printability/V08_FIX_ARC_SPEC.md` (deleted) | — | — |
+
+**Pause-for-visuals count: 8.** Per `feedback_one_at_a_time_review`'s two-pass rule (numbers-pass + visuals-pass), each ⏸︎ row blocks until the user has opened the produced PLY artifacts in their viewer of choice and reported the verdict.
+
+**High-tier commits: 4** (#2 Gap M, #10 Gap C, #14 Gap H, #16 Gap I). Each runs §8.4 pre-flight verification before authoring src + a thorough re-read pass + risk-mitigation pass before commit lands.
+
+### §12.2 Per-commit message template
+
+All commits use the workspace-standard `type(scope): subject` format per `feedback_commit_message_format` (the pre-commit hook rejects formats it can't parse).
+
+```
+<type>(<scope>): <subject>
+
+<body — 1–3 paragraphs explaining the WHY + the load-bearing mechanics>
+
+<acceptance summary — bullet list of what gates passed>
+
+[Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>]
+```
+
+`<type>` ∈ {`feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `release`}. Scope is `mesh-printability` for src/test changes, `examples` for example crates.
+
+**Examples** (per §12.1):
+
+- `fix(mesh-printability): correct overhang predicate to FDM convention + build-plate filter (Gap M)`
+- `feat(mesh-printability): ThinWall detector via inward ray-cast (Gap C) + tests-release CI for stress fixtures`
+- `feat(examples): mesh-printability-thin-wall visual demo (Gap C)`
+- `release(mesh-printability): v0.8.0`
+
+**Multi-fix commits** name primary in the subject and itemize secondaries in the body. E.g., commit #15's body opens with the TrappedVolume detector mechanics, then itemizes the cross-os CI extension + the §6.3 OOM amendment.
+
+**No `!` breaking-change marker** (the pre-commit hook rejects it per `feedback_commit_message_format`); semver-significant changes go into the commit body's `BREAKING:` paragraph + the `CHANGELOG.md` entry.
+
+### §12.3 Per-commit acceptance criteria template
+
+Every commit, regardless of type, runs **all** of these gates locally before committing:
+
+```
+□ cargo fmt --all (auto-applied; pre-commit hook enforces)
+□ cargo clippy -p mesh-printability --tests --all-targets -- -D warnings (post Gap A)
+□ cargo test -p mesh-printability (debug)
+□ RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p mesh-printability
+□ cargo xtask grade mesh-printability --skip-coverage  →  A across 7 criteria
+□ cargo build --workspace  (catches workspace-member regressions)
+```
+
+**Detector commits (§6) additionally run**:
+
+```
+□ At least one stress fixture from §9.2.<gap> is exercised
+□ All edge cases from §6.<gap>'s "Edge cases" section have a covering test
+```
+
+**Example commits (§7) additionally run**:
+
+```
+□ cargo run -p example-mesh-printability-<name> --release  →  exit 0
+□ out/*.ply files written; ASCII PLY readable by MeshLab/ParaView/Blender
+□ ⏸︎ pause until user signals visuals-pass complete
+```
+
+**High-tier commits additionally run pre-flight gates**:
+
+| Commit | Pre-flight (per §8.4 + §10.1) |
+|--------|--------------------------------|
+| #2 Gap M | Read `check_overhangs` + `evaluate_orientation` predicates in current code; verify FDM convention match (PrusaSlicer/Cura semantic comparison) |
+| #10 Gap C | §7.1 fixture topology audit; verify 2-cluster outcome theoretical |
+| #14 Gap H | (post-amendment) memory-cap arithmetic verified for FDM defaults; cross-os CI matrix change reviewed |
+| #16 Gap I | `cargo xtask grade mesh-printability --skip-coverage` AFTER mesh-repair dep add but BEFORE any src change consuming it; verify Criterion 6 stays A AND `cargo build --target wasm32-unknown-unknown -p mesh-printability` passes |
+
+**v0.8.0 release commit (#24) additionally runs the full §10.6 end-of-arc grading checkpoint** (Coverage % vs §11.2 baseline; workspace `grade-all`; `cargo build --workspace --release`; release-stress fixtures pass; rustdoc clean) AND finalizes Gap K's `COMPLETION.md` rewrite per §5.7 with the full v0.8 detector inventory.
+
+**Spec deletion commit (#25) requires no gate beyond CI green** — the spec file is removed; no src or test changes.
+
+### §12.4 Per-commit details (cross-references to upstream sections)
+
+Each commit's authoritative content is the upstream spec section. Per-commit notes here cover only what's specific to the commit boundary.
+
+#### Commit #1 — Gap A workspace lints + CHANGELOG creation + Coverage baseline capture
+
+Per §5.1 + §5.10 + §11.2.
+
+**Specific to this commit**:
+- §11.2 one-time Coverage baseline run (5–10 min): `cargo xtask grade mesh-printability` (without `--skip-coverage`). Record absolute % in commit body.
+- §5.1 stop-and-raise gate: if clippy fallout exceeds 10 sites OR any single site requires >20 LOC of refactor, **revert + raise**.
+- CHANGELOG.md initial structure per §5.10; first `[Unreleased] / Changed` entry: "Inherited workspace lints; clean against `-D warnings`".
+
+**Body template**:
+
+```
+chore(mesh-printability): inherit workspace lints + create CHANGELOG (Gap A)
+
+Adds [lints] workspace = true to mesh-printability/Cargo.toml; clippy
+fallout: <N> sites fixed inline. Creates CHANGELOG.md with the
+keepachangelog.com structure; subsequent commits append entries.
+
+v0.7 coverage baseline: <X>%  (cargo xtask grade mesh-printability,
+without --skip-coverage, on feature/mesh-printability-v0-8 HEAD pre-Gap-A)
+
+Acceptance:
+- cargo clippy -p mesh-printability --tests --all-targets -- -D warnings: clean
+- cargo xtask grade mesh-printability --skip-coverage: A across 7
+- cargo test -p mesh-printability: <existing-count>/<existing-count> pass
+```
+
+#### Commit #2 — Gap M overhang predicate + build-plate filter + stress_inputs.rs creation
+
+Per §5.9 + §9.2.1 + §9.2.2.
+
+**Specific to this commit**:
+- Creates `tests/stress_inputs.rs` (new file) with §9.2.1 existing-detector stress fixtures + §9.2.2 Gap M fixtures.
+- §5.9 test-anchor regression sweep: every existing `validation.rs::tests` test asserting on overhang-derived numerics gets refreshed inline.
+- Symmetric edits in `validation.rs` AND `orientation.rs`; commit-time grep verifies both `dot < 0.0` early-out lines removed.
+- Pre-flight per §8.4: read both predicates in current code; document the FDM-convention semantic match in the commit body.
+
+#### Commit #3 — Gap B max-angle tracking
+
+Per §5.2.
+
+**Specific to this commit**: small in-place change; the `OverhangRegion.angle` field semantic now reads "actual maximum observed". Existing tests adapted as needed (§5.2 acceptance).
+
+#### Commit #4 — `build_edge_to_faces` helper extraction (separate refactor)
+
+Per §5.3 sub-step.
+
+**Specific to this commit**:
+- New private helper `fn build_edge_to_faces(mesh: &IndexedMesh) -> HashMap<(u32, u32), Vec<u32>>` factored from `check_basic_manifold`.
+- §5.3 regression gate: `test_not_watertight_detection`, `test_watertight_mesh`, `test_validation_summary`, `test_issue_counts`, `test_sls_no_overhang_check` all pass without modification.
+- Pure refactor; zero behavior change. The diff IS the review surface.
+
+#### Commit #5 — Gap D overhang region split (consumes helper)
+
+Per §5.3 (Gap D portion).
+
+**Specific to this commit**: Gap D consumes the helper from commit #4. Region-split logic + 5 §5.3 tests + `validation.support_regions.len()` == `validation.overhangs.len()` invariant.
+
+#### Commit #6 — Gap E severity tightening
+
+Per §5.4. `classify_overhang_severity` central helper added.
+
+#### Commit #7 — Gap F winding orientation in manifold check
+
+Per §5.5. Directed-edge tracking added to `check_basic_manifold`. `test_watertight_mesh` regression risk per §8.1 Gap F High-tier table — pre-flight: read `create_watertight_cube` source pre-commit and confirm CCW-from-outside winding.
+
+#### Commit #8 — Gap L `build_up_direction` parametrization
+
+Per §5.6. New field + builder + propagation through `check_overhangs` and `evaluate_orientation`. All 4 `*_default()` constructors updated.
+
+#### Commit #9 — DetectorSkipped variant
+
+Per §5.8. New `PrintIssueType::DetectorSkipped` variant + `as_str()` arm. Lands BEFORE the first detector with skip behavior (Gap C, commit #11).
+
+#### Commit #10 — Gap C ThinWall + tests-release CI extension
+
+Per §6.1 + §9.2.3 + §10.4.2.
+
+**Specific to this commit**:
+- New private helper: Möller-Trumbore ray-tri intersection (~30 LOC).
+- Pre-flight per §8.4: §7.1 fixture topology audit before §6.1's algorithm authoring.
+- `.github/workflows/quality-gate.yml` `tests-release` job step gets `-p mesh-printability` appended (one-line edit).
+- The first stress fixture marked `#[cfg_attr(debug_assertions, ignore)]` (`stress_c_5k_tri_perf_budget`) lands here; verify it runs in `cargo test --release -p mesh-printability` before commit.
+
+#### Commit #11 — §7.1 thin-wall example ⏸︎
+
+Per §7.1 + §7.0 cadence.
+
+**Specific to this commit**:
+- New example crate at `examples/mesh/printability-thin-wall/`.
+- Workspace `Cargo.toml` `[workspace.members]` updated.
+- `out/` written at runtime, gitignored via `examples/mesh/.gitignore`.
+- ⏸︎ Pause for user visuals-pass.
+
+#### Commits #12–#19 — Detector + example pairs
+
+Pattern same as #10+#11. Each detector commit appends its §9.2.x stress fixtures to `tests/stress_inputs.rs`. Each example commit adds a workspace member + an `out/` artifact set.
+
+**Special: Commit #14 (Gap H)**:
+- Implements §6.3 with the §9.2.5 OOM amendment (1 GB voxel-grid cap → DetectorSkipped) baked in from commit-time, NOT as a follow-up.
+- `.github/workflows/quality-gate.yml` `cross-os` job step gets `-p mesh-printability` appended.
+- ROW_JITTER constant declared with cross-platform-stability doc-comment.
+
+**Special: Commit #16 (Gap I)**:
+- Pre-flight gate per §8.4: split into two stages.
+  - Stage 1: `Cargo.toml` mesh-repair dep add + run `cargo xtask grade mesh-printability --skip-coverage` to verify Layer Integrity stays A. If it fails, **stop and raise**.
+  - Stage 2: src changes consuming mesh-repair land only after Stage 1 confirms.
+- Both stages bundled in commit #16 as a single squash unit; the staging is logical, not commit-boundary.
+
+#### Commit #20 — §9.3 cross-detector stress fixtures
+
+Per §9.3 + §9.5.
+
+**Specific to this commit**: 6 cross-detector fixtures appended to `tests/stress_inputs.rs`. No detector or example changes; pure test additions exercising multi-detector behavior. Lands AFTER all detectors (commit #18) so all fixtures' assertions are valid; lands BEFORE the orientation example (commit #21) per §9.5.
+
+#### Commits #21–#23 — Orientation, technology-sweep, showcase examples ⏸︎
+
+Per §7.6, §7.7, §7.8. All ⏸︎ pause-for-visuals.
+
+#### Commit #24 — v0.8.0 release commit + Gap K COMPLETION.md rewrite
+
+Per §10.6 + §5.7 (Gap K) + §13.
+
+**Specific to this commit**:
+- `mesh-printability/Cargo.toml`: `version = "0.7.0"` → `"0.8.0"`. Umbrella `mesh/mesh/Cargo.toml` unchanged per §11.1.
+- **Gap K rewrite**: `COMPLETION.md` rewritten per §5.7 with full v0.8 detector inventory, accurate test counts (~233 + 47 stress = ~280), workspace-lints status, dependency list including mesh-repair, known limitations + v0.9 followups. Lands here (not earlier) per §12.0 row #4 reconciliation: truth is settled only after all detectors + examples + cross-detector stress fixtures land.
+- `CHANGELOG.md`: close `[Unreleased]` → `[0.8.0] - YYYY-MM-DD` (`date -u +%Y-%m-%d` at commit-author time).
+- §10.6 end-of-arc grading checkpoint runs (Coverage compared against §11.2 baseline; workspace `grade-all`; release-stress fixtures pass).
+- Memo update: `project_mesh_printability_gaps.md` rewritten as "v0.8 closed + v0.9 backlog with triggers" per §13.
+- Mesh book §50 depth-pass section authored per §13.
+
+**Note**: this commit bundles 5 distinct concerns (version bump, Gap K, CHANGELOG pin, memo rewrite, book section). Per `feedback_pr_size_ci_economics`, internal commit segmentation matters but a release commit's job IS to bundle all release-correlated edits. Each concern is small (≤200 LOC) and they are inherently co-changed (you don't ship v0.8.0 with stale COMPLETION.md or stale memo). Keeping them in one commit makes the release atom reviewable.
+
+#### Commit #25 — Spec deletion (final commit)
+
+Per `feedback_code_speaks` + §13.
+
+**Specific to this commit**:
+- `mesh/mesh-printability/V08_FIX_ARC_SPEC.md` deleted.
+- No other changes.
+- Pre-squash tag per `feedback_pre_squash_tag` ships at this point; see §12.5.
+
+### §12.5 Git operations
+
+**Branch**: `feature/mesh-printability-v0-8` (already cut from main 2026-04-30; 4 commits + this 5-spec-section work already committed; remaining 26 implementation commits land on this branch).
+
+**Commit cadence**: ask-before-commit per `feedback_master_architect_delegation` standard counterweights. After each commit lands, surface a one-line confirmation to the user; for ⏸︎ commits, explicitly wait for visuals-pass signal before next.
+
+**Push cadence**: push after each detector + example pair (so commits #10+#11 → push; #12+#13 → push; etc.). Pre-PR commit lands as the pre-squash tag. Avoids long branches without remote backups.
+
+**Pre-squash tag** per `feedback_pre_squash_tag`:
+
+```
+git tag -a feature/mesh-printability-v0-8-pre-squash -m "v0.8 fix arc — pre-squash 25-commit audit trail"
+git push origin feature/mesh-printability-v0-8-pre-squash
+```
+
+Tag lands after commit #25 (spec deletion), before opening the PR. Preserves the per-commit audit trail when the merge squashes.
+
+**PR + squash-merge**:
+
+```
+gh pr create --title "feat(mesh-printability): v0.8 fix arc — 13 gap fixes + 5 detectors + 8 examples" \
+  --body "..."
+# Wait for CI green (per reference_ci_timing: ~5 min fast tier; ~25 min total)
+# Squash-merge via web UI or `gh pr merge --squash --delete-branch`
+```
+
+PR body cross-references the pre-squash tag for the audit trail.
+
+**Working-state restoration if the arc is ever re-opened**: `git checkout feature/mesh-printability-v0-8-pre-squash` recovers the 25-commit history. The deleted spec is recoverable from any pre-#25 commit.
+
+### §12.6 Pause cadence + user-visible coordination
+
+The 8 ⏸︎ pause-points are where the cadence requires user attention:
+
+| Pause | After commit | Concept exercised | What user reviews |
+|-------|--------------|--------------------|----------------------|
+| 1 | #11 (§7.1 thin-wall) | Edge-adjacency clustering on outer/inner topology | `out/mesh.ply`, `out/issues.ply` |
+| 2 | #13 (§7.2 long-bridge) | Bbox-based span detection on H-shape | `out/mesh.ply`, `out/issues.ply` |
+| 3 | #15 (§7.3 trapped-volume) | Voxel flood-fill + tech-aware severity | `out/mesh.ply`, `out/issues.ply`, `out/voxels.ply` |
+| 4 | #17 (§7.4 self-intersecting) | mesh-repair re-use through validate-pipeline | `out/mesh.ply`, `out/issues.ply` |
+| 5 | #19 (§7.5 small-feature) | Connected-component bbox + on-plate burr placement | `out/mesh.ply`, `out/issues.ply` |
+| 6 | #21 (§7.6 orientation) | `find_optimal_orientation` + `build_up_direction` parametrization equivalence | `out/mesh_original.ply`, `out/mesh_rotated.ply`, `out/issues_run*.ply` |
+| 7 | #22 (§7.7 technology-sweep) | Same mesh, four-tech severity divergence | `out/mesh.ply`, `out/issues_<tech>.ply` × 4 |
+| 8 | #23 (§7.8 showcase) | Multi-detector report on a realistic CAD bracket | `out/mesh.ply`, `out/issues.ply` |
+
+Per `feedback_one_at_a_time_review`'s two-pass protocol: numbers-pass (Claude verifies `cargo run` exits 0 + assertions pass) is the precondition for the pause; visuals-pass (user opens PLY in viewer) is the resume gate.
+
+**Each pause's expected user action**: open the artifact set, verify the README's "what to look for" prose matches the rendered geometry, signal "visuals-pass complete" or report regression. Implementation does not advance without this signal.
+
+**Estimated pause time per pass**: 5–10 min for user viewer interaction. 8 pauses × 7.5 min ≈ 1 hour of user attention spread across the arc (per `feedback_patience_track_record`).
+
+### §12.7 What §12 does NOT cover
+
+For audit clarity, items that look like they should be in §12 but aren't:
+
+- **Per-commit content** (algorithms, test names, tolerances): authoritative source is §5 / §6 / §7 / §9. §12 references but doesn't duplicate.
+- **CI workflow body** for §10.4.1 / §10.4.2 yaml edits: authoritative source is §10.4. §12 says "where" the edit lands; §10.4 says "what" the edit is.
+- **`COMPLETION.md` content**: authoritative source is §5.7. §12 says "when" it's authored (commit #24, bundled into the release per §12.0 row #4 reconciliation).
+- **v0.8.0 version bump rationale**: authoritative source is §3 + §11.1. §12 says commit #24 makes the edit.
+- **Memo + book migration content**: authoritative source is §13 (next).
+
+---
+
 
