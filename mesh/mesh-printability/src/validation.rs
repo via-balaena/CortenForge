@@ -216,6 +216,12 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
 
     let mut overhang_faces = Vec::new();
     let mut total_overhang_area = 0.0;
+    // §5.2 Gap B: track the actual maximum `overhang_angle` (in radians)
+    // observed across flagged faces; replaces v0.7's hardcoded
+    // `config.max_overhang_angle + 10.0` placeholder. Read at region
+    // creation below; the `overhang_faces.is_empty()` guard prevents the
+    // zero-init from leaking into a region.
+    let mut max_overhang_angle_rad: f64 = 0.0;
 
     let num_triangles = mesh.face_count();
     for i in 0..num_triangles {
@@ -280,6 +286,7 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
             // Mesh face index i fits in u32 (mesh size bounded well below 2^32).
             #[allow(clippy::cast_possible_truncation)]
             overhang_faces.push(i as u32);
+            max_overhang_angle_rad = max_overhang_angle_rad.max(overhang_angle);
 
             // Compute triangle area
             let area = len / 2.0;
@@ -289,7 +296,7 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
 
     if !overhang_faces.is_empty() {
         let center = compute_face_centroid(mesh, overhang_faces[0] as usize);
-        let overhang_angle_deg = config.max_overhang_angle + 10.0; // Approximate
+        let overhang_angle_deg = max_overhang_angle_rad.to_degrees();
 
         let region = OverhangRegion::new(center, overhang_angle_deg, total_overhang_area)
             .with_faces(overhang_faces.clone());
@@ -891,6 +898,93 @@ mod tests {
             anchored.overhangs.len(),
             1,
             "anchored roof (mesh_min = 0, face_min = 20) flags — filter is mesh-min-relative, not face-z-absolute"
+        );
+    }
+
+    // ---- §5.2 Gap B max-angle tracking tests ---------------------------
+    //
+    // Lock in the post-§5.2 semantic: `OverhangRegion.angle` is the actual
+    // maximum of `overhang_angle` (in degrees) across the flagged faces.
+    // Pre-Gap-B v0.7 reported `config.max_overhang_angle + 10.0` (a
+    // geometry-independent constant); §5.2 replaces this with
+    // `max_overhang_angle_rad.to_degrees()`. Composes with Gap M (§5.9):
+    // post-v0.8 `overhang_angle ∈ [0°, 90°]` for downward-facing flagged
+    // faces. Tolerance epsilon = 1e-6 per §4.5 / §5.2 acceptance.
+
+    #[test]
+    fn test_overhang_angle_tracks_max() {
+        // Single-face fixture at β = 60° tilt: per the
+        // `make_overhang_fixture` contract, the test face has
+        // `overhang_angle = β` (face normal = (0, cos β, -sin β),
+        // dot = -sin β, overhang_angle = acos(-sin β) - π/2 = β).
+        let mesh = make_overhang_fixture(60.0_f64.to_radians(), 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 60° fixture");
+
+        assert_eq!(result.overhangs.len(), 1, "60° tilt must flag");
+        approx::assert_relative_eq!(result.overhangs[0].angle, 60.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_overhang_angle_uses_steepest_face() {
+        // Two test faces at β = 50° and β = 70°, plus a ground anchor at
+        // z = 0. Both flag under FDM max = 45°; the reported angle is the
+        // max (~70°). Critical lock-in for the "max-of" semantic: pre-Gap-B
+        // v0.7 would report 55° here regardless of geometry.
+        let beta1 = 50.0_f64.to_radians();
+        let beta2 = 70.0_f64.to_radians();
+        let z_offset = 5.0_f64;
+        let vertices = vec![
+            // Ground anchor at z = 0 (top-facing, not flagged):
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+            // Test face 1 at β = 50°, x = 0:
+            Point3::new(0.0, 0.0, z_offset),
+            Point3::new(1.0, 0.0, z_offset),
+            Point3::new(0.0, beta1.sin(), z_offset + beta1.cos()),
+            // Test face 2 at β = 70°, x = 5:
+            Point3::new(5.0, 0.0, z_offset),
+            Point3::new(6.0, 0.0, z_offset),
+            Point3::new(5.0, beta2.sin(), z_offset + beta2.cos()),
+        ];
+        let faces = vec![[0, 1, 2], [3, 5, 4], [6, 8, 7]];
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the two-face fixture");
+
+        // Pre-Gap-D: all flagged faces lump into a single OverhangRegion.
+        // The reported angle is the max observed across flagged faces.
+        assert_eq!(
+            result.overhangs.len(),
+            1,
+            "two flagged faces lump into one region pre-Gap-D"
+        );
+        approx::assert_relative_eq!(result.overhangs[0].angle, 70.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_overhang_no_overhang_no_region() {
+        // Vertical-wall fixture (β = 0): overhang_angle = 0, no faces
+        // flag. The `overhang_faces.is_empty()` guard prevents the
+        // zero-init `max_overhang_angle_rad` from leaking out as a region
+        // with `angle = 0` (Gap B risk row 3 lock-in, §8.1).
+        let mesh = make_overhang_fixture(0.0, 5.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the vertical-wall fixture");
+
+        assert!(
+            result.overhangs.is_empty(),
+            "no flagged faces → no region (Gap B empty-case guard)"
         );
     }
 }

@@ -41,6 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Symmetric edits in `evaluate_orientation` (`orientation.rs`) so
   `find_optimal_orientation`'s scoring matches `validate_for_printing`'s
   predicate under candidate rotations.
+- **`OverhangRegion.angle` now reports the actual maximum observed
+  overhang angle (Gap B).** v0.7's `OverhangRegion.angle =
+  config.max_overhang_angle + 10.0` was a hardcoded approximate that did
+  not reflect the geometry of the flagged faces. `check_overhangs` now
+  tracks the running max of the per-face `overhang_angle` and reports
+  the steepest face's tilt-from-vertical (in degrees) at region
+  creation. Composes with Gap M (predicate fix above) so post-v0.8 the
+  reported angle ranges in `[0°, 90°]` for downward-facing flagged
+  faces, matching the FDM-slicer convention. Sets up the Gap E
+  severity classifier (commit #6) which will consume `angle` to assign
+  Critical / Warning / Info severity bands.
 
 ### v0.9 candidates
 
