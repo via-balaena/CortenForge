@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`mul_add`) and midpoint forms would shift FP bits at the threshold
   boundary. Bit-exactness deferral is tracked under
   [v0.9 candidates](#v09-candidates).
+- Extracted `build_edge_to_faces` private helper from
+  `check_basic_manifold` so the same edge→face-list map can be shared
+  with `check_overhangs`' region-split logic (Gap D, next commit). Pure
+  refactor; the existing manifold/watertight regression tests
+  (`test_not_watertight_detection`, `test_watertight_mesh`,
+  `test_validation_summary`, `test_issue_counts`,
+  `test_sls_no_overhang_check`) pass without modification.
 
 ### Fixed
 

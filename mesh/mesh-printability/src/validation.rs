@@ -3,6 +3,7 @@
 //! Provides the primary validation functionality to check meshes
 //! against printer constraints.
 
+use hashbrown::HashMap;
 use mesh_types::{IndexedMesh, Point3, Vector3};
 
 use crate::config::PrinterConfig;
@@ -331,14 +332,17 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
     }
 }
 
-/// Basic manifold check (edge usage).
-fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
-    use hashbrown::HashMap;
+/// Build a map from undirected edges to incident face indices.
+///
+/// Keys are `(min, max)`-normalized vertex pairs; values are the list of
+/// face indices that reference the edge, in mesh-iteration order. Used by
+/// `check_basic_manifold` for edge-count classification (open vs
+/// non-manifold) and by `check_overhangs`' region-split logic
+/// (§5.3 Gap D, lands at the next commit).
+fn build_edge_to_faces(mesh: &IndexedMesh) -> HashMap<(u32, u32), Vec<u32>> {
+    let mut edge_to_faces: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
 
-    // Count edge usage
-    let mut edge_count: HashMap<(u32, u32), u32> = HashMap::new();
-
-    for face in &mesh.faces {
+    for (face_idx, face) in mesh.faces.iter().enumerate() {
         let idx0 = face[0];
         let idx1 = face[1];
         let idx2 = face[2];
@@ -350,20 +354,31 @@ fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
             (idx2.min(idx0), idx2.max(idx0)),
         ];
 
+        // Mesh face index fits in u32 (mesh size bounded well below 2^32);
+        // pattern shared with the cast in `check_overhangs`.
+        #[allow(clippy::cast_possible_truncation)]
+        let face_idx = face_idx as u32;
         for edge in &edges {
-            *edge_count.entry(*edge).or_insert(0) += 1;
+            edge_to_faces.entry(*edge).or_default().push(face_idx);
         }
     }
 
+    edge_to_faces
+}
+
+/// Basic manifold check (edge usage).
+fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
+    let edge_to_faces = build_edge_to_faces(mesh);
+
     // In a manifold mesh, each edge should be shared by exactly 2 faces
-    let boundary_edges: Vec<_> = edge_count
+    let boundary_edges: Vec<_> = edge_to_faces
         .iter()
-        .filter(|(_, count)| **count != 2)
+        .filter(|(_, faces)| faces.len() != 2)
         .collect();
 
     if !boundary_edges.is_empty() {
-        let non_manifold_count = boundary_edges.iter().filter(|(_, c)| **c > 2).count();
-        let open_edge_count = boundary_edges.iter().filter(|(_, c)| **c == 1).count();
+        let non_manifold_count = boundary_edges.iter().filter(|(_, f)| f.len() > 2).count();
+        let open_edge_count = boundary_edges.iter().filter(|(_, f)| f.len() == 1).count();
 
         if non_manifold_count > 0 {
             let issue = PrintIssue::new(
