@@ -2726,4 +2726,84 @@ If a criterion drops to B or lower, **stop and fix** before the release commit l
 
 ---
 
+## §11. Open questions
+
+Most open questions surfaced during spec authoring were resolved inline (§7.9 Q1–Q7, §9.2.5 §6.3 OOM amendment, §10.4 CI extensions). This section captures the residual: items that were genuinely undecided after §1–§10 and the master-architect call resolving each.
+
+### §11.1 Mesh umbrella version (§3 flag) — resolved
+
+**The question** (§3, line 275): `mesh/Cargo.toml` uses `version.workspace = true` (workspace-package version `0.7.0`). The umbrella re-exports mesh-printability as `mesh::printability`, so its surface technically expanded with v0.8. Two options:
+
+1. **Keep umbrella at workspace 0.7.0**: pragmatic; path-deps mean no consumer of the umbrella sees a version mismatch; only matters if mesh ships to crates.io.
+2. **Switch umbrella to its own version, bump to 0.8.0**: strict semver hygiene; signals to external consumers that the umbrella's API surface grew.
+
+**Resolved (master-architect call 2026-04-30): option 1.** Rationale:
+
+- The umbrella `mesh` crate is **not published to crates.io** (verified in §10.5: the `semver` job in `quality-gate.yml` checks only `mesh-repair`, the sole published workspace crate).
+- All 6 in-workspace consumers of mesh-printability (umbrella + 3 examples + regression test + workspace root) use path-deps, which resolve the latest version regardless of pin.
+- The umbrella's *internal* code didn't change — only the re-exported surface area expanded by virtue of mesh-printability's own changes. Bumping the umbrella to 0.8.0 in this arc sends a misleading signal that the umbrella itself shipped a behavioral change.
+- Decoupling one crate from `version.workspace = true` (option 2) is a one-manifest edit (just `mesh/mesh/Cargo.toml`), not workspace-wide. But it creates a precedent — the next umbrella-publishing crate would need the same decoupling, and the workspace-version vs per-crate-version policy is best decided once at first-publish, not piecemeal per-arc.
+- Trigger for re-opening this decision: the moment a workspace crate is first published to crates.io (currently mesh-repair is the sole candidate), the workspace-version vs per-crate-version question gets a workspace-wide ergonomic answer, not a per-arc one.
+
+**Implementation consequence**: §8.3 commit #24 (v0.8.0 release commit) bumps **only** `mesh/mesh-printability/Cargo.toml` from `0.7.0` to `0.8.0`. The umbrella `mesh/mesh/Cargo.toml` stays at `version.workspace = true` (workspace version unchanged at `0.7.0`). No other Cargo.toml edits in commit #24.
+
+### §11.2 Coverage baseline % — resolved (capture timing)
+
+**The question**: §10.0's grade baseline runs with `--skip-coverage`, so v0.7 coverage % is not pinned in the spec. v0.8's coverage target (§10.1.1) is "match v0.7 % or better" — but without an explicit number, "or better" is ambiguous if the v0.7 value drifts during the arc due to scheduled-CI runs against `main`.
+
+**Resolved (master-architect call 2026-04-30)**: the **v0.7 coverage baseline is captured at the start of the arc** (Gap A commit), not at end-of-arc. Sequence:
+
+1. Gap A commit's local validation includes a one-time `cargo xtask grade mesh-printability` (without `--skip-coverage`) on the branch HEAD pre-Gap-A. This run takes 5–10 min on the project's reference machine but runs once.
+2. The Coverage % output is recorded in the Gap A commit message body (a single line: `v0.7 coverage baseline: <X>%`).
+3. The end-of-arc grading checkpoint (§10.6) compares end-of-arc Coverage % against the recorded baseline.
+4. Acceptance: end-of-arc Coverage ≥ baseline (per `feedback_grading_rubric` "A-across-the-board"). If end-of-arc drops, add tests until it lifts.
+
+This pins the comparison point pre-arc, prevents drift, and avoids the 5–10-min run becoming a per-commit gate (which it cannot be at xtask grade's `--skip-coverage` performance).
+
+**Alternative considered**: capture at end-of-arc and compare against itself ("Coverage A-grade threshold ≥75% per `xtask/src/grade.rs`"). Rejected because the relative comparison ("did v0.8 lift Coverage?") is more informative than the absolute threshold check.
+
+### §11.3 Tier-classification continuity — resolved (mesh-printability stays L0)
+
+**The question**: Gap I adds `mesh-repair = { path = "../mesh-repair" }`. mesh-repair is L0; mesh-printability is L0. Adding a same-tier dep does not auto-promote tier, but should the `[package.metadata.cortenforge] tier = "L0"` declaration in `mesh/mesh-printability/Cargo.toml` change in v0.8?
+
+**Resolved (master-architect call 2026-04-30): no change to tier declaration.** Rationale:
+
+- mesh-printability stays L0 functionally and architecturally — pure-Rust validation analysis on indexed-mesh primitives, no I/O, no GPU.
+- The Layer Integrity criterion (§10.1.6) verifies mesh-printability's release-graph dep count stays under L0's 80-cap (estimated ~50–55 post-arc).
+- v0.9 candidate trigger: a downstream consumer requests mesh-printability to expose a streaming/progress-callback interface that requires `tracing` instrumentation, in which case L0→L0-io tier-up is on the table. v0.8 does not introduce such an interface (§4.6 explicitly keeps mesh-printability tracing-free).
+
+**Implementation consequence**: no edit to `[package.metadata.cortenforge]` in mesh-printability's `Cargo.toml`.
+
+### §11.4 What's NOT open (consolidated audit trail)
+
+The following items were considered as candidates for §11 during the §8/§9/§10 reviews but resolved inline; recorded here so the audit trail is explicit and the reviewer doesn't re-discover them as open:
+
+- **§6.3 OOM safety amendment** — surfaced during §9.2.5 risk-mitigation review; resolved inline (1 GB voxel-grid cap with DetectorSkipped fallback). Master-architect call 2026-04-30.
+- **§10.4.1 cross-os matrix extension for mesh-printability** — surfaced during §10.4 authoring; resolved inline (ships in v0.8 inside Gap H detector commit). Master-architect call 2026-04-30.
+- **§10.4.2 tests-release matrix extension for mesh-printability** — surfaced during §10.4 authoring; resolved inline (ships in v0.8 inside Gap C detector commit). Master-architect call 2026-04-30.
+- **§7.1, §7.3, §7.8 fixture construction approach** — §7 specifies hand-author option 1 as recommended baseline, with mesh-sdf+MC option 2 as fallback "if mesh-sdf exposes a public MC entry point". This is an impl-time choice, not a spec-time decision; defaults to hand-author (verified deterministic + tractable).
+- **`feature-combos` job extension** — v0.8 introduces no feature gates on mesh-printability; the existing `feature-combos` job (sim-soft `gpu-probe`-only) is unaffected. Re-evaluate if v0.9 adds a feature flag (e.g., `bvh` for the optional BVH acceleration triple-tracked in §1).
+- **Example main() promotion to CI test gate** — §10.3 note 2 documents that example `main()` numerical-anchor assertions run as smoke tests (manual `cargo run`) but are NOT in the CI test matrix. Trigger for v0.9 promotion: a regression on an example that wasn't caught locally lands on `main`. v0.8 covers `cargo build --workspace` (compile-only) for example crates inside `tests-debug`; per-example main() exit-code testing in CI is deferred.
+- **Umbrella `mesh/mesh/tests/api_regression.rs` updates** — §3 audit (F14) verified no struct-update syntax on `PrintValidation`; existing tests use `let _ = result.is_printable();` discardable patterns. v0.8's API expansion is purely additive at the umbrella surface. Verified at commit-time per §10.2's `cargo build --workspace` per-commit gate.
+- **`PrintTechnology::Other` `requires_supports()` semantic** — pre-existing v0.7 behavior (returns true conservatively). Not a v0.8 decision.
+
+### §11.5 Re-open triggers (explicit)
+
+Each closed-but-trackable item carries a v0.9 re-open trigger; consolidated for audit:
+
+| Item | v0.9 re-open trigger |
+|------|------------------------|
+| Mesh umbrella version (§11.1) | First workspace crate publishes to crates.io |
+| Coverage % baseline pinning (§11.2) | A user asks for a per-detector coverage breakdown |
+| Tier-classification (§11.3) | A consumer requests mesh-printability `tracing` instrumentation |
+| §6.3 1 GB voxel cap (§11.4) | A user reports a >100 mm part being silently DetectorSkipped |
+| Example main() in CI (§11.4) | A regression on an example lands on main without local catch |
+| Cavity-ceiling overhang co-flag (§7.9 / §11.4) | A user asks for cavity-aware overhang severity |
+| AttributedMesh face-attributes (Q2 / §11.4) | (i) user reports centroid point-cloud is insufficient for visual review, OR (ii) AttributedMesh gains face-attribute support and the integration is ~30 LOC |
+| BVH for ThinWall + SelfIntersecting (§1 out-of-scope) | A real mesh exceeds 10k tris and validation runtime exceeds 5 s on the project's reference machine |
+
+Each trigger is verifiable from outside the spec (memo backlog + CHANGELOG `[Unreleased]` block) so v0.9-arc planning isn't dependent on the deleted v0.8 spec.
+
+---
+
 
