@@ -59,6 +59,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   faces, matching the FDM-slicer convention. Sets up the Gap E
   severity classifier (commit #6) which will consume `angle` to assign
   Critical / Warning / Info severity bands.
+- **Overhangs now split into connected regions (Gap D).** v0.7's
+  `check_overhangs` lumped ALL flagged faces into a single
+  `OverhangRegion` (centroid taken from `overhang_faces[0]`'s position;
+  reported `angle` was the global max; `area` was the global sum).
+  v0.8 partitions flagged faces into connected components by
+  shared-manifold-edge adjacency (using the `build_edge_to_faces`
+  helper extracted in the previous commit). Adjacency contract: two
+  flagged faces share a component iff they share a manifold edge
+  (incident on exactly 2 faces); non-manifold edges (>2 incident
+  faces) and open edges (1 incident face) do not contribute adjacency,
+  and faces sharing only a vertex are not adjacent. Each component
+  emits one `OverhangRegion` (centroid = mean of per-face centroids;
+  `angle` = per-component max; `area` = per-component sum) and one
+  matching `SupportRegion`, preserving the
+  `support_regions.len() == overhangs.len()` 1:1 invariant at
+  component granularity. One `ExcessiveOverhang` `PrintIssue` is
+  emitted per region (was: one summary issue across all flagged
+  faces) — sets up Gap E (commit #6) which will replace the
+  area-based per-region severity with the §4.3 angle-based classifier.
+  Components emerge in min-face-idx order and faces within each
+  region are sorted ascending for deterministic output across
+  HashMap iteration permutations.
 
 ### v0.9 candidates
 

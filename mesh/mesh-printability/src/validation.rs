@@ -3,7 +3,7 @@
 //! Provides the primary validation functionality to check meshes
 //! against printer constraints.
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use mesh_types::{IndexedMesh, Point3, Vector3};
 
 use crate::config::PrinterConfig;
@@ -195,9 +195,20 @@ fn check_build_volume(
     validation.estimated_material_volume = Some(size_x * size_y * size_z * 0.3); // Rough 30% fill estimate
 }
 
+/// Per-face metadata captured during the overhang flag-collection loop.
+///
+/// Used post-loop for per-component aggregation in the §5.3 Gap D
+/// connected-region partition: each component's `OverhangRegion`
+/// reports the max `overhang_angle_rad` (converted to degrees) and the
+/// summed `area` over its member faces.
+#[derive(Clone, Copy)]
+struct FlaggedFaceMeta {
+    overhang_angle_rad: f64,
+    area: f64,
+}
+
 /// Check for excessive overhangs.
 fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut PrintValidation) {
-    // Skip overhang check for technologies that don't need supports
     if !config.technology.requires_supports() {
         return;
     }
@@ -205,6 +216,35 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
     let max_angle_rad = config.max_overhang_angle.to_radians();
     let up = Vector3::new(0.0, 0.0, 1.0);
 
+    let flagged = flag_overhang_faces(mesh, max_angle_rad, up);
+    if flagged.is_empty() {
+        return;
+    }
+
+    let components = partition_flagged_into_components(mesh, &flagged);
+
+    // Per component: one OverhangRegion + one SupportRegion + one
+    // ExcessiveOverhang issue. The 1:1
+    // `support_regions.len() == overhangs.len()` invariant is preserved
+    // at component granularity (was: 1:1 globally pre-Gap-D). The
+    // ExcessiveOverhang issue per region is what Gap E (commit #6) will
+    // re-classify by per-region max angle.
+    for component in components {
+        emit_overhang_component(mesh, config, &flagged, component, validation);
+    }
+}
+
+/// Walk every face and collect those whose normal exceeds
+/// `config.max_overhang_angle` from the build-up direction (FDM
+/// convention; §5.9 Gap M predicate). The build-plate filter (M.2)
+/// rejects faces resting on the mesh-min plane. Returns per-face
+/// `overhang_angle` + `area` keyed by face index for downstream
+/// connected-region partition (§5.3 Gap D).
+fn flag_overhang_faces(
+    mesh: &IndexedMesh,
+    max_angle_rad: f64,
+    up: Vector3<f64>,
+) -> HashMap<u32, FlaggedFaceMeta> {
     // Build-plate filter (M.2): a face is "on the build plate" iff its
     // minimum projection along `up` is within EPS_GEOMETRIC of the mesh
     // minimum. Hoisted before the face loop so the O(n_vertices) reduction
@@ -215,14 +255,7 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
         .map(|v| v.coords.dot(&up))
         .fold(f64::INFINITY, f64::min);
 
-    let mut overhang_faces = Vec::new();
-    let mut total_overhang_area = 0.0;
-    // §5.2 Gap B: track the actual maximum `overhang_angle` (in radians)
-    // observed across flagged faces; replaces v0.7's hardcoded
-    // `config.max_overhang_angle + 10.0` placeholder. Read at region
-    // creation below; the `overhang_faces.is_empty()` guard prevents the
-    // zero-init from leaking into a region.
-    let mut max_overhang_angle_rad: f64 = 0.0;
+    let mut flagged: HashMap<u32, FlaggedFaceMeta> = HashMap::new();
 
     let num_triangles = mesh.face_count();
     for i in 0..num_triangles {
@@ -284,52 +317,154 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
                 continue;
             }
 
+            let area = len / 2.0;
             // Mesh face index i fits in u32 (mesh size bounded well below 2^32).
             #[allow(clippy::cast_possible_truncation)]
-            overhang_faces.push(i as u32);
-            max_overhang_angle_rad = max_overhang_angle_rad.max(overhang_angle);
-
-            // Compute triangle area
-            let area = len / 2.0;
-            total_overhang_area += area;
+            let face_idx = i as u32;
+            flagged.insert(
+                face_idx,
+                FlaggedFaceMeta {
+                    overhang_angle_rad: overhang_angle,
+                    area,
+                },
+            );
         }
     }
 
-    if !overhang_faces.is_empty() {
-        let center = compute_face_centroid(mesh, overhang_faces[0] as usize);
-        let overhang_angle_deg = max_overhang_angle_rad.to_degrees();
+    flagged
+}
 
-        let region = OverhangRegion::new(center, overhang_angle_deg, total_overhang_area)
-            .with_faces(overhang_faces.clone());
-        validation.overhangs.push(region);
-
-        // Create support region estimate
-        let support_volume = total_overhang_area * 5.0; // Rough estimate
-        let support_region = SupportRegion::new(center, support_volume, 10.0) // Rough height
-            .with_faces(overhang_faces.clone());
-        validation.support_regions.push(support_region);
-
-        let severity = if total_overhang_area > 1000.0 {
-            IssueSeverity::Warning
-        } else {
-            IssueSeverity::Info
-        };
-
-        let issue = PrintIssue::new(
-            PrintIssueType::ExcessiveOverhang,
-            severity,
-            format!(
-                "{} faces with overhangs exceeding {:.1}° (total area: {:.1} mm²)",
-                overhang_faces.len(),
-                config.max_overhang_angle,
-                total_overhang_area
-            ),
-        )
-        .with_location(center)
-        .with_affected_elements(overhang_faces);
-
-        validation.issues.push(issue);
+/// Partition flagged faces into edge-connected components (§5.3 Gap D).
+///
+/// Adjacency contract: only manifold edges (incident on exactly 2
+/// faces) contribute. Non-manifold edges (>2 incident faces) and open
+/// edges (1 incident face) do NOT — two flagged faces are
+/// "geometrically adjacent" iff they share a manifold edge in the FDM
+/// sense; vertex-only sharing produces disjoint regions.
+///
+/// Output ordering is deterministic across `HashMap` iteration
+/// permutations: components emerge in min-face-idx order (each
+/// component's seed is its smallest `face_idx`; smaller seeds are
+/// visited first), and faces within each component are sorted
+/// ascending.
+fn partition_flagged_into_components(
+    mesh: &IndexedMesh,
+    flagged: &HashMap<u32, FlaggedFaceMeta>,
+) -> Vec<Vec<u32>> {
+    let edge_to_faces = build_edge_to_faces(mesh);
+    let mut adjacency: HashMap<u32, Vec<u32>> = HashMap::new();
+    for faces in edge_to_faces.values() {
+        if faces.len() == 2 {
+            let a = faces[0];
+            let b = faces[1];
+            if flagged.contains_key(&a) && flagged.contains_key(&b) {
+                adjacency.entry(a).or_default().push(b);
+                adjacency.entry(b).or_default().push(a);
+            }
+        }
     }
+
+    let mut sorted_seeds: Vec<u32> = flagged.keys().copied().collect();
+    sorted_seeds.sort_unstable();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut components: Vec<Vec<u32>> = Vec::new();
+
+    for &seed in &sorted_seeds {
+        if !visited.insert(seed) {
+            continue;
+        }
+        let mut component: Vec<u32> = vec![seed];
+        let mut stack: Vec<u32> = vec![seed];
+        while let Some(face_idx) = stack.pop() {
+            if let Some(neighbors) = adjacency.get(&face_idx) {
+                for &n in neighbors {
+                    if visited.insert(n) {
+                        component.push(n);
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+
+    components
+}
+
+/// Aggregate one connected component's per-face metadata and emit an
+/// `OverhangRegion`, a `SupportRegion`, and an `ExcessiveOverhang`
+/// `PrintIssue` (§5.3 Gap D per-component emission).
+///
+/// The component's reported `angle` is the per-component max
+/// `overhang_angle` (in degrees); `area` is the summed area; the
+/// `center` is the mean of per-face centroids. Severity is still
+/// area-based pre-Gap-E (commit #6 will replace with the §4.3
+/// angle-based classifier).
+fn emit_overhang_component(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+    flagged: &HashMap<u32, FlaggedFaceMeta>,
+    component: Vec<u32>,
+    validation: &mut PrintValidation,
+) {
+    let mut max_overhang_angle_rad: f64 = 0.0;
+    let mut total_area: f64 = 0.0;
+    let mut centroid_sum_x: f64 = 0.0;
+    let mut centroid_sum_y: f64 = 0.0;
+    let mut centroid_sum_z: f64 = 0.0;
+
+    for &face_idx in &component {
+        // Lookup is infallible by construction: face_idx came from the
+        // DFS over `flagged.keys()`. Skip on a (impossible) miss to
+        // keep the code panic-free per the workspace
+        // `clippy::expect_used` policy.
+        if let Some(meta) = flagged.get(&face_idx) {
+            max_overhang_angle_rad = max_overhang_angle_rad.max(meta.overhang_angle_rad);
+            total_area += meta.area;
+        }
+        let face_centroid = compute_face_centroid(mesh, face_idx as usize);
+        centroid_sum_x += face_centroid.x;
+        centroid_sum_y += face_centroid.y;
+        centroid_sum_z += face_centroid.z;
+    }
+
+    // `component.len()` is bounded by `mesh.face_count()`, which fits
+    // in u32 (asserted by the upstream `i as u32` cast); usize → f64
+    // is exact for any value below 2^53, well above the u32 range.
+    #[allow(clippy::cast_precision_loss)]
+    let n = component.len() as f64;
+    let center = Point3::new(centroid_sum_x / n, centroid_sum_y / n, centroid_sum_z / n);
+
+    let region = OverhangRegion::new(center, max_overhang_angle_rad.to_degrees(), total_area)
+        .with_faces(component.clone());
+    validation.overhangs.push(region);
+
+    let support_volume = total_area * 5.0; // Rough estimate
+    let support_region =
+        SupportRegion::new(center, support_volume, 10.0).with_faces(component.clone());
+    validation.support_regions.push(support_region);
+
+    let severity = if total_area > 1000.0 {
+        IssueSeverity::Warning
+    } else {
+        IssueSeverity::Info
+    };
+
+    let issue = PrintIssue::new(
+        PrintIssueType::ExcessiveOverhang,
+        severity,
+        format!(
+            "{} face(s) with overhangs exceeding {:.1}° (region area: {:.1} mm²)",
+            component.len(),
+            config.max_overhang_angle,
+            total_area
+        ),
+    )
+    .with_location(center)
+    .with_affected_elements(component);
+
+    validation.issues.push(issue);
 }
 
 /// Build a map from undirected edges to incident face indices.
@@ -974,14 +1109,29 @@ mod tests {
         let result = validate_for_printing(&mesh, &config)
             .expect("validation should succeed for the two-face fixture");
 
-        // Pre-Gap-D: all flagged faces lump into a single OverhangRegion.
-        // The reported angle is the max observed across flagged faces.
+        // Post-Gap-D: the two flagged faces share no edge or vertex
+        // (one at x = 0, one at x = 5), so they split into two disjoint
+        // regions. Each region has one face, so its `angle` field equals
+        // that single face's overhang angle. Assertions use min/max over
+        // the regions to be independent of HashMap iteration order in
+        // the partition output.
         assert_eq!(
             result.overhangs.len(),
-            1,
-            "two flagged faces lump into one region pre-Gap-D"
+            2,
+            "two flagged faces with no shared edge or vertex split into two regions post-Gap-D"
         );
-        approx::assert_relative_eq!(result.overhangs[0].angle, 70.0, epsilon = 1e-6);
+        let max_angle = result
+            .overhangs
+            .iter()
+            .map(|r| r.angle)
+            .fold(0.0_f64, f64::max);
+        let min_angle = result
+            .overhangs
+            .iter()
+            .map(|r| r.angle)
+            .fold(f64::INFINITY, f64::min);
+        approx::assert_relative_eq!(max_angle, 70.0, epsilon = 1e-6);
+        approx::assert_relative_eq!(min_angle, 50.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -1000,6 +1150,250 @@ mod tests {
         assert!(
             result.overhangs.is_empty(),
             "no flagged faces → no region (Gap B empty-case guard)"
+        );
+    }
+
+    // ---- §5.3 Gap D connected-region partition tests --------------------
+    //
+    // Lock in the post-§5.3 semantic: `check_overhangs` partitions
+    // flagged faces into edge-connected components via the
+    // `build_edge_to_faces` helper (commit #4). Each component emits
+    // one `OverhangRegion` (mean of face centroids, max overhang_angle
+    // in degrees, summed area) and one matching `SupportRegion`
+    // (volume = component_area × 5.0, height = 10.0 mm placeholder).
+    // Pre-Gap-D v0.7 lumped ALL flagged faces into one region using
+    // `overhang_faces[0]`'s centroid (geometry-blind).
+    //
+    // Adjacency contract: two flagged faces share a component IFF they
+    // share a manifold edge (incident on exactly 2 faces). Non-manifold
+    // edges (>2 incident faces) and open edges (1 incident face) do
+    // NOT contribute adjacency. Faces sharing only a vertex are NOT
+    // adjacent.
+    //
+    // Invariants:
+    //   1. `validation.support_regions.len() == validation.overhangs.len()`
+    //      preserved at component granularity.
+    //   2. Σ(component.area) == total_overhang_area pre-Gap-D
+    //      (partition is exhaustive — every flagged face lands in
+    //      exactly one component).
+    //   3. Components emerge in min-face-idx order; faces within each
+    //      component sorted ascending. Independent of HashMap
+    //      iteration order.
+
+    #[test]
+    fn test_overhang_single_connected_region() {
+        // Two coplanar roof triangles sharing the diagonal edge (3, 5):
+        // both have downward normal (0, 0, -1), both flag, and they
+        // form a single connected component → one OverhangRegion.
+        let mesh = IndexedMesh::from_parts(
+            vec![
+                // Anchor at z=0 (top-facing, not flagged):
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+                Point3::new(0.0, 10.0, 0.0),
+                // Two roof triangles forming a 1×1 square at z=5:
+                Point3::new(0.0, 0.0, 5.0), // 3
+                Point3::new(0.0, 1.0, 5.0), // 4
+                Point3::new(1.0, 0.0, 5.0), // 5
+                Point3::new(1.0, 1.0, 5.0), // 6
+            ],
+            vec![[0, 1, 2], [3, 4, 5], [4, 6, 5]],
+        );
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the connected-roof fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            1,
+            "two flagged faces sharing a manifold edge form one connected region"
+        );
+        assert_eq!(
+            result.overhangs[0].faces.len(),
+            2,
+            "the single region contains both flagged faces"
+        );
+        assert_eq!(
+            result.support_regions.len(),
+            result.overhangs.len(),
+            "1:1 support/overhang invariant preserved at component granularity"
+        );
+    }
+
+    #[test]
+    fn test_overhang_two_disjoint_regions() {
+        // Two roof triangles at separated x positions sharing no
+        // vertices (geometric gap). Both flag. Faces are disjoint:
+        // every face index appears in exactly one region's
+        // `faces` list (partition is exhaustive and non-overlapping).
+        let mesh = IndexedMesh::from_parts(
+            vec![
+                // Anchor at z=0:
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(20.0, 0.0, 0.0),
+                Point3::new(0.0, 5.0, 0.0),
+                // Roof 1 at x ∈ [0, 1]:
+                Point3::new(0.0, 0.0, 5.0),
+                Point3::new(0.0, 1.0, 5.0),
+                Point3::new(1.0, 0.0, 5.0),
+                // Roof 2 at x ∈ [10, 11] (no shared vertices):
+                Point3::new(10.0, 0.0, 5.0),
+                Point3::new(10.0, 1.0, 5.0),
+                Point3::new(11.0, 0.0, 5.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]],
+        );
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the two-disjoint-roofs fixture");
+
+        assert_eq!(
+            result.overhangs.len(),
+            2,
+            "two flagged faces with no shared geometry form two regions"
+        );
+        // Face-disjoint membership: union of region face lists has the
+        // same length as the sum of region face counts (no duplicates).
+        let mut all_faces: Vec<u32> = result
+            .overhangs
+            .iter()
+            .flat_map(|r| r.faces.iter().copied())
+            .collect();
+        let total_count = all_faces.len();
+        all_faces.sort_unstable();
+        all_faces.dedup();
+        assert_eq!(
+            all_faces.len(),
+            total_count,
+            "regions are face-disjoint (partition is non-overlapping)"
+        );
+        assert_eq!(
+            result.support_regions.len(),
+            result.overhangs.len(),
+            "1:1 support/overhang invariant preserved at component granularity"
+        );
+    }
+
+    #[test]
+    fn test_overhang_region_centroid_is_component_centroid() {
+        // Single triangular overhang at known position.
+        // Triangle vertices (1, 0, 5), (1, 1, 5), (2, 0, 5) →
+        // analytical centroid ((1+1+2)/3, (0+1+0)/3, (5+5+5)/3)
+        //                   = (4/3, 1/3, 5).
+        // Single-face component → component centroid = face centroid.
+        let mesh = IndexedMesh::from_parts(
+            vec![
+                // Anchor at z=0:
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+                Point3::new(0.0, 10.0, 0.0),
+                // Single overhang at known position:
+                Point3::new(1.0, 0.0, 5.0),
+                Point3::new(1.0, 1.0, 5.0),
+                Point3::new(2.0, 0.0, 5.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the single-face-overhang fixture");
+
+        assert_eq!(result.overhangs.len(), 1);
+        let center = result.overhangs[0].center;
+        approx::assert_relative_eq!(center.x, 4.0_f64 / 3.0, epsilon = 1e-6);
+        approx::assert_relative_eq!(center.y, 1.0_f64 / 3.0, epsilon = 1e-6);
+        approx::assert_relative_eq!(center.z, 5.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_overhang_no_overhangs() {
+        // Watertight cube on the build plate: bottom faces are
+        // filtered by the M.2 build-plate filter; all other faces are
+        // top-facing or vertical. Result: zero overhangs and zero
+        // support regions. Locks the §5.3 acceptance bullet
+        // "no overhangs → no support_regions" at component
+        // granularity.
+        let mesh = create_watertight_cube();
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the cube-on-plate fixture");
+
+        assert!(
+            result.overhangs.is_empty(),
+            "no overhangs after build-plate filter on cube-on-plate"
+        );
+        assert!(
+            result.support_regions.is_empty(),
+            "no support regions when no overhangs (1:1 invariant at zero)"
+        );
+    }
+
+    #[test]
+    fn test_overhang_face_adjacency_via_shared_edge() {
+        // Locks the manifold-edge adjacency contract: two flagged
+        // faces share a component IFF they share a manifold edge.
+        // Vertex-only sharing produces disjoint components. Two
+        // contrast variants in one test for direct comparison.
+        let config = PrinterConfig::fdm_default();
+
+        // Variant A — edge-shared: two roof triangles share edge (4, 5).
+        // Both have downward normal (0, 0, -1) → both flag → ONE region.
+        let mesh_edge_shared = IndexedMesh::from_parts(
+            vec![
+                // Anchor at z=0:
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+                Point3::new(0.0, 10.0, 0.0),
+                // Two coplanar roofs at z=5:
+                Point3::new(0.0, 0.0, 5.0), // 3
+                Point3::new(0.0, 1.0, 5.0), // 4
+                Point3::new(1.0, 0.0, 5.0), // 5
+                Point3::new(1.0, 1.0, 5.0), // 6
+            ],
+            vec![[0, 1, 2], [3, 4, 5], [4, 6, 5]],
+        );
+        #[allow(clippy::expect_used)]
+        let edge_shared = validate_for_printing(&mesh_edge_shared, &config)
+            .expect("validation should succeed for the edge-shared variant");
+        assert_eq!(
+            edge_shared.overhangs.len(),
+            1,
+            "two faces sharing a manifold edge form one connected region"
+        );
+
+        // Variant B — vertex-only: the second roof shares only vertex 5
+        // with the first (no shared edge). Both flag → TWO regions.
+        let mesh_vertex_only = IndexedMesh::from_parts(
+            vec![
+                // Anchor at z=0:
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+                Point3::new(0.0, 10.0, 0.0),
+                // Roof 1:
+                Point3::new(0.0, 0.0, 5.0), // 3
+                Point3::new(0.0, 1.0, 5.0), // 4
+                Point3::new(1.0, 0.0, 5.0), // 5 (shared with roof 2)
+                // Roof 2 — shares only vertex 5:
+                Point3::new(1.0, 1.0, 5.0), // 6
+                Point3::new(2.0, 0.0, 5.0), // 7
+            ],
+            vec![[0, 1, 2], [3, 4, 5], [5, 6, 7]],
+        );
+        #[allow(clippy::expect_used)]
+        let vertex_only = validate_for_printing(&mesh_vertex_only, &config)
+            .expect("validation should succeed for the vertex-only variant");
+        assert_eq!(
+            vertex_only.overhangs.len(),
+            2,
+            "two faces sharing only a vertex form two disjoint regions"
         );
     }
 }
