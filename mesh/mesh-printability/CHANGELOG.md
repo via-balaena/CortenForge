@@ -101,6 +101,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo test --release` command); cost ~3-5 min cold-cache, ~1-2 min
   warm-cache (Swatinem/rust-cache active); runs in parallel with
   `tests-debug` so no critical-path impact.
+- **`examples/mesh/printability-thin-wall` visual demo (Gap C, §7.1).**
+  First production consumer of the §6.1 ThinWall detector — a
+  hand-authored 24-triangle hollow box (outer 30×20×15 mm; inner
+  cavity x ∈ [1.5, 28.5], y ∈ [1.5, 18.5], z ∈ [1.5, 14.6] with the
+  top wall thinned to 0.4 mm; side and bottom walls 1.5 mm). The two
+  vertex-disjoint shells (8 outer corners + 8 inner corners; outer
+  CCW-from-outside, inner REVERSED so each face's normal points away
+  from the surrounding solid) are watertight + consistently wound by
+  construction, partitioning under edge-adjacency into the predicted
+  two clusters (outer top + inner top) per §7.1. `main()` asserts
+  eight of the §7.1 numerical anchors: cluster count = 2, both
+  centroids `(15, 10, 15)` + `(15, 10, 14.6)` within 1e-9, both areas
+  600 + 459 mm² within 1e-9, both `thickness ≈ 0.4 mm` within 1e-5,
+  two Critical ThinWall issues, `!is_printable()`, ≥1 Overhang region
+  for the cavity-ceiling co-flag (overhang_angle = 90°, Critical
+  under FDM 45° + 30° = 75° band), and zero `DetectorSkipped` issues
+  (preconditions hold). Produces `out/mesh.ply` (16v, 24f, ASCII)
+  + `out/issues.ply` (vertex-only point-cloud of region centroids,
+  ASCII) for the visuals pass. **Three TrappedVolume assertions from
+  §7.1 (sealed-cavity volume ≈ 6011.7 mm³, centroid `(15, 10, 8.05)`,
+  count == 1) are deferred** to row #14b — a tiny follow-up commit
+  immediately after row #14 (when the §6.3 TrappedVolume detector
+  first ships); the current `PrintValidation` struct has no
+  `trapped_volumes` field. The
+  README's f3d-winding callout sits **near the top of the file** per
+  `feedback_f3d_winding_callout` — the inner cavity's reversed
+  winding is the load-bearing topology the detector relies on, not a
+  bug, and `f3d`'s default two-sided lighting hides it; MeshLab and
+  ParaView render both shells with their distinct orientations
+  visible. Crate name `example-mesh-printability-thin-wall` per §7.0
+  + §12.3's example-commit naming convention. Pure addition; first
+  ⏸︎ pause-for-visuals commit per §12.1 row #11.
 
 ### Changed
 

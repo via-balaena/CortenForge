@@ -297,6 +297,7 @@ members = [
     "examples/mesh/mesh-offset-inward",
     "examples/mesh/shell-generation-fast",
     "examples/mesh/shell-generation-high-quality",
+    "examples/mesh/printability-thin-wall",
 
     # Foundation (active development)
     "design/cf-geometry",

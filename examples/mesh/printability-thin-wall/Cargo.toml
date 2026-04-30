@@ -1,0 +1,21 @@
+[package]
+name = "example-mesh-printability-thin-wall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# 24-triangle hollow-box construction + Point3 + IndexedMesh::from_parts
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply + out/issues.ply (ASCII PLY for human-readable diff)
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::fdm_default + region/issue types
+mesh-printability = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for thickness/centroid/area numerical anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true
