@@ -2451,4 +2451,279 @@ Stress fixtures push the post-arc test total to **~186 + 47 = ~233** (vs §-revi
 
 ---
 
+## §10. Grading & CI impact
+
+This section names the v0.7→v0.8 grade delta per criterion, the per-commit grading cadence, and the CI matrix changes (additions and recommendations).
+
+### §10.0 v0.7.0 grade baseline (captured 2026-04-30)
+
+`cargo xtask grade mesh-printability --skip-coverage` (run on `feature/mesh-printability-v0-8` cut-point, before any v0.8 commit lands):
+
+| # | Criterion | Result | Grade |
+|---|-----------|--------|-------|
+| 1 | Coverage | (skipped per `--skip-coverage`) | — |
+| 2 | Documentation | 0 warnings | A |
+| 3 | Clippy | 0 warnings | A |
+| 4 | Safety | 0 violations | A |
+| 5 | Dependencies | 5 deps, all justified | A |
+| 6 | Layer Integrity | ✓ confirmed | A |
+| 7 | WASM Compat | ✓ builds | A |
+| 8 | API Design | (manual review) | ? |
+
+**Automated grade: A across 7/7 criteria.** Coverage runs out of band; v0.8 will lift it during end-of-arc grading checkpoint (§10.6). The baseline is what every commit's grading gate compares against (per `feedback_grading_rubric` "A-across-the-board or fix-and-regrade before execution").
+
+**Direct dep count baseline**:
+- `cargo tree -p mesh-printability -e normal --prefix none | sort -u | wc -l` = **34** unique entries (release graph; cap at L0 release_max = 80)
+- `cargo tree -p mesh-printability -e normal,dev --prefix none | sort -u | wc -l` = **34** (no `dev`-only deps in v0.7 graph beyond `approx`, which is workspace-shared)
+- Headroom for Gap I's mesh-repair add: 80 − 34 = 46 deps. mesh-repair's own release graph is 46 unique deps; estimated overlap (mesh-types, nalgebra, hashbrown, rayon-shared, cf-geometry-shared) brings combined unique count to ~50–55 unique entries — **well under 80**. Pre-flight sanity check; commit-time `cargo xtask grade` is the authoritative verification per §8.4.
+
+### §10.1 Per-criterion impact across v0.8
+
+For each criterion, what changes during v0.8 and what's the target post-arc state.
+
+#### §10.1.1 Coverage (Criterion 1)
+
+v0.7 baseline: not captured during arc-grading runs (they use `--skip-coverage`). v0.7 coverage value runs in scheduled CI nightly + locally via `cargo xtask grade mesh-printability` (without `--skip-coverage`).
+
+v0.8 impact:
+- **Test count**: 32 (existing) + ~34 (§5 per-fix) + ~50 (§6 per-detector) + ~70 (§7 example-driven main() assertions) + 47 (§9 stress) ≈ **~233 tests** (4 release-only). Test surface roughly 7× the v0.7 baseline.
+- **Source LOC**: +5 new detectors (~150–250 LOC each) + 1 architectural change (Gap L) + 5 in-place fixes ≈ +1500 LOC src in `validation.rs` + `regions.rs` + 1 new private helper file (`tests/stress_inputs.rs` is integration-tests, not src).
+- **Coverage target**: maintain or improve the v0.7 absolute % (baseline value captured at end-of-arc grading; arc deletion of the working spec doesn't change Coverage).
+
+If Coverage drops below v0.7 baseline at end-of-arc, **stop and add tests** before the v0.8.0 release commit (§12). Per `feedback_grading_rubric` no-exceptions A-grade.
+
+#### §10.1.2 Documentation (Criterion 2)
+
+v0.7 baseline: A (0 rustdoc warnings under `RUSTDOCFLAGS=-D warnings`).
+
+v0.8 impact:
+- New public types in `regions.rs` (4 region types per §3) + new `PrinterConfig` field + new variant `PrintIssueType::DetectorSkipped` + 5 new public functions in `validation.rs` — each requires complete rustdoc.
+- New doc-tests on each new public function + region type — adds ≥5 doc-tests (per §3 acceptance: "Each new detector commit adds a doc-test on the public `check_*` function or the populated region type").
+- **Pre-commit hook is fmt+clippy only** per `feedback_cargo_doc_pre_commit`; rustdoc only surfaces at xtask grade gate. **Each commit's local validation must include**: `RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p mesh-printability` (per the working memory recommendation).
+
+Target: maintain A. Risk: rustdoc warnings (un-backticked brackets like `face[N]` parsed as anchor links) on new doc comments. Mitigation: per-commit local rustdoc check.
+
+#### §10.1.3 Clippy (Criterion 3)
+
+v0.7 baseline: A (0 warnings against own lints; not workspace lints — Gap A target).
+
+v0.8 impact:
+- **Gap A**: workspace lints inheritance (`[lints] workspace = true`) tightens the ruleset. §5.1 stop-and-raise gate enforces ≤10 fallout sites per the v0.8-as-arc commitment.
+- **All new code post-Gap A**: must satisfy workspace lints from authoring time, not retrofit.
+- **Per-commit gate**: `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings` clean.
+
+Target: maintain A under workspace lints (which is a strictly tighter standard than v0.7's own-lints).
+
+#### §10.1.4 Safety (Criterion 4)
+
+v0.7 baseline: A (0 unsafe violations).
+
+v0.8 impact:
+- Möller-Trumbore ray-tri intersection helper (Gap C, §6.1): pure-safe nalgebra arithmetic; no `unsafe`.
+- Voxel scanline + flood-fill (Gap H, §6.3): pure-safe; uses `Vec<u8>` for the grid + standard BFS over indexed cells.
+- mesh-repair re-use (Gap I): mesh-repair's own grade includes safety. Since the v0.8 dep add is path-only (workspace-local), our Safety criterion doesn't transitively check mesh-repair's safety; but the workspace's grade-all does cover it.
+
+Target: maintain A — no `unsafe` blocks introduced.
+
+#### §10.1.5 Dependencies (Criterion 5)
+
+v0.7 baseline: A — grader reports "5 deps, all justified" = 4 normal (`mesh-types`, `nalgebra`, `thiserror`, `hashbrown`) + 1 dev (`approx`).
+
+v0.8 impact:
+- **Gap I**: `mesh-repair = { path = "../mesh-repair" }` added. Justification: `// for SelfIntersection re-use; avoids re-implementing tri-tri intersection`. Inline comment in Cargo.toml per the workspace's justification convention (matches existing deps' pattern).
+- **No transitive concerns at the Dependencies criterion level** — Criterion 5 audits direct deps, not transitive. Post-arc direct-dep count: 5 normal + 1 dev = 6 per grader.
+
+Target: maintain A — 1 new direct dep, justified inline.
+
+#### §10.1.6 Layer Integrity (Criterion 6)
+
+v0.7 baseline: A (`Tier::L0` confirmed; release graph 34 unique entries < 80 cap; banned-pattern check passes).
+
+v0.8 impact (the **High-tier risk** per §8.4):
+- **Gap L (build_up_direction)**: parametrize-via-config — no dep change, no tier change. ✓
+- **Gap I (mesh-repair add)**: mesh-printability stays L0; mesh-repair is L0. L0→L0 dep — no Layer Integrity tier-shift. Combined unique-dep count estimated at ~50–55, under the 80 cap.
+- **Cross-platform note**: Layer Integrity also enforces banned-pattern checks. mesh-repair's transitive deps (`rayon`, `tracing`, `cf-geometry`) are all on L0's allowed list (none of them in `L0_BANNED` per `xtask/src/grade.rs:2079–2110`).
+
+**Pre-flight at Gap I commit (per §8.4)**: run `cargo xtask grade mesh-printability --skip-coverage` after the Cargo.toml dep add but before any new src code lands; verify Criterion 6 stays A. If it fails (unique-dep count exceeds 80, or a banned pattern surfaces), STOP and surface to user — Gap I cannot ship without dep-graph headroom.
+
+Target: maintain A. Risk: if a future workspace lint pattern is added to `L0_BANNED` mid-arc and one of mesh-repair's transitive deps matches, Gap I breaks. Mitigation: per-commit `cargo xtask grade` re-runs the check.
+
+#### §10.1.7 WASM Compat (Criterion 7)
+
+v0.7 baseline: A (L0-tier WASM build via `cargo build --target wasm32-unknown-unknown -p mesh-printability`).
+
+v0.8 impact:
+- **Gap I (mesh-repair add)**: empirically verified — `cargo build --target wasm32-unknown-unknown -p mesh-repair` builds cleanly (~10 s on warm cache, 2026-04-30 local check on `feature/mesh-printability-v0-8` branch HEAD). mesh-repair's transitive deps (rayon, tracing, cf-geometry) all compile to wasm32 without friction. mesh-printability inheriting them poses no WASM blocker.
+- **Pre-flight at Gap I commit**: `cargo build --target wasm32-unknown-unknown -p mesh-printability` post-dep-add to confirm.
+
+Target: maintain A. Risk: low — empirical baseline already passes for the dep being added.
+
+#### §10.1.8 API Design (Criterion 8 — manual review)
+
+v0.7 baseline: not graded automatically. v0.8 doesn't change the manual-review process; the spec itself + `COMPLETION.md` rewrite (Gap K) is the v0.8 contribution to API Design hygiene.
+
+v0.8 impact:
+- New public types follow existing pattern (`new()` + builder methods consistent with `ThinWallRegion` / `OverhangRegion` / `SupportRegion`).
+- New `PrintIssueType::DetectorSkipped` variant + behavior documented (§5.8).
+- v0.7→v0.8 semver-strict-breaking fields documented in `CHANGELOG.md` (§5.10) + version bump rationale (§3).
+- Public surface diff table in §3 supports the manual API review.
+
+Target: pass manual review. Pre-merge gate: `cargo xtask complete mesh-printability` per the grader's "next step" message.
+
+### §10.2 Per-commit grading cadence
+
+Per §8.4 risk-tier response policy + `feedback_grading_rubric`, every commit runs the grading gate before being committed:
+
+```
+cargo xtask grade mesh-printability --skip-coverage
+```
+
+Acceptance: All 7 criteria report A. Failure = stop-and-fix before commit lands.
+
+**Per-commit additional gates** (beyond the xtask grade):
+- `cargo test -p mesh-printability` — unit + integration tests pass.
+- `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings` — workspace lints clean (Gap A onwards).
+- `RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p mesh-printability` — rustdoc clean per `feedback_cargo_doc_pre_commit`.
+- For example commits (§7): `cargo run -p example-mesh-printability-<name> --release` exits 0 (numbers-pass).
+- For workspace-member additions (each example commit): `cargo build --workspace` to confirm workspace-members list integrity.
+
+**xtask grade vs per-criterion checks**: per `feedback_xtask_grade_opacity`, the full grade run is opaque. During iteration, prefer per-criterion checks above; the full `cargo xtask grade` is the final confirmation gate at commit time.
+
+**High-tier-commit additional gates** (per §8.4):
+- **Commit #2 (Gap M)**: `cargo test -p mesh-printability` — sweep `validation.rs::tests` for any test asserting on overhang-derived numerics; update inline. Per §5.9 "test-numerical-anchor regression sweep".
+- **Commit #17 (Gap I, mesh-repair add)**: `cargo xtask grade mesh-printability --skip-coverage` BEFORE adding any src consuming mesh-repair; verify Criterion 6 stays A. Per §8.4 pre-flight.
+
+### §10.3 CI matrix — current state and v0.8 deltas
+
+Reference: `.github/workflows/quality-gate.yml`. The matrix has 8 jobs that gate `feature/*` and `develop`/`main` branches:
+
+| Job | What it runs | mesh-printability included? |
+|-----|--------------|------------------------------|
+| `format` | `cargo fmt --all -- --check` | yes (workspace-wide) |
+| `grade` | `cargo run -p xtask --release -- grade-all --skip-coverage` | yes (graded crate-by-crate; mesh-printability is in the workspace) |
+| `tests-debug` | `cargo test -p mesh-types -p mesh-io ... -p mesh-printability ...` (ubuntu) | **yes** (line 173) |
+| `tests-release` | `cargo test --release -p sim-ml-chassis ...` (ubuntu, 5 heavy crates + sim-soft) | **no** — not currently included |
+| `cross-os` | `cargo test -p sim-core -p sim-mjcf -p mesh-io` (macos + windows) | **no** — not currently included |
+| `feature-combos` | `cargo test --features gpu-probe -p sim-soft` | not applicable (no feature gates) |
+| `dependencies` | `cargo-deny check licenses sources` | yes (workspace-wide) |
+| `semver` | `cargo-semver-checks-action` (mesh-repair only) | not applicable (mesh-printability not on crates.io yet) |
+| `sbom` | `cargo cyclonedx` (workspace-wide) | yes (workspace-wide) |
+
+Final `quality-gate` job aggregates: `[format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies]`.
+
+**v0.8 deltas (additive)**:
+
+1. **`tests-debug` automatically picks up new tests** — no CI plumbing change. Existing 32 + ~152 new tests (per §10.1.1) = ~184 debug-only tests; well under the 20-min `tests-debug` budget for mesh-printability's per-crate share.
+2. **Examples are tested via `cargo build --workspace`** in `tests-debug`; CI compiles all workspace members. The 8 new example crates (§7) compile and the resulting binaries are valid; their `main()` numerical-anchor assertions run as **smoke tests** when manually invoked (`cargo run -p ...`) but are NOT in the CI test matrix unless promoted (deferred to v0.9 if needed).
+3. **`tests-release` not added** — mesh-printability has no heavy stochastic-physics tests. The 3 release-only stress fixtures from §9 (`stress_c_5k_tri_perf_budget`, `stress_h_voxel_grid_perf_cliff`, `stress_i_truncation_at_100`) use `#[cfg_attr(debug_assertions, ignore)]` per `feedback_release_mode_heavy_tests`. For these to actually run in CI, they need `cargo test --release` invocation. **Recommendation**: extend `tests-release` job to include `mesh-printability` for these 3 fixtures (~2 min added compile cost; runs in parallel with the existing 5 heavy crates). See §10.4 for the full recommendation summary.
+4. **`cross-os` extension** — see §10.4.
+
+### §10.4 CI additions resolved for v0.8
+
+Two CI matrix changes ship as part of the arc, surfaced from §8.4 High-tier risk coverage. Resolved 2026-04-30 (master-architect call): both ship; combined CI cost ~3–4 min in the existing parallel jobs; matches the §8.4 response policy ("High-tier: pre-flight verification mandated; additional test fixtures if any uncertainty"). Implementation commit slot: each YAML edit lands as part of the **corresponding detector commit** (§10.4.1 lands with Gap H detector commit; §10.4.2 lands with the first release-only stress fixture, i.e., Gap C detector commit) — keeps the CI plumbing change beside the test it protects.
+
+#### §10.4.1 Add mesh-printability to `cross-os` matrix (Gap H FP-drift coverage)
+
+**Why**: Gap H's voxel inside-test (scanline ray-tri parity + flood-fill) is FP-drift-sensitive on cross-platform per §8.2.1's Phase-4-faer-LDLᵀ lesson. macOS/Linux/Windows can diverge by 1+ voxel on the boundary of trapped components, breaking `validation.trapped_volumes.len()` assertions or volume tolerances.
+
+**Mitigation in v0.8**: §6.3's `max_relative = 0.10` volume tolerance + `assert!(volume_in_tolerance)` should absorb single-voxel discretization noise. **But platform-divergent hard-fails** (e.g., mesh-repair returns a different `pairs_count` on Windows, or scanline parity flips on macOS) only surface in a multi-OS test run.
+
+**Proposed change** — `quality-gate.yml::cross-os::matrix`:
+
+```yaml
+cross-os:
+  ...
+  - name: Run tests (default features)
+    run: cargo test -p sim-core -p sim-mjcf -p mesh-io -p mesh-printability
+    shell: bash
+```
+
+Single-line addition. Cost: ~2 min added per OS (mesh-printability has small src + ~233 tests; compiles fast in `cargo test` debug mode). Fits comfortably in the existing `cross-os` job runtime.
+
+**Alternative considered**: only add the §9 stress fixtures to cross-os (via test selection); rejected as more brittle than running all of mesh-printability's tests.
+
+**§9.4 Gap H FP-drift mitigation** depends on this CI extension being in place before the arc closes.
+
+**Resolved: ships in v0.8.** Lands inside the Gap H detector commit (§12 commit-order) so the YAML edit is reviewable alongside the detector that depends on it.
+
+#### §10.4.2 Add mesh-printability to `tests-release` matrix (release-only stress fixtures)
+
+**Why**: §9's 3 release-only fixtures (`stress_c_5k_tri_perf_budget`, `stress_h_voxel_grid_perf_cliff`, `stress_i_truncation_at_100`) test perf-cliff regression. Without `cargo test --release` in CI, they only run locally — perf regressions go unnoticed.
+
+**Proposed change** — `quality-gate.yml::tests-release` step:
+
+```yaml
+- name: Run tests (--release)
+  run: |
+    cargo test --release \
+      -p sim-ml-chassis -p sim-thermostat -p sim-rl \
+      -p sim-conformance-tests -p sim-opt -p mesh-printability
+    cargo test --release -p sim-soft \
+      --test hertz_sphere_plane \
+      --test contact_drop_rest \
+      --test non_interpenetration
+  shell: bash
+```
+
+(Single `-p mesh-printability` addition.)
+
+Cost: mesh-printability `cargo test --release` is roughly 3–5 min cold-cache, 1–2 min warm-cache (Swatinem/rust-cache active). Adds to `tests-release` job runtime; runs in parallel with `tests-debug` so no critical-path impact.
+
+**Alternative considered**: leave perf-cliff fixtures local-only and document that v0.8 doesn't gate on perf in CI. Rejected because perf regressions silently accumulate.
+
+**Resolved: ships in v0.8.** Lands inside the Gap C detector commit (the first commit that introduces a release-only stress fixture), so the YAML edit is reviewable alongside the test it gates.
+
+### §10.5 Other CI implications
+
+- **`dependencies` job (cargo-deny)**: Gap I adds `mesh-repair` as a workspace-internal dep (path-based, not crates.io). cargo-deny's licenses + sources audit operates on the dep graph, transitively covering mesh-repair's transitive deps (rayon, tracing, cf-geometry). All those crates already pass cargo-deny in the workspace baseline (they're consumed by other workspace members). **No change expected.**
+- **`semver` job**: only runs against `mesh-repair` per `quality-gate.yml:338` — not mesh-printability. v0.8 publishes neither to crates.io. **No change.** Future v0.9 work could add `package: mesh-printability` to the semver-checks step once a crates.io baseline exists.
+- **`sbom` job**: workspace-wide cyclonedx; mesh-printability already covered. **No change.**
+- **`format` job**: `cargo fmt --all -- --check` workspace-wide. New code in `validation.rs`, `regions.rs`, `tests/stress_inputs.rs`, and 8 new example crates must be `cargo fmt --all`-clean per the existing pre-commit hook. **No matrix change.**
+
+### §10.6 End-of-arc grading checkpoint
+
+Per §13's spec-lifecycle plan, the **second-to-last commit** of the arc (the v0.8.0 release commit, §8.3 row #24) runs:
+
+```
+cargo xtask grade mesh-printability                      # full grade with coverage (5–10 min)
+cargo xtask grade-all                                    # workspace-wide grade (5–10 min)
+cargo build --workspace --release                        # examples compile (~3–5 min cold)
+cargo test -p mesh-printability                          # all 230+ debug tests pass
+cargo test --release -p mesh-printability                # 3 release-only stress fixtures pass
+RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p mesh-printability   # rustdoc clean
+```
+
+(Workspace clippy is enforced by `cargo xtask grade-all` Criterion 3 — no separate `cargo clippy --workspace` call needed.)
+
+**Acceptance**: all 7 automated criteria A; workspace `grade-all` no regression; coverage maintained or improved vs v0.7.0 baseline. Per `feedback_grading_rubric` "A-across-the-board or fix-and-regrade before execution" — any criterion below A blocks the v0.8.0 release commit.
+
+If a criterion drops to B or lower, **stop and fix** before the release commit lands. Specific failure-mode playbook:
+
+| Failure | Likely cause | Recovery |
+|---------|--------------|----------|
+| Coverage drops | New uncovered branch in §6 detectors | Add unit tests; re-run grade |
+| Documentation B | Missing rustdoc on new public type | Add doc-comment; re-run grade |
+| Clippy B | New warning post-Gap-A workspace lints | Triage warning; either fix or justify with `#[allow(..)]` (per `feedback_grading_rubric`'s grader lint-justification scan) |
+| Safety B | Accidental `unsafe` in new code | Refactor to safe pure-Rust |
+| Deps B | Unjustified new dep | Add justification comment to Cargo.toml |
+| Layer Integrity B | Banned-pattern dep snuck in via transitive | Investigate `cargo tree -e normal -p mesh-printability`; remove offending transitive |
+| WASM B | mesh-repair's transitive breaks WASM build | Add `cfg(target_arch = "wasm32")` fallback in mesh-printability or escalate to mesh-repair |
+
+### §10.7 Summary — v0.8 grading impact
+
+| Criterion | v0.7 | Target v0.8 | Risk source |
+|-----------|------|--------------|--------------|
+| 1. Coverage | (skipped) | match v0.7 % or better | new src LOC (+5 detectors); offset by ~152 new tests |
+| 2. Documentation | A | A | new public types need rustdoc + doc-tests |
+| 3. Clippy | A (own lints) | A (workspace lints) | Gap A's stop-and-raise gate caps fallout at 10 sites |
+| 4. Safety | A | A | no `unsafe` introduced |
+| 5. Dependencies | A (5 = 4 normal + 1 dev) | A (6 = 5 normal + 1 dev) | mesh-repair add justified |
+| 6. Layer Integrity | A | A | mesh-repair add stays under 80-dep L0 cap (estimate ~50–55) |
+| 7. WASM Compat | A | A | mesh-repair already WASM-compat |
+| 8. API Design | manual review | passes manual review | spec authors the rationale |
+
+**v0.8 ships A across all 7 automated criteria. Both §10.4 CI matrix changes ship as part of the arc per master-architect call 2026-04-30** (resolved §10.4.1 + §10.4.2 — folded into the corresponding detector commits in §12).
+
+---
+
 
