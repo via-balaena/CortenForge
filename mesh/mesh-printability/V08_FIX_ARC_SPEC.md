@@ -2243,6 +2243,212 @@ Pre-flight verifications consolidated for high-risk gaps:
 
 ---
 
-## §9 onwards — pending
+## §9. Stress-test gauntlet
 
-(Sections 9–13: stress-test gauntlet, grading & CI impact, open questions, implementation order, spec lifecycle.)
+This section enumerates pathological inputs each detector must handle, maps them to **flag / skip / tolerate** outcomes, and locks in stress fixtures that prove the §8.4 High-tier mitigations in code (not in the spec). The §7 examples cover the **happy path + load-bearing concept**; §9 covers **adversarial inputs** that surface bugs the happy-path examples cannot.
+
+Stress fixtures live in **`mesh/mesh-printability/tests/stress_inputs.rs`** (new file, lands incrementally with each detector commit). Fixtures whose inputs require >50 LOC of vertex authoring use a small per-test helper in the same file; no shared `tests/common/` module (per `feedback_simplify_examples`).
+
+### §9.0 Methodology
+
+**Three outcomes** (mapped per detector input):
+
+- **flag** — the detector emits a typed-region entry + `PrintIssue` with the documented severity. The fixture asserts on counts + severity.
+- **skip** — the detector emits exactly one `Info`-severity `DetectorSkipped` issue and returns early; no typed-region entries. The fixture asserts on the skip diagnostic + the empty typed-region field.
+- **tolerate** — the detector runs to completion without panicking, returns a non-fatal result; the fixture asserts no panic + bounded runtime + sensible (possibly empty) output.
+
+**No "undefined behavior" or "best effort" outcomes**: every fixture commits to exactly one of the three. Per `feedback_no_reflexive_defer`, deferring with "the algorithm just handles it" is not a documented outcome.
+
+**Risk-coverage rule** (§8.4 enforcement): every High-tier risk in §8.4 has at least one stress fixture proving its mitigation works. Tracked at §9.4.
+
+**Performance budget**: all stress fixtures must complete in **debug mode under 30 seconds total** (the `tests-debug` CI job's per-crate share of its 20-min budget). Heavy fixtures (Gap C 5k-tris, Gap H 100mm part, Gap I 100+ intersections) are **`#[cfg_attr(debug_assertions, ignore)]`** per `feedback_release_mode_heavy_tests`, run in `tests-release` and locally. Light stress fixtures (empty mesh, single triangle, degenerate triangles) stay debug-only.
+
+**Determinism**: every stress fixture asserts deterministic output across two consecutive runs of `validate_for_printing` (the `_sort_stable` test pattern from §6). Cross-platform determinism is the §10 cross-os concern; the per-fixture stable-order check guards within-platform regression.
+
+### §9.1 Pathological-input → detector matrix
+
+Each row is a pathological input class. Columns name the expected behavior of each detector under v0.8. Multiple non-tolerate cells per row are intentional — e.g., row 11 (Gap F same-direction faces) flags Manifold AND skips ThinWall AND tolerates TrappedVolume.
+
+**Cell legend**: `flag <Type>` = emits typed-region + issue; `skip` = emits one DetectorSkipped Info; `tolerate` = runs without panic, no flag; `n/a` = upstream check (BuildVolume error path) returns before this detector runs.
+
+| # | Pathological input | BuildVolume | Overhang (Gap M) | Manifold (Gap F) | ThinWall (Gap C) | LongBridge (Gap G) | TrappedVolume (Gap H) | SelfIntersect (Gap I) | SmallFeature (Gap J) |
+|---|---------------------|-------------|------------------|-------------------|-------------------|--------------------|------------------------|------------------------|----------------------|
+| 1 | Empty mesh (0 verts, 0 faces) | error: `Err(EmptyMesh)` | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+| 2 | Single triangle (3 verts, 1 face) | tolerate | tolerate (1 normal; build-plate filter applies if downward at z=0) | flag NotWatertight (3 open edges) | skip (not watertight) | tolerate (no horizontal cluster, or cluster span < threshold) | skip (not watertight) | tolerate (1 face has no pairs) | tolerate or flag SmallFeature (1 component; flag iff max_extent < min_feature_size) |
+| 3 | Degenerate near-zero-area face (3 collinear verts) | tolerate | tolerate (degenerate normal filtered via EPS_DEGENERATE_NORMAL) | flag NotWatertight (degenerate face contributes 3 open edges to count) | skip (not watertight) | tolerate (degenerate face's normal classify-skipped) | skip (not watertight) | tolerate (degenerate triangle's M-T returns None per epsilon) | tolerate (face_count > 0; bbox from verts) |
+| 4 | Two triangles near-coplanar, intersecting at narrow angle | tolerate | tolerate | flag NotWatertight (6 open edges, 2 disjoint triangles) | skip (not watertight) | tolerate | skip (not watertight) | flag SelfIntersecting (Möller-Trumbore via mesh-repair within EPS_INTERSECTION = 1e-10) | tolerate (2 components, each tiny — possibly flagged SmallFeature) |
+| 5 | 100k-triangle thin shell (watertight, consistently wound) | tolerate | flag if downward normals exceed threshold | tolerate (closed; consistent winding) | flag (perf cliff documented; v0.8 stress fixture uses 5k tri proxy) | tolerate (geometry-dependent) | flag if cavity sealed | tolerate (clean watertight shell typically has no self-intersections) | tolerate (1 component) |
+| 6 | Voxel grid at perf cliff (100 mm cube at FDM voxel 0.1 mm = 10⁹ voxels = 1 GB grid) | tolerate (within typical FDM build volume) | tolerate | tolerate | tolerate (tri-count budget separate concern) | tolerate | flag w/ runtime budget; **release-only fixture** at 100×100×30 mm sub-cap variant (~300M voxels) | tolerate | tolerate |
+| 7 | Unit-conversion error (30 mm part authored in meters → 0.030-mm coords) | tolerate (0.030 mm fits any build volume trivially) | tolerate (overhang predicate is scale-invariant) | tolerate | (depends on watertightness — solid 0.030-mm cube IS watertight; ray-cast distance ≈ 0.030 mm < 1.0/2 → flag Critical ThinWall) | tolerate (no spans exceed `max_bridge_span` thresholds at this scale) | tolerate (no cavity) | tolerate | flag SmallFeature (entire-mesh component max_extent = 0.030 < 0.8/2 = 0.4 → Warning; user-diagnostic per §6.5) |
+| 8 | Mesh entirely below `min_feature_size` (e.g. solid 0.1 mm cube with `min_feature_size = 0.8 mm`) | tolerate (fits) | tolerate (cube on plate; bottom filtered; sides vertical) | tolerate | flag Critical ThinWall (cube IS watertight; ray-cast hits opposite face at 0.1 mm < 1.0/2 = 0.5) | tolerate (no horizontal downward faces above plate) | tolerate (no cavity) | tolerate | flag Warning SmallFeature (max_extent = 0.1 < 0.8/2 = 0.4) |
+| 9 | Sub-voxel-resolution opening from cavity to exterior (cavity with channel ≤ voxel_size diameter) | tolerate | flag if cavity-ceiling fires Gap M | tolerate | tolerate (walls thick by construction — see fixture) | tolerate | tolerate; cavity NOT flagged (flood-fill leaks through opening; documented intentional v0.8 behavior per §6.3 — drainage simulation is v0.9) | tolerate (no self-intersection) | tolerate (1 component) |
+| 10 | Tied vertex via UV-sphere tessellation (≥3 faces share a single vertex at a pole) | tolerate | flag iff downward-tilted faces present | tolerate (each edge shared by exactly 2 faces; vertex-fan does NOT make an edge non-manifold) | flag (hollow shell ray-cast finds opposite-pole face at distance ≈ 2r — i.e., diameter, NOT thickness; documented limitation, fixture asserts ray-cast returns finite distance, no panic) | tolerate | flag iff interior is sealed | tolerate (clean sphere has no self-intersections per `skip_adjacent`) | tolerate (1 component) |
+| 11 | Faces traversed in same direction (Gap F target: watertight cube with one face's vertex order flipped) | tolerate | tolerate | flag NonManifold Critical (post-Gap-F: directed-edge collision → "winding inconsistency" description) | skip (not consistent winding) | tolerate (algorithm is winding-agnostic) | tolerate (watertight by edge-count check; flood-fill runs — TrappedVolume requires watertight only, NOT consistent winding per §6.3) | tolerate | tolerate |
+| 12 | Two triangles sharing only a vertex (no shared edge) | tolerate | tolerate | flag NotWatertight (no shared edges → 6 open edges) | skip (not watertight) | tolerate | skip (not watertight) | tolerate (vertex-only contact is NOT an intersection per §6.4 documented edge case; mesh-repair returns empty pairs since neither face penetrates the other) | tolerate (2 components per edge-adjacency definition; each potentially flagged if extent < threshold) |
+| 13 | Disconnected duplicate of valid mesh (2 watertight components, each with internal cavity) | tolerate | tolerate (each component contributes individually) | tolerate (both components watertight; no open edges or non-manifold edges in either) | flag (each component independently if walls thin; lock-in via fixture geometry) | tolerate or flag (per geometry) | flag (both cavities; flood-fill exterior reaches both component exteriors via grid-corner seed) | tolerate (cleanly offset duplicates don't intersect) | tolerate (or flag if either component below threshold) |
+| 14 | NaN / Inf in vertex coordinates | tolerate (bbox computation propagates NaN; threshold comparison with NaN is false → no flag; v0.7 has no `is_finite` gate) | tolerate (NaN propagates through arccos; threshold comparison is false → no flag; centroid is NaN-poisoned but no panic) | tolerate (edge-count uses integer indexes; immune to coord NaN) | skip (precondition runs first; if precondition pass, M-T returns NaN-poisoned distance; threshold comparison is false → no flag) | tolerate (NaN-poisoned span comparison is false → no flag) | tolerate (voxel inside-test parity is undefined-but-bounded; no panic) | tolerate (mesh-repair returns empty pairs on NaN-poisoned input) | tolerate (NaN-poisoned bbox extent comparison is false → no flag) |
+
+#### Notes on edge-cases that need spec lock-in (not just guidance)
+
+These rows above carry footnote-worthy detail that the matrix can only hint at:
+
+**Row 1 (empty mesh)**: `validate_for_printing` returns `Err(PrintabilityError::EmptyMesh)` per existing v0.7 behavior (`test_empty_mesh_error` already covers); detectors are never invoked. Stress fixture verifies the error path is preserved post-arc.
+
+**Row 7 (unit-conversion error)**: a "mesh in meters" produces a 30 mm × 30 mm × 30 mm part if treated as mm, 30000 m × 30000 m × ... if treated as meters by other downstream tools. mesh-printability has no unit metadata; treats coords as mm by convention. The fixture authors a 0.030-mm cube (= 30 µm = a 30 mm part scaled 1000×); it fits the build volume, has a single component below feature size, and the SmallFeature detector flags it. The example demonstrates the validator surfacing a unit-conversion error, not silently approving a 30 µm part.
+
+**Row 13 (disconnected duplicate)**: TrappedVolume's flood-fill exterior is seeded at the grid corner (always-outside per padded grid). When two disjoint watertight components both have interior cavities, the exterior flood-fill reaches exterior of both; both cavities flag. Stress fixture has 2 separate cubes-with-cavities offset by 30 mm; expects 2 TrappedVolume regions.
+
+**Row 14 (NaN/Inf)**: by §4.5's "tolerance-based assertions, exact-representable fixtures" policy, mesh-printability does not panic on NaN inputs but does NOT promise correct output. Stress fixture asserts **no panic** (the detector returns whatever it returns); the fixture's job is regression-protecting against future code that might unwrap a NaN-bearing `Option` or trigger a debug assert. **Caveat**: if a future detector implementation introduces a `debug_assert!(x.is_finite())`, the stress fixture would need to be updated to skip in debug mode (`#[cfg_attr(debug_assertions, ignore)]`); document this in the fixture's doc-comment.
+
+### §9.2 Per-detector stress fixtures
+
+Each subsection lists fixture names, what they prove, and where they live. Fixture name format: `stress_<gap-letter>_<scenario>` for traceability with the gap inventory.
+
+#### §9.2.1 Build volume + manifold (existing detectors)
+
+These are not part of the v0.8 in-scope gaps but interact with the new detectors via the precondition skip pathway. Stress coverage:
+
+- `stress_existing_empty_mesh_error_preserved`: empty `IndexedMesh`; assert `validate_for_printing` returns `Err(EmptyMesh)`; detectors never invoked. Light. (Row 1.)
+- `stress_existing_single_triangle_open_mesh`: 1 face, 3 verts; assert `NotWatertight` issue, ThinWall + TrappedVolume both emit `DetectorSkipped`. Light. (Row 2.)
+- `stress_existing_two_faces_vertex_only_shared`: 2 disjoint triangles sharing a vertex but no edge; assert 6 open edges flagged, ThinWall + TrappedVolume skip, no winding-inconsistency flag (no shared edge means no directed-edge collision). Light. (Row 12.)
+
+#### §9.2.2 Gap M (overhang predicate + build-plate filter)
+
+- `stress_m_pure_roof_flagged`: single horizontal face at z=10 with normal `(0,0,-1)` and a supporting box below it; under FDM `max_overhang_angle = 45°`, `overhang_angle = 90°` → flagged Critical (90° > 45° + 30°). Light. **(Mitigates High-tier risk: §8.4 anchor cascade — proves the corrected predicate flags roofs.)**
+- `stress_m_solid_on_plate_bottom_filtered`: solid 10 mm cube on build plate (z ∈ [0, 10]); the cube's bottom face has `dot=-1`, `overhang_angle = 90°` but `face_min_along_up = 0 = mesh_min_along_up`; assert `validation.overhangs.len() == 0` (build-plate filter applies). Light. **(Mitigates the M.2 sub-fix risk — proves the filter saves cube-on-plate.)**
+- `stress_m_floating_box_bottom_flagged`: same cube lifted to z ∈ [10, 20] with no support; assert `validation.overhangs.len() >= 1` (bottom face flagged Critical). Light. (Companion to the previous fixture.)
+- `stress_m_layered_bottoms_filter_correctly`: a tall stack — base box at z ∈ [0, 5] + tower at z ∈ [5, 25] sharing the z=5 interface; `mesh_min_along_up = 0`; tower's bottom face at z=5 has `face_min_along_up - mesh_min_along_up = 5 > EPS_GEOMETRIC` → NOT filtered; flagged Critical. Verifies the filter is mesh-min-relative, not geometric-z-relative. Light.
+- `stress_m_y_up_orientation_symmetric`: same fixture as `stress_m_pure_roof_flagged` but rotated 90° around X with `with_build_up_direction(Vector3::new(0, 1, 0))`; assert same flag count + severity (Gap L cross-check). Light.
+
+#### §9.2.3 Gap C (ThinWall)
+
+- `stress_c_clean_thick_box_no_flag`: 30 mm cube with 5 mm walls (effectively solid); `min_wall = 1.0`; assert 0 ThinWall regions. Light.
+- `stress_c_open_mesh_skipped`: 5-of-6-face open box; assert one `DetectorSkipped` issue with description containing "ThinWall" + "watertight"; assert `thin_walls.len() == 0`. Light.
+- `stress_c_inconsistent_winding_skipped`: watertight cube with one face's vertex order flipped (Gap-F target); assert `DetectorSkipped` issue (ThinWall precondition includes consistent winding); independently assert NonManifold Critical also fires (Gap F detector runs first). Light.
+- `stress_c_concave_z_shape`: Z-shaped solid with a 0.5 mm thin section sandwiched between thick sections; expect 1 region for the thin section with thickness ≈ 0.5 mm. Light.
+- `stress_c_pole_tied_vertex_sphere`: hollow tessellated UV-sphere (outer radius 5 mm, wall 0.4 mm = inner radius 4.6 mm; 16-segment × 8-stack tessellation, ~256 outer + 256 inner triangles) where each pole has 16 faces fanning from one vertex; concatenate outer+inner with REVERSED inner winding for watertight+consistent topology. Assert: ThinWall flags ≥1 cluster spanning equatorial faces; **all flagged regions report `thickness ∈ [0.39, 0.41]` mm** (within shell-thickness tolerance, NOT diameter). Pole faces have ray-cast distance ≈ 2 × outer_radius = 10 mm (ray exits one pole, hits the opposite pole's far face) → > min_wall_thickness, NOT flagged at poles. Verifies the algorithm doesn't degenerate at fan apexes. Light. (Row 10.)
+- `stress_c_two_disjoint_thin_clusters`: two disjoint thin-walled hollow boxes (each 10×10×10 mm with 0.4 mm walls), positioned 20 mm apart along +X. Each box independently watertight + consistently wound. Assert `thin_walls.len()` is 2 × (clusters per box per §7.1 analysis) — i.e., ≥ 4 clusters total (each box's outer-top + inner-top ⇒ 2 × 2 = 4 minimum, possibly more if other walls cluster). Critical severity on each. **(Mitigates §8.4 Gap C cluster-split topology risk via explicit multi-cluster fixture.)** Light.
+- `stress_c_5k_tri_perf_budget` (`#[cfg_attr(debug_assertions, ignore)]`): tessellated thin-walled cylinder with ~5000 triangles; assert detector completes in <1 s (release mode); assert non-zero ThinWall count. Heavy. **(Mitigates §8.2.4 Gap C >10k-tri cliff documentation; verifies the 5k baseline.)**
+
+#### §9.2.4 Gap G (LongBridge)
+
+- `stress_g_clean_solid_cube_no_flag`: solid cube on plate; no horizontal downward faces above plate; assert 0 LongBridge regions. Light.
+- `stress_g_sls_silent_skip`: same H-shape from §7.2 with SLS config; assert `long_bridges.len() == 0` AND no `DetectorSkipped` issue (silent skip, not announced). Light.
+- `stress_g_diagonal_bridge_underflagged`: a 14 × 14 mm horizontal patch at z=10 (axis-aligned bbox extent = 14, true diagonal ≈ 19.8) with `max_bridge_span = 15`; assert 0 regions (documented v0.8 behavior; v0.9 OBB followup catches). Light. (Locks in v0.8 bbox-conservative semantics.)
+- `stress_g_cantilever_currently_flagged`: 20 mm cantilever face anchored on one end at z=10; assert 1 region (currently can't distinguish from bridge; v0.9 followup). Light. (Locks in v0.8 limitation.)
+- `stress_g_diagonal_underflag_with_y_up`: same diagonal patch with `+Y up` config (rotated); assert same 0 regions. Light.
+
+#### §9.2.5 Gap H (TrappedVolume)
+
+- `stress_h_solid_cube_no_cavity`: 20 mm solid cube; assert 0 TrappedVolume regions; verifies flood-fill correctly classifies entire interior as inside. Light.
+- `stress_h_open_mesh_skipped`: 20 mm cube with one face removed; assert `DetectorSkipped` issue, 0 regions. Light.
+- `stress_h_subvoxel_opening_not_flagged`: 20 mm cube with a 5 mm-radius spherical cavity, plus a sub-voxel-resolution channel from the cavity to the exterior (channel cross-section ≤ FDM voxel size = 0.1 mm). Assert 0 trapped regions (flood-fill leaks through opening; this is correct topological behavior — the cavity has an opening so it's not trapped — but documents that the printer's drainage capability is a separate concern v0.9 will address). Cube walls remain 7.5 mm thick → ThinWall does NOT flag. Light. **(Documents intentional v0.8 behavior; corresponds to row 9.)**
+- `stress_h_sphere_inside_cube_volume_within_10pct`: spherical cavity, analytical volume 523.6 mm³; assert region volume within ±10%. Light. **(Mitigates §8.4 cross-platform voxel FP-drift risk: tolerance band is wide enough to absorb cross-platform ULP variance.)**
+- `stress_h_two_disjoint_cavities`: cube with 2 separate spherical cavities; assert 2 regions. Light.
+- `stress_h_disconnected_dual_cavity`: 2 separate cubes-with-cavity offset by 30 mm; assert 2 regions (verifies flood-fill exterior reaches both component exteriors via grid-corner seed). Light. (Row 13.)
+- `stress_h_voxel_grid_perf_cliff` (`#[cfg_attr(debug_assertions, ignore)]`): 80 mm part with a 5 mm cavity at FDM voxel size 0.1 mm (~ 800³ ≈ 512M voxels would OOM); use 100 mm × 100 mm × 30 mm part instead (~250³ × 750 = 47M voxels ≈ 47 MB) and assert detector completes in <2 s release-mode + memory < 64 MB (documented ceiling). Heavy. **(Mitigates §8.4 grid memory blowup risk — proves the documented 100mm ceiling holds within budget.)**
+- `stress_h_voxel_grid_oom_safety`: 200 mm cube at FDM voxel size 0.1 mm would request 2000³ × 1 byte = 8 × 10⁹ bytes ≈ 8 GB. v0.8 must NOT panic / OOM. Mitigation: detector emits `DetectorSkipped` Info with description containing `"voxel grid would exceed 1 GB"` when the dim product × 1 byte > 1 GB. **Spec consequence: §6.3 algorithm needs a memory pre-flight check** — see §6.3 amendment below. Light fixture (assertion only; the cap check returns BEFORE the grid is allocated, so the test runs in <1 ms). **(Mitigates §8.4 grid memory blowup in the worst case — full-build-volume parts at fine voxels.)**
+
+**§6.3 spec amendment** (surfaced by §9.2.5 risk-mitigation review): §6.3 algorithm gets a new step prepended to step 5 (voxel grid allocation):
+
+```
+4.5. Memory pre-flight: let total_voxels = grid_dims.0 * grid_dims.1 * grid_dims.2;
+     if total_voxels > 1_000_000_000 (1 GB equivalent at 1 byte per voxel):
+         emit one DetectorSkipped Info issue with description containing
+         "TrappedVolume detection skipped: voxel grid <a>×<b>×<c> at <voxel_size> mm would exceed 1 GB memory budget";
+         return early.
+```
+
+The 1 GB cap is one byte per voxel (the `u8` voxel state), is well above the §6.3 documented ceiling for typical FDM parts (~16 MB at 100mm-extent FDM defaults), and protects against pathological inputs (>100 mm parts at fine voxel; 250 mm × 200 mm × 220 mm full FDM build volume at 0.1 mm voxel = 11 GB grid) without affecting realistic <100 mm parts. v0.9 followup: adaptive voxel sizing for over-cap parts (already triple-tracked).
+
+**Implementation slot**: §12 commit-order spec for Gap H must reference this amendment in its acceptance criteria so the memory check ships in the Gap H detector commit, not as a follow-up.
+
+#### §9.2.6 Gap I (SelfIntersecting)
+
+- `stress_i_clean_cube_no_flag`: clean watertight cube; assert 0 SelfIntersecting regions; verifies `skip_adjacent = true` doesn't flag adjacent triangles. Light.
+- `stress_i_truncation_at_100`: heavily self-folded mesh with 200+ intersection pairs (a rolled-up thin sheet wound back through itself); assert `self_intersecting.len() == 100` AND issue description contains "(search truncated; total may be higher)". Heavy. **`#[cfg_attr(debug_assertions, ignore)]`** — heavy mesh-repair work.
+- `stress_i_canonical_face_a_lt_face_b`: any fixture with self-intersections; assert all entries' `face_a < face_b`. Light.
+- `stress_i_vertex_only_contact_not_flagged`: two cubes touching at a single shared vertex (carefully constructed: shared vertex only, no shared edge or interior overlap); assert 0 self-intersections (vertex-only contact is not an intersection per §6.4). Light. (Row 12.)
+- `stress_i_near_coplanar_intersection`: two near-coplanar triangles intersecting at a narrow angle (1 mrad off coplanar) at exactly EPS_INTERSECTION × 100 inside their shared region; assert mesh-repair flags this with `epsilon = 1e-10` per `IntersectionParams::default()`. Light.
+
+#### §9.2.7 Gap J (SmallFeature)
+
+- `stress_j_clean_main_body_not_flagged`: 30 mm cube; max_extent 30 ≫ min_feature_size 0.8; assert 0 regions. Light.
+- `stress_j_floating_burr_warning`: 30 mm cube on plate + 0.2 mm hex-prism burr next to it (per §7.5 fixture); assert 1 region, severity `Warning` (0.2 < 0.8/2). Light.
+- `stress_j_unit_conversion_diagnostic`: 30-µm cube (entire mesh, single component, max_extent 0.030 mm) with FDM `min_feature_size = 0.8`; assert 1 SmallFeature region for the entire mesh (documents the user-diagnostic role per §6.5). Light. (Row 7.)
+- `stress_j_below_threshold_warning_not_info`: floating fragment with max_extent = 0.1 mm, `min_feature_size = 0.4`; assert severity Warning (0.1 < 0.4/2 = 0.2). Light.
+- `stress_j_just_below_threshold_info`: floating fragment with max_extent = 0.3 mm, `min_feature_size = 0.4`; assert severity Info (0.3 ≥ 0.2). Light.
+- `stress_j_open_component_no_panic`: open 5-of-6 face cube (small extent, non-watertight component); assert 1 region; volume from `signed_volume::abs()` is finite (no panic, no NaN). Light. **(Mitigates §6.5 doc — open-component volume is approximate but no-panic.)**
+- `stress_j_face_adjacency_via_edge_only`: two faces sharing only a vertex (no edge); assert 2 separate components (one per face) — verifies edge-adjacency definition. Light.
+- `stress_j_signed_volume_unit_cube`: unit-cube fragment (1 mm side, exact-representable verts), `min_feature_size = 2.0`; assert volume within `1e-6` of 1.0 mm³ (FP-stable on exact-representable inputs). Light. **(Mitigates §8.2.1 cross-platform FP-drift via exact-representable inputs.)**
+
+### §9.3 Cross-detector stress fixtures
+
+Stress fixtures that exercise multiple detectors at once. Lands once all detectors are in (§7.7 / §7.8 territory).
+
+- `stress_cross_empty_mesh_full_pipeline`: confirms that error path returns before any detector emits issues. Light. (Row 1; subsumes §9.2.1's coverage but as a single end-to-end gate.)
+- `stress_cross_inconsistent_winding_blocks_thin_wall_only`: watertight cube with one face flipped; assert exactly: 1 NonManifold Critical (Gap F), 1 DetectorSkipped from ThinWall, 1 DetectorSkipped from TrappedVolume, 0 ThinWall + 0 TrappedVolume entries. Verifies that a single root-cause issue (winding) cleanly cascades through preconditions. Light. (Row 11.)
+- `stress_cross_unit_conversion_full_pipeline`: 30-µm cube; assert SmallFeature flag (entire mesh = 1 region, Warning); assert no other detector flags falsely. Light. (Row 7.)
+- `stress_cross_disconnected_full_pipeline`: 2 disjoint watertight 20-mm thin-walled cubes-with-cavity (each with 0.4 mm walls and a 5 mm-radius cavity) offset by 30 mm along +X; assert 2 TrappedVolume regions; assert ≥ 4 ThinWall regions (each cube produces ≥ 2 clusters per §7.1 outer/inner-top topology); assert SmallFeature unaffected (each cube max_extent = 20 mm ≫ 0.8 mm). Light. (Row 13.)
+- `stress_cross_face_count_at_zero_after_skips`: open mesh that triggers 2 DetectorSkipped issues + 1 NotWatertight Critical; assert `validation.thin_walls.len() == 0 && validation.trapped_volumes.len() == 0` (skip-precondition pathway leaves the typed-region fields empty). Light.
+- `stress_cross_nan_input_no_panic`: authors a mesh with one vertex containing `f64::NAN` in `x`; asserts the call to `validate_for_printing` returns without panicking and produces a `PrintValidation` (any contents, including possibly NaN-poisoned numerics, are acceptable as long as no detector panics). Doc-comment caveat: if a future detector adds `debug_assert!(x.is_finite())`, this fixture must be updated to `#[cfg_attr(debug_assertions, ignore)]`. Light. (Row 14.)
+
+### §9.4 §8.4 High-tier risk → stress-fixture coverage
+
+Each High-tier risk in §8.4 maps to ≥ 1 stress fixture proving the mitigation. Pre-flight per §8.4 is the spec-time check; the stress fixture is the regression-time check.
+
+| §8.4 High-tier risk | Pre-flight (§8.4) | Stress fixture(s) (§9.2) | Expected outcome |
+|----------------------|--------------------|----------------------------|--------------------|
+| **Gap M v0.7 anchor cascade** (per §8.2.3 `validation.rs::tests` sweep + `total_support_volume` shifts) | Read `check_overhangs` predicate in current code; verify FDM-convention semantics match | `stress_m_pure_roof_flagged`, `stress_m_solid_on_plate_bottom_filtered`, `stress_m_floating_box_bottom_flagged`, `stress_m_layered_bottoms_filter_correctly` | Roofs flagged, build-plate-touching faces filtered, both flag and filter survive `place_on_build_plate` semantics |
+| **Gap C cluster-split topology** (§7.1 hollow box: edge-adjacency operates per topological component → 2 clusters) | §7.1 fixture topology audit; verify `validation.thin_walls.len() == 2` is theoretical outcome | `stress_c_two_disjoint_thin_clusters` (explicit multi-cluster fixture, ≥ 4 clusters across 2 boxes) + `stress_c_concave_z_shape` (single-cluster baseline) + §7.1 example assertions (2-cluster lock-in on load-bearing fixture) | Cluster count matches edge-adjacency theory across single, double-component, and concave-Z topologies |
+| **Gap H cross-platform voxel inside-test FP drift** | Cross-os CI dry-run on §7.3 fixture (manual or via CI matrix) | `stress_h_sphere_inside_cube_volume_within_10pct` + §10's recommendation to **add mesh-printability to the cross-os CI matrix** (next subsection) | Volume assertion's 10% tolerance band absorbs cross-platform ULP variance; cross-os CI catches platform-divergent hard-fails |
+| **Gap H grid memory blowup** (>100mm parts at fine voxel) | (no pre-flight; documented ceiling) | `stress_h_voxel_grid_perf_cliff` (proves 100mm ceiling holds in budget) + `stress_h_voxel_grid_oom_safety` (proves >1GB grid emits `DetectorSkipped` instead of OOM) — **§9.2.5 amends §6.3 with a pre-allocation memory check** | Detector either runs within budget or skips with diagnostic; no OOM panic |
+| **Gap I Layer Integrity dep-count cap** (mesh-repair add bumps L0 dep count; cap is release_max=80, test_max=100) | Run `cargo xtask grade mesh-printability --skip-coverage` after dep add; verify Criterion 6 stays A | (no runtime stress fixture — this is a build-time concern; Gap I commit's `xtask grade` run IS the verification) | Layer Integrity criterion remains A post-merge |
+
+The "no runtime fixture for Gap I" entry is appropriate — Layer Integrity is a static dep-graph check, not a runtime invariant. The pre-flight `cargo xtask grade` IS the proof.
+
+### §9.5 Where the fixtures live
+
+| Detector | File | Lands with commit |
+|----------|------|---------------------|
+| Existing detectors | `tests/stress_inputs.rs` (new) | Lands with first stress-fixture-bearing detector commit (Gap M, since Gap M is the first detector-touching commit per §8.3) |
+| Gap M | same | Gap M commit |
+| Gap C | same | Gap C commit |
+| Gap G | same | Gap G commit |
+| Gap H | same | Gap H commit |
+| Gap I | same | Gap I commit |
+| Gap J | same | Gap J commit |
+| Cross-detector | same | After all detectors land (between §7.5 small-feature example and §7.6 orientation example, per §12 commit-order) |
+
+`tests/stress_inputs.rs` is a single integration test file (integration-tests-style, not unit-tests-style — exercises the public `validate_for_printing` entry point with adversarial inputs). Each commit appends; no commit modifies a previous commit's fixtures.
+
+**Hand-authoring note**: stress fixtures that need >50 LOC of vertex authoring (e.g., `stress_h_sphere_inside_cube_volume_within_10pct`) factor a small per-test helper in the same file (e.g., `fn build_sphere_in_cube_fixture() -> IndexedMesh`). No shared `tests/common/` module per `feedback_simplify_examples` — even at the cost of 6× duplicated cube-builder boilerplate across stress fixtures.
+
+### §9.6 Numerical-anchor stability across stress fixtures
+
+Per §8.2.1 cross-platform FP risk, each stress fixture's assertions follow the §4.5 convention:
+
+- Assertions on **counts** (region counts, issue counts) use exact equality (`assert_eq!`).
+- Assertions on **derived geometric values** (areas, volumes, thicknesses, angles) use `approx::assert_relative_eq!` with tolerances from §4.5 (`epsilon = 1e-6` for distances/angles; `max_relative = 0.10` for voxel-discretization volume; `max_relative = 1e-3` for divergence-theorem volume).
+- Assertions on **severity classifications** use exact match (severity is enum-typed; no FP).
+- Assertions on **descriptions** use `description.contains("...")` substring match (not full-string equality), so future doc-improvement edits don't break stress fixtures.
+
+### §9.7 Stress-test gauntlet — total fixture count
+
+| Category | Count |
+|----------|-------|
+| §9.2.1 Existing detectors | 3 |
+| §9.2.2 Gap M | 5 |
+| §9.2.3 Gap C | 7 (1 release-only) |
+| §9.2.4 Gap G | 5 |
+| §9.2.5 Gap H | 8 (1 release-only) |
+| §9.2.6 Gap I | 5 (1 release-only) |
+| §9.2.7 Gap J | 8 |
+| §9.3 Cross-detector | 6 |
+| **Total** | **47** (3 release-only) |
+
+Stress fixtures push the post-arc test total to **~186 + 47 = ~233** (vs §-revised "post-arc total ~186" in the gap memo). Updated test-count budget table in §13's PR-close memo migration.
+
+---
+
+
