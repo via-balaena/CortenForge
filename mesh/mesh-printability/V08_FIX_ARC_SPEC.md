@@ -405,23 +405,56 @@ This section covers in-place fixes to existing code paths and the infrastructure
 
 ### §5.1 Gap A — Workspace lints inheritance
 
-**Change**: Add `[lints] workspace = true` block to `mesh/mesh-printability/Cargo.toml` after `[package.metadata.cortenforge]`.
+**Change**: Add `[lints] workspace = true` block to `mesh/mesh-printability/Cargo.toml` after `[package.metadata.cortenforge]`. Triage the 38-site fallout per the §13-locked pre-flight battery via a 3-commit split (1a/1b/1c) — each sub-commit is FP-semantics-preserving.
 
-**Procedure**:
-1. Edit Cargo.toml.
-2. Run `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings`.
-3. Triage fallout. Classify each warning:
-   - **In-arc fix**: simple unwrap/expect/panic that has an obvious replacement (e.g. `.expect()` in a `_default()` constructor).
-   - **Stop-and-raise**: ≥10 fallout sites, or any single site requiring >20 LOC of refactor.
-4. If fallout is light, fix in the same commit as the lints flip.
-5. If fallout is heavy, **stop, revert the lints flip, and raise** — bundling a major src-cleanup with the lints flip violates the commit-segmentation principle.
+**Stop-and-raise gate**: the original gate was "≥10 fallout sites or any single site needing >20 LOC of refactor → revert the lints flip and raise". Pre-flight measured **38 sites — 3.8× the gate**. The arc raises this exception with a documented resolution (3-commit split below); the >10 gate stays in effect for any future Gap-A-shaped lint flip in another crate.
 
-**Acceptance criteria**:
-- `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings` passes.
-- `cargo xtask grade mesh-printability --skip-coverage` baseline preserved.
-- Commit message names the count of fallout sites fixed (e.g. "fix(mesh-printability): inherit workspace lints (3 unwrap fixes in tests)").
+**Pre-flight fallout breakdown** (measured 2026-04-30 night per §13):
 
-**Tests**: no new unit tests; the gate is the clippy run.
+| Category | Count | Treatment |
+|----------|-------|-----------|
+| `clippy::missing_const_for_fn` | 19 | Mechanical — add `const` keyword |
+| `clippy::cast_precision_loss` | 3 | Mechanical — add `#[allow]` + one-line justification |
+| `clippy::uninlined_format_args` | 1 | Mechanical — inline the format arg |
+| `clippy::match_same_arms` | 1 | Mechanical — collapse arms |
+| `clippy::expect_used` (in tests) | 5 | Test-site — `#[allow]` or restructure to non-panicking |
+| `clippy::suboptimal_flops` (mul_add) | 8 | **FP-semantics** — `#[allow]` per-site with justification |
+| `clippy::manual_midpoint` | 1 | **FP-semantics** — `#[allow]` per-site with justification |
+| **Total** | **38** | |
+
+**FP-semantics rationale**: 8 `mul_add` sites (validation.rs:227, 235; orientation.rs:387; etc.) and 1 `manual_midpoint` site change overhang-detection floating-point bits. Applying these "fixes" mechanically would change which faces flag as overhang at the threshold boundary — invisible numerically but visible in any test asserting on flag-count or affected-faces lists. Bit-exactness of the post-Gap-M predicate is a separate decision; conflating it with a hygiene commit violates `feedback_baby_steps`. Per-site `#[allow]` keeps the lint local + auditable so future code added to those files still gets the warning.
+
+**Why per-site `#[allow]` (not crate-level `#![allow]`)**: a crate-level `#![allow(clippy::suboptimal_flops)]` in `lib.rs` would silence the lint forever, including on new code added after v0.8 where FMA might be a clean win. Per-site annotation tells the next maintainer which lines deliberately preserve the non-FMA form and why. Trade-off: clippy is **red** between commits 1a and 1c — only green after 1c lands. CI doesn't run between feature-branch commits, so no CI cost; only an ergonomic cost during the 3-commit window.
+
+**3-commit split** (locked; full per-commit detail in §12.4):
+
+| Commit | Theme | Sites | Compiler-checkable | Clippy state |
+|--------|-------|-------|---------------------|--------------|
+| **1a** | Mechanical-only, no annotations | 19 const + 3 cast + 1 format + 1 match = 24 | Yes (`cargo build`) | Red (lints not yet inherited) |
+| **1b** | Test-site cleanup | 5 expect_used (allow or restructure) | Yes (`cargo test`) | Red (lints not yet inherited) |
+| **1c** | `[lints] workspace = true` flip + 8 mul_add allows + 1 midpoint allow | Cargo.toml + 9 `#[allow]` annotations | Yes (`cargo clippy`) | **Green** |
+
+**Acceptance criteria** (per sub-commit):
+
+- **1a**: `cargo build -p mesh-printability --tests --all-targets` clean; `cargo test -p mesh-printability` 35/35 pass; commit body names the 24 sites changed by category. No clippy gate (lints not yet inherited).
+- **1b**: `cargo test -p mesh-printability` 35/35 pass; commit body names the 5 test sites and which got `#[allow]` vs restructure.
+- **1c**: `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings` passes; `cargo xtask grade mesh-printability --skip-coverage` A across 7 criteria; CHANGELOG.md created (per §5.10) with "Inherited workspace lints; 9 per-site allows for FP-semantics-preserving sites" in `[Unreleased] / Changed`. v0.7 coverage baseline (per §11.2) captured in this commit's body since it's the first commit that completes the Gap A scope.
+
+**Justification comment template** (for each FP-semantics `#[allow]`):
+
+```rust
+// Preserved as `(a * b) + c` rather than `a.mul_add(b, c)`: FMA changes the
+// final FP bit of overhang predicate evaluation, which would shift which
+// faces flag at the 45° boundary on cross-platform runs. Bit-exactness of
+// the overhang predicate is tracked as a v0.9 candidate; see CHANGELOG.md
+// `[Unreleased]` for the open issue.
+#[allow(clippy::suboptimal_flops)]
+let dot = (n_x * up_x) + (n_y * up_y) + (n_z * up_z);
+```
+
+The comment references the CHANGELOG (which survives spec deletion at commit #25 per §13), not this spec section. Wording adapted per site — `manual_midpoint` site uses an analogous comment naming `(a + b) / 2.0` vs `a.midpoint(b)`. The v0.9-candidate entry must exist in §11.5's re-open trigger table at the time of commit 1c so the comment's CHANGELOG reference is honored end-to-end.
+
+**Tests**: no new unit tests; the gate is `cargo clippy` (in 1c) + the existing 35-test suite (gates 1a + 1b + 1c).
 
 ### §5.2 Gap B — Track actual maximum overhang angle
 
@@ -802,7 +835,7 @@ This makes physical sense: severity scales with how far past threshold the face 
 
 ### §5.10 CHANGELOG.md creation + per-commit updates
 
-**Change**: create `mesh/mesh-printability/CHANGELOG.md` in the same commit as Gap A (workspace lints). Each subsequent commit appends to the `[Unreleased]` section. The final pre-spec-deletion commit closes `[Unreleased]` → `[0.8.0] - YYYY-MM-DD`.
+**Change**: create `mesh/mesh-printability/CHANGELOG.md` in **commit 1c** (the sub-commit that flips `[lints] workspace = true` and the only Gap A sub-commit that touches `Cargo.toml`). Per §5.1's 3-commit split, sub-commits 1a + 1b are pure src changes that don't touch Cargo.toml or CHANGELOG. Each subsequent commit (#2 onward) appends to the `[Unreleased]` section. The final pre-spec-deletion commit closes `[Unreleased]` → `[0.8.0] - YYYY-MM-DD`.
 
 **Initial structure**:
 ```markdown
@@ -829,8 +862,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ```
 
 **Acceptance criteria**:
-- File exists at `mesh/mesh-printability/CHANGELOG.md` after commit 1.
-- Each subsequent commit's diff includes a CHANGELOG.md update entry.
+- File exists at `mesh/mesh-printability/CHANGELOG.md` after commit 1c.
+- Each subsequent commit's diff (from commit #2 onward) includes a CHANGELOG.md update entry. Sub-commits 1a + 1b do not (they predate file creation).
 - Final commit pins the release date and version under the `[0.8.0]` section.
 
 ---
@@ -1294,7 +1327,7 @@ The `out/` directory is created at runtime (`std::fs::create_dir_all`); produced
 
 #### Cargo.toml shape
 
-Each example is a workspace member with `publish = false`, named `example-mesh-printability-<name>`. Dependencies are minimal: `mesh-types`, `mesh-io`, `mesh-printability`, `anyhow` (for `main() -> Result<()>`), and per-example extras (e.g., `mesh-repair` for the self-intersection fixture, `mesh-shell` or `mesh-sdf` if a fixture needs a non-trivial implicit surface). The `[lints] workspace = true` block is required.
+Each example is a workspace member with `publish = false`, named `example-mesh-printability-<name>`. Dependencies are minimal: `mesh-types`, `mesh-io`, `mesh-printability`, `anyhow` (for `main() -> Result<()>`), and per-example extras. Common per-example extras: `mesh-repair` (for the §7.4 self-intersection fixture's verification + the optional self-intersection auto-fix demo); `mesh-offset` (for §7.1 + §7.3's optional MC fallback fixture-construction path — `mesh-offset::marching_cubes(&ScalarGrid, &MarchingCubesConfig) -> IndexedMesh` is the public, L0, workspace-internal MC entry point); `mesh-shell` (only if a fixture genuinely needs an offset shell — none of the v0.8 examples do, but the door is open for v0.9). §7.8 (showcase) hand-authors all components; no MC fallback applies there. **Note**: mesh-sdf is NOT in this list — it exposes only SDF queries (no public MC API), so it's not the right tool for fixture construction. The `[lints] workspace = true` block is required.
 
 #### `main()` shape — numbers-pass via assertions
 
@@ -1462,10 +1495,10 @@ A double-walled hollow box. Outer cube 30×20×15 mm; inner cavity 27×17×13.1 
 
 **Construction approach** (impl-time choice; spec lists options in preference order):
 1. **Hand-author** 12 outer triangles + 12 inner-cavity triangles (24 triangles total, 16 unique vertices: 8 outer cube corners + 8 inner-cavity corners), vertex-list-driven. Each cube face is split along a diagonal into 2 triangles. Outer faces wound CCW-from-outside (normals point outward, away from solid material); inner-cavity faces wound CCW-from-cavity-side (normals point into the cavity, away from solid material — i.e., REVERSED from outer winding so each face's normal points away from the solid that surrounds the face). Concatenate with vertex-index offset; result is watertight (each edge shared by exactly 2 faces — both within outer, or both within inner) but topologically two disconnected components in the same `IndexedMesh`. Verification at impl time: confirm that `validate_for_printing` treats this as watertight (each edge appears exactly twice; component count is incidental to manifold check).
-2. **`mesh-sdf` + marching cubes** if mesh-sdf exposes a public MC entry point on a closed-form SDF (`max(box_sdf, -inner_box_sdf)` representing solid = outer ∩ ¬inner). Currently mesh-shell uses MC internally; if that's not exposed publicly, option 1 is canonical.
+2. **`mesh-offset::marching_cubes(grid, config)`** on a closed-form SDF (`max(box_sdf, -inner_box_sdf)` representing solid = outer ∩ ¬inner) sampled to a `ScalarGrid`. mesh-offset's MC is the public, L0, workspace-internal MC entry point (mesh-sdf has no public MC API — it exposes SDF queries only; mesh-lattice's MC is private). Adds `mesh-offset = { workspace = true }` to the example crate's `[dependencies]` per §7.0. Pre-flight verified 2026-04-30 that mesh-offset is L0 (same tier as mesh-printability) so the example's dep graph stays layer-clean.
 3. **NOT mesh-shell directly** — mesh-shell is offset-based, not CSG-based; not the right tool for box-minus-box.
 
-Hand-author (option 1) is the recommended baseline; the example's deterministic 24-triangle construction is the kind of thing the spec can lock in.
+Hand-author (option 1) is the recommended baseline; the example's deterministic 24-triangle construction is the kind of thing the spec can lock in. Option 2 (mesh-offset MC) is the documented fallback if hand-authoring proves error-prone at impl time, but pre-flight verified the 24-triangle hand-author is tractable.
 
 **FDM config**:
 - `PrinterConfig::fdm_default()` — `min_wall_thickness = 1.0 mm`, `max_overhang_angle = 45°`, `min_feature_size = 0.8 mm`.
@@ -1594,9 +1627,9 @@ A solid 20×20×20 mm cube containing a sealed sphere cavity of radius 5 mm cent
 
 **Construction approach** (impl-time choice, in preference order):
 1. **Hand-author** 12 outer cube triangles + a tessellated sphere (32 segments × 16 stacks ≈ 1024 triangles) with REVERSED winding so sphere normals point INTO the cavity. Concatenate. Total ~1036 triangles. Tractable; deterministic; bounded ray-tri budget for §6.3 scanline.
-2. **mesh-sdf + MC** if mesh-sdf exposes a public MC entry point on a closed-form `max(box_sdf, -sphere_sdf)`. Currently unverified.
+2. **`mesh-offset::marching_cubes(grid, config)`** on a closed-form `max(box_sdf, -sphere_sdf)` sampled to a `ScalarGrid`. mesh-offset's MC is the public, L0, workspace-internal MC entry point (mesh-sdf has no public MC API; mesh-lattice's MC is private). Adds `mesh-offset = { workspace = true }` to the example crate's `[dependencies]` per §7.0. mesh-offset is L0 (same tier as mesh-printability) so the example's dep graph stays layer-clean. Trade-off vs option 1: MC produces a chamfered (planar-faceted) sphere — see `feedback_chamfered_not_rounded` — which is faithful to MC semantics but visually distinct from a UV-tessellated sphere. The §7.3 README's Visuals section already calls out the chamfered look downstream, so this is consistent.
 
-Hand-author (option 1) recommended; cap sphere tessellation at ≤32 segments to keep §6.3's ray-tri scanline budget under 2 s on the reference machine (200³ voxel grid × ~1000 triangles → ~ 4×10⁷ ray-tri tests; well within target).
+Hand-author (option 1) recommended; cap sphere tessellation at ≤32 segments to keep §6.3's ray-tri scanline budget under 2 s on the reference machine (200³ voxel grid × ~1000 triangles → ~ 4×10⁷ ray-tri tests; well within target). Option 2 (mesh-offset MC) is the documented fallback if hand-authoring the 1024-triangle tessellated sphere proves error-prone at impl time.
 
 **Multi-config**: validate at FDM, SLA, SLS, MJF and assert each technology's severity policy.
 
@@ -1941,7 +1974,7 @@ The v0.7.0 overhang flagging predicate is inverted from FDM convention; fix in v
 
 §7.2, §7.6, §7.8 overhang predictions are specific (post-Gap-M with build-plate filter) rather than soft-landed. The Run-2 ≡ Run-3 invariant in §7.6 is the load-bearing claim regardless.
 
-§1 gap inventory updated with Gap M (incl. M.2 sub-fix in description); §2 added F15 finding; §5.9 holds the per-fix spec including build-plate filter logic; §5.10 holds CHANGELOG creation; commit-order is A → M → B → D → E → F → L → K → DetectorSkipped → CHANGELOG → C → G → H → I → J → §7 examples in detector order.
+§1 gap inventory updated with Gap M (incl. M.2 sub-fix in description); §2 added F15 finding; §5.9 holds the per-fix spec including build-plate filter logic; §5.10 holds CHANGELOG creation. Concept-level commit-order is A → M → B → D → E → F → L → K → DetectorSkipped → CHANGELOG → C → G → H → I → J → §7 examples in detector order. **Three reconciliations supersede this letter-level sequence**: (a) Gap A is split into three sub-commits 1a/1b/1c per §5.1 — the row-numbered canonical order is §12.1, where 1a/1b/1c occupy the first three slots; (b) Gap K is bundled into the v0.8.0 release commit (§12.1 row #24 per §12.0 row #4), not the pre-DetectorSkipped slot the letter-sequence reads; (c) CHANGELOG is created inside Gap A's commit 1c (per §12.0 row #2), not a separate slot. §12.1 is canonical for any commit-row-number reference; the A→...→J letter sequence above is preserved for the gap-dependency-graph reading only.
 
 ---
 
@@ -1969,7 +2002,7 @@ The §7-review-pass methodology (`project_mesh_printability_gaps.md`) — read e
 |------|-----------|------|
 | Clippy fallout exceeds the 10-site cap, forcing a bundled src-cleanup that violates `feedback_pr_size_ci_economics` | §5.1 stop-and-raise gate; if heavy, revert lints flip and surface to user | Medium |
 | Workspace lint surface drifts after Gap A but before later commits (e.g. a new clippy lint promoted at a Rust-toolchain bump mid-arc) | Each post-Gap-A commit re-runs `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings` per §10's per-commit gate; toolchain pinning via `rust-toolchain.toml` (already in repo) prevents surprise upgrades | Low |
-| Fixing a clippy fallout site (e.g. unwrap → expect) silently changes panic message, breaking a test that asserts on panic strings | Pre-flight at Gap A commit: `grep -rn 'should_panic.*expected' mesh/mesh-printability/src/ mesh/mesh-printability/tests/` should return nothing; if not, the affected test gets its expected-string updated alongside the fallout fix | Low |
+| Fixing a clippy fallout site (e.g. unwrap → expect) silently changes panic message, breaking a test that asserts on panic strings | Pre-flight before commit 1a (the first Gap A sub-commit): `grep -rn 'should_panic.*expected' mesh/mesh-printability/src/ mesh/mesh-printability/tests/` should return nothing; if not, the affected test gets its expected-string updated alongside the fallout fix in the appropriate sub-commit (1a for src-side panics; 1b for test-site panics) | Low |
 
 #### Gap M — Overhang predicate fix + build-plate filter
 
@@ -2181,14 +2214,18 @@ Each row corresponds to one commit. Order reconciles §7.9's gap-order with §7.
 **Three §-internal inconsistencies that §12 must reconcile** (flagged for explicit commit-order spec in §12, not silently absorbed here):
 
 1. §5.3 says `build_edge_to_faces` extraction "happens as a separate commit before Gap D" but §7.9's locked-order summary doesn't list it. Row #4 below reflects §5.3's reading.
-2. §1 + §5.10 specify CHANGELOG creation in the Gap A commit; §7.9 lists CHANGELOG as a separate slot after DetectorSkipped. Row #1 below reflects §5.10's reading (creation at Gap A; subsequent commits append, no separate creation slot).
+2. §1 + §5.10 specify CHANGELOG creation in the Gap A slot; §7.9 lists CHANGELOG as a separate slot after DetectorSkipped. Row #1c below reflects §5.10's reading (CHANGELOG.md is created in commit 1c — the only Gap A sub-commit that touches Cargo.toml; subsequent commits #2 onward append; no separate creation slot).
 3. §7.0 specifies interleaved detector → example → next-detector cadence; §7.9's "C → G → H → I → J → §7 examples in detector order" reads as batched-after. Rows #11–#22 below reflect §7.0's interleaved reading per `feedback_one_at_a_time`.
+
+**Gap A 3-commit split**: per §5.1's pre-flight measurement (38 fallout sites, 3.8× the >10 stop-and-raise gate), Gap A is split into three sub-commits (1a/1b/1c) in §12.1. §8.3 mirrors that split below — rows #1a/#1b/#1c replace the original row #1. Rows #2 onward keep their existing numbers (§8.3 uses sub-suffix sub-numbering, not cascade renumbering).
 
 §12 will produce the canonical commit-order list and resolve all three readings.
 
 | # | Commit | Files modified | Downstream affected | Test-anchor risk |
 |---|--------|----------------|---------------------|------------------|
-| 1 | Gap A workspace lints + CHANGELOG creation | `Cargo.toml`, `CHANGELOG.md` (new), per-clippy fallout sites | None (lints only) | None — clippy gate |
+| 1a | Gap A sub-1 — mechanical-only fallout (19 const_fn + 3 cast + 1 format + 1 match = 24 sites) | per-site src edits in `validation.rs`, `orientation.rs`, `regions.rs`, `config.rs` (no Cargo.toml change) | None | None — `cargo build` gate (clippy not yet inherited) |
+| 1b | Gap A sub-2 — test-site cleanup (5 expect_used) | per-site src edits in `validation.rs::tests` (or restructure) | None | None — `cargo test` gate |
+| 1c | Gap A sub-3 — `[lints] workspace = true` flip + 9 FP-semantics `#[allow]`s + CHANGELOG.md creation + Coverage baseline capture | `Cargo.toml`, `CHANGELOG.md` (new), 8× `#[allow(clippy::suboptimal_flops)]` in `validation.rs` + `orientation.rs`, 1× `#[allow(clippy::manual_midpoint)]` | None (lints only; FP semantics preserved by per-site allows) | None — clippy gate (now active) |
 | 2 | Gap M (overhang predicate + build-plate filter) | `validation.rs`, `orientation.rs`, `validation.rs::tests` | Umbrella regression test, 3 examples (mesh-pipeline, design-to-print, full-pipeline) — verify no overhang-derived numerical anchors | **High** — anchor sweep per §8.2.3 |
 | 3 | Gap B (max-angle tracking) | `validation.rs::check_overhangs` | None (region.angle field semantics) | Medium — `OverhangRegion.angle` value shifts |
 | 4 | Refactor: `build_edge_to_faces` helper | `validation.rs` (extract helper) | None | None per §5.3 regression gate |
@@ -2751,10 +2788,10 @@ Most open questions surfaced during spec authoring were resolved inline (§7.9 Q
 
 **The question**: §10.0's grade baseline runs with `--skip-coverage`, so v0.7 coverage % is not pinned in the spec. v0.8's coverage target (§10.1.1) is "match v0.7 % or better" — but without an explicit number, "or better" is ambiguous if the v0.7 value drifts during the arc due to scheduled-CI runs against `main`.
 
-**Resolved (master-architect call 2026-04-30)**: the **v0.7 coverage baseline is captured at the start of the arc** (Gap A commit), not at end-of-arc. Sequence:
+**Resolved (master-architect call 2026-04-30)**: the **v0.7 coverage baseline is captured at the start of the arc** (Gap A — specifically commit 1c per §5.1's 3-commit split, since 1c is where `[lints] workspace = true` lands and is the first sub-commit producing a clippy-clean state suitable for grading), not at end-of-arc. Sequence:
 
-1. Gap A commit's local validation includes a one-time `cargo xtask grade mesh-printability` (without `--skip-coverage`) on the branch HEAD pre-Gap-A. This run takes 5–10 min on the project's reference machine but runs once.
-2. The Coverage % output is recorded in the Gap A commit message body (a single line: `v0.7 coverage baseline: <X>%`).
+1. Commit 1c's local validation includes a one-time `cargo xtask grade mesh-printability` (without `--skip-coverage`) on the branch HEAD post-1c. This run takes 5–10 min on the project's reference machine but runs once. (Pre-1a baseline is functionally equivalent for Coverage since 1a/1b only touch test bodies + add `const` keywords; neither shifts coverage. 1c is chosen for the capture so the recorded baseline is post-lints-flip, matching the workspace-lints-inherited state of every subsequent commit.)
+2. The Coverage % output is recorded in commit 1c's message body (a single line: `v0.7 coverage baseline: <X>%`).
 3. The end-of-arc grading checkpoint (§10.6) compares end-of-arc Coverage % against the recorded baseline.
 4. Acceptance: end-of-arc Coverage ≥ baseline (per `feedback_grading_rubric` "A-across-the-board"). If end-of-arc drops, add tests until it lifts.
 
@@ -2781,7 +2818,7 @@ The following items were considered as candidates for §11 during the §8/§9/§
 - **§6.3 OOM safety amendment** — surfaced during §9.2.5 risk-mitigation review; resolved inline (1 GB voxel-grid cap with DetectorSkipped fallback). Master-architect call 2026-04-30.
 - **§10.4.1 cross-os matrix extension for mesh-printability** — surfaced during §10.4 authoring; resolved inline (ships in v0.8 inside Gap H detector commit). Master-architect call 2026-04-30.
 - **§10.4.2 tests-release matrix extension for mesh-printability** — surfaced during §10.4 authoring; resolved inline (ships in v0.8 inside Gap C detector commit). Master-architect call 2026-04-30.
-- **§7.1, §7.3, §7.8 fixture construction approach** — §7 specifies hand-author option 1 as recommended baseline, with mesh-sdf+MC option 2 as fallback "if mesh-sdf exposes a public MC entry point". This is an impl-time choice, not a spec-time decision; defaults to hand-author (verified deterministic + tractable).
+- **§7.1, §7.3 fixture construction approach** — §7 specifies hand-author option 1 as recommended baseline, with `mesh-offset::marching_cubes(grid, config)` option 2 as documented fallback. Pre-flight battery 2026-04-30 verified that mesh-sdf has NO public MC API (it exposes SDF queries only); mesh-offset is the workspace's public MC entry point and is L0 (same tier as mesh-printability), so option 2 is layer-clean. This is an impl-time choice, not a spec-time decision; defaults to hand-author (verified deterministic + tractable). §7.8 (showcase) explicitly hand-authors all components per §7.8 — MC fallback not applicable.
 - **`feature-combos` job extension** — v0.8 introduces no feature gates on mesh-printability; the existing `feature-combos` job (sim-soft `gpu-probe`-only) is unaffected. Re-evaluate if v0.9 adds a feature flag (e.g., `bvh` for the optional BVH acceleration triple-tracked in §1).
 - **Example main() promotion to CI test gate** — §10.3 note 2 documents that example `main()` numerical-anchor assertions run as smoke tests (manual `cargo run`) but are NOT in the CI test matrix. Trigger for v0.9 promotion: a regression on an example that wasn't caught locally lands on `main`. v0.8 covers `cargo build --workspace` (compile-only) for example crates inside `tests-debug`; per-example main() exit-code testing in CI is deferred.
 - **Umbrella `mesh/mesh/tests/api_regression.rs` updates** — §3 audit (F14) verified no struct-update syntax on `PrintValidation`; existing tests use `let _ = result.is_printable();` discardable patterns. v0.8's API expansion is purely additive at the umbrella surface. Verified at commit-time per §10.2's `cargo build --workspace` per-commit gate.
@@ -2801,6 +2838,7 @@ Each closed-but-trackable item carries a v0.9 re-open trigger; consolidated for 
 | Cavity-ceiling overhang co-flag (§7.9 / §11.4) | A user asks for cavity-aware overhang severity |
 | AttributedMesh face-attributes (Q2 / §11.4) | (i) user reports centroid point-cloud is insufficient for visual review, OR (ii) AttributedMesh gains face-attribute support and the integration is ~30 LOC |
 | BVH for ThinWall + SelfIntersecting (§1 out-of-scope) | A real mesh exceeds 10k tris and validation runtime exceeds 5 s on the project's reference machine |
+| FP bit-exactness of overhang predicate (§5.1 deferral) | Cross-platform CI run on Gap H or Gap M fixtures shows divergence within tolerance but at the bit level (e.g., affected-face count differs by 1 between macOS/Linux/Windows on a fixture authored to land *exactly* on the threshold). Trigger applies to either: (i) replacing the 9 per-site `#[allow]`s with `mul_add` / `midpoint` after a tolerance-based diff confirms semantic equivalence, OR (ii) reframing the predicate to be FMA-stable across platforms. |
 
 Each trigger is verifiable from outside the spec (memo backlog + CHANGELOG `[Unreleased]` block) so v0.9-arc planning isn't dependent on the deleted v0.8 spec.
 
@@ -2815,17 +2853,19 @@ This section is the **canonical commit-order spec**. Three §-internal inconsist
 | # | Conflict | Reconciled to | Rationale |
 |---|----------|---------------|-----------|
 | 1 | `build_edge_to_faces` refactor placement: §5.3 says "separate commit before Gap D" vs §7.9's locked-order doesn't list it | **Separate commit between Gap B and Gap D** (slot #4 in §12.1) | §5.3's reading. Extracting the helper from `check_basic_manifold` is a refactor that benefits from isolated diff review + the §5.3 regression-gate sweep. Bundling with Gap D would conflate "refactor" with "behavior change". |
-| 2 | CHANGELOG creation slot: §1+§5.10 say "at Gap A" vs §7.9 lists it post-DetectorSkipped | **Created in Gap A commit; every subsequent commit appends entries** | §5.10's reading. There's no separate "CHANGELOG creation" commit. §7.9's slot was a stale artifact of an earlier ordering. The CHANGELOG-as-living-document pattern is what's standard for `keepachangelog.com` workflows. |
+| 2 | CHANGELOG creation slot: §1+§5.10 say "at Gap A" vs §7.9 lists it post-DetectorSkipped | **Created in Gap A's commit 1c (the only Gap A sub-commit that touches `Cargo.toml`); every subsequent commit (#2 onward) appends entries; sub-commits 1a + 1b predate file creation and have no CHANGELOG diff** | §5.10's reading. There's no separate "CHANGELOG creation" commit. §7.9's slot was a stale artifact of an earlier ordering. The CHANGELOG-as-living-document pattern is what's standard for `keepachangelog.com` workflows. |
 | 3 | Detector↔example interleave: §7.0 says "interleaved" vs §7.9 reads as "batched-after" | **Interleaved** (detector → its example → next detector) | §7.0's reading. Per `feedback_one_at_a_time` + `feedback_one_at_a_time_review`: each detector commit is followed by its example commit + user visuals-pass before the next detector lands. This is the slow-cadence pattern the user's `feedback_patience_track_record` calls out as historically successful. |
 | 4 | Gap K (COMPLETION.md rewrite) slot: §1 says "late (rewrite when truth is settled)" vs §7.9 places it at slot 8 (after L, before DetectorSkipped) | **Bundled into the v0.8.0 release commit** (§12.1 row #24) | §1's reading. "Truth is settled" only after all detectors + examples land. Authoring COMPLETION.md early forces partial-then-fill across many commits, drifting the document at every detector add. Bundling into release ships one clean rewrite with the full v0.8 inventory. Surfaced during §12 risk-mitigation review pass. |
 
 ### §12.1 Canonical commit order
 
-25 commits total. Each row names the commit, its scope, the affected files, and the v0.8.0 baseline target it advances. **Pause-for-visuals-pass** rows (per `feedback_one_at_a_time_review`) are flagged with ⏸︎ — implementation pauses there for user review before the next commit starts.
+**27 commits total** (Gap A 3-commit split per §5.1 lifts the count from 25 to 27; subsequent commit numbers preserved via letter-suffix sub-numbering on the Gap A slot, so existing #2..#25 references throughout the spec stay valid). Each row names the commit, its scope, the affected files, and the v0.8.0 baseline target it advances. **Pause-for-visuals-pass** rows (per `feedback_one_at_a_time_review`) are flagged with ⏸︎ — implementation pauses there for user review before the next commit starts.
 
 | # | Commit | Scope | Files | High-tier? | Pause? |
 |---|--------|-------|-------|------------|--------|
-| 1 | `chore(mesh-printability): inherit workspace lints + create CHANGELOG (Gap A)` | §5.1 + §5.10 + §11.2 v0.7 coverage baseline capture | `Cargo.toml`, `CHANGELOG.md` (new), per-clippy fallout in src or tests | — | — |
+| 1a | `chore(mesh-printability): mechanical clippy fallout — const fns, casts, format args, match arms (Gap A sub-1)` | §5.1 mechanical-only sites (19 const_fn + 3 cast + 1 format + 1 match = 24) | per-site src edits in `validation.rs`, `orientation.rs`, `regions.rs`, `config.rs` (no Cargo.toml or CHANGELOG yet) | — | — |
+| 1b | `chore(mesh-printability): test-site clippy cleanup — expect_used (Gap A sub-2)` | §5.1 test-site sites (5 expect_used, allow or restructure) | `validation.rs::tests` per-site edits | — | — |
+| 1c | `chore(mesh-printability): inherit workspace lints + per-site FP-semantics allows + create CHANGELOG (Gap A sub-3)` | §5.1 lints flip + 9 FP-semantics `#[allow]`s + §5.10 CHANGELOG creation + §11.2 v0.7 coverage baseline capture | `Cargo.toml` (`[lints] workspace = true`), `CHANGELOG.md` (new), 8× `#[allow(clippy::suboptimal_flops)]` + 1× `#[allow(clippy::manual_midpoint)]` per-site annotations in `validation.rs` + `orientation.rs` | — | — |
 | 2 | `fix(mesh-printability): correct overhang predicate to FDM convention + build-plate filter (Gap M)` | §5.9 (M) + §9.2.1 + §9.2.2 stress fixtures + `tests/stress_inputs.rs` (new file) | `validation.rs`, `orientation.rs`, `validation.rs::tests`, `tests/stress_inputs.rs` (new), `CHANGELOG.md` | **High** (§8.4 anchor cascade) | — |
 | 3 | `fix(mesh-printability): track actual maximum overhang angle (Gap B)` | §5.2 | `validation.rs::check_overhangs`, `validation.rs::tests`, `CHANGELOG.md` | — | — |
 | 4 | `refactor(mesh-printability): extract build_edge_to_faces helper` | §5.3 sub-step (helper extraction) + §5.3 regression gate | `validation.rs` (new helper module / fn), `CHANGELOG.md` | — | — |
@@ -2927,31 +2967,71 @@ Every commit, regardless of type, runs **all** of these gates locally before com
 
 Each commit's authoritative content is the upstream spec section. Per-commit notes here cover only what's specific to the commit boundary.
 
-#### Commit #1 — Gap A workspace lints + CHANGELOG creation + Coverage baseline capture
+#### Commit #1a — Gap A sub-1: mechanical-only fallout (24 sites, no semantics change)
+
+Per §5.1 (mechanical-only category).
+
+**Specific to this commit**:
+- 19 `clippy::missing_const_for_fn` — add `const` keyword.
+- 3 `clippy::cast_precision_loss` — add `#[allow]` + one-line justification.
+- 1 `clippy::uninlined_format_args` — inline the format arg.
+- 1 `clippy::match_same_arms` — collapse arms.
+- No Cargo.toml change (lints not yet inherited; clippy still red).
+- No CHANGELOG.md change (not yet created).
+- Body names the 24 sites changed by category (4-line itemization).
+
+**Acceptance**:
+- `cargo build -p mesh-printability --tests --all-targets` clean
+- `cargo test -p mesh-printability` 35/35 pass
+- (Clippy intentionally NOT run — lints not yet inherited; clippy will still report the remaining 14 sites)
+
+#### Commit #1b — Gap A sub-2: test-site cleanup (5 expect_used sites)
+
+Per §5.1 (test-site category).
+
+**Specific to this commit**:
+- 5 `clippy::expect_used` sites in `validation.rs::tests` — per-site decision: either `#[allow(clippy::expect_used)]` with one-line justification, or restructure to non-panicking (e.g., `assert!(matches!(...))` instead of `.expect()`).
+- No Cargo.toml change. No CHANGELOG.md change.
+- Body names the 5 test sites and which got `#[allow]` vs restructure.
+
+**Acceptance**:
+- `cargo test -p mesh-printability` 35/35 pass
+- (Clippy intentionally NOT run — lints not yet inherited)
+
+#### Commit #1c — Gap A sub-3: workspace lints flip + per-site FP allows + CHANGELOG creation + Coverage baseline
 
 Per §5.1 + §5.10 + §11.2.
 
 **Specific to this commit**:
-- §11.2 one-time Coverage baseline run (5–10 min): `cargo xtask grade mesh-printability` (without `--skip-coverage`). Record absolute % in commit body.
-- §5.1 stop-and-raise gate: if clippy fallout exceeds 10 sites OR any single site requires >20 LOC of refactor, **revert + raise**.
-- CHANGELOG.md initial structure per §5.10; first `[Unreleased] / Changed` entry: "Inherited workspace lints; clean against `-D warnings`".
+- Adds `[lints] workspace = true` to `mesh/mesh-printability/Cargo.toml` after `[package.metadata.cortenforge]`.
+- 8× `#[allow(clippy::suboptimal_flops)]` per-site annotations on the FMA-equivalent sites in `validation.rs` (lines 227, 235, etc.) and `orientation.rs` (line 387, etc.) — each with the §5.1 justification-comment template adapted per site.
+- 1× `#[allow(clippy::manual_midpoint)]` per-site annotation with the analogous comment.
+- Creates `mesh/mesh-printability/CHANGELOG.md` per §5.10 initial structure.
+- §11.2 one-time Coverage baseline run (5–10 min): `cargo xtask grade mesh-printability` (without `--skip-coverage`) on the post-1c HEAD. Record absolute % in commit body. (Pre-1a baseline is functionally equivalent for Coverage since 1a/1b only touch test bodies + add `const` keywords; 1c is chosen for the capture so the recorded baseline is post-lints-flip, matching every subsequent commit's grading state.)
+- First `[Unreleased] / Changed` CHANGELOG entry: "Inherited workspace lints; 9 per-site `#[allow]`s preserve FP semantics for overhang-predicate sites (FMA + midpoint forms changed FP bits; deferred as v0.9 candidate per §11.5)."
+- §5.1 stop-and-raise gate documented exception: 38 sites is 3.8× the >10 gate; the 3-commit split (commits 1a/1b/1c) is the resolution; the gate stays in effect for any future Gap-A-shaped lint flip in another crate.
 
 **Body template**:
 
 ```
-chore(mesh-printability): inherit workspace lints + create CHANGELOG (Gap A)
+chore(mesh-printability): inherit workspace lints + per-site FP-semantics allows + create CHANGELOG (Gap A sub-3)
 
-Adds [lints] workspace = true to mesh-printability/Cargo.toml; clippy
-fallout: <N> sites fixed inline. Creates CHANGELOG.md with the
-keepachangelog.com structure; subsequent commits append entries.
+Adds [lints] workspace = true to mesh-printability/Cargo.toml. Per-site
+allows preserve FP semantics on 8 mul_add + 1 midpoint sites where FMA
+would shift overhang-predicate FP bits at the threshold boundary;
+bit-exactness deferred as v0.9 candidate per §11.5.
+
+Creates CHANGELOG.md with the keepachangelog.com structure; subsequent
+commits append entries.
 
 v0.7 coverage baseline: <X>%  (cargo xtask grade mesh-printability,
-without --skip-coverage, on feature/mesh-printability-v0-8 HEAD pre-Gap-A)
+without --skip-coverage, on feature/mesh-printability-v0-8 HEAD post-1c)
 
 Acceptance:
 - cargo clippy -p mesh-printability --tests --all-targets -- -D warnings: clean
 - cargo xtask grade mesh-printability --skip-coverage: A across 7
-- cargo test -p mesh-printability: <existing-count>/<existing-count> pass
+- cargo test -p mesh-printability: 35/35 pass
+- mesh/mesh-printability/CHANGELOG.md exists with [Unreleased] block
 ```
 
 #### Commit #2 — Gap M overhang predicate + build-plate filter + stress_inputs.rs creation
@@ -3071,7 +3151,7 @@ Per `feedback_code_speaks` + §13.
 
 ### §12.5 Git operations
 
-**Branch**: `feature/mesh-printability-v0-8` (already cut from main 2026-04-30; 4 commits + this 5-spec-section work already committed; remaining 26 implementation commits land on this branch).
+**Branch**: `feature/mesh-printability-v0-8` (already cut from main 2026-04-30; 9 spec-authoring commits + this 5-spec-section reconciliation already committed; remaining 27 implementation commits land on this branch — 25 base slots + 2 added by Gap A's 3-commit split per §5.1).
 
 **Commit cadence**: ask-before-commit per `feedback_master_architect_delegation` standard counterweights. After each commit lands, surface a one-line confirmation to the user; for ⏸︎ commits, explicitly wait for visuals-pass signal before next.
 
@@ -3080,7 +3160,7 @@ Per `feedback_code_speaks` + §13.
 **Pre-squash tag** per `feedback_pre_squash_tag`:
 
 ```
-git tag -a feature/mesh-printability-v0-8-pre-squash -m "v0.8 fix arc — pre-squash 25-commit audit trail"
+git tag -a feature/mesh-printability-v0-8-pre-squash -m "v0.8 fix arc — pre-squash 27-commit audit trail (Gap A 3-commit split per §5.1)"
 git push origin feature/mesh-printability-v0-8-pre-squash
 ```
 
@@ -3097,7 +3177,7 @@ gh pr create --title "feat(mesh-printability): v0.8 fix arc — 13 gap fixes + 5
 
 PR body cross-references the pre-squash tag for the audit trail.
 
-**Working-state restoration if the arc is ever re-opened**: `git checkout feature/mesh-printability-v0-8-pre-squash` recovers the 25-commit history. The deleted spec is recoverable from any pre-#25 commit.
+**Working-state restoration if the arc is ever re-opened**: `git checkout feature/mesh-printability-v0-8-pre-squash` recovers the 27-commit history. The deleted spec is recoverable from any pre-#25 commit.
 
 ### §12.6 Pause cadence + user-visible coordination
 
@@ -3180,7 +3260,7 @@ For each spec section, what migrates where (or doesn't migrate at all). "Drop" =
 | §9 Stress-test gauntlet | 47 stress fixtures + §6.3 OOM amendment | Code (`tests/stress_inputs.rs` itself); §6.3 amendment baked into `validation.rs::check_trapped_volumes`. Detail dropped. |
 | §10 Grading & CI impact | Per-criterion grade impact + CI matrix changes | `.github/workflows/quality-gate.yml` edits; `COMPLETION.md` "Quality" section. End-of-arc grading checkpoint output recorded in commit #24's body. Detail dropped. |
 | §11 Open questions | Resolved decisions (umbrella, coverage baseline, tier) | Memo (rationale for v0.9 re-open triggers); for the umbrella+coverage+tier resolutions specifically, the rationale stays in commit #24's message body. Detail dropped. |
-| §12 Implementation order | 25-commit canonical order | Audit trail preserved via the 25-commit history at the **pre-squash tag** (§13.4). Detail dropped. |
+| §12 Implementation order | 27-commit canonical order (Gap A 3-commit split per §5.1) | Audit trail preserved via the 27-commit history at the **pre-squash tag** (§13.4). Detail dropped. |
 | §13 Spec lifecycle | Migration plan | This section — drops itself in the deletion commit. |
 
 The migration map ensures **every spec fact that's load-bearing post-arc has a durable home**. Scaffolding (review methodology, intermediate reasoning, planning artifacts) gets dropped — because it's already served its purpose.
@@ -3225,7 +3305,7 @@ type: project
 - Master-architect delegation worked. 5 high-tier risks pre-flight-verified; 4 inline scope expansions surfaced via risk-mitigation review (Gap M.2 build-plate filter, §6.3 OOM amendment, §10.4.1 cross-os, §10.4.2 tests-release).
 - §-internal inconsistency reconciliation: §12.0 absorbed 4 conflicts (build_edge_to_faces refactor placement; CHANGELOG creation slot; detector↔example interleave; Gap K placement). Pattern: when in doubt, prefer the more pragmatic of two readings + bake the rationale.
 - Cross-platform FP-drift lesson generalized from Phase 4 faer-LDLᵀ: tolerance bands + exact-representable inputs + cross-os CI matrix is the durable mitigation for any ray-casting/voxel-fill/divergence-theorem operation.
-- Commit cadence: 25 commits across the arc; ⏸ pause-for-visuals at 8 example commits per `feedback_one_at_a_time_review`. Internal commit segmentation (vs splitting PRs) aligns with `feedback_pr_size_ci_economics`.
+- Commit cadence: 27 commits across the arc (Gap A 3-commit split per §5.1 lifts the count from 25 to 27; sub-numbering preserves downstream commit-# references); ⏸ pause-for-visuals at 8 example commits per `feedback_one_at_a_time_review`. Internal commit segmentation (vs splitting PRs) aligns with `feedback_pr_size_ci_economics`.
 
 ## Cross-references
 - Mesh architecture book Part 5: `docs/studies/mesh_architecture/src/50-shell-and-print.md`
@@ -3248,7 +3328,7 @@ The book section is **prose, not spec** — explains the architecture for a huma
 
 ### §13.5 CHANGELOG migration content
 
-By commit #24, `CHANGELOG.md` has accumulated 24 commit-by-commit `[Unreleased]` entries (one per arc commit, except #25 which deletes the spec). Commit #24 closes the section. Per `keepachangelog.com` convention, `[Unreleased]` stays at the top + new released sections nest below in descending date order:
+By commit #24, `CHANGELOG.md` has accumulated 24 commit-by-commit `[Unreleased]` entries: one per arc commit (commits #2 through #24 = 23 entries), plus the initial entry that landed when commit 1c created the file (= 1 entry, "Inherited workspace lints; 9 per-site allows for FP-semantics-preserving sites"). Sub-commits 1a + 1b predate CHANGELOG.md creation (no entry); commit #25 deletes the spec (no entry). Total = 1 + 23 = 24 entries — unchanged from pre-split baseline since the split adds 2 commits but those commits are exactly the two pre-CHANGELOG-creation slots. Commit #24 closes the section. Per `keepachangelog.com` convention, `[Unreleased]` stays at the top + new released sections nest below in descending date order:
 
 ```markdown
 # Changelog
@@ -3335,7 +3415,7 @@ liabilities; durable narrative migrated to:
 - mesh/mesh-printability/CHANGELOG.md (per-commit + [0.8.0] release
   pin in commit #24)
 
-The 25-commit audit trail is preserved at the pre-squash tag:
+The 27-commit audit trail is preserved at the pre-squash tag:
   git checkout feature/mesh-printability-v0-8-pre-squash
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
@@ -3350,15 +3430,16 @@ Per `feedback_pre_squash_tag`, before opening the PR:
 ```
 # After commit #25 lands locally
 git tag -a feature/mesh-printability-v0-8-pre-squash \
-    -m "v0.8 fix arc — pre-squash 25-commit audit trail
+    -m "v0.8 fix arc — pre-squash 27-commit audit trail (Gap A 3-commit split per §5.1)
 
 13 gaps A–M shipped; 5 detectors populated; 8 examples; 47 stress
 fixtures. §-internal inconsistencies reconciled in §12 (4 absorbed).
 Master-architect delegation cadence with 4 high-tier pre-flight
 verifications + 4 inline scope expansions surfaced via risk-mitigation
-review.
+review. Gap A scope landed as 3 sub-commits (1a/1b/1c) per §5.1's
+pre-flight 38-site fallout measurement vs the >10 stop-and-raise gate.
 
-Squash-merge will collapse this 25-commit history; this tag preserves
+Squash-merge will collapse this 27-commit history; this tag preserves
 the per-commit audit trail."
 
 git push origin feature/mesh-printability-v0-8-pre-squash
@@ -3404,7 +3485,7 @@ After squash-merge lands on `main`, verify the migration succeeded:
 - [ ] `docs/studies/mesh_architecture/src/50-shell-and-print.md` has the v0.8 depth-pass section
 - [ ] `mesh/mesh-printability/CHANGELOG.md` has `[0.8.0] - YYYY-MM-DD` (dated) + `[Unreleased]` block populated
 - [ ] `mesh/mesh-printability/COMPLETION.md` reflects v0.8.0 truth (5 detectors populated, mesh-repair listed as dep)
-- [ ] Pre-squash tag `feature/mesh-printability-v0-8-pre-squash` resolves to a commit with all 25 commits visible via `git log`
+- [ ] Pre-squash tag `feature/mesh-printability-v0-8-pre-squash` resolves to a commit with all 27 commits visible via `git log` (Gap A 3-commit split per §5.1: 1a + 1b + 1c + 24 base slots = 27)
 - [ ] `examples/mesh/printability-*` directories exist (8 examples) and each `cargo run -p example-mesh-printability-<name> --release` exits 0
 
 If any item fails, cherry-pick a fix on top of `main` (post-merge) — the migration is part of the arc's contract.
