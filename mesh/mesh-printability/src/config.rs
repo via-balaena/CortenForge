@@ -3,6 +3,15 @@
 //! Provides configuration for different 3D printing technologies
 //! (FDM, SLA, SLS) with their specific constraints and capabilities.
 
+use mesh_types::Vector3;
+
+/// Tolerance below which a `build_up_direction` vector is treated as
+/// degenerate (effectively zero) by `with_build_up_direction`. Distinct
+/// from `EPS_GEOMETRIC` (1e-9, used for build-plate filters) — this
+/// guards a normalization precondition, not a millimetre-scale spatial
+/// comparison.
+const EPS_DEGENERATE_NORMAL: f64 = 1e-12;
+
 /// 3D printing technology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrintTechnology {
@@ -80,6 +89,21 @@ pub struct PrinterConfig {
 
     /// Build volume (X, Y, Z) in mm.
     pub build_volume: (f64, f64, f64),
+
+    /// Build-up direction in mesh-frame coordinates (unit vector).
+    ///
+    /// Defaults to `(0, 0, 1)` (i.e. `+Z` is up) for all four technology
+    /// constructors, matching v0.7's hardcoded behaviour. Set via
+    /// [`PrinterConfig::with_build_up_direction`] for non-`+Z` build
+    /// orientations (5-axis printers, oriented castings, mesh-frame
+    /// rotated coordinate systems).
+    ///
+    /// Consumed by `check_overhangs` (in `validation`) and
+    /// `evaluate_orientation` (in `orientation`); both compute the
+    /// per-face overhang as
+    /// `acos(face_normal · build_up_direction) - π/2` (the
+    /// tilt-from-vertical, per the Gap M FDM-slicer convention fix).
+    pub build_up_direction: Vector3<f64>,
 }
 
 impl Default for PrinterConfig {
@@ -103,6 +127,7 @@ impl PrinterConfig {
             min_feature_size: 0.8,
             max_bridge_span: 10.0,
             build_volume: (200.0, 200.0, 200.0),
+            build_up_direction: Vector3::new(0.0, 0.0, 1.0),
         }
     }
 
@@ -120,6 +145,7 @@ impl PrinterConfig {
             min_feature_size: 0.1,
             max_bridge_span: 5.0,
             build_volume: (120.0, 68.0, 155.0),
+            build_up_direction: Vector3::new(0.0, 0.0, 1.0),
         }
     }
 
@@ -137,6 +163,7 @@ impl PrinterConfig {
             min_feature_size: 0.3,
             max_bridge_span: f64::INFINITY, // No bridges needed
             build_volume: (300.0, 300.0, 300.0),
+            build_up_direction: Vector3::new(0.0, 0.0, 1.0),
         }
     }
 
@@ -152,6 +179,7 @@ impl PrinterConfig {
             min_feature_size: 0.2,
             max_bridge_span: f64::INFINITY,
             build_volume: (380.0, 284.0, 380.0),
+            build_up_direction: Vector3::new(0.0, 0.0, 1.0),
         }
     }
 
@@ -173,6 +201,31 @@ impl PrinterConfig {
     #[must_use]
     pub const fn with_max_overhang_angle(mut self, angle: f64) -> Self {
         self.max_overhang_angle = angle;
+        self
+    }
+
+    /// Create a custom configuration with a specific build-up direction.
+    ///
+    /// The input vector is normalized internally; callers may pass any
+    /// non-zero vector. The resulting `build_up_direction` field is a
+    /// unit vector in mesh-frame coordinates.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics via `debug_assert!` if `up.norm()` is
+    /// below `EPS_DEGENERATE_NORMAL` (1e-12). In release builds, no
+    /// panic — the normalization produces `NaN` components which then
+    /// propagate through downstream `acos(face_normal · build_up_direction)`
+    /// computations as `NaN`. Callers that may produce zero-vector input
+    /// from upstream computation are responsible for filtering before
+    /// passing to this builder.
+    #[must_use]
+    pub fn with_build_up_direction(mut self, up: Vector3<f64>) -> Self {
+        debug_assert!(
+            up.norm() > EPS_DEGENERATE_NORMAL,
+            "with_build_up_direction: input vector is degenerate (norm <= EPS_DEGENERATE_NORMAL)",
+        );
+        self.build_up_direction = up.normalize();
         self
     }
 }
@@ -253,5 +306,40 @@ mod tests {
     fn test_default_is_fdm() {
         let config = PrinterConfig::default();
         assert_eq!(config.technology, PrintTechnology::Fdm);
+    }
+
+    // -- Gap L (§5.6): build_up_direction parametrization --------------------
+
+    #[test]
+    fn test_build_up_direction_default_is_z() {
+        // All four technology constructors must default to +Z up,
+        // matching v0.7's hardcoded behaviour.
+        let expected = Vector3::new(0.0, 0.0, 1.0);
+        assert_eq!(PrinterConfig::fdm_default().build_up_direction, expected);
+        assert_eq!(PrinterConfig::sla_default().build_up_direction, expected);
+        assert_eq!(PrinterConfig::sls_default().build_up_direction, expected);
+        assert_eq!(PrinterConfig::mjf_default().build_up_direction, expected);
+    }
+
+    #[test]
+    fn test_build_up_direction_normalized_in_builder() {
+        // Builder normalizes a non-unit input. (0, 0, 5) → (0, 0, 1) is
+        // FP-exact since |(0,0,5)| = 5 is exactly representable.
+        let config =
+            PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 0.0, 5.0));
+        let up = config.build_up_direction;
+        assert!((up.x - 0.0).abs() < f64::EPSILON);
+        assert!((up.y - 0.0).abs() < f64::EPSILON);
+        assert!((up.z - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "with_build_up_direction")]
+    fn test_build_up_direction_zero_panics_in_debug() {
+        // debug_assert! catches degenerate input (norm <= EPS_DEGENERATE_NORMAL)
+        // in debug builds. Release-mode behaviour (`NaN` propagation) is
+        // documented in the builder's # Panics section, not tested.
+        let _config = PrinterConfig::fdm_default().with_build_up_direction(Vector3::zeros());
     }
 }

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`PrinterConfig::build_up_direction` parametrization (Gap L).** v0.7's
+  `check_overhangs` and `evaluate_orientation` hardcoded
+  `Vector3::new(0.0, 0.0, 1.0)` as the build-up direction, blocking
+  callers using non-`+Z` build orientations (5-axis printers, oriented
+  castings, mesh-frame rotated coordinate systems) from validating
+  without first rotating their meshes. v0.8 adds a public
+  `build_up_direction: Vector3<f64>` field to `PrinterConfig` (defaults
+  to `(0, 0, 1)` in all four `*_default()` constructors, preserving
+  v0.7 behaviour) and a `with_build_up_direction(up: Vector3<f64>)`
+  builder that normalizes the input internally and `debug_assert!`s on
+  zero-vector input. Pure addition; existing callers see no behavioural
+  change. The four `*_default()` constructors stay `pub const fn`
+  (`Vector3::new` is const-callable in nalgebra ≥ 0.34); the new
+  builder is non-const because it calls `.normalize()`. Release-mode
+  zero-vector input produces `NaN` components which propagate through
+  the downstream `acos(face_normal · build_up_direction)`
+  computations — explicit caller responsibility per the builder's
+  `# Panics` doc section. **Future-detector commitment**: detectors
+  authored later in v0.8 (`TrappedVolume`, `LongBridge`, and any
+  successors) consume `config.build_up_direction` from day one — never
+  a hardcoded `(0, 0, 1)`.
+
 ### Changed
 
 - Inherited workspace lints (`[lints] workspace = true`); 6 per-statement

@@ -209,7 +209,7 @@ fn evaluate_orientation(
     config: &PrinterConfig,
     rotation: UnitQuaternion<f64>,
 ) -> OrientationResult {
-    let up = Vector3::new(0.0, 0.0, 1.0);
+    let up = config.build_up_direction;
     let max_angle_rad = config.max_overhang_angle.to_radians();
 
     let mut total_overhang_area = 0.0;
@@ -441,5 +441,43 @@ mod tests {
         #[allow(clippy::suboptimal_flops)]
         let expected = 100.0 + 50.0 * 0.1;
         assert!((result.score - expected).abs() < f64::EPSILON);
+    }
+
+    // -- Gap L (§5.6): build_up_direction parametrization --------------------
+
+    #[test]
+    fn test_find_optimal_orientation_respects_build_up_direction() {
+        // Equivalence: rotating the mesh -90° around +X (mesh +Z → world +Y)
+        // and switching the config from default +Z up to +Y up must yield
+        // the same support_volume and overhang_area at the optimum, since
+        // the cost function depends only on the relative alignment between
+        // each face normal and the build-up direction. The two searches
+        // sample equivalent orientation sets through opposite rotations of
+        // the mesh frame.
+        let mesh_z = create_simple_mesh();
+        let vertices_y: Vec<Point3<f64>> = mesh_z
+            .vertices
+            .iter()
+            .map(|v| Point3::new(v.x, v.z, -v.y))
+            .collect();
+        let mesh_y = IndexedMesh::from_parts(vertices_y, mesh_z.faces.clone());
+
+        let config_z = PrinterConfig::fdm_default();
+        let config_y =
+            PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 1.0, 0.0));
+
+        let result_z = find_optimal_orientation(&mesh_z, &config_z, 12);
+        let result_y = find_optimal_orientation(&mesh_y, &config_y, 12);
+
+        approx::assert_relative_eq!(
+            result_z.support_volume,
+            result_y.support_volume,
+            epsilon = 1e-6
+        );
+        approx::assert_relative_eq!(
+            result_z.overhang_area,
+            result_y.overhang_area,
+            epsilon = 1e-6
+        );
     }
 }

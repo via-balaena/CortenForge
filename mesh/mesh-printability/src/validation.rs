@@ -214,7 +214,7 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
     }
 
     let max_angle_rad = config.max_overhang_angle.to_radians();
-    let up = Vector3::new(0.0, 0.0, 1.0);
+    let up = config.build_up_direction;
 
     let flagged = flag_overhang_faces(mesh, max_angle_rad, up);
     if flagged.is_empty() {
@@ -1763,6 +1763,72 @@ mod tests {
                     && i.description.contains("winding inconsistency")),
             "two faces sharing only a vertex have no shared edge; no winding-inconsistency issue should fire"
         );
+    }
+
+    // -- Gap L (§5.6): build_up_direction parametrization --------------------
+
+    /// Rotate a mesh -90° around the +X axis. Maps each vertex
+    /// `(x, y, z)` to `(x, z, -y)`, sending the mesh's `+Z` axis to
+    /// world `+Y`. Used to exercise the `+Y` build-up direction
+    /// symmetric with the default `+Z` configuration.
+    fn rotate_neg_90_about_x(mesh: &IndexedMesh) -> IndexedMesh {
+        let vertices: Vec<Point3<f64>> = mesh
+            .vertices
+            .iter()
+            .map(|v| Point3::new(v.x, v.z, -v.y))
+            .collect();
+        let faces = mesh.faces.clone();
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn test_overhang_with_y_up_orientation() {
+        // Equivalence: the same overhang fixture flagged under +Z up
+        // must flag the same number of regions under +Y up after the
+        // mesh is rotated -90° around +X (which sends mesh +Z → world +Y).
+        // Both branches dispatch through `check_overhangs`'s build-up
+        // direction read, so any failure here means propagation broke.
+        let mesh_z = make_overhang_fixture(std::f64::consts::FRAC_PI_2, 5.0);
+        let mesh_y = rotate_neg_90_about_x(&mesh_z);
+
+        let config_z = PrinterConfig::fdm_default();
+        let config_y =
+            PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 1.0, 0.0));
+
+        #[allow(clippy::expect_used)]
+        let result_z = validate_for_printing(&mesh_z, &config_z)
+            .expect("validation should succeed for +Z-up roof fixture");
+        #[allow(clippy::expect_used)]
+        let result_y = validate_for_printing(&mesh_y, &config_y)
+            .expect("validation should succeed for +Y-up rotated roof fixture");
+
+        assert_eq!(result_z.overhangs.len(), 1, "+Z up should flag the roof");
+        assert_eq!(
+            result_z.overhangs.len(),
+            result_y.overhangs.len(),
+            "overhang count must be symmetric across +Z and +Y build-up directions"
+        );
+    }
+
+    #[test]
+    fn test_overhang_with_oblique_up() {
+        // Builder normalizes a non-axis-aligned input. (0, 1, 1) →
+        // (0, 1/√2, 1/√2). The validator must accept any unit vector
+        // as the build-up direction; the dot-product math is fully
+        // direction-agnostic.
+        let config =
+            PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 1.0, 1.0));
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((config.build_up_direction.x - 0.0).abs() < f64::EPSILON);
+        assert!((config.build_up_direction.y - s).abs() < f64::EPSILON);
+        assert!((config.build_up_direction.z - s).abs() < f64::EPSILON);
+
+        // Validation should run without panic on a fixture under the
+        // oblique up vector (no NaN / Inf escapes).
+        let mesh = make_overhang_fixture(std::f64::consts::FRAC_PI_2, 5.0);
+        #[allow(clippy::expect_used)]
+        let _ = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed with oblique build-up direction");
     }
 
     #[test]
