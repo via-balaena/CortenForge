@@ -1,0 +1,25 @@
+[package]
+name = "example-mesh-printability-long-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Hand-authored 24-vertex / 44-triangle H-shape construction (Point3
+# + IndexedMesh::from_parts).
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply + out/issues.ply (ASCII PLY for human-
+# readable diff and downstream numerical PLY-parse verification).
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::fdm_default + sls_default,
+# region/issue types, severity enum.
+mesh-printability = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for span / centroid / region-area numerical
+# anchors.
+approx = { workspace = true }
+
+[lints]
+workspace = true

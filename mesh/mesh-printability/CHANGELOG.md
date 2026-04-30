@@ -176,6 +176,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new public `LongBridgeRegion` type;
   `PrintIssueType::LongBridge` was already declared in v0.7 so
   exhaustive `match` callers are unaffected.
+- **`examples/mesh/printability-long-bridge` visual demo (Gap G, §7.2).**
+  Second production consumer of the §6.2 `LongBridge` detector (after
+  the 13 unit tests + 5 §9.2.4 stress fixtures from the detector
+  commit). Hand-authored 24-vertex / 44-triangle H-shape — two
+  5×5×18 mm pillars (`x ∈ [0, 5]` and `[25, 30]`, `y ∈ [0, 5]`) joined
+  by a 35×5×2 mm horizontal slab (`x ∈ [-2.5, 32.5]`, `z ∈ [18, 20]`)
+  — built as a single watertight, consistently-wound boolean-union
+  solid. Pillar tops at `z = 18` are interior to the union; the slab
+  bottom is a polygon-with-2-rectangular-holes triangulated as three
+  edge-disjoint regions: a 20×5 middle bridge (between pillars) plus
+  two 2.5×5 cantilevers (outside the pillars). Slab front + back are
+  8-gons (bottom edges broken at the 4 pillar-attachment x-values),
+  triangulated as 6-triangle fans from the top-corner vertex; left +
+  right are 2 each; bottom regions are 2 each × 3 = 6. Hand-traced
+  manifold proof (every undirected edge appears in exactly two faces;
+  every directed edge is matched by its reverse) confirms the §6.2
+  preconditions. `main()` asserts the §7.2 numerical anchors under
+  `PrinterConfig::fdm_default()`: `long_bridges.len() == 1` (only the
+  middle bridge clears `max_bridge_span = 10`; cantilevers at span 5
+  silently dropped by `emit_long_bridge_component`'s
+  `span <= max_bridge_span` early-return), middle bridge `span ≈ 20`
+  and `start.x / end.x ≈ 5 / 25` within 1e-6, 1 Critical
+  `LongBridge` issue (20 > 10 × 1.5 = 15), `overhangs.len() == 3` with
+  centroids `(-1.25, 2.5, 18)` / `(15, 2.5, 18)` / `(31.25, 2.5, 18)`
+  within 1e-9, 3 Critical `ExcessiveOverhang` issues (90° tilt > 75°),
+  middle-bridge LongBridge midpoint coincides with middle-bridge
+  OverhangRegion centroid at `(15, 2.5, 18)` (the load-bearing
+  multi-detector co-flag), and `!is_printable()`. The `TrappedVolume`
+  spec assertion #7 (`trapped_volumes.len() == 0`) is implemented as
+  a `PrintIssueType::TrappedVolume` issue-count filter rather than a
+  literal field check — semantically equivalent and stays correct
+  after row #14 lands the `trapped_volumes` field; no row #14b
+  backfill is needed for this example. SLS tech-skip cross-check
+  re-validates the same fixture under `PrinterConfig::sls_default()`
+  and asserts `long_bridges.len() == 0` AND `overhangs.len() == 0`
+  AND zero `DetectorSkipped` issues — SLS has
+  `requires_supports() == false`, so both `check_overhangs`
+  (`validation.rs:270`) and `check_long_bridges`
+  (`validation.rs:1303`) early-return before classifying any face;
+  the `DetectorSkipped` variant is reserved for precondition skips
+  (per §6.2 line 996), not technology-policy skips. Produces
+  `out/mesh.ply` (24v, 44f, ASCII) +
+  `out/issues.ply` (4 centroid points, 2 coincident at `(15, 2.5, 18)`,
+  ASCII) for the visuals pass. The README's f3d back-face-culling
+  callout sits **near the top of the file** per
+  `feedback_f3d_winding_callout` — the slab's bottom is a genuine
+  outward-facing-with-normal-`-z` surface, exactly as the printability
+  detector sees it; viewers that cull back-faces by default will hide
+  the load-bearing geometry. Crate name
+  `example-mesh-printability-long-bridge` per §7.0 + §12.3's
+  example-commit naming convention. Pure addition; second ⏸︎
+  pause-for-visuals commit per §12.1 row #13.
 
 ### Changed
 
