@@ -41,7 +41,7 @@ pub struct PrintValidation {
 impl PrintValidation {
     /// Create a new validation result.
     #[must_use]
-    pub fn new(config: PrinterConfig) -> Self {
+    pub const fn new(config: PrinterConfig) -> Self {
         Self {
             config,
             issues: Vec::new(),
@@ -179,8 +179,7 @@ fn check_build_volume(
             PrintIssueType::ExceedsBuildVolume,
             IssueSeverity::Critical,
             format!(
-                "Mesh dimensions ({:.1} x {:.1} x {:.1} mm) exceed build volume ({:.1} x {:.1} x {:.1} mm)",
-                size_x, size_y, size_z, build_x, build_y, build_z
+                "Mesh dimensions ({size_x:.1} x {size_y:.1} x {size_z:.1} mm) exceed build volume ({build_x:.1} x {build_y:.1} x {build_z:.1} mm)"
             ),
         );
         validation.issues.push(issue);

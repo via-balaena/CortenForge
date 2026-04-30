@@ -165,7 +165,12 @@ fn generate_sample_orientations(samples: usize) -> Vec<UnitQuaternion<f64>> {
         let golden_ratio = (1.0 + 5.0_f64.sqrt()) / 2.0;
 
         for i in 0..remaining {
+            // Fibonacci-sphere sample index: `samples` is caller-bounded (small int);
+            // f64's 52-bit mantissa exactly represents any usize up to 2^52, so
+            // `i as f64` and `remaining as f64` are exact for any realistic count.
+            #[allow(clippy::cast_precision_loss)]
             let theta = 2.0 * std::f64::consts::PI * (i as f64) / golden_ratio;
+            #[allow(clippy::cast_precision_loss)]
             let phi = (1.0 - 2.0 * (i as f64 + 0.5) / remaining as f64).acos();
 
             let axis = Vector3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());

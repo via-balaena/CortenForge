@@ -21,7 +21,7 @@ pub enum PrintTechnology {
 impl PrintTechnology {
     /// Get a human-readable name for the technology.
     #[must_use]
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Fdm => "FDM",
             Self::Sla => "SLA",
@@ -33,11 +33,10 @@ impl PrintTechnology {
 
     /// Check if this technology typically requires support structures.
     #[must_use]
-    pub fn requires_supports(&self) -> bool {
+    pub const fn requires_supports(&self) -> bool {
         match self {
-            Self::Fdm | Self::Sla => true,
+            Self::Fdm | Self::Sla | Self::Other => true,
             Self::Sls | Self::Mjf => false,
-            Self::Other => true,
         }
     }
 }
@@ -94,7 +93,7 @@ impl PrinterConfig {
     ///
     /// Based on typical consumer FDM printers like Prusa or Ender.
     #[must_use]
-    pub fn fdm_default() -> Self {
+    pub const fn fdm_default() -> Self {
         Self {
             technology: PrintTechnology::Fdm,
             min_wall_thickness: 1.0,
@@ -111,7 +110,7 @@ impl PrinterConfig {
     ///
     /// Based on typical consumer resin printers.
     #[must_use]
-    pub fn sla_default() -> Self {
+    pub const fn sla_default() -> Self {
         Self {
             technology: PrintTechnology::Sla,
             min_wall_thickness: 0.4,
@@ -128,7 +127,7 @@ impl PrinterConfig {
     ///
     /// Based on typical industrial SLS machines.
     #[must_use]
-    pub fn sls_default() -> Self {
+    pub const fn sls_default() -> Self {
         Self {
             technology: PrintTechnology::Sls,
             min_wall_thickness: 0.7,
@@ -143,7 +142,7 @@ impl PrinterConfig {
 
     /// Default configuration for MJF printers (HP Multi Jet Fusion).
     #[must_use]
-    pub fn mjf_default() -> Self {
+    pub const fn mjf_default() -> Self {
         Self {
             technology: PrintTechnology::Mjf,
             min_wall_thickness: 0.5,
@@ -158,21 +157,21 @@ impl PrinterConfig {
 
     /// Create a custom configuration with a specific build volume.
     #[must_use]
-    pub fn with_build_volume(mut self, x: f64, y: f64, z: f64) -> Self {
+    pub const fn with_build_volume(mut self, x: f64, y: f64, z: f64) -> Self {
         self.build_volume = (x, y, z);
         self
     }
 
     /// Create a custom configuration with a specific wall thickness.
     #[must_use]
-    pub fn with_min_wall_thickness(mut self, thickness: f64) -> Self {
+    pub const fn with_min_wall_thickness(mut self, thickness: f64) -> Self {
         self.min_wall_thickness = thickness;
         self
     }
 
     /// Create a custom configuration with a specific overhang angle.
     #[must_use]
-    pub fn with_max_overhang_angle(mut self, angle: f64) -> Self {
+    pub const fn with_max_overhang_angle(mut self, angle: f64) -> Self {
         self.max_overhang_angle = angle;
         self
     }

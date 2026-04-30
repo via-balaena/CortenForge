@@ -21,7 +21,7 @@ pub struct ThinWallRegion {
 impl ThinWallRegion {
     /// Create a new thin wall region.
     #[must_use]
-    pub fn new(center: Point3<f64>, thickness: f64) -> Self {
+    pub const fn new(center: Point3<f64>, thickness: f64) -> Self {
         Self {
             center,
             thickness,
@@ -32,7 +32,7 @@ impl ThinWallRegion {
 
     /// Set the area of the region.
     #[must_use]
-    pub fn with_area(mut self, area: f64) -> Self {
+    pub const fn with_area(mut self, area: f64) -> Self {
         self.area = area;
         self
     }
@@ -61,7 +61,7 @@ pub struct OverhangRegion {
 impl OverhangRegion {
     /// Create a new overhang region.
     #[must_use]
-    pub fn new(center: Point3<f64>, angle: f64, area: f64) -> Self {
+    pub const fn new(center: Point3<f64>, angle: f64, area: f64) -> Self {
         Self {
             center,
             angle,
@@ -94,7 +94,7 @@ pub struct SupportRegion {
 impl SupportRegion {
     /// Create a new support region.
     #[must_use]
-    pub fn new(center: Point3<f64>, volume: f64, max_height: f64) -> Self {
+    pub const fn new(center: Point3<f64>, volume: f64, max_height: f64) -> Self {
         Self {
             center,
             volume,
