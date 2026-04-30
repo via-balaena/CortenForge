@@ -12,9 +12,22 @@ use crate::issues::{IssueSeverity, PrintIssue, PrintIssueType};
 use crate::regions::{OverhangRegion, SupportRegion, ThinWallRegion};
 
 /// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
-/// Used by the build-plate filter in `check_overhangs` to identify faces
-/// resting on the build plate.
+/// Two call sites:
+/// - `check_overhangs` build-plate filter — identifies faces resting on
+///   the build plate by comparing per-face min projection against
+///   mesh-min along the build-up axis.
+/// - `moller_trumbore` (§6.1) — both the determinant magnitude check
+///   (ray co-planar with triangle) and the `t > EPS` ray-parameter
+///   guard (positive ray direction).
 const EPS_GEOMETRIC: f64 = 1e-9;
+
+/// Ray-origin inward offset for the §6.1 `ThinWall` ray-cast (mm).
+///
+/// Offsets the ray's starting point inward by 1 µm along `-N_F` so the
+/// Möller-Trumbore intersection at `t > EPS_GEOMETRIC` cannot self-hit
+/// the originating face. Three orders of magnitude above
+/// `EPS_GEOMETRIC` (1e-9 mm) — adequate margin per §8.1 Gap C row 1.
+const EPS_RAY_OFFSET: f64 = 1e-6;
 
 /// Result of validating a mesh for printing.
 ///
@@ -163,6 +176,11 @@ pub fn validate_for_printing(
     // Check manifold (basic check)
     check_basic_manifold(mesh, &mut validation);
 
+    // §6.1 Gap C — thin walls via inward ray-cast. Runs after manifold so
+    // its precondition check (watertight + consistent winding) reflects
+    // the same edge analysis the manifold detector just performed.
+    check_thin_walls(mesh, config, &mut validation);
+
     Ok(validation)
 }
 
@@ -204,6 +222,16 @@ fn check_build_volume(
 #[derive(Clone, Copy)]
 struct FlaggedFaceMeta {
     overhang_angle_rad: f64,
+    area: f64,
+}
+
+/// Per-face metadata captured during the §6.1 `ThinWall` flag-collection
+/// loop. Used post-loop for per-cluster aggregation: each cluster's
+/// `ThinWallRegion` reports the *minimum* observed `thickness` (the
+/// worst-case constraint) and the summed `area` over its member faces.
+#[derive(Clone, Copy)]
+struct ThinWallFlagMeta {
+    thickness: f64,
     area: f64,
 }
 
@@ -347,9 +375,9 @@ fn flag_overhang_faces(
 /// component's seed is its smallest `face_idx`; smaller seeds are
 /// visited first), and faces within each component are sorted
 /// ascending.
-fn partition_flagged_into_components(
+fn partition_flagged_into_components<T>(
     mesh: &IndexedMesh,
-    flagged: &HashMap<u32, FlaggedFaceMeta>,
+    flagged: &HashMap<u32, T>,
 ) -> Vec<Vec<u32>> {
     let edge_to_faces = build_edge_to_faces(mesh);
     let mut adjacency: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -596,6 +624,297 @@ fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
             ),
         );
         validation.issues.push(issue);
+    }
+}
+
+// ===== §6.1 Gap C — ThinWall detector via inward ray-cast =================
+
+/// Möller-Trumbore ray-triangle intersection (§6.1).
+///
+/// Returns `Some(t)` for ray parameter `t > EPS_GEOMETRIC` if the ray hits
+/// the triangle's interior; `None` otherwise. Standard textbook form
+/// (Möller & Trumbore 1997). Early-out conditions:
+///
+/// - ray is co-planar with the triangle (`a.abs() < EPS_GEOMETRIC`),
+/// - barycentric `u`, `v` fall outside `[0, 1]` or `u + v > 1`,
+/// - parameter `t` is at or behind the ray origin (`t <= EPS_GEOMETRIC`).
+///
+/// `t > EPS_GEOMETRIC` (1e-9 mm) is three orders above the
+/// `EPS_RAY_OFFSET` (1e-6 mm) that `flag_thin_wall_faces` applies, so
+/// any back-reflection from the originating face is rejected.
+// Single-character names are the canonical Möller-Trumbore notation
+// (h = direction × edge2; a = determinant; f = 1/a; s, q = barycentric
+// intermediates; u, v = barycentric coords; t = ray parameter).
+// Renaming obscures the textbook reading — same naming choice most
+// ray-tracer references use.
+#[allow(clippy::many_single_char_names)]
+fn moller_trumbore(
+    origin: Point3<f64>,
+    direction: Vector3<f64>,
+    v0: Point3<f64>,
+    v1: Point3<f64>,
+    v2: Point3<f64>,
+) -> Option<f64> {
+    let edge1 = Vector3::new(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z);
+    let edge2 = Vector3::new(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
+    let h = direction.cross(&edge2);
+    let a = edge1.dot(&h);
+    if a.abs() < EPS_GEOMETRIC {
+        return None;
+    }
+    let f = 1.0 / a;
+    let s = Vector3::new(origin.x - v0.x, origin.y - v0.y, origin.z - v0.z);
+    let u = f * s.dot(&h);
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(&edge1);
+    let v = f * direction.dot(&q);
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = f * edge2.dot(&q);
+    if t > EPS_GEOMETRIC { Some(t) } else { None }
+}
+
+/// Classify `ThinWall` severity per §6.1 (two-band).
+///
+/// `Critical` if `thickness < min_wall_thickness / 2`, `Warning` otherwise
+/// (the lower-band entry condition `thickness < min_wall_thickness` is
+/// `flag_thin_wall_faces`'s invariant). Single source of severity policy
+/// — only call site is `emit_thin_wall_component`.
+fn classify_thin_wall_severity(thickness: f64, min_wall: f64) -> IssueSeverity {
+    if thickness < min_wall / 2.0 {
+        IssueSeverity::Critical
+    } else {
+        IssueSeverity::Warning
+    }
+}
+
+/// Watertight + consistent-winding precondition for §6.1 `ThinWall`.
+///
+/// Returns `true` iff every undirected edge is incident on exactly two
+/// faces (watertight) AND every directed edge appears in at most one
+/// face (consistent winding). Mirrors `check_basic_manifold`'s edge
+/// passes; computed independently so the precondition is encoded in
+/// the detector itself rather than relying on `validation.issues`
+/// inspection.
+fn is_watertight_and_consistent_winding(mesh: &IndexedMesh) -> bool {
+    let edge_to_faces = build_edge_to_faces(mesh);
+    if edge_to_faces.values().any(|faces| faces.len() != 2) {
+        return false;
+    }
+    let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
+    for face in &mesh.faces {
+        let edges = [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])];
+        for edge in &edges {
+            *directed.entry(*edge).or_insert(0) += 1;
+        }
+    }
+    directed.values().all(|&c| c <= 1)
+}
+
+/// Walk every face and ray-cast inward; collect those whose nearest
+/// opposite face is closer than `config.min_wall_thickness`. Returns
+/// per-face `thickness` + `area` keyed by face index for downstream
+/// edge-adjacency clustering and per-cluster emission.
+fn flag_thin_wall_faces(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+) -> HashMap<u32, ThinWallFlagMeta> {
+    let mut flagged: HashMap<u32, ThinWallFlagMeta> = HashMap::new();
+    let num_triangles = mesh.face_count();
+
+    for i in 0..num_triangles {
+        let face = mesh.faces[i];
+        let idx0 = face[0] as usize;
+        let idx1 = face[1] as usize;
+        let idx2 = face[2] as usize;
+        if idx0 >= mesh.vertices.len() || idx1 >= mesh.vertices.len() || idx2 >= mesh.vertices.len()
+        {
+            continue;
+        }
+
+        let v0 = mesh.vertices[idx0];
+        let v1 = mesh.vertices[idx1];
+        let v2 = mesh.vertices[idx2];
+        let edge1 = Vector3::new(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z);
+        let edge2 = Vector3::new(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
+        let raw_normal = edge1.cross(&edge2);
+
+        // FP-bit preserved: same rationale as `flag_overhang_faces`'s
+        // `len = sqrt(x*x + y*y + z*z)` site — keeping the explicit form
+        // ensures threshold-boundary determinism cross-platform.
+        #[allow(clippy::suboptimal_flops)]
+        let len = (raw_normal.x * raw_normal.x
+            + raw_normal.y * raw_normal.y
+            + raw_normal.z * raw_normal.z)
+            .sqrt();
+        if len < 1e-10 {
+            continue;
+        }
+        let normal = Vector3::new(raw_normal.x / len, raw_normal.y / len, raw_normal.z / len);
+        let area = len / 2.0;
+
+        let centroid = compute_face_centroid(mesh, i);
+        // FP-bit preserved: rewriting `centroid - EPS_RAY_OFFSET * normal`
+        // into `mul_add(-normal, centroid)` would shift the ray-origin's
+        // FP bits cross-platform, which in turn shifts which faces flag
+        // at the `min_wall_thickness` threshold. Same precedent as the
+        // `flag_overhang_faces` `len = sqrt(...)` site. Bit-exactness
+        // deferred — see CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
+        let origin = Point3::new(
+            centroid.x - EPS_RAY_OFFSET * normal.x,
+            centroid.y - EPS_RAY_OFFSET * normal.y,
+            centroid.z - EPS_RAY_OFFSET * normal.z,
+        );
+        let direction = Vector3::new(-normal.x, -normal.y, -normal.z);
+
+        let mut min_dist = f64::INFINITY;
+        for (j, other) in mesh.faces.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let oj0 = other[0] as usize;
+            let oj1 = other[1] as usize;
+            let oj2 = other[2] as usize;
+            if oj0 >= mesh.vertices.len()
+                || oj1 >= mesh.vertices.len()
+                || oj2 >= mesh.vertices.len()
+            {
+                continue;
+            }
+            if let Some(t) = moller_trumbore(
+                origin,
+                direction,
+                mesh.vertices[oj0],
+                mesh.vertices[oj1],
+                mesh.vertices[oj2],
+            ) && t < min_dist
+            {
+                min_dist = t;
+            }
+        }
+
+        // Reported thickness is min_dist + EPS_RAY_OFFSET — the geometric
+        // wall thickness from outer face surface to inner face surface,
+        // accounting for the ray's inward starting offset. Without this
+        // correction, every reported thickness is off by 1 µm and a
+        // wall at exactly `min_wall_thickness` flags spuriously
+        // (`min_dist = 0.999999 < 1.0` at thickness = 1.0).
+        let thickness = min_dist + EPS_RAY_OFFSET;
+        if thickness < config.min_wall_thickness {
+            // Mesh face index `i` fits in u32 (same bound as
+            // `flag_overhang_faces`'s `i as u32` cast).
+            #[allow(clippy::cast_possible_truncation)]
+            let face_idx = i as u32;
+            flagged.insert(face_idx, ThinWallFlagMeta { thickness, area });
+        }
+    }
+
+    flagged
+}
+
+/// Aggregate one cluster's per-face metadata and emit a `ThinWallRegion`
+/// + a `ThinWall` `PrintIssue` (§6.1 per-cluster emission).
+///
+/// Per cluster: `thickness` is the minimum observed (worst-case
+/// constraint), `area` is the summed area, `center` is the mean of
+/// per-face centroids. Severity per `classify_thin_wall_severity`.
+fn emit_thin_wall_component(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+    flagged: &HashMap<u32, ThinWallFlagMeta>,
+    component: Vec<u32>,
+    validation: &mut PrintValidation,
+) {
+    let mut min_thickness = f64::INFINITY;
+    let mut total_area = 0.0_f64;
+    let mut centroid_sum_x = 0.0_f64;
+    let mut centroid_sum_y = 0.0_f64;
+    let mut centroid_sum_z = 0.0_f64;
+
+    for &face_idx in &component {
+        if let Some(meta) = flagged.get(&face_idx) {
+            if meta.thickness < min_thickness {
+                min_thickness = meta.thickness;
+            }
+            total_area += meta.area;
+        }
+        let face_centroid = compute_face_centroid(mesh, face_idx as usize);
+        centroid_sum_x += face_centroid.x;
+        centroid_sum_y += face_centroid.y;
+        centroid_sum_z += face_centroid.z;
+    }
+
+    // `component.len()` is bounded by `mesh.face_count()` (u32-fittable);
+    // usize → f64 is exact below 2^53. Same precision rationale as
+    // `emit_overhang_component`.
+    #[allow(clippy::cast_precision_loss)]
+    let n = component.len() as f64;
+    let center = Point3::new(centroid_sum_x / n, centroid_sum_y / n, centroid_sum_z / n);
+
+    let region = ThinWallRegion::new(center, min_thickness)
+        .with_area(total_area)
+        .with_faces(component.clone());
+    validation.thin_walls.push(region);
+
+    let severity = classify_thin_wall_severity(min_thickness, config.min_wall_thickness);
+    let issue = PrintIssue::new(
+        PrintIssueType::ThinWall,
+        severity,
+        format!(
+            "{} face(s) with min thickness {:.3} mm (threshold {:.3} mm, region area: {:.1} mm²)",
+            component.len(),
+            min_thickness,
+            config.min_wall_thickness,
+            total_area
+        ),
+    )
+    .with_location(center)
+    .with_affected_elements(component);
+    validation.issues.push(issue);
+}
+
+/// Detect thin walls via inward ray-cast (§6.1 Gap C).
+///
+/// Preconditions: watertight + consistent winding. On precondition
+/// failure: emit one `Info` `PrintIssue` of type `DetectorSkipped` and
+/// return without populating `validation.thin_walls`.
+///
+/// Algorithm:
+///
+/// 1. For each face F: ray-cast inward from
+///    `centroid(F) - EPS_RAY_OFFSET * N_F` along `-N_F`; record `min_dist`
+///    to the nearest opposite face via `moller_trumbore`.
+/// 2. Flag F if `min_dist < config.min_wall_thickness`.
+/// 3. Cluster flagged faces by edge-adjacency (using
+///    `partition_flagged_into_components`, which reuses
+///    `build_edge_to_faces`).
+/// 4. Per cluster: emit one `ThinWallRegion` + one `ThinWall`
+///    `PrintIssue`.
+///
+/// Per-face complexity is O(n) ray-tri intersections; total is O(n²).
+/// Documented v0.9 BVH followup at >10k tris (see §6.1 of the v0.8 spec).
+fn check_thin_walls(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut PrintValidation) {
+    if !is_watertight_and_consistent_winding(mesh) {
+        validation.issues.push(PrintIssue::new(
+            PrintIssueType::DetectorSkipped,
+            IssueSeverity::Info,
+            "ThinWall detection requires watertight mesh with consistent winding (skipped)",
+        ));
+        return;
+    }
+
+    let flagged = flag_thin_wall_faces(mesh, config);
+    if flagged.is_empty() {
+        return;
+    }
+
+    let components = partition_flagged_into_components(mesh, &flagged);
+    for component in components {
+        emit_thin_wall_component(mesh, config, &flagged, component, validation);
     }
 }
 
@@ -1860,5 +2179,294 @@ mod tests {
                     && i.description.contains("winding inconsistency")),
             "incomplete cube has consistent winding; no winding-inconsistency issue should fire"
         );
+    }
+
+    // -- §6.1: ThinWall detector ---------------------------------------
+
+    /// Build a closed 10×10×`thickness` cuboid centred on the +XY quadrant
+    /// at z ∈ [0, thickness], wound CCW-from-outside. Watertight +
+    /// consistently wound; the §6.1 `ThinWall` detector preconditions
+    /// hold. The cuboid's top + bottom faces oppose each other at
+    /// distance `thickness` along the build-up axis; the four side faces
+    /// oppose each other at distance 10 mm in the orthogonal axes.
+    fn make_thin_slab(thickness: f64) -> IndexedMesh {
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+            Point3::new(0.0, 0.0, thickness),
+            Point3::new(10.0, 0.0, thickness),
+            Point3::new(10.0, 10.0, thickness),
+            Point3::new(0.0, 10.0, thickness),
+        ];
+        let faces = vec![
+            [0, 2, 1],
+            [0, 3, 2], // Bottom (-z normal)
+            [4, 5, 6],
+            [4, 6, 7], // Top (+z normal)
+            [0, 1, 5],
+            [0, 5, 4], // Front (-y)
+            [3, 6, 2],
+            [3, 7, 6], // Back (+y)
+            [0, 4, 7],
+            [0, 7, 3], // Left (-x)
+            [1, 2, 6],
+            [1, 6, 5], // Right (+x)
+        ];
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn test_thin_wall_detected_on_thin_slab() {
+        // 10×10×0.4 mm slab, FDM `min_wall_thickness = 1.0`. The top and
+        // bottom faces oppose each other across 0.4 mm; their inward
+        // rays hit the opposite face at 0.4 mm — flagged. Side faces
+        // oppose at 10 mm — not flagged. By edge-adjacency the top and
+        // bottom triangles cluster *separately* (closed-shell topology:
+        // top tris share no edge with bottom tris), so the assertion is
+        // exactly 2 clusters, both reporting thickness ≈ 0.4 mm. Same
+        // topological pattern as the §7.1 hollow box (2 clusters per
+        // pre-flight hand-trace).
+        let mesh = make_thin_slab(0.4);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the thin-slab fixture");
+
+        assert_eq!(
+            result.thin_walls.len(),
+            2,
+            "thin slab: top + bottom flagged faces cluster into 2 disjoint regions"
+        );
+        for region in &result.thin_walls {
+            assert!(
+                (region.thickness - 0.4).abs() < 1e-5,
+                "expected thickness ≈ 0.4 mm, got {}",
+                region.thickness
+            );
+        }
+        let critical_thin = result
+            .issues
+            .iter()
+            .filter(|i| {
+                i.issue_type == PrintIssueType::ThinWall && i.severity == IssueSeverity::Critical
+            })
+            .count();
+        assert_eq!(
+            critical_thin, 2,
+            "0.4 < 1.0/2 = 0.5 → both clusters Critical"
+        );
+    }
+
+    #[test]
+    fn test_thin_wall_no_issue_on_thick_cube() {
+        // A 10 mm watertight cube under FDM `min_wall_thickness = 1.0`:
+        // every face's inward ray hits the opposite face at 10 mm,
+        // 10 ≫ 1.0 → no `ThinWall` regions. Verifies the detector
+        // doesn't false-flag effectively-solid geometry.
+        let mesh = create_watertight_cube();
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the watertight-cube fixture");
+
+        assert_eq!(
+            result.thin_walls.len(),
+            0,
+            "10 mm walls under min_wall=1.0 must not flag"
+        );
+    }
+
+    #[test]
+    fn test_thin_wall_severity_critical_at_quarter_min() {
+        // 0.25 mm slab, min_wall=1.0 → 0.25 < 1.0/2 = 0.5 → Critical.
+        let mesh = make_thin_slab(0.25);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 0.25 mm slab");
+
+        assert!(!result.thin_walls.is_empty(), "0.25 mm slab must flag");
+        let any_critical = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::ThinWall && i.severity == IssueSeverity::Critical
+        });
+        assert!(any_critical, "0.25 < 0.5 must classify as Critical");
+    }
+
+    #[test]
+    fn test_thin_wall_severity_warning_at_three_quarter_min() {
+        // 0.75 mm slab, min_wall=1.0 → 0.5 ≤ 0.75 < 1.0 → Warning.
+        let mesh = make_thin_slab(0.75);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the 0.75 mm slab");
+
+        assert!(!result.thin_walls.is_empty(), "0.75 mm slab must flag");
+        let any_warning = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::ThinWall && i.severity == IssueSeverity::Warning
+        });
+        let any_critical = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::ThinWall && i.severity == IssueSeverity::Critical
+        });
+        assert!(any_warning, "0.75 ≥ 0.5 must classify as Warning");
+        assert!(!any_critical, "0.75 ≥ 0.5 must NOT classify as Critical");
+    }
+
+    #[test]
+    fn test_thin_wall_borderline_no_issue() {
+        // Strictly-less predicate (`min_dist < min_wall_thickness`):
+        // 1.0 mm slab under min_wall=1.0 must NOT flag.
+        let mesh = make_thin_slab(1.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the borderline 1.0 mm slab");
+
+        assert_eq!(
+            result.thin_walls.len(),
+            0,
+            "1.0 mm under min_wall=1.0 must not flag (strict-less predicate)"
+        );
+    }
+
+    #[test]
+    fn test_thin_wall_skipped_on_open_mesh() {
+        // Open mesh (top of slab removed → 4 open edges along the top
+        // perimeter): watertight precondition fails → `DetectorSkipped`
+        // emitted, no `ThinWallRegion`s populated.
+        let mut mesh = make_thin_slab(0.4);
+        // Drop the top tris (faces 2 + 3 in the slab face list). Drain
+        // and rebuild the face list omitting indices 2..4.
+        let faces: Vec<[u32; 3]> = mesh
+            .faces
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != 2 && *idx != 3)
+            .map(|(_, f)| *f)
+            .collect();
+        mesh = IndexedMesh::from_parts(mesh.vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the open-mesh fixture");
+
+        let any_skipped = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::DetectorSkipped
+                && i.description.contains("ThinWall")
+                && i.description.contains("watertight")
+        });
+        assert!(
+            any_skipped,
+            "open mesh must emit DetectorSkipped with ThinWall + watertight in description"
+        );
+        assert_eq!(
+            result.thin_walls.len(),
+            0,
+            "open mesh must not populate thin_walls"
+        );
+    }
+
+    #[test]
+    fn test_thin_wall_skipped_on_inconsistent_winding() {
+        // Slab with one top tri's vertex order flipped → directed edge
+        // (4, 6) appears in BOTH the flipped face and the unflipped
+        // sister face → consistent-winding precondition fails →
+        // `DetectorSkipped` emitted.
+        let mesh = make_thin_slab(0.4);
+        // Flip face index 2 from [4, 5, 6] to [4, 6, 5].
+        let mut faces: Vec<[u32; 3]> = mesh.faces.clone();
+        faces[2] = [4, 6, 5];
+        let mesh = IndexedMesh::from_parts(mesh.vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the flipped-winding fixture");
+
+        let any_skipped = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("ThinWall")
+        });
+        assert!(
+            any_skipped,
+            "inconsistent winding must emit DetectorSkipped from ThinWall"
+        );
+        assert_eq!(
+            result.thin_walls.len(),
+            0,
+            "winding-inconsistent mesh must not populate thin_walls"
+        );
+    }
+
+    #[test]
+    fn test_thin_wall_two_disjoint_clusters() {
+        // Two slabs offset along +X by 30 mm: each slab independently
+        // produces 2 clusters (top + bottom topologically disjoint per
+        // closed-shell hand-trace). Total: 4 clusters across the two
+        // disjoint components.
+        let slab_a = make_thin_slab(0.4);
+        let mut vertices: Vec<Point3<f64>> = slab_a.vertices.clone();
+        let mut faces: Vec<[u32; 3]> = slab_a.faces.clone();
+
+        let offset_x = 30.0;
+        // Hand-built fixture: an `expect` failure here would indicate
+        // the slab helper itself was malformed, not a detector regression.
+        #[allow(clippy::expect_used)]
+        let base = u32::try_from(slab_a.vertices.len()).expect("slab vertex count fits in u32");
+        for v in &slab_a.vertices {
+            vertices.push(Point3::new(v.x + offset_x, v.y, v.z));
+        }
+        for f in &slab_a.faces {
+            faces.push([f[0] + base, f[1] + base, f[2] + base]);
+        }
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for the two-slab fixture");
+
+        assert_eq!(
+            result.thin_walls.len(),
+            4,
+            "two disjoint slabs each contribute 2 clusters → 4 total"
+        );
+        for region in &result.thin_walls {
+            assert!(
+                (region.thickness - 0.4).abs() < 1e-5,
+                "all clusters report thickness ≈ 0.4 mm"
+            );
+        }
+    }
+
+    #[test]
+    fn test_thin_wall_sort_stable_across_runs() {
+        // Same input, two runs: cluster ordering matches deterministically.
+        // Verifies §4.4 sort stability — `partition_flagged_into_components`
+        // emerges in min-face-idx order regardless of `HashMap` iteration
+        // permutation.
+        let mesh = make_thin_slab(0.4);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let r1 = validate_for_printing(&mesh, &config).expect("validation 1");
+        #[allow(clippy::expect_used)]
+        let r2 = validate_for_printing(&mesh, &config).expect("validation 2");
+
+        assert_eq!(r1.thin_walls.len(), r2.thin_walls.len());
+        for (a, b) in r1.thin_walls.iter().zip(r2.thin_walls.iter()) {
+            assert_eq!(a.faces, b.faces, "cluster face order must match");
+            assert!(
+                (a.thickness - b.thickness).abs() < f64::EPSILON,
+                "cluster thickness must match bit-for-bit"
+            );
+        }
     }
 }

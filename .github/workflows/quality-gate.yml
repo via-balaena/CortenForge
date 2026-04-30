@@ -216,7 +216,7 @@ jobs:
         run: |
           cargo test --release \
             -p sim-ml-chassis -p sim-thermostat -p sim-rl \
-            -p sim-conformance-tests -p sim-opt
+            -p sim-conformance-tests -p sim-opt -p mesh-printability
           # sim-soft release-only contact tests — Phase 5 commits 9 + 10
           # mark V-3 / V-5 / V-4-V-3 / V-4-V-5 as `#[cfg_attr(debug_assertions,
           # ignore)]` per `feedback_release_mode_heavy_tests`. The crate

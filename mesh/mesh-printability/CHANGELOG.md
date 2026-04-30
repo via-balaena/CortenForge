@@ -52,6 +52,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later in v0.8 (`ThinWall` §6.1, `TrappedVolume` §6.2, and any
   successors) emit `DetectorSkipped` on precondition failure rather
   than silently returning.
+- **`check_thin_walls` detector + populated `ThinWallRegion` (Gap C, §6.1).**
+  v0.7 exposed `PrintIssueType::ThinWall` and `PrintValidation.thin_walls`
+  but `validate_for_printing` never populated the field — a critical
+  silent-failure for FDM/SLA print validation, since under-min-wall
+  geometry is the dominant cause of print failure for sub-1 mm features.
+  v0.8 wires a private `check_thin_walls(mesh, config, issues) ->
+  Vec<ThinWallRegion>` per §6.1: brute-force O(n²) inward ray-cast from
+  each face's centroid (offset 1 µm by `EPS_RAY_OFFSET` to avoid self-hit)
+  via a private `moller_trumbore` helper (~30 LOC textbook implementation;
+  workspace had no prior ray-tri primitive — `mesh-repair::intersect`
+  exposes triangle-triangle, not ray-triangle). Preconditions: watertight
+  + consistent winding; on failure, emits the §5.8 `DetectorSkipped`
+  variant with description `"ThinWall detection requires watertight mesh
+  with consistent winding (skipped)"` and returns empty regions
+  (first consumer of the §5.8 variant in production). Per-cluster
+  severity via `classify_thin_wall_severity`: `Critical` if `thickness <
+  min_wall_thickness / 2`, `Warning` otherwise. Clusters emerge in
+  min-face-idx component order via `partition_flagged_into_components`
+  (the §5.3 helper, generalized in this commit from `HashMap<u32,
+  FlaggedFaceMeta>` to `HashMap<u32, T>` so the same DFS serves both
+  detectors); faces within each cluster are sorted ascending. Reported
+  thickness is `min_dist + EPS_RAY_OFFSET` (the geometric wall
+  thickness, accounting for the ray's 1 µm starting offset). **§7.1
+  fixture topology audit (HIGH-tier per §8.4)**: hand-traced the 24-
+  triangle hollow-box construction; confirmed watertight + consistent-
+  winding + 2-cluster theoretical outcome (outer-top + inner-top
+  topologically disjoint via edge-adjacency, since the construction
+  uses two disjoint cube-component vertex sets). The 2-cluster topology
+  applies generically to closed-shell thin-section fixtures (slab top
+  + slab bottom share no edge); unit tests assert it explicitly. **v0.9
+  followups**: BVH acceleration for the >10k-tri perf cliff (documented,
+  not gated); shell-based thickness via mesh-offset SDF for highly
+  curved geometry; anisotropic thresholds per build direction. **SEMVER
+  note**: pure addition (new private fns + `partition_flagged_into_components`
+  signature generalization that's invisible to existing callers); v0.7's
+  unpopulated `validation.thin_walls` was always empty so existing
+  callers see no behavioural break beyond now having actual data.
+- **`tests-release` CI job covers mesh-printability (§10.4.2).**
+  `stress_c_5k_tri_perf_budget` (5000-triangle thin-walled UV-sphere
+  shell pair, asserts O(n²) ThinWall detector completes in <2 s release
+  mode) is the first release-only stress fixture for mesh-printability;
+  subsequent §6 detectors will land more (e.g., `stress_h_voxel_grid_perf_cliff`
+  in commit #14, `stress_i_truncation_at_100` in commit #16). Without
+  `cargo test --release` in CI, perf regressions on the >5k-tri budget
+  go unnoticed. Single-line append to `quality-gate.yml::tests-release`
+  step (adds `-p mesh-printability` to the existing
+  `cargo test --release` command); cost ~3-5 min cold-cache, ~1-2 min
+  warm-cache (Swatinem/rust-cache active); runs in parallel with
+  `tests-debug` so no critical-path impact.
 
 ### Changed
 
