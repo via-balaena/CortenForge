@@ -151,7 +151,7 @@ documenting the Overhang co-flag.
 
 **Three TrappedVolume assertions deferred to row #14b**:
 §7.1 of the v0.8 fix arc spec lists three additional anchors —
-`trapped_volumes.len() == 1`, volume ≈ 6011.7 mm³, centroid
+`trapped_volumes.len() == 1`, volume ≈ 6012.9 mm³, centroid
 `(15, 10, 8.05)`. The TrappedVolume detector first ships at row #14
 of the arc; row #14b (a tiny follow-up commit immediately after)
 backfills these three assertions into this example's `verify`. See

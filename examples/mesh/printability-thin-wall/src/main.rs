@@ -277,7 +277,7 @@ fn print_diagnostics(v: &PrintValidation) {
 /// or breaks the cluster split fails loudly with the bug it caught.
 ///
 /// **Deferred per §12.1 row #11**: the three `TrappedVolume` assertions
-/// from §7.1 (`trapped_volumes.len() == 1`, volume ≈ 6011.7 mm³,
+/// from §7.1 (`trapped_volumes.len() == 1`, volume ≈ 6012.9 mm³,
 /// centroid (15, 10, 8.05)) are NOT asserted here. The current
 /// `PrintValidation` struct has no `trapped_volumes` field; the
 /// `TrappedVolume` detector first ships at row #14 of the v0.8 fix

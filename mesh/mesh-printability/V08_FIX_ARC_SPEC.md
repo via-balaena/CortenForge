@@ -1510,7 +1510,7 @@ Inner cavity (the void): x ∈ [1.5, 28.5], y ∈ [1.5, 18.5], z ∈ [1.5, 14.6]
 Side wall thicknesses: x walls = 1.5 mm, y walls = 1.5 mm, bottom wall = 1.5 mm.
 Top wall thickness: 15 − 14.6 = 0.4 mm.
 Inner cavity dimensions: 27 × 17 × 13.1 mm.
-Inner cavity volume: 6011.7 mm³.
+Inner cavity volume: 6012.9 mm³ (= 27 × 17 × 13.1; an earlier draft of this spec quoted 6011.7 mm³ in error — corrected when row #11 surfaced the drift via post-PLY-write `signed_volume` verification).
 Inner cavity centroid: ((1.5+28.5)/2, (1.5+18.5)/2, (1.5+14.6)/2) = **(15, 10, 8.05)**.
 
 **ThinWall clustering analysis** (load-bearing for `thin_walls.len()` prediction):
@@ -1540,7 +1540,7 @@ Therefore: **2 clusters** — one outer-top cluster (2 triangles, 600 mm² area,
 5. `validation.issues.iter().filter(|i| matches!(i.issue_type, ThinWall) && matches!(i.severity, Critical)).count() == 2` — "two Critical ThinWall issues, one per cluster"
 6. `!validation.is_printable()` — "0.4mm wall under min_wall=1.0 blocks printability"
 7. `validation.trapped_volumes.len() == 1` — "sealed inner cavity must flag as TrappedVolume on FDM (Info)"
-8. `approx::assert_relative_eq!(validation.trapped_volumes[0].volume, 6011.7, max_relative = 0.10)` — analytical interior volume; voxel-discretization tolerance per §6.3.
+8. `approx::assert_relative_eq!(validation.trapped_volumes[0].volume, 6012.9, max_relative = 0.10)` — analytical interior volume (`27 × 17 × 13.1`); voxel-discretization tolerance per §6.3.
 9. `validation.trapped_volumes[0].center` within `voxel_size` (= 0.1 mm at FDM defaults) of `(15, 10, 8.05)`.
 10. `validation.overhangs.len() >= 1` — "cavity-ceiling co-flag: the inner top face's normal points down into cavity, `overhang_angle = 90°`, flagged Critical under FDM `max=45°`". The example documents this co-flag in the README.
 11. The pedagogically-load-bearing flag is the ThinWall Critical (which drives `is_printable()` independently). The cavity-ceiling overhang is a documented structural-detector co-flag that the user learns to read alongside ThinWall.
@@ -2879,7 +2879,7 @@ This section is the **canonical commit-order spec**. Three §-internal inconsist
 | 12 | `feat(mesh-printability): LongBridge detector via boundary-edge span analysis (Gap G)` | §6.2 + §9.2.4 | `validation.rs::check_long_bridges` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `CHANGELOG.md` | — | — |
 | 13 | `feat(examples): mesh-printability-long-bridge visual demo (Gap G)` | §7.2 | `examples/mesh/printability-long-bridge/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
 | 14 | `feat(mesh-printability): TrappedVolume detector via exterior flood-fill (Gap H) + cross-os CI + voxel-grid memory cap` | §6.3 (incl. OOM amendment from §9.2.5) + §9.2.5 + §10.4.1 CI extension | `validation.rs::check_trapped_volumes` (new), `regions.rs`, `lib.rs`, `tests/stress_inputs.rs` (append), `.github/workflows/quality-gate.yml` (append `-p mesh-printability` to cross-os), `CHANGELOG.md` | **High** (§8.4 FP drift + grid memory) | — |
-| 14b | `feat(examples): backfill TrappedVolume assertions in printability-thin-wall (deferred from row #11)` | §7.1 deferred-from-#11 (assertions #7–9: `trapped_volumes.len() == 1`, volume ≈ 6011.7 mm³, centroid `(15, 10, 8.05)`) | `examples/mesh/printability-thin-wall/src/main.rs` (3 assertions + remove deferral comment + update doc-comment references), `CHANGELOG.md` | — | — |
+| 14b | `feat(examples): backfill TrappedVolume assertions in printability-thin-wall (deferred from row #11)` | §7.1 deferred-from-#11 (assertions #7–9: `trapped_volumes.len() == 1`, volume ≈ 6012.9 mm³, centroid `(15, 10, 8.05)`) | `examples/mesh/printability-thin-wall/src/main.rs` (3 assertions + remove deferral comment + update doc-comment references), `CHANGELOG.md` | — | — |
 | 15 | `feat(examples): mesh-printability-trapped-volume visual demo (Gap H)` | §7.3 | `examples/mesh/printability-trapped-volume/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |
 | 16 | `feat(mesh-printability): SelfIntersecting detector via mesh-repair re-use (Gap I)` | §6.4 + §9.2.6 + dep add | `validation.rs::check_self_intersecting` (new), `regions.rs`, `lib.rs`, `Cargo.toml` (mesh-repair dep), `tests/stress_inputs.rs` (append), `CHANGELOG.md` | **High** (§8.4 Layer Integrity dep cap) | — |
 | 17 | `feat(examples): mesh-printability-self-intersecting visual demo (Gap I)` | §7.4 | `examples/mesh/printability-self-intersecting/...` (new), workspace `Cargo.toml`, `CHANGELOG.md` | — | ⏸︎ |

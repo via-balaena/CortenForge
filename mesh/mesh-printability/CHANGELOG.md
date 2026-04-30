@@ -120,7 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (preconditions hold). Produces `out/mesh.ply` (16v, 24f, ASCII)
   + `out/issues.ply` (vertex-only point-cloud of region centroids,
   ASCII) for the visuals pass. **Three TrappedVolume assertions from
-  §7.1 (sealed-cavity volume ≈ 6011.7 mm³, centroid `(15, 10, 8.05)`,
+  §7.1 (sealed-cavity volume ≈ 6012.9 mm³, centroid `(15, 10, 8.05)`,
   count == 1) are deferred** to row #14b — a tiny follow-up commit
   immediately after row #14 (when the §6.3 TrappedVolume detector
   first ships); the current `PrintValidation` struct has no
