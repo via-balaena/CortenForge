@@ -9,7 +9,7 @@ use mesh_types::{IndexedMesh, Point3, Vector3};
 use crate::config::PrinterConfig;
 use crate::error::{PrintabilityError, PrintabilityResult};
 use crate::issues::{IssueSeverity, PrintIssue, PrintIssueType};
-use crate::regions::{OverhangRegion, SupportRegion, ThinWallRegion};
+use crate::regions::{LongBridgeRegion, OverhangRegion, SupportRegion, ThinWallRegion};
 
 /// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
 /// Two call sites:
@@ -47,6 +47,9 @@ pub struct PrintValidation {
     /// Overhang regions detected.
     pub overhangs: Vec<OverhangRegion>,
 
+    /// Long-bridge regions detected (§6.2 Gap G).
+    pub long_bridges: Vec<LongBridgeRegion>,
+
     /// Regions needing support structures.
     pub support_regions: Vec<SupportRegion>,
 
@@ -66,6 +69,7 @@ impl PrintValidation {
             issues: Vec::new(),
             thin_walls: Vec::new(),
             overhangs: Vec::new(),
+            long_bridges: Vec::new(),
             support_regions: Vec::new(),
             estimated_print_time: None,
             estimated_material_volume: None,
@@ -181,6 +185,11 @@ pub fn validate_for_printing(
     // the same edge analysis the manifold detector just performed.
     check_thin_walls(mesh, config, &mut validation);
 
+    // §6.2 Gap G — long bridges via boundary-edge span analysis. Runs
+    // after `check_thin_walls`; FDM/SLA-only (silent skip on SLS/MJF
+    // per `requires_supports()`).
+    check_long_bridges(mesh, config, &mut validation);
+
     Ok(validation)
 }
 
@@ -234,6 +243,27 @@ struct ThinWallFlagMeta {
     thickness: f64,
     area: f64,
 }
+
+/// Per-face metadata captured during the §6.2 `LongBridge` flag-collection
+/// loop. `area` is summed per cluster for the issue-description's
+/// `region area: …` line (parity with `ThinWall` + `ExcessiveOverhang`).
+/// `angle_from_neg_up_rad` is preserved for v0.9 diagnostic surface
+/// (per-cluster "most-horizontal face" reporting); the v0.8 emit path
+/// reads it via `meta.angle_from_neg_up_rad` only when the field is
+/// referenced explicitly, so the dead-code lint allow below is the
+/// minimal escape until v0.9.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct LongBridgeFlagMeta {
+    angle_from_neg_up_rad: f64,
+    area: f64,
+}
+
+/// Maximum tilt-from-horizontal (radians) for `LongBridge` candidate
+/// faces (§6.2 — `ANGLE_TOL_HORIZONTAL = 30°`). A face whose outward
+/// normal sits within 30° of `-up` is "near-horizontal downward" — the
+/// FDM/SLA bridge-candidate predicate.
+const LONG_BRIDGE_ANGLE_TOL_RAD: f64 = std::f64::consts::FRAC_PI_6;
 
 /// Check for excessive overhangs.
 fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut PrintValidation) {
@@ -916,6 +946,399 @@ fn check_thin_walls(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut
     for component in components {
         emit_thin_wall_component(mesh, config, &flagged, component, validation);
     }
+}
+
+/// Construct an orthonormal basis `(e1, e2)` of the plane perpendicular
+/// to `up` (which is assumed unit-length per `with_build_up_direction`'s
+/// normalize-on-construct contract).
+///
+/// Reference vector picking avoids the degenerate case where the chosen
+/// reference is collinear with `up`: pick `(1, 0, 0)` unless `up` is
+/// nearly parallel to it (`|up.x| > 0.9`), in which case pick `(0, 1, 0)`.
+/// `0.9` chosen so the reference is at least ~26° from `up` — avoiding
+/// FP loss in the Gram-Schmidt subtraction `ref - (ref·up)*up`.
+///
+/// For default `+Z` up the basis falls out as `e1 = (1, 0, 0)`,
+/// `e2 = (0, 1, 0)` — the natural world-X/Y projection. For `+Y` up the
+/// basis is `e1 = (1, 0, 0)`, `e2 = (0, 0, -1)` — symmetric span.
+fn perpendicular_plane_basis(up: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let reference = if up.x.abs() > 0.9 {
+        Vector3::new(0.0, 1.0, 0.0)
+    } else {
+        Vector3::new(1.0, 0.0, 0.0)
+    };
+    // Gram-Schmidt: subtract the up-component of `reference` to land in
+    // the perpendicular plane, then normalize.
+    let dot = reference.dot(&up);
+    let raw_e1 = reference - up * dot;
+    let e1 = raw_e1.normalize();
+    let e2 = up.cross(&e1);
+    (e1, e2)
+}
+
+/// Classify `LongBridge` severity per §6.2 (two-band; no Info).
+///
+/// `Critical` if `span > max_span * 1.5`; `Warning` otherwise. The lower-
+/// band entry condition `span > max_span` is `flag_long_bridge_faces`'s
+/// downstream guard — only clusters whose span strictly exceeds
+/// `max_bridge_span` reach this classifier. No Info band: bridges that
+/// don't exceed the threshold don't flag at all (the FDM/SLA decision is
+/// binary at the printer-config level).
+const fn classify_long_bridge_severity(span: f64, max_span: f64) -> IssueSeverity {
+    if span > max_span * 1.5 {
+        IssueSeverity::Critical
+    } else {
+        IssueSeverity::Warning
+    }
+}
+
+/// Walk every face and collect those whose outward normal lies within
+/// `LONG_BRIDGE_ANGLE_TOL_RAD` (30°) of `-up` — "near-horizontal
+/// downward" candidates. Build-plate filter (mesh-min-relative, same
+/// pattern as `flag_overhang_faces`'s M.2) rejects faces resting on the
+/// build plate.
+fn flag_long_bridge_faces(
+    mesh: &IndexedMesh,
+    up: Vector3<f64>,
+) -> HashMap<u32, LongBridgeFlagMeta> {
+    let mesh_min_along_up = mesh
+        .vertices
+        .iter()
+        .map(|v| v.coords.dot(&up))
+        .fold(f64::INFINITY, f64::min);
+
+    let neg_up = -up;
+    let mut flagged: HashMap<u32, LongBridgeFlagMeta> = HashMap::new();
+
+    let num_triangles = mesh.face_count();
+    for i in 0..num_triangles {
+        let face = mesh.faces[i];
+        let idx0 = face[0] as usize;
+        let idx1 = face[1] as usize;
+        let idx2 = face[2] as usize;
+        if idx0 >= mesh.vertices.len() || idx1 >= mesh.vertices.len() || idx2 >= mesh.vertices.len()
+        {
+            continue;
+        }
+
+        let v0 = mesh.vertices[idx0];
+        let v1 = mesh.vertices[idx1];
+        let v2 = mesh.vertices[idx2];
+        let edge1 = Vector3::new(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z);
+        let edge2 = Vector3::new(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
+        let raw_normal = edge1.cross(&edge2);
+
+        // FP-bit preserved: same rationale as `flag_overhang_faces`'s
+        // `len = sqrt(...)` site — keeping the explicit form ensures
+        // threshold-boundary determinism cross-platform.
+        #[allow(clippy::suboptimal_flops)]
+        let len = (raw_normal.x * raw_normal.x
+            + raw_normal.y * raw_normal.y
+            + raw_normal.z * raw_normal.z)
+            .sqrt();
+        if len < 1e-10 {
+            continue;
+        }
+        let normal = Vector3::new(raw_normal.x / len, raw_normal.y / len, raw_normal.z / len);
+
+        // Tilt from `-up` (the "downward horizontal" reference). A face
+        // whose normal is exactly `-up` has angle 0; a vertical wall has
+        // angle π/2. Flag iff angle < ANGLE_TOL_HORIZONTAL.
+        #[allow(clippy::suboptimal_flops)]
+        let dot_neg_up = normal.x * neg_up.x + normal.y * neg_up.y + normal.z * neg_up.z;
+        let angle_from_neg_up = dot_neg_up.clamp(-1.0, 1.0).acos();
+        if angle_from_neg_up >= LONG_BRIDGE_ANGLE_TOL_RAD {
+            continue;
+        }
+
+        // Build-plate filter (mesh-min-relative): a face touching the
+        // build plate is supported by the plate, not a bridge.
+        let face_min_along_up = [v0, v1, v2]
+            .iter()
+            .map(|v| v.coords.dot(&up))
+            .fold(f64::INFINITY, f64::min);
+        if (face_min_along_up - mesh_min_along_up) < EPS_GEOMETRIC {
+            continue;
+        }
+
+        let area = len / 2.0;
+        // Mesh face index `i` fits in u32 (same bound as
+        // `flag_overhang_faces`'s `i as u32` cast).
+        #[allow(clippy::cast_possible_truncation)]
+        let face_idx = i as u32;
+        flagged.insert(
+            face_idx,
+            LongBridgeFlagMeta {
+                angle_from_neg_up_rad: angle_from_neg_up,
+                area,
+            },
+        );
+    }
+
+    flagged
+}
+
+/// Axis-aligned bounding box of a `LongBridge` cluster's vertices,
+/// projected onto the plane perpendicular to `up`. Stored as struct
+/// fields (rather than four bindings) to keep the call site readable
+/// and avoid `clippy::similar_names` triggers on any pair like
+/// `min_u`/`min_w`.
+struct ClusterPerpBbox {
+    min_along_e1: f64,
+    max_along_e1: f64,
+    min_along_e2: f64,
+    max_along_e2: f64,
+}
+
+impl ClusterPerpBbox {
+    const fn extent_e1(&self) -> f64 {
+        self.max_along_e1 - self.min_along_e1
+    }
+    const fn extent_e2(&self) -> f64 {
+        self.max_along_e2 - self.min_along_e2
+    }
+    const fn mid_e1(&self) -> f64 {
+        f64::midpoint(self.min_along_e1, self.max_along_e1)
+    }
+    const fn mid_e2(&self) -> f64 {
+        f64::midpoint(self.min_along_e2, self.max_along_e2)
+    }
+}
+
+/// Project a `LongBridge` cluster's unique vertices onto the plane
+/// spanned by `(e1, e2)` and compute the axis-aligned bbox of the
+/// projection. Vertex de-dup via `HashSet<u32>` so shared cluster-
+/// interior vertices are only sampled once.
+fn cluster_perpendicular_bbox(
+    mesh: &IndexedMesh,
+    component: &[u32],
+    e1: Vector3<f64>,
+    e2: Vector3<f64>,
+) -> ClusterPerpBbox {
+    let mut vertex_indices: HashSet<u32> = HashSet::new();
+    for &face_idx in component {
+        let face = mesh.faces[face_idx as usize];
+        vertex_indices.insert(face[0]);
+        vertex_indices.insert(face[1]);
+        vertex_indices.insert(face[2]);
+    }
+
+    let mut bbox = ClusterPerpBbox {
+        min_along_e1: f64::INFINITY,
+        max_along_e1: f64::NEG_INFINITY,
+        min_along_e2: f64::INFINITY,
+        max_along_e2: f64::NEG_INFINITY,
+    };
+    for &vi in &vertex_indices {
+        let v = mesh.vertices[vi as usize];
+        let proj_e1 = v.coords.dot(&e1);
+        let proj_e2 = v.coords.dot(&e2);
+        bbox.min_along_e1 = bbox.min_along_e1.min(proj_e1);
+        bbox.max_along_e1 = bbox.max_along_e1.max(proj_e1);
+        bbox.min_along_e2 = bbox.min_along_e2.min(proj_e2);
+        bbox.max_along_e2 = bbox.max_along_e2.max(proj_e2);
+    }
+    bbox
+}
+
+/// Identify a cluster's boundary edges: edges shared with at least one
+/// face that is NOT in the flagged set (per §6.2 line 988). Output is
+/// `(min, max)`-normalized vertex pairs, sorted ascending for
+/// determinism across `HashMap` iteration permutations.
+fn cluster_boundary_edges(
+    mesh: &IndexedMesh,
+    component: &[u32],
+    edge_to_faces: &HashMap<(u32, u32), Vec<u32>>,
+    flagged: &HashMap<u32, LongBridgeFlagMeta>,
+) -> Vec<(u32, u32)> {
+    let mut boundary_edges: Vec<(u32, u32)> = Vec::new();
+    let mut seen: HashSet<(u32, u32)> = HashSet::new();
+    for &face_idx in component {
+        let face = mesh.faces[face_idx as usize];
+        let raw_edges = [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])];
+        for (a, b) in raw_edges {
+            let key = (a.min(b), a.max(b));
+            if !seen.insert(key) {
+                continue;
+            }
+            if let Some(faces) = edge_to_faces.get(&key) {
+                let on_boundary = faces.iter().any(|f| !flagged.contains_key(f));
+                if on_boundary {
+                    boundary_edges.push(key);
+                }
+            }
+        }
+    }
+    boundary_edges.sort_unstable();
+    boundary_edges
+}
+
+/// Project a cluster's vertices onto the plane perpendicular to `up`
+/// (using basis `(e1, e2)`), compute the axis-aligned bounding box of
+/// projections, and emit a `LongBridgeRegion` + `LongBridge` `PrintIssue`
+/// if the max bbox extent exceeds `config.max_bridge_span`.
+///
+/// `start` and `end` lift the longest-axis endpoints back to 3D using
+/// the cluster centroid's elevation along `up`; the issue location is
+/// the midpoint.
+fn emit_long_bridge_component(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+    edge_to_faces: &HashMap<(u32, u32), Vec<u32>>,
+    flagged: &HashMap<u32, LongBridgeFlagMeta>,
+    component: Vec<u32>,
+    validation: &mut PrintValidation,
+) {
+    let up = config.build_up_direction;
+    let (e1, e2) = perpendicular_plane_basis(up);
+    let bbox = cluster_perpendicular_bbox(mesh, &component, e1, e2);
+
+    let extent_e1 = bbox.extent_e1();
+    let extent_e2 = bbox.extent_e2();
+    let span = extent_e1.max(extent_e2);
+    if span <= config.max_bridge_span {
+        return;
+    }
+
+    // Cluster centroid: mean of per-face centroids (matches
+    // `emit_overhang_component` + `emit_thin_wall_component`). `total_area`
+    // is the per-cluster sum used in the issue description (parity with
+    // sister detectors' `region area: …` field).
+    let mut centroid_sum_x = 0.0_f64;
+    let mut centroid_sum_y = 0.0_f64;
+    let mut centroid_sum_z = 0.0_f64;
+    let mut total_area = 0.0_f64;
+    for &face_idx in &component {
+        if let Some(meta) = flagged.get(&face_idx) {
+            total_area += meta.area;
+        }
+        let c = compute_face_centroid(mesh, face_idx as usize);
+        centroid_sum_x += c.x;
+        centroid_sum_y += c.y;
+        centroid_sum_z += c.z;
+    }
+    // `component.len()` is bounded by `mesh.face_count()` (u32-fittable);
+    // usize → f64 is exact below 2^53. Same precision rationale as
+    // `emit_overhang_component`.
+    #[allow(clippy::cast_precision_loss)]
+    let n = component.len() as f64;
+    let cluster_centroid = Point3::new(centroid_sum_x / n, centroid_sum_y / n, centroid_sum_z / n);
+
+    // Pick the longest perpendicular-plane axis; lift the bbox center
+    // back to 3D from its (e1, e2, up) projections.
+    let (axis, long_proj, perp_axis, perp_proj) = if extent_e1 >= extent_e2 {
+        (e1, bbox.mid_e1(), e2, bbox.mid_e2())
+    } else {
+        (e2, bbox.mid_e2(), e1, bbox.mid_e1())
+    };
+    let center_along_up = cluster_centroid.coords.dot(&up);
+    let center_vec = axis * long_proj + perp_axis * perp_proj + up * center_along_up;
+    let center = Point3::new(center_vec.x, center_vec.y, center_vec.z);
+
+    let half_span = span / 2.0;
+    let start_vec = center_vec - axis * half_span;
+    let end_vec = center_vec + axis * half_span;
+    let start = Point3::new(start_vec.x, start_vec.y, start_vec.z);
+    let end = Point3::new(end_vec.x, end_vec.y, end_vec.z);
+
+    let boundary_edges = cluster_boundary_edges(mesh, &component, edge_to_faces, flagged);
+
+    let region = LongBridgeRegion::new(start, end, span)
+        .with_edges(boundary_edges)
+        .with_faces(component.clone());
+    validation.long_bridges.push(region);
+
+    let severity = classify_long_bridge_severity(span, config.max_bridge_span);
+    let issue = PrintIssue::new(
+        PrintIssueType::LongBridge,
+        severity,
+        format!(
+            "{} face(s) span {:.1} mm (limit {:.1} mm, region area: {:.1} mm²)",
+            component.len(),
+            span,
+            config.max_bridge_span,
+            total_area
+        ),
+    )
+    .with_location(center)
+    .with_affected_elements(component);
+    validation.issues.push(issue);
+}
+
+/// Detect long bridges via boundary-edge span analysis (§6.2 Gap G).
+///
+/// Preconditions: `config.technology.requires_supports()` must be true
+/// (FDM/SLA). SLS/MJF skip **silently** — no `DetectorSkipped` issue
+/// (bridges aren't applicable to powder-bed-supported processes per
+/// §6.2 line 996).
+///
+/// Algorithm:
+///
+/// 1. Pre-check: `requires_supports()`; silent early return otherwise.
+/// 2. Per face: classify as bridge candidate iff the outward normal
+///    sits within 30° of `-up`. Build-plate filter (mesh-min-relative)
+///    rejects faces on the plate.
+/// 3. Cluster candidates by edge-adjacency
+///    (`partition_flagged_into_components`).
+/// 4. Per cluster: project vertices onto the plane perpendicular to
+///    `up`, compute axis-aligned bbox; if `max(extent_u, extent_w) >
+///    config.max_bridge_span`, emit a `LongBridgeRegion` (with start +
+///    end at the longest-axis endpoints, lifted to 3D at the cluster
+///    centroid's `up`-elevation) and a `LongBridge` `PrintIssue`.
+///
+/// **v0.8 limitations** (locked by §9.2.4 stress fixtures, v0.9
+/// followups documented in `CHANGELOG.md`):
+///
+/// - Cantilever-as-bridge: a one-end-anchored horizontal face flags
+///   even though it isn't a true bridge. v0.9: support-end analysis to
+///   distinguish.
+/// - Diagonal underflag: bbox is axis-aligned in the perpendicular
+///   plane, so a 14×14 mm patch (true diagonal ≈ 19.8 mm) underflags
+///   when `max_bridge_span = 15`. v0.9: OBB-based span.
+fn check_long_bridges(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+    validation: &mut PrintValidation,
+) {
+    if !config.technology.requires_supports() {
+        return;
+    }
+
+    let up = config.build_up_direction;
+    let flagged = flag_long_bridge_faces(mesh, up);
+    if flagged.is_empty() {
+        return;
+    }
+
+    let edge_to_faces = build_edge_to_faces(mesh);
+    let components = partition_flagged_into_components(mesh, &flagged);
+    let regions_before = validation.long_bridges.len();
+    for component in components {
+        emit_long_bridge_component(
+            mesh,
+            config,
+            &edge_to_faces,
+            &flagged,
+            component,
+            validation,
+        );
+    }
+
+    // §4.4 ordering: sort `long_bridges` by `(start.x, start.y, start.z)`.
+    // `f64::total_cmp` gives a total order on all `f64` (including
+    // signed zero / NaN), avoiding the `partial_cmp` panic risk
+    // flagged by `clippy::expect_used` and matching §4.4's
+    // "deterministic across runs" promise. Sort range is restricted
+    // to the regions emitted by this detector so a future hoist of
+    // the sort to `validate_for_printing` doesn't have to undo
+    // anything per-detector.
+    validation.long_bridges[regions_before..].sort_by(|a, b| {
+        a.start
+            .x
+            .total_cmp(&b.start.x)
+            .then_with(|| a.start.y.total_cmp(&b.start.y))
+            .then_with(|| a.start.z.total_cmp(&b.start.z))
+    });
 }
 
 /// Compute the bounding box of a mesh.
@@ -2468,5 +2891,425 @@ mod tests {
                 "cluster thickness must match bit-for-bit"
             );
         }
+    }
+
+    // ---- §6.2 Gap G LongBridge tests --------------------------------------
+    //
+    // Closed-mesh bridge fixtures: a tiny ground-anchor cuboid at `z=0`
+    // plus an elevated slab. Two disjoint cuboids are jointly watertight
+    // + consistently wound (each component closes on its own; vertices
+    // are disjoint so no edge crosses components). The slab's bottom
+    // face is the bridge candidate; the anchor pins `mesh_min_along_up = 0`
+    // so the slab's bottom isn't filtered. Slab thickness ≥ 1 mm to
+    // avoid co-flagging as `ThinWall` under default FDM
+    // `min_wall_thickness = 1.0`.
+
+    /// Append a closed cuboid (CCW-from-outside) to `(vertices, faces)`.
+    /// `min`/`max` are diagonally-opposite corners; six rectangular
+    /// faces / twelve triangles. Mirrors the winding of
+    /// `cube_vertices_and_faces` in `tests/stress_inputs.rs`.
+    fn append_closed_cuboid(
+        vertices: &mut Vec<Point3<f64>>,
+        faces: &mut Vec<[u32; 3]>,
+        min: Point3<f64>,
+        max: Point3<f64>,
+    ) {
+        // `vertices.len()` is bounded by the test fixtures' small tri
+        // counts (≤ 100); usize → u32 is safe at this scale.
+        #[allow(clippy::cast_possible_truncation)]
+        let base: u32 = vertices.len() as u32;
+        vertices.extend_from_slice(&[
+            Point3::new(min.x, min.y, min.z),
+            Point3::new(max.x, min.y, min.z),
+            Point3::new(max.x, max.y, min.z),
+            Point3::new(min.x, max.y, min.z),
+            Point3::new(min.x, min.y, max.z),
+            Point3::new(max.x, min.y, max.z),
+            Point3::new(max.x, max.y, max.z),
+            Point3::new(min.x, max.y, max.z),
+        ]);
+        let cf = |a: u32, b: u32, c: u32| [base + a, base + b, base + c];
+        faces.extend_from_slice(&[
+            cf(0, 2, 1),
+            cf(0, 3, 2),
+            cf(4, 5, 6),
+            cf(4, 6, 7),
+            cf(0, 1, 5),
+            cf(0, 5, 4),
+            cf(3, 6, 2),
+            cf(3, 7, 6),
+            cf(0, 4, 7),
+            cf(0, 7, 3),
+            cf(1, 2, 6),
+            cf(1, 6, 5),
+        ]);
+    }
+
+    /// Build a closed bridge fixture: a 2×2×2 anchor cuboid at
+    /// `z ∈ [0, 2]` (sets `mesh_min_along_up = 0`) plus a slab of
+    /// `x_extent × y_extent × slab_thickness` at `z ∈ [elevation,
+    /// elevation + slab_thickness]`. The slab is x-offset by `+10` so
+    /// its vertices are disjoint from the anchor's.
+    fn make_closed_bridge_fixture(
+        x_extent: f64,
+        y_extent: f64,
+        slab_thickness: f64,
+        elevation: f64,
+    ) -> IndexedMesh {
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        // Anchor at (-3..-1, -3..-1, 0..2) — x/y-offset to avoid overlap
+        // with the slab's bbox.
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(-3.0, -3.0, 0.0),
+            Point3::new(-1.0, -1.0, 2.0),
+        );
+        // Slab at (0..x_extent, 0..y_extent, elevation..elevation+thickness).
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(0.0, 0.0, elevation),
+            Point3::new(x_extent, y_extent, elevation + slab_thickness),
+        );
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn test_long_bridge_horizontal_slab_exceeds_span() {
+        // 20×5 slab at z=10, max_bridge_span = 10 (FDM default).
+        // span = max(20, 5) = 20; flagged at Critical (20 > 10*1.5).
+        let mesh = make_closed_bridge_fixture(20.0, 5.0, 1.5, 10.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(
+            result.long_bridges.len(),
+            1,
+            "20×5 slab elevated above plate must produce 1 LongBridge region"
+        );
+        let region = &result.long_bridges[0];
+        assert!(
+            (region.span - 20.0).abs() < 1e-6,
+            "span must equal the bbox max-extent (20 mm); got {}",
+            region.span
+        );
+        // Issue exists at LongBridge type with Critical severity.
+        let critical = result
+            .issues
+            .iter()
+            .filter(|i| {
+                i.issue_type == PrintIssueType::LongBridge && i.severity == IssueSeverity::Critical
+            })
+            .count();
+        assert_eq!(critical, 1, "20 mm > 10*1.5 → Critical");
+    }
+
+    #[test]
+    fn test_long_bridge_short_span_no_issue() {
+        // 5×5 slab, max_bridge_span = 10. span = 5 ≤ 10 → no flag.
+        let mesh = make_closed_bridge_fixture(5.0, 5.0, 1.5, 10.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(
+            result.long_bridges.len(),
+            0,
+            "5×5 slab span (5) ≤ max_bridge_span (10); no LongBridge region"
+        );
+    }
+
+    #[test]
+    fn test_long_bridge_borderline_warning() {
+        // 12×5 slab, max=10. span = 12; 10 < 12 ≤ 10*1.5 = 15 → Warning.
+        let mesh = make_closed_bridge_fixture(12.0, 5.0, 1.5, 10.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(result.long_bridges.len(), 1);
+        let warning = result
+            .issues
+            .iter()
+            .filter(|i| {
+                i.issue_type == PrintIssueType::LongBridge && i.severity == IssueSeverity::Warning
+            })
+            .count();
+        assert_eq!(warning, 1, "span 12 in (10, 15] → Warning");
+    }
+
+    #[test]
+    fn test_long_bridge_well_above_critical() {
+        // 20×5 slab, max=10. 20 > 10*1.5 = 15 → Critical (boundary
+        // bracketed by 5 mm above the Warning/Critical edge).
+        let mesh = make_closed_bridge_fixture(20.0, 5.0, 1.5, 10.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(result.long_bridges.len(), 1);
+        let critical = result
+            .issues
+            .iter()
+            .filter(|i| {
+                i.issue_type == PrintIssueType::LongBridge && i.severity == IssueSeverity::Critical
+            })
+            .count();
+        assert_eq!(critical, 1, "span 20 > 10*1.5 → Critical");
+    }
+
+    #[test]
+    fn test_long_bridge_skipped_for_sls() {
+        // SLS config: `requires_supports() == false` → silent skip.
+        // No `LongBridge` regions, no `DetectorSkipped` issue (per §6.2
+        // line 996, distinct from `ThinWall`'s `DetectorSkipped` on
+        // non-watertight).
+        let mesh = make_closed_bridge_fixture(20.0, 5.0, 1.5, 10.0);
+        let config = PrinterConfig::sls_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(result.long_bridges.len(), 0, "SLS skips bridges silently");
+        let skipped_naming_bridge = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::DetectorSkipped
+                && i.description.to_lowercase().contains("bridge")
+        });
+        assert!(
+            !skipped_naming_bridge,
+            "SLS skip is silent — no DetectorSkipped issue naming bridges"
+        );
+    }
+
+    #[test]
+    fn test_long_bridge_bottom_face_not_flagged() {
+        // 20×5 slab at z=0 (sitting on build plate). The slab's bottom
+        // face has `face_min = 0 = mesh_min` → build-plate filter
+        // excludes; no bridge. Single closed cuboid, no anchor needed
+        // (its own bottom is mesh-min).
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(20.0, 5.0, 1.5),
+        );
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(
+            result.long_bridges.len(),
+            0,
+            "slab on build plate: bottom filtered, no LongBridge"
+        );
+    }
+
+    #[test]
+    fn test_long_bridge_two_disjoint_bridges() {
+        // Two parallel 20×5 slabs separated by 30 mm along +X plus a
+        // single ground anchor. Three disjoint closed cuboids; each
+        // slab's bottom is its own cluster. Two LongBridge regions.
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(-3.0, -3.0, 0.0),
+            Point3::new(-1.0, -1.0, 2.0),
+        );
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(0.0, 0.0, 10.0),
+            Point3::new(20.0, 5.0, 11.5),
+        );
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(30.0, 0.0, 10.0),
+            Point3::new(50.0, 5.0, 11.5),
+        );
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(
+            result.long_bridges.len(),
+            2,
+            "two disjoint slab bottoms → 2 LongBridge regions"
+        );
+        for region in &result.long_bridges {
+            assert!(
+                (region.span - 20.0).abs() < 1e-6,
+                "each slab spans 20 mm; got {}",
+                region.span
+            );
+        }
+    }
+
+    #[test]
+    fn test_long_bridge_with_y_up_orientation() {
+        // Same 20×5 slab geometry, rotated 90° around +X (y → z, z → -y),
+        // validated with `+Y up`. The bridge face's outward normal in
+        // the rotated frame is (0, -1, 0) = -up; flagged identically.
+        // Anchor at (-3..-1, 0..2, 1..3) (y plays z-role).
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        // Anchor in the y-up frame: y ∈ [0, 2] is "elevation 0..2", and
+        // x/z extents define the footprint.
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(-3.0, 0.0, -3.0),
+            Point3::new(-1.0, 2.0, -1.0),
+        );
+        // Slab in the y-up frame: y ∈ [10, 11.5] (1.5 mm thick), x ∈
+        // [0, 20], z ∈ [0, 5]. Span = max(20, 5) = 20 in the
+        // (e1, e2) = ((1,0,0), (0,0,-1)) basis.
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(0.0, 10.0, 0.0),
+            Point3::new(20.0, 11.5, 5.0),
+        );
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config =
+            PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 1.0, 0.0));
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(
+            result.long_bridges.len(),
+            1,
+            "+Y up rotation produces same flag count as +Z up"
+        );
+        let region = &result.long_bridges[0];
+        assert!(
+            (region.span - 20.0).abs() < 1e-6,
+            "span identical to +Z fixture; got {}",
+            region.span
+        );
+    }
+
+    #[test]
+    fn test_long_bridge_cantilever_currently_flagged() {
+        // 20-mm cantilever face anchored on one end. v0.8 cannot
+        // distinguish a cantilever from a bridge: both produce a single
+        // cluster of horizontal-down faces above the build plate.
+        // Locks the v0.8 limitation; v0.9 followup adds support-end
+        // analysis. Fixture is identical to
+        // `test_long_bridge_well_above_critical`: the v0.8 detector
+        // sees both shapes the same way.
+        let mesh = make_closed_bridge_fixture(20.0, 5.0, 1.5, 10.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(
+            result.long_bridges.len(),
+            1,
+            "cantilever currently flags as a bridge (v0.8 limitation; v0.9 followup)"
+        );
+    }
+
+    #[test]
+    fn test_long_bridge_diagonal_underflagged_documented() {
+        // 14×14 horizontal patch at z=10, `max_bridge_span = 15`.
+        // span = max(14, 14) = 14 < 15 → no flag, even though the true
+        // Euclidean diagonal (14·√2 ≈ 19.8 mm) exceeds the limit. v0.8
+        // axis-aligned bbox is conservative for diagonals; v0.9 OBB
+        // followup will catch this case.
+        let mesh = make_closed_bridge_fixture(14.0, 14.0, 1.5, 10.0);
+        let mut config = PrinterConfig::fdm_default();
+        config.max_bridge_span = 15.0;
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(
+            result.long_bridges.len(),
+            0,
+            "diagonal patch: bbox extent (14) < max (15); v0.8 underflags by design"
+        );
+    }
+
+    #[test]
+    fn test_long_bridge_regions_sorted_by_start_xyz() {
+        // §4.4 ordering: `long_bridges` sorted by `(start.x, start.y,
+        // start.z)`. Two parallel slabs appended in REVERSE x-order
+        // (high-x slab first → lower face indices). Without §4.4 sort,
+        // emission order would be high-x then low-x. With the sort,
+        // low-x must precede high-x.
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(-3.0, -3.0, 0.0),
+            Point3::new(-1.0, -1.0, 2.0),
+        );
+        // High-x slab appended FIRST (gets lower face indices).
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(30.0, 0.0, 10.0),
+            Point3::new(50.0, 5.0, 11.5),
+        );
+        // Low-x slab appended SECOND.
+        append_closed_cuboid(
+            &mut vertices,
+            &mut faces,
+            Point3::new(0.0, 0.0, 10.0),
+            Point3::new(20.0, 5.0, 11.5),
+        );
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(result.long_bridges.len(), 2);
+        let first = &result.long_bridges[0];
+        let second = &result.long_bridges[1];
+        assert!(
+            first.start.x < second.start.x,
+            "§4.4: long_bridges must sort by start.x; got [{}, {}]",
+            first.start.x,
+            second.start.x
+        );
+    }
+
+    #[test]
+    fn test_long_bridge_co_flags_with_overhang() {
+        // §6.2 edge case: cluster overlapping with overhang region —
+        // both detectors flag independently (not a duplicate-flag bug).
+        // The slab bottom has overhang_angle = 90° (>> FDM 45°
+        // threshold) AND span 20 > max=10. Both regions emit.
+        let mesh = make_closed_bridge_fixture(20.0, 5.0, 1.5, 10.0);
+        let config = PrinterConfig::fdm_default();
+
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(result.long_bridges.len(), 1);
+        assert!(
+            !result.overhangs.is_empty(),
+            "slab bottom (90° overhang) must also flag as ExcessiveOverhang"
+        );
     }
 }

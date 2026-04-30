@@ -11,6 +11,7 @@
 //! - §9.2.1 #1: existing-detector — empty-mesh error preserved (commit #2).
 //! - §9.2.2 #1–#4: Gap M predicate + build-plate filter (commit #2).
 //! - §9.2.3 #1–#7: Gap C `ThinWall` adversarial inputs (commit #10).
+//! - §9.2.4 #1–#5: Gap G `LongBridge` adversarial inputs (commit #12).
 //!
 //! Deferred fixtures and where they land:
 //!
@@ -29,7 +30,7 @@
 use mesh_printability::{
     IssueSeverity, PrintIssueType, PrintabilityError, PrinterConfig, validate_for_printing,
 };
-use mesh_types::{IndexedMesh, Point3};
+use mesh_types::{IndexedMesh, Point3, Vector3};
 
 // ===== §9.2.1 Existing-detector stress fixtures ==========================
 
@@ -625,5 +626,226 @@ fn stress_c_5k_tri_perf_budget() {
     assert!(
         !validation.thin_walls.is_empty(),
         "Gap C: 5k-tri thin shell must flag at least one cluster"
+    );
+}
+
+// ===== §9.2.4 Gap G (LongBridge) =========================================
+
+/// Append a closed cuboid (CCW-from-outside) to `(vertices, faces)`.
+/// `min`/`max` are diagonally-opposite corners. Mirrors
+/// `cube_vertices_and_faces`'s winding but parametric on bbox extents.
+/// Used to compose the §9.2.4 closed-mesh bridge fixtures (anchor cuboid
+/// + slab cuboid disjoint by vertex set).
+fn append_closed_cuboid(
+    vertices: &mut Vec<Point3<f64>>,
+    faces: &mut Vec<[u32; 3]>,
+    min: Point3<f64>,
+    max: Point3<f64>,
+) {
+    #[allow(clippy::cast_possible_truncation)]
+    let base: u32 = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        Point3::new(min.x, min.y, min.z),
+        Point3::new(max.x, min.y, min.z),
+        Point3::new(max.x, max.y, min.z),
+        Point3::new(min.x, max.y, min.z),
+        Point3::new(min.x, min.y, max.z),
+        Point3::new(max.x, min.y, max.z),
+        Point3::new(max.x, max.y, max.z),
+        Point3::new(min.x, max.y, max.z),
+    ]);
+    let cf = |a: u32, b: u32, c: u32| [base + a, base + b, base + c];
+    faces.extend_from_slice(&[
+        cf(0, 2, 1),
+        cf(0, 3, 2),
+        cf(4, 5, 6),
+        cf(4, 6, 7),
+        cf(0, 1, 5),
+        cf(0, 5, 4),
+        cf(3, 6, 2),
+        cf(3, 7, 6),
+        cf(0, 4, 7),
+        cf(0, 7, 3),
+        cf(1, 2, 6),
+        cf(1, 6, 5),
+    ]);
+}
+
+#[test]
+fn stress_g_clean_solid_cube_no_flag() {
+    // 10 mm solid cube on the build plate. The cube's bottom face sits
+    // at `mesh_min`, filtered by the build-plate guard; the top + sides
+    // are not "near-horizontal downward". Expected: 0 LongBridge regions.
+    let (vertices, faces) = cube_vertices_and_faces(0.0, 0);
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("validation should succeed for the solid-cube fixture");
+
+    assert_eq!(
+        validation.long_bridges.len(),
+        0,
+        "Gap G: solid cube on build plate has no horizontal-down faces above plate"
+    );
+}
+
+#[test]
+fn stress_g_sls_silent_skip() {
+    // SLS config + a 20×5×1.5 mm bridge slab elevated at z=10 (anchor
+    // at z=0 sets `mesh_min = 0`). Powder-bed processes don't need
+    // bridge flagging; per §6.2 line 996 the skip is silent — no
+    // `DetectorSkipped` issue announces it (distinct from `ThinWall`,
+    // which emits `DetectorSkipped` on non-watertight).
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(-3.0, -3.0, 0.0),
+        Point3::new(-1.0, -1.0, 2.0),
+    );
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 10.0),
+        Point3::new(20.0, 5.0, 11.5),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::sls_default();
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("validation should succeed for the SLS bridge fixture");
+
+    assert_eq!(
+        validation.long_bridges.len(),
+        0,
+        "Gap G: SLS skips bridge detection silently"
+    );
+    let any_bridge_skipped = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped
+            && i.description.to_lowercase().contains("bridge")
+    });
+    assert!(
+        !any_bridge_skipped,
+        "Gap G: SLS skip is silent — no DetectorSkipped issue naming bridges"
+    );
+}
+
+#[test]
+fn stress_g_diagonal_bridge_underflagged() {
+    // 14×14 horizontal patch at z=10, `max_bridge_span = 15`. The
+    // axis-aligned bbox extent is 14 < 15 → no flag, even though the
+    // true diagonal (14·√2 ≈ 19.8 mm) exceeds the limit. Locks v0.8
+    // bbox-conservative behavior; v0.9 OBB followup catches diagonals.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(-3.0, -3.0, 0.0),
+        Point3::new(-1.0, -1.0, 2.0),
+    );
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 10.0),
+        Point3::new(14.0, 14.0, 11.5),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let mut config = PrinterConfig::fdm_default();
+    config.max_bridge_span = 15.0;
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("validation should succeed for the diagonal-patch fixture");
+
+    assert_eq!(
+        validation.long_bridges.len(),
+        0,
+        "Gap G: diagonal 14×14 patch underflags at v0.8 (bbox = 14 < max = 15); v0.9 OBB catches"
+    );
+}
+
+#[test]
+fn stress_g_cantilever_currently_flagged() {
+    // 20-mm cantilever (one-end-anchored horizontal face) at z=10 with
+    // anchor cube at z=0. v0.8 cannot distinguish a cantilever from a
+    // bridge — both produce a single cluster of horizontal-down faces
+    // above the build plate. Locks the v0.8 limitation; v0.9 followup
+    // adds support-end analysis to demote cantilevers from `LongBridge`
+    // to a no-flag.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(-3.0, -3.0, 0.0),
+        Point3::new(-1.0, -1.0, 2.0),
+    );
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 10.0),
+        Point3::new(20.0, 5.0, 11.5),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("validation should succeed for the cantilever fixture");
+
+    assert_eq!(
+        validation.long_bridges.len(),
+        1,
+        "Gap G: cantilever flags as bridge at v0.8 (locks limitation); v0.9 adds support-end analysis"
+    );
+    let any_critical = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::LongBridge && i.severity == IssueSeverity::Critical
+    });
+    assert!(
+        any_critical,
+        "Gap G: 20 mm > 10*1.5 → Critical bridge severity"
+    );
+}
+
+#[test]
+fn stress_g_diagonal_underflag_with_y_up() {
+    // Same 14×14 diagonal patch, rotated to +Y up: anchor at y ∈ [0, 2],
+    // patch at y ∈ [10, 11.5]. With `build_up_direction = (0, 1, 0)`,
+    // the perpendicular-plane basis is `e1 = (1, 0, 0)`,
+    // `e2 = (0, 0, -1)` — projecting cluster vertices onto the (x, -z)
+    // plane gives the same axis-aligned extent (14, 14) as the +Z fixture.
+    // Span = 14 < 15 → 0 regions, identical outcome under symmetry.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(-3.0, 0.0, -3.0),
+        Point3::new(-1.0, 2.0, -1.0),
+    );
+    append_closed_cuboid(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 10.0, 0.0),
+        Point3::new(14.0, 11.5, 14.0),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let mut config =
+        PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 1.0, 0.0));
+    config.max_bridge_span = 15.0;
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("validation should succeed for the +Y-up diagonal fixture");
+
+    assert_eq!(
+        validation.long_bridges.len(),
+        0,
+        "Gap G: +Y up rotation must produce same 0 regions as +Z (symmetry)"
     );
 }

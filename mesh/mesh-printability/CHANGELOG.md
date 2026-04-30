@@ -133,6 +133,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visible. Crate name `example-mesh-printability-thin-wall` per §7.0
   + §12.3's example-commit naming convention. Pure addition; first
   ⏸︎ pause-for-visuals commit per §12.1 row #11.
+- **`check_long_bridges` detector + populated `LongBridgeRegion` (Gap G, §6.2).**
+  v0.7 exposed `PrintIssueType::LongBridge` and `PrinterConfig::max_bridge_span`
+  but `validate_for_printing` never populated a bridge field on
+  `PrintValidation` — a silent miss for FDM/SLA bridge-span constraints.
+  v0.8 wires a private `check_long_bridges(mesh, config, validation)`
+  per §6.2: per-face `arccos(N · -up) < 30°` classification (the
+  "near-horizontal downward" predicate), build-plate filter
+  (mesh-min-relative, same pattern as `check_overhangs`'s M.2),
+  edge-adjacency clustering (reuses the §5.3 generic
+  `partition_flagged_into_components<T>`), and per-cluster bbox-extent
+  computation in the plane perpendicular to `up` via a new
+  `perpendicular_plane_basis` helper (orthonormal `(e1, e2)` derived
+  by Gram-Schmidt from a non-collinear reference vector). New
+  `LongBridgeRegion` type added to `regions::*` (re-exported from the
+  crate root) carries `start`, `end`, `span`, `edges` (boundary edges
+  shared with non-candidate faces, `(min, max)`-normalized), and
+  `faces`. New `PrintValidation.long_bridges: Vec<LongBridgeRegion>`
+  field populated alongside `thin_walls` and `overhangs`. Per-cluster
+  severity via a new `classify_long_bridge_severity`: `Critical` if
+  `span > max_bridge_span * 1.5`, `Warning` otherwise — **no Info
+  band** (the bridge decision is binary at the printer-config level
+  per §6.2 line 1014). SLS/MJF skip **silently** (no
+  `DetectorSkipped` issue, distinct from `ThinWall`'s skip semantics)
+  per §6.2 line 996, since bridges are not applicable to powder-bed
+  processes. **v0.8 documented limitations** (locked by §9.2.4 stress
+  fixtures `stress_g_cantilever_currently_flagged` +
+  `stress_g_diagonal_bridge_underflagged`): cantilever-as-bridge (no
+  support-end analysis; v0.9 followup) and diagonal-underflag
+  (axis-aligned-in-perp-plane bbox is conservative for diagonals;
+  v0.9 OBB followup). Cluster overlapping with overhang regions
+  produces independent flags from both detectors (documented
+  behaviour, not a duplicate-flag bug). **§4.4 ordering**:
+  `long_bridges` regions sort by `(start.x, start.y, start.z)` via
+  `f64::total_cmp` (deterministic across `HashMap` iteration
+  permutations and FP signed-zero / NaN edge cases); the sort is
+  scoped per-detector to a `regions_before` slice so a future hoist
+  to `validate_for_printing` can move it cleanly. **§7.2 visual demo
+  deferred** to row #13 (`feat(examples):
+  mesh-printability-long-bridge visual demo (Gap G)`). **SEMVER
+  note**: pure addition of a new field on `PrintValidation` and a
+  new public `LongBridgeRegion` type;
+  `PrintIssueType::LongBridge` was already declared in v0.7 so
+  exhaustive `match` callers are unaffected.
 
 ### Changed
 
