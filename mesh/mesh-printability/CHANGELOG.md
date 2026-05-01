@@ -573,6 +573,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure mode (per §7.5 README pitfalls section); §6.4
   `IntersectionParams` re-export gap (carried from row #17, still
   open).
+- **§9.3 cross-detector stress fixtures (6 fixtures).** Six new
+  `stress_cross_*` integration tests in `tests/stress_inputs.rs`
+  exercise multi-detector cascade behavior end-to-end now that the
+  full v0.8 detector inventory has landed. Each fixture commits to
+  one of the §9.0 outcomes (flag / skip / tolerate) per detector;
+  no "best effort" assertions. (1) `stress_cross_empty_mesh_full_pipeline`
+  re-asserts the `Err(EmptyMesh)` short-circuit at the public API
+  boundary. (2) `stress_cross_inconsistent_winding_blocks_thin_wall_only`
+  locks the cascade where a single winding flip triggers `NonManifold`
+  Critical (Gap F) + `ThinWall` `DetectorSkipped` while `TrappedVolume`
+  tolerates per `is_watertight` (NOT `is_watertight_and_consistent_winding`).
+  (3) `stress_cross_unit_conversion_full_pipeline` locks the 30-µm cube
+  user-diagnostic (`SmallFeature` Warning, no false flags from
+  `Overhang`/`NotWatertight`/`NonManifold`; `ThinWall` co-flags per
+  row #19 row-pattern, not asserted). (4) `stress_cross_disconnected_full_pipeline`
+  uses two disjoint thin-walled cubes-with-cavity (0.4 mm walls,
+  19.2 mm inner cube cavity, offset 30 mm) → 2 `TrappedVolume` regions
+  + ≥ 4 `ThinWall` clusters + 0 `SmallFeature`. Custom config
+  (`layer_height = 0.4` → voxel 0.2 mm) keeps walls 2 voxels thick
+  for flood-fill robustness while keeping the grid ≈ 2.5M voxels.
+  (5) `stress_cross_face_count_at_zero_after_skips` uses an open square
+  (4 verts, 2 tris) to verify the skip-precondition pathway leaves
+  `thin_walls`/`trapped_volumes` empty (NOT garbage). (6)
+  `stress_cross_nan_input_no_panic` proves `validate_for_printing`
+  does not panic on NaN-poisoned coords (per §9.1 row 14 contract).
+  All 6 fixtures are light (no `#[cfg_attr(debug_assertions, ignore)]`);
+  full `stress_inputs.rs` runs 5.69 s in debug, well under the 30 s
+  per-crate budget. **Spec deviations surfaced** (committed inline
+  + at fixture-cluster header): (a) §9.3 fixture #2 (line 2427)
+  predicted "1 `DetectorSkipped` from `TrappedVolume`" on the
+  winding-flipped cube, but `validation.rs::is_watertight` (line 1424)
+  only checks watertight (NOT consistent winding) per §9.1 row 11 —
+  fixture asserts NO `TrappedVolume` `DetectorSkipped`; (b) §9.3
+  fixture #4 (line 2429) "20 mm outer cube + 0.4 mm walls + 5 mm-radius
+  cavity" is geometrically inconsistent — fixture honors the wall-
+  thickness + ThinWall-flag requirements, cavity is 19.2 mm cube
+  (~7080 mm³) instead of the implied 5 mm-radius (~524 mm³); the
+  load-bearing `≥ 4 ThinWall` + `2 TrappedVolume` assertions still
+  hold; (c) §9.3 fixture #6 (line 2431) "produces a `PrintValidation`"
+  implies `Result::Ok` — fixture's strict contract per §9.1 row 14 is
+  no-panic, so `Ok` or `Err` is acceptable. Test counts post-#20:
+  124 lib + 42 integ + 3 ignored + 4 doc debug; 123 + 45 + 0 + 4
+  release.
 
 ### Changed
 

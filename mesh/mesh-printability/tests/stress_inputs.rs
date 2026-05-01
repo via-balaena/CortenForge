@@ -19,6 +19,7 @@
 //!   is **explicitly deferred** — see "Deferred fixtures" below.
 //! - §9.2.6 #1–#5: Gap I `SelfIntersecting` adversarial inputs (commit #16).
 //! - §9.2.7 #1–#8: Gap J `SmallFeature` adversarial inputs (commit #18).
+//! - §9.3 #1–#6: cross-detector cascade fixtures (commit #20).
 //!
 //! Deferred fixtures and where they land:
 //!
@@ -2007,4 +2008,346 @@ fn stress_j_signed_volume_unit_cube() {
          exact-representable verts; got {}",
         region.volume
     );
+}
+
+// ===== §9.3 Cross-detector stress fixtures ===============================
+//
+// Six fixtures that exercise multiple detectors at once, locking in the
+// cascade behavior between preconditions and detector outputs. Lands AFTER
+// all detectors (commits #2/#10/#12/#14/#16/#18) so all assertions are
+// valid; lands BEFORE the §7.6 orientation example (commit #21) per §9.5.
+//
+// Three §9.3 spec deviations made during authoring (documented inline at
+// each fixture and surfaced in the commit body):
+//
+// - Fixture #2 spec line 2427's "1 DetectorSkipped from TrappedVolume" on
+//   the winding-flipped cube contradicts §9.1 row 11 + `validation.rs`'s
+//   `is_watertight` (which checks watertight ONLY, NOT consistent winding,
+//   per validation.rs:1424). TrappedVolume tolerates the inconsistent
+//   winding; this fixture asserts NO `TrappedVolume` `DetectorSkipped`.
+//
+// - Fixture #4 spec line 2429's "20 mm outer cube + 0.4 mm walls + 5 mm-
+//   radius cavity" is geometrically inconsistent (uniform 0.4 mm walls on
+//   a 20 mm cube ⇒ 19.2 mm cube cavity, NOT 5 mm-radius). This fixture
+//   honors the wall-thickness + ThinWall-flag requirements; cavity
+//   becomes a 19.2 mm cube. The two TrappedVolume regions + ≥ 4 ThinWall
+//   clusters + 0 SmallFeature regions assertions all still hold.
+//
+// - Fixture #6 spec line 2431's "produces a `PrintValidation`" implies
+//   `Result::Ok`, but per §9.1 row 14 the strict contract is no-panic.
+//   This fixture asserts only that the call returns without panic;
+//   either `Ok` or `Err` is acceptable.
+
+#[test]
+fn stress_cross_empty_mesh_full_pipeline() {
+    // §9.3 row 1: empty `IndexedMesh` short-circuits to
+    // `Err(EmptyMesh)` per `validate_for_printing` line 181-183 of
+    // `validation.rs`; no detector emits any issue. Subsumes §9.2.1's
+    // empty-mesh coverage as a single end-to-end gate.
+    let mesh = IndexedMesh::from_parts(vec![], vec![]);
+    let config = PrinterConfig::fdm_default();
+
+    let result = validate_for_printing(&mesh, &config);
+
+    assert!(
+        matches!(result, Err(PrintabilityError::EmptyMesh)),
+        "empty mesh must short-circuit to Err(EmptyMesh); detectors never invoked"
+    );
+}
+
+#[test]
+fn stress_cross_inconsistent_winding_blocks_thin_wall_only() {
+    // §9.3 row 2 + §9.1 row 11: watertight cube with one face's vertex
+    // order flipped → directed-edge collision → NonManifold Critical with
+    // "winding inconsistency" description. ThinWall's precondition
+    // (`is_watertight_and_consistent_winding`, validation.rs:766) fails
+    // → `DetectorSkipped`. TrappedVolume's precondition is `is_watertight`
+    // ONLY (validation.rs:1424), which tolerates inconsistent winding per
+    // §9.1 row 11 → runs to completion, finds 0 trapped volumes (no
+    // cavity in the solid cube). Spec line 2427's claim of "1
+    // `DetectorSkipped` from `TrappedVolume`" deviates from this contract;
+    // see header note.
+    let (vertices, mut faces) = cube_vertices_and_faces(0.0, 0);
+    let f = faces[0];
+    faces[0] = [f[0], f[2], f[1]];
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("flipped-winding cube: validation must succeed");
+
+    let nonmanifold_winding_count = validation
+        .issues
+        .iter()
+        .filter(|i| {
+            i.issue_type == PrintIssueType::NonManifold
+                && i.severity == IssueSeverity::Critical
+                && i.description.contains("winding inconsistency")
+        })
+        .count();
+    let thin_wall_skip_count = validation
+        .issues
+        .iter()
+        .filter(|i| {
+            i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("ThinWall")
+        })
+        .count();
+    let trapped_vol_skip_count = validation
+        .issues
+        .iter()
+        .filter(|i| {
+            i.issue_type == PrintIssueType::DetectorSkipped
+                && i.description.contains("TrappedVolume")
+        })
+        .count();
+
+    assert_eq!(
+        nonmanifold_winding_count, 1,
+        "exactly 1 NonManifold Critical with 'winding inconsistency' description"
+    );
+    assert_eq!(
+        thin_wall_skip_count, 1,
+        "exactly 1 ThinWall DetectorSkipped (precondition: consistent winding fails)"
+    );
+    assert_eq!(
+        trapped_vol_skip_count, 0,
+        "TrappedVolume tolerates inconsistent winding per §9.1 row 11; no DetectorSkipped"
+    );
+    assert_eq!(validation.thin_walls.len(), 0);
+    assert_eq!(validation.trapped_volumes.len(), 0);
+}
+
+#[test]
+fn stress_cross_unit_conversion_full_pipeline() {
+    // §9.3 row 3 + §9.1 row 7: 30-µm cube (0.030 mm side) — the user-
+    // diagnostic for "mesh authored in metres". Entire mesh is one
+    // component with max_extent 0.030 mm < `min_feature_size`/2 = 0.4 →
+    // SmallFeature 1 region Warning per §6.5.
+    //
+    // Pattern from row #19 §7.5: sub-millimetre solid components ALSO
+    // trigger ThinWall Critical (inward ray-cast hits opposite face at
+    // 0.030 mm < `min_wall_thickness`/2 = 0.5). This is correct,
+    // documented v0.8 behavior — not a "false flag" — so this fixture
+    // does not assert on `thin_walls` count. The load-bearing claim is
+    // that SmallFeature surfaces the unit-conversion error; ThinWall
+    // co-flagging adds Critical signal that the part is unprintable
+    // regardless of intent.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_small_feature_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(0.030, 0.030, 0.030),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("30-µm cube: validation must succeed");
+
+    assert_eq!(
+        validation.small_features.len(),
+        1,
+        "entire 30-µm mesh is one sub-feature-size component"
+    );
+
+    // Per-site `expect_used` allow: assertion-target lookup; if SmallFeature
+    // emission contract breaks, panicking with a clear message is the
+    // right test failure mode.
+    #[allow(clippy::expect_used)]
+    let small_feat_issue = validation
+        .issues
+        .iter()
+        .find(|i| matches!(i.issue_type, PrintIssueType::SmallFeature))
+        .expect("30-µm mesh must emit a SmallFeature issue");
+    assert_eq!(
+        small_feat_issue.severity,
+        IssueSeverity::Warning,
+        "max_extent 0.030 < 0.8/2 = 0.4 → Warning per §6.5"
+    );
+
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        0,
+        "30-µm solid cube has no cavity"
+    );
+    let any_excessive_overhang = validation
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::ExcessiveOverhang);
+    assert!(
+        !any_excessive_overhang,
+        "cube on plate has all bottom faces filtered + sides vertical; no overhang flags"
+    );
+    let any_not_watertight = validation
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::NotWatertight);
+    let any_nonmanifold = validation
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::NonManifold);
+    assert!(
+        !any_not_watertight && !any_nonmanifold,
+        "clean watertight cube → no NotWatertight / NonManifold issues"
+    );
+}
+
+#[test]
+fn stress_cross_disconnected_full_pipeline() {
+    // §9.3 row 4 + §9.1 row 13: two disjoint watertight thin-walled
+    // cubes-with-cavity, offset 30 mm along +X. Outer 20 mm + inner
+    // 19.2 mm shells (`append_outer_cube` + `append_inner_cavity`,
+    // vertex-disjoint, inner REVERSED) → uniform 0.4 mm walls.
+    //
+    // Spec line 2429's "5 mm-radius cavity" is dropped (geometrically
+    // inconsistent with "20 mm outer + 0.4 mm walls"; see §9.3 header
+    // deviation note). The load-bearing assertions — 2 TrappedVolume
+    // regions + ≥ 4 ThinWall clusters + 0 SmallFeature — survive the
+    // geometry change.
+    //
+    // Voxel-grid sizing: this fixture uses a custom config with
+    // `layer_height = 0.4` so `voxel_size = min(0.8, 0.4)/2 = 0.2` mm
+    // → 0.4 mm wall = 2 voxels (robust against flood-fill leakage).
+    // Bbox ~50×20×20 mm → 250×100×100 ≈ 2.5M voxels, well under the
+    // 1 GB cap.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    // Cube A: outer 0..20, inner 0.4..19.6
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(20.0, 20.0, 20.0),
+    );
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.4, 0.4, 0.4),
+        Point3::new(19.6, 19.6, 19.6),
+    );
+    // Cube B: offset +30 along X. Outer 30..50, inner 30.4..49.6
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(30.0, 0.0, 0.0),
+        Point3::new(50.0, 20.0, 20.0),
+    );
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(30.4, 0.4, 0.4),
+        Point3::new(49.6, 19.6, 19.6),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let mut config = PrinterConfig::fdm_default();
+    config.layer_height = 0.4;
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("dual thin-walled cube-with-cavity: validation must succeed");
+
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        2,
+        "two disjoint sealed cavities → 2 trapped regions \
+         (flood-fill exterior reaches both component exteriors via grid-corner seed)"
+    );
+    assert!(
+        validation.thin_walls.len() >= 4,
+        "expected ≥ 4 ThinWall clusters across 2 thin-walled cubes \
+         (each cube ≥ 2 clusters per §7.1 outer/inner-shell topology); got {}",
+        validation.thin_walls.len()
+    );
+    assert_eq!(
+        validation.small_features.len(),
+        0,
+        "each cube max_extent = 20 mm ≫ min_feature_size = 0.8 mm; no SmallFeature flags"
+    );
+}
+
+#[test]
+fn stress_cross_face_count_at_zero_after_skips() {
+    // §9.3 row 5: a single open square (4 verts, 2 tris) has 4 boundary
+    // edges → not watertight → NotWatertight Critical. ThinWall and
+    // TrappedVolume preconditions both check `is_watertight`-style
+    // predicates → both emit DetectorSkipped Info. Verifies that the
+    // skip-precondition pathway leaves `thin_walls` and `trapped_volumes`
+    // empty (NOT garbage / partial state).
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(1.0, 1.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let faces = vec![[0, 2, 1], [0, 3, 2]];
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("open square: validation must succeed");
+
+    assert_eq!(
+        validation.thin_walls.len(),
+        0,
+        "ThinWall skip pathway must leave thin_walls empty"
+    );
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        0,
+        "TrappedVolume skip pathway must leave trapped_volumes empty"
+    );
+
+    let any_not_watertight_critical = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::NotWatertight && i.severity == IssueSeverity::Critical
+    });
+    let any_thin_wall_skip = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("ThinWall")
+    });
+    let any_trapped_vol_skip = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("TrappedVolume")
+    });
+
+    assert!(
+        any_not_watertight_critical,
+        "open square must emit ≥ 1 NotWatertight Critical issue"
+    );
+    assert!(
+        any_thin_wall_skip,
+        "open square must emit ThinWall DetectorSkipped Info"
+    );
+    assert!(
+        any_trapped_vol_skip,
+        "open square must emit TrappedVolume DetectorSkipped Info"
+    );
+}
+
+#[test]
+fn stress_cross_nan_input_no_panic() {
+    // §9.3 row 6 + §9.1 row 14: a tetrahedron with one NaN coord.
+    // mesh-printability does not promise correct output on NaN inputs,
+    // but it MUST NOT panic. The fact that this assertion runs proves
+    // no detector panicked. Per the §9.3 header deviation note, the
+    // strict contract per §9.1 row 14 is no-panic; either Ok with
+    // NaN-poisoned numerics or Err is acceptable.
+    //
+    // Caveat: if a future detector adds `debug_assert!(x.is_finite())`,
+    // this fixture must be updated to
+    // `#[cfg_attr(debug_assertions, ignore)]` per spec line 2431.
+    let vertices = vec![
+        Point3::new(f64::NAN, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+    ];
+    let faces = vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    let _result = validate_for_printing(&mesh, &config);
+    // Assertion contract: no panic. Reaching this line proves it.
 }
