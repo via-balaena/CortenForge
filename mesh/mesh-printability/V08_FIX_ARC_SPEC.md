@@ -1836,6 +1836,8 @@ So Run 1's overhang issue is Info, not Critical. `is_printable()` is NOT blocked
 8. All three Runs print `overhangs.len()` and total overhang area to stdout.
 9. Manual rotation correctness: `debug_assert!((R_Y(-60°) * axis_pre - Vector3::new(0,0,1)).norm() < 1e-12)` to lock the manual rotation's mathematical correctness at construction time.
 10. Diagnostic `find_optimal_orientation`: print picked rotation + resulting `overhang_area` to stdout; do NOT assert specific values (the picked sample depends on sample-set ordering, which may shift in future v0.9 enrichment). Document the sample-set-discreteness limitation in the README.
+11. **Geometric — centroid on lateral surface** (added in test-anchor follow-up commit): each Run 1 `OverhangRegion.center`'s radial distance from the cylinder's central axis line must lie in `[4.5, 5.0]` mm — the chord-shrinkage envelope for a multi-face cluster centroid spanning ±22.5° of azimuth at `R = 5 mm`. Catches regressions where the detector emits centroids off the geometry (e.g., interior-point bug in Gap D partition or off-mesh emission).
+12. **Geometric — centroid in downhill arc** (added in test-anchor follow-up commit): each Run 1 `OverhangRegion.center`'s azimuth in the cylinder's perpendicular-to-axis plane (measured in the `(perp_u, perp_v)` frame) must lie within `±33.75°` of the downhill direction `270°` (= `-perp_v` direction). Catches regressions where the detector flags the wrong side of the cylinder (Gap M predicate inversion or build-plate filter inversion).
 
 **Visuals**:
 - `out/mesh_original.ply` — leaning cylinder pre-validation (post-`place_on_build_plate`; min_z = 0).

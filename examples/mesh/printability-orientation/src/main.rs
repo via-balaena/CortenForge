@@ -90,6 +90,18 @@
 //!     resulting `overhang_area`; no value-level assertion (the picked
 //!     sample depends on sample-set ordering, which may shift in v0.9
 //!     enrichment).
+//! 11. **Geometric — centroid on lateral surface**: each Run 1
+//!     `OverhangRegion.center` has radial distance from the cylinder's
+//!     central axis line within `[RADIAL_BAND_LO, RADIAL_BAND_HI]` =
+//!     `[4.5, 5.0]` mm (chord-shrinkage envelope for a 4–5 face cluster).
+//!     Catches regressions where the detector emits centroids off the
+//!     geometry (e.g., interior-point bug in Gap D partition).
+//! 12. **Geometric — centroid in downhill arc**: each Run 1
+//!     `OverhangRegion.center`'s azimuth in the cylinder's perpendicular
+//!     plane lies within `±33.75°` of the downhill direction (`270°`).
+//!     Catches regressions where the detector flags the wrong side of
+//!     the cylinder (Gap M predicate inversion or build-plate filter
+//!     bug).
 //!
 //! ## How to run
 //!
@@ -202,6 +214,109 @@ fn exact_compensating_rotation() -> UnitQuaternion<f64> {
     )
 }
 
+/// Z-shift applied by `place_on_build_plate` to the leaning cylinder
+/// (= the negative of the pre-place mesh's min z). The pre-place
+/// cylinder has `min z = neg_centre.z + perp_v.z · R · sin(-π/2) =
+/// -cos(60°)·LENGTH/2 - sin(60°)·R`; `lift_z` is the absolute value.
+/// Derived analytically rather than from the placed mesh's bbox so the
+/// geometric anchors (#11 / #12) reference a closed-form value rather
+/// than an `O(n_vertex)` min-reduction (which would carry per-vertex
+/// FP drift).
+fn place_lift_z() -> f64 {
+    let tilt_rad = TILT_DEG.to_radians();
+    // FP-bit preserved: the analytical lift is two independent terms
+    // (axial half-length projection + radial sin-projection); rewriting
+    // as `(LENGTH / 2.0).mul_add(tilt_rad.cos(), RADIUS * tilt_rad.sin())`
+    // would subtly shift the cap-rim z values used by anchors #11 / #12,
+    // making cross-platform FP drift hard to reason about. Mirror of the
+    // mesh-printability/orientation FP-semantics convention; see
+    // CHANGELOG.md `[Unreleased] / v0.9 candidates / FP bit-exactness`.
+    #[allow(clippy::suboptimal_flops)]
+    let lift = LENGTH / 2.0 * tilt_rad.cos() + RADIUS * tilt_rad.sin();
+    lift
+}
+
+/// Radial distance from the cylinder's central axis line for a point
+/// in post-place_on_build_plate coordinates. Translates the point back
+/// to the pre-place frame (`z -= lift_z`), projects onto the axis line
+/// passing through origin, and returns the perpendicular distance.
+///
+/// Anchor #11 asserts each `OverhangRegion` centroid is within
+/// `[RADIAL_BAND_LO, RADIAL_BAND_HI]` of the lateral surface (= chord-
+/// shrinkage envelope for a multi-face cluster spanning ±`arc_half_width`
+/// in azimuth). For the §7.6 fixture's 4-5 face clusters spanning ~45°
+/// of azimuth, the chord shrinkage is `R · (1 - cos(arc_half_width))` ≈
+/// `R · (1 - cos(22.5°))` ≈ `0.38 mm`, so the band is `[R · cos(22.5°),
+/// R] ≈ [4.62, 5.0]` mm.
+fn centroid_radial_distance_from_axis(centroid: Point3<f64>) -> f64 {
+    let axis = axis_unit();
+    let lift_z = place_lift_z();
+    // Translate centroid back to pre-place frame (cylinder centred at origin).
+    let c_pre = Vector3::new(centroid.x, centroid.y, centroid.z - lift_z);
+    // Project onto axis line passing through origin: t = c_pre · axis.
+    let t = c_pre.dot(&axis);
+    let p_on_axis = axis * t;
+    (c_pre - p_on_axis).norm()
+}
+
+/// Azimuth (in degrees, range `[0, 360)`) of a point in the cylinder's
+/// perpendicular plane, measured in the `(perp_u, perp_v)` frame.
+/// `0°` is `+perp_u` (= `+Y` in world coords); `90°` is `+perp_v`
+/// (= `(-cos60°, 0, sin60°)` in world coords); `270°` is `-perp_v`
+/// (= the downhill direction in the cylinder's tilted frame).
+///
+/// Anchor #12 asserts each `OverhangRegion` centroid's azimuth lies
+/// within `±DOWNHILL_HALF_WIDTH_DEG` of `DOWNHILL_AZIMUTH_DEG = 270°`
+/// — i.e. within the flagged downhill arc per §7.6's expected output.
+fn centroid_azimuth_deg(centroid: Point3<f64>) -> f64 {
+    let axis = axis_unit();
+    let perp_u = perp_u_unit();
+    let perp_v = perp_v_unit();
+    let lift_z = place_lift_z();
+    let c_pre = Vector3::new(centroid.x, centroid.y, centroid.z - lift_z);
+    let t = c_pre.dot(&axis);
+    let p_on_axis = axis * t;
+    let diff = c_pre - p_on_axis;
+    let proj_u = diff.dot(&perp_u);
+    let proj_v = diff.dot(&perp_v);
+    let az_deg = proj_v.atan2(proj_u).to_degrees();
+    if az_deg < 0.0 { az_deg + 360.0 } else { az_deg }
+}
+
+// -- Geometric anchor bands (anchors #11 + #12) ----------------------------
+
+/// Lower bound for the centroid's radial distance from the cylinder's
+/// axis line. Multi-face cluster centroid sits inside the rim circle
+/// by chord-shrinkage proportional to the cluster's azimuthal half-
+/// width. For the §7.6 fixture's 4-5 face clusters spanning ~45° of
+/// azimuth, the bound is `R · cos(22.5°)` ≈ `4.6194`. Padded down to
+/// `4.50` to absorb FP drift across mesh-printability detector
+/// implementations (Gap D split heuristic is per-component edge-walk;
+/// per-cluster face count can vary by ±1 cross-platform).
+const RADIAL_BAND_LO: f64 = 4.50;
+
+/// Upper bound for the centroid's radial distance: exactly `R`. A
+/// single-face cluster's centroid sits at `R · cos(π/(2·SEG))` ≈
+/// `R · 0.999` for `SEG = 32` (each lateral face's vertices are on
+/// the rim circle of radius `R`; the face centroid is the mean of 3
+/// such points). Multi-face clusters CANNOT exceed `R` (the convex
+/// hull of rim verts is bounded by the cylinder's circumscribed
+/// cylinder of radius `R`).
+const RADIAL_BAND_HI: f64 = RADIUS;
+
+/// Center of the flagged downhill arc in the `(perp_u, perp_v)` frame.
+/// `270°` corresponds to `-perp_v` direction = the cylinder's downhill
+/// side in the tilted frame.
+const DOWNHILL_AZIMUTH_DEG: f64 = 270.0;
+
+/// Half-width of the flagged downhill arc per §7.6 expected output:
+/// `±33.75°` (= the strict-greater-than `45°` threshold maps to
+/// lateral-normal `dot < -sin(45°)` = `dot < -0.707`; for cylinder axis
+/// at `α = 60°`, max-downward dot is `-sin(60°) = -0.866`; the chord
+/// of normals satisfying `dot < -0.707` spans `±33.75°` from straight
+/// downhill in the perpendicular-plane azimuth).
+const DOWNHILL_HALF_WIDTH_DEG: f64 = 33.75;
+
 // `clippy::too_many_lines`: the 3-runs-+-diagnostic-+-5-PLY-writes structure
 // is the example's pedagogical surface — splitting per-Run into helpers would
 // hide the run-by-run flow that the visuals-pass reader walks down. Each Run
@@ -299,6 +414,42 @@ fn main() -> Result<()> {
         "anchor #2: Run 1 must surface an ExcessiveOverhang issue with Info severity (60° max \
          angle ≤ threshold + 15° = 60° per §4.3 strict-greater-than boundary)",
     );
+
+    // Anchors #11 + #12 — geometric correctness of OverhangRegion centroids
+    // against the leaning cylinder's analytical lateral surface + downhill
+    // arc azimuth band. Catches regressions where the detector emits
+    // centroids off the geometry (e.g., interior-point bug in Gap D
+    // partition) or flags the wrong side of the cylinder. Visuals-pass
+    // counterpart of the area/severity-only anchors above.
+    for (i, region) in validation_run1.overhangs.iter().enumerate() {
+        // Anchor #11 — centroid lies on cylinder's lateral surface.
+        let r = centroid_radial_distance_from_axis(region.center);
+        assert!(
+            (RADIAL_BAND_LO..=RADIAL_BAND_HI).contains(&r),
+            "anchor #11: Run 1 centroid[{i}] radial distance from axis line = {r:.6} mm, \
+             outside expected band [{RADIAL_BAND_LO}, {RADIAL_BAND_HI}] (chord-shrinkage envelope \
+             for a 4–5 face cluster spanning ±22.5° of azimuth at R={RADIUS}). Centroid is NOT \
+             on the cylinder's lateral surface — investigate detector regression that emits \
+             interior or off-mesh points.",
+        );
+
+        // Anchor #12 — centroid in the downhill arc.
+        let az = centroid_azimuth_deg(region.center);
+        let raw_off = (az - DOWNHILL_AZIMUTH_DEG).abs();
+        // Wrap into [0, 180] for the off-from-downhill comparison.
+        let off = if raw_off > 180.0 {
+            360.0 - raw_off
+        } else {
+            raw_off
+        };
+        assert!(
+            off <= DOWNHILL_HALF_WIDTH_DEG,
+            "anchor #12: Run 1 centroid[{i}] azimuth = {az:.3}° is {off:.3}° from downhill \
+             ({DOWNHILL_AZIMUTH_DEG}°), outside expected ±{DOWNHILL_HALF_WIDTH_DEG}° band. \
+             Cluster is on wrong side of cylinder — investigate Gap M overhang predicate \
+             regression or build-plate filter inversion.",
+        );
+    }
 
     // ─── Run 2: manual exact R_Y(-60°) rotation + default config ─────────
     println!("---- Run 2: manual exact R_Y(-60°) rotation + default `+Z up` config ----");

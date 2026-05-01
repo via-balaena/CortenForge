@@ -650,6 +650,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests (smoke-tested via `cargo run --release` exit-0 + 5 PLY
   artifacts: `mesh_original.ply`, `mesh_rotated.ply`,
   `issues_run{1,2,3}.ply`).
+- **`example-mesh-printability-orientation` centroid-geometry anchors
+  (#11 + #12)** — follow-up to the row #21 example commit, hardening
+  the visuals-pass against detector regressions that wouldn't be
+  caught by the existing area / severity / count anchors. Each Run 1
+  `OverhangRegion.center` now passes two geometric assertions:
+  (#11) radial distance from the cylinder's central axis line lies
+  in `[4.5, 5.0]` mm — the chord-shrinkage envelope for a 4–5 face
+  cluster centroid spanning ±22.5° of azimuth at `R = 5 mm`; catches
+  detector regressions emitting centroids off the geometry (e.g.,
+  interior-point bug in Gap D partition); (#12) azimuth in the
+  cylinder's perpendicular plane lies within `±33.75°` of the
+  downhill direction (`270°` in the `(perp_u, perp_v)` frame); catches
+  Gap M predicate inversion or build-plate filter inversion that
+  would flag the wrong side of the cylinder. Three new helpers added
+  to `examples/mesh/printability-orientation/src/main.rs`:
+  `place_lift_z()` (analytical pre-place z-shift),
+  `centroid_radial_distance_from_axis(centroid)`,
+  and `centroid_azimuth_deg(centroid)`.
+  Validation derived from a math-only Python script run during the
+  visuals-pass that confirmed both centroids lie on the lateral
+  surface (radial 4.95 / 4.93 ≈ R) at azimuths 247.5° / 289.5° (both
+  within the ±33.75° band) — the script's findings are now load-bearing
+  Rust assertions in `main()`. Test counts unchanged: example adds 0
+  lib/integ/doc tests; the smoke-test via `cargo run --release` exits
+  0 with the new anchors active.
 
 ### Changed
 
