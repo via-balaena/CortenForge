@@ -1769,25 +1769,34 @@ The two components share **no vertices, no edges, no faces** — they're geometr
 
 ### §7.6 `printability-orientation` — Gap L demonstration
 
-**Detector**: orientation infrastructure (`find_optimal_orientation` + `evaluate_orientation`) parametrized by `PrinterConfig::build_up_direction`.
+**Detector**: orientation infrastructure (`apply_orientation` + `with_build_up_direction`) parametrized by `PrinterConfig::build_up_direction`. `find_optimal_orientation` is exercised as a supplementary diagnostic (see "Diagnostic" sub-section below).
 
-**Concept**: A leaning column — a tilted cylinder oriented at 60° from vertical. Validating with default `+Z up` flags massive overhang (the column's "leaning" direction is 60° from vertical, well past 45° threshold). Validating after running `find_optimal_orientation` rotates the column to lay flat → minimal overhang. Then validating with `with_build_up_direction(Vector3::new(0,1,0))` (+Y up) on the original mesh reproduces the same rotated result without rotating the mesh — demonstrating that build-up direction parametrization is equivalent to mesh rotation.
+**Concept**: A leaning column — a tilted cylinder oriented at 60° from vertical. Validating with default `+Z up` flags substantial overhang (the column's lateral surface arc opposite the lean is past 45° threshold). The Gap L parametrization is then demonstrated **two mathematically equivalent ways**:
+1. **Mesh-side**: rotate the cylinder by the exact compensating rotation `R_Y(-60°)` so its axis aligns with `+Z`; validate with default config → no overhang.
+2. **Config-side**: keep the original mesh; set `with_build_up_direction(axis)` so the validator's "up" aligns with the cylinder's axis → no overhang.
+
+These two transformations are mathematically equivalent — rotating the mesh to align with the up-vector ≡ rotating the up-vector to align with the mesh. The example asserts this equivalence as the load-bearing Gap L invariant.
+
+**Why not `find_optimal_orientation` for Run 2?** The 12-sample default sample set is `{identity, ±90°/180° X, ±90° Y, ±45°/±135° X, +45° Y}` — none of which is `R_Y(-60°)`, the exact rotation needed to map this fixture's leaning axis onto `+Z`. The closest non-trivial candidate (`R_Y(-90°)`) drives lateral overhang to 0 but leaves the bottom cap tilted 30°, exposing ~30 of 32 cap-fan triangles to a comparable post-rotation overhang. For an EXACT mathematical equivalence test, a manually-constructed exact rotation is required. `find_optimal_orientation` is exercised as a diagnostic to show the search infrastructure (and its discrete-sample limitation), but is not load-bearing for the Gap L invariant assertion. (For the L=15 / R=5 fixture below, the search actually picks identity — even `R_Y(-90°)`'s residual cap-overhang exceeds the unrotated lateral-overhang baseline at this aspect ratio. The discrete-sample limitation surfaces even more starkly at smaller cylinder lengths.) Logged as v0.9 candidate: enrich `find_optimal_orientation`'s sampler (e.g., 1° angle bins around primary axes, or gradient-descent refinement step) to handle arbitrary axis-aligned rotations.
 
 **Fixture geometry**:
 
-A cylinder of radius 5 mm, length 30 mm, axis aligned along the direction `(sin(60°), 0, cos(60°))` ≈ `(0.866, 0, 0.5)`, base centered at origin so the column "leans" 60° from vertical in the +X direction. Watertight, consistent winding.
+A cylinder of radius 5 mm, **length 15 mm** (reduced from the spec's original 30 mm — see "mesh-repair false-positive deviation" below), axis aligned along the direction `(sin(60°), 0, cos(60°))` ≈ `(0.866, 0, 0.5)`, centered at origin so the column "leans" 60° from vertical in the +X direction. 32-segment lateral tessellation (66 vertices, 128 triangles). Watertight, consistent winding.
+
+**Mesh-repair false-positive deviation (length reduced 30 → 15 mm)**: at the original L=30 mm, mesh-repair's `detect_self_intersections` (called from `check_self_intersecting`) produces 8 false-positive `SelfIntersecting` `Critical` pairs between diametrically-opposite lateral triangles. Empirically reproduced at SEGMENTS ∈ {8, 12, 16, 32}; the bug surfaces above ~L=18 mm (lateral-triangle aspect ratio > 4:1) for any segment count. The 30:1 lateral-triangle aspect ratio at R=5 / L=30 / SEG=32 trips an FP edge case in mesh-repair's BVH triangle-pair test (suspected cause: opposite-side tangent-plane intersection within FP tolerance bounds). Reducing L to 15 mm drops the aspect ratio to ~15:1 (still thin, but below the false-positive threshold) and yields a clean `is_printable() == true` Run 1. **Logged as v0.9 candidate**: investigate mesh-repair `detect_self_intersections` sensitivity to thin-aspect-ratio cylindrical lateral triangles; the same fixture shape at L=15 produces zero false-positives, while L=18+ consistently flags 8 cross-cylinder pairs regardless of segment count.
 
 **Three runs** (in main()):
 
-1. **Default `+Z up`** with original mesh — large overhang area along the lateral cylinder surface (60° tilt > 45° threshold).
-2. **`find_optimal_orientation`** + apply rotation — cylinder lies flat; overhang area drops to near-zero (laterally none; only the two circular end caps which are 90° from the new "up" — but those are wholly above the build plate after `place_on_build_plate`, so they don't flag as overhang either).
-3. **`with_build_up_direction(Vector3::new(0.866, 0, 0.5))`** with original mesh — equivalent to "the +(0.866, 0, 0.5) direction is 'up'" — overhang area drops to near-zero (the cylinder's lateral surface is now parallel to the build-up direction, no overhang).
+1. **Default `+Z up`** with original mesh — substantial overhang along the lateral cylinder surface (60° tilt > 45° threshold).
+2. **Manual exact rotation** `R_Y(-60°)` applied via `apply_orientation(&mesh, &OrientationResult::new(R_Y(-60°), 0.0, 0.0))` + `place_on_build_plate` — cylinder stands perfectly vertical; bottom cap flat on build plate; lateral surface vertical → no overhang.
+3. **`with_build_up_direction(Vector3::new(sin(60°), 0, cos(60°)).normalize())`** with original mesh + `place_on_build_plate` — the up-vector aligns with the cylinder's axis, so the validator sees the cylinder as perfectly vertical without any mesh transformation → no overhang.
 
-Cross-check: runs 2 and 3 should produce **the same overhang area within 1e-6** — same physical setup, two equivalent ways to express it (rotate the mesh OR rotate the up-vector).
+Cross-check: runs 2 and 3 produce **the same overhang area within 1e-6 mm²** — same physical setup, two equivalent expressions (mesh-rotation vs up-vector-rotation). This is the load-bearing Gap L invariant, and is `assert_relative_eq!`d as such.
+
+**Diagnostic** (printed, NOT asserted): after the 3 runs, the example calls `find_optimal_orientation(&mesh, &PrinterConfig::fdm_default(), 12)` and prints the picked rotation + resulting `overhang_area` to stdout. Expected output for the L=15 fixture: rotation = **identity** (no rotation), `overhang_area ≈ 66 mm²` (same as Run 1). The 12-sample default cannot improve on identity here — every non-identity sample either preserves or worsens the overhang area for this cylinder aspect ratio. For example, `R_Y(-90°)` (the closest sample to the exact `R_Y(-60°)`) drives lateral overhang to 0 but tilts the bottom cap 30°, flagging ~30 of 32 cap-fan triangles for a comparable post-rotation overhang area. The diagnostic illustrates the search's discrete-sample limitation directly: the heuristic can fail to improve over identity entirely. v0.9 candidate per "Why not `find_optimal_orientation`" sub-section above.
 
 **FDM config**:
-- `PrinterConfig::fdm_default()` for run 1.
-- `PrinterConfig::fdm_default()` (default `+Z up`) for run 2 after rotation.
+- `PrinterConfig::fdm_default()` for runs 1 and 2.
 - `PrinterConfig::fdm_default().with_build_up_direction(...)` for run 3.
 
 **Expected output (post-Gap-M convention with build-plate filter)**:
@@ -1801,17 +1810,12 @@ Each Run applies `place_on_build_plate` to the validated mesh so `mesh_min_along
 - Bottom end cap (normal = -axis ≈ (-0.866, 0, -0.5), `dot = -0.5`): `overhang_angle = 30°` → NOT flagged. (Also irrelevant: any face on the build plate would be filtered.)
 - Top end cap (normal = +axis = (0.866, 0, 0.5), `dot = +0.5`): `overhang_angle = -30°` → NOT flagged.
 
-For 32-segment cylinder lateral tessellation (~64 lateral triangles): roughly 12 of them flag (the strip on the downhill side). Each lateral triangle area ≈ (2π·r·length / 64) = (2π·5·30 / 64) ≈ 14.7 mm². Flagged area ≈ 12 × 14.7 ≈ 176 mm². Build-plate filter: lateral faces' min vertex z > 0 in general (lateral faces span the full cylinder; their lowest vertex is at z=0 only for faces immediately at the base ring). Conservatively, ~10 lateral faces touch z=0 (bottom ring); these get filtered. Net flagged: ~10 × 14.7 ≈ 150 mm² (post-filter estimate; exact count depends on tessellation).
+For 32-segment cylinder lateral tessellation (~64 lateral triangles): roughly 12 of them flag (the strip on the downhill side, azimuth ±33.75° from straight downhill). Each lateral triangle area ≈ (2π·r·length / 64) = (2π·5·15 / 64) ≈ 7.36 mm² at L=15. Flagged area ≈ 12 × 7.36 ≈ 88 mm². Build-plate filter: the lateral triangles touching the min-z rim vertex (the single vertex at the cylinder's lowest point post-`place_on_build_plate`) get filtered — this is a 3-triangle cluster (one shared vertex appears in 3 lateral triangles per cylinder topology). Net flagged: ~9 × 7.36 ≈ 66 mm² (post-filter estimate; exact count depends on tessellation; the empirical Gap D split partitions this into 2 OverhangRegions).
 
-**Run 2** (`find_optimal_orientation` + `apply_orientation` + `place_on_build_plate`): the orientation search includes a 45°-rotation around Y (in `generate_sample_orientations`'s 12-sample default), which maps the cylinder's leaning axis (0.866, 0, 0.5) close to +Z (post-rotation axis ≈ (0.259, 0, 0.966)). The exact -60°-around-Y is NOT in the sample set, but the closest sample (45°-around-Y) gets axis 15°-from-up. Under Gap M with FDM `max=45°`:
-- Lateral normals (after 45° rotation) span `dot ∈ [-sin(15°), +sin(15°)] = [-0.259, +0.259]`. Max `overhang_angle ≈ 15°`. NOT flagged.
-- Top end cap (post-rotation): dot ≈ +0.966, NOT flagged.
-- Bottom end cap (post-rotation): dot ≈ -0.966. `overhang_angle = 75°` → 75 > 45 → flagged → BUT on build plate after `place_on_build_plate` → filtered.
+**Run 2** (`apply_orientation(&mesh, &OrientationResult::new(R_Y(-60°), 0, 0))` + `place_on_build_plate`): the cylinder's axis post-rotation is exactly `(0, 0, 1)` (perfectly vertical, by construction — `R_Y(-60°) × (sin60°, 0, cos60°) = (0, 0, 1)`, verifiable in the example via a `debug_assert` against 1e-12). Lateral normals are perpendicular to axis = perpendicular to `+Z`: `dot = 0`, `overhang_angle = 0`, NOT flagged. Top cap normal aligned with `+Z`: `dot = +1`, NOT flagged. Bottom cap normal anti-aligned with `+Z`: `dot = -1`, `overhang_angle = 90°`, flagged → BUT the bottom cap is the perfectly horizontal face at `z=0` after placement; ALL bottom-cap fan triangles share `face_min_z = 0 = mesh_min_z` → filtered.
 - Run 2 overhang area = **0**, `validation.overhangs.len() == 0`.
 
-(Caveat: which rotation `find_optimal_orientation` picks depends on the score function `support_volume + overhang_area*0.1`. Multiple rotations give score 0 if they reduce overhang to 0; the implementation picks the FIRST in the sample list with min score. The 45°-around-Y rotation is one such; identity is not. Verified at impl time by inspecting `result.rotation`.)
-
-**Run 3** (`PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.866, 0, 0.5).normalize())` on original mesh, `place_on_build_plate` first): the up-vector aligns with the cylinder's leaning axis. Lateral normals are perpendicular to axis = perpendicular to new up: `dot = 0`, `overhang_angle = 0`, NOT flagged. Top cap normal aligned with new up: `dot = +1`, NOT flagged. Bottom cap normal anti-aligned with new up: `dot = -1`, `overhang_angle = 90°`, flagged → BUT bottom cap is at minimum-along-new-up (axis-pos 0), so `face_min_along_up - mesh_min_along_up = 0` → filtered.
+**Run 3** (`PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(sin(60°), 0, cos(60°)).normalize())` on original mesh, `place_on_build_plate` first): the up-vector aligns with the cylinder's leaning axis. Lateral normals are perpendicular to axis = perpendicular to new up: `dot = 0`, `overhang_angle = 0`, NOT flagged. Top cap normal aligned with new up: `dot = +1`, NOT flagged. Bottom cap normal anti-aligned with new up: `dot = -1`, `overhang_angle = 90°`, flagged → BUT all bottom-cap vertices share `axis-projection = -|axis|·half_len = -15 = mesh_min_along_up` (rim vertices are perp_u/perp_v offsets from neg_centre; both perp_u and perp_v are perpendicular to axis, so their `axis`-projection contribution is 0) → all bottom-cap fan triangles filtered.
 - Run 3 overhang area = **0**, `validation.overhangs.len() == 0`.
 
 **Severity reasoning** (Run 1, downhill faces): the maximum observed `overhang_angle` is ~60° (faces with `dot ≈ -0.866`). Per §4.3:
@@ -1819,26 +1823,29 @@ For 32-segment cylinder lateral tessellation (~64 lateral triangles): roughly 12
 - Warning: 60° < angle ≤ 75°. 60 > 60? Strict-greater-than. No.
 - Info: 45° < angle ≤ 60°. 60 ≤ 60 → yes. **Info severity** for Run 1's lateral-arc cluster.
 
-So Run 1's overhang issue is Info, not Critical. `is_printable()` is NOT blocked by Run 1's overhang alone. The example documents this — `is_printable()` is **printed but not asserted** for Run 1.
+So Run 1's overhang issue is Info, not Critical. `is_printable()` is NOT blocked by Run 1's overhang alone. The example documents this — `is_printable()` is **printed but not asserted** for Run 1 (a cylinder has no thin walls, no cavity, no self-intersections, no small features, so `is_printable() == true` is expected — confirm by print, not by assertion).
 
 **Assertion list (lock-in)**:
-1. Run 1: `validation.overhangs.len() >= 1`; total overhang area ∈ `[100, 250]` mm² (analytical "downhill arc" minus build-plate-filtered ring ≈ 150 mm²).
+1. Run 1: `validation.overhangs.len() >= 1`; total overhang area ∈ `[50, 100]` mm² (analytical "downhill arc" minus build-plate-filtered cluster ≈ 66 mm²; band reduced from spec's original `[100, 250]` to match L=15 fixture).
 2. Run 1: ExcessiveOverhang severity `Info` (per §4.3 boundary calculation above).
-3. Run 1: print `is_printable()` to stdout but do NOT assert (depends on whether other detectors fire; a cylinder has no thin walls, no cavity, no self-intersections, no small features, so `is_printable() == true` is expected — confirm by print, not by assertion).
-4. Run 2: `validation.overhangs.len() == 0`; total overhang area = 0 within `1e-6` mm².
-5. Run 3: `validation.overhangs.len() == 0`; total overhang area = 0 within `1e-6` mm².
-6. **The Gap L invariant**: `assert_relative_eq!(run2_overhang_area, run3_overhang_area, epsilon = 1e-6)` — trivially 0 = 0; semantically Gap-L's load-bearing claim.
-7. Run 2 overhang area STRICTLY LESS than Run 1 overhang area (`assert!(run2_area < run1_area)`; orientation search reduces support need; 0 < ~150 holds).
+3. Run 1: print `is_printable()` to stdout but do NOT assert (depends on whether other detectors fire; expected `true`).
+4. Run 2: `validation.overhangs.len() == 0`; total overhang area = 0 within `1e-6` mm² (exact rotation makes cylinder perfectly vertical; bottom cap flat-on-plate → all filtered).
+5. Run 3: `validation.overhangs.len() == 0`; total overhang area = 0 within `1e-6` mm² (up-vector aligned with axis → all bottom-cap rim vertices share `axis-projection = mesh_min_along_up` → all filtered).
+6. **The Gap L invariant**: `assert_relative_eq!(run2_overhang_area, run3_overhang_area, epsilon = 1e-6)` — trivially 0 = 0; semantically Gap L's load-bearing claim that mesh-rotation ≡ up-vector-rotation when both are exact.
+7. Run 2 overhang area STRICTLY LESS than Run 1 overhang area (`assert!(run2_area < run1_area)`; the rotation-side fix eliminates support; 0 < ~66 holds).
 8. All three Runs print `overhangs.len()` and total overhang area to stdout.
+9. Manual rotation correctness: `debug_assert!((R_Y(-60°) * axis_pre - Vector3::new(0,0,1)).norm() < 1e-12)` to lock the manual rotation's mathematical correctness at construction time.
+10. Diagnostic `find_optimal_orientation`: print picked rotation + resulting `overhang_area` to stdout; do NOT assert specific values (the picked sample depends on sample-set ordering, which may shift in future v0.9 enrichment). Document the sample-set-discreteness limitation in the README.
 
 **Visuals**:
 - `out/mesh_original.ply` — leaning cylinder pre-validation (post-`place_on_build_plate`; min_z = 0).
-- `out/mesh_rotated.ply` — cylinder after `find_optimal_orientation.rotation` applied + `place_on_build_plate`. Axis-up (or near-axis-up post-search); cylinder stands on its bottom end-cap.
+- `out/mesh_rotated.ply` — cylinder after manual `R_Y(-60°)` rotation + `place_on_build_plate`. Axis perfectly vertical; cylinder stands on its bottom end-cap.
 - `out/issues_run1.ply` — point cloud of overhang-region centers from Run 1 (likely 1–2 points on the downhill strip).
 - `out/issues_run2.ply`, `out/issues_run3.ply` — empty point-clouds (zero overhang); demonstrates the "no issues = no points" rendering.
 
 **README pitfalls**:
 - "Run 2 and Run 3 give the same answer — why have both?" Because they're **architecturally different**: Run 2 modifies the mesh; Run 3 modifies the config. For workflows that don't want to rotate the mesh (preserves authoring frame, allows comparing orientations without rebuilding the mesh), Run 3 is the right tool. The example demonstrates both equivalence and the use-case difference.
+- "Why isn't `find_optimal_orientation` Run 2?" The 12-sample default sample set doesn't include `R_Y(-60°)` (the exact compensating rotation). For this fixture's aspect ratio (R=5 / L=15) the search actually picks identity — even `R_Y(-90°)` (the closest sample to the exact rotation) trades lateral overhang for cap overhang at a worse net cost. To demonstrate the EXACT Gap L equivalence, the example uses a manually-constructed rotation. `find_optimal_orientation` is included as a stdout diagnostic (printed, not asserted) to surface the search infrastructure's existence and its discrete-sample limitation. v0.9 candidate: enrich the sampler.
 - The chamfered note (`feedback_chamfered_not_rounded`): the cylinder is tessellated with 32 segments; lateral surface looks **chamfered** at coarse zoom, not smooth-curved. Use that wording in README.
 
 **Implementation slot**: lands after the §5.6 Gap L parametrization commit (and after `find_optimal_orientation` is verified to consume `config.build_up_direction` — F10 in §2 of the spec).
@@ -2203,7 +2210,7 @@ The §7 review surfaced that hand-authored fixtures can have non-obvious topolog
 | §7.2 H-shape boolean union: shared vertices at pillar-slab junctions | Faces sharing only a vertex aren't edge-adjacent → split into 3 cantilever/bridge clusters | §7.2 lock-in: 1 LongBridge (only middle exceeds threshold) + 3 OverhangRegion (Gap-D split) |
 | §7.3 sphere-in-cube: reversed sphere winding for inward-facing normals | If winding is wrong, Gap F flags it post-arc; sphere is INSIDE solid material → cavity-ceiling fires under Gap M | §7.3 lock-in: pre-flight winding verification + cavity-ceiling explicit prediction |
 | §7.5 burr on plate: bottom-of-burr vs build-plate filter | If burr is off-plate, Gap M flags burr's bottom face → spurious Critical breaking the SmallFeature-only narrative | §7.5 burr at z=0.1 with bottom at z=0; build-plate filter applies |
-| §7.6 leaning cylinder: orientation-search sample set discrete (12 samples) | `find_optimal_orientation` may NOT pick the exact-perpendicular rotation; expected output computed against the closest-sample rotation | §7.6 lock-in: 45°-around-Y closest sample analysis |
+| §7.6 leaning cylinder: orientation-search sample set discrete (12 samples) | `find_optimal_orientation`'s default sample set `{identity, ±90°/180° X, ±90° Y, ±45°/±135° X, +45° Y}` does not include `R_Y(-60°)` (the exact compensating rotation); for the L=15 fixture the search actually picks identity (no improvement) — even `R_Y(-90°)` (the closest sample) trades lateral overhang for cap overhang at a worse net cost at this aspect ratio | §7.6 lock-in: Run 2 uses **manual exact** `R_Y(-60°)` (load-bearing for Gap L invariant); `find_optimal_orientation` retained as stdout diagnostic only; v0.9 candidate to enrich sampler |
 
 **Pattern**: hand-authored fixtures get a per-fixture topology audit before the example commit. This is the §7-review-pass methodology applied at impl time.
 
@@ -3191,7 +3198,7 @@ The 8 ⏸︎ pause-points are where the cadence requires user attention:
 | 3 | #15 (§7.3 trapped-volume) | Voxel flood-fill + tech-aware severity | `out/mesh.ply`, `out/issues.ply`, `out/voxels.ply` |
 | 4 | #17 (§7.4 self-intersecting) | mesh-repair re-use through validate-pipeline | `out/mesh.ply`, `out/issues.ply` |
 | 5 | #19 (§7.5 small-feature) | Connected-component bbox + on-plate burr placement | `out/mesh.ply`, `out/issues.ply` |
-| 6 | #21 (§7.6 orientation) | `find_optimal_orientation` + `build_up_direction` parametrization equivalence | `out/mesh_original.ply`, `out/mesh_rotated.ply`, `out/issues_run*.ply` |
+| 6 | #21 (§7.6 orientation) | Gap L equivalence via manual exact `R_Y(-60°)` rotation ≡ `with_build_up_direction(axis)`; `find_optimal_orientation` as stdout diagnostic only | `out/mesh_original.ply`, `out/mesh_rotated.ply`, `out/issues_run*.ply` |
 | 7 | #22 (§7.7 technology-sweep) | Same mesh, four-tech severity divergence | `out/mesh.ply`, `out/issues_<tech>.ply` × 4 |
 | 8 | #23 (§7.8 showcase) | Multi-detector report on a realistic CAD bracket | `out/mesh.ply`, `out/issues.ply` |
 

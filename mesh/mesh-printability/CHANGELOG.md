@@ -616,6 +616,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no-panic, so `Ok` or `Err` is acceptable. Test counts post-#20:
   124 lib + 42 integ + 3 ignored + 4 doc debug; 123 + 45 + 0 + 4
   release.
+- **Example crate `example-mesh-printability-orientation`** — Gap L
+  (`PrinterConfig::build_up_direction`) parametrization equivalence
+  visual demo (V08_FIX_ARC_SPEC.md §7.6, row #21). Hand-authors a
+  watertight 32-segment leaning cylinder (R=5 mm, L=15 mm, axis
+  `(sin60°, 0, cos60°)`, 66v/128f) and validates it three ways:
+  (1) original mesh + default `+Z` up — 2 `OverhangRegion` Info-only
+  flags, total area ~66 mm² on the lateral downhill arc; (2) manual
+  exact `R_Y(-60°)` rotation via `apply_orientation` + default config —
+  cylinder perfectly vertical, 0 overhangs; (3) original mesh +
+  `with_build_up_direction(axis)` — up-vector aligned with axis,
+  0 overhangs. The load-bearing **Gap L invariant** —
+  `assert_relative_eq!(run2_overhang_area, run3_overhang_area,
+  epsilon = 1e-6)` — locks mesh-rotation ≡ up-vector-rotation when
+  both are exact. `find_optimal_orientation` is exercised as a stdout
+  diagnostic (printed, NOT asserted): the 12-sample default
+  `{identity, ±90°/180° X, ±90° Y, ±45°/±135° X, +45° Y}` does not
+  include `R_Y(-60°)` (the exact compensating rotation), and for this
+  fixture's aspect ratio the search picks identity entirely (no
+  improvement over the unrotated baseline). **Spec deviations
+  surfaced** (committed inline in the example's `LENGTH` const +
+  README's "Length deviation from spec" + spec body): (a) §7.6's
+  original `find_optimal_orientation`-based Run 2 with `Run 2 ≡ Run 3
+  = 0` cannot hold because the discrete sample set lacks `R_Y(-60°)`;
+  switched to manual exact rotation, which delivers the equivalence
+  cleanly; (b) `LENGTH` reduced from 30 → 15 mm because at L≥18 mm,
+  mesh-repair `detect_self_intersections` produces 8 false-positive
+  `SelfIntersecting Critical` pairs between diametrically-opposite
+  lateral triangles (independent of segment count: empirically
+  reproduced at SEGMENTS ∈ {8, 12, 16, 32}); (c) Run 1 area band
+  reduced from `[100, 250]` to `[50, 100]` mm² to match L=15 fixture
+  geometry. Test counts unchanged: example crate adds 0 lib/integ/doc
+  tests (smoke-tested via `cargo run --release` exit-0 + 5 PLY
+  artifacts: `mesh_original.ply`, `mesh_rotated.ply`,
+  `issues_run{1,2,3}.ply`).
 
 ### Changed
 
@@ -753,6 +787,47 @@ comments can reference a stable anchor that survives v0.8 spec deletion.
   cross-referencing flagged faces against `TrappedVolume`-detected
   cavities (which lands in v0.8 as the trapped-volume detector,
   commit #14).
+- **`find_optimal_orientation` discrete-sample limitation (§7.6
+  Run-2 deviation).** The 12-sample default sample set
+  `{identity, ±90°/180° X, ±90° Y, ±45°/±135° X, +45° Y}` cannot reach
+  arbitrary axis-aligned rotations like `R_Y(-60°)` (the rotation
+  needed to map `(sin60°, 0, cos60°)` onto `+Z`). The Fibonacci sphere
+  branch (engaged at samples > 14) generates 90°-only rotations around
+  sphere-distributed axes — also not arbitrary-angle. The
+  `printability-orientation` example (commit #21) surfaced this when
+  the spec's original `find_optimal_orientation`-based Run 2 with
+  `Run 2 area = 0` could not be made to hold for any sample count;
+  switched to a manual exact rotation as the Gap L invariant's
+  load-bearing mechanism, with `find_optimal_orientation` retained as
+  a stdout diagnostic illustrating the limitation. Resolution path:
+  enrich the sampler — e.g., 1° angle bins around primary axes
+  (12 axes × 36 bins = 432 samples) for problems where exact-axis
+  alignment matters, or a gradient-descent refinement step from the
+  best discrete sample. Re-open trigger: a user reports
+  `find_optimal_orientation` recommends a clearly-suboptimal
+  orientation when an exact axis-aligned compensating rotation exists.
+- **`mesh-repair detect_self_intersections` false-positives on
+  thin-aspect-ratio cylinders (§7.6 LENGTH deviation).** A single
+  watertight tilted cylinder with lateral-triangle aspect ratio above
+  ~4:1 (empirically observed at L=18+ mm with R=5 mm) consistently
+  triggers 8 false-positive `SelfIntersecting Critical` pairs between
+  diametrically-opposite lateral triangles, regardless of azimuthal
+  segment count (reproduced at SEGMENTS ∈ {8, 12, 16, 32}). The
+  intersection points cluster on the cylinder's central axis line —
+  suggesting BVH triangle-pair test confuses near-tangent opposite-
+  side planes within FP tolerance bounds. The `printability-orientation`
+  example (commit #21) reduced cylinder length from spec's 30 mm to
+  15 mm to stay below the threshold; same fixture shape at L=15
+  produces zero false-positives, while L≥18 consistently fires 8
+  pairs. Re-open trigger: a user reports false-positive
+  `SelfIntersecting` flags on a single watertight cylinder, OR
+  another v0.9 example needs a tall thin cylinder fixture without
+  switching to a different shape. Resolution path: investigate
+  `mesh_repair::intersect::detect_self_intersections`'s `IntersectionParams::epsilon`
+  and BVH bucketing; consider a tighter tolerance default OR a
+  pre-pass that detects tangent-plane parallelism and skips those
+  pair tests. (Cross-references existing v0.9 candidate: §6.4
+  `IntersectionParams` re-export gap.)
 
 ## [0.7.0] - 2025-XX-XX
 

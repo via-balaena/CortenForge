@@ -3652,6 +3652,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-printability-orientation"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-types",
+ "nalgebra",
+]
+
+[[package]]
 name = "example-mesh-printability-self-intersecting"
 version = "0.7.0"
 dependencies = [
