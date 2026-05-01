@@ -3,13 +3,17 @@
 //! Provides the primary validation functionality to check meshes
 //! against printer constraints.
 
+use std::collections::VecDeque;
+
 use hashbrown::{HashMap, HashSet};
 use mesh_types::{IndexedMesh, Point3, Vector3};
 
-use crate::config::PrinterConfig;
+use crate::config::{PrintTechnology, PrinterConfig};
 use crate::error::{PrintabilityError, PrintabilityResult};
 use crate::issues::{IssueSeverity, PrintIssue, PrintIssueType};
-use crate::regions::{LongBridgeRegion, OverhangRegion, SupportRegion, ThinWallRegion};
+use crate::regions::{
+    LongBridgeRegion, OverhangRegion, SupportRegion, ThinWallRegion, TrappedVolumeRegion,
+};
 
 /// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
 /// Two call sites:
@@ -50,6 +54,9 @@ pub struct PrintValidation {
     /// Long-bridge regions detected (§6.2 Gap G).
     pub long_bridges: Vec<LongBridgeRegion>,
 
+    /// Trapped-volume regions detected (§6.3 Gap H).
+    pub trapped_volumes: Vec<TrappedVolumeRegion>,
+
     /// Regions needing support structures.
     pub support_regions: Vec<SupportRegion>,
 
@@ -70,6 +77,7 @@ impl PrintValidation {
             thin_walls: Vec::new(),
             overhangs: Vec::new(),
             long_bridges: Vec::new(),
+            trapped_volumes: Vec::new(),
             support_regions: Vec::new(),
             estimated_print_time: None,
             estimated_material_volume: None,
@@ -189,6 +197,12 @@ pub fn validate_for_printing(
     // after `check_thin_walls`; FDM/SLA-only (silent skip on SLS/MJF
     // per `requires_supports()`).
     check_long_bridges(mesh, config, &mut validation);
+
+    // §6.3 Gap H — trapped volumes via voxel-based exterior flood-fill.
+    // Watertight precondition (NOT consistent winding, distinct from
+    // ThinWall) — `§9.1` row 11 documents that TrappedVolume tolerates
+    // inconsistent winding.
+    check_trapped_volumes(mesh, config, &mut validation);
 
     Ok(validation)
 }
@@ -1338,6 +1352,514 @@ fn check_long_bridges(
             .total_cmp(&b.start.x)
             .then_with(|| a.start.y.total_cmp(&b.start.y))
             .then_with(|| a.start.z.total_cmp(&b.start.z))
+    });
+}
+
+// ===== §6.3 Gap H — TrappedVolume detector via exterior flood-fill =======
+
+/// Per-row scanline ray-origin offsets in y and z (mm).
+///
+/// Applied to the §6.3 voxel inside-test scanline ray's origin so no
+/// row passes exactly through a vertex / edge. The y and z offsets
+/// are intentionally **different** so the ray's `(y, z)` coordinates
+/// never lie on a triangle's symmetry line: equal jitters fail on
+/// axis-aligned cube fixtures whose face diagonals bisect the face
+/// along `y = z` (or `y + z = const`), where the ray re-strikes the
+/// shared diagonal edge of two triangles and the parity flips by 2
+/// (no net effect — voxels never get marked `VOXEL_INSIDE`). The
+/// 1.0e-5 / 1.7e-5 split breaks both `y = z` and `y + z = const`
+/// coincidences; magnitudes still sit an order of magnitude above
+/// `EPS_RAY_OFFSET` (1e-6 mm) so the per-row offset and the
+/// `moller_trumbore` self-hit guard don't interact at threshold
+/// boundaries. Per §6.3 line 1096 (with v0.8 implementation refinement
+/// — the spec text "a single uniform jitter suffices" is incorrect for
+/// axis-aligned cube fixtures; v0.9 spec edit will document the
+/// asymmetric requirement).
+const ROW_JITTER_Y: f64 = 1.0e-5;
+const ROW_JITTER_Z: f64 = 1.7e-5;
+
+/// Voxel-grid memory budget per §6.3 step 4.5 amendment (surfaced by
+/// §9.2.5 risk-mitigation review): 1 byte per voxel (`u8` voxel state),
+/// cap at 1 GB. Pathological inputs above this cap (e.g. a 250×200×220
+/// mm full FDM build volume at 0.1 mm voxel — 11 GB) emit a
+/// `DetectorSkipped` Info instead of allocating; mitigates the §8.4
+/// Gap H grid-memory blowup risk.
+const VOXEL_GRID_BYTE_CAP: u64 = 1_000_000_000;
+
+/// Voxel state encoding for the `TrappedVolume` detector's grid:
+/// 0 unknown, 1 inside-mesh, 2 exterior, 3 trapped, 4 trapped-visited.
+const VOXEL_UNKNOWN: u8 = 0;
+const VOXEL_INSIDE: u8 = 1;
+const VOXEL_EXTERIOR: u8 = 2;
+const VOXEL_TRAPPED: u8 = 3;
+const VOXEL_TRAPPED_VISITED: u8 = 4;
+
+/// Watertight check (§6.3 precondition; NO consistent-winding requirement).
+///
+/// Returns `true` iff no edge is incident on exactly one face (i.e. no
+/// `open_edge_count` per `check_basic_manifold`'s pass). Distinct from
+/// `is_watertight_and_consistent_winding`: the `TrappedVolume` detector
+/// tolerates inconsistent winding (`§9.1` row 11), so the check is
+/// open-edge-count-only.
+fn is_watertight(mesh: &IndexedMesh) -> bool {
+    let edge_to_faces = build_edge_to_faces(mesh);
+    !edge_to_faces.values().any(|faces| faces.len() == 1)
+}
+
+/// Classify `TrappedVolume` severity per §6.3 (technology-aware).
+///
+/// `Info` if `volume < min_feature_size³` (below the printer's
+/// resolution; not actionable). Otherwise `Critical` for SLA / SLS / MJF
+/// (trapped uncured / unsintered material is a hard failure mode);
+/// `Info` for FDM / Other (sealed cavities print fine on extrusion).
+fn classify_trapped_volume_severity(
+    volume: f64,
+    tech: PrintTechnology,
+    config: &PrinterConfig,
+) -> IssueSeverity {
+    let res_volume = config.min_feature_size.powi(3);
+    if volume < res_volume {
+        return IssueSeverity::Info;
+    }
+    match tech {
+        PrintTechnology::Sla | PrintTechnology::Sls | PrintTechnology::Mjf => {
+            IssueSeverity::Critical
+        }
+        PrintTechnology::Fdm | PrintTechnology::Other => IssueSeverity::Info,
+    }
+}
+
+/// Voxel grid for the §6.3 `TrappedVolume` detector.
+///
+/// `dims` is `(nx, ny, nz)`. `origin` is the grid's min corner.
+/// `voxel_size` is the per-axis voxel size in mm (isotropic).
+/// `states` is `nx × ny × nz` bytes, x-major (linear index
+/// `(z * ny + y) * nx + x`).
+struct VoxelGrid {
+    dims: (u32, u32, u32),
+    origin: Point3<f64>,
+    voxel_size: f64,
+    states: Vec<u8>,
+}
+
+impl VoxelGrid {
+    /// Linear index for `(x, y, z)`, x-major. Caller verifies bounds.
+    const fn linear_index(&self, x: u32, y: u32, z: u32) -> usize {
+        let nx = self.dims.0 as usize;
+        let ny = self.dims.1 as usize;
+        ((z as usize * ny) + y as usize) * nx + x as usize
+    }
+
+    /// Center of voxel `(x, y, z)` in mesh coordinates (mm).
+    // FP-bit preserved: the explicit `(coord + 0.5) * voxel_size` form
+    // keeps the parity-flip threshold deterministic across platforms.
+    // `mul_add` would shift FP bits and break cross-os voxel inside-
+    // test parity per §8.4 row 3.
+    #[allow(clippy::suboptimal_flops)]
+    fn voxel_center(&self, x: u32, y: u32, z: u32) -> Point3<f64> {
+        Point3::new(
+            self.origin.x + (f64::from(x) + 0.5) * self.voxel_size,
+            self.origin.y + (f64::from(y) + 0.5) * self.voxel_size,
+            self.origin.z + (f64::from(z) + 0.5) * self.voxel_size,
+        )
+    }
+}
+
+/// Mark inside voxels via per-row scanline + Möller-Trumbore parity
+/// (§6.3 step 6).
+///
+/// For each `(y, z)` row, cast a `+X` ray from one voxel left of the grid
+/// at `(grid_x_min − voxel_size, y_center + ROW_JITTER_Y, z_center +
+/// ROW_JITTER_Z)`. Collect all `moller_trumbore` t-intersections, sort
+/// by t. Sweep voxels left-to-right: at each voxel midpoint, if the
+/// parity of crossings with `t < midpoint_t` is odd, mark voxel
+/// `VOXEL_INSIDE`. Per row the cost is `O(n_faces + nx)`; per grid
+/// `O(ny × nz × (n_faces + nx))`.
+///
+// FP-bit preserved on the `(coord + 0.5) * voxel_size` arithmetic: same
+// FP-determinism rationale as `flag_overhang_faces`'s `len = sqrt(...)`
+// site — `mul_add` would shift FP bits and break cross-os voxel
+// parity per §8.4 row 3.
+#[allow(clippy::suboptimal_flops)]
+fn mark_inside_voxels(grid: &mut VoxelGrid, mesh: &IndexedMesh) {
+    let (nx, ny, nz) = grid.dims;
+    let v = grid.voxel_size;
+    let origin_x = grid.origin.x;
+    let origin_y = grid.origin.y;
+    let origin_z = grid.origin.z;
+
+    // +X ray direction (unit, axis-aligned for FP determinism).
+    let direction = Vector3::new(1.0, 0.0, 0.0);
+
+    for z in 0..nz {
+        let z_center = origin_z + (f64::from(z) + 0.5) * v + ROW_JITTER_Z;
+        for y in 0..ny {
+            let y_center = origin_y + (f64::from(y) + 0.5) * v + ROW_JITTER_Y;
+            // Ray origin one voxel-width outside the grid; voxel-midpoint
+            // t-values then fall in `[v + 0.5 v, v + (nx − 0.5) v]` —
+            // strictly positive, so `moller_trumbore`'s `t > EPS_GEOMETRIC`
+            // guard never rejects a legitimate crossing.
+            let row_origin = Point3::new(origin_x - v, y_center, z_center);
+
+            let mut crossings: Vec<f64> = Vec::new();
+            for face in &mesh.faces {
+                let i0 = face[0] as usize;
+                let i1 = face[1] as usize;
+                let i2 = face[2] as usize;
+                if i0 >= mesh.vertices.len()
+                    || i1 >= mesh.vertices.len()
+                    || i2 >= mesh.vertices.len()
+                {
+                    continue;
+                }
+                if let Some(t) = moller_trumbore(
+                    row_origin,
+                    direction,
+                    mesh.vertices[i0],
+                    mesh.vertices[i1],
+                    mesh.vertices[i2],
+                ) {
+                    crossings.push(t);
+                }
+            }
+            crossings.sort_by(f64::total_cmp);
+
+            let mut inside = false;
+            let mut next = 0_usize;
+            for x in 0..nx {
+                let voxel_mid_t = v + (f64::from(x) + 0.5) * v;
+                while next < crossings.len() && crossings[next] < voxel_mid_t {
+                    inside = !inside;
+                    next += 1;
+                }
+                if inside {
+                    let idx = grid.linear_index(x, y, z);
+                    grid.states[idx] = VOXEL_INSIDE;
+                }
+            }
+        }
+    }
+}
+
+/// 6-connected BFS flood-fill from `seed`.
+///
+/// Visits every voxel reachable from `seed` whose current state matches
+/// `from_state`; marks visited voxels with `to_state`. Uses an explicit
+/// `VecDeque` queue (FIFO / BFS) — no recursion, so even an 8M-voxel
+/// (200³) grid cannot stack-overflow.
+fn flood_fill_6_connected(
+    grid: &mut VoxelGrid,
+    seed: (u32, u32, u32),
+    from_state: u8,
+    to_state: u8,
+) {
+    let (nx, ny, nz) = grid.dims;
+    let seed_idx = grid.linear_index(seed.0, seed.1, seed.2);
+    if grid.states[seed_idx] != from_state {
+        return;
+    }
+    grid.states[seed_idx] = to_state;
+    let mut queue: VecDeque<(u32, u32, u32)> = VecDeque::new();
+    queue.push_back(seed);
+    while let Some((x, y, z)) = queue.pop_front() {
+        // 6-connected neighbors via i64 to handle 0 − 1 underflow safely.
+        let neighbors: [(i64, i64, i64); 6] = [
+            (i64::from(x) - 1, i64::from(y), i64::from(z)),
+            (i64::from(x) + 1, i64::from(y), i64::from(z)),
+            (i64::from(x), i64::from(y) - 1, i64::from(z)),
+            (i64::from(x), i64::from(y) + 1, i64::from(z)),
+            (i64::from(x), i64::from(y), i64::from(z) - 1),
+            (i64::from(x), i64::from(y), i64::from(z) + 1),
+        ];
+        for (nxi, nyi, nzi) in neighbors {
+            if nxi < 0 || nyi < 0 || nzi < 0 {
+                continue;
+            }
+            // i64 → u32 cast is bounded: positive-checked above; upper
+            // bound enforced by the next `>=` guard against grid dims.
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let neighbor = (nxi as u32, nyi as u32, nzi as u32);
+            if neighbor.0 >= nx || neighbor.1 >= ny || neighbor.2 >= nz {
+                continue;
+            }
+            let n_idx = grid.linear_index(neighbor.0, neighbor.1, neighbor.2);
+            if grid.states[n_idx] != from_state {
+                continue;
+            }
+            grid.states[n_idx] = to_state;
+            queue.push_back(neighbor);
+        }
+    }
+}
+
+/// Connected-component label trapped voxels (state == `VOXEL_TRAPPED`)
+/// via 6-connected BFS. Returns one entry per component.
+///
+/// Marks visited voxels as `VOXEL_TRAPPED_VISITED` (state 4) so the
+/// outer triple-loop doesn't re-seed the same component. Component
+/// scan order is x-major (`for z { for y { for x }}`), giving
+/// deterministic component-discovery order; per-component voxel order
+/// is BFS expansion order from the first-discovered seed.
+fn trapped_components(grid: &mut VoxelGrid) -> Vec<Vec<(u32, u32, u32)>> {
+    let mut components: Vec<Vec<(u32, u32, u32)>> = Vec::new();
+    let (nx, ny, nz) = grid.dims;
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                let idx = grid.linear_index(x, y, z);
+                if grid.states[idx] != VOXEL_TRAPPED {
+                    continue;
+                }
+                let mut component: Vec<(u32, u32, u32)> = Vec::new();
+                let mut queue: VecDeque<(u32, u32, u32)> = VecDeque::new();
+                grid.states[idx] = VOXEL_TRAPPED_VISITED;
+                queue.push_back((x, y, z));
+                while let Some((cx, cy, cz)) = queue.pop_front() {
+                    component.push((cx, cy, cz));
+                    let neighbors: [(i64, i64, i64); 6] = [
+                        (i64::from(cx) - 1, i64::from(cy), i64::from(cz)),
+                        (i64::from(cx) + 1, i64::from(cy), i64::from(cz)),
+                        (i64::from(cx), i64::from(cy) - 1, i64::from(cz)),
+                        (i64::from(cx), i64::from(cy) + 1, i64::from(cz)),
+                        (i64::from(cx), i64::from(cy), i64::from(cz) - 1),
+                        (i64::from(cx), i64::from(cy), i64::from(cz) + 1),
+                    ];
+                    for (nxi, nyi, nzi) in neighbors {
+                        if nxi < 0 || nyi < 0 || nzi < 0 {
+                            continue;
+                        }
+                        // Same bounded-cast rationale as in `flood_fill_6_connected`.
+                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                        let nb = (nxi as u32, nyi as u32, nzi as u32);
+                        if nb.0 >= nx || nb.1 >= ny || nb.2 >= nz {
+                            continue;
+                        }
+                        let n_idx = grid.linear_index(nb.0, nb.1, nb.2);
+                        if grid.states[n_idx] != VOXEL_TRAPPED {
+                            continue;
+                        }
+                        grid.states[n_idx] = VOXEL_TRAPPED_VISITED;
+                        queue.push_back(nb);
+                    }
+                }
+                components.push(component);
+            }
+        }
+    }
+    components
+}
+
+/// Detect trapped volumes via voxel-based exterior flood-fill (§6.3 Gap H).
+///
+/// Preconditions: `is_watertight(mesh)` (no `open_edge_count`). On
+/// failure: emit one `Info` `PrintIssue` of type `DetectorSkipped` and
+/// return without populating `validation.trapped_volumes`. Inconsistent
+/// winding is tolerated (`§9.1` row 11).
+///
+/// Algorithm:
+///
+/// 1. Watertight pre-check (open-edge count only).
+/// 2. `voxel_size = min(min_feature_size, layer_height) / 2`.
+/// 3. Mesh AABB padded by 2 voxel widths on every side; integer
+///    `dims = ceil(extent / voxel_size)`.
+/// 4. **Memory pre-flight (§6.3 step 4.5 / §9.2.5 amendment)**:
+///    if `nx × ny × nz > VOXEL_GRID_BYTE_CAP` (1 GB at 1 byte / voxel),
+///    emit `DetectorSkipped` Info and return; the grid is never
+///    allocated. Mitigates §8.4 grid-memory blowup.
+/// 5. Allocate `Vec<u8>` initialized to `VOXEL_UNKNOWN`; mark inside
+///    voxels via per-row scanline + `moller_trumbore` parity (§6.3
+///    step 6). FP-drift mitigated cross-platform by the per-row
+///    `ROW_JITTER` offset + the §9.2.5
+///    `stress_h_sphere_inside_cube_volume_within_10pct` 10 % volume
+///    tolerance + the §10.4.1 cross-os CI matrix extension.
+/// 6. Exterior flood-fill from grid corner `(0, 0, 0)` over
+///    `VOXEL_UNKNOWN` voxels → mark `VOXEL_EXTERIOR`.
+/// 7. Trap-label remaining `VOXEL_UNKNOWN` voxels → `VOXEL_TRAPPED`.
+/// 8. Connected-component label trapped voxels via 6-connected BFS;
+///    per component emit one `TrappedVolumeRegion` + one
+///    `PrintIssue` (severity per `classify_trapped_volume_severity`).
+/// 9. §4.4 sort `validation.trapped_volumes` by
+///    `(center.x, center.y, center.z)` via `f64::total_cmp`.
+///
+/// **v0.8 limitations** (locked by §9.2.5 stress fixtures, v0.9
+/// followups documented in `CHANGELOG.md`):
+///
+/// - Sub-voxel pinhole leaks: a cavity-to-exterior channel narrower
+///   than `voxel_size` lets the flood-fill reach the cavity, so it is
+///   not flagged as trapped. Documented intentional behavior for v0.8
+///   (printer drainage capability is a separate concern). v0.9:
+///   drainage-path simulation along `up` direction.
+/// - Adaptive voxel sizing: parts much larger than `min_feature_size`
+///   pay an `O((part_size / voxel_size)³)` memory bill. v0.9: per-region
+///   adaptive voxel sizing.
+//
+// `clippy::too_many_lines`: the §6.3 algorithm is inherently 11-step
+// (precondition → voxel sizing → memory pre-flight → grid alloc →
+// inside-mark → exterior flood-fill → trap label → connected-component
+// label → per-component emit → §4.4 sort), and helper extraction would
+// cross algorithm phase boundaries (e.g., the per-component emit loop
+// reads voxel-grid state, builds `TrappedVolumeRegion`, runs severity
+// classifier, and pushes both region + issue — splitting it would
+// require a 6-field tuple intermediate). Keeping the algorithm linear
+// in one function preserves §6.3 step-numbered traceability.
+#[allow(clippy::too_many_lines)]
+fn check_trapped_volumes(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+    validation: &mut PrintValidation,
+) {
+    if !is_watertight(mesh) {
+        validation.issues.push(PrintIssue::new(
+            PrintIssueType::DetectorSkipped,
+            IssueSeverity::Info,
+            "TrappedVolume detection requires watertight mesh (skipped)",
+        ));
+        return;
+    }
+
+    let voxel_size = config.min_feature_size.min(config.layer_height) / 2.0;
+    if !voxel_size.is_finite() || voxel_size <= 0.0 {
+        // Pathological config (zero / negative / NaN feature size). Tolerate
+        // silently — `validate_for_printing`'s upstream `check_build_volume`
+        // is the authoritative handler for nonsensical configs.
+        return;
+    }
+
+    let (mesh_min, mesh_max) = compute_bounds(mesh);
+    let pad = 2.0 * voxel_size;
+    let grid_min = Point3::new(mesh_min.x - pad, mesh_min.y - pad, mesh_min.z - pad);
+    let grid_max = Point3::new(mesh_max.x + pad, mesh_max.y + pad, mesh_max.z + pad);
+    let extent_x = grid_max.x - grid_min.x;
+    let extent_y = grid_max.y - grid_min.y;
+    let extent_z = grid_max.z - grid_min.z;
+
+    // Per-axis dim: `ceil(extent / voxel_size).max(1)`. f64 → u64 saturates
+    // NaN to 0 and Inf to u64::MAX (Rust 1.45+ semantics); the subsequent
+    // `checked_mul` step 4 detects the latter and skips.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let nx = (extent_x / voxel_size).ceil().max(1.0) as u64;
+    // Same f64 → u64 saturation rationale as `nx`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ny = (extent_y / voxel_size).ceil().max(1.0) as u64;
+    // Same f64 → u64 saturation rationale as `nx`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let nz = (extent_z / voxel_size).ceil().max(1.0) as u64;
+
+    // Step 4.5 — §9.2.5 memory pre-flight amendment.
+    let total_bytes = nx.checked_mul(ny).and_then(|p| p.checked_mul(nz));
+    let Some(total_bytes) = total_bytes else {
+        validation.issues.push(PrintIssue::new(
+            PrintIssueType::DetectorSkipped,
+            IssueSeverity::Info,
+            format!(
+                "TrappedVolume detection skipped: voxel grid {nx}×{ny}×{nz} at {voxel_size:.4} mm voxel would exceed 1 GB memory budget (u64 overflow)"
+            ),
+        ));
+        return;
+    };
+    if total_bytes > VOXEL_GRID_BYTE_CAP {
+        validation.issues.push(PrintIssue::new(
+            PrintIssueType::DetectorSkipped,
+            IssueSeverity::Info,
+            format!(
+                "TrappedVolume detection skipped: voxel grid {nx}×{ny}×{nz} at {voxel_size:.4} mm voxel would exceed 1 GB memory budget"
+            ),
+        ));
+        return;
+    }
+
+    // Past the cap → each dim ≤ total_bytes ≤ 1e9, fits in u32 (u32::MAX ≈ 4.3e9).
+    #[allow(clippy::cast_possible_truncation)]
+    let dims = (nx as u32, ny as u32, nz as u32);
+    // total_bytes ≤ 1e9 fits in usize on every 32-bit-or-larger target.
+    #[allow(clippy::cast_possible_truncation)]
+    let total_voxels_usize = total_bytes as usize;
+
+    let mut grid = VoxelGrid {
+        dims,
+        origin: grid_min,
+        voxel_size,
+        states: vec![VOXEL_UNKNOWN; total_voxels_usize],
+    };
+
+    mark_inside_voxels(&mut grid, mesh);
+    flood_fill_6_connected(&mut grid, (0, 0, 0), VOXEL_UNKNOWN, VOXEL_EXTERIOR);
+    for state in &mut grid.states {
+        if *state == VOXEL_UNKNOWN {
+            *state = VOXEL_TRAPPED;
+        }
+    }
+
+    let regions_before = validation.trapped_volumes.len();
+    let voxel_volume = voxel_size.powi(3);
+    let half_voxel = voxel_size / 2.0;
+    let components = trapped_components(&mut grid);
+    for component in components {
+        let voxel_count = component.len();
+        // `component.len()` is bounded by `total_voxels_usize ≤ 1e9 < u32::MAX`.
+        #[allow(clippy::cast_possible_truncation)]
+        let voxel_count_u32 = voxel_count as u32;
+
+        let mut sum_x = 0.0_f64;
+        let mut sum_y = 0.0_f64;
+        let mut sum_z = 0.0_f64;
+        let mut bbox_x = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut bbox_y = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut bbox_z = (f64::INFINITY, f64::NEG_INFINITY);
+        for &(vx, vy, vz) in &component {
+            let c = grid.voxel_center(vx, vy, vz);
+            sum_x += c.x;
+            sum_y += c.y;
+            sum_z += c.z;
+            bbox_x = (bbox_x.0.min(c.x), bbox_x.1.max(c.x));
+            bbox_y = (bbox_y.0.min(c.y), bbox_y.1.max(c.y));
+            bbox_z = (bbox_z.0.min(c.z), bbox_z.1.max(c.z));
+        }
+        // `voxel_count` ≤ 1e9 < 2^53; usize → f64 is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let n = voxel_count as f64;
+        let center = Point3::new(sum_x / n, sum_y / n, sum_z / n);
+        let bbox_min = Point3::new(
+            bbox_x.0 - half_voxel,
+            bbox_y.0 - half_voxel,
+            bbox_z.0 - half_voxel,
+        );
+        let bbox_max = Point3::new(
+            bbox_x.1 + half_voxel,
+            bbox_y.1 + half_voxel,
+            bbox_z.1 + half_voxel,
+        );
+        // Same precision rationale.
+        #[allow(clippy::cast_precision_loss)]
+        let volume = (voxel_count as f64) * voxel_volume;
+
+        let region =
+            TrappedVolumeRegion::new(center, volume, (bbox_min, bbox_max), voxel_count_u32);
+        validation.trapped_volumes.push(region);
+
+        let severity = classify_trapped_volume_severity(volume, config.technology, config);
+        let issue = PrintIssue::new(
+            PrintIssueType::TrappedVolume,
+            severity,
+            format!(
+                "{voxel_count} trapped voxel(s); volume {volume:.2} mm³ at voxel size {voxel_size:.3} mm"
+            ),
+        )
+        .with_location(center);
+        validation.issues.push(issue);
+    }
+
+    // §4.4 sort: `(center.x, center.y, center.z)` via `f64::total_cmp`.
+    // Range-restricted to this detector's emissions so a future hoist
+    // of the sort to `validate_for_printing` doesn't have to undo it
+    // per-detector. Same precedent as `check_long_bridges` at
+    // `validation.rs:1335`.
+    validation.trapped_volumes[regions_before..].sort_by(|a, b| {
+        a.center
+            .x
+            .total_cmp(&b.center.x)
+            .then_with(|| a.center.y.total_cmp(&b.center.y))
+            .then_with(|| a.center.z.total_cmp(&b.center.z))
     });
 }
 
@@ -3310,6 +3832,476 @@ mod tests {
         assert!(
             !result.overhangs.is_empty(),
             "slab bottom (90° overhang) must also flag as ExcessiveOverhang"
+        );
+    }
+
+    // ---- §6.3 Gap H — TrappedVolume detector tests --------------------------
+    //
+    // The §6.3 spec calls the load-bearing fixture "sphere_inside_cube" but
+    // the implementation here uses a cube-cavity-in-cube. Rationale: the
+    // detector is winding- and curvature-agnostic (operates on voxelized
+    // parity); a cube cavity is sufficient to exercise every code path. The
+    // §9.2.5 stress fixture `stress_h_sphere_inside_cube_volume_within_10pct`
+    // (in `tests/stress_inputs.rs`) is the geometry-faithful sphere variant.
+
+    /// Build a watertight outer cube with a single inner-cube cavity.
+    /// Outer cube vertices `[0..8]` are wound CCW-from-outside (mirrors
+    /// `create_watertight_cube`). Inner cavity vertices `[8..16]` are wound
+    /// CCW-from-inside the cavity (normals point into the cavity). The
+    /// detector's parity-based inside-test is winding-agnostic so either
+    /// inner winding works; this convention matches the implicit-surface
+    /// "body is the inside set" mental model.
+    fn make_cube_with_inner_cavity(outer_size: f64, inner_size: f64) -> IndexedMesh {
+        let cs = (outer_size - inner_size) / 2.0;
+        let i_max = cs + inner_size;
+        let vertices = vec![
+            // Outer cube vertices [0..8]
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(outer_size, 0.0, 0.0),
+            Point3::new(outer_size, outer_size, 0.0),
+            Point3::new(0.0, outer_size, 0.0),
+            Point3::new(0.0, 0.0, outer_size),
+            Point3::new(outer_size, 0.0, outer_size),
+            Point3::new(outer_size, outer_size, outer_size),
+            Point3::new(0.0, outer_size, outer_size),
+            // Inner cavity vertices [8..16]
+            Point3::new(cs, cs, cs),
+            Point3::new(i_max, cs, cs),
+            Point3::new(i_max, i_max, cs),
+            Point3::new(cs, i_max, cs),
+            Point3::new(cs, cs, i_max),
+            Point3::new(i_max, cs, i_max),
+            Point3::new(i_max, i_max, i_max),
+            Point3::new(cs, i_max, i_max),
+        ];
+        let faces = vec![
+            // Outer cube — CCW-from-outside.
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 6, 2],
+            [3, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+            // Inner cavity — wound CCW-from-INSIDE the cavity.
+            [8, 9, 10],
+            [8, 10, 11],
+            [12, 14, 13],
+            [12, 15, 14],
+            [8, 13, 9],
+            [8, 12, 13],
+            [11, 10, 14],
+            [11, 14, 15],
+            [8, 15, 12],
+            [8, 11, 15],
+            [9, 14, 10],
+            [9, 13, 14],
+        ];
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    /// Build a watertight outer cube with two disjoint inner-cube cavities
+    /// at `(cavity_size/2 + offset_a, …)` and `(outer_size − cavity_size/2 −
+    /// offset_a, …)` along the diagonal — well-separated so flood-fill
+    /// labels them as distinct components. 24 vertices, 36 faces.
+    fn make_cube_with_two_inner_cavities(
+        outer_size: f64,
+        cavity_size: f64,
+        offset_a: f64,
+    ) -> IndexedMesh {
+        let outer_min = Point3::new(0.0, 0.0, 0.0);
+        let outer_max = Point3::new(outer_size, outer_size, outer_size);
+        let a_lo = offset_a;
+        let a_hi = a_lo + cavity_size;
+        let b_lo = outer_size - offset_a - cavity_size;
+        let b_hi = b_lo + cavity_size;
+        let vertices = vec![
+            // Outer cube [0..8]
+            outer_min,
+            Point3::new(outer_max.x, 0.0, 0.0),
+            Point3::new(outer_max.x, outer_max.y, 0.0),
+            Point3::new(0.0, outer_max.y, 0.0),
+            Point3::new(0.0, 0.0, outer_max.z),
+            Point3::new(outer_max.x, 0.0, outer_max.z),
+            outer_max,
+            Point3::new(0.0, outer_max.y, outer_max.z),
+            // Cavity A [8..16]
+            Point3::new(a_lo, a_lo, a_lo),
+            Point3::new(a_hi, a_lo, a_lo),
+            Point3::new(a_hi, a_hi, a_lo),
+            Point3::new(a_lo, a_hi, a_lo),
+            Point3::new(a_lo, a_lo, a_hi),
+            Point3::new(a_hi, a_lo, a_hi),
+            Point3::new(a_hi, a_hi, a_hi),
+            Point3::new(a_lo, a_hi, a_hi),
+            // Cavity B [16..24]
+            Point3::new(b_lo, b_lo, b_lo),
+            Point3::new(b_hi, b_lo, b_lo),
+            Point3::new(b_hi, b_hi, b_lo),
+            Point3::new(b_lo, b_hi, b_lo),
+            Point3::new(b_lo, b_lo, b_hi),
+            Point3::new(b_hi, b_lo, b_hi),
+            Point3::new(b_hi, b_hi, b_hi),
+            Point3::new(b_lo, b_hi, b_hi),
+        ];
+        let faces = vec![
+            // Outer cube — CCW-from-outside.
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 6, 2],
+            [3, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+            // Cavity A — CCW-from-INSIDE the cavity.
+            [8, 9, 10],
+            [8, 10, 11],
+            [12, 14, 13],
+            [12, 15, 14],
+            [8, 13, 9],
+            [8, 12, 13],
+            [11, 10, 14],
+            [11, 14, 15],
+            [8, 15, 12],
+            [8, 11, 15],
+            [9, 14, 10],
+            [9, 13, 14],
+            // Cavity B — same winding pattern, offset by +8.
+            [16, 17, 18],
+            [16, 18, 19],
+            [20, 22, 21],
+            [20, 23, 22],
+            [16, 21, 17],
+            [16, 20, 21],
+            [19, 18, 22],
+            [19, 22, 23],
+            [16, 23, 20],
+            [16, 19, 23],
+            [17, 22, 18],
+            [17, 21, 22],
+        ];
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    /// Coarse-voxel `PrinterConfig` for fast unit tests: voxel = 0.2 mm
+    /// regardless of technology (`min_feature_size = 0.8`,
+    /// `layer_height = 0.4`). At a 6 mm outer cube, this produces a 34³ ≈
+    /// 39 k-voxel grid that finishes in <100 ms in debug mode while still
+    /// exercising every algorithmic path. The technology field still
+    /// drives `classify_trapped_volume_severity`'s SLA / SLS / MJF /
+    /// FDM branch.
+    fn coarse_voxel_config(tech: PrintTechnology) -> PrinterConfig {
+        let mut c = match tech {
+            PrintTechnology::Sla => PrinterConfig::sla_default(),
+            PrintTechnology::Sls => PrinterConfig::sls_default(),
+            PrintTechnology::Mjf => PrinterConfig::mjf_default(),
+            PrintTechnology::Fdm | PrintTechnology::Other => PrinterConfig::fdm_default(),
+        };
+        c.technology = tech;
+        c.min_feature_size = 0.8;
+        c.layer_height = 0.4;
+        c
+    }
+
+    #[test]
+    fn test_trapped_volume_no_cavity() {
+        // Solid 6 mm cube (no inner cavity) under FDM coarse-voxel config.
+        // Flood-fill from grid corner reaches every non-inside voxel →
+        // no trapped voxels → 0 regions.
+        let mesh = create_watertight_cube();
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for solid cube");
+
+        assert_eq!(
+            result.trapped_volumes.len(),
+            0,
+            "solid cube must produce no trapped-volume regions"
+        );
+        let any_trapped = result
+            .issues
+            .iter()
+            .any(|i| i.issue_type == PrintIssueType::TrappedVolume);
+        assert!(!any_trapped, "solid cube must emit no TrappedVolume issues");
+    }
+
+    #[test]
+    fn test_trapped_volume_skipped_on_open_mesh() {
+        // Open mesh (4-face square at z=0; 4 open edges → not watertight)
+        // → DetectorSkipped Info; trapped_volumes stays empty.
+        let mesh = create_cube_mesh();
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+        #[allow(clippy::expect_used)]
+        let result =
+            validate_for_printing(&mesh, &config).expect("validation should succeed for open mesh");
+
+        let any_skipped = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::DetectorSkipped
+                && i.description.contains("TrappedVolume")
+                && i.description.contains("watertight")
+        });
+        assert!(
+            any_skipped,
+            "open mesh must emit DetectorSkipped with TrappedVolume + watertight in description"
+        );
+        assert_eq!(
+            result.trapped_volumes.len(),
+            0,
+            "open mesh must not populate trapped_volumes"
+        );
+    }
+
+    #[test]
+    fn test_trapped_volume_sphere_inside_cube() {
+        // 6 mm outer cube with 2 mm inner cavity (cube cavity used as
+        // cavity proxy per module-doc deviation note). Expected analytical
+        // cavity volume: 2³ = 8 mm³. At voxel 0.2 mm, the cavity occupies
+        // ~10³ = 1000 voxels = 1000 × 0.008 = 8 mm³ exactly. Bbox is
+        // approximately 2×2×2 mm (within ±voxel_size on each side).
+        let mesh = make_cube_with_inner_cavity(6.0, 2.0);
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for cube-cavity fixture");
+
+        assert_eq!(
+            result.trapped_volumes.len(),
+            1,
+            "single inner cavity must produce exactly one trapped-volume region"
+        );
+        let region = &result.trapped_volumes[0];
+        // Cavity center is at outer_size/2 = 3.0 mm in each axis.
+        assert!(
+            (region.center.x - 3.0).abs() < 0.2 + 1e-9
+                && (region.center.y - 3.0).abs() < 0.2 + 1e-9
+                && (region.center.z - 3.0).abs() < 0.2 + 1e-9,
+            "cavity centroid must be near (3, 3, 3); got {:?}",
+            region.center
+        );
+        let bbox_extent_x = region.bounding_box.1.x - region.bounding_box.0.x;
+        let bbox_extent_y = region.bounding_box.1.y - region.bounding_box.0.y;
+        let bbox_extent_z = region.bounding_box.1.z - region.bounding_box.0.z;
+        assert!(
+            (bbox_extent_x - 2.0).abs() < 0.4
+                && (bbox_extent_y - 2.0).abs() < 0.4
+                && (bbox_extent_z - 2.0).abs() < 0.4,
+            "cavity bbox must be ~2×2×2 mm; got {bbox_extent_x:.3} × {bbox_extent_y:.3} × {bbox_extent_z:.3}"
+        );
+    }
+
+    #[test]
+    fn test_trapped_volume_two_disjoint_cavities() {
+        // 8 mm outer cube with 2 disjoint 1 mm cubic cavities at offset 1.5
+        // from opposite corners. Walls between cavities ≥ 3 mm = 15
+        // voxels, so flood-fill labels them as 2 separate components.
+        let mesh = make_cube_with_two_inner_cavities(8.0, 1.0, 1.5);
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for two-cavity fixture");
+
+        assert_eq!(
+            result.trapped_volumes.len(),
+            2,
+            "two disjoint cavities must produce exactly two trapped-volume regions"
+        );
+    }
+
+    #[test]
+    fn test_trapped_volume_critical_for_sla() {
+        // SLA + 2 mm cavity (volume 8 mm³) ≫ res_volume = 0.8³ = 0.512
+        // → severity Critical (trapped uncured resin is a hard failure).
+        let mesh = make_cube_with_inner_cavity(6.0, 2.0);
+        let config = coarse_voxel_config(PrintTechnology::Sla);
+        #[allow(clippy::expect_used)]
+        let result =
+            validate_for_printing(&mesh, &config).expect("validation should succeed for SLA");
+
+        let critical_trapped = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::TrappedVolume && i.severity == IssueSeverity::Critical
+        });
+        assert!(
+            critical_trapped,
+            "SLA + cavity above resolution → Critical severity"
+        );
+    }
+
+    #[test]
+    fn test_trapped_volume_critical_for_sls() {
+        // SLS + 2 mm cavity → severity Critical (trapped unsintered powder).
+        let mesh = make_cube_with_inner_cavity(6.0, 2.0);
+        let config = coarse_voxel_config(PrintTechnology::Sls);
+        #[allow(clippy::expect_used)]
+        let result =
+            validate_for_printing(&mesh, &config).expect("validation should succeed for SLS");
+
+        let critical_trapped = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::TrappedVolume && i.severity == IssueSeverity::Critical
+        });
+        assert!(
+            critical_trapped,
+            "SLS + cavity above resolution → Critical severity"
+        );
+    }
+
+    #[test]
+    fn test_trapped_volume_critical_for_mjf() {
+        // MJF + 2 mm cavity → severity Critical (trapped unfused powder).
+        let mesh = make_cube_with_inner_cavity(6.0, 2.0);
+        let config = coarse_voxel_config(PrintTechnology::Mjf);
+        #[allow(clippy::expect_used)]
+        let result =
+            validate_for_printing(&mesh, &config).expect("validation should succeed for MJF");
+
+        let critical_trapped = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::TrappedVolume && i.severity == IssueSeverity::Critical
+        });
+        assert!(
+            critical_trapped,
+            "MJF + cavity above resolution → Critical severity"
+        );
+    }
+
+    #[test]
+    fn test_trapped_volume_info_for_fdm() {
+        // FDM + 2 mm cavity → severity Info (sealed cavity prints fine on
+        // extrusion). Cavity is detected; the flag is just informational.
+        let mesh = make_cube_with_inner_cavity(6.0, 2.0);
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+        #[allow(clippy::expect_used)]
+        let result =
+            validate_for_printing(&mesh, &config).expect("validation should succeed for FDM");
+
+        let any_trapped_critical = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::TrappedVolume && i.severity == IssueSeverity::Critical
+        });
+        assert!(
+            !any_trapped_critical,
+            "FDM trapped volume must NOT be Critical"
+        );
+        let any_trapped_info = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::TrappedVolume && i.severity == IssueSeverity::Info
+        });
+        assert!(any_trapped_info, "FDM trapped volume must be Info");
+    }
+
+    #[test]
+    fn test_trapped_volume_info_below_min_feature() {
+        // Tiny cavity (0.6 mm cube → analytical 0.216 mm³) under config
+        // with min_feature_size = 0.8 (res_volume = 0.512 mm³). Volume is
+        // below resolution → severity Info regardless of technology.
+        let mesh = make_cube_with_inner_cavity(6.0, 0.6);
+        let config = coarse_voxel_config(PrintTechnology::Sla);
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed for sub-resolution cavity");
+
+        // The detector may emit a region (it depends on whether the
+        // 0.6 mm cavity at voxel 0.2 mm contains any non-leak voxels).
+        // What's load-bearing: any trapped issue reported is Info, never
+        // Critical/Warning.
+        let any_critical = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::TrappedVolume && i.severity == IssueSeverity::Critical
+        });
+        assert!(
+            !any_critical,
+            "sub-resolution cavity must NOT be Critical even on SLA"
+        );
+        for issue in &result.issues {
+            if issue.issue_type == PrintIssueType::TrappedVolume {
+                assert_eq!(
+                    issue.severity,
+                    IssueSeverity::Info,
+                    "all sub-resolution trapped issues must be Info"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_trapped_volume_volume_within_10pct_of_analytical() {
+        // 6 mm outer cube + 2 mm cube cavity → analytical volume 8 mm³.
+        // Voxel-discretized volume must be within ±10% of analytical
+        // (per §9.6 + §6.3 line 1136 tolerance band; absorbs voxel
+        // discretization noise + cross-platform ULP variance).
+        let mesh = make_cube_with_inner_cavity(6.0, 2.0);
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+        assert_eq!(result.trapped_volumes.len(), 1);
+        let analytical_volume = 2.0_f64.powi(3); // cube cavity volume
+        let voxel_volume = result.trapped_volumes[0].volume;
+        approx::assert_relative_eq!(voxel_volume, analytical_volume, max_relative = 0.10);
+    }
+
+    #[test]
+    fn test_trapped_volume_sort_stable_across_runs() {
+        // Two disjoint cavities → two regions. §4.4 mandates sort by
+        // (center.x, center.y, center.z) via total_cmp; back-to-back
+        // runs must produce identical centers in the same order.
+        let mesh = make_cube_with_two_inner_cavities(8.0, 1.0, 1.5);
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+
+        #[allow(clippy::expect_used)]
+        let r1 = validate_for_printing(&mesh, &config).expect("validation should succeed (run 1)");
+        #[allow(clippy::expect_used)]
+        let r2 = validate_for_printing(&mesh, &config).expect("validation should succeed (run 2)");
+
+        assert_eq!(r1.trapped_volumes.len(), 2);
+        assert_eq!(r2.trapped_volumes.len(), 2);
+        for (a, b) in r1.trapped_volumes.iter().zip(r2.trapped_volumes.iter()) {
+            assert!((a.center.x - b.center.x).abs() < 1e-9);
+            assert!((a.center.y - b.center.y).abs() < 1e-9);
+            assert!((a.center.z - b.center.z).abs() < 1e-9);
+        }
+        // Ascending §4.4 sort: first center has smaller (x, y, z).
+        assert!(
+            r1.trapped_volumes[0].center.x <= r1.trapped_volumes[1].center.x,
+            "§4.4: trapped_volumes must sort by center.x ascending"
+        );
+    }
+
+    #[test]
+    fn test_trapped_volume_voxel_grid_oom_safety_skips() {
+        // Pathological config that would request a >1 GB grid: 200 mm cube
+        // at FDM-coarsened voxel = 0.2 mm → 1004³ ≈ 10⁹ bytes — at the
+        // boundary. Push into oversize via cavity-fixture-with-large-extent:
+        // construct a fake fixture whose vertices span (-1000, +1000) on
+        // each axis → 2000 mm extent at voxel 0.2 → 10004³ ≈ 10¹² bytes
+        // → far above the 1 GB cap → DetectorSkipped emitted before
+        // the grid is allocated.
+        let outer_extent = 2000.0;
+        let mesh = make_cube_with_inner_cavity(outer_extent, outer_extent / 3.0);
+        let config = coarse_voxel_config(PrintTechnology::Fdm);
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed (oom safety path)");
+
+        let any_skipped = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::DetectorSkipped
+                && i.description.contains("TrappedVolume")
+                && i.description.contains("1 GB")
+        });
+        assert!(
+            any_skipped,
+            "200 mm-extent fixture must trigger §6.3 step 4.5 memory pre-flight skip"
+        );
+        assert_eq!(
+            result.trapped_volumes.len(),
+            0,
+            "memory-cap skip must not populate trapped_volumes"
         );
     }
 }

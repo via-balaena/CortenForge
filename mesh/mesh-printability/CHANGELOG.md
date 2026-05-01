@@ -228,6 +228,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `example-mesh-printability-long-bridge` per §7.0 + §12.3's
   example-commit naming convention. Pure addition; second ⏸︎
   pause-for-visuals commit per §12.1 row #13.
+- **`check_trapped_volumes` detector + populated `TrappedVolumeRegion`
+  (Gap H, §6.3).** v0.7 exposed `PrintIssueType::TrappedVolume` but
+  `validate_for_printing` never populated a `trapped_volumes` field on
+  `PrintValidation` — a silent miss for SLA / SLS / MJF print
+  validation, since trapped uncured / unsintered material in a sealed
+  cavity is one of the dominant hard-failure modes for those processes.
+  v0.8 wires a private `check_trapped_volumes(mesh, config, validation)`
+  per §6.3: voxel-based exterior flood-fill. Algorithm: `voxel_size =
+  min(min_feature_size, layer_height) / 2`; mesh AABB padded by 2 voxel
+  widths; integer dims via `ceil(extent / voxel_size)`. Inside-mark
+  every voxel via per-row +X scanline + Möller-Trumbore parity; flood-
+  fill exterior from grid corner `(0, 0, 0)` over `VOXEL_UNKNOWN`
+  voxels (6-connected BFS via `VecDeque`); remaining `VOXEL_UNKNOWN`
+  voxels become `VOXEL_TRAPPED`; connected-component label trapped
+  voxels via 6-connected BFS; per component emit one
+  `TrappedVolumeRegion { center, volume, bounding_box, voxel_count }`
+  + one `PrintIssue` keyed on technology-aware severity classifier.
+  New public `TrappedVolumeRegion` type added to `regions::*`
+  (re-exported from the crate root); new
+  `PrintValidation.trapped_volumes: Vec<TrappedVolumeRegion>` field
+  populated alongside `thin_walls`, `overhangs`, `long_bridges`.
+  Per-cluster severity via a new `classify_trapped_volume_severity`:
+  `Info` if `volume < min_feature_size³` (below printer resolution;
+  not actionable), else `Critical` for SLA / SLS / MJF, `Info` for
+  FDM / Other (sealed cavities print fine on extrusion). Precondition:
+  `is_watertight(mesh)` (open-edge-count only — a new helper distinct
+  from the §6.1 `is_watertight_and_consistent_winding`, since
+  TrappedVolume tolerates inconsistent winding per §9.1 row 11). On
+  failure: emit `DetectorSkipped` Info + return without populating
+  `trapped_volumes`. **§6.3 step 4.5 amendment (§9.2.5-surfaced):**
+  pre-allocation memory check rejects voxel grids whose total byte
+  count would exceed 1 GB (1 byte per voxel; `u8` voxel state) —
+  emits `DetectorSkipped` Info with description naming the grid
+  dimensions + the voxel size, returns BEFORE allocation. Mitigates
+  §8.4 grid-memory blowup risk: a 250 × 200 × 220 mm full FDM build
+  volume at voxel 0.1 mm would request 11 GB; the cap catches this
+  cleanly. Verified pre-flight by direct arithmetic for FDM defaults
+  (20 mm part = 8.5 MB OK; 200 mm cube = 8 GB caught; full build
+  volume = 11 GB caught). **§6.3 spec refinement (v0.8 implementation
+  vs spec):** the §6.3 line 1096 text "a single uniform jitter
+  suffices" produces a parity-flip-by-2-cancel bug on axis-aligned
+  cube fixtures whose face diagonals run along `y = z`; v0.8
+  implementation uses **asymmetric per-axis jitter** (`ROW_JITTER_Y =
+  1.0e-5`, `ROW_JITTER_Z = 1.7e-5`) so the ray's `(y, z)` coords never
+  lie on a triangle's symmetry line. Both magnitudes still sit an
+  order above `EPS_RAY_OFFSET` (1e-6 mm). v0.9 spec edit will document
+  the asymmetric requirement. **§4.4 ordering**: `trapped_volumes`
+  regions sort by `(center.x, center.y, center.z)` via
+  `f64::total_cmp` (mirrors `long_bridges`' pattern at
+  `validation.rs:1335`); sort scoped per-detector to a `regions_before`
+  slice so a future hoist to `validate_for_printing` can move it
+  cleanly. **§7.3 visual demo deferred** to row #15. **§7.1 backfill
+  (3 deferred TrappedVolume assertions: `trapped_volumes.len() == 1`,
+  volume ≈ 6012.9 mm³, centroid `(15, 10, 8.05)`)** lands at row #14b
+  (a tiny follow-up commit immediately after row #14, per §12.1).
+  **SEMVER note**: pure addition of a new field on `PrintValidation`
+  and a new public `TrappedVolumeRegion` type;
+  `PrintIssueType::TrappedVolume` was already declared in v0.7 so
+  exhaustive `match` callers are unaffected.
+- **§9.2.5 stress fixtures + §9.2.1 deferred fixtures**
+  (`tests/stress_inputs.rs`): 9 new integration tests landing alongside
+  the §6.3 detector. §9.2.1 deferred from row #2:
+  `stress_existing_single_triangle_open_mesh` +
+  `stress_existing_two_faces_vertex_only_shared` — both assert that
+  the new TrappedVolume detector skips with `DetectorSkipped` on
+  non-watertight inputs, alongside ThinWall's matching skip. §9.2.5:
+  `stress_h_solid_cube_no_cavity`, `stress_h_open_mesh_skipped`,
+  `stress_h_sphere_inside_cube_volume_within_10pct` (cube cavity sized
+  to give analytical sphere volume 523.6 mm³; 10 % tolerance per §9.6
+  + §8.4 cross-platform FP-drift mitigation),
+  `stress_h_two_disjoint_cavities`,
+  `stress_h_disconnected_dual_cavity` (verifies grid-corner-seeded
+  flood-fill reaches both cubes' exteriors per §9.1 row 13),
+  `stress_h_voxel_grid_perf_cliff` (`#[cfg_attr(debug_assertions,
+  ignore)]`; release-only; 100 × 100 × 30 mm part with cavity, voxel
+  0.4 mm; <30 s release-mode runtime budget),
+  `stress_h_voxel_grid_oom_safety` (200 mm cube at FDM voxel 0.1 mm =
+  8 GB grid → `DetectorSkipped` emitted before allocation; runs in
+  <100 ms, locks the §6.3 step 4.5 amendment). **Deferred:**
+  `stress_h_subvoxel_opening_not_flagged` (§9.2.5 line 2382) is
+  explicitly deferred — the faithful fixture requires a watertight
+  cube + watertight inner cavity + sub-voxel tube fusing them via
+  hole-triangulation (≈ 50 LOC of cube-with-hole authoring + tube
+  topology), and the v0.8 documented limitation per §6.3 line 1118 is
+  already covered indirectly by `test_trapped_volume_info_below_min_feature`
+  in `validation.rs::tests` (resolution-threshold path). Geometry-
+  authoring effort is better paired with v0.9's drainage-path
+  simulation, when the behavior becomes actionable rather than
+  purely diagnostic.
+- **`cross-os` CI matrix covers mesh-printability (§10.4.1).** Single-
+  line append to `quality-gate.yml::cross-os::Run tests` step (adds
+  `-p mesh-printability` to the existing `cargo test` command). Cost:
+  ~2 min per OS (mesh-printability compiles fast in `cargo test` debug
+  mode); fits comfortably in the existing job runtime. Mitigates §8.4
+  Gap H FP-drift risk: macOS and Windows runners catch platform-
+  divergent hard-fails in the voxel inside-test (scanline ray-tri
+  parity + flood-fill) that single-OS coverage would miss. Per §9.4's
+  Gap H FP-drift mitigation table, this CI extension is load-bearing
+  for closing the §8.4 row 3 risk; the
+  `stress_h_sphere_inside_cube_volume_within_10pct` fixture's 10 %
+  volume tolerance + the cross-os matrix together absorb the
+  documented FP-drift surface.
 
 ### Changed
 

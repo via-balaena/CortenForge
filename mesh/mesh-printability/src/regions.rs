@@ -134,6 +134,51 @@ impl LongBridgeRegion {
     }
 }
 
+/// Information about a trapped volume region (§6.3 Gap H).
+///
+/// A trapped volume is a connected region of interior empty space inside
+/// a watertight mesh that has no path to the exterior. Detected via
+/// voxel-based exterior flood-fill: any voxel that is "inside" the mesh
+/// (per scanline ray-tri parity) AND not reached by flood-fill from the
+/// padded grid corner is "trapped". Connected components of trapped
+/// voxels are emitted as separate regions.
+///
+/// `center` is the mean of trapped-voxel centers in the component.
+/// `volume` is `voxel_count * voxel_size³` — voxel-discretized; use
+/// `approx::assert_relative_eq!` with `max_relative = 0.10` per §9.6.
+/// `bounding_box` is `(min voxel-center − voxel_size/2,
+/// max voxel-center + voxel_size/2)` — the axis-aligned bounding box
+/// of the component's voxel cells.
+#[derive(Debug, Clone)]
+pub struct TrappedVolumeRegion {
+    /// Centroid of the trapped voxel cluster (mean of voxel centers).
+    pub center: Point3<f64>,
+    /// Voxel-discretized volume in `mm³` (`voxel_count * voxel_size³`).
+    pub volume: f64,
+    /// Axis-aligned bounding box (`min`, `max`) of the component's voxels.
+    pub bounding_box: (Point3<f64>, Point3<f64>),
+    /// Number of trapped voxels in this component.
+    pub voxel_count: u32,
+}
+
+impl TrappedVolumeRegion {
+    /// Create a new trapped-volume region.
+    #[must_use]
+    pub const fn new(
+        center: Point3<f64>,
+        volume: f64,
+        bounding_box: (Point3<f64>, Point3<f64>),
+        voxel_count: u32,
+    ) -> Self {
+        Self {
+            center,
+            volume,
+            bounding_box,
+            voxel_count,
+        }
+    }
+}
+
 /// Information about a region that needs support.
 #[derive(Debug, Clone)]
 pub struct SupportRegion {
@@ -207,6 +252,22 @@ mod tests {
         assert!((region.end.x - 20.0).abs() < f64::EPSILON);
         assert_eq!(region.edges.len(), 2);
         assert_eq!(region.faces.len(), 4);
+    }
+
+    #[test]
+    fn test_trapped_volume_region() {
+        let region = TrappedVolumeRegion::new(
+            Point3::new(5.0, 5.0, 5.0),
+            523.6,
+            (Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 10.0, 10.0)),
+            1000,
+        );
+
+        assert!((region.center.x - 5.0).abs() < f64::EPSILON);
+        assert!((region.volume - 523.6).abs() < f64::EPSILON);
+        assert_eq!(region.voxel_count, 1000);
+        assert!((region.bounding_box.0.x - 0.0).abs() < f64::EPSILON);
+        assert!((region.bounding_box.1.x - 10.0).abs() < f64::EPSILON);
     }
 
     #[test]

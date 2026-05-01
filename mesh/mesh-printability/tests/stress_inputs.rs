@@ -9,17 +9,29 @@
 //! Coverage to date:
 //!
 //! - §9.2.1 #1: existing-detector — empty-mesh error preserved (commit #2).
+//! - §9.2.1 #2–#3: existing-detector — single triangle + vertex-only-shared
+//!   (commit #14, deferred from #2 until `TrappedVolume` exists).
 //! - §9.2.2 #1–#4: Gap M predicate + build-plate filter (commit #2).
 //! - §9.2.3 #1–#7: Gap C `ThinWall` adversarial inputs (commit #10).
 //! - §9.2.4 #1–#5: Gap G `LongBridge` adversarial inputs (commit #12).
+//! - §9.2.5 #1, #2, #4–#8: Gap H `TrappedVolume` adversarial inputs
+//!   (commit #14). Fixture #3 `stress_h_subvoxel_opening_not_flagged`
+//!   is **explicitly deferred** — see "Deferred fixtures" below.
 //!
 //! Deferred fixtures and where they land:
 //!
-//! - §9.2.1 #2 `stress_existing_single_triangle_open_mesh` and
-//!   §9.2.1 #3 `stress_existing_two_faces_vertex_only_shared` reference
-//!   the `TrappedVolume` detector (commit #14 / §6.3). They land with
-//!   commit #14 (the first commit at which all of their assertion
-//!   targets exist).
+//! - §9.2.5 #3 `stress_h_subvoxel_opening_not_flagged` documents the v0.8
+//!   intentional behavior that flood-fill leaks through cavity-to-exterior
+//!   channels narrower than `voxel_size`. The faithful fixture requires a
+//!   watertight cube + watertight inner cavity + sub-voxel tube fusing
+//!   them — ≈ 50 LOC of vertex-and-face-with-hole-triangulation authoring
+//!   per §9.5 hand-authoring note. The detector's correct handling of
+//!   sub-voxel features is already documented at §6.3 line 1118 + tested
+//!   indirectly via `test_trapped_volume_info_below_min_feature` in
+//!   `validation.rs::tests` (which exercises the resolution-threshold
+//!   path). Faithful sub-voxel-opening fixture deferred to a v0.8.x
+//!   follow-up commit or v0.9 once drainage-path simulation makes the
+//!   behavior actionable rather than purely diagnostic.
 //!
 //! - §9.2.2 #5 `stress_m_y_up_orientation_symmetric` exercises Gap L's
 //!   `with_build_up_direction`. It was not authored in commit #8 (Gap
@@ -28,7 +40,8 @@
 //!   land in a v0.9 cleanup pass if needed.
 
 use mesh_printability::{
-    IssueSeverity, PrintIssueType, PrintabilityError, PrinterConfig, validate_for_printing,
+    IssueSeverity, PrintIssueType, PrintTechnology, PrintabilityError, PrinterConfig,
+    validate_for_printing,
 };
 use mesh_types::{IndexedMesh, Point3, Vector3};
 
@@ -847,5 +860,505 @@ fn stress_g_diagonal_underflag_with_y_up() {
         validation.long_bridges.len(),
         0,
         "Gap G: +Y up rotation must produce same 0 regions as +Z (symmetry)"
+    );
+}
+
+// ===== §9.2.1 deferred (TrappedVolume-aware) ============================
+
+#[test]
+fn stress_existing_single_triangle_open_mesh() {
+    // Single triangle (3 verts, 1 face): 3 open edges → not watertight.
+    // Both `ThinWall` and `TrappedVolume` precondition checks must skip
+    // and emit one `DetectorSkipped` `Info` issue each. The mesh also
+    // produces a `NotWatertight` `Critical` issue from `check_basic_manifold`.
+    let mesh = IndexedMesh::from_parts(
+        vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(5.0, 10.0, 0.0),
+        ],
+        vec![[0, 1, 2]],
+    );
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("single triangle: validation must succeed");
+
+    let any_not_watertight = validation
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::NotWatertight);
+    assert!(
+        any_not_watertight,
+        "single triangle must flag NotWatertight (3 open edges)"
+    );
+    let thinwall_skipped = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("ThinWall")
+    });
+    let trapped_skipped = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("TrappedVolume")
+    });
+    assert!(
+        thinwall_skipped,
+        "ThinWall must emit DetectorSkipped on non-watertight single triangle"
+    );
+    assert!(
+        trapped_skipped,
+        "TrappedVolume must emit DetectorSkipped on non-watertight single triangle"
+    );
+    assert_eq!(validation.thin_walls.len(), 0);
+    assert_eq!(validation.trapped_volumes.len(), 0);
+}
+
+#[test]
+fn stress_existing_two_faces_vertex_only_shared() {
+    // Two disjoint triangles sharing exactly one vertex (no shared edge).
+    // Six unique edges (count = 1 each) → 6 open edges → not watertight.
+    // `ThinWall` and `TrappedVolume` skip; no winding-inconsistency flag
+    // (no shared directed edge to collide).
+    let mesh = IndexedMesh::from_parts(
+        vec![
+            // Triangle A
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(5.0, 10.0, 0.0),
+            // Triangle B — shares vertex 0 only, offset along +Z
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(0.0, 10.0, 5.0),
+        ],
+        vec![[0, 1, 2], [0, 3, 4]],
+    );
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("vertex-only-shared mesh: validation must succeed");
+
+    let any_not_watertight = validation
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::NotWatertight);
+    assert!(
+        any_not_watertight,
+        "vertex-only-shared mesh must flag NotWatertight (6 open edges)"
+    );
+    let any_winding_collision = validation
+        .issues
+        .iter()
+        .any(|i| i.description.contains("winding inconsistency"));
+    assert!(
+        !any_winding_collision,
+        "no shared edges → no winding-inconsistency flag"
+    );
+    let thinwall_skipped = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("ThinWall")
+    });
+    let trapped_skipped = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped && i.description.contains("TrappedVolume")
+    });
+    assert!(thinwall_skipped, "ThinWall must skip");
+    assert!(trapped_skipped, "TrappedVolume must skip");
+}
+
+// ===== §9.2.5 Gap H (TrappedVolume) ======================================
+//
+// Per §9.5 hand-authoring note: helpers live in this file (no shared
+// `tests/common/` module). The cube-cavity helpers below mirror the
+// `validation.rs::tests::make_cube_with_inner_cavity` pattern; the §6.3
+// spec uses "sphere" terminology but the implementations use cube
+// cavities for vertex-and-face authoring simplicity. The detector is
+// curvature-agnostic (operates on voxelized parity), so a cube cavity
+// exercises the same algorithmic path.
+
+/// Coarse-voxel `PrinterConfig` for stress fixtures: voxel = 0.4 mm
+/// regardless of technology (`min_feature_size = 1.6`,
+/// `layer_height = 0.8`). Matches §6.3 line 1140's "100 mm part,
+/// `voxel_size` = 0.4 mm" perf-doc example. Keeps integration-test
+/// runtime well within `tests-debug` per-crate budget while still
+/// driving every algorithmic path.
+const fn stress_h_coarse_config(tech: PrintTechnology) -> PrinterConfig {
+    let mut c = match tech {
+        PrintTechnology::Sla => PrinterConfig::sla_default(),
+        PrintTechnology::Sls => PrinterConfig::sls_default(),
+        PrintTechnology::Mjf => PrinterConfig::mjf_default(),
+        PrintTechnology::Fdm | PrintTechnology::Other => PrinterConfig::fdm_default(),
+    };
+    c.technology = tech;
+    c.min_feature_size = 1.6;
+    c.layer_height = 0.8;
+    c
+}
+
+/// Append a watertight cube to `vertices` + `faces` whose corners span
+/// `min` → `max`. Faces are wound CCW-from-outside (normals pointing
+/// out of the cube). 8 vertices, 12 triangles.
+fn append_outer_cube(
+    vertices: &mut Vec<Point3<f64>>,
+    faces: &mut Vec<[u32; 3]>,
+    min: Point3<f64>,
+    max: Point3<f64>,
+) {
+    #[allow(clippy::cast_possible_truncation)]
+    let base = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        Point3::new(min.x, min.y, min.z),
+        Point3::new(max.x, min.y, min.z),
+        Point3::new(max.x, max.y, min.z),
+        Point3::new(min.x, max.y, min.z),
+        Point3::new(min.x, min.y, max.z),
+        Point3::new(max.x, min.y, max.z),
+        Point3::new(max.x, max.y, max.z),
+        Point3::new(min.x, max.y, max.z),
+    ]);
+    let cf = |a: u32, b: u32, c: u32| [base + a, base + b, base + c];
+    faces.extend_from_slice(&[
+        cf(0, 2, 1),
+        cf(0, 3, 2),
+        cf(4, 5, 6),
+        cf(4, 6, 7),
+        cf(0, 1, 5),
+        cf(0, 5, 4),
+        cf(3, 6, 2),
+        cf(3, 7, 6),
+        cf(0, 4, 7),
+        cf(0, 7, 3),
+        cf(1, 2, 6),
+        cf(1, 6, 5),
+    ]);
+}
+
+/// Append a watertight inner-cavity cube to `vertices` + `faces` whose
+/// corners span `min` → `max`. Faces are wound CCW-from-INSIDE the
+/// cavity (normals point INTO the cavity). 8 vertices, 12 triangles.
+fn append_inner_cavity(
+    vertices: &mut Vec<Point3<f64>>,
+    faces: &mut Vec<[u32; 3]>,
+    min: Point3<f64>,
+    max: Point3<f64>,
+) {
+    #[allow(clippy::cast_possible_truncation)]
+    let base = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        Point3::new(min.x, min.y, min.z),
+        Point3::new(max.x, min.y, min.z),
+        Point3::new(max.x, max.y, min.z),
+        Point3::new(min.x, max.y, min.z),
+        Point3::new(min.x, min.y, max.z),
+        Point3::new(max.x, min.y, max.z),
+        Point3::new(max.x, max.y, max.z),
+        Point3::new(min.x, max.y, max.z),
+    ]);
+    let cf = |a: u32, b: u32, c: u32| [base + a, base + b, base + c];
+    faces.extend_from_slice(&[
+        cf(0, 1, 2),
+        cf(0, 2, 3),
+        cf(4, 6, 5),
+        cf(4, 7, 6),
+        cf(0, 5, 1),
+        cf(0, 4, 5),
+        cf(3, 2, 6),
+        cf(3, 6, 7),
+        cf(0, 7, 4),
+        cf(0, 3, 7),
+        cf(1, 6, 2),
+        cf(1, 5, 6),
+    ]);
+}
+
+#[test]
+fn stress_h_solid_cube_no_cavity() {
+    // 20 mm solid cube; 0 trapped regions (no cavity).
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(20.0, 20.0, 20.0),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = stress_h_coarse_config(PrintTechnology::Fdm);
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("solid cube: validation must succeed");
+
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        0,
+        "solid cube must produce no trapped regions"
+    );
+    let any_trapped = validation
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::TrappedVolume);
+    assert!(!any_trapped, "solid cube: no TrappedVolume issues");
+}
+
+#[test]
+fn stress_h_open_mesh_skipped() {
+    // 20 mm cube with one face removed → 4 open edges → not watertight
+    // → DetectorSkipped Info; trapped_volumes stays empty.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(20.0, 20.0, 20.0),
+    );
+    // Drop the +Z face's two triangles (last 2 of the 12-tri outer cube
+    // would be `[1, 2, 6], [1, 6, 5]` — the +X face. Remove the +Z
+    // face's triangles at indices 2, 3 (`[4, 5, 6], [4, 6, 7]`).
+    let faces: Vec<[u32; 3]> = faces
+        .into_iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != 2 && *idx != 3)
+        .map(|(_, f)| f)
+        .collect();
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = stress_h_coarse_config(PrintTechnology::Fdm);
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("open mesh: validation must succeed");
+
+    let any_skipped = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped
+            && i.description.contains("TrappedVolume")
+            && i.description.contains("watertight")
+    });
+    assert!(
+        any_skipped,
+        "open mesh must emit TrappedVolume DetectorSkipped"
+    );
+    assert_eq!(validation.trapped_volumes.len(), 0);
+}
+
+#[test]
+fn stress_h_sphere_inside_cube_volume_within_10pct() {
+    // Spec name retains "sphere" per §9.2.5 line 2383; implementation uses
+    // a cube cavity sized so its analytical volume equals (4/3)π·5³ ≈
+    // 523.6 mm³ (cube edge ≈ 8.0588 mm). The 10% tolerance band absorbs
+    // voxel discretization noise + cross-platform ULP variance per §9.6
+    // (mitigates §8.4 Gap H FP-drift risk).
+    let cube_edge = ((4.0_f64 / 3.0) * std::f64::consts::PI * 5.0_f64.powi(3)).cbrt();
+    let outer_size = 20.0;
+    let cavity_min_coord = (outer_size - cube_edge) / 2.0;
+    let cavity_max_coord = cavity_min_coord + cube_edge;
+
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(outer_size, outer_size, outer_size),
+    );
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(cavity_min_coord, cavity_min_coord, cavity_min_coord),
+        Point3::new(cavity_max_coord, cavity_max_coord, cavity_max_coord),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = stress_h_coarse_config(PrintTechnology::Fdm);
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("sphere-cavity fixture: validation must succeed");
+
+    assert_eq!(validation.trapped_volumes.len(), 1);
+    let analytical_volume = (4.0_f64 / 3.0) * std::f64::consts::PI * 5.0_f64.powi(3);
+    let voxel_volume = validation.trapped_volumes[0].volume;
+    approx::assert_relative_eq!(voxel_volume, analytical_volume, max_relative = 0.10);
+}
+
+#[test]
+fn stress_h_two_disjoint_cavities() {
+    // 20 mm outer cube + 2 disjoint 4 mm cube cavities at offset 3 mm
+    // from opposite corners — walls between cavities ≥ 6 mm = 15
+    // voxels at voxel 0.4 mm. Flood-fill labels them as 2 components.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(20.0, 20.0, 20.0),
+    );
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(3.0, 3.0, 3.0),
+        Point3::new(7.0, 7.0, 7.0),
+    );
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(13.0, 13.0, 13.0),
+        Point3::new(17.0, 17.0, 17.0),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = stress_h_coarse_config(PrintTechnology::Fdm);
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("two-cavity fixture: validation must succeed");
+
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        2,
+        "two disjoint cavities must produce two regions"
+    );
+    let count_trapped_issues = validation
+        .issues
+        .iter()
+        .filter(|i| i.issue_type == PrintIssueType::TrappedVolume)
+        .count();
+    assert_eq!(
+        count_trapped_issues, 2,
+        "one TrappedVolume issue per region"
+    );
+}
+
+#[test]
+fn stress_h_disconnected_dual_cavity() {
+    // Two separate 12 mm cubes-with-cavity offset by 30 mm along +X.
+    // Each cube has its own watertight closed cavity (4 mm). The
+    // exterior flood-fill from the grid corner reaches both cubes'
+    // exteriors via the surrounding empty space, so both cavities are
+    // correctly labeled trapped (§9.1 row 13). Verifies the grid-corner
+    // seed is not blind to "second" cubes.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    // Cube A at origin
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(12.0, 12.0, 12.0),
+    );
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(4.0, 4.0, 4.0),
+        Point3::new(8.0, 8.0, 8.0),
+    );
+    // Cube B offset +30 along X
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(42.0, 0.0, 0.0),
+        Point3::new(54.0, 12.0, 12.0),
+    );
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(46.0, 4.0, 4.0),
+        Point3::new(50.0, 8.0, 8.0),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = stress_h_coarse_config(PrintTechnology::Fdm);
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("dual-cube-with-cavity fixture: validation must succeed");
+
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        2,
+        "two disconnected cubes-with-cavity must produce two trapped regions"
+    );
+}
+
+/// **Release-only** perf-cliff fixture per §9.2.5 line 2386.
+///
+/// 100 × 100 × 30 mm part with a 6 mm cube cavity at the center, voxel
+/// 0.4 mm → grid ≈ 250 × 250 × 75 = 4.7 M voxels = 4.7 MB, well under
+/// the 64 MB stress-fixture budget. Asserts the detector completes
+/// quickly enough not to time out the integration-test budget;
+/// debug-mode runtime is too slow per `feedback_release_mode_heavy_tests`,
+/// so the fixture is `#[cfg_attr(debug_assertions, ignore)]`.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release-only perf budget; debug runtime would over-budget the 30 s ceiling"
+)]
+fn stress_h_voxel_grid_perf_cliff() {
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(100.0, 100.0, 30.0),
+    );
+    // 6 mm cube cavity at center; centroid at (50, 50, 15).
+    append_inner_cavity(
+        &mut vertices,
+        &mut faces,
+        Point3::new(47.0, 47.0, 12.0),
+        Point3::new(53.0, 53.0, 18.0),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = stress_h_coarse_config(PrintTechnology::Fdm);
+
+    let start = std::time::Instant::now();
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("perf-cliff fixture: validation must succeed");
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        validation.trapped_volumes.len(),
+        1,
+        "single cavity → 1 region"
+    );
+    assert!(
+        elapsed.as_secs_f64() < 30.0,
+        "stress_h_voxel_grid_perf_cliff exceeded 30 s release-mode runtime budget: {elapsed:?}"
+    );
+}
+
+#[test]
+fn stress_h_voxel_grid_oom_safety() {
+    // 200 mm cube at FDM defaults (voxel = 0.1 mm) → 2000³ ≈ 8 × 10⁹
+    // voxels = 8 GB, well above the 1 GB cap. The §6.3 step 4.5
+    // memory pre-flight must emit `DetectorSkipped` Info BEFORE the
+    // grid is allocated; the test runs in <1 ms (no allocation).
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(200.0, 200.0, 200.0),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    let start = std::time::Instant::now();
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("oom-safety fixture: validation must succeed");
+    let elapsed = start.elapsed();
+
+    let any_skipped = validation.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::DetectorSkipped
+            && i.description.contains("TrappedVolume")
+            && i.description.contains("1 GB")
+    });
+    assert!(
+        any_skipped,
+        "200 mm cube at FDM voxel 0.1 mm must trigger §6.3 step 4.5 memory pre-flight skip"
+    );
+    assert_eq!(validation.trapped_volumes.len(), 0);
+    // Memory cap check fires BEFORE grid alloc → fixture runs in <1 ms;
+    // 100 ms is a generous safety margin for cold-cache / loaded CI runners.
+    assert!(
+        elapsed.as_millis() < 100,
+        "memory pre-flight must skip before allocation; got {elapsed:?}"
     );
 }
