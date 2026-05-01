@@ -675,6 +675,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rust assertions in `main()`. Test counts unchanged: example adds 0
   lib/integ/doc tests; the smoke-test via `cargo run --release` exits
   0 with the new anchors active.
+- **Example crate `example-mesh-printability-technology-sweep`** —
+  cross-technology severity divergence visual demo (V08_FIX_ARC_SPEC.md
+  §7.7, row #22). Hand-authors the §7.1 hollow-box fixture scaled to
+  `25 × 20 × 15 mm` outer / `22 × 17 × 13.1 mm` inner (top wall
+  thinned to 0.4 mm; sealed inner cavity; 16v / 24f, watertight via
+  the 36-edge incidence-2 numbers-pass + signed-volume bit-exact at
+  `2600.6 mm³ = 7500 - 4899.4`) and validates it under all four
+  `PrinterConfig::*_default()` technologies. The same physical part
+  produces four different printability verdicts: **FDM** flags the
+  0.4 mm wall as 2× Critical `ThinWall` (`0.4 < 1.0 / 2 = 0.5`),
+  cavity as Info `TrappedVolume`, cavity ceiling as Critical
+  `ExcessiveOverhang` (`90 > 45 + 30 = 75`); **SLA** does NOT flag
+  `ThinWall` (`0.4 < 0.4` is false; strict-less-than boundary
+  demonstration), cavity as Critical `TrappedVolume`, ceiling as
+  Critical overhang (`90 > 30 + 30 = 60`); **SLS / MJF** flag the
+  0.4 mm wall as 2× Warning `ThinWall` (above `min_wall / 2` band),
+  cavity as Critical `TrappedVolume`, no overhangs (silent skip,
+  `requires_supports() == false` ⇒ `check_overhangs` early-returns at
+  `validation.rs:304` BEFORE the per-face loop). All four techs fail
+  `is_printable()` for *different* reasons — the load-bearing
+  pedagogical claim. Surprise co-flag surfaced in stdout but NOT
+  asserted (per the §7.7 matrix scope): FDM and SLA additionally
+  flag 1× Critical `LongBridge` on the 22 mm cavity-ceiling extent
+  (FDM `max_bridge_span = 10 mm`, SLA `5 mm`); SLS / MJF
+  `max_bridge_span = ∞` so no `LongBridge` ever fires. 5 PLY
+  artifacts (`mesh.ply` + `issues_<tech>.ply` × 4) for the visuals
+  pass — each tech produces a different point-cloud overlay on the
+  same mesh. No spec deviations surfaced — §7.7 spec body matched
+  empirical detector behavior on first authoring. Test counts
+  unchanged: example adds 0 lib/integ/doc tests (smoke-tested via
+  `cargo run --release` exit-0).
 
 ### Changed
 

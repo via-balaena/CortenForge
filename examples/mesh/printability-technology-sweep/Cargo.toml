@@ -1,0 +1,23 @@
+[package]
+name = "example-mesh-printability-technology-sweep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# 24-triangle hollow-box construction + Point3 + IndexedMesh::from_parts.
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply + out/issues_<tech>.ply (ASCII PLY for human-
+# readable diff).
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::*_default + region/issue/severity
+# types for the per-tech severity matrix.
+mesh-printability = { workspace = true }
+# Result<()> return type for main().
+anyhow = { workspace = true }
+# assert_relative_eq! for thickness / centroid / volume numerical anchors.
+approx = { workspace = true }
+
+[lints]
+workspace = true
