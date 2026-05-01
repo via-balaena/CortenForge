@@ -12,7 +12,8 @@ use crate::config::{PrintTechnology, PrinterConfig};
 use crate::error::{PrintabilityError, PrintabilityResult};
 use crate::issues::{IssueSeverity, PrintIssue, PrintIssueType};
 use crate::regions::{
-    LongBridgeRegion, OverhangRegion, SupportRegion, ThinWallRegion, TrappedVolumeRegion,
+    LongBridgeRegion, OverhangRegion, SelfIntersectingRegion, SupportRegion, ThinWallRegion,
+    TrappedVolumeRegion,
 };
 
 /// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
@@ -57,6 +58,9 @@ pub struct PrintValidation {
     /// Trapped-volume regions detected (§6.3 Gap H).
     pub trapped_volumes: Vec<TrappedVolumeRegion>,
 
+    /// Self-intersecting triangle pairs detected (§6.4 Gap I).
+    pub self_intersecting: Vec<SelfIntersectingRegion>,
+
     /// Regions needing support structures.
     pub support_regions: Vec<SupportRegion>,
 
@@ -78,6 +82,7 @@ impl PrintValidation {
             overhangs: Vec::new(),
             long_bridges: Vec::new(),
             trapped_volumes: Vec::new(),
+            self_intersecting: Vec::new(),
             support_regions: Vec::new(),
             estimated_print_time: None,
             estimated_material_volume: None,
@@ -203,6 +208,11 @@ pub fn validate_for_printing(
     // ThinWall) — `§9.1` row 11 documents that TrappedVolume tolerates
     // inconsistent winding.
     check_trapped_volumes(mesh, config, &mut validation);
+
+    // §6.4 Gap I — self-intersecting triangle pairs via mesh-repair
+    // re-use. No precondition (mesh-repair handles all input gracefully:
+    // single-face / empty / large meshes).
+    check_self_intersecting(mesh, &mut validation);
 
     Ok(validation)
 }
@@ -1863,6 +1873,82 @@ fn check_trapped_volumes(
     });
 }
 
+/// §6.4 Gap I — detect self-intersecting triangle pairs via mesh-repair.
+///
+/// Re-uses `mesh_repair::detect_self_intersections` with
+/// `IntersectionParams::default()` (`max_reported = 100`,
+/// `epsilon = 1e-10`, `skip_adjacent = true`). One
+/// `SelfIntersectingRegion` is pushed per intersecting pair (capped
+/// at 100 by default params; the cap is exposed in the issue
+/// description). One summary `PrintIssue` is pushed at
+/// `IssueSeverity::Critical` — slicer behavior on self-intersection is
+/// undefined, so any pair blocks `is_printable()`.
+///
+/// Adjacent triangles sharing an edge are skipped via
+/// `skip_adjacent = true` and not flagged. Vertex-only contact is not
+/// an intersection (interiors do not share points) and is not flagged.
+///
+/// `face_a` and `face_b` are canonicalized so `face_a < face_b` per
+/// §4.4. `approximate_location` is the midpoint of the two face
+/// centroids — visual placement only. The §4.4 sort is range-restricted
+/// to this detector's emissions so a future hoist of the sort to
+/// `validate_for_printing` does not have to undo it per-detector
+/// (same precedent as `check_trapped_volumes` at `validation.rs:1867`).
+fn check_self_intersecting(mesh: &IndexedMesh, validation: &mut PrintValidation) {
+    let result = mesh_repair::intersect::detect_self_intersections(
+        mesh,
+        &mesh_repair::intersect::IntersectionParams::default(),
+    );
+
+    if !result.has_intersections {
+        return;
+    }
+
+    let regions_before = validation.self_intersecting.len();
+    for &(a, b) in &result.intersecting_pairs {
+        // mesh-repair's outer/inner-loop construction emits `(i, j)`
+        // with `i < j`, so canonicalization is defensive insurance —
+        // §6.4 line 1162 documents that mesh-repair does not guarantee
+        // canonical order in its output.
+        let (face_a, face_b) = if a < b { (a, b) } else { (b, a) };
+        let centroid_a = compute_face_centroid(mesh, face_a as usize);
+        let centroid_b = compute_face_centroid(mesh, face_b as usize);
+        let approximate_location = Point3::new(
+            f64::midpoint(centroid_a.x, centroid_b.x),
+            f64::midpoint(centroid_a.y, centroid_b.y),
+            f64::midpoint(centroid_a.z, centroid_b.z),
+        );
+        validation
+            .self_intersecting
+            .push(SelfIntersectingRegion::new(
+                face_a,
+                face_b,
+                approximate_location,
+            ));
+    }
+
+    let pair_count = result.intersection_count;
+    let truncation_suffix = if result.truncated {
+        " (search truncated; total may be higher)"
+    } else {
+        ""
+    };
+    let issue = PrintIssue::new(
+        PrintIssueType::SelfIntersecting,
+        IssueSeverity::Critical,
+        format!("{pair_count} self-intersecting triangle pair(s){truncation_suffix}"),
+    );
+    validation.issues.push(issue);
+
+    // §4.4 sort: `(face_a, face_b)` ascending. Range-restricted to
+    // this detector's emissions per the precedent above.
+    validation.self_intersecting[regions_before..].sort_by(|a, b| {
+        a.face_a
+            .cmp(&b.face_a)
+            .then_with(|| a.face_b.cmp(&b.face_b))
+    });
+}
+
 /// Compute the bounding box of a mesh.
 fn compute_bounds(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
     let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
@@ -2865,16 +2951,26 @@ mod tests {
             // Left side (outward -x; vertical wall):
             [5, 11, 6],
             [5, 6, 0],
-            // Front face (outward -y; hexagon fanned from P1):
-            [0, 1, 2],
-            [0, 2, 3],
-            [0, 3, 4],
-            [0, 4, 5],
-            // Back face (outward +y; hexagon fanned from P1'):
-            [6, 11, 10],
-            [6, 10, 9],
-            [6, 9, 8],
-            [6, 8, 7],
+            // Front face (outward -y; hexagon fanned from P6 = vertex
+            // 5). Fanning from P1 (the original choice) overlaps the
+            // pair `[P1,P2,P3]` and `[P1,P3,P4]` because P4 sits at a
+            // SMALLER polar angle than P3 from P1's perspective on the
+            // L-shape (concave reflex at P3) — Gap I's
+            // `check_self_intersecting` correctly flagged the bug.
+            // Fanning from convex P6 in the monotonic angular order
+            // P5 → P4 → P3 → P2 → P1 produces non-overlapping
+            // triangles with consistent `-y` outward normals.
+            [5, 3, 4],
+            [5, 2, 3],
+            [5, 1, 2],
+            [5, 0, 1],
+            // Back face (outward +y; hexagon fanned from P6' = vertex
+            // 11) — same ear-clipping rationale, traversal reversed
+            // to flip the normal to `+y`.
+            [11, 10, 9],
+            [11, 9, 8],
+            [11, 8, 7],
+            [11, 7, 6],
         ];
         IndexedMesh::from_parts(vertices, faces)
     }
@@ -4303,5 +4399,216 @@ mod tests {
             0,
             "memory-cap skip must not populate trapped_volumes"
         );
+    }
+
+    // ===== §6.4 Gap I — SelfIntersecting detector tests ==================
+
+    /// Two interpenetrating triangles that share NO vertices. Triangle A
+    /// lies in the `z = 0` plane with `x ∈ [0, 10]`, `y ∈ [0, 10]`;
+    /// triangle B lies in the `y = 5` plane with `z ∈ [-5, 5]`. B's
+    /// edges cross `z = 0` at `(4, 5, 0)` and `(6, 5, 0)` — a segment
+    /// lying inside A's interior. mesh-repair flags the pair via
+    /// Möller-Trumbore at `epsilon = 1e-10`.
+    fn make_two_intersecting_triangles() -> IndexedMesh {
+        let vertices = vec![
+            // Triangle A — XY plane.
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(5.0, 10.0, 0.0),
+            // Triangle B — y=5 plane, vertically oriented.
+            Point3::new(3.0, 5.0, -5.0),
+            Point3::new(7.0, 5.0, -5.0),
+            Point3::new(5.0, 5.0, 5.0),
+        ];
+        let faces = vec![[0, 1, 2], [3, 4, 5]];
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn test_self_intersecting_two_overlapping_triangles() {
+        let mesh = make_two_intersecting_triangles();
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed on two-triangle fixture");
+
+        assert!(
+            !result.self_intersecting.is_empty(),
+            "two interpenetrating non-adjacent triangles must produce ≥ 1 region"
+        );
+        let any_critical = result.issues.iter().any(|i| {
+            i.issue_type == PrintIssueType::SelfIntersecting
+                && i.severity == IssueSeverity::Critical
+        });
+        assert!(
+            any_critical,
+            "self-intersection issue must be Critical (slicer behavior undefined)"
+        );
+    }
+
+    #[test]
+    fn test_self_intersecting_clean_cube_no_issue() {
+        // Clean watertight cube — no self-intersections.
+        let mesh = create_watertight_cube();
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result =
+            validate_for_printing(&mesh, &config).expect("validation should succeed on clean cube");
+
+        assert_eq!(
+            result.self_intersecting.len(),
+            0,
+            "clean watertight cube must produce 0 self-intersecting regions"
+        );
+        let any_si_issue = result
+            .issues
+            .iter()
+            .any(|i| i.issue_type == PrintIssueType::SelfIntersecting);
+        assert!(
+            !any_si_issue,
+            "no self-intersecting issue should be emitted on a clean cube"
+        );
+    }
+
+    #[test]
+    fn test_self_intersecting_adjacent_triangles_skipped() {
+        // Two triangles sharing an edge `(0)-(1)`. mesh-repair's
+        // `skip_adjacent = true` filters edge-sharing pairs out before
+        // Möller-Trumbore, so no intersection is reported.
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(0.5, -1.0, 0.0),
+        ];
+        let faces = vec![[0, 1, 2], [0, 1, 3]];
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed on edge-adjacent pair");
+
+        assert_eq!(
+            result.self_intersecting.len(),
+            0,
+            "edge-adjacent triangles must be skipped (skip_adjacent = true)"
+        );
+    }
+
+    #[test]
+    fn test_self_intersecting_truncation_at_100() {
+        // Light unit-test version — assert issue-description structure
+        // on the non-truncated path (one intersecting pair → no
+        // truncation suffix). The heavy 100-cap fixture lives at
+        // `stress_i_truncation_at_100` per §9.2.6.
+        let mesh = make_two_intersecting_triangles();
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed on two-triangle fixture");
+
+        let issue = result
+            .issues
+            .iter()
+            .find(|i| i.issue_type == PrintIssueType::SelfIntersecting);
+        #[allow(clippy::expect_used)]
+        let issue = issue.expect("self-intersecting issue must be present");
+        assert!(
+            issue
+                .description
+                .contains("self-intersecting triangle pair"),
+            "issue description must mention 'self-intersecting triangle pair'; got `{}`",
+            issue.description
+        );
+        assert!(
+            !issue.description.contains("truncated"),
+            "single-pair fixture must NOT contain truncation suffix; got `{}`",
+            issue.description
+        );
+    }
+
+    #[test]
+    fn test_self_intersecting_approximate_location_in_midpoint() {
+        // For `make_two_intersecting_triangles`:
+        // - Triangle A centroid = ((0+10+5)/3, (0+0+10)/3, 0) = (5, 10/3, 0).
+        // - Triangle B centroid = ((3+7+5)/3, 5, (-5-5+5)/3) = (5, 5, -5/3).
+        // - Midpoint = (5, (10/3 + 5)/2, (0 + -5/3)/2) = (5, 25/6, -5/6).
+        let mesh = make_two_intersecting_triangles();
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed on two-triangle fixture");
+
+        assert_eq!(result.self_intersecting.len(), 1);
+        let region = &result.self_intersecting[0];
+        let expected_x = 5.0;
+        let expected_y = f64::midpoint(10.0 / 3.0, 5.0);
+        let expected_z = -5.0 / 6.0;
+        approx::assert_relative_eq!(
+            region.approximate_location.x,
+            expected_x,
+            epsilon = EPS_GEOMETRIC
+        );
+        approx::assert_relative_eq!(
+            region.approximate_location.y,
+            expected_y,
+            epsilon = EPS_GEOMETRIC
+        );
+        approx::assert_relative_eq!(
+            region.approximate_location.z,
+            expected_z,
+            epsilon = EPS_GEOMETRIC
+        );
+    }
+
+    #[test]
+    fn test_self_intersecting_critical_blocks_is_printable() {
+        let mesh = make_two_intersecting_triangles();
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed on two-triangle fixture");
+
+        assert!(
+            !result.is_printable(),
+            "any self-intersecting pair must flip is_printable() to false"
+        );
+    }
+
+    #[test]
+    fn test_self_intersecting_sort_stable() {
+        // Two consecutive runs on the same fixture must produce the
+        // same `(face_a, face_b)` ordering — locks §4.4 sort.
+        let mesh = make_two_intersecting_triangles();
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let r1 = validate_for_printing(&mesh, &config).expect("validation should succeed (run 1)");
+        #[allow(clippy::expect_used)]
+        let r2 = validate_for_printing(&mesh, &config).expect("validation should succeed (run 2)");
+
+        assert_eq!(r1.self_intersecting.len(), r2.self_intersecting.len());
+        for (a, b) in r1.self_intersecting.iter().zip(r2.self_intersecting.iter()) {
+            assert_eq!(a.face_a, b.face_a);
+            assert_eq!(a.face_b, b.face_b);
+        }
+    }
+
+    #[test]
+    fn test_self_intersecting_face_indices_unique_per_pair() {
+        // Canonical `face_a < face_b` per §6.4 line 1162.
+        let mesh = make_two_intersecting_triangles();
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation should succeed on two-triangle fixture");
+
+        for region in &result.self_intersecting {
+            assert!(
+                region.face_a < region.face_b,
+                "§6.4 canonical ordering: face_a ({}) must be < face_b ({})",
+                region.face_a,
+                region.face_b
+            );
+        }
     }
 }

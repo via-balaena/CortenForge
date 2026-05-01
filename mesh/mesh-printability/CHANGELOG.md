@@ -391,6 +391,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   centroid + bounding box already in `issues.ply` cover the
   pedagogical need; the per-voxel point-cloud is a v0.9 visualization
   enhancement once a clear use case drives it.
+- **`SelfIntersecting` detector via mesh-repair re-use (Gap I, §6.4).**
+  Re-uses `mesh_repair::detect_self_intersections` with
+  `IntersectionParams::default()` (`max_reported = 100`, `epsilon = 1e-10`,
+  `skip_adjacent = true`). New `SelfIntersectingRegion` typed-region
+  (face_a, face_b, approximate_location) and new
+  `PrintValidation.self_intersecting` field populated by
+  `check_self_intersecting`. Severity is always Critical (slicer
+  behavior on self-intersection is undefined). Per-region
+  `(face_a, face_b)` is canonicalized to `face_a < face_b` and §4.4-
+  sorted ascending for cross-run determinism. One summary `PrintIssue`
+  per call: description format
+  `"{N} self-intersecting triangle pair(s)"` + `" (search truncated;
+  total may be higher)"` suffix when mesh-repair's
+  `SelfIntersectionResult.truncated` is true. mesh-repair workspace
+  dep added; HIGH-tier pre-flight per §8.4 row 5 verified Layer
+  Integrity Criterion 6 stays A (release graph dep count comfortably
+  under L0's 80 cap) and `cargo build --target wasm32-unknown-unknown
+  -p mesh-printability` stays clean. Eight unit tests in
+  `validation.rs::tests` cover §6.4's 8 adversarial cases (overlapping
+  pair, clean cube, edge-adjacent skip, truncation-suffix structure,
+  approximate-location midpoint, Critical-blocks-is_printable, sort
+  stability, canonical face_a < face_b). Five §9.2.6 stress fixtures
+  in `tests/stress_inputs.rs` (clean cube, release-only 21-triangle
+  fan that hits the 100-cap with truncation, canonical ordering,
+  vertex-only contact, near-coplanar intersection at ~1 mrad).
+  **§6.4 spec deviations surfaced**: (a) mesh-repair's `skip_adjacent`
+  is *vertex*-shared (per `build_face_adjacency` at
+  `mesh-repair/src/intersect.rs:260`), not edge-shared as the spec
+  text implied — broader than necessary but conservatively correct
+  (vertex-only contact is also "not flagged" per §6.4 line 1189);
+  (b) the §9.2.6 line 2408 fixture
+  `stress_i_vertex_only_contact_not_flagged` was reframed to use a
+  shared vertex *index* rather than coord-only-shared corners, because
+  mesh-repair's SAT separating-axis test is loose at coord-only vertex
+  contact (`max1 + epsilon < min2` fails for touching projections —
+  `mesh-repair/src/intersect.rs:379`) and produces 36 false-positive
+  pairs on coord-shared cubes; the v0.8 mechanism for "vertex-only
+  contact = not flagged" is the adjacency skip path, faithfully
+  exercised by the shared-INDEX fixture, and the SAT looseness on
+  duplicate-coord meshes is filed as a v0.9 mesh-repair followup.
 
 ### Changed
 

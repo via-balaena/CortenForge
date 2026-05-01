@@ -1362,3 +1362,259 @@ fn stress_h_voxel_grid_oom_safety() {
         "memory pre-flight must skip before allocation; got {elapsed:?}"
     );
 }
+
+// ===== §9.2.6 Gap I — SelfIntersecting stress fixtures ===================
+
+#[test]
+fn stress_i_clean_cube_no_flag() {
+    // Clean watertight cube: every face pair shares at least one
+    // vertex *index*, so mesh-repair's `skip_adjacent = true` filters
+    // them out before SAT testing. Disjoint cube faces (across-the-cube
+    // triangles) don't share interior points because the cube is
+    // convex + watertight. Result: 0 SelfIntersecting regions.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(10.0, 10.0, 10.0),
+    );
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("clean cube: validation must succeed");
+
+    assert_eq!(
+        validation.self_intersecting.len(),
+        0,
+        "clean watertight cube must produce 0 SelfIntersecting regions"
+    );
+    let any_si_issue = validation
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::SelfIntersecting);
+    assert!(
+        !any_si_issue,
+        "no SelfIntersecting issue should be emitted on a clean cube"
+    );
+}
+
+/// Build a "self-folded sheet" of `n` large triangles arranged as a fan
+/// rotated about the Y axis. All triangles span a central region near
+/// the Y axis; per-triangle `(dx, _, dx)` translation guarantees every
+/// triangle has unique vertex indices (mesh-repair's
+/// `skip_adjacent = true` filters by vertex-sharing in
+/// `build_face_adjacency`, so vertex-disjoint construction is required
+/// to surface intersections). Each pair intersects through the central
+/// region. With `n = 21`, candidate pairs `= 21 * 20 / 2 = 210` —
+/// comfortably above the `IntersectionParams::default()`
+/// `max_reported = 100` cap.
+fn make_self_folded_sheet(n: u32) -> IndexedMesh {
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    let pi = std::f64::consts::PI;
+    for i in 0..n {
+        let theta = (f64::from(i) + 0.5) * pi / f64::from(n);
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
+        let dx = f64::from(i) * 0.001;
+        vertices.push(Point3::new(
+            10.0_f64.mul_add(cos_t, dx),
+            -10.0,
+            10.0_f64.mul_add(sin_t, dx),
+        ));
+        vertices.push(Point3::new(
+            10.0_f64.mul_add(-cos_t, dx),
+            -10.0,
+            10.0_f64.mul_add(-sin_t, dx),
+        ));
+        vertices.push(Point3::new(dx, 10.0, dx));
+        let base = i * 3;
+        faces.push([base, base + 1, base + 2]);
+    }
+    IndexedMesh::from_parts(vertices, faces)
+}
+
+/// Heavy fixture per §9.2.6 line 2406. 21-triangle vertex-disjoint
+/// fan → 210 candidate intersecting pairs;
+/// `IntersectionParams::default()` caps reported pairs at 100 with
+/// `truncated = true`. Heavy enough to warrant
+/// `#[cfg_attr(debug_assertions, ignore)]` per
+/// `feedback_release_mode_heavy_tests`.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release-only — heavy mesh-repair self-intersection work; debug runtime over-budgets"
+)]
+fn stress_i_truncation_at_100() {
+    let mesh = make_self_folded_sheet(21);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("21-triangle fan: validation must succeed");
+
+    assert_eq!(
+        validation.self_intersecting.len(),
+        100,
+        "max_reported = 100 must cap the region count at exactly 100"
+    );
+    let issue = validation
+        .issues
+        .iter()
+        .find(|i| i.issue_type == PrintIssueType::SelfIntersecting);
+    #[allow(clippy::expect_used)]
+    let issue = issue.expect("SelfIntersecting summary issue must be emitted");
+    assert!(
+        issue
+            .description
+            .contains("(search truncated; total may be higher)"),
+        "truncated description must contain the expected suffix; got `{}`",
+        issue.description
+    );
+    assert_eq!(issue.severity, IssueSeverity::Critical);
+}
+
+#[test]
+fn stress_i_canonical_face_a_lt_face_b() {
+    // 8-triangle fan still produces multiple vertex-disjoint
+    // intersecting pairs (8 * 7 / 2 = 28 candidates) without
+    // approaching the truncation cap.
+    let mesh = make_self_folded_sheet(8);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation =
+        validate_for_printing(&mesh, &config).expect("8-triangle fan: validation must succeed");
+
+    assert!(
+        !validation.self_intersecting.is_empty(),
+        "8-triangle fan must produce ≥ 1 self-intersecting region"
+    );
+    for region in &validation.self_intersecting {
+        assert!(
+            region.face_a < region.face_b,
+            "§6.4: face_a ({}) must be < face_b ({})",
+            region.face_a,
+            region.face_b
+        );
+    }
+}
+
+#[test]
+fn stress_i_vertex_only_contact_not_flagged() {
+    // Two cubes sharing exactly one vertex *index* at the corner
+    // `(10, 10, 10)`. Cube A is built via `append_outer_cube` (vertex
+    // 6 = max corner). Cube B is built manually so its "min corner"
+    // (local index 0) reuses cube A's index 6 instead of allocating
+    // a fresh vertex — total mesh vertex count = 15 (= 8 + 7), and
+    // every face-pair (`cube_A_face_touching_idx_6`,
+    // `cube_B_face_touching_idx_6`) shares vertex index 6.
+    //
+    // mesh-repair's `build_face_adjacency` is index-based (see
+    // `mesh-repair/src/intersect.rs:260`), so the 36 corner-touching
+    // pairs are all skipped before SAT testing. The 6 non-corner
+    // cube-A faces vs the 6 non-corner cube-B faces are checked via
+    // SAT and correctly return "separated" because each triangle's
+    // interior lies in its own cube's solid half-space.
+    //
+    // **Spec deviation from §9.2.6 line 2408**: the spec called for
+    // two cubes with *coordinate*-shared corners (no shared index).
+    // mesh-repair's SAT test is loose at coord-only vertex contact
+    // (separating-axis tolerance compares `max1 + epsilon < min2`,
+    // which fails for touching-but-not-overlapping intervals — see
+    // `mesh-repair/src/intersect.rs:379`), producing 36 false-positive
+    // intersections. The shared-INDEX construction tests the v0.8
+    // mechanism for "vertex-only contact = not flagged" (the
+    // adjacency skip path) faithfully; the coord-only SAT looseness
+    // is a v0.9 followup against mesh-repair, not a v0.8 detector
+    // regression.
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_outer_cube(
+        &mut vertices,
+        &mut faces,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(10.0, 10.0, 10.0),
+    );
+    // Cube B's 7 fresh vertices (local indices 1..=7); local index 0
+    // remaps to cube A's index 6 (the shared corner).
+    vertices.extend_from_slice(&[
+        Point3::new(20.0, 10.0, 10.0),
+        Point3::new(20.0, 20.0, 10.0),
+        Point3::new(10.0, 20.0, 10.0),
+        Point3::new(10.0, 10.0, 20.0),
+        Point3::new(20.0, 10.0, 20.0),
+        Point3::new(20.0, 20.0, 20.0),
+        Point3::new(10.0, 20.0, 20.0),
+    ]);
+    let local_to_global: [u32; 8] = [6, 8, 9, 10, 11, 12, 13, 14];
+    let cf =
+        |a: usize, b: usize, c: usize| [local_to_global[a], local_to_global[b], local_to_global[c]];
+    faces.extend_from_slice(&[
+        cf(0, 2, 1),
+        cf(0, 3, 2),
+        cf(4, 5, 6),
+        cf(4, 6, 7),
+        cf(0, 1, 5),
+        cf(0, 5, 4),
+        cf(3, 6, 2),
+        cf(3, 7, 6),
+        cf(0, 4, 7),
+        cf(0, 7, 3),
+        cf(1, 2, 6),
+        cf(1, 6, 5),
+    ]);
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("vertex-index-shared cubes: validation must succeed");
+
+    assert_eq!(
+        validation.self_intersecting.len(),
+        0,
+        "shared-INDEX vertex-only contact must produce 0 SelfIntersecting regions"
+    );
+}
+
+#[test]
+fn stress_i_near_coplanar_intersection() {
+    // Two non-vertex-sharing triangles, near-coplanar (~1 mrad off
+    // the common XY plane), with their interiors crossing at z ≈ 0.
+    // Triangle A is in z = 0; triangle B is tilted so its base sits
+    // at z = +1e-3 (above) and its apex at z = -1e-3 (below) — the
+    // edges crossing z = 0 lie within A's interior. Critical
+    // property: mesh-repair's `is_coplanar` early-return predicate
+    // (`cross_normals.norm_squared() < epsilon² * |n1|² * |n2|²`)
+    // does NOT fire at 1 mrad off coplanar — `(1e-3)² ≈ 1e-6` is six
+    // orders of magnitude above `epsilon² = 1e-20`. The 3D SAT path
+    // detects the interpenetration.
+    let vertices = vec![
+        // Triangle A — z = 0 plane.
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(10.0, 0.0, 0.0),
+        Point3::new(5.0, 10.0, 0.0),
+        // Triangle B — tilted about a horizontal axis;
+        // base above z = 0, apex below z = 0.
+        Point3::new(1.0, 1.0, 1.0e-3),
+        Point3::new(9.0, 1.0, 1.0e-3),
+        Point3::new(5.0, 9.0, -1.0e-3),
+    ];
+    let faces = vec![[0, 1, 2], [3, 4, 5]];
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let config = PrinterConfig::fdm_default();
+
+    #[allow(clippy::expect_used)]
+    let validation = validate_for_printing(&mesh, &config)
+        .expect("near-coplanar fixture: validation must succeed");
+
+    assert!(
+        !validation.self_intersecting.is_empty(),
+        "near-coplanar interpenetrating triangles must be flagged at epsilon = 1e-10"
+    );
+}

@@ -179,6 +179,43 @@ impl TrappedVolumeRegion {
     }
 }
 
+/// Information about a self-intersecting triangle pair (§6.4 Gap I).
+///
+/// Two non-adjacent triangles intersect when their interiors share a
+/// point that does not lie on a shared edge. mesh-printability detects
+/// these via `mesh_repair::detect_self_intersections` and emits one
+/// `SelfIntersectingRegion` per intersecting pair (capped at 100 pairs
+/// per `IntersectionParams::default()`'s `max_reported`).
+///
+/// `face_a` and `face_b` are canonicalized so that `face_a < face_b`,
+/// matching the §4.4 sort key. `approximate_location` is the midpoint
+/// of the two face centroids and is intended for visual placement of
+/// the issue marker — not as an exact geometric intersection point.
+/// Severity is always `Critical` (slicer behavior on self-intersection
+/// is undefined; print quality unpredictable).
+#[derive(Debug, Clone)]
+pub struct SelfIntersectingRegion {
+    /// Lower face index of the intersecting pair (`face_a < face_b`).
+    pub face_a: u32,
+    /// Higher face index of the intersecting pair.
+    pub face_b: u32,
+    /// Midpoint of the two face centroids — visual placement only.
+    pub approximate_location: Point3<f64>,
+}
+
+impl SelfIntersectingRegion {
+    /// Create a new self-intersecting region. Caller must canonicalize
+    /// indices so `face_a < face_b`.
+    #[must_use]
+    pub const fn new(face_a: u32, face_b: u32, approximate_location: Point3<f64>) -> Self {
+        Self {
+            face_a,
+            face_b,
+            approximate_location,
+        }
+    }
+}
+
 /// Information about a region that needs support.
 #[derive(Debug, Clone)]
 pub struct SupportRegion {
@@ -268,6 +305,17 @@ mod tests {
         assert_eq!(region.voxel_count, 1000);
         assert!((region.bounding_box.0.x - 0.0).abs() < f64::EPSILON);
         assert!((region.bounding_box.1.x - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_self_intersecting_region() {
+        let region = SelfIntersectingRegion::new(3, 7, Point3::new(1.5, 2.5, 3.5));
+
+        assert_eq!(region.face_a, 3);
+        assert_eq!(region.face_b, 7);
+        assert!((region.approximate_location.x - 1.5).abs() < f64::EPSILON);
+        assert!((region.approximate_location.y - 2.5).abs() < f64::EPSILON);
+        assert!((region.approximate_location.z - 3.5).abs() < f64::EPSILON);
     }
 
     #[test]

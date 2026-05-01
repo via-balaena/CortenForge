@@ -22,6 +22,9 @@ nalgebra = { workspace = true }
 thiserror = { workspace = true }
 # Swiss-table hash map
 hashbrown = { workspace = true }
+# Self-intersection detection (Gap I detector re-uses
+# `mesh_repair::detect_self_intersections`)
+mesh-repair = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for numeric tests
