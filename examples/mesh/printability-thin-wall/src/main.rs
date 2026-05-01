@@ -47,15 +47,11 @@
 //! - Inner cluster centroid `(15, 10, 14.6)` area `459 mm²`.
 //! - 2 Critical `ThinWall` issues; `!is_printable()`.
 //! - 1+ Overhang region (cavity ceiling, Critical).
-//!
-//! Three `TrappedVolume` assertions from §7.1 of the v0.8 fix arc spec
-//! (sealed-cavity volume + centroid + count) are deferred to row #14b
-//! — a tiny follow-up commit immediately after row #14 (when the
-//! `TrappedVolume` detector first ships). The current `PrintValidation`
-//! struct has no `trapped_volumes` field yet. See
-//! `mesh-printability/CHANGELOG.md` `[Unreleased]/Added` for the
-//! deferral note and §12.1 of the v0.8 fix arc spec for the row
-//! #11 / row #14b split rationale.
+//! - 1 `TrappedVolume` region for the sealed inner cavity; voxel-
+//!   discretized volume ≈ 6012.9 mm³ (= 27 × 17 × 13.1, the cavity
+//!   interior); centroid `(15, 10, 8.05)` within `voxel_size` (0.1 mm
+//!   at FDM defaults). FDM severity `Info` — sealed cavities print
+//!   fine on extrusion.
 //!
 //! ## How to run
 //!
@@ -112,6 +108,27 @@ const CENTROID_TOL: f64 = 1.0e-9;
 /// for axis-aligned right triangles — geometrically exact, no chord
 /// error.
 const AREA_TOL: f64 = 1.0e-9;
+
+/// Analytical cavity interior volume (mm³): `27 × 17 × 13.1` (cavity
+/// extents along x / y / z respectively). The voxel-discretized
+/// `TrappedVolume` region must lie within `±TRAPPED_VOLUME_REL_TOL`
+/// of this value; for axis-aligned cube cavities aligned to voxel
+/// edges the discretization is bit-exact.
+const ANALYTICAL_CAVITY_VOLUME: f64 = 6012.9;
+
+/// Relative tolerance for the `TrappedVolume` cavity volume. The 10 %
+/// band absorbs voxel discretization noise + cross-platform FP-drift
+/// in the §6.3 voxel inside-test (parity-flip on row offsets — the
+/// `ROW_JITTER_Y / ROW_JITTER_Z` constants — could shift voxel
+/// classifications by ±1 voxel on platform boundaries).
+const TRAPPED_VOLUME_REL_TOL: f64 = 0.10;
+
+/// Tolerance for the `TrappedVolume` centroid (mm) — matches the FDM
+/// `voxel_size = min(min_feature_size, layer_height) / 2 = 0.1 mm`.
+/// For this fixture the cavity boundaries align with voxel edges so
+/// the actual reported centroid is bit-exact at `(15, 10, 8.05)`;
+/// the 0.1 mm band is cross-platform headroom.
+const TRAPPED_CENTROID_TOL: f64 = 0.1;
 
 fn main() -> Result<()> {
     let mesh = build_hollow_box();
@@ -275,14 +292,6 @@ fn print_diagnostics(v: &PrintValidation) {
 /// names the invariant being checked (per `feedback_risk_mitigation_review`'s
 /// pass-by-correctness rule), so a regression that flips Critical→Warning
 /// or breaks the cluster split fails loudly with the bug it caught.
-///
-/// **Deferred per §12.1 row #11**: the three `TrappedVolume` assertions
-/// from §7.1 (`trapped_volumes.len() == 1`, volume ≈ 6012.9 mm³,
-/// centroid (15, 10, 8.05)) are NOT asserted here. The current
-/// `PrintValidation` struct has no `trapped_volumes` field; the
-/// `TrappedVolume` detector first ships at row #14 of the v0.8 fix
-/// arc, and row #14b (a tiny follow-up commit immediately after)
-/// backfills these three assertions.
 fn verify(v: &PrintValidation) {
     // (1) Cluster count: outer top + inner top, edge-adjacency
     // partitions into exactly two components because the shells are
@@ -371,22 +380,69 @@ fn verify(v: &PrintValidation) {
         skipped_count, 0,
         "watertight + consistently-wound fixture; ThinWall must not skip",
     );
+
+    // (9) Sealed inner cavity flags as TrappedVolume on FDM (Info).
+    // The cavity is fully enclosed by the inner + outer shells; flood-
+    // fill from the grid corner cannot reach the interior, so the
+    // 6012.9 mm³ region surfaces as one trapped component.
+    assert_eq!(
+        v.trapped_volumes.len(),
+        1,
+        "sealed inner cavity must produce exactly one TrappedVolume region under FDM",
+    );
+
+    // (10) Voxel-discretized cavity volume within ±10 % of analytical
+    // (= 27 × 17 × 13.1 = 6012.9 mm³). For this fixture the cavity
+    // boundaries align with voxel edges so the discretization is
+    // bit-exact; the 10 % band is cross-platform headroom.
+    let trapped = &v.trapped_volumes[0];
+    assert_relative_eq!(
+        trapped.volume,
+        ANALYTICAL_CAVITY_VOLUME,
+        max_relative = TRAPPED_VOLUME_REL_TOL,
+    );
+
+    // (11) Cavity centroid at the analytical midpoint
+    // `(mid_x, mid_y, mid_z) = (15, 10, 8.05)` within `voxel_size`
+    // (= 0.1 mm at FDM defaults). The voxel-center mean equals the
+    // analytical centroid bit-exactly for axis-aligned cube cavities
+    // whose boundaries align with voxel edges (the §6.3 grid pad of
+    // `2 × voxel_size` puts the cavity at integer voxel offsets).
+    assert_relative_eq!(
+        trapped.center.x,
+        OUTER_X / 2.0,
+        epsilon = TRAPPED_CENTROID_TOL,
+    );
+    assert_relative_eq!(
+        trapped.center.y,
+        OUTER_Y / 2.0,
+        epsilon = TRAPPED_CENTROID_TOL,
+    );
+    let expected_centroid_z = f64::midpoint(INNER_Z_MIN, INNER_Z_MAX);
+    assert_relative_eq!(
+        trapped.center.z,
+        expected_centroid_z,
+        epsilon = TRAPPED_CENTROID_TOL,
+    );
 }
 
 /// Write region centroids as a vertex-only ASCII PLY. Per §7.0's
 /// per-example helper template; duplicated per-example (not factored
 /// out) per `feedback_simplify_examples`.
 ///
-/// Currently aggregates `thin_walls` + `overhangs` + `support_regions`
-/// — the populated region collections in v0.8. Future detectors
-/// (`TrappedVolume` row #14, `LongBridge` row #12, etc.) will extend
-/// their own collections, and each example's helper will pick those up
-/// independently.
+/// Aggregates `thin_walls` + `overhangs` + `support_regions` +
+/// `trapped_volumes` — the populated region collections after the v0.8
+/// detector arc. `LongBridge` is intentionally OMITTED here: its
+/// centroid is the cluster-bbox midpoint, not a per-region "issue
+/// location" point in the same sense as the other detectors, and
+/// surfacing it would clutter the visuals pass with a fourth point
+/// type whose semantics differ.
 fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     let mut centroids: Vec<Point3<f64>> = Vec::new();
     centroids.extend(v.thin_walls.iter().map(|r| r.center));
     centroids.extend(v.overhangs.iter().map(|r| r.center));
     centroids.extend(v.support_regions.iter().map(|r| r.center));
+    centroids.extend(v.trapped_volumes.iter().map(|r| r.center));
     let mesh = IndexedMesh::from_parts(centroids, vec![]);
     save_ply(&mesh, path, false)?;
     Ok(())
@@ -394,5 +450,5 @@ fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
 
 /// Number of region centroids written to `out/issues.ply`.
 const fn issue_centroid_count(v: &PrintValidation) -> usize {
-    v.thin_walls.len() + v.overhangs.len() + v.support_regions.len()
+    v.thin_walls.len() + v.overhangs.len() + v.support_regions.len() + v.trapped_volumes.len()
 }

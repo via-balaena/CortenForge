@@ -330,6 +330,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `stress_h_sphere_inside_cube_volume_within_10pct` fixture's 10 %
   volume tolerance + the cross-os matrix together absorb the
   documented FP-drift surface.
+- **Backfilled `TrappedVolume` assertions in `printability-thin-wall`
+  (deferred from row #11).** §7.1 of the v0.8 fix arc spec specified
+  three TrappedVolume anchors for the hollow-box example —
+  `trapped_volumes.len() == 1`, voxel-discretized cavity volume
+  ≈ 6012.9 mm³ (= 27 × 17 × 13.1, the cavity interior), centroid
+  `(15, 10, 8.05)` within `voxel_size` (= 0.1 mm at FDM defaults) —
+  but row #11 deferred them because the §6.3 `TrappedVolume` detector
+  did not yet ship. Row #14 landed the detector; row #14b backfills
+  the three assertions in `examples/mesh/printability-thin-wall/src/main.rs`,
+  removes the row #11 deferral comment block from `verify`'s
+  doc-comment + the module doc-comment, and updates the bullet-list
+  numerical anchors. Three new constants
+  (`ANALYTICAL_CAVITY_VOLUME = 6012.9`, `TRAPPED_VOLUME_REL_TOL = 0.10`,
+  `TRAPPED_CENTROID_TOL = 0.1`) capture the spec's tolerance bands.
+  `save_issue_centroids` + `issue_centroid_count` extend to include
+  `trapped_volumes` (the cavity centroid lands as the 5th point in
+  `out/issues.ply`); `LongBridge` is intentionally omitted from the
+  PLY-writer per its differing centroid semantic (cluster-bbox
+  midpoint vs per-region issue location). For this fixture the
+  cavity boundaries align with voxel edges so the discretization is
+  bit-exact: 270 × 170 × 131 = 6 012 900 voxels × 0.001 mm³ =
+  6012.90 mm³, voxel-center mean = `(15, 10, 8.05)` exactly. The
+  spec's 10 %-volume / 0.1 mm-centroid tolerance bands give
+  cross-platform ULP headroom per §9.6 + §8.4 row 3.
 
 ### Changed
 
