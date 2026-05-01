@@ -299,6 +299,7 @@ members = [
     "examples/mesh/shell-generation-high-quality",
     "examples/mesh/printability-thin-wall",
     "examples/mesh/printability-long-bridge",
+    "examples/mesh/printability-trapped-volume",
 
     # Foundation (active development)
     "design/cf-geometry",

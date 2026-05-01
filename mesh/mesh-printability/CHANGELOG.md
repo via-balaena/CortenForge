@@ -354,6 +354,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   6012.90 mm³, voxel-center mean = `(15, 10, 8.05)` exactly. The
   spec's 10 %-volume / 0.1 mm-centroid tolerance bands give
   cross-platform ULP headroom per §9.6 + §8.4 row 3.
+- **`examples/mesh/printability-trapped-volume` visual demo (Gap H, §7.3).**
+  First production consumer of the §6.3 `TrappedVolume` detector beyond
+  the row #14 unit tests + stress fixtures and the row #14b
+  `printability-thin-wall` backfill. The fixture is a hand-authored
+  20 × 20 × 20 mm solid cube with a sealed sphere cavity (radius 5 mm,
+  centred at `(10, 10, 10)`): 12 outer cube triangles plus a UV-
+  tessellated sphere (32 segments × 16 stacks = 960 triangles) with
+  REVERSED winding so sphere normals point INTO the cavity. Both shells
+  are individually watertight + consistently wound and they share no
+  vertices. **Multi-technology severity sweep**: validates under all
+  four `PrinterConfig::*_default` technologies and asserts the §7.3
+  table — TrappedVolume `Info` for FDM (sealed cavities print fine on
+  extrusion) vs `Critical` for SLA / SLS / MJF (uncured-resin /
+  unsintered-powder trap); cavity-ceiling overhang `Critical` for FDM
+  + SLA, silent-skip for SLS / MJF (`requires_supports() == false`).
+  Per-tech `voxel_size = min(min_feature_size, layer_height) / 2` is
+  recomputed in the centroid-tolerance assertion (`0.1 mm` FDM,
+  `0.025 mm` SLA, `0.05 mm` SLS, `0.04 mm` MJF). Volume tolerance is
+  the §9.6 `± 10 %` band against analytical `(4/3) π r³ ≈ 523.6 mm³`,
+  absorbing UV-tessellation chord shrinkage (~ 1.5 %), voxel
+  discretization, and cross-platform FP drift. Each tech fails
+  `is_printable()` for a different reason — the pedagogical point of
+  the example. Saves `out/mesh.ply` (490 v, 972 f, ASCII) + `out/issues.ply`
+  (FDM iteration centroids, ASCII vertex-only) for the visuals pass;
+  README front-matter callout per `feedback_f3d_winding_callout` flags
+  the inner sphere's REVERSED winding as f3d-hidden by design (use
+  MeshLab + slice plane or ParaView + clip filter to see the cavity).
+  Crate name `example-mesh-printability-trapped-volume` per §7.0 +
+  §12.3's example-commit acceptance gates. **§7.3 spec deviation**:
+  `out/voxels.ply` (point-cloud of trapped voxel centres) is deferred
+  to v0.9 — `TrappedVolumeRegion` (regions.rs:153) exposes only
+  `center / volume / bounding_box / voxel_count` and not the individual
+  voxel centres; surfacing them requires a public-API extension that
+  is out of scope for the row #15 example-only commit. The cavity
+  centroid + bounding box already in `issues.ply` cover the
+  pedagogical need; the per-voxel point-cloud is a v0.9 visualization
+  enhancement once a clear use case drives it.
 
 ### Changed
 
