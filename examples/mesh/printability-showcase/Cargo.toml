@@ -1,0 +1,23 @@
+[package]
+name = "example-mesh-printability-showcase"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Multi-component hand-author (body + wing + thin-lip slab + burr +
+# UV sphere cavity); IndexedMesh::from_parts + Point3.
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply + out/issues.ply (ASCII, human-readable).
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::fdm_default + region/issue/
+# severity types; the load-bearing API surface for the capstone.
+mesh-printability = { workspace = true }
+# Result<()> return type for main().
+anyhow = { workspace = true }
+# assert_relative_eq! for vertex / normal / centroid / volume anchors.
+approx = { workspace = true }
+
+[lints]
+workspace = true

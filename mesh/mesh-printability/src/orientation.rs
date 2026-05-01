@@ -8,6 +8,11 @@ use nalgebra::{Unit, UnitQuaternion};
 
 use crate::config::PrinterConfig;
 
+/// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
+/// Used by the build-plate filter in `evaluate_orientation` to identify
+/// faces resting on the build plate after the candidate rotation is applied.
+const EPS_GEOMETRIC: f64 = 1e-9;
+
 /// Result of orientation analysis.
 #[derive(Debug, Clone)]
 pub struct OrientationResult {
@@ -28,7 +33,13 @@ impl OrientationResult {
     /// Create a new orientation result.
     #[must_use]
     pub fn new(rotation: UnitQuaternion<f64>, support_volume: f64, overhang_area: f64) -> Self {
-        // Score combines support volume and overhang area
+        // Score combines support volume and overhang area.
+        // FP-bit preserved: rewriting `a + b * c` to `b.mul_add(c, a)` would
+        // shift the final FP bit of the orientation-search score on cross-
+        // platform runs, changing which orientation is selected as optimal at
+        // tie-break boundaries. Bit-exactness deferred — see CHANGELOG.md
+        // `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let score = support_volume + overhang_area * 0.1;
         Self {
             rotation,
@@ -162,10 +173,20 @@ fn generate_sample_orientations(samples: usize) -> Vec<UnitQuaternion<f64>> {
     // Fibonacci sphere sampling for more orientations
     if samples > orientations.len() {
         let remaining = samples - orientations.len();
+        // FP-bit preserved: `f64::midpoint(a, b)` differs from `(a + b) / 2.0`
+        // in the final bit and would shift Fibonacci-sphere sample positions,
+        // changing the orientation-search optimum cross-platform. Bit-exactness
+        // deferred — see CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::manual_midpoint)]
         let golden_ratio = (1.0 + 5.0_f64.sqrt()) / 2.0;
 
         for i in 0..remaining {
+            // Fibonacci-sphere sample index: `samples` is caller-bounded (small int);
+            // f64's 52-bit mantissa exactly represents any usize up to 2^52, so
+            // `i as f64` and `remaining as f64` are exact for any realistic count.
+            #[allow(clippy::cast_precision_loss)]
             let theta = 2.0 * std::f64::consts::PI * (i as f64) / golden_ratio;
+            #[allow(clippy::cast_precision_loss)]
             let phi = (1.0 - 2.0 * (i as f64 + 0.5) / remaining as f64).acos();
 
             let axis = Vector3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
@@ -188,11 +209,24 @@ fn evaluate_orientation(
     config: &PrinterConfig,
     rotation: UnitQuaternion<f64>,
 ) -> OrientationResult {
-    let up = Vector3::new(0.0, 0.0, 1.0);
+    let up = config.build_up_direction;
     let max_angle_rad = config.max_overhang_angle.to_radians();
 
     let mut total_overhang_area = 0.0;
     let rotation_matrix = rotation.to_rotation_matrix();
+
+    // Build-plate filter (M.2) symmetric with `validation::check_overhangs`:
+    // after rotation, the face's projection along world `up` is
+    // `(rotation_matrix * v.coords).dot(&up) == v.coords.dot(&up_in_mesh)`,
+    // where `up_in_mesh = rotation_matrix.transpose() * up`. The transpose
+    // form keeps each per-vertex projection a 3-dim inner product instead
+    // of a 3×3 mat-vec, matching `validation`'s O(n_vertices) hoist.
+    let up_in_mesh = rotation_matrix.transpose() * up;
+    let mesh_min_along_up = mesh
+        .vertices
+        .iter()
+        .map(|v| v.coords.dot(&up_in_mesh))
+        .fold(f64::INFINITY, f64::min);
 
     let num_triangles = mesh.face_count();
     for i in 0..num_triangles {
@@ -215,6 +249,12 @@ fn evaluate_orientation(
         let edge2 = Vector3::new(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z);
         let normal = edge1.cross(&edge2);
 
+        // FP-bit preserved: rewriting `(x*x + y*y + z*z)` into nested
+        // `mul_add` calls would shift the normalized face-normal cross-
+        // platform and thereby shift which faces flag at the overhang
+        // threshold. Bit-exactness deferred — see CHANGELOG.md
+        // `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let len = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).sqrt();
         if len < 1e-10 {
             continue;
@@ -225,16 +265,26 @@ fn evaluate_orientation(
         // Rotate normal
         let rotated_normal = rotation_matrix * normal;
 
-        // Check if face is pointing downward (overhang)
+        // §5.9 FDM-convention overhang predicate: `overhang_angle` is the
+        // signed deviation of the rotated face normal from the build-plane
+        // plane. Mirrors `validation::check_overhangs`.
         let dot = rotated_normal.dot(&up);
-        let angle = dot.acos();
+        let angle_from_up = dot.acos();
+        let overhang_angle = angle_from_up - std::f64::consts::FRAC_PI_2;
 
-        if dot < 0.0 {
-            let overhang_angle = std::f64::consts::PI - angle;
-            if overhang_angle > max_angle_rad {
-                let area = len / 2.0;
-                total_overhang_area += area;
+        if overhang_angle > max_angle_rad {
+            // Build-plate filter (M.2): face touching the build plate
+            // (after rotation) is supported by the plate itself.
+            let face_min_along_up = [v0, v1, v2]
+                .iter()
+                .map(|v| v.coords.dot(&up_in_mesh))
+                .fold(f64::INFINITY, f64::min);
+            if (face_min_along_up - mesh_min_along_up) < EPS_GEOMETRIC {
+                continue;
             }
+
+            let area = len / 2.0;
+            total_overhang_area += area;
         }
     }
 
@@ -383,8 +433,51 @@ mod tests {
         let rotation = UnitQuaternion::identity();
         let result = OrientationResult::new(rotation, 100.0, 50.0);
 
-        // Score = support_volume + overhang_area * 0.1
+        // Score = support_volume + overhang_area * 0.1.
+        // FP-bit preserved to mirror the impl at `OrientationResult::new`;
+        // rewriting one without the other would silently mask cross-platform
+        // drift in the score formula. Bit-exactness deferred — see
+        // CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        #[allow(clippy::suboptimal_flops)]
         let expected = 100.0 + 50.0 * 0.1;
         assert!((result.score - expected).abs() < f64::EPSILON);
+    }
+
+    // -- Gap L (§5.6): build_up_direction parametrization --------------------
+
+    #[test]
+    fn test_find_optimal_orientation_respects_build_up_direction() {
+        // Equivalence: rotating the mesh -90° around +X (mesh +Z → world +Y)
+        // and switching the config from default +Z up to +Y up must yield
+        // the same support_volume and overhang_area at the optimum, since
+        // the cost function depends only on the relative alignment between
+        // each face normal and the build-up direction. The two searches
+        // sample equivalent orientation sets through opposite rotations of
+        // the mesh frame.
+        let mesh_z = create_simple_mesh();
+        let vertices_y: Vec<Point3<f64>> = mesh_z
+            .vertices
+            .iter()
+            .map(|v| Point3::new(v.x, v.z, -v.y))
+            .collect();
+        let mesh_y = IndexedMesh::from_parts(vertices_y, mesh_z.faces.clone());
+
+        let config_z = PrinterConfig::fdm_default();
+        let config_y =
+            PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 1.0, 0.0));
+
+        let result_z = find_optimal_orientation(&mesh_z, &config_z, 12);
+        let result_y = find_optimal_orientation(&mesh_y, &config_y, 12);
+
+        approx::assert_relative_eq!(
+            result_z.support_volume,
+            result_y.support_volume,
+            epsilon = 1e-6
+        );
+        approx::assert_relative_eq!(
+            result_z.overhang_area,
+            result_y.overhang_area,
+            epsilon = 1e-6
+        );
     }
 }

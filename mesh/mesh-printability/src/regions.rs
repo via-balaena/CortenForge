@@ -1,7 +1,7 @@
 //! Region types for printability analysis.
 //!
-//! Defines structures for thin wall regions, overhang regions,
-//! and support regions detected during validation.
+//! Defines structures for thin wall, overhang, long-bridge, and
+//! support regions detected during validation.
 
 use mesh_types::Point3;
 
@@ -21,7 +21,7 @@ pub struct ThinWallRegion {
 impl ThinWallRegion {
     /// Create a new thin wall region.
     #[must_use]
-    pub fn new(center: Point3<f64>, thickness: f64) -> Self {
+    pub const fn new(center: Point3<f64>, thickness: f64) -> Self {
         Self {
             center,
             thickness,
@@ -32,7 +32,7 @@ impl ThinWallRegion {
 
     /// Set the area of the region.
     #[must_use]
-    pub fn with_area(mut self, area: f64) -> Self {
+    pub const fn with_area(mut self, area: f64) -> Self {
         self.area = area;
         self
     }
@@ -61,7 +61,7 @@ pub struct OverhangRegion {
 impl OverhangRegion {
     /// Create a new overhang region.
     #[must_use]
-    pub fn new(center: Point3<f64>, angle: f64, area: f64) -> Self {
+    pub const fn new(center: Point3<f64>, angle: f64, area: f64) -> Self {
         Self {
             center,
             angle,
@@ -75,6 +75,195 @@ impl OverhangRegion {
     pub fn with_faces(mut self, faces: Vec<u32>) -> Self {
         self.faces = faces;
         self
+    }
+}
+
+/// Information about a long-bridge region (§6.2 Gap G).
+///
+/// A long bridge is a connected component of near-horizontal,
+/// downward-facing faces (within `ANGLE_TOL_HORIZONTAL` of `-up`) whose
+/// bbox max-extent in the plane perpendicular to `up` exceeds
+/// `config.max_bridge_span`. FDM/SLA-relevant; SLS/MJF skip silently.
+///
+/// Reported `start` and `end` are the back-projected endpoints of the
+/// cluster's longest bbox axis in the plane perpendicular to `up`,
+/// lifted back to 3D at the cluster centroid's elevation along `up`.
+/// `span` is the bbox max-extent (the larger of the two perpendicular-
+/// plane axis extents). `edges` are the cluster's boundary edges
+/// (`(min, max)`-normalized vertex-index pairs shared with non-candidate
+/// faces).
+#[derive(Debug, Clone)]
+pub struct LongBridgeRegion {
+    /// Back-projected start of the bridge along the longest bbox axis.
+    pub start: Point3<f64>,
+    /// Back-projected end of the bridge along the longest bbox axis.
+    pub end: Point3<f64>,
+    /// Bridge span in mm (max of the two perpendicular-plane bbox extents).
+    pub span: f64,
+    /// Boundary edges shared with non-candidate faces, `(min, max)`-normalized.
+    pub edges: Vec<(u32, u32)>,
+    /// Face indices in this cluster.
+    pub faces: Vec<u32>,
+}
+
+impl LongBridgeRegion {
+    /// Create a new long-bridge region.
+    #[must_use]
+    pub const fn new(start: Point3<f64>, end: Point3<f64>, span: f64) -> Self {
+        Self {
+            start,
+            end,
+            span,
+            edges: Vec::new(),
+            faces: Vec::new(),
+        }
+    }
+
+    /// Set the boundary edges.
+    #[must_use]
+    pub fn with_edges(mut self, edges: Vec<(u32, u32)>) -> Self {
+        self.edges = edges;
+        self
+    }
+
+    /// Set the affected faces.
+    #[must_use]
+    pub fn with_faces(mut self, faces: Vec<u32>) -> Self {
+        self.faces = faces;
+        self
+    }
+}
+
+/// Information about a trapped volume region (§6.3 Gap H).
+///
+/// A trapped volume is a connected region of interior empty space inside
+/// a watertight mesh that has no path to the exterior. Detected via
+/// voxel-based exterior flood-fill: any voxel that is "inside" the mesh
+/// (per scanline ray-tri parity) AND not reached by flood-fill from the
+/// padded grid corner is "trapped". Connected components of trapped
+/// voxels are emitted as separate regions.
+///
+/// `center` is the mean of trapped-voxel centers in the component.
+/// `volume` is `voxel_count * voxel_size³` — voxel-discretized; use
+/// `approx::assert_relative_eq!` with `max_relative = 0.10` per §9.6.
+/// `bounding_box` is `(min voxel-center − voxel_size/2,
+/// max voxel-center + voxel_size/2)` — the axis-aligned bounding box
+/// of the component's voxel cells.
+#[derive(Debug, Clone)]
+pub struct TrappedVolumeRegion {
+    /// Centroid of the trapped voxel cluster (mean of voxel centers).
+    pub center: Point3<f64>,
+    /// Voxel-discretized volume in `mm³` (`voxel_count * voxel_size³`).
+    pub volume: f64,
+    /// Axis-aligned bounding box (`min`, `max`) of the component's voxels.
+    pub bounding_box: (Point3<f64>, Point3<f64>),
+    /// Number of trapped voxels in this component.
+    pub voxel_count: u32,
+}
+
+impl TrappedVolumeRegion {
+    /// Create a new trapped-volume region.
+    #[must_use]
+    pub const fn new(
+        center: Point3<f64>,
+        volume: f64,
+        bounding_box: (Point3<f64>, Point3<f64>),
+        voxel_count: u32,
+    ) -> Self {
+        Self {
+            center,
+            volume,
+            bounding_box,
+            voxel_count,
+        }
+    }
+}
+
+/// Information about a self-intersecting triangle pair (§6.4 Gap I).
+///
+/// Two non-adjacent triangles intersect when their interiors share a
+/// point that does not lie on a shared edge. mesh-printability detects
+/// these via `mesh_repair::detect_self_intersections` and emits one
+/// `SelfIntersectingRegion` per intersecting pair (capped at 100 pairs
+/// per `IntersectionParams::default()`'s `max_reported`).
+///
+/// `face_a` and `face_b` are canonicalized so that `face_a < face_b`,
+/// matching the §4.4 sort key. `approximate_location` is the midpoint
+/// of the two face centroids and is intended for visual placement of
+/// the issue marker — not as an exact geometric intersection point.
+/// Severity is always `Critical` (slicer behavior on self-intersection
+/// is undefined; print quality unpredictable).
+#[derive(Debug, Clone)]
+pub struct SelfIntersectingRegion {
+    /// Lower face index of the intersecting pair (`face_a < face_b`).
+    pub face_a: u32,
+    /// Higher face index of the intersecting pair.
+    pub face_b: u32,
+    /// Midpoint of the two face centroids — visual placement only.
+    pub approximate_location: Point3<f64>,
+}
+
+impl SelfIntersectingRegion {
+    /// Create a new self-intersecting region. Caller must canonicalize
+    /// indices so `face_a < face_b`.
+    #[must_use]
+    pub const fn new(face_a: u32, face_b: u32, approximate_location: Point3<f64>) -> Self {
+        Self {
+            face_a,
+            face_b,
+            approximate_location,
+        }
+    }
+}
+
+/// Information about a small-feature component (§6.5 Gap J).
+///
+/// A small feature is a connected component of the mesh whose
+/// bounding-box maximum extent is less than `config.min_feature_size`.
+/// Catches floating debris, isolated tiny protrusions, and unit-
+/// conversion errors (e.g. mesh authored in metres instead of mm).
+///
+/// `center` is the mean of component vertex positions. `max_extent`
+/// is the largest of the three AABB axis sizes. `volume` is the
+/// absolute signed volume via the divergence theorem
+/// `Σ (v0 · (v1 × v2)) / 6` over component faces; for closed,
+/// consistently-wound components this is the geometric volume in
+/// `mm³`. For open or non-manifold components the value is non-
+/// physical; `abs(...)` ensures non-negative output and the field
+/// should be treated as approximate. `face_count` is the number of
+/// faces in the component. `faces` are the component face indices,
+/// sorted ascending.
+#[derive(Debug, Clone)]
+pub struct SmallFeatureRegion {
+    /// Centroid of the component (mean of vertex positions).
+    pub center: Point3<f64>,
+    /// Largest AABB axis size in mm.
+    pub max_extent: f64,
+    /// Absolute signed volume in `mm³` (approximate for non-watertight components).
+    pub volume: f64,
+    /// Number of faces in the component.
+    pub face_count: u32,
+    /// Component face indices, sorted ascending.
+    pub faces: Vec<u32>,
+}
+
+impl SmallFeatureRegion {
+    /// Create a new small-feature region.
+    #[must_use]
+    pub const fn new(
+        center: Point3<f64>,
+        max_extent: f64,
+        volume: f64,
+        face_count: u32,
+        faces: Vec<u32>,
+    ) -> Self {
+        Self {
+            center,
+            max_extent,
+            volume,
+            face_count,
+            faces,
+        }
     }
 }
 
@@ -94,7 +283,7 @@ pub struct SupportRegion {
 impl SupportRegion {
     /// Create a new support region.
     #[must_use]
-    pub fn new(center: Point3<f64>, volume: f64, max_height: f64) -> Self {
+    pub const fn new(center: Point3<f64>, volume: f64, max_height: f64) -> Self {
         Self {
             center,
             volume,
@@ -134,6 +323,69 @@ mod tests {
         assert!((region.angle - 60.0).abs() < f64::EPSILON);
         assert!((region.area - 50.0).abs() < f64::EPSILON);
         assert_eq!(region.faces.len(), 2);
+    }
+
+    #[test]
+    fn test_long_bridge_region() {
+        let region = LongBridgeRegion::new(
+            Point3::new(0.0, 5.0, 10.0),
+            Point3::new(20.0, 5.0, 10.0),
+            20.0,
+        )
+        .with_edges(vec![(0, 1), (2, 3)])
+        .with_faces(vec![1, 2, 3, 4]);
+
+        assert!((region.span - 20.0).abs() < f64::EPSILON);
+        assert!((region.start.x - 0.0).abs() < f64::EPSILON);
+        assert!((region.end.x - 20.0).abs() < f64::EPSILON);
+        assert_eq!(region.edges.len(), 2);
+        assert_eq!(region.faces.len(), 4);
+    }
+
+    #[test]
+    fn test_trapped_volume_region() {
+        let region = TrappedVolumeRegion::new(
+            Point3::new(5.0, 5.0, 5.0),
+            523.6,
+            (Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 10.0, 10.0)),
+            1000,
+        );
+
+        assert!((region.center.x - 5.0).abs() < f64::EPSILON);
+        assert!((region.volume - 523.6).abs() < f64::EPSILON);
+        assert_eq!(region.voxel_count, 1000);
+        assert!((region.bounding_box.0.x - 0.0).abs() < f64::EPSILON);
+        assert!((region.bounding_box.1.x - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_self_intersecting_region() {
+        let region = SelfIntersectingRegion::new(3, 7, Point3::new(1.5, 2.5, 3.5));
+
+        assert_eq!(region.face_a, 3);
+        assert_eq!(region.face_b, 7);
+        assert!((region.approximate_location.x - 1.5).abs() < f64::EPSILON);
+        assert!((region.approximate_location.y - 2.5).abs() < f64::EPSILON);
+        assert!((region.approximate_location.z - 3.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_small_feature_region() {
+        let region = SmallFeatureRegion::new(
+            Point3::new(1.0, 2.0, 3.0),
+            0.25,
+            0.015_625,
+            12,
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        );
+
+        assert!((region.center.x - 1.0).abs() < f64::EPSILON);
+        assert!((region.max_extent - 0.25).abs() < f64::EPSILON);
+        assert!((region.volume - 0.015_625).abs() < f64::EPSILON);
+        assert_eq!(region.face_count, 12);
+        assert_eq!(region.faces.len(), 12);
+        assert_eq!(region.faces[0], 0);
+        assert_eq!(region.faces[11], 11);
     }
 
     #[test]

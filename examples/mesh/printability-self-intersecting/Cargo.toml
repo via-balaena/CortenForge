@@ -1,0 +1,20 @@
+[package]
+name = "example-mesh-printability-self-intersecting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Hand-authored two-cylinder construction (Point3, Vector3, IndexedMesh::from_parts).
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply + out/issues.ply (ASCII PLY for human-readable diff).
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::fdm_default + place_on_build_plate +
+# region/issue/severity types.
+mesh-printability = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

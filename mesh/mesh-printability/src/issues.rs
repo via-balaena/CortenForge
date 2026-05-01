@@ -42,7 +42,7 @@ impl PrintIssue {
 
     /// Set the location of the issue.
     #[must_use]
-    pub fn with_location(mut self, location: Point3<f64>) -> Self {
+    pub const fn with_location(mut self, location: Point3<f64>) -> Self {
         self.location = Some(location);
         self
     }
@@ -56,13 +56,13 @@ impl PrintIssue {
 
     /// Check if this is a critical issue.
     #[must_use]
-    pub fn is_critical(&self) -> bool {
+    pub const fn is_critical(&self) -> bool {
         matches!(self.severity, IssueSeverity::Critical)
     }
 
     /// Check if this is a warning.
     #[must_use]
-    pub fn is_warning(&self) -> bool {
+    pub const fn is_warning(&self) -> bool {
         matches!(self.severity, IssueSeverity::Warning)
     }
 }
@@ -90,12 +90,18 @@ pub enum PrintIssueType {
     SelfIntersecting,
     /// Other issue.
     Other,
+    /// Emitted when a detector's preconditions (e.g. watertight mesh,
+    /// consistent winding) are not met. Severity is always Info.
+    /// The issue's description names the detector + missing precondition.
+    /// Distinct from `Other`, which is a caller-extension hook that
+    /// mesh-printability never emits.
+    DetectorSkipped,
 }
 
 impl PrintIssueType {
     /// Get a human-readable name for the issue type.
     #[must_use]
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::ThinWall => "Thin Wall",
             Self::ExcessiveOverhang => "Excessive Overhang",
@@ -107,6 +113,7 @@ impl PrintIssueType {
             Self::NonManifold => "Non-Manifold",
             Self::SelfIntersecting => "Self-Intersecting",
             Self::Other => "Other",
+            Self::DetectorSkipped => "Detector Skipped",
         }
     }
 }
@@ -125,7 +132,7 @@ pub enum IssueSeverity {
 impl IssueSeverity {
     /// Get a human-readable name for the severity.
     #[must_use]
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Info => "Info",
             Self::Warning => "Warning",
@@ -195,5 +202,23 @@ mod tests {
     fn test_severity_ordering() {
         assert!(IssueSeverity::Info < IssueSeverity::Warning);
         assert!(IssueSeverity::Warning < IssueSeverity::Critical);
+    }
+
+    // -- §5.8: DetectorSkipped variant ----------------------------------------
+
+    #[test]
+    fn test_detector_skipped_as_str() {
+        assert_eq!(PrintIssueType::DetectorSkipped.as_str(), "Detector Skipped");
+    }
+
+    #[test]
+    fn test_detector_skipped_is_info_severity_when_emitted() {
+        let pi = PrintIssue::new(
+            PrintIssueType::DetectorSkipped,
+            IssueSeverity::Info,
+            "ThinWall: requires watertight mesh",
+        );
+        assert!(!pi.is_warning());
+        assert!(!pi.is_critical());
     }
 }

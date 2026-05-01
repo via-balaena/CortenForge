@@ -1,0 +1,28 @@
+[package]
+name = "example-mesh-printability-orientation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Hand-authored leaning-cylinder construction (Point3, Vector3, IndexedMesh::from_parts).
+mesh-types = { workspace = true }
+# save_ply for out/mesh_*.ply + out/issues_run*.ply (ASCII PLY for human-readable diff).
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig + with_build_up_direction (Gap L) +
+# OrientationResult + apply_orientation + place_on_build_plate +
+# find_optimal_orientation (diagnostic) + region/issue/severity types.
+mesh-printability = { workspace = true }
+# UnitQuaternion::from_axis_angle for the manual exact R_Y(-60°) rotation
+# that locks the Gap L invariant. mesh-types only re-exports Point3 + Vector3,
+# not UnitQuaternion, so the example takes a direct nalgebra dep.
+nalgebra = { workspace = true }
+# Result<()> return type for main().
+anyhow = { workspace = true }
+# assert_relative_eq! for the load-bearing Gap L invariant assertion
+# (Run 2 area ≡ Run 3 area within 1e-6 mm²).
+approx = { workspace = true }
+
+[lints]
+workspace = true

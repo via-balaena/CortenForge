@@ -1,6 +1,6 @@
 [package]
 name = "mesh-printability"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Print validation and manufacturing analysis for triangle meshes"
@@ -9,6 +9,9 @@ categories = ["graphics", "game-development", "science"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lints]
+workspace = true
 
 [dependencies]
 # Shared mesh data structures (workspace)
@@ -19,6 +22,9 @@ nalgebra = { workspace = true }
 thiserror = { workspace = true }
 # Swiss-table hash map
 hashbrown = { workspace = true }
+# Self-intersection detection (Gap I detector re-uses
+# `mesh_repair::detect_self_intersections`)
+mesh-repair = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for numeric tests

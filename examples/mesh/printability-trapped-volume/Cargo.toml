@@ -1,0 +1,21 @@
+[package]
+name = "example-mesh-printability-trapped-volume"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Cube + UV-tessellated sphere construction + Point3 + IndexedMesh::from_parts
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply + out/issues.ply (ASCII PLY for human-readable diff)
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::{fdm,sla,sls,mjf}_default + region/issue types
+mesh-printability = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for analytical-sphere-volume + voxel-discretized-centroid anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true

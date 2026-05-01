@@ -77,5 +77,8 @@ pub use issues::{IssueSeverity, PrintIssue, PrintIssueType};
 pub use orientation::{
     OrientationResult, apply_orientation, find_optimal_orientation, place_on_build_plate,
 };
-pub use regions::{OverhangRegion, SupportRegion, ThinWallRegion};
+pub use regions::{
+    LongBridgeRegion, OverhangRegion, SelfIntersectingRegion, SmallFeatureRegion, SupportRegion,
+    ThinWallRegion, TrappedVolumeRegion,
+};
 pub use validation::{PrintValidation, validate_for_printing};
