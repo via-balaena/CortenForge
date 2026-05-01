@@ -431,6 +431,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contact = not flagged" is the adjacency skip path, faithfully
   exercised by the shared-INDEX fixture, and the SAT looseness on
   duplicate-coord meshes is filed as a v0.9 mesh-repair followup.
+- **`examples/mesh/printability-self-intersecting` visual demo (Gap I, §7.4).**
+  First production consumer of the §6.4 `SelfIntersecting` detector
+  beyond the row #16 unit + stress fixtures. The fixture is two hand-
+  authored cylinders concatenated **without** boolean union, welding,
+  or vertex sharing: cylinder A axis along `+X` (length 30 mm × radius
+  5 mm), cylinder B axis along `+Y` (same dimensions), each with 16
+  azimuthal segments → 34 vertices + 64 triangles per cylinder. The
+  combined assembly is 68 verts + 128 tris; post-`place_on_build_plate`
+  the bbox is `[-15, +15] × [-15, +15] × [0, 10]` and the original
+  origin maps to `(0, 0, 5)`. Each cylinder is independently watertight
+  and consistently wound; the union is NOT manifold (lateral surfaces
+  interpenetrate), but `SelfIntersecting` runs unconditionally — no
+  watertightness precondition for §6.4. **Anchor outcomes**: the four
+  analytical interpenetration rings (`y = ±x`, `z = ±√(25 − x²)`,
+  `x ∈ [-5, +5]`) tessellate to ~ 101–104 actual `(face_a, face_b)`
+  pair candidates in mesh-repair (count varies 101 → 104 across runs
+  due to Rayon parallel-loop non-determinism — per-thread counters
+  trip the cap independently), capped at `max_reported = 100` in the
+  returned vec; description carries the truncation suffix. Severity
+  Critical → `is_printable() == false`. `overhangs.len() == 4` lateral
+  underside co-flag (each cluster's `overhang_angle = 56.25°` from
+  azimuth offset `±22.5°` off `−Z`; classified `Info` since `45° <
+  56.25° < 75°` — not Critical, not Warning, doesn't block
+  `is_printable()`). **Single-cylinder regression**: re-runs validation
+  on cylinder A alone (still horizontal, still placed on build plate)
+  and asserts `self_intersecting.len() == 0` — locks the no-false-
+  positives-on-convex-single-mesh invariant. Saves `out/mesh.ply`
+  (68v / 128f, ASCII) + `out/issues.ply` (104 vertex-only centroids:
+  100 `approximate_location` points clustered around the four rings
+  near `(0, 0, 5)` + 4 `OverhangRegion.center` points at the lateral
+  underside region centroids). README front-matter callout per
+  `feedback_f3d_winding_callout` documents that the four
+  interpenetration rings produce z-fighting in `f3d`'s default
+  rendering — that visual mess IS the detector's input signal. Crate
+  name `example-mesh-printability-self-intersecting` per §7.0 + §12.3's
+  example-commit naming convention. **§6.4 re-export gap surfaced**:
+  the §3 spec at line 222 calls for `pub use
+  mesh_repair::intersect::{IntersectionParams, SelfIntersectionResult};`
+  to give power users an ergonomic tuned-params escape hatch from
+  within `mesh-printability`. Row #16 landed the detector but did not
+  ship that re-export; the example documents the gap inline (README
+  pitfall section + module doc-comment) and flags it as a v0.9
+  candidate. Pure addition; fourth ⏸ pause-for-visuals commit per
+  §12.6 row 4.
 
 ### Changed
 

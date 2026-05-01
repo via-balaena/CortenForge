@@ -3652,6 +3652,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-printability-self-intersecting"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-mesh-printability-thin-wall"
 version = "0.7.0"
 dependencies = [
