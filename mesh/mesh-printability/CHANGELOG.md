@@ -726,6 +726,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional + correct the f3d invocation guidance (run from crate
   root, drop `--multi-file-mode=all` since it degrades mixed mesh +
   point-cloud loads to all-points rendering). Test counts unchanged.
+- **Example crate `example-mesh-printability-showcase`** — capstone
+  multi-detector visual demo (V08_FIX_ARC_SPEC.md §7.8, row #23). A
+  single realistic-feeling bracket fixture exercises all six v0.8
+  detectors at once on five vertex-disjoint hand-authored shells
+  (528v / 1032f total): solid `50 × 30 × 10 mm` body, leaning 60°
+  parallelogram-prism wing (length 30 mm, `5 × 5 mm` cross-section),
+  §7.1-style hollow thin-lip slab (outer `30 × 10 × 4 mm`; 0.4 mm
+  top wall), `0.2 mm` hex-prism burr, and `r = 3 mm` UV-tessellated
+  sphere cavity (32 segs × 16 stacks; REVERSED winding) inside the
+  body's solid material. Math-pass-first per row #22.5 precedent +
+  `feedback_math_pass_first_handauthored`: hand-authored components
+  (46 verts + 72 faces) get bit-exact `1e-12` per-vertex +
+  per-face winding anchors via `expected_hand_vertices()` /
+  `expected_hand_face_normals()`; sphere shell (482 verts + 960
+  faces) gets procedural anchors (per-vertex `|v - center| ≈ R`
+  within `1e-12`; per-face REVERSED-winding cosine similarity
+  `> 0.99` with center direction); plus mesh bounding-box anchor.
+  Sets the procedural-sphere-anchors pattern as a v0.9 candidate
+  template for SDF-meshed math-pass. Five §7.8 spec deviations
+  surfaced + documented inline in `src/main.rs` + README:
+  (1) sphere radius reduced 4 mm → 3 mm to put body wall thickness
+  at 2 mm (avoiding knife-edge `EPS_RAY_OFFSET` round-off at the
+  FDM `min_wall_thickness = 1.0` boundary);
+  (2) two trapped volumes observed (slab inner cavity 582 mm³ +
+  sphere cavity 111 mm³, both Info on FDM), spec asserts `>= 1`;
+  (3) wing's analytical 60° overhang silently masked by the
+  build-plate filter at `validation.rs:404-408` (`face_min_along_up
+  = 0 = mesh_min_along_up`; the filter excludes any face whose
+  minimum-along-up coincides with the mesh's, regardless of full
+  extent — a real Gap M.2 over-aggressiveness; v0.9 candidate
+  "build-plate filter discrimination between edge-touches-plate and
+  face-supported-by-plate"; the `>= 2` overhang assertion is
+  satisfied independently by slab + sphere cavity ceilings);
+  (4) wing produces 2 unexpected `ThinWall` Warning co-flags from
+  leaning-prism geometry (inward ray-cast from wing top / bottom
+  fans exits through tilted lateral face at `(WING_X_SPAN / 2) /
+  tan(60°) ≈ 0.962 mm`, below `min_wall = 1.0 mm` Warning band; a
+  real-CAD pitfall surfaced as a load-bearing pedagogical
+  observation, not asserted by spec);
+  (5) wing produces 3 false-positive `SelfIntersecting Critical`
+  triangle pairs (BVH precision bug in
+  `mesh_repair::detect_self_intersections` on tilted prismatic
+  geometry; same family as orientation crate's L≥18 mm cylinder
+  observation; v0.9 candidate already tracked in this CHANGELOG).
+  6th deviation: `validate_for_printing` does NOT apply a global
+  §4.4 severity-descending sort to `validation.issues` (issues
+  append in detector run order); anchor #7 in this example was
+  relaxed to a non-empty structural check; v0.9 candidate.
+  Per-detector outcome on FDM: 5 `ThinWall` (3 Critical + 2 Warning),
+  1 `SmallFeature` Warning (no Critical band per
+  `classify_small_feature_severity`), 2 `TrappedVolume` Info, 2
+  `ExcessiveOverhang` Critical, 1 `LongBridge` Critical, 1
+  `SelfIntersecting` Critical, 0 `NotWatertight` ⇒ 12 PrintIssues
+  (7 Critical + 3 Warning + 2 Info), `is_printable() == false`. 9
+  §7.8 anchors + dedicated cross-check on Critical ThinWall
+  presence pass. 2 PLY artifacts (`mesh.ply` 528v / 1032f + `issues.ply`
+  12 centroid points). The deviations together (#3 silencing the
+  wing's intended overhang; #4 surfacing it via a different
+  detector; #5 surfacing a v0.9 BVH false-positive) are the richest
+  pedagogical surface of the fixture: real CAD pipelines lose
+  intended diagnostics to filter masks AND gain unintended
+  diagnostics from inward-ray-cast slope sensitivity, and the
+  capstone forces this into the reader's attention rather than
+  papering it over. Test counts unchanged: example adds 0
+  lib/integ/doc tests (smoke-tested via `cargo run --release`
+  exit-0).
 
 ### Changed
 

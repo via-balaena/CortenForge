@@ -304,6 +304,7 @@ members = [
     "examples/mesh/printability-small-feature",
     "examples/mesh/printability-orientation",
     "examples/mesh/printability-technology-sweep",
+    "examples/mesh/printability-showcase",
 
     # Foundation (active development)
     "design/cf-geometry",
