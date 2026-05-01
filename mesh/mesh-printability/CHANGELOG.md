@@ -7,6 +7,185 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.9 candidates
+
+These v0.9 backlog items are tracked here so per-site `#[allow]`
+justification comments + project memo cross-references can point at a
+stable anchor that survives v0.8 spec deletion. Each entry lists a
+named re-open trigger so v0.9-arc planning is not dependent on the
+deleted v0.8 spec.
+
+- **FP bit-exactness of overhang predicate (§5.1 deferral).** v0.8 keeps
+  the non-FMA forms `(a * b) + c` and `(a + b) / 2.0` to preserve current
+  overhang-detection FP bits across platforms. Re-open trigger: a
+  cross-platform CI run on Gap H or Gap M fixtures shows divergence at
+  the bit level (e.g., affected-face count differs by 1 between
+  macOS/Linux/Windows on a fixture authored to land *exactly* on the
+  threshold). Resolution path: either replace the per-site `#[allow]`s
+  with `f64::mul_add` / `f64::midpoint` after a tolerance-based diff
+  confirms semantic equivalence, or reframe the predicate to be
+  FMA-stable across platforms.
+- **Cavity-ceiling co-flag (§7.9 / §11.5).** Under the corrected Gap M
+  predicate, the *ceiling* of a sealed interior cavity inherently flags
+  as a 90° overhang because its outward normal points down into the
+  void. This is technically correct given the predicate's definition —
+  but a ceiling supported by surrounding solid material has no
+  user-actionable overhang concern. v0.8 emits the flag; downstream
+  callers can mask it by inspecting `overhangs[i].faces` against an
+  enclosed-cavity classifier. Re-open trigger: a user requests
+  cavity-aware overhang severity (e.g., "demote interior overhangs to
+  Info" or "skip overhangs interior to detected cavities"). Resolution
+  path: extend `OverhangRegion` with an `is_interior` field populated by
+  cross-referencing flagged faces against `TrappedVolume`-detected
+  cavities.
+- **`find_optimal_orientation` discrete-sample limitation (§7.6
+  Run-2 deviation).** The 12-sample default sample set
+  `{identity, ±90°/180° X, ±90° Y, ±45°/±135° X, +45° Y}` cannot reach
+  arbitrary axis-aligned rotations like `R_Y(-60°)` (the rotation
+  needed to map `(sin60°, 0, cos60°)` onto `+Z`). The Fibonacci sphere
+  branch (engaged at samples > 14) generates 90°-only rotations around
+  sphere-distributed axes — also not arbitrary-angle. The
+  `printability-orientation` example surfaced this when the spec's
+  original `find_optimal_orientation`-based Run 2 with `Run 2 area = 0`
+  could not be made to hold for any sample count; switched to a manual
+  exact rotation as the Gap L invariant's load-bearing mechanism, with
+  `find_optimal_orientation` retained as a stdout diagnostic
+  illustrating the limitation. Resolution path: enrich the sampler —
+  e.g., 1° angle bins around primary axes (12 axes × 36 bins = 432
+  samples) for problems where exact-axis alignment matters, or a
+  gradient-descent refinement step from the best discrete sample.
+  Re-open trigger: a user reports `find_optimal_orientation` recommends
+  a clearly-suboptimal orientation when an exact axis-aligned
+  compensating rotation exists.
+- **`mesh-repair detect_self_intersections` false-positives on
+  thin-aspect-ratio prismatic geometry (§7.6 LENGTH deviation +
+  §7.8 wing observation).** A single watertight tilted prismatic
+  feature with lateral-triangle aspect ratio above ~4:1 (empirically
+  observed at L=18+ mm with R=5 mm cylinders, and at the showcase
+  example's `5×5×15 mm` 60°-tilted wing) consistently triggers
+  false-positive `SelfIntersecting Critical` pairs between
+  diametrically-opposite lateral triangles, regardless of azimuthal
+  segment count (cylinder reproduced at SEGMENTS ∈ {8, 12, 16, 32};
+  wing reproduced as 3 pairs at fixed prism topology). The
+  intersection points cluster on the feature's central axis line —
+  suggesting the BVH triangle-pair test confuses near-tangent
+  opposite-side planes within FP tolerance bounds. The
+  `printability-orientation` example reduced cylinder length from
+  spec's 30 mm to 15 mm to stay below the threshold; same fixture
+  shape at L=15 produces zero false-positives, while L≥18 consistently
+  fires 8 pairs. Re-open trigger: a user reports false-positive
+  `SelfIntersecting` flags on a single watertight prismatic feature,
+  OR another v0.9 example needs a tall thin tilted-prism fixture
+  without switching to a different shape. Resolution path: investigate
+  `mesh_repair::intersect::detect_self_intersections`'s
+  `IntersectionParams::epsilon` and BVH bucketing; consider a tighter
+  tolerance default OR a pre-pass that detects tangent-plane
+  parallelism and skips those pair tests. (Cross-references existing
+  v0.9 candidate: §6.4 `IntersectionParams` re-export gap.)
+- **§6.4 `IntersectionParams` re-export gap.** v0.8's
+  `mesh-printability::*` does not re-export
+  `mesh_repair::IntersectionParams` and `SelfIntersectionResult` —
+  callers who want to tune intersection sensitivity (`epsilon`,
+  `max_reported`, `allow_touching`) must depend on `mesh-repair`
+  directly. v0.8's `validate_for_printing` calls
+  `mesh_repair::detect_self_intersections` with
+  `IntersectionParams::default()` (`max_reported = 100`,
+  `epsilon = 1e-10`) unconditionally. Re-open trigger: a downstream
+  caller asks for tunable intersection params from within
+  `validate_for_printing` (e.g., to suppress thin-aspect-ratio
+  false-positives via tighter `epsilon`). Resolution path: either
+  re-export the types from `mesh-printability::*` and add a
+  `validate_for_printing_with_params` overload, or document the
+  dual-import pattern as the canonical "tune intersections" workflow.
+- **Unit-detection heuristic for "scaled 1000×" CAD pitfall (§7.5).**
+  When a CAD export drops its millimeter assumption and exports in
+  meters (or scales by some other factor of 10ⁿ), every length-based
+  threshold (`min_wall_thickness`, `max_bridge_span`, build-plate
+  filter EPS) misfires by the same factor. v0.8 has no detector for
+  this; users see "every wall is thin" or "no walls thin" depending
+  on direction of the error. Re-open trigger: a user reports
+  `validate_for_printing` flagging a real CAD mesh with all walls
+  Critical (or with all detectors silent on a part known to have
+  thin walls) and the bbox max extent is suspiciously 1000× too
+  large or too small. Resolution path: add an optional bbox-extent
+  sanity check that emits an `Info`-severity `PrintIssue` when the
+  bbox extent looks unit-mismatched (e.g., `< 0.001 mm` or
+  `> 100_000 mm`), and document the "scaled 1000×" pitfall in the
+  mesh book §50 Known limitations subsection.
+- **`AttributedMesh` face-attributes for issue annotations (Q2
+  deferral).** v0.8's `out/issues.ply` artifacts ship as vertex-only
+  point clouds (one vertex per `PrintIssue` centroid) so visual
+  reviewers can render them alongside the source mesh in MeshLab /
+  ParaView / `f3d --multi-file-mode=all`. The natural representation
+  is per-face `severity` + `issue_type` attributes on the source mesh
+  itself, rendered via face-color shading; v0.8's
+  `mesh-types::AttributedMesh` does not yet support face-level
+  attributes (vertex attributes only), so this lands as a deferral.
+  Re-open trigger: `mesh-types` adds face-attribute support, OR a
+  user reports the centroid point-cloud as insufficient for visual
+  review (e.g., they cannot tell which face cluster a centroid
+  annotates without a MeshLab face-pick). Resolution path: extend the
+  example crates' visual-pass step to emit `out/mesh_annotated.ply`
+  (`AttributedMesh` with per-face `severity` + `issue_type` `u8`
+  attributes) once face attributes ship.
+- **Build-plate filter discrimination — edge-touches-plate vs
+  face-supported-by-plate (Gap M.2 over-aggressiveness, §7.8 wing
+  observation).** v0.8's `check_overhangs` build-plate filter
+  (`validation.rs:404-408`) skips any face whose
+  `face_min_along_up == mesh_min_along_up`; this is a single threshold
+  test that does not distinguish between (a) a face fully resting on
+  the build plate (correctly excluded — supported by the plate) and
+  (b) a face whose lowest VERTEX touches the plate but whose centroid
+  + remaining vertices extend high above (the showcase wing's
+  60°-tilted lateral face: lowest vertex at `z = 0`, centroid at
+  `z = 7.5`). Case (b) is silently masked even though it represents
+  real overhang concern. Re-open trigger: a user reports a real CAD
+  part with a tilted lateral feature touching the build plate at one
+  edge — overhang silently suppressed. Resolution path: replace the
+  point-touches-plate threshold with a face-supported-by-plate
+  classifier (e.g., area-weighted average along-up coordinate near
+  `mesh_min_along_up`), OR emit the silenced overhang as `Info`
+  rather than fully suppressing.
+- **Leaning-prism `ThinWall` co-flag from slope-perpendicular
+  inward-ray-cast (§7.8 wing observation).** A solid prismatic
+  feature tilted past ~50° presents narrow inward distances when the
+  ThinWall ray-cast exits through a tilted lateral face. The showcase
+  wing (`5×5×15 mm` cross-section, 60° tilt) sees the inward ray from
+  its top + bottom fans exit through the tilted side at distance
+  `(WING_X_SPAN / 2) / tan(60°) ≈ 0.962 mm`, below the FDM
+  `min_wall_thickness = 1.0` Warning band. The fixture is **not**
+  thin-walled in any user-meaningful sense (5 mm cross-section), but
+  the detector cannot distinguish "wall-perpendicular thickness < min"
+  from "lateral-projected width < min". A real-CAD pitfall surfaced
+  by the capstone example as a load-bearing pedagogical observation.
+  Re-open trigger: a user reports `ThinWall` Warnings on a tilted
+  prismatic feature with cross-section ≥ `min_wall_thickness`.
+  Resolution path: extend the ray-cast to also project along the
+  shell-perpendicular direction (weighted by the angle between `-N_F`
+  and the local outward normal) and classify as ThinWall only when
+  both directions report insufficient distance.
+- **§4.4 global severity-descending sort of `validation.issues` not
+  implemented (§7.8 capstone observation).** v0.8 spec §4.4 required
+  `validate_for_printing` to sort the final `validation.issues` Vec
+  by severity descending (Critical → Warning → Info) so callers can
+  iterate top-priority issues first. v0.8 implements per-detector
+  sort policies (each detector sorts its own regions per the
+  per-field rules in §4.4), but the global cross-detector sort on
+  `validation.issues` was not implemented — issues append in detector
+  run order (`overhangs → thin_walls → long_bridges → trapped_volumes
+  → self_intersections → small_features`). The showcase example's
+  anchor #7 was relaxed from "first issue is Critical" to a non-empty
+  structural check to absorb the detector-run-order behavior.
+  Re-open trigger: any caller iterates `validation.issues` and
+  depends on severity-descending order, OR a user authoring a UI that
+  lists issues in priority order asks for the documented sort.
+  Resolution path: add a final
+  `validation.issues.sort_by(|a, b| b.severity.cmp(&a.severity))`
+  pass at the end of `validate_for_printing` (using `IssueSeverity`'s
+  variant order: Critical = 2, Warning = 1, Info = 0).
+
+## [0.8.0] - 2026-05-01
+
 ### Added
 
 - **`PrinterConfig::build_up_direction` parametrization (Gap L).** v0.7's
@@ -900,76 +1079,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inconsistent face orientations — they now see a Critical issue and
   `is_printable()` returns `false`.
 
-### v0.9 candidates
+### Notes (semver-significant behavioral changes)
 
-These deferrals are tracked here so per-site `#[allow]` justification
-comments can reference a stable anchor that survives v0.8 spec deletion.
+The v0.8 fix arc closes 13 v0.7→v0.8 gaps (A–M) including 5 new
+detectors. Several of those changes shift the `is_printable()` /
+`validation.*.len()` outputs callers may have been observing on v0.7.
+Each per-detector entry above carries its own `**SEMVER note**` callout;
+the consolidated picture is:
 
-- **FP bit-exactness of overhang predicate (§5.1 deferral).** v0.8 keeps
-  the non-FMA forms `(a * b) + c` and `(a + b) / 2.0` to preserve current
-  overhang-detection FP bits across platforms. Re-open trigger: a
-  cross-platform CI run on Gap H or Gap M fixtures shows divergence at
-  the bit level (e.g., affected-face count differs by 1 between
-  macOS/Linux/Windows on a fixture authored to land *exactly* on the
-  threshold). Resolution path: either replace the per-site `#[allow]`s
-  with `f64::mul_add` / `f64::midpoint` after a tolerance-based diff
-  confirms semantic equivalence, or reframe the predicate to be
-  FMA-stable across platforms.
-- **Cavity-ceiling co-flag (§7.9 / §11.5).** Under the corrected Gap M
-  predicate, the *ceiling* of a sealed interior cavity inherently flags
-  as a 90° overhang because its outward normal points down into the
-  void. This is technically correct given the predicate's definition —
-  but a ceiling supported by surrounding solid material has no
-  user-actionable overhang concern. v0.8 emits the flag; downstream
-  callers can mask it by inspecting `overhangs[i].faces` against an
-  enclosed-cavity classifier. Re-open trigger: a user requests
-  cavity-aware overhang severity (e.g., "demote interior overhangs to
-  Info" or "skip overhangs interior to detected cavities"). Resolution
-  path: extend `OverhangRegion` with an `is_interior` field populated by
-  cross-referencing flagged faces against `TrappedVolume`-detected
-  cavities (which lands in v0.8 as the trapped-volume detector,
-  commit #14).
-- **`find_optimal_orientation` discrete-sample limitation (§7.6
-  Run-2 deviation).** The 12-sample default sample set
-  `{identity, ±90°/180° X, ±90° Y, ±45°/±135° X, +45° Y}` cannot reach
-  arbitrary axis-aligned rotations like `R_Y(-60°)` (the rotation
-  needed to map `(sin60°, 0, cos60°)` onto `+Z`). The Fibonacci sphere
-  branch (engaged at samples > 14) generates 90°-only rotations around
-  sphere-distributed axes — also not arbitrary-angle. The
-  `printability-orientation` example (commit #21) surfaced this when
-  the spec's original `find_optimal_orientation`-based Run 2 with
-  `Run 2 area = 0` could not be made to hold for any sample count;
-  switched to a manual exact rotation as the Gap L invariant's
-  load-bearing mechanism, with `find_optimal_orientation` retained as
-  a stdout diagnostic illustrating the limitation. Resolution path:
-  enrich the sampler — e.g., 1° angle bins around primary axes
-  (12 axes × 36 bins = 432 samples) for problems where exact-axis
-  alignment matters, or a gradient-descent refinement step from the
-  best discrete sample. Re-open trigger: a user reports
-  `find_optimal_orientation` recommends a clearly-suboptimal
-  orientation when an exact axis-aligned compensating rotation exists.
-- **`mesh-repair detect_self_intersections` false-positives on
-  thin-aspect-ratio cylinders (§7.6 LENGTH deviation).** A single
-  watertight tilted cylinder with lateral-triangle aspect ratio above
-  ~4:1 (empirically observed at L=18+ mm with R=5 mm) consistently
-  triggers 8 false-positive `SelfIntersecting Critical` pairs between
-  diametrically-opposite lateral triangles, regardless of azimuthal
-  segment count (reproduced at SEGMENTS ∈ {8, 12, 16, 32}). The
-  intersection points cluster on the cylinder's central axis line —
-  suggesting BVH triangle-pair test confuses near-tangent opposite-
-  side planes within FP tolerance bounds. The `printability-orientation`
-  example (commit #21) reduced cylinder length from spec's 30 mm to
-  15 mm to stay below the threshold; same fixture shape at L=15
-  produces zero false-positives, while L≥18 consistently fires 8
-  pairs. Re-open trigger: a user reports false-positive
-  `SelfIntersecting` flags on a single watertight cylinder, OR
-  another v0.9 example needs a tall thin cylinder fixture without
-  switching to a different shape. Resolution path: investigate
-  `mesh_repair::intersect::detect_self_intersections`'s `IntersectionParams::epsilon`
-  and BVH bucketing; consider a tighter tolerance default OR a
-  pre-pass that detects tangent-plane parallelism and skips those
-  pair tests. (Cross-references existing v0.9 candidate: §6.4
-  `IntersectionParams` re-export gap.)
+- Callers asserting `is_printable() == true` on meshes with
+  severe-but-pre-Gap-E-uncritical overhangs will now see `false`
+  (Gap E severity tightening + Gap M predicate correction). This is
+  a correctness fix.
+- Callers asserting on `validation.overhangs.len()` may see a
+  different count per Gap D (split into edge-adjacency components,
+  was one collapsed region) + Gap M (predicate flips for previously
+  unflagged roof faces) + Gap M.2 (build-plate filter excludes
+  solid-on-plate bottoms that the v0.7 predicate accidentally
+  avoided flagging via the inverted threshold).
+- Callers performing exhaustive `match` on `PrintIssueType` without
+  a wildcard arm need to add a `DetectorSkipped => …` arm
+  (`PrintIssueType` is not `#[non_exhaustive]`).
+- Callers asserting on `validate_for_printing(...)` outputs against
+  meshes with inconsistent winding orientations now see a Critical
+  `NonManifold` issue and `is_printable() == false` (Gap F directed-
+  edge check). v0.7 silently accepted such meshes.
+- Cavity-ceiling co-flag (sealed cavities flag overhang under
+  Gap M) is documented behavior; tracked as a v0.9 candidate for
+  cavity-aware severity in the `[Unreleased] / v0.9 candidates`
+  block above.
 
 ## [0.7.0] - 2025-XX-XX
 
