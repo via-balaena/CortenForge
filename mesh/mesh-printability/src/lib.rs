@@ -78,7 +78,7 @@ pub use orientation::{
     OrientationResult, apply_orientation, find_optimal_orientation, place_on_build_plate,
 };
 pub use regions::{
-    LongBridgeRegion, OverhangRegion, SelfIntersectingRegion, SupportRegion, ThinWallRegion,
-    TrappedVolumeRegion,
+    LongBridgeRegion, OverhangRegion, SelfIntersectingRegion, SmallFeatureRegion, SupportRegion,
+    ThinWallRegion, TrappedVolumeRegion,
 };
 pub use validation::{PrintValidation, validate_for_printing};

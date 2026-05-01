@@ -12,8 +12,8 @@ use crate::config::{PrintTechnology, PrinterConfig};
 use crate::error::{PrintabilityError, PrintabilityResult};
 use crate::issues::{IssueSeverity, PrintIssue, PrintIssueType};
 use crate::regions::{
-    LongBridgeRegion, OverhangRegion, SelfIntersectingRegion, SupportRegion, ThinWallRegion,
-    TrappedVolumeRegion,
+    LongBridgeRegion, OverhangRegion, SelfIntersectingRegion, SmallFeatureRegion, SupportRegion,
+    ThinWallRegion, TrappedVolumeRegion,
 };
 
 /// General geometric tie-breaking tolerance in millimetres (per spec §4.2).
@@ -61,6 +61,9 @@ pub struct PrintValidation {
     /// Self-intersecting triangle pairs detected (§6.4 Gap I).
     pub self_intersecting: Vec<SelfIntersectingRegion>,
 
+    /// Small-feature components detected (§6.5 Gap J).
+    pub small_features: Vec<SmallFeatureRegion>,
+
     /// Regions needing support structures.
     pub support_regions: Vec<SupportRegion>,
 
@@ -83,6 +86,7 @@ impl PrintValidation {
             long_bridges: Vec::new(),
             trapped_volumes: Vec::new(),
             self_intersecting: Vec::new(),
+            small_features: Vec::new(),
             support_regions: Vec::new(),
             estimated_print_time: None,
             estimated_material_volume: None,
@@ -213,6 +217,12 @@ pub fn validate_for_printing(
     // re-use. No precondition (mesh-repair handles all input gracefully:
     // single-face / empty / large meshes).
     check_self_intersecting(mesh, &mut validation);
+
+    // §6.5 Gap J — small features via connected-component bbox extent.
+    // No precondition (tolerant of any input: empty, open, non-manifold,
+    // or NaN-vertex). Catches floating debris, unit-conversion errors,
+    // and CAD-leftover burrs.
+    check_small_features(mesh, config, &mut validation);
 
     Ok(validation)
 }
@@ -1946,6 +1956,243 @@ fn check_self_intersecting(mesh: &IndexedMesh, validation: &mut PrintValidation)
         a.face_a
             .cmp(&b.face_a)
             .then_with(|| a.face_b.cmp(&b.face_b))
+    });
+}
+
+/// Partition every face of the mesh into edge-connected components
+/// (§6.5 Gap J helper).
+///
+/// Two faces are adjacent iff they share an edge, regardless of
+/// orientation or how many other faces also share that edge. Open
+/// edges (1-incident) and non-manifold edges (>2 incident) both
+/// contribute to adjacency — every distinct unordered pair of faces
+/// sharing an edge gets linked. This is broader than
+/// `partition_flagged_into_components`'s manifold-only adjacency
+/// (used by Gap D / Gap C / Gap G) because §6.5's small-feature
+/// definition is purely topological: a CAD-leftover burr loosely
+/// connected to the main body via a single non-manifold edge should
+/// still be one component, not split into pieces.
+///
+/// Every face index `0..mesh.faces.len()` seeds the DFS, including
+/// faces with no shared edges (true islands). Components emerge in
+/// min-face-idx order: the outer loop visits seeds in ascending
+/// index, so the first unvisited face index becomes the seed of the
+/// next component. Faces within each component are sorted ascending,
+/// matching `partition_flagged_into_components`'s output contract.
+fn partition_all_faces_into_components(mesh: &IndexedMesh) -> Vec<Vec<u32>> {
+    let edge_to_faces = build_edge_to_faces(mesh);
+    let mut adjacency: HashMap<u32, Vec<u32>> = HashMap::new();
+    for faces in edge_to_faces.values() {
+        if faces.len() < 2 {
+            continue;
+        }
+        for i in 0..faces.len() {
+            for j in (i + 1)..faces.len() {
+                let a = faces[i];
+                let b = faces[j];
+                adjacency.entry(a).or_default().push(b);
+                adjacency.entry(b).or_default().push(a);
+            }
+        }
+    }
+
+    let face_count = mesh.faces.len();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut components: Vec<Vec<u32>> = Vec::new();
+
+    for face_idx in 0..face_count {
+        // Mesh face index fits in u32 (mesh size bounded well below 2^32);
+        // pattern shared with `build_edge_to_faces`.
+        #[allow(clippy::cast_possible_truncation)]
+        let face_idx = face_idx as u32;
+        if !visited.insert(face_idx) {
+            continue;
+        }
+        let mut component: Vec<u32> = vec![face_idx];
+        let mut stack: Vec<u32> = vec![face_idx];
+        while let Some(f) = stack.pop() {
+            if let Some(neighbors) = adjacency.get(&f) {
+                for &n in neighbors {
+                    if visited.insert(n) {
+                        component.push(n);
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+
+    components
+}
+
+/// Signed volume of a face subset via the divergence theorem
+/// (§6.5 Gap J helper).
+///
+/// Sums per-face tetrahedral volumes `(v0 · (v1 × v2)) / 6` against
+/// the origin. For a closed, consistently-wound surface this equals
+/// the enclosed volume up to sign (positive for outward winding,
+/// negative for inward). For open or non-manifold components the
+/// result is non-physical; the caller takes `abs(...)` and documents
+/// the field as approximate.
+///
+/// FP semantics: scalar form is preserved verbatim from the spec
+/// (§6.5 line 1238) for cross-platform bit-level reproducibility on
+/// exact-representable inputs (`stress_j_signed_volume_unit_cube`
+/// locks 1.0 mm³ within 1e-6 on a unit cube). `mul_add` substitution
+/// would change the rounding profile across platforms.
+fn signed_volume(mesh: &IndexedMesh, face_indices: &[u32]) -> f64 {
+    let mut vol = 0.0;
+    for &fi in face_indices {
+        let face = mesh.faces[fi as usize];
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
+        // Per-site `#[allow]` justification: §5.1 deferral pattern —
+        // `f64::mul_add` would change rounding bits across platforms,
+        // breaking the 1e-6 tolerance assertion in
+        // `stress_j_signed_volume_unit_cube`. The `(a*b - c*d)`
+        // determinant form is the canonical signed-tetrahedron volume.
+        #[allow(clippy::suboptimal_flops)]
+        let term = v0.x * (v1.y * v2.z - v1.z * v2.y)
+            + v0.y * (v1.z * v2.x - v1.x * v2.z)
+            + v0.z * (v1.x * v2.y - v1.y * v2.x);
+        vol += term / 6.0;
+    }
+    vol
+}
+
+/// Classify `SmallFeature` severity per §6.5 line 1266.
+///
+/// - `max_extent < min_feature_size / 2.0` → `IssueSeverity::Warning`
+///   (definitely below printer resolution)
+/// - otherwise → `IssueSeverity::Info` (borderline; may print)
+///
+/// No `Critical` band: small features are advisory, not blocking.
+/// Even a unit-conversion-mistaken mesh that is entirely below
+/// resolution should not block `is_printable()` — the user reading
+/// the warning fixes the mesh upstream.
+fn classify_small_feature_severity(max_extent: f64, min_feature: f64) -> IssueSeverity {
+    if max_extent < min_feature / 2.0 {
+        IssueSeverity::Warning
+    } else {
+        IssueSeverity::Info
+    }
+}
+
+/// Detect connected components below the printer's minimum feature
+/// size (§6.5 Gap J).
+///
+/// A small feature is any edge-connected face component whose AABB
+/// max-extent falls under `config.min_feature_size`. Catches floating
+/// debris, isolated tiny protrusions left by CAD/Boolean ops, and
+/// unit-conversion errors (a mesh authored in metres looks like a
+/// single sub-millimetre fragment under FDM's 0.8 mm threshold).
+///
+/// No precondition; runs on any input topology. Open/non-manifold
+/// components produce approximate volume via `abs(signed_volume)` —
+/// non-physical but no-panic, documented in the `volume` field.
+///
+/// Per qualifying component: one `SmallFeatureRegion` pushed and one
+/// `PrintIssue` of type `SmallFeature`. Severity per
+/// `classify_small_feature_severity`. The §4.4 sort is range-restricted
+/// to this detector's emissions so a future hoist of the sort to
+/// `validate_for_printing` does not have to undo it per-detector
+/// (same precedent as `check_self_intersecting`).
+fn check_small_features(
+    mesh: &IndexedMesh,
+    config: &PrinterConfig,
+    validation: &mut PrintValidation,
+) {
+    let components = partition_all_faces_into_components(mesh);
+    let regions_before = validation.small_features.len();
+
+    for component in components {
+        // Collect unique vertex indices from the component's faces.
+        let mut vertex_indices: HashSet<u32> = HashSet::new();
+        for &fi in &component {
+            let face = mesh.faces[fi as usize];
+            vertex_indices.insert(face[0]);
+            vertex_indices.insert(face[1]);
+            vertex_indices.insert(face[2]);
+        }
+
+        // AABB over component vertices.
+        let mut bbox_min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut bbox_max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for &vi in &vertex_indices {
+            let v = &mesh.vertices[vi as usize];
+            bbox_min.x = bbox_min.x.min(v.x);
+            bbox_min.y = bbox_min.y.min(v.y);
+            bbox_min.z = bbox_min.z.min(v.z);
+            bbox_max.x = bbox_max.x.max(v.x);
+            bbox_max.y = bbox_max.y.max(v.y);
+            bbox_max.z = bbox_max.z.max(v.z);
+        }
+        let extent_x = bbox_max.x - bbox_min.x;
+        let extent_y = bbox_max.y - bbox_min.y;
+        let extent_z = bbox_max.z - bbox_min.z;
+        let max_extent = extent_x.max(extent_y).max(extent_z);
+
+        // NaN-tolerant flag gate: a NaN `max_extent` makes
+        // `max_extent < threshold` evaluate to false, so NaN-vertex
+        // components are silently skipped (no false positive, no panic).
+        // Direct positive-form check so the NaN handling is explicit
+        // rather than via `!(<)`.
+        if !max_extent.is_finite() || max_extent >= config.min_feature_size {
+            continue;
+        }
+
+        // Centroid: mean of component vertex positions.
+        let mut centroid_sum_x: f64 = 0.0;
+        let mut centroid_sum_y: f64 = 0.0;
+        let mut centroid_sum_z: f64 = 0.0;
+        for &vi in &vertex_indices {
+            let v = &mesh.vertices[vi as usize];
+            centroid_sum_x += v.x;
+            centroid_sum_y += v.y;
+            centroid_sum_z += v.z;
+        }
+        // `vertex_indices.len()` ≤ `mesh.vertices.len()`, well below 2^53;
+        // usize → f64 cast is exact in this range.
+        #[allow(clippy::cast_precision_loss)]
+        let n = vertex_indices.len() as f64;
+        let center = Point3::new(centroid_sum_x / n, centroid_sum_y / n, centroid_sum_z / n);
+
+        let volume = signed_volume(mesh, &component).abs();
+        // `component.len()` ≤ `mesh.faces.len()`, bounded by `u32::MAX`;
+        // pattern shared with `build_edge_to_faces`'s face-index cast.
+        #[allow(clippy::cast_possible_truncation)]
+        let face_count = component.len() as u32;
+        let region = SmallFeatureRegion::new(center, max_extent, volume, face_count, component);
+        let severity = classify_small_feature_severity(max_extent, config.min_feature_size);
+
+        let issue = PrintIssue::new(
+            PrintIssueType::SmallFeature,
+            severity,
+            format!(
+                "{face_count} face(s) form a small feature with max extent {max_extent:.3} mm \
+                 (min feature size {:.3} mm; volume {volume:.3} mm³)",
+                config.min_feature_size
+            ),
+        )
+        .with_location(center)
+        .with_affected_elements(region.faces.clone());
+
+        validation.small_features.push(region);
+        validation.issues.push(issue);
+    }
+
+    // §4.4 sort: by `min(component_face_indices)` ascending. Each
+    // region's `faces` is already sorted ascending (per
+    // `partition_all_faces_into_components`), so `faces[0]` IS the
+    // min. Range-restricted to this detector's emissions per the
+    // precedent in `check_self_intersecting`.
+    validation.small_features[regions_before..].sort_by(|a, b| {
+        let a_min = a.faces.first().copied().unwrap_or(u32::MAX);
+        let b_min = b.faces.first().copied().unwrap_or(u32::MAX);
+        a_min.cmp(&b_min)
     });
 }
 
@@ -4610,5 +4857,413 @@ mod tests {
                 region.face_b
             );
         }
+    }
+
+    // ===== §6.5 Gap J — SmallFeature unit tests =========================
+
+    /// Build an axis-aligned 1-triangle "fragment" with extent
+    /// `(side, side, 0.0)` at +Z = z, anchored at origin `(cx, cy)`.
+    fn make_isolated_triangle(cx: f64, cy: f64, z: f64, side: f64) -> IndexedMesh {
+        let vertices = vec![
+            Point3::new(cx, cy, z),
+            Point3::new(cx + side, cy, z),
+            Point3::new(cx, cy + side, z),
+        ];
+        let faces = vec![[0, 1, 2]];
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    /// Build a watertight 12-triangle cube at `origin` with side `side`,
+    /// using the same outward winding as `create_watertight_cube`. Vertex
+    /// indices start at `index_offset` (so the fixture can be merged into
+    /// a multi-component mesh with no index collisions).
+    fn append_unit_cube_at(
+        vertices: &mut Vec<Point3<f64>>,
+        faces: &mut Vec<[u32; 3]>,
+        origin: Point3<f64>,
+        side: f64,
+    ) {
+        // Cast: `vertices.len()` ≤ mesh vertex count, well under 2^32.
+        #[allow(clippy::cast_possible_truncation)]
+        let i = vertices.len() as u32;
+        let x0 = origin.x;
+        let y0 = origin.y;
+        let z0 = origin.z;
+        let x1 = x0 + side;
+        let y1 = y0 + side;
+        let z1 = z0 + side;
+        vertices.extend_from_slice(&[
+            Point3::new(x0, y0, z0),
+            Point3::new(x1, y0, z0),
+            Point3::new(x1, y1, z0),
+            Point3::new(x0, y1, z0),
+            Point3::new(x0, y0, z1),
+            Point3::new(x1, y0, z1),
+            Point3::new(x1, y1, z1),
+            Point3::new(x0, y1, z1),
+        ]);
+        faces.extend_from_slice(&[
+            // Bottom (Z = z0), top (Z = z1) — outward winding matches
+            // `create_watertight_cube`.
+            [i, i + 2, i + 1],
+            [i, i + 3, i + 2],
+            [i + 4, i + 5, i + 6],
+            [i + 4, i + 6, i + 7],
+            [i, i + 1, i + 5],
+            [i, i + 5, i + 4],
+            [i + 3, i + 6, i + 2],
+            [i + 3, i + 7, i + 6],
+            [i, i + 4, i + 7],
+            [i, i + 7, i + 3],
+            [i + 1, i + 2, i + 6],
+            [i + 1, i + 6, i + 5],
+        ]);
+    }
+
+    fn make_unit_cube_at(origin: Point3<f64>, side: f64) -> IndexedMesh {
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        append_unit_cube_at(&mut vertices, &mut faces, origin, side);
+        IndexedMesh::from_parts(vertices, faces)
+    }
+
+    #[test]
+    fn test_small_feature_floating_triangle_detected() {
+        // 100 mm cube + isolated 0.1 mm triangle. min_feature_size = 0.4
+        // → triangle flags as Warning (0.1 < 0.4 / 2 = 0.2); cube does
+        // not (max_extent 100 ≫ 0.4).
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        append_unit_cube_at(&mut vertices, &mut faces, Point3::new(0.0, 0.0, 0.0), 100.0);
+        // Append the floating triangle at +X = 200 mm (well outside the
+        // cube) so the two are not edge-adjacent.
+        // Cast as in `append_unit_cube_at`.
+        #[allow(clippy::cast_possible_truncation)]
+        let base = vertices.len() as u32;
+        vertices.extend_from_slice(&[
+            Point3::new(200.0, 0.0, 0.0),
+            Point3::new(200.1, 0.0, 0.0),
+            Point3::new(200.0, 0.1, 0.0),
+        ]);
+        faces.push([base, base + 1, base + 2]);
+
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 0.4;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on cube + floating-triangle fixture");
+
+        assert_eq!(
+            result.small_features.len(),
+            1,
+            "exactly one small-feature region (the 0.1 mm triangle)"
+        );
+        let region = &result.small_features[0];
+        assert!(
+            (region.max_extent - 0.1).abs() < 1e-9,
+            "max_extent ≈ 0.1 mm; got {}",
+            region.max_extent
+        );
+        assert_eq!(region.face_count, 1);
+
+        // Per-site `expect_used` allow: assertion-target lookup; if the
+        // detector's emission contract breaks, panicking with a clear
+        // message is the right test failure mode.
+        #[allow(clippy::expect_used)]
+        let issue = result
+            .issues
+            .iter()
+            .find(|i| matches!(i.issue_type, PrintIssueType::SmallFeature))
+            .expect("SmallFeature issue must be emitted");
+        assert_eq!(
+            issue.severity,
+            IssueSeverity::Warning,
+            "0.1 < 0.4 / 2 = 0.2 → Warning"
+        );
+    }
+
+    #[test]
+    fn test_small_feature_borderline_no_issue() {
+        // max_extent = 0.5 mm, min_feature_size = 0.4 → 0.5 NOT < 0.4 →
+        // not flagged. The detector uses strict `<`, not `≤`.
+        let mesh = make_isolated_triangle(0.0, 0.0, 0.0, 0.5);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 0.4;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on borderline fixture");
+
+        assert_eq!(
+            result.small_features.len(),
+            0,
+            "max_extent ≥ min_feature_size → not flagged"
+        );
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| matches!(i.issue_type, PrintIssueType::SmallFeature)),
+            "no SmallFeature issue at the borderline"
+        );
+    }
+
+    #[test]
+    fn test_small_feature_below_half_threshold_warning() {
+        // max_extent = 0.1 mm, min_feature_size = 0.4 → flagged
+        // (0.1 < 0.4) AND severity = Warning (0.1 < 0.4 / 2 = 0.2).
+        let mesh = make_isolated_triangle(0.0, 0.0, 0.0, 0.1);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 0.4;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on below-half-threshold fixture");
+
+        assert_eq!(result.small_features.len(), 1);
+        // Per-site `expect_used` allow: assertion-target lookup; if the
+        // detector's emission contract breaks, panicking with a clear
+        // message is the right test failure mode.
+        #[allow(clippy::expect_used)]
+        let issue = result
+            .issues
+            .iter()
+            .find(|i| matches!(i.issue_type, PrintIssueType::SmallFeature))
+            .expect("SmallFeature issue must be emitted");
+        assert_eq!(issue.severity, IssueSeverity::Warning);
+    }
+
+    #[test]
+    fn test_small_feature_just_below_threshold_info() {
+        // max_extent = 0.3 mm, min_feature_size = 0.4 → flagged
+        // (0.3 < 0.4) AND severity = Info (0.3 ≥ 0.4 / 2 = 0.2).
+        let mesh = make_isolated_triangle(0.0, 0.0, 0.0, 0.3);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 0.4;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on just-below-threshold fixture");
+
+        assert_eq!(result.small_features.len(), 1);
+        // Per-site `expect_used` allow: assertion-target lookup; if the
+        // detector's emission contract breaks, panicking with a clear
+        // message is the right test failure mode.
+        #[allow(clippy::expect_used)]
+        let issue = result
+            .issues
+            .iter()
+            .find(|i| matches!(i.issue_type, PrintIssueType::SmallFeature))
+            .expect("SmallFeature issue must be emitted");
+        assert_eq!(issue.severity, IssueSeverity::Info);
+    }
+
+    #[test]
+    fn test_small_feature_clean_main_body_not_flagged() {
+        // 100 mm watertight cube; max_extent 100 ≫ 0.8 (FDM default) →
+        // 0 small-feature regions.
+        let mesh = make_unit_cube_at(Point3::new(0.0, 0.0, 0.0), 100.0);
+        let config = PrinterConfig::fdm_default();
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on clean 100 mm cube");
+
+        assert_eq!(
+            result.small_features.len(),
+            0,
+            "main body must not be flagged (max_extent 100 ≫ 0.8)"
+        );
+    }
+
+    #[test]
+    fn test_small_feature_two_floating_fragments() {
+        // 100 mm cube + 2 disjoint 0.1 mm fragments at +X = 200 / 300 mm
+        // (well outside the cube) → 2 small-feature regions (cube
+        // unaffected). Fragments share no vertex indices with the cube
+        // or each other, so they form separate components.
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        append_unit_cube_at(&mut vertices, &mut faces, Point3::new(0.0, 0.0, 0.0), 100.0);
+
+        // Fragment A at (200, 0, 0).
+        // Cast as in `append_unit_cube_at`.
+        #[allow(clippy::cast_possible_truncation)]
+        let base_a = vertices.len() as u32;
+        vertices.extend_from_slice(&[
+            Point3::new(200.0, 0.0, 0.0),
+            Point3::new(200.1, 0.0, 0.0),
+            Point3::new(200.0, 0.1, 0.0),
+        ]);
+        faces.push([base_a, base_a + 1, base_a + 2]);
+
+        // Fragment B at (300, 0, 0).
+        #[allow(clippy::cast_possible_truncation)]
+        let base_b = vertices.len() as u32;
+        vertices.extend_from_slice(&[
+            Point3::new(300.0, 0.0, 0.0),
+            Point3::new(300.1, 0.0, 0.0),
+            Point3::new(300.0, 0.1, 0.0),
+        ]);
+        faces.push([base_b, base_b + 1, base_b + 2]);
+
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 0.4;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on cube + 2-fragment fixture");
+
+        assert_eq!(
+            result.small_features.len(),
+            2,
+            "two fragments expected; cube unaffected"
+        );
+    }
+
+    #[test]
+    fn test_small_feature_face_adjacency_via_edge_only() {
+        // Two triangles sharing only vertex index 2 (no shared edge) →
+        // 2 separate components per the §6.5 line 1280 edge-adjacency
+        // contract.
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),   // 0
+            Point3::new(0.1, 0.0, 0.0),   // 1
+            Point3::new(0.05, 0.05, 0.0), // 2 (shared)
+            Point3::new(0.1, 0.05, 0.0),  // 3
+            Point3::new(0.05, 0.1, 0.0),  // 4
+        ];
+        let faces = vec![[0, 1, 2], [2, 3, 4]];
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 0.4;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on vertex-only-shared fixture");
+
+        assert_eq!(
+            result.small_features.len(),
+            2,
+            "vertex-only sharing is not edge-adjacency; expect 2 components"
+        );
+        for region in &result.small_features {
+            assert_eq!(region.face_count, 1);
+        }
+    }
+
+    #[test]
+    fn test_small_feature_volume_via_divergence_theorem() {
+        // Unit cube (1 mm side, exact-representable verts), min_feature
+        // = 2.0 → flagged (max_extent 1.0 < 2.0). Volume must be ≈ 1.0
+        // mm³ within 1e-6 (FP-stable on exact-representable inputs).
+        let mesh = make_unit_cube_at(Point3::new(0.0, 0.0, 0.0), 1.0);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 2.0;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on unit-cube fixture");
+
+        assert_eq!(result.small_features.len(), 1);
+        let region = &result.small_features[0];
+        assert!(
+            (region.volume - 1.0).abs() < 1e-6,
+            "divergence-theorem volume ≈ 1.0 mm³ within 1e-6; got {}",
+            region.volume
+        );
+    }
+
+    #[test]
+    fn test_small_feature_open_component_no_panic() {
+        // 5-of-6 face cube (top removed) at side = 1 mm, min_feature =
+        // 2.0 → flagged. Open mesh; signed_volume is non-physical but
+        // `abs(...)` guarantees finite, non-negative output.
+        let x0 = 0.0;
+        let y0 = 0.0;
+        let z0 = 0.0;
+        let x1 = 1.0;
+        let y1 = 1.0;
+        let z1 = 1.0;
+        let vertices = vec![
+            Point3::new(x0, y0, z0),
+            Point3::new(x1, y0, z0),
+            Point3::new(x1, y1, z0),
+            Point3::new(x0, y1, z0),
+            Point3::new(x0, y0, z1),
+            Point3::new(x1, y0, z1),
+            Point3::new(x1, y1, z1),
+            Point3::new(x0, y1, z1),
+        ];
+        // 5 sides, no top: bottom + front + back + left + right.
+        let faces = vec![
+            [0, 2, 1],
+            [0, 3, 2], // bottom
+            [0, 1, 5],
+            [0, 5, 4], // front
+            [3, 6, 2],
+            [3, 7, 6], // back
+            [0, 4, 7],
+            [0, 7, 3], // left
+            [1, 2, 6],
+            [1, 6, 5], // right
+        ];
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 2.0;
+        #[allow(clippy::expect_used)]
+        let result = validate_for_printing(&mesh, &config)
+            .expect("validation must succeed on open-component fixture");
+
+        assert_eq!(result.small_features.len(), 1);
+        let region = &result.small_features[0];
+        assert!(
+            region.volume.is_finite() && region.volume >= 0.0,
+            "open-component volume must be finite and non-negative; got {}",
+            region.volume
+        );
+    }
+
+    #[test]
+    fn test_small_feature_sort_stable() {
+        // Same input run twice → identical region order. Verifies §4.4
+        // sort-by-min-face-index. Two fragments with face indices in
+        // intentionally non-sorted Vec construction order; expected
+        // sort puts fragment A (lower face index) first.
+        let mut vertices: Vec<Point3<f64>> = Vec::new();
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        // Cast as in `append_unit_cube_at`.
+        #[allow(clippy::cast_possible_truncation)]
+        let base_a = vertices.len() as u32;
+        vertices.extend_from_slice(&[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.1, 0.0, 0.0),
+            Point3::new(0.0, 0.1, 0.0),
+        ]);
+        faces.push([base_a, base_a + 1, base_a + 2]); // face 0
+        #[allow(clippy::cast_possible_truncation)]
+        let base_b = vertices.len() as u32;
+        vertices.extend_from_slice(&[
+            Point3::new(50.0, 0.0, 0.0),
+            Point3::new(50.1, 0.0, 0.0),
+            Point3::new(50.0, 0.1, 0.0),
+        ]);
+        faces.push([base_b, base_b + 1, base_b + 2]); // face 1
+
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let mut config = PrinterConfig::fdm_default();
+        config.min_feature_size = 0.4;
+
+        #[allow(clippy::expect_used)]
+        let r1 = validate_for_printing(&mesh, &config).expect("validation run 1 must succeed");
+        #[allow(clippy::expect_used)]
+        let r2 = validate_for_printing(&mesh, &config).expect("validation run 2 must succeed");
+
+        assert_eq!(r1.small_features.len(), 2);
+        assert_eq!(r1.small_features.len(), r2.small_features.len());
+        for (a, b) in r1.small_features.iter().zip(r2.small_features.iter()) {
+            assert_eq!(
+                a.faces, b.faces,
+                "§4.4 sort stability: identical face vectors across runs"
+            );
+        }
+        // Lowest-face-idx fragment first per §4.4.
+        assert_eq!(r1.small_features[0].faces, vec![0]);
+        assert_eq!(r1.small_features[1].faces, vec![1]);
     }
 }

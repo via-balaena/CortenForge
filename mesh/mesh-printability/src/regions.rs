@@ -216,6 +216,57 @@ impl SelfIntersectingRegion {
     }
 }
 
+/// Information about a small-feature component (§6.5 Gap J).
+///
+/// A small feature is a connected component of the mesh whose
+/// bounding-box maximum extent is less than `config.min_feature_size`.
+/// Catches floating debris, isolated tiny protrusions, and unit-
+/// conversion errors (e.g. mesh authored in metres instead of mm).
+///
+/// `center` is the mean of component vertex positions. `max_extent`
+/// is the largest of the three AABB axis sizes. `volume` is the
+/// absolute signed volume via the divergence theorem
+/// `Σ (v0 · (v1 × v2)) / 6` over component faces; for closed,
+/// consistently-wound components this is the geometric volume in
+/// `mm³`. For open or non-manifold components the value is non-
+/// physical; `abs(...)` ensures non-negative output and the field
+/// should be treated as approximate. `face_count` is the number of
+/// faces in the component. `faces` are the component face indices,
+/// sorted ascending.
+#[derive(Debug, Clone)]
+pub struct SmallFeatureRegion {
+    /// Centroid of the component (mean of vertex positions).
+    pub center: Point3<f64>,
+    /// Largest AABB axis size in mm.
+    pub max_extent: f64,
+    /// Absolute signed volume in `mm³` (approximate for non-watertight components).
+    pub volume: f64,
+    /// Number of faces in the component.
+    pub face_count: u32,
+    /// Component face indices, sorted ascending.
+    pub faces: Vec<u32>,
+}
+
+impl SmallFeatureRegion {
+    /// Create a new small-feature region.
+    #[must_use]
+    pub const fn new(
+        center: Point3<f64>,
+        max_extent: f64,
+        volume: f64,
+        face_count: u32,
+        faces: Vec<u32>,
+    ) -> Self {
+        Self {
+            center,
+            max_extent,
+            volume,
+            face_count,
+            faces,
+        }
+    }
+}
+
 /// Information about a region that needs support.
 #[derive(Debug, Clone)]
 pub struct SupportRegion {
@@ -316,6 +367,25 @@ mod tests {
         assert!((region.approximate_location.x - 1.5).abs() < f64::EPSILON);
         assert!((region.approximate_location.y - 2.5).abs() < f64::EPSILON);
         assert!((region.approximate_location.z - 3.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_small_feature_region() {
+        let region = SmallFeatureRegion::new(
+            Point3::new(1.0, 2.0, 3.0),
+            0.25,
+            0.015_625,
+            12,
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        );
+
+        assert!((region.center.x - 1.0).abs() < f64::EPSILON);
+        assert!((region.max_extent - 0.25).abs() < f64::EPSILON);
+        assert!((region.volume - 0.015_625).abs() < f64::EPSILON);
+        assert_eq!(region.face_count, 12);
+        assert_eq!(region.faces.len(), 12);
+        assert_eq!(region.faces[0], 0);
+        assert_eq!(region.faces[11], 11);
     }
 
     #[test]

@@ -475,6 +475,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pitfall section + module doc-comment) and flags it as a v0.9
   candidate. Pure addition; fourth ⏸ pause-for-visuals commit per
   §12.6 row 4.
+- **`SmallFeature` detector via connected-component bbox extent (Gap J, §6.5).**
+  Final v0.8 detector. v0.7 exposed `PrintIssueType::SmallFeature`
+  but `validate_for_printing` never populated any field — silent skip
+  for floating debris, isolated tiny protrusions, and unit-conversion
+  errors (a mesh authored in metres looks like a single sub-millimetre
+  fragment under FDM's 0.8 mm resolution). v0.8 wires a private
+  `check_small_features(mesh, config, validation)` that partitions
+  every face of the mesh into edge-connected components (DFS over
+  shared-edge adjacency, regardless of orientation or non-manifold
+  edge incidence — broader than `partition_flagged_into_components`'s
+  manifold-only adjacency, since §6.5's small-feature definition is
+  purely topological), computes per-component AABB max-extent, and
+  flags components whose `max_extent < config.min_feature_size`.
+  New `SmallFeatureRegion` typed-region (`center`, `max_extent`,
+  `volume`, `face_count`, `faces`) and new
+  `PrintValidation.small_features` field. Volume comes from the
+  divergence-theorem sum `Σ (v0 · (v1 × v2)) / 6` over component
+  faces, then `abs(...)` so open / non-manifold components produce
+  finite, non-negative values (non-physical but no-panic; documented
+  as approximate for non-watertight inputs). Severity classifier:
+  `max_extent < min_feature_size / 2` → Warning (definitely below
+  resolution); else → Info (borderline; may print). No Critical band
+  — small features are advisory, not blocking, so even a unit-
+  conversion-mistaken mesh entirely below resolution does not flip
+  `is_printable()` to false. Per-region `(face_indices)` is sorted
+  ascending by `partition_all_faces_into_components`; the per-detector
+  §4.4 sort orders regions by `min(faces)` ascending. New private
+  helpers: `partition_all_faces_into_components` (DFS, every face is
+  a seed including isolated islands; re-uses `build_edge_to_faces`
+  from §5.3), `signed_volume` (verbatim spec form, no `mul_add`
+  substitution to preserve cross-platform bit semantics on exact-
+  representable inputs), `classify_small_feature_severity`.
+  Tolerant of any input — no preconditions, no `DetectorSkipped`
+  path: empty/single-face/open/non-manifold/NaN-vertex meshes all
+  flow through without panic. Ten unit tests in `validation.rs::tests`
+  cover §6.5's adversarial cases (floating triangle Warning,
+  borderline `0.5 ≥ 0.4` no-issue, below-half-threshold Warning,
+  just-below-threshold Info, clean main body, two floating fragments,
+  vertex-only adjacency = 2 components, divergence-theorem volume
+  ≈ 1.0 mm³ within 1e-6 on a unit cube, open-component finite volume
+  no-panic, sort stability across runs). Eight §9.2.7 stress fixtures
+  in `tests/stress_inputs.rs` (clean 30 mm cube no-flag, 0.2 mm
+  hex-prism burr Warning, 30-µm cube unit-conversion diagnostic,
+  below-threshold Warning vs just-below-threshold Info severity bands,
+  open 5-of-6-face cube no-panic, vertex-only adjacency = 2 components,
+  unit-cube divergence-theorem 1.0 mm³ within 1e-6). All eight are
+  Light (no `#[cfg_attr(debug_assertions, ignore)]`); the algorithm
+  is `O(n_faces)` so no perf-budget concern. **v0.9 followups (§6.5)**:
+  curvature-based detection (small bumps on a larger body), volume-
+  based threshold (long thin spikes that pass extent but fail volume).
 
 ### Changed
 
