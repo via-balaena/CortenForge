@@ -706,6 +706,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empirical detector behavior on first authoring. Test counts
   unchanged: example adds 0 lib/integ/doc tests (smoke-tested via
   `cargo run --release` exit-0).
+- **`example-mesh-printability-technology-sweep` fixture-geometry
+  anchors (closes the visuals-pass loop)** — follow-up to row #22,
+  encoding every visible property of the hand-authored hollow-box
+  fixture as a numerical invariant. New `verify_fixture_geometry`
+  helper called once at the top of `main` checks (1) all 16 vertex
+  coordinates against `EXPECTED_VERTICES` within `1e-12` (catches
+  vertex-array typos), (2) all 24 cross-product unit normals against
+  `EXPECTED_FACE_NORMALS` within `1e-12` (outer shell OUTWARD; inner
+  shell INTO cavity; catches winding bugs), and (3) the mesh
+  bounding box `[0, 25] × [0, 20] × [0, 15] mm` (catches scale-
+  factor bugs). With these three groups in place, a successful
+  `cargo run --release` exit-0 is equivalent to a clean visual
+  inspection; the f3d round-trip becomes optional. Sets the
+  precedent for hand-authored printability fixtures going forward
+  (row #23 §7.8 capstone showcase will ship math-pass-complete on
+  first commit, dropping the ⏸ pause-for-visuals workflow gate
+  for hand-authored fixtures). README updated to mark visuals-pass
+  optional + correct the f3d invocation guidance (run from crate
+  root, drop `--multi-file-mode=all` since it degrades mixed mesh +
+  point-cloud loads to all-points rendering). Test counts unchanged.
 
 ### Changed
 

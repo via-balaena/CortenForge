@@ -174,12 +174,24 @@ written to `examples/mesh/printability-technology-sweep/out/`:
 - `out/issues_mjf.ply` — 3 centroids (2 ThinWall + 0 Overhang +
   1 TrappedVolume).
 
-Open the mesh and any one of the `issues_*.ply` files together
-(e.g. `f3d --up=+Z --multi-file-mode=all out/mesh.ply
-out/issues_fdm.ply`); compare against the SLS variant (no overhang
-centroid at the cavity ceiling) to *see* the per-tech severity shift.
-Without `--multi-file-mode=all`, f3d opens the two PLYs in separate
-tabs instead of overlaying them.
+A successful `cargo run --release` exit-0 means **both** the per-tech
+severity matrix and the fixture geometry (per-vertex coordinates,
+per-face winding, bounding box) match expectation — see
+`verify_fixture_geometry` in `src/main.rs`. **The visuals-pass is
+optional** at this point; everything visible has been encoded as a
+numerical invariant.
+
+If you do want to eyeball the artifacts, **run f3d from the crate
+root** (`examples/mesh/printability-technology-sweep/`) on each PLY
+**separately** — f3d's `--multi-file-mode=all` falls back to
+all-points rendering when mixing a face-mesh with a vertex-only
+point cloud, so you lose the cube surface:
+
+```text
+f3d --up=+Z out/mesh.ply        # the hollow box, surface-rendered
+f3d --up=+Z out/issues_fdm.ply  # FDM centroids (5 dots)
+f3d --up=+Z out/issues_sls.ply  # SLS centroids (3 dots; no overhang)
+```
 
 The fixture's outer + inner shells are wound in opposite directions
 (REVERSED inner shell → cavity normals point INTO the cavity); the

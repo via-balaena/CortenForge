@@ -102,6 +102,18 @@
 //! diagnostics but does NOT assert against it (not load-bearing for the
 //! per-tech severity story; SLS / MJF have `max_bridge_span = ∞`).
 //!
+//! ## Fixture-geometry anchors (closes the visuals-pass loop)
+//!
+//! `verify_fixture_geometry` (called once at the top of `main`) locks
+//! every visible property of the hand-authored fixture as a numerical
+//! invariant: per-vertex coordinates of all 16 vertices, per-face
+//! cross-product unit normal of all 24 faces, and the overall mesh
+//! bounding box `[0, OUTER_X] × [0, OUTER_Y] × [0, OUTER_Z]`. With
+//! these in place, a successful `cargo run --release` exit-0 is
+//! equivalent to a clean visual inspection — the visuals-pass becomes
+//! a user-optional sanity check, not a workflow gate. This sets the
+//! precedent for hand-authored printability example fixtures.
+//!
 //! ## How to run
 //!
 //! ```text
@@ -118,9 +130,11 @@
 //!   centroids. Same mesh, four different point clouds — the visual
 //!   payoff.
 //!
-//! Open `mesh.ply` and the four `issues_*.ply` files together (e.g.
-//! `f3d --up=+Z out/mesh.ply out/issues_fdm.ply` etc.) to see how the
-//! detector population shifts per technology.
+//! With `verify_fixture_geometry` active, the visuals-pass is optional.
+//! If you do want to eyeball the artifacts, run `f3d` on each PLY
+//! separately (`f3d --up=+Z out/mesh.ply` then `f3d --up=+Z
+//! out/issues_<tech>.ply`) — `f3d --multi-file-mode=all` mixed with a
+//! point-cloud falls back to all-points rendering. See `README.md`.
 
 use std::path::Path;
 
@@ -167,6 +181,69 @@ const TOP_WALL_THICKNESS: f64 = OUTER_Z - INNER_Z_MAX; // = 0.4 mm
 const ANALYTICAL_CAVITY_VOLUME: f64 =
     (INNER_X_MAX - INNER_X_MIN) * (INNER_Y_MAX - INNER_Y_MIN) * (INNER_Z_MAX - INNER_Z_MIN);
 
+// -- Fixture-geometry expected anchors --------------------------------------
+
+/// Expected per-vertex coordinates (mm). Locks the fixture's 16-vertex
+/// hand-authored construction: 8 outer cube corners (indices `0..=7`)
+/// and 8 inner cavity corners (indices `8..=15`, vertex-disjoint from
+/// outer). Each entry must match `mesh.vertices[i]` within `VERTEX_TOL`.
+/// Independent description vs `build_hollow_box` implementation —
+/// catches typos in the vertex array.
+const EXPECTED_VERTICES: [[f64; 3]; 16] = [
+    [0.0, 0.0, 0.0],                         //  0  outer bottom-front-left
+    [OUTER_X, 0.0, 0.0],                     //  1  outer bottom-front-right
+    [OUTER_X, OUTER_Y, 0.0],                 //  2  outer bottom-back-right
+    [0.0, OUTER_Y, 0.0],                     //  3  outer bottom-back-left
+    [0.0, 0.0, OUTER_Z],                     //  4  outer top-front-left
+    [OUTER_X, 0.0, OUTER_Z],                 //  5  outer top-front-right
+    [OUTER_X, OUTER_Y, OUTER_Z],             //  6  outer top-back-right
+    [0.0, OUTER_Y, OUTER_Z],                 //  7  outer top-back-left
+    [INNER_X_MIN, INNER_Y_MIN, INNER_Z_MIN], //  8  inner bottom-front-left
+    [INNER_X_MAX, INNER_Y_MIN, INNER_Z_MIN], //  9  inner bottom-front-right
+    [INNER_X_MAX, INNER_Y_MAX, INNER_Z_MIN], // 10  inner bottom-back-right
+    [INNER_X_MIN, INNER_Y_MAX, INNER_Z_MIN], // 11  inner bottom-back-left
+    [INNER_X_MIN, INNER_Y_MIN, INNER_Z_MAX], // 12  inner top-front-left
+    [INNER_X_MAX, INNER_Y_MIN, INNER_Z_MAX], // 13  inner top-front-right
+    [INNER_X_MAX, INNER_Y_MAX, INNER_Z_MAX], // 14  inner top-back-right
+    [INNER_X_MIN, INNER_Y_MAX, INNER_Z_MAX], // 15  inner top-back-left
+];
+
+/// Expected per-face unit normal directions. Outer shell wound CCW-
+/// from-outside (normals OUTWARD); inner shell REVERSED (normals point
+/// INTO cavity, AWAY from surrounding solid). Each entry must match the
+/// cross-product unit normal of `mesh.faces[i]` within `NORMAL_TOL`.
+/// Catches winding bugs (e.g. face wound clockwise) that detector-level
+/// assertions wouldn't surface — only visual inspection or geometric
+/// anchors would.
+const EXPECTED_FACE_NORMALS: [[f64; 3]; 24] = [
+    // Outer shell, OUTWARD
+    [0.0, 0.0, -1.0], //  0  outer bottom  [0, 3, 2]   normal -z
+    [0.0, 0.0, -1.0], //  1  outer bottom  [0, 2, 1]
+    [0.0, 0.0, 1.0],  //  2  outer top     [4, 5, 6]   normal +z
+    [0.0, 0.0, 1.0],  //  3  outer top     [4, 6, 7]
+    [0.0, -1.0, 0.0], //  4  outer front   [0, 1, 5]   normal -y
+    [0.0, -1.0, 0.0], //  5  outer front   [0, 5, 4]
+    [0.0, 1.0, 0.0],  //  6  outer back    [3, 7, 6]   normal +y
+    [0.0, 1.0, 0.0],  //  7  outer back    [3, 6, 2]
+    [-1.0, 0.0, 0.0], //  8  outer left    [0, 4, 7]   normal -x
+    [-1.0, 0.0, 0.0], //  9  outer left    [0, 7, 3]
+    [1.0, 0.0, 0.0],  // 10  outer right   [1, 2, 6]   normal +x
+    [1.0, 0.0, 0.0],  // 11  outer right   [1, 6, 5]
+    // Inner shell, INTO cavity (REVERSED)
+    [0.0, 0.0, 1.0],  // 12  inner bottom  [8, 9, 10]   +z (cavity above)
+    [0.0, 0.0, 1.0],  // 13  inner bottom  [8, 10, 11]
+    [0.0, 0.0, -1.0], // 14  inner top     [12, 14, 13] -z (cavity below)
+    [0.0, 0.0, -1.0], // 15  inner top     [12, 15, 14]
+    [0.0, 1.0, 0.0],  // 16  inner front   [8, 12, 13]  +y (cavity behind)
+    [0.0, 1.0, 0.0],  // 17  inner front   [8, 13, 9]
+    [0.0, -1.0, 0.0], // 18  inner back    [11, 10, 14] -y (cavity in front)
+    [0.0, -1.0, 0.0], // 19  inner back    [11, 14, 15]
+    [1.0, 0.0, 0.0],  // 20  inner left    [8, 11, 15]  +x (cavity to right)
+    [1.0, 0.0, 0.0],  // 21  inner left    [8, 15, 12]
+    [-1.0, 0.0, 0.0], // 22  inner right   [9, 13, 14]  -x (cavity to left)
+    [-1.0, 0.0, 0.0], // 23  inner right   [9, 14, 10]
+];
+
 // -- Numerical-anchor tolerances --------------------------------------------
 
 /// Tolerance on `ThinWallRegion.thickness` (mm). The detector reports
@@ -193,6 +270,18 @@ const AREA_TOL: f64 = 1.0e-9;
 /// classifications by `± 1` voxel on platform boundaries) per §9.6.
 const TRAPPED_VOLUME_REL_TOL: f64 = 0.10;
 
+/// Tolerance on per-vertex coordinate equality (mm) for fixture-
+/// geometry assertions. All 16 vertex coordinates are exact-representable
+/// in f64 except `INNER_Z_MAX = 14.6`, which has IEEE-754 drift of
+/// `~ 1e-16`; `1e-12` is comfortably tight.
+const VERTEX_TOL: f64 = 1.0e-12;
+
+/// Tolerance on per-face unit normal equality for fixture-geometry
+/// assertions. Cross-product on axis-aligned-vertex coordinates produces
+/// bit-exact `±1.0` / `0.0` components after normalization for axis-
+/// aligned right-triangle faces; `1e-12` is comfortably tight.
+const NORMAL_TOL: f64 = 1.0e-12;
+
 // -- Helpers ----------------------------------------------------------------
 
 /// Per-tech `voxel_size = min(min_feature_size, layer_height) / 2` per
@@ -215,6 +304,7 @@ fn voxel_size(config: &PrinterConfig) -> f64 {
 #[allow(clippy::similar_names, clippy::too_many_lines)]
 fn main() -> Result<()> {
     let mesh = build_hollow_box();
+    verify_fixture_geometry(&mesh);
 
     println!("==== mesh-printability-technology-sweep ====");
     println!();
@@ -367,6 +457,113 @@ fn build_hollow_box() -> IndexedMesh {
     ];
 
     IndexedMesh::from_parts(vertices, faces)
+}
+
+/// Verify the fixture's hand-authored geometry — locks the per-vertex
+/// coordinates, per-face winding, and overall bounding box. Catches
+/// regressions that detector-level assertions wouldn't surface (typos
+/// in the vertex array, swapped winding on a face, scale-factor bug).
+/// With this verifier active, the visual inspection step is no longer
+/// load-bearing: every visible property of the fixture is encoded as a
+/// numerical invariant, so a successful `cargo run --release` exit-0 is
+/// equivalent to a clean visuals-pass.
+///
+/// Three logical groups:
+/// 1. **Per-vertex coordinates** — all 16 vertices match
+///    `EXPECTED_VERTICES`.
+/// 2. **Per-face winding** — all 24 cross-product unit normals match
+///    `EXPECTED_FACE_NORMALS` (outer shell OUTWARD; inner shell INTO
+///    cavity).
+/// 3. **Mesh bounding box** — `[0, OUTER_X] × [0, OUTER_Y] × [0,
+///    OUTER_Z]`.
+//
+// `clippy::suboptimal_flops`: the cross-product `a*b - c*d` form is
+// preferred here over `a.mul_add(b, -(c*d))` — the operands are integer
+// vertex coordinates so both forms produce bit-exact results, but the
+// straight-line form reads as the textbook cross-product definition.
+#[allow(clippy::suboptimal_flops)]
+fn verify_fixture_geometry(mesh: &IndexedMesh) {
+    // (1) Vertex count + per-vertex coordinates.
+    assert_eq!(
+        mesh.vertices.len(),
+        EXPECTED_VERTICES.len(),
+        "fixture must have {} vertices",
+        EXPECTED_VERTICES.len(),
+    );
+    for (i, expected) in EXPECTED_VERTICES.iter().enumerate() {
+        let v = &mesh.vertices[i];
+        assert_relative_eq!(v.x, expected[0], epsilon = VERTEX_TOL);
+        assert_relative_eq!(v.y, expected[1], epsilon = VERTEX_TOL);
+        assert_relative_eq!(v.z, expected[2], epsilon = VERTEX_TOL);
+    }
+
+    // (2) Face count + per-face cross-product unit normal direction.
+    assert_eq!(
+        mesh.faces.len(),
+        EXPECTED_FACE_NORMALS.len(),
+        "fixture must have {} faces",
+        EXPECTED_FACE_NORMALS.len(),
+    );
+    for (i, expected) in EXPECTED_FACE_NORMALS.iter().enumerate() {
+        let face = mesh.faces[i];
+        let p0 = mesh.vertices[face[0] as usize];
+        let p1 = mesh.vertices[face[1] as usize];
+        let p2 = mesh.vertices[face[2] as usize];
+        let edge1 = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
+        let edge2 = [p2.x - p0.x, p2.y - p0.y, p2.z - p0.z];
+        let normal = [
+            edge1[1] * edge2[2] - edge1[2] * edge2[1],
+            edge1[2] * edge2[0] - edge1[0] * edge2[2],
+            edge1[0] * edge2[1] - edge1[1] * edge2[0],
+        ];
+        let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        assert!(
+            len > 0.0,
+            "face {i} has degenerate cross product (zero-area triangle)",
+        );
+        let unit = [normal[0] / len, normal[1] / len, normal[2] / len];
+        assert_relative_eq!(unit[0], expected[0], epsilon = NORMAL_TOL);
+        assert_relative_eq!(unit[1], expected[1], epsilon = NORMAL_TOL);
+        assert_relative_eq!(unit[2], expected[2], epsilon = NORMAL_TOL);
+    }
+
+    // (3) Mesh bounding box: full outer extent.
+    let min_x = mesh
+        .vertices
+        .iter()
+        .map(|v| v.x)
+        .fold(f64::INFINITY, f64::min);
+    let min_y = mesh
+        .vertices
+        .iter()
+        .map(|v| v.y)
+        .fold(f64::INFINITY, f64::min);
+    let min_z = mesh
+        .vertices
+        .iter()
+        .map(|v| v.z)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = mesh
+        .vertices
+        .iter()
+        .map(|v| v.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = mesh
+        .vertices
+        .iter()
+        .map(|v| v.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_z = mesh
+        .vertices
+        .iter()
+        .map(|v| v.z)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert_relative_eq!(min_x, 0.0, epsilon = VERTEX_TOL);
+    assert_relative_eq!(min_y, 0.0, epsilon = VERTEX_TOL);
+    assert_relative_eq!(min_z, 0.0, epsilon = VERTEX_TOL);
+    assert_relative_eq!(max_x, OUTER_X, epsilon = VERTEX_TOL);
+    assert_relative_eq!(max_y, OUTER_Y, epsilon = VERTEX_TOL);
+    assert_relative_eq!(max_z, OUTER_Z, epsilon = VERTEX_TOL);
 }
 
 /// Run `validate_for_printing` for one technology and surface
