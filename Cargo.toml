@@ -301,6 +301,7 @@ members = [
     "examples/mesh/printability-long-bridge",
     "examples/mesh/printability-trapped-volume",
     "examples/mesh/printability-self-intersecting",
+    "examples/mesh/printability-small-feature",
 
     # Foundation (active development)
     "design/cf-geometry",

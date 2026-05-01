@@ -1,0 +1,19 @@
+[package]
+name = "example-mesh-printability-small-feature"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Hand-authored cube + hex-prism construction (Point3, IndexedMesh::from_parts).
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply + out/issues.ply (ASCII PLY for human-readable diff).
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::fdm_default + region/issue/severity types.
+mesh-printability = { workspace = true }
+# Result<()> return type for main().
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

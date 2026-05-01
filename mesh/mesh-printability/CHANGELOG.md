@@ -525,6 +525,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is `O(n_faces)` so no perf-budget concern. **v0.9 followups (§6.5)**:
   curvature-based detection (small bumps on a larger body), volume-
   based threshold (long thin spikes that pass extent but fail volume).
+- **`examples/mesh/printability-small-feature` visual demo (Gap J, §7.5).**
+  First production consumer of the §6.5 `SmallFeature` detector beyond
+  the row #18 unit + stress fixtures. The fixture is a 30 mm solid cube
+  on the build plate plus a tiny isolated hexagonal-prism burr (radius
+  0.1 mm × height 0.2 mm — `max_extent = 0.2 mm`) sitting alongside it
+  at `(35, 15, 0.1)`, modelling a CAD leftover from an imperfect
+  boolean cut. The two components share **no** vertices, edges, or
+  faces: 8 verts + 12 tris cube + 14 verts + 24 tris hex prism →
+  22 verts + 36 tris combined. Each component is independently
+  watertight + consistently wound; under the §6.5 edge-adjacency
+  partition they emerge as two distinct components, only the burr
+  flagging (`max_extent = 0.2 < min_feature_size = 0.8`). **Anchor
+  outcomes**: `small_features.len() == 1`; centroid `(35, 15, 0.1)`
+  within `1e-6` (vertex-mean averages exactly to the prism's geometric
+  midpoint by hex symmetry); `face_count == 24` locked-in by the
+  12-lateral + 6-top-fan + 6-bottom-fan construction; `max_extent ∈
+  [0.199, 0.201]` (vertex-to-vertex hex diameter `2·r = 0.2 mm`); volume
+  `5.196e-3 mm³` within `1e-3 max_relative` of the divergence-theorem
+  prediction `(3√3/2) · r² · h`; `SmallFeature` severity `Warning`
+  (`0.2 < 0.8/2 = 0.4`); `overhangs.len() == 0` (cube + burr bottoms
+  build-plate-filtered; lateral hex faces have `normal.z = 0` so are
+  vertical walls, not overhangs). **Spec deviation surfaced**:
+  §7.5 anchor #8's predicted `is_printable() == true` does NOT hold —
+  the §6.1 `ThinWall` detector (added at row #10, after the §7.5 spec
+  was first drafted) co-flags the burr because the inward ray-cast
+  from each burr face hits the opposite face at `r·√3 ≈ 0.173 mm`
+  (flat-to-flat hex distance), well below `min_wall_thickness / 2 =
+  0.5 mm` → ThinWall Critical. So `is_printable() == false`, blocked
+  by ThinWall not SmallFeature. Anchor #8 corrected in `main()` and
+  documented in module-doc + README; new anchor #9 locks the ThinWall
+  Critical co-flag observation. The two detectors agreeing on the
+  same defect from complementary angles is pedagogically useful, not
+  a bug. Saves `out/mesh.ply` (22v / 36f, ASCII) + `out/issues.ply`
+  (2 vertex-only centroids: 1 SmallFeature + 1 ThinWall, both at
+  `(35, 15, 0.1)` since they localize the same component). README
+  front-matter callout per `feedback_f3d_winding_callout` documents
+  the 1:150 cube-vs-burr scale ratio + the `f3d --up +Z` flag
+  recommendation per row #17.5 precedent. Crate name
+  `example-mesh-printability-small-feature` per §7.0 + §12.3's
+  example-commit naming convention. **v0.8 detector inventory now
+  complete in examples**: ThinWall (row #11) + LongBridge (row #13) +
+  TrappedVolume (row #15) + SelfIntersecting (row #17) +
+  SmallFeature (this commit) — each with a paired visual demo.
+  Eighth ⏸ pause-for-visuals commit per §12.6 row 8. **v0.9
+  candidates**: unit-detection heuristic for "scaled 1000×" CAD
+  failure mode (per §7.5 README pitfalls section); §6.4
+  `IntersectionParams` re-export gap (carried from row #17, still
+  open).
 
 ### Changed
 
