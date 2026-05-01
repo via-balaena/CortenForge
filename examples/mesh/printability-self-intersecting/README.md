@@ -15,11 +15,19 @@ load-bearing geometry of the example.
 
 To inspect the four interpenetration rings:
 
-- **`f3d`** (`f3d out/mesh.ply`): rotate to look down `+Y`; the two
-  cylinders form a `+` from this view. Toggle edges (`E`) to see the
-  lateral facets where the cylinders cross. Drop in `out/issues.ply`
-  alongside (`f3d out/mesh.ply out/issues.ply`) to see the 100 self-
-  intersection markers + 4 lateral-overhang markers as points clouds.
+- **`f3d`**: f3d defaults to a `+Y`-up world, so cylinder B (axis
+  `+Y`) renders vertically and the build-plate-perpendicular `+Z` goes
+  into-screen. Pass `f3d --up +Z out/mesh.ply` to match the FDM print
+  orientation (build plate horizontal); the canonical `+`-shape view
+  is then looking down `+Z`. Toggle edges (`E`) to see the 16-segment
+  lateral facets where the cylinders cross. To overlay the 100
+  self-intersection markers + 4 lateral-overhang markers from
+  `out/issues.ply`, use `f3d --up +Z --multi-file-mode=all
+  out/mesh.ply out/issues.ply` — f3d's default multi-file mode loads
+  both as separate file groups (showing one at a time; cycle with
+  `→` / `←`), so `--multi-file-mode=all` is what you want for the
+  overlay. Press `O` to toggle point sphere rendering on the issues
+  point cloud.
 - **MeshLab** (`meshlab out/mesh.ply`): enable `Render → Show Edges`
   and `Render → Show Vertices` to see the interpenetration zone
   clearly. The lateral surfaces' z-fighting in the cross region is the
