@@ -14,17 +14,7 @@ the whole axis-aligned bounding box. Complementary to §5.9
 `mesh-lattice-mesh-bounded-infill`, which exercises the
 mesh-bounded composite path via `generate_infill`.
 
-> Skeleton commit (`§6.2 #19` per the v1.0 examples-coverage arc spec
-> at `mesh/MESH_V1_EXAMPLES_SCOPE.md`). The `is_outside_shape`
-> predicate anchors (4 spatial points + the no-SDF default), the
-> with-vs-without trimmed-vertex-count anchor, and the per-vertex
-> distance-to-origin bound (every output vertex lies within
-> `sphere_radius + voxel_size + cushion ≈ 13.67` of origin) all
-> land in `§6.2 #20`. This README is a placeholder; museum-plaque
-> content (numerical anchors, visuals, comparison-output callout,
-> cross-references) fills in alongside the impl commit.
-
-## What this example will demonstrate
+## What this example demonstrates
 
 `mesh-lattice` exposes boundary-conforming generation via the
 `with_shape_sdf` builder: an arbitrary analytical SDF
@@ -52,11 +42,11 @@ resolution 15, the marching-cubes voxel size is exactly
 `10 / 15 = 2/3 ≈ 0.667 mm` (the bbox is an integer multiple of the
 cell, so `total_resolution = ceil((30 / 10) × 15) = 45` and voxel
 size = `30 / 45 = 2/3` exactly). Every output vertex satisfies
-`(v - origin).norm() < 12 + voxel_size + cushion ≈ 13.67` — the
+`(v - origin).norm() < 12 + voxel_size + cushion ≈ 13.667` — the
 cushion accounts for marching-cubes interpolating across cells
 straddling the sphere boundary.
 
-The example will compute (TBD — land in `§6.2 #20`):
+The example computes:
 
 1. **Direct `is_outside_shape` predicate anchors** — 4 spatial
    evaluations against the sphere-radius-12 SDF at known points
@@ -66,28 +56,27 @@ The example will compute (TBD — land in `§6.2 #20`):
    no SDF is set on `LatticeParams::gyroid(10.0)` (per
    `params.rs:415-417`). All exact (boolean equality).
 2. **`LatticeParams::gyroid(10.0)` builder chain** —
-   `with_density(_)`, `with_resolution(15)`, `with_shape_sdf(_)`;
-   `validate() == Ok(())`; `params.shape_sdf.is_some()` (post-
-   builder) and `is_some_and(...)` returns the expected `true` /
-   `false` per the four spatial probes above.
+   `with_density(0.3)`, `with_resolution(15)`, `with_shape_sdf(_)`;
+   `validate() == Ok(())`; `params.shape_sdf.is_some()`; and field
+   locks pinning `cell_size`, `density`, and `resolution` to the
+   fixture values.
 3. **`generate_lattice` result counts (with-SDF vs without-SDF)** —
    two runs over the same bbox + same gyroid params; the only
-   difference is whether `with_shape_sdf` is applied. The
-   with-SDF result has strictly fewer vertices than the without-SDF
-   result (strict `<` on `vertex_count()`). The trimmed lattice
-   retains the full bbox `cell_count` (the count reports total
-   bbox cells, not cells inside the SDF — F9-related, documented
-   in the README).
-4. **Per-vertex distance-to-origin bound** — every vertex `v` of
-   the with-SDF result satisfies
-   `(v - origin).norm() < sphere_radius + voxel_size + cushion`,
-   with `voxel_size = 2/3` (exact integer multiple) and a small
-   cushion accounting for marching-cubes interpolation across the
-   sphere boundary.
-5. **Edge case: tiny-sphere trim** — a sphere SDF with a
-   sufficiently small radius produces a result with very few output
-   vertices (or zero) compared to the bbox-fill — demonstrates that
-   the SDF clip is real and not a no-op.
+   difference is whether `with_shape_sdf` is applied. The with-SDF
+   result has strictly fewer vertices than the without-SDF result
+   (strict `<` on `vertex_count()`). The trimmed lattice still
+   retains the full bbox `cell_count` (the count reports total bbox
+   cells, not cells inside the SDF — F9-related, documented below).
+4. **Per-vertex distance-to-origin bound** — every vertex `v` of the
+   with-SDF result satisfies
+   `(v - origin).norm() < sphere_radius + voxel_size + cushion`
+   `≈ 13.667 mm`, with `voxel_size = 2/3` (exact integer multiple)
+   and a `1.0 mm` cushion accounting for marching-cubes interpolation
+   across the sphere boundary.
+5. **Edge case: tiny-sphere trim** — a sphere SDF of radius `1 mm`
+   produces a result with order-of-magnitude fewer output vertices
+   than the radius-12 trim, demonstrating that the SDF clip is real
+   and not a no-op.
 
 ## Boundary-conforming vs bbox-filling contrast (with §5.5)
 
@@ -99,7 +88,7 @@ The example will compute (TBD — land in `§6.2 #20`):
 | `is_outside_shape` | `false` for any point (default) | `sdf(p) > 0.0` |
 | `shell_sdf` composition | `tpms_value` only | `tpms_value.max(sphere_sdf(p))` |
 | Output extent | Fills the bbox | Trimmed to sphere interior |
-| Load-bearing anchor | per-vertex `abs(abs(G(v)) - 0.75) < 0.05` | strict `<` on `vertex_count()` (with-SDF vs without) + per-vertex `norm(v) < 13.67` |
+| Load-bearing anchor | per-vertex `abs(abs(G(v)) - 0.75) < 0.05` | strict `<` on `vertex_count()` (with-SDF vs without) + per-vertex `norm(v) < 13.667` |
 | Visual centerpiece | Bbox-filling gyroid (3³ ≈ 27 cells) | Sphere-shaped gyroid (boundary-conforming) |
 
 ## Public-surface coverage (per spec §5.8)
@@ -135,42 +124,84 @@ For the sphere SDF `|p| p.coords.norm() - 12.0`: points with
 positive (outside); points exactly on the sphere surface return zero
 (retained).
 
-## Numerical anchors (TBD — land in `§6.2 #20`)
+## Numerical anchors
 
-- 4 `is_outside_shape` predicate anchors at known spatial points
-  (origin, radius 11 interior, radius 13 exterior, radius 20 far
-  exterior) — boolean equality.
-- 1 default-no-SDF `is_outside_shape == false` anchor.
-- `LatticeParams::gyroid(10.0).with_shape_sdf(_)` builder anchor:
-  `validate() == Ok(())`, `shape_sdf.is_some()`.
-- With-vs-without `generate_lattice` comparison:
-  `result_with.vertex_count() < result_without.vertex_count()`
-  (strict inequality).
-- Per-vertex distance-to-origin bound: every `v` of the with-SDF
-  result satisfies `(v - origin).norm() < 12 + 2/3 + cushion`
-  (with the cushion picked to absorb marching-cubes boundary
-  interpolation).
-- Tiny-sphere edge-case anchor: an even smaller sphere radius yields
-  a sharply smaller output vertex count.
+| Anchor | Locked value |
+|---|---|
+| `is_outside_shape((0, 0, 0))` (sdf = -12) | `false` (interior) |
+| `is_outside_shape((11, 0, 0))` (sdf = -1) | `false` (interior) |
+| `is_outside_shape((13, 0, 0))` (sdf = +1) | `true` (exterior) |
+| `is_outside_shape((20, 0, 0))` (sdf = +8) | `true` (far exterior) |
+| no-SDF default `is_outside_shape(any_point)` | `false` (per `is_some_and` short-circuit) |
+| Builder validate | `Ok(())` |
+| `params.shape_sdf.is_some()` (post-builder) | `true` |
+| `params.cell_size` / `params.density` / `params.resolution` | `10.0` / `0.3` / `15` |
+| `result_with_sdf.vertex_count()` | `87480` (trimmed) |
+| `result_without_sdf.vertex_count()` | `321084` (bbox-filling baseline) |
+| With-vs-without strict-`<` on vertex_count | trim drops `233604` verts (`72.8%`) |
+| Empirical max `norm(v)` over with-SDF result | `11.9999 mm` |
+| Per-vertex bound `< 12 + 2/3 + 1.0 ≈ 13.667 mm` | green (cushion comfortably oversized) |
+| `result.cell_count` (with-SDF) | `27` (BIT-EXACT; total bbox cells, not trimmed) |
+| `tiny.vertex_count()` (radius-1 sphere) | `24` (`< 87480 / 10 = 8748`) |
 
-## Run (TBD — land in `§6.2 #20`)
+The empirical max distance-to-origin is `11.9999 mm` — slightly
+*inside* the sphere boundary, not beyond it. The `voxel_size + cushion`
+allowance is therefore comfortably oversized for this fixture; the
+spec bound `13.667` holds with ~1.7 mm of headroom. This is consistent
+with marching-cubes producing edge vertices via linear interpolation
+between corners that bracket the `shell_sdf == 0` isovalue: when one
+corner is outside the sphere (`shell_sdf == sphere_sdf > 0`) and one
+inside, the interpolated vertex lands between them, and at this density
++ resolution the interpolation typically lands just inside the sphere
+boundary rather than beyond it. The cushion remains in the bound to
+absorb FP wobble at thinner shell densities or other shape SDFs where
+the interpolation could land further out.
+
+The `cell_count == 27` anchor is F9-related: the TPMS path computes
+`cells_x × cells_y × cells_z` pre-trim at
+`mesh-lattice/src/generate.rs:417`, so SDF clipping cannot reduce this
+count. The trimmed `vertex_count()` shrinks by 72.8% (`87480` vs
+`321084`), but `cell_count` reports the bbox geometry, not the post-
+trim mesh.
+
+## Run
 
 ```text
 cargo run -p example-mesh-mesh-lattice-shape-bounded --release
 ```
 
-Output: `out/sphere_gyroid.ply` (the trimmed sphere-bounded lattice);
-optionally `out/sphere_gyroid_full.ply` (the un-trimmed comparison
-under a `WRITE_COMPARISON: bool = true` constant for reviewer
-clarity).
+Expected exit `0`; the binary asserts every anchor (boolean / strict
+inequality / per-vertex bound / `BIT-EXACT` `cell_count`) and prints a
+museum-plaque summary plus an `OK — …` confirmation banner.
 
-## Visuals (TBD — land in `§6.2 #20`)
+Artifacts written to `out/` (gitignored at the repo level):
+
+- `out/sphere_gyroid.ply` — the trimmed sphere-bounded lattice
+  (`87480` vertices, `29160` faces, binary little-endian).
+- `out/sphere_gyroid_full.ply` — the un-trimmed comparison (`321084`
+  vertices, `107028` faces, binary little-endian), written behind a
+  `WRITE_COMPARISON: bool = true` constant in `src/main.rs` per spec
+  §5.8 line 751 ("for reviewer clarity"). Toggle to `false` to skip.
+
+## Visuals
 
 ⏸ Visual review **recommended** — sphere-bounded gyroid is visually
 iconic; the with-vs-without comparison tells the boundary-conforming
-story. The sphere-clipped output should be visibly contained inside
-a 12 mm radius from origin while still showing the gyroid's
-characteristic twisted-saddle wall structure.
+story.
+
+```text
+f3d out/sphere_gyroid.ply
+f3d out/sphere_gyroid_full.ply
+```
+
+The sphere-clipped output should be visibly contained inside a `12 mm`
+radius from origin while still showing the gyroid's characteristic
+twisted-saddle wall structure (the same TPMS topology as §5.5, but
+trimmed to the analytical sphere boundary). The un-trimmed comparison
+fills the full 30 mm bbox with bbox-edge-aligned slab faces where
+marching-cubes terminates at the bounding box. F10 vertex-soup
+faceting is visible on curl crests in both meshes (platform-truth, per
+§5.5's findings — F10 weld pass is v0.9 backlog).
 
 ## Cross-references
 
