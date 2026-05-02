@@ -311,6 +311,7 @@ members = [
     "examples/mesh/mesh-sdf-distance-query",
     "examples/mesh/mesh-lattice-tpms-gyroid",
     "examples/mesh/mesh-lattice-strut-cubic",
+    "examples/mesh/mesh-lattice-density-gradient",
 
     # Foundation (active development)
     "design/cf-geometry",
