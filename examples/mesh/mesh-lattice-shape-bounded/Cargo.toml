@@ -1,0 +1,27 @@
+[package]
+name = "example-mesh-mesh-lattice-shape-bounded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh + Point3 for the generated lattice mesh
+mesh-types = { workspace = true }
+# save_ply for out/sphere_gyroid.ply (and out/sphere_gyroid_full.ply
+# under the WRITE_COMPARISON constant per spec §5.8)
+mesh-io = { workspace = true }
+# LatticeParams::gyroid + with_shape_sdf (Arc<dyn Fn(Point3<f64>) -> f64
+# + Send + Sync> per `mesh-lattice/src/params.rs:406`) +
+# is_outside_shape accessor (returns `sdf(p) > 0.0` per
+# `params.rs:415-417`) + generate_lattice (TPMS path composes
+# `tpms_value.max(sdf(p))` per `generate.rs:441`) + LatticeResult
+mesh-lattice = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for is_outside_shape predicate + with-vs-without
+# trimmed-vertex-count + per-vertex distance-to-origin anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true

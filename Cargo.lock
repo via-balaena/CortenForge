@@ -3583,6 +3583,84 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-mesh-lattice-density-gradient"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-lattice-shape-bounded"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-lattice-strut-cubic"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-lattice-tpms-gyroid"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-measure-bounding-box"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-measure",
+ "mesh-types",
+ "nalgebra",
+]
+
+[[package]]
+name = "example-mesh-mesh-measure-cross-section"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-measure",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-measure-distance-to-mesh"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-measure",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-mesh-mesh-offset-inward"
 version = "0.7.0"
 dependencies = [
@@ -3611,6 +3689,17 @@ dependencies = [
  "anyhow",
  "mesh-io",
  "mesh-repair",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-mesh-mesh-sdf-distance-query"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-sdf",
  "mesh-types",
 ]
 

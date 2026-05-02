@@ -1,0 +1,21 @@
+[package]
+name = "example-mesh-mesh-measure-distance-to-mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Two-cube fixture: Point3 + IndexedMesh::from_parts
+mesh-types = { workspace = true }
+# save_ply for out/two_cubes.ply (ASCII PLY for human-readable diff)
+mesh-io = { workspace = true }
+# measure_distance, closest_point_on_mesh, distance_to_mesh, DistanceMeasurement
+mesh-measure = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for distance / point-coords / Hausdorff anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true

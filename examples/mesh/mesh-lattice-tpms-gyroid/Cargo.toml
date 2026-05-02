@@ -1,0 +1,22 @@
+[package]
+name = "example-mesh-mesh-lattice-tpms-gyroid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh + Point3 for the generated lattice mesh
+mesh-types = { workspace = true }
+# save_ply for out/gyroid_lattice.ply
+mesh-io = { workspace = true }
+# LatticeParams::gyroid + generate_lattice + LatticeResult + LatticeType
+# + free fns: gyroid, density_to_threshold, make_shell
+mesh-lattice = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for free-fn TPMS / threshold / vertex-on-surface anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true

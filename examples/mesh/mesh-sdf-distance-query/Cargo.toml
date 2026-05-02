@@ -1,0 +1,23 @@
+[package]
+name = "example-mesh-mesh-sdf-distance-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Octahedron fixture: Point3 + IndexedMesh::from_parts + AttributedMesh wrap
+mesh-types = { workspace = true }
+# save_ply for out/octahedron.ply + save_ply_attributed for out/sdf_grid.ply
+mesh-io = { workspace = true }
+# SignedDistanceField + closest_point_on_triangle + ray_triangle_intersect +
+# point_in_mesh + point_segment_distance_squared + signed/unsigned_distance
+# free fns + SdfError::EmptyMesh
+mesh-sdf = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for SDF query / closest-point / face-normal anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "example-mesh-mesh-lattice-density-gradient"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh + Point3 for the generated lattice mesh
+mesh-types = { workspace = true }
+# save_ply for out/density_gradient_lattice.ply
+mesh-io = { workspace = true }
+# LatticeParams::octet_truss + DensityMap (Uniform / Gradient / Radial /
+# Function) + DensityMap::{evaluate, evaluate_with_distance, from_function,
+# from_stress_field} + LatticeParams::density_at + generate_lattice +
+# LatticeResult + Beam / BeamLatticeData (per-beam r1 density anchor)
+mesh-lattice = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for DensityMap evaluation + per-beam r1 anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true
