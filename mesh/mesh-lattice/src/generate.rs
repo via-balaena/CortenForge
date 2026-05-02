@@ -246,6 +246,7 @@ fn generate_cubic_lattice(
 }
 
 /// Generates an octet-truss lattice.
+#[allow(clippy::too_many_lines)] // Lattice generation is inherently sequential
 #[allow(clippy::unnecessary_wraps)] // Consistent API with generate_lattice
 fn generate_octet_truss_lattice(
     params: &LatticeParams,
@@ -262,6 +263,25 @@ fn generate_octet_truss_lattice(
     let cell_count = cells_x * cells_y * cells_z;
 
     let radius = params.strut_thickness / 2.0;
+
+    // For beam data export
+    let mut beam_data = if params.preserve_beam_data {
+        Some(BeamLatticeData::new(radius))
+    } else {
+        None
+    };
+
+    // Vertex deduplication map (cell corners are shared across adjacent cells;
+    // cell centers are unique per cell). Same `quantize` scale as the cubic path.
+    let mut vertex_map: HashMap<[i64; 3], u32> = HashMap::new();
+    let quantize = |p: Point3<f64>| -> [i64; 3] {
+        let scale = 1e6;
+        [
+            (p.x * scale) as i64,
+            (p.y * scale) as i64,
+            (p.z * scale) as i64,
+        ]
+    };
 
     let mut struts = Vec::new();
     let mut total_length = 0.0;
@@ -308,6 +328,20 @@ fn generate_octet_truss_lattice(
                         total_length += (*corner - center).norm();
                         struts.push(strut);
                     }
+
+                    // Record beam data
+                    if let Some(ref mut data) = beam_data {
+                        let key_start = quantize(*corner);
+                        let key_end = quantize(center);
+
+                        let v1 = *vertex_map
+                            .entry(key_start)
+                            .or_insert_with(|| data.add_vertex(*corner));
+                        let v2 = *vertex_map
+                            .entry(key_end)
+                            .or_insert_with(|| data.add_vertex(center));
+                        data.add_beam_with_radius(v1, v2, local_radius);
+                    }
                 }
 
                 // Edge struts along the 12 edges
@@ -331,6 +365,20 @@ fn generate_octet_truss_lattice(
                         total_length += (corners[i] - corners[j]).norm();
                         struts.push(strut);
                     }
+
+                    // Record beam data
+                    if let Some(ref mut data) = beam_data {
+                        let key_start = quantize(corners[i]);
+                        let key_end = quantize(corners[j]);
+
+                        let v1 = *vertex_map
+                            .entry(key_start)
+                            .or_insert_with(|| data.add_vertex(corners[i]));
+                        let v2 = *vertex_map
+                            .entry(key_end)
+                            .or_insert_with(|| data.add_vertex(corners[j]));
+                        data.add_beam_with_radius(v1, v2, local_radius);
+                    }
                 }
             }
         }
@@ -342,7 +390,14 @@ fn generate_octet_truss_lattice(
     let strut_volume = estimate_strut_volume(&mesh, radius);
     let actual_density = (strut_volume / bounds_volume).min(1.0);
 
-    Ok(LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length))
+    let mut result =
+        LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length);
+
+    if let Some(data) = beam_data {
+        result = result.with_beam_data(data);
+    }
+
+    Ok(result)
 }
 
 /// Generates a TPMS-based lattice with specified type.
@@ -651,6 +706,38 @@ mod tests {
         let beam_data = lattice.beam_data.unwrap();
         assert!(beam_data.vertex_count() > 0);
         assert!(beam_data.beam_count() > 0);
+    }
+
+    #[test]
+    fn test_beam_data_export_octet_truss() {
+        // Parity with `test_beam_data_export` for the octet-truss path.
+        // Before this commit the octet path silently dropped
+        // `params.preserve_beam_data` on the floor; this test pins the
+        // populated `BeamLatticeData` via the public surface.
+        let params = LatticeParams::octet_truss(5.0).with_beam_export(true);
+        let bounds = (Point3::new(0.0, 0.0, 0.0), Point3::new(15.0, 15.0, 15.0));
+        let result = generate_lattice(&params, bounds);
+
+        assert!(result.is_ok());
+        let lattice = result.unwrap();
+        assert!(lattice.beam_data.is_some());
+
+        let beam_data = lattice.beam_data.unwrap();
+        assert!(beam_data.vertex_count() > 0);
+        assert!(beam_data.beam_count() > 0);
+    }
+
+    #[test]
+    fn test_beam_data_not_exported_octet_truss_default() {
+        // Without `with_beam_export(true)`, the octet path leaves
+        // `beam_data` as `None` (default behavior).
+        let params = LatticeParams::octet_truss(5.0);
+        let bounds = (Point3::new(0.0, 0.0, 0.0), Point3::new(15.0, 15.0, 15.0));
+        let result = generate_lattice(&params, bounds);
+
+        assert!(result.is_ok());
+        let lattice = result.unwrap();
+        assert!(lattice.beam_data.is_none());
     }
 
     #[test]
