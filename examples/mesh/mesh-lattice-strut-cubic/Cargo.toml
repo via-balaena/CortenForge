@@ -1,0 +1,23 @@
+[package]
+name = "example-mesh-mesh-lattice-strut-cubic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh + Point3 for the generated lattice mesh
+mesh-types = { workspace = true }
+# save_ply for out/cubic_lattice.ply
+mesh-io = { workspace = true }
+# LatticeParams::cubic + generate_lattice + LatticeResult + LatticeType
+# + Beam / BeamCap / BeamLatticeData + free fns: generate_strut,
+# generate_strut_tapered, combine_struts, estimate_strut_volume
+mesh-lattice = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for free-fn strut / beam-data anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true

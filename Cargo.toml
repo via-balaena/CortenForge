@@ -310,6 +310,7 @@ members = [
     "examples/mesh/mesh-measure-distance-to-mesh",
     "examples/mesh/mesh-sdf-distance-query",
     "examples/mesh/mesh-lattice-tpms-gyroid",
+    "examples/mesh/mesh-lattice-strut-cubic",
 
     # Foundation (active development)
     "design/cf-geometry",
