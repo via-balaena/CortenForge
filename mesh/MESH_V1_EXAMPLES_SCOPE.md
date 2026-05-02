@@ -402,33 +402,41 @@ If user feedback later prefers welded TPMS-lattice output (better visual aesthet
 - `OrientedBoundingBox::extents`, `axis_x`/`y`/`z`, `contains`, `surface_area`.
 - `OrientedBoundingBox.vertices` — 8-corner array.
 
-**Fixture**: two cubes side by side as ONE input mesh:
-- **Axis-aligned cube** at `[0, 10] × [-5, 5] × [0, 10]` (10 mm cube, **y-centered on the origin** so its `y ∈ [-5, 5]` sits inside the tilted cube's `y ∈ [-5√2, 5√2]`; combined-mesh AABB then has clean `depth = 10√2` and `center.y = 0`. 8 verts + 12 tris, FP-exact).
-- **Tilted cube** with the same dimensions but rotated 45° around Z, translated so its bbox-center sits at `(25, 0, 5)` (8 verts + 12 tris). **The rotation uses `let s = f64::sqrt(0.5)` for both cos and sin coefficients** — `f64::sqrt` is correctly-rounded per IEEE-754 (`f64::sin(π/4)` and `f64::cos(π/4)` are NOT correctly-rounded; using sqrt-derived values keeps the rotation matrix FP-stable across libm versions). After rotation+translation: tilted-cube AABB extents are `10·√2` in X and Y, and `10` in Z; with the bbox-center at `(25, 0, 5)`, the tilted-cube AABB occupies `[25 - 5√2, 25 + 5√2] × [-5√2, 5√2] × [0, 10]`.
+**Fixture**: two vertex-disjoint shapes side by side as ONE input mesh:
+- **Cube A — axis-aligned 10 mm cube** at `[0, 10] × [-5, 5] × [0, 10]` (y-centered on the origin so its `y ∈ [-5, 5]` sits inside the tilted brick's `y ∈ [-7.5√2, 7.5√2]`; combined-mesh AABB then has clean `center.y = 0`. 8 verts + 12 tris, FP-exact).
+- **Cube B — 20 × 10 × 10 mm tilted brick** (long axis along local +X, then rotated 45° around Z and translated so its bbox-center sits at `(25, 0, 5)`; 8 verts + 12 tris). The brick is non-cubic so PCA's eigenvalues are distinct (one large + two equal small) and OBB on cube B alone recovers the original `(20, 10, 10)` extents — for a 10×10×10 *cube*, PCA's covariance is `α·I` with all three eigenvalues equal and OBB cannot uniquely recover the rotation, so the spec's pedagogy requires the brick. **The rotation uses `let s = f64::sqrt(0.5)` for both cos and sin coefficients** — `f64::sqrt` is correctly-rounded per IEEE-754 (`f64::sin(π/4)` and `f64::cos(π/4)` are NOT; using sqrt-derived values keeps the rotation matrix FP-stable across libm versions). After rotation+translation: tilted-brick AABB extents are `15·√2` in X and Y, and `10` in Z; brick AABB occupies `[25 - 7.5√2, 25 + 7.5√2] × [-7.5√2, 7.5√2] × [0, 10]`.
 
-The combined mesh's overall AABB: `[0, 25 + 5√2] × [-5√2, 5√2] × [0, 10]` ≈ `[0, 32.07] × [-7.07, 7.07] × [0, 10]`. The tilted cube's AABB has volume `(10√2)² × 10 = 2000` (2× the 1000 cube volume); the tilted cube's OBB recovers the original 10³ = 1000 volume (PCA finds the principal axis at 45°).
+The combined mesh's overall AABB: `[0, 25 + 7.5√2] × [-7.5√2, 7.5√2] × [0, 10]` ≈ `[0, 35.61] × [-10.61, 10.61] × [0, 10]`. The tilted-brick AABB has volume `(15√2)² × 10 = 4500` (2.25× the brick's actual `20·10·10 = 2000` mm³); the brick's OBB (computed on the cube B vertex slice as a sub-mesh) recovers the original 2000 volume (PCA finds the principal axis at 45° from world +X). The OBB on the *combined* mesh has principal axis at `atan(3/8)/2 ≈ 10.28°` from world +X (PCA compromise between cube A's spread and the brick's elongation) and recovers a more modest 5% volume reduction — `7169.48` vs AABB `7553.30`.
 
-The two cubes are vertex-disjoint, so the union's manifold is preserved per the printability-showcase precedent.
+The two shapes are vertex-disjoint, so the union's manifold is preserved per the printability-showcase precedent.
 
 **Math-pass anchors**:
 - 16 hand-authored vertices within `1e-12` of `expected_hand_vertices()` (rotation matrix uses `s = f64::sqrt(0.5)`; the 1-ULP `sin(π/4) ≠ sqrt(2)/2` divergence is sidestepped).
-- 24 face-winding anchors (cross-product unit normal cosine similarity > 0.9999 with outward direction).
+- 24 face-winding cross-product unit-normal anchors within `1e-12`.
 - `dimensions(mesh)`:
-  - `width = 25 + 5√2` ≈ `32.07`, `height = 10.0`, `depth = 10√2` ≈ `14.142...` within `1e-12`.
-  - `diagonal = sqrt(width² + depth² + 10²)` within `1e-12`.
-  - `center = ((25 + 5√2)/2, 0, 5)` ≈ `(16.04, 0, 5)` (combined-mesh AABB center).
-  - `bounding_volume = width × depth × 10` within `1e-12`.
-  - `min_extent = 10.0`, `max_extent = width ≈ 32.07`, `aspect_ratio = max/min ≈ 3.21`, `is_cubic(0.01) == false`.
-- `oriented_bounding_box(mesh)`:
-  - `volume` within 5% of analytical (PCA on a 16-vertex multi-cube fixture isn't bit-exact; covariance matrix is FP-stable to `1e-6`).
-  - `extents` ordering: longest `≈ 30`, others `≈ 10` to within `1.0` (PCA may rotate slightly; tolerance reflects eigenvalue separation).
-  - `surface_area > 0` and within reasonable tolerance.
-  - All 16 input vertices satisfy `obb.contains(v) == true`.
-  - All 8 OBB corners satisfy `aabb.contains(obb_corner)` of an inflated AABB (extents + 1e-6 cushion).
+  - `width = 25 + 7.5√2 ≈ 35.61`, `depth = 15√2 ≈ 21.21`, `height = 10.0` within `1e-12`.
+  - `diagonal = sqrt(width² + depth² + 10²) ≈ 42.64` within `1e-12`.
+  - `center = ((25 + 7.5√2)/2, 0, 5) ≈ (17.80, 0, 5)`.
+  - `bounding_volume = width × depth × 10 = 3750·√2 + 2250 ≈ 7553.30` within `1e-12`.
+  - `min_extent = 10`, `max_extent ≈ 35.61`, `aspect_ratio ≈ 3.56`, `is_cubic(0.01) == false`.
+  - `size()` returns `Vector3(width, depth, height)` — verified component-wise to `1e-12`.
+- `oriented_bounding_box(mesh)` (combined mesh):
+  - `volume` within 5% of empirical `7169.48` (PCA-derived; covariance is non-diagonal due to brick elongation).
+  - `axis_x.{x, y, z} ≈ (0.984, 0.178, 0)` within `1e-9` (principal axis ≈ `10.28°` from world +X).
+  - `axis_x ⊥ axis_y ⊥ axis_z` within `1e-9` (rotation orthogonality).
+  - `surface_area > 0`.
+  - All 16 input vertices satisfy `|local_offset| ≤ half_extents + 1e-9` (tolerance-aware containment — strict `obb.contains(v)` can fail by 1 ULP for the 4 brick vertices that defined the OBB extremes; v0.9 candidate gap, see §10).
+  - **No "8 corners within inflated AABB" anchor** — that anchor only holds when `OBB.rotation == identity` (OBB ⊆ AABB). For a non-degenerate OBB at any non-trivial tilt, OBB corners extend OUTSIDE the AABB envelope (here by ~3.5 mm in y). The contains-input-verts anchor is the correct enclosure test. The "OBB ⊆ AABB" intuition is captured as v0.9 candidate gap in §10.
+- `oriented_bounding_box` on cube B sub-mesh (the brick alone — vertices `[8..16]` extracted as a no-faces sub-mesh):
+  - `volume = 2000` within `1e-9` (recovers brick's analytical `BRICK_LONG · BRICK_SHORT · BRICK_SHORT`).
+  - Sorted extents `(20, 10, 10)` within `1e-9`.
+  - `center = (25, 0, 5)` within `1e-9`.
+  - `surface_area = 2·(20·10 + 20·10 + 10·10) = 1000` mm² within `1e-9`.
+  - All 8 brick vertices satisfy tolerance-aware containment.
 
-**LOC estimate**: ~280 LOC (140 lib code, 140 anchors).
+**LOC estimate**: ~645 LOC actual (160 fixture, 350 anchors, 100 print/main, 35 const docs explaining empirical OBB constants). Up from the original 280 estimate because the spec now drives three computations (AABB on combined, OBB on combined, OBB on brick sub-mesh) plus structured verifier helpers and the P1 brick pivot that the cold-read on §6.2 #4 surfaced. **Sets the new per-example LOC ceiling for v1.0** (§7 stop-gate item 4 raised from 600 → 700; see §8 Round 4 follow-up).
 
-**⏸ visual review**: not required (math-pass-first); optional `f3d out/mesh.ply` to see the two-cube fixture.
+**⏸ visual review**: not required (math-pass-first); optional `f3d out/mesh.ply` to see the cube + tilted-brick fixture.
 
 **Dependencies on other examples**: none.
 
@@ -935,7 +943,7 @@ Following the §8.1 master-architect cadence — risk-mitigation review per `fee
 1. Workspace version bump 0.7.0 → 1.0.0 (R8).
 2. Any scope-expansion beyond this spec — public-surface OR new mesh-types primitive needed by F6 sub-arc gap b (per §1 two-tier cap). **Expected outcome is in-arc fix + scope expansion**, not defer.
 3. Any deviation from the §6 commit ordering by > 2 commits.
-4. Any per-example LOC > 600 (current ceiling: 480 for SDF). Suggests a missing decomposition.
+4. Any per-example LOC > 700 (current ceiling: bounding-box at ~645 post-P1-pivot). Suggests a missing decomposition. *(Ceiling raised 2026-05-02 from 600 → 700 after the §5.1 brick-pivot scope expansion: the spec author underestimated the structured-verifier + drift-documentation overhead. The bounding-box example legitimately runs three independent computations and exercises both the recovery case and the multi-cluster compromise case; decomposition into helper modules saves no LOC and harms in-line readability.)*
 
 (Previous draft listed a "partial-defer for F6 gap b" as an acceptable outcome — REMOVED 2026-05-01 per user correction. We accept that gap-discovery may grow scope; we do NOT pre-build escape hatches around that growth.)
 
@@ -950,7 +958,7 @@ Per the `project_gameplan.md` "Gates per phase" convention. 6 rounds documented;
 | **1** | Numerical-anchor verification — every analytical formula in §5 evaluated independently in Python at 1e-15 ULP scale | **Three findings**: (a) **MATH ERROR caught in §5.3 Hausdorff** — original draft said `sqrt(8) ≈ 2.828`, correct value is `sqrt(12) ≈ 3.464`; the closest point on cube B `[2,3]³` from `(0,0,0)` is the (clamped) corner `(2,2,2)` not the face-interior `(2,0,0)`. (b) `density_to_threshold(0.3, 'gyroid') = 0.6 + 1 ULP` (FP normal); §5.5 anchor at `1e-12` is correct. (c) `f64::sin(π/4)` and `f64::sqrt(0.5)` differ in the last bit (R6 below); §5.1 needed clarification — "rotation uses `f64::sqrt(0.5)` not `f64::sin(π/4)`." | (a) §5.3 Hausdorff anchor rewritten with parenthetical noting the original error. (b) Anchor unchanged. (c) §5.1 fixture description updated to specify `s = f64::sqrt(0.5)` for the rotation matrix coefficients. |
 | **2** | Public-surface coverage — every public item from §2 walked against §5 per-example coverage tables | Found 3 items missing: `DistanceMeasurement::midpoint` was missing from §5.3; `LatticeType::recommended_resolution` was missing from §5.5; `BeamCap::Flat` and `BeamCap::Butt` are NOT demonstrated by §5.6 (only default `BeamCap::Sphere` is). | (a) Added `midpoint` to §5.3 anchor list. (b) Added `recommended_resolution()` to §5.5 anchor list. (c) Acknowledged in §5.6 that `BeamCap::Flat`/`Butt` are NOT demonstrated; §10 v0.9 candidate #8 added "Demo non-default BeamCap variants" as trigger-gated low-priority. |
 | **3** | Dep cycles + tier integrity | New examples depend on `mesh-types`, `mesh-io`, `mesh-sdf`, `mesh-measure`, `mesh-lattice`, optionally `mesh-repair`, `anyhow`, `approx`. All workspace members already. Examples are tier `L0-integration`. Layer Integrity check passes — no sim-* / cf-* / Bevy imports. Beam-data anchor `beam_count == 540` for cubic 5×5×5 verified analytically: `3 × 5 × 6 × 6 = 540` (R2). | Confirmed; no revision. |
-| **4** | LOC estimate sanity — sum of §5 estimates against precedent | Sum across 9 examples: 280 + 340 + 310 + 480 + 370 + 420 + 380 + 340 + 480 = **3400 LOC** (§5.9 mesh-bounded-infill added per Round 7). Mesh-printability v0.8's 8 examples totaled ~3200 LOC. Per-example range: 280–480 LOC, all under R8's 600 ceiling. **Octet-truss cell count for §5.7 verified**: 30mm/7.5mm cells = 4³ = 64 cells × 20 struts/cell × 14 verts/strut ≈ 17920 verts (allow ±5% for density-skip). | Within range. Octet-truss density-modulation skip threshold (density < 0.05) confirmed not hit (gradient 0.1 → 0.5; min density is 0.1 > 0.05). |
+| **4** | LOC estimate sanity — sum of §5 estimates against precedent | Initial sum across 9 examples: 280 + 340 + 310 + 480 + 370 + 420 + 380 + 340 + 480 = **3400 LOC** (§5.9 mesh-bounded-infill added per Round 7). Mesh-printability v0.8's 8 examples totaled ~3200 LOC. Per-example range originally 280–480 LOC, all under the (then) 600 ceiling. **Post-P1-pivot follow-up (2026-05-02)**: §5.1 actual ~645 LOC after the cube→brick fixture pivot + 3 computations; ceiling raised to 700 (§7 item 4). Revised sum estimate: ~3600 LOC across 9 examples. | Per-example range now 280–645 LOC. Other 8 examples remain at original estimates pending in-flight cold-read passes. |
 | **5** | Reviewer readability — README pacing + per-example single-sitting flow | Walk §4.3 README templates per example. §5.4 sdf-distance-query has densest content (14 analytical anchors + free-fn direct anchors); README will be ~120-150 lines. §5.6 strut-cubic has a beam-data printout that could overwhelm `main()` — extract `print_beam_summary(beam_data)` helper. **Octahedron face-winding verified analytically (R3)**: `+x+y+z` face with vertex order `[(1,0,0), (0,1,0), (0,0,1)]` produces cross-product `(1,1,1)` outward — matches the §5.4 spec's "CCW from outside" convention. | Refactor decision baked into §5.6 spec: `print_beam_summary(beam_data)` helper. §5.4 octahedron face winding is correctly specified. |
 | **6** | Downstream consumer — v0.9 backlog absorbs all surfaced findings | Walk each F# from §1: F4 → mesh-sdf CHANGELOG; F5 → mesh-measure CHANGELOG; F6, F7, F10, F11 → mesh-lattice CHANGELOG + book §70 Known limitations. Mesh book Part 10 (Roadmap) gets consolidated v0.9 candidates list. **R6 finding**: `f64::sqrt(2)/2` vs `f64::sin(π/4)` differ at 1 ULP — adds informational note to §4.4 (fixture style "bias toward exact-representable inputs"). | §10 backlog complete; commit 32 per §6.2 (CHANGELOG migration) + commit 31 per §6.2 (book Part 10 update) deliver the triple-tracking. §4.4 not modified (already covered by "use `f64::sqrt(0.5)` rather than `sin(π/4)` when geometry is rotation-derived" — added as part of round 1 §5.1 fix). |
 | **7** | **Philosophy correction round** (post-stress-rounds) — user feedback 2026-05-01 mid-spec-authoring: "examples are just as much for completing/fixing gaps as showcasing." Initial draft pre-deferred F6 (`generate_infill`) on `feedback_no_reflexive_defer` >200-LOC-off-theme grounds. **User correction**: examples-arc theme INCLUDES gap-fix; "off-theme" means different crate / different API contract, NOT "the example would surface the gap." Saved as `feedback_examples_drive_gap_fixes`. | F6 moved IN-ARC: 9th example `mesh-lattice-mesh-bounded-infill` (§5.9) added; F6 gap-fix sub-arc spec at §6.5; §6.2 commit ordering revised to interleave 5 gap-fix commits between example skeleton and post-fix anchors; §10 backlog item 3 (was F6) removed; §11 locked decisions reversed; §7 R9 reframed from "user surprise" to "scope-creep risk on gap b". §6.4 precedent table updated to note "engine fixes mid-arc: yes" (was "unlikely"). |
@@ -1024,6 +1032,8 @@ Migration commits per §6.2: commit 31 (mesh book Part 10 Roadmap update); commi
 | 6 | Demo non-default BeamCap variants (Flat, Butt) | examples | A user reports surprise that `BeamCap::Flat`/`Butt` aren't visually demonstrated | Augment `mesh-lattice-strut-cubic` with a sub-demo, OR add a separate example | small (~80 LOC additive) |
 | 7 | Consolidate `closest_point_on_triangle` duplication | mesh-sdf + mesh-measure | A maintainer asks "why does this exist twice?" | Workspace-hygiene refactor; pick one home (probably `mesh-sdf` since it's the older surface) and re-export | small (~50 LOC: one move + one re-export) |
 | 8 | Concave-mesh SDF sign-convention upgrade (winding-number or generalized) | mesh-sdf | A user reports SDF sign flipping incorrectly near edges of concave geometry | Current implementation uses face-normal-of-closest-face; winding-number-based is more robust | medium (~200 LOC; algorithm is well-documented in literature) |
+| 9 | Tolerance-aware `OrientedBoundingBox::contains` | mesh-measure | Surfaced 2026-05-02 by §5.1 example. PCA's iterative `SymmetricEigen` produces `half_extents` and the inverse-rotation mapping with ~1 ULP roundoff; the 4 input vertices that defined the OBB extremes can fail strict `<=` containment by `~1.78e-15` | Library should accept an FP epsilon (default 1e-9) so callers don't have to re-implement the local-frame projection. Currently `OrientedBoundingBox::contains` uses strict `<=`, leading to surprising `false` returns for the very vertices the OBB was built from | small (~30 LOC: add `contains_with_tol(point, eps)` method, keep strict `contains` as alias for `contains_with_tol(p, 0.0)`) |
+| 10 | Document "OBB ⊄ AABB in general" + remove the corners-within-AABB anchor pattern from API docs/examples | mesh-measure | Surfaced 2026-05-02 by §5.1 spec authoring. The folk-intuition "OBB is tighter than AABB so OBB ⊆ AABB" is false for any non-trivial OBB rotation; OBB corners extend OUTSIDE AABB by `half_extent · sin(rotation_angle)` | One-paragraph caveat in `oriented_bounding_box` rustdoc; correct any user-facing example that asserted "8 OBB corners within AABB" as a sanity check | small (~10 LOC of docstring + audit pass on existing tests) |
 
 ---
 
