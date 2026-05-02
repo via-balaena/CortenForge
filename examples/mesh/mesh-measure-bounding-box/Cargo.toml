@@ -1,0 +1,23 @@
+[package]
+name = "example-mesh-mesh-measure-bounding-box"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Two-cube hand-authored fixture + Point3 + IndexedMesh::from_parts
+mesh-types = { workspace = true }
+# save_ply for out/mesh.ply (ASCII PLY for human-readable diff)
+mesh-io = { workspace = true }
+# dimensions(), oriented_bounding_box(), Dimensions, OrientedBoundingBox
+mesh-measure = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for AABB extent + OBB volume numerical anchors
+approx = { workspace = true }
+# Point3 + Rotation3 for the tilted-cube fixture rotation
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true
