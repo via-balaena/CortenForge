@@ -312,6 +312,7 @@ members = [
     "examples/mesh/mesh-lattice-tpms-gyroid",
     "examples/mesh/mesh-lattice-strut-cubic",
     "examples/mesh/mesh-lattice-density-gradient",
+    "examples/mesh/mesh-lattice-shape-bounded",
 
     # Foundation (active development)
     "design/cf-geometry",
