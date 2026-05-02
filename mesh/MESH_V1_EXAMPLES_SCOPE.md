@@ -403,7 +403,7 @@ If user feedback later prefers welded TPMS-lattice output (better visual aesthet
 - `OrientedBoundingBox.vertices` — 8-corner array.
 
 **Fixture**: two cubes side by side as ONE input mesh:
-- **Axis-aligned cube** at `[0, 10]³` (8 verts + 12 tris, FP-exact).
+- **Axis-aligned cube** at `[0, 10] × [-5, 5] × [0, 10]` (10 mm cube, **y-centered on the origin** so its `y ∈ [-5, 5]` sits inside the tilted cube's `y ∈ [-5√2, 5√2]`; combined-mesh AABB then has clean `depth = 10√2` and `center.y = 0`. 8 verts + 12 tris, FP-exact).
 - **Tilted cube** with the same dimensions but rotated 45° around Z, translated so its bbox-center sits at `(25, 0, 5)` (8 verts + 12 tris). **The rotation uses `let s = f64::sqrt(0.5)` for both cos and sin coefficients** — `f64::sqrt` is correctly-rounded per IEEE-754 (`f64::sin(π/4)` and `f64::cos(π/4)` are NOT correctly-rounded; using sqrt-derived values keeps the rotation matrix FP-stable across libm versions). After rotation+translation: tilted-cube AABB extents are `10·√2` in X and Y, and `10` in Z; with the bbox-center at `(25, 0, 5)`, the tilted-cube AABB occupies `[25 - 5√2, 25 + 5√2] × [-5√2, 5√2] × [0, 10]`.
 
 The combined mesh's overall AABB: `[0, 25 + 5√2] × [-5√2, 5√2] × [0, 10]` ≈ `[0, 32.07] × [-7.07, 7.07] × [0, 10]`. The tilted cube's AABB has volume `(10√2)² × 10 = 2000` (2× the 1000 cube volume); the tilted cube's OBB recovers the original 10³ = 1000 volume (PCA finds the principal axis at 45°).
