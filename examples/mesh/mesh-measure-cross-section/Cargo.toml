@@ -1,0 +1,21 @@
+[package]
+name = "example-mesh-mesh-measure-cross-section"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# 32-segment closed cylinder fixture: Point3 + Vector3 + IndexedMesh::from_parts
+mesh-types = { workspace = true }
+# save_ply for out/cylinder.ply (ASCII PLY for human-readable diff)
+mesh-io = { workspace = true }
+# cross_section, cross_sections, circumference_at_height, area_at_height, CrossSection
+mesh-measure = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for area / perimeter / centroid / point-coords anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true

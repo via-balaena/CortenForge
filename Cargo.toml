@@ -306,6 +306,7 @@ members = [
     "examples/mesh/printability-technology-sweep",
     "examples/mesh/printability-showcase",
     "examples/mesh/mesh-measure-bounding-box",
+    "examples/mesh/mesh-measure-cross-section",
 
     # Foundation (active development)
     "design/cf-geometry",
