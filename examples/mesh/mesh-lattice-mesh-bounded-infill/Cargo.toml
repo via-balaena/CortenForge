@@ -1,0 +1,28 @@
+[package]
+name = "example-mesh-mesh-lattice-mesh-bounded-infill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh + Point3 for the hand-authored 50 mm cube input mesh
+# (8 verts / 12 tris) and the inspection of `result.{mesh, shell, lattice}`
+mesh-types = { workspace = true }
+# save_ply for out/{input, shell, lattice, composite}.ply per spec §5.9
+mesh-io = { workspace = true }
+# InfillParams + for_fdm/for_lightweight/for_strong constructors +
+# with_lattice_type/with_cell_size/with_shell_thickness/with_infill_percentage/
+# with_solid_caps/with_solid_cap_layers builders + validate +
+# generate_infill (`mesh-lattice/src/infill.rs:287`) +
+# InfillResult { mesh, shell, lattice, actual_density, shell_volume,
+# lattice_volume, interior_volume } + total_volume/vertex_count/triangle_count
+mesh-lattice = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for actual_density / volume / signed-volume-integral
+# anchors at the post-fix commit (§6.2 #29)
+approx = { workspace = true }
+
+[lints]
+workspace = true

@@ -313,6 +313,7 @@ members = [
     "examples/mesh/mesh-lattice-strut-cubic",
     "examples/mesh/mesh-lattice-density-gradient",
     "examples/mesh/mesh-lattice-shape-bounded",
+    "examples/mesh/mesh-lattice-mesh-bounded-infill",
 
     # Foundation (active development)
     "design/cf-geometry",
