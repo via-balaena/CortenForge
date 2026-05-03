@@ -6249,6 +6249,7 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "hashbrown 0.16.1",
+ "mesh-offset",
  "mesh-types",
  "nalgebra",
  "rand 0.9.2",

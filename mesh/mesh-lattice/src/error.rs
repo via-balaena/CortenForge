@@ -57,4 +57,8 @@ pub enum LatticeError {
     /// The interior volume is too small for lattice generation.
     #[error("interior volume too small for lattice generation after shell offset")]
     InteriorTooSmall,
+
+    /// Inward shell offset via mesh-offset failed.
+    #[error("shell offset failed: {0}")]
+    OffsetFailed(String),
 }

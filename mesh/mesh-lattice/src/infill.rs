@@ -7,6 +7,7 @@ use crate::error::LatticeError;
 use crate::generate::generate_lattice;
 use crate::params::LatticeParams;
 use crate::types::LatticeType;
+use mesh_offset::{OffsetConfig, offset_mesh};
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
@@ -206,7 +207,8 @@ pub struct InfillResult {
     /// Complete combined mesh (shell + lattice).
     pub mesh: IndexedMesh,
 
-    /// Outer shell mesh (for inspection).
+    /// Hollow shell mesh — outer surface combined with inward-offset inner
+    /// surface (for inspection).
     pub shell: IndexedMesh,
 
     /// Inner lattice mesh (for inspection).
@@ -268,6 +270,8 @@ impl InfillResult {
 /// - The mesh is not watertight
 /// - Parameters are invalid
 /// - The interior is too small for lattice generation
+/// - The inward shell offset (via `mesh-offset`) fails (e.g., shell thickness
+///   exceeds the mesh's local thickness, producing an empty offset surface)
 ///
 /// # Examples
 ///
@@ -348,9 +352,14 @@ pub fn generate_infill(
     // Generate lattice in interior
     let lattice_result = generate_lattice(&params.lattice, (interior_min, interior_max))?;
 
-    // For now, use the original mesh as the "shell"
-    // (Proper shell generation would use mesh-offset to create a hollow shell)
-    let shell = mesh.clone();
+    // Build the hollow shell: outer surface + inward-offset inner surface.
+    // Resolution targets ~2 voxels across the wall thickness, clamped to a
+    // sensible range; finer resolutions blow up the SDF grid for large bboxes.
+    let offset_resolution = (params.shell_thickness / 2.0).clamp(0.1, 1.0);
+    let offset_config = OffsetConfig::default().with_resolution(offset_resolution);
+    let inner_offset = offset_mesh(mesh, -params.shell_thickness, &offset_config)
+        .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?;
+    let shell = combine_meshes(mesh, &inner_offset);
 
     // Combine shell and lattice
     let combined = combine_meshes(&shell, &lattice_result.mesh);

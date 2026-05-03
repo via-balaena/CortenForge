@@ -24,6 +24,9 @@ workspace = true
 # Core mesh types
 mesh-types = { workspace = true }
 
+# SDF-based mesh offset (used by generate_infill for real shell offset, F6 gap a)
+mesh-offset = { workspace = true }
+
 # Math
 nalgebra = { workspace = true }
 
