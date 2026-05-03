@@ -9,11 +9,9 @@
 //! mesh-measure-distance-to-mesh — point-to-point + point-to-mesh +
 //! symmetric Hausdorff distance composed from the public surface.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.3. Demonstrates the full
-//! `mesh-measure::measure_distance` + `closest_point_on_mesh` +
-//! `distance_to_mesh` public surface against two SEPARATE
-//! axis-aligned `IndexedMesh` instances. Anchors landed across §6.2
-//! #7 (skeleton at commit `16ac9d42`) and §6.2 #8 (16 vertex coords,
+//! Demonstrates the full `mesh-measure::measure_distance` +
+//! `closest_point_on_mesh` + `distance_to_mesh` public surface against
+//! two SEPARATE axis-aligned `IndexedMesh` instances: 16 vertex coords,
 //! 24 face-winding unit-normal per-component anchors at `1e-12`
 //! (cross products on FP-exact integer cube coords are bit-exact;
 //! no need for the cosine-similarity floor used in cross-section's

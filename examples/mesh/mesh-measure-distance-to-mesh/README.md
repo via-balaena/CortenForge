@@ -215,9 +215,6 @@ the clamped-corner explanation.
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.3 (this example)
-  + §8 round 1 (Hausdorff sqrt(12) vs naive sqrt(8) clamped-corner
-  correction).
 - **Sister examples** (round out `mesh-measure` public-surface
   coverage): `mesh-measure-bounding-box` (§5.1) shipped at
   `719a85d3`; `mesh-measure-cross-section` (§5.2) shipped at

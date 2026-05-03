@@ -85,9 +85,9 @@ in-memory shape of the 3MF beam-lattice extension's `<beamlattice>` /
 node indices), `r1` / `r2` (per-end radii), `length` /
 `average_radius` (computed methods), and `cap1` / `cap2`
 (`BeamCap::Sphere` default; `Flat` and `Butt` are the other
-variants exposed). The 3MF *writer* itself is **F11** in
-`mesh/MESH_V1_EXAMPLES_SCOPE.md` §10 — a v0.9 candidate. v1.0 stops
-at the in-memory data structure, with this example as the test that
+variants exposed). The 3MF *writer* itself is **F11**, a v0.9
+candidate (see [`mesh-io/CHANGELOG.md`](../../../mesh/mesh-io/CHANGELOG.md)).
+v1.0 stops at the in-memory data structure, with this example as the test that
 the build path populates it correctly from a strut-based
 `generate_lattice` call.
 
@@ -258,11 +258,6 @@ OK — 4 strut + 2 estimate_strut_volume + 4 LatticeType + ...
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.6 (this example) +
-  §10 v0.9 backlog (F11 3MF beam writer — consumes the
-  `BeamLatticeData` populated here). No drifts surfaced at this
-  commit; spec §5.6 anchors lock as written (contrast with §5.2
-  drifts 7+8, §5.4 drifts 9+10, §5.5 drifts 11+12).
 - **Sister examples** rounding out the v1.0 mesh-arc:
   `mesh-measure-bounding-box` (§5.1) at `719a85d3`,
   `mesh-measure-cross-section` (§5.2) at `021a9712`,

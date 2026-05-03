@@ -277,11 +277,6 @@ counter values + max unsigned distance.
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.4 (this example) +
-  §7 R5 / R10 (corner / winding risks) + §10 item 8 (v0.9
-  pseudo-normal / winding-number trigger; expanded by drift-10
-  inline at this commit). Drift-9 (volume formula `(4/3)·r³` not
-  `(8/3)·r³`) lands inline at §5.4 line 572.
 - **Sister examples** rounding out the v1.0 mesh-arc:
   `mesh-measure-bounding-box` (§5.1) at `719a85d3`,
   `mesh-measure-cross-section` (§5.2) at `021a9712`,

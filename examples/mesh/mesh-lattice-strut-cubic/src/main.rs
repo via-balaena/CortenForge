@@ -9,7 +9,7 @@
 //! mesh-lattice-strut-cubic — cubic strut lattice generation +
 //! the 3MF beam-data export precursor.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.6. Fixture: 25 mm cube at
+//! Fixture: 25 mm cube at
 //! 5 mm cell size (5 × 5 × 5 = 125 cells), strut thickness 1.0 mm
 //! (radius 0.5 mm), uniform density 1.0 (so `density.sqrt() == 1.0`
 //! and per-beam `r1 == r2 == 0.5` exactly), `with_beam_export(true)`.

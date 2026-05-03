@@ -9,7 +9,7 @@
 //! mesh-lattice-shape-bounded — boundary-conforming TPMS lattice clipped
 //! to an analytical sphere SDF via `with_shape_sdf`.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.8. Fixture: 30 mm cube
+//! Fixture: 30 mm cube
 //! centered at origin (`min = (-15, -15, -15)`, `max = (15, 15, 15)`)
 //! at cell size 10 mm and resolution 15, with sphere SDF of radius
 //! 12 mm at origin (`Arc::new(|p| p.coords.norm() - 12.0)`) clipping

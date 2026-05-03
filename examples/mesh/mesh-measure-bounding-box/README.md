@@ -147,9 +147,6 @@ the volume reduction percentage and principal-axis angle.
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.1 (this example) +
-  §4.4 (FP-exact rotation via `f64::sqrt(0.5)`) + §10 items 9/10
-  (v0.9 candidate gaps surfaced by this example).
 - **Sister examples** (round out `mesh-measure` public-surface
   coverage): `mesh-measure-cross-section` (§5.2),
   `mesh-measure-distance-to-mesh` (§5.3).

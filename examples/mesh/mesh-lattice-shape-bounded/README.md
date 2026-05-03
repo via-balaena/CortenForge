@@ -205,7 +205,6 @@ faceting is visible on curl crests in both meshes (platform-truth, per
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.8 (this example).
 - **Sister examples**: §5.5 `mesh-lattice-tpms-gyroid` at
   `947aa8d8` (TPMS bbox-filling counterpart — this example is the
   shape-clipped variant of the same path); §5.9

@@ -9,7 +9,7 @@
 //! mesh-lattice-density-gradient — variable-density lattice via
 //! `DensityMap` on the octet-truss preset.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.7. Fixture: 30 mm cube at
+//! Fixture: 30 mm cube at
 //! 7.5 mm cell size (4 × 4 × 4 = 64 cells, octet-truss topology), strut
 //! thickness 0.6 mm (baseline radius 0.3 mm), `with_beam_export(true)`.
 //! `Gradient` density map climbs linearly along z: `from_density = 0.1`

@@ -9,7 +9,7 @@
 //! mesh-lattice-tpms-gyroid — TPMS surface generation via the gyroid
 //! implicit function + marching-cubes vertex-soup output.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.5. Fixture: 30 mm cube at
+//! Fixture: 30 mm cube at
 //! 10 mm cell size (3 × 3 × 3 = 27 cells), resolution 15, density 0.5
 //! (threshold = 0 BIT-EXACT, R3 mitigation for F8), wall thickness
 //! 1.5 mm. Locks the gyroid free fn at known points, the

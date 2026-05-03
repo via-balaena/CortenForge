@@ -9,7 +9,7 @@
 //! mesh-sdf-distance-query — signed-distance + inside/outside +
 //! closest-point + bulk-query coverage of the `mesh-sdf` public surface.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.4. Fixture: unit
+//! Fixture: unit
 //! octahedron — 6 vertices `(±1, 0, 0)`, `(0, ±1, 0)`, `(0, 0, ±1)`
 //! and 8 triangles (one per `(sx, sy, sz)` octant). The octahedron is
 //! the L1-unit-ball; signed distance is `(|x|+|y|+|z| − 1) / √3` in

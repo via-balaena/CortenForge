@@ -1,10 +1,10 @@
 //! mesh-measure-bounding-box — AABB + OBB on a two-shape fixture.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.1. Demonstrates the full
-//! `mesh-measure::dimensions` + `oriented_bounding_box` public surface
-//! against a hand-authored two-shape fixture. Anchors landed across
-//! §6.2 #3 (16 vertex + 24 winding) and §6.2 #4 (Dimensions on the
-//! combined mesh; OBB on the combined mesh; OBB on the brick alone).
+//! Demonstrates the full `mesh-measure::dimensions` +
+//! `oriented_bounding_box` public surface against a hand-authored
+//! two-shape fixture: 16 vertex + 24 winding anchors, Dimensions on
+//! the combined mesh, OBB on the combined mesh, and OBB on the brick
+//! alone.
 //!
 //! Fixture: 16 verts + 24 tris in two vertex-disjoint shapes —
 //! - **Cube A**: axis-aligned 10 mm cube at `[0, 10] × [-5, 5] × [0, 10]`

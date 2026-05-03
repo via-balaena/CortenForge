@@ -10,9 +10,8 @@
 //! composite via `generate_infill` on a hand-authored 50 mm
 //! watertight cube.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.9. Mesh-bounded
-//! counterpart to §5.8 `mesh-lattice-shape-bounded` (analytical-SDF
-//! trim); both ship in v1.0.
+//! Mesh-bounded counterpart to `mesh-lattice-shape-bounded`
+//! (analytical-SDF trim); both ship in v1.0.
 //!
 //! Demonstrates the canonical FDM-infill workflow on a watertight
 //! input mesh: outer shell from inward offset, lattice in the

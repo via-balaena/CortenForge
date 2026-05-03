@@ -168,10 +168,6 @@ normal demo) with chord-shrinkage diagnostics.
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.2 (this example) +
-  §4.7 (sin/cos `1e-12` cross-platform tolerance) + §7 R6
-  (UV-cylinder face-winding cosine similarity floor) + §10 item 11
-  (v0.9 candidate: proper polygon centroid).
 - **Sister examples** (round out `mesh-measure` public-surface
   coverage): `mesh-measure-bounding-box` (§5.1) shipped at
   `719a85d3`; `mesh-measure-distance-to-mesh` (§5.3) lands at

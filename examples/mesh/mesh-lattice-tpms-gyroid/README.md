@@ -262,12 +262,6 @@ artifact path.
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.5 (this example) +
-  §7 R3 (density_to_threshold approximate, mitigated by anchoring
-  at `density = 0.5 → threshold = 0` bit-exact) + §10 v0.9 backlog
-  (F10 weld-pass trigger, item 4). Drift-11 (line 617 anchor
-  reformulation) + drift-12 (line 615 range correction) land
-  inline at this commit.
 - **Sister examples** rounding out the v1.0 mesh-arc:
   `mesh-measure-bounding-box` (§5.1) at `719a85d3`,
   `mesh-measure-cross-section` (§5.2) at `021a9712`,

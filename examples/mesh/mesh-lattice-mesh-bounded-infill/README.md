@@ -166,8 +166,6 @@ lattice + solid caps at top/bottom + bridging connection struts).
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.9 (this example) +
-  `§6.5` (F6 gap-fix sub-arc cadence).
 - **Sister example**: §5.8 `mesh-lattice-shape-bounded` (the
   analytical-SDF-trimmed counterpart; both ship in v1.0).
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`

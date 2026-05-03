@@ -201,6 +201,5 @@ Same shape for Reviews 2 + 3 with their respective branches + focus docs.
 
 ## §10. Cross-references
 
-- [`mesh/MESH_V1_EXAMPLES_SCOPE.md`](../../mesh/MESH_V1_EXAMPLES_SCOPE.md) — v1.0 mesh examples spec; the other in-flight planning artifact this session.
 - `sim/L0/core/src/lib.rs` — module-level docs; canonical description of the MuJoCo-aligned architecture under review.
 - Memory: `project_mujoco_as_foundation.md` — MuJoCo-as-anchor framing.

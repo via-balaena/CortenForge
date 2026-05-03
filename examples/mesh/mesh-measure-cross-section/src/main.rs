@@ -1,12 +1,11 @@
 //! mesh-measure-cross-section — planar slicing of a 32-segment closed cylinder.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.2. Demonstrates the full
-//! `mesh-measure::cross_section` + `cross_sections` +
-//! `circumference_at_height` + `area_at_height` public surface against
-//! a hand-authored UV-cylinder fixture. Anchors landed across §6.2 #5
-//! (skeleton at commit `2a3e6701`) and §6.2 #6 (66 vertex coords, 128
-//! face-winding cosine similarities, single mid-slice, 10-slice stack,
-//! convenience helpers, out-of-mesh slice, plane-normal normalization).
+//! Demonstrates the full `mesh-measure::cross_section` +
+//! `cross_sections` + `circumference_at_height` + `area_at_height`
+//! public surface against a hand-authored UV-cylinder fixture: 66
+//! vertex coords, 128 face-winding cosine similarities, single
+//! mid-slice, 10-slice stack, convenience helpers, out-of-mesh slice,
+//! plane-normal normalization.
 //!
 //! Fixture: 66 verts + 128 tris closed cylinder of radius 5 mm,
 //! height 10 mm, axis along +Z —

@@ -164,10 +164,10 @@ in-memory shape of the 3MF beam-lattice extension's `<beamlattice>` /
 `<beams>` / `<beam>` blocks. Each `Beam` carries `v1` / `v2`
 (grid-node indices), `r1` / `r2` (per-end radii — *the* density-
 modulation target for this example), and `cap1` / `cap2`. The 3MF
-*writer* itself is **F11** in `mesh/MESH_V1_EXAMPLES_SCOPE.md` §10 — a
-v0.9 candidate that §5.6 `mesh-lattice-strut-cubic` already pre-stages
-for the uniform case and that this example pre-stages for the
-variable-density case.
+*writer* itself is **F11**, a v0.9 candidate (see
+[`mesh-io/CHANGELOG.md`](../../../mesh/mesh-io/CHANGELOG.md)) that
+`mesh-lattice-strut-cubic` already pre-stages for the uniform case
+and that this example pre-stages for the variable-density case.
 
 ## Numerical anchors
 
@@ -244,10 +244,6 @@ cargo run -p example-mesh-mesh-lattice-density-gradient --release
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.7 (this example) +
-  §10 v0.9 backlog (F11 3MF beam writer — consumes the
-  `BeamLatticeData` populated here, same v0.9 candidate that §5.6
-  pre-stages for the uniform case).
 - **Sister examples**: §5.6 `mesh-lattice-strut-cubic` (uniform-density
   strut counterpart); §5.5 `mesh-lattice-tpms-gyroid` (TPMS
   contrast).
