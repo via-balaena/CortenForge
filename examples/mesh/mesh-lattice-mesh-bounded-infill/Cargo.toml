@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+# `cargo run -p example-mesh-mesh-lattice-mesh-bounded-infill` resolves
+# to the package-named default binary (`src/main.rs`); the audit-trail
+# bin is reached via `cargo run --bin pre_fix_check`.
+default-run = "example-mesh-mesh-lattice-mesh-bounded-infill"
 
 [dependencies]
 # IndexedMesh + Point3 for the hand-authored 50 mm cube input mesh
@@ -23,6 +27,24 @@ anyhow = { workspace = true }
 # assert_relative_eq! for actual_density / volume / signed-volume-integral
 # anchors at the post-fix commit (§6.2 #29)
 approx = { workspace = true }
+
+[lib]
+# Internal library exposing the shared 50 mm cube fixture (`src/fixture.rs`)
+# to both binaries. Bin-only crate layout would require `#[path = "..."]`
+# to share a module across `src/main.rs` + `src/bin/pre_fix_check.rs`;
+# a regular `lib.rs` re-export is more conventional.
+name = "example_mesh_mesh_lattice_mesh_bounded_infill"
+path = "src/lib.rs"
+
+# Audit-trail binary capturing the v0.7 `generate_infill` baseline
+# (gap-a/b/c/d/e pre-fix witnesses). Compiled by CI via the example
+# crate's grade pass but never auto-invoked (`cargo test -p ...`
+# does not run secondary binaries) — manual gate is
+# `cargo run --bin pre_fix_check --release`. Deleted at `§6.2 #29`
+# once post-fix anchors land.
+[[bin]]
+name = "pre_fix_check"
+path = "src/bin/pre_fix_check.rs"
 
 [lints]
 workspace = true

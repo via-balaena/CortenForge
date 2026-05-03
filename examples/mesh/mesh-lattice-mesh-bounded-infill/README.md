@@ -1,33 +1,32 @@
 # mesh-lattice-mesh-bounded-infill
 
 **FDM-style shell + lattice composite via `generate_infill` on a
-hand-authored watertight mesh — pre-fix anchors capture the v0.7
-`generate_infill` baseline (`shell == mesh.clone()` per
-`infill.rs:353`, bbox-heuristic volumes per `infill.rs:363-371`),
-then the F6 gap-fix sub-arc (a/d/e/c/b per `§6.5`) replaces those
-with a real inward-offset shell, signed-volume integrals on the
-shell + lattice, an SDF-bounded interior, solid caps at top/bottom,
-and lattice-to-shell connections. The fixture is a 50 mm × 50 mm ×
-50 mm cube (`min = (0, 0, 0)`, `max = (50, 50, 50)`; 8 verts / 12
-tris, hand-authored with outward-normal winding) fed to
-`generate_infill` under the `InfillParams::for_fdm` preset.** The
-mesh-bounded counterpart to §5.8 `mesh-lattice-shape-bounded`: §5.8
-trims a lattice with an analytical SDF (closed-form sphere); §5.9
-trims a lattice with a watertight input mesh (the canonical
-"shell + lattice" composite for 3D printing). Both paths matter;
-both ship in v1.0.
+hand-authored 50 mm watertight cube. At this commit (the **pre-fix
+anchor capture** commit, `§6.2 #23` follow-on), the v0.7 baseline
+behavior of `generate_infill` is locked numerically — the F6 sub-arc
+gap-a/b/c/d/e witnesses are captured by the audit-trail binary
+`bin/pre_fix_check.rs`, which compiles cleanly through every gap-fix
+commit (`§6.2 #24-#28`) but is never auto-invoked by CI. Each gap-fix
+that lands flips one or more witnesses red — proof that the gap
+existed numerically before the fix.** The mesh-bounded counterpart to
+§5.8 `mesh-lattice-shape-bounded`: §5.8 trims a lattice with an
+analytical SDF (closed-form sphere); §5.9 trims a lattice with a
+watertight input mesh (the canonical "shell + lattice" composite for
+3D printing). Both paths matter; both ship in v1.0.
 
-> Skeleton commit (`§6.2 #23` per the v1.0 examples-coverage arc
-> spec at `mesh/MESH_V1_EXAMPLES_SCOPE.md`). The pre-fix anchors
-> (v0.7 baseline behavior captured), the F6 gap-fix sub-arc commits
-> (a/d/e/c/b in dependency order per `§6.5`), and the post-fix
-> anchors (real shell `vertex_count`, signed-volume integrals,
-> solid caps, connections, comparison runs) all land in subsequent
-> commits within this PR. This README is a placeholder; museum-plaque
-> content (numerical anchors, visuals, comparison-output callout,
-> cross-references) fills in alongside the impl commits.
+> Pre-fix anchor capture commit (`§6.2 #23` follow-on per the v1.0
+> examples-coverage arc spec at `mesh/MESH_V1_EXAMPLES_SCOPE.md`).
+> The F6 gap-fix sub-arc commits (a/d/e/c/b in dependency order per
+> `§6.5`) and the post-fix anchors (real shell `vertex_count`,
+> signed-volume integrals on shell + lattice, solid caps, lattice-
+> to-shell connections, comparison runs) all land in subsequent
+> commits within this PR. The audit-trail binary
+> `src/bin/pre_fix_check.rs` and its `[[bin]]` entry in
+> `Cargo.toml` are deleted at `§6.2 #29` once the post-fix anchors
+> land — `main.rs` is rewritten at the same commit to assert
+> post-fix anchors directly.
 
-## What this example will demonstrate
+## What this example demonstrates
 
 `mesh-lattice` exposes the FDM-infill workflow via `generate_infill`
 (`mesh-lattice/src/infill.rs:287`): given a watertight `IndexedMesh`
@@ -59,79 +58,93 @@ examples-coverage arc spec §1.2):
   for non-box input meshes the lattice can extend through input
   faces.
 
-The pre-fix anchors (next commit) lock the v0.7 behavior (so we
-have a reproducible baseline to invalidate). The 5 gap-fix commits
-(`§6.2 #24-#28` per `§6.5`) replace each of a/d/e/c/b in dependency
-order. The post-fix anchors (`§6.2 #29`) prove every gap closed —
-shell has a different vertex count from input, volumes match
-signed-volume integrals within 1%, solid caps cover top/bottom
-layers (no lattice verts in those regions), and bridging struts
-emit when `connect_to_shell == true`.
-
 The fixture is a 50 mm × 50 mm × 50 mm cube (`min = (0, 0, 0)`,
 `max = (50, 50, 50)`; the simplest watertight mesh that exercises
 every `InfillParams` field). Hand-authored with 8 vertices and 12
-outward-normal-winding triangles, so the per-vertex coordinate
+outward-CCW triangles in `src/fixture.rs`, so per-vertex coordinate
 anchors and per-face winding-cosine anchors are bit-exact (per
-`feedback_math_pass_first_handauthored`). The `InfillParams::for_fdm`
-preset (per `mesh-lattice/src/infill.rs:94-105`) gives
-`LatticeParams::cubic(5.0)` with density `0.2`, `shell_thickness = 1.2`,
-`shell_layers = 3`, `infill_percentage = 0.2`, `connect_to_shell = true`,
+`feedback_math_pass_first_handauthored`). Topology + winding mirror
+`mesh-types::unit_cube` (`mesh/mesh-types/src/mesh.rs:20-54`) scaled
+by 50.
+
+The `InfillParams::for_fdm` preset (per
+`mesh-lattice/src/infill.rs:94-105`) gives `LatticeParams::cubic(5.0)`
+with density `0.2`, `shell_thickness = 1.2`, `shell_layers = 3`,
+`infill_percentage = 0.2`, `connect_to_shell = true`,
 `connection_thickness = 0.4`, `solid_caps = true`,
-`solid_cap_layers = 4`; the fixture commit overrides `cell_size` to
-`10.0` via `.with_cell_size(10.0)` for a coarser, more visually
-readable lattice within the 50 mm bbox (the default 5.0 mm cell
-yields ~514 cells in the post-shell interior; 10 mm cell yields ~54
-cells — clearer in cross-section).
+`solid_cap_layers = 4`. The fixture overrides `cell_size` to `10.0`
+via `.with_cell_size(10.0)` for a coarser, more visually readable
+lattice within the 50 mm bbox (the default 5.0 mm cell yields ~514
+cells in the post-shell interior; 10 mm cell yields ~54 cells —
+clearer in cross-section).
 
-The example will compute (TBD — land across the next ~7 commits):
+## v0.7 baseline locked at this commit
 
-1. **Hand-authored 50 mm cube fixture** — 8 vertices within `1e-12`
-   of `[0, 50]³`; 12 face-winding cross-product cosine-similarity
-   anchors > `0.9999` against the outward-normal direction.
-2. **Pre-fix anchors** (`expected_pre_fix.rs`, deleted at #29)
-   capturing the v0.7 baseline:
-   - `result.shell.vertex_count() == input.vertex_count()` (gap a:
-     shell IS the input clone).
-   - `result.shell_volume == bounds_volume - interior_volume`
-     (gap d: bbox heuristic, NOT signed-volume integral).
-   - No top/bottom-region cap detection (gap c: lattice extends
-     through where caps should sit).
-   - No connection geometry between lattice nodes and the shell
-     interior surface (gap b).
-3. **`InfillParams` builder + validate paths**:
-   - `InfillParams::for_fdm().validate() == Ok(())`.
-   - **Negative-validate via direct field assignment**: builder
-     `with_shell_thickness` clamps to `max(0.0)` per
-     `infill.rs:161-164` so the negative-`shell_thickness` path through
-     `validate` is reachable only by direct construction —
-     `let mut p = InfillParams::for_fdm(); p.shell_thickness = -1.0;`
-     then `p.validate()` returns
-     `Err(LatticeError::InvalidShellThickness(-1.0))`. The README
-     explains: builder is callable-side-defensive (clamp on input);
-     `validate()` is the inspection-side check (both paths exist).
-4. **`generate_infill` error paths**:
-   - Empty input mesh ⇒ `Err(LatticeError::EmptyMesh)`.
-   - Input mesh smaller than `2 × shell_thickness + 1 × cell_size`
-     ⇒ `Err(LatticeError::InteriorTooSmall)`.
-5. **Post-fix anchors** (`§6.2 #29`, after F6 sub-arc closes):
-   - `result.shell.vertex_count() != input.vertex_count()` (gap a).
-   - `result.shell_volume` within 1% of
-     `signed_volume_integral(&result.shell)` (gap d).
-   - `result.lattice_volume` within 1% of
-     `signed_volume_integral(&result.lattice)` (gap d).
-   - `result.actual_density` within ±10% of
-     `params.infill_percentage = 0.2`.
-   - `result.mesh.vertex_count() > result.shell.vertex_count() + result.lattice.vertex_count()`
-     when `connect_to_shell == true` (gap b: the strict-`>` proves
-     bridging struts add verts beyond the sub-mesh sum).
-   - `solid_caps == true` and `solid_cap_layers == 4` ⇒ count of
-     lattice verts with `z > 50 - 4 × layer_height` is **zero**
-     (gap c: solid caps cover the top region).
-   - With-vs-without solid-caps comparison (two runs, identical
-     fixture): the `solid_caps == true` mesh has MORE triangles
-     (planar-slab geometry adds tris) and FEWER top/bottom lattice
-     verts (gap c).
+`main.rs` runs only **stable** anchors — the math-pass anchors on
+the fixture itself, the `InfillParams` preset / negative-validate /
+error-path anchors, and smoke anchors on `generate_infill` that the
+F6 sub-arc does not invalidate (`actual_density` finite + in
+`[0, 1]`, `interior_volume > 0`, `vertex_count > 0`,
+`triangle_count > 0`, `total_volume` finite). All stay green at
+v0.7 AND through every gap-fix commit.
+
+The **v0.7 baseline witnesses** (numerical values that flip as each
+gap-fix lands) live in the audit-trail binary `bin/pre_fix_check.rs`,
+runnable via:
+
+```text
+cargo run -p example-mesh-mesh-lattice-mesh-bounded-infill --release --bin pre_fix_check
+```
+
+The captured stdout at this commit is the audit-trail evidence that
+gaps a-e existed numerically before the fixes landed:
+
+| Gap | Witness | Pre-fix value (this commit) | Post-fix flip (commit) |
+|-----|---------|-----------------------------|------------------------|
+| **a** | `shell.vertex_count` | `8` (= `fixture.vertex_count`; shell IS `mesh.clone()`) | `≠ 8` (offset-shell vertex count differs) at `§6.2 #24` |
+| **a** | `shell.signed_volume` | `125 000.0` mm³ (= `50³`; shell IS the input cube) | offset-shell signed volume at `§6.2 #24` |
+| **b** | `mesh.vertex_count == shell + lattice` | `2024 == 8 + 2016` (no bridging-strut verts) | `mesh.vertex_count > shell + lattice` at `§6.2 #28` |
+| **c** | lattice verts in top region (`z > 33.8`) | `448` (cap region lattice-populated) | `0` at `§6.2 #27` |
+| **c** | lattice verts in bottom region (`z < 16.2`) | `592` (cap region lattice-populated) | `0` at `§6.2 #27` |
+| **d** | `shell_volume` | `71 842.624` mm³ (bbox-heuristic = `125 000 − 53 157.376`) | signed-volume integral on offset shell at `§6.2 #25` |
+| **d** | `lattice_volume` | `609.461907` mm³ (bbox-heuristic = `interior × actual_density`) | signed-volume integral on lattice at `§6.2 #25` |
+| **e** | `interior_volume` | `53 157.376` mm³ (= `37.6³`; AABB inset per `infill.rs:337-338`) | mesh-SDF intersection on offset shell at `§6.2 #26` |
+
+(The empirical `actual_density ≈ 0.011_465` reflects the cubic-strut
+heuristic at low density on the 50 mm interior; not a load-bearing
+witness on its own — it stays in `[0, 1]` and finite through the
+sub-arc.)
+
+For the cube fixture specifically, gap-e's fix at `§6.2 #26`
+produces no numerical change in `interior_volume` — AABB inset and
+mesh-SDF intersection on the offset shell both yield `37.6³` on a
+cube. The audit-trail labels gap-e by source-line provenance
+(`infill.rs:337-338` pre-fix → mesh-SDF intersection post-fix), not
+by a numerical flip; a non-cube fixture would be needed to flip the
+scalar value (and to expose the load-bearing geometric consequence:
+on a non-cube, the AABB-bounded lattice extends through input mesh
+faces). Gap-d is independent of gap-e's degeneracy on the cube and
+remains numerically detectable here: `shell_volume` and
+`lattice_volume` are bbox-heuristic functions of `interior_volume`
+per `infill.rs:363, :371`, and become signed-volume integrals on the
+shell + lattice meshes at `§6.2 #25`.
+
+## F6 gap-fix sub-arc (per `§6.5`)
+
+The 5 gap-fix commits land between this pre-fix anchor commit and
+the post-fix anchors, in dependency order:
+
+| Commit | Gap | Description |
+|--------|-----|-------------|
+| `§6.2 #24` | **a** | Real shell offset via `mesh-offset::offset_mesh(mesh, -shell_thickness)`; replaces `let shell = mesh.clone();` at `infill.rs:353`. |
+| `§6.2 #25` | **d** | Signed-volume integrals on shell + lattice via promoted `estimate_mesh_volume`; replaces bbox-heuristic at `infill.rs:363-371`. Depends on gap a (a real shell exists to integrate over). |
+| `§6.2 #26` | **e** | SDF-bounded interior via internal `with_shape_sdf` on the offset shell; replaces AABB bounds at `infill.rs:337-338`. Depends on gap a (offset shell defines the boundary). |
+| `§6.2 #27` | **c** | Solid caps at top/bottom — planar-slab geometry covering the top + bottom `solid_cap_layers` of the post-shell interior (concrete layer-thickness convention TBD at #27, likely derived from `cell_size` or a new `layer_height` param). Depends on gap e (interior bounded so caps don't extend through mesh faces). |
+| `§6.2 #28` | **b** | Lattice-to-shell connections — bridging struts from each lattice node within `connection_thickness` of the inner shell. Depends on gap a (shell exists) + gap e (interior bounded). |
+
+Each fix is its own commit per `feedback_baby_steps`. After each,
+`cargo xtask grade mesh-lattice --skip-coverage` confirms A-grade
+holds before proceeding.
 
 ## Mesh-bounded vs analytical-SDF contrast (with §5.8)
 
@@ -154,14 +167,19 @@ The example will compute (TBD — land across the next ~7 commits):
   `connect_to_shell`, `connection_thickness`, `solid_caps`,
   `solid_cap_layers`).
 - `InfillParams::for_fdm` / `for_lightweight` / `for_strong` —
-  preset constructors covering the canonical 3D-printing profiles.
+  preset constructors covering the canonical 3D-printing profiles
+  (all three preset `validate()` paths are anchored in `main.rs`).
 - `InfillParams::with_lattice_type` / `with_cell_size` /
   `with_shell_thickness` / `with_infill_percentage` /
-  `with_solid_caps` / `with_solid_cap_layers` — builders (six total;
-  `with_shell_thickness` clamps to `max(0.0)`,
-  `with_infill_percentage` clamps to `[0.0, 1.0]`).
-- `InfillParams::validate` — success and `InvalidShellThickness`
-  error paths.
+  `with_solid_caps` / `with_solid_cap_layers` — six builders;
+  `with_shell_thickness` clamps to `max(0.0)` per `infill.rs:161-164`,
+  `with_infill_percentage` clamps to `[0.0, 1.0]` per
+  `infill.rs:170-173`. The first three are declared `pub fn`, the
+  last three are declared `pub const fn`.
+- `InfillParams::validate` — success path (all three presets) and
+  the `InvalidShellThickness` error path via direct field assignment
+  (negative-`shell_thickness` is reachable through `validate` only
+  by bypassing the clamping builder per spec HE-3).
 - `generate_infill(mesh, params) -> Result<InfillResult, LatticeError>`
   per `mesh-lattice/src/infill.rs:287`.
 - `InfillResult` fields: `mesh`, `shell`, `lattice`,
@@ -169,78 +187,67 @@ The example will compute (TBD — land across the next ~7 commits):
   `interior_volume`.
 - `InfillResult::total_volume` (`shell_volume + lattice_volume`),
   `vertex_count`, `triangle_count`.
-- `LatticeError::EmptyMesh` (empty input) and
-  `LatticeError::InteriorTooSmall` (input smaller than
-  `2 × shell_thickness + 1 × cell_size`).
+- `LatticeError::EmptyMesh` (empty input — anchored by feeding
+  `IndexedMesh::new()`) and `LatticeError::InteriorTooSmall` (input
+  smaller than `2 × shell_thickness + 1 × cell_size` — anchored by
+  feeding a 5 mm cube under `for_fdm + cell_size 4`,
+  `inset = 4 × 0.5 + 1.2 = 3.2`, `5 - 2 × 3.2 = -1.4 < 0`).
 
-## F6 gap-fix sub-arc (per `§6.5`)
+## Numerical anchors
 
-The 5 gap-fix commits land between this skeleton's pre-fix anchors
-and the post-fix anchors, in dependency order:
+**Locked at this commit (pre-fix anchor capture)** — math-pass
+anchors on the fixture + `InfillParams` preset / validate / error-
+path / smoke-call anchors in `main.rs`; gap-a/b/c/d/e v0.7 baseline
+witnesses in `bin/pre_fix_check.rs` (deleted at `§6.2 #29`).
 
-| Commit | Gap | Description |
-|--------|-----|-------------|
-| `§6.2 #24` | **a** | Real shell offset via `mesh-offset::offset_mesh(mesh, -shell_thickness)`; replaces `let shell = mesh.clone();` at `infill.rs:353`. |
-| `§6.2 #25` | **d** | Signed-volume integrals on shell + lattice via promoted `estimate_mesh_volume`; replaces bbox-heuristic at `infill.rs:363-371`. Depends on gap a (a real shell exists to integrate over). |
-| `§6.2 #26` | **e** | SDF-bounded interior via internal `with_shape_sdf` on the offset shell; replaces AABB bounds at `infill.rs:337-338`. Depends on gap a (offset shell defines the boundary). |
-| `§6.2 #27` | **c** | Solid caps at top/bottom — planar-slab geometry near `bounds.max.z - solid_cap_layers × layer_height` and the symmetric bottom. Depends on gap e (interior bounded so caps don't extend through mesh faces). |
-| `§6.2 #28` | **b** | Lattice-to-shell connections — bridging struts from each lattice node within `connection_thickness` of the inner shell. Depends on gap a (shell exists) + gap e (interior bounded). |
+**Locked at `§6.2 #29` (post-fix anchors)**, after F6 sub-arc closes:
 
-Each fix is its own commit per `feedback_baby_steps`. After each,
-`cargo xtask grade mesh-lattice --skip-coverage` confirms A-grade
-holds before proceeding.
-
-## Numerical anchors (TBD — land across the F6 sub-arc + post-fix commit)
-
-Pre-fix anchors (next commit, deleted at `§6.2 #29`):
-
-- `result.shell.vertex_count() == 8` (== input cube vertex count;
-  gap a ⇒ shell is `mesh.clone()`).
-- `result.shell_volume == 125000.0 - interior_volume`
-  (bbox-heuristic per `infill.rs:363-371`; explicit numerical match
-  with the heuristic formula, NOT a signed-volume integral).
-
-Post-fix anchors (`§6.2 #29`, gates the PR2 closeout):
-
-- 8 hand-authored vertices within `1e-12` of `[0, 50]³`.
-- 12 face-winding cosine-similarity anchors > `0.9999`.
+- 8 hand-authored vertices within `1e-12` of `[0, 50]³` (already
+  locked here via `fixture::verify_fixture`).
+- 12 face-winding cosine-similarity anchors > `0.9999` against the
+  outward-normal direction (already locked here).
 - `result.shell.vertex_count() != input.vertex_count()` (gap a).
 - `result.shell_volume` within 1% of
   `signed_volume_integral(&result.shell)` (gap d).
 - `result.lattice_volume` within 1% of
   `signed_volume_integral(&result.lattice)` (gap d).
-- `result.interior_volume > 0.0` (always; bbox-derived).
+- `result.interior_volume > 0.0` (already locked here).
 - `result.actual_density` within ±10% of `0.2`.
-- Solid-caps coverage anchor (gap c).
-- Connection-strut anchor (gap b).
-- With-vs-without solid-caps comparison (gap c).
+- Solid-caps coverage anchor (gap c — count of lattice verts in
+  cap regions is zero).
+- Connection-strut anchor (gap b — `mesh.vertex_count > shell +
+  lattice`).
+- With-vs-without solid-caps comparison (gap c — two runs, identical
+  fixture; the `solid_caps == true` mesh has more triangles and
+  fewer top/bottom lattice verts).
 
-## Run (TBD — full readout lands at `§6.2 #29`)
+## Run
 
 ```text
 cargo run -p example-mesh-mesh-lattice-mesh-bounded-infill --release
+cargo run -p example-mesh-mesh-lattice-mesh-bounded-infill --release --bin pre_fix_check
 ```
 
-Output:
+Output (this commit):
 
-- `out/input.ply` — the 50 mm input cube (8 verts, 12 tris).
-- `out/shell.ply` — the inward-offset hollow shell (post-gap-a;
-  pre-gap-a this is identical to `input.ply`).
+- `out/input.ply` — the 50 mm input cube fixture (8 verts, 12 tris).
+
+Output (post `§6.2 #29` once the post-fix demo lands):
+
+- `out/shell.ply` — the inward-offset hollow shell.
 - `out/lattice.ply` — the interior lattice (excludes shell).
 - `out/composite.ply` — the combined mesh (shell + lattice + caps
   + connections).
 
-Numerical printout includes the three volume reports and every
-post-fix anchor's empirical value.
+## Visuals
 
-## Visuals (TBD — land at `§6.2 #29`)
-
-⏸ Visual review **recommended** — opening `composite.ply` in f3d
-shows the FDM-style cutaway aesthetic (outer shell + interior
-lattice + solid caps at top/bottom + bridging connection struts).
-The post-fix shell + lattice composite is the visual centerpiece;
-pre-fix `composite.ply` would show only the input cube glued onto
-a free-floating lattice (no actual shell, no caps, no connections).
+⏸ Visual review **recommended** at `§6.2 #29` — opening
+`composite.ply` in f3d will show the FDM-style cutaway aesthetic
+(outer shell + interior lattice + solid caps at top/bottom +
+bridging connection struts). At this pre-fix-anchor commit, only
+`out/input.ply` exists (the 50 mm cube fixture); visual inspection
+is optional since `fixture::verify_fixture`'s math-pass anchors
+gate the cube's geometric correctness.
 
 ## Cross-references
 
@@ -254,9 +261,10 @@ a free-floating lattice (no actual shell, no caps, no connections).
 - **Cadence memos**:
   [`feedback_examples_drive_gap_fixes`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_examples_drive_gap_fixes.md)
   — example impl recon surfaces in-arc platform fixes (this example
-  IS that pattern: 5 gap-fixes in dependency order between skeleton
-  and post-fix anchors);
+  IS that pattern: 5 gap-fixes in dependency order between pre-fix
+  anchors and post-fix anchors);
   [`feedback_baby_steps`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_baby_steps.md)
   — each gap-fix is its own commit + `cargo xtask grade` gate;
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md)
-  — clean exit-0 from the post-fix anchors gates the visuals pass.
+  — clean exit-0 from `verify_fixture` IS the math-pass anchor on
+  the fixture itself.
