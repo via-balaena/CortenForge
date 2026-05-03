@@ -8,8 +8,10 @@ use crate::generate::generate_lattice;
 use crate::params::LatticeParams;
 use crate::types::LatticeType;
 use mesh_offset::{OffsetConfig, offset_mesh};
+use mesh_sdf::SignedDistanceField;
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;
+use std::sync::Arc;
 
 /// Parameters for infill generation.
 ///
@@ -347,16 +349,46 @@ pub fn generate_infill(
         return Err(LatticeError::InteriorTooSmall);
     }
 
-    // Generate lattice in interior
-    let lattice_result = generate_lattice(&params.lattice, (interior_min, interior_max))?;
-
-    // Build the hollow shell: outer surface + inward-offset inner surface.
+    // Build the inward-offset inner surface first; the lattice is then clipped
+    // to the cavity it bounds.
+    //
     // Resolution targets ~2 voxels across the wall thickness, clamped to a
     // sensible range; finer resolutions blow up the SDF grid for large bboxes.
     let offset_resolution = (params.shell_thickness / 2.0).clamp(0.1, 1.0);
     let offset_config = OffsetConfig::default().with_resolution(offset_resolution);
     let inner_offset = offset_mesh(mesh, -params.shell_thickness, &offset_config)
         .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?;
+
+    // Build a cavity-bounded SDF on the inner offset. `mesh-offset`'s
+    // inward-offset MC orients inner faces with normals into the cavity
+    // (`inner_offset.signed_volume() < 0` standalone), so `mesh-sdf::distance`
+    // returns positive in the cavity and negative in the wall material — the
+    // opposite sign of what `is_outside_shape` expects. Negate to get the
+    // cavity-SDF convention: `< 0` in cavity, `> 0` in wall.
+    //
+    // Face-normal sign rather than `unsigned_distance + is_inside`: the
+    // un-welded MC output of `mesh-offset` produces overlapping triangles
+    // wherever adjacent voxels resolve the same surface region, and
+    // `point_in_mesh`'s ray-crossing parity test goes noisy on that soup —
+    // empirically miscounts ~36% of cavity nodes as outside on the cube
+    // fixture, dropping ~48% of struts. The face-normal approach uses one
+    // closest face per query and is stable under MC discretization.
+    //
+    // Limitation: for non-convex inputs whose AABB inset includes regions
+    // outside the part (e.g., the hole of a torus), `-distance` returns
+    // negative there too — outside-the-part is on the same side of the
+    // closest inner face as the cavity. Convex inputs are unaffected.
+    let inner_sdf = SignedDistanceField::new(inner_offset.clone())
+        .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?;
+    let cavity_lattice_params = params
+        .lattice
+        .clone()
+        .with_shape_sdf(Arc::new(move |p| -inner_sdf.distance(p)));
+
+    // Generate lattice in interior, clipped to the cavity by the SDF.
+    let lattice_result = generate_lattice(&cavity_lattice_params, (interior_min, interior_max))?;
+
+    // Build the hollow shell: outer surface + inward-offset inner surface.
     let shell = combine_meshes(mesh, &inner_offset);
 
     // Combine shell and lattice
