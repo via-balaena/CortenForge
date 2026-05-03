@@ -329,9 +329,7 @@ pub fn generate_infill(
     }
 
     // Compute mesh bounds
-    let bounds = compute_bounds(mesh);
-    let (min, max) = bounds;
-    let size = max - min;
+    let (min, max) = compute_bounds(mesh);
 
     // Compute interior bounds (inset by shell thickness + safety margin)
     let inset = params
@@ -364,12 +362,16 @@ pub fn generate_infill(
     // Combine shell and lattice
     let combined = combine_meshes(&shell, &lattice_result.mesh);
 
-    // Estimate volumes
-    let bounds_volume = size.x * size.y * size.z;
+    // Shell signed-volume integral resolves to the wall volume:
+    // `mesh-offset`'s inward-offset MC orients inner faces with normals
+    // pointing into the cavity, so the divergence theorem subtracts the
+    // inner-offset enclosed volume from the outer mesh's enclosed
+    // volume.
     let interior_volume = (interior_max.x - interior_min.x)
         * (interior_max.y - interior_min.y)
         * (interior_max.z - interior_min.z);
-    let shell_volume = bounds_volume - interior_volume;
+    let shell_volume = shell.volume();
+    let lattice_volume = lattice_result.mesh.volume();
 
     Ok(InfillResult {
         mesh: combined,
@@ -377,7 +379,7 @@ pub fn generate_infill(
         lattice: lattice_result.mesh,
         actual_density: lattice_result.actual_density,
         shell_volume,
-        lattice_volume: interior_volume * lattice_result.actual_density,
+        lattice_volume,
         interior_volume,
     })
 }

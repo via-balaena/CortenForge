@@ -452,7 +452,7 @@ fn generate_tpms_lattice(
 
     // Estimate actual density
     let bounds_volume = size.x * size.y * size.z;
-    let mesh_volume = estimate_mesh_volume(&mesh);
+    let mesh_volume = mesh.volume();
     let actual_density = (mesh_volume / bounds_volume).clamp(0.0, 1.0);
 
     Ok(LatticeResult::new(mesh, actual_density, cell_count))
@@ -601,33 +601,6 @@ fn estimate_strut_volume(mesh: &IndexedMesh, radius: f64) -> f64 {
 
     // Volume = n × π × r² × L
     estimated_struts * PI * radius * radius * avg_strut_length
-}
-
-/// Estimates mesh volume using signed volume method.
-fn estimate_mesh_volume(mesh: &IndexedMesh) -> f64 {
-    let vertices = &mesh.vertices;
-    let faces = &mesh.faces;
-
-    let mut volume = 0.0_f64;
-
-    for face in faces {
-        let i0 = face[0] as usize;
-        let i1 = face[1] as usize;
-        let i2 = face[2] as usize;
-
-        if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
-            continue;
-        }
-
-        let v0 = &vertices[i0];
-        let v1 = &vertices[i1];
-        let v2 = &vertices[i2];
-
-        // Signed volume of tetrahedron from origin
-        volume += v0.coords.dot(&v1.coords.cross(&v2.coords));
-    }
-
-    (volume / 6.0).abs()
 }
 
 #[cfg(test)]
@@ -819,27 +792,5 @@ mod tests {
         let result = generate_lattice(&params, bounds);
         assert!(result.is_ok());
         assert!(result.unwrap().vertex_count() > 0);
-    }
-
-    #[test]
-    fn test_estimate_mesh_volume() {
-        // Create a simple tetrahedron
-        let vertices = vec![
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(1.0, 0.0, 0.0),
-            Point3::new(0.0, 1.0, 0.0),
-            Point3::new(0.0, 0.0, 1.0),
-        ];
-        let faces = vec![
-            [0, 1, 2], // Base
-            [0, 1, 3], // Side 1
-            [1, 2, 3], // Side 2
-            [2, 0, 3], // Side 3
-        ];
-        let mesh = IndexedMesh::from_parts(vertices, faces);
-
-        let volume = estimate_mesh_volume(&mesh);
-        // Tetrahedron volume = 1/6
-        assert!((volume - 1.0 / 6.0).abs() < 0.1);
     }
 }
