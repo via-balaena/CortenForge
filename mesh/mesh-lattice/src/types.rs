@@ -85,6 +85,7 @@ impl LatticeType {
 
 /// Result of lattice generation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LatticeResult {
     /// The generated lattice mesh.
     pub mesh: IndexedMesh,
