@@ -65,11 +65,13 @@ The example computes:
    closed bbox `[min, max]` within `1e-12` (MC's linear-interp
    places verts strictly between cell-corner samples; the highest-
    index cell's far corner equals `bounds.max` exactly).
-9. **`actual_density` is finite + in `[0, 1]`** — see drift-12
-   below for why the prior `[0.3, 0.7]` range was wrong.
+9. **`actual_density` is finite + in `[0, 1]`** — see the
+   `actual_density` callout below for why a tighter range can't
+   anchor on shell topologies.
 10. **Per-vertex SDF surface verification** — every vertex `v`
-    satisfies `||gyroid(v, 10)| − half_thickness| < 0.05` (the
-    drift-11 anchor; see callout below).
+    satisfies `||gyroid(v, 10)| − half_thickness| < 0.05`. The
+    surface lives at `|G| = half_thickness`, not `G = 0`; see the
+    "Vertex SDF anchor" callout below.
 
 ## Vertex-soup output (F10) — platform truth
 
@@ -80,7 +82,7 @@ pass). Source: `mesh-lattice/src/marching_cubes.rs:456` —
 a deliberate simplification, not a regression — and a **v0.9
 candidate** for replacement once a real consumer needs welded
 TPMS-lattice output (file size, cleaner viewer rendering, robust
-orientation propagation) — spec §10 item 4.
+orientation propagation). See `mesh-lattice/CHANGELOG.md`.
 
 The example asserts `vertex_count == 3 × triangle_count`
 **bit-exact** — both quantities are gated by the same
@@ -97,41 +99,38 @@ its MC output via `mesh-repair::weld_vertices`; v1.0 lattice
 examples treat the lattice's un-welded output as platform-truth and
 document the alternative.
 
-## Drift-11 — vertices live on the SHELL surface, not on `G = 0`
+## Vertex SDF anchor — vertices live on the SHELL surface, not on `G = 0`
 
-Spec §5.5 line 617 framed the per-vertex SDF anchor as
+A natural per-vertex SDF anchor would be
 `gyroid(v).abs() < threshold + voxel_size + epsilon` with
-`threshold = 0` for `density = 0.5`, implying vertices live near the
-bare gyroid level set `G = 0`. **Geometric truth**:
+`threshold = 0` for `density = 0.5`, implying vertices live near
+the bare gyroid level set `G = 0`. **Geometric truth**:
 `generate_tpms_lattice` (`mesh-lattice/src/generate.rs:379-386`)
 wraps the gyroid into `make_shell` whose surface is at
 `|G| = half_thickness = 0.75` (NOT `G = 0`). The MC isosurface
 extracts that shell wall, so vertices live at
 `|G(v)| ≈ half_thickness ± quantization`, NOT at `|G(v)| ≈ 0`.
 
-The reformulated anchor — encoded in this example — is
+The actual anchor — encoded in this example — is
 
 ```text
 ||gyroid(v, 10)| − half_thickness| < 0.05  (for all v)
 ```
 
 Empirical max across the 315,576 output vertices is **0.0229**,
-50× tighter than the spec's prior 1.0 cushion AND 30× tighter than
-the analytical worst-case bound (`½ · |∇²G|_max · voxel² ≈ 0.18`)
-— the gyroid's second-derivative magnitude is well below its
-theoretical max across most cells. The `0.05` cushion absorbs
-cross-platform libm `sin`/`cos` drift.
+30× tighter than the analytical worst-case bound
+(`½ · |∇²G|_max · voxel² ≈ 0.18`) — the gyroid's second-derivative
+magnitude is well below its theoretical max across most cells. The
+`0.05` cushion absorbs cross-platform libm `sin` / `cos` drift.
 
 Both `max |G(v)| ≈ 0.7729` and `max ||G(v)| − half_thickness| ≈
-0.0229` are surfaced in the stdout summary. Drift-11 spec edit
-lands inline at this commit (precedent: drifts 7+8 in §5.2,
-drifts 9+10 in §5.4).
+0.0229` are surfaced in the stdout summary.
 
-## Drift-12 — `actual_density` heuristic is broken on shell topologies
+## `actual_density` heuristic is broken on shell topologies
 
-Spec §5.5 line 615 said `actual_density` lands in `[0.3, 0.7]` for
-`density = 0.5` input (declared F9 heuristic, "not tight").
-Empirically `actual_density ≈ 0.06` — the range was wrong by ~6×.
+For `density = 0.5` input one might expect `actual_density` to land
+roughly in `[0.3, 0.7]` (declared F9 heuristic, "not tight").
+Empirically `actual_density ≈ 0.06` — well outside that range.
 
 `estimate_mesh_volume` (`mesh-lattice/src/generate.rs:552-576`) is
 the divergence-theorem formula `(1/6) Σ v0·(v1×v2)`, which requires
@@ -142,8 +141,8 @@ output violates one or more of the precondition assumptions in this
 implementation — exact cause **untraced** (candidates: TRI_TABLE
 orientation inconsistencies between cube cases, `is_degenerate`
 filter interactions, or seam handling between adjacent cells). F9
-is more broken than the spec assumed; the heuristic cannot be
-range-anchored on shell topologies. The reformulated anchor is
+is more broken than a naive range-anchor assumes; the heuristic
+cannot be range-anchored on shell topologies. The actual anchor is
 
 ```text
 actual_density.is_finite() && actual_density ∈ [0.0, 1.0]
@@ -151,7 +150,7 @@ actual_density.is_finite() && actual_density ∈ [0.0, 1.0]
 
 The v0.9 fix (proper volume integration on welded mesh) belongs
 with the F10 weld-pass — both unblock cleaner volume estimates.
-Drift-12 spec edit lands inline at this commit alongside drift-11.
+See `mesh-lattice/CHANGELOG.md` for the v0.9 candidate entry.
 
 ## Numerical anchors
 
@@ -209,7 +208,7 @@ Concrete output values: `vertex_count = 315 576`,
 F10 ratio is invariant per commit (filter at
 `marching_cubes.rs:462-468`).
 
-### Per-vertex SDF surface (`verify_vertex_sdf_surface`, drift-11)
+### Per-vertex SDF surface (`verify_vertex_sdf_surface`)
 
 For all 315,576 output vertices `v`:
 
@@ -219,16 +218,17 @@ For all 315,576 output vertices `v`:
 
 Empirical max across the run:
 
-| Quantity | Empirical | Locked anchor | Spec (prior) |
-|---------|-----------|---------------|--------------|
-| `max |G(v)|` | `0.7729` | within `[0.70, 0.80]` (= `half_thickness ± 0.05`) | `< 1.0` cushion (drift-11 reformulated) |
-| `max ||G(v)| − half_thickness|` | `0.0229` | `< 0.05` | n/a (anchor reframed) |
+| Quantity | Empirical | Locked anchor |
+|---------|-----------|---------------|
+| `max |G(v)|` | `0.7729` | within `[0.70, 0.80]` (= `half_thickness ± 0.05`) |
+| `max ||G(v)| − half_thickness|` | `0.0229` | `< 0.05` |
 
-### `actual_density` (`verify_actual_density`, drift-12)
+### `actual_density` (`verify_actual_density`)
 
 `actual_density.is_finite() && actual_density ∈ [0.0, 1.0]` —
-empirical `~0.06`, but per drift-12 the heuristic on un-welded
-shell topologies is severely broken. See drift-12 callout above.
+empirical `~0.06`. The heuristic is severely broken on un-welded
+shell topologies; see the `actual_density` callout above for why
+no tighter range can anchor here.
 
 ## Visuals
 
@@ -256,37 +256,28 @@ cargo run -p example-mesh-mesh-lattice-tpms-gyroid --release
 Output: `out/gyroid_lattice.ply` (the generated MC lattice mesh).
 Stdout prints fixture summary, all free-fn anchors, the
 `LatticeType::Gyroid` trait checks, generated-lattice counts +
-F10 vertex-soup signature, the drift-11 SDF surface anchors
+F10 vertex-soup signature, the per-vertex SDF surface anchors
 (both `max |G(v)|` and `max ||G(v)| − half_thickness|`), and the
 artifact path.
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.5 (this example) +
-  §7 R3 (density_to_threshold approximate, mitigated by anchoring
-  at `density = 0.5 → threshold = 0` bit-exact) + §10 v0.9 backlog
-  (F10 weld-pass trigger, item 4). Drift-11 (line 617 anchor
-  reformulation) + drift-12 (line 615 range correction) land
-  inline at this commit.
 - **Sister examples** rounding out the v1.0 mesh-arc:
-  `mesh-measure-bounding-box` (§5.1) at `719a85d3`,
-  `mesh-measure-cross-section` (§5.2) at `021a9712`,
-  `mesh-measure-distance-to-mesh` (§5.3) at `4650058a`,
-  `mesh-sdf-distance-query` (§5.4) at `ab7335fd`. The next two —
-  `mesh-lattice-strut-cubic` (§5.6, the strut-based-lattice
-  contrast) and `mesh-lattice-density-gradient` (§5.7, variable
-  density via `DensityMap`) — lock in `§6.2 #15-#20`.
+  `mesh-measure-bounding-box`, `mesh-measure-cross-section`,
+  `mesh-measure-distance-to-mesh`, `mesh-sdf-distance-query`. The
+  strut-based contrast is `mesh-lattice-strut-cubic` (uniform
+  cubic lattice); the variable-density extension is
+  `mesh-lattice-density-gradient` (octet-truss with `DensityMap`).
 - **MC welding contrast**: `mesh-offset-{outward,inward}` use the
-  `mesh-shell` engine which DOES weld MC output (PR #222 commits
-  11.5.1 / 11.5.2 via `mesh-repair::weld_vertices`); the lattice's
-  un-welded output is documented as deliberate (F10) until a real
-  consumer surfaces.
+  `mesh-shell` engine which DOES weld MC output (via
+  `mesh-repair::weld_vertices`); the lattice's un-welded output is
+  documented as deliberate (F10) until a real consumer surfaces.
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory (depth-pass updates land at `§6.2 #31` of the
-  arc).
+  — Part 8 inventory.
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md)
   — clean exit-0 gates the visuals pass;
   [`feedback_examples_drive_gap_fixes`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_examples_drive_gap_fixes.md)
-  — drift-11 / drift-12 surface as v0.9 candidates from this
-  example; spec §10 backlog migration lands at `§6.2 #32`.
+  — the F10 weld + F9 `actual_density` findings surfaced by this
+  example are documented as v0.9 candidates in
+  `mesh-lattice/CHANGELOG.md`.

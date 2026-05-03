@@ -24,6 +24,12 @@ workspace = true
 # Core mesh types
 mesh-types = { workspace = true }
 
+# SDF-based mesh offset (used by generate_infill for real shell offset, F6 gap a)
+mesh-offset = { workspace = true }
+
+# Mesh SDF queries (used by generate_infill to clip the lattice to the inner-offset cavity, F6 gap e)
+mesh-sdf = { workspace = true }
+
 # Math
 nalgebra = { workspace = true }
 

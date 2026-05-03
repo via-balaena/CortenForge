@@ -1,0 +1,33 @@
+[package]
+name = "example-mesh-mesh-lattice-mesh-bounded-infill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# IndexedMesh for the hand-authored 50 mm cube input mesh (8 verts /
+# 12 tris) and inspection of `result.{mesh, shell, lattice}`.
+mesh-types = { workspace = true }
+# save_ply for out/{input, shell, lattice, composite}.ply per spec §5.9.
+mesh-io = { workspace = true }
+# InfillParams + for_fdm/for_lightweight/for_strong constructors +
+# with_lattice_type/with_cell_size/with_shell_thickness/with_infill_percentage/
+# with_solid_caps/with_solid_cap_layers builders + validate +
+# generate_infill (`mesh-lattice/src/infill.rs:299`) +
+# InfillResult { mesh, shell, lattice, actual_density, shell_volume,
+# lattice_volume, interior_volume } + total_volume/vertex_count/triangle_count.
+mesh-lattice = { workspace = true }
+# Result<()> return type for main().
+anyhow = { workspace = true }
+
+[lib]
+# Internal library exposing the shared 50 mm cube fixture
+# (`src/fixture.rs`) to the binary. Bin-only crate layout would
+# require `#[path = "..."]` to share modules; a regular `lib.rs`
+# re-export is more conventional, even with a single bin.
+name = "example_mesh_mesh_lattice_mesh_bounded_infill"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

@@ -20,7 +20,7 @@ Builds a 66-vertex / 128-triangle closed cylinder:
 - **Bottom ring** (verts 0..31) at z=0; vertex i at
   `(5·cos(2π·i/32), 5·sin(2π·i/32), 0)` — sin/cos derived,
   cross-platform stable to `1e-12` (`f64::sin` / `f64::cos` are NOT
-  correctly-rounded; tolerance per spec §4.7).
+  correctly-rounded; `1e-12` covers libm drift).
 - **Top ring** (verts 32..63) at the same `(x, y)` with z=10.
 - **Cap centers**: bottom (vert 64) at `(0, 0, 0)`; top (vert 65) at
   `(0, 0, 10)`.
@@ -61,15 +61,15 @@ a clean `cargo run --release` exit-0 == clean visual inspection.
 ### Fixture geometry (`verify_fixture_geometry`)
 
 - 66 per-vertex coordinate anchors at `1e-12` (32 bottom-ring + 32
-  top-ring sin/cos derived, plus 2 FP-exact cap centers). Per spec
-  §4.7, `f64::sin` / `f64::cos` are not correctly-rounded; `1e-12`
-  covers cross-platform libm drift.
+  top-ring sin/cos derived, plus 2 FP-exact cap centers). `f64::sin`
+  / `f64::cos` are not correctly-rounded; `1e-12` covers cross-
+  platform libm drift.
 - 128 per-face winding cross-product unit-normal anchors at cosine-
   similarity `> 0.999_999_9` with the analytical outward direction
   (cap fans → ±z; wall tris → radial at chord midpoint angle
-  `(2k+1)·π/32`). Spec §7 R6 sets the worst-case floor at `> 0.99`;
-  the tighter floor surfaces any winding flip without burning
-  cross-platform headroom.
+  `(2k+1)·π/32`). The platform-wide worst-case floor for sin/cos-
+  derived face windings is `> 0.99`; the tighter floor here surfaces
+  any winding flip without burning cross-platform headroom.
 
 ### Mid-slice (`verify_mid_slice`)
 
@@ -98,8 +98,9 @@ Anchors:
   `sum_unique = 0`; `sum = V_dup` where `V_dup` is the duplicated
   chain-closure vertex. Probe shows `V_dup = mid_(16, 17)` at z=5,
   giving `centroid = (-(1+cos(π/16))/26, -sin(π/16)/26, 5)`.
-  Captured as a v0.9 candidate gap in `mesh-measure` (spec §10
-  item 11). Anchor tolerance `1e-12` (deterministic per FP).
+  Documented as a v0.9 candidate gap in `mesh-measure/CHANGELOG.md`
+  (proper polygon centroid via shoelace). Anchor tolerance `1e-12`
+  (deterministic per FP).
 - `contour_count == 1`; `is_closed() == true` — semantically
   `contour_count > 0`, **NOT** geometric closure (last point ==
   first point); per `cross_section.rs:73-77`.
@@ -168,17 +169,11 @@ normal demo) with chord-shrinkage diagnostics.
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.2 (this example) +
-  §4.7 (sin/cos `1e-12` cross-platform tolerance) + §7 R6
-  (UV-cylinder face-winding cosine similarity floor) + §10 item 11
-  (v0.9 candidate: proper polygon centroid).
 - **Sister examples** (round out `mesh-measure` public-surface
-  coverage): `mesh-measure-bounding-box` (§5.1) shipped at
-  `719a85d3`; `mesh-measure-distance-to-mesh` (§5.3) lands at
-  §6.2 #7.
+  coverage): `mesh-measure-bounding-box`,
+  `mesh-measure-distance-to-mesh`.
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory of v1.0 examples (depth-pass lands in spec
-  §6.2 commit 31).
+  — Part 8 inventory of v1.0 examples.
 - **Surfaced platform gap** (v0.9 candidate in
   `mesh-measure::cross_section`):
   1. `CrossSection::centroid` is `sum / N` over chain-closed points
@@ -188,4 +183,4 @@ normal demo) with chord-shrinkage diagnostics.
      (1/(6A))·Σ(x_i + x_(i+1))·(x_i·y_(i+1) − x_(i+1)·y_i)` and
      similar for `c_y` (project to 2D via the same `(u, v)` basis
      as `calculate_cross_section_area`, then back to 3D).
-     ~30 LOC. Captured as spec §10 item 11.
+     ~30 LOC. See `mesh-measure/CHANGELOG.md`.

@@ -38,7 +38,7 @@
 //! assert!(config.validate().is_ok());
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/sim-types/0.7.0")]
+#![doc(html_root_url = "https://docs.rs/sim-types/1.0.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
 // Allow certain clippy lints that are overly pedantic for type definitions

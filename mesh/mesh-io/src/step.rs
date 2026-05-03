@@ -13,7 +13,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! mesh-io = { version = "0.7", features = ["step"] }
+//! mesh-io = { version = "1.0", features = ["step"] }
 //! ```
 //!
 //! # Limitations

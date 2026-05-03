@@ -2,6 +2,7 @@
 
 use crate::beam::BeamLatticeData;
 use mesh_types::IndexedMesh;
+use nalgebra::Point3;
 
 /// Types of lattice structures that can be generated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -84,6 +85,7 @@ impl LatticeType {
 
 /// Result of lattice generation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LatticeResult {
     /// The generated lattice mesh.
     pub mesh: IndexedMesh,
@@ -103,6 +105,19 @@ pub struct LatticeResult {
     ///
     /// Only populated if `preserve_beam_data` is enabled in params.
     pub beam_data: Option<BeamLatticeData>,
+
+    /// Unique grid-node positions that participate in at least one
+    /// emitted strut.
+    ///
+    /// Populated by strut-based lattices (Cubic / `OctetTruss` /
+    /// Voronoi); empty for TPMS (Gyroid / `SchwarzP` / Diamond),
+    /// which have no graph-node concept — their geometry is the
+    /// marching-cubes-extracted surface itself.
+    ///
+    /// Used by `generate_infill` to anchor lattice-to-shell bridging
+    /// struts (F6 gap b): each near-shell node emits one strut from
+    /// itself to its closest point on the inward-offset shell.
+    pub nodes: Vec<Point3<f64>>,
 }
 
 impl LatticeResult {
@@ -115,6 +130,7 @@ impl LatticeResult {
             cell_count,
             total_strut_length: None,
             beam_data: None,
+            nodes: Vec::new(),
         }
     }
 
@@ -129,6 +145,15 @@ impl LatticeResult {
     #[must_use]
     pub fn with_beam_data(mut self, data: BeamLatticeData) -> Self {
         self.beam_data = Some(data);
+        self
+    }
+
+    /// Sets the unique grid-node positions.
+    ///
+    /// See [`LatticeResult::nodes`] for semantics.
+    #[must_use]
+    pub fn with_nodes(mut self, nodes: Vec<Point3<f64>>) -> Self {
+        self.nodes = nodes;
         self
     }
 
@@ -192,6 +217,7 @@ mod tests {
         assert_eq!(result.cell_count, 100);
         assert!(result.total_strut_length.is_none());
         assert!(result.beam_data.is_none());
+        assert!(result.nodes.is_empty());
     }
 
     #[test]
@@ -199,5 +225,15 @@ mod tests {
         let mesh = IndexedMesh::new();
         let result = LatticeResult::new(mesh, 0.3, 50).with_strut_length(1234.5);
         assert_eq!(result.total_strut_length, Some(1234.5));
+    }
+
+    #[test]
+    fn test_lattice_result_with_nodes() {
+        let mesh = IndexedMesh::new();
+        let nodes = vec![Point3::new(1.0, 2.0, 3.0), Point3::new(4.0, 5.0, 6.0)];
+        let result = LatticeResult::new(mesh, 0.3, 50).with_nodes(nodes);
+        assert_eq!(result.nodes.len(), 2);
+        assert!((result.nodes[0].x - 1.0).abs() < f64::EPSILON);
+        assert!((result.nodes[1].z - 6.0).abs() < f64::EPSILON);
     }
 }

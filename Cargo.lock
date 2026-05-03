@@ -1803,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "cf-design"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "cf-design-tests"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "cf-design",
  "mesh-io",
@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "cf-geometry"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra",
@@ -1836,7 +1836,7 @@ dependencies = [
 
 [[package]]
 name = "cf-spatial"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
@@ -2634,7 +2634,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-activation-filter"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-cylinder"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2654,7 +2654,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-damper"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-gear-and-limits"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2674,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-integrator"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-motor"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-position-servo"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-site-transmission"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-slider-crank"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2724,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "example-actuator-velocity-servo"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "example-ball-joint-cone-limit"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2744,7 +2744,7 @@ dependencies = [
 
 [[package]]
 name = "example-ball-joint-cone-orbit"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "example-ball-joint-conical"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2764,7 +2764,7 @@ dependencies = [
 
 [[package]]
 name = "example-ball-joint-pendulum"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "example-batch-sim-parameter-sweep"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "example-batch-sim-reset-subset"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2794,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "example-batch-sim-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "example-bio-shapes"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "example-composite-cable-catenary"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2823,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "example-composite-cable-loaded"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "example-composite-hanging-cable"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2843,7 +2843,7 @@ dependencies = [
 
 [[package]]
 name = "example-composite-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-condim-compare"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2862,7 +2862,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-filtering-bitmask"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2872,7 +2872,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-filtering-exclude-pairs"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-filtering-ghost-layers"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -2892,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-filtering-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-friction-slide"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-margin-gap"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2923,7 +2923,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-pair-override"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2934,7 +2934,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-solimp-depth"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2945,7 +2945,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-solref-bounce"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2956,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "example-contact-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -2965,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-control-design"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2976,7 +2976,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-convergence"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2987,7 +2987,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-epsilon-vcurve"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -2998,7 +2998,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-hybrid-vs-fd"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-inverse-dynamics"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-linearize-pendulum"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-sensor-jacobians"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "example-derivatives-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -3051,7 +3051,7 @@ dependencies = [
 
 [[package]]
 name = "example-design-to-print"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -3067,7 +3067,7 @@ dependencies = [
 
 [[package]]
 name = "example-design-to-sim"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -3078,7 +3078,7 @@ dependencies = [
 
 [[package]]
 name = "example-energy-damped-decay"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "example-energy-elastic-bounce"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3098,7 +3098,7 @@ dependencies = [
 
 [[package]]
 name = "example-energy-free-flight"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3108,7 +3108,7 @@ dependencies = [
 
 [[package]]
 name = "example-energy-pendulum-energy"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3118,7 +3118,7 @@ dependencies = [
 
 [[package]]
 name = "example-energy-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -3126,7 +3126,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-connect-body-to-body"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3137,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-connect-to-world"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3148,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-distance"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-joint-gear"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-joint-mimic"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -3188,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-weld-body-to-body"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "example-equality-weld-to-world"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -3210,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "example-finger-design"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -3222,7 +3222,7 @@ dependencies = [
 
 [[package]]
 name = "example-free-joint-projectile"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3232,7 +3232,7 @@ dependencies = [
 
 [[package]]
 name = "example-free-joint-spinning-toss"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3242,7 +3242,7 @@ dependencies = [
 
 [[package]]
 name = "example-free-joint-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "example-free-joint-tumble"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3261,7 +3261,7 @@ dependencies = [
 
 [[package]]
 name = "example-full-pipeline"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -3278,7 +3278,7 @@ dependencies = [
 
 [[package]]
 name = "example-hello-solid"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -3289,7 +3289,7 @@ dependencies = [
 
 [[package]]
 name = "example-hinge-joint-double-pendulum"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "example-hinge-joint-pendulum"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3309,14 +3309,14 @@ dependencies = [
 
 [[package]]
 name = "example-integrator-comparison"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-mjcf",
 ]
 
 [[package]]
 name = "example-integrator-comparison-visual"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3325,7 +3325,7 @@ dependencies = [
 
 [[package]]
 name = "example-integrator-euler"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3335,7 +3335,7 @@ dependencies = [
 
 [[package]]
 name = "example-integrator-implicit"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3345,7 +3345,7 @@ dependencies = [
 
 [[package]]
 name = "example-integrator-implicit-fast"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3355,7 +3355,7 @@ dependencies = [
 
 [[package]]
 name = "example-integrator-implicit-spring-damper"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3365,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "example-integrator-rk4"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3375,7 +3375,7 @@ dependencies = [
 
 [[package]]
 name = "example-inverse-forward-replay"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "example-inverse-gravity-compensation"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3395,7 +3395,7 @@ dependencies = [
 
 [[package]]
 name = "example-inverse-jacobian"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3405,7 +3405,7 @@ dependencies = [
 
 [[package]]
 name = "example-inverse-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -3413,7 +3413,7 @@ dependencies = [
 
 [[package]]
 name = "example-inverse-torque-profile"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3423,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "example-joint-limits-ball-cone"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3433,7 +3433,7 @@ dependencies = [
 
 [[package]]
 name = "example-joint-limits-hinge-limits"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3443,7 +3443,7 @@ dependencies = [
 
 [[package]]
 name = "example-joint-limits-slide-limits"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3453,7 +3453,7 @@ dependencies = [
 
 [[package]]
 name = "example-joint-limits-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -3461,7 +3461,7 @@ dependencies = [
 
 [[package]]
 name = "example-keyframes-multi-body"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "example-keyframes-save-restore"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3481,7 +3481,7 @@ dependencies = [
 
 [[package]]
 name = "example-keyframes-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -3489,7 +3489,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-attributed-mesh-basics"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-types",
@@ -3497,7 +3497,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-box"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3507,7 +3507,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-capsule"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3517,7 +3517,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-cylinder"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-ellipsoid"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-mesh"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3547,7 +3547,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-plane"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3557,7 +3557,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-sphere"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-collision-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -3575,7 +3575,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-format-conversion"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3584,7 +3584,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-lattice-density-gradient"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3594,8 +3594,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-mesh-lattice-mesh-bounded-infill"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-mesh-mesh-lattice-shape-bounded"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3606,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-lattice-strut-cubic"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3617,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-lattice-tpms-gyroid"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3628,7 +3638,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-measure-bounding-box"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3640,7 +3650,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-measure-cross-section"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3651,7 +3661,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-measure-distance-to-mesh"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3662,7 +3672,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-offset-inward"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3673,7 +3683,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-offset-outward"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3684,7 +3694,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-repair-walkthrough"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3694,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-mesh-sdf-distance-query"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3705,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-pipeline"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bevy",
@@ -3722,7 +3732,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-ply-with-custom-attributes"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3731,7 +3741,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-long-bridge"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3742,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-orientation"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3754,7 +3764,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-self-intersecting"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3764,7 +3774,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-showcase"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3775,7 +3785,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-small-feature"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3785,7 +3795,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-technology-sweep"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3796,7 +3806,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-thin-wall"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3807,7 +3817,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-printability-trapped-volume"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
@@ -3818,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-shell-generation-fast"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3829,7 +3839,7 @@ dependencies = [
 
 [[package]]
 name = "example-mesh-shell-generation-high-quality"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "mesh-io",
@@ -3842,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-6dof-cem-linear"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "example-ml-shared",
@@ -3856,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-6dof-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "rand 0.9.2",
  "sim-core",
@@ -3867,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-persistence-train-then-replay"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "example-ml-shared",
@@ -3878,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-shared"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3888,7 +3898,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-sim-env-episode-loop"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3900,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-sim-env-on-reset"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3912,7 +3922,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-sim-env-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -3921,7 +3931,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-sim-env-sub-stepping"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3932,7 +3942,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-spaces-act-clamping"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3944,7 +3954,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-spaces-act-inject"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3956,7 +3966,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-spaces-obs-extract"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3968,7 +3978,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-spaces-obs-rich"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -3980,7 +3990,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-spaces-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -3989,7 +3999,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-auto-reset"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "example-ml-shared",
@@ -4003,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-parallel-step"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4014,7 +4024,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-ppo"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "example-ml-shared",
@@ -4028,7 +4038,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-reinforce"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "example-ml-shared",
@@ -4042,7 +4052,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-sac"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "example-ml-shared",
@@ -4056,7 +4066,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -4065,7 +4075,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-td3"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "example-ml-shared",
@@ -4079,7 +4089,7 @@ dependencies = [
 
 [[package]]
 name = "example-ml-vec-env-terminal-obs"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4090,7 +4100,7 @@ dependencies = [
 
 [[package]]
 name = "example-mocap-bodies-drag-target"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4101,7 +4111,7 @@ dependencies = [
 
 [[package]]
 name = "example-mocap-bodies-push-object"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4112,7 +4122,7 @@ dependencies = [
 
 [[package]]
 name = "example-mocap-bodies-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -4121,7 +4131,7 @@ dependencies = [
 
 [[package]]
 name = "example-mocap-bodies-tilt-drop"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4132,7 +4142,7 @@ dependencies = [
 
 [[package]]
 name = "example-multi-scene-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4142,7 +4152,7 @@ dependencies = [
 
 [[package]]
 name = "example-muscle-activation"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4152,7 +4162,7 @@ dependencies = [
 
 [[package]]
 name = "example-muscle-cocontraction"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4162,7 +4172,7 @@ dependencies = [
 
 [[package]]
 name = "example-muscle-force-length"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4172,7 +4182,7 @@ dependencies = [
 
 [[package]]
 name = "example-muscle-forearm-flexion"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4182,7 +4192,7 @@ dependencies = [
 
 [[package]]
 name = "example-muscle-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -4190,7 +4200,7 @@ dependencies = [
 
 [[package]]
 name = "example-passive-ellipsoid-drag"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4200,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "example-passive-fluid-drag"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4210,7 +4220,7 @@ dependencies = [
 
 [[package]]
 name = "example-passive-spring-damper-tuning"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4220,7 +4230,7 @@ dependencies = [
 
 [[package]]
 name = "example-passive-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -4229,7 +4239,7 @@ dependencies = [
 
 [[package]]
 name = "example-passive-wind"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4240,7 +4250,7 @@ dependencies = [
 
 [[package]]
 name = "example-raycasting-basic-shapes"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4251,7 +4261,7 @@ dependencies = [
 
 [[package]]
 name = "example-raycasting-heightfield"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4262,7 +4272,7 @@ dependencies = [
 
 [[package]]
 name = "example-raycasting-scene-query"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4273,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "example-raycasting-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "cf-geometry",
  "nalgebra",
@@ -4283,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-01-sdf-grid"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4293,7 +4303,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-02-thin-grid"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4303,7 +4313,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-03-freefall"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4314,7 +4324,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-04-rest"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4325,7 +4335,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-05-drop"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4336,7 +4346,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-06-slide"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4347,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-07-pair"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4358,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-08-stack"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4369,7 +4379,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-09-cube-in-box"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4380,7 +4390,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-10-ball-in-bowl"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4391,7 +4401,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-11-hinge-free"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4403,7 +4413,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-12-hinge-wall"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4414,7 +4424,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-13-hinge-stop"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4425,7 +4435,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-14-damped-hinge"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4436,7 +4446,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-15-concave-stop"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4447,7 +4457,7 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-cpu-16-socket"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4458,11 +4468,11 @@ dependencies = [
 
 [[package]]
 name = "example-sdf-gpu-01-hockey"
-version = "0.7.0"
+version = "1.0.0"
 
 [[package]]
 name = "example-sensor-accelerometer"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4472,7 +4482,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-actuator-force"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4482,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-actuator-pos-vel"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4492,7 +4502,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-force-torque"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4502,7 +4512,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-frame-acceleration"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4512,7 +4522,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-frame-velocity"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4522,7 +4532,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-rangefinder"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4532,7 +4542,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -4541,7 +4551,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-subtree-angmom"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4551,7 +4561,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-adv-subtree-velocity"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4561,7 +4571,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-clock"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4571,7 +4581,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-frame-pos-quat"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4581,7 +4591,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-geom-distance"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4591,7 +4601,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-gyro-velocimeter"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4601,7 +4611,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-joint-pos-vel"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4611,7 +4621,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-subtree-com"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4621,7 +4631,7 @@ dependencies = [
 
 [[package]]
 name = "example-sensor-touch"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4631,7 +4641,7 @@ dependencies = [
 
 [[package]]
 name = "example-sim-informed-design"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-design",
@@ -4646,7 +4656,7 @@ dependencies = [
 
 [[package]]
 name = "example-sleep-wake-contact"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4656,7 +4666,7 @@ dependencies = [
 
 [[package]]
 name = "example-sleep-wake-islands"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4666,7 +4676,7 @@ dependencies = [
 
 [[package]]
 name = "example-sleep-wake-settle"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4676,7 +4686,7 @@ dependencies = [
 
 [[package]]
 name = "example-sleep-wake-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -4684,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "example-slide-joint-horizontal"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4694,7 +4704,7 @@ dependencies = [
 
 [[package]]
 name = "example-slide-joint-vertical"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4704,7 +4714,7 @@ dependencies = [
 
 [[package]]
 name = "example-solver-cg"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4714,14 +4724,14 @@ dependencies = [
 
 [[package]]
 name = "example-solver-comparison"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-mjcf",
 ]
 
 [[package]]
 name = "example-solver-comparison-visual"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4731,7 +4741,7 @@ dependencies = [
 
 [[package]]
 name = "example-solver-newton"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4741,7 +4751,7 @@ dependencies = [
 
 [[package]]
 name = "example-solver-pgs"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4751,7 +4761,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-actuator"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4761,7 +4771,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-cylinder-wrap"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "nalgebra",
@@ -4772,7 +4782,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-fixed-coupling"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4782,7 +4792,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-limits"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4792,7 +4802,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-pulley"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4802,7 +4812,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-spatial-path"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4812,7 +4822,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-sphere-wrap"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4822,7 +4832,7 @@ dependencies = [
 
 [[package]]
 name = "example-tendon-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "sim-core",
@@ -4831,7 +4841,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-continuous"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4841,7 +4851,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-damping-friction"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4852,14 +4862,14 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-error-handling"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-urdf",
 ]
 
 [[package]]
 name = "example-urdf-fixed"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4869,7 +4879,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-geometry"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4879,7 +4889,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-inertia"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4890,7 +4900,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-mimic"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4900,7 +4910,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-prismatic"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4911,7 +4921,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-revolute"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "sim-bevy",
@@ -4921,7 +4931,7 @@ dependencies = [
 
 [[package]]
 name = "example-urdf-stress-test"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
@@ -6200,7 +6210,7 @@ dependencies = [
 
 [[package]]
 name = "mesh"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "mesh-io",
  "mesh-lattice",
@@ -6216,7 +6226,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-io"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "mesh-types",
@@ -6234,10 +6244,12 @@ dependencies = [
 
 [[package]]
 name = "mesh-lattice"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "hashbrown 0.16.1",
+ "mesh-offset",
+ "mesh-sdf",
  "mesh-types",
  "nalgebra",
  "rand 0.9.2",
@@ -6246,7 +6258,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-measure"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "mesh-types",
@@ -6257,7 +6269,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-offset"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "mesh-sdf",
@@ -6280,7 +6292,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-repair"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
@@ -6295,7 +6307,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-repair-benches"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "mesh-repair",
@@ -6304,7 +6316,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-sdf"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "mesh-types",
@@ -6314,7 +6326,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-shell"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "hashbrown 0.16.1",
@@ -6328,7 +6340,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-shell-benches"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "mesh-shell",
@@ -6337,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-types"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
@@ -8120,7 +8132,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sim-bevy"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-geometry",
@@ -8134,7 +8146,7 @@ dependencies = [
 
 [[package]]
 name = "sim-conformance-tests"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra",
@@ -8147,7 +8159,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
@@ -8164,7 +8176,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core-benches"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "nalgebra",
@@ -8174,7 +8186,7 @@ dependencies = [
 
 [[package]]
 name = "sim-gpu"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "bytemuck",
@@ -8189,7 +8201,7 @@ dependencies = [
 
 [[package]]
 name = "sim-mjcf"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "bincode",
@@ -8208,7 +8220,7 @@ dependencies = [
 
 [[package]]
 name = "sim-ml-chassis"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "getrandom 0.3.4",
@@ -8223,7 +8235,7 @@ dependencies = [
 
 [[package]]
 name = "sim-ml-chassis-benches"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "sim-core",
@@ -8232,7 +8244,7 @@ dependencies = [
 
 [[package]]
 name = "sim-ml-chassis-bevy"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "bevy_ecs",
  "sim-core",
@@ -8241,7 +8253,7 @@ dependencies = [
 
 [[package]]
 name = "sim-opt"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "getrandom 0.3.4",
@@ -8256,7 +8268,7 @@ dependencies = [
 
 [[package]]
 name = "sim-rl"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "rand 0.9.2",
@@ -8267,7 +8279,7 @@ dependencies = [
 
 [[package]]
 name = "sim-simd"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra",
@@ -8277,7 +8289,7 @@ dependencies = [
 
 [[package]]
 name = "sim-simd-benches"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "nalgebra",
@@ -8287,7 +8299,7 @@ dependencies = [
 
 [[package]]
 name = "sim-soft"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "bytemuck",
@@ -8301,7 +8313,7 @@ dependencies = [
 
 [[package]]
 name = "sim-therm-env"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "sim-core",
@@ -8315,7 +8327,7 @@ dependencies = [
 
 [[package]]
 name = "sim-thermostat"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "getrandom 0.3.4",
  "nalgebra",
@@ -8329,7 +8341,7 @@ dependencies = [
 
 [[package]]
 name = "sim-types"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra",
@@ -8339,7 +8351,7 @@ dependencies = [
 
 [[package]]
 name = "sim-urdf"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra",

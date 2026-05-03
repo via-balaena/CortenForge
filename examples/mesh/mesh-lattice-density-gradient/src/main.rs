@@ -9,13 +9,13 @@
 //! mesh-lattice-density-gradient — variable-density lattice via
 //! `DensityMap` on the octet-truss preset.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.7. Fixture: 30 mm cube at
+//! Fixture: 30 mm cube at
 //! 7.5 mm cell size (4 × 4 × 4 = 64 cells, octet-truss topology), strut
 //! thickness 0.6 mm (baseline radius 0.3 mm), `with_beam_export(true)`.
 //! `Gradient` density map climbs linearly along z: `from_density = 0.1`
 //! at `(0, 0, 0)`, `to_density = 0.5` at `(0, 0, 30)`.
 //!
-//! Density-modulated counterpart to §5.6 `mesh-lattice-strut-cubic`:
+//! Density-modulated counterpart to `mesh-lattice-strut-cubic`:
 //! same strut path mechanism, but octet-truss topology (20 struts per
 //! cell — 8 corner-to-center + 12 corner-to-corner) and a non-uniform
 //! density map. The load-bearing observation: density modulates per-
@@ -334,8 +334,9 @@ fn verify_params_validate(params: &LatticeParams) {
 /// the C15a fix to `generate_octet_truss_lattice` (parity with the
 /// cubic path's beam-data export). `actual_density` is the F9
 /// heuristic — finite + in [0, 1] (octet path uses the same
-/// `estimate_strut_volume` route as cubic, which has no §5.5
-/// drift-12 closed-orientable-manifold pathology).
+/// `estimate_strut_volume` route as cubic, so the closed-orientable-
+/// manifold pathology that breaks `actual_density` on un-welded
+/// TPMS shells doesn't apply here).
 fn verify_lattice_result_basic(result: &LatticeResult) {
     assert_eq!(
         result.cell_count, EXPECTED_CELL_COUNT,
@@ -448,13 +449,15 @@ fn verify_per_beam_r1_density_anchor(beam_data: &BeamLatticeData) -> R1Stats {
     let ratio = top_mean / bottom_mean;
 
     // Empirical anchor (analytical derivation matches; see fn doc):
-    // bottom mean ≈ 0.1433, top mean ≈ 0.1944, ratio ≈ 1.357. Spec
-    // §5.7 line 709 claims ratio ≈ 1.41 ± 5%; our empirical 1.357 is
-    // inside that band (1.357 / 1.41 ≈ 0.962, ~3.8% below).
+    // bottom mean ≈ 0.1433, top mean ≈ 0.1944, ratio ≈ 1.357.
+    // Analytical half-region mean-r1 ratio = √(0.4 / 0.2) = √2 ≈ 1.414
+    // (given Gradient 0.1 → 0.5; bottom-half mean-density 0.2,
+    // top-half mean-density 0.4). Empirical 1.357 vs analytical 1.414
+    // = ~3.8% below, accounted for by v1-filter asymmetry (see README).
     assert!(
         ratio > 1.30 && ratio < 1.45,
         "top/bottom r1 mean ratio = {ratio:.4} must be in (1.30, 1.45) \
-         (spec §5.7 ≈ 1.41 ± 5%, empirical ≈ 1.357 with v1-filtering)",
+         (analytical √2 ≈ 1.414, empirical ≈ 1.357 with v1-filtering)",
     );
 
     // Spot-check: bottom-most stratum (cells iz=0, density 0.15) has
@@ -515,9 +518,8 @@ fn verify_beam_data_counts(beam_data: &BeamLatticeData) {
 // verify_function_demo — DensityMap::Function with a non-trivial closure
 // =============================================================================
 
-/// Demonstrates `DensityMap::Function` with a sinusoidal closure (per
-/// spec §5.7 line 712). Sampled at known points where the analytical
-/// value is exact.
+/// Demonstrates `DensityMap::Function` with a sinusoidal closure.
+/// Sampled at known points where the analytical value is exact.
 fn verify_function_demo() {
     // f(p) = 0.5 + 0.1 × sin(p.x / 10.0). At x = 0: sin(0) = 0, so
     // f = 0.5. At x = 10π: sin(π) = 0, so f = 0.5. At x = 5π: sin(π/2)
@@ -543,7 +545,8 @@ fn verify_function_demo() {
 
 /// Bundled inputs for [`print_summary`]; avoids
 /// `clippy::too_many_arguments` while keeping fields trivially
-/// constructed at the call site (precedent: §5.4 / §5.6 `Summary`).
+/// constructed at the call site (precedent: `Summary` in
+/// `mesh-sdf-distance-query` + `mesh-lattice-strut-cubic`).
 struct Summary<'a> {
     result: &'a LatticeResult,
     beam_data: &'a BeamLatticeData,

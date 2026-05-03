@@ -29,7 +29,7 @@ Cross-sections are **the most generatively-useful primitive in `mesh-measure`** 
 - **Manufacturing constraint surfaces.** Wall-thickness verification can sample the part along axial directions and report the minimum wall thickness per slice.
 - **Volume integration via slabs.** Rule-of-thumb volume estimation by integrating cross-section areas along an axis; used as a sanity check against `IndexedMesh::aabb()`-derived volume estimates.
 
-The depth pass covers the algorithmic specifics (per-triangle plane intersection, edge-walking to assemble closed contours, handling of the degenerate cases where the plane grazes a vertex or coincides with a face) and the cross-section's role in soft-body visualization examples (one of the [Tier 2 mesh examples](80-examples.md) is `cross_section_sweep`).
+The depth pass covers the algorithmic specifics (per-triangle plane intersection, edge-walking to assemble closed contours, handling of the degenerate cases where the plane grazes a vertex or coincides with a face) and the cross-section's role in soft-body visualization examples (the [`mesh-measure-cross-section`](80-examples.md) example walks through the planar-slicing surface end-to-end).
 
 ## Dimensions and OBB
 

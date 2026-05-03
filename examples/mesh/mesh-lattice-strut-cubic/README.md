@@ -5,7 +5,7 @@
 anchors, then `generate_lattice` for a 25mm³ bbox at cell size 5mm,
 strut thickness 1.0mm, uniform density 1.0, with `with_beam_export(true)`
 flipping on the 3MF `BeamLatticeData` precursor (deduplicated grid
-nodes + per-edge beam list).** The strut counterpart to §5.5
+nodes + per-edge beam list).** The strut counterpart to
 `mesh-lattice-tpms-gyroid`: cylindrical beams between integer-spaced
 grid nodes — NOT a TPMS isosurface — so the per-strut mesh counts are
 combinatorial constants, the total strut length is bit-exact, and the
@@ -16,8 +16,9 @@ straight from the cubic-cell topology.
 
 `mesh-lattice` exposes two distinct lattice paths: the **TPMS** path
 (gyroid / Schwarz-P / diamond / IWP / neovius) extracted via marching
-cubes — covered by §5.5 — and the **strut** path (cylindrical beams
-between cell-grid nodes) covered here. Cubic is the simplest strut
+cubes — covered by `mesh-lattice-tpms-gyroid` — and the **strut**
+path (cylindrical beams between cell-grid nodes) covered here. Cubic
+is the simplest strut
 topology: 3 axis-aligned beam families per cell, no diagonal struts
 (octet-truss / kelvin / etc. add diagonals on top of the same cubic
 node grid).
@@ -56,7 +57,7 @@ The example computes:
    below 2⁵³).
 7. **`actual_density.is_finite() && ∈ [0, 1]`** — F9 heuristic
    (cubic-strut path uses `estimate_strut_volume` on the mesh, NOT
-   the §5.5 signed-tet formula; empirical `~0.13`).
+   the signed-tet formula used by the TPMS path; empirical `~0.13`).
 8. **`BeamLatticeData`** — `vertex_count() == 216` (deduplicated
    grid nodes via the `quantize` `HashMap` pattern at scale `1e6`);
    `beam_count() == 540`; `total_length() ≈ 2700.0` within `1e-9`;
@@ -65,15 +66,15 @@ The example computes:
    in the cylinder-sum range (≈ `675π ≈ 2120.575` mm³); per-beam
    `length(&data.vertices) == Some(5.0)` within `1e-9`.
 
-## Strut-vs-TPMS contrast (with §5.5)
+## Strut-vs-TPMS contrast
 
-| | §5.5 `mesh-lattice-tpms-gyroid` | §5.6 `mesh-lattice-strut-cubic` |
+| | `mesh-lattice-tpms-gyroid` | `mesh-lattice-strut-cubic` |
 |---|---|---|
 | Path | TPMS isosurface (marching cubes) | Strut topology (cylindrical beams) |
 | `is_tpms` / `is_strut_based` | `true` / `false` | `false` / `true` |
 | Vertex/triangle counts | Cube-case dependent (vertex-soup) | Combinatorial (`N_struts × 14` / `× 24`) |
 | Bit-exact total length | n/a (TPMS path returns `None`) | `total_strut_length == Some(2700.0)` BIT-EXACT |
-| `actual_density` heuristic | `estimate_mesh_volume` (signed-tet; broken on shells per §5.5 drift-12) | `estimate_strut_volume` (mesh-bbox heuristic; not affected by drift-12) |
+| `actual_density` heuristic | `estimate_mesh_volume` (signed-tet; broken on un-welded TPMS shells — see the gyroid example's `actual_density` callout) | `estimate_strut_volume` (mesh-bbox heuristic; not affected by the closed-orientable-manifold pathology) |
 | Beam-data side channel | n/a (TPMS path skips `BeamLatticeData`) | populated when `with_beam_export(true)` (216 nodes + 540 beams) |
 | Visual centerpiece | iconic gyroid surface | cubic strut grid (axis-aligned cylinders) |
 
@@ -85,9 +86,9 @@ in-memory shape of the 3MF beam-lattice extension's `<beamlattice>` /
 node indices), `r1` / `r2` (per-end radii), `length` /
 `average_radius` (computed methods), and `cap1` / `cap2`
 (`BeamCap::Sphere` default; `Flat` and `Butt` are the other
-variants exposed). The 3MF *writer* itself is **F11** in
-`mesh/MESH_V1_EXAMPLES_SCOPE.md` §10 — a v0.9 candidate. v1.0 stops
-at the in-memory data structure, with this example as the test that
+variants exposed). The 3MF *writer* itself is **F11**, a v0.9
+candidate (see [`mesh-io/CHANGELOG.md`](../../../mesh/mesh-io/CHANGELOG.md)).
+v1.0 stops at the in-memory data structure, with this example as the test that
 the build path populates it correctly from a strut-based
 `generate_lattice` call.
 
@@ -113,7 +114,7 @@ the 216 unique grid nodes.
 - **`data.total_length() ≈ 2700.0` within `1e-9`** — every beam's
   `length` is `(v2 − v1).norm() = sqrt(25.0) = 5.0` (perfect square,
   IEEE 754 sqrt is correctly-rounded). The sum of 540 fives is
-  2700.0; tolerance is `1e-9` per spec but the empirical value prints
+  2700.0; tolerance is `1e-9` but the empirical value prints
   as `2700.000000`.
 - **`data.vertex_count() == 216`** — the `quantize` `HashMap` keys
   are `[(p.x · 1e6) as i64, …]` triples on grid nodes that are
@@ -179,8 +180,9 @@ the optional cubic-grid visual below).
 empirical `≈ 0.1335`. The cubic-strut path uses
 `estimate_strut_volume(&mesh, radius)` (`generate.rs:519-549`), a
 mesh-bbox-diagonal heuristic; *not* the signed-tet integration that
-§5.5 drift-12 broke on un-welded gyroid shells. The cubic estimate
-is approximate but stable, and well within `[0, 1]`.
+breaks on un-welded gyroid shells (see the gyroid example's
+`actual_density` callout). The cubic estimate is approximate but
+stable, and well within `[0, 1]`.
 
 ### `BeamLatticeData` (`verify_beam_data`)
 
@@ -258,22 +260,14 @@ OK — 4 strut + 2 estimate_strut_volume + 4 LatticeType + ...
 
 ## Cross-references
 
-- **Spec**: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.6 (this example) +
-  §10 v0.9 backlog (F11 3MF beam writer — consumes the
-  `BeamLatticeData` populated here). No drifts surfaced at this
-  commit; spec §5.6 anchors lock as written (contrast with §5.2
-  drifts 7+8, §5.4 drifts 9+10, §5.5 drifts 11+12).
 - **Sister examples** rounding out the v1.0 mesh-arc:
-  `mesh-measure-bounding-box` (§5.1) at `719a85d3`,
-  `mesh-measure-cross-section` (§5.2) at `021a9712`,
-  `mesh-measure-distance-to-mesh` (§5.3) at `4650058a`,
-  `mesh-sdf-distance-query` (§5.4) at `ab7335fd`,
-  `mesh-lattice-tpms-gyroid` (§5.5) at `947aa8d8`. The next
-  example — `mesh-lattice-density-gradient` (§5.7, variable density
-  via `DensityMap` on octet-truss) — locks in `§6.2 #17 / #18`.
+  `mesh-measure-bounding-box`, `mesh-measure-cross-section`,
+  `mesh-measure-distance-to-mesh`, `mesh-sdf-distance-query`,
+  `mesh-lattice-tpms-gyroid`. The density-modulated counterpart is
+  `mesh-lattice-density-gradient` (variable density via `DensityMap`
+  on octet-truss).
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory (depth-pass updates land at `§6.2 #31` of the
-  arc).
+  — Part 8 inventory.
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md)
   — clean exit-0 gates the visuals pass (delivered first-run on

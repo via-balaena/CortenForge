@@ -9,7 +9,7 @@
 //! mesh-lattice-tpms-gyroid — TPMS surface generation via the gyroid
 //! implicit function + marching-cubes vertex-soup output.
 //!
-//! Spec: `mesh/MESH_V1_EXAMPLES_SCOPE.md` §5.5. Fixture: 30 mm cube at
+//! Fixture: 30 mm cube at
 //! 10 mm cell size (3 × 3 × 3 = 27 cells), resolution 15, density 0.5
 //! (threshold = 0 BIT-EXACT, R3 mitigation for F8), wall thickness
 //! 1.5 mm. Locks the gyroid free fn at known points, the
@@ -17,25 +17,23 @@
 //! `make_shell` SDF wrapper at the origin, and verifies the generated
 //! mesh against the gyroid SDF post-extraction.
 //!
-//! Drift-11 (NEW spec edit at this commit; precedent: drifts 7+8 in
-//! §5.2, drifts 9+10 in §5.4). Spec §5.5 line 617 frames the per-
-//! vertex SDF anchor with `threshold = 0` for `density = 0.5`,
-//! implying vertices live near the bare gyroid level set at zero.
-//! Geometric truth: `generate_tpms_lattice` (`generate.rs:379-386`)
-//! wraps the gyroid into `make_shell`, placing the lattice surface at
-//! abs-G equal to `half_thickness` (0.75), NOT at `G = 0`. MC extracts
-//! that surface, so vertices live at `abs(G(v)) ≈ 0.75` plus MC
-//! linear-interp quantization. The spec's 1.0 cushion happens to
-//! absorb both `half_thickness` AND quantization, but the framing
-//! mis-states the geometric model. Empirical max offset from the
-//! shell wall is ~0.023 — 30× tighter than the analytical worst-
-//! case bound (~0.18 from gyroid second-derivative magnitude over
-//! one voxel). Anchor locked at 0.05 (~2× empirical, cushion for
-//! cross-platform libm sin/cos drift).
+//! Vertex SDF anchor: a natural framing would be
+//! `gyroid(v).abs() < threshold + epsilon` with `threshold = 0` for
+//! `density = 0.5`, implying vertices live near the bare gyroid
+//! level set at zero. Geometric truth: `generate_tpms_lattice`
+//! (`generate.rs:379-386`) wraps the gyroid into `make_shell`,
+//! placing the lattice surface at abs-G equal to `half_thickness`
+//! (0.75), NOT at `G = 0`. MC extracts that surface, so vertices
+//! live at `abs(G(v)) ≈ 0.75` plus MC linear-interp quantization.
+//! Empirical max offset from the shell wall is ~0.023 — 30× tighter
+//! than the analytical worst-case bound (~0.18 from gyroid
+//! second-derivative magnitude over one voxel). Anchor locked at
+//! 0.05 (~2× empirical, cushion for cross-platform libm sin/cos
+//! drift).
 //!
-//! Drift-12 (NEW spec edit at this commit, surfaced empirically).
-//! Spec §5.5 line 615 says `actual_density` lands in `[0.3, 0.7]`
-//! for `density = 0.5` input (declared F9 heuristic, "not tight").
+//! `actual_density` heuristic on shell topologies: a naive expectation
+//! would be that `actual_density` lands roughly in `[0.3, 0.7]` for
+//! `density = 0.5` input (declared F9 heuristic, "not tight").
 //! Empirically it is ~0.06 — off by ~8× from the expected wall
 //! volume fraction of ~50% (gyroid shell at `|G| < 0.75` occupies
 //! ~half the bbox). `estimate_mesh_volume` (`generate.rs:552-576`)
@@ -48,9 +46,8 @@
 //! between cube cases, `is_degenerate` filter interactions, or
 //! seam handling between adjacent cells). The heuristic cannot be
 //! range-anchored on shell topologies; v0.9 fix is proper volume
-//! integration on a welded mesh, gated on F10 weld-pass.
-//! Reformulated anchor: `actual_density` is finite and in `[0.0,
-//! 1.0]`.
+//! integration on a welded mesh, gated on F10 weld-pass. Anchor
+//! used here: `actual_density` is finite and in `[0.0, 1.0]`.
 //!
 //! F8 mitigation (R3): `density_to_threshold(0.5, "gyroid")` returns
 //! exactly `0.0` because the formula `(0.5 − density) * 3.0` becomes
@@ -66,11 +63,11 @@
 //! `faces.push([...])` inside the same `if !is_degenerate(...)`
 //! block — degenerate-tri filtering removes both atomically, so the
 //! ratio is invariant per commit. v0.9 candidate: weld via
-//! `mesh-repair::weld_vertices` (spec §10 item 4).
+//! `mesh-repair::weld_vertices` (see `mesh-lattice/CHANGELOG.md`).
 
 // Gyroid analytical formulas read more clearly without `mul_add`
 // rewrites; the comparisons below are bit-equivalent on f64. (Same
-// crate-level allow precedent as §5.4 sdf-distance-query.)
+// crate-level allow precedent as `mesh-sdf-distance-query`.)
 #![allow(clippy::suboptimal_flops)]
 
 use std::path::Path;
@@ -306,7 +303,7 @@ fn verify_actual_density(result: &LatticeResult) {
 }
 
 // =============================================================================
-// verify_vertex_sdf_surface — empirical probe + drift-11 anchor
+// verify_vertex_sdf_surface — empirical probe + per-vertex anchor
 // =============================================================================
 
 /// Per-vertex SDF surface verification. Returns `(max_abs_g,
@@ -320,9 +317,11 @@ fn verify_actual_density(result: &LatticeResult) {
 ///   10/15 ≈ 0.667`) plus second-order error from the gyroid's
 ///   non-linearity along each cell edge.
 ///
-/// The geometrically-correct anchor (drift-11 reformulation of spec
-/// §5.5 line 617): `max_offset_from_wall < voxel_size + cushion`
-/// where the cushion absorbs the gyroid's second-order curvature.
+/// The geometrically-correct anchor:
+/// `max_offset_from_wall < voxel_size + cushion` where the cushion
+/// absorbs the gyroid's second-order curvature. Vertices live at
+/// `|G| = half_thickness`, NOT at `G = 0`; see the README's
+/// "Vertex SDF anchor" callout.
 fn verify_vertex_sdf_surface(result: &LatticeResult) -> (f64, f64) {
     let mut max_abs_g: f64 = 0.0;
     let mut max_offset_from_wall: f64 = 0.0;
@@ -333,19 +332,16 @@ fn verify_vertex_sdf_surface(result: &LatticeResult) -> (f64, f64) {
         max_offset_from_wall = max_offset_from_wall.max((abs_g - HALF_THICKNESS).abs());
     }
 
-    // Drift-11 anchor: empirical max ≈ 0.023; lock at 0.05 (2× cushion
-    // for cross-platform sin/cos drift). 30× tighter than the analytic
-    // worst-case `½ · |∇²G|_max · voxel² ≈ 0.18`; gyroid's curvature
-    // doesn't reach its bound across most cells. Replaces spec §5.5
-    // line 617 framing `gyroid(v).abs() < threshold + voxel_size +
-    // epsilon` with `threshold = 0` (which mis-states the geometric
-    // model: vertices live on the shell surface `|G| = half_thickness`,
-    // NOT on the bare gyroid level set `G = 0`).
+    // Empirical max ≈ 0.023; lock at 0.05 (2× cushion for cross-
+    // platform sin/cos drift). 30× tighter than the analytic worst-
+    // case `½ · |∇²G|_max · voxel² ≈ 0.18`; the gyroid's curvature
+    // doesn't reach its bound across most cells. The geometric model
+    // is: vertices live on the shell surface `|G| = half_thickness`,
+    // NOT on the bare gyroid level set `G = 0`.
     let anchor = 0.05;
     assert!(
         max_offset_from_wall < anchor,
-        "max ||G(v)| − half_thickness| = {max_offset_from_wall:.6} must be < {anchor:.6} \
-         (drift-11 empirical anchor); spec §5.5 line 617 reformulated",
+        "max ||G(v)| − half_thickness| = {max_offset_from_wall:.6} must be < {anchor:.6}",
     );
 
     // Sanity bound on max |G(v)|: must exceed half_thickness (vertices
@@ -367,7 +363,8 @@ fn verify_vertex_sdf_surface(result: &LatticeResult) -> (f64, f64) {
 
 /// Bundled inputs for [`print_summary`]; avoids
 /// `clippy::too_many_arguments` while keeping fields trivially
-/// constructed at the call site (precedent: §5.4 `Summary`).
+/// constructed at the call site (precedent: `Summary` in
+/// `mesh-sdf-distance-query`).
 struct Summary<'a> {
     result: &'a LatticeResult,
     max_abs_g: f64,
@@ -404,11 +401,11 @@ fn print_summary(s: &Summary) {
     );
     println!("  triangle_count   = {}", s.result.triangle_count());
     println!(
-        "  actual_density   ≈ {:.4}  (F9 broken on shell topologies; drift-12: spec range wrong)",
+        "  actual_density   ≈ {:.4}  (F9 heuristic broken on un-welded shell topologies)",
         s.result.actual_density,
     );
     println!();
-    println!("Per-vertex SDF surface verification (drift-11 anchor):");
+    println!("Per-vertex SDF surface verification:");
     println!(
         "  max |G(v)|                    = {:.6}  (≈ half_thickness = 0.75; \
          NOT bare G=0 level set)",
@@ -466,7 +463,7 @@ fn main() -> Result<()> {
     println!(
         "OK — 3 gyroid + 2 density_to_threshold + 1 make_shell + LatticeType traits + \
          params validate + cell_count + F10 vertex-soup + bounds containment + \
-         actual_density + drift-11 SDF surface anchors all green"
+         actual_density + per-vertex SDF surface anchors all green"
     );
 
     Ok(())
