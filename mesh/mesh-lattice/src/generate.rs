@@ -21,6 +21,23 @@ use hashbrown::HashMap;
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
+/// Quantizes a point to integer micrometers for use as a `HashMap`
+/// key.
+///
+/// Used by the strut-based generate paths to dedupe shared grid
+/// nodes (cell corners are reached from up to 8 cells; cell centers
+/// are unique per cell). The 1e6 scale factor gives sub-micron
+/// resolution, which is well below any meaningful FDM tolerance and
+/// safely above f64 round-trip noise on cell-aligned positions.
+fn quantize(p: Point3<f64>) -> [i64; 3] {
+    let scale = 1e6;
+    [
+        (p.x * scale) as i64,
+        (p.y * scale) as i64,
+        (p.z * scale) as i64,
+    ]
+}
+
 /// Generates a lattice structure within a bounding box.
 ///
 /// # Arguments
@@ -107,16 +124,17 @@ fn generate_cubic_lattice(
         None
     };
 
-    // Vertex deduplication map
+    // Vertex deduplication map for beam data export.
     let mut vertex_map: HashMap<[i64; 3], u32> = HashMap::new();
-    let quantize = |p: Point3<f64>| -> [i64; 3] {
-        let scale = 1e6;
-        [
-            (p.x * scale) as i64,
-            (p.y * scale) as i64,
-            (p.z * scale) as i64,
-        ]
-    };
+
+    // Unique grid-node positions that participate in at least one
+    // emitted strut. Populated only at successful strut emissions
+    // (degenerate `generate_strut == None` cases and out-of-bounds
+    // skips do not add nodes), so orphan grid points that pass the
+    // shape filter but never participate in the lattice mesh are
+    // correctly excluded. Consumed by `generate_infill` for
+    // lattice-to-shell connections (F6 gap b).
+    let mut node_map: HashMap<[i64; 3], Point3<f64>> = HashMap::new();
 
     let mut struts = Vec::new();
     let mut total_length = 0.0;
@@ -155,6 +173,8 @@ fn generate_cubic_lattice(
                         if let Some(strut) = generate_strut(node, end, local_radius) {
                             total_length += cell_size;
                             struts.push(strut);
+                            node_map.entry(quantize(node)).or_insert(node);
+                            node_map.entry(quantize(end)).or_insert(end);
                         }
 
                         // Record beam data
@@ -182,6 +202,8 @@ fn generate_cubic_lattice(
                         if let Some(strut) = generate_strut(node, end, local_radius) {
                             total_length += cell_size;
                             struts.push(strut);
+                            node_map.entry(quantize(node)).or_insert(node);
+                            node_map.entry(quantize(end)).or_insert(end);
                         }
 
                         if let Some(ref mut data) = beam_data {
@@ -208,6 +230,8 @@ fn generate_cubic_lattice(
                         if let Some(strut) = generate_strut(node, end, local_radius) {
                             total_length += cell_size;
                             struts.push(strut);
+                            node_map.entry(quantize(node)).or_insert(node);
+                            node_map.entry(quantize(end)).or_insert(end);
                         }
 
                         if let Some(ref mut data) = beam_data {
@@ -235,8 +259,11 @@ fn generate_cubic_lattice(
     let strut_volume = estimate_strut_volume(&mesh, radius);
     let actual_density = (strut_volume / bounds_volume).min(1.0);
 
-    let mut result =
-        LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length);
+    let nodes: Vec<Point3<f64>> = node_map.into_values().collect();
+
+    let mut result = LatticeResult::new(mesh, actual_density, cell_count)
+        .with_strut_length(total_length)
+        .with_nodes(nodes);
 
     if let Some(data) = beam_data {
         result = result.with_beam_data(data);
@@ -271,17 +298,13 @@ fn generate_octet_truss_lattice(
         None
     };
 
-    // Vertex deduplication map (cell corners are shared across adjacent cells;
-    // cell centers are unique per cell). Same `quantize` scale as the cubic path.
+    // Vertex deduplication map for beam data export.
     let mut vertex_map: HashMap<[i64; 3], u32> = HashMap::new();
-    let quantize = |p: Point3<f64>| -> [i64; 3] {
-        let scale = 1e6;
-        [
-            (p.x * scale) as i64,
-            (p.y * scale) as i64,
-            (p.z * scale) as i64,
-        ]
-    };
+
+    // Unique grid-node positions (cell corners + cell centers) that
+    // participate in at least one emitted strut. See `node_map`
+    // commentary in `generate_cubic_lattice` for semantics.
+    let mut node_map: HashMap<[i64; 3], Point3<f64>> = HashMap::new();
 
     let mut struts = Vec::new();
     let mut total_length = 0.0;
@@ -327,6 +350,8 @@ fn generate_octet_truss_lattice(
                     if let Some(strut) = generate_strut(*corner, center, local_radius) {
                         total_length += (*corner - center).norm();
                         struts.push(strut);
+                        node_map.entry(quantize(*corner)).or_insert(*corner);
+                        node_map.entry(quantize(center)).or_insert(center);
                     }
 
                     // Record beam data
@@ -364,6 +389,8 @@ fn generate_octet_truss_lattice(
                     if let Some(strut) = generate_strut(corners[i], corners[j], local_radius) {
                         total_length += (corners[i] - corners[j]).norm();
                         struts.push(strut);
+                        node_map.entry(quantize(corners[i])).or_insert(corners[i]);
+                        node_map.entry(quantize(corners[j])).or_insert(corners[j]);
                     }
 
                     // Record beam data
@@ -390,8 +417,11 @@ fn generate_octet_truss_lattice(
     let strut_volume = estimate_strut_volume(&mesh, radius);
     let actual_density = (strut_volume / bounds_volume).min(1.0);
 
-    let mut result =
-        LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length);
+    let nodes: Vec<Point3<f64>> = node_map.into_values().collect();
+
+    let mut result = LatticeResult::new(mesh, actual_density, cell_count)
+        .with_strut_length(total_length)
+        .with_nodes(nodes);
 
     if let Some(data) = beam_data {
         result = result.with_beam_data(data);
@@ -485,8 +515,8 @@ fn generate_voronoi_lattice(
         ((seed >> 16) & 0x7fff) as f64 / 32768.0 - 0.5
     };
 
-    // Generate perturbed grid points
-    let mut nodes: Vec<Point3<f64>> = Vec::new();
+    // Generate perturbed grid points (lookup table indexed by `idx`).
+    let mut grid_points: Vec<Point3<f64>> = Vec::new();
     for iz in 0..=cells_z {
         for iy in 0..=cells_y {
             for ix in 0..=cells_x {
@@ -499,7 +529,7 @@ fn generate_voronoi_lattice(
                 let y = y.clamp(min.y, max.y);
                 let z = z.clamp(min.z, max.z);
 
-                nodes.push(Point3::new(x, y, z));
+                grid_points.push(Point3::new(x, y, z));
             }
         }
     }
@@ -507,6 +537,11 @@ fn generate_voronoi_lattice(
     // Connect nodes in a grid pattern (similar to cubic, but with perturbed positions)
     let mut struts = Vec::new();
     let mut total_length = 0.0;
+
+    // Unique grid-node positions that participate in at least one
+    // emitted strut. See `node_map` commentary in
+    // `generate_cubic_lattice` for semantics.
+    let mut node_map: HashMap<[i64; 3], Point3<f64>> = HashMap::new();
 
     let idx = |ix: usize, iy: usize, iz: usize| -> usize {
         iz * (cells_y + 1) * (cells_x + 1) + iy * (cells_x + 1) + ix
@@ -516,7 +551,7 @@ fn generate_voronoi_lattice(
         for iy in 0..=cells_y {
             for ix in 0..=cells_x {
                 let node_idx = idx(ix, iy, iz);
-                let node = nodes[node_idx];
+                let node = grid_points[node_idx];
 
                 let density = params.density_at(node);
                 if density < 0.05 {
@@ -533,28 +568,34 @@ fn generate_voronoi_lattice(
                 // Connect to neighbors
                 if ix < cells_x {
                     let neighbor_idx = idx(ix + 1, iy, iz);
-                    let neighbor = nodes[neighbor_idx];
+                    let neighbor = grid_points[neighbor_idx];
                     if let Some(strut) = generate_strut(node, neighbor, local_radius) {
                         total_length += (neighbor - node).norm();
                         struts.push(strut);
+                        node_map.entry(quantize(node)).or_insert(node);
+                        node_map.entry(quantize(neighbor)).or_insert(neighbor);
                     }
                 }
 
                 if iy < cells_y {
                     let neighbor_idx = idx(ix, iy + 1, iz);
-                    let neighbor = nodes[neighbor_idx];
+                    let neighbor = grid_points[neighbor_idx];
                     if let Some(strut) = generate_strut(node, neighbor, local_radius) {
                         total_length += (neighbor - node).norm();
                         struts.push(strut);
+                        node_map.entry(quantize(node)).or_insert(node);
+                        node_map.entry(quantize(neighbor)).or_insert(neighbor);
                     }
                 }
 
                 if iz < cells_z {
                     let neighbor_idx = idx(ix, iy, iz + 1);
-                    let neighbor = nodes[neighbor_idx];
+                    let neighbor = grid_points[neighbor_idx];
                     if let Some(strut) = generate_strut(node, neighbor, local_radius) {
                         total_length += (neighbor - node).norm();
                         struts.push(strut);
+                        node_map.entry(quantize(node)).or_insert(node);
+                        node_map.entry(quantize(neighbor)).or_insert(neighbor);
                     }
                 }
             }
@@ -567,7 +608,11 @@ fn generate_voronoi_lattice(
     let strut_volume = estimate_strut_volume(&mesh, radius);
     let actual_density = (strut_volume / bounds_volume).min(1.0);
 
-    Ok(LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length))
+    let nodes: Vec<Point3<f64>> = node_map.into_values().collect();
+
+    Ok(LatticeResult::new(mesh, actual_density, cell_count)
+        .with_strut_length(total_length)
+        .with_nodes(nodes))
 }
 
 /// Estimates strut volume from mesh (approximate).

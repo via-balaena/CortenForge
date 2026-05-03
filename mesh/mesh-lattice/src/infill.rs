@@ -10,6 +10,7 @@
 use crate::error::LatticeError;
 use crate::generate::generate_lattice;
 use crate::params::LatticeParams;
+use crate::strut::{combine_struts, generate_strut};
 use crate::types::LatticeType;
 use mesh_offset::{OffsetConfig, offset_mesh};
 use mesh_sdf::SignedDistanceField;
@@ -294,6 +295,7 @@ impl InfillResult {
 ///     Err(e) => eprintln!("Error: {}", e),
 /// }
 /// ```
+#[allow(clippy::too_many_lines)] // Sequential pipeline: bounds → caps → SDF → lattice → shell → connections → combined.
 pub fn generate_infill(
     mesh: &IndexedMesh,
     params: &InfillParams,
@@ -424,12 +426,20 @@ pub fn generate_infill(
     // outside the part (e.g., the hole of a torus), `-distance` returns
     // negative there too — outside-the-part is on the same side of the
     // closest inner face as the cavity. Convex inputs are unaffected.
-    let inner_sdf = SignedDistanceField::new(inner_offset.clone())
-        .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?;
+    //
+    // The `inner_sdf` is `Arc`-shared with the lattice-to-shell
+    // connections pass below (gap b): both queries reuse the same
+    // precomputed face-normal table and avoid building a second SDF
+    // on the same `inner_offset`.
+    let inner_sdf = Arc::new(
+        SignedDistanceField::new(inner_offset.clone())
+            .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?,
+    );
+    let inner_sdf_for_clip = Arc::clone(&inner_sdf);
     let cavity_lattice_params = params
         .lattice
         .clone()
-        .with_shape_sdf(Arc::new(move |p| -inner_sdf.distance(p)));
+        .with_shape_sdf(Arc::new(move |p| -inner_sdf_for_clip.distance(p)));
 
     // Generate lattice in the (cap-shrunken) iteration domain, clipped to
     // the cavity by the SDF.
@@ -449,13 +459,89 @@ pub fn generate_infill(
         IndexedMesh::new()
     };
 
-    // Combine shell + lattice + caps. The combined mesh is a soup of
-    // disjoint closed-or-open sub-volumes; signed volume on the
-    // combined sums each sub-volume's contribution. The dedicated
-    // `shell_volume` / `lattice_volume` fields stay scoped to their
-    // sub-meshes; cap volume is observable via the triangle-count
-    // delta on `mesh` between `solid_caps = true` and `false` runs.
-    let combined = combine_meshes(&combine_meshes(&shell, &lattice_result.mesh), &cap_mesh);
+    // Lattice-to-shell bridging struts (gap b). For each unique
+    // grid-node that participates in at least one lattice strut and
+    // sits within `2 * cell_size` of the inward-offset shell, emit
+    // one strut from the node to its closest point on the inner
+    // shell. The detection threshold is the natural lattice-scale
+    // ("near-shell cells reach the wall") and decoupled from
+    // `connection_thickness` (the strut diameter); a separate
+    // `params.connection_distance` field is a v0.9 candidate if a
+    // real consumer wants explicit control.
+    //
+    // Why `2 * cell_size` and not `cell_size / 2`: the lattice
+    // iter-domain inset is `cell_size / 2 + shell_thickness`, so
+    // perimeter nodes sit `cell_size / 2` from the inner shell in
+    // the simple case. But `generate_cubic_lattice` (and
+    // `generate_voronoi_lattice` / `generate_octet_truss_lattice`)
+    // also enforces `trim_to_bounds`, which orphans grid nodes
+    // whose +x/+y/+z neighbor would extend past `iter_max`. On the
+    // canonical cube fixture (cell_size 10, iter [6.2, 43.8]³),
+    // this leaves the participating grid at ix/iy/iz ∈ [0, 3] /
+    // [0, 3] / [0, 2] — and the +x/+y perimeter recedes to ~12.6
+    // mm from the inner shell, +z to ~18.6 mm (with cap_thickness
+    // = 4). A single-cell threshold would catch only the -x/-y/-z
+    // perimeter (2 of 6 inner-shell faces); a 1.5-cell threshold
+    // catches +x/+y but not +z. `2 * cell_size` captures the
+    // full perimeter robustly across `trim_to_bounds` + solid-cap
+    // interactions.
+    //
+    // Scope: strut-based lattices only (Cubic / OctetTruss /
+    // Voronoi). TPMS lattices (Gyroid / SchwarzP / Diamond) have no
+    // graph-node concept — the cavity-SDF clipping above already
+    // terminates the marching-cubes surface against the inner shell
+    // at cell boundaries, so connect_to_shell is implicit.
+    // `lattice_result.nodes` is empty for TPMS, so the no-op falls
+    // out of the `is_empty` guard without needing a `LatticeType`
+    // switch.
+    //
+    // Cap-band filter: the closest-point's z must lie in the lattice
+    // iteration domain `[iter_min.z, iter_max.z]`. Without this, a
+    // lattice node near a cap-band boundary could connect to the
+    // inner-shell's top or bottom face (which is in the cap region),
+    // producing a strut that passes through the cap mesh. On the
+    // cube fixture this filter does most of the actual exclusion
+    // work — `2 * cell_size` is intentionally permissive on the
+    // distance side, and the cap-band filter rejects interior nodes
+    // whose closest face is -z or +z.
+    //
+    // Watertightness: connection struts share endpoint coordinates
+    // with lattice strut centers (welded by combine_struts at the
+    // lattice node) and with arbitrary face-interior points on the
+    // inner shell (un-welded — the SDF returns a closest-point that
+    // is generally NOT a vertex of the inward-offset MC output).
+    // The combined mesh is therefore non-watertight at the
+    // connection-shell junction. Pre-existing soup-composition
+    // pattern across the entire F6 sub-arc (shell+lattice and
+    // shell+caps already share no vertices); not gap-b-specific.
+    let connections_mesh = if params.connect_to_shell
+        && params.connection_thickness > 0.0
+        && !lattice_result.nodes.is_empty()
+    {
+        let detection_threshold = 2.0 * params.lattice.cell_size;
+        let strut_radius = params.connection_thickness / 2.0;
+        build_lattice_to_shell_connections(
+            &lattice_result.nodes,
+            &inner_sdf,
+            detection_threshold,
+            strut_radius,
+            iter_min.z,
+            iter_max.z,
+        )
+    } else {
+        IndexedMesh::new()
+    };
+
+    // Combine shell + lattice + caps + connections. The combined
+    // mesh is a soup of disjoint closed-or-open sub-volumes; signed
+    // volume on the combined sums each sub-volume's contribution.
+    // The dedicated `shell_volume` / `lattice_volume` fields stay
+    // scoped to their sub-meshes; cap and connection volumes are
+    // observable via the triangle-count delta on `mesh` between
+    // `solid_caps`/`connect_to_shell` true and false runs.
+    let mut combined = combine_meshes(&shell, &lattice_result.mesh);
+    combined = combine_meshes(&combined, &cap_mesh);
+    combined = combine_meshes(&combined, &connections_mesh);
 
     // Shell signed-volume integral resolves to the wall volume:
     // `mesh-offset`'s inward-offset MC orients inner faces with normals
@@ -477,6 +563,52 @@ pub fn generate_infill(
         lattice_volume,
         interior_volume,
     })
+}
+
+/// Builds bridging struts from each near-shell lattice node to its
+/// closest point on the inner shell.
+///
+/// Iteration is O(M × N) where M is the unique-node count from
+/// `lattice_result.nodes` and N is the inner-offset face count
+/// (`SignedDistanceField::closest_point` does an O(N) scan over all
+/// faces). On the canonical cube fixture (~50 unique nodes ×
+/// ~75 000 inner-offset faces ≈ 3.8 M ops), this runs in
+/// milliseconds in release mode — well within v1.0 example budgets.
+/// A BVH-accelerated `mesh-sdf` is a v0.9 candidate that would speed
+/// this up by ~3 orders of magnitude on large fixtures.
+///
+/// Threshold semantic: a node is considered "near-shell" when its
+/// closest-point distance is `<= threshold` (inclusive). On the
+/// cube fixture the threshold is `2 * cell_size = 20 mm` and no
+/// participating node sits at exactly that distance, so `<=` vs `<`
+/// is observationally equivalent here — but the inclusive choice is
+/// the natural one for fixtures where a perimeter node could land
+/// exactly on the threshold (e.g., a cubical cavity sized so that a
+/// trim-orphan recedes the perimeter to exactly `2 * cell_size`).
+///
+/// Cap-band filter: only emit a strut if the closest-point's z lies
+/// in the lattice iteration domain `[iter_min_z, iter_max_z]`. See
+/// the call-site doc-comment for rationale.
+fn build_lattice_to_shell_connections(
+    nodes: &[Point3<f64>],
+    inner_sdf: &SignedDistanceField,
+    threshold: f64,
+    strut_radius: f64,
+    iter_min_z: f64,
+    iter_max_z: f64,
+) -> IndexedMesh {
+    let struts = nodes.iter().filter_map(|node| {
+        let closest = inner_sdf.closest_point(*node);
+        let dist = (closest - *node).norm();
+        if dist > threshold {
+            return None;
+        }
+        if closest.z < iter_min_z || closest.z > iter_max_z {
+            return None;
+        }
+        generate_strut(*node, closest, strut_radius)
+    });
+    combine_struts(struts)
 }
 
 /// Builds the two solid-cap boxes (bottom + top) covering the full xy
@@ -701,18 +833,22 @@ mod tests {
         // lattice iteration domain shrinks by `cap_thickness` at top/bottom
         // — so the caps-on lattice has strictly fewer vertices than the
         // caps-off lattice on the same fixture.
+        //
+        // `connect_to_shell` is disabled on both runs so the
+        // `mesh = shell + lattice + cap` decomposition is exact;
+        // connection-strut interaction with caps is exercised by
+        // `test_generate_infill_lattice_to_shell_connections`.
         let mesh = create_test_cube();
 
-        let with_caps =
-            generate_infill(&mesh, &InfillParams::for_fdm().with_cell_size(10.0)).unwrap();
+        let mut params_with = InfillParams::for_fdm().with_cell_size(10.0);
+        params_with.connect_to_shell = false;
+        let with_caps = generate_infill(&mesh, &params_with).unwrap();
 
-        let without_caps = generate_infill(
-            &mesh,
-            &InfillParams::for_fdm()
-                .with_cell_size(10.0)
-                .with_solid_caps(false),
-        )
-        .unwrap();
+        let mut params_without = InfillParams::for_fdm()
+            .with_cell_size(10.0)
+            .with_solid_caps(false);
+        params_without.connect_to_shell = false;
+        let without_caps = generate_infill(&mesh, &params_without).unwrap();
 
         assert!(
             with_caps.lattice.vertex_count() < without_caps.lattice.vertex_count(),
@@ -762,6 +898,110 @@ mod tests {
         assert!(
             with_caps_max_z < 39.8,
             "no lattice vert should land in the top cap band [39.8, 43.8]: got max_z = {with_caps_max_z}",
+        );
+    }
+
+    #[test]
+    fn test_generate_infill_lattice_to_shell_connections() {
+        // `for_fdm` has `connect_to_shell = true` and
+        // `connection_thickness = 0.4`. With `cell_size = 10`, the
+        // detection threshold is `2 * cell_size = 20 mm`, capturing
+        // the lattice perimeter (including +x/+y/+z trim-orphan
+        // perimeters at ~12.6 / ~12.6 / ~18.6 mm). Cap-band filter
+        // excludes nodes whose nearest face is -z or +z.
+        //
+        // The `with vs without` comparison anchor (spec §5.9): each
+        // connection strut adds exactly 14 vertices + 24 triangles
+        // to the combined mesh, and shell/lattice/cap sub-meshes are
+        // unchanged across the comparison. Empirically on the cube
+        // fixture: ~37 connection struts; the inequality bounds are
+        // intentionally loose (25-60 connections) to absorb any MC
+        // discretization noise on the SDF closest-point queries.
+        let mesh = create_test_cube();
+
+        let with_conn =
+            generate_infill(&mesh, &InfillParams::for_fdm().with_cell_size(10.0)).unwrap();
+
+        let mut params_no_conn = InfillParams::for_fdm().with_cell_size(10.0);
+        params_no_conn.connect_to_shell = false;
+        let without_conn = generate_infill(&mesh, &params_no_conn).unwrap();
+
+        assert_eq!(
+            with_conn.shell.vertex_count(),
+            without_conn.shell.vertex_count(),
+            "shell.vertex_count must be invariant across connect_to_shell flag",
+        );
+        assert_eq!(
+            with_conn.shell.face_count(),
+            without_conn.shell.face_count(),
+            "shell.face_count must be invariant across connect_to_shell flag",
+        );
+        assert_eq!(
+            with_conn.lattice.vertex_count(),
+            without_conn.lattice.vertex_count(),
+            "lattice.vertex_count must be invariant across connect_to_shell flag",
+        );
+        assert_eq!(
+            with_conn.lattice.face_count(),
+            without_conn.lattice.face_count(),
+            "lattice.face_count must be invariant across connect_to_shell flag",
+        );
+
+        let vert_delta = with_conn.mesh.vertex_count() - without_conn.mesh.vertex_count();
+        let tri_delta = with_conn.mesh.face_count() - without_conn.mesh.face_count();
+
+        assert_eq!(
+            vert_delta % 14,
+            0,
+            "connection-strut vertex delta must be divisible by 14 (verts per strut): got {vert_delta}",
+        );
+        assert_eq!(
+            tri_delta % 24,
+            0,
+            "connection-strut triangle delta must be divisible by 24 (tris per strut): got {tri_delta}",
+        );
+        assert_eq!(
+            vert_delta / 14,
+            tri_delta / 24,
+            "connection-strut count from verts ({}) and tris ({}) must agree",
+            vert_delta / 14,
+            tri_delta / 24,
+        );
+
+        let connection_count = vert_delta / 14;
+        assert!(
+            (25..=60).contains(&connection_count),
+            "expected 25-60 connection struts on cube fixture (predicted ~37): got {connection_count}",
+        );
+    }
+
+    #[test]
+    fn test_generate_infill_connect_to_shell_disabled() {
+        // When `connect_to_shell = false`, the combined mesh is
+        // exactly shell + lattice + caps (no bridging struts). This
+        // is the same invariant `pre_fix_check.rs::witness_gap_b`
+        // anchored at #23 PRE-FIX with the addition of caps; the
+        // gap-b fix only injects connections behind the
+        // `connect_to_shell` flag.
+        let mesh = create_test_cube();
+        let mut params = InfillParams::for_fdm().with_cell_size(10.0);
+        params.connect_to_shell = false;
+
+        let result = generate_infill(&mesh, &params).unwrap();
+
+        let cap_verts = result.mesh.vertex_count()
+            - result.shell.vertex_count()
+            - result.lattice.vertex_count();
+        assert_eq!(
+            cap_verts, 16,
+            "with connections off, mesh = shell + lattice + caps; cap contributes 16 verts",
+        );
+
+        let cap_tris =
+            result.mesh.face_count() - result.shell.face_count() - result.lattice.face_count();
+        assert_eq!(
+            cap_tris, 24,
+            "with connections off, mesh = shell + lattice + caps; cap contributes 24 tris",
         );
     }
 
