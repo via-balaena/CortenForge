@@ -4,47 +4,30 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-# `cargo run -p example-mesh-mesh-lattice-mesh-bounded-infill` resolves
-# to the package-named default binary (`src/main.rs`); the audit-trail
-# bin is reached via `cargo run --bin pre_fix_check`.
-default-run = "example-mesh-mesh-lattice-mesh-bounded-infill"
 
 [dependencies]
-# IndexedMesh + Point3 for the hand-authored 50 mm cube input mesh
-# (8 verts / 12 tris) and the inspection of `result.{mesh, shell, lattice}`
+# IndexedMesh for the hand-authored 50 mm cube input mesh (8 verts /
+# 12 tris) and inspection of `result.{mesh, shell, lattice}`.
 mesh-types = { workspace = true }
-# save_ply for out/{input, shell, lattice, composite}.ply per spec §5.9
+# save_ply for out/{input, shell, lattice, composite}.ply per spec §5.9.
 mesh-io = { workspace = true }
 # InfillParams + for_fdm/for_lightweight/for_strong constructors +
 # with_lattice_type/with_cell_size/with_shell_thickness/with_infill_percentage/
 # with_solid_caps/with_solid_cap_layers builders + validate +
-# generate_infill (`mesh-lattice/src/infill.rs:287`) +
+# generate_infill (`mesh-lattice/src/infill.rs:299`) +
 # InfillResult { mesh, shell, lattice, actual_density, shell_volume,
-# lattice_volume, interior_volume } + total_volume/vertex_count/triangle_count
+# lattice_volume, interior_volume } + total_volume/vertex_count/triangle_count.
 mesh-lattice = { workspace = true }
-# Result<()> return type for main()
+# Result<()> return type for main().
 anyhow = { workspace = true }
-# assert_relative_eq! for actual_density / volume / signed-volume-integral
-# anchors at the post-fix commit (§6.2 #29)
-approx = { workspace = true }
 
 [lib]
-# Internal library exposing the shared 50 mm cube fixture (`src/fixture.rs`)
-# to both binaries. Bin-only crate layout would require `#[path = "..."]`
-# to share a module across `src/main.rs` + `src/bin/pre_fix_check.rs`;
-# a regular `lib.rs` re-export is more conventional.
+# Internal library exposing the shared 50 mm cube fixture
+# (`src/fixture.rs`) to the binary. Bin-only crate layout would
+# require `#[path = "..."]` to share modules; a regular `lib.rs`
+# re-export is more conventional, even with a single bin.
 name = "example_mesh_mesh_lattice_mesh_bounded_infill"
 path = "src/lib.rs"
-
-# Audit-trail binary capturing the v0.7 `generate_infill` baseline
-# (gap-a/b/c/d/e pre-fix witnesses). Compiled by CI via the example
-# crate's grade pass but never auto-invoked (`cargo test -p ...`
-# does not run secondary binaries) — manual gate is
-# `cargo run --bin pre_fix_check --release`. Deleted at `§6.2 #29`
-# once post-fix anchors land.
-[[bin]]
-name = "pre_fix_check"
-path = "src/bin/pre_fix_check.rs"
 
 [lints]
 workspace = true

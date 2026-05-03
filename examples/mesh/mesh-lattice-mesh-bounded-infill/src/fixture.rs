@@ -1,5 +1,5 @@
-//! Hand-authored 50 mm × 50 mm × 50 mm watertight cube fixture
-//! shared by `main.rs` and `bin/pre_fix_check.rs`.
+//! Hand-authored 50 mm × 50 mm × 50 mm watertight cube fixture used
+//! by `main.rs`.
 //!
 //! Mirrors `mesh-types::unit_cube` (`mesh/mesh-types/src/mesh.rs:20-54`)
 //! scaled by 50; topology + outward-CCW winding are bit-identical (the

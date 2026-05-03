@@ -978,9 +978,7 @@ mod tests {
     #[test]
     fn test_generate_infill_connect_to_shell_disabled() {
         // When `connect_to_shell = false`, the combined mesh is
-        // exactly shell + lattice + caps (no bridging struts). This
-        // is the same invariant `pre_fix_check.rs::witness_gap_b`
-        // anchored at #23 PRE-FIX with the addition of caps; the
+        // exactly shell + lattice + caps (no bridging struts). The
         // gap-b fix only injects connections behind the
         // `connect_to_shell` flag.
         let mesh = create_test_cube();
