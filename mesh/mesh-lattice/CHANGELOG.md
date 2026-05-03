@@ -197,7 +197,7 @@ maintainers.
   exercise OOB). Empirical witnesses on the cube fixture:
   `shell_volume` 71842.624 → 17195.179 mm³ (matches analytical
   wall target 50³ − 47.6³ = 17149.824 within ~45 mm³ of marching-cubes
-  chamfer), `lattice_volume` 609.461907 → 39.906451 mm³ reflecting
+  chamfer), `lattice_volume` 609.461907 → 28.821325 mm³ reflecting
   the un-welded marching-cubes vertex multiplicity, `interior_volume`
   53157.376 unchanged.
 
