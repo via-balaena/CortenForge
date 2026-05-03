@@ -66,15 +66,32 @@ const BOUNDS_VOLUME: f64 = SIDE * SIDE * SIDE;
 const SHELL_VOLUME_PRE_FIX: f64 = BOUNDS_VOLUME - INTERIOR_VOLUME_PRE_FIX;
 
 /// Top-region z-threshold (mm) for the gap c witness — pre-fix, the
-/// lattice extends to `interior_max.z = SIDE - INSET = 43.8`, so we
-/// expect at least one lattice vertex with `z > 43.8 - cell_size =
-/// 33.8`. Post-gap-c-fix, this region is carved into a planar slab
-/// and contains no lattice vertices.
+/// lattice extends to `interior_max.z = SIDE - INSET = 43.8`, so
+/// horizontal-strut cylinder verts at the iz=3 grid row (`z = 36.2`,
+/// from `cells_z` = 4 over the un-shrunken interior `[6.2, 43.8]`)
+/// land above this threshold (= `43.8 - cell_size`). Post-gap-c-fix
+/// (`§6.2 #27`), the lattice iteration domain shrinks to
+/// `[10.2, 39.8]` (`cap_thickness` = `solid_cap_layers ×
+/// cell_size/resolution = 4 × 10/10 = 4 mm`); `cells_z` drops to 3,
+/// iz reindexes over `{10.2, 20.2, 30.2, 40.2}`, and
+/// `trim_to_bounds` drops every strut from iz=3 (`end.z = 40.2 >
+/// iter_max.z = 39.8`), so the highest surviving lattice vert lands
+/// at z ≈ 30.6 — the gap-c witness's `count > 0` ensure! would FAIL
+/// post-fix. The witness binary short-circuits at GAP-A's `ensure!`
+/// post-`§6.2 #24`, so this gap-c witness never executes after
+/// gap-fixes land — the audit-trail evidence is the captured stdout
+/// AT the §6.2 #23 follow-on commit, before any gap-fix. The
+/// post-fix carving is also observable via the in-tree
+/// `test_generate_infill_solid_caps` max-z anchor.
 const TOP_REGION_Z: f64 = SIDE - INSET - CELL_SIZE_OVERRIDE;
 
 /// Bottom-region z-threshold (mm) — symmetric to `TOP_REGION_Z`,
 /// pre-fix at least one lattice vertex with `z < INSET + cell_size
-/// = 16.2`.
+/// = 16.2`. Post-gap-c-fix carved cap band is the strict subset
+/// `[interior_min.z, interior_min.z + cap_thickness] = [6.2, 10.2]`
+/// mm on this fixture; same audit-trail framing as `TOP_REGION_Z`
+/// (gap-c witness short-circuits behind GAP-A post-fix; witness
+/// would fail if reached).
 const BOTTOM_REGION_Z: f64 = INSET + CELL_SIZE_OVERRIDE;
 
 /// Numerical tolerance for bit-exact volume anchors (`f64`
@@ -234,7 +251,13 @@ fn witness_gap_c(result: &InfillResult) -> Result<()> {
         "  ✓ lattice has {lattice_bottom_count} vertices in bottom region (z < {BOTTOM_REGION_Z} mm)"
     );
     println!(
-        "  → POST-FIX (#27): top + bottom cap regions become solid slabs (zero lattice verts there)."
+        "  → POST-FIX (#27): cap bands [interior_max.z - cap_thickness, interior_max.z] and \
+         [interior_min.z, interior_min.z + cap_thickness] (= [39.8, 43.8] and [6.2, 10.2] mm \
+         on this fixture; cap_thickness = solid_cap_layers × cell_size/resolution = 4 mm) \
+         become solid slabs; the lattice iteration domain shrinks to [10.2, 39.8], and \
+         trim_to_bounds drops the iz=3 row at z=40.2, so the gap-c witness count would \
+         FAIL post-fix — the witness short-circuits behind GAP-A's ensure! post-§6.2 #24, \
+         preserving this commit's stdout as the audit-trail evidence."
     );
     println!();
     Ok(())

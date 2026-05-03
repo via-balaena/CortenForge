@@ -1,7 +1,11 @@
 //! Infill generation for hollow meshes with lattice interiors.
 
-// Allow numeric casts for vertex indexing
+// Allow numeric casts for vertex indexing and geometry-domain conversions
+// (cap_thickness derives from `usize as f64` on `solid_cap_layers` and
+// `resolution`, both validated to small bounded values; mirrors
+// `generate.rs`'s file-level allows).
 #![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
 
 use crate::error::LatticeError;
 use crate::generate::generate_lattice;
@@ -349,6 +353,48 @@ pub fn generate_infill(
         return Err(LatticeError::InteriorTooSmall);
     }
 
+    // Solid caps (gap c): when `params.solid_caps` is true, reserve
+    // `cap_thickness` of z-extent at the top + bottom of the cavity for
+    // planar-slab geometry; the lattice iteration domain shrinks to skip
+    // those bands. `layer_height` derives from `cell_size / resolution`
+    // per the v1.0 spec heuristic — `resolution` is validated `>= 2`
+    // (`params.rs::LatticeParams::validate`), and across the three
+    // preset constructors (cubic res=10, gyroid res=15, octet res=10)
+    // yields FDM-typical 0.4–0.6 mm/layer. Adding `params.layer_height`
+    // as an explicit `f64` field is a v0.9 candidate when a real
+    // consumer wants direct control.
+    //
+    // Caps occupy the FULL xy interior bbox so they meet the
+    // inward-offset shell wall on each side. Same non-convex-input
+    // limitation as gap e: for inputs whose AABB inset includes
+    // regions outside the part (e.g., a torus hole), caps will extend
+    // through those regions; convex inputs are unaffected.
+    let cap_thickness = if params.solid_caps {
+        let layer_height = params.lattice.cell_size / params.lattice.resolution as f64;
+        params.solid_cap_layers as f64 * layer_height
+    } else {
+        0.0
+    };
+
+    // Reuse `InteriorTooSmall` rather than introducing a `CapsTooThick`
+    // variant — the existing message covers "interior cannot fit the
+    // requested geometry," and consumers already pattern-match on it.
+    let interior_height_z = interior_max.z - interior_min.z;
+    if 2.0 * cap_thickness >= interior_height_z {
+        return Err(LatticeError::InteriorTooSmall);
+    }
+
+    let iter_min = Point3::new(
+        interior_min.x,
+        interior_min.y,
+        interior_min.z + cap_thickness,
+    );
+    let iter_max = Point3::new(
+        interior_max.x,
+        interior_max.y,
+        interior_max.z - cap_thickness,
+    );
+
     // Build the inward-offset inner surface first; the lattice is then clipped
     // to the cavity it bounds.
     //
@@ -385,14 +431,31 @@ pub fn generate_infill(
         .clone()
         .with_shape_sdf(Arc::new(move |p| -inner_sdf.distance(p)));
 
-    // Generate lattice in interior, clipped to the cavity by the SDF.
-    let lattice_result = generate_lattice(&cavity_lattice_params, (interior_min, interior_max))?;
+    // Generate lattice in the (cap-shrunken) iteration domain, clipped to
+    // the cavity by the SDF.
+    let lattice_result = generate_lattice(&cavity_lattice_params, (iter_min, iter_max))?;
 
     // Build the hollow shell: outer surface + inward-offset inner surface.
     let shell = combine_meshes(mesh, &inner_offset);
 
-    // Combine shell and lattice
-    let combined = combine_meshes(&shell, &lattice_result.mesh);
+    // Build solid caps in the reserved z-bands. Two axis-aligned boxes
+    // (outward-CCW) covering the full xy interior; empty mesh when
+    // `params.solid_caps` is false OR `cap_thickness == 0.0` (the
+    // latter handles `solid_caps = true` with `solid_cap_layers = 0`,
+    // which would otherwise produce degenerate zero-height boxes).
+    let cap_mesh = if params.solid_caps && cap_thickness > 0.0 {
+        build_solid_caps(interior_min, interior_max, cap_thickness)
+    } else {
+        IndexedMesh::new()
+    };
+
+    // Combine shell + lattice + caps. The combined mesh is a soup of
+    // disjoint closed-or-open sub-volumes; signed volume on the
+    // combined sums each sub-volume's contribution. The dedicated
+    // `shell_volume` / `lattice_volume` fields stay scoped to their
+    // sub-meshes; cap volume is observable via the triangle-count
+    // delta on `mesh` between `solid_caps = true` and `false` runs.
+    let combined = combine_meshes(&combine_meshes(&shell, &lattice_result.mesh), &cap_mesh);
 
     // Shell signed-volume integral resolves to the wall volume:
     // `mesh-offset`'s inward-offset MC orients inner faces with normals
@@ -414,6 +477,80 @@ pub fn generate_infill(
         lattice_volume,
         interior_volume,
     })
+}
+
+/// Builds the two solid-cap boxes (bottom + top) covering the full xy
+/// interior at the reserved z-bands. Each cap is an outward-CCW
+/// closed box with 8 vertices + 12 triangles (winding mirrors
+/// `mesh-types::unit_cube`); the combined cap mesh has 16 vertices +
+/// 24 triangles.
+fn build_solid_caps(
+    interior_min: Point3<f64>,
+    interior_max: Point3<f64>,
+    cap_thickness: f64,
+) -> IndexedMesh {
+    let bottom = build_axis_aligned_box(
+        interior_min.x,
+        interior_max.x,
+        interior_min.y,
+        interior_max.y,
+        interior_min.z,
+        interior_min.z + cap_thickness,
+    );
+    let top = build_axis_aligned_box(
+        interior_min.x,
+        interior_max.x,
+        interior_min.y,
+        interior_max.y,
+        interior_max.z - cap_thickness,
+        interior_max.z,
+    );
+    combine_meshes(&bottom, &top)
+}
+
+/// Builds an axis-aligned box mesh (8 verts + 12 outward-CCW
+/// triangles). Vertex + face ordering mirrors `mesh-types::unit_cube`
+/// (`mesh/mesh-types/src/mesh.rs:24-51`); `signed_volume` returns the
+/// box's enclosed volume (positive).
+fn build_axis_aligned_box(
+    x_lo: f64,
+    x_hi: f64,
+    y_lo: f64,
+    y_hi: f64,
+    z_lo: f64,
+    z_hi: f64,
+) -> IndexedMesh {
+    let vertices = vec![
+        Point3::new(x_lo, y_lo, z_lo), // 0
+        Point3::new(x_hi, y_lo, z_lo), // 1
+        Point3::new(x_hi, y_hi, z_lo), // 2
+        Point3::new(x_lo, y_hi, z_lo), // 3
+        Point3::new(x_lo, y_lo, z_hi), // 4
+        Point3::new(x_hi, y_lo, z_hi), // 5
+        Point3::new(x_hi, y_hi, z_hi), // 6
+        Point3::new(x_lo, y_hi, z_hi), // 7
+    ];
+    let faces = vec![
+        // Bottom (z=z_lo); outward = -z
+        [0, 2, 1],
+        [0, 3, 2],
+        // Top (z=z_hi); outward = +z
+        [4, 5, 6],
+        [4, 6, 7],
+        // Front (y=y_lo); outward = -y
+        [0, 1, 5],
+        [0, 5, 4],
+        // Back (y=y_hi); outward = +y
+        [3, 7, 6],
+        [3, 6, 2],
+        // Left (x=x_lo); outward = -x
+        [0, 4, 7],
+        [0, 7, 3],
+        // Right (x=x_hi); outward = +x
+        [1, 2, 6],
+        [1, 6, 5],
+    ];
+    IndexedMesh::from_parts(vertices, faces)
 }
 
 /// Computes the axis-aligned bounding box of a mesh.
@@ -460,7 +597,13 @@ mod tests {
     use nalgebra::Point3;
 
     fn create_test_cube() -> IndexedMesh {
-        // Simple unit cube
+        // 50 mm outward-CCW cube; winding mirrors `mesh-types::unit_cube`
+        // (`mesh/mesh-types/src/mesh.rs:24-51`) scaled by 50, so
+        // `signed_volume() == +125_000.0` (not inside-out). Surfaced as
+        // a winding bug at §6.2 #27 when the new gap-c comparison test
+        // produced an empty lattice on this fixture (mesh-offset's
+        // inward-offset flipped sign on inside-out input → cavity SDF
+        // misclassified all interior nodes).
         let vertices = vec![
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(50.0, 0.0, 0.0),
@@ -472,26 +615,25 @@ mod tests {
             Point3::new(0.0, 50.0, 50.0),
         ];
 
-        // 12 triangles for the cube
         let faces = vec![
-            // Front
-            [0, 1, 2],
-            [0, 2, 3],
-            // Back
-            [4, 6, 5],
-            [4, 7, 6],
-            // Top
-            [3, 2, 6],
-            [3, 6, 7],
-            // Bottom
-            [0, 5, 1],
-            [0, 4, 5],
-            // Right
-            [1, 5, 6],
-            [1, 6, 2],
-            // Left
-            [0, 3, 7],
-            [0, 7, 4],
+            // Bottom (z=0); outward = -z
+            [0, 2, 1],
+            [0, 3, 2],
+            // Top (z=50); outward = +z
+            [4, 5, 6],
+            [4, 6, 7],
+            // Front (y=0); outward = -y
+            [0, 1, 5],
+            [0, 5, 4],
+            // Back (y=50); outward = +y
+            [3, 7, 6],
+            [3, 6, 2],
+            // Left (x=0); outward = -x
+            [0, 4, 7],
+            [0, 7, 3],
+            // Right (x=50); outward = +x
+            [1, 2, 6],
+            [1, 6, 5],
         ];
 
         IndexedMesh::from_parts(vertices, faces)
@@ -547,6 +689,80 @@ mod tests {
 
         let infill = result.unwrap();
         assert!(infill.vertex_count() > 0);
+    }
+
+    #[test]
+    fn test_generate_infill_solid_caps() {
+        // `for_fdm` has `solid_caps = true` and `solid_cap_layers = 4`. With
+        // `cell_size = 10` and the cubic preset's default `resolution = 10`,
+        // `layer_height = 1.0` mm and `cap_thickness = 4.0` mm. The
+        // `with vs without` comparison anchor (spec §5.9): each cap adds
+        // exactly 8 verts + 12 triangles to the combined mesh, and the
+        // lattice iteration domain shrinks by `cap_thickness` at top/bottom
+        // — so the caps-on lattice has strictly fewer vertices than the
+        // caps-off lattice on the same fixture.
+        let mesh = create_test_cube();
+
+        let with_caps =
+            generate_infill(&mesh, &InfillParams::for_fdm().with_cell_size(10.0)).unwrap();
+
+        let without_caps = generate_infill(
+            &mesh,
+            &InfillParams::for_fdm()
+                .with_cell_size(10.0)
+                .with_solid_caps(false),
+        )
+        .unwrap();
+
+        assert!(
+            with_caps.lattice.vertex_count() < without_caps.lattice.vertex_count(),
+            "solid_caps = true should shrink the lattice (iteration domain reserved for caps): with={} >= without={}",
+            with_caps.lattice.vertex_count(),
+            without_caps.lattice.vertex_count(),
+        );
+
+        let cap_verts = with_caps.mesh.vertex_count()
+            - with_caps.shell.vertex_count()
+            - with_caps.lattice.vertex_count();
+        assert_eq!(
+            cap_verts, 16,
+            "two outward-CCW box caps contribute exactly 16 vertices (8 per cap)",
+        );
+
+        let cap_tris = with_caps.mesh.face_count()
+            - with_caps.shell.face_count()
+            - with_caps.lattice.face_count();
+        assert_eq!(
+            cap_tris, 24,
+            "two outward-CCW box caps contribute exactly 24 triangles (12 per cap)",
+        );
+
+        // Top cap-band emptiness: the gap-c carving is provable via a
+        // max-z bound on `with_caps.lattice`. With cap_thickness = 4 mm,
+        // iter_max.z = 39.8; `cells_z = ceil(29.6/10) = 3` produces
+        // iz ∈ 0..=3 over `{10.2, 20.2, 30.2, 40.2}`, and
+        // `trim_to_bounds` drops every strut from iz=3 (`end.z > 39.8`),
+        // so the highest non-trimmed row is iz=2 at z=30.2 (cylinder
+        // verts ≤ 30.2 + strut_radius ≈ 30.6 — well below 39.8 with
+        // > 9 mm cushion).
+        //
+        // We do NOT anchor on the BOTTOM cap band: cells_z = 3 places
+        // the iz=0 row at z=10.2 (the cap_band_hi exactly), and strut
+        // radius ≈ 0.4 mm spreads cylinder verts down to ~9.8 mm — a
+        // pre-existing soup-composition artifact at any lattice-
+        // iteration boundary, not gap-c-specific. Empirically observed
+        // bottom min_z ≈ 10.02 mm at this fixture (cylinder vert
+        // tessellation lands inside the cap band by ~0.18 mm).
+        let with_caps_max_z = with_caps
+            .lattice
+            .vertices
+            .iter()
+            .map(|v| v.z)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            with_caps_max_z < 39.8,
+            "no lattice vert should land in the top cap band [39.8, 43.8]: got max_z = {with_caps_max_z}",
+        );
     }
 
     #[test]
