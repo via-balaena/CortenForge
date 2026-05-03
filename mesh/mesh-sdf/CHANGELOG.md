@@ -51,6 +51,15 @@ the entries below are the mesh-sdf-specific subset.
   re-export to `mesh-measure`. *Trigger*: a maintainer asks "why
   does this exist twice?" Effort: ~50 LOC.
 
+## [1.0.0] - 2026-05-03
+
+### Added
+
+- First stable release. No functional changes from 0.7.0; the
+  semver-major bump indicates API stability commitment per the
+  workspace v1.0 milestone (the mesh ecosystem ships its full
+  examples-coverage arc at v1.0.0).
+
 ## [0.7.0]
 
 Initial release.

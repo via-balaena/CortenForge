@@ -22,6 +22,15 @@ the entry below is the mesh-io-specific subset.
   Lattice Extension format. *Trigger*: 3MF beam-output demand from
   a printer-driver workflow. Effort: ~300-500 LOC.
 
+## [1.0.0] - 2026-05-03
+
+### Added
+
+- First stable release. No functional changes from 0.7.0; the
+  semver-major bump indicates API stability commitment per the
+  workspace v1.0 milestone (the mesh ecosystem ships its full
+  examples-coverage arc at v1.0.0).
+
 ## [0.7.0]
 
 Initial release.

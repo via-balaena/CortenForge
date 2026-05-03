@@ -63,6 +63,15 @@ the entries below are the mesh-measure-specific subset.
   function. Listed here so the dedup is discoverable from this
   crate's backlog.
 
+## [1.0.0] - 2026-05-03
+
+### Added
+
+- First stable release. No functional changes from 0.7.0; the
+  semver-major bump indicates API stability commitment per the
+  workspace v1.0 milestone (the mesh ecosystem ships its full
+  examples-coverage arc at v1.0.0).
+
 ## [0.7.0]
 
 Initial release.

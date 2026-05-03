@@ -75,6 +75,21 @@ the entries below are the mesh-lattice-specific subset.
   heuristic is implicit. *Trigger*: a real consumer wants direct
   control of the layer-height heuristic. Effort: ~30 LOC additive.
 
+- **Workspace-wide `#[non_exhaustive]` audit on v1.0.0-shipping
+  public structs.** `LatticeResult` was marked `#[non_exhaustive]`
+  during the v1.0.0 cut after a "Pure addition" semver claim was
+  found to be technically wrong without the marker (adding a public
+  field is strict-semver-breaking for struct-literal callers when
+  the struct is exhaustive). Other public structs across
+  mesh-{types, lattice, sdf, measure, io, offset, shell,
+  printability} have not been audited; absent the marker, every
+  future field addition becomes a v2.0.0-required breaking change
+  for external struct-literal callers. *Trigger*: before broad
+  external consumer adoption forces v2.0.0, OR a downstream
+  consumer reports a struct field addition broke their build.
+  Effort: ~30 LOC across ~5-8 files; low-risk additive markers
+  with build/clippy verification per crate.
+
 ## [1.0.0] - 2026-05-03
 
 ### Added
@@ -105,6 +120,16 @@ the entries below are the mesh-lattice-specific subset.
       `closest_point` queries used to bound lattice nodes inside the
       cavity (gap e) and to anchor lattice-to-shell connections
       (gap b).
+
+- **`LatticeResult` marked `#[non_exhaustive]`.** Future field
+  additions to `LatticeResult` are now non-breaking for external
+  consumers; struct-literal construction is no longer permitted
+  outside the crate (use `LatticeResult::default()` + builder
+  methods such as `with_nodes` instead). `LatticeError` and
+  `LatticeType` were already `#[non_exhaustive]` pre-arc; this
+  closes the gap surfaced when the `LatticeResult::nodes` addition
+  was claimed as "Pure addition" — strictly true only with the
+  marker.
 
 ### Fixed
 

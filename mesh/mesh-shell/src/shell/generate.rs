@@ -293,7 +293,7 @@ fn generate_shell_sdf(
         merged, orphans
     );
 
-    // mesh-offset 0.7.x's marching cubes produces inside-out winding (commits
+    // mesh-offset's marching cubes produces inside-out winding (commits
     // 9+10 platform truth). Flip every outer face so normals point outward
     // from the wall material; otherwise the assembled shell has
     // signed_volume < 0 + is_inside_out == true and slicers see backfaces.

@@ -1,6 +1,6 @@
 [package]
 name = "mesh-repair"
-version = "0.7.0"
+version.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Mesh repair operations: validation, welding, degenerate removal, hole filling, winding correction, component analysis, self-intersection detection"
