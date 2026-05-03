@@ -17,7 +17,7 @@
 //! input mesh: outer shell from inward offset, lattice in the
 //! mesh-bounded interior, optional bridging connections from lattice
 //! nodes to the inner shell, optional solid caps near the bbox top
-//! and bottom. All five F6 gap-fixes (`§6.2 #24-#28`) are landed; the
+//! and bottom. All five F6 gap-fixes (a/b/c/d/e) are landed; the
 //! anchors below lock the post-fix numerical contract on the
 //! `for_fdm + cell_size 10` configuration over the 50 mm cube.
 //!
@@ -184,7 +184,7 @@ const DENSITY_TOL: f64 = 1e-9;
 const TOTAL_VOLUME_TOL: f64 = 1e-9;
 
 // =============================================================================
-// PLY output paths — per spec §5.9 lines 802-806
+// PLY output paths — workspace-root-relative (cargo runs from the workspace)
 // =============================================================================
 
 const INPUT_PLY: &str = "out/input.ply";
@@ -542,7 +542,7 @@ fn count_top_wide(result: &InfillResult) -> usize {
 }
 
 // =============================================================================
-// PLY outputs — per spec §5.9 lines 802-806
+// PLY outputs — write the four artifacts to workspace-root `out/`
 // =============================================================================
 
 fn write_plys(fixture: &IndexedMesh, result: &InfillResult) -> Result<()> {

@@ -14,7 +14,7 @@
 //! (radius 0.5 mm), uniform density 1.0 (so `density.sqrt() == 1.0`
 //! and per-beam `r1 == r2 == 0.5` exactly), `with_beam_export(true)`.
 //!
-//! Strut counterpart to §5.5 `mesh-lattice-tpms-gyroid`: cylindrical
+//! Strut counterpart to `mesh-lattice-tpms-gyroid`: cylindrical
 //! beams between integer-spaced grid nodes — NOT a TPMS isosurface.
 //! That topology unlocks combinatorial + bit-exact anchors that the
 //! marching-cubes path cannot offer:
@@ -39,9 +39,10 @@
 //! BIT-EXACT (perfect square), so `data.total_length()` sums to
 //! `540 × 5.0 = 2700.0` BIT-EXACT in any order.
 //!
-//! F11 (3MF beam writer; spec §10 v0.9 backlog) is the consumer this
-//! example pre-stages: v1.0 stops at the populated `BeamLatticeData`,
-//! v0.9 will emit it as `<beamlattice>` / `<beams>` / `<beam>` blocks.
+//! F11 (3MF beam writer) is a v0.9 candidate this example pre-stages:
+//! v1.0 stops at the populated `BeamLatticeData`; the v0.9 writer
+//! will emit it as `<beamlattice>` / `<beams>` / `<beam>` blocks.
+//! See `mesh-io/CHANGELOG.md` for the v0.9 candidate entry.
 
 use std::path::Path;
 
@@ -315,9 +316,10 @@ fn verify_total_strut_length(result: &LatticeResult) {
 /// (`generate.rs:519-549`) — `triangle_count / 24` for an
 /// approximate strut count, mesh-bbox diagonal divided by
 /// `cbrt(strut_count) + 1` for an approximate average length, then
-/// `n · π · r² · L_avg`. The heuristic doesn't have the §5.5
-/// drift-12 closed-orientable-manifold pathology (signed-tet volume
-/// integration is not used on the strut path), but the `+ 1` term in
+/// `n · π · r² · L_avg`. The heuristic doesn't have the closed-
+/// orientable-manifold pathology that breaks `actual_density` on
+/// un-welded TPMS shells (signed-tet volume integration is not used
+/// on the strut path), but the `+ 1` term in
 /// the denominator and the diagonal-as-length proxy still bias the
 /// estimate. Anchor here is the F9 declared range — finite and in
 /// `[0, 1]` — with the empirical `≈ 0.13` reported in the summary.
@@ -396,7 +398,8 @@ fn verify_beam_data(data: &BeamLatticeData) -> f64 {
 
 /// Bundled inputs for [`print_summary`]; avoids
 /// `clippy::too_many_arguments` while keeping fields trivially
-/// constructed at the call site (precedent: §5.4 / §5.5 `Summary`).
+/// constructed at the call site (precedent: `Summary` in
+/// `mesh-sdf-distance-query` + `mesh-lattice-tpms-gyroid`).
 struct Summary<'a> {
     result: &'a LatticeResult,
     beam_data: &'a BeamLatticeData,

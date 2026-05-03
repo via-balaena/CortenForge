@@ -179,11 +179,11 @@ For the two-cube fixture:
 
 Anchors at `1e-12` (deterministic Pythagorean of integer offsets).
 
-> The `sqrt(12)` vs naive `sqrt(8)` clamped-corner correction came
-> from spec §8 round 1. The `sqrt(8)` answer projects `(0, 0)` onto
-> the `+X` face interior at `(2, 0, 0)` — but the face's
-> `(y, z) ∈ [2, 3]²` bounds exclude that point, so the projection
-> clamps to the corner `(2, 2, 2)` instead.
+> The `sqrt(12)` vs naive `sqrt(8)` clamped-corner correction:
+> the `sqrt(8)` answer projects `(0, 0)` onto the `+X` face interior
+> at `(2, 0, 0)` — but the face's `(y, z) ∈ [2, 3]²` bounds exclude
+> that point, so the projection clamps to the corner `(2, 2, 2)`
+> instead.
 
 ## Visuals
 
@@ -216,15 +216,13 @@ the clamped-corner explanation.
 ## Cross-references
 
 - **Sister examples** (round out `mesh-measure` public-surface
-  coverage): `mesh-measure-bounding-box` (§5.1) shipped at
-  `719a85d3`; `mesh-measure-cross-section` (§5.2) shipped at
-  `021a9712`.
+  coverage): `mesh-measure-bounding-box`, `mesh-measure-cross-section`.
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  Part 8 — depth-pass lands in `§6.2 #31` of the arc.
+  Part 8 inventory.
 - **Inside-test caveat**: `distance_to_mesh` is unsigned. For
   signed-distance + inside-test queries, use `mesh-sdf` —
-  `mesh-sdf-distance-query` (§5.4) covers
-  `SignedDistanceField::is_inside` + `distance` (signed) + bulk
-  query patterns. (Note `mesh-sdf::query::closest_point_on_triangle`
-  duplicates `mesh-measure::distance::closest_point_on_triangle`
-  internally; spec §10 item 7 v0.9 dedup candidate.)
+  `mesh-sdf-distance-query` covers `SignedDistanceField::is_inside`
+  + `distance` (signed) + bulk query patterns. (Note
+  `mesh-sdf::query::closest_point_on_triangle` duplicates
+  `mesh-measure::distance::closest_point_on_triangle` internally;
+  v0.9 dedup candidate — see `mesh-sdf/CHANGELOG.md`.)

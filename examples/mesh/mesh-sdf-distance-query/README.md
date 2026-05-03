@@ -73,10 +73,11 @@ outside).
 This is a documented platform truth, NOT a fixture bug. The
 example uses an off-axis interior point `(0.05, 0.07, 0.11)` so
 the +X ray hits the `+x+y+z` face interior at exactly one point.
-v0.9 candidate upgrade: winding-number-based inside-test (spec
-§10 item 8 trigger expanded by drift-10 below).
+v0.9 candidate upgrade: winding-number-based inside-test (see the
+"vertex / edge region failure" callout below; documented in
+`mesh-sdf/CHANGELOG.md`).
 
-## Bulk-grid drift-10 — face-normal sign-test fails at vertex regions
+## Bulk-grid finding — face-normal sign-test fails at vertex regions
 
 A second, independent failure of the face-normal sign convention
 surfaces in the 1000-point bulk-grid scan. `signed_distance < 0`
@@ -95,16 +96,16 @@ This failure mode is fundamental to the **face-normal-of-closest-
 face sign convention** (`sdf.rs:172-185`): when the closest point is
 a vertex shared by ≥ 2 faces with diverging outward directions,
 the chosen face's normal may give the wrong sign. **The failure
-applies to CONVEX geometry** at vertex / edge regions (spec §7 R5
-framed it as concave-only; corrected by drift-10 inline).
+applies to CONVEX geometry** at vertex / edge regions (a common
+mis-framing is that this is concave-only; this example demonstrates
+the failure on a convex octahedron).
 
 Compensating fix is the **pseudo-normal sign convention**
 (Bærentzen-Aanæs angle-weighted vertex normal) or **winding-number
 sign convention**. Both robustly classify inside / outside
-regardless of which closest-point region wins on tie-break. v0.9
-candidate trigger: spec §10 item 8 (description expanded inline at
-this commit from "concave-mesh" to "vertex / edge regions of any
-mesh, including CONVEX").
+regardless of which closest-point region wins on tie-break.
+Documented as a v0.9 candidate in `mesh-sdf/CHANGELOG.md`
+(applies to vertex / edge regions of any mesh, including CONVEX).
 
 The example surfaces both counts as platform-truth anchors. For
 analytical-grid queries, prefer **`point_in_mesh`** (ray-casting)
@@ -131,8 +132,9 @@ a clean `cargo run --release` exit-0 == clean visual inspection
 - 8 per-face winding cross-product unit-normal anchors at `1e-12`
   (analytical `(sx, sy, sz) / √3` per octant; cross products on
   integer coordinates are bit-exact, the `1 / √3` divisor is
-  correctly-rounded by the libm). Face windings (CCW from outside,
-  with parity flip per spec R10):
+  correctly-rounded by the libm). Face windings (CCW from outside;
+  the four `sx·sy·sz = -1` octants use parity-flipped winding so all
+  8 cross-product normals point outward as `(sx, sy, sz)/√3`):
 
   | Face | Octant | Vertex order | Outward normal     | Parity |
   |------|--------|--------------|--------------------|--------|
@@ -214,7 +216,7 @@ queries verified.
 
 10 × 10 × 10 cubic grid in `[-2, 2]³`, spacing `4 / 9`,
 endpoint-inclusive at `−2` and `2`. Two inside-counters disagree
-by design (see "Bulk-grid drift-10" callout above):
+by design (see the bulk-grid finding callout above):
 
 | Method                                   | Count   | Percent |
 |------------------------------------------|---------|---------|
@@ -222,17 +224,18 @@ by design (see "Bulk-grid drift-10" callout above):
 | `signed_distance < 0` (face-normal sign) | **14**  | 1.4%    |
 
 Continuous-volume sanity check: the unit octahedron has volume
-`(4/3) · r³` (L1-ball), giving continuous fraction
+`(4/3) · r³` (L1-ball, the correct factor — a common
+mis-derivation gives `(8/3)·r³`, off by 2 because each octant
+contributes `(1/6)·r³` not `(1/3)·r³`), giving continuous fraction
 `(4/3) / 64 = 1/48 ≈ 2.083%` — a denser grid would converge
-toward this value (drift-9: spec previously asserted `(8/3) · r³`,
-off by factor 2; corrected inline at this commit).
+toward this value.
 
 The 8 ray-casting "inside" points are exactly the
 `(±2/9, ±2/9, ±2/9)` grid corners with `|x| + |y| + |z| = 6/9 < 1`;
 the next-nearest combination `2/9 + 2/9 + 6/9 = 10/9 > 1` is
 exterior. The 6 signed-distance false-positives are at
 `(±2, ±2/3, ∓2/3)`-permutation grid points where 4 faces tie on
-the closest octahedron vertex (see drift-10 above).
+the closest octahedron vertex (see the bulk-grid finding above).
 
 Max unsigned distance: `5 / √3 ≈ 2.887`, achieved at all 8 bbox
 corners (e.g., `(−2, −2, −2)` projects to `(−1/3, −1/3, −1/3)` on
@@ -254,13 +257,13 @@ or any field-data colormap renderer) to see the SDF's 8-fold
 symmetry: the 8 strictly-interior grid points at
 `(±2/9, ±2/9, ±2/9)` read with small-magnitude negative signed
 distance (`-1/(3√3) ≈ -0.192`); a smooth positive gradient extends
-toward the bbox corners up to `5/√3 ≈ 2.887`; and the 6 drift-10
-false-positives at the `(±2, ±2/3, ∓2/3)`-permutation grid points
-also register as negative (`-√17/3 ≈ -1.374`) due to the vertex-
-region face-normal sign-flip. Color by `signed_distance` for the
-canonical visualization; the sign-divergence between the true L1-
-ball interior and the 6 bbox-edge false-positives is visible as
-isolated negative-color points along the bbox boundary.
+toward the bbox corners up to `5/√3 ≈ 2.887`; and the 6
+sign-flip false-positives at the `(±2, ±2/3, ∓2/3)`-permutation
+grid points also register as negative (`-√17/3 ≈ -1.374`) due to
+the vertex-region face-normal sign-flip. Color by `signed_distance`
+for the canonical visualization; the sign-divergence between the
+true L1-ball interior and the 6 bbox-edge false-positives is
+visible as isolated negative-color points along the bbox boundary.
 
 ## Run
 
@@ -278,24 +281,22 @@ counter values + max unsigned distance.
 ## Cross-references
 
 - **Sister examples** rounding out the v1.0 mesh-arc:
-  `mesh-measure-bounding-box` (§5.1) at `719a85d3`,
-  `mesh-measure-cross-section` (§5.2) at `021a9712`,
-  `mesh-measure-distance-to-mesh` (§5.3) at `4650058a`. The §5.3
-  unsigned `distance_to_mesh` uses an internal
+  `mesh-measure-bounding-box`, `mesh-measure-cross-section`,
+  `mesh-measure-distance-to-mesh`. The unsigned `distance_to_mesh`
+  in `mesh-measure-distance-to-mesh` uses an internal
   `closest_point_on_triangle` that **duplicates** mesh-sdf's free
-  fn (spec §10 item 7 v0.9 dedup candidate).
+  fn (v0.9 dedup candidate; see `mesh-sdf/CHANGELOG.md`).
 - **PLY-attribute pattern**: `examples/mesh/ply-with-custom-attributes/`
   — same `save_ply_attributed` + `extras["<scalar>"]` pattern; this
   example reuses it for the bulk-grid output (vertices-only, 0
   faces).
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory (depth-pass updates land at `§6.2 #31` of the
-  arc).
+  — Part 8 inventory.
 - **Inside-test caveats** consolidated:
   - HE-1 origin corner-degeneracy → use off-axis interior queries.
-  - drift-10 vertex-region face-normal sign-flip → prefer
-    `point_in_mesh` (ray-casting) or future winding-number
-    convention (v0.9 item 8).
+  - vertex-region face-normal sign-flip → prefer `point_in_mesh`
+    (ray-casting) or a future winding-number convention (v0.9
+    candidate; see `mesh-sdf/CHANGELOG.md`).
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md),
   [`feedback_examples_drive_gap_fixes`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_examples_drive_gap_fixes.md),

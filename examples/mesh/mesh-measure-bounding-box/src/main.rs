@@ -10,7 +10,7 @@
 //! - **Cube A**: axis-aligned 10 mm cube at `[0, 10] × [-5, 5] × [0, 10]`
 //!   (y-centered on the origin so cube A's y-range sits inside the
 //!   tilted brick's; combined-mesh AABB then has clean
-//!   `center.y = 0` per spec §5.1) (verts 0–7).
+//!   `center.y = 0`) (verts 0–7).
 //! - **Cube B**: 20 × 10 × 10 mm brick (long axis along local +X)
 //!   rotated 45° around Z and translated so its bbox-center is
 //!   `(25, 0, 5)` (verts 8–15). The brick is non-cubic so PCA's
@@ -18,8 +18,8 @@
 //!   actual `(20, 10, 10)` extents while AABB inflates the rotated
 //!   shadow to `(15√2, 15√2, 10) ≈ (21.21, 21.21, 10)`.
 //!
-//! Per §4.4 of the spec, the rotation uses `let s = f64::sqrt(0.5)`
-//! for both cosine and sine coefficients of the 45° rotation matrix —
+//! The rotation uses `let s = f64::sqrt(0.5)` for both cosine and
+//! sine coefficients of the 45° rotation matrix —
 //! `f64::sqrt` is correctly-rounded per IEEE-754 (`f64::sin(π/4)` and
 //! `f64::cos(π/4)` are NOT correctly-rounded; the 1-ULP divergence
 //! `f64::sqrt(2)/2 = 0.70710678118654757` vs `f64::sin(π/4) =
@@ -59,8 +59,8 @@ const ANALYTICAL_TOL: f64 = 1e-12;
 /// per platform; 1e-9 is a comfortable upper bound.
 const PCA_TOL: f64 = 1e-9;
 
-/// Volume tolerance for the combined-mesh OBB — per spec §5.1, 5%
-/// reflects covariance-matrix FP stability across libms.
+/// Volume tolerance for the combined-mesh OBB — 5% empirical band
+/// reflecting covariance-matrix FP stability across libms.
 const OBB_VOLUME_REL_TOL: f64 = 0.05;
 
 /// Combined-mesh OBB anchor: principal-axis x-component (empirical,
@@ -341,7 +341,7 @@ fn obb_local_offset(obb: &OrientedBoundingBox, point: Point3<f64>) -> nalgebra::
 }
 
 // =============================================================================
-// verify_dimensions — AABB anchors per spec §5.1
+// verify_dimensions — AABB anchors
 // =============================================================================
 
 /// Lock every `Dimensions` field on the combined two-cube mesh against
@@ -422,7 +422,7 @@ fn verify_dimensions(dims: &Dimensions) {
 /// improvement). Less dramatic than the brick-alone OBB recovery
 /// (see [`verify_brick_obb`]) but pedagogically real.
 fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
-    // Volume — empirical anchor with 5% tolerance per spec §5.1.
+    // Volume — empirical anchor with 5% tolerance for FP stability.
     assert_relative_eq!(
         obb.volume,
         COMBINED_OBB_VOLUME,
@@ -435,8 +435,7 @@ fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
     assert_relative_eq!(axis_x.y.abs(), COMBINED_OBB_AXIS_Y, epsilon = PCA_TOL);
     assert_relative_eq!(axis_x.z, 0.0, epsilon = PCA_TOL);
 
-    // Axes orthogonal (per §5.1 implicit OrientedBoundingBox::axis_*
-    // surface coverage).
+    // Axes orthogonal (`OrientedBoundingBox::axis_*` surface coverage).
     let axis_y = obb.axis_y();
     let axis_z = obb.axis_z();
     assert_relative_eq!(axis_x.dot(&axis_y), 0.0, epsilon = PCA_TOL);
@@ -450,14 +449,15 @@ fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
         obb.surface_area()
     );
 
-    // All 16 input vertices satisfy `obb.contains(v) == true` per spec
-    // §5.1 — implemented with a 1-ULP tolerance because PCA's iterative
+    // All 16 input vertices satisfy `obb.contains(v) == true` —
+    // implemented with a 1-ULP tolerance because PCA's iterative
     // eigen-decomposition computes `half_extents` and the inverse-rotation
     // mapping with ~1e-15 FP roundoff. Vertices that defined the OBB
     // (the extremes along each principal axis) project back to the
     // boundary of the local frame and `<=` comparison can trip by 1 ULP
     // (here: vertices 8 / 12 fail by `dy = 1.776e-15`). The strict
-    // library behavior is captured as a v0.9 candidate gap in spec §10.
+    // library behavior is a v0.9 candidate gap (tolerance-aware
+    // `OBB::contains_with_tol`); see `mesh-measure/CHANGELOG.md`.
     for (i, v) in mesh.vertices.iter().enumerate() {
         let local = obb_local_offset(obb, *v);
         assert!(
@@ -481,7 +481,8 @@ fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
     // outside the AABB envelope. Geometrically: the input mesh sits
     // inside both AABB and OBB, but neither contains the other. The
     // 16-vertex `obb.contains()` anchor above is the proper enclosure
-    // test. Captured as v0.9 candidate gap in spec §10.)
+    // test. The "OBB ⊆ AABB" folk intuition is a documentation v0.9
+    // candidate; see `mesh-measure/CHANGELOG.md`.)
 }
 
 // =============================================================================

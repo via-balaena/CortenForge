@@ -22,10 +22,10 @@
 //! 1.0 mm absorbs marching-cubes interpolation across cells straddling
 //! the sphere boundary.
 //!
-//! Boundary-conforming counterpart to §5.5 `mesh-lattice-tpms-gyroid`
+//! Boundary-conforming counterpart to `mesh-lattice-tpms-gyroid`
 //! (same gyroid TPMS path, but the lattice is trimmed to a
 //! mathematical shape rather than filling the full bbox);
-//! complementary to §5.9 `mesh-lattice-mesh-bounded-infill` (the
+//! complementary to `mesh-lattice-mesh-bounded-infill` (the
 //! mesh-bounded composite path via `generate_infill`).
 
 use std::path::Path;
@@ -88,8 +88,8 @@ const TIGHT_TOL: f64 = 1e-12;
 
 /// Toggle for the un-trimmed comparison artifact at
 /// `out/sphere_gyroid_full.ply` (in addition to the trimmed
-/// `out/sphere_gyroid.ply`). Per spec §5.8 line 751: "for reviewer
-/// clarity."
+/// `out/sphere_gyroid.ply`). The comparison helps a reviewer see
+/// the trim effect side-by-side.
 const WRITE_COMPARISON: bool = true;
 
 // =============================================================================
@@ -271,10 +271,10 @@ fn verify_per_vertex_distance_bound(result: &LatticeResult) -> f64 {
 /// trimmed cell count): `(30 / 10)³ = 27`. The TPMS path's
 /// `generate_tpms_lattice` computes
 /// `cell_count = cells_x × cells_y × cells_z` pre-trim at
-/// `generate.rs:417`, so SDF clipping cannot reduce this number. Spec
-/// §5.8 calls this "F9-related" and mandates README documentation;
-/// this anchor pins the behavior bit-exactly so any future change
-/// surfaces here.
+/// `generate.rs:417`, so SDF clipping cannot reduce this number.
+/// This anchor pins the behavior bit-exactly so any future change
+/// surfaces here. (Documented in the README as F9-related —
+/// `cell_count` is the bbox count, not the post-trim count.)
 fn verify_cell_count_reports_total_bbox(result: &LatticeResult) {
     assert_eq!(
         result.cell_count, EXPECTED_CELL_COUNT,
@@ -306,8 +306,9 @@ fn verify_tiny_sphere_edge_case(tiny: &LatticeResult, with_sdf: &LatticeResult) 
 
 /// Bundled inputs for [`print_summary`]; avoids
 /// `clippy::too_many_arguments` while keeping fields trivially
-/// constructed at the call site (precedent: §5.4 / §5.6 / §5.7
-/// `Summary` extraction).
+/// constructed at the call site (precedent: `Summary` extraction in
+/// `mesh-sdf-distance-query`, `mesh-lattice-strut-cubic`, and
+/// `mesh-lattice-density-gradient`).
 struct Summary<'a> {
     with_sdf: &'a LatticeResult,
     without_sdf: &'a LatticeResult,

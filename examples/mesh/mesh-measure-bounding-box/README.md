@@ -56,9 +56,9 @@ a clean `cargo run --release` exit-0 == clean visual inspection.
 - 16 per-vertex coordinate anchors at `1e-12` (cube A's 8 corners +
   cube B's 8 brick corners). Cube B vertex coords use
   `s = f64::sqrt(0.5)` for both cosine and sine of the 45° rotation
-  matrix per spec §4.4 — `f64::sqrt` is correctly-rounded per
-  IEEE-754, while `f64::sin(π/4)` and `f64::cos(π/4)` are not, and
-  the 1-ULP divergence would defeat the `1e-12` tolerance.
+  matrix — `f64::sqrt` is correctly-rounded per IEEE-754, while
+  `f64::sin(π/4)` and `f64::cos(π/4)` are not, and the 1-ULP
+  divergence would defeat the `1e-12` tolerance.
 - 24 per-face winding cross-product unit-normal anchors at `1e-12`
   (CCW from outside; outward normals on both shapes verified).
 
@@ -83,7 +83,8 @@ eigenvalues and a principal axis at `atan(3/8)/2 ≈ 10.28°` from
 world +X.
 
 - `volume ≈ 7169.48` mm³ (5.08% reduction vs AABB; PCA finds
-  compromise tilt) — within 5% per spec §5.1 OBB volume tolerance.
+  compromise tilt) — within the 5% empirical tolerance band for OBB
+  volume (covariance-matrix FP stability across platforms).
 - `axis_x ≈ (0.984, 0.178, 0)` within `1e-9`; principal axis ≈
   `10.28°` from world +X.
 - `axis_x ⊥ axis_y ⊥ axis_z` within `1e-9` (rotation orthogonality).
@@ -117,8 +118,9 @@ The pedagogical contrast: the brick's AABB has volume `(15√2)² · 10
 = 4500` mm³ (2.25× the brick's actual `2000`); the OBB recovers the
 brick exactly. This is the textbook "AABB inflates a rotated shape;
 OBB recovers it" demonstration — and it requires a non-cubic input
-to hold (drift caught and resolved in v1.0 spec-authoring; see
-spec §10 v0.9 backlog items 9 and 10 for the surfaced gaps).
+to hold. Two v0.9 candidates surfaced by this example are documented
+in `mesh-measure/CHANGELOG.md` (tolerance-aware `OBB::contains` +
+the "OBB ⊆ AABB" folk intuition documentation gap).
 
 ## Visuals
 
@@ -148,11 +150,10 @@ the volume reduction percentage and principal-axis angle.
 ## Cross-references
 
 - **Sister examples** (round out `mesh-measure` public-surface
-  coverage): `mesh-measure-cross-section` (§5.2),
-  `mesh-measure-distance-to-mesh` (§5.3).
+  coverage): `mesh-measure-cross-section`,
+  `mesh-measure-distance-to-mesh`.
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory of v1.0 examples (depth-pass lands in spec
-  §6.2 commit 31).
+  — Part 8 inventory of v1.0 examples.
 - **Surfaced platform gaps** (v0.9 candidates in
   `mesh-measure::oriented_bounding_box`):
   1. Strict `OrientedBoundingBox::contains(v)` returns `false` for

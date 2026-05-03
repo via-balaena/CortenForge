@@ -9,7 +9,7 @@ publish = false
 # IndexedMesh + Point3 for the generated lattice mesh
 mesh-types = { workspace = true }
 # save_ply for out/sphere_gyroid.ply (and out/sphere_gyroid_full.ply
-# under the WRITE_COMPARISON constant per spec §5.8)
+# under the WRITE_COMPARISON constant for side-by-side review)
 mesh-io = { workspace = true }
 # LatticeParams::gyroid + with_shape_sdf (Arc<dyn Fn(Point3<f64>) -> f64
 # + Send + Sync> per `mesh-lattice/src/params.rs:406`) +

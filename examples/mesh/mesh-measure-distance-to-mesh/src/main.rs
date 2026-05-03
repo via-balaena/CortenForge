@@ -20,8 +20,8 @@
 //! `cube_a`, empty-mesh edge case, symmetric Hausdorff = sqrt(12)).
 //!
 //! Fixture: two vertex-disjoint unit cubes, each its own
-//! `IndexedMesh` (per spec §5.3 — Hausdorff iteration requires
-//! independent `distance_to_mesh` calls per cube):
+//! `IndexedMesh` (Hausdorff iteration requires independent
+//! `distance_to_mesh` calls per cube):
 //! - `cube_a` : axis-aligned unit cube at `[0, 1]³` (8 verts, 12 tris).
 //! - `cube_b` : axis-aligned unit cube at `[2, 3]³` (8 verts, 12 tris).
 //!
@@ -31,8 +31,7 @@
 //! is the closest-point-on-cube_b from `cube_a`'s farthest vertex
 //! `(0, 0, 0)` — clamped to `cube_b`'s `(2, 2, 2)` corner, NOT to
 //! the face-interior `(2, 0, 0)` (that face's `(y, z) ∈ [2, 3]²`
-//! bounds exclude `(0, 0)`). This `sqrt(12)` vs naive `sqrt(8)`
-//! correction came from spec §8 round 1.
+//! bounds exclude `(0, 0)`).
 //!
 //! `DistanceMeasurement::dx` / `dy` / `dz` are **absolute** values
 //! per `mesh-measure/src/distance.rs:97-99` — `measure_distance(

@@ -19,11 +19,10 @@
 //! tris (outward normal +z) + 64 wall tris (32 quads × 2; outward
 //! normal radial at chord midpoint) = 128 total.
 //!
-//! Per spec §4.7, sin/cos derived coords use `1e-12` tolerance, not
-//! bit-exact (`f64::sin` / `f64::cos` are NOT correctly-rounded;
-//! cross-platform libm versions can drift at the last bit). The
-//! per-face winding anchor uses cosine similarity per spec §7 R6;
-//! the analytical match is near 1.
+//! `f64::sin` / `f64::cos` are NOT correctly-rounded; cross-platform
+//! libm versions can drift at the last bit, so sin/cos-derived coords
+//! use `1e-12` tolerance rather than bit-exact. The per-face winding
+//! anchor uses cosine similarity (the analytical match is near 1).
 
 // Cross-product unit-normal computation reads as the textbook formula
 // `e1.y*e2.z - e1.z*e2.y`; the `mul_add` rewrite obscures intent and
@@ -56,8 +55,8 @@ const CYLINDER_RADIUS: f64 = 5.0;
 const CYLINDER_HEIGHT: f64 = 10.0;
 
 /// UV ring segment count. 32 yields chord-shrinkage area error of
-/// ~0.64% vs analytical π·r²; per spec §5.2, anchors target the
-/// polygon shoelace, NOT the analytical circle.
+/// ~0.64% vs analytical π·r²; anchors target the polygon shoelace,
+/// NOT the analytical circle.
 const RING_SEGMENTS: usize = 32;
 
 /// Same as `RING_SEGMENTS` typed `u32` for face-index arithmetic.
@@ -81,13 +80,13 @@ const TOP_CENTER_IDX: u32 = 65;
 
 /// Per-vertex coordinate tolerance — sin/cos derived ring coords (NOT
 /// FP-exact since `f64::sin` / `f64::cos` aren't correctly-rounded);
-/// `1e-12` covers cross-platform libm drift per spec §4.7.
+/// `1e-12` covers cross-platform libm drift.
 const VERTEX_TOL: f64 = 1e-12;
 
-/// Per-face winding cosine-similarity floor — spec §7 R6 sets
-/// `> 0.99` as the worst-case anchor; the analytical direction match
-/// is ~1, so a tighter floor passes comfortably and surfaces any
-/// winding flip.
+/// Per-face winding cosine-similarity floor. The platform-wide
+/// worst-case anchor for sin/cos-derived face windings is `> 0.99`;
+/// the analytical direction match here is ~1, so a tighter floor
+/// passes comfortably and surfaces any winding flip.
 const COSINE_SIM_MIN: f64 = 0.999_999_9;
 
 /// Single-slice perimeter / area / slice-stack tolerance.
@@ -109,8 +108,8 @@ const NORMAL_MAG_TOL: f64 = 1e-12;
 /// centroid is `(0, 0, 5)`; library returns `V_first / 65` where
 /// `V_first` is the chain's anchor vertex (deterministic per
 /// face-emission order). Anchored to literal precision below; see
-/// spec §10 item 11 for the v0.9 candidate (polygon centroid vs
-/// naive-average).
+/// `mesh-measure/CHANGELOG.md` for the v0.9 candidate (proper
+/// polygon centroid via shoelace).
 const CENTROID_TOL: f64 = 1e-12;
 
 /// Empirical biased centroid x of the mid-slice. Library returns
@@ -122,9 +121,7 @@ const CENTROID_TOL: f64 = 1e-12;
 /// chain happens to close after spiraling out from face 64 = wall
 /// tri `A_0 = [bot_0, bot_1, top_1]`). Analytical:
 /// `mid_(16,17).x = -2.5·(1 + cos(π/16))`, giving
-/// `centroid_x = -(1 + cos(π/16)) / 26 ≈ -0.0762`. See spec §10
-/// item 11 for the v0.9 candidate (proper polygon centroid via
-/// shoelace, not naive-average over chain-closed points).
+/// `centroid_x = -(1 + cos(π/16)) / 26 ≈ -0.0762`.
 const MID_SLICE_CENTROID_X: f64 = -0.076_184_049_246_278_27;
 
 /// Empirical biased centroid y. `mid_(16,17).y = -2.5·sin(π/16)` →
@@ -321,7 +318,7 @@ fn expected_face_normal(face_idx: usize) -> [f64; 3] {
 // =============================================================================
 
 /// Lock every `CrossSection` field on the mid-height slice (z=5)
-/// against analytical + empirical anchors per spec §5.2.
+/// against analytical + empirical anchors.
 ///
 /// Geometric note: each wall side's quad is split into 2 tris via
 /// the diagonal `bot_k → top_(k+1)`. At any z ∈ (0, 10), the diagonal
@@ -352,7 +349,7 @@ fn verify_mid_slice(mid: &CrossSection) {
     // Centroid: library returns naive-average sum/N over chain-closure-
     // duplicated points (NOT polygon centroid). For our symmetric 32-gon
     // perimeter, sum_unique = 0; sum = V_dup; centroid = V_dup / 65.
-    // See spec §10 item 11 for the v0.9 candidate fix.
+    // See `mesh-measure/CHANGELOG.md` for the v0.9 candidate fix.
     assert_relative_eq!(mid.centroid.x, MID_SLICE_CENTROID_X, epsilon = CENTROID_TOL);
     assert_relative_eq!(mid.centroid.y, MID_SLICE_CENTROID_Y, epsilon = CENTROID_TOL);
     assert_relative_eq!(mid.centroid.z, MID_SLICE_CENTROID_Z, epsilon = CENTROID_TOL);
@@ -391,10 +388,10 @@ fn verify_mid_slice(mid: &CrossSection) {
 // =============================================================================
 
 /// Lock the 10-slice stack at z=0.5..9.5 against the polygon-shoelace
-/// area `400·sin(π/16)` per spec drift-8 resolution. Cylinder is
-/// z-uniform and the polygon shape is invariant in z (the per-side
-/// chord-interior point stays on the chord at parameter z/h),
-/// so every slice has the same area + perimeter to FP precision.
+/// area `400·sin(π/16)`. Cylinder is z-uniform and the polygon shape
+/// is invariant in z (the per-side chord-interior point stays on the
+/// chord at parameter z/h), so every slice has the same area +
+/// perimeter to FP precision.
 fn verify_slice_stack(mesh: &IndexedMesh) {
     let stack = cross_sections(
         mesh,
@@ -520,7 +517,7 @@ fn print_summary(mesh: &IndexedMesh, mid: &CrossSection) {
     );
     println!(
         "  centroid  = ({:.6}, {:.6}, {:.6})   ← biased by V_dup/65 vs true \
-         (0, 0, 5); see spec §10 item 11",
+         (0, 0, 5); v0.9 candidate (proper polygon centroid via shoelace)",
         mid.centroid.x, mid.centroid.y, mid.centroid.z,
     );
     println!(

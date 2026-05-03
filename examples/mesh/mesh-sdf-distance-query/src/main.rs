@@ -16,29 +16,29 @@
 //! face-region. The 4 octants where `sx*sy*sz = -1` use parity-flipped
 //! winding (R10) so all 8 cross-product normals are `(sx, sy, sz) / √3`.
 //!
-//! Origin corner-degeneracy (R5 + HE-1): `is_inside((0, 0, 0))`
-//! reports false — +X ray hits 4 faces sharing vertex `(1, 0, 0)`,
-//! count = 4 → even. Example uses off-axis interior `(0.05, 0.07,
-//! 0.11)`. Drift-9 (spec §5.4 line 572): octahedron volume is
-//! `(4/3)·r³` (L1-ball), NOT `(8/3)·r³`; continuous fraction inside
-//! `[-2, 2]³` is `1/48 ≈ 2.083%`, NOT 4.17%. Discrete 10×10×10 grid
-//! (spacing `4/9`, endpoint-inclusive) puts exactly 8 grid points at
+//! Origin corner-degeneracy (HE-1): `is_inside((0, 0, 0))` reports
+//! false — +X ray hits 4 faces sharing vertex `(1, 0, 0)`, count = 4
+//! → even. Example uses off-axis interior `(0.05, 0.07, 0.11)`.
+//!
+//! Octahedron volume is `(4/3)·r³` (L1-ball; a common mis-derivation
+//! gives `(8/3)·r³`, off by 2). Continuous fraction inside `[-2, 2]³`
+//! is `1/48 ≈ 2.083%`. Discrete 10×10×10 grid (spacing `4/9`,
+//! endpoint-inclusive) puts exactly 8 grid points at
 //! `(±2/9, ±2/9, ±2/9)` strictly inside.
 //!
-//! Drift-10 (NEW v0.9 trigger surfaced by the bulk-grid scan): the
-//! face-normal-of-closest-face sign test produces 6 vertex-region
-//! FALSE-POSITIVES along the bbox boundary, e.g. `(-2, -2/3, 2/3)`
-//! where 4 faces tie on closest-vertex `(-1, 0, 0)` and the strict-
-//! `<` tie-break picks an outward direction whose dot with `to_point`
-//! flips negative — the point reads `signed_distance < 0` despite
-//! being geometrically OUTSIDE. So `signed < 0` reports 14 inside
-//! while `point_in_mesh` (ray-casting) correctly reports 8. Failure
-//! mode is fundamental to the face-normal sign convention and applies
-//! to CONVEX geometry at vertex / edge regions (spec R5 framed it as
-//! concave-only; corrected). v0.9 fix: pseudo-normal (Bærentzen-
-//! Aanæs) or winding-number sign convention; spec §10 item 8.
-//! Drift-9 + drift-10 spec edits land inline at this commit (same
-//! precedent as drifts 7/8 in §5.2).
+//! Bulk-grid finding: the face-normal-of-closest-face sign test
+//! produces 6 vertex-region FALSE-POSITIVES along the bbox boundary,
+//! e.g. `(-2, -2/3, 2/3)` where 4 faces tie on closest-vertex
+//! `(-1, 0, 0)` and the strict-`<` tie-break picks an outward
+//! direction whose dot with `to_point` flips negative — the point
+//! reads `signed_distance < 0` despite being geometrically OUTSIDE.
+//! So `signed < 0` reports 14 inside while `point_in_mesh`
+//! (ray-casting) correctly reports 8. Failure mode is fundamental
+//! to the face-normal sign convention and applies to CONVEX geometry
+//! at vertex / edge regions (a common mis-framing is that this is
+//! concave-only; this example demonstrates the failure on a convex
+//! octahedron). v0.9 fix: pseudo-normal (Bærentzen-Aanæs) or
+//! winding-number sign convention. See `mesh-sdf/CHANGELOG.md`.
 
 // Cross-product unit-normal computation reads as the textbook formula
 // `e1.y*e2.z - e1.z*e2.y`; the `mul_add` rewrite obscures intent and
@@ -87,7 +87,8 @@ const GRID_MAX: f64 = 2.0;
 /// is `10/9 > 1`. Ray-casting agrees with analytical L1-ball.
 const EXPECTED_INSIDE_COUNT_RAYCAST: usize = 8;
 
-/// 8 true + 6 vertex-region false-positives (drift-10; §10 item 8).
+/// 8 true + 6 vertex-region false-positives (face-normal sign-flip;
+/// see `mesh-sdf/CHANGELOG.md` v0.9 candidate).
 const EXPECTED_INSIDE_COUNT_SIGNED: usize = 14;
 
 // =============================================================================
@@ -107,9 +108,9 @@ const EXPECTED_INSIDE_COUNT_SIGNED: usize = 14;
 ///
 /// Face winding produces outward-facing normals on a CCW-from-outside
 /// convention. The 4 octants where `sx*sy*sz = +1` use the standard
-/// winding `[v_x, v_y, v_z]`; the 4 where `sx*sy*sz = -1` need the
-/// flipped winding `[v_x, v_z, v_y]` per spec R10. Cross-product unit
-/// normals come out as `(sx, sy, sz) / √3` for all 8 faces.
+/// winding `[v_x, v_y, v_z]`; the 4 where `sx*sy*sz = -1` use the
+/// flipped winding `[v_x, v_z, v_y]` so all 8 cross-product normals
+/// come out as `(sx, sy, sz) / √3`.
 fn build_octahedron(r: f64) -> IndexedMesh {
     let vertices: Vec<Point3<f64>> = vec![
         Point3::new(r, 0.0, 0.0),  //  0  +X
@@ -514,8 +515,9 @@ fn bulk_query(sdf: &SignedDistanceField) -> Vec<(Point3<f64>, f64)> {
 ///
 /// And max unsigned distance `5/√3 ≈ 2.887` at the 8 bbox corners.
 /// The divergence between the two counts is the v0.9 trigger for
-/// pseudo-normal / winding-number sign convention (spec §10 item 8;
-/// see module doc + README "Bulk grid" callout for derivation).
+/// pseudo-normal / winding-number sign convention (see
+/// `mesh-sdf/CHANGELOG.md` + the README's "Bulk-grid finding"
+/// callout for derivation).
 fn verify_bulk_query_stats(grid: &[(Point3<f64>, f64)], mesh: &IndexedMesh) -> (usize, usize, f64) {
     assert_eq!(grid.len(), GRID_TOTAL);
 
@@ -632,7 +634,7 @@ fn print_summary(s: &Summary) {
     );
     println!(
         "  inside via signed < 0      = {} / {GRID_TOTAL} = {percent_signed:.1}%  \
-         ({EXPECTED_INSIDE_COUNT_RAYCAST} true + {} vertex-region false-positives, drift-10)",
+         ({EXPECTED_INSIDE_COUNT_RAYCAST} true + {} vertex-region false-positives)",
         s.count_signed,
         EXPECTED_INSIDE_COUNT_SIGNED - EXPECTED_INSIDE_COUNT_RAYCAST,
     );

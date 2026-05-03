@@ -7,10 +7,10 @@ set), then `generate_lattice` for a 30 mm³ bbox centered at origin
 (`min = (-15, -15, -15)`, `max = (15, 15, 15)`) at cell size 10 mm
 and resolution 15, with a sphere SDF of radius 12 mm at origin
 (`Arc::new(|p| p.coords.norm() - 12.0)`) clipping the gyroid
-output.** The shape-bounded counterpart to §5.5
+output.** The shape-bounded counterpart to
 `mesh-lattice-tpms-gyroid`: same TPMS path, but the lattice is
 trimmed by a mathematical shape (analytical SDF) rather than filling
-the whole axis-aligned bounding box. Complementary to §5.9
+the whole axis-aligned bounding box. Complementary to
 `mesh-lattice-mesh-bounded-infill`, which exercises the
 mesh-bounded composite path via `generate_infill`.
 
@@ -27,8 +27,9 @@ gets emitted. The `is_outside_shape` accessor
 (`params.rs:415-417`) returns `sdf(point) > 0.0` when an SDF is set,
 and `false` for any point when no SDF is set — the convention is
 "outside means strictly positive; negative = inside; zero = on
-surface." §5.5 covered the bbox-filling TPMS path (no shape SDF);
-this example covers the shape-clipped TPMS path.
+surface." The `mesh-lattice-tpms-gyroid` example covers the
+bbox-filling TPMS path (no shape SDF); this example covers the
+shape-clipped TPMS path.
 
 The fixture is a 30 mm × 30 mm × 30 mm bounding box centered at
 origin (`min = (-15, -15, -15)`, `max = (15, 15, 15)`) at 10 mm
@@ -78,9 +79,9 @@ The example computes:
    than the radius-12 trim, demonstrating that the SDF clip is real
    and not a no-op.
 
-## Boundary-conforming vs bbox-filling contrast (with §5.5)
+## Boundary-conforming vs bbox-filling contrast
 
-| | §5.5 `mesh-lattice-tpms-gyroid` | §5.8 `mesh-lattice-shape-bounded` |
+| | `mesh-lattice-tpms-gyroid` | `mesh-lattice-shape-bounded` |
 |---|---|---|
 | Topology | Gyroid (TPMS shell) | Gyroid (TPMS shell) |
 | Bounds | 30 mm³ bbox-filling | 30 mm³ bbox, sphere-clipped at radius 12 |
@@ -91,7 +92,7 @@ The example computes:
 | Load-bearing anchor | per-vertex `abs(abs(G(v)) - 0.75) < 0.05` | strict `<` on `vertex_count()` (with-SDF vs without) + per-vertex `norm(v) < 13.667` |
 | Visual centerpiece | Bbox-filling gyroid (3³ ≈ 27 cells) | Sphere-shaped gyroid (boundary-conforming) |
 
-## Public-surface coverage (per spec §5.8)
+## Public-surface coverage
 
 - `LatticeParams::gyroid` — TPMS path preset (where shape-conforming
   is most striking visually).
@@ -147,7 +148,7 @@ positive (outside); points exactly on the sphere surface return zero
 The empirical max distance-to-origin is `11.9999 mm` — slightly
 *inside* the sphere boundary, not beyond it. The `voxel_size + cushion`
 allowance is therefore comfortably oversized for this fixture; the
-spec bound `13.667` holds with ~1.7 mm of headroom. This is consistent
+bound `13.667` holds with ~1.7 mm of headroom. This is consistent
 with marching-cubes producing edge vertices via linear interpolation
 between corners that bracket the `shell_sdf == 0` isovalue: when one
 corner is outside the sphere (`shell_sdf == sphere_sdf > 0`) and one
@@ -180,8 +181,9 @@ Artifacts written to `out/` (gitignored at the repo level):
   (`87480` vertices, `29160` faces, binary little-endian).
 - `out/sphere_gyroid_full.ply` — the un-trimmed comparison (`321084`
   vertices, `107028` faces, binary little-endian), written behind a
-  `WRITE_COMPARISON: bool = true` constant in `src/main.rs` per spec
-  §5.8 line 751 ("for reviewer clarity"). Toggle to `false` to skip.
+  `WRITE_COMPARISON: bool = true` constant in `src/main.rs` (toggle
+  to `false` to skip; the comparison helps a reviewer see the trim
+  effect side-by-side).
 
 ## Visuals
 
@@ -196,28 +198,27 @@ f3d out/sphere_gyroid_full.ply
 
 The sphere-clipped output should be visibly contained inside a `12 mm`
 radius from origin while still showing the gyroid's characteristic
-twisted-saddle wall structure (the same TPMS topology as §5.5, but
-trimmed to the analytical sphere boundary). The un-trimmed comparison
-fills the full 30 mm bbox with bbox-edge-aligned slab faces where
-marching-cubes terminates at the bounding box. F10 vertex-soup
-faceting is visible on curl crests in both meshes (platform-truth, per
-§5.5's findings — F10 weld pass is v0.9 backlog).
+twisted-saddle wall structure (the same TPMS topology as the
+bbox-filling `mesh-lattice-tpms-gyroid` example, but trimmed to the
+analytical sphere boundary). The un-trimmed comparison fills the full
+30 mm bbox with bbox-edge-aligned slab faces where marching-cubes
+terminates at the bounding box. F10 vertex-soup faceting is visible
+on curl crests in both meshes (platform-truth, same as the bbox-filling
+example — F10 weld pass is a v0.9 backlog candidate).
 
 ## Cross-references
 
-- **Sister examples**: §5.5 `mesh-lattice-tpms-gyroid` at
-  `947aa8d8` (TPMS bbox-filling counterpart — this example is the
-  shape-clipped variant of the same path); §5.9
-  `mesh-lattice-mesh-bounded-infill` (the mesh-bounded composite
-  path via `generate_infill`, complementary to this analytical-SDF
-  path).
+- **Sister examples**: `mesh-lattice-tpms-gyroid` (TPMS bbox-filling
+  counterpart — this example is the shape-clipped variant of the
+  same path); `mesh-lattice-mesh-bounded-infill` (the mesh-bounded
+  composite path via `generate_infill`, complementary to this
+  analytical-SDF path).
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory (depth-pass updates land at the v1.0 closeout
-  commit of the arc).
+  — Part 8 inventory.
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md)
   — clean exit-0 gates the visuals pass;
   [`feedback_examples_drive_gap_fixes`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_examples_drive_gap_fixes.md)
   — example impl recon may surface in-arc platform fixes (precedent:
-  C15a octet-truss beam-data parity fix between §6.2 #18 skeleton
-  and fixture).
+  the octet-truss beam-data parity fix surfaced during the density-
+  gradient example's authoring).

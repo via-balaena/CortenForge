@@ -2,10 +2,10 @@
 
 **FDM-style shell + lattice composite via `generate_infill` on a
 hand-authored 50 mm watertight cube.** The mesh-bounded counterpart
-to §5.8 `mesh-lattice-shape-bounded`: §5.8 trims a lattice with an
-analytical SDF (closed-form sphere); §5.9 trims a lattice with a
-watertight input mesh (the canonical "shell + lattice" composite for
-3D printing). Both paths matter; both ship in v1.0.
+to `mesh-lattice-shape-bounded`: that example trims a lattice with
+an analytical SDF (closed-form sphere); this one trims a lattice
+with a watertight input mesh (the canonical "shell + lattice"
+composite for 3D printing). Both paths matter; both ship in v1.0.
 
 ## What this example demonstrates
 
@@ -76,28 +76,28 @@ free and platform-deterministic). Count anchors hold bit-exactly.
 | `mesh.triangle_count()` | 78 308 | 79 292 | with < without (un-carved cells_z = 4 strut layer adds ~960 lattice tris, dwarfing the 24 cap-box tris removed) |
 | top-wide lattice verts (z > 33.8) | 0 | 448 | gap c witness — without caps, the strut layer at z ≈ 36.2 repopulates |
 
-(The directional triangle-count finding empirically inverts the spec
-§5.9 line 800 prediction; the cap-thickness carving removes a strut
-layer from the lattice that more than offsets the planar-slab
-geometry the caps add.)
+(The cap-thickness carving removes a strut layer from the lattice
+that more than offsets the planar-slab geometry the caps add — so
+`without > with` on triangle count, perhaps counter-intuitively.)
 
 ## F6 sub-arc historical note
 
 The v0.7 `generate_infill` had five gaps (F6 a–e). Each was fixed in
 its own commit during this PR:
 
-| Commit | Gap | Fix |
-|--------|-----|-----|
-| `§6.2 #24` | **a** | Real shell offset via `mesh_offset::offset_mesh(mesh, -shell_thickness, ...)`; replaces `let shell = mesh.clone();` at `infill.rs:353`. |
-| `§6.2 #25` | **d** | Signed-volume integrals via promoted `estimate_mesh_volume`; replaces bbox-heuristic at `infill.rs:363-371`. |
-| `§6.2 #26` | **e** | SDF-bounded interior via mesh-SDF intersection on the offset shell; replaces AABB bounds at `infill.rs:337-338`. |
-| `§6.2 #27` | **c** | Solid caps at top/bottom — extruded cap boxes carve the lattice domain by `cap_thickness = solid_cap_layers × cell_size / resolution`. |
-| `§6.2 #28` | **b** | Lattice-to-shell connections — for each lattice node within `2 × cell_size` of the inner shell (and outside the carved cap bands), emit a `connection_thickness`-radius cylinder bridge to the closest point on the shell. |
+| Gap | Fix |
+|-----|-----|
+| **a** | Real shell offset via `mesh_offset::offset_mesh(mesh, -shell_thickness, ...)`; replaces `let shell = mesh.clone();` at `infill.rs:353`. |
+| **d** | Signed-volume integrals via promoted `estimate_mesh_volume`; replaces bbox-heuristic at `infill.rs:363-371`. |
+| **e** | SDF-bounded interior via mesh-SDF intersection on the offset shell; replaces AABB bounds at `infill.rs:337-338`. |
+| **c** | Solid caps at top/bottom — extruded cap boxes carve the lattice domain by `cap_thickness = solid_cap_layers × cell_size / resolution`. |
+| **b** | Lattice-to-shell connections — for each lattice node within `2 × cell_size` of the inner shell (and outside the carved cap bands), emit a `connection_thickness`-radius cylinder bridge to the closest point on the shell. |
 
 The anchors locked in this README and `main.rs` are the post-fix
-contract — `cargo run --release` exits 0 against them.
+contract — `cargo run --release` exits 0 against them. See
+`mesh-lattice/CHANGELOG.md` for the full F6 sub-arc retrospective.
 
-## Public-surface coverage (per spec §5.9)
+## Public-surface coverage
 
 - `mesh_lattice::InfillParams` — the 8-field struct (`lattice`,
   `shell_thickness`, `shell_layers`, `infill_percentage`,
@@ -129,9 +129,9 @@ contract — `cargo run --release` exits 0 against them.
   cube under `for_fdm + cell_size 4`, `inset = 4 × 0.5 + 1.2 = 3.2`,
   `5 − 2 × 3.2 = −1.4 < 0`).
 
-## Mesh-bounded vs analytical-SDF contrast (with §5.8)
+## Mesh-bounded vs analytical-SDF contrast
 
-| | §5.8 `mesh-lattice-shape-bounded` | §5.9 `mesh-lattice-mesh-bounded-infill` |
+| | `mesh-lattice-shape-bounded` | `mesh-lattice-mesh-bounded-infill` |
 |---|---|---|
 | Trim source | Analytical SDF (closed-form sphere) | Watertight input mesh |
 | API | `LatticeParams::with_shape_sdf` + `generate_lattice` | `InfillParams::for_fdm` + `generate_infill` |
@@ -149,7 +149,8 @@ contract — `cargo run --release` exits 0 against them.
 cargo run -p example-mesh-mesh-lattice-mesh-bounded-infill --release
 ```
 
-Outputs (per spec §5.9 lines 802-806):
+Outputs (written to `<workspace-root>/out/`; cargo runs from the
+workspace root):
 
 - `out/input.ply` — the 50 mm cube fixture (8 verts, 12 tris).
 - `out/shell.ply` — the inward-offset hollow shell (224 672 verts /
@@ -160,16 +161,37 @@ Outputs (per spec §5.9 lines 802-806):
 
 ## Visuals
 
-⏸ Visual review **recommended** — `composite.ply` opened in f3d
-shows the FDM-style cutaway aesthetic (outer shell + interior cubic
-lattice + solid caps at top/bottom + bridging connection struts).
+⏸ Visual review **recommended**, but with a caveat: `composite.ply`
+is a closed mesh, so f3d's default view shows only the outer shell
+(the slightly-shrunken inward-offset envelope). The interior
+structure (cubic lattice + solid caps + connection struts) is sealed
+inside. To see it, open the components separately:
+
+- **`f3d out/lattice.ply`** — the interior cubic lattice. Visible
+  cap-band carving at top + bottom (gap c witness: lattice extent
+  shorter in z than x/y) and SDF-bounded interior (gap e witness:
+  lattice does NOT reach the 50 mm input bbox edges).
+- **`f3d out/shell.ply`** — the inward-offset hollow shell
+  (~48.8 mm outer face). Closed surface; visually similar to the
+  input cube. Gap-a is verified empirically rather than visually:
+  224 672 verts / 74 900 tris vs the input's 8 / 12 — if gap-a were
+  broken (`shell = mesh.clone()`), `shell.ply` would match
+  `input.ply` byte-for-byte.
+- **`f3d out/composite.ply`** — the combined mesh. Default view
+  shows only the outer shell. f3d's interactive clipping plane (or
+  wireframe via `e`) exposes the interior cutaway view.
+
+The lattice mesh is un-welded vertex-soup output (F10 — v0.9
+candidate documented in `mesh-lattice/CHANGELOG.md`); shading
+discontinuities at MC-cell boundaries are platform-truth, not a
+regression.
 
 ## Cross-references
 
-- **Sister example**: §5.8 `mesh-lattice-shape-bounded` (the
-  analytical-SDF-trimmed counterpart; both ship in v1.0).
+- **Sister example**: `mesh-lattice-shape-bounded` (the analytical-
+  SDF-trimmed counterpart; both ship in v1.0).
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory (depth pass at the v1.0 closeout commit).
+  — Part 8 inventory.
 - **Cadence memos**:
   [`feedback_examples_drive_gap_fixes`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_examples_drive_gap_fixes.md)
   — example impl recon surfaces in-arc platform fixes (this example

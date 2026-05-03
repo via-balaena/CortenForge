@@ -7,7 +7,7 @@
 size 7.5 mm, strut thickness 0.6 mm, with a `Gradient` density map
 climbing from 0.1 at z=0 to 0.5 at z=30 and `with_beam_export(true)`
 flipping on the per-beam radius readout that demonstrates density
-modulation.** The density-modulated counterpart to §5.6
+modulation.** The density-modulated counterpart to
 `mesh-lattice-strut-cubic`: same strut path, but octet-truss topology
 (richer geometry — 20 struts per cell instead of 3 axis families) and
 a non-uniform density map, so per-beam `r1` varies with cell position
@@ -19,9 +19,10 @@ rather than being a global constant.
 six variants (`Uniform`, `Gradient`, `Radial`, `SurfaceDistance`,
 `StressField`, `Function`) feeding `LatticeParams::with_density_map`,
 which the strut-path generators consume to scale per-beam radius as
-`r1 = strut_thickness/2 × density.sqrt()`. §5.6 covered the
-uniform-density strut path (cubic, density 1.0); this example covers
-the variable-density strut path (octet-truss, `Gradient` map).
+`r1 = strut_thickness/2 × density.sqrt()`. The `mesh-lattice-strut-cubic`
+example covers the uniform-density strut path (cubic, density 1.0);
+this example covers the variable-density strut path (octet-truss,
+`Gradient` map).
 
 The fixture is a 30 mm × 30 mm × 30 mm bounding box at 7.5 mm cell
 size (so 4 × 4 × 4 = **64 cells**, octet-truss topology). Strut
@@ -67,8 +68,9 @@ The example computes:
 6. **`generate_lattice` result counts** — `cell_count == 64` (4³)
    BIT-EXACT; `result.beam_data == Some(_)` (post C15a parity fix);
    `actual_density` finite + in `[0, 1]` (F9 heuristic — octet path
-   uses the same `estimate_strut_volume` route as cubic, no §5.5
-   drift-12 closed-orientable-manifold pathology).
+   uses the same `estimate_strut_volume` route as cubic, so the
+   closed-orientable-manifold pathology that breaks `actual_density`
+   on un-welded TPMS shells doesn't apply here).
 7. **Per-beam `r1` density anchor (HE-4, load-bearing)** — every
    octet-truss cell emits 20 struts × 14 verts/strut = 280 verts
    regardless of density (geometric tessellation is FIXED; density
@@ -84,9 +86,11 @@ The example computes:
      `generate.rs:325-382`). Empirical: bottom-half (v1.z ≤ 15) has
      n=832 beams with mean r1 ≈ **0.1433 mm**; top-half (v1.z > 15)
      has n=448 beams with mean r1 ≈ **0.1945 mm**. Top/bottom mean
-     ratio ≈ **1.357** — well inside the spec's ±5% band around 1.41
-     (1.357 / 1.41 ≈ 0.962, ~3.8% below; the offset is structural,
-     not noise — see "v1-filter asymmetry" below).
+     ratio ≈ **1.357** — well inside the ±5% empirical band around
+     the analytical √(0.4/0.2) = √2 ≈ 1.414 (half-region mean-density
+     ratio, given Gradient 0.1 → 0.5). Empirical 1.357 vs analytical
+     1.414 = ~3.8% below; the offset is structural, not noise — see
+     "v1-filter asymmetry" below.
    - **Spot-checks**: `min r1 at v1.z < 7.5 ≈ 0.1162 < 0.16`
      (iz=0 stratum); `max r1 at v1.z > 22.5 ≈ 0.2012 > 0.18`
      (iz=3 stratum, exact within `1e-9`).
@@ -120,9 +124,9 @@ density-modulation observation is quantitatively grounded; the
 ratio anchor's tolerance accounts for the v1-filter's structural
 asymmetry.
 
-## Density-modulated vs uniform contrast (with §5.6)
+## Density-modulated vs uniform contrast
 
-| | §5.6 `mesh-lattice-strut-cubic` | §5.7 `mesh-lattice-density-gradient` |
+| | `mesh-lattice-strut-cubic` | `mesh-lattice-density-gradient` |
 |---|---|---|
 | Topology | Cubic (3 axis families per cell) | Octet truss (20 struts per cell) |
 | Density map | None (`density = 1.0` global) | `Gradient` (0.1 at z=0 → 0.5 at z=30) |
@@ -130,7 +134,7 @@ asymmetry.
 | Cell count | `125` (5³, 25 mm bbox) | `64` (4³, 30 mm bbox) |
 | Beam count | `540` (3 × 5 × 6 × 6 cubic edges) | `1280` (64 cells × 20) |
 | BeamLatticeData vertex count | `216` (6³ deduplicated grid nodes) | `189` (5³ deduplicated corners + 64 cell centers) |
-| Load-bearing anchor | `total_strut_length == Some(2700.0)` BIT-EXACT | top/bottom mean `r1` ratio ≈ 1.357 (spec ±5% of 1.41) |
+| Load-bearing anchor | `total_strut_length == Some(2700.0)` BIT-EXACT | top/bottom mean `r1` ratio ≈ 1.357 (within ±5% of analytical √2 ≈ 1.414) |
 | Visual centerpiece | Cubic strut grid (axis-aligned cylinders) | Octet truss with thin bottom → thick top struts |
 
 ## `DensityMap` six variants
@@ -223,7 +227,8 @@ and that this example pre-stages for the variable-density case.
   30 720-triangle binary little-endian PLY of the triangulated
   density-modulated octet-truss lattice. Each octet cell contributes
   20 struts × (14 verts + 24 tris); `combine_struts` does NOT weld
-  inter-strut nodes (matches §5.6's no-weld pattern).
+  inter-strut nodes (matches the strut-cubic example's no-weld
+  pattern).
 
 ```text
 f3d examples/mesh/mesh-lattice-density-gradient/out/density_gradient_lattice.ply
@@ -234,7 +239,8 @@ visually striking: the bottom half of the cube has thin struts, the
 top half has noticeably thicker struts, with the four cell-z strata
 sharply visible as four discrete radius bands. The octet topology
 (corners-to-center diagonals + face/vertical edges) creates a denser,
-more visually rich lattice than §5.6's pure cubic grid.
+more visually rich lattice than the strut-cubic example's pure cubic
+grid.
 
 ## Run
 
@@ -244,12 +250,10 @@ cargo run -p example-mesh-mesh-lattice-density-gradient --release
 
 ## Cross-references
 
-- **Sister examples**: §5.6 `mesh-lattice-strut-cubic` (uniform-density
-  strut counterpart); §5.5 `mesh-lattice-tpms-gyroid` (TPMS
-  contrast).
+- **Sister examples**: `mesh-lattice-strut-cubic` (uniform-density
+  strut counterpart); `mesh-lattice-tpms-gyroid` (TPMS contrast).
 - **Mesh book**: `docs/studies/mesh_architecture/src/80-examples.md`
-  — Part 8 inventory (depth-pass updates land at `§6.2 #31` of the
-  arc).
+  — Part 8 inventory.
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md)
   — clean exit-0 gates the visuals pass;
