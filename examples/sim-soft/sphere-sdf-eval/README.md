@@ -11,7 +11,7 @@ axis-aligned + off-axis + Pythagorean-triple anchors, then sweeps an
 bit-exact identity at every sample and emit `out/sdf_grid.ply` with
 two per-vertex scalars — `signed_distance` (analytic SDF) and
 `gradient_magnitude` (`|∇_FD SDF|` from central / one-sided finite
-differences) — for external colormap rendering.
+differences) — for colormap rendering.
 
 ## What this example demonstrates
 
