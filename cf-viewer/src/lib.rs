@@ -8,12 +8,16 @@
 //!   the point-cloud sizing constant.
 //! - [`colormap`] — Q5 distribution detection + per-vertex RGBA mapping
 //!   (commit 4).
+//! - [`camera`] — mouse-driven orbit camera (commit 5).
+//! - [`ui`] — scalar + colormap dropdowns via `bevy_egui` (commit 5).
 //!
-//! Orbit camera and CLI flags land in subsequent commits — see
+//! CLI flags (`--scalar` / `--colormap` / `--up`) land in commit 6 — see
 //! `docs/VIEWER_DESIGN.md` for the locked PR shape.
 
+pub mod camera;
 pub mod colormap;
 pub mod mesh;
+pub mod ui;
 
 use std::path::Path;
 

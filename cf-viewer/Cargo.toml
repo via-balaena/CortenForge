@@ -42,6 +42,17 @@ bevy = { workspace = true, default-features = false, features = [
     "zstd_rust",
 ] }
 
+# egui-on-Bevy plugin — UI library for scalar / colormap dropdowns
+# (commit 5). 0.39.1 is the first release that pins `bevy ^0.18.0`. Default
+# features include `manage_clipboard` + `open_url`; we don't need the
+# webbrowser dep, so disable defaults and re-enable just what's needed
+# (rendering + Bevy-UI integration + default fonts).
+bevy_egui = { version = "0.39.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+    "bevy_ui",
+] }
+
 # Mesh I/O — PLY loader (`load_ply_attributed`) is the v1 input format per Q3.
 mesh-io = { workspace = true }
 # AttributedMesh + IndexedMesh + Point3 re-exports. Public-API surface of
