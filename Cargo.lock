@@ -1850,7 +1850,11 @@ dependencies = [
 name = "cf-viewer"
 version = "1.0.0"
 dependencies = [
+ "anyhow",
  "bevy",
+ "mesh-io",
+ "mesh-types",
+ "tempfile",
 ]
 
 [[package]]

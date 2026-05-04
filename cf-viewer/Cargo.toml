@@ -13,6 +13,9 @@ publish = false
 # No `[package.metadata.cortenforge]` block — tier metadata is for L0/L1 sim
 # libraries under sim/, not for workspace tools or binaries (matches xtask).
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "cf-view"
 path = "src/main.rs"
@@ -38,6 +41,18 @@ bevy = { workspace = true, default-features = false, features = [
     "tonemapping_luts",
     "zstd_rust",
 ] }
+
+# Mesh I/O — PLY loader (`load_ply_attributed`) is the v1 input format per Q3.
+mesh-io = { workspace = true }
+# AttributedMesh + IndexedMesh + Point3 re-exports. Public-API surface of
+# `ViewerInput`, so this is a non-private dep.
+mesh-types = { workspace = true }
+# Application-style error chaining for the binary's load+wrap path.
+anyhow = { workspace = true }
+
+[dev-dependencies]
+# Round-trip PLY tests write to a temp dir; tempfile auto-cleans on drop.
+tempfile = { workspace = true }
 
 [features]
 default = ["x11"]
