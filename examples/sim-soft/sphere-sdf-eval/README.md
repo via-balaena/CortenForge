@@ -195,19 +195,24 @@ point cloud with two per-vertex scalars:
   diagnostic; auto-detected as sequential (positive only,
   continuous).
 
-Open in any viewer that understands custom PLY attributes; switch
-between the two scalars to compare the analytic radial pattern
-against the discretization's Eikonal property:
+Open in `cf-view`, the workspace's unified visual-review viewer:
 
 ```text
-# MeshLab — Render → Color → Per-vertex Quality, then
-# Filters → Quality Mapper applied to either scalar
-meshlab examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
+cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
+```
 
-# ParaView — open the PLY, then in the Coloring panel pick
-# the "signed_distance" array (divergent) or "gradient_magnitude"
-# array (sequential)
-paraview examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
+cf-view auto-discovers per-vertex scalars on load and selects the
+alphabetical first by default — so the launch view is colour-mapped
+by `gradient_magnitude` (sequential viridis). Switch to
+`signed_distance` (divergent bwr — blue interior, white surface
+band, red exterior) via the side-panel scalar dropdown; the
+colormap re-detects per scalar from its value distribution.
+
+For scripted reproducibility, pre-select `signed_distance` from
+the CLI:
+
+```text
+cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply --scalar=signed_distance
 ```
 
 What you should see when colour-mapped by `signed_distance`:
