@@ -11,6 +11,9 @@ members = [
     # Development tooling
     "xtask",
 
+    # Workspace-wide visual-review viewer (replaces f3d + MeshLab for static artifacts)
+    "cf-viewer",
+
     # Mesh domain (active development)
     "mesh/mesh-types",
     "mesh/mesh-io",

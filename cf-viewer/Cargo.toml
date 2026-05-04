@@ -1,0 +1,54 @@
+[package]
+name = "cf-viewer"
+description = "Workspace-wide Bevy-CLI viewer for static-artifact visual review (replaces f3d + MeshLab)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-tool binary; see docs/VIEWER_DESIGN.md for the full design plan.
+# No `[package.metadata.cortenforge]` block — tier metadata is for L0/L1 sim
+# libraries under sim/, not for workspace tools or binaries (matches xtask).
+
+[[bin]]
+name = "cf-view"
+path = "src/main.rs"
+
+[dependencies]
+# Bevy 0.18 engine — feature set mirrors sim/L1/bevy so we inherit a validated
+# subset (rendering pipeline, winit windowing, multi-threaded scheduler). No
+# default features so we don't accidentally pull in audio / file-watching.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+
+[features]
+default = ["x11"]
+# Linux window backends — match sim-bevy's feature shape.
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
