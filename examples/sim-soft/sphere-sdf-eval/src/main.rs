@@ -511,10 +511,12 @@ fn print_summary(interior: usize, surface: usize, exterior: usize, path: &Path) 
     println!("         vertices-only point cloud + 2 per-vertex scalars:");
     println!("           extras[\"signed_distance\"]    — analytic SDF, divergent");
     println!("           extras[\"gradient_magnitude\"] — |∇_FD SDF|, sequential");
-    println!("         open in MeshLab / ParaView and colormap by either scalar");
-    println!("         (signed_distance shows the radial SDF; gradient_magnitude");
-    println!("         shows the Eikonal diagnostic, with the discretization dip");
-    println!("         around the origin where central diffs smooth the kink).");
+    println!("         open in cf-view, the workspace's unified visual-review viewer:");
+    println!("           cargo run -p cf-viewer -- <path>");
+    println!("         default-picks gradient_magnitude (Eikonal diagnostic; dip near");
+    println!("         origin where central diffs smooth the kink); dropdown switches");
+    println!("         to signed_distance (radial SDF, divergent bwr — blue interior");
+    println!("         → red exterior).");
 }
 
 // =============================================================================
