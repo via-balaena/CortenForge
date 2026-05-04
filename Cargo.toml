@@ -427,7 +427,7 @@ parry3d = "0.17"
 # ---------------------------------------------------------------------------
 # Randomness
 # ---------------------------------------------------------------------------
-rand = "0.9"
+rand = "0.10"
 rand_chacha = "0.9"
 rand_distr = "0.5"
 # getrandom is not used directly anywhere in this workspace; it enters
