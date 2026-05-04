@@ -11,6 +11,9 @@ members = [
     # Development tooling
     "xtask",
 
+    # Workspace-wide visual-review viewer (replaces f3d + MeshLab for static artifacts)
+    "cf-viewer",
+
     # Mesh domain (active development)
     "mesh/mesh-types",
     "mesh/mesh-io",
@@ -314,6 +317,9 @@ members = [
     "examples/mesh/mesh-lattice-density-gradient",
     "examples/mesh/mesh-lattice-shape-bounded",
     "examples/mesh/mesh-lattice-mesh-bounded-infill",
+
+    # Examples — sim-soft
+    "examples/sim-soft/sphere-sdf-eval",
 
     # Foundation (active development)
     "design/cf-geometry",

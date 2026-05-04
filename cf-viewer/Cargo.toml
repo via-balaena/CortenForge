@@ -1,0 +1,84 @@
+[package]
+name = "cf-viewer"
+description = "Workspace-wide Bevy-CLI viewer for static-artifact visual review (replaces f3d + MeshLab)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-tool binary; see docs/VIEWER_DESIGN.md for the full design plan.
+# No `[package.metadata.cortenforge]` block — tier metadata is for L0/L1 sim
+# libraries under sim/, not for workspace tools or binaries (matches xtask).
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "cf-view"
+path = "src/main.rs"
+
+[dependencies]
+# Bevy 0.18 engine — feature set mirrors sim/L1/bevy so we inherit a validated
+# subset (rendering pipeline, winit windowing, multi-threaded scheduler). No
+# default features so we don't accidentally pull in audio / file-watching.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+
+# egui-on-Bevy plugin — UI library for scalar / colormap dropdowns
+# (commit 5). 0.39.1 is the first release that pins `bevy ^0.18.0`. Default
+# features include `manage_clipboard` + `open_url`; we don't need the
+# webbrowser dep, so disable defaults and re-enable just what's needed
+# (rendering + Bevy-UI integration + default fonts).
+bevy_egui = { version = "0.39.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+    "bevy_ui",
+] }
+
+# Mesh I/O — PLY loader (`load_ply_attributed`) is the v1 input format per Q3.
+mesh-io = { workspace = true }
+# AttributedMesh + IndexedMesh + Point3 re-exports. Public-API surface of
+# `ViewerInput`, so this is a non-private dep.
+mesh-types = { workspace = true }
+# Application-style error chaining for the binary's load+wrap path.
+anyhow = { workspace = true }
+# CLI argument parsing (commit 6). Direct dep with `derive`; matches the
+# xtask precedent — clap has no workspace pin today and cf-viewer is the
+# second consumer.
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# Round-trip PLY tests write to a temp dir; tempfile auto-cleans on drop.
+tempfile = { workspace = true }
+
+[features]
+default = ["x11"]
+# Linux window backends — match sim-bevy's feature shape.
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

@@ -2213,6 +2213,17 @@ fn applies_to_crate(crate_name: &str) -> bool {
     if matches!(crate_name, "mesh" | "cortenforge") {
         return true;
     }
+    // Workspace tools that happen to match a library-namespace prefix
+    // need an explicit exemption. xtask is excluded by virtue of having
+    // no matching prefix at all; cf-viewer's `cf-` prefix would
+    // otherwise pull it into the design-library scope (cf-spatial /
+    // cf-design / cf-geometry). Per docs/VIEWER_DESIGN.md Q1 + Q8
+    // locks: cf-viewer is a workspace tool, carries no tier metadata,
+    // and Q8 explicitly directs path-based filtering as the gating
+    // mechanism rather than retrofitting metadata.
+    if matches!(crate_name, "cf-viewer") {
+        return false;
+    }
     let prefixes = ["sim-", "mesh-", "cf-", "cortenforge-"];
     prefixes.iter().any(|p| crate_name.starts_with(p))
 }
@@ -3530,6 +3541,9 @@ serde = \"1\"
         // A crate whose name happens to start with `mes` (not `mesh-`,
         // not `mesh`) is out of scope.
         assert!(!applies_to_crate("messy"));
+        // cf-viewer is a workspace tool with the cf- prefix; explicit
+        // exemption per docs/VIEWER_DESIGN.md Q1 + Q8 locks.
+        assert!(!applies_to_crate("cf-viewer"));
     }
 
     #[test]
