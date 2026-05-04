@@ -429,7 +429,7 @@ parry3d = "0.17"
 # ---------------------------------------------------------------------------
 rand = "0.9"
 rand_chacha = "0.9"
-rand_distr = "0.5"
+rand_distr = "0.6"
 # getrandom is not used directly anywhere in this workspace; it enters
 # transitively via rand_chacha → rand_core. It is registered here so
 # L0 crates that build for wasm32-unknown-unknown can opt the
