@@ -514,7 +514,7 @@ fn print_summary(interior: usize, surface: usize, exterior: usize, path: &Path) 
     println!("         open in cf-view, the workspace's unified visual-review viewer:");
     println!("           cargo run -p cf-viewer -- <path>");
     println!("         default-picks gradient_magnitude (Eikonal diagnostic; dip near");
-    println!("         origin where central diffs smooth the kink); dropdown switches");
+    println!("         origin where central diffs smooth the kink); scalar dropdown switches");
     println!("         to signed_distance (radial SDF, divergent bwr — blue interior");
     println!("         → red exterior).");
 }
