@@ -42,7 +42,8 @@ use std::collections::HashSet;
 /// table to sample from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColormapKind {
-    /// Symmetric around 0; signed scalars (e.g. `signed_distance`).
+    /// Centered at 0 (`TwoSlopeNorm` — see module docs); signed scalars
+    /// (e.g. `signed_distance`).
     Divergent,
     /// Continuous positive scalars; magnitudes, distances, fractions.
     Sequential,
@@ -78,10 +79,12 @@ impl Colormap {
         Self { kind, range }
     }
 
-    /// Map a scalar value to an RGBA color in linear `[0, 1]` channels.
+    /// Map a scalar value to an sRGBA color with each channel in `[0, 1]`.
     ///
-    /// Non-finite inputs render as mid-grey rather than panicking or
-    /// producing garbage colors at clamp boundaries.
+    /// The colormap tables hold sRGB values (matplotlib convention); pass
+    /// the result to `bevy::prelude::Color::srgba(...)` directly. Non-finite
+    /// inputs render as mid-grey rather than panicking or producing garbage
+    /// colors at clamp boundaries.
     #[must_use]
     pub fn rgba(&self, value: f32) -> [f32; 4] {
         if !value.is_finite() {

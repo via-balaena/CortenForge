@@ -1,6 +1,6 @@
 # CortenForge Visual-Review Viewer — Design Plan
 
-**Status:** Commits 1 (scaffolding `02bceb9c`) + 2 (PLY load + `ViewerInput` `093f0410`) + 3 (geometry rendering `79b97339`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. Plan iter-1 still locked + iter 1.3 head-architect calls banked at commit-3 authoring time + iter 1.4 head-architect call (point-cloud coloring option A) banked at commit-4 authoring time; next step is commit 4 (colormap pipeline).
+**Status:** Commits 1 (scaffolding `02bceb9c`) + 2 (PLY load + `ViewerInput` `093f0410`) + 3 (geometry rendering `79b97339`) + commit-3 cold-read fixes (`b46d0b99`) + 4 (colormap pipeline `0c3ab996`) + commit-4 visual-review corrections (`8b53f296` — TwoSlopeNorm + unlit + saturated bwr) shipped on `dev`. Plan iter-1 locked + iter-1.3 (commit-3 head-architect calls) + iter-1.4 (commit-4 point-cloud coloring lock) + iter-1.5/1.6/1.7 (commit-4 visual-review corrections) all banked. **Commit 4 visually reviewed + passed 2026-05-04** — sphere-sdf-eval renders with the deep-blue inside-sphere region (~6% of points) clearly distinct from the white isosurface ring and the saturated red outer corners. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. **Next step: commit 5 (orbit camera + UI).**
 
 **Purpose:** Design the unified visual-review viewer that supersedes per-example tool chains (MeshLab + filter dialogs for sim-soft; f3d for mesh examples). One command, one window, every static-field artifact in the workspace. Living document — delete after the viewer ships and the workspace has migrated to it, per `feedback_code_speaks`.
 
@@ -86,7 +86,7 @@ On PLY load, the viewer enumerates all per-vertex scalar properties — everythi
 
 **CLI override:** `--colormap=divergent|sequential|categorical` for explicit control when the heuristic mis-classifies (rare but possible; e.g., a signed scalar that happens to be all-positive in the PLY's bbox).
 
-**Three colormap library v1:** divergent (`coolwarm` or `RdBu`), sequential (`viridis`), categorical (`tab10`). Hard-coded for v1; pluggable colormaps deferred.
+**Three colormap library v1:** divergent (saturated bwr-style — endpoints `(0,0,1)` / `(1,0,0)`, white center; iter 1.7 lock chose this over matplotlib-coolwarm's perceptually-uniform-but-medium-saturation endpoints because for visual review the negative/positive split must be unmistakable), sequential (`viridis`), categorical (`tab10`). Hard-coded for v1; pluggable colormaps deferred. The const name in `colormap.rs` is still `COOLWARM` — that's the divergent-bin name, not the matplotlib-palette name.
 
 ### Q6 — Up-axis convention: `+Z` default + `--up=+X|+Y|+Z` CLI flag.
 
@@ -260,18 +260,18 @@ _(append session-by-session; date-stamped; what changed and why)_
 
 ## Resume-here for next session
 
-**Commits 1 (scaffolding `02bceb9c`) + 2 (PLY load + `ViewerInput` `093f0410`) + 3 (geometry rendering `79b97339`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`.**
+**Commits 1 (scaffolding `02bceb9c`) + 2 (PLY load + `ViewerInput` `093f0410`) + 3 (geometry rendering `79b97339`) + commit-3 cold-read fixes (`b46d0b99`) + 4 (colormap pipeline `0c3ab996`) + commit-4 visual-review corrections (`8b53f296` — TwoSlopeNorm + unlit + saturated bwr) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. Commit 4 visually reviewed + passed 2026-05-04.**
 
-1. Verify current state: on `dev`, commit 3 (geometry rendering) is the most recent viewer commit. Working tree should be clean.
-2. User reviews commit 3 by running `cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply` (point-cloud path: 1331 sphere markers visible) and a mesh-v1.0 fixture (face path: triangle mesh with smooth shading), e.g. `examples/mesh/format-conversion/out/cube.ply`.
-3. Author **commit 4 — colormap pipeline**: detect distribution category (divergent / sequential / categorical) per Q5 rules, compute per-vertex RGBA, attach as `Mesh::ATTRIBUTE_COLOR` on the Bevy mesh + adjust `StandardMaterial` to honor vertex colors. Unit tests on the detection logic.
-4. Pause for user review; per-commit cadence per `feedback_one_at_a_time_review`.
-5. Continue down the 7-8-commit segmentation in the PR shape section above; that is the executable checklist.
+1. Verify current state: on `dev`, commit `8b53f296` is the most recent viewer commit. Working tree should be clean. `cargo test -p cf-viewer` should report 22/22 passing.
+2. Author **commit 5 — orbit camera + UI**: orbit-zoom-pan camera (write minimal inline per iter-1 still-open #1 — NO sim-bevy dep) replacing the static placeholder camera in `setup_scene`. Scalar-selector dropdown for multi-scalar PLYs + colormap-selector dropdown via `bevy_egui` (iter-2 still-open #3 default lean — confirm during authoring). Resolves the orbit-camera + UI surface that's been deferred since the static placeholder shipped in commit 3.
+3. Pause for user review; per-commit cadence per `feedback_one_at_a_time_review`. Visual review steps: (a) orbit/zoom/pan with mouse on the sphere-sdf-eval fixture, (b) confirm the dropdown is wired + switching between scalars in a multi-extra PLY actually re-colors the scene.
+4. Continue down the 7-8-commit segmentation in the PR shape section above; commit 6 is CLI flags, commit 7 is the sphere-sdf-eval README retrofit.
 
 **Bevy 0.18 API gotchas banked so far:**
 - Commit 1: `EventWriter` → `MessageWriter`; emit `AppExit::Success` to exit cleanly.
 - Commit 3: `AmbientLight` is now a per-camera component override; world-wide ambient is `GlobalAmbientLight` (sim-bevy `scene.rs:101` precedent).
 - Commit 4: vertex colors via `Mesh::ATTRIBUTE_COLOR` use `VertexFormat::Float32x4`; the PBR fragment shader OVERWRITES `material.base_color` from `in.color` (not modulates), so a shared template `StandardMaterial` "just works" as the fallback when no vertex colors are present.
-- Commit 4 visual-review note: bright lighting (DirectionalLight 12_000 + GlobalAmbientLight 1_200) + `TonyMcMapface` tonemap compress subtle hue differences in highlights — pale colormap colors (e.g. light blue at `t = 0.3` of coolwarm) wash to near-white. Prefer colormap normalizations that saturate near both extremes (e.g. `TwoSlopeNorm` for divergent — see iter 1.5). **AND** even saturated colors get desaturated under bright PBR — set `unlit = true` on `StandardMaterial` whenever the color encodes data rather than a physical surface (iter 1.6). PBR is for physical surfaces; data colors aren't physical surfaces.
+- Commit 4 visual-review (iter 1.5/1.6/1.7): bright lighting (DirectionalLight 12_000 + GlobalAmbientLight 1_200) + `TonyMcMapface` tonemap compress subtle hue differences in highlights — pale colormap colors (e.g. light blue at `t = 0.3` of coolwarm) wash to near-white. **Three corrections needed:** (a) for divergent maps prefer `TwoSlopeNorm` over symmetric `(-m, m)` so both extremes always saturate; (b) set `unlit = true` on `StandardMaterial` whenever the color encodes data rather than a physical surface — PBR is for physical surfaces, data colors aren't; (c) prefer saturated palettes (bwr-style endpoints `(0,0,1)`/`(1,0,0)`) over matplotlib-coolwarm's medium-saturation endpoints when the visual goal is unmistakable category split rather than perceptual luminance uniformity.
+- Commit 4 also: `cargo fmt --all -- --check` is stricter than `cargo fmt -p` (per `project_git_and_hook_gotchas.md`) — bit again at commit 4 with a multi-line `assert_eq!` reflow.
 
 If anything in the locked decisions feels wrong on a re-read, redirect — locked ≠ frozen, and the planning doc is the place for second thoughts before code makes them expensive to undo.
