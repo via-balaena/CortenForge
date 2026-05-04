@@ -1,6 +1,6 @@
 # CortenForge Visual-Review Viewer — Design Plan
 
-**Status:** SEED — to iterate across sessions before execution.
+**Status:** ITER 1 LOCKED (stress-tested) — plan is executable; next step is code, not more planning.
 
 **Purpose:** Design the unified visual-review viewer that supersedes per-example tool chains (MeshLab + filter dialogs for sim-soft; f3d for mesh examples). One command, one window, every static-field artifact in the workspace. Living document — delete after the viewer ships and the workspace has migrated to it, per `feedback_code_speaks`.
 
@@ -36,7 +36,7 @@ Per `feedback_examples_drive_gap_fixes` — examples drive engine fixes; this ga
 
 - Static-field examples — sim-soft Tier 1-3 + Tier 5 rows 1-3, 8-11, 15-16, 19 (10 examples).
 - Static-geometry examples — mesh-v1.0 examples (eventual retrofit; see open question 7).
-- Format support: PLY (binary + ASCII), with custom per-vertex / per-face scalars.
+- Format support: PLY (binary + ASCII), with custom per-vertex scalars (per-face deferred — see Q4).
 - Cross-platform Bevy app with orbit camera, scalar selector, colormap selector.
 
 **Out of scope (v1):**
@@ -64,7 +64,7 @@ Pairs with crate name `cf-viewer` (crate is the library + binary, binary entry p
 
 ### Q3 — Input formats: PLY-only for v1. CLI binary only.
 
-Every existing example in the workspace emits PLY (mesh-v1.0, sim-soft sphere-sdf-eval). PLY natively carries per-vertex / per-face scalars — the whole point of the viewer. OBJ + STL don't carry scalars and would dilute the v1 anchoring goal. Library API (in-process consumption) deferred to v2 unless a real consumer asks. PLY parsing reuses `mesh_io::load_ply_attributed` — no greenfield parser.
+Every existing example in the workspace emits PLY (mesh-v1.0, sim-soft sphere-sdf-eval). PLY natively carries per-vertex scalars (per-face is a PLY-format feature but not exposed by mesh-io's `AttributedMesh` today; see Q4) — the whole point of the viewer. OBJ + STL don't carry scalars and would dilute the v1 anchoring goal. Library API (in-process consumption) deferred to v2 unless a real consumer asks. PLY parsing reuses `mesh_io::load_ply_attributed` — no greenfield parser.
 
 ### Q4 — Scalar detection: auto-discover at load + alphabetical-first-pick + UI dropdown. **Per-VERTEX only.**
 
@@ -102,7 +102,7 @@ Bevy is already a transitive CI cost via `sim-bevy` and the 4 integration exampl
 
 **Tests:** v1 ships with **no integration tests that run a Bevy window** (CI runners don't have a display server; spinning up the full app would require headless EGL setup that's overkill for v1). v1 DOES ship with **unit tests on the colormap detection logic + scalar-extraction logic + CLI parsing** — those are pure-function deterministic and exercise the brain of the viewer. The window itself goes uncovered until v2 adds headless rendering for screenshot regression tests.
 
-`xtask grade` likely treats `cf-viewer` similarly to `sim-bevy` — opt-in coverage, structurally-pinned-low coverage with a documented tier rationale (Bevy app code is mostly resource setup + system wiring, hard to unit-test without a running app). Match `sim-bevy`'s `[package.metadata.cortenforge]` shape.
+`xtask grade` treatment: cf-viewer carries no `[package.metadata.cortenforge]` block per Q1 (matches xtask, not sim-bevy). xtask itself is excluded from `xtask grade` by virtue of its untiered status; cf-viewer inherits the same exclusion. If xtask grade ever needs to gate the viewer (e.g., for clippy / fmt), do it via the existing path-based filtering rather than retrofitting tier metadata.
 
 ---
 
@@ -115,7 +115,7 @@ Bevy is already a transitive CI cost via `sim-bevy` and the 4 integration exampl
 1. **Scaffolding** — `cf-viewer/Cargo.toml`, `src/main.rs` Bevy app skeleton (window + clear color + exit-on-Esc), workspace registration.
 2. **PLY loading** — `load_input(path) -> ViewerInput` via `mesh_io::load_ply_attributed`; data structures for the loaded scalars + geometry; unit tests on a known PLY fixture.
 3. **Geometry rendering** — spawn `Mesh3d` entities from the loaded `AttributedMesh` (faces case) or point-cloud entities (faces-empty case). Default material, no scalar coloring yet.
-4. **Colormap pipeline** — detect distribution category (divergent/sequential/categorical) per Q5 rules, compute per-vertex / per-face RGBA, attach as a vertex-color attribute on the Bevy mesh. Unit tests on the detection logic.
+4. **Colormap pipeline** — detect distribution category (divergent/sequential/categorical) per Q5 rules, compute per-vertex RGBA, attach as a vertex-color attribute on the Bevy mesh. Unit tests on the detection logic.
 5. **Orbit camera + UI** — orbit-zoom-pan camera (likely lift from `sim-bevy::camera` or write a minimal one), scalar-selector dropdown for multi-scalar PLYs, colormap-selector dropdown.
 6. **CLI flags** — `--scalar=<name>`, `--colormap=<kind>`, `--up=<axis>` via `clap`. Unit tests on flag parsing.
 7. **Sphere-sdf-eval consumer** — update `examples/sim-soft/sphere-sdf-eval/README.md`'s "Visuals" section to point at `cf-view <path>` (replaces the MeshLab two-filter chain). End-to-end smoke test.
@@ -138,7 +138,7 @@ PR size precedent: comparable to mesh-v1.0 PR #224 (8 mesh examples, 8 commits).
 
 ## Adjacent / related decisions (not gating but worth tracking)
 
-- **Sim-soft Bevy adapter** for deforming tet meshes (boundary-face re-extraction per frame from `x_current`) is the Tier-4-and-Tier-6 dynamic-playback path. **Not the unified viewer's responsibility** — those are per-example Bevy apps. The adapter could live in the same crate as the viewer if there's natural reuse (mesh rendering primitives, colormap utilities, camera setup), or in `sim/L1/sim-bevy/` if the dynamic-playback story diverges.
+- **Sim-soft Bevy adapter** for deforming tet meshes (boundary-face re-extraction per frame from `x_current`) is the Tier-4-and-Tier-6 dynamic-playback path. **Not the unified viewer's responsibility** — those are per-example Bevy apps. The adapter **cannot live in cf-viewer** per stress-test N1 (cf-viewer has no sim-soft / sim-types / sim-core deps); it lives in `sim/L1/sim-bevy/` (or a new `sim/L1/sim-bevy-soft/` sibling) where the physics deps already exist. cf-viewer and the sim-soft Bevy adapter can independently extract any truly-shared bits (orbit camera, AttributedMesh→Bevy-mesh) into a `cf-bevy-common` crate later if duplication crosses a threshold; v1 keeps them separate.
 - **Casting-domain / cf-design future examples** — the viewer should anticipate them. cf-design likely emits the same PLY shape (geometry + per-vertex scalars). Casting domain may want time-series support eventually — but that's v2, not v1.
 
 ---
