@@ -1,6 +1,6 @@
 # CortenForge Visual-Review Viewer — Design Plan
 
-**Status:** ITER 1 LOCKED (stress-tested) — plan is executable; next step is code, not more planning.
+**Status:** Commit 1 (scaffolding) shipped 2026-05-04 on `dev` (`02bceb9c`). Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. Plan iter-1 still locked; next step is commit 2 (PLY load + ViewerInput).
 
 **Purpose:** Design the unified visual-review viewer that supersedes per-example tool chains (MeshLab + filter dialogs for sim-soft; f3d for mesh examples). One command, one window, every static-field artifact in the workspace. Living document — delete after the viewer ships and the workspace has migrated to it, per `feedback_code_speaks`.
 
@@ -108,7 +108,7 @@ Bevy is already a transitive CI cost via `sim-bevy` and the 4 integration exampl
 
 ## PR shape + commit segmentation (iter 1)
 
-**Branch:** `feature/cf-viewer-arc` off `main`. Sim-soft branch (`feature/sim-soft-examples-arc`) rebases after viewer arc merges.
+**Branch:** single long-running `dev` branch (renamed from `feature/sim-soft-examples-arc` 2026-05-04 after retiring the two-branch plan — see iteration log entry "iter 1.2"). Branch ≠ PR; PR shape is a ship-time decision off `dev`.
 
 **Commit segmentation (target ~7-8 commits):**
 
@@ -178,6 +178,12 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Next iteration entry point:** unchanged — scaffolding commit on `feature/cf-viewer-arc` (off main). Verified: cf-viewer/Cargo.toml has NO tier annotation, depends on bevy + mesh-io + mesh-types + clap + anyhow (and likely bevy_egui pending iter-2 still-open #3).
 
+- **2026-05-04 (iter 1.2 — branch strategy retired during commit 1):** Mid-commit-1 redirect from user: "two parallel branches = recipe for disaster." Original plan had `feature/cf-viewer-arc` (viewer code, off main) running parallel to `feature/sim-soft-examples-arc` (planning + paused sphere-sdf-eval). Resolution: cherry-picked the viewer-scaffolding commit onto sim-soft branch, deleted `feature/cf-viewer-arc`, renamed sim-soft branch to `dev`. Going forward: single long-running `dev` branch; branch ≠ PR; PR segmentation decided at ship time. Banked at [`feedback_single_active_branch`](../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_single_active_branch.md). PR-shape commit segmentation in this doc unchanged — only the branching changed. **Bevy-0.18 API correction during the same commit:** `EventWriter` was renamed to `MessageWriter` in 0.18; `app.run()` returns `AppExit` (not `()`); use `MessageWriter<AppExit>` + `AppExit::Success` to exit cleanly. (Captured here so commit-2-onwards code authoring inherits the pattern.)
+
+  **Commit 1 shipped:** `02bceb9c feat(cf-viewer): scaffolding — Bevy app skeleton + workspace member`. 4 files / 87 insertions. cargo build / clippy -D warnings / cargo doc all clean. `examples/sim-soft/` untracked-files concern during the prior two-branch attempt was just gitignored test output (`out/sdf_grid.ply`) — zero leak risk. Pre-commit hook clean.
+
+  **Next iteration entry point:** commit 2 (PLY load + ViewerInput) on `dev` branch — see Resume-here block.
+
 ---
 
 ## Cross-references
@@ -198,13 +204,14 @@ _(append session-by-session; date-stamped; what changed and why)_
 
 ## Resume-here for next session
 
-**Iter 1 complete (2026-05-04). All 8 open questions locked. PR shape locked. Plan is executable — next step is code, not more planning.**
+**Commit 1 (scaffolding) shipped 2026-05-04 as `02bceb9c` on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`.**
 
-1. Read this file end-to-end (especially the locked Q1-Q8 + PR shape sections + still-open iter-2 items).
-2. Branch off `main` as `feature/cf-viewer-arc`. (The seed planning doc rode `feature/sim-soft-examples-arc` because it was prose-only; viewer code ships its own PR per the locked branch strategy.)
-3. Recon `xtask/Cargo.toml` for any tier-annotation / category metadata precedent that should propagate to `cf-viewer/Cargo.toml`.
-4. Author **commit 1 — scaffolding**: `cf-viewer/Cargo.toml`, `src/main.rs` (Bevy app skeleton — window + clear color + Esc-to-exit, nothing more), workspace member registration in root `Cargo.toml`. Build clean, run clean, exit clean.
-5. Pause for user review per the per-commit cadence; iterate per `feedback_one_at_a_time_review`.
-6. Continue down the 7-8-commit segmentation; the iter-1 PR shape is the executable checklist.
+1. Verify current state: on `dev`, scaffolding commit `02bceb9c` is the most recent viewer commit. Working tree should be clean.
+2. User reviews commit 1 by running `cargo run -p cf-viewer` (window + Esc exit).
+3. Author **commit 2 — PLY loading + ViewerInput**: `load_input(path) -> ViewerInput` via `mesh_io::load_ply_attributed`; data structures for loaded scalars + geometry; unit tests on a known PLY fixture (sphere-sdf-eval's `out/sdf_grid.ply` is the natural one — also exercises the per-vertex-scalar path).
+4. Pause for user review; per-commit cadence per `feedback_one_at_a_time_review`.
+5. Continue down the 7-8-commit segmentation in the PR shape section above; that is the executable checklist.
+
+**Bevy 0.18 API gotcha** banked from commit 1: `EventWriter` → `MessageWriter`; emit `AppExit::Success` to exit cleanly. Apply when authoring event-write code in future commits.
 
 If anything in the locked decisions feels wrong on a re-read, redirect — locked ≠ frozen, and the planning doc is the place for second thoughts before code makes them expensive to undo.
