@@ -41,6 +41,12 @@ allow = [
     "MPL-2.0",
     "Unlicense",
     "bzip2-1.0.6",
+    # Font licenses — cover font ASSETS only (not code). Pulled in via
+    # `bevy_egui` → `egui` → `epaint` → `epaint_default_fonts`, which
+    # ships Hack + Ubuntu fonts. Compatible with Apache-2.0 workspace
+    # since font-asset licenses don't infect software using the font.
+    "OFL-1.1",          # SIL Open Font License 1.1 (Google Fonts default)
+    "Ubuntu-font-1.0",  # Ubuntu Font Licence v1.0
 ]
 confidence-threshold = 0.8
 
