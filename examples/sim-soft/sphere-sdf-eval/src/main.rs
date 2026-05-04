@@ -426,8 +426,10 @@ fn finite_difference_grad_magnitude(eval: &[f64]) -> Vec<f32> {
 /// Four regimes:
 ///
 /// - **Sanity bound** — every value finite and in `[0, 1.05]`. Analytic
-///   `|∇SDF| = 1` is the upper limit; FD truncation is one-sided so
-///   the magnitude can exceed 1 only by FP noise (well within 1.05).
+///   `|∇SDF| = 1` is the upper limit on this geometry, and central +
+///   one-sided FD truncation error on the unit-sphere SDF stays well
+///   below `0.05` everywhere; the `1.05` ceiling is FP-noise headroom,
+///   not a tight bound.
 /// - **Origin (5, 5, 5)** — magnitude ≈ 0 within `APPROX_TOL` (`1e-15`).
 ///   Central diffs along each axis approximately cancel by SDF
 ///   symmetry: `f(±h e_i) = ‖h e_i‖ − 1 = h − 1` would be identical

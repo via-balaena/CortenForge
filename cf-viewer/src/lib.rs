@@ -30,8 +30,10 @@ use mesh_types::AttributedMesh;
 ///
 /// `scalar_names` is the alphabetically-ordered list of per-vertex
 /// `extras` keys (Q4 lock — see `docs/VIEWER_DESIGN.md`). Auto-selection
-/// picks the first; the UI dropdown and `--scalar=<name>` flag arrive in
-/// later commits.
+/// picks the first; the [`ui::scalar_and_colormap_panel`] dropdown
+/// (commit 5) and the `--scalar=<name>` CLI flag (commit 6) override.
+///
+/// [`ui::scalar_and_colormap_panel`]: crate::ui::scalar_and_colormap_panel
 #[derive(Resource)]
 pub struct ViewerInput {
     /// Geometry plus per-vertex attributes loaded from the PLY.

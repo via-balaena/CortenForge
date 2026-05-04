@@ -70,9 +70,11 @@ fn setup_scene(mut commands: Commands, input: Res<ViewerInput>) {
         center_physics.z as f32,
         center_physics.y as f32,
     );
-    // Single-point degenerate AABB and very small bboxes would shrink the
-    // camera offset + light placement below the visible-on-screen floor;
-    // clamp the diagonal to 1.0 so framing stays sane.
+    // Local `diagonal` is used here only for directional-light placement;
+    // the camera's framing has its own clamp inside
+    // `OrbitCamera::framing_for_aabb`. Single-point degenerate AABBs
+    // and very small bboxes would otherwise place the light below the
+    // visible-on-screen floor; clamp to 1.0 so it stays useful.
     let diagonal = (aabb.diagonal() as f32).max(1.0);
 
     // Orbit camera framed corner-on at 1.5 × diagonal, matching commit 3's

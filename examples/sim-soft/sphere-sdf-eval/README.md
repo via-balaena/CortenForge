@@ -242,8 +242,9 @@ What you should see when colour-mapped by `gradient_magnitude`:
 cargo run -p example-sim-soft-sphere-sdf-eval --release
 ```
 
-Output: `out/sdf_grid.ply` (1331-vertex grid). Stdout prints input
-fixture summary, all 7 anchor-group names, and the bulk-grid
+Output: `out/sdf_grid.ply` (1331-vertex grid + 2 per-vertex scalars).
+Stdout prints input fixture summary, all 8 anchor-group names
+(including `fd_gradient_magnitude`), and the bulk-grid
 interior / surface / exterior counts.
 
 ## Cross-references
