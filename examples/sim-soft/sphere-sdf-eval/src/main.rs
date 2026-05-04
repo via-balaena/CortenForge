@@ -1,4 +1,5 @@
-//! sphere-sdf-eval — `Sdf` trait contract on `SphereSdf`.
+//! sphere-sdf-eval — `Sdf` trait contract on `SphereSdf` + a discrete
+//! Eikonal-property diagnostic on the sampled grid.
 //!
 //! Sphere of radius 1 centred at the origin. Signed distance is
 //! `‖p‖ − 1` (negative inside, zero on the surface, positive outside);
@@ -16,10 +17,22 @@
 //! mesh-v1.0 convention to satisfy clippy's `float_cmp` lint.
 //!
 //! Bulk pass: an 11³ = 1331-point grid in `[−2, 2]³` at spacing 0.4 is
-//! emitted as `out/sdf_grid.ply` with `extras["signed_distance"]` for
+//! emitted as `out/sdf_grid.ply` with two per-vertex scalars for
 //! external colormap rendering, and the bit-exact identity
 //! `eval(p) == ‖p‖ − radius` is asserted at every grid point (both
-//! sides do the same arithmetic, so equality holds exactly).
+//! sides do the same arithmetic, so equality holds exactly):
+//!
+//! - `extras["signed_distance"]` — analytic SDF value `‖p‖ − 1`.
+//! - `extras["gradient_magnitude"]` — `|∇_FD SDF|` from central /
+//!   one-sided finite differences over the sampled `signed_distance`
+//!   field. For an analytic SDF this approximates `|∇SDF| ≈ 1`
+//!   everywhere the field is smooth; visible dip toward 0 at the
+//!   origin (where the analytic gradient flips through the centre)
+//!   is the *Eikonal diagnostic* — it shows where a discretized SDF
+//!   under-resolves the true distance-field property
+//!   `|∇SDF| = 1`. Real downstream concern when sim-soft consumes
+//!   externally-sampled SDFs (e.g. mesh-sdf bridge) rather than
+//!   analytic ones.
 
 // PLY field-data is single-precision on disk; converting f64 SDF
 // values to f32 for `extras["signed_distance"]` is intrinsic to the
@@ -79,6 +92,13 @@ const GRID_TOTAL: usize = GRID_RES * GRID_RES * GRID_RES;
 /// Origin index in the 1D grid axis (`-2.0 + 5 * 0.4 = 0.0` exactly —
 /// `5.0 * 0.4` rounds bit-exactly to 2.0 by ties-to-even).
 const ORIGIN_GRID_INDEX: usize = 5;
+
+/// 1-D-flatten strides for the `[ix][iy][iz]` axis ordering used by
+/// [`build_grid`]. Used by [`finite_difference_grad_magnitude`] to step
+/// to the ±1 neighbour along each axis.
+const X_STRIDE: usize = GRID_RES * GRID_RES;
+const Y_STRIDE: usize = GRID_RES;
+const Z_STRIDE: usize = 1;
 
 // =============================================================================
 // verify_surface_eval — eval = 0 on the sphere surface
@@ -322,11 +342,14 @@ fn verify_grid_consistency(grid: &[GridSample]) -> (usize, usize, usize) {
     (interior, surface, exterior)
 }
 
-/// Write the bulk grid as a vertices-only PLY with
-/// `extras["signed_distance"]` per-vertex scalar. Mirrors the
-/// `examples/mesh/ply-with-custom-attributes` and
-/// `examples/mesh/mesh-sdf-distance-query` patterns.
-fn save_grid_ply(grid: &[GridSample], path: &Path) -> Result<()> {
+/// Write the bulk grid as a vertices-only PLY with two per-vertex
+/// scalars: `signed_distance` (analytic SDF) and `gradient_magnitude`
+/// (finite-difference Eikonal diagnostic on the sampled field). Mirrors
+/// the `examples/mesh/ply-with-custom-attributes` and
+/// `examples/mesh/mesh-sdf-distance-query` patterns; the second extra
+/// extends the precedent to multi-scalar output for cf-view's scalar
+/// dropdown.
+fn save_grid_ply(grid: &[GridSample], fd_grad_mag: &[f32], path: &Path) -> Result<()> {
     let vertices: Vec<Point3<f64>> = grid
         .iter()
         .map(|g| Point3::new(g.p.x, g.p.y, g.p.z))
@@ -336,8 +359,121 @@ fn save_grid_ply(grid: &[GridSample], path: &Path) -> Result<()> {
     let mut attributed = AttributedMesh::new(geometry);
     let scalars: Vec<f32> = grid.iter().map(|g| g.eval as f32).collect();
     attributed.insert_extra("signed_distance", scalars)?;
+    attributed.insert_extra("gradient_magnitude", fd_grad_mag.to_vec())?;
     save_ply_attributed(&attributed, path, true)?;
     Ok(())
+}
+
+// =============================================================================
+// Finite-difference gradient magnitude — Eikonal diagnostic
+// =============================================================================
+
+/// Map a 3-D grid index `(ix, iy, iz)` to the 1-D-flattened position used
+/// by [`build_grid`]. Inverse of the explicit `ix * X_STRIDE + iy *
+/// Y_STRIDE + iz * Z_STRIDE` arithmetic but named so call-sites can be
+/// read in 3-D without re-deriving the layout.
+const fn flat_index(ix: usize, iy: usize, iz: usize) -> usize {
+    ix * X_STRIDE + iy * Y_STRIDE + iz * Z_STRIDE
+}
+
+/// Central-or-one-sided derivative along one axis at flat grid position
+/// `i`. Central in the interior (`axis_idx ∈ [1, GRID_RES − 2]`),
+/// forward at the lower face (`axis_idx == 0`), backward at the upper
+/// face (`axis_idx == GRID_RES − 1`). Pure function over the eval-field
+/// samples; called once per axis per grid point.
+fn axis_derivative(eval: &[f64], i: usize, axis_idx: usize, stride: usize) -> f64 {
+    if axis_idx == 0 {
+        (eval[i + stride] - eval[i]) / GRID_SPACING
+    } else if axis_idx == GRID_RES - 1 {
+        (eval[i] - eval[i - stride]) / GRID_SPACING
+    } else {
+        (eval[i + stride] - eval[i - stride]) / (2.0 * GRID_SPACING)
+    }
+}
+
+/// Finite-difference gradient magnitude `|∇_FD SDF|` at every grid
+/// point, computed from the per-vertex `eval` field. Central
+/// differences in the interior; one-sided at the 6 boundary faces.
+/// Result emitted as f32 for PLY storage.
+///
+/// For a true analytic SDF this approximates `|∇SDF| ≈ 1` everywhere
+/// the underlying field is smooth. Visible dips below 1 mark
+/// non-smooth regions: for `SphereSdf` the most prominent dip is at
+/// the origin (the analytic gradient `p / ‖p‖` flips through the
+/// centre, central diffs cancel exactly → magnitude = 0), and a
+/// secondary smoothing-error dip near the origin shell where curved
+/// shells are sampled at coarse spacing.
+fn finite_difference_grad_magnitude(eval: &[f64]) -> Vec<f32> {
+    assert_eq!(eval.len(), GRID_TOTAL);
+    let mut out = Vec::with_capacity(GRID_TOTAL);
+    for ix in 0..GRID_RES {
+        for iy in 0..GRID_RES {
+            for iz in 0..GRID_RES {
+                let i = flat_index(ix, iy, iz);
+                let dfx = axis_derivative(eval, i, ix, X_STRIDE);
+                let dfy = axis_derivative(eval, i, iy, Y_STRIDE);
+                let dfz = axis_derivative(eval, i, iz, Z_STRIDE);
+                let mag = dfx.mul_add(dfx, dfy.mul_add(dfy, dfz * dfz)).sqrt();
+                out.push(mag as f32);
+            }
+        }
+    }
+    out
+}
+
+/// Verify the FD gradient-magnitude pipeline on the unit-sphere grid.
+///
+/// Four regimes:
+///
+/// - **Sanity bound** — every value finite and in `[0, 1.05]`. Analytic
+///   `|∇SDF| = 1` is the upper limit; FD truncation is one-sided so
+///   the magnitude can exceed 1 only by FP noise (well within 1.05).
+/// - **Origin (5, 5, 5)** — magnitude ≈ 0 within `APPROX_TOL` (`1e-15`).
+///   Central diffs along each axis approximately cancel by SDF
+///   symmetry: `f(±h e_i) = ‖h e_i‖ − 1 = h − 1` would be identical
+///   on both sides if the grid coords were bit-exactly opposite, but
+///   `−2.0 + 4 · 0.4` and `−(−2.0 + 6 · 0.4)` differ by ~1 ULP in
+///   f64 (0.4 is not dyadic), so the cancellation is approximate.
+/// - **Axis-aligned non-origin (e.g. (0.4, 0, 0))** — magnitude ≈ 1.0
+///   within `APPROX_TOL`. The SDF is linear along a coordinate axis
+///   when the other two coords are 0 (`|p| = |x|`), so the parallel
+///   central diff has zero truncation error in the limit; the
+///   orthogonal diffs approximately cancel by `f(x, ±h, 0) = f(x, ∓h,
+///   0)` symmetry (same FP-non-symmetry caveat as the origin).
+/// - **Off-axis interior (0.4, 0.4, 0)** — window-bound `0.85 ≤ m
+///   ≤ 0.90`. Analytic `|∇| = 1.0` but the central diff samples
+///   `f(±0.8, 0.4, 0) = √0.8 − 1` and `f(0, 0.4, 0) = −0.6`, giving
+///   `df/dx = df/dy = (√0.8 + 0.6)/2 / 0.4 ≈ 0.618`. Magnitude
+///   `√(2 · 0.618²) ≈ 0.874`. This dip IS the diagnostic: a curved
+///   field sampled at coarse spacing under-resolves the true
+///   gradient.
+fn verify_fd_gradient_magnitude(grid: &[GridSample], fd_grad_mag: &[f32]) {
+    assert_eq!(fd_grad_mag.len(), grid.len());
+
+    for (i, &m) in fd_grad_mag.iter().enumerate() {
+        assert!(m.is_finite(), "fd_grad_mag[{i}] = {m} not finite");
+        assert!(
+            (0.0..=1.05).contains(&m),
+            "fd_grad_mag[{i}] = {m} out of [0, 1.05]",
+        );
+    }
+
+    let origin = flat_index(ORIGIN_GRID_INDEX, ORIGIN_GRID_INDEX, ORIGIN_GRID_INDEX);
+    assert_relative_eq!(f64::from(fd_grad_mag[origin]), 0.0, epsilon = APPROX_TOL);
+
+    let plus_x = flat_index(ORIGIN_GRID_INDEX + 1, ORIGIN_GRID_INDEX, ORIGIN_GRID_INDEX);
+    assert_relative_eq!(f64::from(fd_grad_mag[plus_x]), 1.0, epsilon = APPROX_TOL);
+
+    let off_axis = flat_index(
+        ORIGIN_GRID_INDEX + 1,
+        ORIGIN_GRID_INDEX + 1,
+        ORIGIN_GRID_INDEX,
+    );
+    let m = f64::from(fd_grad_mag[off_axis]);
+    assert!(
+        (0.85..=0.90).contains(&m),
+        "fd_grad_mag at (0.4, 0.4, 0) = {m} expected ≈ 0.874 (smoothed-curvature dip)",
+    );
 }
 
 // =============================================================================
@@ -359,6 +495,8 @@ fn print_summary(interior: usize, surface: usize, exterior: usize, path: &Path) 
     println!("  gradient_unit_length       : 6 axis-aligned + 4 off-axis points");
     println!("  gradient_direction         : axis-aligned + Pythagorean (3, 4, 0)");
     println!("  origin_singularity         : grad(0) = Vec3::z() documented fallback");
+    println!("  fd_gradient_magnitude      : sanity bound + origin = 0 + axis = 1");
+    println!("                               + off-axis dip ≈ 0.874");
     println!();
     println!(
         "Bulk grid {GRID_RES}³ = {GRID_TOTAL} points in [−{GRID_HALF_EXTENT}, +{GRID_HALF_EXTENT}]³ at spacing {GRID_SPACING}:"
@@ -368,10 +506,13 @@ fn print_summary(interior: usize, surface: usize, exterior: usize, path: &Path) 
     println!("  exterior (eval > 0)        : {exterior:>5}");
     println!();
     println!("PLY    : {}", path.display());
-    println!("         vertices-only point cloud + extras[\"signed_distance\"]");
-    println!("         open in MeshLab / ParaView; colormap by signed_distance");
-    println!("         to see the radial SDF gradient (negative inside, positive");
-    println!("         outside, zero on the sphere surface).");
+    println!("         vertices-only point cloud + 2 per-vertex scalars:");
+    println!("           extras[\"signed_distance\"]    — analytic SDF, divergent");
+    println!("           extras[\"gradient_magnitude\"] — |∇_FD SDF|, sequential");
+    println!("         open in MeshLab / ParaView and colormap by either scalar");
+    println!("         (signed_distance shows the radial SDF; gradient_magnitude");
+    println!("         shows the Eikonal diagnostic, with the discretization dip");
+    println!("         around the origin where central diffs smooth the kink).");
 }
 
 // =============================================================================
@@ -394,10 +535,20 @@ fn main() -> Result<()> {
     let grid = build_grid(&sphere);
     let (interior, surface, exterior) = verify_grid_consistency(&grid);
 
+    // Eikonal diagnostic: finite-difference gradient magnitude over the
+    // sampled `signed_distance` field. Approximates `|∇SDF| ≈ 1` for
+    // smooth analytic SDFs; dips toward 0 at the origin (the `p / ‖p‖`
+    // gradient flips through the centre, central diffs cancel) and
+    // shows smoothing-error dips in the curved interior shell. See
+    // `verify_fd_gradient_magnitude` for the regime breakdown.
+    let eval_field: Vec<f64> = grid.iter().map(|g| g.eval).collect();
+    let fd_grad_mag = finite_difference_grad_magnitude(&eval_field);
+    verify_fd_gradient_magnitude(&grid, &fd_grad_mag);
+
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
     let out_path = out_dir.join("sdf_grid.ply");
-    save_grid_ply(&grid, &out_path)?;
+    save_grid_ply(&grid, &fd_grad_mag, &out_path)?;
 
     print_summary(interior, surface, exterior, &out_path);
     Ok(())
