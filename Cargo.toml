@@ -315,6 +315,9 @@ members = [
     "examples/mesh/mesh-lattice-shape-bounded",
     "examples/mesh/mesh-lattice-mesh-bounded-infill",
 
+    # Examples — sim-soft
+    "examples/sim-soft/sphere-sdf-eval",
+
     # Foundation (active development)
     "design/cf-geometry",
     "design/cf-spatial",

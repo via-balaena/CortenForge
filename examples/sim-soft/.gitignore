@@ -1,0 +1,3 @@
+# Per-example PLY / JSON artifacts written by `cargo run --release`.
+# Mirrors the convention from `examples/mesh/.gitignore`.
+*/out/
