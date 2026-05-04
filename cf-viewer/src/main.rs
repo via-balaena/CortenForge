@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 use bevy::prelude::*;
 use cf_viewer::{
-    ViewerInput, load_input,
+    ViewerInput,
+    colormap::Colormap,
+    load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh, vertex_position},
 };
 use mesh_types::Bounded;
@@ -45,17 +47,27 @@ fn main() -> Result<()> {
 /// the loaded [`ViewerInput`].
 ///
 /// **Faces case** (`face_count() > 0`): one `Mesh3d` entity carrying the
-/// converted Bevy mesh.
+/// converted Bevy mesh. Per-vertex colors (when scalars are present) are
+/// baked into `Mesh::ATTRIBUTE_COLOR` and the PBR shader overwrites
+/// `material.base_color` from them.
 ///
 /// **Faces-empty case** (point cloud): one tiny sphere entity per vertex,
-/// sharing a single mesh handle and a single material handle. Sphere radius
-/// is `bbox.diagonal() * POINT_RADIUS_FRACTION`. See `docs/VIEWER_DESIGN.md`
-/// iter-2 still-open #6 for the rendering-approach decision.
+/// sharing a single `Sphere` mesh handle (per `docs/VIEWER_DESIGN.md`
+/// iter-2 still-open #6). Sphere radius is `bbox.diagonal() *
+/// POINT_RADIUS_FRACTION`. With scalars present, each entity gets its own
+/// `StandardMaterial` clone with `base_color` set to the colormapped value
+/// (option A per iter-2 still-open #7); without scalars, all spheres share
+/// the neutral grey template material.
+///
+/// **Scalar selection:** auto-picks `input.scalar_names[0]`
+/// (`BTreeMap` iteration is alphabetical → deterministic) per Q4. The
+/// `--scalar=<name>` CLI flag (commit 6) overrides.
 ///
 /// The camera + lights size themselves to the input's AABB. Orbit camera
 /// (commit 5) replaces this static placeholder.
 #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
+#[allow(clippy::too_many_lines)] // single-system scene setup; orbit-cam commit 5 will split
 fn setup_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -103,17 +115,33 @@ fn setup_scene(
         ..default()
     });
 
-    let material_handle = materials.add(StandardMaterial {
+    // Auto-select the first scalar (Q4 alphabetical-first-pick). `BTreeMap`
+    // iteration is alphabetical → `scalar_names[0]` is the deterministic
+    // pick. The CLI override (`--scalar=<name>`) lands in commit 6.
+    let scalar_values: Option<&Vec<f32>> = input
+        .scalar_names
+        .first()
+        .and_then(|name| input.mesh.extras.get(name));
+    let colormap = scalar_values.map(|values| Colormap::from_values(values));
+    let vertex_colors: Option<Vec<[f32; 4]>> = scalar_values
+        .zip(colormap.as_ref())
+        .map(|(values, cm)| values.iter().map(|&v| cm.rgba(v)).collect());
+
+    // Template material — neutral grey base. The PBR shader overwrites
+    // `base_color` from `Mesh::ATTRIBUTE_COLOR` when present, so this color
+    // only renders in the no-scalars fallback path.
+    let template_material = StandardMaterial {
         base_color: Color::srgb(0.70, 0.72, 0.78),
         metallic: 0.10,
         perceptual_roughness: 0.6,
         double_sided: true,
         cull_mode: None,
         ..default()
-    });
+    };
 
     if input.mesh.face_count() > 0 {
-        let bevy_mesh = build_face_mesh(&input.mesh);
+        let bevy_mesh = build_face_mesh(&input.mesh, vertex_colors.as_deref());
+        let material_handle = materials.add(template_material);
         commands.spawn((
             Mesh3d(meshes.add(bevy_mesh)),
             MeshMaterial3d(material_handle),
@@ -121,12 +149,35 @@ fn setup_scene(
     } else {
         let radius = (diagonal * POINT_RADIUS_FRACTION).max(1e-3);
         let sphere_handle = meshes.add(Sphere::new(radius));
-        for v in &input.mesh.geometry.vertices {
-            commands.spawn((
-                Mesh3d(sphere_handle.clone()),
-                MeshMaterial3d(material_handle.clone()),
-                Transform::from_translation(Vec3::from_array(vertex_position(v))),
-            ));
+        match vertex_colors.as_deref() {
+            Some(colors) => {
+                // Per-vertex `StandardMaterial` (iter-2 still-open #7
+                // option A): one material clone per sphere with
+                // `base_color` set to the colormapped value. Wasteful but
+                // simple; combined-mesh (option B) is the polish-commit
+                // direction if a future consumer pushes past ~10K verts.
+                for (v, color) in input.mesh.geometry.vertices.iter().zip(colors) {
+                    let material = materials.add(StandardMaterial {
+                        base_color: Color::srgba(color[0], color[1], color[2], color[3]),
+                        ..template_material.clone()
+                    });
+                    commands.spawn((
+                        Mesh3d(sphere_handle.clone()),
+                        MeshMaterial3d(material),
+                        Transform::from_translation(Vec3::from_array(vertex_position(v))),
+                    ));
+                }
+            }
+            None => {
+                let material_handle = materials.add(template_material);
+                for v in &input.mesh.geometry.vertices {
+                    commands.spawn((
+                        Mesh3d(sphere_handle.clone()),
+                        MeshMaterial3d(material_handle.clone()),
+                        Transform::from_translation(Vec3::from_array(vertex_position(v))),
+                    ));
+                }
+            }
         }
     }
 }

@@ -64,12 +64,17 @@ fn vertex_normal(n: &Vector3<f64>) -> [f32; 3] {
 /// - Indices: triangle list with `(v0, v2, v1)` winding flip — the Y/Z swap
 ///   reverses handedness, so emit reversed triangles to keep front-faces
 ///   facing the camera.
+/// - Vertex colors: if `vertex_colors` is `Some`, attached as
+///   `Mesh::ATTRIBUTE_COLOR` (`Float32x4`). The PBR fragment shader
+///   overwrites `material.base_color` from this, so the bound
+///   `StandardMaterial`'s `base_color` is moot when colors are present.
+///   Length must match `geometry.vertices.len()` (debug-asserted).
 ///
 /// Caller responsibility: check `mesh.face_count() > 0` before calling. The
 /// faces-empty path is point-cloud rendering, handled by the scene-setup
 /// system in `main.rs` (one sphere entity per vertex).
 #[must_use]
-pub fn build_face_mesh(mesh: &AttributedMesh) -> Mesh {
+pub fn build_face_mesh(mesh: &AttributedMesh, vertex_colors: Option<&[[f32; 4]]>) -> Mesh {
     let geometry = &mesh.geometry;
     debug_assert!(
         !geometry.faces.is_empty(),
@@ -100,6 +105,14 @@ pub fn build_face_mesh(mesh: &AttributedMesh) -> Mesh {
     );
     bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    if let Some(colors) = vertex_colors {
+        debug_assert_eq!(
+            colors.len(),
+            geometry.vertices.len(),
+            "build_face_mesh: vertex_colors length must match vertex count",
+        );
+        bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
+    }
     bevy_mesh.insert_indices(Indices::U32(indices));
     bevy_mesh
 }
@@ -125,7 +138,7 @@ mod tests {
             vec![[0, 1, 2]],
         );
         let mesh = AttributedMesh::new(geometry);
-        let bevy_mesh = build_face_mesh(&mesh);
+        let bevy_mesh = build_face_mesh(&mesh, None);
 
         let position_count = match bevy_mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
             Some(VertexAttributeValues::Float32x3(values)) => values.len(),
@@ -143,6 +156,55 @@ mod tests {
         assert_eq!(position_count, 3, "positions match vertex count");
         assert_eq!(normal_count, 3, "normals match vertex count");
         assert_eq!(index_count, 3, "indices = face_count * 3");
+    }
+
+    /// `vertex_colors = None` must NOT attach `ATTRIBUTE_COLOR` — the
+    /// shared template `StandardMaterial`'s `base_color` only applies when
+    /// the shader's `VERTEX_COLORS` def stays off, which requires the
+    /// attribute to be absent from the mesh layout.
+    #[test]
+    fn build_face_mesh_no_colors_omits_attribute() {
+        let geometry = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            vec![[0, 1, 2]],
+        );
+        let mesh = AttributedMesh::new(geometry);
+        let bevy_mesh = build_face_mesh(&mesh, None);
+        assert!(
+            bevy_mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_none(),
+            "no vertex colors → ATTRIBUTE_COLOR must be absent",
+        );
+    }
+
+    /// `vertex_colors = Some(_)` attaches `ATTRIBUTE_COLOR` as `Float32x4`
+    /// with the supplied values preserved.
+    #[test]
+    fn build_face_mesh_attaches_vertex_colors() {
+        let geometry = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            vec![[0, 1, 2]],
+        );
+        let mesh = AttributedMesh::new(geometry);
+        let colors = [
+            [1.0_f32, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ];
+        let bevy_mesh = build_face_mesh(&mesh, Some(&colors));
+
+        let stored: Vec<[f32; 4]> = match bevy_mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+            Some(VertexAttributeValues::Float32x4(values)) => values.clone(),
+            _ => Vec::new(),
+        };
+        assert_eq!(stored, colors.to_vec());
     }
 
     /// Z-up → Y-up swap on a known position. Physics `(1, 2, 3)` should
@@ -167,7 +229,7 @@ mod tests {
             vec![[0, 1, 2]],
         );
         let mesh = AttributedMesh::new(geometry);
-        let bevy_mesh = build_face_mesh(&mesh);
+        let bevy_mesh = build_face_mesh(&mesh, None);
 
         let indices: Vec<u32> = match bevy_mesh.indices() {
             Some(Indices::U32(idx)) => idx.clone(),
