@@ -127,15 +127,28 @@ fn setup_scene(
         .zip(colormap.as_ref())
         .map(|(values, cm)| values.iter().map(|&v| cm.rgba(v)).collect());
 
-    // Template material — neutral grey base. The PBR shader overwrites
-    // `base_color` from `Mesh::ATTRIBUTE_COLOR` when present, so this color
-    // only renders in the no-scalars fallback path.
+    // Template material. Two regimes (iter 1.6 lock):
+    //
+    // - **Scalar data present** → `unlit = true`. The base_color (set per
+    //   vertex/material from the colormap) renders faithfully without
+    //   PBR shading × bright lights × tonemap desaturating the hue.
+    //   For a viz tool the color *is* the data; shading fights it.
+    //
+    // - **No scalars** → `unlit = false` (default). The mesh-v1.0
+    //   geometry-only path needs proper shading to read surface form.
+    //
+    // The PBR shader still overwrites `base_color` from
+    // `Mesh::ATTRIBUTE_COLOR` when present (faces case), so the
+    // template's grey is moot in that branch — the unlit flag is what
+    // actually keeps the colors honest.
+    let unlit = vertex_colors.is_some();
     let template_material = StandardMaterial {
         base_color: Color::srgb(0.70, 0.72, 0.78),
         metallic: 0.10,
         perceptual_roughness: 0.6,
         double_sided: true,
         cull_mode: None,
+        unlit,
         ..default()
     };
 

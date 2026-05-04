@@ -1,8 +1,13 @@
 //! Colormap pipeline — auto-detect distribution category + per-vertex RGBA.
 //!
-//! Per `docs/VIEWER_DESIGN.md` Q5 (locked iter 1):
+//! Per `docs/VIEWER_DESIGN.md` Q5 (locked iter 1) + iter 1.5 normalization
+//! interpretation:
 //!
-//! - Any value `< 0.0` → **divergent** (`coolwarm`, range symmetric around 0).
+//! - Any value `< 0.0` → **divergent** (`coolwarm`, "centered at 0" via
+//!   `TwoSlopeNorm`: negatives stretch to `t ∈ [0, 0.5]` independent of
+//!   positive magnitude, positives to `t ∈ [0.5, 1.0]` — value 0 always
+//!   lands at `t = 0.5` (white center), both extremes hit the saturated
+//!   ends of the colormap).
 //! - Else if all values cast equal to integer AND there are 2..16 unique
 //!   values → **categorical** (`tab10`, indexed by `value mod 10`).
 //! - Otherwise → **sequential** (`viridis`, range = data extent).
@@ -53,26 +58,23 @@ pub enum ColormapKind {
 pub struct Colormap {
     /// Detected distribution category.
     pub kind: ColormapKind,
-    /// Normalization range. Symmetric around 0 for [`ColormapKind::Divergent`];
-    /// the data extent for [`ColormapKind::Sequential`]; unused for
-    /// [`ColormapKind::Categorical`] (which indexes by `value mod 10`).
+    /// Data extent `(min, max)`. For [`ColormapKind::Divergent`] this is
+    /// the raw data range — normalization is asymmetric (`TwoSlopeNorm`),
+    /// not via a symmetric `(-m, m)` bound. For [`ColormapKind::Sequential`]
+    /// it's the data extent. Unused for [`ColormapKind::Categorical`]
+    /// (which indexes by `value mod 10`).
     pub range: (f32, f32),
 }
 
 impl Colormap {
-    /// Detect the distribution category of `values` and compute the
-    /// appropriate normalization range.
+    /// Detect the distribution category of `values` and store the data
+    /// extent. All three kinds use the raw `(min, max)` extent — the
+    /// `TwoSlopeNorm` two-half mapping for [`ColormapKind::Divergent`]
+    /// happens at sample time inside [`Self::rgba`].
     #[must_use]
     pub fn from_values(values: &[f32]) -> Self {
         let kind = detect(values);
-        let (data_min, data_max) = data_range(values);
-        let range = match kind {
-            ColormapKind::Divergent => {
-                let m = data_min.abs().max(data_max.abs());
-                (-m, m)
-            }
-            ColormapKind::Sequential | ColormapKind::Categorical => (data_min, data_max),
-        };
+        let range = data_range(values);
         Self { kind, range }
     }
 
@@ -87,7 +89,7 @@ impl Colormap {
         }
         match self.kind {
             ColormapKind::Sequential => sample(VIRIDIS, normalize(value, self.range)),
-            ColormapKind::Divergent => sample(COOLWARM, normalize(value, self.range)),
+            ColormapKind::Divergent => sample(COOLWARM, two_slope_normalize(value, self.range)),
             ColormapKind::Categorical => {
                 let idx = (value as i64).rem_euclid(TAB10.len() as i64) as usize;
                 let (r, g, b) = TAB10[idx];
@@ -179,6 +181,24 @@ fn normalize(value: f32, range: (f32, f32)) -> f32 {
     }
 }
 
+/// Two-slope normalization for divergent maps: pin value 0 to `t = 0.5`
+/// (center of the colormap) and stretch each side to its own extent.
+/// Negatives map `[min, 0] → [0, 0.5]` (deep blue → white); positives map
+/// `[0, max] → [0.5, 1.0]` (white → deep red). Either side absent (e.g.
+/// `min ≥ 0` or `max ≤ 0`) collapses to `0.5` for that side.
+#[inline]
+#[must_use]
+fn two_slope_normalize(value: f32, range: (f32, f32)) -> f32 {
+    let (min, max) = range;
+    if value < 0.0 && min < 0.0 {
+        (0.5 * (1.0 - value / min)).clamp(0.0, 0.5)
+    } else if value > 0.0 && max > 0.0 {
+        (0.5 + 0.5 * (value / max)).clamp(0.5, 1.0)
+    } else {
+        0.5
+    }
+}
+
 /// Linearly interpolate between `table` control points. `t` is clamped to
 /// `[0, 1]`.
 #[must_use]
@@ -198,18 +218,24 @@ fn sample(table: &[(f32, f32, f32)], t: f32) -> [f32; 4] {
     ]
 }
 
-/// 9-point control approximation of matplotlib's `coolwarm` diverging
-/// colormap. Center (t=0.5) is light grey ~`(0.866, 0.866, 0.866)`.
+/// 9-point saturated blue→white→red divergent table (bwr-style).
+///
+/// Picked over matplotlib's perceptually-uniform `coolwarm` (whose
+/// endpoints are `(0.230, 0.299, 0.754)` and `(0.706, 0.016, 0.150)` —
+/// medium-saturation by design) because for visual review the
+/// negative/positive split must be unmistakable at a glance. Saturation
+/// trumps perceptual-luminance uniformity here. Iter 1.7 lock — see
+/// `docs/VIEWER_DESIGN.md`.
 const COOLWARM: &[(f32, f32, f32)] = &[
-    (0.230, 0.299, 0.754),
-    (0.346, 0.426, 0.847),
-    (0.484, 0.563, 0.916),
-    (0.625, 0.685, 0.961),
-    (0.866, 0.866, 0.866),
-    (0.961, 0.685, 0.625),
-    (0.916, 0.563, 0.484),
-    (0.847, 0.426, 0.346),
-    (0.706, 0.016, 0.150),
+    (0.000, 0.000, 1.000),
+    (0.250, 0.250, 1.000),
+    (0.500, 0.500, 1.000),
+    (0.750, 0.750, 1.000),
+    (1.000, 1.000, 1.000),
+    (1.000, 0.750, 0.750),
+    (1.000, 0.500, 0.500),
+    (1.000, 0.250, 0.250),
+    (1.000, 0.000, 0.000),
 ];
 
 /// 9-point control approximation of matplotlib's `viridis` sequential
@@ -346,11 +372,50 @@ mod tests {
     }
 
     #[test]
-    fn from_values_divergent_range_is_symmetric() {
+    fn from_values_divergent_range_is_data_extent() {
         let cm = Colormap::from_values(&[-2.0, 0.0, 1.0]);
         assert_eq!(cm.kind, ColormapKind::Divergent);
-        // |min|=2, |max|=1 → symmetric around 0 with m=2.
-        assert_eq!(cm.range, (-2.0, 2.0));
+        // TwoSlopeNorm semantics: range is the raw data extent, not a
+        // symmetric `(-m, m)` envelope.
+        assert_eq!(cm.range, (-2.0, 1.0));
+    }
+
+    #[test]
+    fn divergent_two_slope_saturates_each_extreme() {
+        // Asymmetric data — typical sphere-SDF shape (min=-1, max=+2.46).
+        let cm = Colormap {
+            kind: ColormapKind::Divergent,
+            range: (-1.0, 2.46),
+        };
+        // Most-negative point → deep blue end (t=0).
+        let deep_neg = cm.rgba(-1.0);
+        assert!(
+            deep_neg[2] > 0.7 && deep_neg[0] < 0.3,
+            "two-slope: min should hit deep blue: {deep_neg:?}",
+        );
+        // Most-positive point → deep red end (t=1).
+        let deep_pos = cm.rgba(2.46);
+        assert!(
+            deep_pos[0] > 0.6 && deep_pos[2] < 0.2,
+            "two-slope: max should hit deep red: {deep_pos:?}",
+        );
+        // Zero → white center.
+        let center = cm.rgba(0.0);
+        assert!(
+            center[0] > 0.7 && center[1] > 0.7 && center[2] > 0.7,
+            "two-slope: 0 should be ~white: {center:?}",
+        );
+    }
+
+    #[test]
+    fn divergent_two_slope_collapses_when_one_side_absent() {
+        // All-positive data (min > 0): negatives can't occur in the data
+        // but the function shouldn't panic if asked.
+        let cm = Colormap {
+            kind: ColormapKind::Divergent,
+            range: (0.5, 2.0),
+        };
+        assert_eq!(cm.rgba(-1.0)[..3], cm.rgba(0.0)[..3]);
     }
 
     #[test]

@@ -75,9 +75,14 @@ On PLY load, the viewer enumerates all per-vertex scalar properties — everythi
 ### Q5 — Colormap policy: auto-detect by value distribution + CLI override.
 
 **Detection rules:**
-- If the scalar has any negative value → **divergent** (cool→white→warm), centered at 0.
+- If the scalar has any negative value → **divergent** (cool→white→warm), centered at 0 via `TwoSlopeNorm` (see Normalization below).
 - Otherwise, if all values cast bit-equal to their integer cast AND there are < 16 unique values → **categorical** (tab10 or similar).
 - Otherwise → **sequential** (viridis).
+
+**Normalization (locked iter 1.5):**
+- **Divergent — `TwoSlopeNorm` (asymmetric):** value 0 always pins to `t = 0.5` (white center); negatives stretch to `t ∈ [0, 0.5]` (deep blue → white) using their own extent; positives stretch to `t ∈ [0.5, 1.0]` (white → deep red) using theirs. Both extremes always saturate. Matches matplotlib's `TwoSlopeNorm` and ParaView's default for asymmetric divergent data. The naive symmetric `(-m, m)` alternative (matplotlib's default `Normalize`) wastes half the colormap when data is asymmetric — sphere-sdf-eval (min=-1, max=+2.46) only reaches t=0.297 on the cool side under symmetric normalization, washing out the inside-sphere blue under bright lighting + tonemapping. See iteration log entry "iter 1.5" for the full rationale.
+- **Sequential:** `(data_min, data_max)` linear normalization to `t ∈ [0, 1]`.
+- **Categorical:** integer value indexed `mod 10` into the tab10 table.
 
 **CLI override:** `--colormap=divergent|sequential|categorical` for explicit control when the heuristic mis-classifies (rare but possible; e.g., a signed scalar that happens to be all-positive in the PLY's bbox).
 
@@ -205,6 +210,36 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Next iteration entry point:** commit 5 (orbit camera + UI) on `dev` after user reviews commit 4 by running `cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply` (signed_distance is divergent → coolwarm; inside-sphere blue, outside red, isosurface white-grey) and a mesh-v1.0 PLY (no scalars → grey fallback unchanged).
 
+- **2026-05-04 (iter 1.5 — commit-4 visual-review correction: divergent normalization → `TwoSlopeNorm`):** Visual review of `sphere-sdf-eval` after the initial commit 4 (`0c3ab996`) showed all-warm coloring with no visible blue inside-sphere region — the math was correct (origin at `v=-1` mapped to `(0.537, 0.609, 0.933)` light blue, verified via diagnostic prints), but the `(-m, m)` symmetric range with `m = max(|min|, |max|) = 2.46` only reached `t = 0.297` on the cool side. Combined with the bright directional + ambient lighting and `TonyMcMapface` tonemap, light blue washed out to near-white while the warm half (1250/1331 points) saturated visibly. **Locked: switch divergent normalization from symmetric `(-m, m)` to `TwoSlopeNorm` (asymmetric two-half).** Negatives map `[min, 0] → [0, 0.5]`; positives map `[0, max] → [0.5, 1.0]`; value 0 always pins to `t = 0.5`. Both extremes saturate independent of magnitude asymmetry. Matches matplotlib's `TwoSlopeNorm` + ParaView's default for asymmetric divergent data. The "centered at 0" Q5 semantic is preserved either way; the change is in *how* each half stretches.
+
+  User-decided UX call per `feedback_master_architect_delegation` (UX/visual-review effectiveness is a project-scope call, not a tech detail). Followup commit on `dev` after `0c3ab996`.
+
+  **Bevy 0.18 lighting note worth banking:** the bright lighting setup (DirectionalLight illuminance 12_000 + GlobalAmbientLight brightness 1_200) compresses subtle hue differences in the highlight region after PBR + tonemap. If subtle colormap variations need to be visible in future commits, consider easing the lighting OR ensuring the colormap saturates near both extremes (which `TwoSlopeNorm` does for divergent). **Iter 1.6 (below) supersedes this with the cleaner fix.**
+
+  **Next iteration entry point:** unchanged — commit 5 (orbit camera + UI) after user re-reviews the corrected commit 4.
+
+- **2026-05-04 (iter 1.6 — commit-4 visual-review second correction: `unlit = true` when colormap data present):** The iter-1.5 `TwoSlopeNorm` fix mathematically saturated both colormap extremes (origin v=-1 → t=0 → COOLWARM[0] = (0.230, 0.299, 0.754) deep blue), but the second visual review still showed at most a faint lavender hint in the inner region — no visibly blue points. Root cause: PBR shading × bright lights × `TonyMcMapface` tonemap desaturate the deep-blue base_color into near-grey by the time it hits the display. The pipeline `sRGB(0.230, 0.299, 0.754) → linear(~0.043, ~0.073, ~0.527) → × illuminance/ambient → tonemap → display sRGB` over-drives into the highlight-desaturation regime of TonyMcMapface.
+
+  **Locked: set `unlit = true` on `StandardMaterial` when colormap data is present** (faces with vertex colors OR point cloud with per-vertex materials). For a visualization tool the color IS the data; PBR shading actively fights the colormap. The `unlit` flag bypasses lighting entirely so the material's `base_color` (or vertex color via `Mesh::ATTRIBUTE_COLOR`) renders faithfully on every fragment. **Geometry-only path keeps `unlit = false`** — mesh-v1.0 examples need proper shading to read surface form. Single rule at material creation: `let unlit = vertex_colors.is_some()`.
+
+  Two-line fix (one assignment + one struct field). User-decided UX call per `feedback_master_architect_delegation`. Same followup commit as iter 1.5 (rolling both fixes into one commit on `dev` since iter 1.5 alone was insufficient and the visual-review cycle is what's gating).
+
+  **Iter 1.6 supersedes the iter-1.5 lighting-easing speculation:** rather than dim the lights (which would compromise the geometry-only path), simply opt out of lighting per-material when it's not needed. Cleaner, no global setting trade-off.
+
+  **Bevy 0.18 design pattern banked:** for data-encoded color (visualization, debug overlays, custom UI on PBR meshes), `StandardMaterial { unlit: true, .. }` is the right escape hatch. PBR is for *physical surfaces*; data colors aren't physical surfaces.
+
+  **Next iteration entry point:** unchanged — commit 5 (orbit camera + UI) after user re-reviews the corrected commit 4 (now with iter 1.5 + iter 1.6 fixes).
+
+- **2026-05-04 (iter 1.7 — commit-4 visual-review third correction: divergent palette → saturated bwr):** Iter-1.5 + iter-1.6 fixed normalization + lighting; the rendered colors now matched matplotlib coolwarm faithfully. But coolwarm's endpoints `(0.230, 0.299, 0.754)` blue and `(0.706, 0.016, 0.150)` red are *intentionally* medium-saturation (matplotlib's design — perceptual uniformity > saturation), and at point-cloud-marker scale on a dark background the deep blue read as "lavender hint" rather than "unmistakably blue." For a workspace visual-review tool the negative/positive split needs to be obvious at a glance — saturation trumps perceptual uniformity for THIS use case (matplotlib's coolwarm is optimal for static figures where exact luminance matters; cf-viewer is for "is the inside-sphere region negative? yes/no"). **Locked: replace the 9-point matplotlib-coolwarm approximation with a saturated bwr-style ramp** — endpoints `(0, 0, 1)` deep blue and `(1, 0, 0)` deep red, white center `(1, 1, 1)`, linear interpolation through 9 control points. Constant name `COOLWARM` retained (it's the divergent-bin colormap implementation; "coolwarm" is the bin name even though the specific palette is now bwr). Doc comment in `colormap.rs` records the choice + rationale.
+
+  User-decided UX call per `feedback_master_architect_delegation` (subjective saturation preference for visual review). Same followup commit as iter 1.5 + 1.6; the visual-review cycle is what's gating the commit.
+
+  **Future flexibility:** commit 6's `--colormap=<kind>` flag can grow to also accept palette overrides (e.g., `--palette=coolwarm|bwr|rdbu`) if a downstream consumer needs matplotlib-faithful coolwarm specifically. Out of v1 scope.
+
+  **Bevy-related lesson reinforced:** the iter-1.5 + iter-1.6 + iter-1.7 chain shows how easily "the math is right" can mask "the rendered output is wrong." For visualization commits, the visual review IS the test — three correction cycles before the colors actually communicated the data. Per `feedback_thorough_review_before_commit`, N+1 always finds something — but for visual output, N+1 has to mean an actual eye-on-pixels pass, not just code re-reads.
+
+  **Next iteration entry point:** unchanged — commit 5 (orbit camera + UI) after user re-reviews commit 4 with all three iter 1.5/1.6/1.7 fixes applied.
+
 ---
 
 ## Cross-references
@@ -237,5 +272,6 @@ _(append session-by-session; date-stamped; what changed and why)_
 - Commit 1: `EventWriter` → `MessageWriter`; emit `AppExit::Success` to exit cleanly.
 - Commit 3: `AmbientLight` is now a per-camera component override; world-wide ambient is `GlobalAmbientLight` (sim-bevy `scene.rs:101` precedent).
 - Commit 4: vertex colors via `Mesh::ATTRIBUTE_COLOR` use `VertexFormat::Float32x4`; the PBR fragment shader OVERWRITES `material.base_color` from `in.color` (not modulates), so a shared template `StandardMaterial` "just works" as the fallback when no vertex colors are present.
+- Commit 4 visual-review note: bright lighting (DirectionalLight 12_000 + GlobalAmbientLight 1_200) + `TonyMcMapface` tonemap compress subtle hue differences in highlights — pale colormap colors (e.g. light blue at `t = 0.3` of coolwarm) wash to near-white. Prefer colormap normalizations that saturate near both extremes (e.g. `TwoSlopeNorm` for divergent — see iter 1.5). **AND** even saturated colors get desaturated under bright PBR — set `unlit = true` on `StandardMaterial` whenever the color encodes data rather than a physical surface (iter 1.6). PBR is for physical surfaces; data colors aren't physical surfaces.
 
 If anything in the locked decisions feels wrong on a re-read, redirect — locked ≠ frozen, and the planning doc is the place for second thoughts before code makes them expensive to undo.
