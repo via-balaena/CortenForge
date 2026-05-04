@@ -167,6 +167,9 @@ jobs:
           #   locally via pre-commit, not in this matrix.
           # - sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests
           #   / sim-opt: heavy-physics validators move to tests-release below.
+          # cf-viewer is included: its tests are pure-function (no App::new()
+          # / window spin-up), so headless CI handles them; the x11 / wayland
+          # dev libs already installed above suffice for the link step.
           cargo test \
             -p mesh-types -p mesh-io -p mesh-repair -p mesh-sdf \
             -p mesh-offset -p mesh-shell -p mesh-measure \
@@ -174,7 +177,7 @@ jobs:
             -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
             -p sim-urdf -p sim-gpu -p sim-soft -p sim-ml-chassis-bevy \
             -p sim-therm-env -p cf-geometry -p cf-spatial -p cf-design \
-            -p cf-design-tests
+            -p cf-design-tests -p cf-viewer
         shell: bash
 
   # ============================================================================
