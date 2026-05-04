@@ -2,9 +2,13 @@
 //!
 //! Wraps [`mesh_io::load_ply_attributed`] in a Bevy-friendly resource that
 //! carries the loaded geometry plus a deterministically-ordered list of
-//! per-vertex scalar names. Geometry rendering, colormap pipeline, orbit
-//! camera, and CLI flags land in subsequent commits — see
+//! per-vertex scalar names. The [`mesh`] submodule converts the loaded
+//! geometry into a Bevy `Mesh` (face case) and exposes the point-cloud
+//! sizing constant used by the scene-setup system. Colormap pipeline,
+//! orbit camera, and CLI flags land in subsequent commits — see
 //! `docs/VIEWER_DESIGN.md` for the locked PR shape.
+
+pub mod mesh;
 
 use std::path::Path;
 

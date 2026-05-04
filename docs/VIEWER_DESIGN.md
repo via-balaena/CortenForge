@@ -1,6 +1,6 @@
 # CortenForge Visual-Review Viewer — Design Plan
 
-**Status:** Commit 1 (scaffolding) shipped 2026-05-04 on `dev` (`02bceb9c`). Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. Plan iter-1 still locked; next step is commit 2 (PLY load + ViewerInput).
+**Status:** Commit 1 (scaffolding `02bceb9c`) + commit 2 (PLY load + `ViewerInput` `093f0410`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. Plan iter-1 still locked; next step is commit 3 (geometry rendering).
 
 **Purpose:** Design the unified visual-review viewer that supersedes per-example tool chains (MeshLab + filter dialogs for sim-soft; f3d for mesh examples). One command, one window, every static-field artifact in the workspace. Living document — delete after the viewer ships and the workspace has migrated to it, per `feedback_code_speaks`.
 
@@ -130,9 +130,11 @@ PR size precedent: comparable to mesh-v1.0 PR #224 (8 mesh examples, 8 commits).
 ## Iter-1 still-open items (not blocking; surfaces during code authoring)
 
 1. **Shared Bevy utilities — locked: NO sim-bevy dep.** Stress-test N1 confirmed sim-bevy's transitive deps (sim-types, sim-core, sim-mjcf, sim-urdf) are physics-specific and have zero overlap with cf-viewer's concerns. **Decision: write the orbit camera + AttributedMesh→Bevy-mesh conversion inline in cf-viewer (~150 LOC).** Factor out to a `cf-bevy-common` sibling crate ONLY if a second consumer emerges. cf-viewer's only Bevy-related deps in v1 are `bevy` itself, `bevy_egui` (likely; see #3), and `mesh-types` / `mesh-io` for the PLY surface.
-2. **Axis conversion (PLY-z up → Bevy-y up)** — Bevy is internally Y-up; mesh-v1.0 examples use Z-up build-plate convention (hence f3d's `--up=+Z`). Two implementation paths: (a) rotate input mesh at load to align user-space-up with Bevy-y (sim-bevy's `convert.rs` does this), or (b) configure camera + lighting + grid to interpret the chosen axis as up without rotating data. **Default for now:** option (a) per sim-bevy's precedent; reconsider during commit 5 if (b) ends up cleaner for the orbit-camera shape.
+2. **Axis conversion (PLY-z up → Bevy-y up) — locked at commit 3: option (a) inline.** Bevy is internally Y-up; mesh-v1.0 examples use Z-up build-plate convention (hence f3d's `--up=+Z`). Implementation: copy-adapt sim-bevy's `convert.rs` swap inline in cf-viewer's mesh-conversion path — `[x, z, y]` on positions and normals, `(v0, v2, v1)` winding flip on triangle indices. Locked because (b) "configure camera/lighting for axis without rotating data" would force every downstream consumer (orbit camera, gizmos, light placement) to re-derive the swap; doing it once at conversion time keeps Bevy's Y-up assumption intact through the whole render path. The `--up=<axis>` CLI flag (commit 6) parameterizes which input axis maps to Bevy-y; Z-up is the default per Q6.
 3. **UI library choice** — egui (mature, common Bevy companion via `bevy_egui`) vs Bevy's built-in UI. Decide during commit 5 (orbit camera + UI). egui is likely cleaner for dropdowns; Bevy UI is leaner but rougher for forms. **Default for now:** lean toward `bevy_egui` unless workspace already uses Bevy UI primitives elsewhere.
 4. **Scalar value range** — should the viewer expose a CLI flag / UI slider for the colormap range (clamping outliers)? Out of v1 scope; flag if it surfaces.
+5. **Crease-angle splitting for the geometry-only path — DEFERRED to a polish commit before the Q7 mesh-v1.0 retrofit PR.** sim-bevy's `triangle_mesh_from_indexed` does crease-angle vertex splitting (cos 30° threshold) so cuboid lattices shade as flat surfaces and curved SDF surfaces shade smoothly. cf-viewer commit 3 ships the simpler smooth-normals path (use `mesh.normals` if `Some` else `geometry.compute_vertex_normals()`) — visually fine for the sphere-sdf-eval consumer but renders mesh-v1.0 cuboid faces with noticeable corner blurring. Cost to land splitting now: ~80 extra LOC + extra tests. Per `feedback_baby_steps`, kept commit 3 small; mesh-v1.0 retrofit is its own followup PR (Q7) and a polish commit can land between now and then once a real mesh consumer is exercised.
+6. **Point-cloud rendering — locked at commit 3: option (b) instanced spheres.** PR shape said "spawn `Mesh3d` entities (faces case) or point-cloud entities (faces-empty case)." Walked the four candidates: (a) `PrimitiveTopology::PointList` with default size (Bevy 0.18 renders 1px points; not viable at orbit-camera distances); (b) instanced small spheres / cubes per vertex; (c) custom point-cloud shader; (d) defer faces-empty entirely until commit 4. Locked (b) — sphere-sdf-eval (1331 verts, the only commit-3 consumer of this path) is well within the entity-spawn budget for a static viewer; one shared `Sphere` mesh handle + one shared `StandardMaterial` handle keeps it cheap. Sphere radius = `bbox.diagonal() * 0.005` (empirically tuned to render discrete dots without occluding neighbors at the 11³-grid scale; user can refine in commit 4 once colormap shading provides a second visibility cue). Custom shader (c) is over-engineering for v1; defer (d) would block sphere-sdf-eval, which IS the commit-3 acceptance fixture.
 
 ---
 
@@ -184,6 +186,18 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Next iteration entry point:** commit 2 (PLY load + ViewerInput) on `dev` branch — see Resume-here block.
 
+- **2026-05-04 (iter 1.3 — commit-3 head-architect calls + axis-conversion locked):** Three architectural calls made at commit-3 authoring time per `feedback_master_architect_delegation`:
+
+  **(a) Axis conversion locked option (a) inline** — moved iter-2 still-open #2 from "default for now" to "locked." Z-up → Y-up swap (`[x, z, y]` on positions + normals, `(v0, v2, v1)` on triangle indices) lives in cf-viewer's mesh-conversion path. Justification: option (b) would force every downstream consumer (orbit camera, gizmos, light placement) to re-derive the swap; once at conversion time keeps Bevy's Y-up assumption intact through the whole render path.
+
+  **(b) Point-cloud rendering locked option (b) instanced spheres** — resolved iter-2 still-open #6. Sphere radius = `bbox.diagonal() * 0.005`, one shared mesh handle + one shared material handle. PointList (option a) renders 1px on Bevy 0.18; custom shader (option c) is over-engineering; defer (option d) would block sphere-sdf-eval as the commit-3 acceptance fixture.
+
+  **(c) Crease-angle splitting deferred** — added iter-2 still-open #5. Commit 3 ships smooth normals only (`mesh.normals` if `Some` else `compute_vertex_normals()`); crease-angle splitting (sim-bevy precedent) lands as a polish commit before the Q7 mesh-v1.0 retrofit PR. Per `feedback_baby_steps` to keep commit 3 reviewable in one sitting.
+
+  Recon batch before authoring: sim-bevy's `triangle_mesh_from_indexed` + `triangle_mesh_from_attributed` (sim/L1/bevy/src/mesh.rs:255-403) and `convert.rs` swap functions (sim/L1/bevy/src/convert.rs:251-283); `AttributedMesh::compute_normals` (mesh/mesh-types/src/attributed.rs:187) + `Bounded` impl (line 248) re-exported from `mesh_types`; `cf_geometry::Aabb` center/diagonal/is_empty (design/cf-geometry/src/aabb.rs); Bevy 0.18 `GlobalAmbientLight` (sim-bevy's `scene.rs:101` — `AmbientLight` was demoted to a per-camera component in 0.18). All four recon hits informed the implementation; no further surprises during authoring.
+
+  **Next iteration entry point:** commit 4 (colormap pipeline) on `dev` after user reviews commit 3 by running `cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply` and a mesh-v1.0 fixture.
+
 ---
 
 ## Cross-references
@@ -204,14 +218,16 @@ _(append session-by-session; date-stamped; what changed and why)_
 
 ## Resume-here for next session
 
-**Commit 1 (scaffolding) shipped 2026-05-04 as `02bceb9c` on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`.**
+**Commit 1 (scaffolding `02bceb9c`) + commit 2 (PLY load + `ViewerInput` `093f0410`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`.**
 
-1. Verify current state: on `dev`, scaffolding commit `02bceb9c` is the most recent viewer commit. Working tree should be clean.
-2. User reviews commit 1 by running `cargo run -p cf-viewer` (window + Esc exit).
-3. Author **commit 2 — PLY loading + ViewerInput**: `load_input(path) -> ViewerInput` via `mesh_io::load_ply_attributed`; data structures for loaded scalars + geometry; unit tests on a known PLY fixture (sphere-sdf-eval's `out/sdf_grid.ply` is the natural one — also exercises the per-vertex-scalar path).
+1. Verify current state: on `dev`, commit 3 (geometry rendering) is the most recent viewer commit. Working tree should be clean.
+2. User reviews commit 3 by running `cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply` (point-cloud path: 1331 sphere markers visible) and a mesh-v1.0 fixture (face path: triangle mesh with smooth shading), e.g. `examples/mesh/format-conversion/out/cube.ply`.
+3. Author **commit 4 — colormap pipeline**: detect distribution category (divergent / sequential / categorical) per Q5 rules, compute per-vertex RGBA, attach as `Mesh::ATTRIBUTE_COLOR` on the Bevy mesh + adjust `StandardMaterial` to honor vertex colors. Unit tests on the detection logic.
 4. Pause for user review; per-commit cadence per `feedback_one_at_a_time_review`.
 5. Continue down the 7-8-commit segmentation in the PR shape section above; that is the executable checklist.
 
-**Bevy 0.18 API gotcha** banked from commit 1: `EventWriter` → `MessageWriter`; emit `AppExit::Success` to exit cleanly. Apply when authoring event-write code in future commits.
+**Bevy 0.18 API gotchas banked so far:**
+- Commit 1: `EventWriter` → `MessageWriter`; emit `AppExit::Success` to exit cleanly.
+- Commit 3: `AmbientLight` is now a per-camera component override; world-wide ambient is `GlobalAmbientLight` (sim-bevy `scene.rs:101` precedent).
 
 If anything in the locked decisions feels wrong on a re-read, redirect — locked ≠ frozen, and the planning doc is the place for second thoughts before code makes them expensive to undo.
