@@ -71,8 +71,9 @@ fn setup_scene(
         center_physics.z as f32,
         center_physics.y as f32,
     );
-    // Empty-AABB sentinel (min > max) yields negative diagonal — clamp so
-    // camera + sphere-radius calculations stay sane on degenerate input.
+    // Single-point degenerate case (min == max → diagonal == 0) and very
+    // small AABBs would shrink the camera offset + sphere radius below the
+    // visible-on-screen floor; clamp to 1.0 so framing stays sane.
     let diagonal = (aabb.diagonal() as f32).max(1.0);
 
     // Camera: ~1.5× diagonal off the (+x, +y, +z) corner so the bbox sits

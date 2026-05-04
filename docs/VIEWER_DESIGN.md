@@ -1,6 +1,6 @@
 # CortenForge Visual-Review Viewer — Design Plan
 
-**Status:** Commit 1 (scaffolding `02bceb9c`) + commit 2 (PLY load + `ViewerInput` `093f0410`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. Plan iter-1 still locked; next step is commit 3 (geometry rendering).
+**Status:** Commits 1 (scaffolding `02bceb9c`) + 2 (PLY load + `ViewerInput` `093f0410`) + 3 (geometry rendering `79b97339`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`. Plan iter-1 still locked + iter 1.3 head-architect calls banked at commit-3 authoring time; next step is commit 4 (colormap pipeline).
 
 **Purpose:** Design the unified visual-review viewer that supersedes per-example tool chains (MeshLab + filter dialogs for sim-soft; f3d for mesh examples). One command, one window, every static-field artifact in the workspace. Living document — delete after the viewer ships and the workspace has migrated to it, per `feedback_code_speaks`.
 
@@ -186,7 +186,7 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Next iteration entry point:** commit 2 (PLY load + ViewerInput) on `dev` branch — see Resume-here block.
 
-- **2026-05-04 (iter 1.3 — commit-3 head-architect calls + axis-conversion locked):** Three architectural calls made at commit-3 authoring time per `feedback_master_architect_delegation`:
+- **2026-05-04 (iter 1.3 — commit-3 head-architect calls: axis conversion + point cloud + crease-angle deferred):** Three architectural calls made at commit-3 authoring time per `feedback_master_architect_delegation`:
 
   **(a) Axis conversion locked option (a) inline** — moved iter-2 still-open #2 from "default for now" to "locked." Z-up → Y-up swap (`[x, z, y]` on positions + normals, `(v0, v2, v1)` on triangle indices) lives in cf-viewer's mesh-conversion path. Justification: option (b) would force every downstream consumer (orbit camera, gizmos, light placement) to re-derive the swap; once at conversion time keeps Bevy's Y-up assumption intact through the whole render path.
 
@@ -218,7 +218,7 @@ _(append session-by-session; date-stamped; what changed and why)_
 
 ## Resume-here for next session
 
-**Commit 1 (scaffolding `02bceb9c`) + commit 2 (PLY load + `ViewerInput` `093f0410`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`.**
+**Commits 1 (scaffolding `02bceb9c`) + 2 (PLY load + `ViewerInput` `093f0410`) + 3 (geometry rendering `79b97339`) shipped on `dev`. Branch strategy revised mid-commit-1 to single-branch flow per `feedback_single_active_branch`.**
 
 1. Verify current state: on `dev`, commit 3 (geometry rendering) is the most recent viewer commit. Working tree should be clean.
 2. User reviews commit 3 by running `cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply` (point-cloud path: 1331 sphere markers visible) and a mesh-v1.0 fixture (face path: triangle mesh with smooth shading), e.g. `examples/mesh/format-conversion/out/cube.ply`.
