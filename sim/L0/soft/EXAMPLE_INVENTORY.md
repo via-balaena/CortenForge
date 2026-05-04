@@ -174,6 +174,15 @@ Not in this list (deliberate Fork B parking):
 
 ## Visualization convention (PLY/JSON vs Bevy)
 
+> **2026-05-04 SUPERSEDED — pending viewer arc.** PR1 commit 1's visual pass (sphere-sdf-eval via MeshLab) surfaced a gap the PLY-vs-Bevy split below didn't anticipate: **field-over-space content** (signed distance, material tags, stress) has no native viewer in the workspace — MeshLab requires a per-example two-filter chain to render the per-vertex scalar; f3d ignores the scalar entirely. The user separately flagged that f3d was already underwhelming for the mesh-v1.0 examples. The fix is a unified Bevy-CLI viewer (`cf-view <path>`-shaped) that auto-colormaps per-vertex / per-face scalars and replaces both f3d and MeshLab for static-artifact review. **Sim-soft examples arc PAUSED at PR1 commit 1** until the viewer arc lands. New planning doc: [`docs/VIEWER_DESIGN.md`](../../docs/VIEWER_DESIGN.md). The split below is preserved for audit-trail context but is not the operative convention going forward.
+>
+> **Operative convention going forward (locked at this layer; details in viewer arc):**
+> - Static fields + meshes: emit PLY (existing pattern), visual review via the unified Bevy viewer one-liner `cf-view <path>`.
+> - Dynamics (Tier 4 + Tier 6): per-example Bevy app, unchanged from below.
+> - JSON-only force-stretch / displacement traces (rows 4, 5, 6): unchanged — matplotlib post-hoc, not in viewer scope.
+
+**(Original iter-2 content below — superseded as noted; preserved for audit trail.)**
+
 **Decision: split by tier — static-artifact (PLY/JSON, f3d/MeshLab viewing) for Tier 1-3 + Tier 5; Bevy real-time playback for Tier 4 + Tier 6.**
 
 **Why split rather than pick one:**
@@ -249,6 +258,18 @@ _(append session-by-session; date-stamped; what changed and why)_
   **Inventory is now executable as a 3-PR plan with all architectural decisions locked.**
 
   **Next iteration entry point:** before any execution, walk each row's "simplest example" sentence and convert it into a concrete numerical-anchor list (the math-pass-first asserts) — that's the last planning round before PR1 authoring begins. Could be done in this same multi-session arc, or could be the first sub-step of PR1 itself depending on how concrete the user wants the plan vs how much they want to leave to in-PR judgment.
+
+- **2026-05-04 (iter 3 — PR1 commit 1 shipped + arc PAUSED for viewer gap):** PR1 commit 1 shipped at `93b4d5a4` — sphere-sdf-eval (row 1) at `examples/sim-soft/sphere-sdf-eval/`: 7 verify_* anchor groups, 11³ = 1331-point grid, PLY emit with `extras["signed_distance"]`. All asserts green (exit-0); pre-commit clean (fmt + clippy with file-level allows mirroring mesh-sdf-distance-query); cargo doc clean under `-D warnings`. Per-example template now established for PR1 rows 2-11.
+
+  **Visual pass surfaced a load-bearing gap.** MeshLab opened the PLY but required a 2-filter chain (`Per Vertex Quality Function` with `func q = signed_distance` → `Colorize by Vertex Quality`) to render the field. Per-example friction across 10 PR1 rows. User then flagged that f3d had also been underwhelming for the mesh-v1.0 examples — geometry-only viewer, no scalar colormap, no field semantics. The PLY-vs-Bevy split locked in iter 2 conflated two cases: mesh-v1.0's content is geometric (f3d works), sim-soft Tier 1's content is field-over-space (no native viewer in the workspace). The fix is engine-level, not example-level: a unified Bevy-CLI viewer (`cf-view <path>`-shaped) that auto-colormaps per-vertex / per-face scalars and replaces both f3d and MeshLab.
+
+  **Sim-soft examples arc PAUSED at PR1 commit 1.** Per `feedback_fix_gaps_before_continuing` — when examples reveal engine gaps, fix the engine first. Next 9 PR1 rows would compound the friction; better to surface and fix now than 9 examples later.
+
+  **Visualization convention superseded** at the section banner above; operative go-forward convention is locked at the banner level (`cf-view <path>` for static fields + meshes; per-example Bevy unchanged for dynamics; matplotlib unchanged for JSON-only force-stretch traces). Detail decisions deferred to the new arc.
+
+  **New arc opened: unified-viewer architecture.** Seed planning doc at [`docs/VIEWER_DESIGN.md`](../../docs/VIEWER_DESIGN.md). Branch strategy: stays on `feature/sim-soft-examples-arc` for the seed-doc commit (prose only, low conflict); when viewer code starts, branch off main as `feature/cf-viewer-arc` so the viewer ships as its own PR. Sim-soft branch rebases after viewer merges; sphere-sdf-eval's README updates to point at `cf-view <path>` post-rebase. Mesh-v1.0 retrofit to the unified viewer is a separate followup, not gated on the viewer arc itself.
+
+  **Next iteration entry point for the sim-soft arc:** wait for viewer arc to ship; then resume PR1 at row 2 (`hollow-shell-sdf`) using the new viewer. **Next iteration entry point for the viewer arc:** see `docs/VIEWER_DESIGN.md` resume-here block.
 
 ---
 
