@@ -60,6 +60,10 @@ mesh-io = { workspace = true }
 mesh-types = { workspace = true }
 # Application-style error chaining for the binary's load+wrap path.
 anyhow = { workspace = true }
+# CLI argument parsing (commit 6). Direct dep with `derive`; matches the
+# xtask precedent — clap has no workspace pin today and cf-viewer is the
+# second consumer.
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 # Round-trip PLY tests write to a temp dir; tempfile auto-cleans on drop.

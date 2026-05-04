@@ -1896,6 +1896,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "bevy_egui",
+ "clap",
  "mesh-io",
  "mesh-types",
  "tempfile",

@@ -10,11 +10,12 @@
 //!   (commit 4).
 //! - [`camera`] — mouse-driven orbit camera (commit 5).
 //! - [`ui`] — scalar + colormap dropdowns via `bevy_egui` (commit 5).
-//!
-//! CLI flags (`--scalar` / `--colormap` / `--up`) land in commit 6 — see
-//! `docs/VIEWER_DESIGN.md` for the locked PR shape.
+//! - [`cli`] — `clap`-derived `--scalar` / `--colormap` / `--up` flags
+//!   that seed [`ui::Selection`] + [`UpAxis`] before the dropdowns see
+//!   them (commit 6).
 
 pub mod camera;
+pub mod cli;
 pub mod colormap;
 pub mod mesh;
 pub mod ui;
@@ -41,6 +42,44 @@ pub struct ViewerInput {
 
     /// Sorted names of per-vertex scalar extras (`mesh.extras` keys).
     pub scalar_names: Vec<String>,
+}
+
+/// Which input axis maps to Bevy's +Y. Z-up is the workspace default
+/// (mesh-v1.0 build-plate convention; sphere-sdf-eval is rotation-symmetric);
+/// the `--up=<+X|+Y|+Z>` CLI flag (commit 6) parameterizes it for non-default
+/// inputs.
+///
+/// The mapping is an axis swap that re-uses the reflection convention from
+/// commit 3:
+///
+/// - [`UpAxis::PlusZ`]: input `(x, y, z)` → Bevy `(x, z, y)` — today's
+///   default; Y↔Z swap inverts handedness, so triangle winding flips.
+/// - [`UpAxis::PlusY`]: input `(x, y, z)` → Bevy `(x, y, z)` — identity;
+///   no winding flip.
+/// - [`UpAxis::PlusX`]: input `(x, y, z)` → Bevy `(y, x, z)` — X↔Y swap
+///   inverts handedness, so triangle winding flips.
+///
+/// Stored as a Bevy `Resource`; systems read `Res<UpAxis>` and pass it to
+/// the pure helpers in [`mesh`] / [`camera`].
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpAxis {
+    /// Input X axis is up — `(x, y, z)` → Bevy `(y, x, z)`. Winding flips.
+    PlusX,
+    /// Input Y axis is up — identity. Winding does not flip.
+    PlusY,
+    /// Input Z axis is up — `(x, y, z)` → Bevy `(x, z, y)`. Winding flips.
+    /// Workspace default.
+    #[default]
+    PlusZ,
+}
+
+impl UpAxis {
+    /// `true` when the swap inverts handedness (parity-flipping). Triangle
+    /// winding must be reversed in this case to keep CCW front-facing.
+    #[must_use]
+    pub fn flips_winding(self) -> bool {
+        !matches!(self, Self::PlusY)
+    }
 }
 
 /// Load a PLY file into a [`ViewerInput`].
@@ -103,5 +142,17 @@ mod tests {
             vec!["phi".to_string(), "zeta".to_string()],
         );
         Ok(())
+    }
+
+    #[test]
+    fn up_axis_default_is_plus_z() {
+        assert_eq!(UpAxis::default(), UpAxis::PlusZ);
+    }
+
+    #[test]
+    fn up_axis_flips_winding_for_reflective_swaps_only() {
+        assert!(UpAxis::PlusX.flips_winding());
+        assert!(!UpAxis::PlusY.flips_winding());
+        assert!(UpAxis::PlusZ.flips_winding());
     }
 }

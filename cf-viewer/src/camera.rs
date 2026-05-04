@@ -12,8 +12,12 @@
 //! y = distance · sin(elevation)
 //! z = distance · sin(azimuth) · cos(elevation)
 //! ```
-//! Bevy is internally Y-up; `mesh.rs` swaps Z↔Y on load so the input's
-//! Z-up frame already matches Bevy's by the time the camera sees it.
+//! Bevy is internally Y-up; [`mesh::vertex_position`] (parameterized by
+//! [`UpAxis`]) swaps the input frame to Bevy-Y-up before the camera sees
+//! it, and [`OrbitCamera::framing_for_aabb`] applies the same swap to the
+//! AABB center so the orbit pose is in the Bevy frame end-to-end.
+//!
+//! [`mesh::vertex_position`]: crate::mesh::vertex_position
 //!
 //! # Controls
 //!
@@ -29,6 +33,9 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use mesh_types::Aabb;
+
+use crate::UpAxis;
+use crate::mesh::vertex_position;
 
 /// Orbit camera component carried by the `Camera3d` entity.
 #[derive(Component, Debug, Clone)]
@@ -88,16 +95,16 @@ impl OrbitCamera {
     /// The single-point degenerate case (zero diagonal) is handled by the
     /// `max(_, 1.0)` clamp on the diagonal — same floor as the static
     /// placeholder used.
+    ///
+    /// `up` parameterizes the input → Bevy frame swap on the AABB center
+    /// (commit 6) so the camera target stays aligned with the rendered
+    /// geometry under any `--up=<+X|+Y|+Z>` choice.
     #[must_use]
-    pub fn framing_for_aabb(aabb: &Aabb) -> Self {
+    pub fn framing_for_aabb(aabb: &Aabb, up: UpAxis) -> Self {
         let center_physics = aabb.center();
-        // Z-up → Y-up swap on the AABB center, mirroring `mesh::vertex_position`'s
-        // `[x, z, y]` swap. Keeps the camera target aligned with rendered geometry.
-        let target = Vec3::new(
-            center_physics.x as f32,
-            center_physics.z as f32,
-            center_physics.y as f32,
-        );
+        // Mirror `mesh::vertex_position`'s axis swap on the AABB center so
+        // the camera target stays aligned with the rendered geometry.
+        let target = Vec3::from_array(vertex_position(&center_physics, up));
         let diagonal = (aabb.diagonal() as f32).max(1.0);
         let d = diagonal * 1.5;
 
@@ -219,7 +226,7 @@ mod tests {
     fn framing_for_aabb_matches_static_placeholder_corner_on() {
         // 2-unit cube centered at origin (Z-up physics frame).
         let aabb = Aabb::from_corners(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
-        let cam = OrbitCamera::framing_for_aabb(&aabb);
+        let cam = OrbitCamera::framing_for_aabb(&aabb, UpAxis::PlusZ);
 
         // Diagonal = 2√3; 1.5 × diagonal = 3√3 ≈ 5.196; corner-on offset
         // d = (diagonal · 1.5) = 3√3, so each component = 3√3.
@@ -235,7 +242,7 @@ mod tests {
     #[test]
     fn framing_for_aabb_handles_degenerate_diagonal() {
         let aabb = Aabb::from_corners(Point3::new(2.0, 2.0, 2.0), Point3::new(2.0, 2.0, 2.0));
-        let cam = OrbitCamera::framing_for_aabb(&aabb);
+        let cam = OrbitCamera::framing_for_aabb(&aabb, UpAxis::PlusZ);
         // diagonal = 0 → clamped to 1.0; d = 1.5; distance = 1.5√3
         let expected_distance = 1.5 * 3.0_f32.sqrt();
         assert!(
@@ -250,11 +257,27 @@ mod tests {
 
     /// Z-up → Y-up swap applied to AABB center: physics y becomes Bevy z.
     #[test]
-    fn framing_for_aabb_swaps_y_and_z_on_target() {
+    fn framing_for_aabb_plus_z_swaps_y_and_z_on_target() {
         // Single point at (1, 5, 9) physics frame → target (1, 9, 5) Bevy frame.
         let aabb = Aabb::from_corners(Point3::new(1.0, 5.0, 9.0), Point3::new(1.0, 5.0, 9.0));
-        let cam = OrbitCamera::framing_for_aabb(&aabb);
+        let cam = OrbitCamera::framing_for_aabb(&aabb, UpAxis::PlusZ);
         assert_eq!(cam.target, Vec3::new(1.0, 9.0, 5.0));
+    }
+
+    /// `+Y` (input is already Bevy-Y-up) leaves the AABB center unchanged.
+    #[test]
+    fn framing_for_aabb_plus_y_target_is_identity() {
+        let aabb = Aabb::from_corners(Point3::new(1.0, 5.0, 9.0), Point3::new(1.0, 5.0, 9.0));
+        let cam = OrbitCamera::framing_for_aabb(&aabb, UpAxis::PlusY);
+        assert_eq!(cam.target, Vec3::new(1.0, 5.0, 9.0));
+    }
+
+    /// `+X` swaps X↔Y on the AABB center.
+    #[test]
+    fn framing_for_aabb_plus_x_swaps_x_and_y_on_target() {
+        let aabb = Aabb::from_corners(Point3::new(1.0, 5.0, 9.0), Point3::new(1.0, 5.0, 9.0));
+        let cam = OrbitCamera::framing_for_aabb(&aabb, UpAxis::PlusX);
+        assert_eq!(cam.target, Vec3::new(5.0, 1.0, 9.0));
     }
 
     /// Zoom is multiplicative + clamped to `[min_distance, max_distance]`.

@@ -1,33 +1,33 @@
 //! `cf-view` — workspace-wide visual-review viewer.
 
-use std::path::PathBuf;
-
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_viewer::{
-    ViewerInput,
+    UpAxis, ViewerInput,
     camera::{OrbitCamera, orbit_camera_input, update_orbit_camera},
+    cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
     load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh, vertex_position},
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
+use clap::Parser;
 use mesh_types::Bounded;
 
 fn main() -> Result<()> {
-    let path: PathBuf = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("usage: cf-view <path-to-ply>"))?;
+    let cli = Cli::parse();
 
-    let input = load_input(&path)?;
+    let input = load_input(&cli.path)?;
     println!(
         "loaded {} vertices, {} scalars: {:?}",
         input.mesh.vertex_count(),
         input.scalar_names.len(),
         input.scalar_names,
     );
+
+    let selection = seed_selection(&cli, &input.scalar_names)?;
+    let up_axis: UpAxis = cli.up.into();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -40,7 +40,8 @@ fn main() -> Result<()> {
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(input)
-        .init_resource::<Selection>()
+        .insert_resource(selection)
+        .insert_resource(up_axis)
         .add_systems(Startup, setup_scene)
         .add_systems(
             Update,
@@ -62,14 +63,12 @@ fn main() -> Result<()> {
 /// changes, so this system is no longer the geometry-spawn entry point.
 #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
-fn setup_scene(mut commands: Commands, input: Res<ViewerInput>) {
+fn setup_scene(mut commands: Commands, input: Res<ViewerInput>, up: Res<UpAxis>) {
     let aabb = input.mesh.aabb();
     let center_physics = aabb.center();
-    let center_bevy = Vec3::new(
-        center_physics.x as f32,
-        center_physics.z as f32,
-        center_physics.y as f32,
-    );
+    // Same input → Bevy frame swap as `mesh::vertex_position` so the light
+    // anchor stays aligned with the rendered geometry under any `--up=<...>`.
+    let center_bevy = Vec3::from_array(vertex_position(&center_physics, *up));
     // Local `diagonal` is used here only for directional-light placement;
     // the camera's framing has its own clamp inside
     // `OrbitCamera::framing_for_aabb`. Single-point degenerate AABBs
@@ -78,9 +77,9 @@ fn setup_scene(mut commands: Commands, input: Res<ViewerInput>) {
     let diagonal = (aabb.diagonal() as f32).max(1.0);
 
     // Orbit camera framed corner-on at 1.5 × diagonal, matching commit 3's
-    // static placeholder pose. `OrbitCamera::framing_for_aabb` handles the
-    // Z-up → Y-up swap on the target.
-    let orbit = OrbitCamera::framing_for_aabb(&aabb);
+    // static placeholder pose. `framing_for_aabb` mirrors the up-axis swap
+    // so the camera target tracks the rendered geometry's center.
+    let orbit = OrbitCamera::framing_for_aabb(&aabb, *up);
     let mut transform = Transform::default();
     orbit.apply_to_transform(&mut transform);
     commands.spawn((Camera3d::default(), orbit, transform));
@@ -133,6 +132,7 @@ fn setup_scene(mut commands: Commands, input: Res<ViewerInput>) {
 fn spawn_geometry(
     selection: Res<Selection>,
     input: Res<ViewerInput>,
+    up: Res<UpAxis>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -177,7 +177,7 @@ fn spawn_geometry(
     };
 
     if input.mesh.face_count() > 0 {
-        let bevy_mesh = build_face_mesh(&input.mesh, vertex_colors.as_deref());
+        let bevy_mesh = build_face_mesh(&input.mesh, vertex_colors.as_deref(), *up);
         let material_handle = materials.add(template_material);
         commands.spawn((
             GeometryEntity,
@@ -200,7 +200,7 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material),
-                        Transform::from_translation(Vec3::from_array(vertex_position(v))),
+                        Transform::from_translation(Vec3::from_array(vertex_position(v, *up))),
                     ));
                 }
             }
@@ -211,7 +211,7 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material_handle.clone()),
-                        Transform::from_translation(Vec3::from_array(vertex_position(v))),
+                        Transform::from_translation(Vec3::from_array(vertex_position(v, *up))),
                     ));
                 }
             }
