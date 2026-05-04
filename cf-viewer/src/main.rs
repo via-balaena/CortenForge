@@ -130,7 +130,6 @@ fn setup_scene(mut commands: Commands, input: Res<ViewerInput>) {
 /// the colormapped value (option A per iter-2 still-open #7).
 #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
-#[allow(clippy::too_many_arguments)] // Bevy system signature
 fn spawn_geometry(
     selection: Res<Selection>,
     input: Res<ViewerInput>,
