@@ -4,8 +4,8 @@
 //! used both inside the field's blend AND attached via
 //! `MaterialField::with_interface_sdf` to populate `Mesh::interface_flags`.
 //!
-//! Per inventory Tier 3 row 9 — the canonical Phase 4 §02 §01 composition
-//! example. A solid `SphereSdf{ radius: R_OUTER }` body (reused from row 8)
+//! Per inventory Tier 3 row 9 — the canonical Phase 4 composition example
+//! per Part 7 §02 §01. A solid `SphereSdf{ radius: R_OUTER }` body (reused from row 8)
 //! is meshed; an interior `SphereSdf{ radius: R_INTERFACE }` (NEW)
 //! drives two `BlendedScalarField`s (one per Lamé parameter) blending
 //! `(MU_INNER, LAMBDA_INNER)` (inside the interface sphere) into
