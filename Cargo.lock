@@ -4782,6 +4782,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-multi-element-stretch"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "nalgebra",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-neo-hookean-uniaxial"
 version = "1.0.0"
 dependencies = [

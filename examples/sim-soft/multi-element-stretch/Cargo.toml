@@ -1,0 +1,30 @@
+[package]
+name = "example-sim-soft-multi-element-stretch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# CpuNewtonSolver (Phase 2 multi-element FEM assembly), HandBuiltTetMesh,
+# BoundaryConditions, NeoHookean + Material trait, MaterialField, Tet4,
+# referenced_vertices + pick_vertices_by_predicate (canonical BC pattern).
+sim-soft = { workspace = true }
+# Tape + Tensor for replay_step; ml-chassis is sim-soft's tape backend.
+sim-ml-chassis = { workspace = true }
+# Matrix3 + nalgebra Vec3 for direct F = J · J_0^-1 computation per tet
+# (the solver's `deformation_gradient` is private to the solver module;
+# this example replicates the math inline since the assembly path's
+# subject is the constitutive-input-from-positions surface).
+nalgebra = { workspace = true }
+# Result<()> return + error-context wrapping for the JSON emit step.
+anyhow = { workspace = true }
+# JSON emit for out/multi_element_stretch.json — schema documented inline
+# in src/main.rs::save_json.
+serde_json = { workspace = true }
+# `assert_relative_eq!` for closed-form analytic vs observed comparisons —
+# same convention as `sim/L0/soft/tests/material_fd.rs` and rows 4-5.
+approx = { workspace = true }
+
+[lints]
+workspace = true
