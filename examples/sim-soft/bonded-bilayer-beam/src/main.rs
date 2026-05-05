@@ -33,12 +33,13 @@
 //! converges at `~O(h^1.5)` (sub-`O(h²)` due to a bilayer-interface
 //! discretisation gap that Phase H Tet10 + interface-aware refinement
 //! closes). At the user-facing example refinement `(20, 8, 8)`, the
-//! observed relative error against the EB-composite analytic is
-//! `~20-25 %` typical, mirroring IV-3's `iv_3_uniform_passthrough_at_h2_
-//! matches_eb_within_30pct` sanity gate. The "to 3 digits" (`1e-3` rel)
-//! gate is empirically unreachable at Tet4 + reasonable mesh size; the
-//! operative gate here is **`< 0.30`** mirroring IV-3 sanity, with the
-//! README documenting the Tet4 caveat.
+//! observed bilayer rel-err vs the EB-composite analytic is `~16 %`,
+//! well within IV-3's `iv_3_uniform_passthrough_at_h2_matches_eb_
+//! within_30pct` sanity gate (which absorbs the broader `~20-25 %`
+//! Tet4 cantilever-bending under-convergence band per IV-3's docstring).
+//! The "to 3 digits" (`1e-3` rel) gate is empirically unreachable at
+//! Tet4 + reasonable mesh size; the operative gate here is **`< 0.30`**
+//! mirroring IV-3 sanity, with the README documenting the Tet4 caveat.
 //!
 //! ## cf-view artifact
 //!
@@ -93,11 +94,11 @@
 //!   inside `RequireOrientation` regime).
 //! - **`interface_continuity_no_slip`** — for every interface vertex
 //!   (rest `z = HEIGHT / 2`), find one tet from layer 0 (`centroid.z <
-//!   INTERFACE_Z`) and one tet from layer 1 (`centroid.z > INTERFACE_Z`)
-//!   that contain it; assert `x_final` read via either tet's connectivity
-//!   is bit-equal (IV-2-lens-α tautology in shared-vertex FEM, since
-//!   `x_final` is global and indexed by global vertex ID; the assertion
-//!   documents the contract). Plus non-trivial: at the mid-beam interface
+//!   INTERFACE_Z`) and one tet from layer 1 (`centroid.z >=
+//!   INTERFACE_Z`) that contain it; assert `x_final` read via either
+//!   tet's connectivity is bit-equal (IV-2-lens-α tautology in
+//!   shared-vertex FEM, since `x_final` is global and indexed by global
+//!   vertex ID; the assertion documents the contract). Plus non-trivial: at the mid-beam interface
 //!   vertex (`x = L/2, y = b/2, z = H/2`), assert displacement-z exceeds
 //!   `1e-4 m` confirming the scene is loaded. HEADLINE B — first
 //!   user-facing exposure of IV-2's shared-vertex continuity claim
