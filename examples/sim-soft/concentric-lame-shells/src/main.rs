@@ -1255,11 +1255,13 @@ fn verify_solver_converges(snapshot: &SceneSnapshot, records: &[TetRecord]) {
     assert!(
         max_dev_global < 0.05,
         "global max|σ-1| at x_final = {max_dev_global} > 0.05 — small-strain \
-         regime sanity violated; the cavity-pressure inflation at {PRESSURE} Pa lands at \
-         `~0.84 %` cavity-wall analytic strain (radial scalar) and the per-tet `max|σ-1|` \
-         (3D peak SVD over F) is observed at `~0.024`, well within the 0.05 small-strain \
-         band; a regression that pushes peak `max|σ-1|` past 0.05 signals the converged \
-         field has shifted out of the small-strain band into NH's nonlinear regime"
+         regime sanity violated. Row 11 at h/2 ships with peak per-tet `max|σ-1|` \
+         (3D peak SVD over F) at `~0.024` against `~0.84 %` cavity-wall analytic strain \
+         (radial scalar; the SVD-peak / radial-strain factor is `~3×` from local \
+         intensification at BCC mesh tets near the cavity surface — normal FEM behavior). \
+         A peak `max|σ-1|` past 0.05 signals the converged field has shifted out of the \
+         small-strain band into NH's nonlinear regime, OR that the inflation regime has \
+         changed (PRESSURE / radii / stiffnesses)"
     );
 }
 
