@@ -327,6 +327,7 @@ members = [
     "examples/sim-soft/multi-element-stretch",
     "examples/sim-soft/layered-scalar-field",
     "examples/sim-soft/blended-scalar-field",
+    "examples/sim-soft/bonded-bilayer-beam",
 
     # Foundation (active development)
     "design/cf-geometry",
