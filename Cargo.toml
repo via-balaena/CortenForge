@@ -325,6 +325,7 @@ members = [
     "examples/sim-soft/single-tet-stretch",
     "examples/sim-soft/neo-hookean-uniaxial",
     "examples/sim-soft/multi-element-stretch",
+    "examples/sim-soft/layered-scalar-field",
 
     # Foundation (active development)
     "design/cf-geometry",
