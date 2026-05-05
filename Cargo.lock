@@ -4771,6 +4771,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-blended-scalar-field"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-hollow-shell-sdf"
 version = "1.0.0"
 dependencies = [

@@ -326,6 +326,7 @@ members = [
     "examples/sim-soft/neo-hookean-uniaxial",
     "examples/sim-soft/multi-element-stretch",
     "examples/sim-soft/layered-scalar-field",
+    "examples/sim-soft/blended-scalar-field",
 
     # Foundation (active development)
     "design/cf-geometry",

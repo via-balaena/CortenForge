@@ -1,0 +1,36 @@
+[package]
+name = "example-sim-soft-blended-scalar-field"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# BlendedScalarField + ConstantField + Field trait + MaterialField +
+# SdfMeshedTetMesh + SphereSdf + Sdf + Mesh trait + NeoHookean +
+# Material + Aabb3 + MeshingHints + Vec3 + TetId + VertexId +
+# referenced_vertices + the LAYERED_SPHERE_R_OUTER /
+# LAYERED_SPHERE_BBOX_HALF_EXTENT geometry constants reused from row 8
+# for cross-row visual continuity (same body sphere, same bbox).
+sim-soft = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the per-tet centroid
+# point-cloud PLY (mirrors row 1's sphere-sdf-eval point-cloud pattern
+# + row 8's z-slab cut).
+mesh-types = { workspace = true }
+# save_ply_attributed for out/material_blend.ply (3 per-vertex scalars:
+# interface_flag + material_mu + smoothstep_weight).
+mesh-io = { workspace = true }
+# Matrix3 for the F_probe = diag(1.2, 1, 1) reference deformation —
+# the Material-trait probe used in the per-tet value-correctness gate
+# (NeoHookean's mu/lambda are private; comparing energy + first_piola
+# bit-equal at a probe F is the cross-implementation gate, same
+# precedent as row 8).
+nalgebra = { workspace = true }
+# Result<()> return + error-context wrapping for the PLY emit step.
+anyhow = { workspace = true }
+# assert_relative_eq! for the Material-trait probe value-correctness;
+# same convention as rows 1-6 + 8.
+approx = { workspace = true }
+
+[lints]
+workspace = true
