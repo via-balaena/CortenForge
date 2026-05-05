@@ -57,11 +57,11 @@
 //!
 //! # Anchor groups (all assertions exit-0 on success)
 //!
-//! - **Mesh topology** — `n_vertices == 27`, `n_tets == 48`, interior vertex ID == 13.
 //! - **Referenced-vertices canonical pattern** — `referenced_vertices(&mesh)` returns `[0..27)`;
 //!   pinning via `pick_vertices_by_predicate` + orphan-filter is the canonical idiom for
 //!   spatial-predicate BC construction (no-op orphan-filter on hand-built meshes;
 //!   load-bearing for SDF-meshed scenes per `tests/sdf_forward_map_gradcheck.rs`).
+//! - **Mesh topology** — `n_vertices == 27`, `n_tets == 48`, interior vertex ID == 13.
 //! - **Boundary partition** — 26 boundary vertices pinned, 1 interior free (vertex ID 13).
 //! - **Validity in-domain at `x_prev`** — `max |σᵢ − 1|` per tet stays below NH's
 //!   declared `max_stretch_deviation = 1.0` boundary at the off-equilibrium initial guess.
@@ -75,13 +75,13 @@
 //!   the constrained-NH closed form at relative `1e-12`.
 //! - **Uniformity spread bounded** — `max P_11 − min P_11` across all 48 tets within
 //!   a tight FP-noise bound (Newton convergence + sparse-solve drift).
-//! - **Sweep bit-equal** — captured-reference bit pins for: interior `x_final` (3),
-//!   one isolated representative tet's `F`/`P` diag + `ψ` (7), plus the closed-form
-//!   match. Captured-bit anchors use **relative-tolerance comparison**, NOT strict
-//!   `to_bits` equality, per the IV-1 sparse-tier contract — 81 DOFs through faer's
-//!   sparse Cholesky lives between IV-1's dense bit-equal tier (12-24 DOFs) and
-//!   sparse-at-scale tier (~3k tets, 3-ULP cross-platform drift). 1e-12 relative
-//!   bar admits sparse-solver SIMD/FMA noise while catching any real regression.
+//! - **Captured bits** — captured-reference bit pins for: interior `x_final` (3),
+//!   one isolated representative tet's `F`/`P` diag + `ψ` (7). Captured-bit anchors
+//!   use **relative-tolerance comparison**, NOT strict `to_bits` equality, per the
+//!   IV-1 sparse-tier contract — 81 DOFs through faer's sparse Cholesky lives between
+//!   IV-1's dense bit-equal tier (12-24 DOFs) and sparse-at-scale tier (~3k tets,
+//!   3-ULP cross-platform drift). 1e-12 relative bar admits sparse-solver SIMD/FMA
+//!   noise while catching any real regression.
 
 #![allow(
     // `doc_markdown` flags Unicode math notation (`λ`, `μ`, `Λ`, `σᵢ`, `ψ`)
@@ -744,8 +744,8 @@ fn verify_uniformity_spread_bounded(records: &[TetRecord]) -> f64 {
 // Captured-reference bit anchors (see provenance block below)
 // =============================================================================
 //
-// **Capture provenance** — captured on 2026-05-05 at sim-soft `dev` HEAD
-// (preceding commit `bd727023` from row 5 neo-hookean-uniaxial), rustc 1.95.0
+// **Capture provenance** — captured on 2026-05-05 at sim-soft `dev` (row-5
+// tip `bd727023` from neo-hookean-uniaxial, pre-row-6), rustc 1.95.0
 // (`59807616e` 2026-04-14) — the same toolchain IV-1 captured at sim-soft
 // `c3729d4a` per `invariant_iv_1_uniform_passthrough.rs:138-151` — on macOS arm64.
 //
@@ -771,7 +771,7 @@ fn verify_uniformity_spread_bounded(records: &[TetRecord]) -> f64 {
 //   3. NEVER re-bake the reference values to make the test green.
 
 // Interior vertex `x_final` reference (3 entries: x, y, z). Captured at
-// sim-soft `dev` HEAD (preceding row 6 commit), rustc 1.95.0 (`59807616e`
+// sim-soft `dev` (row-5 tip, pre-row-6), rustc 1.95.0 (`59807616e`
 // 2026-04-14) on macOS arm64.
 const INTERIOR_X_FINAL_REF_BITS: [u64; 3] = [
     0x3fae_b851_eb85_1eb8, // v13.x = 0.06 = 1.2 * 0.05 (D · v13_rest.x)
@@ -814,11 +814,13 @@ const REPRESENTATIVE_PSI_REF_BITS: u64 = 0x40c4_5809_83ce_d475; // ψ ≈ 1.0416
 // =============================================================================
 
 fn verify_captured_bits(observed_v13: Vec3, records: &[TetRecord]) {
-    // The placeholder bits above are ALL ZEROS — first-run captures
-    // populate them via the TEMP block in main(). The rel-tol comparison
-    // below is no-op against zeros (the `epsilon = EPS_ABS` floor admits
-    // anything smaller than 1e-12); after capture, this enforces the
-    // sparse-tier contract.
+    // Per the IV-1 sparse-tier contract documented above the `*_REF_BITS`
+    // arrays: rel-tol `1e-12` comparison, not strict `to_bits` equality
+    // — 81 DOFs through faer's sparse Cholesky lives in the gray zone
+    // between IV-1's dense bit-equal tier and sparse-at-scale tier.
+    // Empirically bit-equal on the capture platform (macOS arm64) at
+    // λ = 1.20; cross-platform reservation is the slack the rel-tol
+    // bar buys.
     let v13_components = [observed_v13.x, observed_v13.y, observed_v13.z];
     for (&val, &ref_bits) in v13_components.iter().zip(INTERIOR_X_FINAL_REF_BITS.iter()) {
         let expected = f64::from_bits(ref_bits);
