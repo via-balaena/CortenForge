@@ -25,6 +25,7 @@ the source of truth for what's planned vs shipped.)
 | Example | Concept |
 |---------|---------|
 | [`sphere-sdf-eval`](sphere-sdf-eval/) | The `Sdf` trait contract on `SphereSdf` — analytic signed distance and unit-length gradient, including the documented `Vec3::z()` origin-singularity fallback; 11³ = 1331 grid sweep emitted as PLY with `extras["signed_distance"]` |
+| [`hollow-shell-sdf`](hollow-shell-sdf/) | Sharp-CSG difference combinator `SphereSdf{R_OUTER=1.0} \ SphereSdf{R_CAVITY=0.5}` via `DifferenceSdf` (book Part 7 §00 §01); emits a 2-D z = 0 slice (49² = 2401 verts) with two scalars — `signed_distance` (donut cross-section) and `active_branch` (visualizes the equidistant branch-flip circle at `\|p\| = 0.75`) |
 
 ## Visualization convention
 
@@ -33,9 +34,10 @@ Examples split by tier per
 §Visualization convention:
 
 - **PLY + JSON** for static math-pass-first artifacts (Tier 1-3 +
-  Tier 5). Open in f3d / MeshLab / ParaView; per-example READMEs
-  call out the colormap or per-vertex scalar to render. Mirrors the
-  `examples/mesh/` convention.
+  Tier 5). Open in [`cf-view`](../../cf-viewer/) — the workspace's
+  unified Bevy-CLI viewer with auto-discovered per-vertex scalars
+  and auto-colormap detection. Per-example READMEs call out the
+  scalar to pre-select and the canonical visual.
 - **Bevy real-time** for contact dynamics + the silicone-device
   synthesis (Tier 4 + Tier 6). Headless asserts pre-render +
   visual-mode playback under one `cargo run`. Mirrors the
@@ -69,9 +71,8 @@ Two-pass review per example (per `feedback_one_at_a_time` and
    `feedback_math_pass_first_handauthored`, anchors are
    `assert_relative_eq!` calls in `src/main.rs` and a clean exit-0
    IS the correctness signal.
-2. **Visuals pass (user)** — opens the PLY in MeshLab / ParaView (or
-   watches the Bevy playback) to confirm the visual matches
-   expectations.
+2. **Visuals pass (user)** — opens the PLY in cf-view (or watches
+   the Bevy playback) to confirm the visual matches expectations.
 
 Examples are reviewed individually before the next one lands.
 Multiple examples bundle into one PR per

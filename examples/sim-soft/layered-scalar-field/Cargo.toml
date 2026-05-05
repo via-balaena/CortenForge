@@ -1,0 +1,33 @@
+[package]
+name = "example-sim-soft-layered-scalar-field"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# LayeredScalarField + Field trait + MaterialField + SdfMeshedTetMesh +
+# SphereSdf + Sdf + Mesh trait + NeoHookean + Material + Aabb3 +
+# MeshingHints + Vec3 + TetId + VertexId + referenced_vertices +
+# the LAYERED_SPHERE_R_* / BBOX_HALF_EXTENT geometry constants reused
+# from SoftScene::layered_silicone_sphere for cross-row alignment with
+# row 11 (concentric-lame-shells, IV-5 hollow form).
+sim-soft = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the per-tet centroid
+# point-cloud PLY (mirrors row 1's sphere-sdf-eval point-cloud pattern).
+mesh-types = { workspace = true }
+# save_ply_attributed for out/material_layer_assignment.ply.
+mesh-io = { workspace = true }
+# Matrix3 for the F_probe = diag(1.2, 1, 1) reference deformation —
+# the Material-trait probe used in the per-tet value-correctness gate
+# (NeoHookean's mu/lambda are private; comparing energy + first_piola
+# bit-equal at a probe F is the cross-implementation gate).
+nalgebra = { workspace = true }
+# Result<()> return + error-context wrapping for the PLY emit step.
+anyhow = { workspace = true }
+# assert_relative_eq! for the Material-trait probe value-correctness +
+# centroid-radius bound; same convention as rows 1-6.
+approx = { workspace = true }
+
+[lints]
+workspace = true

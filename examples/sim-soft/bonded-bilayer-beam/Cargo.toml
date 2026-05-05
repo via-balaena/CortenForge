@@ -1,0 +1,41 @@
+[package]
+name = "example-sim-soft-bonded-bilayer-beam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# HandBuiltTetMesh::cantilever_bilayer_beam + BoundaryConditions +
+# CpuNewtonSolver / CpuTet4NHSolver + Field trait (for the inline
+# HalfSpaceField) + LoadAxis + MaterialField + Mesh trait + NeoHookean +
+# Material + NewtonStep + NullContact + Solver + SolverConfig + Tet4 +
+# Vec3 + VertexId + pick_vertices_by_predicate + InversionHandling
+# (for the validity-domain sanity check at the converged state).
+sim-soft = { workspace = true }
+# Tensor for solver.replay_step inputs (x_prev, v_prev, theta).
+sim-ml-chassis = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the per-tet centroid
+# point-cloud PLY (mirrors rows 8 + 9's z-slab pattern, here adapted to
+# y-slab for the axial cantilever-beam geometry).
+mesh-types = { workspace = true }
+# save_ply_attributed for out/bilayer_beam.ply (2 per-vertex scalars:
+# material_id + displacement_z).
+mesh-io = { workspace = true }
+# Matrix3 for the F_probe = diag(1.2, 1, 1) reference deformation —
+# the Material-trait probe used in the per-tet value-correctness gate
+# (NeoHookean's mu/lambda are private; comparing energy + first_piola
+# bit-equal at a probe F is the cross-implementation gate, same
+# precedent as rows 8 + 9). Also for the F = J · J_0^-1 +
+# max-singular-value path of `verify_solver_converges_bilayer`'s
+# validity-domain sanity at x_final.
+nalgebra = { workspace = true }
+# Result<()> return + error-context wrapping for the PLY emit step.
+anyhow = { workspace = true }
+# assert_relative_eq! for the IV-1 sparse-tier rel-tol contract on
+# captured tip-displacement bits + tip-displacement-vs-EB-analytic
+# 30% gate; same convention as rows 1-6 + 8 + 9.
+approx = { workspace = true }
+
+[lints]
+workspace = true

@@ -320,6 +320,15 @@ members = [
 
     # Examples — sim-soft
     "examples/sim-soft/sphere-sdf-eval",
+    "examples/sim-soft/hollow-shell-sdf",
+    "examples/sim-soft/sdf-to-tet-sphere",
+    "examples/sim-soft/single-tet-stretch",
+    "examples/sim-soft/neo-hookean-uniaxial",
+    "examples/sim-soft/multi-element-stretch",
+    "examples/sim-soft/layered-scalar-field",
+    "examples/sim-soft/blended-scalar-field",
+    "examples/sim-soft/bonded-bilayer-beam",
+    "examples/sim-soft/concentric-lame-shells",
 
     # Foundation (active development)
     "design/cf-geometry",

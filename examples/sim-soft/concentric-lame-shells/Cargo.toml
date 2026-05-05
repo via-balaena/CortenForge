@@ -1,0 +1,43 @@
+[package]
+name = "example-sim-soft-concentric-lame-shells"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# SoftScene::layered_silicone_sphere (the production fixture row 11 user-faces)
+# + BoundaryConditions + CpuNewtonSolver / CpuTet4NHSolver + Field trait
+# (for the LayeredScalarField builder mirroring IV-5's three_shell_field) +
+# LAYERED_SPHERE_R_CAVITY / R_INNER_OUTER / R_OUTER_INNER / R_OUTER /
+# BBOX_HALF_EXTENT geometry constants + LayeredScalarField + LoadAxis +
+# MaterialField + Mesh trait + NeoHookean + Material + NewtonStep +
+# NullContact + SceneInitial + SdfMeshedTetMesh + SphereSdf + Solver +
+# SolverConfig + Tet4 + Vec3 + VertexId + referenced_vertices +
+# InversionHandling (validity-domain sanity check at converged state).
+sim-soft = { workspace = true }
+# Tensor for solver.replay_step inputs (x_prev, v_prev, theta).
+sim-ml-chassis = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the per-tet centroid
+# point-cloud PLY (mirrors row 8 + 9 + 10 z-slab pattern).
+mesh-types = { workspace = true }
+# save_ply_attributed for out/concentric_lame_shells.ply (2 per-vertex scalars:
+# material_id + radial_displacement).
+mesh-io = { workspace = true }
+# Matrix3 for the F_probe = diag(1.2, 1, 1) reference deformation —
+# the Material-trait probe used in the per-tet value-correctness gate
+# (NeoHookean's mu/lambda are private; comparing energy + first_piola
+# bit-equal at a probe F is the cross-implementation gate, same precedent
+# as rows 8 + 9 + 10). Plus Matrix6 + Vector6 + SVD for the closed-form
+# multi-shell Lamé 6×6 solver inlined from IV-5.
+nalgebra = { workspace = true }
+# Result<()> return + error-context wrapping for the PLY emit step.
+anyhow = { workspace = true }
+# assert_relative_eq! for the IV-1 sparse-tier rel-tol contract on
+# captured radial-displacement bits + per-shell radial-displacement-vs-Lamé
+# 30% gate (with eps absorption for small-magnitude outer-shell mean);
+# same convention as rows 1-6 + 8 + 9 + 10.
+approx = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "example-sim-soft-sdf-to-tet-sphere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# SdfMeshedTetMesh + MeshingHints + Aabb3 + SphereSdf + Mesh trait + Vec3
+# + VertexId / TetId + referenced_vertices orphan filter
+sim-soft = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the boundary triangle PLY
+mesh-types = { workspace = true }
+# save_ply_attributed for out/sphere_boundary.ply
+mesh-io = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
