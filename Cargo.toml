@@ -323,6 +323,7 @@ members = [
     "examples/sim-soft/hollow-shell-sdf",
     "examples/sim-soft/sdf-to-tet-sphere",
     "examples/sim-soft/single-tet-stretch",
+    "examples/sim-soft/neo-hookean-uniaxial",
 
     # Foundation (active development)
     "design/cf-geometry",
