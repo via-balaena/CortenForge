@@ -328,6 +328,7 @@ members = [
     "examples/sim-soft/layered-scalar-field",
     "examples/sim-soft/blended-scalar-field",
     "examples/sim-soft/bonded-bilayer-beam",
+    "examples/sim-soft/concentric-lame-shells",
 
     # Foundation (active development)
     "design/cf-geometry",

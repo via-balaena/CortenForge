@@ -4796,6 +4796,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-concentric-lame-shells"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-hollow-shell-sdf"
 version = "1.0.0"
 dependencies = [
