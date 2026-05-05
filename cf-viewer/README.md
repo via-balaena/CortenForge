@@ -16,7 +16,7 @@ from its up-axis convention to Bevy's Y-up internally.
 ## Quickstart
 
 ```text
-cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
+cargo run -p cf-viewer --release -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
 ```
 
 The viewer auto-discovers per-vertex scalars in the PLY's `extras`

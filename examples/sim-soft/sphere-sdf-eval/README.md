@@ -198,7 +198,7 @@ point cloud with two per-vertex scalars:
 Open in `cf-view`, the workspace's unified visual-review viewer:
 
 ```text
-cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
+cargo run -p cf-viewer --release -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
 ```
 
 cf-view auto-discovers per-vertex scalars on load and selects the
@@ -212,7 +212,7 @@ For scripted reproducibility, pre-select `signed_distance` from
 the CLI:
 
 ```text
-cargo run -p cf-viewer -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply --scalar=signed_distance
+cargo run -p cf-viewer --release -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply --scalar=signed_distance
 ```
 
 What you should see when colour-mapped by `signed_distance`:

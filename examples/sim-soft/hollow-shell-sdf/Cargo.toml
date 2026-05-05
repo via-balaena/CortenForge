@@ -1,0 +1,21 @@
+[package]
+name = "example-sim-soft-hollow-shell-sdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# DifferenceSdf + SphereSdf + Sdf trait + Vec3 (= nalgebra::Vector3<f64>)
+sim-soft = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the slice PLY
+mesh-types = { workspace = true }
+# save_ply_attributed for out/sdf_slice.ply
+mesh-io = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for surface + interior + gradient anchors
+approx = { workspace = true }
+
+[lints]
+workspace = true
