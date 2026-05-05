@@ -112,9 +112,11 @@ const R_OUTER: f64 = LAYERED_SPHERE_R_OUTER;
 const R_OUTER_INNER: f64 = LAYERED_SPHERE_R_OUTER_INNER;
 
 /// Boundary radius between inner and middle shells (m).
-/// `R_INNER_OUTER < R_OUTER_INNER` ⇒ shell `[R_INNER_OUTER, R_OUTER_INNER]`
-/// = middle. Inner shell is `‖p‖ < R_INNER_OUTER` (down to origin —
-/// row 8 is solid; the cavity is row 11's territory).
+/// `R_INNER_OUTER < R_OUTER_INNER` ⇒ shell `[R_INNER_OUTER, R_OUTER_INNER)`
+/// = middle (closed-left, open-right per the partition rule —
+/// `‖p‖ = R_OUTER_INNER` lands in outer, not middle). Inner shell is
+/// `‖p‖ < R_INNER_OUTER` (down to origin — row 8 is solid; the cavity is
+/// row 11's territory).
 const R_INNER_OUTER: f64 = LAYERED_SPHERE_R_INNER_OUTER;
 
 /// Bounding-box half-extent (m). Matches the III-1 / IV-4 canonical
@@ -124,13 +126,15 @@ const BBOX_HALF_EXTENT: f64 = LAYERED_SPHERE_BBOX_HALF_EXTENT;
 /// BCC lattice spacing (m) — III-1 / IV-4 h/2 canonical.
 const CELL_SIZE: f64 = 0.02;
 
-/// Inner-shell threshold on `phi = ‖p‖ − R_OUTER`. `phi <= -0.04` ⇒
-/// `‖p‖ <= R_INNER_OUTER` ⇒ inner shell.
+/// Inner-shell threshold on `phi = ‖p‖ − R_OUTER`. `phi < -0.04` ⇒
+/// `‖p‖ < R_INNER_OUTER` ⇒ inner shell (strict less than per the
+/// `partition_point(|&t| t <= phi)` rule — at `phi == -0.04`, the point
+/// lands in the OUTER shell relative to this threshold = middle).
 const PHI_INNER_THRESHOLD: f64 = R_INNER_OUTER - R_OUTER;
 
-/// Middle-shell threshold on `phi`. `-0.04 < phi <= -0.02` ⇒
-/// `R_INNER_OUTER < ‖p‖ <= R_OUTER_INNER` ⇒ middle shell.
-/// `phi > -0.02` ⇒ outer shell.
+/// Middle-shell threshold on `phi`. `-0.04 ≤ phi < -0.02` ⇒
+/// `R_INNER_OUTER ≤ ‖p‖ < R_OUTER_INNER` ⇒ middle shell.
+/// `phi ≥ -0.02` ⇒ outer shell.
 const PHI_MIDDLE_THRESHOLD: f64 = R_OUTER_INNER - R_OUTER;
 
 // ── Lamé pairs per shell ─────────────────────────────────────────────────
