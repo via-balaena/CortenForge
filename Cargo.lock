@@ -4782,6 +4782,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-sdf-to-tet-sphere"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-sphere-sdf-eval"
 version = "1.0.0"
 dependencies = [
