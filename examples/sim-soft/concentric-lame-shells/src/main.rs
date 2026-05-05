@@ -320,8 +320,8 @@ const EXACT_TOL: f64 = 0.0;
 const SPARSE_REL_TOL: f64 = 1.0e-12;
 
 /// Absolute floor for relative comparisons that touch zero. `1e-12` is
-/// below typical radial-displacement magnitudes (cavity-wall ~5e-4 m,
-/// outer-shell-mean ~1e-5 m) by 7+ orders of magnitude. Same precedent
+/// below typical radial-displacement magnitudes (cavity-wall ~3e-4 m,
+/// outer-shell-mean ~7e-6 m) by 6-8 orders of magnitude. Same precedent
 /// as rows 6 + 10.
 const SPARSE_EPS_ABS: f64 = 1.0e-12;
 
@@ -1255,9 +1255,11 @@ fn verify_solver_converges(snapshot: &SceneSnapshot, records: &[TetRecord]) {
     assert!(
         max_dev_global < 0.05,
         "global max|σ-1| at x_final = {max_dev_global} > 0.05 — small-strain \
-         regime sanity violated; the cavity-pressure inflation at {PRESSURE} Pa should \
-         land well below 0.05 (`~0.84 %` cavity-wall analytic strain ⇒ `~0.024` peak \
-         observed `max|σ-1|`)"
+         regime sanity violated; the cavity-pressure inflation at {PRESSURE} Pa lands at \
+         `~0.84 %` cavity-wall analytic strain (radial scalar) and the per-tet `max|σ-1|` \
+         (3D peak SVD over F) is observed at `~0.024`, well within the 0.05 small-strain \
+         band; a regression that pushes peak `max|σ-1|` past 0.05 signals the converged \
+         field has shifted out of the small-strain band into NH's nonlinear regime"
     );
 }
 

@@ -260,7 +260,7 @@ If you want the un-amplified visualisation (TRUE geometric deformation), set `DI
 
 Per `feedback_visual_review_is_the_test` — for cf-view consumers, the visual pass is real (not collapsed to JSON read).
 
-Stdout's museum-plaque summary covers the same numbers in human-readable form (input fixture, all 10 anchor-group names, full-body per-shell split + 4 radial-displacement readouts table + analytic + rel-err per readout + z-slab partition).
+Stdout's museum-plaque summary covers the same numbers in human-readable form (input fixture, all 11 anchor-group names, full-body per-shell split + 4 radial-displacement readouts table + analytic + rel-err per readout + cavity-wall uniform-baseline comparison + z-slab partition).
 
 ## Run
 
@@ -297,13 +297,13 @@ The eps-floor (`5e-6 m`) absorbs this small-magnitude case: `assert_relative_eq!
 
 **Cavity-wall mean at the row 11 constants — analytic vs FEM at h/2.** The three-shell `1× / 2× / 1×` cavity-wall analytic is `3.342e-4 m` (~0.84 % of `R_CAVITY = 0.04 m`); the FEM observed at h/2 is `2.857e-4 m` (~14.5 % rel-err — IV-5 sanity-band convergence behavior). At HEADLINE C the FEM-vs-FEM uniform-baseline runs give:
 
-| Configuration | Cavity-wall mean (FEM at h/2) | Analytic (closed-form) |
+| Configuration | Cavity-wall mean (FEM at h/2) | Analytic (closed-form, single-shell Lamé) |
 |---|---|---|
-| `uniform_2x` (all shells at MU_MIDDLE = 2×) | `1.626e-4 m` | `1.671e-4 m` (half of uniform-1× by linearity) |
-| `three-shell` (`1× / 2× / 1×`) | `2.857e-4 m` | `3.342e-4 m` |
-| `uniform_1x` (all shells at MU_INNER = 1×) | `3.245e-4 m` | `3.342e-4 m` (half of three-shell × 2 by linearity) |
+| `uniform_2x` (all shells at MU_MIDDLE = 2×) | `1.626e-4 m` | `~1.91e-4 m` (= 0.5 × uniform-1× by uniform-stiffness linearity) |
+| `three-shell` (`1× / 2× / 1×`) | `2.857e-4 m` | `3.342e-4 m` (piecewise-Lamé 6×6 LU) |
+| `uniform_1x` (all shells at MU_INNER = 1×) | `3.245e-4 m` | `~3.82e-4 m` (single-shell `u_r(R_a) = A·R_a + B/R_a²` with `A = -p / (K + 4μ R_b³/R_a³)`, `B = -A R_b³`) |
 
-The strict-between inequality holds at both the analytic and FEM levels. By Lamé linearity in `(μ, λ)`, `uniform_2x = 0.5 × uniform_1x` exactly (1.626e-4 vs 0.5 × 3.245e-4 = 1.622e-4 — `~0.25 %` rel diff is clean FP noise on the linearity prediction). Three-shell sits between because two of three shells are at 1× and one at 2×.
+The strict-between inequality holds at both the analytic and FEM levels. By Lamé linearity in `(μ, λ)`, `uniform_2x = 0.5 × uniform_1x` exactly at the analytic level (since uniform-2× has every parameter scaled by 2× from uniform-1×); at the FEM level the linearity holds within `~0.24 %` (1.626e-4 vs `0.5 × 3.245e-4 = 1.622e-4` — clean FP noise). Three-shell sits between because two of three shells are at 1× (more compliant than uniform-2×'s all-2× configuration) and one is at 2× (less compliant than uniform-1×'s all-1× configuration); note that three-shell `≠ 0.5 × uniform_1×` because the middle shell's stiffness change is not a uniform scaling.
 
 **Note: IV-5 docstring stale number.** IV-5's `PRESSURE` constant docstring at `tests/concentric_lame_shells.rs:289-293` quotes `~4.6e-4 m` for the cavity-wall analytic; this is a stale pre-implementation estimate — the actual analytic at the row's constants is `3.342e-4 m` per the LU solve (verified bit-exact against IV-5's own runtime `eprintln!` from `iv_5_three_shell_converges_to_piecewise_lame`). Banked as an IV-5 docstring fixup candidate for a follow-up sim-soft commit.
 
