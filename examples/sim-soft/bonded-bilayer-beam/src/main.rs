@@ -48,10 +48,10 @@
 //! positions (`vertex = rest + SCALE * (deformed - rest)`) —
 //! visualisation-only, the `displacement_z` per-vertex scalar carries
 //! the TRUE physical displacement and every `verify_*` operates on the
-//! unscaled solver outputs. The amplification puts the tip displacement
-//! at `~26 cm` (`~52%` of beam length) so the cantilever arc is
-//! dramatically visible from any cf-view orbit angle, while the
-//! rectangle still reads as a beam. The cloud is
+//! unscaled solver outputs. The amplification puts the visible tip
+//! displacement at `~22 cm` (`~43%` of beam length, observed bilayer
+//! `~1.1 cm × 20`) so the cantilever arc is dramatically visible from
+//! any cf-view orbit angle, while the rectangle still reads as a beam. The cloud is
 //! filtered to a thin `|y - b/2| < dy/2` axial mid-plane y-slab cut
 //! (~960 of 7680 centroids; mirrors rows 8 + 9 z-slab pattern adapted to
 //! the cantilever-beam axial geometry). Two per-vertex scalars: the
@@ -303,14 +303,14 @@ const NON_TRIVIAL_DISP_THRESHOLD: f64 = 1.0e-4;
 /// continues to carry the TRUE physical displacement) or to any
 /// numerical assertion (every `verify_*` operates on the unscaled
 /// solver outputs). Standard FEM-visualisation trick: at small-strain
-/// regime (`~2.6%` of `L` here), the geometric bending arc is
-/// honest-but-subtle at default cf-view orbit; a `20×` amplifier puts
-/// the tip displacement at `~26 cm` (`~52%` of beam length), arcing
-/// dramatically without distorting the beam-shape readability — the
-/// bend is exaggerated but the rectangle still reads as a beam. Same
-/// trade-off framing as IV-3's dynamic-vs-quasi-static `cfg.dt`
-/// choice — an authoring decision that reshapes visual pedagogy
-/// without affecting the underlying physics.
+/// regime (observed bilayer `~2.2%` of `L` here), the geometric
+/// bending arc is honest-but-subtle at default cf-view orbit; a `20×`
+/// amplifier puts the visible tip displacement at `~22 cm` (`~43%` of
+/// beam length), arcing dramatically without distorting the beam-shape
+/// readability — the bend is exaggerated but the rectangle still reads
+/// as a beam. Same trade-off framing as IV-3's dynamic-vs-quasi-static
+/// `cfg.dt` choice — an authoring decision that reshapes visual
+/// pedagogy without affecting the underlying physics.
 const DISPLACEMENT_SCALE: f64 = 20.0;
 
 // ── Exact-pinned counts (derived from geometry; III-1 contract) ──────────
@@ -865,8 +865,8 @@ fn verify_per_tet_material_assignment(
 /// `iter_count < cfg.max_newton_iter`, `final_residual_norm < cfg.tol`,
 /// AND per-tet `max|σ-1| < 1.0` at converged `x_final` (NH validity
 /// boundary at `RequireOrientation` regime). The bilayer beam under
-/// `1 N` tip load deforms by `~2.6 %` of `L` at the tip — the maximum
-/// per-tet stretch deviation lands well inside NH's domain.
+/// `1 N` tip load deforms by `~2.2 %` of `L` at the tip (observed) —
+/// the maximum per-tet stretch deviation lands well inside NH's domain.
 fn verify_solver_converges_bilayer(snapshot: &SceneSnapshot, records: &[TetRecord]) {
     let step = &snapshot.step;
     let cfg = &snapshot.cfg;

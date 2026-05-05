@@ -130,7 +130,7 @@ The 3840 / 3840 split is structural at `NZ = 8`: cells `k ∈ {0, 1, 2, 3}` have
 | `mat.validity().max_stretch_deviation` | `to_bits` equality vs `1.0` |
 | `mat.validity().inversion` | `RequireOrientation` |
 
-NH's `RequireOrientation` declares `max_stretch_deviation = 1.0`; the bilayer beam under `1 N` tip load deforms by `~2.6 %` of `L` at the tip, with per-tet `max|σ-1| ≈ 0.007` (well below the validity boundary; observed value surfaced in stdout). Catches a regression that would push the converged solution into NH's domain boundary.
+NH's `RequireOrientation` declares `max_stretch_deviation = 1.0`; the bilayer beam under `1 N` tip load deforms by `~2.2 %` of `L` at the tip (observed), with per-tet `max|σ-1| ≈ 0.007` (well below the validity boundary; observed value surfaced in stdout). Catches a regression that would push the converged solution into NH's domain boundary.
 
 ### 6. `interface_continuity_no_slip`
 
@@ -222,7 +222,7 @@ User dropdowns to `material_id`: cf-view detects integer-valued + 2 unique value
 
 ### Why `DISPLACEMENT_SCALE = 20.0` (visualisation-only amplification)
 
-Standard FEM-visualisation trick. At small-strain regime the geometric bending arc is honest-but-subtle: the bilayer beam deflects by `~1.3 cm` at the tip on a `50 cm` beam (`~2.6 %` of `L`), well within small-strain Neo-Hookean validity but visually understated at default cf-view orbit even with modest amplification. A `20×` amplifier on the geometric vertex positions puts the visible tip displacement at `~26 cm` (`~52 %` of `L`, `~2.6×` beam thickness `H = 0.1 m`), arcing dramatically in the y-slab projection without distorting the beam-shape readability — the bend is exaggerated but the rectangle still reads as a beam.
+Standard FEM-visualisation trick. At small-strain regime the geometric bending arc is honest-but-subtle: the observed bilayer tip displacement is `~1.1 cm` on a `50 cm` beam (`~2.2 %` of `L`; the EB-composite analytic predicts `~1.3 cm` ≈ `~2.6 %` and the Tet4 + bilayer rel-err at this refinement is `~16 %` per the Tet4-caveat section below), well within small-strain Neo-Hookean validity but visually understated at default cf-view orbit even with modest amplification. A `20×` amplifier on the geometric vertex positions puts the visible tip displacement at `~22 cm` (`~43 %` of `L`, `~2.2×` beam thickness `H = 0.1 m`), arcing dramatically in the y-slab projection without distorting the beam-shape readability — the bend is exaggerated but the rectangle still reads as a beam.
 
 **The amplification is geometry-only.** The `displacement_z` per-vertex scalar carries the TRUE physical displacement (no scale factor); cf-view's color gradient still reflects the true bending magnitude `[0, ~1.3e-2 m]`. Every `verify_*` correctness gate operates on the unscaled solver outputs (`step.x_final`, `tip_disp_*`, the per-tet records' `f_at_x_final`) — the convergence anchor at 16% rel-err vs the EB-composite analytic, the captured-bits anchor under IV-1 sparse-tier rel-tol, and the discriminating uniform-bounds anchor are all unaffected. The amplification is a presentation choice in the same family as IV-3's `cfg.dt = 1.0` quasi-static idiom: an authoring decision that reshapes the readout without affecting the underlying physics.
 
