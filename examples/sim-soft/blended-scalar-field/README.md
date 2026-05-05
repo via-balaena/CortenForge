@@ -57,7 +57,7 @@ phi ≥ +0.015                ⇒ outside snap  ‖p‖ ≥ 0.085   (μ = MU_OUT
 
 Boundary inclusivity follows the `clamp(0, 1)` exactly: `s = 0` at `phi = -band` (inside snap inclusive) and `s = 1` at `phi = +band` (outside snap inclusive); cubic Hermite is C¹ at both edges and bit-exact at `s ∈ {0, 0.5, 1}`.
 
-This is **row 9 of the sim-soft examples arc** — the second Tier 3 multi-material example, generalizing row 8's sharp-boundary `LayeredScalarField` to smooth-transition `BlendedScalarField`. It's also the **first user-facing coverage of the `BlendedScalarField + with_interface_sdf` composition path uncovered by IV-6** (`tests/interface_band_flagging.rs:53-60` explicitly notes IV-6 uses `LayeredScalarField`, NOT `BlendedScalarField`).
+This is **row 9 of the sim-soft examples arc** — the second Tier 3 multi-material example, generalizing row 8's sharp-boundary `LayeredScalarField` to smooth-transition `BlendedScalarField`. It's also the **first user-facing coverage of the `BlendedScalarField + with_interface_sdf` composition path not covered by IV-6** (`tests/interface_band_flagging.rs:53-60` explicitly notes IV-6 uses `LayeredScalarField`, NOT `BlendedScalarField`).
 
 **Geometry constants reused from row 8.** `LAYERED_SPHERE_R_OUTER` (body radius `0.10`) and `LAYERED_SPHERE_BBOX_HALF_EXTENT` (bbox `0.12`) — same body sphere + bbox as row 8 for cross-row visual continuity. `R_INTERFACE = 0.07` is a NEW constant: the visual midpoint between row 8's `R_INNER_OUTER = 0.06` and `R_OUTER_INNER = 0.08`, semantically distinct from those (row 9's `R_INTERFACE` is the BlendedScalarField zero-set "stiff skin over soft core" boundary, NOT a partition boundary). `BAND_HALF_WIDTH = 0.015` is NEW: `≈ 0.75 × CELL_SIZE`, so the full band (`2 × BAND_HALF_WIDTH = 0.03`) is roughly 1.5 BCC cells wide — well-resolved, neither under-sampled nor inside-snap-collapsing.
 
@@ -152,7 +152,7 @@ Inventory row 9's named gate — directly verifies the smooth-gradient property 
 | `mesh.interface_flags()[t]` | exact `bool` equality vs `(\|phi(centroid)\| < L_e(t))` |
 | `mesh.interface_flags().len()` | `== n_tets` |
 
-First user-facing coverage of the `BlendedScalarField + with_interface_sdf` composition path uncovered by IV-6 (`tests/interface_band_flagging.rs:53-60` explicitly notes IV-6 uses `LayeredScalarField` shell-pattern, NOT `BlendedScalarField`). Test-side `mean_edge_length` is a bit-exact mirror of `interface_flags_from_field` at `mesh/mod.rs:180-186` — six norms in the exact same order, divided by 6.0 once. `expected_flag = phi.abs() < l_e` (strict `<`, mirroring `mesh/mod.rs:187`). On a fixed toolchain, observed and expected bit-equal by construction.
+First user-facing coverage of the `BlendedScalarField + with_interface_sdf` composition path not covered by IV-6 (`tests/interface_band_flagging.rs:53-60` explicitly notes IV-6 uses `LayeredScalarField` shell-pattern, NOT `BlendedScalarField`). Test-side `mean_edge_length` is a bit-exact mirror of `interface_flags_from_field` at `mesh/mod.rs:180-186` — six norms in the exact same order, divided by 6.0 once. `expected_flag = phi.abs() < l_e` (strict `<`, mirroring `mesh/mod.rs:187`). On a fixed toolchain, observed and expected bit-equal by construction.
 
 Note: `L_e(t)` varies per tet with the BCC + Isosurface Stuffing edge-length distribution and is empirically larger than `BAND_HALF_WIDTH = 0.015` on most tets at this resolution (flagged count `3480` > smoothstep band count `2736`), so the IV-6 interface band and the smoothstep band are **distinct but overlapping** populations.
 

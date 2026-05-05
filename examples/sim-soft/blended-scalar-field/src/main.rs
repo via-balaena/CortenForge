@@ -81,7 +81,7 @@
 //!   L_e(t))` where `L_e(t)` is the test-side re-derivation of the
 //!   six-edge-mean rule (`mesh/mod.rs:180-187`). HEADLINE 2 — first
 //!   user-facing coverage of the `BlendedScalarField +
-//!   with_interface_sdf` composition path uncovered by IV-6
+//!   with_interface_sdf` composition path not covered by IV-6
 //!   (`tests/interface_band_flagging.rs:53-60` explicitly notes IV-6
 //!   uses the LayeredScalarField shell-pattern, not BlendedScalarField).
 //! - **Band populations all non-empty** — inside-snap, band, and
@@ -690,7 +690,7 @@ fn verify_inside_band_monotonic_mu_gradient(records: &[TetRecord]) {
 /// where `L_e(t)` is the six-edge mean from [`mean_edge_length`].
 ///
 /// First user-facing coverage of the `BlendedScalarField +
-/// with_interface_sdf` composition path uncovered by IV-6
+/// with_interface_sdf` composition path not covered by IV-6
 /// (`tests/interface_band_flagging.rs:53-60` explicitly notes IV-6
 /// uses `LayeredScalarField`, NOT `BlendedScalarField`). Test-side
 /// `mean_edge_length` is a bit-exact mirror of
