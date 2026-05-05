@@ -322,6 +322,7 @@ members = [
     "examples/sim-soft/sphere-sdf-eval",
     "examples/sim-soft/hollow-shell-sdf",
     "examples/sim-soft/sdf-to-tet-sphere",
+    "examples/sim-soft/single-tet-stretch",
 
     # Foundation (active development)
     "design/cf-geometry",

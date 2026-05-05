@@ -4792,6 +4792,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-single-tet-stretch"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-sphere-sdf-eval"
 version = "1.0.0"
 dependencies = [
