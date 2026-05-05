@@ -1137,6 +1137,16 @@ fn verify_boundary_partition(snapshot: &SceneSnapshot) {
 ///
 /// Per-shell tet counts also exact-pinned. The canonical IV-5
 /// cross-impl gate exposed user-facing.
+//
+// Function-scope `clippy::unreachable` allow for the 0/1/2 shell-id
+// match's `_ => unreachable!(...)` arm. The file-top `#![allow]` block
+// covers `clippy::panic` but not `clippy::unreachable`, and even if it
+// did, the file-top allows sit in `cargo xtask grade`'s safety-scan
+// dead zone (lines 51-350 from file-top — see
+// `project_xtask_grade_safety_dead_zone` memo) past which the 300-line
+// back-window doesn't reach. Function-scope attribute lands within the
+// back-window.
+#[allow(clippy::unreachable)]
 fn verify_per_tet_material_assignment(
     snapshot: &SceneSnapshot,
     records: &[TetRecord],

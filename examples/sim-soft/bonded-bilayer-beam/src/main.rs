@@ -793,6 +793,13 @@ fn verify_boundary_partition(snapshot: &SceneSnapshot) {
 /// at `z = k·dz < H/2` for `k < 4`); same argument symmetrically
 /// places cells `k ∈ {4..7}` strictly above. Lower + upper sum to
 /// total exactly.
+//
+// Function-scope `clippy::unreachable` allow for the 0/1 layer match's
+// `_ => unreachable!(...)` arm. Same dead-zone rationale as the
+// function-scope `clippy::panic` allow on
+// `verify_interface_continuity_no_slip` (file-top allows past line 50
+// don't reach the safety scanner's 300-line back-window).
+#[allow(clippy::unreachable)]
 fn verify_per_tet_material_assignment(
     snapshot: &SceneSnapshot,
     records: &[TetRecord],
@@ -949,6 +956,15 @@ fn verify_solver_converges_bilayer(snapshot: &SceneSnapshot, records: &[TetRecor
 /// (`tests/multi_material_continuity.rs:181-234`) at production-scale
 /// 7680-tet mesh resolution; IV-2 covers the same tautology on a
 /// 2-tet hand-built scene.
+//
+// Function-scope `clippy::panic` allow needed because the file-top
+// `#![allow(clippy::panic)]` (line 182) sits in `cargo xtask grade`'s
+// safety-scan dead zone (lines 51-350 from file-top — see
+// `project_xtask_grade_safety_dead_zone` memo). The two `panic!(...)`
+// calls below at the malformed-mesh structural-invariant checks live
+// at line ~996/~1003, past the 300-line back-window from the dead-zone
+// allow. Function-scope attribute lands within the back-window.
+#[allow(clippy::panic)]
 fn verify_interface_continuity_no_slip(snapshot: &SceneSnapshot, records: &[TetRecord]) {
     // Find all interface vertices by rest geometry. With NZ = 8 (even)
     // and dz = HEIGHT / NZ = 0.0125, the interface `z = H/2 = 0.05` is
