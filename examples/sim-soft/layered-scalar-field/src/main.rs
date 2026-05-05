@@ -613,13 +613,14 @@ const ZSLAB_HALF_THICKNESS: f64 = CELL_SIZE / 2.0;
 /// rendering — projects to a thin disk in 3D, reading as three
 /// concentric color rings on the z=0 plane.
 ///
-/// The asserts (anchors 1-9) run over all 6768 tets — only the visual
-/// PLY is filtered. Per-shell counts in the slab are exact-pinned via
-/// the `*_ZSLAB_EXACT` constants for III-1 determinism contract
-/// coverage. Mirrors hollow-shell-sdf row 2's z=0 slice precedent for
-/// cross-section cf-view visualization (rationale: a thin slab in 3D
-/// projects unambiguously to a 2D disk pattern at any orbit angle,
-/// where a 3D wedge requires the user to face the cut planes).
+/// The correctness anchors (1-9) run over all 6768 body tets; only the
+/// visual PLY emit + anchor 10 (`verify_zslab_visual_populations_exact`)
+/// operate on the filtered slab subset. Per-shell slab counts are
+/// exact-pinned via the `*_ZSLAB_EXACT` constants for III-1 determinism
+/// contract coverage. Mirrors hollow-shell-sdf row 2's z=0 slice
+/// precedent for cross-section cf-view visualization (rationale: a thin
+/// slab in 3D projects unambiguously to a 2D disk pattern at any orbit
+/// angle, where a 3D wedge requires the user to face the cut planes).
 fn keep_for_zslab_visual(rec: &TetRecord) -> bool {
     rec.centroid.z.abs() < ZSLAB_HALF_THICKNESS
 }
