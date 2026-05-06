@@ -37,17 +37,25 @@
 //!
 //! Headless asserts + PLY emit ALWAYS run. Setting `CF_VISUAL=1` (any
 //! non-empty value) additionally spawns a Bevy app that replays the
-//! captured 1000-frame trajectory at `SLOW_MO_FACTOR = 5×` slow-motion
-//! (5 s replay duration); the replay clamps at end (no looping).
-//! Slow-motion is the default because the analytic 100 ms freefall +
-//! contact onset is blink-and-miss-it at 1× wall-clock — `5×` puts the
-//! freefall arc at `~500 ms` (clearly visible) while keeping the
-//! settle-and-rest phase under `4 s`. The trajectory's playback clock
-//! starts at the first
+//! captured 1000-frame trajectory at `SLOW_MO_FACTOR = 10×` slow-motion
+//! (10 s replay duration); the replay clamps at end (no looping).
+//! Slow-motion is the default because the analytic 89 ms freefall +
+//! contact onset is blink-and-miss-it at 1× wall-clock — `10×` puts
+//! the freefall arc at `~890 ms` (clearly observable, contact-onset
+//! reads as a distinct beat) while keeping the settle-and-rest phase
+//! under `9 s`. The trajectory's playback clock starts at the first
 //! [`step_replay`](sim_bevy_soft::trajectory::step_replay) tick
 //! (per-entity [`ReplayEpoch`](sim_bevy_soft::trajectory::ReplayEpoch)
 //! capture), NOT at app start, so `DefaultPlugins` startup time does
 //! not consume playback budget.
+//!
+//! ### Controls
+//!
+//! - **`R`** — reset and replay from frame 0
+//!   ([`reset_replay_on_keypress`](sim_bevy_soft::trajectory::reset_replay_on_keypress)).
+//! - **Mouse drag / scroll / middle-drag** — orbit / zoom / pan
+//!   (via [`OrbitCameraPlugin`]).
+//! - **Close window** — exit.
 //!
 //! Camera = sim-bevy precedent's orbit camera with target ≈ rest COM
 //! `(0, R + d̂, 0)` in Bevy frame (under `UpAxis::PlusZ`'s
@@ -278,15 +286,19 @@ const SPARSE_REL_TOL: f64 = 1.0e-12;
 /// PR1 rows 6 + 10 + 11.
 const SPARSE_EPS_ABS: f64 = 1.0e-12;
 
-/// Visual-mode replay rate multiplier on `Trajectory.dt`. `5.0×`
-/// stretches the 1-s simulated trajectory to 5 s wall-clock replay
-/// (`SLOW_MO_FACTOR × N_STEPS × DT = 5 × 1000 × 1e-3 = 5 s`). Default
+/// Visual-mode replay rate multiplier on `Trajectory.dt`. `10.0×`
+/// stretches the 1-s simulated trajectory to 10 s wall-clock replay
+/// (`SLOW_MO_FACTOR × N_STEPS × DT = 10 × 1000 × 1e-3 = 10 s`). Default
 /// rationale: the analytic time-to-impact `t_c = sqrt(2 (h-R-d̂) / |g|)
-/// ≈ 89 ms` is blink-and-miss-it at 1× wall-clock; `5×` puts the
-/// freefall + contact-onset arc at `~500 ms` (clearly visible) while
-/// the settle-and-rest phase fits under `4 s`. Pure visualization knob
-/// — has no effect on the headless asserts or the captured PLY.
-const SLOW_MO_FACTOR: f64 = 5.0;
+/// ≈ 89 ms` is blink-and-miss-it at 1× wall-clock; `10×` puts the
+/// freefall + contact-onset arc at `~890 ms` (clearly observable, and
+/// the contact-pair onset reads as a distinct beat) while the
+/// settle-and-rest phase fits under `9 s`. Press `R` mid-replay to
+/// reset and watch again from frame 0 — see
+/// [`reset_replay_on_keypress`](sim_bevy_soft::trajectory::reset_replay_on_keypress).
+/// Pure visualization knob — has no effect on the headless asserts or
+/// the captured PLY.
+const SLOW_MO_FACTOR: f64 = 10.0;
 
 // =============================================================================
 // Exact-pinned mesh counts (III-1 determinism contract)
@@ -1064,7 +1076,10 @@ fn print_summary(snapshot: &DropSnapshot, ply_path: &Path) {
         "         replay at {SLOW_MO_FACTOR:.0}× slow-motion ({replay_duration:.1} s wall-clock for {sim_t:.3} s simulated;"
     );
     println!(
-        "         clamp at end). Per-entity ReplayEpoch defers playback clock to first step_replay"
+        "         clamp at end). Press R to replay from frame 0, mouse to orbit/zoom/pan, close"
+    );
+    println!(
+        "         window to exit. Per-entity ReplayEpoch defers playback clock to first step_replay"
     );
     println!(
         "         tick so DefaultPlugins startup (~1-2 s on first run) does not consume budget."

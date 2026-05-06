@@ -189,11 +189,21 @@ Spawns an `OrbitCamera` scene with three entities:
 
 Plus a directional light + ambient (Bevy `DefaultPlugins` ships `AmbientLight`).
 
-Replay runs at `SLOW_MO_FACTOR = 5×` slow-motion: 1000 frames × `dt = SLOW_MO_FACTOR × DT = 5 ms` per replay frame = **5.000 s replay duration** for the 1.000 s simulated trajectory. The default is slow-motion because the analytic time-to-impact `t_c ≈ 89 ms` is blink-and-miss-it at 1× wall-clock — `5×` puts the freefall + contact-onset arc at `~500 ms` (clearly visible) while the settle-and-rest phase fits under `4 s`. Pure visualization knob; has no effect on the headless asserts or the captured PLY.
+Replay runs at `SLOW_MO_FACTOR = 10×` slow-motion: 1000 frames × `dt = SLOW_MO_FACTOR × DT = 10 ms` per replay frame = **10.000 s replay duration** for the 1.000 s simulated trajectory. The default is slow-motion because the analytic time-to-impact `t_c ≈ 89 ms` is blink-and-miss-it at 1× wall-clock — `10×` puts the freefall + contact-onset arc at `~890 ms` (clearly observable, contact-pair onset reads as a distinct beat) while the settle-and-rest phase fits under `9 s`. Pure visualization knob; has no effect on the headless asserts or the captured PLY.
 
-The trajectory's playback clock is captured per-entity via `sim_bevy_soft::trajectory::ReplayEpoch` at the first `step_replay` tick — NOT at `App::new()` instantiation. This isolates the trajectory's playback budget from `DefaultPlugins` startup time (winit + render-pipeline init, `~1-2 s` on first run on Apple Silicon), which would otherwise consume the entire `5 s` replay window before the user sees the first frame. (sim-bevy-soft fix: previously `step_replay` used `Time<Real>::elapsed_secs_f64()` from app start, which clamped row 12's first visual review to the final settled frame before the window became visible.)
+The trajectory's playback clock is captured per-entity via `sim_bevy_soft::trajectory::ReplayEpoch` at the first `step_replay` tick — NOT at `App::new()` instantiation. This isolates the trajectory's playback budget from `DefaultPlugins` startup time (winit + render-pipeline init, `~1-2 s` on first run on Apple Silicon), which would otherwise consume the replay window before the user sees the first frame. (sim-bevy-soft fix: previously `step_replay` used `Time<Real>::elapsed_secs_f64()` from app start, which clamped row 12's first visual review to the final settled frame before the window became visible.)
 
-The replay clamps at end (no looping); close the window to exit. To tune the replay rate edit `SLOW_MO_FACTOR` in `src/main.rs` (`1.0` = real-time, larger = slower). No in-app pause/scrub controls — defer to a future row that needs them per `sim_bevy_soft::trajectory::step_replay` docs.
+### Controls
+
+| Key | Action |
+|---|---|
+| **`R`** | Reset and replay from frame 0 (clears `ReplayEpoch.epoch_secs` so the next `step_replay` tick captures a fresh epoch — see [`sim_bevy_soft::trajectory::reset_replay_on_keypress`](../../../sim/L1/sim-bevy-soft/src/trajectory.rs)) |
+| **Mouse drag** | Orbit camera around the soft body |
+| **Mouse scroll** | Zoom |
+| **Mouse middle-drag** | Pan |
+| **Close window** | Exit the app |
+
+The replay clamps at end (no looping); press `R` to watch again, or close the window to exit. To tune the replay rate edit `SLOW_MO_FACTOR` in `src/main.rs` (`1.0` = real-time, larger = slower). No in-app pause/scrub controls — defer to a future row that needs them per `sim_bevy_soft::trajectory::step_replay` docs.
 
 User drags to orbit, scrolls to zoom, middle-drags to pan via the standard `OrbitCameraPlugin` controls.
 
