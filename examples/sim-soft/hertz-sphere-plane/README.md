@@ -150,8 +150,8 @@ Spawns an `OrbitCamera` scene with four entities (rendered at `RENDER_SCALE = 10
 
 - **Soft mesh** (`Mesh3d` + `MeshMaterial3d` + `Trajectory`) — coral PBR sphere built via `sim_bevy_soft::mesh::build_soft_mesh` from the rest configuration + `Mesh::boundary_faces()` triangulation, animated to the captured h/4 deformed positions on first `step_replay` tick (single-frame trajectory; `frame_index_at` clamps at end). `Transform::from_scale(100)` so cm-scale physics renders at meter scale.
 - **Rigid plane** (`Mesh3d` + `MeshMaterial3d`) — `8 m × 8 m` total (`4 × R × RENDER_SCALE = 4 m` half-size) gray PBR quad at Bevy `y = -(R + d̂) · 100 = -1.1 m` (= physics `z = -(R + d̂)` under `UpAxis::PlusZ`'s `(x,y,z) → (x,z,y)` swap), normal `+Y` Bevy. Static; carries no `Trajectory`.
-- **`a_FEM` annulus** (`Mesh3d` + `MeshMaterial3d`) — coral thin ring at `r = a_FEM = 1.497 mm`, thickness `±1%`. Lays flat on the plane (rotated `-π/2` around X). Unlit material so it reads identical regardless of camera angle.
-- **`a_Hertz` annulus** (`Mesh3d` + `MeshMaterial3d`) — white thin ring at `r = a_Hertz = 1.778 mm`, same thickness. Slightly above the `a_FEM` ring (1 mm physics offset) to avoid z-fighting at extreme camera angles.
+- **`a_FEM` annulus** (`Mesh3d` + `MeshMaterial3d`) — coral thin ring at `r = a_FEM = 1.497 mm` (physics scale), thickness `±2.5%`. Lays flat on the plane (rotated `-π/2` around X). Unlit material + `cull_mode: None` + `double_sided: true` so it reads identical regardless of camera angle.
+- **`a_Hertz` annulus** (`Mesh3d` + `MeshMaterial3d`) — white thin ring at `r = a_Hertz = 1.778 mm`, same thickness. Same y-coordinate as the `a_FEM` ring — radii are non-overlapping (`a_Hertz / a_FEM ≈ 1.19`), so no z-fighting between them.
 
 Plus a directional-light at `12 klx` from upper-front-right + per-camera `AmbientLight` at `80 cd/m²` (mirror row 12). The HUD shows numeric `a_FEM`, `a_Hertz`, `rel_err_a` values top-right so the visual ring gap reads 1:1 with the asserted scalar.
 
@@ -165,6 +165,14 @@ The scene is **static** — single quasi-static step with no temporal evolution.
 | **Mouse scroll** | Zoom |
 | **Right-drag** | Pan |
 | **Close window** | Exit the app |
+
+### Reading the patch-radius rings
+
+The default startup view shows the full sphere-on-plane scene at ~3R camera distance — the two patch-radius rings appear as **small concentric markers** directly under the sphere's south pole, where the deformed sphere meets the plane. At physics scale the rings are ~1.5 / 1.8 mm radius vs the sphere's 10 mm radius (15-18% of sphere radius), so they read as tiny circles from the full-scene framing.
+
+**To inspect the FEM/Hertz radial gap up close**, scroll-wheel zoom toward the contact zone — the rings expand to fill the frame and the `rel_err_a = 15.84%` shows visually as the radial gap between the coral and white circles. The HUD top-left holds the numeric values throughout regardless of camera position. Optionally, left-drag to orbit to a more top-down angle for a clean concentric-circles read.
+
+The pedagogical ordering: **full-scene first** (spatial context — soft sphere on rigid plane, patch is small relative to body, validates Hertz `a/R ≪ 1` small-strain assumption visually), then **zoom-in** (precision read — the FEM-vs-Hertz gap as a directly-visible radial offset).
 
 ### Why the rendered scene is `100×` simulation scale
 

@@ -1537,21 +1537,25 @@ fn setup_visual_scene(
         },
     ));
 
-    // Camera target sits low (near the contact zone, not mid-sphere) so
-    // the annuli get screen real-estate even though they're tiny vs the
-    // sphere. Elevation 0.9 rad (~52°) is steeper than row 12's 0.4 —
-    // necessary because the patch annuli (radii 0.15-0.178 Bevy) are
-    // tucked under the sphere body (radius 1.0 Bevy); a more top-down
-    // angle peeks past the sphere's bottom rim to expose the rings on
-    // the plane below. User can mouse-drag to orbit to other angles.
-    let target_y = -0.85 * RADIUS as f32 * RENDER_SCALE;
+    // Camera framing — full-scene default: sphere + plane both
+    // visible with the patch annuli readable as tiny markers at the
+    // contact zone. Mirrors row 12's `(0.6, 0.4)` rad orientation +
+    // 3R distance + target near the COM. The patch rings (radii
+    // 0.15-0.178 Bevy on a sphere of radius 1.0 Bevy) appear small
+    // from this distance — scroll-wheel zoom-in is required to
+    // inspect the FEM/Hertz radial gap up close (see README "Bevy
+    // visualization" section). Keeping the default at the
+    // full-scene framing prioritizes spatial-context-on-startup over
+    // ring-detail-on-startup; user-orbit + scroll-zoom drive the
+    // detail review.
+    let target_y = -0.5 * RADIUS as f32 * RENDER_SCALE;
     commands.spawn((
         Camera3d::default(),
         Transform::default(),
         OrbitCamera::new()
             .with_target(BevyVec3::new(0.0, target_y, 0.0))
-            .with_distance(2.5 * RADIUS as f32 * RENDER_SCALE)
-            .with_angles(0.4, 0.9),
+            .with_distance(3.0 * RADIUS as f32 * RENDER_SCALE)
+            .with_angles(0.4, 0.5),
         AmbientLight {
             color: Color::WHITE,
             brightness: 80.0,
