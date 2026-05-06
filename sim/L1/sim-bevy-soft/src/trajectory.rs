@@ -1,9 +1,9 @@
 //! Frame-by-frame deformed positions captured from a headless sim-soft run.
 //!
 //! [`Trajectory`] is a Bevy `Component` carried by the soft-mesh entity
-//! alongside `Mesh3d` (enforced via `#[require(Mesh3d)]`). Each
-//! `frames[i]` is a flat `Vec<f64>` in vertex-major + xyz-inner DOF
-//! layout — same packing as
+//! alongside `Mesh3d` and [`ReplayEpoch`] (both auto-added via
+//! `#[require(...)]`). Each `frames[i]` is a flat `Vec<f64>` in
+//! vertex-major + xyz-inner DOF layout — same packing as
 //! [`sim_soft::NewtonStep::x_final`](sim_soft::NewtonStep). For an
 //! `n_vertex` mesh, `frames[i].len() == 3 * n_vertices`.
 //!
@@ -15,6 +15,21 @@
 //! `step.x_final` into [`Trajectory::frames`] and spawns the soft-mesh
 //! entity with `(Mesh3d, MeshMaterial3d, Transform, Trajectory)`. The
 //! solver is NEVER invoked from inside Bevy's update loop.
+//!
+//! # Replay clock
+//!
+//! [`step_replay`] computes frame index against `Time<Real>` elapsed —
+//! but Bevy's `DefaultPlugins` startup (winit window + render-pipeline
+//! init, ~1-2 s on first run) ticks `Time<Real>` continuously before the
+//! first frame becomes visible. To prevent that startup window from
+//! consuming the trajectory's playback budget, each entity carries a
+//! [`ReplayEpoch`] component (auto-added via [`Trajectory`]'s
+//! `#[require(...)]`) that captures the wall-clock at the first
+//! [`step_replay`] tick and freezes it; subsequent ticks compute frame
+//! index against `(now - epoch)` rather than `now`. Each soft-body
+//! entity gets its own epoch — multi-body scenes spawning at different
+//! times each animate from their own `t = 0` rather than a shared global
+//! clock.
 //!
 //! # Multi-soft-body
 //!
@@ -30,17 +45,36 @@ use cf_bevy_common::axis::UpAxis;
 
 use crate::mesh::apply_soft_positions;
 
+/// Per-entity replay-clock epoch — wall-clock `Time<Real>` reading at the
+/// first [`step_replay`] tick against this entity. `None` until the first
+/// replay, then captured-and-frozen so subsequent frame-index lookups are
+/// relative to "first replay tick" rather than "app start".
+///
+/// Auto-added on [`Trajectory`] spawn via `#[require(ReplayEpoch)]`.
+/// Consumers do not construct or read this directly under normal use —
+/// it's load-bearing only inside [`step_replay`].
+///
+/// See the module-level "Replay clock" section for the full motivation
+/// (`DefaultPlugins` startup window not consuming playback budget).
+#[derive(Component, Default, Debug, Clone)]
+pub struct ReplayEpoch {
+    /// Wall-clock seconds at first replay tick. `None` before first tick.
+    pub epoch_secs: Option<f64>,
+}
+
 /// Captured trajectory of deformed positions, replayed by [`step_replay`].
 #[derive(Component, Debug, Clone)]
-#[require(Mesh3d)]
+#[require(Mesh3d, ReplayEpoch)]
 pub struct Trajectory {
     /// Frame-by-frame deformed positions. Each `frames[i]` is the
     /// flat-stride-3 `Vec<f64>` layout produced by sim-soft's solver
     /// (vertex-major + xyz-inner; `frames[i].len() == 3 * n_vertices`).
     pub frames: Vec<Vec<f64>>,
     /// Wall-clock seconds between consecutive frames. Replay maps
-    /// `Time<Real>::elapsed_secs_f64() → frame_index = floor(elapsed / dt)`,
-    /// clamped to the last frame at end of trajectory.
+    /// `(now - epoch) → frame_index = floor(elapsed / dt)`, clamped to
+    /// the last frame at end of trajectory. The `epoch` is captured at
+    /// first replay tick (see [`ReplayEpoch`]) so `Time<Real>` ticks
+    /// during `DefaultPlugins` startup do not consume playback budget.
     pub dt: f64,
 }
 
@@ -75,9 +109,10 @@ impl Trajectory {
     }
 }
 
-/// Bevy system: per-soft-body-entity, advance the frame index under
-/// `Time<Real>` and update the entity's `Mesh3d` POSITION + NORMAL
-/// attributes via [`apply_soft_positions`].
+/// Bevy system: per-soft-body-entity, advance the frame index under the
+/// per-entity epoch-relative `Time<Real>` reading and update the
+/// entity's `Mesh3d` POSITION + NORMAL attributes via
+/// [`apply_soft_positions`].
 ///
 /// Wired by [`crate::plugin::SoftBodyVisualPlugin`] into Bevy's `Update`
 /// schedule; consumers wanting to interleave their own systems can call
@@ -86,18 +121,27 @@ impl Trajectory {
 /// and clamps at trajectory end. Add a custom replay-clock Resource
 /// when those controls become load-bearing.
 ///
+/// On the first tick against an entity, the entity's [`ReplayEpoch`] is
+/// `None`; this system captures the current `Time<Real>` reading into
+/// it. Subsequent ticks compute `elapsed = now - epoch_secs`, isolating
+/// the trajectory's playback budget from `DefaultPlugins` startup time
+/// (see module-level "Replay clock" section).
+///
 /// Skips entities whose `Mesh3d` handle has no live asset (e.g., during
 /// despawn) or whose computed frame index falls outside the trajectory
 /// (defensive — [`Trajectory::frame_index_at`] already clamps).
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
 pub fn step_replay(
     mut meshes: ResMut<Assets<Mesh>>,
-    query: Query<(&Mesh3d, &Trajectory)>,
+    mut query: Query<(&Mesh3d, &Trajectory, &mut ReplayEpoch)>,
     time: Res<bevy::time::Time<bevy::time::Real>>,
     up: Res<UpAxis>,
 ) {
-    for (mesh3d, trajectory) in &query {
-        let frame_index = trajectory.frame_index_at(time.elapsed_secs_f64());
+    let now = time.elapsed_secs_f64();
+    for (mesh3d, trajectory, mut epoch) in &mut query {
+        let epoch_secs = *epoch.epoch_secs.get_or_insert(now);
+        let elapsed = (now - epoch_secs).max(0.0);
+        let frame_index = trajectory.frame_index_at(elapsed);
         let Some(frame) = trajectory.frames.get(frame_index) else {
             continue;
         };
@@ -165,5 +209,15 @@ mod tests {
     fn duration_secs_matches_frame_count_times_dt() {
         let t = three_frame_trajectory(0.05);
         assert!((t.duration_secs() - 0.15).abs() < 1e-12);
+    }
+
+    /// `ReplayEpoch::default()` starts as `None` (un-captured); the
+    /// epoch-capture happens inside [`step_replay`] on first tick. This
+    /// ensures `Trajectory`'s `#[require(ReplayEpoch)]` auto-add lands
+    /// the entity in the pre-first-tick state, not pre-loaded.
+    #[test]
+    fn replay_epoch_defaults_to_none() {
+        let epoch = ReplayEpoch::default();
+        assert!(epoch.epoch_secs.is_none());
     }
 }

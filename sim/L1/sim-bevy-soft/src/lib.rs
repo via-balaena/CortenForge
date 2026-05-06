@@ -48,11 +48,12 @@ pub mod trajectory;
 
 /// Convenience re-exports. `use sim_bevy_soft::prelude::*;` brings in the
 /// load-bearing types ([`Trajectory`](trajectory::Trajectory),
+/// [`ReplayEpoch`](trajectory::ReplayEpoch),
 /// [`SoftBodyVisualPlugin`](plugin::SoftBodyVisualPlugin)) plus the public
 /// build / apply / replay functions for consumers that prefer manual
 /// wiring over the plugin.
 pub mod prelude {
     pub use crate::mesh::{apply_soft_positions, build_soft_mesh};
     pub use crate::plugin::SoftBodyVisualPlugin;
-    pub use crate::trajectory::{Trajectory, step_replay};
+    pub use crate::trajectory::{ReplayEpoch, Trajectory, step_replay};
 }
