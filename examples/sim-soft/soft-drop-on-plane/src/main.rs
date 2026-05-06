@@ -37,18 +37,28 @@
 //!
 //! Headless asserts + PLY emit ALWAYS run. Setting `CF_VISUAL=1` (any
 //! non-empty value) additionally spawns a Bevy app that replays the
-//! captured 1000-frame trajectory at 1× wall-clock (1 s replay duration);
-//! the replay clamps at end (no looping). Camera = sim-bevy precedent's
-//! orbit camera with target ≈ rest COM `(0, R + d̂, 0)` in Bevy frame
-//! (under `UpAxis::PlusZ`'s physics-`(x,y,z)` → Bevy-`(x,z,y)` swap),
-//! distance `0.15 m` (~3× release_height for full trajectory bbox visible),
-//! angles `(0.6, 0.4) rad` (~0.6 rad ≈ 34° azimuth, 0.4 rad ≈ 23°
-//! elevation). Plane is a `4 cm × 4 cm` gray PBR quad at Bevy `y = 0`
-//! (= physics `z = 0`), normal `+Y` Bevy. To slow down the replay edit
-//! the spawned [`Trajectory::dt`](sim_bevy_soft::trajectory::Trajectory::dt)
-//! to e.g. `5 × DT` for 5× slow-motion; pause/scrub controls are out of
-//! scope (defer to a future row that wants them — see
-//! `sim_bevy_soft::trajectory::step_replay` docs).
+//! captured 1000-frame trajectory at `SLOW_MO_FACTOR = 5×` slow-motion
+//! (5 s replay duration); the replay clamps at end (no looping).
+//! Slow-motion is the default because the analytic 100 ms freefall +
+//! contact onset is blink-and-miss-it at 1× wall-clock — `5×` puts the
+//! freefall arc at `~500 ms` (clearly visible) while keeping the
+//! settle-and-rest phase under `4 s`. The trajectory's playback clock
+//! starts at the first
+//! [`step_replay`](sim_bevy_soft::trajectory::step_replay) tick
+//! (per-entity [`ReplayEpoch`](sim_bevy_soft::trajectory::ReplayEpoch)
+//! capture), NOT at app start, so `DefaultPlugins` startup time does
+//! not consume playback budget.
+//!
+//! Camera = sim-bevy precedent's orbit camera with target ≈ rest COM
+//! `(0, R + d̂, 0)` in Bevy frame (under `UpAxis::PlusZ`'s
+//! physics-`(x,y,z)` → Bevy-`(x,z,y)` swap), distance `0.15 m` (~3×
+//! release_height for full trajectory bbox visible), angles
+//! `(0.6, 0.4) rad` (~0.6 rad ≈ 34° azimuth, 0.4 rad ≈ 23° elevation).
+//! Plane is a `4 cm × 4 cm` gray PBR quad at Bevy `y = 0`
+//! (= physics `z = 0`), normal `+Y` Bevy. To tune the replay rate edit
+//! [`SLOW_MO_FACTOR`] (`1.0` = real-time, larger = slower); pause/scrub
+//! controls are out of scope (defer to a future row that wants them —
+//! see `sim_bevy_soft::trajectory::step_replay` docs).
 //!
 //! Row 12 sets the `CF_VISUAL=1` convention for sim-bevy-soft consumers
 //! (rows 13 / 14 / 18 inherit). Documented in `examples/EXAMPLES.md`.
@@ -267,6 +277,16 @@ const SPARSE_REL_TOL: f64 = 1.0e-12;
 /// drop-metric magnitudes by 8+ orders of magnitude. Same precedent as
 /// PR1 rows 6 + 10 + 11.
 const SPARSE_EPS_ABS: f64 = 1.0e-12;
+
+/// Visual-mode replay rate multiplier on `Trajectory.dt`. `5.0×`
+/// stretches the 1-s simulated trajectory to 5 s wall-clock replay
+/// (`SLOW_MO_FACTOR × N_STEPS × DT = 5 × 1000 × 1e-3 = 5 s`). Default
+/// rationale: the analytic time-to-impact `t_c = sqrt(2 (h-R-d̂) / |g|)
+/// ≈ 89 ms` is blink-and-miss-it at 1× wall-clock; `5×` puts the
+/// freefall + contact-onset arc at `~500 ms` (clearly visible) while
+/// the settle-and-rest phase fits under `4 s`. Pure visualization knob
+/// — has no effect on the headless asserts or the captured PLY.
+const SLOW_MO_FACTOR: f64 = 5.0;
 
 // =============================================================================
 // Exact-pinned mesh counts (III-1 determinism contract)
@@ -827,7 +847,7 @@ fn run_visual_mode(snapshot: &DropSnapshot) {
     let visual_setup = VisualSetupInner {
         trajectory: Trajectory {
             frames: snapshot.trajectory.clone(),
-            dt: DT,
+            dt: DT * SLOW_MO_FACTOR,
         },
         rest_positions: snapshot.rest_positions.clone(),
         boundary_faces: snapshot.boundary_faces.clone(),
@@ -1039,8 +1059,15 @@ fn print_summary(snapshot: &DropSnapshot, ply_path: &Path) {
     println!(
         "         spawns an OrbitCamera scene with the deforming sphere + gray plane + light;"
     );
+    let replay_duration = sim_t * SLOW_MO_FACTOR;
     println!(
-        "         replay tracks Time<Real> at 1× wall-clock ({sim_t:.3} s replay duration; clamp at end)."
+        "         replay at {SLOW_MO_FACTOR:.0}× slow-motion ({replay_duration:.1} s wall-clock for {sim_t:.3} s simulated;"
+    );
+    println!(
+        "         clamp at end). Per-entity ReplayEpoch defers playback clock to first step_replay"
+    );
+    println!(
+        "         tick so DefaultPlugins startup (~1-2 s on first run) does not consume budget."
     );
 }
 

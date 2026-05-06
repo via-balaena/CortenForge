@@ -189,7 +189,11 @@ Spawns an `OrbitCamera` scene with three entities:
 
 Plus a directional light + ambient (Bevy `DefaultPlugins` ships `AmbientLight`).
 
-Replay tracks `Time<Real>` at **1× wall-clock**: 1000 frames × `dt = 1 ms` = 1.000 s replay duration. The replay clamps at end (no looping); close the window to exit. To slow the replay edit the spawned `Trajectory.dt` to e.g. `5 × DT` for 5× slow-motion (no in-app pause/scrub controls — defer to a future row that needs them per `sim_bevy_soft::trajectory::step_replay` docs).
+Replay runs at `SLOW_MO_FACTOR = 5×` slow-motion: 1000 frames × `dt = SLOW_MO_FACTOR × DT = 5 ms` per replay frame = **5.000 s replay duration** for the 1.000 s simulated trajectory. The default is slow-motion because the analytic time-to-impact `t_c ≈ 89 ms` is blink-and-miss-it at 1× wall-clock — `5×` puts the freefall + contact-onset arc at `~500 ms` (clearly visible) while the settle-and-rest phase fits under `4 s`. Pure visualization knob; has no effect on the headless asserts or the captured PLY.
+
+The trajectory's playback clock is captured per-entity via `sim_bevy_soft::trajectory::ReplayEpoch` at the first `step_replay` tick — NOT at `App::new()` instantiation. This isolates the trajectory's playback budget from `DefaultPlugins` startup time (winit + render-pipeline init, `~1-2 s` on first run on Apple Silicon), which would otherwise consume the entire `5 s` replay window before the user sees the first frame. (sim-bevy-soft fix: previously `step_replay` used `Time<Real>::elapsed_secs_f64()` from app start, which clamped row 12's first visual review to the final settled frame before the window became visible.)
+
+The replay clamps at end (no looping); close the window to exit. To tune the replay rate edit `SLOW_MO_FACTOR` in `src/main.rs` (`1.0` = real-time, larger = slower). No in-app pause/scrub controls — defer to a future row that needs them per `sim_bevy_soft::trajectory::step_replay` docs.
 
 User drags to orbit, scrolls to zoom, middle-drags to pan via the standard `OrbitCameraPlugin` controls.
 
