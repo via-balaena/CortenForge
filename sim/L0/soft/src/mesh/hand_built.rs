@@ -22,8 +22,8 @@
 //! constraint per Phase 2 scope §9.
 
 use super::{
-    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, interface_flags_from_field,
-    materials_from_field, quality,
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, boundary_faces_from_topology,
+    interface_flags_from_field, materials_from_field, quality,
 };
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
@@ -44,6 +44,7 @@ pub struct HandBuiltTetMesh {
     q: QualityMetrics,
     material_cache: Vec<NeoHookean>,
     interface_flags: Vec<bool>,
+    boundary_faces: Vec<[VertexId; 3]>,
 }
 
 impl HandBuiltTetMesh {
@@ -77,6 +78,7 @@ impl HandBuiltTetMesh {
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
         let interface_flags = interface_flags_from_field(&vertices, &tets, field);
+        let boundary_faces = boundary_faces_from_topology(&tets);
         Self {
             vertices,
             tets,
@@ -84,6 +86,7 @@ impl HandBuiltTetMesh {
             q,
             material_cache,
             interface_flags,
+            boundary_faces,
         }
     }
 
@@ -119,6 +122,7 @@ impl HandBuiltTetMesh {
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
         let interface_flags = interface_flags_from_field(&vertices, &tets, field);
+        let boundary_faces = boundary_faces_from_topology(&tets);
         Self {
             vertices,
             tets,
@@ -126,6 +130,7 @@ impl HandBuiltTetMesh {
             q,
             material_cache,
             interface_flags,
+            boundary_faces,
         }
     }
 
@@ -268,6 +273,7 @@ impl HandBuiltTetMesh {
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
         let interface_flags = interface_flags_from_field(&vertices, &tets, field);
+        let boundary_faces = boundary_faces_from_topology(&tets);
         Self {
             vertices,
             tets,
@@ -275,6 +281,7 @@ impl HandBuiltTetMesh {
             q,
             material_cache,
             interface_flags,
+            boundary_faces,
         }
     }
 
@@ -346,6 +353,10 @@ impl Mesh for HandBuiltTetMesh {
 
     fn interface_flags(&self) -> &[bool] {
         &self.interface_flags
+    }
+
+    fn boundary_faces(&self) -> &[[VertexId; 3]] {
+        &self.boundary_faces
     }
 
     // Mirror of `SingleTetMesh::equals_structurally` generalized to N
@@ -623,5 +634,99 @@ mod tests {
     fn cantilever_bilayer_beam_panics_on_zero_length() {
         let _mesh =
             HandBuiltTetMesh::cantilever_bilayer_beam(4, 2, 2, 0.0, 0.1, 0.1, &canonical_field());
+    }
+
+    // -- boundary_faces -------------------------------------------------
+
+    /// Single-tet boundary faces are pinned to the exact right-handed
+    /// outward winding tuple. Catches any drift in the per-face
+    /// emission convention in `boundary_faces_from_topology`.
+    #[test]
+    fn single_tet_boundary_faces_exact_pin() {
+        use crate::mesh::SingleTetMesh;
+
+        let mesh = SingleTetMesh::new(&canonical_field());
+        let faces = mesh.boundary_faces();
+        assert_eq!(
+            faces,
+            &[
+                [1u32, 2, 3], // opposite v0
+                [0, 3, 2],    // opposite v1
+                [0, 1, 3],    // opposite v2
+                [0, 2, 1],    // opposite v3
+            ],
+            "single tet must emit the four right-handed outward faces in tet-id-then-face-id order",
+        );
+    }
+
+    /// Two-tet shared-face mesh has the interior face (vertex set
+    /// `{1, 2, 3}`) culled — both orientations cancel at the canonical
+    /// counting step, leaving 6 boundary faces (3 from each tet, with
+    /// the shared face dropped).
+    #[test]
+    fn two_tet_shared_face_culls_interior_face() {
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
+        let faces = mesh.boundary_faces();
+        // 4 faces per tet × 2 tets − 2 (shared face, both orientations) = 6.
+        assert_eq!(
+            faces.len(),
+            6,
+            "expected 6 boundary faces, got {}",
+            faces.len()
+        );
+
+        // Tet 0 = [0, 1, 2, 3]; the (1, 2, 3) face is the shared one.
+        // Tet 1 = [1, 2, 3, 4]; (1, 3, 2) — the (1,2,3) canonical key —
+        // also falls out. Neither orientation should appear in the
+        // output.
+        let shared_canonical = {
+            let mut k = [1u32, 2, 3];
+            k.sort_unstable();
+            k
+        };
+        for face in faces {
+            let mut k = *face;
+            k.sort_unstable();
+            assert_ne!(
+                k, shared_canonical,
+                "shared face {face:?} (canonical {k:?}) must be culled",
+            );
+        }
+    }
+
+    /// `uniform_block(2, 0.1, ...)` emits a 2³-cell cube. Each of the
+    /// 6 cube faces tiles with 4 surface quads × 2 triangles = 8
+    /// triangles, totalling 48 boundary faces. Spot-check that every
+    /// face winds outward (its right-hand-rule normal points away from
+    /// the cube center) — the per-face check catches any sign drift in
+    /// the boundary-face winding convention against actual mesh
+    /// geometry, not just topological pinning.
+    #[test]
+    fn uniform_block_2_cube_boundary_count_and_outward_winding() {
+        let edge = 0.1;
+        let mesh = HandBuiltTetMesh::uniform_block(2, edge, &canonical_field());
+        let faces = mesh.boundary_faces();
+        assert_eq!(
+            faces.len(),
+            48,
+            "2³-cell cube must have 48 boundary triangles, got {}",
+            faces.len(),
+        );
+
+        let positions = mesh.positions();
+        let cube_center = Vec3::new(edge / 2.0, edge / 2.0, edge / 2.0);
+        for face in faces {
+            let v_a = positions[face[0] as usize];
+            let v_b = positions[face[1] as usize];
+            let v_c = positions[face[2] as usize];
+            let normal = (v_b - v_a).cross(&(v_c - v_a));
+            let face_centroid = (v_a + v_b + v_c) / 3.0;
+            let outward_dir = face_centroid - cube_center;
+            assert!(
+                normal.dot(&outward_dir) > 0.0,
+                "face {face:?} normal must point away from cube center {cube_center:?} \
+                 (face centroid {face_centroid:?}, normal {normal:?})",
+            );
+        }
     }
 }

@@ -44,8 +44,8 @@ use std::collections::BTreeMap;
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
 use crate::mesh::{
-    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, interface_flags_from_field,
-    materials_from_field, quality,
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, boundary_faces_from_topology,
+    interface_flags_from_field, materials_from_field, quality,
 };
 
 use super::MeshingHints;
@@ -67,6 +67,7 @@ pub struct SdfMeshedTetMesh {
     q: QualityMetrics,
     material_cache: Vec<NeoHookean>,
     interface_flags: Vec<bool>,
+    boundary_faces: Vec<[VertexId; 3]>,
 }
 
 /// Errors returned by [`SdfMeshedTetMesh::from_sdf`].
@@ -208,6 +209,12 @@ impl SdfMeshedTetMesh {
         let interface_flags =
             interface_flags_from_field(&output_positions, &output_tets, material_field);
 
+        // Step 10: per-mesh boundary-face cache. Pure topology;
+        // outward winding inherits from the right-handed sub-tets the
+        // stuffing pipeline emits by construction (Decision H — no
+        // negative-volume tet survives the D-10 backstop).
+        let boundary_faces = boundary_faces_from_topology(&output_tets);
+
         Ok(Self {
             vertices: output_positions,
             tets: output_tets,
@@ -215,6 +222,7 @@ impl SdfMeshedTetMesh {
             q,
             material_cache,
             interface_flags,
+            boundary_faces,
         })
     }
 }
@@ -256,6 +264,10 @@ impl Mesh for SdfMeshedTetMesh {
 
     fn interface_flags(&self) -> &[bool] {
         &self.interface_flags
+    }
+
+    fn boundary_faces(&self) -> &[[VertexId; 3]] {
+        &self.boundary_faces
     }
 
     // Mirrors `HandBuiltTetMesh::equals_structurally`: same vertex
