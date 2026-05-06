@@ -894,11 +894,17 @@ fn setup_visual_scene(
     // Soft-mesh entity: built from rest config, animated by step_replay
     // reading the Trajectory each frame. Per `#[require(Mesh3d)]` on
     // Trajectory, the spawn bundle MUST include Mesh3d — provided here.
+    //
+    // Coral PBR base — warm, light, high contrast against the dark gray
+    // Bevy clear color so the deformation arc reads cleanly without the
+    // user squinting. Slight gloss (perceptual_roughness 0.5) catches
+    // the directional light's specular highlight at the contact patch
+    // without going full glossy.
     let soft_mesh_handle = meshes.add(build_soft_mesh(&rest_positions, &boundary_faces, *up));
     let soft_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.3, 0.6, 1.0),
-        perceptual_roughness: 0.6,
-        metallic: 0.1,
+        base_color: Color::srgb(1.0, 0.55, 0.4),
+        perceptual_roughness: 0.5,
+        metallic: 0.05,
         ..default()
     });
     commands.spawn((
@@ -946,6 +952,27 @@ fn setup_visual_scene(
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.6, 0.4, 0.0)),
+    ));
+
+    // HUD — Text overlay listing the controls so users discover them
+    // without reading the README. Bottom-left corner, light-yellow on
+    // dark-gray default Bevy clear color reads cleanly. Default font
+    // ships via the `default_font` Cargo feature already in our set.
+    commands.spawn((
+        Text::new(
+            "Press R to reset · Mouse: drag orbit · scroll zoom · middle-drag pan · close window to exit",
+        ),
+        TextFont {
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.95, 0.95, 0.7)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(12.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
     ));
 }
 
