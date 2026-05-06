@@ -1459,10 +1459,23 @@ fn setup_visual_scene(
     // plane; rotate by -π/2 around X so the disc faces +Y (lays flat
     // on the floor).
     //
-    // RING_THICKNESS_FRAC = 0.01 = ±1% of radius — visible as a thin
-    // outline, not a filled disk; no translucency artifacts.
-    let ring_y = 0.001_f32.mul_add(RENDER_SCALE, plane_y);
-    let ring_thickness_frac: f32 = 0.01;
+    // ring_y placement: critical that the ring sits CLOSE to the plane
+    // (just above, well below the sphere body). The plane lives at
+    // `plane_y = -(R + d̂) · RENDER_SCALE = -1.1` Bevy; the deformed
+    // sphere south pole sits near `-R · RENDER_SCALE = -1.0` Bevy.
+    // The 0.1-Bevy contact-band gap between them is where the rings go
+    // — pin at `plane_y + 0.005` = `-1.095` Bevy (5 cm Bevy above
+    // plane = 50 μm physics, well above depth-buffer z-fight floor at
+    // ~2 m camera distance, well below the deformed sphere body that
+    // would otherwise occlude rings placed too high).
+    //
+    // RING_THICKNESS_FRAC = 0.025 — at radii 0.15-0.178 Bevy and the
+    // camera distance below, this is large enough to read as a clearly
+    // visible ring without overlapping the FEM/Hertz radial gap (gap
+    // is 16% of radius; ring half-thickness is 2.5% per ring, so 5%
+    // combined coverage leaves 11% radial gap clear between them).
+    let ring_y = plane_y + 0.005_f32;
+    let ring_thickness_frac: f32 = 0.025;
     let ring_rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
     // Coral a_FEM annulus — matches the soft-mesh PBR for "this is the
@@ -1472,11 +1485,18 @@ fn setup_visual_scene(
         r_fem_render * (1.0 - ring_thickness_frac),
         r_fem_render * (1.0 + ring_thickness_frac),
     ));
+    // Unlit + double_sided + cull_mode None — annuli must render from
+    // both faces (Bevy's `Annulus` 2D primitive carries a single-side
+    // winding; under the -π/2 X-rotation that lays the disc flat, the
+    // back-face culls when the camera is above the disc). Unlit is
+    // intentional — the ring colors should read identically regardless
+    // of camera angle, since they encode pure-quantity scalars (not
+    // surface lighting).
     let fem_material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.55, 0.4),
-        emissive: LinearRgba::new(0.5, 0.28, 0.20, 1.0),
-        perceptual_roughness: 0.4,
         unlit: true,
+        double_sided: true,
+        cull_mode: None,
         ..default()
     });
     commands.spawn((
@@ -1498,32 +1518,40 @@ fn setup_visual_scene(
     ));
     let hertz_material = materials.add(StandardMaterial {
         base_color: Color::WHITE,
-        emissive: LinearRgba::new(0.6, 0.6, 0.6, 1.0),
         unlit: true,
+        double_sided: true,
+        cull_mode: None,
         ..default()
     });
+    // Both annuli at the same `ring_y` — they have non-overlapping
+    // radii (a_FEM = 1.50 mm vs a_Hertz = 1.78 mm physics), so no
+    // z-fighting between them; staggering by a sub-mm Bevy offset is
+    // unnecessary and hides the radial gap visually.
     commands.spawn((
         Mesh3d(hertz_annulus),
         MeshMaterial3d(hertz_material),
         Transform {
-            translation: BevyVec3::new(0.0, 0.001_f32.mul_add(RENDER_SCALE, ring_y), 0.0),
+            translation: BevyVec3::new(0.0, ring_y, 0.0),
             rotation: ring_rotation,
             ..default()
         },
     ));
 
-    // Camera target = midpoint between sphere center (Bevy y = 0) and
-    // contact zone (Bevy y ≈ plane_y + R · RENDER_SCALE = -d̂ ·
-    // RENDER_SCALE ≈ -0.1 Bevy m). Aim slightly toward the contact so
-    // patch annuli are centered in view.
-    let target_y = -0.5 * RADIUS as f32 * RENDER_SCALE;
+    // Camera target sits low (near the contact zone, not mid-sphere) so
+    // the annuli get screen real-estate even though they're tiny vs the
+    // sphere. Elevation 0.9 rad (~52°) is steeper than row 12's 0.4 —
+    // necessary because the patch annuli (radii 0.15-0.178 Bevy) are
+    // tucked under the sphere body (radius 1.0 Bevy); a more top-down
+    // angle peeks past the sphere's bottom rim to expose the rings on
+    // the plane below. User can mouse-drag to orbit to other angles.
+    let target_y = -0.85 * RADIUS as f32 * RENDER_SCALE;
     commands.spawn((
         Camera3d::default(),
         Transform::default(),
         OrbitCamera::new()
             .with_target(BevyVec3::new(0.0, target_y, 0.0))
-            .with_distance(3.0 * RADIUS as f32 * RENDER_SCALE)
-            .with_angles(0.4, 0.5),
+            .with_distance(2.5 * RADIUS as f32 * RENDER_SCALE)
+            .with_angles(0.4, 0.9),
         AmbientLight {
             color: Color::WHITE,
             brightness: 80.0,
@@ -1542,23 +1570,10 @@ fn setup_visual_scene(
         Transform::from_xyz(0.5, 1.0, 0.5).looking_at(BevyVec3::ZERO, BevyVec3::Y),
     ));
 
-    // HUD — controls overlay in bottom-left, plus the asserted scalars
-    // top-right so the user sees the patch radii numerically right next
-    // to their visual rendering.
-    commands.spawn((
-        Text::new("Mouse: drag orbit | scroll zoom | right-drag pan | close window to exit"),
-        TextFont {
-            font_size: 14.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.95, 0.95, 0.7)),
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(12.0),
-            left: Val::Px(12.0),
-            ..default()
-        },
-    ));
+    // HUD — both panels pinned to the LEFT edge so multi-line text
+    // grows rightward without truncating against the right-edge
+    // viewport boundary. Asserted scalars top-left (read alongside the
+    // visual rings); controls bottom-left (mirror row 12).
     commands.spawn((
         Text::new(format!(
             "a_FEM (coral)  = {:.4} mm\na_Hertz (white) = {:.4} mm\nrel_err_a       = {:.2} %",
@@ -1574,7 +1589,21 @@ fn setup_visual_scene(
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(12.0),
-            right: Val::Px(12.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+    ));
+    commands.spawn((
+        Text::new("Mouse: drag orbit | scroll zoom | right-drag pan | close window to exit"),
+        TextFont {
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.95, 0.95, 0.7)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(12.0),
+            left: Val::Px(12.0),
             ..default()
         },
     ));
