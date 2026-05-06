@@ -81,9 +81,9 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
-    /// Frame the input AABB the same way the cf-viewer commit-3 placeholder
-    /// did: camera offset by `(d, d, d)` (where `d = max(diagonal, 1.0) ·
-    /// 1.5`) from the AABB center, looking at the center.
+    /// Frame the input AABB corner-on: camera offset by `(d, d, d)` (where
+    /// `d = max(diagonal, 1.0) · 1.5`) from the AABB center, looking at
+    /// the center.
     ///
     /// Per the spherical convention, `(d, d, d)` corresponds to:
     /// - `azimuth = π/4`
@@ -242,10 +242,10 @@ mod tests {
         assert!(p.z.abs() < 1e-5, "z = {}", p.z);
     }
 
-    /// `framing_for_aabb` reproduces the cf-viewer commit-3 corner-on view:
-    /// camera offset = `(d, d, d)` from center where `d = diagonal · 1.5`.
+    /// `framing_for_aabb` produces the corner-on view: camera offset =
+    /// `(d, d, d)` from center where `d = diagonal · 1.5`.
     #[test]
-    fn framing_for_aabb_matches_static_placeholder_corner_on() {
+    fn framing_for_aabb_corner_on_at_one_and_a_half_diagonal() {
         // 2-unit cube centered at origin (Z-up physics frame).
         let aabb = Aabb::from_corners(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
         let cam = OrbitCamera::framing_for_aabb(&aabb, UpAxis::PlusZ);

@@ -7,8 +7,8 @@
 //! conversion) can treat positions as Bevy-Y-up without re-deriving the
 //! conversion.
 //!
-//! The mapping is an axis swap re-using the reflection convention from
-//! cf-viewer's commit 3 + commit 6 (parameterization by `--up=<+X|+Y|+Z>`):
+//! The mapping is a single-axis swap parameterized by `--up=<+X|+Y|+Z>`
+//! (or equivalently a [`UpAxis`] resource):
 //!
 //! - [`UpAxis::PlusZ`]: input `(x, y, z)` → Bevy `(x, z, y)` — workspace
 //!   default; Y↔Z swap inverts handedness, so triangle winding flips.
