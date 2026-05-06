@@ -133,9 +133,9 @@
 //! **finest-refinement settled deformed cube** between **two visual
 //! plates** (bottom + top) — a static (single-step) scene with the
 //! HUD reading per-refinement ε, F_R_FEM, two-bound bracket, Cauchy
-//! ratio, and effective modulus. Pressing `R` is a no-op (no
-//! animation to reset); orbit / zoom / pan via mouse work as in
-//! rows 12 + 13.
+//! ratio, effective modulus, and the VIZ_AMPLIFY disclosure line.
+//! Pressing `R` is a no-op (no animation to reset); orbit / zoom /
+//! pan via mouse work as in rows 12 + 13.
 //!
 //! **The bottom plate is purely visual** — physics has no penalty
 //! contact at the bottom face; the bottom face is BC-pinned in
@@ -144,6 +144,25 @@
 //! between two RigidPlanes," and the BC-pin is the nearest-
 //! representable analog of a perfectly bonded rigid bottom plate; the
 //! second plate carries no penalty force in the physics.
+//!
+//! **Visualization is amplified** by `VIZ_AMPLIFY = 50×` per banked
+//! pattern (b) — V-3a's small-strain regime (`ε ≈ 0.6 %`) is below
+//! human visual acuity at typical viewing distance, so cube
+//! deformations from rest are multiplied by `VIZ_AMPLIFY` so the
+//! squish becomes visually perceptible (`~30 %` apparent
+//! z-compression at finest). The **plates are positioned flush
+//! against the (amplified) cube faces** with a sub-mm z-fight offset,
+//! NOT at the kinematic `δ`-offset positions the physics solver uses
+//! — the penalty model's `sd ≈ 9.78 μm` contact-band would inflate to
+//! ~5 cm Bevy under amplification and dominate the visual story; the
+//! band is an FEM no-penetration-enforcement implementation detail
+//! tangential to the row's "two plates squishing a cube" pedagogy, so
+//! it's absorbed into the visualization. **Headless asserts + JSON +
+//! PLY are NOT amplified** — they read the true `x_final` from the
+//! solver. HUD numbers + JSON + plot.py F-vs-ε scatter still carry
+//! the penalty-band physics. The HUD's last line declares the
+//! amplification factor so the visual-vs-numerical contract is
+//! explicit.
 //!
 //! ### Why the rendered scene is `100×` simulation scale
 //!
@@ -1532,6 +1551,42 @@ fn save_finest_frame_ply(snapshot: &CompressiveSnapshot, path: &Path) -> Result<
 /// scale-invariant.
 const RENDER_SCALE: f32 = 100.0;
 
+/// Visualization-only displacement amplifier (banked pattern (b) at
+/// row 10 — `feedback_visual_review_is_the_test`). V-3a's small-strain
+/// regime (`ε ≈ 0.6 %` finest-equilibrium) is well below human visual
+/// acuity at typical viewing distance: 60 μm cube compression on a
+/// 1 m visual cube subtends ~2 mrad ≈ 0.1° from a 3 m camera, below
+/// the ~17 mrad ≈ 1 arc-min threshold. **Multiplies `(deformed −
+/// rest)` by `VIZ_AMPLIFY` before passing to the Bevy trajectory
+/// replay**, so the cube's compression + lateral Poisson bulge become
+/// visually perceptible (`50× → ~30 %` apparent z-squish + `~12 %`
+/// lateral expansion at `ε = 0.6 %`, `ν = 0.4`).
+///
+/// **Plates are positioned flush against the (amplified) cube faces**
+/// rather than at the kinematic `δ`-offset positions, so the visual
+/// reads as "two plates squishing the cube" without an inflated-by-
+/// `VIZ_AMPLIFY` contact-band gap (the penalty model's finite-band
+/// compliance produces `sd ≈ 9.78 μm` at finest equilibrium, which
+/// amplifies to ~5 cm Bevy and dominates the visual story; the band
+/// is an FEM no-penetration-enforcement implementation detail
+/// tangential to the row's physics pedagogy). The contact-band gap
+/// is absorbed into the visualization layer; HUD numbers + JSON +
+/// plot.py F-vs-ε scatter still carry the penalty-band physics for
+/// anyone wanting to inspect it.
+///
+/// **Headless asserts + JSON + PLY are NOT amplified** — they operate
+/// on the true `x_final` produced by the solver. The HUD declares the
+/// amplification factor on the last line so the visual-vs-numerical
+/// contract is explicit.
+const VIZ_AMPLIFY: f32 = 50.0;
+
+/// Sub-mm Bevy offset between plate face and cube face to prevent
+/// depth-buffer z-fight while reading visually as "in contact."
+/// At RENDER_SCALE 100×, 0.002 Bevy = 20 μm physics-equivalent
+/// (negligible vs the cube's 1 cm physics edge). Sufficient depth
+/// resolution at the default Bevy 0.18 near/far clip bracket.
+const PLATE_ZFIGHT_OFFSET: f32 = 0.002;
+
 /// Resource carrying the headless-harness outputs the Bevy `Startup`
 /// system needs to spawn the soft-mesh + plates + camera entities.
 /// Mirrors rows 12+13's `VisualSetup` shape — wrapped in `Option` so
@@ -1546,25 +1601,63 @@ struct VisualSetupInner {
     trajectory: Trajectory,
     rest_positions: Vec<Vec3>,
     boundary_faces: Vec<[VertexId; 3]>,
+    /// Bevy y-coordinate of the amplified cube top face (rest top
+    /// minus `VIZ_AMPLIFY × compression`, then × RENDER_SCALE).
+    /// Top plate's bottom face is positioned at this y plus
+    /// `PLATE_ZFIGHT_OFFSET`.
+    cube_top_amplified_y: f32,
     /// HUD-line text — pre-formatted on the headless side so the Bevy
     /// system reads ready-to-render strings.
     hud: String,
 }
 
 fn run_visual_mode(snapshot: &CompressiveSnapshot) {
+    // Amplify deformations from rest for visualization-only — see
+    // `VIZ_AMPLIFY` constant docstring + pattern (b) memo. Each vertex
+    // gets `viz_pos = rest + VIZ_AMPLIFY · (x_final − rest)` per
+    // dimension; rest positions are unchanged in the trajectory's
+    // first-tick replay payload (Bevy mesh starts at rest, then
+    // step_replay overwrites with amplified positions). Headless
+    // asserts + JSON + PLY paths read `snapshot.n8.x_final` directly
+    // and remain unamplified.
+    let n_vertices = snapshot.n8.rest_positions.len();
+    let mut amplified_x_final = vec![0.0_f64; 3 * n_vertices];
+    let amp = f64::from(VIZ_AMPLIFY);
+    for i in 0..n_vertices {
+        let rest = &snapshot.n8.rest_positions[i];
+        let dx = snapshot.n8.x_final[3 * i] - rest.x;
+        let dy = snapshot.n8.x_final[3 * i + 1] - rest.y;
+        let dz = snapshot.n8.x_final[3 * i + 2] - rest.z;
+        amplified_x_final[3 * i] = amp.mul_add(dx, rest.x);
+        amplified_x_final[3 * i + 1] = amp.mul_add(dy, rest.y);
+        amplified_x_final[3 * i + 2] = amp.mul_add(dz, rest.z);
+    }
+
     let trajectory = Trajectory {
-        frames: vec![snapshot.n8.x_final.clone()],
+        frames: vec![amplified_x_final],
         // dt is irrelevant at frames.len() == 1 (frame_index_at clamps
         // to 0); set to STATIC_DT so the math is well-defined.
         dt: STATIC_DT,
     };
+
+    // Amplified cube top y (Bevy units) for top-plate face placement.
+    // At rest, cube top is at z = EDGE_LEN; under VIZ_AMPLIFY the top
+    // face descends by VIZ × (compression) where compression = ε ·
+    // EDGE_LEN. Final amplified top z = EDGE_LEN · (1 − VIZ × ε);
+    // multiply by RENDER_SCALE for Bevy y.
+    #[allow(clippy::cast_possible_truncation)]
+    let cube_top_amplified_y = (EDGE_LEN
+        * f64::from(VIZ_AMPLIFY).mul_add(-snapshot.n8.eps, 1.0)
+        * f64::from(RENDER_SCALE)) as f32;
+
     let hud = format!(
         "n=2  ε = {:.4}%  F_R = {:.4} N  [F_us {:.4}, F_strain {:.4}]\n\
          n=4  ε = {:.4}%  F_R = {:.4} N  [F_us {:.4}, F_strain {:.4}]\n\
          n=8  ε = {:.4}%  F_R = {:.4} N  [F_us {:.4}, F_strain {:.4}]\n\
          Cauchy ratio (F_R) = {:.4} (gate < 1)\n\
          E_eff (n=8) = {:.4e} Pa  in [E={:.4e}, M_c={:.4e}]\n\
-         rel_pos_in_bounds = {:.4} (0=uniaxial-stress, 1=uniaxial-strain)",
+         rel_pos_in_bounds = {:.4} (0=uniaxial-stress, 1=uniaxial-strain)\n\
+         VIZ_AMPLIFY = {:.0}× (cube + plates amplified for visibility; plates flush against cube; numbers above are TRUE physics)",
         snapshot.n2.eps * 100.0,
         snapshot.n2.f_r_fem,
         snapshot.n2.f_us,
@@ -1582,11 +1675,13 @@ fn run_visual_mode(snapshot: &CompressiveSnapshot) {
         snapshot.e_young,
         snapshot.m_constrained,
         snapshot.rel_pos_in_bounds_n8,
+        VIZ_AMPLIFY,
     );
     let visual_setup = VisualSetupInner {
         trajectory,
         rest_positions: snapshot.n8.rest_positions.clone(),
         boundary_faces: snapshot.n8.boundary_faces.clone(),
+        cube_top_amplified_y,
         hud,
     };
 
@@ -1611,6 +1706,7 @@ fn setup_visual_scene(
         trajectory,
         rest_positions,
         boundary_faces,
+        cube_top_amplified_y,
         hud,
     }) = visual_setup.0.take()
     else {
@@ -1634,11 +1730,18 @@ fn setup_visual_scene(
         trajectory,
     ));
 
-    // Plate visualizations — gray PBR quads. Plate half-size = 4 ×
-    // EDGE_LEN × RENDER_SCALE = 4 m (mirrors rows 12+13's `4 R`
-    // proportionality). Both plates share the same mesh + material.
-    let plate_half_size = 4.0 * EDGE_LEN as f32 * RENDER_SCALE;
-    let plate_mesh = meshes.add(Plane3d::new(BevyVec3::Y, Vec2::splat(plate_half_size)));
+    // Plate visualizations — gray PBR cuboids (thick rectangular
+    // slabs that read as compression-test rig press plates). Sized
+    // 1.5× cube edge in the lateral (xz) directions so they're
+    // clearly larger than the cube without dominating the frame, and
+    // 8% of cube edge in thickness (y) so they have visible substance
+    // — Plane3d quads (rows 12+13's choice for a sphere-on-plane
+    // scene) read as paper-thin under perspective and obscure the
+    // "two plates squishing the cube" pedagogy this row needs. Both
+    // plates share the same mesh + material.
+    let plate_lateral = 1.5 * EDGE_LEN as f32 * RENDER_SCALE;
+    let plate_thickness = 0.08 * EDGE_LEN as f32 * RENDER_SCALE;
+    let plate_mesh = meshes.add(Cuboid::new(plate_lateral, plate_thickness, plate_lateral));
     let plate_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.7, 0.7, 0.7),
         perceptual_roughness: 0.9,
@@ -1646,28 +1749,35 @@ fn setup_visual_scene(
     });
 
     // Bottom plate — purely visual; physics has no penalty contact
-    // here (bottom face is BC-pinned). Symmetric placement to top
-    // plate: pulled DOWN from the cube bottom face by exactly
-    // DISPLACEMENT (50 μm physics → 0.005 Bevy units at RENDER_SCALE
-    // 100×) so both plates sit `δ` away from their respective cube
-    // faces in the rest config. Avoids depth-buffer z-fight between
-    // the cube's bottom face (Bevy y = 0 at rest) and a coplanar
-    // bottom plate; the offset reads as a thin visual gap from
-    // any camera angle.
-    let bottom_plate_y = -(DISPLACEMENT as f32) * RENDER_SCALE;
+    // here (bottom face is BC-pinned, doesn't move from z=0). Plate's
+    // TOP face sits flush against cube bottom at Bevy y=0, with a
+    // sub-mm `PLATE_ZFIGHT_OFFSET` to prevent depth-buffer z-fight.
+    // Cuboid is centered at the entity transform, so transform y =
+    // face_y − thickness/2.
+    let bottom_plate_face_y = -PLATE_ZFIGHT_OFFSET;
+    let bottom_plate_y = (-0.5_f32).mul_add(plate_thickness, bottom_plate_face_y);
     commands.spawn((
         Mesh3d(plate_mesh.clone()),
         MeshMaterial3d(plate_material.clone()),
         Transform::from_xyz(0.0, bottom_plate_y, 0.0),
     ));
 
-    // Top plate — the physical `RigidPlane`. Plane equation
-    // `n·x = offset` with normal `-ẑ` and offset = `δ − L = -9.95e-3`
-    // gives plane surface at physics `z = L − δ ≈ 9.95 mm` (just
-    // below the cube's rest top face by exactly δ). Under the PlusZ
-    // swap, physics z → Bevy y unchanged, so Bevy
-    // `y = (EDGE_LEN − DISPLACEMENT) · RENDER_SCALE ≈ 0.995 m`.
-    let top_plate_y = (EDGE_LEN - DISPLACEMENT) as f32 * RENDER_SCALE;
+    // Top plate — the physical `RigidPlane`. Plate's BOTTOM face
+    // positioned flush against the AMPLIFIED cube top surface (sub-mm
+    // `PLATE_ZFIGHT_OFFSET` above to prevent depth-buffer z-fight),
+    // NOT at the kinematic `δ`-offset position the physics solver
+    // uses. The penalty model's finite-band compliance produces
+    // `sd ≈ 9.78 μm` at finest equilibrium — under VIZ_AMPLIFY=50
+    // this would inflate to ~5 cm Bevy gap and dominate the visual
+    // story. The band is an FEM no-penetration-enforcement
+    // implementation detail tangential to the row's "two plates
+    // squishing a cube" pedagogy; absorbing it into the visualization
+    // gives the rigid-contact look users expect from a compression
+    // test rig. HUD numbers + JSON + plot.py F-vs-ε scatter still
+    // carry the penalty-band physics for inspection. Cuboid transform
+    // y = face_y + thickness/2.
+    let top_plate_face_y = cube_top_amplified_y + PLATE_ZFIGHT_OFFSET;
+    let top_plate_y = 0.5_f32.mul_add(plate_thickness, top_plate_face_y);
     commands.spawn((
         Mesh3d(plate_mesh),
         MeshMaterial3d(plate_material),
