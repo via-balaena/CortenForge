@@ -363,6 +363,7 @@ members = [
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
     "sim/L1/ml-chassis-bevy",
+    "sim/L1/sim-bevy-soft",
 ]
 
 # Exclude directories that aren't workspace members
@@ -565,6 +566,7 @@ sim-soft = { path = "sim/L0/soft" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 sim-ml-chassis-bevy = { path = "sim/L1/ml-chassis-bevy" }
+sim-bevy-soft = { path = "sim/L1/sim-bevy-soft" }
 
 # Shared Bevy-0.18 helpers consumed by cf-viewer + sim-bevy + sim-bevy-soft.
 cf-bevy-common = { path = "cf-bevy-common" }

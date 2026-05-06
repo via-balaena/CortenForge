@@ -8391,6 +8391,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-bevy-soft"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "cf-bevy-common",
+ "mesh-types",
+ "sim-soft",
+]
+
+[[package]]
 name = "sim-conformance-tests"
 version = "1.0.0"
 dependencies = [
