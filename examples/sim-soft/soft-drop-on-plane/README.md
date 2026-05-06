@@ -185,7 +185,7 @@ CF_VISUAL=1 cargo run -p example-sim-soft-soft-drop-on-plane --release
 Spawns an `OrbitCamera` scene with three entities (rendered at `RENDER_SCALE = 100×` physics scale per the section below):
 
 - **Soft mesh** (`Mesh3d` + `MeshMaterial3d` + `Trajectory`) — a coral PBR sphere built via `sim_bevy_soft::mesh::build_soft_mesh` from the rest configuration + `Mesh::boundary_faces()` triangulation, animated by `sim_bevy_soft::trajectory::step_replay` reading the captured 1000-frame trajectory each frame. Carries `Transform::from_scale(100)` so the cm-scale physics positions render at meter scale.
-- **Rigid plane** (`Mesh3d` + `MeshMaterial3d`) — `4 m × 4 m` half-size gray PBR quad at Bevy `y = 0` (= physics `z = 0` under `UpAxis::PlusZ`'s `(x,y,z) → (x,z,y)` swap), normal `+Y` Bevy. Static; no `Trajectory`. Half-size = `4 × R × RENDER_SCALE = 4 m`.
+- **Rigid plane** (`Mesh3d` + `MeshMaterial3d`) — `8 m × 8 m` total (`4 m` half-size on each axis per Bevy's `Plane3d::new`, sized by `4 × R × RENDER_SCALE = 4 m`) gray PBR quad at Bevy `y = 0` (= physics `z = 0` under `UpAxis::PlusZ`'s `(x,y,z) → (x,z,y)` swap), normal `+Y` Bevy. Static; no `Trajectory`.
 - **Camera** (`Camera3d` + `OrbitCamera`) — target near rest COM `(0, R + d̂, 0)` Bevy scaled by `RENDER_SCALE` to `(0, 1.1, 0)` Bevy, distance `15 m` (~3× release_height for full trajectory bbox visible), angles `(0.6, 0.4) rad` (~34° azimuth, 23° elevation). Per-camera `AmbientLight` Component (Bevy 0.18 moved AmbientLight from a global Resource to a per-camera Component — `#[require(Camera)]`) at `80 cd/m²`.
 
 Plus a separate directional-light entity at `12 klx` illuminance, oriented from upper-front-right via `Transform::from_xyz(0.5, 1.0, 0.5).looking_at(Vec3::ZERO, Vec3::Y)`.

@@ -91,11 +91,12 @@
 //! `RENDER_SCALE` so target lands at `(0, 1.1, 0)` Bevy (vs
 //! `(0, 0.011, 0)` at 1×). Distance `15 m` (~3× release_height for
 //! full trajectory bbox visible), angles `(0.6, 0.4) rad`
-//! (~34° azimuth, ~23° elevation). Plane is a `4 m × 4 m` half-size
-//! gray PBR quad at Bevy `y = 0` (= physics `z = 0`), normal `+Y`
-//! Bevy. To tune the replay rate edit [`SLOW_MO_FACTOR`] (`1.0` =
-//! real-time, larger = slower); pause/scrub controls are out of scope
-//! (defer to a future row that wants them — see
+//! (~34° azimuth, ~23° elevation). Plane is `8 m × 8 m` total
+//! (`4 m` half-size on each axis per Bevy's `Plane3d::new`) gray PBR
+//! quad at Bevy `y = 0` (= physics `z = 0`), normal `+Y` Bevy. To
+//! tune the replay rate edit [`SLOW_MO_FACTOR`] (`1.0` = real-time,
+//! larger = slower); pause/scrub controls are out of scope (defer to
+//! a future row that wants them — see
 //! `sim_bevy_soft::trajectory::step_replay` docs).
 //!
 //! Row 12 sets the `CF_VISUAL=1` convention for sim-bevy-soft consumers
