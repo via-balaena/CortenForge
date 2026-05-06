@@ -941,26 +941,45 @@ fn setup_visual_scene(
             .with_target(BevyVec3::new(0.0, target_y, 0.0))
             .with_distance(0.15)
             .with_angles(0.6, 0.4),
+        // AmbientLight is a per-camera Component in Bevy 0.18 (not a
+        // global Resource). Low-but-nonzero (80 cd/m², near Bevy
+        // default) keeps the unlit hemisphere readable without
+        // washing out the spherical NdotL gradient on the lit side.
+        AmbientLight {
+            color: Color::WHITE,
+            brightness: 80.0,
+            ..default()
+        },
     ));
 
-    // Directional light — softly elevated so the sphere's deformation
-    // arc reads under PBR shading.
+    // Directional light positioned above-and-camera-side so the
+    // sphere's camera-facing hemisphere is the LIT one.
+    // `Transform::from_xyz(...).looking_at(...)` is clearer to reason
+    // about than Euler-angle rotations: the light source sits at
+    // `(+0.5, +1.0, +0.5)` Bevy units (upper-front-right) looking at
+    // the world origin, so forward = `(-0.41, -0.82, -0.41)` (steep
+    // from upper-front-right). 12 klx illuminance is the
+    // overcast-bright-room range; keeps the plane (gray albedo 0.7)
+    // reading as a clean mid-gray rather than blowing out to white,
+    // while the coral sphere's lit-side reads at full saturation.
     commands.spawn((
         DirectionalLight {
-            illuminance: 8_000.0,
+            illuminance: 12_000.0,
             shadows_enabled: false,
             ..default()
         },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.6, 0.4, 0.0)),
+        Transform::from_xyz(0.5, 1.0, 0.5).looking_at(BevyVec3::ZERO, BevyVec3::Y),
     ));
 
     // HUD — Text overlay listing the controls so users discover them
     // without reading the README. Bottom-left corner, light-yellow on
     // dark-gray default Bevy clear color reads cleanly. Default font
     // ships via the `default_font` Cargo feature already in our set.
+    // ASCII `|` separators avoid the default font's missing-glyph
+    // boxes for U+00B7 middle-dot.
     commands.spawn((
         Text::new(
-            "Press R to reset · Mouse: drag orbit · scroll zoom · middle-drag pan · close window to exit",
+            "Press R to reset  |  Mouse: drag orbit | scroll zoom | middle-drag pan  |  close window to exit",
         ),
         TextFont {
             font_size: 14.0,
