@@ -506,6 +506,62 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Push branch to origin before starting row 13 session** — `git push origin dev` (11 unpushed commits at branch tip `a86f9320` after this iter-11 banking commit lands). Recommended per `feedback_push_feature_branch_default`.
 
+- **2026-05-06 (iter 12 — row 13 hertz-sphere-plane shipped + 2 cf-view foundation patches surfaced + 9-theme N+1 cold-read pre-commit + 3-iteration visual review; PR2 second example row complete):** Row 13 shipped end-to-end across **3 commits** (initial + annulus visibility/HUD fixup + camera-revert + README zoom guidance). The 3-pass cadence collapsed differently from row 12 — N+1 cold-read ran **pre-commit** (per `feedback_thorough_review_before_commit`'s "thorough re-read before commit" preference applied this iteration); visual review iterations ran in-session per pattern (i). Pattern (j) prediction held: 2 cf-view foundation patches surfaced (down from row 12's 3 sim-bevy-soft patches), consistent with "decreasing as foundation matures" — but at a different abstraction layer (cf-view, not sim-bevy-soft, which row 13 inherited stable from row 12).
+
+  **Locked design calls (row 13 in-arc):**
+
+  1. **`a_FEM` headline gate, `δ_FEM` diagnostic-only** — V-3 fixture's "Plan change 2" reframe verbatim. Penalty compliance band makes Hertz indentation `δ_Hertz` structurally unreachable; the FEM finds the correct contact-patch radius `a_FEM` to within mesh-bound discretisation error. Both reported in stdout + JSON; only `a_FEM` asserted at `rel_err_a < 20%` finest-level + monotonic + Cauchy `< 1`. Captured `15.84%` at h/4 (~4 pp headroom over gate); 45 active pairs at h/4 (matches V-3 docstring exactly).
+
+  2. **3-section JSON schema** — scalars (radii, errors, counts) + per-active-vertex `(r, sd, force_z)` at finest only + 200-pt Hertz analytic curve `p(r) = p₀·sqrt(1 - (r/a)²)`. plot.py PEP 723 single-file overlays per-vertex points against analytic. Per-vertex emits raw `force_z = κ·(d̂ - sd)` not pressure (Voronoi-cell-area conversion is a follow-on). Honest qualitative shape match.
+
+  3. **Per-vertex `contact_force_z` PLY extra at finest only** — `κ · (d̂ - sd)` for active vertices, zero elsewhere. cf-view auto-colormap should render contact patch as a bright disk on the deformed sphere. Fills row 12's "contact-band membership is a row-13 Hertz-patch concern" deferral (modulo the cf-view C1 + C2 foundation patches surfaced this iteration).
+
+  4. **Bevy static-state visualization (option F per planning)** — finest deformed sphere + coral `a_FEM` annulus + white `a_Hertz` annulus on plane. Single-frame `Trajectory` replay (no animation; clamp at end). Annuli at `plane_y + 0.005` Bevy with `unlit: true + cull_mode: None + double_sided: true` per pattern (k) below. Both annuli at the same `ring_y` (radii non-overlapping, `a_Hertz / a_FEM ≈ 1.19`, no z-fight). RENDER_SCALE = 100× lift inherited from row 12 banked pattern.
+
+  5. **All 3 refinements (3, 1.5, 0.75 mm)** required for the convergence story (monotonic + Cauchy + finest gate). `cargo run --release` only (~2 min release; debug-mode unviable). V-3 release-only policy mirrored.
+
+  6. **Default-view = full-scene framing** — distance 3R, elevation 0.5 rad, target -0.5R. Patch annuli appear as tiny markers (radii 0.15-0.178 Bevy on a 1.0-Bevy sphere); user scroll-zooms to inspect. README docs the cadence explicitly. Pattern (l) banked.
+
+  **N+1 cold-read findings (9 themes pre-commit, mostly polish):**
+  1. Module docstring `n_pinned == 4` → `≥ 3` (matches assertion contract; helper picks 4 then dedups).
+  2. Captured-bits "diagnostic-only assertion" wording sharpened (asserted at IV-1 rel-tol; the value is diagnostic vs Hertz analytic).
+  3. Capture-provenance placeholder `<see capture provenance below>` filled with tip `fed36c62`.
+  4. `RefinementSnapshot` docstring referenced removed `referenced` field (clippy-fixup-time drop not propagated to docs).
+  5. `CELL_SIZE_H4` docstring "V-3 measured ~45" → "captured 45 (matches V-3 docstring exactly)" — empirical confirmation tightened.
+  6. Stdout "boundary_partition: 4 equator pins" → "≥ 3 equator pins (helper picks 4, dedups)".
+  7. Stdout "Bevy replay" → "Bevy visualization" (static, not replay; row 12 wording leaked).
+  8. README orphan ratio "~96% at h" → "~97%" (561/18696 numerical correction).
+  9. Cargo.toml comment refined (Tensor reaches transitively through sim-soft, not direct construction).
+
+  Within iter-9 banked budget `max(5, 2 × surface units)`. Slightly below row 12's 8 themes — first-author rows have lower drift than design-pivot-heavy commits.
+
+  **Visual review iterations (3 in-session per pattern (i)):**
+  1. **Iteration 1 (commit `6628000c`)** — B1 pass 1 (annulus position lifted from sphere-bottom-coincident to plane-edge) + B2 (HUD top-right → top-left to fix multi-line truncation against viewport edge). User re-test: HUD ✓; rings still hidden by sphere body at oblique camera.
+  2. **Iteration 2 (same commit `6628000c`)** — B1 pass 2: `cull_mode: None + double_sided: true` on ring materials + thickness 0.01 → 0.025 + camera elevation 0.5 → 0.9 rad + distance 3R → 2.5R + target -0.5R → -0.85R. User re-test: rings render correctly when zoomed in close, but sphere-occluding default view persisted. Pattern (k) banked.
+  3. **Iteration 3 (commit `c6efcf66`)** — Camera revert to row-12-style full-scene framing (distance 3R, elevation 0.5, target -0.5R) + README "Reading the patch-radius rings" subsection with explicit scroll-zoom guidance. Pattern (l) banked: full-scene-first beats default-zoomed-in for sub-cm-feature rows because the small `a/R` ratio IS itself the small-strain-validity story.
+
+  **Banked at this iter (cross-arc-relevant patterns):**
+
+  - **(k) Bevy 2D-primitive back-face culling under axis-laying rotation** — when rotating a 2D primitive (`Annulus`, `Circle`, `Rectangle`) by `±π/2` to lay it flat on a coordinate plane, the disc's mesh-local +Z normal aligns with the world axis the rotation puts it on; depending on the camera's view direction relative to that normal, the back-face culls. Default `StandardMaterial { unlit: true, double_sided: true, cull_mode: None, ..default() }` ensures the disc renders from any camera angle. Sister of `feedback_visible_contacts` at the rendering-primitives layer. Trigger: any 2D primitive used as a flat marker on a 3D plane in sim-bevy-soft / cf-bevy-common consumers.
+
+  - **(l) Full-scene-first default-view for sub-cm-feature rows** — when the row's headline visual feature is sub-cm (Hertz contact patch ~1.5-2 mm vs sphere 1 cm = 15-18% of body radius), the default startup view should show the FULL scene (sphere + plane + tiny patch markers) with explicit scroll-zoom guidance in the README, NOT a tight zoom that hides the spatial context. The sub-cm patch IS itself the small-strain validity story (`a/R ≈ 17.8%` < 30% Hertz domain ceiling); making it tiny on startup reinforces that pedagogy. Sister of `feedback_simplify_examples` "realistic-looking parts before combining domains" at the camera-framing layer. Trigger: rows where headline visual feature ≪ scene-bounding-feature.
+
+  - **(m) Pre-commit N+1 cold-read for first-author rows** — `feedback_thorough_review_before_commit` says "explicit per-leaf-verdict re-read; N+1 user-initiated passes always find something." Row 12 ran the pattern as commit + N+1-fixup cycle. Row 13 pre-empted by running the cold-read **before** initial commit, catching 9 themes at the same N+1 level pre-commit instead of post-commit. **Banked observation: for first-author rows (no design pivots in-session), pre-commit cold-read is more efficient than post-commit-fixup cycle** — same finding density, one less commit. For design-pivot-heavy rows (like row 12's RENDER_SCALE pivot), post-commit fixup may still surface intermediate-state drift that pre-commit can't anticipate.
+
+  **2 cf-view foundation patches surfaced (banked as deferred followups):**
+
+  - **C1: `framing_for_aabb` doesn't auto-fit cm-scale meshes** — cf-view's default camera was too far for sub-cm PLYs (row 13's 2cm-bbox PLY rendered as a single dot from the default camera position). Same RENDER_SCALE=100× root cause as row 12's sim-bevy-soft foundation patches at a different abstraction layer. Fix candidates: (a) cf-view computes a render-scale from mesh bbox and applies a Transform::from_scale to the loaded mesh, or (b) `framing_for_aabb` clamps camera distance proportional to bbox max-dim with no min-distance lower-bound. (b) is cleaner per the "RENDER_SCALE-as-rendering-pipeline-default-workaround" pattern — keeps the loaded mesh in its native units.
+
+  - **C2: Colormap default heuristic picks `divergent` for unipolar fields** — `contact_force_z` is non-negative everywhere (zero for inactive vertices, positive `κ·(d̂-sd)` for active); cf-view defaulted to `divergent` (red-blue around 0). Sequential viridis is the right pick when min ≥ 0. Fix: cf-view's auto-detection should check `min_value >= 0` (sequential) vs `straddles-zero` (divergent). One-line heuristic.
+
+  Both are out of row 13 scope; banked for a cf-view foundation followup before row 14/18 ship (which both also emit per-vertex contact-pressure or similar unipolar PLY scalars per inventory rows 14 + 18 gap-to-land columns).
+
+  **PR2 commit count update (iter-12, post-row-13):** 30 commits = 26 (foundation phase complete + row 12) + iter-12 banking (this commit) + row 13: `7bc7fda3` (initial) + `6628000c` (visibility + HUD fixup) + `c6efcf66` (camera revert + README zoom guidance) = 3 row-13 commits + 1 iter-12 banking = ~30. Remaining: cf-view foundation (~2 commits, C1 + C2), row 14 + row 18 (~3-5 commits each, cf-view + sim-bevy-soft foundation now stable) = ~8-12 more. Final PR2 estimate: ~38-42 commits. Below iter-11's ~44-50 estimate (foundation patches per row diminishing as predicted).
+
+  **Pre-flight per row-13 commit: build, fmt --all, clippy --workspace -- -D warnings, cargo doc -D warnings, xtask grade A on automated criteria.** **Pushed to origin** at iter-12 close (tip `c6efcf66`).
+
+  **Next iteration entry point:** **cf-view foundation followups (C1 + C2)** then **row 14 — `compressive-block` (V-3a)**. Recommend the cf-view patches BEFORE row 14 since row 14 also emits a force-displacement PLY/JSON (per inventory row 14 gap-to-land) and rows 18/20 likewise — fixing cf-view once benefits the remaining 3 PR2 + PR3 rows. Small commits (~50-100 LOC each in cf-bevy-common / cf-viewer). After cf-view, row 14: **new session recommended** for phase transition (row 13 accumulated annulus rendering / camera framing iteration / cf-view foundation surfacing context that row 14 doesn't need). Row 14 inherits row 12-fixed sim-bevy-soft foundation + row 13-fixed annulus rendering pattern (k). Recon for row 14: read this file's row 14 spec section + `sim/L0/soft/tests/penalty_compressive_block.rs` (V-3a internal fixture) + row 12 + row 13 as immediate precedents. Cadence: 3-pass per row.
+
 ---
 
 ## Cross-references
