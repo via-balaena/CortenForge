@@ -1,9 +1,12 @@
 //! `Mesh` trait — tet-mesh storage abstraction.
 //!
-//! Seven items: counts, vertex lookup, positions, adjacency, quality,
-//! and a structural-equality predicate used by change-detection. One
-//! impl (`SingleTetMesh`, hand-rolled 1 tet) in skeleton; multi-tet
-//! `TetMesh` lands in Phase A proper per spec §8.
+//! Ten items: counts, vertex lookup, positions, adjacency, quality,
+//! per-tet materials, per-tet interface flags, boundary triangles,
+//! and a structural-equality predicate used by change-detection.
+//! Three impls: [`SingleTetMesh`] (1 tet, walking-skeleton spec §2),
+//! [`HandBuiltTetMesh`] (multi-tet hand-authored scenes — Phase 2/4/5
+//! gate fixtures), and `SdfMeshedTetMesh` (Phase 3 BCC + Labelle-
+//! Shewchuk Isosurface Stuffing pipeline; lives in `sdf_bridge`).
 
 use std::collections::{BTreeSet, HashMap};
 
