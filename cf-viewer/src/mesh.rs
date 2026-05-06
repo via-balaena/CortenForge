@@ -1,22 +1,15 @@
 //! `AttributedMesh` → Bevy `Mesh` conversion + point-cloud sizing.
 //!
-//! Inline copy-adapted from `sim/L1/bevy/src/{mesh,convert}.rs` per
-//! `docs/VIEWER_DESIGN.md` iter-1.1 N1 — cf-viewer must not depend on
-//! `sim-bevy` (whose transitive deps are physics-specific).
+//! `build_face_mesh` consumes an `AttributedMesh` (PLY-loaded via
+//! [`mesh_io::load_ply_attributed`]) and emits a Bevy `Mesh` ready for
+//! the rendering pipeline. The axis-aware coordinate swap (input frame →
+//! Bevy Y-up) is delegated to [`UpAxis::to_bevy_point`] /
+//! [`UpAxis::to_bevy_normal`] in `cf-bevy-common`; winding is flipped via
+//! [`UpAxis::flips_winding`] under parity-flipping swaps.
 //!
-//! # Coordinate convention
-//!
-//! Workspace input PLYs are Z-up (mesh-v1.0 build-plate convention; sim-soft
-//! sphere-sdf-eval is rotation-symmetric, so any up-axis works). Bevy is
-//! internally Y-up. The swap from input frame to Bevy frame lives in this
-//! module so that every downstream consumer (scene placement, lights,
-//! orbit camera) can treat positions as Bevy-y-up without re-deriving
-//! the conversion.
-//!
-//! Commit 6 parameterized the swap by [`UpAxis`]: callers thread the
-//! resource into `vertex_position` / `vertex_normal` / `build_face_mesh`
-//! so the mapping varies per-run via `--up=<+X|+Y|+Z>`. `+Z` reproduces
-//! today's `[x, z, y]` swap exactly.
+//! [`UpAxis::to_bevy_point`]: cf_bevy_common::axis::UpAxis::to_bevy_point
+//! [`UpAxis::to_bevy_normal`]: cf_bevy_common::axis::UpAxis::to_bevy_normal
+//! [`UpAxis::flips_winding`]: cf_bevy_common::axis::UpAxis::flips_winding
 //!
 //! # Normals (smooth-only for v1)
 //!
@@ -31,9 +24,8 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use mesh_types::{AttributedMesh, Point3, Vector3};
-
-use crate::UpAxis;
+use cf_bevy_common::axis::UpAxis;
+use mesh_types::AttributedMesh;
 
 /// Radius of point-cloud sphere markers, expressed as a fraction of the
 /// AABB diagonal.
@@ -44,42 +36,14 @@ use crate::UpAxis;
 /// a second visibility cue.
 pub const POINT_RADIUS_FRACTION: f32 = 0.005;
 
-/// Convert a physics-space `Point3<f64>` (input frame) to a Bevy `[f32; 3]`
-/// (Y-up) under the supplied [`UpAxis`].
-///
-/// - [`UpAxis::PlusZ`] — `(x, y, z)` → `(x, z, y)` (today's default).
-/// - [`UpAxis::PlusY`] — identity.
-/// - [`UpAxis::PlusX`] — `(x, y, z)` → `(y, x, z)`.
-#[inline]
-#[must_use]
-pub fn vertex_position(p: &Point3<f64>, up: UpAxis) -> [f32; 3] {
-    let (x, y, z) = (p.x as f32, p.y as f32, p.z as f32);
-    match up {
-        UpAxis::PlusX => [y, x, z],
-        UpAxis::PlusY => [x, y, z],
-        UpAxis::PlusZ => [x, z, y],
-    }
-}
-
-/// Convert a physics-space `Vector3<f64>` normal to a Bevy `[f32; 3]`
-/// (Y-up). Same swap as [`vertex_position`].
-#[inline]
-fn vertex_normal(n: &Vector3<f64>, up: UpAxis) -> [f32; 3] {
-    let (x, y, z) = (n.x as f32, n.y as f32, n.z as f32);
-    match up {
-        UpAxis::PlusX => [y, x, z],
-        UpAxis::PlusY => [x, y, z],
-        UpAxis::PlusZ => [x, z, y],
-    }
-}
-
 /// Build a Bevy `Mesh` from an `AttributedMesh` whose `geometry.faces` is
 /// non-empty.
 ///
-/// - Positions: f64 → f32 cast with the [`UpAxis`] swap applied.
+/// - Positions: f64 → f32 cast with the [`UpAxis`] swap applied via
+///   [`UpAxis::to_bevy_point`].
 /// - Normals: stored `mesh.normals` if `Some`, else area-weighted smooth
 ///   normals from `IndexedMesh::compute_vertex_normals`. Same swap as
-///   positions.
+///   positions via [`UpAxis::to_bevy_normal`].
 /// - Indices: triangle list. When the swap is parity-flipping
 ///   ([`UpAxis::flips_winding`]), emits `(v0, v2, v1)` to restore CCW
 ///   front-facing; otherwise emits `(v0, v1, v2)` unchanged.
@@ -92,6 +56,10 @@ fn vertex_normal(n: &Vector3<f64>, up: UpAxis) -> [f32; 3] {
 /// Caller responsibility: check `mesh.face_count() > 0` before calling. The
 /// faces-empty path is point-cloud rendering, handled by the scene-setup
 /// system in `main.rs` (one sphere entity per vertex).
+///
+/// [`UpAxis::to_bevy_point`]: cf_bevy_common::axis::UpAxis::to_bevy_point
+/// [`UpAxis::to_bevy_normal`]: cf_bevy_common::axis::UpAxis::to_bevy_normal
+/// [`UpAxis::flips_winding`]: cf_bevy_common::axis::UpAxis::flips_winding
 #[must_use]
 pub fn build_face_mesh(
     mesh: &AttributedMesh,
@@ -107,15 +75,15 @@ pub fn build_face_mesh(
     let positions: Vec<[f32; 3]> = geometry
         .vertices
         .iter()
-        .map(|p| vertex_position(p, up))
+        .map(|p| up.to_bevy_point(p))
         .collect();
 
     let normals: Vec<[f32; 3]> = match mesh.normals.as_ref() {
-        Some(stored) => stored.iter().map(|n| vertex_normal(n, up)).collect(),
+        Some(stored) => stored.iter().map(|n| up.to_bevy_normal(n)).collect(),
         None => geometry
             .compute_vertex_normals()
             .iter()
-            .map(|n| vertex_normal(n, up))
+            .map(|n| up.to_bevy_normal(n))
             .collect(),
     };
 
@@ -158,7 +126,7 @@ mod tests {
     use super::*;
 
     use bevy::mesh::VertexAttributeValues;
-    use mesh_types::IndexedMesh;
+    use mesh_types::{IndexedMesh, Point3};
 
     fn unit_triangle() -> AttributedMesh {
         let geometry = IndexedMesh::from_parts(
@@ -229,28 +197,6 @@ mod tests {
             _ => Vec::new(),
         };
         assert_eq!(stored, colors.to_vec());
-    }
-
-    /// Z-up → Y-up swap on a known position. Physics `(1, 2, 3)` should
-    /// land in Bevy as `(1, 3, 2)` (Y/Z swapped).
-    #[test]
-    fn vertex_position_plus_z_swaps_y_and_z() {
-        let p = Point3::new(1.0, 2.0, 3.0);
-        assert_eq!(vertex_position(&p, UpAxis::PlusZ), [1.0_f32, 3.0, 2.0]);
-    }
-
-    /// `+Y` is identity: the input is already Bevy-Y-up, no swap.
-    #[test]
-    fn vertex_position_plus_y_is_identity() {
-        let p = Point3::new(1.0, 2.0, 3.0);
-        assert_eq!(vertex_position(&p, UpAxis::PlusY), [1.0_f32, 2.0, 3.0]);
-    }
-
-    /// `+X` swaps X↔Y so input X (the up axis) lands in Bevy +Y.
-    #[test]
-    fn vertex_position_plus_x_swaps_x_and_y() {
-        let p = Point3::new(1.0, 2.0, 3.0);
-        assert_eq!(vertex_position(&p, UpAxis::PlusX), [2.0_f32, 1.0, 3.0]);
     }
 
     /// Winding flip under `+Z` (today's default): input face `[0, 1, 2]`

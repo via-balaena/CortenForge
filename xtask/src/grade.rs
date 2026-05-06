@@ -2213,15 +2213,19 @@ fn applies_to_crate(crate_name: &str) -> bool {
     if matches!(crate_name, "mesh" | "cortenforge") {
         return true;
     }
-    // Workspace tools that happen to match a library-namespace prefix
-    // need an explicit exemption. xtask is excluded by virtue of having
-    // no matching prefix at all; cf-viewer's `cf-` prefix would
-    // otherwise pull it into the design-library scope (cf-spatial /
-    // cf-design / cf-geometry). Per docs/VIEWER_DESIGN.md Q1 + Q8
-    // locks: cf-viewer is a workspace tool, carries no tier metadata,
-    // and Q8 explicitly directs path-based filtering as the gating
-    // mechanism rather than retrofitting metadata.
-    if matches!(crate_name, "cf-viewer") {
+    // Workspace tools and shared helper crates that happen to match a
+    // library-namespace prefix need an explicit exemption. xtask is
+    // excluded by virtue of having no matching prefix at all; cf-viewer
+    // and cf-bevy-common both have `cf-` prefixes that would otherwise
+    // pull them into the design-library scope (cf-spatial / cf-design /
+    // cf-geometry). Per docs/VIEWER_DESIGN.md Q1 + Q8 locks: cf-viewer is
+    // a workspace tool, carries no tier metadata, and Q8 directs path-
+    // based filtering as the gating mechanism rather than retrofitting
+    // metadata. cf-bevy-common (sim-soft PR2 C2b factor-out) is a
+    // workspace-internal Bevy helper consumed by cf-viewer + sim-bevy +
+    // sim-bevy-soft; same exemption shape — no tier metadata, path-based
+    // filter.
+    if matches!(crate_name, "cf-viewer" | "cf-bevy-common") {
         return false;
     }
     let prefixes = ["sim-", "mesh-", "cf-", "cortenforge-"];
@@ -3542,8 +3546,11 @@ serde = \"1\"
         // not `mesh`) is out of scope.
         assert!(!applies_to_crate("messy"));
         // cf-viewer is a workspace tool with the cf- prefix; explicit
-        // exemption per docs/VIEWER_DESIGN.md Q1 + Q8 locks.
+        // exemption per docs/VIEWER_DESIGN.md Q1 + Q8 locks. cf-bevy-common
+        // is the C2b factor-out: workspace-internal Bevy helper, same
+        // exemption shape.
         assert!(!applies_to_crate("cf-viewer"));
+        assert!(!applies_to_crate("cf-bevy-common"));
     }
 
     #[test]

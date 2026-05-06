@@ -1845,6 +1845,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-bevy-common"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "mesh-types",
+]
+
+[[package]]
 name = "cf-design"
 version = "1.0.0"
 dependencies = [
@@ -1896,6 +1904,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "bevy_egui",
+ "cf-bevy-common",
  "clap",
  "mesh-io",
  "mesh-types",

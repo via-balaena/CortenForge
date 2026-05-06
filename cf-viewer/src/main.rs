@@ -3,13 +3,13 @@
 use anyhow::Result;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
+use cf_bevy_common::prelude::*;
 use cf_viewer::{
     UpAxis, ViewerInput,
-    camera::{OrbitCamera, orbit_camera_input, update_orbit_camera},
     cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
     load_input,
-    mesh::{POINT_RADIUS_FRACTION, build_face_mesh, vertex_position},
+    mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
@@ -38,20 +38,13 @@ fn main() -> Result<()> {
             ..default()
         }))
         .add_plugins(EguiPlugin::default())
+        .add_plugins(OrbitCameraPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(input)
         .insert_resource(selection)
         .insert_resource(up_axis)
         .add_systems(Startup, setup_scene)
-        .add_systems(
-            Update,
-            (
-                orbit_camera_input,
-                update_orbit_camera.after(orbit_camera_input),
-                spawn_geometry,
-                exit_on_esc,
-            ),
-        )
+        .add_systems(Update, (spawn_geometry, exit_on_esc))
         .add_systems(EguiPrimaryContextPass, scalar_and_colormap_panel)
         .run();
 
@@ -66,9 +59,9 @@ fn main() -> Result<()> {
 fn setup_scene(mut commands: Commands, input: Res<ViewerInput>, up: Res<UpAxis>) {
     let aabb = input.mesh.aabb();
     let center_physics = aabb.center();
-    // Same input → Bevy frame swap as `mesh::vertex_position` so the light
+    // Same input → Bevy frame swap as `build_face_mesh` so the light
     // anchor stays aligned with the rendered geometry under any `--up=<...>`.
-    let center_bevy = Vec3::from_array(vertex_position(&center_physics, *up));
+    let center_bevy = Vec3::from_array(up.to_bevy_point(&center_physics));
     // Local `diagonal` is used here only for directional-light placement;
     // the camera's framing has its own clamp inside
     // `OrbitCamera::framing_for_aabb`. Single-point degenerate AABBs
@@ -200,7 +193,7 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material),
-                        Transform::from_translation(Vec3::from_array(vertex_position(v, *up))),
+                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v))),
                     ));
                 }
             }
@@ -211,7 +204,7 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material_handle.clone()),
-                        Transform::from_translation(Vec3::from_array(vertex_position(v, *up))),
+                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v))),
                     ));
                 }
             }

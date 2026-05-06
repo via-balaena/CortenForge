@@ -1,10 +1,9 @@
 //! Mouse-driven orbit camera controller.
 //!
-//! Pure inline implementation (per `docs/VIEWER_DESIGN.md` iter-2 still-open
-//! #1 — no `sim-bevy` dep). Copy-adapted from `sim/L1/bevy/src/camera.rs`
-//! with workspace-local additions: AABB-aware initial framing
-//! ([`OrbitCamera::framing_for_aabb`]) preserves commit-3's
-//! "1.5 × diagonal corner-on" view as the startup pose.
+//! Three consumers share this controller: `cf-viewer` (PLY visual review),
+//! `sim-bevy-soft` (deforming-tet-mesh visualization), and `sim-bevy`
+//! (rigid-body scenes). Factoring keeps the camera surface in one place
+//! so consumers don't drift.
 //!
 //! Spherical-coordinates state:
 //! ```text
@@ -12,12 +11,12 @@
 //! y = distance · sin(elevation)
 //! z = distance · sin(azimuth) · cos(elevation)
 //! ```
-//! Bevy is internally Y-up; [`mesh::vertex_position`] (parameterized by
-//! [`UpAxis`]) swaps the input frame to Bevy-Y-up before the camera sees
-//! it, and [`OrbitCamera::framing_for_aabb`] applies the same swap to the
-//! AABB center so the orbit pose is in the Bevy frame end-to-end.
+//! Bevy is internally Y-up; [`UpAxis::to_bevy_point`] swaps the input frame
+//! to Bevy-Y-up before the camera sees it, and [`OrbitCamera::framing_for_aabb`]
+//! applies the same swap to the AABB center so the orbit pose is in the
+//! Bevy frame end-to-end.
 //!
-//! [`mesh::vertex_position`]: crate::mesh::vertex_position
+//! [`UpAxis::to_bevy_point`]: crate::axis::UpAxis::to_bevy_point
 //!
 //! # Controls
 //!
@@ -25,8 +24,8 @@
 //! - **Right mouse drag**: pan the focal point parallel to the screen
 //! - **Scroll wheel**: zoom (multiplicative on `distance`)
 //!
-//! Speeds + clamp ranges live on [`OrbitCamera`] so a future commit can
-//! expose them via CLI without touching the systems.
+//! Speeds + clamp ranges live on [`OrbitCamera`] so consumers can tune
+//! per-app without touching the systems.
 
 #![allow(clippy::cast_precision_loss)] // f64 → f32 framing math; AABB extents are well within f32
 
@@ -34,8 +33,7 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use mesh_types::Aabb;
 
-use crate::UpAxis;
-use crate::mesh::vertex_position;
+use crate::axis::UpAxis;
 
 /// Orbit camera component carried by the `Camera3d` entity.
 #[derive(Component, Debug, Clone)]
@@ -83,9 +81,9 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
-    /// Frame the input AABB the same way the static placeholder did in
-    /// commit 3: camera offset by `(d, d, d)` (where `d = max(diagonal,
-    /// 1.0) · 1.5`) from the AABB center, looking at the center.
+    /// Frame the input AABB the same way the cf-viewer commit-3 placeholder
+    /// did: camera offset by `(d, d, d)` (where `d = max(diagonal, 1.0) ·
+    /// 1.5`) from the AABB center, looking at the center.
     ///
     /// Per the spherical convention, `(d, d, d)` corresponds to:
     /// - `azimuth = π/4`
@@ -93,18 +91,17 @@ impl OrbitCamera {
     /// - `distance = d · √3`
     ///
     /// The single-point degenerate case (zero diagonal) is handled by the
-    /// `max(_, 1.0)` clamp on the diagonal — same floor as the static
-    /// placeholder used.
+    /// `max(_, 1.0)` clamp on the diagonal.
     ///
     /// `up` parameterizes the input → Bevy frame swap on the AABB center
-    /// (commit 6) so the camera target stays aligned with the rendered
-    /// geometry under any `--up=<+X|+Y|+Z>` choice.
+    /// so the camera target stays aligned with the rendered geometry under
+    /// any `--up=<+X|+Y|+Z>` choice.
     #[must_use]
     pub fn framing_for_aabb(aabb: &Aabb, up: UpAxis) -> Self {
         let center_physics = aabb.center();
-        // Mirror `mesh::vertex_position`'s axis swap on the AABB center so
+        // Mirror `UpAxis::to_bevy_point`'s axis swap on the AABB center so
         // the camera target stays aligned with the rendered geometry.
-        let target = Vec3::from_array(vertex_position(&center_physics, up));
+        let target = Vec3::from_array(up.to_bevy_point(&center_physics));
         let diagonal = (aabb.diagonal() as f32).max(1.0);
         let d = diagonal * 1.5;
 
@@ -200,6 +197,31 @@ pub fn update_orbit_camera(mut cameras: Query<(&OrbitCamera, &mut Transform)>) {
     }
 }
 
+/// Plugin that wires the orbit camera systems into the `Update` schedule
+/// with explicit ordering: `update_orbit_camera.after(orbit_camera_input)`.
+///
+/// Today's resource-conflict serialization (input mutates `OrbitCamera`,
+/// update reads it) happens to align with tuple order, but the explicit
+/// `.after()` documents the contract and survives future scheduler tweaks
+/// or refactors that decouple the systems' resource borrows.
+///
+/// Consumers wanting to interleave their own systems between input and
+/// update can wire [`orbit_camera_input`] / [`update_orbit_camera`]
+/// manually instead of using this plugin.
+pub struct OrbitCameraPlugin;
+
+impl Plugin for OrbitCameraPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (
+                orbit_camera_input,
+                update_orbit_camera.after(orbit_camera_input),
+            ),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,7 +242,7 @@ mod tests {
         assert!(p.z.abs() < 1e-5, "z = {}", p.z);
     }
 
-    /// `framing_for_aabb` reproduces the static-placeholder corner-on view:
+    /// `framing_for_aabb` reproduces the cf-viewer commit-3 corner-on view:
     /// camera offset = `(d, d, d)` from center where `d = diagonal · 1.5`.
     #[test]
     fn framing_for_aabb_matches_static_placeholder_corner_on() {
