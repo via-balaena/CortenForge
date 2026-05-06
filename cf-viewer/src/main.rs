@@ -64,11 +64,13 @@ fn main() -> Result<()> {
 /// regime. Bevy 0.18's defaults — near plane `0.1 m`,
 /// [`OrbitCamera::framing_for_aabb`]'s internal `.max(1.0)` clamp on
 /// diagonal, AmbientLight brightness — were tuned for human-scale scenes;
-/// at sim-soft's cm-scale (e.g. row 13's 2 cm bbox), the camera lands
-/// 1.5 m away from a 35 mm-diagonal mesh and the geometry renders as a
-/// single dot. Lifting the rendered scene to ~1 m diagonal puts everything
-/// safely within the defaults' working range. mesh-v1.0 examples already
-/// at meter scale get `render_scale = 1.0` (no change).
+/// at sim-soft's cm-scale (e.g. row 13's 5.3 cm bbox = 52.6 mm diagonal,
+/// `2 R + 2 · margin` for the BCC mesher's bbox-margin allocation around
+/// a 1 cm sphere), the framing helper clamps diagonal up to `1.0` and
+/// places the camera 1.5 m away — geometry then renders as a single dot.
+/// Lifting the rendered scene to ~1 m diagonal puts everything safely
+/// within the defaults' working range. mesh-v1.0 examples already at
+/// meter scale get `render_scale = 1.0` (no change).
 ///
 /// Banked at sim-soft EXAMPLE_INVENTORY iter-12 as the cf-view application
 /// of inventory iter-11 pattern (b) (RENDER_SCALE-as-rendering-pipeline-
@@ -180,9 +182,10 @@ fn setup_scene(
 /// sharing a single `Sphere` mesh handle. With scalars present each
 /// entity gets its own `StandardMaterial` clone with `base_color` set to
 /// the colormapped value (option A per iter-2 still-open #7).
-#[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy
+// f64 → f32 is intentional for Bevy
+#[allow(clippy::cast_possible_truncation)]
+// Bevy systems take resources by value (Res / ResMut / Query / Commands).
 #[allow(clippy::needless_pass_by_value)]
-// Bevy systems take resources by value
 // 8 args (1 over the 7-default) — Bevy systems pull each Res / ResMut /
 // Query / Commands as a separate parameter; threading them through a
 // SystemParam-derive tuple costs more boilerplate than the +1 buys in

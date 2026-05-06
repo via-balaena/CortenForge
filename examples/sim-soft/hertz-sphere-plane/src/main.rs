@@ -269,9 +269,14 @@ const LAMBDA: f64 = 8.0e5;
 /// monotonic-convergence baseline.
 const CELL_SIZE_H: f64 = 3.0e-3;
 
-/// Mid refinement — V-3 mirror. Slightly above the multi-vertex
-/// threshold but transitioning; error reduces vs coarse but remains
-/// substantial.
+/// Mid refinement — V-3 mirror. Below the multi-vertex threshold
+/// (`1.5 mm < 3.16 mm`); engages multi-vertex Hertz contact (captured
+/// `n_active = 5`). Error reduces vs coarse but remains substantial
+/// (rel-err ~40%) — the contact patch is undersampled at this
+/// resolution. (V-3 fixture's docstring says "slightly above the
+/// multi-vertex threshold" using a stale 1 mm threshold from κ = 1e4
+/// scope-memo arithmetic — the actual κ = 1e3 V-3-LOCAL override
+/// gives threshold 3.16 mm and h/2 sits comfortably below it.)
 const CELL_SIZE_H2: f64 = 1.5e-3;
 
 /// Fine refinement — V-3 mirror. Below the multi-vertex threshold;
@@ -1552,9 +1557,10 @@ fn setup_visual_scene(
     // and contact zone), angles `(0.4, 0.5)` rad (~23° azimuth, ~29°
     // elevation). Inherits row 12's "full-scene framing" convention
     // but the specific values diverge from row 12's `(0.6, 0.4)` rad
-    // + 15R distance + target at sphere COM (`(0, R + d̂, 0)` Bevy):
-    // row 13's contact zone is BELOW the sphere center (south pole
-    // pressing), so target is shifted lower; row 13 closes distance
+    // + 15R distance + target at sphere COM (Bevy `y = (R + d̂) ·
+    // RENDER_SCALE = 1.1`): row 13's contact zone is BELOW the sphere
+    // center (south pole pressing), so target is shifted lower (Bevy
+    // `y = -0.5 · R · RENDER_SCALE = -0.5`); row 13 closes distance
     // 15R → 3R since the row's "interesting feature" is contact-zone
     // detail rather than full freefall trajectory. The patch rings
     // (radii 0.15-0.178 Bevy on a sphere of radius 1.0 Bevy) appear
