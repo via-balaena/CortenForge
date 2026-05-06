@@ -3,8 +3,9 @@
 //! contact-patch radius compared against the Hertzian closed-form.
 //!
 //! `SoftScene::sphere_on_plane(radius, cell_size, force, material_field)`
-//! (sim-soft `c3729d4a` per Phase 5 commit-9 V-3 scaffolding) builds the
-//! production scene — a `SphereSdf` body BCC-meshed at three refinement
+//! (sim-soft `818fa7b1` Phase 5 commit-6 helper + `b3368aa9` commit-9
+//! V-3 fixture) builds the production scene — a `SphereSdf` body
+//! BCC-meshed at three refinement
 //! levels (`h, h/2, h/4` = `3, 1.5, 0.75 mm`) via
 //! `SdfMeshedTetMesh::from_sdf`, four equator pins (cardinal-direction
 //! `(±R, 0, 0)`, `(0, ±R, 0)` to remove rigid-body modes), top-of-sphere
@@ -99,8 +100,9 @@
 //!    iter_count)` per refinement, derived `(rel_err_a, cauchy_ratio_a,
 //!    delta_fem_h4)`.
 //! 2. `vertices` — at finest refinement only, one entry per active
-//!    contact vertex: `(r, sd, force_z)` where
-//!    `force_z = κ · (d̂ − sd)`.
+//!    contact vertex: `(v, r, sd, force_z)` where `v` is the FEM
+//!    vertex id, `r = sqrt(x² + y²)` the horizontal radius, `sd` the
+//!    plane signed distance, and `force_z = κ · (d̂ − sd)`.
 //! 3. `analytic` — 200-point Hertz pressure curve `p(r) = p₀ · √(1 −
 //!    (r/a)²)` sampled on `r ∈ [0, a_Hertz]` for plot.py overlay.
 //!
@@ -244,7 +246,11 @@ const RADIUS: f64 = 1.0e-2;
 /// reach single-vertex penalty equilibrium far short of multi-vertex
 /// Hertz. F = 500 mN + V-3-LOCAL κ = 1e3 raises the multi-vertex
 /// threshold `h < sqrt(2 R · F/κ)` to `≈ 3.16 mm`, engaging multi-vertex
-/// contact at all three refinement levels.
+/// contact at the mid + finest refinement levels (h sits **right at the
+/// 3.16 mm threshold** and gives single-vertex regime empirically:
+/// captured `n_active` = 1, 5, 45 at (h, h/2, h/4); the convergence
+/// story still works because `rel_err_a` decreases monotonically
+/// 100% → 40% → 16% across the sequence).
 const FORCE: f64 = 0.5;
 
 /// Lamé pair `(μ, λ)` — Ecoflex 00-30 + 15 wt% carbon-black composite,
@@ -1371,7 +1377,10 @@ struct VisualSetupInner {
     rest_positions: Vec<Vec3>,
     boundary_faces: Vec<[VertexId; 3]>,
     /// FEM-measured patch radius (m, physics scale). Annulus inner +
-    /// outer radii derive from this via `× RENDER_SCALE × (0.99, 1.01)`.
+    /// outer radii derive from this via
+    /// `× RENDER_SCALE × (1.0 ∓ RING_THICKNESS_FRAC)` where
+    /// `RING_THICKNESS_FRAC = 0.025` (`× 0.975` inner, `× 1.025`
+    /// outer).
     a_fem: f32,
     /// Hertz analytic patch radius (m, physics scale).
     a_hertz: f32,
@@ -1466,7 +1475,7 @@ fn setup_visual_scene(
     // The 0.1-Bevy contact-band gap between them is where the rings go
     // — pin at `plane_y + 0.005` = `-1.095` Bevy (5 cm Bevy above
     // plane = 50 μm physics, well above depth-buffer z-fight floor at
-    // ~2 m camera distance, well below the deformed sphere body that
+    // ~3 m camera distance, well below the deformed sphere body that
     // would otherwise occlude rings placed too high).
     //
     // RING_THICKNESS_FRAC = 0.025 — at radii 0.15-0.178 Bevy and the
@@ -1539,13 +1548,20 @@ fn setup_visual_scene(
 
     // Camera framing — full-scene default: sphere + plane both
     // visible with the patch annuli readable as tiny markers at the
-    // contact zone. Mirrors row 12's `(0.6, 0.4)` rad orientation +
-    // 3R distance + target near the COM. The patch rings (radii
-    // 0.15-0.178 Bevy on a sphere of radius 1.0 Bevy) appear small
-    // from this distance — scroll-wheel zoom-in is required to
+    // contact zone. Distance 3R, target -0.5R (between sphere center
+    // and contact zone), angles `(0.4, 0.5)` rad (~23° azimuth, ~29°
+    // elevation). Inherits row 12's "full-scene framing" convention
+    // but the specific values diverge from row 12's `(0.6, 0.4)` rad
+    // + 15R distance + target at sphere COM (`(0, R + d̂, 0)` Bevy):
+    // row 13's contact zone is BELOW the sphere center (south pole
+    // pressing), so target is shifted lower; row 13 closes distance
+    // 15R → 3R since the row's "interesting feature" is contact-zone
+    // detail rather than full freefall trajectory. The patch rings
+    // (radii 0.15-0.178 Bevy on a sphere of radius 1.0 Bevy) appear
+    // small from this distance — scroll-wheel zoom-in is required to
     // inspect the FEM/Hertz radial gap up close (see README "Bevy
-    // visualization" section). Keeping the default at the
-    // full-scene framing prioritizes spatial-context-on-startup over
+    // visualization" section). Keeping the default at the full-scene
+    // framing prioritizes spatial-context-on-startup over
     // ring-detail-on-startup; user-orbit + scroll-zoom drive the
     // detail review.
     let target_y = -0.5 * RADIUS as f32 * RENDER_SCALE;

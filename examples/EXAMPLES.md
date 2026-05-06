@@ -356,11 +356,11 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 
 ### Visual-mode convention: `CF_VISUAL=1`
 
-Tier 4 + Tier 6 examples (`soft-drop-on-plane` and successors) ship a **headless harness + opt-in Bevy replay**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that replays the captured trajectory:
+Tier 4 + Tier 6 examples (`soft-drop-on-plane` and successors) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` renders the single quasi-static settled frame):
 
 ```text
 cargo run -p example-sim-soft-soft-drop-on-plane --release           # headless asserts + PLY
-CF_VISUAL=1 cargo run -p example-sim-soft-soft-drop-on-plane --release # + Bevy windowed replay
+CF_VISUAL=1 cargo run -p example-sim-soft-soft-drop-on-plane --release # + Bevy windowed visualization
 ```
 
 The replay clock is per-entity — a `ReplayEpoch` component captures the wall-clock at the first `step_replay` tick (so `DefaultPlugins` startup time doesn't consume playback budget) and `step_replay` thereafter computes frame index against `(now - epoch)`. Press `R` to clear all entities' epochs and replay from frame 0. Default replay rate is `1×` wall-clock; consumers can override per spawn (row 12 ships at `10×` slow-motion since its `~89 ms` freefall is blink-and-miss-it at real-time). Replay clamps at end (no looping). Pause / scrub controls are out of scope — defer to a future row per the [`step_replay`][step-replay] docs.
