@@ -27,6 +27,10 @@
 //! └───────────────────────────────────────────────────────────┘
 //! ```
 //!
+//! `OrbitCamera` + `OrbitCameraPlugin` are re-exported from `cf-bevy-common`
+//! (single source of truth across cf-viewer + sim-bevy + sim-bevy-soft); see
+//! [`crate::camera`] / [`crate::prelude`].
+//!
 //! # Design Philosophy
 //!
 //! - The viewer is a *window into* sim-core, not a replacement
