@@ -9,7 +9,7 @@
 //!
 //! # Capture path
 //!
-//! Per Q5 trajectory-replay (β) lock: solver runs headless,
+//! The headless solver harness builds the trajectory:
 //! [`Solver::replay_step`](sim_soft::Solver::replay_step) returns
 //! [`NewtonStep`](sim_soft::NewtonStep) per step, the example collects
 //! `step.x_final` into [`Trajectory::frames`] and spawns the soft-mesh
@@ -18,10 +18,10 @@
 //!
 //! # Multi-soft-body
 //!
-//! v1 known scope (PR2 rows 12, 13, 14, 18 + PR3 row 20) is single-
-//! soft-body; the Component shape lifts to multi-body for free — adding a
-//! second soft body in a future arc spawns a second entity with its own
-//! `(Mesh3d, Trajectory, ...)` bundle. No migration required.
+//! Per-entity Component shape supports any number of soft bodies — each
+//! spawns its own `(Mesh3d, Trajectory, ...)` bundle and `step_replay`
+//! iterates the query. There is no global "current soft body" Resource
+//! to migrate around.
 
 use bevy::asset::Assets;
 use bevy::mesh::{Mesh, Mesh3d};
@@ -47,32 +47,28 @@ pub struct Trajectory {
 impl Trajectory {
     /// Index of the frame to display at `elapsed_secs` of wall-clock time
     /// since trajectory start. Clamps at `frames.len() - 1` past
-    /// trajectory duration (last frame holds — no looping for v1).
-    ///
-    /// Returns `0` for an empty trajectory (defensive — `frames` is
-    /// expected non-empty at consumer-construction time).
+    /// trajectory duration — last frame holds, no looping. Returns `0`
+    /// for an empty trajectory (defensive; consumers are expected to
+    /// construct with non-empty `frames`).
     #[must_use]
-    // f64 → usize cast saturates to 0 for negative/NaN and to usize::MAX
-    // for huge inputs; the subsequent `.min(...)` clamps to last frame in
-    // both cases, so cast-truncation / sign-loss / precision-loss are all
-    // intentional and bounded.
+    // f64 → usize cast saturates to 0 for negative/NaN inputs and to
+    // usize::MAX for huge ones; `.min(...)` then clamps to the last
+    // frame in either case, so the bounded-and-intentional truncation /
+    // sign-loss / precision-loss covers the full input domain.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss
     )]
     pub fn frame_index_at(&self, elapsed_secs: f64) -> usize {
-        // `elapsed / dt` is f64; floor + as-usize saturates to 0 for
-        // negative / NaN inputs and to usize::MAX for huge ones. The
-        // subsequent `.min(...)` clamps to last frame either way.
         let raw = (elapsed_secs / self.dt).floor() as usize;
         raw.min(self.frames.len().saturating_sub(1))
     }
 
     /// Total wall-clock duration of the trajectory.
     #[must_use]
-    // usize → f64 cast: PR2 trajectory lengths are well below 2^53, so
-    // precision loss from the frame-count cast is not realizable.
+    // usize → f64 cast: realistic trajectory lengths are well below 2^53,
+    // so precision loss from the frame-count cast is not realizable.
     #[allow(clippy::cast_precision_loss)]
     pub fn duration_secs(&self) -> f64 {
         self.frames.len() as f64 * self.dt
@@ -85,9 +81,10 @@ impl Trajectory {
 ///
 /// Wired by [`crate::plugin::SoftBodyVisualPlugin`] into Bevy's `Update`
 /// schedule; consumers wanting to interleave their own systems can call
-/// it directly via the `prelude` re-export. Pause / scrub / loop controls
-/// are out of scope for v1; promote to a custom replay-clock Resource
-/// when a row demands them.
+/// it directly via the `prelude` re-export. Pause / scrub / loop
+/// controls are not implemented — replay tracks `Time<Real>` directly
+/// and clamps at trajectory end. Add a custom replay-clock Resource
+/// when those controls become load-bearing.
 ///
 /// Skips entities whose `Mesh3d` handle has no live asset (e.g., during
 /// despawn) or whose computed frame index falls outside the trajectory
@@ -147,8 +144,7 @@ mod tests {
         assert_eq!(t.frame_index_at(0.1), 1);
     }
 
-    /// Past trajectory duration, the last frame holds (clamp-not-loop per
-    /// Q4 v1 lock).
+    /// Past trajectory duration, the last frame holds (clamp, not loop).
     #[test]
     fn frame_index_at_clamps_past_duration() {
         let t = three_frame_trajectory(0.1);

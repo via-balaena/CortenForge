@@ -1,20 +1,22 @@
-//! Soft-body Bevy visualization — trajectory replay (β) for sim-soft.
+//! Soft-body Bevy visualization — deformed-tet-mesh trajectory replay
+//! for sim-soft.
 //!
 //! Companion to `sim-soft` (L0): the solver runs headless, captures a
 //! [`Trajectory`](trajectory::Trajectory) of frame-by-frame deformed
-//! positions, then a Bevy app replays the trajectory by stepping a frame
-//! counter under [`Time<Real>`](bevy::time::Time) and updating the soft-mesh
-//! entity's `ATTRIBUTE_POSITION` buffer in place each frame. The solver is
-//! NEVER invoked from inside Bevy's update loop — the (β)-replay shape
-//! decouples solver step time from rendering frame time, deterministic
-//! across CI headless and user windowed runs.
+//! positions, then a Bevy app replays it by computing a frame index from
+//! [`Time<Real>`](bevy::time::Time)'s elapsed wall-clock each tick and
+//! writing that frame's positions + smooth normals into the soft-mesh
+//! entity's `Mesh3d` asset. The solver is NEVER invoked from inside
+//! Bevy's update loop — replaying captured frames decouples solver step
+//! time from rendering frame time, deterministic across CI headless and
+//! user windowed runs.
 //!
 //! Sister support crate to `sim-bevy` (rigid-body sim-core integration).
-//! Reuses [`cf_bevy_common::axis::UpAxis`] for input → Bevy frame swap and
-//! [`cf_bevy_common::camera::OrbitCameraPlugin`] for camera input;
-//! consumers wire the camera plugin explicitly, mirroring the
-//! cf-bevy-common precedent (separation of up-axis convention, camera
-//! input, and viz systems).
+//! Consumes [`cf_bevy_common::axis::UpAxis`] for the input → Bevy frame
+//! swap; the orbit camera ([`cf_bevy_common::camera::OrbitCameraPlugin`])
+//! is wired by consumers, not this crate, mirroring the cf-bevy-common
+//! precedent (separation of up-axis convention, camera input, and viz
+//! systems).
 //!
 //! # Authoring shape
 //!
@@ -26,15 +28,16 @@
 //!
 //! Submodules:
 //!
-//! - [`mesh`] — [`mesh::build_soft_mesh`] one-shot Bevy `Mesh` build from a
-//!   sim-soft positions slice + boundary-face triangulation;
-//!   [`mesh::apply_soft_positions`] in-place per-frame position + normal
-//!   update.
+//! - [`mesh`] — [`mesh::build_soft_mesh`] one-shot Bevy `Mesh` build from
+//!   a sim-soft positions slice + boundary-face triangulation;
+//!   [`mesh::apply_soft_positions`] per-frame position + smooth-normal
+//!   write into an existing Mesh asset.
 //! - [`trajectory`] — [`trajectory::Trajectory`] Bevy `Component` carrying
-//!   the captured frames; [`trajectory::step_replay`] system advancing the
-//!   per-entity frame index under `Time<Real>`.
-//! - [`plugin`] — [`plugin::SoftBodyVisualPlugin`] wires `step_replay` into
-//!   Bevy's `Update` schedule and inits the [`UpAxis`] resource.
+//!   the captured frames; [`trajectory::step_replay`] system that, per
+//!   soft-body entity, looks up the active frame under `Time<Real>` and
+//!   writes its positions + normals via `apply_soft_positions`.
+//! - [`plugin`] — [`plugin::SoftBodyVisualPlugin`] wires `step_replay`
+//!   into Bevy's `Update` schedule and inits the [`UpAxis`] resource.
 //! - [`prelude`] — convenience re-exports for consumer wiring.
 //!
 //! [`UpAxis`]: cf_bevy_common::axis::UpAxis

@@ -1,6 +1,6 @@
 [package]
 name = "sim-bevy-soft"
-description = "Bevy visualization for sim-soft soft-body trajectories — replay (β) of headless solver runs over a deforming tet mesh"
+description = "Bevy visualization for sim-soft soft-body trajectories — replay of headless solver runs over a deforming tet mesh"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,8 +16,10 @@ tier = "L1"
 # sim-soft Mesh trait + boundary_faces + Vec3 type alias.
 sim-soft = { workspace = true }
 
-# Shared Bevy helpers — UpAxis swap + OrbitCamera (consumers wire
-# OrbitCameraPlugin themselves; this crate's plugin does not add it).
+# UpAxis (input → Bevy frame swap) read by the mesh build path and the
+# step_replay system. `OrbitCameraPlugin` also lives in cf-bevy-common
+# but is wired by consumers, not this crate — the dep here is for
+# UpAxis only.
 cf-bevy-common = { workspace = true }
 
 # `Point3<f64>` for `UpAxis::to_bevy_point` calls in the mesh build path.

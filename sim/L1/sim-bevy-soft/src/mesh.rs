@@ -1,4 +1,4 @@
-//! Soft-mesh build + per-frame in-place position update.
+//! Soft-mesh build + per-frame position + smooth-normal write.
 //!
 //! [`build_soft_mesh`] consumes a sim-soft rest-configuration positions
 //! slice + a `boundary_faces` triangulation and emits a Bevy `Mesh` with
@@ -8,12 +8,12 @@
 //! [`cf_bevy_common::axis::UpAxis::flips_winding`] (sister of
 //! `cf-viewer/src/mesh.rs::build_face_mesh`).
 //!
-//! [`apply_soft_positions`] writes a frame's f64 stride-3 positions into
-//! the Mesh's `ATTRIBUTE_POSITION` buffer in place and recomputes smooth
-//! vertex normals so PBR shading tracks the deformed geometry.
-//! Per-frame normal recompute via [`Mesh::compute_smooth_normals`] is
-//! ~10K float ops at PR2 mesh sizes (hundreds of vertices) — effectively
-//! free, removes the visual-lag artifact of frozen-rest-pose shading.
+//! [`apply_soft_positions`] overwrites a Mesh's `ATTRIBUTE_POSITION`
+//! attribute with a frame's deformed positions and recomputes smooth
+//! vertex normals so PBR shading tracks the deformation rather than
+//! sticking to the rest configuration. Per-frame
+//! [`Mesh::compute_smooth_normals`] cost is negligible at expected mesh
+//! sizes (hundreds to thousands of vertices).
 //!
 //! # Vertex set
 //!
@@ -100,9 +100,9 @@ pub fn build_soft_mesh(
 /// buffer (set by [`build_soft_mesh`]) — `compute_smooth_normals` panics
 /// without one.
 ///
-/// Allocates a fresh `Vec<[f32; 3]>` per call. Per-frame allocation is
-/// cheap at PR2 mesh scales; if a future row hits a vertex count where
-/// this matters, the position buffer can be mutated in place via
+/// Allocates a fresh `Vec<[f32; 3]>` per call. Negligible at expected
+/// mesh sizes; if a vertex count ever pushes this onto the profiler,
+/// the existing position buffer can be mutated in place via
 /// `Mesh::attribute_mut(ATTRIBUTE_POSITION)`.
 ///
 /// [`UpAxis`]: cf_bevy_common::axis::UpAxis
@@ -126,8 +126,9 @@ mod tests {
     use super::*;
     use bevy::mesh::VertexAttributeValues;
 
-    /// Single tet, 4 vertices, 4 boundary faces. Matches
-    /// `sim-soft::SingleTetMesh::vertices`'s right-handed canonical layout.
+    /// Right-handed unit tet — 4 vertices forming a positive-volume
+    /// tetrahedron, suitable for `boundary_faces_from_topology`'s
+    /// outward-winding convention.
     fn single_tet_positions() -> Vec<sim_soft::Vec3> {
         vec![
             sim_soft::Vec3::new(0.0, 0.0, 0.0),
