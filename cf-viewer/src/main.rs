@@ -13,17 +13,24 @@ use cf_viewer::{
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
-use mesh_types::Bounded;
+use mesh_types::{Aabb, Bounded, Point3};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let input = load_input(&cli.path)?;
+    let raw_diagonal = input.mesh.aabb().diagonal() as f32;
+    let render_scale = compute_render_scale(raw_diagonal);
     println!(
         "loaded {} vertices, {} scalars: {:?}",
         input.mesh.vertex_count(),
         input.scalar_names.len(),
         input.scalar_names,
+    );
+    println!(
+        "bbox diagonal = {raw_diagonal:.4} m; render_scale = {render_scale:.2}× \
+         (sub-meter scenes are lifted to ~1 m for Bevy's pipeline-default \
+         camera + lighting; ≥1 m scenes render at native scale)"
     );
 
     let selection = seed_selection(&cli, &input.scalar_names)?;
@@ -43,6 +50,7 @@ fn main() -> Result<()> {
         .insert_resource(input)
         .insert_resource(selection)
         .insert_resource(up_axis)
+        .insert_resource(RenderScale(render_scale))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, (spawn_geometry, exit_on_esc))
         .add_systems(EguiPrimaryContextPass, scalar_and_colormap_panel)
@@ -51,13 +59,65 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Render-side scale factor applied uniformly to all spawned geometry so
+/// sub-meter scenes lift to Bevy's pipeline-default human-scale (~1 m)
+/// regime. Bevy 0.18's defaults — near plane `0.1 m`,
+/// [`OrbitCamera::framing_for_aabb`]'s internal `.max(1.0)` clamp on
+/// diagonal, AmbientLight brightness — were tuned for human-scale scenes;
+/// at sim-soft's cm-scale (e.g. row 13's 2 cm bbox), the camera lands
+/// 1.5 m away from a 35 mm-diagonal mesh and the geometry renders as a
+/// single dot. Lifting the rendered scene to ~1 m diagonal puts everything
+/// safely within the defaults' working range. mesh-v1.0 examples already
+/// at meter scale get `render_scale = 1.0` (no change).
+///
+/// Banked at sim-soft EXAMPLE_INVENTORY iter-12 as the cf-view application
+/// of inventory iter-11 pattern (b) (RENDER_SCALE-as-rendering-pipeline-
+/// default-workaround); same root cause as sim-bevy-soft's row-12 +
+/// row-13 RENDER_SCALE policy.
+#[derive(Resource, Clone, Copy, Debug)]
+struct RenderScale(f32);
+
+/// Compute the render scale from the raw bbox diagonal: lift sub-meter
+/// scenes to a 1 m target diagonal; meter+ scenes render at native scale.
+/// Degenerate (zero / non-finite) diagonals fall back to `1.0` so the
+/// downstream framing helper's own clamp handles them.
+fn compute_render_scale(raw_diagonal: f32) -> f32 {
+    const TARGET_DIAGONAL: f32 = 1.0;
+    if !raw_diagonal.is_finite() || raw_diagonal <= 0.0 || raw_diagonal >= TARGET_DIAGONAL {
+        1.0
+    } else {
+        TARGET_DIAGONAL / raw_diagonal
+    }
+}
+
+/// Apply a uniform scale factor to an [`Aabb`]'s corners. Used to compute
+/// the camera-framing AABB at render scale (the rendered geometry's
+/// bbox), distinct from the loaded mesh's physics-scale AABB.
+fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
+    let s = scale as f64;
+    Aabb::from_corners(
+        Point3::new(raw.min.x * s, raw.min.y * s, raw.min.z * s),
+        Point3::new(raw.max.x * s, raw.max.y * s, raw.max.z * s),
+    )
+}
+
 /// Spawn the orbit camera + lighting once at startup. Geometry is spawned
 /// (and re-spawned) by [`spawn_geometry`] in response to [`Selection`]
 /// changes, so this system is no longer the geometry-spawn entry point.
+///
+/// The orbit camera frames the **rendered** AABB (raw mesh AABB scaled by
+/// [`RenderScale`]) — at native scale for meter+ meshes, lifted to ~1 m
+/// for sub-meter meshes. See [`RenderScale`] for the policy.
 #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
-fn setup_scene(mut commands: Commands, input: Res<ViewerInput>, up: Res<UpAxis>) {
-    let aabb = input.mesh.aabb();
+fn setup_scene(
+    mut commands: Commands,
+    input: Res<ViewerInput>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+) {
+    let raw_aabb = input.mesh.aabb();
+    let aabb = scale_aabb(&raw_aabb, render_scale.0);
     let center_physics = aabb.center();
     // Same input → Bevy frame swap as `build_face_mesh` so the light
     // anchor stays aligned with the rendered geometry under any `--up=<...>`.
@@ -121,11 +181,19 @@ fn setup_scene(mut commands: Commands, input: Res<ViewerInput>, up: Res<UpAxis>)
 /// entity gets its own `StandardMaterial` clone with `base_color` set to
 /// the colormapped value (option A per iter-2 still-open #7).
 #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
+#[allow(clippy::needless_pass_by_value)]
+// Bevy systems take resources by value
+// 8 args (1 over the 7-default) — Bevy systems pull each Res / ResMut /
+// Query / Commands as a separate parameter; threading them through a
+// SystemParam-derive tuple costs more boilerplate than the +1 buys in
+// readability. Mirrors the example precedent of `setup_visual_scene` in
+// `examples/sim-soft/soft-drop-on-plane/src/main.rs`.
+#[allow(clippy::too_many_arguments)]
 fn spawn_geometry(
     selection: Res<Selection>,
     input: Res<ViewerInput>,
     up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -169,17 +237,29 @@ fn spawn_geometry(
         ..default()
     };
 
+    let scale = render_scale.0;
     if input.mesh.face_count() > 0 {
+        // Faces case — single Mesh3d carrying the full triangle set, with
+        // a uniform Transform::from_scale lifting cm-scale physics
+        // positions to Bevy's human-scale rendering regime (or = 1.0 for
+        // meter+ meshes; no change from native).
         let bevy_mesh = build_face_mesh(&input.mesh, vertex_colors.as_deref(), *up);
         let material_handle = materials.add(template_material);
         commands.spawn((
             GeometryEntity,
             Mesh3d(meshes.add(bevy_mesh)),
             MeshMaterial3d(material_handle),
+            Transform::from_scale(Vec3::splat(scale)),
         ));
     } else {
-        let aabb = input.mesh.aabb();
-        let diagonal = (aabb.diagonal() as f32).max(1.0);
+        // Point-cloud case — one Mesh3d per vertex sharing a Sphere mesh
+        // handle. The sphere RADIUS is computed from the SCALED bbox
+        // diagonal so per-vertex sphere size scales with the rendered
+        // scene; per-vertex POSITION is multiplied by `scale` at spawn so
+        // the cluster spans the rendered bbox not the physics bbox.
+        let raw_aabb = input.mesh.aabb();
+        let scaled_aabb = scale_aabb(&raw_aabb, scale);
+        let diagonal = (scaled_aabb.diagonal() as f32).max(1.0);
         let radius = (diagonal * POINT_RADIUS_FRACTION).max(1e-3);
         let sphere_handle = meshes.add(Sphere::new(radius));
         match vertex_colors.as_deref() {
@@ -193,7 +273,7 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material),
-                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v))),
+                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v)) * scale),
                     ));
                 }
             }
@@ -204,7 +284,7 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material_handle.clone()),
-                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v))),
+                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v)) * scale),
                     ));
                 }
             }
