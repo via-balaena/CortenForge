@@ -104,8 +104,7 @@ fn compressive_block_plane_penetrates_top_face_by_displacement() {
     // vertex (z = edge_len) has signed_distance = -displacement
     // (penetrated by exactly `displacement`). Dispatch through the
     // ContactModel's gradient to verify the plane's orientation +
-    // offset round-trip via PenaltyRigidContact's RigidPrimitive
-    // dispatch.
+    // offset round-trip via PenaltyRigidContact's `Sdf` dispatch.
     let (mesh, _bc, _initial, contact) = SoftScene::compressive_block_on_plane(
         V3A_EDGE_LEN,
         V3A_CELL_SIZE,

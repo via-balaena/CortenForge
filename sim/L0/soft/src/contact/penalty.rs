@@ -36,13 +36,11 @@
 //!   returns [`f64::INFINITY`] per scope memo Decision E. Phase H IPC
 //!   delivers proper CCD.
 
-use super::{
-    ContactGradient, ContactHessian, ContactModel, ContactPair,
-    rigid::{RigidPlane, RigidPrimitive},
-};
+use super::{ContactGradient, ContactHessian, ContactModel, ContactPair};
 use crate::{
     Vec3,
     mesh::{Mesh, VertexId},
+    sdf_bridge::Sdf,
 };
 use nalgebra::Matrix3;
 
@@ -70,8 +68,14 @@ pub(crate) const PENALTY_DHAT_DEFAULT: f64 = 1.0e-3;
 /// whose signed distance is below the contact band `d̂`. See the
 /// [module docs](self) for the energy / gradient / Hessian formulas
 /// and sign conventions.
+///
+/// Primitives are heap-erased [`Sdf`] trait objects so a single contact
+/// model can compose mixed primitive types (planes, spheres, scan-derived
+/// `MeshSdf`, cf-design `Solid`s) in one list. The constructors are
+/// generic over any `IntoIterator` of `Sdf + 'static`, so a homogeneous
+/// `Vec<RigidPlane>` flows through without explicit boxing.
 pub struct PenaltyRigidContact {
-    primitives: Vec<Box<dyn RigidPrimitive>>,
+    primitives: Vec<Box<dyn Sdf>>,
     kappa: f64,
     d_hat: f64,
 }
@@ -79,12 +83,14 @@ pub struct PenaltyRigidContact {
 impl PenaltyRigidContact {
     /// Construct with default `(κ, d̂)` from `PENALTY_KAPPA_DEFAULT` /
     /// `PENALTY_DHAT_DEFAULT` (crate-private; tunable only via
-    /// [`with_params`](Self::with_params) for V-* tests). Boxes the
-    /// concrete planes into the trait-erased primitive list internally
-    /// — `RigidPrimitive` stays `pub(crate)` per scope memo §0 row.
+    /// [`with_params`](Self::with_params) for V-* tests).
     #[must_use]
-    pub fn new(planes: Vec<RigidPlane>) -> Self {
-        Self::with_params(planes, PENALTY_KAPPA_DEFAULT, PENALTY_DHAT_DEFAULT)
+    pub fn new<I>(primitives: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Sdf + 'static,
+    {
+        Self::with_params(primitives, PENALTY_KAPPA_DEFAULT, PENALTY_DHAT_DEFAULT)
     }
 
     /// Construct with non-default `(κ, d̂)` — Phase 5 testing surface
@@ -93,10 +99,14 @@ impl PenaltyRigidContact {
     /// follow-on per scope memo Decision J; production scenes go
     /// through [`new`](Self::new).
     #[must_use]
-    pub fn with_params(planes: Vec<RigidPlane>, kappa: f64, d_hat: f64) -> Self {
-        let primitives: Vec<Box<dyn RigidPrimitive>> = planes
+    pub fn with_params<I>(primitives: I, kappa: f64, d_hat: f64) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Sdf + 'static,
+    {
+        let primitives: Vec<Box<dyn Sdf>> = primitives
             .into_iter()
-            .map(|p| Box::new(p) as Box<dyn RigidPrimitive>)
+            .map(|p| Box::new(p) as Box<dyn Sdf>)
             .collect();
         Self {
             primitives,
@@ -123,7 +133,7 @@ impl ContactModel for PenaltyRigidContact {
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
             for (pid, prim) in self.primitives.iter().enumerate() {
-                if prim.signed_distance(p) < self.d_hat {
+                if prim.eval(p) < self.d_hat {
                     pairs.push(ContactPair::Vertex {
                         vertex_id: vid as VertexId,
                         primitive_id: pid as u32,
@@ -140,7 +150,7 @@ impl ContactModel for PenaltyRigidContact {
             primitive_id,
         } = pair;
         let p = positions[vertex_id as usize];
-        let d = self.primitives[primitive_id as usize].signed_distance(p);
+        let d = self.primitives[primitive_id as usize].eval(p);
         if d >= self.d_hat {
             0.0
         } else {
@@ -156,11 +166,11 @@ impl ContactModel for PenaltyRigidContact {
         } = pair;
         let p = positions[vertex_id as usize];
         let prim = &self.primitives[primitive_id as usize];
-        let d = prim.signed_distance(p);
+        let d = prim.eval(p);
         if d >= self.d_hat {
             ContactGradient::default()
         } else {
-            let n = prim.outward_normal(p);
+            let n = prim.grad(p);
             let force = -self.kappa * (self.d_hat - d) * n;
             ContactGradient {
                 contributions: vec![(vertex_id, force)],
@@ -175,11 +185,11 @@ impl ContactModel for PenaltyRigidContact {
         } = pair;
         let p = positions[vertex_id as usize];
         let prim = &self.primitives[primitive_id as usize];
-        let d = prim.signed_distance(p);
+        let d = prim.eval(p);
         if d >= self.d_hat {
             ContactHessian::default()
         } else {
-            let n = prim.outward_normal(p);
+            let n = prim.grad(p);
             let block: Matrix3<f64> = self.kappa * (n * n.transpose());
             ContactHessian {
                 contributions: vec![(vertex_id, vertex_id, block)],
