@@ -1,5 +1,4 @@
-//! Orbit camera surface — re-exported from
-//! [`cf_bevy_common::camera`](../../cf_bevy_common/camera/index.html).
+//! Orbit camera surface — re-exported from [`cf_bevy_common::camera`].
 //!
 //! sim-bevy is one of three Bevy consumers (alongside `cf-viewer` and
 //! `sim-bevy-soft`); the `OrbitCamera` controller and `OrbitCameraPlugin`
