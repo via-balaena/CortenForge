@@ -105,7 +105,7 @@ Sketched during the 2026-05-04 conversation; refine and re-validate during itera
 
 - `mesh-sdf → cf-design` bridge — `MeshSdf` should be wrappable as a `cf_design::Solid` primitive composable with parametric ones. (Memory's pre-2026-05-04 line "`mesh-sdf` adapter stays unbuilt absent a real consumer" is now obsolete — silicone device scan workflow IS the consumer.)
 - `cf-design → sim-soft` bridge — `cf_design::Solid` should impl `sim_soft::Sdf` (or an equivalent one-line conversion). Today every user wires their own glue.
-- `RigidSdfPrimitive` — extends Phase 5's `RigidPrimitive` trait beyond `RigidPlane`. Wraps any `cf_design::Solid` (which transitively wraps a scan SDF). Required for non-planar rigid indenters.
+- ~~`RigidSdfPrimitive`~~ — **CLOSED at PR2 iter 1 (2026-05-06, `71e9bb77`)** by `RigidPrimitive` → `Sdf` trait unification. Any `impl Sdf` is a valid rigid primitive directly via [`PenaltyRigidContact::new`](src/contact/penalty.rs); no wrapper newtype needed. See iter-6 entry below.
 - Force / pressure readout at contact — needed for relative-comparison sim and empirical-calibration loop.
 - Material reference — code constants module, builder, or doc table for `{Ecoflex 00-10/20/30/50, Dragon Skin 10A/20A/30A}` with Young's modulus / ν / source. Stops "look it up somewhere" friction.
 - `sim/L0/soft/examples/` directory — does not exist today. Closest end-to-end demo is `SoftScene::layered_silicone_sphere` inside `src/readout/scene.rs` (a fixture in production source, not user-facing).

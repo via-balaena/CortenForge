@@ -1,13 +1,15 @@
-//! Hand-rolled kinematic rigid primitives — the rigid side of one-way
-//! soft↔rigid penalty contact.
+//! Hand-rolled kinematic rigid plane primitive — the rigid side of
+//! one-way soft↔rigid penalty contact.
 //!
-//! Phase 5 ships [`RigidPlane`] only; non-planar primitives are unlocked
-//! at PR2 of the sim-soft examples arc by routing penalty contact through
-//! the crate-public [`Sdf`] trait — any `impl Sdf` is now a valid rigid
-//! primitive (`SphereSdf`, scan-derived `MeshSdf`, cf-design `Solid`,
-//! etc.). Primitives are kinematic — they don't move during a step
-//! (Decision C: one-way coupling). sim-mjcf rigid-body integration is
-//! its own future phase between Phase 5 and Phase H.
+//! Phase 5 shipped [`RigidPlane`] as the sole concrete primitive type
+//! behind the now-deleted `RigidPrimitive` trait. PR2 of the sim-soft
+//! examples arc routes penalty contact through the crate-public
+//! [`Sdf`] trait instead, so any `impl Sdf` (`SphereSdf`, scan-derived
+//! `MeshSdf`, cf-design `Solid`, ...) is now a valid rigid primitive
+//! without per-shape boilerplate; this file holds only `RigidPlane` and
+//! its [`Sdf`] impl. Primitives stay kinematic — they don't move during
+//! a step (Decision C: one-way coupling). sim-mjcf rigid-body
+//! integration is its own future phase between Phase 5 and Phase H.
 
 use crate::{Vec3, sdf_bridge::Sdf};
 
