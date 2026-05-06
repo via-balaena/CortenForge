@@ -334,6 +334,7 @@ members = [
     "examples/sim-soft/bonded-bilayer-beam",
     "examples/sim-soft/concentric-lame-shells",
     "examples/sim-soft/soft-drop-on-plane",
+    "examples/sim-soft/hertz-sphere-plane",
 
     # Foundation (active development)
     "design/cf-geometry",

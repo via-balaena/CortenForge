@@ -352,6 +352,7 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
 | `soft-drop-on-plane` | `example-sim-soft-soft-drop-on-plane` | Working | ★ Soft sphere released above `RigidPlane`, settles into quiescence; first sim-bevy-soft consumer (CF_VISUAL=1) |
+| `hertz-sphere-plane` | `example-sim-soft-hertz-sphere-plane` | Working | ★ Soft sphere quasi-statically pressed; contact-patch radius vs Hertz analytic (V-3); cf-view colormap PLY + matplotlib pressure-profile plot |
 
 ### Visual-mode convention: `CF_VISUAL=1`
 
