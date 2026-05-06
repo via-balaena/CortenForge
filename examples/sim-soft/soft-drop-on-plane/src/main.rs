@@ -53,9 +53,29 @@
 //!
 //! - **`R`** — reset and replay from frame 0
 //!   ([`reset_replay_on_keypress`](sim_bevy_soft::trajectory::reset_replay_on_keypress)).
-//! - **Mouse drag / scroll / middle-drag** — orbit / zoom / pan
-//!   (via [`OrbitCameraPlugin`]).
+//! - **Left-drag / scroll / right-drag** — orbit / zoom / pan (via
+//!   [`OrbitCameraPlugin`]).
 //! - **Close window** — exit.
+//!
+//! ### Why the rendered scene is `100×` simulation scale
+//!
+//! The visual entities (soft mesh, plane, camera target, camera
+//! distance) are rendered at `100×` the physics scale via a
+//! `Transform::from_scale` on the soft mesh + corresponding scaled
+//! plane and camera distances. Sphere is rendered at `1 m` radius
+//! instead of `1 cm`, plane at `4 m` half-size, camera at `15 m`
+//! distance. Reason: Bevy 0.18's pipeline defaults — near plane
+//! `0.1 m`, OrbitCamera `min_distance = 0.1 m`, AmbientLight
+//! brightness — were tuned for human-scale (1 m+) scenes. At cm-scale
+//! the camera approaches the near plane on any zoom-in (geometry past
+//! `0.1 m` from camera gets clipped, producing a hole through the
+//! sphere) and `compute_smooth_normals`'s hardcoded
+//! `EPS = f32::EPSILON` zeros out per-vertex weights at sub-mm edge
+//! lengths (`compute_area_weighted_normals` sidesteps the latter,
+//! shipped at sim-bevy-soft `cc2e6324`; the former needs the scale
+//! lift). Headless asserts + PLY emit are scale-invariant — they
+//! operate on the unscaled physics positions, so this is a
+//! visualization-only adjustment.
 //!
 //! Camera = sim-bevy precedent's orbit camera with target ≈ rest COM
 //! `(0, R + d̂, 0)` in Bevy frame (under `UpAxis::PlusZ`'s
@@ -875,6 +895,18 @@ fn run_visual_mode(snapshot: &DropSnapshot) {
         .run();
 }
 
+/// Render-side scale factor on visual entities. The simulation runs at
+/// physics scale (sphere radius `1 cm`); the rendered Bevy entities are
+/// `100×` larger so geometry lands in Bevy 0.18's pipeline-default
+/// human-scale (m) regime (near plane `0.1 m`, OrbitCamera
+/// `min_distance = 0.1 m`, AmbientLight brightness tuned for `1 m+`
+/// scenes). At cm-scale rendering, the camera approached the near
+/// plane on any zoom-in and clipped the front of the sphere; at `100×`
+/// the rendered sphere is `1 m` radius and all defaults Just Work.
+/// Headless asserts + PLY emit are scale-invariant — they operate on
+/// the unscaled physics positions, so this is visualization-only.
+const RENDER_SCALE: f32 = 100.0;
+
 fn setup_visual_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<BevyMesh>>,
@@ -894,12 +926,13 @@ fn setup_visual_scene(
     // Soft-mesh entity: built from rest config, animated by step_replay
     // reading the Trajectory each frame. Per `#[require(Mesh3d)]` on
     // Trajectory, the spawn bundle MUST include Mesh3d — provided here.
-    //
     // Coral PBR base — warm, light, high contrast against the dark gray
     // Bevy clear color so the deformation arc reads cleanly without the
     // user squinting. Slight gloss (perceptual_roughness 0.5) catches
     // the directional light's specular highlight at the contact patch
-    // without going full glossy.
+    // without going full glossy. The Transform's scale is `RENDER_SCALE`
+    // (see const docs above) so the cm-scale physics positions render
+    // at human-scale.
     let soft_mesh_handle = meshes.add(build_soft_mesh(&rest_positions, &boundary_faces, *up));
     let soft_material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.55, 0.4),
@@ -910,14 +943,15 @@ fn setup_visual_scene(
     commands.spawn((
         Mesh3d(soft_mesh_handle),
         MeshMaterial3d(soft_material),
-        Transform::default(),
+        Transform::from_scale(BevyVec3::splat(RENDER_SCALE)),
         trajectory,
     ));
 
     // Rigid plane visualization — gray PBR quad at Bevy y=0 (= physics z=0
-    // under PlusZ swap). half_size = 4 × R = 4 cm extends well beyond the
-    // expected contact patch.
-    let plane_half_size = 4.0 * RADIUS as f32;
+    // under PlusZ swap). Plane mesh is sized at Bevy-frame scale
+    // directly (no physics-positions to scale), so half_size already
+    // accounts for RENDER_SCALE: 4 × R × RENDER_SCALE = 4 m.
+    let plane_half_size = 4.0 * RADIUS as f32 * RENDER_SCALE;
     let plane_mesh = meshes.add(Plane3d::new(BevyVec3::Y, Vec2::splat(plane_half_size)));
     let plane_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.7, 0.7, 0.7),
@@ -933,13 +967,18 @@ fn setup_visual_scene(
     // Orbit camera — target near rest COM (physics `(0, 0, R + D_HAT)` →
     // Bevy `(0, R + D_HAT, 0)` under PlusZ swap), distance ~3× release for
     // the full trajectory bbox visible.
-    let target_y = (RADIUS + D_HAT) as f32;
+    // Camera target = rest COM (physics `(0, 0, R+d̂)` → Bevy `(0,
+    // R+d̂, 0)` under PlusZ swap), scaled into Bevy-frame meters by
+    // RENDER_SCALE. Distance = 15 m (was 15 cm); OrbitCamera defaults
+    // (min_distance = 0.1 m, near plane 0.1 m, etc.) all work at this
+    // scale.
+    let target_y = (RADIUS + D_HAT) as f32 * RENDER_SCALE;
     commands.spawn((
         Camera3d::default(),
         Transform::default(),
         OrbitCamera::new()
             .with_target(BevyVec3::new(0.0, target_y, 0.0))
-            .with_distance(0.15)
+            .with_distance(0.15 * RENDER_SCALE)
             .with_angles(0.6, 0.4),
         // AmbientLight is a per-camera Component in Bevy 0.18 (not a
         // global Resource). Low-but-nonzero (80 cd/m², near Bevy
@@ -953,15 +992,14 @@ fn setup_visual_scene(
     ));
 
     // Directional light positioned above-and-camera-side so the
-    // sphere's camera-facing hemisphere is the LIT one.
-    // `Transform::from_xyz(...).looking_at(...)` is clearer to reason
-    // about than Euler-angle rotations: the light source sits at
-    // `(+0.5, +1.0, +0.5)` Bevy units (upper-front-right) looking at
-    // the world origin, so forward = `(-0.41, -0.82, -0.41)` (steep
-    // from upper-front-right). 12 klx illuminance is the
-    // overcast-bright-room range; keeps the plane (gray albedo 0.7)
-    // reading as a clean mid-gray rather than blowing out to white,
-    // while the coral sphere's lit-side reads at full saturation.
+    // sphere's camera-facing hemisphere is the LIT one. Directional
+    // lights have no position (only orientation), so we don't need to
+    // scale here — only the looking_at source position needs to be
+    // far enough that the look-direction calculation is well-conditioned.
+    // 12 klx illuminance is the overcast-bright-room range; keeps the
+    // plane (gray albedo 0.7) reading as a clean mid-gray rather than
+    // blowing out to white, while the coral sphere's lit-side reads at
+    // full saturation.
     commands.spawn((
         DirectionalLight {
             illuminance: 12_000.0,
@@ -978,9 +1016,7 @@ fn setup_visual_scene(
     // ASCII `|` separators avoid the default font's missing-glyph
     // boxes for U+00B7 middle-dot.
     commands.spawn((
-        Text::new(
-            "Press R to reset  |  Mouse: drag orbit | scroll zoom | middle-drag pan  |  close window to exit",
-        ),
+        Text::new("Press R to reset  |  Mouse: drag orbit | scroll zoom  |  close window to exit"),
         TextFont {
             font_size: 14.0,
             ..default()
@@ -1122,14 +1158,15 @@ fn print_summary(snapshot: &DropSnapshot, ply_path: &Path) {
         "         replay at {SLOW_MO_FACTOR:.0}× slow-motion ({replay_duration:.1} s wall-clock for {sim_t:.3} s simulated;"
     );
     println!(
-        "         clamp at end). Press R to replay from frame 0, mouse to orbit/zoom/pan, close"
+        "         clamp at end). Press R to replay from frame 0, mouse drag to orbit, scroll to"
     );
     println!(
-        "         window to exit. Per-entity ReplayEpoch defers playback clock to first step_replay"
+        "         zoom, close window to exit. Per-entity ReplayEpoch defers playback clock to"
     );
     println!(
-        "         tick so DefaultPlugins startup (~1-2 s on first run) does not consume budget."
+        "         first step_replay tick so DefaultPlugins startup (~1-2 s on first run) does"
     );
+    println!("         not consume budget.");
 }
 
 // =============================================================================

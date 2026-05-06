@@ -198,10 +198,14 @@ The trajectory's playback clock is captured per-entity via `sim_bevy_soft::traje
 | Key | Action |
 |---|---|
 | **`R`** | Reset and replay from frame 0 (clears `ReplayEpoch.epoch_secs` so the next `step_replay` tick captures a fresh epoch — see [`sim_bevy_soft::trajectory::reset_replay_on_keypress`](../../../sim/L1/sim-bevy-soft/src/trajectory.rs)) |
-| **Mouse drag** | Orbit camera around the soft body |
+| **Left-drag** | Orbit camera around the soft body |
 | **Mouse scroll** | Zoom |
-| **Mouse middle-drag** | Pan |
+| **Right-drag** | Pan |
 | **Close window** | Exit the app |
+
+### Why the rendered scene is `100×` simulation scale
+
+The visual entities (soft mesh, plane, camera target, camera distance) are rendered at `RENDER_SCALE = 100×` the physics scale via a `Transform::from_scale` on the soft mesh + correspondingly scaled plane half-size and camera distance. Rendered sphere is `1 m` radius (instead of `1 cm`), plane is `4 m` half-size (instead of `4 cm`), camera distance is `15 m` (instead of `15 cm`). Bevy 0.18's pipeline defaults were tuned for human-scale (1 m+) scenes — at cm-scale the camera approaches the default `0.1 m` near plane on any zoom-in (geometry past the near plane gets clipped, producing a hole through the sphere or worse, the entire sphere disappears). Lifting the rendered scene to meter scale puts everything safely past the defaults. Headless asserts + PLY emit are scale-invariant — they operate on the unscaled physics positions — so this is a visualization-only adjustment.
 
 The replay clamps at end (no looping); press `R` to watch again, or close the window to exit. To tune the replay rate edit `SLOW_MO_FACTOR` in `src/main.rs` (`1.0` = real-time, larger = slower). No in-app pause/scrub controls — defer to a future row that needs them per `sim_bevy_soft::trajectory::step_replay` docs.
 
