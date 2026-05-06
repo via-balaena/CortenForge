@@ -104,7 +104,7 @@ The energy gate catches sign-flipped gravity, inverted contact gradient, or runa
 | Anchor | Bound |
 |---|---|
 | `n_step_first_contact > 0` | sphere did not start in contact band |
-| `n_step_first_contact ≤ N_STEPS / 4 = 250` | sphere reached the plane within 2.5× the analytic freefall step |
+| `n_step_first_contact ≤ N_STEPS / 4 = 250` | sphere reached the plane within ~2.8× the analytic freefall step |
 
 Catches a sphere-flying-sideways or gravity-magnitude regression that wouldn't trip the energy gate. Analytic time-for-sphere-bottom-to-band: `t_c = sqrt(2 (h-R-d̂) / |g|) / dt ≈ 89 steps`; observed `88` (one step early under sub-step interpolation as penalty's bounded-oscillation onset begins). The `N_STEPS / 4 = 250` upper bound has `2.8×` headroom.
 
@@ -182,12 +182,13 @@ cf-view renders the smoothly shaded boundary mesh; the settled sphere reads as a
 CF_VISUAL=1 cargo run -p example-sim-soft-soft-drop-on-plane --release
 ```
 
-Spawns an `OrbitCamera` scene with three entities:
-- **Soft mesh** (`Mesh3d` + `MeshMaterial3d` + `Trajectory`) — a blue PBR sphere built via `sim_bevy_soft::mesh::build_soft_mesh` from the rest configuration + `Mesh::boundary_faces()` triangulation, animated by `sim_bevy_soft::trajectory::step_replay` reading the captured 1000-frame trajectory each frame.
-- **Rigid plane** (`Mesh3d` + `MeshMaterial3d`) — a `8 cm × 8 cm` (4 × R half-size) gray PBR quad at Bevy `y = 0` (= physics `z = 0` under `UpAxis::PlusZ`'s `(x,y,z) → (x,z,y)` swap), normal `+Y` Bevy. Static; no `Trajectory`.
-- **Camera** (`Camera3d` + `OrbitCamera`) — target near rest COM `(0, R + d̂, 0)` Bevy, distance `0.15 m` (~3× release_height for full trajectory bbox visible), angles `(0.6, 0.4) rad` (~34° azimuth, 23° elevation).
+Spawns an `OrbitCamera` scene with three entities (rendered at `RENDER_SCALE = 100×` physics scale per the section below):
 
-Plus a directional light + ambient (Bevy `DefaultPlugins` ships `AmbientLight`).
+- **Soft mesh** (`Mesh3d` + `MeshMaterial3d` + `Trajectory`) — a coral PBR sphere built via `sim_bevy_soft::mesh::build_soft_mesh` from the rest configuration + `Mesh::boundary_faces()` triangulation, animated by `sim_bevy_soft::trajectory::step_replay` reading the captured 1000-frame trajectory each frame. Carries `Transform::from_scale(100)` so the cm-scale physics positions render at meter scale.
+- **Rigid plane** (`Mesh3d` + `MeshMaterial3d`) — `4 m × 4 m` half-size gray PBR quad at Bevy `y = 0` (= physics `z = 0` under `UpAxis::PlusZ`'s `(x,y,z) → (x,z,y)` swap), normal `+Y` Bevy. Static; no `Trajectory`. Half-size = `4 × R × RENDER_SCALE = 4 m`.
+- **Camera** (`Camera3d` + `OrbitCamera`) — target near rest COM `(0, R + d̂, 0)` Bevy scaled by `RENDER_SCALE` to `(0, 1.1, 0)` Bevy, distance `15 m` (~3× release_height for full trajectory bbox visible), angles `(0.6, 0.4) rad` (~34° azimuth, 23° elevation). Per-camera `AmbientLight` Component (Bevy 0.18 moved AmbientLight from a global Resource to a per-camera Component — `#[require(Camera)]`) at `80 cd/m²`.
+
+Plus a separate directional-light entity at `12 klx` illuminance, oriented from upper-front-right via `Transform::from_xyz(0.5, 1.0, 0.5).looking_at(Vec3::ZERO, Vec3::Y)`.
 
 Replay runs at `SLOW_MO_FACTOR = 10×` slow-motion: 1000 frames × `dt = SLOW_MO_FACTOR × DT = 10 ms` per replay frame = **10.000 s replay duration** for the 1.000 s simulated trajectory. The default is slow-motion because the analytic time-to-impact `t_c ≈ 89 ms` is blink-and-miss-it at 1× wall-clock — `10×` puts the freefall + contact-onset arc at `~890 ms` (clearly observable, contact-pair onset reads as a distinct beat) while the settle-and-rest phase fits under `9 s`. Pure visualization knob; has no effect on the headless asserts or the captured PLY.
 
@@ -208,8 +209,6 @@ The trajectory's playback clock is captured per-entity via `sim_bevy_soft::traje
 The visual entities (soft mesh, plane, camera target, camera distance) are rendered at `RENDER_SCALE = 100×` the physics scale via a `Transform::from_scale` on the soft mesh + correspondingly scaled plane half-size and camera distance. Rendered sphere is `1 m` radius (instead of `1 cm`), plane is `4 m` half-size (instead of `4 cm`), camera distance is `15 m` (instead of `15 cm`). Bevy 0.18's pipeline defaults were tuned for human-scale (1 m+) scenes — at cm-scale the camera approaches the default `0.1 m` near plane on any zoom-in (geometry past the near plane gets clipped, producing a hole through the sphere or worse, the entire sphere disappears). Lifting the rendered scene to meter scale puts everything safely past the defaults. Headless asserts + PLY emit are scale-invariant — they operate on the unscaled physics positions — so this is a visualization-only adjustment.
 
 The replay clamps at end (no looping); press `R` to watch again, or close the window to exit. To tune the replay rate edit `SLOW_MO_FACTOR` in `src/main.rs` (`1.0` = real-time, larger = slower). No in-app pause/scrub controls — defer to a future row that needs them per `sim_bevy_soft::trajectory::step_replay` docs.
-
-User drags to orbit, scrolls to zoom, middle-drags to pan via the standard `OrbitCameraPlugin` controls.
 
 Per [`feedback_visible_contacts`][vis] — for Tier 4 penalty contact rows, the visual review is real (not collapsed to JSON read).
 

@@ -16,8 +16,9 @@
 //! `1300×` per step at the `(κ, m_v)` parameters, so a few hundred
 //! post-contact steps drop kinetic energy below the `1 cm/s`-magnitude
 //! `KE_REST_THRESHOLD`. `n_steps = 1000` (1 s simulated total) gives
-//! ample headroom over the analytic time-to-impact `t_c = sqrt(2h/g) ≈
-//! 0.10 s ≈ 100 steps`.
+//! ample headroom over the analytic time-to-impact for the sphere
+//! bottom to enter the contact band: `t_c = sqrt(2 (h-R-d̂) / |g|) ≈
+//! 89 ms ≈ step 89`.
 //!
 //! The headline new capability vs PR1's user-facing rows is **dynamic
 //! integration with one-way penalty contact + rest-state convergence** —
@@ -60,33 +61,42 @@
 //! ### Why the rendered scene is `100×` simulation scale
 //!
 //! The visual entities (soft mesh, plane, camera target, camera
-//! distance) are rendered at `100×` the physics scale via a
-//! `Transform::from_scale` on the soft mesh + corresponding scaled
-//! plane and camera distances. Sphere is rendered at `1 m` radius
-//! instead of `1 cm`, plane at `4 m` half-size, camera at `15 m`
-//! distance. Reason: Bevy 0.18's pipeline defaults — near plane
-//! `0.1 m`, OrbitCamera `min_distance = 0.1 m`, AmbientLight
-//! brightness — were tuned for human-scale (1 m+) scenes. At cm-scale
-//! the camera approaches the near plane on any zoom-in (geometry past
-//! `0.1 m` from camera gets clipped, producing a hole through the
-//! sphere) and `compute_smooth_normals`'s hardcoded
-//! `EPS = f32::EPSILON` zeros out per-vertex weights at sub-mm edge
-//! lengths (`compute_area_weighted_normals` sidesteps the latter,
-//! shipped at sim-bevy-soft `cc2e6324`; the former needs the scale
-//! lift). Headless asserts + PLY emit are scale-invariant — they
-//! operate on the unscaled physics positions, so this is a
+//! distance) are rendered at `RENDER_SCALE = 100×` the physics scale
+//! via a `Transform::from_scale` on the soft mesh + corresponding
+//! scaled plane half-size and camera distance. Rendered sphere is
+//! `1 m` radius (instead of `1 cm`), plane is `4 m` half-size (instead
+//! of `4 cm`), camera distance is `15 m` (instead of `15 cm`).
+//! Reason: Bevy 0.18's pipeline defaults — near plane `0.1 m`,
+//! OrbitCamera `min_distance = 0.1 m`, AmbientLight brightness, depth
+//! precision — were tuned for human-scale (1 m+) scenes. At cm-scale
+//! rendering the camera approaches the near plane on any zoom-in
+//! (geometry past `0.1 m` from camera gets clipped, producing a hole
+//! through the sphere or, at extreme zoom, the entire sphere
+//! disappearing). Lifting the rendered scene to meter scale puts
+//! everything safely past the defaults. Headless asserts + PLY emit
+//! are scale-invariant — they operate on the unscaled physics
+//! positions in the captured `DropSnapshot`, so this is a
 //! visualization-only adjustment.
 //!
-//! Camera = sim-bevy precedent's orbit camera with target ≈ rest COM
-//! `(0, R + d̂, 0)` in Bevy frame (under `UpAxis::PlusZ`'s
-//! physics-`(x,y,z)` → Bevy-`(x,z,y)` swap), distance `0.15 m` (~3×
-//! release_height for full trajectory bbox visible), angles
-//! `(0.6, 0.4) rad` (~0.6 rad ≈ 34° azimuth, 0.4 rad ≈ 23° elevation).
-//! Plane is a `4 cm × 4 cm` gray PBR quad at Bevy `y = 0`
-//! (= physics `z = 0`), normal `+Y` Bevy. To tune the replay rate edit
-//! [`SLOW_MO_FACTOR`] (`1.0` = real-time, larger = slower); pause/scrub
-//! controls are out of scope (defer to a future row that wants them —
-//! see `sim_bevy_soft::trajectory::step_replay` docs).
+//! (Separately, sim-bevy-soft `cc2e6324` swapped Bevy's
+//! `Mesh::compute_smooth_normals` for `compute_area_weighted_normals`
+//! to dodge a Bevy 0.18 issue where the corner-angle-weighted variant
+//! has a hardcoded `EPS = f32::EPSILON` gate that zeros out per-vertex
+//! weights at sub-mm edge lengths. That fix is in sim-bevy-soft
+//! itself and independent of the `100×` render-scale lift here.)
+//!
+//! Camera target = rest COM (physics `(0, 0, R + d̂)` → Bevy
+//! `(0, R + d̂, 0)` under `UpAxis::PlusZ`'s physics-`(x, y, z)` →
+//! Bevy-`(x, z, y)` swap), scaled into Bevy-frame meters by
+//! `RENDER_SCALE` so target lands at `(0, 1.1, 0)` Bevy (vs
+//! `(0, 0.011, 0)` at 1×). Distance `15 m` (~3× release_height for
+//! full trajectory bbox visible), angles `(0.6, 0.4) rad`
+//! (~34° azimuth, ~23° elevation). Plane is a `4 m × 4 m` half-size
+//! gray PBR quad at Bevy `y = 0` (= physics `z = 0`), normal `+Y`
+//! Bevy. To tune the replay rate edit [`SLOW_MO_FACTOR`] (`1.0` =
+//! real-time, larger = slower); pause/scrub controls are out of scope
+//! (defer to a future row that wants them — see
+//! `sim_bevy_soft::trajectory::step_replay` docs).
 //!
 //! Row 12 sets the `CF_VISUAL=1` convention for sim-bevy-soft consumers
 //! (rows 13 / 14 / 18 inherit). Documented in `examples/EXAMPLES.md`.
@@ -125,9 +135,10 @@
 //! - **`contact_engagement`** — at least one step `k ∈ [0, N_STEPS / 4]`
 //!   has the sphere bottom in the contact band (`min_z(frame[k]) < D_HAT`).
 //!   Catches a sphere-flying-sideways or gravity-magnitude regression that
-//!   wouldn't trip the energy gate. Analytic time-to-impact in pure
-//!   freefall from `RELEASE_HEIGHT` is `t_c = sqrt(2h/g) ≈ 100 ms ≈
-//!   step 100`; the `N_STEPS / 4 = 250` upper bound gives `2.5×` headroom.
+//!   wouldn't trip the energy gate. Analytic time-for-sphere-bottom-to-band
+//!   in pure freefall is `t_c = sqrt(2 (h-R-d̂) / |g|) ≈ 89 ms ≈ step 89`
+//!   (the bottom falls `RELEASE_HEIGHT - R - d̂ ≈ 3.9 cm` before crossing
+//!   into d̂); the `N_STEPS / 4 = 250` upper bound gives `~2.8×` headroom.
 //! - **`reaches_rest`** — final `|v|_max < KE_REST_THRESHOLD = 1 cm/s`
 //!   (mirrors V-5).
 //! - **`com_descended`** — final referenced-vertex mean-z `<` initial
@@ -249,10 +260,11 @@ const GRAVITY: f64 = -9.81;
 /// per step in the post-contact regime.
 const DT: f64 = 1.0e-3;
 
-/// Total step count (1000 → 1 s simulated). Time-to-impact in pure
-/// freefall from `RELEASE_HEIGHT`: `t_c = sqrt(2h/g) ≈ 0.10 s = 100 steps
-/// at dt = 1e-3 s`. Post-contact decay: `~few hundred steps`. `1000` gives
-/// `~5×` headroom on the rest gate.
+/// Total step count (1000 → 1 s simulated). Sphere-bottom-to-band
+/// freefall time `t_c = sqrt(2 (h-R-d̂) / |g|) ≈ 89 ms ≈ 89 steps`
+/// (captured `n_step_first_contact = 88`, one step early under
+/// sub-step interpolation). Post-contact decay: `~few hundred steps`.
+/// `1000` gives `~10×` headroom on the rest gate.
 const N_STEPS: usize = 1000;
 
 /// Newton iter cap (mirror V-5). Bumped from skeleton's 10 to 50 for
@@ -388,12 +400,12 @@ const COM_Z_AT_REST_REF_BITS: u64 = 0x3f86_4276_ba7d_682c;
 const COM_DESCENT_REF_BITS: u64 = 0x3fa4_08fb_eafa_3fbc;
 
 /// First step where any referenced vertex enters the contact band `d̂`.
-/// Captured at 88. Analytic freefall time-to-impact for the sphere
-/// *bottom* (not center) is `t_c = sqrt(2 (h - R) / |g|) / dt = sqrt(2
-/// × 0.039 / 9.81) / 1e-3 ≈ 89 steps` — captured 88 sits one step early
-/// (sub-step interpolation under penalty's bounded-oscillation onset).
-/// Captures gravity-magnitude regressions distinct from the per-step
-/// energy gate.
+/// Captured at 88. Analytic freefall time for the sphere *bottom* (not
+/// center) to reach the band's upper edge: `t_c = sqrt(2 (h - R - d̂)
+/// / |g|) / dt = sqrt(2 × 0.039 / 9.81) / 1e-3 ≈ 89 steps` — captured
+/// 88 sits one step early (sub-step interpolation under penalty's
+/// bounded-oscillation onset). Captures gravity-magnitude regressions
+/// distinct from the per-step energy gate.
 const N_STEP_FIRST_CONTACT_REF: usize = 88;
 
 /// Maximum Newton iter count observed across all `N_STEPS` solver
@@ -742,7 +754,7 @@ fn verify_contact_engagement(snapshot: &DropSnapshot) {
     );
     assert!(
         snapshot.n_step_first_contact <= upper_bound,
-        "n_step_first_contact = {} exceeds upper bound {upper_bound} (= N_STEPS / 4) — sphere never reached the plane within 2.5× the analytic freefall time-to-impact (~step 100). Likely cause: gravity wiring inactive OR sphere flying sideways through plane.",
+        "n_step_first_contact = {} exceeds upper bound {upper_bound} (= N_STEPS / 4) — sphere never reached the plane within ~2.8× the analytic freefall time-to-band (~step 89, sphere-bottom). Likely cause: gravity wiring inactive OR sphere flying sideways through plane.",
         snapshot.n_step_first_contact,
     );
 }
@@ -964,14 +976,12 @@ fn setup_visual_scene(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // Orbit camera — target near rest COM (physics `(0, 0, R + D_HAT)` →
-    // Bevy `(0, R + D_HAT, 0)` under PlusZ swap), distance ~3× release for
-    // the full trajectory bbox visible.
     // Camera target = rest COM (physics `(0, 0, R+d̂)` → Bevy `(0,
     // R+d̂, 0)` under PlusZ swap), scaled into Bevy-frame meters by
-    // RENDER_SCALE. Distance = 15 m (was 15 cm); OrbitCamera defaults
-    // (min_distance = 0.1 m, near plane 0.1 m, etc.) all work at this
-    // scale.
+    // RENDER_SCALE so target lands at `(0, 1.1, 0)` Bevy (vs
+    // `(0, 0.011, 0)` at 1×). Distance = 15 m (was 15 cm); OrbitCamera
+    // defaults (min_distance = 0.1 m, near plane 0.1 m, etc.) all work
+    // at this scale.
     let target_y = (RADIUS + D_HAT) as f32 * RENDER_SCALE;
     commands.spawn((
         Camera3d::default(),

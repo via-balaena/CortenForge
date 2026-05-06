@@ -147,10 +147,13 @@ pub fn reset_replay_on_keypress(
 ///
 /// Wired by [`crate::plugin::SoftBodyVisualPlugin`] into Bevy's `Update`
 /// schedule; consumers wanting to interleave their own systems can call
-/// it directly via the `prelude` re-export. Pause / scrub / loop
-/// controls are not implemented — replay tracks `Time<Real>` directly
-/// and clamps at trajectory end. Add a custom replay-clock Resource
-/// when those controls become load-bearing.
+/// it directly via the `prelude` re-export. Replay clamps at trajectory
+/// end (no looping); reset is wired separately by
+/// [`reset_replay_on_keypress`] (KeyR clears the per-entity epoch so
+/// the next tick captures a fresh one and animates from frame 0).
+/// Pause / scrub controls are out of scope (would extend
+/// [`ReplayEpoch`] with a paused-elapsed accumulator — defer to a
+/// future row that needs them).
 ///
 /// On the first tick against an entity, the entity's [`ReplayEpoch`] is
 /// `None`; this system captures the current `Time<Real>` reading into

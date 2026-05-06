@@ -362,7 +362,7 @@ cargo run -p example-sim-soft-soft-drop-on-plane --release           # headless 
 CF_VISUAL=1 cargo run -p example-sim-soft-soft-drop-on-plane --release # + Bevy windowed replay
 ```
 
-The replay tracks `Time<Real>` at 1× wall-clock and clamps at end (no looping). Pause / scrub controls are out of scope; future rows that need them add a custom replay-clock Resource per the [`step_replay`][step-replay] docs.
+The replay clock is per-entity — a `ReplayEpoch` component captures the wall-clock at the first `step_replay` tick (so `DefaultPlugins` startup time doesn't consume playback budget) and `step_replay` thereafter computes frame index against `(now - epoch)`. Press `R` to clear all entities' epochs and replay from frame 0. Default replay rate is `1×` wall-clock; consumers can override per spawn (row 12 ships at `10×` slow-motion since its `~89 ms` freefall is blink-and-miss-it at real-time). Replay clamps at end (no looping). Pause / scrub controls are out of scope — defer to a future row per the [`step_replay`][step-replay] docs.
 
 [sbsp]: ../sim/L1/sim-bevy-soft/src/plugin.rs
 [step-replay]: ../sim/L1/sim-bevy-soft/src/trajectory.rs
