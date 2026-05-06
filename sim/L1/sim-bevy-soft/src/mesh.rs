@@ -12,8 +12,25 @@
 //! attribute with a frame's deformed positions and recomputes smooth
 //! vertex normals so PBR shading tracks the deformation rather than
 //! sticking to the rest configuration. Per-frame
-//! [`Mesh::compute_smooth_normals`] cost is negligible at expected mesh
-//! sizes (hundreds to thousands of vertices).
+//! [`Mesh::compute_area_weighted_normals`] cost is negligible at
+//! expected mesh sizes (hundreds to thousands of vertices).
+//!
+//! # Why area-weighted instead of corner-angle smoothing
+//!
+//! Bevy 0.18's [`Mesh::compute_smooth_normals`] (corner-angle weighted)
+//! has a hardcoded `EPS = f32::EPSILON` check on `(edge_a² × edge_c²)`
+//! that gates each triangle's contribution. At sim-soft's typical
+//! cell-size scale (e.g. `3 mm` for V-5 / row 12), the squared-edge
+//! product is `~8e-11` — below `f32::EPSILON ≈ 1.2e-7`, so EVERY
+//! per-vertex weight zeros out and `compute_smooth_normals` produces
+//! all-zero normals (PBR sees `NdotL = 0` everywhere → ambient-only
+//! shading regardless of light direction). [`Mesh::compute_area_weighted_normals`]
+//! uses raw cross-product magnitudes (un-normalized; magnitude = `2 ×
+//! triangle_area`) and only normalizes at the end, so the accumulator
+//! stays well above any normalization threshold at our scales. Both
+//! methods produce smooth Gouraud-shading-grade per-vertex normals;
+//! the weighting difference (corner-angle vs area) is imperceptible
+//! for fairly uniform tet-boundary triangulations.
 //!
 //! # Vertex set
 //!
@@ -41,10 +58,14 @@ use sim_soft::VertexId;
 /// - Indices: triangle list. When the swap is parity-flipping
 ///   ([`UpAxis::flips_winding`]), emits `(v0, v2, v1)` to restore CCW
 ///   front-facing; otherwise emits `(v0, v1, v2)` unchanged.
-/// - Normals: smooth, area-and-corner-angle-weighted via
-///   [`Mesh::compute_smooth_normals`] over the rest configuration. The
-///   per-frame replay path ([`apply_soft_positions`]) recomputes
-///   against each frame's deformed positions.
+/// - Normals: smooth, area-weighted via
+///   [`Mesh::compute_area_weighted_normals`] over the rest
+///   configuration. The per-frame replay path
+///   ([`apply_soft_positions`]) recomputes against each frame's
+///   deformed positions. See module-level "Why area-weighted instead of
+///   corner-angle smoothing" for the small-scale-mesh
+///   `compute_smooth_normals`-zero-out gotcha that selects this
+///   variant.
 ///
 /// `boundary_faces` is the slice returned by
 /// [`sim_soft::Mesh::boundary_faces`]; outward-CCW winding follows from
@@ -86,19 +107,19 @@ pub fn build_soft_mesh(
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, bevy_positions);
     mesh.insert_indices(Indices::U32(indices));
-    mesh.compute_smooth_normals();
+    mesh.compute_area_weighted_normals();
     mesh
 }
 
 /// Write a frame's stride-3 f64 positions into the Mesh's
 /// `ATTRIBUTE_POSITION` buffer (with the [`UpAxis`] swap), then recompute
-/// smooth vertex normals so shading tracks the deformed geometry.
+/// area-weighted vertex normals so shading tracks the deformed geometry.
 ///
 /// `frame.len()` must equal `3 * n_vertices` (vertex-major + xyz-inner DOF
 /// layout — same packing as `sim_soft::NewtonStep::x_final` per
 /// `sim/L0/soft/src/solver/mod.rs`). The Mesh must already carry an index
-/// buffer (set by [`build_soft_mesh`]) — `compute_smooth_normals` panics
-/// without one.
+/// buffer (set by [`build_soft_mesh`]) — `compute_area_weighted_normals`
+/// panics without one.
 ///
 /// Allocates a fresh `Vec<[f32; 3]>` per call. Negligible at expected
 /// mesh sizes; if a vertex count ever pushes this onto the profiler,
@@ -118,7 +139,7 @@ pub fn apply_soft_positions(mesh: &mut Mesh, frame: &[f64], up: UpAxis) {
         })
         .collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, bevy_positions);
-    mesh.compute_smooth_normals();
+    mesh.compute_area_weighted_normals();
 }
 
 #[cfg(test)]
@@ -282,5 +303,66 @@ mod tests {
         apply_soft_positions(&mut mesh, &frame, UpAxis::PlusZ);
         // Normal count tracks vertex count after recompute.
         assert_eq!(normal_count(&mesh), 4);
+    }
+
+    /// Read normals out of the mesh as `Vec<[f32; 3]>`.
+    fn read_normals(mesh: &Mesh) -> Vec<[f32; 3]> {
+        match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+            Some(VertexAttributeValues::Float32x3(values)) => values.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// **Regression test for the Bevy `compute_smooth_normals` zero-out
+    /// bug at sim-soft scales.**
+    ///
+    /// Bevy 0.18's [`Mesh::compute_smooth_normals`] (corner-angle
+    /// weighted) gates each triangle's contribution by an absolute
+    /// `f32::EPSILON ≈ 1.2e-7` check on `(edge_a² × edge_c²)`. At
+    /// sim-soft's typical cell-size scale (e.g. `3 mm` for V-5 / row
+    /// 12), the squared-edge product is `~8e-11` — below the EPS, so
+    /// every triangle's per-vertex weight zeros out and the resulting
+    /// normals are all `(0, 0, 0)`. PBR sees `NdotL = 0` everywhere
+    /// (ambient-only shading regardless of light direction).
+    ///
+    /// [`build_soft_mesh`] uses [`Mesh::compute_area_weighted_normals`]
+    /// to side-step this — area-weighted contribution is the un-normalized
+    /// cross product (magnitude `2 × triangle_area`); the accumulator
+    /// stays well above any normalization threshold at our scales.
+    ///
+    /// This test scales [`single_tet_positions`] down to `1 cm`-edge
+    /// (sim-soft's V-5 sphere radius, smaller than V-5's `3 mm` cell
+    /// size — even harsher condition than row 12) and asserts every
+    /// indexed-vertex normal has unit magnitude. Catches a regression
+    /// that would re-introduce the smooth-normals zero-out (e.g.,
+    /// swapping back to `compute_smooth_normals` for "perceived
+    /// shading quality" reasons).
+    #[test]
+    fn build_soft_mesh_normals_unit_magnitude_at_sim_soft_scales() {
+        // Tet positions scaled to ~1 cm — well below Bevy
+        // compute_smooth_normals' EPS = f32::EPSILON breakpoint.
+        let scale: f64 = 1.0e-2;
+        let positions: Vec<sim_soft::Vec3> = single_tet_positions()
+            .into_iter()
+            .map(|p| sim_soft::Vec3::new(p.x * scale, p.y * scale, p.z * scale))
+            .collect();
+        let faces = single_tet_boundary_faces();
+        let mesh = build_soft_mesh(&positions, &faces, UpAxis::PlusZ);
+
+        let normals = read_normals(&mesh);
+        let indices = read_indices(&mesh);
+        assert!(!indices.is_empty());
+
+        // Every INDEXED vertex must have a unit-length normal. Orphan
+        // vertices (none in this single-tet fixture, but kept for
+        // generality) are exempt.
+        for idx in &indices {
+            let n = normals[*idx as usize];
+            let mag = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!(
+                (mag - 1.0).abs() < 1.0e-5,
+                "indexed vertex {idx} has normal {n:?} with |n| = {mag} (expected 1.0)",
+            );
+        }
     }
 }
