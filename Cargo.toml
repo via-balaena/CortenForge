@@ -335,6 +335,7 @@ members = [
     "examples/sim-soft/concentric-lame-shells",
     "examples/sim-soft/soft-drop-on-plane",
     "examples/sim-soft/hertz-sphere-plane",
+    "examples/sim-soft/compressive-block",
 
     # Foundation (active development)
     "design/cf-geometry",

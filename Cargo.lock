@@ -4805,6 +4805,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-compressive-block"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "bevy",
+ "cf-bevy-common",
+ "mesh-io",
+ "mesh-types",
+ "serde_json",
+ "sim-bevy-soft",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-concentric-lame-shells"
 version = "1.0.0"
 dependencies = [
