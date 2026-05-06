@@ -5,8 +5,7 @@
 //! per example while remaining configurable for outliers.
 
 use bevy::prelude::*;
-
-use crate::camera::OrbitCamera;
+use cf_bevy_common::camera::OrbitCamera;
 
 /// Builder for a standard example scene (camera, lights, ground plane).
 ///

@@ -8381,6 +8381,7 @@ name = "sim-bevy"
 version = "1.0.0"
 dependencies = [
  "bevy",
+ "cf-bevy-common",
  "cf-geometry",
  "mesh-types",
  "nalgebra",

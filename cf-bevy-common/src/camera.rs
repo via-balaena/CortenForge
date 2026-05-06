@@ -81,6 +81,42 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
+    /// Construct an orbit camera with default settings (equivalent to
+    /// `OrbitCamera::default()`); typically chained with [`with_target`],
+    /// [`with_distance`], [`with_angles`] for fluent setup.
+    ///
+    /// [`with_target`]: Self::with_target
+    /// [`with_distance`]: Self::with_distance
+    /// [`with_angles`]: Self::with_angles
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the focal point the camera orbits around.
+    #[must_use]
+    pub fn with_target(mut self, target: Vec3) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// Set the initial distance, clamped to `[min_distance, max_distance]`
+    /// so the result is always inside the configured zoom range.
+    #[must_use]
+    pub fn with_distance(mut self, distance: f32) -> Self {
+        self.distance = distance.clamp(self.min_distance, self.max_distance);
+        self
+    }
+
+    /// Set the initial `(azimuth, elevation)` angles in radians; elevation
+    /// is clamped to `[min_elevation, max_elevation]` to avoid gimbal lock.
+    #[must_use]
+    pub fn with_angles(mut self, azimuth: f32, elevation: f32) -> Self {
+        self.azimuth = azimuth;
+        self.elevation = elevation.clamp(self.min_elevation, self.max_elevation);
+        self
+    }
+
     /// Frame the input AABB corner-on: camera offset by `(d, d, d)` (where
     /// `d = max(diagonal, 1.0) · 1.5`) from the AABB center, looking at
     /// the center.
@@ -240,6 +276,55 @@ mod tests {
         assert!((p.x - 5.0).abs() < 1e-5, "x = {}", p.x);
         assert!(p.y.abs() < 1e-5, "y = {}", p.y);
         assert!(p.z.abs() < 1e-5, "z = {}", p.z);
+    }
+
+    /// `new()` returns the same shape as `Default::default()` — the builder
+    /// chain pattern uses it as the entry point.
+    #[test]
+    fn new_matches_default() {
+        let n = OrbitCamera::new();
+        let d = OrbitCamera::default();
+        assert_eq!(n.target, d.target);
+        assert_eq!(n.distance, d.distance);
+        assert_eq!(n.azimuth, d.azimuth);
+        assert_eq!(n.elevation, d.elevation);
+    }
+
+    /// `with_target` overrides the focal point; other fields stay at default.
+    #[test]
+    fn with_target_sets_target() {
+        let cam = OrbitCamera::new().with_target(Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(cam.target, Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(cam.distance, OrbitCamera::default().distance);
+    }
+
+    /// `with_distance` clamps to `[min_distance, max_distance]`. Values
+    /// inside the range pass through unchanged.
+    #[test]
+    fn with_distance_clamps_to_bounds() {
+        let cam = OrbitCamera::new().with_distance(5.0);
+        assert!((cam.distance - 5.0).abs() < 1e-5);
+
+        let too_small = OrbitCamera::new().with_distance(0.0);
+        assert!((too_small.distance - too_small.min_distance).abs() < 1e-5);
+
+        let too_big = OrbitCamera::new().with_distance(1.0e9);
+        assert!((too_big.distance - too_big.max_distance).abs() < 1e-5);
+    }
+
+    /// `with_angles` sets azimuth as-is and clamps elevation to
+    /// `[min_elevation, max_elevation]`.
+    #[test]
+    fn with_angles_sets_azimuth_and_clamps_elevation() {
+        let cam = OrbitCamera::new().with_angles(0.7, 0.4);
+        assert!((cam.azimuth - 0.7).abs() < 1e-5);
+        assert!((cam.elevation - 0.4).abs() < 1e-5);
+
+        let too_high = OrbitCamera::new().with_angles(0.0, 100.0);
+        assert!((too_high.elevation - too_high.max_elevation).abs() < 1e-5);
+
+        let too_low = OrbitCamera::new().with_angles(0.0, -100.0);
+        assert!((too_low.elevation - too_low.min_elevation).abs() < 1e-5);
     }
 
     /// `framing_for_aabb` produces the corner-on view: camera offset =
