@@ -102,7 +102,7 @@
 //! Equilibrium strain `ε ≈ 0.6 %` — deep into small-strain regime
 //! where the two pure-BC bounds cleanly bracket the FEM response.
 //!
-//! Production scenes (V-1 commit 7 + V-3 commit 9 + V-4 / V-5 / V-7)
+//! Production scenes (V-1 / V-3 / V-4 / V-5 / V-7 + rows 12+13)
 //! continue to use the default `(κ, d̂)`; V-3a's override is local to
 //! this example only, never propagated upstream. `KAPPA` stays at the
 //! `PENALTY_KAPPA_DEFAULT = 1e4` value (no κ change, only `d̂`).
@@ -133,9 +133,9 @@
 //! **finest-refinement settled deformed cube** between **two visual
 //! plates** (bottom + top) — a static (single-step) scene with the
 //! HUD reading per-refinement ε, F_R_FEM, two-bound bracket, Cauchy
-//! ratio, effective modulus, and the VIZ_AMPLIFY disclosure line.
-//! Pressing `R` is a no-op (no animation to reset); orbit / zoom /
-//! pan via mouse work as in rows 12 + 13.
+//! ratio, effective modulus, `rel_pos_in_bounds_n8`, and the
+//! VIZ_AMPLIFY disclosure line. Pressing `R` is a no-op (no animation
+//! to reset); orbit / zoom / pan via mouse work as in rows 12 + 13.
 //!
 //! **The bottom plate is purely visual** — physics has no penalty
 //! contact at the bottom face; the bottom face is BC-pinned in
@@ -1785,11 +1785,16 @@ fn setup_visual_scene(
     ));
 
     // Camera framing — full-scene default per pattern (l): camera
-    // distance ≈ 3 × EDGE_LEN × RENDER_SCALE (3 m), target at cube COM
-    // (Bevy y = 0.5 · EDGE_LEN · RENDER_SCALE = 0.5 m), angles (0.4,
-    // 0.5) rad mirroring row 13's framing. The full cube + both
-    // plates fit comfortably; HUD top-left holds the asserted scalars
-    // throughout regardless of camera position.
+    // distance ≈ 3 × EDGE_LEN × RENDER_SCALE (3 m), target at the
+    // **rest** cube COM (Bevy y = 0.5 · EDGE_LEN · RENDER_SCALE = 0.5
+    // m), angles (0.4, 0.5) rad mirroring row 13's angle pair. Note
+    // the target sits ~0.15 Bevy ABOVE the amplified-deformed cube
+    // COM (≈ 0.35 m at VIZ_AMPLIFY=50 with `ε ≈ 0.6 %`); the cube
+    // appears slightly low in frame, but the full cube + both plates
+    // fit comfortably and the HUD readout makes the bound-bracket
+    // numbers visible regardless of camera position. Tracking the
+    // amplified COM would require recomputing on every VIZ_AMPLIFY
+    // change without visual-quality dividend.
     let cube_com_y = 0.5 * EDGE_LEN as f32 * RENDER_SCALE;
     let camera_distance = 3.0 * EDGE_LEN as f32 * RENDER_SCALE;
     commands.spawn((
