@@ -124,7 +124,7 @@
 //! row 13's `--release` invocation removes one variable from the
 //! determinism contract. V-3a is fast enough at finest `n=8` that
 //! debug-mode is also viable, but consistency with sister rows wins
-//! over the shave on cold-build time.
+//! over the cold-build-time savings.
 //!
 //! ## Visual-mode opt-in: `CF_VISUAL=1`
 //!
@@ -191,7 +191,11 @@
 //! - **`geometry_invariants`** — compile-time `const { assert!(...) }`
 //!   on `EDGE_LEN > 0`, `DISPLACEMENT > 0`, `MU > 0`, `LAMBDA > 0`,
 //!   `KAPPA > 0`, `D_HAT_OVERRIDE > 0`, `STATIC_DT > 0`, refinement
-//!   ordering, `MAX_NEWTON_ITER > 0`, `0 < SMALL_STRAIN_CEILING < 1`.
+//!   ordering (`n2 < n4 < n8`; `h_n2 > h_n4 > h_n8 > 0`),
+//!   `DISPLACEMENT < EDGE_LEN` (plate descends INTO not THROUGH the
+//!   cube), `MAX_NEWTON_ITER > 0`, `NEWTON_ITER_SANITY_CAP <
+//!   MAX_NEWTON_ITER`, `0 < SMALL_STRAIN_CEILING < 1`,
+//!   `0 < LAMBDA_Z_FLOOR < 1`.
 //! - **`mesh_topology_exact`** — per-refinement exact-pin
 //!   `(n_tets, n_vertices, n_loaded, n_pinned)` per the III-1
 //!   determinism contract. `n_loaded == 0` exact (V-3a-specific — no
@@ -572,8 +576,11 @@ struct ContactVertex {
     /// Final y-coordinate (m).
     y: f64,
     /// Plane signed distance: `sd = EDGE_LEN − DISPLACEMENT − z_v`.
-    /// Active when `sd < D_HAT_OVERRIDE`. V-3a expected `sd ≈ 4 μm`
-    /// at finest equilibrium for a top-face vertex.
+    /// Active when `sd < D_HAT_OVERRIDE`. V-3a expected
+    /// `sd ≈ 9.8 μm` for the average top-face vertex at finest
+    /// equilibrium (just under `D_HAT_OVERRIDE = 10 μm`); per-vertex
+    /// values vary by a few μm around the mean depending on
+    /// corner-vs-interior position.
     sd: f64,
     /// Penalty force z-component on the vertex: `force_z = κ ·
     /// (d̂_override − sd)`. Positive (rigid pushes DOWN on soft;

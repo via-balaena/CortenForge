@@ -35,7 +35,7 @@ let step = solver.replay_step(&x_prev, &v_prev, &empty_theta, cfg.dt);
 
 [inv]: ../../../sim/L0/soft/EXAMPLE_INVENTORY.md
 
-This is **row 14 of the sim-soft examples arc** — the third Tier 4 penalty-contact example, the third PR2 example row, and the third user-facing demo of `sim-bevy-soft` (under `CF_VISUAL=1`) and the first user-facing consumer of `<HandBuiltTetMesh as Mesh>::boundary_faces` (rows 12 + 13 used `SdfMeshedTetMesh`).
+This is **row 14 of the sim-soft examples arc** — the third Tier 4 penalty-contact example, the third PR2 example row, and the third user-facing demo of `sim-bevy-soft` (under `CF_VISUAL=1`). Row 14 is also the first user-facing consumer of `<HandBuiltTetMesh as Mesh>::boundary_faces`; rows 12 + 13 consumed the trait method on `SdfMeshedTetMesh`.
 
 ## Why `F_R ∈ [F_us, F_strain]` is the headline
 
@@ -74,7 +74,7 @@ Captured Cauchy ratio: `0.4296` — comfortably below `1.0`, geometric convergen
 
 ## Why `cargo run --release` only
 
-Mirrors row 13 + row 12 + V-3a fixture precedent. The IV-1 captured-bits contract is platform + build-mode-locked; matching row 13's `--release` invocation removes one variable from the determinism contract. V-3a is fast enough at finest `n=8` that debug-mode is also viable, but consistency with sister rows wins over the shave on cold-build time. Per [`feedback_release_mode_heavy_tests`][rel].
+Mirrors row 13 + row 12 + V-3a fixture precedent. The IV-1 captured-bits contract is platform + build-mode-locked; matching row 13's `--release` invocation removes one variable from the determinism contract. V-3a is fast enough at finest `n=8` that debug-mode is also viable, but consistency with sister rows wins over the cold-build-time savings. Per [`feedback_release_mode_heavy_tests`][rel].
 
 [rel]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_release_mode_heavy_tests.md
 
@@ -239,7 +239,7 @@ uv run examples/sim-soft/compressive-block/plot.py
 
 Output: `out/compressive_block.png` (F-vs-ε scatter + analytic bound lines).
 
-Per [`feedback_release_mode_heavy_tests`][rel], always `--release` for this example. Sub-second release-mode total runtime across the three refinements; debug-mode is also viable but consistency with sister rows wins over the shave on cold-build time.
+Per [`feedback_release_mode_heavy_tests`][rel], always `--release` for this example. Sub-second release-mode total runtime across the three refinements; debug-mode is also viable but consistency with sister rows wins over the cold-build-time savings.
 
 ## Cross-references
 
