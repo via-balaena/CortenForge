@@ -64,13 +64,14 @@ fn main() -> Result<()> {
 /// regime. Bevy 0.18's defaults — near plane `0.1 m`,
 /// [`OrbitCamera::framing_for_aabb`]'s internal `.max(1.0)` clamp on
 /// diagonal, AmbientLight brightness — were tuned for human-scale scenes;
-/// at sim-soft's cm-scale (e.g. row 13's 5.3 cm bbox = 52.6 mm diagonal,
-/// `2 R + 2 · margin` for the BCC mesher's bbox-margin allocation around
-/// a 1 cm sphere), the framing helper clamps diagonal up to `1.0` and
-/// places the camera 1.5 m away — geometry then renders as a single dot.
-/// Lifting the rendered scene to ~1 m diagonal puts everything safely
-/// within the defaults' working range. mesh-v1.0 examples already at
-/// meter scale get `render_scale = 1.0` (no change).
+/// at sim-soft's cm-scale (e.g. row 13's 52.6 mm bbox diagonal — the
+/// BCC mesher allocates a cube of side `2 (R + margin)` around the
+/// 1 cm sphere, with margin scaling per cell-size), the framing helper
+/// clamps diagonal up to `1.0` and places the camera 1.5 m away —
+/// geometry then renders as a single dot. Lifting the rendered scene to
+/// ~1 m diagonal puts everything safely within the defaults' working
+/// range. mesh-v1.0 examples already at meter scale get
+/// `render_scale = 1.0` (no change).
 ///
 /// Banked at sim-soft EXAMPLE_INVENTORY iter-12 as the cf-view application
 /// of inventory iter-11 pattern (b) (RENDER_SCALE-as-rendering-pipeline-
@@ -110,8 +111,10 @@ fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
 /// The orbit camera frames the **rendered** AABB (raw mesh AABB scaled by
 /// [`RenderScale`]) — at native scale for meter+ meshes, lifted to ~1 m
 /// for sub-meter meshes. See [`RenderScale`] for the policy.
-#[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
+// f64 → f32 is intentional for Bevy
+#[allow(clippy::cast_possible_truncation)]
+// Bevy systems take resources by value (Res / ResMut / Query / Commands).
+#[allow(clippy::needless_pass_by_value)]
 fn setup_scene(
     mut commands: Commands,
     input: Res<ViewerInput>,

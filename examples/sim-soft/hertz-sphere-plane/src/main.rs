@@ -264,9 +264,12 @@ const MU: f64 = 2.0e5;
 const LAMBDA: f64 = 8.0e5;
 
 /// Coarsest cell size — V-3 mirror. At `R = 1 cm` BCC sphere gives
-/// ~few thousand tets; in the single-vertex / transition regime
-/// (`h ≈ sqrt(2R · F/κ) ≈ 3 mm`), `rel_err` is high — establishes the
-/// monotonic-convergence baseline.
+/// ~few thousand tets; sits **just below the multi-vertex threshold**
+/// (`3.0 mm < 3.16 mm = sqrt(2R · F/κ)`, within 5% of the boundary)
+/// — the threshold formula is the SUFFICIENT condition for multi-vertex
+/// engagement, and at this edge the regime is single-vertex empirically
+/// (`n_active = 1`). 100% rel-err vs `a_Hertz` is expected; establishes
+/// the monotonic-convergence baseline.
 const CELL_SIZE_H: f64 = 3.0e-3;
 
 /// Mid refinement — V-3 mirror. Below the multi-vertex threshold
