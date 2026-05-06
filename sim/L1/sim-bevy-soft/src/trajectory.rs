@@ -39,6 +39,8 @@
 //! to migrate around.
 
 use bevy::asset::Assets;
+use bevy::input::ButtonInput;
+use bevy::input::keyboard::KeyCode;
 use bevy::mesh::{Mesh, Mesh3d};
 use bevy::prelude::{Component, Query, Res, ResMut};
 use cf_bevy_common::axis::UpAxis;
@@ -109,6 +111,35 @@ impl Trajectory {
     }
 }
 
+/// Bevy system: on `KeyR` press, clear every entity's [`ReplayEpoch`] so
+/// the next [`step_replay`] tick captures a fresh epoch and the
+/// trajectory animates from frame 0 again.
+///
+/// Wired by [`crate::plugin::SoftBodyVisualPlugin`] into Bevy's `Update`
+/// schedule, ordered `.before(step_replay)` so the reset takes effect
+/// on the same frame the key is pressed (no one-frame stale-end-state
+/// glitch). Reads keyboard via the standard [`ButtonInput<KeyCode>`]
+/// resource populated by Bevy's `InputPlugin` (part of `DefaultPlugins`);
+/// consumers running with `MinimalPlugins` would need to add
+/// `InputPlugin` themselves for the system to receive events.
+///
+/// `KeyR` was chosen because the orbit camera ([`cf_bevy_common::camera::OrbitCameraPlugin`])
+/// is mouse-only — there is no keybind conflict. Pause / scrub are
+/// out of scope (defer to a future row that needs them; pause requires
+/// a mutable elapsed-accumulator on `ReplayEpoch`, more invasive than
+/// reset's `set epoch to None`).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
+pub fn reset_replay_on_keypress(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut ReplayEpoch>,
+) {
+    if keys.just_pressed(KeyCode::KeyR) {
+        for mut epoch in &mut query {
+            epoch.epoch_secs = None;
+        }
+    }
+}
+
 /// Bevy system: per-soft-body-entity, advance the frame index under the
 /// per-entity epoch-relative `Time<Real>` reading and update the
 /// entity's `Mesh3d` POSITION + NORMAL attributes via
@@ -154,6 +185,10 @@ pub fn step_replay(
 
 #[cfg(test)]
 mod tests {
+    // Test code uses `.expect("entity exists")` to surface state-extraction
+    // failures loudly; the crate-level deny is for production paths.
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn three_frame_trajectory(dt: f64) -> Trajectory {
@@ -219,5 +254,62 @@ mod tests {
     fn replay_epoch_defaults_to_none() {
         let epoch = ReplayEpoch::default();
         assert!(epoch.epoch_secs.is_none());
+    }
+
+    /// `reset_replay_on_keypress` clears `epoch_secs` to `None` on KeyR
+    /// press; verified by driving the system in a minimal Bevy app and
+    /// asserting the post-press state.
+    #[test]
+    fn reset_replay_on_keypress_clears_epoch() {
+        use bevy::ecs::schedule::{IntoScheduleConfigs, Schedule};
+        use bevy::ecs::world::World;
+
+        let mut world = World::new();
+        world.init_resource::<ButtonInput<KeyCode>>();
+
+        let entity = world
+            .spawn(ReplayEpoch {
+                epoch_secs: Some(1.234),
+            })
+            .id();
+
+        // Press KeyR.
+        world
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(reset_replay_on_keypress.into_configs());
+        schedule.run(&mut world);
+
+        let epoch = world.get::<ReplayEpoch>(entity).expect("entity exists");
+        assert!(
+            epoch.epoch_secs.is_none(),
+            "KeyR press should clear epoch_secs to None",
+        );
+    }
+
+    /// Without KeyR press, `reset_replay_on_keypress` leaves the epoch
+    /// untouched.
+    #[test]
+    fn reset_replay_on_keypress_without_press_is_noop() {
+        use bevy::ecs::schedule::{IntoScheduleConfigs, Schedule};
+        use bevy::ecs::world::World;
+
+        let mut world = World::new();
+        world.init_resource::<ButtonInput<KeyCode>>();
+
+        let entity = world
+            .spawn(ReplayEpoch {
+                epoch_secs: Some(2.5),
+            })
+            .id();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(reset_replay_on_keypress.into_configs());
+        schedule.run(&mut world);
+
+        let epoch = world.get::<ReplayEpoch>(entity).expect("entity exists");
+        assert_eq!(epoch.epoch_secs, Some(2.5));
     }
 }
