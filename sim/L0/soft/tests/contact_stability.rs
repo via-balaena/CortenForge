@@ -1,21 +1,21 @@
-//! V-6 — empirical κ-ceiling stability scan.
+//! Empirical κ-ceiling stability scan.
 //!
-//! Phase 5 scope memo §1 V-6 + §8 commit 10 (`phase_5_penalty_contact_scope.md`).
-//! Documents the empirically-determined `κ_pen` ceiling above which Newton
-//! diverges for a representative contact-active scene at the Phase-5 dev
-//! machine, and verifies that the production default `PENALTY_KAPPA_DEFAULT
-//! = 1e4 N/m` sits at least one order of magnitude below the ceiling.
+//! Documents the empirically-determined `κ_pen` ceiling above which
+//! Newton diverges for a representative contact-active scene at the
+//! dev machine, and verifies that the production default
+//! `PENALTY_KAPPA_DEFAULT = 1e4 N/m` sits at least one order of
+//! magnitude below the ceiling.
 //!
-//! ## Material plan change vs scope memo §1 V-6
+//! ## Plan change — proxy gate vs Hessian condition-number
 //!
-//! Scope memo §1 V-6 prescribes a Hessian condition-number gate
-//! (`cond < 1e10` at every Newton iter for V-3 / V-3a / V-5 scenes).
+//! The original spec prescribed a Hessian condition-number gate
+//! (`cond < 1e10` at every Newton iter on the contact-active scenes).
 //! `CpuNewtonSolver` does not expose tangent eigenvalues today —
 //! adding eigenvalue extraction is non-trivial plumbing (faer's
 //! `SymbolicLlt` doesn't surface a condition-number estimate; a
-//! separate eigensolver call is needed) and lives outside Phase 5's
-//! "first-time wiring" axis. Instead V-6 ships an **empirical
-//! Newton-convergence + monotonic-residual proxy gate**:
+//! separate eigensolver call is needed) and lives outside this
+//! crate's "first-time wiring" axis. Instead this fixture ships an
+//! **empirical Newton-convergence + monotonic-residual proxy gate**:
 //!
 //! - Run a single quasi-static Newton step at each `κ` in a logarithmic
 //!   scan from `1e3` to `1e7` against a fixed reference scene.
@@ -31,44 +31,45 @@
 //!
 //! Phase H IPC tightens this to a proper condition-number gate when the
 //! solver gains tangent-eigenvalue instrumentation; the proxy gate here
-//! is a Phase 5 hygiene posture, not a substitute for the long-term
+//! is a hygiene posture, not a substitute for the long-term
 //! observability story.
 //!
-//! ## Scene choice — V-3a override regime
+//! ## Scene choice — compressive-block override regime
 //!
-//! V-6 runs the scan against the V-3a compressive-block scene at its
-//! commit-8 working override regime (`d̂ = 1e-5 m`, `δ = 5e-5 m`,
-//! `n_per_edge = 4`). Two reasons:
+//! The scan runs against the compressive-block scene at its working
+//! override regime (`d̂ = 1e-5 m`, `δ = 5e-5 m`, `n_per_edge = 4`).
+//! Two reasons:
 //!
 //! 1. **Cheapest contact-active scene** — quasi-static Newton on a
 //!    `~384`-tet cube at `STATIC_DT = 1.0` converges in `~3-5` iters
 //!    release-mode in `~25 ms`. A 5-point `κ` scan completes in well
 //!    under a second per `feedback_release_mode_heavy_tests`.
-//! 2. **Well-understood failure regime** — V-3a commit-8 surfaced
-//!    cold-start tet inversion at `(κ = 1e4, d̂ = 1e-3, δ = 5e-4)`
-//!    where `κ · (d̂ + δ) ≈ 15 N` per top-face vertex. The override
-//!    `(d̂, δ)` keeps cold-start residual `κ · (d̂ + δ) ≈ κ · 6e-5 N`
-//!    per vertex; ceiling onset is dominated by `κ · (d̂ + δ)`
-//!    reaching a tet-inversion threshold scaled by element stiffness
-//!    `E·h`. At `μ = 1e5, λ = 4e5, E ≈ 2.8e5 Pa, h = EDGE_LEN/n =
-//!    2.5 mm`, that threshold scale is `~E·h ≈ 700 N/m`. Empirically
-//!    the ceiling sits between `1e7` and `1e8 N/m` at this scene
-//!    (`κ ≤ 1e7` converges in 3 Newton iters; `κ ≥ 1e8` Armijo-stalls).
+//! 2. **Well-understood failure regime** — the compressive-block
+//!    fixture surfaced cold-start tet inversion at `(κ = 1e4,
+//!    d̂ = 1e-3, δ = 5e-4)` where `κ · (d̂ + δ) ≈ 15 N` per top-face
+//!    vertex. The override `(d̂, δ)` keeps cold-start residual
+//!    `κ · (d̂ + δ) ≈ κ · 6e-5 N` per vertex; ceiling onset is
+//!    dominated by `κ · (d̂ + δ)` reaching a tet-inversion threshold
+//!    scaled by element stiffness `E·h`. At `μ = 1e5, λ = 4e5,
+//!    E ≈ 2.8e5 Pa, h = EDGE_LEN/n = 2.5 mm`, that threshold scale
+//!    is `~E·h ≈ 700 N/m`. Empirically the ceiling sits between
+//!    `1e7` and `1e8 N/m` at this scene (`κ ≤ 1e7` converges in 3
+//!    Newton iters; `κ ≥ 1e8` Armijo-stalls).
 //!
-//! V-3 `sphere_on_plane` and V-5 `dropping_sphere` are also scope-memo-
-//! named V-6 targets, but at `~22 s` (V-5) and `~7 s` (V-3 coarsest)
-//! per scan point they would push V-6 into the multi-minute regime
-//! without diagnostic gain. The V-3a-only choice is documented here
-//! and is consistent with the proxy framing.
+//! The sphere-on-plane and dropping-sphere scenes also exercise contact
+//! but at `~22 s` (drop) and `~7 s` (sphere coarsest) per scan point
+//! they would push this fixture into the multi-minute regime without
+//! diagnostic gain. The block-only choice is documented here and is
+//! consistent with the proxy framing.
 //!
 //! ## Headroom assertion
 //!
-//! The scope memo's load-bearing claim is *"default κ stays one order of
-//! magnitude below the ceiling."* V-6 asserts this directly by walking
+//! The load-bearing claim is *"default κ stays one order of magnitude
+//! below the ceiling."* This fixture asserts that directly by walking
 //! the κ scan and pinning `highest_converged_kappa ≥ 10 × κ_default`.
-//! Failure here surfaces a `(κ_default, h, material)` retune as a
-//! Decision-J adjustment (the same authority that allowed V-3a's `d̂`
-//! override and V-3's local `κ` override).
+//! Failure surfaces a `(κ_default, h, material)` retune as a local
+//! override (the same authority that allowed the compressive-block's
+//! `d̂` override and the Hertzian fixture's local `κ` override).
 
 #![allow(
     // Helper destructures a 4-tuple (no Result); `expect_used` left
@@ -103,16 +104,16 @@ const KAPPA_DEFAULT: f64 = 1.0e4;
 
 /// Logarithmic κ scan from `1e3` to `1e10` (one OOM steps). Eight
 /// points spans seven decades around the production default to
-/// bracket the empirical ceiling at the V-3a regime per the module
-/// docstring "Scene choice" section. Empirical result at the Phase-5
-/// dev machine: `1e3..=1e7` all converge in 3 Newton iters; `1e8..=1e10`
-/// Armijo-stall, locating the ceiling at exactly `κ = 1e7`. Production
-/// default `κ = 1e4` therefore sits 1000× (3 OOM) below ceiling — well
-/// past the scope memo's 10× headroom requirement.
+/// bracket the empirical ceiling in the compressive-block regime —
+/// see module docstring "Scene choice" section. Empirical result on
+/// the dev machine: `1e3..=1e7` all converge in 3 Newton iters;
+/// `1e8..=1e10` Armijo-stall, locating the ceiling at exactly
+/// `κ = 1e7`. Production default `κ = 1e4` therefore sits 1000×
+/// (3 OOM) below ceiling — well past the 10× headroom requirement.
 const KAPPA_SCAN: &[f64] = &[1.0e3, 1.0e4, 1.0e5, 1.0e6, 1.0e7, 1.0e8, 1.0e9, 1.0e10];
 
-/// Required ceiling-headroom multiplier — scope memo §1 V-6's *"default
-/// κ stays one order of magnitude below the ceiling"*. Asserted as
+/// Required ceiling-headroom multiplier — *"default κ stays one order
+/// of magnitude below the ceiling"*. Asserted as
 /// `highest_converged_kappa >= HEADROOM_MULTIPLIER · KAPPA_DEFAULT`.
 const HEADROOM_MULTIPLIER: f64 = 10.0;
 

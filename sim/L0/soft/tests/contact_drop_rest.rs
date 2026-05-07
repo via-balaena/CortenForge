@@ -1,21 +1,19 @@
-//! V-5 — drop-and-rest hygiene: soft sphere released above a rigid plane,
+//! Drop-and-rest hygiene: soft sphere released above a rigid plane,
 //! integrated under gravity until kinetic energy below threshold.
 //!
-//! Phase 5 scope memo §1 V-5 + §8 commit 10 (`phase_5_penalty_contact_scope.md`).
-//! First Phase 5 test that exercises **dynamic** integration with gravity —
-//! V-1 / V-3a / V-3 are quasi-static (`STATIC_DT = 1.0`), V-5 is dt-resolved
-//! transient. The gravity wiring (`SolverConfig::gravity_z`) introduced in
-//! commit 10 is exercised end-to-end here for the first time.
+//! First test that exercises **dynamic** integration with gravity — the
+//! contact-passthrough / compressive-block / Hertzian gates are
+//! quasi-static (`STATIC_DT = 1.0`), this fixture is dt-resolved
+//! transient. `SolverConfig::gravity_z` is exercised end-to-end here.
 //!
-//! ## What V-5 catches
+//! ## What this catches
 //!
-//! Per scope memo §1 V-5: "Soft sphere released above a `RigidPlane`, gravity
-//! loaded, integrated for `n_steps` until kinetic energy `< ε_KE_threshold`.
-//! Steady state reached within documented step count. ... No energy
-//! *injection* — total energy at any step is bounded above by initial
-//! potential + work done by external loads. Penalty's known oscillation
-//! pathology (book §00 §00) is permitted as a documented behavior; not a
-//! failure."
+//! Soft sphere released above a `RigidPlane`, gravity-loaded, integrated
+//! for `n_steps` until kinetic energy `< ε_KE_threshold`: steady state
+//! reached within documented step count, no energy *injection* (total
+//! energy at any step bounded above by initial potential + work done
+//! by external loads). Penalty's known oscillation pathology (book
+//! §00 §00) is permitted as documented behavior, not a failure.
 //!
 //! Three properties asserted, each isolating a distinct failure mode:
 //!
@@ -57,7 +55,7 @@
 //! Penalty oscillation period at this `(κ, m_v)`: `2π / ω ≈ 1.7e-4 s ≈
 //! 0.17 ms`, i.e., `dt / T ≈ 5.8` oscillation periods per integrator
 //! step — gross dynamics captured, fine penalty-oscillation structure
-//! unresolved (and per scope memo "permitted as a documented behavior").
+//! unresolved (permitted as a documented behavior, not a failure).
 //!
 //! ## RB modes — auto-pin handles them
 //!
@@ -122,8 +120,7 @@ const MU: f64 = 2.0e5;
 const LAMBDA: f64 = 8.0e5;
 
 /// Gravitational acceleration along `+ẑ` (`m/s²`). Negative = downward.
-/// Earth standard `9.81 m/s²` per scope memo §1 V-5's "gravity loaded"
-/// framing.
+/// Earth standard `9.81 m/s²`.
 const GRAVITY: f64 = -9.81;
 
 /// Time step (1 ms). See module docstring "Why dt = 1e-3 s" section.
@@ -200,15 +197,15 @@ fn mean_referenced_z(x_flat: &[f64], referenced: &[VertexId]) -> f64 {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 // Release-mode-only gate per `feedback_release_mode_heavy_tests` and the
-// V-3 commit-9 precedent. V-5 runtime is ~22 s release-mode at the
-// canonical (CELL_SIZE = 3 mm, N_STEPS = 1000) parameters; debug-mode
-// inflation at this resolution would push runtime into the multi-minute
-// range, against the CI 30-min total budget per scope memo §4. The
-// `#[cfg_attr(debug_assertions, ignore)]` pattern mirrors
-// `hertz_sphere_plane.rs:621-625`. Like V-3, sim-soft is NOT in the CI
-// tests-release matrix today; CI followup to add `cargo test --release
-// -p sim-soft --test contact_drop_rest` to `quality-gate.yml`'s tests-
-// release job is deferred to commit 11 alongside the V-3 followup.
+// Mirrors the Hertzian fixture's release-only pattern. Runtime is ~22 s
+// release-mode at the canonical (CELL_SIZE = 3 mm, N_STEPS = 1000)
+// parameters; debug-mode inflation at this resolution would push
+// runtime into the multi-minute range, against the CI 30-min total
+// budget. The `#[cfg_attr(debug_assertions, ignore)]` pattern mirrors
+// `hertz_sphere_plane.rs`. sim-soft is NOT in the CI tests-release
+// matrix today; CI followup to add `cargo test --release -p sim-soft
+// --test contact_drop_rest` to `quality-gate.yml`'s tests-release job
+// is a separate platform-infra deferral.
 #[cfg_attr(
     debug_assertions,
     ignore = "release-only — heavy drop-and-rest at 1000 steps × dynamic Newton (~22 s release, \

@@ -1,11 +1,11 @@
-//! V-7 — penalty contact differentiability hook: FD-self-consistency
-//! of `∂F_R/∂κ_pen` in the robustly-in-contact band.
+//! Penalty contact differentiability hook: FD-self-consistency of
+//! `∂F_R/∂κ_pen` in the robustly-in-contact band.
 //!
-//! Phase 5 scope memo §1 V-7 + §8 commit 11. **Forward-looking
-//! differentiability hook** — sets up Part 6 / Part 10 differentiable
-//! design with contact parameters; does not pretend penalty is
-//! differentiable across the active-set boundary. Phase H IPC removes
-//! this restriction structurally via the logarithmic barrier.
+//! **Forward-looking differentiability hook** — sets up Part 6 / Part
+//! 10 differentiable design with contact parameters; does not pretend
+//! penalty is differentiable across the active-set boundary. Phase H
+//! IPC removes this restriction structurally via the logarithmic
+//! barrier.
 //!
 //! ## Why this gate
 //!
@@ -26,9 +26,9 @@
 //! ## Reward functional choice
 //!
 //! Scalar `reward(κ_pen) = F_R` — total reaction force on the rigid
-//! plane at converged steady-state of the V-3a override compressive-
-//! block scene. Newton's 3rd-law partner of the penalty force on the
-//! top face. Reconstructed manually from `x_final` + `κ` + `d̂` (per
+//! plane at converged steady-state of the override compressive-block
+//! scene. Newton's 3rd-law partner of the penalty force on the top
+//! face. Reconstructed manually from `x_final` + `κ` + `d̂` (per
 //! [`penalty_compressive_block.rs`] precedent — `PenaltyRigidContact`
 //! moves into the solver at construction so `contact.gradient(...)`
 //! post-step is unreachable).
@@ -52,15 +52,15 @@
 //! κ — the Newton Hessian factor `A` cached at convergence contracted
 //! against `∂r/∂κ`, mirroring Part 6 §02's adjoint formula for
 //! θ-driven parameters. That plumbing is Part 6 / Phase H
-//! differentiable-design work, not Phase 5's hygiene scope (Decision
-//! K — no new γ-locked API types in Phase 5).
+//! differentiable-design work, not the current crate's hygiene scope
+//! (no new γ-locked API types here).
 //!
-//! No closed-form for `F_R(κ)` exists at V-3a's mixed BC (commit-8
-//! deviation 1: bottom full-pin / sides free / top z-pressed has no
-//! clean analytic). The "FD-vs-analytic" framing in scope memo §1 V-7
-//! maps to "FD demonstrates the gradient is well-defined" — the same
+//! No closed-form for `F_R(κ)` exists at the compressive block's
+//! mixed BC (bottom full-pin / sides free / top z-pressed has no
+//! clean analytic). The "FD-vs-analytic" framing maps to "FD
+//! demonstrates the gradient is well-defined" — the same
 //! interpretation IV-8 took, where the "analytic" leg was FD-of-
-//! closed-form-Lamé. For V-7 the analytic leg is degenerate; the
+//! closed-form-Lamé. Here the analytic leg is degenerate; the
 //! self-consistency leg is load-bearing.
 //!
 //! ## Robustly-in-contact band condition
@@ -159,15 +159,16 @@ const N_PER_EDGE: usize = 4;
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0e5;
 
-/// Base penalty stiffness — `PENALTY_KAPPA_DEFAULT` per scope memo
-/// Decision J's V-may-tune authority (V-3a tunes only `d̂` and `δ`; `κ`
-/// stays at default). FD perturbations probe `∂F_R/∂κ` at this base.
+/// Base penalty stiffness — `PENALTY_KAPPA_DEFAULT` (the compressive
+/// block tunes only `d̂` and `δ`; `κ` stays at default). FD
+/// perturbations probe `∂F_R/∂κ` at this base.
 const KAPPA_BASE: f64 = 1.0e4;
 
-/// V-3a-local penalty contact band — 100× smaller than default per
-/// commit-8 deviation 2. Brings cold-start residual `κ · (d̂ + δ) ≈ 0.6`
-/// N per top-face vertex below the tet-inversion threshold; preserves
-/// V-3a regime safety at every perturbed `κ` config V-7 evaluates.
+/// Compressive-block-style penalty contact band — 100× smaller than
+/// default. Brings cold-start residual `κ · (d̂ + δ) ≈ 0.6` N per
+/// top-face vertex below the tet-inversion threshold; preserves the
+/// block-fixture's regime safety at every perturbed `κ` config this
+/// fixture evaluates.
 const D_HAT_OVERRIDE: f64 = 1.0e-5;
 
 /// Static-equilibrium time-step — large `dt` damps the inertial Tikhonov
@@ -189,8 +190,8 @@ const FD_H_REL_COARSE: f64 = 1.0e-3;
 const FD_H_REL_FINE: f64 = 1.0e-4;
 
 /// 5-digit relative-error bar — pairwise FD agreement at the two step
-/// sizes per scope memo §1 V-7 ("agrees to 5-digit relative-error
-/// bar"). Mirrors IV-8 + V-2 commit 4 verbatim.
+/// sizes ("agrees to 5-digit relative-error bar"). Mirrors IV-8 +
+/// `tests/contact_unit.rs` + `tests/contact_fd.rs` verbatim.
 const FD_SELF_CONSISTENCY_BAR: f64 = 1.0e-5;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -342,7 +343,7 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
 
     // ── Robustly-in-contact band condition at every active pair ─────────
     //
-    // Per scope memo §1 V-7: every active pair has `d < d̂ - 2 ε_FD-position`,
+    // Every active pair must satisfy `d < d̂ - 2 ε_FD-position`,
     // where ε_FD-position ≈ h · d̂ / κ via linearization of the implicit-
     // x-vs-κ map (see module docstring "Robustly-in-contact band
     // condition" section). At `h_coarse = 10` N/m, `D_HAT_OVERRIDE = 1e-5`
@@ -408,7 +409,7 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
 
     // ── FD self-consistency at the 5-digit bar ──────────────────────────
     //
-    // Per scope memo §1 V-7: "FD-stable" means the gradient is well-
+    // "FD-stable" means the gradient is well-
     // defined at the perturbation scales the eventual reverse-mode
     // adjoint will consume. Two FD samples at h_rel ∈ {1e-3, 1e-4} sit
     // above the optimal h ≈ ε_f64^(1/3) · |κ| ≈ 6e-2 in the truncation-

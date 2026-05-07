@@ -265,7 +265,6 @@ Per [`feedback_release_mode_heavy_tests`][rel], always `--release` for this exam
 - **`sim-bevy-soft`**: `sim/L1/sim-bevy-soft/` — Bevy soft-body trajectory replay (single-frame trajectory at row 18 makes this a static-state render). Row 18 is its fourth consumer after rows 12 + 13 + 14.
 - **`cf-bevy-common`**: `cf-bevy-common/` — shared Bevy 0.18 helpers (`UpAxis`, `OrbitCamera` + `OrbitCameraPlugin`).
 - **VIEWER_DESIGN.md**: `docs/VIEWER_DESIGN.md` — cf-view static-artifact viewer the headless PLY targets.
-- **Phase 5 scope memo**: `sim/docs/todo/phase_5_penalty_contact_scope.md` — V-3a spec.
 - **Book reference**: Part 4 §00 §00 ("Penalty contact pathology and validation scope") + future calibration-loop chapter (Fork B). Row 18 is the **regression-test artifact** for the per-pair readout surface — the public API row 20's silicone-device E2E will consume to read out per-pair contact forces against a scan-derived `MeshSdf` rigid primitive (no axis-aligned-plane closed-form available).
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md),

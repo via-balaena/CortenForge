@@ -300,11 +300,11 @@ impl SoftScene {
         Ok((mesh, bc, initial, theta))
     }
 
-    /// V-3a compressive-block-on-plane scene — uniform-material soft
-    /// cube compressed by a rigid plane displaced into its top face.
+    /// Compressive-block-on-plane scene — uniform-material soft cube
+    /// compressed by a rigid plane displaced into its top face.
     ///
-    /// Phase 5 commit 6 scaffolding for the V-3a invariant gate (commit
-    /// 8) per `phase_5_penalty_contact_scope.md` §1 V-3a.
+    /// Scene helper for `tests/penalty_compressive_block.rs` (cube
+    /// compression two-bound bracket plus Cauchy-ratio gate).
     ///
     /// # Geometry
     ///
@@ -327,18 +327,17 @@ impl SoftScene {
     ///
     /// **Single bottom-corner-vertex x/y pin** removes the residual
     /// rigid-body modes (lateral translation + rotation about ẑ).
-    /// Phase 5 [`BoundaryConditions`] only models full-vertex Dirichlet
-    /// pin — there's no per-DOF pin granularity; the full corner
-    /// vertex is pinned in xyz. The remaining bottom-face vertices'
-    /// z-DOFs are not modeled either (BC has no z-only flag); the
-    /// nearest representable approximation is to also full-pin the
-    /// bottom face. **This helper does that** — full-pins every
-    /// bottom-face vertex, accepting the constrained-modulus
-    /// approximation as a Phase-5-known limitation. V-3a (commit 8)
-    /// will document this in its analytic-comparison error budget;
-    /// upgrading [`BoundaryConditions`] to per-DOF pin granularity
-    /// is a future-phase plumbing decision (no Phase 5 scope memo
-    /// commitment).
+    /// [`BoundaryConditions`] only models full-vertex Dirichlet pin —
+    /// there's no per-DOF pin granularity; the full corner vertex is
+    /// pinned in xyz. The remaining bottom-face vertices' z-DOFs are
+    /// not modeled either (BC has no z-only flag); the nearest
+    /// representable approximation is to also full-pin the bottom
+    /// face. **This helper does that** — full-pins every bottom-face
+    /// vertex, accepting the constrained-modulus approximation as a
+    /// known limitation. The compressive-block fixture documents this
+    /// in its analytic-comparison error budget; upgrading
+    /// [`BoundaryConditions`] to per-DOF pin granularity is a
+    /// future-phase plumbing decision.
     ///
     /// # Contact
     ///
@@ -453,12 +452,12 @@ impl SoftScene {
         (mesh, bc, initial, contact)
     }
 
-    /// V-3 sphere-on-plane scene — soft sphere pressed onto a rigid
-    /// plane by an axial force, applied through a top-of-sphere
-    /// loaded-vertex band.
+    /// Sphere-on-plane scene — soft sphere pressed onto a rigid plane
+    /// by an axial force, applied through a top-of-sphere loaded-vertex
+    /// band.
     ///
-    /// Phase 5 commit 6 scaffolding for the V-3 Hertzian gate (commit
-    /// 9) per `phase_5_penalty_contact_scope.md` §1 V-3.
+    /// Scene helper for `tests/hertz_sphere_plane.rs` (Hertzian
+    /// quasi-static contact gate against the closed-form a/δ analytic).
     ///
     /// # Geometry
     ///
@@ -697,11 +696,12 @@ impl SoftScene {
         Ok((mesh, bc, initial, contact, theta))
     }
 
-    /// V-5 dropping-sphere scene — soft sphere released above a rigid
+    /// Dropping-sphere scene — soft sphere released above a rigid
     /// plane, freely falling under gravity in the dynamic regime.
     ///
-    /// Phase 5 commit 6 scaffolding for the V-5 hygiene gate (commit
-    /// 10) per `phase_5_penalty_contact_scope.md` §1 V-5.
+    /// Scene helper for `tests/contact_drop_rest.rs` (drop-and-rest
+    /// gravity hygiene: per-step energy bound, no `NaN`, reaches rest
+    /// within budget, sphere descended).
     ///
     /// # Geometry
     ///

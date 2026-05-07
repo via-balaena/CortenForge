@@ -1,25 +1,26 @@
-//! V-4 — non-interpenetration to documented penalty tolerance.
+//! Non-interpenetration to documented penalty tolerance.
 //!
-//! Phase 5 scope memo §1 V-4 + §8 commit 10 (`phase_5_penalty_contact_scope.md`).
-//! At converged steady-state of any V-3a / V-3 / V-5 scene, every soft vertex
-//! satisfies `signed_distance ≥ -δ_pen` for the documented penalty tolerance
-//! `δ_pen = F_max / κ_pen`. Penalty cannot enforce zero overlap (book §00 §00
-//! cited); V-4 is the gate documenting what penalty *can* enforce — bounded
-//! overlap.
+//! At converged steady-state of any contact-active scene
+//! (compressive block, Hertzian sphere, drop-and-rest), every soft
+//! vertex satisfies `signed_distance ≥ -δ_pen` for the documented
+//! penalty tolerance `δ_pen = F_max / κ_pen`. Penalty cannot enforce
+//! zero overlap (book §00 §00 cited); this fixture is the gate
+//! documenting what penalty *can* enforce — bounded overlap.
 //!
-//! ## Why V-4 matters
+//! ## Why this matters
 //!
-//! V-3a / V-3 / V-5 each verify a *different* scientific property:
-//! V-3a force-pumping correctness, V-3 Hertz contact-patch geometry, V-5
-//! drop-and-rest dynamics under gravity. None of them directly checks the
-//! non-penetration property the book §00 §00 explicitly names as penalty's
-//! structural failure mode. V-4 fills that gap with a unified all-vertex
-//! signed-distance walk against each scene's converged state.
+//! The compressive-block / Hertzian / drop-and-rest fixtures each
+//! verify a *different* scientific property: force-pumping correctness,
+//! Hertz contact-patch geometry, drop-and-rest dynamics under gravity.
+//! None of them directly checks the non-penetration property the book
+//! §00 §00 explicitly names as penalty's structural failure mode. This
+//! fixture fills that gap with a unified all-vertex signed-distance
+//! walk against each scene's converged state.
 //!
 //! ## `δ_pen` formula and scene-specific values
 //!
-//! Per scope memo §1 V-4: `δ_pen = F_max / κ_pen` is the single-vertex
-//! worst-case penalty overlap tolerance — derived from the equilibrium
+//! `δ_pen = F_max / κ_pen` is the single-vertex worst-case penalty
+//! overlap tolerance — derived from the equilibrium
 //! force balance `κ · pen_v = F_v` where a single active vertex bears
 //! the entire applied load. In practice multi-vertex contact distributes
 //! the load (`pen_v ≈ F / (κ · N_active)` per active vertex) and actual
@@ -52,13 +53,14 @@
 //! every referenced vertex at converged `x_final` to assert
 //! `signed_distance ≥ -δ_pen`.
 //!
-//! ## Why V-4 doesn't co-locate with V-3a / V-3 / V-5
+//! ## Why this doesn't co-locate with the contact-active fixtures
 //!
-//! Per scope memo §0 site table, V-4 lives at `tests/non_interpenetration.rs`
-//! as a stand-alone file. Co-locating non-penetration assertions inside
-//! V-3a / V-3 / V-5 would couple the gates — a V-3a force-pumping
-//! regression would mask a V-4 non-penetration regression and vice versa.
-//! Keeping V-4 separate isolates failure modes for diagnosis.
+//! Non-penetration lives in this stand-alone file rather than as
+//! assertions tacked onto the compressive-block / Hertzian /
+//! drop-and-rest fixtures. Co-locating would couple the gates — a
+//! force-pumping regression would mask a non-penetration regression
+//! and vice versa. Keeping them separate isolates failure modes for
+//! diagnosis.
 
 #![allow(
     // Helpers return `Result<tuple, MeshingError>`; `expect_used` is
@@ -88,13 +90,13 @@ mod v_3a {
     pub const D_HAT_OVERRIDE: f64 = 1.0e-5;
     pub const STATIC_DT: f64 = 1.0;
     pub const MAX_NEWTON_ITER: usize = 50;
-    /// Refinement: `n = 4` mid-level (matches V-3a commit-8's middle
-    /// refinement; faster than `n = 8` for V-4's hygiene scope, finer
+    /// Refinement: `n = 4` mid-level (matches the compressive block's
+    /// middle refinement; faster than `n = 8` for hygiene scope, finer
     /// than `n = 2` for adequate vertex coverage).
     pub const N_PER_EDGE: usize = 4;
-    /// Conservative `δ_pen = F_max / κ` per scope memo §1 V-4.
-    /// `F_max` per V-3a commit-8 finest-level empirical (~0.18 N at
-    /// n=8); n=4 is similar by Cauchy convergence (~0.186 N).
+    /// Conservative `δ_pen = F_max / κ`. `F_max` per the compressive
+    /// block's finest-level empirical (~0.18 N at n=8); n=4 is similar
+    /// by Cauchy convergence (~0.186 N).
     pub const F_MAX: f64 = 0.20;
     pub const DELTA_PEN: f64 = F_MAX / KAPPA;
 }
@@ -199,9 +201,9 @@ mod v_3 {
     pub const MAX_NEWTON_ITER: usize = 50;
     pub const PENALTY_DHAT: f64 = 1.0e-3;
     pub const KAPPA: f64 = 1.0e3;
-    /// Conservative `δ_pen = F / κ` per scope memo §1 V-4. Single-
-    /// vertex worst-case overlap budget; at h = 3 mm only one vertex
-    /// is typically active per V-3 commit-9 (single-pole regime),
+    /// Conservative `δ_pen = F / κ`. Single-vertex worst-case overlap
+    /// budget; at h = 3 mm only one vertex is typically active in the
+    /// Hertzian fixture's coarsest refinement (single-pole regime),
     /// equivalent to the worst-case bound.
     pub const DELTA_PEN: f64 = FORCE / KAPPA;
 }

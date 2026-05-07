@@ -1,9 +1,8 @@
-//! V-1 — `NullContact` real-zero-stub passthrough is bit-equal to
+//! `NullContact` real-zero-stub passthrough is bit-equal to the
 //! pre-Phase-5 baseline.
 //!
-//! Phase 5 scope memo §1 V-1 + §8 commit 7: post-Phase-5 code threading
-//! the new contact-dispatch hot path (commit 5's edits to
-//! `backward_euler.rs`'s `assemble_global_int_force` and
+//! Threading the contact-dispatch hot path
+//! (`backward_euler.rs`'s `assemble_global_int_force` and
 //! `assemble_free_hessian_triplets` — `self.contact.active_pairs(...)`
 //! per Newton iter + gradient/Hessian scatter via `contributions` Vecs)
 //! through every representative pre-Phase-5 invariant scene produces
@@ -18,8 +17,8 @@
 //!   baseline. Contact dispatch did not exist when IV-1 was authored —
 //!   `_contact: C` carried an underscore prefix on `CpuNewtonSolver`
 //!   and not a single `ContactModel` method was reached on any code
-//!   path (scope memo §0.5 architectural finding).
-//! - V-1 verifies that Phase 5's contact-dispatch hot path through
+//!   path.
+//! - This fixture verifies that the contact-dispatch hot path through
 //!   `NullContact`'s real zero-stubs (commit 3:
 //!   `Vec::new()` / `0.0` / `Default::default()` / `f64::INFINITY`
 //!   replacing the unreachable `unimplemented!("skeleton phase 2")`)
@@ -261,7 +260,7 @@ fn assert_x_final_bit_equal(actual: &[f64], expected_bits: &[u64], scene: &str) 
 /// Within-process determinism gate — second run's `x_final` is
 /// bit-equal to first run's. Catches non-determinism in the
 /// `active_pairs` walk + `gradient`/`hessian` `contributions` Vec
-/// allocation pattern through faer (scope memo §6 R-2 + Decision M).
+/// allocation pattern through faer.
 fn assert_x_final_runs_bit_equal(run_a: &[f64], run_b: &[f64], scene: &str) {
     assert_eq!(
         run_a.len(),
@@ -278,16 +277,16 @@ fn assert_x_final_runs_bit_equal(run_a: &[f64], run_b: &[f64], scene: &str) {
             b.to_bits(),
             "{scene}: x_final[{i}] bit drift between two within-process \
              runs — run A {:#018x} ({a:e}) vs run B {:#018x} ({b:e}). \
-             V-1's run-vs-run gate covers the dispatch-wiring tier of \
-             scope memo R-2 + Decision M (the in-impl-`active_pairs` \
-             non-determinism tier is V-3a/V-3/V-5's beat — V-1 uses \
+             This run-vs-run gate covers the dispatch-wiring tier \
+             (the in-impl-`active_pairs` non-determinism tier is \
+             penalty-active fixtures' beat — this fixture uses \
              `NullContact` whose `active_pairs` returns `Vec::new()`). \
              Faer is bit-deterministic within-process by construction \
              (`sim-soft/Cargo.toml` disables faer's rayon feature for \
-             this purpose); a run-vs-run drift here implicates Phase-5 \
-             dispatch wiring (commit 5's edits to `backward_euler.rs`'s \
-             assembly methods or any subsequent regression in the \
-             surrounding solver arithmetic), not faer.",
+             this purpose); a run-vs-run drift here implicates the \
+             contact-dispatch wiring (`backward_euler.rs`'s assembly \
+             methods or any subsequent regression in the surrounding \
+             solver arithmetic), not faer.",
             a.to_bits(),
             b.to_bits(),
         );

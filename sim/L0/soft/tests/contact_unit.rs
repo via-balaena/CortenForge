@@ -1,14 +1,13 @@
 //! Unit tests for kinematic rigid primitives — the rigid side of
-//! one-way soft↔rigid penalty contact (Phase 5 commit 1).
+//! one-way soft↔rigid penalty contact.
 //!
-//! Phase 5 ships [`RigidPlane`] only (`RigidSphere` deferred to Phase H
-//! per `phase_5_penalty_contact_scope.md` Decision B). The trait surface
-//! and its sign convention (positive outside, negative inside) is pinned
-//! here so future `RigidSphere` / `RigidBox` impls inherit the same
-//! contract; V-2 / V-3 / V-3a / V-4 / V-5 all depend on it.
+//! Currently [`RigidPlane`] only (`RigidSphere` etc. deferred). The
+//! trait surface and its sign convention (positive outside, negative
+//! inside) is pinned here so future `RigidSphere` / `RigidBox` impls
+//! inherit the same contract; every penalty-active fixture in this
+//! crate depends on it.
 //!
-//! Penalty `ContactModel` cases (V-2 unit + FD) land in this same file
-//! at commit 4.
+//! Penalty `ContactModel` unit + FD cases also land in this file.
 
 use approx::assert_relative_eq;
 use sim_soft::{
@@ -133,15 +132,13 @@ fn rigid_plane_is_send_and_sync() {
 }
 
 // =====================================================================
-// PenaltyRigidContact (V-2 unit) — Phase 5 commit 4
+// PenaltyRigidContact unit tests
 // =====================================================================
 //
-// V-2 invariant per `phase_5_penalty_contact_scope.md` §1: penalty
-// energy / gradient / Hessian unit-level + FD-consistent. This file
-// covers the unit-level cases (formula correctness, gradient
-// direction, Hessian eigenstructure, ccd_toi sentinel, active-pair
-// filtering and ordering); FD self-consistency lives in
-// `tests/contact_fd.rs`.
+// Penalty energy / gradient / Hessian at the unit level (formula
+// correctness, gradient direction, Hessian eigenstructure, ccd_toi
+// sentinel, active-pair filtering and ordering); FD self-consistency
+// against the energy lives in `tests/contact_fd.rs`.
 
 const KAPPA: f64 = 1.0e4;
 const D_HAT: f64 = 1.0e-3;
@@ -389,7 +386,7 @@ fn penalty_active_pairs_filters_by_d_hat() {
 #[test]
 fn penalty_active_pairs_deterministic_ordering() {
     // 4 vertices × 2 primitives, all active — pins the outer-vertex /
-    // inner-primitive walk per Decision M.
+    // inner-primitive walk order.
     let plane_z0 = RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
     let plane_z2 = RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 2.0 * D_HAT);
     let c = PenaltyRigidContact::with_params(vec![plane_z0, plane_z2], KAPPA, D_HAT);

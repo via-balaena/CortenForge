@@ -75,11 +75,12 @@ pub struct SolverConfig {
     pub max_line_search_backtracks: usize,
     /// Body-force gravitational acceleration along `+ẑ` (`m/s²`).
     /// Pass a negative value for "downward" gravity (e.g. `-9.81`).
-    /// Phase 5 commit 10 wiring per `phase_5_penalty_contact_scope.md` §1
-    /// V-5; scalar (not `Vec3`) form preserves [`Self::skeleton`]'s
-    /// `const fn` signature. Default `0.0` keeps the pre-Phase-5
-    /// regression net bit-equal — `assemble_external_force` short-
-    /// circuits the body-force scatter when this is exactly zero.
+    /// Wired alongside `tests/contact_drop_rest.rs` (drop-and-rest
+    /// gravity hygiene); scalar (not `Vec3`) form preserves
+    /// [`Self::skeleton`]'s `const fn` signature. Default `0.0` keeps
+    /// pre-gravity regression nets bit-equal —
+    /// `assemble_external_force` short-circuits the body-force scatter
+    /// when this is exactly zero.
     pub gravity_z: f64,
 }
 

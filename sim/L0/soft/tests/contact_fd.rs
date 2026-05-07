@@ -1,14 +1,14 @@
 //! Finite-difference vs. analytic derivative tests for
-//! [`PenaltyRigidContact`] (Phase 5 commit 4, V-2 cont.).
+//! [`PenaltyRigidContact`].
 //!
-//! Two FD checks per `phase_5_penalty_contact_scope.md` §1 V-2:
+//! Two FD checks:
 //!
 //! 1. `gradient` vs. central FD of `energy`.
 //! 2. `hessian` vs. central FD of `gradient`.
 //!
 //! Both at `H = 1.5e-8` per `material_fd.rs:21` — central FD, square
-//! root of f64 eps; relative bar `1.0e-5` per scope memo §1's
-//! "5-digit relative-error bar." The penalty energy is *exactly*
+//! root of f64 eps; relative bar `1.0e-5` (the crate's standard
+//! 5-digit relative-error bar). The penalty energy is *exactly*
 //! quadratic in position when `d < d̂` (the SDF is linear in `p` for a
 //! `RigidPlane`, so `E(p) = ½ κ (d̂ − p·n + offset)²` is a polynomial
 //! of degree 2), so the central-FD truncation error is identically

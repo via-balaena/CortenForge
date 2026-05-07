@@ -311,35 +311,33 @@ const NEWTON_ITER_SANITY_CAP: usize = 40;
 
 /// Default contact band `d̂` (m). Pinned at upstream
 /// `sim_soft::contact::penalty::PENALTY_DHAT_DEFAULT` value
-/// (`penalty.rs:62`) per Phase 5 scope memo Decision J. Re-pinned here
-/// because the upstream constant is `pub(crate)`. d̂ stays at default
-/// since the helper bakes `-(R + d̂)` into plane construction
-/// (`scene.rs:691-694`); the V-3-LOCAL override touches κ only.
+/// (`penalty.rs:62`). Re-pinned here because the upstream constant is
+/// `pub(crate)`. d̂ stays at default since the helper bakes
+/// `-(R + d̂)` into plane construction (`scene.rs:691-694`); the
+/// fixture-local override touches κ only.
 const PENALTY_DHAT: f64 = 1.0e-3;
 
-/// V-3-LOCAL penalty stiffness. **Override of**
-/// `PENALTY_KAPPA_DEFAULT = 1e4` (`penalty.rs:54`) per scope memo
-/// Decision J's V-3-may-tune authority — see V-3 fixture's "Material
-/// plan change 1" docstring for the empirical motivation. `1e3` is 10×
-/// softer than default; brings the multi-vertex contact threshold
-/// `h < sqrt(2 R · F/κ)` from `≈ 0.45 mm` (default κ + F = 100 mN) to
-/// `≈ 3.16 mm` (this κ + F = 500 mN), so all three refinement levels
-/// engage multi-vertex Hertz contact rather than single-vertex penalty
-/// equilibrium.
+/// Fixture-local penalty stiffness. **Override of**
+/// `PENALTY_KAPPA_DEFAULT = 1e4` (`penalty.rs:54`) — see the Hertzian
+/// fixture's "Material plan change 1" docstring for the empirical
+/// motivation. `1e3` is 10× softer than default; brings the
+/// multi-vertex contact threshold `h < sqrt(2 R · F/κ)` from
+/// `≈ 0.45 mm` (default κ + F = 100 mN) to `≈ 3.16 mm` (this κ + F =
+/// 500 mN), so all three refinement levels engage multi-vertex Hertz
+/// contact rather than single-vertex penalty equilibrium.
 ///
 /// **Penalty-correction bias** at this κ: `pen_avg = F/(κ·N_active) ≈
 /// 9 μm` at h/4 multi-vertex equilibrium — `~3%` bias relative to
 /// `δ_Hertz ≈ 316 μm`, well below the 20% finest-level rel-err gate.
-/// Production scenes (V-1 / V-3a / V-4 / V-5 / V-7 + row 12) continue
-/// to use the default κ; this constant only enters via
-/// [`PenaltyRigidContact::with_params`] in [`run_at_refinement`] and
-/// must NOT be propagated upstream.
+/// Other contact-active scenes continue to use the default κ; this
+/// constant only enters via [`PenaltyRigidContact::with_params`] in
+/// [`run_at_refinement`] and must NOT be propagated upstream.
 const KAPPA: f64 = 1.0e3;
 
-/// Finest-level Hertz patch-radius rel-error gate. V-3 ships at 20%
-/// (relaxed from scope memo §1 V-3's 15% on δ_FEM, since δ is
-/// structurally unreachable per "Plan change 2"). Mesh-bound; tightening
-/// to `<10%` is Phase H Tet10 + adaptive refinement work.
+/// Finest-level Hertz patch-radius rel-error gate. Ships at 20%
+/// (relaxed from the original spec's 15% on δ_FEM, since δ is
+/// structurally unreachable per "Plan change 2"). Mesh-bound;
+/// tightening to `<10%` is Phase H Tet10 + adaptive refinement work.
 const REL_ERR_GATE: f64 = 0.20;
 
 /// Hertz small-strain validity ceiling (`a / R`). Textbook Hertz
@@ -476,8 +474,8 @@ const N_ACTIVE_H_REF: usize = 1;
 /// Active-pair count at h/2. Multi-vertex regime engaged.
 const N_ACTIVE_H2_REF: usize = 5;
 
-/// Active-pair count at h/4. Matches V-3 docstring's "~45 active pairs"
-/// empirical (banked at scope memo §1 V-3 "Material plan change 2").
+/// Active-pair count at h/4. Matches the Hertzian fixture's
+/// "~45 active pairs" empirical (banked at "Material plan change 2").
 const N_ACTIVE_H4_REF: usize = 45;
 
 /// Newton iter count at h.

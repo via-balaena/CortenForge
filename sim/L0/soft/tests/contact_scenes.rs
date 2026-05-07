@@ -1,15 +1,15 @@
-//! Unit-config asserts for the Phase 5 commit 6 contact-aware scene
-//! helpers — `SoftScene::compressive_block_on_plane` (V-3a scaffold),
-//! `SoftScene::sphere_on_plane` (V-3 scaffold), `SoftScene::dropping_sphere`
-//! (V-5 scaffold). Per `phase_5_penalty_contact_scope.md` §8 commit 6
-//! gate: "new scene helpers compile + their unit-config asserts pass."
+//! Unit-config asserts for the contact-aware scene helpers —
+//! `SoftScene::compressive_block_on_plane`, `SoftScene::sphere_on_plane`,
+//! `SoftScene::dropping_sphere`.
 //!
 //! These are sanity-level configurational checks — vertex counts vs
 //! `cell_size`, BC pinned/loaded vertex counts, contact-model primitive
 //! count, plane-orientation conventions documented in each helper's
 //! docstring, initial-state tensor shape. The full physical-correctness
-//! gates (V-3a uniaxial closed-form, V-3 Hertz, V-5 drop-and-rest) live
-//! at commits 8 / 9 / 10 — not preempted here.
+//! gates live in `tests/penalty_compressive_block.rs` (uniaxial
+//! closed-form), `tests/hertz_sphere_plane.rs` (Hertzian a/δ), and
+//! `tests/contact_drop_rest.rs` (drop-and-rest hygiene) — not preempted
+//! here.
 
 #![allow(
     // Helpers' meshing return `Result<…, MeshingError>`; the canonical

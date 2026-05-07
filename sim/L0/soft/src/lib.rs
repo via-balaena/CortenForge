@@ -102,19 +102,19 @@ pub type SkeletonSolver = CpuTet4NHSolver<mesh::SingleTetMesh>;
 /// [`PenaltyRigidContact`] instead of [`NullContact`], generic over
 /// the mesh impl.
 ///
-/// Phase 5 V-* invariant tests (V-3a compressive block, V-3 Hertzian
-/// sphere↔plane, V-5 drop-and-rest) drive this flavor; walking-skeleton
-/// plus Phase 2/3/4 invariants continue to use [`CpuTet4NHSolver`]
-/// (NullContact-pinned). Both flavors live parallel through Phase 5 per
-/// `phase_5_penalty_contact_scope.md` Decision F. Penalty contact
-/// itself is a stepping stone — a future contact upgrade replaces
-/// penalty as the production baseline (the Phase-5 commit-9 BF-12
-/// amendment narrows the book's "no penalty even as a baseline"
-/// commitment to "no penalty as a *production* baseline").
+/// Penalty-active invariant tests (`tests/penalty_compressive_block.rs`,
+/// `tests/hertz_sphere_plane.rs`, `tests/contact_drop_rest.rs`) drive
+/// this flavor; walking-skeleton plus Phase 2/3/4 invariants continue
+/// to use [`CpuTet4NHSolver`] (NullContact-pinned). Both flavors live
+/// parallel: penalty is a stepping stone — a future contact upgrade
+/// replaces penalty as the production baseline (the book's "no penalty
+/// even as a baseline" commitment is narrowed to "no penalty as a
+/// *production* baseline" — see
+/// `docs/studies/soft_body_architecture/src/40-contact/00-why-ipc/00-penalty.md`).
 ///
 /// Specialize via the `Msh` parameter — e.g.,
-/// `PenaltyRigidContactSolver<HandBuiltTetMesh>` for the V-3a
+/// `PenaltyRigidContactSolver<HandBuiltTetMesh>` for the
 /// compressive-block scene, `PenaltyRigidContactSolver<SdfMeshedTetMesh>`
-/// for V-3 / V-5 sphere scenes.
+/// for sphere-on-plane / drop-and-rest scenes.
 pub type PenaltyRigidContactSolver<Msh> =
     solver::CpuNewtonSolver<element::Tet4, Msh, contact::PenaltyRigidContact, 4, 1>;

@@ -23,12 +23,12 @@ pub use rigid::RigidPlane;
 
 /// A pair of geometric primitives active under the contact model.
 ///
-/// Phase 5 ships the [`Vertex`](Self::Vertex) variant only — a soft-body
-/// vertex against a rigid primitive, the one-way coupling case per
-/// `phase_5_penalty_contact_scope.md` Decision C. Phase H IPC will add
-/// `EdgeEdge` / `VertexFace` variants for self-contact per Decision G;
-/// the single-variant enum is deliberately heavier than a struct to
-/// avoid a breaking change at that handoff.
+/// Currently the [`Vertex`](Self::Vertex) variant only — a soft-body
+/// vertex against a rigid primitive, the one-way coupling case (rigid
+/// kinematic; soft side feels the force). A future IPC upgrade will add
+/// `EdgeEdge` / `VertexFace` variants for self-contact; the
+/// single-variant enum is deliberately heavier than a struct to avoid a
+/// breaking change at that handoff.
 #[derive(Clone, Debug)]
 pub enum ContactPair {
     /// A soft-body vertex contacting a rigid primitive registered at
