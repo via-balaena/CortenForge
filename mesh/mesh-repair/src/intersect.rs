@@ -19,6 +19,12 @@
 //! assert!(result.is_clean());
 //! ```
 
+#![allow(
+    // `usize` → `u32` casts are safe at mesh sizes the crate targets:
+    // face / triangle indices fit in `u32` by mesh-types contract.
+    clippy::cast_possible_truncation
+)]
+
 use cf_geometry::Aabb;
 use hashbrown::HashSet;
 use mesh_types::{IndexedMesh, Triangle, Vector3};
@@ -33,19 +39,19 @@ pub struct SelfIntersectionResult {
     pub has_intersections: bool,
     /// Number of intersecting triangle pairs found.
     pub intersection_count: usize,
-    /// List of intersecting triangle pairs as (face_idx_a, face_idx_b).
+    /// List of intersecting triangle pairs as `(face_idx_a, face_idx_b)`.
     /// Limited to first `max_reported` pairs.
     pub intersecting_pairs: Vec<(u32, u32)>,
     /// Total faces checked.
     pub faces_checked: usize,
-    /// Whether the search was terminated early due to reaching max_reported.
+    /// Whether the search was terminated early due to reaching `max_reported`.
     pub truncated: bool,
 }
 
 impl SelfIntersectionResult {
     /// Check if the mesh is free of self-intersections.
     #[must_use]
-    pub fn is_clean(&self) -> bool {
+    pub const fn is_clean(&self) -> bool {
         !self.has_intersections
     }
 }
@@ -91,7 +97,7 @@ impl Default for IntersectionParams {
 impl IntersectionParams {
     /// Create params that check all pairs without limit.
     #[must_use]
-    pub fn exhaustive() -> Self {
+    pub const fn exhaustive() -> Self {
         Self {
             max_reported: 0,
             epsilon: 1e-10,
@@ -101,7 +107,7 @@ impl IntersectionParams {
 
     /// Create params that only check for the presence of intersections.
     #[must_use]
-    pub fn quick_check() -> Self {
+    pub const fn quick_check() -> Self {
         Self {
             max_reported: 1,
             epsilon: 1e-10,

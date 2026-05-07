@@ -19,6 +19,23 @@
 //!
 //! Run with: cargo test -p mesh-repair visual_regression
 
+#![allow(
+    // Tests legitimately use `.expect()` for control flow, `_ =` to
+    // discard `#[must_use]` returns when the side effect is the
+    // actual under-test contract, and inline-arg `format!`. Mesh
+    // index casts (`usize → u32`, `usize → f64`) hit at test-data-
+    // construction sites; mesh-types contracts that vertex/face
+    // indices fit in `u32` apply the same to test fixtures.
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    clippy::uninlined_format_args,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::redundant_clone,
+    clippy::doc_markdown
+)]
+
 use mesh_repair::{RepairParams, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 

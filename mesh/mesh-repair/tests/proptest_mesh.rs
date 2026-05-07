@@ -4,6 +4,19 @@
 //!
 //! Run with: cargo test -p mesh-repair -- proptest
 
+#![allow(
+    // Tests legitimately use `.expect()` / `_ =` for proptest flow,
+    // and the `usize → u32` casts hit at random-mesh construction
+    // sites where the index range is bounded by the proptest strategy.
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::redundant_clone,
+    clippy::uninlined_format_args
+)]
+
 use mesh_repair::{RepairParams, validate_mesh, weld_vertices};
 use mesh_types::{IndexedMesh, Point3};
 use proptest::prelude::*;

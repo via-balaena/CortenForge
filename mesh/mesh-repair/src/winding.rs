@@ -21,6 +21,12 @@
 //! fix_winding_order(&mut mesh).unwrap();
 //! ```
 
+#![allow(
+    // `usize` → `u32` casts are safe at mesh sizes the crate targets:
+    // face / vertex indices fit in `u32` by mesh-types contract.
+    clippy::cast_possible_truncation
+)]
+
 use hashbrown::HashSet;
 use mesh_types::IndexedMesh;
 use std::collections::VecDeque;
@@ -43,6 +49,16 @@ use crate::error::RepairResult;
 /// # Returns
 ///
 /// Ok(()) if successful.
+///
+/// # Errors
+///
+/// Currently always returns `Ok(())` — the function operates in-place
+/// on `mesh.faces` and the only failure modes are upstream
+/// adjacency-graph construction failures, which `MeshAdjacency::build`
+/// handles internally without surfacing through this signature. The
+/// `RepairResult<()>` shape is preserved for forward compatibility
+/// (future winding strategies that consult per-vertex normals or
+/// signed-volume diagnostics may surface error variants).
 ///
 /// # Example
 ///
