@@ -36,7 +36,7 @@
 //!   returns [`f64::INFINITY`] per scope memo Decision E. Phase H IPC
 //!   delivers proper CCD.
 
-use super::{ContactGradient, ContactHessian, ContactModel, ContactPair};
+use super::{ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout};
 use crate::{
     Vec3,
     mesh::{Mesh, VertexId},
@@ -113,6 +113,59 @@ impl PenaltyRigidContact {
             kappa,
             d_hat,
         }
+    }
+
+    /// Per-active-pair readout — for every `(soft vertex, rigid
+    /// primitive)` pair in the contact band, emit a
+    /// [`ContactPairReadout`] with the vertex position, signed distance,
+    /// outward primitive normal, and the penalty force on the soft side
+    /// at the readout-time `positions`.
+    ///
+    /// Mirrors [`active_pairs`](Self::active_pairs)'s walk order
+    /// (vertices outer × primitives inner) and band gate (`sd < d̂`),
+    /// so the returned vec is the same length as `active_pairs(...)`
+    /// at the same `positions` and the readouts appear in the same
+    /// order.
+    ///
+    /// `force_on_soft` resolves to `+κ·(d̂ − sd)·n` per the type docs'
+    /// sign convention — a single bit-equivalent reproduction of the
+    /// Newton scatter the solver would perform via
+    /// [`ContactModel::gradient`] (`−κ·(d̂ − sd)·n` returned, then
+    /// negated by the solver to obtain the force on the soft side).
+    /// Row 18 (`contact-force-readout`) is the canonical consumer;
+    /// row 14 (`compressive-block`) reconstructs this surface inline
+    /// from known plane geometry, predating this method.
+    // `vid as VertexId` and `pid as u32` mirror `active_pairs`'s `Vec`-
+    // iteration index packing — bounded by mesh / primitive counts that
+    // fit in `u32` for any Phase 5 scene.
+    #[allow(clippy::cast_possible_truncation)]
+    #[must_use]
+    pub fn per_pair_readout(
+        &self,
+        _mesh: &dyn Mesh,
+        positions: &[Vec3],
+    ) -> Vec<ContactPairReadout> {
+        let mut readouts = Vec::new();
+        for (vid, &p) in positions.iter().enumerate() {
+            for (pid, prim) in self.primitives.iter().enumerate() {
+                let sd = prim.eval(p);
+                if sd < self.d_hat {
+                    let normal = prim.grad(p);
+                    let force_on_soft = self.kappa * (self.d_hat - sd) * normal;
+                    readouts.push(ContactPairReadout {
+                        pair: ContactPair::Vertex {
+                            vertex_id: vid as VertexId,
+                            primitive_id: pid as u32,
+                        },
+                        position: p,
+                        sd,
+                        normal,
+                        force_on_soft,
+                    });
+                }
+            }
+        }
+        readouts
     }
 }
 
