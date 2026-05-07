@@ -146,9 +146,20 @@
 //! inactive vertices, `|force_z| / A_per_pair_uniform` for active
 //! top-face vertices, units Pa under the uniform-area approximation;
 //! pressure is unsigned so cf-view's sequential viridis colormap
-//! renders the patch as a bright disk regardless of `force_z`'s
-//! soft-side sign). Open in cf-view: `cargo run -p cf-viewer
-//! --release -- <path>`.
+//! renders the contact patch as a bright top-face cap regardless of
+//! `force_z`'s soft-side sign).
+//!
+//! **Top-face-only coloring is the intended physics asymmetry** —
+//! the bottom face is BC-pinned (Dirichlet, not penalty-contacted),
+//! so it carries no `contact_pressure` scalar. cf-view best surfaces
+//! the engagement boundary (top vs not-top) and the mean pressure
+//! level; the corner-vs-interior pressure gradient (the Saint-Venant
+//! boundary-layer pattern) is smoothed out by smooth-normal
+//! interpolation across the boundary triangulation, and reads
+//! cleanly only in `plot.py`'s scatter (no smoothing — each active
+//! pair is a discrete marker).
+//!
+//! Open in cf-view: `cargo run -p cf-viewer --release -- <path>`.
 //!
 //! ## Anchor groups (all assertions exit-0 on success)
 //!
@@ -1850,7 +1861,18 @@ fn print_summary(snapshot: &ReadoutSnapshot, ply_path: &Path, json_path: &Path) 
         "         per-vertex contact_pressure extra (zero for inactive, |force_z| / A_per_pair \
          for active);"
     );
-    println!("         open in cf-view (workspace's unified visual-review viewer):");
+    println!(
+        "         top-face-only coloring is intended (bottom is BC-pinned, not \
+         penalty-contacted);"
+    );
+    println!(
+        "         cf-view shows the engagement boundary + mean pressure level — the \
+         corner-vs-interior"
+    );
+    println!(
+        "         pressure gradient (~6x) is plot.py's headline (no smooth-normal \
+         interpolation):"
+    );
     println!("           cargo run -p cf-viewer --release -- <path>");
     println!();
     println!("JSON   : {}", json_path.display());
