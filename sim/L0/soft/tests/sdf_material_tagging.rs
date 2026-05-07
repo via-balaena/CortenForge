@@ -38,10 +38,9 @@
 //!
 //! ## Monotonicity is on the straddler *fraction*, not the count
 //!
-//! Scope memo §1 IV-4 row reads "misclassification count decreases
-//! monotonically as the mesher's `cell_size` halves" — this test
-//! interprets "count" as **fraction** (`straddlers / n_tets`) per the
-//! standard 3D interface-scaling reality:
+//! Refinement-monotonicity is gated on the **misclassification fraction**
+//! (`straddlers / n_tets`), not the absolute count, per the standard 3D
+//! interface-scaling reality:
 //!
 //! - Total tet count scales as `O(1/h³)` (volumetric).
 //! - Tets crossed by a fixed 2D shell-boundary surface scale as
@@ -52,9 +51,7 @@
 //!
 //! Both metrics encode the same physical claim ("the interface band
 //! shrinks under refinement"); only the fraction strictly decreases
-//! per halving. The memo phrasing reads as colloquial — surfacing
-//! this to commit 13 as a documentation-fixup candidate so §1 IV-4
-//! + IV-6 disambiguate "count" → "fraction".
+//! per halving.
 //!
 //! The strict-decrease assertion across `(h, h/2, h/4)` catches
 //! mesher regressions that introduce non-monotonic interface

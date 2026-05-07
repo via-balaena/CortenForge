@@ -37,12 +37,6 @@
 //! halves cleanly per refinement level. Strict-decrease on the
 //! fraction is the well-defined refinement-monotonicity claim.
 //!
-//! Scope memo §1 IV-6 row reads "halves the interface-tet count to
-//! within ~25%" — that phrasing is colloquial / Decision-K-time guess.
-//! This test interprets it via the standard 3D interface-scaling
-//! reasoning, mirroring the IV-4 amendment already queued for commit
-//! 13. Surfacing both at once.
-//!
 //! ## What this test does NOT cover
 //!
 //! - The book-prescribed adaptive-refinement consumer
