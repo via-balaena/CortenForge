@@ -62,14 +62,16 @@
 //!
 //! Row 18 uses a **uniform per-pair area approximation**:
 //! `A_per_pair_uniform = A_top_face / n_active_pairs = 1e-4 m² / 81
-//! ≈ 1.235e-6 m²`. Per-pair pressure is then `force_z /
-//! A_per_pair_uniform`. The aggregate `mean_pressure = sum(force_z) /
-//! A_top_face` is exact engineering stress σ_z (independent of the
-//! per-vertex area choice); per-vertex pressure varies because
-//! `force_z` varies (corner-vs-interior penetration depth differs by
-//! a few μm under the mixed BC). Honest "approximate per-vertex
-//! pressure" — not "exact Voronoi." Voronoi-cell area is banked as a
-//! live followup.
+//! ≈ 1.235e-6 m²`. Per-pair pressure is then `|force_z| /
+//! A_per_pair_uniform` (unsigned magnitude — V-3a's `force_z` is
+//! negative under the soft-side sign convention; pressure is reported
+//! as its absolute value). The aggregate `mean_pressure =
+//! sum(|force_z|) / A_top_face` is exact engineering stress σ_z
+//! (independent of the per-vertex area choice); per-vertex pressure
+//! varies because `force_z` varies (corner-vs-interior penetration
+//! depth differs by a few μm under the mixed BC). Honest "approximate
+//! per-vertex pressure" — not "exact Voronoi." Voronoi-cell area is
+//! banked as a live followup.
 //!
 //! ## Why `cargo run --release` only
 //!
@@ -141,11 +143,11 @@
 //!
 //! `out/contact_force_readout.ply` — finest-refinement deformed
 //! boundary mesh with per-vertex `contact_pressure` extra (zero for
-//! inactive vertices, `force_z / A_per_pair_uniform` for active
-//! top-face vertices, units Pa under the uniform-area approximation).
-//! cf-view auto-colormaps the sequential viridis on positive scalar
-//! — the contact patch reads as a uniform bright disk on the
-//! deformed cube's top face. Open in cf-view: `cargo run -p cf-viewer
+//! inactive vertices, `|force_z| / A_per_pair_uniform` for active
+//! top-face vertices, units Pa under the uniform-area approximation;
+//! pressure is unsigned so cf-view's sequential viridis colormap
+//! renders the patch as a bright disk regardless of `force_z`'s
+//! soft-side sign). Open in cf-view: `cargo run -p cf-viewer
 //! --release -- <path>`.
 //!
 //! ## Anchor groups (all assertions exit-0 on success)
@@ -166,19 +168,27 @@
 //! - **`contact_engagement`** — `n_active_pairs == 81 = (n+1)²`.
 //! - **`small_strain_validity`** — `0 < ε < SMALL_STRAIN_CEILING =
 //!   0.10`.
-//! - **`gross_physics`** — `λ_z ∈ (0.5, 1.0)`; `f_r_total > 0`;
-//!   every `readout.force_on_soft.z > 0`.
-//! - **`force_bound_bracket`** — `f_us ≤ f_r_total ≤ f_strain`
-//!   (inherited from row 14 V-3a).
+//! - **`gross_physics`** — `λ_z ∈ (0.5, 1.0)`; `f_r_total < 0`
+//!   (V-3a soft-side convention: outward normal `n = -ẑ` so the
+//!   z-component is negative; rigid reaction `−f_r_total` is
+//!   positive); every `readout.force_on_soft.z < 0` (per-pair sign
+//!   sanity).
+//! - **`force_bound_bracket`** — `f_us ≤ |f_r_total| ≤ f_strain`
+//!   at the equilibrium ε (inherited from row 14 V-3a; the
+//!   absolute value flips `f_r_total` from soft-side-negative to
+//!   the row-14-style positive rigid reaction for the bound check).
 //! - **`accessor_vs_manual_consistency`** (HEADLINE) —
-//!   `assert_relative_eq!(sum(readouts.force_on_soft.z),
+//!   `assert_relative_eq!(−sum(readouts.force_on_soft.z),
 //!   manual_reconstruction_sum, max_relative=1e-12, epsilon=1e-12)`.
+//!   The leading `−` is the soft-side-vs-rigid-reaction sign flip
+//!   (manual reconstruction follows row 14's positive convention).
 //!   The structural anchor: the new public surface returns what row
 //!   14 had to reconstruct manually.
 //! - **`per_pair_invariants`** — for every readout: `sd <
-//!   D_HAT_OVERRIDE`, `force_on_soft.z > 0`, `|force_on_soft.x|`
-//!   and `|force_on_soft.y|` near zero (axis-aligned plane), `normal
-//!   ≈ -ẑ`.
+//!   D_HAT_OVERRIDE`, `|force_on_soft.x|` and `|force_on_soft.y|`
+//!   near zero (axis-aligned plane), `normal ≈ -ẑ`, `vertex_id` in
+//!   range. (Per-pair `force_on_soft.z` sign is enforced in
+//!   `gross_physics`, not here.)
 //! - **`captured_bits_readout_metrics`** — IV-1 sparse-tier rel-tol
 //!   contract on `lambda_z_avg`, `eps`, `f_r_total`,
 //!   `mean_force_z`, `max_force_z`, `min_force_z`, `mean_pressure`,
