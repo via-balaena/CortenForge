@@ -1503,21 +1503,26 @@ fn run_visual_mode(snapshot: &ReadoutSnapshot) {
         * f64::from(VIZ_AMPLIFY).mul_add(-snapshot.eps, 1.0)
         * f64::from(RENDER_SCALE)) as f32;
 
+    // ASCII-only HUD per row 12's banked precedent (`886e6ba3` —
+    // Bevy 0.18's default font lacks Unicode glyphs like ε / λ /
+    // σ / × / em-dash, which render as missing-glyph boxes). Use
+    // ASCII identifiers (eps, lambda_z, sigma_z, x) and `-`
+    // hyphens.
     let hud = format!(
         "contact-force-readout (V-3a scene + per-pair readout)\n\
-         n_active_pairs : {n_active}  (= {n_per_edge_plus_1}×{n_per_edge_plus_1} top-face grid)\n\
+         n_active_pairs : {n_active}  (= {n_per_edge_plus_1}x{n_per_edge_plus_1} top-face grid)\n\
          F_R_total      : {fr:.4} N  (rigid reaction; soft-side total = {fr_neg:.4} N)\n\
          mean force_z   : {mfz:.4e} N  (per-pair, soft-side; negative)\n\
-         max force_z    : {Mfz:.4e} N  (least negative — smallest penetration)\n\
-         min force_z    : {mnfz:.4e} N  (most negative — largest penetration)\n\
-         mean pressure  : {mp:.4e} Pa  (= |F_R_total| / A_top_face = engineering stress σ_z)\n\
+         max force_z    : {Mfz:.4e} N  (least negative - smallest penetration)\n\
+         min force_z    : {mnfz:.4e} N  (most negative - largest penetration)\n\
+         mean pressure  : {mp:.4e} Pa  (= |F_R_total| / A_top_face = engineering stress sigma_z)\n\
          max pressure   : {Mp:.4e} Pa  (uniform per-pair area approx; corner vertices)\n\
          min pressure   : {mnp:.4e} Pa  (interior vertices)\n\
-         ε              : {eps_pct:.4}%\n\
-         λ_z            : {lz:.6}\n\
+         eps            : {eps_pct:.4}%\n\
+         lambda_z       : {lz:.6}\n\
          e_eff          : {eeff:.4e} Pa  in [E={E:.2e}, M_c={Mc:.2e}]  rel_pos = {relp:.3}\n\
          iter_count     : {ic}\n\
-         VIZ_AMPLIFY = {viz:.0}× (cube + plates amplified for visibility; plates flush against cube; numbers above are TRUE physics)",
+         VIZ_AMPLIFY = {viz:.0}x (cube + plates amplified for visibility; plates flush against cube; numbers above are TRUE physics)",
         n_active = snapshot.n_active_pairs,
         n_per_edge_plus_1 = N_PER_EDGE + 1,
         fr = -snapshot.f_r_total,
@@ -1589,8 +1594,8 @@ fn setup_visual_scene(
         trajectory,
     ));
 
-    // Plate visualizations — gray PBR cuboids (mirror row 14
-    // verbatim). Both plates share the same mesh + material.
+    // Plate visualizations — gray PBR cuboids. Both plates share
+    // the same mesh + material.
     let plate_lateral = 1.5 * EDGE_LEN as f32 * RENDER_SCALE;
     let plate_thickness = 0.08 * EDGE_LEN as f32 * RENDER_SCALE;
     let plate_mesh = meshes.add(Cuboid::new(plate_lateral, plate_thickness, plate_lateral));
@@ -1600,35 +1605,62 @@ fn setup_visual_scene(
         ..default()
     });
 
+    // Cube lateral center (Bevy units). The V-3a helper builds the
+    // mesh spanning physics `[0, EDGE_LEN]` in each axis, NOT
+    // centered at origin. Under `UpAxis::PlusZ` swap (physics
+    // `(x, y, z)` → Bevy `(x, z, y)`) and `Transform::from_scale(
+    // RENDER_SCALE)`, the Bevy cube spans `(0, RENDER_SCALE *
+    // EDGE_LEN)` in each axis, so its lateral center sits at
+    // `(0.5, *, 0.5)` Bevy meters (= 0.5 m at L=1cm × 100×). Plates
+    // centered at `(0, *, 0)` would extend asymmetrically past the
+    // cube on one side; align them to the cube's actual lateral
+    // center instead. Camera target also shifted to match (camera
+    // orbits around the cube's true COM, not the world origin).
+    let cube_lateral_x = 0.5 * EDGE_LEN as f32 * RENDER_SCALE;
+    let cube_lateral_z = 0.5 * EDGE_LEN as f32 * RENDER_SCALE;
+
     // Bottom plate — purely visual (BC-pinned bottom, no penalty
-    // contact). Mirror row 14.
+    // contact). TOP face flush against cube bottom at Bevy y=0
+    // with sub-mm `PLATE_ZFIGHT_OFFSET` to prevent depth-buffer
+    // z-fight. Cuboid centered at lateral cube center.
     let bottom_plate_face_y = -PLATE_ZFIGHT_OFFSET;
     let bottom_plate_y = (-0.5_f32).mul_add(plate_thickness, bottom_plate_face_y);
     commands.spawn((
         Mesh3d(plate_mesh.clone()),
         MeshMaterial3d(plate_material.clone()),
-        Transform::from_xyz(0.0, bottom_plate_y, 0.0),
+        Transform::from_xyz(cube_lateral_x, bottom_plate_y, cube_lateral_z),
     ));
 
-    // Top plate — flush against the AMPLIFIED cube top. Mirror
-    // row 14.
+    // Top plate — BOTTOM face flush against the AMPLIFIED cube
+    // top. Same lateral centering as bottom plate.
     let top_plate_face_y = cube_top_amplified_y + PLATE_ZFIGHT_OFFSET;
     let top_plate_y = 0.5_f32.mul_add(plate_thickness, top_plate_face_y);
     commands.spawn((
         Mesh3d(plate_mesh),
         MeshMaterial3d(plate_material),
-        Transform::from_xyz(0.0, top_plate_y, 0.0),
+        Transform::from_xyz(cube_lateral_x, top_plate_y, cube_lateral_z),
     ));
 
-    // Camera framing — full-scene default per pattern (l). Mirror
-    // row 14.
+    // Camera framing — full-scene default per pattern (l). Target
+    // at the rest cube COM (`(cube_lateral_x, EDGE_LEN/2 *
+    // RENDER_SCALE, cube_lateral_z) = (0.5, 0.5, 0.5)` Bevy m at
+    // L=1cm × 100×); the cube IS the orbit-rotation center, so
+    // mouse-orbit feels natural (no drift around a phantom origin).
+    // Note: the target is at the **rest** COM, ~0.15 Bevy ABOVE the
+    // amplified-deformed cube COM (≈ 0.35 m at VIZ_AMPLIFY=50 with
+    // ε ≈ 0.6 %); the cube appears slightly low in frame, but the
+    // full cube + both plates fit comfortably and the HUD readout
+    // makes the bound-bracket numbers visible regardless of camera
+    // position. Tracking the amplified COM would require
+    // recomputing on every VIZ_AMPLIFY change without
+    // visual-quality dividend.
     let cube_com_y = 0.5 * EDGE_LEN as f32 * RENDER_SCALE;
     let camera_distance = 3.0 * EDGE_LEN as f32 * RENDER_SCALE;
     commands.spawn((
         Camera3d::default(),
         Transform::default(),
         OrbitCamera::new()
-            .with_target(BevyVec3::new(0.0, cube_com_y, 0.0))
+            .with_target(BevyVec3::new(cube_lateral_x, cube_com_y, cube_lateral_z))
             .with_distance(camera_distance)
             .with_angles(0.4, 0.5),
         AmbientLight {
