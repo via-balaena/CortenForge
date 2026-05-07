@@ -68,10 +68,14 @@
 //! as its absolute value). The aggregate `mean_pressure =
 //! sum(|force_z|) / A_top_face` is exact engineering stress σ_z
 //! (independent of the per-vertex area choice); per-vertex pressure
-//! varies because `force_z` varies (corner-vs-interior penetration
-//! depth differs by a few μm under the mixed BC). Honest "approximate
-//! per-vertex pressure" — not "exact Voronoi." Voronoi-cell area is
-//! banked as a live followup.
+//! varies because `force_z` varies (interior-vs-corner penetration
+//! depth differs by a few μm under the mixed BC's Saint-Venant
+//! boundary-layer pattern — interior vertices are laterally
+//! surrounded by material on all four sides → locally uniaxial-strain
+//! → stiffer → equilibrium at less compliance → vertex stays close
+//! to rest z → larger penetration → ~6× larger force/pressure than
+//! corners). Honest "approximate per-vertex pressure" — not "exact
+//! Voronoi." Voronoi-cell area is banked as a live followup.
 //!
 //! ## Why `cargo run --release` only
 //!
@@ -152,11 +156,14 @@
 //! the bottom face is BC-pinned (Dirichlet, not penalty-contacted),
 //! so it carries no `contact_pressure` scalar. cf-view best surfaces
 //! the engagement boundary (top vs not-top) and the mean pressure
-//! level; the corner-vs-interior pressure gradient (the Saint-Venant
-//! boundary-layer pattern) is smoothed out by smooth-normal
-//! interpolation across the boundary triangulation, and reads
-//! cleanly only in `plot.py`'s scatter (no smoothing — each active
-//! pair is a discrete marker).
+//! level; the interior-vs-corner pressure gradient (the Saint-Venant
+//! boundary-layer pattern: interior vertices are laterally
+//! constrained so locally uniaxial-strain → stiffer → larger
+//! penetration → ~6× larger pressure than corners, which are
+//! free-edge-adjacent and locally uniaxial-stress) is smoothed out
+//! by smooth-normal interpolation across the boundary triangulation,
+//! and reads cleanly only in `plot.py`'s scatter (no smoothing —
+//! each active pair is a discrete marker).
 //!
 //! Open in cf-view: `cargo run -p cf-viewer --release -- <path>`.
 //!
@@ -446,18 +453,21 @@ const F_R_TOTAL_REF_BITS: u64 = 0xbfc7_47f5_d85c_59cb;
 const MEAN_FORCE_Z_REF_BITS: u64 = 0xbf62_651a_bdea_2758;
 
 /// Max (least negative; closest to zero) per-pair `force_on_soft.z`
-/// (N). Interior top-face vertices have the smallest penetration
-/// under the mixed BC's Saint-Venant boundary-layer pattern (the
-/// bottom-pin's lateral constraint propagates through the cube
-/// interior, producing a strong corner-vs-interior force-magnitude
-/// gradient). `≈ -4.619e-4 N` — about 6× smaller magnitude than
-/// the mean and about 6× smaller than the corner.
+/// (N). **Corner** top-face vertices have the smallest penetration
+/// — free side-faces in two directions allow lateral bulging
+/// (locally uniaxial-stress regime, vertically softer), so the
+/// vertex moves DOWN toward the plate level and reaches equilibrium
+/// at near-zero penetration. `≈ -4.619e-4 N` — about 5× smaller
+/// magnitude than the mean and about 6× smaller than the
+/// largest-penetration interior vertex.
 const MAX_FORCE_Z_REF_BITS: u64 = 0xbf3e_45a5_7010_4830;
 
 /// Min (most negative; largest magnitude) per-pair `force_on_soft.z`
-/// (N). Corner top-face vertices have the largest penetration —
-/// the free side-faces meeting at a corner column transfer more
-/// vertical load to that corner's top-face vertex.
+/// (N). **Interior** top-face vertices have the largest penetration
+/// — laterally surrounded by material on all four sides, so they
+/// can't bulge laterally (locally uniaxial-strain regime, vertically
+/// stiffer); equilibrium reached at less vertical compliance, vertex
+/// stays close to its rest z, plate penetration is largest.
 /// `≈ -2.942e-3 N`.
 const MIN_FORCE_Z_REF_BITS: u64 = 0xbf68_19ff_ca41_5346;
 
@@ -467,15 +477,16 @@ const MIN_FORCE_Z_REF_BITS: u64 = 0xbf68_19ff_ca41_5346;
 const MEAN_PRESSURE_REF_BITS: u64 = 0x409c_6b57_9a9c_bba8;
 
 /// Max per-pair pressure (Pa). `|min_force_z| / A_per_pair_uniform`
-/// — corner vertex (largest-magnitude force_z gives
+/// — **interior vertex** (largest-magnitude force_z gives
 /// highest-magnitude pressure since pressure is unsigned).
 /// `≈ 2.383e3 Pa`.
 const MAX_PRESSURE_REF_BITS: u64 = 0x40a2_9e2d_707b_c055;
 
 /// Min per-pair pressure (Pa). `|max_force_z| / A_per_pair_uniform`
-/// — interior vertex. `≈ 374 Pa`. About 5× smaller than mean —
-/// reflects the Saint-Venant boundary-layer concentration of
-/// vertical load at the corners.
+/// — **corner vertex**. `≈ 374 Pa`. About 5× smaller than mean —
+/// reflects the Saint-Venant boundary-layer pattern: corners
+/// (locally uniaxial-stress, free-edge-adjacent) carry less
+/// vertical load than the laterally-constrained interior.
 const MIN_PRESSURE_REF_BITS: u64 = 0x4077_626a_d0f6_03d3;
 
 /// Effective modulus: `|f_r_total| / (A_top_face · ε)` — `≈ 3.043e5
@@ -1526,8 +1537,8 @@ fn run_visual_mode(snapshot: &ReadoutSnapshot) {
          max force_z    : {Mfz:.4e} N  (least negative - smallest penetration)\n\
          min force_z    : {mnfz:.4e} N  (most negative - largest penetration)\n\
          mean pressure  : {mp:.4e} Pa  (= |F_R_total| / A_top_face = engineering stress sigma_z)\n\
-         max pressure   : {Mp:.4e} Pa  (uniform per-pair area approx; corner vertices)\n\
-         min pressure   : {mnp:.4e} Pa  (interior vertices)\n\
+         max pressure   : {Mp:.4e} Pa  (uniform per-pair area approx; interior vertices)\n\
+         min pressure   : {mnp:.4e} Pa  (corner vertices)\n\
          eps            : {eps_pct:.4}%\n\
          lambda_z       : {lz:.6}\n\
          e_eff          : {eeff:.4e} Pa  in [E={E:.2e}, M_c={Mc:.2e}]  rel_pos = {relp:.3}\n\
@@ -1786,11 +1797,11 @@ fn print_summary(snapshot: &ReadoutSnapshot, ply_path: &Path, json_path: &Path) 
         snapshot.mean_pressure,
     );
     println!(
-        "    max          : {:>12.6e} Pa  (corner vertices)",
+        "    max          : {:>12.6e} Pa  (interior vertices — locally uniaxial-strain, stiffer)",
         snapshot.max_pressure,
     );
     println!(
-        "    min          : {:>12.6e} Pa  (interior vertices)",
+        "    min          : {:>12.6e} Pa  (corner vertices — locally uniaxial-stress, softer)",
         snapshot.min_pressure,
     );
     println!();
@@ -1866,12 +1877,13 @@ fn print_summary(snapshot: &ReadoutSnapshot, ply_path: &Path, json_path: &Path) 
     );
     println!(
         "         cf-view shows the engagement boundary + mean pressure level — the \
-         corner-vs-interior"
+         interior-vs-corner"
     );
     println!(
-        "         pressure gradient (~6x) is plot.py's headline (no smooth-normal \
-         interpolation)."
+        "         pressure gradient (~6x; interior > corner per Saint-Venant) is plot.py's \
+         headline"
     );
+    println!("         (no smooth-normal interpolation).");
     println!("         Open in cf-view:");
     println!("           cargo run -p cf-viewer --release -- <path>");
     println!();

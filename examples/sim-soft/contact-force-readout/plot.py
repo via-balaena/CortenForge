@@ -8,14 +8,24 @@ with marker color encoding per-pair pressure (Pa, viridis colormap)
 and marker size encoding per-pair force magnitude (|force_z|, N).
 
 The mixed BC (bottom full-pin + top penalty-contact + sides free)
-produces non-uniform pressure across the 9×9 top-face grid: corner
-vertices penetrate further than interior vertices under the
-Saint-Venant boundary-layer pattern, so corner pressure is highest.
-The pattern reads as a "cross" of higher-pressure corner+edge
-vertices framing a lower-pressure interior — a visual readout of
-how the bottom-pin's lateral constraint propagates through the cube.
+produces non-uniform pressure across the 9x9 top-face grid under
+the Saint-Venant boundary-layer principle:
+- Interior vertices (49 markers) are laterally surrounded by
+  material on all four sides -> locally uniaxial-strain regime ->
+  vertically stiffer -> equilibrium reached at less compliance ->
+  vertex stays close to its rest z -> larger penetration into the
+  descended plate -> larger |force_z| and pressure.
+- Corner vertices (4 markers) are adjacent to free side-faces in
+  two directions -> can bulge laterally -> locally uniaxial-stress
+  regime -> vertically softer -> vertex moves DOWN to nearly match
+  the plate level -> smallest penetration -> smallest pressure.
+- Edge-mid vertices (28 markers) sit between the two regimes.
 
-Title shows F_R_total + n_active_pairs + asserted ε + effective
+The visual reads as a uniform-yellow 7x7 interior block framed by
+darker edge-rows and the four darkest corners (~6x pressure ratio
+from corners ~374 Pa to interior ~2383 Pa).
+
+Title shows F_R_total + n_active_pairs + asserted eps + effective
 modulus.
 
 Usage:
