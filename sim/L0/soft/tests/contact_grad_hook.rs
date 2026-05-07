@@ -409,9 +409,9 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
 
     // ── FD self-consistency at the 5-digit bar ──────────────────────────
     //
-    // "FD-stable" means the gradient is well-
-    // defined at the perturbation scales the eventual reverse-mode
-    // adjoint will consume. Two FD samples at h_rel ∈ {1e-3, 1e-4} sit
+    // "FD-stable" means the gradient is well-defined at the
+    // perturbation scales the eventual reverse-mode adjoint will
+    // consume. Two FD samples at h_rel ∈ {1e-3, 1e-4} sit
     // above the optimal h ≈ ε_f64^(1/3) · |κ| ≈ 6e-2 in the truncation-
     // dominated regime; pairwise agreement at the 5-digit bar bounds
     // the coarse-step truncation itself (truncation at h=10 is 100×

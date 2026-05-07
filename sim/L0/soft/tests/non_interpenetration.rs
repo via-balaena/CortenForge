@@ -20,10 +20,10 @@
 //! ## `δ_pen` formula and scene-specific values
 //!
 //! `δ_pen = F_max / κ_pen` is the single-vertex worst-case penalty
-//! overlap tolerance — derived from the equilibrium
-//! force balance `κ · pen_v = F_v` where a single active vertex bears
-//! the entire applied load. In practice multi-vertex contact distributes
-//! the load (`pen_v ≈ F / (κ · N_active)` per active vertex) and actual
+//! overlap tolerance — derived from the equilibrium force balance
+//! `κ · pen_v = F_v` where a single active vertex bears the entire
+//! applied load. In practice multi-vertex contact distributes the
+//! load (`pen_v ≈ F / (κ · N_active)` per active vertex) and actual
 //! overlap is much smaller; the worst-case bound is conservative by
 //! construction.
 //!

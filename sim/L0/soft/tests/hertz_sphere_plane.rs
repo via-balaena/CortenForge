@@ -10,26 +10,28 @@
 //! elastic sphere on a rigid frictionless plane (Hertz 1882; Johnson
 //! 1985, *Contact Mechanics*, Ch 3).
 //!
-//! ## Why V-3 is load-bearing
+//! ## Why this gate is load-bearing
 //!
-//! V-3a (commit 8) validated `PenaltyRigidContact`'s force-pumping
-//! correctness at trivial cube geometry — the integrated reaction force
-//! sits between two pure-BC closed-form bounds, with Cauchy convergence
-//! across refinements demonstrating the FEM sequence is converging to a
-//! stable answer. Sign convention exercised at the integrated level for
-//! the first time (R-5 lens (v)). V-3 is the next scientific gate up:
-//! true contact mechanics on curved geometry, where Hertz's closed-form
-//! couples FEM elasticity with contact-patch geometry.
+//! The compressive-block fixture (`tests/penalty_compressive_block.rs`)
+//! validated `PenaltyRigidContact`'s force-pumping correctness at
+//! trivial cube geometry — the integrated reaction force sits between
+//! two pure-BC closed-form bounds, with Cauchy convergence across
+//! refinements demonstrating the FEM sequence is converging to a
+//! stable answer; sign convention exercised at the integrated level
+//! for the first time. This fixture is the next scientific gate up:
+//! true contact mechanics on curved geometry, where Hertz's
+//! closed-form couples FEM elasticity with contact-patch geometry.
 //!
-//! Failure modes V-3 catches that V-3a cannot: (a) Hertz-formula
-//! transcription, (b) sphere-mesh BCC resolution effects on contact-
-//! patch shape, (c) penalty `(κ, d̂)` defaults under sphere geometry
-//! vs cube, (d) penalty-vs-elastic compliance balance under curved
-//! geometry — V-3 surfaced empirically that at scope-memo
-//! parameters the sphere reaches penalty-band equilibrium far short
-//! of Hertz rigid-limit indentation, motivating the `δ_FEM` → `a_FEM`
-//! gate reframe (Plan change 2 below). V-3a having validated force-
-//! pumping in isolation lets any V-3 failure be diagnosed in
+//! Failure modes this fixture catches that the compressive block
+//! cannot: (a) Hertz-formula transcription, (b) sphere-mesh BCC
+//! resolution effects on contact-patch shape, (c) penalty `(κ, d̂)`
+//! defaults under sphere geometry vs cube, (d) penalty-vs-elastic
+//! compliance balance under curved geometry — empirical iteration
+//! surfaced that at the original parameters the sphere reaches
+//! penalty-band equilibrium far short of Hertz rigid-limit
+//! indentation, motivating the `δ_FEM` → `a_FEM` gate reframe (Plan
+//! change 2 below). The compressive block having validated
+//! force-pumping in isolation lets any failure here be diagnosed in
 //! isolation from contact-machinery bugs.
 //!
 //! ## Hertzian closed-form
@@ -380,13 +382,12 @@ const CELL_SIZE_H2: f64 = 1.5e-3;
 /// Fine refinement — material plan change vs the original 2 mm.
 /// Below the multi-vertex threshold (`0.75 mm < 3.16 mm` at
 /// fixture-local `κ = 1e3`); engages multi-vertex Hertz contact in
-/// the disk of
-/// radius `sqrt(2R · F/κ) ≈ 3 mm` at single-pole descent (~45 active
-/// pairs at h/4 empirically). Empirical-cap finest level: at h/4 =
-/// 0.5 mm the SDF-meshed sphere plus multi-vertex contact-Newton
-/// produced runtime > 12 min release-mode (active-set churn during
-/// convergence); 0.75 mm fits CI release-tier budget at ~2 min
-/// release-mode total runtime.
+/// the disk of radius `sqrt(2R · F/κ) ≈ 3 mm` at single-pole descent
+/// (~45 active pairs at h/4 empirically). Empirical-cap finest level:
+/// at h/4 = 0.5 mm the SDF-meshed sphere plus multi-vertex
+/// contact-Newton produced runtime > 12 min release-mode (active-set
+/// churn during convergence); 0.75 mm fits CI release-tier budget at
+/// ~2 min release-mode total runtime.
 const CELL_SIZE_H4: f64 = 7.5e-4;
 
 /// Static-equilibrium time-step — large `dt` damps the inertial
@@ -612,9 +613,10 @@ fn run_at_refinement(cell_size: f64) -> StepReport {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-// Release-mode-only gate. At h/4 = 0.75 mm + multi-vertex contact-Newton, release
-// runtime is ~2 min; debug-mode is `5-10×` slower (`~10-20 min`),
-// over the CI 30-min budget. `#[cfg_attr(debug_assertions, ignore)]`
+// Release-mode-only gate. At h/4 = 0.75 mm + multi-vertex
+// contact-Newton, release runtime is ~2 min; debug-mode is `5-10×`
+// slower (`~10-20 min`), over the CI 30-min budget.
+// `#[cfg_attr(debug_assertions, ignore)]`
 // skips the test in default-profile `cargo test` (CI tests-debug
 // tier per `quality-gate.yml:138-178`) but exercises it under
 // `cargo test --release` (developer pre-push verification +

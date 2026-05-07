@@ -13,9 +13,10 @@
 //!
 //! ## First integrated sign-convention check
 //!
-//! `tests/contact_unit.rs` + `tests/contact_fd.rs` pin sign convention at the per-pair
-//! gradient/Hessian level. V-3a is the first end-to-end "elastic +
-//! penalty equilibrium force balance" exercise: the elastic potential's
+//! `tests/contact_unit.rs` + `tests/contact_fd.rs` pin sign
+//! convention at the per-pair gradient/Hessian level. This fixture is
+//! the first end-to-end "elastic + penalty equilibrium force balance"
+//! exercise: the elastic potential's
 //! gradient is `+f_int` (scattered into `f_int` as `+∂Ψ/∂x` at commit
 //! 5); the penalty potential's gradient at active config is
 //! `-κ·(d̂-d)·n` where `n` is the outward primitive normal. For a
