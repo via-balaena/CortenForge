@@ -3,7 +3,7 @@
 //! quiescence on the plane.
 //!
 //! `SoftScene::dropping_sphere(radius, cell_size, release_height,
-//! material_field)` (sim-soft `c3729d4a` per Phase 5 commit-6 scaffolding +
+//! material_field)` (sim-soft `818fa7b1` per Phase 5 commit-6 scaffolding +
 //! commit-10 gravity wiring) is the production scene constructor — a
 //! `SphereSdf` body BCC-meshed via `SdfMeshedTetMesh::from_sdf` at
 //! `cell_size = 3 mm`, with rest configuration shifted upward to `(0, 0,
@@ -132,7 +132,7 @@
 //!   no NaN in `x_final`; `iter_count ≤ MAX_NEWTON_ITER = 50`; per-step
 //!   `|v|_max < sqrt(2 g h) × ENERGY_BOUND_SAFETY = 1.5` m/s (no energy
 //!   injection on top of the gravitational-freefall bound + penalty's
-//!   bounded-oscillation overshoot per scope memo §1 V-5).
+//!   bounded-oscillation overshoot per the drop-and-rest hygiene gate).
 //! - **`contact_engagement`** — at least one step `k ∈ [0, N_STEPS / 4]`
 //!   has the sphere bottom in the contact band (`min_z(frame[k]) < D_HAT`).
 //!   Catches a sphere-flying-sideways or gravity-magnitude regression that
@@ -248,8 +248,7 @@ const MU: f64 = 2.0e5;
 const LAMBDA: f64 = 8.0e5;
 
 /// Gravitational acceleration along `+ẑ` (`m/s²`). Negative = downward.
-/// Earth standard `9.81 m/s²` per scope memo §1 V-5's "gravity loaded"
-/// framing.
+/// Earth standard `9.81 m/s²`.
 const GRAVITY: f64 = -9.81;
 
 /// Time step (1 ms). At penalty stiffness `κ = 1e4 N/m`, sphere total
@@ -284,13 +283,13 @@ const KE_REST_THRESHOLD: f64 = 1.0e-2;
 /// accommodates penalty's documented bounded-oscillation overshoot.
 const ENERGY_BOUND_SAFETY: f64 = 1.5;
 
-/// Penalty contact band `d̂` (m). `PenaltyRigidContact::new` defaults
-/// pinned per Phase 5 scope memo Decision J — re-asserted here as a
-/// named const for the [`com_at_equilibrium_height`](verify_com_at_equilibrium_height)
-/// and [`contact_engagement`](verify_contact_engagement) gates' algebra.
-/// MUST equal `sim_soft::contact::penalty::PENALTY_DHAT_DEFAULT`; if the
-/// helper's default is ever tuned, this const and the captured bits below
-/// must move in lockstep.
+/// Penalty contact band `d̂` (m). `PenaltyRigidContact::new` default
+/// — re-asserted here as a named const for the
+/// [`com_at_equilibrium_height`](verify_com_at_equilibrium_height) and
+/// [`contact_engagement`](verify_contact_engagement) gates' algebra.
+/// MUST equal `sim_soft::contact::penalty::PENALTY_DHAT_DEFAULT`; if
+/// the helper's default is ever tuned, this const and the captured
+/// bits below must move in lockstep.
 const D_HAT: f64 = 1.0e-3;
 
 /// COM-at-equilibrium tolerance (m). `2 × D_HAT = 2 mm`. The settled

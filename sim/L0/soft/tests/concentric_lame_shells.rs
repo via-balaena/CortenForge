@@ -286,11 +286,11 @@ const LAMBDA_INNER: f64 = 4.0e5;
 // ── Internal pressure ────────────────────────────────────────────────────
 
 /// Internal pressure on the cavity wall (Pa). At the chosen radii and
-/// material parameters the Lamé closed-form predicts cavity-wall radial
-/// displacement `u_r(R_cavity) ≈ 4.6e-4 m` ≈ `1.2 %` of `R_cavity = 0.04
-/// m` — comfortably small-strain, well inside the linear-elastic regime
-/// where Neo-Hookean reduces to Lamé. The pressure value is engineered
-/// to land in this window:
+/// material parameters the piecewise-Lamé closed-form predicts cavity-
+/// wall radial displacement `u_r(R_cavity) ≈ 3.34e-4 m` ≈ `0.84 %` of
+/// `R_cavity = 0.04 m` — comfortably small-strain, well inside the
+/// linear-elastic regime where Neo-Hookean reduces to Lamé. The
+/// pressure value is engineered to land in this window:
 ///
 /// ```text
 /// inflation_target = ~1 %       (small-strain, below ~3 % where Neo-

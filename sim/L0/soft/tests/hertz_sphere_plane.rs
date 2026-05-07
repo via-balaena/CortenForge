@@ -1,15 +1,14 @@
-//! V-3 — Hertzian sphere↔plane: contact mechanics analytic comparison.
+//! Hertzian sphere↔plane: contact mechanics analytic comparison.
 //!
-//! Phase 5 scope memo §1 V-3 + §8 commit 9 + Decision D (V-3 as the
-//! load-bearing scientific gate of Phase 5; equivalent of Phase 4 IV-3
-//! Timoshenko bilayer beam + IV-5 concentric Lamé). Soft sphere of
-//! radius `R` pressed against a `RigidPlane` by an axial force `F`,
-//! meshed at three refinement levels (h, h/2, h/4) via
+//! Penalty contact's load-bearing scientific gate — equivalent of
+//! Phase 4 IV-3 Timoshenko bilayer beam + IV-5 concentric Lamé. Soft
+//! sphere of radius `R` pressed against a `RigidPlane` by an axial
+//! force `F`, meshed at three refinement levels (h, h/2, h/4) via
 //! [`SdfMeshedTetMesh`]. At each refinement: measure the sphere's
-//! center-of-mass downward displacement and contact-patch radius; compare
-//! against the Hertzian closed-form prediction for a soft elastic sphere
-//! on a rigid frictionless plane (Hertz 1882; Johnson 1985,
-//! *Contact Mechanics*, Ch 3).
+//! center-of-mass downward displacement and contact-patch radius;
+//! compare against the Hertzian closed-form prediction for a soft
+//! elastic sphere on a rigid frictionless plane (Hertz 1882; Johnson
+//! 1985, *Contact Mechanics*, Ch 3).
 //!
 //! ## Why V-3 is load-bearing
 //!
@@ -58,43 +57,41 @@
 //! (textbook threshold `a/R ≲ 30 %`) and the linear-elastic regime
 //! where Neo-Hookean reduces to Lamé.
 //!
-//! ## Material plan changes vs scope memo §1 V-3 + §9
+//! ## Material plan changes
 //!
-//! Scope memo §9 V-3 row recommended `F = 50–200 mN` and cell sizes
+//! The original spec recommended `F = 50–200 mN` and cell sizes
 //! `(5 mm, 3 mm, 2 mm)` with a finest-level gate of
-//! `|δ_FEM - δ_Hertz| / δ_Hertz < 15 %`. Empirical commit-9 iteration
+//! `|δ_FEM - δ_Hertz| / δ_Hertz < 15 %`. Empirical iteration
 //! surfaced two distinct issues with this framing:
 //!
 //! ### Plan change 1 — F + cell-size + κ retune (engagement issue)
 //!
-//! At `F = 100 mN` (middle of the §9 range) and default `κ = 1e4`,
-//! single-pole descent `F/κ = 10 μm`, but the next vertex layer at
-//! `h = 2 mm` sits `h²/(2R) = 200 μm` above the south pole
+//! At `F = 100 mN` (middle of the original range) and default
+//! `κ = 1e4`, single-pole descent `F/κ = 10 μm`, but the next vertex
+//! layer at `h = 2 mm` sits `h²/(2R) = 200 μm` above the south pole
 //! geometrically — so only the south pole engages, equilibrating
 //! against the full `F` in a linear-spring relation, not a Hertz
 //! pressure profile. The condition for multi-vertex Hertz engagement
-//! is `h < sqrt(2 R · F/κ)` — at default κ + scope-memo F, that bound
-//! is `< 0.45 mm`, finer than the §9 finest cell.
+//! is `h < sqrt(2 R · F/κ)` — at default κ + the original F, that
+//! bound is `< 0.45 mm`, finer than the original finest cell.
 //!
-//! V-3 takes the **F + κ + cell-size adjustment** path per Decision
-//! J's V-3-may-tune authority + scope memo §9's *"Resolve at commit 9
-//! after first CI run measures actual runtime"*. Three concrete
-//! adjustments:
+//! This fixture takes the **F + κ + cell-size adjustment** path under
+//! local-tune authority. Three concrete adjustments:
 //!
-//! `F = 500 mN` (5× the §9 middle, 2.5× the §9 upper). Strain
-//! `δ/R ≈ 3.2 %` stays comfortably small-strain.
+//! `F = 500 mN` (5× the original middle, 2.5× the original upper).
+//! Strain `δ/R ≈ 3.2 %` stays comfortably small-strain.
 //!
-//! **V-3-LOCAL `κ = 1e3 N/m` override** (10× softer than the
-//! `PENALTY_KAPPA_DEFAULT = 1e4`). Mirror of V-3a's deviation 2
-//! pattern (`penalty_compressive_block.rs:228-239`); production
-//! scenes (V-1 / V-3a / V-4 / V-5 / V-7) continue to use the default
-//! κ. The override is **necessary** because at default κ + scope-memo
-//! F (50–200 mN) and h ≥ 0.5 mm, the system reaches a single-vertex
-//! penalty equilibrium where the south pole alone provides the full F
-//! at descent `F/κ ≈ 10 μm`, far short of the multi-vertex Hertz
+//! **Fixture-local `κ = 1e3 N/m` override** (10× softer than the
+//! `PENALTY_KAPPA_DEFAULT = 1e4`). Mirror of the compressive block's
+//! deviation 2 pattern (`penalty_compressive_block.rs:228-239`); other
+//! contact-active fixtures continue to use the default κ. The override
+//! is **necessary** because at default κ + the original F (50–200 mN)
+//! and h ≥ 0.5 mm, the system reaches a single-vertex penalty
+//! equilibrium where the south pole alone provides the full F at
+//! descent `F/κ ≈ 10 μm`, far short of the multi-vertex Hertz
 //! indentation. Softening to `κ = 1e3` raises the multi-vertex
 //! threshold `h < sqrt(2R · F/κ)` from `0.45 mm` to `3.16 mm`,
-//! engaging multi-vertex contact at all three V-3 refinement levels.
+//! engaging multi-vertex contact at all three refinement levels.
 //! Penalty correction `pen_avg = F/(κ·N_active) ≈ 9 μm` at finest is
 //! a `~3 %` bias relative to `δ_Hertz` — well within the rel-err gate.
 //!
@@ -162,8 +159,8 @@
 //! to within mesh-bound discretisation error. `δ_FEM` is reported in
 //! the diagnostic `eprintln!` for inspection but not asserted.
 //!
-//! This is the V-3 equivalent of V-3a's two-bound + Cauchy reframe
-//! per `penalty_compressive_block.rs:31-65` — the original
+//! This mirrors the compressive block's two-bound + Cauchy reframe
+//! (`penalty_compressive_block.rs:31-65`) — the original
 //! single-closed-form-numeric-match gate is replaced with a more
 //! rigorous "test what the system can validate, document what it
 //! can't" framing.
@@ -171,13 +168,13 @@
 //! **Phase H IPC** structurally fixes this: IPC's logarithmic barrier
 //! `−κ log(d/d̂)` blows up as `d → 0`, enforcing exact
 //! non-penetration; the Hertz rigid limit is recovered automatically
-//! at the κ → ∞ asymptote. Phase 5 penalty's compliance-band design
-//! is the explicit stepping-stone IPC replaces (BF-12 amendment).
+//! at the κ → ∞ asymptote. Penalty's compliance-band design is the
+//! explicit stepping-stone IPC replaces.
 //!
-//! ## Compressible Neo-Hookean regime — Decision J deviation per IV-3
+//! ## Compressible Neo-Hookean regime
 //!
-//! Decision J prescribes Ecoflex 00-30 with `ν ≈ 0.49` (near-
-//! incompressible) for the canonical layered-silicone-device. IV-3
+//! The canonical layered-silicone-device target is Ecoflex 00-30 with
+//! `ν ≈ 0.49` (near-incompressible). IV-3
 //! (`bonded_bilayer_beam.rs:42-56`) and IV-5
 //! (`concentric_lame_shells.rs:45-64`) deviate to `ν = 0.4` (compressible
 //! Neo-Hookean, `λ = 4 μ`) because Tet4 under `ν → 0.5` exhibits
@@ -189,8 +186,8 @@
 //! near-incompressible Ecoflex regime per Part 2 §05 §02.
 //!
 //! Material parameters use the carbon-black composite Lamé pair
-//! (`μ = 2e5`, `λ = 8e5`) per scope memo §9 V-3 row + Phase 4 IV-3
-//! Region B + IV-5 middle-shell precedent. Hertz is more discriminating
+//! (`μ = 2e5`, `λ = 8e5`) — Phase 4 IV-3 Region B + IV-5 middle-shell
+//! precedent. Hertz is more discriminating
 //! at higher stiffness — smaller `δ` at fixed `F` means smaller
 //! mesh-bound error percentage on the rel-error gate.
 //!
@@ -228,12 +225,11 @@
 //!
 //! ## Indentation + contact-patch extraction
 //!
-//! `κ_pen` is **V-3-LOCAL-overridden** to `1e3 N/m` (10× softer than
-//! `PENALTY_KAPPA_DEFAULT`) per Decision J's V-3-may-tune authority —
-//! see "Material plan change" section below for the empirical
-//! motivation. `d̂` stays at `PENALTY_DHAT_DEFAULT = 1e-3 m` since the
-//! helper `sphere_on_plane` bakes the default `d̂` into plane
-//! construction (`scene.rs:617`).
+//! `κ_pen` is **fixture-locally overridden** to `1e3 N/m` (10× softer
+//! than `PENALTY_KAPPA_DEFAULT`) — see "Material plan change" section
+//! above for the empirical motivation. `d̂` stays at
+//! `PENALTY_DHAT_DEFAULT = 1e-3 m` since the helper `sphere_on_plane`
+//! bakes the default `d̂` into plane construction (`scene.rs:617`).
 //!
 //! **Indentation extraction (diagnostic only — not asserted; see Plan
 //! change 2).** The sphere starts at rest with center at origin and
@@ -287,15 +283,16 @@
 //! - **Monotonic error reduction** in `|a_FEM - a_Hertz| / a_Hertz`
 //!   across (h, h/2, h/4).
 //! - **Finest-level relative error** `rel_err_a < 20 %`. Slightly
-//!   relaxed from the scope memo §1 V-3's `15 %` (which was on the
+//!   relaxed from the original spec's `15 %` (which was on the
 //!   indentation `δ_FEM`, structurally unreachable in penalty per
 //!   plan change 2) — the new gate is on `a_FEM` instead. Mesh-bound;
 //!   tightening to `< 10 %` is Phase H Tet10 + adaptive refinement
 //!   work.
 //! - **Cauchy convergence** on the `a_FEM` sequence
 //!   (`|a_h2 − a_h4| < |a_h − a_h2|`) — geometric convergence ratio
-//!   `< 1`, mirror of V-3a's Cauchy gate. Catches "bounded but
-//!   non-converging" regressions that monotonic alone could miss.
+//!   `< 1`, mirror of the compressive block's Cauchy gate. Catches
+//!   "bounded but non-converging" regressions that monotonic alone
+//!   could miss.
 //! - **`δ_FEM` diagnostic only** — reported in `eprintln!` but not
 //!   asserted. Per "Plan change 2" reframe: `δ_FEM` is dominated by
 //!   penalty compliance, not Hertz indentation, and Hertz comparison
@@ -344,11 +341,13 @@ use sim_soft::{
 const RADIUS: f64 = 1.0e-2;
 
 /// Axial downward force on top-of-sphere band (500 mN). Material plan
-/// change vs scope memo §9 V-3 row's 50–200 mN range — see module
+/// change vs the original spec's 50–200 mN range — see module
 /// docstring "Material plan change" section. The 500 mN value gives
-/// `δ_Hertz ≈ 316 μm` and `a_Hertz ≈ 1.78 mm`, with multi-vertex
-/// contact threshold `h < sqrt(2R · F/κ) ≈ 1 mm` — engaging multi-
-/// vertex Hertz mechanics at the mid + fine refinement levels.
+/// `δ_Hertz ≈ 316 μm` and `a_Hertz ≈ 1.78 mm`. At the fixture-local
+/// `κ = 1e3 N/m` override (see "Plan change 1" + KAPPA below) the
+/// multi-vertex contact threshold is `h < sqrt(2R · F/κ) ≈ 3.16 mm` —
+/// engaging multi-vertex Hertz mechanics at the mid + fine refinement
+/// levels.
 const FORCE: f64 = 0.5;
 
 /// Lamé pair `(μ, λ)` — Ecoflex 00-30 + 15 wt% carbon-black composite,
@@ -361,25 +360,31 @@ const FORCE: f64 = 0.5;
 const MU: f64 = 2.0e5;
 const LAMBDA: f64 = 8.0e5;
 
-/// Coarsest cell size — material plan change vs scope memo §9 V-3
-/// row's 5 mm. At `R = 1 cm` BCC sphere gives ~3k tets; in the
-/// single-vertex penalty regime (`h > sqrt(2R · F/κ) = 1 mm`) so
-/// `rel_err` is high — establishes the monotonic-convergence baseline.
+/// Coarsest cell size — material plan change vs the original spec's
+/// 5 mm. At `R = 1 cm` BCC sphere gives ~3k tets; sits **just below
+/// the multi-vertex threshold** (`3.0 mm < 3.16 mm = sqrt(2R · F/κ)`,
+/// within 5% of the boundary at the fixture-local `κ = 1e3`) — the
+/// threshold formula is the SUFFICIENT condition for multi-vertex
+/// engagement, and at this edge the regime is single-vertex
+/// empirically (`n_active = 1`). `rel_err` is high — establishes the
+/// monotonic-convergence baseline.
 const CELL_SIZE_H: f64 = 3.0e-3;
 
-/// Mid refinement — material plan change vs scope memo's 3 mm.
-/// Slightly above the multi-vertex threshold `h ≈ sqrt(2R · F/κ) =
-/// 1 mm`; mostly single-vertex but transitioning, error reduces vs
-/// coarse but remains substantial.
+/// Mid refinement — material plan change vs the original 3 mm. Below
+/// the multi-vertex threshold (`1.5 mm < 3.16 mm` at fixture-local
+/// `κ = 1e3`); engages multi-vertex Hertz contact (`n_active = 5`
+/// empirically). Error reduces vs coarse but remains substantial —
+/// the contact patch is undersampled at this resolution.
 const CELL_SIZE_H2: f64 = 1.5e-3;
 
-/// Fine refinement — material plan change vs scope memo's 2 mm.
-/// Below the multi-vertex threshold (`0.75 mm < 1 mm`); expected to
-/// engage multi-vertex Hertz contact in the disk of radius `sqrt(2R
-/// · F/κ) = 1 mm` at single-pole descent (~45 active pairs at h/4
-/// empirically). Empirical-cap finest level: at h/4 = 0.5 mm the
-/// SDF-meshed sphere plus multi-vertex contact-Newton produced
-/// runtime > 12 min release-mode (active-set churn during
+/// Fine refinement — material plan change vs the original 2 mm.
+/// Below the multi-vertex threshold (`0.75 mm < 3.16 mm` at
+/// fixture-local `κ = 1e3`); engages multi-vertex Hertz contact in
+/// the disk of
+/// radius `sqrt(2R · F/κ) ≈ 3 mm` at single-pole descent (~45 active
+/// pairs at h/4 empirically). Empirical-cap finest level: at h/4 =
+/// 0.5 mm the SDF-meshed sphere plus multi-vertex contact-Newton
+/// produced runtime > 12 min release-mode (active-set churn during
 /// convergence); 0.75 mm fits CI release-tier budget at ~2 min
 /// release-mode total runtime.
 const CELL_SIZE_H4: f64 = 7.5e-4;
@@ -399,29 +404,29 @@ const MAX_NEWTON_ITER: usize = 50;
 
 /// Default contact band — pinned at upstream
 /// `sim_soft::contact::penalty::PENALTY_DHAT_DEFAULT` value
-/// (`penalty.rs:65`) per scope memo Decision J. Re-pinned here because
-/// the upstream constant is `pub(crate)`. d̂ stays at default since
-/// the V-3 plane is set at `z = -(R + d̂)` — the helper bakes this
-/// constant into plane construction (`scene.rs:617`).
+/// (`penalty.rs:65`). Re-pinned here because the upstream constant is
+/// `pub(crate)`. d̂ stays at default since the plane is set at
+/// `z = -(R + d̂)` — the helper bakes this constant into plane
+/// construction (`scene.rs:617`).
 const PENALTY_DHAT: f64 = 1.0e-3;
 
-/// V-3-local penalty stiffness. **Override of**
-/// `PENALTY_KAPPA_DEFAULT = 1e4` (`penalty.rs:57`) per scope memo
-/// Decision J's V-3-may-tune authority — see module docstring's
-/// "Material plan change" section for the empirical motivation.
-/// `1e3` is 10× softer than default; brings the multi-vertex contact
-/// threshold `h < sqrt(2 R · F/κ)` from `≈ 0.45 mm` (default κ + F=
-/// 100 mN) up to `≈ 3.16 mm` (this κ + F=500 mN), so all three
-/// refinement levels (3, 1.5, 0.75 mm) engage multi-vertex Hertz
-/// contact rather than single-vertex penalty equilibrium.
+/// Fixture-local penalty stiffness. **Override of**
+/// `PENALTY_KAPPA_DEFAULT = 1e4` (`penalty.rs:57`) — see module
+/// docstring's "Material plan change" section for the empirical
+/// motivation. `1e3` is 10× softer than default; brings the
+/// multi-vertex contact threshold `h < sqrt(2 R · F/κ)` from
+/// `≈ 0.45 mm` (default κ + F=100 mN) up to `≈ 3.16 mm` (this κ +
+/// F=500 mN), so all three refinement levels (3, 1.5, 0.75 mm) engage
+/// multi-vertex Hertz contact rather than single-vertex penalty
+/// equilibrium.
 ///
 /// **Penalty-correction bias** at this κ: `pen_avg = F/(κ·N_active)
 /// ≈ 9 μm` at h/4 multi-vertex equilibrium (~55 active pairs). Vs
 /// `δ_Hertz ≈ 316 μm` that's `~3 %` bias — well below the 15 %
-/// finest-level rel-err gate. Production scenes (V-1 / V-3a /
-/// V-4 / V-5 / V-7) continue to use the default κ; this constant
-/// only enters via [`PenaltyRigidContact::with_params`] in
-/// [`run_at_refinement`] and must NOT be propagated upstream.
+/// finest-level rel-err gate. Other contact-active fixtures continue
+/// to use the default κ; this constant only enters via
+/// [`PenaltyRigidContact::with_params`] in [`run_at_refinement`] and
+/// must NOT be propagated upstream.
 const KAPPA: f64 = 1.0e3;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -607,8 +612,7 @@ fn run_at_refinement(cell_size: f64) -> StepReport {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-// Release-mode-only gate per scope memo §1 V-3 + §4 + §6 R-5 lens
-// (ii). At h/4 = 0.75 mm + multi-vertex contact-Newton, release
+// Release-mode-only gate. At h/4 = 0.75 mm + multi-vertex contact-Newton, release
 // runtime is ~2 min; debug-mode is `5-10×` slower (`~10-20 min`),
 // over the CI 30-min budget. `#[cfg_attr(debug_assertions, ignore)]`
 // skips the test in default-profile `cargo test` (CI tests-debug
@@ -776,14 +780,14 @@ fn v_3_hertz_sphere_plane_converges_to_closed_form() {
 
     // ── Finest-level relative error gate ────────────────────────────────
     //
-    // V-3 reframed gate (per "Plan change 2"): `rel_err_a < 20 %` at
-    // h/4. Mesh-bound; tightening to <10% is Phase H Tet10 + adaptive
-    // refinement work, not Phase 5. Slightly relaxed from scope memo
-    // §1 V-3's `15 %` (which was on δ_FEM, structurally unreachable
-    // in penalty regime). Failure here means the FEM is not
-    // converging to Hertz patch radius at this resolution OR the
-    // contact-machinery integration has a residual bias that doesn't
-    // shrink with mesh refinement.
+    // Reframed gate (per "Plan change 2"): `rel_err_a < 20 %` at h/4.
+    // Mesh-bound; tightening to <10% is Phase H Tet10 + adaptive
+    // refinement work. Slightly relaxed from the original spec's
+    // `15 %` (which was on δ_FEM, structurally unreachable in the
+    // penalty regime). Failure here means the FEM is not converging
+    // to Hertz patch radius at this resolution OR the contact-
+    // machinery integration has a residual bias that doesn't shrink
+    // with mesh refinement.
     assert!(
         err_a_h4 < 0.20,
         "h/4 rel_err_a = {err_a_h4:.4} ≥ 0.20 — Hertz patch-radius comparison fails the \
