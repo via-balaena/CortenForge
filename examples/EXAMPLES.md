@@ -353,6 +353,8 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 |---------|---------|--------|-------|
 | `soft-drop-on-plane` | `example-sim-soft-soft-drop-on-plane` | Working | ★ Soft sphere released above `RigidPlane`, settles into quiescence; first sim-bevy-soft consumer (CF_VISUAL=1) |
 | `hertz-sphere-plane` | `example-sim-soft-hertz-sphere-plane` | Working | ★ Soft sphere quasi-statically pressed; contact-patch radius vs Hertz analytic (V-3); cf-view colormap PLY + matplotlib pressure-profile plot |
+| `compressive-block` | `example-sim-soft-compressive-block` | Working | ★ Soft cube quasi-statically compressed by descending plate; per-refinement F_R two-bound bracket [F_us, F_strain] + Cauchy convergence (V-3a); cf-view colormap PLY + matplotlib F-vs-ε scatter |
+| `contact-force-readout` | `example-sim-soft-contact-force-readout` | Working | ★ Per-active-pair contact readout via `PenaltyRigidContact::per_pair_readout` (foundation patch `995fb0bf`); same V-3a scene as `compressive-block`; accessor-vs-manual consistency at 1e-12 rel; cf-view pressure-colormap PLY + matplotlib top-down patch scatter |
 
 ### Visual-mode convention: `CF_VISUAL=1`
 
