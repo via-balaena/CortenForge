@@ -1592,14 +1592,23 @@ fn has_enclosing_allow(lines: &[&str], i: usize, lint: &str) -> bool {
         }
     }
 
-    // Additive scan for file-level INNER attributes: if `i` is deep enough
-    // that the back-window doesn't reach the first 50 lines of the file,
-    // explicitly check those top lines for `#![allow(...)]` only. These
-    // are module-level attributes that cover the whole file regardless
-    // of distance. Outer `#[allow(...)]` at file-top is excluded here —
-    // it binds to the next item, not the whole file, so using it to
-    // suppress a violation far below would be a false positive.
-    if back_start > 50 {
+    // Additive scan for file-level INNER attributes: when the back-window
+    // doesn't reach the file top (`back_start > 0`), explicitly check the
+    // first 50 lines for `#![allow(...)]`. These are module-level
+    // attributes that cover the whole file regardless of distance. Outer
+    // `#[allow(...)]` at file-top is excluded here — it binds to the next
+    // item, not the whole file, so using it to suppress a violation far
+    // below would be a false positive.
+    //
+    // Gate threshold MUST be `> 0`, not `> 50`: with `> 50`, indices in
+    // `(0, 50]` fall in a dead zone where neither the primary scan
+    // (`back_start..i` skips `0..back_start`) nor the additive scan
+    // (gated off) reaches the file-top attribute. The dead zone hits
+    // violations at line indices `301..=350` when an `#![allow(...)]`
+    // sits at the file top. Overlap with the primary scan on
+    // `back_start..50` (when `0 < back_start <= 50`) is harmless — both
+    // scans return on first match.
+    if back_start > 0 {
         for open_idx in 0..50 {
             if attr_covers(open_idx, "#![allow(") {
                 return true;
@@ -2884,6 +2893,33 @@ mod tests {
         // Panic at index 902. Inner allow at index 1 — way outside the
         // 300-line back-window but inside the 50-line file-top window.
         assert!(has_enclosing_allow(&lines, 902, "clippy::panic"));
+    }
+
+    #[test]
+    fn enclosing_allow_file_top_inner_covers_dead_zone_line() {
+        // Regression for the dead-zone bug: violations at line indices
+        // 301..=350 with `back_start ∈ (0, 50]` previously fell through —
+        // primary scan (`back_start..i`) skipped `0..back_start` and the
+        // additive scan was gated on `back_start > 50`. The fix drops
+        // the gate to `back_start > 0`. Test exemplars at `i = 305` and
+        // `i = 349` (both in the former dead zone).
+        let mut src = String::from("#![allow(clippy::panic)]\n");
+        for _ in 0..348 {
+            src.push_str("// filler\n");
+        }
+        src.push_str("fn foo() { panic!(); }\n");
+        let lines = split(&src);
+        // Panic at index 349, back_start = 49 — within former dead zone.
+        assert!(has_enclosing_allow(&lines, 349, "clippy::panic"));
+
+        // Panic at index 305, back_start = 5 — within former dead zone.
+        let mut src2 = String::from("#![allow(clippy::panic)]\n");
+        for _ in 0..304 {
+            src2.push_str("// filler\n");
+        }
+        src2.push_str("fn foo() { panic!(); }\n");
+        let lines2 = split(&src2);
+        assert!(has_enclosing_allow(&lines2, 305, "clippy::panic"));
     }
 
     #[test]
