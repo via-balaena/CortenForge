@@ -47,6 +47,8 @@ use sim_rl::{
 };
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
 
+mod common;
+
 // ─── Central parameters (duplicated from d2c_cem_training.rs:64-69) ────────
 
 const DELTA_V: f64 = 3.0;
@@ -312,4 +314,15 @@ fn d2c_sr_rematch() {
     );
     eprintln!("Apply Ch 51 §2.3's nine-cell framework to read the verdict.  final_reward is the");
     eprintln!("primary operationalization of Ch 30's \"resolves the peak\" question.");
+
+    // Persist the verdict to a JSON artifact under
+    // `target/rematch_verdicts/` — libtest swallows the eprintln!
+    // verdict above on a clean pass, so the JSON is the durable
+    // record of the scientific outcome regardless of `--nocapture`
+    // / `--show-output` invocation. Bonus: post-squash reruns can
+    // diff against the pre-squash artifact for byte-level
+    // reproducibility checks beyond the binary protocol-completes
+    // gate.
+    common::write_verdict_json("d2c_sr_rematch", &outcome)
+        .expect("verdict JSON write should succeed");
 }
