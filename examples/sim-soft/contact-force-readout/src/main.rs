@@ -146,8 +146,7 @@
 //! inactive vertices, `|force_z| / A_per_pair_uniform` for active
 //! top-face vertices, units Pa under the uniform-area approximation;
 //! pressure is unsigned so cf-view's sequential viridis colormap
-//! renders the contact patch as a bright top-face cap regardless of
-//! `force_z`'s soft-side sign).
+//! renders the contact patch as a bright top-face cap).
 //!
 //! **Top-face-only coloring is the intended physics asymmetry** —
 //! the bottom face is BC-pinned (Dirichlet, not penalty-contacted),
@@ -1871,8 +1870,9 @@ fn print_summary(snapshot: &ReadoutSnapshot, ply_path: &Path, json_path: &Path) 
     );
     println!(
         "         pressure gradient (~6x) is plot.py's headline (no smooth-normal \
-         interpolation):"
+         interpolation)."
     );
+    println!("         Open in cf-view:");
     println!("           cargo run -p cf-viewer --release -- <path>");
     println!();
     println!("JSON   : {}", json_path.display());

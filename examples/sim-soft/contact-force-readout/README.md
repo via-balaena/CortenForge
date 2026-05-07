@@ -169,23 +169,11 @@ extras["contact_pressure"]
                   auto-colormap (sequential viridis on positive scalar) renders the
                   contact patch as a bright top-face cap; colorbar reads in pressure
                   units (Pa) vs row 14's force_z.
-
-                  **Top-face-only coloring is the intended physics asymmetry, not a
-                  viewer bug.** The bottom face is BC-pinned (Dirichlet, via
-                  `BoundaryConditions::pinned_vertices`), not penalty-contacted, so
-                  it carries no `contact_pressure` scalar. Only top-face vertices
-                  enter the d̂-band under the descended top plate; side faces are
-                  free surfaces. Sister of the Bevy section's "the bottom plate is
-                  purely visual" caveat at the colormap layer.
-
-                  The corner-vs-interior pressure gradient (~6× from interior 374 Pa
-                  to corner 2383 Pa per the Saint-Venant boundary-layer pattern) is
-                  smoothed out by smooth-normal interpolation across the boundary
-                  triangulation — cf-view best surfaces the **engagement boundary**
-                  (top vs not-top) and the **mean pressure level**. The per-pair
-                  gradient is plot.py's headline (no smoothing — each active pair
-                  is a discrete marker).
 ```
+
+**Top-face-only coloring is the intended physics asymmetry, not a viewer bug.** The bottom face is BC-pinned (Dirichlet, via `BoundaryConditions::pinned_vertices`), not penalty-contacted, so it carries no `contact_pressure` scalar. Only top-face vertices enter the d̂-band under the descended top plate; side faces are free surfaces. Sister of the Bevy section's "the bottom plate is purely visual" caveat at the colormap layer.
+
+The corner-vs-interior pressure gradient (~6× from interior 374 Pa to corner 2383 Pa per the Saint-Venant boundary-layer pattern) is smoothed out by smooth-normal interpolation across the boundary triangulation — cf-view best surfaces the **engagement boundary** (top vs not-top) and the **mean pressure level**. The per-pair gradient is plot.py's headline (no smoothing — each active pair is a discrete marker).
 
 **cf-view command:**
 
