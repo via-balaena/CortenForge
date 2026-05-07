@@ -167,9 +167,14 @@ jobs:
           #   locally via pre-commit, not in this matrix.
           # - sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests
           #   / sim-opt: heavy-physics validators move to tests-release below.
-          # cf-viewer is included: its tests are pure-function (no App::new()
-          # / window spin-up), so headless CI handles them; the x11 / wayland
-          # dev libs already installed above suffice for the link step.
+          # cf-viewer + cf-bevy-common + sim-bevy-soft are included: their
+          # tests are pure-function (no App::new() / window spin-up), so
+          # headless CI handles them; the x11 / wayland dev libs already
+          # installed above suffice for the link step. cf-bevy-common
+          # (sim-soft PR2 C2b) is the shared Bevy helper crate consumed by
+          # cf-viewer + sim-bevy + sim-bevy-soft. sim-bevy-soft (sim-soft
+          # PR2 C2c) is the deforming-tet-mesh trajectory replay (β) crate
+          # consumed by sim-soft Tier 4 examples (rows 12-14, 18).
           cargo test \
             -p mesh-types -p mesh-io -p mesh-repair -p mesh-sdf \
             -p mesh-offset -p mesh-shell -p mesh-measure \
@@ -177,7 +182,8 @@ jobs:
             -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
             -p sim-urdf -p sim-gpu -p sim-soft -p sim-ml-chassis-bevy \
             -p sim-therm-env -p cf-geometry -p cf-spatial -p cf-design \
-            -p cf-design-tests -p cf-viewer
+            -p cf-design-tests -p cf-viewer -p cf-bevy-common \
+            -p sim-bevy-soft
         shell: bash
 
   # ============================================================================

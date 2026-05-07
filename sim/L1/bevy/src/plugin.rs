@@ -5,8 +5,8 @@
 
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
+use cf_bevy_common::camera::{OrbitCamera, OrbitCameraPlugin};
 
-use crate::camera::{OrbitCameraPlugin, spawn_orbit_camera};
 use crate::gizmos::{
     DebugGizmosSet, draw_contact_normals, draw_contact_points, draw_muscles, draw_tendons,
 };
@@ -182,6 +182,22 @@ fn configure_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
     // Negative depth bias to render gizmos in front of meshes
     config.depth_bias = -0.01;
+}
+
+/// Spawn the default orbit camera used by `SimViewerPlugin` when
+/// `spawn_camera` is enabled. Defaults aim at a point 1m above ground with
+/// a wide framing angle for typical sim-bevy MJCF scenes; consumers wanting
+/// different framing should disable `spawn_camera` and spawn their own.
+fn spawn_orbit_camera(mut commands: Commands) {
+    let camera = OrbitCamera::new()
+        .with_target(Vec3::new(0.0, 1.0, 0.0))
+        .with_distance(8.0)
+        .with_angles(0.8, 0.6);
+
+    let mut transform = Transform::default();
+    camera.apply_to_transform(&mut transform);
+
+    commands.spawn((Camera3d::default(), camera, transform));
 }
 
 /// Spawn default lighting for the scene.

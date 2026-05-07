@@ -1,29 +1,17 @@
-//! Hand-rolled kinematic rigid primitives — the rigid side of one-way
-//! soft↔rigid penalty contact.
+//! Hand-rolled kinematic rigid plane primitive — the rigid side of
+//! one-way soft↔rigid penalty contact.
 //!
-//! Phase 5 ships [`RigidPlane`] only; `RigidSphere` is deferred to Phase
-//! H per `phase_5_penalty_contact_scope.md` Decision B (no V-* test
-//! exercises it). Primitives are kinematic — they don't move during a
-//! step (Decision C: one-way coupling). sim-mjcf rigid-body integration
-//! is its own future phase between Phase 5 and Phase H.
+//! Phase 5 shipped [`RigidPlane`] as the sole concrete primitive type
+//! behind the now-deleted `RigidPrimitive` trait. PR2 of the sim-soft
+//! examples arc routes penalty contact through the crate-public
+//! [`Sdf`] trait instead, so any `impl Sdf` (`SphereSdf`, scan-derived
+//! `MeshSdf`, cf-design `Solid`, ...) is now a valid rigid primitive
+//! without per-shape boilerplate; this file holds only `RigidPlane` and
+//! its [`Sdf`] impl. Primitives stay kinematic — they don't move during
+//! a step (Decision C: one-way coupling). sim-mjcf rigid-body
+//! integration is its own future phase between Phase 5 and Phase H.
 
-use crate::Vec3;
-
-/// Closed analytic surface that a soft vertex can contact.
-///
-/// `signed_distance` follows the SDF convention used elsewhere in
-/// `sim-soft` (see [`crate::sdf_bridge::SphereSdf`]): positive outside
-/// the rigid solid (in the direction of [`RigidPrimitive::outward_normal`]),
-/// zero on the surface, negative inside.
-///
-/// `pub(crate)` because external users construct concrete primitives
-/// (e.g. [`RigidPlane`]) and pass them to the Phase 5 penalty contact
-/// model; the trait is the internal `dyn`-erasure surface for primitive
-/// heterogeneity inside a single contact model.
-pub(crate) trait RigidPrimitive: Send + Sync {
-    fn signed_distance(&self, p: Vec3) -> f64;
-    fn outward_normal(&self, p: Vec3) -> Vec3;
-}
+use crate::{Vec3, sdf_bridge::Sdf};
 
 /// Infinite half-space `{ p : p · normal ≥ offset }` with a kinematic
 /// pose.
@@ -33,6 +21,12 @@ pub(crate) trait RigidPrimitive: Send + Sync {
 /// Constructor panics on a zero or non-finite `normal` — a degenerate
 /// plane has no well-defined outward direction and would silently break
 /// sign conventions downstream.
+///
+/// `RigidPlane` impls [`Sdf`] so it can be passed directly to
+/// [`PenaltyRigidContact::new`](super::PenaltyRigidContact::new) and
+/// composed with other `Sdf` primitives in a mixed-primitive contact
+/// list. `eval` is the signed distance and `grad` is the (constant)
+/// outward unit normal.
 #[derive(Clone, Copy, Debug)]
 pub struct RigidPlane {
     normal: Vec3,
@@ -70,28 +64,29 @@ impl RigidPlane {
     }
 
     /// Signed distance `p · normal - offset` — positive above the plane
-    /// (in the direction of the unit normal), negative below.
+    /// (in the direction of the unit normal), negative below. Inherent
+    /// alias for [`Sdf::eval`]; the inherent name reads better at
+    /// plane-specific call sites where the SDF abstraction is incidental.
     #[must_use]
     pub fn signed_distance(&self, p: Vec3) -> f64 {
         p.dot(&self.normal) - self.offset
     }
 
     /// Constant outward normal — independent of `_p` because the plane
-    /// is flat. The argument is part of the `RigidPrimitive`
-    /// (crate-private) trait contract for primitives whose normal
-    /// varies with surface position.
+    /// is flat. Inherent alias for [`Sdf::grad`]; kept for symmetry with
+    /// [`RigidPlane::signed_distance`].
     #[must_use]
     pub const fn outward_normal(&self, _p: Vec3) -> Vec3 {
         self.normal
     }
 }
 
-impl RigidPrimitive for RigidPlane {
-    fn signed_distance(&self, p: Vec3) -> f64 {
+impl Sdf for RigidPlane {
+    fn eval(&self, p: Vec3) -> f64 {
         Self::signed_distance(self, p)
     }
 
-    fn outward_normal(&self, p: Vec3) -> Vec3 {
+    fn grad(&self, p: Vec3) -> Vec3 {
         Self::outward_normal(self, p)
     }
 }

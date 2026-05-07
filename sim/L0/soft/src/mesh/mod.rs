@@ -1,11 +1,14 @@
 //! `Mesh` trait — tet-mesh storage abstraction.
 //!
-//! Seven items: counts, vertex lookup, positions, adjacency, quality,
-//! and a structural-equality predicate used by change-detection. One
-//! impl (`SingleTetMesh`, hand-rolled 1 tet) in skeleton; multi-tet
-//! `TetMesh` lands in Phase A proper per spec §8.
+//! Ten items: counts, vertex lookup, positions, adjacency, quality,
+//! per-tet materials, per-tet interface flags, boundary triangles,
+//! and a structural-equality predicate used by change-detection.
+//! Three impls: [`SingleTetMesh`] (1 tet, walking-skeleton spec §2),
+//! [`HandBuiltTetMesh`] (multi-tet hand-authored scenes — Phase 2/4/5
+//! gate fixtures), and `SdfMeshedTetMesh` (Phase 3 BCC + Labelle-
+//! Shewchuk Isosurface Stuffing pipeline; lives in `sdf_bridge`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
@@ -107,6 +110,27 @@ pub trait Mesh: Send + Sync {
     /// consumer is Part 11 mesh-quality reporting.
     fn interface_flags(&self) -> &[bool];
 
+    /// Outward-oriented boundary triangles. Length equals the number
+    /// of unique boundary faces; interior faces (shared between two
+    /// tets) are culled at construction time.
+    ///
+    /// Populated at mesh-construction time by extracting boundary
+    /// triangles from the tet topology. Outward winding is derived
+    /// purely from the right-handed tet vertex order — each
+    /// constructor in this crate enforces `signed_volume > 0`, so the
+    /// four faces of a right-handed tet `[v0, v1, v2, v3]` orient as:
+    ///
+    /// - opposite v0 → `(v1, v2, v3)`
+    /// - opposite v1 → `(v0, v3, v2)`
+    /// - opposite v2 → `(v0, v1, v3)`
+    /// - opposite v3 → `(v0, v2, v1)`
+    ///
+    /// Diagnostic / visualization surface — the Newton hot path never
+    /// touches it. Sister cache to [`Mesh::materials`] and
+    /// [`Mesh::interface_flags`] (populated once at construction,
+    /// exposed by reference for zero-copy access).
+    fn boundary_faces(&self) -> &[[VertexId; 3]];
+
     /// Structural equality: two meshes are structurally equal when they
     /// share vertex count, tet count, and per-tet vertex indices (Ch 00
     /// §02 mesh claim 3).
@@ -185,6 +209,60 @@ pub(crate) fn interface_flags_from_field(
                 + (v3 - v2).norm())
                 / 6.0;
             sdf.eval(centroid).abs() < l_e
+        })
+        .collect()
+}
+
+/// Compute the per-mesh boundary-face cache that backs
+/// [`Mesh::boundary_faces`].
+///
+/// A face appears in exactly one tet iff it lies on the mesh boundary:
+/// interior faces are shared between two neighbouring tets with
+/// opposite winding, so the canonical-key counting step below collapses
+/// each interior pair into a single 2-count entry. Boundary faces drop
+/// out as 1-count entries, retaining the outward winding emitted by
+/// the right-handed-tet face convention:
+///
+/// - opposite v0 → `(v1, v2, v3)`
+/// - opposite v1 → `(v0, v3, v2)`
+/// - opposite v2 → `(v0, v1, v3)`
+/// - opposite v3 → `(v0, v2, v1)`
+///
+/// Each constructor in this crate enforces right-handed tet orientation
+/// (`signed_volume > 0`), so the topological winding rule is sound
+/// without re-checking positions here. Sister of
+/// [`materials_from_field`] and [`interface_flags_from_field`].
+///
+/// Walked in `tet_id` order (single-threaded) for I-5 determinism
+/// carry-forward; the `HashMap` counting pass is order-independent
+/// (lookups are black-box queries), so output determinism comes from
+/// the input slice walk, not from the map.
+#[must_use]
+pub(crate) fn boundary_faces_from_topology(tets: &[[VertexId; 4]]) -> Vec<[VertexId; 3]> {
+    let mut oriented: Vec<[VertexId; 3]> = Vec::with_capacity(tets.len() * 4);
+    for &t in tets {
+        oriented.push([t[1], t[2], t[3]]); // opposite v0
+        oriented.push([t[0], t[3], t[2]]); // opposite v1
+        oriented.push([t[0], t[1], t[3]]); // opposite v2
+        oriented.push([t[0], t[2], t[1]]); // opposite v3
+    }
+
+    // Canonical key = sorted vertex triple. Boundary faces hit once;
+    // interior faces hit twice (with opposite winding from the two
+    // neighbouring tets — sort collapses both into the same key).
+    let mut counts: HashMap<[VertexId; 3], u32> = HashMap::with_capacity(oriented.len());
+    for face in &oriented {
+        let mut key = *face;
+        key.sort_unstable();
+        *counts.entry(key).or_insert(0) += 1;
+    }
+
+    oriented
+        .into_iter()
+        .filter(|face| {
+            let mut key = *face;
+            key.sort_unstable();
+            counts[&key] == 1
         })
         .collect()
 }

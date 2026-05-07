@@ -32,6 +32,24 @@ pub trait Sdf: Send + Sync {
     fn grad(&self, p: Vec3) -> Vec3;
 }
 
+/// Blanket forwarding impl so a heap-erased SDF satisfies `Sdf` itself.
+///
+/// Lets a `Vec<Box<dyn Sdf>>` be consumed by the same generic constructors
+/// that accept `Vec<RigidPlane>` or `Vec<SphereSdf>` — sites that build a
+/// mixed-primitive list (e.g., a `RigidPlane` floor plus a `SphereSdf`
+/// indenter for the layered-silicone-device scene) box each primitive
+/// once and pass the homogeneous boxed vector through the same call path
+/// as a homogeneous concrete vector.
+impl<T: Sdf + ?Sized> Sdf for Box<T> {
+    fn eval(&self, p: Vec3) -> f64 {
+        (**self).eval(p)
+    }
+
+    fn grad(&self, p: Vec3) -> Vec3 {
+        (**self).grad(p)
+    }
+}
+
 /// Sphere centred at the origin with the given radius.
 ///
 /// `eval = ‖p‖ − r` and `grad = p / ‖p‖`. At `p = 0` the gradient is

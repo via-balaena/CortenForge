@@ -1,0 +1,42 @@
+[package]
+name = "sim-bevy-soft"
+description = "Bevy visualization for sim-soft soft-body trajectories — replay of headless solver runs over a deforming tet mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.cortenforge]
+tier = "L1"
+
+[dependencies]
+# sim-soft Mesh trait + boundary_faces + Vec3 type alias.
+sim-soft = { workspace = true }
+
+# UpAxis (input → Bevy frame swap) read by the mesh build path and the
+# step_replay system. `OrbitCameraPlugin` also lives in cf-bevy-common
+# but is wired by consumers, not this crate — the dep here is for
+# UpAxis only.
+cf-bevy-common = { workspace = true }
+
+# `Point3<f64>` for `UpAxis::to_bevy_point` calls in the mesh build path.
+mesh-types = { workspace = true }
+
+# Bevy 0.18 — minimal feature set per cf-bevy-common precedent. Library code
+# touches Mesh + Mesh3d + ATTRIBUTE_POSITION/NORMAL + Assets<Mesh> + Time<Real>
+# (covered by `bevy_render` + `bevy_asset`; `bevy_time` is base and always
+# enabled). PBR materials, camera bundles, winit, gizmos, etc. are consumer
+# concerns — each example brings its own via Cargo's additive feature
+# unification.
+bevy = { workspace = true, features = ["bevy_render", "bevy_asset"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

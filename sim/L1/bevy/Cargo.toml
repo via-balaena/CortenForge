@@ -18,6 +18,10 @@ tier = "L1"
 cf-geometry = { path = "../../../design/cf-geometry" }
 # Per-vertex attribute container — renderer consumes AttributedMesh
 mesh-types = { path = "../../../mesh/mesh-types" }
+# Shared Bevy helpers — `OrbitCamera` + `OrbitCameraPlugin` re-exported by
+# `sim_bevy::camera` and `sim_bevy::prelude`. Single source of truth for
+# the orbit-camera controller across cf-viewer + sim-bevy + sim-bevy-soft.
+cf-bevy-common = { workspace = true }
 
 # BodyId / Pose primitives threaded from Layer 0 into Bevy ECS components
 sim-types = { path = "../../L0/types" }

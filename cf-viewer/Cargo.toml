@@ -58,6 +58,11 @@ mesh-io = { workspace = true }
 # AttributedMesh + IndexedMesh + Point3 re-exports. Public-API surface of
 # `ViewerInput`, so this is a non-private dep.
 mesh-types = { workspace = true }
+# Shared Bevy helpers — `UpAxis` (axis-swap convention), `OrbitCamera` +
+# `OrbitCameraPlugin` (mouse-driven viewport controls), `framing_for_aabb`
+# (corner-on initial pose). Factored out at sim-soft PR2 C2b alongside
+# sim-bevy-soft + sim-bevy migrations.
+cf-bevy-common = { workspace = true }
 # Application-style error chaining for the binary's load+wrap path.
 anyhow = { workspace = true }
 # CLI argument parsing (commit 6). Direct dep with `derive`; matches the

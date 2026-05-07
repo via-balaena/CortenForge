@@ -46,8 +46,8 @@ pub mod solver;
 
 pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{
-    ContactGradient, ContactHessian, ContactModel, ContactPair, NullContact, PenaltyRigidContact,
-    RigidPlane,
+    ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout, NullContact,
+    PenaltyRigidContact, RigidPlane,
 };
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};

@@ -51,4 +51,4 @@ cf-view <path> [--scalar=<name>] [--colormap=<auto|divergent|sequential|categori
 
 ## Tests
 
-`cargo test -p cf-viewer` — 56 unit tests covering colormap detection, scalar extraction, CLI parsing, mesh conversion, and orbit-camera framing. The Bevy window itself is not tested in CI (no headless display server on the runners); local visual review against `examples/sim-soft/sphere-sdf-eval` is the v1 test surface for the rendering path.
+`cargo test -p cf-viewer` — 42 unit tests covering colormap detection, scalar extraction, CLI parsing, and mesh conversion. The orbit camera + up-axis convention live in `cf-bevy-common` (15 unit tests, `cargo test -p cf-bevy-common`) since sim-soft PR2 C2b factored them out for sharing with sim-bevy + sim-bevy-soft. The Bevy window itself is not tested in CI (no headless display server on the runners); local visual review against `examples/sim-soft/sphere-sdf-eval` is the v1 test surface for the rendering path.

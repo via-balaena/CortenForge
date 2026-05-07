@@ -73,6 +73,51 @@ pub struct ContactHessian {
     pub contributions: Vec<(VertexId, VertexId, Matrix3<f64>)>,
 }
 
+/// Per-active-pair readout — contact geometry plus the force the
+/// contact model exerts on the soft side.
+///
+/// Bundles the outputs of a single active-pair evaluation for
+/// downstream readout consumers (the row 18 `contact-force-readout`
+/// example, future calibration loops). Sister of [`ContactGradient`] /
+/// [`ContactHessian`] at the human-facing readout layer: those return
+/// the data the *solver* needs to assemble a residual / tangent;
+/// `ContactPairReadout` returns the data a *user* needs to inspect
+/// what's happening at the contact interface.
+///
+/// Capture timing is on-demand — readout consumers pass current
+/// positions and the producer recomputes geometry + force from scratch,
+/// matching the on-demand semantics of [`ContactModel::active_pairs`].
+/// No per-iter cache is maintained.
+///
+/// **Sign convention** — `force_on_soft` is the force the contact
+/// model exerts on the soft side at this pair, equal to `-gradient` of
+/// the contact energy at the contacted vertex. For the penalty case
+/// with outward primitive normal `n`, this resolves to
+/// `+κ·(d̂-sd)·n` (positive scalar times outward normal: the soft body
+/// is pushed *away* from the rigid surface, restoring the active config
+/// back to the inactive band). The Newton's-3rd-law reaction on the
+/// rigid side is `-force_on_soft`.
+#[derive(Clone, Debug)]
+pub struct ContactPairReadout {
+    /// The active pair this readout describes.
+    pub pair: ContactPair,
+    /// Position of the contacted soft vertex (or relevant geometric
+    /// point for future IPC variants) at the readout-time configuration.
+    pub position: Vec3,
+    /// Signed distance from `position` to the rigid primitive at
+    /// readout time. Values strictly less than `d̂` are the active
+    /// regime — matching the gate at
+    /// [`ContactModel::active_pairs`]; the producer only emits
+    /// readouts for active pairs.
+    pub sd: f64,
+    /// Outward-pointing unit normal of the rigid primitive evaluated
+    /// at `position`.
+    pub normal: Vec3,
+    /// Force the contact model exerts on the soft side at this pair —
+    /// see "Sign convention" in the type docs.
+    pub force_on_soft: Vec3,
+}
+
 /// Contact-energy surface over candidate pairs. `dyn`-compatible at
 /// scene construction; monomorphized `C: ContactModel` on the hot path.
 pub trait ContactModel: Send + Sync {

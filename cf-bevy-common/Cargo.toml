@@ -1,0 +1,37 @@
+[package]
+name = "cf-bevy-common"
+description = "Shared Bevy-0.18 helpers (orbit camera + up-axis convention) for workspace consumers (cf-viewer, sim-bevy, sim-bevy-soft)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-internal Bevy support crate; consumed by cf-viewer + sim-bevy +
+# sim-bevy-soft. Per the cf-viewer arc Q1 + Q8 locks, no
+# `[package.metadata.cortenforge]` block — tier metadata is for L0/L1 sim
+# libraries under sim/, not for workspace tools or shared support crates
+# (matches xtask + cf-viewer). xtask Layer Integrity grader exempts this
+# crate explicitly (see `xtask/src/grade.rs::applies_to_crate`).
+
+[dependencies]
+# Bevy 0.18 — workspace-default feature set is sufficient. cf-bevy-common's
+# code uses only ECS + math + transform + input + app surface, all of which
+# live in `bevy_internal`'s base (not feature-gated). Downstream consumers
+# (cf-viewer, sim-bevy, sim-bevy-soft) bring their own rendering-pipeline
+# features via Cargo's additive feature unification.
+bevy = { workspace = true }
+
+# `Aabb`, `Point3`, `Vector3` for `OrbitCamera::framing_for_aabb` and
+# `UpAxis::to_bevy_point` / `to_bevy_normal`.
+mesh-types = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

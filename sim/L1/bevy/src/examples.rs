@@ -26,7 +26,8 @@ use sim_core::validation::{
 };
 use sim_core::{ConstraintType, Data, Model};
 
-use crate::camera::OrbitCamera;
+use cf_bevy_common::camera::OrbitCamera;
+
 use crate::convert::vec3_from_vector;
 use crate::model_data::{PhysicsData, PhysicsModel};
 

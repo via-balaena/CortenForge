@@ -1,0 +1,58 @@
+[package]
+name = "example-sim-soft-soft-drop-on-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# SoftScene::dropping_sphere (V-5 fixture's helper) + CpuNewtonSolver +
+# PenaltyRigidContactSolver type alias + RigidPlane + PenaltyRigidContact +
+# MaterialField + Mesh trait + SceneInitial + SdfMeshedTetMesh + Solver +
+# SolverConfig + Tet4 + Vec3 + VertexId + referenced_vertices.
+sim-soft = { workspace = true }
+# Tensor for solver.replay_step inputs (x_prev, v_prev, theta).
+sim-ml-chassis = { workspace = true }
+# Trajectory + SoftBodyVisualPlugin + build_soft_mesh — Bevy replay path
+# (CF_VISUAL=1 visual mode). Row 12 is the first user of sim-bevy-soft.
+sim-bevy-soft = { workspace = true }
+# UpAxis::PlusZ for the input → Bevy frame swap; OrbitCamera +
+# OrbitCameraPlugin for the visual-mode camera.
+cf-bevy-common = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the final-frame deformed-
+# mesh PLY emit.
+mesh-types = { workspace = true }
+# save_ply_attributed for out/soft_drop_on_plane.ply.
+mesh-io = { workspace = true }
+# Result<()> return + error-context wrapping for the PLY emit step.
+anyhow = { workspace = true }
+# assert_relative_eq! for the IV-1 sparse-tier rel-tol contract on captured
+# drop-metric bits + the COM-at-equilibrium gate.
+approx = { workspace = true }
+# Bevy 0.18 — full PBR + winit + UI feature set mirroring sim-bevy's
+# example-time set so the visual-mode `App::new().add_plugins(DefaultPlugins)`
+# resolves a windowed render pipeline. Headless mode never invokes Bevy at
+# runtime, but the binary links bevy unconditionally per Cargo's
+# additive-features model — sim-bevy-soft's minimal `bevy_render +
+# bevy_asset` set unifies up to this consumer's full set.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+    "x11",
+] }
+
+[lints]
+workspace = true

@@ -6,8 +6,8 @@
 //! Phase A proper replaces this with a general `TetMesh`.
 
 use super::{
-    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, interface_flags_from_field,
-    materials_from_field, quality,
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, boundary_faces_from_topology,
+    interface_flags_from_field, materials_from_field, quality,
 };
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
@@ -20,6 +20,7 @@ pub struct SingleTetMesh {
     q: QualityMetrics,
     material_cache: Vec<NeoHookean>,
     interface_flags: Vec<bool>,
+    boundary_faces: Vec<[VertexId; 3]>,
 }
 
 impl SingleTetMesh {
@@ -40,12 +41,14 @@ impl SingleTetMesh {
         let q = quality::compute_metrics(&vertices, &tets);
         let material_cache = materials_from_field(&vertices, &tets, field);
         let interface_flags = interface_flags_from_field(&vertices, &tets, field);
+        let boundary_faces = boundary_faces_from_topology(&tets);
         Self {
             vertices,
             adj: MeshAdjacency,
             q,
             material_cache,
             interface_flags,
+            boundary_faces,
         }
     }
 }
@@ -82,6 +85,10 @@ impl Mesh for SingleTetMesh {
 
     fn interface_flags(&self) -> &[bool] {
         &self.interface_flags
+    }
+
+    fn boundary_faces(&self) -> &[[VertexId; 3]] {
+        &self.boundary_faces
     }
 
     // Ch 00 §02 mesh claim 3: same vertex count, same tet count, and

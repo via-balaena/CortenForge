@@ -316,6 +316,60 @@ ML boundary layer — observation/action spaces, environments, learning algorith
 | `vec-env/td3` | `example-ml-vec-env-td3` | Working | ★ 50 reaching arms + TD3 (5 tests) |
 | `vec-env/sac` | `example-ml-vec-env-sac` | Working | ★ 50 reaching arms + SAC (5 tests) |
 
+## sim-soft/
+
+Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + Labelle-Shewchuk SDF meshing, multi-material partitioning, penalty contact with rigid primitives. See [`sim/L0/soft/EXAMPLE_INVENTORY.md`][sim-soft-inv] for the full 3-PR plan + tier breakdown.
+
+[sim-soft-inv]: ../sim/L0/soft/EXAMPLE_INVENTORY.md
+
+### Tier 1 — SDF primitives + meshing
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `sphere-sdf-eval` | `example-sim-soft-sphere-sdf-eval` | Working | `Sdf` trait contract on `SphereSdf`; 11³ = 1331-point grid with `signed_distance` per-vertex scalar |
+| `hollow-shell-sdf` | `example-sim-soft-hollow-shell-sdf` | Working | `DifferenceSdf` of two `SphereSdf`s; hollow-body composition |
+| `sdf-to-tet-sphere` | `example-sim-soft-sdf-to-tet-sphere` | Working | `SdfMeshedTetMesh::from_sdf` solid sphere; BCC + Labelle-Shewchuk pipeline |
+
+### Tier 2 — Constitutive + multi-element
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `single-tet-stretch` | `example-sim-soft-single-tet-stretch` | Working | Single Tet4 uniaxial stretch; closed-form NeoHookean comparison |
+| `neo-hookean-uniaxial` | `example-sim-soft-neo-hookean-uniaxial` | Working | Compressible NH through inversion (folds inventory row 7 InversionHandling) |
+| `multi-element-stretch` | `example-sim-soft-multi-element-stretch` | Working | N-tet `HandBuiltTetMesh` uniform Dirichlet stretch; per-element stress agreement |
+
+### Tier 3 — Multi-material spatial fields
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `layered-scalar-field` | `example-sim-soft-layered-scalar-field` | Working | 3-shell `LayeredScalarField` field-exposition (no solver) |
+| `blended-scalar-field` | `example-sim-soft-blended-scalar-field` | Working | `BlendedScalarField` smooth-transition counterpart |
+| `bonded-bilayer-beam` | `example-sim-soft-bonded-bilayer-beam` | Working | Bilayer cantilever beam, EB-composite analytic comparison |
+| `concentric-lame-shells` | `example-sim-soft-concentric-lame-shells` | Working | ★ 3-shell hollow silicone sphere, internal pressure, piecewise-Lamé closed-form (PR1 finale) |
+
+### Tier 4 — Penalty contact (PR2 in flight)
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `soft-drop-on-plane` | `example-sim-soft-soft-drop-on-plane` | Working | ★ Soft sphere released above `RigidPlane`, settles into quiescence; first sim-bevy-soft consumer (CF_VISUAL=1) |
+| `hertz-sphere-plane` | `example-sim-soft-hertz-sphere-plane` | Working | ★ Soft sphere quasi-statically pressed; contact-patch radius vs Hertz analytic (V-3); cf-view colormap PLY + matplotlib pressure-profile plot |
+| `compressive-block` | `example-sim-soft-compressive-block` | Working | ★ Soft cube quasi-statically compressed by descending plate; per-refinement F_R two-bound bracket [F_us, F_strain] + Cauchy convergence (V-3a); cf-view colormap PLY + matplotlib F-vs-ε scatter |
+| `contact-force-readout` | `example-sim-soft-contact-force-readout` | Working | ★ Per-active-pair contact readout via `PenaltyRigidContact::per_pair_readout` (foundation patch `995fb0bf`); same V-3a scene as `compressive-block`; accessor-vs-manual consistency at 1e-12 rel; cf-view pressure-colormap PLY + matplotlib top-down patch scatter |
+
+### Visual-mode convention: `CF_VISUAL=1`
+
+Tier 4 + Tier 6 examples (`soft-drop-on-plane` and successors) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` renders the single quasi-static settled frame):
+
+```text
+cargo run -p example-sim-soft-soft-drop-on-plane --release           # headless asserts + PLY
+CF_VISUAL=1 cargo run -p example-sim-soft-soft-drop-on-plane --release # + Bevy windowed visualization
+```
+
+The replay clock is per-entity — a `ReplayEpoch` component captures the wall-clock at the first `step_replay` tick (so `DefaultPlugins` startup time doesn't consume playback budget) and `step_replay` thereafter computes frame index against `(now - epoch)`. Press `R` to clear all entities' epochs and replay from frame 0. Default replay rate is `1×` wall-clock; consumers can override per spawn (row 12 ships at `10×` slow-motion since its `~89 ms` freefall is blink-and-miss-it at real-time). Replay clamps at end (no looping). Pause / scrub controls are out of scope — defer to a future row per the [`step_replay`][step-replay] docs.
+
+[sbsp]: ../sim/L1/sim-bevy-soft/src/plugin.rs
+[step-replay]: ../sim/L1/sim-bevy-soft/src/trajectory.rs
+
 ## integration/
 
 Pipeline composition: proving domains work together end-to-end.

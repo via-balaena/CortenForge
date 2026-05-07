@@ -1845,6 +1845,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-bevy-common"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "mesh-types",
+]
+
+[[package]]
 name = "cf-design"
 version = "1.0.0"
 dependencies = [
@@ -1896,6 +1904,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "bevy_egui",
+ "cf-bevy-common",
  "clap",
  "mesh-io",
  "mesh-types",
@@ -4796,6 +4805,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-compressive-block"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "bevy",
+ "cf-bevy-common",
+ "mesh-io",
+ "mesh-types",
+ "serde_json",
+ "sim-bevy-soft",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-concentric-lame-shells"
 version = "1.0.0"
 dependencies = [
@@ -4804,6 +4829,38 @@ dependencies = [
  "mesh-io",
  "mesh-types",
  "nalgebra",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
+name = "example-sim-soft-contact-force-readout"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "bevy",
+ "cf-bevy-common",
+ "mesh-io",
+ "mesh-types",
+ "serde_json",
+ "sim-bevy-soft",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
+name = "example-sim-soft-hertz-sphere-plane"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "bevy",
+ "cf-bevy-common",
+ "mesh-io",
+ "mesh-types",
+ "serde_json",
+ "sim-bevy-soft",
  "sim-ml-chassis",
  "sim-soft",
 ]
@@ -4870,6 +4927,21 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
+name = "example-sim-soft-soft-drop-on-plane"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "bevy",
+ "cf-bevy-common",
+ "mesh-io",
+ "mesh-types",
+ "sim-bevy-soft",
  "sim-ml-chassis",
  "sim-soft",
 ]
@@ -8372,6 +8444,7 @@ name = "sim-bevy"
 version = "1.0.0"
 dependencies = [
  "bevy",
+ "cf-bevy-common",
  "cf-geometry",
  "mesh-types",
  "nalgebra",
@@ -8379,6 +8452,16 @@ dependencies = [
  "sim-mjcf",
  "sim-types",
  "sim-urdf",
+]
+
+[[package]]
+name = "sim-bevy-soft"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "cf-bevy-common",
+ "mesh-types",
+ "sim-soft",
 ]
 
 [[package]]
