@@ -296,6 +296,8 @@ fn d2c_sr_rematch_pt() {
 
     // Persist verdict JSON — see d2c_sr_rematch.rs for the rationale
     // (libtest swallows the eprintln! verdict on a clean pass).
-    common::write_verdict_json("d2c_sr_rematch_pt", &outcome)
-        .expect("verdict JSON write should succeed");
+    // Best-effort: log on FS error rather than panic.
+    if let Err(e) = common::write_verdict_json("d2c_sr_rematch_pt", &outcome) {
+        eprintln!("[warn] verdict JSON write failed: {e}");
+    }
 }

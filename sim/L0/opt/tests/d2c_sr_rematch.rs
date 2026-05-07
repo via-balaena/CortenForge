@@ -323,6 +323,13 @@ fn d2c_sr_rematch() {
     // diff against the pre-squash artifact for byte-level
     // reproducibility checks beyond the binary protocol-completes
     // gate.
-    common::write_verdict_json("d2c_sr_rematch", &outcome)
-        .expect("verdict JSON write should succeed");
+    //
+    // Best-effort: a write failure (FS full, permission, etc.) logs
+    // and continues rather than panicking, because the verdict is
+    // informational per Ch 42 §6 sub-decision (g) shape-α and the
+    // rematch protocol itself completed cleanly. A 4-hour clean run
+    // shouldn't fail on a post-run FS hiccup.
+    if let Err(e) = common::write_verdict_json("d2c_sr_rematch", &outcome) {
+        eprintln!("[warn] verdict JSON write failed: {e}");
+    }
 }
