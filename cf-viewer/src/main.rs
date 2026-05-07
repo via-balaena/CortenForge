@@ -263,10 +263,39 @@ fn spawn_geometry(
         // diagonal so per-vertex sphere size scales with the rendered
         // scene; per-vertex POSITION is multiplied by `scale` at spawn so
         // the cluster spans the rendered bbox not the physics bbox.
+        //
+        // Radius is the MIN of two bounds:
+        //   1. `diagonal × POINT_RADIUS_FRACTION` — the original
+        //      empirical bound, calibrated against sphere-sdf-eval's
+        //      sparse 11³ grid.
+        //   2. `0.4 × (V/N)^(1/3)` — density-aware bound. With `N`
+        //      points uniformly distributed in volume `V`, the average
+        //      inter-point spacing is `(V/N)^(1/3)`; rendering each as
+        //      a sphere ~40% of that spacing keeps adjacent spheres
+        //      visually discrete (~20% gap). Surfaces dense per-tet
+        //      centroid clouds (sim-soft layered-scalar-field row 8 +
+        //      successors) where the diagonal-only rule gave overlap.
         let raw_aabb = input.mesh.aabb();
         let scaled_aabb = scale_aabb(&raw_aabb, scale);
         let diagonal = (scaled_aabb.diagonal() as f32).max(1.0);
-        let radius = (diagonal * POINT_RADIUS_FRACTION).max(1e-3);
+        let n_points = input.mesh.geometry.vertices.len();
+        let diagonal_radius = diagonal * POINT_RADIUS_FRACTION;
+        // `n_points == 0` is unreachable here (this branch is gated on a
+        // non-empty mesh up the call stack), but defensive against a
+        // future caller change. `cbrt` is well-defined on f32.
+        let density_radius = if n_points > 0 {
+            // `n_points as f32` precision loss only matters above ~16M
+            // points where f32 representation truncates; sim-soft and
+            // mesh examples all sit < 100k. Cast is loss-free in scope.
+            #[allow(clippy::cast_precision_loss)]
+            let n_f = n_points as f32;
+            #[allow(clippy::cast_possible_truncation)]
+            let volume = scaled_aabb.volume() as f32;
+            0.4 * (volume / n_f).cbrt()
+        } else {
+            f32::INFINITY
+        };
+        let radius = diagonal_radius.min(density_radius).max(1e-3);
         let sphere_handle = meshes.add(Sphere::new(radius));
         match vertex_colors.as_deref() {
             Some(colors) => {
