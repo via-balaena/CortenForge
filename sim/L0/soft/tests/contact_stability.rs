@@ -73,7 +73,7 @@
 
 #![allow(
     // Helper destructures a 4-tuple (no Result); `expect_used` left
-    // enabled for future test additions. Mirrors V-3a precedent.
+    // enabled for future test additions. Mirrors the compressive block precedent.
     clippy::expect_used
 )]
 
@@ -86,7 +86,7 @@ use sim_soft::{
     Vec3,
 };
 
-// ── Reference V-3a scene constants — must track penalty_compressive_block.rs
+// ── Reference compressive-block scene constants — must track penalty_compressive_block.rs
 
 const EDGE_LEN: f64 = 0.01;
 const DISPLACEMENT: f64 = 5.0e-5;
@@ -127,7 +127,7 @@ fn material_field() -> MaterialField {
     MaterialField::uniform(MU, LAMBDA)
 }
 
-/// Single quasi-static Newton step against the V-3a override scene at
+/// Single quasi-static Newton step against the compressive-block override scene at
 /// `kappa`. Catches solver panics (Newton non-convergence, Armijo
 /// stall, `NonPositivePivot`) and returns a structured `ScanResult`
 /// rather than propagating. `replay_step` is the tape-free path so
@@ -194,7 +194,7 @@ fn try_run_at_kappa(kappa: f64) -> ScanResult {
 }
 
 #[test]
-fn v_6_kappa_ceiling_scan_v_3a_regime() {
+fn kappa_ceiling_scan_compressive_block_regime() {
     let mut results: Vec<(f64, ScanResult)> = Vec::with_capacity(KAPPA_SCAN.len());
     let mut highest_converged: f64 = 0.0;
 
@@ -207,7 +207,7 @@ fn v_6_kappa_ceiling_scan_v_3a_regime() {
     }
 
     eprintln!(
-        "v_6 κ ceiling scan (V-3a override regime, d̂ = {dhat:e} m, δ = {disp:e} m, n = {n}, \
+        "κ ceiling scan (compressive-block override regime, d̂ = {dhat:e} m, δ = {disp:e} m, n = {n}, \
          μ = {mu:e} Pa, λ = {lam:e} Pa, h = {h:e} m):",
         dhat = D_HAT_OVERRIDE,
         disp = DISPLACEMENT,
@@ -244,7 +244,7 @@ fn v_6_kappa_ceiling_scan_v_3a_regime() {
     //
     // Sanity: the production default (`PENALTY_KAPPA_DEFAULT = 1e4`)
     // must be in the convergent regime. If it isn't, the entire Phase
-    // 5 default-κ contract is broken (V-1 / V-3a / V-3 / V-4 / V-5 all
+    // 5 default-κ contract is broken (the passthrough / compressive-block / Hertzian / non-interpenetration / drop-and-rest fixtures all
     // assume default κ converges on at least *some* contact-active
     // scene).
     let default_converged = results.iter().any(|(k, r)| {
@@ -252,14 +252,14 @@ fn v_6_kappa_ceiling_scan_v_3a_regime() {
     });
     assert!(
         default_converged,
-        "Production default κ = {KAPPA_DEFAULT:e} N/m did not converge on the V-3a override \
+        "Production default κ = {KAPPA_DEFAULT:e} N/m did not converge on the compressive-block override \
          regime. The Phase 5 contract assumes default κ is in the convergent regime — \
          investigate Decision-J retune.",
     );
 
     // ── One-OOM headroom ──────────────────────────────────────────────
     //
-    // Scope memo §1 V-6 load-bearing claim. Failure here means the
+    // The load-bearing claim. Failure here means the
     // production default sits at the very top of the convergent
     // range — a small parameter perturbation (cell size, material
     // change, slightly tighter d̂) could push it over. Decision-J
@@ -270,7 +270,7 @@ fn v_6_kappa_ceiling_scan_v_3a_regime() {
         highest_converged >= required_ceiling,
         "Empirical κ ceiling {highest_converged:e} N/m is below the required \
          {required_ceiling:e} N/m ({HEADROOM_MULTIPLIER:.1}× default = {KAPPA_DEFAULT:e} N/m). \
-         The default has less than one OOM of stability headroom on the V-3a regime — \
+         The default has less than one OOM of stability headroom on the compressive-block regime — \
          Decision-J retune candidate.",
     );
 }

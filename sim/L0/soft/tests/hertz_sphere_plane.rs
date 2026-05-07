@@ -51,7 +51,7 @@
 //! penetrated past the rigid-plane contact threshold (Johnson 1985 §3.4).
 //! `a_Hertz` is the radius of the circular contact patch in the plane.
 //!
-//! At the V-3 parameters (`R = 1 cm`, `F = 500 mN`, `μ = 2e5 Pa`,
+//! At this fixture's parameters (`R = 1 cm`, `F = 500 mN`, `μ = 2e5 Pa`,
 //! `λ = 8e5 Pa` ⇒ `E = 5.6e5 Pa`, `ν = 0.4` ⇒ `E* = E/(1-ν²) ≈ 6.67e5
 //! Pa`), the analytic predictions are `δ_Hertz ≈ 3.16e-4 m ≈ 316 μm` and
 //! `a_Hertz ≈ 1.78e-3 m ≈ 1.78 mm`. Strain `δ/R ≈ 3.2 %`,
@@ -151,7 +151,7 @@
 //! penalty's compliance band fundamentally prevents the
 //! `force = ∞ at sd ≤ 0` rigid-wall behavior Hertz assumes.
 //!
-//! V-3 therefore validates the **`a_FEM` vs `a_Hertz` comparison**
+//! This fixture therefore validates the **`a_FEM` vs `a_Hertz` comparison**
 //! (the Hertz-physical quantity that DOES match in the penalty
 //! regime), not `δ_FEM` vs `δ_Hertz`. `a_FEM` is the contact-patch
 //! radius — direct geometric measurement of where the sphere meets
@@ -181,7 +181,7 @@
 //! (`concentric_lame_shells.rs:45-64`) deviate to `ν = 0.4` (compressible
 //! Neo-Hookean, `λ = 4 μ`) because Tet4 under `ν → 0.5` exhibits
 //! volumetric locking (Part 2 §05 §00). The same deviation applies to
-//! V-3 here, for an analogous reason: Hertz contact under
+//! this fixture here, for an analogous reason: Hertz contact under
 //! near-incompressibility produces a bulged-out lateral expansion at the
 //! contact patch that Tet4's single-Gauss-point integration cannot
 //! represent without locking. Phase H Tet10 + F-bar recovers the
@@ -204,7 +204,7 @@
 //! Saint-Venant distortion at the pin points (small relative to
 //! `δ_Hertz ≈ 316 μm` and far from the south contact patch).
 //!
-//! Why pinning is necessary (resolved at commit 9 V-3 empirical
+//! Why pinning is necessary (resolved by empirical
 //! surfacing): the helper's pre-commit-9 design assumed contact-
 //! penalty damping plus loaded-vertex traction asymmetry would damp
 //! rigid-body modes from an empty pinned set. At rest configuration
@@ -263,7 +263,8 @@
 //!
 //! ## Newton config
 //!
-//! Mirrors IV-3 (`bonded_bilayer_beam.rs:271`) + V-3a
+//! Mirrors IV-3 (`bonded_bilayer_beam.rs:271`) + the compressive
+//! block
 //! (`penalty_compressive_block.rs:244-251`): `STATIC_DT = 1.0 s` collapses
 //! the inertial term `M / dt²` by ~4 orders of magnitude relative to
 //! stiffness, yielding pure-static root-find from rest.
@@ -276,7 +277,7 @@
 //! material plan changes above. At `R = 1 cm` and BCC mesher with
 //! margin ratio `6.0` (`scene.rs:753`), empirical tet count grows from
 //! `~2.2k` at h to `~124k` at h/4 — release-mode runtime ~2 min total
-//! per V-3 commit-9 empirical measurement.
+//! per empirical measurement.
 //!
 //! Asserted shape — **`a_FEM` track per "Plan change 2" reframe**:
 //! - **Per-level** Newton iters `< 40`; `0 < a_FEM < R` (partial
@@ -305,21 +306,22 @@
 //! inspection but not asserted at a specific order — per Phase 4 IV-5
 //! precedent, super-quadratic was observed but not pinned.
 //!
-//! ## Why V-3 lands after V-3a (commit 8)
+//! ## Why this lands after the compressive block
 //!
-//! V-3a's uniform-cube geometry has no contact-area-radius scaling; V-3
-//! Hertz couples sphere-mesh resolution (BCC mesher's piecewise-linear
-//! approximation of the curved sphere) with contact-force-pumping
-//! correctness AND contact-patch geometry. V-3a force-pumping
-//! validation in isolation lets any V-3 failure be diagnosed cleanly:
-//! the remaining failure modes V-3 catches are Hertz-specific (formula
-//! transcription, sphere-mesh resolution effects, default `(κ, d̂)`
-//! tuning under sphere geometry).
+//! The compressive block's uniform-cube geometry has no
+//! contact-area-radius scaling; this fixture couples sphere-mesh
+//! resolution (BCC mesher's piecewise-linear approximation of the
+//! curved sphere) with contact-force-pumping correctness AND
+//! contact-patch geometry. The compressive block's force-pumping
+//! validation in isolation lets any failure here be diagnosed cleanly:
+//! the remaining failure modes this fixture catches are Hertz-specific
+//! (formula transcription, sphere-mesh resolution effects, default
+//! `(κ, d̂)` tuning under sphere geometry).
 
 #![allow(
     // The helper signature returns a `Result<5-tuple, MeshingError>`;
     // `expect_used` is needed at the `.expect("...")` callsite.
-    // Mirrors `concentric_lame_shells.rs` / V-3a precedent.
+    // Mirrors `concentric_lame_shells.rs` / `penalty_compressive_block.rs` precedent.
     clippy::expect_used,
     // Three-refinement-level analytic-comparison tests legitimately
     // exceed clippy's 100-line soft cap once the diagnostic
@@ -337,7 +339,7 @@ use sim_soft::{
 
 // ── Scene constants ──────────────────────────────────────────────────────
 
-/// Sphere radius (1 cm). Scope memo §9 V-3 recommendation. Hertz
+/// Sphere radius (1 cm). Hertz
 /// validity requires `δ / R ≪ 1`; at `F = 500 mN` and the chosen
 /// material, `δ_Hertz / R ≈ 3.2 %` — comfortably small-strain.
 const RADIUS: f64 = 1.0e-2;
@@ -393,13 +395,13 @@ const CELL_SIZE_H4: f64 = 7.5e-4;
 /// Static-equilibrium time-step — large `dt` damps the inertial
 /// Tikhonov regulariser `M / dt²` to negligible relative magnitude,
 /// yielding pure-static root-find. Mirrors IV-3's `STATIC_DT` +
-/// V-3a's same-named const.
+/// the compressive block's same-named const.
 const STATIC_DT: f64 = 1.0;
 
 /// Newton iteration cap — bumped from skeleton's `10` to mirror IV-3's
 /// `50` (static-equilibrium from rest needs more headroom than
 /// transient-step's small `Δx`). Newton typically takes `3-10` iters
-/// per level under V-3 sphere geometry; cap leaves wide margin against
+/// per level under sphere geometry; cap leaves wide margin against
 /// load / material perturbations.
 const MAX_NEWTON_ITER: usize = 50;
 
@@ -433,7 +435,8 @@ const KAPPA: f64 = 1.0e3;
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /// Young's modulus from Lamé pair: `E = μ (3 λ + 2 μ) / (λ + μ)`.
-/// Mirror of [`bonded_bilayer_beam`]'s + V-3a's same-named helper. At
+/// Mirror of [`bonded_bilayer_beam`]'s + the compressive block's
+/// same-named helper. At
 /// canonical `(2e5, 8e5)`: `E = 5.6e5 Pa` (which also equals `2 μ
 /// (1 + ν) = 2 · 2e5 · 1.4`).
 const fn young_modulus(mu: f64, lambda: f64) -> f64 {
@@ -502,7 +505,7 @@ struct StepReport {
 fn run_at_refinement(cell_size: f64) -> StepReport {
     // Helper builds mesh + BC + initial + theta + a default-κ contact;
     // we discard the default contact and replace with a `with_params`
-    // override at V-3-LOCAL κ per the module docstring's "Material plan
+    // override at fixture-local κ per the module docstring's "Material plan
     // change" section. The plane is reconstructed identically to the
     // helper's `RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), -(radius +
     // d̂))` construction (`scene.rs:616-619`).
@@ -630,7 +633,7 @@ fn run_at_refinement(cell_size: f64) -> StepReport {
               ~10-20 min debug); rerun with `cargo test --release` to include"
 )]
 #[test]
-fn v_3_hertz_sphere_plane_converges_to_closed_form() {
+fn hertz_sphere_plane_converges_to_closed_form() {
     let report_h = run_at_refinement(CELL_SIZE_H);
     let report_h2 = run_at_refinement(CELL_SIZE_H2);
     let report_h4 = run_at_refinement(CELL_SIZE_H4);
@@ -721,7 +724,7 @@ fn v_3_hertz_sphere_plane_converges_to_closed_form() {
 
     // ── Per-level Newton + sign + active-pair sanity ────────────────────
     //
-    // Newton-budget per level — mirrors IV-3 / V-3a pattern. Under V-3
+    // Newton-budget per level — mirrors IV-3 / compressive-block pattern. Under this fixture's
     // sphere geometry at default `(κ, d̂)`, Newton typically completes
     // in `3-10` iters per level. At `< 40` we have `10+` iters of margin.
     for (label, report) in [("h", &report_h), ("h/2", &report_h2), ("h/4", &report_h4)] {
@@ -736,7 +739,7 @@ fn v_3_hertz_sphere_plane_converges_to_closed_form() {
 
     // Physical-plausibility per level. `0 < a_FEM < R` (partial
     // contact patch, smaller than sphere radius — small-strain Hertz
-    // requires `a / R << 1`, expected `a / R ≈ 18 %` at V-3 F=500mN).
+    // requires `a / R << 1`, expected `a / R ≈ 18 %` at this fixture's F=500mN).
     // `n_active > 0` (contact engaged at all — degenerate scenes with
     // theta uncoupled from contact would zero this). δ_FEM is
     // diagnostic-only per "Plan change 2" reframe — penalty compliance
@@ -808,7 +811,7 @@ fn v_3_hertz_sphere_plane_converges_to_closed_form() {
     // above, confirms the asymptote sits within 20% of analytic Hertz.
     // Stronger gate than monotonic-only — catches "a_FEM oscillates
     // bounded but doesn't converge" regressions where the rel_err
-    // sequence wanders without settling. Mirror of V-3a's Cauchy gate.
+    // sequence wanders without settling. Mirror of the compressive block's Cauchy gate.
     assert!(
         cauchy_ratio_a < 1.0,
         "Cauchy ratio (a_FEM) {cauchy_ratio_a:.4} (|Δ_fine| / |Δ_coarse|) ≥ 1.0 — a_FEM \

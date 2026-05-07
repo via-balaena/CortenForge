@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# SoftScene::dropping_sphere (V-5 fixture's helper) + CpuNewtonSolver +
+# SoftScene::dropping_sphere (the drop-and-rest fixture's helper) + CpuNewtonSolver +
 # PenaltyRigidContactSolver type alias + RigidPlane + PenaltyRigidContact +
 # MaterialField + Mesh trait + SceneInitial + SdfMeshedTetMesh + Solver +
 # SolverConfig + Tet4 + Vec3 + VertexId + referenced_vertices.

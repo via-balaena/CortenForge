@@ -2,7 +2,7 @@
 
 **Drop-and-rest user-facing wrap — soft sphere released above a `RigidPlane`, integrated under gravity until it settles into quiescence on the plane.** A `SphereSdf` body of radius `R = 1 cm` is BCC-meshed via `SdfMeshedTetMesh::from_sdf` at `cell_size = 3 mm`, with rest configuration shifted upward to `(0, 0, RELEASE_HEIGHT = 5 cm)` (zero-strain rigid translation). A single `RigidPlane(+ẑ, offset=0)` at `z = 0` sits in the `−ẑ` half-space; the soft sphere falls into the contact band `d̂ = 1 mm` and one-way `PenaltyRigidContact` (κ = 1e4 N/m, d̂ = 1e-3 m, defaults pinned) bounces it into rest. Gravity (`SolverConfig::gravity_z = -9.81 m/s²`) drives the dynamics; backward-Euler at `dt = 1 ms` damps penalty oscillation `~1300×` per step at the scene's `(κ, m_v)` parameters, so a few hundred post-contact steps drop kinetic energy below the `1 cm/s`-magnitude `KE_REST_THRESHOLD`. `n_steps = 1000` (1 s simulated total) gives `~5×` headroom over the analytic time-to-impact `t_c = sqrt(2 (h-R-d̂) / |g|) / dt ≈ 89 steps`.
 
-The headline new capability vs PR1's user-facing rows is **dynamic integration with one-way penalty contact + rest-state convergence** — the first PR2 example row, opening the soft↔rigid contact arc. Row 12 mirrors `sim/L0/soft/tests/contact_drop_rest.rs` verbatim on constants + scene setup; the contributions vs the internal fixture are: **(a)** deformed-mesh PLY emit at the final settled frame via `Mesh::boundary_faces()` (this row is its first user-facing headless consumer per the C2a foundation commit), **(b)** optional Bevy trajectory replay under `CF_VISUAL=1` (this row is `sim-bevy-soft`'s first consumer per the C2c foundation commit), **(c)** a NEW `com_at_equilibrium_height` gate that the V-5 fixture explicitly omits ("No quantitative bound — mean z is biased by orphan vertices"), here corrected by computing COM over `referenced_vertices` only.
+The headline new capability vs PR1's user-facing rows is **dynamic integration with one-way penalty contact + rest-state convergence** — the first PR2 example row, opening the soft↔rigid contact arc. Row 12 mirrors `sim/L0/soft/tests/contact_drop_rest.rs` verbatim on constants + scene setup; the contributions vs the internal fixture are: **(a)** deformed-mesh PLY emit at the final settled frame via `Mesh::boundary_faces()` (this row is its first user-facing headless consumer per the C2a foundation commit), **(b)** optional Bevy trajectory replay under `CF_VISUAL=1` (this row is `sim-bevy-soft`'s first consumer per the C2c foundation commit), **(c)** a NEW `com_at_equilibrium_height` gate that the drop-and-rest fixture explicitly omits ("No quantitative bound — mean z is biased by orphan vertices"), here corrected by computing COM over `referenced_vertices` only.
 
 Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. Output is `out/soft_drop_on_plane.ply` (deformed boundary mesh — 18696 vertices including unreferenced BCC-orphan corners, 648 triangles via `Mesh::boundary_faces()`, no per-vertex scalars).
 
@@ -34,7 +34,7 @@ for step_idx in 0..N_STEPS {
 
 [inv]: ../../../sim/L0/soft/EXAMPLE_INVENTORY.md
 
-This is **row 12 of the sim-soft examples arc** — the first Tier 4 penalty-contact example, the first PR2 example row, and the first user-facing demo of `sim-bevy-soft` (under `CF_VISUAL=1`). Row 12 is the canonical V-5 hygiene gate (`sim/L0/soft/tests/contact_drop_rest.rs`), exposed as a user-facing demo at the V-5 canonical refinement (`cell_size = 3 mm`).
+This is **row 12 of the sim-soft examples arc** — the first Tier 4 penalty-contact example, the first PR2 example row, and the first user-facing demo of `sim-bevy-soft` (under `CF_VISUAL=1`). Row 12 is the canonical drop-and-rest hygiene gate (`sim/L0/soft/tests/contact_drop_rest.rs`), exposed as a user-facing demo at the drop-and-rest canonical refinement (`cell_size = 3 mm`).
 
 **Why `cfg.dt = 1 ms`.** PR1's static-regime idiom (`cfg.dt = 1.0 s` or `cfg.density = 0`) collapses the inertial term `M / dt²` so a single `replay_step` from rest converges to the static equilibrium. Row 12 is the inverse — the dynamics ARE the headline, so `dt` must resolve the integration timescale. At penalty stiffness `κ = 1e4 N/m`, the sphere's per-vertex lumped mass `m_v ≈ M / n_referenced ≈ 7.7e-6 kg` puts the penalty oscillator at `ω = sqrt(κ / m_v) ≈ 3.6e4 rad/s`. Backward-Euler at `dt = 1 ms` doesn't resolve the `~0.17 ms` oscillation period (under-resolution gives `dt × ω / (2π) ≈ 5.8` periods per step, i.e., gross dynamics captured + fine penalty-oscillation structure unresolved — permitted as a documented behavior, not a failure). What BE *does* deliver at this `(κ, m_v, dt)` is per-step amplitude factor `1 / (1 + ω²·dt²) ≈ 7.6e-4` — penalty oscillation amplitude shrinks `~1300×` per step in the post-contact regime, so a few hundred post-contact steps brings the system to rest.
 
@@ -85,11 +85,11 @@ Counts captured 2026-05-06 on the row 12 capture platform per the III-1 determin
 | `bc.pinned_vertices.is_empty()` | `true` (free-flight) |
 | `bc.loaded_vertices.is_empty()` | `true` (gravity is solver-level body force) |
 
-The `dropping_sphere` helper builds an empty `BoundaryConditions` — orphan auto-pin by `CpuNewtonSolver::new`'s `effective_pinned` step is the only Dirichlet constraint, and the mass-driven `M / dt²` Tikhonov regulariser keeps the free-DOF Hessian SPD without an equator pin. Distinct from V-1 / V-3a / V-3 / IV-5 which use explicit pinned + loaded sets.
+The `dropping_sphere` helper builds an empty `BoundaryConditions` — orphan auto-pin by `CpuNewtonSolver::new`'s `effective_pinned` step is the only Dirichlet constraint, and the mass-driven `M / dt²` Tikhonov regulariser keeps the free-DOF Hessian SPD without an equator pin. Distinct from the passthrough / compressive-block / Hertzian / IV-5 which use explicit pinned + loaded sets.
 
 ### 4. `solver_per_step_invariants`
 
-For every step (mirrors V-5):
+For every step (mirrors the drop-and-rest fixture):
 
 | Anchor | Bound |
 |---|---|
@@ -114,7 +114,7 @@ Catches a sphere-flying-sideways or gravity-magnitude regression that wouldn't t
 |---|---|
 | `final \|v\|_max` | `< KE_REST_THRESHOLD = 1 cm/s` |
 
-Mirror V-5. Backward-Euler is dissipative; numerical damping carries the system to rest with the high per-step damping fraction at our `(κ, m_v, dt)`. Failure suggests either BE damping rate is much lower than expected, `dt × N_STEPS` doesn't cover impact + decay, or penalty oscillation amplitude is not decaying. Captured `1.187e-4 m/s` — `~84×` headroom over the threshold.
+Mirror the drop-and-rest fixture. Backward-Euler is dissipative; numerical damping carries the system to rest with the high per-step damping fraction at our `(κ, m_v, dt)`. Failure suggests either BE damping rate is much lower than expected, `dt × N_STEPS` doesn't cover impact + decay, or penalty oscillation amplitude is not decaying. Captured `1.187e-4 m/s` — `~84×` headroom over the threshold.
 
 ### 7. `com_descended`
 
@@ -122,11 +122,11 @@ Mirror V-5. Backward-Euler is dissipative; numerical damping carries the system 
 |---|---|
 | `final mean_z` | strict `<` `initial mean_z` |
 
-Mirror V-5. Both means computed over `referenced_vertices` (orphan auto-pin makes referenced-only mean meaningful — full-mesh mean would be biased toward the static auto-pinned cohort at `initial_mean_z + small_shift`). Sanity gate against frozen-x bug (solver returns `x_prev` unmodified).
+Mirror the drop-and-rest fixture. Both means computed over `referenced_vertices` (orphan auto-pin makes referenced-only mean meaningful — full-mesh mean would be biased toward the static auto-pinned cohort at `initial_mean_z + small_shift`). Sanity gate against frozen-x bug (solver returns `x_prev` unmodified).
 
 ### 8. `com_at_equilibrium_height`
 
-**NEW — fills the V-5 gap-to-land per inventory row 12 spec.** V-5 explicitly omits a quantitative bound on COM-at-rest because mean-z is biased by orphan vertices; computing over `referenced_vertices` corrects this and lets us assert the settled height directly.
+**NEW — fills the drop-and-rest gap-to-land per inventory row 12 spec.** The drop-and-rest fixture explicitly omits a quantitative bound on COM-at-rest because mean-z is biased by orphan vertices; computing over `referenced_vertices` corrects this and lets us assert the settled height directly.
 
 | Anchor | Bound |
 |---|---|
@@ -236,14 +236,14 @@ Per [`feedback_release_mode_heavy_tests`][rel], always `--release` for the examp
 
 ## Cross-references
 
-- **Sister sim-soft examples**: `sphere-sdf-eval` (row 1 — `Sdf` trait contract on `SphereSdf`, the SDF body row 12's `dropping_sphere` constructor uses); `sdf-to-tet-sphere` (row 3 — single-material `SdfMeshedTetMesh::from_sdf` on a solid sphere, the FEM-meshing pipeline row 12 reuses); future `hertz-sphere-plane` (row 13 — Hertz analytic gate at the same sphere-on-plane geometry, contact-patch IS the headline) and `compressive-block` (row 14 — V-3a compressive-load variant at the rigid-plane interface).
-- **Internal-fixture template**: `sim/L0/soft/tests/contact_drop_rest.rs` (V-5 — drop-and-rest hygiene gate at three-property structure: per-step energy bound, no NaN, reaches rest within budget, sphere descended). Row 12 mirrors V-5's scene + load + BC + DT + N_STEPS exactly; the per-step + final asserts mirror V-5 verbatim. The NEW `com_at_equilibrium_height` gate fills V-5's explicit "no quantitative bound on COM" gap by computing the mean over `referenced_vertices` only (V-5's `mean_referenced_z` helper, here adapted to assert against `R + d̂ ± COM_TOLERANCE`).
+- **Sister sim-soft examples**: `sphere-sdf-eval` (row 1 — `Sdf` trait contract on `SphereSdf`, the SDF body row 12's `dropping_sphere` constructor uses); `sdf-to-tet-sphere` (row 3 — single-material `SdfMeshedTetMesh::from_sdf` on a solid sphere, the FEM-meshing pipeline row 12 reuses); future `hertz-sphere-plane` (row 13 — Hertz analytic gate at the same sphere-on-plane geometry, contact-patch IS the headline) and `compressive-block` (row 14 — compressive-load variant at the rigid-plane interface).
+- **Internal-fixture template**: `sim/L0/soft/tests/contact_drop_rest.rs` (drop-and-rest hygiene gate at three-property structure: per-step energy bound, no NaN, reaches rest within budget, sphere descended). Row 12 mirrors the drop-and-rest fixture's scene + load + BC + DT + N_STEPS exactly; the per-step + final asserts mirror the drop-and-rest fixture verbatim. The NEW `com_at_equilibrium_height` gate fills the drop-and-rest fixture's explicit "no quantitative bound on COM" gap by computing the mean over `referenced_vertices` only (the drop-and-rest fixture's `mean_referenced_z` helper, here adapted to assert against `R + d̂ ± COM_TOLERANCE`).
 - **`SoftScene::dropping_sphere`**: `sim/L0/soft/src/readout/scene.rs:753-817` — `(radius, cell_size, release_height, material_field) -> (mesh, bc, initial, contact)`. `SphereSdf` body BCC-meshed at `cell_size`, rest-config positions shifted upward by `release_height`, single `RigidPlane(+ẑ, offset=0)` packed into `PenaltyRigidContact::new` with defaults pinned.
 - **`Mesh::boundary_faces`**: `sim/L0/soft/src/mesh/mod.rs:113-132` — outward-CCW boundary-face cache populated at construction via `boundary_faces_from_topology`. Row 12 is its first user-facing headless consumer (PR2 C2a foundation commit shipped this trait method).
 - **`sim-bevy-soft`**: `sim/L1/sim-bevy-soft/` — Bevy soft-body trajectory replay. Row 12 is its first consumer (PR2 C2c foundation commit shipped the skeleton crate). Module structure: `mesh::build_soft_mesh` + `mesh::apply_soft_positions` (per-frame position + smooth-normal write); `trajectory::Trajectory` Component + `trajectory::step_replay` system; `plugin::SoftBodyVisualPlugin` wires step_replay into Update.
 - **`cf-bevy-common`**: `cf-bevy-common/` — shared Bevy 0.18 helpers (`UpAxis` input → Bevy frame swap, `OrbitCamera` + `OrbitCameraPlugin`). Row 12 consumes both via the `BevyVec3` / `BevyMesh` aliases (sim-soft's `Vec3` / `Mesh` shadow Bevy's prelude under workspace-default re-exports).
 - **VIEWER_DESIGN.md**: `docs/VIEWER_DESIGN.md` — cf-view static-artifact viewer the headless PLY targets.
-- **Book reference**: Part 4 §00 §00 ("Penalty contact pathology and validation scope"); Part 5 §00 §00 ("Backward-Euler dissipation in transient FEM"). Row 12 is the **regression-test artifact** for the rigid-soft penalty-contact-with-gravity chapter section — V-5's three-property hygiene gate, exposed user-facing at the example layer, plus the COM-at-equilibrium quantitative bound that V-5 explicitly omits.
+- **Book reference**: Part 4 §00 §00 ("Penalty contact pathology and validation scope"); Part 5 §00 §00 ("Backward-Euler dissipation in transient FEM"). Row 12 is the **regression-test artifact** for the rigid-soft penalty-contact-with-gravity chapter section — the drop-and-rest three-property hygiene gate, exposed user-facing at the example layer, plus the COM-at-equilibrium quantitative bound that the drop-and-rest fixture explicitly omits.
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md),
   [`feedback_one_at_a_time_review`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_one_at_a_time_review.md),

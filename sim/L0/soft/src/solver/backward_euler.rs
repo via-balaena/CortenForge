@@ -88,9 +88,10 @@ impl SolverConfig {
     /// Scope §2 defaults for the walking-skeleton scene: `dt = 1e-2`,
     /// `tol = 1e-10` (five digits below gradcheck's 1e-5 bar),
     /// `density = 1030` (silicone-class), up to 10 Newton iterations +
-    /// 20 backtracks per iteration. `gravity_z = 0` per Phase 5 commit
-    /// 10 — V-5 opts in by mutating the field on a constructed config
-    /// (mirrors V-3 / V-3a's `STATIC_DT` bumping pattern).
+    /// 20 backtracks per iteration. `gravity_z = 0` — the
+    /// drop-and-rest fixture opts in by mutating the field on a
+    /// constructed config (mirrors the Hertzian and compressive-block
+    /// fixtures' `STATIC_DT` bumping pattern).
     #[must_use]
     pub const fn skeleton() -> Self {
         Self {
@@ -127,10 +128,10 @@ where
     element: E,
     mesh: Msh,
     // Read once per Newton iter from `assemble_global_int_force` and
-    // `assemble_free_hessian_triplets` (scope memo Decision H —
-    // per-iter active-pair recompute). `NullContact`'s zero-stubs
-    // preserve pre-Phase-5 numerics on non-contact scenes; V-1
-    // (commit 7) is the regression-net spine.
+    // `assemble_free_hessian_triplets` (per-iter active-pair
+    // recompute). `NullContact`'s zero-stubs preserve pre-penalty
+    // numerics on non-contact scenes; `tests/contact_passthrough.rs`
+    // is the regression-net spine.
     contact: C,
     config: SolverConfig,
     boundary_conditions: BoundaryConditions,
@@ -784,10 +785,11 @@ where
     /// `[3 * n_loaded]` per-vertex traction triples. Mixed-axis
     /// scenes are out of Phase 2 scope per `LoadAxis` doc.
     ///
-    /// Phase 5 commit 10: `config.gravity_z` adds a body-force `m_v ·
-    /// gravity_z` to every vertex's `+ẑ` DOF after the θ scatter.
-    /// Default `gravity_z = 0` short-circuits the loop — bit-equal
-    /// regression on V-1 / V-3a / V-3 (which set `gravity_z = 0`).
+    /// `config.gravity_z` adds a body-force `m_v · gravity_z` to every
+    /// vertex's `+ẑ` DOF after the θ scatter. Default `gravity_z = 0`
+    /// short-circuits the loop — bit-equal regression on the
+    /// passthrough / compressive-block / Hertzian fixtures (which
+    /// leave `gravity_z = 0`).
     //
     // Shape mismatches (BC contradicting θ length) panic — programmer
     // bug at scene wiring time, not runtime input.
@@ -848,13 +850,13 @@ where
             }
         }
 
-        // Phase 5 commit 10: gravity body force `f_z += m_v · g_z` per
-        // vertex. The exact-zero short-circuit preserves bit-equality
-        // on the regression net (V-1 / V-3a / V-3 leave `gravity_z =
-        // 0`). For loaded AxisZ vertices the gravity term adds onto
-        // the θ-traction; orphan vertices are auto-pinned at `new()`'s
-        // `effective_pinned` step so their zero `mass_per_dof` never
-        // reaches a free DOF.
+        // Gravity body force `f_z += m_v · g_z` per vertex. The
+        // exact-zero short-circuit preserves bit-equality on the
+        // regression net (the passthrough / compressive-block /
+        // Hertzian fixtures leave `gravity_z = 0`). For loaded AxisZ
+        // vertices the gravity term adds onto the θ-traction; orphan
+        // vertices are auto-pinned at `new()`'s `effective_pinned`
+        // step so their zero `mass_per_dof` never reaches a free DOF.
         if self.config.gravity_z != 0.0 {
             let n_vertices = self.n_dof / 3;
             for v in 0..n_vertices {
@@ -1212,12 +1214,12 @@ fn residual_into(
 /// xyz-inner) to a `Vec<Vec3>` of length `N`.
 ///
 /// Bridges the solver's flat representation to
-/// [`crate::contact::ContactModel`]'s `&[Vec3]` argument shape
-/// (Phase 5 commit 5; trait surface unchanged per scope memo
-/// Decision E). Allocates per call site — `assemble_global_int_force`
-/// and `assemble_free_hessian_triplets` each build their own vec at
-/// the contact-dispatch step. Cost analysis at scope memo Decision H:
-/// negligible vs FEM assembly even at V-3 finest-level scale.
+/// [`crate::contact::ContactModel`]'s `&[Vec3]` argument shape (trait
+/// surface unchanged from the pre-penalty era). Allocates per call
+/// site — `assemble_global_int_force` and
+/// `assemble_free_hessian_triplets` each build their own vec at the
+/// contact-dispatch step. Negligible vs FEM assembly even at the
+/// Hertzian fixture's finest-level scale.
 fn slice_to_vec3s(x_flat: &[f64]) -> Vec<Vec3> {
     debug_assert!(x_flat.len().is_multiple_of(3));
     let n = x_flat.len() / 3;

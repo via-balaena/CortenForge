@@ -1,4 +1,4 @@
-//! contact-force-readout — Phase 5 V-3a scene + per-active-pair contact
+//! contact-force-readout — compressive-block scene + per-active-pair contact
 //! readout via the [`PenaltyRigidContact::per_pair_readout`] foundation
 //! patch shipped at `995fb0bf`. Single-refinement (n=8) headline:
 //! **the public per-pair readout surface returns the same per-vertex
@@ -6,7 +6,7 @@
 //! plane geometry** — bit-equivalent at 1e-12 relative tolerance.
 //!
 //! `SoftScene::compressive_block_on_plane(edge_len, cell_size,
-//! displacement, &material_field)` (V-3a fixture's Phase 5 commit-6
+//! displacement, &material_field)` (the compressive-block fixture's Phase 5 commit-6
 //! helper at `sim/L0/soft/src/readout/scene.rs:377`) builds the
 //! production scene — a `HandBuiltTetMesh::uniform_block` cube of
 //! edge `L = 1 cm` at `n_per_edge = 8` (3072 tets, 729 vertices),
@@ -14,12 +14,12 @@
 //! tolerance), no external traction. A single `RigidPlane(n = -ẑ,
 //! offset = δ - L)` represents the descended top plate, penetrated
 //! by exactly `δ = 5 × 10⁻⁵ m` at rest; one-way `PenaltyRigidContact`
-//! with **V-3a-LOCAL `(d̂, δ)` override** (`d̂ = 1e-5 m`, default
+//! with **fixture-local `(d̂, δ)` override** (`d̂ = 1e-5 m`, default
 //! `κ = 1e4 N/m`) drives the cube into static equilibrium.
 //!
 //! `STATIC_DT = 1.0 s` collapses the inertial Tikhonov regulariser
 //! `M / dt²` so a single `replay_step` from rest converges to static
-//! equilibrium (mirrors V-3a + row 14). Newton typically takes 3
+//! equilibrium (mirrors the compressive block + row 14). Newton typically takes 3
 //! iters at this regime.
 //!
 //! ## Why per-pair readout (vs. row 14's manual reconstruction)
@@ -57,13 +57,13 @@
 //! Pressure (Pa) requires per-vertex area to convert from per-pair
 //! force (N). The exact derivation is per-vertex Voronoi-cell or
 //! barycentric area on the boundary triangulation — non-trivial
-//! enough that V-3 (row 13) deferred per-vertex pressure entirely,
+//! enough that the Hertzian fixture (row 13) deferred per-vertex pressure entirely,
 //! emitting raw `force_z` to PLY instead.
 //!
 //! Row 18 uses a **uniform per-pair area approximation**:
 //! `A_per_pair_uniform = A_top_face / n_active_pairs = 1e-4 m² / 81
 //! ≈ 1.235e-6 m²`. Per-pair pressure is then `|force_z| /
-//! A_per_pair_uniform` (unsigned magnitude — V-3a's `force_z` is
+//! A_per_pair_uniform` (unsigned magnitude — the compressive block's `force_z` is
 //! negative under the soft-side sign convention; pressure is reported
 //! as its absolute value). The aggregate `mean_pressure =
 //! sum(|force_z|) / A_top_face` is exact engineering stress σ_z
@@ -80,10 +80,10 @@
 //!
 //! ## Why `cargo run --release` only
 //!
-//! Mirrors row 14 + V-3a fixture precedent. The IV-1 captured-bits
+//! Mirrors row 14 + the compressive-block fixture precedent. The IV-1 captured-bits
 //! contract is platform + build-mode-locked; matching row 14's
 //! `--release` invocation removes one variable from the determinism
-//! contract. V-3a is fast enough at finest `n=8` that debug-mode is
+//! contract. The compressive block is fast enough at finest `n=8` that debug-mode is
 //! also viable, but consistency with sister rows wins.
 //!
 //! ## Visual-mode opt-in: `CF_VISUAL=1`
@@ -107,7 +107,7 @@
 //! plate; the bottom plate carries no penalty force in the physics.
 //!
 //! **Visualization is amplified** by `VIZ_AMPLIFY = 50×` per banked
-//! pattern (b) — V-3a's small-strain regime (`ε ≈ 0.6 %`) is below
+//! pattern (b) — the compressive block's small-strain regime (`ε ≈ 0.6 %`) is below
 //! human visual acuity at typical viewing distance. The plates are
 //! positioned flush against the (amplified) cube faces with a sub-mm
 //! z-fight offset, NOT at the kinematic `δ`-offset positions the
@@ -187,12 +187,12 @@
 //! - **`small_strain_validity`** — `0 < ε < SMALL_STRAIN_CEILING =
 //!   0.10`.
 //! - **`gross_physics`** — `λ_z ∈ (0.5, 1.0)`; `f_r_total < 0`
-//!   (V-3a soft-side convention: outward normal `n = -ẑ` so the
+//!   (compressive-block soft-side convention: outward normal `n = -ẑ` so the
 //!   z-component is negative; rigid reaction `−f_r_total` is
 //!   positive); every `readout.force_on_soft.z < 0` (per-pair sign
 //!   sanity).
 //! - **`force_bound_bracket`** — `f_us ≤ |f_r_total| ≤ f_strain`
-//!   at the equilibrium ε (inherited from row 14 V-3a; the
+//!   at the equilibrium ε (inherited from row 14 / the compressive block; the
 //!   absolute value flips `f_r_total` from soft-side-negative to
 //!   the row-14-style positive rigid reaction for the bound check).
 //! - **`accessor_vs_manual_consistency`** (HEADLINE) —
@@ -281,22 +281,22 @@ use sim_soft::{
 };
 
 // =============================================================================
-// Scene constants — mirror row 14 + V-3a
+// Scene constants — mirror row 14 + the compressive block
 // (`sim/L0/soft/tests/penalty_compressive_block.rs`) verbatim.
 // Re-deriving here keeps the example self-contained AND captures-
-// platform-locked; any regression in the V-3a helper that shifts
+// platform-locked; any regression in the compressive-block helper that shifts
 // these implicitly would surface at first row 18 visual review.
 // =============================================================================
 
-/// Cube edge length (1 cm). Mirror V-3a's `EDGE_LEN` per scope memo
+/// Cube edge length (1 cm). Mirror the compressive block's `EDGE_LEN`
 /// §9.
 const EDGE_LEN: f64 = 1.0e-2;
 
-/// Rigid-plane axial displacement (50 μm). Mirror row 14 / V-3a
+/// Rigid-plane axial displacement (50 μm). Mirror row 14 / the compressive block
 /// fixture's override of scope memo §9's recommended 0.5 mm.
 const DISPLACEMENT: f64 = 5.0e-5;
 
-/// Lamé pair `(μ, λ)` — Phase 4 IV-3 / IV-5 / V-3a / row 14 default
+/// Lamé pair `(μ, λ)` — Phase 4 IV-3 / IV-5 / compressive-block / row 14 default
 /// Ecoflex-class compressible NeoHookean (`λ = 4 μ` ⇒ `ν = 0.4`).
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0e5;
@@ -317,18 +317,18 @@ const N_PER_EDGE: usize = 8;
 /// Cell size (m). `EDGE_LEN / N_PER_EDGE = 1.25e-3`.
 const CELL_SIZE: f64 = EDGE_LEN / 8.0;
 
-/// V-3a-LOCAL penalty stiffness. Pinned at the
+/// Fixture-local penalty stiffness. Pinned at the
 /// `sim_soft::contact::penalty::PENALTY_KAPPA_DEFAULT` value
-/// (`penalty.rs:54`) per scope memo Decision J — V-3a's override
+/// (`penalty.rs:54`) — this row's override
 /// is scoped to `d̂` (and `δ`); `κ` stays at default. The
 /// `pub(crate)` visibility on the upstream constant forces
 /// re-pinning here.
 const KAPPA: f64 = 1.0e4;
 
-/// V-3a-LOCAL penalty contact band (m). **Override of**
+/// Fixture-local penalty contact band (m). **Override of**
 /// `PENALTY_DHAT_DEFAULT = 1e-3` (`penalty.rs:62`) per scope memo
-/// Decision J's V-3a-may-tune authority — see row 14's "Why the
-/// V-3a-LOCAL (d̂, δ) override" section for the full derivation.
+/// — see row 14's "Why the
+/// fixture-local (d̂, δ) override" section for the full derivation.
 /// 100× smaller than default to bring cold-start penalty residual
 /// `κ · (d̂ + δ) ≈ 0.6 N` per top-face vertex below the
 /// tet-inversion threshold.
@@ -336,11 +336,11 @@ const D_HAT_OVERRIDE: f64 = 1.0e-5;
 
 /// Static-equilibrium time-step — large `dt` damps the inertial
 /// Tikhonov regulariser `M / dt²` to negligible relative magnitude,
-/// yielding pure-static root-find. Mirrors V-3a + row 14 verbatim.
+/// yielding pure-static root-find. Mirrors the compressive block + row 14 verbatim.
 const STATIC_DT: f64 = 1.0;
 
-/// Newton iter cap — mirror V-3a + row 14. Static-equilibrium from
-/// rest under V-3a `(d̂, δ)` override typically completes in `3-5`
+/// Newton iter cap — mirror the compressive block + row 14. Static-equilibrium from
+/// rest under the `(d̂, δ)` override typically completes in `3-5`
 /// iters; cap leaves `45+` iters of margin against material / load
 /// perturbations.
 const MAX_NEWTON_ITER: usize = 50;
@@ -351,15 +351,15 @@ const MAX_NEWTON_ITER: usize = 50;
 const NEWTON_ITER_SANITY_CAP: usize = 40;
 
 /// Small-strain validity ceiling on the equilibrium compressive
-/// strain `ε = 1 − λ_z`. V-3a expected `ε ≈ 0.6 %` — well below the
+/// strain `ε = 1 − λ_z`. Expected `ε ≈ 0.6 %` — well below the
 /// textbook `ε ≲ 5 %` linear-elastic threshold. Cap at `10 %` gives
-/// ~17× headroom over expected; failure here means the V-3a
+/// ~17× headroom over expected; failure here means the
 /// `(d̂, δ)` override is no longer producing a small-strain regime
 /// — investigate before relaxing.
 const SMALL_STRAIN_CEILING: f64 = 0.10;
 
 /// Lower-bound on `λ_z` — physical sanity for "less than 50 %
-/// compression." V-3a expected `λ_z ≈ 0.994`.
+/// compression." Expected `λ_z ≈ 0.994`.
 const LAMBDA_Z_FLOOR: f64 = 0.5;
 
 /// IV-1 sparse-tier rel-tol for captured bits. `~few thousand tets`
@@ -400,7 +400,7 @@ const LATERAL_FORCE_TOL: f64 = 1.0e-15;
 const N_TETS_REF: usize = 3072;
 /// Vertex count at n=8. `(n+1)³ = 729`.
 const N_VERTICES_REF: usize = 729;
-/// Loaded vertex count. **V-3a-specific: 0 exact** —
+/// Loaded vertex count. **Compressive-block-specific: 0 exact** —
 /// `compressive_block_on_plane` helper sets
 /// `BoundaryConditions { loaded_vertices: Vec::new(), ... }`
 /// because load is penalty-mediated (no external traction).
@@ -497,11 +497,11 @@ const MIN_PRESSURE_REF_BITS: u64 = 0x4077_626a_d0f6_03d3;
 const EFFECTIVE_MODULUS_REF_BITS: u64 = 0x4112_9258_06e1_6c93;
 
 /// Active-pair count. **`(n+1)² = 81` exact** — every top-face
-/// vertex inside the `d̂`-band at equilibrium per V-3a fixture's
+/// vertex inside the `d̂`-band at equilibrium per the compressive-block fixture's
 /// docstring.
 const N_ACTIVE_PAIRS_REF: usize = 81;
 
-/// Newton iter count at n=8 — `3` iters at the V-3a `(d̂, δ)`
+/// Newton iter count at n=8 — `3` iters at the `(d̂, δ)`
 /// override regime. Bit-equivalent to row 14's `ITER_COUNT_N8_REF`.
 const ITER_COUNT_REF: usize = 3;
 
@@ -605,7 +605,7 @@ struct ReadoutSnapshot {
     /// closer to uniaxial-stress (lateral free); closer to 1 means
     /// closer to uniaxial-strain (lateral pinned).
     rel_pos_in_bounds: f64,
-    /// Active-pair count. **`(n+1)² = 81` exact** per V-3a fixture's
+    /// Active-pair count. **`(n+1)² = 81` exact** per the compressive-block fixture's
     /// docstring (every top-face vertex inside band).
     n_active_pairs: usize,
     /// Newton iter count at convergence.
@@ -616,7 +616,7 @@ struct ReadoutSnapshot {
     n_tets: usize,
     /// Total mesh vertex count.
     n_vertices: usize,
-    /// External-traction loaded vertex count. **0 exact** for V-3a.
+    /// External-traction loaded vertex count. **0 exact** for the compressive block.
     n_loaded: usize,
     /// Bottom-face pinned vertex count. `(n+1)² = 81`.
     n_pinned: usize,
@@ -657,8 +657,8 @@ struct ReadoutSnapshot {
 // Run — single n=8 refinement
 // =============================================================================
 
-/// Build the V-3a compressive-block scene at `N_PER_EDGE = 8`,
-/// replace the helper's default-`d̂` contact with a V-3a-LOCAL
+/// Build the compressive-block scene at `N_PER_EDGE = 8`,
+/// replace the helper's default-`d̂` contact with a fixture-local
 /// `D_HAT_OVERRIDE` override, run a single static `replay_step`,
 /// then call the [`PenaltyRigidContact::per_pair_readout`]
 /// foundation surface against a freshly-constructed inspection
@@ -671,7 +671,7 @@ fn run_readout_sweep() -> ReadoutSnapshot {
     // Helper builds mesh + BC + initial via commit-6 scaffolding;
     // its returned `default_contact` (default `κ`, `d̂`) is
     // discarded and replaced with a `with_params` override per the
-    // V-3a-LOCAL section in the module docstring.
+    // fixture-local section in the module docstring.
     let (mesh, bc, initial, _default_contact) =
         SoftScene::compressive_block_on_plane(EDGE_LEN, CELL_SIZE, DISPLACEMENT, &materials);
     let plane = RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), DISPLACEMENT - EDGE_LEN);
@@ -775,7 +775,7 @@ fn run_readout_sweep() -> ReadoutSnapshot {
     let n_active_pairs = readouts.len();
     assert!(
         n_active_pairs > 0,
-        "per_pair_readout returned 0 readouts at n=8 — V-3a expects 81 active pairs",
+        "per_pair_readout returned 0 readouts at n=8 — the compressive block expects 81 active pairs",
     );
     let f_r_total: f64 = readouts.iter().map(|r| r.force_on_soft.z).sum();
     let mean_force_z = f_r_total / n_active_pairs as f64;
@@ -998,7 +998,7 @@ fn verify_mesh_topology_exact(snapshot: &ReadoutSnapshot) {
     );
     assert_eq!(
         snapshot.n_loaded, N_LOADED_REF,
-        "n_loaded drift — expected {N_LOADED_REF}, got {} (V-3a expects 0 exact — load is \
+        "n_loaded drift — expected {N_LOADED_REF}, got {} (the compressive block expects 0 exact — load is \
          penalty-mediated, no external traction)",
         snapshot.n_loaded,
     );
@@ -1043,7 +1043,7 @@ fn verify_contact_engagement(snapshot: &ReadoutSnapshot) {
     assert_eq!(
         snapshot.n_active_pairs, expected,
         "n_active_pairs = {} should equal (n+1)² = {expected} (every top-face vertex inside \
-         the d̂-band at equilibrium per V-3a fixture's docstring)",
+         the d̂-band at equilibrium per the compressive-block fixture's docstring)",
         snapshot.n_active_pairs,
     );
     assert_eq!(
@@ -1068,7 +1068,7 @@ fn verify_small_strain_validity(snapshot: &ReadoutSnapshot) {
     );
     assert!(
         snapshot.eps < SMALL_STRAIN_CEILING,
-        "ε = {:.4} ≥ small-strain ceiling {SMALL_STRAIN_CEILING:.2} — V-3a `(d̂, δ)` override \
+        "ε = {:.4} ≥ small-strain ceiling {SMALL_STRAIN_CEILING:.2} — `(d̂, δ)` override \
          no longer producing small-strain regime; investigate before relaxing",
         snapshot.eps,
     );
@@ -1086,7 +1086,7 @@ fn verify_gross_physics(snapshot: &ReadoutSnapshot) {
         snapshot.lambda_z_avg,
     );
     // f_r_total is the SUM over readouts of `force_on_soft.z`,
-    // which is negative per the V-3a sign convention (soft body
+    // which is negative per the compressive-block sign convention (soft body
     // pushed DOWN by penalty along outward normal `n = -ẑ`).
     // Rigid reaction is its negation (positive). Per-pair sign
     // sanity is checked in the next gate.
@@ -1101,7 +1101,7 @@ fn verify_gross_physics(snapshot: &ReadoutSnapshot) {
         assert!(
             r.force_on_soft.z < 0.0,
             "readout[{idx}] force_on_soft.z = {:e} should be negative (soft-side force pushed \
-             along outward normal n = -ẑ for V-3a's descended top plate)",
+             along outward normal n = -ẑ for the compressive block's descended top plate)",
             r.force_on_soft.z,
         );
     }
@@ -1172,7 +1172,7 @@ fn verify_per_pair_invariants(snapshot: &ReadoutSnapshot) {
             r.sd,
             D_HAT_OVERRIDE,
         );
-        // Lateral force components — V-3a's plane has normal exactly
+        // Lateral force components — the compressive block's plane has normal exactly
         // `(0, 0, -1)`; under IEEE-754 multiplication
         // `force.x = κ·(d̂-sd)·0 = ±0` strictly. Tolerance leaves
         // headroom for a `RigidPlane` constructor quirk without
@@ -1469,7 +1469,7 @@ const RENDER_SCALE: f32 = 100.0;
 
 /// Visualization-only displacement amplifier (banked pattern (b)
 /// at row 10 — `feedback_visual_review_is_the_test`). Mirror row
-/// 14 verbatim — V-3a's small-strain regime (`ε ≈ 0.6 %`) is well
+/// 14 verbatim — the compressive block's small-strain regime (`ε ≈ 0.6 %`) is well
 /// below human visual acuity at typical viewing distance. Plates
 /// are positioned flush against the (amplified) cube faces, NOT at
 /// the kinematic `δ`-offset positions. **Headless asserts + JSON +
@@ -1531,7 +1531,7 @@ fn run_visual_mode(snapshot: &ReadoutSnapshot) {
     // ASCII identifiers (eps, lambda_z, sigma_z, x) and `-`
     // hyphens.
     let hud = format!(
-        "contact-force-readout (V-3a scene + per-pair readout)\n\
+        "contact-force-readout (compressive-block scene + per-pair readout)\n\
          n_active_pairs : {n_active}  (= {n_per_edge_plus_1}x{n_per_edge_plus_1} top-face grid)\n\
          F_R_total      : {fr:.4} N  (rigid reaction; soft-side total = {fr_neg:.4} N)\n\
          mean force_z   : {mfz:.4e} N  (per-pair, soft-side; negative)\n\
@@ -1627,7 +1627,7 @@ fn setup_visual_scene(
         ..default()
     });
 
-    // Cube lateral center (Bevy units). The V-3a helper builds the
+    // Cube lateral center (Bevy units). The compressive-block helper builds the
     // mesh spanning physics `[0, EDGE_LEN]` in each axis, NOT
     // centered at origin. Under `UpAxis::PlusZ` swap (physics
     // `(x, y, z)` → Bevy `(x, z, y)`) and `Transform::from_scale(
@@ -1738,7 +1738,7 @@ fn setup_visual_scene(
 fn print_summary(snapshot: &ReadoutSnapshot, ply_path: &Path, json_path: &Path) {
     println!("==== contact-force-readout ====");
     println!();
-    println!("Scene: SoftScene::compressive_block_on_plane (V-3a mirror, single n=8)");
+    println!("Scene: SoftScene::compressive_block_on_plane (compressive-block mirror, single n=8)");
     println!(
         "  geometry      : HandBuiltTetMesh::uniform_block cube, EDGE_LEN = {EDGE_LEN} m, \
          A_top = {A_TOP_FACE:.4e} m²"
@@ -1759,7 +1759,7 @@ fn print_summary(snapshot: &ReadoutSnapshot, ply_path: &Path, json_path: &Path) 
         DISPLACEMENT - EDGE_LEN,
     );
     println!(
-        "  contact       : PenaltyRigidContact V-3a-LOCAL (κ = {KAPPA} N/m, \
+        "  contact       : PenaltyRigidContact fixture-local (κ = {KAPPA} N/m, \
          d̂_override = {D_HAT_OVERRIDE} m)"
     );
     println!(
@@ -1806,7 +1806,7 @@ fn print_summary(snapshot: &ReadoutSnapshot, ply_path: &Path, json_path: &Path) 
         snapshot.min_pressure,
     );
     println!();
-    println!("Force-bound bracket (V-3a inheritance):");
+    println!("Force-bound bracket (compressive-block inheritance):");
     println!(
         "  ε              = {:>12.6e}     (compressive strain)",
         snapshot.eps,

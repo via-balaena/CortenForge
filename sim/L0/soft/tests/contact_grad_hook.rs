@@ -17,11 +17,11 @@
 //! > in-contact or robustly out-of-contact; the transition band is a
 //! > forbidden zone.
 //!
-//! V-7 tests the *positive* half of that statement — penalty IS
+//! This fixture tests the *positive* half of that statement — penalty IS
 //! differentiable when every active pair sits robustly inside the
 //! contact band (`d < d̂ - 2 ε_FD-position`). The *negative* half
 //! (transition-band singularity at `d = d̂`) is what Phase H IPC
-//! structurally removes; V-7 does not exercise it.
+//! structurally removes; this fixture does not exercise it.
 //!
 //! ## Reward functional choice
 //!
@@ -46,7 +46,7 @@
 //! differentiability-hook pattern: FD agreement at two step sizes at
 //! the 5-digit bar demonstrates the map IS smooth at the perturbation
 //! scales the eventual reverse-mode adjoint will consume. That **is**
-//! the V-7 "FD-stable" gate.
+//! this fixture's "FD-stable" gate.
 //!
 //! Hand-derived analytic `∂F_R/∂κ` requires plumbing the IFT adjoint at
 //! κ — the Newton Hessian factor `A` cached at convergence contracted
@@ -75,7 +75,7 @@
 //! `κ · N_active · (d̂ - d_eq) ≈ F_elastic(x_final)` gives
 //! `δd_eq / d_eq ≈ -δκ / κ` (treating elastic force ≈ const at small
 //! κ-perturbations). So `ε_FD-position ≈ h · d̂ / κ`. At commit-8
-//! V-3a override `n = 4` regime: average per-pair band margin
+//! compressive-block override `n = 4` regime: average per-pair band margin
 //! `≈ F_R / (κ · N_active) ≈ 0.186 / (1e4 · 25) ≈ 7.4e-7 m`; empirical
 //! **minimum** band margin across the 25 active pairs `≈ 1.9e-7 m`
 //! (top-face vertices have non-uniform depth at converged steady-state
@@ -101,11 +101,11 @@
 //!
 //! ## Why one refinement level only
 //!
-//! V-7 is forward-looking differentiability hygiene, not a multi-
-//! refinement scientific gate. `n_per_edge = 4` (V-3a override regime)
+//! This fixture is forward-looking differentiability hygiene, not a multi-
+//! refinement scientific gate. `n_per_edge = 4` (compressive-block override regime)
 //! gives 25 active pairs with average band margin `~7.4e-7 m` (min
 //! `~1.9e-7 m`); five `replay_step` calls at sub-second debug-mode
-//! runtime per call. Mirror of V-6's single-config κ-scan structure
+//! runtime per call. Mirror of the κ-ceiling fixture's single-config κ-scan structure
 //! (commit 10).
 //!
 //! ## Forward path: Part 6 + Phase H IPC
@@ -118,7 +118,7 @@
 //! III-3 / IV-8 Gate 2.
 //! Phase H IPC's logarithmic barrier `−κ · log(d / d̂)` extends
 //! differentiability to the full domain (the barrier blows up smoothly
-//! as `d → 0`); V-7's robustly-in-contact restriction lifts at that
+//! as `d → 0`); this fixture's robustly-in-contact restriction lifts at that
 //! point.
 
 #![allow(
@@ -140,22 +140,23 @@ use sim_soft::{
     Vec3, VertexId,
 };
 
-// ── Scene constants — V-3a override regime (mirrors penalty_compressive_block.rs) ──
+// ── Scene constants — compressive-block override regime (mirrors penalty_compressive_block.rs) ──
 
-/// Cube edge length (1 cm). Scope memo §9 V-3a recommendation.
+/// Cube edge length (1 cm). Compressive-block fixture's value.
 const EDGE_LEN: f64 = 0.01;
 
-/// Rigid-plane axial displacement (0.05 mm). V-3a override per commit-8
+/// Rigid-plane axial displacement (0.05 mm). compressive-block override per commit-8
 /// deviation 2 — see [`penalty_compressive_block`] module docstring.
 const DISPLACEMENT: f64 = 5.0e-5;
 
-/// Refinement level — single config for V-7 hygiene scope. n=4 gives 25
+/// Refinement level — single config for this fixture's hygiene scope. n=4 gives 25
 /// active pairs with average band margin `~7.4e-7 m` (min `~1.9e-7 m`);
 /// 5×5×5 = 125 vertices, sub-second debug-mode runtime.
 const N_PER_EDGE: usize = 4;
 
 /// Lamé pair `(μ, λ)` — Phase 4 IV-3 / IV-5 default Ecoflex-class
-/// compressible `NeoHookean` (`λ = 4 μ` ⇒ `ν = 0.4`). Mirrors V-3a.
+/// compressible `NeoHookean` (`λ = 4 μ` ⇒ `ν = 0.4`). Mirrors the
+/// compressive block.
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0e5;
 
@@ -173,11 +174,11 @@ const D_HAT_OVERRIDE: f64 = 1.0e-5;
 
 /// Static-equilibrium time-step — large `dt` damps the inertial Tikhonov
 /// regulariser `M / dt²` to negligible relative magnitude, yielding
-/// pure-static root-find. Mirrors V-3a's `STATIC_DT`.
+/// pure-static root-find. Mirrors the compressive block's `STATIC_DT`.
 const STATIC_DT: f64 = 1.0;
 
-/// Newton iteration cap — mirrors V-3a (50). Newton typically takes
-/// `3-5` iters per pass under V-3a override; cap leaves wide margin
+/// Newton iteration cap — mirrors the compressive block (50). Newton typically takes
+/// `3-5` iters per pass under compressive-block override; cap leaves wide margin
 /// against perturbation-induced regime drift.
 const MAX_NEWTON_ITER: usize = 50;
 
@@ -217,7 +218,7 @@ struct ReactionReport {
     residual_norm: f64,
 }
 
-/// Build the V-3a override scene at `κ = kappa`, run one static
+/// Build the compressive-block override scene at `κ = kappa`, run one static
 /// `replay_step`, return reconstructed `F_R` plus diagnostics. Mirrors
 /// [`penalty_compressive_block.rs::run_at_refinement`] structure with
 /// fixed `n_per_edge = N_PER_EDGE` and configurable κ.
@@ -249,7 +250,7 @@ fn reaction_at(kappa: f64) -> ReactionReport {
 
     // Reconstruct F_R from x_final per `penalty_compressive_block.rs`'s
     // "Reaction-force extraction" section: gradient is `-κ·(d̂-d)·n`
-    // with `n = -ẑ` for the V-3a plane, so the force on the rigid body
+    // with `n = -ẑ` for the compressive-block plane, so the force on the rigid body
     // (Newton's 3rd-law partner) along `+ẑ` is `+κ·(d̂-d)`.
     let mut f_r = 0.0;
     let mut n_active = 0;
@@ -285,7 +286,7 @@ fn reaction_at(kappa: f64) -> ReactionReport {
 // line soft cap. Extracting helpers would add indirection without
 // improving clarity.
 #[allow(clippy::too_many_lines)]
-fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
+fn contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
     let h_coarse = FD_H_REL_COARSE * KAPPA_BASE;
     let h_fine = FD_H_REL_FINE * KAPPA_BASE;
 
@@ -303,7 +304,7 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
     let fd_self_rel_err = (fd_coarse - fd_fine).abs() / fd_coarse.abs().max(1.0e-12);
 
     eprintln!(
-        "v_7 ∂F_R/∂κ FD-stability at V-3a override regime n={N_PER_EDGE}, κ={KAPPA_BASE:e} N/m: \
+        "∂F_R/∂κ FD-stability at compressive-block override regime n={N_PER_EDGE}, κ={KAPPA_BASE:e} N/m: \
          base F_R = {base_fr:.6} N, n_active = {base_n}, min band margin = {base_m:e} m, \
          iters = {base_it}, res = {base_r:e}; \
          FD at h_rel={FD_H_REL_COARSE:e} (ε_κ = {h_coarse:e}) = {fd_coarse:e} N/(N/m); \
@@ -318,10 +319,10 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
 
     // ── Newton convergence sanity at every pass ─────────────────────────
     //
-    // Under V-3a override, Newton typically takes 3-5 iters per pass
+    // Under compressive-block override, Newton typically takes 3-5 iters per pass
     // (commit 8 logs). At < 40 we have 35+ iters of margin against
     // perturbation-induced regime drift. A pass that runs near the cap
-    // signals the V-3a `(d̂, δ)` override is not robust at this
+    // signals the compressive-block `(d̂, δ)` override is not robust at this
     // perturbed κ — would corrupt the FD numerator before band-margin
     // or self-consistency gates surface.
     for (label, report) in [
@@ -367,7 +368,7 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
     ] {
         assert!(
             report.n_active > 0,
-            "{label}: zero active pairs — V-7 requires the V-3a override regime to engage \
+            "{label}: zero active pairs — this fixture requires the compressive-block override regime to engage \
              contact at all five FD configs; an empty active set at any perturbed κ \
              signals the regime drifted out of contact",
         );
@@ -376,7 +377,7 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
             "{label}: min band margin {m:e} m ≤ 2·ε_FD-position {bm:e} m. \
              FD κ-perturbation could flip active-set membership across the d = d̂ \
              discontinuity (book Part 4 §00 §00 'transition band is a forbidden zone'); \
-             V-7's smooth-derivative assumption fails. Diagnose: (1) is the V-3a override \
+             this fixture's smooth-derivative assumption fails. Diagnose: (1) is the compressive-block override \
              regime still robustly-in-contact at this commit's HEAD? Commit-11 empirical \
              min margin at n=4 was ≈ 1.9e-7 m (avg ≈ 7.4e-7 m). (2) has the FD step grown \
              beyond commit-time tolerance? (3) at perturbed κ, has any active pair drifted \
@@ -418,24 +419,24 @@ fn v_7_contact_gradient_hook_is_fd_stable_in_robustly_in_contact_band() {
     // truncation at h=1 for smooth F_R(κ)). Demonstrates we're safely
     // above the Newton-convergence noise floor (`tol = 1e-10` × effective
     // stiffness ~ 1e-10 N noise at F_R ≈ 0.18 N) — the empirical
-    // self-consistency rel_err at the V-3a regime sits in the 1e-7 range,
+    // self-consistency rel_err at the compressive-block regime sits in the 1e-7 range,
     // 12× headroom against the bar.
     assert!(
         fd_self_rel_err <= FD_SELF_CONSISTENCY_BAR,
-        "V-7 FD self-consistency failed: \
+        "FD self-consistency failed: \
          FD at h_rel = {FD_H_REL_COARSE:e} = {fd_coarse:e} N/(N/m), \
          FD at h_rel = {FD_H_REL_FINE:e} = {fd_fine:e} N/(N/m), \
          rel_err = {fd_self_rel_err:.3e} > {FD_SELF_CONSISTENCY_BAR:.0e}. \
          Diagnose in this order: (1) Newton convergence — verify all five passes \
          converged to `tol = 1e-10` (residual_norm in `replay_step`'s NewtonStep); \
-         a regression here suggests the V-3a override regime no longer converges \
+         a regression here suggests the compressive-block override regime no longer converges \
          as cleanly at perturbed κ. (2) Step-size band — h too small lets roundoff \
          dominate, h too large lets truncation; the chosen `h_rel ∈ {{1e-3, 1e-4}}` \
          brackets `ε_f64^(1/3) · |κ|`, a regression here suggests the optimal-h \
          derivation no longer holds at this commit's HEAD. (3) Robustly-in-contact \
          band — if any active pair's `(d̂ - d)` shrunk below `2 · ε_FD-position` \
          (caught by the band-condition assertion above, but worth re-checking if \
-         the regime drifted). (4) commit-8 V-3a regime drift — the override \
+         the regime drifted). (4) commit-8 compressive-block regime drift — the override \
          `(d̂, δ) = (1e-5, 5e-5)` was tuned for cold-start residual safety, not \
          sensitivity precision; if the regime moved, FD step sizes need \
          recalibration accordingly.",

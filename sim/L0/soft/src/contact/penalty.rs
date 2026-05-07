@@ -79,7 +79,7 @@ pub struct PenaltyRigidContact {
 impl PenaltyRigidContact {
     /// Construct with default `(κ, d̂)` from `PENALTY_KAPPA_DEFAULT` /
     /// `PENALTY_DHAT_DEFAULT` (crate-private; tunable only via
-    /// [`with_params`](Self::with_params) for V-* tests).
+    /// [`with_params`](Self::with_params) for fixture-local tuning).
     #[must_use]
     pub fn new<I>(primitives: I) -> Self
     where

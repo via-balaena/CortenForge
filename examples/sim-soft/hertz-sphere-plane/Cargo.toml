@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# SoftScene::sphere_on_plane (V-3 fixture's helper) + CpuNewtonSolver +
+# SoftScene::sphere_on_plane (the Hertzian fixture's helper) + CpuNewtonSolver +
 # PenaltyRigidContactSolver type alias + RigidPlane + PenaltyRigidContact +
 # MaterialField + Mesh trait + SceneInitial + SdfMeshedTetMesh + Solver +
 # SolverConfig + Tet4 + Vec3 + VertexId + referenced_vertices.

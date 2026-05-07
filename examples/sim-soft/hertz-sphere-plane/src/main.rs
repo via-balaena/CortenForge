@@ -1,10 +1,10 @@
-//! hertz-sphere-plane — Phase 5 V-3 user-facing wrap: soft sphere
+//! hertz-sphere-plane — Hertzian sphere↔plane user-facing wrap: soft sphere
 //! quasi-statically pressed against a `RigidPlane` by an axial force,
 //! contact-patch radius compared against the Hertzian closed-form.
 //!
 //! `SoftScene::sphere_on_plane(radius, cell_size, force, material_field)`
 //! (sim-soft `818fa7b1` Phase 5 commit-6 helper + `b3368aa9` commit-9
-//! V-3 fixture) builds the production scene — a `SphereSdf` body
+//! the Hertzian fixture) builds the production scene — a `SphereSdf` body
 //! BCC-meshed at three refinement
 //! levels (`h, h/2, h/4` = `3, 1.5, 0.75 mm`) via
 //! `SdfMeshedTetMesh::from_sdf`, four equator pins (cardinal-direction
@@ -12,23 +12,23 @@
 //! band loaded with `LoadAxis::AxisZ` traction summing to `−F = −500 mN`.
 //! A single `RigidPlane(+ẑ, offset = -(R + d̂))` at `z = -(R + d̂)` sits
 //! just below the sphere's south pole; one-way `PenaltyRigidContact`
-//! resists the press with **V-3-LOCAL κ = 1e3 N/m** (10× softer than
+//! resists the press with **fixture-local κ = 1e3 N/m** (10× softer than
 //! `PENALTY_KAPPA_DEFAULT = 1e4`, applied via
 //! [`PenaltyRigidContact::with_params`](sim_soft::PenaltyRigidContact::with_params)).
 //!
 //! `STATIC_DT = 1.0 s` collapses the inertial Tikhonov regulariser
 //! `M / dt²` so a single `replay_step` from rest converges to static
-//! equilibrium (mirrors V-3's `cfg.dt = 1.0`). Three refinements run
+//! equilibrium (mirrors the Hertzian fixture's `cfg.dt = 1.0`). Three refinements run
 //! sequentially; the row's headline gate is the **finest-level
 //! Hertzian patch-radius match `rel_err_a < 20%`** plus **monotonic
 //! convergence + Cauchy ratio** on `a_FEM`.
 //!
 //! ## Why `a_FEM` is the headline (and `δ_FEM` is diagnostic-only)
 //!
-//! V-3 commit 9 surfaced empirically that the rigid-plane Hertz
+//! Empirical iteration on the Hertzian fixture surfaced that the rigid-plane Hertz
 //! indentation `δ_Hertz` is **structurally unreachable** in the penalty
 //! regime: penalty's contact-band depth `d̂ = 1 mm` provides ~1 mm of
-//! "soft compliance" before saturating, and at the V-3 force `F = 500 mN`
+//! "soft compliance" before saturating, and at the fixture's force `F = 500 mN`
 //! + Ecoflex stiffness, the sphere reaches penalty-band equilibrium at
 //! ~219 μm COM descent — far short of the rigid-limit `R + d̂ + δ_Hertz
 //! ≈ 11.3 mm`. Higher κ doesn't fix it (penalty stiffer = even less
@@ -45,7 +45,7 @@
 //! distorts; the FEM finds the correct contact-patch radius scaling
 //! within mesh-bound discretisation error. Both `δ_FEM` and `a_FEM`
 //! appear in stdout + JSON for inspection; **only `a_FEM` is asserted**.
-//! Mirror of V-3 fixture's "Plan change 2" reframe verbatim.
+//! Mirror of the Hertzian fixture's "Plan change 2" reframe verbatim.
 //!
 //! ## Hertzian closed-form (Johnson 1985 §3.4)
 //!
@@ -60,7 +60,7 @@
 //! p₀_Hertz = 3 F / (2 π a_Hertz²)            (peak pressure at center, eq 3.41)
 //! ```
 //!
-//! At V-3 parameters (`R = 1 cm`, `F = 500 mN`, `μ = 2e5 Pa`,
+//! At the Hertzian fixture's parameters (`R = 1 cm`, `F = 500 mN`, `μ = 2e5 Pa`,
 //! `λ = 8e5 Pa` ⇒ `ν = 0.4`, `E* ≈ 6.67e5 Pa`): `δ_Hertz ≈ 316 μm`,
 //! `a_Hertz ≈ 1.78 mm`, `p₀_Hertz ≈ 75 kPa`. Strain `δ/R ≈ 3.2%`,
 //! `a/R ≈ 17.8%` — comfortably inside Hertz small-strain validity
@@ -134,12 +134,12 @@
 //!   hit distinct vertices, but the assertion accepts `≥ 3` to match
 //!   the helper's contract) and `n_loaded > 0` (top-of-sphere band).
 //! - **`solver_per_step_invariants`** — per-refinement: no NaN in
-//!   `x_final`; `iter_count < MAX_NEWTON_ITER - 10 = 40` per V-3's iter
+//!   `x_final`; `iter_count < MAX_NEWTON_ITER - 10 = 40` per the Hertzian fixture's iter
 //!   margin policy; finite residual norm.
 //! - **`contact_engagement`** — `n_active_pairs > 0` per refinement
 //!   (sphere reached the plane, contact engaged at all).
 //! - **`small_strain_validity`** — `a_fem / R << 1` per refinement
-//!   (`< 0.30` per Hertz domain ceiling; expected `~0.18` at V-3
+//!   (`< 0.30` per Hertz domain ceiling; expected `~0.18` at this row
 //!   parameters).
 //! - **`monotonic_a_convergence`** — `rel_err_a` decreases across
 //!   `(h → h/2 → h/4)` (mesh refinement progressively resolves the
@@ -171,7 +171,7 @@
 // thousands here, well within f64 mantissa exact range.
 #![allow(clippy::cast_precision_loss)]
 // `sphere_on_plane(...).expect(...)` on the helper signature. Mirror of
-// V-3 fixture + concentric_lame_shells precedent.
+// Hertzian-fixture + concentric_lame_shells precedent.
 #![allow(clippy::expect_used)]
 // `print_summary` and `print_capture_block` are single museum-plaque
 // stdout writers; splitting into sub-helpers fragments the visual format
@@ -229,22 +229,22 @@ use sim_soft::{
 };
 
 // =============================================================================
-// Scene constants — mirror V-3 (`sim/L0/soft/tests/hertz_sphere_plane.rs`)
+// Scene constants — mirror the Hertzian fixture (`sim/L0/soft/tests/hertz_sphere_plane.rs`)
 // verbatim. Re-deriving here keeps the example self-contained AND
-// captures-platform-locked; any regression in the V-3 helper that shifts
+// captures-platform-locked; any regression in the Hertzian helper that shifts
 // these implicitly would surface at first row 13 visual review.
 // =============================================================================
 
-/// Sphere radius (1 cm). Mirror V-3's `RADIUS`. Hertz validity requires
+/// Sphere radius (1 cm). Mirror the Hertzian fixture's `RADIUS`. Hertz validity requires
 /// `δ / R ≪ 1`; at `F = 500 mN` and the chosen material, `δ_Hertz / R
 /// ≈ 3.2 %` and `a_Hertz / R ≈ 17.8 %` — comfortably small-strain.
 const RADIUS: f64 = 1.0e-2;
 
-/// Axial downward force on top-of-sphere band (500 mN). Mirror V-3 per
+/// Axial downward force on top-of-sphere band (500 mN). Mirror the Hertzian fixture per
 /// the empirical "Material plan change 1" — at default `κ = 1e4` and
 /// scope-memo F (50-200 mN), only the south pole engages and dynamics
 /// reach single-vertex penalty equilibrium far short of multi-vertex
-/// Hertz. F = 500 mN + V-3-LOCAL κ = 1e3 raises the multi-vertex
+/// Hertz. F = 500 mN + fixture-local κ = 1e3 raises the multi-vertex
 /// threshold `h < sqrt(2 R · F/κ)` to `≈ 3.16 mm`, engaging multi-vertex
 /// contact at the mid + finest refinement levels (h sits **right at the
 /// 3.16 mm threshold** and gives single-vertex regime empirically:
@@ -254,7 +254,7 @@ const RADIUS: f64 = 1.0e-2;
 const FORCE: f64 = 0.5;
 
 /// Lamé pair `(μ, λ)` — Ecoflex 00-30 + 15 wt% carbon-black composite,
-/// Phase 4 IV-3 Region B / IV-5 middle-shell precedent + V-3 mirror.
+/// Phase 4 IV-3 Region B / IV-5 middle-shell precedent + Hertzian-fixture mirror.
 /// `λ = 4 μ` ⇒ `ν = 0.4` (compressible Neo-Hookean — Tet4 under
 /// `ν → 0.5` exhibits volumetric locking; Phase H Tet10 + F-bar
 /// recovers near-incompressible Ecoflex per Part 2 §05 §02). At canonical
@@ -263,7 +263,7 @@ const FORCE: f64 = 0.5;
 const MU: f64 = 2.0e5;
 const LAMBDA: f64 = 8.0e5;
 
-/// Coarsest cell size — V-3 mirror. At `R = 1 cm` BCC sphere gives
+/// Coarsest cell size — Hertzian-fixture mirror. At `R = 1 cm` BCC sphere gives
 /// ~few thousand tets; sits **just below the multi-vertex threshold**
 /// (`3.0 mm < 3.16 mm = sqrt(2R · F/κ)`, within 5% of the boundary)
 /// — the threshold formula is the SUFFICIENT condition for multi-vertex
@@ -272,20 +272,20 @@ const LAMBDA: f64 = 8.0e5;
 /// the monotonic-convergence baseline.
 const CELL_SIZE_H: f64 = 3.0e-3;
 
-/// Mid refinement — V-3 mirror. Below the multi-vertex threshold
+/// Mid refinement — Hertzian-fixture mirror. Below the multi-vertex threshold
 /// (`1.5 mm < 3.16 mm`); engages multi-vertex Hertz contact (captured
 /// `n_active = 5`). Error reduces vs coarse but remains substantial
 /// (rel-err ~40%) — the contact patch is undersampled at this
-/// resolution. (V-3 fixture's docstring says "slightly above the
+/// resolution. (the Hertzian fixture's docstring says "slightly above the
 /// multi-vertex threshold" using a stale 1 mm threshold from κ = 1e4
-/// scope-memo arithmetic — the actual κ = 1e3 V-3-LOCAL override
+/// the original arithmetic — the actual κ = 1e3 fixture-local override
 /// gives threshold 3.16 mm and h/2 sits comfortably below it.)
 const CELL_SIZE_H2: f64 = 1.5e-3;
 
-/// Fine refinement — V-3 mirror. Below the multi-vertex threshold;
+/// Fine refinement — Hertzian-fixture mirror. Below the multi-vertex threshold;
 /// engages multi-vertex Hertz contact in the disk of radius `sqrt(2R ·
 /// F/κ) ≈ 3 mm` at single-pole descent. Captured `n_active_pairs = 45`
-/// at this refinement (matches V-3 docstring's empirical claim
+/// at this refinement (matches the Hertzian fixture's empirical claim
 /// exactly). **Empirical-cap finest level**: at `h/4 = 0.5 mm`
 /// Newton convergence with multi-vertex active-set churn ran > 12 min
 /// release-mode; `0.75 mm` is the release-mode-feasible finest at ~2
@@ -294,17 +294,17 @@ const CELL_SIZE_H4: f64 = 7.5e-4;
 
 /// Static-equilibrium time-step — large `dt` damps the inertial
 /// Tikhonov regulariser `M / dt²` to negligible relative magnitude,
-/// yielding pure-static root-find. Mirror V-3 verbatim.
+/// yielding pure-static root-find. Mirror the Hertzian fixture verbatim.
 const STATIC_DT: f64 = 1.0;
 
-/// Newton iter cap — mirror V-3. Static-equilibrium from rest with
+/// Newton iter cap — mirror the Hertzian fixture. Static-equilibrium from rest with
 /// multi-vertex active-set churn typically completes in `3-10` iters
 /// per refinement; cap leaves `40+` iters of margin against material
 /// or load perturbations.
 const MAX_NEWTON_ITER: usize = 50;
 
 /// Per-refinement Newton-iter sanity cap (margin under
-/// `MAX_NEWTON_ITER`). V-3 uses `< 40` (10-iter margin under cap). If
+/// `MAX_NEWTON_ITER`). The Hertzian fixture uses `< 40` (10-iter margin under cap). If
 /// any refinement spends more than this, surface as a regression
 /// before bumping the cap.
 const NEWTON_ITER_SANITY_CAP: usize = 40;
@@ -341,7 +341,7 @@ const KAPPA: f64 = 1.0e3;
 const REL_ERR_GATE: f64 = 0.20;
 
 /// Hertz small-strain validity ceiling (`a / R`). Textbook Hertz
-/// requires `a / R ≲ 30%`; expected at V-3 `(F, R, E*)` is `~17.8%`.
+/// requires `a / R ≲ 30%`; expected at the Hertzian fixture's `(F, R, E*)` is `~17.8%`.
 const SMALL_STRAIN_CEILING: f64 = 0.30;
 
 /// IV-1 sparse-tier rel-tol for captured bits. ~few thousand tets through
@@ -414,7 +414,7 @@ const N_LOADED_H4: usize = 118;
 
 /// Equator pin count at h. The helper picks the four cardinal-direction
 /// equator points and de-duplicates; under generic BCC resolution the
-/// dedup leaves `≥ 3` distinct vertices — at all three V-3 cell sizes
+/// dedup leaves `≥ 3` distinct vertices — at all three cell sizes
 /// the four cardinal points hit four distinct referenced vertices.
 const N_PINNED_H: usize = 4;
 
@@ -443,7 +443,7 @@ const N_PINNED_H4: usize = 4;
 /// y²)` over active vertices at converged `x_final`.
 /// `f64::from_bits(0x3e29_f1ec_0667_6821) ≈ 3.020e-9 m` — at coarse h
 /// only the south-pole vertex enters the band (single-vertex penalty
-/// regime per V-3 "Material plan change 1"); horizontal radius of that
+/// regime per "Material plan change 1"); horizontal radius of that
 /// pole's converged position is 3 nm (essentially 0). 100% rel-err vs
 /// `a_Hertz` is expected and is the monotonic-baseline starting point.
 const A_FEM_H_REF_BITS: u64 = 0x3e29_f1ec_0667_6821;
@@ -456,7 +456,7 @@ const A_FEM_H2_REF_BITS: u64 = 0x3f51_6ea7_e77f_12ad;
 /// `a_FEM` at h/4 (m). The headline-anchor scalar — finest-level
 /// rel-err vs `a_Hertz` is the row's REL_ERR_GATE = 20% gate.
 /// `f64::from_bits(0x3f58_861e_638b_8a7a) ≈ 1.497e-3 m`. 45 active
-/// pairs (matches V-3 docstring); rel-err ~16% (under the 20% gate).
+/// pairs (matches the Hertzian fixture's docstring); rel-err ~16% (under the 20% gate).
 const A_FEM_H4_REF_BITS: u64 = 0x3f58_861e_638b_8a7a;
 
 /// `δ_FEM` at h/4 (m). **Diagnostic-only** per "Plan change 2" reframe —
@@ -465,7 +465,7 @@ const A_FEM_H4_REF_BITS: u64 = 0x3f58_861e_638b_8a7a;
 /// detection only.
 /// `f64::from_bits(0xbf49_989d_b206_e410) ≈ -7.811e-4 m` — sphere is in
 /// the band but hasn't reached first-contact-equivalent depth `−d̂`,
-/// so δ_FEM is negative (matches V-3 docstring's `-781 μm` empirical).
+/// so δ_FEM is negative (matches the Hertzian fixture's `-781 μm` empirical).
 const DELTA_FEM_H4_REF_BITS: u64 = 0xbf49_989d_b206_e410;
 
 /// Active-pair count at h. Single-vertex regime — only south pole.
@@ -557,7 +557,7 @@ struct ContactVertex {
 
 /// Per-refinement run output. Carries FEM-measured Hertz quantities +
 /// Newton diagnostics + mesh stats for the diagnostic stdout + JSON +
-/// PLY paths. Mirrors V-3 fixture's `StepReport` plus the extras the
+/// PLY paths. Mirrors the Hertzian fixture's `StepReport` plus the extras the
 /// user-facing example wants (`x_final`, `rest_positions`,
 /// `boundary_faces`, `contact_vertices`).
 struct RefinementSnapshot {
@@ -636,8 +636,8 @@ struct HertzSnapshot {
 // Run — single refinement
 // =============================================================================
 
-/// Build the V-3 sphere-on-plane scene at `cell_size`, replace the
-/// helper's default-κ contact with a V-3-LOCAL `KAPPA` override, run a
+/// Build the Hertzian sphere-on-plane scene at `cell_size`, replace the
+/// helper's default-κ contact with a fixture-local `KAPPA` override, run a
 /// single static `replay_step`, and capture the [`RefinementSnapshot`].
 ///
 /// `populate_contact_vertices` is `true` only at the finest refinement
@@ -650,7 +650,7 @@ fn run_at_refinement(
 ) -> RefinementSnapshot {
     // Helper builds mesh + BC + initial + theta + a default-κ contact;
     // we discard the default contact and replace with a `with_params`
-    // override at V-3-LOCAL κ per the module docstring. The plane is
+    // override at fixture-local κ per the module docstring. The plane is
     // reconstructed identically to the helper's `RigidPlane::new(
     // Vec3::new(0.0, 0.0, 1.0), -(radius + d̂))` (`scene.rs:691-694`).
     let (mesh, bc, initial, _default_contact, theta) =
@@ -665,7 +665,7 @@ fn run_at_refinement(
     let n_pinned = bc.pinned_vertices.len();
 
     // Snapshot referenced vertices (drop BCC lattice orphans) BEFORE
-    // moving the mesh into the solver. Mirrors V-3 fixture's idiom +
+    // moving the mesh into the solver. Mirrors the Hertzian fixture's idiom +
     // row 12's pattern; the BCC mesher allocates corners for the full
     // bbox-margin region that no tet references, and orphan auto-pin
     // by `CpuNewtonSolver::new` keeps the free-DOF Hessian SPD without
@@ -699,7 +699,7 @@ fn run_at_refinement(
     let step: NewtonStep<_> = solver.replay_step(&x_prev, &v_prev, &theta, cfg.dt);
 
     // COM displacement Δz_COM = mean(z_v_final - z_v_initial) over
-    // referenced vertices. Mirror V-3 verbatim — referenced-only mean
+    // referenced vertices. Mirror the Hertzian fixture verbatim — referenced-only mean
     // tracks the actual sphere body rather than the static auto-pinned
     // orphan cohort.
     let z_disp_sum: f64 = referenced
@@ -1643,7 +1643,7 @@ fn setup_visual_scene(
 fn print_summary(snapshot: &HertzSnapshot, ply_path: &Path, json_path: &Path) {
     println!("==== hertz-sphere-plane ====");
     println!();
-    println!("Scene: SoftScene::sphere_on_plane (V-3 mirror)");
+    println!("Scene: SoftScene::sphere_on_plane (Hertzian mirror)");
     println!(
         "  geometry      : SphereSdf body, RADIUS = {RADIUS} m, FORCE = {FORCE} N (axial press)"
     );
@@ -1659,7 +1659,7 @@ fn print_summary(snapshot: &HertzSnapshot, ply_path: &Path, json_path: &Path) {
         -(RADIUS + PENALTY_DHAT),
     );
     println!(
-        "  contact       : PenaltyRigidContact V-3-LOCAL (κ = {KAPPA} N/m, d̂ = {PENALTY_DHAT} m)"
+        "  contact       : PenaltyRigidContact fixture-local (κ = {KAPPA} N/m, d̂ = {PENALTY_DHAT} m)"
     );
     println!("  solver config : Δt = {STATIC_DT} s (static), max_newton_iter = {MAX_NEWTON_ITER}");
     println!();

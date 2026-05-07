@@ -24,8 +24,8 @@
 //! `+κ·(d̂-d)` (positive), scattered as `+f_int.z`. The Newton step
 //! `δx = -K⁻¹·r` drives `x_curr.z` DOWN, compressing the cube. An
 //! inverted sign would either fail to converge (cube blown apart) or
-//! converge to a config with the cube floating above the plane. V-3a's
-//! `F_R_FEM > 0` per-level assert + `F_R_FEM ∈ [F_us, F_strain]`
+//! converge to a config with the cube floating above the plane. This
+//! fixture's `F_R_FEM > 0` per-level assert + `F_R_FEM ∈ [F_us, F_strain]`
 //! two-bound assert catch sign flips at the integrated level.
 //!
 //! ## Two deviations from the original spec
@@ -45,7 +45,7 @@
 //! The deformation field is non-uniform; **no clean closed-form
 //! exists** for this BC at general aspect ratio.
 //!
-//! V-3a therefore uses **two pure-BC bounds** to bracket the FEM
+//! This fixture therefore uses **two pure-BC bounds** to bracket the FEM
 //! response, plus **Cauchy-style geometric convergence** to confirm
 //! the FEM is converging to a stable answer:
 //!
@@ -150,7 +150,7 @@
 //! integration; under quasi-static-equilibrium tests the inertial
 //! Tikhonov regulariser `M / dt²` dominates and skews the equilibrium.
 //! Mirror IV-3's `STATIC_DT = 1.0` + `MAX_NEWTON_ITER = 50` to recover
-//! the pure-static root-find regime. Under the V-3a `(d̂, δ)` override,
+//! the pure-static root-find regime. Under the `(d̂, δ)` override,
 //! Newton typically takes `3-5` iters per level (cold-start residual
 //! `~0.6 N` per top-face vertex; raw step well below tet-inversion
 //! threshold); the `MAX_NEWTON_ITER = 50` cap exists to mirror IV-3's
@@ -197,7 +197,7 @@ const DISPLACEMENT: f64 = 5.0e-5;
 
 /// Lamé pair `(μ, λ)` — Phase 4 IV-3 / IV-5 default Ecoflex-class
 /// compressible `NeoHookean` (`λ = 4 μ` ⇒ `ν = 0.4`). The canonical
-/// pair pins V-3a to the rest of the regression net.
+/// pair pins this fixture to the rest of the regression net.
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0e5;
 
@@ -244,7 +244,7 @@ const STATIC_DT: f64 = 1.0;
 /// Newton iteration cap — bumped from skeleton's `10` to mirror IV-3's
 /// `50` (static-equilibrium from rest needs more headroom than
 /// transient-step's small `Δx`). Newton typically takes `3-5` iters
-/// per level under the V-3a `(d̂, δ)` override; cap leaves wide margin
+/// per level under the `(d̂, δ)` override; cap leaves wide margin
 /// against load / material perturbations.
 const MAX_NEWTON_ITER: usize = 50;
 
@@ -391,7 +391,7 @@ fn run_at_refinement(n_per_edge: usize) -> StepReport {
 // (Newton iters / sign sanity / two-bound) + Cauchy gate are inlined.
 // Extracting helpers would add indirection without improving clarity.
 #[allow(clippy::too_many_lines)]
-fn v_3a_compressive_block_force_pumping_correctness() {
+fn compressive_block_force_pumping_correctness() {
     let report_n2 = run_at_refinement(2);
     let report_n4 = run_at_refinement(4);
     let report_n8 = run_at_refinement(8);
@@ -449,7 +449,7 @@ fn v_3a_compressive_block_force_pumping_correctness() {
 
     // ── Per-level Newton + sign + active-pair sanity ────────────────────
     //
-    // Newton-budget per level — mirrors IV-3 pattern. Under the V-3a
+    // Newton-budget per level — mirrors IV-3 pattern. Under the
     // `(d̂, δ)` override, Newton typically completes in `3-5` iters
     // per level (cold-start residual `~0.6 N` per top-face vertex;
     // raw Newton step well below tet-inversion threshold). At `< 40`
@@ -467,7 +467,7 @@ fn v_3a_compressive_block_force_pumping_correctness() {
 
     // Sign sanity per level: `λ_z < 1` (cube compresses, not extends);
     // `λ_z > 0.5` rules out >50% compression as physically implausible
-    // at the V-3a `(κ, d̂, δ)` regime; `F_R > 0` (soft body pushes UP
+    // at the `(κ, d̂, δ)` regime; `F_R > 0` (soft body pushes UP
     // on rigid plane — Newton's 3rd-law partner of penalty's DOWN
     // force on top face). Catches sign-flip regressions at gross-
     // physics level before the bound asserts surface them numerically.

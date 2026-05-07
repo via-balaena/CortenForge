@@ -2,14 +2,14 @@
 # requires-python = ">=3.11"
 # dependencies = ["matplotlib"]
 # ///
-"""Plot V-3a compressive-block results: per-refinement F_R FEM scatter
+"""Plot compressive-block results: per-refinement F_R FEM scatter
 overlaid on the two pure-BC analytic bound lines (uniaxial-stress lower,
 uniaxial-strain upper). The shaded band between the bounds is the
 physically valid range for the mixed BC (bottom full-pin + top
 penalty-contact + sides free); FEM scatter falling inside the band IS
 the asserted two-bound bracket.
 
-Per V-3a fixture's "Deviation 1" derivation: adding lateral constraints
+Per the compressive-block fixture's "Deviation 1" derivation: adding lateral constraints
 can only stiffen the response, removing them can only soften it — so
 F_R for the mixed BC must satisfy
     F_us(ε) = E · A · ε  ≤  F_R(ε)  ≤  F_strain(ε) = M_c · A · ε
@@ -106,7 +106,7 @@ ax.legend(loc="upper left", fontsize=9)
 ax.grid(True, alpha=0.3)
 
 plt.title(
-    "compressive-block (V-3a): FEM in two-bound bracket — "
+    "compressive-block (compressive block): FEM in two-bound bracket — "
     f"E_eff(n=8) = {effective_modulus_n8:.3e} Pa, "
     f"rel_pos = {rel_pos:.3f}, Cauchy = {cauchy_ratio:.3f}"
 )

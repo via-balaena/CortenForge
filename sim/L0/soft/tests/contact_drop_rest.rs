@@ -60,18 +60,19 @@
 //! ## RB modes — auto-pin handles them
 //!
 //! The `dropping_sphere` helper ships empty `pinned_vertices`. In
-//! statics that produced the V-3 `sphere_on_plane` stall (commit 9
-//! lesson) — but in dynamics the `M / dt²` Tikhonov regulariser is per-
-//! DOF positive on every referenced vertex, so the free-DOF Hessian is
-//! SPD even at rest config with zero contact engagement. RB modes don't
-//! need a four-pin equator set in V-5 (orphan vertices auto-pin via
-//! `CpuNewtonSolver::new`'s `effective_pinned` step; referenced
-//! vertices stay free with mass-driven inertial regularization).
+//! statics that produced the `sphere_on_plane` stall in the Hertzian
+//! fixture's iteration — but in dynamics the `M / dt²` Tikhonov
+//! regulariser is per-DOF positive on every referenced vertex, so the
+//! free-DOF Hessian is SPD even at rest config with zero contact
+//! engagement. RB modes don't need a four-pin equator set here
+//! (orphan vertices auto-pin via `CpuNewtonSolver::new`'s
+//! `effective_pinned` step; referenced vertices stay free with
+//! mass-driven inertial regularization).
 //!
 //! ## Helper extensions surfaced at first use
 //!
-//! Per `feedback_no_reflexive_defer` and the commit-9 V-3 / commit-8
-//! V-3a precedent (helper docstring claims may need empirical
+//! Per `feedback_no_reflexive_defer` and the Hertzian / compressive-
+//! block precedent (helper docstring claims may need empirical
 //! validation), the `dropping_sphere` helper at
 //! `SoftScene::dropping_sphere` was validated end-to-end here. No
 //! drift surfaced — the empty-pinned design works under dynamics for
@@ -80,12 +81,13 @@
 #![allow(
     // The helper signature returns a `Result<4-tuple, MeshingError>`.
     // Mirror of `concentric_lame_shells.rs` / `hertz_sphere_plane.rs`
-    // / V-3a precedent.
+    // / `penalty_compressive_block.rs` precedent.
     clippy::expect_used,
-    // V-5 single-fn structure with (a) constants, (b) setup, (c)
+    // Single-fn structure with (a) constants, (b) setup, (c)
     // step-loop with per-step asserts, (d) final asserts, (e)
     // diagnostic eprintln legitimately exceeds clippy's 100-line cap
-    // once the loop logic is inlined. Mirrors V-3 / V-3a precedent.
+    // once the loop logic is inlined. Mirrors the Hertzian / compressive-
+    // block precedent.
     clippy::too_many_lines
 )]
 
@@ -97,13 +99,13 @@ use sim_soft::{
 
 // ── Scene constants ──────────────────────────────────────────────────────
 
-/// Sphere radius (1 cm) — mirror V-3 commit-9 RADIUS for parameter
+/// Sphere radius (1 cm) — mirror the Hertzian fixture's RADIUS for parameter
 /// consistency across the contact-active regression net.
 const RADIUS: f64 = 1.0e-2;
 
-/// Cell size (3 mm) — matches V-3 commit-9 coarsest level (~2.2k tets
-/// at this `R` per V-3 empirical). Debug-mode-feasible step latency at
-/// this resolution; finer resolution is gratuitous for V-5's hygiene
+/// Cell size (3 mm) — matches the Hertzian fixture's coarsest level (~2.2k tets
+/// at this `R` per the Hertzian fixture's empirical). Debug-mode-feasible step latency at
+/// this resolution; finer resolution is gratuitous for this fixture's hygiene
 /// scope (this isn't an analytic-comparison gate).
 const CELL_SIZE: f64 = 3.0e-3;
 
@@ -113,9 +115,9 @@ const CELL_SIZE: f64 = 3.0e-3;
 /// across many steps before the contact dispatch fires.
 const RELEASE_HEIGHT: f64 = 5.0e-2;
 
-/// Lamé pair `(μ, λ)` — mirror V-3 commit-9 (Ecoflex 00-30 + 15 wt%
+/// Lamé pair `(μ, λ)` — mirror the Hertzian fixture (Ecoflex 00-30 + 15 wt%
 /// carbon-black composite, `ν = 0.4` compressible Neo-Hookean per
-/// Phase 4 IV-3 / IV-5 + V-3 precedent).
+/// Phase 4 IV-3 / IV-5 + Hertzian-fixture precedent).
 const MU: f64 = 2.0e5;
 const LAMBDA: f64 = 8.0e5;
 
@@ -134,7 +136,7 @@ const N_STEPS: usize = 1000;
 /// Newton iteration cap — bumped from skeleton's 10 to 50 for transient
 /// integration headroom (penalty oscillation during contact + Newton
 /// step under steep `M/dt²` regularization can take 5-15 iters per
-/// step). Mirrors V-3a's `MAX_NEWTON_ITER = 50` for consistency.
+/// step). Mirrors the compressive block's `MAX_NEWTON_ITER = 50` for consistency.
 const MAX_NEWTON_ITER: usize = 50;
 
 /// Per-vertex velocity magnitude floor for "rest" (`m/s`). Below this
@@ -181,7 +183,7 @@ fn max_vertex_velocity(v_flat: &[f64]) -> f64 {
 /// orphan vertices (auto-pinned at `x_prev` by `CpuNewtonSolver::new`'s
 /// `effective_pinned` step) are excluded so the mean tracks the
 /// actual sphere body, not the static auto-pinned orphan cohort.
-/// Mirrors V-3 commit-9's `referenced_vertices` filter pattern.
+/// Mirrors the Hertzian fixture's `referenced_vertices` filter pattern.
 fn mean_referenced_z(x_flat: &[f64], referenced: &[VertexId]) -> f64 {
     debug_assert!(x_flat.len().is_multiple_of(3));
     let z_sum: f64 = referenced
@@ -212,7 +214,7 @@ fn mean_referenced_z(x_flat: &[f64], referenced: &[VertexId]) -> f64 {
               multi-minute debug); rerun with `cargo test --release` to include"
 )]
 #[test]
-fn v_5_dropping_sphere_reaches_rest_no_energy_injection() {
+fn dropping_sphere_reaches_rest_no_energy_injection() {
     let (mesh, bc, initial, contact) =
         SoftScene::dropping_sphere(RADIUS, CELL_SIZE, RELEASE_HEIGHT, material_field())
             .expect("dropping_sphere should mesh successfully at canonical params");
@@ -224,7 +226,7 @@ fn v_5_dropping_sphere_reaches_rest_no_energy_injection() {
     // into the solver. Orphans auto-pin per `backward_euler.rs:270-
     // 298`'s `effective_pinned`; their z stays frozen at `x_prev` and
     // would bias the mean-z descent gate downward by orders of
-    // magnitude relative to the actual sphere descent. Mirrors V-3
+    // magnitude relative to the actual sphere descent. Mirrors the Hertzian fixture
     // commit-9's `referenced` snapshot at `hertz_sphere_plane.rs:519`.
     let referenced: Vec<VertexId> = referenced_vertices(&mesh);
     let n_referenced = referenced.len();

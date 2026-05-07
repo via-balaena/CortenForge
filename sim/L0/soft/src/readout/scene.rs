@@ -312,14 +312,14 @@ impl SoftScene {
     /// via [`HandBuiltTetMesh::uniform_block`] at `n_per_edge =
     /// edge_len / cell_size` cells per axis (Coxeter-Freudenthal-Kuhn
     /// 6-tets-per-cell). `cell_size` must divide `edge_len` to an even
-    /// integer — V-3a's three refinement levels at `edge_len = 0.01`
-    /// satisfy this by construction (`5 / 2.5 / 1.25` mm → `n = 2 / 4
-    /// / 8`).
+    /// integer — the compressive-block fixture's three refinement
+    /// levels at `edge_len = 0.01` satisfy this by construction
+    /// (`5 / 2.5 / 1.25` mm → `n = 2 / 4 / 8`).
     ///
     /// # Boundary conditions
     ///
-    /// **z-DOFs only pinned on the bottom face** (`z = 0` band) —
-    /// scope memo §1 V-3a's uniaxial-stress validity requirement: the
+    /// **z-DOFs only pinned on the bottom face** (`z = 0` band) — the
+    /// compressive-block fixture's uniaxial-stress validity requirement: the
     /// block must be free to Poisson-contract laterally, so x/y DOFs of
     /// bottom-face vertices stay free. A second-tier pin would
     /// otherwise drive `F = E·A·ε·(1−ν) / ((1+ν)(1−2ν))` (constrained-
@@ -349,14 +349,15 @@ impl SoftScene {
     /// by exactly `displacement` at rest config). The penalty force
     /// pushes the top face down; Newton equilibrates to a deformed
     /// top-face strain `δ_eq < displacement` per finite-κ semantics
-    /// (`δ_eq → displacement` as `κ_pen → ∞`). V-3a's analytic
-    /// comparison `F = E·A·ε` reads `ε = δ_eq / edge_len` at
-    /// equilibrium, not `displacement / edge_len`.
+    /// (`δ_eq → displacement` as `κ_pen → ∞`). The compressive-block
+    /// fixture's analytic comparison `F = E·A·ε` reads
+    /// `ε = δ_eq / edge_len` at equilibrium, not `displacement /
+    /// edge_len`.
     ///
     /// `(κ_pen, d̂)` defaults pinned at
     /// [`PENALTY_KAPPA_DEFAULT`](crate::contact::PenaltyRigidContact)
     /// and [`PENALTY_DHAT_DEFAULT`](crate::contact::PenaltyRigidContact)
-    /// per scope memo Decision J — V-7 commit 11 testing surface
+    /// — the fixture-local-tune surface
     /// (`PenaltyRigidContact::with_params`) is not exposed here.
     ///
     /// # Returns
@@ -400,7 +401,7 @@ impl SoftScene {
         assert!(
             (n_f - n_f.round()).abs() < 1e-9,
             "compressive_block_on_plane: cell_size = {cell_size} must divide edge_len = \
-             {edge_len} to an integer (got n = {n_f}); V-3a refinement levels assume \
+             {edge_len} to an integer (got n = {n_f}); refinement levels assume \
              integer cells per axis",
         );
         // `n_f` is verified as a small positive integer above; the
@@ -412,9 +413,9 @@ impl SoftScene {
 
         // Full-pin every bottom-face vertex (z = 0 band, half-cell
         // tolerance for FP safety even though the grid vertices land
-        // exactly on integer multiples of cell_size). V-3a's uniaxial-
-        // stress closed-form ideally wants z-only pinning of the
-        // bottom face with x/y free; Phase 5 BoundaryConditions only
+        // exactly on integer multiples of cell_size). The
+        // uniaxial-stress closed-form ideally wants z-only pinning of
+        // the bottom face with x/y free; BoundaryConditions only
         // models full-vertex Dirichlet, so the full pin is the
         // nearest-representable approximation — see the docstring
         // section above on the constrained-modulus approximation.
@@ -474,10 +475,10 @@ impl SoftScene {
     /// The sphere's rest configuration sits centered at the origin —
     /// its bottom pole at `z = -radius`. The rigid plane (per the
     /// **Contact** section below) lives at `z = -radius - d̂` so that
-    /// at rest config no soft vertex penetrates the band. V-3 (commit
-    /// 9) drives the system with `force` axial-down on the top-of-
-    /// sphere band; Newton equilibrates to a Hertzian indentation `δ`
-    /// at the south pole.
+    /// at rest config no soft vertex penetrates the band. The Hertzian
+    /// fixture drives the system with `force` axial-down on the
+    /// top-of-sphere band; Newton equilibrates to a Hertzian
+    /// indentation `δ` at the south pole.
     ///
     /// # Boundary conditions
     ///
@@ -490,24 +491,24 @@ impl SoftScene {
     /// construction with `~90°` distribution around the equator,
     /// preserving axial symmetry under the `+ẑ`-aligned axial load.
     ///
-    /// **Why pinning is necessary** (resolved at commit 9 V-3
-    /// empirical surfacing): the helper's pre-commit-9 design assumed
-    /// contact-penalty damping plus loaded-vertex traction asymmetry
-    /// would damp rigid-body modes from an empty pinned set. At rest
-    /// configuration the south pole sits exactly at `sd = +d̂` (band
-    /// edge per the **Contact** section below), so the contact
-    /// active-set is empty and the contact tangent is zero —
-    /// providing no damping. The `LoadAxis::AxisZ` traction is
+    /// **Why pinning is necessary** (resolved by empirical surfacing
+    /// during the Hertzian fixture's iteration): an earlier design
+    /// assumed contact-penalty damping plus loaded-vertex traction
+    /// asymmetry would damp rigid-body modes from an empty pinned
+    /// set. At rest configuration the south pole sits exactly at
+    /// `sd = +d̂` (band edge per the **Contact** section below), so
+    /// the contact active-set is empty and the contact tangent is
+    /// zero — providing no damping. The `LoadAxis::AxisZ` traction is
     /// pure-`+ẑ` per loaded vertex, with no x/y component to break
     /// the lateral rigid-body translation modes either. Newton's
     /// first iteration produces a search direction along the
     /// undamped rigid-body modes; Armijo line-search stalls (no
     /// step length finds residual decrease). The four-pin equator
     /// set fixes this with documented Saint-Venant distortion at
-    /// the pin points (order `ν · δ_Hertz`, e.g. `~130 μm` at V-3
-    /// commit-9 parameters where `δ_Hertz ≈ 316 μm`) — small
-    /// relative to `δ_Hertz` itself and far from the south contact
-    /// patch (Saint-Venant decay over `R = 1 cm`).
+    /// the pin points (order `ν · δ_Hertz`, e.g. `~130 μm` at the
+    /// Hertzian fixture's parameters where `δ_Hertz ≈ 316 μm`) —
+    /// small relative to `δ_Hertz` itself and far from the south
+    /// contact patch (Saint-Venant decay over `R = 1 cm`).
     ///
     /// `loaded_vertices` is the **top-of-sphere band** (every vertex
     /// within `0.5 × cell_size` of `z = +radius`, filtered to
@@ -525,10 +526,10 @@ impl SoftScene {
     /// offset `−radius − d̂` so the plane surface lies at `z = −radius
     /// − d̂`. At rest config, the south-pole vertex at `z = −radius`
     /// has signed distance `+d̂` — exactly at the edge of the contact
-    /// band, no penalty force yet. V-3 commit 9 drives the system
-    /// into contact via `theta`.
+    /// band, no penalty force yet. The Hertzian fixture drives the
+    /// system into contact via `theta`.
     ///
-    /// `(κ_pen, d̂)` defaults pinned per scope memo Decision J.
+    /// `(κ_pen, d̂)` defaults pinned at upstream defaults.
     ///
     /// # Returns
     ///
@@ -822,8 +823,9 @@ impl SoftScene {
 /// Pinned at 6 to match Phase 4's
 /// [`LAYERED_SPHERE_BBOX_HALF_EXTENT`] design (`half_extent /
 /// cell_size = 6.0` at `cell_size = 0.02`). Gives the mesher room to
-/// enclose the SDF zero set without surface clipping. V-3 / V-5 use
-/// this for the dynamic radius-and-cell-size combinations they sweep
+/// enclose the SDF zero set without surface clipping. The Hertzian
+/// and drop-and-rest fixtures use this for the dynamic
+/// radius-and-cell-size combinations they sweep
 /// (the layered-silicone-sphere helper hardcodes its margin because
 /// its radius is fixed by the [`LAYERED_SPHERE_R_OUTER`] const).
 const SPHERE_BBOX_MARGIN_RATIO: f64 = 6.0;

@@ -22,7 +22,7 @@
 //! at `H = 1.5e-8 ≪ 0.4·d̂ = 4e-4`, FD perturbations stay five orders
 //! of magnitude inside the band so the formula is smooth across the
 //! probe — boundary discontinuity at `d = d̂` is not the regime here.
-//! V-7 (commit 11) handles the FD-vs-κ direction; this file is purely
+//! `tests/contact_grad_hook.rs` handles the FD-vs-κ direction; this file is purely
 //! position-derivative coverage.
 
 use approx::assert_relative_eq;

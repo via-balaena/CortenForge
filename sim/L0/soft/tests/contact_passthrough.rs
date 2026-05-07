@@ -35,7 +35,7 @@
 //! IV-1 captures from `c3729d4a` (Phase 3 tip, pre-Phase-4) re-pasted
 //! verbatim. Their validity as pre-Phase-5 baselines rests on
 //! transitivity: IV-1 still passes at HEAD post-commit-5/6 (215/215
-//! sim-soft tests green pre-V-1, including IV-1's four sub-tests on
+//! sim-soft tests green pre-passthrough, including IV-1's four sub-tests on
 //! these scenes), so the bit-equal `x_final` at `c3729d4a` carries
 //! through `c3729d4a` → main `96d7d679` (Phase 4 merge tip =
 //! pre-Phase-5 branch-cut point) → HEAD via the new contact-dispatch
@@ -64,11 +64,12 @@
 //! **Determinism-across-runs gate (R-2 carry-forward, dispatch-wiring
 //! tier).** Each scene runs twice within its test fn; the second run's
 //! output is asserted bit-equal to the first run's via `to_bits()` on
-//! every scalar. Scope memo §6 R-2 names a failure mode that lives
-//! inside `PenaltyRigidContact::active_pairs` (e.g., `HashSet`-based
-//! primitive iteration); V-1 exercises `NullContact` specifically, so
-//! it cannot directly surface non-determinism that lives inside the
-//! penalty impl — that's V-3a/V-3/V-5's beat (commits 8/9/10). What V-1
+//! every scalar. A non-determinism failure mode lives inside
+//! `PenaltyRigidContact::active_pairs` (e.g., `HashSet`-based
+//! primitive iteration); this fixture exercises `NullContact`
+//! specifically, so it cannot directly surface non-determinism that
+//! lives inside the penalty impl — that's the contact-active
+//! fixtures' beat. What this fixture
 //! *does* catch is non-determinism in the *dispatch wiring* introduced
 //! at commit 5: the new for-loops over `gradient.contributions` /
 //! `hessian.contributions`, the `slice_to_vec3s` helper, and the
@@ -85,32 +86,33 @@
 //! determinism rationale documented in that file). Distinct from
 //! II-1's within-process-determinism gate
 //! (`multi_element_isolation.rs`), which only covers hand-built scenes
-//! — V-1 generalizes the gate to the SDF-meshed sparse-solver path,
+//! — this fixture generalizes the gate to the SDF-meshed sparse-solver path,
 //! the path where any solver-side allocation-order regression on the
 //! contact-dispatch boundary would land first.
 //!
 //! **Tests:**
-//! 1. `v_1_one_tet_skeleton_passthrough` — 1-tet skeleton `x_final`
+//! 1. `one_tet_skeleton_passthrough` — 1-tet skeleton `x_final`
 //!    (12 DOFs) bit-equal vs baseline AND between two runs.
-//! 2. `v_1_two_isolated_tets_passthrough` — 2-isolated-tets `x_final`
+//! 2. `two_isolated_tets_passthrough` — 2-isolated-tets `x_final`
 //!    (24 DOFs) bit-equal vs baseline AND between two runs.
-//! 3. `v_1_two_tet_shared_face_passthrough` — 2-tet shared-face
+//! 3. `two_tet_shared_face_passthrough` — 2-tet shared-face
 //!    `x_final` (15 DOFs) bit-equal vs baseline AND between two runs.
-//! 4. `v_1_sdf_sphere_grad_and_reward_passthrough` — SDF-meshed sphere
+//! 4. `sdf_sphere_grad_and_reward_passthrough` — SDF-meshed sphere
 //!    `(grad, reward)` 1e-12 relative vs baseline AND bit-equal
 //!    between two runs (within-process faer determinism).
-//! 5. `v_1_reference_constant_lengths` — meta-smoke catching accidental
+//! 5. `reference_constant_lengths` — meta-smoke catching accidental
 //!    truncation of the reference arrays.
 //!
-//! **Why V-1 lands before V-3a / V-3 / V-5 (commits 8 / 9 / 10).**
-//! Failure of V-1 means the Phase 5 contact-dispatch wiring is
-//! silently corrupting elastic dynamics on non-contact scenes, and any
-//! V-3a / V-3 / V-5 failure would otherwise be entangled with that
-//! root cause. V-1 must pin the zero-regression baseline before
-//! contact-active scientific gates can be diagnosed in isolation.
+//! **Why this fixture lands before the contact-active fixtures.**
+//! Failure here means the contact-dispatch wiring is silently
+//! corrupting elastic dynamics on non-contact scenes, and any failure
+//! in the contact-active fixtures would otherwise be entangled with
+//! that root cause. This fixture must pin the zero-regression baseline
+//! before contact-active scientific gates can be diagnosed in
+//! isolation.
 
 #![allow(
-    // Bit-equality assertions on f64 are the entire point of V-1 —
+    // Bit-equality assertions on f64 are the entire point of this fixture —
     // `to_bits()` comparisons document the contract.
     clippy::float_cmp,
     // `.expect()` on `SdfMeshedTetMesh::from_sdf` and on the load-
@@ -324,9 +326,9 @@ fn assert_scalar_close_within_relative_tol(
          A drift this large is NOT cross-platform sparse-solver SIMD \
          noise (~6.7e-16 floor); it signals a real Phase-5-boundary \
          regression on the SDF-meshed-sphere contact-dispatch path. \
-         Diagnose in this order: (1) verify the small-FEM V-1 \
-         sub-tests still pass bit-equal — if they fail too, regression \
-         touches every contact-dispatch path through `NullContact`'s \
+         Diagnose in this order: (1) verify the small-FEM \
+         passthrough sub-tests still pass bit-equal — if they fail \
+         too, regression touches every contact-dispatch path through `NullContact`'s \
          zero-stubs (commit 5 wiring is the prime candidate); (2) if \
          only this test fails, regression is in the SDF→FEM→autograd \
          contact-dispatch composition; (3) NEVER re-bake the reference \
@@ -476,7 +478,7 @@ fn run_sdf_sphere_evaluate() -> (f64, f64) {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[test]
-fn v_1_one_tet_skeleton_passthrough() {
+fn one_tet_skeleton_passthrough() {
     let run_a = run_one_tet_x_final();
     let run_b = run_one_tet_x_final();
     assert_x_final_bit_equal(&run_a, &ONE_TET_X_FINAL, "one_tet_skeleton (run A)");
@@ -484,7 +486,7 @@ fn v_1_one_tet_skeleton_passthrough() {
 }
 
 #[test]
-fn v_1_two_isolated_tets_passthrough() {
+fn two_isolated_tets_passthrough() {
     let run_a = run_two_isolated_tets_x_final();
     let run_b = run_two_isolated_tets_x_final();
     assert_x_final_bit_equal(
@@ -496,7 +498,7 @@ fn v_1_two_isolated_tets_passthrough() {
 }
 
 #[test]
-fn v_1_two_tet_shared_face_passthrough() {
+fn two_tet_shared_face_passthrough() {
     let run_a = run_shared_face_x_final();
     let run_b = run_shared_face_x_final();
     assert_x_final_bit_equal(&run_a, &SHARED_FACE_X_FINAL, "two_tet_shared_face (run A)");
@@ -504,7 +506,7 @@ fn v_1_two_tet_shared_face_passthrough() {
 }
 
 #[test]
-fn v_1_sdf_sphere_grad_and_reward_passthrough() {
+fn sdf_sphere_grad_and_reward_passthrough() {
     // 1e-12 relative tolerance for baseline comparison per the
     // two-tier contract — see module docstring's "Two-tier contract"
     // section. Cross-platform faer sparse Cholesky drifts at the last
@@ -538,8 +540,8 @@ fn v_1_sdf_sphere_grad_and_reward_passthrough() {
          5's edits to `backward_euler.rs`'s assembly methods). \
          `NullContact`'s `active_pairs` returns `Vec::new()` and \
          `contributions` Vecs are empty, so the in-impl-`active_pairs` \
-         non-determinism mode named at R-2 cannot surface here — that \
-         tier is V-3a/V-3/V-5's beat.",
+         non-determinism mode cannot surface here — that tier is the \
+         contact-active fixtures' beat.",
         grad_a.to_bits(),
         grad_b.to_bits(),
     );
@@ -558,7 +560,7 @@ fn v_1_sdf_sphere_grad_and_reward_passthrough() {
 }
 
 #[test]
-fn v_1_reference_constant_lengths() {
+fn reference_constant_lengths() {
     // Meta-smoke: catches accidental truncation of the reference
     // arrays during edits (mirror of IV-1's
     // `iv_1_reference_constant_lengths`).
