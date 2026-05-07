@@ -1,8 +1,8 @@
 # compressive-block
 
-**Phase 5 V-3a user-facing wrap — soft cube quasi-statically compressed by a descending rigid plane against a BC-pinned bottom face; per-refinement reaction force compared against the two pure-BC analytic limits + Cauchy convergence.** A `HandBuiltTetMesh::uniform_block` cube of edge `L = 1 cm` is built at three refinement levels (`n ∈ {2, 4, 8}` → `48 / 384 / 3072` tets); the bottom face is full-pinned via `BoundaryConditions::pinned_vertices` (bottom-bonded rigid base), and a single `RigidPlane(n = −ẑ, offset = δ − L)` represents the descended top plate, penetrated by exactly `δ = 5 × 10⁻⁵ m` at rest. One-way `PenaltyRigidContact` with **V-3a-LOCAL `(d̂, δ)` override** (`d̂ = 1e-5 m`, default `κ = 1e4 N/m`) drives the cube to static equilibrium under the descended plate; `STATIC_DT = 1.0 s` collapses the inertial Tikhonov term so a single backward-Euler step from rest reaches static equilibrium per refinement.
+**Compressive-block user-facing wrap — soft cube quasi-statically compressed by a descending rigid plane against a BC-pinned bottom face; per-refinement reaction force compared against the two pure-BC analytic limits + Cauchy convergence.** A `HandBuiltTetMesh::uniform_block` cube of edge `L = 1 cm` is built at three refinement levels (`n ∈ {2, 4, 8}` → `48 / 384 / 3072` tets); the bottom face is full-pinned via `BoundaryConditions::pinned_vertices` (bottom-bonded rigid base), and a single `RigidPlane(n = −ẑ, offset = δ − L)` represents the descended top plate, penetrated by exactly `δ = 5 × 10⁻⁵ m` at rest. One-way `PenaltyRigidContact` with **fixture-local `(d̂, δ)` override** (`d̂ = 1e-5 m`, default `κ = 1e4 N/m`) drives the cube to static equilibrium under the descended plate; `STATIC_DT = 1.0 s` collapses the inertial Tikhonov term so a single backward-Euler step from rest reaches static equilibrium per refinement.
 
-The headline new capability vs row 13's Hertzian sphere-plane is **`PenaltyRigidContact` under bilateral compression with NH-derived stiffness slope assertion (V-3a)** — the third PR2 example row. Row 14 mirrors `sim/L0/soft/tests/penalty_compressive_block.rs` (V-3a) verbatim on constants + scene + bound-bracket gate selection; the contributions vs the internal fixture are: **(a)** finest-refinement deformed-mesh PLY emit with per-vertex `contact_force_z` extras (cf-view auto-colormap renders the contact patch as a bright disk on the cube's top face), **(b)** three-section JSON emit (scalars + per-active top-face vertex `(v, x, y, sd, force_z)` at finest + 11-point F-vs-ε analytic bound curves) for matplotlib overlay, **(c)** opt-in Bevy static-state visualization under `CF_VISUAL=1` — `VIZ_AMPLIFY = 50×` displacement amplifier (small-strain regime is below visual acuity) + thick Cuboid plates positioned flush against the amplified cube faces (a real compression-test rig look, with the penalty contact-band gap absorbed into the visualization) + HUD reading per-refinement ε / F_R / [F_us, F_strain] / Cauchy ratio / E_eff / rel_pos_in_bounds + amplification disclosure.
+The headline new capability vs row 13's Hertzian sphere-plane is **`PenaltyRigidContact` under bilateral compression with NH-derived stiffness slope assertion** — the third PR2 example row. Row 14 mirrors `sim/L0/soft/tests/penalty_compressive_block.rs` verbatim on constants + scene + bound-bracket gate selection; the contributions vs the internal fixture are: **(a)** finest-refinement deformed-mesh PLY emit with per-vertex `contact_force_z` extras (cf-view auto-colormap renders the contact patch as a bright disk on the cube's top face), **(b)** three-section JSON emit (scalars + per-active top-face vertex `(v, x, y, sd, force_z)` at finest + 11-point F-vs-ε analytic bound curves) for matplotlib overlay, **(c)** opt-in Bevy static-state visualization under `CF_VISUAL=1` — `VIZ_AMPLIFY = 50×` displacement amplifier (small-strain regime is below visual acuity) + thick Cuboid plates positioned flush against the amplified cube faces (a real compression-test rig look, with the penalty contact-band gap absorbed into the visualization) + HUD reading per-refinement ε / F_R / [F_us, F_strain] / Cauchy ratio / E_eff / rel_pos_in_bounds + amplification disclosure.
 
 Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. Output: `out/compressive_block.ply` (finest deformed boundary mesh, 729 vertices, 768 triangles via `Mesh::boundary_faces` + per-vertex `contact_force_z` extra) and `out/compressive_block.json` (scalars + per-active top-face vertex contact data + 11-point F-vs-ε analytic bound curves).
 
@@ -10,14 +10,14 @@ Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `
 
 ## What this example demonstrates
 
-The third user-facing example of Tier 4 penalty contact per [`EXAMPLE_INVENTORY.md`][inv] — bilateral compression on cube geometry, the V-3a fixture's two-bound-plus-Cauchy gate exposed user-facing (V-3a per `phase_5_penalty_contact_scope.md`):
+The third user-facing example of Tier 4 penalty contact per [`EXAMPLE_INVENTORY.md`][inv] — bilateral compression on cube geometry, the compressive-block fixture's two-bound-plus-Cauchy gate exposed user-facing (regression-test artifact for [`tests/penalty_compressive_block.rs`](../../../sim/L0/soft/tests/penalty_compressive_block.rs)):
 
 ```rust
 let (mesh, bc, initial, _default_contact) = SoftScene::compressive_block_on_plane(
     EDGE_LEN, cell_size, DISPLACEMENT, &MaterialField::uniform(MU, LAMBDA),
 ); // (1e-2, EDGE_LEN/{2,4,8}, 5e-5, NH(1e5, 4e5))
 
-// V-3a-LOCAL d̂ override per scope memo Decision J's V-3a-may-tune authority.
+// Fixture-local d̂ override.
 // κ stays at PENALTY_KAPPA_DEFAULT = 1e4; only d̂ is overridden.
 let plane = RigidPlane::new(Vec3::new(0.0, 0.0, -1.0), DISPLACEMENT - EDGE_LEN);
 let contact = PenaltyRigidContact::with_params(vec![plane], KAPPA, D_HAT_OVERRIDE); // (1e4, 1e-5)
@@ -39,9 +39,9 @@ This is **row 14 of the sim-soft examples arc** — the third Tier 4 penalty-con
 
 ## Why `F_R ∈ [F_us, F_strain]` is the headline
 
-Scope memo §1 V-3a originally named the gate as `< 5 %` rel-err vs uniaxial-stress small-strain `F_us = E · A · ε`, presupposing **pure uniaxial-stress BC** (z-only pin on the bottom face, x/y free). The Phase 5 commit-6 helper `SoftScene::compressive_block_on_plane` full-pins **every** bottom-face vertex (`BoundaryConditions` only models full-vertex Dirichlet; see [`scene.rs:414-423`][s5]), giving a **mixed BC**: bottom full-pinned (constrained-modulus regime locally), sides free (uniaxial-stress regime), top z-contacted. The deformation field is non-uniform; **no clean closed-form exists** for this BC at general aspect ratio.
+The original spec named the gate as `< 5 %` rel-err vs uniaxial-stress small-strain `F_us = E · A · ε`, presupposing **pure uniaxial-stress BC** (z-only pin on the bottom face, x/y free). The Phase 5 commit-6 helper `SoftScene::compressive_block_on_plane` full-pins **every** bottom-face vertex (`BoundaryConditions` only models full-vertex Dirichlet; see [`scene.rs:414-423`][s5]), giving a **mixed BC**: bottom full-pinned (constrained-modulus regime locally), sides free (uniaxial-stress regime), top z-contacted. The deformation field is non-uniform; **no clean closed-form exists** for this BC at general aspect ratio.
 
-V-3a therefore brackets the FEM response by **two pure-BC bounds** at the equilibrium strain `ε`:
+This row therefore brackets the FEM response by **two pure-BC bounds** at the equilibrium strain `ε`:
 
 - **Lower bound** — uniaxial-stress small-strain `F_us = E · A · ε` (everywhere lateral free; achievable only with z-only-pin BC). The mixed BC must give `F ≥ F_us` because adding lateral constraints (the bottom full-pin) makes the system stiffer, not softer.
 - **Upper bound** — uniaxial-strain small-strain `F_strain = M_c · A · ε` where `M_c = E · (1 - ν) / ((1 + ν)(1 - 2 ν)) = λ + 2 μ` (everywhere lateral pin; achievable only with full-pin throughout). The mixed BC must give `F ≤ F_strain` because removing lateral constraints (sides free, top free) makes the system softer.
@@ -54,27 +54,27 @@ The "NH-derived stiffness slope" framing in the [`EXAMPLE_INVENTORY`][inv] row 1
 
 Reference: Sokolnikoff, *Mathematical Theory of Elasticity*, 2nd ed., Ch 4 (Saint-Venant principle for boundary-layer effects); Bonet & Wood, *Nonlinear Continuum Mechanics for Finite Element Analysis*, 2nd ed., Ch 5 (small-strain regime). Phase 4 IV-3 (`bonded_bilayer_beam.rs`) precedent for three-refinement-level single-test-fn structure with monotonic + iter-budget asserts + diagnostic `eprintln!`.
 
-## Why the V-3a-LOCAL `(d̂, δ)` override
+## Why the fixture-local `(d̂, δ)` override
 
-At scope memo §9 V-3a parameters (`L = 1 cm, δ = 0.5 mm, κ = 1e4 N/m, d̂ = 1 mm, ν = 0.4`), the cold-start penalty residual is `~κ · d̂ ≈ 10 N` per top-face vertex. The raw Newton step is `~residual / κ ≈ 1 mm` per vertex — **10 % of the cube edge**, past the tet-inversion threshold. Armijo's residual-norm sufficient-decrease condition does NOT check element invertibility; line-search accepts trial steps that push elements into NeoHookean's compressive nonlinearity regime, and the next Newton iter's tangent fails Cholesky. Three remediation paths considered:
+At the original spec parameters (`L = 1 cm, δ = 0.5 mm, κ = 1e4 N/m, d̂ = 1 mm, ν = 0.4`), the cold-start penalty residual is `~κ · d̂ ≈ 10 N` per top-face vertex. The raw Newton step is `~residual / κ ≈ 1 mm` per vertex — **10 % of the cube edge**, past the tet-inversion threshold. Armijo's residual-norm sufficient-decrease condition does NOT check element invertibility; line-search accepts trial steps that push elements into NeoHookean's compressive nonlinearity regime, and the next Newton iter's tangent fails Cholesky. Three remediation paths considered:
 
 - **(a) Multi-step rollout with inertial damping.** Requires `dt ≈ 1e-5 s` to make `M / dt²` competitive with `κ_pen`; `~10 000` steps to reach quasi-static. Infeasible test runtime.
-- **(b) Decision J adjustment** — global default `κ` reduction. Out of V-3a authority (V-3 commit 9 has separate authority over defaults under Hertz geometry); would silently affect V-1 / V-3 / V-4 / V-5 / V-7 + rows 12+13.
-- **(c) V-3a-local `(d̂, δ)` override via `PenaltyRigidContact::with_params`.** Scope memo §6 R-5 lens (i): *"if defaults fall on the wrong side of the ceiling, surface as a Decision-J adjustment, not a fix-on-the-fly."* For V-3a, the ceiling sits comfortably above defaults at the V-3 sphere geometry but below at the cube geometry — so V-3a-local override (NOT a global Decision-J adjustment) is the right reconciliation.
+- **(b) Global default `κ` reduction.** The Hertzian fixture has separate authority over defaults under sphere geometry; a global reduction would silently affect every other contact-active scene.
+- **(c) Fixture-local `(d̂, δ)` override via `PenaltyRigidContact::with_params`.** Policy: *"if defaults fall on the wrong side of the ceiling, surface as a global retune, not a fix-on-the-fly."* Here the ceiling sits comfortably above defaults at the sphere geometry but below at the cube geometry — so a fixture-local override (NOT a global retune) is the right reconciliation.
 
-V-3a takes (c). Override `d̂ = 1e-5 m` (100× smaller than default) and `δ = 5e-5 m` (10× smaller than scope memo §9). At the override parameters: cold-start residual `κ · (d̂ + δ) ≈ 0.6 N` per vertex, raw Newton step `~6 × 10⁻⁵ m ≈ 0.6 %` of edge — safely below tet-inversion threshold. Equilibrium strain `ε ≈ 0.6 %` — deep into small-strain regime where the two pure-BC bounds cleanly bracket the FEM response (`≈ 0.182 N` at finest, between `F_us ≈ 0.167 N` and `F_strain ≈ 0.359 N`).
+This row takes (c). Override `d̂ = 1e-5 m` (100× smaller than default) and `δ = 5e-5 m` (10× smaller than the original spec). At the override parameters: cold-start residual `κ · (d̂ + δ) ≈ 0.6 N` per vertex, raw Newton step `~6 × 10⁻⁵ m ≈ 0.6 %` of edge — safely below tet-inversion threshold. Equilibrium strain `ε ≈ 0.6 %` — deep into small-strain regime where the two pure-BC bounds cleanly bracket the FEM response (`≈ 0.182 N` at finest, between `F_us ≈ 0.167 N` and `F_strain ≈ 0.359 N`).
 
-Production scenes (V-1 / V-3 / V-4 / V-5 / V-7 + rows 12+13) continue to use the default `(κ, d̂)` per scope memo Decision J; V-3a's override is local to this example only, never propagated upstream. **`KAPPA` stays at the `PENALTY_KAPPA_DEFAULT = 1e4` value** (no κ change, only `d̂`).
+Other contact-active scenes (Hertzian sphere-plane, drop-and-rest, non-interpenetration, grad-hook + rows 12+13) continue to use the default `(κ, d̂)`; this row's override is local to this example only, never propagated upstream. **`KAPPA` stays at the `PENALTY_KAPPA_DEFAULT = 1e4` value** (no κ change, only `d̂`).
 
 ## Why three refinements
 
-The convergence story needs three points: per-level two-bound bracket holds + Cauchy ratio `|Δ_fine| / |Δ_coarse| < 1`. Mirrors V-3a fixture's `n_per_edge ∈ {2, 4, 8}` choice (cell sizes `5 / 2.5 / 1.25 mm`; tet counts `48 / 384 / 3072` — `HandBuiltTetMesh::uniform_block` decomposes each unit cell into 6 tets). Sub-second release-mode runtime per refinement at the V-3a `(d̂, δ)` override. Captured Newton iter counts: `3 / 3 / 3` — flat across refinements (active-set size grows but per-iter residual decreases at the same Newton rate); the `MAX_NEWTON_ITER = 50` cap exists as headroom against material / load perturbations rather than as a tight working budget.
+The convergence story needs three points: per-level two-bound bracket holds + Cauchy ratio `|Δ_fine| / |Δ_coarse| < 1`. Mirrors the compressive-block fixture's `n_per_edge ∈ {2, 4, 8}` choice (cell sizes `5 / 2.5 / 1.25 mm`; tet counts `48 / 384 / 3072` — `HandBuiltTetMesh::uniform_block` decomposes each unit cell into 6 tets). Sub-second release-mode runtime per refinement at the `(d̂, δ)` override. Captured Newton iter counts: `3 / 3 / 3` — flat across refinements (active-set size grows but per-iter residual decreases at the same Newton rate); the `MAX_NEWTON_ITER = 50` cap exists as headroom against material / load perturbations rather than as a tight working budget.
 
 Captured Cauchy ratio: `0.4296` — comfortably below `1.0`, geometric convergence demonstrated. The `F_R` sequence converges to its asymptotic value at a `~2.3×` rate per refinement halving (consistent with first-order quadrature error in the FEM contact integration).
 
 ## Why `cargo run --release` only
 
-Mirrors row 13 + row 12 + V-3a fixture precedent. The IV-1 captured-bits contract is platform + build-mode-locked; matching row 13's `--release` invocation removes one variable from the determinism contract. V-3a is fast enough at finest `n=8` that debug-mode is also viable, but consistency with sister rows wins over the cold-build-time savings. Per [`feedback_release_mode_heavy_tests`][rel].
+Mirrors row 13 + row 12 + the compressive-block fixture precedent. The IV-1 captured-bits contract is platform + build-mode-locked; matching row 13's `--release` invocation removes one variable from the determinism contract. The compressive block is fast enough at finest `n=8` that debug-mode is also viable, but consistency with sister rows wins over the cold-build-time savings. Per [`feedback_release_mode_heavy_tests`][rel].
 
 [rel]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_release_mode_heavy_tests.md
 
@@ -94,27 +94,27 @@ Compile-time `const { assert!(...) }` on all input scalars + cell-size monotonic
 | n=4 | 384  | 125 | 0 | 25 |
 | n=8 | 3072 | 729 | 0 | 81 |
 
-III-1 determinism contract per refinement. Captured 2026-05-06 on macOS arm64 in `--release` build. **`n_loaded == 0` exact** is V-3a-specific — no external traction; load is penalty-mediated. **`n_pinned = (n+1)²`** because the helper full-pins all bottom-face vertices.
+III-1 determinism contract per refinement. Captured 2026-05-06 on macOS arm64 in `--release` build. **`n_loaded == 0` exact** is compressive-block-specific — no external traction; load is penalty-mediated. **`n_pinned = (n+1)²`** because the helper full-pins all bottom-face vertices.
 
 ### 3. `boundary_partition`
 
-Per refinement: `n_pinned > 0` (bottom-face full-pin must be non-empty) and `n_loaded == 0` exact (V-3a guarantee — load is penalty-mediated, no external traction).
+Per refinement: `n_pinned > 0` (bottom-face full-pin must be non-empty) and `n_loaded == 0` exact (compressive-block guarantee — load is penalty-mediated, no external traction).
 
 ### 4. `solver_per_step_invariants`
 
-Per refinement: no NaN in `x_final`; `iter_count < NEWTON_ITER_SANITY_CAP = 40` (10-iter margin under `MAX_NEWTON_ITER = 50` per V-3a policy); finite residual norm. Captured `iter_count`: `3, 3, 3` at (n=2, n=4, n=8).
+Per refinement: no NaN in `x_final`; `iter_count < NEWTON_ITER_SANITY_CAP = 40` (10-iter margin under `MAX_NEWTON_ITER = 50` per compressive-block policy); finite residual norm. Captured `iter_count`: `3, 3, 3` at (n=2, n=4, n=8).
 
 ### 5. `contact_engagement`
 
-Per refinement: `n_active_pairs == (n+1)²` exact. Captured `9, 25, 81` at (n=2, n=4, n=8) — every top-face vertex inside the `d̂`-band at equilibrium per V-3a fixture's docstring (cube compresses by `~6e-5 m` from `δ = 5e-5 m` plate displacement plus `d̂_override = 1e-5 m` band engagement, leaving every top vertex with a small positive `sd` strictly less than `D_HAT_OVERRIDE`). Stronger than row 13's `n_active > 0` since V-3a's geometry guarantees uniform top-face penetration.
+Per refinement: `n_active_pairs == (n+1)²` exact. Captured `9, 25, 81` at (n=2, n=4, n=8) — every top-face vertex inside the `d̂`-band at equilibrium per the compressive-block fixture's docstring (cube compresses by `~6e-5 m` from `δ = 5e-5 m` plate displacement plus `d̂_override = 1e-5 m` band engagement, leaving every top vertex with a small positive `sd` strictly less than `D_HAT_OVERRIDE`). Stronger than row 13's `n_active > 0` since the compressive block's geometry guarantees uniform top-face penetration.
 
 ### 6. `small_strain_validity`
 
-Per refinement: `0 < ε < SMALL_STRAIN_CEILING = 0.10` (10× cap over expected `ε ≈ 0.6 %`). Catches a regression where the V-3a `(d̂, δ)` override no longer produces a small-strain regime. Captured: `0.578 % / 0.593 % / 0.598 %` — well into small-strain.
+Per refinement: `0 < ε < SMALL_STRAIN_CEILING = 0.10` (10× cap over expected `ε ≈ 0.6 %`). Catches a regression where the `(d̂, δ)` override no longer produces a small-strain regime. Captured: `0.578 % / 0.593 % / 0.598 %` — well into small-strain.
 
 ### 7. `gross_physics_per_level`
 
-Per refinement: `λ_z ∈ (LAMBDA_Z_FLOOR, 1.0) = (0.5, 1.0)` (cube compresses, not extends; `λ_z > 0.5` rules out >50% compression as physically implausible at the V-3a `(κ, d̂, δ)` regime); `F_R > 0` (soft body pushes UP on rigid plane — Newton's 3rd-law partner of penalty's DOWN force on top face). Catches sign-flip regressions at gross-physics level before the bound asserts surface them numerically.
+Per refinement: `λ_z ∈ (LAMBDA_Z_FLOOR, 1.0) = (0.5, 1.0)` (cube compresses, not extends; `λ_z > 0.5` rules out >50% compression as physically implausible at the `(κ, d̂, δ)` regime); `F_R > 0` (soft body pushes UP on rigid plane — Newton's 3rd-law partner of penalty's DOWN force on top face). Catches sign-flip regressions at gross-physics level before the bound asserts surface them numerically.
 
 ### 8. `two_bound_per_level` (HEADLINE)
 
@@ -209,7 +209,7 @@ Mirrors rows 12 + 13 verbatim. Bevy 0.18's pipeline defaults (near plane `0.1 m`
 
 ### Why deformations are amplified by `VIZ_AMPLIFY = 50×`
 
-Banked pattern (b) per row 10's [`feedback_visual_review_is_the_test`][vrt]. V-3a's small-strain regime — `ε ≈ 0.6 %` finest-equilibrium per the headline gate — produces 60 μm cube compression on a 1 cm physical edge. At `RENDER_SCALE = 100×` the visual cube is 1 m tall and the compression is 6 mm — viewed from the default `~3 m` camera distance, this subtends `~2 mrad ≈ 0.1°`, well below the human visual acuity threshold (`~17 mrad ≈ 1 arc-min`). At rest configuration, the cube would appear visually identical to its compressed equilibrium configuration; the asserted physics is invisible.
+Banked pattern (b) per row 10's [`feedback_visual_review_is_the_test`][vrt]. The compressive block's small-strain regime — `ε ≈ 0.6 %` finest-equilibrium per the headline gate — produces 60 μm cube compression on a 1 cm physical edge. At `RENDER_SCALE = 100×` the visual cube is 1 m tall and the compression is 6 mm — viewed from the default `~3 m` camera distance, this subtends `~2 mrad ≈ 0.1°`, well below the human visual acuity threshold (`~17 mrad ≈ 1 arc-min`). At rest configuration, the cube would appear visually identical to its compressed equilibrium configuration; the asserted physics is invisible.
 
 `VIZ_AMPLIFY = 50` multiplies the displacement-from-rest of every cube vertex (`viz_pos = rest + VIZ_AMPLIFY · (x_final − rest)`) before the trajectory replay writes positions to the Bevy mesh. **Plates are positioned flush against the amplified cube faces** (top plate's bottom face at amplified cube top y; bottom plate's top face at cube bottom y=0; both with a sub-mm z-fight offset) — NOT at the kinematic `δ`-offset positions the physics solver uses. The penalty model's `sd ≈ 9.78 μm` contact-band would inflate to ~5 cm Bevy under amplification and dominate the visual story; the band is an FEM no-penetration-enforcement implementation detail tangential to the row's pedagogy, so it's absorbed into the visualization layer. The amplified scene reads as `~30%` apparent z-compression + `~12%` lateral Poisson bulge with both plates clearly in contact — pedagogically faithful to "two plates squishing a cube."
 
@@ -253,15 +253,14 @@ Per [`feedback_release_mode_heavy_tests`][rel], always `--release` for this exam
 
 ## Cross-references
 
-- **Sister sim-soft examples**: `soft-drop-on-plane` (row 12 — V-5 dynamic-integration drop-and-rest), `hertz-sphere-plane` (row 13 — V-3 Hertzian sphere-plane analytical-comparison; closest precedent for static-state Bevy rendering + IV-1 sparse-tier captured-bits contract); future `contact-force-readout` (row 18 — quantitative readout for the calibration loop, blocked on `PenaltyRigidContact::contact_pairs()` accessor).
-- **Internal-fixture template**: `sim/L0/soft/tests/penalty_compressive_block.rs` (V-3a — penalty-contact bilateral-compression gate; the load-bearing scientific gate of Phase 5 commit 8 per scope memo §1 V-3a + §8 commit 8 + Decision D). Row 14 mirrors V-3a's scene + load + BC + DT + (d̂, δ) override + cell sizes + two-bound + Cauchy gates verbatim. The user-facing extensions are the per-vertex force PLY, three-section JSON + plot.py, and the Bevy static-state visualization.
-- **`SoftScene::compressive_block_on_plane`**: `sim/L0/soft/src/readout/scene.rs:377-454` — `(edge_len, cell_size, displacement, &material_field) -> (mesh, bc, initial, contact)`. `HandBuiltTetMesh::uniform_block` cube, full-pin BC on bottom face, no external traction (load is penalty-mediated), default-κ default-d̂ `PenaltyRigidContact` (replaced here by V-3a-LOCAL `with_params`).
+- **Sister sim-soft examples**: `soft-drop-on-plane` (row 12 — drop-and-rest), `hertz-sphere-plane` (row 13 — Hertzian sphere-plane analytical-comparison; closest precedent for static-state Bevy rendering + IV-1 sparse-tier captured-bits contract); future `contact-force-readout` (row 18 — quantitative readout for the calibration loop, blocked on `PenaltyRigidContact::contact_pairs()` accessor).
+- **Internal-fixture template**: `sim/L0/soft/tests/penalty_compressive_block.rs` (penalty-contact bilateral-compression gate; the simpler-geometry warmup before the Hertzian fixture). Row 14 mirrors the fixture's scene + load + BC + DT + (d̂, δ) override + cell sizes + two-bound + Cauchy gates verbatim. The user-facing extensions are the per-vertex force PLY, three-section JSON + plot.py, and the Bevy static-state visualization.
+- **`SoftScene::compressive_block_on_plane`**: `sim/L0/soft/src/readout/scene.rs:377-454` — `(edge_len, cell_size, displacement, &material_field) -> (mesh, bc, initial, contact)`. `HandBuiltTetMesh::uniform_block` cube, full-pin BC on bottom face, no external traction (load is penalty-mediated), default-κ default-d̂ `PenaltyRigidContact` (replaced here by fixture-local `with_params`).
 - **`Mesh::boundary_faces`** for `HandBuiltTetMesh`: `sim/L0/soft/src/mesh/hand_built.rs:358-359` — outward-CCW boundary-face cache populated at construction via `boundary_faces_from_topology`. Row 14 is its first user-facing consumer on `HandBuiltTetMesh` (rows 12 + 13 used `SdfMeshedTetMesh`).
 - **`sim-bevy-soft`**: `sim/L1/sim-bevy-soft/` — Bevy soft-body trajectory replay (single-frame trajectory at row 14 makes this a static-state render). Row 14 is its third consumer after rows 12 + 13; the row 12-fixed foundation patches (ReplayEpoch + R-key reset + area-weighted normals) are inherited unchanged.
 - **`cf-bevy-common`**: `cf-bevy-common/` — shared Bevy 0.18 helpers (`UpAxis` input → Bevy frame swap, `OrbitCamera` + `OrbitCameraPlugin`).
 - **VIEWER_DESIGN.md**: `docs/VIEWER_DESIGN.md` — cf-view static-artifact viewer the headless PLY targets (auto-colormap on positive `extras` scalar; `RENDER_SCALE` auto-fit from cf-view C1 handles cm-scale meshes natively).
-- **Phase 5 scope memo**: `sim/docs/todo/phase_5_penalty_contact_scope.md` — V-3a spec at §1 V-3a + §8 commit 8 + Decision D (V-3a as simpler-geometry warmup before V-3 Hertz) + Decision J (V-3a-may-tune authority for `(d̂, δ)` override).
-- **Book reference**: Part 4 §00 §00 ("Penalty contact pathology and validation scope"). Row 14 is the **regression-test artifact** for the bilateral-compression validation chapter section — V-3a's two-bound-bracket-plus-Cauchy gate, exposed user-facing at the example layer with the deformed-mesh + per-vertex contact-force visualization that the internal fixture omits. Saint-Venant boundary-layer doctrine cited in-line via Sokolnikoff Ch 4 (above).
+- **Book reference**: Part 4 §00 §00 ("Penalty contact pathology and validation scope"). Row 14 is the **regression-test artifact** for the bilateral-compression validation chapter section — the two-bound-bracket-plus-Cauchy gate, exposed user-facing at the example layer with the deformed-mesh + per-vertex contact-force visualization that the internal fixture omits. Saint-Venant boundary-layer doctrine cited in-line via Sokolnikoff Ch 4 (above).
 - **Cadence memos**:
   [`feedback_math_pass_first_handauthored`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md),
   [`feedback_one_at_a_time_review`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_one_at_a_time_review.md),

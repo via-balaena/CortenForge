@@ -26,6 +26,11 @@ thiserror = { workspace = true }
 [dev-dependencies]
 # Float tolerance assertions across analysis.rs unit tests
 approx = { workspace = true }
+# JSON artifact emit for d2c_sr_rematch* verdicts — libtest's default
+# capture policy swallows the eprintln! verdicts on test pass, so the
+# fixtures persist their TwoMetricOutcome to target/rematch_verdicts/
+# via std::fs::write (unaffected by libtest capture).
+serde_json = { workspace = true }
 # DVector for rematch fixtures' Model state threading + the `test-fixtures`
 # feature, which backs the SR Model used by d2c_sr_rematch* fixtures
 # (replaces the prior sim-mjcf dev-dep per L0 plan §3.2 — keeps the

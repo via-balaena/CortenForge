@@ -1,18 +1,16 @@
 //! Penalty rigid↔soft contact — first force-bearing
 //! [`ContactModel`] impl on `sim-soft`.
 //!
-//! One-way coupling per `phase_5_penalty_contact_scope.md` Decision C
-//! (rigid kinematic; soft side feels the force). Penalty is a stepping
-//! stone to IPC at Phase H per BF-12 (Phase 5 commit 9), not a
-//! production baseline. The structural failure modes documented in
-//! book Part 4 §00 §00 — active-set discontinuity at `d = d̂`,
-//! parameter sensitivity, oscillation pathology near the boundary —
-//! stay valid; the BF-12 amendment narrows §00 §00's "even as a
-//! baseline" commitment to "as a *production* baseline." The scope
-//! memo authorizes penalty exactly for §00 §00's named validation
-//! scope: rigid↔soft co-sim plumbing, first-time [`ContactModel`]
-//! wiring into the Newton hot path (Phase 5 commit 5), and the
-//! Hertzian sphere↔plane analytic gate (Phase 5 commit 9 V-3).
+//! One-way coupling (rigid kinematic; soft side feels the force).
+//! Penalty is a stepping stone to IPC, not a production baseline. The
+//! structural failure modes documented in book Part 4 §00 §00 —
+//! active-set discontinuity at `d = d̂`, parameter sensitivity,
+//! oscillation pathology near the boundary — stay valid; §00 §00's
+//! "no penalty even as a baseline" commitment is narrowed to "no
+//! penalty as a *production* baseline" (this implementation is
+//! deliberately scoped to rigid↔soft co-sim plumbing, first-time
+//! [`ContactModel`] wiring into the Newton hot path, and the Hertzian
+//! sphere↔plane analytic gate at `tests/hertz_sphere_plane.rs`).
 //!
 //! ## Formula
 //!
@@ -33,8 +31,7 @@
 //!   full system tangent becomes SPD after the elastic Hessian is
 //!   added.
 //! - **CCD** — penalty has no time-of-impact concept; `ccd_toi`
-//!   returns [`f64::INFINITY`] per scope memo Decision E. Phase H IPC
-//!   delivers proper CCD.
+//!   returns [`f64::INFINITY`]. Phase H IPC delivers proper CCD.
 
 use super::{ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout};
 use crate::{
@@ -44,21 +41,20 @@ use crate::{
 };
 use nalgebra::Matrix3;
 
-/// Default penalty stiffness (N/m). Pinned at Phase 5 commit 4 per
-/// scope memo Decision J. Middle of the recommended `1e3..1e5` range
-/// — at Ecoflex-class material `E ≈ 200 kPa` and `h ≈ 5 mm` element
-/// edge, element stiffness `E·h ≈ 1e3 N/m`; κ at 10× element
-/// stiffness is the "stiff but Newton-convergent" regime. May tune
-/// at commit 8 / 9 if V-3a / V-3 expose stability or accuracy issues
-/// per Decision J.
+/// Default penalty stiffness (N/m). Middle of the recommended
+/// `1e3..1e5` range — at Ecoflex-class material `E ≈ 200 kPa` and
+/// `h ≈ 5 mm` element edge, element stiffness `E·h ≈ 1e3 N/m`; κ at
+/// 10× element stiffness is the "stiff but Newton-convergent" regime.
+/// Fixtures may tune locally via [`PenaltyRigidContact::with_params`]
+/// (see `tests/penalty_compressive_block.rs` and
+/// `tests/hertz_sphere_plane.rs`).
 pub(crate) const PENALTY_KAPPA_DEFAULT: f64 = 1.0e4;
 
-/// Default contact band (m). Pinned at Phase 5 commit 4 per scope
-/// memo Decision J. 1 mm — ~20× the expected Hertz indentation
-/// `δ ≈ 5e-5 m` at V-3's R = 1 cm soft sphere × Ecoflex-class
-/// composite, so the active-set band cleanly contains the contact
-/// patch without pulling in spurious distant-vertex pairs. May tune
-/// at commit 8 / 9 per Decision J.
+/// Default contact band (m). 1 mm — ~20× the expected Hertz
+/// indentation `δ ≈ 5e-5 m` at the canonical R = 1 cm soft sphere ×
+/// Ecoflex-class composite, so the active-set band cleanly contains
+/// the contact patch without pulling in spurious distant-vertex
+/// pairs.
 pub(crate) const PENALTY_DHAT_DEFAULT: f64 = 1.0e-3;
 
 /// Penalty contact between soft-body vertices and a set of kinematic
@@ -83,7 +79,7 @@ pub struct PenaltyRigidContact {
 impl PenaltyRigidContact {
     /// Construct with default `(κ, d̂)` from `PENALTY_KAPPA_DEFAULT` /
     /// `PENALTY_DHAT_DEFAULT` (crate-private; tunable only via
-    /// [`with_params`](Self::with_params) for V-* tests).
+    /// [`with_params`](Self::with_params) for fixture-local tuning).
     #[must_use]
     pub fn new<I>(primitives: I) -> Self
     where
@@ -93,11 +89,12 @@ impl PenaltyRigidContact {
         Self::with_params(primitives, PENALTY_KAPPA_DEFAULT, PENALTY_DHAT_DEFAULT)
     }
 
-    /// Construct with non-default `(κ, d̂)` — Phase 5 testing surface
-    /// for V-* invariants and the V-7 differentiability hook
-    /// (commit 11). User-facing parameter tuning is a Phase E
-    /// follow-on per scope memo Decision J; production scenes go
-    /// through [`new`](Self::new).
+    /// Construct with non-default `(κ, d̂)` — testing surface for
+    /// fixture-local overrides (see
+    /// `tests/penalty_compressive_block.rs`,
+    /// `tests/hertz_sphere_plane.rs`, `tests/contact_grad_hook.rs`).
+    /// User-facing parameter tuning is a future-phase follow-on;
+    /// production scenes go through [`new`](Self::new).
     #[must_use]
     pub fn with_params<I>(primitives: I, kappa: f64, d_hat: f64) -> Self
     where
@@ -173,7 +170,7 @@ impl ContactModel for PenaltyRigidContact {
     /// primitives inner (`0..self.primitives.len()`); emits a
     /// [`ContactPair::Vertex`] for every `(v, p)` whose signed
     /// distance is below the band `d̂`. Order is deterministic — no
-    /// sort, no `HashMap`, no rayon — per scope memo Decision M.
+    /// sort, no `HashMap`, no rayon.
     // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
     // in practice bounded by mesh / primitive counts that fit
     // comfortably in `u32`. The `as` cast matches the convention used

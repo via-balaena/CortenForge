@@ -85,7 +85,7 @@ h_f, l_f = ax_f.get_legend_handles_labels()
 ax_p.legend(h_p + h_f, l_p + l_f, loc="upper right")
 
 plt.title(
-    "Hertz sphere-plane (V-3, h/4 = 0.75 mm): "
+    "Hertz sphere-plane (Hertzian sphere↔plane, h/4 = 0.75 mm): "
     f"rel_err_a = {rel_err_pct:.2f}% (gate < {rel_err_gate_pct:.0f}%; "
     f"Cauchy = {cauchy_ratio:.3f})"
 )

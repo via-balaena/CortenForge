@@ -4,6 +4,22 @@
 //!
 //! Run with: cargo test -p mesh-repair -- proptest
 
+#![allow(
+    // `usize → u32` casts at random-mesh construction sites where the
+    // index range is bounded by the proptest strategy.
+    clippy::cast_possible_truncation,
+    // `i32 → u32` casts at proptest-fixture face-index construction
+    // (the strategy generates non-negative i32 indices but the mesh-
+    // types `u32` index requires the cast).
+    clippy::cast_sign_loss,
+    // `.clone()` on proptest-generated meshes before applying repair
+    // — the original is preserved for invariant comparisons.
+    clippy::redundant_clone,
+    // `let _ = repair_mesh(...)` discards the `RepairSummary` return
+    // when the side effect is the under-test contract.
+    clippy::let_underscore_must_use
+)]
+
 use mesh_repair::{RepairParams, validate_mesh, weld_vertices};
 use mesh_types::{IndexedMesh, Point3};
 use proptest::prelude::*;

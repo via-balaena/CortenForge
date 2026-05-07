@@ -1,10 +1,10 @@
-//! compressive-block — Phase 5 V-3a user-facing wrap: soft cube
+//! compressive-block — Compressive-block user-facing wrap: soft cube
 //! quasi-statically compressed by a descending rigid plane against a
 //! BC-pinned bottom face; per-refinement reaction force compared
 //! against the two pure-BC analytic limits + Cauchy convergence.
 //!
 //! `SoftScene::compressive_block_on_plane(edge_len, cell_size,
-//! displacement, &material_field)` (V-3a fixture's Phase 5 commit-6
+//! displacement, &material_field)` (the compressive-block fixture's Phase 5 commit-6
 //! helper at `sim/L0/soft/src/readout/scene.rs:377`) builds the
 //! production scene — a `HandBuiltTetMesh::uniform_block` cube of edge
 //! `L = 1 cm` at three refinement levels (`n ∈ {2, 4, 8}` →
@@ -12,23 +12,23 @@
 //! (`z ≈ 0` band, half-cell tolerance), no external traction. A single
 //! `RigidPlane(n = -ẑ, offset = δ - L)` represents the descended top
 //! plate, penetrated by exactly `δ = 5 × 10⁻⁵ m` at rest; one-way
-//! `PenaltyRigidContact` with **V-3a-LOCAL `(d̂, δ)` override**
+//! `PenaltyRigidContact` with **fixture-local `(d̂, δ)` override**
 //! (`d̂ = 1e-5 m`, default `κ = 1e4 N/m`) drives the cube into static
 //! equilibrium under the descended plate.
 //!
 //! `STATIC_DT = 1.0 s` collapses the inertial Tikhonov regulariser
 //! `M / dt²` so a single `replay_step` from rest converges to static
-//! equilibrium (mirrors V-3a `cfg.dt = 1.0`). Three refinements run
+//! equilibrium (mirrors the compressive block's `cfg.dt = 1.0`). Three refinements run
 //! sequentially; the row's headline gate is the **per-refinement
 //! two-bound bracket `F_us ≤ F_R_FEM ≤ F_strain`** plus **Cauchy ratio
 //! `< 1`** on the `F_R_FEM` sequence.
 //!
 //! ## Why `F_R ∈ [F_us, F_strain]` is the headline
 //!
-//! V-3a fixture's "Deviation 1" lays out the full derivation; mirrored
+//! the compressive-block fixture's "Deviation 1" lays out the full derivation; mirrored
 //! here verbatim:
 //!
-//! Scope memo §1 V-3a names the gate as `< 5 %` rel-err vs uniaxial-
+//! The original spec named the gate as `< 5 %` rel-err vs uniaxial-
 //! stress small-strain `F_us = E · A · ε`, presupposing pure
 //! uniaxial-stress BC (z-only pin on the bottom face, x/y free). The
 //! commit-6 helper full-pins every bottom-face vertex (Phase 5
@@ -39,7 +39,7 @@
 //! **no clean closed-form exists** for this BC at general aspect
 //! ratio.
 //!
-//! V-3a therefore brackets the FEM response by **two pure-BC bounds**
+//! This row therefore brackets the FEM response by **two pure-BC bounds**
 //! at the equilibrium strain:
 //!
 //! - **Lower bound** — uniaxial-stress small-strain `F_us = E · A · ε`
@@ -79,12 +79,12 @@
 //! Wood, *Nonlinear Continuum Mechanics for Finite Element Analysis*,
 //! 2nd ed., Ch 5 (small-strain regime).
 //!
-//! ## Why the V-3a-LOCAL `(d̂, δ)` override
+//! ## Why the fixture-local `(d̂, δ)` override
 //!
-//! V-3a fixture's "Deviation 2" lays out the full derivation; mirrored
+//! the compressive-block fixture's "Deviation 2" lays out the full derivation; mirrored
 //! here verbatim:
 //!
-//! At scope memo §9 V-3a parameters
+//! At the original spec parameters
 //! (`L = 1 cm, δ = 0.5 mm, κ = 1e4 N/m, d̂ = 1 mm, ν = 0.4`), the
 //! cold-start penalty residual is `~κ · d̂ ≈ 10 N` per top-face
 //! vertex. The raw Newton step is `~residual / κ ≈ 1 mm` per vertex —
@@ -94,7 +94,7 @@
 //! into NeoHookean's compressive nonlinearity regime, and the next
 //! Newton iter's tangent fails Cholesky.
 //!
-//! V-3a takes a **scope-memo-Decision-J V-3a-may-tune** override:
+//! This row takes a fixture-local override:
 //! `d̂ = 1e-5 m` (100× smaller than default) and `δ = 5e-5 m` (10×
 //! smaller than scope memo §9). At the override parameters: cold-start
 //! residual `κ · (d̂ + δ) ≈ 0.6 N` per vertex, raw Newton step `~6 ×
@@ -102,8 +102,8 @@
 //! Equilibrium strain `ε ≈ 0.6 %` — deep into small-strain regime
 //! where the two pure-BC bounds cleanly bracket the FEM response.
 //!
-//! Production scenes (V-1 / V-3 / V-4 / V-5 / V-7 + rows 12+13)
-//! continue to use the default `(κ, d̂)`; V-3a's override is local to
+//! Production scenes (the passthrough / Hertzian / non-interpenetration / drop-and-rest / grad-hook fixtures + rows 12+13)
+//! continue to use the default `(κ, d̂)`; this row's override is local to
 //! this example only, never propagated upstream. `KAPPA` stays at the
 //! `PENALTY_KAPPA_DEFAULT = 1e4` value (no κ change, only `d̂`).
 //!
@@ -111,18 +111,18 @@
 //!
 //! The convergence story needs three points: per-level two-bound
 //! bracket holds + Cauchy ratio `|Δ_fine| / |Δ_coarse| < 1`. Mirrors
-//! V-3a fixture's `n_per_edge ∈ {2, 4, 8}` choice. Sub-second
-//! release-mode runtime per refinement at the V-3a `(d̂, δ)` override
+//! The compressive-block fixture's `n_per_edge ∈ {2, 4, 8}` choice. Sub-second
+//! release-mode runtime per refinement at the `(d̂, δ)` override
 //! (Newton typically converges in `3-5` iters per level; the
 //! `MAX_NEWTON_ITER = 50` cap exists as headroom against material /
 //! load perturbations rather than as a tight working budget).
 //!
 //! ## Why `cargo run --release` only
 //!
-//! Mirrors row 13 + row 12 + V-3a fixture precedent. The IV-1
+//! Mirrors row 13 + row 12 + the compressive-block fixture precedent. The IV-1
 //! captured-bits contract is platform + build-mode-locked; matching
 //! row 13's `--release` invocation removes one variable from the
-//! determinism contract. V-3a is fast enough at finest `n=8` that
+//! determinism contract. The compressive block is fast enough at finest `n=8` that
 //! debug-mode is also viable, but consistency with sister rows wins
 //! over the cold-build-time savings.
 //!
@@ -146,7 +146,7 @@
 //! second plate carries no penalty force in the physics.
 //!
 //! **Visualization is amplified** by `VIZ_AMPLIFY = 50×` per banked
-//! pattern (b) — V-3a's small-strain regime (`ε ≈ 0.6 %`) is below
+//! pattern (b) — the compressive block's small-strain regime (`ε ≈ 0.6 %`) is below
 //! human visual acuity at typical viewing distance, so cube
 //! deformations from rest are multiplied by `VIZ_AMPLIFY` so the
 //! squish becomes visually perceptible (`~30 %` apparent
@@ -217,20 +217,20 @@
 //!   `0 < LAMBDA_Z_FLOOR < 1`.
 //! - **`mesh_topology_exact`** — per-refinement exact-pin
 //!   `(n_tets, n_vertices, n_loaded, n_pinned)` per the III-1
-//!   determinism contract. `n_loaded == 0` exact (V-3a-specific — no
+//!   determinism contract. `n_loaded == 0` exact (compressive-block-specific — no
 //!   external traction, load is penalty-mediated).
 //! - **`boundary_partition`** — per-refinement `n_pinned > 0` (bottom
 //!   face full-pin) and `n_loaded == 0` exact.
 //! - **`solver_per_step_invariants`** — per-refinement: no NaN in
-//!   `x_final`; `iter_count < NEWTON_ITER_SANITY_CAP = 40` per V-3a
+//!   `x_final`; `iter_count < NEWTON_ITER_SANITY_CAP = 40` per the compressive-block fixture
 //!   iter-margin policy; finite residual norm.
 //! - **`contact_engagement`** — `n_active_pairs == (n+1)²` exact per
 //!   refinement (every top-face vertex inside the `d̂`-band at
-//!   equilibrium per V-3a fixture's docstring; stronger than row 13's
-//!   `> 0` since V-3a's geometry guarantees uniform top-face
+//!   equilibrium per the compressive-block fixture's docstring; stronger than row 13's
+//!   `> 0` since the compressive block's geometry guarantees uniform top-face
 //!   penetration).
 //! - **`small_strain_validity`** — `0 < ε < SMALL_STRAIN_CEILING =
-//!   0.10` per refinement (V-3a expected `ε ≈ 0.6 %` — well into
+//!   0.10` per refinement (the compressive block expects `ε ≈ 0.6 %` — well into
 //!   small-strain).
 //! - **`gross_physics_per_level`** — `λ_z ∈ (0.5, 1.0)` (cube
 //!   compresses, not extends, and < 50 % strain) + `F_R > 0` (soft
@@ -315,22 +315,22 @@ use sim_soft::{
 };
 
 // =============================================================================
-// Scene constants — mirror V-3a (`sim/L0/soft/tests/penalty_compressive_block.rs`)
+// Scene constants — mirror the compressive-block fixture (`sim/L0/soft/tests/penalty_compressive_block.rs`)
 // verbatim. Re-deriving here keeps the example self-contained AND
-// captures-platform-locked; any regression in the V-3a helper that
+// captures-platform-locked; any regression in the compressive-block helper that
 // shifts these implicitly would surface at first row 14 visual review.
 // =============================================================================
 
-/// Cube edge length (1 cm). Mirror V-3a's `EDGE_LEN` per scope memo §9.
+/// Cube edge length (1 cm). Mirror the compressive block's `EDGE_LEN`.
 const EDGE_LEN: f64 = 1.0e-2;
 
-/// Rigid-plane axial displacement (50 μm). Mirror V-3a fixture's
+/// Rigid-plane axial displacement (50 μm). Mirror the compressive-block fixture's
 /// override of scope memo §9's recommended 0.5 mm — see module
-/// docstring "Why the V-3a-LOCAL (d̂, δ) override" section.
+/// docstring "Why the fixture-local (d̂, δ) override" section.
 const DISPLACEMENT: f64 = 5.0e-5;
 
-/// Lamé pair `(μ, λ)` — Phase 4 IV-3 / IV-5 / V-3a default Ecoflex-
-/// class compressible NeoHookean (`λ = 4 μ` ⇒ `ν = 0.4`). Pins V-3a to
+/// Lamé pair `(μ, λ)` — Phase 4 IV-3 / IV-5 / compressive-block default Ecoflex-
+/// class compressible NeoHookean (`λ = 4 μ` ⇒ `ν = 0.4`). Pins this row to
 /// the rest of the regression net.
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0e5;
@@ -340,7 +340,7 @@ const LAMBDA: f64 = 4.0e5;
 const A_CROSS: f64 = EDGE_LEN * EDGE_LEN;
 
 /// Refinement levels — `n ∈ {2, 4, 8}` cells per cube edge. Mirrors
-/// V-3a fixture verbatim. Tet counts: `6 · n³ = {48, 384, 3072}`
+/// the compressive-block fixture verbatim. Tet counts: `6 · n³ = {48, 384, 3072}`
 /// (uniform_block decomposes each unit cell into 6 tets). Locked
 /// exact via the III-1 captured-bits block below.
 const N_PER_EDGE_N2: usize = 2;
@@ -352,20 +352,20 @@ const CELL_SIZE_N2: f64 = EDGE_LEN / 2.0;
 const CELL_SIZE_N4: f64 = EDGE_LEN / 4.0;
 const CELL_SIZE_N8: f64 = EDGE_LEN / 8.0;
 
-/// V-3a-local penalty stiffness. Pinned at the
+/// Fixture-local penalty stiffness. Pinned at the
 /// `sim_soft::contact::penalty::PENALTY_KAPPA_DEFAULT` value
-/// (`penalty.rs:57`) per scope memo Decision J — V-3a's override is
+/// (`penalty.rs:57`) — this row's override is
 /// scoped to `d̂` (and `δ`); `κ` stays at default. The `pub(crate)`
 /// visibility on the upstream constant forces re-pinning here.
 const KAPPA: f64 = 1.0e4;
 
-/// V-3a-LOCAL penalty contact band (m). **Override of**
+/// Fixture-local penalty contact band (m). **Override of**
 /// `PENALTY_DHAT_DEFAULT = 1e-3` (`penalty.rs:65`) per scope memo
-/// Decision J's V-3a-may-tune authority — see module docstring "Why
-/// the V-3a-LOCAL (d̂, δ) override" section. 100× smaller than default
+/// — see module docstring "Why
+/// the fixture-local (d̂, δ) override" section. 100× smaller than default
 /// to bring cold-start penalty residual `κ · (d̂ + δ) ≈ 0.6 N` per
 /// top-face vertex below the tet-inversion threshold. Production
-/// scenes (V-1 / V-3 / V-4 / V-5 / V-7 + rows 12+13) continue to use
+/// scenes (the passthrough / Hertzian / non-interpenetration / drop-and-rest / grad-hook fixtures + rows 12+13) continue to use
 /// the default; this constant only enters via
 /// [`PenaltyRigidContact::with_params`] in [`run_at_refinement`] and
 /// must NOT be propagated upstream.
@@ -373,31 +373,31 @@ const D_HAT_OVERRIDE: f64 = 1.0e-5;
 
 /// Static-equilibrium time-step — large `dt` damps the inertial
 /// Tikhonov regulariser `M / dt²` to negligible relative magnitude,
-/// yielding pure-static root-find. Mirrors V-3a verbatim.
+/// yielding pure-static root-find. Mirrors the compressive block verbatim.
 const STATIC_DT: f64 = 1.0;
 
-/// Newton iter cap — mirror V-3a (also matches IV-3 + V-3 precedents).
-/// Static-equilibrium from rest under V-3a `(d̂, δ)` override
+/// Newton iter cap — mirror the compressive block (also matches IV-3 + Hertzian-fixture precedents).
+/// Static-equilibrium from rest under the `(d̂, δ)` override
 /// typically completes in `3-5` iters per refinement; cap leaves
 /// `45+` iters of margin against material / load perturbations.
 const MAX_NEWTON_ITER: usize = 50;
 
 /// Per-refinement Newton-iter sanity cap (10-iter margin under
-/// `MAX_NEWTON_ITER`). Mirror V-3a `< 40`. If any refinement spends
+/// `MAX_NEWTON_ITER`). Mirror the compressive block `< 40`. If any refinement spends
 /// more than this, surface as a regression before bumping the cap.
 const NEWTON_ITER_SANITY_CAP: usize = 40;
 
 /// Small-strain validity ceiling on the equilibrium compressive strain
-/// `ε = 1 − λ_z`. V-3a expected `ε ≈ 0.6 %` — well below the textbook
+/// `ε = 1 − λ_z`. The compressive block expects `ε ≈ 0.6 %` — well below the textbook
 /// `ε ≲ 5 %` linear-elastic threshold. Cap at `10 %` gives ~17×
-/// headroom over expected; failure here means the V-3a `(d̂, δ)`
+/// headroom over expected; failure here means the `(d̂, δ)`
 /// override is no longer producing a small-strain regime — investigate
 /// before relaxing.
 const SMALL_STRAIN_CEILING: f64 = 0.10;
 
 /// Lower-bound on `λ_z` — physical sanity for "less than 50 %
 /// compression." Catches gross-physics regressions where the cube has
-/// collapsed entirely. V-3a expected `λ_z ≈ 0.994`.
+/// collapsed entirely. The compressive block expects `λ_z ≈ 0.994`.
 const LAMBDA_Z_FLOOR: f64 = 0.5;
 
 /// IV-1 sparse-tier rel-tol for captured bits. `~few thousand tets`
@@ -443,7 +443,7 @@ const N_VERTICES_N4: usize = 125;
 /// Vertex count at n=8. `(n+1)³ = 729`.
 const N_VERTICES_N8: usize = 729;
 
-/// Loaded vertex count at n=2. **V-3a-specific: 0 exact** —
+/// Loaded vertex count at n=2. **Compressive-block-specific: 0 exact** —
 /// `compressive_block_on_plane` helper sets
 /// `BoundaryConditions { loaded_vertices: Vec::new(), ... }` because
 /// load is penalty-mediated (no external traction).
@@ -515,7 +515,7 @@ const CAUCHY_RATIO_REF_BITS: u64 = 0x3fdb_7eb6_9dba_5bd5;
 const EFFECTIVE_MODULUS_N8_REF_BITS: u64 = 0x4112_9258_06e1_6c93;
 
 /// Active-pair count at n=2. **`(n+1)² = 9` exact** — every top-face
-/// vertex inside the `d̂`-band at equilibrium per V-3a fixture's
+/// vertex inside the `d̂`-band at equilibrium per the compressive-block fixture's
 /// docstring.
 const N_ACTIVE_N2_REF: usize = 9;
 /// Active-pair count at n=4. **`(n+1)² = 25` exact**.
@@ -523,14 +523,14 @@ const N_ACTIVE_N4_REF: usize = 25;
 /// Active-pair count at n=8. **`(n+1)² = 81` exact**.
 const N_ACTIVE_N8_REF: usize = 81;
 
-/// Newton iter count at n=2 — `3` iters at the V-3a `(d̂, δ)`
+/// Newton iter count at n=2 — `3` iters at the `(d̂, δ)`
 /// override regime (cold-start residual `~0.6 N` per top-face vertex,
 /// raw step ≪ tet-inversion threshold).
 const ITER_COUNT_N2_REF: usize = 3;
 /// Newton iter count at n=4 — `3` iters.
 const ITER_COUNT_N4_REF: usize = 3;
 /// Newton iter count at n=8 — `3` iters. Flat across refinements at
-/// V-3a's `(d̂, δ)` override (active-set size grows but per-iter
+/// the `(d̂, δ)` override (active-set size grows but per-iter
 /// residual decreases at the same Newton rate).
 const ITER_COUNT_N8_REF: usize = 3;
 
@@ -595,7 +595,7 @@ struct ContactVertex {
     /// Final y-coordinate (m).
     y: f64,
     /// Plane signed distance: `sd = EDGE_LEN − DISPLACEMENT − z_v`.
-    /// Active when `sd < D_HAT_OVERRIDE`. V-3a expected
+    /// Active when `sd < D_HAT_OVERRIDE`. The compressive block expects
     /// `sd ≈ 9.8 μm` for the average top-face vertex at finest
     /// equilibrium (just under `D_HAT_OVERRIDE = 10 μm`); per-vertex
     /// values vary by sub-micron amounts (~0.25 μm) around the mean
@@ -612,7 +612,7 @@ struct ContactVertex {
 
 /// Per-refinement run output. Carries FEM-measured compressive
 /// quantities + Newton diagnostics + mesh stats for the diagnostic
-/// stdout + JSON + PLY paths. Mirrors V-3a fixture's `StepReport` plus
+/// stdout + JSON + PLY paths. Mirrors the compressive-block fixture's `StepReport` plus
 /// the extras the user-facing example wants (`x_final`,
 /// `rest_positions`, `boundary_faces`, `contact_vertices`).
 struct RefinementSnapshot {
@@ -639,7 +639,7 @@ struct RefinementSnapshot {
     /// Upper bound on `f_r_fem`.
     f_strain: f64,
     /// Active-pair count at converged `x_final`. Exact `(n+1)²` per
-    /// V-3a fixture's docstring (every top-face vertex inside band).
+    /// the compressive-block fixture's docstring (every top-face vertex inside band).
     n_active_pairs: usize,
     /// Newton iter count at convergence.
     iter_count: usize,
@@ -651,7 +651,7 @@ struct RefinementSnapshot {
     /// no orphan-bbox-margin (unlike `SdfMeshedTetMesh`); every vertex
     /// is referenced by ≥ 1 tet.
     n_vertices: usize,
-    /// External-traction loaded vertex count. **0 exact** for V-3a (no
+    /// External-traction loaded vertex count. **0 exact** for the compressive block (no
     /// external load).
     n_loaded: usize,
     /// Bottom-face pinned vertex count. `(n+1)²` per `helper`.
@@ -704,8 +704,8 @@ struct CompressiveSnapshot {
 // Run — single refinement
 // =============================================================================
 
-/// Build the V-3a compressive-block scene at `n_per_edge`, replace the
-/// helper's default-`d̂` contact with a V-3a-LOCAL `D_HAT_OVERRIDE`
+/// Build the compressive-block scene at `n_per_edge`, replace the
+/// helper's default-`d̂` contact with a fixture-local `D_HAT_OVERRIDE`
 /// override, run a single static `replay_step`, and capture the
 /// [`RefinementSnapshot`].
 ///
@@ -724,7 +724,7 @@ fn run_at_refinement(
     // Helper builds mesh + BC + initial via commit-6 scaffolding; its
     // returned `default_contact` (default `κ`, `d̂`) is discarded and
     // replaced with a `with_params` override per the module docstring's
-    // "Why the V-3a-LOCAL (d̂, δ) override" section. The plane is
+    // "Why the fixture-local (d̂, δ) override" section. The plane is
     // reconstructed identically to the helper's `RigidPlane::new(
     // Vec3::new(0.0, 0.0, -1.0), DISPLACEMENT - EDGE_LEN)`
     // (`scene.rs:450`).
@@ -740,7 +740,7 @@ fn run_at_refinement(
 
     // Snapshot top-face vertex IDs (rest config `z = EDGE_LEN`,
     // half-cell tolerance) BEFORE moving the mesh into the solver.
-    // Mirror V-3a fixture's idiom — only top-face vertices can enter
+    // Mirror the compressive-block fixture's idiom — only top-face vertices can enter
     // the contact band (`sd < D_HAT_OVERRIDE`), so iterating just the
     // top face captures every active pair.
     let band_tol = 0.5 * cell_size;
@@ -786,7 +786,7 @@ fn run_at_refinement(
 
     // FEM reaction force = sum over active top-face pairs of penalty
     // gradient.z. Manual reconstruction from the known plane geometry
-    // (`normal = -ẑ`, `offset = DISPLACEMENT - EDGE_LEN`); see V-3a
+    // (`normal = -ẑ`, `offset = DISPLACEMENT - EDGE_LEN`); see the compressive-block
     // fixture's "Reaction-force extraction" section. The bottom-face
     // pinned vertices stay at `z = 0`, giving `sd = EDGE_LEN -
     // DISPLACEMENT ≈ 1e-2 m ≫ D_HAT_OVERRIDE = 1e-5 m`, never active —
@@ -1104,7 +1104,7 @@ fn verify_mesh_topology_exact(snapshot: &CompressiveSnapshot) {
         );
         assert_eq!(
             rs.n_loaded, n_loaded_ref,
-            "{}: n_loaded drift — expected {n_loaded_ref}, got {} (V-3a expects 0 exact — \
+            "{}: n_loaded drift — expected {n_loaded_ref}, got {} (the compressive block expects 0 exact — \
              load is penalty-mediated, no external traction)",
             rs.label, rs.n_loaded,
         );
@@ -1131,7 +1131,7 @@ fn verify_boundary_partition(snapshot: &CompressiveSnapshot) {
         );
         assert_eq!(
             rs.n_loaded, 0,
-            "{}: V-3a expects no external traction — load is penalty-mediated; \
+            "{}: the compressive block expects no external traction — load is penalty-mediated; \
              `BoundaryConditions::loaded_vertices` must be empty (got {})",
             rs.label, rs.n_loaded,
         );
@@ -1178,7 +1178,7 @@ fn verify_contact_engagement(snapshot: &CompressiveSnapshot) {
         assert_eq!(
             rs.n_active_pairs, expected,
             "{}: n_active_pairs = {} should equal (n+1)² = {expected} (every top-face vertex \
-             inside the d̂-band at equilibrium per V-3a fixture's docstring)",
+             inside the d̂-band at equilibrium per the compressive-block fixture's docstring)",
             rs.label, rs.n_active_pairs,
         );
     }
@@ -1199,7 +1199,7 @@ fn verify_small_strain_validity(snapshot: &CompressiveSnapshot) {
         );
         assert!(
             rs.eps < SMALL_STRAIN_CEILING,
-            "{}: ε = {:.4} ≥ small-strain ceiling {SMALL_STRAIN_CEILING:.2} — V-3a `(d̂, δ)` \
+            "{}: ε = {:.4} ≥ small-strain ceiling {SMALL_STRAIN_CEILING:.2} — the `(d̂, δ)` \
              override no longer producing small-strain regime; investigate before relaxing",
             rs.label,
             rs.eps,
@@ -1555,7 +1555,7 @@ fn save_finest_frame_ply(snapshot: &CompressiveSnapshot, path: &Path) -> Result<
 const RENDER_SCALE: f32 = 100.0;
 
 /// Visualization-only displacement amplifier (banked pattern (b) at
-/// row 10 — `feedback_visual_review_is_the_test`). V-3a's small-strain
+/// row 10 — `feedback_visual_review_is_the_test`). The compressive block's small-strain
 /// regime (`ε ≈ 0.6 %` finest-equilibrium) is well below human visual
 /// acuity at typical viewing distance: 60 μm cube compression on a
 /// 1 m visual cube subtends ~2 mrad ≈ 0.1° from a 3 m camera, below
@@ -1756,7 +1756,7 @@ fn setup_visual_scene(
         ..default()
     });
 
-    // Cube lateral center (Bevy units). The V-3a helper builds the
+    // Cube lateral center (Bevy units). The compressive-block helper builds the
     // mesh spanning physics `[0, EDGE_LEN]` in each axis, NOT
     // centered at origin. Under `UpAxis::PlusZ` swap (physics
     // `(x, y, z)` → Bevy `(x, z, y)`) and `Transform::from_scale(
@@ -1887,7 +1887,7 @@ fn setup_visual_scene(
 fn print_summary(snapshot: &CompressiveSnapshot, ply_path: &Path, json_path: &Path) {
     println!("==== compressive-block ====");
     println!();
-    println!("Scene: SoftScene::compressive_block_on_plane (V-3a mirror)");
+    println!("Scene: SoftScene::compressive_block_on_plane (compressive-block mirror)");
     println!(
         "  geometry      : HandBuiltTetMesh::uniform_block cube, EDGE_LEN = {EDGE_LEN} m, \
          A = {A_CROSS:.4e} m²"
@@ -1908,7 +1908,7 @@ fn print_summary(snapshot: &CompressiveSnapshot, ply_path: &Path, json_path: &Pa
         DISPLACEMENT - EDGE_LEN,
     );
     println!(
-        "  contact       : PenaltyRigidContact V-3a-LOCAL (κ = {KAPPA} N/m, \
+        "  contact       : PenaltyRigidContact fixture-local (κ = {KAPPA} N/m, \
          d̂_override = {D_HAT_OVERRIDE} m)"
     );
     println!(
@@ -2009,7 +2009,7 @@ fn print_summary(snapshot: &CompressiveSnapshot, ply_path: &Path, json_path: &Pa
     println!("  mesh_topology_exact               : per-refinement III-1 contract");
     println!(
         "  boundary_partition                : n_pinned > 0 (bottom full-pin) + n_loaded == 0 \
-         (V-3a)"
+         (compressive block)"
     );
     println!(
         "  solver_per_step_invariants        : no NaN, iter < {NEWTON_ITER_SANITY_CAP}, \

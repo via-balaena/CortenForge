@@ -6,13 +6,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# SoftScene::compressive_block_on_plane (V-3a fixture's helper) +
+# SoftScene::compressive_block_on_plane (the compressive-block fixture's helper) +
 # CpuNewtonSolver + PenaltyRigidContactSolver type alias + RigidPlane +
 # PenaltyRigidContact + MaterialField + Mesh trait + SceneInitial +
 # HandBuiltTetMesh + Solver + SolverConfig + Tet4 + Vec3 + VertexId +
 # pick_vertices_by_predicate.
 sim-soft = { workspace = true }
-# Tensor for the empty `theta` argument to `replay_step` (V-3a's load is
+# Tensor for the empty `theta` argument to `replay_step` (the compressive block's load is
 # penalty-mediated, so external traction is length-0 by construction).
 sim-ml-chassis = { workspace = true }
 # Trajectory + SoftBodyVisualPlugin + build_soft_mesh — Bevy static-state

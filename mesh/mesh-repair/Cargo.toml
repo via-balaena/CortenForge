@@ -11,6 +11,9 @@ categories = ["algorithms", "graphics", "game-development"]
 [package.metadata.cortenforge]
 tier = "L0"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Geometric primitives (workspace)
 cf-geometry = { path = "../../design/cf-geometry" }

@@ -1,22 +1,22 @@
-//! V-3a — penalty contact compressive block: force-pumping correctness
-//! + bounded-by-pure-BC-limits + Cauchy convergence.
+//! Penalty contact compressive block: force-pumping correctness +
+//! bounded-by-pure-BC-limits + Cauchy convergence.
 //!
-//! Phase 5 scope memo §1 V-3a + §8 commit 8 + Decision D (V-3a as
-//! simpler-geometry warmup before V-3 Hertz, isolating contact-force
-//! pumping from contact-area-radius scaling). The first contact-active
-//! scientific gate of the phase: `PenaltyRigidContact`'s force-pumping
-//! validated at the integrated level by (i) sign convention exercised
-//! end-to-end, (ii) FEM-integrated reaction force bounded by the two
-//! pure-BC closed-form limits (uniaxial-stress lower / uniaxial-strain
-//! upper) at every refinement level, (iii) Cauchy-style geometric
-//! convergence across three refinement levels (`n_per_edge ∈ {2, 4, 8}`
-//! → 48 / 384 / 3072 tets).
+//! Simpler-geometry warmup before the Hertzian fixture, isolating
+//! contact-force pumping from contact-area-radius scaling. The first
+//! contact-active scientific gate: `PenaltyRigidContact`'s
+//! force-pumping validated at the integrated level by (i) sign
+//! convention exercised end-to-end, (ii) FEM-integrated reaction force
+//! bounded by the two pure-BC closed-form limits (uniaxial-stress
+//! lower / uniaxial-strain upper) at every refinement level, (iii)
+//! Cauchy-style geometric convergence across three refinement levels
+//! (`n_per_edge ∈ {2, 4, 8}` → 48 / 384 / 3072 tets).
 //!
-//! ## R-5 lens (v) — first integrated sign-convention check
+//! ## First integrated sign-convention check
 //!
-//! V-2 commit 4's unit + FD tests pin sign convention at the per-pair
-//! gradient/Hessian level. V-3a is the first end-to-end "elastic +
-//! penalty equilibrium force balance" exercise: the elastic potential's
+//! `tests/contact_unit.rs` + `tests/contact_fd.rs` pin sign
+//! convention at the per-pair gradient/Hessian level. This fixture is
+//! the first end-to-end "elastic + penalty equilibrium force balance"
+//! exercise: the elastic potential's
 //! gradient is `+f_int` (scattered into `f_int` as `+∂Ψ/∂x` at commit
 //! 5); the penalty potential's gradient at active config is
 //! `-κ·(d̂-d)·n` where `n` is the outward primitive normal. For a
@@ -24,28 +24,28 @@
 //! `+κ·(d̂-d)` (positive), scattered as `+f_int.z`. The Newton step
 //! `δx = -K⁻¹·r` drives `x_curr.z` DOWN, compressing the cube. An
 //! inverted sign would either fail to converge (cube blown apart) or
-//! converge to a config with the cube floating above the plane. V-3a's
-//! `F_R_FEM > 0` per-level assert + `F_R_FEM ∈ [F_us, F_strain]`
+//! converge to a config with the cube floating above the plane. This
+//! fixture's `F_R_FEM > 0` per-level assert + `F_R_FEM ∈ [F_us, F_strain]`
 //! two-bound assert catch sign flips at the integrated level.
 //!
-//! ## Two deviations from scope memo §1 V-3a + §9
+//! ## Two deviations from the original spec
 //!
 //! ### Deviation 1: gate replaced from "<5% closed-form match" to "two-bound + Cauchy convergence"
 //!
-//! Scope memo §1 V-3a names *"F = E · A · ε (uniaxial small-strain,
+//! The original spec named *"F = E · A · ε (uniaxial small-strain,
 //! ε = δ/h, valid because lateral expansion is unconstrained →
 //! uniaxial-stress regime)"* with a `< 5 %` finest-level relative
 //! error gate. This presupposes the BC enforces pure uniaxial-stress
-//! (z-only pin on the bottom face, x/y free). The commit-6 helper
+//! (z-only pin on the bottom face, x/y free). The helper
 //! [`SoftScene::compressive_block_on_plane`] **full-pins the entire
-//! bottom face** ([`scene.rs:319-341`] + commit-6 lesson (d) on
-//! [`BoundaryConditions`]'s lack of per-DOF pin granularity), giving
+//! bottom face** ([`scene.rs:319-341`] —
+//! [`BoundaryConditions`] has no per-DOF pin granularity), giving
 //! a **mixed BC**: bottom full-pinned (constrained-modulus regime
 //! locally), sides free (uniaxial-stress regime), top z-contacted.
 //! The deformation field is non-uniform; **no clean closed-form
 //! exists** for this BC at general aspect ratio.
 //!
-//! V-3a therefore uses **two pure-BC bounds** to bracket the FEM
+//! This fixture therefore uses **two pure-BC bounds** to bracket the FEM
 //! response, plus **Cauchy-style geometric convergence** to confirm
 //! the FEM is converging to a stable answer:
 //!
@@ -80,9 +80,9 @@
 //! single-test-fn structure with monotonic + iter-budget asserts +
 //! diagnostic `eprintln!`.
 //!
-//! ### Deviation 2: `(d̂, δ)` override per scope memo Decision J's V-3a-may-tune authority
+//! ### Deviation 2: `(d̂, δ)` override authorised locally
 //!
-//! At the scope-memo §9 V-3a parameters (`L = 1 cm`, `δ = 0.5 mm`,
+//! At the original spec parameters (`L = 1 cm`, `δ = 0.5 mm`,
 //! `κ = 1e4 N/m`, `d̂ = 1 mm`, `ν = 0.4`), the cold-start penalty
 //! residual is `~κ · d̂ ≈ 10 N` per top-face vertex. The raw Newton
 //! step is `~residual / κ ≈ 1 mm` per vertex — `10 %` of the cube
@@ -97,33 +97,32 @@
 //!   `dt ≈ 1e-5 s` to make the Tikhonov regulariser `M / dt²`
 //!   competitive with `κ_pen`; `~10 000` steps to reach quasi-static.
 //!   Infeasible test runtime.
-//! - **(b) Decision J adjustment** — global default `κ` reduction.
-//!   Out of V-3a authority (V-3 commit 9 has separate authority over
-//!   defaults under Hertz geometry); would silently affect V-1 / V-3 /
-//!   V-4 / V-5 / V-7.
-//! - **(c) V-3a-local `(d̂, δ)` override via
-//!   [`PenaltyRigidContact::with_params`].** Scope memo §6 R-5 lens
-//!   (i): *"if defaults fall on the wrong side of the ceiling,
-//!   surface as a Decision-J adjustment, not a fix-on-the-fly."* For
-//!   V-3a, the ceiling sits comfortably above defaults at the V-3
-//!   sphere geometry but below at the cube geometry — so V-3a-local
-//!   override (NOT a global Decision-J adjustment) is the right
+//! - **(b) global default `κ` reduction.** The Hertzian fixture has
+//!   separate authority over defaults under sphere geometry; a global
+//!   reduction would silently affect every other contact-active
+//!   fixture.
+//! - **(c) Local `(d̂, δ)` override via
+//!   [`PenaltyRigidContact::with_params`].** Policy: *"if defaults fall
+//!   on the wrong side of the ceiling, surface as a global retune, not
+//!   a fix-on-the-fly."* Here the ceiling sits comfortably above
+//!   defaults at the sphere geometry but below at the cube geometry —
+//!   so a fixture-local override (NOT a global retune) is the right
 //!   reconciliation.
 //!
-//! V-3a takes (c). Override `d̂ = 1e-5 m` (100× smaller than default)
-//! and `δ = 5e-5 m` (10× smaller than scope memo §9). At the override
-//! parameters: cold-start residual `κ · (d̂ + δ) ≈ 0.6 N` per vertex,
-//! raw Newton step `~6 × 10⁻⁵ m ≈ 0.6 %` of edge — safely below tet-
-//! inversion threshold. Equilibrium strain `ε ≈ 0.6 %` — deep into
-//! small-strain regime where the two pure-BC bounds (uniaxial-stress
-//! `≈ 0.16 N` lower, uniaxial-strain `≈ 0.36 N` upper) cleanly bracket
-//! the FEM response (`≈ 0.18 N` at finest level, sub-second debug-mode
-//! runtime).
+//! This fixture takes (c). Override `d̂ = 1e-5 m` (100× smaller than
+//! default) and `δ = 5e-5 m` (10× smaller than the original spec). At
+//! the override parameters: cold-start residual `κ · (d̂ + δ) ≈ 0.6 N`
+//! per vertex, raw Newton step `~6 × 10⁻⁵ m ≈ 0.6 %` of edge — safely
+//! below tet-inversion threshold. Equilibrium strain `ε ≈ 0.6 %` —
+//! deep into small-strain regime where the two pure-BC bounds
+//! (uniaxial-stress `≈ 0.16 N` lower, uniaxial-strain `≈ 0.36 N`
+//! upper) cleanly bracket the FEM response (`≈ 0.18 N` at finest
+//! level, sub-second debug-mode runtime).
 //!
-//! Production scenes (V-1 commit 7 + V-3 commit 9 + V-4 / V-5 / V-7
-//! commits 10 / 11) continue to use the default `(κ, d̂)` per
-//! scope memo Decision J; V-3a's override is local to this test file
-//! only, never propagated upstream.
+//! Production scenes (passthrough, sphere-on-plane, drop-and-rest,
+//! grad-hook) continue to use the default `(κ, d̂)`; this fixture's
+//! override is local to this test file only, never propagated
+//! upstream.
 //!
 //! ## Reaction-force extraction
 //!
@@ -151,21 +150,22 @@
 //! integration; under quasi-static-equilibrium tests the inertial
 //! Tikhonov regulariser `M / dt²` dominates and skews the equilibrium.
 //! Mirror IV-3's `STATIC_DT = 1.0` + `MAX_NEWTON_ITER = 50` to recover
-//! the pure-static root-find regime. Under the V-3a `(d̂, δ)` override,
+//! the pure-static root-find regime. Under the `(d̂, δ)` override,
 //! Newton typically takes `3-5` iters per level (cold-start residual
 //! `~0.6 N` per top-face vertex; raw step well below tet-inversion
 //! threshold); the `MAX_NEWTON_ITER = 50` cap exists to mirror IV-3's
 //! per-IV-3 `STATIC_DT` precedent and to reserve headroom against load
 //! / material perturbations rather than as a tight working budget.
 //!
-//! ## Why V-3a lands before V-3 (commit 9)
+//! ## Why this fixture lands before the Hertzian one
 //!
-//! V-3a has uniform (cube) geometry — no contact-area-radius scaling.
-//! V-3 Hertz couples sphere-mesh resolution (BCC mesher's piecewise-
-//! linear approximation of the curved sphere) with contact-force-
-//! pumping correctness. V-3a failure at refinement isolates contact-
-//! machinery integration bugs from Hertz-specific sphere-mesh
-//! resolution sensitivity. V-3 cannot be diagnosed cleanly until V-3a
+//! The compressive block has uniform (cube) geometry — no
+//! contact-area-radius scaling. The Hertzian fixture couples
+//! sphere-mesh resolution (BCC mesher's piecewise-linear approximation
+//! of the curved sphere) with contact-force-pumping correctness. A
+//! cube-side failure at refinement isolates contact-machinery
+//! integration bugs from Hertz-specific sphere-mesh resolution
+//! sensitivity. Hertz cannot be diagnosed cleanly until this fixture
 //! passes.
 
 #![allow(
@@ -187,18 +187,17 @@ use sim_soft::{
 
 // ── Scene constants ──────────────────────────────────────────────────────
 
-/// Cube edge length (1 cm). Scope memo §9 V-3a recommendation.
+/// Cube edge length (1 cm).
 const EDGE_LEN: f64 = 0.01;
 
-/// Rigid-plane axial displacement (0.05 mm). 10× smaller than scope
-/// memo §9 V-3a's recommended 0.5 mm — see module docstring "Deviation
-/// 2" section on the `(d̂, δ)` override under scope memo Decision J's
-/// V-3a-may-tune authority.
+/// Rigid-plane axial displacement (0.05 mm). 10× smaller than the
+/// original spec's recommended 0.5 mm — see module docstring
+/// "Deviation 2" section on the locally-authorised `(d̂, δ)` override.
 const DISPLACEMENT: f64 = 5.0e-5;
 
 /// Lamé pair `(μ, λ)` — Phase 4 IV-3 / IV-5 default Ecoflex-class
 /// compressible `NeoHookean` (`λ = 4 μ` ⇒ `ν = 0.4`). The canonical
-/// pair pins V-3a to the rest of the regression net.
+/// pair pins this fixture to the rest of the regression net.
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0e5;
 
@@ -220,20 +219,19 @@ const fn constrained_modulus(mu: f64, lambda: f64) -> f64 {
     lambda + 2.0 * mu
 }
 
-/// V-3a-local penalty stiffness. Pinned at the
+/// Fixture-local penalty stiffness. Pinned at the
 /// `sim_soft::contact::penalty::PENALTY_KAPPA_DEFAULT` value
-/// (penalty.rs:57) per scope memo Decision J — V-3a's override is
-/// scoped to `d̂` (and `δ`); `κ` stays at default. The `pub(crate)`
-/// visibility on the upstream constant forces re-pinning here.
+/// (penalty.rs:57) — this fixture's override is scoped to `d̂` (and
+/// `δ`); `κ` stays at default. The `pub(crate)` visibility on the
+/// upstream constant forces re-pinning here.
 const KAPPA: f64 = 1.0e4;
 
-/// V-3a-local penalty contact band. **Override of**
-/// `PENALTY_DHAT_DEFAULT = 1e-3` (penalty.rs:65) per scope memo
-/// Decision J's V-3a-may-tune authority — see module docstring
-/// "Deviation 2" section. 100× smaller than default to bring
-/// cold-start penalty residual `κ · (d̂ + δ) ≈ 0.6 N` per top-face
-/// vertex below the tet-inversion threshold. Production scenes (V-1 /
-/// V-3 / V-4 / V-5 / V-7) continue to use the default; this constant
+/// Fixture-local penalty contact band. **Override of**
+/// `PENALTY_DHAT_DEFAULT = 1e-3` (penalty.rs:65) — see module
+/// docstring "Deviation 2" section. 100× smaller than default to
+/// bring cold-start penalty residual `κ · (d̂ + δ) ≈ 0.6 N` per
+/// top-face vertex below the tet-inversion threshold. Other
+/// contact-active fixtures continue to use the default; this constant
 /// only enters via [`PenaltyRigidContact::with_params`] in
 /// [`run_at_refinement`] and must NOT be propagated upstream.
 const D_HAT_OVERRIDE: f64 = 1.0e-5;
@@ -246,7 +244,7 @@ const STATIC_DT: f64 = 1.0;
 /// Newton iteration cap — bumped from skeleton's `10` to mirror IV-3's
 /// `50` (static-equilibrium from rest needs more headroom than
 /// transient-step's small `Δx`). Newton typically takes `3-5` iters
-/// per level under the V-3a `(d̂, δ)` override; cap leaves wide margin
+/// per level under the `(d̂, δ)` override; cap leaves wide margin
 /// against load / material perturbations.
 const MAX_NEWTON_ITER: usize = 50;
 
@@ -393,7 +391,7 @@ fn run_at_refinement(n_per_edge: usize) -> StepReport {
 // (Newton iters / sign sanity / two-bound) + Cauchy gate are inlined.
 // Extracting helpers would add indirection without improving clarity.
 #[allow(clippy::too_many_lines)]
-fn v_3a_compressive_block_force_pumping_correctness() {
+fn compressive_block_force_pumping_correctness() {
     let report_n2 = run_at_refinement(2);
     let report_n4 = run_at_refinement(4);
     let report_n8 = run_at_refinement(8);
@@ -451,7 +449,7 @@ fn v_3a_compressive_block_force_pumping_correctness() {
 
     // ── Per-level Newton + sign + active-pair sanity ────────────────────
     //
-    // Newton-budget per level — mirrors IV-3 pattern. Under the V-3a
+    // Newton-budget per level — mirrors IV-3 pattern. Under the
     // `(d̂, δ)` override, Newton typically completes in `3-5` iters
     // per level (cold-start residual `~0.6 N` per top-face vertex;
     // raw Newton step well below tet-inversion threshold). At `< 40`
@@ -469,7 +467,7 @@ fn v_3a_compressive_block_force_pumping_correctness() {
 
     // Sign sanity per level: `λ_z < 1` (cube compresses, not extends);
     // `λ_z > 0.5` rules out >50% compression as physically implausible
-    // at the V-3a `(κ, d̂, δ)` regime; `F_R > 0` (soft body pushes UP
+    // at the `(κ, d̂, δ)` regime; `F_R > 0` (soft body pushes UP
     // on rigid plane — Newton's 3rd-law partner of penalty's DOWN
     // force on top face). Catches sign-flip regressions at gross-
     // physics level before the bound asserts surface them numerically.

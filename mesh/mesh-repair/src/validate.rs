@@ -41,13 +41,13 @@ impl MeshReport {
     ///
     /// A printable mesh must be watertight, manifold, and have correct winding.
     #[must_use]
-    pub fn is_printable(&self) -> bool {
+    pub const fn is_printable(&self) -> bool {
         self.is_watertight && self.is_manifold && !self.is_inside_out
     }
 
     /// Check if the mesh has any issues.
     #[must_use]
-    pub fn has_issues(&self) -> bool {
+    pub const fn has_issues(&self) -> bool {
         self.boundary_edge_count > 0
             || self.non_manifold_edge_count > 0
             || self.degenerate_face_count > 0
@@ -56,7 +56,7 @@ impl MeshReport {
 
     /// Get a count of total issues found.
     #[must_use]
-    pub fn issue_count(&self) -> usize {
+    pub const fn issue_count(&self) -> usize {
         self.boundary_edge_count
             + self.non_manifold_edge_count
             + self.degenerate_face_count
@@ -235,7 +235,7 @@ fn count_duplicate_faces(faces: &[[u32; 3]]) -> usize {
 }
 
 /// Normalize a face so the smallest vertex index comes first.
-fn normalize_face(face: [u32; 3]) -> [u32; 3] {
+const fn normalize_face(face: [u32; 3]) -> [u32; 3] {
     let min_idx = if face[0] <= face[1] && face[0] <= face[2] {
         0
     } else if face[1] <= face[2] {
@@ -266,9 +266,13 @@ fn check_inside_out(mesh: &IndexedMesh) -> bool {
         let v2 = &mesh.vertices[face[2] as usize];
 
         // Signed volume of tetrahedron formed with origin
-        volume += v0.x * (v1.y * v2.z - v2.y * v1.z)
-            + v1.x * (v2.y * v0.z - v0.y * v2.z)
-            + v2.x * (v0.y * v1.z - v1.y * v0.z);
+        volume += v2.x.mul_add(
+            v0.y.mul_add(v1.z, -(v1.y * v0.z)),
+            v0.x.mul_add(
+                v1.y.mul_add(v2.z, -(v2.y * v1.z)),
+                v1.x * v2.y.mul_add(v0.z, -(v0.y * v2.z)),
+            ),
+        );
     }
 
     volume / 6.0 < 0.0
@@ -377,7 +381,7 @@ mod tests {
     fn report_display() {
         let mesh = simple_triangle();
         let report = validate_mesh(&mesh);
-        let display = format!("{}", report);
+        let display = format!("{report}");
 
         assert!(display.contains("Vertices: 3"));
         assert!(display.contains("Watertight: No"));

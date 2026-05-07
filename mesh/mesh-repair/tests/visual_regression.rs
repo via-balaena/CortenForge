@@ -19,6 +19,27 @@
 //!
 //! Run with: cargo test -p mesh-repair visual_regression
 
+#![allow(
+    // Tests use `.expect()` to assert holes-filled counts and similar
+    // Result values where a panic IS the test failure mode, plus
+    // `_ = repair_mesh(...)` to discard `#[must_use]` returns when
+    // the under-test contract is the side effect on the mesh.
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    // Inline-arg `format!` rewrites for assertion-message strings.
+    clippy::uninlined_format_args,
+    // `usize → u32` (vertex count) and `usize → f64` (mean position)
+    // at test-data-construction sites; mesh-types contracts that
+    // indices fit in `u32` apply the same to test fixtures.
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    // `.clone()` of fixture meshes before applying repairs — original
+    // is preserved for invariant comparisons.
+    clippy::redundant_clone,
+    // Doc-comment identifiers that aren't wrapped in backticks.
+    clippy::doc_markdown
+)]
+
 use mesh_repair::{RepairParams, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 

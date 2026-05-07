@@ -57,6 +57,8 @@ use sim_rl::{
 };
 use sim_thermostat::{DoubleWellPotential, LangevinThermostat, OscillatingField, PassiveStack};
 
+mod common;
+
 // ─── Central parameters (duplicated) ───────────────────────────────────────
 
 const DELTA_V: f64 = 3.0;
@@ -291,4 +293,11 @@ fn d2c_sr_rematch_pt() {
         "Apply Ch 53 §3.2's three-case rule to PT's final_reward classification \
          (joint with richer-SA's)."
     );
+
+    // Persist verdict JSON — see d2c_sr_rematch.rs for the rationale
+    // (libtest swallows the eprintln! verdict on a clean pass).
+    // Best-effort: log on FS error rather than panic.
+    if let Err(e) = common::write_verdict_json("d2c_sr_rematch_pt", &outcome) {
+        eprintln!("[warn] verdict JSON write failed: {e}");
+    }
 }

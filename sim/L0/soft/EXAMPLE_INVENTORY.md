@@ -72,9 +72,9 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|
-| 12 | Drop-and-rest on plane | `soft-drop-on-plane` — soft sphere falls under gravity, settles on `RigidPlane`; assert final COM height = R + tolerance | one-way penalty contact + rest-state convergence (V-5) | `internal-fixture` (`contact_drop_rest.rs`) | wrap as `examples/sim-soft/soft-drop-on-plane/`; emit final-frame deformed-mesh PLY; assert quiescence (max velocity < threshold) |
-| 13 | Hertzian sphere ↔ plane | `hertz-sphere-plane` — soft sphere quasi-statically pressed against `RigidPlane`; assert contact-patch radius vs Hertz analytic | analytical contact-pressure validation (V-3) | `internal-fixture` (`hertz_sphere_plane.rs`) | wrap as `examples/sim-soft/hertz-sphere-plane/`; assert patch radius within Hertz tolerance; emit pressure-vs-radius JSON |
-| 14 | Compressive block under plates | `compressive-block` — soft cube between two `RigidPlane`s, top plate descends quasi-statically; assert engineering-stress curve | `PenaltyRigidContact` under bilateral compression (V-3a) | `internal-fixture` (`penalty_compressive_block.rs`) | wrap as `examples/sim-soft/compressive-block/`; emit force-displacement JSON; assert NH-derived stiffness slope |
+| 12 | Drop-and-rest on plane | `soft-drop-on-plane` — soft sphere falls under gravity, settles on `RigidPlane`; assert final COM height = R + tolerance | one-way penalty contact + rest-state convergence (drop-and-rest) | `internal-fixture` (`contact_drop_rest.rs`) | wrap as `examples/sim-soft/soft-drop-on-plane/`; emit final-frame deformed-mesh PLY; assert quiescence (max velocity < threshold) |
+| 13 | Hertzian sphere ↔ plane | `hertz-sphere-plane` — soft sphere quasi-statically pressed against `RigidPlane`; assert contact-patch radius vs Hertz analytic | analytical contact-pressure validation (Hertzian) | `internal-fixture` (`hertz_sphere_plane.rs`) | wrap as `examples/sim-soft/hertz-sphere-plane/`; assert patch radius within Hertz tolerance; emit pressure-vs-radius JSON |
+| 14 | Compressive block under plates | `compressive-block` — soft cube between two `RigidPlane`s, top plate descends quasi-statically; assert engineering-stress curve | `PenaltyRigidContact` under bilateral compression (compressive block) | `internal-fixture` (`penalty_compressive_block.rs`) | wrap as `examples/sim-soft/compressive-block/`; emit force-displacement JSON; assert NH-derived stiffness slope |
 
 ### Tier 5 — Bridges + extensions (silicone-device path; **mostly blocked**)
 
@@ -502,7 +502,7 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Pre-flight: build, test (sim-bevy-soft 17/17), fmt --all, clippy -D warnings, cargo doc -D warnings, xtask grade A on automated criteria** (run after each row-12-related commit). **Push to origin recommended at row 12 close** since 11 unpushed commits accumulate risk; not done (per `feedback_no_push_ultrareview` deferred to user discretion). Row 13 should start fresh with branch pushed.
 
-  **Next iteration entry point:** Row 13 — PR2's second example row (`hertz-sphere-plane`, the canonical Hertzian indentation analytic gate per inventory Tier 4). **New session recommended** for phase transition: this session accumulated full row 12 context (lighting/camera iteration + 3 foundation-patch debug paths + RENDER_SCALE pivot reasoning) that row 13 doesn't need. Row 13 inherits the row 12-fixed foundation (ReplayEpoch + R-key reset + area-weighted normals) AND the visualization conventions (RENDER_SCALE 100×, SLOW_MO_FACTOR knob, CF_VISUAL=1 opt-in, coral PBR + HUD pattern). Recon for row 13: read this file's row 13 spec section + `sim/L0/soft/tests/hertz_sphere_plane.rs` (V-3 internal fixture) + row 12's `examples/sim-soft/soft-drop-on-plane/` as the immediate precedent. Cadence: 3-pass per row (commit + N+1 cold-read + N+2 visual review); per pattern (i) the visual review may collapse into the iterative session for this Tier 4 row.
+  **Next iteration entry point:** Row 13 — PR2's second example row (`hertz-sphere-plane`, the canonical Hertzian indentation analytic gate per inventory Tier 4). **New session recommended** for phase transition: this session accumulated full row 12 context (lighting/camera iteration + 3 foundation-patch debug paths + RENDER_SCALE pivot reasoning) that row 13 doesn't need. Row 13 inherits the row 12-fixed foundation (ReplayEpoch + R-key reset + area-weighted normals) AND the visualization conventions (RENDER_SCALE 100×, SLOW_MO_FACTOR knob, CF_VISUAL=1 opt-in, coral PBR + HUD pattern). Recon for row 13: read this file's row 13 spec section + `sim/L0/soft/tests/hertz_sphere_plane.rs` (Hertzian internal fixture) + row 12's `examples/sim-soft/soft-drop-on-plane/` as the immediate precedent. Cadence: 3-pass per row (commit + N+1 cold-read + N+2 visual review); per pattern (i) the visual review may collapse into the iterative session for this Tier 4 row.
 
   **Push branch to origin before starting row 13 session** — `git push origin dev` (11 unpushed commits at branch tip `a86f9320` after this iter-11 banking commit lands). Recommended per `feedback_push_feature_branch_default`.
 
@@ -510,7 +510,7 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Locked design calls (row 13 in-arc):**
 
-  1. **`a_FEM` headline gate, `δ_FEM` diagnostic-only** — V-3 fixture's "Plan change 2" reframe verbatim. Penalty compliance band makes Hertz indentation `δ_Hertz` structurally unreachable; the FEM finds the correct contact-patch radius `a_FEM` to within mesh-bound discretisation error. Both reported in stdout + JSON; only `a_FEM` asserted at `rel_err_a < 20%` finest-level + monotonic + Cauchy `< 1`. Captured `15.84%` at h/4 (~4 pp headroom over gate); 45 active pairs at h/4 (matches V-3 docstring exactly).
+  1. **`a_FEM` headline gate, `δ_FEM` diagnostic-only** — the Hertzian fixture's "Plan change 2" reframe verbatim. Penalty compliance band makes Hertz indentation `δ_Hertz` structurally unreachable; the FEM finds the correct contact-patch radius `a_FEM` to within mesh-bound discretisation error. Both reported in stdout + JSON; only `a_FEM` asserted at `rel_err_a < 20%` finest-level + monotonic + Cauchy `< 1`. Captured `15.84%` at h/4 (~4 pp headroom over gate); 45 active pairs at h/4 (matches the Hertzian fixture's docstring exactly).
 
   2. **3-section JSON schema** — scalars (radii, errors, counts) + per-active-vertex `(r, sd, force_z)` at finest only + 200-pt Hertz analytic curve `p(r) = p₀·sqrt(1 - (r/a)²)`. plot.py PEP 723 single-file overlays per-vertex points against analytic. Per-vertex emits raw `force_z = κ·(d̂ - sd)` not pressure (Voronoi-cell-area conversion is a follow-on). Honest qualitative shape match.
 
@@ -518,7 +518,7 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   4. **Bevy static-state visualization (option F per planning)** — finest deformed sphere + coral `a_FEM` annulus + white `a_Hertz` annulus on plane. Single-frame `Trajectory` replay (no animation; clamp at end). Annuli at `plane_y + 0.005` Bevy with `unlit: true + cull_mode: None + double_sided: true` per pattern (k) below. Both annuli at the same `ring_y` (radii non-overlapping, `a_Hertz / a_FEM ≈ 1.19`, no z-fight). RENDER_SCALE = 100× lift inherited from row 12 banked pattern.
 
-  5. **All 3 refinements (3, 1.5, 0.75 mm)** required for the convergence story (monotonic + Cauchy + finest gate). `cargo run --release` only (~2 min release; debug-mode unviable). V-3 release-only policy mirrored.
+  5. **All 3 refinements (3, 1.5, 0.75 mm)** required for the convergence story (monotonic + Cauchy + finest gate). `cargo run --release` only (~2 min release; debug-mode unviable). Hertzian release-only policy mirrored.
 
   6. **Default-view = full-scene framing** — distance 3R, elevation 0.5 rad, target -0.5R. Patch annuli appear as tiny markers (radii 0.15-0.178 Bevy on a 1.0-Bevy sphere); user scroll-zooms to inspect. README docs the cadence explicitly. Pattern (l) banked.
 
@@ -527,7 +527,7 @@ _(append session-by-session; date-stamped; what changed and why)_
   2. Captured-bits "diagnostic-only assertion" wording sharpened (asserted at IV-1 rel-tol; the value is diagnostic vs Hertz analytic).
   3. Capture-provenance placeholder `<see capture provenance below>` filled with tip `fed36c62`.
   4. `RefinementSnapshot` docstring referenced removed `referenced` field (clippy-fixup-time drop not propagated to docs).
-  5. `CELL_SIZE_H4` docstring "V-3 measured ~45" → "captured 45 (matches V-3 docstring exactly)" — empirical confirmation tightened.
+  5. `CELL_SIZE_H4` docstring "Hertzian fixture measured ~45" → "captured 45 (matches the Hertzian fixture's docstring exactly)" — empirical confirmation tightened.
   6. Stdout "boundary_partition: 4 equator pins" → "≥ 3 equator pins (helper picks 4, dedups)".
   7. Stdout "Bevy replay" → "Bevy visualization" (static, not replay; row 12 wording leaked).
   8. README orphan ratio "~96% at h" → "~97%" (561/18696 numerical correction).
@@ -560,7 +560,7 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   **Pre-flight per row-13 commit: build, fmt --all, clippy --workspace -- -D warnings, cargo doc -D warnings, xtask grade A on automated criteria.** **Pushed to origin progressively** as iter-12 commits land; current `dev` tip is recorded in MEMORY.md `Resume here` header (single source of truth, robust against staleness here as new fixup commits land).
 
-  **Next iteration entry point:** **row 14 — `compressive-block` (V-3a)**. cf-view foundation cleanup is complete this iteration (C1 shipped at `ca7d375c`, C2 disproven at `c82e784f`); rows 14 + 18 + 20 inherit cf-view's auto-RENDER_SCALE for any sub-meter PLYs they emit. **New session recommended** for phase transition (row 13 accumulated annulus rendering / camera framing iteration / cf-view foundation surfacing context that row 14 doesn't need). Row 14 inherits row 12-fixed sim-bevy-soft foundation + row 13-fixed annulus rendering pattern (k) + cf-view auto-scale. Recon for row 14: read this file's row 14 spec section + `sim/L0/soft/tests/penalty_compressive_block.rs` (V-3a internal fixture) + row 12 + row 13 as immediate precedents. Cadence: 3-pass per row.
+  **Next iteration entry point:** **row 14 — `compressive-block`**. cf-view foundation cleanup is complete this iteration (C1 shipped at `ca7d375c`, C2 disproven at `c82e784f`); rows 14 + 18 + 20 inherit cf-view's auto-RENDER_SCALE for any sub-meter PLYs they emit. **New session recommended** for phase transition (row 13 accumulated annulus rendering / camera framing iteration / cf-view foundation surfacing context that row 14 doesn't need). Row 14 inherits row 12-fixed sim-bevy-soft foundation + row 13-fixed annulus rendering pattern (k) + cf-view auto-scale. Recon for row 14: read this file's row 14 spec section + `sim/L0/soft/tests/penalty_compressive_block.rs` (compressive-block internal fixture) + row 12 + row 13 as immediate precedents. Cadence: 3-pass per row.
 
 - **2026-05-06 (iter 13 — row 18 contact-force-readout shipped + 1 PROACTIVE foundation patch + ~24-theme integrated cold-read across 5 passes; PR2 fourth + last example row complete, all four rows shipped, ready for ship-time decisions):** Row 18 shipped end-to-end across **10 commits** = 2 (foundation patch: `995fb0bf` `per_pair_readout` + `ContactPairReadout` + integration test, `38cc3f42` foundation cold-read 5 themes) + 8 (example row + cold-read passes: `11cea6f1` initial + `67a5cc77` post-commit cold-read 6 themes (sign-convention drift) + `4bea4c2f` visual-review fixup 6 findings (Bevy plate alignment + HUD ASCII) + `b319f6f1` cf-view doc-gap 2 findings + `f66b347e` cf-view cold-read 3 themes + `5640cdf0` Saint-Venant inversion fix 12 locations + `b3614811` inversion-fix cold-read 1 theme (sub-micron) + `2768a3ef` end-of-session cold-read 4 themes). Row 14 (4 commits, 16 themes) banked separately; this iter focuses on row 18 + foundation.
 
@@ -574,7 +574,7 @@ _(append session-by-session; date-stamped; what changed and why)_
 
   4. **Single-refinement n=8 (NOT three)** — row 18's headline is per-pair readout (API/structural property), not convergence (row 14 owns that). Single refinement gives 81 active pairs (max informativeness for per-pair JSON) at ~3× faster runtime.
 
-  5. **Bit-equivalent captures with row 14** — `lambda_z_avg`, `eps`, `f_r_total` (sign-flipped), `effective_modulus` are bit-equivalent to row 14's `*_N8_REF_BITS`. Cross-row regression detection: a regression at the V-3a `(d̂, δ)` override would fail BOTH rows simultaneously.
+  5. **Bit-equivalent captures with row 14** — `lambda_z_avg`, `eps`, `f_r_total` (sign-flipped), `effective_modulus` are bit-equivalent to row 14's `*_N8_REF_BITS`. Cross-row regression detection: a regression at the `(d̂, δ)` override would fail BOTH rows simultaneously.
 
   6. **Two-section JSON (NOT three)** — `scalars` + `pairs`. Drops row 14's `analytic` curves section; row 14 owns F-vs-ε visualization.
 

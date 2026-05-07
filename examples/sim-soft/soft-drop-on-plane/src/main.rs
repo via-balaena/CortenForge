@@ -1,9 +1,9 @@
-//! soft-drop-on-plane — Phase 5 V-5 user-facing wrap: soft sphere released
+//! soft-drop-on-plane — Drop-and-rest user-facing wrap: soft sphere released
 //! above a `RigidPlane`, integrated under gravity until it settles into
 //! quiescence on the plane.
 //!
 //! `SoftScene::dropping_sphere(radius, cell_size, release_height,
-//! material_field)` (sim-soft `c3729d4a` per Phase 5 commit-6 scaffolding +
+//! material_field)` (sim-soft `818fa7b1` per Phase 5 commit-6 scaffolding +
 //! commit-10 gravity wiring) is the production scene constructor — a
 //! `SphereSdf` body BCC-meshed via `SdfMeshedTetMesh::from_sdf` at
 //! `cell_size = 3 mm`, with rest configuration shifted upward to `(0, 0,
@@ -23,14 +23,14 @@
 //! The headline new capability vs PR1's user-facing rows is **dynamic
 //! integration with one-way penalty contact + rest-state convergence** —
 //! the first PR2 example row, opening the soft↔rigid contact arc. Row 12
-//! mirrors `sim/L0/soft/tests/contact_drop_rest.rs` (V-5) verbatim on
+//! mirrors `sim/L0/soft/tests/contact_drop_rest.rs` verbatim on
 //! constants + scene setup; the contributions vs the internal fixture
 //! are: (a) deformed-mesh PLY emit at the final settled frame via
 //! [`Mesh::boundary_faces`] (this row is its first user-facing headless
 //! consumer), (b) optional Bevy trajectory replay under `CF_VISUAL=1`
 //! (this row is sim-bevy-soft's first consumer), (c) a NEW
 //! [`com_at_equilibrium_height`](verify_com_at_equilibrium_height) gate
-//! that the V-5 fixture explicitly omits ("No quantitative bound — mean
+//! that the drop-and-rest fixture explicitly omits ("No quantitative bound — mean
 //! z is biased by orphan vertices"), here corrected by computing COM
 //! over `referenced_vertices` only.
 //!
@@ -128,11 +128,11 @@
 //!   by `CpuNewtonSolver::new`'s `effective_pinned` step is the only
 //!   Dirichlet constraint, and the mass-driven `M / dt²` Tikhonov
 //!   regulariser keeps the free-DOF Hessian SPD without an equator pin.
-//! - **`solver_per_step_invariants`** — for every step (mirrors V-5):
+//! - **`solver_per_step_invariants`** — for every step (mirrors the drop-and-rest fixture):
 //!   no NaN in `x_final`; `iter_count ≤ MAX_NEWTON_ITER = 50`; per-step
 //!   `|v|_max < sqrt(2 g h) × ENERGY_BOUND_SAFETY = 1.5` m/s (no energy
 //!   injection on top of the gravitational-freefall bound + penalty's
-//!   bounded-oscillation overshoot per scope memo §1 V-5).
+//!   bounded-oscillation overshoot per the drop-and-rest hygiene gate).
 //! - **`contact_engagement`** — at least one step `k ∈ [0, N_STEPS / 4]`
 //!   has the sphere bottom in the contact band (`min_z(frame[k]) < D_HAT`).
 //!   Catches a sphere-flying-sideways or gravity-magnitude regression that
@@ -141,9 +141,9 @@
 //!   (the bottom falls `RELEASE_HEIGHT - R - d̂ ≈ 3.9 cm` before crossing
 //!   into d̂); the `N_STEPS / 4 = 250` upper bound gives `~2.8×` headroom.
 //! - **`reaches_rest`** — final `|v|_max < KE_REST_THRESHOLD = 1 cm/s`
-//!   (mirrors V-5).
+//!   (mirrors the drop-and-rest fixture).
 //! - **`com_descended`** — final referenced-vertex mean-z `<` initial
-//!   referenced-vertex mean-z (mirrors V-5; orphan auto-pin makes
+//!   referenced-vertex mean-z (mirrors the drop-and-rest fixture; orphan auto-pin makes
 //!   referenced-only mean meaningful, full-mesh mean would be biased
 //!   downward by the static auto-pinned cohort).
 //! - **`com_at_equilibrium_height`** — NEW: `|com_z_final - (R + D_HAT)|
@@ -214,20 +214,21 @@ use sim_soft::{
 };
 
 // =============================================================================
-// Scene constants — mirror V-5 (`sim/L0/soft/tests/contact_drop_rest.rs`)
+// Scene constants — mirror the drop-and-rest fixture (`sim/L0/soft/tests/contact_drop_rest.rs`)
 // verbatim. Re-deriving here keeps the example self-contained AND
-// captures-platform-locked; any regression in the V-5 helper that shifts
+// captures-platform-locked; any regression in the drop-and-rest helper that shifts
 // these implicitly would surface at first sim-bevy-soft visual review.
 // =============================================================================
 
-/// Sphere radius (1 cm). Mirror V-5's `RADIUS` for parameter consistency
-/// across the contact-active regression net (V-3 / V-3a / V-5 share the
+/// Sphere radius (1 cm). Mirror the drop-and-rest fixture's `RADIUS`
+/// for parameter consistency across the contact-active regression net
+/// (Hertzian, compressive-block, and drop-and-rest fixtures share the
 /// 1-cm sphere).
 const RADIUS: f64 = 1.0e-2;
 
-/// BCC cell size (3 mm). Mirror V-5's `CELL_SIZE` — release-mode-feasible
+/// BCC cell size (3 mm). Mirror the drop-and-rest fixture's `CELL_SIZE` — release-mode-feasible
 /// step latency (~22 s for 1000 steps × dynamic Newton) at the scene's
-/// `(κ, m_v)`. Finer resolution is gratuitous for V-5's hygiene scope and
+/// `(κ, m_v)`. Finer resolution is gratuitous for this row's hygiene scope and
 /// row 12's quiescence-on-plane scope; if visual review surfaces a
 /// "too-chunky-sphere" finding (~hundreds-of-triangles boundary at this
 /// `(R, h)`), tune to 2 mm in a follow-up commit and recapture
@@ -241,15 +242,14 @@ const CELL_SIZE: f64 = 3.0e-3;
 /// the contact dispatch fires.
 const RELEASE_HEIGHT: f64 = 5.0e-2;
 
-/// Lamé pair `(μ, λ)` — mirror V-5 (Ecoflex 00-30 + 15 wt% carbon-black
+/// Lamé pair `(μ, λ)` — mirror the drop-and-rest fixture (Ecoflex 00-30 + 15 wt% carbon-black
 /// composite, `ν = 0.4` compressible Neo-Hookean per Phase 4 IV-3 / IV-5
-/// + V-3 precedent).
+/// + Hertzian-fixture precedent).
 const MU: f64 = 2.0e5;
 const LAMBDA: f64 = 8.0e5;
 
 /// Gravitational acceleration along `+ẑ` (`m/s²`). Negative = downward.
-/// Earth standard `9.81 m/s²` per scope memo §1 V-5's "gravity loaded"
-/// framing.
+/// Earth standard `9.81 m/s²`.
 const GRAVITY: f64 = -9.81;
 
 /// Time step (1 ms). At penalty stiffness `κ = 1e4 N/m`, sphere total
@@ -268,29 +268,29 @@ const DT: f64 = 1.0e-3;
 /// `1000` gives `~10×` headroom on the rest gate.
 const N_STEPS: usize = 1000;
 
-/// Newton iter cap (mirror V-5). Bumped from skeleton's 10 to 50 for
+/// Newton iter cap (mirror the drop-and-rest fixture). Bumped from skeleton's 10 to 50 for
 /// transient-integration headroom (penalty oscillation during contact +
 /// Newton step under steep `M / dt²` regularization can take 5-15 iters
 /// per step).
 const MAX_NEWTON_ITER: usize = 50;
 
-/// Per-vertex velocity magnitude floor for "rest" (`m/s`). Mirror V-5
+/// Per-vertex velocity magnitude floor for "rest" (`m/s`). Mirror the drop-and-rest fixture
 /// verbatim. `1 cm/s` is generous — at the scene's `(κ, m_v)` the
 /// BE-damped envelope falls below `1e-4 m/s` long before step 1000.
 const KE_REST_THRESHOLD: f64 = 1.0e-2;
 
 /// Multiplier on the freefall velocity bound `sqrt(2 g h)` for the
-/// per-step "no energy injection" gate. Mirror V-5 verbatim. `1.5×`
+/// per-step "no energy injection" gate. Mirror the drop-and-rest fixture verbatim. `1.5×`
 /// accommodates penalty's documented bounded-oscillation overshoot.
 const ENERGY_BOUND_SAFETY: f64 = 1.5;
 
-/// Penalty contact band `d̂` (m). `PenaltyRigidContact::new` defaults
-/// pinned per Phase 5 scope memo Decision J — re-asserted here as a
-/// named const for the [`com_at_equilibrium_height`](verify_com_at_equilibrium_height)
-/// and [`contact_engagement`](verify_contact_engagement) gates' algebra.
-/// MUST equal `sim_soft::contact::penalty::PENALTY_DHAT_DEFAULT`; if the
-/// helper's default is ever tuned, this const and the captured bits below
-/// must move in lockstep.
+/// Penalty contact band `d̂` (m). `PenaltyRigidContact::new` default
+/// — re-asserted here as a named const for the
+/// [`com_at_equilibrium_height`](verify_com_at_equilibrium_height) and
+/// [`contact_engagement`](verify_contact_engagement) gates' algebra.
+/// MUST equal `sim_soft::contact::penalty::PENALTY_DHAT_DEFAULT`; if
+/// the helper's default is ever tuned, this const and the captured
+/// bits below must move in lockstep.
 const D_HAT: f64 = 1.0e-3;
 
 /// COM-at-equilibrium tolerance (m). `2 × D_HAT = 2 mm`. The settled
@@ -420,7 +420,7 @@ const MAX_ITER_OBSERVED_REF: usize = 8;
 // =============================================================================
 
 /// Maximum per-vertex velocity magnitude over a flat `[3·N]` velocity
-/// buffer. Mirror V-5 helper verbatim.
+/// buffer. Mirror the drop-and-rest helper verbatim.
 fn max_vertex_velocity(v_flat: &[f64]) -> f64 {
     debug_assert!(v_flat.len().is_multiple_of(3));
     let mut max = 0.0_f64;
@@ -438,7 +438,7 @@ fn max_vertex_velocity(v_flat: &[f64]) -> f64 {
 }
 
 /// Mean z-coordinate over a referenced-vertices subset of a flat `[3·N]`
-/// position buffer. Mirror V-5 helper verbatim — orphan vertices
+/// position buffer. Mirror the drop-and-rest helper verbatim — orphan vertices
 /// (auto-pinned at `x_prev` by `CpuNewtonSolver::new`'s `effective_pinned`
 /// step) are excluded so the mean tracks the actual sphere body, not the
 /// static auto-pinned orphan cohort.
@@ -717,7 +717,7 @@ fn verify_boundary_partition(snapshot: &DropSnapshot) {
 }
 
 // =============================================================================
-// Anchor 4 — solver_per_step_invariants (mirror V-5)
+// Anchor 4 — solver_per_step_invariants (mirror drop-and-rest)
 // =============================================================================
 
 fn verify_solver_per_step_invariants(snapshot: &DropSnapshot) {
@@ -761,7 +761,7 @@ fn verify_contact_engagement(snapshot: &DropSnapshot) {
 }
 
 // =============================================================================
-// Anchor 6 — reaches_rest (mirror V-5)
+// Anchor 6 — reaches_rest (mirror drop-and-rest)
 // =============================================================================
 
 fn verify_reaches_rest(snapshot: &DropSnapshot) {
@@ -773,7 +773,7 @@ fn verify_reaches_rest(snapshot: &DropSnapshot) {
 }
 
 // =============================================================================
-// Anchor 7 — com_descended (mirror V-5)
+// Anchor 7 — com_descended (mirror drop-and-rest)
 // =============================================================================
 
 fn verify_com_descended(snapshot: &DropSnapshot) {
@@ -786,7 +786,7 @@ fn verify_com_descended(snapshot: &DropSnapshot) {
 }
 
 // =============================================================================
-// Anchor 8 — com_at_equilibrium_height (NEW — fills V-5 gap-to-land)
+// Anchor 8 — com_at_equilibrium_height (NEW — fills drop-and-rest gap-to-land)
 // =============================================================================
 
 fn verify_com_at_equilibrium_height(snapshot: &DropSnapshot) {
@@ -1068,7 +1068,7 @@ fn print_summary(snapshot: &DropSnapshot, ply_path: &Path) {
         "  geometry             : SphereSdf body, RADIUS = {RADIUS} m, RELEASE_HEIGHT = {RELEASE_HEIGHT} m"
     );
     println!(
-        "  cell_size            : {CELL_SIZE} m (V-5 mirror — release-mode-feasible step latency)"
+        "  cell_size            : {CELL_SIZE} m (drop-and-rest mirror — release-mode-feasible step latency)"
     );
     println!(
         "                         = {} verts ({} referenced), {} tets",

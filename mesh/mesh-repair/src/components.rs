@@ -25,6 +25,15 @@
 //! assert_eq!(analysis.component_count, 2);
 //! ```
 
+#![allow(
+    // `usize` → `u32` casts are safe at mesh sizes the crate targets:
+    // vertex / face indices fit in `u32` by mesh-types contract.
+    clippy::cast_possible_truncation,
+    // `usize` → `f64` for face/component-count statistics; precision
+    // loss only matters above ~16M items, far beyond crate targets.
+    clippy::cast_precision_loss
+)]
+
 use std::cmp::Reverse;
 
 use hashbrown::{HashMap, HashSet};
@@ -49,14 +58,14 @@ pub struct ComponentAnalysis {
 impl ComponentAnalysis {
     /// Check if the mesh is fully connected (single component).
     #[must_use]
-    pub fn is_connected(&self) -> bool {
+    pub const fn is_connected(&self) -> bool {
         self.component_count == 1
     }
 
     /// Get the face indices of the largest component.
     #[must_use]
     pub fn largest_component(&self) -> &[u32] {
-        self.components.first().map(Vec::as_slice).unwrap_or(&[])
+        self.components.first().map_or(&[], Vec::as_slice)
     }
 }
 
@@ -183,8 +192,8 @@ pub fn find_connected_components(mesh: &IndexedMesh) -> ComponentAnalysis {
     components.sort_by_key(|c| Reverse(c.len()));
 
     let component_count = components.len();
-    let largest_component_size = components.first().map(Vec::len).unwrap_or(0);
-    let smallest_component_size = components.last().map(Vec::len).unwrap_or(0);
+    let largest_component_size = components.first().map_or(0, Vec::len);
+    let smallest_component_size = components.last().map_or(0, Vec::len);
 
     info!(
         "Found {} connected component(s) in mesh with {} faces",

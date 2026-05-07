@@ -27,7 +27,7 @@
 //!    (`κ · (d̂ − sd) · n`) on the same `Sdf::eval` / `Sdf::grad`
 //!    outputs.
 //!
-//! Test scene: V-3a-LOCAL `compressive_block_on_plane` at
+//! Test scene: Compressive-block scene helper `compressive_block_on_plane` at
 //! `n_per_edge = 2` (smallest refinement, 27 vertices, 9 expected
 //! active pairs at the rest configuration). The rest configuration
 //! already places every top-face vertex strictly inside the d̂-band
@@ -39,15 +39,15 @@ use sim_soft::{
     Vec3,
 };
 
-/// Cube edge length (1 cm). Mirrors V-3a fixture / row 14.
+/// Cube edge length (1 cm). Mirrors the compressive-block fixture / row 14.
 const EDGE_LEN: f64 = 0.01;
 /// Coarsest-refinement cell size — 9 expected active pairs at rest.
 const CELL_SIZE: f64 = EDGE_LEN / 2.0;
-/// Plate displacement (50 μm). Mirrors V-3a fixture / row 14.
+/// Plate displacement (50 μm). Mirrors the compressive-block fixture / row 14.
 const DISPLACEMENT: f64 = 5.0e-5;
-/// V-3a-LOCAL penalty stiffness (mirrors `PENALTY_KAPPA_DEFAULT`).
+/// Fixture-local penalty stiffness (mirrors `PENALTY_KAPPA_DEFAULT`).
 const KAPPA: f64 = 1.0e4;
-/// V-3a-LOCAL contact band override (100× smaller than the default).
+/// Fixture-local contact band override (100× smaller than the default).
 const D_HAT_OVERRIDE: f64 = 1.0e-5;
 
 const MU: f64 = 1.0e5;
@@ -183,17 +183,17 @@ fn per_pair_readout_matches_active_pairs_and_gradient() {
             "readout[{idx}] force_on_soft.z should bit-match κ·(d̂−sd)·n.z",
         );
 
-        // Sign sanity — V-3a's plate sits at `z = L - δ` with outward
+        // Sign sanity — the compressive block's plate sits at `z = L - δ` with outward
         // normal `n = -ẑ` (the `sd > 0` half-space is below the plate,
         // where the soft cube naturally lives). The top-face vertex at
         // `z = L` penetrates upward with `sd = -δ < 0`. The penalty
         // restoring force `+κ·(d̂-sd)·n` along `-ẑ` pushes the vertex
         // back DOWN out of the rigid; Newton's-3rd-law reaction on the
-        // plate is `+ẑ` (the V-3a fixture's positive `F_R_FEM`).
+        // plate is `+ẑ` (the compressive-block fixture's positive `F_R_FEM`).
         assert!(
             readout.force_on_soft.z < 0.0,
             "readout[{idx}] force_on_soft.z = {} should be negative \
-             (V-3a plane outward normal n = -ẑ; restoring force pushes soft vertex \
+             (compressive-block plane outward normal n = -ẑ; restoring force pushes soft vertex \
              DOWN out of the rigid; rigid reaction is +ẑ)",
             readout.force_on_soft.z,
         );

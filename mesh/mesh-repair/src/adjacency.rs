@@ -145,11 +145,17 @@ impl MeshAdjacency {
 
 /// Normalize edge direction so v0 < v1.
 #[inline]
-fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
+const fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
     if v0 < v1 { (v0, v1) } else { (v1, v0) }
 }
 
 #[cfg(test)]
+#[allow(
+    // Tests legitimately use `.unwrap()` to assert an Option is Some.
+    // Workspace lints flip this to deny in production code, but the
+    // test mod is exempt.
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
 

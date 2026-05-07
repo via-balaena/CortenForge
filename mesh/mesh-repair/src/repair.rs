@@ -3,6 +3,17 @@
 //! Provides functions for fixing common mesh issues like degenerate triangles,
 //! duplicate vertices, and unreferenced vertices.
 
+#![allow(
+    // `usize` → `u32` casts are safe at mesh sizes the crate targets:
+    // vertex / face indices fit in `u32` by mesh-types contract
+    // (see `mesh_types::VertexId`); meshes with > 2³² vertices are
+    // out of scope. `f64` → `i64` casts in spatial-bucket helpers
+    // (e.g., quantizing positions to integer grid keys) target
+    // grid coordinates that fit in `i64` by orders of magnitude
+    // for any geometrically meaningful mesh.
+    clippy::cast_possible_truncation
+)]
+
 use hashbrown::{HashMap, HashSet};
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;
@@ -126,7 +137,7 @@ impl RepairParams {
     ///     .with_weld_epsilon(0.01);
     /// ```
     #[must_use]
-    pub fn with_weld_epsilon(mut self, epsilon: f64) -> Self {
+    pub const fn with_weld_epsilon(mut self, epsilon: f64) -> Self {
         self.weld_epsilon = epsilon;
         self
     }
@@ -135,7 +146,7 @@ impl RepairParams {
     ///
     /// Triangles with area below this are removed as degenerate.
     #[must_use]
-    pub fn with_degenerate_area_threshold(mut self, threshold: f64) -> Self {
+    pub const fn with_degenerate_area_threshold(mut self, threshold: f64) -> Self {
         self.degenerate_area_threshold = threshold;
         self
     }
@@ -145,7 +156,7 @@ impl RepairParams {
     /// Triangles with aspect ratio above this are considered degenerate.
     /// Use `f64::INFINITY` to disable this check.
     #[must_use]
-    pub fn with_degenerate_aspect_ratio(mut self, ratio: f64) -> Self {
+    pub const fn with_degenerate_aspect_ratio(mut self, ratio: f64) -> Self {
         self.degenerate_aspect_ratio = ratio;
         self
     }
@@ -155,14 +166,14 @@ impl RepairParams {
     /// Triangles with any edge shorter than this are removed.
     /// Use `0.0` to disable this check.
     #[must_use]
-    pub fn with_degenerate_min_edge_length(mut self, length: f64) -> Self {
+    pub const fn with_degenerate_min_edge_length(mut self, length: f64) -> Self {
         self.degenerate_min_edge_length = length;
         self
     }
 
     /// Set whether to remove unreferenced vertices after repair.
     #[must_use]
-    pub fn with_remove_unreferenced(mut self, remove: bool) -> Self {
+    pub const fn with_remove_unreferenced(mut self, remove: bool) -> Self {
         self.remove_unreferenced = remove;
         self
     }
@@ -505,7 +516,7 @@ pub fn remove_duplicate_faces(mesh: &mut IndexedMesh) -> usize {
 }
 
 /// Normalize a face so the smallest vertex index comes first.
-fn normalize_face(face: [u32; 3]) -> [u32; 3] {
+const fn normalize_face(face: [u32; 3]) -> [u32; 3] {
     let min_idx = if face[0] <= face[1] && face[0] <= face[2] {
         0
     } else if face[1] <= face[2] {
@@ -614,7 +625,7 @@ pub struct RepairSummary {
 impl RepairSummary {
     /// Check if any repairs were performed.
     #[must_use]
-    pub fn had_changes(&self) -> bool {
+    pub const fn had_changes(&self) -> bool {
         self.vertices_welded > 0
             || self.degenerates_removed > 0
             || self.duplicates_removed > 0
@@ -805,7 +816,7 @@ mod tests {
             unreferenced_removed: 2,
         };
 
-        let display = format!("{}", result);
+        let display = format!("{result}");
         assert!(display.contains("95 verts"));
         assert!(display.contains("3 welded"));
     }

@@ -1,14 +1,14 @@
 //! Finite-difference vs. analytic derivative tests for
-//! [`PenaltyRigidContact`] (Phase 5 commit 4, V-2 cont.).
+//! [`PenaltyRigidContact`].
 //!
-//! Two FD checks per `phase_5_penalty_contact_scope.md` §1 V-2:
+//! Two FD checks:
 //!
 //! 1. `gradient` vs. central FD of `energy`.
 //! 2. `hessian` vs. central FD of `gradient`.
 //!
 //! Both at `H = 1.5e-8` per `material_fd.rs:21` — central FD, square
-//! root of f64 eps; relative bar `1.0e-5` per scope memo §1's
-//! "5-digit relative-error bar." The penalty energy is *exactly*
+//! root of f64 eps; relative bar `1.0e-5` (the crate's standard
+//! 5-digit relative-error bar). The penalty energy is *exactly*
 //! quadratic in position when `d < d̂` (the SDF is linear in `p` for a
 //! `RigidPlane`, so `E(p) = ½ κ (d̂ − p·n + offset)²` is a polynomial
 //! of degree 2), so the central-FD truncation error is identically
@@ -22,7 +22,7 @@
 //! at `H = 1.5e-8 ≪ 0.4·d̂ = 4e-4`, FD perturbations stay five orders
 //! of magnitude inside the band so the formula is smooth across the
 //! probe — boundary discontinuity at `d = d̂` is not the regime here.
-//! V-7 (commit 11) handles the FD-vs-κ direction; this file is purely
+//! `tests/contact_grad_hook.rs` handles the FD-vs-κ direction; this file is purely
 //! position-derivative coverage.
 
 use approx::assert_relative_eq;

@@ -22,6 +22,12 @@
 //! // println!("Filled {} holes", filled);
 //! ```
 
+#![allow(
+    // `usize` → `u32` casts are safe at mesh sizes the crate targets:
+    // vertex indices fit in `u32` by mesh-types contract.
+    clippy::cast_possible_truncation
+)]
+
 use hashbrown::{HashMap, HashSet};
 use mesh_types::{IndexedMesh, Point3, Triangle, Vector3};
 use tracing::{debug, info, warn};
@@ -41,13 +47,13 @@ pub struct BoundaryLoop {
 impl BoundaryLoop {
     /// Number of edges (and vertices) in the loop.
     #[must_use]
-    pub fn edge_count(&self) -> usize {
+    pub const fn edge_count(&self) -> usize {
         self.vertices.len()
     }
 
     /// Check if this is a valid boundary loop.
     #[must_use]
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         self.vertices.len() >= 3
     }
 }
@@ -121,10 +127,7 @@ pub fn detect_holes(_mesh: &IndexedMesh, adjacency: &MeshAdjacency) -> Vec<Bound
             loop_vertices.push(current);
 
             // Find next vertex in loop (not the one we came from)
-            let neighbors = edge_neighbors
-                .get(&current)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+            let neighbors = edge_neighbors.get(&current).map_or(&[][..], Vec::as_slice);
 
             let next = neighbors
                 .iter()
@@ -198,10 +201,14 @@ pub fn fill_hole_ear_clipping(mesh: &IndexedMesh, boundary: &BoundaryLoop) -> Ve
         .map(|&idx| mesh.vertices[idx as usize])
         .collect();
 
-    // Compute average normal of the hole (for consistent winding)
+    // Compute average normal of the hole (for consistent winding).
+    // `n as f64`: hole loops have at most a few hundred vertices in
+    // practice; well below f64's 2^53 mantissa exactness threshold.
+    #[allow(clippy::cast_precision_loss)]
+    let n_f = n as f64;
     let centroid = positions.iter().fold(Point3::origin(), |acc, p| {
         Point3::new(acc.x + p.x, acc.y + p.y, acc.z + p.z)
-    }) / (n as f64);
+    }) / n_f;
 
     let hole_normal = compute_hole_normal(&positions, &centroid);
 
@@ -358,7 +365,7 @@ fn point_in_triangle_2d(
 
 fn point_in_triangle_2d_impl(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
     let sign = |p1: (f64, f64), p2: (f64, f64), p3: (f64, f64)| -> f64 {
-        (p1.0 - p3.0) * (p2.1 - p3.1) - (p2.0 - p3.0) * (p1.1 - p3.1)
+        (p1.0 - p3.0).mul_add(p2.1 - p3.1, -((p2.0 - p3.0) * (p1.1 - p3.1)))
     };
 
     let d1 = sign(p, a, b);
