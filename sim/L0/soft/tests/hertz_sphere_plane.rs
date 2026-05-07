@@ -263,8 +263,7 @@
 //!
 //! ## Newton config
 //!
-//! Mirrors IV-3 (`bonded_bilayer_beam.rs:271`) + the compressive
-//! block
+//! Mirrors IV-3 (`bonded_bilayer_beam.rs:271`) + the compressive block
 //! (`penalty_compressive_block.rs:244-251`): `STATIC_DT = 1.0 s` collapses
 //! the inertial term `M / dt²` by ~4 orders of magnitude relative to
 //! stiffness, yielding pure-static root-find from rest.

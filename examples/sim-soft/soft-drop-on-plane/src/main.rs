@@ -220,8 +220,9 @@ use sim_soft::{
 // these implicitly would surface at first sim-bevy-soft visual review.
 // =============================================================================
 
-/// Sphere radius (1 cm). Mirror the drop-and-rest fixture's `RADIUS` for parameter consistency
-/// across the contact-active regression net (the Hertzian / compressive-block / drop-and-rest fixtures share the
+/// Sphere radius (1 cm). Mirror the drop-and-rest fixture's `RADIUS`
+/// for parameter consistency across the contact-active regression net
+/// (Hertzian, compressive-block, and drop-and-rest fixtures share the
 /// 1-cm sphere).
 const RADIUS: f64 = 1.0e-2;
 

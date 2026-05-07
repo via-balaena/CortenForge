@@ -388,7 +388,7 @@ const MAX_NEWTON_ITER: usize = 50;
 const NEWTON_ITER_SANITY_CAP: usize = 40;
 
 /// Small-strain validity ceiling on the equilibrium compressive strain
-/// `ε = 1 − λ_z`. the compressive block expects `ε ≈ 0.6 %` — well below the textbook
+/// `ε = 1 − λ_z`. The compressive block expects `ε ≈ 0.6 %` — well below the textbook
 /// `ε ≲ 5 %` linear-elastic threshold. Cap at `10 %` gives ~17×
 /// headroom over expected; failure here means the `(d̂, δ)`
 /// override is no longer producing a small-strain regime — investigate
@@ -397,7 +397,7 @@ const SMALL_STRAIN_CEILING: f64 = 0.10;
 
 /// Lower-bound on `λ_z` — physical sanity for "less than 50 %
 /// compression." Catches gross-physics regressions where the cube has
-/// collapsed entirely. the compressive block expects `λ_z ≈ 0.994`.
+/// collapsed entirely. The compressive block expects `λ_z ≈ 0.994`.
 const LAMBDA_Z_FLOOR: f64 = 0.5;
 
 /// IV-1 sparse-tier rel-tol for captured bits. `~few thousand tets`
@@ -595,7 +595,7 @@ struct ContactVertex {
     /// Final y-coordinate (m).
     y: f64,
     /// Plane signed distance: `sd = EDGE_LEN − DISPLACEMENT − z_v`.
-    /// Active when `sd < D_HAT_OVERRIDE`. the compressive block expects
+    /// Active when `sd < D_HAT_OVERRIDE`. The compressive block expects
     /// `sd ≈ 9.8 μm` for the average top-face vertex at finest
     /// equilibrium (just under `D_HAT_OVERRIDE = 10 μm`); per-vertex
     /// values vary by sub-micron amounts (~0.25 μm) around the mean
@@ -1555,7 +1555,7 @@ fn save_finest_frame_ply(snapshot: &CompressiveSnapshot, path: &Path) -> Result<
 const RENDER_SCALE: f32 = 100.0;
 
 /// Visualization-only displacement amplifier (banked pattern (b) at
-/// row 10 — `feedback_visual_review_is_the_test`). the compressive block's small-strain
+/// row 10 — `feedback_visual_review_is_the_test`). The compressive block's small-strain
 /// regime (`ε ≈ 0.6 %` finest-equilibrium) is well below human visual
 /// acuity at typical viewing distance: 60 μm cube compression on a
 /// 1 m visual cube subtends ~2 mrad ≈ 0.1° from a 3 m camera, below

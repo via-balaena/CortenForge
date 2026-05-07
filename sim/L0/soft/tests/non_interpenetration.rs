@@ -84,7 +84,7 @@ use sim_soft::{
 
 // ── Compressive-block non-penetration: cube against plane at equilibrium ─
 
-/// compressive-block-mirroring scene constants — must track
+/// Compressive-block-mirroring scene constants — must track
 /// `penalty_compressive_block.rs` exactly so the `δ_pen` budget remains
 /// a faithful representation of the compressive block's actual
 /// converged state.
@@ -122,10 +122,9 @@ fn compressive_block_non_interpenetration() {
         &material_field,
     );
     // Fixture-local override: κ default but d̂ = 1e-5 (the compressive
-    // block's deviation 2
-    // per `penalty_compressive_block.rs` module docstring). Plane
-    // reconstructed identically to `SoftScene::compressive_block_on_plane`'s
-    // helper construction.
+    // block's deviation 2 per `penalty_compressive_block.rs` module
+    // docstring). Plane reconstructed identically to
+    // `SoftScene::compressive_block_on_plane`'s helper construction.
     let plane = RigidPlane::new(
         Vec3::new(0.0, 0.0, -1.0),
         compressive_block::DISPLACEMENT - compressive_block::EDGE_LEN,
@@ -302,7 +301,7 @@ fn hertz_sphere_plane_non_interpenetration() {
 
 // ── Drop-and-rest non-penetration: dropping sphere at static rest ────────
 
-/// drop-and-rest-mirroring scene constants — must track `contact_drop_rest.rs`
+/// Drop-and-rest-mirroring scene constants — must track `contact_drop_rest.rs`
 /// exactly so the `δ_pen` budget remains a faithful representation of
 /// the drop-and-rest fixture's actual converged rest state.
 mod drop_rest {

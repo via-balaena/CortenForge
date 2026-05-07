@@ -145,7 +145,7 @@ use sim_soft::{
 /// Cube edge length (1 cm). Compressive-block fixture's value.
 const EDGE_LEN: f64 = 0.01;
 
-/// Rigid-plane axial displacement (0.05 mm). compressive-block override per commit-8
+/// Rigid-plane axial displacement (0.05 mm). Compressive-block override per commit-8
 /// deviation 2 — see [`penalty_compressive_block`] module docstring.
 const DISPLACEMENT: f64 = 5.0e-5;
 
