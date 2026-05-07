@@ -314,6 +314,14 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 }
 
 #[cfg(test)]
+#[allow(
+    // Tests legitimately use `.unwrap()` and `panic!()` for control
+    // flow (asserting an Option is Some, asserting an unreachable
+    // arm). Workspace lints flip these to deny in production code,
+    // but the test mod is exempt.
+    clippy::unwrap_used,
+    clippy::panic
+)]
 mod tests {
     use super::*;
     use mesh_types::Point3;

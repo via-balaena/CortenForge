@@ -150,6 +150,12 @@ fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
 }
 
 #[cfg(test)]
+#[allow(
+    // Tests legitimately use `.unwrap()` to assert an Option is Some.
+    // Workspace lints flip this to deny in production code, but the
+    // test mod is exempt.
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
 
