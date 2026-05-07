@@ -69,13 +69,14 @@
 //! sum(|force_z|) / A_top_face` is exact engineering stress σ_z
 //! (independent of the per-vertex area choice); per-vertex pressure
 //! varies because `force_z` varies (interior-vs-corner penetration
-//! depth differs by a few μm under the mixed BC's Saint-Venant
-//! boundary-layer pattern — interior vertices are laterally
-//! surrounded by material on all four sides → locally uniaxial-strain
-//! → stiffer → equilibrium at less compliance → vertex stays close
-//! to rest z → larger penetration → ~6× larger force/pressure than
-//! corners). Honest "approximate per-vertex pressure" — not "exact
-//! Voronoi." Voronoi-cell area is banked as a live followup.
+//! depth differs by sub-micron amounts (~0.25 μm) under the mixed
+//! BC's Saint-Venant boundary-layer pattern — interior vertices are
+//! laterally surrounded by material on all four sides → locally
+//! uniaxial-strain → stiffer → equilibrium at less compliance →
+//! vertex stays close to rest z → larger penetration → ~6× larger
+//! force/pressure than corners). Honest "approximate per-vertex
+//! pressure" — not "exact Voronoi." Voronoi-cell area is banked as
+//! a live followup.
 //!
 //! ## Why `cargo run --release` only
 //!
