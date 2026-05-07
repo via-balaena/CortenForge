@@ -128,13 +128,12 @@ impl PenaltyRigidContact {
     /// order.
     ///
     /// `force_on_soft` resolves to `+κ·(d̂ − sd)·n` per the type docs'
-    /// sign convention — a single bit-equivalent reproduction of the
-    /// Newton scatter the solver would perform via
-    /// [`ContactModel::gradient`] (`−κ·(d̂ − sd)·n` returned, then
-    /// negated by the solver to obtain the force on the soft side).
-    /// Row 18 (`contact-force-readout`) is the canonical consumer;
-    /// row 14 (`compressive-block`) reconstructs this surface inline
-    /// from known plane geometry, predating this method.
+    /// sign convention — a bit-equivalent reproduction of the energy
+    /// gradient [`ContactModel::gradient`] returns (`−κ·(d̂ − sd)·n`),
+    /// negated by the force-as-`−∇U` identity. Row 18
+    /// (`contact-force-readout`) is the canonical consumer; row 14
+    /// (`compressive-block`) reconstructs this surface inline from
+    /// known plane geometry, predating this method.
     // `vid as VertexId` and `pid as u32` mirror `active_pairs`'s `Vec`-
     // iteration index packing — bounded by mesh / primitive counts that
     // fit in `u32` for any Phase 5 scene.

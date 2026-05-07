@@ -76,8 +76,8 @@ pub struct ContactHessian {
 /// Per-active-pair readout — contact geometry plus the force the
 /// contact model exerts on the soft side.
 ///
-/// Bundles the inputs and outputs of a single active-pair evaluation
-/// for downstream readout consumers (the row 18 `contact-force-readout`
+/// Bundles the outputs of a single active-pair evaluation for
+/// downstream readout consumers (the row 18 `contact-force-readout`
 /// example, future calibration loops). Sister of [`ContactGradient`] /
 /// [`ContactHessian`] at the human-facing readout layer: those return
 /// the data the *solver* needs to assemble a residual / tangent;
@@ -105,8 +105,10 @@ pub struct ContactPairReadout {
     /// point for future IPC variants) at the readout-time configuration.
     pub position: Vec3,
     /// Signed distance from `position` to the rigid primitive at
-    /// readout time. Negative or sub-`d̂` values are the active-pair
-    /// regime; the producer only emits readouts for active pairs.
+    /// readout time. Values strictly less than `d̂` are the active
+    /// regime — matching the gate at
+    /// [`ContactModel::active_pairs`]; the producer only emits
+    /// readouts for active pairs.
     pub sd: f64,
     /// Outward-pointing unit normal of the rigid primitive evaluated
     /// at `position`.

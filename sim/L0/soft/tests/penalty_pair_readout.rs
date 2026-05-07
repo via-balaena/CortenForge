@@ -39,11 +39,11 @@ use sim_soft::{
     Vec3,
 };
 
-/// Cube edge length (1 cm). Mirrors V-3a fixture / row 14 / row 18.
+/// Cube edge length (1 cm). Mirrors V-3a fixture / row 14.
 const EDGE_LEN: f64 = 0.01;
 /// Coarsest-refinement cell size — 9 expected active pairs at rest.
 const CELL_SIZE: f64 = EDGE_LEN / 2.0;
-/// Plate displacement (50 μm). Mirrors V-3a fixture / row 14 / row 18.
+/// Plate displacement (50 μm). Mirrors V-3a fixture / row 14.
 const DISPLACEMENT: f64 = 5.0e-5;
 /// V-3a-LOCAL penalty stiffness (mirrors `PENALTY_KAPPA_DEFAULT`).
 const KAPPA: f64 = 1.0e4;
