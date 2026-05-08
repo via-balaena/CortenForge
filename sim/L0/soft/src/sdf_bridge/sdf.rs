@@ -27,13 +27,12 @@ pub use cf_design::Sdf;
 /// `cf_design::Solid::sphere(r)` is the equivalent surface in
 /// cf-design; `SphereSdf` is retained as a sim-soft-local primitive for
 /// IV-1 / IV-2 / IV-3 invariant fixtures (where bit-pinned reference
-/// values were captured against the literal `p.norm() - r` arithmetic
-/// here). Migration to `Solid::sphere` is deferred to a separate
-/// cleanup pass; `Solid::sphere(r).evaluate(&p)` is bit-equivalent on
-/// `eval`, but the singularity-fallback gradient differs
-/// (`Vector3::zeros()` in cf-design vs `Vec3::z()` here) — that delta
-/// deserves its own resolution rather than being folded into the trait
-/// migration.
+/// values depend on this struct's specific `eval` arithmetic).
+/// Migration to `Solid::sphere` is deferred to a separate cleanup pass;
+/// `Solid::sphere(r).evaluate(&p)` is bit-equivalent on `eval`, but
+/// the singularity-fallback gradient differs (`Vector3::zeros()` in
+/// cf-design vs `Vec3::z()` here) — that delta deserves its own
+/// resolution rather than being folded into the trait migration.
 #[derive(Clone, Debug)]
 pub struct SphereSdf {
     /// Radius in world units (metres). Must be positive for the SDF to

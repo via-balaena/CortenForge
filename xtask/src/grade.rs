@@ -2118,18 +2118,19 @@ const L0_INTEGRATION_BANNED: &[BanPattern] = L0_IO_BANNED;
 
 const L1_BANNED: &[BanPattern] = &[];
 
-/// Look up the static `TierConfig` for a tier. Numbers track plan §5.2
-/// (release 100/200/200, test 120/220/220). Plan §2.1 proposes tighter
-/// numbers (60/180/180) post-Appendix-A; we'll re-tune at hard-gate flip
-/// (plan §8 step 12) once surgeries land and the actual headroom is known.
+/// Look up the static `TierConfig` for a tier. Numbers initially tracked
+/// plan §5.2 (release 80/200/200, test 100/220/220) and re-tune as
+/// integration experience accumulates. Plan §2.1 proposes tighter
+/// numbers (60/180/180) post-Appendix-A; we'll re-tune again at
+/// hard-gate flip (plan §8 step 12) once surgeries land and the actual
+/// headroom is known.
 ///
-/// L0 release_max bumped 80 → 100 when cf-design landed as a load-bearing
-/// L0 dep for sim crates that need the SDF design surface (Sdf trait, Solid
-/// CSG kernel, mesh-sdf adapter). cf-design alone reaches 48 transitive
-/// deps; an L0 sim crate with its own baseline consuming cf-design
-/// legitimately lands in the 85-95 range. test_max bumped symmetrically to
-/// preserve the original +20 release/test buffer (matching L0Io and
-/// L0Integration's 200/220 pattern).
+/// L0's current 100/120 accommodates the cf-design SDF design surface
+/// (Sdf trait, Solid CSG kernel, mesh-sdf adapter) entering L0 sim
+/// crates' transitive dep set: cf-design reaches 48 transitive deps,
+/// and an L0 sim crate with its own baseline consuming cf-design lands
+/// in the 85-95 range. The +20 release/test buffer matches L0Io's and
+/// L0Integration's 200/220 pattern.
 fn tier_config(tier: Tier) -> TierConfig {
     match tier {
         Tier::L0 => TierConfig {

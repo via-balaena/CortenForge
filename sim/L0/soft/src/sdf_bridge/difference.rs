@@ -8,17 +8,20 @@
 //!
 //! under the `φ < 0` inside convention. A point lies inside `A \ B` iff
 //! it is inside `A` and outside `B`. The hollow thick-walled sphere
-//! IV-5 (commit 11) meshes is `SphereSdf{R_outer} \ SphereSdf{R_cavity}`
-//! — interior between the two surfaces, exterior elsewhere.
+//! IV-5 scene meshes as `SphereSdf{R_outer} \ SphereSdf{R_cavity}` —
+//! interior between the two surfaces, exterior elsewhere.
 //!
-//! Phase 4 ships **only Difference**: the closed CSG algebra (Union,
-//! Intersection, smoothed variants per §01) lands when first
-//! consumer-facing requirement surfaces. The combinator pattern below
-//! is the anchor; sibling Union / Intersection drop in as separate
-//! types holding the same `(Box<dyn Sdf>, Box<dyn Sdf>)` tuple with
-//! `min` / `max` instead of `max(_, -_)`. cf-design coordination memo
-//! (scope memo Decision L, commit 13) names this combinator as the
-//! tree-of-Sdfs node type cf-design's `from_design` emission produces.
+//! `cf_design::Solid` ships the broad CSG kernel (Union, Subtract,
+//! Intersect, smoothed variants) over typed `Solid` operands.
+//! `DifferenceSdf` is sim-soft-local and narrower: it composes any two
+//! `Box<dyn Sdf>` operands, so it can heterogeneously combine a sphere
+//! `SphereSdf` with a scan-derived `mesh_sdf::SignedDistanceField` —
+//! something cf-design's `Solid::subtract` (which takes `Self`) cannot
+//! express. Retained alongside [`SphereSdf`](super::SphereSdf) as a
+//! sim-soft-local primitive for IV-5 hollow-shell fixtures (lazy
+//! migration per inventory Q5); the row-20 heterogeneous-CSG path will
+//! decide whether this combinator stays or is replaced by a future
+//! cf-design `Solid::from_sdf`-style adapter.
 //!
 //! # Differentiability
 //!
