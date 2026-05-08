@@ -14,10 +14,15 @@
 //! - [`camera`] — [`camera::OrbitCamera`] component +
 //!   [`camera::OrbitCameraPlugin`] that wires `orbit_camera_input` →
 //!   `update_orbit_camera` with explicit `.after()` ordering.
+//! - [`mesh`] — [`mesh::triangle_mesh_with_crease_splitting`]: shared
+//!   `IndexedMesh` → Bevy `Mesh` conversion with cos(30°) crease-angle
+//!   vertex splitting, optional per-vertex colors, and `UpAxis`-aware
+//!   coordinate swap + winding flip.
 //! - [`prelude`] — convenience re-exports for consumer wiring.
 
 pub mod axis;
 pub mod camera;
+pub mod mesh;
 
 /// Convenience re-exports. `use cf_bevy_common::prelude::*;` brings in
 /// the load-bearing types (`UpAxis`, `OrbitCamera`, `OrbitCameraPlugin`)
