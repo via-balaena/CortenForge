@@ -49,12 +49,12 @@
 //! `σ_100 ≈ 3μ` is a small-strain identity for the incompressible NH
 //! material (`σ_eng = μ(λ_axial − 1/λ_axial²)` with the small-strain
 //! linearization `λ_axial − 1 = ε`); at ε = 1.0 the linearized form
-//! gives `σ_100 = 3μ` exactly. The finite-strain form gives
-//! `σ_100 ≈ 1.875μ` for the same incompressible NH at the actual
-//! ε = 1.0 stretch, but the linearized small-strain identity matches
+//! gives `σ_100 = 3μ` exactly. The finite-strain form
+//! `σ_eng = μ(λ − 1/λ²)` evaluated at λ = 2 (i.e. ε = 1.0) gives
+//! `σ_100 = 1.75μ` — but the linearized small-strain identity matches
 //! how data-sheet "100% modulus" is conventionally interpreted in the
 //! soft-robotics literature (Marechal et al. 2021, Polygerinos et al.
-//! 2017). The factor-of-1.6 discrepancy between 1.875μ and 3μ is the
+//! 2017). The factor of ~1.7 discrepancy between 1.75μ and 3μ is the
 //! kind of catalog-value uncertainty Fork B's calibration loop is
 //! designed to absorb at post-cast time.
 //!
@@ -122,8 +122,11 @@ pub const ECOFLEX_00_30: SiliconeMaterial = SiliconeMaterial::new(23_000.0, 92_0
 /// Ecoflex 00-50 — Shore 00-50; firmest in the Ecoflex line.
 pub const ECOFLEX_00_50: SiliconeMaterial = SiliconeMaterial::new(28_000.0, 112_000.0, 1070.0);
 
-/// Dragon Skin 10 (Medium) — Shore 10A; softest in the Dragon Skin
-/// line.
+/// Dragon Skin 10 — Shore 10A; softest in the Dragon Skin line.
+///
+/// Cure-speed variants (Fast / Medium / NV / Slow) share these
+/// mechanical properties on Smooth-On's data sheets and differ only
+/// in pot life and cure time.
 pub const DRAGON_SKIN_10A: SiliconeMaterial = SiliconeMaterial::new(51_000.0, 204_000.0, 1070.0);
 
 /// Dragon Skin 20 — Shore 20A.
@@ -236,7 +239,7 @@ mod tests {
         // the specific (μ, λ).
         use crate::material::Material;
         use nalgebra::Matrix3;
-        for (name, mat) in ALL {
+        for (_, mat) in ALL {
             let nh = mat.to_neo_hookean();
             let id = Matrix3::<f64>::identity();
             assert_relative_eq!(nh.energy(&id), 0.0, epsilon = 0.0,);
@@ -259,9 +262,6 @@ mod tests {
             // Bit-equal: the mul_add chain matches NeoHookean::energy
             // exactly; no rounding slack is needed at this F.
             assert_relative_eq!(nh.energy(&f), expected, epsilon = 0.0,);
-            // `name` is bound for the failure-message context above
-            // even though the inner asserts don't use it directly.
-            let _ = name;
         }
     }
 }
