@@ -181,16 +181,14 @@ per-face winding, bounding box) match expectation — see
 optional** at this point; everything visible has been encoded as a
 numerical invariant.
 
-If you do want to eyeball the artifacts, **run f3d from the crate
-root** (`examples/mesh/printability-technology-sweep/`) on each PLY
-**separately** — f3d's `--multi-file-mode=all` falls back to
-all-points rendering when mixing a face-mesh with a vertex-only
-point cloud, so you lose the cube surface:
+If you do want to eyeball the artifacts, run cf-view on each PLY
+**separately** (cf-view v1 ships single-file rendering; multi-file
+overlay is deferred):
 
 ```text
-f3d --up=+Z out/mesh.ply        # the hollow box, surface-rendered
-f3d --up=+Z out/issues_fdm.ply  # FDM centroids (5 dots)
-f3d --up=+Z out/issues_sls.ply  # SLS centroids (3 dots; no overhang)
+cargo run -p cf-viewer --release -- examples/mesh/printability-technology-sweep/out/mesh.ply        # the hollow box, surface-rendered
+cargo run -p cf-viewer --release -- examples/mesh/printability-technology-sweep/out/issues_fdm.ply  # FDM centroids (5 dots)
+cargo run -p cf-viewer --release -- examples/mesh/printability-technology-sweep/out/issues_sls.ply  # SLS centroids (3 dots; no overhang)
 ```
 
 The fixture's outer + inner shells are wound in opposite directions

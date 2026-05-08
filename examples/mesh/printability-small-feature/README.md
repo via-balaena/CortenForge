@@ -3,21 +3,29 @@
 Visual demo of the §6.5 `SmallFeature` detector (Gap J of the v0.8 fix
 arc).
 
-## ⚠ f3d viewer callout — pass `--up +Z` and zoom to the burr
+## ⚠ Viewer callout — zoom to the burr to see it
 
-`f3d` defaults to a `+Y`-up world, so the cube renders on its side and
-the build plate goes into-screen. Pass `f3d --up +Z out/mesh.ply` to
-match the FDM print orientation (build plate horizontal). The burr is
-at `(35, 15, 0.1)` and is **only 0.2 mm wide** — about 1:150 of the
-cube's 30 mm side — so it is invisible at default framing. Zoom to
-`(35, 15, 0.1)` at ≥ 100× magnification (in `f3d`, click-drag with the
-mouse to orbit, then `+`/`-` to zoom) to see the 6-segment hex prism.
+cf-view's `+Z` default already matches the FDM print orientation
+(build plate horizontal). The burr is at `(35, 15, 0.1)` and is
+**only 0.2 mm wide** — about 1:150 of the cube's 30 mm side — so
+it is invisible at default framing. Open the mesh and zoom to
+`(35, 15, 0.1)` at ≥ 100× magnification (left-drag to orbit,
+scroll to zoom) to see the 6-segment hex prism:
 
-To overlay the centroid markers from `out/issues.ply`, use
-`f3d --up +Z --multi-file-mode=all out/mesh.ply out/issues.ply`. There
-are 2 markers — the `SmallFeature` and `ThinWall` regions both
-localize at `(35, 15, 0.1)`, so the markers stack at the same point.
-Press `O` to toggle point sphere rendering on the issues point cloud.
+```text
+cargo run -p cf-viewer --release -- examples/mesh/printability-small-feature/out/mesh.ply
+```
+
+To inspect the centroid markers from `out/issues.ply`, open the
+issues PLY in a separate cf-view window (cf-view v1 ships
+single-file rendering; multi-file overlay is deferred). There are
+2 markers — the `SmallFeature` and `ThinWall` regions both
+localize at `(35, 15, 0.1)`, so the markers stack at the same
+point.
+
+```text
+cargo run -p cf-viewer --release -- examples/mesh/printability-small-feature/out/issues.ply
+```
 
 ## What this fixture is
 
@@ -58,8 +66,8 @@ The §6.5 detector needs a **discretely-faceted** geometry with a
 locked-in face count for the `region.face_count == 24` numerical
 anchor. A smooth cylinder would require choosing a tessellation
 resolution; the regular hexagon is the simplest closed polygon that
-still produces a credible "round burr" silhouette under MeshLab/f3d
-rendering. Six lateral quads (= 12 lateral triangles) + 6 top fan
+still produces a credible "round burr" silhouette under cf-view's
+flat-per-triangle rendering. Six lateral quads (= 12 lateral triangles) + 6 top fan
 triangles + 6 bottom fan triangles = exactly 24, regardless of
 azimuth-resolution choices.
 

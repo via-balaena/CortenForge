@@ -78,11 +78,12 @@
 //! ```
 //!
 //! Output written to `examples/mesh/printability-small-feature/out/`.
-//! Open `mesh.ply` in `MeshLab`, `ParaView`, or `f3d` for the visuals
-//! pass. The burr is barely visible at default zoom (0.2 mm vs the
-//! cube's 30 mm — 1:150 scale ratio); zoom to `(35, 15, 0.1)` at
-//! ≥ 100× magnification to see the 24-triangle hex prism. See the
-//! README's f3d callout for the `--up +Z` recommendation.
+//! Open `mesh.ply` in cf-view for the visuals pass. The burr is barely
+//! visible at default zoom (0.2 mm vs the cube's 30 mm — 1:150 scale
+//! ratio); zoom to `(35, 15, 0.1)` at ≥ 100× magnification to see the
+//! 24-triangle hex prism. See the README's viewer callout for the
+//! `--up +Z` recommendation (cf-view's `+Z` default already matches
+//! the FDM print orientation).
 
 use std::path::Path;
 

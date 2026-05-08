@@ -3,38 +3,33 @@
 Visual demo of the §6.4 `SelfIntersecting` detector (Gap I of the v0.8
 fix arc).
 
-## ⚠ f3d viewer callout — interpenetrating cylinders render cleanly, but watch the cross zone
+## ⚠ Viewer callout — interpenetrating cylinders render cleanly, but watch the cross zone
 
-`f3d out/mesh.ply` works fine for the overall geometry: a 3-D plus-
-sign cross with the two cylinders crossing at the origin. But the
-self-intersection zone near `(0, 0, 5)` is where the two faceted
-lateral surfaces interpenetrate, so the renderer paints triangles that
-visually overlap and z-fight along the four interpenetration "rings".
-**That visual mess is exactly what the detector flags.** It is the
-load-bearing geometry of the example.
+cf-view renders the overall geometry fine: a 3-D plus-sign cross
+with the two cylinders crossing at the origin. But the self-
+intersection zone near `(0, 0, 5)` is where the two faceted lateral
+surfaces interpenetrate, so the renderer paints triangles that
+visually overlap and z-fight along the four interpenetration
+"rings". **That visual mess is exactly what the detector flags.**
+It is the load-bearing geometry of the example.
 
-To inspect the four interpenetration rings:
+cf-view's `+Z` default already matches the FDM print orientation
+(build plate horizontal); the canonical `+`-shape view is looking
+down `+Z`. cf-view's flat-per-triangle WYSIWYP rendering exposes
+the 16-segment lateral facets where the cylinders cross —
+truthful exposure of the print's actual surface tessellation:
 
-- **`f3d`**: f3d defaults to a `+Y`-up world, so cylinder B (axis
-  `+Y`) renders vertically and the build-plate-perpendicular `+Z` goes
-  into-screen. Pass `f3d --up +Z out/mesh.ply` to match the FDM print
-  orientation (build plate horizontal); the canonical `+`-shape view
-  is then looking down `+Z`. Toggle edges (`E`) to see the 16-segment
-  lateral facets where the cylinders cross. To overlay the 100
-  self-intersection markers + 4 lateral-overhang markers from
-  `out/issues.ply`, use `f3d --up +Z --multi-file-mode=all
-  out/mesh.ply out/issues.ply` — f3d's default multi-file mode loads
-  both as separate file groups (showing one at a time; cycle with
-  `→` / `←`), so `--multi-file-mode=all` is what you want for the
-  overlay. Press `O` to toggle point sphere rendering on the issues
-  point cloud.
-- **MeshLab** (`meshlab out/mesh.ply`): enable `Render → Show Edges`
-  and `Render → Show Vertices` to see the interpenetration zone
-  clearly. The lateral surfaces' z-fighting in the cross region is the
-  detector's input signal.
-- **ParaView** (`paraview out/mesh.ply`): a `Clip` filter at `z = 5`
-  reveals the cross-section through the interpenetration zone — the
-  four ring intersections show up as four bow-tie crossings.
+```text
+cargo run -p cf-viewer --release -- examples/mesh/printability-self-intersecting/out/mesh.ply
+cargo run -p cf-viewer --release -- examples/mesh/printability-self-intersecting/out/issues.ply
+```
+
+cf-view v1 ships single-file rendering; the 100 self-intersection
+markers + 4 lateral-overhang markers in `issues.ply` open in a
+separate window (multi-file overlay is deferred). For interactive
+clipping at `z = 5` (the cross-section through the interpenetration
+zone — four bow-tie crossings), use ParaView's `Clip` filter on
+`mesh.ply`; cf-view v1 ships no built-in clipping plane.
 
 ## What this fixture is
 

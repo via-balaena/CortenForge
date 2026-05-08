@@ -117,9 +117,10 @@
 //! ```
 //!
 //! Output written to `examples/mesh/printability-self-intersecting/out/`.
-//! Open `mesh.ply` and `issues.ply` in `MeshLab`, `ParaView`, or `f3d`
-//! for the visuals pass — see the README's f3d-quirks callout for
-//! viewer-specific notes on the cross geometry.
+//! Open `mesh.ply` and `issues.ply` in cf-view for the visuals pass —
+//! see the README's viewer callout for the WYSIWYP rendering of the
+//! cross zone (z-fighting along the four interpenetration rings is
+//! the detector's input signal).
 
 use std::path::Path;
 
