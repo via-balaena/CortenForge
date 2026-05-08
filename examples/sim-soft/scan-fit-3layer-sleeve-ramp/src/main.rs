@@ -45,26 +45,32 @@
 //! # Why a ramp, not a single step
 //!
 //! Row 21 v1's static fit pose at 1 mm penetration is the canonical
-//! single-step demonstration. Deeper penetration on the same geometry
-//! single-stepped would trip Newton's basin: at 8 mm overlap from
-//! rest, the iter-0 penalty gradient inverts tets in the first step;
-//! at 4-5 mm it triggers Armijo line-search collapse near a
-//! near-singular tangent. The quasi-static ramp circumvents this:
-//! each step's `x_prev` is the previous step's `x_final` (cavity wall
-//! already deformed to the previous step's equilibrium), so the
-//! iter-0 gradient is bounded by the per-step delta only.
+//! single-step demonstration of the row 21 pipeline. Deeper
+//! penetration single-stepped on this geometry is expected to push
+//! the iter-0 penalty gradient out of Newton's basin — single-step
+//! failure modes were directly observed at related configs (v1.5's
+//! capsule + capsule at 4 mm depth tripped a non-PD pivot at iter 3;
+//! the earlier-pivot 459 K-tet 2 mm-cell experiment at 8 mm depth
+//! inverted tets in the first Newton step), and v2's own ramp
+//! observed Armijo line-search collapse at 6.5 mm depth even with a
+//! 6.0 mm pre-converged `x_prev`. The quasi-static ramp circumvents
+//! the single-step basin issue: each step's `x_prev` is the previous
+//! step's `x_final` (cavity wall already deformed to the previous
+//! step's equilibrium), so the iter-0 gradient is bounded by the
+//! per-step delta only.
 //!
 //! The ramp's empirical reach on this geometry/material/resolution
-//! was characterized at v2-spec lock time via three pre-execution
-//! spike runs (see [v2 spec memo][v2spec]): the wall lies at
-//! `max_disp ≈ 7 mm`, where Newton's tangent matrix becomes
-//! near-singular and Armijo line-search hits its hardcoded
-//! `α_min = 2⁻²¹` floor. 6 mm penetration (this row's target) is the
-//! deepest reach with comfortable solver margin (Run 3 step 12 in
-//! 61 iters with `MAX_NEWTON_ITER = 100`). The user-target 8 mm
-//! intrusion is deferred to a v3 followup that requires either
-//! solver-side faer LU fallback OR contact-geometry change (probe
-//! placement / shape).
+//! was characterized at v2-spec lock time via five pre-execution
+//! spike runs (Runs 1–3 swept step-size + iter-cap; Spike A + Spike B
+//! probed mesh resolution + stiffness gradient — see [v2 spec
+//! memo][v2spec]): the wall lies at `max_disp ≈ 7 mm`, where
+//! Newton's tangent matrix becomes near-singular and Armijo
+//! line-search hits its hardcoded `α_min = 2⁻²¹` floor. 6 mm
+//! penetration (this row's target) is the deepest reach with
+//! comfortable solver margin (Run 3 step 12 in 61 iters with
+//! `MAX_NEWTON_ITER = 100`). The user-target 8 mm intrusion is
+//! deferred to a v3 followup that requires either solver-side faer
+//! LU fallback OR contact-geometry change (probe placement / shape).
 //!
 //! # Pipeline
 //!
@@ -1005,7 +1011,7 @@ fn verify_force_displacement_monotone(results: &[RampStepResult]) {
 
 fn verify_per_step_strain_energy_ordering(results: &[RampStepResult]) {
     // Same `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` ordering as row 21 v1's
-    // anchor 5, but applied at every ramp step. The compounding
+    // anchor 7, but applied at every ramp step. The compounding
     // (compliance + distance-to-load + distance-to-constraint) holds
     // throughout the ramp, so the ordering is robust at every
     // intermediate equilibrium.

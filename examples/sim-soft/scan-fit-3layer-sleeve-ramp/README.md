@@ -17,11 +17,11 @@ Every architectural piece is inherited verbatim from row 21 v1 (cuboid scan + sp
 
 ## Why a ramp, not a single step
 
-Row 21 v1's static fit pose at 1 mm penetration is the canonical single-step demonstration of the pipeline. Deeper penetration on the same geometry single-stepped would trip Newton's basin: at 4-5 mm overlap from rest, Armijo line-search collapses near a near-singular tangent (empirically validated at v2-spec spike time). The quasi-static ramp circumvents this — each step's `x_prev` is the previous step's `x_final` (cavity wall already deformed to the previous step's equilibrium), so the iter-0 penalty gradient is bounded by the per-step delta only, not the full target overlap.
+Row 21 v1's static fit pose at 1 mm penetration is the canonical single-step demonstration of the pipeline. Deeper penetration single-stepped on this geometry is expected to push the iter-0 penalty gradient out of Newton's basin — single-step failure modes were directly observed at related configs (v1.5's capsule + capsule at 4 mm depth tripped a non-PD pivot at iter 3; the earlier-pivot 459 K-tet 2 mm-cell experiment at 8 mm depth inverted tets in the first Newton step), and v2's own ramp observed Armijo line-search collapse at 6.5 mm depth even with a 6.0 mm pre-converged `x_prev` (see [v2 spec memo][v2spec]). The quasi-static ramp circumvents the single-step basin issue — each step's `x_prev` is the previous step's `x_final` (cavity wall already deformed to the previous step's equilibrium), so the iter-0 penalty gradient is bounded by the per-step delta only, not the full target overlap.
 
-The ramp's empirical reach was characterized at v2-spec lock time via three pre-execution spike runs (see [v2 spec memo][v2spec]). The wall lies at `max_disp ≈ 7 mm`, where Newton's tangent matrix becomes near-singular and Armijo line-search hits its hardcoded `α_min = 2⁻²¹` floor. **6 mm penetration is this row's target — the deepest reach with comfortable solver margin** (step 12 converges in 61 Newton iters at `MAX_NEWTON_ITER = 100`, leaving a 39-iter safety margin). The user-target 8 mm physical intrusion is structurally unreachable on this contact configuration; it is deferred to a v3 followup that requires either solver-side faer LU fallback OR contact-geometry change (probe placement / shape).
+The ramp's empirical reach was characterized at v2-spec lock time via five pre-execution spike runs (Runs 1–3 swept step-size + iter-cap; Spike A + Spike B then probed mesh resolution + stiffness gradient — see [v2 spec memo][v2spec]). The wall lies at `max_disp ≈ 7 mm`, where Newton's tangent matrix becomes near-singular and Armijo line-search hits its hardcoded `α_min = 2⁻²¹` floor. **6 mm penetration is this row's target — the deepest reach with comfortable solver margin** (step 12 converges in 61 Newton iters at `MAX_NEWTON_ITER = 100`, leaving a 39-iter safety margin). The user-target 8 mm physical intrusion is structurally unreachable on this contact configuration; it is deferred to a v3 followup that requires either solver-side faer LU fallback OR contact-geometry change (probe placement / shape).
 
-This row is also the **first sim-soft user-facing example to demonstrate per-step `replay_step` chaining** — `x_prev_k+1 = x_final_k`, `v_prev = 0` throughout (quasi-static; no inertia carry-over). The pattern generalises to any quasi-static scenario where the single-step Newton basin would otherwise collapse.
+This row is also the **first sim-soft user-facing example to demonstrate quasi-static `replay_step` chaining** — `x_prev_k+1 = x_final_k`, `v_prev = 0` throughout (no inertia carry-over). Distinct from row 17 [`soft-drop-on-plane`](../soft-drop-on-plane/), which chains the full `step` solver method for transient dynamics with inertial damping; v2's chaining is the quasi-static-equilibrium variant. The pattern generalises to any scenario where the single-step Newton basin would otherwise collapse.
 
 Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. Outputs are `out/scan_fit_3layer_sleeve_ramp.json` (final-step scalars + 3-material provenance + per-step `ramp_curve` array + per-active-contact-pair detail at the final step) and `out/sleeve_zslab_final.ply` (z-slab per-tet centroid cloud at the final step, with categorical `material_id` + sequential `displacement_magnitude`).
 
@@ -53,7 +53,7 @@ for k in 0..N_RAMP_STEPS {
     );
     // Capture per-step readouts (force_z, max_disp, per-layer Ψ̄, ...).
     results.push(/* RampStepResult */);
-    x_prev_flat = step_k.x_final.clone();  // chain
+    x_prev_flat.clone_from(&step_k.x_final);  // chain
 }
 
 // 7. Per-step + final-step verifies (12 anchor groups, see "Numerical anchors").
@@ -174,7 +174,7 @@ Plus per-tet material assignment via `mesh.materials()[t].energy(F_probe)` match
 | `n_active_pairs` at final step | `273` |
 | `max Ψ_outer` at final step | bits self-pinned (~10487 J/m³); rel-tol IV-1 sparse-tier |
 
-The final-step active-pair count grew from row 21 v1's 294 (at 1 mm depth) to 273 (at 6 mm depth) — the deeper probe pose displaces the cavity wall outward, and a few cavity-wall vertices fall OUT of the active-contact band as they move beyond the d̂ threshold. Max Ψ_outer at 6 mm depth is ~ 60× row 21 v1's 175.8 J/m³ at 1 mm — strain at the contact-band-adjacent outer-shell tets concentrates dramatically as the radial chain inner → middle → outer transmits the deeper probe load.
+The final-step active-pair count dropped from row 21 v1's 294 (at 1 mm depth) to 273 (at 6 mm depth) — the deeper probe pose displaces the cavity wall outward, and a few cavity-wall vertices fall OUT of the active-contact band as they move beyond the d̂ threshold. Max Ψ_outer at 6 mm depth is ~ 60× row 21 v1's 175.8 J/m³ at 1 mm — strain at the contact-band-adjacent outer-shell tets concentrates dramatically as the radial chain inner → middle → outer transmits the deeper probe load.
 
 ### 12. `per_step_captured_bits` — IV-1 sparse-tier rel-tol
 
@@ -192,7 +192,7 @@ Compared via `assert_relative_eq!` at `SPARSE_REL_TOL = 1e-12` rel + `SPARSE_EPS
 
 ## Visuals
 
-`out/sleeve_zslab_final.ply` — z-slab per-tet centroid cloud at the FINAL ramp step (depth = 6 mm) (`2_092` centroids in `|rest_centroid.z| < CELL_SIZE / 2 = 0.002 m`) with `DISPLACEMENT_SCALE = 10.0` geometric amplification on positions (`amplified = rest_centroid + SCALE * (deformed_centroid - rest_centroid)`). Lower than row 21 v1's 50× because v2's final-pose displacements are ~3-4× larger; `10×` keeps the rendered geometry within cf-view's bbox without saturation. Two scalars: categorical `material_id` (0 = inner / 1 = middle / 2 = outer) + sequential `displacement_magnitude` (true physical magnitude, unscaled).
+`out/sleeve_zslab_final.ply` — z-slab per-tet centroid cloud at the FINAL ramp step (depth = 6 mm) (`2_092` centroids in `|rest_centroid.z| < CELL_SIZE / 2 = 0.002 m`) with `DISPLACEMENT_SCALE = 10.0` geometric amplification on positions (`amplified = rest_centroid + SCALE * (deformed_centroid - rest_centroid)`). Lower than row 21 v1's `50×` so the rendered displacement-field magnitude stays visually comparable to v1's at the same body-scale: v1's `50× × 1.97 mm peak ≈ 99 mm` rendered; v2's `10× × 6.7 mm peak ≈ 67 mm` rendered — same order of magnitude even though v2's true displacements are ~3.4× larger. Two scalars: categorical `material_id` (0 = inner / 1 = middle / 2 = outer) + sequential `displacement_magnitude` (true physical magnitude, unscaled).
 
 Open in cf-view, the workspace's unified visual-review viewer:
 
