@@ -231,7 +231,7 @@ and that this example pre-stages for the variable-density case.
   pattern).
 
 ```text
-f3d examples/mesh/mesh-lattice-density-gradient/out/density_gradient_lattice.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-density-gradient/out/density_gradient_lattice.ply
 ```
 
 ⏸ Visual review **optional but recommended** — the gradient is

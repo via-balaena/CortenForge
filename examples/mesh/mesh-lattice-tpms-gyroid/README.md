@@ -90,9 +90,12 @@ The example asserts `vertex_count == 3 × triangle_count`
 **invariant** at the implementation level. (The filter removes both
 the three `vertices.push(...)` calls AND the `faces.push([...])`
 atomically inside `marching_cubes.rs:462-468`.) Rendering the
-resulting `.ply` in f3d shows the soup-output's hallmark: face
-boundaries appear faceted because adjacent triangles do NOT share
-vertex indices despite sharing geometric position.
+resulting `.ply` in cf-view exposes the soup-output's hallmark
+under flat-per-triangle WYSIWYP shading: face boundaries appear
+faceted because adjacent triangles do NOT share vertex indices
+despite sharing geometric position. (cf-view's flat shading would
+expose this regardless; in the prior smooth-shading viewer chain
+the soup-output looked similar to a welded mesh.)
 
 The mesh-shell engine (PR #222 commits 11.5.1 / 11.5.2) DOES weld
 its MC output via `mesh-repair::weld_vertices`; v1.0 lattice
@@ -233,19 +236,24 @@ no tighter range can anchor here.
 ## Visuals
 
 `out/gyroid_lattice.ply` (binary little-endian, 315 576 verts +
-105 192 tris) is the visual centerpiece. Open in f3d:
+105 192 tris) is the visual centerpiece. Open in cf-view:
 
 ```text
-f3d examples/mesh/mesh-lattice-tpms-gyroid/out/gyroid_lattice.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-tpms-gyroid/out/gyroid_lattice.ply
 ```
 
 ⏸ **Visual review recommended** — even though math-pass anchors
 verify correctness, opening the `.ply` shows the iconic
 'twisted-saddle' surface of the gyroid TPMS. The lattice has 27
 unit cells (3 × 3 × 3) of the periodic gyroid surface, thickened
-into a 1.5 mm shell. f3d will show the soup-output's hallmark
-faceting at triangle boundaries (per F10 — adjacent triangles do
-NOT share vertex indices despite sharing geometric position).
+into a 1.5 mm shell. cf-view's flat-per-triangle WYSIWYP rendering
+exposes the soup-output's hallmark faceting at triangle boundaries
+(per F10 — adjacent triangles do NOT share vertex indices despite
+sharing geometric position) honestly, matching what a 3D printer
+will materialize. For visually smoother (still-truthful) gyroids,
+crank the marching-cubes resolution at generation time — see
+`mesh-lattice-shape-bounded` for a print-quality calibration at
+RESOLUTION = 60 (~0.167 mm voxels).
 
 ## Run
 

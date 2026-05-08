@@ -203,8 +203,8 @@ iconic; the with-vs-without comparison tells the boundary-conforming
 story.
 
 ```text
-f3d out/sphere_gyroid.ply
-f3d out/sphere_gyroid_full.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-shape-bounded/out/sphere_gyroid.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-shape-bounded/out/sphere_gyroid_full.ply
 ```
 
 The sphere-clipped output should be visibly contained inside a `12 mm`
