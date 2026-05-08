@@ -39,7 +39,7 @@ use crate::{
     mesh::{Mesh, VertexId},
     sdf_bridge::Sdf,
 };
-use nalgebra::Matrix3;
+use nalgebra::{Matrix3, Point3};
 
 /// Default penalty stiffness (N/m). Middle of the recommended
 /// `1e3..1e5` range — at Ecoflex-class material `E ≈ 200 kPa` and
@@ -66,10 +66,11 @@ pub(crate) const PENALTY_DHAT_DEFAULT: f64 = 1.0e-3;
 /// and sign conventions.
 ///
 /// Primitives are heap-erased [`Sdf`] trait objects so a single contact
-/// model can compose mixed primitive types (planes, spheres, scan-derived
-/// `MeshSdf`, cf-design `Solid`s) in one list. The constructors are
-/// generic over any `IntoIterator` of `Sdf + 'static`, so a homogeneous
-/// `Vec<RigidPlane>` flows through without explicit boxing.
+/// model can compose mixed primitive types (planes, spheres,
+/// scan-derived `mesh_sdf::SignedDistanceField`, cf-design `Solid`s)
+/// in one list. The constructors are generic over any `IntoIterator`
+/// of `Sdf + 'static`, so a homogeneous `Vec<RigidPlane>` flows
+/// through without explicit boxing.
 pub struct PenaltyRigidContact {
     primitives: Vec<Box<dyn Sdf>>,
     kappa: f64,
@@ -143,10 +144,11 @@ impl PenaltyRigidContact {
     ) -> Vec<ContactPairReadout> {
         let mut readouts = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
+            let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
-                let sd = prim.eval(p);
+                let sd = prim.eval(p_pt);
                 if sd < self.d_hat {
-                    let normal = prim.grad(p);
+                    let normal = prim.grad(p_pt);
                     let force_on_soft = self.kappa * (self.d_hat - sd) * normal;
                     readouts.push(ContactPairReadout {
                         pair: ContactPair::Vertex {
@@ -181,8 +183,9 @@ impl ContactModel for PenaltyRigidContact {
     fn active_pairs(&self, _mesh: &dyn Mesh, positions: &[Vec3]) -> Vec<ContactPair> {
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
+            let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
-                if prim.eval(p) < self.d_hat {
+                if prim.eval(p_pt) < self.d_hat {
                     pairs.push(ContactPair::Vertex {
                         vertex_id: vid as VertexId,
                         primitive_id: pid as u32,
@@ -198,7 +201,7 @@ impl ContactModel for PenaltyRigidContact {
             vertex_id,
             primitive_id,
         } = pair;
-        let p = positions[vertex_id as usize];
+        let p = Point3::from(positions[vertex_id as usize]);
         let d = self.primitives[primitive_id as usize].eval(p);
         if d >= self.d_hat {
             0.0
@@ -213,7 +216,7 @@ impl ContactModel for PenaltyRigidContact {
             vertex_id,
             primitive_id,
         } = pair;
-        let p = positions[vertex_id as usize];
+        let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let d = prim.eval(p);
         if d >= self.d_hat {
@@ -232,7 +235,7 @@ impl ContactModel for PenaltyRigidContact {
             vertex_id,
             primitive_id,
         } = pair;
-        let p = positions[vertex_id as usize];
+        let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let d = prim.eval(p);
         if d >= self.d_hat {

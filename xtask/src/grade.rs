@@ -2118,15 +2118,24 @@ const L0_INTEGRATION_BANNED: &[BanPattern] = L0_IO_BANNED;
 
 const L1_BANNED: &[BanPattern] = &[];
 
-/// Look up the static `TierConfig` for a tier. Numbers track plan §5.2
-/// (release 80/200/200, test 100/220/220). Plan §2.1 proposes tighter
-/// numbers (60/180/180) post-Appendix-A; we'll re-tune at hard-gate flip
-/// (plan §8 step 12) once surgeries land and the actual headroom is known.
+/// Look up the static `TierConfig` for a tier. Numbers initially tracked
+/// plan §5.2 (release 80/200/200, test 100/220/220) and re-tune as
+/// integration experience accumulates. Plan §2.1 proposes tighter
+/// numbers (60/180/180) post-Appendix-A; we'll re-tune again at
+/// hard-gate flip (plan §8 step 12) once surgeries land and the actual
+/// headroom is known.
+///
+/// L0's current 100/120 accommodates the cf-design SDF design surface
+/// (Sdf trait, Solid CSG kernel, mesh-sdf adapter) entering L0 sim
+/// crates' transitive dep set: cf-design reaches 48 transitive deps,
+/// and an L0 sim crate with its own baseline consuming cf-design lands
+/// in the 85-95 range. The +20 release/test buffer matches L0Io's and
+/// L0Integration's 200/220 pattern.
 fn tier_config(tier: Tier) -> TierConfig {
     match tier {
         Tier::L0 => TierConfig {
-            release_max: 80,
-            test_max: 100,
+            release_max: 100,
+            test_max: 120,
             banned: L0_BANNED,
         },
         Tier::L0Io => TierConfig {
@@ -3798,9 +3807,9 @@ tier_up_features = { foo = "L99" }
 
     #[test]
     fn evaluate_dep_set_l0_count_over_max() {
-        // 81 release deps → exceeds L0's 80-release max → one
+        // 101 release deps → exceeds L0's 100-release max → one
         // CountExceeded finding.
-        let deps: Vec<String> = (0..81).map(|i| format!("dep-{}", i)).collect();
+        let deps: Vec<String> = (0..101).map(|i| format!("dep-{}", i)).collect();
         let findings = evaluate_dep_set(
             &deps,
             tier_config(Tier::L0),
@@ -3812,18 +3821,18 @@ tier_up_features = { foo = "L99" }
         assert!(matches!(
             findings[0].kind,
             FindingKind::CountExceeded {
-                actual: 81,
-                max: 80
+                actual: 101,
+                max: 100
             }
         ));
     }
 
     #[test]
     fn evaluate_dep_set_l0_test_max_is_higher_than_release() {
-        // 81 deps in the dev graph → under the 100 test-max, no count
+        // 101 deps in the dev graph → under the 120 test-max, no count
         // finding. Same input over release max — the (release, test)
         // distinction must thread through evaluate_dep_set.
-        let deps: Vec<String> = (0..81).map(|i| format!("dep-{}", i)).collect();
+        let deps: Vec<String> = (0..101).map(|i| format!("dep-{}", i)).collect();
         let findings = evaluate_dep_set(
             &deps,
             tier_config(Tier::L0),
@@ -3953,13 +3962,13 @@ tier_up_features = { foo = "L99" }
             graph_kind: GraphKind::Release,
             effective_tier: Tier::L0,
             kind: FindingKind::CountExceeded {
-                actual: 95,
-                max: 80,
+                actual: 115,
+                max: 100,
             },
         };
         assert_eq!(
             format_finding(&f),
-            "[release all-features, tier L0] dep count 95 exceeds max 80"
+            "[release all-features, tier L0] dep count 115 exceeds max 100"
         );
     }
 

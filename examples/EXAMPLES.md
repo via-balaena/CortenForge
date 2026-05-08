@@ -327,27 +327,27 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
 | `sphere-sdf-eval` | `example-sim-soft-sphere-sdf-eval` | Working | `Sdf` trait contract on `SphereSdf`; 11³ = 1331-point grid with `signed_distance` per-vertex scalar |
-| `hollow-shell-sdf` | `example-sim-soft-hollow-shell-sdf` | Working | `DifferenceSdf` of two `SphereSdf`s; hollow-body composition |
-| `sdf-to-tet-sphere` | `example-sim-soft-sdf-to-tet-sphere` | Working | `SdfMeshedTetMesh::from_sdf` solid sphere; BCC + Labelle-Shewchuk pipeline |
+| `hollow-shell-sdf` | `example-sim-soft-hollow-shell-sdf` | Working | `DifferenceSdf` of two `SphereSdf`s; hollow-body composition; z=0 slice with `signed_distance` + `active_branch` scalars |
+| `sdf-to-tet-sphere` | `example-sim-soft-sdf-to-tet-sphere` | Working | `SdfMeshedTetMesh::from_sdf` solid sphere; BCC + Labelle-Shewchuk Isosurface Stuffing pipeline; first triangle-mesh cf-view consumer (1224 faces, Euler χ = 2, bimodal `boundary_residual` scalar) |
+| `single-tet-stretch` | `example-sim-soft-single-tet-stretch` | Working | Walking-skeleton hand-built tet path — alternative to the SDF route for hand-authored scenes. `SkeletonSolver::step` on `SoftScene::one_tet_cube`; converges in 3 iters to `dz ≈ 9.69e-4 m` matching the IV-1 frozen-reference bit pattern; JSON-only force-stretch trace |
 
 ### Tier 2 — Constitutive + multi-element
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `single-tet-stretch` | `example-sim-soft-single-tet-stretch` | Working | Single Tet4 uniaxial stretch; closed-form NeoHookean comparison |
-| `neo-hookean-uniaxial` | `example-sim-soft-neo-hookean-uniaxial` | Working | Compressible NH through inversion (folds inventory row 7 InversionHandling) |
-| `multi-element-stretch` | `example-sim-soft-multi-element-stretch` | Working | N-tet `HandBuiltTetMesh` uniform Dirichlet stretch; per-element stress agreement |
+| `neo-hookean-uniaxial` | `example-sim-soft-neo-hookean-uniaxial` | Working | Canonical traction-free NH stretch curve — direct-eval `Material::first_piola` / `Material::energy` against closed form across 12-point sweep with inner Newton on `λ_t`; `ValidityDomain` declaration check + 48 captured-bit self-pins; JSON + optional `uv run plot.py` matplotlib panel |
+| `multi-element-stretch` | `example-sim-soft-multi-element-stretch` | Working | Phase 2 multi-element FEM assembly under uniform Dirichlet stretch on a 27-vertex / 48-tet hex grid (`λ = 1.20`, one interior vertex free); per-tet `F` bit-equal `diag(λ, 1, 1)` across all 48 tets; quasi-static via `cfg.density = 0`; JSON-only per-tet uniformity trace |
 
 ### Tier 3 — Multi-material spatial fields
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `layered-scalar-field` | `example-sim-soft-layered-scalar-field` | Working | 3-shell `LayeredScalarField` field-exposition (no solver) |
-| `blended-scalar-field` | `example-sim-soft-blended-scalar-field` | Working | `BlendedScalarField` smooth-transition counterpart |
-| `bonded-bilayer-beam` | `example-sim-soft-bonded-bilayer-beam` | Working | Bilayer cantilever beam, EB-composite analytic comparison |
-| `concentric-lame-shells` | `example-sim-soft-concentric-lame-shells` | Working | ★ 3-shell hollow silicone sphere, internal pressure, piecewise-Lamé closed-form (PR1 finale) |
+| `layered-scalar-field` | `example-sim-soft-layered-scalar-field` | Working | 3-shell `LayeredScalarField` over a concentric `SphereSdf` partition; per-tet `(μ, λ)` sampled at the centroid via `MaterialField::from_fields` and cached in `Mesh::materials()`; first cf-view consumer in PR1's later half. Z-slab per-tet centroid PLY (648 of 6768 tets) with categorical `material_layer_id` reading as three concentric color rings on the z=0 plane |
+| `blended-scalar-field` | `example-sim-soft-blended-scalar-field` | Working | `BlendedScalarField` cubic-Hermite-smoothstep transition between two uniform Lamé regions ("stiff skin over soft core"); same SDF threaded through `MaterialField::with_interface_sdf` to populate `Mesh::interface_flags` per the IV-6 `\|φ(x_c)\| < L_e` rule. Three z-slab PLY scalars: `interface_flag` (categorical), `material_mu` (continuous), `smoothstep_weight` (continuous kernel readout) |
+| `bonded-bilayer-beam` | `example-sim-soft-bonded-bilayer-beam` | Working | Phase 4 IV-3 bonded multi-material cantilever beam (1701 verts / 7680 tets); inline `HalfSpaceField` partitions tets into region A (`1×` Ecoflex) below the interface plane and region B (`2×` Decision J composite) above. First Tier 3 solver-driven scene + first IV-2 shared-vertex displacement-continuity gate at production-scale. Tip displacement matches Euler-Bernoulli composite-beam analytic within 30 % at h/2 (Tet4 sub-`O(h²)` per IV-3); strict-between-uniform-bounds inequality as the IV-2-lens-β discriminator. Y-slab axial-mid-plane PLY with `DISPLACEMENT_SCALE = 20×` viz amplifier on rendered positions |
+| `concentric-lame-shells` | `example-sim-soft-concentric-lame-shells` | Working | ★ PR1 finale — IV-5 three-shell concentric hollow silicone sphere meshed via BCC + Labelle-Shewchuk on a `DifferenceSdf` of two `SphereSdf`s (`R_OUTER = 0.10 m`, `R_CAVITY = 0.04 m`, 6456 tets); 3-shell `MaterialField` per Decision J's `1× / 2× / 1×` symmetry; per-vertex radially-outward pressure traction (`LoadAxis::FullVector`) on cavity surface, fixed Dirichlet pin on outer surface. Four Saint-Venant-averaged radial-displacement readouts match piecewise-Lamé closed-form within 30 % at h/2; IV-2-lens-β strict-between-uniform-bounds gate runs three full solver passes. Z-slab equatorial PLY with `DISPLACEMENT_SCALE = 50×` viz amplifier |
 
-### Tier 4 — Penalty contact (PR2 in flight)
+### Tier 4 — Penalty contact (PR2 shipped at main `55cc3a42`)
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
@@ -356,9 +356,23 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | `compressive-block` | `example-sim-soft-compressive-block` | Working | ★ Soft cube quasi-statically compressed by descending plate; per-refinement F_R two-bound bracket [F_us, F_strain] + Cauchy convergence (V-3a); cf-view colormap PLY + matplotlib F-vs-ε scatter |
 | `contact-force-readout` | `example-sim-soft-contact-force-readout` | Working | ★ Per-active-pair contact readout via `PenaltyRigidContact::per_pair_readout` (foundation patch `995fb0bf`); same V-3a scene as `compressive-block`; accessor-vs-manual consistency at 1e-12 rel; cf-view pressure-colormap PLY + matplotlib top-down patch scatter |
 
+### Tier 5 — Bridges + extensions (PR3 substance complete on `dev`, awaiting squash-merge to main)
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `mesh-scan-as-solid` | `example-sim-soft-mesh-scan-as-solid` | Working | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2); 12-tri programmatic cube fixture, STL save→load round-trip, closed-form L∞-ball anchors via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY (`signed_distance` + `inside_raycast`) with documented HE-1 raycast diagonal degeneracy |
+| `solid-to-sim-soft` | `example-sim-soft-solid-to-sim-soft` | Working | `cf_design::Solid` is a first-class SDF for `SdfMeshedTetMesh::from_sdf` via the F1+F3 bridge (PR3 row 16). Typed boolean-difference body composed via cf-design's CSG kernel flows into sim-soft's BCC + Labelle-Shewchuk pipeline through one `&dyn cf_design::Sdf` coercion; HEADLINE A bit-exact bridge-equivalence anchor vs `DifferenceSdf<SphereSdf>` baseline + cavity-wall mean cross-row continuity bit-equal to row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS` |
+| `silicone-material-table` | `example-sim-soft-silicone-material-table` | Working | Engineering-grade Smooth-On platinum-cure silicone Lamé pairs + density via PR3 F4's `silicone_table.rs` const module. Iterates 7 `pub const SiliconeMaterial` entries (`{Ecoflex 00-10/20/30/50, Dragon Skin 10A/20A/30A}`), dispatches each via `SiliconeMaterial::to_neo_hookean()` (`const` bridge into the `Material` trait), probes at `F = diag(2.0, 1, 1)` (the `σ_100 = 100% engineering strain` data-sheet anchor); 7 verify groups + 21 captured-bit self-pins; JSON-only |
+
+### Tier 6 — Synthesis (PR3 final row)
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `layered-silicone-device` | `example-sim-soft-layered-silicone-device` | Working | ★ The PR3 Tier 6 synthesis row — composes every PR3 foundation piece (F1–F5) into one end-to-end relative-comparison sim of the layered silicone device cavity-fit. Scan SDF (F2) → typed `Solid::from_sdf` heterogeneous CSG (F5) → `SdfMeshedTetMesh::from_sdf` (F1 + F3) → 3-shell `MaterialField` from F4 (`ECOFLEX_00_30` outer + inner / `DRAGON_SKIN_10A` middle as the conductive-composite proxy) → static fit pose with the same scan SDF as `PenaltyRigidContact` rigid indenter (first non-plane consumer post-PR2 trait unification). Outputs `layered_silicone_device.json` (fit-pose scalars + materials + per-active-pair detail) + `device_zslab.ply` (categorical `material_id` + sequential `displacement_magnitude`, z-slab per pattern (aa) for hollow geometry) |
+
 ### Visual-mode convention: `CF_VISUAL=1`
 
-Tier 4 + Tier 6 examples (`soft-drop-on-plane` and successors) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` renders the single quasi-static settled frame):
+Tier 4 examples (`soft-drop-on-plane` + `hertz-sphere-plane` + `compressive-block` + `contact-force-readout`) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` / `compressive-block` / `contact-force-readout` render single quasi-static settled frames):
 
 ```text
 cargo run -p example-sim-soft-soft-drop-on-plane --release           # headless asserts + PLY

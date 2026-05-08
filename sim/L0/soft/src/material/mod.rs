@@ -9,9 +9,11 @@ use nalgebra::{Matrix3, SMatrix};
 
 pub mod material_field;
 pub mod neo_hookean;
+pub mod silicone_table;
 
 pub use material_field::MaterialField;
 pub use neo_hookean::NeoHookean;
+pub use silicone_table::SiliconeMaterial;
 
 /// Constitutive-model surface: energy density and its first two
 /// derivatives in deformation gradient `F`, plus a validity predicate

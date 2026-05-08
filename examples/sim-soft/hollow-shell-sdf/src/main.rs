@@ -116,12 +116,12 @@ fn verify_outer_surface_eval(diff: &DifferenceSdf) {
     for axis in [Vec3::x(), Vec3::y(), Vec3::z()] {
         for sign in [1.0, -1.0] {
             let p = sign * R_OUTER * axis;
-            assert_relative_eq!(diff.eval(p), 0.0, epsilon = EXACT_TOL);
+            assert_relative_eq!(diff.eval(Point3::from(p)), 0.0, epsilon = EXACT_TOL);
         }
     }
     // Pythagorean off-axis: (0.6)² + (0.8)² = 1.0 exactly in f64.
     assert_relative_eq!(
-        diff.eval(Vec3::new(0.6, 0.8, 0.0)),
+        diff.eval(Point3::new(0.6, 0.8, 0.0)),
         0.0,
         epsilon = EXACT_TOL,
     );
@@ -138,7 +138,7 @@ fn verify_cavity_surface_eval(diff: &DifferenceSdf) {
     for axis in [Vec3::x(), Vec3::y(), Vec3::z()] {
         for sign in [1.0, -1.0] {
             let p = sign * R_CAVITY * axis;
-            assert_relative_eq!(diff.eval(p), 0.0, epsilon = EXACT_TOL);
+            assert_relative_eq!(diff.eval(Point3::from(p)), 0.0, epsilon = EXACT_TOL);
         }
     }
 }
@@ -159,17 +159,17 @@ fn verify_cavity_surface_eval(diff: &DifferenceSdf) {
 ///   `max = -0.125` (b-branch active).
 fn verify_shell_interior_eval(diff: &DifferenceSdf) {
     assert_relative_eq!(
-        diff.eval(Vec3::new(BRANCH_FLIP_RADIUS, 0.0, 0.0)),
+        diff.eval(Point3::new(BRANCH_FLIP_RADIUS, 0.0, 0.0)),
         -0.25,
         epsilon = EXACT_TOL,
     );
     assert_relative_eq!(
-        diff.eval(Vec3::new(0.875, 0.0, 0.0)),
+        diff.eval(Point3::new(0.875, 0.0, 0.0)),
         -0.125,
         epsilon = EXACT_TOL,
     );
     assert_relative_eq!(
-        diff.eval(Vec3::new(0.625, 0.0, 0.0)),
+        diff.eval(Point3::new(0.625, 0.0, 0.0)),
         -0.125,
         epsilon = EXACT_TOL,
     );
@@ -188,9 +188,9 @@ fn verify_shell_interior_eval(diff: &DifferenceSdf) {
 ///   bit-exact (distance to nearest body surface = the cavity wall at
 ///   `R_CAVITY − 0.25 = 0.25`).
 fn verify_cavity_interior_eval(diff: &DifferenceSdf) {
-    assert_relative_eq!(diff.eval(Vec3::zeros()), R_CAVITY, epsilon = EXACT_TOL);
+    assert_relative_eq!(diff.eval(Point3::origin()), R_CAVITY, epsilon = EXACT_TOL);
     assert_relative_eq!(
-        diff.eval(Vec3::new(0.25, 0.0, 0.0)),
+        diff.eval(Point3::new(0.25, 0.0, 0.0)),
         0.25,
         epsilon = EXACT_TOL,
     );
@@ -205,12 +205,12 @@ fn verify_cavity_interior_eval(diff: &DifferenceSdf) {
 /// `φ_a = 4`, `-φ_b = -4.5`. `max = 4` bit-exact.
 fn verify_exterior_eval(diff: &DifferenceSdf) {
     assert_relative_eq!(
-        diff.eval(Vec3::new(1.5, 0.0, 0.0)),
+        diff.eval(Point3::new(1.5, 0.0, 0.0)),
         0.5,
         epsilon = EXACT_TOL,
     );
     assert_relative_eq!(
-        diff.eval(Vec3::new(3.0, 4.0, 0.0)),
+        diff.eval(Point3::new(3.0, 4.0, 0.0)),
         4.0,
         epsilon = EXACT_TOL,
     );
@@ -226,26 +226,26 @@ fn verify_exterior_eval(diff: &DifferenceSdf) {
 fn verify_outer_active_grad(diff: &DifferenceSdf) {
     // Inside the shell, near the outer surface.
     assert_relative_eq!(
-        diff.grad(Vec3::new(0.875, 0.0, 0.0)),
+        diff.grad(Point3::new(0.875, 0.0, 0.0)),
         Vec3::x(),
         epsilon = EXACT_TOL,
     );
     // Outside the outer surface.
     assert_relative_eq!(
-        diff.grad(Vec3::new(1.5, 0.0, 0.0)),
+        diff.grad(Point3::new(1.5, 0.0, 0.0)),
         Vec3::x(),
         epsilon = EXACT_TOL,
     );
     // Negative axis (sign symmetry).
     assert_relative_eq!(
-        diff.grad(Vec3::new(-1.5, 0.0, 0.0)),
+        diff.grad(Point3::new(-1.5, 0.0, 0.0)),
         -Vec3::x(),
         epsilon = EXACT_TOL,
     );
     // Pythagorean off-axis on the outer surface — `(0.6, 0.8, 0)/1 =
     // (0.6, 0.8, 0)` bit-exact.
     assert_relative_eq!(
-        diff.grad(Vec3::new(0.6, 0.8, 0.0)),
+        diff.grad(Point3::new(0.6, 0.8, 0.0)),
         Vec3::new(0.6, 0.8, 0.0),
         epsilon = EXACT_TOL,
     );
@@ -263,20 +263,20 @@ fn verify_outer_active_grad(diff: &DifferenceSdf) {
 fn verify_cavity_active_grad(diff: &DifferenceSdf) {
     // Inside the shell, near the cavity surface.
     assert_relative_eq!(
-        diff.grad(Vec3::new(0.625, 0.0, 0.0)),
+        diff.grad(Point3::new(0.625, 0.0, 0.0)),
         -Vec3::x(),
         epsilon = EXACT_TOL,
     );
     // Inside the cavity proper.
     assert_relative_eq!(
-        diff.grad(Vec3::new(0.25, 0.0, 0.0)),
+        diff.grad(Point3::new(0.25, 0.0, 0.0)),
         -Vec3::x(),
         epsilon = EXACT_TOL,
     );
     // Negative axis (sign symmetry — gradient still points inward
     // toward origin, so at -x̂ the inward direction is +x̂).
     assert_relative_eq!(
-        diff.grad(Vec3::new(-0.25, 0.0, 0.0)),
+        diff.grad(Point3::new(-0.25, 0.0, 0.0)),
         Vec3::x(),
         epsilon = EXACT_TOL,
     );
@@ -295,10 +295,11 @@ fn verify_branch_flip_locus(diff: &DifferenceSdf) {
     for axis in [Vec3::x(), Vec3::y(), Vec3::z()] {
         for sign in [1.0, -1.0] {
             let p = sign * BRANCH_FLIP_RADIUS * axis;
+            let p_pt = Point3::from(p);
             // Eval is -0.25 = -(R_OUTER - R_CAVITY)/2 bit-exact.
-            assert_relative_eq!(diff.eval(p), -0.25, epsilon = EXACT_TOL);
+            assert_relative_eq!(diff.eval(p_pt), -0.25, epsilon = EXACT_TOL);
             // Grad is the unit axis vector (outer sphere's p/|p|).
-            assert_relative_eq!(diff.grad(p), sign * axis, epsilon = EXACT_TOL);
+            assert_relative_eq!(diff.grad(p_pt), sign * axis, epsilon = EXACT_TOL);
         }
     }
 }
@@ -315,7 +316,7 @@ fn verify_outer_surface_grad(diff: &DifferenceSdf) {
     for axis in [Vec3::x(), Vec3::y(), Vec3::z()] {
         for sign in [1.0, -1.0] {
             let p = sign * R_OUTER * axis;
-            assert_relative_eq!(diff.grad(p), sign * axis, epsilon = EXACT_TOL);
+            assert_relative_eq!(diff.grad(Point3::from(p)), sign * axis, epsilon = EXACT_TOL);
         }
     }
 }
@@ -335,7 +336,11 @@ fn verify_cavity_surface_grad(diff: &DifferenceSdf) {
         for sign in [1.0, -1.0] {
             let p = sign * R_CAVITY * axis;
             // Inward = -(p/|p|) = -(sign · axis).
-            assert_relative_eq!(diff.grad(p), -sign * axis, epsilon = EXACT_TOL);
+            assert_relative_eq!(
+                diff.grad(Point3::from(p)),
+                -sign * axis,
+                epsilon = EXACT_TOL
+            );
         }
     }
 }
@@ -366,11 +371,12 @@ fn build_slice(diff: &DifferenceSdf) -> Vec<SliceSample> {
         for iy in 0..SLICE_RES {
             let y = -SLICE_HALF_EXTENT + (iy as f64) * SLICE_SPACING;
             let p = Vec3::new(x, y, 0.0);
-            let phi_a = outer.eval(p);
-            let phi_b = cavity.eval(p);
+            let p_pt = Point3::from(p);
+            let phi_a = outer.eval(p_pt);
+            let phi_b = cavity.eval(p_pt);
             slice.push(SliceSample {
                 p,
-                eval: diff.eval(p),
+                eval: diff.eval(p_pt),
                 a_active: phi_a >= -phi_b,
             });
         }

@@ -1858,6 +1858,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
+ "mesh-sdf",
  "mesh-types",
  "nalgebra",
  "rayon",
@@ -4889,6 +4890,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-layered-silicone-device"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-sdf",
+ "mesh-types",
+ "nalgebra",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
+name = "example-sim-soft-mesh-scan-as-solid"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-sdf",
+ "mesh-types",
+]
+
+[[package]]
 name = "example-sim-soft-multi-element-stretch"
 version = "1.0.0"
 dependencies = [
@@ -4922,6 +4951,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-silicone-material-table"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "nalgebra",
+ "serde_json",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-single-tet-stretch"
 version = "1.0.0"
 dependencies = [
@@ -4942,6 +4982,20 @@ dependencies = [
  "mesh-io",
  "mesh-types",
  "sim-bevy-soft",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
+name = "example-sim-soft-solid-to-sim-soft"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
  "sim-ml-chassis",
  "sim-soft",
 ]
@@ -8624,6 +8678,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "bytemuck",
+ "cf-design",
  "faer",
  "getrandom 0.3.4",
  "nalgebra",

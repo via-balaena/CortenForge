@@ -1,0 +1,43 @@
+[package]
+name = "example-sim-soft-solid-to-sim-soft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# cf_design::Solid + Solid::sphere + Solid::subtract — the typed CSG
+# operands the bridge consumes (PR3 row 16). The trait `cf_design::Sdf`
+# rides in via `sim_soft::Sdf` re-export (post-F3) so we don't need a
+# direct cf-design import for the trait itself; the import here is for
+# `Solid` operand construction.
+cf-design = { workspace = true }
+# SdfMeshedTetMesh + MeshingHints + Aabb3 + DifferenceSdf + SphereSdf
+# (sim-soft's PR1-era SDF primitives, used here as the bridge-equivalence
+# baseline at HEADLINE A) + BoundaryConditions + LoadAxis +
+# CpuTet4NHSolver + CpuNewtonSolver + NullContact + SceneInitial +
+# SolverConfig + Tet4 + InversionHandling + Mesh + NeoHookean +
+# pick_vertices_by_predicate + LAYERED_SPHERE_R_OUTER /
+# R_CAVITY / BBOX_HALF_EXTENT geometry constants +
+# referenced_vertices.
+sim-soft = { workspace = true }
+# Tensor for solver.replay_step inputs (x_prev, v_prev, theta).
+sim-ml-chassis = { workspace = true }
+# Point3 + IndexedMesh + AttributedMesh wrap for the deformed-boundary
+# PLY (mirrors row 3 / row 11 boundary-face emit pattern).
+mesh-types = { workspace = true }
+# save_ply_attributed for out/shell_boundary.ply (per-vertex
+# radial_displacement scalar).
+mesh-io = { workspace = true }
+# Result<()> return + error-context wrapping for the PLY emit step.
+anyhow = { workspace = true }
+# assert_relative_eq! for the bridge-equivalence position-by-position
+# match + the cavity-wall-vs-Lamé closed-form gate; same convention as
+# rows 1-15.
+approx = { workspace = true }
+# Point3 + Vector3 for trait-method receivers (`cf_design::Sdf` uses
+# `Point3<f64>`; sim-soft adapter sites use `Point3::from(vec3)`).
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true

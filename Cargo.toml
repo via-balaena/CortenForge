@@ -337,6 +337,10 @@ members = [
     "examples/sim-soft/hertz-sphere-plane",
     "examples/sim-soft/compressive-block",
     "examples/sim-soft/contact-force-readout",
+    "examples/sim-soft/mesh-scan-as-solid",
+    "examples/sim-soft/solid-to-sim-soft",
+    "examples/sim-soft/silicone-material-table",
+    "examples/sim-soft/layered-silicone-device",
 
     # Foundation (active development)
     "design/cf-geometry",

@@ -41,6 +41,8 @@
 
 use std::collections::BTreeMap;
 
+use nalgebra::Point3;
+
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
 use crate::mesh::{
@@ -142,7 +144,7 @@ impl SdfMeshedTetMesh {
         // first non-finite value is the smallest `VertexId` that trips.
         let mut sdf_values: Vec<f64> = Vec::with_capacity(n_lattice);
         for (vid, position) in lattice.positions.iter().enumerate() {
-            let raw = sdf.eval(*position);
+            let raw = sdf.eval(Point3::from(*position));
             if !raw.is_finite() {
                 // BccLattice::new caps `n_lattice` at i32-safe range; the
                 // u32 cast is in range by construction.

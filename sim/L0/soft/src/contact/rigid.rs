@@ -2,13 +2,16 @@
 //! one-way soft↔rigid penalty contact.
 //!
 //! Penalty contact is routed through the crate-public [`Sdf`] trait,
-//! so any `impl Sdf` (`SphereSdf`, scan-derived `MeshSdf`, cf-design
-//! `Solid`, ...) is a valid rigid primitive without per-shape
-//! boilerplate; this file holds only `RigidPlane` and its [`Sdf`]
-//! impl. Primitives stay kinematic — they don't move during a step
+//! so any `impl Sdf` (`SphereSdf`, scan-derived
+//! `mesh_sdf::SignedDistanceField`, cf-design `Solid`, ...) is a valid
+//! rigid primitive without per-shape boilerplate; this file holds only
+//! `RigidPlane` and its [`Sdf`] impl. Primitives stay kinematic — they
+//! don't move during a step
 //! (one-way coupling: rigid kinematic, soft side feels the force).
 //! sim-mjcf rigid-body integration is its own future phase before
 //! Phase H IPC.
+
+use nalgebra::Point3;
 
 use crate::{Vec3, sdf_bridge::Sdf};
 
@@ -81,11 +84,11 @@ impl RigidPlane {
 }
 
 impl Sdf for RigidPlane {
-    fn eval(&self, p: Vec3) -> f64 {
-        Self::signed_distance(self, p)
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        Self::signed_distance(self, p.coords)
     }
 
-    fn grad(&self, p: Vec3) -> Vec3 {
-        Self::outward_normal(self, p)
+    fn grad(&self, p: Point3<f64>) -> Vec3 {
+        Self::outward_normal(self, p.coords)
     }
 }

@@ -8,17 +8,20 @@
 //!
 //! under the `φ < 0` inside convention. A point lies inside `A \ B` iff
 //! it is inside `A` and outside `B`. The hollow thick-walled sphere
-//! IV-5 (commit 11) meshes is `SphereSdf{R_outer} \ SphereSdf{R_cavity}`
-//! — interior between the two surfaces, exterior elsewhere.
+//! IV-5 scene meshes as `SphereSdf{R_outer} \ SphereSdf{R_cavity}` —
+//! interior between the two surfaces, exterior elsewhere.
 //!
-//! Phase 4 ships **only Difference**: the closed CSG algebra (Union,
-//! Intersection, smoothed variants per §01) lands when first
-//! consumer-facing requirement surfaces. The combinator pattern below
-//! is the anchor; sibling Union / Intersection drop in as separate
-//! types holding the same `(Box<dyn Sdf>, Box<dyn Sdf>)` tuple with
-//! `min` / `max` instead of `max(_, -_)`. cf-design coordination memo
-//! (scope memo Decision L, commit 13) names this combinator as the
-//! tree-of-Sdfs node type cf-design's `from_design` emission produces.
+//! `cf_design::Solid` ships the broad CSG kernel (Union, Subtract,
+//! Intersect, smoothed variants) over typed `Solid` operands.
+//! `DifferenceSdf` is sim-soft-local and narrower: it composes any two
+//! `Box<dyn Sdf>` operands, so it can heterogeneously combine a sphere
+//! `SphereSdf` with a scan-derived `mesh_sdf::SignedDistanceField` —
+//! something cf-design's `Solid::subtract` (which takes `Self`) cannot
+//! express. Retained alongside [`SphereSdf`](super::SphereSdf) as a
+//! sim-soft-local primitive for IV-5 hollow-shell fixtures (lazy
+//! migration per inventory Q5); the row-20 heterogeneous-CSG path will
+//! decide whether this combinator stays or is replaced by a future
+//! cf-design `Solid::from_sdf`-style adapter.
 //!
 //! # Differentiability
 //!
@@ -40,6 +43,7 @@
 //! [o]: ../../../../../../docs/studies/soft_body_architecture/src/70-sdf-pipeline/00-sdf-primitive/01-operations.md
 
 use crate::Vec3;
+use nalgebra::Point3;
 
 use super::sdf::Sdf;
 
@@ -75,13 +79,13 @@ impl DifferenceSdf {
 }
 
 impl Sdf for DifferenceSdf {
-    fn eval(&self, p: Vec3) -> f64 {
+    fn eval(&self, p: Point3<f64>) -> f64 {
         let phi_a = self.a.eval(p);
         let phi_b = self.b.eval(p);
         phi_a.max(-phi_b)
     }
 
-    fn grad(&self, p: Vec3) -> Vec3 {
+    fn grad(&self, p: Point3<f64>) -> Vec3 {
         let phi_a = self.a.eval(p);
         let phi_b = self.b.eval(p);
         if phi_a >= -phi_b {
@@ -115,7 +119,7 @@ mod tests {
         // probe is equidistant from both surfaces, and either branch
         // returns the same value).
         let s = hollow_shell();
-        assert_relative_eq!(s.eval(Vec3::new(0.07, 0.0, 0.0)), -0.03, epsilon = 1e-15);
+        assert_relative_eq!(s.eval(Point3::new(0.07, 0.0, 0.0)), -0.03, epsilon = 1e-15,);
     }
 
     #[test]
@@ -125,7 +129,7 @@ mod tests {
         // Difference: max(-0.08, 0.02) = 0.02 (inside cavity ⇒ outside
         // shell body).
         let s = hollow_shell();
-        assert_relative_eq!(s.eval(Vec3::new(0.02, 0.0, 0.0)), 0.02, epsilon = 1e-15);
+        assert_relative_eq!(s.eval(Point3::new(0.02, 0.0, 0.0)), 0.02, epsilon = 1e-15,);
     }
 
     #[test]
@@ -134,7 +138,7 @@ mod tests {
         // (φ_a = 0.05), outside cavity (φ_b = 0.11 ⇒ -φ_b = -0.11).
         // Difference: max(0.05, -0.11) = 0.05.
         let s = hollow_shell();
-        assert_relative_eq!(s.eval(Vec3::new(0.15, 0.0, 0.0)), 0.05, epsilon = 1e-15);
+        assert_relative_eq!(s.eval(Point3::new(0.15, 0.0, 0.0)), 0.05, epsilon = 1e-15,);
     }
 
     #[test]
@@ -143,7 +147,7 @@ mod tests {
         // surface lives at r = 0.04, so at r = 0.10 the cavity SDF is
         // 0.06, negated to -0.06). max(0, -0.06) = 0.
         let s = hollow_shell();
-        assert_relative_eq!(s.eval(Vec3::new(0.10, 0.0, 0.0)), 0.0, epsilon = 1e-15);
+        assert_relative_eq!(s.eval(Point3::new(0.10, 0.0, 0.0)), 0.0, epsilon = 1e-15,);
     }
 
     #[test]
@@ -151,7 +155,7 @@ mod tests {
         // r = R_cavity = 0.04 exactly: φ_a = -0.06, -φ_b = 0. max(-0.06, 0)
         // = 0. Cavity surface is the inner zero-set of the hollow body.
         let s = hollow_shell();
-        assert_relative_eq!(s.eval(Vec3::new(0.04, 0.0, 0.0)), 0.0, epsilon = 1e-15);
+        assert_relative_eq!(s.eval(Point3::new(0.04, 0.0, 0.0)), 0.0, epsilon = 1e-15,);
     }
 
     #[test]
@@ -161,7 +165,7 @@ mod tests {
         // p / |p| = +x̂.
         let s = hollow_shell();
         assert_relative_eq!(
-            s.grad(Vec3::new(0.09, 0.0, 0.0)),
+            s.grad(Point3::new(0.09, 0.0, 0.0)),
             Vec3::x(),
             epsilon = 1e-15,
         );
@@ -178,7 +182,7 @@ mod tests {
         // normal points INTO the cavity, i.e. radially inward.
         let s = hollow_shell();
         assert_relative_eq!(
-            s.grad(Vec3::new(0.05, 0.0, 0.0)),
+            s.grad(Point3::new(0.05, 0.0, 0.0)),
             -Vec3::x(),
             epsilon = 1e-15,
         );

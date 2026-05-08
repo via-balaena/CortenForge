@@ -40,6 +40,7 @@
 // construction or surfaces a regression worth investigating.
 #![allow(clippy::expect_used, clippy::panic)]
 
+use nalgebra::Point3;
 use sim_soft::sdf_bridge::{Aabb3, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf};
 use sim_soft::{MaterialField, Mesh, TetId, Vec3};
 
@@ -227,10 +228,10 @@ fn mesh_equals_structurally_to_a_repeat_run() {
 /// tripping `VertexId`.
 struct NanSdf;
 impl Sdf for NanSdf {
-    fn eval(&self, _p: Vec3) -> f64 {
+    fn eval(&self, _p: Point3<f64>) -> f64 {
         f64::NAN
     }
-    fn grad(&self, _p: Vec3) -> Vec3 {
+    fn grad(&self, _p: Point3<f64>) -> Vec3 {
         Vec3::zeros()
     }
 }
