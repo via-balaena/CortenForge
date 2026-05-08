@@ -327,16 +327,16 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
 | `sphere-sdf-eval` | `example-sim-soft-sphere-sdf-eval` | Working | `Sdf` trait contract on `SphereSdf`; 11³ = 1331-point grid with `signed_distance` per-vertex scalar |
-| `hollow-shell-sdf` | `example-sim-soft-hollow-shell-sdf` | Working | `DifferenceSdf` of two `SphereSdf`s; hollow-body composition |
-| `sdf-to-tet-sphere` | `example-sim-soft-sdf-to-tet-sphere` | Working | `SdfMeshedTetMesh::from_sdf` solid sphere; BCC + Labelle-Shewchuk pipeline |
+| `hollow-shell-sdf` | `example-sim-soft-hollow-shell-sdf` | Working | `DifferenceSdf` of two `SphereSdf`s; hollow-body composition; z=0 slice with `signed_distance` + `active_branch` scalars |
+| `sdf-to-tet-sphere` | `example-sim-soft-sdf-to-tet-sphere` | Working | `SdfMeshedTetMesh::from_sdf` solid sphere; BCC + Labelle-Shewchuk Isosurface Stuffing pipeline; first triangle-mesh cf-view consumer (1224 faces, Euler χ = 2, bimodal `boundary_residual` scalar) |
+| `single-tet-stretch` | `example-sim-soft-single-tet-stretch` | Working | Walking-skeleton hand-built tet path — alternative to the SDF route for hand-authored scenes. `SkeletonSolver::step` on `SoftScene::one_tet_cube`; converges in 3 iters to `dz ≈ 9.69e-4 m` matching the IV-1 frozen-reference bit pattern; JSON-only force-stretch trace |
 
 ### Tier 2 — Constitutive + multi-element
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `single-tet-stretch` | `example-sim-soft-single-tet-stretch` | Working | Single Tet4 uniaxial stretch; closed-form NeoHookean comparison |
-| `neo-hookean-uniaxial` | `example-sim-soft-neo-hookean-uniaxial` | Working | Compressible NH through inversion (folds inventory row 7 InversionHandling) |
-| `multi-element-stretch` | `example-sim-soft-multi-element-stretch` | Working | N-tet `HandBuiltTetMesh` uniform Dirichlet stretch; per-element stress agreement |
+| `neo-hookean-uniaxial` | `example-sim-soft-neo-hookean-uniaxial` | Working | Canonical traction-free NH stretch curve — direct-eval `Material::first_piola` / `Material::energy` against closed form across 12-point sweep with inner Newton on `λ_t`; `ValidityDomain` declaration check + 48 captured-bit self-pins; JSON + optional `uv run plot.py` matplotlib panel |
+| `multi-element-stretch` | `example-sim-soft-multi-element-stretch` | Working | Phase 2 multi-element FEM assembly under uniform Dirichlet stretch on a 27-vertex / 48-tet hex grid (`λ = 1.20`, one interior vertex free); per-tet `F` bit-equal `diag(λ, 1, 1)` across all 48 tets; quasi-static via `cfg.density = 0`; JSON-only per-tet uniformity trace |
 
 ### Tier 3 — Multi-material spatial fields
 
@@ -347,7 +347,7 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | `bonded-bilayer-beam` | `example-sim-soft-bonded-bilayer-beam` | Working | Bilayer cantilever beam, EB-composite analytic comparison |
 | `concentric-lame-shells` | `example-sim-soft-concentric-lame-shells` | Working | ★ 3-shell hollow silicone sphere, internal pressure, piecewise-Lamé closed-form (PR1 finale) |
 
-### Tier 4 — Penalty contact (PR2 in flight)
+### Tier 4 — Penalty contact (PR2 shipped at main `55cc3a42`)
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
@@ -356,11 +356,13 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | `compressive-block` | `example-sim-soft-compressive-block` | Working | ★ Soft cube quasi-statically compressed by descending plate; per-refinement F_R two-bound bracket [F_us, F_strain] + Cauchy convergence (V-3a); cf-view colormap PLY + matplotlib F-vs-ε scatter |
 | `contact-force-readout` | `example-sim-soft-contact-force-readout` | Working | ★ Per-active-pair contact readout via `PenaltyRigidContact::per_pair_readout` (foundation patch `995fb0bf`); same V-3a scene as `compressive-block`; accessor-vs-manual consistency at 1e-12 rel; cf-view pressure-colormap PLY + matplotlib top-down patch scatter |
 
-### Tier 5 — Bridges + extensions (PR3 in flight)
+### Tier 5 — Bridges + extensions (PR3 substance complete on `dev`, awaiting squash-merge to main)
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
 | `mesh-scan-as-solid` | `example-sim-soft-mesh-scan-as-solid` | Working | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2); 12-tri programmatic cube fixture, STL save→load round-trip, closed-form L∞-ball anchors via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY (`signed_distance` + `inside_raycast`) with documented HE-1 raycast diagonal degeneracy and F2-caveat-absent identity |
+| `solid-to-sim-soft` | `example-sim-soft-solid-to-sim-soft` | Working | `cf_design::Solid` is a first-class SDF for `SdfMeshedTetMesh::from_sdf` via the F1+F3 bridge (PR3 row 16). Typed boolean-difference body composed via cf-design's CSG kernel flows into sim-soft's BCC + Labelle-Shewchuk pipeline through one `&dyn cf_design::Sdf` coercion; HEADLINE A bit-exact bridge-equivalence anchor vs `DifferenceSdf<SphereSdf>` baseline + cavity-wall mean cross-row continuity bit-equal to row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS` |
+| `silicone-material-table` | `example-sim-soft-silicone-material-table` | Working | Engineering-grade Smooth-On platinum-cure silicone Lamé pairs + density via PR3 F4's `silicone_table.rs` const module. Iterates 7 `pub const SiliconeMaterial` entries (`{Ecoflex 00-10/20/30/50, Dragon Skin 10A/20A/30A}`), dispatches each via `SiliconeMaterial::to_neo_hookean()` (`const` bridge into the `Material` trait), probes at `F = diag(2.0, 1, 1)` (the `σ_100 = 100% engineering strain` data-sheet anchor); 7 verify groups + 21 captured-bit self-pins; JSON-only |
 
 ### Tier 6 — Synthesis (PR3 final row)
 
@@ -370,7 +372,7 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 
 ### Visual-mode convention: `CF_VISUAL=1`
 
-Tier 4 + Tier 6 examples (`soft-drop-on-plane` and successors) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` renders the single quasi-static settled frame):
+Tier 4 examples (`soft-drop-on-plane` + `hertz-sphere-plane` + `compressive-block` + `contact-force-readout`) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` / `compressive-block` / `contact-force-readout` render single quasi-static settled frames):
 
 ```text
 cargo run -p example-sim-soft-soft-drop-on-plane --release           # headless asserts + PLY
