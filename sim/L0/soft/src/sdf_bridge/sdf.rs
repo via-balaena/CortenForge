@@ -6,10 +6,37 @@
 //! are `Point3<f64>`; sim-soft call sites adapt at the boundary via
 //! `Point3::from(vec3)`.
 //!
-//! [`SphereSdf`] is a sim-soft-local impl retained for IV-1 / IV-2 /
-//! IV-3 invariant test fixtures (lazy migration per inventory Q5; the
-//! [`cf_design::Solid::sphere`] ctor covers the same semantics and would
-//! replace `SphereSdf` in a follow-on cleanup pass).
+//! # Two SDF surfaces, one trait
+//!
+//! sim-soft's [`SphereSdf`] and cf-design's [`cf_design::Solid::sphere`]
+//! ctor are both [`Sdf`] implementors of the same primitive; they are
+//! retained side-by-side because each surfaces a different consumer
+//! role:
+//!
+//! - [`cf_design::Solid::sphere`] is the **production design surface**
+//!   for typed-CSG composition between cf-design primitives — pair it
+//!   with [`cf_design::Solid::subtract`] / `union` / etc. when building
+//!   a body whose operands are all themselves `Solid`-typed.
+//! - [`SphereSdf`] is the **trait teaching primitive** + the
+//!   bit-pinned reference surface for IV-1 / IV-2 / IV-3 / IV-5
+//!   invariant fixtures. The Tier 1 example crates
+//!   [`sphere-sdf-eval`][r1], [`hollow-shell-sdf`][r2] (via
+//!   [`DifferenceSdf`](super::DifferenceSdf)), and
+//!   [`sdf-to-tet-sphere`][r3] teach the [`Sdf`] contract through
+//!   `SphereSdf`'s minimal-surface implementation; the
+//!   [`solid-to-sim-soft`][r16] HEADLINE A bridge anchor pins
+//!   `Solid::sphere(r).evaluate(&p)` bit-equal to `SphereSdf::eval(p)`
+//!   at `EXACT_TOL = 0.0` as the cross-crate semantic-equivalence
+//!   contract.
+//!
+//! Both surfaces are correct + retained; the choice is "are you
+//! composing typed cf-design solids" (use `Solid`) vs "are you
+//! teaching the `Sdf` trait or anchoring the bridge" (use `SphereSdf`).
+//!
+//! [r1]: ../../../../../examples/sim-soft/sphere-sdf-eval/
+//! [r2]: ../../../../../examples/sim-soft/hollow-shell-sdf/
+//! [r3]: ../../../../../examples/sim-soft/sdf-to-tet-sphere/
+//! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
 
 use crate::Vec3;
 use nalgebra::Point3;
@@ -24,10 +51,15 @@ pub use cf_design::Sdf;
 /// near the SDF zero set, never at the centre, so the choice is
 /// unobservable downstream.
 ///
-/// `cf_design::Solid::sphere(r)` is the equivalent surface in
-/// cf-design; `SphereSdf` is retained as a sim-soft-local primitive for
-/// IV-1 / IV-2 / IV-3 invariant fixtures (where bit-pinned reference
-/// values depend on this struct's specific `eval` arithmetic).
+/// `SphereSdf` is the canonical Tier 1 teaching primitive for the
+/// [`Sdf`] trait + the bit-pinned reference surface for IV-1 / IV-2 /
+/// IV-3 invariant fixtures (where reference values depend on this
+/// struct's specific `eval` arithmetic). For typed-CSG composition
+/// between cf-design primitives, use [`cf_design::Solid::sphere`]
+/// instead — that's the production design surface; `SphereSdf` is the
+/// minimal-surface impl that teaches the trait. See the module-level
+/// docs for the role split.
+///
 /// `Solid::sphere(r).evaluate(&p)` is bit-equivalent on `eval`, and
 /// both impls return `Vector3::z()` at the origin singularity —
 /// cf-design's `grad_sphere` uses a `< 1e-15` near-singularity guard

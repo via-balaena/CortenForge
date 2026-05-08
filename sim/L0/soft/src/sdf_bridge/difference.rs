@@ -11,17 +11,40 @@
 //! IV-5 scene meshes as `SphereSdf{R_outer} \ SphereSdf{R_cavity}` —
 //! interior between the two surfaces, exterior elsewhere.
 //!
+//! # Two CSG surfaces, one trait
+//!
 //! `cf_design::Solid` ships the broad CSG kernel (Union, Subtract,
-//! Intersect, smoothed variants) over typed `Solid` operands.
-//! `DifferenceSdf` is sim-soft-local and narrower: it composes any two
-//! `Box<dyn Sdf>` operands, so it can heterogeneously combine a sphere
-//! `SphereSdf` with a scan-derived `mesh_sdf::SignedDistanceField` —
-//! something cf-design's `Solid::subtract` (which takes `Self`) cannot
-//! express. Retained alongside [`SphereSdf`](super::SphereSdf) as a
-//! sim-soft-local primitive for IV-5 hollow-shell fixtures (lazy
-//! migration per inventory Q5); the row-20 heterogeneous-CSG path will
-//! decide whether this combinator stays or is replaced by a future
-//! cf-design `Solid::from_sdf`-style adapter.
+//! Intersect, smoothed variants) over typed `Solid` operands;
+//! [`cf_design::Solid::from_sdf`] (PR3 F5) lifts any `impl Sdf` into a
+//! typed `Solid` so `Solid::subtract` itself now covers heterogeneous
+//! cases (e.g., a typed sphere differenced against a scan-derived
+//! `mesh_sdf::SignedDistanceField`). `DifferenceSdf` and
+//! `Solid::subtract` are both [`Sdf`] implementors of the same sharp
+//! difference, retained side-by-side because each surfaces a different
+//! consumer role:
+//!
+//! - [`cf_design::Solid::subtract`] (with [`from_sdf`][fs] when
+//!   needed) is the **production design surface** for typed-CSG.
+//!   Use it when both operands are or can be lifted into `Solid`s and
+//!   you want to compose with the rest of cf-design's CSG kernel.
+//! - `DifferenceSdf` is the **trait teaching primitive** for sharp-CSG
+//!   composition + a `Box<dyn Sdf>` heterogeneous-composition escape
+//!   hatch when lifting through `from_sdf` is undesirable. The Tier 1
+//!   example [`hollow-shell-sdf`][r2] teaches the difference operator
+//!   through `DifferenceSdf::new(SphereSdf, SphereSdf)` at minimal
+//!   surface; [`solid-to-sim-soft`][r16] uses
+//!   `DifferenceSdf<SphereSdf>` as the bit-equality baseline against
+//!   typed-Solid `Solid::sphere().subtract()` at HEADLINE A's
+//!   `EXACT_TOL = 0.0` cross-crate equivalence anchor.
+//!
+//! Both surfaces are correct + retained; the choice is "are your
+//! operands typed-`Solid`-friendly" (use `Solid::subtract`) vs "are
+//! you teaching the trait or anchoring the bridge" (use
+//! `DifferenceSdf`).
+//!
+//! [fs]: cf_design::Solid::from_sdf
+//! [r2]: ../../../../../examples/sim-soft/hollow-shell-sdf/
+//! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
 //!
 //! # Differentiability
 //!
@@ -52,9 +75,10 @@ use super::sdf::Sdf;
 /// Holds two boxed [`Sdf`] trait objects rather than concrete generics
 /// so a single `DifferenceSdf` value can be stored in a uniform
 /// composition tree (per book Part 7 §00 §01 closed-algebra
-/// commitment). The `Box<dyn Sdf>` storage matches the type the
-/// upcoming cf-design `from_design` emission produces (scope memo
-/// Decision L coordination memo).
+/// commitment) and so heterogeneous operands (e.g., a sphere combined
+/// with a scan-derived `mesh_sdf::SignedDistanceField`) compose at the
+/// trait-object boundary without going through
+/// [`cf_design::Solid::from_sdf`].
 ///
 /// `Send + Sync` follows automatically from `Box<dyn Sdf>`'s supertrait
 /// bound.
