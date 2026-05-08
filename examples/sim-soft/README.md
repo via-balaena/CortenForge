@@ -6,10 +6,11 @@ constitutive laws, multi-element + multi-material assembly, penalty
 contact, and the cf-design / mesh-sdf bridges that make the
 layered silicone device cavity-fit workflow possible.
 
-Each example writes static artifacts (PLY + JSON) or renders live
-in Bevy depending on the capability tier — see "Visualization
-convention" below. Per-example READMEs document the locked
-numerical anchors (asserted by `cargo run --release` exit-0). The
+Each example writes static artifacts (PLY + JSON); Tier 4
+contact-tier examples additionally render live in Bevy under
+`CF_VISUAL=1` — see "Visualization convention" below. Per-example
+READMEs document the locked numerical anchors (asserted by
+`cargo run --release` exit-0). The
 arc-level inventory at
 [`sim/L0/soft/EXAMPLE_INVENTORY.md`](../../sim/L0/soft/EXAMPLE_INVENTORY.md)
 covers strategy, ordering, and PR sequencing; this directory is the
@@ -62,7 +63,7 @@ and PR sequencing rationale.
 |---------|---------|
 | [`mesh-scan-as-solid`](mesh-scan-as-solid/) | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2). 12-tri programmatic cube fixture round-tripped through binary STL on disk; closed-form L∞-ball anchors at face / edge / vertex / interior probes via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY with two scalars — `signed_distance` (analytical SDF) and `inside_raycast` (raycast inside-test, with documented HE-1 diagonal gaps). |
 | [`solid-to-sim-soft`](solid-to-sim-soft/) | `cf_design::Solid` is a first-class SDF for `SdfMeshedTetMesh::from_sdf` via the F1+F3 bridge (PR3 row 16). A typed boolean-difference body composed via cf-design's CSG kernel (`Solid::sphere(R_OUTER).subtract(Solid::sphere(R_CAVITY))`) flows into sim-soft's BCC + Labelle-Shewchuk pipeline through one `&dyn cf_design::Sdf` coercion — companion to row 15's scan-SDF bridge. Geometry identical to row 11 (single-material variant, `MaterialField::skeleton_default = uniform(1e5, 4e5)`); HEADLINE A bit-exact bridge-equivalence anchor vs `DifferenceSdf<SphereSdf>` baseline (`equals_structurally` + per-vertex position match at `EXACT_TOL = 0.0`); cavity-wall mean cross-row continuity bit-equal to row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS`. Z-slab PLY with `radial_displacement` scalar (single-material variant, no `material_id`). |
-| [`silicone-material-table`](silicone-material-table/) | Engineering-grade Smooth-On platinum-cure silicone Lamé pairs + density via PR3 F4's `silicone_table.rs` const module. Iterates 7 `pub const SiliconeMaterial` entries (`{Ecoflex 00-10/20/30/50, Dragon Skin 10A/20A/30A}`), dispatches each via `SiliconeMaterial::to_neo_hookean()` (`const` bridge into the `Material` trait surface), probes at `F = diag(2.0, 1, 1)` (the data-sheet `σ_100 = 100 % engineering strain` anchor). 7 verify groups: `λ.to_bits() == (4·μ).to_bits()` ν=0.40 invariant + rest-config zero + closed-form `P_11` / `P_22` / ψ at rel-tol 1e-12 + transverse symmetry + hardness ordering + 21 captured-bit self-pins (3 quantities × 7 materials). JSON-only per `feedback_visual_pass_collapses_for_json_rows`. |
+| [`silicone-material-table`](silicone-material-table/) | Engineering-grade Smooth-On platinum-cure silicone Lamé pairs + density via PR3 F4's `silicone_table.rs` const module. Iterates 7 `pub const SiliconeMaterial` entries (`{Ecoflex 00-10/20/30/50, Dragon Skin 10A/20A/30A}`), dispatches each via `SiliconeMaterial::to_neo_hookean()` (`const` bridge into the `Material` trait surface), probes at `F = diag(2.0, 1, 1)` (the data-sheet `σ_100 = 100% engineering strain` anchor). 7 verify groups: `λ.to_bits() == (4·μ).to_bits()` ν=0.40 invariant + rest-config zero + closed-form `P_11` / `P_22` / ψ at rel-tol 1e-12 + transverse symmetry + hardness ordering + 21 captured-bit self-pins (3 quantities × 7 materials). JSON-only per `feedback_visual_pass_collapses_for_json_rows`. |
 
 ### Tier 6 — Synthesis (the engineering goal)
 
