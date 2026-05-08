@@ -33,6 +33,12 @@ the source of truth for what's planned vs shipped.)
 |---------|---------|
 | [`mesh-scan-as-solid`](mesh-scan-as-solid/) | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2). 12-tri programmatic cube fixture round-tripped through binary STL on disk; closed-form L∞-ball anchors at face / edge / vertex / interior probes via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY with two scalars — `signed_distance` (analytical SDF) and `inside_raycast` (raycast inside-test, with documented HE-1 diagonal gaps) |
 
+### Tier 6 — Synthesis (the engineering goal)
+
+| Example | Concept |
+|---------|---------|
+| [`layered-silicone-device`](layered-silicone-device/) | The PR3 final synthesis row, closing the entire sim-soft examples arc. Composes every PR3 foundation piece (F1–F5) end-to-end: scan-derived rigid indenter (`mesh_sdf::SignedDistanceField`, F2) bridged into typed `cf_design::Solid` via `Solid::from_sdf` (F5 sugar over `user_fn`); 3-shell `MaterialField` from F4's `silicone_table` (outer + inner = `ECOFLEX_00_30`, middle = `DRAGON_SKIN_10A` as the conductive-composite proxy); BCC + Isosurface Stuffing tet pipeline through `SdfMeshedTetMesh::from_sdf` (F1 + F3); static fit pose with the same scan SDF as the rigid indenter (post-PR2 trait-unified `PenaltyRigidContact::new`, first non-plane consumer). 8 anchor groups including F4 const-fn `to_neo_hookean()` Lamé-pair round-trip + per-shell tet-count partition + IV-1 sparse-tier rel-tol on rest-state contact reaction force. Outputs `out/layered_silicone_device.json` (fit-pose scalars + 3-material provenance + per-active-pair detail) and `out/device_zslab.ply` (categorical `material_id` + sequential `displacement_magnitude`, z-slab pattern (aa) for hollow geometry) |
+
 ## Visualization convention
 
 Examples split by tier per

@@ -362,6 +362,12 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 |---------|---------|--------|-------|
 | `mesh-scan-as-solid` | `example-sim-soft-mesh-scan-as-solid` | Working | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2); 12-tri programmatic cube fixture, STL save→load round-trip, closed-form L∞-ball anchors via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY (`signed_distance` + `inside_raycast`) with documented HE-1 raycast diagonal degeneracy and F2-caveat-absent identity |
 
+### Tier 6 — Synthesis (PR3 final row)
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `layered-silicone-device` | `example-sim-soft-layered-silicone-device` | Working | ★ The PR3 Tier 6 synthesis row — composes every PR3 foundation piece (F1–F5) into one end-to-end relative-comparison sim of the layered silicone device cavity-fit. Scan SDF (F2) → typed `Solid::from_sdf` heterogeneous CSG (F5) → `SdfMeshedTetMesh::from_sdf` (F1 + F3) → 3-shell `MaterialField` from F4 (`ECOFLEX_00_30` outer + inner / `DRAGON_SKIN_10A` middle as the conductive-composite proxy) → static fit pose with the same scan SDF as `PenaltyRigidContact` rigid indenter (first non-plane consumer post-PR2 trait unification). Outputs `layered_silicone_device.json` (fit-pose scalars + materials + per-active-pair detail) + `device_zslab.ply` (categorical `material_id` + sequential `displacement_magnitude`, z-slab per pattern (aa) for hollow geometry) |
+
 ### Visual-mode convention: `CF_VISUAL=1`
 
 Tier 4 + Tier 6 examples (`soft-drop-on-plane` and successors) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` renders the single quasi-static settled frame):

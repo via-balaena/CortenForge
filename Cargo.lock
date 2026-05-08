@@ -4890,6 +4890,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-layered-silicone-device"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-sdf",
+ "mesh-types",
+ "nalgebra",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-mesh-scan-as-solid"
 version = "1.0.0"
 dependencies = [

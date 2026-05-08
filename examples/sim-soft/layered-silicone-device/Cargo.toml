@@ -1,0 +1,72 @@
+[package]
+name = "example-sim-soft-layered-silicone-device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# `cf_design::Solid::sphere` + `Solid::subtract` (the typed parametric
+# outer-body kernel) + `Solid::from_sdf` (the heterogeneous-CSG bridge
+# shipped at PR3 F5; promotes a `mesh_sdf::SignedDistanceField` cavity
+# operand into a typed `Solid` leaf). The trait `cf_design::Sdf` rides
+# in via `sim_soft::Sdf` re-export (post-PR3 F3) so this row imports
+# `cf_design::Solid` directly and `cf_design::Sdf` only when the typed-
+# Solid evaluator probe needs it (it doesn't here — every `Sdf::eval`
+# call goes through `sim_soft::Sdf`).
+cf-design = { workspace = true }
+# `mesh_sdf::SignedDistanceField` — the scan-derived rigid-indenter SDF
+# wrapped from a 12-triangle programmatic cube fixture (no checked-in
+# scan asset per the layered-silicone-device memo's sanitization
+# directive). Same fixture-builder pattern as PR3 row 15
+# `mesh-scan-as-solid`.
+mesh-sdf = { workspace = true }
+# `Aabb3` + `BoundaryConditions` + `CpuNewtonSolver` +
+# `LayeredScalarField` + `MaterialField` + `Mesh` + `MeshingHints` +
+# `NewtonStep` + `PenaltyRigidContact` + `PenaltyRigidContactSolver`
+# (alias) + `SceneInitial` + `Sdf` (re-export of `cf_design::Sdf`) +
+# `SdfMeshedTetMesh` + `Solver` + `SolverConfig` + `SphereSdf`
+# (radial-bin-partition driver for the 3-shell `MaterialField` —
+# parametric, not scan-shaped) + `Tet4` + `Vec3` + `VertexId` +
+# `pick_vertices_by_predicate` + `referenced_vertices` +
+# `material::silicone_table::{ECOFLEX_00_30, DRAGON_SKIN_10A}` (F4 const
+# entries; outer + inner = ECOFLEX_00_30, middle = DRAGON_SKIN_10A as
+# the closest pure-silicone proxy for the conductive-composite middle
+# layer).
+sim-soft = { workspace = true }
+# `Tensor` for the empty-traction `theta` argument to `replay_step`
+# (this row's loading is fully penalty-mediated through contact; no
+# distributed pressure on cavity walls). Same idiom as row 18
+# `contact-force-readout`.
+sim-ml-chassis = { workspace = true }
+# `Point3` + `IndexedMesh` + `AttributedMesh` for the programmatic
+# 12-tri cube scan fixture (mirrors row 15
+# `mesh-scan-as-solid::unit_cube`) + the z-slab per-tet centroid PLY
+# wrap (mirrors row 11 + row 16's hollow-body z-slab artifact pattern
+# per pattern (aa) — hollow / interior-cavity bodies use z-slab over
+# full-boundary-surface to avoid 360° outer-shell occlusion in cf-view).
+mesh-types = { workspace = true }
+# `save_ply_attributed` for `out/device_zslab.ply` (per-tet centroid
+# cloud with categorical `material_id` + sequential
+# `displacement_magnitude`).
+mesh-io = { workspace = true }
+# `Result<()>` return + error-context wrapping for the JSON + PLY emit
+# steps. Same convention as rows 1-19.
+anyhow = { workspace = true }
+# `assert_relative_eq!` for the IV-1 sparse-tier rel-tol contract on
+# captured displacement bits + the `to_neo_hookean()` Lamé-pair round-
+# trip + counts-bound and material-provenance gates. Same convention as
+# rows 1-19.
+approx = { workspace = true }
+# JSON emit for `out/layered_silicone_device.json` — fit-pose summary
+# (force_total_n, n_contact_pairs, displacement_m) + per-shell tet
+# counts + per-shell mean displacement bits + material provenance
+# block. Mirrors row 18's two-section schema (scalars + per-active-pair
+# array).
+serde_json = { workspace = true }
+# `Point3` + `Vector3` for trait-method receivers (`cf_design::Sdf`
+# uses `Point3<f64>`; sim-soft adapter sites use `Point3::from(vec3)`).
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true
