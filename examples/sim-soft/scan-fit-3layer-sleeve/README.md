@@ -101,7 +101,7 @@ Every tet has positive signed volume — the BCC + Isosurface Stuffing pipeline 
 | `n_middle_tets` (`DRAGON_SKIN_10A`)| `16_656` | middle-layer tet count |
 | `n_outer_tets` (`DRAGON_SKIN_20A`) | `32_080` | outer-layer tet count |
 | sum                                | `74_628` | partition gate (every tet centroid sits in exactly one shell) |
-| `n_contact_pairs` (active at static fit pose) | `294` | `verify_n_contact_pairs_exact` — pinned separately from `verify_counts_exact`; cavity-wall vertices in the probe-penetration band annulus near `z ≈ 0.040 m` (scan's `+z` cap) |
+| `n_contact_pairs` (active at static fit pose, referenced-only post-v2.5-equivalent cleanup) | `13` | `verify_n_contact_pairs_exact` — pinned separately from `verify_counts_exact`; cavity-wall vertices in the probe-penetration band annulus near `z ≈ 0.040 m` (scan's `+z` cap). Pre-cleanup the unfiltered count was 294 (~95-97 % orphan-driven; `per_pair_readout` includes BCC corners not in any tet, with no FEM stiffness). |
 
 Cross-row continuity to rows 11+16+20 does NOT extend (pattern (y) at row 19's banking memo): all prior rows use spherical body geometries; row 21 uses a cuboid + offset wrap. Geometry differs ⇒ counts differ. Materials also diverge (rows 11+16 use uniform `(μ, λ) = (1e5, 4e5)`; row 20 uses `ECOFLEX_00_30`/`DRAGON_SKIN_10A`/`ECOFLEX_00_30`; row 21 uses `ECOFLEX_00_20`/`DRAGON_SKIN_10A`/`DRAGON_SKIN_20A`).
 
@@ -166,9 +166,9 @@ Static-pose contact reaction force, cavity-wall mean / max displacement, and per
 
 | Anchor | Bits | Approximate value |
 |---|---|---|
-| `force_total_z_n`             | `0xc060_50ca_d2c1_c858` | ~ -130.5 N (`+z`-component of the force-on-soft summed over active pairs) |
-| `cavity_wall_mean_disp_m`     | `0x3f0c_f7ff_0bfc_a80c` | ~ 5.5e-5 m = 55 µm |
-| `cavity_wall_max_disp_m`      | `0x3f60_2b04_a1ce_3f13` | ~ 1.97e-3 m = 1.97 mm |
+| `force_total_z_n` (referenced-only post-cleanup) | `0x3ffd_e776_ddb0_0a18` | ~ +1.87 N (force-on-soft summed in `+z` direction; wrap-cap material is pushed UP by the probe). Pre-cleanup the unfiltered sum was ~ -130.5 N — sign was orphan-driven, see anchor 2 above. |
+| `cavity_wall_mean_disp_m` (referenced-only post-cleanup) | `0x3f54_791c_dd65_0589` | ~ 1.24 mm — mean over the 13 real cavity-wall vertices in the active band. Pre-cleanup was ~55 µm, diluted by ~280 orphan vertices with zero displacement. |
+| `cavity_wall_max_disp_m`      | `0x3f60_2b04_a1ce_3f13` | ~ 1.97 mm. UNCHANGED from pre-cleanup (max is over real movements; orphans contribute zero by construction). |
 | `mean_psi_inner_j_per_m3`     | `0x4022_6b7f_4bef_57af` | ~ 9.21 J/m³ |
 | `mean_psi_middle_j_per_m3`    | `0x3ff8_675a_701a_9886` | ~ 1.53 J/m³ |
 | `mean_psi_outer_j_per_m3`     | `0x3fd5_e5a3_dc72_1c2a` | ~ 0.342 J/m³ |
@@ -201,7 +201,7 @@ This is distinct from the `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` strain-energy 
 
 **Visible xy-anisotropy** — the cuboid has `SCAN_HX = 20 mm > SCAN_HY = 15 mm`, so the ±y wrap faces (40 mm long in x) are LONGER than the ±x wrap faces (30 mm long in y); under the same propagated load, the longer face panels deflect more, and the displacement field shows brighter bands along the ±y faces and dimmer regions along the ±x faces. The wrap THICKNESS itself is uniform (14 mm everywhere) by the `cuboid.offset` semantics; the asymmetry is in face-panel dimensions, not wrap thickness.
 
-**Captured-bit cross-readout caveat** — the bit-pinned `CAVITY_WALL_MEAN_DISP_REF_BITS ≈ 55 µm` and `CAVITY_WALL_MAX_DISP_REF_BITS ≈ 1.97 mm` are statistics over the **active-contact-pair vertex set** at `z ≈ 0.040 m` (the probe contact zone near the scan's `+z` cap), NOT over the z=0 slab visible in cf-view. The slab artifact and the captured cavity-wall stats describe different regions of the body (equatorial slab vs probe-side cap); they are complementary readouts of the same fit-pose simulation, not redundant. The slab's local `displacement_magnitude` range is automatically normalized by cf-view, so the bright zones in the z=0 image are LOCAL maxima of the propagated flexural field, not the absolute peak (which lives at the cap region not present in the z=0 slab).
+**Captured-bit cross-readout caveat** — the bit-pinned `CAVITY_WALL_MEAN_DISP_REF_BITS ≈ 1.24 mm` and `CAVITY_WALL_MAX_DISP_REF_BITS ≈ 1.97 mm` are statistics over the **referenced-filtered active-contact-pair vertex set** at `z ≈ 0.040 m` (the probe contact zone near the scan's `+z` cap), NOT over the z=0 slab visible in cf-view. The slab artifact and the captured cavity-wall stats describe different regions of the body (equatorial slab vs probe-side cap); they are complementary readouts of the same fit-pose simulation, not redundant. The slab's local `displacement_magnitude` range is automatically normalized by cf-view, so the bright zones in the z=0 image are LOCAL maxima of the propagated flexural field, not the absolute peak (which lives at the cap region not present in the z=0 slab).
 
 **Why z-slab over the full-boundary-surface artifact (row 3 sphere precedent)**: per pattern (aa) banked at row 16 N+3, hollow / interior-cavity / partial-occlusion bodies' full boundary surfaces 360°-occlude the cavity and the inner/middle interfaces from every cf-view orbit angle (cf-view exposes no section-cut UI). The z-slab projects centroids onto a 2-D annulus cut, exposing both the radial material-shell partition and the cavity-wall displacement response under probe intrusion. Row 21's geometry is doubly hollow (scan-shaped cavity AND three concentric shells) → z-slab is required by construction; row 16's N+3 pivot is the precedent and rows 20 + 21 ride the precedent.
 

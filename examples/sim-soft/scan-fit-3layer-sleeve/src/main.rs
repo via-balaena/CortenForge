@@ -410,30 +410,44 @@ const N_INNER_TETS_ZSLAB_EXACT: usize = 768;
 const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 432;
 const N_OUTER_TETS_ZSLAB_EXACT: usize = 892;
 
-/// Active contact-pair count at the static fit pose. Contact band is
-/// `sd < d̂ = PENALTY_DHAT_DEFAULT`; the probe overlaps the inner
-/// cavity wall by `PROBE_PENETRATION_DEPTH`, so all inner-cavity-wall
-/// vertices in the penetration zone are active.
-const N_CONTACT_PAIRS_EXACT: usize = 294;
+/// Active contact-pair count at the static fit pose, filtered to
+/// REFERENCED vertices (v2.5-equivalent cleanup, 2026-05-08; row 21
+/// anchor cleanup mirroring row 22 v2.5). 13 real physical contacts
+/// at the 1 mm static-overlap pose. Pre-cleanup the unfiltered count
+/// was 294 (95-97 % orphan-driven — orphan BCC corners inside the
+/// empty cavity, with no FEM stiffness, ignored by the solver).
+/// Cross-row continuity to row 22 v2.5 step 2 (also at 1 mm depth):
+/// bit-equal at 13 pairs.
+const N_CONTACT_PAIRS_EXACT: usize = 13;
 
-/// Total `+z`-component of the static-pose contact reaction force (N).
-/// `force_on_soft = +κ · (d̂ - sd) · normal`; the `+z`-sum captures
-/// the axial component of the fit-tightness force at probe penetration
-/// depth. Bits represent ~ -130.5 N — sign is direction-of-force on the
-/// soft body summed in z; for the row's static-overlap pose the
-/// dominant active-pair set lies on the cavity-wall annulus where the
-/// probe surface intersects the wrap, with the probe-to-vertex
-/// outward normal direction averaging slightly negative-z over the
-/// 294-pair distribution after the elastic-equilibrium settle.
-const FORCE_TOTAL_Z_REF_BITS: u64 = 0xc060_50ca_d2c1_c858;
+/// Total `+z`-component of the static-pose contact reaction force (N),
+/// summed over REFERENCED vertices only (v2.5-equivalent cleanup).
+/// `force_on_soft = +κ · (d̂ - sd) · normal`; for the row's static-
+/// overlap pose the wrap-cap material above the scan's `+z` cap is
+/// pushed UP (`+z` direction), so the physical sum is positive.
+/// Bits represent ~+1.87 N. Pre-cleanup the unfiltered sum was
+/// -130.5 N — that NEGATIVE sign was orphan-driven (orphans below
+/// the probe equator have `-z` normals and dominated the sum);
+/// post-cleanup the physically correct `+z` push surfaces.
+const FORCE_TOTAL_Z_REF_BITS: u64 = 0x3ffd_e776_ddb0_0a18;
 
-/// Cavity-wall mean displacement-magnitude bits (m) over the active-
-/// contact-pair vertex set. ~5.5e-5 m = 55 µm.
-const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f0c_f7ff_0bfc_a80c;
+/// Cavity-wall mean displacement-magnitude bits (m) over the FILTERED
+/// (referenced-only) active-contact-pair vertex set (v2.5-equivalent
+/// cleanup). ~1.24 mm — the 13 real cavity-wall vertices in the
+/// active contact band each move ~1-2 mm under the 1 mm probe
+/// penetration (penalty-equilibrium amplification, see anchor 8's
+/// `max_disp / depth ≈ 2-3×` at shallow penetration prose). Pre-
+/// cleanup the mean was 55 µm — diluted by ~280 orphan vertices
+/// with zero displacement (orphans don't move; the FEM solver skips
+/// them); post-cleanup the mean reflects only physically displaced
+/// cavity-wall material.
+const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f54_791c_dd65_0589;
 
-/// Cavity-wall max displacement-magnitude bits (m) over the active-
-/// contact-pair vertex set. Cross-checks anchor 7's strict
-/// `< WRAP_THICKNESS` bound. ~1.97e-3 m = 1.97 mm.
+/// Cavity-wall max displacement-magnitude bits (m) over the FILTERED
+/// (referenced-only) active-contact-pair vertex set. ~1.97 mm —
+/// UNCHANGED from the pre-cleanup value (max is over real movements;
+/// orphans contribute zero by construction), confirming the orphan-
+/// pollution effect on the mean was a dilution-by-zero artifact.
 const CAVITY_WALL_MAX_DISP_REF_BITS: u64 = 0x3f60_2b04_a1ce_3f13;
 
 /// Per-layer mean strain-energy-density bits (J/m³) — the headline
@@ -1280,7 +1294,25 @@ fn main() -> Result<()> {
             )
         })
         .collect();
-    let readouts = inspection_contact.per_pair_readout(&inspection_mesh, &positions_vec3);
+    let raw_readouts = inspection_contact.per_pair_readout(&inspection_mesh, &positions_vec3);
+    // v2.5-equivalent anchor cleanup (2026-05-08, post-row-22 mirror):
+    // filter readouts to REFERENCED vertices only. Pre-cleanup the
+    // `per_pair_readout` returns ALL body vertex positions whose
+    // `sd < d̂`, including ORPHAN BCC lattice corners not in any tet
+    // (no FEM stiffness contribution; solver ignores them). For row
+    // 21's geometry (probe inside the cavity), orphans inside the
+    // empty cavity dominated readouts at ~95-97 % (286/295 = orphan
+    // at 1 mm penetration) — they polluted `n_pairs` and
+    // `force_total_z` aggregates and inverted the sign of the
+    // anchored force. v2.5 anchors physical contacts only. See
+    // pattern (xx) at row 22 patterns memo.
+    let referenced_set: BTreeSet<VertexId> = referenced.iter().copied().collect();
+    let readouts: Vec<_> = raw_readouts
+        .into_iter()
+        .filter(|r| match r.pair {
+            sim_soft::ContactPair::Vertex { vertex_id, .. } => referenced_set.contains(&vertex_id),
+        })
+        .collect();
     let n_pairs = readouts.len();
     verify_n_contact_pairs_exact(n_pairs);
 
