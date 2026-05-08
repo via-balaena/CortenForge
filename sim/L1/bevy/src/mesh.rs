@@ -242,110 +242,26 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
 
 /// Create a Bevy mesh from a positions+faces [`IndexedMesh`].
 ///
-/// No per-vertex normals available: the renderer computes them from triangle
-/// geometry using a 30° crease-angle split — sharp edges get duplicated
-/// vertices with per-face normals; gentle edges share smoothed vertex
-/// normals. Use [`triangle_mesh_from_attributed`] when analytical
-/// per-vertex normals (e.g. SDF gradient normals from a marching-cubes pass)
-/// are available — that path skips the splitting and renders smoothly.
+/// Delegates to [`cf_bevy_common::mesh::triangle_mesh_flat_shaded`]
+/// with [`cf_bevy_common::axis::UpAxis::PlusZ`] (sim-bevy's hardcoded
+/// physics-Z-up convention) — every triangle emits three unique
+/// output vertices each carrying that triangle's face normal, so
+/// adjacent triangles render as separate flat surfaces under PBR
+/// lighting. Cuboid colliders flat-shade with crisp 90° edges,
+/// curved SDF outputs faithfully expose their tessellation rather
+/// than smoothing it over (matching cf-viewer's WYSIWYP design —
+/// shared single source of truth at `cf-bevy-common::mesh`).
 ///
-/// Coordinates are converted from physics Z-up to Bevy Y-up using
-/// [`vertex_positions_from_points`] and [`normal_to_bevy`].
+/// Use [`triangle_mesh_from_attributed`] when analytical per-vertex
+/// normals (e.g. SDF gradient normals from a marching-cubes pass)
+/// are available — that path uses the supplied normals directly.
 #[must_use]
 pub fn triangle_mesh_from_indexed(mesh_data: &IndexedMesh) -> Mesh {
-    // Crease-angle vertex splitting: sharp edges (> 30°) get split vertices
-    // with per-face normals, gentle edges share vertices with smooth averaged
-    // normals. This gives flat shading on cuboid faces and smooth shading on
-    // curved SDF surfaces. 30° matches the industry standard auto-smooth
-    // threshold (Blender, Maya).
-    const CREASE_COS: f64 = 0.866; // cos(30°)
-
-    let vertices = &mesh_data.vertices;
-    let triangles = &mesh_data.faces;
-
-    if vertices.is_empty() || triangles.is_empty() {
-        return Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
-        );
-    }
-
-    // Pre-convert all positions to Bevy coordinates
-    let bevy_positions = vertex_positions_from_points(vertices);
-
-    // Compute unit face normals in physics space
-    let face_normals: Vec<nalgebra::Vector3<f64>> = triangles
-        .iter()
-        .map(|face| {
-            let v0 = vertices[face[0] as usize];
-            let v1 = vertices[face[1] as usize];
-            let v2 = vertices[face[2] as usize];
-            let n = (v1 - v0).cross(&(v2 - v0));
-            let len = n.norm();
-            if len > 1e-10 {
-                n / len
-            } else {
-                nalgebra::Vector3::z()
-            }
-        })
-        .collect();
-
-    // For each original vertex, track output splits: (output_index, representative_normal).
-    // A face joins an existing split if its normal is within the crease angle of the
-    // representative (first face that created the split). Otherwise a new split is created.
-    //
-    // Winding fix: the Y↔Z coordinate swap (Z-up → Y-up) reverses handedness,
-    // flipping triangle winding. We emit vertices as (v0, v2, v1) instead of
-    // (v0, v1, v2) to restore correct front-face orientation in Bevy.
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut normal_sums: Vec<nalgebra::Vector3<f64>> = Vec::new();
-    let mut indices: Vec<u32> = Vec::with_capacity(triangles.len() * 3);
-    let mut splits: Vec<Vec<(u32, nalgebra::Vector3<f64>)>> = vec![Vec::new(); vertices.len()];
-
-    for (fi, face) in triangles.iter().enumerate() {
-        let fn_ = face_normals[fi];
-        for &vi in &[face[0], face[2], face[1]] {
-            let vi_usize = vi as usize;
-            let found = splits[vi_usize]
-                .iter()
-                .find(|(_, rep)| fn_.dot(rep) >= CREASE_COS)
-                .map(|&(idx, _)| idx);
-
-            if let Some(out_idx) = found {
-                normal_sums[out_idx as usize] += fn_;
-                indices.push(out_idx);
-            } else {
-                let out_idx = positions.len() as u32;
-                positions.push(bevy_positions[vi_usize]);
-                normal_sums.push(fn_);
-                splits[vi_usize].push((out_idx, fn_));
-                indices.push(out_idx);
-            }
-        }
-    }
-
-    // Normalize accumulated normals and convert to Bevy coordinates
-    let normals: Vec<[f32; 3]> = normal_sums
-        .iter()
-        .map(|n| {
-            let len = n.norm();
-            if len > 1e-6 {
-                normal_to_bevy(&(n / len))
-            } else {
-                [0.0, 1.0, 0.0]
-            }
-        })
-        .collect();
-
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-
-    mesh
+    cf_bevy_common::mesh::triangle_mesh_flat_shaded(
+        mesh_data,
+        None,
+        cf_bevy_common::axis::UpAxis::PlusZ,
+    )
 }
 
 /// Create a Bevy mesh from an [`AttributedMesh`].
