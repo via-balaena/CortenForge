@@ -33,7 +33,7 @@
 //! cavity-fit workflow, after row 20. Where row 20 carved a 12-tri-cube
 //! cavity from a parametric outer sphere, this row models the
 //! manufacturing target's geometry: a thin-walled 3-layer sleeve
-//! wrapping a tapered scan stand-in, exercised by a spherical rigid
+//! wrapping a cuboid scan stand-in, exercised by a spherical rigid
 //! intrusion probe under a static overlap pose.
 //!
 //! [mem]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_layered_silicone_device.md
@@ -103,15 +103,19 @@
 //!    Dirichlet pin (`|outer_envelope.eval(p)| < CELL_SIZE / 2` band)
 //!    plus `PenaltyRigidContact::new(vec![probe_solid])` where
 //!    `probe_solid = Solid::sphere(PROBE_RADIUS).translate(...)` is
-//!    positioned to penetrate `PROBE_PENETRATION_DEPTH = 0.008 m`
-//!    (8 mm) past the scan's `+z` extent into the sleeve cavity. The
+//!    positioned to penetrate `PROBE_PENETRATION_DEPTH = 0.001 m`
+//!    (1 mm) past the scan's `+z` extent into the sleeve cavity. The
 //!    static overlap pose drives the inner-layer cavity wall to
 //!    deform around the probe; the cavity-side cavity-wall vertices
 //!    in the penetration zone start INSIDE the contact band at rest,
 //!    and the static fit pose finds the equilibrium where the
-//!    penalty-elastic balance settles. Headline "fit-tightness"
-//!    readout is the peak normal force at the penetration band per
-//!    pattern-row-20 idiom.
+//!    penalty-elastic balance settles. v1 keeps the overlap gentle
+//!    (1 mm) so the iter-0 penalty gradient stays inside Newton's
+//!    basin of convergence on the stiffer 18-113 kPa silicone stack;
+//!    deeper penetration (the user-target 8 mm physical intrusion)
+//!    flows through v2's quasi-static multi-step ramp. Headline
+//!    "fit-tightness" readout is the peak normal force at the
+//!    penetration band per pattern-row-20 idiom.
 //!
 //! 7. **Per-tet strain energy density** — first sim-soft user-facing
 //!    row to demonstrate post-solve per-tet `Ψ` extraction. The
@@ -157,13 +161,12 @@
 //! Per the [device memo][mem]'s sanitization directive: the scanned
 //! reference geometry is referred to as "scanned reference geometry"
 //! or "scan stand-in" throughout this crate's prose. No anatomical
-//! references appear in any tracked surface. The superellipsoid
-//! placeholder is a parametric synthetic stand-in — the pipeline
-//! demonstration is the workflow ("scan-shaped body → wrap by offset
-//! → carve cavity → 3-material FEM → rigid intrusion contact"), not
-//! the superellipsoid's specific geometry; production runs swap the
-//! superellipsoid for a real scan via row 15's STL-import path
-//! without any other code change.
+//! references appear in any tracked surface. The cuboid placeholder
+//! is a parametric synthetic stand-in — the pipeline demonstration is
+//! the workflow ("scan-shaped body → wrap by offset → carve cavity
+//! → 3-material FEM → rigid intrusion contact"), not the cuboid's
+//! specific geometry; production runs swap the cuboid for a real
+//! scan via row 15's STL-import path without any other code change.
 //!
 //! # Run
 //!
@@ -172,12 +175,14 @@
 //! ```
 //!
 //! Per `feedback_release_mode_heavy_tests` — release mode is required
-//! for the FEM solve at this mesh resolution (~100–150 k tets through
-//! faer's sparse Cholesky); debug mode would take many minutes for
-//! what runs in tens of seconds release. The `CELL_SIZE = 0.002 m`
-//! (2 mm) is sized so the thinnest 3 mm outer layer carries at least
-//! one BCC cell across thickness — coarsening to 5 mm cells would
-//! erase the outer layer entirely.
+//! for the FEM solve at this mesh resolution (~75 k tets through
+//! faer's sparse Cholesky + 9 Newton iters); debug mode would take
+//! many minutes for what runs in seconds release. The `CELL_SIZE =
+//! 0.004 m` (4 mm) is sized so each of the 6/4/4 mm layers carries at
+//! least one BCC cell across thickness — coarsening further would
+//! erase the middle and outer layers, and finer cells (e.g.
+//! `0.002 m`) push the per-cell penalty gradient too high under the
+//! static-overlap pose, inverting tets in the first Newton step.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -269,8 +274,9 @@ const BBOX_HALF_Z: f64 = SCAN_HZ + WRAP_THICKNESS + CELL_SIZE;
 
 /// BCC lattice spacing (m). `0.004 m` (4 mm) is sized so each of the
 /// three 6/4/4 mm layers carries at least one BCC cell across
-/// thickness. The resulting tet count is ~30 k — comparable to row
-/// 20's 7 k baseline, runs release-mode through faer sparse Cholesky
+/// thickness. The resulting tet count is ~75 k — ~10× row 20's
+/// ~7 k baseline (the body is z-elongated and the wrap shell occupies
+/// most of the bbox), runs release-mode through faer sparse Cholesky
 /// in seconds. v2's quasi-static ramp will tolerate finer cells +
 /// the user-target 6/5/3 mm layer split.
 const CELL_SIZE: f64 = 0.004;
@@ -279,8 +285,11 @@ const CELL_SIZE: f64 = 0.004;
 // Constants — rigid intrusion probe
 // =============================================================================
 
-/// Spherical probe radius (m). 12 mm probe drives a 24 mm contact
-/// patch on the inner cavity wall at full penetration.
+/// Spherical probe radius (m). 12 mm probe centred at
+/// `(0, 0, PROBE_CENTER_Z)` reaches z ∈ `[PROBE_CENTER_Z - 12 mm,
+/// PROBE_CENTER_Z + 12 mm]`; at v1's 1 mm penetration the probe-wrap
+/// overlap is a thin annulus near the scan's `+z` cap, ~294 active
+/// contact pairs.
 const PROBE_RADIUS: f64 = 0.012;
 
 /// Probe penetration depth (m) past the scan's `+z` extent. The
@@ -297,7 +306,7 @@ const PROBE_PENETRATION_DEPTH: f64 = 0.001;
 
 /// Probe centre `+z` coordinate (m). At rest the probe centre sits at
 /// `SCAN_HZ - PROBE_RADIUS + PROBE_PENETRATION_DEPTH = 0.040 - 0.012 +
-/// 0.008 = 0.036 m`, so the probe surface penetrates the cavity by
+/// 0.001 = 0.029 m`, so the probe surface penetrates the cavity by
 /// `PROBE_PENETRATION_DEPTH` along the scan's long axis.
 const PROBE_CENTER_Z: f64 = SCAN_HZ - PROBE_RADIUS + PROBE_PENETRATION_DEPTH;
 
@@ -321,10 +330,10 @@ const MAX_NEWTON_ITER: usize = 50;
 // =============================================================================
 
 /// IV-1 sparse-tier rel-tol for captured force / displacement / per-
-/// layer Ψ̄ bits. ~100-150 k tets through faer's sparse Cholesky lives
-/// at the upper end of the IV-1 sparse-at-scale tier (3-ULP cross-
-/// platform drift); `1e-12` admits sparse-solver SIMD/FMA noise while
-/// catching any real regression. Same precedent as rows 6+10+11+16+20.
+/// layer Ψ̄ bits. ~75 k tets through faer's sparse Cholesky lives at
+/// the IV-1 sparse-at-scale tier (3-ULP cross-platform drift);
+/// `1e-12` admits sparse-solver SIMD/FMA noise while catching any
+/// real regression. Same precedent as rows 6+10+11+16+20.
 const SPARSE_REL_TOL: f64 = 1.0e-12;
 
 /// Absolute floor for the captured-bits comparison; below the cavity-
@@ -355,8 +364,9 @@ const MATERIAL_PROBE_EXACT_TOL: f64 = 0.0;
 // arm64 — same toolchain + platform as IV-1's reference capture. Re-
 // bake protocol per IV-1: if a rel-tol assertion fails, do NOT re-
 // bake; rule out toolchain drift first; if same toolchain, real
-// regression in cf-design's `superellipsoid` / `offset` plumbing OR
-// in sim-soft's BCC + IS + faer hot path.
+// regression in cf-design's `cuboid` / `offset` plumbing OR in
+// sim-soft's BCC + IS + faer hot path OR in the inline
+// `deformation_gradient` arithmetic.
 //
 // First-run capture is bootstrapped via `CF_CAPTURE_BITS=1` (pattern
 // (cc) banked at row 19): when the env var is set, the capture-print
@@ -509,9 +519,9 @@ fn build_probe_solid() -> Solid {
 /// is the wrap shell).
 fn build_material_field() -> MaterialField {
     // Partition Sdf is the scan itself — every cloned `Box<dyn Sdf>`
-    // wraps a fresh copy of the typed-Solid superellipsoid, evaluated
-    // at the per-tet centroid in `LayeredScalarField::sample` to look
-    // up `phi = scan.eval(p)` distance-from-scan.
+    // wraps a fresh copy of the typed-Solid cuboid, evaluated at the
+    // per-tet centroid in `LayeredScalarField::sample` to look up
+    // `phi = scan.eval(p)` distance-from-scan.
     let scan_for_partition = || Box::new(build_scan_solid()) as Box<dyn Sdf>;
 
     let mu_field: Box<dyn Field<f64>> = Box::new(LayeredScalarField::new(
@@ -545,11 +555,14 @@ fn build_material_field() -> MaterialField {
 /// chain is strict-`<` test). Rows 8 + 20 use `<=` because their
 /// sphere geometry + BCC tet centroids don't generate exact-threshold
 /// `phi` values at any meaningful fraction of tets; row 21's axis-
-/// aligned cuboid SDF + axis-aligned BCC grid + thresholds chosen as
-/// integer multiples of `CELL_SIZE` (`0.006 = 3 * cell`, `0.011 =
-/// 5.5 * cell`) DO generate exact matches at a regular fraction of
-/// tets, so the strict-`<` convention is required for the per-tet
-/// classifier to agree with the `MaterialField`'s sample bit-equally.
+/// aligned cuboid SDF + axis-aligned BCC grid + face-aligned tet
+/// centroids inside the wrap region DO generate exact phi-at-threshold
+/// matches at a regular fraction of tets (e.g. centroids on the +x
+/// face annulus see `phi = cx - SCAN_HX` with `cx` at half-integer
+/// multiples of `CELL_SIZE / 2`, hitting `LAYER_INNER = 0.006` and
+/// `LAYER_MIDDLE_OUTER = 0.010` exactly), so the strict-`<` convention
+/// is required for the per-tet classifier to agree with the
+/// `MaterialField`'s sample bit-equally.
 fn shell_at_phi(phi: f64) -> usize {
     if phi < LAYER_INNER {
         0 // inner
@@ -1148,7 +1161,7 @@ fn main() -> Result<()> {
     println!("scan-fit-3layer-sleeve — row 21 (Tier 6 synthesis #2)");
     println!();
 
-    // 1. Scan stand-in (typed-Solid superellipsoid).
+    // 1. Scan stand-in (typed-Solid cuboid).
     let scan_solid = build_scan_solid();
 
     // 2. Outer envelope = scan offset by WRAP_THICKNESS.
@@ -1578,7 +1591,7 @@ const _: () = {
     assert!(PROBE_PENETRATION_DEPTH > 0.0);
     assert!(PROBE_PENETRATION_DEPTH < PROBE_RADIUS);
     // The thinnest layer (outer at LAYER_OUTER - LAYER_MIDDLE_OUTER =
-    // 3 mm) carries at least one BCC cell across thickness.
+    // 4 mm at v1) carries at least one BCC cell across thickness.
     assert!(LAYER_OUTER - LAYER_MIDDLE_OUTER >= CELL_SIZE);
     // Bbox covers the outer envelope with one-cell-edge slack on
     // every axis.

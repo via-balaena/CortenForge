@@ -75,7 +75,7 @@ The same body expression scales — replacing the cuboid with `Solid::from_sdf(S
 
 ## Sanitization
 
-Per the [device memo][mem]'s sanitization directive — the scanned reference geometry is referred to as "scanned reference geometry" or "scan stand-in" throughout this crate's prose. No anatomical references appear in any tracked surface. The superellipsoid placeholder is a parametric synthetic stand-in: the pipeline demonstration is the workflow ("scan-shaped body → wrap by offset → carve cavity → 3-material FEM → rigid intrusion contact"), not the superellipsoid's specific geometry. Production runs swap the superellipsoid for a real scan via row 15's STL-import path without any other code change.
+Per the [device memo][mem]'s sanitization directive — the scanned reference geometry is referred to as "scanned reference geometry" or "scan stand-in" throughout this crate's prose. No anatomical references appear in any tracked surface. The cuboid placeholder is a parametric synthetic stand-in: the pipeline demonstration is the workflow ("scan-shaped body → wrap by offset → carve cavity → 3-material FEM → rigid intrusion contact"), not the cuboid's specific geometry. Production runs swap the cuboid for a real scan via row 15's STL-import path without any other code change.
 
 ## Numerical anchors
 
@@ -101,6 +101,7 @@ Every tet has positive signed volume — the BCC + Isosurface Stuffing pipeline 
 | `n_middle_tets` (`DRAGON_SKIN_10A`)| `16_656` | middle-layer tet count |
 | `n_outer_tets` (`DRAGON_SKIN_20A`) | `32_080` | outer-layer tet count |
 | sum                                | `74_628` | partition gate (every tet centroid sits in exactly one shell) |
+| `n_contact_pairs` (active at static fit pose) | `294` | `verify_n_contact_pairs_exact` — pinned separately from `verify_counts_exact`; cavity-wall vertices in the probe-penetration band annulus near `z ≈ 0.040 m` (scan's `+z` cap) |
 
 Cross-row continuity to rows 11+16+20 does NOT extend (pattern (y) at row 19's banking memo): all prior rows use spherical body geometries; row 21 uses a cuboid + offset wrap. Geometry differs ⇒ counts differ. Materials also diverge (rows 11+16 use uniform `(μ, λ) = (1e5, 4e5)`; row 20 uses `ECOFLEX_00_30`/`DRAGON_SKIN_10A`/`ECOFLEX_00_30`; row 21 uses `ECOFLEX_00_20`/`DRAGON_SKIN_10A`/`DRAGON_SKIN_20A`).
 
@@ -192,7 +193,7 @@ cf-view auto-picks the colormap per pattern (u) banked at row 15:
 - **`material_id`** is binary-categorical (3 distinct values 0/1/2) → cf-view picks the **categorical palette** (rows 11+16+20 precedent for shell-id readouts).
 - **`displacement_magnitude`** is unipolar continuous → cf-view picks **sequential viridis**.
 
-The slab projects centroids onto a 2-D annulus on `z = 0`. Three concentric bands of categorical `material_id` overlap with a continuous `displacement_magnitude` distribution: the inner-layer cavity-wall side near the probe-penetration zone (`z ≈ 0`, but the probe centre is at `z = 0.036 m`, so the z=0 slab is just outside the high-displacement zone) shows the strongest displacement signal off-axis; outer-layer centroids near the Dirichlet pin band fall toward zero displacement.
+The slab projects centroids onto a 2-D annulus on `z = 0`. Three concentric bands of categorical `material_id` overlap with a continuous `displacement_magnitude` distribution: the probe centre at `z = 0.029 m` is well above the slab cut, so the z=0 slab catches the radial decay of the displacement field as it propagates from the contact band down through the wrap toward the equator (most active-pair displacement concentrates at `z ≈ 0.040 m` near the scan's `+z` cap, far from the slab); outer-layer centroids near the Dirichlet pin band fall toward zero displacement throughout.
 
 **Why z-slab over the full-boundary-surface artifact (row 3 sphere precedent)**: per pattern (aa) banked at row 16 N+3, hollow / interior-cavity / partial-occlusion bodies' full boundary surfaces 360°-occlude the cavity and the inner/middle interfaces from every cf-view orbit angle (cf-view exposes no section-cut UI). The z-slab projects centroids onto a 2-D annulus cut, exposing both the radial material-shell partition and the cavity-wall displacement response under probe intrusion. Row 21's geometry is doubly hollow (scan-shaped cavity AND three concentric shells) → z-slab is required by construction; row 16's N+3 pivot is the precedent and rows 20 + 21 ride the precedent.
 
@@ -221,4 +222,4 @@ This row is v1 of a queued evolution toward iter-2+ silicone-device design suppo
 - **v2** — multi-step force-displacement curve (5-10 step ramp + JSON sidecar with capture provenance). Replaces the single static fit pose with a quasi-static intrusion sweep.
 - **v3** — axial zoned variation (proximal/mid/distal stiffness modifier composed onto the radial `LayeredScalarField`). Needs a custom `Field<f64>` impl OR a `BlendedScalarField` composition over a longitudinal SDF.
 - **v4** — explicit thin copper-mesh sub-layer (4-shell `LayeredScalarField`; ~0.5 mm mesh-band at much higher Shore between Ecoflex and DS10A).
-- **vN** — real anatomy scan replacing the superellipsoid fixture (`mesh_sdf::SignedDistanceField::new(scan_indexed_mesh)` lifted via PR3 F2 `impl Sdf for SignedDistanceField`, then `Solid::from_sdf` per F5 — exactly row 20's path).
+- **vN** — real anatomy scan replacing the cuboid fixture (`mesh_sdf::SignedDistanceField::new(scan_indexed_mesh)` lifted via PR3 F2 `impl Sdf for SignedDistanceField`, then `Solid::from_sdf` per F5 — exactly row 20's path).

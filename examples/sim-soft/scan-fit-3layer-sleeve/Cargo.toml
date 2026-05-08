@@ -6,15 +6,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# `cf_design::Solid::superellipsoid` (the asymmetric tapered scan
-# stand-in body) + `Solid::offset` (the wrap-thickness extrusion that
+# `cf_design::Solid::cuboid` (the axis-aligned scan stand-in body —
+# exact-SDF primitive required for offset to produce a true uniform
+# wrap shell) + `Solid::offset` (the wrap-thickness extrusion that
 # produces the outer envelope) + `Solid::subtract` (the heterogeneous
 # CSG that carves the scan-shaped cavity from the wrapped envelope to
-# yield the sleeve body) + `Solid::sphere` (the rigid intrusion probe).
-# `cf_design::Aabb` for the `MeshingHints` evaluation domain. Per PR3
-# F1 (`impl Sdf for Solid` at `design/cf-design/src/sdf.rs:56`), every
-# `Solid` is itself an `impl Sdf` and bridges into sim-soft's tet
-# meshing + contact pipelines via the same trait — no per-shape glue.
+# yield the sleeve body) + `Solid::sphere` + `Solid::translate` (the
+# rigid intrusion probe, positioned over the scan's `+z` cap). Per
+# PR3 F1 (`impl Sdf for Solid` at `design/cf-design/src/sdf.rs:56`),
+# every `Solid` is itself an `impl Sdf` and bridges into sim-soft's
+# tet meshing + contact pipelines via the same trait — no per-shape
+# glue.
 cf-design = { workspace = true }
 # `Aabb3` + `BoundaryConditions` + `CpuNewtonSolver` +
 # `LayeredScalarField` + `MaterialField` + `Mesh` + `MeshingHints` +
