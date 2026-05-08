@@ -18,7 +18,7 @@ pub mod penalty;
 pub mod rigid;
 
 pub use null::NullContact;
-pub use penalty::PenaltyRigidContact;
+pub use penalty::{PenaltyRigidContact, filter_pair_readouts_to_referenced};
 pub use rigid::RigidPlane;
 
 /// A pair of geometric primitives active under the contact model.

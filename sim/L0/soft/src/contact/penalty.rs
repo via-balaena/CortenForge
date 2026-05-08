@@ -167,6 +167,37 @@ impl PenaltyRigidContact {
     }
 }
 
+/// Filter `per_pair_readout` results to vertices in the given referenced
+/// set, dropping orphan BCC lattice corners that are not in any tet.
+///
+/// [`PenaltyRigidContact::per_pair_readout`] returns one
+/// [`ContactPairReadout`] for every body vertex in the contact band
+/// (`sd < d̂`) regardless of whether that vertex is referenced by any
+/// tet. Orphans sit at their rest BCC-lattice positions and are
+/// excluded from the solver's free-DOF set; their inclusion in
+/// readouts is a deterministic regression gate but pollutes
+/// physically-meaningful aggregates. For probe-inside-cavity
+/// geometries the orphan share can dominate at 95-97 % of readouts
+/// (rows 21 + 22 silicone-sleeve precedent — see pattern (xx) at
+/// `project_sim_soft_row_22_patterns.md`).
+///
+/// Returns a fresh `Vec` containing only the referenced-vertex readouts
+/// in the same order as the input. Pass `referenced_vertices(&mesh)`
+/// (or any subset thereof) for the `referenced` slice.
+#[must_use]
+pub fn filter_pair_readouts_to_referenced(
+    readouts: Vec<ContactPairReadout>,
+    referenced: &[VertexId],
+) -> Vec<ContactPairReadout> {
+    let set: std::collections::BTreeSet<VertexId> = referenced.iter().copied().collect();
+    readouts
+        .into_iter()
+        .filter(|r| match r.pair {
+            ContactPair::Vertex { vertex_id, .. } => set.contains(&vertex_id),
+        })
+        .collect()
+}
+
 impl ContactModel for PenaltyRigidContact {
     /// Walks soft vertices outer (`0..positions.len()`) × rigid
     /// primitives inner (`0..self.primitives.len()`); emits a
