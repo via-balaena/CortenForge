@@ -338,6 +338,7 @@ members = [
     "examples/sim-soft/compressive-block",
     "examples/sim-soft/contact-force-readout",
     "examples/sim-soft/mesh-scan-as-solid",
+    "examples/sim-soft/solid-to-sim-soft",
 
     # Foundation (active development)
     "design/cf-geometry",

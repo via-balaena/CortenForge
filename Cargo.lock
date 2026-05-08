@@ -4960,6 +4960,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-solid-to-sim-soft"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-sphere-sdf-eval"
 version = "1.0.0"
 dependencies = [
