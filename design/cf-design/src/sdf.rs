@@ -79,15 +79,14 @@ impl Sdf for Solid {
 /// well within face interiors.
 ///
 /// **Sign-heuristic caveat (inherited from `mesh-sdf`).** mesh-sdf's
-/// `distance` infers inside/outside from the dot product of the closest
-/// face's outward normal with `point - v0_of_closest_face`. This is
-/// reliable for points within roughly one mesh-edge-length of the
-/// surface — including the contact band for penalty-contact use cases.
-/// For points far from the surface where the geometrically-closest
-/// face's plane separates the probe from the rest of the body, the
-/// heuristic can return the wrong sign. Consumers needing robust
-/// inside/outside far from the surface should prefer
-/// [`SignedDistanceField::is_inside`] (ray-cast based) directly.
+/// `distance` infers inside/outside from a face-normal heuristic
+/// applied to the closest face. The heuristic is reliable for points
+/// within roughly one mesh-edge-length of the surface, but for points
+/// far from the surface where the closest face's plane happens to lie
+/// between the probe and the rest of the body, the heuristic can
+/// return the wrong sign. Consumers needing robust far-field
+/// inside/outside should prefer [`SignedDistanceField::is_inside`]
+/// (ray-cast based) directly.
 impl Sdf for SignedDistanceField {
     fn eval(&self, p: Point3<f64>) -> f64 {
         self.distance(p)
@@ -190,8 +189,7 @@ mod tests {
 
     /// Regular tetrahedron with the bottom face on z=0 and apex above.
     /// Bottom face winding `[0, 2, 1]` is CCW from below — outward face
-    /// normal of the bottom is -z. Same shape as mesh-sdf's existing
-    /// `unit_tetrahedron` test fixture.
+    /// normal of the bottom is `-z`.
     fn unit_tetrahedron() -> mesh_types::IndexedMesh {
         let mut mesh = mesh_types::IndexedMesh::new();
         mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -218,10 +216,8 @@ mod tests {
         assert!(<SignedDistanceField as Sdf>::eval(&sdf, interior) < 0.0);
 
         // Strictly outside (positive): one unit below the bottom-face
-        // centroid. Within the surface-proximate band where mesh-sdf's
-        // closest-face heuristic is reliable (per the impl docstring's
-        // sign-heuristic caveat); this is the regime penalty contact
-        // operates in.
+        // centroid — the closest face is unambiguously the bottom
+        // (outward `-z`), and the signed distance is exactly 1.
         let exterior_below = Point3::new(0.5, 0.289, -1.0);
         assert_relative_eq!(
             <SignedDistanceField as Sdf>::eval(&sdf, exterior_below),
