@@ -40,6 +40,7 @@ mod mesher;
 pub mod optim;
 mod param;
 mod param_gradient;
+mod sdf;
 mod simplify;
 mod solid;
 
@@ -51,6 +52,7 @@ pub use mechanism::{
     split_part,
 };
 pub use param::{ParamRef, ParamStore};
+pub use sdf::Sdf;
 pub use solid::{InfillKind, ShapeHint, Solid};
 
 // Re-export geometry types that appear in our public API
