@@ -190,11 +190,12 @@ cargo run -p cf-viewer --release -- examples/sim-soft/mesh-scan-as-solid/out/sdf
 
 cf-view auto-discovers per-vertex scalars and selects the
 alphabetical first by default — so the launch view is colour-mapped
-by `inside_raycast` (sequential viridis; binary mask of the cube
-interior, with HE-1 holes along the `y = z` diagonal of the +X
-face). Switch to `signed_distance` (divergent bwr — blue interior,
-white surface band, red exterior) via the side-panel scalar
-dropdown; the colormap re-detects per scalar.
+by `inside_raycast` with the `categorical` palette auto-picked
+(blue = 0 / outside, orange = 1 / inside; cf-view's auto-detect
+treats the binary 0/1 distribution as categorical, not sequential).
+Switch to `signed_distance` via the side-panel scalar dropdown;
+cf-view re-runs auto-detect per scalar and lands on `divergent`
+(red-blue) since the field straddles zero.
 
 For scripted reproducibility, pre-select `signed_distance` from
 the CLI:
@@ -203,27 +204,42 @@ the CLI:
 cargo run -p cf-viewer --release -- examples/sim-soft/mesh-scan-as-solid/out/sdf_grid.ply --scalar=signed_distance
 ```
 
-What you should see when colour-mapped by `signed_distance`:
+What you should see when colour-mapped by `signed_distance`
+(divergent red-blue; auto-detected since the field straddles zero):
 
-- **Cubic radial gradient** — negative interior shrinks to a
-  central darkest-blue cube of strict-interior probes, surface
-  band at zero, positive exterior expanding to bbox corners
-  (`(±2, ±2, ±2)`) at value `√(3 · 1²) = √3 ≈ +1.732` (vertex
-  region: three `d_i = 1`), and `(±2, 0, 0)` etc. at `+1.0` for
-  axis-aligned far-field (face region: one `d_i = 1`).
-- **Sharp face-band step** — the L∞-ball SDF has piecewise-smooth
-  gradient (six face regions, twelve edge wedges, eight vertex
-  caps); the colormap shows visible kinks where the closest-face
-  identity flips.
+- **Small central blue cube** — the strict-interior probes (343
+  of 4913 ≈ 7 %) appear as a small darkest-blue region in the
+  middle. The bbox extent is 4 × R per axis, so the interior is
+  geometrically small relative to the bulk of the rendered point
+  cloud and visually subordinate.
+- **Surface band at zero** — the transition between blue and red
+  sits at the cube boundary `|coord| = R`.
+- **Red exterior expanding to bbox corners** — vertex-region
+  corners `(±2, ±2, ±2)` at value `√(3 · 1²) = √3 ≈ +1.732`,
+  axis-aligned far-field `(±2, 0, 0)` etc. at `+1.0` (face
+  region, single `d_i = 1`).
+- **Piecewise-smooth gradient** — the L∞-ball SDF has six face
+  regions, twelve edge wedges, and eight vertex caps; the colormap
+  shows visible kinks where the closest-face identity flips.
 
-What you should see when colour-mapped by `inside_raycast`:
+What you should see when colour-mapped by `inside_raycast`
+(categorical blue/orange; auto-detected for the binary 0/1 field):
 
-- **Bright cube interior** with a discernible HE-1 thinning along
-  the `y = z` diagonal of the +X face (probes on that line report
-  `inside = false` from raycast despite being strict-interior).
-- **Dark exterior** beyond the cube boundary with sparse
-  bright artifacts at boundary points where Möller-Trumbore's
-  parallel-ray epsilon flickers.
+- **Orange cluster in the cube interior** — the off-diagonal
+  strict-interior probes (294 points) form a roughly cubic core
+  of orange.
+- **Thin diagonal slit through the orange cluster** — the y = z
+  plane (a 2D slice through the cube body, spanning all x; not
+  just a single face's diagonal) reports raycast = 0 from the
+  HE-1 ray-edge degeneracy, projecting at typical viewing angles
+  as a thin diagonal cut through the orange interior.
+- **Solid blue exterior** beyond the cube boundary (raycast = 0
+  everywhere outside).
+- **Mixed boundary band** at `|coord| = R` — the cube's shared
+  face edges (between adjacent faces) produce additional
+  Möller-Trumbore parallel-/edge-coincident misses, so cube-face
+  visible patterns mix blue and orange (the precise mix depends
+  on which face's edges align with the +X ray direction).
 
 ## Run
 
