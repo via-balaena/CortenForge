@@ -11,16 +11,27 @@
 //!
 //! Fixture: 30 mm cube
 //! centered at origin (`min = (-15, -15, -15)`, `max = (15, 15, 15)`)
-//! at cell size 10 mm and resolution 15, with sphere SDF of radius
+//! at cell size 10 mm and resolution 60, with sphere SDF of radius
 //! 12 mm at origin (`Arc::new(|p| p.coords.norm() - 12.0)`) clipping
 //! the gyroid output. The bbox is an integer multiple of the cell, so
-//! `total_resolution = ceil((30 / 10) × 15) = 45` and the
-//! marching-cubes voxel size is exactly `30 / 45 = 2/3 ≈ 0.667 mm`
+//! `total_resolution = ceil((30 / 10) × 60) = 180` and the
+//! marching-cubes voxel size is exactly `30 / 180 = 1/6 ≈ 0.167 mm`
 //! (per `mesh-lattice/src/generate.rs:445-448`). Every output vertex
 //! of the SDF-trimmed lattice satisfies
-//! `(v - origin).norm() < 12 + 2/3 + 1.0 ≈ 13.667`, where the cushion
+//! `(v - origin).norm() < 12 + 1/6 + 1.0 ≈ 13.167`, where the cushion
 //! 1.0 mm absorbs marching-cubes interpolation across cells straddling
 //! the sphere boundary.
+//!
+//! Resolution 60 chosen to match typical 3D-printer XY resolution
+//! (FDM 0.4 mm nozzle, SLA 0.1 mm) — at this voxel size cf-viewer's
+//! flat-per-triangle WYSIWYP rendering looks substantially smooth on
+//! the gyroid TPMS surface (small triangles below perceptual
+//! resolution at typical viewing distance) AND each triangle is the
+//! actual flat surface the slicer + printer will materialize. Coarser
+//! resolution (e.g., 15) ran ~16× faster but produced visibly
+//! faceted gyroid sheets that misled about print quality. Per the
+//! Q7 retrofit PR's flat-per-triangle pivot, the trade-off is
+//! mesh-generation-side: viewer truthfully shows what the mesh is.
 //!
 //! Boundary-conforming counterpart to `mesh-lattice-tpms-gyroid`
 //! (same gyroid TPMS path, but the lattice is trimmed to a
@@ -50,9 +61,10 @@ const BBOX_MAX: f64 = 15.0;
 const CELL_SIZE: f64 = 10.0;
 
 /// Samples per cell along each axis.
-/// `total_resolution = ceil((30 / 10) × 15) = 45` ⇒ MC voxel size
-/// `30 / 45 = 2/3 ≈ 0.667 mm` exactly.
-const RESOLUTION: usize = 15;
+/// `total_resolution = ceil((30 / 10) × 60) = 180` ⇒ MC voxel size
+/// `30 / 180 = 1/6 ≈ 0.167 mm` exactly. Calibrated to typical
+/// 3D-printer XY resolution; see module docs for the rationale.
+const RESOLUTION: usize = 60;
 
 /// Density target for the gyroid wall fraction. Mirrors the in-tree
 /// `test_gyroid_lattice_with_shape_sdf` precedent at
@@ -71,8 +83,8 @@ const TINY_RADIUS: f64 = 1.0;
 /// `bbox_size / cell_size = 30 / 10 = 3`; cells-per-axis cubed.
 const EXPECTED_CELL_COUNT: usize = 27;
 
-/// MC voxel size: `cell_size / resolution = 10 / 15 = 2/3`.
-const VOXEL_SIZE: f64 = 2.0 / 3.0;
+/// MC voxel size: `cell_size / resolution = 10 / 60 = 1/6`.
+const VOXEL_SIZE: f64 = 1.0 / 6.0;
 
 /// Per-vertex distance bound cushion in mm — absorbs marching-cubes
 /// interpolation wobble across boundary-straddling cells.
@@ -160,7 +172,7 @@ fn verify_is_outside_shape_predicate(
 // =============================================================================
 
 /// With-SDF params: `LatticeParams::gyroid(10.0)` + density 0.3 +
-/// resolution 15 + sphere-radius-12 shape SDF closure.
+/// resolution 60 + sphere-radius-12 shape SDF closure.
 fn build_params_with_sdf() -> LatticeParams {
     LatticeParams::gyroid(CELL_SIZE)
         .with_density(DENSITY)
@@ -193,7 +205,7 @@ fn build_params_tiny_sphere() -> LatticeParams {
 // verify_builder_chain — validate() + shape_sdf.is_some() + field locks
 // =============================================================================
 
-/// `LatticeParams::gyroid(10.0).with_density(0.3).with_resolution(15).with_shape_sdf(_)`
+/// `LatticeParams::gyroid(10.0).with_density(0.3).with_resolution(60).with_shape_sdf(_)`
 /// validates clean and the `shape_sdf` field is populated. Field locks
 /// pin the builder-chain effects so a future regression in any of the
 /// builders surfaces as an anchor failure here, not silently
@@ -231,11 +243,11 @@ fn verify_with_vs_without_trim(with_sdf: &LatticeResult, without_sdf: &LatticeRe
 }
 
 // =============================================================================
-// verify_per_vertex_distance_bound — every vertex within 13.667 mm
+// verify_per_vertex_distance_bound — every vertex within 13.167 mm
 // =============================================================================
 
 /// Every vertex `v` of the SDF-trimmed lattice satisfies
-/// `(v - origin).norm() < sphere_radius + voxel_size + cushion ≈ 13.667`.
+/// `(v - origin).norm() < sphere_radius + voxel_size + cushion ≈ 13.167`.
 /// The `voxel_size` term accounts for marching-cubes producing an edge
 /// vertex up to one voxel beyond the sphere boundary (the vertex sits
 /// on an edge between an inside corner and an outside corner of a cell
