@@ -15,6 +15,7 @@ use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn, Val};
 use crate::param::ParamRef;
+use crate::sdf::Sdf;
 
 /// Lattice type for infill operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1072,6 +1073,37 @@ impl Solid {
                 bounds,
             },
         }
+    }
+
+    /// Promote any [`Sdf`] implementor into a typed [`Solid`] leaf.
+    ///
+    /// Sugar over [`Self::user_fn`] for the common pattern of bridging an
+    /// externally-defined signed-distance function — a scan-derived
+    /// [`mesh_sdf::SignedDistanceField`], a custom analytic function
+    /// wrapped behind an `impl Sdf` newtype, or any other crate's SDF
+    /// type that satisfies the [`Sdf`] contract — into the typed-`Solid`
+    /// expression tree, so it composes with parametric primitives via
+    /// `union` / `subtract` / `intersect` like any other `Solid`.
+    ///
+    /// `bounds` is the conservative axis-aligned bounding box of the
+    /// SDF's zero set; the mesher uses it to define the evaluation
+    /// domain. Loose bounds are safe (mesher walks more lattice cells,
+    /// no correctness impact); tight bounds improve meshing performance.
+    ///
+    /// Octree pruning is disabled for this subtree (interval evaluation
+    /// returns `(-∞, +∞)`), inherited from [`Self::user_fn`]. Consumers
+    /// that need pruning should use [`Self::user_fn_with_interval`]
+    /// directly with a hand-derived interval bound.
+    ///
+    /// The [`Sdf`] trait's `Send + Sync` supertrait + the `'static`
+    /// bound here satisfy the closure-capture requirements of the
+    /// underlying `FieldNode::UserFn` storage; every reasonable `Sdf`
+    /// implementor (a pure function, a `Clone + Send + Sync` SDF
+    /// struct, a composition of the same) meets these bounds
+    /// naturally.
+    #[must_use]
+    pub fn from_sdf<S: Sdf + 'static>(sdf: S, bounds: Aabb) -> Self {
+        Self::user_fn(move |p| sdf.eval(p), bounds)
     }
 
     // ── Queries ──────────────────────────────────────────────────────
@@ -2195,6 +2227,109 @@ mod tests {
         );
         let s2 = s.clone();
         assert!((s.evaluate(&Point3::origin()) - s2.evaluate(&Point3::origin())).abs() < 1e-10);
+    }
+
+    // ── from_sdf bridge ─────────────────────────────────────────────
+
+    /// Newtype wrapping a closure as an `Sdf` implementor — the smallest
+    /// fixture that exercises [`Solid::from_sdf`] without depending on a
+    /// downstream crate's concrete `Sdf` type. Sign convention matches
+    /// the trait's: negative inside, positive outside, zero on surface.
+    struct ClosureSdf<F: Fn(Point3<f64>) -> f64 + Send + Sync>(F);
+
+    impl<F: Fn(Point3<f64>) -> f64 + Send + Sync> Sdf for ClosureSdf<F> {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            (self.0)(p)
+        }
+
+        fn grad(&self, _p: Point3<f64>) -> Vector3<f64> {
+            // Gradient is unused by `from_sdf` (which routes through
+            // `FieldNode::UserFn` and falls back to finite differences
+            // for the typed-Solid `gradient` path); a zero stub keeps
+            // the trait satisfied without forcing an analytic derivation.
+            Vector3::zeros()
+        }
+    }
+
+    #[test]
+    fn from_sdf_preserves_sign_convention_of_wrapped_sdf() {
+        // Wrap the unit-sphere SDF (`|p| - 1.0`) as a custom `Sdf` impl
+        // and verify `from_sdf` lifts it into a `Solid` whose `evaluate`
+        // returns the same field values bit-equally — the sign
+        // convention (negative inside, positive outside, zero on
+        // surface) survives the user-fn closure indirection.
+        let sdf = ClosureSdf(|p: Point3<f64>| p.coords.norm() - 1.0);
+        let bounds = Aabb::new(Point3::new(-2.0, -2.0, -2.0), Point3::new(2.0, 2.0, 2.0));
+        let s = Solid::from_sdf(sdf, bounds);
+
+        // Strictly inside (negative).
+        assert!(s.evaluate(&Point3::origin()) < 0.0);
+        assert!((s.evaluate(&Point3::origin()) - (-1.0)).abs() < 1e-15);
+
+        // On the surface (zero, bit-exact for axis-aligned probes since
+        // the closure does no FMA-fused arithmetic that would diverge).
+        assert!((s.evaluate(&Point3::new(1.0, 0.0, 0.0))).abs() < 1e-15);
+
+        // Strictly outside (positive).
+        assert!(s.evaluate(&Point3::new(2.0, 0.0, 0.0)) > 0.0);
+        assert!((s.evaluate(&Point3::new(2.0, 0.0, 0.0)) - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn from_sdf_composes_with_subtract() {
+        // The load-bearing heterogeneous-CSG case for the layered-
+        // silicone-device row 20: a typed parametric `Solid::sphere`
+        // outer body, with a scan-derived inner cavity bridged in via
+        // `from_sdf`. The composition should produce a hollow shell
+        // body — at the mid-shell radius, both the outer-body and
+        // (negated) cavity SDFs are negative, so the `Subtract` =
+        // `max(a, -b)` evaluates to the larger (less-negative) of the
+        // two.
+        let outer = Solid::sphere(1.0);
+        let cavity_sdf = ClosureSdf(|p: Point3<f64>| p.coords.norm() - 0.4);
+        let cavity_bounds = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
+        let cavity = Solid::from_sdf(cavity_sdf, cavity_bounds);
+        let shell = outer.subtract(cavity);
+
+        // Probe at radius 0.7 (mid-shell): outer is at -0.3, cavity is
+        // at +0.3, -cavity is -0.3, so `max(-0.3, -0.3) = -0.3`.
+        assert!((shell.evaluate(&Point3::new(0.7, 0.0, 0.0)) - (-0.3)).abs() < 1e-15);
+
+        // Probe at radius 0.2 (inside cavity): outer is at -0.8, cavity
+        // is at -0.2, -cavity is +0.2, so `max(-0.8, +0.2) = +0.2` —
+        // outside the shell body because we are in the carved cavity.
+        assert!((shell.evaluate(&Point3::new(0.2, 0.0, 0.0)) - 0.2).abs() < 1e-15);
+
+        // Probe at radius 1.5 (outside outer): outer is at +0.5,
+        // cavity is at +1.1, -cavity is -1.1, so `max(+0.5, -1.1) =
+        // +0.5` — outside the shell body.
+        assert!((shell.evaluate(&Point3::new(1.5, 0.0, 0.0)) - 0.5).abs() < 1e-15);
+    }
+
+    #[test]
+    fn from_sdf_plumbs_bounds_through_to_mesher() {
+        // The mesher uses the leaf's `bounds` to define the evaluation
+        // domain. Confirm that `from_sdf`'s `bounds` argument round-
+        // trips through `Solid::bounds()` so the mesher walks the
+        // intended lattice — same contract as the existing
+        // `Solid::user_fn` path, since `from_sdf` is sugar over it.
+        let bounds = Aabb::new(Point3::new(-1.0, -2.0, -3.0), Point3::new(4.0, 5.0, 6.0));
+        let s = Solid::from_sdf(ClosureSdf(|p: Point3<f64>| p.coords.norm() - 0.5), bounds);
+
+        // Cross-check against the underlying `user_fn` constructor: a
+        // hand-rolled `user_fn` over the same closure with the same
+        // `bounds` must produce a `Solid` whose `bounds()` agrees on
+        // both the `Some(_)` discriminant AND the carried `Aabb`. Any
+        // wiring drift in `from_sdf`'s plumbing surfaces here.
+        let reference = Solid::user_fn(|p| p.coords.norm() - 0.5, bounds);
+
+        let lhs = s.bounds();
+        let rhs = reference.bounds();
+        assert!(lhs.is_some() && rhs.is_some());
+        if let (Some(a), Some(b)) = (lhs, rhs) {
+            assert_eq!(a.min, b.min);
+            assert_eq!(a.max, b.max);
+        }
     }
 
     // ── Domain ops chaining ─────────────────────────────────────────
