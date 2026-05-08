@@ -131,7 +131,11 @@ Open in cf-view, the workspace's unified visual-review viewer:
 cargo run -p cf-viewer --release -- examples/sim-soft/solid-to-sim-soft/out/shell_boundary.ply
 ```
 
-cf-view default-picks `radial_displacement` (only scalar present; sequential viridis); the `radial_displacement` field carries the TRUE physical FEM displacement, so the colormap range tracks the FEM-observed profile, NOT the analytic prediction. Cavity wall reads `~3.2e-4 m` (FEM observed mean; per-vertex peak slightly higher) outward to outer wall (`0` by Dirichlet pin); the analytic-vs-observed `~15 %` rel-err lives in the Tet4 + h/2 convergence band per IV-5. The amplified inflation reads as a visibly-bulged inner surface relative to the rest-config outer boundary.
+cf-view default-picks `radial_displacement` (only scalar present; sequential viridis per pattern (u) — unipolar continuous → sequential). The `radial_displacement` field carries the TRUE physical FEM displacement, so the colormap range tracks the FEM-observed profile, NOT the analytic prediction.
+
+The PLY contains 724 boundary vertices = 614 on the outer shell (`|p|_amp ≈ 0.10`, all pinned at `radial_displacement = 0` exactly) + 110 on the inner cavity surface (`|p|_amp ∈ [0.053, 0.062]`, observed `radial_displacement ∈ [+2.57e-4, +4.34e-4]`, mean `~3.4e-4 m`). The field is **bimodal** at the boundary surface layer — outer at 0, inner at 2.6-4.3e-4 — NOT a continuous radial-decay gradient through the shell (the BCC + stuffing pipeline emits interior tet vertices, but `boundary_faces()` walks only surface triangles, so the PLY carries no intermediate vertices).
+
+cf-view's colormap range is `[0, ~4.3e-4]`. Outer surface reads as uniform deep viridis purple (zero); inner cavity surface reads in the upper viridis band (yellow/green) with peak at `~4.34e-4 m`. Cross-readouts for reference: HEADLINE B's `bc.loaded_vertices` mean (134 vertices, slightly tighter half-cell cavity-band set) is `~3.245e-4 m`; analytic single-material Lamé predicts `~3.823e-4 m` at `R_CAVITY`. The inner cavity surface is occluded by the outer in cf-view's frontal view — rotate or use a section cut to see the amplified cavity inflation directly.
 
 ## Run
 

@@ -104,22 +104,40 @@
 //! ## cf-view artifact
 //!
 //! Per-vertex deformed-boundary triangle mesh of the body's outer +
-//! inner surfaces with `DISPLACEMENT_SCALE = 50.0` geometric
-//! amplification on vertex positions (`vertex = rest + SCALE *
-//! (deformed - rest)`) — visualisation-only; the
-//! `radial_displacement` per-vertex scalar carries the TRUE physical
-//! displacement and every `verify_*` operates on the unscaled solver
-//! outputs. `DISPLACEMENT_SCALE = 50.0` inherits from row 11's
-//! small-strain spherical-symmetry-regime constant (`50×` puts visible
-//! cavity-wall inflation at `~36 %` of `R_CAVITY` — dramatically
-//! visible without distorting spherical-symmetry readability); the
+//! inner surfaces (724 vertices, 1440 faces) with `DISPLACEMENT_SCALE
+//! = 50.0` geometric amplification on vertex positions
+//! (`vertex = rest + SCALE * (deformed - rest)`) — visualisation-only;
+//! the `radial_displacement` per-vertex scalar carries the TRUE
+//! physical FEM displacement and every `verify_*` operates on the
+//! unscaled solver outputs. `DISPLACEMENT_SCALE = 50.0` inherits from
+//! row 11's small-strain spherical-symmetry-regime constant; the
 //! artifact shape itself follows row 3's full-boundary-surface
-//! precedent (NOT row 11's z-slab per-tet centroid cloud). cf-view's
-//! sequential viridis on `[0, ~3.5e-4]` shows the radial-decay
-//! profile from the cavity wall (`~3.2e-4 m` FEM observed mean —
-//! analytic predicts `~3.8e-4 m`, the `~15 %` rel-err lives in the
-//! Tet4 + h/2 convergence band) outward to outer wall (`0` by
-//! Dirichlet pin).
+//! precedent (NOT row 11's z-slab per-tet centroid cloud).
+//!
+//! `boundary_faces()` for a hollow shell returns BOTH surfaces — the
+//! outer shell (614 vertices at `|p|_amp ≈ 0.10`, all pinned via
+//! `radial_displacement = 0` exactly) AND the inner cavity surface
+//! (110 vertices at `|p|_amp ∈ [0.053, 0.062]`, all loaded with
+//! `radial_displacement ∈ [+2.57e-4, +4.34e-4]`, mean `~3.4e-4 m`).
+//! The scalar field is therefore **bimodal** at the boundary surface
+//! layer (outer at 0, inner at 2.6-4.3e-4), NOT a continuous radial
+//! decay through the shell body — the BCC + stuffing pipeline emits
+//! interior tet vertices but `boundary_faces()` walks only surface
+//! triangles, so the PLY carries no intermediate vertices.
+//!
+//! cf-view's auto-detect picks sequential viridis (unipolar continuous
+//! per pattern (u)); colormap range `[0, ~4.3e-4]`. The outer surface
+//! reads as a uniform low-end colour (deep viridis purple); the inner
+//! cavity surface reads in the upper viridis band (yellow/green) with
+//! the per-vertex peak at `~4.34e-4 m` and mean at `~3.4e-4 m`. For
+//! reference: HEADLINE B's `bc.loaded_vertices` mean (a slightly
+//! tighter half-cell cavity-band set, 134 vertices) is `~3.245e-4 m`;
+//! the analytic single-material Lamé prediction at `R_CAVITY` is
+//! `~3.823e-4 m` — the `~15 %` rel-err vs analytic lives in the Tet4
+//! Newton + half-cell convergence band per IV-5. The inner cavity
+//! surface is occluded by the outer in cf-view's frontal view; rotate
+//! to see the inflated cavity colour-mapped against the rest-position
+//! outer boundary.
 
 // PLY field-data is single-precision on disk; converting f64
 // `radial_displacement` to f32 for the AttributedMesh extras is
@@ -823,13 +841,13 @@ fn print_summary(
     );
     println!("         open in cf-view, the workspace's unified visual-review viewer:");
     println!("           cargo run -p cf-viewer --release -- <path>");
-    println!("         default-picks radial_displacement (only scalar present);");
-    println!("         sequential viridis tracks the FEM-observed profile, NOT the analytic.");
+    println!("         default-picks radial_displacement (sequential viridis, unipolar);");
     println!(
-        "         Cavity wall reads ~{observed_cavity:.1e} m (FEM mean) outward to outer wall"
+        "         field is bimodal at boundary: outer shell = 0 (Dirichlet pin), inner cavity"
     );
+    println!("         vertices = ~3-4e-4 m (FEM observed); colormap range [0, ~4.3e-4].");
     println!(
-        "         (0 by Dirichlet pin); analytic predicts ~{analytic_cavity:.1e} m at cavity."
+        "         HEADLINE B loaded mean: {observed_cavity:.3e} m; analytic: {analytic_cavity:.3e} m."
     );
 }
 
