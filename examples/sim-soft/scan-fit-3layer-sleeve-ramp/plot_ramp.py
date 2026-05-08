@@ -72,17 +72,21 @@ def main() -> None:
     ax_force.grid(alpha=0.3)
 
     # Annotate iter count above each force-curve point — communicates
-    # solver effort per step (8/8/9 → 11/11/13 → ... → 22/30/61).
+    # solver effort per step (8/8/9 → 11/11/13 → ... → 22/30/61). 12-pt
+    # vertical offset clears the data marker; semi-transparent white
+    # bbox keeps the digits readable against the curve where the
+    # annotation overlaps it (last 2-3 steps where the curve climbs
+    # steeply).
     for d_mm, f_n, it in zip(depths_mm, force_z_n, iters):
         ax_force.annotate(
             f"{it}",
             (d_mm, f_n),
             textcoords="offset points",
-            xytext=(0, 8),
+            xytext=(0, 12),
             ha="center",
             fontsize=8,
             color=color_force,
-            alpha=0.7,
+            bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "edgecolor": "none", "alpha": 0.7},
         )
 
     final = document["scalars"]["final_step"]
@@ -96,9 +100,18 @@ def main() -> None:
     )
     ax_force.set_title(title, fontsize=10)
 
+    # Legend in upper-left: the convex force curve and the linear-ish
+    # max_disp curve both climb left-to-right, leaving the upper-left
+    # corner empty. Upper-right would crowd the rightmost data points
+    # (depth 5-6 mm) plus the iter-count annotations there.
     lines = line_force + line_disp
     labels = [line.get_label() for line in lines]
-    ax_force.legend(lines, labels, loc="upper right")
+    ax_force.legend(lines, labels, loc="upper left")
+
+    # Add headroom so the "61" annotation at step 12 (top-right corner,
+    # ~12 pts above force_z = 23.1 N) doesn't crowd the chart frame.
+    ax_force.margins(y=0.08)
+    ax_disp.margins(y=0.08)
 
     fig.tight_layout()
     out_path = here / "out" / "ramp_curve.png"
