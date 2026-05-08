@@ -32,15 +32,17 @@ A fourth section,
 documents the inline remediation the example uses to produce the
 `after_flipped.ply` artifact.
 
-> **Heads-up for `f3d` users:** `after.ply` and `after_flipped.ply`
-> look identical in `f3d` (and any viewer with two-sided lighting
-> and no backface culling). The inside-out winding only becomes
-> visible in viewers with single-sided rendering OR backface
-> culling — MeshLab solid mode, Blender solid mode with cull
-> backfaces enabled, glTF/PBR materials with `cullFace = back`.
-> This is **not** a bug in the example or the artifacts; it is a
-> property of the renderer's lighting model. See
-> [Visuals](#visuals) for the full pipeline-by-pipeline breakdown.
+> **Heads-up for cf-view users:** `after.ply` and
+> `after_flipped.ply` look identical in cf-view (and any viewer
+> with two-sided lighting + no backface culling — cf-view's PBR
+> materials are double-sided per the cf-viewer arc lock). The
+> inside-out winding only becomes visible in viewers with single-
+> sided rendering OR backface culling — MeshLab solid mode,
+> Blender solid mode with cull backfaces enabled, glTF/PBR
+> materials with `cullFace = back`. This is **not** a bug in the
+> example or the artifacts; it is a property of the renderer's
+> lighting model. See [Visuals](#visuals) for the full
+> pipeline-by-pipeline breakdown.
 
 ## Polytope preservation under inward offset
 
@@ -351,7 +353,14 @@ preserves the "soup" character of the mesh, which is what
 
 ## Visuals
 
-Open the artifacts in MeshLab, ParaView, Blender, or `f3d`:
+Open the artifacts in cf-view (workspace default; flat-per-triangle
+WYSIWYP rendering with double-sided PBR materials):
+
+```text
+cargo run -p cf-viewer --release -- examples/mesh/mesh-offset-inward/out/before.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-offset-inward/out/after_flipped.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-offset-inward/out/after.ply
+```
 
 - **`out/before.ply`** — clean unit cube. Sharp 90° corners and
   edges, six flat quad-pairs, eight corners.
@@ -396,7 +405,7 @@ Open the artifacts in MeshLab, ParaView, Blender, or `f3d`:
   Whether the file looks visibly different from `after_flipped.ply`
   depends entirely on your viewer's rendering pipeline:
 
-  - **Two-sided lighting, no backface culling** (`f3d` default):
+  - **Two-sided lighting, no backface culling** (cf-view default):
     **no visible difference.** When a face's normal points away
     from the light, the lighting calculation uses the flipped
     normal so the face appears lit anyway. Winding direction
@@ -417,7 +426,7 @@ Open the artifacts in MeshLab, ParaView, Blender, or `f3d`:
 
   Quick rule (same as `mesh-offset-outward`): viewers configured for
   single-sided rendering OR backface culling show the difference;
-  viewers configured for two-sided lighting without culling (`f3d`'s
+  viewers configured for two-sided lighting without culling (cf-view's
   defaults) treat both files identically.
 
 You typically only need `after.ply` if you're verifying that
@@ -425,7 +434,7 @@ You typically only need `after.ply` if you're verifying that
 already verifies this in `verify_after`; the file is for human
 inspection of that fact). For everyday use across mixed-viewer
 workflows, **`after_flipped.ply` is the safe artifact** — it
-renders the same as `after.ply` in `f3d` and renders correctly
+renders the same as `after.ply` in cf-view and renders correctly
 in viewers where `after.ply` would not.
 
 ## Run

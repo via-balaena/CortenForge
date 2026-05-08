@@ -404,7 +404,13 @@ sections shift.
 
 ## Visuals
 
-Open the artifacts in MeshLab, ParaView, Blender, or `f3d`:
+Open the artifacts in cf-view (workspace default; flat-per-triangle
+WYSIWYP rendering):
+
+```text
+cargo run -p cf-viewer --release -- examples/mesh/shell-generation-fast/out/before.ply
+cargo run -p cf-viewer --release -- examples/mesh/shell-generation-fast/out/shell.ply
+```
 
 - **`out/before.ply`** — an upward-facing rectangular bowl. Five
   flat 10×10 walls (bottom + four sides), top open. The four top
