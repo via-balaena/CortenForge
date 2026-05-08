@@ -109,12 +109,17 @@
 //! (deformed - rest)`) — visualisation-only; the
 //! `radial_displacement` per-vertex scalar carries the TRUE physical
 //! displacement and every `verify_*` operates on the unscaled solver
-//! outputs. Same precedent as row 11's `DISPLACEMENT_SCALE = 50.0`
-//! (small-strain spherical-symmetry regime; `50×` puts visible cavity-
-//! wall inflation at `~36 %` of `R_CAVITY` — dramatically visible
-//! without distorting the spherical-symmetry readability). cf-view's
-//! sequential viridis on `[0, ~5e-4]` shows the radial-decay profile
-//! from cavity wall (`~3.8e-4 m`) to outer wall (`0` by Dirichlet pin).
+//! outputs. `DISPLACEMENT_SCALE = 50.0` inherits from row 11's
+//! small-strain spherical-symmetry-regime constant (`50×` puts visible
+//! cavity-wall inflation at `~36 %` of `R_CAVITY` — dramatically
+//! visible without distorting spherical-symmetry readability); the
+//! artifact shape itself follows row 3's full-boundary-surface
+//! precedent (NOT row 11's z-slab per-tet centroid cloud). cf-view's
+//! sequential viridis on `[0, ~3.5e-4]` shows the radial-decay
+//! profile from the cavity wall (`~3.2e-4 m` FEM observed mean —
+//! analytic predicts `~3.8e-4 m`, the `~15 %` rel-err lives in the
+//! Tet4 + h/2 convergence band) outward to outer wall (`0` by
+//! Dirichlet pin).
 
 // PLY field-data is single-precision on disk; converting f64
 // `radial_displacement` to f32 for the AttributedMesh extras is
@@ -420,15 +425,10 @@ fn verify_bridge_equivalence(typed: &SdfMeshedTetMesh, baseline: &SdfMeshedTetMe
         pos_typed.len(),
         pos_baseline.len(),
     );
-    for (v, (pt, pb)) in pos_typed.iter().zip(pos_baseline.iter()).enumerate() {
+    for (pt, pb) in pos_typed.iter().zip(pos_baseline.iter()) {
         assert_relative_eq!(pt.x, pb.x, epsilon = EXACT_TOL);
         assert_relative_eq!(pt.y, pb.y, epsilon = EXACT_TOL);
         assert_relative_eq!(pt.z, pb.z, epsilon = EXACT_TOL);
-        // Bit-equal predicate spelled out for diagnostic clarity (an
-        // approx tolerance miss would surface above; a length-mismatch
-        // path would surface earlier; this `_ = v` keeps the loop
-        // index ergonomic for any future diagnostic).
-        let _ = v;
     }
 }
 
@@ -707,7 +707,10 @@ fn verify_captured_cavity_wall_mean_bits(observed: f64) {
 /// remapped onto a contiguous PLY index space, with per-vertex
 /// `radial_displacement` scalar (TRUE physical magnitude). Vertex
 /// positions amplified by `DISPLACEMENT_SCALE = 50.0` for visual
-/// readability — same precedent as row 11's z-slab cf-view artifact.
+/// readability — full-boundary-surface artifact mirrors row 3's
+/// `sphere-boundary.ply` pattern (NOT row 11's z-slab per-tet centroid
+/// cloud); the `DISPLACEMENT_SCALE = 50.0` constant inherits from row
+/// 11's small-strain spherical-symmetry regime.
 fn save_boundary_ply(result: &SolveResult, mesh: &SdfMeshedTetMesh, path: &Path) -> Result<()> {
     let boundary_faces: &[[VertexId; 3]] = mesh.boundary_faces();
     let mut boundary_set: BTreeSet<VertexId> = BTreeSet::new();
@@ -821,8 +824,13 @@ fn print_summary(
     println!("         open in cf-view, the workspace's unified visual-review viewer:");
     println!("           cargo run -p cf-viewer --release -- <path>");
     println!("         default-picks radial_displacement (only scalar present);");
-    println!("         sequential viridis on [0, ~5e-4] shows the radial-decay profile from");
-    println!("         cavity wall (~3.8e-4 m) outward to outer wall (0 by Dirichlet pin).");
+    println!("         sequential viridis tracks the FEM-observed profile, NOT the analytic.");
+    println!(
+        "         Cavity wall reads ~{observed_cavity:.1e} m (FEM mean) outward to outer wall"
+    );
+    println!(
+        "         (0 by Dirichlet pin); analytic predicts ~{analytic_cavity:.1e} m at cavity."
+    );
 }
 
 // =============================================================================

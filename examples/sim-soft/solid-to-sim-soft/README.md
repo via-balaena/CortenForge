@@ -131,7 +131,7 @@ Open in cf-view, the workspace's unified visual-review viewer:
 cargo run -p cf-viewer --release -- examples/sim-soft/solid-to-sim-soft/out/shell_boundary.ply
 ```
 
-cf-view default-picks `radial_displacement` (only scalar present); sequential viridis on `[0, ~5e-4]` shows the radial-decay profile from cavity wall (`~3.8e-4 m` peak inflation) outward to outer wall (`0` by Dirichlet pin). The amplified inflation reads as a visibly-bulged inner surface relative to the rest-config outer boundary.
+cf-view default-picks `radial_displacement` (only scalar present; sequential viridis); the `radial_displacement` field carries the TRUE physical FEM displacement, so the colormap range tracks the FEM-observed profile, NOT the analytic prediction. Cavity wall reads `~3.2e-4 m` (FEM observed mean; per-vertex peak slightly higher) outward to outer wall (`0` by Dirichlet pin); the analytic-vs-observed `~15 %` rel-err lives in the Tet4 + h/2 convergence band per IV-5. The amplified inflation reads as a visibly-bulged inner surface relative to the rest-config outer boundary.
 
 ## Run
 
