@@ -591,25 +591,25 @@ fn print_capture_block(records: &[MaterialRecord]) {
 // JSON emit
 // =============================================================================
 
-/// Schema:
+/// Schema (object-key order follows `serde_json::json!` — alphabetical):
 /// ```json
 /// {
-///   "probe": { "lambda": 2.0, "form": "F = diag(lambda, 1, 1) (simple uniaxial stretch)" },
-///   "psi_to_pa": 6894.757293168361,
 ///   "materials": [
 ///     {
-///       "name": "Ecoflex 00-10",
-///       "mu_pa":            18000.0,
-///       "lambda_pa":        72000.0,
-///       "density_kg_per_m3":  1040.0,
-///       "sigma_100_psi":         8.0,
-///       "sigma_100_pa":      55158.0586547469,
-///       "p_11_pa":           51953.07...,
-///       "p_22_pa":           49906.61...,
-///       "psi_j_per_m3":      31819.71...
+///       "density_kg_per_m3": 1040.0,
+///       "lambda_pa":         72000.0,
+///       "mu_pa":             18000.0,
+///       "name":              "Ecoflex 00-10",
+///       "p_11_pa":           51953.29850015803,
+///       "p_22_pa":           49906.59700031606,
+///       "psi_j_per_m3":      31819.659250976234,
+///       "sigma_100_pa":      55158.058345346886,
+///       "sigma_100_psi":     8.0
 ///     },
 ///     ...
-///   ]
+///   ],
+///   "probe": { "form": "F = diag(lambda, 1, 1) (simple uniaxial stretch)", "lambda": 2.0 },
+///   "psi_to_pa": 6894.757293168361
 /// }
 /// ```
 fn save_json(records: &[MaterialRecord], path: &Path) -> Result<()> {
