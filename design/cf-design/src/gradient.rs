@@ -18,8 +18,16 @@ impl FieldNode {
     /// For approximate SDFs (ellipsoid, superellipsoid, loft taper), the
     /// magnitude may differ from 1 but the direction is correct.
     ///
-    /// Returns the zero vector at singular points (e.g., the center of a
-    /// sphere) where the gradient is undefined.
+    /// At interior singularities (e.g., the centre of a sphere, the
+    /// axis interior of a capsule, the major circle of a torus) the
+    /// gradient is undefined; concrete primitives return either a
+    /// unit-length arbitrary direction (sphere — `Vector3::z()` per
+    /// [`grad_sphere`], matching sim-soft's `SphereSdf::grad`) or a
+    /// degenerate zero vector (higher-D singular sets where
+    /// catastrophic cancellation in the predicate makes the direction
+    /// unrecoverable). The meshing pipeline only queries the gradient
+    /// near the SDF zero set, so the singularity fallback's exact form
+    /// is unobservable downstream.
     #[must_use]
     // Procedural glue code; natural breakpoints are few.
     #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
@@ -261,10 +269,19 @@ impl FieldNode {
 // ── Primitive gradient helpers ──────────────────────────────────────────
 
 /// Sphere: `∇(|p| - r) = p / |p|`.
+///
+/// At the singleton interior singularity (`p = origin`) the gradient is
+/// undefined; returns `Vector3::z()` as an arbitrary unit-length
+/// fallback, matching sim-soft's `SphereSdf::grad` for trait-impl
+/// coherence. Unit length (rather than the degenerate zero vector)
+/// keeps downstream consumers — which expect a normalized direction —
+/// well-defined even when probed inside the band; the meshing pipeline
+/// only queries the gradient near the SDF zero set, so the fallback's
+/// exact direction is unobservable.
 fn grad_sphere(p: &Point3<f64>) -> Vector3<f64> {
     let norm = p.coords.norm();
     if norm < 1e-15 {
-        Vector3::zeros()
+        Vector3::z()
     } else {
         p.coords / norm
     }
@@ -1017,6 +1034,23 @@ mod tests {
         check(&n, Point3::new(1.0, 2.0, 3.0), 1e-6);
         check(&n, Point3::new(0.5, -0.3, 0.1), 1e-6);
         check(&n, Point3::new(5.0, 0.0, 0.0), 1e-6);
+    }
+
+    /// Sphere singularity-fallback contract: at `p = origin` the gradient
+    /// is undefined, and `grad_sphere` returns `Vector3::z()` as an
+    /// arbitrary unit-length fallback. This pin matches sim-soft's
+    /// `SphereSdf::grad`'s `Vec3::z()` choice so the two `Sdf` impls of
+    /// the sphere primitive agree on the singularity-zone fallback —
+    /// even though sim-soft uses an exact `n == 0.0` predicate (singleton
+    /// IEEE 754 sqrt argument) while cf-design uses the wider `< 1e-15`
+    /// near-singularity guard shared with capsule / torus / cuboid.
+    #[test]
+    fn gradient_sphere_singularity_fallback_is_unit_z() {
+        let n = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
+        let g = n.gradient(&Point3::origin());
+        assert_eq!(g, Vector3::z());
     }
 
     #[test]
