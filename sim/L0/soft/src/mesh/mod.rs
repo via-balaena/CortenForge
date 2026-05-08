@@ -10,6 +10,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use nalgebra::Point3;
+
 use crate::Vec3;
 use crate::material::{MaterialField, NeoHookean};
 
@@ -208,7 +210,7 @@ pub(crate) fn interface_flags_from_field(
                 + (v3 - v1).norm()
                 + (v3 - v2).norm())
                 / 6.0;
-            sdf.eval(centroid).abs() < l_e
+            sdf.eval(Point3::from(centroid)).abs() < l_e
         })
         .collect()
 }

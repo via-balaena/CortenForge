@@ -1858,6 +1858,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-geometry",
+ "mesh-sdf",
  "mesh-types",
  "nalgebra",
  "rayon",
@@ -8624,6 +8625,7 @@ version = "1.0.0"
 dependencies = [
  "approx 0.5.1",
  "bytemuck",
+ "cf-design",
  "faer",
  "getrandom 0.3.4",
  "nalgebra",

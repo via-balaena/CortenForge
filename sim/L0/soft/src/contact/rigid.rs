@@ -10,6 +10,8 @@
 //! sim-mjcf rigid-body integration is its own future phase before
 //! Phase H IPC.
 
+use nalgebra::Point3;
+
 use crate::{Vec3, sdf_bridge::Sdf};
 
 /// Infinite half-space `{ p : p · normal ≥ offset }` with a kinematic
@@ -81,11 +83,11 @@ impl RigidPlane {
 }
 
 impl Sdf for RigidPlane {
-    fn eval(&self, p: Vec3) -> f64 {
-        Self::signed_distance(self, p)
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        Self::signed_distance(self, p.coords)
     }
 
-    fn grad(&self, p: Vec3) -> Vec3 {
-        Self::outward_normal(self, p)
+    fn grad(&self, p: Point3<f64>) -> Vec3 {
+        Self::outward_normal(self, p.coords)
     }
 }

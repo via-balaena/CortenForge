@@ -32,6 +32,13 @@ gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
 [dependencies]
 # Chassis tape, VjpOp, Tensor<f64> — shipped in PR #213.
 sim-ml-chassis = { workspace = true }
+# Sdf trait — sim-soft's `sdf_bridge::Sdf` re-exports `cf_design::Sdf`
+# so cf-design's design surface (Solid, mesh-sdf adapter) and sim-soft's
+# simulation surface (penalty contact, BCC stuffing, MaterialField) speak
+# the same trait without an adapter. Trait method receivers are
+# `Point3<f64>`; sim-soft call sites adapt at the boundary via
+# `Point3::from(vec3)`. See inventory Q5 for the architecture decision.
+cf-design = { workspace = true }
 # Dense small matrices for per-Gauss-point Material + per-element Tet4 locals
 # (5 existing L0 consumers at 0.34.2 — not greenfield).
 nalgebra = { workspace = true }

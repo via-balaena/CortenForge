@@ -30,6 +30,8 @@
 //!
 //! [c]: ../../../../docs/studies/soft_body_architecture/src/70-sdf-pipeline/02-material-assignment/01-composition.md
 
+use nalgebra::Point3;
+
 use super::Field;
 use crate::Vec3;
 use crate::sdf_bridge::Sdf;
@@ -119,7 +121,7 @@ impl LayeredScalarField {
 
 impl Field<f64> for LayeredScalarField {
     fn sample(&self, x_ref: Vec3) -> f64 {
-        let phi = self.sdf.eval(x_ref);
+        let phi = self.sdf.eval(Point3::from(x_ref));
         // partition_point returns the first index `i` where the predicate
         // is false. With `t <= phi`, that's the first threshold strictly
         // greater than phi — equivalently, the index of the shell phi
@@ -210,7 +212,7 @@ impl BlendedScalarField {
 
 impl Field<f64> for BlendedScalarField {
     fn sample(&self, x_ref: Vec3) -> f64 {
-        let phi = self.sdf.eval(x_ref);
+        let phi = self.sdf.eval(Point3::from(x_ref));
         let s = ((phi + self.band_half_width) / (2.0 * self.band_half_width)).clamp(0.0, 1.0);
         // Cubic Hermite smoothstep `s² (3 − 2s)` via FMA: `mul_add(-s, 3)`
         // computes `−2s + 3` with one rounding, matching the formula in

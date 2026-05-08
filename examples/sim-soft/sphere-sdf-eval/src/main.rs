@@ -110,7 +110,7 @@ fn verify_surface_eval_axis_aligned(s: &SphereSdf) {
     for axis in [Vec3::x(), Vec3::y(), Vec3::z()] {
         for sign in [1.0, -1.0] {
             let p = sign * axis;
-            assert_relative_eq!(s.eval(p), 0.0, epsilon = EXACT_TOL);
+            assert_relative_eq!(s.eval(Point3::from(p)), 0.0, epsilon = EXACT_TOL);
         }
     }
 }
@@ -121,7 +121,7 @@ fn verify_surface_eval_axis_aligned(s: &SphereSdf) {
 /// stays under 1e-15 for any double-precision input.
 fn verify_surface_eval_off_axis(s: &SphereSdf) {
     let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
-    let p = Vec3::new(inv_sqrt3, inv_sqrt3, inv_sqrt3);
+    let p = Point3::new(inv_sqrt3, inv_sqrt3, inv_sqrt3);
     assert_relative_eq!(s.eval(p), 0.0, epsilon = APPROX_TOL);
 }
 
@@ -134,13 +134,21 @@ fn verify_surface_eval_off_axis(s: &SphereSdf) {
 /// dyadic fractions whose squares and square-roots are
 /// FP-representable exactly.
 fn verify_interior_eval(s: &SphereSdf) {
-    assert_relative_eq!(s.eval(Vec3::zeros()), -1.0, epsilon = EXACT_TOL);
-    assert_relative_eq!(s.eval(Vec3::new(0.5, 0.0, 0.0)), -0.5, epsilon = EXACT_TOL);
-    assert_relative_eq!(s.eval(Vec3::new(0.0, 0.0, 0.5)), -0.5, epsilon = EXACT_TOL);
+    assert_relative_eq!(s.eval(Point3::origin()), -1.0, epsilon = EXACT_TOL);
+    assert_relative_eq!(
+        s.eval(Point3::new(0.5, 0.0, 0.0)),
+        -0.5,
+        epsilon = EXACT_TOL,
+    );
+    assert_relative_eq!(
+        s.eval(Point3::new(0.0, 0.0, 0.5)),
+        -0.5,
+        epsilon = EXACT_TOL,
+    );
 
     // Off-axis interior — (0.5, 0.5, 0.5) has norm √0.75 ≈ 0.8660…;
     // closed-form distance is √0.75 − 1.
-    let p = Vec3::new(0.5, 0.5, 0.5);
+    let p = Point3::new(0.5, 0.5, 0.5);
     let expected = 0.75_f64.sqrt() - 1.0;
     assert_relative_eq!(s.eval(p), expected, epsilon = APPROX_TOL);
 }
@@ -154,12 +162,12 @@ fn verify_interior_eval(s: &SphereSdf) {
 /// bit-exact. Plus an axis-aligned far point and one off-axis far
 /// point with closed-form approximate distance.
 fn verify_exterior_eval(s: &SphereSdf) {
-    assert_relative_eq!(s.eval(Vec3::new(2.0, 0.0, 0.0)), 1.0, epsilon = EXACT_TOL);
-    assert_relative_eq!(s.eval(Vec3::new(3.0, 4.0, 0.0)), 4.0, epsilon = EXACT_TOL);
-    assert_relative_eq!(s.eval(Vec3::new(0.0, 3.0, 4.0)), 4.0, epsilon = EXACT_TOL);
+    assert_relative_eq!(s.eval(Point3::new(2.0, 0.0, 0.0)), 1.0, epsilon = EXACT_TOL,);
+    assert_relative_eq!(s.eval(Point3::new(3.0, 4.0, 0.0)), 4.0, epsilon = EXACT_TOL,);
+    assert_relative_eq!(s.eval(Point3::new(0.0, 3.0, 4.0)), 4.0, epsilon = EXACT_TOL,);
 
     // Far off-axis: (10, 10, 10) has norm √300 = 10√3.
-    let p = Vec3::new(10.0, 10.0, 10.0);
+    let p = Point3::new(10.0, 10.0, 10.0);
     let expected = 300.0_f64.sqrt() - 1.0;
     assert_relative_eq!(s.eval(p), expected, epsilon = APPROX_TOL);
 }
@@ -176,17 +184,17 @@ fn verify_gradient_unit_length(s: &SphereSdf) {
     for axis in [Vec3::x(), Vec3::y(), Vec3::z()] {
         for sign in [1.0, -1.0] {
             let p = sign * axis;
-            assert_relative_eq!(s.grad(p).norm(), 1.0, epsilon = EXACT_TOL);
+            assert_relative_eq!(s.grad(Point3::from(p)).norm(), 1.0, epsilon = EXACT_TOL);
         }
     }
 
     // Off-axis: surface points, interior, exterior, far. All ≠ origin.
     let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
     let off_axis = [
-        Vec3::new(inv_sqrt3, inv_sqrt3, inv_sqrt3),
-        Vec3::new(0.5, 0.5, 0.5),
-        Vec3::new(3.0, 4.0, 0.0),
-        Vec3::new(10.0, 10.0, 10.0),
+        Point3::new(inv_sqrt3, inv_sqrt3, inv_sqrt3),
+        Point3::new(0.5, 0.5, 0.5),
+        Point3::new(3.0, 4.0, 0.0),
+        Point3::new(10.0, 10.0, 10.0),
     ];
     for p in off_axis {
         assert_relative_eq!(s.grad(p).norm(), 1.0, epsilon = APPROX_TOL);
@@ -204,36 +212,36 @@ fn verify_gradient_unit_length(s: &SphereSdf) {
 /// `Vector3 / scalar` divides each lane independently).
 fn verify_gradient_direction(s: &SphereSdf) {
     assert_relative_eq!(
-        s.grad(Vec3::new(1.0, 0.0, 0.0)),
+        s.grad(Point3::new(1.0, 0.0, 0.0)),
         Vec3::x(),
         epsilon = EXACT_TOL
     );
     assert_relative_eq!(
-        s.grad(Vec3::new(0.0, 1.0, 0.0)),
+        s.grad(Point3::new(0.0, 1.0, 0.0)),
         Vec3::y(),
         epsilon = EXACT_TOL
     );
     assert_relative_eq!(
-        s.grad(Vec3::new(0.0, 0.0, 1.0)),
+        s.grad(Point3::new(0.0, 0.0, 1.0)),
         Vec3::z(),
         epsilon = EXACT_TOL
     );
     assert_relative_eq!(
-        s.grad(Vec3::new(-1.0, 0.0, 0.0)),
+        s.grad(Point3::new(-1.0, 0.0, 0.0)),
         -Vec3::x(),
         epsilon = EXACT_TOL
     );
 
     // Direction is invariant to magnitude — grad(2 e_x) = e_x.
     assert_relative_eq!(
-        s.grad(Vec3::new(2.0, 0.0, 0.0)),
+        s.grad(Point3::new(2.0, 0.0, 0.0)),
         Vec3::x(),
         epsilon = EXACT_TOL
     );
 
     // Pythagorean: grad((3, 4, 0)) = (0.6, 0.8, 0.0) bit-exact.
     assert_relative_eq!(
-        s.grad(Vec3::new(3.0, 4.0, 0.0)),
+        s.grad(Point3::new(3.0, 4.0, 0.0)),
         Vec3::new(0.6, 0.8, 0.0),
         epsilon = EXACT_TOL,
     );
@@ -241,7 +249,7 @@ fn verify_gradient_direction(s: &SphereSdf) {
     // Off-axis: grad((1, 1, 1)) = (1/√3) (1, 1, 1).
     let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
     assert_relative_eq!(
-        s.grad(Vec3::new(1.0, 1.0, 1.0)),
+        s.grad(Point3::new(1.0, 1.0, 1.0)),
         Vec3::new(inv_sqrt3, inv_sqrt3, inv_sqrt3),
         epsilon = APPROX_TOL,
     );
@@ -258,7 +266,7 @@ fn verify_gradient_direction(s: &SphereSdf) {
 /// example's PLY-grid pipeline doesn't silently shift if the fallback
 /// ever changes.
 fn verify_origin_singularity(s: &SphereSdf) {
-    assert_relative_eq!(s.grad(Vec3::zeros()), Vec3::z(), epsilon = EXACT_TOL);
+    assert_relative_eq!(s.grad(Point3::origin()), Vec3::z(), epsilon = EXACT_TOL);
 }
 
 // =============================================================================
@@ -286,10 +294,11 @@ fn build_grid(s: &SphereSdf) -> Vec<GridSample> {
             for iz in 0..GRID_RES {
                 let z = -GRID_HALF_EXTENT + (iz as f64) * GRID_SPACING;
                 let p = Vec3::new(x, y, z);
+                let p_pt = Point3::from(p);
                 grid.push(GridSample {
                     p,
-                    eval: s.eval(p),
-                    grad_norm: s.grad(p).norm(),
+                    eval: s.eval(p_pt),
+                    grad_norm: s.grad(p_pt).norm(),
                 });
             }
         }
