@@ -6,20 +6,26 @@ been deliberately thinned to 0.4 mm. The detector flags two clusters
 (outer top + inner top) as Critical ThinWall, the cavity ceiling
 co-flags as a Critical Overhang, and `is_printable()` returns false.
 
-> **Heads-up for `f3d` users — winding-pair artifact:** the inner
-> cavity surface and the outer surface are wound in **opposite
-> directions** (the inner shell's normals point INTO the cavity,
-> away from the surrounding solid; the outer shell's normals point
-> outward). f3d's default two-sided lighting renders both shells as
-> if their normals always faced the camera, so the file looks like
-> a regular box. To *see* both shells with their distinct
-> orientations, open the file in **MeshLab** or **ParaView** (which
-> render with single-sided lighting + visible backfaces by default,
-> or expose the toggle in the menu) and enable a clipping plane to
-> peek inside. This is **not** a bug in the example or the artifact
-> — it is the load-bearing topology the detector relies on. See
+> **Heads-up — winding-pair artifact:** the inner cavity surface
+> and the outer surface are wound in **opposite directions** (the
+> inner shell's normals point INTO the cavity, away from the
+> surrounding solid; the outer shell's normals point outward).
+> cf-view's default two-sided PBR lighting + no backface culling
+> (per the cf-viewer arc lock) renders both shells as if their
+> normals always faced the camera, so the file looks like a regular
+> box from the outside. The cavity is sealed inside the outer
+> shell; cf-view v1 ships no built-in clipping plane, so to inspect
+> the cavity, generate the artifact and open it in MeshLab or
+> Blender (which expose interactive clipping planes + can toggle
+> backface culling to make the shell asymmetry visible). This is
+> **not** a bug in the example or the artifact — it is the
+> load-bearing topology the detector relies on. See
 > [Why two disjoint shells](#why-two-disjoint-shells-with-reversed-inner-winding)
 > below.
+>
+> ```text
+> cargo run -p cf-viewer --release -- examples/mesh/printability-thin-wall/out/mesh.ply
+> ```
 
 ## What this fixture is
 

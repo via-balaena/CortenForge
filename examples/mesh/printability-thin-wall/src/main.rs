@@ -60,9 +60,10 @@
 //! ```
 //!
 //! Output written to `examples/mesh/printability-thin-wall/out/`. Open
-//! `mesh.ply` and `issues.ply` in `MeshLab` or `ParaView` for the
-//! visuals pass — see the README's f3d-winding callout for
-//! viewer-specific notes on the inner-shell winding.
+//! `mesh.ply` and `issues.ply` in cf-view for the visuals pass — see
+//! the README's winding-pair callout for viewer-specific notes on the
+//! inner-shell winding (cf-view's two-sided PBR materials hide the
+//! winding asymmetry; `MeshLab` / `Blender` with backface culling expose it).
 
 use std::path::Path;
 

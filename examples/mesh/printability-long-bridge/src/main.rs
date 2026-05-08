@@ -91,9 +91,9 @@
 //! ```
 //!
 //! Output written to `examples/mesh/printability-long-bridge/out/`. Open
-//! `mesh.ply` and `issues.ply` in `MeshLab` or `ParaView` for the
-//! visuals pass — see the README's f3d back-face-culling callout for
-//! viewer-specific notes on the slab's downward-facing bottom.
+//! `mesh.ply` and `issues.ply` in cf-view for the visuals pass — see
+//! the README's downward-facing-geometry callout for orbit instructions
+//! to expose the slab's downward-facing bottom.
 
 use std::path::Path;
 

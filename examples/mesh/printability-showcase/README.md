@@ -200,25 +200,28 @@ expectation — see `verify_fixture_geometry` in `src/main.rs`. The
 visuals-pass is **optional** at this point; everything visible has
 been encoded as a numerical invariant.
 
-If you do want to eyeball the artifacts, **run f3d from the crate
-root** (`examples/mesh/printability-showcase/`) on each PLY
-**separately** — f3d's `--multi-file-mode=all` falls back to all-
-points rendering when mixing a face-mesh with a vertex-only point
-cloud, so you lose the bracket surface:
+If you do want to eyeball the artifacts, run cf-view on each PLY
+**separately** (cf-view v1 ships single-file rendering; multi-file
+overlay is deferred):
 
 ```text
-f3d --up=+Z out/mesh.ply       # the bracket — body, wing, slab, burr, sphere cavity
-f3d --up=+Z out/issues.ply     # the 12 detected centroid points
+cargo run -p cf-viewer --release -- examples/mesh/printability-showcase/out/mesh.ply       # the bracket — body, wing, slab, burr, sphere cavity
+cargo run -p cf-viewer --release -- examples/mesh/printability-showcase/out/issues.ply     # the 12 detected centroid points
 ```
 
-The sphere cavity has REVERSED winding (normals INTO cavity); f3d
-back-face-culls it by default, so the cavity appears as a hollow void
-inside the body — the intended visual. **Per
-`feedback_chamfered_not_rounded`**: at 32 × 16 UV tessellation the
-sphere is visibly **chamfered** / **polygonal**, not smooth. Marching-
-cubes-style tessellation on a sharp-creased SDF would render
-similarly; the chamfer is a real geometric property of the
-tessellation, not a viewer artifact.
+The sphere cavity has REVERSED winding (normals INTO cavity).
+Under cf-view's two-sided PBR materials (no backface culling per the
+cf-viewer arc lock), both sides of the cavity surface render —
+unlike viewers that backface-cull, the cavity is **visible** from
+the outside as well as from inside. This means the bracket's body
+appears solid except for a discernible spherical pocket where the
+cavity sits; the cavity is real geometry, not a hollow void
+artifact. **Per `feedback_chamfered_not_rounded`**: at 32 × 16 UV
+tessellation the sphere is visibly **chamfered** / **polygonal**,
+not smooth. Marching-cubes-style tessellation on a sharp-creased
+SDF would render similarly; the chamfer is a real geometric
+property of the tessellation that cf-view's flat-per-triangle
+WYSIWYP rendering exposes truthfully.
 
 ## Numerical anchors (asserted in `verify_fixture_geometry` + `verify`)
 
