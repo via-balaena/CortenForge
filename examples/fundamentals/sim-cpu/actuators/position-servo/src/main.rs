@@ -247,8 +247,14 @@ fn servo_diagnostics(
         val.reached_target = true;
     }
 
-    // Check 3: Force formula — force = kp*(ctrl - q) - kv*qdot
-    let expected_force = KP * (TARGET - theta) - val.kv * omega;
+    // Check 3: Force formula — force = kp*(ctrl - q) - kv*qdot.
+    // Use the live ctrl signal (not the constant TARGET) so the formula
+    // stays correct even at the CTRL_DELAY transition step, where the
+    // actuator force one-step lags the apply_ctrl flip — using TARGET
+    // here would compare the post-flip expected force against a
+    // pre-flip actuator output and surface a one-sample 100% error.
+    let ctrl = data.ctrl[0];
+    let expected_force = KP * (ctrl - theta) - val.kv * omega;
     let force_err = (act_force - expected_force).abs();
     // Use relative tolerance for large forces, absolute for small
     let scale = expected_force.abs().max(1.0);
