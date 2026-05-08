@@ -131,15 +131,15 @@ Open in cf-view, the workspace's unified visual-review viewer:
 cargo run -p cf-viewer --release -- examples/sim-soft/solid-to-sim-soft/out/shell_zslab.ply
 ```
 
-cf-view default-picks `radial_displacement` (only scalar present; sequential viridis per pattern (u) — unipolar continuous → sequential). The slab projects centroids onto a 2-D annulus on `z=0` with:
+cf-view default-picks `radial_displacement` (only scalar present; sequential viridis per pattern (u) — unipolar continuous → sequential). The slab projects centroids onto a 2-D annulus on `z=0`; centroids are interior to the wall by ~half-cell-edge by construction (a centroid is the mean of 4 tet vertex positions, so wall-incident tets have centroids one-quarter-edge inside the body). Empirical `|p_xy|` range: `[0.054, 0.097] m`. The annulus reads as:
 
-- **Cavity ring** at `|p_xy| ≈ R_CAVITY = 0.04 m`: highest `radial_displacement` values (peak `~3.4e-4 m`); reads bright yellow/green at the upper end of viridis.
-- **Outer ring** at `|p_xy| ≈ R_OUTER = 0.10 m`: `radial_displacement → 0` (Dirichlet pin); reads deep purple at the low end of viridis.
+- **Cavity-side ring** just outside `R_CAVITY = 0.04 m` (innermost centroids at `~0.054 m`): highest `radial_displacement` values (peak `~3.0e-4 m`, smaller than the per-vertex peak `~4.3e-4 m` because centroid displacement averages 4 vertex displacements); reads bright yellow/green at the upper end of viridis.
+- **Outermost ring** just inside `R_OUTER = 0.10 m` (outermost centroids at `~0.097 m`): `radial_displacement → 0` (Dirichlet pin); reads deep purple at the low end of viridis.
 - **Interior** between rings: continuous radial-decay gradient through the shell body's middle.
 
-No occlusion — every centroid is visible from the `+z` orbit angle. Cross-readouts: HEADLINE B's `bc.loaded_vertices` cavity-wall mean is `~3.245e-4 m`; analytic single-material Lamé predicts `~3.823e-4 m` at `R_CAVITY`; the `~15 %` rel-err vs analytic lives in the Tet4 + half-cell convergence band per IV-5.
+Colormap range `[0, ~3.0e-4]` empirically. No occlusion — every centroid is visible from cf-view's default oblique orbit angle. Cross-readouts: HEADLINE B's `bc.loaded_vertices` per-vertex cavity-wall mean is `~3.245e-4 m`; analytic single-material Lamé predicts `~3.823e-4 m` at `R_CAVITY`; the `~15 %` rel-err vs analytic lives in the Tet4 + half-cell convergence band per IV-5.
 
-**Why z-slab over the full-boundary-surface artifact (row 3 sphere precedent)**: a hollow body's full boundary surface 360°-occludes the inner cavity from every orbit angle, and cf-view does not expose section-cut UI; the inner cavity's displacement signal becomes invisible (banked at iter-15 N+3 visuals-pass after the initial full-boundary attempt failed cf-view eyes-on-pixels review). Row 16 follows row 11's z-slab precedent for the same reason row 11 chose z-slab — it's the canonical hollow-body cf-view pattern.
+**Why z-slab over the full-boundary-surface artifact (row 3 sphere precedent)**: a hollow body's full boundary surface 360°-occludes the inner cavity from every orbit angle, and cf-view does not expose section-cut UI; the inner cavity's displacement signal becomes invisible (banked at iter-15 N+3 visuals-pass after the initial full-boundary attempt failed cf-view eyes-on-pixels review). Row 16 adopts row 11's z-slab + per-tet centroid pattern for hollow-body visualization. Note row 11's z-slab choice was driven by visual density management (cf-view's instanced-sphere radius bug at the time made dense centroid clouds visually overcrowded), NOT occlusion; row 16 inherits the SAME PATTERN for a DIFFERENT REASON (occlusion).
 
 ## Run
 

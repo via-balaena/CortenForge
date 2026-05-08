@@ -117,29 +117,40 @@
 //! from row 11's cf-view artifact convention verbatim — the
 //! single-material variant just drops row 11's `material_id`
 //! categorical scalar. The slab projects centroids onto a 2-D annulus
-//! at z=0 with the cavity ring at `|p_xy| ≈ R_CAVITY = 0.04 m` and
-//! the outer ring at `|p_xy| ≈ R_OUTER = 0.10 m`; interior centroids
-//! between the two rings show the radial-decay profile through the
-//! shell body's middle (no occlusion — every centroid is visible from
-//! the +z orbit angle).
+//! at z=0; centroids are interior to the wall by ~half-cell-edge by
+//! construction (a centroid is the mean of 4 tet vertex positions,
+//! so wall-incident tets have centroids one-quarter-edge inside the
+//! body). Empirically `|p_xy|` spans `[0.054, 0.097] m` — cavity-side
+//! ring just outside `R_CAVITY = 0.04 m` (innermost centroids at
+//! `~0.054 m`), outer-side ring just inside `R_OUTER = 0.10 m`
+//! (outermost centroids at `~0.097 m`); interior centroids between
+//! the two rings show the radial-decay profile through the shell
+//! body's middle (no occlusion — every centroid is visible from
+//! cf-view's default oblique orbit angle).
 //!
 //! cf-view's auto-detect picks sequential viridis (unipolar continuous
-//! per pattern (u)); colormap range `[0, ~3.4e-4]` empirically. The
-//! cavity ring reads bright yellow/green (peak `~3.4e-4 m`); the
-//! outer ring reads deep purple (`0`, Dirichlet pin); the radial
-//! decay between them is continuous. For reference: HEADLINE B's
-//! `bc.loaded_vertices` cavity-wall mean is `~3.245e-4 m`; analytic
-//! single-material Lamé predicts `~3.823e-4 m` at `R_CAVITY` — the
-//! `~15 %` rel-err vs analytic lives in the Tet4 Newton + half-cell
-//! convergence band per IV-5.
+//! per pattern (u)); colormap range `[0, ~3.0e-4]` empirically (the
+//! per-centroid peak is `~3.005e-4 m`, smaller than the per-vertex
+//! peak `~4.3e-4 m` because centroid displacement averages 4 vertex
+//! displacements). The cavity-side ring reads bright yellow/green
+//! (peak `~3.0e-4 m`); the outermost ring reads deep purple (`0`,
+//! Dirichlet pin); the radial decay between them is continuous. For
+//! reference: HEADLINE B's `bc.loaded_vertices` per-vertex cavity-wall
+//! mean is `~3.245e-4 m`; analytic single-material Lamé predicts
+//! `~3.823e-4 m` at `R_CAVITY` — the `~15 %` rel-err vs analytic
+//! lives in the Tet4 Newton + half-cell convergence band per IV-5.
 //!
 //! Why z-slab over full-boundary-surface (the row 3 sphere precedent
-//! that this row's first-author tried): a hollow body's full boundary
-//! surface 360°-occludes the inner cavity from every orbit angle,
-//! and cf-view does not expose section-cut UI; the inner cavity's
-//! displacement signal becomes invisible. Row 16 follows row 11's
-//! z-slab precedent for the same reason row 11 used z-slab over
-//! per-tet centroid cloud (banked at iter-15 N+3 visuals-pass).
+//! the initial row-16 commit `82aaca4b` adopted): a hollow body's
+//! full boundary surface 360°-occludes the inner cavity from every
+//! orbit angle, and cf-view does not expose section-cut UI; the inner
+//! cavity's displacement signal becomes invisible. Row 16 adopts row
+//! 11's z-slab + per-tet centroid pattern for hollow-body
+//! visualization. Note row 11's z-slab choice was driven by visual
+//! density management (cf-view's instanced-sphere radius bug at the
+//! time made dense centroid clouds visually overcrowded) rather than
+//! occlusion; row 16 inherits the SAME PATTERN for a DIFFERENT REASON
+//! (occlusion). Banked at iter-15 N+3 visuals-pass.
 
 // PLY field-data is single-precision on disk; converting f64
 // `radial_displacement` to f32 for the AttributedMesh extras is
