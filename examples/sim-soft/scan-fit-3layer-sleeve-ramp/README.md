@@ -205,7 +205,11 @@ cf-view auto-picks the colormap per pattern (u) banked at row 15:
 - **`material_id`** is binary-categorical (3 distinct values 0/1/2) → cf-view picks the **categorical palette**.
 - **`displacement_magnitude`** is unipolar continuous → cf-view picks **sequential viridis**.
 
-The slab projects centroids onto a 2-D annulus on `z = 0`, 40 mm BELOW the contact zone at `z ≈ 0.040 m`. Same z-slab axis as row 21 v1; the slab catches the propagated secondary response of the wrap shell, NOT the contact-zone signal directly. Row 21 v1's [Visuals section](../scan-fit-3layer-sleeve/README.md#visuals) covers the displacement-pattern interpretation in detail (peak-at-mid-thickness flexural mode + visible xy-anisotropy from the cuboid's `SCAN_HX > SCAN_HY`); v2's final-step PLY shows the same propagated pattern but at ~3-4× the displacement magnitude (final step max_disp ≈ 6.7 mm vs v1's 1.97 mm), so the pattern is more strongly developed but qualitatively the same.
+The slab projects centroids onto a 2-D annulus on `z = 0`, 40 mm BELOW the contact zone at `z ≈ 0.040 m`. Same z-slab axis as row 21 v1; the slab catches the propagated response of the wrap shell, NOT the contact-zone signal directly.
+
+**Regime transition vs row 21 v1.** Row 21 v1's [Visuals section](../scan-fit-3layer-sleeve/README.md#visuals) describes a peak-at-mid-thickness flexural-bending mode at 1 mm penetration: the inner cavity wall and outer envelope are both held near zero (cavity-wall material constrained from moving inward + outer envelope Dirichlet-pinned), so the wrap cross-section interior is the path of least resistance. v2's final-step PLY at 6 mm penetration shows a **qualitatively different** pattern — the displacement field is highest at the inner cavity wall (yellow band against the cavity opening in the viridis sequential render) and decays outward to the Dirichlet-pinned outer envelope (dark purple). The 6× deeper probe pose displaces the inner cavity wall at z=0 (40 mm below the contact zone) substantially through the propagated load chain, exiting the small-strain regime where v1's flexural mode dominated; v2's regime is "inner cavity wall pushed outward as a whole, decaying radially to the outer pin."
+
+The xy-anisotropy v1 documented (longer ±y faces of the cuboid + offset deflect more than the shorter ±x faces) is faintly present in v2's final-step PLY but secondary to the dominant inner-wall-vs-outer-wall radial gradient — the regime change subordinates the flexural-bending detail to the gross radial mode.
 
 **Force-displacement curve via matplotlib.** The `ramp_curve` array in `out/scan_fit_3layer_sleeve_ramp.json` carries the per-step force / displacement / Ψ̄ trace. Optional matplotlib post-processing via PEP 723 inline metadata (mirrors row 5's `plot.py`):
 
@@ -213,7 +217,9 @@ The slab projects centroids onto a 2-D annulus on `z = 0`, 40 mm BELOW the conta
 uv run examples/sim-soft/scan-fit-3layer-sleeve-ramp/plot_ramp.py
 ```
 
-Produces a dual-axis plot of penetration depth (mm) × force_total_z (N) on the left axis and depth × max_disp (mm) on the right axis. The non-linear stiffening between 4 and 4.5 mm depth (force jumps from -462 N to -809 N — `+347 N` for `0.5 mm` vs `+75 N` just before) is the headline visual signature of the deep-penetration regime.
+Produces a dual-axis plot of penetration depth (mm) × force_total_z (N) on the left axis and depth × max_disp (mm) on the right axis, with Newton iter counts annotated above each force-curve point. The non-linear stiffening between 4 and 4.5 mm depth (force jumps from -462 N to -809 N — `+347 N` for `0.5 mm` vs `+75 N` just before) is the headline visual signature of the deep-penetration regime; iter counts climb in step (8 / 8 / 9 / 11 / 11 / 13 / 14 / 16 / 19 / 22 / 30 / 61) and visibly track the stiffening.
+
+**Note on `max_disp` vs depth.** `max_disp` exceeds the rigid `probe penetration depth` at every step (`~1.5 mm` peak displacement at `0.5 mm` penetration; `~6.7 mm` at `6.0 mm`). Penalty contact's elastic equilibrium can push the cavity wall farther than the rigid penetration depth — same effect row 21 v1's anchor 8 prose documents at v1's `~1.97 mm` peak vs `1 mm` penetration. The amplification factor `max_disp / depth` shrinks from `~3×` at 0.5 mm to `~1.1×` at 6 mm as the body stiffens through the non-linear regime.
 
 ## Run
 
