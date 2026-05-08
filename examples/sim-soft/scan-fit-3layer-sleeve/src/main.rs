@@ -1296,23 +1296,13 @@ fn main() -> Result<()> {
         .collect();
     let raw_readouts = inspection_contact.per_pair_readout(&inspection_mesh, &positions_vec3);
     // v2.5-equivalent anchor cleanup (2026-05-08, post-row-22 mirror):
-    // filter readouts to REFERENCED vertices only. Pre-cleanup the
-    // `per_pair_readout` returns ALL body vertex positions whose
-    // `sd < d̂`, including ORPHAN BCC lattice corners not in any tet
-    // (no FEM stiffness contribution; solver ignores them). For row
-    // 21's geometry (probe inside the cavity), orphans inside the
-    // empty cavity dominated readouts at ~95-97 % (286/295 = orphan
-    // at 1 mm penetration) — they polluted `n_pairs` and
-    // `force_total_z` aggregates and inverted the sign of the
-    // anchored force. v2.5 anchors physical contacts only. See
-    // pattern (xx) at row 22 patterns memo.
-    let referenced_set: BTreeSet<VertexId> = referenced.iter().copied().collect();
-    let readouts: Vec<_> = raw_readouts
-        .into_iter()
-        .filter(|r| match r.pair {
-            sim_soft::ContactPair::Vertex { vertex_id, .. } => referenced_set.contains(&vertex_id),
-        })
-        .collect();
+    // drop ORPHAN BCC lattice corners (not in any tet → no FEM
+    // stiffness, solver ignores) from the readout. For row 21's
+    // geometry (probe inside cavity), orphans dominated raw readouts
+    // at ~95-97 % (286/295 at 1 mm penetration) — they polluted
+    // `n_pairs` + `force_total_z` and inverted the anchored sign.
+    // See pattern (xx) at row 22 patterns memo.
+    let readouts = sim_soft::filter_pair_readouts_to_referenced(raw_readouts, &referenced);
     let n_pairs = readouts.len();
     verify_n_contact_pairs_exact(n_pairs);
 

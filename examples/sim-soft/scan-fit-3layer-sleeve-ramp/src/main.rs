@@ -655,18 +655,13 @@ fn solve_ramp(
 ) -> Result<Vec<RampStepResult>> {
     let n_dof = 3 * n_vertices;
 
-    // v2.5 anchor cleanup (2026-05-08): filter `per_pair_readout`
-    // entries to vertices in the referenced set. The unfiltered
-    // readout includes ORPHAN BCC lattice vertices (corners not in
-    // any tet, with no FEM stiffness contribution) that happen to
-    // sit inside the rigid primitive's volume — at v2's 1 mm
-    // penetration, ~286/295 readout entries are orphans inside the
-    // empty cavity; they're ignored by the solver but pollute
-    // counts + force aggregates by ~95-97%. v2.5 anchors only
-    // referenced (= solver-active) vertices, yielding physically
-    // meaningful counts + forces. See pattern (xx) at row 22
-    // patterns memo.
-    let referenced_set: BTreeSet<VertexId> = referenced.iter().copied().collect();
+    // v2.5 anchor cleanup (2026-05-08): each per-step readout is
+    // filtered to referenced (= solver-active) vertices via
+    // `sim_soft::filter_pair_readouts_to_referenced` — the unfiltered
+    // readout includes ORPHAN BCC lattice corners not in any tet,
+    // ignored by the solver but counted + summed in the raw
+    // aggregates (~95-97 % orphan share at this geometry). See
+    // pattern (xx) at row 22 patterns memo.
 
     // Initial x_prev = rest positions (from a one-shot mesh build).
     let initial_mesh = {
@@ -736,16 +731,10 @@ fn solve_ramp(
             })
             .collect();
         let raw_readouts = inspection_contact.per_pair_readout(&inspection_mesh, &positions_k);
-        // v2.5 cleanup: filter to referenced vertices only — see
-        // function-prologue comment above the `referenced_set` build.
-        let readouts: Vec<_> = raw_readouts
-            .into_iter()
-            .filter(|r| match r.pair {
-                sim_soft::ContactPair::Vertex { vertex_id, .. } => {
-                    referenced_set.contains(&vertex_id)
-                }
-            })
-            .collect();
+        // v2.5 cleanup: drop orphan BCC corners — see function-prologue
+        // comment above. `filter_pair_readouts_to_referenced` is the
+        // sim-soft helper added in the same v2.5 commit.
+        let readouts = sim_soft::filter_pair_readouts_to_referenced(raw_readouts, referenced);
         let n_active_pairs = readouts.len();
         let force_total_z: f64 = readouts.iter().map(|r| r.force_on_soft.z).sum();
         let force_mags: Vec<f64> = readouts.iter().map(|r| r.force_on_soft.norm()).collect();
