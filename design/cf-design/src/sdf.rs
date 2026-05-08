@@ -1,10 +1,9 @@
 //! Implicit-surface SDF trait.
 //!
-//! [`Sdf`] is the contract that every signed-distance source in cf-design
-//! satisfies. Consumers query SDFs through the trait without naming the
-//! concrete source — a [`Solid`] composed from primitives and CSG
-//! operators, a scan-derived field added by a downstream crate, or a
-//! user-defined source written from scratch.
+//! [`Sdf`] is the contract for signed-distance functions in cf-design.
+//! [`Solid`] is the built-in implementor; downstream crates and user
+//! code add more by writing their own `impl Sdf for ...`. Consumers
+//! query SDFs through the trait without naming the concrete source.
 
 use nalgebra::{Point3, Vector3};
 
@@ -16,15 +15,13 @@ use crate::Solid;
 /// body, positive strictly outside, zero on the surface. `grad` returns
 /// the gradient of the signed-distance field — unit-length on the zero
 /// set when the field is exact, undefined at interior singularities (a
-/// concrete impl picks an arbitrary fallback there, see e.g. the sphere
-/// centre case in downstream `SphereSdf` impls).
+/// concrete impl picks an arbitrary fallback there).
 ///
-/// `Send + Sync` so trait objects (`Box<dyn Sdf>` inside CSG composition
-/// trees and the downstream simulation surface's spatial fields) satisfy
-/// thread-safety bounds at every storage site without `+ Send + Sync`
-/// clutter. Every reasonable implementor is naturally `Send + Sync` —
-/// a pure function over `Point3<f64>`, or a composition of the same —
-/// and the supertrait documents the invariant.
+/// `Send + Sync` so trait objects (`Box<dyn Sdf>` inside composition
+/// trees) satisfy thread-safety bounds at every storage site without
+/// `+ Send + Sync` clutter. Every reasonable implementor is naturally
+/// `Send + Sync` — a pure function over `Point3<f64>`, or a composition
+/// of the same — and the supertrait documents the invariant.
 pub trait Sdf: Send + Sync {
     /// Signed distance from `p` to the surface.
     fn eval(&self, p: Point3<f64>) -> f64;
@@ -33,15 +30,12 @@ pub trait Sdf: Send + Sync {
     fn grad(&self, p: Point3<f64>) -> Vector3<f64>;
 }
 
-/// Forwarding impl through `Box<T>` (and any other heap-erased
-/// `Box<dyn Sdf>`).
+/// Forwarding impl through `Box<T>` for any `T: Sdf + ?Sized`.
 ///
-/// Lets a heap-erased SDF satisfy [`Sdf`] directly, so a uniform
-/// composition tree (e.g. `Vec<Box<dyn Sdf>>`) can be passed to the
-/// same generic constructors that accept a homogeneous concrete vector.
-/// Sites that mix concrete primitives box each into a homogeneous
-/// `Vec<Box<dyn Sdf>>` and pass it through the same call path as a
-/// concrete vector.
+/// Lets a heap-erased SDF satisfy [`Sdf`] directly, so a `Box<dyn Sdf>`
+/// (or a `Vec<Box<dyn Sdf>>` of mixed concrete implementors) is callable
+/// at every site that takes any `S: Sdf` — without an inner deref or a
+/// `&dyn Sdf` reborrow.
 impl<T: Sdf + ?Sized> Sdf for Box<T> {
     fn eval(&self, p: Point3<f64>) -> f64 {
         (**self).eval(p)
@@ -58,12 +52,6 @@ impl<T: Sdf + ?Sized> Sdf for Box<T> {
 /// [`Solid::gradient`], which uses analytic derivatives for built-in
 /// primitives and operations and falls back to finite differences only
 /// for [`Solid::user_fn`].
-///
-/// Receiver-type idiom shift: [`Solid::evaluate`] and [`Solid::gradient`]
-/// take `&Point3<f64>`; the [`Sdf`] trait takes `Point3<f64>` by value.
-/// `Point3<f64>` is `Copy` (24 bytes), so the shift is zero-cost — by
-/// value matches the wider Rust trait idiom for tiny `Copy` types and
-/// drops the deref at every call site of every implementor.
 impl Sdf for Solid {
     fn eval(&self, p: Point3<f64>) -> f64 {
         self.evaluate(&p)
@@ -108,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn solid_csg_difference_eval_matches_max_chain_rule() {
+    fn solid_csg_difference_eval_at_hollow_shell_probes() {
         let shell = Solid::sphere(1.0).subtract(Solid::sphere(0.4));
 
         // Probe at radius 0.7 (inside outer, outside inner): φ_outer =
