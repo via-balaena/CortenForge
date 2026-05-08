@@ -18,10 +18,12 @@
 //! single material across `λ ∈ [0.15, 1.95]` under traction-free
 //! uniaxial (transcendental `λ_t`); row 19 sweeps seven materials at
 //! one fixed `F` under simple stretch (closed-form scalar — no inner
-//! Newton). The two rows together give the full constitutive-coverage
-//! story: row 5 validates the surface across the in-domain bracket;
-//! row 19 validates the table against itself across the production
-//! material library.
+//! Newton). The two rows together close the constitutive-coverage
+//! story: row 5 validates `Material::first_piola` + `Material::energy`
+//! across the in-domain bracket on one material; row 19 validates the
+//! production material library's `to_neo_hookean()` const bridge by
+//! checking each entry's `Material`-trait dispatch against closed-form
+//! NH at the data-sheet `σ_100` anchor.
 //!
 //! [m]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_museum_plaque_readmes.md
 //! [v]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_visual_pass_collapses_for_json_rows.md
@@ -684,9 +686,13 @@ fn print_summary(records: &[MaterialRecord], json_path: &Path) {
     }
     println!();
     println!("Reference identities:");
-    println!("  σ_100 small-strain (3μ)        = data-sheet linearization, F4 §Conversion");
+    println!(
+        "  σ_100 ≈ 3μ                     small-strain incompressible-NH identity (F4 §Conversion)"
+    );
     println!("  P_11 NH simple-stretch         ≈ 2.886 μ  at λ = 2, ν = 0.40  (this row's probe)");
-    println!("  Δ ≈ 3.8 % below 3μ small-strain — finite-strain compressible-NH correction;");
+    println!(
+        "  Δ ≈ 3.8 % below 3μ            finite-strain compressible-NH simple-stretch correction;"
+    );
     println!(
         "  Fork B post-cast modulus fit absorbs the constitutive gap + catalog-value uncertainty."
     );

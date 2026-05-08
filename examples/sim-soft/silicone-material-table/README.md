@@ -2,7 +2,7 @@
 
 **PR3 row 19 — engineering-grade lookup of Smooth-On platinum-cure silicone Lamé pairs + density, with each entry's compressible Neo-Hookean stress + energy at the σ_100 anchor validated against closed-form.** Direct-eval consumer of [`sim_soft::material::silicone_table`](../../../sim/L0/soft/src/material/silicone_table.rs) (PR3 F4): iterates the seven `pub const SiliconeMaterial` entries (`{ECOFLEX_00_10, _20, _30, _50, DRAGON_SKIN_10A, _20A, _30A}`), dispatches each via `SiliconeMaterial::to_neo_hookean()` (`const` bridge into the [`Material`](../../../sim/L0/soft/src/material/mod.rs) trait surface), and probes the resulting `NeoHookean` at `F = diag(2.0, 1, 1)` (simple uniaxial stretch at `λ = 2.0`, the data-sheet `σ_100 = 100 % engineering strain` anchor). Per inventory Q4 row 19 visualization, JSON-only (no `cf-view`, the table IS the artifact); museum-plaque-tour shape per [`feedback_museum_plaque_readmes`][m] + [`feedback_visual_pass_collapses_for_json_rows`][v].
 
-Companion to row 5 [`neo-hookean-uniaxial`](../neo-hookean-uniaxial): row 5 sweeps a single material across `λ ∈ [0.15, 1.95]` under traction-free uniaxial (transcendental `λ_t`); row 19 sweeps seven materials at one fixed `F` under simple stretch (closed-form scalar — no inner Newton). The two rows together close the constitutive-coverage story: row 5 validates the surface across the in-domain bracket; row 19 validates the production material library against itself.
+Companion to row 5 [`neo-hookean-uniaxial`](../neo-hookean-uniaxial): row 5 sweeps a single material across `λ ∈ [0.15, 1.95]` under traction-free uniaxial (transcendental `λ_t`); row 19 sweeps seven materials at one fixed `F` under simple stretch (closed-form scalar — no inner Newton). The two rows together close the constitutive-coverage story: row 5 validates `Material::first_piola` + `Material::energy` across the in-domain bracket on one material; row 19 validates the production material library's `to_neo_hookean()` const bridge by checking each entry's `Material`-trait dispatch against closed-form NH at the data-sheet σ_100 anchor.
 
 Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m2], a clean `cargo run --release` exit-0 IS the correctness signal. Output is `out/silicone_materials.json` (programmatic-consumption lookup; schema documented inline at `src/main.rs::save_json`).
 
@@ -17,12 +17,12 @@ Engineering-grade material lookup, not "guess your Lamé params from a search ba
 ```rust
 use sim_soft::Material;
 use sim_soft::material::silicone_table::ECOFLEX_00_30;
-use nalgebra::Matrix3;
+use nalgebra::{Matrix3, Vector3};
 
-let nh = ECOFLEX_00_30.to_neo_hookean();             // const bridge into Material trait
-let f  = Matrix3::from_diagonal_element(1.0);        // (or any deformation gradient)
-let p  = nh.first_piola(&f);                         // first Piola stress (Pa)
-let psi = nh.energy(&f);                             // strain-energy density (J/m³)
+let nh = ECOFLEX_00_30.to_neo_hookean();                            // const bridge into Material trait
+let f  = Matrix3::from_diagonal(&Vector3::new(2.0, 1.0, 1.0));     // F = diag(2, 1, 1) — this row's σ_100 probe
+let p  = nh.first_piola(&f);                                        // first Piola stress (Pa)
+let psi = nh.energy(&f);                                            // strain-energy density (J/m³)
 ```
 
 The seven `pub const SiliconeMaterial` entries cover the platinum-cure silicones the [layered silicone device arc](../../../sim/L0/soft/EXAMPLE_INVENTORY.md) currently considers as body-layer or rigid-mold materials. The Lamé pairs are sourced from Smooth-On's published technical data sheets ([www.smooth-on.com](https://www.smooth-on.com)) under the `ν = 0.40` compressible-NH framing per Fork B (sim-soft = relative-comparison tool, not absolute predictor; ν = 0.40 locking is absorbed by post-cast modulus fit).
@@ -123,26 +123,26 @@ Re-bake helper: `CF_CAPTURE_BITS=1 cargo run -p example-sim-soft-silicone-materi
 
 None — JSON-only per [`feedback_visual_pass_collapses_for_json_rows`][v]. The table IS the artifact; cf-view is irrelevant for material-reference data.
 
-`out/silicone_materials.json` — programmatic-consumption lookup with schema:
+`out/silicone_materials.json` — programmatic-consumption lookup. Object-key order follows `serde_json::json!` (alphabetical):
 
 ```json
 {
-  "probe": { "lambda": 2.0, "form": "F = diag(lambda, 1, 1) (simple uniaxial stretch)" },
-  "psi_to_pa": 6894.757293168361,
   "materials": [
     {
-      "name": "Ecoflex 00-10",
-      "mu_pa":            18000.0,
-      "lambda_pa":        72000.0,
-      "density_kg_per_m3":  1040.0,
-      "sigma_100_psi":         8.0,
-      "sigma_100_pa":      55158.058345346886,
+      "density_kg_per_m3": 1040.0,
+      "lambda_pa":         72000.0,
+      "mu_pa":             18000.0,
+      "name":              "Ecoflex 00-10",
       "p_11_pa":           51953.29850015803,
       "p_22_pa":           49906.59700031606,
-      "psi_j_per_m3":      31819.659250976234
+      "psi_j_per_m3":      31819.659250976234,
+      "sigma_100_pa":      55158.058345346886,
+      "sigma_100_psi":     8.0
     },
     ...
-  ]
+  ],
+  "probe": { "form": "F = diag(lambda, 1, 1) (simple uniaxial stretch)", "lambda": 2.0 },
+  "psi_to_pa": 6894.757293168361
 }
 ```
 
