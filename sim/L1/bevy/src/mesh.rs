@@ -29,8 +29,10 @@ use crate::convert::{
 ///
 /// If the mesh carries per-vertex normals (typical for SDF-meshed output via
 /// `cf_design::Solid::mesh*`), those normals are used directly for smooth
-/// shading. Otherwise the renderer falls back to crease-angle splitting on
-/// the underlying geometry.
+/// shading. Otherwise the renderer falls back to flat-per-triangle shading
+/// (every triangle gets its own face normal) on the underlying geometry —
+/// shared via `cf_bevy_common::mesh::triangle_mesh_flat_shaded` for WYSIWYP
+/// rendering parity with cf-view.
 ///
 /// Returns the spawned [`Entity`] so callers can attach additional components.
 pub fn spawn_design_mesh(
@@ -270,8 +272,9 @@ pub fn triangle_mesh_from_indexed(mesh_data: &IndexedMesh) -> Mesh {
 /// (the analytical-normals fast path: typical for SDF marching-cubes output
 /// where the normals come from the field gradient). The Y↔Z winding swap
 /// still applies. If `normals` is `None`, the renderer falls back to
-/// [`triangle_mesh_from_indexed`] on the underlying geometry, which derives
-/// smooth/flat normals via crease-angle splitting.
+/// [`triangle_mesh_from_indexed`] on the underlying geometry, which emits
+/// flat-per-triangle shading via the shared
+/// `cf_bevy_common::mesh::triangle_mesh_flat_shaded` helper.
 #[must_use]
 pub fn triangle_mesh_from_attributed(mesh_data: &AttributedMesh) -> Mesh {
     let vertices = &mesh_data.geometry.vertices;
@@ -285,7 +288,7 @@ pub fn triangle_mesh_from_attributed(mesh_data: &AttributedMesh) -> Mesh {
     }
 
     // No per-vertex normals: defer to the geometry-only path, which handles
-    // crease-angle splitting and Y↔Z winding.
+    // flat-per-triangle shading + Y↔Z winding via cf-bevy-common's helper.
     let Some(ref vertex_normals) = mesh_data.normals else {
         return triangle_mesh_from_indexed(&mesh_data.geometry);
     };

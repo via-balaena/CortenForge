@@ -19,8 +19,8 @@ publish = false
 [dependencies]
 # Bevy 0.18 — minimal feature set covering the ECS + math + transform +
 # input + app surface (all consumers' shared base) plus `bevy_asset` +
-# `bevy_render` for [`mesh::triangle_mesh_with_crease_splitting`]'s
-# `Mesh` / `Indices` / `RenderAssetUsages` types. Downstream consumers
+# `bevy_render` for `mesh::triangle_mesh_flat_shaded`'s `Mesh` /
+# `Indices` / `RenderAssetUsages` types. Downstream consumers
 # (cf-viewer, sim-bevy, sim-bevy-soft) layer their PBR / UI / windowing
 # features on top via Cargo's additive feature unification — those
 # crates' cargo builds already pull bevy_render transitively, so adding
