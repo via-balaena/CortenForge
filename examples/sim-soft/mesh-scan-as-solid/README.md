@@ -118,8 +118,11 @@ central finite-difference approximation with `eps = 1e-6`
 (`design/cf-design/src/sdf.rs:90-110`). On the cube's face contact
 band, `‖grad‖ ≈ 1` and `grad · n̂_face > 0.9` (gradient aligned
 with outward face normal). Asserted in
-`verify_grad_finite_and_outward_on_face_band` at 7 face-band
-probes (3 above-face, 1 below-face per axis sign-mirrored).
+`verify_grad_finite_and_outward_on_face_band` at 7 face-band probes:
+6 axis-aligned exterior probes (one per ±x̂ / ±ŷ / ±ẑ outward face
+at offset 0.05 R) + 1 interior probe at offset 0.05 R inside the
++X face (the contact-band side, which is what penalty contact
+actually engages with).
 
 ### STL round-trip
 
@@ -171,7 +174,7 @@ the F2 sign-flip, see `examples/mesh/mesh-sdf-distance-query`
 fixture as an STL "scan" artifact, the input side of the disk
 transit demo.
 
-`out/sdf_grid.ply` (binary LE, 4913 verts + 0 faces, ~80 KB) —
+`out/sdf_grid.ply` (binary LE, 4913 verts + 0 faces, ~96 KB) —
 point cloud with two per-vertex scalars:
 
 - `extras["signed_distance"]` — analytical SDF; auto-detected as
@@ -205,9 +208,9 @@ What you should see when colour-mapped by `signed_distance`:
 - **Cubic radial gradient** — negative interior shrinks to a
   central darkest-blue cube of strict-interior probes, surface
   band at zero, positive exterior expanding to bbox corners
-  (`(±2, ±2, ±2)`) at value `√0.75 + 1.0 ≈ +1.866` for the
-  vertex-region offsets, and `(±2, 0, 0)` etc. at `+1.0` for
-  axis-aligned far-field.
+  (`(±2, ±2, ±2)`) at value `√(3 · 1²) = √3 ≈ +1.732` (vertex
+  region: three `d_i = 1`), and `(±2, 0, 0)` etc. at `+1.0` for
+  axis-aligned far-field (face region: one `d_i = 1`).
 - **Sharp face-band step** — the L∞-ball SDF has piecewise-smooth
   gradient (six face regions, twelve edge wedges, eight vertex
   caps); the colormap shows visible kinks where the closest-face

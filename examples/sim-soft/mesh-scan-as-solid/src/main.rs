@@ -75,8 +75,8 @@
 // the `mul_add` rewrite obscures intent and the result is
 // bit-equivalent here. Same precedent as sphere-sdf-eval.
 #![allow(clippy::suboptimal_flops)]
-// Grid axis indices are `0..21` so `usize as f64` is exactly
-// representable (f64 mantissa is 52 bits; max index is 20).
+// Grid axis indices are `0..17` so `usize as f64` is exactly
+// representable (f64 mantissa is 52 bits; max index is 16).
 #![allow(clippy::cast_precision_loss)]
 // Cartesian coords spelt as `x, y, z` are reading-grade.
 #![allow(clippy::many_single_char_names)]
