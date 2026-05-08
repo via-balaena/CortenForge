@@ -4935,6 +4935,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-silicone-material-table"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "nalgebra",
+ "serde_json",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-single-tet-stretch"
 version = "1.0.0"
 dependencies = [

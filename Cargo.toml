@@ -339,6 +339,7 @@ members = [
     "examples/sim-soft/contact-force-readout",
     "examples/sim-soft/mesh-scan-as-solid",
     "examples/sim-soft/solid-to-sim-soft",
+    "examples/sim-soft/silicone-material-table",
 
     # Foundation (active development)
     "design/cf-geometry",
