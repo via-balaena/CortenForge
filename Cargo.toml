@@ -341,6 +341,7 @@ members = [
     "examples/sim-soft/solid-to-sim-soft",
     "examples/sim-soft/silicone-material-table",
     "examples/sim-soft/layered-silicone-device",
+    "examples/sim-soft/scan-fit-3layer-sleeve",
 
     # Foundation (active development)
     "design/cf-geometry",
