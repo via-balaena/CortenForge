@@ -1,0 +1,64 @@
+[package]
+name = "example-sim-soft-scan-fit-3layer-sleeve-ramp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# `cf_design::Solid::cuboid` (the axis-aligned scan stand-in body —
+# exact-SDF primitive required for offset to produce a true uniform
+# wrap shell) + `Solid::offset` (the wrap-thickness extrusion that
+# produces the outer envelope) + `Solid::subtract` (the heterogeneous
+# CSG that carves the scan-shaped cavity from the wrapped envelope to
+# yield the sleeve body) + `Solid::sphere` + `Solid::translate` (the
+# rigid intrusion probe, repositioned per ramp step to progressively
+# deeper `+z` cap penetration). Per PR3 F1 (`impl Sdf for Solid` at
+# `design/cf-design/src/sdf.rs:56`), every `Solid` is itself an
+# `impl Sdf` and bridges into sim-soft's tet meshing + contact
+# pipelines via the same trait — no per-shape glue.
+cf-design = { workspace = true }
+# `Aabb3` + `BoundaryConditions` + `CpuNewtonSolver` +
+# `LayeredScalarField` + `MaterialField` + `Mesh` + `MeshingHints` +
+# `NewtonStep` + `PenaltyRigidContact` + `PenaltyRigidContactSolver`
+# (alias) + `SceneInitial` + `Sdf` (re-export of `cf_design::Sdf`) +
+# `SdfMeshedTetMesh` + `Solver` + `SolverConfig` + `Tet4` + `Vec3` +
+# `VertexId` + `pick_vertices_by_predicate` + `referenced_vertices` +
+# `material::silicone_table::{ECOFLEX_00_20, DRAGON_SKIN_10A,
+# DRAGON_SKIN_20A}` (F4 const entries — inner = ECOFLEX_00_20 as proxy
+# for the Slacker-softened Ecoflex 00-30 blend at effective Shore
+# 00-20; middle = DRAGON_SKIN_10A as proxy for the conductive
+# composite at effective Shore 15-18A; outer = DRAGON_SKIN_20A direct).
+sim-soft = { workspace = true }
+# `Tensor` for the empty-traction `theta` argument to `replay_step`
+# (one call per ramp step). Loading is fully penalty-mediated through
+# contact (rigid intrusion probe drives the cavity wall) at every
+# step; no distributed pressure. Same idiom as rows 18 + 20 + 21.
+sim-ml-chassis = { workspace = true }
+# `Point3` + `IndexedMesh` + `AttributedMesh` for the final-step
+# z-slab per-tet centroid PLY emit (`material_id` categorical +
+# `displacement_magnitude` sequential, per pattern (aa) for hollow /
+# interior-cavity bodies).
+mesh-types = { workspace = true }
+# `save_ply_attributed` for `out/sleeve_zslab_final.ply`.
+mesh-io = { workspace = true }
+# `Result<()>` return + error-context wrapping for the JSON + PLY emit
+# steps. Same convention as rows 1-21.
+anyhow = { workspace = true }
+# `assert_relative_eq!` for the IV-1 sparse-tier rel-tol contract on
+# captured per-step force / displacement / per-layer Ψ̄ bits + the
+# `to_neo_hookean()` Lamé-pair round-trip + counts-bound and
+# material-provenance gates. Same convention as rows 1-21.
+approx = { workspace = true }
+# JSON emit for `out/scan_fit_3layer_sleeve_ramp.json` — final-step
+# scalars + 3-material provenance + `ramp_curve` array (per-step
+# RampStepResult records) + final-step per-active-pair detail array.
+# Three-section schema like row 21, plus the new `ramp_curve` array.
+serde_json = { workspace = true }
+# `Matrix3` + `Vector3` for the per-tet F-from-positions helper +
+# `cf_design::Sdf::eval` `Point3` receiver adaptation at material-field
+# probe sites.
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true
