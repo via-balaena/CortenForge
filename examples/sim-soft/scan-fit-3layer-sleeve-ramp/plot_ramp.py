@@ -6,9 +6,11 @@
 
 Reads `out/scan_fit_3layer_sleeve_ramp.json` (specifically the `ramp_curve`
 array of per-step records), produces a dual-axis plot of penetration depth
-vs force_total_z (left) and depth vs max_disp (right). The non-linear
-stiffening between 4 and 4.5 mm depth is the headline visual signature of
-the deep-penetration regime.
+vs force_total_z (left) and depth vs max_disp (right). Post-v2.5 the
+force_total_z grows smoothly + convexly from ~1.1 N at 0.5 mm to ~23 N at
+6 mm; the deep-penetration signature lives in the Newton iter-count growth
+(annotated above each force-curve point) since the body stiffens nonlinearly
+approaching the NH validity-domain boundary.
 
 Mirrors row 5 / row 14 / hertz-sphere-plane's `plot.py` PEP 723 structure.
 

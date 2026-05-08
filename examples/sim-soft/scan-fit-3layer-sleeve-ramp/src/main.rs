@@ -357,9 +357,12 @@ const N_OUTER_TETS_ZSLAB_EXACT: usize = 892;
 /// Ramp-step partition gate. Bit-pinned to `N_RAMP_STEPS = 12`.
 const N_RAMP_STEPS_EXACT: usize = N_RAMP_STEPS;
 
-/// Active contact-pair count at the FINAL ramp step (depth = 6 mm).
-/// 273 active pairs at the deepest pose; matches v2 spike Run 3.
-const N_CONTACT_PAIRS_FINAL_EXACT: usize = 273;
+/// Active contact-pair count at the FINAL ramp step (depth = 6 mm),
+/// filtered to REFERENCED vertices (v2.5 cleanup; 2026-05-08). 37
+/// real physical contacts at the deepest pose. Pre-v2.5 the
+/// unfiltered count was 273 (95-97% orphan-driven); post-v2.5 this
+/// counts physical contacts only.
+const N_CONTACT_PAIRS_FINAL_EXACT: usize = 37;
 
 /// Per-step Newton iter counts. The chained `replay_step` is
 /// deterministic on a fixed toolchain; iter-count drift signals
@@ -368,23 +371,28 @@ const N_CONTACT_PAIRS_FINAL_EXACT: usize = 273;
 /// 30, 61]`.
 const IT_COUNT_RAMP_EXACT: [usize; N_RAMP_STEPS] = [8, 8, 9, 11, 11, 13, 14, 16, 19, 22, 30, 61];
 
-/// Per-step `+z`-component of contact reaction force bits (N). Force
-/// is in `-z` direction; magnitude grows with deeper penetration.
-/// Approximate values: `[-137, -131, -144, -193, -247, -318, -387,
-/// -462, -809, -900, -1002, -1135] N`.
+/// Per-step `+z`-component of contact reaction force bits (N), summed
+/// over REFERENCED vertices only (v2.5 cleanup; 2026-05-08). Force
+/// is in `+z` direction (probe pushes wrap-cap material UP), grows
+/// monotonically with deeper penetration. Approximate values:
+/// `[1.1, 1.9, 2.9, 4.2, 5.6, 7.2, 9.2, 11.5, 14.1, 16.9, 20.0,
+/// 23.1] N`. Pre-v2.5 these were `[-137, -131, ..., -1135] N` —
+/// the sign was negative because orphan BCC vertices inside the
+/// cavity dominated the readout sum with `-z` normal components;
+/// orphans contributed ~95-97% of readout entries.
 const FORCE_TOTAL_Z_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [
-    0xc061_2a81_b227_f0df,
-    0xc060_50ca_d360_42bc,
-    0xc061_ff08_3ebd_0c3a,
-    0xc068_2de3_c842_76cd,
-    0xc06e_e577_a14c_5f3d,
-    0xc073_e7d2_51c9_a833,
-    0xc078_295c_1dad_9bf6,
-    0xc07c_dd63_fb4f_3f50,
-    0xc089_48e5_1760_adad,
-    0xc08c_2174_1fbe_2ab1,
-    0xc08f_514d_20a0_2ced,
-    0xc091_bccb_6414_c625,
+    0x3ff1_7025_2061_5434,
+    0x3ffd_e776_8e72_d943,
+    0x4007_8028_e030_a891,
+    0x4010_a224_f6c6_6811,
+    0x4016_4676_7eae_988b,
+    0x401c_e5b8_834c_8232,
+    0x4022_6b54_7de7_eea2,
+    0x4027_095c_9831_1757,
+    0x402c_2271_a671_c21f,
+    0x4030_e095_1f5b_6fab,
+    0x4033_f37f_f378_8547,
+    0x4037_238b_49db_964a,
 ];
 
 /// Per-step max body-wide displacement-magnitude bits (m) over all
@@ -646,7 +654,19 @@ fn solve_ramp(
     n_outer: usize,
 ) -> Result<Vec<RampStepResult>> {
     let n_dof = 3 * n_vertices;
-    let _ = referenced; // silenced: counts gate uses it upstream
+
+    // v2.5 anchor cleanup (2026-05-08): filter `per_pair_readout`
+    // entries to vertices in the referenced set. The unfiltered
+    // readout includes ORPHAN BCC lattice vertices (corners not in
+    // any tet, with no FEM stiffness contribution) that happen to
+    // sit inside the rigid primitive's volume — at v2's 1 mm
+    // penetration, ~286/295 readout entries are orphans inside the
+    // empty cavity; they're ignored by the solver but pollute
+    // counts + force aggregates by ~95-97%. v2.5 anchors only
+    // referenced (= solver-active) vertices, yielding physically
+    // meaningful counts + forces. See pattern (xx) at row 22
+    // patterns memo.
+    let referenced_set: BTreeSet<VertexId> = referenced.iter().copied().collect();
 
     // Initial x_prev = rest positions (from a one-shot mesh build).
     let initial_mesh = {
@@ -715,7 +735,17 @@ fn solve_ramp(
                 )
             })
             .collect();
-        let readouts = inspection_contact.per_pair_readout(&inspection_mesh, &positions_k);
+        let raw_readouts = inspection_contact.per_pair_readout(&inspection_mesh, &positions_k);
+        // v2.5 cleanup: filter to referenced vertices only — see
+        // function-prologue comment above the `referenced_set` build.
+        let readouts: Vec<_> = raw_readouts
+            .into_iter()
+            .filter(|r| match r.pair {
+                sim_soft::ContactPair::Vertex { vertex_id, .. } => {
+                    referenced_set.contains(&vertex_id)
+                }
+            })
+            .collect();
         let n_active_pairs = readouts.len();
         let force_total_z: f64 = readouts.iter().map(|r| r.force_on_soft.z).sum();
         let force_mags: Vec<f64> = readouts.iter().map(|r| r.force_on_soft.norm()).collect();
@@ -728,10 +758,9 @@ fn solve_ramp(
 
         let rest_pos_k: Vec<Vec3> = inspection_mesh.positions().to_vec();
 
-        // Cavity-wall mean disp over active-contact-pair vertex set
-        // (mirrors row 21 v1's mean_disp_magnitude); max disp
-        // computed over ALL referenced vertices (the v2 spec's
-        // `max_disp_m` is body-wide, not just contact-band).
+        // Cavity-wall mean disp over the FILTERED active-pair vertex set
+        // (referenced-only, post-v2.5-cleanup); max disp computed over
+        // ALL referenced vertices (body-wide, not just contact-band).
         let cavity_vertex_ids: BTreeSet<VertexId> = readouts
             .iter()
             .map(|r| match r.pair {
@@ -963,30 +992,36 @@ fn verify_per_step_iter_count(results: &[RampStepResult]) {
 }
 
 fn verify_force_displacement_monotone(results: &[RampStepResult]) {
-    // Force-on-soft summed `+z`-component is in `-z` direction (the
-    // probe pushes the cavity wall in `-z`); magnitude grows with
-    // deeper penetration overall, so the force_total_z trace should
-    // be monotone-decreasing from step 2 onward. Strict-adjacent
-    // monotonicity at the step 1 → step 2 boundary is NOT required:
-    // contact engagement at the shallowest 0.5 mm penetration is in
-    // a transient regime where the active-pair set is still
-    // settling, and force can dip slightly before becoming
-    // monotone. This was observed empirically at first bake (step 1
-    // = -137.3 N, step 2 = -130.5 N) and matches the v2 spike's
-    // 0.5 mm vs 1.0 mm data — a structural artifact of the
-    // contact-band / BCC-grid discretization, NOT a correctness
-    // failure. From step 2 onward the monotone gate IS strict
-    // (any inversion in the deeper regime would signal a real
-    // defect).
+    // v2.5 cleanup: post-filter, `force_total_z_n` is the `+z` sum of
+    // penalty forces over REFERENCED active pairs (orphan-vertex
+    // pseudo-forces excluded). The probe enters the cavity from above
+    // and pushes the wrap-cap material UP in `+z`; the per-vertex
+    // normals at active pairs (mostly above the probe, see (vv) and
+    // (xx)) point in `+z` direction with axial bias, so
+    // `force_total_z_n > 0` and grows monotonically with deeper
+    // penetration as more wrap-cap material engages.
     //
-    // Sanity bound at the ramp endpoints: |force_z[N-1]| > |force_z[0]| —
+    // Pre-v2.5 the sign was reversed (-1135 N at step 12) because
+    // orphan BCC vertices inside the cavity dominated the readout
+    // sum with `-z` normal components; v2.5 anchors the physically
+    // meaningful (+z, monotone-growing) sum.
+    //
+    // Strict-adjacent monotonicity at the step 1 → step 2 boundary
+    // is NOT required: contact engagement at the shallowest 0.5 mm
+    // penetration is in a transient regime where the active-pair
+    // set is still settling, and force can dip slightly before
+    // becoming monotone. From step 2 onward the monotone gate IS
+    // strict (any inversion in the deeper regime would signal a
+    // real defect).
+    //
+    // Sanity bound at the ramp endpoints: force_z[N-1] > force_z[0] —
     // the deepest step's force magnitude must exceed the shallowest
     // step's, even with the transient.
     let first = &results[0];
     let last = results.last().expect("ramp produced no results");
     assert!(
-        last.force_total_z_n < first.force_total_z_n,
-        "ramp endpoint sanity: final step force_z {:e} N not more negative than first step {:e} N",
+        last.force_total_z_n > first.force_total_z_n,
+        "ramp endpoint sanity: final step force_z {:e} N not greater than first step {:e} N",
         last.force_total_z_n,
         first.force_total_z_n,
     );
@@ -996,9 +1031,9 @@ fn verify_force_displacement_monotone(results: &[RampStepResult]) {
         let a = &w[0];
         let b = &w[1];
         assert!(
-            b.force_total_z_n < a.force_total_z_n,
+            b.force_total_z_n > a.force_total_z_n,
             "non-monotone force-displacement at step {}→{}: {:e} N → {:e} N \
-             (expected step {} < step {} from step 2 onward)",
+             (expected step {} > step {} from step 2 onward)",
             a.step,
             b.step,
             a.force_total_z_n,

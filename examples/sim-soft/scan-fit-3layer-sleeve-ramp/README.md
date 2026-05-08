@@ -135,10 +135,12 @@ The chained `replay_step` is deterministic on a fixed toolchain (rustc 1.95.0 on
 
 | Anchor | Bound |
 |---|---|
-| `force_total_z[N-1] < force_total_z[0]` | strict (ramp endpoint sanity) |
-| `force_total_z[k+1] < force_total_z[k]` for k ≥ 1 | strict-adjacent monotone from step 2 onward |
+| `force_total_z[N-1] > force_total_z[0]` | strict (ramp endpoint sanity) |
+| `force_total_z[k+1] > force_total_z[k]` for k ≥ 1 | strict-adjacent monotone from step 2 onward |
 
-Force-on-soft summed `+z`-component is in `-z` direction (probe pushes cavity wall in `-z`); magnitude grows with deeper penetration. Strict-adjacent monotonicity at step 1 → step 2 is NOT required: contact engagement at the shallowest 0.5 mm penetration is in a transient regime where the active-pair set is still settling, and force can dip slightly (observed: step 1 = -137.3 N, step 2 = -130.5 N — a ~5 % dip from the 0.5 mm transient). From step 2 onward the gate IS strict (any inversion in the deeper regime would signal a real defect).
+Force-on-soft summed `+z`-component is in `+z` direction (probe enters from above; wrap-cap material is pushed UP) and grows monotonically with deeper penetration as more wrap-cap material engages. Strict-adjacent monotonicity at step 1 → step 2 is NOT required: contact engagement at the shallowest 0.5 mm penetration is in a transient regime where the active-pair set is still settling. From step 2 onward the gate IS strict (any inversion in the deeper regime would signal a real defect).
+
+**v2.5 sign-flip note.** Pre-v2.5 anchors had `force_total_z` in the `-z` direction (e.g., `-137 N` at step 1) because the unfiltered `per_pair_readout` includes ORPHAN BCC vertices inside the empty cavity — orphans below the probe equator have `-z` normals and dominated the sum (~95-97% of readout entries were orphans). v2.5 filters readouts to referenced (= solver-active) vertices only, surfacing the physically meaningful `+z` push from wrap-cap-above-probe contacts. See pattern (xx) at the row 22 patterns memo and the v2 spec memo's "Post-ship investigation" section for the orphan-pollution discovery and v2.5 cleanup rationale.
 
 ### 8. `per_step_strain_energy_ordering`
 
@@ -171,16 +173,16 @@ Plus per-tet material assignment via `mesh.materials()[t].energy(F_probe)` match
 
 | Anchor | Pinned |
 |---|---|
-| `n_active_pairs` at final step | `273` |
+| `n_active_pairs` at final step (referenced-only, v2.5) | `37` |
 | `max Ψ_outer` at final step | bits self-pinned (~10487 J/m³); rel-tol IV-1 sparse-tier |
 
-The final-step active-pair count dropped from row 21 v1's 294 (at 1 mm depth) to 273 (at 6 mm depth) — the deeper probe pose displaces the cavity wall outward, and a few cavity-wall vertices fall OUT of the active-contact band as they move beyond the d̂ threshold. Max Ψ_outer at 6 mm depth is ~ 60× row 21 v1's 175.8 J/m³ at 1 mm — strain at the contact-band-adjacent outer-shell tets concentrates dramatically as the radial chain inner → middle → outer transmits the deeper probe load.
+Pre-v2.5 the anchored `n_active_pairs` was 273 — but ~95-97 % of those were ORPHAN BCC lattice vertices inside the empty cavity (no FEM stiffness, ignored by the solver). v2.5 filters to referenced vertices only; the count is now physically meaningful. Real pair count GROWS from 9 at 0.5 mm penetration to 37 at 4 mm and PLATEAUS at 37 from step 7 onward — the deepening probe pose progressively engages more wrap-cap material until the active band stabilizes. Max Ψ_outer at 6 mm depth is ~60× row 21 v1's 175.8 J/m³ at 1 mm — strain at the contact-band-adjacent outer-shell tets concentrates dramatically as the radial chain inner → middle → outer transmits the deeper probe load. (Row 21 v1's anchored 294-pair count is also orphan-polluted; preserved as-is for cross-row continuity at the unfiltered convention.)
 
 ### 12. `per_step_captured_bits` — IV-1 sparse-tier rel-tol
 
 Per-step force-displacement + per-layer Ψ̄ aggregates self-pinned at first capture, 5 quantities × 12 steps = 60 captured-bit anchors (plus the final-step `MAX_PSI_OUTER_FINAL_REF_BITS` from anchor 11):
 
-- `FORCE_TOTAL_Z_RAMP_REF_BITS[12]` — `+z`-force-on-soft summed; values `~[-137, -131, -144, -193, -247, -318, -387, -462, -809, -900, -1002, -1135] N`.
+- `FORCE_TOTAL_Z_RAMP_REF_BITS[12]` — `+z`-force-on-soft summed (referenced-only post-v2.5); values `~[1.1, 1.9, 2.9, 4.2, 5.6, 7.2, 9.2, 11.5, 14.1, 16.9, 20.0, 23.1] N`. Force is in `+z` direction (wrap-cap material pushed UP by the probe) and monotone-growing. Pre-v2.5 these were `~[-137, -131, ..., -1135] N` — orphan-driven sign reversal documented above.
 - `MAX_DISP_RAMP_REF_BITS[12]` — body-wide max displacement; values `~[1.5, 2.0, 2.5, 3.0, 3.4, 3.9, 4.4, 4.9, 5.4, 5.8, 6.3, 6.7] mm`.
 - `MEAN_PSI_INNER_RAMP_REF_BITS[12]` — inner-shell mean Ψ.
 - `MEAN_PSI_MIDDLE_RAMP_REF_BITS[12]` — middle-shell mean Ψ.
@@ -217,7 +219,9 @@ The xy-anisotropy v1 documented (longer ±y faces of the cuboid + offset deflect
 uv run examples/sim-soft/scan-fit-3layer-sleeve-ramp/plot_ramp.py
 ```
 
-Produces a dual-axis plot of penetration depth (mm) × force_total_z (N) on the left axis and depth × max_disp (mm) on the right axis, with Newton iter counts annotated above each force-curve point. The non-linear stiffening between 4 and 4.5 mm depth (force jumps from -462 N to -809 N — `+347 N` for `0.5 mm` vs `+75 N` just before) is the headline visual signature of the deep-penetration regime; iter counts climb in step (8 / 8 / 9 / 11 / 11 / 13 / 14 / 16 / 19 / 22 / 30 / 61) and visibly track the stiffening.
+Produces a dual-axis plot of penetration depth (mm) × force_total_z (N) on the left axis and depth × max_disp (mm) on the right axis, with Newton iter counts annotated above each force-curve point. Force_total_z grows smoothly + convexly from `~1.1 N` at 0.5 mm to `~23 N` at 6 mm (post-v2.5; the per-step growth `+0.78 → +1.07 → +1.22 → ... → +3.19 N` is monotone-increasing, no sharp elbow). Newton iter counts (8 / 8 / 9 / 11 / 11 / 13 / 14 / 16 / 19 / 22 / 30 / 61) climb visibly across the ramp — the deep-penetration regime's signature lives in iter-count growth (not force-curve elbow), since the body stiffens through nonlinear NH approaching the validity-domain boundary.
+
+(The pre-v2.5 plot showed an apparent sharp elbow at 4 → 4.5 mm — force jumping from `-462 N` to `-809 N`. That was an orphan-vertex artifact; the post-v2.5 referenced-only force trajectory has no such elbow. See pattern (xx) + the v2 spec memo's "Post-ship investigation" section.)
 
 **Note on `max_disp` vs depth.** `max_disp` exceeds the rigid `probe penetration depth` at every step (`~1.5 mm` peak displacement at `0.5 mm` penetration; `~6.7 mm` at `6.0 mm`). Penalty contact's elastic equilibrium can push the cavity wall farther than the rigid penetration depth — same effect row 21 v1's anchor 8 prose documents at v1's `~1.97 mm` peak vs `1 mm` penetration. The amplification factor `max_disp / depth` shrinks from `~3×` at 0.5 mm to `~1.1×` at 6 mm as the body stiffens through the non-linear regime.
 
