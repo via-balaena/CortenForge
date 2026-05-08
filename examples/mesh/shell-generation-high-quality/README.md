@@ -293,7 +293,13 @@ geometry, this example fails loudly and the README sections shift.
 
 ## Visuals
 
-Open the artifacts in MeshLab, ParaView, Blender, or `f3d`:
+Open the artifacts in cf-view (workspace default; flat-per-triangle
+WYSIWYP rendering):
+
+```text
+cargo run -p cf-viewer --release -- examples/mesh/shell-generation-high-quality/out/before.ply
+cargo run -p cf-viewer --release -- examples/mesh/shell-generation-high-quality/out/shell.ply
+```
 
 - **`out/before.ply`** — a solid 10mm cube. Six flat 10×10 walls,
   closed (no boundary loop). Sharp 90° edges throughout. Diagonal

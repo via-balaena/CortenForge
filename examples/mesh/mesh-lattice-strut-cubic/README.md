@@ -199,10 +199,10 @@ stable, and well within `[0, 1]`.
 ## Visuals
 
 `out/cubic_lattice.ply` (binary little-endian, 7 560 verts + 12 960
-tris, ~260 KB) is the visual centerpiece. Open in f3d:
+tris, ~260 KB) is the visual centerpiece. Open in cf-view:
 
 ```text
-f3d examples/mesh/mesh-lattice-strut-cubic/out/cubic_lattice.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-strut-cubic/out/cubic_lattice.ply
 ```
 
 ⏸ **Visual review optional but recommended** — even though math-pass

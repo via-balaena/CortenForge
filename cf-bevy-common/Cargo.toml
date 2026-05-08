@@ -17,12 +17,18 @@ publish = false
 # crate explicitly (see `xtask/src/grade.rs::applies_to_crate`).
 
 [dependencies]
-# Bevy 0.18 — workspace-default feature set is sufficient. cf-bevy-common's
-# code uses only ECS + math + transform + input + app surface, all of which
-# live in `bevy_internal`'s base (not feature-gated). Downstream consumers
-# (cf-viewer, sim-bevy, sim-bevy-soft) bring their own rendering-pipeline
-# features via Cargo's additive feature unification.
-bevy = { workspace = true }
+# Bevy 0.18 — minimal feature set covering the ECS + math + transform +
+# input + app surface (all consumers' shared base) plus `bevy_asset` +
+# `bevy_render` for `mesh::triangle_mesh_flat_shaded`'s `Mesh` /
+# `Indices` / `RenderAssetUsages` types. Downstream consumers
+# (cf-viewer, sim-bevy, sim-bevy-soft) layer their PBR / UI / windowing
+# features on top via Cargo's additive feature unification — those
+# crates' cargo builds already pull bevy_render transitively, so adding
+# the features here doesn't change their compile cost.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_render",
+] }
 
 # `Aabb`, `Point3`, `Vector3` for `OrbitCamera::framing_for_aabb` and
 # `UpAxis::to_bevy_point` / `to_bevy_normal`.

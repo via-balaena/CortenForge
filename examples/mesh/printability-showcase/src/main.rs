@@ -171,7 +171,7 @@
 //!
 //! With these in place, a successful `cargo run --release` exit-0 is
 //! equivalent to a clean visual inspection of the fixture geometry.
-//! The `f3d` round-trip is optional (sanity-check only), not a
+//! The cf-view round-trip is optional (sanity-check only), not a
 //! workflow gate.
 //!
 //! ## How to run
@@ -192,10 +192,14 @@
 //!   `support_regions` + `trapped_volumes` + `small_features`).
 //!
 //! With `verify_fixture_geometry` active, the visuals-pass is optional.
-//! If you do want to eyeball the artifacts, run `f3d` on each PLY
-//! separately (`f3d --up=+Z out/mesh.ply` then `f3d --up=+Z
-//! out/issues.ply`) — `f3d --multi-file-mode=all` mixed with a
-//! point-cloud falls back to all-points rendering. See `README.md`.
+//! If you do want to eyeball the artifacts, run cf-view on each PLY
+//! separately:
+//! ```text
+//! cargo run -p cf-viewer --release -- examples/mesh/printability-showcase/out/mesh.ply
+//! cargo run -p cf-viewer --release -- examples/mesh/printability-showcase/out/issues.ply
+//! ```
+//! cf-view v1 ships single-file rendering; see `README.md` for the
+//! WYSIWYP-rendering rationale + cavity / sphere-tessellation notes.
 
 use std::path::Path;
 

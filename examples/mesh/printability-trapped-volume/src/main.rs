@@ -91,10 +91,11 @@
 //! ```
 //!
 //! Output written to `examples/mesh/printability-trapped-volume/out/`.
-//! Open `mesh.ply` and `issues.ply` in `MeshLab` or `ParaView` for the
-//! visuals pass — see the README's f3d-winding callout for viewer-
-//! specific notes on the inner sphere's REVERSED winding (f3d back-
-//! face-culls the cavity by default).
+//! Open `mesh.ply` and `issues.ply` in cf-view for the visuals pass —
+//! see the README's viewer callout for notes on the inner sphere's
+//! REVERSED winding (cf-view's two-sided PBR materials make the cavity
+//! visible from outside; `MeshLab` / `ParaView` clipping planes give
+//! the canonical cavity-interior inspection).
 //!
 //! ## v0.8 spec deviation: `out/voxels.ply` deferred
 //!

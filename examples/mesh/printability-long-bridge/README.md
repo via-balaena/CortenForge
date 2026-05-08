@@ -9,17 +9,23 @@ independently and fall below the bridge threshold. All three downward
 slab-bottom regions also co-flag Critical ExcessiveOverhang (90° tilt),
 and `is_printable()` returns false.
 
-> **Heads-up for `f3d` users — back-face-culling artifact:** the slab's
-> bottom is the load-bearing geometry the detector flags, but it's a
-> *downward-facing* surface. Viewers that cull back-faces by default
-> (or render the model from above) will hide the very face this
-> example is about. Open the file in **MeshLab** or **ParaView**
-> (which render with two-sided lighting + visible back-faces by
-> default, or expose the toggle in the menu) and tilt the camera
-> below the slab to see the bridge + cantilever bottoms. This is
-> **not** a bug in the example or the artifact — the slab bottom is a
-> genuine outward-facing-with-normal-`-z` surface, exactly as the
-> printability detector sees it.
+> **Heads-up — downward-facing geometry:** the slab's bottom is
+> the load-bearing geometry the detector flags, but it's a
+> *downward-facing* surface. Open the file in cf-view (which uses
+> two-sided PBR materials + no backface culling per the cf-viewer
+> arc lock, so the slab bottom stays visible) and orbit the camera
+> below the slab to see the bridge + cantilever bottoms:
+>
+> ```text
+> cargo run -p cf-viewer --release -- examples/mesh/printability-long-bridge/out/mesh.ply
+> ```
+>
+> This is **not** a bug in the example or the artifact — the slab
+> bottom is a genuine outward-facing-with-normal-`-z` surface,
+> exactly as the printability detector sees it. (Viewers with
+> backface culling enabled by default — MeshLab solid mode,
+> Blender solid mode with cull-backfaces — will hide the slab
+> bottom unless you toggle culling off.)
 
 ## What this fixture is
 
@@ -163,7 +169,7 @@ The H-shape: 24 vertices, 44 triangles, ASCII PLY. Best camera angles:
 
 The slab's downward face IS the artifact — viewers that hide
 back-faces by default will need a clipping plane or a tilted-up camera
-to expose it (see f3d callout above).
+to expose it (see cf-view callout above).
 
 ## What you'll see — `out/issues.ply`
 

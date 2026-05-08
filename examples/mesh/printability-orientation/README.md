@@ -3,29 +3,29 @@
 Visual demo of Gap L (`PrinterConfig::build_up_direction` parametrization)
 of the v0.8 fix arc.
 
-## ⚠ f3d viewer callout — pass `--up +Z` to see the cylinder upright
+## ⚠ Viewer callout — `--up +Z` keeps the cylinder upright
 
 The fixture's leaning cylinder is authored in a `+Z`-up world (build
-plate at `z = 0`, axis tilted 60° from vertical toward `+X`). `f3d`'s
-default `+Y`-up world rotates the scene so the build-plate-perpendicular
-direction goes *into the screen*, which makes the cylinder appear to
-*lie* on its side rather than *lean*. Always pass `f3d --up +Z` for this
-example:
+plate at `z = 0`, axis tilted 60° from vertical toward `+X`). cf-view's
+default is `+Z`-up so the build-plate orientation reads correctly out
+of the box; explicitly passing `--up +Z` is harmless + matches the
+canonical convention:
 
 ```text
-f3d --up +Z out/mesh_original.ply                # leaning cylinder
-f3d --up +Z out/mesh_rotated.ply                 # post-R_Y(-60°) — perfectly vertical
-f3d --up +Z --multi-file-mode=all out/mesh_original.ply out/issues_run1.ply  # overhang centroids overlay
+cargo run -p cf-viewer --release -- --up +Z examples/mesh/printability-orientation/out/mesh_original.ply  # leaning cylinder
+cargo run -p cf-viewer --release -- --up +Z examples/mesh/printability-orientation/out/mesh_rotated.ply   # post-R_Y(-60°) — perfectly vertical
+cargo run -p cf-viewer --release -- --up +Z examples/mesh/printability-orientation/out/issues_run1.ply    # overhang centroids (point cloud)
 ```
 
-To compare original vs rotated side-by-side: open both PLYs in two f3d
-windows. The rotated cylinder is OFFSET in `−X` (bbox `x ∈ [-12, -2]`)
-because the rotation pivots around the world origin, not around the
-mesh centroid; this is geometrically expected — `place_on_build_plate`
-re-aligns `z`, but `x` / `y` translation from the rotation is preserved.
-Both meshes have identical signed volume (`1170.5 mm³`) and identical
-vertex/face counts (`66v / 128f`), confirming the rotation is
-orientation-preserving.
+To compare original vs rotated side-by-side: open both PLYs in two
+cf-view windows (cf-view v1 ships single-file rendering; multi-file
+overlay is deferred). The rotated cylinder is OFFSET in `−X`
+(bbox `x ∈ [-12, -2]`) because the rotation pivots around the world
+origin, not around the mesh centroid; this is geometrically expected —
+`place_on_build_plate` re-aligns `z`, but `x` / `y` translation from
+the rotation is preserved. Both meshes have identical signed volume
+(`1170.5 mm³`) and identical vertex/face counts (`66v / 128f`),
+confirming the rotation is orientation-preserving.
 
 ## What this fixture is
 

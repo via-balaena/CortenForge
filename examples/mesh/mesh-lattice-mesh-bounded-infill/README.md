@@ -162,29 +162,41 @@ workspace root):
 ## Visuals
 
 ⏸ Visual review **recommended**, but with a caveat: `composite.ply`
-is a closed mesh, so f3d's default view shows only the outer shell
+is a closed mesh, so the default view shows only the outer shell
 (the slightly-shrunken inward-offset envelope). The interior
 structure (cubic lattice + solid caps + connection struts) is sealed
 inside. To see it, open the components separately:
 
-- **`f3d out/lattice.ply`** — the interior cubic lattice. Visible
-  cap-band carving at top + bottom (gap c witness: lattice extent
-  shorter in z than x/y) and SDF-bounded interior (gap e witness:
-  lattice does NOT reach the 50 mm input bbox edges).
-- **`f3d out/shell.ply`** — the inward-offset hollow shell
-  (~48.8 mm outer face). Closed surface; visually similar to the
-  input cube. Gap-a is verified empirically rather than visually:
-  224 672 verts / 74 900 tris vs the input's 8 / 12 — if gap-a were
-  broken (`shell = mesh.clone()`), `shell.ply` would match
-  `input.ply` byte-for-byte.
-- **`f3d out/composite.ply`** — the combined mesh. Default view
-  shows only the outer shell. f3d's interactive clipping plane (or
-  wireframe via `e`) exposes the interior cutaway view.
+- **lattice** — the interior cubic lattice. Visible cap-band
+  carving at top + bottom (gap c witness: lattice extent shorter
+  in z than x/y) and SDF-bounded interior (gap e witness: lattice
+  does NOT reach the 50 mm input bbox edges).
+  ```text
+  cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-mesh-bounded-infill/out/lattice.ply
+  ```
+- **shell** — the inward-offset hollow shell (~48.8 mm outer face).
+  Closed surface; visually similar to the input cube. Gap-a is
+  verified empirically rather than visually: 224 672 verts /
+  74 900 tris vs the input's 8 / 12 — if gap-a were broken
+  (`shell = mesh.clone()`), `shell.ply` would match `input.ply`
+  byte-for-byte.
+  ```text
+  cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-mesh-bounded-infill/out/shell.ply
+  ```
+- **composite** — the combined mesh. Default view shows only the
+  outer shell; the interior is sealed inside. To inspect the
+  cutaway, view `lattice.ply` separately as above (cf-view ships
+  no built-in clipping plane in v1; the per-component PLYs are
+  the canonical inspection path).
+  ```text
+  cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-mesh-bounded-infill/out/composite.ply
+  ```
 
 The lattice mesh is un-welded vertex-soup output (F10 — v0.9
 candidate documented in `mesh-lattice/CHANGELOG.md`); shading
-discontinuities at MC-cell boundaries are platform-truth, not a
-regression.
+discontinuities at MC-cell boundaries are platform-truth visible
+under cf-view's flat-per-triangle WYSIWYP rendering, not a
+regression — they expose real mesh-quality information.
 
 ## Cross-references
 

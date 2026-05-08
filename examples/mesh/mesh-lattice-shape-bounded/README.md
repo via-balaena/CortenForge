@@ -5,7 +5,7 @@ SDF via `with_shape_sdf` — direct `is_outside_shape` predicate
 anchors (interior / exterior + the default `false` when no SDF is
 set), then `generate_lattice` for a 30 mm³ bbox centered at origin
 (`min = (-15, -15, -15)`, `max = (15, 15, 15)`) at cell size 10 mm
-and resolution 15, with a sphere SDF of radius 12 mm at origin
+and resolution 60, with a sphere SDF of radius 12 mm at origin
 (`Arc::new(|p| p.coords.norm() - 12.0)`) clipping the gyroid
 output.** The shape-bounded counterpart to
 `mesh-lattice-tpms-gyroid`: same TPMS path, but the lattice is
@@ -33,19 +33,29 @@ shape-clipped TPMS path.
 
 The fixture is a 30 mm × 30 mm × 30 mm bounding box centered at
 origin (`min = (-15, -15, -15)`, `max = (15, 15, 15)`) at 10 mm
-cell size and resolution 15, mirroring the in-tree
+cell size and resolution 60, mirroring the in-tree
 `test_gyroid_lattice_with_shape_sdf` precedent in
 `mesh-lattice/src/generate.rs`. The shape SDF is a sphere of radius
 12 mm centered at origin (`Arc::new(|p| p.coords.norm() - 12.0)`),
 so points strictly closer than 12 mm to origin are "inside" and
 points strictly farther are "outside." With cell size 10 mm and
-resolution 15, the marching-cubes voxel size is exactly
-`10 / 15 = 2/3 ≈ 0.667 mm` (the bbox is an integer multiple of the
-cell, so `total_resolution = ceil((30 / 10) × 15) = 45` and voxel
-size = `30 / 45 = 2/3` exactly). Every output vertex satisfies
-`(v - origin).norm() < 12 + voxel_size + cushion ≈ 13.667` — the
+resolution 60, the marching-cubes voxel size is exactly
+`10 / 60 = 1/6 ≈ 0.167 mm` (the bbox is an integer multiple of the
+cell, so `total_resolution = ceil((30 / 10) × 60) = 180` and voxel
+size = `30 / 180 = 1/6` exactly). Every output vertex satisfies
+`(v - origin).norm() < 12 + voxel_size + cushion ≈ 13.167` — the
 cushion accounts for marching-cubes interpolating across cells
 straddling the sphere boundary.
+
+Resolution 60 is calibrated to match typical 3D-printer XY
+resolution (FDM 0.4 mm nozzle, SLA 0.1 mm). Under cf-viewer's
+flat-per-triangle WYSIWYP rendering, the resulting ~0.167 mm
+triangles fall below perceptual resolution at typical viewing
+distance, so the gyroid TPMS surface reads as smooth on screen
+**and** in print. Coarser resolution (e.g., 15) ran ~16× faster
+but produced visibly faceted gyroid sheets that misled about print
+quality — the viewer truthfully shows what the mesh is, so smooth
+prints require smooth meshes.
 
 The example computes:
 
@@ -57,7 +67,7 @@ The example computes:
    no SDF is set on `LatticeParams::gyroid(10.0)` (per
    `params.rs:415-417`). All exact (boolean equality).
 2. **`LatticeParams::gyroid(10.0)` builder chain** —
-   `with_density(0.3)`, `with_resolution(15)`, `with_shape_sdf(_)`;
+   `with_density(0.3)`, `with_resolution(60)`, `with_shape_sdf(_)`;
    `validate() == Ok(())`; `params.shape_sdf.is_some()`; and field
    locks pinning `cell_size`, `density`, and `resolution` to the
    fixture values.
@@ -71,7 +81,7 @@ The example computes:
 4. **Per-vertex distance-to-origin bound** — every vertex `v` of the
    with-SDF result satisfies
    `(v - origin).norm() < sphere_radius + voxel_size + cushion`
-   `≈ 13.667 mm`, with `voxel_size = 2/3` (exact integer multiple)
+   `≈ 13.167 mm`, with `voxel_size = 1/6` (exact integer multiple)
    and a `1.0 mm` cushion accounting for marching-cubes interpolation
    across the sphere boundary.
 5. **Edge case: tiny-sphere trim** — a sphere SDF of radius `1 mm`
@@ -89,7 +99,7 @@ The example computes:
 | `is_outside_shape` | `false` for any point (default) | `sdf(p) > 0.0` |
 | `shell_sdf` composition | `tpms_value` only | `tpms_value.max(sphere_sdf(p))` |
 | Output extent | Fills the bbox | Trimmed to sphere interior |
-| Load-bearing anchor | per-vertex `abs(abs(G(v)) - 0.75) < 0.05` | strict `<` on `vertex_count()` (with-SDF vs without) + per-vertex `norm(v) < 13.667` |
+| Load-bearing anchor | per-vertex `abs(abs(G(v)) - 0.75) < 0.05` | strict `<` on `vertex_count()` (with-SDF vs without) + per-vertex `norm(v) < 13.167` |
 | Visual centerpiece | Bbox-filling gyroid (3³ ≈ 27 cells) | Sphere-shaped gyroid (boundary-conforming) |
 
 ## Public-surface coverage
@@ -136,19 +146,20 @@ positive (outside); points exactly on the sphere surface return zero
 | no-SDF default `is_outside_shape(any_point)` | `false` (per `is_some_and` short-circuit) |
 | Builder validate | `Ok(())` |
 | `params.shape_sdf.is_some()` (post-builder) | `true` |
-| `params.cell_size` / `params.density` / `params.resolution` | `10.0` / `0.3` / `15` |
-| `result_with_sdf.vertex_count()` | `87480` (trimmed) |
-| `result_without_sdf.vertex_count()` | `321084` (bbox-filling baseline) |
-| With-vs-without strict-`<` on vertex_count | trim drops `233604` verts (`72.8%`) |
-| Empirical max `norm(v)` over with-SDF result | `11.9999 mm` |
-| Per-vertex bound `< 12 + 2/3 + 1.0 ≈ 13.667 mm` | green (cushion comfortably oversized) |
+| `params.cell_size` / `params.density` / `params.resolution` | `10.0` / `0.3` / `60` |
+| `result_with_sdf.vertex_count()` | `1474806` (trimmed) |
+| `result_without_sdf.vertex_count()` | `5158080` (bbox-filling baseline) |
+| With-vs-without strict-`<` on vertex_count | trim drops `3683274` verts (`71.4%`) |
+| Empirical max `norm(v)` over with-SDF result | `12.0000 mm` |
+| Per-vertex bound `< 12 + 1/6 + 1.0 ≈ 13.167 mm` | green (cushion comfortably oversized) |
 | `result.cell_count` (with-SDF) | `27` (BIT-EXACT; total bbox cells, not trimmed) |
-| `tiny.vertex_count()` (radius-1 sphere) | `24` (`< 87480 / 10 = 8748`) |
+| `tiny.vertex_count()` (radius-1 sphere) | `2076` (`< 1474806 / 10 = 147480`) |
 
-The empirical max distance-to-origin is `11.9999 mm` — slightly
-*inside* the sphere boundary, not beyond it. The `voxel_size + cushion`
-allowance is therefore comfortably oversized for this fixture; the
-bound `13.667` holds with ~1.7 mm of headroom. This is consistent
+The empirical max distance-to-origin is `12.0000 mm` — exactly on
+the sphere boundary (within float-print rounding), not beyond it.
+The `voxel_size + cushion` allowance is therefore comfortably
+oversized for this fixture; the bound `13.167` holds with ~1.17 mm
+of headroom. This is consistent
 with marching-cubes producing edge vertices via linear interpolation
 between corners that bracket the `shell_sdf == 0` isovalue: when one
 corner is outside the sphere (`shell_sdf == sphere_sdf > 0`) and one
@@ -192,8 +203,8 @@ iconic; the with-vs-without comparison tells the boundary-conforming
 story.
 
 ```text
-f3d out/sphere_gyroid.ply
-f3d out/sphere_gyroid_full.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-shape-bounded/out/sphere_gyroid.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-lattice-shape-bounded/out/sphere_gyroid_full.ply
 ```
 
 The sphere-clipped output should be visibly contained inside a `12 mm`

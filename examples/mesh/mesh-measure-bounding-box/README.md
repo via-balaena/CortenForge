@@ -125,10 +125,10 @@ the "OBB ⊆ AABB" folk intuition documentation gap).
 ## Visuals
 
 `out/mesh.ply` contains the 16-vertex / 24-triangle fixture. Open in
-f3d to see the contrast:
+cf-view to see the contrast:
 
 ```text
-f3d examples/mesh/mesh-measure-bounding-box/out/mesh.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-measure-bounding-box/out/mesh.ply
 ```
 
 Cube A renders as a 10 mm cube near the world origin; cube B renders

@@ -21,22 +21,26 @@ examples here.
 ## Viewing PLY artifacts
 
 Most examples emit one or more `.ply` files to `out/` (gitignored).
-Common viewers:
+The workspace's unified viewer is **`cf-view`** —
+`cargo run -p cf-viewer --release -- <path/to/file.ply>` renders the
+PLY with flat-per-triangle WYSIWYP shading + auto-detected per-vertex
+scalars (colormapped via Q5's heuristic per `docs/VIEWER_DESIGN.md`)
++ orbit camera. Pass `--up=+X|+Y|+Z` to match the input frame
+(workspace default is `+Z`, matching the build-plate orientation
+used by the printability and lattice examples).
 
-- **f3d** — quick desktop preview. Pass `--up=+Z` to match the
-  build-plate orientation used by the printability and lattice
-  examples; f3d's default `+Y`-up world rotates "up" into-screen
-  otherwise.
-- **MeshLab** / **ParaView** — single-sided rendering and clipping
-  planes for inspecting hollow / cavity geometry. Per-example READMEs
-  call out where this matters (the printability hollow-box and
-  trapped-volume fixtures have **REVERSED-wound** inner shells whose
-  normals point INTO the cavity; f3d back-face-culls these by default
-  and the cavity becomes invisible).
-- **PLY-attribute viewers** (ParaView, MeshLab) — required for the
-  vertex-only artifacts that carry custom scalars
-  (`extras["signed_distance"]` from `mesh-sdf-distance-query`); colour-
-  map by the named scalar to render the SDF.
+```text
+cargo run -p cf-viewer --release -- examples/mesh/<example>/out/<file>.ply
+```
+
+cf-view handles both geometry-only meshes and per-vertex scalar PLYs
+(e.g. `extras["signed_distance"]` from `mesh-sdf-distance-query`)
+out of the box — the dropdown auto-discovers scalar names and the
+colormap fires by distribution heuristic (divergent / sequential /
+categorical). Cavity-bearing fixtures (printability hollow-box,
+trapped-volume) have **REVERSED-wound** inner shells; cf-view's
+double-sided PBR materials render both sides without back-face
+culling, so cavities stay visible by default.
 
 The measurement, SDF, and lattice examples follow a math-pass-first
 cadence: every coordinate, winding, count, and bound is encoded as an

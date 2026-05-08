@@ -110,11 +110,10 @@
 //! ```
 //!
 //! Output written to `examples/mesh/printability-orientation/out/`. Open
-//! `mesh_original.ply` and `mesh_rotated.ply` side-by-side in `MeshLab`,
-//! `ParaView`, or `f3d` for the visuals pass. See the README for the
-//! `f3d --up +Z` recommendation (the cylinder's axis-up convention is
-//! load-bearing for the visual reading; `f3d`'s default `+Y` up renders
-//! the rotated cylinder lying on its side, which is misleading).
+//! `mesh_original.ply` and `mesh_rotated.ply` side-by-side in two
+//! cf-view windows for the visuals pass — see the README for the
+//! `--up +Z` recommendation (cf-view's `+Z` default already matches
+//! the build-plate orientation; the flag is explicit + harmless).
 
 use std::path::Path;
 
@@ -809,7 +808,7 @@ fn print_search_diagnostic(result: &OrientationResult, run1_area: f64) {
 /// Each `OverhangRegion`'s `center` (component-mean of per-face
 /// centroids per `emit_overhang_component`) becomes one vertex. Empty
 /// regions vector produces a vertex-only PLY with zero vertices and zero
-/// faces — readable by `MeshLab` / `ParaView` / `Blender` / `f3d` as an
+/// faces — readable by cf-view (and any other PLY consumer) as an
 /// empty point cloud.
 fn save_overhang_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     let centroids: Vec<Point3<f64>> = v.overhangs.iter().map(|r| r.center).collect();

@@ -3,23 +3,30 @@
 Visual demo of the §6.3 `TrappedVolume` detector (Gap H of the v0.8 fix
 arc).
 
-## ⚠ f3d viewer callout — use MeshLab or ParaView with a clipping plane
+## ⚠ Viewer callout — cavity inspection
 
-`f3d`'s default rendering back-face-culls the REVERSED-wound inner
-sphere (the cavity shell's normals point INTO the cavity, away from the
-camera if you are outside the cube), so `f3d --up=+Z out/mesh.ply` shows
-only the outer cube. **The cavity is not missing — `f3d` is hiding it
-by design**, exactly the way the platform's directed-edge topology
-sees it: the REVERSED inner shell is what tells a printer slicer "this
-is a cavity, not a solid blob inside the cube".
+cf-view's two-sided PBR materials (no backface culling per the
+cf-viewer arc lock) render BOTH sides of the REVERSED-wound inner
+sphere — so the cavity shell shows up as a discernible spherical
+pocket inside the outer cube, viewed through the cube's outer
+surface from outside:
 
-To see the cavity:
+```text
+cargo run -p cf-viewer --release -- examples/mesh/printability-trapped-volume/out/mesh.ply
+```
 
-- **MeshLab** (`meshlab out/mesh.ply`): use the slice plane (`Filters
-  → Selection → Slice using a plane`) or simply enable `Render →
-  Show Edges` and rotate; the inner sphere shows up as a wireframe.
-- **ParaView** (`paraview out/mesh.ply`): apply a `Clip` filter at
-  `x = 10` (cavity midplane) to peek inside.
+This visibility-from-outside differs from viewers that back-face-
+cull by default (which would hide the cavity into invisibility) —
+cf-view's double-sided rendering treats the cavity as a real
+surface that happens to have its normals pointing into the cavity. The
+load-bearing topology is unchanged: the REVERSED inner shell is
+what tells a printer slicer "this is a cavity, not a solid blob
+inside the cube".
+
+For interactive clipping (the canonical inspection of the cavity's
+interior): cf-view v1 ships no built-in clipping plane. Use MeshLab
+(`Filters → Selection → Slice using a plane`) or ParaView's `Clip`
+filter at `x = 10` (cavity midplane) to peek inside.
 
 ## What this fixture is
 

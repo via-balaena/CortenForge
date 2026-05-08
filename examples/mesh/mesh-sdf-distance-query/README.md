@@ -244,26 +244,31 @@ corners (e.g., `(−2, −2, −2)` projects to `(−1/3, −1/3, −1/3)` on
 ## Visuals
 
 `out/octahedron.ply` (ASCII, 6 verts + 8 tris, 312 bytes) — open in
-f3d to verify the face windings visually:
+cf-view to verify the face windings visually:
 
 ```text
-f3d examples/mesh/mesh-sdf-distance-query/out/octahedron.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-sdf-distance-query/out/octahedron.ply
 ```
 
 `out/sdf_grid.ply` (binary LE, 1000 verts + 0 faces, ~16KB) — point
-cloud with per-vertex `extras["signed_distance"]` scalar. Open in a
-viewer that understands custom PLY attributes (Paraview, Meshlab,
-or any field-data colormap renderer) to see the SDF's 8-fold
+cloud with per-vertex `extras["signed_distance"]` scalar. cf-view
+auto-discovers the scalar at load and applies its divergent-colormap
+heuristic (negative values present → bwr-style blue/red palette
+through white-zero); the rendered cloud shows the SDF's 8-fold
 symmetry: the 8 strictly-interior grid points at
 `(±2/9, ±2/9, ±2/9)` read with small-magnitude negative signed
 distance (`-1/(3√3) ≈ -0.192`); a smooth positive gradient extends
 toward the bbox corners up to `5/√3 ≈ 2.887`; and the 6
 sign-flip false-positives at the `(±2, ±2/3, ∓2/3)`-permutation
 grid points also register as negative (`-√17/3 ≈ -1.374`) due to
-the vertex-region face-normal sign-flip. Color by `signed_distance`
-for the canonical visualization; the sign-divergence between the
-true L1-ball interior and the 6 bbox-edge false-positives is
-visible as isolated negative-color points along the bbox boundary.
+the vertex-region face-normal sign-flip. The sign-divergence
+between the true L1-ball interior and the 6 bbox-edge false-
+positives is visible as isolated blue points along the bbox
+boundary against the otherwise-red exterior.
+
+```text
+cargo run -p cf-viewer --release -- examples/mesh/mesh-sdf-distance-query/out/sdf_grid.ply
+```
 
 ## Run
 
