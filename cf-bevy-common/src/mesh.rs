@@ -47,11 +47,16 @@ pub const CREASE_COS: f64 = 0.866;
 /// splitting + optional per-vertex colors.
 ///
 /// - **Positions / normals** are emitted in Bevy Y-up space via the
-///   `up`-axis swap. Per-split normals are the area-weighted average of
-///   the contributing faces (where each face contributes its unit normal,
-///   so the average is naturally weighted by face count for the share
-///   group). Sharp splits accumulate exactly one face's contribution and
-///   render with that face's normal.
+///   `up`-axis swap. Per-split normals are the unit-vector sum of every
+///   contributing face's unit normal, then renormalized — i.e. each
+///   face contributes uniform-per-face weight, not area-weight. Sharp
+///   splits accumulate exactly one face's contribution and render with
+///   that face's normal; smooth splits average across all faces sharing
+///   the split. (Area-weighted smoothing — the [`mesh_types`]
+///   `compute_vertex_normals` flavor — is NOT used here; for cuboid /
+///   shell / SDF surfaces the per-face contribution is the right
+///   pedagogy: each face on the share group has equal say in the
+///   smoothed normal regardless of its tessellation density.)
 /// - **Indices** are CCW-correct in Bevy: when `up.flips_winding()`, each
 ///   face emits as `(v0, v2, v1)`; otherwise `(v0, v1, v2)`.
 /// - **Vertex colors** propagate to splits: when `vertex_colors` is
