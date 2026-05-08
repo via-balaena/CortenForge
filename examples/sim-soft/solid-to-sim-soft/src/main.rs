@@ -103,41 +103,43 @@
 //!
 //! ## cf-view artifact
 //!
-//! Per-vertex deformed-boundary triangle mesh of the body's outer +
-//! inner surfaces (724 vertices, 1440 faces) with `DISPLACEMENT_SCALE
-//! = 50.0` geometric amplification on vertex positions
-//! (`vertex = rest + SCALE * (deformed - rest)`) — visualisation-only;
-//! the `radial_displacement` per-vertex scalar carries the TRUE
-//! physical FEM displacement and every `verify_*` operates on the
-//! unscaled solver outputs. `DISPLACEMENT_SCALE = 50.0` inherits from
-//! row 11's small-strain spherical-symmetry-regime constant; the
-//! artifact shape itself follows row 3's full-boundary-surface
-//! precedent (NOT row 11's z-slab per-tet centroid cloud).
+//! Per-tet centroid point cloud filtered to the
+//! `|rest_centroid.z| < CELL_SIZE/2 = 0.01 m` z-slab, with
+//! `DISPLACEMENT_SCALE = 50.0` geometric amplification on positions
+//! (`amplified = rest_centroid + SCALE * (deformed_centroid -
+//! rest_centroid)`). 616 centroids in the slab — bit-equal to row
+//! 11's per-shell z-slab sum at the same geometry + `cell_size`. The
+//! `radial_displacement` per-vertex scalar carries the TRUE physical
+//! FEM displacement (`|deformed_centroid| - |rest_centroid|`); every
+//! `verify_*` operates on the unscaled solver outputs.
 //!
-//! `boundary_faces()` for a hollow shell returns BOTH surfaces — the
-//! outer shell (614 vertices at `|p|_amp ≈ 0.10`, all pinned via
-//! `radial_displacement = 0` exactly) AND the inner cavity surface
-//! (110 vertices at `|p|_amp ∈ [0.053, 0.062]`, all loaded with
-//! `radial_displacement ∈ [+2.57e-4, +4.34e-4]`, mean `~3.4e-4 m`).
-//! The scalar field is therefore **bimodal** at the boundary surface
-//! layer (outer at 0, inner at 2.6-4.3e-4), NOT a continuous radial
-//! decay through the shell body — the BCC + stuffing pipeline emits
-//! interior tet vertices but `boundary_faces()` walks only surface
-//! triangles, so the PLY carries no intermediate vertices.
+//! `DISPLACEMENT_SCALE = 50.0` and the z-slab pattern both inherit
+//! from row 11's cf-view artifact convention verbatim — the
+//! single-material variant just drops row 11's `material_id`
+//! categorical scalar. The slab projects centroids onto a 2-D annulus
+//! at z=0 with the cavity ring at `|p_xy| ≈ R_CAVITY = 0.04 m` and
+//! the outer ring at `|p_xy| ≈ R_OUTER = 0.10 m`; interior centroids
+//! between the two rings show the radial-decay profile through the
+//! shell body's middle (no occlusion — every centroid is visible from
+//! the +z orbit angle).
 //!
 //! cf-view's auto-detect picks sequential viridis (unipolar continuous
-//! per pattern (u)); colormap range `[0, ~4.3e-4]`. The outer surface
-//! reads as a uniform low-end colour (deep viridis purple); the inner
-//! cavity surface reads in the upper viridis band (yellow/green) with
-//! the per-vertex peak at `~4.34e-4 m` and mean at `~3.4e-4 m`. For
-//! reference: HEADLINE B's `bc.loaded_vertices` mean (a slightly
-//! tighter half-cell cavity-band set, 134 vertices) is `~3.245e-4 m`;
-//! the analytic single-material Lamé prediction at `R_CAVITY` is
-//! `~3.823e-4 m` — the `~15 %` rel-err vs analytic lives in the Tet4
-//! Newton + half-cell convergence band per IV-5. The inner cavity
-//! surface is occluded by the outer in cf-view's frontal view; rotate
-//! to see the inflated cavity colour-mapped against the rest-position
-//! outer boundary.
+//! per pattern (u)); colormap range `[0, ~3.4e-4]` empirically. The
+//! cavity ring reads bright yellow/green (peak `~3.4e-4 m`); the
+//! outer ring reads deep purple (`0`, Dirichlet pin); the radial
+//! decay between them is continuous. For reference: HEADLINE B's
+//! `bc.loaded_vertices` cavity-wall mean is `~3.245e-4 m`; analytic
+//! single-material Lamé predicts `~3.823e-4 m` at `R_CAVITY` — the
+//! `~15 %` rel-err vs analytic lives in the Tet4 Newton + half-cell
+//! convergence band per IV-5.
+//!
+//! Why z-slab over full-boundary-surface (the row 3 sphere precedent
+//! that this row's first-author tried): a hollow body's full boundary
+//! surface 360°-occludes the inner cavity from every orbit angle,
+//! and cf-view does not expose section-cut UI; the inner cavity's
+//! displacement signal becomes invisible. Row 16 follows row 11's
+//! z-slab precedent for the same reason row 11 used z-slab over
+//! per-tet centroid cloud (banked at iter-15 N+3 visuals-pass).
 
 // PLY field-data is single-precision on disk; converting f64
 // `radial_displacement` to f32 for the AttributedMesh extras is
@@ -167,7 +169,7 @@
 // gain. Same allowance as rows 10+11.
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
@@ -316,6 +318,16 @@ const N_PINNED_EXACT: usize = 734;
 /// `(‖p‖ - R_CAVITY).abs() < cell_size/2 = 0.01` filtered to referenced
 /// set). Bit-exact match with row 11's `N_LOADED_EXACT`.
 const N_LOADED_EXACT: usize = 134;
+
+/// Per-tet centroid count in the `|rest_centroid.z| < cell_size/2 = 0.01`
+/// z-slab cut for the cf-view PLY artifact (mirrors row 11's z-slab
+/// pattern, single-material variant). Captured at row 16 N+3 visuals-
+/// pass-driven pivot from full-boundary-surface to z-slab centroid cloud
+/// (the boundary-surface artifact failed cf-view occlusion review — outer
+/// shell occluded inner cavity 360°). Bit-equal to row 11's per-shell
+/// z-slab sum (`184 + 176 + 256 = 616`); single-material row 16 doesn't
+/// partition by shell but the slab-mask is identical.
+const N_ZSLAB_TETS_EXACT: usize = 616;
 
 // ── Captured cavity-wall mean bits (cross-row continuity vs row 11) ─────
 //
@@ -718,55 +730,79 @@ fn verify_captured_cavity_wall_mean_bits(observed: f64) {
 }
 
 // =============================================================================
-// 10. PLY emit — deformed boundary surface + radial_displacement scalar
+// 10. PLY emit — z-slab per-tet centroid cloud + radial_displacement scalar
 // =============================================================================
 
-/// Build deformed-boundary PLY: boundary triangles of the tet mesh,
-/// remapped onto a contiguous PLY index space, with per-vertex
-/// `radial_displacement` scalar (TRUE physical magnitude). Vertex
-/// positions amplified by `DISPLACEMENT_SCALE = 50.0` for visual
-/// readability — full-boundary-surface artifact mirrors row 3's
-/// `sphere-boundary.ply` pattern (NOT row 11's z-slab per-tet centroid
-/// cloud); the `DISPLACEMENT_SCALE = 50.0` constant inherits from row
-/// 11's small-strain spherical-symmetry regime.
-fn save_boundary_ply(result: &SolveResult, mesh: &SdfMeshedTetMesh, path: &Path) -> Result<()> {
-    let boundary_faces: &[[VertexId; 3]] = mesh.boundary_faces();
-    let mut boundary_set: BTreeSet<VertexId> = BTreeSet::new();
-    for face in boundary_faces {
-        for &v in face {
-            boundary_set.insert(v);
-        }
-    }
-    let boundary_vertices: Vec<VertexId> = boundary_set.into_iter().collect();
+/// Per-tet record: rest centroid (for z-slab filter and radial reference) +
+/// deformed centroid (for amplified PLY position) + `radial_displacement`
+/// scalar (TRUE physical magnitude).
+struct TetRecord {
+    rest_centroid: Vec3,
+    deformed_centroid: Vec3,
+    radial_displacement: f64,
+}
 
-    // VertexId → contiguous PLY index. BTreeMap keeps lookups
-    // deterministic (mirrors row 3's remap pattern).
-    let remap: BTreeMap<VertexId, u32> = boundary_vertices
+/// Walk every tet and compute its (rest, deformed) centroids + radial
+/// displacement. Mirrors row 11's `build_tet_records` verbatim, dropping
+/// the multi-shell `shell_id` and `f_at_x_final` fields the single-
+/// material variant doesn't need.
+fn build_tet_records(mesh: &SdfMeshedTetMesh, result: &SolveResult) -> Vec<TetRecord> {
+    let n_tets = mesh.n_tets();
+    (0..n_tets as u32)
+        .map(|tet_id| {
+            let verts = mesh.tet_vertices(tet_id);
+            let v = |i: usize| result.rest_positions[verts[i] as usize];
+            let rest_centroid = (v(0) + v(1) + v(2) + v(3)) * 0.25;
+            let cur = |i: usize| {
+                let idx = verts[i] as usize;
+                Vec3::new(
+                    result.step.x_final[3 * idx],
+                    result.step.x_final[3 * idx + 1],
+                    result.step.x_final[3 * idx + 2],
+                )
+            };
+            let deformed_centroid = (cur(0) + cur(1) + cur(2) + cur(3)) * 0.25;
+            let radial_displacement = deformed_centroid.norm() - rest_centroid.norm();
+            TetRecord {
+                rest_centroid,
+                deformed_centroid,
+                radial_displacement,
+            }
+        })
+        .collect()
+}
+
+/// Filter records to the `|rest_centroid.z| < CELL_SIZE / 2` z-slab —
+/// the canonical row-8/9/11 visualization slab through the body's middle.
+/// For a hollow shell at the row's geometry, the slab projects centroids
+/// onto a 2-D annulus on z=0 with cavity-wall ring at `|p_xy| ≈ R_CAVITY`
+/// and outer-wall ring at `|p_xy| ≈ R_OUTER`; cf-view reads as a clean
+/// continuous radial-decay gradient from the cavity inward to outward.
+fn zslab_records(records: &[TetRecord]) -> Vec<&TetRecord> {
+    let half_slab = 0.5 * CELL_SIZE;
+    records
         .iter()
-        .enumerate()
-        .map(|(i, &v)| (v, i as u32))
-        .collect();
+        .filter(|r| r.rest_centroid.z.abs() < half_slab)
+        .collect()
+}
 
-    // Amplified deformed positions + radial_displacement scalar.
-    let mut vertices: Vec<Point3<f64>> = Vec::with_capacity(boundary_vertices.len());
-    let mut radial_displacement: Vec<f32> = Vec::with_capacity(boundary_vertices.len());
-    for &v in &boundary_vertices {
-        let rest = result.rest_positions[v as usize];
-        let final_pos = Vec3::new(
-            result.step.x_final[3 * v as usize],
-            result.step.x_final[3 * v as usize + 1],
-            result.step.x_final[3 * v as usize + 2],
-        );
-        let amplified = rest + DISPLACEMENT_SCALE * (final_pos - rest);
+/// Emit z-slab per-tet centroid cloud as a vertices-only PLY with
+/// `radial_displacement` per-vertex scalar (TRUE physical magnitude;
+/// `verify_*` operates on unscaled solver outputs). Vertex positions
+/// are amplified by `DISPLACEMENT_SCALE = 50.0` for cf-view readability.
+/// Mirrors row 11's z-slab cf-view artifact pattern verbatim, single-
+/// material variant (no `material_id` categorical scalar).
+fn save_zslab_centroid_ply(zslab: &[&TetRecord], path: &Path) -> Result<()> {
+    let mut vertices: Vec<Point3<f64>> = Vec::with_capacity(zslab.len());
+    let mut radial_displacement: Vec<f32> = Vec::with_capacity(zslab.len());
+    for record in zslab {
+        let amplified = record.rest_centroid
+            + DISPLACEMENT_SCALE * (record.deformed_centroid - record.rest_centroid);
         vertices.push(Point3::new(amplified.x, amplified.y, amplified.z));
-        radial_displacement.push((final_pos.norm() - rest.norm()) as f32);
+        radial_displacement.push(record.radial_displacement as f32);
     }
 
-    let faces: Vec<[u32; 3]> = boundary_faces
-        .iter()
-        .map(|f| [remap[&f[0]], remap[&f[1]], remap[&f[2]]])
-        .collect();
-
+    let faces: Vec<[u32; 3]> = Vec::new();
     let geometry = IndexedMesh::from_parts(vertices, faces);
     let mut attributed = AttributedMesh::new(geometry);
     attributed.insert_extra("radial_displacement", radial_displacement)?;
@@ -784,6 +820,7 @@ fn print_summary(
     n_referenced: usize,
     n_pinned: usize,
     n_loaded: usize,
+    n_zslab: usize,
     iter_count: usize,
     final_residual: f64,
     observed_cavity: f64,
@@ -833,8 +870,10 @@ fn print_summary(
     println!();
     println!("PLY    : {}", path.display());
     println!(
-        "         deformed-boundary triangle mesh (DISPLACEMENT_SCALE = {DISPLACEMENT_SCALE}×)",
+        "         z-slab per-tet centroid cloud ({n_zslab} pts; |centroid.z| < {half:.3} m;",
+        half = 0.5 * CELL_SIZE,
     );
+    println!("         DISPLACEMENT_SCALE = {DISPLACEMENT_SCALE}× amplification on positions)");
     println!("         + 1 per-vertex scalar:");
     println!(
         "           extras[\"radial_displacement\"] — TRUE physical magnitude (m), sequential"
@@ -843,9 +882,9 @@ fn print_summary(
     println!("           cargo run -p cf-viewer --release -- <path>");
     println!("         default-picks radial_displacement (sequential viridis, unipolar);");
     println!(
-        "         field is bimodal at boundary: outer shell = 0 (Dirichlet pin), inner cavity"
+        "         z-slab projects centroids onto z=0 annulus — cavity ring (|p_xy| ~ R_CAVITY)"
     );
-    println!("         vertices = ~3-4e-4 m (FEM observed); colormap range [0, ~4.3e-4].");
+    println!("         to outer ring (|p_xy| ~ R_OUTER) with continuous radial-decay gradient.");
     println!(
         "         HEADLINE B loaded mean: {observed_cavity:.3e} m; analytic: {analytic_cavity:.3e} m."
     );
@@ -899,11 +938,21 @@ fn main() -> Result<()> {
     verify_cavity_wall_lame(observed, analytic);
     verify_captured_cavity_wall_mean_bits(observed);
 
-    // PLY emit + summary.
+    // Build per-tet records (rest + deformed centroids + radial
+    // displacement); filter to z-slab; emit cf-view PLY.
+    let records = build_tet_records(&mesh_for_ply, &result);
+    let zslab = zslab_records(&records);
+    assert_eq!(
+        zslab.len(),
+        N_ZSLAB_TETS_EXACT,
+        "z-slab tet count drift: got {}, expected {N_ZSLAB_TETS_EXACT}",
+        zslab.len(),
+    );
+
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
-    let out_path = out_dir.join("shell_boundary.ply");
-    save_boundary_ply(&result, &mesh_for_ply, &out_path)?;
+    let out_path = out_dir.join("shell_zslab.ply");
+    save_zslab_centroid_ply(&zslab, &out_path)?;
 
     print_summary(
         mesh_for_ply.n_tets(),
@@ -911,6 +960,7 @@ fn main() -> Result<()> {
         referenced.len(),
         N_PINNED_EXACT,
         loaded.len(),
+        zslab.len(),
         result.step.iter_count,
         result.step.final_residual_norm,
         observed,

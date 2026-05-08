@@ -123,19 +123,23 @@ Same geometry + same Lamé pair + same solver path through faer's sparse Cholesk
 
 ## Visuals
 
-`out/shell_boundary.ply` — deformed-boundary triangle mesh of the body's inner + outer surfaces with `DISPLACEMENT_SCALE = 50.0` geometric amplification on vertex positions (`vertex = rest + SCALE * (deformed - rest)`) — visualisation-only; the `radial_displacement` per-vertex scalar carries the TRUE physical magnitude. Same precedent as row 11's `DISPLACEMENT_SCALE = 50.0` (small-strain spherical-symmetry regime; `50×` puts cavity-wall inflation at `~36 %` of `R_CAVITY` — dramatically visible without distorting spherical-symmetry readability).
+`out/shell_zslab.ply` — z-slab per-tet centroid cloud (616 centroids in `|rest_centroid.z| < CELL_SIZE/2 = 0.01 m`) with `DISPLACEMENT_SCALE = 50.0` geometric amplification on positions (`amplified = rest_centroid + SCALE * (deformed_centroid - rest_centroid)`). Same z-slab pattern as row 11's [`concentric-lame-shells`](../concentric-lame-shells), single-material variant (no `material_id` categorical scalar). The `radial_displacement` per-vertex scalar carries the TRUE physical magnitude (`|deformed_centroid| - |rest_centroid|`); every `verify_*` runs on unscaled solver outputs.
 
 Open in cf-view, the workspace's unified visual-review viewer:
 
 ```
-cargo run -p cf-viewer --release -- examples/sim-soft/solid-to-sim-soft/out/shell_boundary.ply
+cargo run -p cf-viewer --release -- examples/sim-soft/solid-to-sim-soft/out/shell_zslab.ply
 ```
 
-cf-view default-picks `radial_displacement` (only scalar present; sequential viridis per pattern (u) — unipolar continuous → sequential). The `radial_displacement` field carries the TRUE physical FEM displacement, so the colormap range tracks the FEM-observed profile, NOT the analytic prediction.
+cf-view default-picks `radial_displacement` (only scalar present; sequential viridis per pattern (u) — unipolar continuous → sequential). The slab projects centroids onto a 2-D annulus on `z=0` with:
 
-The PLY contains 724 boundary vertices = 614 on the outer shell (`|p|_amp ≈ 0.10`, all pinned at `radial_displacement = 0` exactly) + 110 on the inner cavity surface (`|p|_amp ∈ [0.053, 0.062]`, observed `radial_displacement ∈ [+2.57e-4, +4.34e-4]`, mean `~3.4e-4 m`). The field is **bimodal** at the boundary surface layer — outer at 0, inner at 2.6-4.3e-4 — NOT a continuous radial-decay gradient through the shell (the BCC + stuffing pipeline emits interior tet vertices, but `boundary_faces()` walks only surface triangles, so the PLY carries no intermediate vertices).
+- **Cavity ring** at `|p_xy| ≈ R_CAVITY = 0.04 m`: highest `radial_displacement` values (peak `~3.4e-4 m`); reads bright yellow/green at the upper end of viridis.
+- **Outer ring** at `|p_xy| ≈ R_OUTER = 0.10 m`: `radial_displacement → 0` (Dirichlet pin); reads deep purple at the low end of viridis.
+- **Interior** between rings: continuous radial-decay gradient through the shell body's middle.
 
-cf-view's colormap range is `[0, ~4.3e-4]`. Outer surface reads as uniform deep viridis purple (zero); inner cavity surface reads in the upper viridis band (yellow/green) with peak at `~4.34e-4 m`. Cross-readouts for reference: HEADLINE B's `bc.loaded_vertices` mean (134 vertices, slightly tighter half-cell cavity-band set) is `~3.245e-4 m`; analytic single-material Lamé predicts `~3.823e-4 m` at `R_CAVITY`. The inner cavity surface is occluded by the outer in cf-view's frontal view — rotate or use a section cut to see the amplified cavity inflation directly.
+No occlusion — every centroid is visible from the `+z` orbit angle. Cross-readouts: HEADLINE B's `bc.loaded_vertices` cavity-wall mean is `~3.245e-4 m`; analytic single-material Lamé predicts `~3.823e-4 m` at `R_CAVITY`; the `~15 %` rel-err vs analytic lives in the Tet4 + half-cell convergence band per IV-5.
+
+**Why z-slab over the full-boundary-surface artifact (row 3 sphere precedent)**: a hollow body's full boundary surface 360°-occludes the inner cavity from every orbit angle, and cf-view does not expose section-cut UI; the inner cavity's displacement signal becomes invisible (banked at iter-15 N+3 visuals-pass after the initial full-boundary attempt failed cf-view eyes-on-pixels review). Row 16 follows row 11's z-slab precedent for the same reason row 11 chose z-slab — it's the canonical hollow-body cf-view pattern.
 
 ## Run
 
