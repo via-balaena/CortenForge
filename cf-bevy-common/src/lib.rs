@@ -14,10 +14,13 @@
 //! - [`camera`] — [`camera::OrbitCamera`] component +
 //!   [`camera::OrbitCameraPlugin`] that wires `orbit_camera_input` →
 //!   `update_orbit_camera` with explicit `.after()` ordering.
-//! - [`mesh`] — [`mesh::triangle_mesh_with_crease_splitting`]: shared
-//!   `IndexedMesh` → Bevy `Mesh` conversion with cos(30°) crease-angle
-//!   vertex splitting, optional per-vertex colors, and `UpAxis`-aware
-//!   coordinate swap + winding flip.
+//! - [`mesh`] — [`mesh::triangle_mesh_flat_shaded`]: shared
+//!   `IndexedMesh` → Bevy `Mesh` conversion with flat-per-triangle
+//!   shading (every triangle emits three unique vertices with that
+//!   triangle's face normal), optional per-vertex colors, and
+//!   `UpAxis`-aware coordinate swap + winding flip. Truthful WYSIWYP
+//!   rendering — the mesh's actual triangulation matches what comes
+//!   out of a 3D printer.
 //! - [`prelude`] — convenience re-exports for consumer wiring.
 
 pub mod axis;

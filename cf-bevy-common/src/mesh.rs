@@ -1,35 +1,51 @@
-//! Crease-angle vertex splitting for `IndexedMesh` → Bevy `Mesh` conversion.
+//! Flat-per-triangle shading for `IndexedMesh` → Bevy `Mesh` conversion.
 //!
-//! [`triangle_mesh_with_crease_splitting`] is the shared mesh-conversion
-//! path for both `cf-viewer` (PLY visual review) and `sim-bevy` (rigid-body
-//! scene rendering). It walks each face, computes the unit face normal in
-//! input space, and decides per source vertex whether to **share** an
-//! existing split (when the new face's normal is within the crease
-//! threshold of an existing representative) or **create a new split**
-//! (otherwise). Smooth-shading regions naturally fall out as one shared
-//! split per source vertex; sharp creases (cuboid edges, mesh-shell faces)
-//! get one split per face direction so the per-face normal renders
-//! crisply.
+//! [`triangle_mesh_flat_shaded`] is the shared mesh-conversion path for
+//! both `cf-viewer` (PLY visual review — WYSIWYP rendering for 3D-print
+//! preview) and `sim-bevy` (rigid-body scene rendering). Every triangle
+//! emits three distinct output vertices, each carrying that triangle's
+//! face normal. There is no smoothing or vertex sharing across faces:
+//! adjacent triangles render with their own face normal, exposing the
+//! mesh's actual triangulation under PBR lighting.
 //!
-//! The threshold is `cos(30°) ≈ 0.866`, matching the industry-standard
-//! auto-smooth angle in Blender / Maya / common DCC tools.
+//! # Why flat-per-triangle (not crease-angle splitting, not smooth)
+//!
+//! cf-viewer is a "what you see is what you print" preview tool. The
+//! input mesh is the geometry that gets sliced + printed; the printer
+//! materializes each triangle as a flat surface in the build. Smooth
+//! shading (area-weighted vertex normals) hides the actual print
+//! tessellation behind a procedurally-blended look — pretty for visual
+//! review but misleading about what will physically come out of the
+//! printer. Crease-angle splitting (cos(30°) Blender default,
+//! cos(45°) intermediate) is a halfway compromise that smooths some
+//! face groups while sharpening others; it requires threshold tuning
+//! per mesh class and STILL hides print reality on smooth-curvature
+//! regions of TPMS / shell / SDF outputs. Flat-per-triangle is the
+//! truthful default — coarse meshes look coarse, fine meshes look
+//! fine, and the viewer matches print quality 1:1.
+//!
+//! For meshes that DO want smooth shading (e.g., SDF marching-cubes
+//! outputs that ship analytical gradient normals), the consumer can
+//! bypass this helper entirely and build the Bevy mesh from the
+//! stored `mesh.normals` directly — see `cf-viewer`'s `build_face_mesh`
+//! which dispatches on `Option<&[Vector3<f64>]>` for that path.
 //!
 //! # Coordinate convention
 //!
-//! Positions and normals are projected through [`UpAxis::to_bevy_point`] /
-//! [`UpAxis::to_bevy_normal`] at the boundary. When the chosen `UpAxis`
-//! is parity-flipping ([`UpAxis::flips_winding`]), the per-face vertex
-//! emission order is reversed (`(v0, v2, v1)` instead of `(v0, v1, v2)`)
-//! so the post-swap winding stays CCW front-facing in Bevy.
+//! Positions and normals are projected through [`UpAxis::to_bevy_point`]
+//! / [`UpAxis::to_bevy_normal`] at the boundary. When the chosen
+//! `UpAxis` is parity-flipping ([`UpAxis::flips_winding`]), the per-
+//! face vertex emission order is reversed (`(v0, v2, v1)` instead of
+//! `(v0, v1, v2)`) so the post-swap winding stays CCW front-facing in
+//! Bevy.
 //!
 //! # Vertex colors
 //!
-//! When `vertex_colors` is `Some`, each output split inherits the colour
-//! of its source vertex. This preserves the colormap-painted shading
-//! that `cf-viewer`'s pipeline attaches via `Mesh::ATTRIBUTE_COLOR`,
-//! even when a single source vertex spawns multiple splits across crease
-//! edges. Length must match `mesh.vertices.len()`; mismatches are caught
-//! by `debug_assert!`.
+//! When `vertex_colors` is `Some`, each emitted output vertex inherits
+//! the colour of its source vertex (so colormap-painted scalars
+//! propagate through the per-triangle expansion bit-equally). Length
+//! must match `mesh.vertices.len()`; mismatches are caught by
+//! `debug_assert!`.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
@@ -37,37 +53,26 @@ use mesh_types::{IndexedMesh, Vector3};
 
 use crate::axis::UpAxis;
 
-/// `cos(30°)` — auto-smooth angle threshold. Faces whose normals dot to at
-/// least this value share a vertex split (smooth shading); below the
-/// threshold they get separate splits with their own face normals (flat
-/// shading on the sharp side).
-pub const CREASE_COS: f64 = 0.866;
-
-/// Build a Bevy `Mesh` from an `IndexedMesh` with crease-angle vertex
-/// splitting + optional per-vertex colors.
+/// Build a Bevy `Mesh` from an `IndexedMesh` with flat-per-triangle
+/// shading + optional per-vertex colors.
 ///
-/// - **Positions / normals** are emitted in Bevy Y-up space via the
-///   `up`-axis swap. Per-split normals are the unit-vector sum of every
-///   contributing face's unit normal, then renormalized — i.e. each
-///   face contributes uniform-per-face weight, not area-weight. Sharp
-///   splits accumulate exactly one face's contribution and render with
-///   that face's normal; smooth splits average across all faces sharing
-///   the split. (Area-weighted smoothing — the [`mesh_types`]
-///   `compute_vertex_normals` flavor — is NOT used here; for cuboid /
-///   shell / SDF surfaces the per-face contribution is the right
-///   pedagogy: each face on the share group has equal say in the
-///   smoothed normal regardless of its tessellation density.)
-/// - **Indices** are CCW-correct in Bevy: when `up.flips_winding()`, each
-///   face emits as `(v0, v2, v1)`; otherwise `(v0, v1, v2)`.
-/// - **Vertex colors** propagate to splits: when `vertex_colors` is
-///   `Some`, the output's `Mesh::ATTRIBUTE_COLOR` carries one `[f32; 4]`
-///   per split, copied from the corresponding source vertex.
+/// - **Positions / normals**: every triangle emits three output
+///   vertices, each at its source position (Bevy Y-up via
+///   [`UpAxis::to_bevy_point`]) and each carrying that triangle's
+///   unit face normal (via [`UpAxis::to_bevy_normal`]). No averaging
+///   across faces — adjacent triangles always render as separate flat
+///   surfaces, matching the input mesh's truthful triangulation.
+/// - **Indices**: CCW-correct in Bevy. When [`UpAxis::flips_winding`],
+///   each face emits as `(v0, v2, v1)`; otherwise `(v0, v1, v2)`.
+/// - **Vertex colors**: when `vertex_colors` is `Some`, the output's
+///   `Mesh::ATTRIBUTE_COLOR` carries one `[f32; 4]` per emitted
+///   vertex, copied from the corresponding source vertex.
 ///
-/// Empty meshes (zero vertices or zero faces) return an empty Bevy `Mesh`
-/// with `TriangleList` topology — same shape as the non-empty path,
-/// callable downstream without special-casing.
+/// Empty meshes (zero vertices or zero faces) return an empty Bevy
+/// `Mesh` with `TriangleList` topology — same shape as the non-empty
+/// path, callable downstream without special-casing.
 #[must_use]
-pub fn triangle_mesh_with_crease_splitting(
+pub fn triangle_mesh_flat_shaded(
     mesh: &IndexedMesh,
     vertex_colors: Option<&[[f32; 4]]>,
     up: UpAxis,
@@ -90,48 +95,38 @@ pub fn triangle_mesh_with_crease_splitting(
         );
     }
 
-    // Pre-convert all source positions to Bevy Y-up.
-    let bevy_positions: Vec<[f32; 3]> = vertices.iter().map(|p| up.to_bevy_point(p)).collect();
-
-    // Per-face unit normal in input (pre-swap) space. The swap is applied
-    // when normals are emitted to the final Bevy mesh; doing the dot-
-    // product comparison in input space keeps the algorithm independent
-    // of the chosen up-axis.
-    let face_normals: Vec<Vector3<f64>> = triangles
-        .iter()
-        .map(|face| {
-            let v0 = vertices[face[0] as usize];
-            let v1 = vertices[face[1] as usize];
-            let v2 = vertices[face[2] as usize];
-            let n = (v1 - v0).cross(&(v2 - v0));
-            let len = n.norm();
-            if len > 1e-10 {
-                n / len
-            } else {
-                // Degenerate (zero-area) face: pick an arbitrary axis-
-                // aligned fallback. The triangle won't render visibly,
-                // but the mesh stays well-formed.
-                Vector3::z()
-            }
-        })
-        .collect();
-
-    // For each source vertex, track output splits: each entry is
-    // `(output_index, representative_normal)`. A new face joins an
-    // existing split iff its face normal dot-products at least
-    // `CREASE_COS` with that split's representative; otherwise a new
-    // split is created.
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut normal_sums: Vec<Vector3<f64>> = Vec::new();
-    let mut colors_out: Vec<[f32; 4]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::with_capacity(triangles.len() * 3);
-    let mut splits: Vec<Vec<(u32, Vector3<f64>)>> = vec![Vec::new(); vertices.len()];
-
     let flips = up.flips_winding();
 
-    for (fi, face) in triangles.iter().enumerate() {
-        let face_n = face_normals[fi];
-        // Emit vertices in winding-correct order for this up-axis.
+    let n_emitted = triangles.len() * 3;
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n_emitted);
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(n_emitted);
+    let mut colors_out: Vec<[f32; 4]> = if vertex_colors.is_some() {
+        Vec::with_capacity(n_emitted)
+    } else {
+        Vec::new()
+    };
+    let mut indices: Vec<u32> = Vec::with_capacity(n_emitted);
+
+    for face in triangles {
+        // Compute the unit face normal in input (pre-swap) space, then
+        // project to Bevy. Same swap as positions keeps the lighting
+        // invariant under the up-axis convention.
+        let v0 = vertices[face[0] as usize];
+        let v1 = vertices[face[1] as usize];
+        let v2 = vertices[face[2] as usize];
+        let n = (v1 - v0).cross(&(v2 - v0));
+        let len = n.norm();
+        let face_n_input = if len > 1e-10 {
+            n / len
+        } else {
+            // Degenerate (zero-area) face: arbitrary axis-aligned
+            // fallback. The triangle won't render visibly, but the
+            // mesh stays well-formed.
+            Vector3::z()
+        };
+        let face_n_bevy = up.to_bevy_normal(&face_n_input);
+
+        // Emit three unique vertices, in winding-correct order.
         let order: [u32; 3] = if flips {
             [face[0], face[2], face[1]]
         } else {
@@ -140,41 +135,15 @@ pub fn triangle_mesh_with_crease_splitting(
 
         for vi in order {
             let vi_usize = vi as usize;
-            let found = splits[vi_usize]
-                .iter()
-                .find(|(_, rep)| face_n.dot(rep) >= CREASE_COS)
-                .map(|&(idx, _)| idx);
-
-            if let Some(out_idx) = found {
-                normal_sums[out_idx as usize] += face_n;
-                indices.push(out_idx);
-            } else {
-                let out_idx = positions.len() as u32;
-                positions.push(bevy_positions[vi_usize]);
-                normal_sums.push(face_n);
-                if let Some(colors) = vertex_colors {
-                    colors_out.push(colors[vi_usize]);
-                }
-                splits[vi_usize].push((out_idx, face_n));
-                indices.push(out_idx);
+            let out_idx = positions.len() as u32;
+            positions.push(up.to_bevy_point(&vertices[vi_usize]));
+            normals.push(face_n_bevy);
+            if let Some(colors) = vertex_colors {
+                colors_out.push(colors[vi_usize]);
             }
+            indices.push(out_idx);
         }
     }
-
-    // Normalize accumulated normals + project to Bevy Y-up.
-    let normals: Vec<[f32; 3]> = normal_sums
-        .iter()
-        .map(|n| {
-            let len = n.norm();
-            if len > 1e-6 {
-                up.to_bevy_normal(&(n / len))
-            } else {
-                // All contributions cancelled (degenerate accumulation).
-                // Fall back to the up-axis vector projected to Bevy.
-                up.to_bevy_normal(&Vector3::z())
-            }
-        })
-        .collect();
 
     let mut bevy_mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -258,115 +227,128 @@ mod tests {
         }
     }
 
-    /// Cuboid faces meet at 90° creases (cos = 0 < CREASE_COS), so each
-    /// of the eight source corners must split into three output vertices
-    /// — one per incident face direction (±X, ±Y, ±Z). Total split count:
-    /// 8 corners × 3 directions = 24 output positions.
+    /// Every triangle emits three unique vertices with that triangle's
+    /// face normal — total output count is `triangles.len() × 3` for any
+    /// input mesh. Cuboid: 12 triangles × 3 = 36 output vertices.
     #[test]
-    fn cuboid_splits_each_corner_into_three_face_directions() {
-        let mesh = triangle_mesh_with_crease_splitting(&unit_cube(), None, UpAxis::PlusZ);
+    fn cuboid_emits_three_vertices_per_triangle() {
+        let mesh = triangle_mesh_flat_shaded(&unit_cube(), None, UpAxis::PlusZ);
         assert_eq!(
             position_count(&mesh),
-            24,
-            "8 corners × 3 face directions = 24 splits",
+            36,
+            "12 triangles × 3 vertices = 36 output positions",
         );
     }
 
-    /// Within a single flat triangle every vertex shares one split (the
-    /// face is its own smooth region). Output position count = source
-    /// vertex count = 3.
+    /// Single-face mesh: 1 triangle × 3 vertices = 3 outputs.
     #[test]
-    fn coplanar_face_does_not_split() {
-        let mesh = triangle_mesh_with_crease_splitting(&flat_triangle(), None, UpAxis::PlusZ);
+    fn single_face_emits_three_vertices() {
+        let mesh = triangle_mesh_flat_shaded(&flat_triangle(), None, UpAxis::PlusZ);
         assert_eq!(position_count(&mesh), 3);
     }
 
-    /// Vertex colors propagate to splits — for the unit cube each of the
-    /// 8 source vertices spawns 3 splits, all 3 carrying the same source
-    /// color. Source vertex 0 gets red; verifying every split derived
-    /// from it carries red proves the propagation invariant.
+    /// Vertex colors propagate by source-vertex lookup: each emitted
+    /// vertex carries its source vertex's colour bit-equally. For the
+    /// unit cube, sum-over-source-vertices of (colors_out matching
+    /// that source) must equal the source's incidence count in the
+    /// triangle list. Source vertices 0 and 6 are corner-of-three-
+    /// faces hubs (incident to 6 triangles each); the other six
+    /// corners are incident to 4 triangles each.
     #[test]
-    fn vertex_colors_propagate_through_splits() {
+    fn vertex_colors_propagate_to_per_triangle_emissions() {
         let mesh = unit_cube();
-        // Distinct color per source vertex.
         let colors: Vec<[f32; 4]> = (0..mesh.vertices.len())
             .map(|i| [i as f32 / 8.0, 0.0, 0.0, 1.0])
             .collect();
 
-        let bevy_mesh = triangle_mesh_with_crease_splitting(&mesh, Some(&colors), UpAxis::PlusZ);
+        let bevy_mesh = triangle_mesh_flat_shaded(&mesh, Some(&colors), UpAxis::PlusZ);
 
         let out_colors: Vec<[f32; 4]> = match bevy_mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
             Some(VertexAttributeValues::Float32x4(values)) => values.clone(),
             _ => Vec::new(),
         };
-        assert_eq!(out_colors.len(), 24, "one output color per split");
+        assert_eq!(out_colors.len(), 36, "12 triangles × 3 = 36 colors");
 
-        // Every output color must equal one of the input colors (no
-        // interpolation), and the multiset {output colors} must equal
-        // {input color × 3 each}.
+        // Decode source vertex from each output color and tally.
         let mut counts = vec![0usize; mesh.vertices.len()];
         for c in &out_colors {
-            // Recover source vertex index from the encoded red channel.
             let src = (c[0] * 8.0).round() as usize;
             assert!(src < mesh.vertices.len(), "color decodes to valid source");
             assert!(
                 (c[0] - colors[src][0]).abs() < 1e-6,
-                "color preserved bit-equally through split",
+                "color preserved bit-equally through emission",
             );
             counts[src] += 1;
         }
-        for (i, &count) in counts.iter().enumerate() {
-            assert_eq!(count, 3, "source vertex {i} should spawn 3 splits");
+        // Per-vertex incidence in the unit_cube fixture: corners 0 and
+        // 6 appear in 6 triangles each; the other six in 4 each.
+        // 2 × 6 + 6 × 4 = 36 ✓.
+        assert_eq!(counts[0], 6);
+        assert_eq!(counts[6], 6);
+        for &i in &[1usize, 2, 3, 4, 5, 7] {
+            assert_eq!(counts[i], 4, "corner {i} should be in 4 triangles");
         }
     }
 
-    /// `UpAxis::PlusZ` is parity-flipping → indices emit in `(v0, v2, v1)`
-    /// order so the post-swap winding stays CCW front-facing.
+    /// `UpAxis::PlusZ` flips winding → output indices reference splits
+    /// in `(face[0], face[2], face[1])` emission order. For a single
+    /// face, the index buffer reads `[0, 1, 2]` (positions are
+    /// permuted, indices count emission order linearly).
     #[test]
     fn flips_winding_under_plus_z() {
-        let mesh = triangle_mesh_with_crease_splitting(&flat_triangle(), None, UpAxis::PlusZ);
-        // Single-face fixture; output indices reference the splits in
-        // emission order, which is (face[0], face[2], face[1]).
+        let mesh = triangle_mesh_flat_shaded(&flat_triangle(), None, UpAxis::PlusZ);
         let indices = index_vec(&mesh);
         assert_eq!(indices, vec![0_u32, 1, 2]);
-        // The first emitted source-vertex index is face[0] (the swap
-        // reorders emission, not the source-vertex identity); but the
-        // OUTPUT indices simply count the order in which splits were
-        // created. The semantics check is that the count and shape are
-        // right; correctness of the swap is exercised by visual review
-        // on real consumers.
     }
 
-    /// `UpAxis::PlusY` is identity → no winding flip; emission order is
-    /// `(v0, v1, v2)` matching the source face.
+    /// `UpAxis::PlusY` is identity → no winding flip.
     #[test]
     fn preserves_winding_under_plus_y() {
-        let mesh = triangle_mesh_with_crease_splitting(&flat_triangle(), None, UpAxis::PlusY);
+        let mesh = triangle_mesh_flat_shaded(&flat_triangle(), None, UpAxis::PlusY);
         let indices = index_vec(&mesh);
         assert_eq!(indices, vec![0_u32, 1, 2]);
     }
 
-    /// Empty mesh — both vertices and faces empty — returns a Bevy mesh
-    /// with `TriangleList` topology and zero positions / indices. No
-    /// panic; downstream consumers can treat the return value uniformly.
+    /// Empty mesh — both vertices and faces empty — returns a Bevy
+    /// mesh with `TriangleList` topology and zero positions / indices.
+    /// No panic; downstream consumers can treat the return value
+    /// uniformly.
     #[test]
     fn empty_mesh_returns_empty_bevy_mesh() {
         let mesh = IndexedMesh::from_parts(Vec::new(), Vec::new());
-        let bevy_mesh = triangle_mesh_with_crease_splitting(&mesh, None, UpAxis::PlusZ);
+        let bevy_mesh = triangle_mesh_flat_shaded(&mesh, None, UpAxis::PlusZ);
         assert_eq!(position_count(&bevy_mesh), 0);
         assert_eq!(index_vec(&bevy_mesh).len(), 0);
     }
 
     /// `vertex_colors = None` must NOT attach `ATTRIBUTE_COLOR` —
-    /// downstream PBR materials' base_color only applies when the
-    /// shader's VERTEX_COLORS def is off, which requires the attribute
-    /// to be absent from the mesh layout.
+    /// downstream PBR materials' `base_color` only applies when the
+    /// shader's `VERTEX_COLORS` def is off, which requires the
+    /// attribute to be absent from the mesh layout.
     #[test]
     fn no_colors_omits_attribute() {
-        let mesh = triangle_mesh_with_crease_splitting(&flat_triangle(), None, UpAxis::PlusZ);
+        let mesh = triangle_mesh_flat_shaded(&flat_triangle(), None, UpAxis::PlusZ);
         assert!(
             mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_none(),
             "no vertex colors → ATTRIBUTE_COLOR must be absent",
         );
+    }
+
+    /// Within a single triangle, all three emitted vertices carry the
+    /// same face normal (since all three reference one face's normal,
+    /// not any per-vertex average).
+    #[test]
+    fn single_face_all_normals_match_face_normal() {
+        let mesh = triangle_mesh_flat_shaded(&flat_triangle(), None, UpAxis::PlusY);
+        let normals: Vec<[f32; 3]> = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+            Some(VertexAttributeValues::Float32x3(values)) => values.clone(),
+            _ => Vec::new(),
+        };
+        assert_eq!(normals.len(), 3);
+        // flat_triangle lies in the z=0 plane → face normal = +z.
+        // Under UpAxis::PlusY (identity), +z stays +z.
+        for n in &normals {
+            assert!((n[2] - 1.0).abs() < 1e-6, "normal should be +z, got {n:?}");
+        }
     }
 }

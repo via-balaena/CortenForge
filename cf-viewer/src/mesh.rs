@@ -18,21 +18,24 @@
 //! - **Stored normals path** (`mesh.normals` is `Some`): use the
 //!   analytical normals as-is (typical for SDF marching-cubes output
 //!   where they come from the field gradient — higher fidelity than
-//!   any face-derived approximation). No crease splitting.
+//!   any face-derived approximation, and the supplier of the mesh has
+//!   explicitly opted into smooth shading by stamping the normals).
 //! - **Compute path** (`mesh.normals` is `None`): delegate to
-//!   [`cf_bevy_common::mesh::triangle_mesh_with_crease_splitting`],
-//!   which uses cos(30°) crease-angle vertex splitting. Sharp creases
-//!   (cuboid edges, mesh-shell faces) get per-face normals; smooth
-//!   regions (curved SDF boundaries) get share-group-averaged normals.
-//!   This replaces v1's `compute_vertex_normals` smooth-only fallback
-//!   per Q7 retrofit PR.
+//!   [`cf_bevy_common::mesh::triangle_mesh_flat_shaded`], which gives
+//!   every triangle its own face normal (no crease-angle smoothing,
+//!   no vertex sharing). cf-viewer is a "what you see is what you
+//!   print" preview — the mesh's actual triangulation IS the printed
+//!   surface, and the renderer should match that 1:1. Smooth
+//!   shading would create a viewer/print mismatch on coarse-tessellation
+//!   geometry. This replaces v1's `compute_vertex_normals` smooth-
+//!   only fallback per the Q7 retrofit PR.
 
 #![allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy meshes
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use cf_bevy_common::axis::UpAxis;
-use cf_bevy_common::mesh::triangle_mesh_with_crease_splitting;
+use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use mesh_types::AttributedMesh;
 
 /// Radius of point-cloud sphere markers, expressed as a fraction of the
@@ -57,9 +60,8 @@ pub const POINT_RADIUS_FRACTION: f32 = 0.005;
 ///   (or analogous source) and have higher fidelity than any face-
 ///   derived approximation could give.
 /// - `None` → delegate to
-///   [`cf_bevy_common::mesh::triangle_mesh_with_crease_splitting`] for
-///   cos(30°) crease-angle splitting + per-face / share-group normals
-///   + Bevy-frame projection in one pass.
+///   [`cf_bevy_common::mesh::triangle_mesh_flat_shaded`] for
+///   flat-per-triangle shading + Bevy-frame projection in one pass.
 ///
 /// `vertex_colors.len()` must match `geometry.vertices.len()` (debug-
 /// asserted in both paths).
@@ -90,14 +92,14 @@ pub fn build_face_mesh(
         );
     }
 
-    // Compute path: delegate to the shared crease-splitting helper.
+    // Compute path: delegate to the flat-shaded helper.
     let Some(stored_normals) = mesh.normals.as_ref() else {
-        return triangle_mesh_with_crease_splitting(geometry, vertex_colors, up);
+        return triangle_mesh_flat_shaded(geometry, vertex_colors, up);
     };
 
     // Stored-normals path: analytical normals come straight through the
-    // axis swap. Crease splitting would only degrade the gradient-based
-    // fidelity here, so we keep the simple per-source-vertex emission.
+    // axis swap. The supplier of the mesh stamped them deliberately, so
+    // the smooth shading is intentional; no per-triangle expansion.
     let positions: Vec<[f32; 3]> = geometry
         .vertices
         .iter()
