@@ -143,10 +143,10 @@ to `1e-12`; the slice geometry is identical to the explicit-unit call
 ## Visuals
 
 `out/cylinder.ply` contains the 66-vertex / 128-triangle closed
-cylinder. Open in f3d to see the axis-aligned UV-cylinder:
+cylinder. Open in cf-view to see the axis-aligned UV-cylinder:
 
 ```text
-f3d examples/mesh/mesh-measure-cross-section/out/cylinder.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-measure-cross-section/out/cylinder.ply
 ```
 
 The cylinder renders as a 32-segment polygonal tube along the +Z

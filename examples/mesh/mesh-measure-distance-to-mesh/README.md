@@ -188,12 +188,12 @@ Anchors at `1e-12` (deterministic Pythagorean of integer offsets).
 ## Visuals
 
 `out/two_cubes.ply` contains the 16-vertex / 24-triangle combined
-mesh (cube_a at `[0, 1]³` + cube_b at `[2, 3]³`). Open in f3d to
-see two axis-aligned unit cubes side-by-side along the body
+mesh (cube_a at `[0, 1]³` + cube_b at `[2, 3]³`). Open in cf-view
+to see two axis-aligned unit cubes side-by-side along the body
 diagonal:
 
 ```text
-f3d examples/mesh/mesh-measure-distance-to-mesh/out/two_cubes.ply
+cargo run -p cf-viewer --release -- examples/mesh/mesh-measure-distance-to-mesh/out/two_cubes.ply
 ```
 
 Low visual novelty (two unit cubes); the math-pass-first verifiers
