@@ -17,15 +17,10 @@
 // indices in the per-pair-readout walk (one rigid primitive in this
 // row). Same allowance as row 18.
 #![allow(clippy::cast_possible_truncation)]
-// `cast_precision_loss` on PLY scalar f64→f32 narrowing — the PLY
-// format encodes per-vertex extras at single precision; the f64 →
-// f32 narrowing is intrinsic to the format. Same allowance as rows
-// 11 + 15 + 16.
-#![allow(clippy::cast_lossless)]
-// PLY field-data is single-precision on disk; the `as f32` narrowing
-// is intrinsic to PLY's binary format. Same allowance as rows 11 + 15
-// + 16.
-// (no extra allow; cast_possible_truncation already covers this.)
+// PLY field-data is single-precision on disk; the per-vertex
+// `as f32` narrowing on f64 displacement / material_id values is
+// intrinsic to the format. The `cast_possible_truncation` allow
+// added above also covers the f64 → f32 narrowing case.
 // `print_summary` is a single museum-plaque stdout writer; splitting
 // fragments the visual format without information gain. Same allowance
 // as rows 4+5+6+9+10+11+15+16+19.
@@ -47,8 +42,8 @@
 //!
 //! 1. **Scan-derived rigid indenter** → `mesh_sdf::SignedDistanceField`
 //!    over a programmatic 12-triangle cube fixture (`R_SCAN = 0.025 m`,
-//!    centred at `SCAN_OFFSET = (0.015, 0, 0)` to make the carved
-//!    cavity asymmetric and visibly non-spherical). No checked-in scan
+//!    translated by `SCAN_OFFSET_X = 0.015 m` along `+x` to make the
+//!    carved cavity asymmetric and visibly non-spherical). No checked-in scan
 //!    asset per the device memo's sanitization directive — the cube
 //!    stand-in IS the workflow demonstration; production scans flow
 //!    through this same `SignedDistanceField::new(loaded_mesh)` path
@@ -93,8 +88,9 @@
 //!    `DRAGON_SKIN_10A` is the closest pure-silicone proxy for the
 //!    composite's effective stiffness. The composite mechanical uplift
 //!    (Cu mesh + carbon black contributions) is deferred to a Fork-B
-//!    post-cast modulus calibration absorbing it into the effective
-//!    μ at sim time. Each `SiliconeMaterial::to_neo_hookean()` call is
+//!    post-cast modulus calibration that absorbs the uplift into the
+//!    effective μ at calibration time; the calibrated μ then flows into
+//!    F4's table for sim consumption. Each `SiliconeMaterial::to_neo_hookean()` call is
 //!    a `const fn` over F4's table entries, so the per-shell
 //!    `(μ, λ)` provenance survives bit-equally from F4 down to the
 //!    per-tet `Material::sample` returned by `MaterialField`.
@@ -360,8 +356,9 @@ const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f53_d596_7b05_b573;
 // Programmatic 12-tri cube scan fixture
 // =============================================================================
 
-/// Build the 12-triangle axis-aligned cube scan-fixture, centred at
-/// `SCAN_OFFSET = (SCAN_OFFSET_X, 0, 0)` with half-extent `R_SCAN`.
+/// Build the 12-triangle axis-aligned cube scan-fixture, half-extent
+/// `R_SCAN` along each axis, translated by `SCAN_OFFSET_X` along `+x`
+/// (so the cube is centred at `(SCAN_OFFSET_X, 0, 0)`).
 /// Outward face winding produces the 6 cube-face outward normals
 /// `±x̂, ±ŷ, ±ẑ` from the 12 cross products. Mirrors row 15
 /// `mesh-scan-as-solid::unit_cube` verbatim, with translation applied
