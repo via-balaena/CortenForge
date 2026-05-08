@@ -1,0 +1,23 @@
+[package]
+name = "example-sim-soft-mesh-scan-as-solid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# cf_design::Sdf trait — the canonical SDF spine (F1)
+cf-design = { workspace = true }
+# SignedDistanceField — the trait impl shipped at cf_design F2
+mesh-sdf = { workspace = true }
+# load_mesh + save_stl — the on-disk transit half of the scan workflow
+mesh-io = { workspace = true }
+# IndexedMesh + Point3 + AttributedMesh wrap for the bulk-grid PLY
+mesh-types = { workspace = true }
+# Result<()> return type for main()
+anyhow = { workspace = true }
+# assert_relative_eq! for closed-form anchors + round-trip equivalence
+approx = { workspace = true }
+
+[lints]
+workspace = true

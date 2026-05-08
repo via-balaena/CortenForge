@@ -27,6 +27,12 @@ the source of truth for what's planned vs shipped.)
 | [`sphere-sdf-eval`](sphere-sdf-eval/) | The `Sdf` trait contract on `SphereSdf` — analytic signed distance and unit-length gradient, including the documented `Vec3::z()` origin-singularity fallback; 11³ = 1331 grid sweep emitted as PLY with `extras["signed_distance"]` |
 | [`hollow-shell-sdf`](hollow-shell-sdf/) | Sharp-CSG difference combinator `SphereSdf{R_OUTER=1.0} \ SphereSdf{R_CAVITY=0.5}` via `DifferenceSdf` (book Part 7 §00 §01); emits a 2-D z = 0 slice (49² = 2401 verts) with two scalars — `signed_distance` (donut cross-section) and `active_branch` (visualizes the equidistant branch-flip circle at `\|p\| = 0.75`) |
 
+### Tier 5 — Bridges + extensions (silicone-device path)
+
+| Example | Concept |
+|---------|---------|
+| [`mesh-scan-as-solid`](mesh-scan-as-solid/) | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2). 12-tri programmatic cube fixture round-tripped through binary STL on disk; closed-form L∞-ball anchors at face / edge / vertex / interior probes via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY with two scalars — `signed_distance` (analytical SDF) and `inside_raycast` (raycast inside-test, with documented HE-1 diagonal gaps) |
+
 ## Visualization convention
 
 Examples split by tier per

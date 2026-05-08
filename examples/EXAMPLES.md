@@ -356,6 +356,12 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | `compressive-block` | `example-sim-soft-compressive-block` | Working | ★ Soft cube quasi-statically compressed by descending plate; per-refinement F_R two-bound bracket [F_us, F_strain] + Cauchy convergence (V-3a); cf-view colormap PLY + matplotlib F-vs-ε scatter |
 | `contact-force-readout` | `example-sim-soft-contact-force-readout` | Working | ★ Per-active-pair contact readout via `PenaltyRigidContact::per_pair_readout` (foundation patch `995fb0bf`); same V-3a scene as `compressive-block`; accessor-vs-manual consistency at 1e-12 rel; cf-view pressure-colormap PLY + matplotlib top-down patch scatter |
 
+### Tier 5 — Bridges + extensions (PR3 in flight)
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `mesh-scan-as-solid` | `example-sim-soft-mesh-scan-as-solid` | Working | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2); 12-tri programmatic cube fixture, STL save→load round-trip, closed-form L∞-ball anchors via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY (`signed_distance` + `inside_raycast`) with documented HE-1 raycast diagonal degeneracy and F2-caveat-absent identity |
+
 ### Visual-mode convention: `CF_VISUAL=1`
 
 Tier 4 + Tier 6 examples (`soft-drop-on-plane` and successors) ship a **headless harness + opt-in Bevy windowed visualization**. Default invocation (no env var) runs all `verify_*` asserts and emits the static PLY artifact — no display / winit / OpenGL required, suitable for CI. Setting `CF_VISUAL=1` (any non-empty value) additionally spawns a Bevy app via [`sim_bevy_soft::SoftBodyVisualPlugin`][sbsp] that renders the captured trajectory or static state (depending on the row — `soft-drop-on-plane` replays a 1000-frame freefall trajectory; `hertz-sphere-plane` renders the single quasi-static settled frame):
