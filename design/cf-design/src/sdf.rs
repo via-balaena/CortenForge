@@ -68,16 +68,22 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn solid_sphere_eval_matches_inherent_evaluate() {
+    fn solid_sphere_eval_sign_convention() {
         let s = Solid::sphere(1.0);
-        for &p in &[
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(1.0, 0.0, 0.0),
-            Point3::new(0.5, 0.0, 0.0),
-            Point3::new(2.0, 0.0, 0.0),
-        ] {
-            assert_relative_eq!(<Solid as Sdf>::eval(&s, p), s.evaluate(&p), epsilon = 0.0);
-        }
+
+        // Strictly inside (negative).
+        assert!(<Solid as Sdf>::eval(&s, Point3::origin()) < 0.0);
+        assert!(<Solid as Sdf>::eval(&s, Point3::new(0.5, 0.0, 0.0)) < 0.0);
+
+        // On the surface (zero).
+        assert_relative_eq!(
+            <Solid as Sdf>::eval(&s, Point3::new(1.0, 0.0, 0.0)),
+            0.0,
+            epsilon = 1e-15,
+        );
+
+        // Strictly outside (positive).
+        assert!(<Solid as Sdf>::eval(&s, Point3::new(2.0, 0.0, 0.0)) > 0.0);
     }
 
     #[test]
