@@ -2167,8 +2167,18 @@ fn emit_xslab_ply(
     // automatically; `insert_extra("zone_id", …)` is rejected as a
     // reserved-name collision (`mesh-io/src/ply.rs:322`).
     mesh.zone_ids = Some(zone_ids.to_vec());
+    // Mirror the zone-id data as an `axial_zone_id` per-vertex extra
+    // (Vec<f32>) so cf-view's scalar selector picks it up — the
+    // viewer at `cf-viewer/src/lib.rs:63` enumerates only
+    // `mesh.extras.keys()`, not canonical AttributedMesh slots, so
+    // the canonical `zone_ids` data is invisible in the Scalar
+    // dropdown without this mirror. The reserved-name guard at
+    // `mesh-io/src/ply.rs:322` blocks the bare `zone_id` extra; the
+    // disambiguated `axial_zone_id` name is accepted.
+    let zone_f32: Vec<f32> = zone_ids.iter().map(|&v| v as f32).collect();
     mesh.insert_extra("displacement_magnitude", disp_f32)?;
     mesh.insert_extra("material_id", mat_f32)?;
+    mesh.insert_extra("axial_zone_id", zone_f32)?;
     mesh.insert_extra("mu_sampled_pa", mu_f32)?;
     save_ply_attributed(&mesh, path, true)?;
     Ok(())
