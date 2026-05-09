@@ -166,17 +166,29 @@
 //!      array + `final_contact_pairs` per-pair detail at step 16
 //!      only).
 //!    - PLY `out/sleeve_xslab_final.ply`: x-slab per-tet centroid
-//!      cloud at the FINAL step. **NEW slab cut vs row 23's z-slab**:
-//!      the axial material gradient is invisible in a z-slab at z = 0
-//!      because the entire z-slab sits inside the smoothstep band; an
-//!      x-slab at x = 0 spans the full axial range so the soft-tip /
-//!      stiff-anchor gradient is eyes-on-pixels visible. PLY carries
-//!      categorical `material_id` (radial shell) + categorical
-//!      `zone_id` (axial proximal/band/distal) + sequential
-//!      `displacement_magnitude` + sequential `mu_sampled_pa` (the
-//!      per-tet sampled μ — visualises the axial blend directly).
-//!      Z-slab tet counts are RETAINED as bit-equal regression gates
-//!      (cheap centroid filter; not emitted as PLY).
+//!      cloud at the FINAL step, rendered at REST positions (no
+//!      displacement amplification — sim-soft viz arc option-1 baby
+//!      step, see [vizarc] memory file). The body's rectangle shape
+//!      is preserved; the contact-zone story shows up as a
+//!      `psi_j_per_m3` strain-energy heatmap rather than as
+//!      geometric explosion. PLY carries six per-vertex scalars:
+//!      categorical `material_id` (radial shell), canonical
+//!      `zone_id`, extra `axial_zone_id` (cf-view selector mirror
+//!      — axial proximal/band/distal sharp partition), sequential
+//!      `displacement_magnitude` (true physical magnitude,
+//!      unscaled), sequential `mu_sampled_pa` (per-tet sampled μ
+//!      — visualises the axial blend directly), and sequential
+//!      `psi_j_per_m3` (per-tet strain-energy density — the FEM
+//!      stress-heatmap headline). **NEW slab cut vs row 23's
+//!      z-slab**: the axial material gradient is invisible in a
+//!      z-slab at z = 0 because the entire z-slab sits inside the
+//!      smoothstep band; an x-slab at x = 0 spans the full axial
+//!      range so the soft-tip / stiff-anchor gradient is
+//!      eyes-on-pixels visible. Z-slab tet counts are RETAINED as
+//!      bit-equal regression gates (cheap centroid filter; not
+//!      emitted as PLY).
+//!
+//! [vizarc]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_sim_soft_viz_arc.md
 //!    - Optional `plot_ramp.py` (PEP 723 + matplotlib): same
 //!      dual-axis depth × `force_z` + depth × `max_disp` curve as
 //!      row 23. Run via `uv run plot_ramp.py`.
@@ -926,6 +938,18 @@ struct FinalStepData {
     /// where `z = 0/1/2` is distal/band/proximal and `s = 0/1/2` is
     /// inner/middle/outer.
     mean_psi_zone_shell: [[f64; 3]; 3],
+    /// Per-tet strain-energy density (J/m³), indexed by tet ID, length =
+    /// `n_tets`. Persisted at the final step for the x-slab PLY's
+    /// `psi_j_per_m3` heatmap scalar (sim-soft viz arc option 1 baby
+    /// step — see [memo] for the gold-standard option 3 follow-up).
+    /// At intermediate steps this is dropped to keep memory bounded.
+    /// Same `Material::energy(F_t)` per-tet computation as the radial
+    /// and zone-shell aggregations; banking each value into the
+    /// vector is a per-tet store with cap-allocate at the start,
+    /// not a separate pass.
+    ///
+    /// [memo]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_sim_soft_viz_arc.md
+    per_tet_psi: Vec<f64>,
 }
 
 // =============================================================================
@@ -1064,16 +1088,22 @@ fn solve_ramp(
             .fold(0.0, f64::max);
 
         // Per-tet Ψ aggregates — radial-only for the per-step record
-        // (preserves row 23's RampStepResult shape; zone breakdown
-        // happens at FINAL step only).
+        // (preserves row 23's RampStepResult shape; zone breakdown +
+        // per-tet vector happen at FINAL step only).
         let materials = inspection_mesh.materials();
         let mut sum_in = 0.0;
         let mut sum_mi = 0.0;
         let mut sum_ou = 0.0;
         let mut max_psi_outer = f64::NEG_INFINITY;
-        // Zone × shell sums populated only at the final step.
+        // Zone × shell sums + per-tet ψ vector populated only at the
+        // final step.
         let is_final = k == N_RAMP_STEPS - 1;
         let mut sum_zs: [[f64; 3]; 3] = [[0.0; 3]; 3];
+        let mut per_tet_psi_final: Vec<f64> = if is_final {
+            Vec::with_capacity(tets.len())
+        } else {
+            Vec::new()
+        };
         for (t, &verts) in tets.iter().enumerate() {
             let f = deformation_gradient(verts, &rest_pos_k, &positions_k);
             let psi_t = materials[t].energy(&f);
@@ -1091,6 +1121,7 @@ fn solve_ramp(
             if is_final {
                 let z = zone_idx_per_tet[t];
                 sum_zs[z][s] += psi_t;
+                per_tet_psi_final.push(psi_t);
             }
         }
         let mean_psi_inner_j_per_m3 = if n_inner == 0 {
@@ -1144,6 +1175,7 @@ fn solve_ramp(
                 deformed_positions: positions_k,
                 pair_records,
                 mean_psi_zone_shell,
+                per_tet_psi: per_tet_psi_final,
             })
         } else {
             None
@@ -2128,9 +2160,14 @@ fn write_json_readout(
 #[derive(Clone, Copy)]
 struct XslabRecord {
     centroid: Vec3,
-    deformed_centroid: Vec3,
+    // `deformed_centroid` was used at row 24 N+0/N+1 for the
+    // amplified PLY render; dropped at N+3 (sim-soft viz arc option
+    // 1: render at rest positions). Displacement magnitude is now
+    // computed at the call site BEFORE pushing the record, so this
+    // record only needs the rest centroid.
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_xslab_ply(
     path: &Path,
     records: &[XslabRecord],
@@ -2138,30 +2175,45 @@ fn emit_xslab_ply(
     material_ids: &[f64],
     zone_ids: &[u32],
     mu_sampled_pa: &[f64],
+    psi_j_per_m3: &[f64],
 ) -> Result<()> {
     assert_eq!(records.len(), displacement_magnitudes.len());
     assert_eq!(records.len(), material_ids.len());
     assert_eq!(records.len(), zone_ids.len());
     assert_eq!(records.len(), mu_sampled_pa.len());
+    assert_eq!(records.len(), psi_j_per_m3.len());
 
     let mut geometry = IndexedMesh::new();
     for r in records {
-        // Geometric amplification scales the displacement for visual
-        // clarity; the `displacement_magnitude` extra carries the
-        // unscaled physical magnitude. Same 10× scale as row 23
-        // (final-step max_disp ~8.5 mm → ~85 mm rendered).
-        const DISPLACEMENT_SCALE: f64 = 10.0;
-        let amplified = r.centroid + DISPLACEMENT_SCALE * (r.deformed_centroid - r.centroid);
+        // Render at REST positions (no displacement amplification) per
+        // sim-soft viz arc option-1 baby step (memory file
+        // `project_sim_soft_viz_arc.md`). The body's rest-shape
+        // rectangle is preserved; the `psi_j_per_m3` PLY extra (sequential
+        // viridis under cf-view) carries the contact-zone strain-energy
+        // concentration as a heatmap, which is the canonical FEM-viz
+        // story for soft-material contact problems. Earlier rows
+        // (21/22/23) used `DISPLACEMENT_SCALE = 10.0` to amplify
+        // the deformation field, but at this row's contact intensity
+        // (8 mm penetration on a 108 mm body) the 10× amplification
+        // sent the contact-band tets ~85 mm above the body's rest
+        // extent, reading like a fluid spray rather than a soft
+        // solid (user feedback 2026-05-10). The displacement field
+        // is preserved as an unscaled `displacement_magnitude` PLY
+        // extra so the deformation story is still readable via that
+        // scalar.
         geometry
             .vertices
-            .push(Point3::new(amplified.x, amplified.y, amplified.z));
+            .push(Point3::new(r.centroid.x, r.centroid.y, r.centroid.z));
     }
     // No faces — x-slab is a per-tet centroid cloud, point-only PLY.
+    // Real triangulated surface mesh from tet centroids is the
+    // option-3 follow-up arc in `project_sim_soft_viz_arc.md`.
 
     let mut mesh = AttributedMesh::new(geometry);
     let disp_f32: Vec<f32> = displacement_magnitudes.iter().map(|&v| v as f32).collect();
     let mat_f32: Vec<f32> = material_ids.iter().map(|&v| v as f32).collect();
     let mu_f32: Vec<f32> = mu_sampled_pa.iter().map(|&v| v as f32).collect();
+    let psi_f32: Vec<f32> = psi_j_per_m3.iter().map(|&v| v as f32).collect();
     // Use AttributedMesh's canonical `zone_ids` slot (Vec<u32>) — the
     // PLY exporter routes this to a reserved `zone_id` property
     // automatically; `insert_extra("zone_id", …)` is rejected as a
@@ -2180,6 +2232,7 @@ fn emit_xslab_ply(
     mesh.insert_extra("material_id", mat_f32)?;
     mesh.insert_extra("axial_zone_id", zone_f32)?;
     mesh.insert_extra("mu_sampled_pa", mu_f32)?;
+    mesh.insert_extra("psi_j_per_m3", psi_f32)?;
     save_ply_attributed(&mesh, path, true)?;
     Ok(())
 }
@@ -2317,6 +2370,7 @@ fn main() -> Result<()> {
     let mut xslab_mat: Vec<f64> = Vec::new();
     let mut xslab_zone: Vec<u32> = Vec::new();
     let mut xslab_mu: Vec<f64> = Vec::new();
+    let mut xslab_psi: Vec<f64> = Vec::new();
     let mut n_zone_shell_xslab: [[usize; 3]; 3] = [[0; 3]; 3];
     let mut n_inner_z_carry = 0usize;
     let mut n_middle_z_carry = 0usize;
@@ -2352,12 +2406,12 @@ fn main() -> Result<()> {
         let mu_sampled = sampling_field.sample_yeoh(rest_centroid).mu();
         xslab_records.push(XslabRecord {
             centroid: rest_centroid,
-            deformed_centroid,
         });
         xslab_disp.push((deformed_centroid - rest_centroid).norm());
         xslab_mat.push(s as f64);
         xslab_zone.push(z as u32);
         xslab_mu.push(mu_sampled);
+        xslab_psi.push(final_data.per_tet_psi[tet_idx]);
     }
     verify_zslab_counts_exact(n_inner_z_carry, n_middle_z_carry, n_outer_z_carry);
     verify_xslab_zone_shell_counts_exact(n_zone_shell_xslab);
@@ -2370,6 +2424,7 @@ fn main() -> Result<()> {
         &xslab_mat,
         &xslab_zone,
         &xslab_mu,
+        &xslab_psi,
     )?;
 
     // 9. Museum-plaque summary.
@@ -2493,7 +2548,7 @@ fn print_summary(
         "  out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp.json (scalars + axial_zoning + 3-shell × 2-zone Yeoh materials + ramp_curve + final_pairs)"
     );
     println!(
-        "  out/sleeve_xslab_final.ply                             (x-slab centroid cloud at final step, four scalars: material_id, zone_id, displacement_magnitude, mu_sampled_pa)"
+        "  out/sleeve_xslab_final.ply                             (x-slab centroid cloud at final step at REST positions, six scalars: material_id, zone_id, axial_zone_id, displacement_magnitude, mu_sampled_pa, psi_j_per_m3)"
     );
     println!();
     println!("View final-step PLY in cf-view (workspace's unified visual-review viewer):");

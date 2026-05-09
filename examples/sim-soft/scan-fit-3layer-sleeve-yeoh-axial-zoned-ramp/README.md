@@ -52,7 +52,7 @@ Sign convention (load-bearing — get this wrong and proximal/distal flip): with
 
 Peak axial μ-gradient (at the band's interior `|z − SPLIT| < BAND_HALF`) is `(μ_distal − μ_proximal) / (2 · band_half_width) ≈ 4.1 GPa/m` for the middle shell and `8.5 GPa/m` for the outer shell — comparable to or smaller than the existing inner-middle radial step (`(51 − 18) kPa / CELL_SIZE ≈ 8.25 GPa/m`), so Newton's tangent stiffness landscape is no harsher than row 23's already-converged regime.
 
-Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. Outputs are `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp.json` (final-step scalars + `axial_zoning` metadata + 3-shell × 2-zone Yeoh provenance + per-step `ramp_curve` array + per-active-contact-pair detail at the final step) and `out/sleeve_xslab_final.ply` (x-slab per-tet centroid cloud at the final step, with categorical `material_id` + categorical `zone_id` + sequential `displacement_magnitude` + sequential `mu_sampled_pa`).
+Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. Outputs are `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp.json` (final-step scalars + `axial_zoning` metadata + 3-shell × 2-zone Yeoh provenance + per-step `ramp_curve` array + per-active-contact-pair detail at the final step) and `out/sleeve_xslab_final.ply` (x-slab per-tet centroid cloud at the final step rendered at REST positions, with categorical `material_id` + canonical `zone_id` + extra `axial_zone_id` + sequential `displacement_magnitude` + sequential `mu_sampled_pa` + sequential `psi_j_per_m3` strain-energy heatmap).
 
 ## Why x-slab over z-slab (vs row 23)
 
@@ -189,12 +189,18 @@ Two ordering gates beyond the bit-pin on `zone_shell_psi_final`:
 
 ## Visuals
 
-`out/sleeve_xslab_final.ply` — **x-slab** per-tet centroid cloud at the FINAL ramp step (depth = 8 mm) at `|rest_centroid.x| < CELL_SIZE / 2 = 0.002 m`, with `DISPLACEMENT_SCALE = 10.0` geometric amplification on positions. Four scalars:
+`out/sleeve_xslab_final.ply` — **x-slab** per-tet centroid cloud at the FINAL ramp step (depth = 8 mm) at `|rest_centroid.x| < CELL_SIZE / 2 = 0.002 m`, rendered at **REST positions** (no displacement amplification). Per the [sim-soft viz arc memo][vizarc] this row is the option-1 baby step toward FEM-grade soft-body cf-view rendering: the body keeps its rest-shape rectangle so soft-solid character is preserved, and the contact-zone story shows up as a `psi_j_per_m3` strain-energy heatmap rather than as geometric "explosion." Earlier rows (21/22/23) used `DISPLACEMENT_SCALE = 10.0` to amplify the deformation field for visibility, but at this row's contact intensity (8 mm penetration on a 108 mm body) 10× amplification sent the contact-band tets ~85 mm above the body's rest extent — reading like a fluid spray rather than a soft solid. The displacement field is preserved as the `displacement_magnitude` scalar (true physical magnitude, no scaling).
 
-- **`material_id`** (categorical, 0/1/2 = inner/middle/outer) — radial shell membership.
-- **`zone_id`** (categorical, 0/1/2 = distal/band/proximal) — sharp axial-zone classification.
-- **`displacement_magnitude`** (sequential, m) — true physical magnitude, unscaled.
-- **`mu_sampled_pa`** (sequential, Pa) — the per-tet sampled μ, visualises the axial smoothstep blend directly. Within each shell, `mu_sampled_pa` is constant across the proximal-pure zone (e.g. 18 kPa for inner shell), continuously increasing through the band (smoothstep), then constant again across the distal-pure zone (e.g. 23 kPa for inner shell).
+Six scalars:
+
+- **`material_id`** (categorical extra, 0/1/2 = inner/middle/outer) — radial shell membership.
+- **`zone_id`** (canonical `AttributedMesh.zone_ids` slot, written as `property uint zone_id` in the PLY) — sharp axial-zone classification.
+- **`axial_zone_id`** (categorical extra mirror of `zone_id`, 0.0/1.0/2.0 = distal/band/proximal) — selectable in cf-view's Scalar dropdown (cf-viewer enumerates `extras` only, not canonical AttributedMesh slots; the disambiguated extra name dodges the reserved-name guard at `mesh-io/src/ply.rs:322`).
+- **`displacement_magnitude`** (sequential extra, m) — true physical magnitude, unscaled. Peak is at the contact band on the proximal cap (z ≈ +SCAN_HZ).
+- **`mu_sampled_pa`** (sequential extra, Pa) — the per-tet sampled μ, visualises the axial smoothstep blend directly. Within each shell, `mu_sampled_pa` is constant across the proximal-pure zone (e.g. 18 kPa for inner shell), continuously increasing through the band (smoothstep), then constant again across the distal-pure zone (e.g. 23 kPa for inner shell).
+- **`psi_j_per_m3`** (sequential extra, J/m³) — per-tet strain-energy density `Ψ = Material::energy(F)`, the FEM stress-concentration **headline scalar**. Spans ~6 orders of magnitude across the body: contact-band tets at the proximal cap reach ~49 200 J/m³ (`MAX_PSI_OUTER_FINAL_REF_BITS` anchor), distal-zone tets sit at ~10⁻⁴ J/m³ (barely deformed). Sequential viridis under cf-view picks out the contact-zone glow against the cool-toned bulk.
+
+[vizarc]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_sim_soft_viz_arc.md
 
 Open in cf-view, the workspace's unified visual-review viewer:
 
@@ -204,8 +210,8 @@ cargo run -p cf-viewer --release -- examples/sim-soft/scan-fit-3layer-sleeve-yeo
 
 cf-view auto-picks the colormap per pattern (u) banked at row 15:
 
-- **`material_id`** + **`zone_id`** are categorical → cf-view picks the **categorical palette**.
-- **`displacement_magnitude`** + **`mu_sampled_pa`** are unipolar continuous → cf-view picks **sequential viridis**.
+- **`material_id`** + **`axial_zone_id`** are categorical → cf-view picks the **categorical palette**.
+- **`displacement_magnitude`** + **`mu_sampled_pa`** + **`psi_j_per_m3`** are unipolar continuous → cf-view picks **sequential viridis**.
 
 The slab projects centroids onto a 2-D rectangle on `x = 0`, spanning the full z range from −SCAN_HZ − WRAP_THICKNESS to +SCAN_HZ + WRAP_THICKNESS (≈ 108 mm tall). The probe contact zone at z ≈ +SCAN_HZ shows the deformation peak; the soft-tip / stiff-anchor material gradient is visible in `mu_sampled_pa`'s smoothstep transition through the equator band.
 
