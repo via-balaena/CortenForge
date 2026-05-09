@@ -32,6 +32,9 @@
 //! - **Validity bound population** — `to_yeoh()` round-trips
 //!   `(max, min) = (0.8·λ_break, 0.30)`:
 //!   `silicone_table.rs::tests::to_yeoh_round_trips_yeoh_fields_for_each_anchor`.
+//! - **`λ_break` ↔ `ε_break` ASTM-D412 conversion + 0.8 rupture margin**
+//!   — pins `validity_max = 0.8 · (1 + ε_break / 100)` per anchor:
+//!   `silicone_table.rs::tests::validity_max_pins_to_80_pct_of_one_plus_elongation_at_break`.
 //! - **Solver-side gate trip behavior** — driven via row-23 (F4)
 //!   integration scenarios; out of scope for this contract file.
 
