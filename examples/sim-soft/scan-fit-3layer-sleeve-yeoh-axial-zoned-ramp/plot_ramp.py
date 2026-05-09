@@ -93,18 +93,22 @@ def main() -> None:
 
     final = document["scalars"]["final_step"]
     axial = document["axial_zoning"]
+    # Three-line title; the soft-tip / stiff-anchor metadata won't fit
+    # on a single line without overflowing the figure's right margin
+    # (was clipping the trailing "per step)" at the previous 8×5 figsize
+    # + fontsize=9 layout). Three short lines + fontsize=8 keep the
+    # whole title legible at 8×5 / 150 DPI.
     title = (
         f"row 24 axial-zoned Yeoh quasi-static ramp — {len(ramp_curve)} × "
         f"{ramp_curve[1]['depth_m'] * 1000.0 - ramp_curve[0]['depth_m'] * 1000.0:.1f} mm "
         f"to {final['depth_m'] * 1000.0:.1f} mm\n"
+        f"soft-tip / stiff-anchor; split z = {axial['axial_split_z_m']*1000:.0f} mm, "
+        f"band = ±{axial['axial_band_half_width_m']*1000:.0f} mm\n"
         f"final force_z = {final['force_total_z_n']:+.1f} N, "
         f"max_disp = {final['max_displacement_magnitude_m'] * 1000.0:.2f} mm "
-        f"(soft-tip / stiff-anchor; "
-        f"split z = {axial['axial_split_z_m']*1000:.0f} mm, "
-        f"band = ±{axial['axial_band_half_width_m']*1000:.0f} mm; "
-        f"annotations = Newton iter count per step)"
+        f"(annotations = Newton iter count per step)"
     )
-    ax_force.set_title(title, fontsize=9)
+    ax_force.set_title(title, fontsize=8)
 
     # Legend in upper-left — same as row 23 (force convex + max_disp
     # linear-ish, both climbing left-to-right; upper-left is empty).
