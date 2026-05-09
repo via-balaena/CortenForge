@@ -247,6 +247,236 @@ impl SiliconeMaterial {
             self.validity_min_principal_stretch,
         )
     }
+
+    /// Path 2 — anchor-bounded interpolation in Shore space within
+    /// family. Bracket `shore` between two adjacent published anchors
+    /// of the same scale and linearly interpolate the Lamé pair, Yeoh
+    /// `C₂`, density, and tensile validity bound. Compressive bound
+    /// stays family-uniform at `0.30` (no interpolation).
+    ///
+    /// Cross-family interpolation is rejected (memo D3): Ecoflex and
+    /// Dragon Skin are different chemistries and pretending Shore
+    /// 00-50 sits on a continuous curve with Shore A 5 hides this.
+    ///
+    /// `user_description` carries the recipe prose
+    /// (`"Ecoflex 00-30 + 50 % Slacker"`) into
+    /// [`ConstructionSource::Interpolated`] for downstream JSON
+    /// capture and row prose.
+    ///
+    /// # Errors
+    ///
+    /// - [`ShoreInterpolationError::NoAnchorsInFamily`] when no
+    ///   anchors are published for the supplied scale (Shore D today).
+    /// - [`ShoreInterpolationError::OutOfRange`] when `shore`'s value
+    ///   is outside the bracketing anchors' span.
+    pub fn from_effective_shore(
+        shore: ShoreReading,
+        user_description: Option<&'static str>,
+    ) -> Result<Self, ShoreInterpolationError> {
+        let anchors = anchors_for_family(&shore)
+            .ok_or(ShoreInterpolationError::NoAnchorsInFamily { shore })?;
+        let target = shore_value(&shore);
+        let (low, high, weight) =
+            bracket(anchors, target).ok_or_else(|| ShoreInterpolationError::OutOfRange {
+                shore,
+                low_bound: shore_value(&anchors[0].shore),
+                high_bound: shore_value(&anchors[anchors.len() - 1].shore),
+            })?;
+        let low_name = anchor_name(low);
+        let high_name = anchor_name(high);
+        Ok(Self {
+            mu: lerp(low.mu, high.mu, weight),
+            lambda: lerp(low.lambda, high.lambda, weight),
+            c2: lerp(low.c2, high.c2, weight),
+            density: lerp(low.density, high.density, weight),
+            validity_max_principal_stretch: lerp(
+                low.validity_max_principal_stretch,
+                high.validity_max_principal_stretch,
+                weight,
+            ),
+            validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,
+            shore,
+            source: ConstructionSource::Interpolated {
+                low_anchor: low_name,
+                high_anchor: high_name,
+                weight,
+                user_description,
+            },
+        })
+    }
+
+    /// Path 3 — post-cast measurement. Derive `(μ, λ, C₂)` from the
+    /// user's measured Shore reading + 100 % modulus per the F4
+    /// `σ_100 / 3` correlation and the Yeoh calibration formula:
+    ///
+    /// ```text
+    /// μ = σ_100 / 3
+    /// λ = 4 μ                           (ν = 0.40 convention)
+    /// C₂ = (σ_100 / 3.5 − μ / 2) / 4    (uniaxial Yeoh at λ = 2)
+    /// ```
+    ///
+    /// Density defaults per [`silicone_default_density`] (anchor-family
+    /// average). Validity bounds are open on the tensile side
+    /// (`f64::INFINITY`) — the user must clamp via Fork-B compression
+    /// or rupture testing if a tighter bound is needed; the
+    /// compressive bound stays at `0.30`.
+    ///
+    /// `user_description` is mandatory: it documents the cast batch,
+    /// durometer + tensile setup, and date.
+    ///
+    /// Substituting `μ = σ_100 / 3` into the C₂ formula collapses to
+    /// `C₂ = σ_100 / 33.6`, so any positive `σ_100` yields a positive
+    /// (Drucker-stable) C₂ — no negative-C₂ branch needs guarding here.
+    /// The 2-parameter Yeoh model's calibration shape is the load-
+    /// bearing reason this is safe; switching to 3-param Yeoh or a
+    /// different correlation would require revisiting.
+    ///
+    /// # Errors
+    ///
+    /// - [`MeasuredMaterialError::NonpositiveModulus`] when
+    ///   `modulus_100_pct_pa` is non-finite or `≤ 0`.
+    pub fn from_measured(
+        shore: ShoreReading,
+        modulus_100_pct_pa: f64,
+        user_description: &'static str,
+    ) -> Result<Self, MeasuredMaterialError> {
+        if !modulus_100_pct_pa.is_finite() || modulus_100_pct_pa <= 0.0 {
+            return Err(MeasuredMaterialError::NonpositiveModulus { modulus_100_pct_pa });
+        }
+        let mu = modulus_100_pct_pa / 3.0;
+        let lambda = 4.0 * mu;
+        let c1 = 0.5 * mu;
+        let c2 = (modulus_100_pct_pa / 3.5 - c1) / 4.0;
+        Ok(Self {
+            mu,
+            lambda,
+            c2,
+            density: silicone_default_density(&shore),
+            validity_max_principal_stretch: f64::INFINITY,
+            validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,
+            shore,
+            source: ConstructionSource::Measured { user_description },
+        })
+    }
+}
+
+/// Family default density for materials constructed via
+/// [`SiliconeMaterial::from_measured`] when the user doesn't have a
+/// specific-gravity reading.
+///
+/// Drawn from the anchor table averages: Shore 00 → 1070 kg/m³
+/// (Ecoflex 00-20/30/50); Shore A → 1075 kg/m³ (`DS_10A`/15 at 1070,
+/// `DS_20A`/`DS_30A` at 1080); Shore D not yet anchored.
+#[must_use]
+pub const fn silicone_default_density(shore: &ShoreReading) -> f64 {
+    match shore {
+        ShoreReading::DoubleZero(_) => 1070.0,
+        ShoreReading::A(_) => 1075.0,
+        ShoreReading::D(_) => 1100.0,
+    }
+}
+
+/// Errors from [`SiliconeMaterial::from_effective_shore`].
+#[derive(Clone, Debug)]
+pub enum ShoreInterpolationError {
+    /// Supplied Shore reading falls outside the bracketing anchors'
+    /// span for its family.
+    OutOfRange {
+        /// User's Shore reading.
+        shore: ShoreReading,
+        /// Lowest published anchor on this scale.
+        low_bound: f64,
+        /// Highest published anchor on this scale.
+        high_bound: f64,
+    },
+    /// No anchors are published for the supplied Shore scale (Shore D
+    /// today). Add an anchor const to `silicone_table.rs` to unblock.
+    NoAnchorsInFamily {
+        /// User's Shore reading whose scale has no anchors.
+        shore: ShoreReading,
+    },
+}
+
+/// Errors from [`SiliconeMaterial::from_measured`].
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum MeasuredMaterialError {
+    /// `modulus_100_pct_pa` was non-finite or `≤ 0`. Remeasure.
+    NonpositiveModulus {
+        /// As supplied by the caller.
+        modulus_100_pct_pa: f64,
+    },
+}
+
+// --- Internal interpolation helpers ------------------------------------
+
+const ECOFLEX_FAMILY: &[SiliconeMaterial] =
+    &[ECOFLEX_00_10, ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50];
+
+const DRAGON_SKIN_FAMILY: &[SiliconeMaterial] = &[
+    DRAGON_SKIN_10A,
+    DRAGON_SKIN_15,
+    DRAGON_SKIN_20A,
+    DRAGON_SKIN_30A,
+];
+
+const fn anchors_for_family(shore: &ShoreReading) -> Option<&'static [SiliconeMaterial]> {
+    match shore {
+        ShoreReading::DoubleZero(_) => Some(ECOFLEX_FAMILY),
+        ShoreReading::A(_) => Some(DRAGON_SKIN_FAMILY),
+        ShoreReading::D(_) => None,
+    }
+}
+
+const fn shore_value(shore: &ShoreReading) -> f64 {
+    match shore {
+        ShoreReading::DoubleZero(v) | ShoreReading::A(v) | ShoreReading::D(v) => *v,
+    }
+}
+
+fn anchor_name(mat: &SiliconeMaterial) -> &'static str {
+    match mat.source {
+        ConstructionSource::Anchor { name } => name,
+        // Internal helper called only on the family-anchor slices, all
+        // of which are constructed via `from_anchor`.
+        _ => unreachable!("family slice must contain Anchor-sourced entries"),
+    }
+}
+
+fn bracket(
+    anchors: &[SiliconeMaterial],
+    target: f64,
+) -> Option<(&SiliconeMaterial, &SiliconeMaterial, f64)> {
+    let first = anchors.first()?;
+    let last = anchors.last()?;
+    let lo_bound = shore_value(&first.shore);
+    let hi_bound = shore_value(&last.shore);
+    if target < lo_bound || target > hi_bound {
+        return None;
+    }
+    for window in anchors.windows(2) {
+        let lo = shore_value(&window[0].shore);
+        let hi = shore_value(&window[1].shore);
+        if target >= lo && target <= hi {
+            let span = hi - lo;
+            // Adjacent anchors at identical Shore would zero-divide;
+            // the published table has strictly increasing Shore within
+            // each family, so this branch is defensive only.
+            let weight = if span < f64::EPSILON {
+                0.0
+            } else {
+                (target - lo) / span
+            };
+            return Some((&window[0], &window[1], weight));
+        }
+    }
+    None
+}
+
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    // `(1 - t) * a + t * b` ordering preserves bit-equality with `a`
+    // at `t = 0` and with `b` at `t = 1`.
+    (b - a).mul_add(t, a)
 }
 
 // Per-anchor Yeoh validity bounds: tensile cap = 0.8 · λ_break,
@@ -365,6 +595,7 @@ pub const DRAGON_SKIN_30A: SiliconeMaterial = SiliconeMaterial::from_anchor(
 );
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
@@ -609,6 +840,184 @@ mod tests {
             assert!(
                 rel_err < REL_TOL,
                 "predicted M_100={predicted} Pa, published={published} Pa, rel_err={rel_err}",
+            );
+        }
+    }
+
+    // ---- F2.2 — from_effective_shore (Path 2) ------------------------
+
+    /// At `DoubleZero(20)` the bracket is `(00-10, 00-20)` with
+    /// `weight = 1`, so every interpolated field equals 00-20's
+    /// (within FMA-rounding f64 epsilon). Source carries the
+    /// bracketing anchor names + `weight = 1`.
+    #[test]
+    fn from_effective_shore_at_anchor_position_returns_anchor_data() {
+        let result = SiliconeMaterial::from_effective_shore(
+            ShoreReading::DoubleZero(20.0),
+            Some("test: Ecoflex 00-20 anchor position"),
+        )
+        .expect("Shore 00-20 sits at a published anchor");
+        assert_relative_eq!(result.mu, ECOFLEX_00_20.mu, epsilon = 0.0);
+        assert_relative_eq!(result.lambda, ECOFLEX_00_20.lambda, epsilon = 0.0);
+        assert_relative_eq!(result.c2, ECOFLEX_00_20.c2, epsilon = 0.0);
+        assert_relative_eq!(result.density, ECOFLEX_00_20.density, epsilon = 0.0);
+        assert_relative_eq!(
+            result.validity_max_principal_stretch,
+            ECOFLEX_00_20.validity_max_principal_stretch,
+            epsilon = 0.0
+        );
+        assert!(matches!(
+            result.source,
+            ConstructionSource::Interpolated {
+                low_anchor: "ECOFLEX_00_10",
+                high_anchor: "ECOFLEX_00_20",
+                weight,
+                user_description: Some("test: Ecoflex 00-20 anchor position"),
+            } if (weight - 1.0).abs() < f64::EPSILON
+        ));
+    }
+
+    /// At `DoubleZero(25)` (midpoint between 00-20 and 00-30) every
+    /// scalar field is the linear average of the bracketing anchors.
+    #[test]
+    fn from_effective_shore_at_midpoint_interpolates_linearly() {
+        let result = SiliconeMaterial::from_effective_shore(ShoreReading::DoubleZero(25.0), None)
+            .expect("Shore 00-25 lies between 00-20 and 00-30");
+        assert_relative_eq!(
+            result.mu,
+            0.5 * (ECOFLEX_00_20.mu + ECOFLEX_00_30.mu),
+            epsilon = 0.0
+        );
+        assert_relative_eq!(
+            result.c2,
+            0.5 * (ECOFLEX_00_20.c2 + ECOFLEX_00_30.c2),
+            epsilon = 0.0
+        );
+        assert_relative_eq!(
+            result.density,
+            0.5 * (ECOFLEX_00_20.density + ECOFLEX_00_30.density),
+            epsilon = 0.0
+        );
+        assert!(matches!(
+            result.source,
+            ConstructionSource::Interpolated {
+                low_anchor: "ECOFLEX_00_20",
+                high_anchor: "ECOFLEX_00_30",
+                weight,
+                user_description: None,
+            } if (weight - 0.5).abs() < f64::EPSILON
+        ));
+    }
+
+    /// Below the lowest published anchor returns `OutOfRange`.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn from_effective_shore_below_lowest_returns_out_of_range() {
+        let err = SiliconeMaterial::from_effective_shore(ShoreReading::DoubleZero(5.0), None)
+            .expect_err("Shore 00-5 is below the lowest Ecoflex anchor (00-10)");
+        // Integer-valued f64s; exact == is correct.
+        assert!(matches!(
+            err,
+            ShoreInterpolationError::OutOfRange {
+                shore: ShoreReading::DoubleZero(v),
+                low_bound,
+                high_bound,
+            } if v == 5.0 && low_bound == 10.0 && high_bound == 50.0
+        ));
+    }
+
+    /// Above the highest published anchor returns `OutOfRange`.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn from_effective_shore_above_highest_returns_out_of_range() {
+        let err = SiliconeMaterial::from_effective_shore(ShoreReading::A(40.0), None)
+            .expect_err("Shore A 40 is above the highest Dragon Skin anchor (30A)");
+        assert!(matches!(
+            err,
+            ShoreInterpolationError::OutOfRange {
+                shore: ShoreReading::A(v),
+                low_bound,
+                high_bound,
+            } if v == 40.0 && low_bound == 10.0 && high_bound == 30.0
+        ));
+    }
+
+    /// Shore D has no published anchors today; supplying it returns
+    /// `NoAnchorsInFamily`.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn from_effective_shore_d_scale_returns_no_anchors_error() {
+        let err = SiliconeMaterial::from_effective_shore(ShoreReading::D(50.0), None)
+            .expect_err("Shore D has no anchors yet");
+        assert!(matches!(
+            err,
+            ShoreInterpolationError::NoAnchorsInFamily {
+                shore: ShoreReading::D(v),
+            } if v == 50.0
+        ));
+    }
+
+    // ---- F2.2 — from_measured (Path 3) -------------------------------
+
+    /// `from_measured` applies the F4 `μ = σ_100 / 3` correlation +
+    /// Yeoh calibration formula in isolation. Probes the formula
+    /// directly (not against the rounded anchor table — the table
+    /// rounds μ to nearest kPa and C₂ to nearest 10 Pa, propagating
+    /// 1 % errors that this test would surface as flakiness if it
+    /// compared anchor values).
+    #[test]
+    fn from_measured_applies_calibration_formula_directly() {
+        for m100_pa in [10_000.0_f64, 68_947.57, 151_684.66, 592_949.13] {
+            let measured = SiliconeMaterial::from_measured(
+                ShoreReading::A(20.0),
+                m100_pa,
+                "test: formula probe",
+            )
+            .expect("positive σ_100 yields positive C₂");
+            assert_relative_eq!(measured.mu, m100_pa / 3.0, max_relative = 1e-12);
+            assert_relative_eq!(measured.lambda, 4.0 * m100_pa / 3.0, max_relative = 1e-12);
+            // c2 collapses to σ_100 / 33.6 after μ = σ_100 / 3
+            // substitution; see from_measured doc.
+            assert_relative_eq!(measured.c2, m100_pa / 33.6, max_relative = 1e-12);
+            assert!(matches!(
+                measured.source,
+                ConstructionSource::Measured {
+                    user_description: "test: formula probe",
+                }
+            ));
+        }
+    }
+
+    /// Non-positive modulus (zero, negative, `NaN`, `±inf`) is rejected.
+    #[test]
+    fn from_measured_with_nonpositive_modulus_returns_error() {
+        for bad in [0.0, -100.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = SiliconeMaterial::from_measured(ShoreReading::A(20.0), bad, "test: bad")
+                .expect_err("non-positive modulus must error");
+            assert!(matches!(
+                err,
+                MeasuredMaterialError::NonpositiveModulus { .. }
+            ));
+        }
+    }
+
+    /// `from_measured` C₂ is positive for any positive `σ_100`
+    /// (collapses to `σ_100 / 33.6` after substituting `μ = σ_100/3`).
+    /// Pinned: a future calibration formula change that breaks this
+    /// invariant must also reintroduce the negative-C₂ guard.
+    #[test]
+    fn from_measured_c2_positive_for_any_positive_modulus() {
+        for m100_pa in [1.0, 100.0, 10_000.0, 1_000_000.0] {
+            let mat = SiliconeMaterial::from_measured(
+                ShoreReading::A(20.0),
+                m100_pa,
+                "test: positive C₂ regime",
+            )
+            .expect("positive σ_100 always yields positive C₂");
+            assert!(
+                mat.c2 > 0.0,
+                "σ_100={m100_pa} produced non-positive C₂={}",
+                mat.c2
             );
         }
     }
