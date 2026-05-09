@@ -203,6 +203,39 @@ fn yeoh_first_piola_matches_central_fd_of_energy() {
     }
 }
 
+// ---- Suite (d): FD P → tangent at nontrivial F -------------------------
+
+#[test]
+fn yeoh_tangent_matches_central_fd_of_first_piola() {
+    let yeoh = Yeoh::from_lame_and_c2(MU, LAMBDA, C2);
+    let f0 = nontrivial_f();
+    let tangent = yeoh.tangent(&f0);
+
+    for k in 0..3 {
+        for l in 0..3 {
+            let mut f_pos = f0;
+            f_pos[(k, l)] += H;
+            let mut f_neg = f0;
+            f_neg[(k, l)] -= H;
+            let p_pos = yeoh.first_piola(&f_pos);
+            let p_neg = yeoh.first_piola(&f_neg);
+            let dp_dfkl = (p_pos - p_neg) / (2.0 * H);
+            for i in 0..3 {
+                for j in 0..3 {
+                    let row = i + 3 * j;
+                    let col = k + 3 * l;
+                    assert_relative_eq!(
+                        dp_dfkl[(i, j)],
+                        tangent[(row, col)],
+                        max_relative = MAX_RELATIVE,
+                        epsilon = EPSILON
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ---- Suite (e): per-anchor calibration arithmetic ---------------------
 //
 // Validates that each anchor's `(μ, c2)` reproduces the published M_100
@@ -252,38 +285,5 @@ fn yeoh_calibration_table_reproduces_published_100_pct_modulus() {
             rel_err < REL_TOL,
             "{name}: predicted M_100={predicted_m100} Pa, published={published_m100} Pa, rel_err={rel_err}"
         );
-    }
-}
-
-// ---- Suite (d): FD P → tangent at nontrivial F -------------------------
-
-#[test]
-fn yeoh_tangent_matches_central_fd_of_first_piola() {
-    let yeoh = Yeoh::from_lame_and_c2(MU, LAMBDA, C2);
-    let f0 = nontrivial_f();
-    let tangent = yeoh.tangent(&f0);
-
-    for k in 0..3 {
-        for l in 0..3 {
-            let mut f_pos = f0;
-            f_pos[(k, l)] += H;
-            let mut f_neg = f0;
-            f_neg[(k, l)] -= H;
-            let p_pos = yeoh.first_piola(&f_pos);
-            let p_neg = yeoh.first_piola(&f_neg);
-            let dp_dfkl = (p_pos - p_neg) / (2.0 * H);
-            for i in 0..3 {
-                for j in 0..3 {
-                    let row = i + 3 * j;
-                    let col = k + 3 * l;
-                    assert_relative_eq!(
-                        dp_dfkl[(i, j)],
-                        tangent[(row, col)],
-                        max_relative = MAX_RELATIVE,
-                        epsilon = EPSILON
-                    );
-                }
-            }
-        }
     }
 }
