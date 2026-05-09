@@ -187,6 +187,31 @@
 //!      eyes-on-pixels visible. Z-slab tet counts are RETAINED as
 //!      bit-equal regression gates (cheap centroid filter; not
 //!      emitted as PLY).
+//!    - PLY `out/sleeve_boundary_final.ply`: F1.0 SCRATCH PROTOTYPE
+//!      of the [vizarc]'s tet-mesh-native `boundary_surface()`
+//!      primitive — full 3D body as a triangulated boundary surface
+//!      coloured by per-vertex `psi_j_per_m3` (volume-weighted
+//!      averaging from per-tet psi). Replaces the x-slab's
+//!      reduce-to-2D framing with the canonical FEM-viz convention
+//!      (3D body, sequential heatmap, rotate to inspect). Spike
+//!      crate at `examples/sim-soft/spade-delaunay-spike/` documents
+//!      the falsified Delaunay-of-centroids architecture this
+//!      replaces. F1.1 lifts the helper to `sim/L0/soft/src/viz/`
+//!      after eyes-on-pixels passes; F1.2 retires the x-slab emit.
+//!    - PLY `out/sleeve_slab_cut_x0_final.ply`: F1.3 SCRATCH
+//!      PROTOTYPE of the [vizarc]'s `slab_cut()` primitive —
+//!      marching-tetrahedra cross-section of the body at the x = 0
+//!      plane, coloured by linearly-interpolated per-vertex
+//!      `psi_j_per_m3` along cut edges. Exposes the inner cavity
+//!      profile + axial proximal/band/distal strain gradient that
+//!      the closed boundary-surface PLY hides; the FEM-canonical
+//!      "clipping plane" view. Pulled forward from F1.3 (originally
+//!      after F1.1 + F1.2) per 2026-05-10 user request to see
+//!      inside the cavity-fitting wrap. F1.6 ships an open-mouth
+//!      row 25 variant that gives the FEM-correct version of "see
+//!      inside" (cavity has an actual physical opening through the
+//!      +z face); slab_cut is the meantime view on closed-body row
+//!      24.
 //!
 //! [vizarc]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_sim_soft_viz_arc.md
 //!    - Optional `plot_ramp.py` (PEP 723 + matplotlib): same
@@ -2238,6 +2263,378 @@ fn emit_xslab_ply(
 }
 
 // =============================================================================
+// PLY boundary-surface artifact emit (final step only) — F1.0 SCRATCH PROTOTYPE
+// =============================================================================
+//
+// Throwaway scratch implementation of the sim-soft viz arc's
+// `boundary_surface()` primitive (see `project_sim_soft_viz_arc.md`
+// §"Pivoted architecture — tet-mesh-native primitives"). Renders the
+// row's full 3D body as a triangulated boundary surface coloured by
+// per-vertex strain-energy density `psi_j_per_m3`, replacing the
+// x-slab centroid cloud's reduce-to-2D framing with the canonical
+// FEM-viz convention (3D body, sequential heatmap, rotate to inspect).
+//
+// F1.0 scope: this row only, psi-only scalar, volume-weighted
+// per-vertex averaging. F1.1 lift to `sim/L0/soft/src/viz/mod.rs`
+// (with HashMap<&str, &[f64]> multi-scalar API + unit tests +
+// docstrings) is conditional on this prototype passing eyes-on-pixels
+// in cf-view per `feedback_visual_review_is_the_test`. F1.2 retires
+// the x-slab emit. Spike-before-lock discipline per
+// `feedback_spike_before_trust_analytical` — the Delaunay-of-centroids
+// spike just taught us this lesson the hard way.
+//
+// Architectural finding worth banking before lift: `Mesh<M>` already
+// exposes `boundary_faces() -> &[[VertexId; 3]]` precomputed at
+// construction with documented outward winding (right-handed tet
+// vertex order; see `sim/L0/soft/src/mesh/mod.rs:120-139`). The
+// memo's open question 2 (winding) and 4 (trait surface) are answered
+// by the trait contract — F1.1 does not need to write
+// face-to-tet-adjacency counting.
+// Volume-weighted per-vertex psi averaging. Each tet contributes its
+// psi to each of its 4 vertices weighted by tet volume. Avoids small
+// boundary-fitting tets dominating per-vertex averages on
+// Isosurface-Stuffed organic meshes (chosen over uniform after the
+// 2026-05-10 planning discussion — uniform looks identical on row
+// 24's near-uniform BCC mesh but degrades on the production target
+// of organic scanned shapes; banking the durable choice upfront
+// avoids an F1.0→F1.1 averaging-strategy discontinuity).
+// signed_volume comes out positive for right-handed tets per
+// pipeline Decision H (no negative-volume survivor); .abs() is
+// defensive belt-and-braces. Shared between F1.0 boundary_surface
+// and F1.3 slab_cut helpers; lifts to viz module at F1.1 alongside
+// the emit primitives.
+fn volume_weighted_per_vertex_psi(
+    n_vertices: usize,
+    tets: &[[VertexId; 4]],
+    signed_volumes: &[f64],
+    psi_per_tet: &[f64],
+) -> Vec<f64> {
+    assert_eq!(signed_volumes.len(), tets.len());
+    assert_eq!(psi_per_tet.len(), tets.len());
+    let mut accum_psi_vol = vec![0.0_f64; n_vertices];
+    let mut accum_vol = vec![0.0_f64; n_vertices];
+    for (t, &[v0, v1, v2, v3]) in tets.iter().enumerate() {
+        let vol = signed_volumes[t].abs();
+        let weighted_psi = psi_per_tet[t] * vol;
+        for v in [v0, v1, v2, v3] {
+            accum_psi_vol[v as usize] += weighted_psi;
+            accum_vol[v as usize] += vol;
+        }
+    }
+    (0..n_vertices)
+        .map(|v| {
+            if accum_vol[v] > 0.0 {
+                accum_psi_vol[v] / accum_vol[v]
+            } else {
+                // Orphan vertex (no incident tets) — should not occur
+                // on the BCC + IS pipeline's connected meshes; emit
+                // 0 so the scalar slot stays valid for the PLY.
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn emit_boundary_surface_ply(
+    path: &Path,
+    positions: &[Vec3],
+    boundary_faces: &[[u32; 3]],
+    psi_per_vertex: &[f64],
+) -> Result<()> {
+    assert_eq!(psi_per_vertex.len(), positions.len());
+
+    let mut geometry = IndexedMesh::new();
+    for p in positions {
+        geometry.vertices.push(Point3::new(p.x, p.y, p.z));
+    }
+    // Boundary face indices are u32 = VertexId; copy directly. Faces
+    // index into `geometry.vertices` by full mesh VertexId so all
+    // n_vertices positions are emitted (interior vertices appear as
+    // unreferenced; PLY readers tolerate this and cf-view renders
+    // faces only). F1.1 polish: compact remap to boundary-vertex
+    // subset would shrink the PLY ~5×.
+    for face in boundary_faces {
+        geometry.faces.push(*face);
+    }
+
+    let psi_f32: Vec<f32> = psi_per_vertex.iter().map(|&v| v as f32).collect();
+    let mut attr = AttributedMesh::new(geometry);
+    attr.insert_extra("psi_j_per_m3", psi_f32)?;
+    save_ply_attributed(&attr, path, true)?;
+    Ok(())
+}
+
+// =============================================================================
+// PLY slab-cut artifact emit (final step only) — F1.3 SCRATCH PROTOTYPE
+// =============================================================================
+//
+// Throwaway scratch implementation of the sim-soft viz arc's
+// `slab_cut()` primitive (see `project_sim_soft_viz_arc.md`
+// §"Pivoted architecture — Primitive 2"). Intersects the tet mesh
+// with an axis-aligned plane via marching-tetrahedra; emits the cut
+// polygon mesh with per-vertex `psi_j_per_m3` linearly interpolated
+// from the volume-weighted per-vertex psi field.
+//
+// Pulled forward from F1.3 (originally scheduled after F1.1 lift +
+// F1.2 retrofit) per 2026-05-10 user discussion: row 24's wrap is
+// meant to model an insertion-cavity device, and slab_cut exposes
+// the interior cavity + axial strain gradient that the closed
+// boundary-surface PLY hides. F1.6 ships row 25 with an open-mouth
+// wrap variant that gives the FEM-correct version of "see inside";
+// slab_cut is the meantime view.
+//
+// Algorithm (5 cases by symmetry from 16 sign patterns):
+// - 4-above / 4-below: tet entirely on one side, no contribution.
+// - 1-above-3-below or 3-above-1-below: 3 cross-edges between the
+//   singleton and the 3-set; emit 1 triangle.
+// - 2-above-2-below: 4 cross-edges (a×c, a×d, b×c, b×d for above
+//   {a,b} and below {c,d}); emit a quad split into 2 triangles.
+// Cross-points are linearly interpolated along edges; positions and
+// per-vertex psi share the same parameter t. Cross-points are
+// dedup'd by sorted edge key so a shared edge (interior edges
+// appear in 2 tets) produces one cross-vertex.
+//
+// Winding: each emitted triangle is reordered (if needed) so its
+// normal projection onto the plane axis is non-negative. This keeps
+// all cut polygons facing the +axis side, satisfying cf-view's
+// default single-sided lighting (mirrors the Mesh trait's outward
+// winding contract for boundary_faces).
+#[allow(clippy::too_many_arguments)]
+fn slab_cut_intersect_edge(
+    va: VertexId,
+    vb: VertexId,
+    positions: &[Vec3],
+    psi_per_vertex: &[f64],
+    sd: &[f64],
+    edge_to_idx: &mut std::collections::HashMap<(VertexId, VertexId), u32>,
+    cut_positions: &mut Vec<Point3<f64>>,
+    cut_psi: &mut Vec<f64>,
+) -> u32 {
+    let (lo, hi) = if va < vb { (va, vb) } else { (vb, va) };
+    if let Some(&idx) = edge_to_idx.get(&(lo, hi)) {
+        return idx;
+    }
+    let sd_a = sd[va as usize];
+    let sd_b = sd[vb as usize];
+    // Parameter t from va toward vb where the plane crosses
+    // (0 at va, 1 at vb). Sign-difference denominator is non-zero
+    // because va and vb are on opposite sides of the plane (by
+    // caller construction).
+    let t = sd_a / (sd_a - sd_b);
+    let p_a = positions[va as usize];
+    let p_b = positions[vb as usize];
+    let cross = p_a + (p_b - p_a) * t;
+    let psi_a = psi_per_vertex[va as usize];
+    let psi_b = psi_per_vertex[vb as usize];
+    let cross_psi_val = (1.0 - t).mul_add(psi_a, t * psi_b);
+    let new_idx = cut_positions.len() as u32;
+    cut_positions.push(Point3::new(cross.x, cross.y, cross.z));
+    cut_psi.push(cross_psi_val);
+    edge_to_idx.insert((lo, hi), new_idx);
+    new_idx
+}
+
+fn align_winding_to_axis(
+    tri: [u32; 3],
+    cut_positions: &[Point3<f64>],
+    plane_axis: usize,
+) -> [u32; 3] {
+    let p0 = cut_positions[tri[0] as usize];
+    let p1 = cut_positions[tri[1] as usize];
+    let p2 = cut_positions[tri[2] as usize];
+    let a = p1 - p0;
+    let b = p2 - p0;
+    let cross_on_axis = match plane_axis {
+        0 => a.y.mul_add(b.z, -(a.z * b.y)),
+        1 => a.z.mul_add(b.x, -(a.x * b.z)),
+        _ => a.x.mul_add(b.y, -(a.y * b.x)),
+    };
+    if cross_on_axis >= 0.0 {
+        tri
+    } else {
+        [tri[0], tri[2], tri[1]]
+    }
+}
+
+fn emit_slab_cut_ply(
+    path: &Path,
+    positions: &[Vec3],
+    tets: &[[VertexId; 4]],
+    psi_per_vertex: &[f64],
+    plane_axis: usize,
+    plane_value: f64,
+) -> Result<()> {
+    assert!(plane_axis < 3);
+    assert_eq!(psi_per_vertex.len(), positions.len());
+
+    // Per-vertex signed distance: positive = above (axis side),
+    // non-positive = below. Vertices exactly on the plane (sd == 0)
+    // classify as below, which makes the cross-edge interpolation at
+    // t = 0 collapse the cross-point onto the mesh vertex (harmless
+    // degeneracy).
+    let sd: Vec<f64> = positions
+        .iter()
+        .map(|p| p[plane_axis] - plane_value)
+        .collect();
+
+    let mut edge_to_idx: std::collections::HashMap<(VertexId, VertexId), u32> =
+        std::collections::HashMap::new();
+    let mut cut_positions: Vec<Point3<f64>> = Vec::new();
+    let mut cut_psi: Vec<f64> = Vec::new();
+    let mut cut_faces: Vec<[u32; 3]> = Vec::new();
+
+    for &[v0, v1, v2, v3] in tets {
+        let verts = [v0, v1, v2, v3];
+        let mut above = [0u32; 4];
+        let mut na = 0usize;
+        let mut below = [0u32; 4];
+        let mut nb = 0usize;
+        for &v in &verts {
+            if sd[v as usize] > 0.0 {
+                above[na] = v;
+                na += 1;
+            } else {
+                below[nb] = v;
+                nb += 1;
+            }
+        }
+        let push_tri = |faces: &mut Vec<[u32; 3]>, cuts: &[Point3<f64>], tri: [u32; 3]| {
+            faces.push(align_winding_to_axis(tri, cuts, plane_axis));
+        };
+        match (na, nb) {
+            (4, 0) | (0, 4) => {}
+            (1, 3) => {
+                let s = above[0];
+                let i0 = slab_cut_intersect_edge(
+                    s,
+                    below[0],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                let i1 = slab_cut_intersect_edge(
+                    s,
+                    below[1],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                let i2 = slab_cut_intersect_edge(
+                    s,
+                    below[2],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                push_tri(&mut cut_faces, &cut_positions, [i0, i1, i2]);
+            }
+            (3, 1) => {
+                let s = below[0];
+                let i0 = slab_cut_intersect_edge(
+                    s,
+                    above[0],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                let i1 = slab_cut_intersect_edge(
+                    s,
+                    above[1],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                let i2 = slab_cut_intersect_edge(
+                    s,
+                    above[2],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                push_tri(&mut cut_faces, &cut_positions, [i0, i1, i2]);
+            }
+            (2, 2) => {
+                // Quad cross-section. Above = {a, b}, below = {c, d}.
+                // Cross-edges: a-c, b-c, b-d, a-d. Going around the
+                // quad's perimeter: i_ac → i_bc → i_bd → i_ad → i_ac.
+                // Triangulate via the i_ac--i_bd diagonal.
+                let i_ac = slab_cut_intersect_edge(
+                    above[0],
+                    below[0],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                let i_bc = slab_cut_intersect_edge(
+                    above[1],
+                    below[0],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                let i_bd = slab_cut_intersect_edge(
+                    above[1],
+                    below[1],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                let i_ad = slab_cut_intersect_edge(
+                    above[0],
+                    below[1],
+                    positions,
+                    psi_per_vertex,
+                    &sd,
+                    &mut edge_to_idx,
+                    &mut cut_positions,
+                    &mut cut_psi,
+                );
+                push_tri(&mut cut_faces, &cut_positions, [i_ac, i_bc, i_bd]);
+                push_tri(&mut cut_faces, &cut_positions, [i_ac, i_bd, i_ad]);
+            }
+            _ => unreachable!("tet has 4 vertices; (na, nb) sums to 4"),
+        }
+    }
+
+    let mut geometry = IndexedMesh::new();
+    geometry.vertices = cut_positions;
+    geometry.faces = cut_faces;
+
+    let psi_f32: Vec<f32> = cut_psi.iter().map(|&v| v as f32).collect();
+    let mut attr = AttributedMesh::new(geometry);
+    attr.insert_extra("psi_j_per_m3", psi_f32)?;
+    save_ply_attributed(&attr, path, true)?;
+    Ok(())
+}
+
+// =============================================================================
 // main
 // =============================================================================
 
@@ -2303,6 +2700,13 @@ fn main() -> Result<()> {
     verify_material_assignment_partition(&mesh, &shell_idx_per_tet, &zone_idx_per_tet);
     verify_material_provenance();
     verify_blend_zone_material_provenance(&mesh, &tets, &positions, &shell_idx_per_tet);
+
+    // Stash the small mesh-derived data the F1.0 boundary-surface PLY
+    // emit needs (boundary face indices + per-tet signed volumes).
+    // Captured here so the existing `drop(mesh)` below can free the
+    // bulk mesh memory before the ramp loop.
+    let boundary_faces: Vec<[u32; 3]> = mesh.boundary_faces().to_vec();
+    let signed_volumes: Vec<f64> = mesh.quality().signed_volume.clone();
 
     // 6. Quasi-static intrusion ramp.
     drop(mesh);
@@ -2425,6 +2829,31 @@ fn main() -> Result<()> {
         &xslab_zone,
         &xslab_mu,
         &xslab_psi,
+    )?;
+
+    // F1.0 + F1.3 scratch viz primitives — sim-soft viz arc option-3
+    // tet-mesh-native architecture. boundary_surface() emits the full
+    // 3D body coloured by per-vertex psi; slab_cut() emits the
+    // cross-section at x = 0 so the cavity + axial strain gradient
+    // are visible from outside the closed body. Both share the same
+    // volume-weighted per-vertex psi field. The x-slab centroid PLY
+    // stays as the canonical emit at F1.0/F1.3; F1.2 retires it once
+    // the surface + cut representations are verified as the better
+    // defaults.
+    let psi_per_vertex =
+        volume_weighted_per_vertex_psi(n_vertices, &tets, &signed_volumes, &final_data.per_tet_psi);
+
+    let bd_ply_path = out_dir.join("sleeve_boundary_final.ply");
+    emit_boundary_surface_ply(&bd_ply_path, &positions, &boundary_faces, &psi_per_vertex)?;
+
+    let slab_ply_path = out_dir.join("sleeve_slab_cut_x0_final.ply");
+    emit_slab_cut_ply(
+        &slab_ply_path,
+        &positions,
+        &tets,
+        &psi_per_vertex,
+        0,   // x-axis cut plane
+        0.0, // x = 0 (matches existing x-slab centroid convention)
     )?;
 
     // 9. Museum-plaque summary.
@@ -2550,11 +2979,25 @@ fn print_summary(
     println!(
         "  out/sleeve_xslab_final.ply                             (x-slab centroid cloud at final step at REST positions, six scalars: material_id, zone_id, axial_zone_id, displacement_magnitude, mu_sampled_pa, psi_j_per_m3)"
     );
+    println!(
+        "  out/sleeve_boundary_final.ply                          (F1.0 scratch boundary-surface PLY — full 3D body, per-vertex volume-weighted psi_j_per_m3 heatmap; sim-soft viz arc option-3)"
+    );
+    println!(
+        "  out/sleeve_slab_cut_x0_final.ply                       (F1.3 scratch slab-cut PLY — marching-tet cross-section at x = 0, per-vertex psi via linear interp; exposes cavity + axial gradient)"
+    );
     println!();
-    println!("View final-step PLY in cf-view (workspace's unified visual-review viewer):");
+    println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");
     println!(
         "  cargo run -p cf-viewer --release -- \
          examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp/out/sleeve_xslab_final.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp/out/sleeve_boundary_final.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp/out/sleeve_slab_cut_x0_final.ply"
     );
     println!();
     println!("Optional matplotlib post-processing (force-displacement + max_disp curves):");
