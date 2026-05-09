@@ -2,20 +2,23 @@
 # requires-python = ">=3.11"
 # dependencies = ["matplotlib"]
 # ///
-"""Plot the row 22 quasi-static ramp's force-displacement curve.
+"""Plot the row 23 Yeoh quasi-static ramp's force-displacement curve.
 
-Reads `out/scan_fit_3layer_sleeve_ramp.json` (specifically the `ramp_curve`
-array of per-step records), produces a dual-axis plot of penetration depth
-vs force_total_z (left) and depth vs max_disp (right). Post-v2.5 the
-force_total_z grows smoothly + convexly from ~1.1 N at 0.5 mm to ~23 N at
-6 mm; the deep-penetration signature lives in the Newton iter-count growth
-(annotated above each force-curve point) since the body stiffens nonlinearly
-approaching the NH validity-domain boundary.
+Reads `out/scan_fit_3layer_sleeve_yeoh_ramp.json` (specifically the
+`ramp_curve` array of per-step records), produces a dual-axis plot of
+penetration depth vs force_total_z (left) and depth vs max_disp
+(right). Yeoh's `C₂(I₁−3)²` term enables clean 8 mm penetration past
+row 22's NH validity wall; force grows smoothly + super-linearly from
+~1.1 N at 0.5 mm to ~49.3 N at 8 mm, with the deep-penetration
+signature visible in the Newton iter-count growth (annotated above
+each force-curve point) — counts climb from 8 at step 1 to 77 at step
+16 (cap = 150).
 
-Mirrors row 5 / row 14 / hertz-sphere-plane's `plot.py` PEP 723 structure.
+Mirrors row 5 / row 14 / hertz-sphere-plane / row 22's `plot.py` PEP
+723 structure.
 
 Usage:
-    uv run examples/sim-soft/scan-fit-3layer-sleeve-ramp/plot_ramp.py
+    uv run examples/sim-soft/scan-fit-3layer-sleeve-yeoh-ramp/plot_ramp.py
 """
 
 import json
@@ -26,11 +29,11 @@ import matplotlib.pyplot as plt
 
 def main() -> None:
     here = Path(__file__).resolve().parent
-    json_path = here / "out" / "scan_fit_3layer_sleeve_ramp.json"
+    json_path = here / "out" / "scan_fit_3layer_sleeve_yeoh_ramp.json"
     if not json_path.exists():
         raise SystemExit(
             f"missing {json_path}; run "
-            "`cargo run -p example-sim-soft-scan-fit-3layer-sleeve-ramp --release` first"
+            "`cargo run -p example-sim-soft-scan-fit-3layer-sleeve-yeoh-ramp --release` first"
         )
 
     with json_path.open() as f:
@@ -72,11 +75,11 @@ def main() -> None:
     ax_force.grid(alpha=0.3)
 
     # Annotate iter count above each force-curve point — communicates
-    # solver effort per step (8/8/9 → 11/11/13 → ... → 22/30/61). 12-pt
-    # vertical offset clears the data marker; semi-transparent white
-    # bbox keeps the digits readable against the curve where the
-    # annotation overlaps it (last 2-3 steps where the curve climbs
-    # steeply).
+    # solver effort per step (8/8/9 → 10/11/12 → ... → 23/27/31 →
+    # 39/49/77). 12-pt vertical offset clears the data marker; semi-
+    # transparent white bbox keeps the digits readable against the
+    # curve where the annotation overlaps it (last 2-3 steps where
+    # the curve climbs steeply).
     for d_mm, f_n, it in zip(depths_mm, force_z_n, iters):
         ax_force.annotate(
             f"{it}",
@@ -91,7 +94,7 @@ def main() -> None:
 
     final = document["scalars"]["final_step"]
     title = (
-        f"row 22 quasi-static ramp — {len(ramp_curve)} × "
+        f"row 23 Yeoh quasi-static ramp — {len(ramp_curve)} × "
         f"{ramp_curve[1]['depth_m'] * 1000.0 - ramp_curve[0]['depth_m'] * 1000.0:.1f} mm "
         f"to {final['depth_m'] * 1000.0:.1f} mm\n"
         f"final force_z = {final['force_total_z_n']:+.1f} N, "
@@ -103,13 +106,13 @@ def main() -> None:
     # Legend in upper-left: the convex force curve and the linear-ish
     # max_disp curve both climb left-to-right, leaving the upper-left
     # corner empty. Upper-right would crowd the rightmost data points
-    # (depth 5-6 mm) plus the iter-count annotations there.
+    # (depth 7-8 mm) plus the iter-count annotations there.
     lines = line_force + line_disp
     labels = [line.get_label() for line in lines]
     ax_force.legend(lines, labels, loc="upper left")
 
-    # Add headroom so the "61" annotation at step 12 (top-right corner,
-    # ~12 pts above force_z = 23.1 N) doesn't crowd the chart frame.
+    # Add headroom so the "77" annotation at step 16 (top-right corner,
+    # ~12 pts above force_z = 49.3 N) doesn't crowd the chart frame.
     ax_force.margins(y=0.08)
     ax_disp.margins(y=0.08)
 

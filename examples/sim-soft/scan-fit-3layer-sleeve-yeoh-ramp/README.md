@@ -185,7 +185,7 @@ Plus per-tet material assignment via `mesh.materials()[t].energy(F_probe)` match
 | `n_active_pairs` at final step (referenced-only) | `50` |
 | `max Ψ_outer` at final step | bits self-pinned (~49 205 J/m³); rel-tol IV-1 sparse-tier |
 
-Pair count grows through the ramp from 9 at step 1 to 50 at step 16 (vs row 22's 37 at step 12 / 6 mm) — the deeper probe pose progressively engages more wrap-cap material. Max Ψ_outer at 8 mm depth is ~5× row 22's 10 487 J/m³ at 6 mm — strain at the contact-band-adjacent outer-shell tets concentrates dramatically as Yeoh's `C₂(I₁−3)²` term contributes nonlinear stiffening at the extra 2 mm of depth.
+Pair count grows through the ramp from 9 at step 1 to 50 at step 16 (vs row 22's 37 at step 12 / 6 mm) — the deeper probe pose progressively engages more wrap-cap material. Max Ψ_outer at 8 mm depth is ~4.7× row 22's 10 487 J/m³ at 6 mm (49 205 vs 10 487) — strain at the contact-band-adjacent outer-shell tets concentrates dramatically as Yeoh's `C₂(I₁−3)²` term contributes nonlinear stiffening at the extra 2 mm of depth.
 
 ### 12. `per_step_captured_bits` — IV-1 sparse-tier rel-tol
 
