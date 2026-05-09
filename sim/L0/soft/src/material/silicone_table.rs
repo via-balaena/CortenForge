@@ -999,7 +999,7 @@ mod tests {
 
     // ---- F2.2 — from_measured (Path 3) -------------------------------
 
-    /// `from_measured` applies the F4 `μ = σ_100 / 3` correlation +
+    /// `from_measured` applies the `μ = σ_100 / 3` correlation +
     /// Yeoh calibration formula in isolation. Probes the formula
     /// directly (not against the rounded anchor table — the table
     /// rounds μ to nearest kPa and C₂ to nearest 10 Pa, propagating
