@@ -35,8 +35,8 @@
 //! needed for the test, just helper construction + readout call.
 
 use sim_soft::{
-    ContactModel, ContactPair, MaterialField, Mesh, PenaltyRigidContact, RigidPlane, SoftScene,
-    Vec3,
+    ActivePairsFor, ContactModel, ContactPair, MaterialField, Mesh, PenaltyRigidContact,
+    RigidPlane, SoftScene, Vec3,
 };
 
 /// Cube edge length (1 cm). Mirrors the compressive-block fixture / row 14.

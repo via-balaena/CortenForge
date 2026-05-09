@@ -86,7 +86,7 @@ pub struct ContactHessian {
 ///
 /// Capture timing is on-demand — readout consumers pass current
 /// positions and the producer recomputes geometry + force from scratch,
-/// matching the on-demand semantics of [`ContactModel::active_pairs`].
+/// matching the on-demand semantics of [`ActivePairsFor::active_pairs`].
 /// No per-iter cache is maintained.
 ///
 /// **Sign convention** — `force_on_soft` is the force the contact
@@ -107,7 +107,7 @@ pub struct ContactPairReadout {
     /// Signed distance from `position` to the rigid primitive at
     /// readout time. Values strictly less than `d̂` are the active
     /// regime — matching the gate at
-    /// [`ContactModel::active_pairs`]; the producer only emits
+    /// [`ActivePairsFor::active_pairs`]; the producer only emits
     /// readouts for active pairs.
     pub sd: f64,
     /// Outward-pointing unit normal of the rigid primitive evaluated
@@ -120,10 +120,14 @@ pub struct ContactPairReadout {
 
 /// Contact-energy surface over candidate pairs. `dyn`-compatible at
 /// scene construction; monomorphized `C: ContactModel` on the hot path.
+///
+/// The material-agnostic part — energy, gradient, Hessian, CCD —
+/// lives here. Active-pair selection (which depends on mesh
+/// topology, hence on `M` via `&dyn Mesh<M>`) lives in the
+/// [`ActivePairsFor`] subtrait. The split keeps method-call sites
+/// like `c.hessian(...)` from needing M-inference at every test
+/// caller.
 pub trait ContactModel: Send + Sync {
-    /// Active contact pairs for the given positions.
-    fn active_pairs(&self, mesh: &dyn crate::mesh::Mesh, positions: &[Vec3]) -> Vec<ContactPair>;
-
     /// Contact energy contribution for a single pair (J).
     fn energy(&self, pair: &ContactPair, positions: &[Vec3]) -> f64;
 
@@ -136,4 +140,19 @@ pub trait ContactModel: Send + Sync {
     /// Continuous-collision time of impact along the segment `x0 → x1`.
     /// `f64::INFINITY` means no contact within the step.
     fn ccd_toi(&self, pair: &ContactPair, x0: &[Vec3], x1: &[Vec3]) -> f64;
+}
+
+/// Active-pair selection for a [`ContactModel`] over a particular
+/// material type `M`.
+///
+/// Split out from [`ContactModel`] so that `c.hessian(...)` etc.
+/// don't trigger M-inference at every method call site (only
+/// `active_pairs` actually depends on the mesh, hence on `M`).
+/// Implemented generically over `M: Material` for both
+/// [`NullContact`] and [`PenaltyRigidContact`]; the same impl carries
+/// through any mesh's material model per arc memo D10.
+pub trait ActivePairsFor<M: crate::material::Material>: ContactModel {
+    /// Active contact pairs for the given positions.
+    fn active_pairs(&self, mesh: &dyn crate::mesh::Mesh<M>, positions: &[Vec3])
+    -> Vec<ContactPair>;
 }

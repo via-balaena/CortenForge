@@ -34,7 +34,7 @@ use sim_ml_chassis::{Tensor, Var};
 
 use super::{CpuTape, NewtonStep, Solver};
 use crate::Vec3;
-use crate::contact::ContactModel;
+use crate::contact::{ActivePairsFor, ContactModel};
 use crate::differentiable::newton_vjp::NewtonStepVjp;
 use crate::element::Element;
 use crate::material::{InversionHandling, Material};
@@ -113,17 +113,28 @@ impl Default for SolverConfig {
 
 /// CPU backward-Euler Newton solver.
 ///
-/// Five generic parameters: element `E<N, G>`, mesh `Msh`, contact `C`,
-/// and const-generic `(N, G)` for element shape. The constitutive law
-/// is fixed at `NeoHookean` per Phase 4 scope memo Decision G
-/// (monomorphization); per-tet `NeoHookean` instances live on the mesh
-/// and are read at the assembly hot points via `self.mesh.materials()`.
-/// Monomorphized per skeleton type alias `SkeletonSolver`.
-pub struct CpuNewtonSolver<E, Msh, C, const N: usize, const G: usize>
-where
+/// Six generic parameters: element `E<N, G>`, mesh `Msh`, contact `C`,
+/// material `M`, and const-generic `(N, G)` for element shape.
+///
+/// `M` defaults to [`crate::material::NeoHookean`] for back-compat with Phase 4 scope
+/// memo Decision G's monomorphization. Yeoh consumers (row 23+) write
+/// `M = Yeoh` explicitly, typically via the [`crate::CpuTet4YeohSolver`]
+/// alias, and use a `Mesh<Yeoh>` impl such as
+/// `SdfMeshedTetMesh<Yeoh>` per arc memo D10. Per-tet `M`
+/// instances live on the mesh and are read at the assembly hot
+/// points via `self.mesh.materials()`.
+pub struct CpuNewtonSolver<
+    E,
+    Msh,
+    C,
+    M = crate::material::NeoHookean,
+    const N: usize = 4,
+    const G: usize = 1,
+> where
     E: Element<N, G>,
-    Msh: Mesh,
-    C: ContactModel,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
 {
     element: E,
     mesh: Msh,
@@ -170,13 +181,19 @@ where
     n_dof: usize,
     /// Free DOF count (`free_dof_indices.len()`), cached.
     n_free: usize,
+
+    /// Phantom — `M` only appears in the `Msh: Mesh<M>` and `C:
+    /// ContactModel<M>` bounds, not in any field. The marker tells
+    /// rustc the type parameter is intentionally type-only.
+    _material: std::marker::PhantomData<M>,
 }
 
-impl<E, Msh, C, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, N, G>
+impl<E, Msh, C, M, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, M, N, G>
 where
     E: Element<N, G>,
-    Msh: Mesh,
-    C: ContactModel,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
 {
     /// Assemble a solver from its element, mesh, contact, integration
     /// configuration, and boundary conditions. Per-tet `NeoHookean`
@@ -427,6 +444,7 @@ where
             symbolic,
             n_dof,
             n_free,
+            _material: std::marker::PhantomData,
         }
     }
 
@@ -1079,11 +1097,12 @@ where
     }
 }
 
-impl<E, Msh, C, const N: usize, const G: usize> Solver for CpuNewtonSolver<E, Msh, C, N, G>
+impl<E, Msh, C, M, const N: usize, const G: usize> Solver for CpuNewtonSolver<E, Msh, C, M, N, G>
 where
     E: Element<N, G>,
-    Msh: Mesh,
-    C: ContactModel,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
 {
     type Tape = CpuTape;
 

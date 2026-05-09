@@ -4,7 +4,7 @@
 //! the trait surface without pulling in IPC machinery.
 //! Phase C adds `IpcBarrierModel` with CCD + friction per spec §8.
 
-use super::{ContactGradient, ContactHessian, ContactModel, ContactPair};
+use super::{ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair};
 use crate::Vec3;
 
 /// Null contact — no active pairs, no contact forces.
@@ -12,10 +12,6 @@ use crate::Vec3;
 pub struct NullContact;
 
 impl ContactModel for NullContact {
-    fn active_pairs(&self, _mesh: &dyn crate::mesh::Mesh, _positions: &[Vec3]) -> Vec<ContactPair> {
-        Vec::new()
-    }
-
     fn energy(&self, _pair: &ContactPair, _positions: &[Vec3]) -> f64 {
         0.0
     }
@@ -30,5 +26,15 @@ impl ContactModel for NullContact {
 
     fn ccd_toi(&self, _pair: &ContactPair, _x0: &[Vec3], _x1: &[Vec3]) -> f64 {
         f64::INFINITY
+    }
+}
+
+impl<M: crate::material::Material> ActivePairsFor<M> for NullContact {
+    fn active_pairs(
+        &self,
+        _mesh: &dyn crate::mesh::Mesh<M>,
+        _positions: &[Vec3],
+    ) -> Vec<ContactPair> {
+        Vec::new()
     }
 }

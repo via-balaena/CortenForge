@@ -11,8 +11,8 @@
 
 use approx::assert_relative_eq;
 use sim_soft::{
-    ContactModel, ContactPair, MaterialField, PenaltyRigidContact, RigidPlane, SingleTetMesh, Vec3,
-    VertexId,
+    ActivePairsFor, ContactModel, ContactPair, MaterialField, PenaltyRigidContact, RigidPlane,
+    SingleTetMesh, Vec3, VertexId,
 };
 
 // ---------------------------------------------------------------------

@@ -20,7 +20,7 @@
 )]
 
 use approx::assert_relative_eq;
-use sim_soft::{ContactModel, LoadAxis, MaterialField, Mesh, SceneInitial, SoftScene, Vec3};
+use sim_soft::{ActivePairsFor, LoadAxis, MaterialField, Mesh, SceneInitial, SoftScene, Vec3};
 
 // ── compressive_block_on_plane (compressive-block scaffold) ────────────────────────────
 

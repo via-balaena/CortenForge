@@ -46,8 +46,8 @@ pub mod solver;
 
 pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{
-    ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout, NullContact,
-    PenaltyRigidContact, RigidPlane, filter_pair_readouts_to_referenced,
+    ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout,
+    NullContact, PenaltyRigidContact, RigidPlane, filter_pair_readouts_to_referenced,
 };
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
@@ -91,7 +91,13 @@ pub type Vec3 = nalgebra::Vector3<f64>;
 /// `CpuTet4NHSolver<HandBuiltTetMesh>` for the multi-tet gate scenes,
 /// `CpuTet4NHSolver<SingleTetMesh>` for the 1-tet skeleton).
 pub type CpuTet4NHSolver<Msh> =
-    solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, 4, 1>;
+    solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, material::NeoHookean, 4, 1>;
+
+/// Yeoh-flavored sibling of [`CpuTet4NHSolver`]. Specialize via the
+/// `Msh` parameter (typically `SdfMeshedTetMesh<Yeoh>` per arc
+/// memo D10).
+pub type CpuTet4YeohSolver<Msh> =
+    solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, material::Yeoh, 4, 1>;
 
 /// Walking-skeleton solver alias — `CpuTet4NHSolver` over `SingleTetMesh`.
 ///
@@ -120,5 +126,16 @@ pub type SkeletonSolver = CpuTet4NHSolver<mesh::SingleTetMesh>;
 /// `PenaltyRigidContactSolver<HandBuiltTetMesh>` for the
 /// compressive-block scene, `PenaltyRigidContactSolver<SdfMeshedTetMesh>`
 /// for sphere-on-plane / drop-and-rest scenes.
-pub type PenaltyRigidContactSolver<Msh> =
-    solver::CpuNewtonSolver<element::Tet4, Msh, contact::PenaltyRigidContact, 4, 1>;
+pub type PenaltyRigidContactSolver<Msh> = solver::CpuNewtonSolver<
+    element::Tet4,
+    Msh,
+    contact::PenaltyRigidContact,
+    material::NeoHookean,
+    4,
+    1,
+>;
+
+/// Yeoh-flavored sibling of [`PenaltyRigidContactSolver`]. Row 23 (the
+/// load-bearing F4 consumer of the Yeoh arc) builds against this alias.
+pub type PenaltyRigidContactYeohSolver<Msh> =
+    solver::CpuNewtonSolver<element::Tet4, Msh, contact::PenaltyRigidContact, material::Yeoh, 4, 1>;
