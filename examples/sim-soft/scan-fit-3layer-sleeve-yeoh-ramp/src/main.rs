@@ -763,8 +763,23 @@ fn solve_ramp(
 
     let mut results: Vec<RampStepResult> = Vec::with_capacity(N_RAMP_STEPS);
 
+    println!(
+        "Quasi-static ramp — solving {N_RAMP_STEPS} steps × {RAMP_STEP_DELTA:.4} m to depth {PROBE_PENETRATION_FINAL} m:"
+    );
     for k in 0..N_RAMP_STEPS {
         let depth = (k + 1) as f64 * RAMP_STEP_DELTA;
+
+        // Per-step progress log. Late steps (e.g. step 16 at ~77 iters)
+        // can take 10-15 s on a release build; without this line the
+        // user sees a silent terminal between the early "starting"
+        // print and the post-ramp summary table. Use stderr so the
+        // line flushes even when stdout is piped (CI capture).
+        eprintln!(
+            "  step {:>2}/{} — depth={:.1} mm — solving…",
+            k + 1,
+            N_RAMP_STEPS,
+            depth * 1000.0,
+        );
 
         // Rebuild mesh + bc + contact for this step.
         let scan_k = build_scan_solid();
@@ -935,6 +950,18 @@ fn solve_ramp(
             max_psi_outer_j_per_m3: max_psi_outer,
             final_step_data,
         });
+
+        // Per-step completion log (paired with the "solving…" line
+        // above). Same eprintln channel so progress + result lines
+        // interleave cleanly under stdout/stderr split capture.
+        eprintln!(
+            "             iter={:>3}  residual={:.2e}  force_z={:+.3e} N  max_disp={:.3e} m  n_pairs={}",
+            step_k.iter_count,
+            step_k.final_residual_norm,
+            force_total_z,
+            max_disp_m,
+            n_active_pairs,
+        );
 
         // Chain x_prev for next step.
         x_prev_flat.clone_from(&step_k.x_final);
