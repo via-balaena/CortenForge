@@ -19,9 +19,9 @@
 //! | Ecoflex 00-10   | 00-10 |    18.0 |    72.0 |     1.69 |      1040 |    9.00 |  7.20 |  8 PSI  |
 //! | Ecoflex 00-20   | 00-20 |    18.0 |    72.0 |     1.69 |      1070 |    9.45 |  7.56 |  8 PSI  |
 //! | Ecoflex 00-30   | 00-30 |    23.0 |    92.0 |     2.05 |      1070 |   10.00 |  8.00 | 10 PSI  |
-//! | Ecoflex 00-50   | 00-50 |    28.0 |   112.0 |     2.41 |      1070 |    9.80 |  7.84 | 12 PSI  |
+//! | Ecoflex 00-50   | 00-50 |    28.0 |   112.0 |     2.41 |      1070 |   10.80 |  8.64 | 12 PSI  |
 //! | Dragon Skin 10A | 10A   |    51.0 |   204.0 |     4.46 |      1070 |   11.00 |  8.80 | 22 PSI  |
-//! | Dragon Skin 15  | 15A   |    92.0 |   368.0 |     8.20 |      1070 |    7.71 |  6.17 | 40 PSI  |
+//! | Dragon Skin 15  | 15A   |    92.0 |   368.0 |     8.20 |      1070 |    8.71 |  6.97 | 40 PSI  |
 //! | Dragon Skin 20A | 20A   |   113.0 |   452.0 |    10.00 |      1080 |    7.20 |  5.76 | 49 PSI  |
 //! | Dragon Skin 30A | 30A   |   198.0 |   792.0 |    17.60 |      1080 |    4.64 |  3.71 | 86 PSI  |
 //!
@@ -474,9 +474,12 @@ fn bracket(
 }
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    // `(1 - t) * a + t * b` ordering preserves bit-equality with `a`
-    // at `t = 0` and with `b` at `t = 1`.
-    (b - a).mul_add(t, a)
+    // `(1 - t) · a + t · b` ordering preserves bit-equality with `a`
+    // at `t = 0` and with `b` at `t = 1`: at t=0 the FMA reduces to
+    // `1·a + 0 = a`; at t=1 it reduces to `0·a + b = b`. The naive
+    // `(b - a) · t + a` form rounds `b - a` first and may drift by
+    // 1 ULP at `t = 1`.
+    (1.0 - t).mul_add(a, t * b)
 }
 
 // Per-anchor Yeoh validity bounds: tensile cap = 0.8 · λ_break,
@@ -526,14 +529,14 @@ pub const ECOFLEX_00_30: SiliconeMaterial = SiliconeMaterial::from_anchor(
 );
 
 /// Ecoflex 00-50 — Shore 00-50; firmest in the Ecoflex line. `λ_break`
-/// = 9.80 (980 % elongation).
+/// = 10.80 (980 % elongation per TDS — `λ = 1 + ε`).
 pub const ECOFLEX_00_50: SiliconeMaterial = SiliconeMaterial::from_anchor(
     "ECOFLEX_00_50",
     28_000.0,
     112_000.0,
     2_410.0,
     1070.0,
-    7.84,
+    8.64,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::DoubleZero(50.0),
 );
@@ -554,16 +557,18 @@ pub const DRAGON_SKIN_10A: SiliconeMaterial = SiliconeMaterial::from_anchor(
     ShoreReading::A(10.0),
 );
 
-/// Dragon Skin 15 — Shore 15A. `λ_break` = 7.71 (771 % elongation).
-/// Added for Yeoh arc 2026-05-08 — sits between [`DRAGON_SKIN_10A`]
-/// and [`DRAGON_SKIN_20A`] in the hardness sequence.
+/// Dragon Skin 15 — Shore 15A. `λ_break` = 8.71 (771 % elongation per
+/// TDS — `λ = 1 + ε`).
+///
+/// Added for Yeoh arc 2026-05-08 — sits between [`DRAGON_SKIN_10A`] and
+/// [`DRAGON_SKIN_20A`] in the hardness sequence.
 pub const DRAGON_SKIN_15: SiliconeMaterial = SiliconeMaterial::from_anchor(
     "DRAGON_SKIN_15",
     92_000.0,
     368_000.0,
     8_200.0,
     1070.0,
-    6.17,
+    6.97,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::A(15.0),
 );
@@ -692,8 +697,12 @@ mod tests {
         }
     }
 
-    /// Validity bounds: `0 < min < 1 < max`, with `max ≤ λ_break · 0.8`.
-    /// `min` is family-uniform at 0.30. Catches ordering typos.
+    /// Validity bounds: `0 < min < 1 < max`. `min` is family-uniform
+    /// at 0.30. Catches ordering typos. The `max = 0.8 · λ_break`
+    /// invariant is locked separately by
+    /// `validity_max_pins_to_80_pct_of_one_plus_elongation_at_break`
+    /// so a typo in either `λ_break` or the multiplier surfaces with a
+    /// targeted failure rather than this gross-shape check.
     #[test]
     fn validity_bounds_well_ordered() {
         for (name, mat) in ALL {
@@ -712,6 +721,37 @@ mod tests {
                 mat.validity_min_principal_stretch,
                 YEOH_MIN_PRINCIPAL_STRETCH,
                 epsilon = 0.0
+            );
+        }
+    }
+
+    /// Each anchor's `validity_max_principal_stretch` equals
+    /// `0.8 · (1 + ε_break(%) / 100)` where `ε_break` is the
+    /// elongation-at-break published on the Smooth-On TDS. Pins both
+    /// the `λ = 1 + ε` ASTM-D412 conversion and the 80 %-rupture-margin
+    /// rule from arc memo D8. A typo in either `λ_break` or the 0.8
+    /// multiplier surfaces here.
+    #[test]
+    fn validity_max_pins_to_80_pct_of_one_plus_elongation_at_break() {
+        // (anchor, ε_break in %, from Smooth-On TDS via arc memo
+        // §"Recon findings" lines 26-31, 35-40).
+        const PUBLISHED_ELONGATION_PCT: &[(SiliconeMaterial, f64)] = &[
+            (ECOFLEX_00_10, 800.0),
+            (ECOFLEX_00_20, 845.0),
+            (ECOFLEX_00_30, 900.0),
+            (ECOFLEX_00_50, 980.0),
+            (DRAGON_SKIN_10A, 1000.0),
+            (DRAGON_SKIN_15, 771.0),
+            (DRAGON_SKIN_20A, 620.0),
+            (DRAGON_SKIN_30A, 364.0),
+        ];
+        for (mat, eb_pct) in PUBLISHED_ELONGATION_PCT {
+            let lambda_break = 1.0 + eb_pct / 100.0;
+            let expected_max = 0.8 * lambda_break;
+            assert_relative_eq!(
+                mat.validity_max_principal_stretch,
+                expected_max,
+                max_relative = 1e-3
             );
         }
     }
