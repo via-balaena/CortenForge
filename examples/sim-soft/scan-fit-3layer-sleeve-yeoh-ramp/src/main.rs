@@ -1207,6 +1207,15 @@ fn verify_material_provenance() {
     // others are Path 1 anchors. The Path-2 source tag is the
     // distinguishing artifact even when the numerics coincide with
     // the high anchor.
+    //
+    // Weight is bit-exactly 1.0: bracket() at silicone_table.rs:469
+    // computes `(20.0 - 10.0) / (20.0 - 10.0)`, which is exact in
+    // IEEE 754. Pinned by the test
+    // `silicone_table.rs::tests::from_effective_shore_at_anchor_position_returns_anchor_data`
+    // (silicone_table.rs:898). The 1e-15 tolerance is a safety margin
+    // against future bracket-math refactors that might introduce
+    // sub-ULP drift; tighten to `== 1.0` if the bracket invariant is
+    // ever lifted to the type system.
     assert!(
         matches!(
             inner.source,
@@ -1434,9 +1443,13 @@ fn write_json_readout(
         ConstructionSource::Measured { user_description } => {
             format!("Measured({user_description})")
         }
-        // ConstructionSource is #[non_exhaustive]; future variants are
-        // serialised as their Debug repr so this row's JSON stays
-        // valid without forcing per-variant JSON-shape choices here.
+        // ConstructionSource is #[non_exhaustive]; future variants
+        // collapse to their Rust Debug repr inside the JSON `source`
+        // string. The JSON document stays parseable, but the field
+        // is no longer a structured Anchor/Interpolated/Measured
+        // descriptor — it's a `Foo { bar: 1 }`-style escape hatch
+        // that surfaces the variant name to a human reader and
+        // signals "extend this match" to the next maintainer.
         other => format!("{other:?}"),
     };
     let materials = json!([
