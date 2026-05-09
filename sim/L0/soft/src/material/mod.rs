@@ -10,10 +10,12 @@ use nalgebra::{Matrix3, SMatrix};
 pub mod material_field;
 pub mod neo_hookean;
 pub mod silicone_table;
+pub mod yeoh;
 
 pub use material_field::MaterialField;
 pub use neo_hookean::NeoHookean;
 pub use silicone_table::SiliconeMaterial;
+pub use yeoh::Yeoh;
 
 /// Constitutive-model surface: energy density and its first two
 /// derivatives in deformation gradient `F`, plus a validity predicate
@@ -53,7 +55,24 @@ pub struct ValidityDomain {
     /// Maximum principal-stretch deviation `|λ − 1|` at which the
     /// declared error bound against the next-more-accurate reference
     /// law still holds.
+    ///
+    /// Legacy NH-style symmetric bound. The solver gate falls back to
+    /// this only when both `max_principal_stretch` and
+    /// `min_principal_stretch` are `None`.
     pub max_stretch_deviation: f64,
+
+    /// Tensile principal-stretch cap. `Some(m)` directs the solver gate
+    /// to panic when any singular value of `F` exceeds `m`. `None`
+    /// defers to the legacy `max_stretch_deviation` symmetric bound.
+    /// Yeoh's calibrated `0.8 · λ_break` lands here per arc memo D8.
+    pub max_principal_stretch: Option<f64>,
+
+    /// Compressive principal-stretch cap. `Some(n)` directs the solver
+    /// gate to panic when any singular value of `F` falls below `n`.
+    /// `None` defers to the legacy `max_stretch_deviation` symmetric
+    /// bound. Yeoh's engineering-aggressive `0.30` lands here per arc
+    /// memo D8.
+    pub min_principal_stretch: Option<f64>,
 
     /// Maximum rotation angle in radians. `f64::INFINITY` for
     /// rotation-invariant laws.

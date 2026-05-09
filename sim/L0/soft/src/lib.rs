@@ -53,7 +53,7 @@ pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeN
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
 pub use material::{
-    InversionHandling, Material, MaterialField, NeoHookean, SiliconeMaterial, ValidityDomain,
+    InversionHandling, Material, MaterialField, NeoHookean, SiliconeMaterial, ValidityDomain, Yeoh,
 };
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,

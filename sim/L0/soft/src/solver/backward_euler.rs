@@ -497,30 +497,68 @@ where
                 );
             }
 
-            // Principal-stretch deviation: SVD `F = U Σ V^T` gives
+            // Principal-stretch bounds: SVD `F = U Σ V^T` gives
             // singular values `σ_i` which are the principal stretches.
-            // `max_i |σ_i - 1|` is the Part 2 §00 §02 stretch bound.
-            // `f.svd_unordered(false, false)` skips U/V computation
-            // (we only need singular values); cheap O(27) FLOPs per
-            // tet. Singular values are non-negative; a reflection-only
-            // F has σ_i ≥ 0 with `det F < 0`, already caught above.
+            // `f.svd_unordered(false, false)` skips U/V (we only need
+            // σ); cheap O(27) FLOPs per tet. Singular values are
+            // non-negative; a reflection-only F has σ_i ≥ 0 with
+            // `det F < 0`, already caught above.
+            //
+            // Two gate flavors (Yeoh arc memo D8): if either of the new
+            // asymmetric bounds is `Some`, gate per-bound; else fall
+            // back to the legacy NH symmetric `max_i |σ_i - 1|` bound.
             let svd = f.svd_unordered(false, false);
             let sigma = svd.singular_values;
-            let max_dev = sigma
-                .iter()
-                .map(|s| (s - 1.0).abs())
-                .fold(0.0_f64, f64::max);
-            let bound = validity.max_stretch_deviation;
-            assert!(
-                max_dev <= bound,
-                "validity violation at tet {tet_id}: max_stretch_deviation \
-                 = {max_dev:.3} exceeds bound {bound:.3} (singular values \
-                 of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
-                 Decision Q fail-closed semantics.",
-                s0 = sigma[0],
-                s1 = sigma[1],
-                s2 = sigma[2],
-            );
+            match (
+                validity.max_principal_stretch,
+                validity.min_principal_stretch,
+            ) {
+                (None, None) => {
+                    let max_dev = sigma
+                        .iter()
+                        .map(|s| (s - 1.0).abs())
+                        .fold(0.0_f64, f64::max);
+                    let bound = validity.max_stretch_deviation;
+                    assert!(
+                        max_dev <= bound,
+                        "validity violation at tet {tet_id}: max_stretch_deviation \
+                         = {max_dev:.3} exceeds bound {bound:.3} (singular values \
+                         of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                         Decision Q fail-closed semantics.",
+                        s0 = sigma[0],
+                        s1 = sigma[1],
+                        s2 = sigma[2],
+                    );
+                }
+                (max_p, min_p) => {
+                    if let Some(max) = max_p {
+                        let max_sigma = sigma.iter().fold(0.0_f64, |a, &b| a.max(b));
+                        assert!(
+                            max_sigma <= max,
+                            "validity violation at tet {tet_id}: max_principal_stretch \
+                             = {max_sigma:.3} exceeds bound {max:.3} (singular values \
+                             of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                             Decision Q fail-closed semantics.",
+                            s0 = sigma[0],
+                            s1 = sigma[1],
+                            s2 = sigma[2],
+                        );
+                    }
+                    if let Some(min) = min_p {
+                        let min_sigma = sigma.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+                        assert!(
+                            min_sigma >= min,
+                            "validity violation at tet {tet_id}: min_principal_stretch \
+                             = {min_sigma:.3} below bound {min:.3} (singular values \
+                             of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                             Decision Q fail-closed semantics.",
+                            s0 = sigma[0],
+                            s1 = sigma[1],
+                            s2 = sigma[2],
+                        );
+                    }
+                }
+            }
         }
     }
 
