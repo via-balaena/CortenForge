@@ -1,33 +1,39 @@
-//! Yeoh contract — math + calibration cross-checks.
+//! Yeoh contract — math cross-checks for the production
+//! [`sim_soft::Yeoh`] struct.
 //!
-//! Originally written as the pre-F1 "Spike 1" file (single-tet analytic
-//! validation, throwaway). Since lifted to call the production
-//! [`sim_soft::Yeoh`] struct after F1 landed; renames to
-//! `yeoh_contract.rs` in F3. The closed forms are documented in
-//! `material/yeoh.rs` and the Yeoh arc memo §"Math derivations":
+//! Closed forms documented in `material/yeoh.rs` and the Yeoh arc memo
+//! §"Math derivations":
 //!
 //! - `ψ = C₁(I₁ − 3) + C₂(I₁ − 3)² − μ ln J + (λ/2)(ln J)²`
 //! - `P = μ(F − F⁻ᵀ) + λ (ln J) F⁻ᵀ + 4 C₂ (I₁ − 3) F`
 //! - `C_ijkl = C_NH_ijkl + 4 C₂ (I₁ − 3) δ_ik δ_jl + 8 C₂ F_ij F_kl`
 //!
-//! Cross-checks:
+//! Cross-checks (Yeoh arc memo §"Validation cascade"):
 //!
 //! 1. **NH bit-exact at C₂=0** — every Yeoh output equals NH on a
 //!    battery of `F`. Validates the locked D2 contract; the production
-//!    impl uses the additive-decomposition + FMA pattern that Spike 1
-//!    surfaced as load-bearing for bit-exactness.
+//!    impl uses the additive-decomposition + FMA pattern (Spike 1
+//!    finding) load-bearing for bit-exactness.
 //! 2. **Hand-derived scalar uniaxial closed-form** — for `F = diag(s,1,1)`,
 //!    matrix-form `ψ`, `P_11`, `P_22` match the scalar closed-form
-//!    derived by hand-substituting the diagonal `F` into the matrix
-//!    formulas. Catches transcription bugs.
+//!    derived by hand-substituting the diagonal `F`. Catches
+//!    transcription bugs.
 //! 3. **FD ψ → P** — central FD of `energy` matches `first_piola` at
 //!    the nontrivial off-diagonal-rich `F` from `material_fd.rs`.
 //! 4. **FD P → tangent** — central FD of `first_piola` matches
 //!    `tangent` at the same point.
+//! 5. **Rest-config vanishing** — `ψ(I) = 0` and `P(I) = 0` for every
+//!    silicone anchor's Yeoh; textbook hyperelastic constraint.
 //!
-//! Calibration arithmetic for the F2 anchor table lives at
-//! `material/silicone_table.rs::tests::c2_calibration_reproduces_published_100_pct_modulus`
-//! — that's where the table data is and where typos would surface.
+//! Companion checks living elsewhere:
+//!
+//! - **Calibration arithmetic** — `M_100 = 3.5·C₁ + 14·C₂` per
+//!   anchor: `material/silicone_table.rs::tests::c2_calibration_reproduces_published_100_pct_modulus`.
+//! - **Validity bound population** — `to_yeoh()` round-trips
+//!   `(max, min) = (0.8·λ_break, 0.30)`:
+//!   `silicone_table.rs::tests::to_yeoh_round_trips_yeoh_fields_for_each_anchor`.
+//! - **Solver-side gate trip behavior** — driven via row-23 (F4)
+//!   integration scenarios; out of scope for this contract file.
 
 use approx::assert_relative_eq;
 use nalgebra::{Matrix3, Vector3};
@@ -232,6 +238,46 @@ fn yeoh_tangent_matches_central_fd_of_first_piola() {
                         epsilon = EPSILON
                     );
                 }
+            }
+        }
+    }
+}
+
+// ---- Suite (e): rest-config vanishing for each anchor -----------------
+
+/// At `F = I` every Yeoh output is identically zero (textbook
+/// constraint for any reasonable hyperelastic): I₁ = 3 so I₁ − 3 = 0,
+/// J = 1 so ln J = 0, and `(F − F⁻ᵀ) = 0`. Pinned for every silicone
+/// anchor's `to_yeoh()` so the rest-state ground truth stays bit-zero
+/// across the table.
+#[test]
+fn yeoh_psi_and_p_vanish_at_identity_per_anchor() {
+    use sim_soft::material::silicone_table::{
+        DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
+        ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
+    };
+    let anchors = [
+        ECOFLEX_00_10,
+        ECOFLEX_00_20,
+        ECOFLEX_00_30,
+        ECOFLEX_00_50,
+        DRAGON_SKIN_10A,
+        DRAGON_SKIN_15,
+        DRAGON_SKIN_20A,
+        DRAGON_SKIN_30A,
+    ];
+    let id = Matrix3::<f64>::identity();
+    for anchor in &anchors {
+        let yeoh = anchor.to_yeoh();
+        // ψ(I) = 0: every term collapses to zero in f64 (0·anything,
+        // 0·0, etc.) so bit-exact match against +0.0 is the right
+        // contract here, not a relative-tolerance check.
+        assert_eq!(yeoh.energy(&id).to_bits(), 0.0_f64.to_bits());
+        // P(I) = 0 matrix.
+        let p = yeoh.first_piola(&id);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(p[(i, j)].to_bits(), 0.0_f64.to_bits());
             }
         }
     }

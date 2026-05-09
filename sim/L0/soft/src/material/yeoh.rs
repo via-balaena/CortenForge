@@ -22,8 +22,7 @@
 //!    `lambda.mul_add(-ln_j, mu)`, not `mu - lambda*ln_j`. The latter
 //!    rounds the product before subtracting and drifts 1 ULP.
 //!
-//! Validation: `tests/yeoh_spike.rs` (throwaway; lifts to
-//! `tests/yeoh_contract.rs` in F3).
+//! Validation: `tests/yeoh_contract.rs`.
 //!
 //! Inversion handling matches `NeoHookean::RequireOrientation`: panic on
 //! non-positive `det F`, expected to be prevented upstream by the IPC
