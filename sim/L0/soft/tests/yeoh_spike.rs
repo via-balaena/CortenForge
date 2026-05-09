@@ -24,9 +24,10 @@
 //!    the nontrivial off-diagonal-rich `F` from `material_fd.rs`.
 //! 4. **FD P → tangent** — central FD of `first_piola` matches
 //!    `tangent` at the same point.
-//! 5. **Per-anchor calibration arithmetic** — `M_100 = 3.5·C₁ + 14·C₂`
-//!    holds for every anchor in the Yeoh arc memo's calibration table.
-//!    Catches typos in the F2 `silicone_table` when it lands.
+//!
+//! Calibration arithmetic for the F2 anchor table lives at
+//! `material/silicone_table.rs::tests::c2_calibration_reproduces_published_100_pct_modulus`
+//! — that's where the table data is and where typos would surface.
 
 use approx::assert_relative_eq;
 use nalgebra::{Matrix3, Vector3};
@@ -233,57 +234,5 @@ fn yeoh_tangent_matches_central_fd_of_first_piola() {
                 }
             }
         }
-    }
-}
-
-// ---- Suite (e): per-anchor calibration arithmetic ---------------------
-//
-// Validates that each anchor's `(μ, c2)` reproduces the published M_100
-// via the calibration formula M_100 = 3.5·C₁ + 14·C₂ (Yeoh arc memo
-// line 72, derived from incompressible-uniaxial Yeoh at λ=2). Catches
-// transcription typos in the F2 anchor table when it lands.
-//
-// Note: this is a calibration-arithmetic check, not a compressible-Yeoh-
-// struct-vs-published-modulus check. The arc memo's calibration assumes
-// incompressible-uniaxial kinematics F=diag(λ, 1/√λ, 1/√λ); compressible
-// Yeoh evaluated at the same F with λ_lame=4μ (ν=0.40) gives P_11 that
-// differs from the incompressible σ_eng by O(2-3 %) due to the
-// non-vanishing lateral stress. That compressibility error is the cost
-// of ν=0.40 vs the silicone's true ν≈0.495, accepted per the memo's
-// Fork-B "relative comparison, not absolute prediction" framing.
-
-#[test]
-fn yeoh_calibration_table_reproduces_published_100_pct_modulus() {
-    // Anchor calibration values from project_yeoh_hyperelastic_arc.md
-    // lines 76-85. (name, μ_Pa, c2_Pa, M_100_psi)
-    const ANCHORS: &[(&str, f64, f64, f64)] = &[
-        ("ECOFLEX_00_10", 18_000.0, 1_690.0, 8.0),
-        ("ECOFLEX_00_20", 18_000.0, 1_690.0, 8.0),
-        ("ECOFLEX_00_30", 23_000.0, 2_050.0, 10.0),
-        ("ECOFLEX_00_50", 28_000.0, 2_410.0, 12.0),
-        ("DRAGON_SKIN_10A", 51_000.0, 4_460.0, 22.0),
-        ("DRAGON_SKIN_15", 92_000.0, 8_200.0, 40.0),
-        ("DRAGON_SKIN_20A", 113_000.0, 10_000.0, 49.0),
-        ("DRAGON_SKIN_30A", 198_000.0, 17_600.0, 86.0),
-    ];
-
-    // psi → Pa (NIST: 1 psi = 6894.757293168361 Pa).
-    const PSI_TO_PA: f64 = 6_894.757_293_168_361;
-
-    // Tolerance covers c2 rounding to nearest 10 Pa in the memo's table.
-    // Worst case observed: DS_20A at rel_err ≈ 2.76e-4 (c2 calibrated
-    // value 10006.65 Pa, rounded to 10000).
-    const REL_TOL: f64 = 1e-3;
-
-    for (name, mu, c2, m100_psi) in ANCHORS {
-        let c1 = 0.5 * mu;
-        // M_100 = 3.5·C₁ + 14·C₂  (incompressible uniaxial Yeoh at λ=2).
-        let predicted_m100 = 3.5_f64.mul_add(c1, 14.0 * c2);
-        let published_m100 = m100_psi * PSI_TO_PA;
-        let rel_err = (predicted_m100 - published_m100).abs() / published_m100;
-        assert!(
-            rel_err < REL_TOL,
-            "{name}: predicted M_100={predicted_m100} Pa, published={published_m100} Pa, rel_err={rel_err}"
-        );
     }
 }

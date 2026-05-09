@@ -14,7 +14,7 @@ pub mod yeoh;
 
 pub use material_field::MaterialField;
 pub use neo_hookean::NeoHookean;
-pub use silicone_table::SiliconeMaterial;
+pub use silicone_table::{ConstructionSource, ShoreReading, SiliconeMaterial};
 pub use yeoh::Yeoh;
 
 /// Constitutive-model surface: energy density and its first two
