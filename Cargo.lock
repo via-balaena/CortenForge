@@ -8947,6 +8947,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spade-delaunay-spike"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "sim-soft",
+ "spade",
+]
+
+[[package]]
 name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
