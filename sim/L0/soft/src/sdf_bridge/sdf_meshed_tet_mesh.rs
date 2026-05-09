@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use nalgebra::Point3;
 
 use crate::Vec3;
-use crate::material::{MaterialField, NeoHookean};
+use crate::material::{BuildableFromField, MaterialField, NeoHookean, Yeoh};
 use crate::mesh::{
     Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, boundary_faces_from_topology,
     interface_flags_from_field, materials_from_field, quality,
@@ -61,13 +61,19 @@ use super::stuffing::{self, EdgeKey};
 /// Isosurface Stuffing case table; implements the [`Mesh`] trait so
 /// it plugs into [`crate::CpuTet4NHSolver`] alongside `SingleTetMesh`
 /// and `HandBuiltTetMesh`.
+///
+/// Generic over `M: BuildableFromField` so the same pipeline produces
+/// either NH or Yeoh per-tet caches. NH consumers omit the type
+/// parameter (defaults to [`NeoHookean`]); Yeoh consumers (row 23+)
+/// write `SdfMeshedTetMesh<Yeoh>` and use [`SdfMeshedTetMesh::from_sdf_yeoh`]
+/// per arc memo D10.
 #[derive(Clone, Debug)]
-pub struct SdfMeshedTetMesh {
+pub struct SdfMeshedTetMesh<M: BuildableFromField = NeoHookean> {
     vertices: Vec<Vec3>,
     tets: Vec<[VertexId; 4]>,
     adj: MeshAdjacency,
     q: QualityMetrics,
-    material_cache: Vec<NeoHookean>,
+    material_cache: Vec<M>,
     interface_flags: Vec<bool>,
     boundary_faces: Vec<[VertexId; 3]>,
 }
@@ -103,9 +109,118 @@ pub enum MeshingError {
     },
 }
 
-impl SdfMeshedTetMesh {
-    /// Build the mesh by running the BCC + Labelle-Shewchuk
+/// Internal generic builder shared by [`SdfMeshedTetMesh<NeoHookean>::from_sdf`]
+/// (NH) and [`SdfMeshedTetMesh<Yeoh>::from_sdf_yeoh`] (Yeoh). Per-`M`
+/// public entry points avoid the type-inference papercut that bare
+/// `from_sdf` would trigger when both NH and Yeoh impls coexist.
+fn build<M: BuildableFromField>(
+    sdf: &dyn Sdf,
+    hints: &MeshingHints,
+    material_field: &MaterialField,
+) -> Result<SdfMeshedTetMesh<M>, MeshingError> {
+    let lattice = BccLattice::new(hints);
+    let n_lattice = lattice.positions.len();
+
+    // Step 2 + 3: sample SDF in sequential VertexId order, detect
+    // non-finite, then negate per Decision A SDF sign convention
+    // adapter (sim-soft negative-inside → paper positive-inside).
+    // The sequential walk pins the failing-vertex diagnostic — the
+    // first non-finite value is the smallest `VertexId` that trips.
+    let mut sdf_values: Vec<f64> = Vec::with_capacity(n_lattice);
+    for (vid, position) in lattice.positions.iter().enumerate() {
+        let raw = sdf.eval(Point3::from(*position));
+        if !raw.is_finite() {
+            // BccLattice::new caps `n_lattice` at i32-safe range; the
+            // u32 cast is in range by construction.
+            #[allow(clippy::cast_possible_truncation)]
+            let vertex_id = vid as VertexId;
+            return Err(MeshingError::NonFiniteSdfValue {
+                vertex_id,
+                value: raw,
+            });
+        }
+        sdf_values.push(-raw);
+    }
+
+    // Step 4: warp displaces near-boundary lattice vertices in place.
+    // We work on a clone so the lattice itself stays anchored to its
+    // unwarped points (`BccLattice::position_of` etc. would otherwise
+    // diverge from `warped_positions`).
+    let mut warped_positions: Vec<Vec3> = lattice.positions.clone();
+    stuffing::warp_lattice(&lattice, &mut warped_positions, &mut sdf_values);
+
+    // Step 5: walk BCC tets and dispatch each through the stuffing
+    // case table. `output_positions` starts with the warped-lattice
+    // prefix copied in so lattice `VertexId`s in `tet_vids` index
+    // directly into it; cut points appended by `get_or_insert_cut`
+    // get fresh `VertexId`s starting at `output_positions.len()`.
+    let mut output_positions: Vec<Vec3> = warped_positions.clone();
+    let mut output_tets: Vec<[VertexId; 4]> = Vec::new();
+    let mut cut_cache: BTreeMap<EdgeKey, VertexId> = BTreeMap::new();
+
+    for &tet_vids in &lattice.tets {
+        stuffing::dispatch_case(
+            tet_vids,
+            &lattice,
+            &warped_positions,
+            &sdf_values,
+            &mut output_positions,
+            &mut output_tets,
+            &mut cut_cache,
+        );
+    }
+
+    // Step 6: empty-mesh detection (typically a bbox far from the
+    // SDF zero set; canonical sphere parameters never trip this).
+    if output_tets.is_empty() {
+        return Err(MeshingError::EmptyMesh);
+    }
+
+    // Step 7: per-tet QualityMetrics. Computed once at construction
+    // (Decision I) so III-1 can assert bit-equality across runs.
+    let q = quality::compute_metrics(&output_positions, &output_tets);
+
+    // Step 8: per-tet material cache. Centroid-sampled from
+    // `material_field` per Part 7 §02 §00 + scope memo Decision K.
+    // Walked in `tet_id` order via `materials_from_field`; orphan
+    // lattice vertices are unreferenced and contribute nothing.
+    let material_cache: Vec<M> =
+        materials_from_field(&output_positions, &output_tets, material_field);
+
+    // Step 9: per-tet interface-flag cache. `|φ(x_c)| < L_e`
+    // rule per Part 7 §02 §01 + scope memo Decision K (commit 12,
+    // IV-6); diagnostic-only — Newton hot path does not branch.
+    // All-`false` payload of length `n_tets` when
+    // `material_field` carries no interface SDF (uniform /
+    // `LayeredScalarField`-only fields go through this path).
+    let interface_flags =
+        interface_flags_from_field(&output_positions, &output_tets, material_field);
+
+    // Step 10: per-mesh boundary-face cache. Pure topology;
+    // outward winding inherits from the right-handed sub-tets the
+    // stuffing pipeline emits by construction (Decision H — no
+    // negative-volume tet survives the D-10 backstop).
+    let boundary_faces = boundary_faces_from_topology(&output_tets);
+
+    Ok(SdfMeshedTetMesh {
+        vertices: output_positions,
+        tets: output_tets,
+        adj: MeshAdjacency,
+        q,
+        material_cache,
+        interface_flags,
+        boundary_faces,
+    })
+}
+
+impl SdfMeshedTetMesh<NeoHookean> {
+    /// Build an NH mesh by running the BCC + Labelle-Shewchuk
     /// Isosurface Stuffing pipeline (see module doc).
+    ///
+    /// When `hints.material_field` is `None`, falls back to the IV-1
+    /// baseline (Ecoflex 00-30 compressible regime, μ=1e5 / λ=4e5)
+    /// via [`MaterialField::skeleton_default`] — a single named
+    /// constant so consumers grep cleanly.
     ///
     /// # Errors
     ///
@@ -122,114 +237,51 @@ impl SdfMeshedTetMesh {
     /// degenerate enough to yield zero cubes along some axis). These
     /// are caller-supplied invariants, not runtime errors; the
     /// canonical Phase 3 sphere parameters never trip them.
+    ///
+    /// Also panics if `hints.material_field` is a Yeoh-variant field —
+    /// call [`SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh`] instead.
     pub fn from_sdf(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
-        // Per scope memo §0 + §8 commit 9: hints carry the canonical
-        // `(SdfField, MaterialField)` pair (book Part 7 §00). When
-        // `hints.material_field` is `None`, fall back to the IV-1
-        // baseline (Ecoflex 00-30 compressible regime, μ=1e5 / λ=4e5)
-        // — a single named constant via `MaterialField::skeleton_default`
-        // so consumers grep cleanly. Building the fallback unconditionally
-        // is two `Box<ConstantField<f64>>` allocations (microseconds);
-        // `from_sdf` is a one-shot per scene construction.
         let fallback = MaterialField::skeleton_default();
         let material_field = hints.material_field.as_ref().unwrap_or(&fallback);
-
-        let lattice = BccLattice::new(hints);
-        let n_lattice = lattice.positions.len();
-
-        // Step 2 + 3: sample SDF in sequential VertexId order, detect
-        // non-finite, then negate per Decision A SDF sign convention
-        // adapter (sim-soft negative-inside → paper positive-inside).
-        // The sequential walk pins the failing-vertex diagnostic — the
-        // first non-finite value is the smallest `VertexId` that trips.
-        let mut sdf_values: Vec<f64> = Vec::with_capacity(n_lattice);
-        for (vid, position) in lattice.positions.iter().enumerate() {
-            let raw = sdf.eval(Point3::from(*position));
-            if !raw.is_finite() {
-                // BccLattice::new caps `n_lattice` at i32-safe range; the
-                // u32 cast is in range by construction.
-                #[allow(clippy::cast_possible_truncation)]
-                let vertex_id = vid as VertexId;
-                return Err(MeshingError::NonFiniteSdfValue {
-                    vertex_id,
-                    value: raw,
-                });
-            }
-            sdf_values.push(-raw);
-        }
-
-        // Step 4: warp displaces near-boundary lattice vertices in place.
-        // We work on a clone so the lattice itself stays anchored to its
-        // unwarped points (`BccLattice::position_of` etc. would otherwise
-        // diverge from `warped_positions`).
-        let mut warped_positions: Vec<Vec3> = lattice.positions.clone();
-        stuffing::warp_lattice(&lattice, &mut warped_positions, &mut sdf_values);
-
-        // Step 5: walk BCC tets and dispatch each through the stuffing
-        // case table. `output_positions` starts with the warped-lattice
-        // prefix copied in so lattice `VertexId`s in `tet_vids` index
-        // directly into it; cut points appended by `get_or_insert_cut`
-        // get fresh `VertexId`s starting at `output_positions.len()`.
-        let mut output_positions: Vec<Vec3> = warped_positions.clone();
-        let mut output_tets: Vec<[VertexId; 4]> = Vec::new();
-        let mut cut_cache: BTreeMap<EdgeKey, VertexId> = BTreeMap::new();
-
-        for &tet_vids in &lattice.tets {
-            stuffing::dispatch_case(
-                tet_vids,
-                &lattice,
-                &warped_positions,
-                &sdf_values,
-                &mut output_positions,
-                &mut output_tets,
-                &mut cut_cache,
-            );
-        }
-
-        // Step 6: empty-mesh detection (typically a bbox far from the
-        // SDF zero set; canonical sphere parameters never trip this).
-        if output_tets.is_empty() {
-            return Err(MeshingError::EmptyMesh);
-        }
-
-        // Step 7: per-tet QualityMetrics. Computed once at construction
-        // (Decision I) so III-1 can assert bit-equality across runs.
-        let q = quality::compute_metrics(&output_positions, &output_tets);
-
-        // Step 8: per-tet material cache. Centroid-sampled from
-        // `material_field` per Part 7 §02 §00 + scope memo Decision K.
-        // Walked in `tet_id` order via `materials_from_field`; orphan
-        // lattice vertices are unreferenced and contribute nothing.
-        let material_cache = materials_from_field(&output_positions, &output_tets, material_field);
-
-        // Step 9: per-tet interface-flag cache. `|φ(x_c)| < L_e`
-        // rule per Part 7 §02 §01 + scope memo Decision K (commit 12,
-        // IV-6); diagnostic-only — Newton hot path does not branch.
-        // All-`false` payload of length `n_tets` when
-        // `material_field` carries no interface SDF (uniform /
-        // `LayeredScalarField`-only fields go through this path).
-        let interface_flags =
-            interface_flags_from_field(&output_positions, &output_tets, material_field);
-
-        // Step 10: per-mesh boundary-face cache. Pure topology;
-        // outward winding inherits from the right-handed sub-tets the
-        // stuffing pipeline emits by construction (Decision H — no
-        // negative-volume tet survives the D-10 backstop).
-        let boundary_faces = boundary_faces_from_topology(&output_tets);
-
-        Ok(Self {
-            vertices: output_positions,
-            tets: output_tets,
-            adj: MeshAdjacency,
-            q,
-            material_cache,
-            interface_flags,
-            boundary_faces,
-        })
+        build(sdf, hints, material_field)
     }
 }
 
-impl Mesh for SdfMeshedTetMesh {
+impl SdfMeshedTetMesh<Yeoh> {
+    /// Build a Yeoh mesh by running the BCC + Labelle-Shewchuk
+    /// Isosurface Stuffing pipeline. Mirror of
+    /// [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`] for Yeoh consumers
+    /// (arc memo D10).
+    ///
+    /// `hints.material_field` MUST be `Some` and built via
+    /// [`MaterialField::from_yeoh_fields`] — there is no
+    /// "Yeoh skeleton default" since Yeoh requires per-row C₂
+    /// calibration that no synthesized fallback could honestly carry.
+    ///
+    /// # Errors
+    ///
+    /// Same set as [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`].
+    ///
+    /// # Panics
+    ///
+    /// - All the same `BccLattice::new` invariants.
+    /// - Panics if `hints.material_field` is `None` (the Yeoh path
+    ///   has no fallback).
+    /// - Panics if `hints.material_field` is `Some` but built via NH
+    ///   constructors — call
+    ///   [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`] instead.
+    #[allow(clippy::expect_used)]
+    pub fn from_sdf_yeoh(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
+        let material_field = hints.material_field.as_ref().expect(
+            "SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh requires hints.material_field to be Some \
+             — there is no Yeoh skeleton default. Pass MaterialField::from_yeoh_fields(...) \
+             via the hints",
+        );
+        build(sdf, hints, material_field)
+    }
+}
+
+impl<M: BuildableFromField> Mesh<M> for SdfMeshedTetMesh<M> {
     fn n_tets(&self) -> usize {
         self.tets.len()
     }
@@ -260,7 +312,7 @@ impl Mesh for SdfMeshedTetMesh {
         &self.q
     }
 
-    fn materials(&self) -> &[NeoHookean] {
+    fn materials(&self) -> &[M] {
         &self.material_cache
     }
 
@@ -282,7 +334,7 @@ impl Mesh for SdfMeshedTetMesh {
     // `usize`, `tet_vertices()` takes `TetId = u32`. Phase 3 meshes
     // stay well below `u32::MAX` tets.
     #[allow(clippy::cast_possible_truncation)]
-    fn equals_structurally(&self, other: &dyn Mesh) -> bool {
+    fn equals_structurally(&self, other: &dyn Mesh<M>) -> bool {
         if self.n_tets() != other.n_tets() {
             return false;
         }

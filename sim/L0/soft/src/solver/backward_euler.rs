@@ -34,7 +34,7 @@ use sim_ml_chassis::{Tensor, Var};
 
 use super::{CpuTape, NewtonStep, Solver};
 use crate::Vec3;
-use crate::contact::ContactModel;
+use crate::contact::{ActivePairsFor, ContactModel};
 use crate::differentiable::newton_vjp::NewtonStepVjp;
 use crate::element::Element;
 use crate::material::{InversionHandling, Material};
@@ -113,17 +113,28 @@ impl Default for SolverConfig {
 
 /// CPU backward-Euler Newton solver.
 ///
-/// Five generic parameters: element `E<N, G>`, mesh `Msh`, contact `C`,
-/// and const-generic `(N, G)` for element shape. The constitutive law
-/// is fixed at `NeoHookean` per Phase 4 scope memo Decision G
-/// (monomorphization); per-tet `NeoHookean` instances live on the mesh
-/// and are read at the assembly hot points via `self.mesh.materials()`.
-/// Monomorphized per skeleton type alias `SkeletonSolver`.
-pub struct CpuNewtonSolver<E, Msh, C, const N: usize, const G: usize>
-where
+/// Six generic parameters: element `E<N, G>`, mesh `Msh`, contact `C`,
+/// material `M`, and const-generic `(N, G)` for element shape.
+///
+/// `M` defaults to [`crate::material::NeoHookean`] for back-compat with Phase 4 scope
+/// memo Decision G's monomorphization. Yeoh consumers (row 23+) write
+/// `M = Yeoh` explicitly, typically via the [`crate::CpuTet4YeohSolver`]
+/// alias, and use a `Mesh<Yeoh>` impl such as
+/// `SdfMeshedTetMesh<Yeoh>` per arc memo D10. Per-tet `M`
+/// instances live on the mesh and are read at the assembly hot
+/// points via `self.mesh.materials()`.
+pub struct CpuNewtonSolver<
+    E,
+    Msh,
+    C,
+    M = crate::material::NeoHookean,
+    const N: usize = 4,
+    const G: usize = 1,
+> where
     E: Element<N, G>,
-    Msh: Mesh,
-    C: ContactModel,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
 {
     element: E,
     mesh: Msh,
@@ -170,17 +181,24 @@ where
     n_dof: usize,
     /// Free DOF count (`free_dof_indices.len()`), cached.
     n_free: usize,
+
+    /// Phantom — `M` only appears in the `Msh: Mesh<M>` and
+    /// `C: ContactModel + ActivePairsFor<M>` bounds, not in any
+    /// concrete field. The marker tells rustc the type parameter is
+    /// intentionally type-only.
+    _material: std::marker::PhantomData<M>,
 }
 
-impl<E, Msh, C, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, N, G>
+impl<E, Msh, C, M, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, M, N, G>
 where
     E: Element<N, G>,
-    Msh: Mesh,
-    C: ContactModel,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
 {
     /// Assemble a solver from its element, mesh, contact, integration
-    /// configuration, and boundary conditions. Per-tet `NeoHookean`
-    /// instances are read from `mesh.materials()` at assembly time.
+    /// configuration, and boundary conditions. Per-tet `M` instances
+    /// are read from `mesh.materials()` at assembly time.
     ///
     /// `Box<dyn Solver<Tape = CpuTape>>` is the intended public handle;
     /// direct access to the concrete type is only needed for
@@ -427,6 +445,7 @@ where
             symbolic,
             n_dof,
             n_free,
+            _material: std::marker::PhantomData,
         }
     }
 
@@ -497,30 +516,75 @@ where
                 );
             }
 
-            // Principal-stretch deviation: SVD `F = U Σ V^T` gives
+            // Principal-stretch bounds: SVD `F = U Σ V^T` gives
             // singular values `σ_i` which are the principal stretches.
-            // `max_i |σ_i - 1|` is the Part 2 §00 §02 stretch bound.
-            // `f.svd_unordered(false, false)` skips U/V computation
-            // (we only need singular values); cheap O(27) FLOPs per
-            // tet. Singular values are non-negative; a reflection-only
-            // F has σ_i ≥ 0 with `det F < 0`, already caught above.
+            // `f.svd_unordered(false, false)` skips U/V (we only need
+            // σ); cheap O(27) FLOPs per tet. Singular values are
+            // non-negative; a reflection-only F has σ_i ≥ 0 with
+            // `det F < 0`, already caught above.
+            //
+            // Two gate flavors (Yeoh arc memo D8): if either of the new
+            // asymmetric bounds is `Some`, gate per-bound; else fall
+            // back to the legacy NH symmetric `max_i |σ_i - 1|` bound.
+            //
+            // Edge case: `(Some, None)` or `(None, Some)` checks only
+            // the populated bound — the other direction is unchecked.
+            // No production constructor reaches that state today (every
+            // `SiliconeMaterial::to_yeoh` sets both via
+            // `with_principal_stretch_bounds`); future asymmetric-only
+            // callers opt into the unchecked direction by construction.
             let svd = f.svd_unordered(false, false);
             let sigma = svd.singular_values;
-            let max_dev = sigma
-                .iter()
-                .map(|s| (s - 1.0).abs())
-                .fold(0.0_f64, f64::max);
-            let bound = validity.max_stretch_deviation;
-            assert!(
-                max_dev <= bound,
-                "validity violation at tet {tet_id}: max_stretch_deviation \
-                 = {max_dev:.3} exceeds bound {bound:.3} (singular values \
-                 of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
-                 Decision Q fail-closed semantics.",
-                s0 = sigma[0],
-                s1 = sigma[1],
-                s2 = sigma[2],
-            );
+            match (
+                validity.max_principal_stretch,
+                validity.min_principal_stretch,
+            ) {
+                (None, None) => {
+                    let max_dev = sigma
+                        .iter()
+                        .map(|s| (s - 1.0).abs())
+                        .fold(0.0_f64, f64::max);
+                    let bound = validity.max_stretch_deviation;
+                    assert!(
+                        max_dev <= bound,
+                        "validity violation at tet {tet_id}: max_stretch_deviation \
+                         = {max_dev:.3} exceeds bound {bound:.3} (singular values \
+                         of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                         Decision Q fail-closed semantics.",
+                        s0 = sigma[0],
+                        s1 = sigma[1],
+                        s2 = sigma[2],
+                    );
+                }
+                (max_p, min_p) => {
+                    if let Some(max) = max_p {
+                        let max_sigma = sigma.iter().fold(0.0_f64, |a, &b| a.max(b));
+                        assert!(
+                            max_sigma <= max,
+                            "validity violation at tet {tet_id}: max_principal_stretch \
+                             = {max_sigma:.3} exceeds bound {max:.3} (singular values \
+                             of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                             Decision Q fail-closed semantics.",
+                            s0 = sigma[0],
+                            s1 = sigma[1],
+                            s2 = sigma[2],
+                        );
+                    }
+                    if let Some(min) = min_p {
+                        let min_sigma = sigma.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+                        assert!(
+                            min_sigma >= min,
+                            "validity violation at tet {tet_id}: min_principal_stretch \
+                             = {min_sigma:.3} below bound {min:.3} (singular values \
+                             of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                             Decision Q fail-closed semantics.",
+                            s0 = sigma[0],
+                            s1 = sigma[1],
+                            s2 = sigma[2],
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -870,11 +934,11 @@ where
     ///
     /// `f_int` is zeroed inside; caller need not pre-clear. Reads
     /// `x_curr` (length `n_dof`), cached `element_geometries`, the
-    /// per-tet `NeoHookean` from `self.mesh.materials()` (Phase 4
-    /// commit 5 — Newton hot path reads from the per-tet material
-    /// cache per Part 7 §02 §00), and `self.contact` for active-pair
-    /// gradient contributions (Phase 5 commit 5; scope memo
-    /// Decision H — per-iter active-pair recompute).
+    /// per-tet `M` from `self.mesh.materials()` (Phase 4 commit 5 —
+    /// Newton hot path reads from the per-tet material cache per
+    /// Part 7 §02 §00), and `self.contact` for active-pair gradient
+    /// contributions (Phase 5 commit 5; scope memo Decision H —
+    /// per-iter active-pair recompute).
     //
     // Lint allows: see assemble_free_hessian_triplets justification.
     #[allow(clippy::cast_possible_truncation, clippy::needless_range_loop)]
@@ -1041,11 +1105,12 @@ where
     }
 }
 
-impl<E, Msh, C, const N: usize, const G: usize> Solver for CpuNewtonSolver<E, Msh, C, N, G>
+impl<E, Msh, C, M, const N: usize, const G: usize> Solver for CpuNewtonSolver<E, Msh, C, M, N, G>
 where
     E: Element<N, G>,
-    Msh: Mesh,
-    C: ContactModel,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
 {
     type Tape = CpuTape;
 

@@ -2,9 +2,12 @@
 //!
 //! One runtime dispatch per `step` via `Box<dyn Solver<Tape = CpuTape>>`.
 //! Per-Newton-iteration work monomorphizes behind the concrete solver
-//! (skeleton: `CpuNewtonSolver<Tet4, SingleTetMesh, NullContact, 4, 1>`,
-//! constitutive law fixed at `NeoHookean` per Phase 4 Decision G).
-//! Part 11 Ch 01 01-composition §Solver commits to this split.
+//! (skeleton: `CpuNewtonSolver<Tet4, SingleTetMesh, NullContact,
+//! NeoHookean, 4, 1>`). Phase 4 Decision G's NH-only monomorphization
+//! was widened by the Yeoh arc's F4.0 commit to a generic `M:
+//! Material` parameter (default [`crate::material::NeoHookean`]); see
+//! [`crate::CpuNewtonSolver`] for the bound details. Part 11 Ch 01
+//! 01-composition §Solver commits to the dyn-vs-monomorphized split.
 //!
 //! The associated `Tape` type pins CPU / GPU VJPs to their own tape
 //! representation. Skeleton is CPU-only (`CpuTape`).

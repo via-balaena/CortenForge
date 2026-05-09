@@ -119,7 +119,7 @@ impl PenaltyRigidContact {
     /// outward primitive normal, and the penalty force on the soft side
     /// at the readout-time `positions`.
     ///
-    /// Mirrors [`active_pairs`](Self::active_pairs)'s walk order
+    /// Mirrors [`active_pairs`](super::ActivePairsFor::active_pairs)'s walk order
     /// (vertices outer × primitives inner) and band gate (`sd < d̂`),
     /// so the returned vec is the same length as `active_pairs(...)`
     /// at the same `positions` and the readouts appear in the same
@@ -137,9 +137,9 @@ impl PenaltyRigidContact {
     // fit in `u32` for any Phase 5 scene.
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
-    pub fn per_pair_readout(
+    pub fn per_pair_readout<M: crate::material::Material>(
         &self,
-        _mesh: &dyn Mesh,
+        _mesh: &dyn Mesh<M>,
         positions: &[Vec3],
     ) -> Vec<ContactPairReadout> {
         let mut readouts = Vec::new();
@@ -199,34 +199,6 @@ pub fn filter_pair_readouts_to_referenced(
 }
 
 impl ContactModel for PenaltyRigidContact {
-    /// Walks soft vertices outer (`0..positions.len()`) × rigid
-    /// primitives inner (`0..self.primitives.len()`); emits a
-    /// [`ContactPair::Vertex`] for every `(v, p)` whose signed
-    /// distance is below the band `d̂`. Order is deterministic — no
-    /// sort, no `HashMap`, no rayon.
-    // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
-    // in practice bounded by mesh / primitive counts that fit
-    // comfortably in `u32`. The `as` cast matches the convention used
-    // in `mesh/hand_built.rs` for `VertexId` packing. A theoretical
-    // overflow on a 64-bit pointer would surface as wrapped indices;
-    // not load-bearing for Phase 5 mesh sizes.
-    #[allow(clippy::cast_possible_truncation)]
-    fn active_pairs(&self, _mesh: &dyn Mesh, positions: &[Vec3]) -> Vec<ContactPair> {
-        let mut pairs = Vec::new();
-        for (vid, &p) in positions.iter().enumerate() {
-            let p_pt = Point3::from(p);
-            for (pid, prim) in self.primitives.iter().enumerate() {
-                if prim.eval(p_pt) < self.d_hat {
-                    pairs.push(ContactPair::Vertex {
-                        vertex_id: vid as VertexId,
-                        primitive_id: pid as u32,
-                    });
-                }
-            }
-        }
-        pairs
-    }
-
     fn energy(&self, pair: &ContactPair, positions: &[Vec3]) -> f64 {
         let &ContactPair::Vertex {
             vertex_id,
@@ -282,5 +254,35 @@ impl ContactModel for PenaltyRigidContact {
 
     fn ccd_toi(&self, _pair: &ContactPair, _x0: &[Vec3], _x1: &[Vec3]) -> f64 {
         f64::INFINITY
+    }
+}
+
+impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidContact {
+    /// Walks soft vertices outer (`0..positions.len()`) × rigid
+    /// primitives inner (`0..self.primitives.len()`); emits a
+    /// [`ContactPair::Vertex`] for every `(v, p)` whose signed
+    /// distance is below the band `d̂`. Order is deterministic — no
+    /// sort, no `HashMap`, no rayon.
+    // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
+    // in practice bounded by mesh / primitive counts that fit
+    // comfortably in `u32`. The `as` cast matches the convention used
+    // in `mesh/hand_built.rs` for `VertexId` packing. A theoretical
+    // overflow on a 64-bit pointer would surface as wrapped indices;
+    // not load-bearing for Phase 5 mesh sizes.
+    #[allow(clippy::cast_possible_truncation)]
+    fn active_pairs(&self, _mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
+        let mut pairs = Vec::new();
+        for (vid, &p) in positions.iter().enumerate() {
+            let p_pt = Point3::from(p);
+            for (pid, prim) in self.primitives.iter().enumerate() {
+                if prim.eval(p_pt) < self.d_hat {
+                    pairs.push(ContactPair::Vertex {
+                        vertex_id: vid as VertexId,
+                        primitive_id: pid as u32,
+                    });
+                }
+            }
+        }
+        pairs
     }
 }

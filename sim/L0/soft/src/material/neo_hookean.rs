@@ -36,6 +36,18 @@ impl NeoHookean {
         Self { mu, lambda }
     }
 
+    /// First Lamé parameter `μ` in pascals.
+    #[must_use]
+    pub const fn mu(&self) -> f64 {
+        self.mu
+    }
+
+    /// Second Lamé parameter `λ` in pascals.
+    #[must_use]
+    pub const fn lambda(&self) -> f64 {
+        self.lambda
+    }
+
     /// Construct from Young's modulus and Poisson ratio `(E, ν)` via the
     /// isotropic-elasticity conversion `μ = E / 2(1+ν)`,
     /// `λ = Eν / [(1+ν)(1−2ν)]`.
@@ -83,6 +95,8 @@ impl Material for NeoHookean {
     fn validity(&self) -> ValidityDomain {
         ValidityDomain {
             max_stretch_deviation: 1.0,
+            max_principal_stretch: None,
+            min_principal_stretch: None,
             max_rotation: f64::INFINITY,
             poisson_range: (-1.0, 0.45),
             temperature_range: None,

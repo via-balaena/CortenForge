@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use nalgebra::Point3;
 
 use crate::Vec3;
-use crate::material::{MaterialField, NeoHookean};
+use crate::material::{BuildableFromField, Material, MaterialField, NeoHookean};
 
 pub mod hand_built;
 pub mod quality;
@@ -60,7 +60,12 @@ pub struct QualityMetrics {
 
 /// Tet-mesh storage surface — read-only view of topology, positions,
 /// and precomputed adjacency / quality.
-pub trait Mesh: Send + Sync {
+///
+/// Generic over the per-tet material type `M`. NH consumers omit the
+/// type parameter (defaults to [`NeoHookean`]); Yeoh consumers (row
+/// 23+) write `Mesh<Yeoh>` explicitly. Per arc memo D10 — row picks
+/// one material model, no in-row mixing.
+pub trait Mesh<M: Material = NeoHookean>: Send + Sync {
     /// Number of tetrahedra in the mesh.
     fn n_tets(&self) -> usize;
 
@@ -87,7 +92,7 @@ pub trait Mesh: Send + Sync {
     /// §02 §00 — sub-leaf
     /// `70-sdf-pipeline/02-material-assignment/00-sampling.md`). Read by
     /// the Newton hot path; not re-sampled per iteration.
-    fn materials(&self) -> &[NeoHookean];
+    fn materials(&self) -> &[M];
 
     /// Per-tet interface flags, indexed by [`TetId`]. Length equals
     /// [`Mesh::n_tets`].
@@ -136,32 +141,35 @@ pub trait Mesh: Send + Sync {
     /// Structural equality: two meshes are structurally equal when they
     /// share vertex count, tet count, and per-tet vertex indices (Ch 00
     /// §02 mesh claim 3).
-    fn equals_structurally(&self, other: &dyn Mesh) -> bool;
+    ///
+    /// Restricted to same-`M` comparisons (mixing NH and Yeoh meshes
+    /// is rejected by D10's "no in-row mixing" rule). Trait method
+    /// signatures can't carry an extra generic over a different `M`
+    /// while staying object-safe; if a future use case needs
+    /// cross-`M` topology comparison, lift the topology methods into
+    /// a separate `MeshTopology` supertrait then.
+    fn equals_structurally(&self, other: &dyn Mesh<M>) -> bool;
 }
 
 /// Sample a [`MaterialField`] at each tet's centroid, returning the
-/// per-tet [`NeoHookean`] cache that backs [`Mesh::materials`].
+/// per-tet `Vec<M>` cache that backs [`Mesh::materials`].
 ///
 /// Pins the Tet4 evaluation point to the centroid `(v0 + v1 + v2 + v3) /
 /// 4` per Part 7 §02 §00 — Phase H Tet10 will sample at four Gauss
 /// points instead and bypass this helper. Walked in `tet_id` order
 /// (single-threaded) for I-5 determinism carry-forward.
+///
+/// Generic over `M: BuildableFromField` so mesh constructors can build
+/// either NH or Yeoh caches by parameterizing on the mesh's material
+/// type. The dispatch goes through [`BuildableFromField::cache_from_field`],
+/// which panics if the field's variant doesn't match `M`.
 #[must_use]
-pub(crate) fn materials_from_field(
+pub(crate) fn materials_from_field<M: BuildableFromField>(
     positions: &[Vec3],
     tets: &[[VertexId; 4]],
     field: &MaterialField,
-) -> Vec<NeoHookean> {
-    tets.iter()
-        .map(|&tv| {
-            let v0 = positions[tv[0] as usize];
-            let v1 = positions[tv[1] as usize];
-            let v2 = positions[tv[2] as usize];
-            let v3 = positions[tv[3] as usize];
-            let centroid = (v0 + v1 + v2 + v3) * 0.25;
-            field.sample(centroid)
-        })
-        .collect()
+) -> Vec<M> {
+    M::cache_from_field(positions, tets, field)
 }
 
 /// Compute the per-tet interface-flag cache that backs
@@ -291,7 +299,7 @@ pub(crate) fn boundary_faces_from_topology(tets: &[[VertexId; 4]]) -> Vec<[Verte
 // well below `u32::MAX`.
 #[allow(clippy::cast_possible_truncation)]
 #[must_use]
-pub fn referenced_vertices(mesh: &dyn Mesh) -> Vec<VertexId> {
+pub fn referenced_vertices<M: Material>(mesh: &dyn Mesh<M>) -> Vec<VertexId> {
     let mut set: BTreeSet<VertexId> = BTreeSet::new();
     for tet_id in 0..mesh.n_tets() as TetId {
         for v in mesh.tet_vertices(tet_id) {

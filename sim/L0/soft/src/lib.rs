@@ -1,15 +1,22 @@
 //! `sim-soft` — soft-body FEM crate.
 //!
-//! Scope as of Phase 4: backward-Euler hyperelastic FEM on linear-
-//! tetrahedral (`Tet4`) meshes with per-element [`NeoHookean`] materials
-//! sourced from a per-mesh [`MaterialField`] aggregator (Phase 4) —
-//! multi-element assembly (Phase 2), pure-Rust SDF→tet bridge via
-//! BCC plus Labelle-Shewchuk Isosurface Stuffing (Phase 3), bonded
-//! multi-material via spatial field aggregation (Phase 4). Architecture
-//! follows the seven γ-locked API names from
+//! Scope as of Phase 4 + Yeoh arc: backward-Euler hyperelastic FEM on
+//! linear-tetrahedral (`Tet4`) meshes with per-element materials
+//! sourced from a per-mesh [`MaterialField`] aggregator. Two material
+//! impls today — [`NeoHookean`] (Phase 4 scaffold) and [`Yeoh`] (Yeoh
+//! arc, F1+F2+F3+F4.0). Multi-element assembly (Phase 2), pure-Rust
+//! SDF→tet bridge via BCC plus Labelle-Shewchuk Isosurface Stuffing
+//! (Phase 3), bonded multi-material via spatial field aggregation
+//! (Phase 4). Architecture follows the seven γ-locked API names from
 //! [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md);
 //! `MaterialField` is internal-API-shaped per Phase 4 scope memo
 //! Decision M.
+//!
+//! Mesh + solver are generic over `M: Material` (default
+//! [`NeoHookean`]); existing NH consumers compile unchanged via
+//! default-type-param elision, Yeoh consumers write `M = Yeoh`
+//! explicitly via the [`CpuTet4YeohSolver`] /
+//! [`PenaltyRigidContactYeohSolver`] aliases.
 //!
 //! Forward roadmap: Phase 5 penalty contact, Phase E GPU port; Phase H
 //! decorators (HGO anisotropy, viscoelasticity, thermal coupling), Tet10,
@@ -46,14 +53,16 @@ pub mod solver;
 
 pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{
-    ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout, NullContact,
-    PenaltyRigidContact, RigidPlane, filter_pair_readouts_to_referenced,
+    ActivePairsFor, ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout,
+    NullContact, PenaltyRigidContact, RigidPlane, filter_pair_readouts_to_referenced,
 };
 pub use differentiable::{CpuDifferentiable, Differentiable, NewtonStepVjp, TapeNodeKey};
 pub use element::{Element, Tet4};
 pub use field::{BlendedScalarField, ConstantField, Field, LayeredScalarField};
 pub use material::{
-    InversionHandling, Material, MaterialField, NeoHookean, SiliconeMaterial, ValidityDomain,
+    ConstructionSource, InversionHandling, Material, MaterialField, MaterialFieldKind,
+    MeasuredMaterialError, NeoHookean, ShoreInterpolationError, ShoreReading, SiliconeMaterial,
+    ValidityDomain, Yeoh,
 };
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
@@ -76,20 +85,27 @@ pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 /// nalgebra's dense small-matrix operations.
 pub type Vec3 = nalgebra::Vector3<f64>;
 
-/// CPU backward-Euler Newton solver pinned to `Tet4` + `NullContact`,
-/// generic over the mesh impl.
+/// CPU backward-Euler Newton solver pinned to `Tet4` + `NullContact`
+/// + `NeoHookean`, generic over the mesh impl.
 ///
-/// The constitutive law is fixed at `NeoHookean` per Phase 4 scope memo
-/// Decision G — per-tet instances live on the mesh and are read at the
-/// assembly hot points via `mesh.materials()` rather than a solver-level
-/// `material` field.
+/// The constitutive law is fixed at [`NeoHookean`] for this alias —
+/// per-tet instances live on the mesh and are read at the assembly
+/// hot points via `mesh.materials()`. The underlying
+/// [`solver::CpuNewtonSolver`] is generic over `M: Material` (default
+/// NH); the [`CpuTet4YeohSolver`] alias picks the Yeoh slot.
 ///
 /// Phase 2's canonical solver type for any hand-built tet scene;
 /// specialize via the `Msh` parameter (e.g.,
 /// `CpuTet4NHSolver<HandBuiltTetMesh>` for the multi-tet gate scenes,
 /// `CpuTet4NHSolver<SingleTetMesh>` for the 1-tet skeleton).
 pub type CpuTet4NHSolver<Msh> =
-    solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, 4, 1>;
+    solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, material::NeoHookean, 4, 1>;
+
+/// Yeoh-flavored sibling of [`CpuTet4NHSolver`]. Specialize via the
+/// `Msh` parameter (typically `SdfMeshedTetMesh<Yeoh>` per arc
+/// memo D10).
+pub type CpuTet4YeohSolver<Msh> =
+    solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, material::Yeoh, 4, 1>;
 
 /// Walking-skeleton solver alias — `CpuTet4NHSolver` over `SingleTetMesh`.
 ///
@@ -118,5 +134,16 @@ pub type SkeletonSolver = CpuTet4NHSolver<mesh::SingleTetMesh>;
 /// `PenaltyRigidContactSolver<HandBuiltTetMesh>` for the
 /// compressive-block scene, `PenaltyRigidContactSolver<SdfMeshedTetMesh>`
 /// for sphere-on-plane / drop-and-rest scenes.
-pub type PenaltyRigidContactSolver<Msh> =
-    solver::CpuNewtonSolver<element::Tet4, Msh, contact::PenaltyRigidContact, 4, 1>;
+pub type PenaltyRigidContactSolver<Msh> = solver::CpuNewtonSolver<
+    element::Tet4,
+    Msh,
+    contact::PenaltyRigidContact,
+    material::NeoHookean,
+    4,
+    1,
+>;
+
+/// Yeoh-flavored sibling of [`PenaltyRigidContactSolver`]. Row 23 (the
+/// load-bearing F4 consumer of the Yeoh arc) builds against this alias.
+pub type PenaltyRigidContactYeohSolver<Msh> =
+    solver::CpuNewtonSolver<element::Tet4, Msh, contact::PenaltyRigidContact, material::Yeoh, 4, 1>;
