@@ -41,9 +41,10 @@
 //!
 //! [s]: ../../../../docs/studies/soft_body_architecture/src/20-materials/09-spatial-fields/00-sdf-valued.md
 
-use super::{NeoHookean, Yeoh};
+use super::{Material, NeoHookean, Yeoh};
 use crate::Vec3;
 use crate::field::{ConstantField, Field};
+use crate::mesh::VertexId;
 use crate::sdf_bridge::Sdf;
 
 /// Aggregator over the scalar Lamé / Yeoh fields backing a per-element
@@ -257,5 +258,65 @@ impl MaterialField {
                 )
             }
         }
+    }
+}
+
+/// Material types that mesh constructors can populate from a
+/// [`MaterialField`].
+///
+/// Sealed at this layer because [`Material`] alone doesn't know how
+/// to read the field's enum-tagged storage — that dispatch lives
+/// here. Implemented for [`NeoHookean`] (reads NH variant via
+/// [`MaterialField::sample`]) and [`Yeoh`] (reads Yeoh variant via
+/// [`MaterialField::sample_yeoh`]). A future material model would add
+/// a third impl + matching `MaterialFieldInner` variant + matching
+/// `MaterialField::sample_*` accessor.
+pub trait BuildableFromField: Material + Sized + 'static {
+    /// Walk every tet, sample the field at each tet's centroid, and
+    /// collect a `Vec<Self>` matching `tets.len()`. The Tet4 default
+    /// per Part 7 §02 §00 — Phase H Tet10 will sample at four Gauss
+    /// points instead and bypass this helper.
+    fn cache_from_field(
+        positions: &[Vec3],
+        tets: &[[VertexId; 4]],
+        field: &MaterialField,
+    ) -> Vec<Self>;
+}
+
+impl BuildableFromField for NeoHookean {
+    fn cache_from_field(
+        positions: &[Vec3],
+        tets: &[[VertexId; 4]],
+        field: &MaterialField,
+    ) -> Vec<Self> {
+        tets.iter()
+            .map(|&tv| {
+                let v0 = positions[tv[0] as usize];
+                let v1 = positions[tv[1] as usize];
+                let v2 = positions[tv[2] as usize];
+                let v3 = positions[tv[3] as usize];
+                let centroid = (v0 + v1 + v2 + v3) * 0.25;
+                field.sample(centroid)
+            })
+            .collect()
+    }
+}
+
+impl BuildableFromField for Yeoh {
+    fn cache_from_field(
+        positions: &[Vec3],
+        tets: &[[VertexId; 4]],
+        field: &MaterialField,
+    ) -> Vec<Self> {
+        tets.iter()
+            .map(|&tv| {
+                let v0 = positions[tv[0] as usize];
+                let v1 = positions[tv[1] as usize];
+                let v2 = positions[tv[2] as usize];
+                let v3 = positions[tv[3] as usize];
+                let centroid = (v0 + v1 + v2 + v3) * 0.25;
+                field.sample_yeoh(centroid)
+            })
+            .collect()
     }
 }
