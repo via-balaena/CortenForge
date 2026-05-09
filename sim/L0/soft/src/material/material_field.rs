@@ -1,33 +1,38 @@
 //! `MaterialField` — per-parameter typed-field aggregator backing
-//! [`NeoHookean`].
+//! [`NeoHookean`] or [`Yeoh`].
 //!
 //! Per Part 2 §09 §00 [`00-sdf-valued.md`][s] "`MaterialField` aggregates
-//! per-parameter typed fields" + "Trait-surface contract": holds one
-//! `Box<dyn Field<f64>>` per scalar Lamé parameter slot (`μ` and `λ`
-//! for Phase 4's [`NeoHookean`]-only specialization per scope memo
-//! Decision G); `sample(x_ref)` produces a per-element `NeoHookean`
-//! instance with scalar parameters. Field-to-scalar conversion happens
-//! at element construction (and warm-restart from re-mesh); the Newton
-//! hot path sees per-element scalar materials, never this aggregator.
+//! per-parameter typed fields" + "Trait-surface contract". Originally
+//! Phase 4-monomorphic to [`NeoHookean`]; the F4.0a Yeoh-arc commit
+//! widens the same-type aggregator to also build [`Yeoh`] from a
+//! `(μ, C₂, λ)` triplet of fields per arc memo D10 ("`MaterialField` gets
+//! parallel constructors; row picks one material model"). Internal
+//! enum-tagged storage; no per-tet `Box<dyn Material>` dispatch.
 //!
-//! Phase 4 monomorphizes against [`NeoHookean`] directly rather than
-//! generic `M: Material` — decorator composition (HGO, Mooney-Rivlin,
-//! viscoelastic) is Phase H per Decision G, and the trait surface
-//! preserves the drop-in path. The constant-everywhere case is
-//! [`MaterialField::uniform`], which slots two
-//! [`ConstantField<f64>`](crate::field::ConstantField) handles; the
-//! graded case uses [`MaterialField::from_fields`] with any
-//! [`Field<f64>`](crate::field::Field) impl
-//! ([`LayeredScalarField`](crate::field::LayeredScalarField),
-//! [`BlendedScalarField`](crate::field::BlendedScalarField), or a
-//! Phase-H `T = f64` impl).
+//! Two construction families:
 //!
-//! Determinism: stateless beyond the two boxed handles; `sample` is a
-//! pure function of `x_ref` whenever both slot impls are deterministic
+//! - **NH constructors** ([`MaterialField::uniform`],
+//!   [`MaterialField::skeleton_default`], [`MaterialField::from_fields`])
+//!   produce the legacy NH variant. Existing call sites compile
+//!   unchanged.
+//! - **Yeoh constructor** ([`MaterialField::from_yeoh_fields`])
+//!   produces the Yeoh variant; row 23+ Yeoh consumers use this.
+//!
+//! Sampling is variant-typed: [`MaterialField::sample`] returns
+//! [`NeoHookean`] (panics on Yeoh variant);
+//! [`MaterialField::sample_yeoh`] returns [`Yeoh`] (panics on NH
+//! variant). Mesh constructors pick the right one based on the
+//! parameterized material type per F4.0b.
+//!
+//! Field-to-scalar conversion happens at element construction (and
+//! warm-restart from re-mesh); the Newton hot path sees per-element
+//! scalar materials, never this aggregator.
+//!
+//! Determinism: stateless beyond the boxed handles; sampling is a pure
+//! function of `x_ref` whenever the slot impls are deterministic
 //! (Phase 2 invariant I-5 carry-forward per scope memo Decision N).
-//! `Send + Sync` follows automatically: `Box<dyn Field<f64>>` is
-//! `Send + Sync` via the [`Field`] supertrait
-//! bound (commit 1).
+//! `Send + Sync` follows from the [`Field`] supertrait bound on every
+//! `Box<dyn Field<f64>>` slot.
 //!
 //! Validity-domain checks belong at solver step start (commit 12,
 //! IV-7) per scope memo Decision Q, not at field-sample time;
@@ -36,28 +41,21 @@
 //!
 //! [s]: ../../../../docs/studies/soft_body_architecture/src/20-materials/09-spatial-fields/00-sdf-valued.md
 
-use super::NeoHookean;
+use super::{NeoHookean, Yeoh};
 use crate::Vec3;
 use crate::field::{ConstantField, Field};
 use crate::sdf_bridge::Sdf;
 
-/// Aggregator over the two scalar Lamé fields backing a per-element
-/// [`NeoHookean`].
+/// Aggregator over the scalar Lamé / Yeoh fields backing a per-element
+/// [`NeoHookean`] or [`Yeoh`] material.
 ///
-/// Each [`MaterialField::sample`] evaluates `mu` and `lambda` at the
-/// reference-space probe and returns a fresh [`NeoHookean`] via
-/// `NeoHookean::from_lame(mu, lambda)`.
+/// Internal enum-tagged storage; the variant is fixed at construction
+/// time:
 ///
-/// Construction:
-///
-/// - [`MaterialField::uniform`] for the degenerate case (both slots
-///   become `ConstantField<f64>`); pre-Phase-4 invariant tests run
-///   through this path bit-equal per scope memo Decision P / IV-1
-///   regression net.
-/// - [`MaterialField::from_fields`] for graded cases (any
-///   `Field<f64>` impl in either or both slots —
-///   `LayeredScalarField`, `BlendedScalarField`, or a future Phase-H
-///   impl).
+/// - NH variant (μ, λ slots) via [`MaterialField::uniform`],
+///   [`MaterialField::skeleton_default`], [`MaterialField::from_fields`].
+/// - Yeoh variant (μ, C₂, λ slots) via
+///   [`MaterialField::from_yeoh_fields`].
 ///
 /// **Interface SDF (commit 12, IV-6 per Part 7 §02 §01).** Optional
 /// slot carrying the SDF whose zero set drives the material blend
@@ -67,29 +65,50 @@ use crate::sdf_bridge::Sdf;
 /// [`MaterialField::with_interface_sdf`], mesh constructors flag tets
 /// whose centroid lands within one mean-edge-length of the SDF zero
 /// per the book's `|φ(x_c)| < L_e` rule, exposed via
-/// [`crate::Mesh::interface_flags`]. When not set, every mesh tet
-/// flag is `false` — uniform fields and `LayeredScalarField`-only
-/// fields go through this path. Diagnostic-only per scope memo
-/// Decision K: the Newton hot path never reads the flag.
+/// [`crate::Mesh::interface_flags`]. Common to both variants.
 pub struct MaterialField {
-    mu: Box<dyn Field<f64>>,
-    lambda: Box<dyn Field<f64>>,
+    inner: MaterialFieldInner,
     interface_sdf: Option<Box<dyn Sdf>>,
 }
 
+/// Variant-tagged backing storage. Pub-crate so mesh constructors can
+/// dispatch on the variant; not a stable public API surface.
+pub(crate) enum MaterialFieldInner {
+    NeoHookean {
+        mu: Box<dyn Field<f64>>,
+        lambda: Box<dyn Field<f64>>,
+    },
+    Yeoh {
+        mu: Box<dyn Field<f64>>,
+        c2: Box<dyn Field<f64>>,
+        lambda: Box<dyn Field<f64>>,
+    },
+}
+
+/// Coarse identifier for which material model a [`MaterialField`]
+/// builds. Used by mesh constructors to verify the field's variant
+/// matches the mesh's parameterized material type at build time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MaterialFieldKind {
+    /// NH — `(μ, λ)` slots; sampled into [`NeoHookean`].
+    NeoHookean,
+    /// Yeoh — `(μ, C₂, λ)` slots; sampled into [`Yeoh`].
+    Yeoh,
+}
+
 impl MaterialField {
-    /// Construct a uniform-everywhere material from two scalar Lamé
+    /// Construct a uniform-everywhere NH material from two scalar Lamé
     /// parameters. Both slots become
     /// [`ConstantField<f64>`](crate::field::ConstantField); every
     /// `sample(x_ref)` returns [`NeoHookean`] built via
     /// `NeoHookean::from_lame(mu, lambda)`.
     #[must_use]
     pub fn uniform(mu: f64, lambda: f64) -> Self {
-        Self {
-            mu: Box::new(ConstantField::new(mu)),
-            lambda: Box::new(ConstantField::new(lambda)),
-            interface_sdf: None,
-        }
+        Self::from_fields(
+            Box::new(ConstantField::new(mu)),
+            Box::new(ConstantField::new(lambda)),
+        )
     }
 
     /// IV-1 baseline material — `MaterialField::uniform(1.0e5, 4.0e5)`.
@@ -107,15 +126,31 @@ impl MaterialField {
         Self::uniform(1.0e5, 4.0e5)
     }
 
-    /// Construct from two heterogeneous [`Field<f64>`](crate::field::Field)
-    /// impls. The two slots sample independently; either or both can
-    /// be `LayeredScalarField`, `BlendedScalarField`, or a Phase-H
-    /// impl.
+    /// Construct an NH variant from two heterogeneous
+    /// [`Field<f64>`](crate::field::Field) impls. The two slots sample
+    /// independently; either or both can be `LayeredScalarField`,
+    /// `BlendedScalarField`, or a Phase-H impl.
     #[must_use]
     pub fn from_fields(mu: Box<dyn Field<f64>>, lambda: Box<dyn Field<f64>>) -> Self {
         Self {
-            mu,
-            lambda,
+            inner: MaterialFieldInner::NeoHookean { mu, lambda },
+            interface_sdf: None,
+        }
+    }
+
+    /// Construct a Yeoh variant from three heterogeneous
+    /// [`Field<f64>`](crate::field::Field) impls (μ, C₂, λ). Yeoh's
+    /// `C₁ = μ / 2` is derived; the field doesn't store `C₁`
+    /// separately. Per arc memo D10 — row picks one material model
+    /// for all its tets, no in-row mixing.
+    #[must_use]
+    pub fn from_yeoh_fields(
+        mu: Box<dyn Field<f64>>,
+        c2: Box<dyn Field<f64>>,
+        lambda: Box<dyn Field<f64>>,
+    ) -> Self {
+        Self {
+            inner: MaterialFieldInner::Yeoh { mu, c2, lambda },
             interface_sdf: None,
         }
     }
@@ -132,8 +167,8 @@ impl MaterialField {
     /// passes the SDF whose zero set the flag should track.
     ///
     /// Builder method (`self`-by-value, returns `Self`) so existing
-    /// constructor call sites stay untouched: a graded-with-flag
-    /// scene reads
+    /// constructor call sites stay untouched: a graded-with-flag scene
+    /// reads
     /// `MaterialField::from_fields(mu, lambda).with_interface_sdf(sdf)`.
     #[must_use]
     pub fn with_interface_sdf(mut self, sdf: Box<dyn Sdf>) -> Self {
@@ -153,7 +188,19 @@ impl MaterialField {
         self.interface_sdf.as_deref()
     }
 
-    /// Sample both slots at `x_ref` and return a fresh per-element
+    /// Coarse identifier for the variant this field carries. Mesh
+    /// constructors check this against their parameterized material
+    /// type and refuse to build a `Mesh<NeoHookean>` from a Yeoh
+    /// field (or vice versa).
+    #[must_use]
+    pub const fn kind(&self) -> MaterialFieldKind {
+        match &self.inner {
+            MaterialFieldInner::NeoHookean { .. } => MaterialFieldKind::NeoHookean,
+            MaterialFieldInner::Yeoh { .. } => MaterialFieldKind::Yeoh,
+        }
+    }
+
+    /// Sample the NH variant at `x_ref` and return a fresh per-element
     /// [`NeoHookean`].
     ///
     /// Per Part 2 §09 §00's "Trait-surface contract" paragraph this is
@@ -161,10 +208,54 @@ impl MaterialField {
     /// at element construction (and warm restart from re-mesh); the
     /// Newton hot path sees the returned scalar [`NeoHookean`], not
     /// this aggregator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this field was constructed via
+    /// [`MaterialField::from_yeoh_fields`] — call
+    /// [`MaterialField::sample_yeoh`] for Yeoh variants. The mesh
+    /// constructors gate variant selection at build time so no
+    /// hot-path call site reaches this branch.
     #[must_use]
+    #[allow(clippy::panic)]
     pub fn sample(&self, x_ref: Vec3) -> NeoHookean {
-        let mu = self.mu.sample(x_ref);
-        let lambda = self.lambda.sample(x_ref);
-        NeoHookean::from_lame(mu, lambda)
+        match &self.inner {
+            MaterialFieldInner::NeoHookean { mu, lambda } => {
+                NeoHookean::from_lame(mu.sample(x_ref), lambda.sample(x_ref))
+            }
+            MaterialFieldInner::Yeoh { .. } => {
+                panic!(
+                    "MaterialField::sample expects NH variant; this field is Yeoh — use sample_yeoh"
+                )
+            }
+        }
+    }
+
+    /// Sample the Yeoh variant at `x_ref` and return a fresh per-element
+    /// [`Yeoh`]. Validity bounds default to `None` on the produced
+    /// `Yeoh` — per-anchor bounds are wired in by the row author via
+    /// the [`crate::SiliconeMaterial::to_yeoh`] path, not the
+    /// `MaterialField` aggregator (which only carries the `(μ, C₂, λ)`
+    /// scalar fields).
+    ///
+    /// # Panics
+    ///
+    /// Panics if this field was constructed via
+    /// [`MaterialField::from_fields`] / [`MaterialField::uniform`] /
+    /// [`MaterialField::skeleton_default`] — call
+    /// [`MaterialField::sample`] for NH variants.
+    #[must_use]
+    #[allow(clippy::panic)]
+    pub fn sample_yeoh(&self, x_ref: Vec3) -> Yeoh {
+        match &self.inner {
+            MaterialFieldInner::Yeoh { mu, c2, lambda } => {
+                Yeoh::from_lame_and_c2(mu.sample(x_ref), lambda.sample(x_ref), c2.sample(x_ref))
+            }
+            MaterialFieldInner::NeoHookean { .. } => {
+                panic!(
+                    "MaterialField::sample_yeoh expects Yeoh variant; this field is NH — use sample"
+                )
+            }
+        }
     }
 }

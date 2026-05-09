@@ -144,3 +144,48 @@ fn material_field_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<MaterialField>();
 }
+
+// ---------------------------------------------------------------------
+// 6. Yeoh variant — `from_yeoh_fields` + `sample_yeoh`
+// ---------------------------------------------------------------------
+
+/// Yeoh constructor produces a `MaterialField` whose `kind()` reports
+/// `Yeoh`, and whose `sample_yeoh(x)` returns a Yeoh struct whose
+/// `(μ, λ, C₂)` accessors round-trip the slot values at that probe.
+#[test]
+fn material_field_from_yeoh_fields_samples_yeoh() {
+    use sim_soft::{MaterialFieldKind, Yeoh};
+    let mu_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(23_000.0));
+    let c2_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(2_050.0));
+    let lambda_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(92_000.0));
+    let field = MaterialField::from_yeoh_fields(mu_field, c2_field, lambda_field);
+    assert_eq!(field.kind(), MaterialFieldKind::Yeoh);
+
+    let probe = Vec3::new(0.1, 0.0, 0.0);
+    let y: Yeoh = field.sample_yeoh(probe);
+    assert_eq!(y.mu().to_bits(), 23_000.0_f64.to_bits());
+    assert_eq!(y.lambda().to_bits(), 92_000.0_f64.to_bits());
+    assert_eq!(y.c2().to_bits(), 2_050.0_f64.to_bits());
+}
+
+/// Calling `sample` (NH-typed) on a Yeoh-constructed field panics —
+/// gates the variant-mismatch case so mesh constructors must dispatch
+/// on `kind()` rather than blindly call `sample()`.
+#[test]
+#[should_panic(expected = "NH variant; this field is Yeoh")]
+fn sample_on_yeoh_variant_panics() {
+    let field = MaterialField::from_yeoh_fields(
+        Box::new(ConstantField::new(1.0)),
+        Box::new(ConstantField::new(1.0)),
+        Box::new(ConstantField::new(1.0)),
+    );
+    let _used = field.sample(Vec3::zeros());
+}
+
+/// Calling `sample_yeoh` on an NH-constructed field panics symmetrically.
+#[test]
+#[should_panic(expected = "Yeoh variant; this field is NH")]
+fn sample_yeoh_on_nh_variant_panics() {
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let _used = field.sample_yeoh(Vec3::zeros());
+}

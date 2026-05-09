@@ -12,7 +12,7 @@ pub mod neo_hookean;
 pub mod silicone_table;
 pub mod yeoh;
 
-pub use material_field::MaterialField;
+pub use material_field::{MaterialField, MaterialFieldKind};
 pub use neo_hookean::NeoHookean;
 pub use silicone_table::{
     ConstructionSource, MeasuredMaterialError, ShoreInterpolationError, ShoreReading,
