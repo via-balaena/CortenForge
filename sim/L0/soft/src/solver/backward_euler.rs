@@ -182,9 +182,10 @@ pub struct CpuNewtonSolver<
     /// Free DOF count (`free_dof_indices.len()`), cached.
     n_free: usize,
 
-    /// Phantom — `M` only appears in the `Msh: Mesh<M>` and `C:
-    /// ContactModel<M>` bounds, not in any field. The marker tells
-    /// rustc the type parameter is intentionally type-only.
+    /// Phantom — `M` only appears in the `Msh: Mesh<M>` and
+    /// `C: ContactModel + ActivePairsFor<M>` bounds, not in any
+    /// concrete field. The marker tells rustc the type parameter is
+    /// intentionally type-only.
     _material: std::marker::PhantomData<M>,
 }
 
@@ -196,8 +197,8 @@ where
     C: ContactModel + ActivePairsFor<M>,
 {
     /// Assemble a solver from its element, mesh, contact, integration
-    /// configuration, and boundary conditions. Per-tet `NeoHookean`
-    /// instances are read from `mesh.materials()` at assembly time.
+    /// configuration, and boundary conditions. Per-tet `M` instances
+    /// are read from `mesh.materials()` at assembly time.
     ///
     /// `Box<dyn Solver<Tape = CpuTape>>` is the intended public handle;
     /// direct access to the concrete type is only needed for
@@ -926,11 +927,11 @@ where
     ///
     /// `f_int` is zeroed inside; caller need not pre-clear. Reads
     /// `x_curr` (length `n_dof`), cached `element_geometries`, the
-    /// per-tet `NeoHookean` from `self.mesh.materials()` (Phase 4
-    /// commit 5 — Newton hot path reads from the per-tet material
-    /// cache per Part 7 §02 §00), and `self.contact` for active-pair
-    /// gradient contributions (Phase 5 commit 5; scope memo
-    /// Decision H — per-iter active-pair recompute).
+    /// per-tet `M` from `self.mesh.materials()` (Phase 4 commit 5 —
+    /// Newton hot path reads from the per-tet material cache per
+    /// Part 7 §02 §00), and `self.contact` for active-pair gradient
+    /// contributions (Phase 5 commit 5; scope memo Decision H —
+    /// per-iter active-pair recompute).
     //
     // Lint allows: see assemble_free_hessian_triplets justification.
     #[allow(clippy::cast_possible_truncation, clippy::needless_range_loop)]

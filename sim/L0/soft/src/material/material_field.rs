@@ -189,10 +189,14 @@ impl MaterialField {
         self.interface_sdf.as_deref()
     }
 
-    /// Coarse identifier for the variant this field carries. Mesh
-    /// constructors check this against their parameterized material
-    /// type and refuse to build a `Mesh<NeoHookean>` from a Yeoh
-    /// field (or vice versa).
+    /// Coarse identifier for the variant this field carries.
+    ///
+    /// Mesh constructors enforce variant-vs-mesh-type matching by
+    /// calling [`MaterialField::sample`] (NH path) or
+    /// [`MaterialField::sample_yeoh`] (Yeoh path), which panic on
+    /// mismatch. `kind()` is a non-panicking probe for callers that
+    /// want graceful error handling before reaching the mesh
+    /// constructor.
     #[must_use]
     pub const fn kind(&self) -> MaterialFieldKind {
         match &self.inner {
@@ -283,22 +287,33 @@ pub trait BuildableFromField: Material + Sized + 'static {
     ) -> Vec<Self>;
 }
 
+/// Centroid-walk shared by every [`BuildableFromField`] impl. Pure
+/// topology + a per-centroid sampler closure; the only thing each
+/// impl varies is `sampler` (which `MaterialField::sample_*` to call).
+fn cache_walk<M, F: Fn(Vec3) -> M>(
+    positions: &[Vec3],
+    tets: &[[VertexId; 4]],
+    sampler: F,
+) -> Vec<M> {
+    tets.iter()
+        .map(|&tv| {
+            let v0 = positions[tv[0] as usize];
+            let v1 = positions[tv[1] as usize];
+            let v2 = positions[tv[2] as usize];
+            let v3 = positions[tv[3] as usize];
+            let centroid = (v0 + v1 + v2 + v3) * 0.25;
+            sampler(centroid)
+        })
+        .collect()
+}
+
 impl BuildableFromField for NeoHookean {
     fn cache_from_field(
         positions: &[Vec3],
         tets: &[[VertexId; 4]],
         field: &MaterialField,
     ) -> Vec<Self> {
-        tets.iter()
-            .map(|&tv| {
-                let v0 = positions[tv[0] as usize];
-                let v1 = positions[tv[1] as usize];
-                let v2 = positions[tv[2] as usize];
-                let v3 = positions[tv[3] as usize];
-                let centroid = (v0 + v1 + v2 + v3) * 0.25;
-                field.sample(centroid)
-            })
-            .collect()
+        cache_walk(positions, tets, |x| field.sample(x))
     }
 }
 
@@ -308,15 +323,6 @@ impl BuildableFromField for Yeoh {
         tets: &[[VertexId; 4]],
         field: &MaterialField,
     ) -> Vec<Self> {
-        tets.iter()
-            .map(|&tv| {
-                let v0 = positions[tv[0] as usize];
-                let v1 = positions[tv[1] as usize];
-                let v2 = positions[tv[2] as usize];
-                let v3 = positions[tv[3] as usize];
-                let centroid = (v0 + v1 + v2 + v3) * 0.25;
-                field.sample_yeoh(centroid)
-            })
-            .collect()
+        cache_walk(positions, tets, |x| field.sample_yeoh(x))
     }
 }
