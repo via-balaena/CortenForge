@@ -526,6 +526,13 @@ where
             // Two gate flavors (Yeoh arc memo D8): if either of the new
             // asymmetric bounds is `Some`, gate per-bound; else fall
             // back to the legacy NH symmetric `max_i |σ_i - 1|` bound.
+            //
+            // Edge case: `(Some, None)` or `(None, Some)` checks only
+            // the populated bound — the other direction is unchecked.
+            // No production constructor reaches that state today (every
+            // `SiliconeMaterial::to_yeoh` sets both via
+            // `with_principal_stretch_bounds`); future asymmetric-only
+            // callers opt into the unchecked direction by construction.
             let svd = f.svd_unordered(false, false);
             let sigma = svd.singular_values;
             match (

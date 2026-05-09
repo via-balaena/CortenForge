@@ -78,13 +78,14 @@ pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 /// nalgebra's dense small-matrix operations.
 pub type Vec3 = nalgebra::Vector3<f64>;
 
-/// CPU backward-Euler Newton solver pinned to `Tet4` + `NullContact`,
-/// generic over the mesh impl.
+/// CPU backward-Euler Newton solver pinned to `Tet4` + `NullContact`
+/// + `NeoHookean`, generic over the mesh impl.
 ///
-/// The constitutive law is fixed at `NeoHookean` per Phase 4 scope memo
-/// Decision G — per-tet instances live on the mesh and are read at the
-/// assembly hot points via `mesh.materials()` rather than a solver-level
-/// `material` field.
+/// The constitutive law is fixed at [`NeoHookean`] for this alias —
+/// per-tet instances live on the mesh and are read at the assembly
+/// hot points via `mesh.materials()`. The underlying
+/// [`solver::CpuNewtonSolver`] is generic over `M: Material` (default
+/// NH); the [`CpuTet4YeohSolver`] alias picks the Yeoh slot.
 ///
 /// Phase 2's canonical solver type for any hand-built tet scene;
 /// specialize via the `Msh` parameter (e.g.,

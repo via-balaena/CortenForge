@@ -1,9 +1,12 @@
 //! `Material` trait — constitutive-model surface.
 //!
 //! Four items per spec §14 / Part 11 Ch 01 00-core.md: `energy`,
-//! `first_piola`, `tangent`, `validity`. One impl (`NeoHookean`) in
-//! scaffold; additive extensions (Mooney-Rivlin, Ogden, corotational,
-//! viscoelasticity) land in Phase D per spec §8.
+//! `first_piola`, `tangent`, `validity`. Two impls today:
+//! [`NeoHookean`] (Phase 4 scaffold; calibrated by `(μ, λ)`) and
+//! [`Yeoh`] (Yeoh arc, 2-parameter compressible polynomial calibrated
+//! by `(μ, λ, C₂)`). Additional decorators (Mooney-Rivlin
+//! corotational, viscoelasticity, HGO anisotropy, thermal coupling)
+//! land in Phase H per spec §8.
 
 use nalgebra::{Matrix3, SMatrix};
 

@@ -34,7 +34,7 @@
 //! `min_principal_stretch` bounds (memo D8). Default constructors leave
 //! these `None`, falling through to the legacy NH symmetric bound at
 //! `max_stretch_deviation = 1.0`. Per-anchor calibrated bounds are set
-//! by the F4 `silicone_table` (F2 work).
+//! by the [`crate::SiliconeMaterial::to_yeoh`] path (Yeoh arc F2 work).
 
 use nalgebra::{Matrix3, SMatrix};
 
