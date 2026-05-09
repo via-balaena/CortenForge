@@ -4971,6 +4971,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-ramp"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-sdf-to-tet-sphere"
 version = "1.0.0"
 dependencies = [

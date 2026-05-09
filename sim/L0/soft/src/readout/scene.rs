@@ -14,7 +14,7 @@ use sim_ml_chassis::Tensor;
 
 use crate::Vec3;
 use crate::contact::{PenaltyRigidContact, RigidPlane};
-use crate::material::MaterialField;
+use crate::material::{Material, MaterialField};
 use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, VertexId, referenced_vertices};
 use crate::sdf_bridge::{
     Aabb3, DifferenceSdf, MeshingError, MeshingHints, SdfMeshedTetMesh, SphereSdf,
@@ -896,10 +896,15 @@ pub struct SceneInitial {
 // `as VertexId` is the Mesh-trait API tax: enumerate yields `usize`
 // while `pinned_vertices` takes `Vec<VertexId = u32>`. Phase 3 meshes
 // stay well below `u32::MAX`.
+// Generic over the mesh's material type `M` so Yeoh-flavored meshes
+// (`Mesh<Yeoh>`, e.g. `SdfMeshedTetMesh<Yeoh>`) can use this helper
+// alongside the legacy NH default. Mirrors `referenced_vertices`'s
+// `<M: Material>` shape (mesh/mod.rs:302); reads only `mesh.positions()`,
+// so the constraint is the same.
 #[allow(clippy::cast_possible_truncation)]
 #[must_use]
-pub fn pick_vertices_by_predicate(
-    mesh: &dyn Mesh,
+pub fn pick_vertices_by_predicate<M: Material>(
+    mesh: &dyn Mesh<M>,
     predicate: impl Fn(&Vec3) -> bool,
 ) -> Vec<VertexId> {
     mesh.positions()
