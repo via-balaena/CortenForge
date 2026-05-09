@@ -38,77 +38,6 @@
 //! - **Solver-side gate trip behavior** — driven via row-23 (F4)
 //!   integration scenarios; out of scope for this contract file.
 
-mod generic_mesh_smoke {
-    //! Smoke test that the F4.0 generic-mesh refactor actually
-    //! instantiates `SingleTetMesh<Yeoh>` end-to-end (not just
-    //! type-checks via the lib aliases).
-    //!
-    //! The unit tests in `material_field_sample.rs` cover
-    //! `MaterialField::from_yeoh_fields` + `sample_yeoh` in isolation;
-    //! this test exercises the full mesh-build path through
-    //! `BuildableFromField::cache_from_field` and
-    //! `Mesh<Yeoh>::materials()`.
-
-    use sim_soft::{
-        ConstantField, Field, Material, MaterialField, Mesh, SingleTetMesh, Yeoh,
-        material::silicone_table::ECOFLEX_00_30,
-    };
-
-    /// Build a `SingleTetMesh<Yeoh>` from a uniform Yeoh field
-    /// (`ECOFLEX_00_30` calibration), confirm the mesh's `materials()`
-    /// reads back as `&[Yeoh]`, and that the constructed Yeoh struct
-    /// at the mesh's centroid round-trips the input field's `(μ, λ, c2)`
-    /// scalars (within FMA-FP noise — sample uses the same arithmetic
-    /// the centroid path traverses).
-    #[test]
-    fn single_tet_mesh_yeoh_materials_round_trip() {
-        let mu_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.mu));
-        let c2_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.c2));
-        let lambda_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.lambda));
-        let field = MaterialField::from_yeoh_fields(mu_field, c2_field, lambda_field);
-
-        let mesh: SingleTetMesh<Yeoh> = SingleTetMesh::<Yeoh>::new_yeoh(&field);
-        assert_eq!(mesh.n_tets(), 1);
-
-        let materials: &[Yeoh] = mesh.materials();
-        assert_eq!(materials.len(), 1);
-        assert_eq!(materials[0].mu().to_bits(), ECOFLEX_00_30.mu.to_bits());
-        assert_eq!(
-            materials[0].lambda().to_bits(),
-            ECOFLEX_00_30.lambda.to_bits()
-        );
-        assert_eq!(materials[0].c2().to_bits(), ECOFLEX_00_30.c2.to_bits());
-    }
-
-    /// `Mesh<Yeoh>::materials()` returns Yeoh structs that satisfy the
-    /// `Material` trait surface — `energy`/`first_piola`/`tangent` compile
-    /// against the generic mesh without explicit type annotations.
-    /// This is the load-bearing call site for the row-23 solver path.
-    #[test]
-    fn yeoh_mesh_materials_satisfy_material_trait() {
-        use nalgebra::Matrix3;
-
-        let mu_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.mu));
-        let c2_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.c2));
-        let lambda_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.lambda));
-        let field = MaterialField::from_yeoh_fields(mu_field, c2_field, lambda_field);
-        let mesh = SingleTetMesh::<Yeoh>::new_yeoh(&field);
-
-        let materials = mesh.materials();
-        let f = Matrix3::<f64>::identity();
-        // ψ(I) = 0, P(I) = 0 — already covered by suite (e), but doing
-        // it through the mesh.materials() generic call site here
-        // confirms the Mesh<Yeoh> -> Material trait dispatch works.
-        assert_eq!(materials[0].energy(&f).to_bits(), 0.0_f64.to_bits());
-        let p = materials[0].first_piola(&f);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(p[(i, j)].to_bits(), 0.0_f64.to_bits());
-            }
-        }
-    }
-}
-
 use approx::assert_relative_eq;
 use nalgebra::{Matrix3, Vector3};
 
@@ -349,6 +278,87 @@ fn yeoh_psi_and_p_vanish_at_identity_per_anchor() {
         assert_eq!(yeoh.energy(&id).to_bits(), 0.0_f64.to_bits());
         // P(I) = 0 matrix.
         let p = yeoh.first_piola(&id);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(p[(i, j)].to_bits(), 0.0_f64.to_bits());
+            }
+        }
+    }
+}
+
+// ---- F4.0 generic-mesh smoke tests ------------------------------------
+//
+// The bulk of the contract suites above test the Yeoh struct in
+// isolation. The smoke tests below exercise the F4.0 generic-mesh
+// refactor — `SingleTetMesh<Yeoh>::new_yeoh(&field)` actually
+// instantiates and reads back as `&[Yeoh]` through the Mesh trait.
+// Without these, the lib aliases (CpuTet4YeohSolver etc.) prove
+// type-system bounds compile, but `BuildableFromField::cache_from_field`
+// runtime path is unverified until row 23 (F4.1) lands.
+
+mod generic_mesh_smoke {
+    //! Smoke test that the F4.0 generic-mesh refactor actually
+    //! instantiates `SingleTetMesh<Yeoh>` end-to-end (not just
+    //! type-checks via the lib aliases).
+    //!
+    //! The unit tests in `material_field_sample.rs` cover
+    //! `MaterialField::from_yeoh_fields` + `sample_yeoh` in isolation;
+    //! this test exercises the full mesh-build path through
+    //! `BuildableFromField::cache_from_field` and
+    //! `Mesh<Yeoh>::materials()`.
+
+    use sim_soft::{
+        ConstantField, Field, Material, MaterialField, Mesh, SingleTetMesh, Yeoh,
+        material::silicone_table::ECOFLEX_00_30,
+    };
+
+    /// Build a `SingleTetMesh<Yeoh>` from a uniform Yeoh field
+    /// (`ECOFLEX_00_30` calibration), confirm the mesh's `materials()`
+    /// reads back as `&[Yeoh]`, and that the constructed Yeoh struct
+    /// at the mesh's centroid round-trips the input field's `(μ, λ, c2)`
+    /// scalars (within FMA-FP noise — sample uses the same arithmetic
+    /// the centroid path traverses).
+    #[test]
+    fn single_tet_mesh_yeoh_materials_round_trip() {
+        let mu_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.mu));
+        let c2_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.c2));
+        let lambda_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.lambda));
+        let field = MaterialField::from_yeoh_fields(mu_field, c2_field, lambda_field);
+
+        let mesh: SingleTetMesh<Yeoh> = SingleTetMesh::<Yeoh>::new_yeoh(&field);
+        assert_eq!(mesh.n_tets(), 1);
+
+        let materials: &[Yeoh] = mesh.materials();
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0].mu().to_bits(), ECOFLEX_00_30.mu.to_bits());
+        assert_eq!(
+            materials[0].lambda().to_bits(),
+            ECOFLEX_00_30.lambda.to_bits()
+        );
+        assert_eq!(materials[0].c2().to_bits(), ECOFLEX_00_30.c2.to_bits());
+    }
+
+    /// `Mesh<Yeoh>::materials()` returns Yeoh structs that satisfy the
+    /// `Material` trait surface — `energy`/`first_piola`/`tangent` compile
+    /// against the generic mesh without explicit type annotations.
+    /// This is the load-bearing call site for the row-23 solver path.
+    #[test]
+    fn yeoh_mesh_materials_satisfy_material_trait() {
+        use nalgebra::Matrix3;
+
+        let mu_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.mu));
+        let c2_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.c2));
+        let lambda_field: Box<dyn Field<f64>> = Box::new(ConstantField::new(ECOFLEX_00_30.lambda));
+        let field = MaterialField::from_yeoh_fields(mu_field, c2_field, lambda_field);
+        let mesh = SingleTetMesh::<Yeoh>::new_yeoh(&field);
+
+        let materials = mesh.materials();
+        let f = Matrix3::<f64>::identity();
+        // ψ(I) = 0, P(I) = 0 — already covered by suite (e), but doing
+        // it through the mesh.materials() generic call site here
+        // confirms the Mesh<Yeoh> -> Material trait dispatch works.
+        assert_eq!(materials[0].energy(&f).to_bits(), 0.0_f64.to_bits());
+        let p = materials[0].first_piola(&f);
         for i in 0..3 {
             for j in 0..3 {
                 assert_eq!(p[(i, j)].to_bits(), 0.0_f64.to_bits());
