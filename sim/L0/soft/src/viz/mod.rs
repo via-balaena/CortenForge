@@ -31,6 +31,11 @@
 //!   per-vertex field; falls back to nearest-tet (clipped barycentric)
 //!   for SDF-isosurface points just outside the analysis mesh's
 //!   polyhedral boundary.
+//! - [`design_surface`] extracts the iso-0 surface of a design SDF as a
+//!   triangulated 3D mesh via marching cubes. Same scalar-transfer
+//!   convention as `design_slab_cut`. Replaces [`boundary_surface`] on
+//!   bodies where the design intent (smooth sphere, organic 3D scan)
+//!   matters more than the analysis-mesh discretization.
 //!
 //! Pick F1 when the analysis-mesh discretization IS the story (e.g.,
 //! debugging mesh quality, sliver-tet inspection). Pick F2 when the
@@ -488,6 +493,143 @@ pub fn design_slab_cut<M: Material>(
     Ok(attr)
 }
 
+/// Extract the iso-0 surface of a design SDF as a triangulated 3D
+/// [`AttributedMesh`] with per-vertex scalars interpolated from
+/// `analysis_mesh`.
+///
+/// Decouples display geometry from analysis geometry per the F2 viz
+/// arc: the boundary surface comes from marching cubes on `sdf` (smooth
+/// curved boundaries on organic shapes, sharp axis-aligned faces on
+/// CSG primitives, exact at any analysis-mesh coarseness), while
+/// scalar values come from barycentric point-in-tet interpolation
+/// against `analysis_mesh`'s volume-weighted per-vertex field.
+///
+/// # Comparison vs [`boundary_surface`]
+///
+/// [`boundary_surface`] extracts the analysis tet mesh's precomputed
+/// boundary faces and inherits the BCC lattice's polyhedral
+/// approximation (visible sliver-tet zigzag along curved surfaces).
+/// `design_surface` queries `sdf` through marching cubes instead, so
+/// the body's outer shell on a sphere-like geometry is smooth, and on
+/// an organic 3D-scanned body the surface follows the scan's actual
+/// shape rather than the BCC lattice's approximation. `analysis_mesh`
+/// is consulted only for scalar values.
+///
+/// # Algorithm
+///
+/// 1. Sample `sdf` on a 3D grid spanning `bounds` at `resolution` cell
+///    size (delegated to [`mesh_offset::ScalarGrid`]).
+/// 2. Run [`mesh_offset::marching_cubes`] at iso-value 0 to extract
+///    the closed boundary surface as a triangulated [`IndexedMesh`].
+/// 3. For each emitted display vertex, find the enclosing analysis
+///    tet via barycentric point-in-tet (walks all tets per probe;
+///    no slab filter since the surface is volumetric). Interpolate
+///    `volume_weighted_per_vertex_avg` scalars to the display vertex
+///    via the barycentrics; fall back to nearest-tet (clipped +
+///    renormalized barycentrics) for vertices just outside every
+///    analysis tet.
+///
+/// # Performance
+///
+/// Naive `O(n_display × n_tets)` scalar lookup. For row 20's geometry
+/// (51 k tets × ~300 k display vertices at `CELL_SIZE / 4` resolution)
+/// the run is ~30 s. A 3D spatial accelerator (kd-tree on tet
+/// centroids, or uniform grid of tet AABBs) would cut this to seconds
+/// — deferred until a row's runtime makes it load-bearing.
+///
+/// # Errors
+///
+/// - [`VizError::InvalidResolution`] if `resolution` is not strictly
+///   positive (zero, negative, or `NaN`).
+/// - [`VizError::PerTetScalarLengthMismatch`] if any scalar's length
+///   != `analysis_mesh.n_tets()`.
+//
+// `cast_possible_truncation` allowed for the f64 → f32 PLY emit path
+// and usize → u32 vertex/tet index path (`VertexId` and `TetId` are
+// `u32` by crate convention). `expect_used` allowed on `insert_extra`:
+// the validate-up-front contract makes the per-vertex scalar Vec
+// length equal the surface vertex count by construction.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::similar_names
+)]
+pub fn design_surface<M: Material>(
+    sdf: &dyn Sdf,
+    analysis_mesh: &dyn Mesh<M>,
+    bounds: &Aabb3,
+    resolution: f64,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+) -> Result<AttributedMesh, VizError> {
+    use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
+
+    if resolution <= 0.0 || resolution.is_nan() {
+        return Err(VizError::InvalidResolution { value: resolution });
+    }
+    validate_per_tet_scalars(analysis_mesh, per_tet_scalars)?;
+
+    // 1. Build grid + sample SDF at every corner.
+    let mut grid = ScalarGrid::from_bounds(
+        NaPoint3::new(bounds.min.x, bounds.min.y, bounds.min.z),
+        NaPoint3::new(bounds.max.x, bounds.max.y, bounds.max.z),
+        resolution,
+        0,
+    );
+    let (nx, ny, nz) = grid.dimensions();
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let p = grid.position(ix, iy, iz);
+                grid.set(ix, iy, iz, sdf.eval(p));
+            }
+        }
+    }
+
+    // 2. Marching cubes on the iso-0 surface.
+    let surface = marching_cubes(&grid, &MarchingCubesConfig::at_iso_value(0.0));
+
+    // 3. Pre-compute volume-weighted per-vertex scalars on analysis mesh.
+    let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
+    let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+        .iter()
+        .map(|&name| volume_weighted_per_vertex_avg(analysis_mesh, per_tet_scalars[&name]))
+        .collect();
+
+    // 4. Per-display-vertex barycentric scalar interp. No slab filter
+    //    (surface is volumetric, not on a plane). Naive O(n_tets) per
+    //    probe; see fn-level docs for performance notes.
+    let analysis_positions = analysis_mesh.positions();
+    let n_tets = analysis_mesh.n_tets();
+    let all_tets: Vec<u32> = (0..n_tets as u32).collect();
+
+    let mut display_scalars: Vec<Vec<f64>> = scalar_names
+        .iter()
+        .map(|_| Vec::with_capacity(surface.vertices.len()))
+        .collect();
+    for v in &surface.vertices {
+        let probe = Vec3::new(v.x, v.y, v.z);
+        let scalars = sample_analysis_at_point(
+            probe,
+            analysis_mesh,
+            analysis_positions,
+            &all_tets,
+            &per_vertex_by_scalar,
+        );
+        for (i, val) in scalars.iter().enumerate() {
+            display_scalars[i].push(*val);
+        }
+    }
+
+    // 5. Wrap as AttributedMesh.
+    let mut attr = AttributedMesh::new(surface);
+    for (i, &name) in scalar_names.iter().enumerate() {
+        let f32_values: Vec<f32> = display_scalars[i].iter().map(|&v| v as f32).collect();
+        attr.insert_extra(name.to_string(), f32_values)
+            .expect("per-display-vertex length matches surface vertex count by construction");
+    }
+    Ok(attr)
+}
+
 /// Pair of in-plane axis indices `(uu, vv)` such that the right-hand-rule
 /// cross product `e_uu × e_vv = +e_axis`. CCW polygons in the (u, v)
 /// frame thus have outward face normals along `+axis`, matching the
@@ -863,7 +1005,7 @@ fn sample_analysis_at_point<M: Material>(
     probe: Vec3,
     mesh: &dyn Mesh<M>,
     positions: &[Vec3],
-    slab_tets: &[u32],
+    candidate_tets: &[u32],
     per_vertex_by_scalar: &[Vec<f64>],
 ) -> Vec<f64> {
     // Tolerance is dimensionless (barycentric coordinates sum to 1.0);
@@ -873,7 +1015,7 @@ fn sample_analysis_at_point<M: Material>(
     let mut best_outside_t: Option<u32> = None;
     let mut best_outside_min_b = f64::NEG_INFINITY;
 
-    for &t in slab_tets {
+    for &t in candidate_tets {
         let [v0, v1, v2, v3] = mesh.tet_vertices(t);
         let p0 = positions[v0 as usize];
         let p1 = positions[v1 as usize];
@@ -1521,5 +1663,124 @@ mod tests {
             rel_err < 0.10,
             "two-disk area {area} vs expected {expected} (rel_err {rel_err})",
         );
+    }
+
+    /// `design_surface` of a sphere produces a triangulated boundary
+    /// whose total area approximates 4πR² within discretization
+    /// tolerance. Validates marching cubes on the iso-0 surface +
+    /// scalar transfer integration.
+    #[test]
+    fn design_surface_sphere_area_approximates_4_pi_r_squared() {
+        use crate::SphereSdf;
+
+        let radius = 0.05_f64;
+        let sphere = SphereSdf { radius };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        // 40^3 grid over [-0.10, +0.10]^3 gives ~3% relative area error.
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let attr = design_surface(&sphere, &analysis, &bounds, resolution, &scalars).unwrap();
+
+        let area: f64 = attr
+            .geometry
+            .faces
+            .iter()
+            .map(|face| {
+                let p0 = attr.geometry.vertices[face[0] as usize];
+                let p1 = attr.geometry.vertices[face[1] as usize];
+                let p2 = attr.geometry.vertices[face[2] as usize];
+                let a = p1 - p0;
+                let b = p2 - p0;
+                0.5 * a.cross(&b).norm()
+            })
+            .sum();
+
+        let expected = 4.0 * std::f64::consts::PI * radius * radius;
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.05,
+            "sphere area {area} vs expected {expected} (rel_err {rel_err})",
+        );
+    }
+
+    /// Plane outside the SDF's interior produces an empty mesh — no
+    /// triangles, no panics, no errors.
+    #[test]
+    fn design_surface_empty_when_bounds_outside_sdf_interior() {
+        use crate::SphereSdf;
+
+        // Sphere at origin radius 0.05; bounds well outside (entirely +x
+        // octant far from origin) so the SDF is everywhere positive in
+        // the grid → no iso-0 crossings.
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(0.20, 0.20, 0.20), Vec3::new(0.30, 0.30, 0.30));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let attr = design_surface(&sphere, &analysis, &bounds, 0.005, &scalars).unwrap();
+
+        assert_eq!(attr.geometry.faces.len(), 0);
+        let psi_extra = attr.extras.get("psi").expect("psi extra missing");
+        assert_eq!(psi_extra.len(), attr.geometry.vertices.len());
+    }
+
+    /// Resolution must be strictly positive — zero, negative, and `NaN`
+    /// all surface as the typed error.
+    #[test]
+    fn design_surface_rejects_invalid_resolution() {
+        use crate::SphereSdf;
+
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        for bad_res in [0.0_f64, -0.001, f64::NAN] {
+            let err = design_surface(&sphere, &analysis, &bounds, bad_res, &scalars).unwrap_err();
+            assert!(
+                matches!(err, VizError::InvalidResolution { .. }),
+                "bad_res = {bad_res}: expected InvalidResolution, got {err:?}",
+            );
+        }
+    }
+
+    /// Per-tet scalar with wrong length surfaces as the typed error.
+    #[test]
+    fn design_surface_rejects_wrong_length_scalar() {
+        use crate::SphereSdf;
+
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        // SingleTetMesh has 1 tet; supply length 2 to trip the gate.
+        let psi = [1.0_f64, 2.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let err = design_surface(&sphere, &analysis, &bounds, 0.005, &scalars).unwrap_err();
+        match err {
+            VizError::PerTetScalarLengthMismatch {
+                name,
+                expected,
+                actual,
+            } => {
+                assert_eq!(name, "psi");
+                assert_eq!(expected, 1);
+                assert_eq!(actual, 2);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

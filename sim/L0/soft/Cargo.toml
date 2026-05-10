@@ -45,6 +45,13 @@ cf-design = { workspace = true }
 # lived in example crates only. Re-exports `cf_geometry::IndexedMesh`,
 # so one dep covers both types the viz API surfaces.
 mesh-types = { workspace = true }
+# `ScalarGrid` + `marching_cubes` + `MarchingCubesConfig` for the F2.1
+# `design_surface` viz helper. mesh-offset's marching_cubes extracts
+# the iso-0 surface of a design SDF as a triangulated 3D mesh; sim-soft
+# wraps it with barycentric scalar interp from the analysis tet mesh
+# to produce an FEM-viz-grade boundary surface decoupled from the BCC
+# discretization. Same L0 tier as sim-soft.
+mesh-offset = { workspace = true }
 # Dense small matrices for per-Gauss-point Material + per-element Tet4 locals
 # (5 existing L0 consumers at 0.34.2 — not greenfield).
 nalgebra = { workspace = true }
