@@ -211,8 +211,8 @@ use sim_soft::{
     Aabb3, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField, Material, MaterialField,
     Mesh, MeshingHints, NewtonStep, PenaltyRigidContact, PenaltyRigidContactSolver, Plane,
     SceneInitial, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
-    boundary_surface, design_slab_cut, design_surface, pick_vertices_by_predicate,
-    referenced_vertices, slab_cut,
+    boundary_surface, design_slab_cut, design_surface, design_surface_deformed,
+    pick_vertices_by_predicate, referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -1241,16 +1241,18 @@ fn main() -> Result<()> {
     let design_surface_path = out_dir.join("device_design_surface.ply");
     save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
 
-    // F2.3a prototype — DEFORMED design surface. Apply per-vertex
-    // displacement (interpolated from analysis-mesh deformation field
-    // via barycentric) to the rest-config design_surface vertices,
+    // F2.3a deformed design surface — apply per-vertex displacement
+    // (interpolated from the analysis-mesh deformation field via
+    // barycentric) to the rest-config design_surface vertices,
     // amplified for visibility on row 20's mm-scale deformation.
-    // Lift to `sim_soft::viz::design_surface_deformed` at F2.3a-B.
+    // The cavity walls show clear inward squashing where the rigid
+    // scan-cube indenter presses from inside; the outer sphere
+    // boundary deforms much less (silicone bulk absorbs the force).
     let displacement_per_vertex: Vec<Vec3> = (0..n_vertices)
         .map(|i| positions_vec3[i] - rest_positions[i])
         .collect();
     let amplify = 10.0_f64;
-    let deformed_attr = design_surface_deformed_proto(
+    let deformed_attr = design_surface_deformed(
         &body_for_viz,
         &inspection_mesh,
         &design_slab_bounds,
@@ -1258,7 +1260,8 @@ fn main() -> Result<()> {
         &per_tet_scalars,
         &displacement_per_vertex,
         amplify,
-    )?;
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     let deformed_path = out_dir.join("device_design_surface_deformed.ply");
     save_ply_attributed(&deformed_attr, &deformed_path, true)?;
 
@@ -1349,7 +1352,7 @@ fn print_summary(
         "  out/device_design_surface.ply     (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF + barycentric scalar interp)"
     );
     println!(
-        "  out/device_design_surface_deformed.ply (F2.3a prototype: design_surface with per-vertex displacement applied at amplify=10)"
+        "  out/device_design_surface_deformed.ply (deformed body via sim_soft::viz::design_surface_deformed at amplify=10; deformed-shape rendering with stress contours)"
     );
     println!();
     println!("View with cf-view (workspace's unified visual-review viewer):");
@@ -1396,127 +1399,3 @@ const _: () = {
 // than just magnitude).
 #[allow(dead_code)]
 type _UnusedVector3Anchor = Vector3<f64>;
-
-// =============================================================================
-// F2.3a prototype — deformed design surface
-// =============================================================================
-//
-// Inline scratch fn matching the F1.0 / F2.0-A / F2.1-A pattern.
-// Builds on the public `design_surface` to get the rest geometry,
-// then post-processes by interpolating the per-vertex displacement
-// field via barycentric and offsetting positions by displacement *
-// amplify. The lift will use a unified one-pass implementation that
-// shares the SDF grid + MC + spatial index with `design_surface`.
-//
-// Brute-force tet walk per probe — ~30 s on row 20 (305 k display
-// vertices × 51 k tets, with early-termination when the enclosing tet
-// is found). Acceptable for prototype; the lift uses the public API's
-// TetGrid spatial index for ~250× speedup, same as F2.1-perf.
-
-#[allow(
-    clippy::too_many_arguments,
-    clippy::cast_possible_truncation,
-    clippy::similar_names,
-    clippy::suboptimal_flops,
-    clippy::collapsible_if
-)]
-fn design_surface_deformed_proto<M: Material>(
-    sdf: &dyn Sdf,
-    mesh: &dyn Mesh<M>,
-    bounds: &Aabb3,
-    resolution: f64,
-    per_tet_scalars: &BTreeMap<&str, &[f64]>,
-    displacement_per_vertex: &[Vec3],
-    amplify: f64,
-) -> Result<mesh_types::AttributedMesh> {
-    if displacement_per_vertex.len() != mesh.n_vertices() {
-        anyhow::bail!(
-            "displacement_per_vertex length {} != mesh.n_vertices() {}",
-            displacement_per_vertex.len(),
-            mesh.n_vertices()
-        );
-    }
-
-    // 1. Get rest geometry via public API.
-    let mut attr = design_surface(sdf, mesh, bounds, resolution, per_tet_scalars)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    // 2. For each surface vertex, find enclosing tet and offset by
-    //    barycentric-interpolated displacement * amplify.
-    let analysis_positions = mesh.positions();
-    let n_tets = mesh.n_tets();
-    let tol_bary = -1e-9_f64;
-
-    for v in &mut attr.geometry.vertices {
-        let probe = Vec3::new(v.x, v.y, v.z);
-        let mut best_outside_t: Option<u32> = None;
-        let mut best_outside_min_b = f64::NEG_INFINITY;
-        let mut applied = false;
-
-        for t in 0..n_tets as u32 {
-            let [v0, v1, v2, v3] = mesh.tet_vertices(t);
-            let p0 = analysis_positions[v0 as usize];
-            let p1 = analysis_positions[v1 as usize];
-            let p2 = analysis_positions[v2 as usize];
-            let p3 = analysis_positions[v3 as usize];
-            let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
-            if m.determinant().abs() < 1e-30 {
-                continue;
-            }
-            let Some(inv) = m.try_inverse() else {
-                continue;
-            };
-            let b = inv * (probe - p0);
-            let b0 = 1.0 - b.x - b.y - b.z;
-            let bs = [b0, b.x, b.y, b.z];
-            let min_b = bs.iter().copied().fold(f64::INFINITY, f64::min);
-
-            if min_b >= tol_bary {
-                let d = bs[0] * displacement_per_vertex[v0 as usize]
-                    + bs[1] * displacement_per_vertex[v1 as usize]
-                    + bs[2] * displacement_per_vertex[v2 as usize]
-                    + bs[3] * displacement_per_vertex[v3 as usize];
-                v.x += d.x * amplify;
-                v.y += d.y * amplify;
-                v.z += d.z * amplify;
-                applied = true;
-                break;
-            }
-            if min_b > best_outside_min_b {
-                best_outside_min_b = min_b;
-                best_outside_t = Some(t);
-            }
-        }
-
-        if !applied {
-            if let Some(t) = best_outside_t {
-                let [v0, v1, v2, v3] = mesh.tet_vertices(t);
-                let p0 = analysis_positions[v0 as usize];
-                let p1 = analysis_positions[v1 as usize];
-                let p2 = analysis_positions[v2 as usize];
-                let p3 = analysis_positions[v3 as usize];
-                let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
-                if let Some(inv) = m.try_inverse() {
-                    let b = inv * (probe - p0);
-                    let b0 = 1.0 - b.x - b.y - b.z;
-                    let mut bs = [b0.max(0.0), b.x.max(0.0), b.y.max(0.0), b.z.max(0.0)];
-                    let sum: f64 = bs.iter().sum();
-                    if sum > 0.0 {
-                        for x in &mut bs {
-                            *x /= sum;
-                        }
-                        let d = bs[0] * displacement_per_vertex[v0 as usize]
-                            + bs[1] * displacement_per_vertex[v1 as usize]
-                            + bs[2] * displacement_per_vertex[v2 as usize]
-                            + bs[3] * displacement_per_vertex[v3 as usize];
-                        v.x += d.x * amplify;
-                        v.y += d.y * amplify;
-                        v.z += d.z * amplify;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(attr)
-}
