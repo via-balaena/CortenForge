@@ -2408,12 +2408,10 @@ fn main() -> Result<()> {
     // F2.3c — per-step deformed PLY series. One design_surface_deformed
     // per ramp step (16 total — row 24 uses N_RAMP_STEPS=16 for finer
     // resolution on the axial-zoned material partition). amplify=10
-    // makes Yeoh's mm-scale deformations visible.
-    let rest_positions = &final_step
-        .final_step_data
-        .as_ref()
-        .expect("final_step_data present")
-        .rest_positions;
+    // makes Yeoh's mm-scale deformations visible. Reuse
+    // `final_data.rest_positions` from the F1 emit block above — same
+    // FinalStepData; no need to re-bind.
+    let rest_positions = &final_data.rest_positions;
     let amplify = 10.0_f64;
     for step_result in &results {
         let step_idx = step_result.step;

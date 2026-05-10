@@ -1795,15 +1795,12 @@ fn main() -> Result<()> {
     save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
 
     // F2.3c — per-step deformed PLY series. One design_surface_deformed
-    // per ramp step (12 total). rest_positions is constant (deterministic
+    // per ramp step (16 total). rest_positions is constant (deterministic
     // BCC + IS → bit-equal mesh per step); deformation evolves per step.
     // amplify=10 makes Yeoh's mm-scale deformations visible on the
-    // ~50 mm body.
-    let rest_positions = &final_step
-        .final_step_data
-        .as_ref()
-        .expect("final_step_data present")
-        .rest_positions;
+    // ~50 mm body. Reuse `final_data.rest_positions` from the F1 emit
+    // block above — same FinalStepData; no need to re-bind.
+    let rest_positions = &final_data.rest_positions;
     let amplify = 10.0_f64;
     for step_result in &results {
         let step_idx = step_result.step;

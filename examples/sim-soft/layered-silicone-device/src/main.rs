@@ -150,6 +150,22 @@
 //!      production target), `design_surface` follows the scan's actual
 //!      shape rather than the BCC lattice's approximation — the
 //!      load-bearing payoff of the F2 arc.
+//!    - PLY `out/device_design_surface_deformed.ply`: same body via
+//!      [`sim_soft::viz::design_surface_deformed`] (F2.3a) but with
+//!      each surface vertex offset by the per-vertex displacement
+//!      field interpolated from the analysis-mesh deformation,
+//!      amplified by `amplify=10` to make row 20's mm-scale
+//!      deformation visible on the cm-scale body. Cavity walls show
+//!      clear inward squashing where the rigid scan-cube indenter
+//!      presses; the outer sphere boundary deforms much less
+//!      (silicone bulk absorbs the contact force).
+//!    - PLY `out/device_design_scene.ply`: body + scan-derived rigid
+//!      indenter merged into one mesh via [`sim_soft::viz::design_scene`]
+//!      (F2.3b), with a categorical `primitive_id` scalar (0 = body,
+//!      1 = indenter). cf-view's Scalar dropdown toggles between
+//!      `primitive_id` (categorical body-vs-indenter color split) and
+//!      the body's continuous scalars (deformation / strain / `material_id`;
+//!      uniform 0 on the rigid indenter).
 //!    - `verify_*` runtime gates (8 anchor groups, see "Numerical
 //!      anchors" in `README.md`).
 //!

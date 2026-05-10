@@ -1,6 +1,6 @@
 //! FEM-grade visualization helpers for soft-body meshes.
 //!
-//! Three primitives, organised by which mesh drives the display geometry:
+//! Six primitives, organised by which mesh drives the display geometry:
 //!
 //! ## Analysis-mesh primitives (F1)
 //!
@@ -60,7 +60,7 @@
 //! chunky polyhedral approximation with sliver-tet zigzag along
 //! curved boundaries.
 //!
-//! Both helpers consume any [`Mesh<M>`] sim-soft can produce and emit
+//! All helpers consume any [`Mesh<M>`] sim-soft can produce and emit
 //! [`AttributedMesh`] with multiple per-vertex scalars (each input
 //! per-tet scalar surfaces as one entry in the output `extras`
 //! `BTreeMap`). PLY emit is the caller's responsibility — pair with
@@ -165,7 +165,7 @@ impl std::fmt::Display for VizError {
 
 impl std::error::Error for VizError {}
 
-/// Axis-aligned cutting plane for [`slab_cut`].
+/// Axis-aligned cutting plane for [`slab_cut`] and [`design_slab_cut`].
 ///
 /// `axis` is 0 (x), 1 (y), or 2 (z); `value` is the plane's
 /// position along that axis. The plane normal points in the +`axis`
@@ -436,8 +436,9 @@ pub fn slab_cut<M: Material>(
 // allowed for grid index → f64 (grid count is bounded above by world
 // extent / resolution, which fits in f64 well below 2^53). `expect_used`
 // allowed on `insert_extra` — by construction each scalar Vec's length
-// equals the display vertex count we counted up. `unreachable` allowed
-// in the (na, nb)/(mask) match — 4 sign bits exhaust 16 cases.
+// equals the display vertex count we counted up. `unreachable` (in the
+// inner `dispatch_cell` match) is invariant-pinned: 4 sign bits exhaust
+// 16 cases.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -548,8 +549,9 @@ pub fn design_slab_cut<M: Material>(
 /// 2. Run [`mesh_offset::marching_cubes`] at iso-value 0 to extract
 ///    the closed boundary surface as a triangulated [`IndexedMesh`].
 /// 3. For each emitted display vertex, find the enclosing analysis
-///    tet via barycentric point-in-tet (walks all tets per probe;
-///    no slab filter since the surface is volumetric). Interpolate
+///    tet via barycentric point-in-tet on the per-call uniform-grid
+///    spatial index (`TetGrid` keyed by tet AABB; 3×3×3 cell window
+///    per probe, see Performance below). Interpolate
 ///    `volume_weighted_per_vertex_avg` scalars to the display vertex
 ///    via the barycentrics; fall back to nearest-tet (clipped +
 ///    renormalized barycentrics) for vertices just outside every
@@ -1318,8 +1320,10 @@ fn sample_analysis_at_point<M: Material>(
 /// Uniform 3D grid of analysis-tet IDs, keyed by tet AABB intersection.
 ///
 /// Cuts the per-probe scalar lookup from `O(n_tets)` to ~27 ×
-/// `tets_per_cell`, where `tets_per_cell` is small (1-5) on a uniform
-/// BCC + IS mesh when the cell size is `~2 ×` the average tet edge.
+/// `tets_per_cell`, where `tets_per_cell` is small (~3-5 on row-20-
+/// shaped BCC + IS meshes at the empirically-tuned `avg_tet_edge ×
+/// 0.25` cell size — see [`TetGrid::build`] for the cell-size choice
+/// rationale).
 ///
 /// Built once per [`design_surface`] call; cost is `O(n_tets × cells_
 /// per_tet)` to register each tet in every cell its AABB overlaps.
@@ -1365,9 +1369,9 @@ impl TetGrid {
         min -= Vec3::new(pad, pad, pad);
         max += Vec3::new(pad, pad, pad);
 
-        // Cell size: `~2 ×` average tet edge keeps cells small enough
-        // for fast lookup and large enough that most tets sit in 1-2
-        // cells per axis. Sample one edge per tet for the average.
+        // Cell size: empirically tuned at `avg_tet_edge × 0.25` (see
+        // the explicit comment + measurement just below the avg_edge
+        // computation). Sample one edge per tet for the average.
         let mut total_edge = 0.0_f64;
         for t in 0..n_tets as u32 {
             let [v0, v1, _v2, _v3] = mesh.tet_vertices(t);

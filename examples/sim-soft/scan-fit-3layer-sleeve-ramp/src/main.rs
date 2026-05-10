@@ -1625,11 +1625,9 @@ fn main() -> Result<()> {
     // rest_positions is constant across steps (deterministic BCC + IS
     // → bit-equal mesh). per_tet_psi varies per step. displacement
     // field varies per step (step's deformed - constant rest).
-    let rest_positions = &final_step
-        .final_step_data
-        .as_ref()
-        .expect("final_step_data present")
-        .rest_positions;
+    // Reuse `final_data.rest_positions` from the F1 emit block above
+    // — same FinalStepData; no need to re-bind.
+    let rest_positions = &final_data.rest_positions;
     // amplify=10 makes row 22's ~mm-scale deformations visible on the
     // ~50 mm body. amplify=1 (true scale) is below cf-view's perceptual
     // threshold; bump for visualization.
@@ -1779,7 +1777,7 @@ fn print_summary(
         "  out/sleeve_design_surface_final.ply  (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF)"
     );
     println!(
-        "  out/sleeve_design_surface_deformed_step_01.ply..step_12.ply  (F2.3c ramp animation series: per-step deformed body via sim_soft::viz::design_surface_deformed)"
+        "  out/sleeve_design_surface_deformed_step_01.ply..step_12.ply  (F2.3c ramp animation series: per-step deformed body via sim_soft::viz::design_surface_deformed at amplify=10)"
     );
     println!();
     println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");

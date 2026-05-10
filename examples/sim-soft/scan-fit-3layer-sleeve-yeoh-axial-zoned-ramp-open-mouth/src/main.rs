@@ -2479,16 +2479,15 @@ fn main() -> Result<()> {
     save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
 
     // F2.3c — per-step deformed PLY series. One design_surface_deformed
-    // per ramp step. The open-mouth fork's per-step series shows the
-    // cup walls progressively deforming inward as the cuboid plug
-    // descends through the open mouth (verify_force_displacement_*
-    // gates disabled here per the row-25 v1.6 spec; the visual
-    // animation is the load-bearing readout). amplify=10.
-    let rest_positions = &final_step
-        .final_step_data
-        .as_ref()
-        .expect("final_step_data present")
-        .rest_positions;
+    // per ramp step (8 total — row 25's open-mouth load case caps at
+    // 8 steps, vs row 24's 16, per the row-25 v1.6 spec). The open-
+    // mouth fork's per-step series shows the cup walls progressively
+    // deforming inward as the cuboid plug descends through the open
+    // mouth (verify_force_displacement_* gates disabled here per the
+    // row-25 v1.6 spec; the visual animation is the load-bearing
+    // readout). amplify=10. Reuse `final_data.rest_positions` from the
+    // F1 emit block above — same FinalStepData; no need to re-bind.
+    let rest_positions = &final_data.rest_positions;
     let amplify = 10.0_f64;
     for step_result in &results {
         let step_idx = step_result.step;
