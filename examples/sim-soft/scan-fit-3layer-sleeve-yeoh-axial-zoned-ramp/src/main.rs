@@ -273,8 +273,8 @@ use sim_soft::{
     Aabb3, BlendedScalarField, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField,
     Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
     PenaltyRigidContactYeohSolver, Plane, Sdf, SdfMeshedTetMesh, SiliconeMaterial, Solver,
-    SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, pick_vertices_by_predicate,
-    referenced_vertices, slab_cut,
+    SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, design_slab_cut, design_surface,
+    pick_vertices_by_predicate, referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -2367,6 +2367,50 @@ fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     save_ply_attributed(&slab_attr, &slab_ply_path, true)?;
 
+    // F2.2 design-mesh emits — `design_slab_cut` (x = 0 plane to match
+    // the F1 emit; reveals the axial-zoned material partition along
+    // the body's long axis) + `design_surface` (full 3D body via
+    // marching cubes on the design SDF) + barycentric scalar interp
+    // from the analysis tet mesh. Decouples display from sim per the
+    // F2 viz arc; emits alongside the F1 boundary_surface + slab_cut
+    // artifacts so both conventions stay available.
+    let body_for_viz = {
+        let scan = build_scan_solid();
+        let outer = build_outer_envelope(scan.clone());
+        build_sleeve_body(outer, scan)
+    };
+    let design_bounds = Aabb3::new(
+        Vec3::new(-BBOX_HALF_X, -BBOX_HALF_Y, -BBOX_HALF_Z),
+        Vec3::new(BBOX_HALF_X, BBOX_HALF_Y, BBOX_HALF_Z),
+    );
+    let design_resolution = CELL_SIZE / 4.0;
+
+    let design_slab_path = out_dir.join("sleeve_design_slab_cut_x0_final.ply");
+    let design_slab_attr = design_slab_cut(
+        &body_for_viz,
+        &mesh,
+        Plane {
+            axis: 0,
+            value: 0.0,
+        },
+        &design_bounds,
+        design_resolution,
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&design_slab_attr, &design_slab_path, true)?;
+
+    let design_surface_path = out_dir.join("sleeve_design_surface_final.ply");
+    let design_surface_attr = design_surface(
+        &body_for_viz,
+        &mesh,
+        &design_bounds,
+        design_resolution,
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
+
     // 9. Museum-plaque summary.
     print_summary(
         n_tets,
@@ -2493,6 +2537,12 @@ fn print_summary(
     println!(
         "  out/sleeve_slab_cut_x0_final.ply                       (cross-section at x = 0 via sim_soft::viz::slab_cut, marching-tet, per-vertex psi via linear interp)"
     );
+    println!(
+        "  out/sleeve_design_slab_cut_x0_final.ply                (cross-section at x = 0 via sim_soft::viz::design_slab_cut, marching-squares-filled on design SDF)"
+    );
+    println!(
+        "  out/sleeve_design_surface_final.ply                    (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF)"
+    );
     println!();
     println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");
     println!(
@@ -2502,6 +2552,14 @@ fn print_summary(
     println!(
         "  cargo run -p cf-viewer --release -- \
          examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp/out/sleeve_slab_cut_x0_final.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp/out/sleeve_design_slab_cut_x0_final.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp/out/sleeve_design_surface_final.ply"
     );
     println!();
     println!("Optional matplotlib post-processing (force-displacement + max_disp curves):");
