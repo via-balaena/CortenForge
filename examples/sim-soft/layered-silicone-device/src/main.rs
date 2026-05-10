@@ -128,6 +128,17 @@
 //!      displacement at the equator from one cut — the same
 //!      view the pre-F1.5 z-slab centroid cloud expressed, but as
 //!      a proper triangulated surface.
+//!    - PLY `out/device_design_slab_cut_z0.ply`: same equatorial
+//!      cut at `z = 0` via [`sim_soft::viz::design_slab_cut`]
+//!      (F2.0 lift). Marching-squares-filled on the design SDF
+//!      (`Solid::sphere(R_OUTER).subtract(scan_cube)`) — produces a
+//!      smooth circle minus a sharp axis-aligned square cross-section,
+//!      decoupled from the analysis-mesh discretization. Per-vertex
+//!      scalars come from barycentric interp against the analysis
+//!      tet mesh, so the same three scalars surface but rendered on
+//!      the design intent rather than the polyhedral approximation.
+//!      Pair with the F1 `slab_cut` artifact for the analysis-mesh-
+//!      vs-design-mesh side-by-side that motivated the F2 arc.
 //!    - `verify_*` runtime gates (8 anchor groups, see "Numerical
 //!      anchors" in `README.md`).
 //!
@@ -172,7 +183,7 @@
 //! faer's sparse Cholesky); debug mode would take many minutes for
 //! what runs in seconds release.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -189,7 +200,7 @@ use sim_soft::{
     Aabb3, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField, Material, MaterialField,
     Mesh, MeshingHints, NewtonStep, PenaltyRigidContact, PenaltyRigidContactSolver, Plane,
     SceneInitial, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
-    boundary_surface, pick_vertices_by_predicate, referenced_vertices, slab_cut,
+    boundary_surface, design_slab_cut, pick_vertices_by_predicate, referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -1172,18 +1183,20 @@ fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     save_ply_attributed(&slab_attr, &slab_ply_path, true)?;
 
-    // F2.0 prototype — DESIGN-mesh slab cut at z = 0. Marching-squares
-    // on the design SDF (sphere - scan_cube) + barycentric scalar
-    // interpolation from the analysis tet mesh. Emits alongside the
-    // tet-based artifact for side-by-side eyes-on-pixels comparison.
-    // Lift to `sim_soft::viz::design_slab_cut` at F2.0-B.
+    // F2.0 design-mesh slab cut at z = 0. Marching-squares on the design
+    // SDF (sphere - scan_cube) + barycentric scalar interpolation from
+    // the analysis tet mesh — decouples display from sim mesh per the
+    // F2 viz arc, so the cross-section is a clean smooth circle minus
+    // sharp axis-aligned square regardless of the analysis-mesh
+    // discretization. Emits alongside the F1 tet-based artifact so
+    // both visualization conventions stay available.
     let body_for_viz = build_body(build_scan_fixture());
     let design_slab_bounds = Aabb3::new(
         Vec3::new(-BBOX_HALF_EXTENT, -BBOX_HALF_EXTENT, -BBOX_HALF_EXTENT),
         Vec3::new(BBOX_HALF_EXTENT, BBOX_HALF_EXTENT, BBOX_HALF_EXTENT),
     );
     let design_slab_resolution = CELL_SIZE / 4.0;
-    let design_slab_attr = design_slab_cut_proto(
+    let design_slab_attr = design_slab_cut(
         &body_for_viz,
         &inspection_mesh,
         Plane {
@@ -1193,7 +1206,8 @@ fn main() -> Result<()> {
         &design_slab_bounds,
         design_slab_resolution,
         &per_tet_scalars,
-    )?;
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     let design_slab_path = out_dir.join("device_design_slab_cut_z0.ply");
     save_ply_attributed(&design_slab_attr, &design_slab_path, true)?;
 
@@ -1278,7 +1292,7 @@ fn print_summary(
         "  out/device_slab_cut_z0.ply        (cross-section at z = 0 via sim_soft::viz::slab_cut)"
     );
     println!(
-        "  out/device_design_slab_cut_z0.ply (F2.0 prototype: marching-squares on design SDF + barycentric scalar interp from analysis tets)"
+        "  out/device_design_slab_cut_z0.ply (cross-section at z = 0 via sim_soft::viz::design_slab_cut, marching-squares-filled on design SDF + barycentric scalar interp)"
     );
     println!();
     println!("View with cf-view (workspace's unified visual-review viewer):");
@@ -1317,577 +1331,3 @@ const _: () = {
 // than just magnitude).
 #[allow(dead_code)]
 type _UnusedVector3Anchor = Vector3<f64>;
-
-// =============================================================================
-// F2.0 prototype — design-mesh slab cut
-// =============================================================================
-//
-// Inline scratch fn matching the F1.0 row-24 pattern: hack-it-in here,
-// eyes-on-pixels gate against the existing tet-based `slab_cut` artifact,
-// then lift to `sim_soft::viz::design_slab_cut` at sub-leaf B.
-//
-// Architecture per `project_sim_soft_viz_arc.md` §F2:
-// 1. Sample the design SDF on a 2D grid in the cutting plane.
-// 2. Marching-squares-filled cell sweep emits interior triangles. 16
-//    cases; saddle (0b0101 / 0b1010) resolves via `sdf.eval(cell_center)`.
-// 3. Cross-edge dedup by (sorted-corner-index) edge key; corner dedup
-//    by (iv * nu + iu) flat-grid index. Both share one Vec of display
-//    positions.
-// 4. Per-display-vertex scalars come from barycentric point-in-tet on
-//    the analysis mesh's slab-filtered tet subset; fallback is
-//    nearest-tet-centroid for SDF-surface points just outside any
-//    analysis tet (boundary discretization slop).
-//
-// CCW (u, v) ordering picks (uu, vv) such that uu × vv = +plane.axis,
-// matching F1's slab_cut outward-winding convention so cf-view's
-// single-sided lighting renders correctly without per-callsite winding
-// flips.
-//
-// # F2.0-A eyes-on-pixels result (2026-05-10)
-//
-// Side-by-side cf-view comparison of the prototype vs the F1 tet-based
-// `slab_cut` at z = 0 confirms the F2 thesis: the prototype produces a
-// clean smooth circle-minus-square cross-section, while the F1 tet-based
-// output shows a jagged sawtooth boundary AND a wide diagonal "missing
-// region" gap where the body cross-section has no triangles at all.
-//
-// The diagonal gap is a SEPARATE upstream issue in `SdfMeshedTetMesh::
-// from_sdf` (BCC + Isosurface Stuffing produces a band of missing tets
-// roughly along a lattice diagonal for this geometry). The F2.0 prototype
-// reveals it as a thin scalar discontinuity rather than a geometric gap
-// — the design-mesh covers the full body geometry; the scalar interp
-// just falls back to nearest-tet across the gap, producing a faint line
-// instead of a void. This is exactly the F2 architectural payoff: graphics
-// === design intent, analysis-mesh artifacts disappear at any coarseness.
-// The remaining thin scalar-discontinuity line is documentation that the
-// analysis mesh has a problem — to be fixed in a separate followup, not
-// in the F2 viz arc.
-
-#[allow(
-    // Prototype: deliberately verbose case dispatch + closure boilerplate
-    // we'll trim at the F2.0-B lift; pinning lint cleanliness here would
-    // bias the prototype toward shape-it-pretty over shape-it-correctly.
-    // `suboptimal_flops` + `neg_cmp_op_on_partial_ord` are both small
-    // wins addressed cleanly at the F2.0-B lift; allowing here keeps the
-    // prototype literal to its algorithmic intent.
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::similar_names,
-    clippy::suboptimal_flops,
-    clippy::neg_cmp_op_on_partial_ord
-)]
-fn design_slab_cut_proto<M: Material>(
-    sdf: &dyn Sdf,
-    mesh: &dyn Mesh<M>,
-    plane: Plane,
-    bounds: &Aabb3,
-    resolution: f64,
-    per_tet_scalars: &BTreeMap<&str, &[f64]>,
-) -> Result<mesh_types::AttributedMesh> {
-    use mesh_types::AttributedMesh;
-    use nalgebra::Point3 as NaPoint3;
-
-    if plane.axis >= 3 {
-        anyhow::bail!("plane axis must be 0/1/2, got {}", plane.axis);
-    }
-    if !(resolution > 0.0) {
-        anyhow::bail!("resolution must be positive, got {resolution}");
-    }
-    let n_tets = mesh.n_tets();
-    for (&name, &values) in per_tet_scalars {
-        if values.len() != n_tets {
-            anyhow::bail!(
-                "per-tet scalar `{name}` length {} != n_tets {n_tets}",
-                values.len()
-            );
-        }
-    }
-
-    // Plane (u, v) axes per right-hand rule:
-    //   axis 0 (x): (u, v) = (y, z)  → y × z = +x
-    //   axis 1 (y): (u, v) = (z, x)  → z × x = +y
-    //   axis 2 (z): (u, v) = (x, y)  → x × y = +z
-    let (uu, vv) = match plane.axis {
-        0 => (1usize, 2usize),
-        1 => (2usize, 0usize),
-        _ => (0usize, 1usize),
-    };
-
-    let u_min = bounds.min[uu];
-    let u_max = bounds.max[uu];
-    let v_min = bounds.min[vv];
-    let v_max = bounds.max[vv];
-
-    let nu_minus_1 = ((u_max - u_min) / resolution).ceil().max(1.0) as usize;
-    let nv_minus_1 = ((v_max - v_min) / resolution).ceil().max(1.0) as usize;
-    let nu = nu_minus_1 + 1;
-    let nv = nv_minus_1 + 1;
-    let du = (u_max - u_min) / nu_minus_1 as f64;
-    let dv = (v_max - v_min) / nv_minus_1 as f64;
-
-    let pos3_corner = |iu: usize, iv: usize| -> [f64; 3] {
-        let mut p = [0.0_f64; 3];
-        p[plane.axis] = plane.value;
-        p[uu] = u_min + iu as f64 * du;
-        p[vv] = v_min + iv as f64 * dv;
-        p
-    };
-    let pos3_uv = |u: f64, v: f64| -> [f64; 3] {
-        let mut p = [0.0_f64; 3];
-        p[plane.axis] = plane.value;
-        p[uu] = u;
-        p[vv] = v;
-        p
-    };
-
-    // Sample SDF at every grid corner.
-    let mut sdf_grid = vec![0.0_f64; nu * nv];
-    for iv in 0..nv {
-        for iu in 0..nu {
-            let p = pos3_corner(iu, iv);
-            sdf_grid[iv * nu + iu] = sdf.eval(NaPoint3::new(p[0], p[1], p[2]));
-        }
-    }
-
-    // Volume-weighted per-vertex scalars on the analysis mesh.
-    let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
-    let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
-        .iter()
-        .map(|&name| volume_weighted_per_vertex_scalar(mesh, per_tet_scalars[&name]))
-        .collect();
-
-    // Pre-filter analysis tets that intersect the cutting plane along
-    // `plane.axis`. Per-display-vertex search walks this subset only.
-    let analysis_positions = mesh.positions();
-    let slab_tets: Vec<u32> = (0..n_tets as u32)
-        .filter(|&t| {
-            let [v0, v1, v2, v3] = mesh.tet_vertices(t);
-            let coords = [v0, v1, v2, v3].map(|v| analysis_positions[v as usize][plane.axis]);
-            let lo = coords.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = coords.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            lo <= plane.value && plane.value <= hi
-        })
-        .collect();
-
-    let mut display_positions: Vec<[f64; 3]> = Vec::new();
-    let mut display_faces: Vec<[u32; 3]> = Vec::new();
-    let mut corner_to_idx: HashMap<usize, u32> = HashMap::new();
-    let mut edge_to_idx: HashMap<(usize, usize), u32> = HashMap::new();
-
-    let corner_key = |iu: usize, iv: usize| -> usize { iv * nu + iu };
-
-    let emit_corner =
-        |iu: usize, iv: usize, dp: &mut Vec<[f64; 3]>, c2i: &mut HashMap<usize, u32>| -> u32 {
-            let key = corner_key(iu, iv);
-            if let Some(&idx) = c2i.get(&key) {
-                return idx;
-            }
-            let idx = dp.len() as u32;
-            dp.push(pos3_corner(iu, iv));
-            c2i.insert(key, idx);
-            idx
-        };
-
-    let emit_edge = |iu_a: usize,
-                     iv_a: usize,
-                     iu_b: usize,
-                     iv_b: usize,
-                     dp: &mut Vec<[f64; 3]>,
-                     e2i: &mut HashMap<(usize, usize), u32>|
-     -> u32 {
-        let ka = corner_key(iu_a, iv_a);
-        let kb = corner_key(iu_b, iv_b);
-        let key = if ka < kb { (ka, kb) } else { (kb, ka) };
-        if let Some(&idx) = e2i.get(&key) {
-            return idx;
-        }
-        let idx = dp.len() as u32;
-        let sa = sdf_grid[ka];
-        let sb = sdf_grid[kb];
-        // Caller-side invariant: only called when sa and sb straddle 0.
-        let t = sa / (sa - sb);
-        let pa = pos3_corner(iu_a, iv_a);
-        let pb = pos3_corner(iu_b, iv_b);
-        dp.push([
-            pa[0] + (pb[0] - pa[0]) * t,
-            pa[1] + (pb[1] - pa[1]) * t,
-            pa[2] + (pb[2] - pa[2]) * t,
-        ]);
-        e2i.insert(key, idx);
-        idx
-    };
-
-    // Sweep cells; emit triangles per 16-case marching-squares dispatch.
-    for iv in 0..nv_minus_1 {
-        for iu in 0..nu_minus_1 {
-            let s00 = sdf_grid[corner_key(iu, iv)];
-            let s10 = sdf_grid[corner_key(iu + 1, iv)];
-            let s11 = sdf_grid[corner_key(iu + 1, iv + 1)];
-            let s01 = sdf_grid[corner_key(iu, iv + 1)];
-
-            // bit 0 = corner 00, bit 1 = 10, bit 2 = 11, bit 3 = 01.
-            // Strict `< 0` (not `<= 0`) avoids spurious triangles when a
-            // grid corner lands exactly on the design SDF's zero-set
-            // (e.g., at the carved cube's faces in row 20, where many
-            // grid corners share the cube's axis-aligned x/y values).
-            // With `<= 0`, a corner with sdf == 0 plus an adjacent corner
-            // strictly inside a subtractive primitive (sdf > 0 = outside
-            // body) produces a pentagon/trapezoid whose interior triangle
-            // pokes INTO the subtracted region. Strict `<` classifies
-            // boundary corners as outside, so cells fully inside the
-            // subtracted region emit zero triangles (correct: subtracted
-            // region is hollow).
-            let mask = (u8::from(s00 < 0.0))
-                | (u8::from(s10 < 0.0) << 1)
-                | (u8::from(s11 < 0.0) << 2)
-                | (u8::from(s01 < 0.0) << 3);
-
-            // Closures for each named vertex (corners + 4 cross-edges).
-            let c00 = |dp: &mut Vec<[f64; 3]>, c2i: &mut HashMap<usize, u32>| {
-                emit_corner(iu, iv, dp, c2i)
-            };
-            let c10 = |dp: &mut Vec<[f64; 3]>, c2i: &mut HashMap<usize, u32>| {
-                emit_corner(iu + 1, iv, dp, c2i)
-            };
-            let c11 = |dp: &mut Vec<[f64; 3]>, c2i: &mut HashMap<usize, u32>| {
-                emit_corner(iu + 1, iv + 1, dp, c2i)
-            };
-            let c01 = |dp: &mut Vec<[f64; 3]>, c2i: &mut HashMap<usize, u32>| {
-                emit_corner(iu, iv + 1, dp, c2i)
-            };
-            // EA = bottom (00→10), EB = right (10→11), EC = top (11→01),
-            // ED = left (01→00). Each is on the cell edge between two
-            // straddling corners.
-            let ea = |dp: &mut Vec<[f64; 3]>, e2i: &mut HashMap<(usize, usize), u32>| {
-                emit_edge(iu, iv, iu + 1, iv, dp, e2i)
-            };
-            let eb = |dp: &mut Vec<[f64; 3]>, e2i: &mut HashMap<(usize, usize), u32>| {
-                emit_edge(iu + 1, iv, iu + 1, iv + 1, dp, e2i)
-            };
-            let ec = |dp: &mut Vec<[f64; 3]>, e2i: &mut HashMap<(usize, usize), u32>| {
-                emit_edge(iu + 1, iv + 1, iu, iv + 1, dp, e2i)
-            };
-            let ed = |dp: &mut Vec<[f64; 3]>, e2i: &mut HashMap<(usize, usize), u32>| {
-                emit_edge(iu, iv + 1, iu, iv, dp, e2i)
-            };
-
-            match mask {
-                0b0000 => {}
-                0b0001 => {
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c00, i_ea, i_ed]);
-                }
-                0b0010 => {
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c10, i_eb, i_ea]);
-                }
-                0b0100 => {
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c11, i_ec, i_eb]);
-                }
-                0b1000 => {
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c01, i_ed, i_ec]);
-                }
-                0b0011 => {
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c00, i_c10, i_eb]);
-                    display_faces.push([i_c00, i_eb, i_ed]);
-                }
-                0b0110 => {
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c10, i_c11, i_ec]);
-                    display_faces.push([i_c10, i_ec, i_ea]);
-                }
-                0b1100 => {
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c11, i_c01, i_ed]);
-                    display_faces.push([i_c11, i_ed, i_eb]);
-                }
-                0b1001 => {
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    display_faces.push([i_c00, i_ea, i_ec]);
-                    display_faces.push([i_c00, i_ec, i_c01]);
-                }
-                0b0101 => {
-                    // Saddle: corners 00 + 11 inside; resolve via center.
-                    let center = pos3_uv(
-                        u_min + (iu as f64 + 0.5) * du,
-                        v_min + (iv as f64 + 0.5) * dv,
-                    );
-                    let center_in = sdf.eval(NaPoint3::new(center[0], center[1], center[2])) < 0.0;
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    if center_in {
-                        // Hexagon {C00, EA, EB, C11, EC, ED}, fan from C00.
-                        display_faces.push([i_c00, i_ea, i_eb]);
-                        display_faces.push([i_c00, i_eb, i_c11]);
-                        display_faces.push([i_c00, i_c11, i_ec]);
-                        display_faces.push([i_c00, i_ec, i_ed]);
-                    } else {
-                        display_faces.push([i_c00, i_ea, i_ed]);
-                        display_faces.push([i_c11, i_ec, i_eb]);
-                    }
-                }
-                0b1010 => {
-                    // Saddle: corners 10 + 01 inside.
-                    let center = pos3_uv(
-                        u_min + (iu as f64 + 0.5) * du,
-                        v_min + (iv as f64 + 0.5) * dv,
-                    );
-                    let center_in = sdf.eval(NaPoint3::new(center[0], center[1], center[2])) < 0.0;
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    if center_in {
-                        // Hexagon {C10, EB, EC, C01, ED, EA}, fan from C10.
-                        display_faces.push([i_c10, i_eb, i_ec]);
-                        display_faces.push([i_c10, i_ec, i_c01]);
-                        display_faces.push([i_c10, i_c01, i_ed]);
-                        display_faces.push([i_c10, i_ed, i_ea]);
-                    } else {
-                        display_faces.push([i_c10, i_eb, i_ea]);
-                        display_faces.push([i_c01, i_ed, i_ec]);
-                    }
-                }
-                0b1110 => {
-                    // Pentagon {EA, C10, C11, C01, ED}, fan from EA.
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_ea, i_c10, i_c11]);
-                    display_faces.push([i_ea, i_c11, i_c01]);
-                    display_faces.push([i_ea, i_c01, i_ed]);
-                }
-                0b1101 => {
-                    // Pentagon {C00, EA, EB, C11, C01}, fan from C00.
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_ea = ea(&mut display_positions, &mut edge_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    display_faces.push([i_c00, i_ea, i_eb]);
-                    display_faces.push([i_c00, i_eb, i_c11]);
-                    display_faces.push([i_c00, i_c11, i_c01]);
-                }
-                0b1011 => {
-                    // Pentagon {C00, C10, EB, EC, C01}, fan from C00.
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_eb = eb(&mut display_positions, &mut edge_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    display_faces.push([i_c00, i_c10, i_eb]);
-                    display_faces.push([i_c00, i_eb, i_ec]);
-                    display_faces.push([i_c00, i_ec, i_c01]);
-                }
-                0b0111 => {
-                    // Pentagon {C00, C10, C11, EC, ED}, fan from C00.
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_ec = ec(&mut display_positions, &mut edge_to_idx);
-                    let i_ed = ed(&mut display_positions, &mut edge_to_idx);
-                    display_faces.push([i_c00, i_c10, i_c11]);
-                    display_faces.push([i_c00, i_c11, i_ec]);
-                    display_faces.push([i_c00, i_ec, i_ed]);
-                }
-                0b1111 => {
-                    let i_c00 = c00(&mut display_positions, &mut corner_to_idx);
-                    let i_c10 = c10(&mut display_positions, &mut corner_to_idx);
-                    let i_c11 = c11(&mut display_positions, &mut corner_to_idx);
-                    let i_c01 = c01(&mut display_positions, &mut corner_to_idx);
-                    display_faces.push([i_c00, i_c10, i_c11]);
-                    display_faces.push([i_c00, i_c11, i_c01]);
-                }
-                _ => unreachable!("4 bits → 16 cases, all covered"),
-            }
-        }
-    }
-
-    // Per-vertex scalar lookup via barycentric on slab-filtered tets.
-    let mut display_scalars_by_name: Vec<Vec<f64>> = scalar_names
-        .iter()
-        .map(|_| Vec::with_capacity(display_positions.len()))
-        .collect();
-    for &p in &display_positions {
-        let probe = Vec3::new(p[0], p[1], p[2]);
-        let scalars = sample_analysis_at_point(
-            probe,
-            mesh,
-            analysis_positions,
-            &slab_tets,
-            &per_vertex_by_scalar,
-        );
-        for (i, val) in scalars.iter().enumerate() {
-            display_scalars_by_name[i].push(*val);
-        }
-    }
-
-    let mut geometry = IndexedMesh::new();
-    geometry.vertices = display_positions
-        .iter()
-        .map(|p| Point3::new(p[0], p[1], p[2]))
-        .collect();
-    geometry.faces = display_faces;
-
-    let mut attr = AttributedMesh::new(geometry);
-    for (i, &name) in scalar_names.iter().enumerate() {
-        let f32_values: Vec<f32> = display_scalars_by_name[i]
-            .iter()
-            .map(|&v| v as f32)
-            .collect();
-        attr.insert_extra(name.to_string(), f32_values)
-            .map_err(|e| anyhow::anyhow!("insert_extra({name}): {e:?}"))?;
-    }
-    Ok(attr)
-}
-
-/// Volume-weighted projection of a per-tet scalar to per-vertex.
-/// Mirrors `sim_soft::viz::volume_weighted_per_vertex_avg` (private to
-/// the F1 module; F2.0-B exposes the F1 helper for reuse).
-fn volume_weighted_per_vertex_scalar<M: Material>(mesh: &dyn Mesh<M>, per_tet: &[f64]) -> Vec<f64> {
-    let n_vertices = mesh.n_vertices();
-    let signed_vols = &mesh.quality().signed_volume;
-    let mut acc_val_vol = vec![0.0_f64; n_vertices];
-    let mut acc_vol = vec![0.0_f64; n_vertices];
-    #[allow(clippy::cast_possible_truncation)]
-    for t in 0..mesh.n_tets() {
-        let vol = signed_vols[t].abs();
-        let weighted = per_tet[t] * vol;
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t as u32);
-        for v in [v0, v1, v2, v3] {
-            acc_val_vol[v as usize] += weighted;
-            acc_vol[v as usize] += vol;
-        }
-    }
-    (0..n_vertices)
-        .map(|v| {
-            if acc_vol[v] > 0.0 {
-                acc_val_vol[v] / acc_vol[v]
-            } else {
-                0.0
-            }
-        })
-        .collect()
-}
-
-/// Find the analysis-mesh tet enclosing `probe` (if any) and return the
-/// barycentric-interpolated per-vertex scalars. Falls back to nearest-
-/// tet-centroid (per-vertex average over that tet's 4 verts) for points
-/// just outside any tet — typical for SDF-isosurface display vertices
-/// that fall in the polyhedral-boundary slop of the analysis mesh.
-#[allow(clippy::suboptimal_flops)]
-fn sample_analysis_at_point<M: Material>(
-    probe: Vec3,
-    mesh: &dyn Mesh<M>,
-    positions: &[Vec3],
-    slab_tets: &[u32],
-    per_vertex_by_scalar: &[Vec<f64>],
-) -> Vec<f64> {
-    let tol_bary = -1e-9;
-    let mut best_outside_t: Option<u32> = None;
-    let mut best_outside_min_b: f64 = f64::NEG_INFINITY;
-
-    for &t in slab_tets {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
-        let p0 = positions[v0 as usize];
-        let p1 = positions[v1 as usize];
-        let p2 = positions[v2 as usize];
-        let p3 = positions[v3 as usize];
-        let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
-        let det = m.determinant();
-        if det.abs() < 1e-30 {
-            continue;
-        }
-        let Some(inv) = m.try_inverse() else {
-            continue;
-        };
-        let rhs = probe - p0;
-        let b = inv * rhs;
-        let b0 = 1.0 - b.x - b.y - b.z;
-        let bs = [b0, b.x, b.y, b.z];
-        let min_b = bs.iter().copied().fold(f64::INFINITY, f64::min);
-        if min_b >= tol_bary {
-            // Inside (within tolerance) — interpolate per-vertex scalars.
-            return per_vertex_by_scalar
-                .iter()
-                .map(|pv| {
-                    bs[0] * pv[v0 as usize]
-                        + bs[1] * pv[v1 as usize]
-                        + bs[2] * pv[v2 as usize]
-                        + bs[3] * pv[v3 as usize]
-                })
-                .collect();
-        }
-        if min_b > best_outside_min_b {
-            best_outside_min_b = min_b;
-            best_outside_t = Some(t);
-        }
-    }
-
-    // Fallback: closest-bary tet, clipped + renormalized barycentrics.
-    if let Some(t) = best_outside_t {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
-        let p0 = positions[v0 as usize];
-        let p1 = positions[v1 as usize];
-        let p2 = positions[v2 as usize];
-        let p3 = positions[v3 as usize];
-        let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
-        if let Some(inv) = m.try_inverse() {
-            let rhs = probe - p0;
-            let b = inv * rhs;
-            let b0 = 1.0 - b.x - b.y - b.z;
-            let mut bs = [b0.max(0.0), b.x.max(0.0), b.y.max(0.0), b.z.max(0.0)];
-            let sum: f64 = bs.iter().sum();
-            if sum > 0.0 {
-                for v in &mut bs {
-                    *v /= sum;
-                }
-                return per_vertex_by_scalar
-                    .iter()
-                    .map(|pv| {
-                        bs[0] * pv[v0 as usize]
-                            + bs[1] * pv[v1 as usize]
-                            + bs[2] * pv[v2 as usize]
-                            + bs[3] * pv[v3 as usize]
-                    })
-                    .collect();
-            }
-        }
-    }
-    // Last resort: zeros (no slab tets — shouldn't happen if the plane
-    // cuts the body).
-    per_vertex_by_scalar.iter().map(|_| 0.0).collect()
-}
