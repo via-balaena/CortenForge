@@ -345,6 +345,7 @@ members = [
     "examples/sim-soft/scan-fit-3layer-sleeve-ramp",
     "examples/sim-soft/scan-fit-3layer-sleeve-yeoh-ramp",
     "examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp",
+    "examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth",
     "examples/sim-soft/spade-delaunay-spike",
 
     # Foundation (active development)
