@@ -181,6 +181,7 @@ use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_sdf::SignedDistanceField;
 use mesh_types::{IndexedMesh, Point3, Vector3};
+use nalgebra::Matrix3;
 use serde_json::{Value, json};
 use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::{DRAGON_SKIN_10A, ECOFLEX_00_30};
@@ -601,6 +602,29 @@ fn solve_static(
         rest_positions,
         step,
     }
+}
+
+// =============================================================================
+// Per-tet deformation gradient (mirrors row 22 / row 23 / row 24's
+// `deformation_gradient` helper; private to this row, used only for
+// the F1.5-follow-up per-tet psi computation feeding the viz emits).
+// =============================================================================
+
+fn deformation_gradient(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3]) -> Matrix3<f64> {
+    let r0 = rest[verts[0] as usize];
+    let r1 = rest[verts[1] as usize];
+    let r2 = rest[verts[2] as usize];
+    let r3 = rest[verts[3] as usize];
+    let c0 = curr[verts[0] as usize];
+    let c1 = curr[verts[1] as usize];
+    let c2 = curr[verts[2] as usize];
+    let c3 = curr[verts[3] as usize];
+    let d_rest = Matrix3::from_columns(&[r1 - r0, r2 - r0, r3 - r0]);
+    let d_curr = Matrix3::from_columns(&[c1 - c0, c2 - c0, c3 - c0]);
+    let d_rest_inv = d_rest
+        .try_inverse()
+        .expect("D_rest is invertible by verify_quality_floors signed-volume gate");
+    d_curr * d_rest_inv
 }
 
 // =============================================================================
@@ -1095,9 +1119,28 @@ fn main() -> Result<()> {
         })
         .collect();
     let material_id_per_tet: Vec<f64> = shell_idx_per_tet.iter().map(|&s| s as f64).collect();
+
+    // Per-tet strain-energy density (`psi_j_per_m3`) at the static
+    // fit pose. Same `Material::energy(F_t)` per-tet computation
+    // rows 22/23/24 use; row 20 didn't track this in pre-F1.5 prose
+    // because the device's headline JSON readouts were force +
+    // displacement (cavity-fit tightness story). The viz emits get
+    // it now as a 3rd scalar so cf-view's dropdown surfaces the
+    // strain-energy-density heatmap on the boundary surface + cut.
+    let materials_for_psi = inspection_mesh.materials();
+    let psi_per_tet: Vec<f64> = tets
+        .iter()
+        .enumerate()
+        .map(|(t, &verts)| {
+            let f = deformation_gradient(verts, &rest_positions, &positions_vec3);
+            materials_for_psi[t].energy(&f)
+        })
+        .collect();
+
     let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
     per_tet_scalars.insert("displacement_magnitude", &displacement_per_tet);
     per_tet_scalars.insert("material_id", &material_id_per_tet);
+    per_tet_scalars.insert("psi_j_per_m3", &psi_per_tet);
 
     let bd_ply_path = out_dir.join("device_boundary.ply");
     let bd_attr =

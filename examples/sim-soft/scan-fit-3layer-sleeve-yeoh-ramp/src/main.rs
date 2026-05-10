@@ -731,6 +731,16 @@ struct FinalStepData {
     rest_positions: Vec<Vec3>,
     deformed_positions: Vec<Vec3>,
     pair_records: Vec<Value>,
+    /// Per-tet strain-energy density (J/m³), indexed by tet ID,
+    /// length = `n_tets`. Captured at the final step only as a
+    /// scalar for the F1.1-lifted
+    /// [`sim_soft::viz::boundary_surface`] and
+    /// [`sim_soft::viz::slab_cut`] PLY emits — same
+    /// `Material::energy(F_t)` per-tet computation as the radial
+    /// Ψ̄ aggregates above, just banked into a vector for
+    /// downstream visualization. Dropped at intermediate steps to
+    /// keep memory bounded.
+    per_tet_psi: Vec<f64>,
 }
 
 // =============================================================================
@@ -878,12 +888,18 @@ fn solve_ramp(
             .map(|i| (positions_k[i] - rest_pos_k[i]).norm())
             .fold(0.0, f64::max);
 
-        // Per-tet Ψ aggregates.
+        // Per-tet Ψ aggregates + per-tet psi vector at final step.
+        let is_final = k == N_RAMP_STEPS - 1;
         let materials = inspection_mesh.materials();
         let mut sum_in = 0.0;
         let mut sum_mi = 0.0;
         let mut sum_ou = 0.0;
         let mut max_psi_outer = f64::NEG_INFINITY;
+        let mut per_tet_psi_final: Vec<f64> = if is_final {
+            Vec::with_capacity(tets.len())
+        } else {
+            Vec::new()
+        };
         for (t, &verts) in tets.iter().enumerate() {
             let f = deformation_gradient(verts, &rest_pos_k, &positions_k);
             let psi_t = materials[t].energy(&f);
@@ -896,6 +912,9 @@ fn solve_ramp(
                         max_psi_outer = psi_t;
                     }
                 }
+            }
+            if is_final {
+                per_tet_psi_final.push(psi_t);
             }
         }
         let mean_psi_inner_j_per_m3 = if n_inner == 0 {
@@ -915,7 +934,7 @@ fn solve_ramp(
         };
 
         // Final step: capture per-pair detail for JSON + PLY emit.
-        let final_step_data = if k == N_RAMP_STEPS - 1 {
+        let final_step_data = if is_final {
             let pair_records: Vec<Value> = readouts
                 .iter()
                 .map(|r| {
@@ -940,6 +959,7 @@ fn solve_ramp(
                 rest_positions: rest_pos_k,
                 deformed_positions: positions_k,
                 pair_records,
+                per_tet_psi: per_tet_psi_final,
             })
         } else {
             None
@@ -1721,6 +1741,7 @@ fn main() -> Result<()> {
     let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
     per_tet_scalars.insert("displacement_magnitude", &displacement_per_tet);
     per_tet_scalars.insert("material_id", &material_id_per_tet);
+    per_tet_scalars.insert("psi_j_per_m3", &final_data.per_tet_psi);
 
     let bd_ply_path = out_dir.join("sleeve_boundary_final.ply");
     let bd_attr = boundary_surface(&mesh, &per_tet_scalars).map_err(|e| anyhow::anyhow!("{e}"))?;
