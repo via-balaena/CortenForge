@@ -71,7 +71,7 @@ anyhow = { workspace = true }
 # `phi == 0` yields `outside_weight = 0.5` exactly per the doc-comment).
 # Same convention as rows 1-23.
 approx = { workspace = true }
-# JSON emit for `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp.json` —
+# JSON emit for `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp_open_mouth.json` —
 # final-step scalars + 3-shell × 2-zone provenance (Yeoh-flavored
 # nested schema: per-shell proximal_anchor + distal_anchor with μ, c2,
 # λ, density, source-tag, validity bounds at both ends) +

@@ -2,24 +2,25 @@
 # requires-python = ">=3.11"
 # dependencies = ["matplotlib"]
 # ///
-"""Plot the row 24 axial-zoned Yeoh quasi-static ramp's force-displacement curve.
+"""Plot the row 25 open-mouth Yeoh quasi-static ramp's force-displacement curve.
 
-Reads `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp.json`
+Reads `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp_open_mouth.json`
 (specifically the `ramp_curve` array of per-step records), produces
 a dual-axis plot of penetration depth vs force_total_z (left) and
-depth vs max_disp (right). Soft-tip / stiff-anchor axial zoning
-shifts the force-displacement curve relative to row 23's uniform
-proximal stack — distal half's stiffer anchor stack increases peak
-force at deep penetration; max_disp expected lower than row 23 since
-distal stiffness compresses the deformation field toward the
-proximal half. Newton iter counts are annotated above each
-force-curve point.
+depth vs max_disp (right). Row 25's cuboid-plug + open-mouth load
+case differs structurally from row 23/24: force_z is NEGATIVE (plug
+presses on cavity walls in the xy-interference band, force_on_soft
+points -z) and the trajectory is non-monotone during contact-onset
+(early steps converge in iter=0 with the rest-state penalty residual
+already below tolerance, then steps 5-8 begin iterating as the plug
+descends past the rim into the cavity walls). Newton iter counts
+annotated above each force-curve point.
 
-Mirrors row 23's `plot_ramp.py` PEP 723 structure verbatim — only
-the JSON path + title text differ.
+Inherited from row 24's `plot_ramp.py` shape — JSON path + title +
+package name updated for row 25.
 
 Usage:
-    uv run examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp/plot_ramp.py
+    uv run examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/plot_ramp.py
 """
 
 import json
@@ -30,11 +31,11 @@ import matplotlib.pyplot as plt
 
 def main() -> None:
     here = Path(__file__).resolve().parent
-    json_path = here / "out" / "scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp.json"
+    json_path = here / "out" / "scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp_open_mouth.json"
     if not json_path.exists():
         raise SystemExit(
             f"missing {json_path}; run "
-            "`cargo run -p example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp --release` first"
+            "`cargo run -p example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth --release` first"
         )
 
     with json_path.open() as f:
@@ -99,9 +100,9 @@ def main() -> None:
     # + fontsize=9 layout). Three short lines + fontsize=8 keep the
     # whole title legible at 8×5 / 150 DPI.
     title = (
-        f"row 24 axial-zoned Yeoh quasi-static ramp — {len(ramp_curve)} × "
+        f"row 25 open-mouth Yeoh quasi-static ramp — {len(ramp_curve)} × "
         f"{ramp_curve[1]['depth_m'] * 1000.0 - ramp_curve[0]['depth_m'] * 1000.0:.1f} mm "
-        f"to {final['depth_m'] * 1000.0:.1f} mm\n"
+        f"to {final['depth_m'] * 1000.0:.1f} mm (cuboid plug into open mouth)\n"
         f"soft-tip / stiff-anchor; split z = {axial['axial_split_z_m']*1000:.0f} mm, "
         f"band = ±{axial['axial_band_half_width_m']*1000:.0f} mm\n"
         f"final force_z = {final['force_total_z_n']:+.1f} N, "
@@ -110,14 +111,16 @@ def main() -> None:
     )
     ax_force.set_title(title, fontsize=8)
 
-    # Legend in upper-left — same as row 23 (force convex + max_disp
-    # linear-ish, both climbing left-to-right; upper-left is empty).
+    # Legend in upper-left — inherited from row 23/24 layout. Force_z
+    # for row 25 is NEGATIVE (plug-on-cavity-wall contact) so the
+    # curve sits below the x-axis instead of climbing; legend
+    # placement still works because the upper-left quadrant is empty.
     lines = line_force + line_disp
     labels = [line.get_label() for line in lines]
     ax_force.legend(lines, labels, loc="upper left")
 
-    # Add headroom so the iter-count annotation at step 16 doesn't
-    # crowd the chart frame.
+    # Add headroom so the iter-count annotation at the final step
+    # doesn't crowd the chart frame.
     ax_force.margins(y=0.08)
     ax_disp.margins(y=0.08)
 
