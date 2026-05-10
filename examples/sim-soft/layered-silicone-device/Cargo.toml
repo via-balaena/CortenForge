@@ -50,6 +50,13 @@ mesh-types = { workspace = true }
 # cloud with categorical `material_id` + sequential
 # `displacement_magnitude`).
 mesh-io = { workspace = true }
+# `ScalarGrid` + `marching_cubes` + `MarchingCubesConfig` for the F2.3b
+# `design_scene_proto` prototype: marches the contact-primitive SDFs
+# (rigid scan-derived indenter) into geometry-only triangle meshes
+# that get merged into the body's design_surface output. Lifted to
+# `sim_soft::viz::design_scene` at F2.3b-B; row 20 dep removed at
+# F2.3b-C when the inline prototype is replaced by the public API call.
+mesh-offset = { workspace = true }
 # `Result<()>` return + error-context wrapping for the JSON + PLY emit
 # steps. Same convention as rows 1-19.
 anyhow = { workspace = true }

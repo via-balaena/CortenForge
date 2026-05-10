@@ -1265,6 +1265,24 @@ fn main() -> Result<()> {
     let deformed_path = out_dir.join("device_design_surface_deformed.ply");
     save_ply_attributed(&deformed_attr, &deformed_path, true)?;
 
+    // F2.3b prototype — DESIGN SCENE: body + contact primitives
+    // merged into one PLY with a categorical primitive_id scalar.
+    // cf-view toggles between primitive_id (categorical body-vs-
+    // indenter color split) and the body's continuous scalars
+    // (displacement_magnitude / psi_j_per_m3 / material_id; uniform 0
+    // on the indenter). Lift to `sim_soft::viz::design_scene` at F2.3b-B.
+    let scan_for_overlay = build_scan_fixture();
+    let scene_attr = design_scene_proto(
+        &body_for_viz,
+        &[&scan_for_overlay as &dyn Sdf],
+        &inspection_mesh,
+        &design_slab_bounds,
+        design_surface_resolution,
+        &per_tet_scalars,
+    )?;
+    let scene_path = out_dir.join("device_design_scene.ply");
+    save_ply_attributed(&scene_attr, &scene_path, true)?;
+
     // 11. Museum-plaque summary.
     print_summary(
         n_tets,
@@ -1354,6 +1372,9 @@ fn print_summary(
     println!(
         "  out/device_design_surface_deformed.ply (deformed body via sim_soft::viz::design_surface_deformed at amplify=10; deformed-shape rendering with stress contours)"
     );
+    println!(
+        "  out/device_design_scene.ply       (F2.3b prototype: body + scan indenter merged; primitive_id scalar distinguishes body=0 vs indenter=1)"
+    );
     println!();
     println!("View with cf-view (workspace's unified visual-review viewer):");
     println!(
@@ -1375,6 +1396,10 @@ fn print_summary(
     println!(
         "  cargo run -p cf-viewer --release -- \
          examples/sim-soft/layered-silicone-device/out/device_design_surface_deformed.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/layered-silicone-device/out/device_design_scene.ply"
     );
 }
 
@@ -1399,3 +1424,95 @@ const _: () = {
 // than just magnitude).
 #[allow(dead_code)]
 type _UnusedVector3Anchor = Vector3<f64>;
+
+// =============================================================================
+// F2.3b prototype — design scene (body + contact primitive overlay)
+// =============================================================================
+//
+// Inline scratch fn matching the F1.0 / F2.0-A / F2.1-A / F2.3a-A
+// pattern. Calls public design_surface for the body (with scalar
+// interp) and mesh_offset::marching_cubes directly for each contact
+// primitive (geometry-only — rigid bodies have no scalar field).
+// Merges all into one AttributedMesh with a categorical primitive_id
+// scalar (0 = body, 1+ = each contact). Other scalars padded with 0.0
+// for contact-primitive vertices.
+//
+// Lift to `sim_soft::viz::design_scene` at F2.3b-B with proper API
+// + unit tests + module-level docstring update.
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
+fn design_scene_proto<M: Material>(
+    body_sdf: &dyn Sdf,
+    contact_sdfs: &[&dyn Sdf],
+    mesh: &dyn Mesh<M>,
+    bounds: &Aabb3,
+    resolution: f64,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+) -> Result<mesh_types::AttributedMesh> {
+    use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
+    use nalgebra::Point3 as NaPoint3;
+
+    // 1. Body: design_surface with scalar interp.
+    let mut body_attr = design_surface(body_sdf, mesh, bounds, resolution, per_tet_scalars)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let body_vert_count = body_attr.geometry.vertices.len();
+    let mut primitive_id: Vec<f32> = vec![0.0_f32; body_vert_count];
+
+    // 2. Contacts: marching cubes only (no scalar interp; rigid).
+    for (contact_idx, &contact_sdf) in contact_sdfs.iter().enumerate() {
+        let id_value = (contact_idx + 1) as f32;
+        let mut grid = ScalarGrid::from_bounds(
+            NaPoint3::new(bounds.min.x, bounds.min.y, bounds.min.z),
+            NaPoint3::new(bounds.max.x, bounds.max.y, bounds.max.z),
+            resolution,
+            0,
+        );
+        let (nx, ny, nz) = grid.dimensions();
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let p = grid.position(ix, iy, iz);
+                    grid.set(ix, iy, iz, contact_sdf.eval(p));
+                }
+            }
+        }
+        let surface = marching_cubes(&grid, &MarchingCubesConfig::at_iso_value(0.0));
+
+        let base_v = body_attr.geometry.vertices.len() as u32;
+        for v in &surface.vertices {
+            body_attr.geometry.vertices.push(*v);
+            primitive_id.push(id_value);
+        }
+        for face in &surface.faces {
+            body_attr
+                .geometry
+                .faces
+                .push([face[0] + base_v, face[1] + base_v, face[2] + base_v]);
+        }
+    }
+
+    // 3. Pad existing extras (displacement_magnitude / material_id /
+    //    psi_j_per_m3) with 0.0 for contact-primitive vertices. The
+    //    contact primitives are rigid; no FEM scalar is meaningful, so
+    //    a uniform 0 is the most honest fill.
+    let total_vertices = body_attr.geometry.vertices.len();
+    let extra_keys: Vec<String> = body_attr.extras.keys().cloned().collect();
+    for key in extra_keys {
+        if let Some(values) = body_attr.extras.get_mut(&key) {
+            while values.len() < total_vertices {
+                values.push(0.0_f32);
+            }
+        }
+    }
+
+    // 4. Insert primitive_id as the new categorical scalar.
+    body_attr
+        .insert_extra("primitive_id".to_string(), primitive_id)
+        .map_err(|e| anyhow::anyhow!("insert_extra(primitive_id): {e:?}"))?;
+
+    Ok(body_attr)
+}
