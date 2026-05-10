@@ -4897,6 +4897,7 @@ dependencies = [
  "approx 0.5.1",
  "cf-design",
  "mesh-io",
+ "mesh-offset",
  "mesh-sdf",
  "mesh-types",
  "nalgebra",
