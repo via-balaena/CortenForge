@@ -197,7 +197,12 @@ pub fn boundary_surface<M: Material>(
 #[allow(
     clippy::cast_possible_truncation,
     clippy::expect_used,
-    clippy::similar_names
+    clippy::similar_names,
+    // The `_ => unreachable!()` arm in the (na, nb) match is invariant-
+    // pinned: a tet has exactly 4 vertices, so na + nb == 4 and the 5
+    // explicit arms (4,0)/(0,4)/(1,3)/(3,1)/(2,2) exhaust the space.
+    // The `unreachable!()` cannot fire under any well-formed input.
+    clippy::unreachable
 )]
 pub fn slab_cut<M: Material>(
     mesh: &dyn Mesh<M>,
