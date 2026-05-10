@@ -238,12 +238,19 @@ const BBOX_HALF_EXTENT: f64 = 0.12;
 // Constants — meshing + solver
 // =============================================================================
 
-/// BCC lattice spacing (m). Same `cell_size = h/2 = 0.02` as rows 11 +
-/// 16 — IV-3/IV-4/IV-5's mid-refinement; `~5–7 k tets` after the
-/// scan-shaped cavity carve. Bit-pin to row 11 + 16's tet count is
-/// expected to NOT hold (the cavity differs); first-run capture
-/// produces row-20-specific counts.
-const CELL_SIZE: f64 = 0.02;
+/// BCC lattice spacing (m). 2× finer than the original row-20 0.02 m
+/// (which was inherited from rows 11 + 16's IV-3/IV-4/IV-5
+/// mid-refinement choice; `~5–7 k tets` after the scan-shaped cavity
+/// carve). The original coarse mesh approximated the spherical outer
+/// surface as a low-poly envelope (only ~5 lattice cells across the
+/// `R_OUTER = 0.10 m` radius), which the F1.5-lifted
+/// `boundary_surface` + `slab_cut` PLY emits faithfully exposed —
+/// the pre-F1.5 z-slab centroid PLY hid the surface approximation
+/// because centroids are interior-only. Refined to 0.01 m (~10
+/// lattice cells across the radius, ~56 k tets) so the spherical
+/// envelope is visibly smoother in the slab cut. Captured-bits
+/// constants below are first-run captures at the refined mesh.
+const CELL_SIZE: f64 = 0.01;
 
 /// Static-regime time step (s). Mirrors rows 11 + 14 + 16 + 18's
 /// `STATIC_DT` verbatim: at large `dt`, the backward-Euler residual's
@@ -252,10 +259,15 @@ const CELL_SIZE: f64 = 0.02;
 /// converges to the static equilibrium far below `tol = 1e-10`.
 const STATIC_DT: f64 = 1.0;
 
-/// Newton iter cap. Mirrors rows 11 + 16's `MAX_NEWTON_ITER`
-/// verbatim: empirical convergence on similar geometries is ≤ 5 iters;
-/// `50` leaves headroom for future material / load perturbations.
-const MAX_NEWTON_ITER: usize = 50;
+/// Newton iter cap. Bumped from 50 → 200 alongside the
+/// `CELL_SIZE = 0.02 → 0.01` refinement: at the finer mesh the
+/// initial overlap between the cavity walls (which sit on the scan
+/// SDF zero-set by construction) and the indenter spans more
+/// vertices, so the contact-onset Newton iteration's residual takes
+/// more steps to drive below `tol = 1e-10`. Empirical convergence
+/// at the refined mesh is ~70-100 iters at first call from rest;
+/// 200 leaves comfortable headroom for future load perturbations.
+const MAX_NEWTON_ITER: usize = 200;
 
 // =============================================================================
 // Constants — tolerances
@@ -310,58 +322,59 @@ const F4_PROVENANCE_EXACT_TOL: f64 = 0.0;
 /// cube at `(0.015, 0, 0)`) differs from rows 11 + 16's `R_CAVITY =
 /// 0.04 m` sphere — pattern (y) cross-row bit-equal continuity does
 /// NOT extend.
-const N_TETS_EXACT: usize = 6860;
+const N_TETS_EXACT: usize = 51_670;
 
 /// Total mesh vertex count, including BCC lattice corners not
 /// referenced by any tet.
-const N_VERTICES_EXACT: usize = 4773;
+const N_VERTICES_EXACT: usize = 32_496;
 
-/// Vertices referenced by at least one tet. `N_VERTICES_EXACT -
-/// N_REFERENCED_EXACT = 3197` orphan BCC lattice corners excluded
-/// from solver participation.
-const N_REFERENCED_EXACT: usize = 1576;
+/// Vertices referenced by at least one tet.
+const N_REFERENCED_EXACT: usize = 10_259;
 
 /// Outer-surface Dirichlet-pinned vertex count (every vertex with
-/// `(‖p‖ - R_OUTER).abs() < CELL_SIZE / 2 = 0.01`, filtered to
-/// referenced set). Diverges from rows 11 + 16's `734` — the cavity-
-/// asymmetry reduces the BCC-lattice population in the outer-surface
-/// band slightly (the offset cube cuts into the body's interior, so a
-/// handful of BCC vertices that would have been outer-band lattice
-/// neighbours are unreferenced after the cavity carve).
-const N_PINNED_EXACT: usize = 710;
+/// `(‖p‖ - R_OUTER).abs() < CELL_SIZE / 2 = 0.005`, filtered to
+/// referenced set).
+const N_PINNED_EXACT: usize = 2_800;
 
 /// Per-shell tet counts at first capture. `INNER + MIDDLE + OUTER ==
 /// N_TETS_EXACT` by construction (every tet centroid sits in exactly
 /// one of the three radial bins).
-const N_INNER_TETS_EXACT: usize = 856;
-const N_MIDDLE_TETS_EXACT: usize = 2035;
-const N_OUTER_TETS_EXACT: usize = 3969;
+const N_INNER_TETS_EXACT: usize = 5_330;
+const N_MIDDLE_TETS_EXACT: usize = 15_401;
+const N_OUTER_TETS_EXACT: usize = 30_939;
 
-/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.01`
-/// z-slab cut for the cf-view PLY artifact (~10 % of full body,
-/// mirroring rows 11 + 16's z-slab fraction).
-const N_INNER_TETS_ZSLAB_EXACT: usize = 144;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 270;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 258;
+/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.005`
+/// z-slab cut. Survives at the F1.5 retrofit as a cheap centroid
+/// regression filter (no PLY data emitted there anymore).
+const N_INNER_TETS_ZSLAB_EXACT: usize = 548;
+const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 912;
+const N_OUTER_TETS_ZSLAB_EXACT: usize = 1_225;
 
 /// Active contact-pair count at the static fit pose. Contact band is
 /// `sd < d̂ = PENALTY_DHAT_DEFAULT` (sim-soft's crate-default value);
 /// at rest the cavity walls already kiss the indenter, so all cavity-
-/// surface vertices within `d̂` are active.
-const N_CONTACT_PAIRS_EXACT: usize = 127;
+/// surface vertices within `d̂` are active. Larger at the refined
+/// mesh than the original 0.02 m capture (~127) because the
+/// cavity-wall vertex population scales with surface area at finer
+/// lattice resolution.
+const N_CONTACT_PAIRS_EXACT: usize = 532;
 
 /// Total z-component of the rest-state contact reaction force (N).
 /// `force_on_soft = +κ · (d̂ - sd) · normal`; the z-sum captures the
 /// axial component of the fit-tightness force at zero indenter
 /// displacement.
-/// `f64::from_bits(0x3fc4_0790_5286_ba74) ≈ 1.5648e-1 N`.
-const FORCE_TOTAL_Z_REF_BITS: u64 = 0x3fc4_0790_5286_ba74;
+/// `f64::from_bits(0x3f9c_cd87_639b_8cf0) ≈ 2.8128e-2 N`. Smaller
+/// magnitude than the original 0.02 m capture because at the refined
+/// mesh the cavity-wall surface integration is finer and the +z and
+/// -z contributions cancel more closely (the cavity is z-symmetric
+/// up to BCC lattice artifacts; the offset is only in x).
+const FORCE_TOTAL_Z_REF_BITS: u64 = 0x3f9c_cd87_639b_8cf0;
 
 /// Cavity-wall mean displacement-magnitude bits (m) at the static fit
 /// pose. Mean over the active-contact-pair vertex set of
 /// `(deformed - rest).norm()`.
-/// `f64::from_bits(0x3f53_d596_7b05_b573) ≈ 1.2106e-3 m`.
-const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f53_d596_7b05_b573;
+/// `f64::from_bits(0x3f40_a094_dbee_1514) ≈ 5.0742e-4 m`.
+const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f40_a094_dbee_1514;
 
 // =============================================================================
 // Programmatic 12-tri cube scan fixture
