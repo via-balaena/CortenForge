@@ -1,6 +1,13 @@
 //! Marching cubes algorithm for isosurface extraction.
 //!
 //! Extracts a triangle mesh from a 3D scalar field at a given iso-value.
+//! Edge intersections are deduplicated across cells via a hashmap cache,
+//! so the output mesh is properly indexed (each unique cross-vertex
+//! appears once in `vertices`, referenced by every triangle that uses
+//! it). Manifold output: smooth shading and per-vertex attributes work
+//! as expected.
+
+use std::collections::HashMap;
 
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;
@@ -37,10 +44,13 @@ impl MarchingCubesConfig {
 ///
 /// # Returns
 ///
-/// A triangle mesh representing the isosurface.
+/// A triangle mesh representing the isosurface. Vertices are
+/// deduplicated across cells via an edge cache (one cross-vertex per
+/// unique global grid edge), so the output is properly indexed.
 #[must_use]
 pub fn marching_cubes(grid: &ScalarGrid, config: &MarchingCubesConfig) -> IndexedMesh {
     let mut mesh = IndexedMesh::new();
+    let mut edge_cache: HashMap<(usize, usize, usize, u8), u32> = HashMap::new();
     let iso = config.iso_value;
 
     let (nx, ny, nz) = grid.dimensions();
@@ -49,7 +59,7 @@ pub fn marching_cubes(grid: &ScalarGrid, config: &MarchingCubesConfig) -> Indexe
     for iz in 0..nz - 1 {
         for iy in 0..ny - 1 {
             for ix in 0..nx - 1 {
-                process_cell(grid, ix, iy, iz, iso, &mut mesh);
+                process_cell(grid, ix, iy, iz, iso, &mut mesh, &mut edge_cache);
             }
         }
     }
@@ -58,6 +68,11 @@ pub fn marching_cubes(grid: &ScalarGrid, config: &MarchingCubesConfig) -> Indexe
 }
 
 /// Process a single cell in the marching cubes algorithm.
+//
+// `cast_possible_truncation` allowed: vertex count is bounded by
+// the grid's cell count, well below `u32::MAX` in any practical
+// deployment.
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn process_cell(
     grid: &ScalarGrid,
     ix: usize,
@@ -65,6 +80,7 @@ fn process_cell(
     iz: usize,
     iso: f64,
     mesh: &mut IndexedMesh,
+    edge_cache: &mut HashMap<(usize, usize, usize, u8), u32>,
 ) {
     // Get the 8 corner values
     let values = [
@@ -109,36 +125,62 @@ fn process_cell(
         grid.position(ix, iy + 1, iz + 1),
     ];
 
-    // Compute edge vertices
-    let mut edge_vertices = [Point3::origin(); 12];
-
+    // Resolve each crossed edge to a deduplicated global vertex index.
+    // The cache key is (lower_corner_x, lower_corner_y, lower_corner_z,
+    // axis), where `axis` is 0/1/2 for x/y/z, so each unique grid edge
+    // maps to exactly one cross-vertex regardless of how many cells
+    // share it.
+    let mut edge_indices = [0_u32; 12];
     for edge_idx in 0..12 {
-        if edge_mask & (1 << edge_idx) != 0 {
-            let (c0, c1) = EDGE_CORNERS[edge_idx];
-            edge_vertices[edge_idx] =
-                interpolate_vertex(corners[c0], corners[c1], values[c0], values[c1], iso);
+        if edge_mask & (1 << edge_idx) == 0 {
+            continue;
         }
+        let (dx, dy, dz, axis) = EDGE_CACHE_OFFSETS[edge_idx];
+        let key = (ix + dx, iy + dy, iz + dz, axis);
+        let vert_idx = if let Some(&cached) = edge_cache.get(&key) {
+            cached
+        } else {
+            let (c0, c1) = EDGE_CORNERS[edge_idx];
+            let v = interpolate_vertex(corners[c0], corners[c1], values[c0], values[c1], iso);
+            let new_idx = mesh.vertices.len() as u32;
+            mesh.vertices.push(v);
+            edge_cache.insert(key, new_idx);
+            new_idx
+        };
+        edge_indices[edge_idx] = vert_idx;
     }
 
-    // Generate triangles
+    // Generate triangles using cached indices.
     let tri_table = &TRI_TABLE[cube_index as usize];
     let mut i = 0;
     while i < 16 && tri_table[i] != -1 {
         let e0 = tri_table[i] as usize;
         let e1 = tri_table[i + 1] as usize;
         let e2 = tri_table[i + 2] as usize;
-
-        let base_idx = mesh.vertices.len() as u32;
-
-        mesh.vertices.push(edge_vertices[e0]);
-        mesh.vertices.push(edge_vertices[e1]);
-        mesh.vertices.push(edge_vertices[e2]);
-
-        mesh.faces.push([base_idx, base_idx + 1, base_idx + 2]);
-
+        mesh.faces
+            .push([edge_indices[e0], edge_indices[e1], edge_indices[e2]]);
         i += 3;
     }
 }
+
+/// Per-edge offsets `(dx, dy, dz, axis)` for translating the 12 cell-
+/// local edge indices into global grid edge keys. Each grid edge spans
+/// exactly one axis (0=x, 1=y, 2=z), and `(ix + dx, iy + dy, iz + dz)`
+/// is the lower corner of that edge in global grid coordinates.
+const EDGE_CACHE_OFFSETS: [(usize, usize, usize, u8); 12] = [
+    (0, 0, 0, 0), // edge 0: 0→1, +x at (ix,   iy,   iz)
+    (1, 0, 0, 1), // edge 1: 1→2, +y at (ix+1, iy,   iz)
+    (0, 1, 0, 0), // edge 2: 2→3, +x at (ix,   iy+1, iz)
+    (0, 0, 0, 1), // edge 3: 3→0, +y at (ix,   iy,   iz)
+    (0, 0, 1, 0), // edge 4: 4→5, +x at (ix,   iy,   iz+1)
+    (1, 0, 1, 1), // edge 5: 5→6, +y at (ix+1, iy,   iz+1)
+    (0, 1, 1, 0), // edge 6: 6→7, +x at (ix,   iy+1, iz+1)
+    (0, 0, 1, 1), // edge 7: 7→4, +y at (ix,   iy,   iz+1)
+    (0, 0, 0, 2), // edge 8: 0→4, +z at (ix,   iy,   iz)
+    (1, 0, 0, 2), // edge 9: 1→5, +z at (ix+1, iy,   iz)
+    (1, 1, 0, 2), // edge 10: 2→6, +z at (ix+1, iy+1, iz)
+    (0, 1, 0, 2), // edge 11: 3→7, +z at (ix,   iy+1, iz)
+];
 
 /// Interpolate vertex position along an edge.
 fn interpolate_vertex(p0: Point3<f64>, p1: Point3<f64>, v0: f64, v1: f64, iso: f64) -> Point3<f64> {

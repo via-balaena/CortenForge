@@ -80,7 +80,10 @@ pub use sdf_bridge::{
     Aabb3, DifferenceSdf, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf,
 };
 pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
-pub use viz::{Plane, VizError, boundary_surface, slab_cut};
+pub use viz::{
+    Plane, VizError, boundary_surface, design_scene, design_slab_cut, design_surface,
+    design_surface_deformed, slab_cut,
+};
 
 /// Three-component column vector in world space, `f64`. Matches
 /// `nalgebra::Vector3<f64>` so per-element locals can plug into

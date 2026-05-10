@@ -128,6 +128,44 @@
 //!      displacement at the equator from one cut — the same
 //!      view the pre-F1.5 z-slab centroid cloud expressed, but as
 //!      a proper triangulated surface.
+//!    - PLY `out/device_design_slab_cut_z0.ply`: same equatorial
+//!      cut at `z = 0` via [`sim_soft::viz::design_slab_cut`]
+//!      (F2.0 lift). Marching-squares-filled on the design SDF
+//!      (`Solid::sphere(R_OUTER).subtract(scan_cube)`) — produces a
+//!      smooth circle minus a sharp axis-aligned square cross-section,
+//!      decoupled from the analysis-mesh discretization. Per-vertex
+//!      scalars come from barycentric interp against the analysis
+//!      tet mesh, so the same three scalars surface but rendered on
+//!      the design intent rather than the polyhedral approximation.
+//!      Pair with the F1 `slab_cut` artifact for the analysis-mesh-
+//!      vs-design-mesh side-by-side that motivated the F2 arc.
+//!    - PLY `out/device_design_surface.ply`: full 3D body via
+//!      [`sim_soft::viz::design_surface`] (F2.1 lift). Marching cubes
+//!      on the design SDF — produces a smooth sphere boundary
+//!      (without the BCC sliver-tet zigzag the F1 `boundary_surface`
+//!      artifact shows on curved surfaces). Same scalar-transfer
+//!      convention as `design_slab_cut`. Pair with the F1
+//!      `boundary_surface` artifact for the analysis-mesh-vs-design-
+//!      mesh boundary side-by-side. On organic 3D-scanned bodies (the
+//!      production target), `design_surface` follows the scan's actual
+//!      shape rather than the BCC lattice's approximation — the
+//!      load-bearing payoff of the F2 arc.
+//!    - PLY `out/device_design_surface_deformed.ply`: same body via
+//!      [`sim_soft::viz::design_surface_deformed`] (F2.3a) but with
+//!      each surface vertex offset by the per-vertex displacement
+//!      field interpolated from the analysis-mesh deformation,
+//!      amplified by `amplify=10` to make row 20's mm-scale
+//!      deformation visible on the cm-scale body. Cavity walls show
+//!      clear inward squashing where the rigid scan-cube indenter
+//!      presses; the outer sphere boundary deforms much less
+//!      (silicone bulk absorbs the contact force).
+//!    - PLY `out/device_design_scene.ply`: body + scan-derived rigid
+//!      indenter merged into one mesh via [`sim_soft::viz::design_scene`]
+//!      (F2.3b), with a categorical `primitive_id` scalar (0 = body,
+//!      1 = indenter). cf-view's Scalar dropdown toggles between
+//!      `primitive_id` (categorical body-vs-indenter color split) and
+//!      the body's continuous scalars (deformation / strain / `material_id`;
+//!      uniform 0 on the rigid indenter).
 //!    - `verify_*` runtime gates (8 anchor groups, see "Numerical
 //!      anchors" in `README.md`).
 //!
@@ -189,7 +227,8 @@ use sim_soft::{
     Aabb3, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField, Material, MaterialField,
     Mesh, MeshingHints, NewtonStep, PenaltyRigidContact, PenaltyRigidContactSolver, Plane,
     SceneInitial, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
-    boundary_surface, pick_vertices_by_predicate, referenced_vertices, slab_cut,
+    boundary_surface, design_scene, design_slab_cut, design_surface, design_surface_deformed,
+    pick_vertices_by_predicate, referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -1172,6 +1211,94 @@ fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     save_ply_attributed(&slab_attr, &slab_ply_path, true)?;
 
+    // F2.0 design-mesh slab cut at z = 0. Marching-squares on the design
+    // SDF (sphere - scan_cube) + barycentric scalar interpolation from
+    // the analysis tet mesh — decouples display from sim mesh per the
+    // F2 viz arc, so the cross-section is a clean smooth circle minus
+    // sharp axis-aligned square regardless of the analysis-mesh
+    // discretization. Emits alongside the F1 tet-based artifact so
+    // both visualization conventions stay available.
+    let body_for_viz = build_body(build_scan_fixture());
+    let design_slab_bounds = Aabb3::new(
+        Vec3::new(-BBOX_HALF_EXTENT, -BBOX_HALF_EXTENT, -BBOX_HALF_EXTENT),
+        Vec3::new(BBOX_HALF_EXTENT, BBOX_HALF_EXTENT, BBOX_HALF_EXTENT),
+    );
+    let design_slab_resolution = CELL_SIZE / 4.0;
+    let design_slab_attr = design_slab_cut(
+        &body_for_viz,
+        &inspection_mesh,
+        Plane {
+            axis: 2,
+            value: 0.0,
+        },
+        &design_slab_bounds,
+        design_slab_resolution,
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let design_slab_path = out_dir.join("device_design_slab_cut_z0.ply");
+    save_ply_attributed(&design_slab_attr, &design_slab_path, true)?;
+
+    // F2.1 design-mesh boundary surface. Marching cubes on the design
+    // SDF (sphere - scan_cube) + barycentric scalar interp from the
+    // analysis tet mesh — produces a clean smooth sphere boundary
+    // (no BCC sliver-tet zigzag like the F1 boundary_surface). Emits
+    // alongside the F1 tet-based artifact so both visualization
+    // conventions stay available.
+    let design_surface_resolution = CELL_SIZE / 4.0;
+    let design_surface_attr = design_surface(
+        &body_for_viz,
+        &inspection_mesh,
+        &design_slab_bounds,
+        design_surface_resolution,
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let design_surface_path = out_dir.join("device_design_surface.ply");
+    save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
+
+    // F2.3a deformed design surface — apply per-vertex displacement
+    // (interpolated from the analysis-mesh deformation field via
+    // barycentric) to the rest-config design_surface vertices,
+    // amplified for visibility on row 20's mm-scale deformation.
+    // The cavity walls show clear inward squashing where the rigid
+    // scan-cube indenter presses from inside; the outer sphere
+    // boundary deforms much less (silicone bulk absorbs the force).
+    let displacement_per_vertex: Vec<Vec3> = (0..n_vertices)
+        .map(|i| positions_vec3[i] - rest_positions[i])
+        .collect();
+    let amplify = 10.0_f64;
+    let deformed_attr = design_surface_deformed(
+        &body_for_viz,
+        &inspection_mesh,
+        &design_slab_bounds,
+        design_surface_resolution,
+        &per_tet_scalars,
+        &displacement_per_vertex,
+        amplify,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let deformed_path = out_dir.join("device_design_surface_deformed.ply");
+    save_ply_attributed(&deformed_attr, &deformed_path, true)?;
+
+    // F2.3b design scene: body + contact primitives merged into one
+    // PLY with a categorical primitive_id scalar. cf-view toggles
+    // between primitive_id (categorical body-vs-indenter color split)
+    // and the body's continuous scalars (displacement_magnitude /
+    // psi_j_per_m3 / material_id; uniform 0 on the rigid indenter).
+    let scan_for_overlay = build_scan_fixture();
+    let scene_attr = design_scene(
+        &body_for_viz,
+        &[&scan_for_overlay as &dyn Sdf],
+        &inspection_mesh,
+        &design_slab_bounds,
+        design_surface_resolution,
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let scene_path = out_dir.join("device_design_scene.ply");
+    save_ply_attributed(&scene_attr, &scene_path, true)?;
+
     // 11. Museum-plaque summary.
     print_summary(
         n_tets,
@@ -1252,6 +1379,18 @@ fn print_summary(
     println!(
         "  out/device_slab_cut_z0.ply        (cross-section at z = 0 via sim_soft::viz::slab_cut)"
     );
+    println!(
+        "  out/device_design_slab_cut_z0.ply (cross-section at z = 0 via sim_soft::viz::design_slab_cut, marching-squares-filled on design SDF + barycentric scalar interp)"
+    );
+    println!(
+        "  out/device_design_surface.ply     (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF + barycentric scalar interp)"
+    );
+    println!(
+        "  out/device_design_surface_deformed.ply (deformed body via sim_soft::viz::design_surface_deformed at amplify=10; deformed-shape rendering with stress contours)"
+    );
+    println!(
+        "  out/device_design_scene.ply       (body + scan indenter merged via sim_soft::viz::design_scene; primitive_id scalar distinguishes body=0 vs indenter=1)"
+    );
     println!();
     println!("View with cf-view (workspace's unified visual-review viewer):");
     println!(
@@ -1261,6 +1400,22 @@ fn print_summary(
     println!(
         "  cargo run -p cf-viewer --release -- \
          examples/sim-soft/layered-silicone-device/out/device_slab_cut_z0.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/layered-silicone-device/out/device_design_slab_cut_z0.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/layered-silicone-device/out/device_design_surface.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/layered-silicone-device/out/device_design_surface_deformed.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/layered-silicone-device/out/device_design_scene.ply"
     );
 }
 

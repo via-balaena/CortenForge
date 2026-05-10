@@ -8756,6 +8756,7 @@ dependencies = [
  "cf-design",
  "faer",
  "getrandom 0.3.4",
+ "mesh-offset",
  "mesh-types",
  "nalgebra",
  "pollster",

@@ -319,8 +319,8 @@ use sim_soft::{
     Aabb3, BlendedScalarField, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField,
     Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
     PenaltyRigidContactYeohSolver, Plane, Sdf, SdfMeshedTetMesh, SiliconeMaterial, Solver,
-    SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, pick_vertices_by_predicate,
-    referenced_vertices, slab_cut,
+    SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, design_slab_cut, design_surface,
+    design_surface_deformed, pick_vertices_by_predicate, referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -980,6 +980,15 @@ struct RampStepResult {
     mean_psi_middle_j_per_m3: f64,
     mean_psi_outer_j_per_m3: f64,
     max_psi_outer_j_per_m3: f64,
+    /// Per-step deformed vertex positions. Always captured (F2.3c
+    /// needs these per-step for the `design_surface_deformed` PLY
+    /// series).
+    deformed_positions: Vec<Vec3>,
+    /// Per-tet strain-energy density (J/m³), indexed by tet ID,
+    /// length = `n_tets`. Captured every step (F2.3c needs per-step
+    /// psi for the ramp-animation PLY series); pre-F2.3c this was
+    /// final-step only and lived inside [`FinalStepData`].
+    per_tet_psi: Vec<f64>,
     /// Step 16 only: the per-pair readouts for JSON
     /// `final_contact_pairs` and the final-step PLY x-slab + the
     /// 9-cell zone × shell mean Ψ partition (intermediate steps drop
@@ -995,18 +1004,6 @@ struct FinalStepData {
     /// where `z = 0/1/2` is distal/band/proximal and `s = 0/1/2` is
     /// inner/middle/outer.
     mean_psi_zone_shell: [[f64; 3]; 3],
-    /// Per-tet strain-energy density (J/m³), indexed by tet ID, length =
-    /// `n_tets`. Persisted at the final step for the x-slab PLY's
-    /// `psi_j_per_m3` heatmap scalar (sim-soft viz arc option 1 baby
-    /// step — see [memo] for the gold-standard option 3 follow-up).
-    /// At intermediate steps this is dropped to keep memory bounded.
-    /// Same `Material::energy(F_t)` per-tet computation as the radial
-    /// and zone-shell aggregations; banking each value into the
-    /// vector is a per-tet store with cap-allocate at the start,
-    /// not a separate pass.
-    ///
-    /// [memo]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_sim_soft_viz_arc.md
-    per_tet_psi: Vec<f64>,
 }
 
 // =============================================================================
@@ -1156,11 +1153,7 @@ fn solve_ramp(
         // final step.
         let is_final = k == N_RAMP_STEPS - 1;
         let mut sum_zs: [[f64; 3]; 3] = [[0.0; 3]; 3];
-        let mut per_tet_psi_final: Vec<f64> = if is_final {
-            Vec::with_capacity(tets.len())
-        } else {
-            Vec::new()
-        };
+        let mut per_tet_psi: Vec<f64> = Vec::with_capacity(tets.len());
         for (t, &verts) in tets.iter().enumerate() {
             let f = deformation_gradient(verts, &rest_pos_k, &positions_k);
             let psi_t = materials[t].energy(&f);
@@ -1178,8 +1171,8 @@ fn solve_ramp(
             if is_final {
                 let z = zone_idx_per_tet[t];
                 sum_zs[z][s] += psi_t;
-                per_tet_psi_final.push(psi_t);
             }
+            per_tet_psi.push(psi_t);
         }
         let mean_psi_inner_j_per_m3 = if n_inner == 0 {
             0.0
@@ -1231,7 +1224,6 @@ fn solve_ramp(
                 rest_positions: rest_pos_k,
                 pair_records,
                 mean_psi_zone_shell,
-                per_tet_psi: per_tet_psi_final,
             })
         } else {
             None
@@ -1252,6 +1244,8 @@ fn solve_ramp(
             mean_psi_middle_j_per_m3,
             mean_psi_outer_j_per_m3,
             max_psi_outer_j_per_m3: max_psi_outer,
+            deformed_positions: positions_k,
+            per_tet_psi,
             final_step_data,
         });
 
@@ -2422,7 +2416,7 @@ fn main() -> Result<()> {
     // the same API; F1.6 ships row 25 with an open-mouth wrap that
     // exercises the open-boundary topology.
     let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
-    per_tet_scalars.insert("psi_j_per_m3", &final_data.per_tet_psi);
+    per_tet_scalars.insert("psi_j_per_m3", &final_step.per_tet_psi);
 
     let bd_ply_path = out_dir.join("sleeve_boundary_final.ply");
     let bd_attr = boundary_surface(&mesh, &per_tet_scalars).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2439,6 +2433,84 @@ fn main() -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     save_ply_attributed(&slab_attr, &slab_ply_path, true)?;
+
+    // F2.2 design-mesh emits — `design_slab_cut` (x = 0 plane) +
+    // `design_surface` (full 3D body via marching cubes) on the
+    // open-mouth design SDF. The cavity here is the EXTENDED cavity
+    // (pokes through the outer envelope on +z), so the design surface
+    // includes the open-mouth rim where the cavity wall meets the
+    // outer envelope — useful eyes-on-pixels validation that F2
+    // primitives handle the open-boundary topology cleanly.
+    let body_for_viz = {
+        let scan = build_scan_solid();
+        let outer = build_outer_envelope(scan);
+        build_sleeve_body(outer, build_cavity_solid_for_subtraction())
+    };
+    let design_bounds = Aabb3::new(
+        Vec3::new(-BBOX_HALF_X, -BBOX_HALF_Y, -BBOX_HALF_Z),
+        Vec3::new(BBOX_HALF_X, BBOX_HALF_Y, BBOX_HALF_Z),
+    );
+    let design_resolution = CELL_SIZE / 4.0;
+
+    let design_slab_path = out_dir.join("sleeve_design_slab_cut_x0_final.ply");
+    let design_slab_attr = design_slab_cut(
+        &body_for_viz,
+        &mesh,
+        Plane {
+            axis: 0,
+            value: 0.0,
+        },
+        &design_bounds,
+        design_resolution,
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&design_slab_attr, &design_slab_path, true)?;
+
+    let design_surface_path = out_dir.join("sleeve_design_surface_final.ply");
+    let design_surface_attr = design_surface(
+        &body_for_viz,
+        &mesh,
+        &design_bounds,
+        design_resolution,
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
+
+    // F2.3c — per-step deformed PLY series. One design_surface_deformed
+    // per ramp step (8 total — row 25's open-mouth load case caps at
+    // 8 steps, vs row 24's 16, per the row-25 v1.6 spec). The open-
+    // mouth fork's per-step series shows the cup walls progressively
+    // deforming inward as the cuboid plug descends through the open
+    // mouth (verify_force_displacement_* gates disabled here per the
+    // row-25 v1.6 spec; the visual animation is the load-bearing
+    // readout). amplify=10. Reuse `final_data.rest_positions` from the
+    // F1 emit block above — same FinalStepData; no need to re-bind.
+    let rest_positions = &final_data.rest_positions;
+    let amplify = 10.0_f64;
+    for step_result in &results {
+        let step_idx = step_result.step;
+        let step_displacement: Vec<Vec3> = (0..n_vertices)
+            .map(|i| step_result.deformed_positions[i] - rest_positions[i])
+            .collect();
+        let mut step_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        step_scalars.insert("psi_j_per_m3", &step_result.per_tet_psi);
+        let step_attr = design_surface_deformed(
+            &body_for_viz,
+            &mesh,
+            &design_bounds,
+            design_resolution,
+            &step_scalars,
+            &step_displacement,
+            amplify,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let step_path = out_dir.join(format!(
+            "sleeve_design_surface_deformed_step_{step_idx:02}.ply"
+        ));
+        save_ply_attributed(&step_attr, &step_path, true)?;
+    }
 
     // 9. Museum-plaque summary.
     print_summary(
@@ -2567,6 +2639,15 @@ fn print_summary(
     println!(
         "  out/sleeve_slab_cut_x0_final.ply                       (cross-section at x = 0 via sim_soft::viz::slab_cut, marching-tet, per-vertex psi via linear interp)"
     );
+    println!(
+        "  out/sleeve_design_slab_cut_x0_final.ply                (cross-section at x = 0 via sim_soft::viz::design_slab_cut, marching-squares-filled on design SDF)"
+    );
+    println!(
+        "  out/sleeve_design_surface_final.ply                    (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF)"
+    );
+    println!(
+        "  out/sleeve_design_surface_deformed_step_NN.ply         (F2.3c ramp animation series: per-step deformed body via sim_soft::viz::design_surface_deformed at amplify=10)"
+    );
     println!();
     println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");
     println!(
@@ -2576,6 +2657,14 @@ fn print_summary(
     println!(
         "  cargo run -p cf-viewer --release -- \
          examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/sleeve_slab_cut_x0_final.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/sleeve_design_slab_cut_x0_final.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/sleeve_design_surface_final.ply"
     );
     println!();
     println!("Optional matplotlib post-processing (force-displacement + max_disp curves):");
