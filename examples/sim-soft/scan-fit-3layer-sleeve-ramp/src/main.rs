@@ -121,10 +121,21 @@
 //!      (scalars at final step + `material_layers` provenance +
 //!      `ramp_curve` 12-element array + `final_contact_pairs` per-pair
 //!      detail at step 12 only).
-//!    - PLY `out/sleeve_zslab_final.ply`: z-slab per-tet centroid
-//!      cloud at the FINAL step, with categorical `material_id` +
-//!      sequential `displacement_magnitude`. Same z-slab pattern as
-//!      row 21 v1 + rows 11+16+20.
+//!    - PLY `out/sleeve_boundary_final.ply`: full 3D body via
+//!      [`sim_soft::viz::boundary_surface`] (F1.1 lift), with
+//!      sequential `displacement_magnitude` + categorical
+//!      `material_id` per-vertex (volume-weighted averaged from
+//!      per-tet). Replaces the pre-F1.5 z-slab centroid cloud's
+//!      reduce-to-2D framing with the canonical FEM-viz convention
+//!      (3D body, sequential heatmap, rotate to inspect).
+//!    - PLY `out/sleeve_slab_cut_z0_final.ply`: equatorial
+//!      cross-section at `z = 0` via
+//!      [`sim_soft::viz::slab_cut`] (F1.1 lift). Marching-tetrahedra
+//!      intersection; per-vertex scalars linearly interpolated along
+//!      cross-edges. Catches the propagated secondary response 40 mm
+//!      below the contact zone — exposes the radial material-shell
+//!      partition AND the cavity-wall displacement at the equator
+//!      from one cut.
 //!    - Optional `plot_ramp.py` (PEP 723 + matplotlib): dual-axis
 //!      depth × `force_z` + depth × `max_disp` force-displacement
 //!      curve, mirrors row 5's `plot.py` structure. Run via
@@ -132,20 +143,19 @@
 //!    - `verify_*` runtime gates (12 anchor groups, see "Numerical
 //!      anchors" in `README.md`).
 //!
-//! # Why z-slab over full-boundary-surface
+//! # Why z = 0 for the slab cut
 //!
-//! Same rationale as row 21 v1. Pattern (aa) banked at row 16 N+3:
-//! hollow / interior-cavity / partial-occlusion bodies → z-slab
-//! per-tet centroid cloud. The 3-layer sleeve's doubly-hollow geometry
-//! (scan-shaped cavity AND three concentric material shells) requires
-//! an axis-aligned slab cut to expose both the radial material-shell
-//! partition and the cavity-wall displacement response. The z-slab
-//! at `z = 0` is the equatorial cross-section, 40 mm BELOW the
-//! contact zone at `z ≈ 0.040 m` — it catches the propagated
-//! secondary response, NOT the contact-zone signal directly. (A
-//! longitudinal y-slab was considered for v1.5 capsule + capsule
-//! geometry but is unrelated to v2's ramp differentiator; the v2 row
-//! retains v1's z-slab axis verbatim.)
+//! Pattern (aa) banked at row 16 N+3: hollow / interior-cavity /
+//! partial-occlusion bodies need an axis-aligned cut to expose
+//! interior structure. The 3-layer sleeve's doubly-hollow geometry
+//! (scan-shaped cavity AND three concentric material shells) cuts
+//! cleanly at `z = 0` — the equatorial cross-section is 40 mm BELOW
+//! the contact zone at `z ≈ 0.040 m`, so it catches the propagated
+//! secondary response (NOT the contact-zone signal directly) and
+//! exposes the radial shells + cavity wall in one frame. F1.5
+//! retrofit (post the closed-cavity row 24) keeps the z = 0 axis
+//! choice; the marching-tet cross-section replaces the centroid
+//! cloud the row's pre-F1.5 emit produced.
 //!
 //! # Sanitization
 //!
@@ -181,22 +191,23 @@
 //! uv run examples/sim-soft/scan-fit-3layer-sleeve-ramp/plot_ramp.py
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
 use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
-use mesh_types::{AttributedMesh, IndexedMesh, Point3, Vector3};
+use mesh_types::Vector3;
 use nalgebra::Matrix3;
 use serde_json::{Value, json};
 use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::{DRAGON_SKIN_10A, DRAGON_SKIN_20A, ECOFLEX_00_20};
 use sim_soft::{
     Aabb3, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField, Material, MaterialField,
-    Mesh, MeshingHints, PenaltyRigidContact, PenaltyRigidContactSolver, Sdf, SdfMeshedTetMesh,
-    Solver, SolverConfig, Tet4, Vec3, VertexId, pick_vertices_by_predicate, referenced_vertices,
+    Mesh, MeshingHints, PenaltyRigidContact, PenaltyRigidContactSolver, Plane, Sdf,
+    SdfMeshedTetMesh, Solver, SolverConfig, Tet4, Vec3, VertexId, boundary_surface,
+    pick_vertices_by_predicate, referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -1351,48 +1362,17 @@ fn write_json_readout(
 }
 
 // =============================================================================
-// PLY z-slab artifact emit (final step only)
+// (PLY z-slab inline scratch helpers retired at F1.5)
 // =============================================================================
-
-#[derive(Clone, Copy)]
-struct ZslabRecord {
-    centroid: Vec3,
-    deformed_centroid: Vec3,
-}
-
-fn emit_zslab_ply(
-    path: &Path,
-    records: &[ZslabRecord],
-    displacement_magnitudes: &[f64],
-    material_ids: &[f64],
-) -> Result<()> {
-    assert_eq!(records.len(), displacement_magnitudes.len());
-    assert_eq!(records.len(), material_ids.len());
-
-    let mut geometry = IndexedMesh::new();
-    for r in records {
-        // Geometric amplification scales the displacement for visual
-        // clarity; the `displacement_magnitude` extra carries the
-        // unscaled physical magnitude. v2 final-step max_disp ~6.7 mm
-        // × 10× = 67 mm rendered, fits in cf-view's bbox without
-        // saturation. Lower than row 21 v1's 50× because the v2
-        // displacements are ~3-4× larger at the deeper final pose.
-        const DISPLACEMENT_SCALE: f64 = 10.0;
-        let amplified = r.centroid + DISPLACEMENT_SCALE * (r.deformed_centroid - r.centroid);
-        geometry
-            .vertices
-            .push(Point3::new(amplified.x, amplified.y, amplified.z));
-    }
-    // No faces — z-slab is a per-tet centroid cloud, point-only PLY.
-
-    let mut mesh = AttributedMesh::new(geometry);
-    let disp_f32: Vec<f32> = displacement_magnitudes.iter().map(|&v| v as f32).collect();
-    let mat_f32: Vec<f32> = material_ids.iter().map(|&v| v as f32).collect();
-    mesh.insert_extra("displacement_magnitude", disp_f32)?;
-    mesh.insert_extra("material_id", mat_f32)?;
-    save_ply_attributed(&mesh, path, true)?;
-    Ok(())
-}
+//
+// The pre-F1.5 inline `emit_zslab_ply` + `ZslabRecord` (with
+// DISPLACEMENT_SCALE = 10.0 amplification) emitted a z-slab per-tet
+// centroid cloud at z = 0. Lifted to [`sim_soft::viz::boundary_surface`]
+// + [`sim_soft::viz::slab_cut`] at F1.1 / F1.5 retrofit; row 22 now
+// emits the full 3D body + the proper triangulated cross-section
+// rather than an amplified centroid cloud. Z-slab tet-COUNT
+// regression gate (`verify_zslab_counts_exact`) survives — cheap
+// centroid filter, no PLY data.
 
 // =============================================================================
 // main
@@ -1460,8 +1440,12 @@ fn main() -> Result<()> {
     // 12 steps. The upstream `mesh` + `bc` are NOT moved into the
     // ramp's first solver call — the ramp rebuilds its own mesh per
     // step (same SDF, same hints, deterministic BCC + IS → bit-equal
-    // mesh).
-    drop(mesh);
+    // mesh). The pre-F1.5 explicit `drop(mesh)` was retired here —
+    // F1.5's `sim_soft::viz::{boundary_surface, slab_cut}` calls at
+    // the post-ramp PLY emit step need `&dyn Mesh<NeoHookean>`
+    // access, so the mesh stays alive until function-end. Mesh
+    // memory at this row's size is a few MB — negligible relative
+    // to the solver's per-step working set.
     drop(bc);
     let _outer_kept = outer_envelope; // silence unused
 
@@ -1503,17 +1487,17 @@ fn main() -> Result<()> {
         &results,
     )?;
 
-    // PLY z-slab (final step only) — uses final-step rest_positions
-    // and deformed_positions captured in `RampStepResult.final_step_data`.
+    // PLY emits via `sim_soft::viz` public API (F1.5 retrofit; see
+    // `sim/L0/soft/src/viz/mod.rs` + `project_sim_soft_viz_arc.md`).
     let final_step = results.last().expect("ramp produced no results");
     let final_data = final_step
         .final_step_data
         .as_ref()
         .expect("final ramp step missing FinalStepData");
     let half_cell = 0.5 * CELL_SIZE;
-    let mut zslab_records: Vec<ZslabRecord> = Vec::new();
-    let mut zslab_disp: Vec<f64> = Vec::new();
-    let mut zslab_mat: Vec<f64> = Vec::new();
+
+    // z-slab tet-COUNT regression gate (cheap centroid filter — no
+    // PLY data accumulation; pre-F1.5 PLY-emit path retired).
     let mut n_inner_z = 0usize;
     let mut n_middle_z = 0usize;
     let mut n_outer_z = 0usize;
@@ -1526,28 +1510,54 @@ fn main() -> Result<()> {
         if rest_centroid.z.abs() >= half_cell {
             continue;
         }
-        let deformed_centroid = (final_data.deformed_positions[v0 as usize]
-            + final_data.deformed_positions[v1 as usize]
-            + final_data.deformed_positions[v2 as usize]
-            + final_data.deformed_positions[v3 as usize])
-            / 4.0;
-        let mat_id = shell_idx_per_tet[tet_idx];
-        match mat_id {
+        match shell_idx_per_tet[tet_idx] {
             0 => n_inner_z += 1,
             1 => n_middle_z += 1,
             _ => n_outer_z += 1,
         }
-        zslab_records.push(ZslabRecord {
-            centroid: rest_centroid,
-            deformed_centroid,
-        });
-        zslab_disp.push((deformed_centroid - rest_centroid).norm());
-        zslab_mat.push(mat_id as f64);
     }
     verify_zslab_counts_exact(n_inner_z, n_middle_z, n_outer_z);
 
-    let ply_path = out_dir.join("sleeve_zslab_final.ply");
-    emit_zslab_ply(&ply_path, &zslab_records, &zslab_disp, &zslab_mat)?;
+    // Per-tet displacement magnitude across the full mesh (rest →
+    // deformed centroid distance) and per-tet material id (radial
+    // shell index, 0 = inner / 1 = middle / 2 = outer). These two
+    // scalars feed both the boundary-surface and slab-cut emits.
+    let displacement_per_tet: Vec<f64> = tets
+        .iter()
+        .map(|&[v0, v1, v2, v3]| {
+            let rest = (final_data.rest_positions[v0 as usize]
+                + final_data.rest_positions[v1 as usize]
+                + final_data.rest_positions[v2 as usize]
+                + final_data.rest_positions[v3 as usize])
+                / 4.0;
+            let deformed = (final_data.deformed_positions[v0 as usize]
+                + final_data.deformed_positions[v1 as usize]
+                + final_data.deformed_positions[v2 as usize]
+                + final_data.deformed_positions[v3 as usize])
+                / 4.0;
+            (deformed - rest).norm()
+        })
+        .collect();
+    let material_id_per_tet: Vec<f64> = shell_idx_per_tet.iter().map(|&s| s as f64).collect();
+    let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+    per_tet_scalars.insert("displacement_magnitude", &displacement_per_tet);
+    per_tet_scalars.insert("material_id", &material_id_per_tet);
+
+    let bd_ply_path = out_dir.join("sleeve_boundary_final.ply");
+    let bd_attr = boundary_surface(&mesh, &per_tet_scalars).map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&bd_attr, &bd_ply_path, true)?;
+
+    let slab_ply_path = out_dir.join("sleeve_slab_cut_z0_final.ply");
+    let slab_attr = slab_cut(
+        &mesh,
+        Plane {
+            axis: 2,
+            value: 0.0,
+        },
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&slab_attr, &slab_ply_path, true)?;
 
     // 9. Museum-plaque summary.
     print_summary(
@@ -1641,13 +1651,20 @@ fn print_summary(
         "  out/scan_fit_3layer_sleeve_ramp.json (scalars + materials + ramp_curve + final_pairs)"
     );
     println!(
-        "  out/sleeve_zslab_final.ply           (z-slab centroid cloud at final step, two scalars)"
+        "  out/sleeve_boundary_final.ply        (full 3D body via sim_soft::viz::boundary_surface, displacement_magnitude + material_id per-vertex)"
+    );
+    println!(
+        "  out/sleeve_slab_cut_z0_final.ply     (cross-section at z = 0 via sim_soft::viz::slab_cut, marching-tet)"
     );
     println!();
-    println!("View final-step PLY in cf-view (workspace's unified visual-review viewer):");
+    println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");
     println!(
         "  cargo run -p cf-viewer --release -- \
-         examples/sim-soft/scan-fit-3layer-sleeve-ramp/out/sleeve_zslab_final.ply"
+         examples/sim-soft/scan-fit-3layer-sleeve-ramp/out/sleeve_boundary_final.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-ramp/out/sleeve_slab_cut_z0_final.ply"
     );
     println!();
     println!("Optional matplotlib post-processing (force-displacement + max_disp curves):");
