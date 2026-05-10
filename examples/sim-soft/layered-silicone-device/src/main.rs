@@ -139,6 +139,17 @@
 //!      the design intent rather than the polyhedral approximation.
 //!      Pair with the F1 `slab_cut` artifact for the analysis-mesh-
 //!      vs-design-mesh side-by-side that motivated the F2 arc.
+//!    - PLY `out/device_design_surface.ply`: full 3D body via
+//!      [`sim_soft::viz::design_surface`] (F2.1 lift). Marching cubes
+//!      on the design SDF — produces a smooth sphere boundary
+//!      (without the BCC sliver-tet zigzag the F1 `boundary_surface`
+//!      artifact shows on curved surfaces). Same scalar-transfer
+//!      convention as `design_slab_cut`. Pair with the F1
+//!      `boundary_surface` artifact for the analysis-mesh-vs-design-
+//!      mesh boundary side-by-side. On organic 3D-scanned bodies (the
+//!      production target), `design_surface` follows the scan's actual
+//!      shape rather than the BCC lattice's approximation — the
+//!      load-bearing payoff of the F2 arc.
 //!    - `verify_*` runtime gates (8 anchor groups, see "Numerical
 //!      anchors" in `README.md`).
 //!
@@ -200,7 +211,8 @@ use sim_soft::{
     Aabb3, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField, Material, MaterialField,
     Mesh, MeshingHints, NewtonStep, PenaltyRigidContact, PenaltyRigidContactSolver, Plane,
     SceneInitial, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
-    boundary_surface, design_slab_cut, pick_vertices_by_predicate, referenced_vertices, slab_cut,
+    boundary_surface, design_slab_cut, design_surface, pick_vertices_by_predicate,
+    referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -1211,19 +1223,21 @@ fn main() -> Result<()> {
     let design_slab_path = out_dir.join("device_design_slab_cut_z0.ply");
     save_ply_attributed(&design_slab_attr, &design_slab_path, true)?;
 
-    // F2.1 prototype — DESIGN-mesh boundary surface. Marching cubes on
-    // the design SDF (sphere - scan_cube) + barycentric scalar interp
-    // from the analysis tet mesh. Emits alongside the F1 tet-based
-    // device_boundary.ply for side-by-side eyes-on-pixels comparison.
-    // Lift to `sim_soft::viz::design_surface` at F2.1-B.
+    // F2.1 design-mesh boundary surface. Marching cubes on the design
+    // SDF (sphere - scan_cube) + barycentric scalar interp from the
+    // analysis tet mesh — produces a clean smooth sphere boundary
+    // (no BCC sliver-tet zigzag like the F1 boundary_surface). Emits
+    // alongside the F1 tet-based artifact so both visualization
+    // conventions stay available.
     let design_surface_resolution = CELL_SIZE / 4.0;
-    let design_surface_attr = design_surface_proto(
+    let design_surface_attr = design_surface(
         &body_for_viz,
         &inspection_mesh,
         &design_slab_bounds,
         design_surface_resolution,
         &per_tet_scalars,
-    )?;
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     let design_surface_path = out_dir.join("device_design_surface.ply");
     save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
 
@@ -1311,7 +1325,7 @@ fn print_summary(
         "  out/device_design_slab_cut_z0.ply (cross-section at z = 0 via sim_soft::viz::design_slab_cut, marching-squares-filled on design SDF + barycentric scalar interp)"
     );
     println!(
-        "  out/device_design_surface.ply     (F2.1 prototype: marching-cubes on design SDF + barycentric scalar interp from analysis tets)"
+        "  out/device_design_surface.ply     (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF + barycentric scalar interp)"
     );
     println!();
     println!("View with cf-view (workspace's unified visual-review viewer):");
@@ -1354,257 +1368,3 @@ const _: () = {
 // than just magnitude).
 #[allow(dead_code)]
 type _UnusedVector3Anchor = Vector3<f64>;
-
-// =============================================================================
-// F2.1 prototype — design-mesh boundary surface via marching cubes
-// =============================================================================
-//
-// Inline scratch fn matching the F1.0 / F2.0-A pattern: prototype here,
-// eyes-on-pixels gate against the F1 tet-based `device_boundary.ply`,
-// then lift to `sim_soft::viz::design_surface` at sub-leaf B.
-//
-// Architecture per `project_sim_soft_viz_arc.md` §F2:
-// 1. Sample the design SDF on a 3D grid spanning `bounds` at `resolution`
-//    cell size.
-// 2. Run `mesh_offset::marching_cubes` to extract the iso-0 surface as a
-//    triangulated `IndexedMesh` (mesh-offset's MC has edge-cache dedup
-//    so the output is manifold).
-// 3. For each emitted display vertex, find the enclosing analysis tet
-//    via barycentric point-in-tet (no slab filter — we walk all tets,
-//    accepting the O(n_tets × n_display) cost for the prototype).
-// 4. Wrap as `AttributedMesh` with one `extras` entry per input scalar.
-//
-// Marching cubes is the canonical FEM-viz isosurface extraction
-// algorithm (Lorensen & Cline 1987, originally for medical CT scans).
-// Organic 3D-scanned bodies — the production target for this row's
-// cavity-fitting silicone device — are exactly MC's home territory:
-// smooth curved surfaces, no sharp creases. The cube fixture in row 20
-// is the worst-case stress test (sharp axis-aligned features at every
-// face); MC's chamfering of those edges at low resolution is below
-// visible threshold at our `CELL_SIZE / 4` resolution and disappears
-// entirely on the production organic geometry.
-//
-// # F2.1-A eyes-on-pixels result (2026-05-10)
-//
-// Side-by-side cf-view comparison vs F1's `device_boundary.ply`
-// confirms the F2 thesis: the prototype produces a clean smooth sphere
-// (no BCC sliver-tet zigzag), and the residual horizontal scalar
-// discontinuity bands wrapping the body trace back to the SAME upstream
-// missing-tet band that produced F2.0's diagonal slit (banked at
-// `project_sim_soft_analysis_mesh_missing_tet_band.md`). In the slab
-// cut the band intersected the cutting plane as a 1D line; on the full
-// boundary surface the band intersects the surface as a 2D ring. The
-// design-mesh GEOMETRY is correct in both cases; the scalar field
-// shows the artifact because barycentric scalar interp falls back to
-// nearest-tet across the missing band, returning different scalar
-// values on either side. Same architectural payoff as F2.0.
-
-#[allow(
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::similar_names,
-    clippy::suboptimal_flops,
-    clippy::neg_cmp_op_on_partial_ord
-)]
-fn design_surface_proto<M: Material>(
-    sdf: &dyn Sdf,
-    mesh: &dyn Mesh<M>,
-    bounds: &Aabb3,
-    resolution: f64,
-    per_tet_scalars: &BTreeMap<&str, &[f64]>,
-) -> Result<mesh_types::AttributedMesh> {
-    use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
-    use mesh_types::AttributedMesh;
-    use nalgebra::Point3 as NaPoint3;
-
-    if !(resolution > 0.0) {
-        anyhow::bail!("resolution must be positive, got {resolution}");
-    }
-    let n_tets = mesh.n_tets();
-    for (&name, &values) in per_tet_scalars {
-        if values.len() != n_tets {
-            anyhow::bail!(
-                "per-tet scalar `{name}` length {} != n_tets {n_tets}",
-                values.len()
-            );
-        }
-    }
-
-    // 1. Build grid + sample SDF at every corner.
-    let mut grid = ScalarGrid::from_bounds(
-        NaPoint3::new(bounds.min.x, bounds.min.y, bounds.min.z),
-        NaPoint3::new(bounds.max.x, bounds.max.y, bounds.max.z),
-        resolution,
-        0,
-    );
-    let (nx, ny, nz) = grid.dimensions();
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let p = grid.position(ix, iy, iz);
-                grid.set(ix, iy, iz, sdf.eval(p));
-            }
-        }
-    }
-
-    // 2. Marching cubes on the iso-0 surface.
-    let surface = marching_cubes(&grid, &MarchingCubesConfig::at_iso_value(0.0));
-
-    // 3. Pre-compute volume-weighted per-vertex scalars on analysis mesh.
-    let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
-    let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
-        .iter()
-        .map(|&name| volume_weighted_per_vertex_scalar(mesh, per_tet_scalars[&name]))
-        .collect();
-
-    // 4. Per-display-vertex barycentric scalar interp. No slab filter —
-    //    walk all tets per probe. Acceptable for prototype (~1G ops on
-    //    row 20 = ~10s); F2.1-B may add a 3D spatial accelerator if
-    //    organic-scan rows are slow.
-    let analysis_positions = mesh.positions();
-    let all_tets: Vec<u32> = (0..n_tets as u32).collect();
-
-    let mut display_scalars: Vec<Vec<f64>> = scalar_names
-        .iter()
-        .map(|_| Vec::with_capacity(surface.vertices.len()))
-        .collect();
-    for v in &surface.vertices {
-        let probe = Vec3::new(v.x, v.y, v.z);
-        let scalars = sample_analysis_at_point(
-            probe,
-            mesh,
-            analysis_positions,
-            &all_tets,
-            &per_vertex_by_scalar,
-        );
-        for (i, val) in scalars.iter().enumerate() {
-            display_scalars[i].push(*val);
-        }
-    }
-
-    // 5. Wrap as AttributedMesh.
-    let mut attr = AttributedMesh::new(surface);
-    for (i, &name) in scalar_names.iter().enumerate() {
-        let f32_values: Vec<f32> = display_scalars[i].iter().map(|&v| v as f32).collect();
-        attr.insert_extra(name.to_string(), f32_values)
-            .map_err(|e| anyhow::anyhow!("insert_extra({name}): {e:?}"))?;
-    }
-    Ok(attr)
-}
-
-/// Volume-weighted projection of a per-tet scalar to per-vertex.
-/// Mirrors `sim_soft::viz::volume_weighted_per_vertex_avg` (private to
-/// the F1 module). Duplicated here for the F2.1-A inline prototype;
-/// F2.1-B reuses `sim_soft::viz`'s existing helper at lift time.
-fn volume_weighted_per_vertex_scalar<M: Material>(mesh: &dyn Mesh<M>, per_tet: &[f64]) -> Vec<f64> {
-    let n_vertices = mesh.n_vertices();
-    let signed_vols = &mesh.quality().signed_volume;
-    let mut acc_val_vol = vec![0.0_f64; n_vertices];
-    let mut acc_vol = vec![0.0_f64; n_vertices];
-    #[allow(clippy::cast_possible_truncation)]
-    for t in 0..mesh.n_tets() {
-        let vol = signed_vols[t].abs();
-        let weighted = per_tet[t] * vol;
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t as u32);
-        for v in [v0, v1, v2, v3] {
-            acc_val_vol[v as usize] += weighted;
-            acc_vol[v as usize] += vol;
-        }
-    }
-    (0..n_vertices)
-        .map(|v| {
-            if acc_vol[v] > 0.0 {
-                acc_val_vol[v] / acc_vol[v]
-            } else {
-                0.0
-            }
-        })
-        .collect()
-}
-
-/// Find the analysis-mesh tet enclosing `probe` and return barycentric-
-/// interpolated per-vertex scalars; falls back to nearest-tet for points
-/// just outside every tet (with clipped and renormalized barycentrics).
-/// The fallback case is common where the design SDF's smooth surface
-/// lies outside the analysis mesh's polyhedral envelope.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::similar_names,
-    clippy::suboptimal_flops
-)]
-fn sample_analysis_at_point<M: Material>(
-    probe: Vec3,
-    mesh: &dyn Mesh<M>,
-    positions: &[Vec3],
-    candidate_tets: &[u32],
-    per_vertex_by_scalar: &[Vec<f64>],
-) -> Vec<f64> {
-    let tol_bary = -1e-9_f64;
-    let mut best_outside_t: Option<u32> = None;
-    let mut best_outside_min_b = f64::NEG_INFINITY;
-
-    for &t in candidate_tets {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
-        let p0 = positions[v0 as usize];
-        let p1 = positions[v1 as usize];
-        let p2 = positions[v2 as usize];
-        let p3 = positions[v3 as usize];
-        let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
-        if m.determinant().abs() < 1e-30 {
-            continue;
-        }
-        let Some(inv) = m.try_inverse() else {
-            continue;
-        };
-        let b = inv * (probe - p0);
-        let b0 = 1.0 - b.x - b.y - b.z;
-        let bs = [b0, b.x, b.y, b.z];
-        let min_b = bs.iter().copied().fold(f64::INFINITY, f64::min);
-        if min_b >= tol_bary {
-            return per_vertex_by_scalar
-                .iter()
-                .map(|pv| {
-                    bs[0] * pv[v0 as usize]
-                        + bs[1] * pv[v1 as usize]
-                        + bs[2] * pv[v2 as usize]
-                        + bs[3] * pv[v3 as usize]
-                })
-                .collect();
-        }
-        if min_b > best_outside_min_b {
-            best_outside_min_b = min_b;
-            best_outside_t = Some(t);
-        }
-    }
-
-    if let Some(t) = best_outside_t {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
-        let p0 = positions[v0 as usize];
-        let p1 = positions[v1 as usize];
-        let p2 = positions[v2 as usize];
-        let p3 = positions[v3 as usize];
-        let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
-        if let Some(inv) = m.try_inverse() {
-            let b = inv * (probe - p0);
-            let b0 = 1.0 - b.x - b.y - b.z;
-            let mut bs = [b0.max(0.0), b.x.max(0.0), b.y.max(0.0), b.z.max(0.0)];
-            let sum: f64 = bs.iter().sum();
-            if sum > 0.0 {
-                for v in &mut bs {
-                    *v /= sum;
-                }
-                return per_vertex_by_scalar
-                    .iter()
-                    .map(|pv| {
-                        bs[0] * pv[v0 as usize]
-                            + bs[1] * pv[v1 as usize]
-                            + bs[2] * pv[v2 as usize]
-                            + bs[3] * pv[v3 as usize]
-                    })
-                    .collect();
-            }
-        }
-    }
-    per_vertex_by_scalar.iter().map(|_| 0.0).collect()
-}

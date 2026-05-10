@@ -50,13 +50,6 @@ mesh-types = { workspace = true }
 # cloud with categorical `material_id` + sequential
 # `displacement_magnitude`).
 mesh-io = { workspace = true }
-# `ScalarGrid` + `marching_cubes` + `MarchingCubesConfig` for the F2.1
-# `design_surface_proto` prototype: extracts the body's iso-0 surface
-# (sphere minus carved cavity) as a triangulated 3D mesh from the design
-# SDF. Lifted to `sim_soft::viz::design_surface` at F2.1-B; this dep
-# disappears from row 20 at F2.1-C when the inline prototype is replaced
-# with the public API call.
-mesh-offset = { workspace = true }
 # `Result<()>` return + error-context wrapping for the JSON + PLY emit
 # steps. Same convention as rows 1-19.
 anyhow = { workspace = true }
