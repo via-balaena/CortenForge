@@ -36,6 +36,12 @@
 //!   convention as `design_slab_cut`. Replaces [`boundary_surface`] on
 //!   bodies where the design intent (smooth sphere, organic 3D scan)
 //!   matters more than the analysis-mesh discretization.
+//! - [`design_surface_deformed`] same as [`design_surface`] but each
+//!   surface vertex is offset by the per-vertex displacement field
+//!   interpolated from the analysis tet mesh, scaled by an `amplify`
+//!   factor. Renders the deformed configuration with stress contours
+//!   — the canonical commercial-FEM-viz convention. Pass `amplify > 1`
+//!   to make sub-mm deformations visually obvious on cm-scale bodies.
 //!
 //! Pick F1 when the analysis-mesh discretization IS the story (e.g.,
 //! debugging mesh quality, sliver-tet inspection). Pick F2 when the
@@ -114,6 +120,14 @@ pub enum VizError {
         /// Bad resolution value supplied (in plane units, m).
         value: f64,
     },
+    /// A per-vertex displacement field's length does not equal
+    /// `analysis_mesh.n_vertices()`.
+    PerVertexLengthMismatch {
+        /// Required length (= `analysis_mesh.n_vertices()`).
+        expected: usize,
+        /// Length actually supplied.
+        actual: usize,
+    },
 }
 
 impl std::fmt::Display for VizError {
@@ -133,6 +147,11 @@ impl std::fmt::Display for VizError {
             Self::InvalidResolution { value } => {
                 write!(f, "marching-squares resolution must be > 0, got {value}")
             }
+            Self::PerVertexLengthMismatch { expected, actual } => write!(
+                f,
+                "per-vertex field has length {actual}, expected {expected} \
+                 (= analysis_mesh.n_vertices())"
+            ),
         }
     }
 }
@@ -642,6 +661,94 @@ pub fn design_surface<M: Material>(
         attr.insert_extra(name.to_string(), f32_values)
             .expect("per-display-vertex length matches surface vertex count by construction");
     }
+    Ok(attr)
+}
+
+/// Same output as [`design_surface`] but each display vertex is
+/// offset by the per-vertex displacement field interpolated from the
+/// analysis tet mesh, scaled by `amplify`.
+///
+/// Renders the body's deformed configuration with stress contours,
+/// the canonical commercial-FEM-viz convention. For tiny deformations
+/// (sub-mm displacements on cm-scale bodies, e.g. row 20's static
+/// fit pose), pass `amplify = 5.0..50.0` to make the deformation
+/// visually obvious; pass `amplify = 1.0` for the true deformed shape.
+///
+/// # Algorithm
+///
+/// 1. Call [`design_surface`] for the rest geometry + scalar field.
+/// 2. Rebuild the analysis-tet spatial index (the same uniform-grid
+///    `TetGrid` `design_surface` uses internally).
+/// 3. For each surface vertex, find the enclosing analysis tet via
+///    barycentric on the spatial-index 3×3×3 cell window and
+///    interpolate `displacement_per_vertex` to the surface vertex.
+/// 4. Offset the surface vertex position by `displacement * amplify`.
+///
+/// The double-pass (one inside `design_surface` for scalars, one here
+/// for displacement) costs ~2× the single-pass equivalent on row 20
+/// (~600 ms vs ~300 ms); per-row scalar lookup is the dominant cost
+/// in both cases. Acceptable for now; collapse into a single-pass
+/// implementation if profiling shows organic-scan rows need it.
+///
+/// # Errors
+///
+/// All [`design_surface`] errors plus
+/// [`VizError::PerVertexLengthMismatch`] if `displacement_per_vertex`'s
+/// length differs from `analysis_mesh.n_vertices()`.
+//
+// `cast_possible_truncation` allowed: VertexId/TetId are u32 crate-wide
+// (γ-locked invariant) so usize→u32 casts in the bary search fit.
+// `similar_names` allowed: `bs[0..3]` + `v0..v3` are the tet bary +
+// vertex naming convention shared with sample_analysis_at_point.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::similar_names
+)]
+pub fn design_surface_deformed<M: Material>(
+    sdf: &dyn Sdf,
+    analysis_mesh: &dyn Mesh<M>,
+    bounds: &Aabb3,
+    resolution: f64,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+    displacement_per_vertex: &[Vec3],
+    amplify: f64,
+) -> Result<AttributedMesh, VizError> {
+    let n_vertices = analysis_mesh.n_vertices();
+    if displacement_per_vertex.len() != n_vertices {
+        return Err(VizError::PerVertexLengthMismatch {
+            expected: n_vertices,
+            actual: displacement_per_vertex.len(),
+        });
+    }
+
+    // 1. Get rest geometry + scalar field via design_surface (also
+    //    validates resolution and per_tet_scalars lengths).
+    let mut attr = design_surface(sdf, analysis_mesh, bounds, resolution, per_tet_scalars)?;
+
+    // 2. Rebuild the analysis-tet spatial index. Cost on row 20 is
+    //    ~35 ms — negligible vs the per-vertex lookup pass.
+    let analysis_positions = analysis_mesh.positions();
+    let tet_grid = TetGrid::build(analysis_mesh, analysis_positions);
+
+    // 3. Per-vertex displacement lookup + apply.
+    let mut candidates: Vec<u32> = Vec::with_capacity(512);
+    for v in &mut attr.geometry.vertices {
+        let probe = Vec3::new(v.x, v.y, v.z);
+        candidates.clear();
+        tet_grid.append_candidates_with_neighbors(probe, &mut candidates);
+        let displacement = sample_displacement_at_point(
+            probe,
+            analysis_mesh,
+            analysis_positions,
+            &candidates,
+            displacement_per_vertex,
+        );
+        v.x += displacement.x * amplify;
+        v.y += displacement.y * amplify;
+        v.z += displacement.z * amplify;
+    }
+
     Ok(attr)
 }
 
@@ -1266,6 +1373,80 @@ impl TetGrid {
             }
         }
     }
+}
+
+/// Find the analysis-mesh tet enclosing `probe` and return the
+/// barycentric-interpolated per-vertex displacement; same enclosing-
+/// tet-or-nearest-fallback logic as [`sample_analysis_at_point`] but
+/// returning a [`Vec3`] instead of a per-scalar [`Vec`]. Used by
+/// [`design_surface_deformed`].
+//
+// `cast_possible_truncation` allowed for VertexId casts (u32 crate-wide).
+#[allow(clippy::cast_possible_truncation, clippy::similar_names)]
+fn sample_displacement_at_point<M: Material>(
+    probe: Vec3,
+    mesh: &dyn Mesh<M>,
+    positions: &[Vec3],
+    candidate_tets: &[u32],
+    displacement_per_vertex: &[Vec3],
+) -> Vec3 {
+    let tol_bary = -1e-9_f64;
+    let mut best_outside_t: Option<u32> = None;
+    let mut best_outside_min_b = f64::NEG_INFINITY;
+
+    for &t in candidate_tets {
+        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
+        let p0 = positions[v0 as usize];
+        let p1 = positions[v1 as usize];
+        let p2 = positions[v2 as usize];
+        let p3 = positions[v3 as usize];
+        let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
+        if m.determinant().abs() < 1e-30 {
+            continue;
+        }
+        let Some(inv) = m.try_inverse() else {
+            continue;
+        };
+        let b = inv * (probe - p0);
+        let b0 = 1.0 - b.x - b.y - b.z;
+        let bs = [b0, b.x, b.y, b.z];
+        let min_b = bs.iter().copied().fold(f64::INFINITY, f64::min);
+        if min_b >= tol_bary {
+            return bs[0] * displacement_per_vertex[v0 as usize]
+                + bs[1] * displacement_per_vertex[v1 as usize]
+                + bs[2] * displacement_per_vertex[v2 as usize]
+                + bs[3] * displacement_per_vertex[v3 as usize];
+        }
+        if min_b > best_outside_min_b {
+            best_outside_min_b = min_b;
+            best_outside_t = Some(t);
+        }
+    }
+
+    if let Some(t) = best_outside_t {
+        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
+        let p0 = positions[v0 as usize];
+        let p1 = positions[v1 as usize];
+        let p2 = positions[v2 as usize];
+        let p3 = positions[v3 as usize];
+        let m = Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
+        if let Some(inv) = m.try_inverse() {
+            let b = inv * (probe - p0);
+            let b0 = 1.0 - b.x - b.y - b.z;
+            let mut bs = [b0.max(0.0), b.x.max(0.0), b.y.max(0.0), b.z.max(0.0)];
+            let sum: f64 = bs.iter().sum();
+            if sum > 0.0 {
+                for v in &mut bs {
+                    *v /= sum;
+                }
+                return bs[0] * displacement_per_vertex[v0 as usize]
+                    + bs[1] * displacement_per_vertex[v1 as usize]
+                    + bs[2] * displacement_per_vertex[v2 as usize]
+                    + bs[3] * displacement_per_vertex[v3 as usize];
+            }
+        }
+    }
+    Vec3::zeros()
 }
 
 /// Volume-weighted projection of a per-tet scalar to per-vertex.
@@ -1960,6 +2141,160 @@ mod tests {
             } => {
                 assert_eq!(name, "psi");
                 assert_eq!(expected, 1);
+                assert_eq!(actual, 2);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Zero-displacement case: `design_surface_deformed` with all-zero
+    /// displacement matches `design_surface` bit-for-bit on positions.
+    #[test]
+    fn design_surface_deformed_zero_displacement_matches_rest() {
+        use crate::SphereSdf;
+
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let displacement = vec![Vec3::zeros(); analysis.n_vertices()];
+        let amplify = 1.0_f64;
+
+        let rest = design_surface(&sphere, &analysis, &bounds, resolution, &scalars).unwrap();
+        let deformed = design_surface_deformed(
+            &sphere,
+            &analysis,
+            &bounds,
+            resolution,
+            &scalars,
+            &displacement,
+            amplify,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rest.geometry.vertices.len(),
+            deformed.geometry.vertices.len()
+        );
+        for (a, b) in rest
+            .geometry
+            .vertices
+            .iter()
+            .zip(deformed.geometry.vertices.iter())
+        {
+            assert!((a.x - b.x).abs() < 1e-12);
+            assert!((a.y - b.y).abs() < 1e-12);
+            assert!((a.z - b.z).abs() < 1e-12);
+        }
+    }
+
+    /// Uniform displacement translates every surface vertex by exactly
+    /// `displacement * amplify`. Validates that the barycentric interp
+    /// (and the clipped+renormalized fallback) preserves uniform fields.
+    /// Uses an offset sphere fitted inside `SingleTetMesh`'s AABB so
+    /// every surface vertex falls within the tet-grid spatial index's
+    /// search window (otherwise fallback returns zeros).
+    #[test]
+    fn design_surface_deformed_uniform_displacement_translates_uniformly() {
+        struct OffsetSphere {
+            center: Vec3,
+            radius: f64,
+        }
+        impl Sdf for OffsetSphere {
+            fn eval(&self, p: NaPoint3<f64>) -> f64 {
+                (Vec3::new(p.x, p.y, p.z) - self.center).norm() - self.radius
+            }
+            fn grad(&self, _p: NaPoint3<f64>) -> Vec3 {
+                Vec3::z()
+            }
+        }
+        // Sphere centered inside SingleTetMesh's AABB ([0, 0.1]^3),
+        // small enough to fit entirely within the tet's neighborhood.
+        let sphere = OffsetSphere {
+            center: Vec3::new(0.04, 0.04, 0.04),
+            radius: 0.015,
+        };
+        let bounds = Aabb3::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.1, 0.1, 0.1));
+        let resolution = 0.0025_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let uniform = Vec3::new(0.001, 0.002, 0.003);
+        let displacement = vec![uniform; analysis.n_vertices()];
+
+        for amplify in [1.0_f64, 2.0, 10.0] {
+            let rest = design_surface(&sphere, &analysis, &bounds, resolution, &scalars).unwrap();
+            let deformed = design_surface_deformed(
+                &sphere,
+                &analysis,
+                &bounds,
+                resolution,
+                &scalars,
+                &displacement,
+                amplify,
+            )
+            .unwrap();
+            assert!(
+                !rest.geometry.vertices.is_empty(),
+                "rest surface should be non-empty"
+            );
+
+            let expected = uniform * amplify;
+            for (a, b) in rest
+                .geometry
+                .vertices
+                .iter()
+                .zip(deformed.geometry.vertices.iter())
+            {
+                assert!(
+                    (b.x - a.x - expected.x).abs() < 1e-9,
+                    "amplify={amplify}: x diff {} expected {}",
+                    b.x - a.x,
+                    expected.x
+                );
+                assert!((b.y - a.y - expected.y).abs() < 1e-9);
+                assert!((b.z - a.z - expected.z).abs() < 1e-9);
+            }
+        }
+    }
+
+    /// Mismatched displacement length surfaces as the typed error.
+    #[test]
+    fn design_surface_deformed_rejects_wrong_displacement_length() {
+        use crate::SphereSdf;
+
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        // SingleTetMesh has 4 vertices; supply length 2 to trip the gate.
+        let bad_displacement = vec![Vec3::zeros(); 2];
+
+        let err = design_surface_deformed(
+            &sphere,
+            &analysis,
+            &bounds,
+            0.005,
+            &scalars,
+            &bad_displacement,
+            1.0,
+        )
+        .unwrap_err();
+        match err {
+            VizError::PerVertexLengthMismatch { expected, actual } => {
+                assert_eq!(expected, 4);
                 assert_eq!(actual, 2);
             }
             other => panic!("unexpected error: {other:?}"),
