@@ -42,6 +42,13 @@
 //!   factor. Renders the deformed configuration with stress contours
 //!   — the canonical commercial-FEM-viz convention. Pass `amplify > 1`
 //!   to make sub-mm deformations visually obvious on cm-scale bodies.
+//! - [`design_scene`] combines a body's [`design_surface`] with
+//!   marching-cubes-only renderings of each contact primitive
+//!   (rigid; no scalar field) into one [`AttributedMesh`] with a
+//!   categorical `primitive_id` scalar. cf-view toggles between
+//!   `primitive_id` (body-vs-contact split) and the body's continuous
+//!   scalars (deformation/strain with contact primitives as uniform-
+//!   zero solids).
 //!
 //! Pick F1 when the analysis-mesh discretization IS the story (e.g.,
 //! debugging mesh quality, sliver-tet inspection). Pick F2 when the
@@ -748,6 +755,106 @@ pub fn design_surface_deformed<M: Material>(
         v.y += displacement.y * amplify;
         v.z += displacement.z * amplify;
     }
+
+    Ok(attr)
+}
+
+/// Combine [`design_surface`] of `body_sdf` with contact primitives.
+///
+/// Each entry in `contact_sdfs` is rendered geometry-only via marching
+/// cubes (rigid bodies have no scalar field) and merged into a single
+/// [`AttributedMesh`] with a categorical `primitive_id` scalar
+/// (`0.0` = body, `1.0..=N` = each contact in `contact_sdfs` order).
+///
+/// Other scalars from `per_tet_scalars` (e.g. `displacement_magnitude`,
+/// `material_id`, `psi_j_per_m3`) are computed for the body via the
+/// usual barycentric interp and padded with `0.0` for contact-primitive
+/// vertices — contact primitives are rigid and have no FEM scalar
+/// field, so the uniform-zero padding is the most honest fill.
+///
+/// In cf-view, toggle the Scalar dropdown to `primitive_id` for a
+/// categorical body-vs-contact split (canonical commercial-FEM-viz
+/// scene convention); toggle to a continuous scalar (e.g.
+/// `displacement_magnitude`) to see the body's field with the
+/// contact primitives as uniform-zero solids.
+///
+/// # Errors
+///
+/// All [`design_surface`] errors. The contact primitives are rendered
+/// geometry-only (no scalar interp), so per-tet scalar validation
+/// applies to the body's pass only.
+//
+// `cast_precision_loss` allowed: `(idx + 1) as f32` for primitive_id
+// is safe up to ~16 M contacts (well beyond any practical use).
+// `cast_possible_truncation` allowed: vertex/face index casts use
+// the same VertexId/TetId u32 invariant as the rest of the module.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::expect_used
+)]
+pub fn design_scene<M: Material>(
+    body_sdf: &dyn Sdf,
+    contact_sdfs: &[&dyn Sdf],
+    analysis_mesh: &dyn Mesh<M>,
+    bounds: &Aabb3,
+    resolution: f64,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+) -> Result<AttributedMesh, VizError> {
+    use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
+
+    // 1. Body via design_surface (handles validation).
+    let mut attr = design_surface(body_sdf, analysis_mesh, bounds, resolution, per_tet_scalars)?;
+    let body_vert_count = attr.geometry.vertices.len();
+    let mut primitive_id: Vec<f32> = vec![0.0_f32; body_vert_count];
+
+    // 2. Contacts via marching cubes only (rigid; no scalar interp).
+    for (contact_idx, &contact_sdf) in contact_sdfs.iter().enumerate() {
+        let id_value = (contact_idx + 1) as f32;
+        let mut grid = ScalarGrid::from_bounds(
+            NaPoint3::new(bounds.min.x, bounds.min.y, bounds.min.z),
+            NaPoint3::new(bounds.max.x, bounds.max.y, bounds.max.z),
+            resolution,
+            0,
+        );
+        let (nx, ny, nz) = grid.dimensions();
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let p = grid.position(ix, iy, iz);
+                    grid.set(ix, iy, iz, contact_sdf.eval(p));
+                }
+            }
+        }
+        let surface = marching_cubes(&grid, &MarchingCubesConfig::at_iso_value(0.0));
+
+        let base_v = attr.geometry.vertices.len() as u32;
+        for v in &surface.vertices {
+            attr.geometry.vertices.push(*v);
+            primitive_id.push(id_value);
+        }
+        for face in &surface.faces {
+            attr.geometry
+                .faces
+                .push([face[0] + base_v, face[1] + base_v, face[2] + base_v]);
+        }
+    }
+
+    // 3. Pad existing extras with 0.0 for contact-primitive vertices.
+    let total_vertices = attr.geometry.vertices.len();
+    let extra_keys: Vec<String> = attr.extras.keys().cloned().collect();
+    for key in extra_keys {
+        if let Some(values) = attr.extras.get_mut(&key) {
+            while values.len() < total_vertices {
+                values.push(0.0_f32);
+            }
+        }
+    }
+
+    // 4. Insert primitive_id as the new categorical scalar.
+    attr.insert_extra("primitive_id".to_string(), primitive_id)
+        .expect("primitive_id length matches total vertex count by construction");
 
     Ok(attr)
 }
@@ -2299,5 +2406,117 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    /// Empty `contact_sdfs` produces output equal to `design_surface`
+    /// on geometry + scalar field, plus a `primitive_id` scalar that's
+    /// uniform `0.0` across the body.
+    #[test]
+    fn design_scene_empty_contacts_matches_design_surface() {
+        use crate::SphereSdf;
+
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let body_only = design_surface(&sphere, &analysis, &bounds, resolution, &scalars).unwrap();
+        let scene = design_scene(&sphere, &[], &analysis, &bounds, resolution, &scalars).unwrap();
+
+        assert_eq!(
+            body_only.geometry.vertices.len(),
+            scene.geometry.vertices.len()
+        );
+        assert_eq!(body_only.geometry.faces.len(), scene.geometry.faces.len());
+
+        let primitive_id = scene
+            .extras
+            .get("primitive_id")
+            .expect("primitive_id missing");
+        assert_eq!(primitive_id.len(), scene.geometry.vertices.len());
+        for &id in primitive_id {
+            assert!(
+                (id - 0.0).abs() < 1e-9,
+                "expected body primitive_id 0.0, got {id}"
+            );
+        }
+    }
+
+    /// Two contact primitives produce `primitive_id` values 0.0 (body),
+    /// 1.0 (first contact), 2.0 (second contact), each in a contiguous
+    /// vertex range. Other scalars are padded with 0.0 for contacts.
+    #[test]
+    fn design_scene_two_contacts_categorical_primitive_id() {
+        use crate::SphereSdf;
+
+        // Body sphere + two non-overlapping contact spheres at offsets.
+        struct OffsetSphere {
+            cx: f64,
+            r: f64,
+        }
+        impl Sdf for OffsetSphere {
+            fn eval(&self, p: NaPoint3<f64>) -> f64 {
+                let dx = p.x - self.cx;
+                dx.mul_add(dx, p.y.mul_add(p.y, p.z * p.z)).sqrt() - self.r
+            }
+            fn grad(&self, _p: NaPoint3<f64>) -> Vec3 {
+                Vec3::z()
+            }
+        }
+
+        let body = SphereSdf { radius: 0.05 };
+        let contact_a = OffsetSphere { cx: 0.07, r: 0.015 };
+        let contact_b = OffsetSphere {
+            cx: -0.07,
+            r: 0.015,
+        };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let scene = design_scene(
+            &body,
+            &[&contact_a as &dyn Sdf, &contact_b as &dyn Sdf],
+            &analysis,
+            &bounds,
+            0.005,
+            &scalars,
+        )
+        .unwrap();
+
+        let primitive_id = scene
+            .extras
+            .get("primitive_id")
+            .expect("primitive_id missing");
+
+        // All three categorical values present.
+        let mut counts = [0_usize; 3];
+        for &id in primitive_id {
+            let bucket = if (id - 0.0).abs() < 0.5 {
+                0
+            } else if (id - 1.0).abs() < 0.5 {
+                1
+            } else if (id - 2.0).abs() < 0.5 {
+                2
+            } else {
+                panic!("primitive_id {id} out of expected range 0..=2");
+            };
+            counts[bucket] += 1;
+        }
+        assert!(counts[0] > 0, "expected body vertices (id=0)");
+        assert!(counts[1] > 0, "expected contact_a vertices (id=1)");
+        assert!(counts[2] > 0, "expected contact_b vertices (id=2)");
+
+        // psi extra is body-only-meaningful — padded 0.0 for contacts.
+        // Total length matches vertex count.
+        let psi_extra = scene.extras.get("psi").expect("psi missing");
+        assert_eq!(psi_extra.len(), scene.geometry.vertices.len());
     }
 }
