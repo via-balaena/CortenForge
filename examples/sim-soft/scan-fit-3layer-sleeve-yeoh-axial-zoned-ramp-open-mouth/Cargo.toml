@@ -1,0 +1,89 @@
+[package]
+name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# `cf_design::Solid::cuboid` (the axis-aligned scan stand-in body —
+# exact-SDF primitive required for offset to produce a true uniform
+# wrap shell) + `Solid::offset` (the wrap-thickness extrusion that
+# produces the outer envelope) + `Solid::subtract` (the heterogeneous
+# CSG that carves the scan-shaped cavity from the wrapped envelope to
+# yield the sleeve body) + `Solid::sphere` + `Solid::translate` (the
+# rigid intrusion probe, repositioned per ramp step to progressively
+# deeper `+z` cap penetration). Per PR3 F1 (`impl Sdf for Solid` at
+# `design/cf-design/src/sdf.rs:56`), every `Solid` is itself an
+# `impl Sdf` and bridges into sim-soft's tet meshing + contact
+# pipelines via the same trait — no per-shape glue.
+cf-design = { workspace = true }
+# `Aabb3` + `BoundaryConditions` + `BlendedScalarField` (the v3
+# differentiator — smoothstep blend between proximal + distal
+# `LayeredScalarField`s over an axial half-space SDF) +
+# `CpuNewtonSolver` + `LayeredScalarField` (per-zone radial-shell
+# partition) + `MaterialField` (with `from_yeoh_fields` — Yeoh variant
+# for the F4.0 generic-mesh path) + `Mesh<Yeoh>` + `MeshingHints` +
+# `NewtonStep` + `PenaltyRigidContact` + `PenaltyRigidContactYeohSolver`
+# (Yeoh alias of `CpuNewtonSolver<…, Yeoh, 4, 1>`, lib.rs:148) +
+# `SceneInitial` + `Sdf` (re-export of `cf_design::Sdf`; supertrait of
+# the inline `AxialHalfSpace` impl below) + `SdfMeshedTetMesh<Yeoh>`
+# (Yeoh-flavored mesh built via `from_sdf_yeoh`) + `Solver` +
+# `SolverConfig` + `Tet4` + `Vec3` + `VertexId` +
+# `pick_vertices_by_predicate` + `referenced_vertices` +
+# `material::Yeoh` + `material::silicone_table::{ECOFLEX_00_20,
+# ECOFLEX_00_30, DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A,
+# DRAGON_SKIN_30A}` (F4 const entries — six anchors used directly via
+# Path 1 `to_yeoh()` round-trip; proximal stack matches row 23's
+# 18/51/113 kPa; distal stack is one-Shore-step stiffer per family
+# yielding 23/92/198 kPa). Path-2 parametric construction is not used
+# in this row (row 23 already demonstrates the Path-2 surface; row 24
+# isolates the axial-composition variable).
+sim-soft = { workspace = true }
+# `Tensor` for the empty-traction `theta` argument to `replay_step`
+# (one call per ramp step). Loading is fully penalty-mediated through
+# contact (rigid intrusion probe drives the cavity wall) at every
+# step; no distributed pressure. Same idiom as rows 18 + 20 + 21 + 22 +
+# 23.
+sim-ml-chassis = { workspace = true }
+# `Point3` + `IndexedMesh` + `AttributedMesh` for the final-step
+# x-slab per-tet centroid PLY emit (`material_id` categorical +
+# `zone_id` categorical + `displacement_magnitude` sequential +
+# `mu_sampled_pa` sequential). x-slab is a NEW visualization for this
+# row vs row 23's z-slab — the axial material gradient is invisible
+# in a z-slab cut at z = 0 because the entire z-slab sits inside the
+# smoothstep band. The x-slab cut at `x = 0` spans the full axial
+# range so the soft-tip / stiff-anchor material gradient is
+# eyes-on-pixels visible. Z-slab tet counts are retained as bit-equal
+# regression gates (cheap centroid filter; not emitted as PLY).
+mesh-types = { workspace = true }
+# `save_ply_attributed` for `out/sleeve_xslab_final.ply`.
+mesh-io = { workspace = true }
+# `Result<()>` return + error-context wrapping for the JSON + PLY emit
+# steps. Same convention as rows 1-23.
+anyhow = { workspace = true }
+# `assert_relative_eq!` for the IV-1 sparse-tier rel-tol contract on
+# captured per-step force / displacement / per-layer Ψ̄ bits + the
+# `to_yeoh()` Yeoh-parameters round-trip + counts-bound and
+# material-provenance gates + the NEW `verify_blend_zone_material_provenance`
+# midplane-weight pin (proximal-distal arithmetic mean at z = SPLIT
+# is bit-exact in IEEE 754 since BlendedScalarField's smoothstep at
+# `phi == 0` yields `outside_weight = 0.5` exactly per the doc-comment).
+# Same convention as rows 1-23.
+approx = { workspace = true }
+# JSON emit for `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp_open_mouth.json` —
+# final-step scalars + 3-shell × 2-zone provenance (Yeoh-flavored
+# nested schema: per-shell proximal_anchor + distal_anchor with μ, c2,
+# λ, density, source-tag, validity bounds at both ends) +
+# `axial_split_z` + `axial_band_half_width_m` axis-of-zoning metadata +
+# `ramp_curve` array (per-step RampStepResult records, same shape as
+# row 23) + final-step per-active-pair detail array. Five-section
+# schema (row 23's four + axial-zoning metadata).
+serde_json = { workspace = true }
+# `Matrix3` + `Vector3` for the per-tet F-from-positions helper +
+# `cf_design::Sdf::eval` `Point3` receiver adaptation at material-field
+# probe sites + `Vec3::z()` for the axial half-space's gradient.
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true

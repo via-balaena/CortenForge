@@ -270,6 +270,9 @@ impl SdfMeshedTetMesh<Yeoh> {
     /// - Panics if `hints.material_field` is `Some` but built via NH
     ///   constructors — call
     ///   [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`] instead.
+    // Build-time API contract: Yeoh has no skeleton default, so a
+    // missing material_field is a caller error worth panicking on at
+    // construction. Documented in the # Panics section above.
     #[allow(clippy::expect_used)]
     pub fn from_sdf_yeoh(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
         let material_field = hints.material_field.as_ref().expect(

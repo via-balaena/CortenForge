@@ -114,27 +114,37 @@
 //!      mean/max/min `force_magnitude`) + per-shell tet counts +
 //!      material provenance block + per-active-pair detail array
 //!      (mirrors row 18's two-section schema).
-//!    - PLY `out/device_zslab.ply`: z-slab per-tet centroid cloud
-//!      (`|centroid.z| < cell_size/2`) with two scalars — `material_id`
-//!      categorical (0 = inner / 1 = middle / 2 = outer; cf-view
-//!      auto-picks categorical palette per pattern (u)) and
-//!      `displacement_magnitude` continuous unipolar (sequential
-//!      viridis per pattern (u)).
+//!    - PLY `out/device_boundary.ply`: full 3D body via
+//!      [`sim_soft::viz::boundary_surface`] (F1.1 lift), with
+//!      sequential `displacement_magnitude` + categorical
+//!      `material_id` per-vertex (volume-weighted averaged from
+//!      per-tet). Replaces the pre-F1.5 z-slab centroid cloud's
+//!      reduce-to-2D framing with the canonical FEM-viz convention.
+//!    - PLY `out/device_slab_cut_z0.ply`: equatorial cross-section
+//!      at `z = 0` via [`sim_soft::viz::slab_cut`] (F1.1 lift).
+//!      Marching-tetrahedra intersection; per-vertex scalars
+//!      linearly interpolated along cross-edges. Exposes both the
+//!      radial material-shell partition AND the cavity-wall
+//!      displacement at the equator from one cut — the same
+//!      view the pre-F1.5 z-slab centroid cloud expressed, but as
+//!      a proper triangulated surface.
 //!    - `verify_*` runtime gates (8 anchor groups, see "Numerical
 //!      anchors" in `README.md`).
 //!
-//! # Why z-slab over full-boundary-surface
+//! # Why both boundary-surface and slab-cut
 //!
-//! Per pattern (aa) banked at row 16 N+3 (`feedback`, [memo][mem16]):
-//! hollow / interior-cavity / partial-occlusion bodies → z-slab
-//! per-tet centroid cloud (row 11 precedent). The layered silicone
-//! device has BOTH a hollow scan-shaped cavity AND three concentric
-//! material shells — a full-boundary-surface PLY would 360°-occlude
-//! the cavity and the inner/middle interfaces from every cf-view
-//! orbit angle. The z-slab projects centroids onto a 2-D annulus
-//! cut, exposing both the radial material-shell partition (via
-//! `material_id` categorical) and the cavity-wall displacement
-//! response (via `displacement_magnitude` sequential).
+//! Pattern (aa) banked at row 16 N+3: hollow / interior-cavity /
+//! partial-occlusion bodies (the doubly-hollow layered silicone
+//! device — scan-shaped cavity AND three concentric material
+//! shells — qualifies on both counts) need an axis-aligned cut to
+//! expose interior structure. The F1.5 retrofit (replacing the
+//! pre-F1.5 z-slab centroid cloud) emits BOTH primitives: the
+//! boundary-surface gives the 3D outer shape with the contact-zone
+//! displacement glow, while the slab-cut at `z = 0` cuts through
+//! the body to expose the radial material shells + cavity wall in
+//! one frame. Together they cover the visualization story the
+//! pre-F1.5 z-slab + amplified-displacement convention compressed
+//! into a single artifact.
 //!
 //! [mem16]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_sim_soft_row_16_patterns.md
 //!
@@ -162,7 +172,7 @@
 //! faer's sparse Cholesky); debug mode would take many minutes for
 //! what runs in seconds release.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -170,15 +180,16 @@ use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_sdf::SignedDistanceField;
-use mesh_types::{AttributedMesh, IndexedMesh, Point3, Vector3};
+use mesh_types::{IndexedMesh, Point3, Vector3};
+use nalgebra::Matrix3;
 use serde_json::{Value, json};
 use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::{DRAGON_SKIN_10A, ECOFLEX_00_30};
 use sim_soft::{
     Aabb3, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField, Material, MaterialField,
-    Mesh, MeshingHints, NewtonStep, PenaltyRigidContact, PenaltyRigidContactSolver, SceneInitial,
-    Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
-    pick_vertices_by_predicate, referenced_vertices,
+    Mesh, MeshingHints, NewtonStep, PenaltyRigidContact, PenaltyRigidContactSolver, Plane,
+    SceneInitial, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SphereSdf, Tet4, Vec3, VertexId,
+    boundary_surface, pick_vertices_by_predicate, referenced_vertices, slab_cut,
 };
 
 // =============================================================================
@@ -227,12 +238,19 @@ const BBOX_HALF_EXTENT: f64 = 0.12;
 // Constants — meshing + solver
 // =============================================================================
 
-/// BCC lattice spacing (m). Same `cell_size = h/2 = 0.02` as rows 11 +
-/// 16 — IV-3/IV-4/IV-5's mid-refinement; `~5–7 k tets` after the
-/// scan-shaped cavity carve. Bit-pin to row 11 + 16's tet count is
-/// expected to NOT hold (the cavity differs); first-run capture
-/// produces row-20-specific counts.
-const CELL_SIZE: f64 = 0.02;
+/// BCC lattice spacing (m). 2× finer than the original row-20 0.02 m
+/// (which was inherited from rows 11 + 16's IV-3/IV-4/IV-5
+/// mid-refinement choice; `~5–7 k tets` after the scan-shaped cavity
+/// carve). The original coarse mesh approximated the spherical outer
+/// surface as a low-poly envelope (only ~5 lattice cells across the
+/// `R_OUTER = 0.10 m` radius), which the F1.5-lifted
+/// `boundary_surface` + `slab_cut` PLY emits faithfully exposed —
+/// the pre-F1.5 z-slab centroid PLY hid the surface approximation
+/// because centroids are interior-only. Refined to 0.01 m (~10
+/// lattice cells across the radius, ~56 k tets) so the spherical
+/// envelope is visibly smoother in the slab cut. Captured-bits
+/// constants below are first-run captures at the refined mesh.
+const CELL_SIZE: f64 = 0.01;
 
 /// Static-regime time step (s). Mirrors rows 11 + 14 + 16 + 18's
 /// `STATIC_DT` verbatim: at large `dt`, the backward-Euler residual's
@@ -241,10 +259,15 @@ const CELL_SIZE: f64 = 0.02;
 /// converges to the static equilibrium far below `tol = 1e-10`.
 const STATIC_DT: f64 = 1.0;
 
-/// Newton iter cap. Mirrors rows 11 + 16's `MAX_NEWTON_ITER`
-/// verbatim: empirical convergence on similar geometries is ≤ 5 iters;
-/// `50` leaves headroom for future material / load perturbations.
-const MAX_NEWTON_ITER: usize = 50;
+/// Newton iter cap. Bumped from 50 → 200 alongside the
+/// `CELL_SIZE = 0.02 → 0.01` refinement: at the finer mesh the
+/// initial overlap between the cavity walls (which sit on the scan
+/// SDF zero-set by construction) and the indenter spans more
+/// vertices, so the contact-onset Newton iteration's residual takes
+/// more steps to drive below `tol = 1e-10`. Empirical convergence
+/// at the refined mesh is ~70-100 iters at first call from rest;
+/// 200 leaves comfortable headroom for future load perturbations.
+const MAX_NEWTON_ITER: usize = 200;
 
 // =============================================================================
 // Constants — tolerances
@@ -299,58 +322,59 @@ const F4_PROVENANCE_EXACT_TOL: f64 = 0.0;
 /// cube at `(0.015, 0, 0)`) differs from rows 11 + 16's `R_CAVITY =
 /// 0.04 m` sphere — pattern (y) cross-row bit-equal continuity does
 /// NOT extend.
-const N_TETS_EXACT: usize = 6860;
+const N_TETS_EXACT: usize = 51_670;
 
 /// Total mesh vertex count, including BCC lattice corners not
 /// referenced by any tet.
-const N_VERTICES_EXACT: usize = 4773;
+const N_VERTICES_EXACT: usize = 32_496;
 
-/// Vertices referenced by at least one tet. `N_VERTICES_EXACT -
-/// N_REFERENCED_EXACT = 3197` orphan BCC lattice corners excluded
-/// from solver participation.
-const N_REFERENCED_EXACT: usize = 1576;
+/// Vertices referenced by at least one tet.
+const N_REFERENCED_EXACT: usize = 10_259;
 
 /// Outer-surface Dirichlet-pinned vertex count (every vertex with
-/// `(‖p‖ - R_OUTER).abs() < CELL_SIZE / 2 = 0.01`, filtered to
-/// referenced set). Diverges from rows 11 + 16's `734` — the cavity-
-/// asymmetry reduces the BCC-lattice population in the outer-surface
-/// band slightly (the offset cube cuts into the body's interior, so a
-/// handful of BCC vertices that would have been outer-band lattice
-/// neighbours are unreferenced after the cavity carve).
-const N_PINNED_EXACT: usize = 710;
+/// `(‖p‖ - R_OUTER).abs() < CELL_SIZE / 2 = 0.005`, filtered to
+/// referenced set).
+const N_PINNED_EXACT: usize = 2_800;
 
 /// Per-shell tet counts at first capture. `INNER + MIDDLE + OUTER ==
 /// N_TETS_EXACT` by construction (every tet centroid sits in exactly
 /// one of the three radial bins).
-const N_INNER_TETS_EXACT: usize = 856;
-const N_MIDDLE_TETS_EXACT: usize = 2035;
-const N_OUTER_TETS_EXACT: usize = 3969;
+const N_INNER_TETS_EXACT: usize = 5_330;
+const N_MIDDLE_TETS_EXACT: usize = 15_401;
+const N_OUTER_TETS_EXACT: usize = 30_939;
 
-/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.01`
-/// z-slab cut for the cf-view PLY artifact (~10 % of full body,
-/// mirroring rows 11 + 16's z-slab fraction).
-const N_INNER_TETS_ZSLAB_EXACT: usize = 144;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 270;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 258;
+/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.005`
+/// z-slab cut. Survives at the F1.5 retrofit as a cheap centroid
+/// regression filter (no PLY data emitted there anymore).
+const N_INNER_TETS_ZSLAB_EXACT: usize = 548;
+const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 912;
+const N_OUTER_TETS_ZSLAB_EXACT: usize = 1_225;
 
 /// Active contact-pair count at the static fit pose. Contact band is
 /// `sd < d̂ = PENALTY_DHAT_DEFAULT` (sim-soft's crate-default value);
 /// at rest the cavity walls already kiss the indenter, so all cavity-
-/// surface vertices within `d̂` are active.
-const N_CONTACT_PAIRS_EXACT: usize = 127;
+/// surface vertices within `d̂` are active. Larger at the refined
+/// mesh than the original 0.02 m capture (~127) because the
+/// cavity-wall vertex population scales with surface area at finer
+/// lattice resolution.
+const N_CONTACT_PAIRS_EXACT: usize = 532;
 
 /// Total z-component of the rest-state contact reaction force (N).
 /// `force_on_soft = +κ · (d̂ - sd) · normal`; the z-sum captures the
 /// axial component of the fit-tightness force at zero indenter
 /// displacement.
-/// `f64::from_bits(0x3fc4_0790_5286_ba74) ≈ 1.5648e-1 N`.
-const FORCE_TOTAL_Z_REF_BITS: u64 = 0x3fc4_0790_5286_ba74;
+/// `f64::from_bits(0x3f9c_cd87_639b_8cf0) ≈ 2.8128e-2 N`. Smaller
+/// magnitude than the original 0.02 m capture because at the refined
+/// mesh the cavity-wall surface integration is finer and the +z and
+/// -z contributions cancel more closely (the cavity is z-symmetric
+/// up to BCC lattice artifacts; the offset is only in x).
+const FORCE_TOTAL_Z_REF_BITS: u64 = 0x3f9c_cd87_639b_8cf0;
 
 /// Cavity-wall mean displacement-magnitude bits (m) at the static fit
 /// pose. Mean over the active-contact-pair vertex set of
 /// `(deformed - rest).norm()`.
-/// `f64::from_bits(0x3f53_d596_7b05_b573) ≈ 1.2106e-3 m`.
-const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f53_d596_7b05_b573;
+/// `f64::from_bits(0x3f40_a094_dbee_1514) ≈ 5.0742e-4 m`.
+const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f40_a094_dbee_1514;
 
 // =============================================================================
 // Programmatic 12-tri cube scan fixture
@@ -594,6 +618,29 @@ fn solve_static(
 }
 
 // =============================================================================
+// Per-tet deformation gradient (mirrors row 22 / row 23 / row 24's
+// `deformation_gradient` helper; private to this row, used only for
+// the F1.5-follow-up per-tet psi computation feeding the viz emits).
+// =============================================================================
+
+fn deformation_gradient(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3]) -> Matrix3<f64> {
+    let r0 = rest[verts[0] as usize];
+    let r1 = rest[verts[1] as usize];
+    let r2 = rest[verts[2] as usize];
+    let r3 = rest[verts[3] as usize];
+    let c0 = curr[verts[0] as usize];
+    let c1 = curr[verts[1] as usize];
+    let c2 = curr[verts[2] as usize];
+    let c3 = curr[verts[3] as usize];
+    let d_rest = Matrix3::from_columns(&[r1 - r0, r2 - r0, r3 - r0]);
+    let d_curr = Matrix3::from_columns(&[c1 - c0, c2 - c0, c3 - c0]);
+    let d_rest_inv = d_rest
+        .try_inverse()
+        .expect("D_rest is invertible by verify_quality_floors signed-volume gate");
+    d_curr * d_rest_inv
+}
+
+// =============================================================================
 // Verifications — 8 anchor groups
 // =============================================================================
 
@@ -833,46 +880,17 @@ fn write_json_readout(
 }
 
 // =============================================================================
-// PLY z-slab artifact emit
+// (PLY z-slab inline scratch helpers retired at F1.5)
 // =============================================================================
-
-#[derive(Clone, Copy)]
-struct ZslabRecord {
-    centroid: Vec3,
-    deformed_centroid: Vec3,
-}
-
-fn emit_zslab_ply(
-    path: &Path,
-    records: &[ZslabRecord],
-    displacement_magnitudes: &[f64],
-    material_ids: &[f64],
-) -> Result<()> {
-    assert_eq!(records.len(), displacement_magnitudes.len());
-    assert_eq!(records.len(), material_ids.len());
-
-    let mut geometry = IndexedMesh::new();
-    for r in records {
-        // Amplification scales the displacement for visual clarity;
-        // the `displacement_magnitude` extra carries the unscaled
-        // physical magnitude for quantitative cross-readout. Mirrors
-        // row 11 + 16's z-slab pattern.
-        const DISPLACEMENT_SCALE: f64 = 50.0;
-        let amplified = r.centroid + DISPLACEMENT_SCALE * (r.deformed_centroid - r.centroid);
-        geometry
-            .vertices
-            .push(Point3::new(amplified.x, amplified.y, amplified.z));
-    }
-    // No faces — z-slab is a per-tet centroid cloud, point-only PLY.
-
-    let mut mesh = AttributedMesh::new(geometry);
-    let disp_f32: Vec<f32> = displacement_magnitudes.iter().map(|&v| v as f32).collect();
-    let mat_f32: Vec<f32> = material_ids.iter().map(|&v| v as f32).collect();
-    mesh.insert_extra("displacement_magnitude", disp_f32)?;
-    mesh.insert_extra("material_id", mat_f32)?;
-    save_ply_attributed(&mesh, path, true)?;
-    Ok(())
-}
+//
+// The pre-F1.5 inline `emit_zslab_ply` + `ZslabRecord` (with
+// DISPLACEMENT_SCALE = 50.0 amplification) emitted a z-slab per-tet
+// centroid cloud. Lifted to [`sim_soft::viz::boundary_surface`] +
+// [`sim_soft::viz::slab_cut`] at F1.1 / F1.5 retrofit; row 20 now
+// emits the full 3D body + the proper triangulated cross-section
+// rather than an amplified centroid cloud. Z-slab tet-COUNT
+// regression gate (`verify_zslab_counts_exact`) survives — cheap
+// centroid filter, no PLY data.
 
 // =============================================================================
 // main
@@ -1064,14 +1082,16 @@ fn main() -> Result<()> {
         &pair_records,
     )?;
 
-    // PLY z-slab — per-tet centroid cloud filtered to `|cz| < CELL/2`,
-    // with categorical `material_id` + sequential
-    // `displacement_magnitude` per the cf-view artifact-shape
-    // decision rule (pattern (aa)).
+    // PLY emits via `sim_soft::viz` public API (F1.5 retrofit; see
+    // `sim/L0/soft/src/viz/mod.rs` + `project_sim_soft_viz_arc.md`).
+    // The `inspection_mesh` (built post-solver from the same SDF +
+    // hints, deterministic BCC + IS → bit-equal mesh) carries the
+    // `&dyn Mesh<NeoHookean>` access the public viz API needs; the
+    // original `mesh` was moved into the solver above.
     let half_cell = 0.5 * CELL_SIZE;
-    let mut zslab_records: Vec<ZslabRecord> = Vec::new();
-    let mut zslab_disp: Vec<f64> = Vec::new();
-    let mut zslab_mat: Vec<f64> = Vec::new();
+
+    // z-slab tet-COUNT regression gate (cheap centroid filter — no
+    // PLY data accumulation; pre-F1.5 PLY-emit path retired).
     let mut n_inner_z = 0usize;
     let mut n_middle_z = 0usize;
     let mut n_outer_z = 0usize;
@@ -1084,28 +1104,73 @@ fn main() -> Result<()> {
         if rest_centroid.z.abs() >= half_cell {
             continue;
         }
-        let deformed_centroid = (positions_vec3[v0 as usize]
-            + positions_vec3[v1 as usize]
-            + positions_vec3[v2 as usize]
-            + positions_vec3[v3 as usize])
-            / 4.0;
-        let mat_id = shell_idx_per_tet[tet_idx];
-        match mat_id {
+        match shell_idx_per_tet[tet_idx] {
             0 => n_inner_z += 1,
             1 => n_middle_z += 1,
             _ => n_outer_z += 1,
         }
-        zslab_records.push(ZslabRecord {
-            centroid: rest_centroid,
-            deformed_centroid,
-        });
-        zslab_disp.push((deformed_centroid - rest_centroid).norm());
-        zslab_mat.push(mat_id as f64);
     }
     verify_zslab_counts_exact(n_inner_z, n_middle_z, n_outer_z);
 
-    let ply_path = out_dir.join("device_zslab.ply");
-    emit_zslab_ply(&ply_path, &zslab_records, &zslab_disp, &zslab_mat)?;
+    // Per-tet displacement magnitude across the full mesh + per-tet
+    // material id (radial shell index). Both feed boundary-surface
+    // and slab-cut emits via the public viz API.
+    let displacement_per_tet: Vec<f64> = tets
+        .iter()
+        .map(|&[v0, v1, v2, v3]| {
+            let rest = (rest_positions[v0 as usize]
+                + rest_positions[v1 as usize]
+                + rest_positions[v2 as usize]
+                + rest_positions[v3 as usize])
+                / 4.0;
+            let deformed = (positions_vec3[v0 as usize]
+                + positions_vec3[v1 as usize]
+                + positions_vec3[v2 as usize]
+                + positions_vec3[v3 as usize])
+                / 4.0;
+            (deformed - rest).norm()
+        })
+        .collect();
+    let material_id_per_tet: Vec<f64> = shell_idx_per_tet.iter().map(|&s| s as f64).collect();
+
+    // Per-tet strain-energy density (`psi_j_per_m3`) at the static
+    // fit pose. Same `Material::energy(F_t)` per-tet computation
+    // rows 22/23/24 use; row 20 didn't track this in pre-F1.5 prose
+    // because the device's headline JSON readouts were force +
+    // displacement (cavity-fit tightness story). The viz emits get
+    // it now as a 3rd scalar so cf-view's dropdown surfaces the
+    // strain-energy-density heatmap on the boundary surface + cut.
+    let materials_for_psi = inspection_mesh.materials();
+    let psi_per_tet: Vec<f64> = tets
+        .iter()
+        .enumerate()
+        .map(|(t, &verts)| {
+            let f = deformation_gradient(verts, &rest_positions, &positions_vec3);
+            materials_for_psi[t].energy(&f)
+        })
+        .collect();
+
+    let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+    per_tet_scalars.insert("displacement_magnitude", &displacement_per_tet);
+    per_tet_scalars.insert("material_id", &material_id_per_tet);
+    per_tet_scalars.insert("psi_j_per_m3", &psi_per_tet);
+
+    let bd_ply_path = out_dir.join("device_boundary.ply");
+    let bd_attr =
+        boundary_surface(&inspection_mesh, &per_tet_scalars).map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&bd_attr, &bd_ply_path, true)?;
+
+    let slab_ply_path = out_dir.join("device_slab_cut_z0.ply");
+    let slab_attr = slab_cut(
+        &inspection_mesh,
+        Plane {
+            axis: 2,
+            value: 0.0,
+        },
+        &per_tet_scalars,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    save_ply_attributed(&slab_attr, &slab_ply_path, true)?;
 
     // 11. Museum-plaque summary.
     print_summary(
@@ -1181,12 +1246,21 @@ fn print_summary(
     println!();
     println!("Outputs:");
     println!("  out/layered_silicone_device.json  (scalars + materials + per-pair)");
-    println!("  out/device_zslab.ply              (z-slab centroid cloud, two scalars)");
+    println!(
+        "  out/device_boundary.ply           (full 3D body via sim_soft::viz::boundary_surface)"
+    );
+    println!(
+        "  out/device_slab_cut_z0.ply        (cross-section at z = 0 via sim_soft::viz::slab_cut)"
+    );
     println!();
     println!("View with cf-view (workspace's unified visual-review viewer):");
     println!(
         "  cargo run -p cf-viewer --release -- \
-         examples/sim-soft/layered-silicone-device/out/device_zslab.ply"
+         examples/sim-soft/layered-silicone-device/out/device_boundary.ply"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/layered-silicone-device/out/device_slab_cut_z0.ply"
     );
 }
 

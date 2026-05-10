@@ -204,6 +204,10 @@ impl SiliconeMaterial {
     /// Internal anchor constructor. `const fn` so the table entries
     /// below are compile-time values. Not pub: external callers go
     /// through `from_effective_shore` / `from_measured` (F2.2).
+    // Internal const-fn called only from the anchor table below; the
+    // wide signature exists to keep each anchor's parameters explicit
+    // and audit-traceable at the call site instead of bundled in a
+    // builder. External callers go through the narrower public paths.
     #[allow(clippy::too_many_arguments)]
     const fn from_anchor(
         name: &'static str,

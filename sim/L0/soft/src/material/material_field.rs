@@ -222,6 +222,10 @@ impl MaterialField {
     /// constructors gate variant selection at build time so no
     /// hot-path call site reaches this branch.
     #[must_use]
+    // Variant-mismatch panic is a logic-error guard hit only when a
+    // Yeoh-built field is sampled via the NH accessor; mesh constructors
+    // gate the variant per the doc above so the runtime path never
+    // reaches this branch.
     #[allow(clippy::panic)]
     pub fn sample(&self, x_ref: Vec3) -> NeoHookean {
         match &self.inner {
@@ -250,6 +254,9 @@ impl MaterialField {
     /// [`MaterialField::skeleton_default`] — call
     /// [`MaterialField::sample`] for NH variants.
     #[must_use]
+    // Symmetric to `sample`: variant-mismatch panic is an assembly-time
+    // logic-error guard, not a runtime path. Mesh constructors gate the
+    // variant per the doc above.
     #[allow(clippy::panic)]
     pub fn sample_yeoh(&self, x_ref: Vec3) -> Yeoh {
         match &self.inner {

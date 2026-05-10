@@ -4971,6 +4971,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
+name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
+name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-ramp"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "serde_json",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sim-soft-sdf-to-tet-sphere"
 version = "1.0.0"
 dependencies = [
@@ -8711,6 +8756,7 @@ dependencies = [
  "cf-design",
  "faer",
  "getrandom 0.3.4",
+ "mesh-types",
  "nalgebra",
  "pollster",
  "sim-ml-chassis",
@@ -8914,6 +8960,19 @@ dependencies = [
  "num-traits",
  "robust",
  "smallvec",
+]
+
+[[package]]
+name = "spade-delaunay-spike"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-design",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "sim-soft",
+ "spade",
 ]
 
 [[package]]
