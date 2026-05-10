@@ -218,7 +218,8 @@ use sim_soft::{
     Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
     PenaltyRigidContactYeohSolver, Plane, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial,
     Solver, SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, design_slab_cut,
-    design_surface, pick_vertices_by_predicate, referenced_vertices, slab_cut,
+    design_surface, design_surface_deformed, pick_vertices_by_predicate, referenced_vertices,
+    slab_cut,
 };
 
 // =============================================================================
@@ -720,27 +721,24 @@ struct RampStepResult {
     mean_psi_middle_j_per_m3: f64,
     mean_psi_outer_j_per_m3: f64,
     max_psi_outer_j_per_m3: f64,
-    /// Step 12 only: the per-pair readouts for JSON `final_contact_pairs`
-    /// and the final-step PLY z-slab (intermediate steps drop this
-    /// to keep memory bounded).
+    /// Per-step deformed vertex positions. Always captured (F2.3c needs
+    /// these per-step for the `design_surface_deformed` PLY series).
+    deformed_positions: Vec<Vec3>,
+    /// Per-tet strain-energy density (J/m³), indexed by tet ID,
+    /// length = `n_tets`. Captured every step (F2.3c needs per-step
+    /// psi for the ramp-animation PLY series); pre-F2.3c this was
+    /// final-step only and lived inside [`FinalStepData`].
+    per_tet_psi: Vec<f64>,
+    /// Step 12 only: per-pair readouts for JSON `final_contact_pairs`
+    /// and `rest_positions` for the final-step PLY emits. Intermediate
+    /// steps drop this to keep memory bounded.
     final_step_data: Option<FinalStepData>,
 }
 
 #[derive(Clone, Debug)]
 struct FinalStepData {
     rest_positions: Vec<Vec3>,
-    deformed_positions: Vec<Vec3>,
     pair_records: Vec<Value>,
-    /// Per-tet strain-energy density (J/m³), indexed by tet ID,
-    /// length = `n_tets`. Captured at the final step only as a
-    /// scalar for the F1.1-lifted
-    /// [`sim_soft::viz::boundary_surface`] and
-    /// [`sim_soft::viz::slab_cut`] PLY emits — same
-    /// `Material::energy(F_t)` per-tet computation as the radial
-    /// Ψ̄ aggregates above, just banked into a vector for
-    /// downstream visualization. Dropped at intermediate steps to
-    /// keep memory bounded.
-    per_tet_psi: Vec<f64>,
 }
 
 // =============================================================================
@@ -895,11 +893,7 @@ fn solve_ramp(
         let mut sum_mi = 0.0;
         let mut sum_ou = 0.0;
         let mut max_psi_outer = f64::NEG_INFINITY;
-        let mut per_tet_psi_final: Vec<f64> = if is_final {
-            Vec::with_capacity(tets.len())
-        } else {
-            Vec::new()
-        };
+        let mut per_tet_psi: Vec<f64> = Vec::with_capacity(tets.len());
         for (t, &verts) in tets.iter().enumerate() {
             let f = deformation_gradient(verts, &rest_pos_k, &positions_k);
             let psi_t = materials[t].energy(&f);
@@ -913,9 +907,7 @@ fn solve_ramp(
                     }
                 }
             }
-            if is_final {
-                per_tet_psi_final.push(psi_t);
-            }
+            per_tet_psi.push(psi_t);
         }
         let mean_psi_inner_j_per_m3 = if n_inner == 0 {
             0.0
@@ -957,9 +949,7 @@ fn solve_ramp(
                 .collect();
             Some(FinalStepData {
                 rest_positions: rest_pos_k,
-                deformed_positions: positions_k,
                 pair_records,
-                per_tet_psi: per_tet_psi_final,
             })
         } else {
             None
@@ -980,6 +970,8 @@ fn solve_ramp(
             mean_psi_middle_j_per_m3,
             mean_psi_outer_j_per_m3,
             max_psi_outer_j_per_m3: max_psi_outer,
+            deformed_positions: positions_k,
+            per_tet_psi,
             final_step_data,
         });
 
@@ -1729,10 +1721,10 @@ fn main() -> Result<()> {
                 + final_data.rest_positions[v2 as usize]
                 + final_data.rest_positions[v3 as usize])
                 / 4.0;
-            let deformed = (final_data.deformed_positions[v0 as usize]
-                + final_data.deformed_positions[v1 as usize]
-                + final_data.deformed_positions[v2 as usize]
-                + final_data.deformed_positions[v3 as usize])
+            let deformed = (final_step.deformed_positions[v0 as usize]
+                + final_step.deformed_positions[v1 as usize]
+                + final_step.deformed_positions[v2 as usize]
+                + final_step.deformed_positions[v3 as usize])
                 / 4.0;
             (deformed - rest).norm()
         })
@@ -1741,7 +1733,7 @@ fn main() -> Result<()> {
     let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
     per_tet_scalars.insert("displacement_magnitude", &displacement_per_tet);
     per_tet_scalars.insert("material_id", &material_id_per_tet);
-    per_tet_scalars.insert("psi_j_per_m3", &final_data.per_tet_psi);
+    per_tet_scalars.insert("psi_j_per_m3", &final_step.per_tet_psi);
 
     let bd_ply_path = out_dir.join("sleeve_boundary_final.ply");
     let bd_attr = boundary_surface(&mesh, &per_tet_scalars).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1801,6 +1793,58 @@ fn main() -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
+
+    // F2.3c — per-step deformed PLY series. One design_surface_deformed
+    // per ramp step (12 total). rest_positions is constant (deterministic
+    // BCC + IS → bit-equal mesh per step); deformation evolves per step.
+    // amplify=10 makes Yeoh's mm-scale deformations visible on the
+    // ~50 mm body.
+    let rest_positions = &final_step
+        .final_step_data
+        .as_ref()
+        .expect("final_step_data present")
+        .rest_positions;
+    let amplify = 10.0_f64;
+    for step_result in &results {
+        let step_idx = step_result.step;
+        let step_displacement: Vec<Vec3> = (0..n_vertices)
+            .map(|i| step_result.deformed_positions[i] - rest_positions[i])
+            .collect();
+        let step_displacement_per_tet: Vec<f64> = tets
+            .iter()
+            .map(|&[v0, v1, v2, v3]| {
+                let rest = (rest_positions[v0 as usize]
+                    + rest_positions[v1 as usize]
+                    + rest_positions[v2 as usize]
+                    + rest_positions[v3 as usize])
+                    / 4.0;
+                let deformed = (step_result.deformed_positions[v0 as usize]
+                    + step_result.deformed_positions[v1 as usize]
+                    + step_result.deformed_positions[v2 as usize]
+                    + step_result.deformed_positions[v3 as usize])
+                    / 4.0;
+                (deformed - rest).norm()
+            })
+            .collect();
+        let mut step_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        step_scalars.insert("displacement_magnitude", &step_displacement_per_tet);
+        step_scalars.insert("material_id", &material_id_per_tet);
+        step_scalars.insert("psi_j_per_m3", &step_result.per_tet_psi);
+        let step_attr = design_surface_deformed(
+            &body_for_viz,
+            &mesh,
+            &design_bounds,
+            design_resolution,
+            &step_scalars,
+            &step_displacement,
+            amplify,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let step_path = out_dir.join(format!(
+            "sleeve_design_surface_deformed_step_{step_idx:02}.ply"
+        ));
+        save_ply_attributed(&step_attr, &step_path, true)?;
+    }
 
     // 9. Museum-plaque summary.
     print_summary(
@@ -1904,6 +1948,9 @@ fn print_summary(
     );
     println!(
         "  out/sleeve_design_surface_final.ply       (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF)"
+    );
+    println!(
+        "  out/sleeve_design_surface_deformed_step_01.ply..step_12.ply  (F2.3c ramp animation series: per-step deformed body via sim_soft::viz::design_surface_deformed at amplify=10)"
     );
     println!();
     println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");
