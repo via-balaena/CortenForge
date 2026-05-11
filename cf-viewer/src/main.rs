@@ -10,7 +10,7 @@ use cf_viewer::{
     colormap::{Colormap, ColormapKind},
     detect_input_mode, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
-    sequence::sequence_info_panel,
+    sequence::{handle_frame_navigation, reload_frame_on_change, sequence_info_panel},
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
@@ -77,7 +77,15 @@ fn main() -> Result<()> {
     }
 
     app.add_systems(Startup, setup_scene)
-        .add_systems(Update, (spawn_geometry, exit_on_esc))
+        // Sequence-mode chain: input → reload → respawn must run in
+        // order within a single frame, otherwise pressing `→` would
+        // take two frames to render the new geometry. `exit_on_esc`
+        // has no resource conflicts and lives outside the chain.
+        .add_systems(
+            Update,
+            (handle_frame_navigation, reload_frame_on_change, spawn_geometry).chain(),
+        )
+        .add_systems(Update, exit_on_esc)
         // Both panel systems take `EguiContexts` so Bevy auto-serializes
         // them, but the relative order isn't otherwise guaranteed.
         // `.chain()` pins it so layout (which panel claims space first
@@ -237,7 +245,10 @@ fn spawn_geometry(
     mut materials: ResMut<Assets<StandardMaterial>>,
     geometry: Query<Entity, With<GeometryEntity>>,
 ) {
-    if !selection.is_changed() {
+    // Respawn when either the user changes the scalar/colormap selection
+    // OR the loaded frame swaps (sequence-mode frame navigation in D1.3
+    // mutates `ViewerInput` via `sequence::reload_frame_on_change`).
+    if !selection.is_changed() && !input.is_changed() {
         return;
     }
     for entity in &geometry {

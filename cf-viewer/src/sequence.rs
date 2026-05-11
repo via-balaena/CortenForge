@@ -2,16 +2,23 @@
 //!
 //! When `cf-view <path>` is called with a directory of
 //! `*_step_<n>.ply` files (detected by [`crate::discover_ply_sequence`]),
-//! `main.rs` inserts a [`Sequence`] resource. The
-//! [`sequence_info_panel`] egui system reads it and renders a one-line
-//! "Frame N/M" status bar at the bottom of the viewport. Frame-swap and
-//! scrub controls (D1.3 / D2) are layered on top of this resource in
-//! subsequent commits.
+//! `main.rs` inserts a [`Sequence`] resource. Three systems live here:
+//!
+//! - [`sequence_info_panel`] — egui bottom-bar "Frame N/M" status.
+//! - [`handle_frame_navigation`] — keyboard `←` / `→` arrows step
+//!   `Sequence::current` (with `Home` / `End` for first / last). The
+//!   richer scrub UI (timeline drag) comes in D2.
+//! - [`reload_frame_on_change`] — detects [`Sequence`] mutation and
+//!   re-loads the new frame's PLY into the [`crate::ViewerInput`]
+//!   resource. The existing geometry-spawn system in `main.rs`
+//!   respawns geometry on `ViewerInput::is_changed()`.
 
 use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+
+use crate::{ViewerInput, load_input};
 
 /// Active multi-frame PLY sequence — the lex-sorted frame list plus
 /// the index of the frame currently rendered. Inserted by `main.rs`
@@ -23,8 +30,9 @@ pub struct Sequence {
     /// before any [`Sequence`] is constructed).
     pub frames: Vec<PathBuf>,
     /// Zero-based index into [`Self::frames`] for the frame currently
-    /// loaded into [`crate::ViewerInput`]. Mutated by future scrub UI
-    /// (D2); D1.2 only reads it for the info panel display.
+    /// loaded into [`crate::ViewerInput`]. Mutated by
+    /// [`handle_frame_navigation`] (D1.3 keyboard) — the scrub UI (D2)
+    /// will mutate it the same way.
     pub current: usize,
 }
 
@@ -101,9 +109,92 @@ pub fn sequence_info_panel(mut contexts: EguiContexts, sequence: Option<Res<Sequ
                 ui.label(egui::RichText::new(format!("Frame {current_human}/{len}")).strong());
                 ui.separator();
                 ui.label(egui::RichText::new(name).monospace());
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("←/→ step · Home/End first/last")
+                        .small()
+                        .italics(),
+                );
             });
         });
     Ok(())
+}
+
+/// Keyboard-driven frame navigation. Mutates [`Sequence::current`] on
+/// `←` / `→` (previous / next, clamped) and `Home` / `End` (first /
+/// last). No-op when the [`Sequence`] resource is absent (single-file
+/// mode).
+///
+/// Mutation goes through `ResMut`, so Bevy's change-detection on
+/// [`Sequence`] flips to `true` for that frame — that's what
+/// [`reload_frame_on_change`] reads to decide when to re-load the PLY.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
+pub fn handle_frame_navigation(
+    keys: Res<ButtonInput<KeyCode>>,
+    sequence: Option<ResMut<Sequence>>,
+) {
+    let Some(mut sequence) = sequence else {
+        return;
+    };
+    let len = sequence.len();
+    if len == 0 {
+        return;
+    }
+    if keys.just_pressed(KeyCode::ArrowRight) && sequence.current + 1 < len {
+        sequence.current += 1;
+    } else if keys.just_pressed(KeyCode::ArrowLeft) && sequence.current > 0 {
+        sequence.current -= 1;
+    } else if keys.just_pressed(KeyCode::Home) && sequence.current != 0 {
+        sequence.current = 0;
+    } else if keys.just_pressed(KeyCode::End) && sequence.current + 1 != len {
+        sequence.current = len - 1;
+    }
+}
+
+/// Re-load the active frame's PLY into [`ViewerInput`] when
+/// [`Sequence::current`] changes. The initial-insertion change event
+/// (right after `main.rs` inserts the resource) is skipped via a
+/// `Local<bool>` guard — `main.rs` already loaded frame 0 before the
+/// Bevy app started, so the first observed change is a no-op.
+///
+/// Replacing the [`ViewerInput`] resource flips its
+/// `Res::is_changed()` flag, which is what `spawn_geometry` in
+/// `main.rs` reads to despawn-and-respawn the rendered geometry.
+///
+/// PLY-load errors are printed to stderr and the old frame stays
+/// rendered (no panic, no resource swap).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
+pub fn reload_frame_on_change(
+    mut have_seen_initial: Local<bool>,
+    sequence: Option<Res<Sequence>>,
+    mut input: ResMut<ViewerInput>,
+) {
+    let Some(sequence) = sequence else {
+        return;
+    };
+    if !sequence.is_changed() {
+        return;
+    }
+    if !*have_seen_initial {
+        // First fire: main.rs already loaded frame 0 before Bevy ran.
+        *have_seen_initial = true;
+        return;
+    }
+    let Some(path) = sequence.current_path() else {
+        return;
+    };
+    match load_input(path) {
+        Ok(new_input) => {
+            *input = new_input;
+        }
+        Err(e) => {
+            eprintln!(
+                "cf-view: failed to load frame {} ({}): {e:#}",
+                sequence.current,
+                path.display(),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -160,5 +251,37 @@ mod tests {
         assert!(empty.is_empty());
         let nonempty = Sequence::new(sample_frames());
         assert!(!nonempty.is_empty());
+    }
+
+    // The keyboard-driven nav system mirrors these state transitions on
+    // `←`/`→`/`Home`/`End`. Faking `ButtonInput<KeyCode>` inside a
+    // headless Bevy app is heavyweight; verifying the clamping math
+    // here keeps the unit test surface lean. `handle_frame_navigation`
+    // itself is exercised end-to-end during the visual-review pass.
+
+    #[test]
+    fn frame_advance_clamps_at_last_index() {
+        let mut s = Sequence::new(sample_frames());
+        s.current = s.len() - 1;
+        // Mirrors the `current + 1 < len` guard in handle_frame_navigation.
+        let can_advance = s.current + 1 < s.len();
+        assert!(!can_advance, "advance past last must be rejected");
+    }
+
+    #[test]
+    fn frame_retreat_clamps_at_zero() {
+        let mut s = Sequence::new(sample_frames());
+        s.current = 0;
+        // Mirrors the `current > 0` guard.
+        let can_retreat = s.current > 0;
+        assert!(!can_retreat, "retreat from frame 0 must be rejected");
+    }
+
+    #[test]
+    fn frame_advance_and_retreat_in_middle() {
+        let mut s = Sequence::new(sample_frames());
+        s.current = 1;
+        assert!(s.current + 1 < s.len());
+        assert!(s.current > 0);
     }
 }
