@@ -94,7 +94,12 @@ impl Colormap {
             ColormapKind::Sequential => sample(VIRIDIS, normalize(value, self.range)),
             ColormapKind::Divergent => sample(COOLWARM, two_slope_normalize(value, self.range)),
             ColormapKind::Categorical => {
-                let idx = (value as i64).rem_euclid(TAB10.len() as i64) as usize;
+                // `round` rather than truncating cast so `1.9999…`
+                // (barycentric interp of 2.0 with fp-noise) lands in
+                // class 2, not class 1. The detector accepts inputs
+                // within `INT_TOL` of their nearest integer, so the
+                // rendering needs to agree on the same rounding.
+                let idx = (value.round() as i64).rem_euclid(TAB10.len() as i64) as usize;
                 let (r, g, b) = TAB10[idx];
                 [r, g, b, 1.0]
             }
@@ -110,8 +115,26 @@ impl Colormap {
 /// boundary).
 #[must_use]
 pub fn detect(values: &[f32]) -> ColormapKind {
+    // A scalar slips into `Divergent` only when it has a value strictly
+    // below this threshold — large enough to dismiss floating-point
+    // noise from barycentric interpolation near a 0-valued layer
+    // boundary (`sim_soft::viz::sample_analysis_at_point` accepts
+    // barycentrics down to -1e-9, producing per-vertex values around
+    // -1e-10 when neighboring tets carry non-zero scalars), small
+    // enough that any genuinely signed field (e.g. a signed-distance
+    // scalar with magnitude on the order of millimeters) trips it.
+    const NOISE_FLOOR: f32 = -1e-4;
+    // A value counts as "essentially integer" when it lies within
+    // this absolute tolerance of its nearest integer. Same motivation:
+    // barycentric interp between tets that share an integer scalar
+    // (e.g. all neighbors carry `shell_id = 2`) yields a per-vertex
+    // value of 2.0 ± fp-noise, which `v == v.trunc()` rejects but
+    // `(v - v.round()).abs() < INT_TOL` accepts. The truly fractional
+    // boundary samples (e.g. ~1.5 between shell_id=1 and shell_id=2
+    // tets) stay above this and still flip the field to Sequential.
+    const INT_TOL: f32 = 1e-4;
     let mut any_finite = false;
-    let mut any_negative = false;
+    let mut min_value = f32::INFINITY;
     let mut all_int = true;
     let mut unique: HashSet<u32> = HashSet::new();
 
@@ -120,23 +143,24 @@ pub fn detect(values: &[f32]) -> ColormapKind {
             continue;
         }
         any_finite = true;
-        if v < 0.0 {
-            any_negative = true;
+        if v < min_value {
+            min_value = v;
         }
-        if v != v.trunc() {
+        let nearest_int = v.round();
+        if (v - nearest_int).abs() > INT_TOL {
             all_int = false;
         }
         // Only track unique values while the integer-cast invariant still
         // holds; once `all_int` flips false the count is irrelevant.
         if all_int {
-            unique.insert(v.to_bits());
+            unique.insert(nearest_int.to_bits());
         }
     }
 
     if !any_finite {
         return ColormapKind::Sequential;
     }
-    if any_negative {
+    if min_value < NOISE_FLOOR {
         return ColormapKind::Divergent;
     }
     // Categorical needs ≥ 2 distinct integer classes to carry information.
@@ -281,9 +305,34 @@ mod tests {
     }
 
     #[test]
+    fn detect_tolerates_fp_noise_negative_for_integer_set() {
+        // Real per-vertex material-id data interpolated through
+        // `sim_soft::viz::sample_analysis_at_point` can dip to ~-1e-10
+        // at tet boundaries (barycentric tolerance is -1e-9). Without
+        // the NOISE_FLOOR check this would flip the whole field to
+        // Divergent and render integer classes on a coolwarm gradient.
+        assert_eq!(
+            detect(&[-1.0e-10, 0.0, 1.0, 2.0]),
+            ColormapKind::Categorical,
+        );
+    }
+
+    #[test]
     fn detect_small_integer_set_is_categorical() {
         assert_eq!(detect(&[0.0, 1.0, 2.0, 3.0]), ColormapKind::Categorical);
         assert_eq!(detect(&[5.0, 5.0, 7.0, 9.0]), ColormapKind::Categorical);
+    }
+
+    #[test]
+    fn detect_near_integer_with_fp_noise_is_categorical() {
+        // Barycentric interp between tets carrying identical integer
+        // material-id scalars yields per-vertex values like `1.9999998`
+        // and `2.0000001`. `(v - v.round()).abs() <= INT_TOL` rounds
+        // those into the integer class so the field stays categorical.
+        assert_eq!(
+            detect(&[0.000_001, 1.000_001, 1.999_999]),
+            ColormapKind::Categorical,
+        );
     }
 
     #[test]
