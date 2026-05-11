@@ -10,6 +10,7 @@ use cf_viewer::{
     colormap::{Colormap, ColormapKind},
     load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
+    resolve_initial_frame,
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
@@ -18,7 +19,8 @@ use mesh_types::{Aabb, Bounded, Point3};
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let input = load_input(&cli.path)?;
+    let frame_path = resolve_initial_frame(&cli.path)?;
+    let input = load_input(&frame_path)?;
     let raw_diagonal = input.mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
     println!(
