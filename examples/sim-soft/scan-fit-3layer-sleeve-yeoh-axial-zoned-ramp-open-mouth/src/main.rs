@@ -2276,6 +2276,29 @@ fn main() -> Result<()> {
         n_zone_shell[z][s] += 1;
     }
 
+    // B1 (per `docs/SIM_SOFT_ROADMAP.md` Track B): per-tet material-id
+    // scalars threaded through the viz emits so cf-view's categorical
+    // colormap renders the radial × axial composition with distinct
+    // colors. `shell_idx_per_tet` and `zone_idx_per_tet` are already
+    // computed above for the verify gates; here we cast to f64 once so
+    // the BTreeMap<&str, &[f64]> emit interface can borrow them
+    // through both the static and per-step emit blocks below.
+    //
+    // `material_shell_id`: 0 = inner, 1 = middle, 2 = outer (radial).
+    // `material_zone_id`: 0 = distal, 1 = band, 2 = proximal (axial).
+    //
+    // Integer-valued f64s flow through cf-view's Q5 colormap detector
+    // as the `categorical` kind (low-cardinality small-integer set),
+    // matching the verbatim-target image's "distinct layers" decoding.
+    //
+    // The combined (material_zone_id × 3 + material_shell_id) form is
+    // deferred — both per-axis fields are already separately useful
+    // and the scalar dropdown lets the viewer pick.
+    #[allow(clippy::cast_precision_loss)] // shell idx ∈ {0,1,2}; lossless
+    let material_shell_id: Vec<f64> = shell_idx_per_tet.iter().map(|&s| s as f64).collect();
+    #[allow(clippy::cast_precision_loss)] // zone idx ∈ {0,1,2}; lossless
+    let material_zone_id: Vec<f64> = zone_idx_per_tet.iter().map(|&z| z as f64).collect();
+
     // Quality + counts gates BEFORE the ramp.
     verify_quality_floors(&mesh);
     verify_counts_exact(
@@ -2417,6 +2440,8 @@ fn main() -> Result<()> {
     // exercises the open-boundary topology.
     let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
     per_tet_scalars.insert("psi_j_per_m3", &final_step.per_tet_psi);
+    per_tet_scalars.insert("material_shell_id", &material_shell_id);
+    per_tet_scalars.insert("material_zone_id", &material_zone_id);
 
     let bd_ply_path = out_dir.join("sleeve_boundary_final.ply");
     let bd_attr = boundary_surface(&mesh, &per_tet_scalars).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2540,6 +2565,8 @@ fn main() -> Result<()> {
             .collect();
         let mut step_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
         step_scalars.insert("psi_j_per_m3", &step_result.per_tet_psi);
+        step_scalars.insert("material_shell_id", &material_shell_id);
+        step_scalars.insert("material_zone_id", &material_zone_id);
         let step_attr = design_surface_deformed(
             &body_for_viz,
             &mesh,
