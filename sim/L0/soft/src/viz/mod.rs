@@ -231,6 +231,14 @@ pub fn boundary_surface<M: Material>(
         attr.insert_extra(name.to_string(), f32_values)
             .expect("per-vertex length matches mesh.n_vertices() by construction");
     }
+    // C1: area-weighted vertex normals from the tet-mesh boundary
+    // triangulation. No SDF on this code path (the boundary surface is
+    // extracted from the analysis tet mesh, not a scalar field), so the
+    // analytical-gradient variant used in `design_surface` isn't an
+    // option — the area-weighted alternative is still smooth-shaded
+    // and replaces the flat-per-triangle default cf-view would
+    // otherwise compute.
+    attr.compute_normals();
     Ok(attr)
 }
 
@@ -670,6 +678,34 @@ pub fn design_surface<M: Material>(
         attr.insert_extra(name.to_string(), f32_values)
             .expect("per-display-vertex length matches surface vertex count by construction");
     }
+
+    // 6. C1 (per `docs/SIM_SOFT_ROADMAP.md` Track C): smooth-shading
+    //    normals from the SDF gradient. The gradient of a signed-
+    //    distance field at a zero-crossing is exactly the unit outward
+    //    surface normal — the analytical alternative to area-weighted
+    //    normals computed from the triangulated MC output. cf-view's
+    //    `build_face_mesh` stored-normals path routes these straight
+    //    through without per-triangle expansion, replacing the flat-
+    //    per-triangle faceting the F2 viz arc shipped with.
+    //
+    //    Falls back to `+ẑ` if the gradient is degenerate (norm < tol);
+    //    matches the trait's documented singularity convention.
+    attr.normals = Some(
+        attr.geometry
+            .vertices
+            .iter()
+            .map(|v| {
+                let g = sdf.grad(NaPoint3::new(v.x, v.y, v.z));
+                let n_sq = g.z.mul_add(g.z, g.x.mul_add(g.x, g.y * g.y));
+                if n_sq > 1e-30 {
+                    g / n_sq.sqrt()
+                } else {
+                    Vec3::z()
+                }
+            })
+            .collect(),
+    );
+
     Ok(attr)
 }
 
@@ -757,6 +793,15 @@ pub fn design_surface_deformed<M: Material>(
         v.y += displacement.y * amplify;
         v.z += displacement.z * amplify;
     }
+
+    // C1: the rest-state normals `design_surface` stamped via the SDF
+    //    gradient no longer match the displaced surface — replace with
+    //    area-weighted normals computed from the deformed triangle
+    //    geometry. Loses the analytical SDF-gradient smoothness for
+    //    the deformed case, but stays correct as the body squishes
+    //    against the indenter; still smooth-shaded vs the F2 viz
+    //    arc's flat-per-triangle default.
+    attr.compute_normals();
 
     Ok(attr)
 }
@@ -2180,6 +2225,52 @@ mod tests {
             rel_err < 0.05,
             "sphere area {area} vs expected {expected} (rel_err {rel_err})",
         );
+    }
+
+    /// C1: `design_surface` populates per-vertex normals from the SDF
+    /// gradient. On a sphere the analytical outward normal is the
+    /// unit position vector `p / |p|`, so each emitted vertex on the
+    /// iso-0 surface should have a stored normal aligned with its
+    /// position (within MC discretization tolerance — vertices are
+    /// linearly interpolated along grid edges, so they sit slightly
+    /// off the true sphere).
+    #[test]
+    fn design_surface_sphere_populates_radial_normals() {
+        use crate::SphereSdf;
+
+        let radius = 0.05_f64;
+        let sphere = SphereSdf { radius };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let attr = design_surface(&sphere, &analysis, &bounds, resolution, &scalars).unwrap();
+
+        let normals = attr.normals.as_ref().expect("normals populated by C1");
+        assert_eq!(normals.len(), attr.geometry.vertices.len());
+
+        // Every normal should be a unit vector and align with its
+        // vertex's outward direction. MC edge-linear-interp puts
+        // vertices ~`resolution` off the true sphere, so allow a few
+        // degrees of misalignment.
+        for (v, n) in attr.geometry.vertices.iter().zip(normals.iter()) {
+            assert!(
+                (n.norm() - 1.0).abs() < 1e-9,
+                "normal not unit-length: |n| = {}",
+                n.norm(),
+            );
+            let r = nalgebra::Vector3::new(v.x, v.y, v.z);
+            let r_unit = r / r.norm();
+            let dot = n.dot(&r_unit);
+            assert!(
+                dot > 0.95,
+                "normal {n:?} not aligned with radial direction {r_unit:?} (dot = {dot})",
+            );
+        }
     }
 
     /// Plane outside the SDF's interior produces an empty mesh — no

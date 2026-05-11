@@ -304,7 +304,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
@@ -2276,6 +2276,29 @@ fn main() -> Result<()> {
         n_zone_shell[z][s] += 1;
     }
 
+    // B1 (per `docs/SIM_SOFT_ROADMAP.md` Track B): per-tet material-id
+    // scalars threaded through the viz emits so cf-view's categorical
+    // colormap renders the radial × axial composition with distinct
+    // colors. `shell_idx_per_tet` and `zone_idx_per_tet` are already
+    // computed above for the verify gates; here we cast to f64 once so
+    // the BTreeMap<&str, &[f64]> emit interface can borrow them
+    // through both the static and per-step emit blocks below.
+    //
+    // `material_shell_id`: 0 = inner, 1 = middle, 2 = outer (radial).
+    // `material_zone_id`: 0 = distal, 1 = band, 2 = proximal (axial).
+    //
+    // Integer-valued f64s flow through cf-view's Q5 colormap detector
+    // as the `categorical` kind (low-cardinality small-integer set),
+    // matching the verbatim-target image's "distinct layers" decoding.
+    //
+    // The combined (material_zone_id × 3 + material_shell_id) form is
+    // deferred — both per-axis fields are already separately useful
+    // and the scalar dropdown lets the viewer pick.
+    #[allow(clippy::cast_precision_loss)] // shell idx ∈ {0,1,2}; lossless
+    let material_shell_id: Vec<f64> = shell_idx_per_tet.iter().map(|&s| s as f64).collect();
+    #[allow(clippy::cast_precision_loss)] // zone idx ∈ {0,1,2}; lossless
+    let material_zone_id: Vec<f64> = zone_idx_per_tet.iter().map(|&z| z as f64).collect();
+
     // Quality + counts gates BEFORE the ramp.
     verify_quality_floors(&mesh);
     verify_counts_exact(
@@ -2417,6 +2440,8 @@ fn main() -> Result<()> {
     // exercises the open-boundary topology.
     let mut per_tet_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
     per_tet_scalars.insert("psi_j_per_m3", &final_step.per_tet_psi);
+    per_tet_scalars.insert("material_shell_id", &material_shell_id);
+    per_tet_scalars.insert("material_zone_id", &material_zone_id);
 
     let bd_ply_path = out_dir.join("sleeve_boundary_final.ply");
     let bd_attr = boundary_surface(&mesh, &per_tet_scalars).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2479,23 +2504,69 @@ fn main() -> Result<()> {
     save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
 
     // F2.3c — per-step deformed PLY series. One design_surface_deformed
-    // per ramp step (8 total — row 25's open-mouth load case caps at
-    // 8 steps, vs row 24's 16, per the row-25 v1.6 spec). The open-
-    // mouth fork's per-step series shows the cup walls progressively
-    // deforming inward as the cuboid plug descends through the open
-    // mouth (verify_force_displacement_* gates disabled here per the
-    // row-25 v1.6 spec; the visual animation is the load-bearing
-    // readout). amplify=10. Reuse `final_data.rest_positions` from the
-    // F1 emit block above — same FinalStepData; no need to re-bind.
+    // per ramp step that produced actual deformation (see iter_count==0
+    // skip below). The open-mouth fork's per-step series shows the cup
+    // walls progressively deforming inward as the cuboid plug descends
+    // through the open mouth (verify_force_displacement_* gates
+    // disabled here per the row-25 v1.6 spec; the visual animation is
+    // the load-bearing readout). amplify=10. Reuse
+    // `final_data.rest_positions` from the F1 emit block above — same
+    // FinalStepData; no need to re-bind.
+    //
+    // Stale-file cleanup: prior runs may have emitted step_NN.ply files
+    // for steps that now skip (e.g. row 25's first 4 steps under the
+    // iter_count==0 rule below). Deleting any pre-existing matching
+    // files keeps the directory honest after a re-run.
     let rest_positions = &final_data.rest_positions;
     let amplify = 10.0_f64;
+    for entry in std::fs::read_dir(&out_dir).context("scanning out_dir for stale step PLYs")? {
+        let entry = entry.context("reading out_dir entry")?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let is_step_ply = name.starts_with("sleeve_design_surface_deformed_step_")
+            && std::path::Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ply"));
+        if is_step_ply {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("removing stale step PLY {}", path.display()))?;
+        }
+    }
     for step_result in &results {
         let step_idx = step_result.step;
+        // Skip when the solver converged at iter 0 — the residual at
+        // x_prev was already below tol, so x_final == x_prev (rest
+        // positions). Emitting a "deformed" PLY here would byte-equal
+        // the rest geometry and create duplicate animation frames.
+        //
+        // Row 25 hits this for steps 1–4: the cuboid plug's
+        // interference contact engages only cavity-rim vertices, which
+        // are pinned as part of the outer-envelope Dirichlet band, so
+        // contact-gradient contributions land at pinned DOFs and are
+        // excluded from `free_residual_norm` — solver sees zero
+        // residual, returns x_prev unchanged. By step 5 the plug has
+        // descended past the rim band; contact reaches free DOFs
+        // further down the cavity wall and Newton iterates normally.
+        // The mesh-resolution root cause (4 mm BCC cells vs 0.5 mm
+        // ramp step) is a separate followup — refining the mesh near
+        // the rim is a Track A leaf in `docs/SIM_SOFT_ROADMAP.md`.
+        if step_result.iter_count == 0 {
+            eprintln!(
+                "  skipping PLY emit for step {step_idx:02} — iter_count=0 \
+                 (contact engagement at pinned rim DOFs only; \
+                 see emit-block comment)"
+            );
+            continue;
+        }
         let step_displacement: Vec<Vec3> = (0..n_vertices)
             .map(|i| step_result.deformed_positions[i] - rest_positions[i])
             .collect();
         let mut step_scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
         step_scalars.insert("psi_j_per_m3", &step_result.per_tet_psi);
+        step_scalars.insert("material_shell_id", &material_shell_id);
+        step_scalars.insert("material_zone_id", &material_zone_id);
         let step_attr = design_surface_deformed(
             &body_for_viz,
             &mesh,
