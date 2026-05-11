@@ -934,6 +934,14 @@ struct SdfGrid {
 }
 
 impl SdfGrid {
+    // `cast_precision_loss` + `cast_sign_loss` + `cast_possible_truncation`
+    // allowed: usize ↔ f64 round-trip for the 2D grid sweep
+    // (`(u_max - u_min) / resolution as usize`, then `nu_minus_1 as f64`
+    // for the back-conversion to step size). Grid dimensions stay
+    // within u32 range at any canonical bounds + resolution.
+    // `similar_names` allowed: `nu`/`nv`, `u_min`/`v_min`, `du`/`dv`,
+    // `uu`/`vv` are the algorithm's natural in-plane axis names;
+    // renaming would obscure the 2D-sweep symmetry.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_sign_loss,
@@ -981,6 +989,14 @@ impl SdfGrid {
         }
     }
 
+    // `cast_precision_loss` allowed: `(iu as f64).mul_add(du, u_min)`
+    // converts a grid index to its world-space coordinate; usize → f64
+    // on indices well below 2^53.
+    // `too_many_arguments` allowed: this is the `static` helper
+    // [`corner_pos`] forwards to during `&self` construction, where
+    // `&self` doesn't yet exist (see `sample`). Bundling into a config
+    // struct would add wrapping cost for two callers with no clarity
+    // gain.
     #[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
     fn corner_pos_static(
         plane: Plane,
@@ -1014,6 +1030,12 @@ impl SdfGrid {
         self.sdf_values[self.corner_key(iu, iv)]
     }
 
+    // `cast_precision_loss` allowed: `iu as f64 + 0.5` converts a
+    // cell-index to its 0.5-offset cell-center coordinate; the indices
+    // are well below 2^53.
+    // `similar_names` allowed: `iu_f`/`iv_f` are the f64 versions of
+    // the integer indices, following the existing
+    // `uu`/`vv`/`du`/`dv`/`u_min`/`v_min` 2-axis naming convention.
     #[allow(clippy::cast_precision_loss, clippy::similar_names)]
     fn cell_center(&self, iu: usize, iv: usize) -> [f64; 3] {
         let mut p = [0.0_f64; 3];
@@ -1035,6 +1057,16 @@ impl SdfGrid {
         }
     }
 
+    // `too_many_lines` allowed: marching-squares dispatch enumerates
+    // the 16 corner-sign configurations explicitly (a single 4-bit
+    // case-table); condensing the per-case emit would obscure the
+    // 1:1 mapping with the marching-squares lookup table.
+    // `unreachable` allowed: the case-table dispatch is exhaustive
+    // over the 4-bit corner pattern; the catch-all arm is invariant-
+    // pinned and cannot fire on a well-formed cell.
+    // `similar_names` allowed: `s00`/`s10`/`s11`/`s01` are the
+    // canonical names for the 4 corner SDF values (uv-quadrant
+    // indexing); these match the marching-squares literature.
     #[allow(clippy::too_many_lines, clippy::unreachable, clippy::similar_names)]
     fn dispatch_cell(&self, iu: usize, iv: usize, sdf: &dyn Sdf, state: &mut DesignCutState) {
         let s00 = self.corner_sdf(iu, iv);
@@ -1225,6 +1257,10 @@ impl DesignCutState {
         }
     }
 
+    // `cast_possible_truncation` allowed: `self.positions.len() as u32`
+    // packs the new vertex index — VertexId is u32 by the mesh-types
+    // convention, and cross-section vertex counts stay comfortably
+    // below u32::MAX at any canonical resolution.
     #[allow(clippy::cast_possible_truncation)]
     fn emit_corner(&mut self, grid: &SdfGrid, iu: usize, iv: usize) -> u32 {
         let key = grid.corner_key(iu, iv);
@@ -1237,6 +1273,11 @@ impl DesignCutState {
         idx
     }
 
+    // `cast_possible_truncation` allowed: same `positions.len() as u32`
+    // vertex-ID pack as `emit_corner`; vertex counts stay within u32.
+    // `similar_names` allowed: `iu_a`/`iv_a`/`iu_b`/`iv_b` are the
+    // endpoint coordinates of a cell edge; the `_a`/`_b` suffixes
+    // mirror the corner-naming pattern at the call sites.
     #[allow(clippy::cast_possible_truncation, clippy::similar_names)]
     fn emit_edge(
         &mut self,
