@@ -5,12 +5,12 @@ use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::*;
 use cf_viewer::{
-    UpAxis, ViewerInput,
+    InputMode, UpAxis, ViewerInput,
     cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
-    load_input,
+    detect_input_mode, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
-    resolve_initial_frame,
+    sequence::sequence_info_panel,
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
@@ -19,7 +19,21 @@ use mesh_types::{Aabb, Bounded, Point3};
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let frame_path = resolve_initial_frame(&cli.path)?;
+    let mode = detect_input_mode(&cli.path)?;
+    // Sequence-mode log lives in `main` (not in `detect_input_mode`) so
+    // the lib function stays side-effect free and reusable.
+    if let InputMode::Sequence(seq) = &mode {
+        let first_name = seq.current_name().unwrap_or("?");
+        println!(
+            "detected PLY sequence: {} frame(s) in {}; rendering frame 1/{} ({})",
+            seq.len(),
+            cli.path.display(),
+            seq.len(),
+            first_name,
+        );
+    }
+    let frame_path = mode.initial_frame()?;
+
     let input = load_input(&frame_path)?;
     let raw_diagonal = input.mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
@@ -38,24 +52,36 @@ fn main() -> Result<()> {
     let selection = seed_selection(&cli, &input.scalar_names)?;
     let up_axis: UpAxis = cli.up.into();
 
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "cf-view".into(),
-                ..default()
-            }),
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "cf-view".into(),
             ..default()
-        }))
-        .add_plugins(EguiPlugin::default())
-        .add_plugins(OrbitCameraPlugin)
-        .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
-        .insert_resource(input)
-        .insert_resource(selection)
-        .insert_resource(up_axis)
-        .insert_resource(RenderScale(render_scale))
-        .add_systems(Startup, setup_scene)
+        }),
+        ..default()
+    }))
+    .add_plugins(EguiPlugin::default())
+    .add_plugins(OrbitCameraPlugin)
+    .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
+    .insert_resource(input)
+    .insert_resource(selection)
+    .insert_resource(up_axis)
+    .insert_resource(RenderScale(render_scale));
+
+    // Sequence-mode-only resource. The `sequence_info_panel` system is
+    // added unconditionally below but is itself gated on
+    // `Option<Res<Sequence>>` inside the handler, so single-file mode
+    // pays nothing.
+    if let InputMode::Sequence(seq) = mode {
+        app.insert_resource(seq);
+    }
+
+    app.add_systems(Startup, setup_scene)
         .add_systems(Update, (spawn_geometry, exit_on_esc))
-        .add_systems(EguiPrimaryContextPass, scalar_and_colormap_panel)
+        .add_systems(
+            EguiPrimaryContextPass,
+            (scalar_and_colormap_panel, sequence_info_panel),
+        )
         .run();
 
     Ok(())

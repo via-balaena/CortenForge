@@ -21,15 +21,18 @@
 pub mod cli;
 pub mod colormap;
 pub mod mesh;
+pub mod sequence;
 pub mod ui;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use bevy::prelude::Resource;
 pub use cf_bevy_common::axis::UpAxis;
 use mesh_io::load_ply_attributed;
 use mesh_types::AttributedMesh;
+
+pub use sequence::Sequence;
 
 /// Loaded artifact ready for visualization.
 ///
@@ -119,34 +122,55 @@ fn is_sequence_frame_name(name: &str) -> bool {
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Resolve the CLI path to the single PLY file we'll load for the
-/// initial frame: pass through for file input; pick the first frame of
-/// the lex-sorted sequence for directory input.
+/// Detected CLI-input form: either a single PLY file or a multi-frame
+/// sequence. Sequence variant carries the populated [`Sequence`]
+/// resource ready to insert into the Bevy app; `main.rs` only inserts
+/// it in directory-input mode so single-file consumers pay nothing.
+#[derive(Debug, Clone)]
+pub enum InputMode {
+    /// Single static PLY — the existing pre-D1 viewer behavior.
+    Single(PathBuf),
+    /// Lex-sorted sequence of `*_step_<n>.ply` frames, with the initial
+    /// `current` index set to 0.
+    Sequence(Sequence),
+}
+
+impl InputMode {
+    /// Path of the frame to load first. For [`InputMode::Single`] this
+    /// is the CLI-supplied path; for [`InputMode::Sequence`] it is
+    /// frame 0 of the sorted series.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only in the (logically unreachable) case where
+    /// a [`Sequence`] was constructed with an empty `frames` vec.
+    pub fn initial_frame(&self) -> Result<PathBuf> {
+        match self {
+            Self::Single(p) => Ok(p.clone()),
+            Self::Sequence(s) => s
+                .current_path()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| anyhow::anyhow!("sequence has no current frame")),
+        }
+    }
+}
+
+/// Detect whether the CLI path resolves to a single PLY or a directory
+/// of sequence frames.
 ///
-/// Prints a one-line stdout summary in sequence mode so the user can
-/// see frame-count + first-frame name before the Bevy window opens.
+/// Pure detection — no stdout side effects (see `main.rs` for the
+/// human-facing detection log).
 ///
 /// # Errors
 ///
 /// Bubbles up [`discover_ply_sequence`]'s errors when the input is a
-/// directory.
-pub fn resolve_initial_frame(path: &Path) -> Result<PathBuf> {
+/// directory containing no matching frames.
+pub fn detect_input_mode(path: &Path) -> Result<InputMode> {
     if path.is_dir() {
         let frames = discover_ply_sequence(path)?;
-        let first = frames
-            .first()
-            .cloned()
-            .ok_or_else(|| anyhow!("discover_ply_sequence returned empty"))?;
-        println!(
-            "detected PLY sequence: {} frame(s) in {}; rendering frame 1/{} ({})",
-            frames.len(),
-            path.display(),
-            frames.len(),
-            first.display(),
-        );
-        Ok(first)
+        Ok(InputMode::Sequence(Sequence::new(frames)))
     } else {
-        Ok(path.to_path_buf())
+        Ok(InputMode::Single(path.to_path_buf()))
     }
 }
 
@@ -243,17 +267,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_initial_frame_passes_through_file_input() -> Result<()> {
+    fn detect_input_mode_returns_single_for_file_input() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let file_path = dir.path().join("one_off.ply");
         File::create(&file_path)?;
-        let resolved = resolve_initial_frame(&file_path)?;
-        assert_eq!(resolved, file_path);
+        let mode = detect_input_mode(&file_path)?;
+        assert!(
+            matches!(&mode, InputMode::Single(p) if p == &file_path),
+            "expected Single({}); got {mode:?}",
+            file_path.display(),
+        );
+        assert_eq!(mode.initial_frame()?, file_path);
         Ok(())
     }
 
     #[test]
-    fn resolve_initial_frame_picks_first_sequence_frame() -> Result<()> {
+    fn detect_input_mode_returns_sequence_for_dir_input() -> Result<()> {
         let dir = tempfile::tempdir()?;
         for name in [
             "body_step_02.ply",
@@ -263,9 +292,20 @@ mod tests {
         ] {
             File::create(dir.path().join(name))?;
         }
-        let resolved = resolve_initial_frame(dir.path())?;
+        let mode = detect_input_mode(dir.path())?;
+        let seq = match &mode {
+            InputMode::Sequence(s) => s,
+            InputMode::Single(_) => {
+                return Err(anyhow::anyhow!(
+                    "expected Sequence variant for dir input; got Single",
+                ));
+            }
+        };
+        assert_eq!(seq.len(), 3, "should see 3 step frames + 1 skipped");
+        assert_eq!(seq.current, 0);
+        let initial = mode.initial_frame()?;
         assert_eq!(
-            resolved.file_name().and_then(|n| n.to_str()),
+            initial.file_name().and_then(|n| n.to_str()),
             Some("body_step_00.ply"),
         );
         Ok(())
