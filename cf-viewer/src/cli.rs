@@ -33,9 +33,10 @@ use crate::ui::{ColormapOverride, Selection};
 )]
 pub struct Cli {
     /// Path to a PLY file, or a directory of `*_step_<digits>.ply` frames.
-    /// Directory input loads the lex-first frame for initial render
-    /// (timeline + scrub UI follow as D2 lands per
-    /// `docs/SIM_SOFT_ROADMAP.md` Track D).
+    /// Directory input loads the lex-first frame and enables keyboard
+    /// frame navigation (`←` / `→` step, `Home` / `End` first/last);
+    /// the in-window scrub timeline + play/pause/loop UI is D2 in
+    /// `docs/SIM_SOFT_ROADMAP.md` Track D.
     pub path: PathBuf,
 
     /// Pre-select a per-vertex scalar by name. The name must match a key

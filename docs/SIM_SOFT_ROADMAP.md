@@ -49,10 +49,10 @@ Concrete decomposition:
 - ✅ F2.3b `design_scene` (body + contact merged with primitive_id scalar)
 - ✅ F2.3c per-step ramp animation (PLY series, rows 22/23/24/25)
 - ✅ F2.3d MC edge-cache dedup (6× vertex reduction)
-- ❌ Smooth shading (today: flat-per-triangle)
+- ✅ Smooth shading (C1, PR #238 — SDF-gradient analytical normals on `design_surface`, area-weighted normals on `design_surface_deformed` + `boundary_surface`)
 - ❌ k-nearest-tet weighted scalar interp (today: scattered per-tet dots)
 - ❌ Per-primitive bounds in design_scene (mesh-sdf far-field "wing" artifacts)
-- ❌ Per-tet material-id scalar plumbing through design_surface_deformed
+- ✅ Per-tet material-id scalar plumbing through design_surface_deformed (B1, PR #238 — row 25 emits `material_shell_id` + `material_zone_id` integer scalars)
 - ❌ Multi-scalar overlay (stress + displacement + material-id)
 - ❌ Stress tensor invariants (von Mises, principal stresses) — currently exports `per_tet_psi` only
 - ❌ Cutting planes (interactive cross-section)
@@ -63,8 +63,8 @@ Concrete decomposition:
 
 - ✅ Single PLY rendering
 - ✅ Camera orbit
-- ❌ PLY sequence playback / timeline
-- ❌ Animation controls (play/pause/step/scrub/speed/loop)
+- ✅ PLY sequence playback (D1, PR #238 — `cf-view <dir>` auto-detects + loads + renders one frame from a lex-sorted directory; bottom panel shows `Frame N/M — <filename>`)
+- ⏳ Animation controls — D1.3 ships keyboard step (`←` / `→` / `Home` / `End`); scrub timeline + play/pause/speed/loop still ahead (D2)
 - ❌ Scalar-field toggle + color-map UI
 - ❌ Camera bookmarks / zoom-to-fit
 - ❌ Probe tool
@@ -195,13 +195,13 @@ Archive trigger: move this doc to `docs/archive/` when it's no longer load-beari
 
 ### Slice ship log
 
-_(empty — populated as slices ship)_
+- **S1 (partial)** — PR #238, 2026-05-11. Shipped: **D1** (cf-view auto-detect dir input + keyboard frame navigation), **B1** (per-tet `material_shell_id` + `material_zone_id` scalars through `design_surface` / `design_surface_deformed` / `boundary_surface`), **C1** (SDF-gradient analytical normals + area-weighted normals on deformed/boundary outputs). **A1** deferred — F2 architecturally masks the missing-tet band for design-mesh primitives; banked as Track A followup. Adjacent fixes that landed in the same slice: row 25's `iter_count==0` ramp-emit skip (cuboid-plug-into-open-mouth load case only engages pinned rim DOFs for steps 1–4), and cf-view's colormap detector noise tolerance (fp-noise negatives no longer flip integer scalars to Divergent). Commits: `61e41efc` (roadmap), `9ea098c6` (D1.1), `96443779` (D1.2), `1585e8f5 + b1415f86` (D1.2 polish), `e347020d` (D1.3), `66f297c5` (row 25 zero-iter), `7b8157ac` (detector noise), `b4afb911` (B1), `995c436d` (C1).
 
 ---
 
 ## Open questions
 
-- **S1 sub-leaf ordering**: should A1 (missing-tet band) land before B1 (material-id plumbing), or in parallel? A1 unblocks visual quality on every row; B1 unblocks the "3–5 layers" axis specifically. Both feed S1's MVP image.
-- **D1 implementation surface**: should PLY sequence playback be a new cf-view subcommand (`cf-view play <dir>`) or a flag on the existing single-file mode? Affects API stability.
-- **Material-id colormap**: discrete (categorical, one color per layer) or continuous (gradient by stiffness)? Suggests discrete for clarity, but flag for user preference.
-- **MVP image source row**: row 24 v3 (axial-zoned, has multi-layer composition) or a new row purpose-built for the canonical demo (open-cavity + 3–5 layers + indenter)?
+- ~~**S1 sub-leaf ordering**: should A1 land before B1, or in parallel?~~ **Resolved in PR #238:** D1 first (visibility-boundary force-multiplier) → B1 (lowest-risk visible payoff) → C1 (single biggest visual win) → A1 deferred (deepest leaf, F2 masks the artifact for design-mesh primitives, ~multi-hour algorithmic investigation in BCC+IS).
+- ~~**D1 implementation surface**: subcommand `cf-view play <dir>` or flag on existing single-file mode?~~ **Resolved in PR #238:** auto-detect on path type. `cf-view <path>` dispatches to single-frame or sequence mode based on `path.is_dir()`. No CLI restructure, no subcommand ceremony.
+- **Material-id colormap**: discrete (categorical, one color per layer) or continuous (gradient by stiffness)? **Partly resolved in PR #238:** producer emits integer-valued f64 scalars; cf-view's Q5 detector picks Categorical when values are integer-clean, falls back to Sequential (viridis) when barycentric interpolation produces fractional values at layer boundaries — perceptually-ordered viridis happens to match the natural layer ordering well. A "pure categorical even with fractional samples" path would require nearest-tet sampling for named scalars; deferred unless visual review demands it.
+- ~~**MVP image source row**: row 24 v3 or a new row?~~ **Resolved in PR #238:** **row 25** (`scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth`). Production-target geometry (open-mouth insertion cavity), already has 3-shell × 2-zone material composition + indenter + ramp animation. No new row needed.
