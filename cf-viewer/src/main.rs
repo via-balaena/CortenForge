@@ -78,12 +78,10 @@ fn main() -> Result<()> {
 
     app.add_systems(Startup, setup_scene)
         .add_systems(Update, (spawn_geometry, exit_on_esc))
-        // Chain order matters in egui: panels claim space in call order.
-        // SidePanel::left runs first (full-height left strip); the
-        // TopBottomPanel::bottom in `sequence_info_panel` then claims the
-        // bottom of the *remaining* area (right of the side panel).
-        // Swapping the order would push the side panel above the bottom
-        // panel's full width.
+        // Both panel systems take `EguiContexts` so Bevy auto-serializes
+        // them, but the relative order isn't otherwise guaranteed.
+        // `.chain()` pins it so layout (which panel claims space first
+        // within an egui frame) is deterministic across runs.
         .add_systems(
             EguiPrimaryContextPass,
             (scalar_and_colormap_panel, sequence_info_panel).chain(),

@@ -86,13 +86,12 @@ pub fn sequence_info_panel(mut contexts: EguiContexts, sequence: Option<Res<Sequ
     // 0-indexed for `Vec` access.
     let current_human = sequence.current.saturating_add(1);
     let name = sequence.current_name().unwrap_or("?");
-    // `min_height` guards against the single-row content collapsing to
-    // an invisible strip against the dark Bevy clear color; `.frame()`
-    // gives the panel an explicit fill so the divide between geometry
-    // and status reads clearly.
-    let frame = egui::Frame::default()
-        .fill(egui::Color32::from_rgb(28, 28, 32))
-        .inner_margin(egui::Margin::symmetric(8, 6));
+    // Bottom-panel default frame derived from the active egui style
+    // (so theme changes flow through) plus a small inner margin so
+    // the single-row content doesn't hug the panel edges. `min_height`
+    // keeps the strip readable at the bottom of a tall viewport.
+    let frame =
+        egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 6));
     egui::TopBottomPanel::bottom("cf-view-sequence")
         .resizable(false)
         .min_height(28.0)
