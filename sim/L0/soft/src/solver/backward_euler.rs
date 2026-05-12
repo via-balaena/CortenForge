@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use faer::linalg::solvers::SolveCore;
 use faer::prelude::Reborrow;
-use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
+use faer::sparse::linalg::solvers::{Llt, SymbolicLlt, SymbolicLu};
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Conj, MatMut, Side};
 use nalgebra::{Matrix3, SMatrix};
@@ -172,11 +172,20 @@ pub struct CpuNewtonSolver<
     /// `free_dof_indices` (the forward direction: free idx → full
     /// DOF) — `full_to_free_idx` is the inverse direction.
     full_to_free_idx: Vec<Option<usize>>,
-    /// Symbolic factor of the free-DOF Hessian sparsity pattern, built
-    /// once from element-vertex incidence per Decision J. Per-iter
-    /// numeric refactor consumes a `clone()` of this (cheap — faer
-    /// 0.24 wraps the symbolic in `Arc` internally).
+    /// Symbolic factor of the free-DOF Hessian sparsity pattern (Llt
+    /// shape, `Side::Lower`), built once from element-vertex incidence
+    /// per Decision J. Per-iter numeric refactor consumes a `clone()`
+    /// of this (cheap — faer 0.24 wraps the symbolic in `Arc`
+    /// internally).
     symbolic: SymbolicLlt<usize>,
+    /// Symbolic factor of the same free-DOF Hessian pattern, in Lu
+    /// shape (full matrix, no `Side`). Held alongside `symbolic` so
+    /// the A2 LU fallback (Lu factorize when Llt hits a non-PD pivot)
+    /// can run without rebuilding the symbolic factor at the failure
+    /// site. Construction cost is one-shot at `new()` and small
+    /// relative to the numeric factor; same `Arc`-internal sharing
+    /// makes `clone()` cheap per fall-through.
+    symbolic_lu: SymbolicLu<usize>,
     /// Total DOF count (`3 * n_vertices`), cached for slice indexing.
     n_dof: usize,
     /// Free DOF count (`free_dof_indices.len()`), cached.
@@ -216,6 +225,10 @@ where
     //     bug at construction time.
     //   • SymbolicLlt failure = solver-pattern build is wrong (impossible
     //     for any valid mesh + Dirichlet set), programmer bug.
+    //   • SymbolicLu failure shares the same "pattern build wrong" rationale;
+    //     LU symbolic factorization of a valid free-block pattern only
+    //     errors out on OutOfMemory, which on a healthy host is a programmer
+    //     bug on the mesh-size axis.
     //
     // Lint allows: same Mesh-trait-API tax + Tet4 4-node iteration +
     // per-element grad/grad_generic similar-name pair as the assembly
@@ -432,6 +445,26 @@ where
         let symbolic = SymbolicLlt::<usize>::try_new(pattern_mat.symbolic(), Side::Lower)
             .expect("symbolic factorization of free-block pattern failed");
 
+        // A2 LU fallback: reflect the structurally-symmetric lower-tri
+        // pattern into the full pattern needed by `SymbolicLu` (Lu has
+        // no `Side` argument; it reads both halves). Diagonal entries
+        // emit once; off-diagonals emit at both (r, c) and (c, r). The
+        // numeric Lu factor at fall-through symmetrizes the assembled
+        // tangent the same way.
+        let mut pattern_triplets_full: Vec<Triplet<usize, usize, f64>> =
+            Vec::with_capacity(triplet_set.len() * 2);
+        for &(c, r) in &triplet_set {
+            pattern_triplets_full.push(Triplet::new(r, c, 1.0));
+            if c != r {
+                pattern_triplets_full.push(Triplet::new(c, r, 1.0));
+            }
+        }
+        let pattern_mat_full: SparseColMat<usize, f64> =
+            SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets_full)
+                .expect("malformed full free-block triplet pattern");
+        let symbolic_lu = SymbolicLu::<usize>::try_new(pattern_mat_full.symbolic())
+            .expect("symbolic LU factorization of free-block pattern failed");
+
         Self {
             element,
             mesh,
@@ -443,6 +476,7 @@ where
             free_dof_indices,
             full_to_free_idx,
             symbolic,
+            symbolic_lu,
             n_dof,
             n_free,
             _material: std::marker::PhantomData,
