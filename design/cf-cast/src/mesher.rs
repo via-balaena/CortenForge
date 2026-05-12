@@ -4,7 +4,7 @@ use cf_design::Solid;
 use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 use mesh_types::IndexedMesh;
 
-use crate::error::CastError;
+use crate::error::{CastError, CastTarget};
 
 /// Meters → millimeters scale factor at the cf-design → printer
 /// boundary. cf-design works in meters; STL output and
@@ -22,12 +22,13 @@ const GRID_PADDING_CELLS: usize = 2;
 /// millimeters in-place. Returns the resulting [`IndexedMesh`] in mm
 /// coordinates.
 ///
-/// `target` labels the operation for error reporting (`"mold"` /
-/// `"plug"`).
+/// `target` labels the operation for error reporting — per-layer
+/// mold output uses [`CastTarget::Mold`], the shared plug uses
+/// [`CastTarget::Plug`].
 pub fn solid_to_mm_mesh(
     solid: &Solid,
     cell_size_m: f64,
-    target: &'static str,
+    target: CastTarget,
 ) -> Result<IndexedMesh, CastError> {
     let bounds = solid.bounds().ok_or(CastError::InfiniteBounds(target))?;
 
@@ -74,6 +75,7 @@ mod tests {
     use mesh_types::{IndexedMesh, Point3};
 
     use super::{METERS_TO_MM, scale_in_place, solid_to_mm_mesh};
+    use crate::error::CastTarget;
     use cf_design::Solid;
     use nalgebra::Vector3;
 
@@ -108,7 +110,7 @@ mod tests {
         // produce a closed mesh well inside the f64 range and well
         // above the empty-mesh threshold.
         let sphere = Solid::sphere(0.010);
-        let mesh = solid_to_mm_mesh(&sphere, 0.001, "sphere_smoke").unwrap();
+        let mesh = solid_to_mm_mesh(&sphere, 0.001, CastTarget::Mold { layer_index: 0 }).unwrap();
 
         assert!(!mesh.vertices.is_empty(), "MC should produce vertices");
         assert!(!mesh.faces.is_empty(), "MC should produce faces");
@@ -133,7 +135,7 @@ mod tests {
         // axis-aligned at zero.
         let cuboid = Solid::cuboid(Vector3::new(0.005, 0.005, 0.005))
             .translate(Vector3::new(0.020, 0.0, 0.0));
-        let mesh = solid_to_mm_mesh(&cuboid, 0.001, "cuboid_smoke").unwrap();
+        let mesh = solid_to_mm_mesh(&cuboid, 0.001, CastTarget::Plug).unwrap();
         assert!(!mesh.vertices.is_empty());
         // Translated by +20 mm in x; vertices should lie roughly at
         // x ∈ [15, 25] mm (5 mm half-extent + cell padding).

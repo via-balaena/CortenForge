@@ -6,12 +6,25 @@
 //! per-layer mold/plug exporter for the layered-silicone-device v1.0
 //! cast workflow.
 //!
-//! # Stage 1 scope
+//! # Stage 2 scope
 //!
-//! Single layer only: one mold cup STL + one plug STL written to a
-//! caller-supplied output directory, with the F4 printability gate
-//! firing at write time. Multi-layer composition, pour-volume budgeting
-//! (F2), and the procedure-spec generator (F3) arrive in Stage 2.
+//! Multi-layer cast spec: [`CastSpec::layers`] carries N
+//! [`CastLayer`]s in **innermost-first** cast order. `layers[0]` is
+//! cast first into the bounding region with the shared printed
+//! [`CastSpec::plug`] shaping its inner cavity; subsequent layers
+//! pour around the previously cured layer (no additional printed
+//! plug), so the artifact count is **N mold cup STLs + 1 plug STL**
+//! per the casting roadmap.
+//!
+//! Per-layer geometry is the **cumulative** outer-surface positive
+//! after that pour cures: `layers[0].body` is the innermost shell
+//! only; `layers[N].body` for `N > 0` is the cured-inner-plus-this-
+//! pour fused solid. Each mold cup is
+//! `bounding_region ∖ layers[i].body ∖ clip_above(layers[i].body)`.
+//!
+//! Stage 2's F1 leaf ships the multi-layer geometry pipeline; F2
+//! (pour-volume + mass-budget gate) and F3 (procedure-spec markdown)
+//! plug into the same [`CastSpec`] surface in subsequent commits.
 //!
 //! # Unit boundary
 //!
@@ -19,16 +32,17 @@
 //! [`mesh_printability::PrinterConfig::fdm_default`]'s build-volume
 //! check work in **millimeters**. The [`CastSpec::export_molds`]
 //! pipeline performs the `×1000` scale at the marching-cubes →
-//! validate/save boundary exactly once, so caller-facing geometry stays
-//! in meters and printer/STL-facing geometry stays in mm.
+//! validate/save boundary exactly once per mesh, so caller-facing
+//! geometry stays in meters and printer/STL-facing geometry stays in
+//! mm.
 //!
 //! # Demolding axis
 //!
-//! Stage 1 hardcodes `+z` as the demolding axis. The exporter
-//! internally subtracts a clip cuboid covering the half-space above
-//! the body's `z_max`, producing a one-piece cup with an opening at
-//! the top. Stage 2 will expose the axis as a parameter for arbitrary
-//! orientations (and Stage 4+ for multi-piece molds if iter-1 surfaces
+//! Stage 2 hardcodes `+z` as the demolding axis (unchanged from
+//! Stage 1). The exporter internally subtracts a clip cuboid covering
+//! the half-space above each layer body's `z_max`, producing a
+//! one-piece cup with an opening at the top. Stage 3+ may expose the
+//! axis as a parameter (and multi-piece molds if iter-1 surfaces
 //! demolding-undercut issues).
 //!
 //! See the [casting roadmap][rmp] for the full Track F trajectory.
@@ -36,8 +50,10 @@
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
 mod error;
+mod material;
 mod mesher;
 mod spec;
 
-pub use error::CastError;
-pub use spec::{CastSpec, MeshSummary, MoldExportReport};
+pub use error::{CastError, CastTarget};
+pub use material::MoldingMaterial;
+pub use spec::{CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport};
