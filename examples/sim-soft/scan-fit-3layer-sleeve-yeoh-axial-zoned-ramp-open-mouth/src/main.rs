@@ -319,8 +319,9 @@ use sim_soft::{
     Aabb3, BlendedScalarField, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField,
     Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
     PenaltyRigidContactYeohSolver, Plane, Sdf, SdfMeshedTetMesh, SiliconeMaterial, Solver,
-    SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, design_slab_cut, design_surface,
-    design_surface_deformed, pick_vertices_by_predicate, referenced_vertices, slab_cut,
+    SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, design_scene_deformed,
+    design_slab_cut, design_surface, pick_vertices_by_predicate, referenced_vertices, slab_cut,
+    slab_cut_deformed,
 };
 
 // =============================================================================
@@ -378,8 +379,23 @@ const BBOX_HALF_Y: f64 = SCAN_HY + WRAP_THICKNESS + CELL_SIZE;
 // region.
 const BBOX_HALF_Z: f64 = SCAN_HZ + MOUTH_EXTENSION_PLUS_Z + CELL_SIZE;
 
-/// BCC lattice spacing (m). 4 mm — same as rows 21/22/23. Finer cells
-/// (`0.002 m`) trip SPD at the first ramp step.
+/// BCC lattice spacing (m). 4 mm — same as rows 21/22/23.
+///
+/// **Historical note (pre-A2):** earlier comment on this constant
+/// claimed "Finer cells (`0.002 m`) trip SPD at the first ramp step."
+/// **Falsified post-A2 by the B2 evidence experiment (2026-05-11):**
+/// halving `CELL_SIZE` to `0.002` (~433k tets, 2.9× this row's normal
+/// ~150k) ran 3 ramp steps cleanly through faer's Llt at iter counts
+/// 8 / 13 / 17 with residuals 2.85e-11 / 9.34e-11 / 3.44e-11 — ZERO
+/// LU fallback engagements observed. The pre-A2 SPD-trip observation
+/// is either stale (carried from a prior row version) or specific to
+/// a different geometry. A2's Lu fallback is not load-bearing for B2
+/// at 2 mm cells on this row's current geometry.
+///
+/// 4 mm cells stay the row default because the experiment was a
+/// recon spike, not a productionization — finer-cells productionization
+/// would require re-baking all `*_EXACT` counts + `*_REF_BITS` against
+/// the larger mesh and re-running visuals pass. Banked as B2 followup.
 const CELL_SIZE: f64 = 0.004;
 
 // =============================================================================
@@ -980,9 +996,9 @@ struct RampStepResult {
     mean_psi_middle_j_per_m3: f64,
     mean_psi_outer_j_per_m3: f64,
     max_psi_outer_j_per_m3: f64,
-    /// Per-step deformed vertex positions. Always captured (F2.3c
-    /// needs these per-step for the `design_surface_deformed` PLY
-    /// series).
+    /// Per-step deformed vertex positions. Always captured (the
+    /// `design_scene_deformed` per-step PLY series needs these to
+    /// produce the body-displacement field at every ramp step).
     deformed_positions: Vec<Vec3>,
     /// Per-tet strain-energy density (J/m³), indexed by tet ID,
     /// length = `n_tets`. Captured every step (F2.3c needs per-step
@@ -2503,63 +2519,93 @@ fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     save_ply_attributed(&design_surface_attr, &design_surface_path, true)?;
 
-    // F2.3c — per-step deformed PLY series. One design_surface_deformed
-    // per ramp step that produced actual deformation (see iter_count==0
-    // skip below). The open-mouth fork's per-step series shows the cup
-    // walls progressively deforming inward as the cuboid plug descends
-    // through the open mouth (verify_force_displacement_* gates
-    // disabled here per the row-25 v1.6 spec; the visual animation is
-    // the load-bearing readout). amplify=10. Reuse
-    // `final_data.rest_positions` from the F1 emit block above — same
-    // FinalStepData; no need to re-bind.
+    // Per-step ramp animations, two complementary series. Each lives
+    // in its own subdirectory so `cf-view <subdir>` autoloads exactly
+    // that 8-frame sequence (cf-viewer's `discover_ply_sequence`
+    // matches `*_step_<digits>.ply` and treats every match in the
+    // dir as one frame series — mixing two series in one dir produces
+    // a 16-frame interleaved scrub).
     //
-    // Stale-file cleanup: prior runs may have emitted step_NN.ply files
-    // for steps that now skip (e.g. row 25's first 4 steps under the
-    // iter_count==0 rule below). Deleting any pre-existing matching
-    // files keeps the directory honest after a re-run.
+    // 1. `out/scene_steps/step_NN.ply` via `design_scene_deformed`.
+    //    Deformed body + descending rigid plug merged via a
+    //    categorical `primitive_id` scalar (0 = body, 1 = plug).
+    //    amplify=10 on the body; plug renders rigid. Shows the plug
+    //    descending through the open mouth — but the closed outer
+    //    envelope is Dirichlet-pinned, so the body silhouette is
+    //    identical across all 8 frames.
+    //
+    // 2. `out/slab_steps/step_NN.ply` via `slab_cut_deformed`.
+    //    Marching-tet cut at x = 0 through the DEFORMED tet mesh,
+    //    same amplify=10. The cavity wall bulging inward where the
+    //    plug pushes IS visible here — slab cut is the load-bearing
+    //    deformation readout, scene PLYs cover plug descent.
+    //
+    // Bounds for the scene pass: the plug top
+    // (PROBE_PLUG_INITIAL_CENTER_Z + PROBE_PLUG_HZ) extends well above
+    // BBOX_HALF_Z, so `scene_bounds` widens +z by 2 * PROBE_PLUG_HZ +
+    // slack to avoid MC cropping. The slab pass uses the analysis
+    // mesh's own bounds (no SDF MC pass).
+    //
+    // No iter_count==0 skip: the plug moves every step regardless of
+    // whether the body deformed, so every frame carries new
+    // information. Row 25 steps 1–4 (iter_count==0; see RampStepResult
+    // doc) still emit — the body is at rest there, but the plug is
+    // visibly descending pre-engagement.
+    //
+    // Reuses `final_data.rest_positions` from the F1 emit block above.
     let rest_positions = &final_data.rest_positions;
     let amplify = 10.0_f64;
+    let scene_bounds = Aabb3::new(
+        Vec3::new(-BBOX_HALF_X, -BBOX_HALF_Y, -BBOX_HALF_Z),
+        Vec3::new(
+            BBOX_HALF_X,
+            BBOX_HALF_Y,
+            2.0_f64.mul_add(PROBE_PLUG_HZ, BBOX_HALF_Z) + CELL_SIZE,
+        ),
+    );
+    let scene_steps_dir = out_dir.join("scene_steps");
+    let slab_steps_dir = out_dir.join("slab_steps");
+
+    // Stale-file cleanup for the per-step subdirs. Old runs left files
+    // directly in `out/`; sweep both old root-level prefixes AND the
+    // current-shape subdirs so a re-run lands in a clean state. The
+    // subdirs are recreated below.
     for entry in std::fs::read_dir(&out_dir).context("scanning out_dir for stale step PLYs")? {
         let entry = entry.context("reading out_dir entry")?;
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let is_step_ply = name.starts_with("sleeve_design_surface_deformed_step_")
+        let is_legacy_step_ply = path.is_file()
+            && (name.starts_with("sleeve_design_scene_step_")
+                || name.starts_with("sleeve_slab_cut_x0_step_")
+                || name.starts_with("sleeve_design_surface_deformed_step_"))
             && std::path::Path::new(name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("ply"));
-        if is_step_ply {
+        if is_legacy_step_ply {
             std::fs::remove_file(&path)
                 .with_context(|| format!("removing stale step PLY {}", path.display()))?;
         }
     }
+    for stale_subdir in [&scene_steps_dir, &slab_steps_dir] {
+        if stale_subdir.exists() {
+            std::fs::remove_dir_all(stale_subdir).with_context(|| {
+                format!("removing stale step subdir {}", stale_subdir.display())
+            })?;
+        }
+    }
+    std::fs::create_dir_all(&scene_steps_dir)
+        .with_context(|| format!("creating scene-steps subdir {}", scene_steps_dir.display()))?;
+    std::fs::create_dir_all(&slab_steps_dir)
+        .with_context(|| format!("creating slab-steps subdir {}", slab_steps_dir.display()))?;
+
+    let slab_plane_x0 = Plane {
+        axis: 0,
+        value: 0.0,
+    };
     for step_result in &results {
         let step_idx = step_result.step;
-        // Skip when the solver converged at iter 0 — the residual at
-        // x_prev was already below tol, so x_final == x_prev (rest
-        // positions). Emitting a "deformed" PLY here would byte-equal
-        // the rest geometry and create duplicate animation frames.
-        //
-        // Row 25 hits this for steps 1–4: the cuboid plug's
-        // interference contact engages only cavity-rim vertices, which
-        // are pinned as part of the outer-envelope Dirichlet band, so
-        // contact-gradient contributions land at pinned DOFs and are
-        // excluded from `free_residual_norm` — solver sees zero
-        // residual, returns x_prev unchanged. By step 5 the plug has
-        // descended past the rim band; contact reaches free DOFs
-        // further down the cavity wall and Newton iterates normally.
-        // The mesh-resolution root cause (4 mm BCC cells vs 0.5 mm
-        // ramp step) is a separate followup — refining the mesh near
-        // the rim is a Track A leaf in `docs/SIM_SOFT_ROADMAP.md`.
-        if step_result.iter_count == 0 {
-            eprintln!(
-                "  skipping PLY emit for step {step_idx:02} — iter_count=0 \
-                 (contact engagement at pinned rim DOFs only; \
-                 see emit-block comment)"
-            );
-            continue;
-        }
         let step_displacement: Vec<Vec3> = (0..n_vertices)
             .map(|i| step_result.deformed_positions[i] - rest_positions[i])
             .collect();
@@ -2567,20 +2613,31 @@ fn main() -> Result<()> {
         step_scalars.insert("psi_j_per_m3", &step_result.per_tet_psi);
         step_scalars.insert("material_shell_id", &material_shell_id);
         step_scalars.insert("material_zone_id", &material_zone_id);
-        let step_attr = design_surface_deformed(
+        let plug_step = build_probe_solid_at_depth(step_result.depth_m);
+        let step_attr = design_scene_deformed(
             &body_for_viz,
+            &[&plug_step as &dyn Sdf],
             &mesh,
-            &design_bounds,
+            &scene_bounds,
             design_resolution,
             &step_scalars,
             &step_displacement,
             amplify,
         )
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let step_path = out_dir.join(format!(
-            "sleeve_design_surface_deformed_step_{step_idx:02}.ply"
-        ));
+        let step_path = scene_steps_dir.join(format!("scene_step_{step_idx:02}.ply"));
         save_ply_attributed(&step_attr, &step_path, true)?;
+
+        let slab_attr = slab_cut_deformed(
+            &mesh,
+            slab_plane_x0,
+            &step_scalars,
+            &step_displacement,
+            amplify,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let slab_path = slab_steps_dir.join(format!("slab_step_{step_idx:02}.ply"));
+        save_ply_attributed(&slab_attr, &slab_path, true)?;
     }
 
     // 9. Museum-plaque summary.
@@ -2717,10 +2774,23 @@ fn print_summary(
         "  out/sleeve_design_surface_final.ply                    (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF)"
     );
     println!(
-        "  out/sleeve_design_surface_deformed_step_NN.ply         (F2.3c ramp animation series: per-step deformed body via sim_soft::viz::design_surface_deformed at amplify=10)"
+        "  out/scene_steps/scene_step_NN.ply                      (per-step ramp animation: deformed body + descending plug merged via sim_soft::viz::design_scene_deformed; primitive_id scalar splits body=0 from plug=1; body amplify=10; point cf-view at the subdir to scrub)"
+    );
+    println!(
+        "  out/slab_steps/slab_step_NN.ply                        (per-step deformed cross-section at x=0 via sim_soft::viz::slab_cut_deformed at amplify=10; cavity wall bulging inward where the plug pushes is visible here even though the closed outer envelope hides it in the scene PLYs)"
     );
     println!();
-    println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");
+    println!("View ramp animation series in cf-view (subdirs = scrubbable 8-frame sequences):");
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/scene_steps"
+    );
+    println!(
+        "  cargo run -p cf-viewer --release -- \
+         examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/slab_steps"
+    );
+    println!();
+    println!("View final-step PLYs in cf-view (single-frame mode):");
     println!(
         "  cargo run -p cf-viewer --release -- \
          examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/sleeve_boundary_final.ply"

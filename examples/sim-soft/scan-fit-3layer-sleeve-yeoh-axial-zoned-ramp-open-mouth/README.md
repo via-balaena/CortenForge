@@ -108,19 +108,24 @@ Row 25 disables the load-case-dependent `verify_*` gates that don't generalize f
 
 ## Visuals
 
-Two PLY artifacts via the F1.1-shipped public viz API:
+PLY artifacts via the F1/F2 public viz API:
 
 - **`out/sleeve_boundary_final.ply`** — full 3D body via [`sim_soft::viz::boundary_surface`]. Per-vertex `psi_j_per_m3` from volume-weighted averaging over per-tet psi. Includes the cavity-wall surface joining the outer envelope at the rim — open-mouth topology in a single connected boundary mesh.
 - **`out/sleeve_slab_cut_x0_final.ply`** — cross-section at `x = 0` via [`sim_soft::viz::slab_cut`]. Marching-tetrahedra cut, per-vertex psi linearly interpolated along cross-edges. Reads as a "U" shape (vs row 24's closed "O") — directly visualises the cup-with-open-top geometry.
+- **`out/sleeve_design_slab_cut_x0_final.ply`** + **`out/sleeve_design_surface_final.ply`** — design-mesh siblings via [`sim_soft::viz::design_slab_cut`] + [`sim_soft::viz::design_surface`]. Marching-cubes on the design SDF; per-display-vertex scalars by barycentric transfer from the analysis tet mesh.
+- **`out/scene_steps/scene_step_NN.ply`** (NN = 01..=08) — per-step ramp animation via [`sim_soft::viz::design_scene_deformed`]. Each step merges the deformed body (amplify=10) with the rigid cuboid plug at its current depth into one mesh, tagged via a categorical `primitive_id` extra (`0` = body, `1` = plug). Steps 1–4 show the plug descending pre-engagement (body at rest, `iter_count=0`); steps 5–8 show the cup walls deforming inward as the plug contacts cavity walls. **Caveat**: the closed outer envelope is Dirichlet-pinned, so the body's *outer* silhouette is identical across all 8 frames — the deformation lives on the cavity walls inside. See the slab-cut companion below.
+- **`out/slab_steps/slab_step_NN.ply`** (NN = 01..=08) — per-step deformed cross-section at `x = 0` via [`sim_soft::viz::slab_cut_deformed`]. F1 analysis-mesh marching-tet through the deformed tet positions at `amplify=10`. The "U" shape's inner cavity walls visibly bulge inward across frames 5–8 — this is where the squish is actually visible.
 
-Open in cf-view:
+Each ramp series lives in its own subdirectory so cf-view's S1 D1 sequence player (which lex-sorts every `*_step_<digits>.ply` in the input directory into one scrub) shows exactly one series per launch:
 
 ```sh
+cargo run -p cf-viewer --release -- examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/scene_steps
+cargo run -p cf-viewer --release -- examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/slab_steps
 cargo run -p cf-viewer --release -- examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/sleeve_boundary_final.ply
 cargo run -p cf-viewer --release -- examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/out/sleeve_slab_cut_x0_final.ply
 ```
 
-cf-view auto-picks sequential viridis for `psi_j_per_m3`. Orbit the boundary surface to look down through the open mouth — the cavity floor at `z = -SCAN_HZ` sits ~50% of the body's height below the rim. cf-view's flat per-triangle shading + single-sided directional light makes depth perception inside the cavity less obvious than the slab cut's "U" shape directly conveys; the F2 viz arc (banked at [vizarc memo][vizarc] §F2) addresses this with display surfaces decoupled from the analysis tet mesh.
+cf-view auto-picks sequential viridis for `psi_j_per_m3` and toggles to the categorical `primitive_id` scalar to read the body-vs-plug split on the per-step scenes. Use `←` `→` `Home` `End` to scrub.
 
 **Force-displacement curve via matplotlib.** The `ramp_curve` array carries the per-step force / displacement / Ψ̄ trace. Optional matplotlib post-processing via PEP 723 inline metadata:
 

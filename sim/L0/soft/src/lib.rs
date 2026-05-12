@@ -81,8 +81,8 @@ pub use sdf_bridge::{
 };
 pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
 pub use viz::{
-    Plane, VizError, boundary_surface, design_scene, design_slab_cut, design_surface,
-    design_surface_deformed, slab_cut,
+    Plane, VizError, boundary_surface, design_scene, design_scene_deformed, design_slab_cut,
+    design_surface, design_surface_deformed, slab_cut, slab_cut_deformed,
 };
 
 /// Three-component column vector in world space, `f64`. Matches

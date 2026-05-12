@@ -10,7 +10,10 @@ use cf_viewer::{
     colormap::{Colormap, ColormapKind},
     detect_input_mode, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
-    sequence::{handle_frame_navigation, reload_frame_on_change, sequence_info_panel},
+    sequence::{
+        Playback, advance_playback_on_clock, handle_frame_navigation, handle_playback_input,
+        reload_frame_on_change, sequence_info_panel,
+    },
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
@@ -68,22 +71,34 @@ fn main() -> Result<()> {
     .insert_resource(up_axis)
     .insert_resource(RenderScale(render_scale));
 
-    // Sequence-mode-only resource. The `sequence_info_panel` system is
-    // added unconditionally below but is itself gated on
-    // `Option<Res<Sequence>>` inside the handler, so single-file mode
-    // pays nothing.
+    // Sequence-mode-only resources. The sequence systems below are
+    // added unconditionally but each one is gated on
+    // `Option<Res<Sequence>>` / `Option<Res<Playback>>` inside the
+    // handler, so single-file mode pays nothing.
     if let InputMode::Sequence(seq) = mode {
         app.insert_resource(seq);
+        app.insert_resource(Playback::default());
     }
 
     app.add_systems(Startup, setup_scene)
-        // Sequence-mode chain: input → reload → respawn must run in
-        // order within a single frame, otherwise pressing `→` would
-        // take two frames to render the new geometry. `exit_on_esc`
-        // has no resource conflicts and lives outside the chain.
+        // Sequence-mode chain: explicit user input → automatic clock
+        // advance → reload → respawn, all within a single frame so a
+        // keyboard step / space toggle / scrub drag renders the new
+        // frame on the same tick. Manual input runs first so the
+        // clock can't race a just-stepped frame; reload runs after
+        // any `Sequence::current` mutation so it sees the latest
+        // index. `exit_on_esc` has no resource conflicts and lives
+        // outside the chain.
         .add_systems(
             Update,
-            (handle_frame_navigation, reload_frame_on_change, spawn_geometry).chain(),
+            (
+                handle_frame_navigation,
+                handle_playback_input,
+                advance_playback_on_clock,
+                reload_frame_on_change,
+                spawn_geometry,
+            )
+                .chain(),
         )
         .add_systems(Update, exit_on_esc)
         // Both panel systems take `EguiContexts` so Bevy auto-serializes

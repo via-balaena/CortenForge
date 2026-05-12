@@ -16,6 +16,11 @@
 //!   via marching-tetrahedra and emits the cross-section polygon as
 //!   a triangle mesh, with per-vertex scalars linearly interpolated
 //!   from the same volume-weighted per-vertex field.
+//! - [`slab_cut_deformed`] same as [`slab_cut`] but each rest position
+//!   is offset by the per-vertex displacement field, scaled by an
+//!   `amplify` factor. Renders the cross-section of the deformed tet
+//!   mesh — sliced cavity walls + contact-zone bulges that are
+//!   invisible from a closed outer boundary surface.
 //!
 //! ## Design-mesh primitives (F2)
 //!
@@ -49,6 +54,9 @@
 //!   `primitive_id` (body-vs-contact split) and the body's continuous
 //!   scalars (deformation/strain with contact primitives as uniform-
 //!   zero solids).
+//! - [`design_scene_deformed`] same as [`design_scene`] but the body
+//!   pass uses [`design_surface_deformed`] — quasi-static ramp
+//!   animations of a soft body with a moving rigid plug land here.
 //!
 //! Pick F1 when the analysis-mesh discretization IS the story (e.g.,
 //! debugging mesh quality, sliver-tet inspection). Pick F2 when the
@@ -104,6 +112,18 @@ use crate::Vec3;
 use crate::material::Material;
 use crate::mesh::{Mesh, VertexId};
 use crate::sdf_bridge::{Aabb3, Sdf};
+
+/// C2.2 IDW hyperparameter — top-k count for the continuous-scalar
+/// kNN-IDW sampler [`idw_k_nearest_tet_centroids`].
+///
+/// k = 8 matches the typical tets-per-cell on a BCC analysis mesh
+/// (six BCC tets per cubic cell, plus boundary-overflow from the
+/// 3×3×3 `TetGrid` window) — the smoothing kernel is effectively
+/// "one Voronoi neighborhood." Smaller k narrows the smoothing
+/// (k = 1 collapses to nearest-tet, identical to the C2.1 categorical
+/// path); larger k widens it but admits centroids from further away
+/// that aren't physically relevant to the probe.
+const IDW_K: usize = 8;
 
 /// Error surface for viz primitives.
 #[derive(Clone, Debug)]
@@ -189,8 +209,12 @@ pub struct Plane {
 /// The boundary faces come from the precomputed
 /// [`Mesh::boundary_faces`] cache (right-handed outward winding, populated
 /// at mesh construction). Per-tet scalars in `per_tet_scalars` are
-/// projected to per-vertex via volume-weighted averaging and surface as
-/// entries in the output mesh's `extras` map under the same names.
+/// projected to per-vertex and surfaced as entries in the output mesh's
+/// `extras` map under the same names. Continuous scalars use volume-
+/// weighted averaging over incident tets; categorical scalars (suffix
+/// `_id`) use the largest-volume incident tet (C2.1 nearest-tet
+/// semantics) so display-vertex values stay integer for the cf-view
+/// colormap detector's Categorical pick.
 ///
 /// All vertices of `mesh` are emitted, including interior vertices
 /// (which appear as unreferenced vertices in the PLY — most readers
@@ -209,7 +233,15 @@ pub struct Plane {
 // length contract makes the call infallible (failure would mean the
 // per_vertex Vec we just built is a different length than
 // mesh.n_vertices() — internally inconsistent and unreachable).
-#[allow(clippy::cast_possible_truncation, clippy::expect_used)]
+// `too_many_lines` allowed: the C2 categorical pre-pass + per-scalar
+// dispatch loop pushes the body past clippy's 100-line default; the
+// alternative — extracting `winner_tet_per_vertex` to a helper —
+// inflates the API surface for a single internal use.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::too_many_lines
+)]
 pub fn boundary_surface<M: Material>(
     mesh: &dyn Mesh<M>,
     per_tet_scalars: &BTreeMap<&str, &[f64]>,
@@ -224,9 +256,54 @@ pub fn boundary_surface<M: Material>(
         geometry.faces.push(face);
     }
 
+    // C2 categorical path: pick a single "winner" tet per analysis-mesh
+    // vertex (the largest-volume incident tet) so categorical scalars
+    // emit the exact integer of that representative tet rather than the
+    // volume-weighted-average-over-incident-tets fractional value that
+    // continuous scalars use. Only pay the pre-pass when at least one
+    // categorical scalar is in flight; pure-continuous calls (the
+    // pre-C2.1 default) skip it entirely.
+    let any_categorical = per_tet_scalars
+        .keys()
+        .any(|&n| is_categorical_scalar_name(n));
+    let winner_tet_per_vertex: Option<Vec<Option<u32>>> = if any_categorical {
+        let n_vertices = mesh.n_vertices();
+        let signed_volumes = &mesh.quality().signed_volume;
+        let mut best_vol = vec![0.0_f64; n_vertices];
+        let mut best_tet: Vec<Option<u32>> = vec![None; n_vertices];
+        for (t, &sv) in signed_volumes.iter().enumerate() {
+            let vol = sv.abs();
+            let tet_id = t as u32;
+            let [v0, v1, v2, v3] = mesh.tet_vertices(tet_id);
+            for v in [v0, v1, v2, v3] {
+                if vol > best_vol[v as usize] {
+                    best_vol[v as usize] = vol;
+                    best_tet[v as usize] = Some(tet_id);
+                }
+            }
+        }
+        Some(best_tet)
+    } else {
+        None
+    };
+
     let mut attr = AttributedMesh::new(geometry);
     for (&name, &per_tet) in per_tet_scalars {
-        let per_vertex = volume_weighted_per_vertex_avg(mesh, per_tet);
+        let per_vertex: Vec<f64> = if is_categorical_scalar_name(name) {
+            // Categorical: emit the per-tet value of the largest-volume
+            // incident tet at each vertex (C2 nearest-tet, k=1).
+            // Orphan vertices (no incident tets) fall back to 0.0 to
+            // match the continuous-path orphan convention.
+            let lookup = winner_tet_per_vertex
+                .as_ref()
+                .expect("populated above when any categorical scalar is present");
+            lookup
+                .iter()
+                .map(|&maybe_t| maybe_t.map_or(0.0, |t| per_tet[t as usize]))
+                .collect()
+        } else {
+            volume_weighted_per_vertex_avg(mesh, per_tet)
+        };
         let f32_values: Vec<f32> = per_vertex.iter().map(|&v| v as f32).collect();
         attr.insert_extra(name.to_string(), f32_values)
             .expect("per-vertex length matches mesh.n_vertices() by construction");
@@ -245,8 +322,13 @@ pub fn boundary_surface<M: Material>(
 /// Intersect a tet mesh with an axis-aligned plane via marching-tetrahedra.
 ///
 /// Returns the cross-section as an [`AttributedMesh`] of triangles
-/// with per-vertex scalars linearly interpolated from the
-/// volume-weighted per-vertex field.
+/// with per-vertex scalars sampled from the analysis tet mesh.
+/// Continuous scalars linearly interpolate along each crossed edge
+/// from the volume-weighted-per-vertex field; categorical scalars
+/// (suffix `_id`) take the value of the tet whose centroid is closest
+/// in 3D space to the cut vertex among the tets that touch the cut
+/// edge (C2.1 position-based nearest-tet semantics) — preserves
+/// integer labels for the cf-view colormap detector's Categorical pick.
 ///
 /// Each tet contributes 0, 1, or 2 cross-section triangles depending
 /// on its sign pattern with respect to the plane (5 cases by
@@ -264,29 +346,90 @@ pub fn boundary_surface<M: Material>(
 /// - [`VizError::InvalidPlaneAxis`] if `plane.axis >= 3`.
 /// - [`VizError::PerTetScalarLengthMismatch`] if any scalar's length
 ///   != `mesh.n_tets()`.
+pub fn slab_cut<M: Material>(
+    mesh: &dyn Mesh<M>,
+    plane: Plane,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+) -> Result<AttributedMesh, VizError> {
+    slab_cut_at_positions(mesh, mesh.positions(), plane, per_tet_scalars)
+}
+
+/// Deformed-mesh sibling of [`slab_cut`].
+///
+/// Same marching-tetrahedra cut, but each rest position is offset by
+/// `displacement_per_vertex[v] * amplify` before classifying tets and
+/// interpolating cross-edges. Renders the cross-section of the
+/// **deformed** tet mesh — sliced cavity walls, contact-zone bulges,
+/// and any other deformation that's invisible from a closed outer
+/// boundary surface.
+///
+/// Per-tet scalar projection still uses the rest-position scalar
+/// pipeline (volume-weighted-per-vertex for continuous; closest-
+/// centroid-to-cut-vertex for categorical `_id` scalars; see
+/// [`slab_cut`]) — only the geometric cut uses deformed positions.
+/// Pass `amplify > 1` to make sub-mm deformations visually obvious
+/// on cm-scale bodies, matching the [`design_surface_deformed`]
+/// convention.
+///
+/// # Errors
+///
+/// All [`slab_cut`] errors plus [`VizError::PerVertexLengthMismatch`]
+/// if `displacement_per_vertex`'s length differs from
+/// `mesh.n_vertices()`.
+pub fn slab_cut_deformed<M: Material>(
+    mesh: &dyn Mesh<M>,
+    plane: Plane,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+    displacement_per_vertex: &[Vec3],
+    amplify: f64,
+) -> Result<AttributedMesh, VizError> {
+    let n_vertices = mesh.n_vertices();
+    if displacement_per_vertex.len() != n_vertices {
+        return Err(VizError::PerVertexLengthMismatch {
+            expected: n_vertices,
+            actual: displacement_per_vertex.len(),
+        });
+    }
+
+    let rest_positions = mesh.positions();
+    let deformed_positions: Vec<Vec3> = rest_positions
+        .iter()
+        .zip(displacement_per_vertex.iter())
+        .map(|(p, d)| p + d * amplify)
+        .collect();
+
+    slab_cut_at_positions(mesh, &deformed_positions, plane, per_tet_scalars)
+}
+
+/// Marching-tet core shared by [`slab_cut`] (rest) and
+/// [`slab_cut_deformed`] (displaced). `positions` is the position
+/// slice the SD computation and cross-edge interpolation read; `mesh`
+/// supplies validation, tet connectivity, and the per-tet scalar
+/// projection (rest-volume-weighted per-vertex for continuous;
+/// closest-centroid-to-cut-vertex for categorical `_id` scalars).
 //
-// `cast_possible_truncation` allowed for the f64 → f32 PLY emit
-// path and the usize → u32 vertex index path (VertexId is u32 by
-// crate convention; `mesh.n_tets() < u32::MAX` is a γ-locked mesh
-// invariant). `expect_used` allowed on `insert_extra` — see the
-// boundary_surface justification; the cross-vertex count we count
-// up matches the cut_scalars[i] vec length by construction.
-// `similar_names` allowed because `i_ac`/`i_bc`/`i_ad`/`i_bd` are
-// the algorithm's natural names for the four cross-edges of the
-// 2-2 tet sign-pattern case (above-{a,b}, below-{c,d}); renaming
-// would obscure the geometry.
+// `cast_possible_truncation` allowed for the f64 → f32 PLY emit path
+// and the usize → u32 vertex index path (VertexId is u32 by crate
+// convention; `mesh.n_tets() < u32::MAX` is a γ-locked mesh invariant).
+// `expect_used` allowed on `insert_extra` — the cross-vertex count we
+// count up matches the cut_scalars[i] vec length by construction.
+// `similar_names` allowed because `i_ac`/`i_bc`/`i_ad`/`i_bd` are the
+// algorithm's natural names for the four cross-edges of the 2-2 tet
+// sign-pattern case (above-{a,b}, below-{c,d}); renaming would obscure
+// the geometry. `unreachable` allowed on the `_ => unreachable!()`
+// match arm in the (na, nb) dispatch — invariant-pinned: a tet has
+// exactly 4 vertices, so na + nb == 4 and the 5 explicit arms
+// (4,0)/(0,4)/(1,3)/(3,1)/(2,2) exhaust the space.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::expect_used,
     clippy::similar_names,
-    // The `_ => unreachable!()` arm in the (na, nb) match is invariant-
-    // pinned: a tet has exactly 4 vertices, so na + nb == 4 and the 5
-    // explicit arms (4,0)/(0,4)/(1,3)/(3,1)/(2,2) exhaust the space.
-    // The `unreachable!()` cannot fire under any well-formed input.
+    clippy::too_many_lines,
     clippy::unreachable
 )]
-pub fn slab_cut<M: Material>(
+fn slab_cut_at_positions<M: Material>(
     mesh: &dyn Mesh<M>,
+    positions: &[Vec3],
     plane: Plane,
     per_tet_scalars: &BTreeMap<&str, &[f64]>,
 ) -> Result<AttributedMesh, VizError> {
@@ -295,16 +438,41 @@ pub fn slab_cut<M: Material>(
     }
     validate_per_tet_scalars(mesh, per_tet_scalars)?;
 
-    let positions = mesh.positions();
-    let n_tets = mesh.n_tets();
-
-    // Project each per-tet scalar to per-vertex up-front so the
-    // marching-tet interior loop can interpolate cheaply along each
-    // crossed edge.
+    // C2 categorical/continuous split. Continuous scalars pre-project
+    // to a volume-weighted per-vertex average so the marching-tet
+    // inner loop can linearly interpolate along each crossed edge.
+    // Categorical scalars (suffix `_id`) hand a `Some(per_tet)` slice
+    // to `intersect_edge`, which samples the cut vertex from the tet
+    // whose centroid is closest in 3D space to the cut vertex among
+    // the tets that have touched it so far — preserves the integer-
+    // label invariant the cf-view colormap detector reads as
+    // Categorical (`tab10`) AND keeps the categorical boundary aligned
+    // with the 3D centroid-Voronoi midline (smooth) rather than the
+    // analysis-mesh largest-volume topology (jagged stair-step at
+    // every shell-boundary face). The empty Vec slots in
+    // `per_vertex_by_scalar` at categorical indices are intentionally
+    // never read (gated by `per_tet_by_scalar[i].is_some()` in
+    // `intersect_edge`).
     let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
     let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
         .iter()
-        .map(|&name| volume_weighted_per_vertex_avg(mesh, per_tet_scalars[&name]))
+        .map(|&name| {
+            if is_categorical_scalar_name(name) {
+                Vec::new()
+            } else {
+                volume_weighted_per_vertex_avg(mesh, per_tet_scalars[&name])
+            }
+        })
+        .collect();
+    let per_tet_by_scalar: Vec<Option<&[f64]>> = scalar_names
+        .iter()
+        .map(|&name| {
+            if is_categorical_scalar_name(name) {
+                Some(per_tet_scalars[&name])
+            } else {
+                None
+            }
+        })
         .collect();
 
     // Per-vertex signed distance: positive = above (axis side),
@@ -318,8 +486,15 @@ pub fn slab_cut<M: Material>(
 
     let mut state = SlabCutState::new(scalar_names.len());
 
+    let n_tets = mesh.n_tets();
     for t in 0..n_tets {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t as u32);
+        let tet_id = t as u32;
+        let [v0, v1, v2, v3] = mesh.tet_vertices(tet_id);
+        let tet_centroid = (positions[v0 as usize]
+            + positions[v1 as usize]
+            + positions[v2 as usize]
+            + positions[v3 as usize])
+            * 0.25;
         let verts = [v0, v1, v2, v3];
         let mut above = [0u32; 4];
         let mut na = 0usize;
@@ -338,16 +513,70 @@ pub fn slab_cut<M: Material>(
             (4, 0) | (0, 4) => {}
             (1, 3) => {
                 let s = above[0];
-                let i0 = state.intersect_edge(s, below[0], positions, &per_vertex_by_scalar, &sd);
-                let i1 = state.intersect_edge(s, below[1], positions, &per_vertex_by_scalar, &sd);
-                let i2 = state.intersect_edge(s, below[2], positions, &per_vertex_by_scalar, &sd);
+                let i0 = state.intersect_edge(
+                    s,
+                    below[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i1 = state.intersect_edge(
+                    s,
+                    below[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i2 = state.intersect_edge(
+                    s,
+                    below[2],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
                 state.push_face([i0, i1, i2], plane.axis);
             }
             (3, 1) => {
                 let s = below[0];
-                let i0 = state.intersect_edge(s, above[0], positions, &per_vertex_by_scalar, &sd);
-                let i1 = state.intersect_edge(s, above[1], positions, &per_vertex_by_scalar, &sd);
-                let i2 = state.intersect_edge(s, above[2], positions, &per_vertex_by_scalar, &sd);
+                let i0 = state.intersect_edge(
+                    s,
+                    above[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i1 = state.intersect_edge(
+                    s,
+                    above[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i2 = state.intersect_edge(
+                    s,
+                    above[2],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
                 state.push_face([i0, i1, i2], plane.axis);
             }
             (2, 2) => {
@@ -355,14 +584,46 @@ pub fn slab_cut<M: Material>(
                 // Cross-edges: a-c, b-c, b-d, a-d. Going around the
                 // quad's perimeter: i_ac → i_bc → i_bd → i_ad → i_ac.
                 // Triangulate via the i_ac → i_bd diagonal.
-                let i_ac =
-                    state.intersect_edge(above[0], below[0], positions, &per_vertex_by_scalar, &sd);
-                let i_bc =
-                    state.intersect_edge(above[1], below[0], positions, &per_vertex_by_scalar, &sd);
-                let i_bd =
-                    state.intersect_edge(above[1], below[1], positions, &per_vertex_by_scalar, &sd);
-                let i_ad =
-                    state.intersect_edge(above[0], below[1], positions, &per_vertex_by_scalar, &sd);
+                let i_ac = state.intersect_edge(
+                    above[0],
+                    below[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i_bc = state.intersect_edge(
+                    above[1],
+                    below[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i_bd = state.intersect_edge(
+                    above[1],
+                    below[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i_ad = state.intersect_edge(
+                    above[0],
+                    below[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
                 state.push_face([i_ac, i_bc, i_bd], plane.axis);
                 state.push_face([i_ac, i_bd, i_ad], plane.axis);
             }
@@ -390,9 +651,11 @@ pub fn slab_cut<M: Material>(
 /// Decouples display geometry from analysis geometry per the F2 viz
 /// arc: the cross-section comes from marching-squares-filled on `sdf`
 /// (sharp at axis-aligned faces, smooth on curved boundaries, exact
-/// at any analysis-mesh coarseness), while scalar values come from
-/// barycentric point-in-tet interpolation against `analysis_mesh`'s
-/// volume-weighted per-vertex field.
+/// at any analysis-mesh coarseness), while scalar values are sampled
+/// per display vertex from `analysis_mesh`'s per-tet field (barycentric
+/// interp of the volume-weighted-per-vertex field for continuous
+/// scalars; single nearest-tet-centroid for categorical `_id` scalars;
+/// see Algorithm below).
 ///
 /// # Comparison vs [`slab_cut`]
 ///
@@ -415,13 +678,15 @@ pub fn slab_cut<M: Material>(
 ///    (2-opposite-inside, masks `0b0101` / `0b1010`) resolve via
 ///    `sdf.eval(cell_center)` so opposite-corner islands bridge or
 ///    split as the SDF dictates.
-/// 3. For each emitted display vertex, find the enclosing analysis
-///    tet via barycentric point-in-tet on a slab-filtered tet subset
-///    (only tets whose AABB along `plane.axis` straddles `plane.value`
-///    can possibly contain a point on the plane). Interpolate
-///    `volume_weighted_per_vertex_avg` scalars to the display vertex
-///    via the barycentrics (same per-vertex projection [`slab_cut`]
-///    uses; `volume_weighted_per_vertex_avg` is private to this module).
+/// 3. For each emitted display vertex, sample from `analysis_mesh`'s
+///    per-tet field over a slab-filtered tet subset (only tets whose
+///    AABB along `plane.axis` straddles `plane.value` can possibly
+///    contain a point on the plane). Continuous scalars: barycentric
+///    point-in-tet on the volume-weighted-per-vertex field (same
+///    per-vertex projection [`slab_cut`] uses). Categorical scalars
+///    (suffix `_id`): single nearest-tet-centroid via
+///    `nearest_tet_centroid_idx` — preserves integer labels for the
+///    Categorical colormap pick.
 /// 4. Fall back to nearest-tet (clipped + renormalized barycentrics)
 ///    for vertices that fall just outside every analysis tet — common
 ///    where the design SDF's smooth surface lies outside the analysis
@@ -473,10 +738,35 @@ pub fn design_slab_cut<M: Material>(
     let (uu, vv) = uv_axes(plane.axis);
     let grid = SdfGrid::sample(sdf, plane, bounds, resolution, uu, vv);
 
+    // C2.1 categorical/continuous split. Continuous scalars pre-
+    // project to vol-weighted-per-vertex so `sample_analysis_at_point`
+    // can barycentric-interpolate inside the enclosing slab tet;
+    // categorical scalars (suffix `_id`) skip the pre-projection and
+    // share a single `nearest_tet_centroid_idx` lookup per display
+    // vertex against `slab_tets`, emitting the exact integer of the
+    // nearest tet. Mirrors the dispatch in `design_surface` (the C2.2
+    // kNN-IDW continuous-path swap is deliberately scope-limited to
+    // `design_surface` — `design_slab_cut` doesn't build a `TetGrid`
+    // and adding one is a perf-vs-benefit trade banked for C2.x).
     let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
-    let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+    let is_categorical: Vec<bool> = scalar_names
         .iter()
-        .map(|&name| volume_weighted_per_vertex_avg(analysis_mesh, per_tet_scalars[&name]))
+        .map(|&n| is_categorical_scalar_name(n))
+        .collect();
+    let any_categorical = is_categorical.iter().any(|&b| b);
+    let cont_per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+        .iter()
+        .zip(is_categorical.iter())
+        .filter_map(|(&name, &cat)| {
+            if cat {
+                None
+            } else {
+                Some(volume_weighted_per_vertex_avg(
+                    analysis_mesh,
+                    per_tet_scalars[&name],
+                ))
+            }
+        })
         .collect();
 
     let analysis_positions = analysis_mesh.positions();
@@ -499,15 +789,28 @@ pub fn design_slab_cut<M: Material>(
         .collect();
     for &p in &state.positions {
         let probe = Vec3::new(p[0], p[1], p[2]);
-        let scalars = sample_analysis_at_point(
+        let cont_vals = sample_analysis_at_point(
             probe,
             analysis_mesh,
             analysis_positions,
             &slab_tets,
-            &per_vertex_by_scalar,
+            &cont_per_vertex_by_scalar,
         );
-        for (i, val) in scalars.iter().enumerate() {
-            display_scalars[i].push(*val);
+        let nearest = if any_categorical {
+            nearest_tet_centroid_idx(probe, analysis_mesh, analysis_positions, &slab_tets)
+        } else {
+            None
+        };
+        let mut next_cont = 0_usize;
+        for (i, &name) in scalar_names.iter().enumerate() {
+            let val = if is_categorical[i] {
+                nearest.map_or(0.0, |t| per_tet_scalars[&name][t as usize])
+            } else {
+                let v = cont_vals[next_cont];
+                next_cont += 1;
+                v
+            };
+            display_scalars[i].push(val);
         }
     }
 
@@ -536,8 +839,9 @@ pub fn design_slab_cut<M: Material>(
 /// arc: the boundary surface comes from marching cubes on `sdf` (smooth
 /// curved boundaries on organic shapes, sharp axis-aligned faces on
 /// CSG primitives, exact at any analysis-mesh coarseness), while
-/// scalar values come from barycentric point-in-tet interpolation
-/// against `analysis_mesh`'s volume-weighted per-vertex field.
+/// scalar values are sampled per probe from `analysis_mesh`'s per-tet
+/// field (Shepard kNN-IDW for continuous scalars, single nearest-tet-
+/// centroid for categorical `_id` scalars; see Algorithm below).
 ///
 /// # Comparison vs [`boundary_surface`]
 ///
@@ -556,14 +860,17 @@ pub fn design_slab_cut<M: Material>(
 ///    size (delegated to [`mesh_offset::ScalarGrid`]).
 /// 2. Run [`mesh_offset::marching_cubes`] at iso-value 0 to extract
 ///    the closed boundary surface as a triangulated [`IndexedMesh`].
-/// 3. For each emitted display vertex, find the enclosing analysis
-///    tet via barycentric point-in-tet on the per-call uniform-grid
+/// 3. For each emitted display vertex, query a per-call uniform-grid
 ///    spatial index (`TetGrid` keyed by tet AABB; 3×3×3 cell window
-///    per probe, see Performance below). Interpolate
-///    `volume_weighted_per_vertex_avg` scalars to the display vertex
-///    via the barycentrics; fall back to nearest-tet (clipped +
-///    renormalized barycentrics) for vertices just outside every
-///    analysis tet.
+///    per probe, see Performance below) for nearby analysis tets.
+///    Continuous scalars sample via Shepard kNN-IDW (top-k=8 by
+///    centroid distance, weights `1/(d²+ε)`; see
+///    `idw_k_nearest_tet_centroids`). Categorical scalars (suffix
+///    `_id`) sample via single nearest-tet-centroid (k=1; see
+///    `nearest_tet_centroid_idx`) shared across every categorical
+///    scalar this probe — preserves integer labels for the cf-view
+///    colormap detector's Categorical (`tab10`) pick. Both paths
+///    share the same 3×3×3 candidate pool.
 ///
 /// # Performance
 ///
@@ -588,10 +895,16 @@ pub fn design_slab_cut<M: Material>(
 // `u32` by crate convention). `expect_used` allowed on `insert_extra`:
 // the validate-up-front contract makes the per-vertex scalar Vec
 // length equal the surface vertex count by construction.
+// `too_many_lines` allowed: the C2 categorical/continuous split adds
+// a partition pass + nearest-tet branch alongside the existing
+// barycentric path, pushing the body past clippy's 100-line default;
+// extracting either half to a helper would inflate the API surface
+// for a single internal use.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::expect_used,
-    clippy::similar_names
+    clippy::similar_names,
+    clippy::too_many_lines
 )]
 pub fn design_surface<M: Material>(
     sdf: &dyn Sdf,
@@ -627,25 +940,60 @@ pub fn design_surface<M: Material>(
     // 2. Marching cubes on the iso-0 surface.
     let surface = marching_cubes(&grid, &MarchingCubesConfig::at_iso_value(0.0));
 
-    // 3. Pre-compute volume-weighted per-vertex scalars on analysis mesh.
+    // 3. C2 categorical/continuous split. Continuous scalars sample
+    //    via Shepard kNN-IDW (`idw_k_nearest_tet_centroids`) per probe
+    //    directly on per-tet values; categorical scalars (suffix
+    //    `_id`) sample via single nearest-tet-centroid
+    //    (`nearest_tet_centroid_idx`, k=1) per probe, emitting the
+    //    exact integer of that tet. Both paths share the same
+    //    `TetGrid` 3×3×3 cell window. Preserves the cf-view colormap
+    //    detector's Categorical pick (`tab10`) at layer boundaries
+    //    instead of falling back to Sequential viridis on fractional
+    //    samples.
     let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
-    let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+    let is_categorical: Vec<bool> = scalar_names
         .iter()
-        .map(|&name| volume_weighted_per_vertex_avg(analysis_mesh, per_tet_scalars[&name]))
+        .map(|&n| is_categorical_scalar_name(n))
+        .collect();
+    let any_categorical = is_categorical.iter().any(|&b| b);
+    // Continuous slots only, in `scalar_names` order with categorical
+    // slots skipped. C2.2 samples each probe directly from per-tet
+    // values via kNN-IDW (no precomputed vol-weighted-per-vertex
+    // intermediate), so we just collect the underlying `&[f64]`
+    // references — `idw_k_nearest_tet_centroids` does the smoothing
+    // at sample time.
+    let cont_per_tet_refs: Vec<&[f64]> = scalar_names
+        .iter()
+        .zip(is_categorical.iter())
+        .filter_map(|(&name, &cat)| {
+            if cat {
+                None
+            } else {
+                Some(per_tet_scalars[&name])
+            }
+        })
         .collect();
 
-    // 4. Per-display-vertex barycentric scalar interp via uniform-grid
-    //    spatial accelerator. Each probe queries a 3×3×3 cell window
-    //    around its grid cell — covers tets whose AABB contains the
-    //    probe AND nearby tets the probe is just outside (the design
-    //    SDF's smooth surface and the analysis mesh's polyhedral
-    //    surface don't coincide; nearest-tet-with-clipped-bary fallback
-    //    needs to see neighboring cells to find the closest candidate).
-    //    Total work: ~27 × tets-per-cell per probe vs n_tets in the
-    //    pre-perf naive walk. On row 20 (51 k tets, 0.01 m cell, 305 k
-    //    display vertices), naive ran ~80 s; spatial-grid ran ~few s.
+    // 4. Per-display-vertex scalar sampling via uniform-grid spatial
+    //    accelerator. Each probe queries a 3×3×3 cell window around
+    //    its grid cell — covers tets whose AABB contains the probe
+    //    AND nearby tets the probe is just outside. On row 20 (51 k
+    //    tets, 0.01 m cell, 305 k display vertices) the naive
+    //    O(n_tets) walk ran ~80 s; spatial-grid lookup runs in seconds.
+    //    Categorical scalars share a single `nearest_tet_centroid_idx`
+    //    lookup per probe (C2.1 k=1); continuous scalars share a
+    //    single `idw_k_nearest_tet_centroids` pass per probe (C2.2
+    //    Shepard's IDW over the top-k=8 nearest centroids in the
+    //    same 3×3×3 candidate pool).
     let analysis_positions = analysis_mesh.positions();
     let tet_grid = TetGrid::build(analysis_mesh, analysis_positions);
+
+    // C2.2 IDW eps floor: scale-invariant weight clamp that collapses
+    // the IDW kernel to nearest-tet behavior when the probe lies
+    // essentially on a centroid (avoids 1/0 blow-up while staying
+    // negligible at any geometric distance above the floor).
+    // `IDW_K` is module-level (see top of file).
+    let idw_eps = (tet_grid.cell_size * 1e-3).powi(2);
 
     let mut display_scalars: Vec<Vec<f64>> = scalar_names
         .iter()
@@ -659,15 +1007,49 @@ pub fn design_surface<M: Material>(
         let probe = Vec3::new(v.x, v.y, v.z);
         candidates.clear();
         tet_grid.append_candidates_with_neighbors(probe, &mut candidates);
-        let scalars = sample_analysis_at_point(
+
+        // Continuous: Shepard-style kNN-IDW (k=8) directly on per-tet
+        // values. Wider smoothing radius than the pre-C2.2 single-
+        // enclosing-tet barycentric path; smooths the patchwork
+        // gradient-jump-at-tet-faces pattern visible on ψ fields.
+        // Empty `cont_per_tet_refs` (all-categorical case) returns
+        // an empty `cont_vals` (the helper short-circuits at
+        // `n_scalars == 0`).
+        let cont_vals = idw_k_nearest_tet_centroids(
             probe,
             analysis_mesh,
             analysis_positions,
             &candidates,
-            &per_vertex_by_scalar,
+            &cont_per_tet_refs,
+            IDW_K,
+            idw_eps,
         );
-        for (i, val) in scalars.iter().enumerate() {
-            display_scalars[i].push(*val);
+
+        // Categorical: single nearest-tet-centroid lookup shared
+        // across every categorical scalar this probe. `None` only
+        // when `candidates` is empty (the probe lies outside every
+        // analysis tet's 3×3×3 cell neighborhood) — fall back to
+        // `0.0`, matching the orphan convention elsewhere in the
+        // module.
+        let nearest = if any_categorical {
+            nearest_tet_centroid_idx(probe, analysis_mesh, analysis_positions, &candidates)
+        } else {
+            None
+        };
+
+        // Recombine into `scalar_names` order. `next_cont` advances
+        // in lockstep with continuous slots so categorical positions
+        // don't consume an entry from `cont_vals`.
+        let mut next_cont = 0_usize;
+        for (i, &name) in scalar_names.iter().enumerate() {
+            let val = if is_categorical[i] {
+                nearest.map_or(0.0, |t| per_tet_scalars[&name][t as usize])
+            } else {
+                let v = cont_vals[next_cont];
+                next_cont += 1;
+                v
+            };
+            display_scalars[i].push(val);
         }
     }
 
@@ -814,10 +1196,12 @@ pub fn design_surface_deformed<M: Material>(
 /// (`0.0` = body, `1.0..=N` = each contact in `contact_sdfs` order).
 ///
 /// Other scalars from `per_tet_scalars` (e.g. `displacement_magnitude`,
-/// `material_id`, `psi_j_per_m3`) are computed for the body via the
-/// usual barycentric interp and padded with `0.0` for contact-primitive
-/// vertices — contact primitives are rigid and have no FEM scalar
-/// field, so the uniform-zero padding is the most honest fill.
+/// `material_shell_id`, `psi_j_per_m3`) are computed for the body via
+/// [`design_surface`]'s dispatched scalar pipeline (kNN-IDW for
+/// continuous, nearest-tet for categorical `_id` scalars) and padded
+/// with `0.0` for contact-primitive vertices — contact primitives are
+/// rigid and have no FEM scalar field, so the uniform-zero padding is
+/// the most honest fill.
 ///
 /// In cf-view, toggle the Scalar dropdown to `primitive_id` for a
 /// categorical body-vs-contact split (canonical commercial-FEM-viz
@@ -830,17 +1214,6 @@ pub fn design_surface_deformed<M: Material>(
 /// All [`design_surface`] errors. The contact primitives are rendered
 /// geometry-only (no scalar interp), so per-tet scalar validation
 /// applies to the body's pass only.
-//
-// `cast_precision_loss` allowed: `(idx + 1) as f32` for primitive_id
-// is safe up to ~16 M contacts (well beyond any practical use).
-// `cast_possible_truncation` allowed: vertex/face index casts use
-// the same VertexId/TetId u32 invariant as the rest of the module.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::expect_used
-)]
 pub fn design_scene<M: Material>(
     body_sdf: &dyn Sdf,
     contact_sdfs: &[&dyn Sdf],
@@ -849,14 +1222,103 @@ pub fn design_scene<M: Material>(
     resolution: f64,
     per_tet_scalars: &BTreeMap<&str, &[f64]>,
 ) -> Result<AttributedMesh, VizError> {
+    // 1. Body via design_surface (handles validation; stamps SDF-gradient
+    //    analytical normals on body vertices per C1).
+    let mut attr = design_surface(body_sdf, analysis_mesh, bounds, resolution, per_tet_scalars)?;
+    // 2. Append contacts + extras pad + primitive_id stamp (shared with
+    //    `design_scene_deformed`).
+    append_contact_primitives(&mut attr, contact_sdfs, bounds, resolution);
+    Ok(attr)
+}
+
+/// Deformed-body sibling of [`design_scene`].
+///
+/// The body pass uses [`design_surface_deformed`], so the body
+/// renders in its deformed configuration while the contact primitives
+/// render at their rest pose. Quasi-static intrusion ramps with a
+/// moving rigid plug land here — one PLY per ramp step with both the
+/// squishing body and the descending plug.
+///
+/// # Algorithm
+///
+/// 1. Body via [`design_surface_deformed`] (validation + displacement
+///    + area-weighted normals on the deformed surface).
+/// 2. Each contact primitive via marching cubes only (rigid; no
+///    scalar interp). Contact normals come from each contact SDF's
+///    gradient at the iso-0 surface (analytical, matching the C1
+///    convention).
+/// 3. Existing scalars are padded with `0.0` for contact-primitive
+///    vertices; a categorical `primitive_id` scalar is stamped
+///    (`0.0` = body, `1.0..=N` = each contact in input order).
+///
+/// # Errors
+///
+/// All [`design_surface_deformed`] errors. Contact primitives are
+/// rendered geometry-only, so per-tet scalar validation applies to
+/// the body pass only.
+//
+// `too_many_arguments` allowed: 8 args matches the F2 design-mesh
+// convention (sdf + analysis_mesh + bounds + resolution + scalars +
+// displacement + amplify, plus the `contact_sdfs` slot
+// `design_scene` adds). Splitting into a config struct would
+// double the call-site noise without clarifying the contract.
+#[allow(clippy::too_many_arguments)]
+pub fn design_scene_deformed<M: Material>(
+    body_sdf: &dyn Sdf,
+    contact_sdfs: &[&dyn Sdf],
+    analysis_mesh: &dyn Mesh<M>,
+    bounds: &Aabb3,
+    resolution: f64,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+    displacement_per_vertex: &[Vec3],
+    amplify: f64,
+) -> Result<AttributedMesh, VizError> {
+    let mut attr = design_surface_deformed(
+        body_sdf,
+        analysis_mesh,
+        bounds,
+        resolution,
+        per_tet_scalars,
+        displacement_per_vertex,
+        amplify,
+    )?;
+    append_contact_primitives(&mut attr, contact_sdfs, bounds, resolution);
+    Ok(attr)
+}
+
+/// Append marching-cubes renderings of each contact primitive into
+/// `attr`, pad existing extras with `0.0` over the new vertex range,
+/// and stamp a categorical `primitive_id` extra (`0.0` = body,
+/// `1.0..=N` = each contact in input order).
+///
+/// If `attr.normals` is already populated by the body pass, extends
+/// the normal vec with analytical unit normals computed from each
+/// contact SDF's gradient at the iso-0 surface (falls back to `+ẑ`
+/// on degenerate gradient, matching the [`design_surface`]
+/// convention). Keeps the slot-length invariant the PLY writer
+/// validates.
+//
+// `cast_precision_loss` allowed: `(idx + 1) as f32` for primitive_id
+// is safe up to ~16 M contacts (well beyond any practical use).
+// `cast_possible_truncation` allowed: vertex index casts use the
+// same VertexId/TetId u32 invariant as the rest of the module.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::expect_used
+)]
+fn append_contact_primitives(
+    attr: &mut AttributedMesh,
+    contact_sdfs: &[&dyn Sdf],
+    bounds: &Aabb3,
+    resolution: f64,
+) {
     use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 
-    // 1. Body via design_surface (handles validation).
-    let mut attr = design_surface(body_sdf, analysis_mesh, bounds, resolution, per_tet_scalars)?;
     let body_vert_count = attr.geometry.vertices.len();
     let mut primitive_id: Vec<f32> = vec![0.0_f32; body_vert_count];
+    let extend_normals = attr.normals.is_some();
 
-    // 2. Contacts via marching cubes only (rigid; no scalar interp).
     for (contact_idx, &contact_sdf) in contact_sdfs.iter().enumerate() {
         let id_value = (contact_idx + 1) as f32;
         let mut grid = ScalarGrid::from_bounds(
@@ -886,9 +1348,24 @@ pub fn design_scene<M: Material>(
                 .faces
                 .push([face[0] + base_v, face[1] + base_v, face[2] + base_v]);
         }
+
+        if extend_normals {
+            if let Some(normals) = attr.normals.as_mut() {
+                normals.reserve(surface.vertices.len());
+                for v in &surface.vertices {
+                    let g = contact_sdf.grad(NaPoint3::new(v.x, v.y, v.z));
+                    let n_sq = g.z.mul_add(g.z, g.x.mul_add(g.x, g.y * g.y));
+                    let n = if n_sq > 1e-30 {
+                        g / n_sq.sqrt()
+                    } else {
+                        Vec3::z()
+                    };
+                    normals.push(n);
+                }
+            }
+        }
     }
 
-    // 3. Pad existing extras with 0.0 for contact-primitive vertices.
     let total_vertices = attr.geometry.vertices.len();
     let extra_keys: Vec<String> = attr.extras.keys().cloned().collect();
     for key in extra_keys {
@@ -899,11 +1376,8 @@ pub fn design_scene<M: Material>(
         }
     }
 
-    // 4. Insert primitive_id as the new categorical scalar.
     attr.insert_extra("primitive_id".to_string(), primitive_id)
         .expect("primitive_id length matches total vertex count by construction");
-
-    Ok(attr)
 }
 
 /// Pair of in-plane axis indices `(uu, vv)` such that the right-hand-rule
@@ -934,6 +1408,14 @@ struct SdfGrid {
 }
 
 impl SdfGrid {
+    // `cast_precision_loss` + `cast_sign_loss` + `cast_possible_truncation`
+    // allowed: usize ↔ f64 round-trip for the 2D grid sweep
+    // (`(u_max - u_min) / resolution as usize`, then `nu_minus_1 as f64`
+    // for the back-conversion to step size). Grid dimensions stay
+    // within u32 range at any canonical bounds + resolution.
+    // `similar_names` allowed: `nu`/`nv`, `u_min`/`v_min`, `du`/`dv`,
+    // `uu`/`vv` are the algorithm's natural in-plane axis names;
+    // renaming would obscure the 2D-sweep symmetry.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_sign_loss,
@@ -981,6 +1463,14 @@ impl SdfGrid {
         }
     }
 
+    // `cast_precision_loss` allowed: `(iu as f64).mul_add(du, u_min)`
+    // converts a grid index to its world-space coordinate; usize → f64
+    // on indices well below 2^53.
+    // `too_many_arguments` allowed: this is the `static` helper
+    // [`corner_pos`] forwards to during `&self` construction, where
+    // `&self` doesn't yet exist (see `sample`). Bundling into a config
+    // struct would add wrapping cost for two callers with no clarity
+    // gain.
     #[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
     fn corner_pos_static(
         plane: Plane,
@@ -1014,6 +1504,12 @@ impl SdfGrid {
         self.sdf_values[self.corner_key(iu, iv)]
     }
 
+    // `cast_precision_loss` allowed: `iu as f64 + 0.5` converts a
+    // cell-index to its 0.5-offset cell-center coordinate; the indices
+    // are well below 2^53.
+    // `similar_names` allowed: `iu_f`/`iv_f` are the f64 versions of
+    // the integer indices, following the existing
+    // `uu`/`vv`/`du`/`dv`/`u_min`/`v_min` 2-axis naming convention.
     #[allow(clippy::cast_precision_loss, clippy::similar_names)]
     fn cell_center(&self, iu: usize, iv: usize) -> [f64; 3] {
         let mut p = [0.0_f64; 3];
@@ -1035,6 +1531,16 @@ impl SdfGrid {
         }
     }
 
+    // `too_many_lines` allowed: marching-squares dispatch enumerates
+    // the 16 corner-sign configurations explicitly (a single 4-bit
+    // case-table); condensing the per-case emit would obscure the
+    // 1:1 mapping with the marching-squares lookup table.
+    // `unreachable` allowed: the case-table dispatch is exhaustive
+    // over the 4-bit corner pattern; the catch-all arm is invariant-
+    // pinned and cannot fire on a well-formed cell.
+    // `similar_names` allowed: `s00`/`s10`/`s11`/`s01` are the
+    // canonical names for the 4 corner SDF values (uv-quadrant
+    // indexing); these match the marching-squares literature.
     #[allow(clippy::too_many_lines, clippy::unreachable, clippy::similar_names)]
     fn dispatch_cell(&self, iu: usize, iv: usize, sdf: &dyn Sdf, state: &mut DesignCutState) {
         let s00 = self.corner_sdf(iu, iv);
@@ -1225,6 +1731,10 @@ impl DesignCutState {
         }
     }
 
+    // `cast_possible_truncation` allowed: `self.positions.len() as u32`
+    // packs the new vertex index — VertexId is u32 by the mesh-types
+    // convention, and cross-section vertex counts stay comfortably
+    // below u32::MAX at any canonical resolution.
     #[allow(clippy::cast_possible_truncation)]
     fn emit_corner(&mut self, grid: &SdfGrid, iu: usize, iv: usize) -> u32 {
         let key = grid.corner_key(iu, iv);
@@ -1237,6 +1747,11 @@ impl DesignCutState {
         idx
     }
 
+    // `cast_possible_truncation` allowed: same `positions.len() as u32`
+    // vertex-ID pack as `emit_corner`; vertex counts stay within u32.
+    // `similar_names` allowed: `iu_a`/`iv_a`/`iu_b`/`iv_b` are the
+    // endpoint coordinates of a cell edge; the `_a`/`_b` suffixes
+    // mirror the corner-naming pattern at the call sites.
     #[allow(clippy::cast_possible_truncation, clippy::similar_names)]
     fn emit_edge(
         &mut self,
@@ -1605,6 +2120,161 @@ fn sample_displacement_at_point<M: Material>(
     Vec3::zeros()
 }
 
+/// C2 categorical-scalar predicate: a per-tet scalar whose **name** ends
+/// in `_id` is treated as a categorical integer label (e.g.
+/// `material_shell_id`, `material_zone_id`, `primitive_id`) and routed
+/// through the nearest-tet path that preserves the integer; anything
+/// else (`psi_j_per_m3`, `displacement_magnitude`, …) is treated as a
+/// continuous field and routed through the per-primitive continuous-
+/// scalar path — volume-weighted-per-vertex (on [`boundary_surface`]),
+/// linear-along-edge from the volume-weighted-per-vertex field (on
+/// [`slab_cut`] / [`slab_cut_deformed`] / [`design_slab_cut`]), or
+/// Shepard kNN-IDW (on [`design_surface`] and its deformed/scene
+/// siblings; see [`idw_k_nearest_tet_centroids`]).
+///
+/// Continuous-scalar smoothing breaks the categorical invariant —
+/// averaging a `_id = 1` tet with a `_id = 2` tet yields `1.5`, which
+/// the cf-view colormap detector reads as Sequential rather than
+/// Categorical (it falls back to viridis at every layer boundary).
+/// Routing categorical scalars to nearest-tet (k=1) keeps display-vertex
+/// samples exactly integer, preserving the tab10 categorical render.
+///
+/// Suffix-by-name is the lightest convention that matches the existing
+/// producer code (`material_shell_id`, `material_zone_id`,
+/// `primitive_id`); per-scalar metadata on [`mesh_types::AttributedMesh`]
+/// is a cleaner long-term answer if `_id` ever becomes a footgun, and is
+/// banked as a C2 followup.
+#[inline]
+#[must_use]
+fn is_categorical_scalar_name(name: &str) -> bool {
+    name.ends_with("_id")
+}
+
+/// Pick the tet from `candidate_tets` whose centroid is closest to
+/// `probe`, returning its tet ID. Returns `None` when `candidate_tets`
+/// is empty.
+///
+/// Used by the C2 categorical sampling path on [`design_surface`]
+/// (and its deformed/scene siblings) and on [`design_slab_cut`]: one
+/// nearest-tet lookup per probe is shared across every categorical
+/// scalar in flight (all categorical scalars sample from the same
+/// nearest tet, so the centroid search amortizes). [`slab_cut`] /
+/// [`slab_cut_deformed`] use a related position-based pick via
+/// `SlabCutState`'s `cut_owner_dist2` tracking rather than calling
+/// this helper directly — the cut-vertex's edge-star tets are visited
+/// one-at-a-time as the marching-tet loop iterates, so the winner
+/// promotion happens incrementally on edge dedup.
+//
+// `cast_possible_truncation` allowed: VertexId/TetId are u32 by crate
+// convention so `mesh.n_tets() < u32::MAX` is a γ-locked invariant.
+#[allow(clippy::cast_possible_truncation)]
+fn nearest_tet_centroid_idx<M: Material>(
+    probe: Vec3,
+    mesh: &dyn Mesh<M>,
+    positions: &[Vec3],
+    candidate_tets: &[u32],
+) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    let mut best_d2 = f64::INFINITY;
+    for &t in candidate_tets {
+        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
+        let centroid = (positions[v0 as usize]
+            + positions[v1 as usize]
+            + positions[v2 as usize]
+            + positions[v3 as usize])
+            * 0.25;
+        let d2 = (probe - centroid).norm_squared();
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best = Some(t);
+        }
+    }
+    best
+}
+
+/// C2.2 continuous-scalar sampler: Shepard-style k-nearest-tet IDW
+/// (inverse-distance-weighted average) at an arbitrary 3D probe point.
+///
+/// Returns one f64 per scalar in `per_tet_scalars` order. Picks the
+/// `k` tets from `candidate_tets` with smallest centroid-to-probe
+/// distance and computes the weighted average:
+/// `value = Σ (w_i * per_tet[t_i]) / Σ w_i` where
+/// `w_i = 1 / (d_i² + eps)` and `d_i` is the centroid-to-probe
+/// distance for tet `t_i`. The `eps` floor avoids weight blow-up when
+/// the probe coincides with a centroid (the limit collapses to
+/// nearest-tet behavior, which matches the C2.1 categorical path).
+///
+/// Wider smoothing radius than the pre-C2.2 vol-weighted-per-vertex +
+/// barycentric path: that path averaged over each MC vertex's one
+/// enclosing analysis tet, producing piecewise-linear-per-tet output
+/// with gradient jumps at tet faces (visible as a "patchwork" pattern
+/// on the ψ field of `design_surface` output). kNN-IDW averages over
+/// k tets regardless of enclosing-tet boundaries, producing visibly
+/// smoother gradients on the design-mesh display surface.
+///
+/// `candidate_tets` is expected to be a `TetGrid` 3×3×3 cell window
+/// around the probe; empty candidates → returns `vec![0.0; n_scalars]`
+/// (orphan-probe convention shared with the rest of the module).
+//
+// `cast_possible_truncation` allowed: VertexId/TetId are u32 by crate
+// convention; `mesh.n_tets() < u32::MAX` is a γ-locked invariant.
+#[allow(clippy::cast_possible_truncation)]
+fn idw_k_nearest_tet_centroids<M: Material>(
+    probe: Vec3,
+    mesh: &dyn Mesh<M>,
+    positions: &[Vec3],
+    candidate_tets: &[u32],
+    per_tet_scalars: &[&[f64]],
+    k: usize,
+    eps: f64,
+) -> Vec<f64> {
+    let n_scalars = per_tet_scalars.len();
+    if candidate_tets.is_empty() || n_scalars == 0 {
+        return vec![0.0; n_scalars];
+    }
+
+    // (squared_distance_to_centroid, tet_id) for each candidate.
+    let mut by_dist2: Vec<(f64, u32)> = candidate_tets
+        .iter()
+        .map(|&t| {
+            let [v0, v1, v2, v3] = mesh.tet_vertices(t);
+            let centroid = (positions[v0 as usize]
+                + positions[v1 as usize]
+                + positions[v2 as usize]
+                + positions[v3 as usize])
+                * 0.25;
+            ((probe - centroid).norm_squared(), t)
+        })
+        .collect();
+
+    // Sort ascending by squared distance. For BCC + 3×3×3 TetGrid
+    // window the candidate count is ~150 and k is ~8; full sort is
+    // cheap and simpler than a partial-sort heap.
+    by_dist2.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let k_eff = k.min(by_dist2.len());
+
+    let mut total_weight = 0.0_f64;
+    let mut sums = vec![0.0_f64; n_scalars];
+    for &(d2, t) in &by_dist2[..k_eff] {
+        let w = 1.0 / (d2 + eps);
+        total_weight += w;
+        for (i, &per_tet) in per_tet_scalars.iter().enumerate() {
+            sums[i] = w.mul_add(per_tet[t as usize], sums[i]);
+        }
+    }
+
+    if total_weight > 0.0 {
+        sums.iter().map(|&s| s / total_weight).collect()
+    } else {
+        // All weights numerically zero — logically unreachable: the
+        // empty-candidates case returns at the top of the fn, and
+        // `1 / (d² + eps)` is strictly positive for any finite `d²`
+        // with `eps > 0`. Keep the branch as a defensive zero-fill
+        // so the caller's per-scalar Vec stays correctly sized.
+        vec![0.0; n_scalars]
+    }
+}
+
 /// Volume-weighted projection of a per-tet scalar to per-vertex.
 ///
 /// `per_tet_scalar.len()` must equal `mesh.n_tets()`; callers are
@@ -1666,12 +2336,38 @@ fn validate_per_tet_scalars<M: Material>(
 
 /// Internal scratch state for [`slab_cut`]: cross-vertex positions,
 /// per-scalar value vecs, dedup map, and emitted faces.
+///
+/// C2 categorical scalars sample from a single "owner" tet per cut
+/// vertex. The owner is the tet whose centroid is closest in 3D space
+/// to the cut vertex; later tet-iteration encounters of the same
+/// shared edge replace the owner only if their centroid is closer.
+/// Position-based winner (rather than topology-based — e.g. largest
+/// volume) keeps the categorical boundary aligned with the 3D
+/// centroid-Voronoi midline between adjacent tets of differing labels,
+/// avoiding the analysis-mesh stair-step and speckle artifacts a
+/// volume-only rule produces at layer interfaces on a regular
+/// BCC + IS mesh. Matches the position-based pick `design_surface`
+/// uses via [`nearest_tet_centroid_idx`].
+///
+/// Continuous scalars are determined by the edge endpoints alone
+/// (linear interp of the volume-weighted-per-vertex average) and are
+/// invariant under owner promotion.
 struct SlabCutState {
     edge_to_idx: HashMap<(VertexId, VertexId), u32>,
     cut_positions: Vec<Point3<f64>>,
     /// Outer Vec indexed by scalar; inner Vec indexed by cross-vertex.
     cut_scalars: Vec<Vec<f64>>,
     cut_faces: Vec<[u32; 3]>,
+    /// Tet ID of the categorical "owner" for each cut vertex (parallel
+    /// to `cut_positions`). The owner is the tet whose centroid is
+    /// closest in 3D space to the cut vertex among the tets that have
+    /// touched the cut vertex so far.
+    cut_owner_tet: Vec<u32>,
+    /// Squared distance from the cut vertex to the current owner tet's
+    /// centroid (parallel to `cut_positions`). Tracked so dedup-hit
+    /// promotion checks don't have to recompute the centroid distance
+    /// for the stored owner.
+    cut_owner_dist2: Vec<f64>,
 }
 
 impl SlabCutState {
@@ -1681,23 +2377,50 @@ impl SlabCutState {
             cut_positions: Vec::new(),
             cut_scalars: (0..n_scalars).map(|_| Vec::new()).collect(),
             cut_faces: Vec::new(),
+            cut_owner_tet: Vec::new(),
+            cut_owner_dist2: Vec::new(),
         }
     }
 
     // `cast_possible_truncation` allowed: cross_vertex count ≤
     // 4×n_tets which fits in u32 by the same γ-locked invariant
     // mesh.n_tets() < u32::MAX assumes (VertexId is u32 crate-wide).
-    #[allow(clippy::cast_possible_truncation)]
+    // `too_many_arguments` allowed: the tet-id / tet-centroid /
+    // per_tet_by_scalar trio is the C2 categorical-owner channel and
+    // is essential context for both new-vertex emission and dedup-hit
+    // owner promotion; folding it into a struct would inflate the
+    // call-site noise without clarifying the contract.
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
     fn intersect_edge(
         &mut self,
         va: VertexId,
         vb: VertexId,
+        tet_id: u32,
+        tet_centroid: crate::Vec3,
         positions: &[crate::Vec3],
         per_vertex_by_scalar: &[Vec<f64>],
+        per_tet_by_scalar: &[Option<&[f64]>],
         sd: &[f64],
     ) -> u32 {
         let (lo, hi) = if va < vb { (va, vb) } else { (vb, va) };
         if let Some(&idx) = self.edge_to_idx.get(&(lo, hi)) {
+            // Dedup hit: promote the categorical owner if this tet's
+            // centroid is closer to the cut vertex in 3D space than
+            // the current owner's. Continuous scalars depend only on
+            // the edge endpoints, so they need no update.
+            let cross_idx = idx as usize;
+            let cross = self.cut_positions[cross_idx];
+            let cross_v = crate::Vec3::new(cross.x, cross.y, cross.z);
+            let dist2 = (cross_v - tet_centroid).norm_squared();
+            if dist2 < self.cut_owner_dist2[cross_idx] {
+                self.cut_owner_tet[cross_idx] = tet_id;
+                self.cut_owner_dist2[cross_idx] = dist2;
+                for (i, &maybe) in per_tet_by_scalar.iter().enumerate() {
+                    if let Some(per_tet) = maybe {
+                        self.cut_scalars[i][cross_idx] = per_tet[tet_id as usize];
+                    }
+                }
+            }
             return idx;
         }
         let sd_a = sd[va as usize];
@@ -1711,10 +2434,26 @@ impl SlabCutState {
         let new_idx = self.cut_positions.len() as u32;
         self.cut_positions
             .push(Point3::new(cross.x, cross.y, cross.z));
-        for (i, per_vertex) in per_vertex_by_scalar.iter().enumerate() {
-            let psi_a = per_vertex[va as usize];
-            let psi_b = per_vertex[vb as usize];
-            self.cut_scalars[i].push((1.0 - t).mul_add(psi_a, t * psi_b));
+        self.cut_owner_tet.push(tet_id);
+        self.cut_owner_dist2
+            .push((cross - tet_centroid).norm_squared());
+        for (i, &maybe) in per_tet_by_scalar.iter().enumerate() {
+            if let Some(per_tet) = maybe {
+                // Categorical: take the owner tet's per-tet value
+                // (k=1 nearest-tet semantics — ties between tets of
+                // differing categorical labels at a shared cut
+                // vertex resolve to the tet whose centroid is closer
+                // in 3D space to the cut vertex).
+                self.cut_scalars[i].push(per_tet[tet_id as usize]);
+            } else {
+                // Continuous: linear interp from vol-weighted
+                // per-vertex avg across the edge endpoints (matches
+                // the pre-C2.1 path bit-exact).
+                let per_vertex = &per_vertex_by_scalar[i];
+                let psi_a = per_vertex[va as usize];
+                let psi_b = per_vertex[vb as usize];
+                self.cut_scalars[i].push((1.0 - t).mul_add(psi_a, t * psi_b));
+            }
         }
         self.edge_to_idx.insert((lo, hi), new_idx);
         new_idx
@@ -1761,7 +2500,12 @@ fn align_winding_to_axis(
     clippy::match_wildcard_for_single_variants,
     // `cast_precision_loss` on len() for averaging in the
     // winding-regression test; len is small (handful of vertices).
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    // `float_cmp` on values that have just been `.round()`'d to an
+    // integer in the C2 categorical tests; comparing the rounded
+    // result against a small integer literal is exact by
+    // construction (integer-valued f64 has no fp-noise window).
+    clippy::float_cmp
 )]
 mod tests {
     use super::*;
@@ -1806,6 +2550,88 @@ mod tests {
         assert_eq!(attr.geometry.faces.len(), 6);
         let psi_extra = attr.extras.get("psi").expect("psi extra missing");
         assert_eq!(psi_extra.len(), 5);
+    }
+
+    /// C2 categorical (suffix `_id`): every per-vertex value must be
+    /// EXACTLY integer. Pre-C2.1 the volume-weighted-per-vertex average
+    /// at the 3 shared-face vertices of `two_tet_shared_face` would
+    /// have produced a fractional value mid-way between the two zones;
+    /// the C2 nearest-tet (k=1, largest-volume incident tet) path
+    /// emits exactly one of the two input integers at every vertex.
+    #[test]
+    fn boundary_surface_categorical_id_stays_integer() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let zone_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_zone_id", &zone_id);
+
+        let attr = boundary_surface(&mesh, &scalars).unwrap();
+        let zone_extra = attr
+            .extras
+            .get("material_zone_id")
+            .expect("zone extra missing");
+        assert_eq!(zone_extra.len(), 5);
+
+        for &v in zone_extra {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical value {v} is fractional — C2 nearest-tet \
+                 path should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical value {rounded} is not one of the input \
+                 integers {{3, 7}}",
+            );
+        }
+    }
+
+    /// C2 mixed scalars: when continuous (`psi`) and categorical
+    /// (`material_zone_id`) are emitted in the same call, the
+    /// continuous slot must be BIT-EXACT identical to a continuous-
+    /// only call (so the C2.1 split doesn't perturb the volume-
+    /// weighted-per-vertex pipeline), and the categorical slot stays
+    /// integer.
+    #[test]
+    fn boundary_surface_mixed_continuous_and_categorical_preserves_continuous() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let psi: [f64; 2] = [1.0, 3.0];
+        let zone_id: [f64; 2] = [3.0, 7.0];
+
+        // Continuous-only baseline.
+        let mut cont_only: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        cont_only.insert("psi", &psi);
+        let baseline = boundary_surface(&mesh, &cont_only).unwrap();
+
+        // Mixed.
+        let mut mixed: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        mixed.insert("psi", &psi);
+        mixed.insert("material_zone_id", &zone_id);
+        let attr = boundary_surface(&mesh, &mixed).unwrap();
+
+        // Continuous slot bit-exact preserved.
+        let psi_baseline = baseline.extras.get("psi").expect("psi baseline");
+        let psi_mixed = attr.extras.get("psi").expect("psi mixed");
+        assert_eq!(
+            psi_baseline, psi_mixed,
+            "continuous `psi` slot must be bit-exact identical when a \
+             categorical scalar is added to the call",
+        );
+
+        // Categorical slot stays integer.
+        let zone = attr
+            .extras
+            .get("material_zone_id")
+            .expect("zone extra missing");
+        for &v in zone {
+            assert!(
+                (v - v.round()).abs() < 1e-9,
+                "categorical value {v} fractional",
+            );
+        }
     }
 
     /// Per-tet scalar with wrong length surfaces as the typed error.
@@ -1865,6 +2691,59 @@ mod tests {
         }
     }
 
+    /// C2 categorical (suffix `_id`): every cut-vertex value must be
+    /// EXACTLY integer. Pre-C2.1 the linear interp along each crossed
+    /// edge between vol-weighted-per-vertex averages would have
+    /// produced fractional values at any cut vertex on an edge shared
+    /// between the two zones; the C2 nearest-tet (k=1, largest-volume
+    /// tet wins on edge dedup) path emits one of the input integers
+    /// at every cut vertex.
+    #[test]
+    fn slab_cut_categorical_id_stays_integer() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let zone_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_zone_id", &zone_id);
+
+        // z = 0.05 crosses both tets — tet 0 (corner) in a (1, 3)
+        // pattern (v3 above), tet 1 (apex jut) in a (2, 2) pattern
+        // (v3 + v4 above). Both contribute cut vertices on the
+        // shared edges (v1, v3) and (v2, v3), which dedup to one cut
+        // vertex per shared edge whose owner is the larger-volume tet.
+        let attr = slab_cut(
+            &mesh,
+            Plane {
+                axis: 2,
+                value: 0.05,
+            },
+            &scalars,
+        )
+        .unwrap();
+        let zone = attr
+            .extras
+            .get("material_zone_id")
+            .expect("zone extra missing");
+        assert!(
+            !zone.is_empty(),
+            "z = 0.05 must produce a non-empty cross-section on \
+             two_tet_shared_face",
+        );
+        for &v in zone {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical cut-vertex value {v} is fractional — \
+                 C2 nearest-tet path should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical cut-vertex value {rounded} is not one \
+                 of the input integers {{3, 7}}",
+            );
+        }
+    }
+
     /// Winding regression: every cut triangle's normal projects
     /// non-negatively onto the cut plane axis.
     #[test]
@@ -1897,6 +2776,103 @@ mod tests {
                      cross_on_axis={cross_on_axis}",
                 );
             }
+        }
+    }
+
+    /// `slab_cut_deformed` with zero displacement matches `slab_cut`
+    /// bit-exact (positions identical, scalars identical, face count
+    /// identical). Mismatched displacement length surfaces as the
+    /// typed error.
+    #[test]
+    fn slab_cut_deformed_zero_displacement_matches_rest() {
+        let field = MaterialField::skeleton_default();
+        let mesh = SingleTetMesh::new(&field);
+        let psi = [7.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = mesh.n_vertices();
+        let zero_disp = vec![Vec3::zeros(); n_v];
+        let plane = Plane {
+            axis: 0,
+            value: 0.05,
+        };
+
+        let rest = slab_cut(&mesh, plane, &scalars).unwrap();
+        let deformed = slab_cut_deformed(&mesh, plane, &scalars, &zero_disp, 1.0).unwrap();
+
+        assert_eq!(
+            rest.geometry.vertices.len(),
+            deformed.geometry.vertices.len()
+        );
+        assert_eq!(rest.geometry.faces.len(), deformed.geometry.faces.len());
+        for (a, b) in rest
+            .geometry
+            .vertices
+            .iter()
+            .zip(deformed.geometry.vertices.iter())
+        {
+            assert!((a.x - b.x).abs() < 1e-12);
+            assert!((a.y - b.y).abs() < 1e-12);
+            assert!((a.z - b.z).abs() < 1e-12);
+        }
+
+        // Mismatched displacement length trips the typed error.
+        let bad_disp = vec![Vec3::zeros(); 2];
+        let err = slab_cut_deformed(&mesh, plane, &scalars, &bad_disp, 1.0).unwrap_err();
+        match err {
+            VizError::PerVertexLengthMismatch { expected, actual } => {
+                assert_eq!(expected, 4);
+                assert_eq!(actual, 2);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Uniform displacement translates the cross-section by
+    /// `displacement * amplify` along each axis, leaving topology
+    /// (vertex count, face count) and the in-plane shape intact.
+    #[test]
+    fn slab_cut_deformed_uniform_displacement_translates_cross_section() {
+        let field = MaterialField::skeleton_default();
+        let mesh = SingleTetMesh::new(&field);
+        let psi = [7.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = mesh.n_vertices();
+        // Translate in +z so the x = 0.05 cross-section is unchanged
+        // in (x, y) but shifted in z by displacement * amplify.
+        let uniform = Vec3::new(0.0, 0.0, 0.001);
+        let displacement = vec![uniform; n_v];
+        let amplify = 5.0_f64;
+
+        let plane = Plane {
+            axis: 0,
+            value: 0.05,
+        };
+        let rest = slab_cut(&mesh, plane, &scalars).unwrap();
+        let deformed = slab_cut_deformed(&mesh, plane, &scalars, &displacement, amplify).unwrap();
+
+        assert_eq!(rest.geometry.faces.len(), deformed.geometry.faces.len());
+        assert_eq!(
+            rest.geometry.vertices.len(),
+            deformed.geometry.vertices.len()
+        );
+        let expected_dz = uniform.z * amplify;
+        for (a, b) in rest
+            .geometry
+            .vertices
+            .iter()
+            .zip(deformed.geometry.vertices.iter())
+        {
+            assert!((b.x - a.x).abs() < 1e-9);
+            assert!((b.y - a.y).abs() < 1e-9);
+            assert!(
+                (b.z - a.z - expected_dz).abs() < 1e-9,
+                "expected dz={expected_dz}, got {}",
+                b.z - a.z
+            );
         }
     }
 
@@ -2273,6 +3249,86 @@ mod tests {
         }
     }
 
+    /// C2 categorical (suffix `_id`): every MC display-vertex value
+    /// must be EXACTLY integer. Pre-C2.1 the barycentric interp inside
+    /// the enclosing analysis tet — whose 4 vertices carry vol-weighted
+    /// averages that differ at the shared-face vertices — would have
+    /// produced fractional values at every MC vert; the C2 nearest-
+    /// tet-centroid (k=1, shared across all categorical scalars per
+    /// probe) path emits exactly one of the input integers.
+    ///
+    /// The sphere isosurface at radius 0.015 centered at the tet 1
+    /// centroid (0.045, 0.045, 0.045) sits fully inside the analysis
+    /// mesh's combined AABB (0..0.1 each axis), so every MC vertex has
+    /// candidate analysis tets in its 3×3×3 cell window.
+    #[test]
+    fn design_surface_categorical_id_stays_integer() {
+        use crate::SphereSdf;
+
+        // Sphere offset from origin so the iso-0 surface lies inside
+        // the analysis mesh's interior (origin-anchored sphere would
+        // collapse to a single point on the analysis-mesh boundary
+        // and produce zero MC verts).
+        struct OffsetSphere {
+            center: Vec3,
+            inner: SphereSdf,
+        }
+        impl crate::sdf_bridge::Sdf for OffsetSphere {
+            fn eval(&self, p: nalgebra::Point3<f64>) -> f64 {
+                let shifted = nalgebra::Point3::new(
+                    p.x - self.center.x,
+                    p.y - self.center.y,
+                    p.z - self.center.z,
+                );
+                self.inner.eval(shifted)
+            }
+            fn grad(&self, p: nalgebra::Point3<f64>) -> Vec3 {
+                let shifted = nalgebra::Point3::new(
+                    p.x - self.center.x,
+                    p.y - self.center.y,
+                    p.z - self.center.z,
+                );
+                self.inner.grad(shifted)
+            }
+        }
+
+        let sphere = OffsetSphere {
+            center: Vec3::new(0.045, 0.045, 0.045),
+            inner: SphereSdf { radius: 0.015 },
+        };
+        let bounds = Aabb3::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.1, 0.1, 0.1));
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let shell_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_shell_id", &shell_id);
+
+        let attr = design_surface(&sphere, &analysis, &bounds, resolution, &scalars).unwrap();
+        let shell = attr
+            .extras
+            .get("material_shell_id")
+            .expect("shell extra missing");
+        assert!(
+            !shell.is_empty(),
+            "sphere isosurface should produce a non-empty MC mesh \
+             within the analysis-mesh AABB",
+        );
+        for &v in shell {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical MC-vertex value {v} is fractional — C2 \
+                 nearest-tet path should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical MC-vertex value {rounded} is not one of \
+                 the input integers {{3, 7}}",
+            );
+        }
+    }
+
     /// Plane outside the SDF's interior produces an empty mesh — no
     /// triangles, no panics, no errors.
     #[test]
@@ -2613,5 +3669,366 @@ mod tests {
         // Total length matches vertex count.
         let psi_extra = scene.extras.get("psi").expect("psi missing");
         assert_eq!(psi_extra.len(), scene.geometry.vertices.len());
+    }
+
+    /// `design_scene` populates normals over the entire vertex range
+    /// (body + contacts). The PLY writer enforces this invariant; the
+    /// pre-helper-refactor code only stamped body normals.
+    #[test]
+    fn design_scene_normals_cover_body_and_contacts() {
+        use crate::SphereSdf;
+
+        struct OffsetSphere {
+            cx: f64,
+            r: f64,
+        }
+        impl Sdf for OffsetSphere {
+            fn eval(&self, p: NaPoint3<f64>) -> f64 {
+                let dx = p.x - self.cx;
+                dx.mul_add(dx, p.y.mul_add(p.y, p.z * p.z)).sqrt() - self.r
+            }
+            fn grad(&self, p: NaPoint3<f64>) -> Vec3 {
+                let dx = p.x - self.cx;
+                let d = Vec3::new(dx, p.y, p.z);
+                let n = d.norm();
+                if n > 1e-12 { d / n } else { Vec3::z() }
+            }
+        }
+
+        let body = SphereSdf { radius: 0.05 };
+        let contact = OffsetSphere { cx: 0.07, r: 0.015 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let scene = design_scene(
+            &body,
+            &[&contact as &dyn Sdf],
+            &analysis,
+            &bounds,
+            0.005,
+            &scalars,
+        )
+        .unwrap();
+
+        let normals = scene.normals.as_ref().expect("normals slot missing");
+        assert_eq!(
+            normals.len(),
+            scene.geometry.vertices.len(),
+            "normals must cover every vertex (body + contacts)"
+        );
+        for n in normals {
+            let nsq = n.x.mul_add(n.x, n.y.mul_add(n.y, n.z * n.z));
+            assert!((nsq - 1.0).abs() < 1e-6, "non-unit normal: {nsq}");
+        }
+    }
+
+    /// `design_scene_deformed` with empty `contact_sdfs` produces output
+    /// equal to `design_surface_deformed` on geometry + scalars, plus a
+    /// `primitive_id` extra that's uniform `0.0` across the body.
+    #[test]
+    fn design_scene_deformed_empty_contacts_matches_deformed_surface() {
+        use crate::SphereSdf;
+
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = analysis.n_vertices();
+        let uniform = Vec3::new(0.001, 0.0, 0.0);
+        let displacement = vec![uniform; n_v];
+        let amplify = 5.0_f64;
+
+        let body_only = design_surface_deformed(
+            &sphere,
+            &analysis,
+            &bounds,
+            resolution,
+            &scalars,
+            &displacement,
+            amplify,
+        )
+        .unwrap();
+        let scene = design_scene_deformed(
+            &sphere,
+            &[],
+            &analysis,
+            &bounds,
+            resolution,
+            &scalars,
+            &displacement,
+            amplify,
+        )
+        .unwrap();
+
+        assert_eq!(
+            body_only.geometry.vertices.len(),
+            scene.geometry.vertices.len()
+        );
+        assert_eq!(body_only.geometry.faces.len(), scene.geometry.faces.len());
+
+        let primitive_id = scene
+            .extras
+            .get("primitive_id")
+            .expect("primitive_id missing");
+        assert_eq!(primitive_id.len(), scene.geometry.vertices.len());
+        for &id in primitive_id {
+            assert!(id.abs() < 1e-9, "expected body primitive_id 0.0, got {id}");
+        }
+    }
+
+    /// `design_scene_deformed` with a contact primitive: body verts get
+    /// `primitive_id = 0.0` and are displaced by `displacement * amplify`;
+    /// contact verts get `primitive_id = 1.0` and are NOT displaced
+    /// (contacts are rigid; their geometry comes from the contact SDF's
+    /// rest pose, set per-call by the caller). Normals slot covers the
+    /// full merged vertex range.
+    #[test]
+    fn design_scene_deformed_one_contact_separates_body_from_contact() {
+        use crate::SphereSdf;
+
+        struct OffsetSphere {
+            cx: f64,
+            r: f64,
+        }
+        impl Sdf for OffsetSphere {
+            fn eval(&self, p: NaPoint3<f64>) -> f64 {
+                let dx = p.x - self.cx;
+                dx.mul_add(dx, p.y.mul_add(p.y, p.z * p.z)).sqrt() - self.r
+            }
+            fn grad(&self, p: NaPoint3<f64>) -> Vec3 {
+                let dx = p.x - self.cx;
+                let d = Vec3::new(dx, p.y, p.z);
+                let n = d.norm();
+                if n > 1e-12 { d / n } else { Vec3::z() }
+            }
+        }
+
+        let body = SphereSdf { radius: 0.05 };
+        let contact = OffsetSphere { cx: 0.07, r: 0.015 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = analysis.n_vertices();
+        let displacement = vec![Vec3::zeros(); n_v];
+
+        let scene = design_scene_deformed(
+            &body,
+            &[&contact as &dyn Sdf],
+            &analysis,
+            &bounds,
+            0.005,
+            &scalars,
+            &displacement,
+            1.0,
+        )
+        .unwrap();
+
+        let primitive_id = scene
+            .extras
+            .get("primitive_id")
+            .expect("primitive_id missing");
+        let mut n_body = 0_usize;
+        let mut n_contact = 0_usize;
+        for &id in primitive_id {
+            if id.abs() < 0.5 {
+                n_body += 1;
+            } else if (id - 1.0).abs() < 0.5 {
+                n_contact += 1;
+            } else {
+                panic!("unexpected primitive_id {id}");
+            }
+        }
+        assert!(n_body > 0, "body vertices missing");
+        assert!(n_contact > 0, "contact vertices missing");
+
+        let psi_extra = scene.extras.get("psi").expect("psi missing");
+        assert_eq!(psi_extra.len(), scene.geometry.vertices.len());
+
+        let normals = scene.normals.as_ref().expect("normals slot missing");
+        assert_eq!(
+            normals.len(),
+            scene.geometry.vertices.len(),
+            "normals must cover body + contact"
+        );
+    }
+
+    // ---- C2.2 idw_k_nearest_tet_centroids unit tests ----
+
+    /// Constant per-tet field → output equals that constant at any
+    /// probe regardless of distance distribution. Trivially follows
+    /// from `Σ w_i * c / Σ w_i = c`; pinned as a baseline so future
+    /// kernel changes don't accidentally bias constant fields.
+    #[test]
+    fn idw_k_nearest_constant_field_returns_constant() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let positions = mesh.positions();
+        let per_tet: [f64; 2] = [42.5, 42.5];
+        let candidates: Vec<u32> = vec![0, 1];
+        for probe in [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.05, 0.05, 0.05),
+            Vec3::new(1.0, -2.0, 3.0),
+        ] {
+            let out = idw_k_nearest_tet_centroids(
+                probe,
+                &mesh,
+                positions,
+                &candidates,
+                &[&per_tet],
+                8,
+                1e-12,
+            );
+            assert_eq!(out.len(), 1);
+            assert!(
+                (out[0] - 42.5).abs() < 1e-12,
+                "constant field at probe {probe:?}: got {} expected 42.5",
+                out[0],
+            );
+        }
+    }
+
+    /// Single candidate tet → output equals that tet's per-tet value
+    /// regardless of probe-to-centroid distance. The IDW reduces to
+    /// `(w * v) / w = v` when only one tet contributes.
+    #[test]
+    fn idw_k_nearest_single_candidate_returns_that_tet_value() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let positions = mesh.positions();
+        let per_tet: [f64; 2] = [42.0, 99.0];
+        // Probe arbitrary, well away from either centroid.
+        let probe = Vec3::new(10.0, 10.0, 10.0);
+        // Only tet 1 in the candidate set.
+        let candidates: Vec<u32> = vec![1];
+        let out = idw_k_nearest_tet_centroids(
+            probe,
+            &mesh,
+            positions,
+            &candidates,
+            &[&per_tet],
+            8,
+            1e-12,
+        );
+        assert!(
+            (out[0] - 99.0).abs() < 1e-12,
+            "single-tet IDW must return that tet's value, got {}",
+            out[0],
+        );
+    }
+
+    /// Probe at the midpoint between two tet centroids with scalars
+    /// `0.0` and `1.0` → IDW returns `0.5` (equal weights cancel).
+    /// Pins the equal-distance branch of the Shepard kernel.
+    #[test]
+    fn idw_k_nearest_symmetric_two_candidates_returns_average() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let positions = mesh.positions();
+        // Tet 0 centroid = (0.025, 0.025, 0.025); tet 1 centroid =
+        // mean of v1=(0.1,0,0), v2=(0,0.1,0), v3=(0,0,0.1),
+        // v4=(0.08,0.08,0.08) = (0.045, 0.045, 0.045). Midpoint:
+        // (0.035, 0.035, 0.035) is equidistant from both centroids.
+        let probe = Vec3::new(0.035, 0.035, 0.035);
+        let per_tet: [f64; 2] = [0.0, 1.0];
+        let candidates: Vec<u32> = vec![0, 1];
+        let out = idw_k_nearest_tet_centroids(
+            probe,
+            &mesh,
+            positions,
+            &candidates,
+            &[&per_tet],
+            8,
+            1e-12,
+        );
+        assert!(
+            (out[0] - 0.5).abs() < 1e-12,
+            "equidistant probe IDW must average to 0.5, got {}",
+            out[0],
+        );
+    }
+
+    /// `design_slab_cut` C2.1 gap-fix: a categorical `_id` scalar on
+    /// the design-SDF cross-section must produce integer-only output,
+    /// matching the rest of the C2.1 design-X family. Pre-fix the
+    /// vol-weighted-per-vertex + barycentric path would produce
+    /// fractional values at any cross-vertex inside an analysis tet
+    /// whose 4 vertices carry different integer-derived averages.
+    #[test]
+    fn design_slab_cut_categorical_id_stays_integer() {
+        // Use the analysis-mesh boundary directly as the design SDF —
+        // the cross-section at z=0.05 then samples shell_id from the
+        // two analysis tets via nearest_tet_centroid_idx.
+        struct MeshBoxSdf;
+        impl crate::sdf_bridge::Sdf for MeshBoxSdf {
+            fn eval(&self, p: nalgebra::Point3<f64>) -> f64 {
+                let lo = nalgebra::Vector3::new(0.0, 0.0, 0.0);
+                let hi = nalgebra::Vector3::new(0.1, 0.1, 0.1);
+                let q = nalgebra::Vector3::new(
+                    (lo.x - p.x).max(p.x - hi.x),
+                    (lo.y - p.y).max(p.y - hi.y),
+                    (lo.z - p.z).max(p.z - hi.z),
+                );
+                q.x.max(q.y).max(q.z)
+            }
+            fn grad(&self, _p: nalgebra::Point3<f64>) -> Vec3 {
+                Vec3::z()
+            }
+        }
+        let sdf = MeshBoxSdf;
+
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let shell_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_shell_id", &shell_id);
+        let bounds = Aabb3::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.1, 0.1, 0.1));
+
+        let attr = design_slab_cut(
+            &sdf,
+            &mesh,
+            Plane {
+                axis: 2,
+                value: 0.05,
+            },
+            &bounds,
+            0.01,
+            &scalars,
+        )
+        .unwrap();
+        let shell = attr
+            .extras
+            .get("material_shell_id")
+            .expect("shell extra missing");
+        assert!(
+            !shell.is_empty(),
+            "z=0.05 design slab cut must produce a non-empty cross-section",
+        );
+        for &v in shell {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical design-slab-cut value {v} is fractional — \
+                 C2.1 gap-fix should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical design-slab-cut value {rounded} is not one \
+                 of the input integers {{3, 7}}",
+            );
+        }
     }
 }
