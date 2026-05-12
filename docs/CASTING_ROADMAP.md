@@ -119,14 +119,14 @@ Why crate-first over example-first: standing project preference is foundational 
 
 ---
 
-## Open architectural decisions (need user input before F1)
+## Architectural decisions
 
-Most parameters default cleanly inside F-leaf implementations; these two are real architectural choices the user is better-positioned to make.
+Resolved 2026-05-12 by user:
 
-- **Q1 Print technology assumption**: v1 default = FDM PLA at 0.2mm layer height, since `mesh-printability::PrinterConfig::fdm_default()` is pre-built and the user has an FDM printer. Alternative: SLA resin if tighter tolerances matter. FDM is more accessible; SLA produces finer features at higher cost.
-- **Q2 Scan-cavity geometry for the innermost mold's plug**: use the existing `layered-silicone-device` row's programmatic cube fixture as a stand-in (CortenForge ships the workflow; user swaps in a real scan STL when ready), or wire real-scan-STL import as part of v1 MVP (one extra leaf)? Both flow through `mesh_sdf::SignedDistanceField` → `Solid::from_sdf`; the difference is whether v1's first cast uses a placeholder or actually fits the scanned reference.
+- **Q1 Print technology** → **FDM PLA**. F4 gate uses `mesh-printability::PrinterConfig::fdm_default()`. Configurable for v2+ if SLA becomes the right choice later.
+- **Q2 Innermost plug geometry** → **scan-derived primary, capsule fallback**. v1 MVP supports both paths via the same `mesh_sdf::SignedDistanceField` → `cf-design::Solid::from_sdf` pipe that already works in the `layered-silicone-device` row. Default if no STL path is supplied = `Solid::capsule(R, half_height)` (the `Solid::capsule` constructor exists at `design/cf-design/src/solid.rs:135` — first-class primitive). The cuboid placeholder from row 25 is explicitly retired.
 
-Other parameters (mold wall thickness, pour-channel placement, mold release strategy, layer keying, demolding axis) belong in F-leaf implementation specs, not the strategic roadmap; they surface in-context when each leaf is being built.
+Other parameters (mold wall thickness, pour-channel placement, mold release strategy, layer keying, demolding axis) belong in F-leaf implementation specs; they surface in-context when each leaf is being built.
 
 ---
 
