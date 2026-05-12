@@ -99,10 +99,8 @@ pub struct MoldExportReport {
     /// Warnings).
     pub plug_validation: PrintValidation,
     /// Post-export mold mesh summary (vertex/face counts + mm-frame
-    /// bounds). Exposed because re-parsing the binary STL is not a
-    /// supported round trip until `mesh-io::load_stl` is fixed for
-    /// `>162`-face meshes (uses `read` instead of `read_exact`, hits
-    /// `BufReader`'s 8192-byte buffer boundary mid-triangle).
+    /// bounds). Exposed so callers can assert post-export geometry
+    /// without re-reading the STL from disk.
     pub mold_summary: MeshSummary,
     /// Post-export plug mesh summary.
     pub plug_summary: MeshSummary,
