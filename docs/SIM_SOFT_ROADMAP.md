@@ -151,6 +151,20 @@ The minimum set of leaves required to produce **the target deliverable image** �
 
 ≈ **8 sub-leaves across 4 tracks** (validation deferred). Each is ~3–10 commits.
 
+### MVP image done-criteria (strawman)
+
+The MVP image "lands" when a single rendered scene or short animation — from row 25 (`scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth`, the current production-target row) emitted via `cf-view` — passes ALL of these:
+
+1. **Per-layer material distinction is visible without per-tet noise.** B1 ships `material_shell_id` + `material_zone_id` scalars; C2 smooths the scattered per-tet sampling pattern into continuous fields. The image must read as "this is three concentric silicone layers" at a glance, not "these are 38k dots colored by layer membership."
+2. **Animated ramp plays cleanly in cf-view from rest to peak deformation.** D2 shipped scrub + play + speed + loop. With B2's finer cells the per-step deformation should be smooth (no visible mesh-resolution-bound popping or jitter between frames).
+3. **Smooth shading reads as a continuous surface, not a polygonal mesh.** C1 shipped SDF-gradient analytical normals on the design-surface MC output. The deformed boundary mesh should look like a curved silicone surface, not flat-per-triangle facets.
+4. **The squish is unambiguous.** A layperson seeing the animation should be able to articulate "the object is going into the cavity, and the cavity walls are deforming around it" without expert interpretation. The deformation magnitude should be visible at unamplified scale (no `DISPLACEMENT_SCALE = 10×` cheating) — i.e., the contact penetration produces real, eye-visible wall displacement at the chosen `PROBE_PENETRATION_FINAL`.
+5. **Cavity AND indenter both visible in the same frame.** Row 25 emits `design_scene_deformed` which merges body + contact primitives. The indenter (cuboid plug in row 25's case) and the cavity walls must both be readable in the rendered frame — no compositing tricks, single PLY through `cf-view`.
+
+**Out of MVP scope (not blockers):** quantitative force-vs-displacement curves, validated modulus values, multi-scalar overlays (stress + displacement + material-id together), interactive cutting planes for cavity inspection. All deferred to S3 (FEM-viz parity) or S4 (validation).
+
+**Done-criteria revision protocol:** strawman is editable. When MVP image is closer to landing (post-B2 + post-C2), refine each criterion against the actual rendered output. Out-of-MVP items can move IN if they turn out to be load-bearing for the "visible squishing" framing.
+
 Scope estimate (assumes current pace continues — baby-steps cadence + two-pass review):
 
 - **MVP image** (visual only): 4–8 weeks of focused arcs
@@ -206,3 +220,4 @@ Archive trigger: move this doc to `docs/archive/` when it's no longer load-beari
 - ~~**D1 implementation surface**: subcommand `cf-view play <dir>` or flag on existing single-file mode?~~ **Resolved in PR #238:** auto-detect on path type. `cf-view <path>` dispatches to single-frame or sequence mode based on `path.is_dir()`. No CLI restructure, no subcommand ceremony.
 - **Material-id colormap**: discrete (categorical, one color per layer) or continuous (gradient by stiffness)? **Partly resolved in PR #238:** producer emits integer-valued f64 scalars; cf-view's Q5 detector picks Categorical when values are integer-clean, falls back to Sequential (viridis) when barycentric interpolation produces fractional values at layer boundaries — perceptually-ordered viridis happens to match the natural layer ordering well. A "pure categorical even with fractional samples" path would require nearest-tet sampling for named scalars; deferred unless visual review demands it.
 - ~~**MVP image source row**: row 24 v3 or a new row?~~ **Resolved in PR #238:** **row 25** (`scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth`). Production-target geometry (open-mouth insertion cavity), already has 3-shell × 2-zone material composition + indenter + ramp animation. No new row needed.
+- **B2 trip-mode evidence**: does B2 actually need A2? The roadmap line 103 marks B2 as "possibly gated on A2" but the only documented Llt trip under finer cells is the parked 459K-tet 2 mm-cell spike (row 22 v2 spec line 305). Concrete experiment: halve `CELL_SIZE` on row 25 (`0.004 → 0.002`) and observe — does the solver trip Llt (A2 was load-bearing for B2), trip a different wall (A2 was incidental), or converge cleanly (B2 was never gated on A2 at all)? Single-session experiment; result either ratifies the soft gating or refines the framing further. Worth resolving before committing to B2 as a roadmap leaf.
