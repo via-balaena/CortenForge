@@ -33,7 +33,7 @@ Concrete decomposition:
 - ✅ LayeredScalarField + BlendedScalarField composition primitives (PR #231)
 - ✅ Bit-exact NH↔Yeoh additive decomposition
 - ✅ faer Cholesky linear solver
-- ⏳ faer LU fallback (Cholesky SPD pivot fails at deep penetration on capsule contacts; parked)
+- ⏳ faer LU fallback (Cholesky SPD pivot fails at row 21 v1.5 capsule-cap apex contact and the 459K-tet 2 mm-cell spike; row 22/25 deeper-penetration walls are validity-bound, NOT Llt — A2 does not unblock those)
 - ❌ Friction (Coulomb-Stribeck) — Phase 5.5, parked
 - ❌ Self-contact (cavity walls touching themselves) — absent
 - ❌ Damping (Rayleigh or numerical) — absent
@@ -88,7 +88,7 @@ Concrete decomposition:
 | # | Leaf | Notes |
 |---|------|-------|
 | A1 | Missing-tet band fix (BCC+IS on CSG bodies) | Upstream blocker; visible slits in viz |
-| A2 | faer LU fallback for SPD pivot failure | Unblocks 8mm penetration + finer cells |
+| A2 | faer LU fallback for SPD pivot failure | Unblocks row 21 v1.5 capsule-cap apex contact (parked at `project_sim_soft_row_21_v1_5_spec.md`); latent enabler for B2/B4 finer-cell layered-field cases. Does NOT unblock row 22/25 deeper penetration — those walls are validity-bound (NH/Yeoh `max_stretch_deviation`), upstream of any factorization |
 | A3 | Adaptive BCC refinement near contact / cavity walls | Uniform cells waste resolution |
 | A4 | Coulomb-Stribeck friction | Phase 5.5 parked; insertion mechanics |
 | A5 | Damping (Rayleigh or numerical) | Smoother ramp dynamics |
@@ -100,7 +100,7 @@ Concrete decomposition:
 | # | Leaf | Notes |
 |---|------|-------|
 | B1 | Per-tet material-id scalar plumbing through `design_surface_deformed` + `design_scene` | Materially distinguishable → visually distinguishable |
-| B2 | LayeredScalarField robustness at finer cells | Gated on A2 |
+| B2 | LayeredScalarField robustness at finer cells | Possibly gated on A2 (the 459K-tet 2 mm-cell spike tripped Llt at iter-0 penalty gradient — row 22 v2 spec line 305); first concrete B2 trip mode under finer cells still TBD |
 | B3 | Per-layer material params (modulus, damping, friction coefficients) | Currently homogeneous within a layer |
 | B4 | Per-layer mesh-resolution control | Finer cells in stiff / contact-prone layers |
 
@@ -144,7 +144,7 @@ Concrete decomposition:
 
 The minimum set of leaves required to produce **the target deliverable image** — defined as **visual only**: a clean, smooth, layered, animated squish at first-pass professional fidelity. Realistic moduli (E1) are **not** part of MVP — the user's verbatim ask ("see things squishing") is a visual gate, not a quantitative one. Validation lives in Slice S4.
 
-- **A1** (clean geometry) + **A2** (solver converges to depth)
+- **A1** (clean geometry) + **A2** (solver survives indefinite-tangent contact cases)
 - **B1** (layers visible) + **B2** (finer cells)
 - **C1** (smooth shading) + **C2** (smooth scalar interpolation)
 - **D1** (sequence playback) + **D2** (basic controls)
@@ -164,7 +164,7 @@ Ship as horizontal slices, **not** vertical track-completes. Each slice produces
 | Slice | Leaves | Outcome |
 |-------|--------|---------|
 | **S1 — MVP image, first pass** | A1 + B1 + C1 + D1 | First time you see a layered, animated squish (basic) |
-| **S2 — MVP image, visually complete** | A2 + B2 + C2 + D2 | 8mm penetration + finer cells + smooth scalar + scrub controls — **MVP target image lands here** |
+| **S2 — MVP image, visually complete** | A2 + B2 + C2 + D2 | Indefinite-tangent contact survival + finer cells + smooth scalar + scrub controls — **MVP target image lands here**. Row 25 depth stays capped at 4 mm (validity-bound wall, separate followup); A2 covers row 21 v1.5 capsule-cap apex case |
 | **S3 — FEM-viz parity** | C4 + C5 + C7 + D3 + D5 | Multi-scalar + cutting planes + von Mises + color-map UI + probe tool |
 | **S4 — validation + advanced solver** | E1 + E2 + E4 + A6 + A3 | Post-cast calibration + force-disp curve + convergence study + self-contact + adaptive refinement |
 | **S5+ — polish & long tail** | C3, C6, D4, D6, D7, D8, A4, A5, A7, B3, B4, E3 | Workflow QoL + remaining solver fidelity + real-anatomy scans |
