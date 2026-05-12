@@ -15,8 +15,9 @@ Real scans don't drop into `cf_cast::CastSpec` directly. They need preprocessing
 - **Reorient** — scanner-frame ≠ cast-frame; the scan's local axes must be rotated so the demolding direction is `+z`
 - **Recenter** — translate the scan so the cavity centroid sits at origin (offsets are then symmetric)
 - **Trim** — drop scanner noise (floor, fixture, extraneous geometry) below a clip plane
+- **Cap open boundaries** — body-part scans are inherently open (you stop scanning where the limb continues, leaving a cup-like cross-section). cf-cast's `mesh_sdf::SignedDistanceField` evaluator requires a **watertight** input; without closing the boundary, the scan's "inside" is undefined and SDF queries return garbage. **This makes capping a load-bearing feature, not a polish item.**
 - **Mouth handling** — extend `+z` headroom past the scan's natural top so the mold cup opens cleanly
-- **Inspect / validate** — sanity-check size vs print volume, surface mesh-quality issues (holes, non-manifold edges, multi-shell topology)
+- **Inspect / validate** — sanity-check size vs print volume, surface mesh-quality issues (non-manifold edges, multi-shell topology)
 
 These decisions need **visual feedback**. The user has tried scan-shell workflows before and knows from experience that programmatic-only preprocessing (rotation matrices in a config file, no preview) is intractable — the user can't tell whether the orientation is right without seeing the scan rendered in 3D with axis gizmos.
 
@@ -47,6 +48,7 @@ Resolved 2026-05-12 by user:
 - **Print-volume warnings** → **CLI-configurable build volume** (`--build-volume-mm W,D,H` flag). Default warns when cleaned AABB exceeds `250 × 210 × 210 mm` (Prusa MK3S baseline). User overrides for their specific printer.
 - **Save behavior** → **single button, overwrites without prompt**. Iterative tuning means saving often; confirm dialogs add friction. Output paths are predictable from input filename; status bar flashes "Saved at HH:MM:SS" on success.
 - **Scan asset path** → **CLI positional argument** (`cargo run -p cf-scan-prep -- /path/to/scan.stl`). Scan stays out of the repo per the CASTING_ROADMAP.md sanitization directive.
+- **Cap open boundaries** → **auto-detect boundary loops + per-loop approve + manual plane override**. Tool runs `mesh-repair` boundary-loop detection, fits a least-squares plane to each loop, displays the proposed cap as a translucent polygon. User approves per-loop via checkboxes (multi-shell scans sometimes have intentional holes); per-loop manual override (axis dropdown + offset slider) for cases where auto-fit's R² is poor. Triangulation via inline ear-clipping (no new dep). **Rejected alternative**: line-drawing in 3D (geometric ambiguity from 2D click → 3D position; single line doesn't uniquely define a plane; positioning friction fights with orbit camera). Auto-detect handles the common case (planar boundary, R² > 0.85) with one click.
 
 ---
 
@@ -65,8 +67,9 @@ End-to-end, scan to mold:
    3. Reorient — rotate so demolding direction = +z
    4. Recenter — translate cavity centroid to origin (or floor → z=0)
    5. Optionally clip — drop scanner-noise floor below z=clip_z
-   6. Set mouth extension — +z headroom for cup opening
-   7. Save — emits <stem>.cleaned.stl + <stem>.prep.toml
+   6. Cap open boundaries — auto-detect open loops, fit planes, approve per loop
+   7. Set mouth extension — +z headroom for cup opening
+   8. Save — emits <stem>.cleaned.stl (watertight) + <stem>.prep.toml
        ↓
 [examples/cast/layered-silicone-device-v1-scan/]
    - reads cleaned STL via CF_CAST_SCAN_STL_PATH env var
@@ -78,7 +81,7 @@ End-to-end, scan to mold:
 [workshop: 3D print → pour → cure → demold]
 ```
 
-cf-scan-prep handles steps 1-7. Steps before (raw scan acquisition + multi-shell trim) and after (workshop) are user-domain.
+cf-scan-prep handles steps 1-8. Steps before (raw scan acquisition + multi-shell trim) and after (workshop) are user-domain.
 
 ---
 
@@ -119,6 +122,13 @@ cf-scan-prep handles steps 1-7. Steps before (raw scan acquisition + multi-shell
 │                                              │   Z ──○──  mm    │
 │                                              │   Drops X% verts │
 │                                              │                  │
+│                                              │ ▼ Cap boundaries │
+│                                              │   [Scan]         │
+│                                              │   Found N loop(s)│
+│                                              │   ☑ Loop A R²=… │
+│                                              │   ☐ Manual plane │
+│                                              │   [Apply caps]   │
+│                                              │                  │
 │                                              │ ▼ Mouth ext.     │
 │                                              │   +Z ──○── mm    │
 │                                              │   ☐ Preview      │
@@ -158,6 +168,8 @@ cf-scan-prep handles steps 1-7. Steps before (raw scan acquisition + multi-shell
 | Element | Default | Trigger |
 |---------|---------|---------|
 | Clip plane (translucent disc at `z = clip_z`) | OFF | `Clip floor → Enabled` checkbox |
+| Open boundary loop highlights (red linestrips along open edges) | ON after `Scan` | `Cap boundaries → [Scan]` button populates the loop list |
+| Per-loop cap polygon (translucent fill on the proposed cap plane, color per loop for disambiguation) | ON for checked loops | Each `Loop X` checkbox toggles its own cap-overlay rendering |
 | Mouth extension overlay (translucent box from `transformed_aabb.z_max` extending `+z` by `mouth_z` mm) | OFF | `Mouth ext. → Preview` checkbox |
 | Cleaned-result preview (semi-transparent body extruded by 14 mm offset) | OFF | Future Stage 2.6 — banked, not in MVP |
 
@@ -202,13 +214,32 @@ Rotation state stored internally as `UnitQuaternion<f64>`; Euler conversion happ
 - Live readout: `"Drops X% of vertices below z=Y mm"` — sanity check before saving destroys mesh
 - When enabled, the translucent disc visualization renders in the viewport
 
-### 5. Mouth extension
+### 5. Cap open boundaries
+
+Closes open boundary loops with a flat planar cap so the saved mesh is watertight (required by `mesh_sdf::SignedDistanceField` downstream in cf-cast).
+
+- `[Scan]` button — runs `mesh-repair` boundary-loop detection on the **transformed** mesh (post-rotation/recenter/clip; ensures the cap planes are computed in cast-frame). Cheap; ~10ms for 50k-face meshes.
+- **Loop list** — one entry per detected open boundary, showing:
+  - Checkbox to include/exclude this loop in the cap operation (default: checked if vertex count ≥ 8 — small loops are usually acceptable holes or scanner artifacts)
+  - Vertex count
+  - Plane-fit R² (least-squares plane through the loop's vertices)
+  - Cap area in mm² (derived from the proposed cap polygon)
+- **Per-loop manual override** (collapsible sub-section, off by default):
+  - Axis dropdown: `+X`, `−X`, `+Y`, `−Y`, `+Z`, `−Z`
+  - Offset slider in mm (range derived from loop's AABB ±2× extent)
+  - When enabled, replaces the auto-fit plane for that loop
+  - Useful for low-R² loops or when the user wants the cap slightly above/below the auto-fit
+- `[Apply caps]` button — bakes the selected caps into the mesh on save (triangulation via inline ear-clipping; new vertices + faces added). Status bar confirms: `"Capped N boundary loops"` 
+- After capping, a re-`[Scan]` will detect zero open loops (sanity confirmation)
+- **Mesh-repair gate**: the status bar warning that surfaced at load (`"6 issues: 4 holes, 2 non-manifold edges"`) updates after capping — `holes` count drops to zero for the loops that were capped
+
+### 6. Mouth extension
 
 - `+Z` slider in mm (range 0–50 mm, default 15 mm — matches the v1 capsule example's headroom)
 - Checkbox `Preview` — when checked, translucent box renders from `transformed_aabb.max.z` extending upward by `+Z` mm
 - The mouth extension is **NOT baked into the cleaned STL** — it's a cf-cast bounding-region hint passed through the TOML
 
-### 6. Cleaned AABB (read-only)
+### 7. Cleaned AABB (read-only)
 
 Live-updates as user drags sliders:
 - Width / depth / height after rotation + translation + clip (in mm)
@@ -217,7 +248,7 @@ Live-updates as user drags sliders:
   - Multi-axis warning if multiple exceeded
 - All warnings advisory; save proceeds regardless
 
-### 7. Save
+### 8. Save
 
 - Output directory display (default: parent of input scan)
 - Filename preview (`<input_stem>.cleaned.stl` + `<input_stem>.prep.toml`)
@@ -255,6 +286,21 @@ m = [0.0, 0.0, -0.05]
 enabled = true
 horizontal_plane_z_m = -0.005
 
+[caps]
+# Boundary loops capped during preprocessing. Each entry records the
+# detected loop's auto-fit plane (so the saved STL's new triangles can
+# be reconstructed / audited) plus whether the user overrode it
+# manually. After capping, the saved STL is watertight.
+applied = true
+[[caps.loops]]
+loop_index = 0
+vertex_count = 87
+plane_fit_r_squared = 0.94
+plane_normal = [0.02, -0.01, 0.999]
+plane_offset_m = 0.121
+manual_override = false
+new_face_count = 85  # ear-clipped triangles added
+
 [mouth_extension]
 # Headroom above the scan's transformed +z extent. Used by cf-cast's
 # bounding-region sizing; not applied to the cleaned STL itself.
@@ -273,7 +319,9 @@ Schema versioned implicitly via `tool_version`; future TOML schema changes bump 
 
 ### `<input_stem>.cleaned.stl`
 
-STL with rotation + translation + clip baked into vertex positions. Mouth extension is **NOT** baked (it's a bounding-region hint, not a mesh modification).
+STL with rotation + translation + clip + caps baked into vertex positions. Mouth extension is **NOT** baked (it's a bounding-region hint, not a mesh modification).
+
+After capping, the cleaned STL is **watertight** — each cap loop's auto-fit (or user-overridden) plane is triangulated via ear-clipping and added as new faces. This is required for `mesh_sdf::SignedDistanceField::from_mesh` to produce valid SDF queries; an open scan would yield undefined inside/outside topology and corrupt cf-cast's mold-cup CSG.
 
 The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes only the cleaned STL for geometry; optionally reads the TOML for the `mouth_extension.plus_z_m` value to size the bounding region.
 
@@ -289,11 +337,13 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 **Live (per-frame):**
 - "Drops X% of vertices below z=Y mm" under clip plane control (updates on slider change)
 - Cleaned-AABB dimensions update on every slider change
+- Per-loop R² readout updates on `[Scan]` button click in the Cap panel (boundary detection re-runs after transform changes)
 
 **At save:**
 - If cleaned AABB exceeds CLI-configured build volume on any axis → red warning in side panel
 - If clip drops `>50%` of vertices → yellow warning (`"clip is removing most of the mesh — verify"`)
-- Both warnings are advisory; save proceeds regardless (user might intentionally want a partial clip for testing)
+- If any open boundary loop remains uncapped at save time → yellow warning (`"N open boundary loops uncapped — cf-cast SDF will produce undefined topology, verify"`). Doesn't block save (user may want to inspect a non-watertight STL externally), but bold so the workflow oversight is visible.
+- All warnings are advisory; save proceeds regardless
 
 ---
 
@@ -315,11 +365,11 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 ## MVP scope vs banked items
 
 **In MVP:**
-- All 7 panels above
-- All visualization elements above
+- All 8 panels above (Scan Info, Reorient, Recenter, Clip floor, Cap open boundaries, Mouth ext., Cleaned AABB, Save)
+- All visualization elements above (axis gizmos, transformed-AABB wireframe, ground grid, optional clip plane disc, open boundary loop highlights, per-loop translucent caps, mouth-extension overlay)
 - All keyboard shortcuts above
-- Output: cleaned STL + TOML config
-- Validation: load-time diagnostic + save-time AABB warning + clip-% live readout
+- Output: cleaned STL (watertight after capping) + TOML config (with capped-loop provenance)
+- Validation: load-time diagnostic + save-time AABB warning + clip-% live readout + uncapped-loop warning + per-loop R² readout
 
 **Banked (deferred to Stage 2.6+):**
 
@@ -338,7 +388,7 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 
 ## Implementation arc structure
 
-12-commit plan, ~15-25 hours active across multiple sessions:
+13-commit plan, ~19-31 hours active across multiple sessions:
 
 | # | Commit | Scope | Est |
 |---|--------|-------|----:|
@@ -349,11 +399,12 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 | 5 | `feat(scan-prep): Reorient panel` | Sliders + snap buttons + quaternion readout; rotation applied to displayed mesh; transformed AABB updates live | ~3-4 hr |
 | 6 | `feat(scan-prep): Recenter panel` | Translation sliders + center + floor → z=0 buttons | ~1-2 hr |
 | 7 | `feat(scan-prep): Clip floor panel + plane viz` | Toggle, slider, translucent disc, drop-% live readout | ~2-3 hr |
-| 8 | `feat(scan-prep): Mouth extension panel + preview overlay` | Slider, translucent box from transformed `z_max` | ~1-2 hr |
-| 9 | `feat(scan-prep): Cleaned AABB + CLI build-volume thresholds` | Read-only panel, configurable via `--build-volume-mm W,D,H` flag | ~1-2 hr |
-| 10 | `feat(scan-prep): Save panel + TOML + cleaned STL writer` | Save button, output naming, status-bar feedback | ~2-3 hr |
-| 11 | `feat(scan-prep): mesh-repair diagnostics + keyboard shortcuts` | Load-time diagnostic in status bar; Esc/Ctrl+S/R/C/F/1-2-3 shortcuts | ~1 hr |
-| 12 | `feat(examples): cast/layered-silicone-device-v1-scan` | New example consuming `<stem>.cleaned.stl` via `CF_CAST_SCAN_STL_PATH` env var; mirrors v1 capsule's structure | ~2 hr |
+| 8 | `feat(scan-prep): Cap open boundaries panel + auto-detect + planar cap triangulation` | `mesh-repair` boundary loop extraction; least-squares plane fit (SVD via nalgebra); inline ear-clipping triangulation (~200 LOC); per-loop checkboxes + manual override sub-panel; red boundary linestrip overlay; translucent cap polygon overlay | ~4-6 hr |
+| 9 | `feat(scan-prep): Mouth extension panel + preview overlay` | Slider, translucent box from transformed `z_max` | ~1-2 hr |
+| 10 | `feat(scan-prep): Cleaned AABB + CLI build-volume thresholds` | Read-only panel, configurable via `--build-volume-mm W,D,H` flag | ~1-2 hr |
+| 11 | `feat(scan-prep): Save panel + TOML + cleaned STL writer` | Save button, output naming, status-bar feedback, uncapped-loop warning | ~2-3 hr |
+| 12 | `feat(scan-prep): mesh-repair diagnostics + keyboard shortcuts` | Load-time diagnostic in status bar; Esc/Ctrl+S/R/C/F/1-2-3 shortcuts | ~1 hr |
+| 13 | `feat(examples): cast/layered-silicone-device-v1-scan` | New example consuming `<stem>.cleaned.stl` via `CF_CAST_SCAN_STL_PATH` env var; mirrors v1 capsule's structure | ~2 hr |
 
 Plus the slice-ship-log update + auto-memory at the end — usually inline with the final ship commit.
 
@@ -366,7 +417,10 @@ Worth surfacing now so failures aren't surprises:
 - **Bevy 0.18 + bevy_egui interactions** — the workspace is on Bevy 0.18; bevy_egui 0.39.1 is the first release that pins `bevy ^0.18.0`. Should be stable but version churn possible.
 - **Translucent overlay rendering** — Bevy's PBR pipeline doesn't always handle translucent materials cleanly with mesh occlusion. The clip-plane disc and mouth-extension box may need custom material setup or a separate render pass. Banked as risk; investigate during commit #7 / #8.
 - **Quaternion-to-Euler-to-quaternion round-trip drift** — three slider sources of truth → one quaternion → display back as Euler can drift after multiple updates. Mitigation: the slider VALUES are the source of truth (not the displayed quaternion); each slider change re-derives the quaternion from the three current slider values. The quaternion display is computed from the quaternion-of-record at render time.
-- **Mesh-repair diagnostic semantics** — `mesh-repair` returns a structured issue list, but mapping that to a human-readable status-bar string ("6 issues: 4 holes, 2 non-manifold edges") needs verification of which issue types it actually surfaces. Recon during commit #11.
+- **Mesh-repair diagnostic semantics** — `mesh-repair` returns a structured issue list, but mapping that to a human-readable status-bar string ("6 issues: 4 holes, 2 non-manifold edges") needs verification of which issue types it actually surfaces. Recon during commit #12.
+- **Boundary-loop extraction** — commit #8 needs to either consume `mesh-repair`'s boundary-edge output or implement loop-walking inline (~50 LOC). If `mesh-repair` doesn't expose loop-grouping (only edge-flagging), inline implementation is needed. Recon at commit #8 start.
+- **Ear-clipping edge cases** — degenerate boundary polygons (self-intersecting after projection to plane, near-collinear vertices, very thin sliver triangles) can break naive ear-clipping. Mitigation: pre-validate the projected loop is simple (no self-intersections); fall back to fan-triangulation from centroid if ear-clipping fails (less optimal triangle quality but always succeeds for star-shaped polygons, which boundary loops typically are).
+- **Cap quality vs scan resolution** — high-resolution scans produce dense boundary loops (hundreds of vertices); ear-clipping is O(n²) so 500-vertex loops cost ~250k operations (still <100ms, fine). Pathological scans with 10k-vertex boundary loops would need a faster triangulation (Delaunay, ~O(n log n)) but are unusual for body-part scans.
 - **Workshop iteration cadence** — the user may discover during real-scan work that some MVP design decisions don't hold (e.g., horizontal-clip-only is too restrictive, or the mouth-extension-preview-as-translucent-box is hard to read against the scan). v2 polish will follow iter-1.
 
 ---
@@ -391,4 +445,5 @@ Archive trigger: move to `docs/archive/` after iter-1 cast is in hand and v2 pre
 
 ### Slice ship log
 
-_(empty — first entry lands when commit #1 ships)_
+- **2026-05-12** — Commit #1 (design spec) shipped (`119ac2f2`). 394-line initial spec, 7 panels, ~12 commits estimated.
+- **2026-05-12** — Cap-feature addendum to commit #1 (this commit). Adds **Cap open boundaries** as panel #5 of 8, makes the spec watertight-by-construction (required for cf-cast SDF queries), bumps implementation arc to 13 commits / ~19-31 hours. Auto-detect + per-loop approve + manual override; rejected line-drawing alternative for geometric-ambiguity reasons.
