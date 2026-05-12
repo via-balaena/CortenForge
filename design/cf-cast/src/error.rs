@@ -97,4 +97,27 @@ pub enum CastError {
         #[source]
         source: IoError,
     },
+
+    /// A layer's computed pour mass exceeds the per-pour
+    /// [`crate::CastSpec::mass_budget_kg`] gate. Fires before any
+    /// meshing or STL write — pre-write atomicity guarantees no
+    /// side effects.
+    ///
+    /// Compared per-layer (single pour event), not aggregated
+    /// across same-material layers — that aggregate-holdings check
+    /// is deferred to F3 procedure-spec generation.
+    #[error(
+        "layer {layer_index} ({material_display_name}) pour mass {mass_kg:.4} kg \
+         exceeds budget {budget_kg:.4} kg"
+    )]
+    MassBudgetExceeded {
+        /// Index into [`crate::CastSpec::layers`].
+        layer_index: usize,
+        /// Carried-through layer material display name.
+        material_display_name: String,
+        /// Computed pour mass in kilograms for this layer's shell.
+        mass_kg: f64,
+        /// Per-pour budget the layer overran ([`crate::CastSpec::mass_budget_kg`]).
+        budget_kg: f64,
+    },
 }

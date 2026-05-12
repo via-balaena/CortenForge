@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use cf_cast::{CastLayer, CastSpec, MoldingMaterial};
+use cf_cast::{CastLayer, CastSpec, DEFAULT_MASS_BUDGET_KG, MoldingMaterial};
 use cf_design::Solid;
 use mesh_printability::PrinterConfig;
 use nalgebra::Vector3;
@@ -52,6 +52,7 @@ fn reference_spec() -> CastSpec {
         bounding_region,
         mesh_cell_size_m: 0.002,
         printer_config: PrinterConfig::fdm_default(),
+        mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
     }
 }
 

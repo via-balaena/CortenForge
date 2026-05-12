@@ -13,6 +13,7 @@ use nalgebra::Vector3;
 use crate::error::{CastError, CastTarget};
 use crate::material::MoldingMaterial;
 use crate::mesher::solid_to_mm_mesh;
+use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -100,6 +101,19 @@ pub struct CastSpec {
     /// [`PrinterConfig::fdm_default`]; configurable for SLA/SLS/MJF
     /// once iter-1 surfaces a real need.
     pub printer_config: PrinterConfig,
+
+    /// Per-pour silicone mass budget in kilograms. Each layer's
+    /// computed pour mass (`shell_volume × material.density_kg_m3`)
+    /// must satisfy `pour_mass ≤ mass_budget_kg`; overruns surface
+    /// as [`CastError::MassBudgetExceeded`] before any STL is
+    /// written.
+    ///
+    /// The recommended default is
+    /// [`crate::DEFAULT_MASS_BUDGET_KG`] (2 lb, the
+    /// layered-silicone-device v1.0 per-silicone holding). The
+    /// field is required so callers cannot silently fall back —
+    /// set it explicitly even when adopting the default.
+    pub mass_budget_kg: f64,
 }
 
 /// Per-layer output of a successful [`CastSpec::export_molds`] run.
@@ -124,6 +138,10 @@ pub struct MoldArtifact {
     /// Post-export mold mesh summary (vertex/face counts + mm-frame
     /// bounds).
     pub summary: MeshSummary,
+    /// F2 pour-volume summary for this layer — shell volume in m³
+    /// and pour mass in kg, both gated against
+    /// [`CastSpec::mass_budget_kg`] before this artifact lands on disk.
+    pub pour_volume: PourVolume,
 }
 
 /// Summary of a successful [`CastSpec::export_molds`] run.
@@ -199,33 +217,94 @@ struct PendingMold {
 }
 
 impl CastSpec {
+    /// Compute per-layer pour volumes (and the corresponding pour
+    /// masses) without writing any artifacts.
+    ///
+    /// For each cast layer, the shell solid is the CSG difference
+    /// between this layer's cumulative body and the previous layer's
+    /// (or the plug, for the innermost layer). Volume integration
+    /// uses the same [`Self::mesh_cell_size_m`] that drives mold
+    /// marching cubes, sampled as a Riemann sum over corner-SDF
+    /// signs.
+    ///
+    /// Standalone access is useful at design time — e.g., F3
+    /// procedure-spec generation prints these masses without
+    /// re-running [`Self::export_molds`].
+    ///
+    /// # Errors
+    ///
+    /// - [`CastError::EmptyLayers`] if [`Self::layers`] is empty.
+    /// - [`CastError::InfiniteBounds`] if any layer body is
+    ///   unbounded. (`Solid::subtract` inherits its bounds from the
+    ///   minuend alone, so an unbounded [`Self::plug`] does NOT
+    ///   trip this path here — that condition surfaces in
+    ///   [`Self::export_molds`]'s plug meshing step instead.)
+    pub fn compute_pour_volumes(&self) -> Result<Vec<PourVolume>, CastError> {
+        if self.layers.is_empty() {
+            return Err(CastError::EmptyLayers);
+        }
+
+        let mut volumes = Vec::with_capacity(self.layers.len());
+        for (layer_index, layer) in self.layers.iter().enumerate() {
+            let shell = if layer_index == 0 {
+                layer.body.clone().subtract(self.plug.clone())
+            } else {
+                let prev = &self.layers[layer_index - 1];
+                layer.body.clone().subtract(prev.body.clone())
+            };
+
+            let shell_volume_m3 = integrate_negative_sdf_volume(
+                &shell,
+                self.mesh_cell_size_m,
+                CastTarget::LayerBody { layer_index },
+            )?;
+            let pour_mass_kg = shell_volume_m3 * layer.material.density_kg_m3;
+
+            volumes.push(PourVolume {
+                layer_index,
+                material_display_name: layer.material.display_name.clone(),
+                shell_volume_m3,
+                pour_mass_kg,
+            });
+        }
+
+        Ok(volumes)
+    }
+
     /// Export per-layer mold cups and the shared plug as
     /// `layers.len() + 1` STL files in `out_dir`.
     ///
     /// Pipeline:
     /// 1. Verify [`Self::layers`] is non-empty.
-    /// 2. For each `layer` in [`Self::layers`]: compute the clip
+    /// 2. Compute per-layer pour volumes
+    ///    ([`Self::compute_pour_volumes`]) and gate each against
+    ///    [`Self::mass_budget_kg`]; abort on overrun before any
+    ///    meshing.
+    /// 3. For each `layer` in [`Self::layers`]: compute the clip
     ///    cuboid above `layer.body`'s `z_max`, build the mold-cup
     ///    solid `bounding_region ∖ layer.body ∖ clip`, sample SDF
     ///    onto a [`mesh_offset::ScalarGrid`], run marching cubes,
     ///    scale meters → mm, then validate against
     ///    [`Self::printer_config`] and abort on any *blocking*
     ///    Critical issue.
-    /// 3. Repeat meshing + validation for [`Self::plug`].
-    /// 4. Create `out_dir` if it doesn't exist.
-    /// 5. Write `mold_layer_0.stl` … `mold_layer_{N-1}.stl` and
-    ///    `plug.stl`.
+    /// 4. Repeat meshing + validation for [`Self::plug`].
+    /// 5. Create `out_dir` if it doesn't exist.
+    /// 6. Write `mold_layer_0.stl` … `mold_layer_{N-1}.stl` and
+    ///    `plug.stl`; attach each layer's [`PourVolume`] to its
+    ///    [`MoldArtifact`].
     ///
-    /// **Atomicity**: meshing and the F4 gate run on every layer
-    /// before the first STL is written. A Critical failure on a
-    /// later layer aborts the run cleanly with no partial output
-    /// from earlier layers.
+    /// **Atomicity**: pour-volume budget check, meshing, and the F4
+    /// gate all run before the first STL is written. A budget
+    /// overrun or Critical failure aborts the run cleanly with no
+    /// partial output on disk.
     ///
     /// # Errors
     ///
     /// - [`CastError::EmptyLayers`] if [`Self::layers`] is empty.
     /// - [`CastError::InfiniteBounds`] if any input Solid is
     ///   unbounded.
+    /// - [`CastError::MassBudgetExceeded`] if any layer's computed
+    ///   pour mass exceeds [`Self::mass_budget_kg`].
     /// - [`CastError::MeshingEmpty`] if marching cubes produces a
     ///   degenerate mesh (e.g., bounding region wholly enclosed by
     ///   a layer body, leaving no cup material).
@@ -233,8 +312,16 @@ impl CastSpec {
     ///   F4 gate with one or more blocking Critical-severity issues.
     /// - [`CastError::MeshIo`] on filesystem failures.
     pub fn export_molds(&self, out_dir: &Path) -> Result<MoldExportReport, CastError> {
-        if self.layers.is_empty() {
-            return Err(CastError::EmptyLayers);
+        let pour_volumes = self.compute_pour_volumes()?;
+        for pv in &pour_volumes {
+            if pv.pour_mass_kg > self.mass_budget_kg {
+                return Err(CastError::MassBudgetExceeded {
+                    layer_index: pv.layer_index,
+                    material_display_name: pv.material_display_name.clone(),
+                    mass_kg: pv.pour_mass_kg,
+                    budget_kg: self.mass_budget_kg,
+                });
+            }
         }
 
         let mut pending = Vec::with_capacity(self.layers.len());
@@ -288,7 +375,7 @@ impl CastSpec {
         })?;
 
         let mut molds = Vec::with_capacity(pending.len());
-        for entry in pending {
+        for (entry, pour_volume) in pending.into_iter().zip(pour_volumes) {
             save_stl(&entry.mesh, &entry.path, true).map_err(|source| CastError::MeshIo {
                 path: entry.path.clone(),
                 source,
@@ -300,6 +387,7 @@ impl CastSpec {
                 path: entry.path,
                 validation: entry.validation,
                 summary,
+                pour_volume,
             });
         }
 
@@ -437,11 +525,13 @@ mod tests {
     // boilerplate at every probe. Same convention as cf-design tests.
     #![allow(clippy::unwrap_used, clippy::panic)]
 
+    use approx::assert_relative_eq;
     use mesh_printability::PrinterConfig;
     use nalgebra::Vector3;
 
     use super::{CastError, CastLayer, CastSpec, CastTarget, MeshSummary, clip_above_body};
     use crate::material::MoldingMaterial;
+    use crate::pour_volume::DEFAULT_MASS_BUDGET_KG;
     use cf_design::Solid;
 
     /// Reference material for smoke tests — Ecoflex 00-30 anchor
@@ -484,6 +574,7 @@ mod tests {
             // fixture trades surface fidelity for run time.
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
         }
     }
 
@@ -527,6 +618,7 @@ mod tests {
             // checks clear in seconds even instrumented.
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
         };
         let report = spec.export_molds(&out_dir).unwrap();
 
@@ -609,6 +701,7 @@ mod tests {
             bounding_region,
             mesh_cell_size_m: 0.012,
             printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
         };
 
         let report = spec.export_molds(&out_dir).unwrap();
@@ -640,6 +733,7 @@ mod tests {
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-empty-layers");
@@ -662,6 +756,7 @@ mod tests {
             bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
             mesh_cell_size_m: 0.002,
             printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
         };
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/cf-cast-error-unbounded");
@@ -775,5 +870,199 @@ mod tests {
         assert!(clip_aabb.max.x > bound_aabb.max.x);
         assert!(clip_aabb.min.y < bound_aabb.min.y);
         assert!(clip_aabb.max.y > bound_aabb.max.y);
+    }
+
+    /// F2 fixture — two stacked cumulative cuboid bodies with the
+    /// plug intentionally DISJOINT from both. Outer body spans z ∈
+    /// [-25, +25] mm; the capsule plug (r = 8 mm, half-height
+    /// 20 mm) is translated to z = +60 mm so its full z-extent is
+    /// [+32, +88] mm — strictly above the outer body's +25 mm top,
+    /// with 7 mm of clearance. Disjointness means Layer 0's shell
+    /// volume equals layer-0-body volume exactly (plug-body
+    /// intersection is empty); Layer 1's shell volume equals
+    /// outer-cuboid volume minus inner-cuboid volume.
+    ///
+    /// Disjoint plug + body keeps the analytic expectations for
+    /// [`pour_volumes_match_analytic_cuboid_shell_volumes`] clean
+    /// so the bias tolerance need not absorb plug displacement on
+    /// top of Riemann-sum surface error.
+    fn pour_volume_fixture() -> CastSpec {
+        let inner_body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.015));
+        let outer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.025));
+        let plug = Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.060));
+        let bounding_region = Solid::cuboid(Vector3::new(0.045, 0.045, 0.035));
+        CastSpec {
+            layers: vec![
+                CastLayer {
+                    body: inner_body,
+                    material: reference_material(),
+                },
+                CastLayer {
+                    body: outer_body,
+                    material: reference_material(),
+                },
+            ],
+            plug,
+            bounding_region,
+            // 1 mm cells: pour-volume integration doesn't trigger
+            // `validate_for_printing` (the heavy O(faces²) check),
+            // so finer cells are tractable under llvm-cov here. 1 mm
+            // keeps the Riemann-sum bias under ~10 % for the small
+            // bodies in this fixture, which is comfortably under the
+            // 20 % `max_relative` tolerance.
+            mesh_cell_size_m: 0.001,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        }
+    }
+
+    #[test]
+    fn compute_pour_volumes_returns_layer_indexed_results_innermost_first() {
+        // Pins: (a) per-layer ordering matches `layers`, (b)
+        // material display names carry through, (c) shell-volume
+        // CSG semantics give body − plug for layer 0 and body[N] −
+        // body[N-1] for layer N > 0.
+        let spec = pour_volume_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        assert_eq!(pours.len(), 2);
+        assert_eq!(pours[0].layer_index, 0);
+        assert_eq!(pours[0].material_display_name, "Ecoflex 00-30");
+        assert_eq!(pours[1].layer_index, 1);
+        assert_eq!(pours[1].material_display_name, "Ecoflex 00-30");
+    }
+
+    #[test]
+    fn pour_volumes_match_analytic_cuboid_shell_volumes() {
+        // Inner cuboid: 40 × 40 × 30 mm → 4.8e-5 m³.
+        // Outer cuboid: 60 × 60 × 50 mm → 1.8e-4 m³.
+        // Plug sits at z = 40 mm, entirely above the outer body's
+        // top face at z = 25 mm — so layer 0 shell = inner body in
+        // full, layer 1 shell = outer − inner.
+        //
+        // Tolerance ±20 % absorbs the Riemann-sum surface-bias
+        // (≲ 15 % on these small cuboids at 1 mm cells) plus the
+        // grid-padding contribution.
+        let spec = pour_volume_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        assert_relative_eq!(pours[0].shell_volume_m3, 4.8e-5, max_relative = 0.20);
+        assert_relative_eq!(pours[1].shell_volume_m3, 1.32e-4, max_relative = 0.20);
+    }
+
+    #[test]
+    fn pour_mass_equals_shell_volume_times_density_bit_exact() {
+        // `pour_mass_kg = shell_volume_m3 * material.density_kg_m3`
+        // is a single multiplication — must match bit-exactly, no
+        // rounding/tolerance. Catches any future refactor that
+        // adds intermediate steps (FMA, unit conversions) between
+        // volume and mass.
+        let spec = pour_volume_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        for (pv, layer) in pours.iter().zip(spec.layers.iter()) {
+            let expected = pv.shell_volume_m3 * layer.material.density_kg_m3;
+            assert!(
+                (pv.pour_mass_kg - expected).abs() < f64::EPSILON,
+                "pour_mass_kg should equal shell_volume_m3 * density_kg_m3 \
+                 bit-exactly: layer {} got {}, expected {}",
+                pv.layer_index,
+                pv.pour_mass_kg,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn compute_pour_volumes_errors_when_layers_is_empty() {
+        // Standalone empty-layers gate, parallel to
+        // `export_molds_errors_when_layers_is_empty`. The standalone
+        // pour-volume path must fail before any SDF sampling.
+        let spec = CastSpec {
+            layers: Vec::new(),
+            plug: Solid::capsule(0.005, 0.010),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.002,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let err = spec.compute_pour_volumes().unwrap_err();
+        assert!(matches!(err, CastError::EmptyLayers));
+    }
+
+    #[test]
+    fn export_molds_errors_when_layer_mass_exceeds_budget() {
+        // Layer 0's pour mass is ~0.051 kg at 1070 kg/m³ density;
+        // a 0.010 kg budget guarantees the budget gate fires before
+        // any STL is written (pre-write atomicity scope).
+        let spec = CastSpec {
+            mass_budget_kg: 0.010,
+            ..pour_volume_fixture()
+        };
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-budget-exceeded");
+        let err = spec.export_molds(&out_dir).unwrap_err();
+        match err {
+            CastError::MassBudgetExceeded {
+                layer_index,
+                material_display_name,
+                mass_kg,
+                budget_kg,
+            } => {
+                // Layer 0 trips first (innermost-first iteration).
+                assert_eq!(layer_index, 0);
+                assert_eq!(material_display_name, "Ecoflex 00-30");
+                assert!(
+                    mass_kg > budget_kg,
+                    "reported mass {mass_kg} should exceed budget {budget_kg}"
+                );
+                assert!((budget_kg - 0.010).abs() < f64::EPSILON);
+            }
+            other => panic!("expected MassBudgetExceeded, got {other:?}"),
+        }
+        // Verify no STL written: the output directory should not
+        // exist (pre-write atomicity — budget gate fires before
+        // `create_dir_all`).
+        assert!(
+            !out_dir.exists(),
+            "out_dir should not be created on budget failure"
+        );
+    }
+
+    #[test]
+    fn mold_artifact_carries_matching_pour_volume_per_layer() {
+        // Pins that each `MoldArtifact.pour_volume` matches what
+        // `compute_pour_volumes()` returns at the same index — i.e.,
+        // `export_molds` doesn't re-compute volumes mid-pipeline.
+        // Uses the 12 mm-cells coverage-test fixture (large enough
+        // bodies to mesh, small enough to clear F4 under llvm-cov).
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-f2-artifact-pour");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let spec = CastSpec {
+            layers: vec![CastLayer {
+                body: Solid::cuboid(Vector3::new(0.025, 0.025, 0.020)),
+                material: reference_material(),
+            }],
+            plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let standalone_pours = spec.compute_pour_volumes().unwrap();
+        let report = spec.export_molds(&out_dir).unwrap();
+        assert_eq!(report.molds.len(), 1);
+        let artifact_pv = &report.molds[0].pour_volume;
+        let standalone_pv = &standalone_pours[0];
+        assert_eq!(artifact_pv.layer_index, standalone_pv.layer_index);
+        assert_eq!(
+            artifact_pv.material_display_name,
+            standalone_pv.material_display_name
+        );
+        assert!((artifact_pv.shell_volume_m3 - standalone_pv.shell_volume_m3).abs() < f64::EPSILON);
+        assert!((artifact_pv.pour_mass_kg - standalone_pv.pour_mass_kg).abs() < f64::EPSILON);
     }
 }
