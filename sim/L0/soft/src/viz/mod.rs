@@ -272,27 +272,6 @@ pub fn boundary_surface<M: Material>(
 /// - [`VizError::InvalidPlaneAxis`] if `plane.axis >= 3`.
 /// - [`VizError::PerTetScalarLengthMismatch`] if any scalar's length
 ///   != `mesh.n_tets()`.
-//
-// `cast_possible_truncation` allowed for the f64 → f32 PLY emit
-// path and the usize → u32 vertex index path (VertexId is u32 by
-// crate convention; `mesh.n_tets() < u32::MAX` is a γ-locked mesh
-// invariant). `expect_used` allowed on `insert_extra` — see the
-// boundary_surface justification; the cross-vertex count we count
-// up matches the cut_scalars[i] vec length by construction.
-// `similar_names` allowed because `i_ac`/`i_bc`/`i_ad`/`i_bd` are
-// the algorithm's natural names for the four cross-edges of the
-// 2-2 tet sign-pattern case (above-{a,b}, below-{c,d}); renaming
-// would obscure the geometry.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::expect_used,
-    clippy::similar_names,
-    // The `_ => unreachable!()` arm in the (na, nb) match is invariant-
-    // pinned: a tet has exactly 4 vertices, so na + nb == 4 and the 5
-    // explicit arms (4,0)/(0,4)/(1,3)/(3,1)/(2,2) exhaust the space.
-    // The `unreachable!()` cannot fire under any well-formed input.
-    clippy::unreachable
-)]
 pub fn slab_cut<M: Material>(
     mesh: &dyn Mesh<M>,
     plane: Plane,
@@ -322,12 +301,6 @@ pub fn slab_cut<M: Material>(
 /// All [`slab_cut`] errors plus [`VizError::PerVertexLengthMismatch`]
 /// if `displacement_per_vertex`'s length differs from
 /// `mesh.n_vertices()`.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::expect_used,
-    clippy::similar_names,
-    clippy::unreachable
-)]
 pub fn slab_cut_deformed<M: Material>(
     mesh: &dyn Mesh<M>,
     plane: Plane,
@@ -358,6 +331,19 @@ pub fn slab_cut_deformed<M: Material>(
 /// slice the SD computation and cross-edge interpolation read; `mesh`
 /// supplies validation, tet connectivity, and the rest-volume-weighted
 /// per-vertex scalar projection.
+//
+// `cast_possible_truncation` allowed for the f64 → f32 PLY emit path
+// and the usize → u32 vertex index path (VertexId is u32 by crate
+// convention; `mesh.n_tets() < u32::MAX` is a γ-locked mesh invariant).
+// `expect_used` allowed on `insert_extra` — the cross-vertex count we
+// count up matches the cut_scalars[i] vec length by construction.
+// `similar_names` allowed because `i_ac`/`i_bc`/`i_ad`/`i_bd` are the
+// algorithm's natural names for the four cross-edges of the 2-2 tet
+// sign-pattern case (above-{a,b}, below-{c,d}); renaming would obscure
+// the geometry. `unreachable` allowed on the `_ => unreachable!()`
+// match arm in the (na, nb) dispatch — invariant-pinned: a tet has
+// exactly 4 vertices, so na + nb == 4 and the 5 explicit arms
+// (4,0)/(0,4)/(1,3)/(3,1)/(2,2) exhaust the space.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::expect_used,
@@ -909,17 +895,6 @@ pub fn design_surface_deformed<M: Material>(
 /// All [`design_surface`] errors. The contact primitives are rendered
 /// geometry-only (no scalar interp), so per-tet scalar validation
 /// applies to the body's pass only.
-//
-// `cast_precision_loss` allowed: `(idx + 1) as f32` for primitive_id
-// is safe up to ~16 M contacts (well beyond any practical use).
-// `cast_possible_truncation` allowed: vertex/face index casts use
-// the same VertexId/TetId u32 invariant as the rest of the module.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::expect_used
-)]
 pub fn design_scene<M: Material>(
     body_sdf: &dyn Sdf,
     contact_sdfs: &[&dyn Sdf],
@@ -962,12 +937,13 @@ pub fn design_scene<M: Material>(
 /// All [`design_surface_deformed`] errors. Contact primitives are
 /// rendered geometry-only, so per-tet scalar validation applies to
 /// the body pass only.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::expect_used
-)]
+//
+// `too_many_arguments` allowed: 8 args matches the F2 design-mesh
+// convention (sdf + analysis_mesh + bounds + resolution + scalars +
+// displacement + amplify, plus the `contact_sdfs` slot
+// `design_scene` adds). Splitting into a config struct would
+// double the call-site noise without clarifying the contract.
+#[allow(clippy::too_many_arguments)]
 pub fn design_scene_deformed<M: Material>(
     body_sdf: &dyn Sdf,
     contact_sdfs: &[&dyn Sdf],
