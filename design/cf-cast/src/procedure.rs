@@ -165,6 +165,14 @@ fn write_per_layer_sections(md: &mut String, spec: &CastSpec, pour_volumes: &[Po
         md.push('\n');
         let mass_g = pour.pour_mass_kg * KG_TO_G;
         let half_g = mass_g / 2.0;
+        // Looked up once per layer — both step 3 (mix) and step 6
+        // (cure) branch on whether this material has an anchored
+        // CureProtocol vs the TDS-fallback prose. Looking it up
+        // directly here (rather than via `cure_protocol_cells`)
+        // avoids substituting placeholder strings into duration /
+        // ratio positions where they read as broken English
+        // ("Cure for ≥consult Smooth-On TDS …").
+        let protocol = layer.material.anchor_key.and_then(lookup_cure);
         let _ = writeln!(
             md,
             "1. Print STL `mold_layer_{}.stl`{}.",
@@ -176,13 +184,21 @@ fn write_per_layer_sections(md: &mut String, spec: &CastSpec, pour_volumes: &[Po
             }
         );
         let _ = writeln!(md, "2. Apply mold release to all printed surfaces.");
-        let (mix, pot_life, cure_time) = cure_protocol_cells(layer.material.anchor_key);
-        let _ = writeln!(
-            md,
-            "3. Mix {:.2} g Part A + {:.2} g Part B {} ({} mix ratio). \
-             Total {:.2} g.",
-            half_g, half_g, layer.material.display_name, mix, mass_g,
-        );
+        if let Some(protocol) = protocol {
+            let _ = writeln!(
+                md,
+                "3. Mix {half_g:.2} g Part A + {half_g:.2} g Part B {} ({} mix ratio). \
+                 Total {mass_g:.2} g.",
+                layer.material.display_name, protocol.mix_ratio_a_to_b,
+            );
+        } else {
+            let _ = writeln!(
+                md,
+                "3. Mix Part A + Part B {} per the Smooth-On TDS \
+                 (total pour mass: {mass_g:.2} g, split per the data-sheet mix ratio).",
+                layer.material.display_name,
+            );
+        }
         let _ = writeln!(md, "4. Vacuum-degas the mix for 2-3 minutes at ≥27 inHg.");
         if pour.layer_index == 0 {
             let _ = writeln!(
@@ -198,10 +214,18 @@ fn write_per_layer_sections(md: &mut String, spec: &CastSpec, pour_volumes: &[Po
                 pour.layer_index - 1,
             );
         }
-        let _ = writeln!(
-            md,
-            "6. Cure for ≥{cure_time} at 73 °F (pot life: {pot_life})."
-        );
+        if let Some(protocol) = protocol {
+            let _ = writeln!(
+                md,
+                "6. Cure for ≥{} hr at 73 °F (pot life: {} min).",
+                protocol.cure_time_hours, protocol.pot_life_minutes,
+            );
+        } else {
+            let _ = writeln!(
+                md,
+                "6. Cure per the Smooth-On TDS at 73 °F (pot life per TDS)."
+            );
+        }
         let _ = writeln!(
             md,
             "7. Demold from the mold cup{}.",

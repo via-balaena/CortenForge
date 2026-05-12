@@ -39,8 +39,11 @@ pub struct CureProtocol {
     /// minutes at 73 °F.
     pub pot_life_minutes: u32,
     /// Cure time (time to demold-ready firmness) in hours at 73 °F.
-    /// `f64` because some grades publish fractional hours (e.g.
-    /// Ecoflex 00-50 at 3 hours sharp, Dragon Skin 30A at 16 hours).
+    /// `f64` is forward-compatible — all eight currently-anchored
+    /// grades publish whole-hour cure schedules, but the wider type
+    /// accommodates future grades with fractional-hour TDS values
+    /// (or sub-hour cures from accelerated formulations) without a
+    /// table-wide retype.
     pub cure_time_hours: f64,
 }
 

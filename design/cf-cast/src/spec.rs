@@ -314,16 +314,7 @@ impl CastSpec {
     /// - [`CastError::MeshIo`] on filesystem failures.
     pub fn export_molds(&self, out_dir: &Path) -> Result<MoldExportReport, CastError> {
         let pour_volumes = self.compute_pour_volumes()?;
-        for pv in &pour_volumes {
-            if pv.pour_mass_kg > self.mass_budget_kg {
-                return Err(CastError::MassBudgetExceeded {
-                    layer_index: pv.layer_index,
-                    material_display_name: pv.material_display_name.clone(),
-                    mass_kg: pv.pour_mass_kg,
-                    budget_kg: self.mass_budget_kg,
-                });
-            }
-        }
+        check_mass_budget(self, &pour_volumes)?;
 
         let mut pending = Vec::with_capacity(self.layers.len());
         for (layer_index, layer) in self.layers.iter().enumerate() {
@@ -426,9 +417,15 @@ impl CastSpec {
     /// - [`CastError::EmptyLayers`] if [`Self::layers`] is empty.
     /// - [`CastError::InfiniteBounds`] if any layer body is
     ///   unbounded (propagates from [`Self::compute_pour_volumes`]).
+    /// - [`CastError::MassBudgetExceeded`] if any layer's computed
+    ///   pour mass exceeds [`Self::mass_budget_kg`] — same gate as
+    ///   [`Self::export_molds`], so the generated Markdown's
+    ///   "every layer within budget" claim never lies when this
+    ///   method returns `Ok`.
     /// - [`CastError::MeshIo`] on filesystem write failure.
     pub fn write_procedure(&self, path: &Path) -> Result<(), CastError> {
         let pour_volumes = self.compute_pour_volumes()?;
+        check_mass_budget(self, &pour_volumes)?;
         let markdown = generate_procedure_markdown(self, &pour_volumes);
         std::fs::write(path, markdown).map_err(|e| CastError::MeshIo {
             path: path.to_path_buf(),
@@ -436,6 +433,28 @@ impl CastSpec {
         })?;
         Ok(())
     }
+}
+
+/// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].
+///
+/// Shared by [`CastSpec::export_molds`] and
+/// [`CastSpec::write_procedure`] so the budget-enforcement contract
+/// stays in one place — both pre-write paths refuse to proceed on
+/// a budget overrun, and the procedure-Markdown's
+/// "every layer falls within budget" claim is therefore factually
+/// correct whenever `write_procedure` returns `Ok`.
+fn check_mass_budget(spec: &CastSpec, pour_volumes: &[PourVolume]) -> Result<(), CastError> {
+    for pv in pour_volumes {
+        if pv.pour_mass_kg > spec.mass_budget_kg {
+            return Err(CastError::MassBudgetExceeded {
+                layer_index: pv.layer_index,
+                material_display_name: pv.material_display_name.clone(),
+                mass_kg: pv.pour_mass_kg,
+                budget_kg: spec.mass_budget_kg,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Run `validate_for_printing` and wrap its error path into a
@@ -1163,6 +1182,95 @@ mod tests {
         assert!(
             md.contains("consult Smooth-On TDS"),
             "non-anchor material should render TDS placeholder"
+        );
+    }
+
+    #[test]
+    fn per_layer_step_6_prose_uses_anchor_values_for_anchored_material() {
+        // Ecoflex 00-30 anchor: cure_time = 4 hr, pot_life = 45 min.
+        // Pour-volume-fixture both layers use this material — pin
+        // the exact step-6 prose to catch any future template-string
+        // refactor that drops the unit suffixes or reorders fields.
+        let spec = pour_volume_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
+        assert!(
+            md.contains("6. Cure for ≥4 hr at 73 °F (pot life: 45 min)."),
+            "anchored step-6 prose should embed the looked-up cure_time + pot_life"
+        );
+    }
+
+    #[test]
+    fn per_layer_step_6_prose_falls_back_for_non_anchor_material() {
+        // When MoldingMaterial.anchor_key is None, step 6 must NOT
+        // substitute the table-cell placeholder into the duration
+        // slot ("Cure for ≥consult Smooth-On TDS …" is broken
+        // English) — the alternate "Cure per TDS" prose runs
+        // instead.
+        let spec = CastSpec {
+            layers: vec![CastLayer {
+                body: Solid::cuboid(Vector3::new(0.020, 0.020, 0.015)),
+                material: MoldingMaterial {
+                    display_name: "Custom Mix".to_string(),
+                    density_kg_m3: 1050.0,
+                    anchor_key: None,
+                },
+            }],
+            plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.060)),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.002,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
+        assert!(
+            !md.contains("≥consult"),
+            "non-anchor prose must not substitute placeholder into the duration slot"
+        );
+        assert!(
+            !md.contains("(pot life: consult"),
+            "non-anchor prose must not substitute placeholder into the pot-life slot"
+        );
+        assert!(
+            md.contains("6. Cure per the Smooth-On TDS at 73 °F (pot life per TDS)."),
+            "non-anchor step 6 must use alternate-prose phrasing"
+        );
+    }
+
+    #[test]
+    fn write_procedure_errors_when_layer_mass_exceeds_budget() {
+        // Mirrors `export_molds_errors_when_layer_mass_exceeds_budget`
+        // — both pre-write paths share the same check_mass_budget
+        // helper, so an overrun must surface identically through
+        // write_procedure. No `.md` file may land on disk.
+        let spec = CastSpec {
+            mass_budget_kg: 0.010,
+            ..pour_volume_fixture()
+        };
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-f3-budget-exceeded.md");
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let err = spec.write_procedure(&path).unwrap_err();
+        match err {
+            CastError::MassBudgetExceeded {
+                layer_index,
+                material_display_name,
+                mass_kg,
+                budget_kg,
+            } => {
+                assert_eq!(layer_index, 0);
+                assert_eq!(material_display_name, "Ecoflex 00-30");
+                assert!(mass_kg > budget_kg);
+                assert!((budget_kg - 0.010).abs() < f64::EPSILON);
+            }
+            other => panic!("expected MassBudgetExceeded, got {other:?}"),
+        }
+        assert!(
+            !path.exists(),
+            "write_procedure must not land a file on budget failure"
         );
     }
 
