@@ -260,7 +260,7 @@ pub fn sequence_info_panel(
         egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 6));
     egui::TopBottomPanel::bottom("cf-view-sequence")
         .resizable(false)
-        .min_height(52.0)
+        .min_height(76.0)
         .frame(frame)
         .show(ctx, |ui| {
             // Row 1 — status: Frame N/M + filename + hint row.
@@ -317,6 +317,29 @@ pub fn sequence_info_panel(
                     }
                 }
             });
+            ui.add_space(2.0);
+            // Row 3 (D2.3) — speed + loop controls. Linear FPS slider
+            // 1..=30 covers slow-frame inspection (1 fps = 1s/frame) up
+            // through fast playback (30 fps = ~33 ms/frame). Default 10
+            // fps gives row 25's 8-frame ramp an ~0.8s end-to-end run.
+            // egui's `Slider::clamp_to_range` (default true) keeps the
+            // value within the band even when typed.
+            //
+            // Loop checkbox flips `Playback::loop_mode`; the clock
+            // system reads it at next advance, so the toggle takes
+            // effect immediately on the next frame boundary.
+            if let Some(playback) = playback.as_deref_mut() {
+                ui.horizontal(|ui| {
+                    ui.label("Speed");
+                    ui.add(
+                        egui::Slider::new(&mut playback.fps, 1.0..=30.0)
+                            .suffix(" fps")
+                            .integer(),
+                    );
+                    ui.separator();
+                    ui.checkbox(&mut playback.loop_mode, "Loop");
+                });
+            }
         });
     Ok(())
 }
