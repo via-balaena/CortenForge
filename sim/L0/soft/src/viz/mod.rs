@@ -113,6 +113,18 @@ use crate::material::Material;
 use crate::mesh::{Mesh, VertexId};
 use crate::sdf_bridge::{Aabb3, Sdf};
 
+/// C2.2 IDW hyperparameter — top-k count for the continuous-scalar
+/// kNN-IDW sampler [`idw_k_nearest_tet_centroids`].
+///
+/// k = 8 matches the typical tets-per-cell on a BCC analysis mesh
+/// (six BCC tets per cubic cell, plus boundary-overflow from the
+/// 3×3×3 `TetGrid` window) — the smoothing kernel is effectively
+/// "one Voronoi neighborhood." Smaller k narrows the smoothing
+/// (k = 1 collapses to nearest-tet, identical to the C2.1 categorical
+/// path); larger k widens it but admits centroids from further away
+/// that aren't physically relevant to the probe.
+const IDW_K: usize = 8;
+
 /// Error surface for viz primitives.
 #[derive(Clone, Debug)]
 pub enum VizError {
@@ -711,10 +723,35 @@ pub fn design_slab_cut<M: Material>(
     let (uu, vv) = uv_axes(plane.axis);
     let grid = SdfGrid::sample(sdf, plane, bounds, resolution, uu, vv);
 
+    // C2.1 categorical/continuous split. Continuous scalars pre-
+    // project to vol-weighted-per-vertex so `sample_analysis_at_point`
+    // can barycentric-interpolate inside the enclosing slab tet;
+    // categorical scalars (suffix `_id`) skip the pre-projection and
+    // share a single `nearest_tet_centroid_idx` lookup per display
+    // vertex against `slab_tets`, emitting the exact integer of the
+    // nearest tet. Mirrors the dispatch in `design_surface` (the C2.2
+    // kNN-IDW continuous-path swap is deliberately scope-limited to
+    // `design_surface` — `design_slab_cut` doesn't build a `TetGrid`
+    // and adding one is a perf-vs-benefit trade banked for C2.x).
     let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
-    let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+    let is_categorical: Vec<bool> = scalar_names
         .iter()
-        .map(|&name| volume_weighted_per_vertex_avg(analysis_mesh, per_tet_scalars[&name]))
+        .map(|&n| is_categorical_scalar_name(n))
+        .collect();
+    let any_categorical = is_categorical.iter().any(|&b| b);
+    let cont_per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+        .iter()
+        .zip(is_categorical.iter())
+        .filter_map(|(&name, &cat)| {
+            if cat {
+                None
+            } else {
+                Some(volume_weighted_per_vertex_avg(
+                    analysis_mesh,
+                    per_tet_scalars[&name],
+                ))
+            }
+        })
         .collect();
 
     let analysis_positions = analysis_mesh.positions();
@@ -737,15 +774,28 @@ pub fn design_slab_cut<M: Material>(
         .collect();
     for &p in &state.positions {
         let probe = Vec3::new(p[0], p[1], p[2]);
-        let scalars = sample_analysis_at_point(
+        let cont_vals = sample_analysis_at_point(
             probe,
             analysis_mesh,
             analysis_positions,
             &slab_tets,
-            &per_vertex_by_scalar,
+            &cont_per_vertex_by_scalar,
         );
-        for (i, val) in scalars.iter().enumerate() {
-            display_scalars[i].push(*val);
+        let nearest = if any_categorical {
+            nearest_tet_centroid_idx(probe, analysis_mesh, analysis_positions, &slab_tets)
+        } else {
+            None
+        };
+        let mut next_cont = 0_usize;
+        for (i, &name) in scalar_names.iter().enumerate() {
+            let val = if is_categorical[i] {
+                nearest.map_or(0.0, |t| per_tet_scalars[&name][t as usize])
+            } else {
+                let v = cont_vals[next_cont];
+                next_cont += 1;
+                v
+            };
+            display_scalars[i].push(val);
         }
     }
 
@@ -888,40 +938,43 @@ pub fn design_surface<M: Material>(
         .collect();
     let any_categorical = is_categorical.iter().any(|&b| b);
     // Continuous slots only, in `scalar_names` order with categorical
-    // slots skipped. `sample_analysis_at_point` iterates this slice
-    // and returns one f64 per entry — never sees the categorical
-    // slots, so the wasted vol-weighted-avg pass on them is avoided.
-    let cont_per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+    // slots skipped. C2.2 samples each probe directly from per-tet
+    // values via kNN-IDW (no precomputed vol-weighted-per-vertex
+    // intermediate), so we just collect the underlying `&[f64]`
+    // references — `idw_k_nearest_tet_centroids` does the smoothing
+    // at sample time.
+    let cont_per_tet_refs: Vec<&[f64]> = scalar_names
         .iter()
         .zip(is_categorical.iter())
         .filter_map(|(&name, &cat)| {
             if cat {
                 None
             } else {
-                Some(volume_weighted_per_vertex_avg(
-                    analysis_mesh,
-                    per_tet_scalars[&name],
-                ))
+                Some(per_tet_scalars[&name])
             }
         })
         .collect();
 
-    // 4. Per-display-vertex barycentric scalar interp via uniform-grid
-    //    spatial accelerator. Each probe queries a 3×3×3 cell window
-    //    around its grid cell — covers tets whose AABB contains the
-    //    probe AND nearby tets the probe is just outside (the design
-    //    SDF's smooth surface and the analysis mesh's polyhedral
-    //    surface don't coincide; nearest-tet-with-clipped-bary fallback
-    //    needs to see neighboring cells to find the closest candidate).
-    //    Total work: ~27 × tets-per-cell per probe vs n_tets in the
-    //    pre-perf naive walk. On row 20 (51 k tets, 0.01 m cell, 305 k
-    //    display vertices), naive ran ~80 s; spatial-grid ran ~few s.
-    //    Categorical scalars reuse the same `candidates` buffer
-    //    (`nearest_tet_centroid_idx`); the centroid search is k=1 over
-    //    the same 3×3×3 window, shared across every `_id` scalar in
-    //    flight.
+    // 4. Per-display-vertex scalar sampling via uniform-grid spatial
+    //    accelerator. Each probe queries a 3×3×3 cell window around
+    //    its grid cell — covers tets whose AABB contains the probe
+    //    AND nearby tets the probe is just outside. On row 20 (51 k
+    //    tets, 0.01 m cell, 305 k display vertices) the naive
+    //    O(n_tets) walk ran ~80 s; spatial-grid lookup runs in seconds.
+    //    Categorical scalars share a single `nearest_tet_centroid_idx`
+    //    lookup per probe (C2.1 k=1); continuous scalars share a
+    //    single `idw_k_nearest_tet_centroids` pass per probe (C2.2
+    //    Shepard's IDW over the top-k=8 nearest centroids in the
+    //    same 3×3×3 candidate pool).
     let analysis_positions = analysis_mesh.positions();
     let tet_grid = TetGrid::build(analysis_mesh, analysis_positions);
+
+    // C2.2 IDW eps floor: scale-invariant weight clamp that collapses
+    // the IDW kernel to nearest-tet behavior when the probe lies
+    // essentially on a centroid (avoids 1/0 blow-up while staying
+    // negligible at any geometric distance above the floor).
+    // `IDW_K` is module-level (see top of file).
+    let idw_eps = (tet_grid.cell_size * 1e-3).powi(2);
 
     let mut display_scalars: Vec<Vec<f64>> = scalar_names
         .iter()
@@ -936,15 +989,21 @@ pub fn design_surface<M: Material>(
         candidates.clear();
         tet_grid.append_candidates_with_neighbors(probe, &mut candidates);
 
-        // Continuous: barycentric over the existing pipeline. Empty
-        // `cont_per_vertex_by_scalar` produces an empty `cont_vals`
-        // (the all-categorical degenerate case is a valid no-op here).
-        let cont_vals = sample_analysis_at_point(
+        // Continuous: Shepard-style kNN-IDW (k=8) directly on per-tet
+        // values. Wider smoothing radius than the pre-C2.2 single-
+        // enclosing-tet barycentric path; smooths the patchwork
+        // gradient-jump-at-tet-faces pattern visible on ψ fields.
+        // Empty `cont_per_tet_refs` (all-categorical case) returns
+        // an empty `cont_vals` (the helper short-circuits at
+        // `n_scalars == 0`).
+        let cont_vals = idw_k_nearest_tet_centroids(
             probe,
             analysis_mesh,
             analysis_positions,
             &candidates,
-            &cont_per_vertex_by_scalar,
+            &cont_per_tet_refs,
+            IDW_K,
+            idw_eps,
         );
 
         // Categorical: single nearest-tet-centroid lookup shared
@@ -2100,6 +2159,88 @@ fn nearest_tet_centroid_idx<M: Material>(
         }
     }
     best
+}
+
+/// C2.2 continuous-scalar sampler: Shepard-style k-nearest-tet IDW
+/// (inverse-distance-weighted average) at an arbitrary 3D probe point.
+///
+/// Returns one f64 per scalar in `per_tet_scalars` order. Picks the
+/// `k` tets from `candidate_tets` with smallest centroid-to-probe
+/// distance and computes the weighted average:
+/// `value = Σ (w_i * per_tet[t_i]) / Σ w_i` where
+/// `w_i = 1 / (d_i² + eps)` and `d_i` is the centroid-to-probe
+/// distance for tet `t_i`. The `eps` floor avoids weight blow-up when
+/// the probe coincides with a centroid (the limit collapses to
+/// nearest-tet behavior, which matches the C2.1 categorical path).
+///
+/// Wider smoothing radius than the pre-C2.2 vol-weighted-per-vertex +
+/// barycentric path: that path averaged over each MC vertex's one
+/// enclosing analysis tet, producing piecewise-linear-per-tet output
+/// with gradient jumps at tet faces (visible as a "patchwork" pattern
+/// on the ψ field of `design_surface` output). kNN-IDW averages over
+/// k tets regardless of enclosing-tet boundaries, producing visibly
+/// smoother gradients on the design-mesh display surface.
+///
+/// `candidate_tets` is expected to be a `TetGrid` 3×3×3 cell window
+/// around the probe; empty candidates → returns `vec![0.0; n_scalars]`
+/// (orphan-probe convention shared with the rest of the module).
+//
+// `cast_possible_truncation` allowed: VertexId/TetId are u32 by crate
+// convention; `mesh.n_tets() < u32::MAX` is a γ-locked invariant.
+#[allow(clippy::cast_possible_truncation)]
+fn idw_k_nearest_tet_centroids<M: Material>(
+    probe: Vec3,
+    mesh: &dyn Mesh<M>,
+    positions: &[Vec3],
+    candidate_tets: &[u32],
+    per_tet_scalars: &[&[f64]],
+    k: usize,
+    eps: f64,
+) -> Vec<f64> {
+    let n_scalars = per_tet_scalars.len();
+    if candidate_tets.is_empty() || n_scalars == 0 {
+        return vec![0.0; n_scalars];
+    }
+
+    // (squared_distance_to_centroid, tet_id) for each candidate.
+    let mut by_dist2: Vec<(f64, u32)> = candidate_tets
+        .iter()
+        .map(|&t| {
+            let [v0, v1, v2, v3] = mesh.tet_vertices(t);
+            let centroid = (positions[v0 as usize]
+                + positions[v1 as usize]
+                + positions[v2 as usize]
+                + positions[v3 as usize])
+                * 0.25;
+            ((probe - centroid).norm_squared(), t)
+        })
+        .collect();
+
+    // Sort ascending by squared distance. For BCC + 3×3×3 TetGrid
+    // window the candidate count is ~150 and k is ~8; full sort is
+    // cheap and simpler than a partial-sort heap.
+    by_dist2.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let k_eff = k.min(by_dist2.len());
+
+    let mut total_weight = 0.0_f64;
+    let mut sums = vec![0.0_f64; n_scalars];
+    for &(d2, t) in &by_dist2[..k_eff] {
+        let w = 1.0 / (d2 + eps);
+        total_weight += w;
+        for (i, &per_tet) in per_tet_scalars.iter().enumerate() {
+            sums[i] = w.mul_add(per_tet[t as usize], sums[i]);
+        }
+    }
+
+    if total_weight > 0.0 {
+        sums.iter().map(|&s| s / total_weight).collect()
+    } else {
+        // All weights numerically zero — only reachable if `eps` is
+        // huge or candidate_tets length is zero (handled above). Keep
+        // the branch as a defensive zero-fill so the caller's per-
+        // scalar Vec stays correctly sized.
+        vec![0.0; n_scalars]
+    }
 }
 
 /// Volume-weighted projection of a per-tet scalar to per-vertex.
@@ -3690,5 +3831,172 @@ mod tests {
             scene.geometry.vertices.len(),
             "normals must cover body + contact"
         );
+    }
+
+    // ---- C2.2 idw_k_nearest_tet_centroids unit tests ----
+
+    /// Constant per-tet field → output equals that constant at any
+    /// probe regardless of distance distribution. Trivially follows
+    /// from `Σ w_i * c / Σ w_i = c`; pinned as a baseline so future
+    /// kernel changes don't accidentally bias constant fields.
+    #[test]
+    fn idw_k_nearest_constant_field_returns_constant() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let positions = mesh.positions();
+        let per_tet: [f64; 2] = [42.5, 42.5];
+        let candidates: Vec<u32> = vec![0, 1];
+        for probe in [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.05, 0.05, 0.05),
+            Vec3::new(1.0, -2.0, 3.0),
+        ] {
+            let out = idw_k_nearest_tet_centroids(
+                probe,
+                &mesh,
+                positions,
+                &candidates,
+                &[&per_tet],
+                8,
+                1e-12,
+            );
+            assert_eq!(out.len(), 1);
+            assert!(
+                (out[0] - 42.5).abs() < 1e-12,
+                "constant field at probe {probe:?}: got {} expected 42.5",
+                out[0],
+            );
+        }
+    }
+
+    /// Single candidate tet → output equals that tet's per-tet value
+    /// regardless of probe-to-centroid distance. The IDW reduces to
+    /// `(w * v) / w = v` when only one tet contributes.
+    #[test]
+    fn idw_k_nearest_single_candidate_returns_that_tet_value() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let positions = mesh.positions();
+        let per_tet: [f64; 2] = [42.0, 99.0];
+        // Probe arbitrary, well away from either centroid.
+        let probe = Vec3::new(10.0, 10.0, 10.0);
+        // Only tet 1 in the candidate set.
+        let candidates: Vec<u32> = vec![1];
+        let out = idw_k_nearest_tet_centroids(
+            probe,
+            &mesh,
+            positions,
+            &candidates,
+            &[&per_tet],
+            8,
+            1e-12,
+        );
+        assert!(
+            (out[0] - 99.0).abs() < 1e-12,
+            "single-tet IDW must return that tet's value, got {}",
+            out[0],
+        );
+    }
+
+    /// Probe at the midpoint between two tet centroids with scalars
+    /// `0.0` and `1.0` → IDW returns `0.5` (equal weights cancel).
+    /// Pins the equal-distance branch of the Shepard kernel.
+    #[test]
+    fn idw_k_nearest_symmetric_two_candidates_returns_average() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let positions = mesh.positions();
+        // Tet 0 centroid = (0.025, 0.025, 0.025); tet 1 centroid =
+        // mean of v1=(0.1,0,0), v2=(0,0.1,0), v3=(0,0,0.1),
+        // v4=(0.08,0.08,0.08) = (0.045, 0.045, 0.045). Midpoint:
+        // (0.035, 0.035, 0.035) is equidistant from both centroids.
+        let probe = Vec3::new(0.035, 0.035, 0.035);
+        let per_tet: [f64; 2] = [0.0, 1.0];
+        let candidates: Vec<u32> = vec![0, 1];
+        let out = idw_k_nearest_tet_centroids(
+            probe,
+            &mesh,
+            positions,
+            &candidates,
+            &[&per_tet],
+            8,
+            1e-12,
+        );
+        assert!(
+            (out[0] - 0.5).abs() < 1e-12,
+            "equidistant probe IDW must average to 0.5, got {}",
+            out[0],
+        );
+    }
+
+    /// `design_slab_cut` C2.1 gap-fix: a categorical `_id` scalar on
+    /// the design-SDF cross-section must produce integer-only output,
+    /// matching the rest of the C2.1 design-X family. Pre-fix the
+    /// vol-weighted-per-vertex + barycentric path would produce
+    /// fractional values at any cross-vertex inside an analysis tet
+    /// whose 4 vertices carry different integer-derived averages.
+    #[test]
+    fn design_slab_cut_categorical_id_stays_integer() {
+        // Use the analysis-mesh boundary directly as the design SDF —
+        // the cross-section at z=0.05 then samples shell_id from the
+        // two analysis tets via nearest_tet_centroid_idx.
+        struct MeshBoxSdf;
+        impl crate::sdf_bridge::Sdf for MeshBoxSdf {
+            fn eval(&self, p: nalgebra::Point3<f64>) -> f64 {
+                let lo = nalgebra::Vector3::new(0.0, 0.0, 0.0);
+                let hi = nalgebra::Vector3::new(0.1, 0.1, 0.1);
+                let q = nalgebra::Vector3::new(
+                    (lo.x - p.x).max(p.x - hi.x),
+                    (lo.y - p.y).max(p.y - hi.y),
+                    (lo.z - p.z).max(p.z - hi.z),
+                );
+                q.x.max(q.y).max(q.z)
+            }
+            fn grad(&self, _p: nalgebra::Point3<f64>) -> Vec3 {
+                Vec3::z()
+            }
+        }
+        let sdf = MeshBoxSdf;
+
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let shell_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_shell_id", &shell_id);
+        let bounds = Aabb3::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.1, 0.1, 0.1));
+
+        let attr = design_slab_cut(
+            &sdf,
+            &mesh,
+            Plane {
+                axis: 2,
+                value: 0.05,
+            },
+            &bounds,
+            0.01,
+            &scalars,
+        )
+        .unwrap();
+        let shell = attr
+            .extras
+            .get("material_shell_id")
+            .expect("shell extra missing");
+        assert!(
+            !shell.is_empty(),
+            "z=0.05 design slab cut must produce a non-empty cross-section",
+        );
+        for &v in shell {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical design-slab-cut value {v} is fractional — \
+                 C2.1 gap-fix should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical design-slab-cut value {rounded} is not one \
+                 of the input integers {{3, 7}}",
+            );
+        }
     }
 }
