@@ -152,15 +152,28 @@ fn load_stl_binary_from_header<R: Read>(header: &[u8], mut reader: R) -> IoResul
 
     let mut mesh = IndexedMesh::with_capacity((face_count as usize) * 3, face_count as usize);
 
-    // Read triangles
+    // Read triangles. `read_exact` (not `read`) because `BufReader::read`
+    // returns at most the bytes remaining in BufReader's internal buffer
+    // — once that buffer (8 KiB by default) runs dry mid-triangle, a
+    // `read` call returns < `TRIANGLE_SIZE` bytes even though the
+    // underlying file has more data. Prior code mistook that condition
+    // for a truncated file and returned `InvalidFaceCount` on any binary
+    // STL with > 162 triangles ((8192 - HEADER_SIZE - 4) / 50 = 162.16).
+    // `read_exact` fills the buffer across multiple kernel reads as
+    // needed; the only failure mode is genuine premature EOF, which we
+    // still surface as `InvalidFaceCount` for callers expecting the
+    // old contract.
     let mut triangle_buf = [0u8; TRIANGLE_SIZE];
     for i in 0..face_count {
-        let bytes_read = reader.read(&mut triangle_buf)?;
-        if bytes_read < TRIANGLE_SIZE {
-            return Err(IoError::InvalidFaceCount {
-                expected: face_count,
-                got: i,
-            });
+        match reader.read_exact(&mut triangle_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(IoError::InvalidFaceCount {
+                    expected: face_count,
+                    got: i,
+                });
+            }
+            Err(e) => return Err(IoError::Io(e)),
         }
 
         // Skip normal (12 bytes), read 3 vertices (36 bytes total)
@@ -423,6 +436,43 @@ mod tests {
                 assert_eq!(loaded.vertex_count(), original.vertex_count());
             }
         }
+    }
+
+    #[test]
+    fn roundtrip_binary_large_mesh_past_bufreader_boundary() {
+        // Regression for the `read` → `read_exact` fix: prior code
+        // used `BufReader::read(&mut buf)` per triangle, which returns
+        // < `TRIANGLE_SIZE` bytes once BufReader's internal buffer
+        // (8 KiB by default) runs dry. 8192 bytes hold the 80-byte
+        // header + 4-byte count + 162 × 50-byte triangles = 8184 bytes
+        // — so any binary STL with ≥ 163 triangles tripped the
+        // partial-read branch and returned `InvalidFaceCount` even
+        // though the file was complete.
+        //
+        // This test writes a 500-triangle binary STL, loads it back,
+        // and asserts the face count survives the roundtrip. Pre-fix
+        // it failed with `InvalidFaceCount { expected: 500, got: 162 }`.
+        const N_FACES: u32 = 500;
+        let mut original = IndexedMesh::new();
+        for i in 0..N_FACES {
+            let x = f64::from(i);
+            original.vertices.push(Point3::new(x, 0.0, 0.0));
+            original.vertices.push(Point3::new(x + 1.0, 0.0, 0.0));
+            original.vertices.push(Point3::new(x, 1.0, 0.0));
+            let base = i * 3;
+            original.faces.push([base, base + 1, base + 2]);
+        }
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("large.stl");
+        save_stl(&original, &path, true).expect("save_stl should succeed");
+
+        let loaded = load_stl(&path).expect("load_stl should round-trip a 500-face binary STL");
+        assert_eq!(
+            loaded.face_count(),
+            original.face_count(),
+            "round-trip face count must match"
+        );
     }
 
     #[test]

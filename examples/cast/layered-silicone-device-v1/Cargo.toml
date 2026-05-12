@@ -1,0 +1,37 @@
+[package]
+name = "example-cast-layered-silicone-device-v1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# `CastLayer`, `CastSpec`, `MoldingMaterial`, `DEFAULT_MASS_BUDGET_KG` —
+# the Stage 2 multi-layer cast API + the 2 lb-per-pour budget constant.
+# Stage 2 F1+F2+F3 are the cf-cast features this example exercises end-
+# to-end (multi-layer mold STLs + pour-volume gate + procedure-spec
+# Markdown).
+cf-cast = { workspace = true }
+# `Solid::capsule` (Q2 capsule-fallback plug per the casting roadmap),
+# `Solid::offset` (cumulative shell construction), `Solid::subtract`
+# (cavity-from-plug CSG), `Solid::cuboid` (bounding region + clip
+# headroom). Same primitives row 25's `scan-fit-3layer-sleeve-yeoh-
+# axial-zoned-ramp-open-mouth` uses for its sim-side body, scaled to
+# the capsule-plug substitute Q2 resolves to.
+cf-design = { workspace = true }
+# `PrinterConfig::fdm_default` for the F4 printability gate on
+# `CastSpec`. cf-cast exposes `printer_config: PrinterConfig` as a
+# public field but does not (yet) re-export the type, so callers
+# pull mesh-printability directly. Re-exporting from cf-cast is
+# tracked as a future ergonomic enhancement.
+mesh-printability = { workspace = true }
+# `Vector3` for `Solid::cuboid` half-extents and `Solid::translate`
+# offsets. Same convention as the cf-cast Stage 1 + 2 lib tests.
+nalgebra = { workspace = true }
+# `Result<()>` return + error-context wrapping for the export +
+# procedure-write steps. Matches the example-crate convention in
+# `examples/sim-soft/*`.
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

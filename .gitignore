@@ -133,6 +133,12 @@ MUJOCO_LOG.TXT
 # Benchmark results (regenerate with cargo bench)
 /target/criterion/
 
+# Cast example STL artifacts (regenerate via
+# `cargo run -p example-cast-layered-silicone-device-v1`).
+# procedure.md is committed as a workshop reference; STLs are large
+# binaries with no GitHub-browse value.
+examples/cast/*/out/*.stl
+
 # =============================================================================
 # Old Repos (during migration)
 # =============================================================================

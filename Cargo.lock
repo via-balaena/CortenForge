@@ -1853,6 +1853,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-cast"
+version = "1.0.0"
+dependencies = [
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-offset",
+ "mesh-printability",
+ "mesh-types",
+ "nalgebra",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cf-design"
 version = "1.0.0"
 dependencies = [
@@ -2935,6 +2949,17 @@ dependencies = [
  "cf-geometry",
  "nalgebra",
  "sim-bevy",
+]
+
+[[package]]
+name = "example-cast-layered-silicone-device-v1"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-cast",
+ "cf-design",
+ "mesh-printability",
+ "nalgebra",
 ]
 
 [[package]]
