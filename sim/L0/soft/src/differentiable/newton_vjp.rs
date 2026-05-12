@@ -54,13 +54,15 @@
 //! rejected at solver construction (per `assemble_external_force`),
 //! so `stage_1` is unambiguous.
 //!
-//! **Factor reuse.** The `Llt<usize, f64>` stashed here comes from
+//! **Factor reuse.** The `FactoredFreeTangent` stashed here comes from
 //! `CpuNewtonSolver::factor_at_position` at `x_final`, not from the last
-//! Newton-iter factor (which was at the pre-convergence iterate). For
-//! `NeoHookean`, `A = A^T` — the same factor serves both forward-solve
-//! and adjoint-solve. A future asymmetric material would need
-//! `solve_transpose_in_place` here. I-3 (factor ownership) verified
-//! operationally in `tests/invariant_3_factor.rs`.
+//! Newton-iter factor (which was at the pre-convergence iterate). It
+//! is the happy-path Cholesky in the common case, or the A2 LU
+//! fallback when the tangent at `x_final` is indefinite. For
+//! `NeoHookean` (and current Yeoh), `A = A^T` — the same factor serves
+//! both forward-solve and adjoint-solve. A future asymmetric material
+//! would need `solve_transpose_in_place` here. I-3 (factor ownership)
+//! verified operationally in `tests/invariant_3_factor.rs`.
 
 // `register_vjp`, `ift_adjoint`, `time_adjoint`, `fd_wrapper` are all
 // `unimplemented!("skeleton phase 2 — ...")` by design (BF-4 / BF-6 +
@@ -69,14 +71,12 @@
 
 use std::fmt;
 
-use faer::linalg::solvers::SolveCore;
-use faer::sparse::linalg::solvers::Llt;
 use faer::{Conj, MatMut};
 use sim_ml_chassis::{Tensor, autograd::VjpOp};
 
 use super::{Differentiable, TapeNodeKey};
 use crate::readout::GradientEstimate;
-use crate::solver::{CpuTape, NewtonStep};
+use crate::solver::{CpuTape, FactoredFreeTangent, NewtonStep};
 
 /// CPU-backend `Differentiable` impl. Stateless at type level;
 /// `NewtonStepVjp` holds primal data per tape node.
@@ -123,7 +123,9 @@ impl Differentiable for CpuDifferentiable {
 
 /// Custom VJP for one converged Newton step.
 ///
-/// Stashes the faer `Llt` factor of `A = ∂r/∂x` at `x_final` plus the
+/// Stashes the faer factor of `A = ∂r/∂x` at `x_final` (either the
+/// happy-path `Llt` or the A2 LU fallback — the variant is held
+/// inside a `FactoredFreeTangent` enum, crate-private), plus the
 /// metadata needed to gather `g_free` from the cotangent and dispatch
 /// the per-stage closed-form contraction (Decision I generalization).
 ///
@@ -134,7 +136,7 @@ impl Differentiable for CpuDifferentiable {
 /// - Stage 2 (all-FullVector BC): per-loaded-vertex triplet
 ///   `parent_cot[3i + axis] += λ[free(v_i.axis)]`.
 pub struct NewtonStepVjp {
-    factor: Llt<usize, f64>,
+    factor: FactoredFreeTangent,
     /// Total DOF count, asserted on the cotangent shape.
     n_dof: usize,
     /// Full-DOF indices of the free DOFs, in ascending free-index
@@ -156,15 +158,19 @@ pub struct NewtonStepVjp {
 impl NewtonStepVjp {
     /// Construct a VJP for one converged Newton step.
     ///
-    /// `factor` is the `Llt` of `A = ∂r/∂x` at `x_final`.
-    /// `free_dof_indices` is the full-DOF index list of free DOFs (in
-    /// ascending free-index order). `loaded_free_xyz` is per-loaded-
-    /// vertex xyz free indices, pre-computed via `full_to_free_idx`
-    /// from the solver. `stage_1` is the BC's load-axis
-    /// discriminator.
+    /// `factor` is the `FactoredFreeTangent` of `A = ∂r/∂x` at
+    /// `x_final` — either the happy-path Cholesky or the A2 LU
+    /// fallback. `free_dof_indices` is the full-DOF index list of free
+    /// DOFs (in ascending free-index order). `loaded_free_xyz` is
+    /// per-loaded-vertex xyz free indices, pre-computed via
+    /// `full_to_free_idx` from the solver. `stage_1` is the BC's
+    /// load-axis discriminator.
+    ///
+    /// Crate-private: the only caller is `CpuNewtonSolver::step`, and
+    /// the `FactoredFreeTangent` parameter is itself `pub(crate)`.
     #[must_use]
-    pub const fn new(
-        factor: Llt<usize, f64>,
+    pub(crate) const fn new(
+        factor: FactoredFreeTangent,
         n_dof: usize,
         free_dof_indices: Vec<usize>,
         loaded_free_xyz: Vec<[usize; 3]>,
@@ -180,14 +186,14 @@ impl NewtonStepVjp {
     }
 }
 
-// `Llt<usize, f64>` does not derive Debug; hand-roll a minimal impl so the
-// `VjpOp` `Debug` supertrait bound is satisfied without leaking factor
-// internals.
+// `FactoredFreeTangent` wraps faer factors that don't derive Debug;
+// hand-roll a minimal impl so the `VjpOp` `Debug` supertrait bound is
+// satisfied without leaking factor internals.
 impl fmt::Debug for NewtonStepVjp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NewtonStepVjp")
             .field("op_id", &"sim_soft::NewtonStepVjp")
-            .field("factor", &"<Llt<usize, f64>>")
+            .field("factor", &"<FactoredFreeTangent>")
             .field("n_dof", &self.n_dof)
             .field("n_free", &self.free_dof_indices.len())
             .field("n_loaded", &self.loaded_free_xyz.len())
@@ -234,10 +240,11 @@ impl VjpOp for NewtonStepVjp {
         let mut rhs: Vec<f64> = self.free_dof_indices.iter().map(|&idx| cot[idx]).collect();
         let n_free = rhs.len();
 
-        // Solve `A · λ = g_free` in place via the stashed Llt. `A` is
-        // symmetric for `NeoHookean`, so we use the same factor shape
-        // the forward Newton step produced — no transpose needed.
-        // (Asymmetric materials would need `solve_transpose_in_place`.)
+        // Solve `A · λ = g_free` in place via the stashed factor (Llt
+        // or — under A2 fallback — Lu). `A` is symmetric for
+        // `NeoHookean`, so we use the same factor shape the forward
+        // Newton step produced — no transpose needed. (Asymmetric
+        // materials would need `solve_transpose_in_place`.)
         let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, n_free, 1);
         self.factor.solve_in_place_with_conj(Conj::No, rhs_mat);
         // `rhs` now holds λ (in free-DOF indexing).

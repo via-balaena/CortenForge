@@ -18,6 +18,7 @@ use sim_ml_chassis::{Tape, Tensor, Var};
 
 pub mod backward_euler;
 
+pub(crate) use backward_euler::FactoredFreeTangent;
 pub use backward_euler::{CpuNewtonSolver, SolverConfig};
 
 /// CPU tape — alias for the chassis `Tape` so VJPs register against a

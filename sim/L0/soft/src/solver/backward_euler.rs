@@ -26,7 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use faer::linalg::solvers::SolveCore;
 use faer::prelude::Reborrow;
-use faer::sparse::linalg::solvers::{Llt, SymbolicLlt, SymbolicLu};
+use faer::sparse::linalg::LltError;
+use faer::sparse::linalg::solvers::{Llt, Lu, SymbolicLlt, SymbolicLu};
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Conj, MatMut, Side};
 use nalgebra::{Matrix3, SMatrix};
@@ -108,6 +109,41 @@ impl SolverConfig {
 impl Default for SolverConfig {
     fn default() -> Self {
         Self::skeleton()
+    }
+}
+
+/// Factor of the free-DOF condensed tangent — either the SPD-happy-path
+/// Cholesky factor or the A2 LU fallback that engages when Llt hits a
+/// non-PD pivot. Both variants implement the same in-place solve via
+/// `solve_in_place_with_conj`, so downstream consumers
+/// ([`NewtonStepVjp`](crate::differentiable::newton_vjp::NewtonStepVjp))
+/// stay solver-shape-agnostic.
+///
+/// Happy path: every factor returned is `Llt`. The fallback fires only
+/// when the assembled tangent is indefinite at the current Newton iter
+/// (or, rarely, at `x_final` for the IFT adjoint), which historically
+/// surfaced at row 21 v1.5's capsule-cap apex contact concentration.
+pub(crate) enum FactoredFreeTangent {
+    Llt(Llt<usize, f64>),
+    /// Boxed because faer's `Lu` (carrying `NumericLu`'s row/col-perm
+    /// vecs + factor data) is substantially larger than `Llt`. The Lu
+    /// variant fires only on the cold A2 fallback path, so the
+    /// per-fallback heap indirection beats enlarging every happy-path
+    /// `Llt`-carrying value (per `clippy::large_enum_variant`).
+    Lu(Box<Lu<usize, f64>>),
+}
+
+impl FactoredFreeTangent {
+    /// Solve `A · x = rhs` in place via the stored factor, forwarding
+    /// `conj` through. Same API shape as
+    /// [`faer::linalg::solvers::SolveCore::solve_in_place_with_conj`];
+    /// the match dispatches to whichever variant holds the actual
+    /// factor. `Box<Lu<…>>` auto-derefs through the trait call.
+    pub(crate) fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, f64>) {
+        match self {
+            Self::Llt(llt) => llt.solve_in_place_with_conj(conj, rhs),
+            Self::Lu(lu) => lu.solve_in_place_with_conj(conj, rhs),
+        }
     }
 }
 
@@ -634,48 +670,113 @@ where
             .sqrt()
     }
 
-    /// Re-factor the free-DOF Hessian at a specific position (post-
-    /// Newton-convergence for the IFT adjoint). Re-uses the cached
-    /// symbolic factor — no rebuild.
+    /// Factor the free-DOF condensed tangent assembled from `triplets`
+    /// (lower-tri, column-major sorted).
+    ///
+    /// Cheap-path-first: try `Llt` on the cached symbolic factor; on
+    /// `LltError::Numeric` (non-PD pivot — an indefinite tangent at the
+    /// current Newton iter or position), reflect the lower-tri triplets
+    /// to the full pattern and factor via `Lu` against the cached
+    /// `symbolic_lu`. Happy path is bit-identical to the pre-A2 code;
+    /// the fall-through engages only on contact-tangent indefiniteness
+    /// (row 21 v1.5 capsule-cap apex was the documented case at A2
+    /// landing).
+    ///
+    /// `context` is a `&str` tag included in the fallback warn-log and
+    /// the doubly-failed panic message so debug can identify which
+    /// factor site fired the fallback or panic.
     //
-    // expect_used + panic justifications:
-    //   • Sparse-pattern construction at the cached n_free dimensions
-    //     can only fail on duplicate triplet entries, which the
-    //     BTreeMap accumulator in `assemble_free_hessian_triplets`
-    //     prevents by construction.
-    //   • Llt factor failure is a scope §3 R-2 SPD-contract violation
-    //     on the θ-path; faer Lu fallback would be the right path if
-    //     an indefinite case ever surfaces, but for the skeleton's
-    //     θ-path it's a programmer bug.
+    // expect_used + panic justifications (helper owns both):
+    //   • `SparseColMat::try_new_from_triplets` can only fail on
+    //     duplicate triplet entries, which the BTreeMap accumulator in
+    //     `assemble_free_hessian_triplets` (and the new() pattern
+    //     reflection) prevents by construction.
+    //   • LltError::Generic (OutOfMemory) and LuError post-fallback are
+    //     both non-recoverable: the symbolic patterns were validated at
+    //     new(), so a fresh failure is either OOM or a deeper bug.
+    //   • The fall-through `Lu::try_new_with_symbolic` failing is the
+    //     A2 doubly-failed case — the Llt path tripped non-PD AND the
+    //     LU path tripped a singular factor; not recoverable without a
+    //     model-level change (looser validity domain, mesh refinement,
+    //     or geometry change). Panic carries the context.
     #[allow(clippy::expect_used, clippy::panic)]
-    fn factor_at_position(&self, x_curr: &[f64], dt: f64) -> Llt<usize, f64> {
-        let triplets = self.assemble_free_hessian_triplets(x_curr, dt);
+    fn factor_free_tangent(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        context: &str,
+    ) -> FactoredFreeTangent {
         let a_mat: SparseColMat<usize, f64> =
-            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &triplets)
+            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, triplets)
                 .expect("malformed condensed-tangent triplet list");
-        Llt::<usize, f64>::try_new_with_symbolic(self.symbolic.clone(), a_mat.rb(), Side::Lower)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "condensed tangent not SPD at x_final (IFT adjoint factor): \
-                     {err:?}. Scope §3 R-2 asserts SPD on the θ-path."
+        match Llt::<usize, f64>::try_new_with_symbolic(
+            self.symbolic.clone(),
+            a_mat.rb(),
+            Side::Lower,
+        ) {
+            Ok(llt) => FactoredFreeTangent::Llt(llt),
+            Err(LltError::Numeric(numeric_err)) => {
+                // A2 fallback. Symmetrize lower-tri → full and factor
+                // via Lu. The warn-log lets debug tell SPD-skeleton
+                // violations (which were panics pre-A2) from
+                // genuinely-recoverable indefinite contact-tangent
+                // cases.
+                eprintln!(
+                    "sim-soft: faer LU fallback fired at {context} \
+                     (Llt non-PD pivot: {numeric_err:?})"
+                );
+                let mut full_triplets: Vec<Triplet<usize, usize, f64>> =
+                    Vec::with_capacity(triplets.len() * 2);
+                for t in triplets {
+                    full_triplets.push(Triplet::new(t.row, t.col, t.val));
+                    if t.row != t.col {
+                        full_triplets.push(Triplet::new(t.col, t.row, t.val));
+                    }
+                }
+                let a_mat_full: SparseColMat<usize, f64> =
+                    SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &full_triplets)
+                        .expect("malformed full condensed-tangent triplet list");
+                let lu = Lu::<usize, f64>::try_new_with_symbolic(
+                    self.symbolic_lu.clone(),
+                    a_mat_full.rb(),
                 )
-            })
+                .unwrap_or_else(|lu_err| {
+                    panic!(
+                        "condensed tangent factor doubly failed at {context}: \
+                         Llt tripped non-PD AND Lu fallback failed: {lu_err:?}. \
+                         Tangent is degenerate beyond LU rescue — model-level \
+                         change needed (looser validity domain, mesh \
+                         refinement, or contact-geometry change)."
+                    )
+                });
+                FactoredFreeTangent::Lu(Box::new(lu))
+            }
+            Err(LltError::Generic(faer_err)) => panic!(
+                "condensed tangent Llt factor failed at {context} with \
+                 non-Numeric error: {faer_err:?} (symbolic pattern wrong or \
+                 OutOfMemory — both should be impossible post-new())."
+            ),
+        }
     }
 
-    /// Solve `A_free · δ = -r_free` using the cached symbolic factor.
+    /// Re-factor the free-DOF condensed tangent at a specific position
+    /// (post-Newton-convergence for the IFT adjoint). Re-uses the
+    /// cached symbolic factors — no rebuild. Returns either the
+    /// happy-path Cholesky or the A2 LU fallback per
+    /// [`Self::factor_free_tangent`].
+    fn factor_at_position(&self, x_curr: &[f64], dt: f64) -> FactoredFreeTangent {
+        let triplets = self.assemble_free_hessian_triplets(x_curr, dt);
+        self.factor_free_tangent(&triplets, "factor_at_position (IFT adjoint at x_final)")
+    }
+
+    /// Solve `A_free · δ = -r_free` via the cached symbolic factor.
     /// Returns the Newton step `δ_free` of length `self.n_free`.
     ///
     /// `triplets` must be the lower-triangle of `A_free` in `(col, row)`-
     /// sorted order; produced by `assemble_free_hessian_triplets`.
     /// `r_full` is the full-DOF residual; the free-DOF subset is
-    /// gathered via `self.free_dof_indices`.
-    //
-    // expect_used + panic: same SPD-contract / fixed-pattern rationale
-    // as `factor_at_position` above (sparse-pattern build can only fail
-    // on duplicate triplets, which the BTreeMap accumulator prevents;
-    // Llt factor failure = scope §3 R-2 SPD violation, programmer bug
-    // on the θ-path).
-    #[allow(clippy::expect_used, clippy::panic)]
+    /// gathered via `self.free_dof_indices`. The factor variant (Llt
+    /// vs Lu) is encapsulated by [`FactoredFreeTangent`] and forwards
+    /// the solve transparently.
     fn factor_and_solve_free(
         &self,
         triplets: &[Triplet<usize, usize, f64>],
@@ -683,22 +784,11 @@ where
         newton_iter: usize,
         r_norm: f64,
     ) -> Vec<f64> {
-        let a_mat: SparseColMat<usize, f64> =
-            SparseColMat::try_new_from_triplets(self.n_free, self.n_free, triplets)
-                .expect("malformed condensed-tangent triplet list");
-        let llt = Llt::<usize, f64>::try_new_with_symbolic(
-            self.symbolic.clone(),
-            a_mat.rb(),
-            Side::Lower,
-        )
-        .unwrap_or_else(|err| {
-            panic!(
-                "condensed tangent not SPD at Newton iter {newton_iter}, \
-                 free residual norm {r_norm:e}: {err:?}. Scope §3 R-2 \
-                 asserts SPD on the skeleton θ-path; faer Lu fallback \
-                 lands when an indefinite case actually surfaces."
-            )
-        });
+        let context = format!(
+            "factor_and_solve_free at Newton iter {newton_iter} \
+             (free residual norm {r_norm:e})"
+        );
+        let factor = self.factor_free_tangent(triplets, &context);
         // RHS = -r_free, gathered from r_full via the free-DOF index map.
         let mut rhs: Vec<f64> = self
             .free_dof_indices
@@ -707,7 +797,7 @@ where
             .collect();
         let rhs_mat: MatMut<'_, f64> =
             MatMut::from_column_major_slice_mut(&mut rhs, self.n_free, 1);
-        llt.solve_in_place_with_conj(Conj::No, rhs_mat);
+        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
         rhs
     }
 
@@ -718,14 +808,17 @@ where
     /// - Newton exceeds `config.max_newton_iter` iterations without
     ///   reaching `config.tol`.
     /// - Armijo backtracks exceed `config.max_line_search_backtracks`.
-    /// - Tangent factorization fails SPD (scope §3 R-2 asserts SPD on
-    ///   the θ-path; failure is a path-violation bug, not a fallback
-    ///   trigger).
+    /// - Tangent factorization fails doubly (Llt tripped non-PD AND
+    ///   the A2 Lu fallback also failed — see
+    ///   `Self::factor_free_tangent`). This is a model-level
+    ///   degeneracy, not runtime-recoverable.
     //
-    // panic: scope §3 R-1 (3-5-iter convergence prediction) + R-2
-    // (SPD-contract on the θ-path) violations are book-level findings,
-    // not runtime-recoverable conditions; faer Lu fallback would land
-    // when an indefinite case actually surfaces.
+    // panic: scope §3 R-1 (3-5-iter convergence prediction) cap +
+    // Armijo cap are book-level findings, not runtime-recoverable
+    // conditions. The A2 Lu fallback at `factor_free_tangent` widens
+    // the previous "Llt fails = panic" path to "Llt fails → try Lu →
+    // panic only if Lu also fails"; the residual panic surface is
+    // exactly the doubly-failed case.
     #[allow(clippy::panic)]
     fn solve_impl(
         &self,
@@ -1335,14 +1428,28 @@ fn slice_to_vec3s(x_flat: &[f64]) -> Vec<Vec3> {
 
 #[cfg(test)]
 mod tests {
-    //! Phase 2 commit 4a.1 — `BoundaryConditions` validation tests.
+    //! Phase 2 commit 4a.1 — `BoundaryConditions` validation tests
+    //! plus A2 LU-fallback unit fixtures.
     //!
     //! `CpuNewtonSolver::new` validates BC against mesh dimensions
     //! and the no-overlap-between-pinned-and-loaded contract before
     //! the cache build runs. Three `#[should_panic]` cases here cover
     //! the three validation branches; happy-path BC is covered by the
     //! existing seven integration tests in `tests/`.
+    //!
+    //! The A2 fixtures exercise `factor_free_tangent` on
+    //! hand-constructed 3×3 triplets against a 1-tet `SkeletonSolver`
+    //! (`n_free = 3`). The SPD case verifies the happy path returns
+    //! `Llt` and round-trips a solve; the indefinite case verifies the
+    //! Lu fallback engages on `LltError::Numeric` and the Lu solve
+    //! still recovers `Ax = b`. The fallback `eprintln!` is a
+    //! deliberate stderr side-effect — it surfaces the rare event in
+    //! the test runner output as it would in a live run.
 
+    use faer::sparse::Triplet;
+    use faer::{Conj, MatMut};
+
+    use super::FactoredFreeTangent;
     use crate::contact::NullContact;
     use crate::material::MaterialField;
     use crate::mesh::SingleTetMesh;
@@ -1358,6 +1465,17 @@ mod tests {
             SolverConfig::skeleton(),
             bc,
         )
+    }
+
+    /// Build a 1-tet skeleton solver with pinned 0/1/2, free vertex 3.
+    /// `n_free = 3` and the cached symbolic factor covers the dense
+    /// lower-tri 3×3 pattern (6 entries: every (col, row) with
+    /// `row ≥ col`).
+    fn build_3free_solver() -> SkeletonSolver {
+        build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+        })
     }
 
     #[test]
@@ -1388,5 +1506,88 @@ mod tests {
             loaded_vertices: vec![(3, LoadAxis::AxisZ)],
         };
         let _ = build(bc);
+    }
+
+    /// SPD case: `A = [[2, 1, 0], [1, 3, 1], [0, 1, 4]]` (Sylvester:
+    /// det of every leading minor positive). `factor_free_tangent`
+    /// must return the `Llt` variant; the in-place solve must recover
+    /// `x` such that `A · x ≈ b = [1, 1, 1]` to f64 noise.
+    #[test]
+    fn factor_free_tangent_llt_path_on_spd_matrix() {
+        let solver = build_3free_solver();
+        assert_eq!(
+            solver.n_free, 3,
+            "1-tet skeleton with vertices 0/1/2 pinned must have n_free=3"
+        );
+
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 2.0),
+            Triplet::new(1, 0, 1.0),
+            Triplet::new(2, 0, 0.0),
+            Triplet::new(1, 1, 3.0),
+            Triplet::new(2, 1, 1.0),
+            Triplet::new(2, 2, 4.0),
+        ];
+
+        let factor = solver.factor_free_tangent(&triplets, "SPD test fixture");
+        assert!(
+            matches!(factor, FactoredFreeTangent::Llt(_)),
+            "SPD case must take the Llt happy path, got Lu fallback"
+        );
+
+        let mut rhs = [1.0_f64, 1.0, 1.0];
+        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, 3, 1);
+        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+
+        // A · x verification — full matrix from the symmetric pattern.
+        let ax0 = 2.0_f64.mul_add(rhs[0], rhs[1]);
+        let ax1 = 1.0_f64.mul_add(rhs[0], 3.0_f64.mul_add(rhs[1], rhs[2]));
+        let ax2 = 1.0_f64.mul_add(rhs[1], 4.0 * rhs[2]);
+        let tol = 1e-12;
+        assert!((ax0 - 1.0).abs() < tol, "A·x[0] = {ax0}, expected 1.0");
+        assert!((ax1 - 1.0).abs() < tol, "A·x[1] = {ax1}, expected 1.0");
+        assert!((ax2 - 1.0).abs() < tol, "A·x[2] = {ax2}, expected 1.0");
+    }
+
+    /// Indefinite case: `A = [[1, 2, 0], [2, 1, 0], [0, 0, 1]]` —
+    /// top-left 2×2 has eigenvalues `{3, -1}` so Llt trips
+    /// `NonPositivePivot { index: 1 }` (the second-row Cholesky pivot
+    /// `A[1][1] - L[1][0]^2 = 1 - 4 = -3 < 0`).
+    /// `factor_free_tangent` must engage the A2 LU fallback (printing
+    /// a `sim-soft: faer LU fallback ...` line to stderr) and return
+    /// the `Lu` variant; the in-place solve must still recover `x`
+    /// with `A · x ≈ b = [1, 1, 1]`.
+    #[test]
+    fn factor_free_tangent_falls_through_to_lu_on_non_pd() {
+        let solver = build_3free_solver();
+
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(1, 0, 2.0),
+            Triplet::new(2, 0, 0.0),
+            Triplet::new(1, 1, 1.0),
+            Triplet::new(2, 1, 0.0),
+            Triplet::new(2, 2, 1.0),
+        ];
+
+        let factor = solver.factor_free_tangent(&triplets, "indefinite test fixture");
+        assert!(
+            matches!(factor, FactoredFreeTangent::Lu(_)),
+            "indefinite case must engage the Lu fallback"
+        );
+
+        let mut rhs = [1.0_f64, 1.0, 1.0];
+        let rhs_mat: MatMut<'_, f64> = MatMut::from_column_major_slice_mut(&mut rhs, 3, 1);
+        factor.solve_in_place_with_conj(Conj::No, rhs_mat);
+
+        // A = [[1, 2, 0], [2, 1, 0], [0, 0, 1]]; symmetric so the
+        // lower-tri-derived "full" pattern matches A exactly.
+        let ax0 = 2.0_f64.mul_add(rhs[1], rhs[0]);
+        let ax1 = 2.0_f64.mul_add(rhs[0], rhs[1]);
+        let ax2 = rhs[2];
+        let tol = 1e-12;
+        assert!((ax0 - 1.0).abs() < tol, "A·x[0] = {ax0}, expected 1.0");
+        assert!((ax1 - 1.0).abs() < tol, "A·x[1] = {ax1}, expected 1.0");
+        assert!((ax2 - 1.0).abs() < tol, "A·x[2] = {ax2}, expected 1.0");
     }
 }
