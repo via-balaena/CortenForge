@@ -33,7 +33,7 @@ Concrete decomposition:
 - ✅ LayeredScalarField + BlendedScalarField composition primitives (PR #231)
 - ✅ Bit-exact NH↔Yeoh additive decomposition
 - ✅ faer Cholesky linear solver
-- ⏳ faer LU fallback (Cholesky SPD pivot fails at row 21 v1.5 capsule-cap apex contact and the 459K-tet 2 mm-cell spike; row 22/25 deeper-penetration walls are validity-bound, NOT Llt — A2 does not unblock those)
+- ✅ faer LU fallback (A2, shipped 2026-05-11 in commit `dda6cf7c`; unblocks row 21 v1.5 capsule-cap apex contact via `FactoredFreeTangent` enum routing both factor sites through `factor_free_tangent` — acceptance test at `scan-fit-3layer-sleeve-v15` confirms vertex 13271 trip resolves cleanly. Row 22/25 deeper-penetration walls remain validity-bound, NOT Llt — A2 does not unblock those)
 - ❌ Friction (Coulomb-Stribeck) — Phase 5.5, parked
 - ❌ Self-contact (cavity walls touching themselves) — absent
 - ❌ Damping (Rayleigh or numerical) — absent
@@ -196,6 +196,7 @@ Archive trigger: move this doc to `docs/archive/` when it's no longer load-beari
 ### Slice ship log
 
 - **S1 (partial)** — PR #238, 2026-05-11. Shipped: **D1** (cf-view auto-detect dir input + keyboard frame navigation), **B1** (per-tet `material_shell_id` + `material_zone_id` scalars through `design_surface` / `design_surface_deformed` / `boundary_surface`), **C1** (SDF-gradient analytical normals + area-weighted normals on deformed/boundary outputs). **A1** deferred — F2 architecturally masks the missing-tet band for design-mesh primitives; banked as Track A followup. Adjacent fixes that landed in the same slice: row 25's `iter_count==0` ramp-emit skip (cuboid-plug-into-open-mouth load case only engages pinned rim DOFs for steps 1–4), and cf-view's colormap detector noise tolerance (fp-noise negatives no longer flip integer scalars to Divergent). Commits: `61e41efc` (roadmap), `9ea098c6` (D1.1), `96443779` (D1.2), `1585e8f5 + b1415f86` (D1.2 polish), `e347020d` (D1.3), `66f297c5` (row 25 zero-iter), `7b8157ac` (detector noise), `b4afb911` (B1), `995c436d` (C1).
+- **S2 (partial)** — A2 arc on dev, 2026-05-11. Shipped: **A2** (faer LU fallback at the two condensed-tangent factor sites in `CpuNewtonSolver`). New `pub(crate) FactoredFreeTangent { Llt(_), Lu(Box<_>) }` enum forwards `solve_in_place_with_conj`; happy path bit-identical to pre-A2 code, fall-through engages on `LltError::Numeric(NonPositivePivot)` and factors via Lu against a cached `SymbolicLu`. Acceptance test at new sibling crate `scan-fit-3layer-sleeve-v15` (row 21.5 in EXAMPLE_INVENTORY): pre-A2 the v1.5 capsule + capsule geometry was PARKED with documented Llt non-PD pivot at Newton iter 2-3 (vertex 13271 at 1 mm); post-A2 the fallback engages 4× at iters 2-5 (vertex 13271 at iter 2 matches the parked memo exactly), Newton converges in 92 iters to 9.05e-11. B2 + C2 + D2 still ahead for S2 completion. Commits: `415239b4` (A2 framing in roadmap), `b85e05a3` (SymbolicLu cache), `dda6cf7c` (Lu fallback + enum + unit tests), `3c116fda` (row 21.5 unpark).
 
 ---
 

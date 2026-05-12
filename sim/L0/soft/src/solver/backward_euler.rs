@@ -10,9 +10,16 @@
 //! Dirichlet: `v_0`, `v_1`, `v_2` pinned) is factored — the free DOFs
 //! start at index `FREE_OFFSET = 9` (private module constant).
 //!
-//! Solve path: faer `SymbolicLlt::try_new` once per `step`-call, then
-//! `Llt::try_new_with_symbolic` + `solve_in_place_with_conj` per Newton
-//! iteration (scope §11 S-3 Round-1-verified API shape).
+//! Solve path: faer `SymbolicLlt::try_new` + `SymbolicLu::try_new`
+//! once per `step`-call (one symbolic factor per algorithm; both share
+//! the same element-vertex sparsity pattern with `Side::Lower` and full
+//! reflection respectively), then `Llt::try_new_with_symbolic` +
+//! `solve_in_place_with_conj` per Newton iteration. A2 LU fallback
+//! engages on `LltError::Numeric(NonPositivePivot)`: the helper
+//! `factor_free_tangent` symmetrizes the lower-tri triplets to full
+//! and factors via `Lu` against the cached `SymbolicLu`. Happy path
+//! stays bit-identical to the pre-A2 Llt-only code (scope §11 S-3
+//! Round-1-verified API shape preserved).
 //!
 //! After convergence, `step` re-factors `A` at `x_final` via
 //! `factor_at_position` and pushes `NewtonStepVjp` onto the tape with
@@ -1260,8 +1267,10 @@ where
         let mut step = self.solve_impl(x_prev, v_prev, &theta_tensor, dt);
 
         // IFT adjoint factor: re-assemble A at x_final (post-convergence)
-        // and factor it. Scope §3 R-2 asserts SPD on the θ-path; factor
-        // ownership pattern (I-3) verified in tests/invariant_3_factor.rs.
+        // and factor it via `factor_free_tangent` — Llt happy path or
+        // A2 Lu fallback per `FactoredFreeTangent`. Factor ownership
+        // pattern (I-3) verified for Llt in tests/invariant_3_factor.rs;
+        // the same Arc-internal ownership shape holds for Lu.
         let factor = self.factor_at_position(&step.x_final, dt);
 
         // Push `NewtonStepVjp` onto the tape with `theta_var` as parent.
