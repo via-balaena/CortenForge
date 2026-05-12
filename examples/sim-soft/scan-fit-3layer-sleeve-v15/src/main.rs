@@ -459,9 +459,9 @@ const MATERIAL_PROBE_EXACT_TOL: f64 = 0.0;
 // `*_REF_BITS` is filled at first run after that.
 
 /// Total tet count after the BCC + Isosurface Stuffing pipeline carves
-/// the scan-shaped cavity from the offset-wrapped cuboid. Captured at
-/// first run (`CF_CAPTURE_BITS=1`, post-Q7 tip `13e46dad`, 2026-05-08,
-/// rustc 1.95.0, macOS arm64).
+/// the scan-shaped cavity from the offset-wrapped capsule. Captured at
+/// first run post-A2 (`CF_CAPTURE_BITS=1`, dev tip `dda6cf7c` + A2
+/// LU fallback engine, 2026-05-11, rustc 1.95.0, macOS arm64).
 const N_TETS_EXACT: usize = 38_592;
 
 /// Total mesh vertex count, including BCC lattice corners not
@@ -625,7 +625,7 @@ fn build_probe_solid() -> Solid {
 /// is the wrap shell).
 fn build_material_field() -> MaterialField {
     // Partition Sdf is the scan itself — every cloned `Box<dyn Sdf>`
-    // wraps a fresh copy of the typed-Solid cuboid, evaluated at the
+    // wraps a fresh copy of the typed-Solid capsule, evaluated at the
     // per-tet centroid in `LayeredScalarField::sample` to look up
     // `phi = scan.eval(p)` distance-from-scan.
     let scan_for_partition = || Box::new(build_scan_solid()) as Box<dyn Sdf>;
@@ -660,15 +660,23 @@ fn build_material_field() -> MaterialField {
 /// equality, so `partition_point` steps PAST it; equivalent direct
 /// chain is strict-`<` test). Rows 8 + 20 use `<=` because their
 /// sphere geometry + BCC tet centroids don't generate exact-threshold
-/// `phi` values at any meaningful fraction of tets; row 21's axis-
-/// aligned cuboid SDF + axis-aligned BCC grid + face-aligned tet
-/// centroids inside the wrap region DO generate exact phi-at-threshold
-/// matches at a regular fraction of tets (e.g. centroids on the +x
-/// face annulus see `phi = cx - SCAN_HX` with `cx` at half-integer
-/// multiples of `CELL_SIZE / 2`, hitting `LAYER_INNER = 0.006` and
-/// `LAYER_MIDDLE_OUTER = 0.010` exactly), so the strict-`<` convention
-/// is required for the per-tet classifier to agree with the
-/// `MaterialField`'s sample bit-equally.
+/// `phi` values at any meaningful fraction of tets.
+///
+/// **v1.5 (this row) keeps the strict-`<` convention for safety**, not
+/// because of cuboid-arithmetic exact matches. v1's row 21 cuboid SDF +
+/// axis-aligned BCC grid + face-aligned tet centroids in the wrap
+/// region DID generate exact phi-at-threshold matches at a regular
+/// fraction of tets (e.g. centroids on the +x face annulus saw
+/// `phi = cx - SCAN_HX` with `cx` at half-integer multiples of
+/// `CELL_SIZE / 2`, hitting `LAYER_INNER = 0.006` and
+/// `LAYER_MIDDLE_OUTER = 0.010` exactly), so the strict-`<` was
+/// REQUIRED there. v1.5's capsule SDF uses `sqrt`/`norm` over radial
+/// distance — exact-threshold matches at `phi == LAYER_*` are
+/// numerically unlikely at any meaningful fraction of tets. Strict-`<`
+/// is retained anyway because it matches `LayeredScalarField::sample`
+/// bit-equally regardless of geometry; switching back to `<=` would
+/// drift the per-tet classifier from the `MaterialField` sample on the
+/// rare exact-match case if it ever surfaced.
 fn shell_at_phi(phi: f64) -> usize {
     if phi < LAYER_INNER {
         0 // inner
@@ -1291,7 +1299,7 @@ fn main() -> Result<()> {
     println!("scan-fit-3layer-sleeve-v15 — row 21.5 (capsule + capsule, A2 acceptance test)");
     println!();
 
-    // 1. Scan stand-in (typed-Solid cuboid).
+    // 1. Scan stand-in (typed-Solid capsule).
     let scan_solid = build_scan_solid();
 
     // 2. Outer envelope = scan offset by WRAP_THICKNESS.
@@ -1508,9 +1516,9 @@ fn main() -> Result<()> {
     // v1.5: strain-energy ordering INVERTS at capsule-apex 1 mm (see
     // `verify_strain_energy_ordering`'s docstring). Gate retained
     // under `#[allow(dead_code)]` for a future v1.5-specific re-engage;
-    // the per-layer Ψ̄ values still flow through to bit-pinned
-    // `MEAN_PSI_*_REF_BITS` captured-bits below + the JSON readout.
-    let _ = (mean_psi_inner, mean_psi_middle, mean_psi_outer);
+    // the per-layer Ψ̄ values flow through to bit-pinned
+    // `MEAN_PSI_*_REF_BITS` captured-bits in the call below + the JSON
+    // readout further down.
     verify_outer_layer_max_psi(max_psi_outer);
     verify_captured_bits(
         force_total_z,

@@ -59,7 +59,11 @@ impl<T> NewtonStep<T> {
     /// Construct a converged-step record without a tape Var — the
     /// `replay_step` / tape-free path. Solver impls call this only from
     /// within the Newton-convergence branch; non-convergence paths panic
-    /// rather than return partial data (scope §3 R-2 SPD contract).
+    /// rather than return partial data. Remaining panic surfaces post-A2
+    /// are Newton iter cap, Armijo line-search stall, and the
+    /// doubly-failed Llt-then-Lu factor case (`factor_free_tangent`);
+    /// single-failure SPD trips are no longer panics — A2 routes them to
+    /// the Lu fallback per `FactoredFreeTangent`.
     #[must_use]
     pub const fn new_converged(
         x_final: Vec<f64>,
