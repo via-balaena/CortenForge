@@ -211,10 +211,18 @@
 //! mode would take many minutes for what runs in seconds release.
 //! The `CELL_SIZE = 0.004 m` (4 mm) is sized so each of the 6/4/4 mm
 //! layers carries at least one BCC cell across thickness — coarsening
-//! further would erase the middle and outer layers, and finer cells
-//! (e.g. `0.002 m`) push the per-cell penalty gradient too high under
-//! the static-overlap pose, inverting tets in the first Newton step
-//! beyond what A2's Lu fallback can recover.
+//! further would erase the middle and outer layers. Finer cells
+//! (e.g. `0.002 m`) on v1.5 are **untested as of A2 ship time** —
+//! the earlier prose here speculated that finer cells would push the
+//! per-cell penalty gradient out of A2's recovery range, but that was
+//! pre-evidence speculation, not measurement. The row-25 B2 evidence
+//! experiment (2026-05-11) converged cleanly at 2 mm cells through
+//! 3 ramp steps with zero LU fallback engagements, so the
+//! "finer-cells-trip-SPD" framing is at least partially falsified
+//! upstream. v1.5's capsule + capsule geometry is structurally
+//! different (single-step, no ramp, apex-stress concentration), so
+//! the row-25 result may or may not transfer; B2 followup if anyone
+//! cares to test it.
 
 use std::collections::BTreeSet;
 use std::path::Path;
