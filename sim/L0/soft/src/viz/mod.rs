@@ -209,8 +209,12 @@ pub struct Plane {
 /// The boundary faces come from the precomputed
 /// [`Mesh::boundary_faces`] cache (right-handed outward winding, populated
 /// at mesh construction). Per-tet scalars in `per_tet_scalars` are
-/// projected to per-vertex via volume-weighted averaging and surface as
-/// entries in the output mesh's `extras` map under the same names.
+/// projected to per-vertex and surfaced as entries in the output mesh's
+/// `extras` map under the same names. Continuous scalars use volume-
+/// weighted averaging over incident tets; categorical scalars (suffix
+/// `_id`) use the largest-volume incident tet (C2.1 nearest-tet
+/// semantics) so display-vertex values stay integer for the cf-view
+/// colormap detector's Categorical pick.
 ///
 /// All vertices of `mesh` are emitted, including interior vertices
 /// (which appear as unreferenced vertices in the PLY — most readers
@@ -318,8 +322,13 @@ pub fn boundary_surface<M: Material>(
 /// Intersect a tet mesh with an axis-aligned plane via marching-tetrahedra.
 ///
 /// Returns the cross-section as an [`AttributedMesh`] of triangles
-/// with per-vertex scalars linearly interpolated from the
-/// volume-weighted per-vertex field.
+/// with per-vertex scalars sampled from the analysis tet mesh.
+/// Continuous scalars linearly interpolate along each crossed edge
+/// from the volume-weighted-per-vertex field; categorical scalars
+/// (suffix `_id`) take the value of the tet whose centroid is closest
+/// in 3D space to the cut vertex among the tets that touch the cut
+/// edge (C2.1 position-based nearest-tet semantics) — preserves
+/// integer labels for the cf-view colormap detector's Categorical pick.
 ///
 /// Each tet contributes 0, 1, or 2 cross-section triangles depending
 /// on its sign pattern with respect to the plane (5 cases by
@@ -354,12 +363,13 @@ pub fn slab_cut<M: Material>(
 /// and any other deformation that's invisible from a closed outer
 /// boundary surface.
 ///
-/// Per-tet scalar projection still uses the rest-position
-/// volume-weighted average (rest tet volumes weight contributions
-/// from material-consistent neighborhoods); only the geometric cut
-/// uses deformed positions. Pass `amplify > 1` to make sub-mm
-/// deformations visually obvious on cm-scale bodies, matching the
-/// [`design_surface_deformed`] convention.
+/// Per-tet scalar projection still uses the rest-position scalar
+/// pipeline (volume-weighted-per-vertex for continuous; closest-
+/// centroid-to-cut-vertex for categorical `_id` scalars; see
+/// [`slab_cut`]) — only the geometric cut uses deformed positions.
+/// Pass `amplify > 1` to make sub-mm deformations visually obvious
+/// on cm-scale bodies, matching the [`design_surface_deformed`]
+/// convention.
 ///
 /// # Errors
 ///
@@ -394,8 +404,9 @@ pub fn slab_cut_deformed<M: Material>(
 /// Marching-tet core shared by [`slab_cut`] (rest) and
 /// [`slab_cut_deformed`] (displaced). `positions` is the position
 /// slice the SD computation and cross-edge interpolation read; `mesh`
-/// supplies validation, tet connectivity, and the rest-volume-weighted
-/// per-vertex scalar projection.
+/// supplies validation, tet connectivity, and the per-tet scalar
+/// projection (rest-volume-weighted per-vertex for continuous;
+/// closest-centroid-to-cut-vertex for categorical `_id` scalars).
 //
 // `cast_possible_truncation` allowed for the f64 → f32 PLY emit path
 // and the usize → u32 vertex index path (VertexId is u32 by crate
@@ -640,9 +651,11 @@ fn slab_cut_at_positions<M: Material>(
 /// Decouples display geometry from analysis geometry per the F2 viz
 /// arc: the cross-section comes from marching-squares-filled on `sdf`
 /// (sharp at axis-aligned faces, smooth on curved boundaries, exact
-/// at any analysis-mesh coarseness), while scalar values come from
-/// barycentric point-in-tet interpolation against `analysis_mesh`'s
-/// volume-weighted per-vertex field.
+/// at any analysis-mesh coarseness), while scalar values are sampled
+/// per display vertex from `analysis_mesh`'s per-tet field (barycentric
+/// interp of the volume-weighted-per-vertex field for continuous
+/// scalars; single nearest-tet-centroid for categorical `_id` scalars;
+/// see Algorithm below).
 ///
 /// # Comparison vs [`slab_cut`]
 ///
@@ -665,13 +678,15 @@ fn slab_cut_at_positions<M: Material>(
 ///    (2-opposite-inside, masks `0b0101` / `0b1010`) resolve via
 ///    `sdf.eval(cell_center)` so opposite-corner islands bridge or
 ///    split as the SDF dictates.
-/// 3. For each emitted display vertex, find the enclosing analysis
-///    tet via barycentric point-in-tet on a slab-filtered tet subset
-///    (only tets whose AABB along `plane.axis` straddles `plane.value`
-///    can possibly contain a point on the plane). Interpolate
-///    `volume_weighted_per_vertex_avg` scalars to the display vertex
-///    via the barycentrics (same per-vertex projection [`slab_cut`]
-///    uses; `volume_weighted_per_vertex_avg` is private to this module).
+/// 3. For each emitted display vertex, sample from `analysis_mesh`'s
+///    per-tet field over a slab-filtered tet subset (only tets whose
+///    AABB along `plane.axis` straddles `plane.value` can possibly
+///    contain a point on the plane). Continuous scalars: barycentric
+///    point-in-tet on the volume-weighted-per-vertex field (same
+///    per-vertex projection [`slab_cut`] uses). Categorical scalars
+///    (suffix `_id`): single nearest-tet-centroid via
+///    `nearest_tet_centroid_idx` — preserves integer labels for the
+///    Categorical colormap pick.
 /// 4. Fall back to nearest-tet (clipped + renormalized barycentrics)
 ///    for vertices that fall just outside every analysis tet — common
 ///    where the design SDF's smooth surface lies outside the analysis
@@ -824,8 +839,9 @@ pub fn design_slab_cut<M: Material>(
 /// arc: the boundary surface comes from marching cubes on `sdf` (smooth
 /// curved boundaries on organic shapes, sharp axis-aligned faces on
 /// CSG primitives, exact at any analysis-mesh coarseness), while
-/// scalar values come from barycentric point-in-tet interpolation
-/// against `analysis_mesh`'s volume-weighted per-vertex field.
+/// scalar values are sampled per probe from `analysis_mesh`'s per-tet
+/// field (Shepard kNN-IDW for continuous scalars, single nearest-tet-
+/// centroid for categorical `_id` scalars; see Algorithm below).
 ///
 /// # Comparison vs [`boundary_surface`]
 ///
@@ -844,14 +860,17 @@ pub fn design_slab_cut<M: Material>(
 ///    size (delegated to [`mesh_offset::ScalarGrid`]).
 /// 2. Run [`mesh_offset::marching_cubes`] at iso-value 0 to extract
 ///    the closed boundary surface as a triangulated [`IndexedMesh`].
-/// 3. For each emitted display vertex, find the enclosing analysis
-///    tet via barycentric point-in-tet on the per-call uniform-grid
+/// 3. For each emitted display vertex, query a per-call uniform-grid
 ///    spatial index (`TetGrid` keyed by tet AABB; 3×3×3 cell window
-///    per probe, see Performance below). Interpolate
-///    `volume_weighted_per_vertex_avg` scalars to the display vertex
-///    via the barycentrics; fall back to nearest-tet (clipped +
-///    renormalized barycentrics) for vertices just outside every
-///    analysis tet.
+///    per probe, see Performance below) for nearby analysis tets.
+///    Continuous scalars sample via Shepard kNN-IDW (top-k=8 by
+///    centroid distance, weights `1/(d²+ε)`; see
+///    `idw_k_nearest_tet_centroids`). Categorical scalars (suffix
+///    `_id`) sample via single nearest-tet-centroid (k=1; see
+///    `nearest_tet_centroid_idx`) shared across every categorical
+///    scalar this probe — preserves integer labels for the cf-view
+///    colormap detector's Categorical (`tab10`) pick. Both paths
+///    share the same 3×3×3 candidate pool.
 ///
 /// # Performance
 ///
@@ -921,16 +940,16 @@ pub fn design_surface<M: Material>(
     // 2. Marching cubes on the iso-0 surface.
     let surface = marching_cubes(&grid, &MarchingCubesConfig::at_iso_value(0.0));
 
-    // 3. C2 categorical/continuous split. Continuous scalars
-    //    pre-project to a volume-weighted per-vertex average so
-    //    `sample_analysis_at_point` can barycentric-interpolate at
-    //    each display vertex; categorical scalars (suffix `_id`)
-    //    skip the pre-projection and share a single nearest-tet-
-    //    centroid lookup per display vertex, emitting the exact
-    //    integer of that tet. Preserves the cf-view colormap
+    // 3. C2 categorical/continuous split. Continuous scalars sample
+    //    via Shepard kNN-IDW (`idw_k_nearest_tet_centroids`) per probe
+    //    directly on per-tet values; categorical scalars (suffix
+    //    `_id`) sample via single nearest-tet-centroid
+    //    (`nearest_tet_centroid_idx`, k=1) per probe, emitting the
+    //    exact integer of that tet. Both paths share the same
+    //    `TetGrid` 3×3×3 cell window. Preserves the cf-view colormap
     //    detector's Categorical pick (`tab10`) at layer boundaries
-    //    instead of falling back to Sequential viridis on
-    //    barycentric-fractional samples.
+    //    instead of falling back to Sequential viridis on fractional
+    //    samples.
     let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
     let is_categorical: Vec<bool> = scalar_names
         .iter()
@@ -1177,10 +1196,12 @@ pub fn design_surface_deformed<M: Material>(
 /// (`0.0` = body, `1.0..=N` = each contact in `contact_sdfs` order).
 ///
 /// Other scalars from `per_tet_scalars` (e.g. `displacement_magnitude`,
-/// `material_id`, `psi_j_per_m3`) are computed for the body via the
-/// usual barycentric interp and padded with `0.0` for contact-primitive
-/// vertices — contact primitives are rigid and have no FEM scalar
-/// field, so the uniform-zero padding is the most honest fill.
+/// `material_shell_id`, `psi_j_per_m3`) are computed for the body via
+/// [`design_surface`]'s dispatched scalar pipeline (kNN-IDW for
+/// continuous, nearest-tet for categorical `_id` scalars) and padded
+/// with `0.0` for contact-primitive vertices — contact primitives are
+/// rigid and have no FEM scalar field, so the uniform-zero padding is
+/// the most honest fill.
 ///
 /// In cf-view, toggle the Scalar dropdown to `primitive_id` for a
 /// categorical body-vs-contact split (canonical commercial-FEM-viz
@@ -2104,8 +2125,12 @@ fn sample_displacement_at_point<M: Material>(
 /// `material_shell_id`, `material_zone_id`, `primitive_id`) and routed
 /// through the nearest-tet path that preserves the integer; anything
 /// else (`psi_j_per_m3`, `displacement_magnitude`, …) is treated as a
-/// continuous field and routed through the existing volume-weighted /
-/// barycentric / linear-interp pipeline.
+/// continuous field and routed through the per-primitive continuous-
+/// scalar path — volume-weighted-per-vertex (on [`boundary_surface`]),
+/// linear-along-edge from the volume-weighted-per-vertex field (on
+/// [`slab_cut`] / [`slab_cut_deformed`] / [`design_slab_cut`]), or
+/// Shepard kNN-IDW (on [`design_surface`] and its deformed/scene
+/// siblings; see [`idw_k_nearest_tet_centroids`]).
 ///
 /// Continuous-scalar smoothing breaks the categorical invariant —
 /// averaging a `_id = 1` tet with a `_id = 2` tet yields `1.5`, which
@@ -2129,10 +2154,16 @@ fn is_categorical_scalar_name(name: &str) -> bool {
 /// `probe`, returning its tet ID. Returns `None` when `candidate_tets`
 /// is empty.
 ///
-/// Used by the C2 categorical sampling path on `design_surface` and
-/// siblings: one nearest-tet lookup per probe is shared across every
-/// categorical scalar in flight (all categorical scalars sample from
-/// the same nearest tet, so the centroid search amortizes).
+/// Used by the C2 categorical sampling path on [`design_surface`]
+/// (and its deformed/scene siblings) and on [`design_slab_cut`]: one
+/// nearest-tet lookup per probe is shared across every categorical
+/// scalar in flight (all categorical scalars sample from the same
+/// nearest tet, so the centroid search amortizes). [`slab_cut`] /
+/// [`slab_cut_deformed`] use a related position-based pick via
+/// `SlabCutState`'s `cut_owner_dist2` tracking rather than calling
+/// this helper directly — the cut-vertex's edge-star tets are visited
+/// one-at-a-time as the marching-tet loop iterates, so the winner
+/// promotion happens incrementally on edge dedup.
 //
 // `cast_possible_truncation` allowed: VertexId/TetId are u32 by crate
 // convention so `mesh.n_tets() < u32::MAX` is a γ-locked invariant.
@@ -2235,10 +2266,11 @@ fn idw_k_nearest_tet_centroids<M: Material>(
     if total_weight > 0.0 {
         sums.iter().map(|&s| s / total_weight).collect()
     } else {
-        // All weights numerically zero — only reachable if `eps` is
-        // huge or candidate_tets length is zero (handled above). Keep
-        // the branch as a defensive zero-fill so the caller's per-
-        // scalar Vec stays correctly sized.
+        // All weights numerically zero — logically unreachable: the
+        // empty-candidates case returns at the top of the fn, and
+        // `1 / (d² + eps)` is strictly positive for any finite `d²`
+        // with `eps > 0`. Keep the branch as a defensive zero-fill
+        // so the caller's per-scalar Vec stays correctly sized.
         vec![0.0; n_scalars]
     }
 }
