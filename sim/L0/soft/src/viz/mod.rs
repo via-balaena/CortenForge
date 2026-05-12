@@ -16,6 +16,11 @@
 //!   via marching-tetrahedra and emits the cross-section polygon as
 //!   a triangle mesh, with per-vertex scalars linearly interpolated
 //!   from the same volume-weighted per-vertex field.
+//! - [`slab_cut_deformed`] same as [`slab_cut`] but each rest position
+//!   is offset by the per-vertex displacement field, scaled by an
+//!   `amplify` factor. Renders the cross-section of the deformed tet
+//!   mesh — sliced cavity walls + contact-zone bulges that are
+//!   invisible from a closed outer boundary surface.
 //!
 //! ## Design-mesh primitives (F2)
 //!
@@ -49,6 +54,9 @@
 //!   `primitive_id` (body-vs-contact split) and the body's continuous
 //!   scalars (deformation/strain with contact primitives as uniform-
 //!   zero solids).
+//! - [`design_scene_deformed`] same as [`design_scene`] but the body
+//!   pass uses [`design_surface_deformed`] — quasi-static ramp
+//!   animations of a soft body with a moving rigid plug land here.
 //!
 //! Pick F1 when the analysis-mesh discretization IS the story (e.g.,
 //! debugging mesh quality, sliver-tet inspection). Pick F2 when the
@@ -290,12 +298,83 @@ pub fn slab_cut<M: Material>(
     plane: Plane,
     per_tet_scalars: &BTreeMap<&str, &[f64]>,
 ) -> Result<AttributedMesh, VizError> {
+    slab_cut_at_positions(mesh, mesh.positions(), plane, per_tet_scalars)
+}
+
+/// Deformed-mesh sibling of [`slab_cut`].
+///
+/// Same marching-tetrahedra cut, but each rest position is offset by
+/// `displacement_per_vertex[v] * amplify` before classifying tets and
+/// interpolating cross-edges. Renders the cross-section of the
+/// **deformed** tet mesh — sliced cavity walls, contact-zone bulges,
+/// and any other deformation that's invisible from a closed outer
+/// boundary surface.
+///
+/// Per-tet scalar projection still uses the rest-position
+/// volume-weighted average (rest tet volumes weight contributions
+/// from material-consistent neighborhoods); only the geometric cut
+/// uses deformed positions. Pass `amplify > 1` to make sub-mm
+/// deformations visually obvious on cm-scale bodies, matching the
+/// [`design_surface_deformed`] convention.
+///
+/// # Errors
+///
+/// All [`slab_cut`] errors plus [`VizError::PerVertexLengthMismatch`]
+/// if `displacement_per_vertex`'s length differs from
+/// `mesh.n_vertices()`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::similar_names,
+    clippy::unreachable
+)]
+pub fn slab_cut_deformed<M: Material>(
+    mesh: &dyn Mesh<M>,
+    plane: Plane,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+    displacement_per_vertex: &[Vec3],
+    amplify: f64,
+) -> Result<AttributedMesh, VizError> {
+    let n_vertices = mesh.n_vertices();
+    if displacement_per_vertex.len() != n_vertices {
+        return Err(VizError::PerVertexLengthMismatch {
+            expected: n_vertices,
+            actual: displacement_per_vertex.len(),
+        });
+    }
+
+    let rest_positions = mesh.positions();
+    let deformed_positions: Vec<Vec3> = rest_positions
+        .iter()
+        .zip(displacement_per_vertex.iter())
+        .map(|(p, d)| p + d * amplify)
+        .collect();
+
+    slab_cut_at_positions(mesh, &deformed_positions, plane, per_tet_scalars)
+}
+
+/// Marching-tet core shared by [`slab_cut`] (rest) and
+/// [`slab_cut_deformed`] (displaced). `positions` is the position
+/// slice the SD computation and cross-edge interpolation read; `mesh`
+/// supplies validation, tet connectivity, and the rest-volume-weighted
+/// per-vertex scalar projection.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::similar_names,
+    clippy::unreachable
+)]
+fn slab_cut_at_positions<M: Material>(
+    mesh: &dyn Mesh<M>,
+    positions: &[Vec3],
+    plane: Plane,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+) -> Result<AttributedMesh, VizError> {
     if plane.axis >= 3 {
         return Err(VizError::InvalidPlaneAxis { axis: plane.axis });
     }
     validate_per_tet_scalars(mesh, per_tet_scalars)?;
 
-    let positions = mesh.positions();
     let n_tets = mesh.n_tets();
 
     // Project each per-tet scalar to per-vertex up-front so the
@@ -849,14 +928,102 @@ pub fn design_scene<M: Material>(
     resolution: f64,
     per_tet_scalars: &BTreeMap<&str, &[f64]>,
 ) -> Result<AttributedMesh, VizError> {
+    // 1. Body via design_surface (handles validation; stamps SDF-gradient
+    //    analytical normals on body vertices per C1).
+    let mut attr = design_surface(body_sdf, analysis_mesh, bounds, resolution, per_tet_scalars)?;
+    // 2. Append contacts + extras pad + primitive_id stamp (shared with
+    //    `design_scene_deformed`).
+    append_contact_primitives(&mut attr, contact_sdfs, bounds, resolution);
+    Ok(attr)
+}
+
+/// Deformed-body sibling of [`design_scene`].
+///
+/// The body pass uses [`design_surface_deformed`], so the body
+/// renders in its deformed configuration while the contact primitives
+/// render at their rest pose. Quasi-static intrusion ramps with a
+/// moving rigid plug land here — one PLY per ramp step with both the
+/// squishing body and the descending plug.
+///
+/// # Algorithm
+///
+/// 1. Body via [`design_surface_deformed`] (validation + displacement
+///    + area-weighted normals on the deformed surface).
+/// 2. Each contact primitive via marching cubes only (rigid; no
+///    scalar interp). Contact normals come from each contact SDF's
+///    gradient at the iso-0 surface (analytical, matching the C1
+///    convention).
+/// 3. Existing scalars are padded with `0.0` for contact-primitive
+///    vertices; a categorical `primitive_id` scalar is stamped
+///    (`0.0` = body, `1.0..=N` = each contact in input order).
+///
+/// # Errors
+///
+/// All [`design_surface_deformed`] errors. Contact primitives are
+/// rendered geometry-only, so per-tet scalar validation applies to
+/// the body pass only.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::expect_used
+)]
+pub fn design_scene_deformed<M: Material>(
+    body_sdf: &dyn Sdf,
+    contact_sdfs: &[&dyn Sdf],
+    analysis_mesh: &dyn Mesh<M>,
+    bounds: &Aabb3,
+    resolution: f64,
+    per_tet_scalars: &BTreeMap<&str, &[f64]>,
+    displacement_per_vertex: &[Vec3],
+    amplify: f64,
+) -> Result<AttributedMesh, VizError> {
+    let mut attr = design_surface_deformed(
+        body_sdf,
+        analysis_mesh,
+        bounds,
+        resolution,
+        per_tet_scalars,
+        displacement_per_vertex,
+        amplify,
+    )?;
+    append_contact_primitives(&mut attr, contact_sdfs, bounds, resolution);
+    Ok(attr)
+}
+
+/// Append marching-cubes renderings of each contact primitive into
+/// `attr`, pad existing extras with `0.0` over the new vertex range,
+/// and stamp a categorical `primitive_id` extra (`0.0` = body,
+/// `1.0..=N` = each contact in input order).
+///
+/// If `attr.normals` is already populated by the body pass, extends
+/// the normal vec with analytical unit normals computed from each
+/// contact SDF's gradient at the iso-0 surface (falls back to `+ẑ`
+/// on degenerate gradient, matching the [`design_surface`]
+/// convention). Keeps the slot-length invariant the PLY writer
+/// validates.
+//
+// `cast_precision_loss` allowed: `(idx + 1) as f32` for primitive_id
+// is safe up to ~16 M contacts (well beyond any practical use).
+// `cast_possible_truncation` allowed: vertex index casts use the
+// same VertexId/TetId u32 invariant as the rest of the module.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::expect_used
+)]
+fn append_contact_primitives(
+    attr: &mut AttributedMesh,
+    contact_sdfs: &[&dyn Sdf],
+    bounds: &Aabb3,
+    resolution: f64,
+) {
     use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 
-    // 1. Body via design_surface (handles validation).
-    let mut attr = design_surface(body_sdf, analysis_mesh, bounds, resolution, per_tet_scalars)?;
     let body_vert_count = attr.geometry.vertices.len();
     let mut primitive_id: Vec<f32> = vec![0.0_f32; body_vert_count];
+    let extend_normals = attr.normals.is_some();
 
-    // 2. Contacts via marching cubes only (rigid; no scalar interp).
     for (contact_idx, &contact_sdf) in contact_sdfs.iter().enumerate() {
         let id_value = (contact_idx + 1) as f32;
         let mut grid = ScalarGrid::from_bounds(
@@ -886,9 +1053,24 @@ pub fn design_scene<M: Material>(
                 .faces
                 .push([face[0] + base_v, face[1] + base_v, face[2] + base_v]);
         }
+
+        if extend_normals {
+            if let Some(normals) = attr.normals.as_mut() {
+                normals.reserve(surface.vertices.len());
+                for v in &surface.vertices {
+                    let g = contact_sdf.grad(NaPoint3::new(v.x, v.y, v.z));
+                    let n_sq = g.z.mul_add(g.z, g.x.mul_add(g.x, g.y * g.y));
+                    let n = if n_sq > 1e-30 {
+                        g / n_sq.sqrt()
+                    } else {
+                        Vec3::z()
+                    };
+                    normals.push(n);
+                }
+            }
+        }
     }
 
-    // 3. Pad existing extras with 0.0 for contact-primitive vertices.
     let total_vertices = attr.geometry.vertices.len();
     let extra_keys: Vec<String> = attr.extras.keys().cloned().collect();
     for key in extra_keys {
@@ -899,11 +1081,8 @@ pub fn design_scene<M: Material>(
         }
     }
 
-    // 4. Insert primitive_id as the new categorical scalar.
     attr.insert_extra("primitive_id".to_string(), primitive_id)
         .expect("primitive_id length matches total vertex count by construction");
-
-    Ok(attr)
 }
 
 /// Pair of in-plane axis indices `(uu, vv)` such that the right-hand-rule
@@ -1941,6 +2120,103 @@ mod tests {
         }
     }
 
+    /// `slab_cut_deformed` with zero displacement matches `slab_cut`
+    /// bit-exact (positions identical, scalars identical, face count
+    /// identical). Mismatched displacement length surfaces as the
+    /// typed error.
+    #[test]
+    fn slab_cut_deformed_zero_displacement_matches_rest() {
+        let field = MaterialField::skeleton_default();
+        let mesh = SingleTetMesh::new(&field);
+        let psi = [7.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = mesh.n_vertices();
+        let zero_disp = vec![Vec3::zeros(); n_v];
+        let plane = Plane {
+            axis: 0,
+            value: 0.05,
+        };
+
+        let rest = slab_cut(&mesh, plane, &scalars).unwrap();
+        let deformed = slab_cut_deformed(&mesh, plane, &scalars, &zero_disp, 1.0).unwrap();
+
+        assert_eq!(
+            rest.geometry.vertices.len(),
+            deformed.geometry.vertices.len()
+        );
+        assert_eq!(rest.geometry.faces.len(), deformed.geometry.faces.len());
+        for (a, b) in rest
+            .geometry
+            .vertices
+            .iter()
+            .zip(deformed.geometry.vertices.iter())
+        {
+            assert!((a.x - b.x).abs() < 1e-12);
+            assert!((a.y - b.y).abs() < 1e-12);
+            assert!((a.z - b.z).abs() < 1e-12);
+        }
+
+        // Mismatched displacement length trips the typed error.
+        let bad_disp = vec![Vec3::zeros(); 2];
+        let err = slab_cut_deformed(&mesh, plane, &scalars, &bad_disp, 1.0).unwrap_err();
+        match err {
+            VizError::PerVertexLengthMismatch { expected, actual } => {
+                assert_eq!(expected, 4);
+                assert_eq!(actual, 2);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Uniform displacement translates the cross-section by
+    /// `displacement * amplify` along each axis, leaving topology
+    /// (vertex count, face count) and the in-plane shape intact.
+    #[test]
+    fn slab_cut_deformed_uniform_displacement_translates_cross_section() {
+        let field = MaterialField::skeleton_default();
+        let mesh = SingleTetMesh::new(&field);
+        let psi = [7.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = mesh.n_vertices();
+        // Translate in +z so the x = 0.05 cross-section is unchanged
+        // in (x, y) but shifted in z by displacement * amplify.
+        let uniform = Vec3::new(0.0, 0.0, 0.001);
+        let displacement = vec![uniform; n_v];
+        let amplify = 5.0_f64;
+
+        let plane = Plane {
+            axis: 0,
+            value: 0.05,
+        };
+        let rest = slab_cut(&mesh, plane, &scalars).unwrap();
+        let deformed = slab_cut_deformed(&mesh, plane, &scalars, &displacement, amplify).unwrap();
+
+        assert_eq!(rest.geometry.faces.len(), deformed.geometry.faces.len());
+        assert_eq!(
+            rest.geometry.vertices.len(),
+            deformed.geometry.vertices.len()
+        );
+        let expected_dz = uniform.z * amplify;
+        for (a, b) in rest
+            .geometry
+            .vertices
+            .iter()
+            .zip(deformed.geometry.vertices.iter())
+        {
+            assert!((b.x - a.x).abs() < 1e-9);
+            assert!((b.y - a.y).abs() < 1e-9);
+            assert!(
+                (b.z - a.z - expected_dz).abs() < 1e-9,
+                "expected dz={expected_dz}, got {}",
+                b.z - a.z
+            );
+        }
+    }
+
     /// Plane axis out of range surfaces as the typed error.
     #[test]
     fn slab_cut_rejects_invalid_axis() {
@@ -2654,5 +2930,199 @@ mod tests {
         // Total length matches vertex count.
         let psi_extra = scene.extras.get("psi").expect("psi missing");
         assert_eq!(psi_extra.len(), scene.geometry.vertices.len());
+    }
+
+    /// `design_scene` populates normals over the entire vertex range
+    /// (body + contacts). The PLY writer enforces this invariant; the
+    /// pre-helper-refactor code only stamped body normals.
+    #[test]
+    fn design_scene_normals_cover_body_and_contacts() {
+        use crate::SphereSdf;
+
+        struct OffsetSphere {
+            cx: f64,
+            r: f64,
+        }
+        impl Sdf for OffsetSphere {
+            fn eval(&self, p: NaPoint3<f64>) -> f64 {
+                let dx = p.x - self.cx;
+                dx.mul_add(dx, p.y.mul_add(p.y, p.z * p.z)).sqrt() - self.r
+            }
+            fn grad(&self, p: NaPoint3<f64>) -> Vec3 {
+                let dx = p.x - self.cx;
+                let d = Vec3::new(dx, p.y, p.z);
+                let n = d.norm();
+                if n > 1e-12 { d / n } else { Vec3::z() }
+            }
+        }
+
+        let body = SphereSdf { radius: 0.05 };
+        let contact = OffsetSphere { cx: 0.07, r: 0.015 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let scene = design_scene(
+            &body,
+            &[&contact as &dyn Sdf],
+            &analysis,
+            &bounds,
+            0.005,
+            &scalars,
+        )
+        .unwrap();
+
+        let normals = scene.normals.as_ref().expect("normals slot missing");
+        assert_eq!(
+            normals.len(),
+            scene.geometry.vertices.len(),
+            "normals must cover every vertex (body + contacts)"
+        );
+        for n in normals {
+            let nsq = n.x.mul_add(n.x, n.y.mul_add(n.y, n.z * n.z));
+            assert!((nsq - 1.0).abs() < 1e-6, "non-unit normal: {nsq}");
+        }
+    }
+
+    /// `design_scene_deformed` with empty `contact_sdfs` produces output
+    /// equal to `design_surface_deformed` on geometry + scalars, plus a
+    /// `primitive_id` extra that's uniform `0.0` across the body.
+    #[test]
+    fn design_scene_deformed_empty_contacts_matches_deformed_surface() {
+        use crate::SphereSdf;
+
+        let sphere = SphereSdf { radius: 0.05 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = analysis.n_vertices();
+        let uniform = Vec3::new(0.001, 0.0, 0.0);
+        let displacement = vec![uniform; n_v];
+        let amplify = 5.0_f64;
+
+        let body_only = design_surface_deformed(
+            &sphere,
+            &analysis,
+            &bounds,
+            resolution,
+            &scalars,
+            &displacement,
+            amplify,
+        )
+        .unwrap();
+        let scene = design_scene_deformed(
+            &sphere,
+            &[],
+            &analysis,
+            &bounds,
+            resolution,
+            &scalars,
+            &displacement,
+            amplify,
+        )
+        .unwrap();
+
+        assert_eq!(
+            body_only.geometry.vertices.len(),
+            scene.geometry.vertices.len()
+        );
+        assert_eq!(body_only.geometry.faces.len(), scene.geometry.faces.len());
+
+        let primitive_id = scene
+            .extras
+            .get("primitive_id")
+            .expect("primitive_id missing");
+        assert_eq!(primitive_id.len(), scene.geometry.vertices.len());
+        for &id in primitive_id {
+            assert!(id.abs() < 1e-9, "expected body primitive_id 0.0, got {id}");
+        }
+    }
+
+    /// `design_scene_deformed` with a contact primitive: body verts get
+    /// `primitive_id = 0.0` and are displaced by `displacement * amplify`;
+    /// contact verts get `primitive_id = 1.0` and are NOT displaced
+    /// (contacts are rigid; their geometry comes from the contact SDF's
+    /// rest pose, set per-call by the caller). Normals slot covers the
+    /// full merged vertex range.
+    #[test]
+    fn design_scene_deformed_one_contact_separates_body_from_contact() {
+        use crate::SphereSdf;
+
+        struct OffsetSphere {
+            cx: f64,
+            r: f64,
+        }
+        impl Sdf for OffsetSphere {
+            fn eval(&self, p: NaPoint3<f64>) -> f64 {
+                let dx = p.x - self.cx;
+                dx.mul_add(dx, p.y.mul_add(p.y, p.z * p.z)).sqrt() - self.r
+            }
+            fn grad(&self, p: NaPoint3<f64>) -> Vec3 {
+                let dx = p.x - self.cx;
+                let d = Vec3::new(dx, p.y, p.z);
+                let n = d.norm();
+                if n > 1e-12 { d / n } else { Vec3::z() }
+            }
+        }
+
+        let body = SphereSdf { radius: 0.05 };
+        let contact = OffsetSphere { cx: 0.07, r: 0.015 };
+        let bounds = Aabb3::new(Vec3::new(-0.10, -0.10, -0.10), Vec3::new(0.10, 0.10, 0.10));
+        let field = MaterialField::skeleton_default();
+        let analysis = SingleTetMesh::new(&field);
+        let psi = [1.0_f64];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("psi", &psi);
+
+        let n_v = analysis.n_vertices();
+        let displacement = vec![Vec3::zeros(); n_v];
+
+        let scene = design_scene_deformed(
+            &body,
+            &[&contact as &dyn Sdf],
+            &analysis,
+            &bounds,
+            0.005,
+            &scalars,
+            &displacement,
+            1.0,
+        )
+        .unwrap();
+
+        let primitive_id = scene
+            .extras
+            .get("primitive_id")
+            .expect("primitive_id missing");
+        let mut n_body = 0_usize;
+        let mut n_contact = 0_usize;
+        for &id in primitive_id {
+            if id.abs() < 0.5 {
+                n_body += 1;
+            } else if (id - 1.0).abs() < 0.5 {
+                n_contact += 1;
+            } else {
+                panic!("unexpected primitive_id {id}");
+            }
+        }
+        assert!(n_body > 0, "body vertices missing");
+        assert!(n_contact > 0, "contact vertices missing");
+
+        let psi_extra = scene.extras.get("psi").expect("psi missing");
+        assert_eq!(psi_extra.len(), scene.geometry.vertices.len());
+
+        let normals = scene.normals.as_ref().expect("normals slot missing");
+        assert_eq!(
+            normals.len(),
+            scene.geometry.vertices.len(),
+            "normals must cover body + contact"
+        );
     }
 }
