@@ -217,7 +217,15 @@ pub struct Plane {
 // length contract makes the call infallible (failure would mean the
 // per_vertex Vec we just built is a different length than
 // mesh.n_vertices() — internally inconsistent and unreachable).
-#[allow(clippy::cast_possible_truncation, clippy::expect_used)]
+// `too_many_lines` allowed: the C2 categorical pre-pass + per-scalar
+// dispatch loop pushes the body past clippy's 100-line default; the
+// alternative — extracting `winner_tet_per_vertex` to a helper —
+// inflates the API surface for a single internal use.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::too_many_lines
+)]
 pub fn boundary_surface<M: Material>(
     mesh: &dyn Mesh<M>,
     per_tet_scalars: &BTreeMap<&str, &[f64]>,
@@ -232,9 +240,54 @@ pub fn boundary_surface<M: Material>(
         geometry.faces.push(face);
     }
 
+    // C2 categorical path: pick a single "winner" tet per analysis-mesh
+    // vertex (the largest-volume incident tet) so categorical scalars
+    // emit the exact integer of that representative tet rather than the
+    // volume-weighted-average-over-incident-tets fractional value that
+    // continuous scalars use. Only pay the pre-pass when at least one
+    // categorical scalar is in flight; pure-continuous calls (the
+    // pre-C2.1 default) skip it entirely.
+    let any_categorical = per_tet_scalars
+        .keys()
+        .any(|&n| is_categorical_scalar_name(n));
+    let winner_tet_per_vertex: Option<Vec<Option<u32>>> = if any_categorical {
+        let n_vertices = mesh.n_vertices();
+        let signed_volumes = &mesh.quality().signed_volume;
+        let mut best_vol = vec![0.0_f64; n_vertices];
+        let mut best_tet: Vec<Option<u32>> = vec![None; n_vertices];
+        for (t, &sv) in signed_volumes.iter().enumerate() {
+            let vol = sv.abs();
+            let tet_id = t as u32;
+            let [v0, v1, v2, v3] = mesh.tet_vertices(tet_id);
+            for v in [v0, v1, v2, v3] {
+                if vol > best_vol[v as usize] {
+                    best_vol[v as usize] = vol;
+                    best_tet[v as usize] = Some(tet_id);
+                }
+            }
+        }
+        Some(best_tet)
+    } else {
+        None
+    };
+
     let mut attr = AttributedMesh::new(geometry);
     for (&name, &per_tet) in per_tet_scalars {
-        let per_vertex = volume_weighted_per_vertex_avg(mesh, per_tet);
+        let per_vertex: Vec<f64> = if is_categorical_scalar_name(name) {
+            // Categorical: emit the per-tet value of the largest-volume
+            // incident tet at each vertex (C2 nearest-tet, k=1).
+            // Orphan vertices (no incident tets) fall back to 0.0 to
+            // match the continuous-path orphan convention.
+            let lookup = winner_tet_per_vertex
+                .as_ref()
+                .expect("populated above when any categorical scalar is present");
+            lookup
+                .iter()
+                .map(|&maybe_t| maybe_t.map_or(0.0, |t| per_tet[t as usize]))
+                .collect()
+        } else {
+            volume_weighted_per_vertex_avg(mesh, per_tet)
+        };
         let f32_values: Vec<f32> = per_vertex.iter().map(|&v| v as f32).collect();
         attr.insert_extra(name.to_string(), f32_values)
             .expect("per-vertex length matches mesh.n_vertices() by construction");
@@ -348,6 +401,7 @@ pub fn slab_cut_deformed<M: Material>(
     clippy::cast_possible_truncation,
     clippy::expect_used,
     clippy::similar_names,
+    clippy::too_many_lines,
     clippy::unreachable
 )]
 fn slab_cut_at_positions<M: Material>(
@@ -361,15 +415,41 @@ fn slab_cut_at_positions<M: Material>(
     }
     validate_per_tet_scalars(mesh, per_tet_scalars)?;
 
-    let n_tets = mesh.n_tets();
-
-    // Project each per-tet scalar to per-vertex up-front so the
-    // marching-tet interior loop can interpolate cheaply along each
-    // crossed edge.
+    // C2 categorical/continuous split. Continuous scalars pre-project
+    // to a volume-weighted per-vertex average so the marching-tet
+    // inner loop can linearly interpolate along each crossed edge.
+    // Categorical scalars (suffix `_id`) hand a `Some(per_tet)` slice
+    // to `intersect_edge`, which samples the cut vertex from the tet
+    // whose centroid is closest in 3D space to the cut vertex among
+    // the tets that have touched it so far — preserves the integer-
+    // label invariant the cf-view colormap detector reads as
+    // Categorical (`tab10`) AND keeps the categorical boundary aligned
+    // with the 3D centroid-Voronoi midline (smooth) rather than the
+    // analysis-mesh largest-volume topology (jagged stair-step at
+    // every shell-boundary face). The empty Vec slots in
+    // `per_vertex_by_scalar` at categorical indices are intentionally
+    // never read (gated by `per_tet_by_scalar[i].is_some()` in
+    // `intersect_edge`).
     let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
     let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
         .iter()
-        .map(|&name| volume_weighted_per_vertex_avg(mesh, per_tet_scalars[&name]))
+        .map(|&name| {
+            if is_categorical_scalar_name(name) {
+                Vec::new()
+            } else {
+                volume_weighted_per_vertex_avg(mesh, per_tet_scalars[&name])
+            }
+        })
+        .collect();
+    let per_tet_by_scalar: Vec<Option<&[f64]>> = scalar_names
+        .iter()
+        .map(|&name| {
+            if is_categorical_scalar_name(name) {
+                Some(per_tet_scalars[&name])
+            } else {
+                None
+            }
+        })
         .collect();
 
     // Per-vertex signed distance: positive = above (axis side),
@@ -383,8 +463,15 @@ fn slab_cut_at_positions<M: Material>(
 
     let mut state = SlabCutState::new(scalar_names.len());
 
+    let n_tets = mesh.n_tets();
     for t in 0..n_tets {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(t as u32);
+        let tet_id = t as u32;
+        let [v0, v1, v2, v3] = mesh.tet_vertices(tet_id);
+        let tet_centroid = (positions[v0 as usize]
+            + positions[v1 as usize]
+            + positions[v2 as usize]
+            + positions[v3 as usize])
+            * 0.25;
         let verts = [v0, v1, v2, v3];
         let mut above = [0u32; 4];
         let mut na = 0usize;
@@ -403,16 +490,70 @@ fn slab_cut_at_positions<M: Material>(
             (4, 0) | (0, 4) => {}
             (1, 3) => {
                 let s = above[0];
-                let i0 = state.intersect_edge(s, below[0], positions, &per_vertex_by_scalar, &sd);
-                let i1 = state.intersect_edge(s, below[1], positions, &per_vertex_by_scalar, &sd);
-                let i2 = state.intersect_edge(s, below[2], positions, &per_vertex_by_scalar, &sd);
+                let i0 = state.intersect_edge(
+                    s,
+                    below[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i1 = state.intersect_edge(
+                    s,
+                    below[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i2 = state.intersect_edge(
+                    s,
+                    below[2],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
                 state.push_face([i0, i1, i2], plane.axis);
             }
             (3, 1) => {
                 let s = below[0];
-                let i0 = state.intersect_edge(s, above[0], positions, &per_vertex_by_scalar, &sd);
-                let i1 = state.intersect_edge(s, above[1], positions, &per_vertex_by_scalar, &sd);
-                let i2 = state.intersect_edge(s, above[2], positions, &per_vertex_by_scalar, &sd);
+                let i0 = state.intersect_edge(
+                    s,
+                    above[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i1 = state.intersect_edge(
+                    s,
+                    above[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i2 = state.intersect_edge(
+                    s,
+                    above[2],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
                 state.push_face([i0, i1, i2], plane.axis);
             }
             (2, 2) => {
@@ -420,14 +561,46 @@ fn slab_cut_at_positions<M: Material>(
                 // Cross-edges: a-c, b-c, b-d, a-d. Going around the
                 // quad's perimeter: i_ac → i_bc → i_bd → i_ad → i_ac.
                 // Triangulate via the i_ac → i_bd diagonal.
-                let i_ac =
-                    state.intersect_edge(above[0], below[0], positions, &per_vertex_by_scalar, &sd);
-                let i_bc =
-                    state.intersect_edge(above[1], below[0], positions, &per_vertex_by_scalar, &sd);
-                let i_bd =
-                    state.intersect_edge(above[1], below[1], positions, &per_vertex_by_scalar, &sd);
-                let i_ad =
-                    state.intersect_edge(above[0], below[1], positions, &per_vertex_by_scalar, &sd);
+                let i_ac = state.intersect_edge(
+                    above[0],
+                    below[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i_bc = state.intersect_edge(
+                    above[1],
+                    below[0],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i_bd = state.intersect_edge(
+                    above[1],
+                    below[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
+                let i_ad = state.intersect_edge(
+                    above[0],
+                    below[1],
+                    tet_id,
+                    tet_centroid,
+                    positions,
+                    &per_vertex_by_scalar,
+                    &per_tet_by_scalar,
+                    &sd,
+                );
                 state.push_face([i_ac, i_bc, i_bd], plane.axis);
                 state.push_face([i_ac, i_bd, i_ad], plane.axis);
             }
@@ -653,10 +826,16 @@ pub fn design_slab_cut<M: Material>(
 // `u32` by crate convention). `expect_used` allowed on `insert_extra`:
 // the validate-up-front contract makes the per-vertex scalar Vec
 // length equal the surface vertex count by construction.
+// `too_many_lines` allowed: the C2 categorical/continuous split adds
+// a partition pass + nearest-tet branch alongside the existing
+// barycentric path, pushing the body past clippy's 100-line default;
+// extracting either half to a helper would inflate the API surface
+// for a single internal use.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::expect_used,
-    clippy::similar_names
+    clippy::similar_names,
+    clippy::too_many_lines
 )]
 pub fn design_surface<M: Material>(
     sdf: &dyn Sdf,
@@ -692,11 +871,39 @@ pub fn design_surface<M: Material>(
     // 2. Marching cubes on the iso-0 surface.
     let surface = marching_cubes(&grid, &MarchingCubesConfig::at_iso_value(0.0));
 
-    // 3. Pre-compute volume-weighted per-vertex scalars on analysis mesh.
+    // 3. C2 categorical/continuous split. Continuous scalars
+    //    pre-project to a volume-weighted per-vertex average so
+    //    `sample_analysis_at_point` can barycentric-interpolate at
+    //    each display vertex; categorical scalars (suffix `_id`)
+    //    skip the pre-projection and share a single nearest-tet-
+    //    centroid lookup per display vertex, emitting the exact
+    //    integer of that tet. Preserves the cf-view colormap
+    //    detector's Categorical pick (`tab10`) at layer boundaries
+    //    instead of falling back to Sequential viridis on
+    //    barycentric-fractional samples.
     let scalar_names: Vec<&str> = per_tet_scalars.keys().copied().collect();
-    let per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+    let is_categorical: Vec<bool> = scalar_names
         .iter()
-        .map(|&name| volume_weighted_per_vertex_avg(analysis_mesh, per_tet_scalars[&name]))
+        .map(|&n| is_categorical_scalar_name(n))
+        .collect();
+    let any_categorical = is_categorical.iter().any(|&b| b);
+    // Continuous slots only, in `scalar_names` order with categorical
+    // slots skipped. `sample_analysis_at_point` iterates this slice
+    // and returns one f64 per entry — never sees the categorical
+    // slots, so the wasted vol-weighted-avg pass on them is avoided.
+    let cont_per_vertex_by_scalar: Vec<Vec<f64>> = scalar_names
+        .iter()
+        .zip(is_categorical.iter())
+        .filter_map(|(&name, &cat)| {
+            if cat {
+                None
+            } else {
+                Some(volume_weighted_per_vertex_avg(
+                    analysis_mesh,
+                    per_tet_scalars[&name],
+                ))
+            }
+        })
         .collect();
 
     // 4. Per-display-vertex barycentric scalar interp via uniform-grid
@@ -709,6 +916,10 @@ pub fn design_surface<M: Material>(
     //    Total work: ~27 × tets-per-cell per probe vs n_tets in the
     //    pre-perf naive walk. On row 20 (51 k tets, 0.01 m cell, 305 k
     //    display vertices), naive ran ~80 s; spatial-grid ran ~few s.
+    //    Categorical scalars reuse the same `candidates` buffer
+    //    (`nearest_tet_centroid_idx`); the centroid search is k=1 over
+    //    the same 3×3×3 window, shared across every `_id` scalar in
+    //    flight.
     let analysis_positions = analysis_mesh.positions();
     let tet_grid = TetGrid::build(analysis_mesh, analysis_positions);
 
@@ -724,15 +935,43 @@ pub fn design_surface<M: Material>(
         let probe = Vec3::new(v.x, v.y, v.z);
         candidates.clear();
         tet_grid.append_candidates_with_neighbors(probe, &mut candidates);
-        let scalars = sample_analysis_at_point(
+
+        // Continuous: barycentric over the existing pipeline. Empty
+        // `cont_per_vertex_by_scalar` produces an empty `cont_vals`
+        // (the all-categorical degenerate case is a valid no-op here).
+        let cont_vals = sample_analysis_at_point(
             probe,
             analysis_mesh,
             analysis_positions,
             &candidates,
-            &per_vertex_by_scalar,
+            &cont_per_vertex_by_scalar,
         );
-        for (i, val) in scalars.iter().enumerate() {
-            display_scalars[i].push(*val);
+
+        // Categorical: single nearest-tet-centroid lookup shared
+        // across every categorical scalar this probe. `None` only
+        // when `candidates` is empty (the probe lies outside every
+        // analysis tet's 3×3×3 cell neighborhood) — fall back to
+        // `0.0`, matching the orphan convention elsewhere in the
+        // module.
+        let nearest = if any_categorical {
+            nearest_tet_centroid_idx(probe, analysis_mesh, analysis_positions, &candidates)
+        } else {
+            None
+        };
+
+        // Recombine into `scalar_names` order. `next_cont` advances
+        // in lockstep with continuous slots so categorical positions
+        // don't consume an entry from `cont_vals`.
+        let mut next_cont = 0_usize;
+        for (i, &name) in scalar_names.iter().enumerate() {
+            let val = if is_categorical[i] {
+                nearest.map_or(0.0, |t| per_tet_scalars[&name][t as usize])
+            } else {
+                let v = cont_vals[next_cont];
+                next_cont += 1;
+                v
+            };
+            display_scalars[i].push(val);
         }
     }
 
@@ -1801,6 +2040,68 @@ fn sample_displacement_at_point<M: Material>(
     Vec3::zeros()
 }
 
+/// C2 categorical-scalar predicate: a per-tet scalar whose **name** ends
+/// in `_id` is treated as a categorical integer label (e.g.
+/// `material_shell_id`, `material_zone_id`, `primitive_id`) and routed
+/// through the nearest-tet path that preserves the integer; anything
+/// else (`psi_j_per_m3`, `displacement_magnitude`, …) is treated as a
+/// continuous field and routed through the existing volume-weighted /
+/// barycentric / linear-interp pipeline.
+///
+/// Continuous-scalar smoothing breaks the categorical invariant —
+/// averaging a `_id = 1` tet with a `_id = 2` tet yields `1.5`, which
+/// the cf-view colormap detector reads as Sequential rather than
+/// Categorical (it falls back to viridis at every layer boundary).
+/// Routing categorical scalars to nearest-tet (k=1) keeps display-vertex
+/// samples exactly integer, preserving the tab10 categorical render.
+///
+/// Suffix-by-name is the lightest convention that matches the existing
+/// producer code (`material_shell_id`, `material_zone_id`,
+/// `primitive_id`); per-scalar metadata on [`mesh_types::AttributedMesh`]
+/// is a cleaner long-term answer if `_id` ever becomes a footgun, and is
+/// banked as a C2 followup.
+#[inline]
+#[must_use]
+fn is_categorical_scalar_name(name: &str) -> bool {
+    name.ends_with("_id")
+}
+
+/// Pick the tet from `candidate_tets` whose centroid is closest to
+/// `probe`, returning its tet ID. Returns `None` when `candidate_tets`
+/// is empty.
+///
+/// Used by the C2 categorical sampling path on `design_surface` and
+/// siblings: one nearest-tet lookup per probe is shared across every
+/// categorical scalar in flight (all categorical scalars sample from
+/// the same nearest tet, so the centroid search amortizes).
+//
+// `cast_possible_truncation` allowed: VertexId/TetId are u32 by crate
+// convention so `mesh.n_tets() < u32::MAX` is a γ-locked invariant.
+#[allow(clippy::cast_possible_truncation)]
+fn nearest_tet_centroid_idx<M: Material>(
+    probe: Vec3,
+    mesh: &dyn Mesh<M>,
+    positions: &[Vec3],
+    candidate_tets: &[u32],
+) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    let mut best_d2 = f64::INFINITY;
+    for &t in candidate_tets {
+        let [v0, v1, v2, v3] = mesh.tet_vertices(t);
+        let centroid = (positions[v0 as usize]
+            + positions[v1 as usize]
+            + positions[v2 as usize]
+            + positions[v3 as usize])
+            * 0.25;
+        let d2 = (probe - centroid).norm_squared();
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best = Some(t);
+        }
+    }
+    best
+}
+
 /// Volume-weighted projection of a per-tet scalar to per-vertex.
 ///
 /// `per_tet_scalar.len()` must equal `mesh.n_tets()`; callers are
@@ -1862,12 +2163,38 @@ fn validate_per_tet_scalars<M: Material>(
 
 /// Internal scratch state for [`slab_cut`]: cross-vertex positions,
 /// per-scalar value vecs, dedup map, and emitted faces.
+///
+/// C2 categorical scalars sample from a single "owner" tet per cut
+/// vertex. The owner is the tet whose centroid is closest in 3D space
+/// to the cut vertex; later tet-iteration encounters of the same
+/// shared edge replace the owner only if their centroid is closer.
+/// Position-based winner (rather than topology-based — e.g. largest
+/// volume) keeps the categorical boundary aligned with the 3D
+/// centroid-Voronoi midline between adjacent tets of differing labels,
+/// avoiding the analysis-mesh stair-step and speckle artifacts a
+/// volume-only rule produces at layer interfaces on a regular
+/// BCC + IS mesh. Matches the position-based pick `design_surface`
+/// uses via [`nearest_tet_centroid_idx`].
+///
+/// Continuous scalars are determined by the edge endpoints alone
+/// (linear interp of the volume-weighted-per-vertex average) and are
+/// invariant under owner promotion.
 struct SlabCutState {
     edge_to_idx: HashMap<(VertexId, VertexId), u32>,
     cut_positions: Vec<Point3<f64>>,
     /// Outer Vec indexed by scalar; inner Vec indexed by cross-vertex.
     cut_scalars: Vec<Vec<f64>>,
     cut_faces: Vec<[u32; 3]>,
+    /// Tet ID of the categorical "owner" for each cut vertex (parallel
+    /// to `cut_positions`). The owner is the tet whose centroid is
+    /// closest in 3D space to the cut vertex among the tets that have
+    /// touched the cut vertex so far.
+    cut_owner_tet: Vec<u32>,
+    /// Squared distance from the cut vertex to the current owner tet's
+    /// centroid (parallel to `cut_positions`). Tracked so dedup-hit
+    /// promotion checks don't have to recompute the centroid distance
+    /// for the stored owner.
+    cut_owner_dist2: Vec<f64>,
 }
 
 impl SlabCutState {
@@ -1877,23 +2204,50 @@ impl SlabCutState {
             cut_positions: Vec::new(),
             cut_scalars: (0..n_scalars).map(|_| Vec::new()).collect(),
             cut_faces: Vec::new(),
+            cut_owner_tet: Vec::new(),
+            cut_owner_dist2: Vec::new(),
         }
     }
 
     // `cast_possible_truncation` allowed: cross_vertex count ≤
     // 4×n_tets which fits in u32 by the same γ-locked invariant
     // mesh.n_tets() < u32::MAX assumes (VertexId is u32 crate-wide).
-    #[allow(clippy::cast_possible_truncation)]
+    // `too_many_arguments` allowed: the tet-id / tet-centroid /
+    // per_tet_by_scalar trio is the C2 categorical-owner channel and
+    // is essential context for both new-vertex emission and dedup-hit
+    // owner promotion; folding it into a struct would inflate the
+    // call-site noise without clarifying the contract.
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
     fn intersect_edge(
         &mut self,
         va: VertexId,
         vb: VertexId,
+        tet_id: u32,
+        tet_centroid: crate::Vec3,
         positions: &[crate::Vec3],
         per_vertex_by_scalar: &[Vec<f64>],
+        per_tet_by_scalar: &[Option<&[f64]>],
         sd: &[f64],
     ) -> u32 {
         let (lo, hi) = if va < vb { (va, vb) } else { (vb, va) };
         if let Some(&idx) = self.edge_to_idx.get(&(lo, hi)) {
+            // Dedup hit: promote the categorical owner if this tet's
+            // centroid is closer to the cut vertex in 3D space than
+            // the current owner's. Continuous scalars depend only on
+            // the edge endpoints, so they need no update.
+            let cross_idx = idx as usize;
+            let cross = self.cut_positions[cross_idx];
+            let cross_v = crate::Vec3::new(cross.x, cross.y, cross.z);
+            let dist2 = (cross_v - tet_centroid).norm_squared();
+            if dist2 < self.cut_owner_dist2[cross_idx] {
+                self.cut_owner_tet[cross_idx] = tet_id;
+                self.cut_owner_dist2[cross_idx] = dist2;
+                for (i, &maybe) in per_tet_by_scalar.iter().enumerate() {
+                    if let Some(per_tet) = maybe {
+                        self.cut_scalars[i][cross_idx] = per_tet[tet_id as usize];
+                    }
+                }
+            }
             return idx;
         }
         let sd_a = sd[va as usize];
@@ -1907,10 +2261,26 @@ impl SlabCutState {
         let new_idx = self.cut_positions.len() as u32;
         self.cut_positions
             .push(Point3::new(cross.x, cross.y, cross.z));
-        for (i, per_vertex) in per_vertex_by_scalar.iter().enumerate() {
-            let psi_a = per_vertex[va as usize];
-            let psi_b = per_vertex[vb as usize];
-            self.cut_scalars[i].push((1.0 - t).mul_add(psi_a, t * psi_b));
+        self.cut_owner_tet.push(tet_id);
+        self.cut_owner_dist2
+            .push((cross - tet_centroid).norm_squared());
+        for (i, &maybe) in per_tet_by_scalar.iter().enumerate() {
+            if let Some(per_tet) = maybe {
+                // Categorical: take the owner tet's per-tet value
+                // (k=1 nearest-tet semantics — ties between tets of
+                // differing categorical labels at a shared cut
+                // vertex resolve to the tet whose centroid is closer
+                // in 3D space to the cut vertex).
+                self.cut_scalars[i].push(per_tet[tet_id as usize]);
+            } else {
+                // Continuous: linear interp from vol-weighted
+                // per-vertex avg across the edge endpoints (matches
+                // the pre-C2.1 path bit-exact).
+                let per_vertex = &per_vertex_by_scalar[i];
+                let psi_a = per_vertex[va as usize];
+                let psi_b = per_vertex[vb as usize];
+                self.cut_scalars[i].push((1.0 - t).mul_add(psi_a, t * psi_b));
+            }
         }
         self.edge_to_idx.insert((lo, hi), new_idx);
         new_idx
@@ -1957,7 +2327,12 @@ fn align_winding_to_axis(
     clippy::match_wildcard_for_single_variants,
     // `cast_precision_loss` on len() for averaging in the
     // winding-regression test; len is small (handful of vertices).
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    // `float_cmp` on values that have just been `.round()`'d to an
+    // integer in the C2 categorical tests; comparing the rounded
+    // result against a small integer literal is exact by
+    // construction (integer-valued f64 has no fp-noise window).
+    clippy::float_cmp
 )]
 mod tests {
     use super::*;
@@ -2002,6 +2377,88 @@ mod tests {
         assert_eq!(attr.geometry.faces.len(), 6);
         let psi_extra = attr.extras.get("psi").expect("psi extra missing");
         assert_eq!(psi_extra.len(), 5);
+    }
+
+    /// C2 categorical (suffix `_id`): every per-vertex value must be
+    /// EXACTLY integer. Pre-C2.1 the volume-weighted-per-vertex average
+    /// at the 3 shared-face vertices of `two_tet_shared_face` would
+    /// have produced a fractional value mid-way between the two zones;
+    /// the C2 nearest-tet (k=1, largest-volume incident tet) path
+    /// emits exactly one of the two input integers at every vertex.
+    #[test]
+    fn boundary_surface_categorical_id_stays_integer() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let zone_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_zone_id", &zone_id);
+
+        let attr = boundary_surface(&mesh, &scalars).unwrap();
+        let zone_extra = attr
+            .extras
+            .get("material_zone_id")
+            .expect("zone extra missing");
+        assert_eq!(zone_extra.len(), 5);
+
+        for &v in zone_extra {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical value {v} is fractional — C2 nearest-tet \
+                 path should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical value {rounded} is not one of the input \
+                 integers {{3, 7}}",
+            );
+        }
+    }
+
+    /// C2 mixed scalars: when continuous (`psi`) and categorical
+    /// (`material_zone_id`) are emitted in the same call, the
+    /// continuous slot must be BIT-EXACT identical to a continuous-
+    /// only call (so the C2.1 split doesn't perturb the volume-
+    /// weighted-per-vertex pipeline), and the categorical slot stays
+    /// integer.
+    #[test]
+    fn boundary_surface_mixed_continuous_and_categorical_preserves_continuous() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let psi: [f64; 2] = [1.0, 3.0];
+        let zone_id: [f64; 2] = [3.0, 7.0];
+
+        // Continuous-only baseline.
+        let mut cont_only: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        cont_only.insert("psi", &psi);
+        let baseline = boundary_surface(&mesh, &cont_only).unwrap();
+
+        // Mixed.
+        let mut mixed: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        mixed.insert("psi", &psi);
+        mixed.insert("material_zone_id", &zone_id);
+        let attr = boundary_surface(&mesh, &mixed).unwrap();
+
+        // Continuous slot bit-exact preserved.
+        let psi_baseline = baseline.extras.get("psi").expect("psi baseline");
+        let psi_mixed = attr.extras.get("psi").expect("psi mixed");
+        assert_eq!(
+            psi_baseline, psi_mixed,
+            "continuous `psi` slot must be bit-exact identical when a \
+             categorical scalar is added to the call",
+        );
+
+        // Categorical slot stays integer.
+        let zone = attr
+            .extras
+            .get("material_zone_id")
+            .expect("zone extra missing");
+        for &v in zone {
+            assert!(
+                (v - v.round()).abs() < 1e-9,
+                "categorical value {v} fractional",
+            );
+        }
     }
 
     /// Per-tet scalar with wrong length surfaces as the typed error.
@@ -2058,6 +2515,59 @@ mod tests {
         // Linear interp between two equal values is the same value.
         for &v in psi_extra {
             assert!((v - 7.0).abs() < 1e-9);
+        }
+    }
+
+    /// C2 categorical (suffix `_id`): every cut-vertex value must be
+    /// EXACTLY integer. Pre-C2.1 the linear interp along each crossed
+    /// edge between vol-weighted-per-vertex averages would have
+    /// produced fractional values at any cut vertex on an edge shared
+    /// between the two zones; the C2 nearest-tet (k=1, largest-volume
+    /// tet wins on edge dedup) path emits one of the input integers
+    /// at every cut vertex.
+    #[test]
+    fn slab_cut_categorical_id_stays_integer() {
+        let field = MaterialField::skeleton_default();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let zone_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_zone_id", &zone_id);
+
+        // z = 0.05 crosses both tets — tet 0 (corner) in a (1, 3)
+        // pattern (v3 above), tet 1 (apex jut) in a (2, 2) pattern
+        // (v3 + v4 above). Both contribute cut vertices on the
+        // shared edges (v1, v3) and (v2, v3), which dedup to one cut
+        // vertex per shared edge whose owner is the larger-volume tet.
+        let attr = slab_cut(
+            &mesh,
+            Plane {
+                axis: 2,
+                value: 0.05,
+            },
+            &scalars,
+        )
+        .unwrap();
+        let zone = attr
+            .extras
+            .get("material_zone_id")
+            .expect("zone extra missing");
+        assert!(
+            !zone.is_empty(),
+            "z = 0.05 must produce a non-empty cross-section on \
+             two_tet_shared_face",
+        );
+        for &v in zone {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical cut-vertex value {v} is fractional — \
+                 C2 nearest-tet path should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical cut-vertex value {rounded} is not one \
+                 of the input integers {{3, 7}}",
+            );
         }
     }
 
@@ -2562,6 +3072,86 @@ mod tests {
             assert!(
                 dot > 0.95,
                 "normal {n:?} not aligned with radial direction {r_unit:?} (dot = {dot})",
+            );
+        }
+    }
+
+    /// C2 categorical (suffix `_id`): every MC display-vertex value
+    /// must be EXACTLY integer. Pre-C2.1 the barycentric interp inside
+    /// the enclosing analysis tet — whose 4 vertices carry vol-weighted
+    /// averages that differ at the shared-face vertices — would have
+    /// produced fractional values at every MC vert; the C2 nearest-
+    /// tet-centroid (k=1, shared across all categorical scalars per
+    /// probe) path emits exactly one of the input integers.
+    ///
+    /// The sphere isosurface at radius 0.015 centered at the tet 1
+    /// centroid (0.045, 0.045, 0.045) sits fully inside the analysis
+    /// mesh's combined AABB (0..0.1 each axis), so every MC vertex has
+    /// candidate analysis tets in its 3×3×3 cell window.
+    #[test]
+    fn design_surface_categorical_id_stays_integer() {
+        use crate::SphereSdf;
+
+        // Sphere offset from origin so the iso-0 surface lies inside
+        // the analysis mesh's interior (origin-anchored sphere would
+        // collapse to a single point on the analysis-mesh boundary
+        // and produce zero MC verts).
+        struct OffsetSphere {
+            center: Vec3,
+            inner: SphereSdf,
+        }
+        impl crate::sdf_bridge::Sdf for OffsetSphere {
+            fn eval(&self, p: nalgebra::Point3<f64>) -> f64 {
+                let shifted = nalgebra::Point3::new(
+                    p.x - self.center.x,
+                    p.y - self.center.y,
+                    p.z - self.center.z,
+                );
+                self.inner.eval(shifted)
+            }
+            fn grad(&self, p: nalgebra::Point3<f64>) -> Vec3 {
+                let shifted = nalgebra::Point3::new(
+                    p.x - self.center.x,
+                    p.y - self.center.y,
+                    p.z - self.center.z,
+                );
+                self.inner.grad(shifted)
+            }
+        }
+
+        let sphere = OffsetSphere {
+            center: Vec3::new(0.045, 0.045, 0.045),
+            inner: SphereSdf { radius: 0.015 },
+        };
+        let bounds = Aabb3::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.1, 0.1, 0.1));
+        let resolution = 0.005_f64;
+        let field = MaterialField::skeleton_default();
+        let analysis = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let shell_id: [f64; 2] = [3.0, 7.0];
+        let mut scalars: BTreeMap<&str, &[f64]> = BTreeMap::new();
+        scalars.insert("material_shell_id", &shell_id);
+
+        let attr = design_surface(&sphere, &analysis, &bounds, resolution, &scalars).unwrap();
+        let shell = attr
+            .extras
+            .get("material_shell_id")
+            .expect("shell extra missing");
+        assert!(
+            !shell.is_empty(),
+            "sphere isosurface should produce a non-empty MC mesh \
+             within the analysis-mesh AABB",
+        );
+        for &v in shell {
+            let rounded = v.round();
+            assert!(
+                (v - rounded).abs() < 1e-9,
+                "categorical MC-vertex value {v} is fractional — C2 \
+                 nearest-tet path should keep every value integer",
+            );
+            assert!(
+                rounded == 3.0 || rounded == 7.0,
+                "categorical MC-vertex value {rounded} is not one of \
+                 the input integers {{3, 7}}",
             );
         }
     }
