@@ -42,8 +42,10 @@ pub struct Sequence {
     pub frames: Vec<PathBuf>,
     /// Zero-based index into [`Self::frames`] for the frame currently
     /// loaded into [`crate::ViewerInput`]. Mutated by
-    /// [`handle_frame_navigation`] (D1.3 keyboard) — the scrub UI (D2)
-    /// will mutate it the same way.
+    /// [`handle_frame_navigation`] (keyboard arrows / Home / End),
+    /// [`advance_playback_on_clock`] (auto-advance when
+    /// [`Playback::playing`]), and [`sequence_info_panel`] (D2.2
+    /// scrub slider).
     pub current: usize,
 }
 
@@ -129,6 +131,28 @@ impl Default for Playback {
     }
 }
 
+impl Playback {
+    /// Flip [`Self::playing`] and drain the internal clock-accumulator
+    /// to `0.0` on the pause edge.
+    ///
+    /// Accumulator drain on pause matters because the clock-advance
+    /// system carries the accumulator across paused frames — without
+    /// the drain, resuming after a pause would fire the next advance
+    /// using whatever sub-period time was banked at pause-time.
+    /// Draining gives every play→pause→play cycle a fresh `1/fps`
+    /// before the first auto-advance.
+    ///
+    /// Resuming from pause (false → true) leaves the accumulator at
+    /// `0.0` (set on the prior pause-edge), which is the same starting
+    /// point the clock system uses on first-ever play.
+    pub fn toggle_playing(&mut self) {
+        self.playing = !self.playing;
+        if !self.playing {
+            self.accumulator = 0.0;
+        }
+    }
+}
+
 /// One step of the clock-advance state machine. Pure function over the
 /// previous `(accumulator, current, playing)` plus the inputs
 /// `(delta, fps, len, loop_mode)`; returns the next state.
@@ -175,22 +199,34 @@ fn advance_step(
     (cur, acc, playing)
 }
 
-/// Spacebar toggles [`Playback::playing`]. Pause also drains the
-/// accumulator so resuming doesn't auto-advance until a fresh
-/// `1.0 / fps` has elapsed.
+/// Spacebar toggles [`Playback::playing`] via
+/// [`Playback::toggle_playing`] (which also drains the accumulator on
+/// pause). Gated on `!egui_ctx.wants_keyboard_input()` so spacebar
+/// presses targeting a focused egui widget (e.g. the on-screen
+/// play/pause button after a click, or any future text-input field)
+/// don't double-fire — the focused widget handles the input itself.
 ///
 /// No-op when the [`Playback`] resource is absent (single-file mode).
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
-pub fn handle_playback_input(keys: Res<ButtonInput<KeyCode>>, playback: Option<ResMut<Playback>>) {
+pub fn handle_playback_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    playback: Option<ResMut<Playback>>,
+    mut contexts: EguiContexts,
+) -> Result {
     let Some(mut playback) = playback else {
-        return;
+        return Ok(());
     };
-    if keys.just_pressed(KeyCode::Space) {
-        playback.playing = !playback.playing;
-        if !playback.playing {
-            playback.accumulator = 0.0;
-        }
+    // If egui has keyboard focus (button, slider, text field, ...),
+    // let the focused widget handle the input — otherwise spacebar
+    // fires both Bevy's path and egui's focus-activation, netting two
+    // toggles in one frame.
+    if contexts.ctx_mut()?.wants_keyboard_input() {
+        return Ok(());
     }
+    if keys.just_pressed(KeyCode::Space) {
+        playback.toggle_playing();
+    }
+    Ok(())
 }
 
 /// Clock-driven advance of [`Sequence::current`] when
@@ -232,10 +268,33 @@ pub fn advance_playback_on_clock(
     }
 }
 
-/// egui bottom panel: one-line `Frame N/M — <filename>` sequence
-/// status. Runs in [`bevy_egui::EguiPrimaryContextPass`]; gated on
-/// the presence of the [`Sequence`] resource so single-file mode pays
-/// nothing.
+/// egui bottom panel — three-row timeline + playback UI. Runs in
+/// [`bevy_egui::EguiPrimaryContextPass`]; gated on the presence of the
+/// [`Sequence`] resource so single-file mode pays nothing.
+///
+/// # Layout
+///
+/// 1. **Status row** — `Frame N/M | filename | keyboard hint`.
+/// 2. **Playback row (D2.2)** — play/pause button + frame scrub
+///    slider. The button calls [`Playback::toggle_playing`]; the
+///    scrub slider mutates [`Sequence::current`] (1-indexed display,
+///    0-indexed storage). Slider hidden when `len < 2` (the range
+///    would collapse otherwise).
+/// 3. **Speed / loop row (D2.3)** — fps slider (`1..=30`, integer
+///    display, stored as `f64`) bound to [`Playback::fps`] + loop
+///    checkbox bound to [`Playback::loop_mode`].
+///
+/// # Change detection
+///
+/// The scrub slider's write to `sequence.current` is gated on
+/// `response.changed()` (egui's "user actually moved it" signal) and
+/// the inner `if sequence.current != new_current` equality check, so
+/// a steady-state re-render at frame N doesn't flag the resource as
+/// changed.
+///
+/// The fps and loop_mode mutations go through `&mut` slider/checkbox
+/// bindings — egui only writes back when the user interacts, so
+/// these likewise don't fire change-detection on quiescent frames.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
 pub fn sequence_info_panel(
     mut contexts: EguiContexts,
@@ -293,10 +352,7 @@ pub fn sequence_info_panel(
                         "▶ Play"
                     };
                     if ui.button(label).clicked() {
-                        playback.playing = !playback.playing;
-                        if !playback.playing {
-                            playback.accumulator = 0.0;
-                        }
+                        playback.toggle_playing();
                     }
                     ui.separator();
                 }
@@ -636,8 +692,59 @@ mod tests {
         }
     }
 
+    /// Accumulator value exactly at the period boundary advances once
+    /// — the `while acc >= period` (not `>`) comparison takes effect
+    /// at the boundary.
+    #[test]
+    fn advance_step_at_period_boundary_advances_once() {
+        // fps=10 → period=0.1; accumulator=0.1 exactly, delta=0 → acc
+        // hits the >= period boundary on the first iteration, advances
+        // once, then acc=0 fails the >= check.
+        let (cur, acc, playing) = advance_step(0.1, 0.0, 10.0, 2, 8, true);
+        assert_eq!(cur, 3);
+        assert!(acc.abs() < 1e-12);
+        assert!(playing);
+    }
+
+    /// At end of sequence with `loop_mode=true` and a multi-period
+    /// delta, the wrap is followed by continued advance from frame 0
+    /// — the `while acc >= period` loop doesn't break on wrap.
+    #[test]
+    fn advance_step_wraps_and_continues_advancing() {
+        // fps=10 → period=0.1; start at frame 6 of 8 with delta=0.5
+        // (= 5 periods). Path: 6 → 7 → wrap to 0 → 1 → 2 → 3, end at
+        // frame 3 with accumulator drained.
+        let (cur, acc, playing) = advance_step(0.0, 0.5, 10.0, 6, 8, true);
+        assert_eq!(cur, 3, "wrap should be followed by continued advance");
+        assert!(
+            acc.abs() < 1e-9,
+            "accumulator should drain across 5 periods"
+        );
+        assert!(playing);
+    }
+
+    /// Sequential calls thread the accumulator across invocations:
+    /// two consecutive sub-period deltas accumulate to trigger an
+    /// advance on the second call. Documents the threading contract
+    /// the Bevy system relies on.
+    #[test]
+    fn advance_step_sequential_calls_thread_accumulator() {
+        // fps=10 → period=0.1.
+        // Call 1: delta=0.06, acc=0+0.06=0.06 → below period, no advance.
+        let (cur1, acc1, playing1) = advance_step(0.0, 0.06, 10.0, 2, 8, true);
+        assert_eq!(cur1, 2);
+        assert!((acc1 - 0.06).abs() < 1e-12);
+        assert!(playing1);
+        // Call 2: delta=0.05, acc=0.06+0.05=0.11 → crosses period,
+        // advances once, leaves acc=0.01.
+        let (cur2, acc2, playing2) = advance_step(acc1, 0.05, 10.0, cur1, 8, true);
+        assert_eq!(cur2, 3);
+        assert!((acc2 - 0.01).abs() < 1e-12);
+        assert!(playing2);
+    }
+
     // Playback resource defaults are part of the public contract — the
-    // UI sliders in D2.3 will read these as initial values.
+    // UI sliders in D2.3 read these as initial values.
 
     #[test]
     fn playback_default_starts_paused_at_ten_fps_with_loop() {
@@ -645,6 +752,59 @@ mod tests {
         assert!(!p.playing);
         assert!((p.fps - 10.0).abs() < 1e-12);
         assert!(p.loop_mode);
+        assert!(p.accumulator.abs() < 1e-12);
+    }
+
+    // Playback::toggle_playing — the shared toggle path called by
+    // both the spacebar handler and the on-screen play/pause button.
+
+    /// Toggling a paused Playback to playing leaves the accumulator
+    /// where it was (the resume side of the cycle starts from a
+    /// fresh-on-pause `0.0` set by the prior pause-edge).
+    #[test]
+    fn toggle_playing_paused_to_playing_preserves_accumulator() {
+        let mut p = Playback {
+            playing: false,
+            accumulator: 0.0, // freshly-paused state
+            ..Playback::default()
+        };
+        p.toggle_playing();
+        assert!(p.playing);
+        assert!(p.accumulator.abs() < 1e-12);
+    }
+
+    /// Toggling a playing Playback to paused drains the accumulator
+    /// to `0.0` so resuming requires a fresh `1/fps` before the next
+    /// auto-advance.
+    #[test]
+    fn toggle_playing_playing_to_paused_drains_accumulator() {
+        let mut p = Playback {
+            playing: true,
+            accumulator: 0.07, // mid-period when paused
+            ..Playback::default()
+        };
+        p.toggle_playing();
+        assert!(!p.playing);
+        assert!(
+            p.accumulator.abs() < 1e-12,
+            "pause-edge must drain accumulator, found {}",
+            p.accumulator
+        );
+    }
+
+    /// Double-toggle (play → pause → play) lands back at playing with
+    /// the accumulator drained — proves the drain happens on every
+    /// pause edge, not just first.
+    #[test]
+    fn toggle_playing_round_trip_drains_accumulator() {
+        let mut p = Playback {
+            playing: true,
+            accumulator: 0.07,
+            ..Playback::default()
+        };
+        p.toggle_playing(); // playing → paused (drains)
+        p.toggle_playing(); // paused → playing (no drain, but already 0)
+        assert!(p.playing);
         assert!(p.accumulator.abs() < 1e-12);
     }
 }
