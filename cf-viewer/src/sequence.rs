@@ -5,7 +5,11 @@
 //! `main.rs` inserts a [`Sequence`] resource (plus a [`Playback`]
 //! resource alongside it). Five systems live here:
 //!
-//! - [`sequence_info_panel`] — egui bottom-bar "Frame N/M" status.
+//! - [`sequence_info_panel`] — egui bottom-bar with a status row
+//!   ("Frame N/M" + filename + hint) plus a control row (D2.2:
+//!   play/pause button + frame scrub slider). Mutates `Sequence` and
+//!   `Playback` through `ResMut`; single-file mode still gates the
+//!   panel out entirely.
 //! - [`handle_frame_navigation`] — keyboard `←` / `→` arrows step
 //!   `Sequence::current` (with `Home` / `End` for first / last).
 //! - [`handle_playback_input`] (D2.1) — keyboard `Space` toggles
@@ -233,8 +237,12 @@ pub fn advance_playback_on_clock(
 /// the presence of the [`Sequence`] resource so single-file mode pays
 /// nothing.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value
-pub fn sequence_info_panel(mut contexts: EguiContexts, sequence: Option<Res<Sequence>>) -> Result {
-    let Some(sequence) = sequence else {
+pub fn sequence_info_panel(
+    mut contexts: EguiContexts,
+    sequence: Option<ResMut<Sequence>>,
+    mut playback: Option<ResMut<Playback>>,
+) -> Result {
+    let Some(mut sequence) = sequence else {
         return Ok(());
     };
     let ctx = contexts.ctx_mut()?;
@@ -242,28 +250,72 @@ pub fn sequence_info_panel(mut contexts: EguiContexts, sequence: Option<Res<Sequ
     // 1-indexed display so "Frame 1/8" reads naturally; storage stays
     // 0-indexed for `Vec` access.
     let current_human = sequence.current.saturating_add(1);
-    let name = sequence.current_name().unwrap_or("?");
+    let name = sequence.current_name().unwrap_or("?").to_string();
     // Bottom-panel default frame derived from the active egui style
     // (so theme changes flow through) plus a small inner margin so
     // the single-row content doesn't hug the panel edges. `min_height`
-    // keeps the strip readable at the bottom of a tall viewport.
+    // keeps the two-row layout readable at the bottom of a tall
+    // viewport.
     let frame =
         egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 6));
     egui::TopBottomPanel::bottom("cf-view-sequence")
         .resizable(false)
-        .min_height(28.0)
+        .min_height(52.0)
         .frame(frame)
         .show(ctx, |ui| {
+            // Row 1 — status: Frame N/M + filename + hint row.
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("Frame {current_human}/{len}")).strong());
                 ui.separator();
                 ui.label(egui::RichText::new(name).monospace());
                 ui.separator();
                 ui.label(
-                    egui::RichText::new("Space play/pause · ←/→ step · Home/End first/last")
-                        .small()
-                        .italics(),
+                    egui::RichText::new(
+                        "Space play/pause · ←/→ step · Home/End first/last · drag to scrub",
+                    )
+                    .small()
+                    .italics(),
                 );
+            });
+            ui.add_space(2.0);
+            // Row 2 — controls: play/pause button + frame scrub slider.
+            //
+            // The scrub mutation goes through `response.changed()` so a
+            // pristine render (slider re-built from the current value
+            // each frame) doesn't fake a change-detection fire. The
+            // play/pause button mirrors `handle_playback_input`'s
+            // accumulator-drain on pause.
+            ui.horizontal(|ui| {
+                if let Some(playback) = playback.as_deref_mut() {
+                    let label = if playback.playing {
+                        "⏸ Pause"
+                    } else {
+                        "▶ Play"
+                    };
+                    if ui.button(label).clicked() {
+                        playback.playing = !playback.playing;
+                        if !playback.playing {
+                            playback.accumulator = 0.0;
+                        }
+                    }
+                    ui.separator();
+                }
+                // Scrub slider — only meaningful when there's something
+                // to scrub through. For len <= 1 the range collapses and
+                // egui would draw a degenerate slider; skip it.
+                if len >= 2 {
+                    let mut scrub_human = current_human;
+                    let response = ui.add_sized(
+                        [ui.available_width(), 20.0],
+                        egui::Slider::new(&mut scrub_human, 1..=len).show_value(false),
+                    );
+                    if response.changed() {
+                        let new_current = scrub_human.saturating_sub(1).min(len.saturating_sub(1));
+                        if sequence.current != new_current {
+                            sequence.current = new_current;
+                        }
+                    }
+                }
             });
         });
     Ok(())
