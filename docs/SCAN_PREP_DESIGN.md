@@ -69,7 +69,7 @@ End-to-end, scan to mold:
    1. Load STL via CLI arg (default --stl-units mm; vertex × 0.001 → meters)
    2. Inspect — vertex/face count, AABB, mesh-repair diagnostics, units assumption
    3. Reorient — rotate so demolding direction = +z
-   4. Recenter — translate cavity centroid to origin (or floor → z=0)
+   4. Recenter — pick one: `[Center origin]` translates centroid to origin, OR `[Floor → z=0]` translates cavity floor to z=0
    5. Optionally clip — drop scanner-noise floor below z=clip_z
    6. Cap open boundaries — auto-detect open loops, fit planes, approve per loop
    7. Set mouth extension — +z headroom for cup opening
@@ -176,7 +176,7 @@ cf-scan-prep handles steps 1-8. Steps before (raw scan acquisition + multi-shell
 | Per-loop cap polygon (translucent fill on the proposed cap plane, color per loop for disambiguation) | ON for checked loops | Each `Loop X` checkbox toggles its own cap-overlay rendering |
 | Cap-stale dim overlay (gray transparency over loop list area + viewport boundary highlights) | ON when transform changes after a `Scan` | Auto-applied; clears on next `[Scan]` click |
 | Mouth extension overlay (translucent box from `transformed_aabb.z_max` extending `+z` by `mouth_z` mm) | OFF | `Mouth ext. → Preview` checkbox |
-| Cleaned-result preview (semi-transparent body extruded by 14 mm offset) | OFF | Future Stage 2.6 — banked, not in MVP |
+| Cleaned-result preview (semi-transparent body extruded by the device outer-shell thickness from the cf-cast CastSpec) | OFF | Future Stage 2.6 — banked, not in MVP |
 
 **Camera behavior:** orbit camera (cf-bevy-common `OrbitCamera`), framed on initial load to scan's transformed AABB. **Position preserved across transform tweaks** — re-framing on every slider change would be jarring. A `[Reframe]` button in the side panel lets the user manually re-center the view if needed.
 
@@ -198,11 +198,12 @@ Loaded at startup, never changes:
 Rotation state stored internally as `UnitQuaternion<f64>`; Euler conversion happens at the slider boundary so gimbal-lock state corruption is avoided.
 
 - Three sliders for **roll / pitch / yaw** (intrinsic XYZ Euler, displayed in degrees, range −180° to +180°)
-- Four shortcut buttons for common scanner-frame → cast-frame rotations:
-  - `[Snap +Z up]` — identity (default)
-  - `[Snap −Z up]` — 180° flip about the X axis
-  - `[Snap +Y → +Z]` — 90° about X (the "scanner had Y up" case)
+- Five shortcut buttons for common scanner-frame → cast-frame rotations:
+  - `[Snap +Z up]` — identity (default; matches `1` keyboard shortcut)
+  - `[Snap −Z up]` — 180° flip about the X axis (matches `2` keyboard shortcut)
+  - `[Snap +Y → +Z]` — 90° about X (the "scanner had Y up" case; matches `3` keyboard shortcut)
   - `[Snap −Y → +Z]` — −90° about X
+  - `[Snap +X → +Z]` — −90° about Y (the "scanner had X up" case, e.g. horizontal scanners)
 - `[Reset rotation]` button → identity quaternion
 - Read-only quaternion display (4 components: `w`, `x`, `y`, `z`) for advanced users
 
@@ -344,7 +345,7 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 **At load:**
 - Run `mesh-repair` diagnostics on the loaded scan (closed manifold? non-manifold edges? holes? disconnected shells?)
 - Display issue count in status bar (`"6 issues: 4 holes, 2 non-manifold edges"`)
-- Allow user to continue — diagnostic is **informational, not blocking** (broken scans CAN produce valid SDFs if the holes are small)
+- Allow user to continue — diagnostic is **informational, not blocking**. Open boundaries surfaced here are addressed via the Cap panel; uncapped loops at save time fire a yellow warning so the workflow oversight is visible. Non-manifold-edge / disconnected-shell counts surface for awareness but aren't auto-fixed (out-of-scope per [MVP scope](#mvp-scope-vs-banked-items) §9).
 
 **Live (per-frame):**
 - "Drops X% of vertices below z=Y mm" under clip plane control (updates on slider change)
@@ -370,7 +371,8 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 | `R` | Reset all transforms |
 | `C` | Center origin |
 | `F` | Floor → z=0 |
-| `1` / `2` / `3` | Snap +X / +Y / +Z up |
+| `A` | Apply caps (acts on currently-detected loops; no-op if none) |
+| `1` / `2` / `3` | `Snap +Z up` / `Snap −Z up` / `Snap +Y → +Z` (matches the first three Reorient panel buttons) |
 | Mouse drag | Orbit camera |
 | Scroll | Zoom |
 
@@ -383,7 +385,7 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 - All visualization elements above (axis gizmos, transformed-AABB wireframe, ground grid, optional clip plane disc, open boundary loop highlights, per-loop translucent caps, mouth-extension overlay)
 - All keyboard shortcuts above
 - Output: cleaned STL (watertight after capping) + TOML config (with capped-loop provenance)
-- Validation: load-time diagnostic + save-time AABB warning + clip-% live readout + uncapped-loop warning + per-loop R² readout
+- Validation: load-time mesh-repair diagnostic + save-time AABB warning + clip-% live readout + uncapped-loop warning + per-loop R² readout + FS error red-status-bar pattern + pre-save non-finite-transform rejection
 
 **Banked (deferred to Stage 2.6+):**
 
@@ -402,13 +404,13 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 
 ## Implementation arc structure
 
-13-commit plan, **~21-34 hours** active across multiple sessions:
+13-commit plan, **~24-32 hours** active across multiple sessions (sum of per-commit estimates with the per-commit ranges):
 
 | # | Commit | Scope | Est |
 |---|--------|-------|----:|
 | 1 | `docs(scan-prep): design spec` | This document | ~30 min |
 | 2 | `refactor(cf-viewer): lift RenderScale + setup helpers to lib` | Extract `RenderScale`, `compute_render_scale`, `scale_aabb`, `setup_camera_and_lighting`, `spawn_face_mesh` from main.rs to lib.rs; cf-view binary thinned; per-crate gates + xtask grade | ~2 hr + 25 min grader |
-| 3 | `feat(tools): cf-scan-prep crate scaffold + STL load with units` | New `tools/cf-scan-prep/` workspace member, deps (cf-viewer + bevy + bevy_egui + mesh-io + mesh-measure + mesh-repair + nalgebra + serde + toml + anyhow + clap), blank Bevy app loading scan via CLI with `--stl-units mm\|m\|inch` flag (default mm; vertex × 0.001 → meters), rendering it via cf-viewer helpers, error-overlay pattern for load failures | ~1.5 hr |
+| 3 | `feat(tools): cf-scan-prep crate scaffold + STL load with units` | New `tools/cf-scan-prep/` workspace member, deps (cf-viewer + bevy + bevy_egui + mesh-io + mesh-measure + mesh-repair + nalgebra + serde + toml + anyhow + clap), blank Bevy app loading scan via CLI with `--stl-units mm\|m\|inch` flag (default mm; vertex × 0.001 → meters), rendering it via cf-viewer helpers with `OrbitCamera::UpAxis = +Z` (cast-frame demolding axis convention; orbit camera frames the raw AABB at load), error-overlay pattern for load failures | ~1.5 hr |
 | 4 | `feat(scan-prep): Scan Info panel` | First egui panel, validates the wiring; surfaces vertex/face counts + AABB in mm + units assumption | ~1 hr |
 | 5 | `feat(scan-prep): Reorient panel` | Sliders + snap buttons + quaternion readout. **Live transforms via Bevy `Transform` component**, not mesh rebuild — slider drags update one component value, no per-tick vertex-buffer copy. Mesh entity spawns once at load; transformed AABB updates per-frame from `Transform * raw_aabb`. Critical for >50k-face perf. | ~3-4 hr |
 | 6 | `feat(scan-prep): Recenter panel` | Translation sliders + center + floor → z=0 buttons. `[Floor → z=0]` uses post-clip min.z if clip enabled, raw transformed min.z otherwise. | ~1-2 hr |
@@ -457,7 +459,7 @@ Each commit must pass:
 - **Eyes-on-pixels** — for UI commits, user inspects the rendered Bevy window before declaring the commit complete. Per the auto-memory rule, this is user-side; Claude relays screenshots.
 - **Ask-before-commit** — standing rule.
 
-When the MVP ships (commit #12), update the [target deliverable](#target-deliverable) section with the actual scan asset details (what scanner / what shape / what cast outcome) once iter-1 produces them.
+When the MVP ships (commit #13), update the [target deliverable](#target-deliverable) section with the actual scan asset details (what scanner / what shape / what cast outcome) once iter-1 produces them.
 
 Archive trigger: move to `docs/archive/` after iter-1 cast is in hand and v2 prep work begins on a new spec.
 
@@ -465,4 +467,5 @@ Archive trigger: move to `docs/archive/` after iter-1 cast is in hand and v2 pre
 
 - **2026-05-12** — Commit #1 (design spec) shipped (`119ac2f2`). 394-line initial spec, 7 panels, ~12 commits estimated.
 - **2026-05-12** — Cap-feature addendum to commit #1 (`b5cd83cd`). Adds **Cap open boundaries** as panel #5 of 8, makes the spec watertight-by-construction (required for cf-cast SDF queries), bumps implementation arc to 13 commits / ~19-31 hours. Auto-detect + per-loop approve + manual override; rejected line-drawing alternative for geometric-ambiguity reasons.
-- **2026-05-12** — Edge-case review pass folds 7 spec updates from a workflow-walkthrough cold-read (this commit). Adds: STL units handling (`--stl-units mm\|m\|inch` flag, default mm, vertex × 0.001 → meters, displayed in Scan Info); clip = true plane intersection (~150 LOC, rejects vertex-drop alt for cap-quality reasons); cap state invalidation on transform change (loop list dims with re-Scan overlay); cap normal orientation (mesh-side-of-plane heuristic + boundary-edge-adjacency fallback); Bevy `Transform`-component live transforms (commit #5/#6 perf for 100k-face scans); save atomicity (`.tmp` + atomic rename); FS error pattern (red status-bar, no panic). Bumps implementation arc to ~21-34 hours (commits #3 +0.5 hr, #7 +1 hr, #11 +0.5 hr). Risks expanded with edge-case enumeration (Transform-component rationale, units-mismatch user-error pattern, true-intersection plane-parallel triangle handling, FS path edge cases).
+- **2026-05-12** — Edge-case review pass folds 7 spec updates from a workflow-walkthrough cold-read (`2666fc0a`). Adds: STL units handling (`--stl-units mm\|m\|inch` flag, default mm, vertex × 0.001 → meters, displayed in Scan Info); clip = true plane intersection (~150 LOC, rejects vertex-drop alt for cap-quality reasons); cap state invalidation on transform change (loop list dims with re-Scan overlay); cap normal orientation (mesh-side-of-plane heuristic + boundary-edge-adjacency fallback); Bevy `Transform`-component live transforms (commit #5/#6 perf for 100k-face scans); save atomicity (`.tmp` + atomic rename); FS error pattern (red status-bar, no panic). Bumps implementation arc to ~21-34 hours (commits #3 +0.5 hr, #7 +1 hr, #11 +0.5 hr). Risks expanded with edge-case enumeration (Transform-component rationale, units-mismatch user-error pattern, true-intersection plane-parallel triangle handling, FS path edge cases).
+- **2026-05-12** — Final-pass cold-read polish (this commit). 5 drift items + 4 minor wording fixes from reading the spec end-to-end with fresh eyes: stale "commit #12" reference (→ #13); load-time validation parenthetical that contradicted strategic context (broken scans CAN produce valid SDFs → tightened to point at Cap panel + uncapped-loop warning); MVP scope validation list missing FS error + non-finite-rejection items; keyboard shortcut `1`/`2`/`3` claimed +X/+Y/+Z but Reorient panel only had 4 buttons (added `[Snap +X → +Z]` button + clarified shortcut mapping); arc total estimate 21-34 hr → 24-32 hr (matches per-commit sum); workflow step 4 wording (centroid-or-floor as alternatives); "14 mm offset" generic wording (→ "device outer-shell thickness from cf-cast CastSpec"); new keyboard shortcut `A` for Apply caps (most-impactful Cap-panel operation); commit #3 scope adds `OrbitCamera::UpAxis = +Z` cast-frame convention. No design changes; spec is implementation-ready.
