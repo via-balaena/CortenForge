@@ -349,6 +349,9 @@ members = [
     "examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth",
     "examples/sim-soft/spade-delaunay-spike",
 
+    # Physical-cast tooling (Track F)
+    "examples/cast/layered-silicone-device-v1",
+
     # Foundation (active development)
     "design/cf-geometry",
     "design/cf-spatial",

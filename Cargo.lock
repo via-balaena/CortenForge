@@ -2952,6 +2952,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-cast-layered-silicone-device-v1"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-cast",
+ "cf-design",
+ "mesh-printability",
+ "nalgebra",
+]
+
+[[package]]
 name = "example-composite-cable-catenary"
 version = "1.0.0"
 dependencies = [
