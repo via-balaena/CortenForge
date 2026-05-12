@@ -379,8 +379,23 @@ const BBOX_HALF_Y: f64 = SCAN_HY + WRAP_THICKNESS + CELL_SIZE;
 // region.
 const BBOX_HALF_Z: f64 = SCAN_HZ + MOUTH_EXTENSION_PLUS_Z + CELL_SIZE;
 
-/// BCC lattice spacing (m). 4 mm — same as rows 21/22/23. Finer cells
-/// (`0.002 m`) trip SPD at the first ramp step.
+/// BCC lattice spacing (m). 4 mm — same as rows 21/22/23.
+///
+/// **Historical note (pre-A2):** earlier comment on this constant
+/// claimed "Finer cells (`0.002 m`) trip SPD at the first ramp step."
+/// **Falsified post-A2 by the B2 evidence experiment (2026-05-11):**
+/// halving `CELL_SIZE` to `0.002` (~433k tets, 2.9× this row's normal
+/// ~150k) ran 3 ramp steps cleanly through faer's Llt at iter counts
+/// 8 / 13 / 17 with residuals 2.85e-11 / 9.34e-11 / 3.44e-11 — ZERO
+/// LU fallback engagements observed. The pre-A2 SPD-trip observation
+/// is either stale (carried from a prior row version) or specific to
+/// a different geometry. A2's Lu fallback is not load-bearing for B2
+/// at 2 mm cells on this row's current geometry.
+///
+/// 4 mm cells stay the row default because the experiment was a
+/// recon spike, not a productionization — finer-cells productionization
+/// would require re-baking all `*_EXACT` counts + `*_REF_BITS` against
+/// the larger mesh and re-running visuals pass. Banked as B2 followup.
 const CELL_SIZE: f64 = 0.004;
 
 // =============================================================================
