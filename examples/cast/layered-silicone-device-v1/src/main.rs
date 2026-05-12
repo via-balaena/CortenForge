@@ -1,4 +1,4 @@
-//! Layered silicone device v1 cast — Stage 2 F4 example wrapper.
+//! Layered silicone device v1 cast — Stage 2 v1 MVP example wrapper.
 //!
 //! Builds a 3-layer [`CastSpec`] against the layered-silicone-device
 //! v1.0 geometry (capsule plug per the casting roadmap Q2

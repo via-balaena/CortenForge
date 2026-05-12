@@ -228,9 +228,12 @@ impl CastSpec {
     /// marching cubes, sampled as a Riemann sum over corner-SDF
     /// signs.
     ///
-    /// Standalone access is useful at design time — e.g., F3
-    /// procedure-spec generation prints these masses without
-    /// re-running [`Self::export_molds`].
+    /// Useful at design time when only the pour-mass numbers are
+    /// needed — e.g., for sweeping layer thicknesses against the
+    /// budget without paying the meshing + F4-gate cost. Both
+    /// [`Self::export_molds`] and [`Self::write_procedure`]
+    /// internalize this call, so callers in the canonical pipeline
+    /// flow do not invoke it directly.
     ///
     /// # Errors
     ///
@@ -440,9 +443,10 @@ impl CastSpec {
 /// Shared by [`CastSpec::export_molds`] and
 /// [`CastSpec::write_procedure`] so the budget-enforcement contract
 /// stays in one place — both pre-write paths refuse to proceed on
-/// a budget overrun, and the procedure-Markdown's
-/// "every layer falls within budget" claim is therefore factually
-/// correct whenever `write_procedure` returns `Ok`.
+/// a budget overrun. The procedure-Markdown's
+/// "Every layer's pour mass falls within budget per the F2 export
+/// gate" line is therefore factually correct whenever
+/// `write_procedure` returns `Ok`.
 fn check_mass_budget(spec: &CastSpec, pour_volumes: &[PourVolume]) -> Result<(), CastError> {
     for pv in pour_volumes {
         if pv.pour_mass_kg > spec.mass_budget_kg {

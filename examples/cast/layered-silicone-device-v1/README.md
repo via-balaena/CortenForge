@@ -1,8 +1,11 @@
 # Cast Track F — Layered Silicone Device v1
 
-Stage 2 F4 example wrapper. Builds a 3-layer [`CastSpec`][1] against
-the layered-silicone-device v1.0 geometry and writes all cast
-artifacts (mold STLs + procedure markdown) to `out/`.
+Stage 2 v1 MVP example wrapper. Builds a 3-layer [`CastSpec`][1]
+against the layered-silicone-device v1.0 geometry and writes all
+cast artifacts (mold STLs + procedure markdown) to `out/`. The
+v1 MVP slice ships F1 (mold + plug STL exporter) + F2 (pour-volume
++ mass-budget gate) + F3 (procedure-spec markdown + cure-protocol
+table) + F4 (printability gate) wired end-to-end via this wrapper.
 
 ## Run
 

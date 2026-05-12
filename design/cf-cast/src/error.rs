@@ -104,8 +104,10 @@ pub enum CastError {
     /// side effects.
     ///
     /// Compared per-layer (single pour event), not aggregated
-    /// across same-material layers — that aggregate-holdings check
-    /// is deferred to F3 procedure-spec generation.
+    /// across same-material layers. The aggregate-holdings check
+    /// is not enforced; F3 procedure-spec generation surfaces it
+    /// as a "verify total holdings against the per-material sums"
+    /// reminder for the workshop user.
     #[error(
         "layer {layer_index} ({material_display_name}) pour mass {mass_kg:.4} kg \
          exceeds budget {budget_kg:.4} kg"
