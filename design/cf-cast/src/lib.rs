@@ -22,10 +22,11 @@
 //! pour fused solid. Each mold cup is
 //! `bounding_region ∖ layers[i].body ∖ clip_above(layers[i].body)`.
 //!
-//! Stage 2's F1 leaf shipped the multi-layer geometry pipeline; the
-//! F2 leaf (this commit) adds per-layer pour-volume integration and
-//! the [`CastSpec::mass_budget_kg`] gate. F3 (procedure-spec markdown
-//! generator) plugs into the same [`CastSpec`] surface in a follow-up.
+//! Stage 2's F1 leaf shipped the multi-layer geometry pipeline; F2
+//! added per-layer pour-volume integration and the
+//! [`CastSpec::mass_budget_kg`] gate. The F3 leaf (this commit) adds
+//! the [`CastSpec::write_procedure`] workshop-Markdown generator
+//! backed by the cf-cast-local [`mod@cure`] table.
 //!
 //! # Unit boundary
 //!
@@ -50,13 +51,17 @@
 //!
 //! [rmp]: ../../../docs/CASTING_ROADMAP.md
 
+pub mod cure;
 mod error;
 mod material;
 mod mesher;
 mod pour_volume;
+mod procedure;
 mod spec;
 
+pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use material::MoldingMaterial;
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
+pub use procedure::generate_procedure_markdown;
 pub use spec::{CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport};

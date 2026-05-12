@@ -14,6 +14,7 @@ use crate::error::{CastError, CastTarget};
 use crate::material::MoldingMaterial;
 use crate::mesher::solid_to_mm_mesh;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
+use crate::procedure::generate_procedure_markdown;
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -404,6 +405,36 @@ impl CastSpec {
             plug_validation,
             plug_summary,
         })
+    }
+
+    /// Write the F3 procedure-spec Markdown for this cast to `path`.
+    ///
+    /// Computes pour volumes via [`Self::compute_pour_volumes`] and
+    /// renders the Markdown via
+    /// [`crate::generate_procedure_markdown`]. The generated document
+    /// is the workshop starting-point reference — per-layer pour
+    /// masses (F2), mix ratio + pot life + cure time
+    /// (via [`crate::cure::lookup`] on each layer's
+    /// [`MoldingMaterial::anchor_key`]), generic Smooth-On guidance,
+    /// and a mass-budget summary.
+    ///
+    /// `path` is written verbatim; the caller is responsible for
+    /// extension (`.md`) and parent-directory creation if needed.
+    ///
+    /// # Errors
+    ///
+    /// - [`CastError::EmptyLayers`] if [`Self::layers`] is empty.
+    /// - [`CastError::InfiniteBounds`] if any layer body is
+    ///   unbounded (propagates from [`Self::compute_pour_volumes`]).
+    /// - [`CastError::MeshIo`] on filesystem write failure.
+    pub fn write_procedure(&self, path: &Path) -> Result<(), CastError> {
+        let pour_volumes = self.compute_pour_volumes()?;
+        let markdown = generate_procedure_markdown(self, &pour_volumes);
+        std::fs::write(path, markdown).map_err(|e| CastError::MeshIo {
+            path: path.to_path_buf(),
+            source: mesh_io::IoError::from(e),
+        })?;
+        Ok(())
     }
 }
 
@@ -1023,6 +1054,115 @@ mod tests {
         assert!(
             !out_dir.exists(),
             "out_dir should not be created on budget failure"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_renders_all_required_sections() {
+        // Pure-function output: pin the five top-level sections so
+        // future template refactors can't accidentally drop one.
+        let spec = pour_volume_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
+        assert!(md.contains("# Cast Procedure"));
+        assert!(md.contains("## Materials Summary"));
+        assert!(md.contains("## Generic Smooth-On Guidance"));
+        assert!(md.contains("## Per-Layer Procedure"));
+        assert!(md.contains("## Mass Budget"));
+    }
+
+    #[test]
+    fn generate_procedure_markdown_renders_pour_mass_in_grams_per_layer() {
+        // The materials-summary table cells render
+        // `pour_mass_kg * 1000.0` formatted as `{:.2} g`. Pins the
+        // unit-conversion + format-string contract — any future
+        // template refactor that switches to kg or different
+        // precision trips this.
+        let spec = pour_volume_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
+        for pv in &pours {
+            let mass_g = pv.pour_mass_kg * 1000.0;
+            let cell = format!("{mass_g:.2} g");
+            assert!(
+                md.contains(&cell),
+                "expected layer {} cell '{}' in markdown",
+                pv.layer_index,
+                cell,
+            );
+        }
+    }
+
+    #[test]
+    fn write_procedure_round_trip_matches_generate_output() {
+        // `write_procedure` writes the same bytes that
+        // `generate_procedure_markdown` returns in-memory — pins
+        // that the FS wrapper is a thin pass-through, not a
+        // re-renderer with drift potential.
+        let out_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-f3-procedure.md");
+        if out_path.exists() {
+            std::fs::remove_file(&out_path).unwrap();
+        }
+        let spec = pour_volume_fixture();
+        spec.write_procedure(&out_path).unwrap();
+        let on_disk = std::fs::read_to_string(&out_path).unwrap();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let in_memory = crate::procedure::generate_procedure_markdown(&spec, &pours);
+        assert_eq!(on_disk, in_memory);
+    }
+
+    #[test]
+    fn write_procedure_errors_when_layers_is_empty() {
+        // Empty-layers error must propagate through write_procedure,
+        // and no file may land on disk in that case.
+        let spec = CastSpec {
+            layers: Vec::new(),
+            plug: Solid::capsule(0.005, 0.010),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.002,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-f3-empty.md");
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let err = spec.write_procedure(&path).unwrap_err();
+        assert!(matches!(err, CastError::EmptyLayers));
+        assert!(
+            !path.exists(),
+            "write_procedure must not land a file on empty-layers error"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_uses_tds_placeholder_for_non_anchor_material() {
+        // A material with `anchor_key = None` (post-cast measured /
+        // interpolated / non-Smooth-On grade) renders the "consult
+        // Smooth-On TDS" placeholder in its row instead of
+        // mix/pot-life/cure-time values.
+        let spec = CastSpec {
+            layers: vec![CastLayer {
+                body: Solid::cuboid(Vector3::new(0.020, 0.020, 0.015)),
+                material: MoldingMaterial {
+                    display_name: "Custom Mix".to_string(),
+                    density_kg_m3: 1050.0,
+                    anchor_key: None,
+                },
+            }],
+            plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.060)),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.002,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown(&spec, &pours);
+        assert!(
+            md.contains("consult Smooth-On TDS"),
+            "non-anchor material should render TDS placeholder"
         );
     }
 
