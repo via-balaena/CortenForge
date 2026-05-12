@@ -2,6 +2,7 @@
 
 **Status:** active (opened 2026-05-11)
 **Predecessor docs:** [`VIEWER_DESIGN.md`](VIEWER_DESIGN.md) (cf-view Q1–Q8), [`V1_ROADMAP.md`](V1_ROADMAP.md) (workspace v1.0 cut), [`sim/docs/ARCHITECTURE.md`](../sim/docs/ARCHITECTURE.md), [`sim/L0/soft/EXAMPLE_INVENTORY.md`](../sim/L0/soft/EXAMPLE_INVENTORY.md)
+**Parallel track:** [`CASTING_ROADMAP.md`](CASTING_ROADMAP.md) (Track F: physical-cast tooling for the same v1.0 device).
 
 ---
 
