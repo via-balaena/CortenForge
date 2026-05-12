@@ -357,6 +357,9 @@ members = [
     "design/cf-design",
     "design/cf-design-tests",
 
+    # Cast tooling (active development)
+    "design/cf-cast",
+
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
     "sim/L0/simd",
@@ -561,6 +564,9 @@ cf-spatial = { path = "design/cf-spatial" }
 # Design kernel
 cf-design = { path = "design/cf-design" }
 cf-design-tests = { path = "design/cf-design-tests" }
+
+# Cast tooling
+cf-cast = { path = "design/cf-cast" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }

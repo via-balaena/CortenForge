@@ -1,0 +1,39 @@
+[package]
+name = "cf-cast"
+description = "Physical-cast tooling — mold/plug STL extraction for layered silicone devices"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# `L0-io` (not bare `L0`) because the public `CastSpec::export_molds` API
+# writes STL files via `mesh-io::save_stl`, which is itself `L0-io`. The
+# Layer Integrity gate enforces tier inheritance through file-I/O deps.
+[package.metadata.cortenforge]
+tier = "L0-io"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Typed SDF/Solid surface — body, plug, bounding-region inputs
+cf-design = { workspace = true }
+# Marching cubes + ScalarGrid for SDF → IndexedMesh
+mesh-offset = { workspace = true }
+# IndexedMesh type — direct dep so the mesher pipeline uses
+# `mesh_types::IndexedMesh` without a transitive-only path
+mesh-types = { workspace = true }
+# STL binary writer + IoError
+mesh-io = { workspace = true }
+# F4 printability gate (validate_for_printing + PrinterConfig)
+mesh-printability = { workspace = true }
+# Linear algebra (Vector3, Point3) for clip-region construction
+nalgebra = { workspace = true }
+# Custom error type derive
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Approximate equality for unit-conversion tests
+approx = { workspace = true }
