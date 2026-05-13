@@ -232,16 +232,25 @@ fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
     }
 }
 
-/// Build the v2 [`Ribbon`] — straight-line approximation in
-/// world-XZ, with split-normal `+Y` so the ribbon's binormal
-/// alternates around `+Z`-ish at each centerline segment. Pieces
-/// split top/bottom relative to the local body cross-section.
+/// Build the v2 [`Ribbon`] — centerline arcs in the XZ plane, so
+/// `split_normal = -Z` makes the binormal `+Y` (since
+/// `tangent × split_normal = binormal` and the tangent is roughly
+/// `+X`). The ribbon plane is then locally `y = 0`, bisecting the
+/// body LEFT / RIGHT of the curve plane → balanced piece sizes.
+///
+/// A `+Y` `split_normal` would instead produce binormal `+Z`-ish,
+/// ribbon plane at `z = 0`-ish, which on a centerline that arcs
+/// to `+Z = +12 mm` at the midpoint leaves the Negative piece
+/// heavier than the Positive piece (Negative captures the
+/// bounding region's empty lower half; Positive becomes a thin
+/// lid carved out by the body cavity). Surfaced during workshop
+/// iter-1 visual-pass review on the cf-view STL mode.
 ///
 /// Registration pins + pour gate both enabled via the builder
 /// methods so the workshop iter-1 gets the full v2 feature set.
 fn build_ribbon(centerline: Vec<Point3<f64>>) -> Result<Ribbon> {
     let split =
-        SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).context("split-normal +Y must normalize")?;
+        SplitNormal::new(Vector3::new(0.0, 0.0, -1.0)).context("split-normal -Z must normalize")?;
     let ribbon = Ribbon::new(centerline, split)
         .context("centerline polyline must produce a valid Ribbon")?;
     Ok(ribbon
