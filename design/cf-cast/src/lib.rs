@@ -68,4 +68,7 @@ pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
 pub use procedure::generate_procedure_markdown;
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
-pub use spec::{CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport};
+pub use spec::{
+    CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport, PieceArtifact, V2LayerReport,
+    V2MoldExportReport,
+};

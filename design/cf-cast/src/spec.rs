@@ -13,8 +13,10 @@ use nalgebra::Vector3;
 use crate::error::{CastError, CastTarget};
 use crate::material::MoldingMaterial;
 use crate::mesher::solid_to_mm_mesh;
+use crate::piece::compose_piece_solid;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::generate_procedure_markdown;
+use crate::ribbon::{PieceSide, Ribbon};
 
 /// XY slack added to the clip cuboid relative to the bounding region.
 /// 100 mm in meters; the clip only needs to cover `bounding_region`'s
@@ -169,6 +171,74 @@ pub struct MoldExportReport {
     pub plug_summary: MeshSummary,
 }
 
+/// One v2 mold piece's post-export geometry + F4 validation.
+///
+/// v2 splits each layer's mold cup into two pieces along the
+/// curve-following ribbon (per `docs/CURVE_FOLLOWING_DESIGN.md`
+/// §"Piece count selection" — v2 ships with 2 pieces; 3+ is v3).
+/// Parent context (layer index, material name, pour volume) lives
+/// on [`V2LayerReport`]; this struct carries only piece-specific
+/// data.
+#[derive(Debug, Clone)]
+pub struct PieceArtifact {
+    /// Which side of the ribbon this piece occupies. Maps 1:1 to
+    /// the `_piece_{0|1}` STL filename suffix (`Negative` → `0`,
+    /// `Positive` → `1`).
+    pub piece_side: PieceSide,
+    /// Filesystem path of the written piece STL.
+    pub path: PathBuf,
+    /// F4 validation result for this piece (zero blocking Critical
+    /// issues guaranteed; per-piece `ExceedsBuildVolume` is in the
+    /// blocking set so each piece must fit the printer independently
+    /// — v2's stricter check vs v1's aggregate-AABB).
+    pub validation: PrintValidation,
+    /// Post-export piece mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub summary: MeshSummary,
+}
+
+/// One v2 layer's complete mold output: pour volume + both pieces.
+///
+/// Indexed parallel to [`CastSpec::layers`] (innermost-first); the
+/// inner `pieces` array is fixed-length 2 to statically enforce
+/// v2's 2-piece convention.
+#[derive(Debug, Clone)]
+pub struct V2LayerReport {
+    /// Index into [`CastSpec::layers`].
+    pub layer_index: usize,
+    /// Carried-through layer material display name
+    /// (e.g., `"Ecoflex 00-30"`).
+    pub material_display_name: String,
+    /// Per-layer pour-volume + mass result. Same value v1's
+    /// [`MoldArtifact::pour_volume`] carries; budget-gated identically.
+    pub pour_volume: PourVolume,
+    /// The 2 piece artifacts for this layer, in
+    /// `[Negative, Positive]` order. Fixed array (vs Vec) pins v2's
+    /// 2-piece convention at the type level.
+    pub pieces: [PieceArtifact; 2],
+}
+
+/// Summary of a successful [`CastSpec::export_molds_v2`] run.
+///
+/// `layers.len() * 2` piece STLs + 1 plug STL = `2 * L + 1` files
+/// total (vs v1's `L + 1`). All pieces and the plug clear the F4
+/// gate before any STL lands on disk (pre-write atomicity, same
+/// scope as v1's [`CastSpec::export_molds`]).
+#[derive(Debug, Clone)]
+pub struct V2MoldExportReport {
+    /// Per-layer reports, innermost-first.
+    pub layers: Vec<V2LayerReport>,
+    /// Filesystem path of the written plug STL. Plug geometry is
+    /// unchanged from v1 — the curve-following split applies to
+    /// the mold cup, not the plug.
+    pub plug_path: PathBuf,
+    /// F4 validation result for the plug.
+    pub plug_validation: PrintValidation,
+    /// Post-export plug mesh summary (vertex/face counts + mm-frame
+    /// bounds).
+    pub plug_summary: MeshSummary,
+}
+
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
 /// coordinates.
 ///
@@ -216,6 +286,23 @@ struct PendingMold {
     validation: PrintValidation,
     path: PathBuf,
 }
+
+/// Per-(layer × piece) buffered v2 mesh + validation, held in
+/// memory until every piece + the plug clear the F4 gate. Parallel
+/// to [`PendingMold`] for v1.
+struct PendingPiece {
+    layer_index: usize,
+    piece_side: PieceSide,
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// v2 piece-count refusal threshold: max tangent rotation along
+/// the centerline beyond which a 2-piece mold can no longer
+/// demold cleanly. `2π/3` rad = 120°, per
+/// `docs/CURVE_FOLLOWING_DESIGN.md` §"Piece count selection".
+const MAX_TANGENT_ROTATION_RAD: f64 = 2.0 * std::f64::consts::FRAC_PI_3;
 
 impl CastSpec {
     /// Compute per-layer pour volumes (and the corresponding pour
@@ -436,6 +523,243 @@ impl CastSpec {
         })?;
         Ok(())
     }
+
+    /// Export the v2 curve-following multi-piece mold for this
+    /// spec + the given `ribbon` as `2 * layers.len() + 1` STL files
+    /// in `out_dir`.
+    ///
+    /// v2 entry point parallel to v1's [`Self::export_molds`]: same
+    /// `CastSpec` data carrier, but each layer's mold cup is split
+    /// into 2 pieces along the curve-following ribbon (instead of
+    /// v1's single-cup straight-pull `+Z` clip). The plug pipeline
+    /// is unchanged.
+    ///
+    /// Pipeline:
+    /// 1. Verify [`Self::layers`] is non-empty.
+    /// 2. Gate `ribbon.max_tangent_rotation_rad()` ≤ `2π/3` rad
+    ///    (120°); abort with [`CastError::CenterlineTooCurved`]
+    ///    before any meshing.
+    /// 3. Compute per-layer pour volumes
+    ///    ([`Self::compute_pour_volumes`]) and gate each against
+    ///    [`Self::mass_budget_kg`]; abort on overrun before any
+    ///    meshing.
+    /// 4. For each `(layer, piece_side)`: compose the piece SDF via
+    ///    [`crate::compose_piece_solid`], mesh it, F4-gate it.
+    ///    Buffer until every piece + plug clear; abort cleanly on
+    ///    any blocking Critical (no partial STLs on disk).
+    /// 5. Mesh + F4-gate the plug (same as v1).
+    /// 6. Create `out_dir` and write all pieces + plug.
+    ///
+    /// **Per-piece printability**: each piece's AABB is checked
+    /// independently against [`Self::printer_config`]'s build
+    /// volume via `mesh-printability::validate_for_printing`'s
+    /// `ExceedsBuildVolume` Critical. v2 enforces the stricter
+    /// per-piece bound (you can't print a piece larger than your
+    /// printer no matter how the combined fits) by virtue of
+    /// running the F4 gate on each piece's mesh — v1's aggregate
+    /// check on a single combined cup is replaced.
+    ///
+    /// **Atomicity**: identical scope to [`Self::export_molds`] —
+    /// curve-rotation gate, budget gate, meshing, and F4 gate all
+    /// run before the first STL is written. Output directory is
+    /// not created on any pre-write failure.
+    ///
+    /// # Errors
+    ///
+    /// - [`CastError::EmptyLayers`] if [`Self::layers`] is empty.
+    /// - [`CastError::CenterlineTooCurved`] if the ribbon's max
+    ///   tangent rotation exceeds `2π/3` rad.
+    /// - [`CastError::InfiniteBounds`] for unbounded inputs (the
+    ///   bounding region must be finite; the layer body need NOT
+    ///   be — v2 doesn't require `body.z_max` for clip placement).
+    /// - [`CastError::MassBudgetExceeded`] if any layer's pour mass
+    ///   exceeds [`Self::mass_budget_kg`].
+    /// - [`CastError::MeshingEmpty`] if marching cubes produces a
+    ///   degenerate mesh for any piece or the plug.
+    /// - [`CastError::PrintabilityCritical`] if any mesh fails the
+    ///   F4 gate with one or more blocking Critical-severity issues.
+    /// - [`CastError::MeshIo`] on filesystem failures during write.
+    pub fn export_molds_v2(
+        &self,
+        ribbon: &Ribbon,
+        out_dir: &Path,
+    ) -> Result<V2MoldExportReport, CastError> {
+        if self.layers.is_empty() {
+            return Err(CastError::EmptyLayers);
+        }
+
+        let max_rotation = ribbon.max_tangent_rotation_rad();
+        if max_rotation > MAX_TANGENT_ROTATION_RAD {
+            return Err(CastError::CenterlineTooCurved {
+                max_rotation_rad: max_rotation,
+                max_rotation_deg: max_rotation.to_degrees(),
+                threshold_rad: MAX_TANGENT_ROTATION_RAD,
+                threshold_deg: MAX_TANGENT_ROTATION_RAD.to_degrees(),
+            });
+        }
+
+        let pour_volumes = self.compute_pour_volumes()?;
+        check_mass_budget(self, &pour_volumes)?;
+
+        let pending_layers = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
+        let (plug_mesh, plug_path, plug_validation) = mesh_and_gate_plug_v2(self, out_dir)?;
+
+        std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
+            path: out_dir.to_path_buf(),
+            source: mesh_io::IoError::from(e),
+        })?;
+
+        let layers_out = write_v2_pieces(self, pending_layers, pour_volumes)?;
+
+        save_stl(&plug_mesh, &plug_path, true).map_err(|source| CastError::MeshIo {
+            path: plug_path.clone(),
+            source,
+        })?;
+        let plug_summary = MeshSummary::from_mesh(&plug_mesh);
+
+        Ok(V2MoldExportReport {
+            layers: layers_out,
+            plug_path,
+            plug_validation,
+            plug_summary,
+        })
+    }
+}
+
+/// Compose, mesh, and F4-gate every (layer × piece) pair.
+/// Returns the v2 pending buffer organized as `[Negative, Positive]`
+/// per-layer pairs, so the writer phase consumes them without
+/// re-pairing or `expect()` on flat-vector ordering.
+fn mesh_and_gate_v2_pieces(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+) -> Result<Vec<[PendingPiece; 2]>, CastError> {
+    let mut pending_layers = Vec::with_capacity(spec.layers.len());
+    for (layer_index, layer) in spec.layers.iter().enumerate() {
+        let neg = mesh_and_gate_v2_piece(
+            spec,
+            ribbon,
+            layer,
+            layer_index,
+            PieceSide::Negative,
+            out_dir,
+        )?;
+        let pos = mesh_and_gate_v2_piece(
+            spec,
+            ribbon,
+            layer,
+            layer_index,
+            PieceSide::Positive,
+            out_dir,
+        )?;
+        pending_layers.push([neg, pos]);
+    }
+    Ok(pending_layers)
+}
+
+/// Compose + mesh + F4-gate a single piece. Extracted so
+/// `mesh_and_gate_v2_pieces` stays readable + each call site has
+/// the same target metadata threaded through identically.
+fn mesh_and_gate_v2_piece(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    layer: &CastLayer,
+    layer_index: usize,
+    piece_side: PieceSide,
+    out_dir: &Path,
+) -> Result<PendingPiece, CastError> {
+    let piece_solid = compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
+    let target = CastTarget::MoldPiece {
+        layer_index,
+        piece_side,
+    };
+    let mesh = solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?;
+    let path = out_dir.join(mold_piece_filename(layer_index, piece_side));
+    let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+
+    let blocking = blocking_critical_count(&validation);
+    if blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target,
+            issue_count: blocking,
+            path,
+        });
+    }
+    Ok(PendingPiece {
+        layer_index,
+        piece_side,
+        mesh,
+        validation,
+        path,
+    })
+}
+
+/// v2 plug pipeline — identical to v1's plug stage, factored out so
+/// `export_molds_v2`'s body stays inside the 100-line clippy budget.
+fn mesh_and_gate_plug_v2(
+    spec: &CastSpec,
+    out_dir: &Path,
+) -> Result<(IndexedMesh, PathBuf, PrintValidation), CastError> {
+    let plug_path = out_dir.join("plug.stl");
+    let plug_mesh = solid_to_mm_mesh(&spec.plug, spec.mesh_cell_size_m, CastTarget::Plug)?;
+    let plug_validation = run_printability_gate(&plug_mesh, &spec.printer_config, &plug_path)?;
+    let plug_blocking = blocking_critical_count(&plug_validation);
+    if plug_blocking > 0 {
+        return Err(CastError::PrintabilityCritical {
+            target: CastTarget::Plug,
+            issue_count: plug_blocking,
+            path: plug_path,
+        });
+    }
+    Ok((plug_mesh, plug_path, plug_validation))
+}
+
+/// Write every pending piece to disk + build the per-layer reports.
+/// Consumes the pending buffer; on any FS failure mid-stream the
+/// remaining pieces are abandoned and the error surfaces with the
+/// failing piece's path attached.
+fn write_v2_pieces(
+    spec: &CastSpec,
+    pending_layers: Vec<[PendingPiece; 2]>,
+    pour_volumes: Vec<PourVolume>,
+) -> Result<Vec<V2LayerReport>, CastError> {
+    let mut layers_out = Vec::with_capacity(pending_layers.len());
+    for (pieces_pair, pour_volume) in pending_layers.into_iter().zip(pour_volumes) {
+        let [entry_neg, entry_pos] = pieces_pair;
+        let layer_index = entry_neg.layer_index;
+
+        save_stl(&entry_neg.mesh, &entry_neg.path, true).map_err(|source| CastError::MeshIo {
+            path: entry_neg.path.clone(),
+            source,
+        })?;
+        save_stl(&entry_pos.mesh, &entry_pos.path, true).map_err(|source| CastError::MeshIo {
+            path: entry_pos.path.clone(),
+            source,
+        })?;
+        let neg_summary = MeshSummary::from_mesh(&entry_neg.mesh);
+        let pos_summary = MeshSummary::from_mesh(&entry_pos.mesh);
+        layers_out.push(V2LayerReport {
+            layer_index,
+            material_display_name: spec.layers[layer_index].material.display_name.clone(),
+            pour_volume,
+            pieces: [
+                PieceArtifact {
+                    piece_side: entry_neg.piece_side,
+                    path: entry_neg.path,
+                    validation: entry_neg.validation,
+                    summary: neg_summary,
+                },
+                PieceArtifact {
+                    piece_side: entry_pos.piece_side,
+                    path: entry_pos.path,
+                    validation: entry_pos.validation,
+                    summary: pos_summary,
+                },
+            ],
+        });
+    }
+    Ok(layers_out)
 }
 
 /// Gate per-layer pour masses against [`CastSpec::mass_budget_kg`].
@@ -481,6 +805,18 @@ fn run_printability_gate(
 /// indexing matches [`CastSpec::layers`].
 fn mold_filename(layer_index: usize) -> String {
     format!("mold_layer_{layer_index}.stl")
+}
+
+/// Filename for the v2 `(layer_index, piece_side)` mold piece.
+/// Piece-side maps to integer suffix: `Negative` → `0`,
+/// `Positive` → `1` per `docs/CURVE_FOLLOWING_DESIGN.md` §"Output
+/// artifacts" naming convention.
+fn mold_piece_filename(layer_index: usize, piece_side: PieceSide) -> String {
+    let piece_index = match piece_side {
+        PieceSide::Negative => 0,
+        PieceSide::Positive => 1,
+    };
+    format!("mold_layer_{layer_index}_piece_{piece_index}.stl")
 }
 
 /// cf-cast's blocking-issue rule: which `Critical`-severity issues
@@ -1316,5 +1652,322 @@ mod tests {
         );
         assert!((artifact_pv.shell_volume_m3 - standalone_pv.shell_volume_m3).abs() < f64::EPSILON);
         assert!((artifact_pv.pour_mass_kg - standalone_pv.pour_mass_kg).abs() < f64::EPSILON);
+    }
+
+    // ----- v2 export_molds_v2 -------------------------------------
+
+    use crate::ribbon::{PieceSide, Ribbon, SplitNormal};
+    use nalgebra::Point3;
+
+    /// v2 reference fixture: same cuboid body + capsule plug + cuboid
+    /// bounding region as v1's coverage tests, plus a straight +X
+    /// centerline so the ribbon zero plane is the world z=0 plane
+    /// (with +Y split-normal → +Z binormal). 12 mm cells per
+    /// pattern (qqq) to keep `validate_for_printing` tractable under
+    /// llvm-cov instrumentation.
+    fn v2_fixture() -> (CastSpec, Ribbon) {
+        let spec = CastSpec {
+            layers: vec![CastLayer {
+                body: Solid::cuboid(Vector3::new(0.025, 0.025, 0.020)),
+                material: reference_material(),
+            }],
+            plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        (spec, ribbon)
+    }
+
+    #[test]
+    fn export_molds_v2_writes_two_pieces_plus_plug_for_single_layer() {
+        // Pins the v2 file-count invariant (`2 * L + 1` STLs) and
+        // the `_piece_{0|1}` filename suffix convention. Layer
+        // count = 1 → 2 pieces + 1 plug = 3 STLs.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-single-layer");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let (spec, ribbon) = v2_fixture();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+
+        assert_eq!(report.layers.len(), 1);
+        let layer = &report.layers[0];
+        assert_eq!(layer.layer_index, 0);
+        assert_eq!(layer.material_display_name, "Ecoflex 00-30");
+
+        // Both pieces present, in `[Negative, Positive]` order.
+        assert_eq!(layer.pieces[0].piece_side, PieceSide::Negative);
+        assert_eq!(layer.pieces[1].piece_side, PieceSide::Positive);
+        assert!(layer.pieces[0].path.ends_with("mold_layer_0_piece_0.stl"));
+        assert!(layer.pieces[1].path.ends_with("mold_layer_0_piece_1.stl"));
+        assert!(layer.pieces[0].path.exists());
+        assert!(layer.pieces[1].path.exists());
+        assert!(layer.pieces[0].summary.face_count > 0);
+        assert!(layer.pieces[1].summary.face_count > 0);
+
+        // Plug landed at the conventional location.
+        assert!(report.plug_path.ends_with("plug.stl"));
+        assert!(report.plug_path.exists());
+        assert!(report.plug_summary.face_count > 0);
+    }
+
+    #[test]
+    fn export_molds_v2_writes_four_pieces_plus_plug_for_two_layer() {
+        // 2 layers × 2 pieces = 4 piece STLs + 1 plug = 5 total.
+        // Pins iteration order: layer 0 (Negative, Positive),
+        // then layer 1 (Negative, Positive).
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-multi-layer");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+
+        let inner_body = Solid::cuboid(Vector3::new(0.020, 0.020, 0.015));
+        let outer_body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.025));
+        let plug = Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040));
+        let bounding_region = Solid::cuboid(Vector3::new(0.045, 0.045, 0.035));
+        let inner_material = MoldingMaterial {
+            display_name: "Ecoflex 00-30".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: Some("ECOFLEX_00_30"),
+        };
+        let outer_material = MoldingMaterial {
+            display_name: "Dragon Skin 10A".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: Some("DRAGON_SKIN_10A"),
+        };
+        let spec = CastSpec {
+            layers: vec![
+                CastLayer {
+                    body: inner_body,
+                    material: inner_material,
+                },
+                CastLayer {
+                    body: outer_body,
+                    material: outer_material,
+                },
+            ],
+            plug,
+            bounding_region,
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert_eq!(report.layers.len(), 2);
+
+        // Layer 0 — innermost, Ecoflex.
+        assert_eq!(report.layers[0].layer_index, 0);
+        assert_eq!(report.layers[0].material_display_name, "Ecoflex 00-30");
+        assert!(
+            report.layers[0].pieces[0]
+                .path
+                .ends_with("mold_layer_0_piece_0.stl")
+        );
+        assert!(
+            report.layers[0].pieces[1]
+                .path
+                .ends_with("mold_layer_0_piece_1.stl")
+        );
+
+        // Layer 1 — outer, Dragon Skin.
+        assert_eq!(report.layers[1].layer_index, 1);
+        assert_eq!(report.layers[1].material_display_name, "Dragon Skin 10A");
+        assert!(
+            report.layers[1].pieces[0]
+                .path
+                .ends_with("mold_layer_1_piece_0.stl")
+        );
+        assert!(
+            report.layers[1].pieces[1]
+                .path
+                .ends_with("mold_layer_1_piece_1.stl")
+        );
+
+        // All 4 pieces + plug on disk.
+        for layer in &report.layers {
+            for piece in &layer.pieces {
+                assert!(piece.path.exists(), "{:?} should exist", piece.path);
+                assert!(piece.summary.face_count > 0);
+            }
+        }
+        assert!(report.plug_path.exists());
+    }
+
+    #[test]
+    fn export_molds_v2_carries_pour_volume_per_layer() {
+        // The V2LayerReport's pour_volume must match the standalone
+        // `compute_pour_volumes()` value — same gate, same numbers,
+        // no re-computation drift.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-pour");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+        let (spec, ribbon) = v2_fixture();
+        let standalone = spec.compute_pour_volumes().unwrap();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        let layer_pv = &report.layers[0].pour_volume;
+        assert_eq!(layer_pv.layer_index, standalone[0].layer_index);
+        assert!((layer_pv.shell_volume_m3 - standalone[0].shell_volume_m3).abs() < f64::EPSILON);
+        assert!((layer_pv.pour_mass_kg - standalone[0].pour_mass_kg).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn export_molds_v2_errors_when_layers_is_empty() {
+        // Empty-layers gate fires before any meshing OR
+        // ribbon-rotation check; mirrors v1's empty-layers path.
+        let spec = CastSpec {
+            layers: Vec::new(),
+            plug: Solid::capsule(0.005, 0.010),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-empty");
+        let err = spec.export_molds_v2(&ribbon, &out_dir).unwrap_err();
+        assert!(matches!(err, CastError::EmptyLayers));
+        assert!(!out_dir.exists(), "no out_dir on EmptyLayers");
+    }
+
+    #[test]
+    fn export_molds_v2_errors_when_centerline_too_curved() {
+        // 135° tangent rotation polyline: segment 0 along +X,
+        // segment 1 rotates by 135°. The v2 gate refuses at > 120°.
+        // Uses +Z split-normal so both segment binormals are
+        // well-defined (Ribbon::new wouldn't accept a polyline that
+        // tripped the parallel-to-split-normal check first).
+        let angle = 135.0_f64.to_radians();
+        let centerline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.010, 0.0, 0.0),
+            Point3::new(
+                0.010f64.mul_add(angle.cos(), 0.010),
+                0.010 * angle.sin(),
+                0.0,
+            ),
+        ];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+
+        // Sanity: the ribbon's max tangent rotation IS 135°.
+        let observed = ribbon.max_tangent_rotation_rad();
+        assert!(
+            (observed - angle).abs() < 1e-9,
+            "fixture must produce 135° rotation; got {observed} rad"
+        );
+
+        let (spec, _straight_ribbon) = v2_fixture();
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-too-curved");
+        let err = spec.export_molds_v2(&ribbon, &out_dir).unwrap_err();
+        match err {
+            CastError::CenterlineTooCurved {
+                max_rotation_rad,
+                max_rotation_deg,
+                threshold_rad: _,
+                threshold_deg,
+            } => {
+                assert!((max_rotation_rad - angle).abs() < 1e-9);
+                assert!((max_rotation_deg - 135.0).abs() < 1e-6);
+                assert!((threshold_deg - 120.0).abs() < 1e-9);
+            }
+            other => panic!("expected CenterlineTooCurved, got {other:?}"),
+        }
+        assert!(!out_dir.exists(), "no out_dir on CenterlineTooCurved");
+    }
+
+    #[test]
+    fn export_molds_v2_errors_when_mass_exceeds_budget() {
+        // Budget gate parallel to v1 — same `check_mass_budget`
+        // helper, same per-layer comparison; must surface
+        // identically through the v2 entry point.
+        let (mut spec, ribbon) = v2_fixture();
+        spec.mass_budget_kg = 0.010; // ~ 1/5 of layer-0 pour mass at 1070 kg/m³.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-budget");
+        let err = spec.export_molds_v2(&ribbon, &out_dir).unwrap_err();
+        match err {
+            CastError::MassBudgetExceeded {
+                layer_index,
+                budget_kg,
+                ..
+            } => {
+                assert_eq!(layer_index, 0);
+                assert!((budget_kg - 0.010).abs() < f64::EPSILON);
+            }
+            other => panic!("expected MassBudgetExceeded, got {other:?}"),
+        }
+        assert!(!out_dir.exists(), "no out_dir on budget overrun");
+    }
+
+    #[test]
+    fn export_molds_v2_errors_when_bounding_region_unbounded() {
+        // Bounding-region must be finite for the ribbon half-space
+        // AABB — propagates through `compose_piece_solid` as
+        // `InfiniteBounds(BoundingRegion)`.
+        let spec = CastSpec {
+            layers: vec![CastLayer {
+                body: Solid::cuboid(Vector3::new(0.020, 0.020, 0.015)),
+                material: reference_material(),
+            }],
+            plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
+            bounding_region: Solid::plane(Vector3::new(0.0, 0.0, 1.0), 0.0),
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-unbounded");
+        let err = spec.export_molds_v2(&ribbon, &out_dir).unwrap_err();
+        assert!(
+            matches!(err, CastError::InfiniteBounds(CastTarget::BoundingRegion)),
+            "expected InfiniteBounds(BoundingRegion), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn mold_piece_filename_maps_piece_side_to_integer_suffix() {
+        // Pure-function helper — pin the side → integer convention
+        // matches `docs/CURVE_FOLLOWING_DESIGN.md` §"Output
+        // artifacts". `_piece_0` = Negative, `_piece_1` = Positive.
+        use super::mold_piece_filename;
+        assert_eq!(
+            mold_piece_filename(0, PieceSide::Negative),
+            "mold_layer_0_piece_0.stl"
+        );
+        assert_eq!(
+            mold_piece_filename(0, PieceSide::Positive),
+            "mold_layer_0_piece_1.stl"
+        );
+        assert_eq!(
+            mold_piece_filename(3, PieceSide::Negative),
+            "mold_layer_3_piece_0.stl"
+        );
     }
 }
