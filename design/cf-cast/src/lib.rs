@@ -66,7 +66,7 @@ pub use error::{CastError, CastTarget};
 pub use material::MoldingMaterial;
 pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
-pub use procedure::generate_procedure_markdown;
+pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{
     CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport, PieceArtifact, V2LayerReport,

@@ -15,7 +15,7 @@ use crate::material::MoldingMaterial;
 use crate::mesher::solid_to_mm_mesh;
 use crate::piece::compose_piece_solid;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
-use crate::procedure::generate_procedure_markdown;
+use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
 
 /// XY slack added to the clip cuboid relative to the bounding region.
@@ -517,6 +517,58 @@ impl CastSpec {
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
         let markdown = generate_procedure_markdown(self, &pour_volumes);
+        std::fs::write(path, markdown).map_err(|e| CastError::MeshIo {
+            path: path.to_path_buf(),
+            source: mesh_io::IoError::from(e),
+        })?;
+        Ok(())
+    }
+
+    /// Write the v2 curve-following multi-piece procedure Markdown
+    /// for this cast + `ribbon` to `path`. Parallel to
+    /// [`Self::write_procedure`] (v1) but renders v2-specific
+    /// content (piece STL filenames, cast-geometry section with
+    /// centerline arc length + max tangent rotation, manual-clamp
+    /// assembly note, demold-in-order prose).
+    ///
+    /// Computes pour volumes via [`Self::compute_pour_volumes`] and
+    /// renders the Markdown via
+    /// [`crate::generate_procedure_markdown_v2`]. The mass-budget
+    /// gate runs identically to v1, so the generated document's
+    /// "every layer within budget" claim never lies when this
+    /// method returns `Ok`. Curve-rotation gate also fires here so
+    /// the procedure prose is never generated for an
+    /// un-demoldable centerline.
+    ///
+    /// # Errors
+    ///
+    /// - [`CastError::EmptyLayers`] if [`Self::layers`] is empty.
+    /// - [`CastError::CenterlineTooCurved`] if the ribbon's max
+    ///   tangent rotation exceeds `2π/3` rad (120°) —
+    ///   `write_procedure_v2` shares this gate with
+    ///   [`Self::export_molds_v2`] so the procedure prose never
+    ///   misrepresents a refused cast.
+    /// - [`CastError::InfiniteBounds`] if any layer body is
+    ///   unbounded (propagates from [`Self::compute_pour_volumes`]).
+    /// - [`CastError::MassBudgetExceeded`] if any layer's computed
+    ///   pour mass exceeds [`Self::mass_budget_kg`].
+    /// - [`CastError::MeshIo`] on filesystem write failure.
+    pub fn write_procedure_v2(&self, ribbon: &Ribbon, path: &Path) -> Result<(), CastError> {
+        if self.layers.is_empty() {
+            return Err(CastError::EmptyLayers);
+        }
+        let max_rotation = ribbon.max_tangent_rotation_rad();
+        if max_rotation > MAX_TANGENT_ROTATION_RAD {
+            return Err(CastError::CenterlineTooCurved {
+                max_rotation_rad: max_rotation,
+                max_rotation_deg: max_rotation.to_degrees(),
+                threshold_rad: MAX_TANGENT_ROTATION_RAD,
+                threshold_deg: MAX_TANGENT_ROTATION_RAD.to_degrees(),
+            });
+        }
+        let pour_volumes = self.compute_pour_volumes()?;
+        check_mass_budget(self, &pour_volumes)?;
+        let markdown = generate_procedure_markdown_v2(self, &pour_volumes, ribbon);
         std::fs::write(path, markdown).map_err(|e| CastError::MeshIo {
             path: path.to_path_buf(),
             source: mesh_io::IoError::from(e),
@@ -2062,6 +2114,176 @@ mod tests {
         }
         // Pre-write atomicity: no out_dir on per-piece F4 failure.
         assert!(!out_dir.exists(), "no out_dir on PrintabilityCritical");
+    }
+
+    // ----- Step 8: v2 procedure.md ---------------------------------
+
+    /// Standard v2 procedure fixture: single-layer cuboid spec + a
+    /// straight +X centerline (so max tangent rotation = 0°, well
+    /// under the 120° gate). Sized to keep `compute_pour_volumes`
+    /// fast under llvm-cov (12 mm cells, same as `v2_fixture`).
+    fn v2_procedure_fixture() -> (CastSpec, Ribbon) {
+        v2_fixture()
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_renders_all_required_sections() {
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // v2 header signal (distinguishes from v1's "# Cast Procedure").
+        assert!(md.contains("# Cast Procedure (v2 curve-following multi-piece)"));
+        // v2-specific sections.
+        assert!(md.contains("## Cast Geometry"));
+        assert!(md.contains("## v2 Mold Assembly"));
+        // Sections shared with v1.
+        assert!(md.contains("## Materials Summary"));
+        assert!(md.contains("## Generic Smooth-On Guidance"));
+        assert!(md.contains("## Per-Layer Procedure"));
+        assert!(md.contains("## Mass Budget"));
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_references_piece_stl_filenames() {
+        // Per-layer Step 1 must reference BOTH piece STLs by name
+        // (`_piece_0` + `_piece_1`) per design-doc §"Output
+        // artifacts" naming convention. Catches any future template
+        // refactor that drops a piece filename.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(md.contains("mold_layer_0_piece_0.stl"));
+        assert!(md.contains("mold_layer_0_piece_1.stl"));
+        // Layer 0 also references the shared plug.
+        assert!(md.contains("plug.stl"));
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_demold_prose_specifies_piece_order() {
+        // Step 8 of the per-layer block must call out "piece_0 first,
+        // then piece_1" — the centerline-slide demold sequence.
+        // Removing pieces out of order risks fighting an undercut on
+        // curved scans.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("remove `piece_0` first, then `piece_1`"),
+            "demold prose must specify piece-removal order; got: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_cast_geometry_includes_arc_length() {
+        // The Cast Geometry section surfaces the centerline arc
+        // length in mm for the workshop user to gauge demold travel.
+        // Fixture polyline is 100 mm long (0.05 → -0.05 along +X)
+        // → arc length 100.0 mm rendered with `:.1` precision.
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // 100.0 mm with one decimal renders as "100.0 mm" in the
+        // Cast Geometry section.
+        assert!(
+            md.contains("100.0 mm"),
+            "expected '100.0 mm' arc-length in: {md}"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_uses_anchor_cure_for_anchored_material() {
+        // Ecoflex 00-30 anchor: cure_time = 4 hr, pot_life = 45 min.
+        // The v2 step-7 cure prose must embed the looked-up values
+        // (parallel to v1's step-6 cure-prose contract).
+        let (spec, ribbon) = v2_procedure_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("7. Cure for ≥4 hr at 73 °F (pot life: 45 min)."),
+            "anchored step-7 cure prose missing in: {md}"
+        );
+    }
+
+    #[test]
+    fn write_procedure_v2_round_trip_matches_generate_output() {
+        // Pin that the FS wrapper writes the same bytes the pure
+        // generator returns — no extra re-rendering / drift.
+        let out_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-procedure.md");
+        if out_path.exists() {
+            std::fs::remove_file(&out_path).unwrap();
+        }
+        let (spec, ribbon) = v2_procedure_fixture();
+        spec.write_procedure_v2(&ribbon, &out_path).unwrap();
+        let on_disk = std::fs::read_to_string(&out_path).unwrap();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let in_memory = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert_eq!(on_disk, in_memory);
+    }
+
+    #[test]
+    fn write_procedure_v2_errors_when_layers_is_empty() {
+        let spec = CastSpec {
+            layers: Vec::new(),
+            plug: Solid::capsule(0.005, 0.010),
+            bounding_region: Solid::cuboid(Vector3::new(0.040, 0.040, 0.030)),
+            mesh_cell_size_m: 0.012,
+            printer_config: PrinterConfig::fdm_default(),
+            mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        };
+        let centerline = vec![Point3::new(-0.05, 0.0, 0.0), Point3::new(0.05, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-procedure-empty.md");
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let err = spec.write_procedure_v2(&ribbon, &path).unwrap_err();
+        assert!(matches!(err, CastError::EmptyLayers));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn write_procedure_v2_errors_when_centerline_too_curved() {
+        // 135° polyline rejected pre-render: the markdown's "Cast
+        // Geometry" section would otherwise misrepresent a refused
+        // cast as printable.
+        let angle = 135.0_f64.to_radians();
+        let centerline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.010, 0.0, 0.0),
+            Point3::new(
+                0.010f64.mul_add(angle.cos(), 0.010),
+                0.010 * angle.sin(),
+                0.0,
+            ),
+        ];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        let (spec, _) = v2_procedure_fixture();
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-procedure-too-curved.md");
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let err = spec.write_procedure_v2(&ribbon, &path).unwrap_err();
+        assert!(matches!(err, CastError::CenterlineTooCurved { .. }));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn write_procedure_v2_errors_when_mass_exceeds_budget() {
+        let (mut spec, ribbon) = v2_procedure_fixture();
+        spec.mass_budget_kg = 0.010;
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-procedure-budget.md");
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let err = spec.write_procedure_v2(&ribbon, &path).unwrap_err();
+        assert!(matches!(err, CastError::MassBudgetExceeded { .. }));
+        assert!(!path.exists());
     }
 
     #[test]
