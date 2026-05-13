@@ -124,24 +124,42 @@ struct OuterEnvelopeState {
 
 impl OuterEnvelopeState {
     /// Build the slice-2-default starting state from the loaded
-    /// scan's bbox diagonal. Picks ~30% of the diagonal as a
-    /// conservative starting radius, clamped to `[20 mm, 150 mm]`.
-    /// For the iter-1 fixture (168 mm diagonal) this lands at
-    /// 50 mm — generous but a sensible visible starting point that
-    /// fully envelopes typical scans.
+    /// scan. Defaults to ~25% of the scan centerline arc length
+    /// when a centerline is present (so the cylindrical section
+    /// has plenty of room — 50% would collapse the cylinder to
+    /// zero); otherwise 30% of the bbox diagonal. Both paths
+    /// clamp the final value to `[20 mm, max - 5 mm]` where `max`
+    /// is the upper slider bound.
     fn from_scan_info(info: &ScanInfo) -> Self {
-        let radius = (info.bbox_diagonal_m * 0.30).clamp(0.020, 0.150);
+        let (_, max_m) = Self::slider_range_m(info);
+        let preferred = if info.centerline_arc_length_m > 0.0 {
+            info.centerline_arc_length_m * 0.25
+        } else {
+            info.bbox_diagonal_m * 0.30
+        };
+        let radius = preferred.clamp(0.020, (max_m - 0.005).max(0.020));
         Self { radius_m: radius }
     }
 
-    /// Slider range for the radius. Wide enough that the user can
-    /// dial up if needed (`bbox_diagonal_m * 1.0` upper bound is
-    /// extremely generous — the device wouldn't be useful at that
-    /// radius but the slider doesn't prevent it), narrow enough at
-    /// the bottom that the user can see the "too small to envelope
-    /// the scan" failure mode (health-check slice 6).
+    /// Slider range for the radius. The MAX is tied to the
+    /// centerline arc length: capsule-along-centerline semantics
+    /// (slice 3 polish 2) requires `2 R < arc length` so the
+    /// cylindrical section has positive length. We cap the upper
+    /// bound at `arc_length / 2 - 5 mm` (5 mm cylindrical-section
+    /// minimum) so the wireframe never degenerates into a sphere.
+    /// Centerline-less scans (no `.prep.toml`) fall back to a
+    /// bbox-diagonal range.
     fn slider_range_m(info: &ScanInfo) -> (f64, f64) {
-        (0.005, (info.bbox_diagonal_m * 1.0).max(0.060))
+        let min_m = 0.005;
+        let max_m = if info.centerline_arc_length_m > 0.0 {
+            // Capsule semantic: `2 R < arc length`. Leave 5 mm of
+            // cylindrical headroom so the user can see the cap
+            // shape clearly even at near-max radius.
+            (info.centerline_arc_length_m * 0.5 - 0.005).max(0.020)
+        } else {
+            (info.bbox_diagonal_m * 1.0).max(0.060)
+        };
+        (min_m, max_m)
     }
 }
 
@@ -198,6 +216,118 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
         .windows(2)
         .map(|pair| (pair[1] - pair[0]).norm())
         .sum()
+}
+
+/// Cumulative arc length at each centerline polyline point.
+/// `arc_positions[0] = 0.0`; `arc_positions[N-1] = total arc length`.
+/// Empty for polylines with fewer than 2 points (no arc to measure).
+fn cumulative_arc_positions_m(points: &[Point3<f64>]) -> Vec<f64> {
+    if points.len() < 2 {
+        return Vec::new();
+    }
+    let mut arc = Vec::with_capacity(points.len());
+    arc.push(0.0);
+    for pair in points.windows(2) {
+        let segment_len = (pair[1] - pair[0]).norm();
+        let last = arc[arc.len() - 1];
+        arc.push(last + segment_len);
+    }
+    arc
+}
+
+/// Sample the centerline polyline at a specific arc-length position
+/// (in meters from the start). Returns `(position, unit_tangent)` —
+/// position is the linear interpolant between adjacent polyline
+/// points; tangent is the unit direction of the surrounding segment
+/// (piecewise constant within a segment).
+///
+/// `arc_positions` must be the result of [`cumulative_arc_positions_m`]
+/// on the same polyline. `target_arc` is clamped to the valid range
+/// `[0.0, arc_positions.last()]` for defensive behavior — out-of-range
+/// asks default to the nearest endpoint.
+///
+/// Returns `None` for polylines with fewer than 2 points (no valid
+/// arc parametrization).
+fn sample_centerline_at_arc(
+    points: &[Point3<f64>],
+    arc_positions: &[f64],
+    target_arc: f64,
+) -> Option<(Point3<f64>, Vector3<f64>)> {
+    if points.len() < 2 || arc_positions.len() != points.len() {
+        return None;
+    }
+    let total = *arc_positions.last()?;
+    let clamped = target_arc.clamp(0.0, total);
+    // Find the segment containing `clamped`. Linear search is fine for
+    // 30-point polylines; binary search if profiling shows hot spots.
+    for i in 0..points.len() - 1 {
+        let a_lo = arc_positions[i];
+        let a_hi = arc_positions[i + 1];
+        if clamped <= a_hi {
+            let segment_len = a_hi - a_lo;
+            let t = if segment_len < 1e-12 {
+                0.0
+            } else {
+                (clamped - a_lo) / segment_len
+            };
+            let pos = Point3::from(points[i].coords + (points[i + 1] - points[i]) * t);
+            let tangent_raw = points[i + 1] - points[i];
+            let tangent_norm = tangent_raw.norm();
+            let tangent = if tangent_norm < 1e-12 {
+                Vector3::new(0.0, 0.0, 1.0)
+            } else {
+                tangent_raw / tangent_norm
+            };
+            return Some((pos, tangent));
+        }
+    }
+    // Fall-through: `clamped == total`, return the last endpoint.
+    let last = points.len() - 1;
+    let tangent_raw = points[last] - points[last - 1];
+    let tangent_norm = tangent_raw.norm();
+    let tangent = if tangent_norm < 1e-12 {
+        Vector3::new(0.0, 0.0, 1.0)
+    } else {
+        tangent_raw / tangent_norm
+    };
+    Some((points[last], tangent))
+}
+
+/// Build a `(b1, b2)` orthonormal basis perpendicular to `tangent` at
+/// a sampled centerline arc position, anchored to the cached
+/// parallel-transport bases at the surrounding polyline points.
+/// Uses the basis at the LOWER-arc polyline point as the propagation
+/// seed, then re-projects perpendicular to `tangent` (handles the
+/// case where the interpolated tangent differs slightly from the
+/// surrounding polyline tangents).
+///
+/// Falls back to [`initial_basis_b1`] if the surrounding-point basis
+/// becomes degenerate after projection.
+fn sample_basis_at_arc(
+    bases: &[(Vector3<f64>, Vector3<f64>)],
+    arc_positions: &[f64],
+    target_arc: f64,
+    tangent: &Vector3<f64>,
+) -> (Vector3<f64>, Vector3<f64>) {
+    if bases.is_empty() || arc_positions.len() != bases.len() {
+        let b1 = initial_basis_b1(tangent);
+        let b2 = tangent.cross(&b1).normalize();
+        return (b1, b2);
+    }
+    let total = *arc_positions.last().unwrap_or(&0.0);
+    let clamped = target_arc.clamp(0.0, total);
+    // Find the lower-arc anchor index.
+    let mut anchor = 0_usize;
+    for i in 0..bases.len() - 1 {
+        if clamped >= arc_positions[i] && clamped <= arc_positions[i + 1] {
+            anchor = i;
+            break;
+        }
+    }
+    let (prev_b1, _) = bases[anchor];
+    let b1 = parallel_transport_b1(prev_b1, tangent);
+    let b2 = tangent.cross(&b1).normalize();
+    (b1, b2)
 }
 
 /// Half-window width (in polyline-index units) used to smooth the
@@ -489,28 +619,65 @@ fn draw_outer_envelope_overlay(
     if centerline.points_m.len() < 2 || bases.bases.len() != centerline.points_m.len() {
         return;
     }
+    let arc_positions = cumulative_arc_positions_m(&centerline.points_m);
+    let Some(&total_arc) = arc_positions.last() else {
+        return;
+    };
+
+    // Capsule-along-centerline semantics: the envelope's total length
+    // along the centerline arc is `total_arc`. The cylindrical section
+    // spans the arc range `[R, total_arc - R]`; hemispherical caps
+    // anchor at those trim points with apexes at the original
+    // centerline endpoints (arc 0 and arc total_arc).
+    //
+    // If `2 R >= total_arc` (radius too large) the cylindrical section
+    // collapses; we early-return to avoid degenerate rendering. The
+    // slider range max should prevent this, but the check is
+    // defensive.
+    let r = state.radius_m;
+    if r * 2.0 >= total_arc {
+        return;
+    }
+    let trim_start = r;
+    let trim_end = total_arc - r;
+
     // Pale green-blue; distinguishes from scan (white) + axis arrows
     // (red/green/blue full saturation) + centerline (cyan).
     let color = Color::srgb(0.55, 0.85, 0.70);
 
-    // Compute rings in physics frame, then project to Bevy frame for
-    // gizmo drawing. Each ring carries OUTER_ENVELOPE_RING_SEGMENTS
-    // vertices.
-    let mut rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(centerline.points_m.len());
-    for (i, point) in centerline.points_m.iter().enumerate() {
-        let (b1, b2) = bases.bases[i];
+    // Build the list of cylindrical-section ring arc positions:
+    //   [trim_start, all centerline arcs in (trim_start, trim_end), trim_end]
+    let mut cyl_arcs: Vec<f64> = vec![trim_start];
+    for &arc in &arc_positions {
+        if arc > trim_start && arc < trim_end {
+            cyl_arcs.push(arc);
+        }
+    }
+    cyl_arcs.push(trim_end);
+
+    // Sample each cylindrical-section ring (position + tangent + basis
+    // + projected ring vertices). Each ring has
+    // OUTER_ENVELOPE_RING_SEGMENTS vertices in Bevy frame.
+    let mut rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(cyl_arcs.len());
+    for &arc in &cyl_arcs {
+        let Some((ring_center, tangent)) =
+            sample_centerline_at_arc(&centerline.points_m, &arc_positions, arc)
+        else {
+            return;
+        };
+        let (b1, b2) = sample_basis_at_arc(&bases.bases, &arc_positions, arc, &tangent);
         let mut ring = Vec::with_capacity(OUTER_ENVELOPE_RING_SEGMENTS);
         for seg in 0..OUTER_ENVELOPE_RING_SEGMENTS {
             #[allow(clippy::cast_precision_loss)] // seg fits in f64 easily.
             let theta = (seg as f64 / OUTER_ENVELOPE_RING_SEGMENTS as f64) * std::f64::consts::TAU;
-            let offset = b1 * (state.radius_m * theta.cos()) + b2 * (state.radius_m * theta.sin());
-            let physics_pt = Point3::from(point.coords + offset);
+            let offset = b1 * (r * theta.cos()) + b2 * (r * theta.sin());
+            let physics_pt = Point3::from(ring_center.coords + offset);
             ring.push(Vec3::from_array(up.to_bevy_point(&physics_pt)) * render_scale.0);
         }
         rings_bevy.push(ring);
     }
 
-    // Draw ring lines (closed circles at each centerline point).
+    // Draw cylindrical ring lines (closed circles at each arc position).
     for ring in &rings_bevy {
         for seg in 0..ring.len() {
             let a = ring[seg];
@@ -520,7 +687,7 @@ fn draw_outer_envelope_overlay(
     }
 
     // Draw longitudinal lines connecting corresponding ring vertices
-    // across centerline rings.
+    // across the cylindrical section.
     if rings_bevy.len() >= 2 {
         let step = OUTER_ENVELOPE_RING_SEGMENTS / OUTER_ENVELOPE_LONGITUDINAL_LINES;
         for k in 0..OUTER_ENVELOPE_LONGITUDINAL_LINES {
@@ -533,23 +700,28 @@ fn draw_outer_envelope_overlay(
         }
     }
 
-    // Hemispherical end caps. For each centerline endpoint, walk
-    // along the outward tangent direction, drawing latitude rings of
-    // shrinking radius until the apex point — matches the
-    // `Solid::pipe(centerline, R)` SDF semantics (sphere of radius R
-    // at each centerline endpoint = hemispherical cap). The 0°
-    // latitude is the cylindrical section's existing end ring; we
-    // draw OUTER_ENVELOPE_CAP_LATITUDES intermediate rings + the
-    // apex point.
-    let last_idx = centerline.points_m.len() - 1;
-    let (first_b1, first_b2) = bases.bases[0];
-    let first_outward = -local_tangent(&centerline.points_m, 0);
+    // Hemispherical end caps under the capsule-along-centerline
+    // convention. The cap at the start of the centerline anchors at
+    // arc `trim_start` (= R), with its apex at arc 0 (original
+    // centerline start); the cap at the end anchors at arc
+    // `trim_end` with its apex at arc `total_arc`. The cap helper
+    // takes the BASE point + outward direction + (b1, b2) and steps
+    // toward the apex.
+    let Some((start_base, start_tangent)) =
+        sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_start)
+    else {
+        return;
+    };
+    let (start_b1, start_b2) =
+        sample_basis_at_arc(&bases.bases, &arc_positions, trim_start, &start_tangent);
+    // Outward at the start cap = direction toward the original
+    // centerline start (arc 0) = -tangent at trim_start.
     draw_hemispherical_cap(
-        &centerline.points_m[0],
-        &first_outward,
-        &first_b1,
-        &first_b2,
-        state.radius_m,
+        &start_base,
+        &(-start_tangent),
+        &start_b1,
+        &start_b2,
+        r,
         &rings_bevy[0],
         *up,
         render_scale.0,
@@ -557,15 +729,23 @@ fn draw_outer_envelope_overlay(
         &mut gizmos,
     );
 
-    let (last_b1, last_b2) = bases.bases[last_idx];
-    let last_outward = local_tangent(&centerline.points_m, last_idx);
+    let Some((end_base, end_tangent)) =
+        sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_end)
+    else {
+        return;
+    };
+    let (end_b1, end_b2) =
+        sample_basis_at_arc(&bases.bases, &arc_positions, trim_end, &end_tangent);
+    // Outward at the end cap = direction toward the original
+    // centerline end (arc total_arc) = +tangent at trim_end.
+    let last_ring_idx = rings_bevy.len() - 1;
     draw_hemispherical_cap(
-        &centerline.points_m[last_idx],
-        &last_outward,
-        &last_b1,
-        &last_b2,
-        state.radius_m,
-        &rings_bevy[last_idx],
+        &end_base,
+        &end_tangent,
+        &end_b1,
+        &end_b2,
+        r,
+        &rings_bevy[last_ring_idx],
         *up,
         render_scale.0,
         color,
@@ -1183,59 +1363,155 @@ another_future_field = "foo"
         }
     }
 
+    fn dummy_scan_info_with_centerline(diag_m: f64, arc_m: f64) -> ScanInfo {
+        ScanInfo {
+            file_label: "test".to_string(),
+            vertex_count: 0,
+            face_count: 0,
+            aabb_mm_extents: [0.0; 3],
+            bbox_diagonal_m: diag_m,
+            centerline_arc_length_m: arc_m,
+            centerline_point_count: 30,
+        }
+    }
+
     #[test]
-    fn outer_envelope_default_clamped_to_min_for_tiny_scans() {
-        // 50 mm diag × 0.30 = 15 mm; below the 20 mm floor → clamped.
+    fn outer_envelope_default_clamped_to_min_for_tiny_scans_no_centerline() {
+        // 50 mm diag → no centerline path. preferred = 50 * 0.30 =
+        // 15 mm; below the 20 mm floor → clamped to 20.
         let info = dummy_scan_info(0.050);
         let state = OuterEnvelopeState::from_scan_info(&info);
-        assert!(approx_eq(state.radius_m, 0.020, 1e-12));
+        assert!(
+            approx_eq(state.radius_m, 0.020, 1e-12),
+            "got {}",
+            state.radius_m
+        );
     }
 
     #[test]
-    fn outer_envelope_default_clamped_to_max_for_huge_scans() {
-        // 600 mm diag × 0.30 = 180 mm; above the 150 mm ceiling →
-        // clamped. Defensive — keeps the default sensible even if
-        // the scan is way larger than a typical device.
-        let info = dummy_scan_info(0.600);
+    fn outer_envelope_default_uses_25pct_of_arc_when_centerline_present() {
+        // iter-1 fixture: 168 mm diag, 134 mm centerline arc.
+        // preferred = 0.134 * 0.25 = 33.5 mm. Max = arc/2 - 5mm =
+        // 62 mm. In-band, no clamping.
+        let info = dummy_scan_info_with_centerline(0.168, 0.134);
         let state = OuterEnvelopeState::from_scan_info(&info);
-        assert!(approx_eq(state.radius_m, 0.150, 1e-12));
+        assert!(
+            approx_eq(state.radius_m, 0.0335, 1e-6),
+            "got {}",
+            state.radius_m
+        );
     }
 
     #[test]
-    fn outer_envelope_default_in_band_for_typical_scans() {
-        // 168 mm diag (iter-1 fixture) × 0.30 = 50.4 mm; in-band.
-        let info = dummy_scan_info(0.168);
-        let state = OuterEnvelopeState::from_scan_info(&info);
-        assert!(approx_eq(state.radius_m, 0.0504, 1e-6));
-    }
-
-    #[test]
-    fn outer_envelope_slider_range_widens_for_larger_scans() {
-        let small = dummy_scan_info(0.050);
-        let large = dummy_scan_info(0.300);
-        let (_, max_small) = OuterEnvelopeState::slider_range_m(&small);
-        let (_, max_large) = OuterEnvelopeState::slider_range_m(&large);
-        assert!(max_large > max_small);
-        // The 60-mm floor on the upper bound keeps even tiny scans
-        // dialable to a reasonable radius.
-        assert!(max_small >= 0.060);
-    }
-
-    #[test]
-    fn outer_envelope_default_inside_slider_range() {
-        for diag in [0.020_f64, 0.080, 0.168, 0.300, 0.600] {
-            let info = dummy_scan_info(diag);
+    fn outer_envelope_default_inside_slider_range_centerline_path() {
+        for arc in [0.060_f64, 0.100, 0.134, 0.250, 0.500] {
+            let info = dummy_scan_info_with_centerline(arc * 1.2, arc);
             let state = OuterEnvelopeState::from_scan_info(&info);
             let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
             assert!(
                 state.radius_m >= min_m && state.radius_m <= max_m,
-                "default {} not in [{}, {}] for diag {}",
+                "default {} not in [{}, {}] for arc {}",
                 state.radius_m,
                 min_m,
                 max_m,
-                diag,
+                arc,
             );
         }
+    }
+
+    #[test]
+    fn outer_envelope_slider_max_under_half_arc_for_capsule_semantic() {
+        // Capsule-along-centerline semantics require `2 R < arc`. We
+        // cap max at `arc/2 - 5 mm` so the cylindrical section has
+        // ≥ 5 mm of length even at max radius. For arc 134 mm that's
+        // 62 mm.
+        let info = dummy_scan_info_with_centerline(0.168, 0.134);
+        let (_, max_m) = OuterEnvelopeState::slider_range_m(&info);
+        assert!(
+            max_m < info.centerline_arc_length_m * 0.5,
+            "max {} should be < arc/2 = {}",
+            max_m,
+            info.centerline_arc_length_m * 0.5,
+        );
+        assert!(approx_eq(max_m, 0.062, 1e-12));
+    }
+
+    #[test]
+    fn outer_envelope_slider_falls_back_to_diag_without_centerline() {
+        let info = dummy_scan_info(0.168);
+        let (_, max_m) = OuterEnvelopeState::slider_range_m(&info);
+        // No centerline → diagonal-based range, 168 mm cap.
+        assert!(approx_eq(max_m, 0.168, 1e-12));
+    }
+
+    // ----- Slice 3 polish 2 — arc-sampling helpers ------------------
+
+    #[test]
+    fn cumulative_arc_positions_match_segment_distances() {
+        let pts = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 1.0),
+        ];
+        let arcs = cumulative_arc_positions_m(&pts);
+        assert_eq!(arcs, vec![0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn cumulative_arc_positions_empty_for_short_polylines() {
+        assert!(cumulative_arc_positions_m(&[]).is_empty());
+        assert!(cumulative_arc_positions_m(&[Point3::origin()]).is_empty());
+    }
+
+    #[test]
+    fn sample_centerline_at_arc_midpoint_lands_between_polyline_points() {
+        let pts = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        let arcs = cumulative_arc_positions_m(&pts);
+        // Arc 0.5 is halfway through the first segment.
+        let (pos, tangent) = sample_centerline_at_arc(&pts, &arcs, 0.5).unwrap();
+        assert!(approx_eq(pos.x, 0.5, 1e-12));
+        assert!(approx_eq(pos.y, 0.0, 1e-12));
+        assert!(approx_eq(pos.z, 0.0, 1e-12));
+        // Tangent is unit +X (first segment direction).
+        assert!(approx_eq(tangent.x, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn sample_centerline_at_arc_clamps_out_of_range() {
+        let pts = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
+        let arcs = cumulative_arc_positions_m(&pts);
+        // Negative arc → clamped to 0 (start).
+        let (pos_neg, _) = sample_centerline_at_arc(&pts, &arcs, -5.0).unwrap();
+        assert!(approx_eq(pos_neg.x, 0.0, 1e-12));
+        // Beyond total → clamped to end.
+        let (pos_far, _) = sample_centerline_at_arc(&pts, &arcs, 10.0).unwrap();
+        assert!(approx_eq(pos_far.x, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn sample_centerline_at_arc_returns_none_for_short_polylines() {
+        let pts: Vec<Point3<f64>> = vec![];
+        let arcs: Vec<f64> = vec![];
+        assert!(sample_centerline_at_arc(&pts, &arcs, 0.5).is_none());
+    }
+
+    #[test]
+    fn sample_basis_at_arc_returns_orthonormal_basis() {
+        let pts = straight_z_centerline();
+        let arcs = cumulative_arc_positions_m(&pts);
+        let bases = compute_centerline_bases(&pts);
+        let (_, tangent) = sample_centerline_at_arc(&pts, &arcs, 0.05).unwrap();
+        let (b1, b2) = sample_basis_at_arc(&bases, &arcs, 0.05, &tangent);
+        assert!(approx_eq(b1.dot(&tangent), 0.0, 1e-9));
+        assert!(approx_eq(b2.dot(&tangent), 0.0, 1e-9));
+        assert!(approx_eq(b1.dot(&b2), 0.0, 1e-9));
+        assert!(approx_eq(b1.norm(), 1.0, 1e-9));
+        assert!(approx_eq(b2.norm(), 1.0, 1e-9));
     }
 
     /// `Aabb` re-export from `mesh_types` (transitive from
