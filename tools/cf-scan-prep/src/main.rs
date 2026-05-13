@@ -413,8 +413,27 @@ struct SimplifyResult {
 /// The output mesh shares its vertex coordinates with the welded
 /// intermediate (no further conversion); faces reference the surviving
 /// vertex indices.
+///
+/// # Precondition: `target_face_count < original.faces.len()`
+///
+/// meshopt is a reduction-only algorithm; its C++ side asserts
+/// `target_index_count <= index_count` in `meshopt_simplifyEdge`
+/// (simplifier.cpp:2286) and SIGABRTs the process if violated. We
+/// defensively early-return the cloned input unchanged when the target
+/// is at or above the current face count, so callers that forget the
+/// precondition see a no-op + finite `elapsed_secs` instead of a
+/// process abort. `handle_simplify_actions` pre-checks this case and
+/// surfaces a user-facing status message before invoking us; the guard
+/// here is belt-and-suspenders.
 fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyResult {
     let start = Instant::now();
+
+    if target_face_count >= original.faces.len() {
+        return SimplifyResult {
+            mesh: original.clone(),
+            elapsed_secs: start.elapsed().as_secs_f64(),
+        };
+    }
 
     // Step 1: weld unshared vertices into shared indices.
     let mut welded = original.clone();
@@ -614,6 +633,24 @@ fn handle_simplify_actions(
 
     let original_face_count = scan.0.faces.len();
     let target = simplify_state.target_face_count;
+
+    // Pre-check the Apply no-op case: meshopt is reduction-only and the
+    // C++ side SIGABRTs if `target_index_count > index_count`
+    // (simplifier.cpp:2286). The user-friendly workflow when they want
+    // *more* faces back is `[Reset to original]` first; surface a
+    // status message explaining that instead of running the meshopt
+    // call (which would abort) or no-op'ing silently (which would look
+    // like the button was broken).
+    if matches!(action, SimplifyAction::Apply) && target >= original_face_count {
+        status.text = format!(
+            "Already at {} faces (target {} is not lower). Use [Reset to original] first if you want a less-decimated mesh.",
+            human_count(original_face_count),
+            human_count(target),
+        );
+        status.kind = StatusKind::Warning;
+        status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
+        return;
+    }
 
     let (new_mesh, status_text) = match action {
         SimplifyAction::Apply => {
@@ -1174,6 +1211,39 @@ mod tests {
         // Elapsed time is finite + non-negative (sanity on the timer).
         assert!(result.elapsed_secs >= 0.0);
         assert!(result.elapsed_secs.is_finite());
+    }
+
+    /// Regression for the iter-1-eyes-on-pixels crash: meshopt's C++
+    /// side asserts `target_index_count <= index_count` in
+    /// `meshopt_simplifyEdge` and SIGABRTs the process if violated.
+    /// `simplify_mesh` defensively early-returns the input unchanged
+    /// when `target_face_count >= original.faces.len()` so the FFI is
+    /// never invoked with assertion-violating params.
+    ///
+    /// Covers the "drag slider right past current face count + Apply"
+    /// workflow (e.g., after a prior Apply reduces to 100 faces, then
+    /// the user drags the slider to 200 and clicks Apply again). The
+    /// `handle_simplify_actions` system pre-checks this case and
+    /// surfaces a user-facing status message, but the guard inside
+    /// `simplify_mesh` itself is the bulletproof layer.
+    #[test]
+    fn simplify_mesh_above_input_face_count_is_no_op() {
+        let original = grid_square(20);
+        assert_eq!(original.faces.len(), 800);
+
+        // Target >> input — would SIGABRT without the guard.
+        let result = simplify_mesh(&original, 10_000);
+
+        assert_eq!(
+            result.mesh.faces.len(),
+            original.faces.len(),
+            "guard must return input unchanged when target >= current",
+        );
+        assert_eq!(result.mesh.vertices.len(), original.vertices.len());
+
+        // Exactly-equal target also exits the guard (>=, not >).
+        let result_eq = simplify_mesh(&original, 800);
+        assert_eq!(result_eq.mesh.faces.len(), 800);
     }
 
     /// `simplify_mesh` post-process strips unreferenced vertices, so
