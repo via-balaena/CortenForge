@@ -43,6 +43,7 @@
 use cf_design::Solid;
 
 use crate::error::{CastError, CastTarget};
+use crate::plug::build_plug_socket_solid;
 use crate::pour::build_pour_gate_solid;
 use crate::registration::build_registration_solid;
 use crate::ribbon::{PieceSide, Ribbon};
@@ -124,9 +125,23 @@ pub fn compose_piece_solid(
     // `ribbon.pour_gate` is `None` the helper returns `None`
     // and the piece flows through unchanged — Steps 5-9 callers
     // unaffected.
-    let piece = match build_pour_gate_solid(ribbon) {
+    let piece_with_channels = match build_pour_gate_solid(ribbon) {
         Some(channels) => piece_with_pins.subtract(channels),
         None => piece_with_pins,
+    };
+
+    // v2.1: plug-anchor sockets at centerline endpoints. Both
+    // pieces lose material where the socket cylinders extend into
+    // cup-wall material (the body-cavity portion is already
+    // excluded by `subtract(layer_body)` above, so the socket
+    // subtraction is a no-op there). Sockets straddle the ribbon
+    // seam — same compose-on-both-pieces pattern as the pour gate
+    // and vent. When `ribbon.plug_pins` is `None` the helper
+    // returns `None` and the piece flows through unchanged — Steps
+    // 5-10 callers unaffected.
+    let piece = match build_plug_socket_solid(ribbon) {
+        Some(sockets) => piece_with_channels.subtract(sockets),
+        None => piece_with_channels,
     };
     Ok(piece)
 }

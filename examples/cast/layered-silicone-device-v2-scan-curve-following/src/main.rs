@@ -78,8 +78,8 @@
 
 use anyhow::{Context, Result};
 use cf_cast::{
-    CastLayer, CastSpec, DEFAULT_MASS_BUDGET_KG, MoldingMaterial, PinSpec, PourGateKind,
-    PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
+    CastLayer, CastSpec, DEFAULT_MASS_BUDGET_KG, MoldingMaterial, PinSpec, PlugPinKind,
+    PlugPinSpec, PourGateKind, PourGateSpec, RegistrationKind, Ribbon, SplitNormal, add_plug_pins,
 };
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
@@ -131,6 +131,17 @@ const BOUNDING_HALF_Z_M: f64 = 0.060;
 /// pour gate + per-piece F4).
 const MESH_CELL_SIZE_M: f64 = 0.003;
 
+/// v2.1 plug-anchor pin length (m). 25 mm — long enough that pin
+/// tip clears the outermost layer body cap (22 mm from centerline
+/// endpoint) by 3 mm of engagement into the outer layer's cup
+/// wall. Each inner layer's cup wall gets correspondingly deeper
+/// engagement (11 mm for layer 0, 7 mm for layer 1). The trade-off
+/// is a 14 mm cumulative pin-shaped channel through the cured
+/// silicone at each centerline end-cap (4-6 mm per layer); the
+/// generated procedure.md surfaces the trade-off for the workshop
+/// user.
+const PLUG_PIN_LENGTH_M: f64 = 0.025;
+
 /// Per-piece minimum wall thickness for the F4 gate (mm).
 ///
 /// v1 default is 1.0 mm; v2 piece geometry (ribbon split + pin
@@ -177,19 +188,36 @@ fn build_centerline() -> Vec<Point3<f64>> {
 /// Build the v2 [`CastSpec`] — 3-layer device + curved-pipe plug
 /// along the centerline polyline. Innermost-first ordering matches
 /// v1's convention (same `CastSpec` data carrier).
-fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
-    let plug = Solid::pipe(centerline.to_vec(), PLUG_RADIUS_M);
+///
+/// The plug solid is extended with v2.1 axial anchor pins via
+/// [`add_plug_pins`] before assignment to [`CastSpec::plug`]; the
+/// ribbon's [`PlugPinKind::Axial`] kind makes the parallel
+/// [`compose_piece_solid`] call subtract matching sockets from
+/// each mold piece. The two halves of the feature ship together
+/// from the same ribbon-as-source-of-truth.
+///
+/// [`add_plug_pins`]: cf_cast::add_plug_pins
+/// [`compose_piece_solid`]: cf_cast::compose_piece_solid
+fn build_spec(centerline: &[Point3<f64>], ribbon: &Ribbon) -> CastSpec {
+    let bare_plug = Solid::pipe(centerline.to_vec(), PLUG_RADIUS_M);
 
-    // Cumulative outer-surface positives per layer. Same offset-and-
-    // subtract pattern as v1 — Solid::pipe's SDF is exact, so
-    // `offset(thickness)` produces the cumulative outer surface
-    // cleanly.
-    let layer_inner_body = plug.clone().offset(LAYER_INNER_M).subtract(plug.clone());
-    let layer_middle_body = plug
+    // Cumulative outer-surface positives per layer use the BARE plug
+    // (not the pin-extended one) — the pin region is mold-anchor
+    // geometry, not part of the silicone shells we're casting.
+    let layer_inner_body = bare_plug
+        .clone()
+        .offset(LAYER_INNER_M)
+        .subtract(bare_plug.clone());
+    let layer_middle_body = bare_plug
         .clone()
         .offset(LAYER_MIDDLE_OUTER_M)
-        .subtract(plug.clone());
-    let layer_outer_body = plug.clone().offset(LAYER_OUTER_M).subtract(plug.clone());
+        .subtract(bare_plug.clone());
+    let layer_outer_body = bare_plug
+        .clone()
+        .offset(LAYER_OUTER_M)
+        .subtract(bare_plug.clone());
+
+    let plug = add_plug_pins(bare_plug, ribbon);
 
     let ecoflex_00_30 = MoldingMaterial {
         display_name: "Ecoflex 00-30".to_string(),
@@ -246,16 +274,22 @@ fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
 /// lid carved out by the body cavity). Surfaced during workshop
 /// iter-1 visual-pass review on the cf-view STL mode.
 ///
-/// Registration pins + pour gate both enabled via the builder
-/// methods so the workshop iter-1 gets the full v2 feature set.
+/// Registration pins + pour gate + v2.1 axial plug-anchor pins
+/// all enabled via the builder methods so the workshop iter-1 gets
+/// the full v2.1 feature set.
 fn build_ribbon(centerline: Vec<Point3<f64>>) -> Result<Ribbon> {
     let split =
         SplitNormal::new(Vector3::new(0.0, 0.0, -1.0)).context("split-normal -Z must normalize")?;
     let ribbon = Ribbon::new(centerline, split)
         .context("centerline polyline must produce a valid Ribbon")?;
+    let plug_pin_spec = PlugPinSpec {
+        pin_length_m: PLUG_PIN_LENGTH_M,
+        ..PlugPinSpec::iter1()
+    };
     Ok(ribbon
         .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
-        .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1())))
+        .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()))
+        .with_plug_pins(PlugPinKind::Axial(plug_pin_spec)))
 }
 
 // ============================================================
@@ -266,8 +300,8 @@ fn main() -> Result<()> {
     let out_dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
 
     let centerline = build_centerline();
-    let spec = build_spec(&centerline);
-    let ribbon = build_ribbon(centerline)?;
+    let ribbon = build_ribbon(centerline.clone())?;
+    let spec = build_spec(&centerline, &ribbon);
 
     // `export_molds_v2` creates `out_dir` internally, writes
     // 2L mold piece STLs + 1 plug STL, and returns the V2 report

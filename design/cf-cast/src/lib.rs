@@ -56,6 +56,7 @@ mod error;
 mod material;
 mod mesher;
 pub mod piece;
+pub mod plug;
 pub mod pour;
 mod pour_volume;
 mod procedure;
@@ -67,6 +68,9 @@ pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use material::MoldingMaterial;
 pub use piece::{RIBBON_PIECE_OVERLAP_M, compose_piece_solid};
+pub use plug::{
+    PlugPinKind, PlugPinSpec, add_plug_pins, build_plug_pin_solid, build_plug_socket_solid,
+};
 pub use pour::{PourGateKind, PourGateSpec, build_pour_gate_solid};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
 pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};

@@ -38,6 +38,7 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::plug::PlugPinKind;
 use crate::pour::PourGateKind;
 use crate::registration::RegistrationKind;
 
@@ -262,6 +263,12 @@ pub struct Ribbon {
     /// [`Ribbon::with_pour_gate`] builder; see [`crate::pour`]
     /// for the channel-geometry contract.
     pub pour_gate: PourGateKind,
+    /// Plug-anchor pin kind. Default [`PlugPinKind::None`] (no
+    /// axial plug-anchor pins — workshop user hand-positions the
+    /// plug during pour). v2.1 adds [`PlugPinKind::Axial`] via the
+    /// [`Ribbon::with_plug_pins`] builder; see [`crate::plug`] for
+    /// the pin + socket geometry contract.
+    pub plug_pins: PlugPinKind,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -391,6 +398,7 @@ impl Ribbon {
             split_normal,
             registration: RegistrationKind::None,
             pour_gate: PourGateKind::None,
+            plug_pins: PlugPinKind::None,
         })
     }
 
@@ -429,6 +437,21 @@ impl Ribbon {
     #[must_use]
     pub const fn with_pour_gate(mut self, pour_gate: PourGateKind) -> Self {
         self.pour_gate = pour_gate;
+        self
+    }
+
+    /// Builder: set the axial plug-anchor pin kind. v2.1 entry
+    /// point — wraps a freshly-constructed [`Ribbon`] with a
+    /// [`PlugPinKind::Axial`] spec (or disables via
+    /// [`PlugPinKind::None`]).
+    ///
+    /// Composable with [`Self::with_registration`] and
+    /// [`Self::with_pour_gate`] — inter-piece registration, pour
+    /// gate, and plug-anchor pins are orthogonal features that may
+    /// be enabled independently or together.
+    #[must_use]
+    pub const fn with_plug_pins(mut self, plug_pins: PlugPinKind) -> Self {
+        self.plug_pins = plug_pins;
         self
     }
 
