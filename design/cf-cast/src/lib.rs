@@ -57,6 +57,7 @@ mod material;
 mod mesher;
 mod pour_volume;
 mod procedure;
+mod ribbon;
 mod spec;
 
 pub use cure::CureProtocol;
@@ -64,4 +65,5 @@ pub use error::{CastError, CastTarget};
 pub use material::MoldingMaterial;
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, PourVolume};
 pub use procedure::generate_procedure_markdown;
+pub use ribbon::{Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport};
