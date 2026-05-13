@@ -574,19 +574,31 @@ fn scan_extent_past_endpoint(
 }
 
 /// Percentile of the per-bucket perpendicular-distance distribution
-/// used as the bucket's "scan radius." 0.95 = 95th percentile —
-/// excludes the top 5 % of distances per bucket, which naturally
-/// rejects single-vertex spikes from scan noise. For a typical
-/// per-bucket population of ~300 K vertices, the top 5 % is ~15 K
-/// vertices, so spikes from hundreds-to-thousands of noisy vertices
-/// get filtered; real anatomical features (tens of thousands of
-/// vertices) survive.
+/// used as the bucket's "scan radius." 0.75 = third quartile —
+/// excludes the top 25 % of distances per bucket, aggressively
+/// filtering bumps + dome-region outliers. For a typical
+/// per-bucket population of ~300 K vertices, the top 25 % is
+/// ~75 K vertices — including not just point-noise but also small
+/// anatomical bulges. Lands the envelope on the scan's TYPICAL
+/// cross-section width rather than its EXTREME at each bucket.
 ///
-/// Iter-1 visual review surfaced this: per-bucket MAX inflated the
-/// dome's cap region whenever a single noisy vertex stood out. 95th
-/// percentile + cross-bucket smoothing together yield a smooth
-/// envelope that tracks the scan's gross shape without overreacting.
-const RADII_BUCKET_PERCENTILE: f64 = 0.95;
+/// Iter-1 visual review iteration history:
+/// - per-bucket MAX → cap region inflated by single-vertex noise
+/// - per-bucket 95th percentile → still inflated by small bumps
+///   spanning hundreds of vertices
+/// - per-bucket 75th percentile (this) → envelope tracks the body's
+///   median width; the wireframe stays smooth even when the scan
+///   has localized bulges that legitimately fall above the 75th
+///   percentile of the bucket.
+///
+/// Trade-off: the envelope is INSIDE the scan at the top 25 % of
+/// each bucket's vertices. For wireframe preview that's acceptable
+/// (scan visibly pokes through at peaks, telling the user there's
+/// a bump there). The cf-cast-cli SDF construction (slice 9) uses
+/// `scan.offset(clearance)` directly and strictly envelopes
+/// everywhere — this percentile only shapes the PREVIEW, not the
+/// downstream SDF.
+const RADII_BUCKET_PERCENTILE: f64 = 0.75;
 
 /// Compute the scan's local cross-section radius at each centerline
 /// polyline point. For each scan vertex, find the closest centerline
@@ -658,19 +670,22 @@ fn compute_scan_local_radii(
 }
 
 /// Half-window for smoothing the per-centerline-point scan-local
-/// radii across centerline buckets. `W = 3` averages each radius
-/// with up to 3 neighbors on each side (a 7-point moving average),
-/// diluting single-vertex spikes by ~1/7 of their original
-/// magnitude. Buckets near the centerline endpoints automatically
-/// shrink the effective window (clamped to the polyline range).
+/// radii across centerline buckets. `W = 5` averages each radius
+/// with up to 5 neighbors on each side (an 11-point moving
+/// average). Combined with the [`RADII_BUCKET_PERCENTILE`] = 0.75
+/// per-bucket robust statistic, this gives a heavily-smoothed
+/// scan-snug envelope that tracks the scan's gross shape without
+/// catching bumps spanning more than a few centerline-points'
+/// worth of arc.
 ///
-/// Tuned after iter-1 visual review "overfits/overreacts to a bump
-/// on the head of the dome": a single noisy vertex at the scan's
-/// dome inflated the endpoint bucket's max-perpendicular-distance,
-/// which then dictated the cap equatorial radius. 7-point smoothing
-/// reduces the spike to ~14 % of its original height — visually
-/// negligible while preserving the scan's gross shape.
-const RADII_SMOOTHING_HALF_WINDOW: usize = 3;
+/// Iter-1 visual review iteration history:
+/// - W = 3 (7-point) → still overreacted to multi-bucket bumps
+///   near the dome region; clamping at endpoints made the spike
+///   averaging insufficient
+/// - W = 5 (11-point, this) → spans ~1/3 of the 30-point iter-1
+///   centerline; spikes get diluted across a significant portion
+///   of the device length.
+const RADII_SMOOTHING_HALF_WINDOW: usize = 5;
 
 /// Smooth the per-centerline scan-local radii with a moving-average
 /// filter across centerline-bucket indices. Reduces the impact of
@@ -1687,11 +1702,16 @@ another_future_field = "foo"
 
     #[test]
     fn smooth_scan_local_radii_handles_endpoint_clamping() {
-        // At index 0 with W = 3, the window clamps to [0, 4)
-        // (4 values, not 7). Average of input[0..4].
+        // At index 0 with W = 5, the window clamps to
+        // [0, min(W+1, len)) = [0, 6) for a 7-element input.
+        // Average of input[0..6].
         let radii = vec![0.010, 0.020, 0.030, 0.040, 0.050, 0.050, 0.050];
         let smoothed = smooth_scan_local_radii(&radii);
-        let expected_at_0 = (0.010 + 0.020 + 0.030 + 0.040) / 4.0;
+        let lo = 0_usize;
+        let hi = (RADII_SMOOTHING_HALF_WINDOW + 1).min(radii.len());
+        #[allow(clippy::cast_precision_loss)]
+        let count = (hi - lo) as f64;
+        let expected_at_0: f64 = radii[lo..hi].iter().sum::<f64>() / count;
         assert!(
             approx_eq(smoothed[0], expected_at_0, 1e-9),
             "got {}, expected {}",
