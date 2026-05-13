@@ -32,6 +32,7 @@
 //! TOML writer, and the load-time mesh-repair diagnostics.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -42,7 +43,9 @@ use cf_viewer::{
 };
 use clap::{Parser, ValueEnum};
 use mesh_io::load_stl;
+use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Bounded, IndexedMesh};
+use meshopt::{SimplifyOptions, simplify_decoder};
 
 /// Cast-frame up-axis convention: `+Z` is the demolding direction
 /// (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home). All
@@ -126,6 +129,131 @@ struct ScanMesh(IndexedMesh);
 #[derive(Resource)]
 struct LoadError(String);
 
+/// Bevy resource carrying a clone of the originally loaded scan mesh
+/// (in meters, post unit conversion). Used by the Simplify panel's
+/// `[Reset to original]` action (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §2) to restore the unsimplified geometry without
+/// re-loading from disk. ~240 MB on the iter-1 fixture
+/// (`sock_over_capsule.stl`, 10M vertices); accepted in exchange for
+/// instant reset vs. a ~3-5 s STL reload.
+#[derive(Resource)]
+struct OriginalScanMesh(IndexedMesh);
+
+/// Marker for the Bevy entity rendering the current scan mesh. Used by
+/// the Simplify Apply/Reset handler to despawn the existing entity
+/// before respawning from the new mesh — without a marker the handler
+/// would have to track the spawned `Entity` id through Bevy state.
+#[derive(Component)]
+struct ScanMeshEntity;
+
+/// Simplify panel state (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §2). The slider mutates `target_face_count`
+/// continuously; clicking `[Apply simplify]` / `[Reset to original]`
+/// sets `pending_action` to the queued command which
+/// [`handle_simplify_actions`] consumes on the next Update tick.
+#[derive(Resource, Debug, Clone)]
+struct SimplifyState {
+    /// Current slider value, clamped to
+    /// `[SIMPLIFY_TARGET_MIN, SIMPLIFY_TARGET_MAX]` by the egui slider.
+    /// Default 200_000 per spec §Architectural decisions §Simplify
+    /// algorithm.
+    target_face_count: usize,
+    /// Queued user action; consumed (cleared) by
+    /// [`handle_simplify_actions`] each Update tick.
+    pending_action: Option<SimplifyAction>,
+}
+
+impl Default for SimplifyState {
+    fn default() -> Self {
+        Self {
+            target_face_count: SIMPLIFY_TARGET_DEFAULT,
+            pending_action: None,
+        }
+    }
+}
+
+/// User action queued from the Simplify panel buttons. Consumed by
+/// [`handle_simplify_actions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SimplifyAction {
+    /// Run `meshopt::simplify` on the current scan mesh down to
+    /// `SimplifyState::target_face_count`. Despawns + respawns the
+    /// Bevy mesh entity; updates `ScanInfo` vertex/face counts; sets a
+    /// status-bar achievement message.
+    Apply,
+    /// Restore the originally loaded scan from [`OriginalScanMesh`].
+    /// Mirrors the Apply pipeline but skips the meshopt call.
+    Reset,
+}
+
+/// Default target face count for the Simplify panel slider per spec
+/// §Architectural decisions §Simplify algorithm: 10× over the 50k
+/// surface-continuity floor, well below the 500k "may be sluggish"
+/// threshold, matches cf-cast's 2 mm-cell SDF sampling density
+/// × surface-continuity headroom.
+const SIMPLIFY_TARGET_DEFAULT: usize = 200_000;
+
+/// Lower slider bound. Below this the simplified mesh loses too much
+/// surface continuity for cast purposes.
+const SIMPLIFY_TARGET_MIN: usize = 1_000;
+
+/// Upper slider bound. Above this we're not really simplifying typical
+/// scans anymore.
+const SIMPLIFY_TARGET_MAX: usize = 1_000_000;
+
+/// Face-count threshold above which the load-time status bar surfaces
+/// the auto-suggest banner. Per spec §Panel specifications §2.
+const AUTO_SUGGEST_FACE_THRESHOLD: usize = 500_000;
+
+/// Spatial-hash welding tolerance applied pre-`meshopt::simplify` so
+/// the STL's 3N unshared vertices collapse to ~N shared. 1 µm in
+/// meters; tighter than any practical scan precision.
+const SIMPLIFY_WELD_EPSILON_M: f64 = 1e-6;
+
+/// `target_error` parameter passed to `meshopt::simplify_decoder`.
+/// Relative to mesh extents (no `ErrorAbsolute` flag), so 0.01 means
+/// "tolerate up to ~1 % of mesh diagonal of geometric error during the
+/// quadric edge collapse." Chosen as a balance: tight enough to
+/// preserve scan surface detail in the simplified output, loose enough
+/// that meshopt doesn't early-exit before reaching the requested face
+/// count. Re-tune if iter-1 eyes-on-pixels surfaces noticeable surface
+/// artifacts at typical target counts.
+const SIMPLIFY_TARGET_ERROR: f32 = 0.01;
+
+/// Default TTL for `Normal`-kind status messages (apply-result,
+/// reset-result). Persistent messages (auto-suggest banner) set
+/// `auto_clear_at_secs` to `None` explicitly.
+const STATUS_NORMAL_TTL_SECS: f64 = 8.0;
+
+/// Status-bar state. Empty `text` means the bottom panel doesn't
+/// render. Auto-suggest banner at load is `Warning` kind + persistent
+/// (`auto_clear_at_secs = None`). Apply / Reset achievement messages
+/// are `Normal` kind with a `STATUS_NORMAL_TTL_SECS` timer.
+#[derive(Resource, Default, Debug, Clone)]
+struct StatusBar {
+    text: String,
+    kind: StatusKind,
+    /// Absolute time (seconds since `Time::elapsed_secs_f64()`) at
+    /// which [`auto_clear_status`] clears `text`. `None` = persistent
+    /// until the next status update overwrites it.
+    auto_clear_at_secs: Option<f64>,
+}
+
+/// Severity tag for [`StatusBar`] used by the bottom-panel renderer to
+/// pick a text color (gray for `Normal`, yellow for `Warning`). An
+/// `Error` variant (red) lands at commit #12 alongside the Save panel's
+/// FS-error pattern + non-finite-transform rejection — kept off the
+/// enum here so the rendering match doesn't pretend to dispatch on a
+/// case it can't reach.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusKind {
+    /// Neutral information (achievement messages, restore-confirmed).
+    #[default]
+    Normal,
+    /// Advisory but non-blocking (auto-suggest banner, soft caps).
+    Warning,
+}
+
 /// Pre-computed display fields for the Scan Info panel
 /// (`docs/SCAN_PREP_DESIGN.md` §Panel specifications §1). Built once at
 /// startup from the loaded scan + CLI metadata; never changes (the panel
@@ -203,7 +331,11 @@ fn main() -> Result<()> {
     match try_load_scan(&cli) {
         Ok(scan_mesh) => {
             let scan_info = ScanInfo::from_loaded(&cli.path, &scan_mesh, cli.stl_units);
-            run_render_app(scan_mesh, scan_info);
+            // Clone the loaded mesh into `OriginalScanMesh` so the
+            // Simplify panel's `[Reset to original]` action can restore
+            // unsimplified geometry without re-reading the STL.
+            let original = OriginalScanMesh(scan_mesh.clone());
+            run_render_app(scan_mesh, original, scan_info);
         }
         Err(err) => {
             let msg = format!("Failed to load {}: {err:#}", cli.path.display());
@@ -241,10 +373,93 @@ fn scale_vertices_in_place(mesh: &mut IndexedMesh, factor: f64) {
     }
 }
 
+/// Result of [`simplify_mesh`]: the decimated mesh + wall-clock elapsed
+/// for the status-bar achievement message.
+struct SimplifyResult {
+    mesh: IndexedMesh,
+    elapsed_secs: f64,
+}
+
+/// Run boundary-preserving quadric edge collapse decimation on `original`
+/// down to (approximately) `target_face_count` faces. Returns the
+/// simplified mesh + wall-clock elapsed time.
+///
+/// Pipeline:
+///
+/// 1. **Weld vertices** ([`mesh_repair::weld_vertices`] with epsilon
+///    `SIMPLIFY_WELD_EPSILON_M`). STL load produces 3N unshared
+///    vertices (one set per triangle); meshopt operates on indexed
+///    buffers and needs shared vertex indices across adjacent triangles
+///    to find collapsible edges. Without this step `meshopt::simplify`
+///    would see every triangle as topologically disconnected and would
+///    refuse to decimate.
+/// 2. **Convert positions to `[f32; 3]`** for meshopt's
+///    `DecodePosition` impl. f64 → f32 loses ~16 ulps of precision at
+///    the scan's mm scale; below the 1 µm weld tolerance.
+/// 3. **`meshopt::simplify_decoder`** with
+///    `SimplifyOptions::LockBorder`. `target_count` is in **indices**
+///    (`target_face_count × 3`); the C-side `meshopt_simplify` takes
+///    `target_index_count`. `LockBorder` pins open-boundary-loop
+///    vertices in place so the Cap panel (commit #9) sees the same
+///    boundary topology after simplification (the spec's load-bearing
+///    boundary-preservation requirement).
+/// 4. **Reassemble `IndexedMesh`** + strip unreferenced vertices left
+///    over from collapse so the simplified mesh has tight memory shape.
+///
+/// The output mesh shares its vertex coordinates with the welded
+/// intermediate (no further conversion); faces reference the surviving
+/// vertex indices.
+fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyResult {
+    let start = Instant::now();
+
+    // Step 1: weld unshared vertices into shared indices.
+    let mut welded = original.clone();
+    weld_vertices(&mut welded, SIMPLIFY_WELD_EPSILON_M);
+
+    // Step 2: convert positions to meshopt-friendly f32 triples.
+    // f64 → f32 cast is intentional; meshopt's C API operates on f32.
+    #[allow(clippy::cast_possible_truncation)]
+    let positions: Vec<[f32; 3]> = welded
+        .vertices
+        .iter()
+        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+        .collect();
+    let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
+
+    // Step 3: run meshopt. `target_count` is in INDICES, not faces.
+    let target_index_count = target_face_count.saturating_mul(3);
+    let mut result_error: f32 = 0.0;
+    let simplified_indices = simplify_decoder(
+        &indices,
+        &positions,
+        target_index_count,
+        SIMPLIFY_TARGET_ERROR,
+        SimplifyOptions::LockBorder,
+        Some(&mut result_error),
+    );
+
+    // Step 4: reassemble. Indices reference the welded vertex buffer.
+    let achieved_face_count = simplified_indices.len() / 3;
+    let mut simplified_faces: Vec<[u32; 3]> = Vec::with_capacity(achieved_face_count);
+    for tri in simplified_indices.chunks_exact(3) {
+        simplified_faces.push([tri[0], tri[1], tri[2]]);
+    }
+    let mut simplified_mesh = welded;
+    simplified_mesh.faces = simplified_faces;
+    remove_unreferenced_vertices(&mut simplified_mesh);
+
+    SimplifyResult {
+        mesh: simplified_mesh,
+        elapsed_secs: start.elapsed().as_secs_f64(),
+    }
+}
+
 /// Run the render-mode Bevy app: spawn camera + lighting + the loaded
 /// scan mesh, framed on its raw AABB; right-side egui sidebar shows the
-/// Scan Info section. Returns when the window closes.
-fn run_render_app(scan_mesh: IndexedMesh, scan_info: ScanInfo) {
+/// Scan Info + Simplify sections; bottom status bar surfaces the
+/// auto-suggest banner at load + apply/reset achievement messages.
+/// Returns when the window closes.
+fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info: ScanInfo) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
@@ -269,9 +484,19 @@ fn run_render_app(scan_mesh: IndexedMesh, scan_info: ScanInfo) {
         .insert_resource(SCAN_UP_AXIS)
         .insert_resource(RenderScale(render_scale))
         .insert_resource(ScanMesh(scan_mesh))
+        .insert_resource(original)
         .insert_resource(scan_info)
-        .add_systems(Startup, setup_render_scene)
-        .add_systems(Update, exit_on_esc)
+        .insert_resource(SimplifyState::default())
+        .insert_resource(StatusBar::default())
+        .add_systems(Startup, (setup_render_scene, init_status_for_load))
+        // Apply/Reset handler runs before auto-clear so a newly-set
+        // status's TTL is checked against the same tick's `Time`. Both
+        // are idempotent (no-op when nothing's pending / nothing's
+        // expired), so order doesn't change the steady-state behavior.
+        .add_systems(
+            Update,
+            (handle_simplify_actions, auto_clear_status, exit_on_esc),
+        )
         .add_systems(EguiPrimaryContextPass, scan_prep_panel)
         .run();
 }
@@ -310,7 +535,7 @@ fn setup_render_scene(
     let scaled_aabb = scale_aabb(&raw_aabb, scale);
     setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
     let entity_transform = Transform::from_scale(Vec3::splat(scale));
-    let _entity = spawn_face_mesh(
+    let entity = spawn_face_mesh(
         &mut commands,
         meshes.as_mut(),
         materials.as_mut(),
@@ -319,6 +544,170 @@ fn setup_render_scene(
         *up,
         entity_transform,
     );
+    // Marker so the Simplify Apply/Reset handler can despawn the
+    // current scan render before respawning from the new mesh.
+    commands.entity(entity).insert(ScanMeshEntity);
+}
+
+/// Startup system: surface the auto-suggest banner if the loaded scan
+/// exceeds `AUTO_SUGGEST_FACE_THRESHOLD` faces. The banner is
+/// `Warning`-kind + persistent (`auto_clear_at_secs = None`) so it
+/// stays visible until the user runs `[Apply simplify]` or
+/// `[Reset to original]`, both of which overwrite the status text. No-op
+/// for already-small scans.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn init_status_for_load(scan: Res<ScanMesh>, mut status: ResMut<StatusBar>) {
+    let face_count = scan.0.faces.len();
+    if face_count <= AUTO_SUGGEST_FACE_THRESHOLD {
+        return;
+    }
+    status.text = format!(
+        "Scan has {} faces. Recommended: simplify to ~{}k for performance. \
+         Open the Simplify panel to decimate.",
+        human_count(face_count),
+        SIMPLIFY_TARGET_DEFAULT / 1_000,
+    );
+    status.kind = StatusKind::Warning;
+    status.auto_clear_at_secs = None;
+}
+
+/// Update system: consume `SimplifyState::pending_action` (if any) by
+/// running the Simplify pipeline or restoring from `OriginalScanMesh`.
+/// Idempotent — does nothing when no action is queued, so it can run
+/// every tick safely.
+///
+/// On Apply: clones the current scan, runs [`simplify_mesh`], updates
+/// `ScanMesh` + `ScanInfo` vertex/face counts, despawns the existing
+/// `ScanMeshEntity` and respawns from the simplified mesh, sets a
+/// `Normal`-kind status message with TTL `STATUS_NORMAL_TTL_SECS`
+/// per spec §Panel specifications §2.
+///
+/// On Reset: clones `OriginalScanMesh`, updates `ScanMesh` + `ScanInfo`,
+/// respawns the entity, sets a confirmation status message.
+// Bevy systems take resources by value.
+#[allow(clippy::needless_pass_by_value)]
+// Bevy systems pull each Res / ResMut / Query / Commands as a separate
+// parameter; threading through a SystemParam-derive tuple costs more
+// boilerplate than the +N buys in readability.
+#[allow(clippy::too_many_arguments)]
+fn handle_simplify_actions(
+    mut simplify_state: ResMut<SimplifyState>,
+    mut scan: ResMut<ScanMesh>,
+    original: Res<OriginalScanMesh>,
+    mut info: ResMut<ScanInfo>,
+    mut status: ResMut<StatusBar>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    time: Res<Time>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    existing: Query<Entity, With<ScanMeshEntity>>,
+) {
+    let Some(action) = simplify_state.pending_action.take() else {
+        return;
+    };
+
+    let original_face_count = scan.0.faces.len();
+    let target = simplify_state.target_face_count;
+
+    let (new_mesh, status_text) = match action {
+        SimplifyAction::Apply => {
+            let result = simplify_mesh(&scan.0, target);
+            let achieved = result.mesh.faces.len();
+            let text = format!(
+                "Reduced {} -> {} faces in {:.1}s",
+                human_count(original_face_count),
+                format_count_with_separators(achieved),
+                result.elapsed_secs,
+            );
+            (result.mesh, text)
+        }
+        SimplifyAction::Reset => {
+            let cloned = original.0.clone();
+            let text = format!(
+                "Restored original mesh ({} faces)",
+                human_count(cloned.faces.len()),
+            );
+            (cloned, text)
+        }
+    };
+
+    info.vertex_count = new_mesh.vertices.len();
+    info.face_count = new_mesh.faces.len();
+    scan.0 = new_mesh;
+    respawn_scan_entity(
+        &mut commands,
+        &existing,
+        &scan.0,
+        meshes.as_mut(),
+        materials.as_mut(),
+        *up,
+        render_scale.0,
+    );
+
+    status.text = status_text;
+    status.kind = StatusKind::Normal;
+    status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
+}
+
+/// Despawn the existing `ScanMeshEntity` and spawn a fresh one from
+/// `mesh` with the cast-frame up-axis swap + render-scale transform.
+/// Used by [`handle_simplify_actions`] for both Apply and Reset paths.
+fn respawn_scan_entity(
+    commands: &mut Commands,
+    existing: &Query<Entity, With<ScanMeshEntity>>,
+    mesh: &IndexedMesh,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    up: UpAxis,
+    render_scale: f32,
+) {
+    for entity in existing {
+        commands.entity(entity).despawn();
+    }
+    let entity = spawn_face_mesh(
+        commands,
+        meshes,
+        materials,
+        mesh,
+        None,
+        up,
+        Transform::from_scale(Vec3::splat(render_scale)),
+    );
+    commands.entity(entity).insert(ScanMeshEntity);
+}
+
+/// Update system: clear the status bar text if its TTL has elapsed.
+/// Persistent messages (`auto_clear_at_secs = None`) are never cleared
+/// here — they're overwritten by the next status update instead.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn auto_clear_status(mut status: ResMut<StatusBar>, time: Res<Time>) {
+    let Some(deadline) = status.auto_clear_at_secs else {
+        return;
+    };
+    if time.elapsed_secs_f64() >= deadline {
+        status.text.clear();
+        status.auto_clear_at_secs = None;
+    }
+}
+
+/// Format a count with thousands separators (e.g., `1_234_567` →
+/// `"1,234,567"`). Used in Simplify achievement messages where the
+/// `human_count` `k`/`M` suffix would hide the precise meshopt-achieved
+/// face count.
+fn format_count_with_separators(n: usize) -> String {
+    let raw = n.to_string();
+    // Insert commas every 3 digits from the right.
+    let mut out = String::with_capacity(raw.len() + raw.len() / 3);
+    let bytes = raw.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
 }
 
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
@@ -375,19 +764,34 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 // `EguiContexts::ctx_mut()?` short-circuit returns `BevyError` not
 // `anyhow::Error`.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn scan_prep_panel(mut contexts: EguiContexts, info: Res<ScanInfo>) -> bevy::ecs::error::Result {
+fn scan_prep_panel(
+    mut contexts: EguiContexts,
+    info: Res<ScanInfo>,
+    mut simplify_state: ResMut<SimplifyState>,
+    status: Res<StatusBar>,
+) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
+    // Status bar first so its bottom-anchored space is claimed before
+    // the right-side panel computes its own layout (egui evaluates
+    // panels in call order; later panels see the remaining central
+    // region).
+    render_status_bar(ctx, &status);
     egui::SidePanel::right("cf-scan-prep-panels")
         .resizable(false)
         .default_width(320.0)
         .show(ctx, |ui| {
             render_scan_info_section(ui, &info);
+            render_simplify_section(ui, &info, &mut simplify_state);
         });
     Ok(())
 }
 
 /// `Scan Info` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications
-/// §1) — read-only, never changes after load. Five logical fields:
+/// §1) — static fields (file path, STL units, raw AABB) loaded at
+/// startup; vertex/face counts update if the Simplify panel applies a
+/// decimation pass (commit #5).
+///
+/// Five logical fields:
 ///
 /// - File basename + hover-text full path.
 /// - Vertex count (compact `human_count` format).
@@ -412,6 +816,71 @@ fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
             ui.label(format!("  W: {:.1} mm", info.aabb_width_mm));
             ui.label(format!("  D: {:.1} mm", info.aabb_depth_mm));
             ui.label(format!("  H: {:.1} mm", info.aabb_height_mm));
+        });
+}
+
+/// `Simplify (decimate)` section (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §2). Boundary-preserving quadric edge collapse via
+/// meshopt; load-bearing for any scan-driven cf-cast workflow on
+/// modern multi-million-face scans.
+///
+/// Layout:
+///
+/// - Current face count (live; reflects the most recent simplify if
+///   any).
+/// - Logarithmic slider over `[SIMPLIFY_TARGET_MIN,
+///   SIMPLIFY_TARGET_MAX]` (1k–1M). Logarithmic so the 200k default
+///   sits near the middle of the slider track instead of the 20 %
+///   mark.
+/// - `[Apply simplify]` + `[Reset to original]` buttons queue
+///   [`SimplifyAction`] on `SimplifyState`; [`handle_simplify_actions`]
+///   consumes them next Update tick.
+fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut SimplifyState) {
+    egui::CollapsingHeader::new("Simplify (decimate)")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(format!("Current: {} faces", human_count(info.face_count)));
+
+            ui.add_space(4.0);
+            ui.label("Target face count:");
+            ui.add(
+                egui::Slider::new(
+                    &mut state.target_face_count,
+                    SIMPLIFY_TARGET_MIN..=SIMPLIFY_TARGET_MAX,
+                )
+                .logarithmic(true)
+                .text("faces"),
+            );
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Apply simplify").clicked() {
+                    state.pending_action = Some(SimplifyAction::Apply);
+                }
+                if ui.button("Reset to original").clicked() {
+                    state.pending_action = Some(SimplifyAction::Reset);
+                }
+            });
+        });
+}
+
+/// Bottom status bar. Renders nothing when `status.text` is empty so an
+/// empty status doesn't claim window space. Color-codes the text by
+/// [`StatusKind`]: gray for Normal, yellow for Warning (auto-suggest
+/// banner / soft caps). An `Error` color path (red) lands at commit #12
+/// alongside the Save panel's FS-error pattern.
+fn render_status_bar(ctx: &egui::Context, status: &StatusBar) {
+    if status.text.is_empty() {
+        return;
+    }
+    let color = match status.kind {
+        StatusKind::Normal => egui::Color32::from_gray(220),
+        StatusKind::Warning => egui::Color32::from_rgb(240, 200, 80),
+    };
+    egui::TopBottomPanel::bottom("cf-scan-prep-status")
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.colored_label(color, &status.text);
         });
 }
 
@@ -588,5 +1057,142 @@ mod tests {
         assert!((info.aabb_width_mm - 80.0).abs() < 1e-9);
         assert!((info.aabb_depth_mm - 80.0).abs() < 1e-9);
         assert!((info.aabb_height_mm - 80.0).abs() < 1e-9);
+    }
+
+    // ----- SimplifyState defaults ------------------------------------
+
+    /// Default target face count is `SIMPLIFY_TARGET_DEFAULT` (200k)
+    /// per spec §Architectural decisions §Simplify algorithm. Pinned so
+    /// silent default-shift cascades don't break the iter-1 fixture's
+    /// expected ~3.35M → ~200k decimation.
+    #[test]
+    fn simplify_state_default_target_is_200k() {
+        let state = SimplifyState::default();
+        assert_eq!(state.target_face_count, 200_000);
+        assert_eq!(state.target_face_count, SIMPLIFY_TARGET_DEFAULT);
+        assert!(state.pending_action.is_none());
+    }
+
+    /// Slider bounds spec-pin (1k–1M) per spec §Panel specifications §2.
+    /// Changing either bound silently shifts the slider's logarithmic
+    /// midpoint (where the 200k default sits in the track), so worth
+    /// a regression test.
+    #[test]
+    fn simplify_slider_bounds_match_spec() {
+        assert_eq!(SIMPLIFY_TARGET_MIN, 1_000);
+        assert_eq!(SIMPLIFY_TARGET_MAX, 1_000_000);
+    }
+
+    /// Auto-suggest threshold is 500k faces per spec §Panel
+    /// specifications §2.
+    #[test]
+    fn auto_suggest_threshold_is_500k_faces() {
+        assert_eq!(AUTO_SUGGEST_FACE_THRESHOLD, 500_000);
+    }
+
+    // ----- format_count_with_separators ------------------------------
+
+    /// Achievement-message format helper. Used in the "Reduced X -> Y
+    /// faces in Zs" status text where Y needs the precise meshopt-
+    /// achieved face count (not the human_count `k`/`M` summary).
+    #[test]
+    fn format_count_with_separators_handles_size_ranges() {
+        assert_eq!(format_count_with_separators(0), "0");
+        assert_eq!(format_count_with_separators(42), "42");
+        assert_eq!(format_count_with_separators(999), "999");
+        assert_eq!(format_count_with_separators(1_000), "1,000");
+        assert_eq!(format_count_with_separators(12_345), "12,345");
+        assert_eq!(format_count_with_separators(198_432), "198,432");
+        assert_eq!(format_count_with_separators(1_234_567), "1,234,567");
+    }
+
+    // ----- simplify_mesh end-to-end (small fixture) ------------------
+
+    /// Build a regular grid-subdivided square (in the XY plane) with
+    /// `cells × cells` quads, each split into 2 triangles. Vertices are
+    /// shared (proper indexed mesh; no STL-style 3N unsharing). Used
+    /// for the simplify-on-known-shape test — small enough to be fast
+    /// in CI while large enough that meshopt has something to collapse.
+    fn grid_square(cells: usize) -> IndexedMesh {
+        let mut mesh = IndexedMesh::with_capacity((cells + 1) * (cells + 1), cells * cells * 2);
+        for j in 0..=cells {
+            for i in 0..=cells {
+                #[allow(clippy::cast_precision_loss)]
+                let x = i as f64 / cells as f64;
+                #[allow(clippy::cast_precision_loss)]
+                let y = j as f64 / cells as f64;
+                mesh.vertices.push(mesh_types::Point3::new(x, y, 0.0));
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let stride = (cells + 1) as u32;
+        for j in 0..cells {
+            for i in 0..cells {
+                #[allow(clippy::cast_possible_truncation)]
+                let row = j as u32 * stride;
+                #[allow(clippy::cast_possible_truncation)]
+                let next_row = (j as u32 + 1) * stride;
+                #[allow(clippy::cast_possible_truncation)]
+                let col = i as u32;
+                let a = row + col;
+                let b = row + col + 1;
+                let c = next_row + col + 1;
+                let d = next_row + col;
+                mesh.faces.push([a, b, c]);
+                mesh.faces.push([a, c, d]);
+            }
+        }
+        mesh
+    }
+
+    /// `simplify_mesh` on a 20×20-cell grid (800 faces) targeting 100
+    /// faces returns a mesh with face count ≤ target. meshopt doesn't
+    /// guarantee hitting the target exactly (topology may force fewer
+    /// collapses), so the assertion is upper-bounded.
+    #[test]
+    fn simplify_mesh_reduces_face_count_within_target() {
+        let original = grid_square(20);
+        assert_eq!(original.faces.len(), 800);
+
+        let result = simplify_mesh(&original, 100);
+        assert!(
+            result.mesh.faces.len() <= 100,
+            "simplified face count {} should not exceed target 100",
+            result.mesh.faces.len(),
+        );
+        // Strictly smaller than original (some progress was made).
+        assert!(
+            result.mesh.faces.len() < original.faces.len(),
+            "simplify must reduce face count (got {} from original {})",
+            result.mesh.faces.len(),
+            original.faces.len(),
+        );
+        // Elapsed time is finite + non-negative (sanity on the timer).
+        assert!(result.elapsed_secs >= 0.0);
+        assert!(result.elapsed_secs.is_finite());
+    }
+
+    /// `simplify_mesh` post-process strips unreferenced vertices, so
+    /// every vertex in the output is touched by at least one face. The
+    /// converse (every face references valid vertex indices) is
+    /// trivially true since `remove_unreferenced_vertices` preserves
+    /// face validity by construction.
+    #[test]
+    fn simplify_mesh_strips_unreferenced_vertices() {
+        let original = grid_square(20);
+        let result = simplify_mesh(&original, 50);
+
+        let vertex_count = result.mesh.vertices.len();
+        let mut touched = vec![false; vertex_count];
+        for face in &result.mesh.faces {
+            for &idx in face {
+                touched[idx as usize] = true;
+            }
+        }
+        let untouched = touched.iter().filter(|t| !**t).count();
+        assert_eq!(
+            untouched, 0,
+            "simplified mesh should have no unreferenced vertices",
+        );
     }
 }

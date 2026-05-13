@@ -605,3 +605,11 @@ cf-bevy-common = { path = "cf-bevy-common" }
 # build graphs.
 cf-viewer = { path = "cf-viewer" }
 
+# meshopt-rs — Rust FFI bindings to Arseny Kapoulkine's `meshoptimizer`
+# C++ library (battle-tested in Unity, Unreal, Bevy itself). Used by
+# `tools/cf-scan-prep` (Stage 2.5 commit #5) for the Simplify panel's
+# boundary-preserving quadric edge collapse decimation. Brings a small
+# C/C++ build-time toolchain dep (cargo handles via `cc` build script);
+# 0.6.2 is the latest stable as of 2025-10. License MIT/Apache-2.0.
+meshopt = "0.6.2"
+

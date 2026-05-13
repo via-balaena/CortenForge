@@ -33,8 +33,19 @@ cf-bevy-common = { workspace = true }
 # for `mesh_io::load_stl`; cleaned-STL writer arrives at commit #12.
 mesh-io = { workspace = true }
 # `IndexedMesh` + `Bounded::aabb()` direct access; vertex-walk for the
-# `--stl-units` → meters unit conversion in `scale_vertices_in_place`.
+# `--stl-units` -> meters unit conversion in `scale_vertices_in_place`.
 mesh-types = { workspace = true }
+# `weld_vertices` (spatial-hash dedup) + `remove_unreferenced_vertices`
+# for the Simplify panel (commit #5). STL load produces unshared
+# vertices (one set per triangle); meshopt needs index-shared vertices
+# to find collapsible edges, so we weld pre-simplify.
+mesh-repair = { workspace = true }
+# Boundary-preserving quadric edge collapse decimation (commit #5
+# Simplify panel). `meshopt::simplify_decoder` with
+# `SimplifyOptions::LockBorder` keeps open-boundary loop vertices
+# pinned so the downstream Cap panel (commit #9) sees the same loop
+# topology.
+meshopt = { workspace = true }
 
 # Bevy 0.18 — feature set mirrors cf-viewer so the workspace's validated
 # rendering subset stays consistent across viewer binaries. `bevy_ui` +

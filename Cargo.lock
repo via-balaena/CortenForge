@@ -1911,7 +1911,9 @@ dependencies = [
  "cf-viewer",
  "clap",
  "mesh-io",
+ "mesh-repair",
  "mesh-types",
+ "meshopt",
 ]
 
 [[package]]
@@ -5536,6 +5538,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6842,6 +6853,18 @@ dependencies = [
  "nalgebra",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "meshopt"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01e77ead21976b3a9f01ec1724f766923da74f0726364e2b0f425658935d71a"
+dependencies = [
+ "bitflags 2.11.0",
+ "cc",
+ "float-cmp",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
