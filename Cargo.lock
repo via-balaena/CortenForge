@@ -1910,6 +1910,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-device-design"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "bevy_egui",
+ "cf-bevy-common",
+ "cf-viewer",
+ "clap",
+ "mesh-io",
+ "mesh-types",
+ "nalgebra",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "cf-geometry"
 version = "1.0.0"
 dependencies = [

@@ -19,6 +19,11 @@ members = [
     # writes v2.1 mold pieces + plugs + procedure.md.
     # See `project_scan_to_cast_bridge_design.md`.
     "tools/cf-cast-cli",
+    # Layered-silicone-device design + testing suite (Bevy + egui GUI).
+    # Consumes cf-scan-prep outputs; produces a `<scan>.design.toml`
+    # that cf-cast-cli will consume (slice 9). The meat of the program
+    # per the user 2026-05-13. See `docs/ENGINEERING_SUITE_DESIGN.md`.
+    "tools/cf-device-design",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.

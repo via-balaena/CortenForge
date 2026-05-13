@@ -1,0 +1,95 @@
+[package]
+name = "cf-device-design"
+description = "Layered-silicone-device design + testing suite — composes cleaned scan + outer envelope + cavity + layers + features into a device design TOML"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace tool; no `[package.metadata.cortenforge]` block — tier
+# metadata is for sim L0/L1 libraries, not workspace tools (matches
+# `tools/cf-scan-prep` + `tools/cf-cast-cli` precedent).
+
+[[bin]]
+name = "cf-device-design"
+path = "src/main.rs"
+
+[dependencies]
+# cf-viewer library — scene helpers (`RenderScale`, `compute_render_scale`,
+# `scale_aabb`, `setup_camera_and_lighting`, `spawn_face_mesh`) lifted at
+# Stage 2.5 commit #2 for cross-tool reuse. cf-device-design is the third
+# consumer alongside cf-view (binary) + cf-scan-prep.
+cf-viewer = { workspace = true }
+
+# Shared Bevy helpers — `UpAxis::PlusZ` (cast-frame demolding axis
+# convention), the `OrbitCameraPlugin` system set wired by
+# `cf_bevy_common::prelude::*`.
+cf-bevy-common = { workspace = true }
+
+# STL loader for the cleaned scan input (cf-scan-prep output).
+mesh-io = { workspace = true }
+# `IndexedMesh` + `Bounded::aabb()` for the scan-info readout +
+# bounding-region derivation.
+mesh-types = { workspace = true }
+# `Point3` + `Vector3` for the centerline polyline parsing.
+nalgebra = { workspace = true }
+
+# Bevy 0.18 — feature set mirrors cf-scan-prep so the workspace's validated
+# rendering subset stays consistent across viewer binaries.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+
+# egui-on-Bevy plugin — UI library for the right-side design panels
+# (Scan Info / Outer Envelope / Cavity / Layers / Validations / Health /
+# Save). 0.39.1 is the workspace-validated pin (cf-viewer + cf-scan-prep
+# precedent).
+bevy_egui = { version = "0.39.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+    "bevy_ui",
+] }
+
+# `Result<()>` + error-context chaining for the CLI load path + the
+# Save panel's atomic write FS error pattern (slice 8).
+anyhow = { workspace = true }
+# `.prep.toml` parsing (cleaned scan provenance + centerline polyline)
+# + `.design.toml` (re)serialization (slice 8).
+serde = { workspace = true }
+toml = { workspace = true }
+
+# CLI argument parsing — direct dep with `derive` (clap has no workspace
+# pin; cf-device-design is the fourth consumer alongside xtask +
+# cf-viewer + cf-scan-prep + cf-cast-cli).
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = ["x11"]
+# Linux window backends — mirror cf-scan-prep's feature shape.
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
