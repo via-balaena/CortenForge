@@ -5,36 +5,64 @@ use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::*;
 use cf_viewer::{
-    InputMode, UpAxis, ViewerInput,
+    AssemblyInputs, InputMode, RenderScale, UpAxis, ViewerInput,
     cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
-    detect_input_mode, load_input,
+    compute_render_scale, detect_input_mode, load_assembly_inputs, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
+    scale_aabb,
     sequence::{
         Playback, advance_playback_on_clock, handle_frame_navigation, handle_playback_input,
         reload_frame_on_change, sequence_info_panel,
     },
+    setup_camera_and_lighting,
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
-use mesh_types::{Aabb, Bounded, Point3};
+use mesh_types::Bounded;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mode = detect_input_mode(&cli.path)?;
-    // Sequence-mode log lives in `main` (not in `detect_input_mode`) so
-    // the lib function stays side-effect free and reusable.
-    if let InputMode::Sequence(seq) = &mode {
-        let first_name = seq.current_name().unwrap_or("?");
-        println!(
-            "detected PLY sequence: {} frame(s) in {}; rendering frame 1/{} ({})",
-            seq.len(),
-            cli.path.display(),
-            seq.len(),
-            first_name,
-        );
+    // `--assembly` opts the directory-input path into Option C
+    // (multi-piece-in-one-scene) instead of the default scrub-through-
+    // pieces sequence mode. Only meaningful when `path` is a directory
+    // of STLs; ignored for single-file or PLY-sequence inputs.
+    let mode = if cli.assembly && cli.path.is_dir() {
+        let stls = cf_viewer::discover_stl_sequence(&cli.path)?;
+        InputMode::Assembly { stls }
+    } else {
+        detect_input_mode(&cli.path)?
+    };
+    match &mode {
+        InputMode::Sequence(seq) => {
+            let first_name = seq.current_name().unwrap_or("?");
+            println!(
+                "detected sequence: {} frame(s) in {}; rendering frame 1/{} ({})",
+                seq.len(),
+                cli.path.display(),
+                seq.len(),
+                first_name,
+            );
+        }
+        InputMode::Assembly { stls } => {
+            println!(
+                "assembly mode: loading {} STLs from {}",
+                stls.len(),
+                cli.path.display(),
+            );
+        }
+        InputMode::Single(_) => {}
     }
+
+    // Assembly mode bypasses the single-mesh ViewerInput pipeline
+    // entirely — load all STLs up front, insert as an AssemblyInputs
+    // resource, skip seed_selection / Selection (no scalar dropdown
+    // for STL-only data).
+    if let InputMode::Assembly { stls } = &mode {
+        return run_assembly_mode(&cli, stls);
+    }
+
     let frame_path = mode.initial_frame()?;
 
     let input = load_input(&frame_path)?;
@@ -114,49 +142,231 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Render-side scale factor applied uniformly to all spawned geometry so
-/// sub-meter scenes lift to Bevy's pipeline-default human-scale (~1 m)
-/// regime. Bevy 0.18's defaults — near plane `0.1 m`,
-/// [`OrbitCamera::framing_for_aabb`]'s internal `.max(1.0)` clamp on
-/// diagonal, AmbientLight brightness — were tuned for human-scale scenes;
-/// at sim-soft's cm-scale (e.g. row 13's 52.6 mm bbox diagonal — the
-/// BCC mesher allocates a cube of side `2 (R + margin)` around the
-/// 1 cm sphere, with margin scaling per cell-size), the framing helper
-/// clamps diagonal up to `1.0` and places the camera 1.5 m away —
-/// geometry then renders as a single dot. Lifting the rendered scene to
-/// ~1 m diagonal puts everything safely within the defaults' working
-/// range. mesh-v1.0 examples already at meter scale get
-/// `render_scale = 1.0` (no change).
-///
-/// Banked at sim-soft EXAMPLE_INVENTORY iter-12 as the cf-view application
-/// of inventory iter-11 pattern (b) (RENDER_SCALE-as-rendering-pipeline-
-/// default-workaround); same root cause as sim-bevy-soft's row-12 +
-/// row-13 RENDER_SCALE policy.
-#[derive(Resource, Clone, Copy, Debug)]
-struct RenderScale(f32);
+// ============================================================
+// Assembly mode (Option C) — multi-piece-in-one-scene.
+// ============================================================
 
-/// Compute the render scale from the raw bbox diagonal: lift sub-meter
-/// scenes to a 1 m target diagonal; meter+ scenes render at native scale.
-/// Degenerate (zero / non-finite) diagonals fall back to `1.0` so the
-/// downstream framing helper's own clamp handles them.
-fn compute_render_scale(raw_diagonal: f32) -> f32 {
-    const TARGET_DIAGONAL: f32 = 1.0;
-    if !raw_diagonal.is_finite() || raw_diagonal <= 0.0 || raw_diagonal >= TARGET_DIAGONAL {
-        1.0
-    } else {
-        TARGET_DIAGONAL / raw_diagonal
+/// Per-piece marker for [`InputMode::Assembly`]'s spawn output.
+/// Each piece's spawned entity carries this component so the
+/// `assembly_piece_panel` UI can flip `Visibility` per piece by
+/// name.
+#[derive(Component, Debug)]
+struct AssemblyPiece {
+    /// Zero-based index into [`AssemblyInputs::pieces`].
+    #[allow(dead_code)] // Reserved for future C.x slices that need stable indices.
+    index: usize,
+    /// Filename — used by the side-panel UI as the per-piece label
+    /// + the visibility-toggle key.
+    name: String,
+}
+
+/// Per-piece visibility state — `pieces[name] = visible?`.
+/// Default all-visible at startup; mutated by
+/// `assembly_piece_panel`; consumed by `apply_assembly_visibility`
+/// each frame.
+#[derive(Resource, Debug, Default)]
+struct AssemblyVisibility {
+    visible: std::collections::HashMap<String, bool>,
+}
+
+/// Drive the Bevy app for Option C assembly mode — load all STLs
+/// up front, insert as [`AssemblyInputs`], skip scrub UI + scalar
+/// dropdown machinery.
+///
+/// Branches off `main` BEFORE the standard PLY/Sequence pipeline
+/// builds its `ViewerInput` resource. Assembly mode runs an
+/// independent Bevy app with its own setup + spawn systems.
+fn run_assembly_mode(cli: &Cli, stls: &[std::path::PathBuf]) -> Result<()> {
+    let assembly = load_assembly_inputs(stls)?;
+    println!("loaded {} assembly pieces:", assembly.pieces.len(),);
+    for piece in &assembly.pieces {
+        println!(
+            "  {} ({} vertices, {} faces)",
+            piece.name,
+            piece.mesh.vertex_count(),
+            piece.mesh.geometry.faces.len(),
+        );
+    }
+
+    // Compute the combined AABB across all pieces so the camera
+    // frames the whole assembly, not just the first piece.
+    let combined_aabb = combined_assembly_aabb(&assembly);
+    let raw_diagonal = combined_aabb.diagonal() as f32;
+    let render_scale = compute_render_scale(raw_diagonal);
+    println!("assembly bbox diagonal = {raw_diagonal:.4} m; render_scale = {render_scale:.2}×",);
+
+    let up_axis: UpAxis = cli.up.into();
+
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "cf-view (assembly)".into(),
+            ..default()
+        }),
+        ..default()
+    }))
+    .add_plugins(EguiPlugin::default())
+    .add_plugins(OrbitCameraPlugin)
+    .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
+    .insert_resource(assembly)
+    .insert_resource(AssemblyVisibility::default())
+    .insert_resource(up_axis)
+    .insert_resource(RenderScale(render_scale));
+
+    app.add_systems(
+        Startup,
+        (setup_assembly_scene, spawn_assembly_pieces).chain(),
+    )
+    .add_systems(Update, (apply_assembly_visibility, exit_on_esc))
+    .add_systems(EguiPrimaryContextPass, assembly_piece_panel)
+    .run();
+
+    Ok(())
+}
+
+/// Compute the union AABB across all pieces' raw mesh AABBs. The
+/// camera + render-scale logic frames this so all pieces are
+/// visible at startup.
+fn combined_assembly_aabb(assembly: &AssemblyInputs) -> mesh_types::Aabb {
+    use mesh_types::Point3;
+    let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for piece in &assembly.pieces {
+        let aabb = piece.mesh.aabb();
+        min.x = min.x.min(aabb.min.x);
+        min.y = min.y.min(aabb.min.y);
+        min.z = min.z.min(aabb.min.z);
+        max.x = max.x.max(aabb.max.x);
+        max.y = max.y.max(aabb.max.y);
+        max.z = max.z.max(aabb.max.z);
+    }
+    mesh_types::Aabb::from_corners(min, max)
+}
+
+/// Startup system — frame the camera on the combined assembly AABB.
+#[allow(clippy::needless_pass_by_value)]
+fn setup_assembly_scene(
+    mut commands: Commands,
+    assembly: Res<AssemblyInputs>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+) {
+    let raw_aabb = combined_assembly_aabb(&assembly);
+    let aabb = scale_aabb(&raw_aabb, render_scale.0);
+    setup_camera_and_lighting(&mut commands, &aabb, *up);
+}
+
+/// `tab10` categorical palette — the same 10 colors matplotlib
+/// uses by default for categorical line plots, well-tested for
+/// visual distinguishability. Assembly mode cycles through this
+/// palette by piece index so each piece gets a distinct color.
+/// Wraps at index 10 (cf-cast v2 emits up to `2 * L + 1` STLs,
+/// so 7 for the 3-layer fixture; for 5-layer that's 11, which
+/// wraps but only one collision).
+const TAB10: [Color; 10] = [
+    Color::srgb(0.121, 0.466, 0.705), // blue
+    Color::srgb(1.000, 0.498, 0.054), // orange
+    Color::srgb(0.172, 0.627, 0.172), // green
+    Color::srgb(0.839, 0.152, 0.156), // red
+    Color::srgb(0.580, 0.403, 0.741), // purple
+    Color::srgb(0.549, 0.337, 0.294), // brown
+    Color::srgb(0.890, 0.466, 0.760), // pink
+    Color::srgb(0.498, 0.498, 0.498), // gray
+    Color::srgb(0.737, 0.741, 0.133), // olive
+    Color::srgb(0.090, 0.745, 0.811), // cyan
+];
+
+/// Startup system — spawn one entity per piece. Each piece gets a
+/// flat-shaded mesh + a [`TAB10`] color indexed by piece position
+/// so overlapping pieces stay visually distinguishable.
+#[allow(clippy::needless_pass_by_value)]
+fn spawn_assembly_pieces(
+    assembly: Res<AssemblyInputs>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let scale = render_scale.0;
+    for (index, piece) in assembly.pieces.iter().enumerate() {
+        let bevy_mesh = build_face_mesh(&piece.mesh, None, *up);
+        let piece_color = TAB10[index % TAB10.len()];
+        let material = StandardMaterial {
+            base_color: piece_color,
+            metallic: 0.10,
+            perceptual_roughness: 0.6,
+            double_sided: true,
+            cull_mode: None,
+            unlit: false,
+            // Slight transparency so overlapping pieces don't fully
+            // hide each other on first orbit. Workshop user can
+            // toggle individual pieces off via the side panel for
+            // a fully opaque look at any single piece.
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        };
+        let mut material_with_alpha = material;
+        material_with_alpha.base_color = piece_color.with_alpha(0.55);
+        commands.spawn((
+            AssemblyPiece {
+                index,
+                name: piece.name.clone(),
+            },
+            Mesh3d(meshes.add(bevy_mesh)),
+            MeshMaterial3d(materials.add(material_with_alpha)),
+            Transform::from_scale(Vec3::splat(scale)),
+        ));
     }
 }
 
-/// Apply a uniform scale factor to an [`Aabb`]'s corners. Used to compute
-/// the camera-framing AABB at render scale (the rendered geometry's
-/// bbox), distinct from the loaded mesh's physics-scale AABB.
-fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
-    let s = scale as f64;
-    Aabb::from_corners(
-        Point3::new(raw.min.x * s, raw.min.y * s, raw.min.z * s),
-        Point3::new(raw.max.x * s, raw.max.y * s, raw.max.z * s),
-    )
+/// Side panel: list every assembly piece with a visibility
+/// checkbox. Default all-on. Mutates [`AssemblyVisibility`] which
+/// [`apply_assembly_visibility`] then propagates to each entity's
+/// `Visibility` component.
+#[allow(clippy::needless_pass_by_value)]
+fn assembly_piece_panel(
+    mut contexts: bevy_egui::EguiContexts,
+    assembly: Res<AssemblyInputs>,
+    mut visibility: ResMut<AssemblyVisibility>,
+) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    bevy_egui::egui::SidePanel::left("assembly_pieces")
+        .min_width(220.0)
+        .show(ctx, |ui| {
+            ui.heading("cf-view (assembly)");
+            ui.label("Per-piece visibility:");
+            ui.separator();
+            for piece in &assembly.pieces {
+                let entry = visibility.visible.entry(piece.name.clone()).or_insert(true);
+                ui.checkbox(entry, &piece.name);
+            }
+            ui.separator();
+            ui.label(format!("{} pieces total", assembly.pieces.len()));
+            ui.label("LMB orbit · RMB pan · scroll zoom · Esc exit");
+        });
+}
+
+/// Each-frame system: read [`AssemblyVisibility`], flip each
+/// `AssemblyPiece` entity's `Visibility` to match. Egui mutates the
+/// resource on checkbox click; this system applies it.
+fn apply_assembly_visibility(
+    visibility: Res<AssemblyVisibility>,
+    mut query: Query<(&AssemblyPiece, &mut Visibility)>,
+) {
+    if !visibility.is_changed() {
+        return;
+    }
+    for (piece, mut vis) in &mut query {
+        let visible = visibility.visible.get(&piece.name).copied().unwrap_or(true);
+        *vis = if visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
 }
 
 /// Spawn the orbit camera + lighting once at startup. Geometry is spawned
@@ -165,9 +375,9 @@ fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
 ///
 /// The orbit camera frames the **rendered** AABB (raw mesh AABB scaled by
 /// [`RenderScale`]) — at native scale for meter+ meshes, lifted to ~1 m
-/// for sub-meter meshes. See [`RenderScale`] for the policy.
-// f64 → f32 is intentional for Bevy
-#[allow(clippy::cast_possible_truncation)]
+/// for sub-meter meshes. See [`RenderScale`] for the policy. Camera + light
+/// placement is delegated to [`setup_camera_and_lighting`] so
+/// `cf-scan-prep` can reuse the same framing.
 // Bevy systems take resources by value (Res / ResMut / Query / Commands).
 #[allow(clippy::needless_pass_by_value)]
 fn setup_scene(
@@ -178,43 +388,7 @@ fn setup_scene(
 ) {
     let raw_aabb = input.mesh.aabb();
     let aabb = scale_aabb(&raw_aabb, render_scale.0);
-    let center_physics = aabb.center();
-    // Same input → Bevy frame swap as `build_face_mesh` so the light
-    // anchor stays aligned with the rendered geometry under any `--up=<...>`.
-    let center_bevy = Vec3::from_array(up.to_bevy_point(&center_physics));
-    // Local `diagonal` is used here only for directional-light placement;
-    // the camera's framing has its own clamp inside
-    // `OrbitCamera::framing_for_aabb`. Single-point degenerate AABBs
-    // and very small bboxes would otherwise place the light below the
-    // visible-on-screen floor; clamp to 1.0 so it stays useful.
-    let diagonal = (aabb.diagonal() as f32).max(1.0);
-
-    // Orbit camera framed corner-on at 1.5 × diagonal, matching commit 3's
-    // static placeholder pose. `framing_for_aabb` mirrors the up-axis swap
-    // so the camera target tracks the rendered geometry's center.
-    let orbit = OrbitCamera::framing_for_aabb(&aabb, *up);
-    let mut transform = Transform::default();
-    orbit.apply_to_transform(&mut transform);
-    commands.spawn((Camera3d::default(), orbit, transform));
-
-    // Strong directional key light + bright global ambient so geometry
-    // stays readable in the geometry-only path. Bevy 0.18: `AmbientLight`
-    // is now per-camera; world-wide ambient is `GlobalAmbientLight`
-    // (sim-bevy `scene.rs:101` precedent).
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12_000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_translation(center_bevy + Vec3::new(diagonal, diagonal * 2.0, diagonal))
-            .looking_at(center_bevy, Vec3::Y),
-    ));
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 1_200.0,
-        ..default()
-    });
+    setup_camera_and_lighting(&mut commands, &aabb, *up);
 }
 
 /// Despawn-and-respawn the geometry whenever [`Selection`] changes (also

@@ -32,11 +32,18 @@ use crate::ui::{ColormapOverride, Selection};
     long_about = None,
 )]
 pub struct Cli {
-    /// Path to a PLY file, or a directory of `*_step_<digits>.ply` frames.
-    /// Directory input loads the lex-first frame and enables keyboard
-    /// frame navigation (`←` / `→` step, `Home` / `End` first/last);
-    /// the in-window scrub timeline + play/pause/loop UI is D2 in
-    /// `docs/SIM_SOFT_ROADMAP.md` Track D.
+    /// Path to a single PLY or STL file, or a directory containing
+    /// either `*_step_<digits>.ply` frames (sim-soft animation) or
+    /// `*.stl` files (cf-cast piece-by-piece visual review).
+    ///
+    /// Directory dispatch: PLY-sequence detection runs first; if no
+    /// PLY frames match, falls back to lex-sorted `*.stl` files.
+    /// Both modes use the same scrub UI to step through the
+    /// frames/pieces; STL mode has no temporal meaning but reuses
+    /// the keyboard/play/loop controls for piece selection.
+    ///
+    /// Single-file dispatch: extension-based — `.stl` (case-insensitive)
+    /// → STL load, anything else → PLY.
     pub path: PathBuf,
 
     /// Pre-select a per-vertex scalar by name. The name must match a key
@@ -56,6 +63,17 @@ pub struct Cli {
     /// runtime-overridable — geometry is mapped to Bevy-Y-up at load.
     #[arg(long, value_enum, default_value = "+Z")]
     pub up: UpAxisArg,
+
+    /// **Assembly mode** — for a directory of `*.stl` files, spawn ALL
+    /// of them in the scene at their world-coordinate positions
+    /// (instead of the default scrub-through-one-at-a-time STL
+    /// sequence). Each piece gets a distinct color + a visibility
+    /// toggle in the side panel. Use this for cf-cast assembly-fit
+    /// verification ("does the plug actually sit inside the cavity
+    /// formed by piece_0 + piece_1?"). Ignored for PLY-sequence
+    /// inputs.
+    #[arg(long, default_value_t = false)]
+    pub assembly: bool,
 }
 
 /// CLI-side mirror of [`ColormapOverride`]. Keeps the `clap`-derived
@@ -239,6 +257,7 @@ mod tests {
             scalar: scalar.map(str::to_string),
             colormap,
             up: UpAxisArg::PlusZ,
+            assembly: false,
         }
     }
 

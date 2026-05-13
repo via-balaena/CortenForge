@@ -135,7 +135,8 @@ mod tests {
         // axis-aligned at zero.
         let cuboid = Solid::cuboid(Vector3::new(0.005, 0.005, 0.005))
             .translate(Vector3::new(0.020, 0.0, 0.0));
-        let mesh = solid_to_mm_mesh(&cuboid, 0.001, CastTarget::Plug).unwrap();
+        let mesh =
+            solid_to_mm_mesh(&cuboid, 0.001, CastTarget::Plug { layer_index: None }).unwrap();
         assert!(!mesh.vertices.is_empty());
         // Translated by +20 mm in x; vertices should lie roughly at
         // x ∈ [15, 25] mm (5 mm half-extent + cell padding).

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use mesh_io::IoError;
 
+use crate::ribbon::PieceSide;
+
 /// Identifies which geometry or output mesh a [`CastError`] refers to.
 ///
 /// Carries the layer index for per-layer targets so multi-layer
@@ -19,16 +21,34 @@ pub enum CastTarget {
         layer_index: usize,
     },
     /// Output mesh: a per-layer mold cup. Indexed parallel to
-    /// `CastSpec::layers`.
+    /// `CastSpec::layers`. Used by v1's single-piece
+    /// [`crate::CastSpec::export_molds`] pipeline.
     Mold {
         /// Index into `CastSpec::layers`.
         layer_index: usize,
     },
+    /// Output mesh: one of the two v2 curve-following mold pieces for
+    /// a given layer. Used by v2's
+    /// [`crate::CastSpec::export_molds_v2`] pipeline.
+    MoldPiece {
+        /// Index into `CastSpec::layers`.
+        layer_index: usize,
+        /// Which side of the ribbon split surface this piece occupies.
+        piece_side: PieceSide,
+    },
     /// Input geometry: the shared `CastSpec::bounding_region`.
     BoundingRegion,
-    /// Input geometry / output mesh: the shared `CastSpec::plug` used
-    /// by the innermost cast.
-    Plug,
+    /// Input geometry / output mesh: a per-layer plug. v1 + v2-pre-2.1
+    /// shared one plug across the cast; v2.1 sub-leaf 2 ships one
+    /// plug per layer for detachable-shell assembly. `layer_index` is
+    /// `None` for v1's single-plug pipeline and `Some(N)` for v2's
+    /// per-layer plug derived from `CastSpec::plug` (`N = 0`) or
+    /// `layers[N - 1].body` (`N > 0`).
+    Plug {
+        /// Layer index for v2's per-layer plug; `None` for v1's
+        /// single shared plug.
+        layer_index: Option<usize>,
+    },
 }
 
 impl fmt::Display for CastTarget {
@@ -36,8 +56,15 @@ impl fmt::Display for CastTarget {
         match self {
             Self::LayerBody { layer_index } => write!(f, "layer {layer_index} body"),
             Self::Mold { layer_index } => write!(f, "mold layer {layer_index}"),
+            Self::MoldPiece {
+                layer_index,
+                piece_side,
+            } => write!(f, "mold layer {layer_index} piece {piece_side:?}"),
             Self::BoundingRegion => write!(f, "bounding region"),
-            Self::Plug => write!(f, "plug"),
+            Self::Plug { layer_index: None } => write!(f, "plug"),
+            Self::Plug {
+                layer_index: Some(n),
+            } => write!(f, "plug layer {n}"),
         }
     }
 }
@@ -96,6 +123,33 @@ pub enum CastError {
         /// Underlying [`IoError`] from `mesh-io`.
         #[source]
         source: IoError,
+    },
+
+    /// The v2 centerline polyline curves more sharply than v2's 2-piece
+    /// mold can demold. Per
+    /// `docs/CURVE_FOLLOWING_DESIGN.md` §"Piece count selection":
+    /// max tangent rotation `> 120°` refuses with this error;
+    /// the user must split the scan upstream (3+-piece molds are v3
+    /// scope).
+    ///
+    /// Fires at the top of
+    /// [`crate::CastSpec::export_molds_v2`] before any meshing —
+    /// pre-write atomicity is preserved.
+    #[error(
+        "centerline max tangent rotation {max_rotation_rad:.4} rad ({max_rotation_deg:.1}°) \
+         exceeds v2 2-piece threshold {threshold_rad:.4} rad ({threshold_deg:.1}°); \
+         split the scan upstream or wait for v3 multi-piece molds"
+    )]
+    CenterlineTooCurved {
+        /// Maximum tangent rotation observed in the centerline
+        /// (radians; sourced from [`crate::Ribbon::max_tangent_rotation_rad`]).
+        max_rotation_rad: f64,
+        /// Same value in degrees for human-readable error display.
+        max_rotation_deg: f64,
+        /// The v2 refusal threshold (`2π/3` rad = 120°).
+        threshold_rad: f64,
+        /// Same in degrees.
+        threshold_deg: f64,
     },
 
     /// A layer's computed pour mass exceeds the per-pour
