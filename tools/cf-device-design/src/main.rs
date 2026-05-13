@@ -627,6 +627,46 @@ fn compute_scan_local_radii(
     max_radii
 }
 
+/// Half-window for smoothing the per-centerline-point scan-local
+/// radii across centerline buckets. `W = 3` averages each radius
+/// with up to 3 neighbors on each side (a 7-point moving average),
+/// diluting single-vertex spikes by ~1/7 of their original
+/// magnitude. Buckets near the centerline endpoints automatically
+/// shrink the effective window (clamped to the polyline range).
+///
+/// Tuned after iter-1 visual review "overfits/overreacts to a bump
+/// on the head of the dome": a single noisy vertex at the scan's
+/// dome inflated the endpoint bucket's max-perpendicular-distance,
+/// which then dictated the cap equatorial radius. 7-point smoothing
+/// reduces the spike to ~14 % of its original height — visually
+/// negligible while preserving the scan's gross shape.
+const RADII_SMOOTHING_HALF_WINDOW: usize = 3;
+
+/// Smooth the per-centerline scan-local radii with a moving-average
+/// filter across centerline-bucket indices. Reduces the impact of
+/// single-vertex outliers that would otherwise blow out an entire
+/// ring's radius (and, at endpoints, the cap's equatorial radius).
+///
+/// Window: `2 * RADII_SMOOTHING_HALF_WINDOW + 1` centerline points,
+/// clamped to the polyline range at endpoints. Returns a Vec of the
+/// same length as the input.
+fn smooth_scan_local_radii(radii: &[f64]) -> Vec<f64> {
+    if radii.is_empty() {
+        return Vec::new();
+    }
+    let n = radii.len();
+    let mut smoothed = Vec::with_capacity(n);
+    for i in 0..n {
+        let lo = i.saturating_sub(RADII_SMOOTHING_HALF_WINDOW);
+        let hi = (i + RADII_SMOOTHING_HALF_WINDOW + 1).min(n);
+        #[allow(clippy::cast_precision_loss)] // window size fits in f64.
+        let count = (hi - lo) as f64;
+        let sum: f64 = radii[lo..hi].iter().sum();
+        smoothed.push(sum / count);
+    }
+    smoothed
+}
+
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn setup_render_scene(
     mut commands: Commands,
@@ -1148,10 +1188,13 @@ fn run_render_app(
         bases: compute_centerline_bases(&centerline_points),
     };
     // Compute the scan's local cross-section radii at each centerline
-    // polyline point. One-time cost at startup; the wireframe ring
-    // radii are derived from this every frame.
+    // polyline point, then smooth across buckets to dilute single-
+    // vertex spikes (e.g. a noisy dome apex inflating the endpoint's
+    // ring → cap radius). One-time cost at startup; the wireframe
+    // ring radii are derived from the smoothed values every frame.
+    let raw_radii = compute_scan_local_radii(&centerline_points, &scan_mesh);
     let scan_radii = ScanLocalRadii {
-        radii_m: compute_scan_local_radii(&centerline_points, &scan_mesh),
+        radii_m: smooth_scan_local_radii(&raw_radii),
     };
     let outer_envelope = OuterEnvelopeState::default_for_scan();
 
@@ -1582,6 +1625,54 @@ another_future_field = "foo"
             "got radii[1] = {}",
             radii[1]
         );
+    }
+
+    #[test]
+    fn smooth_scan_local_radii_dilutes_single_spike() {
+        // Spike at index 3 (height 0.040 amid a flat 0.020 sequence).
+        // 7-point average (W = 3) at index 3: average of indices
+        // [0, 1, 2, 3, 4, 5, 6] = (0.020 * 6 + 0.040) / 7 ≈ 0.0229.
+        // Spike is reduced from 0.040 → 0.0229 (~43 % of original
+        // above the baseline).
+        let radii = vec![0.020, 0.020, 0.020, 0.040, 0.020, 0.020, 0.020];
+        let smoothed = smooth_scan_local_radii(&radii);
+        assert_eq!(smoothed.len(), 7);
+        let expected_at_spike = (0.020 * 6.0 + 0.040) / 7.0;
+        assert!(
+            approx_eq(smoothed[3], expected_at_spike, 1e-9),
+            "got {}, expected {}",
+            smoothed[3],
+            expected_at_spike,
+        );
+    }
+
+    #[test]
+    fn smooth_scan_local_radii_preserves_uniform_input() {
+        let radii = vec![0.025; 10];
+        let smoothed = smooth_scan_local_radii(&radii);
+        for s in &smoothed {
+            assert!(approx_eq(*s, 0.025, 1e-12));
+        }
+    }
+
+    #[test]
+    fn smooth_scan_local_radii_handles_endpoint_clamping() {
+        // At index 0 with W = 3, the window clamps to [0, 4)
+        // (4 values, not 7). Average of input[0..4].
+        let radii = vec![0.010, 0.020, 0.030, 0.040, 0.050, 0.050, 0.050];
+        let smoothed = smooth_scan_local_radii(&radii);
+        let expected_at_0 = (0.010 + 0.020 + 0.030 + 0.040) / 4.0;
+        assert!(
+            approx_eq(smoothed[0], expected_at_0, 1e-9),
+            "got {}, expected {}",
+            smoothed[0],
+            expected_at_0,
+        );
+    }
+
+    #[test]
+    fn smooth_scan_local_radii_empty_input_returns_empty() {
+        assert!(smooth_scan_local_radii(&[]).is_empty());
     }
 
     #[test]
