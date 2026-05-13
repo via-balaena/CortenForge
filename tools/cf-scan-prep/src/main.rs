@@ -48,9 +48,9 @@ use cf_viewer::{
 use clap::{Parser, ValueEnum};
 use mesh_io::load_stl;
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use mesh_types::{Bounded, IndexedMesh};
+use mesh_types::{Aabb, Bounded, IndexedMesh};
 use meshopt::{SimplifyOptions, simplify_decoder};
-use nalgebra::UnitQuaternion;
+use nalgebra::{UnitQuaternion, Vector3};
 
 /// Cast-frame up-axis convention: `+Z` is the demolding direction
 /// (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home). All
@@ -375,6 +375,88 @@ impl ReorientState {
     }
 }
 
+/// Recenter panel state (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §4). Three independent translation components in
+/// **physics-frame millimeters** — mm for display + workshop-convention
+/// consistency, physics-frame because the saved STL (commit #12) bakes
+/// the translation into vertex positions directly (without an up-axis
+/// swap).
+///
+/// The `[Center origin]` and `[Floor -> z=0]` buttons compute their
+/// effects at click time using the current `ReorientState` quaternion
+/// applied to the raw scan AABB corners — so the centering is correct
+/// for the rotated mesh, not the unrotated one. If the user changes
+/// rotation after clicking, the centering becomes stale; they re-click
+/// to re-center. Spec calls them buttons (not continuous behaviors).
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct RecenterState {
+    /// Physics-frame +X translation in mm.
+    tx_mm: f64,
+    /// Physics-frame +Y translation in mm.
+    ty_mm: f64,
+    /// Physics-frame +Z translation in mm.
+    tz_mm: f64,
+}
+
+impl Default for RecenterState {
+    fn default() -> Self {
+        Self {
+            tx_mm: 0.0,
+            ty_mm: 0.0,
+            tz_mm: 0.0,
+        }
+    }
+}
+
+impl RecenterState {
+    /// Project the physics-frame mm translation into a Bevy-world-space
+    /// `Vec3`. Applies the `UpAxis::PlusZ` swap (physics `(x, y, z)` →
+    /// bevy `(x, z, y)`) and the `render_scale` lift in one step so
+    /// `apply_recenter_to_transform` can write the result directly to
+    /// `Transform.translation`.
+    fn translation_world(self, up: UpAxis, render_scale: f32) -> Vec3 {
+        let translation_m =
+            mesh_types::Point3::new(self.tx_mm * 0.001, self.ty_mm * 0.001, self.tz_mm * 0.001);
+        Vec3::from_array(up.to_bevy_point(&translation_m)) * render_scale
+    }
+}
+
+/// Compute the **post-Reorient** AABB of the raw scan AABB in
+/// physics-frame **millimeters**. Used by the Recenter panel's
+/// `[Center origin]` and `[Floor -> z=0]` click handlers to figure out
+/// where the rotated mesh actually sits in space.
+///
+/// Walks the 8 corners of the raw AABB, rotates each by `rot_physics`
+/// (no translation applied — translation is what we're trying to
+/// compute), and accumulates the rotated min/max. Returns mm bounds
+/// because the Recenter sliders + status messages all work in mm
+/// (workshop convention; matches the Scan Info panel's AABB display
+/// units).
+fn rotated_aabb_physics_mm(
+    rot_physics: UnitQuaternion<f64>,
+    raw_aabb_m: &Aabb,
+) -> (Vector3<f64>, Vector3<f64>) {
+    let lo = raw_aabb_m.min;
+    let hi = raw_aabb_m.max;
+    let mut min_mm = Vector3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut max_mm = Vector3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &x in &[lo.x, hi.x] {
+        for &y in &[lo.y, hi.y] {
+            for &z in &[lo.z, hi.z] {
+                let corner_mm = Vector3::new(x * 1000.0, y * 1000.0, z * 1000.0);
+                let rotated = rot_physics.transform_vector(&corner_mm);
+                min_mm.x = min_mm.x.min(rotated.x);
+                min_mm.y = min_mm.y.min(rotated.y);
+                min_mm.z = min_mm.z.min(rotated.z);
+                max_mm.x = max_mm.x.max(rotated.x);
+                max_mm.y = max_mm.y.max(rotated.y);
+                max_mm.z = max_mm.z.max(rotated.z);
+            }
+        }
+    }
+    (min_mm, max_mm)
+}
+
 /// Pre-computed always-on viewport overlay geometry, cached at startup
 /// (`docs/SCAN_PREP_DESIGN.md` §Visualization layer). Combines:
 ///
@@ -410,6 +492,18 @@ struct OverlayLengths {
     /// draws a unit cube and the Transform stretches it to the bbox
     /// extents.
     bbox_dims_bevy: Vec3,
+    /// Raw scan AABB in physics meters (post unit conversion, pre
+    /// `render_scale` lift, pre up-axis swap). Cached so the Recenter
+    /// panel's `[Center origin]` / `[Floor -> z=0]` click handlers
+    /// can compute the post-Reorient bbox bounds without re-walking
+    /// the 10M-vertex scan on every click.
+    raw_aabb_m: Aabb,
+    /// Per-axis slider range for the Recenter panel, in millimeters
+    /// (`±2 × max(raw_aabb)` per spec §Panel specifications §4).
+    /// Scan-derived because the slider's "reasonable" extent depends
+    /// on the scan's own size — a 130 mm-tall scan wants ~±260 mm
+    /// slack to recenter freely; a 1 m-tall body part wants ~±2000 mm.
+    recenter_slider_range_mm: f64,
 }
 
 /// Convert a physics-frame rotation quaternion to the Bevy-frame
@@ -637,22 +731,25 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         .insert_resource(scan_info)
         .insert_resource(SimplifyState::default())
         .insert_resource(ReorientState::default())
+        .insert_resource(RecenterState::default())
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
         // Apply/Reset handler runs before auto-clear so a newly-set
         // status's TTL is checked against the same tick's `Time`.
-        // `apply_reorient_to_transform` is idempotent (no-op when
-        // the desired Bevy rotation already matches the entity's
-        // current rotation) so order vs. the others doesn't change
-        // steady-state behavior; Bevy's scheduler serializes it with
-        // `handle_simplify_actions` automatically because both touch
-        // `ScanMeshEntity`-marked entity Transforms.
+        // `apply_reorient_to_transform` + `apply_recenter_to_transform`
+        // are idempotent (no-op when the desired Bevy rotation /
+        // translation already match the entity's current Transform)
+        // so order vs. the others doesn't change steady-state
+        // behavior. Both write to disjoint channels (rotation /
+        // translation) of the same component, so they're conflict-free
+        // beyond the Bevy scheduler's per-entity serialization.
         .add_systems(
             Update,
             (
                 handle_simplify_actions,
                 apply_reorient_to_transform,
+                apply_recenter_to_transform,
                 auto_clear_status,
                 draw_reference_overlays,
                 exit_on_esc,
@@ -692,10 +789,23 @@ fn build_overlay_lengths(scan: &IndexedMesh, render_scale: f32, up: UpAxis) -> O
 
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
     let scaled_diagonal = scaled_aabb.diagonal() as f32;
+
+    // Spec §Panel specifications §4: Recenter sliders run from
+    // `-2 × max(raw_aabb)` to `+2 × max(raw_aabb)` in mm. Multiplying
+    // by 1000 converts the raw meter extent to mm; the larger of the
+    // three axis extents bounds the slider so even the longest axis
+    // has comfortable +/- slack.
+    let raw_dx_mm = (raw_aabb.max.x - raw_aabb.min.x) * 1000.0;
+    let raw_dy_mm = (raw_aabb.max.y - raw_aabb.min.y) * 1000.0;
+    let raw_dz_mm = (raw_aabb.max.z - raw_aabb.min.z) * 1000.0;
+    let recenter_slider_range_mm = 2.0 * raw_dx_mm.max(raw_dy_mm).max(raw_dz_mm);
+
     OverlayLengths {
         arrow_length: scaled_diagonal * 0.6,
         bbox_center_bevy: center_bevy,
         bbox_dims_bevy: dims_bevy,
+        raw_aabb_m: raw_aabb,
+        recenter_slider_range_mm,
     }
 }
 
@@ -944,6 +1054,33 @@ fn apply_reorient_to_transform(
     }
 }
 
+/// Update system: project the current `RecenterState` translation onto
+/// the `ScanMeshEntity`'s Bevy `Transform.translation` every tick.
+/// Mirror of [`apply_reorient_to_transform`] for the translation
+/// channel — same idempotent equality-check pattern; same automatic
+/// re-application after `handle_simplify_actions` respawns the entity
+/// with identity Transform.
+///
+/// Bevy's `Transform` composes as `world_pos = translation +
+/// rotation * (local_pos * scale)`, so this system writing
+/// `translation` while [`apply_reorient_to_transform`] writes
+/// `rotation` is conflict-free — the two channels compose into the
+/// final world transform without either overwriting the other.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn apply_recenter_to_transform(
+    state: Res<RecenterState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut entities: Query<&mut Transform, With<ScanMeshEntity>>,
+) {
+    let target = state.translation_world(*up, render_scale.0);
+    for mut transform in &mut entities {
+        if transform.translation != target {
+            transform.translation = target;
+        }
+    }
+}
+
 /// Update system: draw the always-on viewport reference overlays each
 /// frame (`docs/SCAN_PREP_DESIGN.md` §Visualization layer).
 ///
@@ -975,7 +1112,10 @@ fn apply_reorient_to_transform(
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn draw_reference_overlays(
     overlays: Res<OverlayLengths>,
-    state: Res<ReorientState>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
 ) {
     let l = overlays.arrow_length;
@@ -989,10 +1129,14 @@ fn draw_reference_overlays(
     // swap maps physics +Z to Bevy +Y (screen up).
     gizmos.arrow(Vec3::ZERO, Vec3::Y * l, Color::srgb(0.40, 0.60, 1.00));
 
-    // Rotated bbox wireframe — follows the live Reorient quaternion.
-    let rotation = physics_quat_to_bevy_for_plus_z(state.quaternion_physics());
+    // Transformed bbox wireframe — composes the live Reorient rotation
+    // + Recenter translation in the same `translation + rotation × ...`
+    // order that Bevy uses for `ScanMeshEntity.Transform`, so the
+    // wireframe stays glued to the mesh through both panels' edits.
+    let rotation = physics_quat_to_bevy_for_plus_z(reorient.quaternion_physics());
+    let recenter_world = recenter.translation_world(*up, render_scale.0);
     let wireframe_transform = Transform {
-        translation: rotation * overlays.bbox_center_bevy,
+        translation: recenter_world + rotation * overlays.bbox_center_bevy,
         rotation,
         scale: overlays.bbox_dims_bevy,
     };
@@ -1085,11 +1229,14 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 // `EguiContexts::ctx_mut()?` short-circuit returns `BevyError` not
 // `anyhow::Error`.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+#[allow(clippy::too_many_arguments)] // egui panel sees one ResMut per panel section.
 fn scan_prep_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
+    overlays: Res<OverlayLengths>,
     mut simplify_state: ResMut<SimplifyState>,
     mut reorient_state: ResMut<ReorientState>,
+    mut recenter_state: ResMut<RecenterState>,
     status: Res<StatusBar>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -1105,6 +1252,7 @@ fn scan_prep_panel(
             render_scan_info_section(ui, &info);
             render_simplify_section(ui, &info, &mut simplify_state);
             render_reorient_section(ui, &mut reorient_state);
+            render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
         });
     Ok(())
 }
@@ -1259,6 +1407,54 @@ fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState) {
                 "q (w,x,y,z) = ({:+.3}, {:+.3}, {:+.3}, {:+.3})",
                 q.w, q.i, q.j, q.k,
             ));
+        });
+}
+
+/// `Recenter` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications
+/// §4). Three translation sliders (mm, range `±2 × max(raw_aabb)`
+/// per-scan) + `[Center origin]`, `[Floor -> z=0]`, `[Reset
+/// translation]` buttons.
+///
+/// **Click-time math for `[Center origin]` and `[Floor -> z=0]`**:
+/// both use the current `ReorientState` quaternion to figure out where
+/// the rotated bbox actually sits, then set the slider values so the
+/// rotated mesh lands at its target position. The center / floor stays
+/// frozen at the click-time configuration — if the user changes
+/// Reorient afterwards, the centering becomes stale and they re-click
+/// to re-center. Spec confirms these are buttons (discrete events) not
+/// continuous behaviors.
+fn render_recenter_section(
+    ui: &mut egui::Ui,
+    state: &mut RecenterState,
+    reorient: &ReorientState,
+    overlays: &OverlayLengths,
+) {
+    egui::CollapsingHeader::new("Recenter")
+        .default_open(true)
+        .show(ui, |ui| {
+            let range = overlays.recenter_slider_range_mm;
+            ui.add(egui::Slider::new(&mut state.tx_mm, -range..=range).text("X (mm)"));
+            ui.add(egui::Slider::new(&mut state.ty_mm, -range..=range).text("Y (mm)"));
+            ui.add(egui::Slider::new(&mut state.tz_mm, -range..=range).text("Z (mm)"));
+
+            ui.add_space(4.0);
+            if ui.button("Center origin").clicked() {
+                let (min_mm, max_mm) =
+                    rotated_aabb_physics_mm(reorient.quaternion_physics(), &overlays.raw_aabb_m);
+                state.tx_mm = -0.5 * (min_mm.x + max_mm.x);
+                state.ty_mm = -0.5 * (min_mm.y + max_mm.y);
+                state.tz_mm = -0.5 * (min_mm.z + max_mm.z);
+            }
+            if ui.button("Floor -> z=0").clicked() {
+                let (min_mm, _max_mm) =
+                    rotated_aabb_physics_mm(reorient.quaternion_physics(), &overlays.raw_aabb_m);
+                state.tz_mm = -min_mm.z;
+            }
+
+            ui.add_space(4.0);
+            if ui.button("Reset translation").clicked() {
+                *state = RecenterState::default();
+            }
         });
 }
 
@@ -1711,6 +1907,94 @@ mod tests {
         assert!((q_bevy.z - expected_pos_sin).abs() < 1e-6);
     }
 
+    // ----- RecenterState + rotated_aabb_physics_mm -------------------
+
+    /// Default state is all-zeros (no translation). Pinned because
+    /// changing the default would silently translate every loaded
+    /// scan from the moment of load.
+    #[test]
+    fn recenter_state_default_is_zero() {
+        let state = RecenterState::default();
+        assert_eq!(state.tx_mm, 0.0);
+        assert_eq!(state.ty_mm, 0.0);
+        assert_eq!(state.tz_mm, 0.0);
+    }
+
+    /// `translation_world` applies the `UpAxis::PlusZ` swap (physics
+    /// `(x, y, z)` → bevy `(x, z, y)`) and the render_scale lift in
+    /// one step. Pinned because both transforms are easy to drift
+    /// silently (e.g., forget to swap Y/Z, or forget render_scale).
+    #[test]
+    fn recenter_translation_world_swaps_and_scales() {
+        let state = RecenterState {
+            tx_mm: 100.0, // 0.1 m physics +X
+            ty_mm: 200.0, // 0.2 m physics +Y
+            tz_mm: 300.0, // 0.3 m physics +Z
+        };
+        // render_scale = 10 → 0.1 m × 10 = 1.0 world units.
+        let world = state.translation_world(UpAxis::PlusZ, 10.0);
+        // Physics +X → Bevy +X.
+        assert!((world.x - 1.0).abs() < 1e-5);
+        // Physics +Y → Bevy +Z.
+        assert!((world.z - 2.0).abs() < 1e-5);
+        // Physics +Z → Bevy +Y.
+        assert!((world.y - 3.0).abs() < 1e-5);
+    }
+
+    /// Identity rotation: `rotated_aabb_physics_mm` returns the raw
+    /// AABB scaled to mm with no axis permutation.
+    #[test]
+    fn rotated_aabb_identity_preserves_bounds_in_mm() {
+        let raw = Aabb::from_corners(
+            mesh_types::Point3::new(-0.05, -0.10, -0.15),
+            mesh_types::Point3::new(0.05, 0.10, 0.15),
+        );
+        let (min_mm, max_mm) = rotated_aabb_physics_mm(UnitQuaternion::identity(), &raw);
+
+        assert!((min_mm.x + 50.0).abs() < 1e-9);
+        assert!((min_mm.y + 100.0).abs() < 1e-9);
+        assert!((min_mm.z + 150.0).abs() < 1e-9);
+        assert!((max_mm.x - 50.0).abs() < 1e-9);
+        assert!((max_mm.y - 100.0).abs() < 1e-9);
+        assert!((max_mm.z - 150.0).abs() < 1e-9);
+    }
+
+    /// 90° rotation about physics X axis: physics +Y becomes physics
+    /// +Z; physics +Z becomes physics -Y. The rotated bbox's
+    /// Y-extent equals the original Z-extent and vice-versa (signs
+    /// shift accordingly). Test load: `(±0.05, ±0.10, ±0.15)` (mm:
+    /// `±50, ±100, ±150`) rotated `+90°` about X:
+    ///
+    /// - X unchanged → `±50` mm.
+    /// - Original Y `±100` becomes... actually the +90°-about-X
+    ///   rotation maps `(0, 1, 0) -> (0, 0, 1)` and
+    ///   `(0, 0, 1) -> (0, -1, 0)`. So the rotated bbox's Y range
+    ///   is `±150` (= original Z range), and the rotated Z range is
+    ///   `±100` (= original Y range).
+    #[test]
+    fn rotated_aabb_90deg_about_x_swaps_y_z_extents() {
+        let raw = Aabb::from_corners(
+            mesh_types::Point3::new(-0.05, -0.10, -0.15),
+            mesh_types::Point3::new(0.05, 0.10, 0.15),
+        );
+        let rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::x_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let (min_mm, max_mm) = rotated_aabb_physics_mm(rot, &raw);
+
+        // X unchanged.
+        assert!((min_mm.x + 50.0).abs() < 1e-6);
+        assert!((max_mm.x - 50.0).abs() < 1e-6);
+        // Y now spans `±150` (was Z).
+        assert!((min_mm.y + 150.0).abs() < 1e-6);
+        assert!((max_mm.y - 150.0).abs() < 1e-6);
+        // Z now spans `±100` (was Y, sign-flipped by the +90° rotation
+        // but symmetric bbox -> same bounds).
+        assert!((min_mm.z + 100.0).abs() < 1e-6);
+        assert!((max_mm.z - 100.0).abs() < 1e-6);
+    }
+
     // ----- build_overlay_lengths -------------------------------------
 
     /// `build_overlay_lengths` derives the axis arrow length from the
@@ -1751,6 +2035,17 @@ mod tests {
             (overlays.arrow_length - expected).abs() < 1e-5,
             "arrow_length {} should match 0.6 × scaled diagonal {expected}",
             overlays.arrow_length,
+        );
+
+        // Raw AABB cached in physics meters (no swap, no scale).
+        assert!((overlays.raw_aabb_m.min.z - 0.0).abs() < 1e-9);
+        assert!((overlays.raw_aabb_m.max.z - 0.3).abs() < 1e-9);
+
+        // Slider range = 2 × max raw dim = 2 × 0.3 m × 1000 = 600 mm.
+        assert!(
+            (overlays.recenter_slider_range_mm - 600.0).abs() < 1e-6,
+            "recenter_slider_range_mm {} should match 2 × 300 mm",
+            overlays.recenter_slider_range_mm,
         );
     }
 
