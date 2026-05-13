@@ -573,22 +573,39 @@ fn scan_extent_past_endpoint(
     max_extent
 }
 
+/// Percentile of the per-bucket perpendicular-distance distribution
+/// used as the bucket's "scan radius." 0.95 = 95th percentile —
+/// excludes the top 5 % of distances per bucket, which naturally
+/// rejects single-vertex spikes from scan noise. For a typical
+/// per-bucket population of ~300 K vertices, the top 5 % is ~15 K
+/// vertices, so spikes from hundreds-to-thousands of noisy vertices
+/// get filtered; real anatomical features (tens of thousands of
+/// vertices) survive.
+///
+/// Iter-1 visual review surfaced this: per-bucket MAX inflated the
+/// dome's cap region whenever a single noisy vertex stood out. 95th
+/// percentile + cross-bucket smoothing together yield a smooth
+/// envelope that tracks the scan's gross shape without overreacting.
+const RADII_BUCKET_PERCENTILE: f64 = 0.95;
+
 /// Compute the scan's local cross-section radius at each centerline
 /// polyline point. For each scan vertex, find the closest centerline
-/// point, compute the perpendicular distance from that vertex to the
-/// centerline tangent line at that point, and update the running max
-/// for that centerline-point bucket. Returns one max-radial-distance
-/// per centerline point.
+/// point and compute the perpendicular distance to the centerline
+/// tangent line at that point. Per-bucket statistic: the
+/// [`RADII_BUCKET_PERCENTILE`]-th percentile (95th by default) of
+/// the distances collected for that bucket.
 ///
-/// Cost: O(N_vertices × N_centerline). For the iter-1 fixture (10 M
-/// vertices × 30 centerline points = 300 M ops) this runs in ~3 s at
-/// startup. Acceptable for a one-time cost; can be sped up via
-/// spatial-bucket indexing if profiling shows it's a hot spot.
+/// Cost: O(N_vertices × N_centerline) for the bucket-assignment +
+/// distance computation + a sort of each bucket. For the iter-1
+/// fixture (10 M vertices × 30 centerline points; ~333 K per bucket)
+/// this runs in ~3–4 s at startup. One-time; results cached.
+///
+/// Memory: O(N_vertices) for the per-bucket distance Vecs (~80 MB
+/// peak on iter-1 at f64). Freed once the percentile is extracted.
 ///
 /// Used by [`draw_outer_envelope_overlay`] (slice 3 polish 7) to
 /// snap the envelope wireframe to the scan's actual outer surface
-/// at every cross-section + a uniform clearance. Replaces the prior
-/// heuristic constant-radius capsule.
+/// at every cross-section + a uniform clearance.
 fn compute_scan_local_radii(
     centerline_points: &[Point3<f64>],
     scan_mesh: &IndexedMesh,
@@ -597,7 +614,7 @@ fn compute_scan_local_radii(
         return Vec::new();
     }
     let n = centerline_points.len();
-    let mut max_radii = vec![0.0_f64; n];
+    let mut bucket_distances: Vec<Vec<f64>> = vec![Vec::new(); n];
     for vertex in &scan_mesh.vertices {
         // Find closest centerline polyline point (Euclidean
         // distance; linear search across ~30 points).
@@ -612,19 +629,32 @@ fn compute_scan_local_radii(
             }
         }
         // Perpendicular distance from the vertex to the centerline
-        // tangent line at the closest centerline point. Project
-        // vertex-to-anchor onto the tangent; the residual is the
-        // perpendicular component.
+        // tangent line at the closest centerline point.
         let tangent = local_tangent(centerline_points, best_i);
         let diff = vertex.coords - centerline_points[best_i].coords;
         let parallel = diff.dot(&tangent);
         let perp_sq = diff.norm_squared() - parallel * parallel;
         let perp = perp_sq.max(0.0).sqrt();
-        if perp > max_radii[best_i] {
-            max_radii[best_i] = perp;
-        }
+        bucket_distances[best_i].push(perp);
     }
-    max_radii
+    // Per-bucket percentile: sort the distances and pick the
+    // RADII_BUCKET_PERCENTILE-th entry. Single-vertex outliers
+    // beyond that percentile are excluded, smoothing real noise
+    // without smearing genuine wide features (which involve many
+    // more vertices than the top-percentile cut).
+    let mut radii = Vec::with_capacity(n);
+    for bucket in &mut bucket_distances {
+        if bucket.is_empty() {
+            radii.push(0.0);
+            continue;
+        }
+        bucket.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        // Bucket sizes are well under 2^53; precision is fine.
+        let idx = ((bucket.len() - 1) as f64 * RADII_BUCKET_PERCENTILE) as usize;
+        radii.push(bucket[idx]);
+    }
+    radii
 }
 
 /// Half-window for smoothing the per-centerline-point scan-local
@@ -1673,6 +1703,37 @@ another_future_field = "foo"
     #[test]
     fn smooth_scan_local_radii_empty_input_returns_empty() {
         assert!(smooth_scan_local_radii(&[]).is_empty());
+    }
+
+    #[test]
+    fn compute_scan_local_radii_percentile_rejects_single_outlier() {
+        // 1 noisy outlier vertex at (1.0, 0, 0) (radial = 1 m) vs
+        // 100 normal vertices on a ring at radius 0.030. With
+        // RADII_BUCKET_PERCENTILE = 0.95, the top 5 % of 101
+        // distances = ~5 entries from the top — but only 1 entry is
+        // the 1m outlier, so the 95th percentile lands at one of
+        // the 0.030 normals.
+        let mut m = IndexedMesh::new();
+        for theta in 0..100 {
+            #[allow(clippy::cast_precision_loss)]
+            let angle = (theta as f64) * std::f64::consts::TAU / 100.0;
+            m.vertices
+                .push(Point3::new(0.030 * angle.cos(), 0.030 * angle.sin(), 0.0));
+        }
+        m.vertices.push(Point3::new(1.0, 0.0, 0.0)); // outlier
+        let pts = vec![
+            Point3::new(0.0, 0.0, -0.001),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.001),
+        ];
+        let radii = compute_scan_local_radii(&pts, &m);
+        // All 101 vertices are closest to centerline point [1]
+        // (z = 0). Its 95th percentile excludes the outlier.
+        assert!(
+            approx_eq(radii[1], 0.030, 1e-6),
+            "got radii[1] = {} (expected ~0.030 m, outlier rejected)",
+            radii[1],
+        );
     }
 
     #[test]
