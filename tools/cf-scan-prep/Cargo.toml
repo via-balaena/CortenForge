@@ -46,6 +46,11 @@ mesh-repair = { workspace = true }
 # pinned so the downstream Cap panel (commit #9) sees the same loop
 # topology.
 meshopt = { workspace = true }
+# `UnitQuaternion<f64>` for the Reorient panel (commit #6). Euler-
+# angle slider values are the source of truth; `quaternion_physics`
+# derives the unit quaternion at read time so gimbal-lock state
+# corruption is avoided (spec §Architectural decisions §Rotation input).
+nalgebra = { workspace = true }
 
 # Bevy 0.18 — feature set mirrors cf-viewer so the workspace's validated
 # rendering subset stays consistent across viewer binaries. `bevy_ui` +

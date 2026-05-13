@@ -50,6 +50,7 @@ use mesh_io::load_stl;
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Bounded, IndexedMesh};
 use meshopt::{SimplifyOptions, simplify_decoder};
+use nalgebra::UnitQuaternion;
 
 /// Cast-frame up-axis convention: `+Z` is the demolding direction
 /// (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home). All
@@ -319,6 +320,85 @@ impl ScanInfo {
     }
 }
 
+/// Reorient panel state (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §3). Holds the user's scan-frame → cast-frame
+/// rotation as three intrinsic XYZ Euler-angle degrees.
+///
+/// **Source-of-truth convention**: the three slider values
+/// (`roll_deg` / `pitch_deg` / `yaw_deg`) are the source of truth;
+/// [`quaternion_physics`](Self::quaternion_physics) derives the unit
+/// quaternion at read time. Per spec §Risks §"Quaternion-to-Euler-to-
+/// quaternion round-trip drift" this avoids the round-trip drift that
+/// would accumulate if we stored only a quaternion and re-derived the
+/// Euler angles for the sliders each tick. Snap buttons set the three
+/// slider values to known degree triples; manual slider drags update
+/// one value at a time.
+///
+/// **Frame convention**: the rotation is conceptually in *physics
+/// frame* (scan-vertex coordinates pre-Bevy-up-axis-swap). The Bevy
+/// `Transform` component on `ScanMeshEntity` gets a bevy-frame
+/// quaternion via [`physics_quat_to_bevy_for_plus_z`] per render tick;
+/// the saved STL (commit #12) bakes the physics-frame rotation into
+/// vertex positions directly.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct ReorientState {
+    /// Rotation about the physics-frame X axis, in degrees. Range
+    /// `[-180, 180]` enforced by the egui slider.
+    roll_deg: f64,
+    /// Intrinsic rotation about the body-frame Y axis (after roll), in
+    /// degrees.
+    pitch_deg: f64,
+    /// Intrinsic rotation about the body-frame Z axis (after roll +
+    /// pitch), in degrees.
+    yaw_deg: f64,
+}
+
+impl Default for ReorientState {
+    fn default() -> Self {
+        Self {
+            roll_deg: 0.0,
+            pitch_deg: 0.0,
+            yaw_deg: 0.0,
+        }
+    }
+}
+
+impl ReorientState {
+    /// Derive the physics-frame unit quaternion from the current
+    /// slider values (intrinsic XYZ Euler, radians).
+    fn quaternion_physics(self) -> UnitQuaternion<f64> {
+        UnitQuaternion::from_euler_angles(
+            self.roll_deg.to_radians(),
+            self.pitch_deg.to_radians(),
+            self.yaw_deg.to_radians(),
+        )
+    }
+}
+
+/// Convert a physics-frame rotation quaternion to the Bevy-frame
+/// equivalent under the `UpAxis::PlusZ` swap.
+///
+/// `UpAxis::PlusZ` maps physics `(x, y, z)` → bevy `(x, z, y)` — a
+/// parity-flipping permutation (det = -1). Conjugating a rotation by
+/// such a transformation transforms its axis by the swap **and**
+/// negates the angle (axes transform as pseudovectors under improper
+/// changes of basis). In quaternion components this collapses to a
+/// scalar formula:
+///
+/// - `(w, x, y, z)` in physics → `(w, -x, -z, -y)` in bevy
+///
+/// Derivation: for `q = (w, sin(θ/2) * a)` representing rotation `θ`
+/// about axis `a`, the bevy-frame equivalent is
+/// `(w, sin(-θ/2) * M_pb·a) = (w, -sin(θ/2) * (a_x, a_z, a_y))`. The
+/// matrix-conjugation form `R_bevy = M_pb · R_physics · M_pb^-1`
+/// agrees on the matrix side; this scalar form is equivalent and
+/// cheaper.
+fn physics_quat_to_bevy_for_plus_z(q: UnitQuaternion<f64>) -> Quat {
+    // f64 → f32 cast is intentional for Bevy.
+    #[allow(clippy::cast_possible_truncation)]
+    Quat::from_xyzw(-q.i as f32, -q.k as f32, -q.j as f32, q.w as f32)
+}
+
 /// Format an integer count with `k` / `M` suffixes for compact display
 /// in the Scan Info panel + Simplify panel + load-time auto-suggest
 /// banner. Mirrors the spec's wording (`"18.4k"`, `"3.35M"`).
@@ -517,15 +597,25 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         .insert_resource(original)
         .insert_resource(scan_info)
         .insert_resource(SimplifyState::default())
+        .insert_resource(ReorientState::default())
         .insert_resource(StatusBar::default())
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
         // Apply/Reset handler runs before auto-clear so a newly-set
-        // status's TTL is checked against the same tick's `Time`. Both
-        // are idempotent (no-op when nothing's pending / nothing's
-        // expired), so order doesn't change the steady-state behavior.
+        // status's TTL is checked against the same tick's `Time`.
+        // `apply_reorient_to_transform` is idempotent (no-op when
+        // the desired Bevy rotation already matches the entity's
+        // current rotation) so order vs. the others doesn't change
+        // steady-state behavior; Bevy's scheduler serializes it with
+        // `handle_simplify_actions` automatically because both touch
+        // `ScanMeshEntity`-marked entity Transforms.
         .add_systems(
             Update,
-            (handle_simplify_actions, auto_clear_status, exit_on_esc),
+            (
+                handle_simplify_actions,
+                apply_reorient_to_transform,
+                auto_clear_status,
+                exit_on_esc,
+            ),
         )
         .add_systems(EguiPrimaryContextPass, scan_prep_panel)
         .run();
@@ -746,6 +836,36 @@ fn respawn_scan_entity(
     commands.entity(entity).insert(ScanMeshEntity);
 }
 
+/// Update system: project the current `ReorientState` quaternion onto
+/// the `ScanMeshEntity`'s Bevy `Transform` component every tick.
+/// Per spec §6 implementation arc: "Live transforms via Bevy
+/// `Transform` component, not mesh rebuild — slider drags update one
+/// component value, no per-tick vertex-buffer copy."
+///
+/// Cheap by design: a single `Quat` derivation + per-entity equality
+/// check + (only if different) one `Transform.rotation` write. The
+/// equality check is the steady-state optimization — when the user
+/// isn't touching the panel and the rotation hasn't changed, this
+/// system is effectively a no-op.
+///
+/// Runs every Update tick regardless of `ReorientState::is_changed()`
+/// because the `ScanMeshEntity` itself can be re-spawned by
+/// `handle_simplify_actions` with an identity rotation; this system
+/// then restores the user's reorient on the next tick automatically
+/// without bespoke threading through the respawn path.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn apply_reorient_to_transform(
+    state: Res<ReorientState>,
+    mut entities: Query<&mut Transform, With<ScanMeshEntity>>,
+) {
+    let q_bevy = physics_quat_to_bevy_for_plus_z(state.quaternion_physics());
+    for mut transform in &mut entities {
+        if transform.rotation != q_bevy {
+            transform.rotation = q_bevy;
+        }
+    }
+}
+
 /// Update system: clear the status bar text if its TTL has elapsed.
 /// Persistent messages (`auto_clear_at_secs = None`) are never cleared
 /// here — they're overwritten by the next status update instead.
@@ -836,6 +956,7 @@ fn scan_prep_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     mut simplify_state: ResMut<SimplifyState>,
+    mut reorient_state: ResMut<ReorientState>,
     status: Res<StatusBar>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -850,6 +971,7 @@ fn scan_prep_panel(
         .show(ctx, |ui| {
             render_scan_info_section(ui, &info);
             render_simplify_section(ui, &info, &mut simplify_state);
+            render_reorient_section(ui, &mut reorient_state);
         });
     Ok(())
 }
@@ -929,6 +1051,81 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
                     state.pending_action = Some(SimplifyAction::Reset);
                 }
             });
+        });
+}
+
+/// `Reorient` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications
+/// §3). Three Euler-angle sliders (intrinsic XYZ in degrees) + five
+/// scanner-frame → cast-frame snap shortcuts + a Reset rotation button
+/// + a read-only quaternion display.
+///
+/// **Why the buttons use ASCII `->` not Unicode `→`**: same egui font
+/// glyph coverage constraint that drove the commit #4 STL-units fix —
+/// `ProggyClean` ships Latin-1 + basic punctuation only, and U+2192
+/// renders as `□` (missing-glyph box). Spec §3 button labels were
+/// amended to ASCII in lockstep with this commit; see slice-ship-log.
+///
+/// The state mutation pattern matches `render_simplify_section`:
+/// `&mut state` flows through, slider drags update fields directly,
+/// snap buttons set known-good triples. `apply_reorient_to_transform`
+/// consumes the state every Update tick and projects it onto the Bevy
+/// Transform.
+fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState) {
+    egui::CollapsingHeader::new("Reorient")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.add(egui::Slider::new(&mut state.roll_deg, -180.0..=180.0).text("roll (deg)"));
+            ui.add(egui::Slider::new(&mut state.pitch_deg, -180.0..=180.0).text("pitch (deg)"));
+            ui.add(egui::Slider::new(&mut state.yaw_deg, -180.0..=180.0).text("yaw (deg)"));
+
+            ui.add_space(4.0);
+            // Five snap shortcuts for the common scanner-frame →
+            // cast-frame mismatches. Each sets the three slider values
+            // to a known triple; the derived quaternion + Bevy
+            // Transform follow on the next tick.
+            if ui.button("Snap +Z up").clicked() {
+                *state = ReorientState::default();
+            }
+            if ui.button("Snap -Z up").clicked() {
+                *state = ReorientState {
+                    roll_deg: 180.0,
+                    pitch_deg: 0.0,
+                    yaw_deg: 0.0,
+                };
+            }
+            if ui.button("Snap +Y -> +Z").clicked() {
+                *state = ReorientState {
+                    roll_deg: 90.0,
+                    pitch_deg: 0.0,
+                    yaw_deg: 0.0,
+                };
+            }
+            if ui.button("Snap -Y -> +Z").clicked() {
+                *state = ReorientState {
+                    roll_deg: -90.0,
+                    pitch_deg: 0.0,
+                    yaw_deg: 0.0,
+                };
+            }
+            if ui.button("Snap +X -> +Z").clicked() {
+                *state = ReorientState {
+                    roll_deg: 0.0,
+                    pitch_deg: -90.0,
+                    yaw_deg: 0.0,
+                };
+            }
+
+            ui.add_space(4.0);
+            if ui.button("Reset rotation").clicked() {
+                *state = ReorientState::default();
+            }
+
+            ui.add_space(4.0);
+            let q = state.quaternion_physics();
+            ui.label(format!(
+                "q (w,x,y,z) = ({:+.3}, {:+.3}, {:+.3}, {:+.3})",
+                q.w, q.i, q.j, q.k,
+            ));
         });
 }
 
@@ -1271,6 +1468,114 @@ mod tests {
         // Exactly-equal target also exits the guard (>=, not >).
         let result_eq = simplify_mesh(&original, 800);
         assert_eq!(result_eq.mesh.faces.len(), 800);
+    }
+
+    // ----- ReorientState + physics_quat_to_bevy ----------------------
+
+    /// Default state is all-zeros (identity rotation). Pinned because
+    /// changing the default silently rotates every loaded scan from
+    /// the moment of load.
+    #[test]
+    fn reorient_state_default_is_zero() {
+        let state = ReorientState::default();
+        assert_eq!(state.roll_deg, 0.0);
+        assert_eq!(state.pitch_deg, 0.0);
+        assert_eq!(state.yaw_deg, 0.0);
+    }
+
+    /// All-zeros sliders derive the identity quaternion `(w=1, 0, 0, 0)`.
+    /// Tests `from_euler_angles(0, 0, 0)`'s contract.
+    #[test]
+    fn reorient_default_quaternion_is_identity() {
+        let q = ReorientState::default().quaternion_physics();
+        assert!((q.w - 1.0).abs() < 1e-12);
+        assert!(q.i.abs() < 1e-12);
+        assert!(q.j.abs() < 1e-12);
+        assert!(q.k.abs() < 1e-12);
+    }
+
+    /// `Snap +Y -> +Z` triple (roll=90°, pitch=0, yaw=0) derives the
+    /// 90°-about-X quaternion: `(cos(45°), sin(45°), 0, 0)`. Pins the
+    /// Euler convention (intrinsic XYZ — roll is the X-axis rotation).
+    /// If nalgebra's `from_euler_angles` argument order ever changes,
+    /// this test fails first.
+    #[test]
+    fn reorient_snap_plus_y_to_plus_z_is_90deg_about_x() {
+        let state = ReorientState {
+            roll_deg: 90.0,
+            pitch_deg: 0.0,
+            yaw_deg: 0.0,
+        };
+        let q = state.quaternion_physics();
+        let expected_cos = (std::f64::consts::FRAC_PI_4).cos();
+        let expected_sin = (std::f64::consts::FRAC_PI_4).sin();
+        assert!((q.w - expected_cos).abs() < 1e-12);
+        assert!((q.i - expected_sin).abs() < 1e-12);
+        assert!(q.j.abs() < 1e-12);
+        assert!(q.k.abs() < 1e-12);
+    }
+
+    /// Identity physics quaternion maps to identity Bevy quaternion
+    /// under the `UpAxis::PlusZ` swap. Sanity check that the
+    /// scalar-form conversion preserves identity.
+    #[test]
+    fn physics_quat_to_bevy_preserves_identity() {
+        let q_bevy = physics_quat_to_bevy_for_plus_z(UnitQuaternion::identity());
+        assert!((q_bevy.w - 1.0).abs() < 1e-6);
+        assert!(q_bevy.x.abs() < 1e-6);
+        assert!(q_bevy.y.abs() < 1e-6);
+        assert!(q_bevy.z.abs() < 1e-6);
+    }
+
+    /// Physics rotation `+90° about X` should map to Bevy rotation
+    /// `-90° about X` under the parity-flipping `UpAxis::PlusZ` swap.
+    /// This is the load-bearing case behind the `[Snap +Y -> +Z]`
+    /// button — physics says "rotate +Y onto +Z", Bevy view says
+    /// "rotate -Y onto +Z" (since Bevy's +Y is screen-up which equals
+    /// physics +Z post-swap).
+    ///
+    /// Verification: the derived quaternion components should be
+    /// `(cos(45°), -sin(45°), 0, 0)`.
+    #[test]
+    fn physics_quat_to_bevy_negates_x_component_for_x_rotation() {
+        let q_phys = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::x_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let q_bevy = physics_quat_to_bevy_for_plus_z(q_phys);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_cos = (std::f64::consts::FRAC_PI_4).cos() as f32;
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_neg_sin = -(std::f64::consts::FRAC_PI_4).sin() as f32;
+        assert!((q_bevy.w - expected_cos).abs() < 1e-6);
+        assert!((q_bevy.x - expected_neg_sin).abs() < 1e-6);
+        assert!(q_bevy.y.abs() < 1e-6);
+        assert!(q_bevy.z.abs() < 1e-6);
+    }
+
+    /// Physics rotation `-90° about Y` (the `[Snap +X -> +Z]` case)
+    /// should map to Bevy rotation `+90° about Z` (since physics Y
+    /// becomes Bevy Z under the swap, and the angle flips sign).
+    ///
+    /// Verification: the derived quaternion components should be
+    /// `(cos(45°), 0, 0, +sin(45°))`.
+    #[test]
+    fn physics_quat_to_bevy_swaps_y_and_z_axes() {
+        let q_phys = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::y_axis(),
+            -std::f64::consts::FRAC_PI_2,
+        );
+        let q_bevy = physics_quat_to_bevy_for_plus_z(q_phys);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_cos = (std::f64::consts::FRAC_PI_4).cos() as f32;
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_pos_sin = (std::f64::consts::FRAC_PI_4).sin() as f32;
+        assert!((q_bevy.w - expected_cos).abs() < 1e-6);
+        assert!(q_bevy.x.abs() < 1e-6);
+        assert!(q_bevy.y.abs() < 1e-6);
+        assert!((q_bevy.z - expected_pos_sin).abs() < 1e-6);
     }
 
     /// `simplify_mesh` post-process strips unreferenced vertices, so
