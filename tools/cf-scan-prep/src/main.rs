@@ -216,14 +216,26 @@ const AUTO_SUGGEST_FACE_THRESHOLD: usize = 500_000;
 const SIMPLIFY_WELD_EPSILON_M: f64 = 1e-6;
 
 /// `target_error` parameter passed to `meshopt::simplify_decoder`.
-/// Relative to mesh extents (no `ErrorAbsolute` flag), so 0.01 means
-/// "tolerate up to ~1 % of mesh diagonal of geometric error during the
-/// quadric edge collapse." Chosen as a balance: tight enough to
-/// preserve scan surface detail in the simplified output, loose enough
-/// that meshopt doesn't early-exit before reaching the requested face
-/// count. Re-tune if iter-1 eyes-on-pixels surfaces noticeable surface
-/// artifacts at typical target counts.
-const SIMPLIFY_TARGET_ERROR: f32 = 0.01;
+/// Normalized to mesh extents — `1.0` means "deviate by up to half
+/// the longest mesh axis"; `0.05` ≈ 5 % of half-extent.
+///
+/// **Calibrated against cf-cast's SDF sampling resolution.** cf-cast
+/// samples its `SignedDistanceField` on a 2 mm grid (spec
+/// §Strategic context); geometric detail below 2 mm is sub-cell and
+/// won't transfer to the silicone mold. Setting the threshold above
+/// that floor means we're trading "wasted detail meshopt couldn't
+/// have preserved anyway" for "actually reaching the requested face
+/// count". For the iter-1 fixture (130 mm tall), `0.05` × 65 mm
+/// half-axis = ~3.25 mm worst-case tolerance — comfortably above the
+/// 2 mm SDF floor + below typical scan-feature scales.
+///
+/// **History**: started at `0.01` (~0.65 mm tolerance for iter-1)
+/// which was too tight — sock-textile scans hit the error budget
+/// before reaching the requested face count (~3.35M → ~3.33M,
+/// effectively zero reduction). Loosened to `0.05` so meshopt
+/// actually decimates. Re-tune if iter-1 cast surfaces visible
+/// surface artifacts; tighten back toward `0.01` if so.
+const SIMPLIFY_TARGET_ERROR: f32 = 0.05;
 
 /// Default TTL for `Normal`-kind status messages (apply-result,
 /// reset-result). Persistent messages (auto-suggest banner) set
