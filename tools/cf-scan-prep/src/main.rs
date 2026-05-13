@@ -7,29 +7,33 @@
 //! TOML that the cast example (`examples/cast/layered-silicone-device-v1-scan/`,
 //! commit #14) consumes. Full design at `docs/SCAN_PREP_DESIGN.md`.
 //!
-//! ## Scope through commit #4 (this file's current shape)
+//! ## Architecture
 //!
 //! - Positional CLI arg: path to the input scan STL.
 //! - `--stl-units mm|m|inch` flag (default `mm`) — STL files don't carry
 //!   unit metadata; cf-cast and the rest of the workspace work in meters,
 //!   so loaded vertex coordinates are scaled into meters at load.
 //! - STL load via [`mesh_io::load_stl`].
-//! - Bevy window rendering the raw scan via cf-viewer's
+//! - Bevy window rendering the loaded scan via cf-viewer's
 //!   [`cf_viewer::setup_camera_and_lighting`] +
 //!   [`cf_viewer::spawn_face_mesh`] helpers under the cast-frame
 //!   [`UpAxis::PlusZ`] convention (`+Z` is the demolding direction).
-//! - The orbit camera frames the raw mesh's AABB at load.
-//! - Right-side egui sidebar with a `Scan Info` collapsing-header
-//!   section (file basename + hover-full-path / vertex + face counts /
-//!   `--stl-units` assumption / raw AABB in mm). Future commits add
-//!   Simplify / Reorient / Recenter / Clip / Cap / Mouth / Cleaned AABB
-//!   / Save as additional sections of the same `SidePanel`.
+//!   The orbit camera frames the raw mesh's AABB at load.
+//! - Right-side egui sidebar with collapsing sections — one per spec'd
+//!   panel. The set of currently-implemented sections is defined by
+//!   the `render_*_section` functions in this file (grep `^fn render_`
+//!   for the live list); the spec's complete panel set is at
+//!   `docs/SCAN_PREP_DESIGN.md` §Window layout.
+//! - Bottom egui status bar surfaces the load-time auto-suggest banner
+//!   (when face count exceeds [`AUTO_SUGGEST_FACE_THRESHOLD`]) +
+//!   apply/reset achievement messages with [`STATUS_NORMAL_TTL_SECS`]
+//!   TTL. Renders nothing when empty so it doesn't claim screen space.
 //! - Load failures surface as a red error-text overlay in the Bevy
-//!   window; the app stays open so the user can read the message before
-//!   pressing Esc to exit.
+//!   window; the app stays open so the user can read the message
+//!   before pressing Esc to exit.
 //!
-//! Subsequent commits add the remaining egui panels, the cleaned-STL +
-//! TOML writer, and the load-time mesh-repair diagnostics.
+//! Per-commit additions are tracked in the spec's slice-ship-log
+//! (`docs/SCAN_PREP_DESIGN.md` §Slice ship log).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -68,8 +72,8 @@ struct Cli {
     /// STL files carry no unit metadata; industry default is millimeters.
     /// cf-cast operates in meters, so loaded vertices are multiplied by
     /// the conversion factor at load. Surfaces in the Scan Info panel
-    /// (commit #4) so the assumption stays visible — loading a meter-
-    /// scale STL with default `mm` produces a 1000× too-small mesh.
+    /// so the assumption stays visible — loading a meter-scale STL with
+    /// default `mm` produces a 1000× too-small mesh.
     #[arg(long, value_enum, default_value_t = StlUnits::Mm)]
     stl_units: StlUnits,
 }
@@ -309,8 +313,8 @@ impl ScanInfo {
 }
 
 /// Format an integer count with `k` / `M` suffixes for compact display
-/// in the Scan Info panel. Mirrors the spec's wording (`"18.4k"`,
-/// `"3.35M"`) which the commit #5 load-time auto-suggest banner reuses.
+/// in the Scan Info panel + Simplify panel + load-time auto-suggest
+/// banner. Mirrors the spec's wording (`"18.4k"`, `"3.35M"`).
 fn human_count(n: usize) -> String {
     // f64 keeps 53 bits of precision; usize → f64 is lossless for the
     // counts cf-scan-prep operates on (typical scans 10k-10M faces; the
@@ -753,12 +757,12 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
     }
 }
 
-/// Right-side egui sidebar carrying the scan-prep panels. At commit #4
-/// this renders the single `Scan Info` section; future commits add
-/// Simplify / Reorient / Recenter / Clip / Cap / Mouth / Cleaned AABB /
-/// Save as additional collapsing sections inside the same `SidePanel`
-/// per the spec's window-layout mockup
-/// (`docs/SCAN_PREP_DESIGN.md` §Window layout).
+/// Right-side egui sidebar carrying the scan-prep panels + bottom
+/// status bar. Renders the currently-implemented set of collapsing
+/// sections (one `render_*_section` call per section, in spec-mockup
+/// order) inside a single `SidePanel` per the spec's window-layout
+/// mockup (`docs/SCAN_PREP_DESIGN.md` §Window layout). Adding a new
+/// panel = add a new `render_*_section` function + a single call here.
 // `Result` is shadowed by `use anyhow::Result` at the top of this file;
 // use Bevy's prelude alias explicitly so the panel system's
 // `EguiContexts::ctx_mut()?` short-circuit returns `BevyError` not
@@ -788,8 +792,8 @@ fn scan_prep_panel(
 
 /// `Scan Info` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications
 /// §1) — static fields (file path, STL units, raw AABB) loaded at
-/// startup; vertex/face counts update if the Simplify panel applies a
-/// decimation pass (commit #5).
+/// startup; vertex/face counts update when the Simplify panel applies a
+/// decimation pass.
 ///
 /// Five logical fields:
 ///
@@ -959,8 +963,8 @@ mod tests {
     // ----- CLI parsing ------------------------------------------------
 
     /// Default unit is `Mm` per the workspace convention surfaced in
-    /// the Scan Info panel (commit #4). Pinned because changing the
-    /// default silently 1000×-shifts every cleaned STL.
+    /// the Scan Info panel. Pinned because changing the default
+    /// silently 1000×-shifts every cleaned STL.
     #[test]
     fn cli_default_stl_units_is_mm() -> Result<(), clap::Error> {
         let cli = Cli::try_parse_from(["cf-scan-prep", "scan.stl"])?;
