@@ -2068,12 +2068,24 @@ fn scan_prep_panel(
         .resizable(false)
         .default_width(320.0)
         .show(ctx, |ui| {
-            render_scan_info_section(ui, &info);
-            render_simplify_section(ui, &info, &mut simplify_state);
-            render_reorient_section(ui, &mut reorient_state);
-            render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
-            render_clip_section(ui, &mut clip_state, &overlays);
-            render_cap_section(ui, &mut cap_state, &mut cap_pending);
+            // Wrap the panel sections in a vertical ScrollArea —
+            // with 6+ collapsing sections (Scan Info / Simplify /
+            // Reorient / Recenter / Clip / Cap, plus #10-#12 to
+            // come), the total content exceeds typical viewport
+            // height on laptop screens. Without scrolling, sections
+            // below the fold are unreachable. `auto_shrink([false,
+            // true])` claims full available width but only as much
+            // height as content needs (with scrollbar on overflow).
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    render_scan_info_section(ui, &info);
+                    render_simplify_section(ui, &info, &mut simplify_state);
+                    render_reorient_section(ui, &mut reorient_state);
+                    render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
+                    render_clip_section(ui, &mut clip_state, &overlays);
+                    render_cap_section(ui, &mut cap_state, &mut cap_pending);
+                });
         });
     Ok(())
 }
