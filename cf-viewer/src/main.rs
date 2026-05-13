@@ -5,19 +5,21 @@ use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::*;
 use cf_viewer::{
-    InputMode, UpAxis, ViewerInput,
+    InputMode, RenderScale, UpAxis, ViewerInput,
     cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
-    detect_input_mode, load_input,
+    compute_render_scale, detect_input_mode, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
+    scale_aabb,
     sequence::{
         Playback, advance_playback_on_clock, handle_frame_navigation, handle_playback_input,
         reload_frame_on_change, sequence_info_panel,
     },
+    setup_camera_and_lighting,
     ui::{ColormapOverride, GeometryEntity, Selection, scalar_and_colormap_panel},
 };
 use clap::Parser;
-use mesh_types::{Aabb, Bounded, Point3};
+use mesh_types::Bounded;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -114,60 +116,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Render-side scale factor applied uniformly to all spawned geometry so
-/// sub-meter scenes lift to Bevy's pipeline-default human-scale (~1 m)
-/// regime. Bevy 0.18's defaults — near plane `0.1 m`,
-/// [`OrbitCamera::framing_for_aabb`]'s internal `.max(1.0)` clamp on
-/// diagonal, AmbientLight brightness — were tuned for human-scale scenes;
-/// at sim-soft's cm-scale (e.g. row 13's 52.6 mm bbox diagonal — the
-/// BCC mesher allocates a cube of side `2 (R + margin)` around the
-/// 1 cm sphere, with margin scaling per cell-size), the framing helper
-/// clamps diagonal up to `1.0` and places the camera 1.5 m away —
-/// geometry then renders as a single dot. Lifting the rendered scene to
-/// ~1 m diagonal puts everything safely within the defaults' working
-/// range. mesh-v1.0 examples already at meter scale get
-/// `render_scale = 1.0` (no change).
-///
-/// Banked at sim-soft EXAMPLE_INVENTORY iter-12 as the cf-view application
-/// of inventory iter-11 pattern (b) (RENDER_SCALE-as-rendering-pipeline-
-/// default-workaround); same root cause as sim-bevy-soft's row-12 +
-/// row-13 RENDER_SCALE policy.
-#[derive(Resource, Clone, Copy, Debug)]
-struct RenderScale(f32);
-
-/// Compute the render scale from the raw bbox diagonal: lift sub-meter
-/// scenes to a 1 m target diagonal; meter+ scenes render at native scale.
-/// Degenerate (zero / non-finite) diagonals fall back to `1.0` so the
-/// downstream framing helper's own clamp handles them.
-fn compute_render_scale(raw_diagonal: f32) -> f32 {
-    const TARGET_DIAGONAL: f32 = 1.0;
-    if !raw_diagonal.is_finite() || raw_diagonal <= 0.0 || raw_diagonal >= TARGET_DIAGONAL {
-        1.0
-    } else {
-        TARGET_DIAGONAL / raw_diagonal
-    }
-}
-
-/// Apply a uniform scale factor to an [`Aabb`]'s corners. Used to compute
-/// the camera-framing AABB at render scale (the rendered geometry's
-/// bbox), distinct from the loaded mesh's physics-scale AABB.
-fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
-    let s = scale as f64;
-    Aabb::from_corners(
-        Point3::new(raw.min.x * s, raw.min.y * s, raw.min.z * s),
-        Point3::new(raw.max.x * s, raw.max.y * s, raw.max.z * s),
-    )
-}
-
 /// Spawn the orbit camera + lighting once at startup. Geometry is spawned
 /// (and re-spawned) by [`spawn_geometry`] in response to [`Selection`]
 /// changes, so this system is no longer the geometry-spawn entry point.
 ///
 /// The orbit camera frames the **rendered** AABB (raw mesh AABB scaled by
 /// [`RenderScale`]) — at native scale for meter+ meshes, lifted to ~1 m
-/// for sub-meter meshes. See [`RenderScale`] for the policy.
-// f64 → f32 is intentional for Bevy
-#[allow(clippy::cast_possible_truncation)]
+/// for sub-meter meshes. See [`RenderScale`] for the policy. Camera + light
+/// placement is delegated to [`setup_camera_and_lighting`] so
+/// `cf-scan-prep` can reuse the same framing.
 // Bevy systems take resources by value (Res / ResMut / Query / Commands).
 #[allow(clippy::needless_pass_by_value)]
 fn setup_scene(
@@ -178,43 +135,7 @@ fn setup_scene(
 ) {
     let raw_aabb = input.mesh.aabb();
     let aabb = scale_aabb(&raw_aabb, render_scale.0);
-    let center_physics = aabb.center();
-    // Same input → Bevy frame swap as `build_face_mesh` so the light
-    // anchor stays aligned with the rendered geometry under any `--up=<...>`.
-    let center_bevy = Vec3::from_array(up.to_bevy_point(&center_physics));
-    // Local `diagonal` is used here only for directional-light placement;
-    // the camera's framing has its own clamp inside
-    // `OrbitCamera::framing_for_aabb`. Single-point degenerate AABBs
-    // and very small bboxes would otherwise place the light below the
-    // visible-on-screen floor; clamp to 1.0 so it stays useful.
-    let diagonal = (aabb.diagonal() as f32).max(1.0);
-
-    // Orbit camera framed corner-on at 1.5 × diagonal, matching commit 3's
-    // static placeholder pose. `framing_for_aabb` mirrors the up-axis swap
-    // so the camera target tracks the rendered geometry's center.
-    let orbit = OrbitCamera::framing_for_aabb(&aabb, *up);
-    let mut transform = Transform::default();
-    orbit.apply_to_transform(&mut transform);
-    commands.spawn((Camera3d::default(), orbit, transform));
-
-    // Strong directional key light + bright global ambient so geometry
-    // stays readable in the geometry-only path. Bevy 0.18: `AmbientLight`
-    // is now per-camera; world-wide ambient is `GlobalAmbientLight`
-    // (sim-bevy `scene.rs:101` precedent).
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12_000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_translation(center_bevy + Vec3::new(diagonal, diagonal * 2.0, diagonal))
-            .looking_at(center_bevy, Vec3::Y),
-    ));
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 1_200.0,
-        ..default()
-    });
+    setup_camera_and_lighting(&mut commands, &aabb, *up);
 }
 
 /// Despawn-and-respawn the geometry whenever [`Selection`] changes (also
