@@ -200,19 +200,40 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
         .sum()
 }
 
-/// Compute the local unit tangent at `points[i]`. Endpoints use a
-/// forward / backward difference; interior points use a central
-/// difference between `points[i-1]` and `points[i+1]`. Falls back
-/// to `+Z` when the polyline is degenerate (consecutive coincident
-/// points) — defensive; the centerline upstream avoids degeneracies.
+/// Half-window width (in polyline-index units) used to smooth the
+/// local-tangent estimate at each centerline point. The tangent at
+/// index `i` is the unit vector from `points[max(0, i - W)]` to
+/// `points[min(N - 1, i + W)]`, where `W = TANGENT_SMOOTHING_HALF_WINDOW`.
+/// At `W = 2` we average over 5 consecutive points — wide enough to
+/// suppress single-sample jitter near the cleaned-scan cap (a real
+/// failure mode seen at iter-1 visual review on
+/// `sock_over_capsule.cleaned.stl`), narrow enough to track 30°
+/// curves cleanly on the 30-point iter-1 polyline.
+const TANGENT_SMOOTHING_HALF_WINDOW: usize = 2;
+
+/// Compute the local unit tangent at `points[i]` using a windowed
+/// finite difference. Endpoints clamp to the polyline range
+/// (effectively a forward / backward difference of up to
+/// `TANGENT_SMOOTHING_HALF_WINDOW` steps); interior points use a
+/// `2 × TANGENT_SMOOTHING_HALF_WINDOW + 1`-point central difference.
+///
+/// The smoothing was added to slice 3 polish after iter-1 visual
+/// review surfaced "crazy rings" at the bottom of the
+/// `sock_over_capsule` envelope — adjacent centerline points there
+/// have Y direction flips that produced ~30° tangent jitter and
+/// tilted the rings wildly. 5-point smoothing averages the noise
+/// out without smearing real curvature.
+///
+/// Falls back to `+Z` when the polyline is degenerate (consecutive
+/// coincident points within the window).
 fn local_tangent(points: &[Point3<f64>], i: usize) -> Vector3<f64> {
-    let raw = if i == 0 {
-        points[1] - points[0]
-    } else if i == points.len() - 1 {
-        points[i] - points[i - 1]
-    } else {
-        points[i + 1] - points[i - 1]
-    };
+    let len = points.len();
+    if len < 2 {
+        return Vector3::new(0.0, 0.0, 1.0);
+    }
+    let lo = i.saturating_sub(TANGENT_SMOOTHING_HALF_WINDOW);
+    let hi = (i + TANGENT_SMOOTHING_HALF_WINDOW).min(len - 1);
+    let raw = points[hi] - points[lo];
     let norm = raw.norm();
     if norm < 1e-12 {
         Vector3::new(0.0, 0.0, 1.0)
@@ -437,6 +458,14 @@ const OUTER_ENVELOPE_RING_SEGMENTS: usize = 24;
 /// as a 3D tube rather than disconnected rings.
 const OUTER_ENVELOPE_LONGITUDINAL_LINES: usize = 4;
 
+/// Number of intermediate latitude rings between the cylindrical
+/// section's end ring and the hemispherical cap's apex point. 3
+/// rings at θ ∈ {22.5°, 45°, 67.5°} from the cylinder plane produce
+/// a smooth hemispherical visualization. Together with the end ring
+/// at θ = 0 and the apex at θ = 90° this is 5 latitudes for each
+/// cap.
+const OUTER_ENVELOPE_CAP_LATITUDES: usize = 3;
+
 /// Draw the outer-envelope wireframe overlay each frame. The
 /// envelope is a curve-following capsule (`Solid::pipe(centerline,
 /// radius_m)` in the SDF kernel; rendered here as a wireframe of
@@ -502,6 +531,120 @@ fn draw_outer_envelope_overlay(
                 gizmos.line(a, b, color);
             }
         }
+    }
+
+    // Hemispherical end caps. For each centerline endpoint, walk
+    // along the outward tangent direction, drawing latitude rings of
+    // shrinking radius until the apex point — matches the
+    // `Solid::pipe(centerline, R)` SDF semantics (sphere of radius R
+    // at each centerline endpoint = hemispherical cap). The 0°
+    // latitude is the cylindrical section's existing end ring; we
+    // draw OUTER_ENVELOPE_CAP_LATITUDES intermediate rings + the
+    // apex point.
+    let last_idx = centerline.points_m.len() - 1;
+    let (first_b1, first_b2) = bases.bases[0];
+    let first_outward = -local_tangent(&centerline.points_m, 0);
+    draw_hemispherical_cap(
+        &centerline.points_m[0],
+        &first_outward,
+        &first_b1,
+        &first_b2,
+        state.radius_m,
+        &rings_bevy[0],
+        *up,
+        render_scale.0,
+        color,
+        &mut gizmos,
+    );
+
+    let (last_b1, last_b2) = bases.bases[last_idx];
+    let last_outward = local_tangent(&centerline.points_m, last_idx);
+    draw_hemispherical_cap(
+        &centerline.points_m[last_idx],
+        &last_outward,
+        &last_b1,
+        &last_b2,
+        state.radius_m,
+        &rings_bevy[last_idx],
+        *up,
+        render_scale.0,
+        color,
+        &mut gizmos,
+    );
+}
+
+/// Draw a hemispherical end cap of radius `radius_m` centered at
+/// `base_point`, with its axis along `outward_tangent` (the
+/// "outward" direction away from the centerline interior). Uses
+/// `(b1, b2)` as the cylindrical-section basis for the rim ring;
+/// latitude rings step from θ = 0 (matches the existing rim) toward
+/// θ = π/2 (apex at `base_point + radius_m * outward_tangent`).
+///
+/// Drawing pattern:
+/// - `OUTER_ENVELOPE_CAP_LATITUDES` intermediate ring circles at
+///   evenly-spaced θ values strictly between 0 and π/2.
+/// - Single apex point at θ = π/2.
+/// - `OUTER_ENVELOPE_LONGITUDINAL_LINES` longitudinal arcs from the
+///   rim ring (via existing `base_ring_bevy[k*step]`) up to the
+///   apex, passing through corresponding ring vertices at each
+///   intermediate latitude.
+#[allow(clippy::too_many_arguments)] // Helper packs the full cap-draw context.
+fn draw_hemispherical_cap(
+    base_point: &Point3<f64>,
+    outward_tangent: &Vector3<f64>,
+    b1: &Vector3<f64>,
+    b2: &Vector3<f64>,
+    radius_m: f64,
+    base_ring_bevy: &[Vec3],
+    up: UpAxis,
+    render_scale: f32,
+    color: Color,
+    gizmos: &mut Gizmos,
+) {
+    // Build intermediate cap rings + apex point in Bevy frame.
+    // `cap_rings_bevy[lat]` is the ring at latitude θ_lat.
+    let mut cap_rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(OUTER_ENVELOPE_CAP_LATITUDES);
+    for lat in 1..=OUTER_ENVELOPE_CAP_LATITUDES {
+        #[allow(clippy::cast_precision_loss)] // lat fits in f64.
+        let theta =
+            (lat as f64 / (OUTER_ENVELOPE_CAP_LATITUDES + 1) as f64) * std::f64::consts::FRAC_PI_2;
+        let ring_center = base_point.coords + outward_tangent * (radius_m * theta.sin());
+        let ring_radius = radius_m * theta.cos();
+        let mut ring = Vec::with_capacity(OUTER_ENVELOPE_RING_SEGMENTS);
+        for seg in 0..OUTER_ENVELOPE_RING_SEGMENTS {
+            #[allow(clippy::cast_precision_loss)]
+            let phi = (seg as f64 / OUTER_ENVELOPE_RING_SEGMENTS as f64) * std::f64::consts::TAU;
+            let offset = b1 * (ring_radius * phi.cos()) + b2 * (ring_radius * phi.sin());
+            let physics_pt = Point3::from(ring_center + offset);
+            ring.push(Vec3::from_array(up.to_bevy_point(&physics_pt)) * render_scale);
+        }
+        cap_rings_bevy.push(ring);
+    }
+    let apex_physics = Point3::from(base_point.coords + outward_tangent * radius_m);
+    let apex_bevy = Vec3::from_array(up.to_bevy_point(&apex_physics)) * render_scale;
+
+    // Draw the intermediate cap rings (closed circles).
+    for ring in &cap_rings_bevy {
+        for seg in 0..ring.len() {
+            let a = ring[seg];
+            let b = ring[(seg + 1) % ring.len()];
+            gizmos.line(a, b, color);
+        }
+    }
+
+    // Longitudinal arcs from rim → intermediate rings → apex. At
+    // each of the OUTER_ENVELOPE_LONGITUDINAL_LINES picked ring
+    // indices, connect rim → cap[0] → cap[1] → ... → apex.
+    let step = OUTER_ENVELOPE_RING_SEGMENTS / OUTER_ENVELOPE_LONGITUDINAL_LINES;
+    for k in 0..OUTER_ENVELOPE_LONGITUDINAL_LINES {
+        let ring_idx = k * step;
+        let mut prev = base_ring_bevy[ring_idx];
+        for cap_ring in &cap_rings_bevy {
+            let next = cap_ring[ring_idx];
+            gizmos.line(prev, next, color);
+            prev = next;
+        }
+        gizmos.line(prev, apex_bevy, color);
     }
 }
 
@@ -927,6 +1070,32 @@ another_future_field = "foo"
         // Degenerate (consecutive coincident points): documented
         // fallback is +Z so the basis math doesn't NaN.
         assert!(approx_eq(t.z, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn local_tangent_windowed_smoothing_suppresses_single_sample_noise() {
+        // 7-point straight-Y centerline with ONE noisy outlier in
+        // the middle: point 3 perturbed in X. With smoothing window 2,
+        // the 5-point central difference at point 3 averages over
+        // points 1..=5, so the X noise cancels out and the tangent
+        // remains nearly +Y. WITHOUT smoothing (3-point central diff)
+        // the tangent at point 3 picks up the X kick from the two
+        // adjacent points and tilts notably.
+        let mut pts: Vec<Point3<f64>> = (0..7)
+            .map(|i| Point3::new(0.0, f64::from(i) * 0.02, 0.0))
+            .collect();
+        // Single-sample perturbation in X at the middle point.
+        pts[3] = Point3::new(0.01, pts[3].y, 0.0);
+
+        let t = local_tangent(&pts, 3);
+        // Smoothed central diff: (pts[5] - pts[1]) = (0, 0.08, 0).
+        // Tangent should be very nearly +Y with a tiny residual.
+        assert!(
+            approx_eq(t.y, 1.0, 1e-9),
+            "smoothed tangent.y should be ~1.0, got {}",
+            t.y
+        );
+        assert!(t.x.abs() < 1e-9, "smoothed tangent.x = {}", t.x);
     }
 
     #[test]
