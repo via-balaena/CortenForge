@@ -185,24 +185,15 @@ impl OuterEnvelopeState {
         }
     }
 
-    /// Slider range for the radius. The MAX is tied to the
-    /// centerline arc length: capsule-along-centerline semantics
-    /// (slice 3 polish 2) requires `2 R < arc length` so the
-    /// cylindrical section has positive length. We cap the upper
-    /// bound at `arc_length / 2 - 5 mm` (5 mm cylindrical-section
-    /// minimum) so the wireframe never degenerates into a sphere.
-    /// Centerline-less scans (no `.prep.toml`) fall back to a
-    /// bbox-diagonal range.
+    /// Slider range for the radius. Slice 3 polish 6 relaxes the
+    /// prior `R < arc / 2` capsule constraint — since the cap height
+    /// is now sized to the scan's actual dome extent (independent of
+    /// R), the cylinder section can extend the full centerline arc
+    /// at any R, so the slider just clamps to a generous bbox-
+    /// diagonal range.
     fn slider_range_m(info: &ScanInfo) -> (f64, f64) {
         let min_m = 0.005;
-        let max_m = if info.centerline_arc_length_m > 0.0 {
-            // Capsule semantic: `2 R < arc length`. Leave 5 mm of
-            // cylindrical headroom so the user can see the cap
-            // shape clearly even at near-max radius.
-            (info.centerline_arc_length_m * 0.5 - 0.005).max(0.020)
-        } else {
-            (info.bbox_diagonal_m * 1.0).max(0.060)
-        };
+        let max_m = (info.bbox_diagonal_m * 1.0).max(0.060);
         (min_m, max_m)
     }
 }
@@ -595,6 +586,43 @@ fn estimate_scan_cross_section_radius(scan_aabb: &Aabb) -> Option<f64> {
     Some(sorted[1] * 0.5)
 }
 
+/// Estimate the scan's extent past a centerline endpoint along an
+/// outward direction. For each AABB corner, project `(corner -
+/// endpoint)` onto `outward` and keep the max non-negative
+/// projection. Returns 0.0 when no corner is forward of the
+/// endpoint (degenerate; defensive).
+///
+/// Used by [`draw_outer_envelope_overlay`] to size each closed
+/// end's ellipsoidal cap to the scan's actual dome height —
+/// addresses iter-1 visual review feedback "the tip of the rings
+/// taper too hard relative to the geometry at the tip" when the
+/// hemispherical-cap height = R was much larger than the scan's
+/// natural dome.
+fn scan_extent_past_endpoint(
+    endpoint: &Point3<f64>,
+    outward: &Vector3<f64>,
+    scan_aabb: &Aabb,
+) -> f64 {
+    let corners = [
+        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.max.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.max.z),
+        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.max.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.max.z),
+    ];
+    let mut max_extent = 0.0_f64;
+    for c in &corners {
+        let projection = (c - endpoint).dot(outward);
+        if projection > max_extent {
+            max_extent = projection;
+        }
+    }
+    max_extent
+}
+
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn setup_render_scene(
     mut commands: Commands,
@@ -713,6 +741,7 @@ fn draw_outer_envelope_overlay(
     centerline: Res<Centerline>,
     bases: Res<CenterlineBases>,
     state: Res<OuterEnvelopeState>,
+    info: Res<ScanInfo>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
@@ -721,21 +750,16 @@ fn draw_outer_envelope_overlay(
         return;
     }
     let arc_positions = cumulative_arc_positions_m(&centerline.points_m);
-    let Some(&total_arc) = arc_positions.last() else {
+    if arc_positions.is_empty() {
         return;
-    };
+    }
 
-    // Capsule-along-centerline semantics: the envelope's total length
-    // along the centerline arc is `total_arc`. The cylindrical section
-    // spans the arc range `[trim_start, trim_end]`, where:
-    // - trim_start = R if the start endpoint is "closed" (cap apex at
-    //   arc 0); else 0 (cylinder extends to the centerline start, no
-    //   cap).
-    // - trim_end = total_arc - R if the end endpoint is "closed"
-    //   (cap apex at arc total_arc); else total_arc.
-    //
-    // Mapping from "high-Z / low-Z closed" panel toggles to "start /
-    // end closed" depends on the centerline polyline's direction.
+    // Geometry semantic (slice 3 polish 6): cylinder runs along the
+    // FULL centerline arc; each closed end has an ELLIPSOIDAL cap
+    // whose height is sized to the scan's actual extent past the
+    // centerline endpoint along the outward direction. The cap thus
+    // hugs the scan's natural dome rather than projecting a full
+    // hemisphere of R into empty space above the scan apex.
     let r = state.radius_m;
     let last_idx = centerline.points_m.len() - 1;
     let high_z_is_start = centerline.points_m[0].z >= centerline.points_m[last_idx].z;
@@ -745,46 +769,15 @@ fn draw_outer_envelope_overlay(
         (state.closed_at_low_z, state.closed_at_high_z)
     };
 
-    // Degenerate-radius guard: if both ends are closed and 2R >=
-    // total_arc, the cylindrical section collapses → early return.
-    // (Slider range max prevents this when both ends closed, but the
-    // check is defensive against future config drift.)
-    if closed_at_start && closed_at_end && r * 2.0 >= total_arc {
-        return;
-    }
-    // Similar guards for one-end-closed cases.
-    if closed_at_start && !closed_at_end && r >= total_arc {
-        return;
-    }
-    if !closed_at_start && closed_at_end && r >= total_arc {
-        return;
-    }
-    let trim_start = if closed_at_start { r } else { 0.0 };
-    let trim_end = if closed_at_end {
-        total_arc - r
-    } else {
-        total_arc
-    };
-
     // Pale green-blue; distinguishes from scan (white) + axis arrows
     // (red/green/blue full saturation) + centerline (cyan).
     let color = Color::srgb(0.55, 0.85, 0.70);
 
-    // Build the list of cylindrical-section ring arc positions:
-    //   [trim_start, all centerline arcs in (trim_start, trim_end), trim_end]
-    let mut cyl_arcs: Vec<f64> = vec![trim_start];
+    // Build cylindrical-section rings at every centerline polyline
+    // point (no trim — the cap extends BEYOND the centerline
+    // endpoints, the cylinder fills the full arc).
+    let mut rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(arc_positions.len());
     for &arc in &arc_positions {
-        if arc > trim_start && arc < trim_end {
-            cyl_arcs.push(arc);
-        }
-    }
-    cyl_arcs.push(trim_end);
-
-    // Sample each cylindrical-section ring (position + tangent + basis
-    // + projected ring vertices). Each ring has
-    // OUTER_ENVELOPE_RING_SEGMENTS vertices in Bevy frame.
-    let mut rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(cyl_arcs.len());
-    for &arc in &cyl_arcs {
         let Some((ring_center, tangent)) =
             sample_centerline_at_arc(&centerline.points_m, &arc_positions, arc)
         else {
@@ -825,30 +818,27 @@ fn draw_outer_envelope_overlay(
         }
     }
 
-    // Hemispherical end caps under the capsule-along-centerline
-    // convention. Each cap is drawn only if the corresponding end is
-    // "closed" per the panel toggles. The cap at the start of the
-    // centerline anchors at arc `trim_start` (= R when closed), with
-    // its apex at arc 0; the cap at the end anchors at `trim_end`
-    // with its apex at arc `total_arc`. Open ends draw NO cap — the
-    // cylindrical rim ring (already drawn above) is the visible
-    // boundary, matching the cleaned-scan flat-cap convention.
+    // Ellipsoidal end caps. For each closed end, the cap base is at
+    // the centerline ENDPOINT (the cylinder's terminal rim ring),
+    // the outward tangent points away from the centerline interior,
+    // and the cap height is computed from the scan AABB's extent
+    // past the endpoint along that outward direction. The cap thus
+    // hugs the actual dome height (e.g. ~8 mm on a sock-shaped
+    // scan whose centerline endpoint sits ~5 mm inside the dome
+    // surface), not a full R hemisphere.
     if closed_at_start {
-        let Some((start_base, start_tangent)) =
-            sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_start)
-        else {
-            return;
-        };
-        let (start_b1, start_b2) =
-            sample_basis_at_arc(&bases.bases, &arc_positions, trim_start, &start_tangent);
-        // Outward at the start cap = direction toward arc 0 =
-        // -tangent at trim_start.
+        let start_point = centerline.points_m[0];
+        let start_outward = -local_tangent(&centerline.points_m, 0);
+        let start_cap_height =
+            scan_extent_past_endpoint(&start_point, &start_outward, &info.scan_aabb_m);
+        let (start_b1, start_b2) = bases.bases[0];
         draw_hemispherical_cap(
-            &start_base,
-            &(-start_tangent),
+            &start_point,
+            &start_outward,
             &start_b1,
             &start_b2,
             r,
+            start_cap_height,
             &rings_bevy[0],
             *up,
             render_scale.0,
@@ -858,22 +848,18 @@ fn draw_outer_envelope_overlay(
     }
 
     if closed_at_end {
-        let Some((end_base, end_tangent)) =
-            sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_end)
-        else {
-            return;
-        };
-        let (end_b1, end_b2) =
-            sample_basis_at_arc(&bases.bases, &arc_positions, trim_end, &end_tangent);
-        // Outward at the end cap = direction toward arc total_arc =
-        // +tangent at trim_end.
+        let end_point = centerline.points_m[last_idx];
+        let end_outward = local_tangent(&centerline.points_m, last_idx);
+        let end_cap_height = scan_extent_past_endpoint(&end_point, &end_outward, &info.scan_aabb_m);
+        let (end_b1, end_b2) = bases.bases[last_idx];
         let last_ring_idx = rings_bevy.len() - 1;
         draw_hemispherical_cap(
-            &end_base,
-            &end_tangent,
+            &end_point,
+            &end_outward,
             &end_b1,
             &end_b2,
             r,
+            end_cap_height,
             &rings_bevy[last_ring_idx],
             *up,
             render_scale.0,
@@ -883,21 +869,26 @@ fn draw_outer_envelope_overlay(
     }
 }
 
-/// Draw a hemispherical end cap of radius `radius_m` centered at
-/// `base_point`, with its axis along `outward_tangent` (the
-/// "outward" direction away from the centerline interior). Uses
-/// `(b1, b2)` as the cylindrical-section basis for the rim ring;
-/// latitude rings step from θ = 0 (matches the existing rim) toward
-/// θ = π/2 (apex at `base_point + radius_m * outward_tangent`).
+/// Draw an ellipsoidal end cap centered at `base_point` with its
+/// axis along `outward_tangent` (away from the centerline
+/// interior). Uses `(b1, b2)` as the rim-ring basis. `radius_m` =
+/// equatorial ring radius (matches the cylinder section);
+/// `height_m` = distance from base to apex along `outward_tangent`.
+/// When `height_m == radius_m` the cap is a hemisphere; when
+/// `height_m < radius_m` it's an oblate (flatter) dome — used in
+/// slice 3 polish 6 to size the cap to the scan's actual extent
+/// past the centerline endpoint instead of always drawing a full
+/// R hemisphere.
 ///
-/// Drawing pattern:
-/// - `OUTER_ENVELOPE_CAP_LATITUDES` intermediate ring circles at
-///   evenly-spaced θ values strictly between 0 and π/2.
-/// - Single apex point at θ = π/2.
-/// - `OUTER_ENVELOPE_LONGITUDINAL_LINES` longitudinal arcs from the
-///   rim ring (via existing `base_ring_bevy[k*step]`) up to the
-///   apex, passing through corresponding ring vertices at each
-///   intermediate latitude.
+/// Cap latitudes are parameterized by `t ∈ [0, 1]` (0 = rim, 1 =
+/// apex). At each `t`:
+/// `ring_radius = radius_m * sqrt(1 - t²)`,
+/// `ring_offset_along_outward = height_m * t`. This matches an
+/// ellipsoid `(x/R)² + (y/R)² + (z/H)² = 1` at the cap half —
+/// equator at `t=0`, pole at `t=1`. Drawing pattern:
+/// `OUTER_ENVELOPE_CAP_LATITUDES` intermediate ring circles +
+/// `OUTER_ENVELOPE_LONGITUDINAL_LINES` arcs from `base_ring_bevy`
+/// through the cap rings up to the apex.
 #[allow(clippy::too_many_arguments)] // Helper packs the full cap-draw context.
 fn draw_hemispherical_cap(
     base_point: &Point3<f64>,
@@ -905,6 +896,7 @@ fn draw_hemispherical_cap(
     b1: &Vector3<f64>,
     b2: &Vector3<f64>,
     radius_m: f64,
+    height_m: f64,
     base_ring_bevy: &[Vec3],
     up: UpAxis,
     render_scale: f32,
@@ -912,14 +904,13 @@ fn draw_hemispherical_cap(
     gizmos: &mut Gizmos,
 ) {
     // Build intermediate cap rings + apex point in Bevy frame.
-    // `cap_rings_bevy[lat]` is the ring at latitude θ_lat.
+    // `cap_rings_bevy[lat]` is the ring at latitude t_lat.
     let mut cap_rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(OUTER_ENVELOPE_CAP_LATITUDES);
     for lat in 1..=OUTER_ENVELOPE_CAP_LATITUDES {
         #[allow(clippy::cast_precision_loss)] // lat fits in f64.
-        let theta =
-            (lat as f64 / (OUTER_ENVELOPE_CAP_LATITUDES + 1) as f64) * std::f64::consts::FRAC_PI_2;
-        let ring_center = base_point.coords + outward_tangent * (radius_m * theta.sin());
-        let ring_radius = radius_m * theta.cos();
+        let t = lat as f64 / (OUTER_ENVELOPE_CAP_LATITUDES + 1) as f64;
+        let ring_center = base_point.coords + outward_tangent * (height_m * t);
+        let ring_radius = radius_m * (1.0 - t * t).max(0.0).sqrt();
         let mut ring = Vec::with_capacity(OUTER_ENVELOPE_RING_SEGMENTS);
         for seg in 0..OUTER_ENVELOPE_RING_SEGMENTS {
             #[allow(clippy::cast_precision_loss)]
@@ -930,7 +921,7 @@ fn draw_hemispherical_cap(
         }
         cap_rings_bevy.push(ring);
     }
-    let apex_physics = Point3::from(base_point.coords + outward_tangent * radius_m);
+    let apex_physics = Point3::from(base_point.coords + outward_tangent * height_m);
     let apex_bevy = Vec3::from_array(up.to_bevy_point(&apex_physics)) * render_scale;
 
     // Draw the intermediate cap rings (closed circles).
@@ -1633,20 +1624,44 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn outer_envelope_slider_max_under_half_arc_for_capsule_semantic() {
-        // Capsule-along-centerline semantics require `2 R < arc`. We
-        // cap max at `arc/2 - 5 mm` so the cylindrical section has
-        // ≥ 5 mm of length even at max radius. For arc 134 mm that's
-        // 62 mm.
+    fn outer_envelope_slider_max_uses_bbox_diagonal() {
+        // Slice 3 polish 6 dropped the prior `R < arc/2` capsule
+        // constraint — cap height is now sized to the scan's dome
+        // extent, independent of R. Slider max is just the bbox
+        // diagonal so the user can dial freely.
         let info = dummy_scan_info_with_centerline(0.168, 0.134);
         let (_, max_m) = OuterEnvelopeState::slider_range_m(&info);
-        assert!(
-            max_m < info.centerline_arc_length_m * 0.5,
-            "max {} should be < arc/2 = {}",
-            max_m,
-            info.centerline_arc_length_m * 0.5,
+        assert!(approx_eq(max_m, 0.168, 1e-12), "got {max_m}");
+    }
+
+    #[test]
+    fn scan_extent_past_endpoint_zero_when_aabb_behind_endpoint() {
+        // Endpoint at (0, 0, +0.100), outward = +Z; AABB entirely
+        // BEHIND the endpoint (z < 0.100). All corner projections
+        // are negative → returns 0.0 (defensive).
+        let endpoint = Point3::new(0.0, 0.0, 0.100);
+        let outward = Vector3::new(0.0, 0.0, 1.0);
+        let aabb = Aabb::new(
+            Point3::new(-0.030, -0.030, 0.0),
+            Point3::new(0.030, 0.030, 0.050),
         );
-        assert!(approx_eq(max_m, 0.062, 1e-12));
+        let e = scan_extent_past_endpoint(&endpoint, &outward, &aabb);
+        assert!(approx_eq(e, 0.0, 1e-12), "got {e}");
+    }
+
+    #[test]
+    fn scan_extent_past_endpoint_iter_1_top_yields_dome_height() {
+        // Iter-1-shaped scan: endpoint at (0, 0, +0.080) with
+        // outward = +Z; AABB extends to z = +0.087. Extent past =
+        // 7 mm (the dome height).
+        let endpoint = Point3::new(0.0, 0.0, 0.080);
+        let outward = Vector3::new(0.0, 0.0, 1.0);
+        let aabb = Aabb::new(
+            Point3::new(-0.035, -0.035, -0.057),
+            Point3::new(0.035, 0.035, 0.087),
+        );
+        let e = scan_extent_past_endpoint(&endpoint, &outward, &aabb);
+        assert!(approx_eq(e, 0.007, 1e-12), "got {e}");
     }
 
     #[test]
