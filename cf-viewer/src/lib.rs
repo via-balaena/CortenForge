@@ -56,7 +56,8 @@ pub use sequence::Sequence;
 /// Inserted as a Bevy resource by `main.rs` when [`InputMode::Assembly`]
 /// is selected via `--assembly`. The spawn system enumerates this
 /// Vec at startup and creates one entity per piece, each tagged with
-/// [`AssemblyPiece`] for per-piece visibility toggling.
+/// an `AssemblyPiece` component (lives in `main.rs`) for per-piece
+/// visibility toggling.
 ///
 /// Distinct from [`ViewerInput`] (which is the single-mesh
 /// PLY/Sequence carrier) — assembly mode does NOT participate in
