@@ -136,9 +136,8 @@ pub fn build_registration_solid(ribbon: &Ribbon) -> Option<Solid> {
     for &t in &spec.arc_fractions {
         let (center, _tangent, binormal) = ribbon.sample_at_arc_fraction(t)?;
         let pin_center = center + spec.offset_from_centerline_m * split_vec;
-        let rotation =
-            UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &binormal)
-                .unwrap_or_else(UnitQuaternion::identity);
+        let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &binormal)
+            .unwrap_or_else(UnitQuaternion::identity);
         let cyl = Solid::cylinder(spec.pin_radius_m, spec.pin_half_length_m)
             .rotate(rotation)
             .translate(pin_center.coords);
@@ -162,10 +161,7 @@ mod tests {
     use nalgebra::Point3;
 
     fn straight_x_ribbon() -> Ribbon {
-        let centerline = vec![
-            Point3::new(-0.050, 0.0, 0.0),
-            Point3::new(0.050, 0.0, 0.0),
-        ];
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         Ribbon::new(centerline, split).unwrap()
     }
@@ -192,9 +188,12 @@ mod tests {
 
     #[test]
     fn build_registration_solid_pins_returns_some_with_finite_bounds() {
-        let ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let pins = build_registration_solid(&ribbon).expect("pin spec should yield a solid");
-        let aabb = pins.bounds().expect("pin cylinders should have finite bounds");
+        let aabb = pins
+            .bounds()
+            .expect("pin cylinders should have finite bounds");
         // 2 pins along +X at 25%/75% of 100 mm centerline → x ∈
         // [-0.025, +0.025] (centers). Each pin offset +0.025 in y
         // and centered at z=0 with half-length 5 mm.
@@ -226,7 +225,8 @@ mod tests {
         //   radius 1.5 mm, half-length 5 mm
         // Query the pin Solid at the pin center: SDF < 0 (inside).
         // Query far away: SDF > 0 (outside).
-        let ribbon = straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        let ribbon =
+            straight_x_ribbon().with_registration(RegistrationKind::Pins(PinSpec::iter1()));
         let pins = build_registration_solid(&ribbon).unwrap();
 
         let pin_center = Point3::new(-0.025, 0.025, 0.0);
