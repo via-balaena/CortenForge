@@ -47,10 +47,10 @@ use cf_viewer::{
 };
 use clap::{Parser, ValueEnum};
 use mesh_io::load_stl;
-use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
+use mesh_repair::{MeshAdjacency, holes, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use meshopt::{SimplifyOptions, simplify_decoder};
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
 /// Cast-frame up-axis convention: `+Z` is the demolding direction
 /// (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home). All
@@ -481,6 +481,90 @@ impl Default for ClipState {
     }
 }
 
+/// One detected boundary loop on the scan, with its least-squares
+/// plane fit + per-loop user-decided cap-include state. Populated by
+/// the `[Scan]` button's run-once handler; consumed by
+/// `render_cap_section` (display) + `draw_cap_overlays` (gizmo
+/// linestrip + plane outline) + commit #12 (bake into cleaned STL on
+/// save).
+///
+/// All vertex indices are into the **scan mesh as it was at scan
+/// time** — the boundary loop's vertex IDs reference positions in
+/// `ScanMesh` snapshotted when the user clicked `[Scan]`. If the user
+/// then simplifies or otherwise mutates `ScanMesh`, the indices go
+/// stale and the loop list dims via the `CapState::stale` flag.
+#[derive(Debug, Clone)]
+struct DetectedCapLoop {
+    /// Ordered vertex indices forming the boundary loop (closed: the
+    /// last edge connects back to vertex 0).
+    vertex_indices: Vec<u32>,
+    /// Least-squares fit plane: position `centroid` and unit normal.
+    /// Centroid is the average of loop vertex positions in mesh-local
+    /// physics-frame meters; normal is outward-oriented per the
+    /// mesh-side-of-plane heuristic. Stored at scan time for use by
+    /// commit #12's ear-clipping triangulation (the bake step needs
+    /// both centroid + normal to project loop vertices onto the fit
+    /// plane before triangulating into cap faces).
+    #[allow(dead_code)] // Used at commit #12 (Save) for cap triangulation.
+    plane_centroid: Point3<f64>,
+    plane_normal: Vector3<f64>,
+    /// Plane-fit R²: 1.0 = perfectly planar loop; 0.0 = totally
+    /// non-planar. Surfaced to the user so they can judge whether
+    /// auto-fit produced a reasonable cap.
+    plane_fit_r_squared: f64,
+    /// User decision: include this loop in `[Apply caps]` /
+    /// downstream save? Default `true` if vertex count >= 8 (per
+    /// spec: small loops are often acceptable holes / scanner
+    /// artifacts), `false` otherwise.
+    include: bool,
+}
+
+/// Cap open boundaries state (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §6). Holds the latest scan result + the centerline
+/// polyline (option-3 hedge for curve-following cf-cast).
+///
+/// **Scan vs Apply**: the `[Scan]` button populates `loops` +
+/// `centerline_polyline` from the current `ScanMesh`. `[Apply caps]`
+/// just commits the user's per-loop include selections — the actual
+/// cap-triangle generation + bake into the saved STL happens at
+/// commit #12 (Save panel). Until then `CapState` is purely
+/// informational + visualization-driving.
+///
+/// **Stale invalidation**: when the user changes Reorient / Recenter
+/// / Simplify after a scan, the loop indices may point at vertices
+/// that no longer exist (post-Simplify) or the plane fits are in a
+/// stale physics frame relative to the rotated/translated mesh. The
+/// `stale` flag is set on any such change; the panel dims the loop
+/// list + shows a "Transform changed — re-Scan to refresh" overlay
+/// until the user re-clicks `[Scan]`.
+#[derive(Resource, Debug, Clone, Default)]
+struct CapState {
+    /// Loops detected by the most recent `[Scan]` run. Empty until
+    /// the user clicks Scan for the first time.
+    loops: Vec<DetectedCapLoop>,
+    /// Cross-section-centroid polyline approximating the scan's
+    /// centerline, in physics-frame meters. Option-3 hedge: validates
+    /// the centerline algorithm cf-cast will need for curve-following
+    /// multi-piece molds, without yet building the full cf-cast
+    /// architecture. Empty until first scan.
+    centerline_polyline: Vec<Point3<f64>>,
+    /// `true` when any state changes after a scan have invalidated
+    /// the cached loops / centerline. The panel dims its readout +
+    /// the overlays draw with reduced opacity until the user
+    /// re-scans.
+    stale: bool,
+}
+
+/// User action queued by the Cap panel's `[Scan]` button. Consumed
+/// next Update tick by `handle_cap_actions`, which runs the actual
+/// detection + plane fit + centerline math.
+#[derive(Resource, Debug, Default)]
+struct CapPendingAction {
+    /// Set to `true` when the user clicks `[Scan]`; consumed
+    /// (cleared) by `handle_cap_actions`.
+    rescan: bool,
+}
+
 /// Walk the scan's vertices, transform each into cast-frame world
 /// coordinates (rotation + translation_z), and return the percentage
 /// that fall below `clip_z_mm`. Called by [`update_clip_drop_pct`]
@@ -692,6 +776,235 @@ fn clip_mesh_against_world_z(
     clipped.faces = new_faces;
     remove_unreferenced_vertices(&mut clipped);
     clipped
+}
+
+/// Detect all open boundary loops in `mesh`. Wraps `mesh-repair`'s
+/// `detect_holes`, which builds adjacency + walks boundary edges into
+/// closed vertex-index loops. Returns a `Vec<BoundaryLoop>` (each
+/// loop's `vertices` is an ordered list of vertex indices closing
+/// back to vertex 0).
+fn detect_boundary_loops(mesh: &IndexedMesh) -> Vec<holes::BoundaryLoop> {
+    let adjacency = MeshAdjacency::build(&mesh.faces);
+    holes::detect_holes(mesh, &adjacency)
+}
+
+/// Least-squares fit a plane to a set of 3D points via SVD on the
+/// centered covariance matrix. Returns `(centroid, normal, r_squared)`.
+///
+/// **Algorithm**: compute the points' centroid, build the covariance
+/// matrix `Σ (p - centroid)(p - centroid)^T`, SVD-decompose it. The
+/// singular vector corresponding to the smallest singular value is
+/// the plane normal (direction of least variance through the cloud).
+/// R² is `1.0 - (smallest_singular_value² / sum_of_singular_values²)` —
+/// measures how concentrated the variance is in the two larger
+/// directions vs. the normal direction. A perfectly planar loop has
+/// `smallest = 0` → `R² = 1.0`; a spherical cloud has all three
+/// roughly equal → `R² ≈ 2/3`.
+///
+/// **Caller responsibility**: the returned normal is *unsigned* —
+/// the SVD doesn't tell us which side is "outward". Pair with
+/// [`orient_cap_normal_outward`] to flip the normal so it points
+/// away from the mesh interior.
+///
+/// Handles degenerate input: < 3 points returns an identity-ish
+/// fallback (`+Z` normal, centroid at origin, R² = 0). Real loops
+/// have ≥ 3 vertices via mesh-repair's `BoundaryLoop::is_valid`.
+fn fit_plane_to_points(points: &[Point3<f64>]) -> (Point3<f64>, Vector3<f64>, f64) {
+    if points.len() < 3 {
+        return (Point3::origin(), Vector3::new(0.0, 0.0, 1.0), 0.0);
+    }
+    // Compute centroid.
+    let mut sum = Vector3::zeros();
+    for p in points {
+        sum += p.coords;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = points.len() as f64;
+    let centroid_v = sum / n;
+    let centroid = Point3::from(centroid_v);
+
+    // Build covariance matrix Σ (p - centroid)(p - centroid)^T.
+    let mut cov = Matrix3::<f64>::zeros();
+    for p in points {
+        let d = p.coords - centroid_v;
+        cov += d * d.transpose();
+    }
+
+    // SVD: cov = U Σ V^T. For a symmetric matrix, U = V; the columns
+    // of U are eigenvectors and the singular values are eigenvalues
+    // (non-negative).
+    let svd = cov.svd(true, true);
+    let singular_values = svd.singular_values;
+    // Smallest singular value's index — that's our normal direction.
+    let (min_idx, min_sv) =
+        if singular_values[2] <= singular_values[1] && singular_values[2] <= singular_values[0] {
+            (2, singular_values[2])
+        } else if singular_values[1] <= singular_values[0] {
+            (1, singular_values[1])
+        } else {
+            (0, singular_values[0])
+        };
+
+    let normal = if let Some(u) = &svd.u {
+        let col = u.column(min_idx);
+        Vector3::new(col[0], col[1], col[2])
+    } else {
+        Vector3::new(0.0, 0.0, 1.0)
+    };
+
+    // R² = 1 - (min_sv² / sum_sv²). If all singular values are zero
+    // (all points coincident), the plane is undefined; fall back to
+    // R² = 0.
+    let sum_sq = singular_values[0] * singular_values[0]
+        + singular_values[1] * singular_values[1]
+        + singular_values[2] * singular_values[2];
+    let r_squared = if sum_sq > f64::EPSILON {
+        1.0 - (min_sv * min_sv) / sum_sq
+    } else {
+        0.0
+    };
+    (centroid, normal.normalize(), r_squared)
+}
+
+/// Flip `normal` so it points **away from the mesh interior**.
+///
+/// **Heuristic**: sample mesh vertices, count how many fall on each
+/// side of the plane (loop_centroid + normal · t). The side with the
+/// MORE vertices is the "interior" (since the mesh extends inward
+/// from the loop). The normal should point to the side with FEWER
+/// vertices. If the heuristic is ambiguous (~50/50 split — possible
+/// when the loop wraps a thin protrusion), the input normal is
+/// returned unchanged; user can manually override via the cap panel's
+/// manual sub-section (out of MVP scope; deferred).
+///
+/// Per spec §Architectural decisions §"Cap normal orientation": the
+/// triangulated cap winding determines outward direction; we need
+/// the normal to face away from the mesh interior so `mesh_sdf`
+/// computes correct inside/outside at commit #12.
+fn orient_cap_normal_outward(
+    mesh: &IndexedMesh,
+    plane_centroid: Point3<f64>,
+    normal: Vector3<f64>,
+) -> Vector3<f64> {
+    let mut above: usize = 0;
+    let mut below: usize = 0;
+    for v in &mesh.vertices {
+        let signed = (v.coords - plane_centroid.coords).dot(&normal);
+        if signed > 0.0 {
+            above += 1;
+        } else if signed < 0.0 {
+            below += 1;
+        }
+    }
+    // The "mesh-majority side" is the side with more vertices. The
+    // outward normal points away from that side.
+    if above > below { -normal } else { normal }
+}
+
+/// Build a cap-loop record from a detected boundary loop: fits its
+/// plane, orients the normal outward, decides the default per-loop
+/// include flag based on vertex count.
+fn build_detected_cap_loop(mesh: &IndexedMesh, loop_data: &holes::BoundaryLoop) -> DetectedCapLoop {
+    let loop_points: Vec<Point3<f64>> = loop_data
+        .vertices
+        .iter()
+        .map(|&idx| mesh.vertices[idx as usize])
+        .collect();
+    let (plane_centroid, plane_normal_raw, r_squared) = fit_plane_to_points(&loop_points);
+    let plane_normal = orient_cap_normal_outward(mesh, plane_centroid, plane_normal_raw);
+
+    // Spec §Panel specifications §6: default-check loops with vertex
+    // count ≥ 8 (small loops are usually acceptable holes or scanner
+    // artifacts).
+    let include = loop_data.vertices.len() >= 8;
+
+    DetectedCapLoop {
+        vertex_indices: loop_data.vertices.clone(),
+        plane_centroid,
+        plane_normal,
+        plane_fit_r_squared: r_squared,
+        include,
+    }
+}
+
+/// Approximate the scan's centerline via cross-section centroids
+/// along a "spine" axis. Option-3 hedge: validates the centerline
+/// algorithm cf-cast needs for curve-following multi-piece molds.
+///
+/// **Algorithm**: pick a spine direction (the first cap loop's
+/// outward normal — points from cup-mouth toward the appendage tip).
+/// Project every mesh vertex onto this axis to get its "depth"; bin
+/// vertices into `n_slices` slabs covering the depth range; take the
+/// 3D centroid of each slab → polyline of centroids.
+///
+/// For an elongated, mostly-tubular scan (the prosthetic-appendage
+/// case): each slab's centroid is roughly where the spine sits at
+/// that depth. The polyline follows the natural curve. Fails on
+/// branching geometry (multi-finger hands, multi-limb torsos) where
+/// a single centroid can't represent multiple branches; those cases
+/// would need a real medial-axis algorithm (MCF / Voronoi). Not in
+/// MVP scope.
+///
+/// **Empty / degenerate input**: returns `Vec::new()` if the mesh
+/// has no vertices or the spine direction is zero-magnitude; the
+/// drawing system then skips the centerline overlay.
+fn compute_centerline_polyline(
+    mesh: &IndexedMesh,
+    spine_direction: Vector3<f64>,
+    n_slices: usize,
+) -> Vec<Point3<f64>> {
+    if mesh.vertices.is_empty() || spine_direction.norm_squared() < f64::EPSILON {
+        return Vec::new();
+    }
+    let axis = spine_direction.normalize();
+
+    // Single pass: collect depth + 3D position per vertex.
+    let depths: Vec<f64> = mesh.vertices.iter().map(|v| axis.dot(&v.coords)).collect();
+    let min_d = depths.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_d = depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = max_d - min_d;
+    if range < f64::EPSILON {
+        return Vec::new();
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let slab_width = range / (n_slices as f64);
+
+    let mut polyline: Vec<Point3<f64>> = Vec::with_capacity(n_slices);
+    for i in 0..n_slices {
+        #[allow(clippy::cast_precision_loss)]
+        let lo = min_d + (i as f64) * slab_width;
+        let hi = lo + slab_width;
+        let mut sum = Vector3::zeros();
+        let mut count: usize = 0;
+        for (j, v) in mesh.vertices.iter().enumerate() {
+            if depths[j] >= lo && depths[j] < hi {
+                sum += v.coords;
+                count += 1;
+            }
+        }
+        if count > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let centroid = sum / (count as f64);
+            polyline.push(Point3::from(centroid));
+        }
+    }
+    polyline
+}
+
+/// Project a physics-frame mesh-local point through the live
+/// Reorient + Recenter + render_scale + up-axis-swap pipeline into
+/// Bevy world-space. Used by the cap-overlay drawing system to
+/// position loop vertices + centerline polyline points in the
+/// viewport so they track the user's current transforms.
+fn project_mesh_local_to_world(
+    physics_local: &Point3<f64>,
+    up: UpAxis,
+    reorient_rotation_bevy: Quat,
+    recenter_world: Vec3,
+    render_scale: f32,
+) -> Vec3 {
+    let bevy_local = Vec3::from_array(up.to_bevy_point(physics_local));
+    recenter_world + reorient_rotation_bevy * (bevy_local * render_scale)
 }
 
 /// Compute the **post-Reorient** AABB of the raw scan AABB in
@@ -1006,6 +1319,8 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         .insert_resource(ReorientState::default())
         .insert_resource(RecenterState::default())
         .insert_resource(ClipState::default())
+        .insert_resource(CapState::default())
+        .insert_resource(CapPendingAction::default())
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
@@ -1025,8 +1340,11 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
                 apply_reorient_to_transform,
                 apply_recenter_to_transform,
                 update_clip_drop_pct,
+                handle_cap_actions,
+                mark_cap_stale_on_transform_change,
                 auto_clear_status,
                 draw_reference_overlays,
+                draw_cap_overlays,
                 exit_on_esc,
             ),
         )
@@ -1456,6 +1774,191 @@ fn draw_reference_overlays(
     }
 }
 
+/// Update system: handle the Cap panel's `[Scan]` action. Reads the
+/// `CapPendingAction::rescan` flag; on `true`, runs boundary loop
+/// detection on the current `ScanMesh`, fits planes, orients normals,
+/// computes the centerline polyline, and writes everything to
+/// `CapState`. Idempotent — does nothing when no scan is pending.
+///
+/// **Why not run on every state change**: detection + plane fits +
+/// centerline are O(N) over the mesh; can be slow on un-simplified
+/// scans (~50 ms+ for 10M verts). Running on user-explicit trigger
+/// keeps the UI responsive; the staleness pattern (re-Scan to
+/// refresh) makes the user-explicit cadence visible.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn handle_cap_actions(
+    mut pending: ResMut<CapPendingAction>,
+    mut cap: ResMut<CapState>,
+    scan: Res<ScanMesh>,
+    mut status: ResMut<StatusBar>,
+    time: Res<Time>,
+) {
+    if !pending.rescan {
+        return;
+    }
+    pending.rescan = false;
+
+    let raw_loops = detect_boundary_loops(&scan.0);
+    cap.loops = raw_loops
+        .iter()
+        .filter(|loop_data| loop_data.is_valid())
+        .map(|loop_data| build_detected_cap_loop(&scan.0, loop_data))
+        .collect();
+
+    // Centerline: use the first cap loop's outward normal as the
+    // spine direction. If no loops detected (closed mesh — unusual
+    // for cf-scan-prep input but possible), skip the centerline.
+    cap.centerline_polyline = if let Some(first_loop) = cap.loops.first() {
+        compute_centerline_polyline(&scan.0, first_loop.plane_normal, 30)
+    } else {
+        Vec::new()
+    };
+
+    cap.stale = false;
+
+    let n_loops = cap.loops.len();
+    let centerline_msg = if cap.centerline_polyline.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; centerline = {} segments",
+            cap.centerline_polyline.len().saturating_sub(1)
+        )
+    };
+    status.text = format!(
+        "Scanned: {n_loops} boundary loop{}{centerline_msg}",
+        if n_loops == 1 { "" } else { "s" },
+    );
+    status.kind = StatusKind::Normal;
+    status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + STATUS_NORMAL_TTL_SECS);
+}
+
+/// Update system: set `CapState::stale = true` when Reorient,
+/// Recenter, or `ScanMesh` changes after a scan has populated
+/// `CapState::loops`. Spec §Panel specifications §6: the loop
+/// indices and plane fits are tied to the mesh as-it-was at scan
+/// time; subsequent transforms / simplify operations invalidate them.
+///
+/// **Cheap check**: only reads change flags and writes a single bool
+/// via `bypass_change_detection` so we don't re-trigger ourselves.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn mark_cap_stale_on_transform_change(
+    mut cap: ResMut<CapState>,
+    scan: Res<ScanMesh>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+) {
+    // Nothing to invalidate if no scan has happened yet.
+    if cap.loops.is_empty() {
+        return;
+    }
+    if cap.stale {
+        return;
+    }
+    if scan.is_changed() || reorient.is_changed() || recenter.is_changed() {
+        cap.bypass_change_detection().stale = true;
+    }
+}
+
+/// Update system: draw boundary linestrips + centerline polyline as
+/// always-on Cap overlays when `CapState::loops` is populated. Each
+/// detected loop draws a red linestrip following its boundary edges
+/// (closing back to vertex 0). The centerline polyline draws as a
+/// cyan linestrip from base to tip — option-3 hedge for curve-
+/// following cf-cast.
+///
+/// When the cap is **stale** (transforms changed since scan),
+/// overlays draw with reduced opacity (dimmer color) so the user
+/// sees they need to re-scan.
+///
+/// **Per-loop color disambiguation** (spec §Panel specifications §6):
+/// loops cycle through a small palette so multi-loop scans visually
+/// distinguish each boundary. With 1-3 loops typical, a 4-color
+/// cycle suffices.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+#[allow(clippy::too_many_arguments)] // Bevy gizmo draw system pulls many Res.
+fn draw_cap_overlays(
+    cap: Res<CapState>,
+    scan: Res<ScanMesh>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut gizmos: Gizmos,
+) {
+    if cap.loops.is_empty() {
+        return;
+    }
+    let rotation_bevy = physics_quat_to_bevy_for_plus_z(reorient.quaternion_physics());
+    let recenter_world = recenter.translation_world(*up, render_scale.0);
+
+    // Dim factor: stale caps draw at 35% brightness so they read as
+    // "needs refresh" without disappearing.
+    let dim = if cap.stale { 0.35 } else { 1.0 };
+
+    // Per-loop palette: cycle through 4 distinguishable colors so
+    // multi-loop scans read as separate boundaries.
+    let palette = [
+        Color::srgb(1.0 * dim, 0.30 * dim, 0.30 * dim),  // red
+        Color::srgb(1.0 * dim, 0.65 * dim, 0.20 * dim),  // orange
+        Color::srgb(0.85 * dim, 0.85 * dim, 0.20 * dim), // yellow
+        Color::srgb(0.95 * dim, 0.40 * dim, 0.85 * dim), // magenta
+    ];
+
+    for (loop_idx, cap_loop) in cap.loops.iter().enumerate() {
+        let color = palette[loop_idx % palette.len()];
+        // Boundary linestrip: connect consecutive vertices, closing
+        // back to vertex 0.
+        let positions: Vec<Vec3> = cap_loop
+            .vertex_indices
+            .iter()
+            .map(|&idx| {
+                // Index validity: loop indices were captured at scan
+                // time. After a Simplify, scan.0.vertices may be
+                // shorter than expected; bounds-check defensively to
+                // avoid a panic. The `stale` flag + dimmed render
+                // signal the user that the topology mismatch
+                // happened.
+                let phys = scan
+                    .0
+                    .vertices
+                    .get(idx as usize)
+                    .copied()
+                    .unwrap_or_else(Point3::origin);
+                project_mesh_local_to_world(
+                    &phys,
+                    *up,
+                    rotation_bevy,
+                    recenter_world,
+                    render_scale.0,
+                )
+            })
+            .collect();
+        for window in positions.windows(2) {
+            gizmos.line(window[0], window[1], color);
+        }
+        // Close the loop.
+        if positions.len() >= 2 {
+            gizmos.line(positions[positions.len() - 1], positions[0], color);
+        }
+    }
+
+    // Centerline polyline — cyan, also dimmed if stale.
+    if !cap.centerline_polyline.is_empty() {
+        let centerline_color = Color::srgb(0.25 * dim, 0.85 * dim, 1.0 * dim);
+        let centerline_world: Vec<Vec3> = cap
+            .centerline_polyline
+            .iter()
+            .map(|p| {
+                project_mesh_local_to_world(p, *up, rotation_bevy, recenter_world, render_scale.0)
+            })
+            .collect();
+        for window in centerline_world.windows(2) {
+            gizmos.line(window[0], window[1], centerline_color);
+        }
+    }
+}
+
 /// Update system: clear the status bar text if its TTL has elapsed.
 /// Persistent messages (`auto_clear_at_secs = None`) are never cleared
 /// here — they're overwritten by the next status update instead.
@@ -1551,6 +2054,8 @@ fn scan_prep_panel(
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
     mut clip_state: ResMut<ClipState>,
+    mut cap_state: ResMut<CapState>,
+    mut cap_pending: ResMut<CapPendingAction>,
     status: Res<StatusBar>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -1568,6 +2073,7 @@ fn scan_prep_panel(
             render_reorient_section(ui, &mut reorient_state);
             render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
             render_clip_section(ui, &mut clip_state, &overlays);
+            render_cap_section(ui, &mut cap_state, &mut cap_pending);
         });
     Ok(())
 }
@@ -1807,6 +2313,72 @@ fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &Over
                         "⚠ Clip removes nearly all geometry — verify Z value",
                     );
                 }
+            }
+        });
+}
+
+/// `Cap open boundaries` section (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §6). Detects open boundary loops on the current
+/// scan, fits a plane to each via SVD, and displays per-loop
+/// metadata for the user to decide which ones to cap when the
+/// cleaned STL is saved.
+///
+/// **Scope at commit #9**: detection + display + visualization
+/// (linestrips + centerline) + per-loop include checkboxes + `[Scan]`
+/// re-run trigger. Cap-triangulation + bake-into-STL deferred to
+/// commit #12 (Save panel) — until then, "Apply" is just a state
+/// commitment; nothing modifies the mesh.
+///
+/// **Stale-loop banner**: when transforms or simplify change after a
+/// scan, the displayed list dims and a "Transform changed — re-Scan
+/// to refresh" notice appears. The user clicks `[Scan]` again to
+/// re-fit planes on the now-current mesh.
+fn render_cap_section(ui: &mut egui::Ui, state: &mut CapState, pending: &mut CapPendingAction) {
+    egui::CollapsingHeader::new("Cap open boundaries")
+        .default_open(true)
+        .show(ui, |ui| {
+            if ui.button("Scan").clicked() {
+                pending.rescan = true;
+            }
+
+            if state.loops.is_empty() {
+                ui.label(
+                    egui::RichText::new("(no scan yet — click Scan to detect boundary loops)")
+                        .italics(),
+                );
+                return;
+            }
+
+            if state.stale {
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 200, 80),
+                    "⚠ Transform changed — re-Scan to refresh",
+                );
+            }
+
+            ui.add_space(4.0);
+            ui.label(format!(
+                "Found {} boundary loop{}:",
+                state.loops.len(),
+                if state.loops.len() == 1 { "" } else { "s" },
+            ));
+            for (loop_idx, cap_loop) in state.loops.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    let label = format!(
+                        "Loop {loop_idx}  ({} verts, R² {:.3})",
+                        cap_loop.vertex_indices.len(),
+                        cap_loop.plane_fit_r_squared,
+                    );
+                    ui.checkbox(&mut cap_loop.include, label);
+                });
+            }
+
+            ui.add_space(4.0);
+            if !state.centerline_polyline.is_empty() {
+                ui.label(format!(
+                    "Centerline: {} segments (cyan polyline)",
+                    state.centerline_polyline.len().saturating_sub(1),
+                ));
             }
         });
 }
@@ -2527,6 +3099,151 @@ mod tests {
             1,
             "after 180° X rotation the triangle is at world z=+0.020, above clip plane",
         );
+    }
+
+    // ----- Cap algorithms (plane fit / normal / centerline) ---------
+
+    /// `fit_plane_to_points` on a perfectly planar XY-plane loop:
+    /// normal should be ±Z; R² should be 1.0; centroid at origin.
+    #[test]
+    fn plane_fit_on_xy_loop_returns_z_normal_and_unit_r_squared() {
+        let points = vec![
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(-1.0, 0.0, 0.0),
+            Point3::new(0.0, -1.0, 0.0),
+        ];
+        let (centroid, normal, r_sq) = fit_plane_to_points(&points);
+
+        assert!(centroid.x.abs() < 1e-9);
+        assert!(centroid.y.abs() < 1e-9);
+        assert!(centroid.z.abs() < 1e-9);
+        // Normal is ±Z (SVD doesn't pick a sign).
+        assert!(normal.x.abs() < 1e-9, "normal x: {}", normal.x);
+        assert!(normal.y.abs() < 1e-9, "normal y: {}", normal.y);
+        assert!(
+            (normal.z.abs() - 1.0).abs() < 1e-9,
+            "normal z: {}",
+            normal.z
+        );
+        // Planar loop → R² ≈ 1.
+        assert!((r_sq - 1.0).abs() < 1e-9, "r² = {r_sq}");
+    }
+
+    /// `fit_plane_to_points` on a non-planar (twisted) loop has
+    /// R² < 1. Four points lifted slightly off the XY plane in
+    /// alternating directions; the best-fit plane is still ~XY but
+    /// the residual is non-zero.
+    #[test]
+    fn plane_fit_on_twisted_loop_has_r_squared_below_one() {
+        let points = vec![
+            Point3::new(1.0, 0.0, 0.05),
+            Point3::new(0.0, 1.0, -0.05),
+            Point3::new(-1.0, 0.0, 0.05),
+            Point3::new(0.0, -1.0, -0.05),
+        ];
+        let (_, _, r_sq) = fit_plane_to_points(&points);
+        assert!(r_sq < 1.0);
+        assert!(
+            r_sq > 0.5,
+            "non-trivial twist; r² should still be high: {r_sq}"
+        );
+    }
+
+    /// `fit_plane_to_points` on < 3 input points returns the
+    /// fallback (R² = 0, normal = +Z). Degenerate input shouldn't
+    /// panic.
+    #[test]
+    fn plane_fit_degenerate_input_returns_fallback() {
+        let too_few = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
+        let (_, _, r_sq) = fit_plane_to_points(&too_few);
+        assert_eq!(r_sq, 0.0);
+    }
+
+    /// `orient_cap_normal_outward` flips the normal so it points
+    /// away from the side containing more mesh vertices. Build a
+    /// mesh with all vertices above the cap plane (z > 0); the
+    /// outward normal should be -Z (pointing away from mesh-side).
+    #[test]
+    fn orient_cap_normal_flips_to_point_away_from_mesh_majority() {
+        let mut mesh = IndexedMesh::with_capacity(5, 0);
+        for v in &[
+            (0.0, 0.0, 1.0),
+            (1.0, 0.0, 1.0),
+            (0.0, 1.0, 1.0),
+            (-1.0, 0.0, 2.0),
+            (0.0, -1.0, 2.0),
+        ] {
+            mesh.vertices.push(Point3::new(v.0, v.1, v.2));
+        }
+        let plane_centroid = Point3::origin();
+        // Try with normal pointing +Z (toward the mesh majority).
+        let oriented =
+            orient_cap_normal_outward(&mesh, plane_centroid, Vector3::new(0.0, 0.0, 1.0));
+        // Outward = away from majority = -Z.
+        assert!(
+            oriented.z < 0.0,
+            "expected outward normal to point -Z; got {:?}",
+            oriented,
+        );
+    }
+
+    /// `compute_centerline_polyline` on an elongated mesh along
+    /// physics +X axis: returned polyline points should themselves
+    /// lie roughly along +X (each slab's centroid stays near the
+    /// shape's mid-Y / mid-Z).
+    #[test]
+    fn centerline_along_elongated_x_axis_follows_x() {
+        // Build a cigar-shaped point cloud: vertices at
+        // (x, 0, 0) for x in [-1, 1] plus a few off-axis "skin"
+        // vertices at each x. Centroid of each x-slab should be
+        // ~(x, 0, 0).
+        let mut mesh = IndexedMesh::with_capacity(100, 0);
+        for i in 0..20 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = (i as f64) * 0.1 - 1.0;
+            for theta_step in 0..5 {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = (theta_step as f64) * std::f64::consts::TAU / 5.0;
+                mesh.vertices
+                    .push(Point3::new(x, 0.1 * theta.cos(), 0.1 * theta.sin()));
+            }
+        }
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(1.0, 0.0, 0.0), 10);
+        assert!(
+            polyline.len() >= 5,
+            "expected ≥5 polyline pts; got {}",
+            polyline.len()
+        );
+        // Each polyline point should have y ≈ 0 and z ≈ 0 (centroid
+        // of a symmetric ring around the x-axis).
+        for p in &polyline {
+            assert!(p.y.abs() < 0.01, "polyline y drifted: {p:?}");
+            assert!(p.z.abs() < 0.01, "polyline z drifted: {p:?}");
+        }
+        // Polyline x values should monotonically increase from min
+        // to max along the spine.
+        let xs: Vec<f64> = polyline.iter().map(|p| p.x).collect();
+        for window in xs.windows(2) {
+            assert!(
+                window[1] > window[0],
+                "polyline x should monotonically increase: {xs:?}",
+            );
+        }
+    }
+
+    /// `compute_centerline_polyline` on empty mesh / zero-direction
+    /// input returns an empty Vec without panicking.
+    #[test]
+    fn centerline_degenerate_input_returns_empty() {
+        let empty = IndexedMesh::with_capacity(0, 0);
+        let polyline = compute_centerline_polyline(&empty, Vector3::new(1.0, 0.0, 0.0), 10);
+        assert!(polyline.is_empty());
+
+        let mut tiny = IndexedMesh::with_capacity(1, 0);
+        tiny.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        let zero_dir = compute_centerline_polyline(&tiny, Vector3::zeros(), 10);
+        assert!(zero_dir.is_empty());
     }
 
     // ----- build_overlay_lengths -------------------------------------
