@@ -35,6 +35,7 @@
 //!
 //! [`Sdf`]: cf_design::Sdf
 
+use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
 /// World-frame direction anchoring "which way the mold opens".
@@ -95,6 +96,79 @@ impl Default for SplitNormal {
     /// direction.
     fn default() -> Self {
         Self(Vector3::x_axis())
+    }
+}
+
+/// Which side of the ribbon a mold piece occupies.
+///
+/// v2 ships 2-piece molds (per
+/// `docs/CURVE_FOLLOWING_DESIGN.md` §"Piece count selection"); the
+/// ribbon's signed-distance zero set divides the bounding region
+/// into a `Negative` (where `ribbon.sdf(p) < 0`) and a `Positive`
+/// (where `ribbon.sdf(p) > 0`) half. Each piece's SDF is the
+/// appropriately-signed `ribbon.sdf`, less the inter-piece overlap
+/// bias.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PieceSide {
+    /// The half where the ribbon's signed distance is negative —
+    /// i.e., the side opposite to the segment binormal direction.
+    Negative,
+    /// The half where the ribbon's signed distance is positive — the
+    /// side along the segment binormal direction.
+    Positive,
+}
+
+impl PieceSide {
+    /// Multiplier applied to the raw `ribbon.sdf(p)` value when
+    /// building this side's half-space SDF. `Negative` → `+1` (the
+    /// half-space SDF matches `ribbon.sdf` so the SDF is negative
+    /// where `ribbon.sdf < 0`); `Positive` → `-1`.
+    #[must_use]
+    pub const fn sign(self) -> f64 {
+        match self {
+            Self::Negative => 1.0,
+            Self::Positive => -1.0,
+        }
+    }
+}
+
+/// `cf_design::Sdf` adapter: a half-space whose surface is the
+/// [`Ribbon`]'s zero set, biased inward by `overlap_m` so the two
+/// pieces overlap at the seam.
+///
+/// Construction is delegated through [`Ribbon::halfspace_solid`]; the
+/// type is private to keep the public surface focused on the entry
+/// point. Owns a clone of the ribbon polyline + segment cache so the
+/// resulting [`Solid`] is `'static` (per [`Solid::from_sdf`]'s
+/// closure-capture bound).
+#[derive(Debug, Clone)]
+struct RibbonHalfspaceSdf {
+    ribbon: Ribbon,
+    side: PieceSide,
+    overlap_m: f64,
+}
+
+impl Sdf for RibbonHalfspaceSdf {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.side
+            .sign()
+            .mul_add(self.ribbon.sdf(&p), -self.overlap_m)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        // Within a segment's Voronoi region the half-space SDF is
+        // `sign * dot(p - projection, binormal) - overlap`, whose
+        // gradient is `sign * binormal` (the projection's
+        // contribution drops to zero when `p` lies in the segment's
+        // Voronoi interior). At segment-junction creases the gradient
+        // is multivalued; we pick the closest-segment side, matching
+        // the convention `mesh_sdf::SignedDistanceField` uses for
+        // face-boundary discontinuities. Unused by the
+        // `Solid::from_sdf` bridge (which always falls back to finite
+        // differences inside `FieldNode::UserFn`) but provided so the
+        // `Sdf` impl is contract-complete.
+        let (seg_idx, _t) = self.ribbon.closest_segment(&p);
+        self.ribbon.segments[seg_idx].binormal * self.side.sign()
     }
 }
 
@@ -424,6 +498,46 @@ impl Ribbon {
         let projection = seg.start + edge * t;
         (query - projection).dot(&seg.binormal)
     }
+
+    /// Build a [`cf_design::Solid`] leaf whose SDF is this ribbon's
+    /// `side`-chosen half-space, biased inward by `overlap_m`.
+    ///
+    /// The resulting Solid composes with the standard
+    /// `union`/`subtract`/`intersect` algebra so callers (Step 5's
+    /// [`crate::piece::compose_piece_solid`]) wire the per-piece
+    /// formula `bounding_region ∖ layer_body ∩ ribbon_side` without
+    /// the ribbon module needing to know about layer-body or
+    /// bounding-region semantics.
+    ///
+    /// `bounds` becomes the Solid's bounding box (cf-design uses it
+    /// to define the meshing evaluation domain). Pass the
+    /// bounding-region's AABB — the ribbon half-space is
+    /// conceptually unbounded, but the intersection with the
+    /// (finite) bounding region clips it down in Step 5's composition
+    /// and the AABB only needs to cover the mesh-of-interest region.
+    ///
+    /// `overlap_m` shifts the half-space's zero surface inward by
+    /// the given distance (in meters), so the two
+    /// [`PieceSide`]-opposed half-spaces grown from the same ribbon
+    /// overlap by `2 * overlap_m` at the seam. Set to `0.0` for the
+    /// raw mathematical half-space (useful for SDF-semantics tests);
+    /// the cf-cast composition uses
+    /// [`crate::piece::RIBBON_PIECE_OVERLAP_M`] in production.
+    ///
+    /// Octree pruning is disabled for the resulting Solid (the
+    /// underlying [`Solid::from_sdf`] inherits user-fn's `(-∞, +∞)`
+    /// interval); marching-cubes walks the full grid. The ~30
+    /// dot-products per query is negligible next to the cell-density
+    /// cost itself.
+    #[must_use]
+    pub fn halfspace_solid(&self, side: PieceSide, bounds: Aabb, overlap_m: f64) -> Solid {
+        let adapter = RibbonHalfspaceSdf {
+            ribbon: self.clone(),
+            side,
+            overlap_m,
+        };
+        Solid::from_sdf(adapter, bounds)
+    }
 }
 
 #[cfg(test)]
@@ -681,5 +795,104 @@ mod tests {
         assert_eq!(idx, 8);
         // segment 8 spans 0.08..0.09; query at 0.085 → t = 0.5.
         assert_relative_eq!(t, 0.5, epsilon = 1e-12);
+    }
+
+    // ----- halfspace_solid ----------------------------------------
+
+    /// Default bounds for halfspace tests: a 0.5 m cube around origin,
+    /// comfortably containing every query point used below.
+    fn halfspace_bounds() -> Aabb {
+        Aabb::from_corners(
+            Point3::new(-0.25, -0.25, -0.25),
+            Point3::new(0.25, 0.25, 0.25),
+        )
+    }
+
+    /// `Negative` half-space (no bias): SDF matches `ribbon.sdf`
+    /// directly (positive above the +X centerline, negative below).
+    #[test]
+    fn halfspace_negative_no_bias_matches_ribbon_sdf() {
+        let ribbon = ribbon_x_axis(); // binormal = +Z
+        let halfspace = ribbon.halfspace_solid(PieceSide::Negative, halfspace_bounds(), 0.0);
+        // Above centerline (ribbon.sdf > 0) → halfspace.sdf > 0 (outside).
+        let q_above = Point3::new(0.05, 0.0, 0.02);
+        assert_relative_eq!(halfspace.evaluate(&q_above), 0.02, epsilon = 1e-12);
+        // Below centerline (ribbon.sdf < 0) → halfspace.sdf < 0 (inside).
+        let q_below = Point3::new(0.05, 0.0, -0.03);
+        assert_relative_eq!(halfspace.evaluate(&q_below), -0.03, epsilon = 1e-12);
+    }
+
+    /// `Positive` half-space (no bias): SDF is the negation of
+    /// `ribbon.sdf` (negative above, positive below).
+    #[test]
+    fn halfspace_positive_no_bias_negates_ribbon_sdf() {
+        let ribbon = ribbon_x_axis();
+        let halfspace = ribbon.halfspace_solid(PieceSide::Positive, halfspace_bounds(), 0.0);
+        let q_above = Point3::new(0.05, 0.0, 0.02);
+        assert_relative_eq!(halfspace.evaluate(&q_above), -0.02, epsilon = 1e-12);
+        let q_below = Point3::new(0.05, 0.0, -0.03);
+        assert_relative_eq!(halfspace.evaluate(&q_below), 0.03, epsilon = 1e-12);
+    }
+
+    /// Bias shifts the zero plane inward by `overlap_m`: a query
+    /// exactly on the unbiased zero set returns `-overlap_m`
+    /// (slightly inside the half-space). Both sides bias the same
+    /// way — pieces grow toward each other.
+    #[test]
+    fn halfspace_bias_grows_each_side_into_the_other() {
+        let ribbon = ribbon_x_axis();
+        let bounds = halfspace_bounds();
+        let bias = 0.0005;
+        let on_plane = Point3::new(0.05, 0.0, 0.0);
+
+        let neg = ribbon.halfspace_solid(PieceSide::Negative, bounds, bias);
+        let pos = ribbon.halfspace_solid(PieceSide::Positive, bounds, bias);
+        // Both sides report `-bias` on the unbiased zero plane —
+        // i.e., the plane lies `bias` inside each piece.
+        assert_relative_eq!(neg.evaluate(&on_plane), -bias, epsilon = 1e-12);
+        assert_relative_eq!(pos.evaluate(&on_plane), -bias, epsilon = 1e-12);
+    }
+
+    /// The two pieces overlap by `2 * overlap_m` along the binormal:
+    /// the negative-side piece's zero set sits at `z = +overlap_m`
+    /// and the positive-side piece's at `z = -overlap_m`.
+    #[test]
+    fn halfspace_bias_produces_seam_overlap() {
+        let ribbon = ribbon_x_axis(); // binormal = +Z
+        let bounds = halfspace_bounds();
+        let bias = 0.0005;
+        let neg = ribbon.halfspace_solid(PieceSide::Negative, bounds, bias);
+        let pos = ribbon.halfspace_solid(PieceSide::Positive, bounds, bias);
+
+        // Negative-side zero: ribbon.sdf - bias = 0 → ribbon.sdf = +bias.
+        let neg_zero = Point3::new(0.05, 0.0, bias);
+        assert_relative_eq!(neg.evaluate(&neg_zero), 0.0, epsilon = 1e-12);
+
+        // Positive-side zero: -ribbon.sdf - bias = 0 → ribbon.sdf = -bias.
+        let pos_zero = Point3::new(0.05, 0.0, -bias);
+        assert_relative_eq!(pos.evaluate(&pos_zero), 0.0, epsilon = 1e-12);
+
+        // Symmetric query at z = 0 falls inside BOTH pieces (the
+        // shared seam region).
+        let seam = Point3::new(0.05, 0.0, 0.0);
+        assert!(neg.evaluate(&seam) < 0.0);
+        assert!(pos.evaluate(&seam) < 0.0);
+    }
+
+    /// The Solid bounds match the requested `bounds` argument.
+    #[test]
+    fn halfspace_solid_bounds_match_requested_aabb() {
+        let ribbon = ribbon_x_axis();
+        let bounds = halfspace_bounds();
+        let halfspace = ribbon.halfspace_solid(PieceSide::Negative, bounds, 0.0);
+        let got = halfspace.bounds().expect("user_fn carries finite bounds");
+        assert_relative_eq!(got.min.x, bounds.min.x, epsilon = 1e-12);
+        assert_relative_eq!(got.max.z, bounds.max.z, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn piece_side_sign_matches_design_doc_convention() {
+        assert!((PieceSide::Negative.sign() - 1.0).abs() < f64::EPSILON);
+        assert!((PieceSide::Positive.sign() - -1.0).abs() < f64::EPSILON);
     }
 }
