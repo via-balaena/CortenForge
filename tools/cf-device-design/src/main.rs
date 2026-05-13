@@ -130,26 +130,30 @@ struct OuterEnvelopeState {
 
 impl OuterEnvelopeState {
     /// Build the slice-2-default starting state from the loaded
-    /// scan + centerline. Heuristic:
-    /// - If centerline is present: compute the min envelope radius
-    ///   that wraps the scan AABB at every centerline arc position
-    ///   ([`min_radius_to_envelope_aabb`]). Default = that +
+    /// scan. Heuristic:
+    /// - Use [`estimate_scan_cross_section_radius`] = half of the
+    ///   larger cross-section AABB extent (perpendicular to the
+    ///   longest AABB axis), plus
     ///   [`ENVELOPE_DEFAULT_CLEARANCE_M`].
-    /// - If no centerline: fall back to 30% of the bbox diagonal.
+    /// - For degenerate AABBs (no extent), fall back to 30 % of the
+    ///   bbox diagonal.
     ///
     /// Clamped to the panel's slider range so the default always
     /// lands inside what the slider can dial back to.
     ///
-    /// Surfaces the user's iter-1 review feedback "doesn't feel
-    /// relative to the outer geometry enough": prior default was a
-    /// fixed % of arc length and frequently sat INSIDE the scan,
-    /// disconnecting the wireframe from the scan's visible shape.
-    fn from_scan_info(info: &ScanInfo, centerline_points: &[Point3<f64>]) -> Self {
+    /// User iter-1 review history:
+    /// - prior `arc_length × 0.25` default sat INSIDE the scan
+    ///   ("doesn't feel relative to the outer geometry");
+    /// - prior `min_radius_to_envelope_aabb` (AABB-CORNER distance)
+    ///   default landed at slider max ("balloons like a sphere");
+    /// - this cross-section-EXTENT default sizes the cylinder to
+    ///   wrap the scan's widest cross-section without overshooting
+    ///   by sqrt(2) into the empty AABB corners.
+    fn from_scan_info(info: &ScanInfo) -> Self {
         let (min_m, max_m) = Self::slider_range_m(info);
-        let preferred = if let Some(envelope_r) =
-            min_radius_to_envelope_aabb(centerline_points, &info.scan_aabb_m)
+        let preferred = if let Some(cross_r) = estimate_scan_cross_section_radius(&info.scan_aabb_m)
         {
-            envelope_r + ENVELOPE_DEFAULT_CLEARANCE_M
+            cross_r + ENVELOPE_DEFAULT_CLEARANCE_M
         } else if info.bbox_diagonal_m > 0.0 {
             info.bbox_diagonal_m * 0.30
         } else {
@@ -526,56 +530,47 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// surface."
 const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
 
-/// Compute the minimum envelope radius that wraps the entire scan
-/// AABB at every centerline arc position. For each centerline point,
-/// computes the max perpendicular distance (i.e., projection onto
-/// the plane normal to the local tangent) from the point to any
-/// AABB corner. Returns the max across all centerline points.
+/// Estimate the scan's cross-section radius from its AABB. Picks
+/// the LONGEST AABB extent as the "centerline-axis" estimate (under
+/// the cf-scan-prep Auto-orient convention, the scan's long axis
+/// aligns roughly with one AABB axis). The cross-section is the
+/// OTHER two extents; we return HALF of the LARGER of those two as a
+/// proxy for the scan's local tube radius.
 ///
-/// Used by [`OuterEnvelopeState::from_scan_info`] to size the
-/// default radius so the envelope ENVELOPES the scan at start time
-/// — addresses iter-1 visual review feedback "doesn't feel relative
-/// to the outer geometry enough" when the prior default sat inside
-/// the scan.
+/// Why not the half-DIAGONAL of the cross-section
+/// (`sqrt(W² + D²) / 2`)? The half-diagonal overshoots for tube-
+/// shaped scans whose AABB has empty corners — any tube inscribed in
+/// a box has corners outside the tube surface, so wrapping to the
+/// AABB-corner radius makes the envelope ~sqrt(2)× wider than it
+/// needs to be. The half-extent picks "what's the widest the tube
+/// gets along its widest cross-section axis" — close to the actual
+/// surface for typical tubular scans.
 ///
-/// Returns `None` when:
-/// - centerline is empty (no points to measure from)
-/// - centerline has only one point (no tangent estimate possible)
-fn min_radius_to_envelope_aabb(centerline_points: &[Point3<f64>], scan_aabb: &Aabb) -> Option<f64> {
-    if centerline_points.len() < 2 {
+/// Update history:
+/// - Slice 3 polish 3 used a `min_radius_to_envelope_aabb` heuristic
+///   over AABB CORNERS, which landed the iter-1 default at slider
+///   max → "balloons like a sphere" per user visual review.
+/// - Slice 3 polish 4 (this) switches to half of the larger
+///   cross-section AABB extent. For iter-1
+///   (W = 68, D = 70, H = 137 mm): default = 70/2 + 5 = 40 mm
+///   instead of ~62 mm, giving a cylinder-dominated wireframe.
+///
+/// Returns `None` for degenerate AABBs (zero or negative extent in
+/// any axis).
+fn estimate_scan_cross_section_radius(scan_aabb: &Aabb) -> Option<f64> {
+    let extents = [
+        scan_aabb.max.x - scan_aabb.min.x,
+        scan_aabb.max.y - scan_aabb.min.y,
+        scan_aabb.max.z - scan_aabb.min.z,
+    ];
+    if extents.iter().any(|&e| e <= 0.0) {
         return None;
     }
-    let corners = [
-        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.max.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.max.z),
-        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.max.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.max.z),
-    ];
-    let mut max_radial = 0.0_f64;
-    for i in 0..centerline_points.len() {
-        let tangent = local_tangent(centerline_points, i);
-        let p = centerline_points[i];
-        for corner in &corners {
-            // Perpendicular distance from `corner` to the line
-            // through `p` along `tangent`:
-            //   diff = corner - p
-            //   parallel_len = diff · tangent
-            //   perp = diff - parallel_len * tangent
-            //   radial = |perp|
-            let diff = corner - p;
-            let parallel = diff.dot(&tangent);
-            let perp_sq = diff.norm_squared() - parallel * parallel;
-            let radial = perp_sq.max(0.0).sqrt();
-            if radial > max_radial {
-                max_radial = radial;
-            }
-        }
-    }
-    Some(max_radial)
+    let mut sorted = extents;
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // sorted[2] = longest (centerline-axis estimate).
+    // sorted[1] = LARGER cross-section extent.
+    Some(sorted[1] * 0.5)
 }
 
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
@@ -1065,7 +1060,7 @@ fn run_render_app(
     let bases = CenterlineBases {
         bases: compute_centerline_bases(&centerline_points),
     };
-    let outer_envelope = OuterEnvelopeState::from_scan_info(&scan_info, &centerline_points);
+    let outer_envelope = OuterEnvelopeState::from_scan_info(&scan_info);
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -1460,39 +1455,56 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn outer_envelope_default_no_centerline_falls_back_to_bbox_diag() {
-        // 50 mm diag → no centerline + degenerate AABB heuristic.
-        // Hits the bbox_diagonal_m fallback path: 50 * 0.30 = 15 mm
-        // → clamped to slider min (5 mm).
+    fn outer_envelope_default_degenerate_aabb_falls_back_to_bbox_diag() {
+        // AABB has zero extent (default ScanInfo helper uses
+        // `Aabb::new(origin, origin)`). Heuristic returns None →
+        // fall back to bbox_diagonal_m × 0.30 = 15 mm → clamped to
+        // slider min (5 mm).
         let info = dummy_scan_info(0.050);
-        let state = OuterEnvelopeState::from_scan_info(&info, &[]);
+        let state = OuterEnvelopeState::from_scan_info(&info);
         let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
         assert!(state.radius_m >= min_m && state.radius_m <= max_m);
     }
 
     #[test]
-    fn outer_envelope_default_envelopes_scan_aabb_with_clearance() {
-        // Build a 40 × 40 × 100 mm AABB centered at origin + a
-        // straight-Z centerline through its middle. The max
-        // perpendicular distance from any centerline point to any
-        // AABB corner = the AABB's max XY half-diagonal =
-        // sqrt(20² + 20²) ≈ 28.28 mm. Plus 5 mm clearance ≈ 33.3 mm.
+    fn outer_envelope_default_uses_cross_section_extent_for_typical_scan() {
+        // Build a 40 × 40 × 100 mm AABB (long axis Z, cross section
+        // 40 × 40 mm). Half of the LARGER cross-section extent = 20 mm.
+        // Plus 5 mm clearance = 25 mm. Slider range for 100 mm arc =
+        // [5, 45] mm; 25 mm is in-band.
         let mut info = dummy_scan_info_with_centerline(0.120, 0.100);
         info.scan_aabb_m = Aabb::new(
             Point3::new(-0.020, -0.020, -0.050),
             Point3::new(0.020, 0.020, 0.050),
         );
-        let pts: Vec<Point3<f64>> = (0..6)
-            .map(|i| Point3::new(0.0, 0.0, -0.050 + f64::from(i) * 0.020))
-            .collect();
-        let state = OuterEnvelopeState::from_scan_info(&info, &pts);
-        let expected_envelope = (20.0_f64 * 20.0 + 20.0 * 20.0).sqrt() / 1000.0; // m
-        let expected_default = expected_envelope + ENVELOPE_DEFAULT_CLEARANCE_M;
+        let state = OuterEnvelopeState::from_scan_info(&info);
+        let expected = 0.020 + ENVELOPE_DEFAULT_CLEARANCE_M;
         assert!(
-            approx_eq(state.radius_m, expected_default, 1e-6),
+            approx_eq(state.radius_m, expected, 1e-9),
             "got {}, expected {}",
             state.radius_m,
-            expected_default,
+            expected,
+        );
+    }
+
+    #[test]
+    fn outer_envelope_default_picks_larger_cross_section_extent() {
+        // Asymmetric cross-section: 40 × 60 × 100 mm (long Z; cross
+        // section 40 × 60). Half of the LARGER cross-section extent
+        // = 30 mm. Plus 5 mm = 35 mm. Slider range max = arc/2 - 5
+        // = 45 mm; 35 mm in-band.
+        let mut info = dummy_scan_info_with_centerline(0.120, 0.100);
+        info.scan_aabb_m = Aabb::new(
+            Point3::new(-0.020, -0.030, -0.050),
+            Point3::new(0.020, 0.030, 0.050),
+        );
+        let state = OuterEnvelopeState::from_scan_info(&info);
+        let expected = 0.030 + ENVELOPE_DEFAULT_CLEARANCE_M;
+        assert!(
+            approx_eq(state.radius_m, expected, 1e-9),
+            "got {}, expected {}",
+            state.radius_m,
+            expected,
         );
     }
 
@@ -1500,7 +1512,7 @@ another_future_field = "foo"
     fn outer_envelope_default_inside_slider_range_for_various_arc_lengths() {
         for arc in [0.060_f64, 0.100, 0.134, 0.250, 0.500] {
             let info = dummy_scan_info_with_centerline(arc * 1.2, arc);
-            let state = OuterEnvelopeState::from_scan_info(&info, &[]);
+            let state = OuterEnvelopeState::from_scan_info(&info);
             let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
             assert!(
                 state.radius_m >= min_m && state.radius_m <= max_m,
@@ -1513,56 +1525,37 @@ another_future_field = "foo"
         }
     }
 
-    // ----- Slice 3 polish 3 — min envelope radius heuristic --------
+    // ----- Slice 3 polish 4 — cross-section radius heuristic -------
 
     #[test]
-    fn min_envelope_radius_short_polyline_returns_none() {
-        let aabb = Aabb::new(
-            Point3::new(-0.020, -0.020, -0.020),
-            Point3::new(0.020, 0.020, 0.020),
-        );
-        assert!(min_radius_to_envelope_aabb(&[], &aabb).is_none());
-        assert!(min_radius_to_envelope_aabb(&[Point3::origin()], &aabb).is_none());
+    fn estimate_cross_section_radius_returns_none_for_degenerate_aabb() {
+        // Zero extent in one axis.
+        let aabb = Aabb::new(Point3::origin(), Point3::new(0.040, 0.040, 0.0));
+        assert!(estimate_scan_cross_section_radius(&aabb).is_none());
     }
 
     #[test]
-    fn min_envelope_radius_unit_cube_centered_centerline_is_xy_half_diag() {
-        // AABB ±10 mm cube; centerline along +Z through the center.
-        // At any centerline point inside the cube, the max
-        // perpendicular distance to an AABB corner equals the
-        // diagonal of the XY half-extents = sqrt(10² + 10²) ≈
-        // 14.14 mm.
+    fn estimate_cross_section_radius_uses_larger_of_two_short_axes() {
+        // 40 × 60 × 100 mm AABB. Long axis = Z (100). Cross section
+        // extents = 40, 60. Half of LARGER cross-section = 30 mm.
         let aabb = Aabb::new(
-            Point3::new(-0.010, -0.010, -0.010),
-            Point3::new(0.010, 0.010, 0.010),
+            Point3::new(-0.020, -0.030, -0.050),
+            Point3::new(0.020, 0.030, 0.050),
         );
-        let pts = vec![
-            Point3::new(0.0, 0.0, -0.010),
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 0.010),
-        ];
-        let r = min_radius_to_envelope_aabb(&pts, &aabb).unwrap();
-        let expected = (10.0_f64 * 10.0 + 10.0 * 10.0).sqrt() / 1000.0;
-        assert!(approx_eq(r, expected, 1e-9), "got {r}, expected {expected}");
+        let r = estimate_scan_cross_section_radius(&aabb).unwrap();
+        assert!(approx_eq(r, 0.030, 1e-12));
     }
 
     #[test]
-    fn min_envelope_radius_off_axis_centerline_inflates() {
-        // Centerline offset 5 mm in +X from the cube center. The
-        // max perpendicular distance now includes the +X-axis offset:
-        // sqrt((10 + 5)² + 10²) ≈ 18.03 mm.
+    fn estimate_cross_section_radius_iter_1_fixture_yields_35mm() {
+        // iter-1 fixture AABB ~ 68 × 70 × 137 mm. Long axis = Z.
+        // Cross section = 68, 70. Half of larger = 35 mm.
         let aabb = Aabb::new(
-            Point3::new(-0.010, -0.010, -0.010),
-            Point3::new(0.010, 0.010, 0.010),
+            Point3::new(0.000, 0.000, 0.000),
+            Point3::new(0.0684, 0.0695, 0.1369),
         );
-        let pts = vec![
-            Point3::new(0.005, 0.0, -0.010),
-            Point3::new(0.005, 0.0, 0.0),
-            Point3::new(0.005, 0.0, 0.010),
-        ];
-        let r = min_radius_to_envelope_aabb(&pts, &aabb).unwrap();
-        let expected = (15.0_f64 * 15.0 + 10.0 * 10.0).sqrt() / 1000.0;
-        assert!(approx_eq(r, expected, 1e-6), "got {r}, expected {expected}");
+        let r = estimate_scan_cross_section_radius(&aabb).unwrap();
+        assert!(approx_eq(r, 0.0695 * 0.5, 1e-9));
     }
 
     #[test]
