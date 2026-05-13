@@ -120,6 +120,24 @@ struct CenterlineBases {
     bases: Vec<(Vector3<f64>, Vector3<f64>)>,
 }
 
+/// Bevy resource carrying the scan's local cross-section radius at
+/// each centerline polyline point. `radii_m[i]` = max perpendicular
+/// distance from `centerline_points[i]` to any scan vertex that's
+/// closest to that centerline point.
+///
+/// Computed once at startup ([`compute_scan_local_radii`]). The
+/// outer-envelope wireframe uses these directly as ring radii (plus
+/// the user-dialed clearance) so the envelope is SNUG to the scan
+/// at every cross-section instead of guessing a constant-radius
+/// capsule.
+///
+/// Empty when the centerline is absent (no arc positions to compute
+/// radii at).
+#[derive(Resource, Default, Clone)]
+struct ScanLocalRadii {
+    radii_m: Vec<f64>,
+}
+
 /// Outer-envelope panel state — the user-dialed constant radius for
 /// the curve-following capsule along the scan centerline (per
 /// `docs/ENGINEERING_SUITE_DESIGN.md`'s Outer Envelope section).
@@ -134,7 +152,14 @@ struct CenterlineBases {
 /// checkboxes when the heuristic guesses wrong.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct OuterEnvelopeState {
-    radius_m: f64,
+    /// Clearance (meters) between the scan surface and the
+    /// envelope wireframe at every cross-section. The wireframe ring
+    /// radius at each centerline polyline point equals
+    /// `scan_local_radius[i] + clearance_m`, so the envelope is
+    /// programmatically SNUG to the scan everywhere — no parametric
+    /// guessing of a constant cylinder radius. Slice 3 polish 7
+    /// pivot from the prior "capsule of constant radius" model.
+    clearance_m: f64,
     /// Render a hemispherical cap at the centerline endpoint with
     /// the higher Z coordinate. Default `true` — that endpoint is
     /// typically the scan's natural dome.
@@ -147,54 +172,22 @@ struct OuterEnvelopeState {
 }
 
 impl OuterEnvelopeState {
-    /// Build the slice-2-default starting state from the loaded
-    /// scan. Heuristic:
-    /// - Use [`estimate_scan_cross_section_radius`] = half of the
-    ///   larger cross-section AABB extent (perpendicular to the
-    ///   longest AABB axis), plus
-    ///   [`ENVELOPE_DEFAULT_CLEARANCE_M`].
-    /// - For degenerate AABBs (no extent), fall back to 30 % of the
-    ///   bbox diagonal.
-    ///
-    /// Clamped to the panel's slider range so the default always
-    /// lands inside what the slider can dial back to.
-    ///
-    /// User iter-1 review history:
-    /// - prior `arc_length × 0.25` default sat INSIDE the scan
-    ///   ("doesn't feel relative to the outer geometry");
-    /// - prior `min_radius_to_envelope_aabb` (AABB-CORNER distance)
-    ///   default landed at slider max ("balloons like a sphere");
-    /// - this cross-section-EXTENT default sizes the cylinder to
-    ///   wrap the scan's widest cross-section without overshooting
-    ///   by sqrt(2) into the empty AABB corners.
-    fn from_scan_info(info: &ScanInfo) -> Self {
-        let (min_m, max_m) = Self::slider_range_m(info);
-        let preferred = if let Some(cross_r) = estimate_scan_cross_section_radius(&info.scan_aabb_m)
-        {
-            cross_r + ENVELOPE_DEFAULT_CLEARANCE_M
-        } else if info.bbox_diagonal_m > 0.0 {
-            info.bbox_diagonal_m * 0.30
-        } else {
-            0.030
-        };
-        let radius = preferred.clamp(min_m, max_m);
+    /// Build the slice-2-default starting state. Clearance defaults
+    /// to [`ENVELOPE_DEFAULT_CLEARANCE_M`] (5 mm) so the envelope
+    /// sits a visible distance outside the scan surface from launch.
+    fn default_for_scan() -> Self {
         Self {
-            radius_m: radius,
+            clearance_m: ENVELOPE_DEFAULT_CLEARANCE_M,
             closed_at_high_z: true,
             closed_at_low_z: false,
         }
     }
 
-    /// Slider range for the radius. Slice 3 polish 6 relaxes the
-    /// prior `R < arc / 2` capsule constraint — since the cap height
-    /// is now sized to the scan's actual dome extent (independent of
-    /// R), the cylinder section can extend the full centerline arc
-    /// at any R, so the slider just clamps to a generous bbox-
-    /// diagonal range.
-    fn slider_range_m(info: &ScanInfo) -> (f64, f64) {
-        let min_m = 0.005;
-        let max_m = (info.bbox_diagonal_m * 1.0).max(0.060);
-        (min_m, max_m)
+    /// Slider range for the clearance, in meters. Min is zero
+    /// (envelope sits ON the scan); max is generous so the user can
+    /// dial a thick wrap if needed for thick-wall devices.
+    fn clearance_slider_range_m() -> (f64, f64) {
+        (0.0, 0.050)
     }
 }
 
@@ -543,49 +536,6 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// surface."
 const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
 
-/// Estimate the scan's cross-section radius from its AABB. Picks
-/// the LONGEST AABB extent as the "centerline-axis" estimate (under
-/// the cf-scan-prep Auto-orient convention, the scan's long axis
-/// aligns roughly with one AABB axis). The cross-section is the
-/// OTHER two extents; we return HALF of the LARGER of those two as a
-/// proxy for the scan's local tube radius.
-///
-/// Why not the half-DIAGONAL of the cross-section
-/// (`sqrt(W² + D²) / 2`)? The half-diagonal overshoots for tube-
-/// shaped scans whose AABB has empty corners — any tube inscribed in
-/// a box has corners outside the tube surface, so wrapping to the
-/// AABB-corner radius makes the envelope ~sqrt(2)× wider than it
-/// needs to be. The half-extent picks "what's the widest the tube
-/// gets along its widest cross-section axis" — close to the actual
-/// surface for typical tubular scans.
-///
-/// Update history:
-/// - Slice 3 polish 3 used a `min_radius_to_envelope_aabb` heuristic
-///   over AABB CORNERS, which landed the iter-1 default at slider
-///   max → "balloons like a sphere" per user visual review.
-/// - Slice 3 polish 4 (this) switches to half of the larger
-///   cross-section AABB extent. For iter-1
-///   (W = 68, D = 70, H = 137 mm): default = 70/2 + 5 = 40 mm
-///   instead of ~62 mm, giving a cylinder-dominated wireframe.
-///
-/// Returns `None` for degenerate AABBs (zero or negative extent in
-/// any axis).
-fn estimate_scan_cross_section_radius(scan_aabb: &Aabb) -> Option<f64> {
-    let extents = [
-        scan_aabb.max.x - scan_aabb.min.x,
-        scan_aabb.max.y - scan_aabb.min.y,
-        scan_aabb.max.z - scan_aabb.min.z,
-    ];
-    if extents.iter().any(|&e| e <= 0.0) {
-        return None;
-    }
-    let mut sorted = extents;
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    // sorted[2] = longest (centerline-axis estimate).
-    // sorted[1] = LARGER cross-section extent.
-    Some(sorted[1] * 0.5)
-}
-
 /// Estimate the scan's extent past a centerline endpoint along an
 /// outward direction. For each AABB corner, project `(corner -
 /// endpoint)` onto `outward` and keep the max non-negative
@@ -621,6 +571,60 @@ fn scan_extent_past_endpoint(
         }
     }
     max_extent
+}
+
+/// Compute the scan's local cross-section radius at each centerline
+/// polyline point. For each scan vertex, find the closest centerline
+/// point, compute the perpendicular distance from that vertex to the
+/// centerline tangent line at that point, and update the running max
+/// for that centerline-point bucket. Returns one max-radial-distance
+/// per centerline point.
+///
+/// Cost: O(N_vertices × N_centerline). For the iter-1 fixture (10 M
+/// vertices × 30 centerline points = 300 M ops) this runs in ~3 s at
+/// startup. Acceptable for a one-time cost; can be sped up via
+/// spatial-bucket indexing if profiling shows it's a hot spot.
+///
+/// Used by [`draw_outer_envelope_overlay`] (slice 3 polish 7) to
+/// snap the envelope wireframe to the scan's actual outer surface
+/// at every cross-section + a uniform clearance. Replaces the prior
+/// heuristic constant-radius capsule.
+fn compute_scan_local_radii(
+    centerline_points: &[Point3<f64>],
+    scan_mesh: &IndexedMesh,
+) -> Vec<f64> {
+    if centerline_points.len() < 2 {
+        return Vec::new();
+    }
+    let n = centerline_points.len();
+    let mut max_radii = vec![0.0_f64; n];
+    for vertex in &scan_mesh.vertices {
+        // Find closest centerline polyline point (Euclidean
+        // distance; linear search across ~30 points).
+        let mut best_i = 0_usize;
+        let mut best_dist_sq = f64::INFINITY;
+        for (i, p) in centerline_points.iter().enumerate() {
+            let delta = vertex.coords - p.coords;
+            let d = delta.norm_squared();
+            if d < best_dist_sq {
+                best_dist_sq = d;
+                best_i = i;
+            }
+        }
+        // Perpendicular distance from the vertex to the centerline
+        // tangent line at the closest centerline point. Project
+        // vertex-to-anchor onto the tangent; the residual is the
+        // perpendicular component.
+        let tangent = local_tangent(centerline_points, best_i);
+        let diff = vertex.coords - centerline_points[best_i].coords;
+        let parallel = diff.dot(&tangent);
+        let perp_sq = diff.norm_squared() - parallel * parallel;
+        let perp = perp_sq.max(0.0).sqrt();
+        if perp > max_radii[best_i] {
+            max_radii[best_i] = perp;
+        }
+    }
+    max_radii
 }
 
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
@@ -740,13 +744,17 @@ const OUTER_ENVELOPE_CAP_LATITUDES: usize = 7;
 fn draw_outer_envelope_overlay(
     centerline: Res<Centerline>,
     bases: Res<CenterlineBases>,
+    scan_radii: Res<ScanLocalRadii>,
     state: Res<OuterEnvelopeState>,
     info: Res<ScanInfo>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
 ) {
-    if centerline.points_m.len() < 2 || bases.bases.len() != centerline.points_m.len() {
+    if centerline.points_m.len() < 2
+        || bases.bases.len() != centerline.points_m.len()
+        || scan_radii.radii_m.len() != centerline.points_m.len()
+    {
         return;
     }
     let arc_positions = cumulative_arc_positions_m(&centerline.points_m);
@@ -754,13 +762,16 @@ fn draw_outer_envelope_overlay(
         return;
     }
 
-    // Geometry semantic (slice 3 polish 6): cylinder runs along the
-    // FULL centerline arc; each closed end has an ELLIPSOIDAL cap
-    // whose height is sized to the scan's actual extent past the
-    // centerline endpoint along the outward direction. The cap thus
-    // hugs the scan's natural dome rather than projecting a full
-    // hemisphere of R into empty space above the scan apex.
-    let r = state.radius_m;
+    // Geometry semantic (slice 3 polish 7): the envelope is the
+    // scan's outer surface offset by `clearance_m`. Each cylindrical
+    // ring at centerline polyline point i has radius
+    // `scan_local_radius[i] + clearance_m` — programmatically snug
+    // to the scan everywhere, no parametric guessing of a constant
+    // cylinder radius. Each closed end has an ellipsoidal cap whose
+    // EQUATORIAL radius matches the local ring radius at that
+    // endpoint, and whose HEIGHT comes from the scan's actual
+    // extent past the endpoint along the outward direction.
+    let clearance = state.clearance_m;
     let last_idx = centerline.points_m.len() - 1;
     let high_z_is_start = centerline.points_m[0].z >= centerline.points_m[last_idx].z;
     let (closed_at_start, closed_at_end) = if high_z_is_start {
@@ -774,21 +785,24 @@ fn draw_outer_envelope_overlay(
     let color = Color::srgb(0.55, 0.85, 0.70);
 
     // Build cylindrical-section rings at every centerline polyline
-    // point (no trim — the cap extends BEYOND the centerline
-    // endpoints, the cylinder fills the full arc).
+    // point. Each ring's radius is the scan's local cross-section
+    // radius at that point plus the user-dialed clearance.
     let mut rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(arc_positions.len());
-    for &arc in &arc_positions {
+    let mut ring_radii: Vec<f64> = Vec::with_capacity(arc_positions.len());
+    for (i, &arc) in arc_positions.iter().enumerate() {
         let Some((ring_center, tangent)) =
             sample_centerline_at_arc(&centerline.points_m, &arc_positions, arc)
         else {
             return;
         };
         let (b1, b2) = sample_basis_at_arc(&bases.bases, &arc_positions, arc, &tangent);
+        let ring_radius = scan_radii.radii_m[i] + clearance;
+        ring_radii.push(ring_radius);
         let mut ring = Vec::with_capacity(OUTER_ENVELOPE_RING_SEGMENTS);
         for seg in 0..OUTER_ENVELOPE_RING_SEGMENTS {
             #[allow(clippy::cast_precision_loss)] // seg fits in f64 easily.
             let theta = (seg as f64 / OUTER_ENVELOPE_RING_SEGMENTS as f64) * std::f64::consts::TAU;
-            let offset = b1 * (r * theta.cos()) + b2 * (r * theta.sin());
+            let offset = b1 * (ring_radius * theta.cos()) + b2 * (ring_radius * theta.sin());
             let physics_pt = Point3::from(ring_center.coords + offset);
             ring.push(Vec3::from_array(up.to_bevy_point(&physics_pt)) * render_scale.0);
         }
@@ -830,14 +844,14 @@ fn draw_outer_envelope_overlay(
         let start_point = centerline.points_m[0];
         let start_outward = -local_tangent(&centerline.points_m, 0);
         let start_cap_height =
-            scan_extent_past_endpoint(&start_point, &start_outward, &info.scan_aabb_m);
+            scan_extent_past_endpoint(&start_point, &start_outward, &info.scan_aabb_m) + clearance;
         let (start_b1, start_b2) = bases.bases[0];
         draw_hemispherical_cap(
             &start_point,
             &start_outward,
             &start_b1,
             &start_b2,
-            r,
+            ring_radii[0],
             start_cap_height,
             &rings_bevy[0],
             *up,
@@ -850,7 +864,8 @@ fn draw_outer_envelope_overlay(
     if closed_at_end {
         let end_point = centerline.points_m[last_idx];
         let end_outward = local_tangent(&centerline.points_m, last_idx);
-        let end_cap_height = scan_extent_past_endpoint(&end_point, &end_outward, &info.scan_aabb_m);
+        let end_cap_height =
+            scan_extent_past_endpoint(&end_point, &end_outward, &info.scan_aabb_m) + clearance;
         let (end_b1, end_b2) = bases.bases[last_idx];
         let last_ring_idx = rings_bevy.len() - 1;
         draw_hemispherical_cap(
@@ -858,7 +873,7 @@ fn draw_outer_envelope_overlay(
             &end_outward,
             &end_b1,
             &end_b2,
-            r,
+            ring_radii[last_ring_idx],
             end_cap_height,
             &rings_bevy[last_ring_idx],
             *up,
@@ -949,35 +964,51 @@ fn draw_hemispherical_cap(
     }
 }
 
-/// Render the Outer Envelope egui section — one slider (radius in
-/// mm) + a live readout of the centerline arc length so the user
-/// can mentally relate "this radius is 30% of the device length"
-/// at a glance.
+/// Render the Outer Envelope egui section. Slice 3 polish 7 pivot:
+/// the envelope is now SCAN-DERIVED — its rings sit at every
+/// centerline cross-section AT THE SCAN SURFACE plus a uniform
+/// `clearance_m`. The user dials the clearance; the radius at each
+/// arc position is computed from the scan, not chosen.
+///
+/// Also surfaces the scan's local-radius range (min / max across
+/// centerline points) so the user sees what the underlying snug
+/// numbers are.
 fn render_outer_envelope_section(
     ui: &mut egui::Ui,
     state: &mut OuterEnvelopeState,
     info: &ScanInfo,
+    scan_radii: &ScanLocalRadii,
 ) {
     egui::CollapsingHeader::new("Outer Envelope")
         .default_open(true)
         .show(ui, |ui| {
-            let (min_m, max_m) = OuterEnvelopeState::slider_range_m(info);
-            let mut radius_mm = state.radius_m * 1000.0;
+            let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
+            let mut clearance_mm = state.clearance_m * 1000.0;
             let min_mm = min_m * 1000.0;
             let max_mm = max_m * 1000.0;
             if ui
-                .add(egui::Slider::new(&mut radius_mm, min_mm..=max_mm).text("radius (mm)"))
+                .add(egui::Slider::new(&mut clearance_mm, min_mm..=max_mm).text("clearance (mm)"))
                 .changed()
             {
-                state.radius_m = radius_mm * 0.001;
+                state.clearance_m = clearance_mm * 0.001;
             }
-            if info.centerline_point_count >= 2 {
+            if info.centerline_point_count >= 2 && !scan_radii.radii_m.is_empty() {
+                let min_r = scan_radii
+                    .radii_m
+                    .iter()
+                    .copied()
+                    .fold(f64::INFINITY, f64::min);
+                let max_r = scan_radii.radii_m.iter().copied().fold(0.0_f64, f64::max);
                 ui.label(format!(
-                    "centerline arc: {:.1} mm",
-                    info.centerline_arc_length_m * 1000.0,
+                    "scan cross-section: {:.1} - {:.1} mm",
+                    min_r * 1000.0,
+                    max_r * 1000.0,
                 ));
-                let ratio = state.radius_m / info.centerline_arc_length_m;
-                ui.label(format!("radius / arc-length: {ratio:.2}"));
+                ui.label(format!(
+                    "envelope at clearance: {:.1} - {:.1} mm",
+                    (min_r + state.clearance_m) * 1000.0,
+                    (max_r + state.clearance_m) * 1000.0,
+                ));
             } else {
                 ui.label("(centerline missing — wireframe will not render)");
             }
@@ -1023,6 +1054,7 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
+    scan_radii: Res<ScanLocalRadii>,
     mut outer_envelope: ResMut<OuterEnvelopeState>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -1034,7 +1066,7 @@ fn device_design_panel(
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
-                    render_outer_envelope_section(ui, &mut outer_envelope, &info);
+                    render_outer_envelope_section(ui, &mut outer_envelope, &info, &scan_radii);
                     render_panel_stubs(ui);
                 });
         });
@@ -1115,7 +1147,13 @@ fn run_render_app(
     let bases = CenterlineBases {
         bases: compute_centerline_bases(&centerline_points),
     };
-    let outer_envelope = OuterEnvelopeState::from_scan_info(&scan_info);
+    // Compute the scan's local cross-section radii at each centerline
+    // polyline point. One-time cost at startup; the wireframe ring
+    // radii are derived from this every frame.
+    let scan_radii = ScanLocalRadii {
+        radii_m: compute_scan_local_radii(&centerline_points, &scan_mesh),
+    };
+    let outer_envelope = OuterEnvelopeState::default_for_scan();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -1136,6 +1174,7 @@ fn run_render_app(
             points_m: centerline_points,
         })
         .insert_resource(bases)
+        .insert_resource(scan_radii)
         .insert_resource(outer_envelope)
         .add_systems(Startup, setup_render_scene)
         .add_systems(
@@ -1477,161 +1516,104 @@ another_future_field = "foo"
         assert!(compute_centerline_bases(&[Point3::origin()]).is_empty());
     }
 
-    // ----- Slice 3 — OuterEnvelopeState defaults + slider range ----
-
-    fn empty_aabb() -> Aabb {
-        Aabb::new(Point3::origin(), Point3::origin())
-    }
-
-    fn dummy_scan_info(diag_m: f64) -> ScanInfo {
-        ScanInfo {
-            file_label: "test".to_string(),
-            vertex_count: 0,
-            face_count: 0,
-            aabb_mm_extents: [0.0; 3],
-            bbox_diagonal_m: diag_m,
-            scan_aabb_m: empty_aabb(),
-            centerline_arc_length_m: 0.0,
-            centerline_point_count: 0,
-        }
-    }
-
-    fn dummy_scan_info_with_centerline(diag_m: f64, arc_m: f64) -> ScanInfo {
-        ScanInfo {
-            file_label: "test".to_string(),
-            vertex_count: 0,
-            face_count: 0,
-            aabb_mm_extents: [0.0; 3],
-            bbox_diagonal_m: diag_m,
-            scan_aabb_m: empty_aabb(),
-            centerline_arc_length_m: arc_m,
-            centerline_point_count: 30,
-        }
-    }
+    // ----- Slice 3 polish 7 — clearance-only envelope state --------
 
     #[test]
-    fn outer_envelope_default_degenerate_aabb_falls_back_to_bbox_diag() {
-        // AABB has zero extent (default ScanInfo helper uses
-        // `Aabb::new(origin, origin)`). Heuristic returns None →
-        // fall back to bbox_diagonal_m × 0.30 = 15 mm → clamped to
-        // slider min (5 mm).
-        let info = dummy_scan_info(0.050);
-        let state = OuterEnvelopeState::from_scan_info(&info);
-        let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
-        assert!(state.radius_m >= min_m && state.radius_m <= max_m);
-    }
-
-    #[test]
-    fn outer_envelope_default_uses_cross_section_extent_for_typical_scan() {
-        // Build a 40 × 40 × 100 mm AABB (long axis Z, cross section
-        // 40 × 40 mm). Half of the LARGER cross-section extent = 20 mm.
-        // Plus 5 mm clearance = 25 mm. Slider range for 100 mm arc =
-        // [5, 45] mm; 25 mm is in-band.
-        let mut info = dummy_scan_info_with_centerline(0.120, 0.100);
-        info.scan_aabb_m = Aabb::new(
-            Point3::new(-0.020, -0.020, -0.050),
-            Point3::new(0.020, 0.020, 0.050),
-        );
-        let state = OuterEnvelopeState::from_scan_info(&info);
-        let expected = 0.020 + ENVELOPE_DEFAULT_CLEARANCE_M;
-        assert!(
-            approx_eq(state.radius_m, expected, 1e-9),
-            "got {}, expected {}",
-            state.radius_m,
-            expected,
-        );
-    }
-
-    #[test]
-    fn outer_envelope_default_picks_larger_cross_section_extent() {
-        // Asymmetric cross-section: 40 × 60 × 100 mm (long Z; cross
-        // section 40 × 60). Half of the LARGER cross-section extent
-        // = 30 mm. Plus 5 mm = 35 mm. Slider range max = arc/2 - 5
-        // = 45 mm; 35 mm in-band.
-        let mut info = dummy_scan_info_with_centerline(0.120, 0.100);
-        info.scan_aabb_m = Aabb::new(
-            Point3::new(-0.020, -0.030, -0.050),
-            Point3::new(0.020, 0.030, 0.050),
-        );
-        let state = OuterEnvelopeState::from_scan_info(&info);
-        let expected = 0.030 + ENVELOPE_DEFAULT_CLEARANCE_M;
-        assert!(
-            approx_eq(state.radius_m, expected, 1e-9),
-            "got {}, expected {}",
-            state.radius_m,
-            expected,
-        );
-    }
-
-    #[test]
-    fn outer_envelope_default_inside_slider_range_for_various_arc_lengths() {
-        for arc in [0.060_f64, 0.100, 0.134, 0.250, 0.500] {
-            let info = dummy_scan_info_with_centerline(arc * 1.2, arc);
-            let state = OuterEnvelopeState::from_scan_info(&info);
-            let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
-            assert!(
-                state.radius_m >= min_m && state.radius_m <= max_m,
-                "default {} not in [{}, {}] for arc {}",
-                state.radius_m,
-                min_m,
-                max_m,
-                arc,
-            );
-        }
-    }
-
-    // ----- Slice 3 polish 4 — cross-section radius heuristic -------
-
-    #[test]
-    fn estimate_cross_section_radius_returns_none_for_degenerate_aabb() {
-        // Zero extent in one axis.
-        let aabb = Aabb::new(Point3::origin(), Point3::new(0.040, 0.040, 0.0));
-        assert!(estimate_scan_cross_section_radius(&aabb).is_none());
-    }
-
-    #[test]
-    fn estimate_cross_section_radius_uses_larger_of_two_short_axes() {
-        // 40 × 60 × 100 mm AABB. Long axis = Z (100). Cross section
-        // extents = 40, 60. Half of LARGER cross-section = 30 mm.
-        let aabb = Aabb::new(
-            Point3::new(-0.020, -0.030, -0.050),
-            Point3::new(0.020, 0.030, 0.050),
-        );
-        let r = estimate_scan_cross_section_radius(&aabb).unwrap();
-        assert!(approx_eq(r, 0.030, 1e-12));
+    fn outer_envelope_default_clearance_is_five_mm() {
+        let state = OuterEnvelopeState::default_for_scan();
+        assert!(approx_eq(state.clearance_m, 0.005, 1e-12));
     }
 
     #[test]
     fn outer_envelope_defaults_to_closed_high_z_open_low_z() {
-        // Cleaned-cap convention: scan dome at high Z (closed),
-        // cf-scan-prep flat cap at low Z (open).
-        let info = dummy_scan_info(0.100);
-        let state = OuterEnvelopeState::from_scan_info(&info);
+        let state = OuterEnvelopeState::default_for_scan();
         assert!(state.closed_at_high_z);
         assert!(!state.closed_at_low_z);
     }
 
     #[test]
-    fn estimate_cross_section_radius_iter_1_fixture_yields_35mm() {
-        // iter-1 fixture AABB ~ 68 × 70 × 137 mm. Long axis = Z.
-        // Cross section = 68, 70. Half of larger = 35 mm.
-        let aabb = Aabb::new(
-            Point3::new(0.000, 0.000, 0.000),
-            Point3::new(0.0684, 0.0695, 0.1369),
-        );
-        let r = estimate_scan_cross_section_radius(&aabb).unwrap();
-        assert!(approx_eq(r, 0.0695 * 0.5, 1e-9));
+    fn outer_envelope_clearance_slider_range_zero_to_fifty_mm() {
+        let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
+        assert!(approx_eq(min_m, 0.0, 1e-12));
+        assert!(approx_eq(max_m, 0.050, 1e-12));
+    }
+
+    // ----- Slice 3 polish 7 — scan-local cross-section radii -------
+
+    #[test]
+    fn compute_scan_local_radii_short_polyline_returns_empty() {
+        let mesh = unit_cube_mesh();
+        assert!(compute_scan_local_radii(&[], &mesh).is_empty());
+        assert!(compute_scan_local_radii(&[Point3::origin()], &mesh).is_empty());
     }
 
     #[test]
-    fn outer_envelope_slider_max_uses_bbox_diagonal() {
-        // Slice 3 polish 6 dropped the prior `R < arc/2` capsule
-        // constraint — cap height is now sized to the scan's dome
-        // extent, independent of R. Slider max is just the bbox
-        // diagonal so the user can dial freely.
-        let info = dummy_scan_info_with_centerline(0.168, 0.134);
-        let (_, max_m) = OuterEnvelopeState::slider_range_m(&info);
-        assert!(approx_eq(max_m, 0.168, 1e-12), "got {max_m}");
+    fn compute_scan_local_radii_unit_cube_endpoints_get_xy_half_diag() {
+        // Unit cube ±50 mm corners; centerline along +Z at three
+        // points. All 8 cube corners are closest to the END
+        // centerline points (z = ±0.030) because the middle point
+        // (z = 0) is equidistant from ±Z corners but the corners'
+        // total Euclidean distance there exceeds the endpoint
+        // distances. So radii[0] and radii[2] = XY half-diagonal =
+        // sqrt(50² + 50²) ≈ 70.7 mm; radii[1] = 0 (no corner
+        // closest).
+        let mesh = unit_cube_mesh();
+        let pts = vec![
+            Point3::new(0.0, 0.0, -0.030),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.030),
+        ];
+        let radii = compute_scan_local_radii(&pts, &mesh);
+        assert_eq!(radii.len(), 3);
+        let expected = (50.0_f64 * 50.0 + 50.0 * 50.0).sqrt() / 1000.0;
+        assert!(
+            approx_eq(radii[0], expected, 1e-9),
+            "got radii[0] = {}",
+            radii[0]
+        );
+        assert!(
+            approx_eq(radii[2], expected, 1e-9),
+            "got radii[2] = {}",
+            radii[2]
+        );
+        // Middle point has no closest vertex on this fixture.
+        assert!(
+            approx_eq(radii[1], 0.0, 1e-12),
+            "got radii[1] = {}",
+            radii[1]
+        );
+    }
+
+    #[test]
+    fn compute_scan_local_radii_returns_per_point_max() {
+        // Build a mesh with two clusters of vertices: one at z=0
+        // with radius 30 mm in XY, one at z=0.04 with radius 50 mm.
+        // Centerline along Z through both. Each centerline point's
+        // closest cluster should give the per-point max.
+        let mut m = IndexedMesh::new();
+        for theta in 0..8 {
+            #[allow(clippy::cast_precision_loss)]
+            let angle = (theta as f64) * std::f64::consts::TAU / 8.0;
+            m.vertices
+                .push(Point3::new(0.030 * angle.cos(), 0.030 * angle.sin(), 0.0));
+            m.vertices
+                .push(Point3::new(0.050 * angle.cos(), 0.050 * angle.sin(), 0.040));
+        }
+        let pts = vec![Point3::new(0.0, 0.0, -0.001), Point3::new(0.0, 0.0, 0.041)];
+        let radii = compute_scan_local_radii(&pts, &m);
+        assert_eq!(radii.len(), 2);
+        // Point at z=-0.001 is closest to the z=0 cluster (30 mm).
+        assert!(
+            approx_eq(radii[0], 0.030, 1e-9),
+            "got radii[0] = {}",
+            radii[0]
+        );
+        // Point at z=+0.041 is closest to the z=0.040 cluster (50 mm).
+        assert!(
+            approx_eq(radii[1], 0.050, 1e-9),
+            "got radii[1] = {}",
+            radii[1]
+        );
     }
 
     #[test]
@@ -1664,13 +1646,10 @@ another_future_field = "foo"
         assert!(approx_eq(e, 0.007, 1e-12), "got {e}");
     }
 
-    #[test]
-    fn outer_envelope_slider_falls_back_to_diag_without_centerline() {
-        let info = dummy_scan_info(0.168);
-        let (_, max_m) = OuterEnvelopeState::slider_range_m(&info);
-        // No centerline → diagonal-based range, 168 mm cap.
-        assert!(approx_eq(max_m, 0.168, 1e-12));
-    }
+    // (Prior `outer_envelope_slider_falls_back_to_diag_without_centerline`
+    // test deleted in polish 7 — slider is now clearance-based, not
+    // radius-based, so the bbox-diagonal fallback is no longer
+    // relevant.)
 
     // ----- Slice 3 polish 2 — arc-sampling helpers ------------------
 
