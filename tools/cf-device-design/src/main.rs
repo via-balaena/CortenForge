@@ -1,10 +1,16 @@
 //! cf-device-design — layered-silicone-device design + testing suite
 //! (`docs/ENGINEERING_SUITE_DESIGN.md`).
 //!
-//! Slice 2 (this commit): crate scaffold + STL/prep load + centerline
-//! overlay + Scan Info panel only. Later slices wire the Outer
-//! Envelope / Cavity / Layers / Features / Validations / Health / Save
-//! panels.
+//! Slices shipped:
+//! - Slice 2: crate scaffold + STL/prep load + centerline overlay +
+//!   Scan Info panel.
+//! - Slice 3: Outer Envelope panel + curve-following wireframe overlay
+//!   (radius slider, parallel-transport bases at each centerline point,
+//!   gizmo rings + longitudinal lines).
+//!
+//! Pending slices: Cavity / Layers / Features / Validations / Health /
+//! Save / Open. See `docs/ENGINEERING_SUITE_DESIGN.md` for the full
+//! ladder.
 
 use std::path::{Path, PathBuf};
 
@@ -19,6 +25,7 @@ use cf_viewer::{
 use clap::Parser;
 use mesh_io::load_stl;
 use mesh_types::{Bounded, IndexedMesh, Point3};
+use nalgebra::Vector3;
 use serde::Deserialize;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
@@ -91,6 +98,53 @@ struct Centerline {
     points_m: Vec<Point3<f64>>,
 }
 
+/// Bevy resource carrying the cached parallel-transport basis at
+/// each centerline point. Computed once at startup so the per-frame
+/// outer-envelope wireframe draw doesn't recompute (parallel
+/// transport is O(N) and stable, no need to recompute every tick).
+///
+/// `bases[i] = (b1_i, b2_i)` — two unit vectors perpendicular to
+/// the local tangent at centerline point `i`, smoothly propagated
+/// from `bases[i-1]` so adjacent rings don't twist relative to
+/// each other (parallel-transport convention).
+///
+/// Empty when [`Centerline`] is empty.
+#[derive(Resource, Default, Clone)]
+struct CenterlineBases {
+    bases: Vec<(Vector3<f64>, Vector3<f64>)>,
+}
+
+/// Outer-envelope panel state — the user-dialed constant radius for
+/// the curve-following capsule along the scan centerline (per
+/// `docs/ENGINEERING_SUITE_DESIGN.md`'s Outer Envelope section).
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct OuterEnvelopeState {
+    radius_m: f64,
+}
+
+impl OuterEnvelopeState {
+    /// Build the slice-2-default starting state from the loaded
+    /// scan's bbox diagonal. Picks ~30% of the diagonal as a
+    /// conservative starting radius, clamped to `[20 mm, 150 mm]`.
+    /// For the iter-1 fixture (168 mm diagonal) this lands at
+    /// 50 mm — generous but a sensible visible starting point that
+    /// fully envelopes typical scans.
+    fn from_scan_info(info: &ScanInfo) -> Self {
+        let radius = (info.bbox_diagonal_m * 0.30).clamp(0.020, 0.150);
+        Self { radius_m: radius }
+    }
+
+    /// Slider range for the radius. Wide enough that the user can
+    /// dial up if needed (`bbox_diagonal_m * 1.0` upper bound is
+    /// extremely generous — the device wouldn't be useful at that
+    /// radius but the slider doesn't prevent it), narrow enough at
+    /// the bottom that the user can see the "too small to envelope
+    /// the scan" failure mode (health-check slice 6).
+    fn slider_range_m(info: &ScanInfo) -> (f64, f64) {
+        (0.005, (info.bbox_diagonal_m * 1.0).max(0.060))
+    }
+}
+
 // ----- .prep.toml parsing (subset; centerline only) -----------------
 
 #[derive(Deserialize)]
@@ -144,6 +198,90 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
         .windows(2)
         .map(|pair| (pair[1] - pair[0]).norm())
         .sum()
+}
+
+/// Compute the local unit tangent at `points[i]`. Endpoints use a
+/// forward / backward difference; interior points use a central
+/// difference between `points[i-1]` and `points[i+1]`. Falls back
+/// to `+Z` when the polyline is degenerate (consecutive coincident
+/// points) — defensive; the centerline upstream avoids degeneracies.
+fn local_tangent(points: &[Point3<f64>], i: usize) -> Vector3<f64> {
+    let raw = if i == 0 {
+        points[1] - points[0]
+    } else if i == points.len() - 1 {
+        points[i] - points[i - 1]
+    } else {
+        points[i + 1] - points[i - 1]
+    };
+    let norm = raw.norm();
+    if norm < 1e-12 {
+        Vector3::new(0.0, 0.0, 1.0)
+    } else {
+        raw / norm
+    }
+}
+
+/// Pick an initial perpendicular vector to `tangent` for the first
+/// centerline point's basis. Uses `+Z` as the candidate, swaps to
+/// `+X` when `tangent` is nearly parallel to `+Z` (so the
+/// Gram-Schmidt projection doesn't collapse to a zero vector).
+fn initial_basis_b1(tangent: &Vector3<f64>) -> Vector3<f64> {
+    let world_z = Vector3::new(0.0, 0.0, 1.0);
+    let candidate = if tangent.dot(&world_z).abs() > 0.9 {
+        Vector3::new(1.0, 0.0, 0.0)
+    } else {
+        world_z
+    };
+    let projected = candidate - tangent * candidate.dot(tangent);
+    let norm = projected.norm();
+    if norm < 1e-12 {
+        // Extremely defensive; shouldn't reach here given the
+        // candidate-swap above.
+        Vector3::new(0.0, 1.0, 0.0)
+    } else {
+        projected / norm
+    }
+}
+
+/// Parallel-transport an existing basis vector `prev_b1` to the new
+/// tangent direction. Projects `prev_b1` onto the plane perpendicular
+/// to `tangent` and normalizes. Smooth across consecutive ring frames
+/// — adjacent rings don't twist relative to each other, which keeps
+/// the longitudinal lines straight along the device.
+fn parallel_transport_b1(prev_b1: Vector3<f64>, tangent: &Vector3<f64>) -> Vector3<f64> {
+    let projected = prev_b1 - tangent * prev_b1.dot(tangent);
+    let norm = projected.norm();
+    if norm < 1e-12 {
+        initial_basis_b1(tangent)
+    } else {
+        projected / norm
+    }
+}
+
+/// Compute the parallel-transport (b1, b2) basis at every centerline
+/// point. b1 starts perpendicular to the first tangent; each
+/// subsequent b1 is the previous b1 projected perpendicular to the
+/// new tangent. b2 = tangent × b1 (right-hand rule), giving a
+/// right-handed orthonormal basis at every point.
+///
+/// Returns an empty vec for polylines with fewer than 2 points.
+fn compute_centerline_bases(points: &[Point3<f64>]) -> Vec<(Vector3<f64>, Vector3<f64>)> {
+    if points.len() < 2 {
+        return Vec::new();
+    }
+    let mut bases = Vec::with_capacity(points.len());
+    let mut prev_b1: Option<Vector3<f64>> = None;
+    for i in 0..points.len() {
+        let tangent = local_tangent(points, i);
+        let b1 = match prev_b1 {
+            Some(b) => parallel_transport_b1(b, &tangent),
+            None => initial_basis_b1(&tangent),
+        };
+        let b2 = tangent.cross(&b1).normalize();
+        bases.push((b1, b2));
+        prev_b1 = Some(b1);
+    }
+    bases
 }
 
 // ----- Bevy app -----------------------------------------------------
@@ -287,6 +425,121 @@ fn draw_reference_overlays(
     }
 }
 
+/// Number of segments around each cross-section ring of the
+/// outer-envelope wireframe. 24 segments → 15°-spaced ring vertices,
+/// smooth enough at typical device radii without overwhelming the
+/// gizmo line count.
+const OUTER_ENVELOPE_RING_SEGMENTS: usize = 24;
+
+/// Number of longitudinal lines connecting corresponding ring
+/// vertices across centerline rings. Drawn at evenly-spaced angles
+/// (0°, 90°, 180°, 270° at the default 4). Helps the wireframe read
+/// as a 3D tube rather than disconnected rings.
+const OUTER_ENVELOPE_LONGITUDINAL_LINES: usize = 4;
+
+/// Draw the outer-envelope wireframe overlay each frame. The
+/// envelope is a curve-following capsule (`Solid::pipe(centerline,
+/// radius_m)` in the SDF kernel; rendered here as a wireframe of
+/// cross-section rings perpendicular to the centerline tangent at
+/// each polyline point + longitudinal lines connecting them).
+///
+/// Wireframe-only (not a meshed surface) by design: marching-cubes
+/// at every slider tick would lag. The wireframe gives instant
+/// visual feedback as the radius changes; the meshed geometry
+/// lands at save / validate time via cf-cast-cli (slice 9).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+#[allow(clippy::too_many_arguments)] // Gizmo draw systems pull many Res by convention.
+fn draw_outer_envelope_overlay(
+    centerline: Res<Centerline>,
+    bases: Res<CenterlineBases>,
+    state: Res<OuterEnvelopeState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut gizmos: Gizmos,
+) {
+    if centerline.points_m.len() < 2 || bases.bases.len() != centerline.points_m.len() {
+        return;
+    }
+    // Pale green-blue; distinguishes from scan (white) + axis arrows
+    // (red/green/blue full saturation) + centerline (cyan).
+    let color = Color::srgb(0.55, 0.85, 0.70);
+
+    // Compute rings in physics frame, then project to Bevy frame for
+    // gizmo drawing. Each ring carries OUTER_ENVELOPE_RING_SEGMENTS
+    // vertices.
+    let mut rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(centerline.points_m.len());
+    for (i, point) in centerline.points_m.iter().enumerate() {
+        let (b1, b2) = bases.bases[i];
+        let mut ring = Vec::with_capacity(OUTER_ENVELOPE_RING_SEGMENTS);
+        for seg in 0..OUTER_ENVELOPE_RING_SEGMENTS {
+            #[allow(clippy::cast_precision_loss)] // seg fits in f64 easily.
+            let theta = (seg as f64 / OUTER_ENVELOPE_RING_SEGMENTS as f64) * std::f64::consts::TAU;
+            let offset = b1 * (state.radius_m * theta.cos()) + b2 * (state.radius_m * theta.sin());
+            let physics_pt = Point3::from(point.coords + offset);
+            ring.push(Vec3::from_array(up.to_bevy_point(&physics_pt)) * render_scale.0);
+        }
+        rings_bevy.push(ring);
+    }
+
+    // Draw ring lines (closed circles at each centerline point).
+    for ring in &rings_bevy {
+        for seg in 0..ring.len() {
+            let a = ring[seg];
+            let b = ring[(seg + 1) % ring.len()];
+            gizmos.line(a, b, color);
+        }
+    }
+
+    // Draw longitudinal lines connecting corresponding ring vertices
+    // across centerline rings.
+    if rings_bevy.len() >= 2 {
+        let step = OUTER_ENVELOPE_RING_SEGMENTS / OUTER_ENVELOPE_LONGITUDINAL_LINES;
+        for k in 0..OUTER_ENVELOPE_LONGITUDINAL_LINES {
+            let ring_idx = k * step;
+            for i in 0..rings_bevy.len() - 1 {
+                let a = rings_bevy[i][ring_idx];
+                let b = rings_bevy[i + 1][ring_idx];
+                gizmos.line(a, b, color);
+            }
+        }
+    }
+}
+
+/// Render the Outer Envelope egui section — one slider (radius in
+/// mm) + a live readout of the centerline arc length so the user
+/// can mentally relate "this radius is 30% of the device length"
+/// at a glance.
+fn render_outer_envelope_section(
+    ui: &mut egui::Ui,
+    state: &mut OuterEnvelopeState,
+    info: &ScanInfo,
+) {
+    egui::CollapsingHeader::new("Outer Envelope")
+        .default_open(true)
+        .show(ui, |ui| {
+            let (min_m, max_m) = OuterEnvelopeState::slider_range_m(info);
+            let mut radius_mm = state.radius_m * 1000.0;
+            let min_mm = min_m * 1000.0;
+            let max_mm = max_m * 1000.0;
+            if ui
+                .add(egui::Slider::new(&mut radius_mm, min_mm..=max_mm).text("radius (mm)"))
+                .changed()
+            {
+                state.radius_m = radius_mm * 0.001;
+            }
+            if info.centerline_point_count >= 2 {
+                ui.label(format!(
+                    "centerline arc: {:.1} mm",
+                    info.centerline_arc_length_m * 1000.0,
+                ));
+                let ratio = state.radius_m / info.centerline_arc_length_m;
+                ui.label(format!("radius / arc-length: {ratio:.2}"));
+            } else {
+                ui.label("(centerline missing — wireframe will not render)");
+            }
+        });
+}
+
 /// Block orbit-camera input when the pointer is over the egui side
 /// panel — prevents the sidebar from accidentally rotating the
 /// camera when the user scrolls a slider list. Mirror of
@@ -312,13 +565,14 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
     }
 }
 
-/// Right-side egui sidebar carrying the design-suite panels. Slice 2
-/// renders only the Scan Info section; subsequent slices add Outer
-/// Envelope, Cavity, Layers, Validations, Health, Save / Open.
+/// Right-side egui sidebar carrying the design-suite panels.
+/// Renders Scan Info + Outer Envelope as of slice 3; remaining
+/// stubs surface the planned panel order.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
+    mut outer_envelope: ResMut<OuterEnvelopeState>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     egui::SidePanel::right("cf-device-design-panels")
@@ -329,6 +583,7 @@ fn device_design_panel(
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
+                    render_outer_envelope_section(ui, &mut outer_envelope, &info);
                     render_panel_stubs(ui);
                 });
         });
@@ -368,12 +623,10 @@ fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
 
 /// Stub-section placeholders for panels arriving in later slices. UI
 /// only — no state to surface yet. Pre-populating with the future
-/// panel names so the user can see the planned layout at slice-2
-/// landing time.
+/// panel names so the user can see the planned layout.
 fn render_panel_stubs(ui: &mut egui::Ui) {
     ui.separator();
     for name in [
-        "Outer Envelope (slice 3)",
         "Cavity (slice 4)",
         "Layers (slice 5)",
         "Validations (slice 6)",
@@ -408,6 +661,10 @@ fn run_render_app(
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
+    let bases = CenterlineBases {
+        bases: compute_centerline_bases(&centerline_points),
+    };
+    let outer_envelope = OuterEnvelopeState::from_scan_info(&scan_info);
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -427,12 +684,15 @@ fn run_render_app(
         .insert_resource(Centerline {
             points_m: centerline_points,
         })
+        .insert_resource(bases)
+        .insert_resource(outer_envelope)
         .add_systems(Startup, setup_render_scene)
         .add_systems(
             Update,
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 draw_reference_overlays,
+                draw_outer_envelope_overlay,
                 exit_on_esc,
             ),
         )
@@ -616,6 +876,197 @@ another_future_field = "foo"
         // Pinned: every cast tool in CortenForge uses +Z up. Drifting
         // away would mismatch cf-scan-prep and cf-cast.
         assert_eq!(DEVICE_UP_AXIS, UpAxis::PlusZ);
+    }
+
+    // ----- Slice 3 — local tangent + parallel-transport bases ------
+
+    fn straight_z_centerline() -> Vec<Point3<f64>> {
+        (0..5)
+            .map(|i| Point3::new(0.0, 0.0, f64::from(i) * 0.02))
+            .collect()
+    }
+
+    fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
+        (a - b).abs() < eps
+    }
+
+    #[test]
+    fn local_tangent_endpoint_forward_difference() {
+        let pts = straight_z_centerline();
+        let t = local_tangent(&pts, 0);
+        // Forward difference (0,0,0) → (0,0,0.02) gives +Z unit.
+        assert!(approx_eq(t.x, 0.0, 1e-12));
+        assert!(approx_eq(t.y, 0.0, 1e-12));
+        assert!(approx_eq(t.z, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn local_tangent_interior_central_difference() {
+        let pts = straight_z_centerline();
+        let t = local_tangent(&pts, 2);
+        // Central difference (0,0,0.02) → (0,0,0.06) gives +Z unit.
+        assert!(approx_eq(t.x, 0.0, 1e-12));
+        assert!(approx_eq(t.y, 0.0, 1e-12));
+        assert!(approx_eq(t.z, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn local_tangent_endpoint_backward_difference() {
+        let pts = straight_z_centerline();
+        let t = local_tangent(&pts, 4);
+        // Backward difference (0,0,0.06) → (0,0,0.08) gives +Z unit.
+        assert!(approx_eq(t.x, 0.0, 1e-12));
+        assert!(approx_eq(t.y, 0.0, 1e-12));
+        assert!(approx_eq(t.z, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn local_tangent_zero_segment_falls_back_to_plus_z() {
+        let pts = vec![Point3::origin(), Point3::origin()];
+        let t = local_tangent(&pts, 0);
+        // Degenerate (consecutive coincident points): documented
+        // fallback is +Z so the basis math doesn't NaN.
+        assert!(approx_eq(t.z, 1.0, 1e-12));
+    }
+
+    #[test]
+    fn initial_basis_b1_orthogonal_to_tangent() {
+        let t = Vector3::new(1.0, 0.0, 0.0);
+        let b1 = initial_basis_b1(&t);
+        assert!(approx_eq(b1.dot(&t), 0.0, 1e-12));
+        assert!(approx_eq(b1.norm(), 1.0, 1e-12));
+    }
+
+    #[test]
+    fn initial_basis_b1_handles_tangent_parallel_to_z() {
+        // Tangent nearly parallel to the +Z candidate; helper must
+        // swap to +X candidate so the projection doesn't collapse.
+        let t = Vector3::new(0.0, 0.0, 1.0);
+        let b1 = initial_basis_b1(&t);
+        assert!(approx_eq(b1.dot(&t), 0.0, 1e-12));
+        assert!(approx_eq(b1.norm(), 1.0, 1e-12));
+    }
+
+    #[test]
+    fn parallel_transport_preserves_orthogonality() {
+        // Start with a basis b1 perpendicular to the OLD tangent;
+        // transport it to a NEW tangent direction. The transported
+        // b1' should be perpendicular to the new tangent + unit-length.
+        let old_t = Vector3::new(0.0, 0.0, 1.0);
+        let b1 = initial_basis_b1(&old_t);
+        let new_t = Vector3::new(0.0, 1.0, 0.0); // perpendicular to old
+        let b1_new = parallel_transport_b1(b1, &new_t);
+        assert!(approx_eq(b1_new.dot(&new_t), 0.0, 1e-12));
+        assert!(approx_eq(b1_new.norm(), 1.0, 1e-12));
+    }
+
+    #[test]
+    fn compute_centerline_bases_yields_orthonormal_right_handed_frames() {
+        let pts = straight_z_centerline();
+        let bases = compute_centerline_bases(&pts);
+        assert_eq!(bases.len(), pts.len());
+        for (i, (b1, b2)) in bases.iter().enumerate() {
+            let t = local_tangent(&pts, i);
+            assert!(
+                approx_eq(b1.dot(&t), 0.0, 1e-9),
+                "b1·t at {i} = {}",
+                b1.dot(&t)
+            );
+            assert!(
+                approx_eq(b2.dot(&t), 0.0, 1e-9),
+                "b2·t at {i} = {}",
+                b2.dot(&t)
+            );
+            assert!(
+                approx_eq(b1.dot(b2), 0.0, 1e-9),
+                "b1·b2 at {i} = {}",
+                b1.dot(b2)
+            );
+            assert!(approx_eq(b1.norm(), 1.0, 1e-9));
+            assert!(approx_eq(b2.norm(), 1.0, 1e-9));
+            // Right-handed: b1 × b2 = +tangent (within sign).
+            let cross = b1.cross(b2);
+            assert!(
+                approx_eq(cross.dot(&t), 1.0, 1e-9),
+                "right-hand check at {i}: cross·t = {}",
+                cross.dot(&t)
+            );
+        }
+    }
+
+    #[test]
+    fn compute_centerline_bases_returns_empty_for_short_polylines() {
+        assert!(compute_centerline_bases(&[]).is_empty());
+        assert!(compute_centerline_bases(&[Point3::origin()]).is_empty());
+    }
+
+    // ----- Slice 3 — OuterEnvelopeState defaults + slider range ----
+
+    fn dummy_scan_info(diag_m: f64) -> ScanInfo {
+        ScanInfo {
+            file_label: "test".to_string(),
+            vertex_count: 0,
+            face_count: 0,
+            aabb_mm_extents: [0.0; 3],
+            bbox_diagonal_m: diag_m,
+            centerline_arc_length_m: 0.0,
+            centerline_point_count: 0,
+        }
+    }
+
+    #[test]
+    fn outer_envelope_default_clamped_to_min_for_tiny_scans() {
+        // 50 mm diag × 0.30 = 15 mm; below the 20 mm floor → clamped.
+        let info = dummy_scan_info(0.050);
+        let state = OuterEnvelopeState::from_scan_info(&info);
+        assert!(approx_eq(state.radius_m, 0.020, 1e-12));
+    }
+
+    #[test]
+    fn outer_envelope_default_clamped_to_max_for_huge_scans() {
+        // 600 mm diag × 0.30 = 180 mm; above the 150 mm ceiling →
+        // clamped. Defensive — keeps the default sensible even if
+        // the scan is way larger than a typical device.
+        let info = dummy_scan_info(0.600);
+        let state = OuterEnvelopeState::from_scan_info(&info);
+        assert!(approx_eq(state.radius_m, 0.150, 1e-12));
+    }
+
+    #[test]
+    fn outer_envelope_default_in_band_for_typical_scans() {
+        // 168 mm diag (iter-1 fixture) × 0.30 = 50.4 mm; in-band.
+        let info = dummy_scan_info(0.168);
+        let state = OuterEnvelopeState::from_scan_info(&info);
+        assert!(approx_eq(state.radius_m, 0.0504, 1e-6));
+    }
+
+    #[test]
+    fn outer_envelope_slider_range_widens_for_larger_scans() {
+        let small = dummy_scan_info(0.050);
+        let large = dummy_scan_info(0.300);
+        let (_, max_small) = OuterEnvelopeState::slider_range_m(&small);
+        let (_, max_large) = OuterEnvelopeState::slider_range_m(&large);
+        assert!(max_large > max_small);
+        // The 60-mm floor on the upper bound keeps even tiny scans
+        // dialable to a reasonable radius.
+        assert!(max_small >= 0.060);
+    }
+
+    #[test]
+    fn outer_envelope_default_inside_slider_range() {
+        for diag in [0.020_f64, 0.080, 0.168, 0.300, 0.600] {
+            let info = dummy_scan_info(diag);
+            let state = OuterEnvelopeState::from_scan_info(&info);
+            let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
+            assert!(
+                state.radius_m >= min_m && state.radius_m <= max_m,
+                "default {} not in [{}, {}] for diag {}",
+                state.radius_m,
+                min_m,
+                max_m,
+                diag,
+            );
+        }
     }
 
     /// `Aabb` re-export from `mesh_types` (transitive from
