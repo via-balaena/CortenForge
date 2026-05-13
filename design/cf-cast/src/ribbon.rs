@@ -332,6 +332,98 @@ impl Ribbon {
         }
         max_angle
     }
+
+    /// Find the index of the centerline segment closest to `query` +
+    /// the parameter `t ∈ [0, 1]` of the projected closest point
+    /// along that segment. Linear scan over the (typically 10-30
+    /// point) centerline — cheap; on a 30-point polyline this is
+    /// ~30 dot-products per query, well under a microsecond.
+    ///
+    /// For query points beyond the polyline endpoints, the closest
+    /// segment is the start or end segment with `t` clamped to
+    /// `0.0` or `1.0` respectively. This makes the ribbon SDF
+    /// well-defined everywhere in world space rather than only on
+    /// the cylinder of points whose projection lands strictly
+    /// within a segment.
+    ///
+    /// Returns `(segment_index, t)` where:
+    /// - `segment_index ∈ [0, segments.len())`
+    /// - `t ∈ [0.0, 1.0]` (clamped)
+    fn closest_segment(&self, query: &Point3<f64>) -> (usize, f64) {
+        let mut best_idx = 0usize;
+        let mut best_t = 0.0f64;
+        let mut best_dist_sq = f64::INFINITY;
+        for (i, seg) in self.segments.iter().enumerate() {
+            let edge = seg.end - seg.start;
+            let edge_len_sq = edge.norm_squared();
+            // Edge non-zero by construction (Ribbon::new validates).
+            let to_query = query - seg.start;
+            let t = (to_query.dot(&edge) / edge_len_sq).clamp(0.0, 1.0);
+            let projection = seg.start + edge * t;
+            let dist_sq = (query - projection).norm_squared();
+            if dist_sq < best_dist_sq {
+                best_dist_sq = dist_sq;
+                best_idx = i;
+                best_t = t;
+            }
+        }
+        (best_idx, best_t)
+    }
+
+    /// Evaluate the ribbon SDF at world-frame query point `query`.
+    /// Returns the signed distance to the local cutting plane at
+    /// the closest centerline segment.
+    ///
+    /// Algorithm (`docs/CURVE_FOLLOWING_DESIGN.md` §Algorithm
+    /// §Step 2):
+    /// 1. Find the closest centerline segment to `query` (linear
+    ///    scan; ~30 ops on a typical centerline).
+    /// 2. Compute the projection `P*` of `query` onto that segment.
+    /// 3. Return `dot(query - P*, B*)` where `B*` is the segment's
+    ///    binormal (`tangent × N_split`, unit-length per
+    ///    construction).
+    ///
+    /// Positive return value -> query is on the `+binormal` side of
+    /// the ribbon (one piece); negative -> `-binormal` side (other
+    /// piece). The zero set is the ribbon surface itself.
+    ///
+    /// **Continuity**: C⁰ everywhere; C¹ within each segment's
+    /// Voronoi region; potential creases at segment-junction
+    /// boundaries (where the closest-segment query switches from
+    /// one to the next). Per design doc §Risks: at curved tangent
+    /// transitions the discontinuity is small (proportional to the
+    /// sin of the tangent rotation between adjacent segments) and
+    /// well-tolerated by marching cubes at the spec's 2mm cell
+    /// size. C¹ smoothing (linear interp of tangent/binormal across
+    /// neighboring segments) deferred until iter-1 surfaces a
+    /// visible artifact.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nalgebra::{Point3, Vector3};
+    /// use cf_cast::{Ribbon, SplitNormal};
+    ///
+    /// // Centerline along +X, split-normal +Y → binormal +Z.
+    /// let points = vec![
+    ///     Point3::new(0.0, 0.0, 0.0),
+    ///     Point3::new(0.10, 0.0, 0.0),
+    /// ];
+    /// let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+    /// let ribbon = Ribbon::new(points, split).unwrap();
+    ///
+    /// // Query at +z above the centerline → positive SDF.
+    /// let q = Point3::new(0.05, 0.0, 0.02);
+    /// assert!((ribbon.sdf(&q) - 0.02).abs() < 1e-12);
+    /// ```
+    #[must_use]
+    pub fn sdf(&self, query: &Point3<f64>) -> f64 {
+        let (seg_idx, t) = self.closest_segment(query);
+        let seg = &self.segments[seg_idx];
+        let edge = seg.end - seg.start;
+        let projection = seg.start + edge * t;
+        (query - projection).dot(&seg.binormal)
+    }
 }
 
 #[cfg(test)]
@@ -479,5 +571,115 @@ mod tests {
             }
             other => panic!("expected TangentParallelToSplitNormal, got {other:?}"),
         }
+    }
+
+    // ----- SDF -----------------------------------------------------
+
+    /// Build a straight-along-+X ribbon with +Y split-normal so the
+    /// binormal is +Z. SDF at any query point along that ribbon's
+    /// span should equal the query's Z coordinate exactly.
+    fn ribbon_x_axis() -> Ribbon {
+        let points = polyline_along_x(11); // 10 segments of 0.01m, total 0.10m
+        let split =
+            SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).expect("(0, 1, 0) is non-degenerate");
+        Ribbon::new(points, split).expect("non-degenerate ribbon")
+    }
+
+    #[test]
+    fn sdf_above_centerline_is_positive_z() {
+        let ribbon = ribbon_x_axis();
+        // Query at +Z above the midpoint of the centerline.
+        let q = Point3::new(0.05, 0.0, 0.02);
+        assert_relative_eq!(ribbon.sdf(&q), 0.02, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn sdf_below_centerline_is_negative_z() {
+        let ribbon = ribbon_x_axis();
+        let q = Point3::new(0.05, 0.0, -0.03);
+        assert_relative_eq!(ribbon.sdf(&q), -0.03, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn sdf_on_centerline_is_zero() {
+        let ribbon = ribbon_x_axis();
+        let q = Point3::new(0.05, 0.0, 0.0);
+        assert_relative_eq!(ribbon.sdf(&q), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn sdf_ignores_offset_along_split_normal() {
+        // Split-normal is +Y, so query offsets in +Y don't change
+        // the cutting-plane distance (which is along the binormal,
+        // i.e. +Z).
+        let ribbon = ribbon_x_axis();
+        let q1 = Point3::new(0.05, 0.0, 0.02);
+        let q2 = Point3::new(0.05, 0.1, 0.02); // same Z, different Y.
+        assert_relative_eq!(ribbon.sdf(&q1), ribbon.sdf(&q2), epsilon = 1e-12);
+    }
+
+    /// For a query beyond the polyline's end, the closest segment
+    /// is the last segment with `t = 1.0` (clamped). The signed
+    /// distance to the cutting plane should still equal the
+    /// query's `z` component (since the last segment's binormal is
+    /// still +Z).
+    #[test]
+    fn sdf_beyond_polyline_endpoint_clamps_to_last_segment() {
+        let ribbon = ribbon_x_axis();
+        let q = Point3::new(0.5, 0.0, 0.03); // x = 0.5m, well past 0.10m end
+        assert_relative_eq!(ribbon.sdf(&q), 0.03, epsilon = 1e-12);
+    }
+
+    /// Right-angle polyline: first segment along +X (binormal +Z if
+    /// split = +Y), second segment along +Y (binormal -Z if split
+    /// = +Y, since X→Y rotates the tangent 90° counter-clockwise
+    /// around +Z, but tangent × Y = -Z). Verify SDF sign behaves
+    /// per the closest segment.
+    #[test]
+    fn sdf_right_angle_polyline_segment_dispatches_correctly() {
+        // Right-angle XY polyline with +Z split-normal so both
+        // segments produce well-defined (non-degenerate) binormals
+        // in the XY plane.
+        let points = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.10, 0.0, 0.0),  // segment 0 along +X
+            Point3::new(0.10, 0.10, 0.0), // segment 1 along +Y
+        ];
+        let split =
+            SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).expect("(0, 0, 1) is non-degenerate");
+        let ribbon = Ribbon::new(points, split).expect("non-degenerate ribbon");
+        // Segment 0: tangent = +X, binormal = X × Z = -Y.
+        // Query at midpoint of segment 0 offset +Y: SDF = -y_offset.
+        let q0 = Point3::new(0.05, 0.01, 0.0);
+        assert_relative_eq!(ribbon.sdf(&q0), -0.01, epsilon = 1e-12);
+        // Segment 1: tangent = +Y, binormal = Y × Z = +X.
+        // Query near midpoint of segment 1 offset +X: SDF = +x_offset
+        // from segment-1 line (which is at x=0.10).
+        let q1 = Point3::new(0.11, 0.05, 0.0);
+        assert_relative_eq!(ribbon.sdf(&q1), 0.01, epsilon = 1e-12);
+    }
+
+    /// SDF flips sign across the cutting plane: querying ±δ symmetric
+    /// points should give equal-magnitude opposite-sign SDF values.
+    #[test]
+    fn sdf_is_antisymmetric_across_cutting_plane() {
+        let ribbon = ribbon_x_axis();
+        let q_plus = Point3::new(0.05, 0.0, 0.02);
+        let q_minus = Point3::new(0.05, 0.0, -0.02);
+        assert_relative_eq!(ribbon.sdf(&q_plus), -ribbon.sdf(&q_minus), epsilon = 1e-12);
+    }
+
+    /// Closest-segment dispatch picks the correct segment when the
+    /// query is nearer to a non-first segment. Centerline goes
+    /// 0.0 → 0.10 along +X; query at x=0.085 should pick segment 8
+    /// (which spans x=0.08 to x=0.09; 0.085 is its midpoint).
+    #[test]
+    fn closest_segment_picks_nearest_in_long_polyline() {
+        let ribbon = ribbon_x_axis(); // 10 segments along x = 0..0.10
+        let q = Point3::new(0.085, 0.0, 0.0);
+        let (idx, t) = ribbon.closest_segment(&q);
+        assert_eq!(idx, 8);
+        // segment 8 spans 0.08..0.09; query at 0.085 → t = 0.5.
+        assert_relative_eq!(t, 0.5, epsilon = 1e-12);
     }
 }
