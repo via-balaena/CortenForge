@@ -214,9 +214,10 @@ mod tests {
     fn build_pour_gate_solid_default_returns_some_with_finite_bounds() {
         let ribbon =
             straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
-        let solid =
-            build_pour_gate_solid(&ribbon).expect("Default kind should yield a solid");
-        let aabb = solid.bounds().expect("channel cylinders should have finite bounds");
+        let solid = build_pour_gate_solid(&ribbon).expect("Default kind should yield a solid");
+        let aabb = solid
+            .bounds()
+            .expect("channel cylinders should have finite bounds");
         // Gate at (-0.05, 0, 0) along +X tangent with half-length
         // 0.020 → x ∈ [-0.07, -0.03]. Vent at (+0.05, 0, 0) →
         // x ∈ [+0.03, +0.07]. Combined union x ∈ [-0.07, +0.07].
