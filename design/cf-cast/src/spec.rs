@@ -2672,18 +2672,18 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_pour_gate_prose_mentions_diameters() {
         // Pour gate ON: "Pour Gate + Vent" section must mention
-        // gate Ø (6.0 mm = 2 × 3 mm radius), vent Ø (3.0 mm =
-        // 2 × 1.5 mm radius), and channel lengths (gate = 90.0 mm
-        // = 2 × 45 mm half-length; vent = 40.0 mm = 2 × 20 mm
+        // gate Ø (6.0 mm = 2 × 3 mm radius), vent Ø (2.0 mm =
+        // 2 × 1 mm radius), and channel lengths (gate = 90.0 mm
+        // = 2 × 45 mm half-length; vent = 80.0 mm = 2 × 40 mm
         // half-length).
         let (spec, ribbon) = v2_fixture_with_pour_gate();
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(md.contains("## Pour Gate + Vent"));
         assert!(md.contains("6.0 mm Ø pour gate"));
-        assert!(md.contains("3.0 mm Ø vent"));
+        assert!(md.contains("2.0 mm Ø vent"));
         assert!(md.contains("90.0 mm total"));
-        assert!(md.contains("40.0 mm total"));
+        assert!(md.contains("80.0 mm total"));
         // Per-layer Step 6 references the side-mounted pour gate
         // when enabled.
         assert!(

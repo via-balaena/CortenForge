@@ -493,15 +493,18 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
             let _ = writeln!(
                 md,
                 "Integrated pour-gate + air-vent channels are CSG'd \
-                 through the assembled mold cup. Pour silicone into the \
-                 **{gate_dia_mm:.1} mm Ø pour gate** on the side of the \
-                 mold (side-mounted at the centerline midpoint along \
-                 the ribbon binormal, {gate_length_mm:.1} mm total \
-                 channel length); air escapes through the **{vent_dia_mm:.1} mm \
-                 Ø vent** at the tip end (axial along the last segment's \
-                 tangent, {vent_length_mm:.1} mm total channel length). \
-                 Both channels split equally between the two pieces \
-                 (each piece gets half the channel cross-section)."
+                 through the assembled mold cup. Pour silicone into \
+                 the **{gate_dia_mm:.1} mm Ø pour gate** on the side \
+                 of the mold (side-mounted at the centerline midpoint \
+                 along the ribbon binormal, {gate_length_mm:.1} mm \
+                 total channel length); air escapes through the \
+                 **{vent_dia_mm:.1} mm Ø vent** at the **arc apex** \
+                 — the polyline's highest-`+Z` vertex, oriented up \
+                 by workshop convention so trapped air rises into \
+                 the vent ({vent_length_mm:.1} mm total channel \
+                 length). Both channels split equally between the two \
+                 pieces (each piece gets half the channel \
+                 cross-section)."
             );
             md.push('\n');
             if !spec.include_vent {

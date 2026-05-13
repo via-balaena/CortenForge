@@ -52,11 +52,14 @@ pub struct PourGateSpec {
     /// 6 mm diameter — enough for low-viscosity silicone flow
     /// without splashing at typical workshop pour rates.
     pub gate_radius_m: f64,
-    /// Air-vent channel radius (m). Default `0.0015` = 1.5 mm =
-    /// 3 mm diameter — smaller than the pour gate; air escapes
-    /// easily through small cross-sections, and silicone won't
-    /// flow out of vents this size at workshop pour pressures
-    /// (silicone surface tension + low pressure differential).
+    /// Air-vent channel radius (m). Default `0.001` = 1 mm =
+    /// 2 mm diameter — small enough for silicone surface tension
+    /// to hold against the workshop pour-pressure differential
+    /// while letting air freely escape. v2.1 sub-leaf 3 shrank
+    /// the default from the prior 1.5 mm to reduce silicone
+    /// surface-tension hold concerns now that the vent is on the
+    /// workshop "roof" (apex of the centerline arc, oriented
+    /// `+Z`-up).
     pub vent_radius_m: f64,
     /// Half-length of the **side-mounted pour-gate** cylinder
     /// (m). Total channel length is `2 * gate_half_length_m`.
@@ -79,20 +82,22 @@ pub struct PourGateSpec {
     /// but does enlarge the gate cylinder's AABB, which slows
     /// cf-design's octree-pruning interval arithmetic.
     pub gate_half_length_m: f64,
-    /// Half-length of the **vent** cylinder along its tangent
+    /// Half-length of the **apex vent** cylinder along its `+Z`
     /// axis (m). Total channel length is `2 * vent_half_length_m`.
-    /// Default `0.020` = 20 mm half-length → 40 mm total channel.
+    /// Default `0.040` = 40 mm half-length → 80 mm total channel.
     ///
-    /// Vent cylinder is centered on the centerline endpoint
-    /// (v2.1 sub-leaf 2 keeps the vent at `centerline.last()`;
-    /// sub-leaf 3 will relocate it to the polyline's argmax-z
-    /// apex), so the channel extends `vent_half_length_m`
-    /// outward into the world AND `vent_half_length_m` inward
-    /// toward the body cavity. The inward half is mostly
-    /// redundant (the body cavity is already excluded by
-    /// `subtract(layer_body)`), but it provides cell-size-tolerant
-    /// overlap so marching cubes doesn't produce a thin annular
-    /// wall at the body-channel interface.
+    /// v2.1 sub-leaf 3 anchors the vent cylinder so its **inner
+    /// tip is at the centerline's argmax-z vertex** and the
+    /// cylinder extends straight up `+Z` by `2 * vent_half_length_m`.
+    /// For a typical workshop bounding region (cuboid with ≤80 mm
+    /// half-extent in `+Z` from the centerline apex), the default
+    /// 40 mm half-length puts the outer tip ≥80 mm above the apex
+    /// — the channel reliably punches all the way through the
+    /// cup wall to the workshop "roof".
+    ///
+    /// Workshop users with apex-far-from-`+Z`-face geometries
+    /// tune this up. The redundant outside-bounding-region portion
+    /// of the cylinder is a no-op for the mold piece composition.
     pub vent_half_length_m: f64,
     /// Whether to include the air-vent cylinder at
     /// `centerline.last()` (tip end). Default `true`. Disable for
@@ -102,17 +107,17 @@ pub struct PourGateSpec {
 }
 
 impl PourGateSpec {
-    /// v2.1 iter-1 defaults: 6 mm Ø pour gate (side-mounted,
-    /// 90 mm total channel along binormal), 3 mm Ø air vent at
-    /// `centerline.last()` (40 mm total channel along tangent),
-    /// vent enabled.
+    /// v2.1 iter-1 defaults: 6 mm Ø pour gate (side-mounted at
+    /// centerline midpoint along binormal, 90 mm total channel),
+    /// 2 mm Ø apex vent (at centerline's argmax-z vertex along
+    /// `+Z`, 80 mm total channel), vent enabled.
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
             gate_radius_m: 0.003,
-            vent_radius_m: 0.0015,
+            vent_radius_m: 0.001,
             gate_half_length_m: 0.045,
-            vent_half_length_m: 0.020,
+            vent_half_length_m: 0.040,
             include_vent: true,
         }
     }
@@ -156,11 +161,13 @@ pub enum PourGateKind {
 ///   channel opening on the assembled mold's side face. Reuses
 ///   [`Ribbon::sample_at_arc_fraction(0.5)`] to derive midpoint +
 ///   binormal.
-/// - The **vent** is at `centerline.last()` with axis along the
-///   last segment's tangent — silicone enters perpendicular to
-///   the seam, air escapes through the tip end. (Sub-leaf 3 of
-///   the v2.1 arc relocates this to the polyline's argmax-z
-///   apex.)
+/// - The **vent** is at the centerline's **argmax-z vertex**
+///   (the highest point on the polyline; workshop user orients
+///   the assembled mold with `+Z` up, so the apex vertex is the
+///   physical highest point on the cured silicone body, where
+///   trapped air collects). Axis is `+Z` (world up), so the vent
+///   channel rises straight from the centerline apex up through
+///   the cup wall to the bounding region's `+Z` outer face.
 ///
 /// Returns `None` when [`Ribbon::sample_at_arc_fraction(0.5)`]
 /// fails to resolve (degenerate centerline). Per the
@@ -189,15 +196,33 @@ pub fn build_pour_gate_solid(ribbon: &Ribbon) -> Option<Solid> {
         return Some(gate_cylinder);
     }
 
-    let last_seg = ribbon.segments.last()?;
-    let vent_cylinder = channel_cylinder(
-        last_seg.end,
-        last_seg.tangent,
-        spec.vent_radius_m,
-        spec.vent_half_length_m,
-    );
+    let apex = apex_point(&ribbon.points)?;
+    let up = Vector3::z_axis().into_inner();
+    let vent_center = apex + up * spec.vent_half_length_m;
+    let vent_cylinder =
+        channel_cylinder(vent_center, up, spec.vent_radius_m, spec.vent_half_length_m);
 
     Some(gate_cylinder.union(vent_cylinder))
+}
+
+/// Return the centerline vertex with the maximum z coordinate (the
+/// "apex" of the polyline in the workshop's `+Z = up` frame).
+///
+/// Trapped air during pour + cure collects at the highest point of
+/// the cavity. v2.1 sub-leaf 3 places the air vent here so the
+/// channel rises straight from the cavity ceiling to the bounding
+/// region's `+Z` outer face — workshop user orients the assembled
+/// mold with `+Z` up, sees the vent as the small hole on the
+/// "roof".
+///
+/// Returns `None` only for an empty polyline (impossible for a
+/// public-API `Ribbon` since `Ribbon::new` rejects fewer than 2
+/// vertices).
+fn apex_point(points: &[nalgebra::Point3<f64>]) -> Option<nalgebra::Point3<f64>> {
+    points
+        .iter()
+        .copied()
+        .max_by(|a, b| a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal))
 }
 
 /// Build a single channel cylinder centered at `center` with the
@@ -236,9 +261,9 @@ mod tests {
     fn pour_gate_spec_iter1_has_workshop_defaults() {
         let s = PourGateSpec::iter1();
         assert!((s.gate_radius_m - 0.003).abs() < f64::EPSILON);
-        assert!((s.vent_radius_m - 0.0015).abs() < f64::EPSILON);
+        assert!((s.vent_radius_m - 0.001).abs() < f64::EPSILON);
         assert!((s.gate_half_length_m - 0.045).abs() < f64::EPSILON);
-        assert!((s.vent_half_length_m - 0.020).abs() < f64::EPSILON);
+        assert!((s.vent_half_length_m - 0.040).abs() < f64::EPSILON);
         assert!(s.include_vent);
     }
 
@@ -254,10 +279,13 @@ mod tests {
     }
 
     /// Straight +X centerline with +Y split-normal → binormal = +Z.
-    /// Midpoint = (0, 0, 0). Side-mounted gate extends from midpoint
-    /// along +Z by `2 * gate_half_length_m` = 90 mm at the iter1
-    /// default. Vent at `centerline.last()` = (+0.050, 0, 0) with
-    /// tangent +X axis spans X ∈ [+0.030, +0.070].
+    /// Midpoint = (0, 0, 0). Side-mounted gate extends from
+    /// midpoint along +Z by `2 * gate_half_length_m` = 90 mm at
+    /// the iter1 default. Apex vent rises straight +Z from the
+    /// polyline's max-z vertex (here both vertices tie at z=0;
+    /// `apex_point`'s `max_by` returns the last-encountered max so
+    /// apex = `(+0.050, 0, 0)`); vent spans z ∈ [0, +0.080] at
+    /// x=+0.050.
     #[test]
     fn build_pour_gate_solid_default_returns_some_with_finite_bounds() {
         let ribbon =
@@ -266,28 +294,33 @@ mod tests {
         let aabb = solid
             .bounds()
             .expect("channel cylinders should have finite bounds");
-        // Side-mounted gate spans z ∈ [0, +0.090] (45 mm half-length
-        // × 2). Vent spans x ∈ [+0.030, +0.070].
+        // Side-mounted gate reaches z ≥ +0.089 (45 mm × 2 from
+        // z=0). Apex vent reaches z ≥ +0.079 (40 mm × 2 from z=0).
+        // Combined max.z dominated by gate.
         assert!(
             aabb.max.z >= 0.089,
             "gate cylinder should reach z ≥ +0.089 m; got max.z = {}",
             aabb.max.z
         );
+        // Gate inner tip + vent inner tip both at z=0 → min z
+        // bounded by ~gate-radius slack on the -z side.
         assert!(
             aabb.min.z >= -0.0035,
-            "gate cylinder should start near z = 0 (only gate-radius slack); got min.z = {}",
+            "channels should start near z = 0; got min.z = {}",
             aabb.min.z
         );
+        // Apex vent at x = +0.050 → max.x bounded by apex x plus
+        // ~vent radius (1 mm).
         assert!(
-            aabb.max.x >= 0.069,
-            "vent should reach x ≥ +0.069 m; got max.x = {}",
+            aabb.max.x >= 0.049,
+            "apex vent at x = +0.050 should reach max.x ≥ +0.049; got max.x = {}",
             aabb.max.x
         );
     }
 
     /// With vent disabled, only the side-mounted gate remains —
     /// AABB spans z up high (gate) but x stays near zero (no vent
-    /// extending to +0.070).
+    /// reaching out to x = -0.050).
     #[test]
     fn build_pour_gate_solid_no_vent_is_smaller_than_with_vent() {
         let mut spec_no_vent = PourGateSpec::iter1();
@@ -298,15 +331,16 @@ mod tests {
             straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
         let no_vent = build_pour_gate_solid(&ribbon_no_vent).unwrap();
         let with_vent = build_pour_gate_solid(&ribbon_with_vent).unwrap();
-        // No-vent solid is just the gate — x stays within gate radius
-        // (~3 mm); with-vent solid extends to x ≥ +0.030 (vent at
-        // +0.050 minus half-length 0.020).
+        // No-vent solid is just the side-mounted gate centered on
+        // the centerline midpoint x = 0 — x stays within gate
+        // radius (~3 mm). With-vent solid additionally has the
+        // apex vent at x = +0.050, so max.x extends out to ~+0.051.
         assert!(
             no_vent.bounds().unwrap().max.x < 0.010,
-            "no-vent gate-only solid should not extend far in x; got max.x = {}",
+            "no-vent gate-only solid should not extend far in +x; got max.x = {}",
             no_vent.bounds().unwrap().max.x,
         );
-        assert!(with_vent.bounds().unwrap().max.x > 0.030);
+        assert!(with_vent.bounds().unwrap().max.x > 0.040);
     }
 
     /// Side-mounted gate is centered at `(0, 0, +half_length)` with
