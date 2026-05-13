@@ -260,13 +260,20 @@ enum StatusKind {
 
 /// Pre-computed display fields for the Scan Info panel
 /// (`docs/SCAN_PREP_DESIGN.md` §Panel specifications §1). Built once at
-/// startup from the loaded scan + CLI metadata; never changes (the panel
-/// is read-only per spec).
+/// startup from the loaded scan + CLI metadata. Static fields
+/// (`file_label`, `file_full_path`, `stl_units_label`, the three
+/// `aabb_*_mm` extents) never change after construction; `vertex_count`
+/// and `face_count` are mutated by [`handle_simplify_actions`] to track
+/// the Simplify panel's `[Apply simplify]` / `[Reset to original]`
+/// effects so the panel display reflects the currently-rendered mesh.
 ///
 /// AABB dimensions are stored in **millimeters regardless of
 /// `--stl-units`** — workshop measurements are in mm; consistency with
 /// the user's mental model. Computed from the post-unit-conversion meter
-/// AABB by scaling by 1000.
+/// AABB by scaling by 1000. The AABB extents stay anchored to the
+/// loaded mesh (not the simplified mesh) because that's what the spec's
+/// "Raw AABB" label means; for the post-transform AABB see the Cleaned
+/// AABB panel (commit #11).
 #[derive(Resource, Debug, Clone)]
 struct ScanInfo {
     /// Basename of the input STL (e.g., `"scan.stl"`). Falls back to the
@@ -599,11 +606,17 @@ fn init_status_for_load(scan: Res<ScanMesh>, mut status: ResMut<StatusBar>) {
 /// Idempotent — does nothing when no action is queued, so it can run
 /// every tick safely.
 ///
-/// On Apply: clones the current scan, runs [`simplify_mesh`], updates
-/// `ScanMesh` + `ScanInfo` vertex/face counts, despawns the existing
-/// `ScanMeshEntity` and respawns from the simplified mesh, sets a
-/// `Normal`-kind status message with TTL `STATUS_NORMAL_TTL_SECS`
-/// per spec §Panel specifications §2.
+/// On Apply (target < current face count): runs [`simplify_mesh`],
+/// updates `ScanMesh` + `ScanInfo` vertex/face counts, despawns the
+/// existing `ScanMeshEntity` and respawns from the simplified mesh,
+/// sets a `Normal`-kind status message with TTL
+/// `STATUS_NORMAL_TTL_SECS` per spec §Panel specifications §2.
+///
+/// On Apply (target >= current face count): no-op for the mesh +
+/// entity (meshopt can't add faces; running it with target > current
+/// would SIGABRT). Surfaces a `Warning`-kind status message naming the
+/// current/target counts and pointing at `[Reset to original]` as the
+/// workflow recovery, then returns.
 ///
 /// On Reset: clones `OriginalScanMesh`, updates `ScanMesh` + `ScanInfo`,
 /// respawns the entity, sets a confirmation status message.
@@ -631,20 +644,34 @@ fn handle_simplify_actions(
         return;
     };
 
-    let original_face_count = scan.0.faces.len();
+    // `current` (not "original"): the face count of `scan.0` AT THE
+    // START OF THIS HANDLER. After a prior Apply, scan.0 holds the
+    // simplified mesh, so `current` is the post-prior-simplify count
+    // (not the unsimplified loaded mesh — that lives in
+    // `original: Res<OriginalScanMesh>`). Naming as "current" to avoid
+    // the two-meanings-of-original confusion inside this function.
+    let current_face_count = scan.0.faces.len();
     let target = simplify_state.target_face_count;
 
-    // Pre-check the Apply no-op case: meshopt is reduction-only and the
-    // C++ side SIGABRTs if `target_index_count > index_count`
-    // (simplifier.cpp:2286). The user-friendly workflow when they want
-    // *more* faces back is `[Reset to original]` first; surface a
-    // status message explaining that instead of running the meshopt
-    // call (which would abort) or no-op'ing silently (which would look
-    // like the button was broken).
-    if matches!(action, SimplifyAction::Apply) && target >= original_face_count {
+    // Pre-check the Apply no-op case. Two reasons we treat
+    // `target >= current` as a no-op rather than calling meshopt:
+    //
+    // 1. Crash prevention: meshopt is reduction-only. Its C++ side
+    //    asserts `target_index_count <= index_count` in
+    //    `meshopt_simplifyEdge` (simplifier.cpp:2286) and SIGABRTs the
+    //    process if violated. So `target > current` would abort.
+    // 2. UX: even `target == current` is wasted work (meshopt would
+    //    early-exit with the input unchanged, but the user-facing
+    //    achievement message "Reduced 200k -> 200k faces in 0.5s"
+    //    reads as a broken button). Treating equality as a no-op
+    //    keeps the messaging honest.
+    //
+    // The user-friendly workflow when they want *more* faces back is
+    // `[Reset to original]` first.
+    if matches!(action, SimplifyAction::Apply) && target >= current_face_count {
         status.text = format!(
             "Already at {} faces (target {} is not lower). Use [Reset to original] first if you want a less-decimated mesh.",
-            human_count(original_face_count),
+            human_count(current_face_count),
             human_count(target),
         );
         status.kind = StatusKind::Warning;
@@ -658,7 +685,7 @@ fn handle_simplify_actions(
             let achieved = result.mesh.faces.len();
             let text = format!(
                 "Reduced {} -> {} faces in {:.1}s",
-                human_count(original_face_count),
+                human_count(current_face_count),
                 format_count_with_separators(achieved),
                 result.elapsed_secs,
             );
