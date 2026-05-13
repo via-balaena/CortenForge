@@ -117,14 +117,16 @@ pub fn compose_piece_solid(
         (None, _) => base_piece,
     };
 
-    // Step 10: pour-gate + air-vent channels. Both pieces lose
-    // material along the channel cylinders (subtract). The
-    // channels are centered on the centerline endpoints + run
-    // along the local tangent, so they straddle the ribbon seam
-    // and each piece gets half the channel cross-section. When
-    // `ribbon.pour_gate` is `None` the helper returns `None`
-    // and the piece flows through unchanged — Steps 5-9 callers
-    // unaffected.
+    // Step 10 + v2.1 sub-leaves 2-3: pour-gate + air-vent channels.
+    // Both pieces lose material along the channel cylinders
+    // (subtract). The side-mounted pour gate runs along the ribbon
+    // binormal from the centerline midpoint (so the positive piece
+    // gets most of the carve + a thin seam-overlap slice on the
+    // negative piece); the apex vent rises along `+Z` from the
+    // polyline's argmax-z vertex (straddles the seam, so each piece
+    // gets half the channel cross-section). When
+    // `ribbon.pour_gate` is `None` the helper returns `None` and the
+    // piece flows through unchanged — Steps 5-9 callers unaffected.
     let piece_with_channels = match build_pour_gate_solid(ribbon) {
         Some(channels) => piece_with_pins.subtract(channels),
         None => piece_with_pins,

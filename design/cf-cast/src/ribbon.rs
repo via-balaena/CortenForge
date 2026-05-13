@@ -11,9 +11,11 @@
 //! divide the mold into the requested number of pieces.
 //!
 //! See `docs/CURVE_FOLLOWING_DESIGN.md` §Algorithm §Step 2 for the
-//! full geometric construction; this module is just the type
-//! definitions + lightweight construction (no SDF evaluation yet —
-//! that lands at Step 4).
+//! full geometric construction. This module ships the [`Ribbon`]
+//! type, its SDF evaluation ([`Ribbon::sdf`] — Step 4 of the v2
+//! arc), and the [`Solid`]-adapter for half-space composition
+//! ([`Ribbon::halfspace_solid`] — used by
+//! [`crate::piece::compose_piece_solid`] at Step 5).
 //!
 //! # Types
 //!
@@ -30,7 +32,7 @@
 //! Both types live in cf-cast (not cf-design) because the ribbon is
 //! a cast-specific construct (it parameterizes mold-piece geometry).
 //! cf-design's [`Sdf`] trait could host a `RibbonSdf` newtype later
-//! if other consumers need it, but Stage 2.5 ships the ribbon as a
+//! if other consumers need it; for now the ribbon is a
 //! cf-cast-internal concept.
 //!
 //! [`Sdf`]: cf_design::Sdf

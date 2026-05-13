@@ -1,29 +1,41 @@
-//! Layered silicone device v2 cast — curve-following multi-piece example.
+//! Layered silicone device v2.1 cast — curve-following multi-piece +
+//! detachable-shell example.
 //!
-//! Closes the v2 code-side arc from `docs/CURVE_FOLLOWING_DESIGN.md`.
-//! Demonstrates Steps 5-10 end-to-end on a synthetic curved body
-//! (gentle arc in the XZ plane) that exercises every v2 feature the
+//! Closes the v2 + v2.1 code-side arcs from
+//! `docs/CURVE_FOLLOWING_DESIGN.md`. Demonstrates Steps 5-10 +
+//! v2.1 sub-leaves 1-3 end-to-end on a synthetic curved body
+//! (gentle arc in the XZ plane) that exercises every feature the
 //! workshop iter-1 needs:
 //!
 //! - **Steps 5-6**: per-piece SDF composition + marching cubes + STL
-//!   export via [`CastSpec::export_molds_v2`]. Produces `2 × L` mold
-//!   piece STLs + 1 plug STL (8 files for a 3-layer cast vs v1's 4).
+//!   export via [`CastSpec::export_molds_v2`]. v2.1 ships per-layer
+//!   plugs (one plug STL per layer, not one shared): output is
+//!   `2L mold piece STLs + L plug STLs = 3L` files (9 files for a
+//!   3-layer cast vs v1's 4).
 //! - **Step 7**: per-piece printability — each piece's AABB checked
 //!   against [`PrinterConfig::fdm_default`]'s build volume
 //!   independently via `mesh-printability::validate_for_printing`.
-//! - **Step 8**: v2 procedure markdown via
+//! - **Step 8**: v2.1 procedure markdown via
 //!   [`CastSpec::write_procedure_v2`] — includes Cast Geometry,
-//!   v2 Mold Assembly, Pour Gate + Vent sections.
-//! - **Step 9**: cylindrical registration pins enabled via
-//!   [`Ribbon::with_registration`]
+//!   v2 Mold Assembly (with Plug Anchor sub-section), Pour Gate +
+//!   Vent, per-layer procedure, and Post-Cure Assembly + Disassembly
+//!   sections.
+//! - **Step 9**: cylindrical inter-piece registration pins enabled
+//!   via [`Ribbon::with_registration`]
 //!   ([`RegistrationKind::Pins(PinSpec::iter1())`]) — 2 pins per
 //!   layer-piece-pair at 25%/75% of centerline arc length, 3 mm Ø ×
 //!   10 mm long × 25 mm offset from the centerline.
-//! - **Step 10 + v2.1 sub-leaf 2**: pour gate + air vent enabled
-//!   via [`Ribbon::with_pour_gate`]
+//! - **Step 10 + v2.1 sub-leaves 2-3**: side-mounted pour gate +
+//!   apex air vent via [`Ribbon::with_pour_gate`]
 //!   ([`PourGateKind::Default(PourGateSpec::iter1())`]) — 6 mm Ø
 //!   side-mounted pour gate at the centerline midpoint along the
-//!   ribbon binormal + 3 mm Ø vent at the tip end.
+//!   ribbon binormal + 2 mm Ø apex vent at the polyline's argmax-z
+//!   vertex along `+Z`.
+//! - **v2.1 sub-leaf 1**: axial plug-anchor pin + matching mold
+//!   socket via [`Ribbon::with_plug_pins`]
+//!   ([`PlugPinKind::Axial(PlugPinSpec::iter1())`]) — 6 mm Ø ×
+//!   28 mm long pin on the pour end of each per-layer plug;
+//!   matching socket carved into each mold piece's cup wall.
 //!
 //! Output (after `cargo run --release -p
 //! example-cast-layered-silicone-device-v2-scan-curve-following`):
@@ -72,7 +84,8 @@
 //! let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0))?;
 //! let ribbon = Ribbon::new(centerline, split)?
 //!     .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
-//!     .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+//!     .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()))
+//!     .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
 //! ```
 //!
 //! The `CastSpec` construction (layers, materials, bounding region,
@@ -137,12 +150,17 @@ const BOUNDING_HALF_XY_M: f64 = 0.080;
 const BOUNDING_HALF_Z_M: f64 = 0.080;
 
 /// Marching-cubes sampling cell size in meters. 3 mm — coarser than
-/// v1's 2 mm because the v2 body is bigger (120 mm bounding region vs
-/// v1's 80 × 60 mm cube → 5× cell count at 2 mm) and per-piece F4
-/// validation runs once per piece (6 pieces for a 3-layer cast vs v1's
-/// 3 single cups). 3 mm cells keep example wall time comfortably
-/// under 30 s on `--release` even with the full v2 pipeline (pins +
-/// pour gate + per-piece F4).
+/// v1's 2 mm because the v2.1 bounding region is bigger (160 mm
+/// cube vs v1's 80 × 60 mm cube → ~10× cell count at 2 mm) and
+/// per-piece + per-layer-plug F4 validation runs once per artifact
+/// (6 pieces + 3 plugs for a 3-layer cast vs v1's 3 single cups).
+/// At 3 mm cells the example walks the full v2.1 pipeline
+/// (inter-piece pins + side-mounted gate + apex vent + per-piece
+/// plug socket + per-layer plug with anchor pin + per-piece F4)
+/// in ~5-8 min wall time on `--release` — the octree-pruning
+/// overhead from the curved-centerline `UserFn` ribbon halfspace
+/// dominates. Tune up to 4-5 mm to halve wall time at the cost of
+/// MC fidelity, or down to 2 mm if you can afford ~3× the wait.
 const MESH_CELL_SIZE_M: f64 = 0.003;
 
 /// v2.1 plug-anchor pin length (m). 28 mm — sized so the pin
@@ -336,11 +354,13 @@ fn main() -> Result<()> {
     let ribbon = build_ribbon(centerline)?;
 
     // `export_molds_v2` creates `out_dir` internally, writes
-    // 2L mold piece STLs + 1 plug STL, and returns the V2 report
-    // carrying per-layer + per-piece paths + pour-volume summaries.
+    // `2L mold piece STLs + L plug STLs = 3L` files per the v2.1
+    // detachable-shell architecture, and returns the V2 report
+    // carrying per-layer + per-piece + per-layer-plug paths +
+    // pour-volume summaries.
     let report = spec
         .export_molds_v2(&ribbon, &out_dir)
-        .context("export_molds_v2 (2 pieces per layer + plug)")?;
+        .context("export_molds_v2 (2 pieces + 1 plug per layer)")?;
 
     let procedure_path = out_dir.join("procedure.md");
     spec.write_procedure_v2(&ribbon, &procedure_path)

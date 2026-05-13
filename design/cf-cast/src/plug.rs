@@ -62,18 +62,26 @@
 //! # Default off
 //!
 //! [`Ribbon::new`] sets `plug_pins = PlugPinKind::None` for
-//! backward compatibility with the v2 Steps 5-10 arc. The
-//! workshop-iter-1 example crate is expected to opt into
-//! [`PlugPinKind::Axial`] via [`Ribbon::with_plug_pins`] AND call
-//! [`add_plug_pins`] to extend its plug `Solid` with matching pin
-//! cylinders. The two halves of the feature have to land together —
-//! sockets without pins jam the plug; pins without sockets prevent
-//! mold close — so the `plug_pins` field on the ribbon is the
-//! single source of truth that both [`add_plug_pins`] and
-//! [`crate::piece::compose_piece_solid`] consult.
+//! backward compatibility with the v2 Steps 5-10 arc. Workshop
+//! iter-1 callers opt into [`PlugPinKind::Axial`] via
+//! [`Ribbon::with_plug_pins`] and let
+//! [`crate::CastSpec::export_molds_v2`] handle the rest —
+//! `export_molds_v2` derives each layer's plug solid from
+//! [`crate::CastSpec::plug`] (layer 0) or `layers[N-1].body`
+//! (layer N>0) and internally calls [`add_plug_pins`] to extend
+//! it with the pin geometry, then [`crate::piece::compose_piece_solid`]
+//! subtracts the matching sockets. The `plug_pins` field on the
+//! ribbon is the single source of truth that both call paths
+//! consult, so sockets-without-pins (jams the plug) and
+//! pins-without-sockets (prevents mold close) can't drift apart.
+//!
+//! [`add_plug_pins`] remains public for callers building a custom
+//! plug `Solid` outside [`CastSpec`]'s per-layer-plug derivation
+//! (e.g., a one-off cast with a hand-tuned plug shape).
 //!
 //! [`Ribbon::new`]: crate::ribbon::Ribbon::new
 //! [`Ribbon::with_plug_pins`]: crate::ribbon::Ribbon::with_plug_pins
+//! [`CastSpec`]: crate::CastSpec
 
 use cf_design::Solid;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
@@ -240,11 +248,20 @@ pub fn build_plug_socket_solid(ribbon: &Ribbon) -> Option<Solid> {
 ///
 /// Returns the plug unchanged when [`Ribbon::plug_pins`] is
 /// [`PlugPinKind::None`]; otherwise returns `plug.union(pins)` where
-/// `pins` is [`build_plug_pin_solid`]'s output. The example crate's
-/// canonical call site is right after constructing the plug `Solid`
-/// and before assigning it to [`crate::CastSpec::plug`].
+/// `pins` is [`build_plug_pin_solid`]'s output.
+///
+/// [`CastSpec::export_molds_v2`] calls this internally for each
+/// per-layer plug (derived from `spec.plug` for layer 0 and
+/// `layers[N-1].body` for `N > 0`), so callers passing
+/// [`PlugPinKind::Axial`] via [`Ribbon::with_plug_pins`] get the
+/// pin geometry baked into every plug STL automatically — no need
+/// to call `add_plug_pins` from the example crate. The function
+/// stays public for callers building a custom plug `Solid` outside
+/// the [`CastSpec`] per-layer-plug derivation.
 ///
 /// [`Ribbon::plug_pins`]: crate::ribbon::Ribbon::plug_pins
+/// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
+/// [`CastSpec`]: crate::CastSpec
 #[must_use]
 pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> Solid {
     match build_plug_pin_solid(ribbon) {

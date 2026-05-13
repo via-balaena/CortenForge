@@ -1,4 +1,7 @@
-//! [`CastSpec`] — the Stage 2 multi-layer public API surface.
+//! [`CastSpec`] — the multi-layer public API surface, shared by
+//! v1's single-piece [`CastSpec::export_molds`] and v2/v2.1's
+//! curve-following multi-piece [`CastSpec::export_molds_v2`] export
+//! pipelines.
 
 use std::path::{Path, PathBuf};
 
@@ -46,9 +49,20 @@ const CLIP_BODY_OVERLAP_M: f64 = 0.0005;
 /// **innermost-first**: `layers[0]` is the innermost shell only;
 /// `layers[i]` for `i > 0` is the fused solid of the inner cured
 /// layers plus the new pour (i.e., the cumulative outer surface
-/// after the `i`-th cast). This convention lets each mold cup carve
-/// the bounding region with the SAME CSG rule used in Stage 1:
-/// `bounding_region ∖ layers[i].body ∖ clip_above(layers[i].body)`.
+/// after the `i`-th cast). Each `body` is a **solid positive**
+/// (not an annular shell) — pour-volume integration subtracts the
+/// previous layer (or [`CastSpec::plug`] for layer 0) inside
+/// [`CastSpec::compute_pour_volumes`] to recover the per-layer
+/// silicone shell.
+///
+/// Mold-cup composition differs per pipeline:
+/// - v1's [`CastSpec::export_molds`] carves the cup with
+///   `bounding_region ∖ layers[i].body ∖ clip_above(layers[i].body)`
+///   (single-piece cup with `+z`-opening clip).
+/// - v2's [`CastSpec::export_molds_v2`] carves
+///   `bounding_region ∖ layers[i].body ∩ ribbon_side` per piece,
+///   plus optional registration pin / pour gate / vent / plug
+///   socket CSG (see [`crate::piece::compose_piece_solid`]).
 #[derive(Debug, Clone)]
 pub struct CastLayer {
     /// Cumulative outer-surface positive solid in **meters**. See
@@ -62,17 +76,24 @@ pub struct CastLayer {
 }
 
 /// Specification for a multi-layer cast: N silicone layers poured
-/// innermost-first into a shared bounding region, with one printed
-/// plug shaping the innermost layer's inner cavity.
+/// innermost-first into a shared bounding region.
+///
+/// v2's [`Self::export_molds_v2`] casts each layer independently
+/// against its own per-layer plug (layer 0 uses [`Self::plug`];
+/// layer N>0 uses `layers[N-1].body`); v1's [`Self::export_molds`]
+/// uses the shared [`Self::plug`] for the innermost cast only and
+/// stacks subsequent layers on the previously-cured shell.
 ///
 /// Geometry is supplied in **meters** in the [`cf_design`]
-/// convention. [`Self::export_molds`] performs the m → mm scale
+/// convention. Both export pipelines perform the m → mm scale
 /// exactly once per output mesh at the marching-cubes →
 /// save/validate boundary.
 ///
-/// Stage 2 hardcodes the demolding axis to `+z`. The exporter
-/// internally clips the bounding region above each layer body's
-/// `z_max`, opening the mold cup at the top for pour access.
+/// Demolding axis: v1 hardcodes `+z` (clip cuboid above each
+/// layer body's `z_max`); v2 demolds along the curve-following
+/// ribbon's two-piece split with workshop orientation `+Z` up
+/// (apex vent on the top face, side-mounted pour gate on the
+/// `±Y` binormal face).
 #[derive(Debug, Clone)]
 pub struct CastSpec {
     /// Cast layers in **innermost-first** order. Must contain at

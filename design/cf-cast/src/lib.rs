@@ -2,50 +2,67 @@
 //!
 //! Composes [`cf_design::Solid`] (typed SDF kernel), [`mesh_offset`]
 //! (marching cubes + scalar grid), [`mesh_io::save_stl`] (STL writer),
-//! and [`mesh_printability::validate_for_printing`] (F4 gate) into a
-//! per-layer mold/plug exporter for the layered-silicone-device v1.0
+//! and [`mesh_printability::validate_for_printing`] (F4 gate) into
+//! per-layer mold + plug exporters for the layered-silicone-device
 //! cast workflow.
 //!
-//! # Stage 2 scope
+//! # Two export pipelines
 //!
-//! Multi-layer cast spec: [`CastSpec::layers`] carries N
-//! [`CastLayer`]s in **innermost-first** cast order. `layers[0]` is
-//! cast first into the bounding region with the shared printed
-//! [`CastSpec::plug`] shaping its inner cavity; subsequent layers
-//! pour around the previously cured layer (no additional printed
-//! plug), so the artifact count is **N mold cup STLs + 1 plug STL**
-//! per the casting roadmap.
+//! cf-cast ships two pipelines that share the [`CastSpec`] data
+//! carrier:
 //!
-//! Per-layer geometry is the **cumulative** outer-surface positive
-//! after that pour cures: `layers[0].body` is the innermost shell
-//! only; `layers[N].body` for `N > 0` is the cured-inner-plus-this-
-//! pour fused solid. Each mold cup is
-//! `bounding_region ∖ layers[i].body ∖ clip_above(layers[i].body)`.
+//! - [`CastSpec::export_molds`] — **v1 single-piece cup** (Stage 2).
+//!   Each layer's mold is one `bounding_region ∖ layer_body ∖
+//!   clip_above(layer_body)` cup; the shared [`CastSpec::plug`]
+//!   shapes the innermost layer's cavity. `+z` is the hardcoded
+//!   demolding axis. Artifact count: **N mold cup STLs + 1 plug
+//!   STL = N + 1**.
+//! - [`CastSpec::export_molds_v2`] — **v2 curve-following multi-
+//!   piece** + **v2.1 detachable-shell**. Each layer's mold cup
+//!   is split into 2 pieces along a curve-following [`Ribbon`]
+//!   surface (per `docs/CURVE_FOLLOWING_DESIGN.md`), with optional
+//!   inter-piece registration pins ([`PinSpec`]), side-mounted
+//!   pour gate + apex air vent ([`PourGateSpec`]), and per-piece
+//!   plug-anchor pin sockets ([`PlugPinSpec`]). Each layer is
+//!   cast independently against its own plug — layer 0's plug
+//!   derives from [`CastSpec::plug`], layer N>0's derives from
+//!   `layers[N-1].body`. Artifact count: **2L mold piece STLs +
+//!   L plug STLs = 3L**.
 //!
-//! Stage 2's F1 leaf shipped the multi-layer geometry pipeline; F2
-//! added per-layer pour-volume integration and the
-//! [`CastSpec::mass_budget_kg`] gate. The F3 leaf (this commit) adds
-//! the [`CastSpec::write_procedure`] workshop-Markdown generator
-//! backed by the cf-cast-local [`mod@cure`] table.
+//! # Cast layer convention
+//!
+//! [`CastSpec::layers`] carries N [`CastLayer`]s in
+//! **innermost-first** cast order. Each `body` field is the
+//! **cumulative SOLID outer-surface positive** of the cured
+//! silicone after that pour: `layers[0].body` is a solid pipe (or
+//! arbitrary [`cf_design::Solid`]) at the innermost layer's outer
+//! radius; `layers[N].body` for `N > 0` is the cumulative outer
+//! solid of all inner-plus-this-pour shells fused. Pour-volume
+//! integration computes each silicone shell as `layer.body ∖
+//! previous.body` (or `∖ spec.plug` for layer 0) inside
+//! [`CastSpec::compute_pour_volumes`], so callers pass cumulative
+//! solid bodies (NOT annular shells — annular bodies break the
+//! `bounding ∖ body` mold-piece composition by re-introducing the
+//! plug-cavity region as "inside the mold piece").
 //!
 //! # Unit boundary
 //!
 //! [`cf_design::Solid`] works in **meters**. STL files and
 //! [`mesh_printability::PrinterConfig::fdm_default`]'s build-volume
-//! check work in **millimeters**. The [`CastSpec::export_molds`]
-//! pipeline performs the `×1000` scale at the marching-cubes →
-//! validate/save boundary exactly once per mesh, so caller-facing
-//! geometry stays in meters and printer/STL-facing geometry stays in
-//! mm.
+//! check work in **millimeters**. Both pipelines perform the
+//! `×1000` scale at the marching-cubes → validate/save boundary
+//! exactly once per mesh, so caller-facing geometry stays in meters
+//! and printer/STL-facing geometry stays in mm.
 //!
-//! # Demolding axis
+//! # Workshop orientation convention (v2.1)
 //!
-//! Stage 2 hardcodes `+z` as the demolding axis (unchanged from
-//! Stage 1). The exporter internally subtracts a clip cuboid covering
-//! the half-space above each layer body's `z_max`, producing a
-//! one-piece cup with an opening at the top. Stage 3+ may expose the
-//! axis as a parameter (and multi-piece molds if iter-1 surfaces
-//! demolding-undercut issues).
+//! [`CastSpec::export_molds_v2`] places the apex vent on the
+//! polyline's argmax-z vertex with axis `+Z`; v2.1 callers orient
+//! the assembled mold **`+Z` up** during pour + cure so trapped
+//! air rises into the vent. The side-mounted pour gate exits on
+//! the `±Y` face (binormal direction at the centerline midpoint).
+//! v1's [`CastSpec::export_molds`] uses `+z` as the demolding
+//! axis (clip cuboid above each layer body's `z_max`).
 //!
 //! See the [casting roadmap][rmp] for the full Track F trajectory.
 //!

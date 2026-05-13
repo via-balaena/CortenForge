@@ -103,10 +103,10 @@ pub struct PourGateSpec {
     /// tune this up. The redundant outside-bounding-region portion
     /// of the cylinder is a no-op for the mold piece composition.
     pub vent_half_length_m: f64,
-    /// Whether to include the air-vent cylinder at
-    /// `centerline.last()` (tip end). Default `true`. Disable for
-    /// short straight molds where air escape through the gate is
-    /// sufficient.
+    /// Whether to include the apex air-vent cylinder (placed at the
+    /// centerline's argmax-z vertex along `+Z` per v2.1 sub-leaf 3).
+    /// Default `true`. Disable for short straight molds where air
+    /// escape through the side-mounted pour gate is sufficient.
     pub include_vent: bool,
 }
 
@@ -144,8 +144,14 @@ pub enum PourGateKind {
     /// No pour-gate or vent channels.
     #[default]
     None,
-    /// Pour gate at centerline base + optional vent at tip, per
-    /// the supplied [`PourGateSpec`].
+    /// Side-mounted pour gate at the centerline midpoint along the
+    /// ribbon binormal + optional apex air vent at the centerline's
+    /// argmax-z vertex along `+Z`, per the supplied
+    /// [`PourGateSpec`]. (v2 Step 10 originally placed the gate at
+    /// the centerline base along tangent and the vent at the tip
+    /// end along tangent; v2.1 sub-leaves 2 + 3 relocated both off
+    /// the centerline endpoints so the endpoints can host plug-
+    /// anchor pin sockets and the workshop "roof" hosts the vent.)
     Default(PourGateSpec),
 }
 
@@ -232,8 +238,7 @@ fn apex_point(points: &[nalgebra::Point3<f64>]) -> Option<nalgebra::Point3<f64>>
 /// Build a single channel cylinder centered at `center` with the
 /// given `axis`, `radius`, and `half_length`. Used by
 /// [`build_pour_gate_solid`] for the side-mounted gate (where
-/// `axis = binormal`) and the centerline-endpoint vent (where
-/// `axis = tangent`).
+/// `axis = binormal`) and the apex vent (where `axis = +Z`).
 fn channel_cylinder(
     center: nalgebra::Point3<f64>,
     axis: Vector3<f64>,
