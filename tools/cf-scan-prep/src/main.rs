@@ -375,6 +375,43 @@ impl ReorientState {
     }
 }
 
+/// Pre-computed always-on viewport overlay geometry, cached at startup
+/// (`docs/SCAN_PREP_DESIGN.md` §Visualization layer). Combines:
+///
+/// - Axis gizmo arrow length (Bevy world units) — sized to the
+///   rendered scan's diagonal so the arrows are visible relative to
+///   the mesh without overwhelming it.
+/// - Pre-swap-and-scale scan AABB center + dimensions in Bevy-local
+///   space — fed to `gizmos.cuboid(...)` each Update tick + transformed
+///   by the live Reorient rotation so the wireframe rotates with the
+///   mesh.
+///
+/// All three fields are immutable post-construction (raw AABB never
+/// changes; render_scale never changes); the user-mutable transforms
+/// (rotation now, translation + clip + caps in commits #7-#9) are
+/// applied per-frame on top of this static base.
+#[derive(Resource, Debug, Clone, Copy)]
+struct OverlayLengths {
+    /// Length of each axis arrow drawn from origin, in Bevy world
+    /// units (which equal physics meters × `render_scale`). Sized to
+    /// `0.6 × scaled_diagonal` so the tips poke just past the
+    /// unrotated bbox extents — visible against the mesh, not lost in
+    /// the corner.
+    arrow_length: f32,
+    /// Center of the unrotated scan AABB in Bevy-local space (post
+    /// `UpAxis::PlusZ` swap, scaled by `render_scale`). Per-frame
+    /// wireframe Transform applies `mesh_rotation * this` as its
+    /// translation so the wireframe rotates around the world origin
+    /// in lockstep with the mesh entity.
+    bbox_center_bevy: Vec3,
+    /// Full dimensions of the unrotated scan AABB in Bevy-local space
+    /// (post `UpAxis::PlusZ` swap, scaled by `render_scale`). Fed
+    /// directly as the wireframe Transform's `scale` — gizmos.cuboid
+    /// draws a unit cube and the Transform stretches it to the bbox
+    /// extents.
+    bbox_dims_bevy: Vec3,
+}
+
 /// Convert a physics-frame rotation quaternion to the Bevy-frame
 /// equivalent under the `UpAxis::PlusZ` swap.
 ///
@@ -580,6 +617,8 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         scan_mesh.faces.len(),
     );
 
+    let overlays = build_overlay_lengths(&scan_mesh, render_scale, SCAN_UP_AXIS);
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -599,6 +638,7 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         .insert_resource(SimplifyState::default())
         .insert_resource(ReorientState::default())
         .insert_resource(StatusBar::default())
+        .insert_resource(overlays)
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
         // Apply/Reset handler runs before auto-clear so a newly-set
         // status's TTL is checked against the same tick's `Time`.
@@ -614,11 +654,49 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
                 handle_simplify_actions,
                 apply_reorient_to_transform,
                 auto_clear_status,
+                draw_reference_overlays,
                 exit_on_esc,
             ),
         )
         .add_systems(EguiPrimaryContextPass, scan_prep_panel)
         .run();
+}
+
+/// Pre-compute the axis arrow length + Bevy-frame bbox center/dims for
+/// the always-on viewport overlays. Called once in `run_render_app`
+/// after the raw scan AABB + render_scale are known; the resulting
+/// values are immutable for the app's lifetime (user-mutable transforms
+/// stack on top per-frame via `draw_reference_overlays`).
+fn build_overlay_lengths(scan: &IndexedMesh, render_scale: f32, up: UpAxis) -> OverlayLengths {
+    let raw_aabb = scan.aabb();
+    let scaled_aabb = scale_aabb(&raw_aabb, render_scale);
+
+    // Center + half-extents in physics frame.
+    let center_physics = scaled_aabb.center();
+    // Bevy-local frame: apply the UpAxis swap so the overlay aligns
+    // with the spawned mesh's vertex positions (which are also
+    // post-swap via `spawn_face_mesh`).
+    let center_bevy = Vec3::from_array(up.to_bevy_point(&center_physics));
+
+    // Dimensions transform under the swap as a vector. We construct a
+    // direction-only Point3 with each axis carrying the corresponding
+    // bbox dimension; the swap permutes the components the same way it
+    // permutes coordinate axes. (The f64 → f32 narrowing happens
+    // inside `up.to_bevy_point` — no `as` cast in this statement.)
+    let dims_physics_pt = mesh_types::Point3::new(
+        scaled_aabb.max.x - scaled_aabb.min.x,
+        scaled_aabb.max.y - scaled_aabb.min.y,
+        scaled_aabb.max.z - scaled_aabb.min.z,
+    );
+    let dims_bevy = Vec3::from_array(up.to_bevy_point(&dims_physics_pt));
+
+    #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
+    let scaled_diagonal = scaled_aabb.diagonal() as f32;
+    OverlayLengths {
+        arrow_length: scaled_diagonal * 0.6,
+        bbox_center_bevy: center_bevy,
+        bbox_dims_bevy: dims_bevy,
+    }
 }
 
 /// Run the error-overlay Bevy app: blank 3D scene + a red error text
@@ -864,6 +942,61 @@ fn apply_reorient_to_transform(
             transform.rotation = q_bevy;
         }
     }
+}
+
+/// Update system: draw the always-on viewport reference overlays each
+/// frame (`docs/SCAN_PREP_DESIGN.md` §Visualization layer).
+///
+/// At commit #6 this renders:
+///
+/// 1. **Three colored axis arrows** at world origin, sized to
+///    `OverlayLengths::arrow_length`. The colors match the
+///    cast-frame convention (X = red, Y = green, Z = blue) but the
+///    on-screen directions follow the `UpAxis::PlusZ` swap that
+///    `spawn_face_mesh` applies to the mesh: red points right
+///    (cast +X = Bevy +X), blue points up (cast +Z = Bevy +Y,
+///    the demolding direction), green points into the screen
+///    (cast +Y = Bevy +Z). The blue "up" arrow is the user's
+///    visual reference for "is the mesh aligned to the cast +Z
+///    demolding axis?"
+/// 2. **A wireframe of the rotated scan AABB** — the unrotated
+///    Bevy-local bbox center + dims (cached in `OverlayLengths`),
+///    rotated by the current `ReorientState` quaternion in lockstep
+///    with the mesh entity. As the user drags Reorient sliders the
+///    wireframe rotates live with the mesh, so when its edges become
+///    parallel to the axis arrows the mesh is rotation-aligned to
+///    the world frame.
+///
+/// Banked but not yet rendered (future polish if workshop iteration
+/// shows it's needed): ground grid at `z=0`. The iter-1 fixture's
+/// natural origin sits inside the scan, so a `z=0` grid wouldn't be
+/// usefully visible until commit #7's Recenter panel translates the
+/// cavity floor to the origin.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn draw_reference_overlays(
+    overlays: Res<OverlayLengths>,
+    state: Res<ReorientState>,
+    mut gizmos: Gizmos,
+) {
+    let l = overlays.arrow_length;
+
+    // X axis (cast +X) — red. Bevy +X is screen-right.
+    gizmos.arrow(Vec3::ZERO, Vec3::X * l, Color::srgb(1.0, 0.30, 0.30));
+    // Y axis (cast +Y) — green. UpAxis::PlusZ swap maps physics +Y to
+    // Bevy +Z (depth into screen).
+    gizmos.arrow(Vec3::ZERO, Vec3::Z * l, Color::srgb(0.30, 1.0, 0.30));
+    // Z axis (cast +Z; demolding direction) — blue. UpAxis::PlusZ
+    // swap maps physics +Z to Bevy +Y (screen up).
+    gizmos.arrow(Vec3::ZERO, Vec3::Y * l, Color::srgb(0.40, 0.60, 1.00));
+
+    // Rotated bbox wireframe — follows the live Reorient quaternion.
+    let rotation = physics_quat_to_bevy_for_plus_z(state.quaternion_physics());
+    let wireframe_transform = Transform {
+        translation: rotation * overlays.bbox_center_bevy,
+        rotation,
+        scale: overlays.bbox_dims_bevy,
+    };
+    gizmos.cube(wireframe_transform, Color::srgb(0.55, 0.55, 0.60));
 }
 
 /// Update system: clear the status bar text if its TTL has elapsed.
@@ -1576,6 +1709,49 @@ mod tests {
         assert!(q_bevy.x.abs() < 1e-6);
         assert!(q_bevy.y.abs() < 1e-6);
         assert!((q_bevy.z - expected_pos_sin).abs() < 1e-6);
+    }
+
+    // ----- build_overlay_lengths -------------------------------------
+
+    /// `build_overlay_lengths` derives the axis arrow length from the
+    /// scaled diagonal (`0.6 × scaled_diagonal`) + applies the
+    /// `UpAxis::PlusZ` swap to the bbox center/dims (physics Y/Z swap
+    /// into Bevy frame).
+    ///
+    /// Fixture: a triangle whose vertices land at the corners of a
+    /// `(0.1, 0.2, 0.3)` physics-space bbox. With `render_scale = 10`:
+    /// scaled bbox = `(1.0, 2.0, 3.0)`; diagonal = `sqrt(14) ≈ 3.74`.
+    /// Center (in physics) = `(0.5, 1.0, 1.5)`; after `PlusZ` swap →
+    /// Bevy `(0.5, 1.5, 1.0)`. Dims swap to `(1.0, 3.0, 2.0)`.
+    #[test]
+    fn build_overlay_lengths_swaps_axes_and_scales_diagonal() {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.1, 0.2, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.3));
+        mesh.faces.push([0, 1, 2]);
+
+        let overlays = build_overlay_lengths(&mesh, 10.0, UpAxis::PlusZ);
+
+        // Bevy bbox center: physics (0.05, 0.10, 0.15) × 10 swapped to
+        // (0.5, 1.5, 1.0).
+        assert!((overlays.bbox_center_bevy.x - 0.5).abs() < 1e-5);
+        assert!((overlays.bbox_center_bevy.y - 1.5).abs() < 1e-5);
+        assert!((overlays.bbox_center_bevy.z - 1.0).abs() < 1e-5);
+
+        // Bevy bbox dims: physics (0.1, 0.2, 0.3) × 10 swapped to
+        // (1.0, 3.0, 2.0).
+        assert!((overlays.bbox_dims_bevy.x - 1.0).abs() < 1e-5);
+        assert!((overlays.bbox_dims_bevy.y - 3.0).abs() < 1e-5);
+        assert!((overlays.bbox_dims_bevy.z - 2.0).abs() < 1e-5);
+
+        // Arrow length: 0.6 × scaled diagonal = 0.6 × sqrt(14) ≈ 2.245.
+        let expected = 0.6 * 14.0_f32.sqrt();
+        assert!(
+            (overlays.arrow_length - expected).abs() < 1e-5,
+            "arrow_length {} should match 0.6 × scaled diagonal {expected}",
+            overlays.arrow_length,
+        );
     }
 
     /// `simplify_mesh` post-process strips unreferenced vertices, so
