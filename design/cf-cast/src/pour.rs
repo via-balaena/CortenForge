@@ -1,9 +1,10 @@
 //! Pour-gate + air-vent geometry for v2 multi-piece molds.
 //!
 //! Step 10 of `docs/CURVE_FOLLOWING_DESIGN.md` added two cylindrical
-//! channels CSG'd off the v2 mold pieces; v2.1 sub-leaf 2 relocates
-//! the **pour gate** to a side-mounted position so the centerline
-//! endpoints can host plug-anchor pin sockets without overlap:
+//! channels CSG'd off the v2 mold pieces; v2.1 sub-leaves 2 + 3
+//! relocate both off the centerline endpoints so the endpoints can
+//! host plug-anchor pin sockets without overlap and so the
+//! workshop "roof" hosts the vent for natural air escape:
 //!
 //! - **Pour gate** at the centerline **midpoint** (arc fraction
 //!   `0.5`), axis along the ribbon's local binormal. The channel
@@ -13,10 +14,13 @@
 //!   `2 * gate_half_length_m`, well past the typical bounding-
 //!   region outer surface. Workshop user pours into the channel
 //!   opening on the side face of the assembled mold.
-//! - **Air vent** at `centerline.last()` (the tip end) — trapped
-//!   air escapes through this channel during pour + cure.
-//!   v2.1 sub-leaf 3 will relocate this to the polyline's
-//!   argmax-z apex; sub-leaf 2 leaves vent geometry unchanged.
+//! - **Air vent** at the centerline's **argmax-z vertex** (the
+//!   highest point on the polyline; workshop user orients the
+//!   assembled mold with `+Z` up, so the apex is the physical
+//!   highest point on the cured silicone body — where trapped
+//!   air collects). Axis is `+Z` (world up); cylinder rises
+//!   straight from the apex up through the cup wall to the
+//!   bounding region's `+Z` outer face.
 //!
 //! ## Composition
 //!

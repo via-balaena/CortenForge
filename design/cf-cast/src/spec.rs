@@ -2227,7 +2227,7 @@ mod tests {
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         // v2 header signal (distinguishes from v1's "# Cast Procedure").
-        assert!(md.contains("# Cast Procedure (v2 curve-following multi-piece)"));
+        assert!(md.contains("# Cast Procedure (v2.1 curve-following, detachable-shell)"));
         // v2-specific sections.
         assert!(md.contains("## Cast Geometry"));
         assert!(md.contains("## v2 Mold Assembly"));
@@ -2687,7 +2687,7 @@ mod tests {
         // Per-layer Step 6 references the side-mounted pour gate
         // when enabled.
         assert!(
-            md.contains("Pour into the side-mounted pour gate at the centerline midpoint"),
+            md.contains("Pour silicone into the side-mounted pour gate at the centerline midpoint"),
             "Step 6 should reference the side-mounted pour gate when enabled; got: {md}",
         );
     }
@@ -2703,7 +2703,7 @@ mod tests {
         assert!(md.contains("## Pour Gate + Vent"));
         assert!(md.contains("`PourGateKind::None`"));
         assert!(
-            md.contains("Pour into the assembled mold cavity"),
+            md.contains("Pour silicone into the assembled mold cavity"),
             "Step 6 should fall back to seam-pour prose; got: {md}",
         );
         // The "Pour Gate + Vent" section's no-gate prose mentions
