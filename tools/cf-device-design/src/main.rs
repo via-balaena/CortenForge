@@ -115,6 +115,10 @@ struct OuterEnvelopeState {
     /// outside the scan surface, measured along the per-vertex
     /// outward normal of the decimated scan proxy.
     clearance_m: f64,
+    /// Whether the outer-envelope wireframe is drawn this frame.
+    /// User toggle in the panel; lets them hide the green-blue
+    /// surface while inspecting the cavity (or vice versa).
+    visible: bool,
 }
 
 impl OuterEnvelopeState {
@@ -124,6 +128,7 @@ impl OuterEnvelopeState {
     fn default_for_scan() -> Self {
         Self {
             clearance_m: ENVELOPE_DEFAULT_CLEARANCE_M,
+            visible: true,
         }
     }
 
@@ -152,16 +157,21 @@ struct CavityState {
     /// the scan surface, measured along the per-vertex INWARD
     /// normal (the negation of the proxy mesh's outward normal).
     inset_m: f64,
+    /// Whether the cavity wireframe is drawn this frame. User
+    /// toggle in the panel.
+    visible: bool,
 }
 
 impl CavityState {
     /// Default state. Inset defaults to
-    /// [`CAVITY_DEFAULT_INSET_M`] (3 mm) — moderate stretch for a
-    /// typical 25–35 mm-diameter scan (≈ 6–10 % radial pre-strain),
-    /// safely within Ecoflex's elongation-at-break window.
+    /// [`CAVITY_DEFAULT_INSET_M`] (0 mm) — cavity coincides with
+    /// the scan surface at launch. The user dials the inset
+    /// upward (slider right) to shrink the cavity into the scan,
+    /// producing the silicone-skin pre-strain.
     fn default_for_scan() -> Self {
         Self {
             inset_m: CAVITY_DEFAULT_INSET_M,
+            visible: true,
         }
     }
 
@@ -360,13 +370,14 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// surface."
 const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
 
-/// Default inset (meters) the cavity sits inside the scan surface.
-/// 3 mm = ~6–10 % radial pre-strain on the scan's typical
-/// cross-section (25–35 mm diameter). Stretch comfortable for
-/// Ecoflex 00-30 (~900 % elongation-at-break) and DragonSkin 30
-/// (~364 %); the silicone "skin" between cavity surface and scan
-/// surface stretches over the appendage when inserted.
-const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
+/// Default cavity inset (meters). 0 mm = cavity coincides with the
+/// scan surface at launch — the silicone skin has zero pre-strain
+/// initially. The user dials the inset up (slider right) to shrink
+/// the cavity into the scan; that delta IS the pre-strain. Lets
+/// the user start from a known reference (scan-as-cavity) and
+/// dial in the stretch they want for a specific silicone /
+/// appendage combination.
+const CAVITY_DEFAULT_INSET_M: f64 = 0.000;
 
 /// Decimate the cleaned scan to a ~`ENVELOPE_PROXY_TARGET_FACES`-
 /// face proxy mesh, compute per-vertex outward normals, and extract
@@ -515,7 +526,7 @@ fn draw_envelope_offset_overlay(
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
 ) {
-    if proxy.vertices.is_empty() || proxy.edges.is_empty() {
+    if !state.visible || proxy.vertices.is_empty() || proxy.edges.is_empty() {
         return;
     }
     // Pale green-blue; same color as the prior ring-based wireframe
@@ -565,7 +576,7 @@ fn draw_cavity_overlay(
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
 ) {
-    if proxy.vertices.is_empty() || proxy.edges.is_empty() {
+    if !state.visible || proxy.vertices.is_empty() || proxy.edges.is_empty() {
         return;
     }
     // Coral / salmon — distinct from outer envelope's green-blue
@@ -687,6 +698,7 @@ fn render_outer_envelope_section(
     egui::CollapsingHeader::new("Outer Envelope")
         .default_open(true)
         .show(ui, |ui| {
+            ui.checkbox(&mut state.visible, "Show wireframe");
             let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
             let mut clearance_mm = state.clearance_m * 1000.0;
             let min_mm = min_m * 1000.0;
@@ -727,6 +739,7 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
     egui::CollapsingHeader::new("Cavity")
         .default_open(true)
         .show(ui, |ui| {
+            ui.checkbox(&mut state.visible, "Show wireframe");
             let (min_m, max_m) = CavityState::inset_slider_range_m();
             let mut inset_mm = state.inset_m * 1000.0;
             let min_mm = min_m * 1000.0;
@@ -1110,9 +1123,9 @@ another_future_field = "foo"
     // ----- Slice 4 v1 — cavity state -------------------------------
 
     #[test]
-    fn cavity_default_inset_is_three_mm() {
+    fn cavity_default_inset_is_zero_mm() {
         let state = CavityState::default_for_scan();
-        assert!(approx_eq(state.inset_m, 0.003, 1e-12));
+        assert!(approx_eq(state.inset_m, 0.0, 1e-12));
     }
 
     #[test]
@@ -1120,6 +1133,19 @@ another_future_field = "foo"
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
         assert!(approx_eq(max_m, 0.015, 1e-12));
+    }
+
+    #[test]
+    fn default_overlays_are_both_visible() {
+        // Sanity: launching the app shows both wireframes by
+        // default; the user can hide either via the panel
+        // checkbox. If we ever flip a default to "hidden," the
+        // user would see a black viewport on launch — a real
+        // confusion-inducing failure mode worth a regression pin.
+        let oe = OuterEnvelopeState::default_for_scan();
+        let cv = CavityState::default_for_scan();
+        assert!(oe.visible);
+        assert!(cv.visible);
     }
 
     // ----- Slice 3 polish 10 — offset-surface proxy mesh ------------
