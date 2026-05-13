@@ -5,10 +5,10 @@ use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::*;
 use cf_viewer::{
-    InputMode, RenderScale, UpAxis, ViewerInput,
+    AssemblyInputs, InputMode, RenderScale, UpAxis, ViewerInput,
     cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
-    compute_render_scale, detect_input_mode, load_input,
+    compute_render_scale, detect_input_mode, load_assembly_inputs, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
     scale_aabb,
     sequence::{
@@ -24,19 +24,45 @@ use mesh_types::Bounded;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mode = detect_input_mode(&cli.path)?;
-    // Sequence-mode log lives in `main` (not in `detect_input_mode`) so
-    // the lib function stays side-effect free and reusable.
-    if let InputMode::Sequence(seq) = &mode {
-        let first_name = seq.current_name().unwrap_or("?");
-        println!(
-            "detected PLY sequence: {} frame(s) in {}; rendering frame 1/{} ({})",
-            seq.len(),
-            cli.path.display(),
-            seq.len(),
-            first_name,
-        );
+    // `--assembly` opts the directory-input path into Option C
+    // (multi-piece-in-one-scene) instead of the default scrub-through-
+    // pieces sequence mode. Only meaningful when `path` is a directory
+    // of STLs; ignored for single-file or PLY-sequence inputs.
+    let mode = if cli.assembly && cli.path.is_dir() {
+        let stls = cf_viewer::discover_stl_sequence(&cli.path)?;
+        InputMode::Assembly { stls }
+    } else {
+        detect_input_mode(&cli.path)?
+    };
+    match &mode {
+        InputMode::Sequence(seq) => {
+            let first_name = seq.current_name().unwrap_or("?");
+            println!(
+                "detected sequence: {} frame(s) in {}; rendering frame 1/{} ({})",
+                seq.len(),
+                cli.path.display(),
+                seq.len(),
+                first_name,
+            );
+        }
+        InputMode::Assembly { stls } => {
+            println!(
+                "assembly mode: loading {} STLs from {}",
+                stls.len(),
+                cli.path.display(),
+            );
+        }
+        InputMode::Single(_) => {}
     }
+
+    // Assembly mode bypasses the single-mesh ViewerInput pipeline
+    // entirely — load all STLs up front, insert as an AssemblyInputs
+    // resource, skip seed_selection / Selection (no scalar dropdown
+    // for STL-only data).
+    if let InputMode::Assembly { stls } = &mode {
+        return run_assembly_mode(&cli, stls);
+    }
+
     let frame_path = mode.initial_frame()?;
 
     let input = load_input(&frame_path)?;
@@ -114,6 +140,233 @@ fn main() -> Result<()> {
         .run();
 
     Ok(())
+}
+
+// ============================================================
+// Assembly mode (Option C) — multi-piece-in-one-scene.
+// ============================================================
+
+/// Per-piece marker for [`InputMode::Assembly`]'s spawn output.
+/// Each piece's spawned entity carries this component so the
+/// `assembly_piece_panel` UI can flip `Visibility` per piece by
+/// name.
+#[derive(Component, Debug)]
+struct AssemblyPiece {
+    /// Zero-based index into [`AssemblyInputs::pieces`].
+    #[allow(dead_code)] // Reserved for future C.x slices that need stable indices.
+    index: usize,
+    /// Filename — used by the side-panel UI as the per-piece label
+    /// + the visibility-toggle key.
+    name: String,
+}
+
+/// Per-piece visibility state — `pieces[name] = visible?`.
+/// Default all-visible at startup; mutated by
+/// `assembly_piece_panel`; consumed by `apply_assembly_visibility`
+/// each frame.
+#[derive(Resource, Debug, Default)]
+struct AssemblyVisibility {
+    visible: std::collections::HashMap<String, bool>,
+}
+
+/// Drive the Bevy app for Option C assembly mode — load all STLs
+/// up front, insert as [`AssemblyInputs`], skip scrub UI + scalar
+/// dropdown machinery.
+///
+/// Branches off `main` BEFORE the standard PLY/Sequence pipeline
+/// builds its `ViewerInput` resource. Assembly mode runs an
+/// independent Bevy app with its own setup + spawn systems.
+fn run_assembly_mode(cli: &Cli, stls: &[std::path::PathBuf]) -> Result<()> {
+    let assembly = load_assembly_inputs(stls)?;
+    println!("loaded {} assembly pieces:", assembly.pieces.len(),);
+    for piece in &assembly.pieces {
+        println!(
+            "  {} ({} vertices, {} faces)",
+            piece.name,
+            piece.mesh.vertex_count(),
+            piece.mesh.geometry.faces.len(),
+        );
+    }
+
+    // Compute the combined AABB across all pieces so the camera
+    // frames the whole assembly, not just the first piece.
+    let combined_aabb = combined_assembly_aabb(&assembly);
+    let raw_diagonal = combined_aabb.diagonal() as f32;
+    let render_scale = compute_render_scale(raw_diagonal);
+    println!("assembly bbox diagonal = {raw_diagonal:.4} m; render_scale = {render_scale:.2}×",);
+
+    let up_axis: UpAxis = cli.up.into();
+
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "cf-view (assembly)".into(),
+            ..default()
+        }),
+        ..default()
+    }))
+    .add_plugins(EguiPlugin::default())
+    .add_plugins(OrbitCameraPlugin)
+    .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
+    .insert_resource(assembly)
+    .insert_resource(AssemblyVisibility::default())
+    .insert_resource(up_axis)
+    .insert_resource(RenderScale(render_scale));
+
+    app.add_systems(
+        Startup,
+        (setup_assembly_scene, spawn_assembly_pieces).chain(),
+    )
+    .add_systems(Update, (apply_assembly_visibility, exit_on_esc))
+    .add_systems(EguiPrimaryContextPass, assembly_piece_panel)
+    .run();
+
+    Ok(())
+}
+
+/// Compute the union AABB across all pieces' raw mesh AABBs. The
+/// camera + render-scale logic frames this so all pieces are
+/// visible at startup.
+fn combined_assembly_aabb(assembly: &AssemblyInputs) -> mesh_types::Aabb {
+    use mesh_types::Point3;
+    let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for piece in &assembly.pieces {
+        let aabb = piece.mesh.aabb();
+        min.x = min.x.min(aabb.min.x);
+        min.y = min.y.min(aabb.min.y);
+        min.z = min.z.min(aabb.min.z);
+        max.x = max.x.max(aabb.max.x);
+        max.y = max.y.max(aabb.max.y);
+        max.z = max.z.max(aabb.max.z);
+    }
+    mesh_types::Aabb::from_corners(min, max)
+}
+
+/// Startup system — frame the camera on the combined assembly AABB.
+#[allow(clippy::needless_pass_by_value)]
+fn setup_assembly_scene(
+    mut commands: Commands,
+    assembly: Res<AssemblyInputs>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+) {
+    let raw_aabb = combined_assembly_aabb(&assembly);
+    let aabb = scale_aabb(&raw_aabb, render_scale.0);
+    setup_camera_and_lighting(&mut commands, &aabb, *up);
+}
+
+/// `tab10` categorical palette — the same 10 colors matplotlib
+/// uses by default for categorical line plots, well-tested for
+/// visual distinguishability. Assembly mode cycles through this
+/// palette by piece index so each piece gets a distinct color.
+/// Wraps at index 10 (cf-cast v2 emits up to `2 * L + 1` STLs,
+/// so 7 for the 3-layer fixture; for 5-layer that's 11, which
+/// wraps but only one collision).
+const TAB10: [Color; 10] = [
+    Color::srgb(0.121, 0.466, 0.705), // blue
+    Color::srgb(1.000, 0.498, 0.054), // orange
+    Color::srgb(0.172, 0.627, 0.172), // green
+    Color::srgb(0.839, 0.152, 0.156), // red
+    Color::srgb(0.580, 0.403, 0.741), // purple
+    Color::srgb(0.549, 0.337, 0.294), // brown
+    Color::srgb(0.890, 0.466, 0.760), // pink
+    Color::srgb(0.498, 0.498, 0.498), // gray
+    Color::srgb(0.737, 0.741, 0.133), // olive
+    Color::srgb(0.090, 0.745, 0.811), // cyan
+];
+
+/// Startup system — spawn one entity per piece. Each piece gets a
+/// flat-shaded mesh + a [`TAB10`] color indexed by piece position
+/// so overlapping pieces stay visually distinguishable.
+#[allow(clippy::needless_pass_by_value)]
+fn spawn_assembly_pieces(
+    assembly: Res<AssemblyInputs>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let scale = render_scale.0;
+    for (index, piece) in assembly.pieces.iter().enumerate() {
+        let bevy_mesh = build_face_mesh(&piece.mesh, None, *up);
+        let piece_color = TAB10[index % TAB10.len()];
+        let material = StandardMaterial {
+            base_color: piece_color,
+            metallic: 0.10,
+            perceptual_roughness: 0.6,
+            double_sided: true,
+            cull_mode: None,
+            unlit: false,
+            // Slight transparency so overlapping pieces don't fully
+            // hide each other on first orbit. Workshop user can
+            // toggle individual pieces off via the side panel for
+            // a fully opaque look at any single piece.
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        };
+        let mut material_with_alpha = material;
+        material_with_alpha.base_color = piece_color.with_alpha(0.55);
+        commands.spawn((
+            AssemblyPiece {
+                index,
+                name: piece.name.clone(),
+            },
+            Mesh3d(meshes.add(bevy_mesh)),
+            MeshMaterial3d(materials.add(material_with_alpha)),
+            Transform::from_scale(Vec3::splat(scale)),
+        ));
+    }
+}
+
+/// Side panel: list every assembly piece with a visibility
+/// checkbox. Default all-on. Mutates [`AssemblyVisibility`] which
+/// [`apply_assembly_visibility`] then propagates to each entity's
+/// `Visibility` component.
+#[allow(clippy::needless_pass_by_value)]
+fn assembly_piece_panel(
+    mut contexts: bevy_egui::EguiContexts,
+    assembly: Res<AssemblyInputs>,
+    mut visibility: ResMut<AssemblyVisibility>,
+) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    bevy_egui::egui::SidePanel::left("assembly_pieces")
+        .min_width(220.0)
+        .show(ctx, |ui| {
+            ui.heading("cf-view (assembly)");
+            ui.label("Per-piece visibility:");
+            ui.separator();
+            for piece in &assembly.pieces {
+                let entry = visibility.visible.entry(piece.name.clone()).or_insert(true);
+                ui.checkbox(entry, &piece.name);
+            }
+            ui.separator();
+            ui.label(format!("{} pieces total", assembly.pieces.len()));
+            ui.label("LMB orbit · RMB pan · scroll zoom · Esc exit");
+        });
+}
+
+/// Each-frame system: read [`AssemblyVisibility`], flip each
+/// `AssemblyPiece` entity's `Visibility` to match. Egui mutates the
+/// resource on checkbox click; this system applies it.
+fn apply_assembly_visibility(
+    visibility: Res<AssemblyVisibility>,
+    mut query: Query<(&AssemblyPiece, &mut Visibility)>,
+) {
+    if !visibility.is_changed() {
+        return;
+    }
+    for (piece, mut vis) in &mut query {
+        let visible = visibility.visible.get(&piece.name).copied().unwrap_or(true);
+        *vis = if visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
 }
 
 /// Spawn the orbit camera + lighting once at startup. Geometry is spawned

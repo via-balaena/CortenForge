@@ -50,6 +50,37 @@ use mesh_types::{Aabb, AttributedMesh, IndexedMesh, Point3};
 
 pub use sequence::Sequence;
 
+/// Multi-STL assembly inputs — N loaded meshes ready to spawn
+/// into a single scene at their world-coordinate positions.
+///
+/// Inserted as a Bevy resource by `main.rs` when [`InputMode::Assembly`]
+/// is selected via `--assembly`. The spawn system enumerates this
+/// Vec at startup and creates one entity per piece, each tagged with
+/// [`AssemblyPiece`] for per-piece visibility toggling.
+///
+/// Distinct from [`ViewerInput`] (which is the single-mesh
+/// PLY/Sequence carrier) — assembly mode does NOT participate in
+/// scrub/playback or scalar-dropdown machinery.
+#[derive(Resource, Debug)]
+pub struct AssemblyInputs {
+    /// Per-piece loaded mesh + filename, lex-sorted to match the
+    /// directory's natural order.
+    pub pieces: Vec<AssemblyPieceInput>,
+}
+
+/// One piece of an [`AssemblyInputs`]: its loaded mesh + the source
+/// filename for UI display.
+#[derive(Debug)]
+pub struct AssemblyPieceInput {
+    /// Loaded mesh in world-coordinate positions (cf-cast STLs are
+    /// already in mm-frame world coordinates per the v2 export
+    /// pipeline, so no re-positioning is needed).
+    pub mesh: AttributedMesh,
+    /// Filename (basename, no directory). Used for the per-piece
+    /// visibility-toggle label in the side panel.
+    pub name: String,
+}
+
 /// Loaded artifact ready for visualization.
 ///
 /// `scalar_names` is the alphabetically-ordered list of per-vertex
@@ -100,6 +131,32 @@ pub fn load_input(path: &Path) -> Result<ViewerInput> {
         .with_context(|| format!("loading PLY from {}", path.display()))?;
     let scalar_names: Vec<String> = mesh.extras.keys().cloned().collect();
     Ok(ViewerInput { mesh, scalar_names })
+}
+
+/// Load every STL in `stls` into an [`AssemblyInputs`] ready for
+/// multi-piece spawning. Each STL is loaded independently via
+/// [`mesh_io::load_stl`] + wrapped in [`AttributedMesh::new`]; the
+/// per-piece basename is captured for the UI label.
+///
+/// # Errors
+///
+/// Returns the first per-piece load error encountered (with the
+/// failing path attached via [`anyhow::Context`]). Caller is
+/// responsible for ensuring `stls` is non-empty if the downstream
+/// spawn system requires it.
+pub fn load_assembly_inputs(stls: &[PathBuf]) -> Result<AssemblyInputs> {
+    let mut pieces = Vec::with_capacity(stls.len());
+    for path in stls {
+        let geometry =
+            load_stl(path).with_context(|| format!("loading STL from {}", path.display()))?;
+        let mesh = AttributedMesh::new(geometry);
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map_or_else(|| path.display().to_string(), String::from);
+        pieces.push(AssemblyPieceInput { mesh, name });
+    }
+    Ok(AssemblyInputs { pieces })
 }
 
 /// Does `path`'s extension match `.stl` (case-insensitive)?
@@ -211,17 +268,32 @@ pub fn discover_stl_sequence(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(frames)
 }
 
-/// Detected CLI-input form: either a single PLY file or a multi-frame
-/// sequence. Sequence variant carries the populated [`Sequence`]
-/// resource ready to insert into the Bevy app; `main.rs` only inserts
-/// it in directory-input mode so single-file consumers pay nothing.
+/// Detected CLI-input form: single file, multi-frame sequence, or
+/// multi-STL assembly. Single/Sequence variants pre-date Option C
+/// (STL assembly mode); Assembly is the cf-cast multi-piece-mold
+/// visual-review entry point per
+/// `docs/CURVE_FOLLOWING_DESIGN.md` Step 11 + the v2 cast example's
+/// `out/` directory.
 #[derive(Debug, Clone)]
 pub enum InputMode {
-    /// Single static PLY — the existing pre-D1 viewer behavior.
+    /// Single static PLY or STL — the existing pre-D1 viewer
+    /// behavior, extended for STL by the load_input extension-
+    /// dispatch path.
     Single(PathBuf),
-    /// Lex-sorted sequence of `*_step_<n>.ply` frames, with the initial
-    /// `current` index set to 0.
+    /// Lex-sorted sequence of `*_step_<n>.ply` frames OR `*.stl`
+    /// files, with the initial `current` index set to 0. Scrub UI
+    /// flips between frames one at a time.
     Sequence(Sequence),
+    /// Multi-STL assembly: spawn ALL STLs in a directory at their
+    /// world-coordinate positions simultaneously. Per-piece
+    /// visibility toggle in the side panel; per-piece distinct
+    /// colors. No scrub UI (assembly has no temporal meaning).
+    Assembly {
+        /// Lex-sorted list of STL paths. Same discovery as
+        /// `Sequence` for STLs ([`discover_stl_sequence`]), but
+        /// loaded all at once rather than one-at-a-time.
+        stls: Vec<PathBuf>,
+    },
 }
 
 impl InputMode {
@@ -240,6 +312,10 @@ impl InputMode {
                 .current_path()
                 .map(Path::to_path_buf)
                 .ok_or_else(|| anyhow::anyhow!("sequence has no current frame")),
+            Self::Assembly { stls } => stls
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("assembly has no STLs")),
         }
     }
 }
@@ -562,6 +638,11 @@ mod tests {
                     "expected Sequence variant for dir input; got Single",
                 ));
             }
+            InputMode::Assembly { .. } => {
+                return Err(anyhow::anyhow!(
+                    "expected Sequence variant for dir input; got Assembly",
+                ));
+            }
         };
         assert_eq!(seq.len(), 3, "should see 3 step frames + 1 skipped");
         assert_eq!(seq.current, 0);
@@ -648,6 +729,11 @@ mod tests {
                     "expected Sequence for STL dir input; got Single",
                 ));
             }
+            InputMode::Assembly { .. } => {
+                return Err(anyhow::anyhow!(
+                    "expected Sequence for STL dir input; got Assembly",
+                ));
+            }
         };
         assert_eq!(seq.len(), 2);
         let initial = mode.initial_frame()?;
@@ -677,6 +763,11 @@ mod tests {
                     "expected Sequence for mixed dir input; got Single",
                 ));
             }
+            InputMode::Assembly { .. } => {
+                return Err(anyhow::anyhow!(
+                    "expected Sequence for mixed dir input; got Assembly",
+                ));
+            }
         };
         // PLY frames win — STL is excluded.
         assert_eq!(seq.len(), 2);
@@ -704,6 +795,64 @@ mod tests {
             msg.contains("PLY sequence frames") && msg.contains("STL files"),
             "error should name both patterns: {msg}",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn input_mode_assembly_initial_frame_is_first_stl() -> Result<()> {
+        let stls = vec![
+            PathBuf::from("/tmp/mold_layer_0_piece_0.stl"),
+            PathBuf::from("/tmp/mold_layer_0_piece_1.stl"),
+            PathBuf::from("/tmp/plug.stl"),
+        ];
+        let mode = InputMode::Assembly { stls: stls.clone() };
+        let initial = mode.initial_frame()?;
+        assert_eq!(initial, stls[0]);
+        Ok(())
+    }
+
+    #[test]
+    fn input_mode_assembly_initial_frame_errors_on_empty() {
+        let mode = InputMode::Assembly { stls: Vec::new() };
+        let result = mode.initial_frame();
+        assert!(result.is_err());
+        assert!(
+            result
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+                .contains("assembly has no STLs")
+        );
+    }
+
+    #[test]
+    fn load_assembly_inputs_loads_every_stl_and_captures_basenames() -> Result<()> {
+        // Round-trip via save_stl so we have real STL files to load.
+        use mesh_io::save_stl;
+        use mesh_types::IndexedMesh as MTIndexedMesh;
+        let dir = tempfile::tempdir()?;
+        let mut paths = Vec::new();
+        for name in ["piece_a.stl", "piece_b.stl", "plug.stl"] {
+            let path = dir.path().join(name);
+            let mut mesh = MTIndexedMesh::new();
+            mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+            mesh.faces.push([0, 1, 2]);
+            save_stl(&mesh, &path, true)?;
+            paths.push(path);
+        }
+        let assembly = load_assembly_inputs(&paths)?;
+        assert_eq!(assembly.pieces.len(), 3);
+        // Lex order matches input order here (we passed paths in order).
+        assert_eq!(assembly.pieces[0].name, "piece_a.stl");
+        assert_eq!(assembly.pieces[1].name, "piece_b.stl");
+        assert_eq!(assembly.pieces[2].name, "plug.stl");
+        // Each piece carries a valid 3-vertex 1-face mesh.
+        for piece in &assembly.pieces {
+            assert_eq!(piece.mesh.geometry.vertices.len(), 3);
+            assert_eq!(piece.mesh.geometry.faces.len(), 1);
+        }
         Ok(())
     }
 

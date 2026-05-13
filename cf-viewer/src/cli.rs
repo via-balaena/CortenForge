@@ -63,6 +63,17 @@ pub struct Cli {
     /// runtime-overridable — geometry is mapped to Bevy-Y-up at load.
     #[arg(long, value_enum, default_value = "+Z")]
     pub up: UpAxisArg,
+
+    /// **Assembly mode** — for a directory of `*.stl` files, spawn ALL
+    /// of them in the scene at their world-coordinate positions
+    /// (instead of the default scrub-through-one-at-a-time STL
+    /// sequence). Each piece gets a distinct color + a visibility
+    /// toggle in the side panel. Use this for cf-cast assembly-fit
+    /// verification ("does the plug actually sit inside the cavity
+    /// formed by piece_0 + piece_1?"). Ignored for PLY-sequence
+    /// inputs.
+    #[arg(long, default_value_t = false)]
+    pub assembly: bool,
 }
 
 /// CLI-side mirror of [`ColormapOverride`]. Keeps the `clap`-derived
@@ -246,6 +257,7 @@ mod tests {
             scalar: scalar.map(str::to_string),
             colormap,
             up: UpAxisArg::PlusZ,
+            assembly: false,
         }
     }
 
