@@ -12,6 +12,7 @@ Track F.2's v1 MVP shipped a capsule-fallback example that demonstrates the cast
 
 Real scans don't drop into `cf_cast::CastSpec` directly. They need preprocessing decisions that the capsule fallback didn't surface:
 
+- **Simplify (decimate)** — modern 3D scanners routinely produce 1M-10M+ face meshes. cf-cast samples SDF on a 2 mm grid; mesh detail finer than the cell size is wasted. A 3 M-face scan adds ~30× compute to cf-cast's `SignedDistanceField` build + queries, ~60× memory pressure on Bevy rendering, and produces cleaned STLs the slicer chokes on. Boundary-preserving quadric edge collapse (via `meshopt-rs`) reduces a typical scan to 50k-200k faces with no perceptible quality loss for cast purposes. **Load-bearing for any scan-driven cf-cast workflow.**
 - **Reorient** — scanner-frame ≠ cast-frame; the scan's local axes must be rotated so the demolding direction is `+z`
 - **Recenter** — translate the scan so the cavity centroid sits at origin (offsets are then symmetric)
 - **Trim** — drop scanner noise (floor, fixture, extraneous geometry) below a clip plane
@@ -53,6 +54,7 @@ Resolved 2026-05-12 by user:
 - **Clip cut style** → **true plane intersection (not vertex-drop)**. For each triangle straddling the clip plane, compute the intersection edge, generate new vertices on the plane, retesselate the triangle into one above-plane (kept) and one or two below-plane (discarded). Result: clean planar cut along `z = clip_z`. **Rejected alternative**: vertex-drop (drop any triangle whose all 3 vertices are below the plane). Vertex-drop is simpler (~30 LOC) but produces jagged ragged edges that don't lie on the clip plane; the resulting open boundary has low plane-fit R² and degrades the auto-cap quality downstream. True intersection costs ~150 LOC of triangle-clipping but makes the clip-then-cap workflow clean (the resulting boundary lies exactly on the clip plane, R² = 1.0).
 - **Cap normal orientation** → **winding-determined outward via mesh-side-of-plane heuristic**. The triangulated cap's vertex winding determines its normal direction; the cap must face outward (away from the mesh interior) so `mesh_sdf` computes the right inside/outside. Heuristic: project the loop centroid + boundary onto the auto-fit plane, walk counterclockwise as seen from the mesh-side of the plane (the side with more original mesh geometry). Fallback if heuristic is ambiguous (loop straddles both sides ~50/50): use the average outward normal of the boundary edges' adjacent faces and orient the cap-plane normal to match.
 - **Save atomicity** → **`.tmp` + atomic rename**. Both files (`.cleaned.stl` and `.prep.toml`) write to `<stem>.cleaned.stl.tmp` + `<stem>.prep.toml.tmp` first, then atomic-rename to final names only after both writes succeed. If either write fails, neither final file lands and the previous version (if any) is preserved. Status bar surfaces the FS error in red.
+- **Simplify (decimate) algorithm** → **`meshopt-rs` workspace dep, boundary-preserving quadric edge collapse**. New workspace dep (Rust crate wrapping Arseny Kapoulkine's `meshoptimizer` C library — battle-tested in Unity, Unreal, Bevy itself; MIT licensed). Boundary preservation is **required** (NOT optional): if decimation collapses edges along the open boundary loop, the cap polygon shape changes and may become non-planar from edge merges, breaking downstream cap detection. `meshopt::simplify` (NOT `simplify_sloppy`) preserves boundaries by setting border-edge collapse cost to ∞. **Rejected alternatives**: inline Garland-Heckbert quadric edge collapse (~500-800 LOC, risk of subtle quadric-math bugs, may not match meshopt's quality tuning); vertex clustering / grid snap (~100 LOC, fast but doesn't preserve boundaries cleanly, uneven triangle distribution). Default target: 200k faces (10× over the 50k surface-continuity floor; well below the 500k "may be sluggish" threshold); user-configurable via slider 1k-1M.
 
 ---
 
@@ -68,12 +70,13 @@ End-to-end, scan to mold:
 [cf-scan-prep GUI]
    1. Load STL via CLI arg (default --stl-units mm; vertex × 0.001 → meters)
    2. Inspect — vertex/face count, AABB, mesh-repair diagnostics, units assumption
-   3. Reorient — rotate so demolding direction = +z
-   4. Recenter — pick one: `[Center origin]` translates centroid to origin, OR `[Floor → z=0]` translates cavity floor to z=0
-   5. Optionally clip — drop scanner-noise floor below z=clip_z
-   6. Cap open boundaries — auto-detect open loops, fit planes, approve per loop
-   7. Set mouth extension — +z headroom for cup opening
-   8. Save — emits <stem>.cleaned.stl (watertight) + <stem>.prep.toml
+   3. Simplify — decimate to target face count (default 200k; auto-banner at >500k); meshopt boundary-preserving
+   4. Reorient — rotate so demolding direction = +z
+   5. Recenter — pick one: `[Center origin]` translates centroid to origin, OR `[Floor → z=0]` translates cavity floor to z=0
+   6. Optionally clip — drop scanner-noise floor below z=clip_z
+   7. Cap open boundaries — auto-detect open loops, fit planes, approve per loop
+   8. Set mouth extension — +z headroom for cup opening
+   9. Save — emits <stem>.cleaned.stl (watertight, simplified) + <stem>.prep.toml
        ↓
 [examples/cast/layered-silicone-device-v1-scan/]
    - reads cleaned STL via CF_CAST_SCAN_STL_PATH env var
@@ -85,7 +88,7 @@ End-to-end, scan to mold:
 [workshop: 3D print → pour → cure → demold]
 ```
 
-cf-scan-prep handles steps 1-8. Steps before (raw scan acquisition + multi-shell trim) and after (workshop) are user-domain.
+cf-scan-prep handles steps 1-9. Steps before (raw scan acquisition + multi-shell trim) and after (workshop) are user-domain.
 
 ---
 
@@ -104,7 +107,14 @@ cf-scan-prep handles steps 1-8. Steps before (raw scan acquisition + multi-shell
 │         · scan mesh (transformed)            │     H: 120.7 mm  │
 │         · axis gizmos at origin              │   Volume: 12.4cm³│
 │         · transformed AABB (wireframe)       │                  │
-│         · clip plane (translucent, opt)      │ ▼ Reorient       │
+│         · clip plane (translucent, opt)      │ ▼ Simplify       │
+│         · cap visualization (translucent)    │   Current: 24.5k │
+│         · mouth extension (translucent, opt) │   Target: ──○──  │
+│         · ground grid (subtle, z=0)          │   200k faces     │
+│                                              │   [Apply]        │
+│         (orbit camera; mouse-drag)           │   [Reset orig]   │
+│                                              │                  │
+│                                              │ ▼ Reorient       │
 │         · mouth extension (translucent, opt) │   Roll  ──○──    │
 │         · ground grid (subtle, z=0)          │   Pitch ──○──    │
 │                                              │   Yaw   ──○──    │
@@ -193,7 +203,20 @@ Loaded at startup, never changes:
 - Raw AABB dimensions in mm (W × D × H) — displayed in mm regardless of `--stl-units` (workshop measurements are in mm; consistency with the user's mental model)
 - Estimated volume in cm³ (via `mesh-measure`)
 
-### 2. Reorient
+### 2. Simplify (decimate)
+
+Reduces scan face count via boundary-preserving quadric edge collapse so all downstream panels operate on a tractable mesh size. Critical for scans > 500k faces (rotating-table scans of a 100mm device routinely produce 1-5M faces).
+
+- **Read-only header**: `"Current: <face_count> (<file_size_mb> MB)"`
+- **Target slider**: 1k - 1M faces, default **200k** (10× over the 50k surface-continuity floor; well below the 500k "may be sluggish" threshold; matches cf-cast's 2 mm-cell SDF sampling density × surface-continuity headroom)
+- **Algorithm**: `meshopt::simplify` (NOT `simplify_sloppy`) — boundary-preserving quadric edge collapse via the `meshopt-rs` crate
+- `[Apply simplify]` button — runs decimation, swaps the displayed Bevy mesh entity, updates Scan Info panel's vertex/face counts. Status bar reports actual achieved face count: `"Reduced 3.35M → 198,432 faces in 4.2s"`
+- `[Reset to original]` button — restores the loaded mesh; user can re-target and re-apply iteratively
+- **Boundary preservation is non-optional**: if the open-boundary loop's vertices get collapsed during decimation, the cap polygon shape changes (and may become non-planar from edge merges), breaking downstream cap detection. `meshopt::simplify` enforces this by setting border-edge collapse cost to ∞.
+- **Auto-suggest banner** at load: when the scan's face count exceeds 500k, the status bar surfaces `"Scan has <N>M faces. Recommended: simplify to ~200k for performance. Open the Simplify panel to decimate."` Non-blocking; user can ignore if they have a reason to keep full resolution.
+- **Position in workflow**: panel #2, BEFORE Reorient, so all subsequent panels (Reorient/Recenter/Clip/Cap/Mouth/AABB/Save) operate on the simplified mesh. Decimating after transforms would re-walk the larger mesh through every transform tick.
+
+### 3. Reorient
 
 Rotation state stored internally as `UnitQuaternion<f64>`; Euler conversion happens at the slider boundary so gimbal-lock state corruption is avoided.
 
@@ -207,14 +230,14 @@ Rotation state stored internally as `UnitQuaternion<f64>`; Euler conversion happ
 - `[Reset rotation]` button → identity quaternion
 - Read-only quaternion display (4 components: `w`, `x`, `y`, `z`) for advanced users
 
-### 3. Recenter
+### 4. Recenter
 
 - Three sliders for **X / Y / Z translation** (in mm, range derived from scan AABB ±2× max dimension)
 - `[Center origin]` button → translate by `−transformed_aabb.center()`
 - `[Floor → z=0]` button → translate by `−transformed_aabb.min.z * Vec3::Z`. Useful default for cast prep (cavity floor sits at `z=0`)
 - `[Reset translation]` button → zero
 
-### 4. Clip floor (optional)
+### 5. Clip floor (optional)
 
 - Checkbox `Enabled` (default off)
 - Z slider for plane height (range derived from transformed AABB; default at `transformed_aabb.min.z + 0.1×height`)
@@ -223,7 +246,7 @@ Rotation state stored internally as `UnitQuaternion<f64>`; Euler conversion happ
 - **Cut style: true plane intersection** — for each triangle straddling the clip plane, compute the intersection edge, generate new vertices on the plane, retesselate the triangle into one above-plane (kept) and one or two below-plane (discarded). Result: clean planar cut along `z = clip_z`, suitable for capping without R² loss. Implementation cost: ~150 LOC of triangle-clipping (commit #7); rejected vertex-drop alternative produces jagged boundaries that degrade auto-cap quality. See [Architectural decisions](#architectural-decisions) §Clip cut style for the full rationale.
 - Edge case: if `>95%` of vertices drop, status bar warns `"Clip removes nearly all geometry — verify Z value"` (catches above-mesh / inverted-axis user errors)
 
-### 5. Cap open boundaries
+### 6. Cap open boundaries
 
 Closes open boundary loops with a flat planar cap so the saved mesh is watertight (required by `mesh_sdf::SignedDistanceField` downstream in cf-cast).
 
@@ -244,13 +267,13 @@ Closes open boundary loops with a flat planar cap so the saved mesh is watertigh
 - **Cap state invalidation on transform change**: any reorient / recenter / clip change invalidates the loop list (planes were fit to the previous transformed mesh; new transform → planes need re-fit). When invalidated, the loop list dims to gray with overlay text `"Transform changed — re-Scan to refresh"`. User clicks `[Scan]` again to recompute. Don't auto-rescan on every slider tick (defeats the per-loop checkbox state the user already set + re-runs `mesh-repair` for nothing).
 - **Cap normal orientation**: triangulated cap winding determines its outward normal direction. Cap must face away from the mesh interior so `mesh_sdf::SignedDistanceField::from_mesh` computes correct inside/outside. Heuristic: walk the boundary loop counterclockwise as seen from the mesh-majority side of the auto-fit plane (the side containing the majority of original mesh geometry). Fallback (loop straddles both sides ~50/50): use the average outward normal of the boundary edges' adjacent faces and orient the cap-plane normal to match. Verify post-cap by sampling a small SDF probe at `aabb.center()` — should be negative (inside) for a watertight cleaned mesh.
 
-### 6. Mouth extension
+### 7. Mouth extension
 
 - `+Z` slider in mm (range 0–50 mm, default 15 mm — matches the v1 capsule example's headroom)
 - Checkbox `Preview` — when checked, translucent box renders from `transformed_aabb.max.z` extending upward by `+Z` mm
 - The mouth extension is **NOT baked into the cleaned STL** — it's a cf-cast bounding-region hint passed through the TOML
 
-### 7. Cleaned AABB (read-only)
+### 8. Cleaned AABB (read-only)
 
 Live-updates as user drags sliders:
 - Width / depth / height after rotation + translation + clip (in mm)
@@ -259,7 +282,7 @@ Live-updates as user drags sliders:
   - Multi-axis warning if multiple exceeded
 - All warnings advisory; save proceeds regardless
 
-### 8. Save
+### 9. Save
 
 - Output directory display (default: parent of input scan; CLI flag `--output-dir <path>` overrides for read-only-input-dir cases)
 - Filename preview (`<input_stem>.cleaned.stl` + `<input_stem>.prep.toml`)
@@ -284,6 +307,17 @@ Caller-readable config + provenance record:
 source_stl = "/abs/path/to/scan.stl"
 tool_version = "0.1.0"
 generated_at = "2026-05-12T16:30:00Z"
+
+[simplify]
+# Decimation applied to the loaded scan before any other preprocessing.
+# Boundary preservation enabled so the cap loop topology survives.
+applied = true
+algorithm = "meshopt_quadric_edge_collapse"
+algorithm_version = "0.4.1"  # meshopt-rs version
+target_face_count = 200000
+achieved_face_count = 198432
+original_face_count = 3352068
+boundary_preserved = true
 
 [transform.rotation]
 # UnitQuaternion (w, x, y, z) applied to scan vertices.
@@ -346,6 +380,7 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 - Run `mesh-repair` diagnostics on the loaded scan (closed manifold? non-manifold edges? holes? disconnected shells?)
 - Display issue count in status bar (`"6 issues: 4 holes, 2 non-manifold edges"`)
 - Allow user to continue — diagnostic is **informational, not blocking**. Open boundaries surfaced here are addressed via the Cap panel; uncapped loops at save time fire a yellow warning so the workflow oversight is visible. Non-manifold-edge / disconnected-shell counts surface for awareness but aren't auto-fixed (out-of-scope per [MVP scope](#mvp-scope-vs-banked-items) §9).
+- **Face-count auto-suggest banner** — if loaded scan has > 500k faces, status bar surfaces `"Scan has <N>M faces. Recommended: simplify to ~200k for performance. Open the Simplify panel to decimate."` Non-blocking; user can ignore if they have a reason to keep full resolution. Banner clears once Simplify is applied.
 
 **Live (per-frame):**
 - "Drops X% of vertices below z=Y mm" under clip plane control (updates on slider change)
@@ -381,11 +416,11 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 ## MVP scope vs banked items
 
 **In MVP:**
-- All 8 panels above (Scan Info, Reorient, Recenter, Clip floor, Cap open boundaries, Mouth ext., Cleaned AABB, Save)
+- All 9 panels above (Scan Info, **Simplify**, Reorient, Recenter, Clip floor, Cap open boundaries, Mouth ext., Cleaned AABB, Save)
 - All visualization elements above (axis gizmos, transformed-AABB wireframe, ground grid, optional clip plane disc, open boundary loop highlights, per-loop translucent caps, mouth-extension overlay)
 - All keyboard shortcuts above
-- Output: cleaned STL (watertight after capping) + TOML config (with capped-loop provenance)
-- Validation: load-time mesh-repair diagnostic + save-time AABB warning + clip-% live readout + uncapped-loop warning + per-loop R² readout + FS error red-status-bar pattern + pre-save non-finite-transform rejection
+- Output: cleaned STL (simplified to target face count + watertight after capping) + TOML config (with simplify provenance + capped-loop provenance)
+- Validation: load-time mesh-repair diagnostic + face-count auto-suggest banner if > 500k faces + save-time AABB warning + clip-% live readout + uncapped-loop warning + per-loop R² readout + FS error red-status-bar pattern + pre-save non-finite-transform rejection
 
 **Banked (deferred to Stage 2.6+):**
 
@@ -404,23 +439,24 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 
 ## Implementation arc structure
 
-13-commit plan, **~24-32 hours** active across multiple sessions (sum of per-commit estimates with the per-commit ranges):
+14-commit plan, **~28-37 hours** active across multiple sessions (sum of per-commit estimates with the per-commit ranges):
 
 | # | Commit | Scope | Est |
 |---|--------|-------|----:|
 | 1 | `docs(scan-prep): design spec` | This document | ~30 min |
 | 2 | `refactor(cf-viewer): lift RenderScale + setup helpers to lib` | Extract `RenderScale`, `compute_render_scale`, `scale_aabb`, `setup_camera_and_lighting`, `spawn_face_mesh` from main.rs to lib.rs; cf-view binary thinned; per-crate gates + xtask grade | ~2 hr + 25 min grader |
-| 3 | `feat(tools): cf-scan-prep crate scaffold + STL load with units` | New `tools/cf-scan-prep/` workspace member, deps (cf-viewer + bevy + bevy_egui + mesh-io + mesh-measure + mesh-repair + nalgebra + serde + toml + anyhow + clap), blank Bevy app loading scan via CLI with `--stl-units mm\|m\|inch` flag (default mm; vertex × 0.001 → meters), rendering it via cf-viewer helpers with `OrbitCamera::UpAxis = +Z` (cast-frame demolding axis convention; orbit camera frames the raw AABB at load), error-overlay pattern for load failures | ~1.5 hr |
+| 3 | `feat(tools): cf-scan-prep crate scaffold + STL load with units` | New `tools/cf-scan-prep/` workspace member, deps (cf-viewer + bevy + bevy_egui + mesh-io + mesh-measure + mesh-repair + meshopt-rs + nalgebra + serde + toml + anyhow + clap), blank Bevy app loading scan via CLI with `--stl-units mm\|m\|inch` flag (default mm; vertex × 0.001 → meters), rendering it via cf-viewer helpers with `OrbitCamera::UpAxis = +Z` (cast-frame demolding axis convention; orbit camera frames the raw AABB at load), error-overlay pattern for load failures | ~1.5 hr |
 | 4 | `feat(scan-prep): Scan Info panel` | First egui panel, validates the wiring; surfaces vertex/face counts + AABB in mm + units assumption | ~1 hr |
-| 5 | `feat(scan-prep): Reorient panel` | Sliders + snap buttons + quaternion readout. **Live transforms via Bevy `Transform` component**, not mesh rebuild — slider drags update one component value, no per-tick vertex-buffer copy. Mesh entity spawns once at load; transformed AABB updates per-frame from `Transform * raw_aabb`. Critical for >50k-face perf. | ~3-4 hr |
-| 6 | `feat(scan-prep): Recenter panel` | Translation sliders + center + floor → z=0 buttons. `[Floor → z=0]` uses post-clip min.z if clip enabled, raw transformed min.z otherwise. | ~1-2 hr |
-| 7 | `feat(scan-prep): Clip floor panel + true plane intersection` | Toggle, slider, translucent disc, drop-% live readout. **True plane intersection** (~150 LOC of triangle-clipping): each straddling triangle generates intersection vertices on the plane, retesselates into above-kept + below-discarded sub-triangles. Result: clean planar cut suitable for capping. Rejected vertex-drop alternative would produce jagged ragged boundaries that degrade auto-cap R². | ~3-4 hr |
-| 8 | `feat(scan-prep): Cap open boundaries panel + auto-detect + planar cap triangulation` | `mesh-repair` boundary loop extraction (or inline edge-walk if mesh-repair only flags edges); least-squares plane fit (SVD via nalgebra); inline ear-clipping triangulation (~200 LOC) with fan-fallback for degenerates; per-loop checkboxes + manual override sub-panel; red boundary linestrip overlay; translucent cap polygon overlay; **cap-stale invalidation on transform change** (loop list dims with "re-Scan to refresh" overlay); **outward cap normal via mesh-side-of-plane heuristic + boundary-edge-adjacency fallback** | ~4-6 hr |
-| 9 | `feat(scan-prep): Mouth extension panel + preview overlay` | Slider, translucent box from transformed `z_max` | ~1-2 hr |
-| 10 | `feat(scan-prep): Cleaned AABB + CLI build-volume thresholds` | Read-only panel, configurable via `--build-volume-mm W,D,H` flag | ~1-2 hr |
-| 11 | `feat(scan-prep): Save panel + TOML + cleaned STL writer + atomic write` | Save button, output naming, status-bar feedback, uncapped-loop warning. **Atomic write**: `.tmp` files first, atomic rename only on success. **FS error pattern**: red status-bar `"Save failed: <fs_error>"` for ~5s, app stays open. **Pre-save validation**: reject non-finite transform values. **`--output-dir <path>` CLI flag** for read-only-input-dir cases. | ~2.5-3.5 hr |
-| 12 | `feat(scan-prep): mesh-repair diagnostics + keyboard shortcuts` | Load-time diagnostic in status bar; Esc/Ctrl+S/R/C/F/1-2-3 shortcuts | ~1 hr |
-| 13 | `feat(examples): cast/layered-silicone-device-v1-scan` | New example consuming `<stem>.cleaned.stl` via `CF_CAST_SCAN_STL_PATH` env var; mirrors v1 capsule's structure | ~2 hr |
+| 5 | `feat(scan-prep): Simplify (decimate) panel + meshopt-rs integration` | New panel #2; target-face-count slider (1k-1M, default 200k); `[Apply simplify]` runs `meshopt::simplify` (boundary-preserving) and swaps Bevy mesh entity; `[Reset to original]` restores loaded mesh; status bar reports achieved face count + elapsed; auto-suggest banner if loaded scan > 500k faces; updates Scan Info panel face counts; TOML schema gains `[simplify]` block | ~3-4 hr |
+| 6 | `feat(scan-prep): Reorient panel` | Sliders + snap buttons + quaternion readout. **Live transforms via Bevy `Transform` component**, not mesh rebuild — slider drags update one component value, no per-tick vertex-buffer copy. Mesh entity spawns once at load; transformed AABB updates per-frame from `Transform * raw_aabb`. Critical for >50k-face perf even after simplify (still 50k-200k faces typical). | ~3-4 hr |
+| 7 | `feat(scan-prep): Recenter panel` | Translation sliders + center + floor → z=0 buttons. `[Floor → z=0]` uses post-clip min.z if clip enabled, raw transformed min.z otherwise. | ~1-2 hr |
+| 8 | `feat(scan-prep): Clip floor panel + true plane intersection` | Toggle, slider, translucent disc, drop-% live readout. **True plane intersection** (~150 LOC of triangle-clipping): each straddling triangle generates intersection vertices on the plane, retesselates into above-kept + below-discarded sub-triangles. Result: clean planar cut suitable for capping. Rejected vertex-drop alternative would produce jagged ragged boundaries that degrade auto-cap R². | ~3-4 hr |
+| 9 | `feat(scan-prep): Cap open boundaries panel + auto-detect + planar cap triangulation` | `mesh-repair` boundary loop extraction (or inline edge-walk if mesh-repair only flags edges); least-squares plane fit (SVD via nalgebra); inline ear-clipping triangulation (~200 LOC) with fan-fallback for degenerates; per-loop checkboxes + manual override sub-panel; red boundary linestrip overlay; translucent cap polygon overlay; **cap-stale invalidation on transform change** (loop list dims with "re-Scan to refresh" overlay); **outward cap normal via mesh-side-of-plane heuristic + boundary-edge-adjacency fallback** | ~4-6 hr |
+| 10 | `feat(scan-prep): Mouth extension panel + preview overlay` | Slider, translucent box from transformed `z_max` | ~1-2 hr |
+| 11 | `feat(scan-prep): Cleaned AABB + CLI build-volume thresholds` | Read-only panel, configurable via `--build-volume-mm W,D,H` flag | ~1-2 hr |
+| 12 | `feat(scan-prep): Save panel + TOML + cleaned STL writer + atomic write` | Save button, output naming, status-bar feedback, uncapped-loop warning. **Atomic write**: `.tmp` files first, atomic rename only on success. **FS error pattern**: red status-bar `"Save failed: <fs_error>"` for ~5s, app stays open. **Pre-save validation**: reject non-finite transform values. **`--output-dir <path>` CLI flag** for read-only-input-dir cases. | ~2.5-3.5 hr |
+| 13 | `feat(scan-prep): mesh-repair diagnostics + keyboard shortcuts` | Load-time diagnostic in status bar; Esc/Ctrl+S/R/C/F/A/1-2-3 shortcuts | ~1 hr |
+| 14 | `feat(examples): cast/layered-silicone-device-v1-scan` | New example consuming `<stem>.cleaned.stl` via `CF_CAST_SCAN_STL_PATH` env var; mirrors v1 capsule's structure | ~2 hr |
 
 Plus the slice-ship-log update + auto-memory at the end — usually inline with the final ship commit.
 
@@ -441,6 +477,9 @@ Worth surfacing now so failures aren't surprises:
 - **STL units mismatch is the most common load-time user error** — loading a meter-scale STL with default `--stl-units mm` produces a 1000× too-small mesh; loading mm-scale with `--stl-units m` produces a 1000× too-big mesh. Mitigation: Scan Info panel surfaces the assumption in panel text; if the displayed AABB dimensions read absurd (e.g., 0.08 mm or 80,000 mm) the user should suspect the units flag. No way to fully auto-detect since STL carries no metadata.
 - **True plane intersection edge cases** — triangles parallel to the clip plane (lying ON the plane) need careful handling: include in kept-side if their average z is >= clip_z, else discard. Triangles with one vertex EXACTLY on the plane should treat that vertex as above-plane (keep the triangle) to avoid degenerate sub-triangles. Implementation notes for commit #7.
 - **Filesystem path edge cases** — input scan path with no parent (e.g., `scan.stl` invoked from cwd) → output dir defaults to cwd. Path with non-ASCII characters → handled by `PathBuf` natively. Symlinks → `std::fs::canonicalize` to resolve; output uses canonicalized parent dir.
+- **Boundary preservation under decimation** — `meshopt::simplify` (NOT `simplify_sloppy`) preserves border edges by setting their collapse cost to ∞. If the implementation accidentally uses the sloppy variant, the open-boundary loop's vertex positions get collapsed, the cap polygon shape changes, and the auto-fit plane becomes wrong (R² drops, the cap might no longer be planar). Verify in commit #5 that the meshopt-rs API call uses the non-sloppy variant + that border-preservation is enabled (it's the default but worth pinning in a unit test that runs decimation on a known open mesh and asserts the boundary loop topology is preserved).
+- **`meshopt-rs` is the first new workspace dep added to this arc** — wraps Arseny Kapoulkine's `meshoptimizer` C library. Brings a small build-time C-toolchain dependency (cargo handles via `cc` build script). Battle-tested in production engines (Unity, Unreal, Bevy itself); MIT-licensed. If meshopt-rs proves unavailable / blocked, fallback is inline Garland-Heckbert quadric edge collapse (~500-800 LOC, ~2-3× the commit-#5 estimate). Recon at commit #5 start to confirm the latest meshopt-rs version pins to a Bevy-0.18-compatible toolchain.
+- **Decimation-then-cap interaction** — the workflow order (Simplify → Cap) means cap detection runs on the SIMPLIFIED boundary. The boundary loop's vertex count drops from (e.g.) 800 → 60 after a 16× decimation. Ear-clipping cost drops from ~640k ops to ~3.6k ops — strictly faster. Cap polygon's plane-fit R² should be UNCHANGED (boundary points remain coplanar; meshopt preserves their positions). Verify in commit #9 with a unit test that pins R² ≥ original-mesh's R².
 - **Workshop iteration cadence** — the user may discover during real-scan work that some MVP design decisions don't hold (e.g., horizontal-clip-only is too restrictive, or the mouth-extension-preview-as-translucent-box is hard to read against the scan). v2 polish will follow iter-1.
 
 ---
@@ -468,4 +507,5 @@ Archive trigger: move to `docs/archive/` after iter-1 cast is in hand and v2 pre
 - **2026-05-12** — Commit #1 (design spec) shipped (`119ac2f2`). 394-line initial spec, 7 panels, ~12 commits estimated.
 - **2026-05-12** — Cap-feature addendum to commit #1 (`b5cd83cd`). Adds **Cap open boundaries** as panel #5 of 8, makes the spec watertight-by-construction (required for cf-cast SDF queries), bumps implementation arc to 13 commits / ~19-31 hours. Auto-detect + per-loop approve + manual override; rejected line-drawing alternative for geometric-ambiguity reasons.
 - **2026-05-12** — Edge-case review pass folds 7 spec updates from a workflow-walkthrough cold-read (`2666fc0a`). Adds: STL units handling (`--stl-units mm\|m\|inch` flag, default mm, vertex × 0.001 → meters, displayed in Scan Info); clip = true plane intersection (~150 LOC, rejects vertex-drop alt for cap-quality reasons); cap state invalidation on transform change (loop list dims with re-Scan overlay); cap normal orientation (mesh-side-of-plane heuristic + boundary-edge-adjacency fallback); Bevy `Transform`-component live transforms (commit #5/#6 perf for 100k-face scans); save atomicity (`.tmp` + atomic rename); FS error pattern (red status-bar, no panic). Bumps implementation arc to ~21-34 hours (commits #3 +0.5 hr, #7 +1 hr, #11 +0.5 hr). Risks expanded with edge-case enumeration (Transform-component rationale, units-mismatch user-error pattern, true-intersection plane-parallel triangle handling, FS path edge cases).
-- **2026-05-12** — Final-pass cold-read polish (this commit). 5 drift items + 4 minor wording fixes from reading the spec end-to-end with fresh eyes: stale "commit #12" reference (→ #13); load-time validation parenthetical that contradicted strategic context (broken scans CAN produce valid SDFs → tightened to point at Cap panel + uncapped-loop warning); MVP scope validation list missing FS error + non-finite-rejection items; keyboard shortcut `1`/`2`/`3` claimed +X/+Y/+Z but Reorient panel only had 4 buttons (added `[Snap +X → +Z]` button + clarified shortcut mapping); arc total estimate 21-34 hr → 24-32 hr (matches per-commit sum); workflow step 4 wording (centroid-or-floor as alternatives); "14 mm offset" generic wording (→ "device outer-shell thickness from cf-cast CastSpec"); new keyboard shortcut `A` for Apply caps (most-impactful Cap-panel operation); commit #3 scope adds `OrbitCamera::UpAxis = +Z` cast-frame convention. No design changes; spec is implementation-ready.
+- **2026-05-12** — Final-pass cold-read polish (`272c98b9`). 5 drift items + 4 minor wording fixes from reading the spec end-to-end with fresh eyes: stale "commit #12" reference (→ #13); load-time validation parenthetical that contradicted strategic context (broken scans CAN produce valid SDFs → tightened to point at Cap panel + uncapped-loop warning); MVP scope validation list missing FS error + non-finite-rejection items; keyboard shortcut `1`/`2`/`3` claimed +X/+Y/+Z but Reorient panel only had 4 buttons (added `[Snap +X → +Z]` button + clarified shortcut mapping); arc total estimate 21-34 hr → 24-32 hr (matches per-commit sum); workflow step 4 wording (centroid-or-floor as alternatives); "14 mm offset" generic wording (→ "device outer-shell thickness from cf-cast CastSpec"); new keyboard shortcut `A` for Apply caps (most-impactful Cap-panel operation); commit #3 scope adds `OrbitCamera::UpAxis = +Z` cast-frame convention. No design changes; spec is implementation-ready.
+- **2026-05-12** — Simplify (decimate) panel addendum (this commit). Adds **Simplify** as panel #2 of 9, between Scan Info and Reorient. Bumps implementation arc to 14 commits / ~28-37 hours. Triggered by iter-1 test fixture sock_over_capsule.stl (3.35M faces, 168 MB) revealing that ANY scan-driven cf-cast workflow without decimation drags 1M-10M+ face meshes through Bevy rendering + cf-cast `SignedDistanceField` build + slicer ingest, all of which choke at that scale. Decimation reduces to ~200k faces (cf-cast's 2 mm-cell SDF sampling density × surface-continuity headroom) with no quality loss for cast purposes; 30× downstream speedup typical. Algorithm: `meshopt-rs` (boundary-preserving quadric edge collapse, NOT `simplify_sloppy` — boundary preservation required so cap topology survives decimation). Rejected alternatives: inline Garland-Heckbert (~500-800 LOC, risk of subtle quadric-math bugs); vertex clustering (~100 LOC but doesn't preserve boundaries cleanly). Auto-suggest banner at load if scan > 500k faces. New `[simplify]` block in TOML schema captures algorithm + version + target/achieved/original face counts. Risks added: boundary-preservation verification (use non-sloppy variant + unit test pinning topology preservation); meshopt-rs as first new workspace dep with C-toolchain build-time dep; decimation-then-cap interaction (R² should be preserved, verify in commit #9).
