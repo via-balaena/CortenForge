@@ -123,9 +123,27 @@ struct CenterlineBases {
 /// Outer-envelope panel state — the user-dialed constant radius for
 /// the curve-following capsule along the scan centerline (per
 /// `docs/ENGINEERING_SUITE_DESIGN.md`'s Outer Envelope section).
+///
+/// Per-end CAP TOGGLES (`closed_at_high_z` / `closed_at_low_z`)
+/// control whether each centerline endpoint gets a hemispherical
+/// cap (closed dome) or remains open (flat rim, cylinder extends
+/// to the centerline endpoint). Defaults match the cf-scan-prep
+/// `+Z`-up convention: the higher-Z endpoint is the scan's natural
+/// dome (closed); the lower-Z endpoint is the cleaned cap region
+/// (open / cylinder rim). User toggles either via the panel
+/// checkboxes when the heuristic guesses wrong.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct OuterEnvelopeState {
     radius_m: f64,
+    /// Render a hemispherical cap at the centerline endpoint with
+    /// the higher Z coordinate. Default `true` — that endpoint is
+    /// typically the scan's natural dome.
+    closed_at_high_z: bool,
+    /// Render a hemispherical cap at the centerline endpoint with
+    /// the lower Z coordinate. Default `false` — that endpoint is
+    /// typically where cf-scan-prep applied its cleaned-cap
+    /// triangulation, i.e. the device's open rim.
+    closed_at_low_z: bool,
 }
 
 impl OuterEnvelopeState {
@@ -160,7 +178,11 @@ impl OuterEnvelopeState {
             0.030
         };
         let radius = preferred.clamp(min_m, max_m);
-        Self { radius_m: radius }
+        Self {
+            radius_m: radius,
+            closed_at_high_z: true,
+            closed_at_low_z: false,
+        }
     }
 
     /// Slider range for the radius. The MAX is tied to the
@@ -705,20 +727,44 @@ fn draw_outer_envelope_overlay(
 
     // Capsule-along-centerline semantics: the envelope's total length
     // along the centerline arc is `total_arc`. The cylindrical section
-    // spans the arc range `[R, total_arc - R]`; hemispherical caps
-    // anchor at those trim points with apexes at the original
-    // centerline endpoints (arc 0 and arc total_arc).
+    // spans the arc range `[trim_start, trim_end]`, where:
+    // - trim_start = R if the start endpoint is "closed" (cap apex at
+    //   arc 0); else 0 (cylinder extends to the centerline start, no
+    //   cap).
+    // - trim_end = total_arc - R if the end endpoint is "closed"
+    //   (cap apex at arc total_arc); else total_arc.
     //
-    // If `2 R >= total_arc` (radius too large) the cylindrical section
-    // collapses; we early-return to avoid degenerate rendering. The
-    // slider range max should prevent this, but the check is
-    // defensive.
+    // Mapping from "high-Z / low-Z closed" panel toggles to "start /
+    // end closed" depends on the centerline polyline's direction.
     let r = state.radius_m;
-    if r * 2.0 >= total_arc {
+    let last_idx = centerline.points_m.len() - 1;
+    let high_z_is_start = centerline.points_m[0].z >= centerline.points_m[last_idx].z;
+    let (closed_at_start, closed_at_end) = if high_z_is_start {
+        (state.closed_at_high_z, state.closed_at_low_z)
+    } else {
+        (state.closed_at_low_z, state.closed_at_high_z)
+    };
+
+    // Degenerate-radius guard: if both ends are closed and 2R >=
+    // total_arc, the cylindrical section collapses → early return.
+    // (Slider range max prevents this when both ends closed, but the
+    // check is defensive against future config drift.)
+    if closed_at_start && closed_at_end && r * 2.0 >= total_arc {
         return;
     }
-    let trim_start = r;
-    let trim_end = total_arc - r;
+    // Similar guards for one-end-closed cases.
+    if closed_at_start && !closed_at_end && r >= total_arc {
+        return;
+    }
+    if !closed_at_start && closed_at_end && r >= total_arc {
+        return;
+    }
+    let trim_start = if closed_at_start { r } else { 0.0 };
+    let trim_end = if closed_at_end {
+        total_arc - r
+    } else {
+        total_arc
+    };
 
     // Pale green-blue; distinguishes from scan (white) + axis arrows
     // (red/green/blue full saturation) + centerline (cyan).
@@ -780,56 +826,61 @@ fn draw_outer_envelope_overlay(
     }
 
     // Hemispherical end caps under the capsule-along-centerline
-    // convention. The cap at the start of the centerline anchors at
-    // arc `trim_start` (= R), with its apex at arc 0 (original
-    // centerline start); the cap at the end anchors at arc
-    // `trim_end` with its apex at arc `total_arc`. The cap helper
-    // takes the BASE point + outward direction + (b1, b2) and steps
-    // toward the apex.
-    let Some((start_base, start_tangent)) =
-        sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_start)
-    else {
-        return;
-    };
-    let (start_b1, start_b2) =
-        sample_basis_at_arc(&bases.bases, &arc_positions, trim_start, &start_tangent);
-    // Outward at the start cap = direction toward the original
-    // centerline start (arc 0) = -tangent at trim_start.
-    draw_hemispherical_cap(
-        &start_base,
-        &(-start_tangent),
-        &start_b1,
-        &start_b2,
-        r,
-        &rings_bevy[0],
-        *up,
-        render_scale.0,
-        color,
-        &mut gizmos,
-    );
+    // convention. Each cap is drawn only if the corresponding end is
+    // "closed" per the panel toggles. The cap at the start of the
+    // centerline anchors at arc `trim_start` (= R when closed), with
+    // its apex at arc 0; the cap at the end anchors at `trim_end`
+    // with its apex at arc `total_arc`. Open ends draw NO cap — the
+    // cylindrical rim ring (already drawn above) is the visible
+    // boundary, matching the cleaned-scan flat-cap convention.
+    if closed_at_start {
+        let Some((start_base, start_tangent)) =
+            sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_start)
+        else {
+            return;
+        };
+        let (start_b1, start_b2) =
+            sample_basis_at_arc(&bases.bases, &arc_positions, trim_start, &start_tangent);
+        // Outward at the start cap = direction toward arc 0 =
+        // -tangent at trim_start.
+        draw_hemispherical_cap(
+            &start_base,
+            &(-start_tangent),
+            &start_b1,
+            &start_b2,
+            r,
+            &rings_bevy[0],
+            *up,
+            render_scale.0,
+            color,
+            &mut gizmos,
+        );
+    }
 
-    let Some((end_base, end_tangent)) =
-        sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_end)
-    else {
-        return;
-    };
-    let (end_b1, end_b2) =
-        sample_basis_at_arc(&bases.bases, &arc_positions, trim_end, &end_tangent);
-    // Outward at the end cap = direction toward the original
-    // centerline end (arc total_arc) = +tangent at trim_end.
-    let last_ring_idx = rings_bevy.len() - 1;
-    draw_hemispherical_cap(
-        &end_base,
-        &end_tangent,
-        &end_b1,
-        &end_b2,
-        r,
-        &rings_bevy[last_ring_idx],
-        *up,
-        render_scale.0,
-        color,
-        &mut gizmos,
-    );
+    if closed_at_end {
+        let Some((end_base, end_tangent)) =
+            sample_centerline_at_arc(&centerline.points_m, &arc_positions, trim_end)
+        else {
+            return;
+        };
+        let (end_b1, end_b2) =
+            sample_basis_at_arc(&bases.bases, &arc_positions, trim_end, &end_tangent);
+        // Outward at the end cap = direction toward arc total_arc =
+        // +tangent at trim_end.
+        let last_ring_idx = rings_bevy.len() - 1;
+        draw_hemispherical_cap(
+            &end_base,
+            &end_tangent,
+            &end_b1,
+            &end_b2,
+            r,
+            &rings_bevy[last_ring_idx],
+            *up,
+            render_scale.0,
+            color,
+            &mut gizmos,
+        );
+    }
 }
 
 /// Draw a hemispherical end cap of radius `radius_m` centered at
@@ -939,6 +990,13 @@ fn render_outer_envelope_section(
             } else {
                 ui.label("(centerline missing — wireframe will not render)");
             }
+            ui.add_space(4.0);
+            // Per-end cap toggles — controls whether the envelope's
+            // dome end (high-Z) and rim end (low-Z) each get a
+            // hemispherical cap. Default closed at high-Z (scan
+            // dome) + open at low-Z (cleaned-cap convention).
+            ui.checkbox(&mut state.closed_at_high_z, "Closed dome (high Z end)");
+            ui.checkbox(&mut state.closed_at_low_z, "Closed dome (low Z end)");
         });
 }
 
@@ -1550,6 +1608,16 @@ another_future_field = "foo"
         );
         let r = estimate_scan_cross_section_radius(&aabb).unwrap();
         assert!(approx_eq(r, 0.030, 1e-12));
+    }
+
+    #[test]
+    fn outer_envelope_defaults_to_closed_high_z_open_low_z() {
+        // Cleaned-cap convention: scan dome at high Z (closed),
+        // cf-scan-prep flat cap at low Z (open).
+        let info = dummy_scan_info(0.100);
+        let state = OuterEnvelopeState::from_scan_info(&info);
+        assert!(state.closed_at_high_z);
+        assert!(!state.closed_at_low_z);
     }
 
     #[test]
