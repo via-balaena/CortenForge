@@ -139,7 +139,7 @@ impl GradeReport {
 /// root) maps to exactly one profile:
 ///
 /// - `examples/`           → [`CrateProfile::Example`]
-/// - `xtask/`              → [`CrateProfile::Xtask`]
+/// - `xtask/`, `tools/`    → [`CrateProfile::Xtask`]
 /// - `sim/L1/`             → [`CrateProfile::BevyLayer1`]
 /// - anything else         → [`CrateProfile::Layer0`] (default; strictest)
 ///
@@ -256,7 +256,19 @@ pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CratePr
     let normalized = crate_path.replace('\\', "/");
     if normalized.starts_with("examples/") || normalized.starts_with("examples\\") {
         CrateProfile::Example
-    } else if normalized == "xtask" || normalized.starts_with("xtask/") {
+    } else if normalized == "xtask"
+        || normalized.starts_with("xtask/")
+        || normalized.starts_with("tools/")
+    {
+        // `tools/` is the workspace-internal-binary-tool folder; first
+        // inhabitant is `tools/cf-scan-prep` (Stage 2.5 scan preprocessing
+        // GUI). Same shape as xtask: bin-only crate, no lib target → can't
+        // be coverage-graded; binary application code → relaxed clippy
+        // unjustified-allow lint per `grade_dependencies`'s
+        // `relax_unjustified_allows` branch. Reusing the `Xtask` variant
+        // avoids adding a near-duplicate `Tool` variant; the display name
+        // "Build tooling" is a mild semantic stretch but the grading
+        // behavior is correct.
         CrateProfile::Xtask
     } else if normalized.starts_with("sim/L1/") {
         CrateProfile::BevyLayer1
@@ -2233,17 +2245,19 @@ fn applies_to_crate(crate_name: &str) -> bool {
     }
     // Workspace tools and shared helper crates that happen to match a
     // library-namespace prefix need an explicit exemption. xtask is
-    // excluded by virtue of having no matching prefix at all; cf-viewer
-    // and cf-bevy-common both have `cf-` prefixes that would otherwise
-    // pull them into the design-library scope (cf-spatial / cf-design /
-    // cf-geometry). Per docs/VIEWER_DESIGN.md Q1 + Q8 locks: cf-viewer is
-    // a workspace tool, carries no tier metadata, and Q8 directs path-
-    // based filtering as the gating mechanism rather than retrofitting
-    // metadata. cf-bevy-common (sim-soft PR2 C2b factor-out) is a
-    // workspace-internal Bevy helper consumed by cf-viewer + sim-bevy +
-    // sim-bevy-soft; same exemption shape — no tier metadata, path-based
-    // filter.
-    if matches!(crate_name, "cf-viewer" | "cf-bevy-common") {
+    // excluded by virtue of having no matching prefix at all; cf-viewer,
+    // cf-bevy-common, and cf-scan-prep all carry `cf-` prefixes that
+    // would otherwise pull them into the design-library scope
+    // (cf-spatial / cf-design / cf-geometry). Per docs/VIEWER_DESIGN.md
+    // Q1 + Q8 locks: cf-viewer is a workspace tool, carries no tier
+    // metadata, and Q8 directs path-based filtering as the gating
+    // mechanism rather than retrofitting metadata. cf-bevy-common
+    // (sim-soft PR2 C2b factor-out) is a workspace-internal Bevy helper
+    // consumed by cf-viewer + sim-bevy + sim-bevy-soft; same exemption
+    // shape. cf-scan-prep (Stage 2.5 scan preprocessing GUI; first
+    // inhabitant of `tools/`) is a workspace tool by the same Q8
+    // path-based-filter rationale as cf-viewer.
+    if matches!(crate_name, "cf-viewer" | "cf-bevy-common" | "cf-scan-prep") {
         return false;
     }
     let prefixes = ["sim-", "mesh-", "cf-", "cortenforge-"];

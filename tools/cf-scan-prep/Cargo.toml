@@ -1,0 +1,80 @@
+[package]
+name = "cf-scan-prep"
+description = "Stage 2.5 GUI tool — preprocess raw 3D scans into watertight cast-frame STLs for cf-cast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-tool binary; full design at `docs/SCAN_PREP_DESIGN.md`.
+# No `[package.metadata.cortenforge]` block — tier metadata is for L0/L1
+# sim libraries under `sim/`, not for workspace tools (matches xtask +
+# cf-viewer precedent).
+
+[[bin]]
+name = "cf-scan-prep"
+path = "src/main.rs"
+
+[dependencies]
+# cf-viewer library — scene helpers (`RenderScale`, `compute_render_scale`,
+# `scale_aabb`, `setup_camera_and_lighting`, `spawn_face_mesh`) lifted at
+# Stage 2.5 commit #2 for cross-tool reuse. cf-scan-prep is the second
+# consumer (cf-view binary is the first).
+cf-viewer = { workspace = true }
+
+# Shared Bevy helpers — `UpAxis` (cast-frame `+Z` convention), the
+# `OrbitCameraPlugin` system set wired by `cf_bevy_common::prelude::*`.
+cf-bevy-common = { workspace = true }
+
+# STL loader. Stage 2.5's STL-centric scope swaps cf-viewer's PLY input
+# for `mesh_io::load_stl`; cleaned-STL writer arrives at commit #12.
+mesh-io = { workspace = true }
+# `IndexedMesh` + `Bounded::aabb()` direct access; vertex-walk for the
+# `--stl-units` → meters unit conversion in `scale_vertices_in_place`.
+mesh-types = { workspace = true }
+
+# Bevy 0.18 — feature set mirrors cf-viewer so the workspace's validated
+# rendering subset stays consistent across viewer binaries. `bevy_ui` +
+# `bevy_text` + `default_font` carry the error-overlay text path at this
+# commit (egui-based side panels arrive at commit #4).
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+
+# Application-style error chaining for the CLI load path.
+anyhow = { workspace = true }
+
+# CLI argument parsing — direct dep with `derive` (clap has no workspace
+# pin today; cf-scan-prep is the third consumer alongside xtask + cf-viewer).
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = ["x11"]
+# Linux window backends — mirror cf-viewer's feature shape.
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

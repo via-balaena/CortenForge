@@ -13,6 +13,8 @@ members = [
 
     # Workspace-wide visual-review viewer (replaces f3d + MeshLab for static artifacts)
     "cf-viewer",
+    # Stage 2.5 scan-preprocessing GUI tool — see `docs/SCAN_PREP_DESIGN.md`.
+    "tools/cf-scan-prep",
 
     # Shared Bevy-0.18 helpers (orbit camera + up-axis convention) consumed by
     # cf-viewer + sim-bevy + sim-bevy-soft.
@@ -594,4 +596,12 @@ sim-bevy-soft = { path = "sim/L1/sim-bevy-soft" }
 
 # Shared Bevy-0.18 helpers consumed by cf-viewer + sim-bevy + sim-bevy-soft.
 cf-bevy-common = { path = "cf-bevy-common" }
+
+# cf-viewer library — scene helpers (`RenderScale`, `compute_render_scale`,
+# `setup_camera_and_lighting`, `spawn_face_mesh`) shared with
+# `tools/cf-scan-prep` per the Stage 2.5 design spec
+# (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home).
+# Library-only consumption; the `cf-view` binary stays out of dependents'
+# build graphs.
+cf-viewer = { path = "cf-viewer" }
 
