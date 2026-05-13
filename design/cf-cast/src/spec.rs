@@ -14,6 +14,7 @@ use crate::error::{CastError, CastTarget};
 use crate::material::MoldingMaterial;
 use crate::mesher::solid_to_mm_mesh;
 use crate::piece::compose_piece_solid;
+use crate::plug::add_plug_pins;
 use crate::pour_volume::{PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2};
 use crate::ribbon::{PieceSide, Ribbon};
@@ -197,11 +198,39 @@ pub struct PieceArtifact {
     pub summary: MeshSummary,
 }
 
-/// One v2 layer's complete mold output: pour volume + both pieces.
+/// One v2 per-layer plug's post-export geometry + F4 validation.
+///
+/// Each layer in v2.1's detachable-shell architecture gets its
+/// own plug STL (`plug_layer_{N}.stl`) sized to that layer's
+/// inner-cavity surface; the plug for layer 0 derives from
+/// [`CastSpec::plug`] (with the ribbon's plug-anchor pin geometry
+/// added), and the plug for `N > 0` derives from
+/// `layers[N - 1].body` (also with pin geometry). Cured per-layer
+/// silicone shells nest at assembly time and can be disassembled
+/// post-cure for cleaning or replacement.
+#[derive(Debug, Clone)]
+pub struct PlugArtifact {
+    /// Filesystem path of the written plug STL.
+    pub path: PathBuf,
+    /// F4 validation result for the plug.
+    pub validation: PrintValidation,
+    /// Post-export plug mesh summary (vertex/face counts +
+    /// mm-frame bounds).
+    pub summary: MeshSummary,
+}
+
+/// One v2 layer's complete mold output: pour volume + both
+/// pieces + a per-layer plug (v2.1 sub-leaf 2 detachable-layer
+/// architecture).
 ///
 /// Indexed parallel to [`CastSpec::layers`] (innermost-first); the
 /// inner `pieces` array is fixed-length 2 to statically enforce
-/// v2's 2-piece convention.
+/// v2's 2-piece convention. The `plug` artifact carries this
+/// layer's inner-cavity plug (derived from
+/// [`CastSpec::plug`] for layer 0 and from `layers[N-1].body` for
+/// `N > 0`); each layer is cast independently against its own
+/// plug so the cured silicone shells nest and can be disassembled
+/// post-cure for cleaning or replacement.
 #[derive(Debug, Clone)]
 pub struct V2LayerReport {
     /// Index into [`CastSpec::layers`].
@@ -216,27 +245,29 @@ pub struct V2LayerReport {
     /// `[Negative, Positive]` order. Fixed array (vs Vec) pins v2's
     /// 2-piece convention at the type level.
     pub pieces: [PieceArtifact; 2],
+    /// This layer's plug artifact. Filename
+    /// `plug_layer_{layer_index}.stl`. For layer 0 the plug
+    /// geometry is [`CastSpec::plug`] (extended with the ribbon's
+    /// plug-anchor pin geometry); for `layer_index > 0` the plug
+    /// is `layers[layer_index - 1].body` (the previous layer's
+    /// outer solid), also extended with the pin geometry. Each
+    /// layer's plug therefore matches the next-inner silicone
+    /// shell's outer surface, enabling independent (detachable)
+    /// per-layer casts.
+    pub plug: PlugArtifact,
 }
 
 /// Summary of a successful [`CastSpec::export_molds_v2`] run.
 ///
-/// `layers.len() * 2` piece STLs + 1 plug STL = `2 * L + 1` files
-/// total (vs v1's `L + 1`). All pieces and the plug clear the F4
-/// gate before any STL lands on disk (pre-write atomicity, same
-/// scope as v1's [`CastSpec::export_molds`]).
+/// `layers.len() * 3` STLs total (2 piece STLs + 1 plug STL per
+/// layer). All pieces and plugs clear the F4 gate before any STL
+/// lands on disk (pre-write atomicity, same scope as v1's
+/// [`CastSpec::export_molds`]).
 #[derive(Debug, Clone)]
 pub struct V2MoldExportReport {
-    /// Per-layer reports, innermost-first.
+    /// Per-layer reports (innermost-first), each carrying its 2
+    /// mold pieces + 1 plug.
     pub layers: Vec<V2LayerReport>,
-    /// Filesystem path of the written plug STL. Plug geometry is
-    /// unchanged from v1 — the curve-following split applies to
-    /// the mold cup, not the plug.
-    pub plug_path: PathBuf,
-    /// F4 validation result for the plug.
-    pub plug_validation: PrintValidation,
-    /// Post-export plug mesh summary (vertex/face counts + mm-frame
-    /// bounds).
-    pub plug_summary: MeshSummary,
 }
 
 /// Lightweight numerical summary of an [`IndexedMesh`] in mm
@@ -288,11 +319,22 @@ struct PendingMold {
 }
 
 /// Per-(layer × piece) buffered v2 mesh + validation, held in
-/// memory until every piece + the plug clear the F4 gate. Parallel
-/// to [`PendingMold`] for v1.
+/// memory until every piece + every per-layer plug clear the F4
+/// gate. Parallel to [`PendingMold`] for v1.
 struct PendingPiece {
     layer_index: usize,
     piece_side: PieceSide,
+    mesh: IndexedMesh,
+    validation: PrintValidation,
+    path: PathBuf,
+}
+
+/// Per-layer buffered v2 plug mesh + validation, held in memory
+/// alongside [`PendingPiece`]s until every artifact clears the F4
+/// gate. v2.1 sub-leaf 2 generates one plug per layer for the
+/// detachable-shell assembly workflow.
+struct PendingPlug {
+    layer_index: usize,
     mesh: IndexedMesh,
     validation: PrintValidation,
     path: PathBuf,
@@ -440,12 +482,16 @@ impl CastSpec {
         }
 
         let plug_path = out_dir.join("plug.stl");
-        let plug_mesh = solid_to_mm_mesh(&self.plug, self.mesh_cell_size_m, CastTarget::Plug)?;
+        let plug_mesh = solid_to_mm_mesh(
+            &self.plug,
+            self.mesh_cell_size_m,
+            CastTarget::Plug { layer_index: None },
+        )?;
         let plug_validation = run_printability_gate(&plug_mesh, &self.printer_config, &plug_path)?;
         let plug_blocking = blocking_critical_count(&plug_validation);
         if plug_blocking > 0 {
             return Err(CastError::PrintabilityCritical {
-                target: CastTarget::Plug,
+                target: CastTarget::Plug { layer_index: None },
                 issue_count: plug_blocking,
                 path: plug_path,
             });
@@ -653,28 +699,17 @@ impl CastSpec {
         let pour_volumes = self.compute_pour_volumes()?;
         check_mass_budget(self, &pour_volumes)?;
 
-        let pending_layers = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
-        let (plug_mesh, plug_path, plug_validation) = mesh_and_gate_plug_v2(self, out_dir)?;
+        let pending_pieces = mesh_and_gate_v2_pieces(self, ribbon, out_dir)?;
+        let pending_plugs = mesh_and_gate_v2_plugs(self, ribbon, out_dir)?;
 
         std::fs::create_dir_all(out_dir).map_err(|e| CastError::MeshIo {
             path: out_dir.to_path_buf(),
             source: mesh_io::IoError::from(e),
         })?;
 
-        let layers_out = write_v2_pieces(self, pending_layers, pour_volumes)?;
+        let layers_out = write_v2_artifacts(self, pending_pieces, pending_plugs, pour_volumes)?;
 
-        save_stl(&plug_mesh, &plug_path, true).map_err(|source| CastError::MeshIo {
-            path: plug_path.clone(),
-            source,
-        })?;
-        let plug_summary = MeshSummary::from_mesh(&plug_mesh);
-
-        Ok(V2MoldExportReport {
-            layers: layers_out,
-            plug_path,
-            plug_validation,
-            plug_summary,
-        })
+        Ok(V2MoldExportReport { layers: layers_out })
     }
 }
 
@@ -747,39 +782,74 @@ fn mesh_and_gate_v2_piece(
     })
 }
 
-/// v2 plug pipeline — identical to v1's plug stage, factored out so
-/// `export_molds_v2`'s body stays inside the 100-line clippy budget.
-fn mesh_and_gate_plug_v2(
+/// v2.1 sub-leaf 2: per-layer plug pipeline.
+///
+/// For each layer N, derive the base plug solid (`spec.plug` for
+/// `N = 0`, `spec.layers[N - 1].body` for `N > 0`), extend it with
+/// the ribbon's plug-anchor pin geometry via [`add_plug_pins`],
+/// then mesh + F4-gate. Each layer's plug matches the next-inner
+/// silicone shell's outer surface, so the detachable per-layer
+/// casts produce nesting cured tubes.
+fn mesh_and_gate_v2_plugs(
     spec: &CastSpec,
+    ribbon: &Ribbon,
     out_dir: &Path,
-) -> Result<(IndexedMesh, PathBuf, PrintValidation), CastError> {
-    let plug_path = out_dir.join("plug.stl");
-    let plug_mesh = solid_to_mm_mesh(&spec.plug, spec.mesh_cell_size_m, CastTarget::Plug)?;
-    let plug_validation = run_printability_gate(&plug_mesh, &spec.printer_config, &plug_path)?;
-    let plug_blocking = blocking_critical_count(&plug_validation);
-    if plug_blocking > 0 {
-        return Err(CastError::PrintabilityCritical {
-            target: CastTarget::Plug,
-            issue_count: plug_blocking,
-            path: plug_path,
+) -> Result<Vec<PendingPlug>, CastError> {
+    let mut pending = Vec::with_capacity(spec.layers.len());
+    for layer_index in 0..spec.layers.len() {
+        let base_plug = if layer_index == 0 {
+            spec.plug.clone()
+        } else {
+            spec.layers[layer_index - 1].body.clone()
+        };
+        let plug_solid = add_plug_pins(base_plug, ribbon);
+        let target = CastTarget::Plug {
+            layer_index: Some(layer_index),
+        };
+        let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
+        let path = out_dir.join(plug_layer_filename(layer_index));
+        let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+        let blocking = blocking_critical_count(&validation);
+        if blocking > 0 {
+            return Err(CastError::PrintabilityCritical {
+                target,
+                issue_count: blocking,
+                path,
+            });
+        }
+        pending.push(PendingPlug {
+            layer_index,
+            mesh,
+            validation,
+            path,
         });
     }
-    Ok((plug_mesh, plug_path, plug_validation))
+    Ok(pending)
 }
 
-/// Write every pending piece to disk + build the per-layer reports.
-/// Consumes the pending buffer; on any FS failure mid-stream the
-/// remaining pieces are abandoned and the error surfaces with the
-/// failing piece's path attached.
-fn write_v2_pieces(
+/// Write every pending piece + per-layer plug to disk and build
+/// the per-layer reports. Consumes both pending buffers; on any FS
+/// failure mid-stream the remaining artifacts are abandoned and
+/// the error surfaces with the failing artifact's path attached.
+///
+/// Assumes `pending_pieces` and `pending_plugs` are both ordered
+/// innermost-first and parallel to `pour_volumes`. The function
+/// asserts this invariant via `layer_index` matching on each step.
+fn write_v2_artifacts(
     spec: &CastSpec,
-    pending_layers: Vec<[PendingPiece; 2]>,
+    pending_pieces: Vec<[PendingPiece; 2]>,
+    pending_plugs: Vec<PendingPlug>,
     pour_volumes: Vec<PourVolume>,
 ) -> Result<Vec<V2LayerReport>, CastError> {
-    let mut layers_out = Vec::with_capacity(pending_layers.len());
-    for (pieces_pair, pour_volume) in pending_layers.into_iter().zip(pour_volumes) {
+    let mut layers_out = Vec::with_capacity(pending_pieces.len());
+    for ((pieces_pair, plug_entry), pour_volume) in pending_pieces
+        .into_iter()
+        .zip(pending_plugs)
+        .zip(pour_volumes)
+    {
         let [entry_neg, entry_pos] = pieces_pair;
         let layer_index = entry_neg.layer_index;
+        debug_assert_eq!(plug_entry.layer_index, layer_index);
 
         save_stl(&entry_neg.mesh, &entry_neg.path, true).map_err(|source| CastError::MeshIo {
             path: entry_neg.path.clone(),
@@ -789,8 +859,13 @@ fn write_v2_pieces(
             path: entry_pos.path.clone(),
             source,
         })?;
+        save_stl(&plug_entry.mesh, &plug_entry.path, true).map_err(|source| CastError::MeshIo {
+            path: plug_entry.path.clone(),
+            source,
+        })?;
         let neg_summary = MeshSummary::from_mesh(&entry_neg.mesh);
         let pos_summary = MeshSummary::from_mesh(&entry_pos.mesh);
+        let plug_summary = MeshSummary::from_mesh(&plug_entry.mesh);
         layers_out.push(V2LayerReport {
             layer_index,
             material_display_name: spec.layers[layer_index].material.display_name.clone(),
@@ -809,6 +884,11 @@ fn write_v2_pieces(
                     summary: pos_summary,
                 },
             ],
+            plug: PlugArtifact {
+                path: plug_entry.path,
+                validation: plug_entry.validation,
+                summary: plug_summary,
+            },
         });
     }
     Ok(layers_out)
@@ -857,6 +937,13 @@ fn run_printability_gate(
 /// indexing matches [`CastSpec::layers`].
 fn mold_filename(layer_index: usize) -> String {
     format!("mold_layer_{layer_index}.stl")
+}
+
+/// Filename for v2.1's per-layer plug STL.
+/// `plug_layer_{layer_index}.stl` — innermost-first indexing
+/// matches [`CastSpec::layers`].
+fn plug_layer_filename(layer_index: usize) -> String {
+    format!("plug_layer_{layer_index}.stl")
 }
 
 /// Filename for the v2 `(layer_index, piece_side)` mold piece.
@@ -1768,10 +1855,11 @@ mod tests {
         assert!(layer.pieces[0].summary.face_count > 0);
         assert!(layer.pieces[1].summary.face_count > 0);
 
-        // Plug landed at the conventional location.
-        assert!(report.plug_path.ends_with("plug.stl"));
-        assert!(report.plug_path.exists());
-        assert!(report.plug_summary.face_count > 0);
+        // Per-layer plug landed at the v2.1 sub-leaf 2 convention
+        // `plug_layer_{N}.stl`. Single-layer cast → one plug.
+        assert!(layer.plug.path.ends_with("plug_layer_0.stl"));
+        assert!(layer.plug.path.exists());
+        assert!(layer.plug.summary.face_count > 0);
     }
 
     #[test]
@@ -1859,8 +1947,13 @@ mod tests {
                 assert!(piece.path.exists(), "{:?} should exist", piece.path);
                 assert!(piece.summary.face_count > 0);
             }
+            assert!(
+                layer.plug.path.exists(),
+                "per-layer plug {:?} should exist",
+                layer.plug.path
+            );
+            assert!(layer.plug.summary.face_count > 0);
         }
-        assert!(report.plug_path.exists());
     }
 
     #[test]
@@ -2156,8 +2249,9 @@ mod tests {
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(md.contains("mold_layer_0_piece_0.stl"));
         assert!(md.contains("mold_layer_0_piece_1.stl"));
-        // Layer 0 also references the shared plug.
-        assert!(md.contains("plug.stl"));
+        // Each layer references its own per-layer plug (v2.1
+        // detachable-shell architecture).
+        assert!(md.contains("plug_layer_0.stl"));
     }
 
     #[test]
@@ -2423,7 +2517,7 @@ mod tests {
         assert_eq!(report.layers.len(), 1);
         assert!(report.layers[0].pieces[0].path.exists());
         assert!(report.layers[0].pieces[1].path.exists());
-        assert!(report.plug_path.exists());
+        assert!(report.layers[0].plug.path.exists());
         // Each piece's mesh has non-trivial face count (the pin
         // cylinder contributes a few dozen extra faces at the 12 mm
         // cell size).
@@ -2480,20 +2574,19 @@ mod tests {
     }
 
     #[test]
-    fn compose_piece_solid_with_pour_gate_carves_channel_through_both_pieces() {
-        // Pour gate at (-0.05, 0, 0) along +X tangent, radius 3 mm.
-        // Gate cylinder spans x ∈ [-0.07, -0.03] (half-length 20 mm).
-        // Within bounding region x ∈ [-0.04, +0.04] the gate carves
-        // x ∈ [-0.04, -0.03] worth of cup wall.
+    fn compose_piece_solid_with_pour_gate_carves_positive_piece_cup_wall() {
+        // v2.1 sub-leaf 2: gate is side-mounted at centerline
+        // midpoint + gate_half_length_m * binormal. For the v2
+        // fixture (straight +X centerline, +Y split-normal → binormal
+        // +Z), the gate cylinder runs along +Z from the midpoint
+        // (0, 0, 0) up by 2 * 0.060 = 0.120 m. Positive piece occupies
+        // z > 0; gate carves a vertical channel through its cup wall.
         //
-        // Query (-0.035, 0, 0.001): on the gate cylinder axis (y=0)
-        // 1mm above seam (z=0). Inside the gate cylinder (radial
-        // dist 0.001 < 0.003 radius; x within span). Inside
-        // bounding region (|x|=0.035 < 0.040); outside body
-        // (|x|=0.035 > 0.025).
-        //
-        // Without gate: SDF should be NEGATIVE (inside cup wall).
-        // With gate: SDF should be POSITIVE (gate carved it out).
+        // Query (0, 0, 0.025): on the gate axis, in the POSITIVE
+        // piece's cup wall (above body z_max=+0.020 and below
+        // bounding z_max=+0.030), inside the gate cylinder. Without
+        // gate the query is INSIDE cup wall (SDF<0); with gate it's
+        // OUTSIDE (gate carved it out, SDF>0).
         let (spec, ribbon_no_gate) = v2_fixture();
         let (_, ribbon_gate) = v2_fixture_with_pour_gate();
         let body = &spec.layers[0].body;
@@ -2504,26 +2597,32 @@ mod tests {
         let piece_gate =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Positive).unwrap();
 
-        let q = Point3::new(-0.035, 0.0, 0.001);
+        let q = Point3::new(0.0, 0.0, 0.025);
         assert!(
             piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate piece should INCLUDE cup-wall query at gate location; got {}",
+            "no-gate piece should INCLUDE cup-wall query above body; got {}",
             piece_no_gate.evaluate(&q),
         );
         assert!(
             piece_gate.evaluate(&q) > 0.0,
-            "pour-gate piece should EXCLUDE channel-axis query; got {}",
+            "side-mounted pour-gate piece should EXCLUDE channel-axis query; got {}",
             piece_gate.evaluate(&q),
         );
     }
 
     #[test]
-    fn compose_piece_solid_with_pour_gate_negative_side_also_carved() {
-        // Symmetric to the Positive-side test — the gate cylinder
-        // straddles the ribbon seam, so the Negative-side piece
-        // also loses material along the same channel.
-        // Query (-0.035, 0, -0.001): mirror of previous query
-        // below the seam.
+    fn compose_piece_solid_with_pour_gate_does_not_carve_negative_piece_dome_wall() {
+        // v2.1 sub-leaf 2: side-mounted gate axis = +binormal = +Z.
+        // The gate cylinder spans z ≥ 0 only; the NEGATIVE piece's
+        // cup wall (which is at z < 0 with seam overlap to
+        // z = +0.0005) is NOT carved by the gate.
+        //
+        // Query (0, 0, -0.025): on the centerline x-axis,
+        // in the negative piece's cup wall (below body z_min=-0.020
+        // and above bounding z_min=-0.030). Both no-gate and
+        // with-gate evaluations should return NEGATIVE (inside cup
+        // wall) — adding the side-mounted gate doesn't perturb this
+        // half of the mold.
         let (spec, ribbon_no_gate) = v2_fixture();
         let (_, ribbon_gate) = v2_fixture_with_pour_gate();
         let body = &spec.layers[0].body;
@@ -2534,15 +2633,15 @@ mod tests {
         let piece_gate =
             crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Negative).unwrap();
 
-        let q = Point3::new(-0.035, 0.0, -0.001);
+        let q = Point3::new(0.0, 0.0, -0.025);
         assert!(
             piece_no_gate.evaluate(&q) < 0.0,
-            "no-gate negative piece should INCLUDE query; got {}",
+            "no-gate negative piece should INCLUDE dome-side cup-wall query; got {}",
             piece_no_gate.evaluate(&q),
         );
         assert!(
-            piece_gate.evaluate(&q) > 0.0,
-            "pour-gate negative piece should EXCLUDE channel-axis query; got {}",
+            piece_gate.evaluate(&q) < 0.0,
+            "side-mounted gate should leave negative piece's dome-side cup wall intact; got {}",
             piece_gate.evaluate(&q),
         );
     }
@@ -2564,7 +2663,7 @@ mod tests {
         assert_eq!(report.layers.len(), 1);
         assert!(report.layers[0].pieces[0].path.exists());
         assert!(report.layers[0].pieces[1].path.exists());
-        assert!(report.plug_path.exists());
+        assert!(report.layers[0].plug.path.exists());
         for piece in &report.layers[0].pieces {
             assert!(piece.summary.face_count > 0);
         }
@@ -2573,8 +2672,9 @@ mod tests {
     #[test]
     fn generate_procedure_markdown_v2_pour_gate_prose_mentions_diameters() {
         // Pour gate ON: "Pour Gate + Vent" section must mention
-        // gate Ø (6.0 mm = 2 × 3 mm radius) + vent Ø (3.0 mm =
-        // 2 × 1.5 mm radius) + channel length (40.0 mm = 2 × 20 mm
+        // gate Ø (6.0 mm = 2 × 3 mm radius), vent Ø (3.0 mm =
+        // 2 × 1.5 mm radius), and channel lengths (gate = 90.0 mm
+        // = 2 × 45 mm half-length; vent = 40.0 mm = 2 × 20 mm
         // half-length).
         let (spec, ribbon) = v2_fixture_with_pour_gate();
         let pours = spec.compute_pour_volumes().unwrap();
@@ -2582,11 +2682,13 @@ mod tests {
         assert!(md.contains("## Pour Gate + Vent"));
         assert!(md.contains("6.0 mm Ø pour gate"));
         assert!(md.contains("3.0 mm Ø vent"));
-        assert!(md.contains("40.0 mm long"));
-        // Per-layer Step 6 references the pour gate when enabled.
+        assert!(md.contains("90.0 mm total"));
+        assert!(md.contains("40.0 mm total"));
+        // Per-layer Step 6 references the side-mounted pour gate
+        // when enabled.
         assert!(
-            md.contains("Pour into the pour gate (base end of the centerline)"),
-            "Step 6 should reference the pour gate when enabled; got: {md}",
+            md.contains("Pour into the side-mounted pour gate at the centerline midpoint"),
+            "Step 6 should reference the side-mounted pour gate when enabled; got: {md}",
         );
     }
 
@@ -2666,11 +2768,17 @@ mod tests {
             piece_neg.evaluate(&pin_q) < 0.0,
             "pins+gate Negative piece should still contain pin protrusion"
         );
-        // Pour-gate channel query (gate in both pieces):
-        let gate_q = Point3::new(-0.035, 0.0, -0.001);
+        // Pour-gate channel query — v2.1 sub-leaf 2 moves the gate
+        // to a side-mounted position: centerline midpoint (0, 0, 0)
+        // + gate_half_length * binormal (+Z). Gate cylinder axis is
+        // +Z spanning Z ∈ [0, 2*0.060]. Query at (0, 0, 0.025) is in
+        // the POSITIVE piece's cup wall (above body z_max=+0.020,
+        // below bounding z_max=+0.030) and on the gate cylinder axis,
+        // so the gate carves it out of the positive piece.
+        let gate_q = Point3::new(0.0, 0.0, 0.025);
         assert!(
-            piece_neg.evaluate(&gate_q) > 0.0,
-            "pins+gate Negative piece should EXCLUDE pour-gate channel"
+            piece_pos.evaluate(&gate_q) > 0.0,
+            "pins+gate Positive piece should EXCLUDE side-mounted pour-gate channel"
         );
     }
 

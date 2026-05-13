@@ -1,23 +1,22 @@
 //! Pour-gate + air-vent geometry for v2 multi-piece molds.
 //!
-//! Step 10 of `docs/CURVE_FOLLOWING_DESIGN.md` adds two cylindrical
-//! channels CSG'd off the v2 mold pieces:
+//! Step 10 of `docs/CURVE_FOLLOWING_DESIGN.md` added two cylindrical
+//! channels CSG'd off the v2 mold pieces; v2.1 sub-leaf 2 relocates
+//! the **pour gate** to a side-mounted position so the centerline
+//! endpoints can host plug-anchor pin sockets without overlap:
 //!
-//! - **Pour gate** at `centerline[0]` (the base end of the
-//!   centerline polyline) — silicone enters the cavity through
-//!   this channel.
+//! - **Pour gate** at the centerline **midpoint** (arc fraction
+//!   `0.5`), axis along the ribbon's local binormal. The channel
+//!   cylinder's inner tip is at the centerline (so it overlaps the
+//!   body cavity by a small redundant amount — MC tolerance
+//!   benefit) and extends outward along binormal by
+//!   `2 * gate_half_length_m`, well past the typical bounding-
+//!   region outer surface. Workshop user pours into the channel
+//!   opening on the side face of the assembled mold.
 //! - **Air vent** at `centerline.last()` (the tip end) — trapped
 //!   air escapes through this channel during pour + cure.
-//!
-//! Both channels run along the centerline tangent at their
-//! respective endpoints. They're cylinders centered on the
-//! endpoint, oriented along the tangent, sized to pierce the
-//! bounding region wall once placed inside (real cf-scan-prep
-//! output has centerline endpoints at the body's surface, just
-//! inside the bounding region; the cylinder extends both inward
-//! into the body cavity — harmless, already excluded by
-//! `subtract(layer_body)` — and outward through the cup wall to
-//! the outside world).
+//!   v2.1 sub-leaf 3 will relocate this to the polyline's
+//!   argmax-z apex; sub-leaf 2 leaves vent geometry unchanged.
 //!
 //! ## Composition
 //!
@@ -25,10 +24,10 @@
 //! (optional) vent cylinders, or `None` if [`PourGateKind::None`].
 //! [`crate::piece::compose_piece_solid`] subtracts this solid
 //! from the base piece geometry, applying the same channel to
-//! BOTH [`crate::ribbon::PieceSide`]s so the pour/vent paths are
-//! centered on the ribbon seam (split equally between the two
-//! pieces — workshop user pours straight along the centerline,
-//! doesn't matter which piece is "up").
+//! BOTH [`crate::ribbon::PieceSide`]s. The gate cylinder is
+//! oriented perpendicular to the ribbon seam (along binormal) so
+//! each piece carves a half-cylinder cross-section that combines
+//! into the full channel when the pieces close.
 //!
 //! ## Default off
 //!
@@ -59,19 +58,42 @@ pub struct PourGateSpec {
     /// flow out of vents this size at workshop pour pressures
     /// (silicone surface tension + low pressure differential).
     pub vent_radius_m: f64,
-    /// Half-length of each channel cylinder along its tangent
-    /// axis (m). Total channel length is `2 * channel_half_length_m`.
+    /// Half-length of the **side-mounted pour-gate** cylinder
+    /// (m). Total channel length is `2 * gate_half_length_m`.
+    /// Default `0.045` = 45 mm half-length → 90 mm total channel.
+    ///
+    /// v2.1 sub-leaf 2 anchors the gate cylinder so its **inner
+    /// tip is at the centerline midpoint** and the cylinder
+    /// extends outward along the local ribbon binormal by
+    /// `2 * gate_half_length_m`. For a typical workshop bounding
+    /// region (cuboid with ≤80 mm half-extent along the binormal
+    /// axis from the centerline midpoint), the default 45 mm
+    /// half-length puts the outer tip 10 mm past the bounding-
+    /// region outer surface — the channel reliably punches all
+    /// the way through the cup wall to the outside.
+    ///
+    /// Workshop users with larger bounding regions tune this up.
+    /// Keep the redundant outside-bounding-region portion of the
+    /// cylinder small: it's a no-op (it doesn't intersect any mold
+    /// piece's `bounding ∖ layer_body ∩ ribbon_side` composition)
+    /// but does enlarge the gate cylinder's AABB, which slows
+    /// cf-design's octree-pruning interval arithmetic.
+    pub gate_half_length_m: f64,
+    /// Half-length of the **vent** cylinder along its tangent
+    /// axis (m). Total channel length is `2 * vent_half_length_m`.
     /// Default `0.020` = 20 mm half-length → 40 mm total channel.
     ///
-    /// Cylinder is centered on the centerline endpoint, so the
-    /// channel extends `channel_half_length_m` outward into the
-    /// world AND `channel_half_length_m` inward toward the body
-    /// cavity. The inward half is mostly redundant (the body
-    /// cavity is already excluded by `subtract(layer_body)`), but
-    /// it provides cell-size-tolerant overlap so marching cubes
-    /// doesn't produce a thin annular wall at the body-channel
-    /// interface.
-    pub channel_half_length_m: f64,
+    /// Vent cylinder is centered on the centerline endpoint
+    /// (v2.1 sub-leaf 2 keeps the vent at `centerline.last()`;
+    /// sub-leaf 3 will relocate it to the polyline's argmax-z
+    /// apex), so the channel extends `vent_half_length_m`
+    /// outward into the world AND `vent_half_length_m` inward
+    /// toward the body cavity. The inward half is mostly
+    /// redundant (the body cavity is already excluded by
+    /// `subtract(layer_body)`), but it provides cell-size-tolerant
+    /// overlap so marching cubes doesn't produce a thin annular
+    /// wall at the body-channel interface.
+    pub vent_half_length_m: f64,
     /// Whether to include the air-vent cylinder at
     /// `centerline.last()` (tip end). Default `true`. Disable for
     /// short straight molds where air escape through the gate is
@@ -80,14 +102,17 @@ pub struct PourGateSpec {
 }
 
 impl PourGateSpec {
-    /// v2 iter-1 defaults: 6 mm Ø pour gate, 3 mm Ø air vent,
-    /// 40 mm total channel length, vent enabled.
+    /// v2.1 iter-1 defaults: 6 mm Ø pour gate (side-mounted,
+    /// 90 mm total channel along binormal), 3 mm Ø air vent at
+    /// `centerline.last()` (40 mm total channel along tangent),
+    /// vent enabled.
     #[must_use]
     pub const fn iter1() -> Self {
         Self {
             gate_radius_m: 0.003,
             vent_radius_m: 0.0015,
-            channel_half_length_m: 0.020,
+            gate_half_length_m: 0.045,
+            vent_half_length_m: 0.020,
             include_vent: true,
         }
     }
@@ -120,15 +145,30 @@ pub enum PourGateKind {
 ///
 /// Returns `Some(solid)` whose SDF is the union of the pour-gate
 /// cylinder (always present in `Default`) and the air-vent
-/// cylinder (present if `spec.include_vent`). Both cylinders are
-/// positioned at their respective centerline endpoints, oriented
-/// along the local tangent.
+/// cylinder (present if `spec.include_vent`).
 ///
-/// The cylinder axis matches the centerline tangent at each
-/// endpoint — i.e., the pour gate runs ALONG the centerline at
-/// the base end, not perpendicular to it. This makes the channel
-/// a natural extension of the body's "axial" direction for
-/// curved scans: silicone flows in along the body's spine.
+/// - The **pour gate** is side-mounted: the cylinder is centered
+///   at `centerline_midpoint + gate_half_length_m * binormal_unit`
+///   with axis along the binormal at the midpoint, so the inner
+///   tip rests at the centerline (overlapping the body cavity for
+///   MC tolerance) and the outer tip extends past the typical
+///   bounding-region outer surface. Workshop user pours into the
+///   channel opening on the assembled mold's side face. Reuses
+///   [`Ribbon::sample_at_arc_fraction(0.5)`] to derive midpoint +
+///   binormal.
+/// - The **vent** is at `centerline.last()` with axis along the
+///   last segment's tangent — silicone enters perpendicular to
+///   the seam, air escapes through the tip end. (Sub-leaf 3 of
+///   the v2.1 arc relocates this to the polyline's argmax-z
+///   apex.)
+///
+/// Returns `None` when [`Ribbon::sample_at_arc_fraction(0.5)`]
+/// fails to resolve (degenerate centerline). Per the
+/// `crate::ribbon::Ribbon` invariants this only occurs for
+/// hand-constructed Ribbons that bypass the public constructor;
+/// the public path always has at least one segment.
+///
+/// [`Ribbon::sample_at_arc_fraction(0.5)`]: crate::ribbon::Ribbon::sample_at_arc_fraction
 #[must_use]
 pub fn build_pour_gate_solid(ribbon: &Ribbon) -> Option<Solid> {
     let spec = match &ribbon.pour_gate {
@@ -136,40 +176,42 @@ pub fn build_pour_gate_solid(ribbon: &Ribbon) -> Option<Solid> {
         PourGateKind::Default(spec) => spec,
     };
 
-    let first_seg = ribbon.segments.first()?;
-    let last_seg = ribbon.segments.last()?;
-
+    let (midpoint, _tangent, binormal) = ribbon.sample_at_arc_fraction(0.5)?;
+    let gate_center = midpoint + binormal * spec.gate_half_length_m;
     let gate_cylinder = channel_cylinder(
-        first_seg.start,
-        first_seg.tangent,
+        gate_center,
+        binormal,
         spec.gate_radius_m,
-        spec.channel_half_length_m,
+        spec.gate_half_length_m,
     );
 
     if !spec.include_vent {
         return Some(gate_cylinder);
     }
 
+    let last_seg = ribbon.segments.last()?;
     let vent_cylinder = channel_cylinder(
         last_seg.end,
         last_seg.tangent,
         spec.vent_radius_m,
-        spec.channel_half_length_m,
+        spec.vent_half_length_m,
     );
 
     Some(gate_cylinder.union(vent_cylinder))
 }
 
 /// Build a single channel cylinder centered at `center` with the
-/// given `tangent` axis, `radius`, and `half_length`. Used by
-/// [`build_pour_gate_solid`] for both gate + vent.
+/// given `axis`, `radius`, and `half_length`. Used by
+/// [`build_pour_gate_solid`] for the side-mounted gate (where
+/// `axis = binormal`) and the centerline-endpoint vent (where
+/// `axis = tangent`).
 fn channel_cylinder(
     center: nalgebra::Point3<f64>,
-    tangent: Vector3<f64>,
+    axis: Vector3<f64>,
     radius: f64,
     half_length: f64,
 ) -> Solid {
-    let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &tangent)
+    let rotation = UnitQuaternion::rotation_between(&Vector3::z_axis().into_inner(), &axis)
         .unwrap_or_else(UnitQuaternion::identity);
     Solid::cylinder(radius, half_length)
         .rotate(rotation)
@@ -195,7 +237,8 @@ mod tests {
         let s = PourGateSpec::iter1();
         assert!((s.gate_radius_m - 0.003).abs() < f64::EPSILON);
         assert!((s.vent_radius_m - 0.0015).abs() < f64::EPSILON);
-        assert!((s.channel_half_length_m - 0.020).abs() < f64::EPSILON);
+        assert!((s.gate_half_length_m - 0.045).abs() < f64::EPSILON);
+        assert!((s.vent_half_length_m - 0.020).abs() < f64::EPSILON);
         assert!(s.include_vent);
     }
 
@@ -210,6 +253,11 @@ mod tests {
         assert!(build_pour_gate_solid(&ribbon).is_none());
     }
 
+    /// Straight +X centerline with +Y split-normal → binormal = +Z.
+    /// Midpoint = (0, 0, 0). Side-mounted gate extends from midpoint
+    /// along +Z by `2 * gate_half_length_m` = 90 mm at the iter1
+    /// default. Vent at `centerline.last()` = (+0.050, 0, 0) with
+    /// tangent +X axis spans X ∈ [+0.030, +0.070].
     #[test]
     fn build_pour_gate_solid_default_returns_some_with_finite_bounds() {
         let ribbon =
@@ -218,16 +266,28 @@ mod tests {
         let aabb = solid
             .bounds()
             .expect("channel cylinders should have finite bounds");
-        // Gate at (-0.05, 0, 0) along +X tangent with half-length
-        // 0.020 → x ∈ [-0.07, -0.03]. Vent at (+0.05, 0, 0) →
-        // x ∈ [+0.03, +0.07]. Combined union x ∈ [-0.07, +0.07].
-        assert!(aabb.min.x <= -0.069);
-        assert!(aabb.max.x >= 0.069);
-        // y, z extents bounded by gate radius (3 mm).
-        assert!(aabb.min.y >= -0.0035);
-        assert!(aabb.max.y <= 0.0035);
+        // Side-mounted gate spans z ∈ [0, +0.090] (45 mm half-length
+        // × 2). Vent spans x ∈ [+0.030, +0.070].
+        assert!(
+            aabb.max.z >= 0.089,
+            "gate cylinder should reach z ≥ +0.089 m; got max.z = {}",
+            aabb.max.z
+        );
+        assert!(
+            aabb.min.z >= -0.0035,
+            "gate cylinder should start near z = 0 (only gate-radius slack); got min.z = {}",
+            aabb.min.z
+        );
+        assert!(
+            aabb.max.x >= 0.069,
+            "vent should reach x ≥ +0.069 m; got max.x = {}",
+            aabb.max.x
+        );
     }
 
+    /// With vent disabled, only the side-mounted gate remains —
+    /// AABB spans z up high (gate) but x stays near zero (no vent
+    /// extending to +0.070).
     #[test]
     fn build_pour_gate_solid_no_vent_is_smaller_than_with_vent() {
         let mut spec_no_vent = PourGateSpec::iter1();
@@ -238,25 +298,60 @@ mod tests {
             straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
         let no_vent = build_pour_gate_solid(&ribbon_no_vent).unwrap();
         let with_vent = build_pour_gate_solid(&ribbon_with_vent).unwrap();
-        // No-vent solid spans only the gate region (negative x).
-        // With-vent solid spans both gate + vent (negative + positive x).
-        assert!(no_vent.bounds().unwrap().max.x < 0.0);
-        assert!(with_vent.bounds().unwrap().max.x > 0.0);
+        // No-vent solid is just the gate — x stays within gate radius
+        // (~3 mm); with-vent solid extends to x ≥ +0.030 (vent at
+        // +0.050 minus half-length 0.020).
+        assert!(
+            no_vent.bounds().unwrap().max.x < 0.010,
+            "no-vent gate-only solid should not extend far in x; got max.x = {}",
+            no_vent.bounds().unwrap().max.x,
+        );
+        assert!(with_vent.bounds().unwrap().max.x > 0.030);
     }
 
+    /// Side-mounted gate is centered at `(0, 0, +half_length)` with
+    /// axis +Z. Query on the channel axis at z = +0.045 (midpoint
+    /// of the cylinder) should be inside (SDF < 0).
     #[test]
     fn pour_gate_solid_is_inside_at_channel_axis() {
-        // Pour gate at (-0.05, 0, 0) along +X tangent, radius 3 mm,
-        // half-length 20 mm. Query on the axis 10 mm outward
-        // (toward -X): (-0.060, 0, 0). Inside the cylinder.
         let ribbon =
             straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
         let solid = build_pour_gate_solid(&ribbon).unwrap();
-        let q = Point3::new(-0.060, 0.0, 0.0);
+        let q = Point3::new(0.0, 0.0, 0.045);
         assert!(
             solid.evaluate(&q) < 0.0,
-            "pour gate SDF on channel axis should be negative; got {}",
+            "side-mounted gate SDF on channel axis at z=+0.045 should be negative; got {}",
             solid.evaluate(&q),
+        );
+    }
+
+    /// Inner tip of the side-mounted gate sits at the centerline
+    /// midpoint (z=0 for the straight-X test ribbon): the cylinder
+    /// extends from there outward along +binormal, so a query at
+    /// the midpoint along the cylinder axis is on the cylinder's
+    /// face. SDF should be close to zero (numerical floor inside
+    /// the cylinder, due to the cell-size-tolerant overlap
+    /// described in [`PourGateSpec::gate_half_length_m`]'s
+    /// docstring).
+    #[test]
+    fn pour_gate_solid_inner_tip_is_at_centerline_midpoint() {
+        let ribbon =
+            straight_x_ribbon().with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        let solid = build_pour_gate_solid(&ribbon).unwrap();
+        // Just inside the cylinder's bottom face along the axis.
+        let q_inside = Point3::new(0.0, 0.0, 0.001);
+        assert!(
+            solid.evaluate(&q_inside) < 0.0,
+            "gate SDF just inside the inner tip should be negative; got {}",
+            solid.evaluate(&q_inside),
+        );
+        // 4 mm below the midpoint along -binormal — outside the
+        // gate cylinder (cylinder starts at z=0).
+        let q_below = Point3::new(0.0, 0.0, -0.004);
+        assert!(
+            solid.evaluate(&q_below) > 0.0,
+            "gate SDF below the inner tip (outside cylinder) should be positive; got {}",
+            solid.evaluate(&q_below),
         );
     }
 }

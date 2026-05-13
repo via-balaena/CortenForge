@@ -38,9 +38,17 @@ pub enum CastTarget {
     },
     /// Input geometry: the shared `CastSpec::bounding_region`.
     BoundingRegion,
-    /// Input geometry / output mesh: the shared `CastSpec::plug` used
-    /// by the innermost cast.
-    Plug,
+    /// Input geometry / output mesh: a per-layer plug. v1 + v2-pre-2.1
+    /// shared one plug across the cast; v2.1 sub-leaf 2 ships one
+    /// plug per layer for detachable-shell assembly. `layer_index` is
+    /// `None` for v1's single-plug pipeline and `Some(N)` for v2's
+    /// per-layer plug derived from `CastSpec::plug` (`N = 0`) or
+    /// `layers[N - 1].body` (`N > 0`).
+    Plug {
+        /// Layer index for v2's per-layer plug; `None` for v1's
+        /// single shared plug.
+        layer_index: Option<usize>,
+    },
 }
 
 impl fmt::Display for CastTarget {
@@ -53,7 +61,10 @@ impl fmt::Display for CastTarget {
                 piece_side,
             } => write!(f, "mold layer {layer_index} piece {piece_side:?}"),
             Self::BoundingRegion => write!(f, "bounding region"),
-            Self::Plug => write!(f, "plug"),
+            Self::Plug { layer_index: None } => write!(f, "plug"),
+            Self::Plug {
+                layer_index: Some(n),
+            } => write!(f, "plug layer {n}"),
         }
     }
 }

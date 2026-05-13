@@ -77,6 +77,6 @@ pub use procedure::{generate_procedure_markdown, generate_procedure_markdown_v2}
 pub use registration::{PinSpec, RegistrationKind, build_registration_solid};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use spec::{
-    CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport, PieceArtifact, V2LayerReport,
-    V2MoldExportReport,
+    CastLayer, CastSpec, MeshSummary, MoldArtifact, MoldExportReport, PieceArtifact, PlugArtifact,
+    V2LayerReport, V2MoldExportReport,
 };

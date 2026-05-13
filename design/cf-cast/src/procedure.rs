@@ -488,17 +488,19 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
         PourGateKind::Default(spec) => {
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
             let vent_dia_mm = spec.vent_radius_m * 2.0 * 1000.0;
-            let channel_length_mm = spec.channel_half_length_m * 2.0 * 1000.0;
+            let gate_length_mm = spec.gate_half_length_m * 2.0 * 1000.0;
+            let vent_length_mm = spec.vent_half_length_m * 2.0 * 1000.0;
             let _ = writeln!(
                 md,
                 "Integrated pour-gate + air-vent channels are CSG'd \
                  through the assembled mold cup. Pour silicone into the \
-                 **{gate_dia_mm:.1} mm Ø pour gate** at the base end \
-                 of the centerline; air escapes through the \
-                 **{vent_dia_mm:.1} mm Ø vent** at the tip end. Both \
-                 channels are {channel_length_mm:.1} mm long, oriented \
-                 along the centerline tangent at their respective \
-                 endpoints, and split equally between the two pieces \
+                 **{gate_dia_mm:.1} mm Ø pour gate** on the side of the \
+                 mold (side-mounted at the centerline midpoint along \
+                 the ribbon binormal, {gate_length_mm:.1} mm total \
+                 channel length); air escapes through the **{vent_dia_mm:.1} mm \
+                 Ø vent** at the tip end (axial along the last segment's \
+                 tangent, {vent_length_mm:.1} mm total channel length). \
+                 Both channels split equally between the two pieces \
                  (each piece gets half the channel cross-section)."
             );
             md.push('\n');
@@ -547,13 +549,11 @@ fn write_per_layer_sections_v2(
         let _ = writeln!(
             md,
             "1. Print STLs `mold_layer_{0}_piece_0.stl` + \
-             `mold_layer_{0}_piece_1.stl`{1}.",
+             `mold_layer_{0}_piece_1.stl` + \
+             `plug_layer_{0}.stl` (this layer's plug, sized to the \
+             previous layer's outer surface or to the innermost \
+             cavity for layer 0).",
             pour.layer_index,
-            if pour.layer_index == 0 {
-                " and the shared `plug.stl`"
-            } else {
-                ""
-            }
         );
         let _ = writeln!(md, "2. Apply mold release to all printed surfaces.");
         let _ = writeln!(
@@ -578,24 +578,18 @@ fn write_per_layer_sections_v2(
         }
         let _ = writeln!(md, "5. Vacuum-degas the mix for 2-3 minutes at ≥27 inHg.");
         let pour_into = match &ribbon.pour_gate {
-            PourGateKind::Default(_) => "the pour gate (base end of the centerline)",
+            PourGateKind::Default(_) => "the side-mounted pour gate at the centerline midpoint",
             PourGateKind::None => "the assembled mold cavity",
         };
-        if pour.layer_index == 0 {
-            let _ = writeln!(
-                md,
-                "6. Pour into {pour_into}. Insert the plug from the open \
-                 end, displacing silicone to shape the inner cavity."
-            );
-        } else {
-            let _ = writeln!(
-                md,
-                "6. Place the cured layer {} (from the previous pour) \
-                 inside the assembled mold cavity as the plug. Pour \
-                 around it into {pour_into}.",
-                pour.layer_index - 1,
-            );
-        }
+        let _ = writeln!(
+            md,
+            "6. Seat `plug_layer_{0}.stl` into the assembled mold via \
+             the plug-anchor pin socket. Pour into {pour_into}. \
+             Silicone fills the gap between the plug's outer surface \
+             and this layer's mold cavity, producing an annular shell \
+             after cure.",
+            pour.layer_index,
+        );
         if let Some(protocol) = protocol {
             let _ = writeln!(
                 md,
@@ -613,13 +607,9 @@ fn write_per_layer_sections_v2(
             "8. Demold: remove `piece_0` first, then `piece_1`. For a \
              curved centerline, removing them in this order lets the part \
              slide along the centerline rather than fighting an undercut. \
-             {}",
-            if pour.layer_index == 0 {
-                "Carefully extract the plug."
-            } else {
-                "The cured layer underneath stays in place for the next \
-                 pour."
-            }
+             Carefully extract the plug; the cured layer detaches as a \
+             standalone silicone tube ready to nest with the other \
+             layers post-cure (v2.1 detachable-shell assembly)."
         );
         md.push('\n');
     }

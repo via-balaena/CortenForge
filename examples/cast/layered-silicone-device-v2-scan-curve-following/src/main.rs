@@ -19,10 +19,11 @@
 //!   ([`RegistrationKind::Pins(PinSpec::iter1())`]) — 2 pins per
 //!   layer-piece-pair at 25%/75% of centerline arc length, 3 mm Ø ×
 //!   10 mm long × 25 mm offset from the centerline.
-//! - **Step 10**: pour gate + air vent enabled via
-//!   [`Ribbon::with_pour_gate`]
-//!   ([`PourGateKind::Default(PourGateSpec::iter1())`]) — 6 mm Ø pour
-//!   gate at the base end + 3 mm Ø vent at the tip end.
+//! - **Step 10 + v2.1 sub-leaf 2**: pour gate + air vent enabled
+//!   via [`Ribbon::with_pour_gate`]
+//!   ([`PourGateKind::Default(PourGateSpec::iter1())`]) — 6 mm Ø
+//!   side-mounted pour gate at the centerline midpoint along the
+//!   ribbon binormal + 3 mm Ø vent at the tip end.
 //!
 //! Output (after `cargo run --release -p
 //! example-cast-layered-silicone-device-v2-scan-curve-following`):
@@ -35,9 +36,16 @@
 //! ├── mold_layer_1_piece_1.stl  (middle, Positive)
 //! ├── mold_layer_2_piece_0.stl  (outer, Negative)
 //! ├── mold_layer_2_piece_1.stl  (outer, Positive)
-//! ├── plug.stl
+//! ├── plug_layer_0.stl          (innermost-cavity plug)
+//! ├── plug_layer_1.stl          (= layer 0's outer; for middle layer cast)
+//! ├── plug_layer_2.stl          (= layer 1's outer; for outer layer cast)
 //! └── procedure.md
 //! ```
+//!
+//! Per v2.1 sub-leaf 2: each layer is cast independently against
+//! its own plug, producing a detachable cured silicone tube that
+//! nests with the other layers post-cure for assembly +
+//! disassembly cleaning/replacement.
 //!
 //! # Scan-driven swap-in
 //!
@@ -79,7 +87,7 @@
 use anyhow::{Context, Result};
 use cf_cast::{
     CastLayer, CastSpec, DEFAULT_MASS_BUDGET_KG, MoldingMaterial, PinSpec, PlugPinKind,
-    PlugPinSpec, PourGateKind, PourGateSpec, RegistrationKind, Ribbon, SplitNormal, add_plug_pins,
+    PlugPinSpec, PourGateKind, PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
 };
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
@@ -109,18 +117,24 @@ const LAYER_MIDDLE_OUTER_M: f64 = 0.018;
 /// wall thickness.
 const LAYER_OUTER_M: f64 = 0.022;
 
-/// Bounding-region half-extent in xy (meters). 60 mm half-extent =
-/// 120 mm cube envelope. Big enough that pin positions (25 mm offset
-/// from centerline) sit comfortably inside the cup wall AND the
-/// pour-gate/vent cylinders (40 mm long, centered on centerline
-/// endpoints) don't escape through the side walls.
-const BOUNDING_HALF_XY_M: f64 = 0.060;
+/// Bounding-region half-extent in xy (meters). 80 mm half-extent =
+/// 160 mm cube envelope. Sized so the outermost layer body
+/// (22 mm radius pipe) sits comfortably inside the bounding region
+/// at every centerline-endpoint tangent direction, with ~20 mm of
+/// cup-wall thickness remaining between the body's hemispherical
+/// cap and the bounding outer face. At the prior 60 mm half-extent
+/// the layer 2 cap exceeded the bounding outer face along the
+/// curved centerline's tangent, opening a hole in the dome-end
+/// cup wall; 80 mm closes it cleanly. Workshop iter-1 visual review
+/// 2026-05-13 caught this — bump as needed for thicker outer
+/// layers.
+const BOUNDING_HALF_XY_M: f64 = 0.080;
 
 /// Bounding-region half-extent in z (meters). Centerline arc apex
 /// at z = +0.012; outer body radius 22 mm; so the +Z extent of the
-/// outer body reaches ~+0.034 m. Half-extent 0.060 leaves ~26 mm
+/// outer body reaches ~+0.034 m. Half-extent 0.080 leaves ~46 mm
 /// of cup wall + clearance above the body and below the centerline.
-const BOUNDING_HALF_Z_M: f64 = 0.060;
+const BOUNDING_HALF_Z_M: f64 = 0.080;
 
 /// Marching-cubes sampling cell size in meters. 3 mm — coarser than
 /// v1's 2 mm because the v2 body is bigger (120 mm bounding region vs
@@ -131,16 +145,32 @@ const BOUNDING_HALF_Z_M: f64 = 0.060;
 /// pour gate + per-piece F4).
 const MESH_CELL_SIZE_M: f64 = 0.003;
 
-/// v2.1 plug-anchor pin length (m). 25 mm — long enough that pin
-/// tip clears the outermost layer body cap (22 mm from centerline
-/// endpoint) by 3 mm of engagement into the outer layer's cup
-/// wall. Each inner layer's cup wall gets correspondingly deeper
-/// engagement (11 mm for layer 0, 7 mm for layer 1). The trade-off
-/// is a 14 mm cumulative pin-shaped channel through the cured
-/// silicone at each centerline end-cap (4-6 mm per layer); the
-/// generated procedure.md surfaces the trade-off for the workshop
-/// user.
-const PLUG_PIN_LENGTH_M: f64 = 0.025;
+/// v2.1 plug-anchor pin length (m). 28 mm — sized so the pin
+/// protrudes ~6-20 mm past every per-layer plug's hemispherical
+/// cap apex while still terminating as a **blind hole** inside
+/// the bounding region's cup wall.
+///
+/// Geometry: centerline[0] = `(-0.040, 0, 0)`; first-segment
+/// tangent ≈ `(+0.97, 0, +0.24)`. Pin axis = `-tangent` (outward).
+/// At the new 80 mm bounding half-extent, the bounding-region
+/// outer face sits ~41 mm from the centerline endpoint along this
+/// axis. 28 mm pin keeps the tip ~13 mm inside the bounding outer
+/// face.
+///
+/// Engagement at 28 mm:
+/// - Layer 0 plug (8 mm radius cap): pin protrudes 20 mm past cap;
+///   socket carves cup wall from body apex (14 mm) to 28 mm =
+///   14 mm engagement ✓
+/// - Layer 1 plug (14 mm radius cap): pin protrudes 14 mm past cap;
+///   socket carves cup wall from 18 mm to 28 mm = 10 mm engagement ✓
+/// - Layer 2 plug (18 mm radius cap): pin protrudes 10 mm past cap;
+///   socket carves cup wall from 22 mm to 28 mm = 6 mm engagement ✓
+///
+/// All three layers get visible-and-functional pin protrusion +
+/// matching cup-wall socket. Workshop iter-1 visual review
+/// 2026-05-13 caught the pin-vanishes-on-outer-layer issue;
+/// bumping the pin length addresses it.
+const PLUG_PIN_LENGTH_M: f64 = 0.028;
 
 /// Per-piece minimum wall thickness for the F4 gate (mm).
 ///
@@ -185,39 +215,41 @@ fn build_centerline() -> Vec<Point3<f64>> {
 // Spec construction.
 // ============================================================
 
-/// Build the v2 [`CastSpec`] — 3-layer device + curved-pipe plug
-/// along the centerline polyline. Innermost-first ordering matches
-/// v1's convention (same `CastSpec` data carrier).
+/// Build the v2 [`CastSpec`] — 3-layer device + bare innermost
+/// plug along the centerline polyline. Innermost-first ordering
+/// matches v1's convention (same `CastSpec` data carrier).
 ///
-/// The plug solid is extended with v2.1 axial anchor pins via
-/// [`add_plug_pins`] before assignment to [`CastSpec::plug`]; the
-/// ribbon's [`PlugPinKind::Axial`] kind makes the parallel
+/// All input solids are **bare** (no pin geometry). v2.1 sub-leaf
+/// 2's `export_molds_v2` derives a per-layer plug for each layer
+/// (`spec.plug` for layer 0, `layers[N - 1].body` for `N > 0`)
+/// and extends it with the ribbon's plug-anchor pin geometry
+/// internally via `add_plug_pins(base_solid, ribbon)`. Each
+/// layer's plug therefore matches its own inner cavity (an
+/// independent detachable cast), and the ribbon's
+/// [`PlugPinKind::Axial`] kind makes the parallel
 /// [`compose_piece_solid`] call subtract matching sockets from
-/// each mold piece. The two halves of the feature ship together
-/// from the same ribbon-as-source-of-truth.
+/// each mold piece.
 ///
-/// [`add_plug_pins`]: cf_cast::add_plug_pins
 /// [`compose_piece_solid`]: cf_cast::compose_piece_solid
-fn build_spec(centerline: &[Point3<f64>], ribbon: &Ribbon) -> CastSpec {
-    let bare_plug = Solid::pipe(centerline.to_vec(), PLUG_RADIUS_M);
+fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
+    let plug = Solid::pipe(centerline.to_vec(), PLUG_RADIUS_M);
 
-    // Cumulative outer-surface positives per layer use the BARE plug
-    // (not the pin-extended one) — the pin region is mold-anchor
-    // geometry, not part of the silicone shells we're casting.
-    let layer_inner_body = bare_plug
-        .clone()
-        .offset(LAYER_INNER_M)
-        .subtract(bare_plug.clone());
-    let layer_middle_body = bare_plug
-        .clone()
-        .offset(LAYER_MIDDLE_OUTER_M)
-        .subtract(bare_plug.clone());
-    let layer_outer_body = bare_plug
-        .clone()
-        .offset(LAYER_OUTER_M)
-        .subtract(bare_plug.clone());
-
-    let plug = add_plug_pins(bare_plug, ribbon);
+    // Per `CastLayer::body`'s docstring, each layer body is the
+    // **cumulative SOLID outer surface** of the cured silicone
+    // after that pour — NOT the annular shell. The plug shapes the
+    // inner cavity; subtracting the plug from each layer body
+    // inside the CastSpec composition would re-introduce the plug
+    // region into the mold piece's "inside" SDF and produce a
+    // half-plug-shaped protrusion in each piece STL (surfaced in
+    // workshop iter-1 visual review 2026-05-13).
+    //
+    // Pour-volume integration computes the silicone shell by
+    // subtracting the previous layer (or the plug for the
+    // innermost layer) inside `compute_pour_volumes` — so the body
+    // solids here just need to be the cumulative outer pipes.
+    let layer_inner_body = Solid::pipe(centerline.to_vec(), LAYER_INNER_M);
+    let layer_middle_body = Solid::pipe(centerline.to_vec(), LAYER_MIDDLE_OUTER_M);
+    let layer_outer_body = Solid::pipe(centerline.to_vec(), LAYER_OUTER_M);
 
     let ecoflex_00_30 = MoldingMaterial {
         display_name: "Ecoflex 00-30".to_string(),
@@ -300,8 +332,8 @@ fn main() -> Result<()> {
     let out_dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
 
     let centerline = build_centerline();
-    let ribbon = build_ribbon(centerline.clone())?;
-    let spec = build_spec(&centerline, &ribbon);
+    let spec = build_spec(&centerline);
+    let ribbon = build_ribbon(centerline)?;
 
     // `export_molds_v2` creates `out_dir` internally, writes
     // 2L mold piece STLs + 1 plug STL, and returns the V2 report
@@ -330,8 +362,8 @@ fn main() -> Result<()> {
         for piece in &layer.pieces {
             println!("    {:?}  →  {}", piece.piece_side, piece.path.display());
         }
+        println!("    plug      →  {}", layer.plug.path.display());
     }
-    println!("  plug  →  {}", report.plug_path.display());
     println!("  procedure  →  {}", procedure_path.display());
     println!();
     println!(
