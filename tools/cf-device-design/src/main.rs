@@ -662,12 +662,18 @@ const OUTER_ENVELOPE_RING_SEGMENTS: usize = 24;
 const OUTER_ENVELOPE_LONGITUDINAL_LINES: usize = 4;
 
 /// Number of intermediate latitude rings between the cylindrical
-/// section's end ring and the hemispherical cap's apex point. 3
-/// rings at θ ∈ {22.5°, 45°, 67.5°} from the cylinder plane produce
-/// a smooth hemispherical visualization. Together with the end ring
-/// at θ = 0 and the apex at θ = 90° this is 5 latitudes for each
-/// cap.
-const OUTER_ENVELOPE_CAP_LATITUDES: usize = 3;
+/// section's end ring and the hemispherical cap's apex point. 7
+/// rings at θ ∈ {11.25°, 22.5°, 33.75°, 45°, 56.25°, 67.5°, 78.75°}
+/// from the cylinder plane produce a smooth hemispherical
+/// visualization. Together with the rim ring (θ = 0) and the apex
+/// (θ = 90°) this is 9 latitudes per cap.
+///
+/// Bumped from 3 → 7 after iter-1 visual review: cap latitudes
+/// were sparser than the cylindrical section's rings, masking the
+/// tip taper. 7 latitudes over a typical 38 mm cap (default
+/// radius on iter-1) lands at ~5 mm per latitude — comparable to
+/// the cylinder section's per-polyline-point spacing.
+const OUTER_ENVELOPE_CAP_LATITUDES: usize = 7;
 
 /// Draw the outer-envelope wireframe overlay each frame. The
 /// envelope is a curve-following capsule (`Solid::pipe(centerline,
