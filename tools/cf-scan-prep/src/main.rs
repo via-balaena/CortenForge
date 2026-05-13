@@ -48,7 +48,7 @@ use cf_viewer::{
 use clap::{Parser, ValueEnum};
 use mesh_io::load_stl;
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use mesh_types::{Aabb, Bounded, IndexedMesh};
+use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use meshopt::{SimplifyOptions, simplify_decoder};
 use nalgebra::{UnitQuaternion, Vector3};
 
@@ -421,6 +421,196 @@ impl RecenterState {
     }
 }
 
+/// Clip floor panel state (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §5). A horizontal-in-cast-frame plane at world
+/// `z = z_mm` (physics `+Z` direction; bevy `+Y` post-swap) that
+/// removes everything below it from the scan.
+///
+/// Scope at this commit: panel UI, the triangle-clipping algorithm,
+/// the disc visualization, and the live drop-percentage readout. The
+/// algorithm sits dormant — it's not yet applied to the displayed
+/// mesh to avoid the respawn-race complexity with
+/// `handle_simplify_actions`. Cap (commit #9) consumes the clipped
+/// mesh for boundary detection; Save (commit #12) bakes the clip into
+/// the cleaned STL. Until then the user sees the disc and the
+/// "Drops X% verts" readout as visual feedback, but the rendered
+/// mesh stays intact.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct ClipState {
+    /// When `false`, the disc visualization stays hidden and the panel
+    /// readout doesn't render. The slider value persists across
+    /// toggle.
+    enabled: bool,
+    /// Plane height in cast-frame world millimeters (post-Reorient +
+    /// post-Recenter). Spec convention: `z >= z_mm` is kept; `z < z_mm`
+    /// is removed.
+    z_mm: f64,
+}
+
+impl Default for ClipState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            z_mm: 0.0,
+        }
+    }
+}
+
+/// Walk the scan's vertices, transform each into cast-frame world
+/// coordinates (rotation + translation_z), and return the percentage
+/// that fall below `clip_z_mm`. Cheap for simplified meshes
+/// (~200k vertices ≈ 1 ms per call); the panel calls this on every
+/// frame the section renders.
+///
+/// Returns 0.0 for an empty mesh (no vertices to drop).
+fn compute_drop_percentage(
+    scan: &IndexedMesh,
+    rotation: UnitQuaternion<f64>,
+    translation_z_mm: f64,
+    clip_z_mm: f64,
+) -> f64 {
+    if scan.vertices.is_empty() {
+        return 0.0;
+    }
+    let mut below: usize = 0;
+    for v in &scan.vertices {
+        // Vertices are in physics-frame meters; lift to mm to match
+        // the clip plane's mm convention. Then rotate (R is unit-norm,
+        // so it doesn't change magnitudes); translation_z lands the
+        // mesh in world frame.
+        let v_mm = Vector3::new(v.x * 1000.0, v.y * 1000.0, v.z * 1000.0);
+        let world_z_mm = rotation.transform_vector(&v_mm).z + translation_z_mm;
+        if world_z_mm < clip_z_mm {
+            below += 1;
+        }
+    }
+    // `as f64` is loss-free for usize values cf-scan-prep handles
+    // (well below 2^53).
+    #[allow(clippy::cast_precision_loss)]
+    {
+        100.0 * (below as f64) / (scan.vertices.len() as f64)
+    }
+}
+
+/// Linear interpolation between two `Point3<f64>` positions.
+/// `t = 0` returns `a`; `t = 1` returns `b`.
+fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
+    Point3::new(
+        a.x + t * (b.x - a.x),
+        a.y + t * (b.y - a.y),
+        a.z + t * (b.z - a.z),
+    )
+}
+
+/// True-plane-intersection mesh clip against a horizontal-in-cast-frame
+/// plane at world `z = clip_z_m` (`docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §5; spec §Architectural decisions §Clip cut style).
+///
+/// For each triangle:
+/// - **All 3 vertices on/above** the plane → keep as-is.
+/// - **All 3 below** → drop.
+/// - **Mixed** → compute intersection points on the crossing edges +
+///   triangulate the surviving polygon (3 or 4 vertices) via a fan
+///   from the first vertex. The result is a clean planar cut along
+///   `z = clip_z`, suitable for capping (boundary stays planar so
+///   `mesh-repair`'s plane fit at commit #9 gets `R² ≈ 1.0`).
+///
+/// **Edge case from spec §Risks §"True plane intersection edge cases"**:
+/// vertices exactly on the plane (`dist == 0`) are classified as
+/// "above" so the surrounding triangle is kept; this avoids degenerate
+/// sub-triangles in the cut.
+///
+/// Rejected alternative: vertex-drop (drop any triangle whose all 3
+/// vertices are below the plane). Cheaper (~30 LOC) but produces
+/// jagged ragged boundaries that lie off the clip plane → degrades
+/// the Cap panel's auto-fit `R²`. Spec mandates true plane
+/// intersection for this reason.
+///
+/// Output mesh's vertex buffer = original vertices + new intersection
+/// vertices appended; `remove_unreferenced_vertices` strips the
+/// dropped (all-below) original vertices afterwards so the result is
+/// tight.
+#[allow(dead_code)] // Used at commit #9 (Cap) and #12 (Save); shipped at #8 for the unit-tested algorithm.
+fn clip_mesh_against_world_z(
+    mesh: &IndexedMesh,
+    rotation: UnitQuaternion<f64>,
+    translation_z_m: f64,
+    clip_z_m: f64,
+) -> IndexedMesh {
+    // Express the world-frame plane `z = clip_z_m` in mesh-local frame.
+    // World `z = (R * v).z + T.z`; keep `z >= clip_z` becomes
+    // `dot(v, R^T · e_z) >= clip_z - T.z` in mesh-local coords.
+    let plane_normal = rotation
+        .inverse()
+        .transform_vector(&Vector3::new(0.0, 0.0, 1.0));
+    let plane_d = clip_z_m - translation_z_m;
+
+    // Output buffers — start with the original vertices (later
+    // stripped of unreferenced); append intersection points as we go.
+    let mut new_vertices: Vec<Point3<f64>> = mesh.vertices.clone();
+    let mut new_faces: Vec<[u32; 3]> = Vec::with_capacity(mesh.faces.len());
+
+    for face in &mesh.faces {
+        let verts = [
+            mesh.vertices[face[0] as usize],
+            mesh.vertices[face[1] as usize],
+            mesh.vertices[face[2] as usize],
+        ];
+        // Signed distance from the plane. dist >= 0 → above (keep).
+        let dists = [
+            plane_normal.dot(&verts[0].coords) - plane_d,
+            plane_normal.dot(&verts[1].coords) - plane_d,
+            plane_normal.dot(&verts[2].coords) - plane_d,
+        ];
+        let above_count = dists.iter().filter(|d| **d >= 0.0).count();
+
+        if above_count == 3 {
+            new_faces.push(*face);
+            continue;
+        }
+        if above_count == 0 {
+            continue;
+        }
+
+        // Mixed case: walk the triangle CCW, collecting above-plane
+        // vertices + intersection points where edges cross. The
+        // resulting polygon has 3 (1-above) or 4 (2-above) vertices —
+        // both convex, so fan-triangulate from vertex[0].
+        let mut poly_indices: Vec<u32> = Vec::with_capacity(4);
+        for i in 0..3 {
+            let next = (i + 1) % 3;
+            let d_curr = dists[i];
+            let d_next = dists[next];
+            if d_curr >= 0.0 {
+                poly_indices.push(face[i]);
+            }
+            // Edge crosses the plane iff the signs of d_curr and
+            // d_next differ. The `>= 0.0` convention puts zeros on
+            // the "above" side, so an edge with one zero and one
+            // negative still crosses.
+            if (d_curr >= 0.0) != (d_next >= 0.0) {
+                let t = d_curr / (d_curr - d_next);
+                let intersection = lerp_point(&verts[i], &verts[next], t);
+                #[allow(clippy::cast_possible_truncation)]
+                let new_idx = new_vertices.len() as u32;
+                new_vertices.push(intersection);
+                poly_indices.push(new_idx);
+            }
+        }
+
+        // Fan triangulation from poly_indices[0].
+        for i in 1..(poly_indices.len() - 1) {
+            new_faces.push([poly_indices[0], poly_indices[i], poly_indices[i + 1]]);
+        }
+    }
+
+    let mut clipped = IndexedMesh::with_capacity(new_vertices.len(), new_faces.len());
+    clipped.vertices = new_vertices;
+    clipped.faces = new_faces;
+    remove_unreferenced_vertices(&mut clipped);
+    clipped
+}
+
 /// Compute the **post-Reorient** AABB of the raw scan AABB in
 /// physics-frame **millimeters**. Used by the Recenter panel's
 /// `[Center origin]` and `[Floor -> z=0]` click handlers to figure out
@@ -732,6 +922,7 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         .insert_resource(SimplifyState::default())
         .insert_resource(ReorientState::default())
         .insert_resource(RecenterState::default())
+        .insert_resource(ClipState::default())
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
@@ -1110,10 +1301,12 @@ fn apply_recenter_to_transform(
 /// usefully visible until commit #7's Recenter panel translates the
 /// cavity floor to the origin.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+#[allow(clippy::too_many_arguments)] // Bevy systems take each Res / Gizmos as a separate param.
 fn draw_reference_overlays(
     overlays: Res<OverlayLengths>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
+    clip: Res<ClipState>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
@@ -1141,6 +1334,42 @@ fn draw_reference_overlays(
         scale: overlays.bbox_dims_bevy,
     };
     gizmos.cube(wireframe_transform, Color::srgb(0.55, 0.55, 0.60));
+
+    // Clip-plane disc — a wireframe rectangle in the cast-frame XY
+    // plane at world `z = clip.z_mm`, indicating where the (eventual)
+    // clip will happen. Rendered only when the panel toggle is on so
+    // a disabled clip doesn't add visual clutter. Drawn as 4 gizmo
+    // lines forming a rectangle (Bevy gizmos can't fill polygons;
+    // gizmos.cube would be a 3D box not a flat plane).
+    if clip.enabled {
+        // Convert clip_z from cast mm to bevy world units: mm × 0.001
+        // (meters) × render_scale. cast +Z = Bevy +Y under the swap.
+        #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
+        let clip_y_bevy = (clip.z_mm * 0.001) as f32 * render_scale.0;
+        // Half-extent in Bevy world units. Use the largest Bevy bbox
+        // axis so the disc clearly extends past the mesh regardless of
+        // current rotation orientation.
+        let half = overlays
+            .bbox_dims_bevy
+            .x
+            .max(overlays.bbox_dims_bevy.y)
+            .max(overlays.bbox_dims_bevy.z)
+            * 0.75;
+        // Rectangle corners in Bevy XZ plane at y = clip_y_bevy.
+        let p00 = Vec3::new(-half, clip_y_bevy, -half);
+        let p10 = Vec3::new(half, clip_y_bevy, -half);
+        let p11 = Vec3::new(half, clip_y_bevy, half);
+        let p01 = Vec3::new(-half, clip_y_bevy, half);
+        let disc_color = Color::srgb(0.95, 0.45, 0.20);
+        gizmos.line(p00, p10, disc_color);
+        gizmos.line(p10, p11, disc_color);
+        gizmos.line(p11, p01, disc_color);
+        gizmos.line(p01, p00, disc_color);
+        // Also draw the diagonals so the disc reads as a translucent
+        // surface rather than just a wireframe outline.
+        gizmos.line(p00, p11, disc_color);
+        gizmos.line(p10, p01, disc_color);
+    }
 }
 
 /// Update system: clear the status bar text if its TTL has elapsed.
@@ -1234,9 +1463,11 @@ fn scan_prep_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     overlays: Res<OverlayLengths>,
+    scan: Res<ScanMesh>,
     mut simplify_state: ResMut<SimplifyState>,
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
+    mut clip_state: ResMut<ClipState>,
     status: Res<StatusBar>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -1253,6 +1484,14 @@ fn scan_prep_panel(
             render_simplify_section(ui, &info, &mut simplify_state);
             render_reorient_section(ui, &mut reorient_state);
             render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
+            render_clip_section(
+                ui,
+                &mut clip_state,
+                &scan,
+                &reorient_state,
+                &recenter_state,
+                &overlays,
+            );
         });
     Ok(())
 }
@@ -1454,6 +1693,57 @@ fn render_recenter_section(
             ui.add_space(4.0);
             if ui.button("Reset translation").clicked() {
                 *state = RecenterState::default();
+            }
+        });
+}
+
+/// `Clip floor` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications
+/// §5). One enable checkbox + one Z slider + a live drop-percentage
+/// readout. The disc visualization renders in `draw_reference_overlays`
+/// when the toggle is on.
+///
+/// **Algorithm landing at #8 but not yet applied to the displayed
+/// mesh.** The triangle-clipping algorithm
+/// ([`clip_mesh_against_world_z`]) is implemented + unit-tested at
+/// this commit but sits dormant. It gets exercised at commit #9 (Cap
+/// detection consumes the clipped mesh for boundary identification)
+/// and commit #12 (Save bakes the clip into the cleaned STL). Until
+/// then the rendered mesh stays whole; the user reads the percentage
+/// + disc position to verify intent.
+///
+/// Drop percentage is computed on every render via
+/// [`compute_drop_percentage`] (a single vertex walk). Cheap on a
+/// simplified mesh (~1 ms for 200k verts).
+fn render_clip_section(
+    ui: &mut egui::Ui,
+    state: &mut ClipState,
+    scan: &ScanMesh,
+    reorient: &ReorientState,
+    recenter: &RecenterState,
+    overlays: &OverlayLengths,
+) {
+    egui::CollapsingHeader::new("Clip floor")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.checkbox(&mut state.enabled, "Enabled");
+
+            let range = overlays.recenter_slider_range_mm;
+            ui.add(egui::Slider::new(&mut state.z_mm, -range..=range).text("Z (mm)"));
+
+            if state.enabled {
+                let pct = compute_drop_percentage(
+                    &scan.0,
+                    reorient.quaternion_physics(),
+                    recenter.tz_mm,
+                    state.z_mm,
+                );
+                ui.label(format!("Drops {pct:.1}% verts"));
+                if pct > 95.0 {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(240, 200, 80),
+                        "⚠ Clip removes nearly all geometry — verify Z value",
+                    );
+                }
             }
         });
 }
@@ -1993,6 +2283,187 @@ mod tests {
         // but symmetric bbox -> same bounds).
         assert!((min_mm.z + 100.0).abs() < 1e-6);
         assert!((max_mm.z - 100.0).abs() < 1e-6);
+    }
+
+    // ----- ClipState + clip_mesh_against_world_z ---------------------
+
+    /// Default ClipState is `enabled=false, z_mm=0.0`. Pinned because
+    /// flipping the default to enabled would silently clip every load.
+    #[test]
+    fn clip_state_default_is_disabled_at_origin() {
+        let state = ClipState::default();
+        assert!(!state.enabled);
+        assert_eq!(state.z_mm, 0.0);
+    }
+
+    /// `compute_drop_percentage` on an empty mesh returns 0 (no
+    /// vertices to drop).
+    #[test]
+    fn drop_percentage_empty_mesh_is_zero() {
+        let empty = IndexedMesh::with_capacity(0, 0);
+        let pct = compute_drop_percentage(&empty, UnitQuaternion::identity(), 0.0, 0.0);
+        assert_eq!(pct, 0.0);
+    }
+
+    /// Identity rotation + zero translation: vertices below `clip_z_mm`
+    /// drop, vertices on/above stay. Test mesh has 4 vertices at
+    /// z = -50, -10, 10, 50 mm (in physics). Clip at z = 0 → 2 below
+    /// (50%).
+    #[test]
+    fn drop_percentage_counts_below_plane() {
+        let mut mesh = IndexedMesh::with_capacity(4, 0);
+        // Z values in physics meters; will be lifted to mm inside the
+        // function.
+        mesh.vertices.push(Point3::new(0.0, 0.0, -0.050));
+        mesh.vertices.push(Point3::new(0.0, 0.0, -0.010));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.010));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.050));
+        let pct = compute_drop_percentage(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
+        assert!(
+            (pct - 50.0).abs() < 1e-9,
+            "2 of 4 vertices below z=0 → 50% expected, got {pct}",
+        );
+    }
+
+    /// `clip_mesh_against_world_z` on a triangle entirely above the
+    /// plane: kept as-is, no new vertices, face count = 1.
+    #[test]
+    fn clip_keeps_triangle_entirely_above_plane() {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.010));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.030));
+        mesh.faces.push([0, 1, 2]);
+        let clipped = clip_mesh_against_world_z(
+            &mesh,
+            UnitQuaternion::identity(),
+            0.0,
+            0.0, // clip at z=0; all vertices have z > 0
+        );
+        assert_eq!(clipped.faces.len(), 1);
+        assert_eq!(clipped.vertices.len(), 3); // no intersections, no unreferenced
+    }
+
+    /// `clip_mesh_against_world_z` on a triangle entirely below the
+    /// plane: dropped, face count = 0, no surviving vertices.
+    #[test]
+    fn clip_drops_triangle_entirely_below_plane() {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, -0.030));
+        mesh.vertices.push(Point3::new(1.0, 0.0, -0.020));
+        mesh.vertices.push(Point3::new(0.0, 1.0, -0.010));
+        mesh.faces.push([0, 1, 2]);
+        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
+        assert_eq!(clipped.faces.len(), 0);
+        // remove_unreferenced_vertices strips all 3 since they're
+        // not used by any surviving face.
+        assert_eq!(clipped.vertices.len(), 0);
+    }
+
+    /// `clip_mesh_against_world_z` on a 1-above-2-below triangle:
+    /// 1 surviving triangle with 2 intersection points.
+    ///
+    /// Test setup: triangle at z = 0.030, -0.010, -0.020 (in meters)
+    /// → first vertex above z=0, other two below. Clip at z = 0
+    /// produces:
+    ///   - 1 surviving triangle
+    ///   - 3 vertices: the original above-vertex + 2 intersection
+    ///     points on the plane (z = 0 exactly)
+    #[test]
+    fn clip_one_above_two_below_produces_one_triangle() {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.030)); // above
+        mesh.vertices.push(Point3::new(1.0, 0.0, -0.010)); // below
+        mesh.vertices.push(Point3::new(0.0, 1.0, -0.020)); // below
+        mesh.faces.push([0, 1, 2]);
+        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
+        assert_eq!(clipped.faces.len(), 1);
+        assert_eq!(clipped.vertices.len(), 3);
+
+        // The two intersection points must have z = 0 (within FP eps).
+        let mut on_plane_count = 0;
+        for v in &clipped.vertices {
+            if v.z.abs() < 1e-9 {
+                on_plane_count += 1;
+            }
+        }
+        assert_eq!(
+            on_plane_count, 2,
+            "expected 2 intersection points on z=0 plane, got {on_plane_count}",
+        );
+    }
+
+    /// `clip_mesh_against_world_z` on a 2-above-1-below triangle:
+    /// 2 surviving triangles (fan-triangulation of the quad) with 2
+    /// intersection points.
+    #[test]
+    fn clip_two_above_one_below_produces_two_triangles() {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.030)); // above
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020)); // above
+        mesh.vertices.push(Point3::new(0.0, 1.0, -0.010)); // below
+        mesh.faces.push([0, 1, 2]);
+        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
+        assert_eq!(clipped.faces.len(), 2);
+        // 2 original above-vertices + 2 intersection points = 4
+        assert_eq!(clipped.vertices.len(), 4);
+
+        // The two intersection points must have z = 0.
+        let mut on_plane_count = 0;
+        for v in &clipped.vertices {
+            if v.z.abs() < 1e-9 {
+                on_plane_count += 1;
+            }
+        }
+        assert_eq!(on_plane_count, 2);
+    }
+
+    /// Spec edge case: a vertex EXACTLY on the plane should be treated
+    /// as above, so the surrounding triangle stays intact (no
+    /// degenerate sub-triangles). Triangle with one vertex on the
+    /// plane + two above: stays whole, no intersection points
+    /// generated.
+    #[test]
+    fn clip_vertex_exactly_on_plane_keeps_triangle() {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0)); // on plane
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020)); // above
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.030)); // above
+        mesh.faces.push([0, 1, 2]);
+        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
+        assert_eq!(
+            clipped.faces.len(),
+            1,
+            "triangle with one vertex on plane should be kept intact",
+        );
+        assert_eq!(clipped.vertices.len(), 3);
+    }
+
+    /// Rotation interaction: a triangle that's "above" in world frame
+    /// but "below" in mesh-local frame should be kept. Tests that the
+    /// rotation is correctly applied when computing the plane in
+    /// mesh-local coordinates.
+    ///
+    /// Setup: triangle at mesh-local z = -0.020 (would be below
+    /// world z=0 without rotation). Apply a 180° rotation about X
+    /// (flips Z). After rotation, the triangle is at world z = +0.020,
+    /// which is ABOVE the world clip plane at z=0. Should be kept.
+    #[test]
+    fn clip_respects_rotation_when_computing_plane() {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, -0.020));
+        mesh.vertices.push(Point3::new(1.0, 0.0, -0.020));
+        mesh.vertices.push(Point3::new(0.0, 1.0, -0.020));
+        mesh.faces.push([0, 1, 2]);
+        // 180° rotation about X flips Y and Z signs.
+        let rot_180_about_x =
+            UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), std::f64::consts::PI);
+        let clipped = clip_mesh_against_world_z(&mesh, rot_180_about_x, 0.0, 0.0);
+        assert_eq!(
+            clipped.faces.len(),
+            1,
+            "after 180° X rotation the triangle is at world z=+0.020, above clip plane",
+        );
     }
 
     // ----- build_overlay_lengths -------------------------------------
