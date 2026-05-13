@@ -38,7 +38,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
@@ -47,11 +47,12 @@ use cf_viewer::{
     RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting, spawn_face_mesh,
 };
 use clap::{Parser, ValueEnum};
-use mesh_io::load_stl;
+use mesh_io::{load_stl, save_stl};
 use mesh_repair::{MeshAdjacency, holes, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use meshopt::{SimplifyOptions, simplify_decoder};
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+use serde::Serialize;
 
 /// Cast-frame up-axis convention: `+Z` is the demolding direction
 /// (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home). All
@@ -78,6 +79,13 @@ struct Cli {
     /// default `mm` produces a 1000× too-small mesh.
     #[arg(long, value_enum, default_value_t = StlUnits::Mm)]
     stl_units: StlUnits,
+
+    /// Output directory for the Save panel's `.cleaned.stl` +
+    /// `.prep.toml` writes. Defaults to the input scan's parent
+    /// directory. Per spec §Architectural decisions §Save behavior:
+    /// useful when the input directory is read-only.
+    #[arg(long, value_name = "PATH")]
+    output_dir: Option<PathBuf>,
 }
 
 /// Unit convention for the input STL's vertex coordinates. The selected
@@ -258,11 +266,10 @@ struct StatusBar {
 }
 
 /// Severity tag for [`StatusBar`] used by the bottom-panel renderer to
-/// pick a text color (gray for `Normal`, yellow for `Warning`). An
-/// `Error` variant (red) lands at commit #12 alongside the Save panel's
-/// FS-error pattern + non-finite-transform rejection — kept off the
-/// enum here so the rendering match doesn't pretend to dispatch on a
-/// case it can't reach.
+/// pick a text color (gray for `Normal`, yellow for `Warning`, red for
+/// `Error`). The `Error` variant carries the Save panel's FS-error +
+/// disk-write-failure pattern per spec §Architectural decisions §FS
+/// error handling.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 enum StatusKind {
     /// Neutral information (achievement messages, restore-confirmed).
@@ -270,6 +277,9 @@ enum StatusKind {
     Normal,
     /// Advisory but non-blocking (auto-suggest banner, soft caps).
     Warning,
+    /// Save-time disk error or non-finite transform (Save panel; spec
+    /// §Architectural decisions §FS error handling). Rendered red.
+    Error,
 }
 
 /// Pre-computed display fields for the Scan Info panel
@@ -565,6 +575,34 @@ struct CapPendingAction {
     /// (cleared) by `handle_cap_actions`.
     rescan: bool,
 }
+
+/// User action queued by the Save panel's `[Save]` button. Consumed
+/// next Update tick by `handle_save_action`, which builds the
+/// cleaned mesh + the `.prep.toml` and writes both files atomically.
+#[derive(Resource, Debug, Default)]
+struct SavePendingAction {
+    save_now: bool,
+}
+
+/// Output directory for the Save panel's writes. Built at startup
+/// from `--output-dir <path>` if supplied, else from the input
+/// scan's parent directory. Carried as a resource so the Save
+/// system reads it without re-parsing CLI args.
+#[derive(Resource, Debug, Clone)]
+struct SaveOutputDir(PathBuf);
+
+/// Input scan path (`cli.path`) carried as a resource so the Save
+/// handler can derive output filenames (`<stem>.cleaned.stl` /
+/// `<stem>.prep.toml`) + record the source in `.prep.toml`'s
+/// provenance block. Read-only after startup.
+#[derive(Resource, Debug, Clone)]
+struct SourceStlPath(PathBuf);
+
+/// CLI `--stl-units` value carried as a resource so the Save
+/// handler can record the load-time unit convention in
+/// `.prep.toml`'s provenance block. Read-only after startup.
+#[derive(Resource, Debug, Clone, Copy)]
+struct StlUnitsResource(StlUnits);
 
 /// Walk the scan's vertices, transform each into cast-frame world
 /// coordinates (rotation + translation_z), and return the percentage
@@ -1008,6 +1046,536 @@ fn project_mesh_local_to_world(
     recenter_world + reorient_rotation_bevy * (bevy_local * render_scale)
 }
 
+/// Triangulate a 2D simple polygon via ear-clipping. Input: ordered
+/// polygon vertices (CCW or CW; algorithm reverses on the fly if
+/// signed area is negative). Output: triangles as index triplets
+/// into the input vertex list. Always closes the polygon (last
+/// edge connects vertex `n-1` back to vertex `0`).
+///
+/// Per spec §Panel specifications §6: cap polygons triangulated via
+/// inline ear-clipping with **fan-fallback** when ear-clipping fails
+/// (degenerate / self-intersecting polygons after projection). Fan
+/// triangulation from vertex 0 produces valid faces for any
+/// star-shaped polygon, which boundary loops typically are.
+///
+/// **Complexity**: O(n²) for the ear-clip path. For a 2609-vertex
+/// loop (iter-1 fixture's open boundary): ~6.8M ops; ~5-20 ms. Fast
+/// enough at save time. Larger loops (10k+) would benefit from
+/// Delaunay or constrained-Delaunay; out of scope until iter-1
+/// surfaces pathological cases.
+///
+/// **Fan fallback trigger**: ear-clipping stops finding ears (no
+/// ear is convex + empty) before reducing to 3 vertices. Either the
+/// polygon is non-simple (self-intersecting) or near-degenerate. Fan
+/// from vertex 0 always works for star-shaped polygons; produces
+/// possibly-thin triangles but no NaN / inverted faces.
+fn triangulate_polygon_2d_earclip(verts_2d: &[(f64, f64)]) -> Vec<[u32; 3]> {
+    let n = verts_2d.len();
+    if n < 3 {
+        return Vec::new();
+    }
+
+    // Signed area (shoelace) — negative → CW; reverse to get CCW.
+    let signed_area: f64 = (0..n)
+        .map(|i| {
+            let (x0, y0) = verts_2d[i];
+            let (x1, y1) = verts_2d[(i + 1) % n];
+            x0 * y1 - x1 * y0
+        })
+        .sum::<f64>()
+        * 0.5;
+
+    // `working` holds the indices into the input array, in CCW
+    // order. We splice ears out of this list as we go.
+    #[allow(clippy::cast_possible_truncation)]
+    let mut working: Vec<u32> = if signed_area >= 0.0 {
+        (0..n as u32).collect()
+    } else {
+        (0..n as u32).rev().collect()
+    };
+
+    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(n.saturating_sub(2));
+
+    // Ear-clip loop. Each iteration finds one ear, emits a triangle,
+    // and removes the ear-tip index from `working`.
+    while working.len() > 3 {
+        let mut found_ear = false;
+        let m = working.len();
+        for i in 0..m {
+            let prev_idx = working[(i + m - 1) % m];
+            let curr_idx = working[i];
+            let next_idx = working[(i + 1) % m];
+            let prev = verts_2d[prev_idx as usize];
+            let curr = verts_2d[curr_idx as usize];
+            let next = verts_2d[next_idx as usize];
+
+            // Is the triangle (prev, curr, next) convex in CCW order?
+            // Cross-product z-component: positive → CCW (convex);
+            // negative or zero → reflex / collinear, skip.
+            let cross =
+                (curr.0 - prev.0) * (next.1 - prev.1) - (curr.1 - prev.1) * (next.0 - prev.0);
+            if cross <= 0.0 {
+                continue;
+            }
+
+            // Does any other polygon vertex lie strictly inside the
+            // ear triangle? If yes, not an ear; skip.
+            let any_inside = working
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != (i + m - 1) % m && *j != i && *j != (i + 1) % m)
+                .map(|(_, &k)| verts_2d[k as usize])
+                .any(|p| point_in_triangle_2d(p, prev, curr, next));
+            if any_inside {
+                continue;
+            }
+
+            triangles.push([prev_idx, curr_idx, next_idx]);
+            working.remove(i);
+            found_ear = true;
+            break;
+        }
+
+        if !found_ear {
+            // Degenerate / self-intersecting input — fall back to
+            // fan triangulation over the remaining `working` indices.
+            let anchor = working[0];
+            for k in 1..(working.len() - 1) {
+                triangles.push([anchor, working[k], working[k + 1]]);
+            }
+            return triangles;
+        }
+    }
+
+    // Final triangle from the last 3 remaining vertices.
+    if working.len() == 3 {
+        triangles.push([working[0], working[1], working[2]]);
+    }
+    triangles
+}
+
+/// Standard 2D point-in-triangle test via barycentric sign check.
+/// Returns `true` if `p` is strictly inside the triangle `(a, b, c)`.
+/// Points on edges return `false` to avoid spurious ear rejection
+/// from shared boundary vertices.
+fn point_in_triangle_2d(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
+    let d1 = (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1);
+    let d2 = (p.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (p.1 - c.1);
+    let d3 = (p.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (p.1 - a.1);
+    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(has_neg && has_pos)
+}
+
+/// Project a 3D loop onto its fit plane and return 2D coordinates
+/// for ear-clipping. Picks an arbitrary orthonormal basis in the
+/// plane (Gram-Schmidt against a non-parallel world axis); the
+/// orientation of the 2D frame doesn't matter because the
+/// ear-clip handles CW/CCW input automatically.
+fn project_loop_to_plane_2d(
+    loop_points_3d: &[Point3<f64>],
+    plane_centroid: Point3<f64>,
+    plane_normal: Vector3<f64>,
+) -> Vec<(f64, f64)> {
+    // Pick a world axis that isn't parallel to `plane_normal`, then
+    // project it orthogonal to the normal → first basis vector `u`.
+    // `v = normal × u` → second basis vector.
+    let world_axis = if plane_normal.x.abs() < 0.9 {
+        Vector3::new(1.0, 0.0, 0.0)
+    } else {
+        Vector3::new(0.0, 1.0, 0.0)
+    };
+    let u = (world_axis - plane_normal * world_axis.dot(&plane_normal)).normalize();
+    let v = plane_normal.cross(&u).normalize();
+
+    loop_points_3d
+        .iter()
+        .map(|p| {
+            let d = p.coords - plane_centroid.coords;
+            (u.dot(&d), v.dot(&d))
+        })
+        .collect()
+}
+
+/// Build the cleaned IndexedMesh from the working scan + Reorient +
+/// Recenter + included cap loops. Skips clip baking for now (Clip
+/// panel stays advisory; v2 cf-cast handles trimming via the
+/// centerline-derived mold geometry).
+///
+/// Pipeline:
+/// 1. Clone `scan` into `out`.
+/// 2. Bake rotation + translation into vertex positions (in place).
+/// 3. For each included cap loop, ear-clip its 2D projection and
+///    append triangles (using existing loop vertex indices — no new
+///    vertices added).
+///
+/// **Cap normal orientation**: the spec mandates that the cap's
+/// outward normal point away from the mesh interior. We orient the
+/// triangulation's vertex winding to match the loop's stored
+/// `plane_normal` (which `build_detected_cap_loop` already flipped
+/// to face outward).
+fn build_cleaned_mesh(
+    scan: &IndexedMesh,
+    reorient: &ReorientState,
+    recenter: &RecenterState,
+    cap: &CapState,
+) -> IndexedMesh {
+    let rotation = reorient.quaternion_physics();
+    let translation = Vector3::new(
+        recenter.tx_mm * 0.001,
+        recenter.ty_mm * 0.001,
+        recenter.tz_mm * 0.001,
+    );
+
+    let mut out = scan.clone();
+
+    // Step 2: bake transforms. Compute rotated + translated position
+    // for each vertex from the ORIGINAL (pre-bake) coordinates so cap
+    // triangulation can still reference the original positions for
+    // plane fit etc. We then mutate `out.vertices` in place.
+    for v in out.vertices.iter_mut() {
+        let rotated = rotation.transform_vector(&v.coords);
+        let world = rotated + translation;
+        *v = Point3::from(world);
+    }
+
+    // Step 3: triangulate + append included caps. Loop vertex
+    // indices were captured at scan time + reference positions in
+    // `scan.0.vertices` — which after our in-place transform are
+    // now in world frame. So both the original-loop-positions math
+    // (for the 2D projection) AND the resulting face indices stay
+    // valid.
+    for cap_loop in &cap.loops {
+        if !cap_loop.include {
+            continue;
+        }
+        // Loop's stored `plane_centroid` and `plane_normal` are in
+        // pre-bake physics-local frame. We need them in world frame
+        // to project the now-transformed loop vertices.
+        let centroid_world = rotation.transform_point(&cap_loop.plane_centroid) + translation;
+        let normal_world = rotation.transform_vector(&cap_loop.plane_normal);
+
+        let loop_points_world: Vec<Point3<f64>> = cap_loop
+            .vertex_indices
+            .iter()
+            .filter_map(|&idx| out.vertices.get(idx as usize).copied())
+            .collect();
+        if loop_points_world.len() != cap_loop.vertex_indices.len() {
+            // Some indices invalid (mesh changed after scan); skip
+            // this loop rather than emit malformed faces.
+            continue;
+        }
+
+        let verts_2d = project_loop_to_plane_2d(&loop_points_world, centroid_world, normal_world);
+        let triangulation = triangulate_polygon_2d_earclip(&verts_2d);
+
+        // Map ear-clip's local indices (into the loop) back to
+        // global mesh vertex indices.
+        for tri in triangulation {
+            let a = cap_loop.vertex_indices[tri[0] as usize];
+            let b = cap_loop.vertex_indices[tri[1] as usize];
+            let c = cap_loop.vertex_indices[tri[2] as usize];
+            // Determine winding from the triangulation's 2D
+            // orientation + match the outward normal. If 2D CCW
+            // (positive cross) the triangle faces +normal in 3D;
+            // we want -normal (outward). Flip if needed.
+            let p0 = verts_2d[tri[0] as usize];
+            let p1 = verts_2d[tri[1] as usize];
+            let p2 = verts_2d[tri[2] as usize];
+            let signed_area_2d = (p1.0 - p0.0) * (p2.1 - p0.1) - (p1.1 - p0.1) * (p2.0 - p0.0);
+            if signed_area_2d >= 0.0 {
+                // CCW in 2D → triangle faces +normal in 3D. We want
+                // outward = away-from-mesh-interior, which is
+                // -normal_world (because orient_cap_normal_outward
+                // already flipped normal to point outward; the cap
+                // surface NORMAL points outward, so the triangle's
+                // GEOMETRIC normal needs to match → 2D-CCW order
+                // gives +normal, we need -normal, so reverse).
+                out.faces.push([a, c, b]);
+            } else {
+                out.faces.push([a, b, c]);
+            }
+        }
+    }
+
+    out
+}
+
+// ----- .prep.toml serializable structures -----
+
+#[derive(Serialize)]
+struct PrepToml {
+    scan_prep: PrepScanPrepBlock,
+    reorient: PrepReorientBlock,
+    recenter: PrepRecenterBlock,
+    clip: PrepClipBlock,
+    caps: PrepCapsBlock,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    centerline: Option<PrepCenterlineBlock>,
+    output: PrepOutputBlock,
+}
+
+#[derive(Serialize)]
+struct PrepScanPrepBlock {
+    source_stl: String,
+    tool_version: &'static str,
+    generated_at: String,
+    stl_units_at_load: &'static str,
+}
+
+#[derive(Serialize)]
+struct PrepReorientBlock {
+    // Physics-frame quaternion (w, x, y, z).
+    quaternion: [f64; 4],
+    roll_deg: f64,
+    pitch_deg: f64,
+    yaw_deg: f64,
+}
+
+#[derive(Serialize)]
+struct PrepRecenterBlock {
+    // Physics-frame translation in meters.
+    translation_m: [f64; 3],
+    translation_mm: [f64; 3],
+}
+
+#[derive(Serialize)]
+struct PrepClipBlock {
+    enabled: bool,
+    /// World-frame Z height in meters.
+    z_m: f64,
+    /// Cached drop percentage at save time.
+    drop_pct: f64,
+    /// At commit #12 the clip is **not baked** into the cleaned STL
+    /// (advisory only); the panel state is recorded here for
+    /// provenance + future v2 cf-cast consumption.
+    baked: bool,
+}
+
+#[derive(Serialize)]
+struct PrepCapsBlock {
+    /// Whether ear-clipping was applied at save time to close the
+    /// included loops. Always `true` if any loops were detected
+    /// AND included.
+    applied: bool,
+    loops: Vec<PrepCapLoop>,
+}
+
+#[derive(Serialize)]
+struct PrepCapLoop {
+    loop_index: usize,
+    vertex_count: usize,
+    plane_fit_r_squared: f64,
+    /// Physics-frame outward normal at scan time (pre-Reorient bake).
+    plane_normal: [f64; 3],
+    /// Physics-frame centroid at scan time.
+    plane_centroid_m: [f64; 3],
+    included: bool,
+}
+
+#[derive(Serialize)]
+struct PrepCenterlineBlock {
+    /// Polyline in **post-bake world-frame meters** (matches the
+    /// cleaned STL's coordinate system; v2 cf-cast consumes
+    /// directly).
+    points_m: Vec<[f64; 3]>,
+    algorithm: &'static str,
+}
+
+#[derive(Serialize)]
+struct PrepOutputBlock {
+    cleaned_stl: String,
+}
+
+/// Build the `.prep.toml` string from the current cf-scan-prep state.
+/// Includes provenance for every transform / cap / centerline so
+/// v2 cf-cast (or a future audit) can reconstruct what cf-scan-prep
+/// did to produce the cleaned STL.
+#[allow(clippy::too_many_arguments)]
+fn build_prep_toml_string(
+    source_stl: &Path,
+    stl_units: StlUnits,
+    reorient: &ReorientState,
+    recenter: &RecenterState,
+    clip: &ClipState,
+    cap: &CapState,
+    cleaned_stl_name: &str,
+    rotation_for_centerline: UnitQuaternion<f64>,
+    translation_for_centerline_m: Vector3<f64>,
+) -> Result<String> {
+    let q = reorient.quaternion_physics();
+    let timestamp = chrono_like_timestamp();
+
+    // Project the centerline polyline into world frame so v2 cf-cast
+    // can consume it directly without redoing Reorient+Recenter math.
+    let centerline_world: Vec<[f64; 3]> = cap
+        .centerline_polyline
+        .iter()
+        .map(|p| {
+            let rotated = rotation_for_centerline.transform_vector(&p.coords);
+            let world = rotated + translation_for_centerline_m;
+            [world.x, world.y, world.z]
+        })
+        .collect();
+
+    let toml_struct = PrepToml {
+        scan_prep: PrepScanPrepBlock {
+            source_stl: source_stl.display().to_string(),
+            tool_version: env!("CARGO_PKG_VERSION"),
+            generated_at: timestamp,
+            stl_units_at_load: stl_units.panel_label(),
+        },
+        reorient: PrepReorientBlock {
+            quaternion: [q.w, q.i, q.j, q.k],
+            roll_deg: reorient.roll_deg,
+            pitch_deg: reorient.pitch_deg,
+            yaw_deg: reorient.yaw_deg,
+        },
+        recenter: PrepRecenterBlock {
+            translation_m: [
+                recenter.tx_mm * 0.001,
+                recenter.ty_mm * 0.001,
+                recenter.tz_mm * 0.001,
+            ],
+            translation_mm: [recenter.tx_mm, recenter.ty_mm, recenter.tz_mm],
+        },
+        clip: PrepClipBlock {
+            enabled: clip.enabled,
+            z_m: clip.z_mm * 0.001,
+            drop_pct: clip.drop_pct,
+            baked: false,
+        },
+        caps: PrepCapsBlock {
+            applied: cap.loops.iter().any(|l| l.include),
+            loops: cap
+                .loops
+                .iter()
+                .enumerate()
+                .map(|(i, cl)| PrepCapLoop {
+                    loop_index: i,
+                    vertex_count: cl.vertex_indices.len(),
+                    plane_fit_r_squared: cl.plane_fit_r_squared,
+                    plane_normal: [cl.plane_normal.x, cl.plane_normal.y, cl.plane_normal.z],
+                    plane_centroid_m: [
+                        cl.plane_centroid.x,
+                        cl.plane_centroid.y,
+                        cl.plane_centroid.z,
+                    ],
+                    included: cl.include,
+                })
+                .collect(),
+        },
+        centerline: if centerline_world.is_empty() {
+            None
+        } else {
+            Some(PrepCenterlineBlock {
+                points_m: centerline_world,
+                algorithm: "cross_section_centroids",
+            })
+        },
+        output: PrepOutputBlock {
+            cleaned_stl: cleaned_stl_name.to_string(),
+        },
+    };
+    toml::to_string_pretty(&toml_struct).context("serialize PrepToml to TOML")
+}
+
+/// Minimal RFC 3339-ish timestamp without pulling in `chrono`. Uses
+/// the OS clock + `std::time::SystemTime` for a UTC-shaped string
+/// good enough for provenance. If the clock returns an error
+/// (extremely unusual), falls back to a placeholder.
+fn chrono_like_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Plain seconds-since-epoch (the user's timezone is irrelevant
+    // for provenance — they can convert if needed). Format as ISO
+    // 8601 UTC by computing a calendar date from the unix timestamp.
+    iso8601_utc_from_unix_seconds(secs)
+}
+
+/// Convert a unix timestamp (seconds since 1970-01-01 UTC) into an
+/// ISO 8601 UTC string like `2026-05-12T22:34:00Z`. Inline because
+/// the only alternative is pulling in `chrono` for one function.
+fn iso8601_utc_from_unix_seconds(unix_secs: u64) -> String {
+    // Days since epoch.
+    let days = unix_secs / 86_400;
+    let secs_in_day = unix_secs % 86_400;
+    let hours = secs_in_day / 3600;
+    let minutes = (secs_in_day % 3600) / 60;
+    let seconds = secs_in_day % 60;
+
+    // Walk forward from 1970-01-01 day-by-day. Slow for far-future
+    // dates but trivial for "now". Use a calendar table.
+    let (year, month, day) = unix_days_to_ymd(days as i64);
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+}
+
+/// Convert "days since 1970-01-01" to a (year, month, day) tuple.
+/// Algorithm: Howard Hinnant's civil-from-days; well-known + branch-
+/// less. ~30 LOC inline, avoids the `chrono` dep.
+fn unix_days_to_ymd(z: i64) -> (i64, u32, u32) {
+    // Shift so the "year 0" anchor is March 1 of year 0 (so leap
+    // days fall at year boundaries cleanly).
+    let z_shifted = z + 719_468;
+    let era = if z_shifted >= 0 {
+        z_shifted / 146_097
+    } else {
+        (z_shifted - 146_096) / 146_097
+    };
+    let doe = (z_shifted - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
+}
+
+/// Atomic two-file write: writes `cleaned_stl_path` + `prep_toml_path`
+/// to `.tmp` siblings first, then renames both to final names. If
+/// either step fails, BOTH `.tmp` files are cleaned up so the user
+/// doesn't end up with a half-written set. Spec §Architectural
+/// decisions §Save atomicity.
+fn atomic_write_save(
+    cleaned_mesh: &IndexedMesh,
+    cleaned_stl_path: &Path,
+    prep_toml_path: &Path,
+    prep_toml_content: &str,
+) -> Result<()> {
+    let stl_tmp = cleaned_stl_path.with_extension("stl.tmp");
+    let toml_tmp = prep_toml_path.with_extension("toml.tmp");
+
+    // STL write (binary; cleaned scans are large — text STL would
+    // 10x the file size with no benefit).
+    save_stl(cleaned_mesh, &stl_tmp, true)
+        .with_context(|| format!("writing {}", stl_tmp.display()))?;
+    // TOML write.
+    if let Err(e) = std::fs::write(&toml_tmp, prep_toml_content) {
+        // Roll back STL tmp; surface the TOML error.
+        let _ = std::fs::remove_file(&stl_tmp);
+        return Err(anyhow::Error::new(e).context(format!("writing {}", toml_tmp.display())));
+    }
+    // Atomic renames.
+    if let Err(e) = std::fs::rename(&stl_tmp, cleaned_stl_path) {
+        let _ = std::fs::remove_file(&stl_tmp);
+        let _ = std::fs::remove_file(&toml_tmp);
+        return Err(anyhow::Error::new(e).context(format!("renaming {}", stl_tmp.display())));
+    }
+    if let Err(e) = std::fs::rename(&toml_tmp, prep_toml_path) {
+        // STL already landed; remove it to keep atomicity contract
+        // ("neither final file lands if either write fails").
+        let _ = std::fs::remove_file(cleaned_stl_path);
+        let _ = std::fs::remove_file(&toml_tmp);
+        return Err(anyhow::Error::new(e).context(format!("renaming {}", toml_tmp.display())));
+    }
+    Ok(())
+}
+
 /// Compute the **post-Reorient** AABB of the raw scan AABB in
 /// physics-frame **millimeters**. Used by the Recenter panel's
 /// `[Center origin]` and `[Floor -> z=0]` click handlers to figure out
@@ -1144,7 +1712,12 @@ fn main() -> Result<()> {
             // Simplify panel's `[Reset to original]` action can restore
             // unsimplified geometry without re-reading the STL.
             let original = OriginalScanMesh(scan_mesh.clone());
-            run_render_app(scan_mesh, original, scan_info);
+            let output_dir = SaveOutputDir(resolve_output_dir(&cli));
+            let source = SourceStlPath(cli.path.clone());
+            let stl_units = StlUnitsResource(cli.stl_units);
+            run_render_app(
+                scan_mesh, original, scan_info, source, output_dir, stl_units,
+            );
         }
         Err(err) => {
             let msg = format!("Failed to load {}: {err:#}", cli.path.display());
@@ -1153,6 +1726,27 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve the Save-panel output directory from CLI args. Honors
+/// `--output-dir <path>` when supplied; else falls back to the input
+/// scan's parent directory. Spec §Architectural decisions §Save
+/// behavior.
+///
+/// **Fallback when `--output-dir` is absent AND `cli.path` has no
+/// parent** (extremely rare: only happens when the user passes a
+/// bare filename like `scan.stl` with no directory component on a
+/// system where the parent resolves to empty — practically never).
+/// Falls back to the current working directory.
+fn resolve_output_dir(cli: &Cli) -> PathBuf {
+    if let Some(dir) = &cli.output_dir {
+        return dir.clone();
+    }
+    cli.path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Load the STL at `cli.path` and convert its vertex coordinates into
@@ -1287,7 +1881,15 @@ fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyRe
 /// Scan Info + Simplify sections; bottom status bar surfaces the
 /// auto-suggest banner at load + apply/reset achievement messages.
 /// Returns when the window closes.
-fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info: ScanInfo) {
+#[allow(clippy::too_many_arguments)]
+fn run_render_app(
+    scan_mesh: IndexedMesh,
+    original: OriginalScanMesh,
+    scan_info: ScanInfo,
+    source: SourceStlPath,
+    output_dir: SaveOutputDir,
+    stl_units: StlUnitsResource,
+) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
@@ -1322,6 +1924,10 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         .insert_resource(ClipState::default())
         .insert_resource(CapState::default())
         .insert_resource(CapPendingAction::default())
+        .insert_resource(SavePendingAction::default())
+        .insert_resource(source)
+        .insert_resource(output_dir)
+        .insert_resource(stl_units)
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
@@ -1343,6 +1949,7 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
                 apply_recenter_to_transform,
                 update_clip_drop_pct,
                 handle_cap_actions,
+                handle_save_action,
                 mark_cap_stale_on_transform_change,
                 auto_clear_status,
                 draw_reference_overlays,
@@ -2097,6 +2704,9 @@ fn scan_prep_panel(
     mut clip_state: ResMut<ClipState>,
     mut cap_state: ResMut<CapState>,
     mut cap_pending: ResMut<CapPendingAction>,
+    mut save_pending: ResMut<SavePendingAction>,
+    source: Res<SourceStlPath>,
+    output_dir: Res<SaveOutputDir>,
     status: Res<StatusBar>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -2131,6 +2741,13 @@ fn scan_prep_panel(
                         &mut cap_pending,
                         &mut reorient_state,
                         &mut recenter_state,
+                    );
+                    render_save_section(
+                        ui,
+                        &source.0,
+                        &output_dir.0,
+                        &cap_state,
+                        &mut save_pending,
                     );
                 });
         });
@@ -2480,11 +3097,206 @@ fn render_cap_section(
         });
 }
 
+/// `Save` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications §9).
+/// Writes the cleaned STL + the `.prep.toml` provenance file to the
+/// configured output directory.
+///
+/// Layout:
+///
+/// - Filename previews (`<stem>.cleaned.stl` + `<stem>.prep.toml`) so
+///   the user sees exactly what will be written.
+/// - Output directory (hover tooltip = full path).
+/// - Per-loop "uncapped" warning if any detected loops are excluded —
+///   they leave the cleaned mesh non-watertight, which downstream
+///   cf-cast SDF queries can't handle. The user can still save anyway
+///   (their judgment call on whether the warning applies).
+/// - `[Save]` button queues `SavePendingAction::save_now`;
+///   `handle_save_action` runs the actual write next Update tick.
+///
+/// Per spec §Architectural decisions §Save behavior: **no confirmation
+/// dialog**. The atomic-write pattern (`.tmp` + rename) means a click
+/// is fully reversible at the FS level if the user notices a mistake
+/// immediately afterward, and the .prep.toml records the full state.
+fn render_save_section(
+    ui: &mut egui::Ui,
+    source_path: &Path,
+    output_dir: &Path,
+    cap_state: &CapState,
+    save_pending: &mut SavePendingAction,
+) {
+    egui::CollapsingHeader::new("Save")
+        .default_open(true)
+        .show(ui, |ui| {
+            let stem = source_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("scan");
+            let cleaned_stl_name = format!("{stem}.cleaned.stl");
+            let prep_toml_name = format!("{stem}.prep.toml");
+
+            ui.label("Outputs:");
+            ui.label(format!("  - {cleaned_stl_name}"));
+            ui.label(format!("  - {prep_toml_name}"));
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Dir:");
+                let dir_label = output_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(".");
+                ui.label(dir_label)
+                    .on_hover_text(output_dir.display().to_string());
+            });
+
+            let included = cap_state.loops.iter().filter(|l| l.include).count();
+            let excluded = cap_state.loops.len().saturating_sub(included);
+            if excluded > 0 {
+                ui.add_space(4.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 200, 80),
+                    format!(
+                        "⚠ {excluded} boundary loop{} excluded — cleaned mesh \
+                         will not be watertight.",
+                        if excluded == 1 { "" } else { "s" },
+                    ),
+                );
+            }
+            if cap_state.loops.is_empty() {
+                ui.add_space(4.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 200, 80),
+                    "⚠ No boundary loops detected — Scan in Cap panel first \
+                     for a watertight save.",
+                );
+            }
+
+            ui.add_space(4.0);
+            if ui.button("Save").clicked() {
+                save_pending.save_now = true;
+            }
+        });
+}
+
+/// Update system: consume `SavePendingAction::save_now` (if any) by
+/// building the cleaned mesh + the `.prep.toml` and atomically
+/// writing both files to the output directory.
+///
+/// Pipeline:
+///
+/// 1. Build cleaned mesh: apply Reorient rotation + Recenter
+///    translation to every vertex; ear-clip + append cap triangles
+///    for each included loop.
+/// 2. Build `.prep.toml` string: scan-prep + reorient + recenter +
+///    clip + caps + (post-bake world-frame) centerline + output
+///    blocks.
+/// 3. Atomic write: STL to `.stl.tmp`, TOML to `.toml.tmp`, rename
+///    both. On any failure roll back both temp + final files so the
+///    user doesn't end up with a half-written save.
+/// 4. Update status bar: green Normal achievement on success
+///    (`Saved <stem>.cleaned.stl (n triangles)`); red Error with
+///    abbreviated cause on failure.
+///
+/// Per spec §Architectural decisions §FS error handling: the handler
+/// never panics — disk-full / read-only / permission errors surface
+/// as red status-bar messages so the user can retry after fixing the
+/// underlying condition.
+#[allow(clippy::too_many_arguments)]
+fn handle_save_action(
+    mut pending: ResMut<SavePendingAction>,
+    scan: Res<ScanMesh>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+    clip: Res<ClipState>,
+    cap: Res<CapState>,
+    output_dir: Res<SaveOutputDir>,
+    source: Res<SourceStlPath>,
+    stl_units: Res<StlUnitsResource>,
+    mut status: ResMut<StatusBar>,
+    time: Res<Time>,
+) {
+    if !pending.save_now {
+        return;
+    }
+    pending.save_now = false;
+
+    let stem = source
+        .0
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("scan");
+    let cleaned_stl_path = output_dir.0.join(format!("{stem}.cleaned.stl"));
+    let prep_toml_path = output_dir.0.join(format!("{stem}.prep.toml"));
+
+    // Reject non-finite transforms before touching the disk. Per spec
+    // §Architectural decisions §FS error handling, malformed slider
+    // values (NaN / Inf from corrupted state) surface as a red error
+    // rather than writing garbage to disk.
+    let q = reorient.quaternion_physics();
+    if !q.w.is_finite()
+        || !q.i.is_finite()
+        || !q.j.is_finite()
+        || !q.k.is_finite()
+        || !recenter.tx_mm.is_finite()
+        || !recenter.ty_mm.is_finite()
+        || !recenter.tz_mm.is_finite()
+    {
+        status.text = "Save failed: non-finite Reorient / Recenter values".into();
+        status.kind = StatusKind::Error;
+        status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
+        return;
+    }
+
+    let cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
+    let triangle_count = cleaned.faces.len();
+
+    let rotation = reorient.quaternion_physics();
+    let translation = Vector3::new(
+        recenter.tx_mm * 0.001,
+        recenter.ty_mm * 0.001,
+        recenter.tz_mm * 0.001,
+    );
+    let toml_str = match build_prep_toml_string(
+        &source.0,
+        stl_units.0,
+        &reorient,
+        &recenter,
+        &clip,
+        &cap,
+        &format!("{stem}.cleaned.stl"),
+        rotation,
+        translation,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            status.text = format!("Save failed: building .prep.toml ({e:#})");
+            status.kind = StatusKind::Error;
+            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
+            return;
+        }
+    };
+
+    match atomic_write_save(&cleaned, &cleaned_stl_path, &prep_toml_path, &toml_str) {
+        Ok(()) => {
+            status.text = format!(
+                "Saved {stem}.cleaned.stl ({} triangles) + {stem}.prep.toml",
+                human_count(triangle_count),
+            );
+            status.kind = StatusKind::Normal;
+            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
+        }
+        Err(e) => {
+            status.text = format!("Save failed: {e:#}");
+            status.kind = StatusKind::Error;
+            status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 8.0);
+        }
+    }
+}
+
 /// Bottom status bar. Renders nothing when `status.text` is empty so an
 /// empty status doesn't claim window space. Color-codes the text by
 /// [`StatusKind`]: gray for Normal, yellow for Warning (auto-suggest
-/// banner / soft caps). An `Error` color path (red) lands at commit #12
-/// alongside the Save panel's FS-error pattern.
+/// banner / soft caps), red for Error (Save-panel FS errors).
 fn render_status_bar(ctx: &egui::Context, status: &StatusBar) {
     if status.text.is_empty() {
         return;
@@ -2492,6 +3304,7 @@ fn render_status_bar(ctx: &egui::Context, status: &StatusBar) {
     let color = match status.kind {
         StatusKind::Normal => egui::Color32::from_gray(220),
         StatusKind::Warning => egui::Color32::from_rgb(240, 200, 80),
+        StatusKind::Error => egui::Color32::from_rgb(230, 80, 80),
     };
     egui::TopBottomPanel::bottom("cf-scan-prep-status")
         .resizable(false)
@@ -3419,5 +4232,195 @@ mod tests {
             untouched, 0,
             "simplified mesh should have no unreferenced vertices",
         );
+    }
+
+    // ----- Save panel helpers ----------------------------------------
+
+    /// A unit square at the origin (CCW in XY). 4 vertices, 2-triangle
+    /// triangulation expected from `triangulate_polygon_2d_earclip`.
+    fn unit_square_2d() -> Vec<(f64, f64)> {
+        vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    }
+
+    /// Ear-clipping a unit square produces exactly 2 triangles
+    /// covering the full polygon area (4 area units of 0.5 each).
+    /// Validates the basic ear-clip + signed-area path.
+    #[test]
+    fn earclip_unit_square_produces_two_triangles() {
+        let verts = unit_square_2d();
+        let tris = triangulate_polygon_2d_earclip(&verts);
+        assert_eq!(tris.len(), 2);
+        // Total signed area of the triangulation should equal the
+        // square's area (1.0). Sums absolute signed area per tri.
+        let total_area: f64 = tris
+            .iter()
+            .map(|t| {
+                let a = verts[t[0] as usize];
+                let b = verts[t[1] as usize];
+                let c = verts[t[2] as usize];
+                0.5 * ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)).abs()
+            })
+            .sum();
+        assert!(
+            (total_area - 1.0).abs() < 1e-12,
+            "expected total area 1.0, got {total_area}",
+        );
+    }
+
+    /// Reversing a CCW polygon to CW must still produce a valid
+    /// 2-triangle triangulation. Pins the `signed_area < 0 -> reverse`
+    /// branch of the ear-clip.
+    #[test]
+    fn earclip_cw_polygon_is_handled() {
+        let mut verts = unit_square_2d();
+        verts.reverse();
+        let tris = triangulate_polygon_2d_earclip(&verts);
+        assert_eq!(tris.len(), 2);
+    }
+
+    /// Polygons with `n < 3` vertices produce no triangles (early
+    /// return). Otherwise an `n=3` polygon should produce exactly
+    /// 1 triangle.
+    #[test]
+    fn earclip_handles_degenerate_vertex_counts() {
+        assert!(triangulate_polygon_2d_earclip(&[]).is_empty());
+        assert!(triangulate_polygon_2d_earclip(&[(0.0, 0.0)]).is_empty());
+        assert!(triangulate_polygon_2d_earclip(&[(0.0, 0.0), (1.0, 0.0)]).is_empty());
+        let single = triangulate_polygon_2d_earclip(&[(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)]);
+        assert_eq!(single.len(), 1);
+    }
+
+    /// A convex pentagon (5 vertices) produces 3 triangles
+    /// (`n - 2 = 3` for any simple polygon).
+    #[test]
+    fn earclip_convex_pentagon_produces_three_triangles() {
+        // Regular-ish pentagon at unit radius.
+        let verts = (0..5)
+            .map(|i| {
+                let theta = i as f64 * std::f64::consts::TAU / 5.0;
+                (theta.cos(), theta.sin())
+            })
+            .collect::<Vec<_>>();
+        let tris = triangulate_polygon_2d_earclip(&verts);
+        assert_eq!(tris.len(), 3);
+    }
+
+    /// `iso8601_utc_from_unix_seconds` produces a parseable, sensible
+    /// timestamp. Pins the date math against a known unix epoch:
+    /// `1640995200` = `2022-01-01T00:00:00Z`.
+    #[test]
+    fn iso8601_timestamp_matches_known_unix_epoch() {
+        let s = iso8601_utc_from_unix_seconds(1_640_995_200);
+        assert_eq!(s, "2022-01-01T00:00:00Z");
+    }
+
+    /// `build_prep_toml_string` produces a string that re-parses as
+    /// TOML and contains the expected top-level keys. Validates the
+    /// serde-derive shape doesn't drift silently.
+    #[test]
+    fn prep_toml_string_round_trips_through_toml_parser() -> Result<()> {
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let clip = ClipState::default();
+        let cap = CapState::default();
+        let rotation = reorient.quaternion_physics();
+        let translation = nalgebra::Vector3::zeros();
+        let s = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            &reorient,
+            &recenter,
+            &clip,
+            &cap,
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+        )?;
+        let parsed: toml::Value = toml::from_str(&s)?;
+        assert!(parsed.get("scan_prep").is_some());
+        assert!(parsed.get("reorient").is_some());
+        assert!(parsed.get("recenter").is_some());
+        assert!(parsed.get("clip").is_some());
+        assert!(parsed.get("caps").is_some());
+        assert!(parsed.get("output").is_some());
+        // No cap loops -> centerline block omitted.
+        assert!(parsed.get("centerline").is_none());
+        Ok(())
+    }
+
+    /// `build_cleaned_mesh` bakes Reorient + Recenter into vertex
+    /// positions: an identity Reorient + +x translation moves all
+    /// vertices by +x. Default state means no caps are appended.
+    #[test]
+    fn build_cleaned_mesh_bakes_recenter_translation() {
+        let mesh = one_triangle_at(0.001);
+        let recenter = RecenterState {
+            tx_mm: 100.0, // +100mm = +0.1m
+            ..RecenterState::default()
+        };
+        let cleaned = build_cleaned_mesh(
+            &mesh,
+            &ReorientState::default(),
+            &recenter,
+            &CapState::default(),
+        );
+        assert_eq!(cleaned.vertices.len(), 3);
+        assert!(
+            (cleaned.vertices[0].x - (0.001 + 0.1)).abs() < 1e-12,
+            "first vertex should be translated by +0.1m, got {}",
+            cleaned.vertices[0].x,
+        );
+    }
+
+    /// `resolve_output_dir` honors `--output-dir <path>` when supplied.
+    #[test]
+    fn resolve_output_dir_honors_explicit_flag() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "cf-scan-prep",
+            "/scans/sock.stl",
+            "--output-dir",
+            "/out/foo",
+        ])?;
+        let dir = resolve_output_dir(&cli);
+        assert_eq!(dir, PathBuf::from("/out/foo"));
+        Ok(())
+    }
+
+    /// `resolve_output_dir` falls back to the input scan's parent
+    /// directory when `--output-dir` is absent.
+    #[test]
+    fn resolve_output_dir_defaults_to_scan_parent() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["cf-scan-prep", "/scans/sock.stl"])?;
+        let dir = resolve_output_dir(&cli);
+        assert_eq!(dir, PathBuf::from("/scans"));
+        Ok(())
+    }
+
+    /// Atomic-write produces both expected files when both writes
+    /// succeed. Uses a tempfile-style temp dir constructed from
+    /// `std::env::temp_dir()` + a unique stem so tests don't collide.
+    #[test]
+    fn atomic_write_save_lands_both_files() -> Result<()> {
+        let tmp_root = std::env::temp_dir().join(format!(
+            "cf-scan-prep-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&tmp_root)?;
+        let stl_path = tmp_root.join("scan.cleaned.stl");
+        let toml_path = tmp_root.join("scan.prep.toml");
+        let mesh = one_triangle_at(0.001);
+        atomic_write_save(&mesh, &stl_path, &toml_path, "key = \"value\"\n")?;
+        assert!(stl_path.exists(), "cleaned STL should land at final path");
+        assert!(toml_path.exists(), ".prep.toml should land at final path");
+        // No `.tmp` files left over.
+        assert!(!stl_path.with_extension("stl.tmp").exists());
+        assert!(!toml_path.with_extension("toml.tmp").exists());
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&tmp_root);
+        Ok(())
     }
 }

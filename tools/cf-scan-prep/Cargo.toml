@@ -86,8 +86,15 @@ bevy_egui = { version = "0.39.1", default-features = false, features = [
     "bevy_ui",
 ] }
 
-# Application-style error chaining for the CLI load path.
+# Application-style error chaining for the CLI load path + the
+# Save panel's atomic write FS error pattern.
 anyhow = { workspace = true }
+# `.prep.toml` provenance file written by the Save panel (commit
+# #12): scan-prep config + centerline polyline + per-cap-loop
+# provenance, consumed by v2 cf-cast for curve-following mold
+# generation (`docs/CURVE_FOLLOWING_DESIGN.md`).
+serde = { workspace = true }
+toml = { workspace = true }
 
 # CLI argument parsing — direct dep with `derive` (clap has no workspace
 # pin today; cf-scan-prep is the third consumer alongside xtask + cf-viewer).

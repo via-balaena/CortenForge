@@ -1915,6 +1915,8 @@ dependencies = [
  "mesh-types",
  "meshopt",
  "nalgebra",
+ "serde",
+ "toml",
 ]
 
 [[package]]
