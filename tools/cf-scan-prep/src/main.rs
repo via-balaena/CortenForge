@@ -445,6 +445,18 @@ struct ClipState {
     /// post-Recenter). Spec convention: `z >= z_mm` is kept; `z < z_mm`
     /// is removed.
     z_mm: f64,
+    /// Cached percentage of vertices below the clip plane, populated
+    /// by [`update_clip_drop_pct`] only when relevant state actually
+    /// changes. Read-only by the panel.
+    ///
+    /// The vertex walk is O(N) — N can be 10M+ on an unsimplified
+    /// scan, which takes ~0.5-1.0 s per call. Computing on every
+    /// panel render (60 Hz) would freeze the UI; caching here makes
+    /// the panel render O(1).
+    ///
+    /// Written via `bypass_change_detection` so updating the cache
+    /// doesn't re-trigger the update system in a self-feedback loop.
+    drop_pct: f64,
 }
 
 impl Default for ClipState {
@@ -452,17 +464,28 @@ impl Default for ClipState {
         Self {
             enabled: false,
             z_mm: 0.0,
+            drop_pct: 0.0,
         }
     }
 }
 
 /// Walk the scan's vertices, transform each into cast-frame world
 /// coordinates (rotation + translation_z), and return the percentage
-/// that fall below `clip_z_mm`. Cheap for simplified meshes
-/// (~200k vertices ≈ 1 ms per call); the panel calls this on every
-/// frame the section renders.
+/// that fall below `clip_z_mm`. Called by [`update_clip_drop_pct`]
+/// only on relevant state changes — not on every panel render — so
+/// the O(N) vertex walk doesn't freeze the UI.
 ///
 /// Returns 0.0 for an empty mesh (no vertices to drop).
+///
+/// **Inner-loop optimization**: we only need the **z-component** of
+/// each rotated vertex. That's the 3rd row of the rotation matrix
+/// dotted with the vertex vector (~6 ops), not the full
+/// `transform_vector` call (~30 ops via `q · v · q^-1`). On a 10M-
+/// vertex unsimplified scan this is the difference between ~50 ms
+/// (acceptable single-shot lag on toggle / slider tick) and ~250 ms
+/// (perceptible UI hitch). For 200k simplified vertices both paths
+/// are sub-frame; the optimization mostly matters when the user
+/// enables Clip *before* simplifying.
 fn compute_drop_percentage(
     scan: &IndexedMesh,
     rotation: UnitQuaternion<f64>,
@@ -472,14 +495,23 @@ fn compute_drop_percentage(
     if scan.vertices.is_empty() {
         return 0.0;
     }
+    // Pull the rotation matrix's 3rd row once outside the hot loop.
+    // `to_rotation_matrix` allocates a Matrix3; doing it per-vertex
+    // would dominate the loop.
+    let r = rotation.to_rotation_matrix();
+    let z_row_x = r[(2, 0)];
+    let z_row_y = r[(2, 1)];
+    let z_row_z = r[(2, 2)];
+
     let mut below: usize = 0;
     for v in &scan.vertices {
         // Vertices are in physics-frame meters; lift to mm to match
-        // the clip plane's mm convention. Then rotate (R is unit-norm,
-        // so it doesn't change magnitudes); translation_z lands the
-        // mesh in world frame.
-        let v_mm = Vector3::new(v.x * 1000.0, v.y * 1000.0, v.z * 1000.0);
-        let world_z_mm = rotation.transform_vector(&v_mm).z + translation_z_mm;
+        // the clip plane's mm convention. Compute only the z-component
+        // of `rotation * v + translation_z`.
+        let world_z_mm = z_row_x * v.x * 1000.0
+            + z_row_y * v.y * 1000.0
+            + z_row_z * v.z * 1000.0
+            + translation_z_mm;
         if world_z_mm < clip_z_mm {
             below += 1;
         }
@@ -490,6 +522,45 @@ fn compute_drop_percentage(
     {
         100.0 * (below as f64) / (scan.vertices.len() as f64)
     }
+}
+
+/// Update system: recompute [`ClipState::drop_pct`] when the clip
+/// state, scan mesh, reorient state, or recenter state has actually
+/// changed. Early-returns when clip is disabled (cached value stays
+/// dormant; re-enable toggle triggers a fresh recompute).
+///
+/// **Why a separate system, not panel-driven**: see [`ClipState::drop_pct`]
+/// docstring. The vertex walk is too expensive (~0.5-1.0 s on 10M
+/// verts) to run on every panel render (60 Hz). Doing it via an
+/// Update system + change detection makes the panel render O(1) and
+/// limits the heavy work to actual state transitions.
+///
+/// **`bypass_change_detection` write**: writing to `clip.drop_pct`
+/// via the normal `ResMut<ClipState>` path would mark `ClipState` as
+/// changed next tick, re-triggering this system in a self-feedback
+/// loop. `bypass_change_detection` returns `&mut ClipState` without
+/// updating the change-detection tick, breaking the cycle.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn update_clip_drop_pct(
+    mut clip: ResMut<ClipState>,
+    scan: Res<ScanMesh>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+) {
+    if !clip.enabled {
+        return;
+    }
+    if !clip.is_changed() && !scan.is_changed() && !reorient.is_changed() && !recenter.is_changed()
+    {
+        return;
+    }
+    let pct = compute_drop_percentage(
+        &scan.0,
+        reorient.quaternion_physics(),
+        recenter.tz_mm,
+        clip.z_mm,
+    );
+    clip.bypass_change_detection().drop_pct = pct;
 }
 
 /// Linear interpolation between two `Point3<f64>` positions.
@@ -941,6 +1012,7 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
                 handle_simplify_actions,
                 apply_reorient_to_transform,
                 apply_recenter_to_transform,
+                update_clip_drop_pct,
                 auto_clear_status,
                 draw_reference_overlays,
                 exit_on_esc,
@@ -1463,7 +1535,6 @@ fn scan_prep_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     overlays: Res<OverlayLengths>,
-    scan: Res<ScanMesh>,
     mut simplify_state: ResMut<SimplifyState>,
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
@@ -1484,14 +1555,7 @@ fn scan_prep_panel(
             render_simplify_section(ui, &info, &mut simplify_state);
             render_reorient_section(ui, &mut reorient_state);
             render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
-            render_clip_section(
-                ui,
-                &mut clip_state,
-                &scan,
-                &reorient_state,
-                &recenter_state,
-                &overlays,
-            );
+            render_clip_section(ui, &mut clip_state, &overlays);
         });
     Ok(())
 }
@@ -1711,17 +1775,10 @@ fn render_recenter_section(
 /// then the rendered mesh stays whole; the user reads the percentage
 /// + disc position to verify intent.
 ///
-/// Drop percentage is computed on every render via
-/// [`compute_drop_percentage`] (a single vertex walk). Cheap on a
-/// simplified mesh (~1 ms for 200k verts).
-fn render_clip_section(
-    ui: &mut egui::Ui,
-    state: &mut ClipState,
-    scan: &ScanMesh,
-    reorient: &ReorientState,
-    recenter: &RecenterState,
-    overlays: &OverlayLengths,
-) {
+/// Drop percentage is read from `ClipState::drop_pct` — the cached
+/// value populated by [`update_clip_drop_pct`] on relevant state
+/// changes. The panel render itself stays O(1).
+fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &OverlayLengths) {
     egui::CollapsingHeader::new("Clip floor")
         .default_open(true)
         .show(ui, |ui| {
@@ -1731,14 +1788,8 @@ fn render_clip_section(
             ui.add(egui::Slider::new(&mut state.z_mm, -range..=range).text("Z (mm)"));
 
             if state.enabled {
-                let pct = compute_drop_percentage(
-                    &scan.0,
-                    reorient.quaternion_physics(),
-                    recenter.tz_mm,
-                    state.z_mm,
-                );
-                ui.label(format!("Drops {pct:.1}% verts"));
-                if pct > 95.0 {
+                ui.label(format!("Drops {:.1}% verts", state.drop_pct));
+                if state.drop_pct > 95.0 {
                     ui.colored_label(
                         egui::Color32::from_rgb(240, 200, 80),
                         "⚠ Clip removes nearly all geometry — verify Z value",
