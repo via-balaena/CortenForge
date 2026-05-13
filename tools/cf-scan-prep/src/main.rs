@@ -100,11 +100,17 @@ impl StlUnits {
     /// §Panel specifications §1) so users see the load-time conversion
     /// factor and notice mismatches when the displayed AABB reads absurd
     /// (e.g. `0.08 mm` for a meter-scale STL with default `mm`).
+    ///
+    /// The arrow uses ASCII `->` rather than Unicode `→` (U+2192)
+    /// because egui's default `ProggyClean` font ships with Latin-1 +
+    /// basic punctuation coverage only; U+2192 falls outside the glyph
+    /// set and renders as `□` (missing-glyph box). `×` (U+00D7) is in
+    /// Latin-1 Supplement and renders fine, so it stays.
     fn panel_label(self) -> &'static str {
         match self {
-            Self::Mm => "mm (vertex × 0.001 → meters)",
+            Self::Mm => "mm (vertex × 0.001 -> meters)",
             Self::M => "m (no scale)",
-            Self::Inch => "inch (vertex × 0.0254 → meters)",
+            Self::Inch => "inch (vertex × 0.0254 -> meters)",
         }
     }
 }
@@ -514,10 +520,11 @@ mod tests {
 
     /// Spec-exact string for `mm` units. Changing this drift-checks the
     /// Scan Info panel against the spec mockup (`docs/SCAN_PREP_DESIGN.md`
-    /// §Panel specifications §1).
+    /// §Panel specifications §1). ASCII `->` (not Unicode `→`) because
+    /// egui's default font lacks U+2192 — see [`StlUnits::panel_label`].
     #[test]
     fn stl_units_mm_panel_label_matches_spec() {
-        assert_eq!(StlUnits::Mm.panel_label(), "mm (vertex × 0.001 → meters)");
+        assert_eq!(StlUnits::Mm.panel_label(), "mm (vertex × 0.001 -> meters)");
     }
 
     #[test]
@@ -529,7 +536,7 @@ mod tests {
     fn stl_units_inch_panel_label_matches_spec() {
         assert_eq!(
             StlUnits::Inch.panel_label(),
-            "inch (vertex × 0.0254 → meters)"
+            "inch (vertex × 0.0254 -> meters)"
         );
     }
 
@@ -577,7 +584,7 @@ mod tests {
         assert_eq!(info.file_full_path, "/tmp/test_scan.stl");
         assert_eq!(info.vertex_count, 3);
         assert_eq!(info.face_count, 1);
-        assert_eq!(info.stl_units_label, "mm (vertex × 0.001 → meters)");
+        assert_eq!(info.stl_units_label, "mm (vertex × 0.001 -> meters)");
         assert!((info.aabb_width_mm - 80.0).abs() < 1e-9);
         assert!((info.aabb_depth_mm - 80.0).abs() < 1e-9);
         assert!((info.aabb_height_mm - 80.0).abs() < 1e-9);
