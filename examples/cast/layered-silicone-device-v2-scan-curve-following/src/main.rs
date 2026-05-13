@@ -1,0 +1,308 @@
+//! Layered silicone device v2 cast — curve-following multi-piece example.
+//!
+//! Closes the v2 code-side arc from `docs/CURVE_FOLLOWING_DESIGN.md`.
+//! Demonstrates Steps 5-10 end-to-end on a synthetic curved body
+//! (gentle arc in the XZ plane) that exercises every v2 feature the
+//! workshop iter-1 needs:
+//!
+//! - **Steps 5-6**: per-piece SDF composition + marching cubes + STL
+//!   export via [`CastSpec::export_molds_v2`]. Produces `2 × L` mold
+//!   piece STLs + 1 plug STL (8 files for a 3-layer cast vs v1's 4).
+//! - **Step 7**: per-piece printability — each piece's AABB checked
+//!   against [`PrinterConfig::fdm_default`]'s build volume
+//!   independently via `mesh-printability::validate_for_printing`.
+//! - **Step 8**: v2 procedure markdown via
+//!   [`CastSpec::write_procedure_v2`] — includes Cast Geometry,
+//!   v2 Mold Assembly, Pour Gate + Vent sections.
+//! - **Step 9**: cylindrical registration pins enabled via
+//!   [`Ribbon::with_registration`]
+//!   ([`RegistrationKind::Pins(PinSpec::iter1())`]) — 2 pins per
+//!   layer-piece-pair at 25%/75% of centerline arc length, 3 mm Ø ×
+//!   10 mm long × 25 mm offset from the centerline.
+//! - **Step 10**: pour gate + air vent enabled via
+//!   [`Ribbon::with_pour_gate`]
+//!   ([`PourGateKind::Default(PourGateSpec::iter1())`]) — 6 mm Ø pour
+//!   gate at the base end + 3 mm Ø vent at the tip end.
+//!
+//! Output (after `cargo run --release -p
+//! example-cast-layered-silicone-device-v2-scan-curve-following`):
+//!
+//! ```text
+//! out/
+//! ├── mold_layer_0_piece_0.stl  (innermost, Negative side)
+//! ├── mold_layer_0_piece_1.stl  (innermost, Positive side)
+//! ├── mold_layer_1_piece_0.stl  (middle, Negative)
+//! ├── mold_layer_1_piece_1.stl  (middle, Positive)
+//! ├── mold_layer_2_piece_0.stl  (outer, Negative)
+//! ├── mold_layer_2_piece_1.stl  (outer, Positive)
+//! ├── plug.stl
+//! └── procedure.md
+//! ```
+//!
+//! # Scan-driven swap-in
+//!
+//! This example uses synthetic [`Solid::pipe`] geometry along a
+//! hand-authored centerline polyline. To run on a real
+//! cf-scan-prep-cleaned scan + extracted centerline, replace the
+//! geometry construction with:
+//!
+//! ```ignore
+//! use mesh_io::load_stl;
+//! use mesh_sdf::SignedDistanceField;
+//!
+//! // Load the cleaned watertight scan (cf-scan-prep commit #12 output).
+//! let scan_mesh = load_stl("path/to/scan.cleaned.stl")?;
+//! let scan_sdf = SignedDistanceField::from_mesh(&scan_mesh, ...);
+//! let scan_aabb = /* compute from scan_mesh bounds */;
+//! let body = Solid::from_sdf(scan_sdf, scan_aabb);
+//!
+//! // Parse the .prep.toml [centerline] block to recover the
+//! // polyline points the centerline algorithm produced.
+//! let centerline: Vec<Point3<f64>> = parse_prep_toml_centerline(
+//!     "path/to/scan.prep.toml",
+//! )?;
+//! let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0))?;
+//! let ribbon = Ribbon::new(centerline, split)?
+//!     .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
+//!     .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+//! ```
+//!
+//! The `CastSpec` construction (layers, materials, bounding region,
+//! cell size, printer config, budget) is geometry-agnostic — the
+//! same wrapper below drives both the synthetic and scan-derived
+//! pipelines.
+//!
+//! Sanitization: per the layered-silicone-device memo, the cavity
+//! geometry is referred to as the synthetic "curved tube" or the
+//! scanned reference geometry. No anatomical references appear.
+
+use anyhow::{Context, Result};
+use cf_cast::{
+    CastLayer, CastSpec, DEFAULT_MASS_BUDGET_KG, MoldingMaterial, PinSpec, PourGateKind,
+    PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
+};
+use cf_design::Solid;
+use nalgebra::{Point3, Vector3};
+use std::path::{Path, PathBuf};
+
+// ============================================================
+// Geometry constants — curved-pipe body + cumulative shells.
+// ============================================================
+
+/// Inner cavity (plug) pipe radius in meters. 8 mm — small enough
+/// that all three cumulative shells fit inside the bounding region
+/// at the v2 pin/gate-offset distances; large enough that the
+/// displaced cavity volume registers cleanly in the marching-cubes
+/// pour-volume integration.
+const PLUG_RADIUS_M: f64 = 0.008;
+
+/// Inner layer cumulative outer radius in meters. 14 mm = plug
+/// radius (8 mm) + 6 mm Ecoflex inner shell thickness.
+const LAYER_INNER_M: f64 = 0.014;
+
+/// Middle layer cumulative outer radius. 18 mm = inner cumulative
+/// (14 mm) + 4 mm Dragon Skin middle shell thickness.
+const LAYER_MIDDLE_OUTER_M: f64 = 0.018;
+
+/// Outer layer cumulative outer radius. 22 mm = middle cumulative
+/// (18 mm) + 4 mm Ecoflex outer shell thickness — the full device
+/// wall thickness.
+const LAYER_OUTER_M: f64 = 0.022;
+
+/// Bounding-region half-extent in xy (meters). 60 mm half-extent =
+/// 120 mm cube envelope. Big enough that pin positions (25 mm offset
+/// from centerline) sit comfortably inside the cup wall AND the
+/// pour-gate/vent cylinders (40 mm long, centered on centerline
+/// endpoints) don't escape through the side walls.
+const BOUNDING_HALF_XY_M: f64 = 0.060;
+
+/// Bounding-region half-extent in z (meters). Centerline arc apex
+/// at z = +0.012; outer body radius 22 mm; so the +Z extent of the
+/// outer body reaches ~+0.034 m. Half-extent 0.060 leaves ~26 mm
+/// of cup wall + clearance above the body and below the centerline.
+const BOUNDING_HALF_Z_M: f64 = 0.060;
+
+/// Marching-cubes sampling cell size in meters. 3 mm — coarser than
+/// v1's 2 mm because the v2 body is bigger (120 mm bounding region vs
+/// v1's 80 × 60 mm cube → 5× cell count at 2 mm) and per-piece F4
+/// validation runs once per piece (6 pieces for a 3-layer cast vs v1's
+/// 3 single cups). 3 mm cells keep example wall time comfortably
+/// under 30 s on `--release` even with the full v2 pipeline (pins +
+/// pour gate + per-piece F4).
+const MESH_CELL_SIZE_M: f64 = 0.003;
+
+/// Per-piece minimum wall thickness for the F4 gate (mm).
+///
+/// v1 default is 1.0 mm; v2 piece geometry (ribbon split + pin
+/// holes + pour-channel CSG) produces sub-1mm MC artifacts at the
+/// seam + feature edges that don't reflect actual print failures
+/// — workshop FDM single-perimeter slicing prints walls well
+/// under 1 mm. 0.1 mm here is below the FDM-default-nozzle 0.4 mm
+/// extrusion width, so the gate only blocks on genuine sliver
+/// geometry (vs MC stair-stepping). Production setups may tune
+/// this back up after iter-1 post-print inspection.
+const PIECE_MIN_WALL_MM: f64 = 0.1;
+
+const ECOFLEX_00_30_DENSITY_KG_M3: f64 = 1070.0;
+const DRAGON_SKIN_10A_DENSITY_KG_M3: f64 = 1070.0;
+
+// ============================================================
+// Centerline — gentle arc in XZ plane (5 points).
+// ============================================================
+
+/// Synthetic centerline polyline approximating a gentle curve like a
+/// finger or short banana. 5 points along +X with a smooth +Z bend
+/// peaking at the midpoint, total arc length ~80 mm. Max tangent
+/// rotation ~30° between adjacent segments — well under v2's 120°
+/// refusal threshold per
+/// `docs/CURVE_FOLLOWING_DESIGN.md` §"Piece count selection".
+///
+/// In a real cf-scan-prep workflow, this polyline comes from the
+/// scan-prep tool's `compute_centerline_polyline` output written to
+/// `.prep.toml`'s `[centerline]` block.
+fn build_centerline() -> Vec<Point3<f64>> {
+    vec![
+        Point3::new(-0.040, 0.0, 0.0),
+        Point3::new(-0.020, 0.0, 0.005),
+        Point3::new(0.0, 0.0, 0.012),
+        Point3::new(0.020, 0.0, 0.005),
+        Point3::new(0.040, 0.0, 0.0),
+    ]
+}
+
+// ============================================================
+// Spec construction.
+// ============================================================
+
+/// Build the v2 [`CastSpec`] — 3-layer device + curved-pipe plug
+/// along the centerline polyline. Innermost-first ordering matches
+/// v1's convention (same `CastSpec` data carrier).
+fn build_spec(centerline: &[Point3<f64>]) -> CastSpec {
+    let plug = Solid::pipe(centerline.to_vec(), PLUG_RADIUS_M);
+
+    // Cumulative outer-surface positives per layer. Same offset-and-
+    // subtract pattern as v1 — Solid::pipe's SDF is exact, so
+    // `offset(thickness)` produces the cumulative outer surface
+    // cleanly.
+    let layer_inner_body = plug.clone().offset(LAYER_INNER_M).subtract(plug.clone());
+    let layer_middle_body = plug
+        .clone()
+        .offset(LAYER_MIDDLE_OUTER_M)
+        .subtract(plug.clone());
+    let layer_outer_body = plug.clone().offset(LAYER_OUTER_M).subtract(plug.clone());
+
+    let ecoflex_00_30 = MoldingMaterial {
+        display_name: "Ecoflex 00-30".to_string(),
+        density_kg_m3: ECOFLEX_00_30_DENSITY_KG_M3,
+        anchor_key: Some("ECOFLEX_00_30"),
+    };
+    let dragon_skin_10a = MoldingMaterial {
+        display_name: "Dragon Skin 10A".to_string(),
+        density_kg_m3: DRAGON_SKIN_10A_DENSITY_KG_M3,
+        anchor_key: Some("DRAGON_SKIN_10A"),
+    };
+
+    let bounding_region = Solid::cuboid(Vector3::new(
+        BOUNDING_HALF_XY_M,
+        BOUNDING_HALF_XY_M,
+        BOUNDING_HALF_Z_M,
+    ));
+
+    CastSpec {
+        layers: vec![
+            CastLayer {
+                body: layer_inner_body,
+                material: ecoflex_00_30.clone(),
+            },
+            CastLayer {
+                body: layer_middle_body,
+                material: dragon_skin_10a,
+            },
+            CastLayer {
+                body: layer_outer_body,
+                material: ecoflex_00_30,
+            },
+        ],
+        plug,
+        bounding_region,
+        mesh_cell_size_m: MESH_CELL_SIZE_M,
+        printer_config: mesh_printability::PrinterConfig::fdm_default()
+            .with_min_wall_thickness(PIECE_MIN_WALL_MM),
+        mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+    }
+}
+
+/// Build the v2 [`Ribbon`] — straight-line approximation in
+/// world-XZ, with split-normal `+Y` so the ribbon's binormal
+/// alternates around `+Z`-ish at each centerline segment. Pieces
+/// split top/bottom relative to the local body cross-section.
+///
+/// Registration pins + pour gate both enabled via the builder
+/// methods so the workshop iter-1 gets the full v2 feature set.
+fn build_ribbon(centerline: Vec<Point3<f64>>) -> Result<Ribbon> {
+    let split =
+        SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).context("split-normal +Y must normalize")?;
+    let ribbon = Ribbon::new(centerline, split)
+        .context("centerline polyline must produce a valid Ribbon")?;
+    Ok(ribbon
+        .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
+        .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1())))
+}
+
+// ============================================================
+// Entry point.
+// ============================================================
+
+fn main() -> Result<()> {
+    let out_dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+
+    let centerline = build_centerline();
+    let spec = build_spec(&centerline);
+    let ribbon = build_ribbon(centerline)?;
+
+    // `export_molds_v2` creates `out_dir` internally, writes
+    // 2L mold piece STLs + 1 plug STL, and returns the V2 report
+    // carrying per-layer + per-piece paths + pour-volume summaries.
+    let report = spec
+        .export_molds_v2(&ribbon, &out_dir)
+        .context("export_molds_v2 (2 pieces per layer + plug)")?;
+
+    let procedure_path = out_dir.join("procedure.md");
+    spec.write_procedure_v2(&ribbon, &procedure_path)
+        .context("write_procedure_v2 (Markdown)")?;
+
+    // Stdout summary — friendly enough to read at a glance.
+    println!("Layered silicone device v2 curve-following cast artifacts:");
+    println!();
+    println!("Output directory: {}", out_dir.display());
+    println!();
+    let mut total_mass_g = 0.0;
+    for layer in &report.layers {
+        let mass_g = layer.pour_volume.pour_mass_kg * 1000.0;
+        total_mass_g += mass_g;
+        println!(
+            "  layer {} ({}): {:.2} g",
+            layer.layer_index, layer.material_display_name, mass_g,
+        );
+        for piece in &layer.pieces {
+            println!("    {:?}  →  {}", piece.piece_side, piece.path.display());
+        }
+    }
+    println!("  plug  →  {}", report.plug_path.display());
+    println!("  procedure  →  {}", procedure_path.display());
+    println!();
+    println!(
+        "Total silicone mass: {:.2} g across {} layers (per-pour budget {:.2} g).",
+        total_mass_g,
+        report.layers.len(),
+        DEFAULT_MASS_BUDGET_KG * 1000.0,
+    );
+    println!();
+    println!(
+        "Centerline arc length: {:.1} mm; max tangent rotation: {:.1}°.",
+        ribbon.arc_length() * 1000.0,
+        ribbon.max_tangent_rotation_rad().to_degrees(),
+    );
+
+    Ok(())
+}

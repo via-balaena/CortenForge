@@ -353,6 +353,7 @@ members = [
 
     # Physical-cast tooling (Track F)
     "examples/cast/layered-silicone-device-v1",
+    "examples/cast/layered-silicone-device-v2-scan-curve-following",
 
     # Foundation (active development)
     "design/cf-geometry",

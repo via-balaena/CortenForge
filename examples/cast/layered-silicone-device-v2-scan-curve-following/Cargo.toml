@@ -1,0 +1,35 @@
+[package]
+name = "example-cast-layered-silicone-device-v2-scan-curve-following"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# v2 cf-cast surface: CastSpec + CastLayer + MoldingMaterial +
+# DEFAULT_MASS_BUDGET_KG (shared with v1) PLUS the v2-arc additions:
+# Ribbon + SplitNormal (Steps 3-4), PieceSide (Step 5), V2 export
+# (Step 6), write_procedure_v2 (Step 8), PinSpec +
+# RegistrationKind (Step 9), PourGateSpec + PourGateKind (Step 10).
+# This example exercises Steps 5-10 end-to-end through the
+# `CastSpec::export_molds_v2` + `write_procedure_v2` entry points.
+cf-cast = { workspace = true }
+# `Solid::pipe` (curved body along centerline polyline) +
+# `Solid::offset` (cumulative shell construction) +
+# `Solid::subtract` (cavity-from-pipe CSG) + `Solid::cuboid`
+# (bounding region). v1 uses `Solid::capsule` for a straight body;
+# v2 uses `Solid::pipe` because the body MUST be curved to
+# demonstrate the curve-following demold value proposition.
+cf-design = { workspace = true }
+# `PrinterConfig::fdm_default` for the v2 F4 printability gate.
+# Same posture as v1 — cf-cast exposes the printer config field
+# but doesn't re-export the type.
+mesh-printability = { workspace = true }
+# `Point3` + `Vector3` for the centerline polyline + cuboid
+# half-extents.
+nalgebra = { workspace = true }
+# `Result<()>` + error-context wrapping.
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
