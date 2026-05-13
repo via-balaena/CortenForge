@@ -39,6 +39,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::prelude::*;
@@ -1336,6 +1337,7 @@ fn run_render_app(scan_mesh: IndexedMesh, original: OriginalScanMesh, scan_info:
         .add_systems(
             Update,
             (
+                block_orbit_input_when_over_egui.before(orbit_camera_input),
                 handle_simplify_actions,
                 apply_reorient_to_transform,
                 apply_recenter_to_transform,
@@ -1957,6 +1959,45 @@ fn draw_cap_overlays(
             gizmos.line(window[0], window[1], centerline_color);
         }
     }
+}
+
+/// Update system: zero out the accumulated mouse motion + scroll
+/// resources before `cf_bevy_common::orbit_camera_input` reads them
+/// when egui has captured the pointer (cursor over a panel area
+/// **or** egui is processing an active interaction). Without this
+/// guard, scrolling the side-panel `ScrollArea` *also* zoomed the
+/// orbit camera, and right-click-dragging on a panel button leaked
+/// into a viewport pan.
+///
+/// **Why mutate the resources, not the events**: cf-bevy-common's
+/// `orbit_camera_input` reads `Res<AccumulatedMouseMotion>` /
+/// `Res<AccumulatedMouseScroll>` (per-frame accumulators), not
+/// `MessageReader<MouseWheel>`. Clearing event queues wouldn't
+/// affect the orbit camera; zeroing the accumulator deltas does.
+///
+/// **System ordering**: registered with `.before(orbit_camera_input)`
+/// so the zero-out lands before the orbit camera reads. Both write
+/// to / read from these accumulator resources, so Bevy's scheduler
+/// would serialize them regardless, but the explicit `.before` makes
+/// the contract obvious.
+///
+/// Known edge case: a click started on egui that drags into the
+/// viewport (e.g., releasing a panel button while moving the cursor
+/// off the panel) can leave the orbit camera mid-drag if the
+/// pointer-capture check flips mid-drag. Acceptable for now; the
+/// common case (scrolling over the sidebar) is what this fixes.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn block_orbit_input_when_over_egui(
+    mut contexts: EguiContexts,
+    mut motion: ResMut<AccumulatedMouseMotion>,
+    mut scroll: ResMut<AccumulatedMouseScroll>,
+) -> bevy::ecs::error::Result {
+    let ctx = contexts.ctx_mut()?;
+    if ctx.wants_pointer_input() || ctx.is_pointer_over_area() {
+        motion.delta = Vec2::ZERO;
+        scroll.delta = Vec2::ZERO;
+    }
+    Ok(())
 }
 
 /// Update system: clear the status bar text if its TTL has elapsed.
