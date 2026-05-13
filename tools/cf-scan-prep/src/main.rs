@@ -2125,7 +2125,13 @@ fn scan_prep_panel(
                     render_reorient_section(ui, &mut reorient_state);
                     render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
                     render_clip_section(ui, &mut clip_state, &overlays);
-                    render_cap_section(ui, &mut cap_state, &mut cap_pending);
+                    render_cap_section(
+                        ui,
+                        &mut cap_state,
+                        &mut cap_pending,
+                        &mut reorient_state,
+                        &mut recenter_state,
+                    );
                 });
         });
     Ok(())
@@ -2386,7 +2392,13 @@ fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &Over
 /// scan, the displayed list dims and a "Transform changed — re-Scan
 /// to refresh" notice appears. The user clicks `[Scan]` again to
 /// re-fit planes on the now-current mesh.
-fn render_cap_section(ui: &mut egui::Ui, state: &mut CapState, pending: &mut CapPendingAction) {
+fn render_cap_section(
+    ui: &mut egui::Ui,
+    state: &mut CapState,
+    pending: &mut CapPendingAction,
+    reorient: &mut ReorientState,
+    recenter: &mut RecenterState,
+) {
     egui::CollapsingHeader::new("Cap open boundaries")
         .default_open(true)
         .show(ui, |ui| {
@@ -2400,6 +2412,38 @@ fn render_cap_section(ui: &mut egui::Ui, state: &mut CapState, pending: &mut Cap
                         .italics(),
                 );
                 return;
+            }
+
+            // One-click alignment: rotate so the first loop's outward
+            // normal points to world -Z (cavity-floor convention) AND
+            // translate so its centroid lands at world origin. Solves
+            // the "manually lining it up is bound to give imperfect
+            // results" UX gap — the SVD plane fit already knows
+            // exactly where the boundary plane is.
+            if ui.button("Snap boundary -> floor").clicked() {
+                if let Some(loop_0) = state.loops.first() {
+                    let target = Vector3::new(0.0, 0.0, -1.0);
+                    let rotation = UnitQuaternion::rotation_between(&loop_0.plane_normal, &target)
+                        .unwrap_or_else(|| {
+                            UnitQuaternion::from_axis_angle(
+                                &nalgebra::Vector3::x_axis(),
+                                std::f64::consts::PI,
+                            )
+                        });
+                    let (roll, pitch, yaw) = rotation.euler_angles();
+                    reorient.roll_deg = roll.to_degrees();
+                    reorient.pitch_deg = pitch.to_degrees();
+                    reorient.yaw_deg = yaw.to_degrees();
+                    let rotated_centroid = rotation.transform_point(&loop_0.plane_centroid);
+                    recenter.tx_mm = -rotated_centroid.x * 1000.0;
+                    recenter.ty_mm = -rotated_centroid.y * 1000.0;
+                    recenter.tz_mm = -rotated_centroid.z * 1000.0;
+                    // Re-scan: the loop indices still reference the
+                    // same mesh vertices, but the staleness flag will
+                    // flip from the Reorient/Recenter mutations. A
+                    // queued rescan clears it on the next tick.
+                    pending.rescan = true;
+                }
             }
 
             if state.stale {
