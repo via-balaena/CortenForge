@@ -1951,6 +1951,119 @@ mod tests {
         );
     }
 
+    // ----- Step 7: per-piece printability + per-piece AABB --------
+    //
+    // The per-piece AABB-vs-build-volume check is enforced by running
+    // `validate_for_printing` on each piece's mesh independently
+    // (Step 6 pipeline). `ExceedsBuildVolume` is in
+    // `is_blocking_critical`'s set, so a per-piece AABB overflow
+    // surfaces as `PrintabilityCritical { target: MoldPiece, ... }`.
+    // These tests pin that behavior is correctly per-piece (vs v1's
+    // single-cup aggregate AABB), and that each piece's
+    // `PrintValidation` is independently populated in the V2 report.
+
+    #[test]
+    fn export_molds_v2_per_piece_aabb_within_bounding_region() {
+        // Bounding region: 80 × 80 × 60 mm centered at origin →
+        // mm AABB `[-40, +40] × [-40, +40] × [-30, +30]`. Each piece's
+        // composition is `bounding_region ∩ halfspace ∖ body`, so the
+        // piece's AABB must be ⊆ bounding region's AABB. MC at
+        // 12 mm cells adds ~6-12 mm slack to face positions; pin
+        // with a generous 18 mm tolerance (1.5 × cell).
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-aabb-within");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+        let (spec, ribbon) = v2_fixture();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+
+        let slack = 18.0_f64;
+        for piece in &report.layers[0].pieces {
+            let aabb = &piece.summary.aabb_mm;
+            assert!(
+                aabb.min.x >= -40.0 - slack,
+                "piece {:?} x_min {} below bound -40 (slack {})",
+                piece.piece_side,
+                aabb.min.x,
+                slack,
+            );
+            assert!(aabb.max.x <= 40.0 + slack);
+            assert!(aabb.min.y >= -40.0 - slack);
+            assert!(aabb.max.y <= 40.0 + slack);
+            assert!(aabb.min.z >= -30.0 - slack);
+            assert!(aabb.max.z <= 30.0 + slack);
+        }
+    }
+
+    #[test]
+    fn export_molds_v2_each_piece_validation_independently_populated() {
+        // Each piece runs `validate_for_printing` independently in
+        // Step 6's pipeline. Pin that each piece's `validation` field
+        // is a real PrintValidation (not a shared/empty placeholder)
+        // and that the v2 fixture's pieces are individually printable
+        // on the default FDM printer.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-validation");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+        let (spec, ribbon) = v2_fixture();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+
+        for piece in &report.layers[0].pieces {
+            // Both pieces individually clear the F4 gate (no blocking
+            // Criticals; cf-cast tolerates non-blocking Criticals
+            // like ExcessiveOverhang per `is_blocking_critical`).
+            assert_eq!(
+                super::blocking_critical_count(&piece.validation),
+                0,
+                "piece {:?} should have zero blocking Critical issues; \
+                 got validation {:?}",
+                piece.piece_side,
+                piece.validation,
+            );
+        }
+    }
+
+    #[test]
+    fn export_molds_v2_per_piece_exceeds_build_volume_reports_mold_piece_target() {
+        // Tiny printer build volume (30 × 30 × 30 mm) vs bounding
+        // region of 80 × 80 × 60 mm: every piece's xy-extent is
+        // ~80 mm > 30 mm, so the FIRST piece (layer 0, Negative,
+        // per iteration order) trips `ExceedsBuildVolume` Critical.
+        // Pins that v2's per-piece error reporting carries the full
+        // `MoldPiece { layer_index, piece_side }` target (vs v1's
+        // single-cup `Mold { layer_index }`).
+        let (mut spec, ribbon) = v2_fixture();
+        spec.printer_config = PrinterConfig::fdm_default().with_build_volume(30.0, 30.0, 30.0);
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-build-volume");
+        let err = spec.export_molds_v2(&ribbon, &out_dir).unwrap_err();
+        match err {
+            CastError::PrintabilityCritical { target, .. } => {
+                // First piece in iteration order is layer 0, Negative.
+                assert!(
+                    matches!(
+                        target,
+                        CastTarget::MoldPiece {
+                            layer_index: 0,
+                            piece_side: PieceSide::Negative,
+                        }
+                    ),
+                    "expected MoldPiece(0, Negative), got {target:?}",
+                );
+            }
+            other => panic!("expected PrintabilityCritical, got {other:?}"),
+        }
+        // Pre-write atomicity: no out_dir on per-piece F4 failure.
+        assert!(!out_dir.exists(), "no out_dir on PrintabilityCritical");
+    }
+
     #[test]
     fn mold_piece_filename_maps_piece_side_to_integer_suffix() {
         // Pure-function helper — pin the side → integer convention
