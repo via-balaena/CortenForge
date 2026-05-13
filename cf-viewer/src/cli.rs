@@ -32,11 +32,18 @@ use crate::ui::{ColormapOverride, Selection};
     long_about = None,
 )]
 pub struct Cli {
-    /// Path to a PLY file, or a directory of `*_step_<digits>.ply` frames.
-    /// Directory input loads the lex-first frame and enables keyboard
-    /// frame navigation (`←` / `→` step, `Home` / `End` first/last);
-    /// the in-window scrub timeline + play/pause/loop UI is D2 in
-    /// `docs/SIM_SOFT_ROADMAP.md` Track D.
+    /// Path to a single PLY or STL file, or a directory containing
+    /// either `*_step_<digits>.ply` frames (sim-soft animation) or
+    /// `*.stl` files (cf-cast piece-by-piece visual review).
+    ///
+    /// Directory dispatch: PLY-sequence detection runs first; if no
+    /// PLY frames match, falls back to lex-sorted `*.stl` files.
+    /// Both modes use the same scrub UI to step through the
+    /// frames/pieces; STL mode has no temporal meaning but reuses
+    /// the keyboard/play/loop controls for piece selection.
+    ///
+    /// Single-file dispatch: extension-based — `.stl` (case-insensitive)
+    /// → STL load, anything else → PLY.
     pub path: PathBuf,
 
     /// Pre-select a per-vertex scalar by name. The name must match a key

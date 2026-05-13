@@ -45,7 +45,7 @@ use bevy::prelude::*;
 pub use cf_bevy_common::axis::UpAxis;
 use cf_bevy_common::camera::OrbitCamera;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
-use mesh_io::load_ply_attributed;
+use mesh_io::{load_ply_attributed, load_stl};
 use mesh_types::{Aabb, AttributedMesh, IndexedMesh, Point3};
 
 pub use sequence::Sequence;
@@ -67,20 +67,48 @@ pub struct ViewerInput {
     pub scalar_names: Vec<String>,
 }
 
-/// Load a PLY file into a [`ViewerInput`].
+/// Load a PLY or STL file into a [`ViewerInput`].
 ///
-/// Wraps [`mesh_io::load_ply_attributed`] and projects the `extras` map
-/// keys into `scalar_names`. `BTreeMap` iteration is alphabetical, so
-/// the order is deterministic across loads.
+/// File-extension dispatch:
+///
+/// - `.stl` (case-insensitive) → [`mesh_io::load_stl`] → wrap in
+///   [`AttributedMesh::new`]. STL carries no per-vertex extras, so
+///   `scalar_names` is empty and the
+///   [`ui::scalar_and_colormap_panel`] dropdown gates itself out.
+///   Useful for inspecting mold-piece + plug STLs from
+///   `cf-cast::export_molds_v2` output without round-tripping through
+///   a PLY converter.
+/// - Anything else (default) → [`mesh_io::load_ply_attributed`]; the
+///   `extras` map keys project into `scalar_names` alphabetically
+///   (`BTreeMap` iteration order, deterministic across loads).
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be read or the PLY is malformed.
+/// Returns an error if the file cannot be read or the file is
+/// malformed for its detected format.
 pub fn load_input(path: &Path) -> Result<ViewerInput> {
+    if is_stl_path(path) {
+        let geometry =
+            load_stl(path).with_context(|| format!("loading STL from {}", path.display()))?;
+        let mesh = AttributedMesh::new(geometry);
+        return Ok(ViewerInput {
+            mesh,
+            scalar_names: Vec::new(),
+        });
+    }
     let mesh = load_ply_attributed(path)
         .with_context(|| format!("loading PLY from {}", path.display()))?;
     let scalar_names: Vec<String> = mesh.extras.keys().cloned().collect();
     Ok(ViewerInput { mesh, scalar_names })
+}
+
+/// Does `path`'s extension match `.stl` (case-insensitive)?
+/// Used by [`load_input`] for format dispatch + by
+/// [`discover_stl_sequence`] for STL-frame detection.
+fn is_stl_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("stl"))
 }
 
 /// Lex-sorted list of `*_step_<digits>.ply` files under `dir`.
@@ -138,6 +166,51 @@ fn is_sequence_frame_name(name: &str) -> bool {
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Lex-sorted list of `*.stl` files under `dir`.
+///
+/// Workshop-iter-1 visual-review use case (see
+/// `docs/CURVE_FOLLOWING_DESIGN.md` Step 11 + the v2 cf-cast example
+/// crate's `out/` directory): step through N piece STLs + plug + any
+/// other STLs in the directory one at a time via the same scrub UI
+/// the PLY-frame mode uses. STLs have no temporal meaning here —
+/// they're separate pieces — but reusing the
+/// [`crate::sequence::Sequence`] resource + scrub UI gives the
+/// user piece-by-piece inspection without a new viewer mode.
+///
+/// Unlike [`discover_ply_sequence`], no filename convention is
+/// enforced; any `*.stl` file qualifies. Lex order matches the v2
+/// example's natural sort (`mold_layer_0_piece_0.stl` <
+/// `mold_layer_0_piece_1.stl` < `mold_layer_1_piece_0.stl` < … <
+/// `plug.stl`).
+///
+/// # Errors
+///
+/// - `dir` cannot be read.
+/// - no `*.stl` entries match.
+pub fn discover_stl_sequence(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut frames: Vec<PathBuf> = Vec::new();
+    let read_dir =
+        std::fs::read_dir(dir).with_context(|| format!("reading directory {}", dir.display()))?;
+    for entry in read_dir {
+        let entry = entry.with_context(|| format!("reading dir entry under {}", dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if is_stl_path(&path) {
+            frames.push(path);
+        }
+    }
+    if frames.is_empty() {
+        bail!(
+            "no STL frames found in {} (looking for *.stl)",
+            dir.display(),
+        );
+    }
+    frames.sort();
+    Ok(frames)
+}
+
 /// Detected CLI-input form: either a single PLY file or a multi-frame
 /// sequence. Sequence variant carries the populated [`Sequence`]
 /// resource ready to insert into the Bevy app; `main.rs` only inserts
@@ -171,20 +244,44 @@ impl InputMode {
     }
 }
 
-/// Detect whether the CLI path resolves to a single PLY or a directory
+/// Detect whether the CLI path resolves to a single file or a directory
 /// of sequence frames.
 ///
 /// Pure detection — no stdout side effects (see `main.rs` for the
 /// human-facing detection log).
 ///
+/// **Directory dispatch**: try [`discover_ply_sequence`] first
+/// (`*_step_<digits>.ply` convention); if no PLY frames match, fall
+/// back to [`discover_stl_sequence`] (`*.stl` lex-sorted). Both
+/// produce a [`Sequence`] consumed by the same scrub UI. Mixed
+/// directories prefer PLY (the sim-soft animation use case) — STLs
+/// are silently skipped when a PLY sequence is present.
+///
+/// **Single-file dispatch**: any non-directory path falls through to
+/// [`load_input`]'s extension-based dispatch (`.stl` → STL, else
+/// PLY). No probing at this layer.
+///
 /// # Errors
 ///
-/// Bubbles up [`discover_ply_sequence`]'s errors when the input is a
-/// directory containing no matching frames.
+/// Returns an error when the input directory contains neither PLY
+/// sequence frames nor any STL files, naming both patterns in the
+/// error so the user knows what was searched.
 pub fn detect_input_mode(path: &Path) -> Result<InputMode> {
     if path.is_dir() {
-        let frames = discover_ply_sequence(path)?;
-        Ok(InputMode::Sequence(Sequence::new(frames)))
+        match discover_ply_sequence(path) {
+            Ok(frames) => return Ok(InputMode::Sequence(Sequence::new(frames))),
+            Err(_ply_err) => {
+                // Fall through to STL discovery; if that also fails,
+                // bubble a combined error that names both patterns.
+            }
+        }
+        match discover_stl_sequence(path) {
+            Ok(frames) => Ok(InputMode::Sequence(Sequence::new(frames))),
+            Err(_stl_err) => bail!(
+                "no PLY sequence frames (*_step_<digits>.ply) or STL files (*.stl) found in {}",
+                path.display(),
+            ),
+        }
     } else {
         Ok(InputMode::Single(path.to_path_buf()))
     }
@@ -472,6 +569,168 @@ mod tests {
         assert_eq!(
             initial.file_name().and_then(|n| n.to_str()),
             Some("body_step_00.ply"),
+        );
+        Ok(())
+    }
+
+    // ----- STL discovery + dispatch -----------------------------------
+
+    #[test]
+    fn is_stl_path_matches_extension_case_insensitive() {
+        assert!(is_stl_path(Path::new("foo.stl")));
+        assert!(is_stl_path(Path::new("/abs/path/MOLD.STL")));
+        assert!(is_stl_path(Path::new("mixed.Stl")));
+        assert!(!is_stl_path(Path::new("foo.ply")));
+        assert!(!is_stl_path(Path::new("foo.json")));
+        assert!(!is_stl_path(Path::new("no_extension")));
+    }
+
+    #[test]
+    fn discover_stl_sequence_lex_sorts_all_stl_files() -> Result<()> {
+        // No `_step_<digits>` convention — any *.stl qualifies.
+        // Out-of-order creation so the sort is meaningful.
+        let dir = tempfile::tempdir()?;
+        for name in [
+            "plug.stl",
+            "mold_layer_0_piece_1.stl",
+            "mold_layer_0_piece_0.stl",
+            "mold_layer_1_piece_0.stl",
+            "readout.json", // skipped: not .stl
+        ] {
+            File::create(dir.path().join(name))?;
+        }
+        let frames = discover_stl_sequence(dir.path())?;
+        let names: Vec<String> = frames
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "mold_layer_0_piece_0.stl".to_string(),
+                "mold_layer_0_piece_1.stl".to_string(),
+                "mold_layer_1_piece_0.stl".to_string(),
+                "plug.stl".to_string(),
+            ],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discover_stl_sequence_errors_on_no_matches() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        for name in ["body.ply", "readout.json"] {
+            File::create(dir.path().join(name))?;
+        }
+        let err = discover_stl_sequence(dir.path()).err();
+        let msg = err.map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("no STL frames"),
+            "error should mention missing STL frames: {msg}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn detect_input_mode_falls_back_to_stl_when_no_ply_sequence() -> Result<()> {
+        // STL-only directory: detect_input_mode tries PLY first, sees
+        // no `*_step_<digits>.ply` matches, falls through to
+        // `discover_stl_sequence`. Returns Sequence variant either way.
+        let dir = tempfile::tempdir()?;
+        for name in ["mold_layer_0_piece_0.stl", "mold_layer_0_piece_1.stl"] {
+            File::create(dir.path().join(name))?;
+        }
+        let mode = detect_input_mode(dir.path())?;
+        let seq = match &mode {
+            InputMode::Sequence(s) => s,
+            InputMode::Single(_) => {
+                return Err(anyhow::anyhow!(
+                    "expected Sequence for STL dir input; got Single",
+                ));
+            }
+        };
+        assert_eq!(seq.len(), 2);
+        let initial = mode.initial_frame()?;
+        assert_eq!(
+            initial.file_name().and_then(|n| n.to_str()),
+            Some("mold_layer_0_piece_0.stl"),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn detect_input_mode_prefers_ply_when_both_present() -> Result<()> {
+        // Mixed-content directory with BOTH PLY frames AND STL files:
+        // PLY-sequence detection wins; STLs are silently skipped.
+        // (The sim-soft animation use case dominates the directory-input
+        // expectation; STL fallback only kicks in when there's no PLY
+        // animation to play.)
+        let dir = tempfile::tempdir()?;
+        for name in ["body_step_00.ply", "body_step_01.ply", "extra_geometry.stl"] {
+            File::create(dir.path().join(name))?;
+        }
+        let mode = detect_input_mode(dir.path())?;
+        let seq = match &mode {
+            InputMode::Sequence(s) => s,
+            InputMode::Single(_) => {
+                return Err(anyhow::anyhow!(
+                    "expected Sequence for mixed dir input; got Single",
+                ));
+            }
+        };
+        // PLY frames win — STL is excluded.
+        assert_eq!(seq.len(), 2);
+        for frame in &seq.frames {
+            assert!(
+                frame.extension().and_then(|e| e.to_str()) == Some("ply"),
+                "PLY-mode should not include STL frames: {frame:?}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn detect_input_mode_errors_naming_both_patterns_on_empty_dir() -> Result<()> {
+        // Empty directory: neither PLY nor STL discovery succeeds.
+        // Error message must name BOTH patterns so the user knows what
+        // was searched.
+        let dir = tempfile::tempdir()?;
+        for name in ["readout.json", "notes.txt"] {
+            File::create(dir.path().join(name))?;
+        }
+        let err = detect_input_mode(dir.path()).err();
+        let msg = err.map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("PLY sequence frames") && msg.contains("STL files"),
+            "error should name both patterns: {msg}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_input_dispatches_to_stl_loader_on_stl_extension() -> Result<()> {
+        // Write a minimal valid binary STL (header + 0 faces) and verify
+        // load_input picks the STL path. `mesh_io::save_stl` round-trip
+        // produces a real STL we can re-load. Using the same pattern as
+        // discover_stl_sequence's fixture but with valid bytes.
+        use mesh_io::save_stl;
+        use mesh_types::IndexedMesh as MTIndexedMesh;
+        let dir = tempfile::tempdir()?;
+        let stl_path = dir.path().join("trivial.stl");
+        // 1-triangle STL — minimal non-empty geometry so load_stl's
+        // checks pass.
+        let mut mesh = MTIndexedMesh::new();
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.faces.push([0, 1, 2]);
+        save_stl(&mesh, &stl_path, true)?;
+        let input = load_input(&stl_path)?;
+        assert_eq!(input.mesh.geometry.vertices.len(), 3);
+        assert_eq!(input.mesh.geometry.faces.len(), 1);
+        assert!(
+            input.scalar_names.is_empty(),
+            "STL has no per-vertex scalars",
         );
         Ok(())
     }
