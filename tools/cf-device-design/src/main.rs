@@ -24,7 +24,7 @@ use cf_viewer::{
 };
 use clap::Parser;
 use mesh_io::load_stl;
-use mesh_types::{Bounded, IndexedMesh, Point3};
+use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use nalgebra::Vector3;
 use serde::Deserialize;
 
@@ -79,6 +79,12 @@ struct ScanInfo {
     /// Bbox diagonal in meters — used by the Outer Envelope panel
     /// (slice 3) to size the default radius slider's range.
     bbox_diagonal_m: f64,
+    /// Raw scan AABB in physics-frame meters. Cached at load time so
+    /// the Outer Envelope default-radius heuristic can compute the
+    /// max perpendicular distance from each centerline point to the
+    /// scan's outer extent (= the min envelope radius that wraps
+    /// the whole scan + clearance).
+    scan_aabb_m: Aabb,
     /// Centerline polyline length in physics meters (sum of
     /// segment distances). Zero if the centerline is absent or
     /// empty. Used by the Cavity panel (slice 4) to bound the
@@ -124,20 +130,32 @@ struct OuterEnvelopeState {
 
 impl OuterEnvelopeState {
     /// Build the slice-2-default starting state from the loaded
-    /// scan. Defaults to ~25% of the scan centerline arc length
-    /// when a centerline is present (so the cylindrical section
-    /// has plenty of room — 50% would collapse the cylinder to
-    /// zero); otherwise 30% of the bbox diagonal. Both paths
-    /// clamp the final value to `[20 mm, max - 5 mm]` where `max`
-    /// is the upper slider bound.
-    fn from_scan_info(info: &ScanInfo) -> Self {
-        let (_, max_m) = Self::slider_range_m(info);
-        let preferred = if info.centerline_arc_length_m > 0.0 {
-            info.centerline_arc_length_m * 0.25
-        } else {
+    /// scan + centerline. Heuristic:
+    /// - If centerline is present: compute the min envelope radius
+    ///   that wraps the scan AABB at every centerline arc position
+    ///   ([`min_radius_to_envelope_aabb`]). Default = that +
+    ///   [`ENVELOPE_DEFAULT_CLEARANCE_M`].
+    /// - If no centerline: fall back to 30% of the bbox diagonal.
+    ///
+    /// Clamped to the panel's slider range so the default always
+    /// lands inside what the slider can dial back to.
+    ///
+    /// Surfaces the user's iter-1 review feedback "doesn't feel
+    /// relative to the outer geometry enough": prior default was a
+    /// fixed % of arc length and frequently sat INSIDE the scan,
+    /// disconnecting the wireframe from the scan's visible shape.
+    fn from_scan_info(info: &ScanInfo, centerline_points: &[Point3<f64>]) -> Self {
+        let (min_m, max_m) = Self::slider_range_m(info);
+        let preferred = if let Some(envelope_r) =
+            min_radius_to_envelope_aabb(centerline_points, &info.scan_aabb_m)
+        {
+            envelope_r + ENVELOPE_DEFAULT_CLEARANCE_M
+        } else if info.bbox_diagonal_m > 0.0 {
             info.bbox_diagonal_m * 0.30
+        } else {
+            0.030
         };
-        let radius = preferred.clamp(0.020, (max_m - 0.005).max(0.020));
+        let radius = preferred.clamp(min_m, max_m);
         Self { radius_m: radius }
     }
 
@@ -495,9 +513,69 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
         face_count: mesh.faces.len(),
         aabb_mm_extents: extents_mm,
         bbox_diagonal_m: aabb.diagonal(),
+        scan_aabb_m: aabb,
         centerline_arc_length_m: centerline_arc_length_m(centerline_points),
         centerline_point_count: centerline_points.len(),
     }
+}
+
+/// Default clearance (meters) added to the wrap-the-scan envelope
+/// radius. 5 mm gives the user a visible gap between the wireframe
+/// and the scan at default radius — communicates "the envelope is
+/// outside the scan" instead of "envelope sits on the scan
+/// surface."
+const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
+
+/// Compute the minimum envelope radius that wraps the entire scan
+/// AABB at every centerline arc position. For each centerline point,
+/// computes the max perpendicular distance (i.e., projection onto
+/// the plane normal to the local tangent) from the point to any
+/// AABB corner. Returns the max across all centerline points.
+///
+/// Used by [`OuterEnvelopeState::from_scan_info`] to size the
+/// default radius so the envelope ENVELOPES the scan at start time
+/// — addresses iter-1 visual review feedback "doesn't feel relative
+/// to the outer geometry enough" when the prior default sat inside
+/// the scan.
+///
+/// Returns `None` when:
+/// - centerline is empty (no points to measure from)
+/// - centerline has only one point (no tangent estimate possible)
+fn min_radius_to_envelope_aabb(centerline_points: &[Point3<f64>], scan_aabb: &Aabb) -> Option<f64> {
+    if centerline_points.len() < 2 {
+        return None;
+    }
+    let corners = [
+        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.min.z),
+        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.max.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.max.z),
+        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.max.z),
+        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.max.z),
+    ];
+    let mut max_radial = 0.0_f64;
+    for i in 0..centerline_points.len() {
+        let tangent = local_tangent(centerline_points, i);
+        let p = centerline_points[i];
+        for corner in &corners {
+            // Perpendicular distance from `corner` to the line
+            // through `p` along `tangent`:
+            //   diff = corner - p
+            //   parallel_len = diff · tangent
+            //   perp = diff - parallel_len * tangent
+            //   radial = |perp|
+            let diff = corner - p;
+            let parallel = diff.dot(&tangent);
+            let perp_sq = diff.norm_squared() - parallel * parallel;
+            let radial = perp_sq.max(0.0).sqrt();
+            if radial > max_radial {
+                max_radial = radial;
+            }
+        }
+    }
+    Some(max_radial)
 }
 
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
@@ -987,7 +1065,7 @@ fn run_render_app(
     let bases = CenterlineBases {
         bases: compute_centerline_bases(&centerline_points),
     };
-    let outer_envelope = OuterEnvelopeState::from_scan_info(&scan_info);
+    let outer_envelope = OuterEnvelopeState::from_scan_info(&scan_info, &centerline_points);
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -1351,6 +1429,10 @@ another_future_field = "foo"
 
     // ----- Slice 3 — OuterEnvelopeState defaults + slider range ----
 
+    fn empty_aabb() -> Aabb {
+        Aabb::new(Point3::origin(), Point3::origin())
+    }
+
     fn dummy_scan_info(diag_m: f64) -> ScanInfo {
         ScanInfo {
             file_label: "test".to_string(),
@@ -1358,6 +1440,7 @@ another_future_field = "foo"
             face_count: 0,
             aabb_mm_extents: [0.0; 3],
             bbox_diagonal_m: diag_m,
+            scan_aabb_m: empty_aabb(),
             centerline_arc_length_m: 0.0,
             centerline_point_count: 0,
         }
@@ -1370,43 +1453,54 @@ another_future_field = "foo"
             face_count: 0,
             aabb_mm_extents: [0.0; 3],
             bbox_diagonal_m: diag_m,
+            scan_aabb_m: empty_aabb(),
             centerline_arc_length_m: arc_m,
             centerline_point_count: 30,
         }
     }
 
     #[test]
-    fn outer_envelope_default_clamped_to_min_for_tiny_scans_no_centerline() {
-        // 50 mm diag → no centerline path. preferred = 50 * 0.30 =
-        // 15 mm; below the 20 mm floor → clamped to 20.
+    fn outer_envelope_default_no_centerline_falls_back_to_bbox_diag() {
+        // 50 mm diag → no centerline + degenerate AABB heuristic.
+        // Hits the bbox_diagonal_m fallback path: 50 * 0.30 = 15 mm
+        // → clamped to slider min (5 mm).
         let info = dummy_scan_info(0.050);
-        let state = OuterEnvelopeState::from_scan_info(&info);
+        let state = OuterEnvelopeState::from_scan_info(&info, &[]);
+        let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
+        assert!(state.radius_m >= min_m && state.radius_m <= max_m);
+    }
+
+    #[test]
+    fn outer_envelope_default_envelopes_scan_aabb_with_clearance() {
+        // Build a 40 × 40 × 100 mm AABB centered at origin + a
+        // straight-Z centerline through its middle. The max
+        // perpendicular distance from any centerline point to any
+        // AABB corner = the AABB's max XY half-diagonal =
+        // sqrt(20² + 20²) ≈ 28.28 mm. Plus 5 mm clearance ≈ 33.3 mm.
+        let mut info = dummy_scan_info_with_centerline(0.120, 0.100);
+        info.scan_aabb_m = Aabb::new(
+            Point3::new(-0.020, -0.020, -0.050),
+            Point3::new(0.020, 0.020, 0.050),
+        );
+        let pts: Vec<Point3<f64>> = (0..6)
+            .map(|i| Point3::new(0.0, 0.0, -0.050 + f64::from(i) * 0.020))
+            .collect();
+        let state = OuterEnvelopeState::from_scan_info(&info, &pts);
+        let expected_envelope = (20.0_f64 * 20.0 + 20.0 * 20.0).sqrt() / 1000.0; // m
+        let expected_default = expected_envelope + ENVELOPE_DEFAULT_CLEARANCE_M;
         assert!(
-            approx_eq(state.radius_m, 0.020, 1e-12),
-            "got {}",
-            state.radius_m
+            approx_eq(state.radius_m, expected_default, 1e-6),
+            "got {}, expected {}",
+            state.radius_m,
+            expected_default,
         );
     }
 
     #[test]
-    fn outer_envelope_default_uses_25pct_of_arc_when_centerline_present() {
-        // iter-1 fixture: 168 mm diag, 134 mm centerline arc.
-        // preferred = 0.134 * 0.25 = 33.5 mm. Max = arc/2 - 5mm =
-        // 62 mm. In-band, no clamping.
-        let info = dummy_scan_info_with_centerline(0.168, 0.134);
-        let state = OuterEnvelopeState::from_scan_info(&info);
-        assert!(
-            approx_eq(state.radius_m, 0.0335, 1e-6),
-            "got {}",
-            state.radius_m
-        );
-    }
-
-    #[test]
-    fn outer_envelope_default_inside_slider_range_centerline_path() {
+    fn outer_envelope_default_inside_slider_range_for_various_arc_lengths() {
         for arc in [0.060_f64, 0.100, 0.134, 0.250, 0.500] {
             let info = dummy_scan_info_with_centerline(arc * 1.2, arc);
-            let state = OuterEnvelopeState::from_scan_info(&info);
+            let state = OuterEnvelopeState::from_scan_info(&info, &[]);
             let (min_m, max_m) = OuterEnvelopeState::slider_range_m(&info);
             assert!(
                 state.radius_m >= min_m && state.radius_m <= max_m,
@@ -1417,6 +1511,58 @@ another_future_field = "foo"
                 arc,
             );
         }
+    }
+
+    // ----- Slice 3 polish 3 — min envelope radius heuristic --------
+
+    #[test]
+    fn min_envelope_radius_short_polyline_returns_none() {
+        let aabb = Aabb::new(
+            Point3::new(-0.020, -0.020, -0.020),
+            Point3::new(0.020, 0.020, 0.020),
+        );
+        assert!(min_radius_to_envelope_aabb(&[], &aabb).is_none());
+        assert!(min_radius_to_envelope_aabb(&[Point3::origin()], &aabb).is_none());
+    }
+
+    #[test]
+    fn min_envelope_radius_unit_cube_centered_centerline_is_xy_half_diag() {
+        // AABB ±10 mm cube; centerline along +Z through the center.
+        // At any centerline point inside the cube, the max
+        // perpendicular distance to an AABB corner equals the
+        // diagonal of the XY half-extents = sqrt(10² + 10²) ≈
+        // 14.14 mm.
+        let aabb = Aabb::new(
+            Point3::new(-0.010, -0.010, -0.010),
+            Point3::new(0.010, 0.010, 0.010),
+        );
+        let pts = vec![
+            Point3::new(0.0, 0.0, -0.010),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.010),
+        ];
+        let r = min_radius_to_envelope_aabb(&pts, &aabb).unwrap();
+        let expected = (10.0_f64 * 10.0 + 10.0 * 10.0).sqrt() / 1000.0;
+        assert!(approx_eq(r, expected, 1e-9), "got {r}, expected {expected}");
+    }
+
+    #[test]
+    fn min_envelope_radius_off_axis_centerline_inflates() {
+        // Centerline offset 5 mm in +X from the cube center. The
+        // max perpendicular distance now includes the +X-axis offset:
+        // sqrt((10 + 5)² + 10²) ≈ 18.03 mm.
+        let aabb = Aabb::new(
+            Point3::new(-0.010, -0.010, -0.010),
+            Point3::new(0.010, 0.010, 0.010),
+        );
+        let pts = vec![
+            Point3::new(0.005, 0.0, -0.010),
+            Point3::new(0.005, 0.0, 0.0),
+            Point3::new(0.005, 0.0, 0.010),
+        ];
+        let r = min_radius_to_envelope_aabb(&pts, &aabb).unwrap();
+        let expected = (15.0_f64 * 15.0 + 10.0 * 10.0).sqrt() / 1000.0;
+        assert!(approx_eq(r, expected, 1e-6), "got {r}, expected {expected}");
     }
 
     #[test]
