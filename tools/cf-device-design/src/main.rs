@@ -133,6 +133,44 @@ impl OuterEnvelopeState {
     }
 }
 
+/// Cavity panel state — the user-dialed `inset_m` by which the
+/// cavity surface sits INSIDE the scan surface. Casting context:
+/// the cavity is the void the appendage slides into; smaller than
+/// the scan so the silicone "skin" between cavity and scan
+/// stretches over the appendage, providing the snug fit. Stretch
+/// strain ≈ `inset_m / local_scan_radius` — too little = sloppy
+/// fit, too much = silicone tears.
+///
+/// Slice 4 v1: a single uniform inset along the entire scan proxy.
+/// Slice 4 polish 2 will add the insertable-length clip
+/// (`docs/ENGINEERING_SUITE_DESIGN.md` § 4) so the cavity covers
+/// only the inserted portion, with a tangent-perpendicular end
+/// cap.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct CavityState {
+    /// Distance (meters) by which the cavity wireframe sits inside
+    /// the scan surface, measured along the per-vertex INWARD
+    /// normal (the negation of the proxy mesh's outward normal).
+    inset_m: f64,
+}
+
+impl CavityState {
+    /// Default state. Inset defaults to
+    /// [`CAVITY_DEFAULT_INSET_M`] (3 mm) — moderate stretch for a
+    /// typical 25–35 mm-diameter scan (≈ 6–10 % radial pre-strain),
+    /// safely within Ecoflex's elongation-at-break window.
+    fn default_for_scan() -> Self {
+        Self {
+            inset_m: CAVITY_DEFAULT_INSET_M,
+        }
+    }
+
+    /// Slider range for the cavity inset, in meters.
+    fn inset_slider_range_m() -> (f64, f64) {
+        (0.0, 0.015)
+    }
+}
+
 /// Decimated proxy of the cleaned scan, used to render the outer-
 /// envelope wireframe as a direct offset surface (slice 3 polish 10
 /// — fundamental pivot from centerline-parameterized rings).
@@ -180,11 +218,20 @@ const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
 /// vertices that meshopt needs welded to find collapsible edges.
 const ENVELOPE_PROXY_WELD_EPSILON_M: f64 = 1e-6;
 
-/// `meshopt::simplify_decoder`'s target-error parameter. Matches
-/// cf-scan-prep's `SIMPLIFY_TARGET_ERROR = 0.05` — a high tolerance
-/// since we're aggressive about face count and the proxy is just
-/// for visualization, not measurement.
-const ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR: f32 = 0.05;
+/// `meshopt::simplify_decoder`'s target-error parameter. Much higher
+/// than cf-scan-prep's `SIMPLIFY_TARGET_ERROR = 0.05` because we're
+/// reducing the iter-1 cleaned scan from 3.3M faces all the way down
+/// to ~1500 (a ~2000× reduction). cf-scan-prep's panel typically
+/// runs 10–50× reductions where 0.05 (= 5% of mesh diagonal) is
+/// enough error budget; at 2000× the budget exhausts long before the
+/// face target is reached and decimation stops early (leaving the
+/// full mesh in the proxy).
+///
+/// 10.0 = "1000% of mesh diagonal" → effectively unbounded, lets
+/// the decimation run until `target_index_count` is reached. The
+/// resulting proxy is approximate (visual only, not measurement);
+/// the cast-time SDF builds on the unmodified scan.
+const ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 
 // ----- .prep.toml parsing (subset; centerline only) -----------------
 
@@ -313,6 +360,14 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// surface."
 const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
 
+/// Default inset (meters) the cavity sits inside the scan surface.
+/// 3 mm = ~6–10 % radial pre-strain on the scan's typical
+/// cross-section (25–35 mm diameter). Stretch comfortable for
+/// Ecoflex 00-30 (~900 % elongation-at-break) and DragonSkin 30
+/// (~364 %); the silicone "skin" between cavity surface and scan
+/// surface stretches over the appendage when inserted.
+const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
+
 /// Decimate the cleaned scan to a ~`ENVELOPE_PROXY_TARGET_FACES`-
 /// face proxy mesh, compute per-vertex outward normals, and extract
 /// deduplicated edges. Returns the proxy struct used by
@@ -352,13 +407,17 @@ fn compute_envelope_proxy_mesh(scan_mesh: &IndexedMesh) -> EnvelopeProxyMesh {
     let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
     let target_index_count = ENVELOPE_PROXY_TARGET_FACES.saturating_mul(3);
     let mut result_error = 0.0_f32;
+    // No `LockBorder` — boundary preservation isn't required for a
+    // visualization proxy, and locking the cleaned cap's circular
+    // boundary loop on the iter-1 fixture starves the decimation of
+    // edges it can collapse. Empty options = full mobility.
     let simplified_indices = if target_index_count < indices.len() {
         simplify_decoder(
             &indices,
             &positions,
             target_index_count,
             ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
-            SimplifyOptions::LockBorder,
+            SimplifyOptions::empty(),
             Some(&mut result_error),
         )
     } else {
@@ -473,6 +532,56 @@ fn draw_envelope_offset_overlay(
         .zip(proxy.vertex_normals.iter())
         .map(|(v, n)| {
             let displaced_physics = Point3::from(v.coords + n * state.clearance_m);
+            Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
+        })
+        .collect();
+
+    for edge in &proxy.edges {
+        let a = displaced_bevy[edge[0] as usize];
+        let b = displaced_bevy[edge[1] as usize];
+        gizmos.line(a, b, color);
+    }
+}
+
+/// Draw the cavity-surface wireframe each frame: same proxy mesh
+/// as the outer envelope, but displaced INWARD along each per-
+/// vertex normal by `inset_m` (slice 4 v1).
+///
+/// The cavity is the void the appendage slides into; being SMALLER
+/// than the scan means the silicone "skin" between the cavity
+/// surface and the scan surface stretches over the appendage to
+/// produce the snug fit. Matches what cf-cast-cli's downstream SDF
+/// (`Solid::from_sdf(scan_sdf).offset(-inset_m)`) will build.
+///
+/// Slice 4 v1 limitation: the cavity wireframe covers the WHOLE
+/// scan, including the cleaned-cap end. Slice 4 polish 2 will clip
+/// to the insertable arc range with a tangent-perpendicular end
+/// cap per the `docs/ENGINEERING_SUITE_DESIGN.md` § 4 spec.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn draw_cavity_overlay(
+    proxy: Res<EnvelopeProxyMesh>,
+    state: Res<CavityState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut gizmos: Gizmos,
+) {
+    if proxy.vertices.is_empty() || proxy.edges.is_empty() {
+        return;
+    }
+    // Coral / salmon — distinct from outer envelope's green-blue
+    // (Color::srgb(0.55, 0.85, 0.70)) and from scan white / axis
+    // arrows / cyan centerline.
+    let color = Color::srgb(0.95, 0.55, 0.45);
+
+    // Inward displacement = vertex.coords - normal * inset_m. Pre-
+    // compute the Bevy-framed positions for every proxy vertex so
+    // edge endpoints read cached values.
+    let displaced_bevy: Vec<Vec3> = proxy
+        .vertices
+        .iter()
+        .zip(proxy.vertex_normals.iter())
+        .map(|(v, n)| {
+            let displaced_physics = Point3::from(v.coords - n * state.inset_m);
             Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
         })
         .collect();
@@ -606,6 +715,32 @@ fn render_outer_envelope_section(
         });
 }
 
+/// Render the Cavity egui section (slice 4 v1). The cavity is the
+/// scan-derived inner void the appendage slides into; its surface
+/// sits `inset_m` inside the scan along per-vertex normals so the
+/// silicone shell between cavity and scan stretches over the
+/// appendage for a snug fit.
+///
+/// Slice 4 v1 ships uniform-inset only. Polish 2 will add
+/// insertable-length clip + tangent-perpendicular end cap.
+fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
+    egui::CollapsingHeader::new("Cavity")
+        .default_open(true)
+        .show(ui, |ui| {
+            let (min_m, max_m) = CavityState::inset_slider_range_m();
+            let mut inset_mm = state.inset_m * 1000.0;
+            let min_mm = min_m * 1000.0;
+            let max_mm = max_m * 1000.0;
+            if ui
+                .add(egui::Slider::new(&mut inset_mm, min_mm..=max_mm).text("inset (mm)"))
+                .changed()
+            {
+                state.inset_m = inset_mm * 0.001;
+            }
+            ui.label("(silicone skin stretches inset_m over appendage)");
+        });
+}
+
 /// Block orbit-camera input when the pointer is over the egui side
 /// panel — prevents the sidebar from accidentally rotating the
 /// camera when the user scrolls a slider list. Mirror of
@@ -632,14 +767,15 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 }
 
 /// Right-side egui sidebar carrying the design-suite panels.
-/// Renders Scan Info + Outer Envelope as of slice 3; remaining
-/// stubs surface the planned panel order.
+/// Renders Scan Info + Outer Envelope + Cavity as of slice 4 v1;
+/// remaining stubs surface the planned panel order.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     proxy: Res<EnvelopeProxyMesh>,
     mut outer_envelope: ResMut<OuterEnvelopeState>,
+    mut cavity: ResMut<CavityState>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     egui::SidePanel::right("cf-device-design-panels")
@@ -651,6 +787,7 @@ fn device_design_panel(
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
                     render_outer_envelope_section(ui, &mut outer_envelope, &proxy);
+                    render_cavity_section(ui, &mut cavity);
                     render_panel_stubs(ui);
                 });
         });
@@ -694,7 +831,6 @@ fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
 fn render_panel_stubs(ui: &mut egui::Ui) {
     ui.separator();
     for name in [
-        "Cavity (slice 4)",
         "Layers (slice 5)",
         "Validations (slice 6)",
         "Features → Texture (slice 7)",
@@ -736,6 +872,7 @@ fn run_render_app(
     // 3.3 M-face fixture, sub-second on small inputs.
     let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh);
     let outer_envelope = OuterEnvelopeState::default_for_scan();
+    let cavity = CavityState::default_for_scan();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -757,6 +894,7 @@ fn run_render_app(
         })
         .insert_resource(envelope_proxy)
         .insert_resource(outer_envelope)
+        .insert_resource(cavity)
         .add_systems(Startup, setup_render_scene)
         .add_systems(
             Update,
@@ -764,6 +902,7 @@ fn run_render_app(
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 draw_reference_overlays,
                 draw_envelope_offset_overlay,
+                draw_cavity_overlay,
                 exit_on_esc,
             ),
         )
@@ -966,6 +1105,21 @@ another_future_field = "foo"
         let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
         assert!(approx_eq(max_m, 0.050, 1e-12));
+    }
+
+    // ----- Slice 4 v1 — cavity state -------------------------------
+
+    #[test]
+    fn cavity_default_inset_is_three_mm() {
+        let state = CavityState::default_for_scan();
+        assert!(approx_eq(state.inset_m, 0.003, 1e-12));
+    }
+
+    #[test]
+    fn cavity_inset_slider_range_zero_to_fifteen_mm() {
+        let (min_m, max_m) = CavityState::inset_slider_range_m();
+        assert!(approx_eq(min_m, 0.0, 1e-12));
+        assert!(approx_eq(max_m, 0.015, 1e-12));
     }
 
     // ----- Slice 3 polish 10 — offset-surface proxy mesh ------------
