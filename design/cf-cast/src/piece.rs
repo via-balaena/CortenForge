@@ -43,6 +43,7 @@
 use cf_design::Solid;
 
 use crate::error::{CastError, CastTarget};
+use crate::registration::build_registration_solid;
 use crate::ribbon::{PieceSide, Ribbon};
 
 /// Inter-piece seam overlap distance applied at the
@@ -98,10 +99,22 @@ pub fn compose_piece_solid(
         .bounds()
         .ok_or(CastError::InfiniteBounds(CastTarget::BoundingRegion))?;
     let halfspace = ribbon.halfspace_solid(side, bounds, RIBBON_PIECE_OVERLAP_M);
-    Ok(bounding_region
+    let base_piece = bounding_region
         .clone()
         .subtract(layer_body.clone())
-        .intersect(halfspace))
+        .intersect(halfspace);
+
+    // Step 9: inter-piece registration pins. `Negative` side
+    // gains protrusions (union); `Positive` side gains matching
+    // holes (subtract). When `ribbon.registration` is `None` the
+    // helper returns `None` and the base piece flows through
+    // unchanged — Step 5-8 callers see no behavior change.
+    let piece = match (build_registration_solid(ribbon), side) {
+        (Some(pins), PieceSide::Negative) => base_piece.union(pins),
+        (Some(pins), PieceSide::Positive) => base_piece.subtract(pins),
+        (None, _) => base_piece,
+    };
+    Ok(piece)
 }
 
 #[cfg(test)]

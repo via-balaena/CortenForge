@@ -38,6 +38,8 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::registration::RegistrationKind;
+
 /// World-frame direction anchoring "which way the mold opens".
 /// Combined with each centerline segment's tangent at Ribbon
 /// construction time to derive the local cutting-plane binormal.
@@ -245,6 +247,13 @@ pub struct Ribbon {
     /// User-supplied world-frame split direction used to compute
     /// the per-segment binormals.
     pub split_normal: SplitNormal,
+    /// Inter-piece registration kind. Default
+    /// [`RegistrationKind::None`] (no registration features —
+    /// pieces hand-clamped at iter-1). Step 9 of the v2 arc adds
+    /// `RegistrationKind::Pins` via the
+    /// [`Ribbon::with_registration`] builder; see
+    /// [`crate::registration`] for the geometry contract.
+    pub registration: RegistrationKind,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -372,7 +381,32 @@ impl Ribbon {
             points,
             segments,
             split_normal,
+            registration: RegistrationKind::None,
         })
+    }
+
+    /// Builder: set the inter-piece registration kind. Step 9 entry
+    /// point — wraps a freshly-constructed
+    /// [`Ribbon`] with a [`RegistrationKind::Pins`] spec (or
+    /// disables registration via [`RegistrationKind::None`]).
+    ///
+    /// Example:
+    /// ```
+    /// use cf_cast::{PinSpec, RegistrationKind, Ribbon, SplitNormal};
+    /// use nalgebra::{Point3, Vector3};
+    ///
+    /// let ribbon = Ribbon::new(
+    ///     vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.1, 0.0, 0.0)],
+    ///     SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap(),
+    /// )
+    /// .unwrap()
+    /// .with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+    /// assert_ne!(ribbon.registration, RegistrationKind::None);
+    /// ```
+    #[must_use]
+    pub fn with_registration(mut self, registration: RegistrationKind) -> Self {
+        self.registration = registration;
+        self
     }
 
     /// Total arc length of the centerline (sum of segment lengths).
@@ -405,6 +439,50 @@ impl Ribbon {
             }
         }
         max_angle
+    }
+
+    /// Sample the centerline at arc-length fraction `t ∈ [0, 1]`.
+    ///
+    /// Returns `Some((center, tangent, binormal))` — the world-frame
+    /// point at fraction `t` along the centerline's arc length, plus
+    /// the tangent + binormal of the segment that point lies in.
+    /// All vectors are unit-length per [`Ribbon`]'s segment-frame
+    /// invariant.
+    ///
+    /// `t = 0.0` returns the centerline's first vertex with the
+    /// first segment's frame; `t = 1.0` returns the last vertex
+    /// with the last segment's frame. Out-of-range `t` returns
+    /// `None`.
+    ///
+    /// Used by [`crate::registration::build_registration_solid`] to
+    /// position pin cylinders along the centerline.
+    #[must_use]
+    pub fn sample_at_arc_fraction(
+        &self,
+        t: f64,
+    ) -> Option<(Point3<f64>, Vector3<f64>, Vector3<f64>)> {
+        if !(0.0..=1.0).contains(&t) || !t.is_finite() {
+            return None;
+        }
+        let target = self.arc_length() * t;
+        let mut accum = 0.0;
+        // Walk segments accumulating arc length.
+        for seg in &self.segments {
+            let seg_len = (seg.end - seg.start).norm();
+            if accum + seg_len >= target {
+                let local_t = if seg_len > 0.0 {
+                    (target - accum) / seg_len
+                } else {
+                    0.0
+                };
+                let center = seg.start + (seg.end - seg.start) * local_t;
+                return Some((center, seg.tangent, seg.binormal));
+            }
+            accum += seg_len;
+        }
+        // FP slack: target ≈ total arc; return last segment endpoint.
+        let last = self.segments.last()?;
+        Some((last.end, last.tangent, last.binormal))
     }
 
     /// Find the index of the centerline segment closest to `query` +

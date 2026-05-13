@@ -27,6 +27,7 @@ use std::fmt::Write as _;
 
 use crate::cure::lookup as lookup_cure;
 use crate::pour_volume::PourVolume;
+use crate::registration::RegistrationKind;
 use crate::ribbon::Ribbon;
 use crate::spec::CastSpec;
 
@@ -348,7 +349,7 @@ pub fn generate_procedure_markdown_v2(
     write_cast_geometry_v2(&mut md, ribbon);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
-    write_v2_assembly_note(&mut md);
+    write_v2_assembly_note(&mut md, ribbon);
     write_per_layer_sections_v2(&mut md, spec, pour_volumes);
     write_mass_budget_summary(&mut md, spec, pour_volumes);
     md
@@ -398,28 +399,73 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
     md.push('\n');
 }
 
-fn write_v2_assembly_note(md: &mut String) {
+fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "Each layer's mold is two ribbon-cut pieces (`_piece_0` + `_piece_1`) \
-         that meet along the curve-following seam. v2 iter-1 has no integral \
-         registration features (pins/dovetails are Step 9 of the v2 \
-         implementation arc); align the pieces by hand and clamp with rubber \
-         bands or wide tape during pour + cure. The 1 mm inter-piece seam \
-         overlap (0.5 mm bias per side, see `cf-cast::piece::RIBBON_PIECE_OVERLAP_M`) \
-         is well above FDM printer accuracy (~0.1 mm), so hand alignment is \
-         workable for the first cast iteration."
-    );
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "If silicone leaks through the seam during pour, add a small fillet \
-         of mold release or putty along the outside of the seam before the \
-         next layer. Document the leak position for the post-iter-1 \
-         registration-feature decision (pins vs dovetails vs magnets)."
-    );
+    match &ribbon.registration {
+        RegistrationKind::None => {
+            let _ = writeln!(
+                md,
+                "Each layer's mold is two ribbon-cut pieces \
+                 (`_piece_0` + `_piece_1`) that meet along the \
+                 curve-following seam. This cast has no integral \
+                 registration features (`RegistrationKind::None`); \
+                 align the pieces by hand and clamp with rubber bands \
+                 or wide tape during pour + cure. The 1 mm inter-piece \
+                 seam overlap (0.5 mm bias per side, see \
+                 `cf-cast::piece::RIBBON_PIECE_OVERLAP_M`) is well \
+                 above FDM printer accuracy (~0.1 mm), so hand \
+                 alignment is workable for the first cast iteration."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "If silicone leaks through the seam during pour, add a \
+                 small fillet of mold release or putty along the outside \
+                 of the seam before the next layer. Document the leak \
+                 position for the post-iter-1 registration-feature \
+                 decision (pins vs dovetails vs magnets)."
+            );
+        }
+        RegistrationKind::Pins(spec) => {
+            let pin_count = spec.arc_fractions.len();
+            let pin_dia_mm = spec.pin_radius_m * 2.0 * 1000.0;
+            let pin_length_mm = spec.pin_half_length_m * 2.0 * 1000.0;
+            let _ = writeln!(
+                md,
+                "Each layer's mold is two ribbon-cut pieces \
+                 (`_piece_0` + `_piece_1`) that meet along the \
+                 curve-following seam. **{pin_count} cylindrical pins** \
+                 ({pin_dia_mm:.1} mm Ø × {pin_length_mm:.1} mm long, \
+                 printed integrally with `_piece_0` and matched by \
+                 cylindrical holes in `_piece_1`) lock the pieces in \
+                 alignment along the seam — no manual clamping needed \
+                 once the pins are seated."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "Insert each pin from `_piece_0` into the matching \
+                 hole in `_piece_1` along the binormal direction (the \
+                 hole axis is perpendicular to the seam at the pin \
+                 position). Pins are gravity-held; no friction lock. \
+                 The 1 mm seam overlap (0.5 mm bias per side) is \
+                 absorbed by the hole depth (slightly deeper than the \
+                 pin protrusion), so pieces seat flush against the \
+                 seam plane without binding."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "If a pin breaks during demold or assembly, file the \
+                 stub flush + drill out the hole if needed; a manual \
+                 rubber-band clamp restores the cast for that layer. \
+                 Document pin failures for the post-iter-1 \
+                 registration-feature decision (revisit dia/length \
+                 defaults in `PinSpec::iter1`)."
+            );
+        }
+    }
     md.push('\n');
 }
 
@@ -452,9 +498,8 @@ fn write_per_layer_sections_v2(md: &mut String, spec: &CastSpec, pour_volumes: &
         let _ = writeln!(md, "2. Apply mold release to all printed surfaces.");
         let _ = writeln!(
             md,
-            "3. Assemble the two pieces along the curve-following seam; \
-             clamp with rubber bands or wide tape (see \"v2 Mold \
-             Assembly\" above)."
+            "3. Assemble the two pieces along the curve-following seam \
+             per the \"v2 Mold Assembly\" section above."
         );
         if let Some(protocol) = protocol {
             let _ = writeln!(

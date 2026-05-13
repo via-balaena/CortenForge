@@ -1708,6 +1708,7 @@ mod tests {
 
     // ----- v2 export_molds_v2 -------------------------------------
 
+    use crate::registration::{PinSpec, RegistrationKind};
     use crate::ribbon::{PieceSide, Ribbon, SplitNormal};
     use nalgebra::Point3;
 
@@ -2284,6 +2285,179 @@ mod tests {
         let err = spec.write_procedure_v2(&ribbon, &path).unwrap_err();
         assert!(matches!(err, CastError::MassBudgetExceeded { .. }));
         assert!(!path.exists());
+    }
+
+    // ----- Step 9: registration pins -------------------------------
+
+    /// v2 fixture variant: same geometry as `v2_fixture` but with
+    /// Step 9 cylindrical-pin registration enabled on the ribbon.
+    fn v2_fixture_with_pins() -> (CastSpec, Ribbon) {
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_registration(RegistrationKind::Pins(PinSpec::iter1()));
+        (spec, ribbon)
+    }
+
+    #[test]
+    fn ribbon_with_registration_sets_field() {
+        // Builder method threads the kind through; default remains
+        // None for a freshly-constructed Ribbon.
+        let (_, ribbon_default) = v2_fixture();
+        assert_eq!(ribbon_default.registration, RegistrationKind::None);
+        let (_, ribbon_pins) = v2_fixture_with_pins();
+        assert!(matches!(
+            ribbon_pins.registration,
+            RegistrationKind::Pins(_)
+        ));
+    }
+
+    #[test]
+    fn ribbon_sample_at_arc_fraction_returns_polyline_position() {
+        // Fixture centerline: x ∈ [-0.05, +0.05], straight along +X.
+        // t = 0.0 → x = -0.05; t = 0.5 → x = 0.0; t = 1.0 → x = +0.05.
+        let (_, ribbon) = v2_fixture();
+        let (p0, _, _) = ribbon.sample_at_arc_fraction(0.0).unwrap();
+        let (p_mid, _, _) = ribbon.sample_at_arc_fraction(0.5).unwrap();
+        let (p1, _, _) = ribbon.sample_at_arc_fraction(1.0).unwrap();
+        assert!((p0.x - -0.05).abs() < 1e-9);
+        assert!((p_mid.x - 0.0).abs() < 1e-9);
+        assert!((p1.x - 0.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ribbon_sample_at_arc_fraction_rejects_out_of_range() {
+        let (_, ribbon) = v2_fixture();
+        assert!(ribbon.sample_at_arc_fraction(-0.1).is_none());
+        assert!(ribbon.sample_at_arc_fraction(1.1).is_none());
+        assert!(ribbon.sample_at_arc_fraction(f64::NAN).is_none());
+    }
+
+    #[test]
+    fn compose_piece_solid_with_pins_negative_side_gains_protrusion() {
+        // Pin 0 sits at (-0.025, +0.025, 0) (arc 0.25 of [-0.05, +0.05]
+        // centerline, offset +0.025 along +Y split-normal). Pin axis
+        // along binormal (+Z), half-length 5 mm so cylinder spans
+        // z ∈ [-0.005, +0.005].
+        //
+        // Negative piece (z < 0): base extends to z ≈ +0.5mm bias.
+        // Union with the pin cylinder extends the negative piece's
+        // material up to z ≈ +5mm at the pin position.
+        //
+        // Query at (-0.025, +0.025, +0.003) — 3mm above the seam,
+        // inside the pin's protrusion. With pins ON: SDF should be
+        // < 0 (inside the piece's gained protrusion). With pins OFF:
+        // SDF should be > 0 (outside the negative piece's natural
+        // half-space).
+        let (spec, ribbon_no_pins) = v2_fixture();
+        let (_, ribbon_pins) = v2_fixture_with_pins();
+        let body = &spec.layers[0].body;
+        let region = &spec.bounding_region;
+
+        let piece_no_pins =
+            crate::compose_piece_solid(body, region, &ribbon_no_pins, PieceSide::Negative).unwrap();
+        let piece_pins =
+            crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Negative).unwrap();
+
+        let q = Point3::new(-0.025, 0.0255, 0.003);
+        // Without pins: query is above the seam → outside negative piece.
+        assert!(
+            piece_no_pins.evaluate(&q) > 0.0,
+            "no-pin negative piece should EXCLUDE query above seam; got {}",
+            piece_no_pins.evaluate(&q),
+        );
+        // With pins: query is inside the pin protrusion → inside.
+        assert!(
+            piece_pins.evaluate(&q) < 0.0,
+            "pin'd negative piece should INCLUDE query in pin protrusion; got {}",
+            piece_pins.evaluate(&q),
+        );
+    }
+
+    #[test]
+    fn compose_piece_solid_with_pins_positive_side_gains_hole() {
+        // Same pin position (-0.025, +0.025, 0); query at
+        // (-0.025, +0.025, +0.003) — inside the pin cylinder AND
+        // inside positive piece's natural half-space (z > -bias).
+        // With pins: positive piece SUBTRACTS the pin cylinder →
+        // SDF > 0 (hole). Without pins: SDF < 0 (cup wall material).
+        let (spec, ribbon_no_pins) = v2_fixture();
+        let (_, ribbon_pins) = v2_fixture_with_pins();
+        let body = &spec.layers[0].body;
+        let region = &spec.bounding_region;
+
+        let piece_no_pins =
+            crate::compose_piece_solid(body, region, &ribbon_no_pins, PieceSide::Positive).unwrap();
+        let piece_pins =
+            crate::compose_piece_solid(body, region, &ribbon_pins, PieceSide::Positive).unwrap();
+
+        let q = Point3::new(-0.025, 0.0255, 0.003);
+        // Without pins: query in cup wall above seam → inside positive piece.
+        assert!(
+            piece_no_pins.evaluate(&q) < 0.0,
+            "no-pin positive piece should INCLUDE cup-wall query; got {}",
+            piece_no_pins.evaluate(&q),
+        );
+        // With pins: query in pin hole → outside (subtracted).
+        assert!(
+            piece_pins.evaluate(&q) > 0.0,
+            "pin'd positive piece should EXCLUDE query in pin hole; got {}",
+            piece_pins.evaluate(&q),
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_with_pins_writes_pieces_plus_plug() {
+        // End-to-end: enabling pins on the ribbon still produces a
+        // valid `2L + 1` STL output. Pins are CSG'd in during
+        // compose_piece_solid; marching cubes runs once per piece
+        // exactly as the no-pins path.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-pins");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+        let (spec, ribbon) = v2_fixture_with_pins();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert_eq!(report.layers.len(), 1);
+        assert!(report.layers[0].pieces[0].path.exists());
+        assert!(report.layers[0].pieces[1].path.exists());
+        assert!(report.plug_path.exists());
+        // Each piece's mesh has non-trivial face count (the pin
+        // cylinder contributes a few dozen extra faces at the 12 mm
+        // cell size).
+        for piece in &report.layers[0].pieces {
+            assert!(piece.summary.face_count > 0);
+        }
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_pin_prose_mentions_pin_count_and_diameter() {
+        // Pins ON: the v2 Mold Assembly section must mention the pin
+        // count + diameter (1.5 mm radius × 2 = 3.0 mm diameter for
+        // iter1). v1/v2-pre-Step-9 prose ("clamp with rubber bands")
+        // must NOT appear.
+        let (spec, ribbon) = v2_fixture_with_pins();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(md.contains("2 cylindrical pins"));
+        assert!(md.contains("3.0 mm Ø"));
+        assert!(md.contains("10.0 mm long"));
+        assert!(
+            !md.contains("rubber bands"),
+            "with-pins prose must not retain rubber-band clamping note"
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_no_pins_prose_keeps_clamp_note() {
+        // Pins OFF: the v2 Mold Assembly section keeps the existing
+        // hand-clamp prose unchanged.
+        let (spec, ribbon) = v2_fixture(); // RegistrationKind::None
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(md.contains("rubber bands"));
+        assert!(md.contains("`RegistrationKind::None`"));
     }
 
     #[test]
