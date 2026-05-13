@@ -2246,9 +2246,9 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // Workspace tools and shared helper crates that happen to match a
     // library-namespace prefix need an explicit exemption. xtask is
     // excluded by virtue of having no matching prefix at all; cf-viewer,
-    // cf-bevy-common, and cf-scan-prep all carry `cf-` prefixes that
-    // would otherwise pull them into the design-library scope
-    // (cf-spatial / cf-design / cf-geometry). Per docs/VIEWER_DESIGN.md
+    // cf-bevy-common, cf-scan-prep, and cf-cast-cli all carry `cf-`
+    // prefixes that would otherwise pull them into the design-library
+    // scope (cf-spatial / cf-design / cf-geometry). Per docs/VIEWER_DESIGN.md
     // Q1 + Q8 locks: cf-viewer is a workspace tool, carries no tier
     // metadata, and Q8 directs path-based filtering as the gating
     // mechanism rather than retrofitting metadata. cf-bevy-common
@@ -2256,8 +2256,14 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // consumed by cf-viewer + sim-bevy + sim-bevy-soft; same exemption
     // shape. cf-scan-prep (Stage 2.5 scan preprocessing GUI; first
     // inhabitant of `tools/`) is a workspace tool by the same Q8
-    // path-based-filter rationale as cf-viewer.
-    if matches!(crate_name, "cf-viewer" | "cf-bevy-common" | "cf-scan-prep") {
+    // path-based-filter rationale as cf-viewer. cf-cast-cli
+    // (scan→cast bridge CLI; second inhabitant of `tools/`) is a
+    // workspace tool with the same exemption shape — it consumes
+    // cf-scan-prep outputs and writes mold STLs via cf-cast.
+    if matches!(
+        crate_name,
+        "cf-viewer" | "cf-bevy-common" | "cf-scan-prep" | "cf-cast-cli"
+    ) {
         return false;
     }
     let prefixes = ["sim-", "mesh-", "cf-", "cortenforge-"];
@@ -3607,9 +3613,12 @@ serde = \"1\"
         // cf-viewer is a workspace tool with the cf- prefix; explicit
         // exemption per docs/VIEWER_DESIGN.md Q1 + Q8 locks. cf-bevy-common
         // is the C2b factor-out: workspace-internal Bevy helper, same
-        // exemption shape.
+        // exemption shape. cf-scan-prep and cf-cast-cli are workspace
+        // tools under `tools/` carrying cf- prefix; same exemption.
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
+        assert!(!applies_to_crate("cf-scan-prep"));
+        assert!(!applies_to_crate("cf-cast-cli"));
     }
 
     #[test]

@@ -1867,6 +1867,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-cast-cli"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-cast",
+ "cf-design",
+ "cf-geometry",
+ "clap",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-sdf",
+ "nalgebra",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "cf-design"
 version = "1.0.0"
 dependencies = [
