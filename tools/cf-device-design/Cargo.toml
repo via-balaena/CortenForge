@@ -34,6 +34,17 @@ mesh-io = { workspace = true }
 # `IndexedMesh` + `Bounded::aabb()` for the scan-info readout +
 # bounding-region derivation.
 mesh-types = { workspace = true }
+# `weld_vertices` (vertex deduplication before mesh decimation) +
+# `remove_unreferenced_vertices` (cleanup after decimation). Used by
+# the outer-envelope offset-surface wireframe (slice 3 polish 10) to
+# reduce the 3.3 M-face iter-1 scan to a tractable ~3 K-face proxy
+# for rendering.
+mesh-repair = { workspace = true }
+# `simplify_decoder` for the outer-envelope offset-surface
+# decimation. Same crate cf-scan-prep uses for its Simplify panel;
+# direct dep here because cf-device-design needs a more aggressive
+# decimation (target ~3 K faces vs cf-scan-prep's 200 K).
+meshopt = { workspace = true }
 # `Point3` + `Vector3` for the centerline polyline parsing.
 nalgebra = { workspace = true }
 

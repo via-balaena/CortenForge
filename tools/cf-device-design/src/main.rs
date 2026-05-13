@@ -12,6 +12,7 @@
 //! Save / Open. See `docs/ENGINEERING_SUITE_DESIGN.md` for the full
 //! ladder.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -24,7 +25,9 @@ use cf_viewer::{
 };
 use clap::Parser;
 use mesh_io::load_stl;
-use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
+use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
+use mesh_types::{Bounded, IndexedMesh, Point3};
+use meshopt::{SimplifyOptions, simplify_decoder};
 use nalgebra::Vector3;
 use serde::Deserialize;
 
@@ -79,12 +82,6 @@ struct ScanInfo {
     /// Bbox diagonal in meters — used by the Outer Envelope panel
     /// (slice 3) to size the default radius slider's range.
     bbox_diagonal_m: f64,
-    /// Raw scan AABB in physics-frame meters. Cached at load time so
-    /// the Outer Envelope default-radius heuristic can compute the
-    /// max perpendicular distance from each centerline point to the
-    /// scan's outer extent (= the min envelope radius that wraps
-    /// the whole scan + clearance).
-    scan_aabb_m: Aabb,
     /// Centerline polyline length in physics meters (sum of
     /// segment distances). Zero if the centerline is absent or
     /// empty. Used by the Cavity panel (slice 4) to bound the
@@ -104,92 +101,90 @@ struct Centerline {
     points_m: Vec<Point3<f64>>,
 }
 
-/// Bevy resource carrying the cached parallel-transport basis at
-/// each centerline point. Computed once at startup so the per-frame
-/// outer-envelope wireframe draw doesn't recompute (parallel
-/// transport is O(N) and stable, no need to recompute every tick).
+/// Outer-envelope panel state — the user-dialed `clearance_m`
+/// between the scan surface and the envelope. The envelope IS the
+/// scan surface offset outward by clearance (slice 3 polish 10
+/// pivot from per-arc rings to direct offset-surface).
 ///
-/// `bases[i] = (b1_i, b2_i)` — two unit vectors perpendicular to
-/// the local tangent at centerline point `i`, smoothly propagated
-/// from `bases[i-1]` so adjacent rings don't twist relative to
-/// each other (parallel-transport convention).
-///
-/// Empty when [`Centerline`] is empty.
-#[derive(Resource, Default, Clone)]
-struct CenterlineBases {
-    bases: Vec<(Vector3<f64>, Vector3<f64>)>,
-}
-
-/// Bevy resource carrying the scan's local cross-section radius at
-/// each centerline polyline point. `radii_m[i]` = max perpendicular
-/// distance from `centerline_points[i]` to any scan vertex that's
-/// closest to that centerline point.
-///
-/// Computed once at startup ([`compute_scan_local_radii`]). The
-/// outer-envelope wireframe uses these directly as ring radii (plus
-/// the user-dialed clearance) so the envelope is SNUG to the scan
-/// at every cross-section instead of guessing a constant-radius
-/// capsule.
-///
-/// Empty when the centerline is absent (no arc positions to compute
-/// radii at).
-#[derive(Resource, Default, Clone)]
-struct ScanLocalRadii {
-    radii_m: Vec<f64>,
-}
-
-/// Outer-envelope panel state — the user-dialed constant radius for
-/// the curve-following capsule along the scan centerline (per
-/// `docs/ENGINEERING_SUITE_DESIGN.md`'s Outer Envelope section).
-///
-/// Per-end CAP TOGGLES (`closed_at_high_z` / `closed_at_low_z`)
-/// control whether each centerline endpoint gets a hemispherical
-/// cap (closed dome) or remains open (flat rim, cylinder extends
-/// to the centerline endpoint). Defaults match the cf-scan-prep
-/// `+Z`-up convention: the higher-Z endpoint is the scan's natural
-/// dome (closed); the lower-Z endpoint is the cleaned cap region
-/// (open / cylinder rim). User toggles either via the panel
-/// checkboxes when the heuristic guesses wrong.
+/// No per-end cap toggles: the scan's natural shape (closed dome at
+/// one end, cleaned flat cap at the other) drives the offset
+/// surface directly.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct OuterEnvelopeState {
-    /// Clearance (meters) between the scan surface and the
-    /// envelope wireframe at every cross-section. The wireframe ring
-    /// radius at each centerline polyline point equals
-    /// `scan_local_radius[i] + clearance_m`, so the envelope is
-    /// programmatically SNUG to the scan everywhere — no parametric
-    /// guessing of a constant cylinder radius. Slice 3 polish 7
-    /// pivot from the prior "capsule of constant radius" model.
+    /// Distance (meters) by which the envelope wireframe sits
+    /// outside the scan surface, measured along the per-vertex
+    /// outward normal of the decimated scan proxy.
     clearance_m: f64,
-    /// Render a hemispherical cap at the centerline endpoint with
-    /// the higher Z coordinate. Default `true` — that endpoint is
-    /// typically the scan's natural dome.
-    closed_at_high_z: bool,
-    /// Render a hemispherical cap at the centerline endpoint with
-    /// the lower Z coordinate. Default `false` — that endpoint is
-    /// typically where cf-scan-prep applied its cleaned-cap
-    /// triangulation, i.e. the device's open rim.
-    closed_at_low_z: bool,
 }
 
 impl OuterEnvelopeState {
-    /// Build the slice-2-default starting state. Clearance defaults
-    /// to [`ENVELOPE_DEFAULT_CLEARANCE_M`] (5 mm) so the envelope
-    /// sits a visible distance outside the scan surface from launch.
+    /// Default state. Clearance defaults to
+    /// [`ENVELOPE_DEFAULT_CLEARANCE_M`] (5 mm) so the envelope sits
+    /// a visible distance outside the scan surface from launch.
     fn default_for_scan() -> Self {
         Self {
             clearance_m: ENVELOPE_DEFAULT_CLEARANCE_M,
-            closed_at_high_z: true,
-            closed_at_low_z: false,
         }
     }
 
-    /// Slider range for the clearance, in meters. Min is zero
-    /// (envelope sits ON the scan); max is generous so the user can
-    /// dial a thick wrap if needed for thick-wall devices.
+    /// Slider range for the clearance, in meters.
     fn clearance_slider_range_m() -> (f64, f64) {
         (0.0, 0.050)
     }
 }
+
+/// Decimated proxy of the cleaned scan, used to render the outer-
+/// envelope wireframe as a direct offset surface (slice 3 polish 10
+/// — fundamental pivot from centerline-parameterized rings).
+///
+/// Each frame, the wireframe is the proxy mesh's edges with every
+/// vertex DISPLACED outward by `OuterEnvelopeState::clearance_m`
+/// along its per-vertex normal. The result IS the scan surface +
+/// clearance, by construction — no per-bucket statistics, no
+/// smoothing, no parametric capsule. Matches the downstream SDF
+/// that cf-cast-cli's slice-9 build (`Solid::from_sdf(scan_sdf)
+/// .offset(clearance)`) will produce.
+///
+/// The proxy is decimated to ~`ENVELOPE_PROXY_TARGET_FACES` (1500
+/// faces by default) at startup — the iter-1 fixture's 3.3M-face
+/// cleaned mesh would be impossible to render as gizmo lines at
+/// full resolution. 1500 faces ≈ 4500 directed edges ≈ 2250 unique
+/// edges, well within Bevy's gizmo throughput.
+#[derive(Resource, Debug, Clone)]
+struct EnvelopeProxyMesh {
+    /// Decimated scan vertices in physics-frame meters.
+    vertices: Vec<Point3<f64>>,
+    /// Per-vertex outward normal (unit length). Computed as the
+    /// area-weighted average of incident face normals. Falls back
+    /// to `+Z` for vertices with no incident faces.
+    vertex_normals: Vec<Vector3<f64>>,
+    /// Deduplicated edges. Each `[a, b]` has `a < b`. One edge per
+    /// unique (vertex, vertex) pair regardless of how many faces
+    /// share it.
+    edges: Vec<[u32; 2]>,
+    /// Original face count (pre-decimation) — surfaced in the panel
+    /// so the user knows the proxy is approximate.
+    original_face_count: usize,
+}
+
+/// Target face count after decimation for the offset-surface
+/// wireframe. 1500 faces is dense enough to show the scan's gross
+/// shape (cylinder + dome + cleaned cap), sparse enough that Bevy
+/// gizmos render fluidly + the user can see THROUGH the wireframe
+/// to the scan.
+const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
+
+/// Weld epsilon (meters) for the pre-decimation vertex weld.
+/// Matches cf-scan-prep's `SIMPLIFY_WELD_EPSILON_M = 1e-6` — the
+/// cleaned scan's STL load produces 3-per-triangle unshared
+/// vertices that meshopt needs welded to find collapsible edges.
+const ENVELOPE_PROXY_WELD_EPSILON_M: f64 = 1e-6;
+
+/// `meshopt::simplify_decoder`'s target-error parameter. Matches
+/// cf-scan-prep's `SIMPLIFY_TARGET_ERROR = 0.05` — a high tolerance
+/// since we're aggressive about face count and the proxy is just
+/// for visualization, not measurement.
+const ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR: f32 = 0.05;
 
 // ----- .prep.toml parsing (subset; centerline only) -----------------
 
@@ -244,223 +239,6 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
         .windows(2)
         .map(|pair| (pair[1] - pair[0]).norm())
         .sum()
-}
-
-/// Cumulative arc length at each centerline polyline point.
-/// `arc_positions[0] = 0.0`; `arc_positions[N-1] = total arc length`.
-/// Empty for polylines with fewer than 2 points (no arc to measure).
-fn cumulative_arc_positions_m(points: &[Point3<f64>]) -> Vec<f64> {
-    if points.len() < 2 {
-        return Vec::new();
-    }
-    let mut arc = Vec::with_capacity(points.len());
-    arc.push(0.0);
-    for pair in points.windows(2) {
-        let segment_len = (pair[1] - pair[0]).norm();
-        let last = arc[arc.len() - 1];
-        arc.push(last + segment_len);
-    }
-    arc
-}
-
-/// Sample the centerline polyline at a specific arc-length position
-/// (in meters from the start). Returns `(position, unit_tangent)` —
-/// position is the linear interpolant between adjacent polyline
-/// points; tangent is the unit direction of the surrounding segment
-/// (piecewise constant within a segment).
-///
-/// `arc_positions` must be the result of [`cumulative_arc_positions_m`]
-/// on the same polyline. `target_arc` is clamped to the valid range
-/// `[0.0, arc_positions.last()]` for defensive behavior — out-of-range
-/// asks default to the nearest endpoint.
-///
-/// Returns `None` for polylines with fewer than 2 points (no valid
-/// arc parametrization).
-fn sample_centerline_at_arc(
-    points: &[Point3<f64>],
-    arc_positions: &[f64],
-    target_arc: f64,
-) -> Option<(Point3<f64>, Vector3<f64>)> {
-    if points.len() < 2 || arc_positions.len() != points.len() {
-        return None;
-    }
-    let total = *arc_positions.last()?;
-    let clamped = target_arc.clamp(0.0, total);
-    // Find the segment containing `clamped`. Linear search is fine for
-    // 30-point polylines; binary search if profiling shows hot spots.
-    for i in 0..points.len() - 1 {
-        let a_lo = arc_positions[i];
-        let a_hi = arc_positions[i + 1];
-        if clamped <= a_hi {
-            let segment_len = a_hi - a_lo;
-            let t = if segment_len < 1e-12 {
-                0.0
-            } else {
-                (clamped - a_lo) / segment_len
-            };
-            let pos = Point3::from(points[i].coords + (points[i + 1] - points[i]) * t);
-            let tangent_raw = points[i + 1] - points[i];
-            let tangent_norm = tangent_raw.norm();
-            let tangent = if tangent_norm < 1e-12 {
-                Vector3::new(0.0, 0.0, 1.0)
-            } else {
-                tangent_raw / tangent_norm
-            };
-            return Some((pos, tangent));
-        }
-    }
-    // Fall-through: `clamped == total`, return the last endpoint.
-    let last = points.len() - 1;
-    let tangent_raw = points[last] - points[last - 1];
-    let tangent_norm = tangent_raw.norm();
-    let tangent = if tangent_norm < 1e-12 {
-        Vector3::new(0.0, 0.0, 1.0)
-    } else {
-        tangent_raw / tangent_norm
-    };
-    Some((points[last], tangent))
-}
-
-/// Build a `(b1, b2)` orthonormal basis perpendicular to `tangent` at
-/// a sampled centerline arc position, anchored to the cached
-/// parallel-transport bases at the surrounding polyline points.
-/// Uses the basis at the LOWER-arc polyline point as the propagation
-/// seed, then re-projects perpendicular to `tangent` (handles the
-/// case where the interpolated tangent differs slightly from the
-/// surrounding polyline tangents).
-///
-/// Falls back to [`initial_basis_b1`] if the surrounding-point basis
-/// becomes degenerate after projection.
-fn sample_basis_at_arc(
-    bases: &[(Vector3<f64>, Vector3<f64>)],
-    arc_positions: &[f64],
-    target_arc: f64,
-    tangent: &Vector3<f64>,
-) -> (Vector3<f64>, Vector3<f64>) {
-    if bases.is_empty() || arc_positions.len() != bases.len() {
-        let b1 = initial_basis_b1(tangent);
-        let b2 = tangent.cross(&b1).normalize();
-        return (b1, b2);
-    }
-    let total = *arc_positions.last().unwrap_or(&0.0);
-    let clamped = target_arc.clamp(0.0, total);
-    // Find the lower-arc anchor index.
-    let mut anchor = 0_usize;
-    for i in 0..bases.len() - 1 {
-        if clamped >= arc_positions[i] && clamped <= arc_positions[i + 1] {
-            anchor = i;
-            break;
-        }
-    }
-    let (prev_b1, _) = bases[anchor];
-    let b1 = parallel_transport_b1(prev_b1, tangent);
-    let b2 = tangent.cross(&b1).normalize();
-    (b1, b2)
-}
-
-/// Half-window width (in polyline-index units) used to smooth the
-/// local-tangent estimate at each centerline point. The tangent at
-/// index `i` is the unit vector from `points[max(0, i - W)]` to
-/// `points[min(N - 1, i + W)]`, where `W = TANGENT_SMOOTHING_HALF_WINDOW`.
-/// At `W = 2` we average over 5 consecutive points — wide enough to
-/// suppress single-sample jitter near the cleaned-scan cap (a real
-/// failure mode seen at iter-1 visual review on
-/// `sock_over_capsule.cleaned.stl`), narrow enough to track 30°
-/// curves cleanly on the 30-point iter-1 polyline.
-const TANGENT_SMOOTHING_HALF_WINDOW: usize = 2;
-
-/// Compute the local unit tangent at `points[i]` using a windowed
-/// finite difference. Endpoints clamp to the polyline range
-/// (effectively a forward / backward difference of up to
-/// `TANGENT_SMOOTHING_HALF_WINDOW` steps); interior points use a
-/// `2 × TANGENT_SMOOTHING_HALF_WINDOW + 1`-point central difference.
-///
-/// The smoothing was added to slice 3 polish after iter-1 visual
-/// review surfaced "crazy rings" at the bottom of the
-/// `sock_over_capsule` envelope — adjacent centerline points there
-/// have Y direction flips that produced ~30° tangent jitter and
-/// tilted the rings wildly. 5-point smoothing averages the noise
-/// out without smearing real curvature.
-///
-/// Falls back to `+Z` when the polyline is degenerate (consecutive
-/// coincident points within the window).
-fn local_tangent(points: &[Point3<f64>], i: usize) -> Vector3<f64> {
-    let len = points.len();
-    if len < 2 {
-        return Vector3::new(0.0, 0.0, 1.0);
-    }
-    let lo = i.saturating_sub(TANGENT_SMOOTHING_HALF_WINDOW);
-    let hi = (i + TANGENT_SMOOTHING_HALF_WINDOW).min(len - 1);
-    let raw = points[hi] - points[lo];
-    let norm = raw.norm();
-    if norm < 1e-12 {
-        Vector3::new(0.0, 0.0, 1.0)
-    } else {
-        raw / norm
-    }
-}
-
-/// Pick an initial perpendicular vector to `tangent` for the first
-/// centerline point's basis. Uses `+Z` as the candidate, swaps to
-/// `+X` when `tangent` is nearly parallel to `+Z` (so the
-/// Gram-Schmidt projection doesn't collapse to a zero vector).
-fn initial_basis_b1(tangent: &Vector3<f64>) -> Vector3<f64> {
-    let world_z = Vector3::new(0.0, 0.0, 1.0);
-    let candidate = if tangent.dot(&world_z).abs() > 0.9 {
-        Vector3::new(1.0, 0.0, 0.0)
-    } else {
-        world_z
-    };
-    let projected = candidate - tangent * candidate.dot(tangent);
-    let norm = projected.norm();
-    if norm < 1e-12 {
-        // Extremely defensive; shouldn't reach here given the
-        // candidate-swap above.
-        Vector3::new(0.0, 1.0, 0.0)
-    } else {
-        projected / norm
-    }
-}
-
-/// Parallel-transport an existing basis vector `prev_b1` to the new
-/// tangent direction. Projects `prev_b1` onto the plane perpendicular
-/// to `tangent` and normalizes. Smooth across consecutive ring frames
-/// — adjacent rings don't twist relative to each other, which keeps
-/// the longitudinal lines straight along the device.
-fn parallel_transport_b1(prev_b1: Vector3<f64>, tangent: &Vector3<f64>) -> Vector3<f64> {
-    let projected = prev_b1 - tangent * prev_b1.dot(tangent);
-    let norm = projected.norm();
-    if norm < 1e-12 {
-        initial_basis_b1(tangent)
-    } else {
-        projected / norm
-    }
-}
-
-/// Compute the parallel-transport (b1, b2) basis at every centerline
-/// point. b1 starts perpendicular to the first tangent; each
-/// subsequent b1 is the previous b1 projected perpendicular to the
-/// new tangent. b2 = tangent × b1 (right-hand rule), giving a
-/// right-handed orthonormal basis at every point.
-///
-/// Returns an empty vec for polylines with fewer than 2 points.
-fn compute_centerline_bases(points: &[Point3<f64>]) -> Vec<(Vector3<f64>, Vector3<f64>)> {
-    if points.len() < 2 {
-        return Vec::new();
-    }
-    let mut bases = Vec::with_capacity(points.len());
-    let mut prev_b1: Option<Vector3<f64>> = None;
-    for i in 0..points.len() {
-        let tangent = local_tangent(points, i);
-        let b1 = match prev_b1 {
-            Some(b) => parallel_transport_b1(b, &tangent),
-            None => initial_basis_b1(&tangent),
-        };
-        let b2 = tangent.cross(&b1).normalize();
-        bases.push((b1, b2));
-        prev_b1 = Some(b1);
-    }
-    bases
 }
 
 // ----- Bevy app -----------------------------------------------------
@@ -523,7 +301,6 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
         face_count: mesh.faces.len(),
         aabb_mm_extents: extents_mm,
         bbox_diagonal_m: aabb.diagonal(),
-        scan_aabb_m: aabb,
         centerline_arc_length_m: centerline_arc_length_m(centerline_points),
         centerline_point_count: centerline_points.len(),
     }
@@ -536,180 +313,175 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// surface."
 const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
 
-/// Estimate the scan's extent past a centerline endpoint along an
-/// outward direction. For each AABB corner, project `(corner -
-/// endpoint)` onto `outward` and keep the max non-negative
-/// projection. Returns 0.0 when no corner is forward of the
-/// endpoint (degenerate; defensive).
+/// Decimate the cleaned scan to a ~`ENVELOPE_PROXY_TARGET_FACES`-
+/// face proxy mesh, compute per-vertex outward normals, and extract
+/// deduplicated edges. Returns the proxy struct used by
+/// [`draw_envelope_offset_overlay`] to render the scan's offset
+/// surface as a wireframe.
 ///
-/// Used by [`draw_outer_envelope_overlay`] to size each closed
-/// end's ellipsoidal cap to the scan's actual dome height —
-/// addresses iter-1 visual review feedback "the tip of the rings
-/// taper too hard relative to the geometry at the tip" when the
-/// hemispherical-cap height = R was much larger than the scan's
-/// natural dome.
-fn scan_extent_past_endpoint(
-    endpoint: &Point3<f64>,
-    outward: &Vector3<f64>,
-    scan_aabb: &Aabb,
-) -> f64 {
-    let corners = [
-        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.min.z),
-        Point3::new(scan_aabb.min.x, scan_aabb.min.y, scan_aabb.max.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.min.y, scan_aabb.max.z),
-        Point3::new(scan_aabb.min.x, scan_aabb.max.y, scan_aabb.max.z),
-        Point3::new(scan_aabb.max.x, scan_aabb.max.y, scan_aabb.max.z),
-    ];
-    let mut max_extent = 0.0_f64;
-    for c in &corners {
-        let projection = (c - endpoint).dot(outward);
-        if projection > max_extent {
-            max_extent = projection;
+/// Pipeline:
+/// 1. Weld duplicated vertices (STL load produces 3-per-triangle
+///    unshared vertices that meshopt can't decimate without
+///    shared topology).
+/// 2. `meshopt::simplify_decoder` with `LockBorder` (preserves any
+///    open boundary edges on the cleaned mesh).
+/// 3. Strip unreferenced vertices left over from the decimation.
+/// 4. Compute face normals from triangle CCW order, then per-vertex
+///    normals as area-weighted averages of incident face normals.
+/// 5. Extract unique edges (each face contributes 3 edges; dedup
+///    by sorted vertex-index pairs).
+///
+/// Cost: O(N_orig_faces) for weld + meshopt + O(N_decimated × 3) for
+/// normals + edges. For the iter-1 fixture (3.3 M cleaned faces →
+/// 1500 proxy faces) this runs in ~5–10 s at startup; one-time.
+fn compute_envelope_proxy_mesh(scan_mesh: &IndexedMesh) -> EnvelopeProxyMesh {
+    let original_face_count = scan_mesh.faces.len();
+
+    // Step 1: weld unshared vertices.
+    let mut welded = scan_mesh.clone();
+    weld_vertices(&mut welded, ENVELOPE_PROXY_WELD_EPSILON_M);
+
+    // Step 2: meshopt simplify. Target index count = target faces × 3.
+    // f64 → f32 cast is intentional; meshopt's C API operates on f32.
+    #[allow(clippy::cast_possible_truncation)]
+    let positions: Vec<[f32; 3]> = welded
+        .vertices
+        .iter()
+        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+        .collect();
+    let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
+    let target_index_count = ENVELOPE_PROXY_TARGET_FACES.saturating_mul(3);
+    let mut result_error = 0.0_f32;
+    let simplified_indices = if target_index_count < indices.len() {
+        simplify_decoder(
+            &indices,
+            &positions,
+            target_index_count,
+            ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
+            SimplifyOptions::LockBorder,
+            Some(&mut result_error),
+        )
+    } else {
+        // Mesh is already at or below the target; skip decimation.
+        indices.clone()
+    };
+
+    // Step 3: reassemble + strip unreferenced vertices.
+    let mut proxy = welded;
+    proxy.faces = simplified_indices
+        .chunks_exact(3)
+        .map(|tri| [tri[0], tri[1], tri[2]])
+        .collect();
+    remove_unreferenced_vertices(&mut proxy);
+
+    // Step 4: face normals (CCW triangle winding × right-hand rule
+    // = outward for cf-scan-prep's cleaned-mesh convention).
+    let face_normals: Vec<Vector3<f64>> = proxy
+        .faces
+        .iter()
+        .map(|face| {
+            let v0 = proxy.vertices[face[0] as usize].coords;
+            let v1 = proxy.vertices[face[1] as usize].coords;
+            let v2 = proxy.vertices[face[2] as usize].coords;
+            let e1 = v1 - v0;
+            let e2 = v2 - v0;
+            // Un-normalized so the magnitude carries the face area
+            // weight (= 2 × triangle area) into the vertex-normal
+            // accumulation. Area-weighting biases the per-vertex
+            // normal toward bigger neighboring triangles, which
+            // gives a more physically meaningful "outward" at
+            // vertices on a curved surface.
+            e1.cross(&e2)
+        })
+        .collect();
+
+    // Per-vertex normals: sum face normals (which carry area
+    // weight via their pre-normalized magnitudes), then normalize.
+    let mut vertex_normals: Vec<Vector3<f64>> = vec![Vector3::zeros(); proxy.vertices.len()];
+    for (face, fn_vec) in proxy.faces.iter().zip(face_normals.iter()) {
+        for &idx in face {
+            vertex_normals[idx as usize] += fn_vec;
         }
     }
-    max_extent
+    // Normalize; fall back to +Z for any vertex with no incident
+    // faces (defensive — should not happen after remove_unrefed).
+    for n in &mut vertex_normals {
+        let norm = n.norm();
+        if norm > 1e-12 {
+            *n /= norm;
+        } else {
+            *n = Vector3::new(0.0, 0.0, 1.0);
+        }
+    }
+
+    // Step 5: deduplicated edges. Each face contributes 3 directed
+    // edges; we collect them as sorted (min, max) tuples in a
+    // HashSet to dedup, then materialize as a Vec.
+    let mut edge_set: HashSet<(u32, u32)> = HashSet::new();
+    for face in &proxy.faces {
+        for (a, b) in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
+            let edge = if a < b { (a, b) } else { (b, a) };
+            edge_set.insert(edge);
+        }
+    }
+    let edges: Vec<[u32; 2]> = edge_set.into_iter().map(|(a, b)| [a, b]).collect();
+
+    EnvelopeProxyMesh {
+        vertices: proxy.vertices,
+        vertex_normals,
+        edges,
+        original_face_count,
+    }
 }
 
-/// Percentile of the per-bucket perpendicular-distance distribution
-/// used as the bucket's "scan radius." 0.75 = third quartile —
-/// excludes the top 25 % of distances per bucket, aggressively
-/// filtering bumps + dome-region outliers. For a typical
-/// per-bucket population of ~300 K vertices, the top 25 % is
-/// ~75 K vertices — including not just point-noise but also small
-/// anatomical bulges. Lands the envelope on the scan's TYPICAL
-/// cross-section width rather than its EXTREME at each bucket.
+/// Draw the outer-envelope wireframe as the scan-proxy's offset
+/// surface (slice 3 polish 10 — fundamental pivot away from
+/// centerline-parameterized rings).
 ///
-/// Iter-1 visual review iteration history:
-/// - per-bucket MAX → cap region inflated by single-vertex noise
-/// - per-bucket 95th percentile → still inflated by small bumps
-///   spanning hundreds of vertices
-/// - per-bucket 75th percentile (this) → envelope tracks the body's
-///   median width; the wireframe stays smooth even when the scan
-///   has localized bulges that legitimately fall above the 75th
-///   percentile of the bucket.
+/// Each frame: for every decimated-mesh vertex, displace by
+/// `clearance_m` along its outward normal; for every deduplicated
+/// edge, draw a gizmo line between the two endpoints' displaced
+/// positions (transformed into Bevy frame via the cast-frame
+/// `UpAxis::PlusZ` swap + `render_scale` lift).
 ///
-/// Trade-off: the envelope is INSIDE the scan at the top 25 % of
-/// each bucket's vertices. For wireframe preview that's acceptable
-/// (scan visibly pokes through at peaks, telling the user there's
-/// a bump there). The cf-cast-cli SDF construction (slice 9) uses
-/// `scan.offset(clearance)` directly and strictly envelopes
-/// everywhere — this percentile only shapes the PREVIEW, not the
-/// downstream SDF.
-const RADII_BUCKET_PERCENTILE: f64 = 0.75;
+/// The wireframe is the scan's outer surface, plus clearance,
+/// everywhere — matches what cf-cast-cli's downstream SDF
+/// (`Solid::from_sdf(scan_sdf).offset(clearance_m)`) builds. No
+/// parameterization to overshoot; no statistics to overfit.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn draw_envelope_offset_overlay(
+    proxy: Res<EnvelopeProxyMesh>,
+    state: Res<OuterEnvelopeState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut gizmos: Gizmos,
+) {
+    if proxy.vertices.is_empty() || proxy.edges.is_empty() {
+        return;
+    }
+    // Pale green-blue; same color as the prior ring-based wireframe
+    // so the visual identity stays consistent across the polish
+    // iterations.
+    let color = Color::srgb(0.55, 0.85, 0.70);
 
-/// Compute the scan's local cross-section radius at each centerline
-/// polyline point. For each scan vertex, find the closest centerline
-/// point and compute the perpendicular distance to the centerline
-/// tangent line at that point. Per-bucket statistic: the
-/// [`RADII_BUCKET_PERCENTILE`]-th percentile (95th by default) of
-/// the distances collected for that bucket.
-///
-/// Cost: O(N_vertices × N_centerline) for the bucket-assignment +
-/// distance computation + a sort of each bucket. For the iter-1
-/// fixture (10 M vertices × 30 centerline points; ~333 K per bucket)
-/// this runs in ~3–4 s at startup. One-time; results cached.
-///
-/// Memory: O(N_vertices) for the per-bucket distance Vecs (~80 MB
-/// peak on iter-1 at f64). Freed once the percentile is extracted.
-///
-/// Used by [`draw_outer_envelope_overlay`] (slice 3 polish 7) to
-/// snap the envelope wireframe to the scan's actual outer surface
-/// at every cross-section + a uniform clearance.
-fn compute_scan_local_radii(
-    centerline_points: &[Point3<f64>],
-    scan_mesh: &IndexedMesh,
-) -> Vec<f64> {
-    if centerline_points.len() < 2 {
-        return Vec::new();
-    }
-    let n = centerline_points.len();
-    let mut bucket_distances: Vec<Vec<f64>> = vec![Vec::new(); n];
-    for vertex in &scan_mesh.vertices {
-        // Find closest centerline polyline point (Euclidean
-        // distance; linear search across ~30 points).
-        let mut best_i = 0_usize;
-        let mut best_dist_sq = f64::INFINITY;
-        for (i, p) in centerline_points.iter().enumerate() {
-            let delta = vertex.coords - p.coords;
-            let d = delta.norm_squared();
-            if d < best_dist_sq {
-                best_dist_sq = d;
-                best_i = i;
-            }
-        }
-        // Perpendicular distance from the vertex to the centerline
-        // tangent line at the closest centerline point.
-        let tangent = local_tangent(centerline_points, best_i);
-        let diff = vertex.coords - centerline_points[best_i].coords;
-        let parallel = diff.dot(&tangent);
-        let perp_sq = diff.norm_squared() - parallel * parallel;
-        let perp = perp_sq.max(0.0).sqrt();
-        bucket_distances[best_i].push(perp);
-    }
-    // Per-bucket percentile: sort the distances and pick the
-    // RADII_BUCKET_PERCENTILE-th entry. Single-vertex outliers
-    // beyond that percentile are excluded, smoothing real noise
-    // without smearing genuine wide features (which involve many
-    // more vertices than the top-percentile cut).
-    let mut radii = Vec::with_capacity(n);
-    for bucket in &mut bucket_distances {
-        if bucket.is_empty() {
-            radii.push(0.0);
-            continue;
-        }
-        bucket.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-        // Bucket sizes are well under 2^53; precision is fine.
-        let idx = ((bucket.len() - 1) as f64 * RADII_BUCKET_PERCENTILE) as usize;
-        radii.push(bucket[idx]);
-    }
-    radii
-}
+    // Pre-compute displaced + Bevy-framed positions for every
+    // vertex so each edge endpoint reads a cached value (vs
+    // recomputing twice per edge).
+    let displaced_bevy: Vec<Vec3> = proxy
+        .vertices
+        .iter()
+        .zip(proxy.vertex_normals.iter())
+        .map(|(v, n)| {
+            let displaced_physics = Point3::from(v.coords + n * state.clearance_m);
+            Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
+        })
+        .collect();
 
-/// Half-window for smoothing the per-centerline-point scan-local
-/// radii across centerline buckets. `W = 5` averages each radius
-/// with up to 5 neighbors on each side (an 11-point moving
-/// average). Combined with the [`RADII_BUCKET_PERCENTILE`] = 0.75
-/// per-bucket robust statistic, this gives a heavily-smoothed
-/// scan-snug envelope that tracks the scan's gross shape without
-/// catching bumps spanning more than a few centerline-points'
-/// worth of arc.
-///
-/// Iter-1 visual review iteration history:
-/// - W = 3 (7-point) → still overreacted to multi-bucket bumps
-///   near the dome region; clamping at endpoints made the spike
-///   averaging insufficient
-/// - W = 5 (11-point, this) → spans ~1/3 of the 30-point iter-1
-///   centerline; spikes get diluted across a significant portion
-///   of the device length.
-const RADII_SMOOTHING_HALF_WINDOW: usize = 5;
-
-/// Smooth the per-centerline scan-local radii with a moving-average
-/// filter across centerline-bucket indices. Reduces the impact of
-/// single-vertex outliers that would otherwise blow out an entire
-/// ring's radius (and, at endpoints, the cap's equatorial radius).
-///
-/// Window: `2 * RADII_SMOOTHING_HALF_WINDOW + 1` centerline points,
-/// clamped to the polyline range at endpoints. Returns a Vec of the
-/// same length as the input.
-fn smooth_scan_local_radii(radii: &[f64]) -> Vec<f64> {
-    if radii.is_empty() {
-        return Vec::new();
+    for edge in &proxy.edges {
+        let a = displaced_bevy[edge[0] as usize];
+        let b = displaced_bevy[edge[1] as usize];
+        gizmos.line(a, b, color);
     }
-    let n = radii.len();
-    let mut smoothed = Vec::with_capacity(n);
-    for i in 0..n {
-        let lo = i.saturating_sub(RADII_SMOOTHING_HALF_WINDOW);
-        let hi = (i + RADII_SMOOTHING_HALF_WINDOW + 1).min(n);
-        #[allow(clippy::cast_precision_loss)] // window size fits in f64.
-        let count = (hi - lo) as f64;
-        let sum: f64 = radii[lo..hi].iter().sum();
-        smoothed.push(sum / count);
-    }
-    smoothed
 }
 
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
@@ -789,280 +561,19 @@ fn draw_reference_overlays(
 }
 
 /// Number of segments around each cross-section ring of the
-/// outer-envelope wireframe. 24 segments → 15°-spaced ring vertices,
-/// smooth enough at typical device radii without overwhelming the
-/// gizmo line count.
-const OUTER_ENVELOPE_RING_SEGMENTS: usize = 24;
-
-/// Number of longitudinal lines connecting corresponding ring
-/// vertices across centerline rings. Drawn at evenly-spaced angles
-/// (0°, 90°, 180°, 270° at the default 4). Helps the wireframe read
-/// as a 3D tube rather than disconnected rings.
-const OUTER_ENVELOPE_LONGITUDINAL_LINES: usize = 4;
-
-/// Number of intermediate latitude rings between the cylindrical
-/// section's end ring and the hemispherical cap's apex point. 7
-/// rings at θ ∈ {11.25°, 22.5°, 33.75°, 45°, 56.25°, 67.5°, 78.75°}
-/// from the cylinder plane produce a smooth hemispherical
-/// visualization. Together with the rim ring (θ = 0) and the apex
-/// (θ = 90°) this is 9 latitudes per cap.
+/// Render the Outer Envelope egui section. Slice 3 polish 10 pivot:
+/// the envelope is the cleaned scan's offset surface — a decimated
+/// proxy mesh with every vertex displaced outward by `clearance_m`
+/// along its per-vertex normal. The user dials the clearance; the
+/// surface IS the scan + offset, by construction.
 ///
-/// Bumped from 3 → 7 after iter-1 visual review: cap latitudes
-/// were sparser than the cylindrical section's rings, masking the
-/// tip taper. 7 latitudes over a typical 38 mm cap (default
-/// radius on iter-1) lands at ~5 mm per latitude — comparable to
-/// the cylinder section's per-polyline-point spacing.
-const OUTER_ENVELOPE_CAP_LATITUDES: usize = 7;
-
-/// Draw the outer-envelope wireframe overlay each frame. The
-/// envelope is a curve-following capsule (`Solid::pipe(centerline,
-/// radius_m)` in the SDF kernel; rendered here as a wireframe of
-/// cross-section rings perpendicular to the centerline tangent at
-/// each polyline point + longitudinal lines connecting them).
-///
-/// Wireframe-only (not a meshed surface) by design: marching-cubes
-/// at every slider tick would lag. The wireframe gives instant
-/// visual feedback as the radius changes; the meshed geometry
-/// lands at save / validate time via cf-cast-cli (slice 9).
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-#[allow(clippy::too_many_arguments)] // Gizmo draw systems pull many Res by convention.
-fn draw_outer_envelope_overlay(
-    centerline: Res<Centerline>,
-    bases: Res<CenterlineBases>,
-    scan_radii: Res<ScanLocalRadii>,
-    state: Res<OuterEnvelopeState>,
-    info: Res<ScanInfo>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
-    mut gizmos: Gizmos,
-) {
-    if centerline.points_m.len() < 2
-        || bases.bases.len() != centerline.points_m.len()
-        || scan_radii.radii_m.len() != centerline.points_m.len()
-    {
-        return;
-    }
-    let arc_positions = cumulative_arc_positions_m(&centerline.points_m);
-    if arc_positions.is_empty() {
-        return;
-    }
-
-    // Geometry semantic (slice 3 polish 7): the envelope is the
-    // scan's outer surface offset by `clearance_m`. Each cylindrical
-    // ring at centerline polyline point i has radius
-    // `scan_local_radius[i] + clearance_m` — programmatically snug
-    // to the scan everywhere, no parametric guessing of a constant
-    // cylinder radius. Each closed end has an ellipsoidal cap whose
-    // EQUATORIAL radius matches the local ring radius at that
-    // endpoint, and whose HEIGHT comes from the scan's actual
-    // extent past the endpoint along the outward direction.
-    let clearance = state.clearance_m;
-    let last_idx = centerline.points_m.len() - 1;
-    let high_z_is_start = centerline.points_m[0].z >= centerline.points_m[last_idx].z;
-    let (closed_at_start, closed_at_end) = if high_z_is_start {
-        (state.closed_at_high_z, state.closed_at_low_z)
-    } else {
-        (state.closed_at_low_z, state.closed_at_high_z)
-    };
-
-    // Pale green-blue; distinguishes from scan (white) + axis arrows
-    // (red/green/blue full saturation) + centerline (cyan).
-    let color = Color::srgb(0.55, 0.85, 0.70);
-
-    // Build cylindrical-section rings at every centerline polyline
-    // point. Each ring's radius is the scan's local cross-section
-    // radius at that point plus the user-dialed clearance.
-    let mut rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(arc_positions.len());
-    let mut ring_radii: Vec<f64> = Vec::with_capacity(arc_positions.len());
-    for (i, &arc) in arc_positions.iter().enumerate() {
-        let Some((ring_center, tangent)) =
-            sample_centerline_at_arc(&centerline.points_m, &arc_positions, arc)
-        else {
-            return;
-        };
-        let (b1, b2) = sample_basis_at_arc(&bases.bases, &arc_positions, arc, &tangent);
-        let ring_radius = scan_radii.radii_m[i] + clearance;
-        ring_radii.push(ring_radius);
-        let mut ring = Vec::with_capacity(OUTER_ENVELOPE_RING_SEGMENTS);
-        for seg in 0..OUTER_ENVELOPE_RING_SEGMENTS {
-            #[allow(clippy::cast_precision_loss)] // seg fits in f64 easily.
-            let theta = (seg as f64 / OUTER_ENVELOPE_RING_SEGMENTS as f64) * std::f64::consts::TAU;
-            let offset = b1 * (ring_radius * theta.cos()) + b2 * (ring_radius * theta.sin());
-            let physics_pt = Point3::from(ring_center.coords + offset);
-            ring.push(Vec3::from_array(up.to_bevy_point(&physics_pt)) * render_scale.0);
-        }
-        rings_bevy.push(ring);
-    }
-
-    // Draw cylindrical ring lines (closed circles at each arc position).
-    for ring in &rings_bevy {
-        for seg in 0..ring.len() {
-            let a = ring[seg];
-            let b = ring[(seg + 1) % ring.len()];
-            gizmos.line(a, b, color);
-        }
-    }
-
-    // Draw longitudinal lines connecting corresponding ring vertices
-    // across the cylindrical section.
-    if rings_bevy.len() >= 2 {
-        let step = OUTER_ENVELOPE_RING_SEGMENTS / OUTER_ENVELOPE_LONGITUDINAL_LINES;
-        for k in 0..OUTER_ENVELOPE_LONGITUDINAL_LINES {
-            let ring_idx = k * step;
-            for i in 0..rings_bevy.len() - 1 {
-                let a = rings_bevy[i][ring_idx];
-                let b = rings_bevy[i + 1][ring_idx];
-                gizmos.line(a, b, color);
-            }
-        }
-    }
-
-    // Ellipsoidal end caps. For each closed end, the cap base is at
-    // the centerline ENDPOINT (the cylinder's terminal rim ring),
-    // the outward tangent points away from the centerline interior,
-    // and the cap height is computed from the scan AABB's extent
-    // past the endpoint along that outward direction. The cap thus
-    // hugs the actual dome height (e.g. ~8 mm on a sock-shaped
-    // scan whose centerline endpoint sits ~5 mm inside the dome
-    // surface), not a full R hemisphere.
-    if closed_at_start {
-        let start_point = centerline.points_m[0];
-        let start_outward = -local_tangent(&centerline.points_m, 0);
-        let start_cap_height =
-            scan_extent_past_endpoint(&start_point, &start_outward, &info.scan_aabb_m) + clearance;
-        let (start_b1, start_b2) = bases.bases[0];
-        draw_hemispherical_cap(
-            &start_point,
-            &start_outward,
-            &start_b1,
-            &start_b2,
-            ring_radii[0],
-            start_cap_height,
-            &rings_bevy[0],
-            *up,
-            render_scale.0,
-            color,
-            &mut gizmos,
-        );
-    }
-
-    if closed_at_end {
-        let end_point = centerline.points_m[last_idx];
-        let end_outward = local_tangent(&centerline.points_m, last_idx);
-        let end_cap_height =
-            scan_extent_past_endpoint(&end_point, &end_outward, &info.scan_aabb_m) + clearance;
-        let (end_b1, end_b2) = bases.bases[last_idx];
-        let last_ring_idx = rings_bevy.len() - 1;
-        draw_hemispherical_cap(
-            &end_point,
-            &end_outward,
-            &end_b1,
-            &end_b2,
-            ring_radii[last_ring_idx],
-            end_cap_height,
-            &rings_bevy[last_ring_idx],
-            *up,
-            render_scale.0,
-            color,
-            &mut gizmos,
-        );
-    }
-}
-
-/// Draw an ellipsoidal end cap centered at `base_point` with its
-/// axis along `outward_tangent` (away from the centerline
-/// interior). Uses `(b1, b2)` as the rim-ring basis. `radius_m` =
-/// equatorial ring radius (matches the cylinder section);
-/// `height_m` = distance from base to apex along `outward_tangent`.
-/// When `height_m == radius_m` the cap is a hemisphere; when
-/// `height_m < radius_m` it's an oblate (flatter) dome — used in
-/// slice 3 polish 6 to size the cap to the scan's actual extent
-/// past the centerline endpoint instead of always drawing a full
-/// R hemisphere.
-///
-/// Cap latitudes are parameterized by `t ∈ [0, 1]` (0 = rim, 1 =
-/// apex). At each `t`:
-/// `ring_radius = radius_m * sqrt(1 - t²)`,
-/// `ring_offset_along_outward = height_m * t`. This matches an
-/// ellipsoid `(x/R)² + (y/R)² + (z/H)² = 1` at the cap half —
-/// equator at `t=0`, pole at `t=1`. Drawing pattern:
-/// `OUTER_ENVELOPE_CAP_LATITUDES` intermediate ring circles +
-/// `OUTER_ENVELOPE_LONGITUDINAL_LINES` arcs from `base_ring_bevy`
-/// through the cap rings up to the apex.
-#[allow(clippy::too_many_arguments)] // Helper packs the full cap-draw context.
-fn draw_hemispherical_cap(
-    base_point: &Point3<f64>,
-    outward_tangent: &Vector3<f64>,
-    b1: &Vector3<f64>,
-    b2: &Vector3<f64>,
-    radius_m: f64,
-    height_m: f64,
-    base_ring_bevy: &[Vec3],
-    up: UpAxis,
-    render_scale: f32,
-    color: Color,
-    gizmos: &mut Gizmos,
-) {
-    // Build intermediate cap rings + apex point in Bevy frame.
-    // `cap_rings_bevy[lat]` is the ring at latitude t_lat.
-    let mut cap_rings_bevy: Vec<Vec<Vec3>> = Vec::with_capacity(OUTER_ENVELOPE_CAP_LATITUDES);
-    for lat in 1..=OUTER_ENVELOPE_CAP_LATITUDES {
-        #[allow(clippy::cast_precision_loss)] // lat fits in f64.
-        let t = lat as f64 / (OUTER_ENVELOPE_CAP_LATITUDES + 1) as f64;
-        let ring_center = base_point.coords + outward_tangent * (height_m * t);
-        let ring_radius = radius_m * (1.0 - t * t).max(0.0).sqrt();
-        let mut ring = Vec::with_capacity(OUTER_ENVELOPE_RING_SEGMENTS);
-        for seg in 0..OUTER_ENVELOPE_RING_SEGMENTS {
-            #[allow(clippy::cast_precision_loss)]
-            let phi = (seg as f64 / OUTER_ENVELOPE_RING_SEGMENTS as f64) * std::f64::consts::TAU;
-            let offset = b1 * (ring_radius * phi.cos()) + b2 * (ring_radius * phi.sin());
-            let physics_pt = Point3::from(ring_center + offset);
-            ring.push(Vec3::from_array(up.to_bevy_point(&physics_pt)) * render_scale);
-        }
-        cap_rings_bevy.push(ring);
-    }
-    let apex_physics = Point3::from(base_point.coords + outward_tangent * height_m);
-    let apex_bevy = Vec3::from_array(up.to_bevy_point(&apex_physics)) * render_scale;
-
-    // Draw the intermediate cap rings (closed circles).
-    for ring in &cap_rings_bevy {
-        for seg in 0..ring.len() {
-            let a = ring[seg];
-            let b = ring[(seg + 1) % ring.len()];
-            gizmos.line(a, b, color);
-        }
-    }
-
-    // Longitudinal arcs from rim → intermediate rings → apex. At
-    // each of the OUTER_ENVELOPE_LONGITUDINAL_LINES picked ring
-    // indices, connect rim → cap[0] → cap[1] → ... → apex.
-    let step = OUTER_ENVELOPE_RING_SEGMENTS / OUTER_ENVELOPE_LONGITUDINAL_LINES;
-    for k in 0..OUTER_ENVELOPE_LONGITUDINAL_LINES {
-        let ring_idx = k * step;
-        let mut prev = base_ring_bevy[ring_idx];
-        for cap_ring in &cap_rings_bevy {
-            let next = cap_ring[ring_idx];
-            gizmos.line(prev, next, color);
-            prev = next;
-        }
-        gizmos.line(prev, apex_bevy, color);
-    }
-}
-
-/// Render the Outer Envelope egui section. Slice 3 polish 7 pivot:
-/// the envelope is now SCAN-DERIVED — its rings sit at every
-/// centerline cross-section AT THE SCAN SURFACE plus a uniform
-/// `clearance_m`. The user dials the clearance; the radius at each
-/// arc position is computed from the scan, not chosen.
-///
-/// Also surfaces the scan's local-radius range (min / max across
-/// centerline points) so the user sees what the underlying snug
-/// numbers are.
+/// Also surfaces the decimated proxy's face count so the user knows
+/// the visualization is approximate, plus the original face count
+/// for context.
 fn render_outer_envelope_section(
     ui: &mut egui::Ui,
     state: &mut OuterEnvelopeState,
-    info: &ScanInfo,
-    scan_radii: &ScanLocalRadii,
+    proxy: &EnvelopeProxyMesh,
 ) {
     egui::CollapsingHeader::new("Outer Envelope")
         .default_open(true)
@@ -1077,33 +588,21 @@ fn render_outer_envelope_section(
             {
                 state.clearance_m = clearance_mm * 0.001;
             }
-            if info.centerline_point_count >= 2 && !scan_radii.radii_m.is_empty() {
-                let min_r = scan_radii
-                    .radii_m
-                    .iter()
-                    .copied()
-                    .fold(f64::INFINITY, f64::min);
-                let max_r = scan_radii.radii_m.iter().copied().fold(0.0_f64, f64::max);
-                ui.label(format!(
-                    "scan cross-section: {:.1} - {:.1} mm",
-                    min_r * 1000.0,
-                    max_r * 1000.0,
-                ));
-                ui.label(format!(
-                    "envelope at clearance: {:.1} - {:.1} mm",
-                    (min_r + state.clearance_m) * 1000.0,
-                    (max_r + state.clearance_m) * 1000.0,
-                ));
+            if proxy.vertices.is_empty() || proxy.edges.is_empty() {
+                ui.label("(proxy mesh empty — no surface to render)");
             } else {
-                ui.label("(centerline missing — wireframe will not render)");
+                // For closed manifolds Euler's relation gives
+                // F ≈ 2E/3 (each face has 3 edges, each edge shared
+                // by 2 faces). Approximate face count is for display
+                // only; the surface is rendered as edges.
+                let proxy_face_count = proxy.edges.len() * 2 / 3;
+                ui.label(format!(
+                    "Proxy: {} edges (~{} faces of {})",
+                    human_count(proxy.edges.len()),
+                    human_count(proxy_face_count),
+                    human_count(proxy.original_face_count),
+                ));
             }
-            ui.add_space(4.0);
-            // Per-end cap toggles — controls whether the envelope's
-            // dome end (high-Z) and rim end (low-Z) each get a
-            // hemispherical cap. Default closed at high-Z (scan
-            // dome) + open at low-Z (cleaned-cap convention).
-            ui.checkbox(&mut state.closed_at_high_z, "Closed dome (high Z end)");
-            ui.checkbox(&mut state.closed_at_low_z, "Closed dome (low Z end)");
         });
 }
 
@@ -1139,7 +638,7 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
-    scan_radii: Res<ScanLocalRadii>,
+    proxy: Res<EnvelopeProxyMesh>,
     mut outer_envelope: ResMut<OuterEnvelopeState>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -1151,7 +650,7 @@ fn device_design_panel(
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
-                    render_outer_envelope_section(ui, &mut outer_envelope, &info, &scan_radii);
+                    render_outer_envelope_section(ui, &mut outer_envelope, &proxy);
                     render_panel_stubs(ui);
                 });
         });
@@ -1229,18 +728,13 @@ fn run_render_app(
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
-    let bases = CenterlineBases {
-        bases: compute_centerline_bases(&centerline_points),
-    };
-    // Compute the scan's local cross-section radii at each centerline
-    // polyline point, then smooth across buckets to dilute single-
-    // vertex spikes (e.g. a noisy dome apex inflating the endpoint's
-    // ring → cap radius). One-time cost at startup; the wireframe
-    // ring radii are derived from the smoothed values every frame.
-    let raw_radii = compute_scan_local_radii(&centerline_points, &scan_mesh);
-    let scan_radii = ScanLocalRadii {
-        radii_m: smooth_scan_local_radii(&raw_radii),
-    };
+    // Decimate the cleaned scan to a proxy mesh (~1500 faces) +
+    // per-vertex outward normals + unique edges. Every frame the
+    // outer-envelope wireframe displaces each vertex by the user-
+    // dialed clearance and renders the proxy's edges as gizmo
+    // lines. One-time cost at startup; ~5–10 s on the iter-1
+    // 3.3 M-face fixture, sub-second on small inputs.
+    let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh);
     let outer_envelope = OuterEnvelopeState::default_for_scan();
 
     App::new()
@@ -1261,8 +755,7 @@ fn run_render_app(
         .insert_resource(Centerline {
             points_m: centerline_points,
         })
-        .insert_resource(bases)
-        .insert_resource(scan_radii)
+        .insert_resource(envelope_proxy)
         .insert_resource(outer_envelope)
         .add_systems(Startup, setup_render_scene)
         .add_systems(
@@ -1270,7 +763,7 @@ fn run_render_app(
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 draw_reference_overlays,
-                draw_outer_envelope_overlay,
+                draw_envelope_offset_overlay,
                 exit_on_esc,
             ),
         )
@@ -1456,152 +949,8 @@ another_future_field = "foo"
         assert_eq!(DEVICE_UP_AXIS, UpAxis::PlusZ);
     }
 
-    // ----- Slice 3 — local tangent + parallel-transport bases ------
-
-    fn straight_z_centerline() -> Vec<Point3<f64>> {
-        (0..5)
-            .map(|i| Point3::new(0.0, 0.0, f64::from(i) * 0.02))
-            .collect()
-    }
-
     fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
         (a - b).abs() < eps
-    }
-
-    #[test]
-    fn local_tangent_endpoint_forward_difference() {
-        let pts = straight_z_centerline();
-        let t = local_tangent(&pts, 0);
-        // Forward difference (0,0,0) → (0,0,0.02) gives +Z unit.
-        assert!(approx_eq(t.x, 0.0, 1e-12));
-        assert!(approx_eq(t.y, 0.0, 1e-12));
-        assert!(approx_eq(t.z, 1.0, 1e-12));
-    }
-
-    #[test]
-    fn local_tangent_interior_central_difference() {
-        let pts = straight_z_centerline();
-        let t = local_tangent(&pts, 2);
-        // Central difference (0,0,0.02) → (0,0,0.06) gives +Z unit.
-        assert!(approx_eq(t.x, 0.0, 1e-12));
-        assert!(approx_eq(t.y, 0.0, 1e-12));
-        assert!(approx_eq(t.z, 1.0, 1e-12));
-    }
-
-    #[test]
-    fn local_tangent_endpoint_backward_difference() {
-        let pts = straight_z_centerline();
-        let t = local_tangent(&pts, 4);
-        // Backward difference (0,0,0.06) → (0,0,0.08) gives +Z unit.
-        assert!(approx_eq(t.x, 0.0, 1e-12));
-        assert!(approx_eq(t.y, 0.0, 1e-12));
-        assert!(approx_eq(t.z, 1.0, 1e-12));
-    }
-
-    #[test]
-    fn local_tangent_zero_segment_falls_back_to_plus_z() {
-        let pts = vec![Point3::origin(), Point3::origin()];
-        let t = local_tangent(&pts, 0);
-        // Degenerate (consecutive coincident points): documented
-        // fallback is +Z so the basis math doesn't NaN.
-        assert!(approx_eq(t.z, 1.0, 1e-12));
-    }
-
-    #[test]
-    fn local_tangent_windowed_smoothing_suppresses_single_sample_noise() {
-        // 7-point straight-Y centerline with ONE noisy outlier in
-        // the middle: point 3 perturbed in X. With smoothing window 2,
-        // the 5-point central difference at point 3 averages over
-        // points 1..=5, so the X noise cancels out and the tangent
-        // remains nearly +Y. WITHOUT smoothing (3-point central diff)
-        // the tangent at point 3 picks up the X kick from the two
-        // adjacent points and tilts notably.
-        let mut pts: Vec<Point3<f64>> = (0..7)
-            .map(|i| Point3::new(0.0, f64::from(i) * 0.02, 0.0))
-            .collect();
-        // Single-sample perturbation in X at the middle point.
-        pts[3] = Point3::new(0.01, pts[3].y, 0.0);
-
-        let t = local_tangent(&pts, 3);
-        // Smoothed central diff: (pts[5] - pts[1]) = (0, 0.08, 0).
-        // Tangent should be very nearly +Y with a tiny residual.
-        assert!(
-            approx_eq(t.y, 1.0, 1e-9),
-            "smoothed tangent.y should be ~1.0, got {}",
-            t.y
-        );
-        assert!(t.x.abs() < 1e-9, "smoothed tangent.x = {}", t.x);
-    }
-
-    #[test]
-    fn initial_basis_b1_orthogonal_to_tangent() {
-        let t = Vector3::new(1.0, 0.0, 0.0);
-        let b1 = initial_basis_b1(&t);
-        assert!(approx_eq(b1.dot(&t), 0.0, 1e-12));
-        assert!(approx_eq(b1.norm(), 1.0, 1e-12));
-    }
-
-    #[test]
-    fn initial_basis_b1_handles_tangent_parallel_to_z() {
-        // Tangent nearly parallel to the +Z candidate; helper must
-        // swap to +X candidate so the projection doesn't collapse.
-        let t = Vector3::new(0.0, 0.0, 1.0);
-        let b1 = initial_basis_b1(&t);
-        assert!(approx_eq(b1.dot(&t), 0.0, 1e-12));
-        assert!(approx_eq(b1.norm(), 1.0, 1e-12));
-    }
-
-    #[test]
-    fn parallel_transport_preserves_orthogonality() {
-        // Start with a basis b1 perpendicular to the OLD tangent;
-        // transport it to a NEW tangent direction. The transported
-        // b1' should be perpendicular to the new tangent + unit-length.
-        let old_t = Vector3::new(0.0, 0.0, 1.0);
-        let b1 = initial_basis_b1(&old_t);
-        let new_t = Vector3::new(0.0, 1.0, 0.0); // perpendicular to old
-        let b1_new = parallel_transport_b1(b1, &new_t);
-        assert!(approx_eq(b1_new.dot(&new_t), 0.0, 1e-12));
-        assert!(approx_eq(b1_new.norm(), 1.0, 1e-12));
-    }
-
-    #[test]
-    fn compute_centerline_bases_yields_orthonormal_right_handed_frames() {
-        let pts = straight_z_centerline();
-        let bases = compute_centerline_bases(&pts);
-        assert_eq!(bases.len(), pts.len());
-        for (i, (b1, b2)) in bases.iter().enumerate() {
-            let t = local_tangent(&pts, i);
-            assert!(
-                approx_eq(b1.dot(&t), 0.0, 1e-9),
-                "b1·t at {i} = {}",
-                b1.dot(&t)
-            );
-            assert!(
-                approx_eq(b2.dot(&t), 0.0, 1e-9),
-                "b2·t at {i} = {}",
-                b2.dot(&t)
-            );
-            assert!(
-                approx_eq(b1.dot(b2), 0.0, 1e-9),
-                "b1·b2 at {i} = {}",
-                b1.dot(b2)
-            );
-            assert!(approx_eq(b1.norm(), 1.0, 1e-9));
-            assert!(approx_eq(b2.norm(), 1.0, 1e-9));
-            // Right-handed: b1 × b2 = +tangent (within sign).
-            let cross = b1.cross(b2);
-            assert!(
-                approx_eq(cross.dot(&t), 1.0, 1e-9),
-                "right-hand check at {i}: cross·t = {}",
-                cross.dot(&t)
-            );
-        }
-    }
-
-    #[test]
-    fn compute_centerline_bases_returns_empty_for_short_polylines() {
-        assert!(compute_centerline_bases(&[]).is_empty());
-        assert!(compute_centerline_bases(&[Point3::origin()]).is_empty());
     }
 
     // ----- Slice 3 polish 7 — clearance-only envelope state --------
@@ -1613,284 +962,93 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn outer_envelope_defaults_to_closed_high_z_open_low_z() {
-        let state = OuterEnvelopeState::default_for_scan();
-        assert!(state.closed_at_high_z);
-        assert!(!state.closed_at_low_z);
-    }
-
-    #[test]
     fn outer_envelope_clearance_slider_range_zero_to_fifty_mm() {
         let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
         assert!(approx_eq(max_m, 0.050, 1e-12));
     }
 
-    // ----- Slice 3 polish 7 — scan-local cross-section radii -------
+    // ----- Slice 3 polish 10 — offset-surface proxy mesh ------------
 
     #[test]
-    fn compute_scan_local_radii_short_polyline_returns_empty() {
+    fn envelope_proxy_unit_cube_yields_decimated_mesh_with_normals_and_edges() {
+        // Unit cube fixture has 12 faces; with ENVELOPE_PROXY_TARGET_FACES
+        // = 1500 the simplify_decoder skips decimation (already
+        // under target). Proxy should match input face count, have
+        // unit-length normals, and expose 18 unique edges (12 faces
+        // × 3 directed edges, deduplicated by sorted vertex-pair).
         let mesh = unit_cube_mesh();
-        assert!(compute_scan_local_radii(&[], &mesh).is_empty());
-        assert!(compute_scan_local_radii(&[Point3::origin()], &mesh).is_empty());
+        let proxy = compute_envelope_proxy_mesh(&mesh);
+        assert_eq!(proxy.original_face_count, 12);
+        // After welding ±0.05 cube vertices match exactly; 8 shared.
+        assert_eq!(proxy.vertices.len(), 8);
+        assert_eq!(proxy.vertex_normals.len(), proxy.vertices.len());
+        // Cube edge count: 12 (one per cube edge). Each cube edge is
+        // shared by exactly 2 triangulated faces → dedup leaves 12
+        // unique edges, plus the 6 cube-face diagonals from the
+        // 2-triangle-per-face winding (one diagonal each) = 18.
+        assert_eq!(proxy.edges.len(), 18);
+        for n in &proxy.vertex_normals {
+            assert!(
+                approx_eq(n.norm(), 1.0, 1e-9),
+                "vertex normal not unit-length: |n| = {}",
+                n.norm()
+            );
+        }
     }
 
     #[test]
-    fn compute_scan_local_radii_unit_cube_endpoints_get_xy_half_diag() {
-        // Unit cube ±50 mm corners; centerline along +Z at three
-        // points. All 8 cube corners are closest to the END
-        // centerline points (z = ±0.030) because the middle point
-        // (z = 0) is equidistant from ±Z corners but the corners'
-        // total Euclidean distance there exceeds the endpoint
-        // distances. So radii[0] and radii[2] = XY half-diagonal =
-        // sqrt(50² + 50²) ≈ 70.7 mm; radii[1] = 0 (no corner
-        // closest).
+    fn envelope_proxy_unit_cube_normals_point_outward_from_origin() {
+        // Cube vertices are at corners ±0.05; outward normal at
+        // each vertex should point AWAY from the origin (each
+        // corner's outward normal lies in the same octant as the
+        // vertex). Robust check: vertex.coords · normal > 0 at
+        // every vertex.
         let mesh = unit_cube_mesh();
-        let pts = vec![
-            Point3::new(0.0, 0.0, -0.030),
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 0.030),
-        ];
-        let radii = compute_scan_local_radii(&pts, &mesh);
-        assert_eq!(radii.len(), 3);
-        let expected = (50.0_f64 * 50.0 + 50.0 * 50.0).sqrt() / 1000.0;
-        assert!(
-            approx_eq(radii[0], expected, 1e-9),
-            "got radii[0] = {}",
-            radii[0]
-        );
-        assert!(
-            approx_eq(radii[2], expected, 1e-9),
-            "got radii[2] = {}",
-            radii[2]
-        );
-        // Middle point has no closest vertex on this fixture.
-        assert!(
-            approx_eq(radii[1], 0.0, 1e-12),
-            "got radii[1] = {}",
-            radii[1]
-        );
-    }
-
-    #[test]
-    fn smooth_scan_local_radii_dilutes_single_spike() {
-        // Spike at index 3 (height 0.040 amid a flat 0.020 sequence).
-        // 7-point average (W = 3) at index 3: average of indices
-        // [0, 1, 2, 3, 4, 5, 6] = (0.020 * 6 + 0.040) / 7 ≈ 0.0229.
-        // Spike is reduced from 0.040 → 0.0229 (~43 % of original
-        // above the baseline).
-        let radii = vec![0.020, 0.020, 0.020, 0.040, 0.020, 0.020, 0.020];
-        let smoothed = smooth_scan_local_radii(&radii);
-        assert_eq!(smoothed.len(), 7);
-        let expected_at_spike = (0.020 * 6.0 + 0.040) / 7.0;
-        assert!(
-            approx_eq(smoothed[3], expected_at_spike, 1e-9),
-            "got {}, expected {}",
-            smoothed[3],
-            expected_at_spike,
-        );
-    }
-
-    #[test]
-    fn smooth_scan_local_radii_preserves_uniform_input() {
-        let radii = vec![0.025; 10];
-        let smoothed = smooth_scan_local_radii(&radii);
-        for s in &smoothed {
-            assert!(approx_eq(*s, 0.025, 1e-12));
+        let proxy = compute_envelope_proxy_mesh(&mesh);
+        for (v, n) in proxy.vertices.iter().zip(proxy.vertex_normals.iter()) {
+            let dot = v.coords.dot(n);
+            assert!(
+                dot > 0.0,
+                "normal at vertex {:?} points inward (v·n = {})",
+                v.coords,
+                dot
+            );
         }
     }
 
     #[test]
-    fn smooth_scan_local_radii_handles_endpoint_clamping() {
-        // At index 0 with W = 5, the window clamps to
-        // [0, min(W+1, len)) = [0, 6) for a 7-element input.
-        // Average of input[0..6].
-        let radii = vec![0.010, 0.020, 0.030, 0.040, 0.050, 0.050, 0.050];
-        let smoothed = smooth_scan_local_radii(&radii);
-        let lo = 0_usize;
-        let hi = (RADII_SMOOTHING_HALF_WINDOW + 1).min(radii.len());
-        #[allow(clippy::cast_precision_loss)]
-        let count = (hi - lo) as f64;
-        let expected_at_0: f64 = radii[lo..hi].iter().sum::<f64>() / count;
-        assert!(
-            approx_eq(smoothed[0], expected_at_0, 1e-9),
-            "got {}, expected {}",
-            smoothed[0],
-            expected_at_0,
-        );
-    }
-
-    #[test]
-    fn smooth_scan_local_radii_empty_input_returns_empty() {
-        assert!(smooth_scan_local_radii(&[]).is_empty());
-    }
-
-    #[test]
-    fn compute_scan_local_radii_percentile_rejects_single_outlier() {
-        // 1 noisy outlier vertex at (1.0, 0, 0) (radial = 1 m) vs
-        // 100 normal vertices on a ring at radius 0.030. With
-        // RADII_BUCKET_PERCENTILE = 0.95, the top 5 % of 101
-        // distances = ~5 entries from the top — but only 1 entry is
-        // the 1m outlier, so the 95th percentile lands at one of
-        // the 0.030 normals.
-        let mut m = IndexedMesh::new();
-        for theta in 0..100 {
-            #[allow(clippy::cast_precision_loss)]
-            let angle = (theta as f64) * std::f64::consts::TAU / 100.0;
-            m.vertices
-                .push(Point3::new(0.030 * angle.cos(), 0.030 * angle.sin(), 0.0));
+    fn envelope_proxy_edges_are_sorted_and_unique() {
+        // Each edge is stored as [a, b] with a < b; the full set is
+        // unique. Verifies the HashSet-based dedup + sorted-pair
+        // canonicalization in compute_envelope_proxy_mesh.
+        let mesh = unit_cube_mesh();
+        let proxy = compute_envelope_proxy_mesh(&mesh);
+        let mut seen = HashSet::new();
+        for edge in &proxy.edges {
+            assert!(
+                edge[0] < edge[1],
+                "edge [{}, {}] not sorted",
+                edge[0],
+                edge[1]
+            );
+            assert!(
+                seen.insert((edge[0], edge[1])),
+                "edge ({}, {}) duplicated",
+                edge[0],
+                edge[1]
+            );
         }
-        m.vertices.push(Point3::new(1.0, 0.0, 0.0)); // outlier
-        let pts = vec![
-            Point3::new(0.0, 0.0, -0.001),
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 0.001),
-        ];
-        let radii = compute_scan_local_radii(&pts, &m);
-        // All 101 vertices are closest to centerline point [1]
-        // (z = 0). Its 95th percentile excludes the outlier.
-        assert!(
-            approx_eq(radii[1], 0.030, 1e-6),
-            "got radii[1] = {} (expected ~0.030 m, outlier rejected)",
-            radii[1],
-        );
     }
 
     #[test]
-    fn compute_scan_local_radii_returns_per_point_max() {
-        // Build a mesh with two clusters of vertices: one at z=0
-        // with radius 30 mm in XY, one at z=0.04 with radius 50 mm.
-        // Centerline along Z through both. Each centerline point's
-        // closest cluster should give the per-point max.
-        let mut m = IndexedMesh::new();
-        for theta in 0..8 {
-            #[allow(clippy::cast_precision_loss)]
-            let angle = (theta as f64) * std::f64::consts::TAU / 8.0;
-            m.vertices
-                .push(Point3::new(0.030 * angle.cos(), 0.030 * angle.sin(), 0.0));
-            m.vertices
-                .push(Point3::new(0.050 * angle.cos(), 0.050 * angle.sin(), 0.040));
-        }
-        let pts = vec![Point3::new(0.0, 0.0, -0.001), Point3::new(0.0, 0.0, 0.041)];
-        let radii = compute_scan_local_radii(&pts, &m);
-        assert_eq!(radii.len(), 2);
-        // Point at z=-0.001 is closest to the z=0 cluster (30 mm).
-        assert!(
-            approx_eq(radii[0], 0.030, 1e-9),
-            "got radii[0] = {}",
-            radii[0]
-        );
-        // Point at z=+0.041 is closest to the z=0.040 cluster (50 mm).
-        assert!(
-            approx_eq(radii[1], 0.050, 1e-9),
-            "got radii[1] = {}",
-            radii[1]
-        );
-    }
-
-    #[test]
-    fn scan_extent_past_endpoint_zero_when_aabb_behind_endpoint() {
-        // Endpoint at (0, 0, +0.100), outward = +Z; AABB entirely
-        // BEHIND the endpoint (z < 0.100). All corner projections
-        // are negative → returns 0.0 (defensive).
-        let endpoint = Point3::new(0.0, 0.0, 0.100);
-        let outward = Vector3::new(0.0, 0.0, 1.0);
-        let aabb = Aabb::new(
-            Point3::new(-0.030, -0.030, 0.0),
-            Point3::new(0.030, 0.030, 0.050),
-        );
-        let e = scan_extent_past_endpoint(&endpoint, &outward, &aabb);
-        assert!(approx_eq(e, 0.0, 1e-12), "got {e}");
-    }
-
-    #[test]
-    fn scan_extent_past_endpoint_iter_1_top_yields_dome_height() {
-        // Iter-1-shaped scan: endpoint at (0, 0, +0.080) with
-        // outward = +Z; AABB extends to z = +0.087. Extent past =
-        // 7 mm (the dome height).
-        let endpoint = Point3::new(0.0, 0.0, 0.080);
-        let outward = Vector3::new(0.0, 0.0, 1.0);
-        let aabb = Aabb::new(
-            Point3::new(-0.035, -0.035, -0.057),
-            Point3::new(0.035, 0.035, 0.087),
-        );
-        let e = scan_extent_past_endpoint(&endpoint, &outward, &aabb);
-        assert!(approx_eq(e, 0.007, 1e-12), "got {e}");
-    }
-
-    // (Prior `outer_envelope_slider_falls_back_to_diag_without_centerline`
-    // test deleted in polish 7 — slider is now clearance-based, not
-    // radius-based, so the bbox-diagonal fallback is no longer
-    // relevant.)
-
-    // ----- Slice 3 polish 2 — arc-sampling helpers ------------------
-
-    #[test]
-    fn cumulative_arc_positions_match_segment_distances() {
-        let pts = vec![
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(1.0, 0.0, 0.0),
-            Point3::new(1.0, 1.0, 0.0),
-            Point3::new(1.0, 1.0, 1.0),
-        ];
-        let arcs = cumulative_arc_positions_m(&pts);
-        assert_eq!(arcs, vec![0.0, 1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn cumulative_arc_positions_empty_for_short_polylines() {
-        assert!(cumulative_arc_positions_m(&[]).is_empty());
-        assert!(cumulative_arc_positions_m(&[Point3::origin()]).is_empty());
-    }
-
-    #[test]
-    fn sample_centerline_at_arc_midpoint_lands_between_polyline_points() {
-        let pts = vec![
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(1.0, 0.0, 0.0),
-            Point3::new(2.0, 0.0, 0.0),
-        ];
-        let arcs = cumulative_arc_positions_m(&pts);
-        // Arc 0.5 is halfway through the first segment.
-        let (pos, tangent) = sample_centerline_at_arc(&pts, &arcs, 0.5).unwrap();
-        assert!(approx_eq(pos.x, 0.5, 1e-12));
-        assert!(approx_eq(pos.y, 0.0, 1e-12));
-        assert!(approx_eq(pos.z, 0.0, 1e-12));
-        // Tangent is unit +X (first segment direction).
-        assert!(approx_eq(tangent.x, 1.0, 1e-12));
-    }
-
-    #[test]
-    fn sample_centerline_at_arc_clamps_out_of_range() {
-        let pts = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
-        let arcs = cumulative_arc_positions_m(&pts);
-        // Negative arc → clamped to 0 (start).
-        let (pos_neg, _) = sample_centerline_at_arc(&pts, &arcs, -5.0).unwrap();
-        assert!(approx_eq(pos_neg.x, 0.0, 1e-12));
-        // Beyond total → clamped to end.
-        let (pos_far, _) = sample_centerline_at_arc(&pts, &arcs, 10.0).unwrap();
-        assert!(approx_eq(pos_far.x, 1.0, 1e-12));
-    }
-
-    #[test]
-    fn sample_centerline_at_arc_returns_none_for_short_polylines() {
-        let pts: Vec<Point3<f64>> = vec![];
-        let arcs: Vec<f64> = vec![];
-        assert!(sample_centerline_at_arc(&pts, &arcs, 0.5).is_none());
-    }
-
-    #[test]
-    fn sample_basis_at_arc_returns_orthonormal_basis() {
-        let pts = straight_z_centerline();
-        let arcs = cumulative_arc_positions_m(&pts);
-        let bases = compute_centerline_bases(&pts);
-        let (_, tangent) = sample_centerline_at_arc(&pts, &arcs, 0.05).unwrap();
-        let (b1, b2) = sample_basis_at_arc(&bases, &arcs, 0.05, &tangent);
-        assert!(approx_eq(b1.dot(&tangent), 0.0, 1e-9));
-        assert!(approx_eq(b2.dot(&tangent), 0.0, 1e-9));
-        assert!(approx_eq(b1.dot(&b2), 0.0, 1e-9));
-        assert!(approx_eq(b1.norm(), 1.0, 1e-9));
-        assert!(approx_eq(b2.norm(), 1.0, 1e-9));
+    fn envelope_proxy_empty_mesh_yields_empty_proxy() {
+        let mesh = IndexedMesh::new();
+        let proxy = compute_envelope_proxy_mesh(&mesh);
+        assert_eq!(proxy.original_face_count, 0);
+        assert!(proxy.vertices.is_empty());
+        assert!(proxy.vertex_normals.is_empty());
+        assert!(proxy.edges.is_empty());
     }
 
     /// `Aabb` re-export from `mesh_types` (transitive from
