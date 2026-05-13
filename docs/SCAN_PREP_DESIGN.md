@@ -430,7 +430,7 @@ The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes onl
 2. **Multiple clip planes** — only horizontal-Z plane in MVP
 3. **Arbitrary-plane clip** (non-horizontal normal) — same
 4. **Painted trim region** (Boolean brush) — substantial new UI; defer
-5. **Auto-PCA initial orientation guess** — useful but adds heuristic surface area
+5. ~~**Auto-PCA initial orientation guess**~~ — **SHIPPED 2026-05-13** as `[Auto-orient (PCA)]` in the Reorient panel. PCA on vertex positions; principal eigenvector → `+Z` with shortest rotation; writes Euler angles back into the slider source-of-truth so the user can still nudge afterwards. Unblocked the scan→cast iter-1 fixture (`sock_over_capsule.stl`) by removing the slider-eyeballing-to-vertical step that was a recipe for downstream tilt.
 6. **Multi-shell selection** (pick one of disconnected meshes) — out of scope; assume user pre-trims to single shell externally
 7. **Undo/redo** — state-management complexity; user can edit the TOML by hand if they need to back out
 8. **Wireframe / shaded toggle** — visualization polish

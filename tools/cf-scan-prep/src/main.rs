@@ -1612,6 +1612,92 @@ fn rotated_aabb_physics_mm(
     (min_mm, max_mm)
 }
 
+/// Compute the principal-axis rotation that aligns a scan's
+/// long axis with `+Z` (the cast-frame demolding axis per
+/// [`SCAN_UP_AXIS`]).
+///
+/// PCA on the mean-centered vertex positions: 3×3 covariance,
+/// symmetric eigendecomposition, principal eigenvector = the
+/// largest-variance direction (the "long axis" of the scan). The
+/// returned [`UnitQuaternion`] is the shortest rotation that maps
+/// that principal axis to `+Z`.
+///
+/// Sign convention: the principal eigenvector is determined only
+/// up to sign. This helper picks the side whose `z` component is
+/// non-negative (i.e., the side already closer to `+Z`) — the
+/// resulting rotation is therefore at most 90° from identity.
+/// Users who want the opposite end pointed up flip post-hoc with
+/// a 180° follow-on rotation (e.g. by setting roll = 180°).
+///
+/// Returns `None` for:
+/// - fewer than 3 vertices (PCA underdetermined)
+/// - degenerate mesh whose covariance has all near-zero
+///   eigenvalues (all vertices coincident; no principal axis)
+///
+/// **Resolves cf-scan-prep deferred item §5 "Auto-PCA initial
+/// orientation guess"** from `docs/SCAN_PREP_DESIGN.md` — the
+/// manual-slider Reorient panel introduces tilt that propagates
+/// downstream to the cleaned STL + centerline + (via cf-cast-cli)
+/// the mold geometry. Auto-PCA gives a deterministic starting
+/// orientation that the user can then nudge with the existing
+/// sliders.
+fn compute_pca_orientation(vertices: &[Point3<f64>]) -> Option<UnitQuaternion<f64>> {
+    if vertices.len() < 3 {
+        return None;
+    }
+
+    // Mean-center.
+    let n = vertices.len() as f64;
+    let mut centroid = Vector3::zeros();
+    for v in vertices {
+        centroid += v.coords;
+    }
+    centroid /= n;
+
+    // 3×3 covariance accumulation (Σ d · d^T / n). Symmetric by
+    // construction, so we use SymmetricEigen for the
+    // eigendecomposition below.
+    let mut cov = Matrix3::zeros();
+    for v in vertices {
+        let d = v.coords - centroid;
+        cov += d * d.transpose();
+    }
+    cov /= n;
+
+    let eigen = cov.symmetric_eigen();
+
+    // Largest eigenvalue's column = principal axis.
+    let (mut max_i, mut max_val) = (0_usize, eigen.eigenvalues[0]);
+    for i in 1..3 {
+        if eigen.eigenvalues[i] > max_val {
+            max_i = i;
+            max_val = eigen.eigenvalues[i];
+        }
+    }
+    // Degeneracy guard: all-zero (or all near-zero) eigenvalues =
+    // no meaningful principal direction (e.g. all vertices
+    // coincident). Threshold relative to the largest eigenvalue
+    // scale; absolute 1e-30 m² catches the all-zeros case
+    // independently.
+    if max_val <= 1e-30 {
+        return None;
+    }
+    let mut principal: Vector3<f64> = eigen.eigenvectors.column(max_i).into_owned();
+
+    // Sign pick: orient the principal axis toward `+Z` so the
+    // resulting rotation is the SHORTEST rotation (≤ 90°).
+    if principal.z < 0.0 {
+        principal = -principal;
+    }
+
+    // `rotation_between` returns `None` for anti-parallel inputs;
+    // the sign-pick above ensures `principal.z >= 0`, so the
+    // anti-parallel case (principal == -Z) is precluded. Identity
+    // case (principal == +Z, already aligned) yields the identity
+    // quaternion.
+    UnitQuaternion::rotation_between(&principal, &Vector3::z())
+}
+
 /// Pre-computed always-on viewport overlay geometry, cached at startup
 /// (`docs/SCAN_PREP_DESIGN.md` §Visualization layer). Combines:
 ///
@@ -2698,6 +2784,7 @@ fn scan_prep_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     overlays: Res<OverlayLengths>,
+    scan: Res<ScanMesh>,
     mut simplify_state: ResMut<SimplifyState>,
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
@@ -2732,7 +2819,7 @@ fn scan_prep_panel(
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
                     render_simplify_section(ui, &info, &mut simplify_state);
-                    render_reorient_section(ui, &mut reorient_state);
+                    render_reorient_section(ui, &mut reorient_state, &scan.0);
                     render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
                     render_clip_section(ui, &mut clip_state, &overlays);
                     render_cap_section(
@@ -2848,13 +2935,28 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
 /// snap buttons set known-good triples. `apply_reorient_to_transform`
 /// consumes the state every Update tick and projects it onto the Bevy
 /// Transform.
-fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState) {
+fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState, mesh: &IndexedMesh) {
     egui::CollapsingHeader::new("Reorient")
         .default_open(true)
         .show(ui, |ui| {
             ui.add(egui::Slider::new(&mut state.roll_deg, -180.0..=180.0).text("roll (deg)"));
             ui.add(egui::Slider::new(&mut state.pitch_deg, -180.0..=180.0).text("pitch (deg)"));
             ui.add(egui::Slider::new(&mut state.yaw_deg, -180.0..=180.0).text("yaw (deg)"));
+
+            ui.add_space(4.0);
+            // Auto-orient — PCA on vertex positions, principal axis
+            // → +Z (cast-frame demolding convention). Closes
+            // SCAN_PREP_DESIGN.md deferred item §5. The resulting
+            // Euler angles drop straight into the slider source-of-
+            // truth so the user can still nudge afterwards.
+            if ui.button("Auto-orient (PCA)").clicked() {
+                if let Some(q) = compute_pca_orientation(&mesh.vertices) {
+                    let (roll, pitch, yaw) = q.euler_angles();
+                    state.roll_deg = roll.to_degrees();
+                    state.pitch_deg = pitch.to_degrees();
+                    state.yaw_deg = yaw.to_degrees();
+                }
+            }
 
             ui.add_space(4.0);
             // Five snap shortcuts for the common scanner-frame →
@@ -3315,6 +3417,12 @@ fn render_status_bar(ctx: &egui::Context, status: &StatusBar) {
 
 #[cfg(test)]
 mod tests {
+    // `unwrap()` + `expect()` are denied at the crate level for
+    // production safety; allow them inside tests so assertions can
+    // pull values out of `Option` / `Result` returns without writing
+    // multi-line `match` ceremony for every fixture build.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     use mesh_types::Point3;
@@ -3678,6 +3786,112 @@ mod tests {
         assert!(q.j.abs() < 1e-12);
         assert!(q.k.abs() < 1e-12);
     }
+
+    // ----- compute_pca_orientation ----------------------------------
+
+    /// Empty vertex slice returns `None` — PCA needs at least one
+    /// point to define a centroid, three to define a principal axis.
+    /// Pinned so a misuse at the call site surfaces visibly rather
+    /// than panicking inside `symmetric_eigen` on a zero matrix.
+    #[test]
+    fn pca_orientation_too_few_vertices_returns_none() {
+        let v: Vec<Point3<f64>> = vec![];
+        assert!(compute_pca_orientation(&v).is_none());
+        let v = vec![Point3::origin(), Point3::new(1.0, 0.0, 0.0)];
+        assert!(compute_pca_orientation(&v).is_none());
+    }
+
+    /// Coincident vertices have zero covariance → no principal axis.
+    /// Returns `None` rather than producing an arbitrary rotation
+    /// from numerical noise.
+    #[test]
+    fn pca_orientation_degenerate_coincident_returns_none() {
+        let v = vec![Point3::origin(); 10];
+        assert!(compute_pca_orientation(&v).is_none());
+    }
+
+    /// Vertices stretched along physics-frame `+X` produce a rotation
+    /// that maps `+X` to `+Z`. The shortest such rotation is `-90°`
+    /// about `+Y`; via `from_axis_angle` that's quaternion
+    /// `(cos(-45°), 0, sin(-45°), 0)`.
+    #[test]
+    fn pca_orientation_long_x_axis_rotates_x_to_z() {
+        // 11 points along +X with no spread on Y or Z. Length 1.0 m
+        // along X, zero variance on Y / Z → principal axis = +X
+        // (or -X; sign-pick flips to +X for positive z-target).
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(f64::from(i) * 0.1, 0.0, 0.0))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+
+        // Apply the rotation to +X — should land at +Z.
+        let rotated = q.transform_vector(&Vector3::x());
+        assert!((rotated.x).abs() < 1e-9, "rotated.x = {}", rotated.x);
+        assert!((rotated.y).abs() < 1e-9, "rotated.y = {}", rotated.y);
+        assert!((rotated.z - 1.0).abs() < 1e-9, "rotated.z = {}", rotated.z);
+    }
+
+    /// Vertices already long along `+Z` produce the identity
+    /// rotation — no work needed. Pins the "no-op fast path" against
+    /// silently producing a small rotation from FP noise.
+    #[test]
+    fn pca_orientation_long_z_axis_yields_identity() {
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(0.0, 0.0, f64::from(i) * 0.1))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+        assert!((q.w - 1.0).abs() < 1e-9, "q.w = {}", q.w);
+        assert!(q.i.abs() < 1e-9, "q.i = {}", q.i);
+        assert!(q.j.abs() < 1e-9, "q.j = {}", q.j);
+        assert!(q.k.abs() < 1e-9, "q.k = {}", q.k);
+    }
+
+    /// Sign-pick check: the principal eigenvector for vertices
+    /// stretched along `-Z` could come out as `+Z` or `-Z`; the
+    /// helper flips to `+Z` (the side closer to the `+Z` target) so
+    /// the resulting rotation is identity rather than a 180° flip.
+    /// Sigil for "no rotation needed when the long axis ALREADY
+    /// points up, even if the eigenvector signs out the other way."
+    #[test]
+    fn pca_orientation_sign_pick_prefers_positive_z() {
+        // 11 points along ±Z spanning 1 m, symmetric about origin.
+        // Centroid = origin; principal eigenvector axis = ±Z line.
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(0.0, 0.0, (f64::from(i) - 5.0) * 0.1))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+        // Identity — sign-pick collapsed both ±Z choices onto +Z.
+        assert!((q.w - 1.0).abs() < 1e-9, "q.w = {}", q.w);
+    }
+
+    /// Cuboid mass distribution with the long axis along physics
+    /// `+Y` produces a rotation that maps `+Y` to `+Z` — i.e. the
+    /// 90°-about-X rotation behind the existing `[Snap +Y -> +Z]`
+    /// button. Sanity check that PCA picks up dominant variance
+    /// along a non-axis-of-largest-index direction.
+    #[test]
+    fn pca_orientation_long_y_axis_rotates_y_to_z() {
+        // Cuboid: 0.05 m × 1.0 m × 0.05 m (long along +Y). Use 9
+        // points covering corners + center to mimic mass spread.
+        let v = vec![
+            Point3::new(-0.025, -0.5, -0.025),
+            Point3::new(0.025, -0.5, -0.025),
+            Point3::new(-0.025, 0.5, -0.025),
+            Point3::new(0.025, 0.5, -0.025),
+            Point3::new(-0.025, -0.5, 0.025),
+            Point3::new(0.025, -0.5, 0.025),
+            Point3::new(-0.025, 0.5, 0.025),
+            Point3::new(0.025, 0.5, 0.025),
+            Point3::origin(),
+        ];
+        let q = compute_pca_orientation(&v).unwrap();
+        let rotated = q.transform_vector(&Vector3::y());
+        assert!((rotated.x).abs() < 1e-9, "rotated.x = {}", rotated.x);
+        assert!((rotated.y).abs() < 1e-9, "rotated.y = {}", rotated.y);
+        assert!((rotated.z - 1.0).abs() < 1e-9, "rotated.z = {}", rotated.z);
+    }
+
+    // ----- physics_quat_to_bevy (continued) -------------------------
 
     /// Identity physics quaternion maps to identity Bevy quaternion
     /// under the `UpAxis::PlusZ` swap. Sanity check that the
