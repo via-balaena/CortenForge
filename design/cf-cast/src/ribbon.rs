@@ -38,6 +38,7 @@
 use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
+use crate::pour::PourGateKind;
 use crate::registration::RegistrationKind;
 
 /// World-frame direction anchoring "which way the mold opens".
@@ -254,6 +255,13 @@ pub struct Ribbon {
     /// [`Ribbon::with_registration`] builder; see
     /// [`crate::registration`] for the geometry contract.
     pub registration: RegistrationKind,
+    /// Pour-gate + air-vent kind. Default [`PourGateKind::None`]
+    /// (no integrated channels — workshop user pours through the
+    /// seam + drills vents post-print). Step 10 of the v2 arc
+    /// adds `PourGateKind::Default` via the
+    /// [`Ribbon::with_pour_gate`] builder; see [`crate::pour`]
+    /// for the channel-geometry contract.
+    pub pour_gate: PourGateKind,
 }
 
 /// Errors encountered while constructing a [`Ribbon`] from a
@@ -382,6 +390,7 @@ impl Ribbon {
             segments,
             split_normal,
             registration: RegistrationKind::None,
+            pour_gate: PourGateKind::None,
         })
     }
 
@@ -406,6 +415,20 @@ impl Ribbon {
     #[must_use]
     pub fn with_registration(mut self, registration: RegistrationKind) -> Self {
         self.registration = registration;
+        self
+    }
+
+    /// Builder: set the pour-gate + air-vent kind. Step 10 entry
+    /// point — wraps a freshly-constructed [`Ribbon`] with a
+    /// [`PourGateKind::Default`] spec (or disables via
+    /// [`PourGateKind::None`]).
+    ///
+    /// Composable with [`Self::with_registration`] — pin
+    /// registration + pour gate are orthogonal features that may
+    /// be enabled independently or together.
+    #[must_use]
+    pub const fn with_pour_gate(mut self, pour_gate: PourGateKind) -> Self {
+        self.pour_gate = pour_gate;
         self
     }
 

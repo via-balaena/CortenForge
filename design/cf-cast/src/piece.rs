@@ -43,6 +43,7 @@
 use cf_design::Solid;
 
 use crate::error::{CastError, CastTarget};
+use crate::pour::build_pour_gate_solid;
 use crate::registration::build_registration_solid;
 use crate::ribbon::{PieceSide, Ribbon};
 
@@ -109,10 +110,23 @@ pub fn compose_piece_solid(
     // holes (subtract). When `ribbon.registration` is `None` the
     // helper returns `None` and the base piece flows through
     // unchanged — Step 5-8 callers see no behavior change.
-    let piece = match (build_registration_solid(ribbon), side) {
+    let piece_with_pins = match (build_registration_solid(ribbon), side) {
         (Some(pins), PieceSide::Negative) => base_piece.union(pins),
         (Some(pins), PieceSide::Positive) => base_piece.subtract(pins),
         (None, _) => base_piece,
+    };
+
+    // Step 10: pour-gate + air-vent channels. Both pieces lose
+    // material along the channel cylinders (subtract). The
+    // channels are centered on the centerline endpoints + run
+    // along the local tangent, so they straddle the ribbon seam
+    // and each piece gets half the channel cross-section. When
+    // `ribbon.pour_gate` is `None` the helper returns `None`
+    // and the piece flows through unchanged — Steps 5-9 callers
+    // unaffected.
+    let piece = match build_pour_gate_solid(ribbon) {
+        Some(channels) => piece_with_pins.subtract(channels),
+        None => piece_with_pins,
     };
     Ok(piece)
 }

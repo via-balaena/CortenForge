@@ -1708,6 +1708,7 @@ mod tests {
 
     // ----- v2 export_molds_v2 -------------------------------------
 
+    use crate::pour::{PourGateKind, PourGateSpec};
     use crate::registration::{PinSpec, RegistrationKind};
     use crate::ribbon::{PieceSide, Ribbon, SplitNormal};
     use nalgebra::Point3;
@@ -2458,6 +2459,219 @@ mod tests {
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(md.contains("rubber bands"));
         assert!(md.contains("`RegistrationKind::None`"));
+    }
+
+    // ----- Step 10: pour gate + air vent ---------------------------
+
+    /// v2 fixture variant with the Step 10 default pour-gate +
+    /// vent enabled on the ribbon.
+    fn v2_fixture_with_pour_gate() -> (CastSpec, Ribbon) {
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        (spec, ribbon)
+    }
+
+    #[test]
+    fn ribbon_with_pour_gate_sets_field() {
+        let (_, ribbon_default) = v2_fixture();
+        assert_eq!(ribbon_default.pour_gate, PourGateKind::None);
+        let (_, ribbon_gate) = v2_fixture_with_pour_gate();
+        assert!(matches!(ribbon_gate.pour_gate, PourGateKind::Default(_)));
+    }
+
+    #[test]
+    fn compose_piece_solid_with_pour_gate_carves_channel_through_both_pieces() {
+        // Pour gate at (-0.05, 0, 0) along +X tangent, radius 3 mm.
+        // Gate cylinder spans x ∈ [-0.07, -0.03] (half-length 20 mm).
+        // Within bounding region x ∈ [-0.04, +0.04] the gate carves
+        // x ∈ [-0.04, -0.03] worth of cup wall.
+        //
+        // Query (-0.035, 0, 0.001): on the gate cylinder axis (y=0)
+        // 1mm above seam (z=0). Inside the gate cylinder (radial
+        // dist 0.001 < 0.003 radius; x within span). Inside
+        // bounding region (|x|=0.035 < 0.040); outside body
+        // (|x|=0.035 > 0.025).
+        //
+        // Without gate: SDF should be NEGATIVE (inside cup wall).
+        // With gate: SDF should be POSITIVE (gate carved it out).
+        let (spec, ribbon_no_gate) = v2_fixture();
+        let (_, ribbon_gate) = v2_fixture_with_pour_gate();
+        let body = &spec.layers[0].body;
+        let region = &spec.bounding_region;
+
+        let piece_no_gate =
+            crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Positive).unwrap();
+        let piece_gate =
+            crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Positive).unwrap();
+
+        let q = Point3::new(-0.035, 0.0, 0.001);
+        assert!(
+            piece_no_gate.evaluate(&q) < 0.0,
+            "no-gate piece should INCLUDE cup-wall query at gate location; got {}",
+            piece_no_gate.evaluate(&q),
+        );
+        assert!(
+            piece_gate.evaluate(&q) > 0.0,
+            "pour-gate piece should EXCLUDE channel-axis query; got {}",
+            piece_gate.evaluate(&q),
+        );
+    }
+
+    #[test]
+    fn compose_piece_solid_with_pour_gate_negative_side_also_carved() {
+        // Symmetric to the Positive-side test — the gate cylinder
+        // straddles the ribbon seam, so the Negative-side piece
+        // also loses material along the same channel.
+        // Query (-0.035, 0, -0.001): mirror of previous query
+        // below the seam.
+        let (spec, ribbon_no_gate) = v2_fixture();
+        let (_, ribbon_gate) = v2_fixture_with_pour_gate();
+        let body = &spec.layers[0].body;
+        let region = &spec.bounding_region;
+
+        let piece_no_gate =
+            crate::compose_piece_solid(body, region, &ribbon_no_gate, PieceSide::Negative).unwrap();
+        let piece_gate =
+            crate::compose_piece_solid(body, region, &ribbon_gate, PieceSide::Negative).unwrap();
+
+        let q = Point3::new(-0.035, 0.0, -0.001);
+        assert!(
+            piece_no_gate.evaluate(&q) < 0.0,
+            "no-gate negative piece should INCLUDE query; got {}",
+            piece_no_gate.evaluate(&q),
+        );
+        assert!(
+            piece_gate.evaluate(&q) > 0.0,
+            "pour-gate negative piece should EXCLUDE channel-axis query; got {}",
+            piece_gate.evaluate(&q),
+        );
+    }
+
+    #[test]
+    fn export_molds_v2_with_pour_gate_writes_pieces_plus_plug() {
+        // End-to-end: enabling pour gate on the ribbon still
+        // produces a valid 2L + 1 STL output. Gate channels are
+        // CSG'd in during compose_piece_solid.
+        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/cf-cast-v2-pour-gate");
+        match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to clean {out_dir:?}: {e}"),
+        }
+        let (spec, ribbon) = v2_fixture_with_pour_gate();
+        let report = spec.export_molds_v2(&ribbon, &out_dir).unwrap();
+        assert_eq!(report.layers.len(), 1);
+        assert!(report.layers[0].pieces[0].path.exists());
+        assert!(report.layers[0].pieces[1].path.exists());
+        assert!(report.plug_path.exists());
+        for piece in &report.layers[0].pieces {
+            assert!(piece.summary.face_count > 0);
+        }
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_pour_gate_prose_mentions_diameters() {
+        // Pour gate ON: "Pour Gate + Vent" section must mention
+        // gate Ø (6.0 mm = 2 × 3 mm radius) + vent Ø (3.0 mm =
+        // 2 × 1.5 mm radius) + channel length (40.0 mm = 2 × 20 mm
+        // half-length).
+        let (spec, ribbon) = v2_fixture_with_pour_gate();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(md.contains("## Pour Gate + Vent"));
+        assert!(md.contains("6.0 mm Ø pour gate"));
+        assert!(md.contains("3.0 mm Ø vent"));
+        assert!(md.contains("40.0 mm long"));
+        // Per-layer Step 6 references the pour gate when enabled.
+        assert!(
+            md.contains("Pour into the pour gate (base end of the centerline)"),
+            "Step 6 should reference the pour gate when enabled; got: {md}",
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_no_pour_gate_prose_falls_back_to_seam() {
+        // Pour gate OFF: "Pour Gate + Vent" section explains the
+        // workshop-drilled-hole fallback; per-layer Step 6
+        // references "the assembled mold cavity" not the gate.
+        let (spec, ribbon) = v2_fixture(); // pour_gate = None
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(md.contains("## Pour Gate + Vent"));
+        assert!(md.contains("`PourGateKind::None`"));
+        assert!(
+            md.contains("Pour into the assembled mold cavity"),
+            "Step 6 should fall back to seam-pour prose; got: {md}",
+        );
+        // The "Pour Gate + Vent" section's no-gate prose mentions
+        // "Pour silicone through the ribbon seam" — but check the
+        // specific marker that distinguishes it from with-gate.
+        assert!(
+            !md.contains("6.0 mm Ø pour gate"),
+            "no-gate prose must not include with-gate dimensions",
+        );
+    }
+
+    #[test]
+    fn generate_procedure_markdown_v2_no_vent_prose_notes_disabled() {
+        // include_vent=false: prose calls out the disabled vent
+        // explicitly so workshop user doesn't expect a vent hole
+        // in the printed pieces.
+        let mut spec_no_vent = PourGateSpec::iter1();
+        spec_no_vent.include_vent = false;
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_pour_gate(PourGateKind::Default(spec_no_vent));
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("`include_vent = false`"),
+            "no-vent prose must reference the disabled vent flag",
+        );
+    }
+
+    #[test]
+    fn compose_piece_solid_with_pins_and_pour_gate_composes_both() {
+        // Step 9 (pins) + Step 10 (pour gate) are orthogonal —
+        // both should compose into the same piece geometry.
+        // Verify by enabling BOTH on the ribbon and confirming
+        // compose_piece_solid produces a valid Solid (non-empty
+        // bounds; no panic).
+        let (spec, ribbon) = v2_fixture();
+        let ribbon = ribbon
+            .with_registration(RegistrationKind::Pins(PinSpec::iter1()))
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+
+        let piece_neg = crate::compose_piece_solid(
+            &spec.layers[0].body,
+            &spec.bounding_region,
+            &ribbon,
+            PieceSide::Negative,
+        )
+        .unwrap();
+        let piece_pos = crate::compose_piece_solid(
+            &spec.layers[0].body,
+            &spec.bounding_region,
+            &ribbon,
+            PieceSide::Positive,
+        )
+        .unwrap();
+
+        assert!(piece_neg.bounds().is_some());
+        assert!(piece_pos.bounds().is_some());
+
+        // Pin protrusion query (pin in Negative piece):
+        let pin_q = Point3::new(-0.025, 0.0255, 0.003);
+        assert!(
+            piece_neg.evaluate(&pin_q) < 0.0,
+            "pins+gate Negative piece should still contain pin protrusion"
+        );
+        // Pour-gate channel query (gate in both pieces):
+        let gate_q = Point3::new(-0.035, 0.0, -0.001);
+        assert!(
+            piece_neg.evaluate(&gate_q) > 0.0,
+            "pins+gate Negative piece should EXCLUDE pour-gate channel"
+        );
     }
 
     #[test]

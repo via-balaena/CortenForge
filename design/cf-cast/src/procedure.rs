@@ -26,6 +26,7 @@
 use std::fmt::Write as _;
 
 use crate::cure::lookup as lookup_cure;
+use crate::pour::PourGateKind;
 use crate::pour_volume::PourVolume;
 use crate::registration::RegistrationKind;
 use crate::ribbon::Ribbon;
@@ -350,7 +351,8 @@ pub fn generate_procedure_markdown_v2(
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
     write_v2_assembly_note(&mut md, ribbon);
-    write_per_layer_sections_v2(&mut md, spec, pour_volumes);
+    write_v2_pour_gate_note(&mut md, ribbon);
+    write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon);
     write_mass_budget_summary(&mut md, spec, pour_volumes);
     md
 }
@@ -469,7 +471,65 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
     md.push('\n');
 }
 
-fn write_per_layer_sections_v2(md: &mut String, spec: &CastSpec, pour_volumes: &[PourVolume]) {
+fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon) {
+    let _ = writeln!(md, "## Pour Gate + Vent");
+    md.push('\n');
+    match &ribbon.pour_gate {
+        PourGateKind::None => {
+            let _ = writeln!(
+                md,
+                "This cast has no integrated pour-gate or air-vent \
+                 channels (`PourGateKind::None`). Pour silicone through \
+                 the ribbon seam where the two pieces meet, and drill \
+                 air-relief holes through the cured cup wall as needed \
+                 if bubbles form during cure."
+            );
+        }
+        PourGateKind::Default(spec) => {
+            let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
+            let vent_dia_mm = spec.vent_radius_m * 2.0 * 1000.0;
+            let channel_length_mm = spec.channel_half_length_m * 2.0 * 1000.0;
+            let _ = writeln!(
+                md,
+                "Integrated pour-gate + air-vent channels are CSG'd \
+                 through the assembled mold cup. Pour silicone into the \
+                 **{gate_dia_mm:.1} mm Ø pour gate** at the base end \
+                 of the centerline; air escapes through the \
+                 **{vent_dia_mm:.1} mm Ø vent** at the tip end. Both \
+                 channels are {channel_length_mm:.1} mm long, oriented \
+                 along the centerline tangent at their respective \
+                 endpoints, and split equally between the two pieces \
+                 (each piece gets half the channel cross-section)."
+            );
+            md.push('\n');
+            if !spec.include_vent {
+                let _ = writeln!(
+                    md,
+                    "**Note**: this cast has the air-vent channel \
+                     disabled (`include_vent = false`). For short straight \
+                     molds the gate alone vents adequately; for any cast \
+                     where air trapping is suspected, enable the vent or \
+                     drill a relief hole post-print at the curve's apex."
+                );
+                md.push('\n');
+            }
+            let _ = writeln!(
+                md,
+                "Pour slowly into the gate to avoid splashing silicone \
+                 through the vent (small-diameter vents have high air \
+                 throughput but limited silicone surface-tension hold)."
+            );
+        }
+    }
+    md.push('\n');
+}
+
+fn write_per_layer_sections_v2(
+    md: &mut String,
+    spec: &CastSpec,
+    pour_volumes: &[PourVolume],
+    ribbon: &Ribbon,
+) {
     let _ = writeln!(md, "## Per-Layer Procedure");
     md.push('\n');
     for (layer, pour) in spec.layers.iter().zip(pour_volumes) {
@@ -517,19 +577,22 @@ fn write_per_layer_sections_v2(md: &mut String, spec: &CastSpec, pour_volumes: &
             );
         }
         let _ = writeln!(md, "5. Vacuum-degas the mix for 2-3 minutes at ≥27 inHg.");
+        let pour_into = match &ribbon.pour_gate {
+            PourGateKind::Default(_) => "the pour gate (base end of the centerline)",
+            PourGateKind::None => "the assembled mold cavity",
+        };
         if pour.layer_index == 0 {
             let _ = writeln!(
                 md,
-                "6. Pour into the assembled mold cavity. Insert the plug \
-                 from the open end, displacing silicone to shape the inner \
-                 cavity."
+                "6. Pour into {pour_into}. Insert the plug from the open \
+                 end, displacing silicone to shape the inner cavity."
             );
         } else {
             let _ = writeln!(
                 md,
                 "6. Place the cured layer {} (from the previous pour) \
-                 inside the assembled mold cavity as the plug. Pour around \
-                 it.",
+                 inside the assembled mold cavity as the plug. Pour \
+                 around it into {pour_into}.",
                 pour.layer_index - 1,
             );
         }
