@@ -27,7 +27,7 @@ use clap::Parser;
 use mesh_io::load_stl;
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Bounded, IndexedMesh, Point3};
-use meshopt::{SimplifyOptions, simplify_decoder};
+use meshopt::simplify_sloppy_decoder;
 use nalgebra::Vector3;
 use serde::Deserialize;
 
@@ -352,19 +352,22 @@ const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
 /// vertices that meshopt needs welded to find collapsible edges.
 const ENVELOPE_PROXY_WELD_EPSILON_M: f64 = 1e-6;
 
-/// `meshopt::simplify_decoder`'s target-error parameter. Much higher
-/// than cf-scan-prep's `SIMPLIFY_TARGET_ERROR = 0.05` because we're
-/// reducing the iter-1 cleaned scan from 3.3M faces all the way down
-/// to ~1500 (a ~2000× reduction). cf-scan-prep's panel typically
-/// runs 10–50× reductions where 0.05 (= 5% of mesh diagonal) is
-/// enough error budget; at 2000× the budget exhausts long before the
-/// face target is reached and decimation stops early (leaving the
-/// full mesh in the proxy).
+/// `meshopt::simplify_sloppy_decoder`'s target-error parameter.
+/// Effectively unbounded (1000 % of mesh diagonal) — we want the
+/// decimation to ALWAYS reach the target face count, sacrificing
+/// geometric fidelity if necessary. simplify_sloppy is topology-
+/// non-preserving and per its docs "always able to reach target
+/// triangle count," so this error cap exists only as a defensive
+/// upper bound; under normal operation the face-count target is
+/// the binding constraint.
 ///
-/// 10.0 = "1000% of mesh diagonal" → effectively unbounded, lets
-/// the decimation run until `target_index_count` is reached. The
-/// resulting proxy is approximate (visual only, not measurement);
-/// the cast-time SDF builds on the unmodified scan.
+/// Switched from `simplify_decoder` (slice 4 polish) to
+/// `simplify_sloppy_decoder` (slice 5 perf pass) after observing
+/// that the iter-1 cleaned scan retains its full 3.34 M face count
+/// through topology-preserving simplification — the scan has
+/// disconnected components / degenerate triangles that block the
+/// regular collapse algorithm. The sloppy variant ignores topology
+/// and reliably hits ~1500 faces.
 const ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 
 // ----- .prep.toml parsing (subset; centerline only) -----------------
@@ -519,8 +522,12 @@ const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
 /// 1. Weld duplicated vertices (STL load produces 3-per-triangle
 ///    unshared vertices that meshopt can't decimate without
 ///    shared topology).
-/// 2. `meshopt::simplify_decoder` with `LockBorder` (preserves any
-///    open boundary edges on the cleaned mesh).
+/// 2. `meshopt::simplify_sloppy_decoder` — topology-non-preserving
+///    decimation that ALWAYS reaches the target face count.
+///    Required for the iter-1 cleaned scan, which retains its full
+///    3.34 M face count through topology-preserving simplification
+///    (disconnected components + degenerate triangles block the
+///    regular collapse algorithm).
 /// 3. Strip unreferenced vertices left over from the decimation.
 /// 4. Compute face normals from triangle CCW order, then per-vertex
 ///    normals as area-weighted averages of incident face normals.
@@ -551,17 +558,17 @@ fn compute_envelope_proxy_mesh(
     let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
     let target_index_count = ENVELOPE_PROXY_TARGET_FACES.saturating_mul(3);
     let mut result_error = 0.0_f32;
-    // No `LockBorder` — boundary preservation isn't required for a
-    // visualization proxy, and locking the cleaned cap's circular
-    // boundary loop on the iter-1 fixture starves the decimation of
-    // edges it can collapse. Empty options = full mobility.
+    // `simplify_sloppy` ignores topology — required for the iter-1
+    // cleaned scan (3.34 M faces with disconnected components +
+    // degenerate triangles that block topology-preserving collapse).
+    // Guaranteed to reach the target face count per the meshopt
+    // docs ("always able to reach target triangle count").
     let simplified_indices = if target_index_count < indices.len() {
-        simplify_decoder(
+        simplify_sloppy_decoder(
             &indices,
             &positions,
             target_index_count,
             ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
-            SimplifyOptions::empty(),
             Some(&mut result_error),
         )
     } else {
@@ -1360,6 +1367,12 @@ fn run_render_app(
     // lines. One-time cost at startup; ~5–10 s on the iter-1
     // 3.3 M-face fixture, sub-second on small inputs.
     let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh, &centerline_points);
+    println!(
+        "envelope proxy: {} edges, {} vertices (decimated from {} faces)",
+        envelope_proxy.edges.len(),
+        envelope_proxy.vertices.len(),
+        envelope_proxy.original_face_count,
+    );
     let outer_envelope = OuterEnvelopeState::default_for_scan();
     let cavity = CavityState::default_for_scan();
     let layers = LayersState::default_for_scan();
