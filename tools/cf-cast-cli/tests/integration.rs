@@ -62,12 +62,12 @@ fn end_to_end_single_layer_synthetic_cube_writes_three_stls_plus_procedure() {
     let prep_toml = tmp.path().join("scan.cleaned.prep.toml");
     let cast_toml = tmp.path().join("cast.toml");
 
-    // mesh_io::save_stl expects mm-frame coordinates (matching the
-    // STL convention), but the bridge load path scales back via the
-    // SDF using the same coordinate values directly — so write the
-    // STL in METERS so the load round-trip reproduces meter-scale
-    // SDF values. (cf-scan-prep's cleaned STLs are in meters per
-    // its spec; we mirror that.)
+    // The whole bridge pipeline works in meters — cf-scan-prep emits
+    // cleaned STLs in meters, and `save_stl` / `load_stl` round-trip
+    // coordinate values verbatim (no unit conversion; the `true` arg
+    // is the binary-format flag). So the fixture is built in meters
+    // and the load round-trip reproduces meter-scale values straight
+    // into the SDF.
     let mesh = cube_mesh_m();
     save_stl(&mesh, &scan_stl, true).unwrap();
 

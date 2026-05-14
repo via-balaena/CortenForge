@@ -30,41 +30,49 @@ pub struct DerivedSpec {
     pub ribbon: Ribbon,
 }
 
-/// Resolve a cf-cast cure anchor key to a Smooth-On TDS density
-/// (kg/m³), mirroring sim-soft's `silicone_table.rs`.
+/// The cf-cast cure anchors this bridge recognizes, as
+/// `(anchor_key, display_name, density_kg_m3)` triples.
 ///
-/// Returns `None` for unrecognized anchors; the caller can layer a
-/// per-layer `density_kg_m3` override on top. This table is the same
-/// one that lives in `sim-soft::material::silicone_table` — it's
-/// reproduced here rather than imported because cf-cast (and
-/// cf-cast-cli) are deliberately decoupled from the FEM crate's
-/// dep tree.
+/// Densities mirror sim-soft's `silicone_table.rs` (Ecoflex 00-10 =
+/// 1040, the rest of the Ecoflex line + Dragon Skin 10A/15 = 1070,
+/// Dragon Skin 20A/30A = 1080 kg/m³). Reproduced here rather than
+/// imported because cf-cast (and cf-cast-cli) are deliberately
+/// decoupled from the FEM crate's dep tree. Structurally identical
+/// to cf-device-design's `LAYER_MATERIALS` — same by-name-mirror
+/// posture. Single source for all three anchor lookups below
+/// ([`density_for_anchor`], [`display_name_for_anchor`], and
+/// `build_material`'s `anchor_key` resolution).
+const ANCHORS: &[(&str, &str, f64)] = &[
+    ("ECOFLEX_00_10", "Ecoflex 00-10", 1040.0),
+    ("ECOFLEX_00_20", "Ecoflex 00-20", 1070.0),
+    ("ECOFLEX_00_30", "Ecoflex 00-30", 1070.0),
+    ("ECOFLEX_00_50", "Ecoflex 00-50", 1070.0),
+    ("DRAGON_SKIN_10A", "Dragon Skin 10A", 1070.0),
+    ("DRAGON_SKIN_15", "Dragon Skin 15", 1070.0),
+    ("DRAGON_SKIN_20A", "Dragon Skin 20A", 1080.0),
+    ("DRAGON_SKIN_30A", "Dragon Skin 30A", 1080.0),
+];
+
+/// Resolve a cf-cast cure anchor key to a Smooth-On TDS density
+/// (kg/m³). Returns `None` for unrecognized anchors; the caller can
+/// layer a per-layer `density_kg_m3` override on top. See
+/// [`ANCHORS`] for the table + the FEM-decoupling rationale.
 #[must_use]
 pub fn density_for_anchor(anchor: &str) -> Option<f64> {
-    match anchor {
-        "ECOFLEX_00_10" => Some(1040.0),
-        "ECOFLEX_00_20" | "ECOFLEX_00_30" | "ECOFLEX_00_50" | "DRAGON_SKIN_10A"
-        | "DRAGON_SKIN_15" => Some(1070.0),
-        "DRAGON_SKIN_20A" | "DRAGON_SKIN_30A" => Some(1080.0),
-        _ => None,
-    }
+    ANCHORS
+        .iter()
+        .find(|(key, _, _)| *key == anchor)
+        .map(|(_, _, density)| *density)
 }
 
 /// Resolve a cf-cast cure anchor key to its human-readable display
-/// name. Returns `None` for unrecognized anchors.
+/// name. Returns `None` for unrecognized anchors. See [`ANCHORS`].
 #[must_use]
 pub fn display_name_for_anchor(anchor: &str) -> Option<&'static str> {
-    match anchor {
-        "ECOFLEX_00_10" => Some("Ecoflex 00-10"),
-        "ECOFLEX_00_20" => Some("Ecoflex 00-20"),
-        "ECOFLEX_00_30" => Some("Ecoflex 00-30"),
-        "ECOFLEX_00_50" => Some("Ecoflex 00-50"),
-        "DRAGON_SKIN_10A" => Some("Dragon Skin 10A"),
-        "DRAGON_SKIN_15" => Some("Dragon Skin 15"),
-        "DRAGON_SKIN_20A" => Some("Dragon Skin 20A"),
-        "DRAGON_SKIN_30A" => Some("Dragon Skin 30A"),
-        _ => None,
-    }
+    ANCHORS
+        .iter()
+        .find(|(key, _, _)| *key == anchor)
+        .map(|(_, name, _)| *name)
 }
 
 /// Build a [`MoldingMaterial`] from one [`LayerConfig`].
@@ -93,21 +101,14 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
         .or_else(|| display_name_for_anchor(&layer.material).map(str::to_string))
         .unwrap_or_else(|| layer.material.clone());
 
-    // Resolve to a recognized cf-cast cure anchor (`&'static str`) only
-    // if the anchor matches one of cf-cast's known keys. Custom keys
-    // surface in the procedure markdown as the "consult Smooth-On TDS"
-    // placeholder branch.
-    let anchor_key: Option<&'static str> = match layer.material.as_str() {
-        "ECOFLEX_00_10" => Some("ECOFLEX_00_10"),
-        "ECOFLEX_00_20" => Some("ECOFLEX_00_20"),
-        "ECOFLEX_00_30" => Some("ECOFLEX_00_30"),
-        "ECOFLEX_00_50" => Some("ECOFLEX_00_50"),
-        "DRAGON_SKIN_10A" => Some("DRAGON_SKIN_10A"),
-        "DRAGON_SKIN_15" => Some("DRAGON_SKIN_15"),
-        "DRAGON_SKIN_20A" => Some("DRAGON_SKIN_20A"),
-        "DRAGON_SKIN_30A" => Some("DRAGON_SKIN_30A"),
-        _ => None,
-    };
+    // Resolve to a recognized cf-cast cure anchor (`&'static str`)
+    // only if the anchor matches one of [`ANCHORS`]' known keys.
+    // Custom keys surface in the procedure markdown as the "consult
+    // Smooth-On TDS" placeholder branch.
+    let anchor_key: Option<&'static str> = ANCHORS
+        .iter()
+        .find(|(key, _, _)| *key == layer.material.as_str())
+        .map(|(key, _, _)| *key);
 
     Ok(MoldingMaterial {
         display_name,
@@ -354,6 +355,22 @@ mod tests {
             Some("Dragon Skin 10A")
         );
         assert_eq!(display_name_for_anchor("CUSTOM"), None);
+    }
+
+    #[test]
+    fn anchors_table_covers_eight_keys_with_in_band_densities() {
+        // The single ANCHORS table now backs all three anchor
+        // lookups (density / display name / anchor_key); pin its
+        // shape so an accidental edit — dropped row, typo'd density —
+        // trips here.
+        assert_eq!(ANCHORS.len(), 8);
+        for (key, name, density) in ANCHORS {
+            assert!(
+                (1040.0..=1080.0).contains(density),
+                "{key}: density {density} kg/m³ outside the silicone band",
+            );
+            assert!(!name.is_empty(), "{key}: display name must be non-empty");
+        }
     }
 
     #[test]
