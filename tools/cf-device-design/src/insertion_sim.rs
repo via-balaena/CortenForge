@@ -408,6 +408,12 @@ fn layered_param_field(
 
 /// The 7.1 deliverable — the device-wall tet mesh + the rigid
 /// intruder, geometry-and-materials only (no solve; that is 7.2+).
+///
+/// Intentionally no `Debug` derive: `mesh` + `intruder` hold the full
+/// tet mesh and scan SDF (tens of thousands of tets / faces), so a
+/// derived `Debug` would be unreadable and a `dbg!` footgun — mirrors
+/// `MeshingHints`'s no-`Debug` rationale. Inspect the scalar fields
+/// (`cavity_offset_m`, `outer_offset_m`, `n_tets`) directly.
 pub struct InsertionGeometry {
     /// Device-wall tet mesh with per-tet Yeoh materials sampled from
     /// the layer stack. The solver (7.2) consumes this by value.
@@ -449,11 +455,23 @@ pub struct InsertionGeometry {
 /// # Errors
 ///
 /// - the design has no layers;
+/// - a layer has a non-positive or non-finite thickness, or
+///   `cavity_inset_m` is non-finite — a strictly-monotone wall
+///   partition needs positive, finite thicknesses (otherwise
+///   `LayeredScalarField::new` would panic rather than error);
 /// - a layer names an anchor key outside the catalog;
 /// - [`SignedDistanceField::new`] fails (empty decimated scan);
 /// - `SdfMeshedTetMesh::from_sdf_yeoh` fails (empty mesh — e.g. a
 ///   degenerate design whose cavity has collapsed — or a non-finite
 ///   SDF sample).
+///
+/// # Panics
+///
+/// `cell_size_m` is a programmer-set knob, not validated here: a
+/// non-positive `cell_size_m` (or a scan degenerate enough that its
+/// bbox is ill-formed) forwards a panic from `BccLattice::new` — the
+/// same "caller-supplied invariant" posture sim-soft documents for
+/// that argument.
 pub fn build_insertion_geometry(
     scan: &IndexedMesh,
     design: &SimDesign,
@@ -462,6 +480,25 @@ pub fn build_insertion_geometry(
 ) -> Result<InsertionGeometry> {
     if design.layers.is_empty() {
         return Err(anyhow!("insertion-sim design has no layers"));
+    }
+    if !design.cavity_inset_m.is_finite() {
+        return Err(anyhow!(
+            "insertion-sim cavity inset is non-finite ({})",
+            design.cavity_inset_m
+        ));
+    }
+    // Every layer needs a positive, finite thickness: the wall
+    // partition's thresholds are cumulative thicknesses, and
+    // `LayeredScalarField::new` *panics* (not errors) on a
+    // non-monotone or non-finite threshold list. Catch it here so the
+    // `Result` contract holds.
+    for (i, layer) in design.layers.iter().enumerate() {
+        if !(layer.thickness_m.is_finite() && layer.thickness_m > 0.0) {
+            return Err(anyhow!(
+                "insertion-sim layer {i} has a non-positive or non-finite thickness ({})",
+                layer.thickness_m
+            ));
+        }
     }
 
     let total_thickness_m: f64 = design.layers.iter().map(|l| l.thickness_m).sum();
@@ -678,6 +715,67 @@ mod tests {
         assert!((t[1] - 0.002).abs() < 1e-12);
         // Strictly increasing — `LayeredScalarField::new` requires it.
         assert!(t[1] > t[0]);
+    }
+
+    #[test]
+    fn build_insertion_geometry_rejects_degenerate_designs() {
+        // Degenerate inputs are caught up front as `Err` — never a
+        // panic deep in `LayeredScalarField::new`. The validation runs
+        // before the scan is decimated, so a stub cube is enough and
+        // the test stays fast.
+        let scan = unit_cube();
+        let build = |design: &SimDesign| build_insertion_geometry(&scan, design, 2_500, 0.004);
+
+        let cases = [
+            (
+                "no layers",
+                SimDesign {
+                    cavity_inset_m: 0.003,
+                    layers: vec![],
+                },
+            ),
+            (
+                "zero thickness",
+                SimDesign {
+                    cavity_inset_m: 0.003,
+                    layers: vec![layer(0.0, "ECOFLEX_00_30")],
+                },
+            ),
+            (
+                "negative thickness",
+                SimDesign {
+                    cavity_inset_m: 0.003,
+                    layers: vec![layer(-0.002, "ECOFLEX_00_30")],
+                },
+            ),
+            (
+                "non-finite thickness",
+                SimDesign {
+                    cavity_inset_m: 0.003,
+                    layers: vec![layer(f64::NAN, "ECOFLEX_00_30")],
+                },
+            ),
+            (
+                "non-finite inset",
+                SimDesign {
+                    cavity_inset_m: f64::INFINITY,
+                    layers: vec![layer(0.005, "ECOFLEX_00_30")],
+                },
+            ),
+            (
+                "off-catalog anchor",
+                SimDesign {
+                    cavity_inset_m: 0.003,
+                    layers: vec![layer(0.005, "UNOBTANIUM")],
+                },
+            ),
+        ];
+        for (label, design) in &cases {
+            assert!(
+                build(design).is_err(),
+                "{label} design should be rejected as Err",
+            );
+        }
     }
 
     /// SDF bridge spike against the iter-1 cleaned scan.
