@@ -13,9 +13,14 @@
 //!   Surfaces render as solid depth-tested Bevy meshes (cavity + one
 //!   per layer); the outermost layer's outer surface IS the device's
 //!   outer skin (no separate "outer envelope" concept).
+//! - Slice 6: Validations panel — per-layer pour volume + mass
+//!   graded against the 2 lb single-pour budget, cavity self-
+//!   intersection check, minimum-castable-wall check. All derived,
+//!   read-only; computed each frame by `compute_validations`.
 //!
-//! Pending slices: Validations / Features → Texture / Save / Open.
-//! See `docs/ENGINEERING_SUITE_DESIGN.md` for the full ladder.
+//! Pending slices: Insertion Sim (FEM, slice 7) / Save / Open
+//! (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the build
+//! and is stale — trust the code.
 
 use std::path::{Path, PathBuf};
 
@@ -166,21 +171,38 @@ impl CavityState {
     }
 }
 
-/// Silicone-material catalog the Layers panel offers. Mirrors the
-/// `anchor_key` strings cf-cast's `cure::lookup` resolves at cast
-/// time. cf-device-design carries the catalog standalone (no
-/// cf-cast dep) so this tool stays composable; cf-cast-cli
-/// validates the chosen anchor at design.toml ingest.
-const LAYER_MATERIALS: &[(&str, &str)] = &[
-    ("ECOFLEX_00_10", "Ecoflex 00-10 (super-soft)"),
-    ("ECOFLEX_00_20", "Ecoflex 00-20 (soft)"),
-    ("ECOFLEX_00_30", "Ecoflex 00-30 (medium-soft)"),
-    ("ECOFLEX_00_50", "Ecoflex 00-50 (firm-soft)"),
-    ("DRAGON_SKIN_10A", "Dragon Skin 10A (soft)"),
-    ("DRAGON_SKIN_15", "Dragon Skin 15 (medium)"),
-    ("DRAGON_SKIN_20A", "Dragon Skin 20A (firm)"),
-    ("DRAGON_SKIN_30A", "Dragon Skin 30A (firmest)"),
+/// Silicone-material catalog the Layers panel offers. Each entry is
+/// `(anchor_key, display_label, density_kg_m3)`.
+///
+/// The `anchor_key` strings mirror cf-cast's `cure::lookup` keys;
+/// the densities mirror `sim-soft`'s `silicone_table.rs` anchor
+/// values (Ecoflex 00-10 = 1040, the rest of the Ecoflex line +
+/// Dragon Skin 10A/15 = 1070, Dragon Skin 20A/30A = 1080 kg/m³).
+/// Both are mirrored by-name, not by-import: cf-device-design
+/// carries the catalog standalone (no cf-cast / sim-soft dep) so
+/// this tool stays composable. cf-cast-cli re-validates the chosen
+/// anchor + resolves the runtime density at `.design.toml` ingest.
+const LAYER_MATERIALS: &[(&str, &str, f64)] = &[
+    ("ECOFLEX_00_10", "Ecoflex 00-10 (super-soft)", 1040.0),
+    ("ECOFLEX_00_20", "Ecoflex 00-20 (soft)", 1070.0),
+    ("ECOFLEX_00_30", "Ecoflex 00-30 (medium-soft)", 1070.0),
+    ("ECOFLEX_00_50", "Ecoflex 00-50 (firm-soft)", 1070.0),
+    ("DRAGON_SKIN_10A", "Dragon Skin 10A (soft)", 1070.0),
+    ("DRAGON_SKIN_15", "Dragon Skin 15 (medium)", 1070.0),
+    ("DRAGON_SKIN_20A", "Dragon Skin 20A (firm)", 1080.0),
+    ("DRAGON_SKIN_30A", "Dragon Skin 30A (firmest)", 1080.0),
 ];
+
+/// Bulk density (kg/m³) for a layer's `material_anchor_key`, looked
+/// up in [`LAYER_MATERIALS`]. Falls back to 1070 kg/m³ (the Ecoflex/
+/// Dragon-Skin line median) for an unrecognized key — defensive
+/// only; every key the Layers panel can set comes from the catalog.
+fn material_density(anchor_key: &str) -> f64 {
+    LAYER_MATERIALS
+        .iter()
+        .find(|(key, _, _)| *key == anchor_key)
+        .map_or(1070.0, |(_, _, density)| *density)
+}
 
 /// Maximum number of concentric silicone layers between the cavity
 /// and the outer envelope. 6 is a generous workshop cap; real
@@ -296,6 +318,24 @@ struct EnvelopeProxyMesh {
     /// Original face count (pre-decimation) — surfaced in the panel
     /// so the user knows the proxy is approximate.
     original_face_count: usize,
+    /// Minimum radial distance (meters) from any non-degenerate
+    /// proxy vertex to its nearest centerline point — i.e. the
+    /// smallest `‖v − nearest_centerline_pt‖` over the vertices,
+    /// measured in the same Z-region-split metric as the radial
+    /// directions (horizontal-only below the centerline, full-3D
+    /// within/above).
+    ///
+    /// This is the cavity-collapse threshold: displacing the cavity
+    /// inward by `inset_m` moves each vertex `inset_m` along its
+    /// radial, so once `inset_m ≥ min_radial_distance_m` at least
+    /// one vertex has reached / crossed the centerline and the
+    /// cavity mesh self-intersects. The Validations panel (slice 6)
+    /// reads this for the cavity self-intersection check.
+    ///
+    /// `f64::INFINITY` when no centerline is available (< 2 points)
+    /// — without a centerline there is no radial-collapse metric, so
+    /// the check is reported as not-applicable.
+    min_radial_distance_m: f64,
 }
 
 /// Target face count after decimation for the shared scan proxy.
@@ -598,8 +638,13 @@ fn compute_envelope_proxy_mesh(
     // vertex) and drag the rim down. There's no visible
     // discontinuity at the threshold because the 3D radial just
     // above `centerline_min_z` is itself ≈ horizontal.
+    // Each closure returns `(radial_direction, radial_distance)`:
+    // the unit displacement direction plus the distance from the
+    // vertex to its nearest centerline point in the same metric.
+    // Degenerate vertices carry `f64::INFINITY` distance so they do
+    // not drag the cavity-collapse minimum to zero.
     let centerline_min_z = centerline.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
-    let vertex_radial_directions: Vec<Vector3<f64>> = if centerline.len() >= 2 {
+    let radial_pairs: Vec<(Vector3<f64>, f64)> = if centerline.len() >= 2 {
         proxy
             .vertices
             .iter()
@@ -617,50 +662,63 @@ fn compute_envelope_proxy_mesh(
                 };
                 let len = raw.norm();
                 if len > 1e-9 {
-                    raw / len
+                    (raw / len, len)
                 } else {
                     // Degenerate (vertex coincident with the
                     // centerline point). Fall back to the per-vertex
                     // normal, Z-stripped for below-centerline
                     // vertices (keep them axially fixed), full 3D
-                    // otherwise.
+                    // otherwise. Distance is INFINITY — a coincident
+                    // vertex has no meaningful radial collapse depth.
                     let fallback = if below_centerline {
                         Vector3::new(n.x, n.y, 0.0)
                     } else {
                         *n
                     };
                     let len_f = fallback.norm();
-                    if len_f > 1e-9 {
+                    let dir = if len_f > 1e-9 {
                         fallback / len_f
                     } else {
                         Vector3::new(1.0, 0.0, 0.0)
-                    }
+                    };
+                    (dir, f64::INFINITY)
                 }
             })
             .collect()
     } else {
         // No centerline available; use per-vertex normals (with Z
         // stripped) as the radial proxy. Consistent posture with the
-        // centerline-present path's below-centerline branch.
+        // centerline-present path's below-centerline branch. Without
+        // a centerline there is no radial-collapse metric, so every
+        // distance is INFINITY (cavity self-intersection check is
+        // reported not-applicable downstream).
         vertex_normals
             .iter()
             .map(|n| {
                 let n_xy = Vector3::new(n.x, n.y, 0.0);
                 let len = n_xy.norm();
-                if len > 1e-9 {
+                let dir = if len > 1e-9 {
                     n_xy / len
                 } else {
                     Vector3::new(1.0, 0.0, 0.0)
-                }
+                };
+                (dir, f64::INFINITY)
             })
             .collect()
     };
+
+    let min_radial_distance_m = radial_pairs
+        .iter()
+        .map(|(_, d)| *d)
+        .fold(f64::INFINITY, f64::min);
+    let vertex_radial_directions = radial_pairs.into_iter().map(|(dir, _)| dir).collect();
 
     EnvelopeProxyMesh {
         vertices: proxy.vertices,
         vertex_radial_directions,
         faces: proxy.faces,
         original_face_count,
+        min_radial_distance_m,
     }
 }
 
@@ -677,6 +735,213 @@ fn nearest_centerline_index(v: &Point3<f64>, centerline: &[Point3<f64>]) -> usiz
         }
     }
     best_i
+}
+
+// ============================================================
+// Geometric validations (slice 6)
+// ============================================================
+//
+// Cheap, derived-from-state checks surfaced in the Validations
+// panel: per-layer pour volume + mass against the 2 lb single-pour
+// budget, cavity self-intersection, and minimum castable wall
+// thickness. Computed fresh each frame from `EnvelopeProxyMesh` +
+// `CavityState` + `LayersState` — `compute_validations` is a pure
+// function so the whole check set is unit-testable without Bevy.
+//
+// Pour volume uses the divergence-theorem signed mesh volume on the
+// displaced proxy (not cf-cast's SDF voxel integration): the
+// suite's geometry model is displaced proxy meshes, it carries no
+// `cf_design::Solid` representation, and the closed-form mesh
+// volume is both dependency-free and more accurate than coarse-
+// voxel counting.
+
+/// Per-silicone single-pour mass budget (kg) for the layered-
+/// silicone-device v1 cast — 2 lb via NIST's exact pound-to-kg
+/// conversion (1 lb = 0.453_592_37 kg). Mirrors cf-cast's
+/// `pour_volume::DEFAULT_MASS_BUDGET_KG` by-value (no cf-cast dep,
+/// same standalone-catalog posture as [`LAYER_MATERIALS`]).
+const MASS_BUDGET_KG: f64 = 0.907_184_74;
+
+/// Fraction of [`MASS_BUDGET_KG`] below which a single pour grades
+/// green; between this fraction and 1.0× the budget grades yellow;
+/// above 1.0× grades red. 0.8 reserves a 20 % working margin before
+/// the budget becomes a hard concern.
+const BUDGET_GREEN_FRACTION: f64 = 0.8;
+
+/// Minimum castable layer thickness (meters). Below ~2 mm a poured
+/// silicone wall is fragile and tears under insertion stretch (cf.
+/// Ecoflex 00-30's ~2 mm castability threshold, cited in
+/// [`CAVITY_DEFAULT_INSET_M`]). The per-layer thickness slider
+/// floor is 1 mm — so sub-2 mm layers are reachable, and the
+/// min-wall check flags them.
+const MIN_CASTABLE_THICKNESS_M: f64 = 0.002;
+
+/// Mass-budget severity grade for one cast pour (or the device
+/// total), graded against [`MASS_BUDGET_KG`]. Variant declaration
+/// order is the severity order — `Ord` is derived so the worst
+/// per-layer status is `layers.iter().map(...).max()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum BudgetStatus {
+    /// Comfortably under budget (< [`BUDGET_GREEN_FRACTION`]× the
+    /// budget).
+    Green,
+    /// Approaching the budget ([`BUDGET_GREEN_FRACTION`]×..=1.0× the
+    /// budget).
+    Yellow,
+    /// Over budget (> 1.0× the budget) — not pourable in one pour.
+    Red,
+}
+
+/// Grade a single pour mass (kg) against [`MASS_BUDGET_KG`].
+fn grade_budget(mass_kg: f64) -> BudgetStatus {
+    if mass_kg > MASS_BUDGET_KG {
+        BudgetStatus::Red
+    } else if mass_kg >= MASS_BUDGET_KG * BUDGET_GREEN_FRACTION {
+        BudgetStatus::Yellow
+    } else {
+        BudgetStatus::Green
+    }
+}
+
+/// Per-layer validation readout — one entry per cast layer.
+#[derive(Debug, Clone, PartialEq)]
+struct LayerValidation {
+    /// Index into [`LayersState::layers`], innermost-first.
+    layer_index: usize,
+    /// Shell volume (m³) — the new silicone this layer's pour adds,
+    /// = V(this layer's outer surface) − V(its inner surface). The
+    /// inner surface is the cavity surface for layer 0, or the
+    /// prior layer's outer surface for layer `i > 0`.
+    shell_volume_m3: f64,
+    /// Pour mass (kg) = `shell_volume_m3` × the layer material's
+    /// bulk density (from [`material_density`]).
+    pour_mass_kg: f64,
+    /// Mass-budget grade for this single pour.
+    status: BudgetStatus,
+    /// Whether this layer's thickness is at or above
+    /// [`MIN_CASTABLE_THICKNESS_M`].
+    thickness_castable: bool,
+}
+
+/// Whole-device validation readout, computed fresh each frame by
+/// [`compute_validations`] from the proxy mesh + cavity + layer
+/// state.
+#[derive(Debug, Clone, PartialEq)]
+struct DeviceValidations {
+    /// One entry per layer, innermost-first.
+    layers: Vec<LayerValidation>,
+    /// Sum of every layer's pour mass (kg). Informational: same-
+    /// material layers may be combined into one pour or each poured
+    /// separately — the per-layer [`LayerValidation::status`] is the
+    /// pour-by-pour budget constraint, this total is context.
+    total_mass_kg: f64,
+    /// Worst per-layer budget status — drives the panel's headline
+    /// color. [`BudgetStatus::Green`] for an empty layer stack.
+    worst_status: BudgetStatus,
+    /// Whether the cavity mesh self-intersects at the current inset:
+    /// `true` when `cavity.inset_m ≥ proxy.min_radial_distance_m`
+    /// (at least one vertex has reached / crossed the centerline).
+    /// Always `false` when no centerline is available — the check
+    /// is reported not-applicable in that case.
+    cavity_self_intersects: bool,
+    /// The inset (m) at which the cavity first collapses onto the
+    /// centerline = `proxy.min_radial_distance_m`. `f64::INFINITY`
+    /// when no centerline is available (check not applicable).
+    cavity_collapse_inset_m: f64,
+    /// `true` when every layer is at or above
+    /// [`MIN_CASTABLE_THICKNESS_M`].
+    min_wall_ok: bool,
+}
+
+/// Enclosed volume (m³) of the proxy mesh with every vertex
+/// displaced by `offset_m` along its per-vertex radial direction
+/// (negative `offset_m` = inward, e.g. the cavity surface).
+///
+/// Divergence-theorem signed volume: `⅙·Σ_faces a·(b×c)` over the
+/// displaced triangles, where `a, b, c` are the face's displaced
+/// vertices. cf-scan-prep's cleaned mesh winds CCW / outward, so a
+/// closed mesh yields a positive volume that grows monotonically
+/// with `offset_m`. For the slightly-open cleaned scan the small
+/// open-boundary error is common to every offset and largely
+/// cancels in the shell differences [`compute_validations`] takes.
+///
+/// Pure geometry in physics-frame meters — no render-scale / UpAxis
+/// mapping (those are display-only concerns).
+fn signed_volume_m3(proxy: &EnvelopeProxyMesh, offset_m: f64) -> f64 {
+    let displaced = |i: u32| -> Vector3<f64> {
+        let idx = i as usize;
+        proxy.vertices[idx].coords + proxy.vertex_radial_directions[idx] * offset_m
+    };
+    let mut six_volume = 0.0_f64;
+    for face in &proxy.faces {
+        let a = displaced(face[0]);
+        let b = displaced(face[1]);
+        let c = displaced(face[2]);
+        six_volume += a.dot(&b.cross(&c));
+    }
+    six_volume / 6.0
+}
+
+/// Compute the whole-device validation readout from the proxy mesh
+/// plus the current cavity + layer state. Pure function — the
+/// Validations panel calls this each frame; the tests call it
+/// directly.
+///
+/// Shell volumes: layer 0's inner surface is the cavity surface (at
+/// offset `−inset_m`); layer `i > 0`'s inner surface is layer
+/// `i − 1`'s outer surface. Layer `i`'s outer surface is at offset
+/// `cumulative_thickness − inset_m`. A pour's shell volume is
+/// `V(outer) − V(inner)` — the new material that pour adds.
+fn compute_validations(
+    proxy: &EnvelopeProxyMesh,
+    cavity: &CavityState,
+    layers: &LayersState,
+) -> DeviceValidations {
+    // The cavity surface is layer 0's inner surface.
+    let mut prev_inner_volume = signed_volume_m3(proxy, -cavity.inset_m);
+    let mut cumulative_thickness_m = 0.0_f64;
+    let mut layer_validations = Vec::with_capacity(layers.layers.len());
+    let mut total_mass_kg = 0.0_f64;
+    let mut worst_status = BudgetStatus::Green;
+    let mut min_wall_ok = true;
+
+    for (layer_index, layer) in layers.layers.iter().enumerate() {
+        cumulative_thickness_m += layer.thickness_m;
+        let outer_offset_m = cumulative_thickness_m - cavity.inset_m;
+        let outer_volume = signed_volume_m3(proxy, outer_offset_m);
+        // The outer surface is a strictly larger radial offset than
+        // the inner surface, so it always encloses more volume; the
+        // `abs` is a guard against floating-point sign noise on the
+        // near-closed cleaned scan, not a real sign ambiguity.
+        let shell_volume_m3 = (outer_volume - prev_inner_volume).abs();
+        prev_inner_volume = outer_volume;
+
+        let pour_mass_kg = shell_volume_m3 * material_density(layer.material_anchor_key);
+        total_mass_kg += pour_mass_kg;
+        let status = grade_budget(pour_mass_kg);
+        worst_status = worst_status.max(status);
+        let thickness_castable = layer.thickness_m >= MIN_CASTABLE_THICKNESS_M;
+        if !thickness_castable {
+            min_wall_ok = false;
+        }
+
+        layer_validations.push(LayerValidation {
+            layer_index,
+            shell_volume_m3,
+            pour_mass_kg,
+            status,
+            thickness_castable,
+        });
+    }
+
+    DeviceValidations {
+        layers: layer_validations,
+        total_mass_kg,
+        worst_status,
+        cavity_self_intersects: cavity.inset_m >= proxy.min_radial_distance_m,
+        cavity_collapse_inset_m: proxy.min_radial_distance_m,
+        min_wall_ok,
+    }
 }
 
 // ============================================================
@@ -1117,13 +1382,13 @@ fn layer_position_label(i: usize, n: usize) -> &'static str {
 fn render_material_dropdown(ui: &mut egui::Ui, layer_index: usize, selected: &mut &'static str) {
     let current_label = LAYER_MATERIALS
         .iter()
-        .find(|(key, _)| *key == *selected)
-        .map(|(_, label)| *label)
+        .find(|(key, _, _)| *key == *selected)
+        .map(|(_, label, _)| *label)
         .unwrap_or("(unknown)");
     egui::ComboBox::from_id_salt(("layer-material", layer_index))
         .selected_text(current_label)
         .show_ui(ui, |ui| {
-            for (key, label) in LAYER_MATERIALS {
+            for (key, label, _) in LAYER_MATERIALS {
                 ui.selectable_value(selected, key, *label);
             }
         });
@@ -1155,13 +1420,19 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 }
 
 /// Right-side egui sidebar carrying the design-suite panels.
-/// Renders Scan Info + Cavity + Layers as of slice 5; remaining
-/// stubs surface the planned panel order (Validations / Features /
+/// Renders Scan Info + Cavity + Layers + Validations as of slice 6;
+/// remaining stubs surface the planned panel order (Insertion Sim /
 /// Save-Open).
+///
+/// The Validations section is computed AFTER the Cavity + Layers
+/// sections render, so its readouts reflect this frame's slider
+/// edits (egui is immediate-mode — the sections mutate the resource
+/// in place before `compute_validations` reads it back).
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
+    proxy: Res<EnvelopeProxyMesh>,
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
@@ -1177,6 +1448,8 @@ fn device_design_panel(
                     render_scan_info_section(ui, &info, &mut scan_visible);
                     render_cavity_section(ui, &mut cavity);
                     render_layers_section(ui, &mut layers, &cavity);
+                    let validations = compute_validations(&proxy, &cavity, &layers);
+                    render_validations_section(ui, &validations);
                     render_panel_stubs(ui);
                 });
         });
@@ -1221,16 +1494,109 @@ fn render_scan_info_section(
 
 /// Stub-section placeholders for panels arriving in later slices. UI
 /// only — no state to surface yet. Pre-populating with the future
-/// panel names so the user can see the planned layout.
+/// panel names so the user can see the planned layout. Order tracks
+/// the reprioritized slice ladder: the FEM insertion sim (slice 7)
+/// is pulled ahead of Features / Texture because the simulation IS
+/// the engineering payoff of the suite.
 fn render_panel_stubs(ui: &mut egui::Ui) {
     ui.separator();
-    for name in [
-        "Validations (slice 6)",
-        "Features → Texture (slice 7)",
-        "Save / Open (slice 8)",
-    ] {
+    for name in ["Insertion Sim (slice 7)", "Save / Open (slice 8)"] {
         ui.add_enabled(false, egui::Label::new(name));
     }
+}
+
+/// egui color for a [`BudgetStatus`] — green / amber / red.
+fn budget_color(status: BudgetStatus) -> egui::Color32 {
+    match status {
+        BudgetStatus::Green => egui::Color32::from_rgb(90, 200, 110),
+        BudgetStatus::Yellow => egui::Color32::from_rgb(230, 180, 60),
+        BudgetStatus::Red => egui::Color32::from_rgb(225, 90, 80),
+    }
+}
+
+/// Render the Validations egui section — per-layer pour volume +
+/// mass graded against the 2 lb single-pour budget, plus the cavity
+/// self-intersection and minimum-castable-wall checks.
+///
+/// All figures are derived; the section is read-only. The headline
+/// color is the worst per-layer budget status. See
+/// [`compute_validations`] for the geometry behind each number.
+fn render_validations_section(ui: &mut egui::Ui, v: &DeviceValidations) {
+    egui::CollapsingHeader::new("Validations")
+        .default_open(true)
+        .show(ui, |ui| {
+            let n = v.layers.len();
+            ui.colored_label(
+                budget_color(v.worst_status),
+                format!(
+                    "Pour mass — budget {:.0} g / 2 lb per pour",
+                    MASS_BUDGET_KG * 1000.0,
+                ),
+            );
+            for lv in &v.layers {
+                ui.colored_label(
+                    budget_color(lv.status),
+                    format!(
+                        "  Layer {} ({}): {:.1} cm³ · {:.1} g",
+                        lv.layer_index,
+                        layer_position_label(lv.layer_index, n),
+                        lv.shell_volume_m3 * 1.0e6,
+                        lv.pour_mass_kg * 1000.0,
+                    ),
+                );
+            }
+            ui.label(format!(
+                "Total: {:.1} g across {} pour{}",
+                v.total_mass_kg * 1000.0,
+                n,
+                if n == 1 { "" } else { "s" },
+            ));
+
+            ui.separator();
+
+            // Cavity self-intersection.
+            if v.cavity_collapse_inset_m.is_infinite() {
+                ui.label("Cavity: n/a (no centerline)");
+            } else if v.cavity_self_intersects {
+                ui.colored_label(
+                    budget_color(BudgetStatus::Red),
+                    format!(
+                        "Cavity self-intersects (inset ≥ {:.1} mm)",
+                        v.cavity_collapse_inset_m * 1000.0,
+                    ),
+                );
+            } else {
+                ui.colored_label(
+                    budget_color(BudgetStatus::Green),
+                    format!(
+                        "Cavity: OK (collapses at inset ≥ {:.1} mm)",
+                        v.cavity_collapse_inset_m * 1000.0,
+                    ),
+                );
+            }
+
+            // Minimum castable wall thickness.
+            if v.min_wall_ok {
+                ui.colored_label(
+                    budget_color(BudgetStatus::Green),
+                    format!(
+                        "Min wall: OK (every layer ≥ {:.1} mm)",
+                        MIN_CASTABLE_THICKNESS_M * 1000.0,
+                    ),
+                );
+            } else {
+                for lv in v.layers.iter().filter(|lv| !lv.thickness_castable) {
+                    ui.colored_label(
+                        budget_color(BudgetStatus::Red),
+                        format!(
+                            "Layer {} below {:.1} mm castability floor",
+                            lv.layer_index,
+                            MIN_CASTABLE_THICKNESS_M * 1000.0,
+                        ),
+                    );
+                }
+            }
+        });
 }
 
 /// Truncate large counts to k / M suffixes for compact panel
@@ -1547,7 +1913,7 @@ another_future_field = "foo"
         // each entry name to catch typos / drift from cf-cast's
         // table. If cf-cast ever adds / removes a silicone, this
         // test fails and we update both sides.
-        let keys: Vec<&str> = LAYER_MATERIALS.iter().map(|(k, _)| *k).collect();
+        let keys: Vec<&str> = LAYER_MATERIALS.iter().map(|(k, _, _)| *k).collect();
         assert_eq!(keys.len(), 8);
         assert!(keys.contains(&"ECOFLEX_00_10"));
         assert!(keys.contains(&"ECOFLEX_00_20"));
@@ -1557,6 +1923,30 @@ another_future_field = "foo"
         assert!(keys.contains(&"DRAGON_SKIN_15"));
         assert!(keys.contains(&"DRAGON_SKIN_20A"));
         assert!(keys.contains(&"DRAGON_SKIN_30A"));
+    }
+
+    #[test]
+    fn layer_material_densities_mirror_silicone_table() {
+        // Densities mirror `sim-soft`'s `silicone_table.rs` anchor
+        // values by-name. If sim-soft revises an anchor density, this
+        // pin fails and we update the catalog to match.
+        assert!(approx_eq(material_density("ECOFLEX_00_10"), 1040.0, 1e-9));
+        assert!(approx_eq(material_density("ECOFLEX_00_20"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("ECOFLEX_00_30"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("ECOFLEX_00_50"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_10A"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_15"), 1070.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_20A"), 1080.0, 1e-9));
+        assert!(approx_eq(material_density("DRAGON_SKIN_30A"), 1080.0, 1e-9));
+        // Every catalog density lands in the silicone band.
+        for (key, _, density) in LAYER_MATERIALS {
+            assert!(
+                (1040.0..=1080.0).contains(density),
+                "{key}: density {density} kg/m³ outside silicone band",
+            );
+        }
+        // Unknown key → defensive median fallback.
+        assert!(approx_eq(material_density("NOT_A_REAL_KEY"), 1070.0, 1e-9));
     }
 
     #[test]
@@ -1718,5 +2108,240 @@ another_future_field = "foo"
         use mesh_types::Aabb;
         let a = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
         assert!((a.diagonal() - (3.0_f64).sqrt()).abs() < 1e-12);
+    }
+
+    // ----- Slice 6 — geometric validations -------------------------
+
+    /// Z-aligned centerline spanning the unit cube fixture's Z
+    /// extents — shared by the slice-6 validation tests so every
+    /// cube vertex gets a horizontal full-3D radial.
+    fn cube_centerline() -> Vec<Point3<f64>> {
+        vec![
+            Point3::new(0.0, 0.0, -0.05),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+        ]
+    }
+
+    #[test]
+    fn signed_volume_recovers_unit_cube_volume_at_zero_offset() {
+        // The unit cube fixture is 0.1 m on a side → 1e-3 m³. At
+        // offset 0 the proxy vertices are undisplaced, so the
+        // divergence-theorem volume must recover the cube volume
+        // (positive — cf-scan-prep meshes wind CCW / outward).
+        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let vol = signed_volume_m3(&proxy, 0.0);
+        assert!(
+            approx_eq(vol, 1.0e-3, 1e-9),
+            "unit-cube signed volume = {vol}, expected 1e-3",
+        );
+    }
+
+    #[test]
+    fn signed_volume_is_monotonic_in_offset() {
+        // Displacing every vertex outward along its radial enlarges
+        // the enclosed volume; inward shrinks it. Pins both the sign
+        // convention and that the radial displacement grows the
+        // surface the way the cavity / layer meshes assume.
+        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let inward = signed_volume_m3(&proxy, -0.01);
+        let zero = signed_volume_m3(&proxy, 0.0);
+        let outward = signed_volume_m3(&proxy, 0.01);
+        assert!(
+            inward < zero && zero < outward,
+            "expected inward ({inward}) < zero ({zero}) < outward ({outward})",
+        );
+    }
+
+    #[test]
+    fn grade_budget_thresholds() {
+        // Green below 0.8× budget, yellow in [0.8×, 1.0×], red above.
+        assert_eq!(grade_budget(0.1), BudgetStatus::Green);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 0.5), BudgetStatus::Green);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 0.8), BudgetStatus::Yellow);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 0.99), BudgetStatus::Yellow);
+        assert_eq!(grade_budget(MASS_BUDGET_KG), BudgetStatus::Yellow);
+        assert_eq!(grade_budget(MASS_BUDGET_KG * 1.01), BudgetStatus::Red);
+    }
+
+    #[test]
+    fn budget_status_orders_by_severity() {
+        // `worst_status` relies on the derived `Ord` matching the
+        // severity order Green < Yellow < Red.
+        assert!(BudgetStatus::Green < BudgetStatus::Yellow);
+        assert!(BudgetStatus::Yellow < BudgetStatus::Red);
+        assert_eq!(
+            [BudgetStatus::Green, BudgetStatus::Red, BudgetStatus::Yellow]
+                .into_iter()
+                .max(),
+            Some(BudgetStatus::Red),
+        );
+    }
+
+    #[test]
+    fn compute_validations_one_entry_per_layer_with_positive_shells() {
+        // Two-layer stack on the cube proxy: one validation per
+        // layer, every shell volume + mass strictly positive, and
+        // the total mass is the sum of the per-layer pour masses.
+        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let cavity = CavityState {
+            inset_m: 0.003,
+            visible: true,
+        };
+        let layers = LayersState {
+            layers: vec![
+                LayerSpec {
+                    thickness_m: 0.005,
+                    material_anchor_key: "ECOFLEX_00_30",
+                    visible: true,
+                },
+                LayerSpec {
+                    thickness_m: 0.004,
+                    material_anchor_key: "DRAGON_SKIN_20A",
+                    visible: true,
+                },
+            ],
+        };
+        let v = compute_validations(&proxy, &cavity, &layers);
+        assert_eq!(v.layers.len(), 2);
+        for lv in &v.layers {
+            assert!(lv.shell_volume_m3 > 0.0, "shell volume must be positive");
+            assert!(lv.pour_mass_kg > 0.0, "pour mass must be positive");
+        }
+        let summed: f64 = v.layers.iter().map(|lv| lv.pour_mass_kg).sum();
+        assert!(
+            approx_eq(v.total_mass_kg, summed, 1e-12),
+            "total {} != sum of layers {}",
+            v.total_mass_kg,
+            summed,
+        );
+        // Pour mass uses the per-layer material density.
+        let l1 = &v.layers[1];
+        assert!(approx_eq(
+            l1.pour_mass_kg,
+            l1.shell_volume_m3 * material_density("DRAGON_SKIN_20A"),
+            1e-12,
+        ));
+    }
+
+    #[test]
+    fn compute_validations_flags_cavity_self_intersection() {
+        // Below the proxy's min radial distance the cavity is fine;
+        // at or above it the cavity mesh self-intersects.
+        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let collapse = proxy.min_radial_distance_m;
+        assert!(collapse.is_finite() && collapse > 0.0);
+        let layers = LayersState::default_for_scan();
+
+        let safe = compute_validations(
+            &proxy,
+            &CavityState {
+                inset_m: collapse * 0.5,
+                visible: true,
+            },
+            &layers,
+        );
+        assert!(!safe.cavity_self_intersects);
+        assert!(approx_eq(safe.cavity_collapse_inset_m, collapse, 1e-12));
+
+        let collapsed = compute_validations(
+            &proxy,
+            &CavityState {
+                inset_m: collapse * 1.5,
+                visible: true,
+            },
+            &layers,
+        );
+        assert!(collapsed.cavity_self_intersects);
+    }
+
+    #[test]
+    fn compute_validations_cavity_check_not_applicable_without_centerline() {
+        // No centerline → min_radial_distance_m is INFINITY → the
+        // cavity self-intersection check can never fire.
+        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &[]);
+        assert!(proxy.min_radial_distance_m.is_infinite());
+        let v = compute_validations(
+            &proxy,
+            &CavityState {
+                inset_m: 0.5,
+                visible: true,
+            },
+            &LayersState::default_for_scan(),
+        );
+        assert!(!v.cavity_self_intersects);
+        assert!(v.cavity_collapse_inset_m.is_infinite());
+    }
+
+    #[test]
+    fn compute_validations_min_wall_flags_sub_floor_layers() {
+        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let cavity = CavityState {
+            inset_m: 0.003,
+            visible: true,
+        };
+        // A 1 mm layer is below the 2 mm castability floor.
+        let thin = LayersState {
+            layers: vec![LayerSpec {
+                thickness_m: 0.001,
+                material_anchor_key: "ECOFLEX_00_30",
+                visible: true,
+            }],
+        };
+        let v_thin = compute_validations(&proxy, &cavity, &thin);
+        assert!(!v_thin.min_wall_ok);
+        assert!(!v_thin.layers[0].thickness_castable);
+
+        // A 3 mm layer clears the floor.
+        let thick = LayersState {
+            layers: vec![LayerSpec {
+                thickness_m: 0.003,
+                material_anchor_key: "ECOFLEX_00_30",
+                visible: true,
+            }],
+        };
+        let v_thick = compute_validations(&proxy, &cavity, &thick);
+        assert!(v_thick.min_wall_ok);
+        assert!(v_thick.layers[0].thickness_castable);
+    }
+
+    #[test]
+    fn compute_validations_worst_status_is_the_max_layer_status() {
+        // `worst_status` must equal the most-severe per-layer grade.
+        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let cavity = CavityState {
+            inset_m: 0.003,
+            visible: true,
+        };
+        let layers = LayersState {
+            layers: vec![
+                LayerSpec {
+                    thickness_m: 0.005,
+                    material_anchor_key: "ECOFLEX_00_30",
+                    visible: true,
+                },
+                LayerSpec {
+                    thickness_m: 0.012,
+                    material_anchor_key: "DRAGON_SKIN_30A",
+                    visible: true,
+                },
+            ],
+        };
+        let v = compute_validations(&proxy, &cavity, &layers);
+        let expected = v
+            .layers
+            .iter()
+            .map(|lv| lv.status)
+            .max()
+            .unwrap_or(BudgetStatus::Green);
+        assert_eq!(v.worst_status, expected);
+    }
+
+    #[test]
+    fn mass_budget_is_two_pounds_to_kg_exact() {
+        // Mirrors cf-cast's `DEFAULT_MASS_BUDGET_KG` by-value: 2 lb
+        // via the NIST exact conversion 1 lb = 0.453_592_37 kg.
+        let lb_to_kg = 0.453_592_37_f64;
+        assert!((MASS_BUDGET_KG - (lb_to_kg + lb_to_kg)).abs() < f64::EPSILON);
     }
 }

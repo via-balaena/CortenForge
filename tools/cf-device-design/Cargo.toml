@@ -69,9 +69,9 @@ bevy = { workspace = true, default-features = false, features = [
 ] }
 
 # egui-on-Bevy plugin — UI library for the right-side design panels
-# (Scan Info / Outer Envelope / Cavity / Layers / Validations / Health /
-# Save). 0.39.1 is the workspace-validated pin (cf-viewer + cf-scan-prep
-# precedent).
+# (Scan Info / Cavity / Layers / Validations as-built; Insertion Sim /
+# Save-Open pending). 0.39.1 is the workspace-validated pin (cf-viewer
+# + cf-scan-prep precedent).
 bevy_egui = { version = "0.39.1", default-features = false, features = [
     "default_fonts",
     "render",
