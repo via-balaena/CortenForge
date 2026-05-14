@@ -70,6 +70,19 @@ struct Cli {
 #[derive(Resource)]
 struct ScanMesh(IndexedMesh);
 
+/// Whether the scan mesh entity is visible this frame. Toggled by
+/// the "Show scan mesh" checkbox in the Scan Info panel. Useful
+/// when inspecting the cavity wireframe, which sits INSIDE the
+/// scan and is occluded by the scan mesh when both are drawn.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct ScanMeshVisible(bool);
+
+impl Default for ScanMeshVisible {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 /// Bevy resource carrying scan-info readouts surfaced in the Scan
 /// Info panel. Computed once at startup; immutable post-construction.
 #[derive(Resource, Debug, Clone)]
@@ -604,6 +617,24 @@ fn draw_cavity_overlay(
     }
 }
 
+/// Apply the [`ScanMeshVisible`] toggle to the scan-mesh entity's
+/// `Visibility` each frame. Cheap (one component write per frame
+/// when the toggle changes; Bevy short-circuits Visibility writes
+/// that don't change the value).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn apply_scan_mesh_visibility(
+    visible: Res<ScanMeshVisible>,
+    mut q: Query<&mut Visibility, With<ScanMeshEntity>>,
+) {
+    for mut v in &mut q {
+        *v = if visible.0 {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn setup_render_scene(
     mut commands: Commands,
@@ -787,6 +818,7 @@ fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     proxy: Res<EnvelopeProxyMesh>,
+    mut scan_visible: ResMut<ScanMeshVisible>,
     mut outer_envelope: ResMut<OuterEnvelopeState>,
     mut cavity: ResMut<CavityState>,
 ) -> bevy::ecs::error::Result {
@@ -798,7 +830,7 @@ fn device_design_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    render_scan_info_section(ui, &info);
+                    render_scan_info_section(ui, &info, &mut scan_visible);
                     render_outer_envelope_section(ui, &mut outer_envelope, &proxy);
                     render_cavity_section(ui, &mut cavity);
                     render_panel_stubs(ui);
@@ -807,10 +839,15 @@ fn device_design_panel(
     Ok(())
 }
 
-fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
+fn render_scan_info_section(
+    ui: &mut egui::Ui,
+    info: &ScanInfo,
+    scan_visible: &mut ScanMeshVisible,
+) {
     egui::CollapsingHeader::new("Scan Info")
         .default_open(true)
         .show(ui, |ui| {
+            ui.checkbox(&mut scan_visible.0, "Show scan mesh");
             ui.label(format!("File:  {}", info.file_label));
             ui.label(format!("Vertices: {}", human_count(info.vertex_count)));
             ui.label(format!("Faces: {}", human_count(info.face_count)));
@@ -908,6 +945,7 @@ fn run_render_app(
         .insert_resource(envelope_proxy)
         .insert_resource(outer_envelope)
         .insert_resource(cavity)
+        .insert_resource(ScanMeshVisible::default())
         .add_systems(Startup, setup_render_scene)
         .add_systems(
             Update,
@@ -916,6 +954,7 @@ fn run_render_app(
                 draw_reference_overlays,
                 draw_envelope_offset_overlay,
                 draw_cavity_overlay,
+                apply_scan_mesh_visibility,
                 exit_on_esc,
             ),
         )
@@ -1146,6 +1185,15 @@ another_future_field = "foo"
         let cv = CavityState::default_for_scan();
         assert!(oe.visible);
         assert!(cv.visible);
+    }
+
+    #[test]
+    fn default_scan_mesh_visible() {
+        // Same posture as the wireframe-visibility defaults: scan
+        // is shown by default; user can hide via the Scan Info
+        // panel checkbox to inspect the cavity wireframe (which
+        // sits INSIDE the scan and is occluded by it).
+        assert!(ScanMeshVisible::default().0);
     }
 
     // ----- Slice 3 polish 10 — offset-surface proxy mesh ------------
