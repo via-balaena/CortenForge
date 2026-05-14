@@ -167,8 +167,11 @@ impl OuterEnvelopeState {
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct CavityState {
     /// Distance (meters) by which the cavity wireframe sits inside
-    /// the scan surface, measured along the per-vertex INWARD
-    /// normal (the negation of the proxy mesh's outward normal).
+    /// the scan surface, measured along the per-vertex radial
+    /// direction (`EnvelopeProxyMesh::vertex_radial_directions`,
+    /// horizontal, pointing away from the centerline). The cavity
+    /// displacement is `-radial * inset_m` per vertex — purely
+    /// horizontal motion toward the centerline, no axial Z drift.
     inset_m: f64,
     /// Whether the cavity wireframe is drawn this frame. User
     /// toggle in the panel.
@@ -177,10 +180,12 @@ struct CavityState {
 
 impl CavityState {
     /// Default state. Inset defaults to
-    /// [`CAVITY_DEFAULT_INSET_M`] (0 mm) — cavity coincides with
-    /// the scan surface at launch. The user dials the inset
-    /// upward (slider right) to shrink the cavity into the scan,
-    /// producing the silicone-skin pre-strain.
+    /// [`CAVITY_DEFAULT_INSET_M`] (3 mm) — the minimum-acceptable
+    /// buildable design: above Ecoflex's ~2 mm castability
+    /// threshold, ~10 % radial pre-strain on a typical scan
+    /// cross-section, and separated from the outer envelope at
+    /// launch (no z-fighting when both sliders sit at 0). User
+    /// dials UP for more pre-strain or DOWN to experiment.
     fn default_for_scan() -> Self {
         Self {
             inset_m: CAVITY_DEFAULT_INSET_M,
@@ -215,10 +220,28 @@ impl CavityState {
 struct EnvelopeProxyMesh {
     /// Decimated scan vertices in physics-frame meters.
     vertices: Vec<Point3<f64>>,
-    /// Per-vertex outward normal (unit length). Computed as the
-    /// area-weighted average of incident face normals. Falls back
-    /// to `+Z` for vertices with no incident faces.
-    vertex_normals: Vec<Vector3<f64>>,
+    /// Per-vertex unit radial direction in the GLOBAL XY plane.
+    /// For each proxy vertex `v`, the radial is the horizontal
+    /// component of `(v - nearest_centerline_point)`, normalized
+    /// (Z component zeroed). Used by both the outer-envelope
+    /// (`+radial * clearance`) and cavity (`-radial * inset`)
+    /// overlays so both wireframes displace ONLY horizontally —
+    /// bottom-rim vertices stay at their original Z level.
+    ///
+    /// Hard-coding the axial direction as global +Z (rather than
+    /// the local centerline tangent) avoids axial drift from any
+    /// curvature in the centerline tangent near the cleaned-cap
+    /// boundary. cf-scan-prep auto-orients the cleaned scan with
+    /// +Z up, so the global-Z assumption holds in the pipeline.
+    ///
+    /// Two-stage fallback for vertices where the primary radial is
+    /// degenerate:
+    /// 1. Z-stripped per-vertex normal (for near-axis vertices)
+    /// 2. `(1, 0, 0)` (for true dome-apex with pure-Z normal)
+    ///
+    /// Both fallback branches also have Z = 0, so axial Z stays
+    /// invariant under displacement at every vertex.
+    vertex_radial_directions: Vec<Vector3<f64>>,
     /// Deduplicated edges. Each `[a, b]` has `a < b`. One edge per
     /// unique (vertex, vertex) pair regardless of how many faces
     /// share it.
@@ -383,14 +406,20 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// surface."
 const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
 
-/// Default cavity inset (meters). 0 mm = cavity coincides with the
-/// scan surface at launch — the silicone skin has zero pre-strain
-/// initially. The user dials the inset up (slider right) to shrink
-/// the cavity into the scan; that delta IS the pre-strain. Lets
-/// the user start from a known reference (scan-as-cavity) and
-/// dial in the stretch they want for a specific silicone /
-/// appendage combination.
-const CAVITY_DEFAULT_INSET_M: f64 = 0.000;
+/// Default cavity inset (meters). 3 mm = the minimum-acceptable
+/// starting point for a buildable silicone device:
+/// - Above Ecoflex 00-30's ~2 mm castability threshold (thinner
+///   walls tear under stretch).
+/// - Yields ~10 % radial pre-strain on a typical 25–35 mm-diameter
+///   scan cross-section — meaningful snug fit, well within
+///   elongation-at-break (~900 %).
+/// - Separates the cavity wireframe from the outer envelope at
+///   launch, avoiding z-fighting when both sliders sit at 0.
+///
+/// The user dials UP for more pre-strain or DOWN to experiment
+/// (down to 0 = cavity-coincident-with-scan, useful as a debug
+/// reference but not a buildable design).
+const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
 
 /// Decimate the cleaned scan to a ~`ENVELOPE_PROXY_TARGET_FACES`-
 /// face proxy mesh, compute per-vertex outward normals, and extract
@@ -413,7 +442,10 @@ const CAVITY_DEFAULT_INSET_M: f64 = 0.000;
 /// Cost: O(N_orig_faces) for weld + meshopt + O(N_decimated × 3) for
 /// normals + edges. For the iter-1 fixture (3.3 M cleaned faces →
 /// 1500 proxy faces) this runs in ~5–10 s at startup; one-time.
-fn compute_envelope_proxy_mesh(scan_mesh: &IndexedMesh) -> EnvelopeProxyMesh {
+fn compute_envelope_proxy_mesh(
+    scan_mesh: &IndexedMesh,
+    centerline: &[Point3<f64>],
+) -> EnvelopeProxyMesh {
     let original_face_count = scan_mesh.faces.len();
 
     // Step 1: weld unshared vertices.
@@ -509,12 +541,97 @@ fn compute_envelope_proxy_mesh(scan_mesh: &IndexedMesh) -> EnvelopeProxyMesh {
     }
     let edges: Vec<[u32; 2]> = edge_set.into_iter().map(|(a, b)| [a, b]).collect();
 
+    // Step 6: per-vertex radial directions in the GLOBAL XY plane.
+    // For each vertex, the radial is the horizontal-only component
+    // of (vertex - nearest_centerline_point), normalized. Hard-
+    // coding the axial direction as +Z (rather than using the
+    // local centerline tangent) prevents the bottom rim from
+    // drifting axially when the user dials the clearance / inset —
+    // any tilt in the centerline tangent near the cleaned-cap end
+    // would otherwise add a small Z component to the radial that
+    // bleeds into axial Z motion at the rim.
+    //
+    // Trade-off: dome-apex vertices (directly above the centerline
+    // endpoint) have a near-zero horizontal component and fall back
+    // to the Z-stripped per-vertex normal (then to +X if even that
+    // is pure-Z). The dome offset isn't strictly radial-spherical,
+    // but the primary visual concern (flat bottom rim) is met, and
+    // cf-cast-cli's downstream SDF builds rigorous geometry anyway.
+    let vertex_radial_directions: Vec<Vector3<f64>> = if centerline.len() >= 2 {
+        proxy
+            .vertices
+            .iter()
+            .zip(vertex_normals.iter())
+            .map(|(v, n)| {
+                let nearest_i = nearest_centerline_index(v, centerline);
+                let diff = v.coords - centerline[nearest_i].coords;
+                // Zero out the Z component → pure horizontal radial.
+                let radial_xy = Vector3::new(diff.x, diff.y, 0.0);
+                let len = radial_xy.norm();
+                if len > 1e-9 {
+                    radial_xy / len
+                } else {
+                    // Apex / near-axis vertex; fall back to the per-
+                    // vertex normal but ALSO strip its Z component so
+                    // displacement stays purely horizontal. Without
+                    // this strip, near-axis vertices near the cleaned-
+                    // cap boundary inherit the downward-tilted normal
+                    // (area-weighted average over sidewall + boundary
+                    // faces), which drags the cavity bottom axially
+                    // when the inset grows.
+                    let n_xy = Vector3::new(n.x, n.y, 0.0);
+                    let len_n = n_xy.norm();
+                    if len_n > 1e-9 {
+                        n_xy / len_n
+                    } else {
+                        // True dome-apex (pure-Z normal); arbitrary
+                        // horizontal default. The wireframe edge at
+                        // this vertex will collapse to a point but
+                        // won't cause axial drift.
+                        Vector3::new(1.0, 0.0, 0.0)
+                    }
+                }
+            })
+            .collect()
+    } else {
+        // No centerline available; use per-vertex normals (with Z
+        // stripped) as the radial proxy. Consistent posture with the
+        // centerline-present path.
+        vertex_normals
+            .iter()
+            .map(|n| {
+                let n_xy = Vector3::new(n.x, n.y, 0.0);
+                let len = n_xy.norm();
+                if len > 1e-9 {
+                    n_xy / len
+                } else {
+                    Vector3::new(1.0, 0.0, 0.0)
+                }
+            })
+            .collect()
+    };
+
     EnvelopeProxyMesh {
         vertices: proxy.vertices,
-        vertex_normals,
+        vertex_radial_directions,
         edges,
         original_face_count,
     }
+}
+
+/// Index of the centerline polyline point closest to `v` by
+/// Euclidean distance. Returns 0 for an empty centerline.
+fn nearest_centerline_index(v: &Point3<f64>, centerline: &[Point3<f64>]) -> usize {
+    let mut best_i = 0;
+    let mut best_dist_sq = f64::INFINITY;
+    for (i, p) in centerline.iter().enumerate() {
+        let d = (v.coords - p.coords).norm_squared();
+        if d < best_dist_sq {
+            best_dist_sq = d;
+            best_i = i;
+        }
+    }
+    best_i
 }
 
 /// Draw the outer-envelope wireframe as the scan-proxy's offset
@@ -549,13 +666,17 @@ fn draw_envelope_offset_overlay(
 
     // Pre-compute displaced + Bevy-framed positions for every
     // vertex so each edge endpoint reads a cached value (vs
-    // recomputing twice per edge).
+    // recomputing twice per edge). Displacement = radial unit
+    // direction × clearance (slice 4 polish: was per-vertex
+    // normal pre-centerline). Radial displacement keeps the
+    // bottom-rim vertices at their original Z level so the
+    // outer envelope matches the cavity geometrically.
     let displaced_bevy: Vec<Vec3> = proxy
         .vertices
         .iter()
-        .zip(proxy.vertex_normals.iter())
-        .map(|(v, n)| {
-            let displaced_physics = Point3::from(v.coords + n * state.clearance_m);
+        .zip(proxy.vertex_radial_directions.iter())
+        .map(|(v, r)| {
+            let displaced_physics = Point3::from(v.coords + r * state.clearance_m);
             Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
         })
         .collect();
@@ -597,40 +718,19 @@ fn draw_cavity_overlay(
     // arrows / cyan centerline.
     let color = Color::srgb(0.95, 0.55, 0.45);
 
-    // Inward displacement = vertex.coords + signed_inward * inset_m
-    // where `signed_inward` points toward the proxy mesh's centroid.
-    // Using a centroid-anchored direction (rather than the per-vertex
-    // surface normal) is robust against scans where the area-weighted
-    // vertex normal happens to flip near boundary edges (cleaned-cap
-    // rim) or degenerate-triangle patches: a vertex's "inward" toward
-    // the proxy's interior is well-defined as `centroid - v`
-    // regardless of triangle winding. The proxy is a closed-ish
-    // surface so the centroid lies inside it.
-    let centroid: Vector3<f64> = if proxy.vertices.is_empty() {
-        Vector3::zeros()
-    } else {
-        #[allow(clippy::cast_precision_loss)] // count fits in f64.
-        let n = proxy.vertices.len() as f64;
-        let sum: Vector3<f64> = proxy
-            .vertices
-            .iter()
-            .map(|p| p.coords)
-            .fold(Vector3::zeros(), |a, b| a + b);
-        sum / n
-    };
-
+    // Inward displacement = vertex.coords - radial * inset_m.
+    // Using the centerline-perpendicular radial (precomputed in
+    // the proxy) keeps each vertex shrinking PURELY RADIALLY
+    // around the centerline: bottom-rim vertices stay at their
+    // original Z level, the cavity shrinks in cross-section
+    // without retracting axially. Matches the downstream cf-cast
+    // SDF (`Solid::pipe(centerline, R - inset)`).
     let displaced_bevy: Vec<Vec3> = proxy
         .vertices
         .iter()
-        .map(|v| {
-            let to_centroid = centroid - v.coords;
-            let len = to_centroid.norm();
-            let inward = if len > 1e-12 {
-                to_centroid / len
-            } else {
-                Vector3::zeros()
-            };
-            let displaced_physics = Point3::from(v.coords + inward * state.inset_m);
+        .zip(proxy.vertex_radial_directions.iter())
+        .map(|(v, r)| {
+            let displaced_physics = Point3::from(v.coords - r * state.inset_m);
             Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
         })
         .collect();
@@ -959,7 +1059,7 @@ fn run_render_app(
     // dialed clearance and renders the proxy's edges as gizmo
     // lines. One-time cost at startup; ~5–10 s on the iter-1
     // 3.3 M-face fixture, sub-second on small inputs.
-    let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh);
+    let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh, &centerline_points);
     let outer_envelope = OuterEnvelopeState::default_for_scan();
     let cavity = CavityState::default_for_scan();
 
@@ -1201,9 +1301,11 @@ another_future_field = "foo"
     // ----- Slice 4 v1 — cavity state -------------------------------
 
     #[test]
-    fn cavity_default_inset_is_zero_mm() {
+    fn cavity_default_inset_is_three_mm() {
+        // 3 mm = minimum-acceptable buildable design (≥ Ecoflex's
+        // ~2 mm castability threshold + ~10 % radial pre-strain).
         let state = CavityState::default_for_scan();
-        assert!(approx_eq(state.inset_m, 0.0, 1e-12));
+        assert!(approx_eq(state.inset_m, 0.003, 1e-12));
     }
 
     #[test]
@@ -1242,44 +1344,24 @@ another_future_field = "foo"
         // Unit cube fixture has 12 faces; with ENVELOPE_PROXY_TARGET_FACES
         // = 1500 the simplify_decoder skips decimation (already
         // under target). Proxy should match input face count, have
-        // unit-length normals, and expose 18 unique edges (12 faces
+        // unit-length radials, and expose 18 unique edges (12 faces
         // × 3 directed edges, deduplicated by sorted vertex-pair).
         let mesh = unit_cube_mesh();
-        let proxy = compute_envelope_proxy_mesh(&mesh);
+        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
         assert_eq!(proxy.original_face_count, 12);
         // After welding ±0.05 cube vertices match exactly; 8 shared.
         assert_eq!(proxy.vertices.len(), 8);
-        assert_eq!(proxy.vertex_normals.len(), proxy.vertices.len());
+        assert_eq!(proxy.vertex_radial_directions.len(), proxy.vertices.len());
         // Cube edge count: 12 (one per cube edge). Each cube edge is
         // shared by exactly 2 triangulated faces → dedup leaves 12
         // unique edges, plus the 6 cube-face diagonals from the
         // 2-triangle-per-face winding (one diagonal each) = 18.
         assert_eq!(proxy.edges.len(), 18);
-        for n in &proxy.vertex_normals {
+        for r in &proxy.vertex_radial_directions {
             assert!(
-                approx_eq(n.norm(), 1.0, 1e-9),
-                "vertex normal not unit-length: |n| = {}",
-                n.norm()
-            );
-        }
-    }
-
-    #[test]
-    fn envelope_proxy_unit_cube_normals_point_outward_from_origin() {
-        // Cube vertices are at corners ±0.05; outward normal at
-        // each vertex should point AWAY from the origin (each
-        // corner's outward normal lies in the same octant as the
-        // vertex). Robust check: vertex.coords · normal > 0 at
-        // every vertex.
-        let mesh = unit_cube_mesh();
-        let proxy = compute_envelope_proxy_mesh(&mesh);
-        for (v, n) in proxy.vertices.iter().zip(proxy.vertex_normals.iter()) {
-            let dot = v.coords.dot(n);
-            assert!(
-                dot > 0.0,
-                "normal at vertex {:?} points inward (v·n = {})",
-                v.coords,
-                dot
+                approx_eq(r.norm(), 1.0, 1e-9),
+                "radial not unit-length: |r| = {}",
+                r.norm()
             );
         }
     }
@@ -1290,7 +1372,7 @@ another_future_field = "foo"
         // unique. Verifies the HashSet-based dedup + sorted-pair
         // canonicalization in compute_envelope_proxy_mesh.
         let mesh = unit_cube_mesh();
-        let proxy = compute_envelope_proxy_mesh(&mesh);
+        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
         let mut seen = HashSet::new();
         for edge in &proxy.edges {
             assert!(
@@ -1311,11 +1393,63 @@ another_future_field = "foo"
     #[test]
     fn envelope_proxy_empty_mesh_yields_empty_proxy() {
         let mesh = IndexedMesh::new();
-        let proxy = compute_envelope_proxy_mesh(&mesh);
+        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
         assert_eq!(proxy.original_face_count, 0);
         assert!(proxy.vertices.is_empty());
-        assert!(proxy.vertex_normals.is_empty());
+        assert!(proxy.vertex_radial_directions.is_empty());
         assert!(proxy.edges.is_empty());
+    }
+
+    #[test]
+    fn envelope_proxy_radial_directions_perpendicular_to_centerline_tangent() {
+        // Cube fixture with a Z-aligned centerline. For every proxy
+        // vertex, the radial direction must be perpendicular to the
+        // local tangent (which is +Z everywhere on the straight Z
+        // centerline). Validates that the projection step strips out
+        // the axial component cleanly.
+        let mesh = unit_cube_mesh();
+        let centerline = vec![
+            Point3::new(0.0, 0.0, -0.05),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+        ];
+        let proxy = compute_envelope_proxy_mesh(&mesh, &centerline);
+        let tangent = Vector3::new(0.0, 0.0, 1.0);
+        for r in &proxy.vertex_radial_directions {
+            assert!(
+                r.dot(&tangent).abs() < 1e-9,
+                "radial direction {:?} is not perpendicular to +Z tangent",
+                r
+            );
+            // Radial directions must be unit length on every path
+            // (primary horizontal projection, Z-stripped normal
+            // fallback, or +X arbitrary default).
+            assert!(
+                (r.norm() - 1.0).abs() < 1e-9,
+                "radial direction {:?} is not unit length",
+                r
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_proxy_no_centerline_yields_horizontal_radials() {
+        // Without a centerline (< 2 points), the radial directions
+        // are still purely horizontal — derived from the per-vertex
+        // normals with Z stripped + renormalized. Pinning this
+        // guarantees no axial Z bleeds into displacement regardless
+        // of centerline presence.
+        let mesh = unit_cube_mesh();
+        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
+        assert_eq!(proxy.vertex_radial_directions.len(), proxy.vertices.len());
+        for r in &proxy.vertex_radial_directions {
+            assert!(r.z.abs() < 1e-9, "radial {:?} has nonzero Z component", r);
+            assert!(
+                (r.norm() - 1.0).abs() < 1e-9,
+                "radial {:?} not unit length",
+                r
+            );
+        }
     }
 
     /// `Aabb` re-export from `mesh_types` (transitive from
