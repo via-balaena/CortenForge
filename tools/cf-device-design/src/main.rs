@@ -4,15 +4,19 @@
 //! Slices shipped:
 //! - Slice 2: crate scaffold + STL/prep load + centerline overlay +
 //!   Scan Info panel.
-//! - Slice 3: Outer Envelope panel + curve-following wireframe overlay
-//!   (radius slider, parallel-transport bases at each centerline point,
-//!   gizmo rings + longitudinal lines).
+//! - Slice 3: decimated scan proxy (`EnvelopeProxyMesh`) +
+//!   per-vertex radial directions.
+//! - Slice 4: Cavity panel — scan-derived inner void, dialed inward
+//!   by a uniform inset.
+//! - Slice 5: Layers panel — 1–6 concentric silicone layers, each
+//!   with its own thickness slider + material + visibility toggle.
+//!   Surfaces render as solid depth-tested Bevy meshes (cavity + one
+//!   per layer); the outermost layer's outer surface IS the device's
+//!   outer skin (no separate "outer envelope" concept).
 //!
-//! Pending slices: Cavity / Layers / Features / Validations / Health /
-//! Save / Open. See `docs/ENGINEERING_SUITE_DESIGN.md` for the full
-//! ladder.
+//! Pending slices: Validations / Features → Texture / Save / Open.
+//! See `docs/ENGINEERING_SUITE_DESIGN.md` for the full ladder.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -92,13 +96,12 @@ struct ScanInfo {
     face_count: usize,
     /// Raw AABB extents in millimeters (workshop convention).
     aabb_mm_extents: [f64; 3],
-    /// Bbox diagonal in meters — used by the Outer Envelope panel
-    /// (slice 3) to size the default radius slider's range.
+    /// Bbox diagonal in meters — shown in the Scan Info panel + the
+    /// startup log as a quick size sanity check.
     bbox_diagonal_m: f64,
     /// Centerline polyline length in physics meters (sum of
     /// segment distances). Zero if the centerline is absent or
-    /// empty. Used by the Cavity panel (slice 4) to bound the
-    /// insertable-length slider.
+    /// empty. Shown in the Scan Info panel.
     centerline_arc_length_m: f64,
     /// Centerline point count (display-only). Zero if the
     /// centerline is absent.
@@ -123,21 +126,22 @@ struct Centerline {
 /// fit, too much = silicone tears.
 ///
 /// Slice 4 v1: a single uniform inset along the entire scan proxy.
-/// Slice 4 polish 2 will add the insertable-length clip
+/// A later slice may add the insertable-length clip
 /// (`docs/ENGINEERING_SUITE_DESIGN.md` § 4) so the cavity covers
 /// only the inserted portion, with a tangent-perpendicular end
 /// cap.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct CavityState {
-    /// Distance (meters) by which the cavity wireframe sits inside
+    /// Distance (meters) by which the cavity surface sits inside
     /// the scan surface, measured along the per-vertex radial
-    /// direction (`EnvelopeProxyMesh::vertex_radial_directions`,
-    /// horizontal, pointing away from the centerline). The cavity
-    /// displacement is `-radial * inset_m` per vertex — purely
-    /// horizontal motion toward the centerline, no axial Z drift.
+    /// direction ([`EnvelopeProxyMesh::vertex_radial_directions`]).
+    /// The cavity mesh displaces each proxy vertex by `-radial *
+    /// inset_m`. The radial is horizontal for below-/alongside-
+    /// centerline vertices and full-3D for the dome — see the
+    /// field docs on [`EnvelopeProxyMesh`].
     inset_m: f64,
-    /// Whether the cavity wireframe is drawn this frame. User
-    /// toggle in the panel.
+    /// Whether the cavity mesh entity is drawn this frame. User
+    /// toggle in the Cavity panel.
     visible: bool,
 }
 
@@ -187,31 +191,28 @@ const LAYER_COUNT_MAX: usize = 6;
 /// One concentric silicone layer in the device wall. Layers are
 /// ordered innermost-first: `layers[0]`'s inner surface = the
 /// cavity surface, `layers[i]`'s outer surface = `layers[i+1]`'s
-/// inner surface, `layers[N-1]`'s outer surface = the outer
-/// envelope.
+/// inner surface, `layers[N-1]`'s outer surface = the device's
+/// outer skin.
 ///
-/// Per the engineering-suite design (§ 5): all layers except the
-/// last carry a user-dialed `thickness_m`; the last layer's
-/// thickness is DERIVED from the geometry (outer envelope position
-/// minus the cumulative sum of preceding thicknesses) so the
-/// outermost surface always coincides with the outer envelope. The
-/// user only picks a *material* for the last layer.
+/// Every layer carries its own user-dialed `thickness_m` (slice 5
+/// polish 3 pivot — there is no derived "last layer"). The device
+/// wall total is the sum of layer thicknesses; the outer skin sits
+/// at `sum(thickness) - cavity.inset_m` radially from the scan.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LayerSpec {
-    /// Radial thickness (meters). For all layers except the last,
-    /// this is user-dialed via a panel slider. For the last layer
-    /// this field is ignored — the rendered thickness is whatever
-    /// remains of `(clearance + inset)` after the preceding layers
-    /// consume their share.
+    /// Radial thickness (meters), user-dialed via a panel slider.
+    /// For layer 0 this is the distance from the cavity surface to
+    /// layer 0's outer surface; for layer `i > 0` it's the Δ from
+    /// the prior layer's outer surface.
     thickness_m: f64,
     /// Smooth-On product anchor key (from [`LAYER_MATERIALS`]).
     /// `'static` lifetime because the entries are compile-time
     /// constants.
     material_anchor_key: &'static str,
     /// Whether this layer's outer-surface mesh is drawn this frame.
-    /// Per-layer visibility (slice 5 polish 5) replaces a single
-    /// global Layers toggle so the user can isolate any single
-    /// layer for inspection.
+    /// Per-layer visibility (slice 5 polish 5) — each layer toggles
+    /// independently so the user can isolate any single layer for
+    /// inspection.
     visible: bool,
 }
 
@@ -225,12 +226,15 @@ impl LayerSpec {
 }
 
 /// Bevy resource carrying the ordered layer stack. Default state
-/// is a single Ecoflex 00-30 layer that consumes the full
-/// (clearance + inset) wall — simplest buildable configuration. The
-/// user adds layers + dials thickness via the Layers panel.
+/// is a single Ecoflex 00-30 layer — the simplest buildable
+/// configuration. The user adds layers + dials each thickness via
+/// the Layers panel; the device wall total is the sum of layer
+/// thicknesses.
 ///
-/// Invariant: `1 <= layers.len() <= LAYER_COUNT_MAX`. Add/remove
-/// operations preserve this.
+/// Invariant: `1 <= layers.len() <= LAYER_COUNT_MAX`. The panel's
+/// add/remove controls preserve this (the "Remove layer" button is
+/// hidden when only one layer remains; "+ Add layer" is hidden at
+/// the cap).
 #[derive(Resource, Debug, Clone, PartialEq)]
 struct LayersState {
     layers: Vec<LayerSpec>,
@@ -268,7 +272,7 @@ struct EnvelopeProxyMesh {
     /// Per-vertex unit displacement direction. Used by both the
     /// cavity (`-radial * inset`) and per-layer (`+radial * offset`)
     /// surface meshes. Split by Z-region (computed in
-    /// [`compute_envelope_proxy_mesh`] step 6):
+    /// [`compute_envelope_proxy_mesh`] step 5):
     ///
     /// - Vertices BELOW the centerline's Z-range (cleaned-cap rim +
     ///   the bottom gap): HORIZONTAL-only radial — the Z component
@@ -284,27 +288,21 @@ struct EnvelopeProxyMesh {
     /// point): per-vertex normal, Z-stripped for below-centerline
     /// vertices; finally `(1, 0, 0)` if even that is degenerate.
     vertex_radial_directions: Vec<Vector3<f64>>,
-    /// Deduplicated edges. Each `[a, b]` has `a < b`. One edge per
-    /// unique (vertex, vertex) pair regardless of how many faces
-    /// share it.
-    edges: Vec<[u32; 2]>,
     /// Triangle face indices (post-decimation). Each face is three
-    /// `u32` indices into `vertices`. Stored so the mesh-based
-    /// surface renderers can build Bevy `Mesh` assets from the
-    /// displaced vertex positions + this connectivity (slice 5
-    /// polish 2 — depth-tested solid surfaces replacing the
-    /// gizmo-line wireframes).
+    /// `u32` indices into `vertices`. The cavity + per-layer
+    /// surface renderers build Bevy `Mesh` assets from the
+    /// displaced vertex positions + this connectivity.
     faces: Vec<[u32; 3]>,
     /// Original face count (pre-decimation) — surfaced in the panel
     /// so the user knows the proxy is approximate.
     original_face_count: usize,
 }
 
-/// Target face count after decimation for the offset-surface
-/// wireframe. 1500 faces is dense enough to show the scan's gross
-/// shape (cylinder + dome + cleaned cap), sparse enough that Bevy
-/// gizmos render fluidly + the user can see THROUGH the wireframe
-/// to the scan.
+/// Target face count after decimation for the shared scan proxy.
+/// 1500 faces is dense enough to show the scan's gross shape
+/// (cylinder + dome + cleaned cap), sparse enough that the cavity
+/// and per-layer surface meshes can be regenerated on every slider
+/// tick without a frame hitch.
 const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld.
@@ -467,10 +465,9 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
 
 /// Decimate the cleaned scan to a ~`ENVELOPE_PROXY_TARGET_FACES`-
-/// face proxy mesh, compute per-vertex outward normals, and extract
-/// deduplicated edges. Returns the proxy struct shared by the
-/// cavity + per-layer mesh-update systems for per-frame mesh
-/// regeneration.
+/// face proxy mesh + compute the per-vertex radial directions.
+/// Returns the proxy struct shared by the cavity + per-layer
+/// mesh-update systems for per-frame mesh regeneration.
 ///
 /// Pipeline:
 /// 1. Weld duplicated vertices (STL load produces 3-per-triangle
@@ -484,12 +481,13 @@ const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
 ///    regular collapse algorithm).
 /// 3. Strip unreferenced vertices left over from the decimation.
 /// 4. Compute face normals from triangle CCW order, then per-vertex
-///    normals as area-weighted averages of incident face normals.
-/// 5. Extract unique edges (each face contributes 3 edges; dedup
-///    by sorted vertex-index pairs).
+///    normals as area-weighted averages of incident face normals
+///    (used only as the degenerate fallback for radial directions).
+/// 5. Compute per-vertex radial directions, split by Z-region (see
+///    the `vertex_radial_directions` field docs).
 ///
-/// Cost: O(N_orig_faces) for weld + meshopt + O(N_decimated × 3) for
-/// normals + edges. For the iter-1 fixture (3.3 M cleaned faces →
+/// Cost: O(N_orig_faces) for weld + meshopt + O(N_decimated) for
+/// normals + radials. For the iter-1 fixture (3.3 M cleaned faces →
 /// 1500 proxy faces) this runs in ~5–10 s at startup; one-time.
 fn compute_envelope_proxy_mesh(
     scan_mesh: &IndexedMesh,
@@ -578,19 +576,7 @@ fn compute_envelope_proxy_mesh(
         }
     }
 
-    // Step 5: deduplicated edges. Each face contributes 3 directed
-    // edges; we collect them as sorted (min, max) tuples in a
-    // HashSet to dedup, then materialize as a Vec.
-    let mut edge_set: HashSet<(u32, u32)> = HashSet::new();
-    for face in &proxy.faces {
-        for (a, b) in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
-            let edge = if a < b { (a, b) } else { (b, a) };
-            edge_set.insert(edge);
-        }
-    }
-    let edges: Vec<[u32; 2]> = edge_set.into_iter().map(|(a, b)| [a, b]).collect();
-
-    // Step 6: per-vertex radial directions. Split by Z-region so
+    // Step 5: per-vertex radial directions. Split by Z-region so
     // the bottom rim stays pinned while the dome grows in 3D:
     //
     // - Vertices BELOW the centerline's Z-range (the cleaned-cap
@@ -673,7 +659,6 @@ fn compute_envelope_proxy_mesh(
     EnvelopeProxyMesh {
         vertices: proxy.vertices,
         vertex_radial_directions,
-        edges,
         faces: proxy.faces,
         original_face_count,
     }
@@ -698,14 +683,14 @@ fn nearest_centerline_index(v: &Point3<f64>, centerline: &[Point3<f64>]) -> usiz
 // Mesh-based surface rendering (slice 5 polish 2)
 // ============================================================
 //
-// Each surface (outer envelope, cavity, per-layer boundary) is
-// a Bevy entity with a triangle Mesh asset + opaque
-// StandardMaterial. Depth-test does the right thing — near
-// fragments occlude far fragments — so the user no longer sees
-// the far side of a wireframe rendering through the near side.
+// Each surface (the cavity + one per layer) is a Bevy entity with
+// a triangle Mesh asset + opaque StandardMaterial. Depth-test does
+// the right thing — near fragments occlude far fragments — so the
+// user no longer sees the far side rendering through the near side
+// (the gizmo-wireframe artifact that slice 5 polish 2 replaced).
 //
 // The mesh asset is regenerated when its source state changes
-// (Changed<> filter on the relevant resource). Re-meshing one
+// (`is_changed()` check on the relevant resource). Re-meshing one
 // surface is sub-millisecond on the iter-1 decimated proxy
 // (1500 faces).
 
@@ -714,13 +699,13 @@ fn nearest_centerline_index(v: &Point3<f64>, centerline: &[Point3<f64>]) -> usiz
 #[derive(Component)]
 struct CavityEntity;
 
-/// Marker component for a per-layer-boundary mesh entity. Bevy
-/// spawns / despawns one entity per intermediate boundary
-/// whenever the layer count changes. The boundary index isn't
-/// stored on the component because the despawn-all-then-respawn
-/// update pattern doesn't need it.
+/// Marker component for a per-layer outer-surface mesh entity.
+/// Bevy spawns / despawns one entity per layer whenever the layer
+/// stack changes. The layer index isn't stored on the component
+/// because the despawn-all-then-respawn update pattern doesn't
+/// need it.
 #[derive(Component)]
-struct LayerBoundaryEntity;
+struct LayerSurfaceEntity;
 
 /// Build a Bevy `Mesh` from the proxy mesh's connectivity, with
 /// each vertex displaced along its radial direction by `offset_m`
@@ -765,9 +750,9 @@ fn build_displaced_proxy_mesh(
     mesh
 }
 
-/// Palette for the per-layer boundary mesh entities. Repeats if
-/// the layer count exceeds the palette length.
-const LAYER_BOUNDARY_PALETTE: &[(f32, f32, f32)] = &[
+/// Palette for the per-layer outer-surface mesh entities. Repeats
+/// if the layer count exceeds the palette length.
+const LAYER_SURFACE_PALETTE: &[(f32, f32, f32)] = &[
     (0.95, 0.80, 0.35), // amber
     (0.45, 0.70, 0.95), // sky blue
     (0.75, 0.55, 0.95), // lavender
@@ -843,8 +828,8 @@ fn update_cavity_mesh(
 /// entity per layer, each at its OUTER-surface offset = cumulative
 /// `sum(thickness[0..=i]) - cavity.inset_m` from the scan surface.
 /// Layer N-1's outer surface is the device's outer skin (no
-/// separate "outer envelope" concept). Visibility tracks
-/// `LayersState.visible`.
+/// separate "outer envelope" concept). Each entity's visibility
+/// tracks its own `LayerSpec::visible` flag.
 ///
 /// Despawn-and-respawn on any state change — layer count is small
 /// (≤ `LAYER_COUNT_MAX = 6`) so the cost is negligible.
@@ -858,7 +843,7 @@ fn update_layer_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    existing: Query<Entity, With<LayerBoundaryEntity>>,
+    existing: Query<Entity, With<LayerSurfaceEntity>>,
 ) {
     if !layers.is_changed() && !cavity.is_changed() {
         return;
@@ -879,7 +864,7 @@ fn update_layer_meshes(
             *up,
             render_scale.0,
         ));
-        let (r, g, b) = LAYER_BOUNDARY_PALETTE[i % LAYER_BOUNDARY_PALETTE.len()];
+        let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
         let material = materials.add(StandardMaterial {
             base_color: Color::srgb(r, g, b),
             double_sided: true,
@@ -895,7 +880,7 @@ fn update_layer_meshes(
             Mesh3d(mesh),
             MeshMaterial3d(material),
             visibility,
-            LayerBoundaryEntity,
+            LayerSurfaceEntity,
         ));
     }
 }
@@ -994,15 +979,13 @@ fn draw_reference_overlays(
     }
 }
 
-/// Number of segments around each cross-section ring of the
-/// Render the Outer Envelope egui section. Slice 3 polish 10 pivot:
-/// Render the Cavity egui section (slice 4 v1). The cavity is the
-/// scan-derived inner void the appendage slides into; its surface
-/// sits `inset_m` inside the scan along per-vertex normals so the
-/// silicone shell between cavity and scan stretches over the
+/// Render the Cavity egui section. The cavity is the scan-derived
+/// inner void the appendage slides into; its surface sits `inset_m`
+/// inside the scan along the per-vertex radial direction, so the
+/// silicone skin between the cavity and the scan stretches over the
 /// appendage for a snug fit.
 ///
-/// Slice 4 v1 ships uniform-inset only. Polish 2 will add
+/// Slice 4 v1 ships uniform-inset only. A later slice may add the
 /// insertable-length clip + tangent-perpendicular end cap.
 fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
     egui::CollapsingHeader::new("Cavity")
@@ -1023,28 +1006,21 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
         });
 }
 
-/// Render the Layers egui section (slice 5 v1). Surfaces the
-/// ordered layer stack innermost-first: each non-final layer gets
-/// a thickness slider + material dropdown + remove button; the
-/// final layer gets a material dropdown only (its thickness is
-/// derived from `clearance + inset - sum(preceding)`).
+/// Render the Layers egui section. Surfaces the ordered layer
+/// stack innermost-first. Every layer carries its own controls:
+/// a visibility checkbox, a thickness slider, a material dropdown,
+/// and a remove button (hidden when only one layer remains). A
+/// "+ Add layer" button appends a new outermost layer up to
+/// [`LAYER_COUNT_MAX`].
 ///
-/// Every layer carries its own thickness slider (slice 5 polish 3:
-/// post-mesh-rendering pivot). The sum of layer thicknesses minus
-/// the cavity inset DEFINES the outer envelope clearance — the
-/// outer envelope is just the outermost layer's outer surface, not
-/// an independent design parameter.
+/// The device wall total is the sum of layer thicknesses; the
+/// outer skin sits at `sum(thickness) - cavity.inset_m` radially
+/// from the scan. Those derived figures are shown as read-only
+/// labels at the bottom of the section.
 ///
-/// The layer mesh-update system regenerates the per-layer mesh
-/// entities (one per layer, each at its outer-surface offset)
-/// when `LayersState` or `CavityState` mutates — no separate
-/// outer-envelope concept.
-fn render_layers_section(
-    ui: &mut egui::Ui,
-    layers: &mut LayersState,
-    cavity: &CavityState,
-    proxy: &EnvelopeProxyMesh,
-) {
+/// [`update_layer_meshes`] regenerates the per-layer surface mesh
+/// entities whenever `LayersState` or `CavityState` mutates.
+fn render_layers_section(ui: &mut egui::Ui, layers: &mut LayersState, cavity: &CavityState) {
     egui::CollapsingHeader::new("Layers")
         .default_open(true)
         .show(ui, |ui| {
@@ -1117,18 +1093,13 @@ fn render_layers_section(
                 "  cavity: -{:.1} mm from scan",
                 cavity.inset_m * 1000.0,
             ));
-            // Suppress unused-param warning when the proxy info is
-            // empty (compiles cleanly; no panel fields use proxy
-            // yet, but it stays in the signature for future readouts
-            // like per-layer pour volume).
-            let _ = proxy;
         });
 }
 
 /// Human-readable position label for a layer in the stack
-/// ("innermost", "middle 1", "outermost", etc.). The innermost
-/// layer touches the cavity surface; the outermost touches the
-/// outer envelope.
+/// ("single", "innermost", "middle", "outermost"). The innermost
+/// layer touches the cavity surface; the outermost layer's outer
+/// surface is the device's outer skin.
 fn layer_position_label(i: usize, n: usize) -> &'static str {
     if n == 1 {
         "single"
@@ -1184,13 +1155,13 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 }
 
 /// Right-side egui sidebar carrying the design-suite panels.
-/// Renders Scan Info + Outer Envelope + Cavity as of slice 4 v1;
-/// remaining stubs surface the planned panel order.
+/// Renders Scan Info + Cavity + Layers as of slice 5; remaining
+/// stubs surface the planned panel order (Validations / Features /
+/// Save-Open).
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
-    proxy: Res<EnvelopeProxyMesh>,
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
@@ -1205,7 +1176,7 @@ fn device_design_panel(
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info, &mut scan_visible);
                     render_cavity_section(ui, &mut cavity);
-                    render_layers_section(ui, &mut layers, &cavity, &proxy);
+                    render_layers_section(ui, &mut layers, &cavity);
                     render_panel_stubs(ui);
                 });
         });
@@ -1286,16 +1257,15 @@ fn run_render_app(
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
-    // Decimate the cleaned scan to a proxy mesh (~1500 faces) +
-    // per-vertex outward normals + unique edges. Every frame the
-    // outer-envelope wireframe displaces each vertex by the user-
-    // dialed clearance and renders the proxy's edges as gizmo
-    // lines. One-time cost at startup; ~5–10 s on the iter-1
-    // 3.3 M-face fixture, sub-second on small inputs.
+    // Decimate the cleaned scan to a shared proxy mesh (~1500
+    // faces) + per-vertex radial directions. The cavity + per-layer
+    // surface meshes are regenerated from this proxy on every
+    // slider tick. One-time decimation cost at startup; ~5–10 s on
+    // the iter-1 3.3 M-face fixture, sub-second on small inputs.
     let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh, &centerline_points);
     println!(
-        "envelope proxy: {} edges, {} vertices (decimated from {} faces)",
-        envelope_proxy.edges.len(),
+        "envelope proxy: {} faces, {} vertices (decimated from {} faces)",
+        envelope_proxy.faces.len(),
         envelope_proxy.vertices.len(),
         envelope_proxy.original_face_count,
     );
@@ -1565,9 +1535,9 @@ another_future_field = "foo"
     #[test]
     fn layer_count_max_is_six() {
         // Workshop-cap pin: more than 6 layers makes the panel
-        // unwieldy and the per-frame N-1 boundary-wireframe draw
-        // cost climb. Pinning so a future "let me have 100 layers"
-        // accident is caught.
+        // unwieldy and the per-frame per-layer surface-mesh
+        // regeneration cost climb. Pinning so a future "let me have
+        // 100 layers" accident is caught.
         assert_eq!(LAYER_COUNT_MAX, 6);
     }
 
@@ -1607,62 +1577,34 @@ another_future_field = "foo"
 
     #[test]
     fn default_scan_mesh_visible() {
-        // Same posture as the wireframe-visibility defaults: scan
-        // is shown by default; user can hide via the Scan Info
-        // panel checkbox to inspect the cavity wireframe (which
-        // sits INSIDE the scan and is occluded by it).
+        // Sanity pin: the scan mesh is shown by default. The user
+        // can hide it via the Scan Info panel checkbox to inspect
+        // the cavity, which sits INSIDE the scan and is occluded by
+        // it when both are drawn.
         assert!(ScanMeshVisible::default().0);
     }
 
-    // ----- Slice 3 polish 10 — offset-surface proxy mesh ------------
+    // ----- Slice 3 — decimated scan proxy --------------------------
 
     #[test]
-    fn envelope_proxy_unit_cube_yields_decimated_mesh_with_normals_and_edges() {
-        // Unit cube fixture has 12 faces; with ENVELOPE_PROXY_TARGET_FACES
-        // = 1500 the simplify_decoder skips decimation (already
-        // under target). Proxy should match input face count, have
-        // unit-length radials, and expose 18 unique edges (12 faces
-        // × 3 directed edges, deduplicated by sorted vertex-pair).
+    fn envelope_proxy_unit_cube_yields_decimated_mesh_with_radials() {
+        // Unit cube fixture has 12 faces; with
+        // ENVELOPE_PROXY_TARGET_FACES = 1500 the sloppy decimator
+        // skips decimation (already under target). Proxy should
+        // match the input face count, weld to 8 shared vertices,
+        // and expose one unit-length radial per vertex.
         let mesh = unit_cube_mesh();
         let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
         assert_eq!(proxy.original_face_count, 12);
+        assert_eq!(proxy.faces.len(), 12);
         // After welding ±0.05 cube vertices match exactly; 8 shared.
         assert_eq!(proxy.vertices.len(), 8);
         assert_eq!(proxy.vertex_radial_directions.len(), proxy.vertices.len());
-        // Cube edge count: 12 (one per cube edge). Each cube edge is
-        // shared by exactly 2 triangulated faces → dedup leaves 12
-        // unique edges, plus the 6 cube-face diagonals from the
-        // 2-triangle-per-face winding (one diagonal each) = 18.
-        assert_eq!(proxy.edges.len(), 18);
         for r in &proxy.vertex_radial_directions {
             assert!(
                 approx_eq(r.norm(), 1.0, 1e-9),
                 "radial not unit-length: |r| = {}",
                 r.norm()
-            );
-        }
-    }
-
-    #[test]
-    fn envelope_proxy_edges_are_sorted_and_unique() {
-        // Each edge is stored as [a, b] with a < b; the full set is
-        // unique. Verifies the HashSet-based dedup + sorted-pair
-        // canonicalization in compute_envelope_proxy_mesh.
-        let mesh = unit_cube_mesh();
-        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
-        let mut seen = HashSet::new();
-        for edge in &proxy.edges {
-            assert!(
-                edge[0] < edge[1],
-                "edge [{}, {}] not sorted",
-                edge[0],
-                edge[1]
-            );
-            assert!(
-                seen.insert((edge[0], edge[1])),
-                "edge ({}, {}) duplicated",
-                edge[0],
-                edge[1]
             );
         }
     }
@@ -1674,7 +1616,7 @@ another_future_field = "foo"
         assert_eq!(proxy.original_face_count, 0);
         assert!(proxy.vertices.is_empty());
         assert!(proxy.vertex_radial_directions.is_empty());
-        assert!(proxy.edges.is_empty());
+        assert!(proxy.faces.is_empty());
     }
 
     #[test]
@@ -1768,8 +1710,8 @@ another_future_field = "foo"
 
     /// `Aabb` re-export from `mesh_types` (transitive from
     /// `cf_geometry`) is the canonical aabb type the suite consumes
-    /// for scan AABB readouts + outer-envelope sizing in slice 3.
-    /// Pin compile-time visibility so a future workspace dep shuffle
+    /// for the scan AABB readouts + render-scale sizing. Pin
+    /// compile-time visibility so a future workspace dep shuffle
     /// doesn't silently break the loader.
     #[test]
     fn aabb_canonical_type_in_scope() {
