@@ -47,11 +47,15 @@ const SPIKE_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 /// Decimate the cleaned scan to roughly `target_faces` triangles for
 /// SDF construction.
 ///
-/// Unlike `main.rs`'s `compute_envelope_proxy_mesh` — which decimates
-/// hard (~1500 faces) for *viewport* speed — the SDF source wants the
-/// *highest* face count that still keeps `SignedDistanceField`'s
-/// brute-force O(faces) queries tractable across a whole BCC lattice.
-/// [`run_sdf_bridge_spike`] sweeps `target_faces` to find that knee.
+/// Separate from `main.rs`'s `compute_envelope_proxy_mesh` (which
+/// decimates hard — ~1500 faces — for *viewport* speed): here the
+/// face count trades `SignedDistanceField`'s brute-force O(faces)
+/// query cost — paid once per BCC lattice vertex — against
+/// isosurface-landing fidelity. [`run_sdf_bridge_spike`] sweeps
+/// `target_faces` so 7.1 can pick that tradeoff point from measured
+/// data; the 7.0 spike found tet count + element quality are governed
+/// by the BCC `cell_size`, *not* the SDF face count, so a low
+/// resolution is preferred (see the slice-7 ship log).
 ///
 /// Pipeline mirrors the proxy builder: weld unshared STL vertices,
 /// `simplify_sloppy_decoder` (topology-non-preserving — required for
