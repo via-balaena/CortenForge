@@ -22,10 +22,10 @@
 //!   slacker`), and the Layers panel reads back the effective Shore
 //!   hardness, tack, and the mix in grams.
 //!
-//! In progress: Insertion Sim (FEM, slice 7) — sub-commit 7.0 seeds
-//! `mod insertion_sim` with the Route-A SDF bridge spike (cleaned
-//! scan → `mesh_sdf` → `cf_design::Solid` CSG → `SdfMeshedTetMesh`),
-//! geometry-only, no solve yet.
+//! In progress: Insertion Sim (FEM, slice 7) — `mod insertion_sim`
+//! holds the Route-A SDF bridge: 7.0 the measurement spike, 7.1 the
+//! geometry + per-layer Yeoh material builder
+//! (`build_insertion_geometry`). Geometry only — no solve yet.
 //!
 //! Pending slices: Insertion Sim solve + UI (slice 7.2+) / Save /
 //! Open (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the
@@ -51,12 +51,12 @@ use serde::Deserialize;
 
 /// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
 ///
-/// `#[cfg(test)]`-gated at sub-commit 7.0: the module is a
-/// measurement spike (cleaned scan → `mesh_sdf` → `cf_design::Solid`
-/// CSG → `SdfMeshedTetMesh`), exercised only by its `--ignored`
-/// integration test — nothing in the shipping binary calls it yet.
-/// Sub-commit 7.1 removes the gate when it wires the geometry builder
-/// into the app. See the module docs.
+/// `#[cfg(test)]`-gated through sub-commits 7.0–7.3: 7.0 seeded the
+/// SDF-bridge spike, 7.1 the geometry + per-layer Yeoh material
+/// builder, 7.2–7.3 the solve. Nothing in the shipping binary calls
+/// it yet — it is exercised by `--ignored` integration tests. The
+/// gate comes off at 7.4, when the Insertion Sim panel wires it in.
+/// See the module docs.
 #[cfg(test)]
 mod insertion_sim;
 

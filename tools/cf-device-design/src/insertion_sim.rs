@@ -7,19 +7,25 @@
 //! Route A (settled with the user before 7.0): keep the decimated mesh
 //! proxy for the live viewport, but at simulate-time re-derive geometry
 //! from a `mesh_sdf` SDF of the *original cleaned scan* — an
-//! `outer.subtract(scan)` device-wall body with `outer =
-//! scan.offset(t)` — mirroring the validated sim-soft rows 21–25
-//! layered-sleeve path. This module is geometry-only at 7.0: no
-//! materials, no intruder, no solve (those land at 7.1–7.3).
+//! `outer.subtract(cavity)` device-wall body offset from that SDF —
+//! mirroring the validated sim-soft rows 21–25 layered-sleeve path.
 //!
-//! The spike's job is to **measure**, not to ship a feature: does
-//! `mesh_sdf` on the real iter-1 scan produce a usable tet mesh in a
-//! tractable time? `SignedDistanceField::distance` is brute-force
-//! O(faces), and `SdfMeshedTetMesh::from_sdf` samples the SDF at every
-//! BCC lattice vertex — so the raw 3.34 M-face scan is a non-starter
-//! and the scan must be decimated first. [`run_sdf_bridge_spike`]
-//! sweeps decimation targets and reports timing + tet-mesh quality so
-//! 7.1 can pick a resolution from data, not a guess.
+//! - **7.0** seeded the module with the SDF-bridge *spike*,
+//!   [`run_sdf_bridge_spike`]: a measurement harness that proved
+//!   Route A end-to-end and characterized the decimation/timing
+//!   tradeoff. `SignedDistanceField::distance` is brute-force
+//!   O(faces) and the mesher samples the SDF at every BCC lattice
+//!   vertex, so the raw 3.34 M-face scan must be decimated — the
+//!   spike found a low target (~1.5–3k faces) is best.
+//! - **7.1** adds [`build_insertion_geometry`]: the real builder that
+//!   turns a [`SimDesign`] (cavity inset + layer stack) into the
+//!   device-wall [`SdfMeshedTetMesh`] with per-tet Yeoh materials,
+//!   plus the rigid intruder SDF.
+//!
+//! Still no solve — the Newton solve + quasi-static ramp land at
+//! 7.2–7.3, the UI at 7.4. The module is `#[cfg(test)]`-gated until
+//! 7.4 wires it into the app; for now it is exercised by `#[ignore]`d
+//! integration tests against the iter-1 scan.
 
 use std::time::Instant;
 
@@ -30,7 +36,14 @@ use mesh_sdf::SignedDistanceField;
 use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
 use nalgebra::{Point3, Vector3};
-use sim_soft::{Aabb3, Mesh, MeshingHints, SdfMeshedTetMesh, Vec3};
+use sim_soft::material::silicone_table::{
+    DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
+    ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
+};
+use sim_soft::{
+    Aabb3, ConstantField, Field, LayeredScalarField, MaterialField, Mesh, MeshingHints,
+    SdfMeshedTetMesh, SiliconeMaterial, Vec3, Yeoh,
+};
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
 /// `main.rs`'s `ENVELOPE_PROXY_WELD_EPSILON_M`. The cleaned scan's STL
@@ -280,6 +293,248 @@ fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1e3
 }
 
+// ── 7.1 — insertion geometry + per-layer Yeoh material ──────────────
+
+/// One concentric layer of the device wall, projected for the
+/// insertion sim: a radial thickness + a base-silicone anchor key.
+///
+/// The decimated form of `main.rs`'s `LayerSpec` — drops `visible` (a
+/// viewport concern) and `slacker_fraction`. **Slacker note:** the
+/// per-layer Slacker ratio (slice 6.5) softens the *effective* Shore
+/// hardness, which would shift the Yeoh `(μ, C₂, λ)` the sim uses;
+/// 7.1 sims the *base* anchor only. Folding Slacker into the sim
+/// modulus (via `SiliconeMaterial::from_effective_shore`) is a
+/// deferred refinement — tracked in the slice-7 memo.
+#[derive(Debug, Clone)]
+pub struct SimLayer {
+    /// Radial thickness (meters). Innermost-first ordering, same as
+    /// `LayerSpec`.
+    pub thickness_m: f64,
+    /// Smooth-On base-silicone anchor key — one of the eight in
+    /// `main.rs`'s `LAYER_MATERIALS` catalog.
+    pub anchor_key: String,
+}
+
+/// Device-design parameters the insertion sim consumes: the cavity
+/// inset + the ordered (innermost-first) layer stack. The decimated
+/// projection of `main.rs`'s `CavityState` + `LayersState`.
+#[derive(Debug, Clone)]
+pub struct SimDesign {
+    /// Distance (meters) the cavity surface sits *inside* the scan
+    /// surface — `CavityState::inset_m`. The cavity surface is at
+    /// scan-SDF offset `-cavity_inset_m`.
+    pub cavity_inset_m: f64,
+    /// Innermost-first layer stack. `layers[0]`'s inner surface is
+    /// the cavity surface; `layers[i]`'s outer surface is
+    /// `layers[i + 1]`'s inner surface.
+    pub layers: Vec<SimLayer>,
+}
+
+/// Resolve a `main.rs` `LAYER_MATERIALS` anchor key to the sim-soft
+/// [`SiliconeMaterial`] anchor it mirrors.
+///
+/// The eight keys are a closed catalog — an unrecognized key is a
+/// wiring bug, surfaced as an error rather than silently substituted.
+/// (`main.rs`'s `material_density` *does* fall back defensively, but
+/// a wrong *modulus* would quietly corrupt the sim, not just a mass
+/// readout — so the sim path fails loud instead.)
+fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
+    match anchor_key {
+        "ECOFLEX_00_10" => Ok(ECOFLEX_00_10),
+        "ECOFLEX_00_20" => Ok(ECOFLEX_00_20),
+        "ECOFLEX_00_30" => Ok(ECOFLEX_00_30),
+        "ECOFLEX_00_50" => Ok(ECOFLEX_00_50),
+        "DRAGON_SKIN_10A" => Ok(DRAGON_SKIN_10A),
+        "DRAGON_SKIN_15" => Ok(DRAGON_SKIN_15),
+        "DRAGON_SKIN_20A" => Ok(DRAGON_SKIN_20A),
+        "DRAGON_SKIN_30A" => Ok(DRAGON_SKIN_30A),
+        other => Err(anyhow!(
+            "unrecognized silicone anchor key {other:?} — not in the cf-device-design catalog"
+        )),
+    }
+}
+
+/// Per-scan-SDF offsets (meters) of the *internal* layer boundaries —
+/// one per adjacent layer pair, so `N` layers yield `N - 1`
+/// thresholds.
+///
+/// Boundary `i` (between layer `i` and layer `i + 1`) is layer `i`'s
+/// outer surface, at `sum(thickness[0..=i]) - cavity_inset_m`.
+/// Strictly increasing (thicknesses are positive), as
+/// [`LayeredScalarField::new`] requires. Empty for a single-layer
+/// design — the caller uses a [`ConstantField`] instead.
+fn layer_boundary_thresholds(design: &SimDesign) -> Vec<f64> {
+    let mut cumulative = 0.0;
+    design
+        .layers
+        .iter()
+        .take(design.layers.len().saturating_sub(1))
+        .map(|layer| {
+            cumulative += layer.thickness_m;
+            cumulative - design.cavity_inset_m
+        })
+        .collect()
+}
+
+/// Build one per-tet scalar parameter field (μ, C₂, or λ) over the
+/// layer stack, keyed on the scan SDF.
+///
+/// `thresholds` are the [`layer_boundary_thresholds`]; `values` is
+/// the per-layer parameter innermost-first, with
+/// `values.len() == thresholds.len() + 1`. For a single-layer design
+/// `thresholds` is empty — [`LayeredScalarField::new`] panics on
+/// empty thresholds, so that case uses a [`ConstantField`] of the
+/// lone value.
+fn layered_param_field(
+    scan_sdf: &SignedDistanceField,
+    thresholds: &[f64],
+    values: Vec<f64>,
+) -> Box<dyn Field<f64>> {
+    if thresholds.is_empty() {
+        // `values` is caller-guaranteed non-empty (≥ 1 layer); the
+        // `0.0` fallback is unreachable defensive code.
+        Box::new(ConstantField::new(values.first().copied().unwrap_or(0.0)))
+    } else {
+        Box::new(LayeredScalarField::new(
+            Box::new(scan_sdf.clone()),
+            thresholds.to_vec(),
+            values,
+        ))
+    }
+}
+
+/// The 7.1 deliverable — the device-wall tet mesh + the rigid
+/// intruder, geometry-and-materials only (no solve; that is 7.2+).
+pub struct InsertionGeometry {
+    /// Device-wall tet mesh with per-tet Yeoh materials sampled from
+    /// the layer stack. The solver (7.2) consumes this by value.
+    pub mesh: SdfMeshedTetMesh<Yeoh>,
+    /// The scan-derived rigid intruder, as the SDF the penalty
+    /// contact primitive will consume at 7.2. Built here so 7.1's
+    /// geometry pass is self-contained; unused until the solve lands.
+    pub intruder: SignedDistanceField,
+    /// Scan-SDF offset (m) of the cavity surface — `-cavity_inset_m`.
+    pub cavity_offset_m: f64,
+    /// Scan-SDF offset (m) of the outer skin —
+    /// `total_thickness - cavity_inset_m`.
+    pub outer_offset_m: f64,
+    /// Tet count of `mesh` — surfaced for the 7.4 UI readout + tests.
+    pub n_tets: usize,
+}
+
+/// Build the Route-A insertion-sim geometry: the device-wall tet mesh
+/// with per-tet Yeoh materials, plus the rigid intruder SDF.
+///
+/// Geometry (mirrors the sim-soft rows 21–25 layered-sleeve path):
+/// decimate the scan → [`SignedDistanceField`] → cavity =
+/// `scan.offset(-inset)`, outer skin = `scan.offset(total - inset)`,
+/// `body = outer.subtract(cavity)`. Materials: each layer's base
+/// silicone ([`silicone_for_anchor`]) supplies `(μ, C₂, λ)`; a
+/// [`LayeredScalarField`] per parameter partitions the wall by
+/// distance-from-scan at [`layer_boundary_thresholds`] (a
+/// [`ConstantField`] for a single-layer design). The mesh is built
+/// via `SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh`.
+///
+/// `sdf_target_faces` decimates the SDF source — the 7.0 spike found
+/// low (~1.5–3k) is best (tet count + quality track `cell_size_m`,
+/// not face count). `cell_size_m` is the BCC lattice spacing; the
+/// rows 21–25 contact-robustness envelope wants ≈ 4 mm, ideally with
+/// `cell_size_m ≤` the thinnest layer so each layer gets ≥ 1 cell.
+///
+/// No solve, no contact wiring — that is 7.2+.
+///
+/// # Errors
+///
+/// - the design has no layers;
+/// - a layer names an anchor key outside the catalog;
+/// - [`SignedDistanceField::new`] fails (empty decimated scan);
+/// - `SdfMeshedTetMesh::from_sdf_yeoh` fails (empty mesh — e.g. a
+///   degenerate design whose cavity has collapsed — or a non-finite
+///   SDF sample).
+pub fn build_insertion_geometry(
+    scan: &IndexedMesh,
+    design: &SimDesign,
+    sdf_target_faces: usize,
+    cell_size_m: f64,
+) -> Result<InsertionGeometry> {
+    if design.layers.is_empty() {
+        return Err(anyhow!("insertion-sim design has no layers"));
+    }
+
+    let total_thickness_m: f64 = design.layers.iter().map(|l| l.thickness_m).sum();
+    let cavity_offset_m = -design.cavity_inset_m;
+    let outer_offset_m = total_thickness_m - design.cavity_inset_m;
+
+    // The BCC lattice / interval-prune bound must contain the whole
+    // body. The body's outermost surface is `scan.offset(outer_offset_m)`;
+    // when `outer_offset_m > 0` it reaches that far beyond the scan
+    // bbox, when ≤ 0 the body sits inside it. Either way, one cell of
+    // slack past the larger extent suffices.
+    let bounds = scan_aabb(scan, outer_offset_m.max(0.0) + cell_size_m);
+
+    // Per-layer Yeoh parameters, innermost-first.
+    let materials = design
+        .layers
+        .iter()
+        .map(|layer| silicone_for_anchor(&layer.anchor_key))
+        .collect::<Result<Vec<SiliconeMaterial>>>()?;
+    let thresholds = layer_boundary_thresholds(design);
+
+    let decimated = decimate_for_sdf(scan, sdf_target_faces);
+    let scan_sdf = SignedDistanceField::new(decimated)
+        .context("build SignedDistanceField from the decimated scan")?;
+
+    // Three `LayeredScalarField`s (or `ConstantField`s) over the same
+    // scan-distance partition — one per Yeoh parameter — mirroring the
+    // row-23 `build_material_field` precedent.
+    let material_field = MaterialField::from_yeoh_fields(
+        layered_param_field(
+            &scan_sdf,
+            &thresholds,
+            materials.iter().map(|m| m.mu).collect(),
+        ),
+        layered_param_field(
+            &scan_sdf,
+            &thresholds,
+            materials.iter().map(|m| m.c2).collect(),
+        ),
+        layered_param_field(
+            &scan_sdf,
+            &thresholds,
+            materials.iter().map(|m| m.lambda).collect(),
+        ),
+    );
+
+    // Route-A device wall: outer skin minus cavity void. `Solid::offset`
+    // takes signed distances — `cavity_offset_m` is negative (the
+    // cavity is inset *inside* the scan).
+    let cavity = Solid::from_sdf(scan_sdf.clone(), bounds).offset(cavity_offset_m);
+    let outer = Solid::from_sdf(scan_sdf.clone(), bounds).offset(outer_offset_m);
+    let body = outer.subtract(cavity);
+
+    let hints = MeshingHints {
+        bbox: aabb3_for_meshing(&bounds),
+        cell_size: cell_size_m,
+        material_field: Some(material_field),
+    };
+    // `MeshingError` does not implement `std::error::Error` — wrap by
+    // hand via its `Debug`, same as `run_sdf_bridge_spike`.
+    let mesh = SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&body, &hints).map_err(|e| {
+        anyhow!("tet-mesh the device-wall body via SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh: {e:?}")
+    })?;
+    let n_tets = mesh.n_tets();
+
+    Ok(InsertionGeometry {
+        mesh,
+        // The scan SDF doubles as the rigid intruder — the press-fit
+        // ramp (7.2) drives this into the cavity.
+        intruder: scan_sdf,
+        cavity_offset_m,
+        outer_offset_m,
+        n_tets,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
@@ -350,6 +605,78 @@ mod tests {
         assert_eq!(out.faces.len(), 12);
     }
 
+    /// One [`SimLayer`] — test sugar.
+    fn layer(thickness_m: f64, anchor: &str) -> SimLayer {
+        SimLayer {
+            thickness_m,
+            anchor_key: anchor.to_string(),
+        }
+    }
+
+    #[test]
+    fn silicone_for_anchor_resolves_the_catalog() {
+        // All eight cf-device-design catalog keys resolve.
+        for key in [
+            "ECOFLEX_00_10",
+            "ECOFLEX_00_20",
+            "ECOFLEX_00_30",
+            "ECOFLEX_00_50",
+            "DRAGON_SKIN_10A",
+            "DRAGON_SKIN_15",
+            "DRAGON_SKIN_20A",
+            "DRAGON_SKIN_30A",
+        ] {
+            assert!(
+                silicone_for_anchor(key).is_ok(),
+                "catalog key {key} should resolve"
+            );
+        }
+        // The firmest Dragon Skin grade is stiffer than the softest
+        // Ecoflex — a sanity check that distinct keys map to distinct
+        // materials, not all to one fallback.
+        let soft = silicone_for_anchor("ECOFLEX_00_10").unwrap();
+        let firm = silicone_for_anchor("DRAGON_SKIN_30A").unwrap();
+        assert!(
+            firm.mu > soft.mu,
+            "DRAGON_SKIN_30A (μ {}) should be stiffer than ECOFLEX_00_10 (μ {})",
+            firm.mu,
+            soft.mu,
+        );
+        // An off-catalog key is an error, not a silent substitution.
+        assert!(silicone_for_anchor("UNOBTANIUM").is_err());
+    }
+
+    #[test]
+    fn layer_boundary_thresholds_single_layer_is_empty() {
+        // One layer → zero internal boundaries → `ConstantField` path.
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        assert!(layer_boundary_thresholds(&design).is_empty());
+    }
+
+    #[test]
+    fn layer_boundary_thresholds_are_cumulative_offsets_from_scan() {
+        // 3 layers, thicknesses 2/3/4 mm, cavity inset 3 mm. The two
+        // internal boundaries (layer 0|1, layer 1|2) sit at cumulative
+        // thickness minus the inset: 2-3 = -1 mm, 5-3 = +2 mm.
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![
+                layer(0.002, "ECOFLEX_00_30"),
+                layer(0.003, "DRAGON_SKIN_10A"),
+                layer(0.004, "DRAGON_SKIN_20A"),
+            ],
+        };
+        let t = layer_boundary_thresholds(&design);
+        assert_eq!(t.len(), 2);
+        assert!((t[0] - (-0.001)).abs() < 1e-12);
+        assert!((t[1] - 0.002).abs() < 1e-12);
+        // Strictly increasing — `LayeredScalarField::new` requires it.
+        assert!(t[1] > t[0]);
+    }
+
     /// SDF bridge spike against the iter-1 cleaned scan.
     ///
     /// `#[ignore]` — needs the repo-excluded iter-1 fixture
@@ -402,5 +729,114 @@ mod tests {
                 "tet mesh must have no inverted (non-positive-volume) tets",
             );
         }
+    }
+
+    /// [`build_insertion_geometry`] against the iter-1 cleaned scan.
+    ///
+    /// `#[ignore]` — same repo-excluded fixture + `CF_DEVICE_DESIGN_SPIKE_SCAN`
+    /// override as [`sdf_bridge_spike_on_iter1_scan`]; skips
+    /// gracefully when the fixture is absent. Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs the repo-excluded iter-1 scan fixture; run with --ignored"]
+    fn build_insertion_geometry_on_iter1_scan() {
+        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !path.exists() {
+            eprintln!("skip: iter-1 scan fixture not found at {}", path.display());
+            return;
+        }
+        let scan = load_stl(&path).expect("load the iter-1 cleaned scan");
+
+        // Low SDF-source resolution per the 7.0 finding; the rows
+        // 21–25 safe BCC cell size.
+        let sdf_target_faces = 2_500;
+        let cell_size_m = 0.004;
+
+        let count_inverted = |g: &InsertionGeometry| {
+            g.mesh
+                .quality()
+                .signed_volume
+                .iter()
+                .filter(|&&v| v <= 0.0)
+                .count()
+        };
+
+        // (1) The default-shaped device — a single Ecoflex 00-30
+        // layer. `ConstantField` path: every tet carries one material.
+        let single = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let g1 = build_insertion_geometry(&scan, &single, sdf_target_faces, cell_size_m)
+            .expect("single-layer geometry should build");
+        eprintln!(
+            "single-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
+            g1.n_tets,
+            g1.cavity_offset_m * 1e3,
+            g1.outer_offset_m * 1e3,
+        );
+        assert!(g1.n_tets > 0, "single-layer mesh must be non-empty");
+        assert_eq!(
+            count_inverted(&g1),
+            0,
+            "single-layer mesh must have no inverted tets"
+        );
+        let ecoflex_mu = silicone_for_anchor("ECOFLEX_00_30").unwrap().mu;
+        assert!(
+            g1.mesh
+                .materials()
+                .iter()
+                .all(|m| (m.mu() - ecoflex_mu).abs() < 1e-9),
+            "single-layer tets should all carry the ECOFLEX_00_30 modulus",
+        );
+        // The rigid intruder is the decimated scan SDF — confirm it
+        // wraps a non-empty mesh (it drives the 7.2 press-fit ramp).
+        assert!(
+            !g1.intruder.mesh().faces.is_empty(),
+            "intruder SDF must wrap a non-empty mesh",
+        );
+
+        // (2) A three-layer device, three different silicones, each
+        // layer thicker than the BCC cell so the partition is clean —
+        // the `LayeredScalarField` must produce ≥ 2 distinct per-tet
+        // moduli.
+        let triple = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![
+                layer(0.005, "ECOFLEX_00_30"),
+                layer(0.005, "DRAGON_SKIN_10A"),
+                layer(0.005, "DRAGON_SKIN_20A"),
+            ],
+        };
+        let g3 = build_insertion_geometry(&scan, &triple, sdf_target_faces, cell_size_m)
+            .expect("three-layer geometry should build");
+        eprintln!(
+            "three-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
+            g3.n_tets,
+            g3.cavity_offset_m * 1e3,
+            g3.outer_offset_m * 1e3,
+        );
+        assert!(g3.n_tets > 0, "three-layer mesh must be non-empty");
+        assert_eq!(
+            count_inverted(&g3),
+            0,
+            "three-layer mesh must have no inverted tets"
+        );
+        let first_mu = g3.mesh.materials().first().map_or(0.0, Yeoh::mu);
+        assert!(
+            g3.mesh
+                .materials()
+                .iter()
+                .any(|m| (m.mu() - first_mu).abs() > 1e-9),
+            "three-layer mesh must carry ≥ 2 distinct per-tet moduli \
+             (LayeredScalarField partition)",
+        );
     }
 }
