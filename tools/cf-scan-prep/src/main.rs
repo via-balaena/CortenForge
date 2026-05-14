@@ -435,7 +435,7 @@ impl RecenterState {
     /// Project the physics-frame mm translation into a Bevy-world-space
     /// `Vec3`. Applies the `UpAxis::PlusZ` swap (physics `(x, y, z)` →
     /// bevy `(x, z, y)`) and the `render_scale` lift in one step so
-    /// `apply_recenter_to_transform` can write the result directly to
+    /// `apply_world_transform_to_scan_entity` can fold the result into
     /// `Transform.translation`.
     fn translation_world(self, up: UpAxis, render_scale: f32) -> Vec3 {
         let translation_m =
@@ -3013,7 +3013,7 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
 ///
 /// The state mutation pattern matches `render_simplify_section`:
 /// `&mut state` flows through, slider drags update fields directly,
-/// snap buttons set known-good triples. `apply_reorient_to_transform`
+/// snap buttons set known-good triples. `apply_world_transform_to_scan_entity`
 /// consumes the state every Update tick and projects it onto the Bevy
 /// Transform.
 fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState, mesh: &IndexedMesh) {

@@ -49,7 +49,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 pub use config::{
-    CastConfig, CastDefaults, LayerConfig, PlugPinConfig, PourGateConfig, ScanConfig,
+    CastConfig, CastDefaults, LayerConfig, PlugPinConfig, PourGateConfig, RegistrationConfig,
+    ScanConfig,
 };
 pub use derive::{
     DerivedSpec, density_for_anchor, derive_spec_and_ribbon, display_name_for_anchor,

@@ -1,6 +1,18 @@
 # Engineering Suite Design — `tools/cf-device-design/`
 
-**Status**: design draft, not yet implemented (2026-05-13 EOD).
+> ⚠️ **STALE — pre-implementation draft. Trust the code, not this doc.**
+> This document was written before `tools/cf-device-design/` was built
+> (2026-05-13) and the implementation diverged hard from it mid-arc —
+> there is no "outer envelope" concept (it was absorbed into the layer
+> stack), surfaces are solid meshes (not wireframes), every layer is
+> user-dialed, and the slice ladder was reprioritized (FEM insertion
+> sim pulled forward). The as-built architecture lives in the code's
+> module docstrings and in `project_cf_device_design_slices_2_5`. This
+> doc is retained only for the original requirements-gathering record.
+
+**Status**: superseded by the as-built code (slices 2–6.5 shipped).
+Original status at authoring: design draft, not yet implemented
+(2026-05-13 EOD).
 
 The engineering suite is the design + testing surface for a layered
 silicone device. User-described as "probably the hardest part to

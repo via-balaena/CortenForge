@@ -52,7 +52,7 @@ const DEVICE_UP_AXIS: UpAxis = UpAxis::PlusZ;
 #[derive(Parser, Debug)]
 #[command(
     name = "cf-device-design",
-    about = "Layered-silicone-device design + testing suite (composes cleaned scan + outer envelope + cavity + layers + features into a device design TOML)",
+    about = "Layered-silicone-device design + testing suite (composes a cleaned scan into a device design: cavity + concentric silicone layers)",
     version
 )]
 struct Cli {
@@ -70,10 +70,11 @@ struct Cli {
 
     /// Optional path to the cf-scan-prep `.prep.toml` companion file.
     /// Defaults to `<cleaned_stl_stem>.prep.toml` next to the cleaned
-    /// STL. The `[centerline].points_m` block is required for the
-    /// curve-following outer envelope + cavity construction in later
-    /// slices; absent for slice 2, the centerline overlay simply
-    /// doesn't render.
+    /// STL. The `[centerline].points_m` block drives the per-vertex
+    /// radial split that shapes the cavity + layer surfaces (see
+    /// [`EnvelopeProxyMesh`]); absent, the centerline overlay doesn't
+    /// render and the radials fall back to Z-stripped per-vertex
+    /// normals.
     #[arg(long, value_name = "PATH")]
     prep_toml: Option<PathBuf>,
 }
@@ -85,8 +86,8 @@ struct ScanMesh(IndexedMesh);
 
 /// Whether the scan mesh entity is visible this frame. Toggled by
 /// the "Show scan mesh" checkbox in the Scan Info panel. Useful
-/// when inspecting the cavity wireframe, which sits INSIDE the
-/// scan and is occluded by the scan mesh when both are drawn.
+/// when inspecting the cavity mesh, which sits INSIDE the scan and
+/// is occluded by the scan mesh when both are drawn.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct ScanMeshVisible(bool);
 
@@ -158,10 +159,9 @@ impl CavityState {
     /// Default state. Inset defaults to
     /// [`CAVITY_DEFAULT_INSET_M`] (3 mm) — the minimum-acceptable
     /// buildable design: above Ecoflex's ~2 mm castability
-    /// threshold, ~10 % radial pre-strain on a typical scan
-    /// cross-section, and separated from the outer envelope at
-    /// launch (no z-fighting when both sliders sit at 0). User
-    /// dials UP for more pre-strain or DOWN to experiment.
+    /// threshold, and ~10 % radial pre-strain on a typical scan
+    /// cross-section. User dials UP for more pre-strain or DOWN to
+    /// experiment.
     fn default_for_scan() -> Self {
         Self {
             inset_m: CAVITY_DEFAULT_INSET_M,
@@ -208,10 +208,10 @@ fn material_density(anchor_key: &str) -> f64 {
         .map_or(1070.0, |(_, _, density)| *density)
 }
 
-/// Maximum number of concentric silicone layers between the cavity
-/// and the outer envelope. 6 is a generous workshop cap; real
-/// designs typically use 1–3. Setting a finite cap keeps panel
-/// scroll predictable + the per-frame draw cost bounded.
+/// Maximum number of concentric silicone layers in the device wall.
+/// 6 is a generous workshop cap; real designs typically use 1–3.
+/// Setting a finite cap keeps panel scroll predictable + the
+/// per-frame draw cost bounded.
 const LAYER_COUNT_MAX: usize = 6;
 
 /// One concentric silicone layer in the device wall. Layers are
@@ -509,8 +509,6 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// - Yields ~10 % radial pre-strain on a typical 25–35 mm-diameter
 ///   scan cross-section — meaningful snug fit, well within
 ///   elongation-at-break (~900 %).
-/// - Separates the cavity wireframe from the outer envelope at
-///   launch, avoiding z-fighting when both sliders sit at 0.
 ///
 /// The user dials UP for more pre-strain or DOWN to experiment
 /// (down to 0 = cavity-coincident-with-scan, useful as a debug
