@@ -199,6 +199,94 @@ impl CavityState {
     }
 }
 
+/// Silicone-material catalog the Layers panel offers. Mirrors the
+/// `anchor_key` strings cf-cast's `cure::lookup` resolves at cast
+/// time. cf-device-design carries the catalog standalone (no
+/// cf-cast dep) so this tool stays composable; cf-cast-cli
+/// validates the chosen anchor at design.toml ingest.
+const LAYER_MATERIALS: &[(&str, &str)] = &[
+    ("ECOFLEX_00_10", "Ecoflex 00-10 (super-soft)"),
+    ("ECOFLEX_00_20", "Ecoflex 00-20 (soft)"),
+    ("ECOFLEX_00_30", "Ecoflex 00-30 (medium-soft)"),
+    ("ECOFLEX_00_50", "Ecoflex 00-50 (firm-soft)"),
+    ("DRAGON_SKIN_10A", "Dragon Skin 10A (soft)"),
+    ("DRAGON_SKIN_15", "Dragon Skin 15 (medium)"),
+    ("DRAGON_SKIN_20A", "Dragon Skin 20A (firm)"),
+    ("DRAGON_SKIN_30A", "Dragon Skin 30A (firmest)"),
+];
+
+/// Maximum number of concentric silicone layers between the cavity
+/// and the outer envelope. 6 is a generous workshop cap; real
+/// designs typically use 1–3. Setting a finite cap keeps panel
+/// scroll predictable + the per-frame draw cost bounded.
+const LAYER_COUNT_MAX: usize = 6;
+
+/// One concentric silicone layer in the device wall. Layers are
+/// ordered innermost-first: `layers[0]`'s inner surface = the
+/// cavity surface, `layers[i]`'s outer surface = `layers[i+1]`'s
+/// inner surface, `layers[N-1]`'s outer surface = the outer
+/// envelope.
+///
+/// Per the engineering-suite design (§ 5): all layers except the
+/// last carry a user-dialed `thickness_m`; the last layer's
+/// thickness is DERIVED from the geometry (outer envelope position
+/// minus the cumulative sum of preceding thicknesses) so the
+/// outermost surface always coincides with the outer envelope. The
+/// user only picks a *material* for the last layer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LayerSpec {
+    /// Radial thickness (meters). For all layers except the last,
+    /// this is user-dialed via a panel slider. For the last layer
+    /// this field is ignored — the rendered thickness is whatever
+    /// remains of `(clearance + inset)` after the preceding layers
+    /// consume their share.
+    thickness_m: f64,
+    /// Smooth-On product anchor key (from [`LAYER_MATERIALS`]).
+    /// `'static` lifetime because the entries are compile-time
+    /// constants.
+    material_anchor_key: &'static str,
+}
+
+impl LayerSpec {
+    /// Slider range for per-layer thickness (m). 1 mm minimum
+    /// matches FDM-printable mold-wall minimum; 20 mm upper bound
+    /// is generous for any single layer.
+    fn thickness_slider_range_m() -> (f64, f64) {
+        (0.001, 0.020)
+    }
+}
+
+/// Bevy resource carrying the ordered layer stack. Default state
+/// is a single Ecoflex 00-30 layer that consumes the full
+/// (clearance + inset) wall — simplest buildable configuration. The
+/// user adds layers + dials thickness via the Layers panel.
+///
+/// Invariant: `1 <= layers.len() <= LAYER_COUNT_MAX`. Add/remove
+/// operations preserve this.
+#[derive(Resource, Debug, Clone, PartialEq)]
+struct LayersState {
+    layers: Vec<LayerSpec>,
+    /// Whether the per-layer boundary wireframes are drawn this
+    /// frame. The cavity + outer envelope wireframes are toggled
+    /// separately; this toggle only affects the N-1 intermediate
+    /// layer-boundary surfaces.
+    visible: bool,
+}
+
+impl LayersState {
+    /// Default state: single Ecoflex 00-30 layer. The user adds
+    /// more layers via the panel as needed.
+    fn default_for_scan() -> Self {
+        Self {
+            layers: vec![LayerSpec {
+                thickness_m: 0.005,
+                material_anchor_key: "ECOFLEX_00_30",
+            }],
+            visible: true,
+        }
+    }
+}
+
 /// Decimated proxy of the cleaned scan, used to render the outer-
 /// envelope wireframe as a direct offset surface (slice 3 polish 10
 /// — fundamental pivot from centerline-parameterized rings).
@@ -742,6 +830,78 @@ fn draw_cavity_overlay(
     }
 }
 
+/// Draw the per-layer boundary wireframes (slice 5 v1). For each
+/// intermediate boundary between concentric layers i and i+1, the
+/// wireframe sits at radial offset `(cumulative_thickness[0..=i] -
+/// inset_m)` from the scan surface — i.e., starting at the cavity
+/// surface (-inset_m) and stepping outward by each layer's
+/// thickness in turn.
+///
+/// Only the N-1 boundaries BETWEEN layers are drawn; the cavity
+/// (layer 0's inner surface) and outer envelope (layer N-1's outer
+/// surface) are drawn by their own systems. Renders nothing when
+/// the layer count is 1 (no boundaries to show).
+///
+/// Colors cycle through a small palette so adjacent boundaries are
+/// distinguishable. The per-layer material is *not* visually
+/// encoded — the panel UI carries that information; the wireframe
+/// is geometric only.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn draw_layer_boundaries_overlay(
+    proxy: Res<EnvelopeProxyMesh>,
+    layers: Res<LayersState>,
+    cavity: Res<CavityState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut gizmos: Gizmos,
+) {
+    if !layers.visible || layers.layers.len() < 2 {
+        return;
+    }
+    if proxy.vertices.is_empty() || proxy.edges.is_empty() {
+        return;
+    }
+
+    // Boundary i sits between layers i and i+1, at radial offset
+    // `(sum(thickness[0..=i]) - inset_m)` from the scan surface.
+    // Negative offset = inside the scan; positive = outside.
+    let mut cumulative_thickness = 0.0_f64;
+    let mut boundary_offsets_m: Vec<f64> = Vec::with_capacity(layers.layers.len() - 1);
+    for layer in &layers.layers[..layers.layers.len() - 1] {
+        cumulative_thickness += layer.thickness_m;
+        boundary_offsets_m.push(cumulative_thickness - cavity.inset_m);
+    }
+
+    // Distinct colors for each boundary so adjacent layers stay
+    // visually separable. Cycles if N-1 > palette length.
+    let palette = [
+        Color::srgb(0.95, 0.80, 0.35), // amber
+        Color::srgb(0.45, 0.70, 0.95), // sky blue
+        Color::srgb(0.75, 0.55, 0.95), // lavender
+        Color::srgb(0.55, 0.95, 0.65), // mint
+        Color::srgb(0.95, 0.45, 0.70), // pink
+    ];
+
+    for (i, &offset_m) in boundary_offsets_m.iter().enumerate() {
+        let color = palette[i % palette.len()];
+        let displaced_bevy: Vec<Vec3> = proxy
+            .vertices
+            .iter()
+            .zip(proxy.vertex_radial_directions.iter())
+            .map(|(v, r)| {
+                let displaced_physics = Point3::from(v.coords + r * offset_m);
+                Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
+            })
+            .collect();
+
+        for edge in &proxy.edges {
+            let a = displaced_bevy[edge[0] as usize];
+            let b = displaced_bevy[edge[1] as usize];
+            gizmos.line(a, b, color);
+        }
+    }
+}
+
 /// Apply the [`ScanMeshVisible`] toggle to the scan-mesh entity's
 /// `Visibility` each frame. Cheap (one component write per frame
 /// when the toggle changes; Bevy short-circuits Visibility writes
@@ -908,6 +1068,137 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
         });
 }
 
+/// Render the Layers egui section (slice 5 v1). Surfaces the
+/// ordered layer stack innermost-first: each non-final layer gets
+/// a thickness slider + material dropdown + remove button; the
+/// final layer gets a material dropdown only (its thickness is
+/// derived from `clearance + inset - sum(preceding)`).
+///
+/// Validates the cumulative thickness against the total wall
+/// (`clearance + inset`). If the user-dialed preceding thicknesses
+/// exceed the total, surfaces a red warning + clamps the derived
+/// final-layer display to 0 mm. The cavity / outer-envelope
+/// geometry isn't affected by the overflow — the layer subdivision
+/// is logical only — but the displayed final-layer thickness
+/// signals "design infeasible at these dimensions."
+fn render_layers_section(
+    ui: &mut egui::Ui,
+    layers: &mut LayersState,
+    outer_envelope: &OuterEnvelopeState,
+    cavity: &CavityState,
+) {
+    egui::CollapsingHeader::new("Layers")
+        .default_open(true)
+        .show(ui, |ui| {
+            let total_wall_m = outer_envelope.clearance_m + cavity.inset_m;
+            let n = layers.layers.len();
+            let (t_min_m, t_max_m) = LayerSpec::thickness_slider_range_m();
+            let t_min_mm = t_min_m * 1000.0;
+            let t_max_mm = t_max_m * 1000.0;
+
+            // Track which layer the user requested removal of (if
+            // any). egui's immediate-mode loop can't mutate the Vec
+            // while iterating, so we defer until after the loop.
+            let mut remove_index: Option<usize> = None;
+            let mut sum_preceding_m = 0.0_f64;
+            for i in 0..n {
+                let is_last = i == n - 1;
+                ui.group(|ui| {
+                    ui.label(format!("Layer {} ({})", i, layer_position_label(i, n)));
+                    if is_last {
+                        let derived_mm = (total_wall_m - sum_preceding_m).max(0.0) * 1000.0;
+                        ui.label(format!("thickness: {:.1} mm (derived)", derived_mm));
+                    } else {
+                        let mut t_mm = layers.layers[i].thickness_m * 1000.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut t_mm, t_min_mm..=t_max_mm)
+                                    .text("thickness (mm)"),
+                            )
+                            .changed()
+                        {
+                            layers.layers[i].thickness_m = t_mm * 0.001;
+                        }
+                        sum_preceding_m += layers.layers[i].thickness_m;
+                    }
+                    render_material_dropdown(ui, i, &mut layers.layers[i].material_anchor_key);
+                    if n > 1 && ui.button("Remove layer").clicked() {
+                        remove_index = Some(i);
+                    }
+                });
+                ui.add_space(2.0);
+            }
+            if let Some(idx) = remove_index {
+                layers.layers.remove(idx);
+            }
+            if layers.layers.len() < LAYER_COUNT_MAX && ui.button("+ Add layer").clicked() {
+                // Append a new layer at the END. It becomes the
+                // new last layer (derived thickness); the prior
+                // last layer keeps its stored thickness, which now
+                // gets a slider in the UI. The new appended
+                // layer's stored thickness is initialized to 3 mm
+                // — it's currently ignored (the last layer is
+                // derived) but becomes the slider value if the
+                // user later appends YET another layer.
+                layers.layers.push(LayerSpec {
+                    thickness_m: 0.003,
+                    material_anchor_key: "ECOFLEX_00_30",
+                });
+            }
+
+            // Total wall + cumulative sum readout.
+            ui.separator();
+            ui.label(format!(
+                "Wall total: {:.1} mm  (clearance {:.1} + inset {:.1})",
+                total_wall_m * 1000.0,
+                outer_envelope.clearance_m * 1000.0,
+                cavity.inset_m * 1000.0,
+            ));
+            if sum_preceding_m > total_wall_m + 1e-9 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 100, 100),
+                    format!(
+                        "⚠ Preceding layers sum {:.1} mm exceeds total — design infeasible",
+                        sum_preceding_m * 1000.0,
+                    ),
+                );
+            }
+        });
+}
+
+/// Human-readable position label for a layer in the stack
+/// ("innermost", "middle 1", "outermost", etc.). The innermost
+/// layer touches the cavity surface; the outermost touches the
+/// outer envelope.
+fn layer_position_label(i: usize, n: usize) -> &'static str {
+    if n == 1 {
+        "single"
+    } else if i == 0 {
+        "innermost"
+    } else if i == n - 1 {
+        "outermost"
+    } else {
+        "middle"
+    }
+}
+
+/// Material-selection ComboBox for one layer. `id_source = i`
+/// distinguishes multiple dropdowns in the same parent UI.
+fn render_material_dropdown(ui: &mut egui::Ui, layer_index: usize, selected: &mut &'static str) {
+    let current_label = LAYER_MATERIALS
+        .iter()
+        .find(|(key, _)| *key == *selected)
+        .map(|(_, label)| *label)
+        .unwrap_or("(unknown)");
+    egui::ComboBox::from_id_salt(("layer-material", layer_index))
+        .selected_text(current_label)
+        .show_ui(ui, |ui| {
+            for (key, label) in LAYER_MATERIALS {
+                ui.selectable_value(selected, key, *label);
+            }
+        });
+}
+
 /// Block orbit-camera input when the pointer is over the egui side
 /// panel — prevents the sidebar from accidentally rotating the
 /// camera when the user scrolls a slider list. Mirror of
@@ -944,6 +1235,7 @@ fn device_design_panel(
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut outer_envelope: ResMut<OuterEnvelopeState>,
     mut cavity: ResMut<CavityState>,
+    mut layers: ResMut<LayersState>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     egui::SidePanel::right("cf-device-design-panels")
@@ -953,10 +1245,17 @@ fn device_design_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    render_display_section(ui, &mut scan_visible, &mut outer_envelope, &mut cavity);
+                    render_display_section(
+                        ui,
+                        &mut scan_visible,
+                        &mut outer_envelope,
+                        &mut cavity,
+                        &mut layers,
+                    );
                     render_scan_info_section(ui, &info);
                     render_outer_envelope_section(ui, &mut outer_envelope, &proxy);
                     render_cavity_section(ui, &mut cavity);
+                    render_layers_section(ui, &mut layers, &outer_envelope, &cavity);
                     render_panel_stubs(ui);
                 });
         });
@@ -973,6 +1272,7 @@ fn render_display_section(
     scan_visible: &mut ScanMeshVisible,
     outer_envelope: &mut OuterEnvelopeState,
     cavity: &mut CavityState,
+    layers: &mut LayersState,
 ) {
     egui::CollapsingHeader::new("Display")
         .default_open(true)
@@ -980,6 +1280,7 @@ fn render_display_section(
             ui.checkbox(&mut scan_visible.0, "Scan mesh (solid)");
             ui.checkbox(&mut outer_envelope.visible, "Outer envelope (wireframe)");
             ui.checkbox(&mut cavity.visible, "Cavity (wireframe)");
+            ui.checkbox(&mut layers.visible, "Layer boundaries (wireframe)");
         });
 }
 
@@ -1020,7 +1321,6 @@ fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
 fn render_panel_stubs(ui: &mut egui::Ui) {
     ui.separator();
     for name in [
-        "Layers (slice 5)",
         "Validations (slice 6)",
         "Features → Texture (slice 7)",
         "Save / Open (slice 8)",
@@ -1062,6 +1362,7 @@ fn run_render_app(
     let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh, &centerline_points);
     let outer_envelope = OuterEnvelopeState::default_for_scan();
     let cavity = CavityState::default_for_scan();
+    let layers = LayersState::default_for_scan();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -1084,6 +1385,7 @@ fn run_render_app(
         .insert_resource(envelope_proxy)
         .insert_resource(outer_envelope)
         .insert_resource(cavity)
+        .insert_resource(layers)
         .insert_resource(ScanMeshVisible::default())
         .add_systems(Startup, setup_render_scene)
         .add_systems(
@@ -1093,6 +1395,7 @@ fn run_render_app(
                 draw_reference_overlays,
                 draw_envelope_offset_overlay,
                 draw_cavity_overlay,
+                draw_layer_boundaries_overlay,
                 apply_scan_mesh_visibility,
                 exit_on_esc,
             ),
@@ -1326,6 +1629,60 @@ another_future_field = "foo"
         let cv = CavityState::default_for_scan();
         assert!(oe.visible);
         assert!(cv.visible);
+    }
+
+    // ----- Slice 5 v1 — layers state -------------------------------
+
+    #[test]
+    fn layers_default_is_single_ecoflex_layer() {
+        let layers = LayersState::default_for_scan();
+        assert_eq!(layers.layers.len(), 1);
+        assert_eq!(layers.layers[0].material_anchor_key, "ECOFLEX_00_30");
+        assert!(approx_eq(layers.layers[0].thickness_m, 0.005, 1e-12));
+        assert!(layers.visible);
+    }
+
+    #[test]
+    fn layer_count_max_is_six() {
+        // Workshop-cap pin: more than 6 layers makes the panel
+        // unwieldy and the per-frame N-1 boundary-wireframe draw
+        // cost climb. Pinning so a future "let me have 100 layers"
+        // accident is caught.
+        assert_eq!(LAYER_COUNT_MAX, 6);
+    }
+
+    #[test]
+    fn layer_material_catalog_covers_all_silicone_anchor_keys() {
+        // Mirrors cf-cast's cure-table anchor keys; verify count +
+        // each entry name to catch typos / drift from cf-cast's
+        // table. If cf-cast ever adds / removes a silicone, this
+        // test fails and we update both sides.
+        let keys: Vec<&str> = LAYER_MATERIALS.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys.len(), 8);
+        assert!(keys.contains(&"ECOFLEX_00_10"));
+        assert!(keys.contains(&"ECOFLEX_00_20"));
+        assert!(keys.contains(&"ECOFLEX_00_30"));
+        assert!(keys.contains(&"ECOFLEX_00_50"));
+        assert!(keys.contains(&"DRAGON_SKIN_10A"));
+        assert!(keys.contains(&"DRAGON_SKIN_15"));
+        assert!(keys.contains(&"DRAGON_SKIN_20A"));
+        assert!(keys.contains(&"DRAGON_SKIN_30A"));
+    }
+
+    #[test]
+    fn layer_position_labels() {
+        assert_eq!(layer_position_label(0, 1), "single");
+        assert_eq!(layer_position_label(0, 3), "innermost");
+        assert_eq!(layer_position_label(1, 3), "middle");
+        assert_eq!(layer_position_label(2, 3), "outermost");
+        assert_eq!(layer_position_label(5, 6), "outermost");
+    }
+
+    #[test]
+    fn layer_thickness_slider_range_one_to_twenty_mm() {
+        let (min_m, max_m) = LayerSpec::thickness_slider_range_m();
+        assert!(approx_eq(min_m, 0.001, 1e-12));
+        assert!(approx_eq(max_m, 0.020, 1e-12));
     }
 
     #[test]
