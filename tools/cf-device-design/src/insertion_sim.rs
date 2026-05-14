@@ -303,8 +303,11 @@ fn elapsed_ms(start: Instant) -> f64 {
 /// per-layer Slacker ratio (slice 6.5) softens the *effective* Shore
 /// hardness, which would shift the Yeoh `(μ, C₂, λ)` the sim uses;
 /// 7.1 sims the *base* anchor only. Folding Slacker into the sim
-/// modulus (via `SiliconeMaterial::from_effective_shore`) is a
-/// deferred refinement — tracked in the slice-7 memo.
+/// modulus is scheduled for **7.4** — that is when `SimDesign` is
+/// built from the real `LayersState` (which carries
+/// `slacker_fraction`), so the resolution via
+/// `SiliconeMaterial::from_effective_shore` rides the same app-state
+/// conversion. `SimLayer` grows a `slacker_fraction` field then.
 #[derive(Debug, Clone)]
 pub struct SimLayer {
     /// Radial thickness (meters). Innermost-first ordering, same as
