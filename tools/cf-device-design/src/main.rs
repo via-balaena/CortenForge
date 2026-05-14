@@ -144,11 +144,6 @@ impl OuterEnvelopeState {
             visible: true,
         }
     }
-
-    /// Slider range for the clearance, in meters.
-    fn clearance_slider_range_m() -> (f64, f64) {
-        (0.0, 0.050)
-    }
 }
 
 /// Cavity panel state — the user-dialed `inset_m` by which the
@@ -334,6 +329,13 @@ struct EnvelopeProxyMesh {
     /// unique (vertex, vertex) pair regardless of how many faces
     /// share it.
     edges: Vec<[u32; 2]>,
+    /// Triangle face indices (post-decimation). Each face is three
+    /// `u32` indices into `vertices`. Stored so the mesh-based
+    /// surface renderers can build Bevy `Mesh` assets from the
+    /// displaced vertex positions + this connectivity (slice 5
+    /// polish 2 — depth-tested solid surfaces replacing the
+    /// gizmo-line wireframes).
+    faces: Vec<[u32; 3]>,
     /// Original face count (pre-decimation) — surfaced in the panel
     /// so the user knows the proxy is approximate.
     original_face_count: usize,
@@ -710,6 +712,7 @@ fn compute_envelope_proxy_mesh(
         vertices: proxy.vertices,
         vertex_radial_directions,
         edges,
+        faces: proxy.faces,
         original_face_count,
     }
 }
@@ -729,183 +732,274 @@ fn nearest_centerline_index(v: &Point3<f64>, centerline: &[Point3<f64>]) -> usiz
     best_i
 }
 
-/// Draw the outer-envelope wireframe as the scan-proxy's offset
-/// surface (slice 3 polish 10 — fundamental pivot away from
-/// centerline-parameterized rings).
-///
-/// Each frame: for every decimated-mesh vertex, displace by
-/// `clearance_m` along its outward normal; for every deduplicated
-/// edge, draw a gizmo line between the two endpoints' displaced
-/// positions (transformed into Bevy frame via the cast-frame
-/// `UpAxis::PlusZ` swap + `render_scale` lift).
-///
-/// The wireframe is the scan's outer surface, plus clearance,
-/// everywhere — matches what cf-cast-cli's downstream SDF
-/// (`Solid::from_sdf(scan_sdf).offset(clearance_m)`) builds. No
-/// parameterization to overshoot; no statistics to overfit.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn draw_envelope_offset_overlay(
+// ============================================================
+// Mesh-based surface rendering (slice 5 polish 2)
+// ============================================================
+//
+// Each surface (outer envelope, cavity, per-layer boundary) is
+// a Bevy entity with a triangle Mesh asset + opaque
+// StandardMaterial. Depth-test does the right thing — near
+// fragments occlude far fragments — so the user no longer sees
+// the far side of a wireframe rendering through the near side.
+//
+// The mesh asset is regenerated when its source state changes
+// (Changed<> filter on the relevant resource). Re-meshing one
+// surface is sub-millisecond on the iter-1 decimated proxy
+// (1500 faces).
+
+/// Marker component for the outer-envelope mesh entity. One
+/// entity at runtime.
+#[derive(Component)]
+struct OuterEnvelopeEntity;
+
+/// Marker component for the cavity mesh entity. One entity at
+/// runtime.
+#[derive(Component)]
+struct CavityEntity;
+
+/// Marker component for a per-layer-boundary mesh entity. Bevy
+/// spawns / despawns one entity per intermediate boundary
+/// whenever the layer count changes. The boundary index isn't
+/// stored on the component because the despawn-all-then-respawn
+/// update pattern doesn't need it.
+#[derive(Component)]
+struct LayerBoundaryEntity;
+
+/// Build a Bevy `Mesh` from the proxy mesh's connectivity, with
+/// each vertex displaced along its radial direction by `offset_m`
+/// in physics frame, then mapped through the cast-frame `UpAxis`
+/// swap + `render_scale` lift to Bevy frame.
+fn build_displaced_proxy_mesh(
+    proxy: &EnvelopeProxyMesh,
+    offset_m: f64,
+    up: UpAxis,
+    render_scale: f32,
+) -> Mesh {
+    let positions: Vec<[f32; 3]> = proxy
+        .vertices
+        .iter()
+        .zip(proxy.vertex_radial_directions.iter())
+        .map(|(v, r)| {
+            let displaced_physics = Point3::from(v.coords + r * offset_m);
+            let bevy = up.to_bevy_point(&displaced_physics);
+            #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
+            [
+                bevy[0] * render_scale,
+                bevy[1] * render_scale,
+                bevy[2] * render_scale,
+            ]
+        })
+        .collect();
+    let indices: Vec<u32> = proxy.faces.iter().flatten().copied().collect();
+
+    let mut mesh = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
+    // Compute smooth (per-vertex-averaged) normals from the
+    // triangle winding. Bevy's PBR shader needs vertex normals for
+    // lighting; without them surfaces render uniform-dark. We use
+    // smooth-normals (not flat) because flat-normals require
+    // unindexed geometry — and the proxy mesh is indexed for
+    // memory + render efficiency.
+    mesh.compute_smooth_normals();
+    mesh
+}
+
+/// Palette for the per-layer boundary mesh entities. Repeats if
+/// the layer count exceeds the palette length.
+const LAYER_BOUNDARY_PALETTE: &[(f32, f32, f32)] = &[
+    (0.95, 0.80, 0.35), // amber
+    (0.45, 0.70, 0.95), // sky blue
+    (0.75, 0.55, 0.95), // lavender
+    (0.55, 0.95, 0.65), // mint
+    (0.95, 0.45, 0.70), // pink
+];
+
+/// Surface colors (`StandardMaterial::base_color`). Each surface's
+/// material is double-sided so the user sees the inside when the
+/// outer envelope is hidden.
+const OUTER_ENVELOPE_COLOR: (f32, f32, f32) = (0.55, 0.85, 0.70);
+const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
+
+/// Spawn the initial outer-envelope + cavity mesh entities at
+/// startup. Layer-boundary entities spawn lazily on the first
+/// state-change tick (the default 1-layer config has no boundaries).
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn spawn_initial_surface_meshes(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     proxy: Res<EnvelopeProxyMesh>,
+    mut outer_envelope: ResMut<OuterEnvelopeState>,
+    cavity: Res<CavityState>,
+    layers: Res<LayersState>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+) {
+    if proxy.vertices.is_empty() || proxy.faces.is_empty() {
+        return;
+    }
+    // Sync outer envelope clearance with the layer-driven derivation
+    // BEFORE building the initial mesh, so the first frame matches
+    // the rest. After this, `render_layers_section` continues to
+    // overwrite clearance whenever layers / cavity change.
+    let sum_layers_m: f64 = layers.layers.iter().map(|l| l.thickness_m).sum();
+    outer_envelope.clearance_m = sum_layers_m - cavity.inset_m;
+    let envelope_mesh = meshes.add(build_displaced_proxy_mesh(
+        &proxy,
+        outer_envelope.clearance_m,
+        *up,
+        render_scale.0,
+    ));
+    let envelope_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(
+            OUTER_ENVELOPE_COLOR.0,
+            OUTER_ENVELOPE_COLOR.1,
+            OUTER_ENVELOPE_COLOR.2,
+        ),
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(envelope_mesh),
+        MeshMaterial3d(envelope_material),
+        OuterEnvelopeEntity,
+    ));
+
+    let cavity_mesh = meshes.add(build_displaced_proxy_mesh(
+        &proxy,
+        -cavity.inset_m,
+        *up,
+        render_scale.0,
+    ));
+    let cavity_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(CAVITY_COLOR.0, CAVITY_COLOR.1, CAVITY_COLOR.2),
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(cavity_mesh),
+        MeshMaterial3d(cavity_material),
+        CavityEntity,
+    ));
+}
+
+/// Regenerate the outer-envelope mesh asset when `OuterEnvelopeState`
+/// changes. Only the mesh's vertex positions vary; the triangle
+/// indices stay constant (they're from the immutable proxy).
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn update_outer_envelope_mesh(
     state: Res<OuterEnvelopeState>,
+    proxy: Res<EnvelopeProxyMesh>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    mut gizmos: Gizmos,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut q: Query<(&mut Mesh3d, &mut Visibility), With<OuterEnvelopeEntity>>,
 ) {
-    if !state.visible || proxy.vertices.is_empty() || proxy.edges.is_empty() {
+    if !state.is_changed() {
         return;
     }
-    // Pale green-blue; same color as the prior ring-based wireframe
-    // so the visual identity stays consistent across the polish
-    // iterations.
-    let color = Color::srgb(0.55, 0.85, 0.70);
-
-    // Pre-compute displaced + Bevy-framed positions for every
-    // vertex so each edge endpoint reads a cached value (vs
-    // recomputing twice per edge). Displacement = radial unit
-    // direction × clearance (slice 4 polish: was per-vertex
-    // normal pre-centerline). Radial displacement keeps the
-    // bottom-rim vertices at their original Z level so the
-    // outer envelope matches the cavity geometrically.
-    let displaced_bevy: Vec<Vec3> = proxy
-        .vertices
-        .iter()
-        .zip(proxy.vertex_radial_directions.iter())
-        .map(|(v, r)| {
-            let displaced_physics = Point3::from(v.coords + r * state.clearance_m);
-            Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
-        })
-        .collect();
-
-    for edge in &proxy.edges {
-        let a = displaced_bevy[edge[0] as usize];
-        let b = displaced_bevy[edge[1] as usize];
-        gizmos.line(a, b, color);
+    for (mut mesh_handle, mut visibility) in &mut q {
+        let new_mesh = build_displaced_proxy_mesh(&proxy, state.clearance_m, *up, render_scale.0);
+        mesh_handle.0 = meshes.add(new_mesh);
+        *visibility = if state.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
 }
 
-/// Draw the cavity-surface wireframe each frame: same proxy mesh
-/// as the outer envelope, but displaced INWARD along each per-
-/// vertex normal by `inset_m` (slice 4 v1).
-///
-/// The cavity is the void the appendage slides into; being SMALLER
-/// than the scan means the silicone "skin" between the cavity
-/// surface and the scan surface stretches over the appendage to
-/// produce the snug fit. Matches what cf-cast-cli's downstream SDF
-/// (`Solid::from_sdf(scan_sdf).offset(-inset_m)`) will build.
-///
-/// Slice 4 v1 limitation: the cavity wireframe covers the WHOLE
-/// scan, including the cleaned-cap end. Slice 4 polish 2 will clip
-/// to the insertable arc range with a tangent-perpendicular end
-/// cap per the `docs/ENGINEERING_SUITE_DESIGN.md` § 4 spec.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn draw_cavity_overlay(
-    proxy: Res<EnvelopeProxyMesh>,
+/// Regenerate the cavity mesh asset when `CavityState` changes.
+/// Same posture as `update_outer_envelope_mesh`.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn update_cavity_mesh(
     state: Res<CavityState>,
+    proxy: Res<EnvelopeProxyMesh>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    mut gizmos: Gizmos,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut q: Query<(&mut Mesh3d, &mut Visibility), With<CavityEntity>>,
 ) {
-    if !state.visible || proxy.vertices.is_empty() || proxy.edges.is_empty() {
+    if !state.is_changed() {
         return;
     }
-    // Coral / salmon — distinct from outer envelope's green-blue
-    // (Color::srgb(0.55, 0.85, 0.70)) and from scan white / axis
-    // arrows / cyan centerline.
-    let color = Color::srgb(0.95, 0.55, 0.45);
-
-    // Inward displacement = vertex.coords - radial * inset_m.
-    // Using the centerline-perpendicular radial (precomputed in
-    // the proxy) keeps each vertex shrinking PURELY RADIALLY
-    // around the centerline: bottom-rim vertices stay at their
-    // original Z level, the cavity shrinks in cross-section
-    // without retracting axially. Matches the downstream cf-cast
-    // SDF (`Solid::pipe(centerline, R - inset)`).
-    let displaced_bevy: Vec<Vec3> = proxy
-        .vertices
-        .iter()
-        .zip(proxy.vertex_radial_directions.iter())
-        .map(|(v, r)| {
-            let displaced_physics = Point3::from(v.coords - r * state.inset_m);
-            Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
-        })
-        .collect();
-
-    for edge in &proxy.edges {
-        let a = displaced_bevy[edge[0] as usize];
-        let b = displaced_bevy[edge[1] as usize];
-        gizmos.line(a, b, color);
+    for (mut mesh_handle, mut visibility) in &mut q {
+        let new_mesh = build_displaced_proxy_mesh(&proxy, -state.inset_m, *up, render_scale.0);
+        mesh_handle.0 = meshes.add(new_mesh);
+        *visibility = if state.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
 }
 
-/// Draw the per-layer boundary wireframes (slice 5 v1). For each
-/// intermediate boundary between concentric layers i and i+1, the
-/// wireframe sits at radial offset `(cumulative_thickness[0..=i] -
-/// inset_m)` from the scan surface — i.e., starting at the cavity
-/// surface (-inset_m) and stepping outward by each layer's
-/// thickness in turn.
+/// Synchronize the per-layer-boundary mesh entities with
+/// `LayersState`. When the layer count or any thickness / cavity
+/// inset changes, despawns all existing boundary entities and
+/// re-spawns one per intermediate boundary. Visibility tracks
+/// `LayersState.visible`.
 ///
-/// Only the N-1 boundaries BETWEEN layers are drawn; the cavity
-/// (layer 0's inner surface) and outer envelope (layer N-1's outer
-/// surface) are drawn by their own systems. Renders nothing when
-/// the layer count is 1 (no boundaries to show).
-///
-/// Colors cycle through a small palette so adjacent boundaries are
-/// distinguishable. The per-layer material is *not* visually
-/// encoded — the panel UI carries that information; the wireframe
-/// is geometric only.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn draw_layer_boundaries_overlay(
-    proxy: Res<EnvelopeProxyMesh>,
+/// The despawn-and-respawn pattern is simpler than reconciling
+/// add/remove deltas and the layer count never exceeds
+/// `LAYER_COUNT_MAX = 6` (i.e., ≤ 5 boundary entities), so the
+/// cost is negligible.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn update_layer_boundary_meshes(
     layers: Res<LayersState>,
     cavity: Res<CavityState>,
+    proxy: Res<EnvelopeProxyMesh>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    mut gizmos: Gizmos,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    existing: Query<Entity, With<LayerBoundaryEntity>>,
 ) {
-    if !layers.visible || layers.layers.len() < 2 {
+    if !layers.is_changed() && !cavity.is_changed() {
         return;
     }
-    if proxy.vertices.is_empty() || proxy.edges.is_empty() {
+    // Wipe the existing entities — simpler than incremental reconcile.
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    if layers.layers.len() < 2 || proxy.vertices.is_empty() {
         return;
     }
-
-    // Boundary i sits between layers i and i+1, at radial offset
-    // `(sum(thickness[0..=i]) - inset_m)` from the scan surface.
-    // Negative offset = inside the scan; positive = outside.
-    let mut cumulative_thickness = 0.0_f64;
-    let mut boundary_offsets_m: Vec<f64> = Vec::with_capacity(layers.layers.len() - 1);
-    for layer in &layers.layers[..layers.layers.len() - 1] {
-        cumulative_thickness += layer.thickness_m;
-        boundary_offsets_m.push(cumulative_thickness - cavity.inset_m);
-    }
-
-    // Distinct colors for each boundary so adjacent layers stay
-    // visually separable. Cycles if N-1 > palette length.
-    let palette = [
-        Color::srgb(0.95, 0.80, 0.35), // amber
-        Color::srgb(0.45, 0.70, 0.95), // sky blue
-        Color::srgb(0.75, 0.55, 0.95), // lavender
-        Color::srgb(0.55, 0.95, 0.65), // mint
-        Color::srgb(0.95, 0.45, 0.70), // pink
-    ];
-
-    for (i, &offset_m) in boundary_offsets_m.iter().enumerate() {
-        let color = palette[i % palette.len()];
-        let displaced_bevy: Vec<Vec3> = proxy
-            .vertices
-            .iter()
-            .zip(proxy.vertex_radial_directions.iter())
-            .map(|(v, r)| {
-                let displaced_physics = Point3::from(v.coords + r * offset_m);
-                Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
-            })
-            .collect();
-
-        for edge in &proxy.edges {
-            let a = displaced_bevy[edge[0] as usize];
-            let b = displaced_bevy[edge[1] as usize];
-            gizmos.line(a, b, color);
-        }
+    let mut cumulative_thickness_m = 0.0_f64;
+    for (i, layer) in layers.layers[..layers.layers.len() - 1].iter().enumerate() {
+        cumulative_thickness_m += layer.thickness_m;
+        let offset_m = cumulative_thickness_m - cavity.inset_m;
+        let mesh = meshes.add(build_displaced_proxy_mesh(
+            &proxy,
+            offset_m,
+            *up,
+            render_scale.0,
+        ));
+        let (r, g, b) = LAYER_BOUNDARY_PALETTE[i % LAYER_BOUNDARY_PALETTE.len()];
+        let material = materials.add(StandardMaterial {
+            base_color: Color::srgb(r, g, b),
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        });
+        let visibility = if layers.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        commands.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            visibility,
+            LayerBoundaryEntity,
+        ));
     }
 }
 
@@ -1015,22 +1109,21 @@ fn draw_reference_overlays(
 /// for context.
 fn render_outer_envelope_section(
     ui: &mut egui::Ui,
-    state: &mut OuterEnvelopeState,
+    state: &OuterEnvelopeState,
     proxy: &EnvelopeProxyMesh,
 ) {
     egui::CollapsingHeader::new("Outer Envelope")
         .default_open(true)
         .show(ui, |ui| {
-            let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
-            let mut clearance_mm = state.clearance_m * 1000.0;
-            let min_mm = min_m * 1000.0;
-            let max_mm = max_m * 1000.0;
-            if ui
-                .add(egui::Slider::new(&mut clearance_mm, min_mm..=max_mm).text("clearance (mm)"))
-                .changed()
-            {
-                state.clearance_m = clearance_mm * 0.001;
-            }
+            // Clearance is DERIVED from the layer stack
+            // (`sum(layer.thickness_m) - cavity.inset_m`). The
+            // outer envelope is the outermost layer's outer
+            // surface; its position is set by the layers, not by
+            // an independent slider. Info-only readout here.
+            ui.label(format!(
+                "Clearance (derived): {:.1} mm",
+                state.clearance_m * 1000.0,
+            ));
             if proxy.vertices.is_empty() || proxy.edges.is_empty() {
                 ui.label("(proxy mesh empty — no surface to render)");
             } else {
@@ -1081,52 +1174,50 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
 /// final layer gets a material dropdown only (its thickness is
 /// derived from `clearance + inset - sum(preceding)`).
 ///
-/// Validates the cumulative thickness against the total wall
-/// (`clearance + inset`). If the user-dialed preceding thicknesses
-/// exceed the total, surfaces a red warning + clamps the derived
-/// final-layer display to 0 mm. The cavity / outer-envelope
-/// geometry isn't affected by the overflow — the layer subdivision
-/// is logical only — but the displayed final-layer thickness
-/// signals "design infeasible at these dimensions."
+/// Every layer carries its own thickness slider (slice 5 polish 3:
+/// post-mesh-rendering pivot). The sum of layer thicknesses minus
+/// the cavity inset DEFINES the outer envelope clearance — the
+/// outer envelope is just the outermost layer's outer surface, not
+/// an independent design parameter.
+///
+/// After rendering all per-layer rows, this fn writes the derived
+/// clearance into `outer_envelope.clearance_m` so the mesh-update
+/// system regenerates the outer-envelope mesh next frame.
 fn render_layers_section(
     ui: &mut egui::Ui,
     layers: &mut LayersState,
-    outer_envelope: &OuterEnvelopeState,
+    outer_envelope: &mut OuterEnvelopeState,
     cavity: &CavityState,
 ) {
     egui::CollapsingHeader::new("Layers")
         .default_open(true)
         .show(ui, |ui| {
-            let total_wall_m = outer_envelope.clearance_m + cavity.inset_m;
             let n = layers.layers.len();
-            let (t_min_m, t_max_m) = LayerSpec::thickness_slider_range_m();
-            let t_min_mm = t_min_m * 1000.0;
-            let t_max_mm = t_max_m * 1000.0;
+            let (t_floor_m, t_ceiling_m) = LayerSpec::thickness_slider_range_m();
+            let t_floor_mm = t_floor_m * 1000.0;
+            let t_ceiling_mm = t_ceiling_m * 1000.0;
 
             // Track which layer the user requested removal of (if
             // any). egui's immediate-mode loop can't mutate the Vec
             // while iterating, so we defer until after the loop.
             let mut remove_index: Option<usize> = None;
-            let mut sum_preceding_m = 0.0_f64;
             for i in 0..n {
-                let is_last = i == n - 1;
                 ui.group(|ui| {
                     ui.label(format!("Layer {} ({})", i, layer_position_label(i, n)));
-                    if is_last {
-                        let derived_mm = (total_wall_m - sum_preceding_m).max(0.0) * 1000.0;
-                        ui.label(format!("thickness: {:.1} mm (derived)", derived_mm));
+                    let mut t_mm = layers.layers[i].thickness_m * 1000.0;
+                    let slider_text = if i == 0 {
+                        "thickness from cavity (mm)"
                     } else {
-                        let mut t_mm = layers.layers[i].thickness_m * 1000.0;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut t_mm, t_min_mm..=t_max_mm)
-                                    .text("thickness (mm)"),
-                            )
-                            .changed()
-                        {
-                            layers.layers[i].thickness_m = t_mm * 0.001;
-                        }
-                        sum_preceding_m += layers.layers[i].thickness_m;
+                        "Δ from prior layer (mm)"
+                    };
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut t_mm, t_floor_mm..=t_ceiling_mm)
+                                .text(slider_text),
+                        )
+                        .changed()
+                    {
+                        layers.layers[i].thickness_m = t_mm * 0.001;
                     }
                     render_material_dropdown(ui, i, &mut layers.layers[i].material_anchor_key);
                     if n > 1 && ui.button("Remove layer").clicked() {
@@ -1138,38 +1229,46 @@ fn render_layers_section(
             if let Some(idx) = remove_index {
                 layers.layers.remove(idx);
             }
+
             if layers.layers.len() < LAYER_COUNT_MAX && ui.button("+ Add layer").clicked() {
-                // Append a new layer at the END. It becomes the
-                // new last layer (derived thickness); the prior
-                // last layer keeps its stored thickness, which now
-                // gets a slider in the UI. The new appended
-                // layer's stored thickness is initialized to 3 mm
-                // — it's currently ignored (the last layer is
-                // derived) but becomes the slider value if the
-                // user later appends YET another layer.
+                // Append at outermost position with 3 mm default.
+                // The new layer is fully user-controlled; no
+                // derived-thickness or remaining-budget gymnastics
+                // since the wall total is now defined BY the
+                // layers (not vice versa).
                 layers.layers.push(LayerSpec {
                     thickness_m: 0.003,
                     material_anchor_key: "ECOFLEX_00_30",
                 });
             }
 
-            // Total wall + cumulative sum readout.
+            // Derive the outer-envelope clearance from the layer
+            // sum + cavity inset. Outer envelope = sum(layers) -
+            // inset radially outward from the scan surface. The
+            // mesh-update system regenerates the outer-envelope
+            // mesh next frame off this change.
+            let sum_layers_m: f64 = layers.layers.iter().map(|l| l.thickness_m).sum();
+            let derived_clearance_m = sum_layers_m - cavity.inset_m;
+            if (outer_envelope.clearance_m - derived_clearance_m).abs() > 1e-9 {
+                outer_envelope.clearance_m = derived_clearance_m;
+            }
+
+            // Wall total readout: matches outer_envelope.clearance_m
+            // + cavity.inset_m by construction, but break it down
+            // so the user sees the layer-sum source-of-truth.
             ui.separator();
             ui.label(format!(
-                "Wall total: {:.1} mm  (clearance {:.1} + inset {:.1})",
-                total_wall_m * 1000.0,
-                outer_envelope.clearance_m * 1000.0,
+                "Wall total: {:.1} mm  (sum of layers)",
+                sum_layers_m * 1000.0,
+            ));
+            ui.label(format!(
+                "  outer position: +{:.1} mm from scan",
+                derived_clearance_m * 1000.0,
+            ));
+            ui.label(format!(
+                "  cavity position: -{:.1} mm from scan",
                 cavity.inset_m * 1000.0,
             ));
-            if sum_preceding_m > total_wall_m + 1e-9 {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 100, 100),
-                    format!(
-                        "⚠ Preceding layers sum {:.1} mm exceeds total — design infeasible",
-                        sum_preceding_m * 1000.0,
-                    ),
-                );
-            }
         });
 }
 
@@ -1260,9 +1359,9 @@ fn device_design_panel(
                         &mut layers,
                     );
                     render_scan_info_section(ui, &info);
-                    render_outer_envelope_section(ui, &mut outer_envelope, &proxy);
+                    render_outer_envelope_section(ui, &outer_envelope, &proxy);
                     render_cavity_section(ui, &mut cavity);
-                    render_layers_section(ui, &mut layers, &outer_envelope, &cavity);
+                    render_layers_section(ui, &mut layers, &mut outer_envelope, &cavity);
                     render_panel_stubs(ui);
                 });
         });
@@ -1400,15 +1499,18 @@ fn run_render_app(
         .insert_resource(cavity)
         .insert_resource(layers)
         .insert_resource(ScanMeshVisible::default())
-        .add_systems(Startup, setup_render_scene)
+        .add_systems(
+            Startup,
+            (setup_render_scene, spawn_initial_surface_meshes).chain(),
+        )
         .add_systems(
             Update,
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 draw_reference_overlays,
-                draw_envelope_offset_overlay,
-                draw_cavity_overlay,
-                draw_layer_boundaries_overlay,
+                update_outer_envelope_mesh,
+                update_cavity_mesh,
+                update_layer_boundary_meshes,
                 apply_scan_mesh_visibility,
                 exit_on_esc,
             ),
@@ -1605,13 +1707,6 @@ another_future_field = "foo"
     fn outer_envelope_default_clearance_is_five_mm() {
         let state = OuterEnvelopeState::default_for_scan();
         assert!(approx_eq(state.clearance_m, 0.005, 1e-12));
-    }
-
-    #[test]
-    fn outer_envelope_clearance_slider_range_zero_to_fifty_mm() {
-        let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
-        assert!(approx_eq(min_m, 0.0, 1e-12));
-        assert!(approx_eq(max_m, 0.050, 1e-12));
     }
 
     // ----- Slice 4 v1 — cavity state -------------------------------
