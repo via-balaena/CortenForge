@@ -265,27 +265,24 @@ impl LayersState {
 struct EnvelopeProxyMesh {
     /// Decimated scan vertices in physics-frame meters.
     vertices: Vec<Point3<f64>>,
-    /// Per-vertex unit radial direction in the GLOBAL XY plane.
-    /// For each proxy vertex `v`, the radial is the horizontal
-    /// component of `(v - nearest_centerline_point)`, normalized
-    /// (Z component zeroed). Used by both the outer-envelope
-    /// (`+radial * clearance`) and cavity (`-radial * inset`)
-    /// overlays so both wireframes displace ONLY horizontally —
-    /// bottom-rim vertices stay at their original Z level.
+    /// Per-vertex unit displacement direction. Used by both the
+    /// cavity (`-radial * inset`) and per-layer (`+radial * offset`)
+    /// surface meshes. Split by Z-region (computed in
+    /// [`compute_envelope_proxy_mesh`] step 6):
     ///
-    /// Hard-coding the axial direction as global +Z (rather than
-    /// the local centerline tangent) avoids axial drift from any
-    /// curvature in the centerline tangent near the cleaned-cap
-    /// boundary. cf-scan-prep auto-orients the cleaned scan with
-    /// +Z up, so the global-Z assumption holds in the pipeline.
+    /// - Vertices BELOW the centerline's Z-range (cleaned-cap rim +
+    ///   the bottom gap): HORIZONTAL-only radial — the Z component
+    ///   of `(v - nearest_centerline_pt)` is zeroed. Keeps the
+    ///   bottom plane pinned at its Z level under any displacement.
+    /// - Vertices WITHIN / ABOVE the centerline's Z-range (side
+    ///   walls + dome): FULL 3D radial — `(v - nearest_centerline_pt)`
+    ///   normalized. Side walls get a ≈-horizontal direction
+    ///   naturally; the dome gets a vertical component so it grows
+    ///   outward AND upward as layers thicken.
     ///
-    /// Two-stage fallback for vertices where the primary radial is
-    /// degenerate:
-    /// 1. Z-stripped per-vertex normal (for near-axis vertices)
-    /// 2. `(1, 0, 0)` (for true dome-apex with pure-Z normal)
-    ///
-    /// Both fallback branches also have Z = 0, so axial Z stays
-    /// invariant under displacement at every vertex.
+    /// Degenerate fallback (vertex coincident with the centerline
+    /// point): per-vertex normal, Z-stripped for below-centerline
+    /// vertices; finally `(1, 0, 0)` if even that is degenerate.
     vertex_radial_directions: Vec<Vector3<f64>>,
     /// Deduplicated edges. Each `[a, b]` has `a < b`. One edge per
     /// unique (vertex, vertex) pair regardless of how many faces
@@ -593,22 +590,29 @@ fn compute_envelope_proxy_mesh(
     }
     let edges: Vec<[u32; 2]> = edge_set.into_iter().map(|(a, b)| [a, b]).collect();
 
-    // Step 6: per-vertex radial directions in the GLOBAL XY plane.
-    // For each vertex, the radial is the horizontal-only component
-    // of (vertex - nearest_centerline_point), normalized. Hard-
-    // coding the axial direction as +Z (rather than using the
-    // local centerline tangent) prevents the bottom rim from
-    // drifting axially when the user dials the clearance / inset —
-    // any tilt in the centerline tangent near the cleaned-cap end
-    // would otherwise add a small Z component to the radial that
-    // bleeds into axial Z motion at the rim.
+    // Step 6: per-vertex radial directions. Split by Z-region so
+    // the bottom rim stays pinned while the dome grows in 3D:
     //
-    // Trade-off: dome-apex vertices (directly above the centerline
-    // endpoint) have a near-zero horizontal component and fall back
-    // to the Z-stripped per-vertex normal (then to +X if even that
-    // is pure-Z). The dome offset isn't strictly radial-spherical,
-    // but the primary visual concern (flat bottom rim) is met, and
-    // cf-cast-cli's downstream SDF builds rigorous geometry anyway.
+    // - Vertices BELOW the centerline's Z-range (the cleaned-cap
+    //   rim + the bottom gap where the centerline doesn't reach):
+    //   HORIZONTAL-only radial = `(vertex - nearest_centerline_pt)`
+    //   with Z zeroed. Keeps the bottom plane fixed at its Z level;
+    //   displacement grows the rim laterally, never axially.
+    //
+    // - Vertices WITHIN / ABOVE the centerline's Z-range (side
+    //   walls + dome): FULL 3D radial = `(vertex -
+    //   nearest_centerline_pt)` normalized. For side walls this is
+    //   naturally ≈ horizontal (vertex is beside the centerline);
+    //   for the dome it has a vertical component so the dome grows
+    //   outward AND upward when layers thicken.
+    //
+    // The split point is `centerline_min_z` — below it the
+    // centerline doesn't run alongside the geometry, so a 3D radial
+    // would tilt downward (the centerline endpoint is ABOVE the rim
+    // vertex) and drag the rim down. There's no visible
+    // discontinuity at the threshold because the 3D radial just
+    // above `centerline_min_z` is itself ≈ horizontal.
+    let centerline_min_z = centerline.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
     let vertex_radial_directions: Vec<Vector3<f64>> = if centerline.len() >= 2 {
         proxy
             .vertices
@@ -617,29 +621,32 @@ fn compute_envelope_proxy_mesh(
             .map(|(v, n)| {
                 let nearest_i = nearest_centerline_index(v, centerline);
                 let diff = v.coords - centerline[nearest_i].coords;
-                // Zero out the Z component → pure horizontal radial.
-                let radial_xy = Vector3::new(diff.x, diff.y, 0.0);
-                let len = radial_xy.norm();
-                if len > 1e-9 {
-                    radial_xy / len
+                let below_centerline = v.z < centerline_min_z;
+                let raw = if below_centerline {
+                    // Bottom rim / gap region: horizontal only.
+                    Vector3::new(diff.x, diff.y, 0.0)
                 } else {
-                    // Apex / near-axis vertex; fall back to the per-
-                    // vertex normal but ALSO strip its Z component so
-                    // displacement stays purely horizontal. Without
-                    // this strip, near-axis vertices near the cleaned-
-                    // cap boundary inherit the downward-tilted normal
-                    // (area-weighted average over sidewall + boundary
-                    // faces), which drags the cavity bottom axially
-                    // when the inset grows.
-                    let n_xy = Vector3::new(n.x, n.y, 0.0);
-                    let len_n = n_xy.norm();
-                    if len_n > 1e-9 {
-                        n_xy / len_n
+                    // Side wall + dome: full 3D radial.
+                    diff
+                };
+                let len = raw.norm();
+                if len > 1e-9 {
+                    raw / len
+                } else {
+                    // Degenerate (vertex coincident with the
+                    // centerline point). Fall back to the per-vertex
+                    // normal, Z-stripped for below-centerline
+                    // vertices (keep them axially fixed), full 3D
+                    // otherwise.
+                    let fallback = if below_centerline {
+                        Vector3::new(n.x, n.y, 0.0)
                     } else {
-                        // True dome-apex (pure-Z normal); arbitrary
-                        // horizontal default. The wireframe edge at
-                        // this vertex will collapse to a point but
-                        // won't cause axial drift.
+                        *n
+                    };
+                    let len_f = fallback.norm();
+                    if len_f > 1e-9 {
+                        fallback / len_f
+                    } else {
                         Vector3::new(1.0, 0.0, 0.0)
                     }
                 }
@@ -648,7 +655,7 @@ fn compute_envelope_proxy_mesh(
     } else {
         // No centerline available; use per-vertex normals (with Z
         // stripped) as the radial proxy. Consistent posture with the
-        // centerline-present path.
+        // centerline-present path's below-centerline branch.
         vertex_normals
             .iter()
             .map(|n| {
@@ -1671,12 +1678,13 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn envelope_proxy_radial_directions_perpendicular_to_centerline_tangent() {
-        // Cube fixture with a Z-aligned centerline. For every proxy
-        // vertex, the radial direction must be perpendicular to the
-        // local tangent (which is +Z everywhere on the straight Z
-        // centerline). Validates that the projection step strips out
-        // the axial component cleanly.
+    fn envelope_proxy_radials_horizontal_when_vertices_align_with_centerline() {
+        // Cube fixture spanning Z ∈ [-0.05, 0.05] with a Z-aligned
+        // centerline at the same Z extents. Every cube vertex sits
+        // at the SAME Z as its nearest centerline point, so
+        // `(v - centerline_pt)` has zero Z component — radial is
+        // purely horizontal on every vertex regardless of the
+        // below-/above-centerline branch. Unit length on every path.
         let mesh = unit_cube_mesh();
         let centerline = vec![
             Point3::new(0.0, 0.0, -0.05),
@@ -1684,22 +1692,58 @@ another_future_field = "foo"
             Point3::new(0.0, 0.0, 0.05),
         ];
         let proxy = compute_envelope_proxy_mesh(&mesh, &centerline);
-        let tangent = Vector3::new(0.0, 0.0, 1.0);
         for r in &proxy.vertex_radial_directions {
             assert!(
-                r.dot(&tangent).abs() < 1e-9,
-                "radial direction {:?} is not perpendicular to +Z tangent",
+                r.z.abs() < 1e-9,
+                "radial {:?} has nonzero Z (vertex aligns with centerline Z)",
                 r
             );
-            // Radial directions must be unit length on every path
-            // (primary horizontal projection, Z-stripped normal
-            // fallback, or +X arbitrary default).
             assert!(
                 (r.norm() - 1.0).abs() < 1e-9,
-                "radial direction {:?} is not unit length",
+                "radial {:?} not unit length",
                 r
             );
         }
+    }
+
+    #[test]
+    fn envelope_proxy_dome_vertices_get_vertical_radial_component() {
+        // A vertex ABOVE the centerline's Z-range must get a radial
+        // with a positive Z component (full 3D radial) so the dome
+        // grows outward AND upward. Build a 2-point Z centerline
+        // capped at z = 0.0; a single vertex at (0, 0, 0.1) is
+        // directly above the top centerline point. Its radial must
+        // be +Z (the dome-growth direction).
+        //
+        // We can't easily inject a custom proxy mesh, so this test
+        // exercises the radial branch logic directly: with
+        // centerline_min_z = -0.05 and a vertex at z = 0.1 (above
+        // it), the diff (0, 0, 0.1) - (0, 0, 0.0) = (0, 0, 0.1)
+        // normalizes to +Z.
+        //
+        // The unit cube proxy doesn't have a vertex above its
+        // centerline's max, so this is verified via a small
+        // synthetic single-triangle mesh whose apex sits above the
+        // centerline.
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(-0.01, -0.01, -0.05)); // base rim
+        mesh.vertices.push(Point3::new(0.01, -0.01, -0.05));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.10)); // apex, above centerline
+        mesh.faces.push([0, 1, 2]);
+        let centerline = vec![Point3::new(0.0, 0.0, -0.05), Point3::new(0.0, 0.0, 0.0)];
+        let proxy = compute_envelope_proxy_mesh(&mesh, &centerline);
+        // The apex vertex (z = 0.10, above centerline_max) must have
+        // a radial with a positive Z component.
+        let apex_idx = proxy
+            .vertices
+            .iter()
+            .position(|v| v.z > 0.05)
+            .expect("apex vertex should survive decimation");
+        assert!(
+            proxy.vertex_radial_directions[apex_idx].z > 0.1,
+            "apex radial {:?} should have a clear +Z component for dome growth",
+            proxy.vertex_radial_directions[apex_idx],
+        );
     }
 
     #[test]
