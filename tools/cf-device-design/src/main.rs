@@ -17,6 +17,10 @@
 //!   graded against the 2 lb single-pour budget, cavity self-
 //!   intersection check, minimum-castable-wall check. All derived,
 //!   read-only; computed each frame by `compute_validations`.
+//! - Slice 6.5: per-layer Slacker recipe — each layer picks a base
+//!   silicone + a Slacker ratio from Smooth-On's TB curves (`mod
+//!   slacker`), and the Layers panel reads back the effective Shore
+//!   hardness, tack, and the mix in grams.
 //!
 //! Pending slices: Insertion Sim (FEM, slice 7) / Save / Open
 //! (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the build
@@ -229,8 +233,16 @@ struct LayerSpec {
     thickness_m: f64,
     /// Smooth-On product anchor key (from [`LAYER_MATERIALS`]).
     /// `'static` lifetime because the entries are compile-time
-    /// constants.
+    /// constants. This is the layer's *base* silicone — Slacker (if
+    /// any) is dialed separately via `slacker_fraction`.
     material_anchor_key: &'static str,
+    /// Slacker mass as a fraction of the base silicone's combined
+    /// Part A + Part B mass — `0.0` is the base with no Slacker. The
+    /// Layers panel only offers the discrete fractions on the base
+    /// material's Smooth-On TB curve ([`slacker::support`]); a
+    /// base-material change that orphans the stored value snaps it
+    /// back to `0.0` via [`resolve_slacker_fraction`].
+    slacker_fraction: f64,
     /// Whether this layer's outer-surface mesh is drawn this frame.
     /// Per-layer visibility (slice 5 polish 5) — each layer toggles
     /// independently so the user can isolate any single layer for
@@ -270,6 +282,7 @@ impl LayersState {
             layers: vec![LayerSpec {
                 thickness_m: 0.005,
                 material_anchor_key: "ECOFLEX_00_30",
+                slacker_fraction: 0.0,
                 visible: true,
             }],
         }
@@ -967,10 +980,12 @@ mod slacker {
     //! 100A + 100B" of base silicone, i.e. per 200 parts base — so a
     //! "+50 Slacker" row is a [`Point::slacker_fraction`] of
     //! 50 / 200 = 0.25.
-
-    // Data landed ahead of its UI consumer (the recipe panel, next
-    // commit) — every item here is wired up there.
-    #![allow(dead_code)]
+    //!
+    //! The recipe-panel UI (the Layers section) is the consumer:
+    //! [`support`] keys off a layer's base-material anchor key and
+    //! the panel renders the resulting curve as a Slacker-ratio
+    //! picker. The module's public surface is `pub(crate)`; the
+    //! curve tables + the `point` table-builder stay private.
 
     use std::fmt;
 
@@ -984,7 +999,7 @@ mod slacker {
     // clippy's `Ooo` suggestion would obscure them.
     #[allow(clippy::upper_case_acronyms)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum ShoreScale {
+    pub(crate) enum ShoreScale {
         /// Shore A — the firmest scale here; Dragon Skin's native
         /// grades.
         A,
@@ -1010,14 +1025,14 @@ mod slacker {
     /// Displays the way Smooth-On writes it — `10A`, `00-30`,
     /// `000-7`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct ShoreHardness {
+    pub(crate) struct ShoreHardness {
         /// Which durometer scale `points` is read on.
-        scale: ShoreScale,
+        pub(crate) scale: ShoreScale,
         /// Durometer points on `scale`. Whole numbers in the TB;
         /// `u32` because Slacker recipes snap to the tabulated data
         /// points (the OO/OOO scale split makes interpolating a
         /// single hardness number meaningless).
-        points: u32,
+        pub(crate) points: u32,
     }
 
     impl fmt::Display for ShoreHardness {
@@ -1037,7 +1052,7 @@ mod slacker {
     /// Cured surface tack at a given Slacker fraction, from the
     /// TB's per-row tack column.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Tack {
+    pub(crate) enum Tack {
         /// No tack — the base silicone, or a low Slacker fraction.
         None,
         /// Slight tack.
@@ -1063,17 +1078,17 @@ mod slacker {
     /// One point on a base silicone's Slacker softening curve: a
     /// Slacker fraction plus the resulting cured hardness + tack.
     #[derive(Debug, Clone, Copy, PartialEq)]
-    struct Point {
+    pub(crate) struct Point {
         /// Slacker mass as a fraction of the base silicone's
         /// combined Part A + Part B mass. `0.0` is the base with no
         /// Slacker (native hardness); the TB's "+50 / +100 / +150 /
         /// +200 Slacker per 100A+100B" rows are `0.25 / 0.50 /
         /// 0.75 / 1.00`.
-        slacker_fraction: f64,
+        pub(crate) slacker_fraction: f64,
         /// Cured Shore hardness at this Slacker fraction.
-        hardness: ShoreHardness,
+        pub(crate) hardness: ShoreHardness,
         /// Cured surface tack at this Slacker fraction.
-        tack: Tack,
+        pub(crate) tack: Tack,
     }
 
     /// Table-construction helper — keeps the const curves below
@@ -1088,7 +1103,7 @@ mod slacker {
 
     /// What Slacker data exists for a given base silicone.
     #[derive(Debug, Clone, Copy, PartialEq)]
-    enum Support {
+    pub(crate) enum Support {
         /// Smooth-On's TB tabulates a softening curve for this
         /// base. The slice leads with the `0.0`-fraction native-
         /// hardness point, then the TB's data points in
@@ -1144,7 +1159,7 @@ mod slacker {
 
     /// Slacker data available for a layer's base silicone, keyed by
     /// the catalog `anchor_key` ([`super::LAYER_MATERIALS`]).
-    fn support(anchor_key: &str) -> Support {
+    pub(crate) fn support(anchor_key: &str) -> Support {
         match anchor_key {
             "ECOFLEX_00_20" => Support::Curve(ECOFLEX_00_20_CURVE),
             "ECOFLEX_00_30" => Support::Curve(ECOFLEX_00_30_CURVE),
@@ -1682,18 +1697,29 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
 /// Render the Layers egui section. Surfaces the ordered layer
 /// stack innermost-first. Every layer carries its own controls:
 /// a visibility checkbox, a thickness slider, a material dropdown,
-/// and a remove button (hidden when only one layer remains). A
-/// "+ Add layer" button appends a new outermost layer up to
-/// [`LAYER_COUNT_MAX`].
+/// a Slacker recipe control, and a remove button (hidden when only
+/// one layer remains). A "+ Add layer" button appends a new
+/// outermost layer up to [`LAYER_COUNT_MAX`].
 ///
 /// The device wall total is the sum of layer thicknesses; the
 /// outer skin sits at `sum(thickness) - cavity.inset_m` radially
 /// from the scan. Those derived figures are shown as read-only
 /// labels at the bottom of the section.
 ///
+/// `validations` is the shared [`DeviceValidations`] — the Slacker
+/// control reads each layer's pour mass from it for the mix-in-
+/// grams readout. A layer added this frame is not yet in
+/// `validations.layers` (it is computed once at the top of the
+/// panel); the control shows a `—` placeholder for that one frame.
+///
 /// [`update_layer_meshes`] regenerates the per-layer surface mesh
 /// entities whenever `LayersState` or `CavityState` mutates.
-fn render_layers_section(ui: &mut egui::Ui, layers: &mut LayersState, cavity: &CavityState) {
+fn render_layers_section(
+    ui: &mut egui::Ui,
+    layers: &mut LayersState,
+    cavity: &CavityState,
+    validations: &DeviceValidations,
+) {
     egui::CollapsingHeader::new("Layers")
         .default_open(true)
         .show(ui, |ui| {
@@ -1726,6 +1752,8 @@ fn render_layers_section(ui: &mut egui::Ui, layers: &mut LayersState, cavity: &C
                         layers.layers[i].thickness_m = t_mm * 0.001;
                     }
                     render_material_dropdown(ui, i, &mut layers.layers[i].material_anchor_key);
+                    let pour_mass_kg = validations.layers.get(i).map(|lv| lv.pour_mass_kg);
+                    render_slacker_control(ui, i, &mut layers.layers[i], pour_mass_kg);
                     if n > 1 && ui.button("Remove layer").clicked() {
                         remove_index = Some(i);
                     }
@@ -1738,11 +1766,12 @@ fn render_layers_section(ui: &mut egui::Ui, layers: &mut LayersState, cavity: &C
 
             if layers.layers.len() < LAYER_COUNT_MAX && ui.button("+ Add layer").clicked() {
                 // Append at outermost position with 3 mm default.
-                // New layer starts visible; user can toggle via
-                // the per-layer "Show layer" checkbox.
+                // New layer starts visible, no Slacker; user can
+                // toggle via the per-layer "Show layer" checkbox.
                 layers.layers.push(LayerSpec {
                     thickness_m: 0.003,
                     material_anchor_key: "ECOFLEX_00_30",
+                    slacker_fraction: 0.0,
                     visible: true,
                 });
             }
@@ -1802,6 +1831,139 @@ fn render_material_dropdown(ui: &mut egui::Ui, layer_index: usize, selected: &mu
         });
 }
 
+/// The Slacker fraction a layer should actually use: `requested` if
+/// it is an exact data point on the base silicone's Smooth-On TB
+/// curve, otherwise `0.0` (no Slacker — the always-valid native
+/// default).
+///
+/// Called every frame before the Slacker control renders, so a
+/// base-material change that orphans the stored fraction (the new
+/// material has a different curve, or no Slacker support at all)
+/// snaps cleanly back to "no Slacker" instead of silently keeping a
+/// fraction that is not on the new curve.
+fn resolve_slacker_fraction(anchor_key: &str, requested: f64) -> f64 {
+    match slacker::support(anchor_key) {
+        slacker::Support::Curve(curve) => {
+            let on_curve = curve
+                .iter()
+                .any(|p| (p.slacker_fraction - requested).abs() < f64::EPSILON);
+            if on_curve { requested } else { 0.0 }
+        }
+        // No Slacker curve for this base — force the native silicone.
+        slacker::Support::NotRecommended | slacker::Support::NoData => 0.0,
+    }
+}
+
+/// Part A / Part B / Slacker masses (grams) to weigh out for one
+/// layer's pour. Returns `(part_ab_g, slacker_g)` where `part_ab_g`
+/// is the mass of *each* of Part A and Part B (the base silicone is
+/// 1:1 A:B by weight).
+///
+/// `pour_mass_kg` is the layer's shell mass from
+/// [`compute_validations`]; `slacker_fraction` is Slacker mass as a
+/// fraction of the base A+B mass, so the cured mix obeys
+/// `pour_mass = 2·part_ab·(1 + slacker_fraction)`.
+///
+/// Approximation: `pour_mass_kg` is `shell_volume × base density` —
+/// this treats the cured base+Slacker mix density as ≈ the base
+/// silicone's (the Slacker TB publishes no density). Close enough
+/// for a bench weigh-out, where the user adds a waste margin
+/// regardless.
+fn slacker_recipe_grams(pour_mass_kg: f64, slacker_fraction: f64) -> (f64, f64) {
+    let pour_mass_g = pour_mass_kg * 1000.0;
+    let part_ab_g = pour_mass_g / (2.0 * (1.0 + slacker_fraction));
+    let slacker_g = slacker_fraction * pour_mass_g / (1.0 + slacker_fraction);
+    (part_ab_g, slacker_g)
+}
+
+/// Dropdown label for one Slacker-curve point: the native (`0.0`)
+/// point reads `No Slacker — Shore 00-30`; every other point reads
+/// `+25% Slacker — Shore 000-40 (slight-to-very tack)` (percentage,
+/// effective Shore hardness, cured tack).
+fn slacker_point_label(point: &slacker::Point) -> String {
+    if point.slacker_fraction > 0.0 {
+        format!(
+            "+{:.0}% Slacker — Shore {} ({})",
+            point.slacker_fraction * 100.0,
+            point.hardness,
+            point.tack,
+        )
+    } else {
+        format!("No Slacker — Shore {}", point.hardness)
+    }
+}
+
+/// Render one layer's Slacker recipe control. For a base silicone
+/// with TB data this is a dropdown of the curve's Slacker ratios
+/// (each labelled with its effective Shore hardness + tack) plus a
+/// mix-in-grams readout for the selected ratio; for a base without
+/// data it is a disabled note explaining why.
+///
+/// `pour_mass_kg` is the layer's shell mass (from the shared
+/// [`DeviceValidations`]), or `None` for a layer added this frame
+/// that the validation pass has not caught up to yet.
+fn render_slacker_control(
+    ui: &mut egui::Ui,
+    layer_index: usize,
+    layer: &mut LayerSpec,
+    pour_mass_kg: Option<f64>,
+) {
+    // Snap the stored fraction to a value valid for the current
+    // base material before rendering — guards a base-material
+    // change that orphaned it.
+    layer.slacker_fraction =
+        resolve_slacker_fraction(layer.material_anchor_key, layer.slacker_fraction);
+
+    match slacker::support(layer.material_anchor_key) {
+        slacker::Support::Curve(curve) => {
+            let selected_label = curve
+                .iter()
+                .find(|p| (p.slacker_fraction - layer.slacker_fraction).abs() < f64::EPSILON)
+                .map_or_else(|| "No Slacker".to_string(), slacker_point_label);
+            egui::ComboBox::from_id_salt(("layer-slacker", layer_index))
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for p in curve {
+                        ui.selectable_value(
+                            &mut layer.slacker_fraction,
+                            p.slacker_fraction,
+                            slacker_point_label(p),
+                        );
+                    }
+                });
+            // Mix-in-grams readout for the selected ratio.
+            match pour_mass_kg {
+                Some(mass_kg) => {
+                    let (part_ab_g, slacker_g) =
+                        slacker_recipe_grams(mass_kg, layer.slacker_fraction);
+                    if layer.slacker_fraction > 0.0 {
+                        ui.label(format!(
+                            "  Mix: {part_ab_g:.1} g A + {part_ab_g:.1} g B + {slacker_g:.1} g Slacker",
+                        ));
+                    } else {
+                        ui.label(format!("  Mix: {part_ab_g:.1} g A + {part_ab_g:.1} g B"));
+                    }
+                }
+                None => {
+                    ui.label("  Mix: —");
+                }
+            }
+        }
+        slacker::Support::NotRecommended => {
+            ui.add_enabled(
+                false,
+                egui::Label::new("Slacker: not recommended for this silicone"),
+            );
+        }
+        slacker::Support::NoData => {
+            ui.add_enabled(
+                false,
+                egui::Label::new("Slacker: no published data for this silicone"),
+            );
+        }
+    }
+}
+
 /// Block orbit-camera input when the pointer is over the egui side
 /// panel — prevents the sidebar from accidentally rotating the
 /// camera when the user scrolls a slider list. Mirror of
@@ -1828,14 +1990,18 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 }
 
 /// Right-side egui sidebar carrying the design-suite panels.
-/// Renders Scan Info + Cavity + Layers + Validations as of slice 6;
-/// remaining stubs surface the planned panel order (Insertion Sim /
+/// Renders Scan Info + Cavity + Layers + Validations; remaining
+/// stubs surface the planned panel order (Insertion Sim /
 /// Save-Open).
 ///
-/// The Validations section is computed AFTER the Cavity + Layers
-/// sections render, so its readouts reflect this frame's slider
-/// edits (egui is immediate-mode — the sections mutate the resource
-/// in place before `compute_validations` reads it back).
+/// [`compute_validations`] runs once at the top of the panel, from
+/// the current resource state, and the resulting [`DeviceValidations`]
+/// is shared by two consumers: the Layers section (each layer's
+/// pour mass drives its Slacker mix-in-grams readout) and the
+/// Validations section. A slider edit this frame lands in those
+/// readouts one frame later — imperceptible at frame rate, and it
+/// keeps both sections reading a single consistent computation
+/// rather than each re-deriving it.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn device_design_panel(
     mut contexts: EguiContexts,
@@ -1846,6 +2012,7 @@ fn device_design_panel(
     mut layers: ResMut<LayersState>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
+    let validations = compute_validations(&proxy, &cavity, &layers);
     egui::SidePanel::right("cf-device-design-panels")
         .resizable(false)
         .default_width(320.0)
@@ -1855,8 +2022,7 @@ fn device_design_panel(
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info, &mut scan_visible);
                     render_cavity_section(ui, &mut cavity);
-                    render_layers_section(ui, &mut layers, &cavity);
-                    let validations = compute_validations(&proxy, &cavity, &layers);
+                    render_layers_section(ui, &mut layers, &cavity, &validations);
                     render_validations_section(ui, &validations);
                     render_panel_stubs(ui);
                 });
@@ -2601,11 +2767,13 @@ another_future_field = "foo"
                 LayerSpec {
                     thickness_m: 0.005,
                     material_anchor_key: "ECOFLEX_00_30",
+                    slacker_fraction: 0.0,
                     visible: true,
                 },
                 LayerSpec {
                     thickness_m: 0.004,
                     material_anchor_key: "DRAGON_SKIN_20A",
+                    slacker_fraction: 0.0,
                     visible: true,
                 },
             ],
@@ -2693,6 +2861,7 @@ another_future_field = "foo"
             layers: vec![LayerSpec {
                 thickness_m: 0.001,
                 material_anchor_key: "ECOFLEX_00_30",
+                slacker_fraction: 0.0,
                 visible: true,
             }],
         };
@@ -2705,6 +2874,7 @@ another_future_field = "foo"
             layers: vec![LayerSpec {
                 thickness_m: 0.003,
                 material_anchor_key: "ECOFLEX_00_30",
+                slacker_fraction: 0.0,
                 visible: true,
             }],
         };
@@ -2726,11 +2896,13 @@ another_future_field = "foo"
                 LayerSpec {
                     thickness_m: 0.005,
                     material_anchor_key: "ECOFLEX_00_30",
+                    slacker_fraction: 0.0,
                     visible: true,
                 },
                 LayerSpec {
                     thickness_m: 0.012,
                     material_anchor_key: "DRAGON_SKIN_30A",
+                    slacker_fraction: 0.0,
                     visible: true,
                 },
             ],
@@ -2751,5 +2923,99 @@ another_future_field = "foo"
         // via the NIST exact conversion 1 lb = 0.453_592_37 kg.
         let lb_to_kg = 0.453_592_37_f64;
         assert!((MASS_BUDGET_KG - (lb_to_kg + lb_to_kg)).abs() < f64::EPSILON);
+    }
+
+    // ----- Slice 6.5 — per-layer Slacker recipe --------------------
+
+    #[test]
+    fn default_layer_has_no_slacker() {
+        // A fresh layer is plain base silicone — no Slacker.
+        let layers = LayersState::default_for_scan();
+        assert!(approx_eq(layers.layers[0].slacker_fraction, 0.0, 1e-12));
+    }
+
+    #[test]
+    fn resolve_slacker_fraction_keeps_on_curve_values() {
+        // A fraction that IS a data point on the base material's
+        // curve passes through unchanged.
+        assert!(approx_eq(
+            resolve_slacker_fraction("ECOFLEX_00_30", 0.25),
+            0.25,
+            1e-12,
+        ));
+        assert!(approx_eq(
+            resolve_slacker_fraction("DRAGON_SKIN_10A", 0.75),
+            0.75,
+            1e-12,
+        ));
+        // 0.0 (the native point) is on every curve.
+        assert!(approx_eq(
+            resolve_slacker_fraction("ECOFLEX_00_30", 0.0),
+            0.0,
+            1e-12,
+        ));
+    }
+
+    #[test]
+    fn resolve_slacker_fraction_resets_orphaned_values() {
+        // 0.75 is on the Dragon Skin 10A curve but NOT the Ecoflex
+        // curves (Ecoflex caps at 0.50) — switching base material
+        // to an Ecoflex orphans it, so it resets to 0.0.
+        assert!(approx_eq(
+            resolve_slacker_fraction("ECOFLEX_00_30", 0.75),
+            0.0,
+            1e-12,
+        ));
+        // An arbitrary off-curve value resets too.
+        assert!(approx_eq(
+            resolve_slacker_fraction("ECOFLEX_00_30", 0.123),
+            0.0,
+            1e-12,
+        ));
+        // Bases with no Slacker curve always resolve to 0.0.
+        assert!(approx_eq(
+            resolve_slacker_fraction("ECOFLEX_00_10", 0.25),
+            0.0,
+            1e-12,
+        ));
+        assert!(approx_eq(
+            resolve_slacker_fraction("DRAGON_SKIN_15", 0.25),
+            0.0,
+            1e-12,
+        ));
+    }
+
+    #[test]
+    fn slacker_recipe_grams_splits_pour_mass_by_ratio() {
+        // No Slacker: the pour is pure base silicone, 1:1 A:B.
+        let (ab, slk) = slacker_recipe_grams(0.200, 0.0);
+        assert!(approx_eq(ab, 100.0, 1e-9), "part A/B = {ab}");
+        assert!(approx_eq(slk, 0.0, 1e-9), "slacker = {slk}");
+
+        // 50 % Slacker on a 300 g pour → 100 g A + 100 g B + 100 g
+        // Slacker (the TB's "100A + 100B + 100 Slacker" row).
+        let (ab, slk) = slacker_recipe_grams(0.300, 0.50);
+        assert!(approx_eq(ab, 100.0, 1e-9), "part A/B = {ab}");
+        assert!(approx_eq(slk, 100.0, 1e-9), "slacker = {slk}");
+
+        // 25 % Slacker: A + B + Slacker must sum back to the pour
+        // mass, and Slacker must be 0.25 × the base A+B mass.
+        let (ab, slk) = slacker_recipe_grams(0.250, 0.25);
+        assert!(approx_eq(2.0 * ab + slk, 250.0, 1e-9));
+        assert!(approx_eq(slk, 0.25 * 2.0 * ab, 1e-9));
+    }
+
+    #[test]
+    fn slacker_point_label_distinguishes_native_from_slacker_points() {
+        // The native (0.0) point reads "No Slacker"; a Slacker
+        // point carries its percentage, hardness, and tack.
+        let slacker::Support::Curve(curve) = slacker::support("ECOFLEX_00_30") else {
+            unreachable!("Ecoflex 00-30 has a Slacker curve");
+        };
+        assert_eq!(slacker_point_label(&curve[0]), "No Slacker — Shore 00-30",);
+        assert_eq!(
+            slacker_point_label(&curve[1]),
+            "+25% Slacker — Shore 000-40 (slight-to-very tack)",
+        );
     }
 }
