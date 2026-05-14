@@ -1867,6 +1867,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-cast-cli"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-cast",
+ "cf-design",
+ "cf-geometry",
+ "clap",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-sdf",
+ "nalgebra",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "cf-design"
 version = "1.0.0"
 dependencies = [
@@ -1889,6 +1907,25 @@ dependencies = [
  "sim-core",
  "sim-mjcf",
  "tempfile",
+]
+
+[[package]]
+name = "cf-device-design"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "bevy_egui",
+ "cf-bevy-common",
+ "cf-viewer",
+ "clap",
+ "mesh-io",
+ "mesh-repair",
+ "mesh-types",
+ "meshopt",
+ "nalgebra",
+ "serde",
+ "toml",
 ]
 
 [[package]]

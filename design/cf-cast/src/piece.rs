@@ -13,7 +13,7 @@
 //! free function [`compose_piece_solid`] that wires the formula
 //! together over [`cf_design::Solid`]'s
 //! `subtract` / `intersect` algebra; the resulting `Solid` is ready
-//! to feed into [`crate::mesher::solid_to_mm_mesh`] in Step 6's
+//! to feed into the internal `solid_to_mm_mesh` mesher in Step 6's
 //! per-piece marching-cubes pipeline.
 //!
 //! # v1 vs v2 mold cup
@@ -70,7 +70,7 @@ pub const RIBBON_PIECE_OVERLAP_M: f64 = 0.0005;
 /// SDF is **negative inside the piece** (i.e., inside the bounding
 /// region, outside the layer body, on the correct side of the
 /// biased ribbon half-space). Step 6's per-piece marching cubes
-/// passes this Solid through [`crate::mesher::solid_to_mm_mesh`].
+/// passes this Solid through the internal `solid_to_mm_mesh` mesher.
 ///
 /// `bounding_region` and `layer_body` are taken by reference and
 /// cloned into the result; the underlying [`cf_design::Solid`] is

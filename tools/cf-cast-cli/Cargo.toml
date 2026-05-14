@@ -1,0 +1,81 @@
+[package]
+name = "cf-cast-cli"
+description = "Scan → cast bridge CLI — reads cleaned STL + .prep.toml + cast.toml, derives a v2.1 cf-cast spec, writes mold pieces + plugs + procedure markdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace tool; no `[package.metadata.cortenforge]` block — tier
+# metadata is for sim L0/L1 libraries, not workspace tools (matches
+# `tools/cf-scan-prep` precedent).
+
+[[bin]]
+name = "cf-cast-cli"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# v2 cf-cast surface: CastSpec + CastLayer + MoldingMaterial +
+# DEFAULT_MASS_BUDGET_KG + Ribbon/SplitNormal + PinSpec +
+# RegistrationKind + PourGateSpec + PourGateKind + PlugPinSpec +
+# PlugPinKind. The CLI is a thin orchestrator that lifts the v2
+# example crate's bespoke synthetic-pipe constants into TOML +
+# auto-derives the matching scan-SDF geometry.
+cf-cast = { workspace = true }
+# `Solid::from_sdf` (scan SDF → typed Solid kernel) +
+# `Solid::offset` (cumulative outer-shell construction) +
+# `Solid::cuboid` (default bounding region).
+cf-design = { workspace = true }
+# `IndexedMesh` for the scan-mesh container + the cf-design Aabb
+# alias re-export.
+cf-geometry = { workspace = true }
+# `load_stl` for the cleaned scan STL.
+mesh-io = { workspace = true }
+# `SignedDistanceField::new` over the loaded scan mesh — used as
+# the cf-design Sdf source for plug + layer body derivation.
+mesh-sdf = { workspace = true }
+# `PrinterConfig::fdm_default` + `with_min_wall_thickness` — same
+# F4 surface the v2 example uses.
+mesh-printability = { workspace = true }
+# `Point3` + `Vector3` for the centerline polyline + SplitNormal.
+nalgebra = { workspace = true }
+# `Result<()>` + `Context::with_context` for the CLI-facing error
+# chain — matches `tools/cf-scan-prep` posture.
+anyhow = { workspace = true }
+# `cast.toml` deserialization + `.prep.toml` centerline parsing.
+serde = { workspace = true }
+toml = { workspace = true }
+# CLI argument parsing (positional cast.toml path + optional output
+# dir override). `clap` is a direct dep with `derive` (matches
+# `tools/cf-scan-prep` precedent — clap has no workspace pin).
+clap = { version = "4", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dev-dependencies]
+# `tempfile` for the end-to-end integration test's scratch dir, and
+# round-trip tests of cast.toml + .prep.toml parsing without
+# polluting the workspace.
+tempfile = "3"
+# `mesh_io::save_stl` for the integration test's synthetic-cube
+# fixture (writes the scan STL the bridge then loads end-to-end).
+mesh-io = { workspace = true }
+# `cf_geometry::IndexedMesh::new` + face push for the same fixture.
+cf-geometry = { workspace = true }
+# `cf_cast::DEFAULT_MASS_BUDGET_KG` for the integration test's
+# under-budget assertion.
+cf-cast = { workspace = true }
+# `Point3` for the synthetic cube's vertices.
+nalgebra = { workspace = true }

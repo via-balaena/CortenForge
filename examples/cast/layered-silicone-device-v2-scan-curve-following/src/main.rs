@@ -13,27 +13,27 @@
 //!   `2L mold piece STLs + L plug STLs = 3L` files (9 files for a
 //!   3-layer cast vs v1's 4).
 //! - **Step 7**: per-piece printability — each piece's AABB checked
-//!   against [`PrinterConfig::fdm_default`]'s build volume
-//!   independently via `mesh-printability::validate_for_printing`.
+//!   against `mesh_printability::PrinterConfig::fdm_default`'s build
+//!   volume independently via `mesh_printability::validate_for_printing`.
 //! - **Step 8**: v2.1 procedure markdown via
 //!   [`CastSpec::write_procedure_v2`] — includes Cast Geometry,
 //!   v2 Mold Assembly (with Plug Anchor sub-section), Pour Gate +
 //!   Vent, per-layer procedure, and Post-Cure Assembly + Disassembly
 //!   sections.
 //! - **Step 9**: cylindrical inter-piece registration pins enabled
-//!   via [`Ribbon::with_registration`]
-//!   ([`RegistrationKind::Pins(PinSpec::iter1())`]) — 2 pins per
+//!   via [`Ribbon::with_registration`] with
+//!   `RegistrationKind::Pins(PinSpec::iter1())` — 2 pins per
 //!   layer-piece-pair at 25%/75% of centerline arc length, 3 mm Ø ×
 //!   10 mm long × 25 mm offset from the centerline.
 //! - **Step 10 + v2.1 sub-leaves 2-3**: side-mounted pour gate +
-//!   apex air vent via [`Ribbon::with_pour_gate`]
-//!   ([`PourGateKind::Default(PourGateSpec::iter1())`]) — 6 mm Ø
+//!   apex air vent via [`Ribbon::with_pour_gate`] with
+//!   `PourGateKind::Default(PourGateSpec::iter1())` — 6 mm Ø
 //!   side-mounted pour gate at the centerline midpoint along the
 //!   ribbon binormal + 2 mm Ø apex vent at the polyline's argmax-z
 //!   vertex along `+Z`.
 //! - **v2.1 sub-leaf 1**: axial plug-anchor pin + matching mold
-//!   socket via [`Ribbon::with_plug_pins`]
-//!   ([`PlugPinKind::Axial(PlugPinSpec::iter1())`]) — 6 mm Ø ×
+//!   socket via [`Ribbon::with_plug_pins`] with
+//!   `PlugPinKind::Axial(PlugPinSpec::iter1())` — 6 mm Ø ×
 //!   28 mm long pin on the pour end of each per-layer plug;
 //!   matching socket carved into each mold piece's cup wall.
 //!
@@ -168,7 +168,7 @@ const MESH_CELL_SIZE_M: f64 = 0.003;
 /// cap apex while still terminating as a **blind hole** inside
 /// the bounding region's cup wall.
 ///
-/// Geometry: centerline[0] = `(-0.040, 0, 0)`; first-segment
+/// Geometry: `centerline[0]` = `(-0.040, 0, 0)`; first-segment
 /// tangent ≈ `(+0.97, 0, +0.24)`. Pin axis = `-tangent` (outward).
 /// At the new 80 mm bounding half-extent, the bounding-region
 /// outer face sits ~41 mm from the centerline endpoint along this

@@ -435,7 +435,7 @@ impl RecenterState {
     /// Project the physics-frame mm translation into a Bevy-world-space
     /// `Vec3`. Applies the `UpAxis::PlusZ` swap (physics `(x, y, z)` →
     /// bevy `(x, z, y)`) and the `render_scale` lift in one step so
-    /// `apply_recenter_to_transform` can write the result directly to
+    /// `apply_world_transform_to_scan_entity` can fold the result into
     /// `Transform.translation`.
     fn translation_world(self, up: UpAxis, render_scale: f32) -> Vec3 {
         let translation_m =
@@ -1032,18 +1032,26 @@ fn compute_centerline_polyline(
 
 /// Project a physics-frame mesh-local point through the live
 /// Reorient + Recenter + render_scale + up-axis-swap pipeline into
-/// Bevy world-space. Used by the cap-overlay drawing system to
-/// position loop vertices + centerline polyline points in the
-/// viewport so they track the user's current transforms.
+/// Bevy world-space, with rotation pivoted around the scan's raw
+/// AABB centroid (Bevy-frame, post-swap, post-scale —
+/// [`OverlayLengths::bbox_center_bevy`]).
+///
+/// Mirror of [`apply_world_transform_to_scan_entity`]'s Transform
+/// composition so cap-overlay loop vertices + centerline polyline
+/// points track the mesh exactly. Used by `draw_cap_overlays`.
 fn project_mesh_local_to_world(
     physics_local: &Point3<f64>,
     up: UpAxis,
     reorient_rotation_bevy: Quat,
     recenter_world: Vec3,
     render_scale: f32,
+    bbox_center_bevy: Vec3,
 ) -> Vec3 {
-    let bevy_local = Vec3::from_array(up.to_bevy_point(physics_local));
-    recenter_world + reorient_rotation_bevy * (bevy_local * render_scale)
+    let bevy_local_scaled = Vec3::from_array(up.to_bevy_point(physics_local)) * render_scale;
+    // R * (bevy_local_scaled - c) + c + recenter
+    let centered = bevy_local_scaled - bbox_center_bevy;
+    let rotated_centered = reorient_rotation_bevy * centered;
+    recenter_world + rotated_centered + bbox_center_bevy
 }
 
 /// Triangulate a 2D simple polygon via ear-clipping. Input: ordered
@@ -1226,17 +1234,22 @@ fn build_cleaned_mesh(
         recenter.ty_mm * 0.001,
         recenter.tz_mm * 0.001,
     );
+    // Pivot the bake rotation around the raw scan AABB centroid so
+    // rotation rotates the mesh in place (matches the viewport's
+    // centroid-pivot Transform composition). Empty mesh → centroid
+    // at origin (matches `IndexedMesh::aabb()` returning
+    // `Aabb::empty()`); the loop below is a no-op anyway.
+    let centroid = scan.aabb().center();
 
     let mut out = scan.clone();
 
-    // Step 2: bake transforms. Compute rotated + translated position
-    // for each vertex from the ORIGINAL (pre-bake) coordinates so cap
-    // triangulation can still reference the original positions for
-    // plane fit etc. We then mutate `out.vertices` in place.
+    // Step 2: bake transforms. Compute centroid-pivoted rotation +
+    // recenter translation for each vertex from the ORIGINAL
+    // (pre-bake) coordinates so cap triangulation can still reference
+    // the original positions for plane fit etc. We then mutate
+    // `out.vertices` in place.
     for v in out.vertices.iter_mut() {
-        let rotated = rotation.transform_vector(&v.coords);
-        let world = rotated + translation;
-        *v = Point3::from(world);
+        *v = bake_vertex_with_pivot(v, rotation, &centroid, translation);
     }
 
     // Step 3: triangulate + append included caps. Loop vertex
@@ -1250,9 +1263,11 @@ fn build_cleaned_mesh(
             continue;
         }
         // Loop's stored `plane_centroid` and `plane_normal` are in
-        // pre-bake physics-local frame. We need them in world frame
-        // to project the now-transformed loop vertices.
-        let centroid_world = rotation.transform_point(&cap_loop.plane_centroid) + translation;
+        // pre-bake physics-local frame. Bake centroid through the
+        // same pivot transform as the vertices; rotate the plane
+        // normal (a direction, no pivot or translation).
+        let centroid_world =
+            bake_vertex_with_pivot(&cap_loop.plane_centroid, rotation, &centroid, translation);
         let normal_world = rotation.transform_vector(&cap_loop.plane_normal);
 
         let loop_points_world: Vec<Point3<f64>> = cap_loop
@@ -1391,6 +1406,12 @@ struct PrepOutputBlock {
 /// Includes provenance for every transform / cap / centerline so
 /// v2 cf-cast (or a future audit) can reconstruct what cf-scan-prep
 /// did to produce the cleaned STL.
+///
+/// `pivot_centroid_m` is the raw scan AABB centroid (in physics-frame
+/// meters). The centerline polyline is baked through the same
+/// centroid-pivot transform `bake_vertex_with_pivot` uses for mesh
+/// vertices, so the polyline coordinates emitted into `.prep.toml`
+/// agree with the cleaned STL on disk.
 #[allow(clippy::too_many_arguments)]
 fn build_prep_toml_string(
     source_stl: &Path,
@@ -1402,19 +1423,26 @@ fn build_prep_toml_string(
     cleaned_stl_name: &str,
     rotation_for_centerline: UnitQuaternion<f64>,
     translation_for_centerline_m: Vector3<f64>,
+    pivot_centroid_m: Point3<f64>,
 ) -> Result<String> {
     let q = reorient.quaternion_physics();
     let timestamp = chrono_like_timestamp();
 
     // Project the centerline polyline into world frame so v2 cf-cast
     // can consume it directly without redoing Reorient+Recenter math.
+    // Same centroid-pivot transform as `build_cleaned_mesh` uses for
+    // mesh vertices.
     let centerline_world: Vec<[f64; 3]> = cap
         .centerline_polyline
         .iter()
         .map(|p| {
-            let rotated = rotation_for_centerline.transform_vector(&p.coords);
-            let world = rotated + translation_for_centerline_m;
-            [world.x, world.y, world.z]
+            let baked = bake_vertex_with_pivot(
+                p,
+                rotation_for_centerline,
+                &pivot_centroid_m,
+                translation_for_centerline_m,
+            );
+            [baked.x, baked.y, baked.z]
         })
         .collect();
 
@@ -1587,10 +1615,20 @@ fn atomic_write_save(
 /// because the Recenter sliders + status messages all work in mm
 /// (workshop convention; matches the Scan Info panel's AABB display
 /// units).
-fn rotated_aabb_physics_mm(
+fn rotated_aabb_around_centroid_physics_mm(
     rot_physics: UnitQuaternion<f64>,
     raw_aabb_m: &Aabb,
 ) -> (Vector3<f64>, Vector3<f64>) {
+    // Pivot rotation around the raw AABB centroid: corner_centered =
+    // corner - centroid, rotated_centered = R * corner_centered,
+    // world = rotated_centered + centroid. This keeps the mesh
+    // ROTATING IN PLACE — the AABB CENTER stays at `centroid * 1000`
+    // mm regardless of `rot_physics`; only the AABB extents rotate.
+    // Without this pivot the [Center origin] / [Floor -> z=0] click
+    // handlers would compute the FULL swing of the off-origin mesh
+    // through space, which the user perceives as "rotation moves the
+    // model" rather than "rotation rotates the model in place".
+    let centroid = raw_aabb_m.center();
     let lo = raw_aabb_m.min;
     let hi = raw_aabb_m.max;
     let mut min_mm = Vector3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
@@ -1598,18 +1636,139 @@ fn rotated_aabb_physics_mm(
     for &x in &[lo.x, hi.x] {
         for &y in &[lo.y, hi.y] {
             for &z in &[lo.z, hi.z] {
-                let corner_mm = Vector3::new(x * 1000.0, y * 1000.0, z * 1000.0);
-                let rotated = rot_physics.transform_vector(&corner_mm);
-                min_mm.x = min_mm.x.min(rotated.x);
-                min_mm.y = min_mm.y.min(rotated.y);
-                min_mm.z = min_mm.z.min(rotated.z);
-                max_mm.x = max_mm.x.max(rotated.x);
-                max_mm.y = max_mm.y.max(rotated.y);
-                max_mm.z = max_mm.z.max(rotated.z);
+                let centered_mm = Vector3::new(
+                    (x - centroid.x) * 1000.0,
+                    (y - centroid.y) * 1000.0,
+                    (z - centroid.z) * 1000.0,
+                );
+                let rotated_centered = rot_physics.transform_vector(&centered_mm);
+                let world_mm = Vector3::new(
+                    rotated_centered.x + centroid.x * 1000.0,
+                    rotated_centered.y + centroid.y * 1000.0,
+                    rotated_centered.z + centroid.z * 1000.0,
+                );
+                min_mm.x = min_mm.x.min(world_mm.x);
+                min_mm.y = min_mm.y.min(world_mm.y);
+                min_mm.z = min_mm.z.min(world_mm.z);
+                max_mm.x = max_mm.x.max(world_mm.x);
+                max_mm.y = max_mm.y.max(world_mm.y);
+                max_mm.z = max_mm.z.max(world_mm.z);
             }
         }
     }
     (min_mm, max_mm)
+}
+
+/// Bake a physics-frame point through Reorient + Recenter with the
+/// rotation pivoted at `centroid` (the scan's raw AABB centroid).
+/// Returns the world-frame point:
+///
+/// ```text
+/// world = rotation * (point - centroid) + centroid + translation_m
+/// ```
+///
+/// The centroid pivot is what makes rotation feel like "rotate in
+/// place" — without it, rotating an off-origin mesh swings the
+/// centroid through space because the bake formula pivots at the
+/// physics-frame origin by default. The pivot compensation
+/// `(I - R) * centroid` is folded into the bake formula uniformly
+/// so the cleaned STL on disk, the viewport mesh + wireframe, and
+/// the cap / centerline overlays all agree.
+fn bake_vertex_with_pivot(
+    point: &Point3<f64>,
+    rotation: UnitQuaternion<f64>,
+    centroid: &Point3<f64>,
+    translation_m: Vector3<f64>,
+) -> Point3<f64> {
+    let centered = point.coords - centroid.coords;
+    let rotated_centered = rotation.transform_vector(&centered);
+    Point3::from(rotated_centered + centroid.coords + translation_m)
+}
+
+/// Compute the principal-axis rotation that aligns a scan's
+/// long axis with `+Z` (the cast-frame demolding axis per
+/// [`SCAN_UP_AXIS`]).
+///
+/// PCA on the mean-centered vertex positions: 3×3 covariance,
+/// symmetric eigendecomposition, principal eigenvector = the
+/// largest-variance direction (the "long axis" of the scan). The
+/// returned [`UnitQuaternion`] is the shortest rotation that maps
+/// that principal axis to `+Z`.
+///
+/// Sign convention: the principal eigenvector is determined only
+/// up to sign. This helper picks the side whose `z` component is
+/// non-negative (i.e., the side already closer to `+Z`) — the
+/// resulting rotation is therefore at most 90° from identity.
+/// Users who want the opposite end pointed up flip post-hoc with
+/// a 180° follow-on rotation (e.g. by setting roll = 180°).
+///
+/// Returns `None` for:
+/// - fewer than 3 vertices (PCA underdetermined)
+/// - degenerate mesh whose covariance has all near-zero
+///   eigenvalues (all vertices coincident; no principal axis)
+///
+/// **Resolves cf-scan-prep deferred item §5 "Auto-PCA initial
+/// orientation guess"** from `docs/SCAN_PREP_DESIGN.md` — the
+/// manual-slider Reorient panel introduces tilt that propagates
+/// downstream to the cleaned STL + centerline + (via cf-cast-cli)
+/// the mold geometry. Auto-PCA gives a deterministic starting
+/// orientation that the user can then nudge with the existing
+/// sliders.
+fn compute_pca_orientation(vertices: &[Point3<f64>]) -> Option<UnitQuaternion<f64>> {
+    if vertices.len() < 3 {
+        return None;
+    }
+
+    // Mean-center.
+    let n = vertices.len() as f64;
+    let mut centroid = Vector3::zeros();
+    for v in vertices {
+        centroid += v.coords;
+    }
+    centroid /= n;
+
+    // 3×3 covariance accumulation (Σ d · d^T / n). Symmetric by
+    // construction, so we use SymmetricEigen for the
+    // eigendecomposition below.
+    let mut cov = Matrix3::zeros();
+    for v in vertices {
+        let d = v.coords - centroid;
+        cov += d * d.transpose();
+    }
+    cov /= n;
+
+    let eigen = cov.symmetric_eigen();
+
+    // Largest eigenvalue's column = principal axis.
+    let (mut max_i, mut max_val) = (0_usize, eigen.eigenvalues[0]);
+    for i in 1..3 {
+        if eigen.eigenvalues[i] > max_val {
+            max_i = i;
+            max_val = eigen.eigenvalues[i];
+        }
+    }
+    // Degeneracy guard: all-zero (or all near-zero) eigenvalues =
+    // no meaningful principal direction (e.g. all vertices
+    // coincident). Threshold relative to the largest eigenvalue
+    // scale; absolute 1e-30 m² catches the all-zeros case
+    // independently.
+    if max_val <= 1e-30 {
+        return None;
+    }
+    let mut principal: Vector3<f64> = eigen.eigenvectors.column(max_i).into_owned();
+
+    // Sign pick: orient the principal axis toward `+Z` so the
+    // resulting rotation is the SHORTEST rotation (≤ 90°).
+    if principal.z < 0.0 {
+        principal = -principal;
+    }
+
+    // `rotation_between` returns `None` for anti-parallel inputs;
+    // the sign-pick above ensures `principal.z >= 0`, so the
+    // anti-parallel case (principal == -Z) is precluded. Identity
+    // case (principal == +Z, already aligned) yields the identity
+    // quaternion.
+    UnitQuaternion::rotation_between(&principal, &Vector3::z())
 }
 
 /// Pre-computed always-on viewport overlay geometry, cached at startup
@@ -1933,20 +2092,19 @@ fn run_render_app(
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
         // Apply/Reset handler runs before auto-clear so a newly-set
         // status's TTL is checked against the same tick's `Time`.
-        // `apply_reorient_to_transform` + `apply_recenter_to_transform`
-        // are idempotent (no-op when the desired Bevy rotation /
-        // translation already match the entity's current Transform)
-        // so order vs. the others doesn't change steady-state
-        // behavior. Both write to disjoint channels (rotation /
-        // translation) of the same component, so they're conflict-free
-        // beyond the Bevy scheduler's per-entity serialization.
+        // `apply_world_transform_to_scan_entity` is idempotent (no-op
+        // when the desired Bevy rotation / translation already match
+        // the entity's current Transform) so order vs. the others
+        // doesn't change steady-state behavior. The earlier split
+        // between reorient + recenter systems merged into one because
+        // the centroid-pivot compensation couples translation to
+        // rotation.
         .add_systems(
             Update,
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 handle_simplify_actions,
-                apply_reorient_to_transform,
-                apply_recenter_to_transform,
+                apply_world_transform_to_scan_entity,
                 update_clip_drop_pct,
                 handle_cap_actions,
                 handle_save_action,
@@ -2226,59 +2384,56 @@ fn respawn_scan_entity(
     commands.entity(entity).insert(ScanMeshEntity);
 }
 
-/// Update system: project the current `ReorientState` quaternion onto
-/// the `ScanMeshEntity`'s Bevy `Transform` component every tick.
-/// Per spec §6 implementation arc: "Live transforms via Bevy
-/// `Transform` component, not mesh rebuild — slider drags update one
-/// component value, no per-tick vertex-buffer copy."
+/// Update system: project the current `ReorientState` + `RecenterState`
+/// onto the `ScanMeshEntity`'s Bevy `Transform` component every tick,
+/// pivoting the rotation around the scan's raw AABB centroid so the
+/// mesh visually rotates in place.
 ///
-/// Cheap by design: a single `Quat` derivation + per-entity equality
-/// check + (only if different) one `Transform.rotation` write. The
-/// equality check is the steady-state optimization — when the user
-/// isn't touching the panel and the rotation hasn't changed, this
-/// system is effectively a no-op.
+/// Bevy's `Transform` composes as `world_pos = translation + rotation *
+/// (local_pos * scale)`. To pivot rotation around the centroid (in
+/// scaled bevy-local space, that's [`OverlayLengths::bbox_center_bevy`])
+/// we solve for the translation that keeps the centroid fixed under
+/// rotation:
 ///
-/// Runs every Update tick regardless of `ReorientState::is_changed()`
-/// because the `ScanMeshEntity` itself can be re-spawned by
-/// `handle_simplify_actions` with an identity rotation; this system
-/// then restores the user's reorient on the next tick automatically
-/// without bespoke threading through the respawn path.
+/// ```text
+/// world_centroid = T + R * c_bevy  (Bevy's formula)
+/// pivot-rotation wants: world_centroid = recenter_world + c_bevy
+/// →  T = recenter_world + (I - R) * c_bevy
+/// ```
+///
+/// Cheap by design: per-entity equality check; only writes when
+/// rotation or translation differs from the existing Transform. Runs
+/// every Update tick regardless of input-`is_changed` flags because
+/// `ScanMeshEntity` can be re-spawned by `handle_simplify_actions`
+/// with an identity Transform; this system then restores the live
+/// transforms on the next tick automatically.
+///
+/// Replaces the prior split `apply_reorient_to_transform` +
+/// `apply_recenter_to_transform` systems — those wrote disjoint
+/// channels (rotation / translation) of the same component, but the
+/// centroid-pivot compensation introduces a rotation-dependency in
+/// the translation channel, so the two channels are no longer
+/// independent and the systems merge into one.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn apply_reorient_to_transform(
-    state: Res<ReorientState>,
-    mut entities: Query<&mut Transform, With<ScanMeshEntity>>,
-) {
-    let q_bevy = physics_quat_to_bevy_for_plus_z(state.quaternion_physics());
-    for mut transform in &mut entities {
-        if transform.rotation != q_bevy {
-            transform.rotation = q_bevy;
-        }
-    }
-}
-
-/// Update system: project the current `RecenterState` translation onto
-/// the `ScanMeshEntity`'s Bevy `Transform.translation` every tick.
-/// Mirror of [`apply_reorient_to_transform`] for the translation
-/// channel — same idempotent equality-check pattern; same automatic
-/// re-application after `handle_simplify_actions` respawns the entity
-/// with identity Transform.
-///
-/// Bevy's `Transform` composes as `world_pos = translation +
-/// rotation * (local_pos * scale)`, so this system writing
-/// `translation` while [`apply_reorient_to_transform`] writes
-/// `rotation` is conflict-free — the two channels compose into the
-/// final world transform without either overwriting the other.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn apply_recenter_to_transform(
-    state: Res<RecenterState>,
+fn apply_world_transform_to_scan_entity(
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+    overlays: Res<OverlayLengths>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut entities: Query<&mut Transform, With<ScanMeshEntity>>,
 ) {
-    let target = state.translation_world(*up, render_scale.0);
+    let rotation_bevy = physics_quat_to_bevy_for_plus_z(reorient.quaternion_physics());
+    let recenter_world = recenter.translation_world(*up, render_scale.0);
+    // (I - R) * c_bevy = pivot compensation.
+    let pivot_compensation = overlays.bbox_center_bevy - rotation_bevy * overlays.bbox_center_bevy;
+    let target_translation = recenter_world + pivot_compensation;
     for mut transform in &mut entities {
-        if transform.translation != target {
-            transform.translation = target;
+        if transform.rotation != rotation_bevy {
+            transform.rotation = rotation_bevy;
+        }
+        if transform.translation != target_translation {
+            transform.translation = target_translation;
         }
     }
 }
@@ -2334,13 +2489,15 @@ fn draw_reference_overlays(
     gizmos.arrow(Vec3::ZERO, Vec3::Y * l, Color::srgb(0.40, 0.60, 1.00));
 
     // Transformed bbox wireframe — composes the live Reorient rotation
-    // + Recenter translation in the same `translation + rotation × ...`
-    // order that Bevy uses for `ScanMeshEntity.Transform`, so the
-    // wireframe stays glued to the mesh through both panels' edits.
+    // + Recenter translation under centroid-pivot rotation, matching
+    // `apply_world_transform_to_scan_entity`. The wireframe center sits
+    // at the mesh centroid in world frame regardless of rotation
+    // (centroid is the pivot point); only the wireframe orientation +
+    // its translation under Recenter change.
     let rotation = physics_quat_to_bevy_for_plus_z(reorient.quaternion_physics());
     let recenter_world = recenter.translation_world(*up, render_scale.0);
     let wireframe_transform = Transform {
-        translation: recenter_world + rotation * overlays.bbox_center_bevy,
+        translation: recenter_world + overlays.bbox_center_bevy,
         rotation,
         scale: overlays.bbox_dims_bevy,
     };
@@ -2491,6 +2648,7 @@ fn draw_cap_overlays(
     scan: Res<ScanMesh>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
+    overlays: Res<OverlayLengths>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
@@ -2500,6 +2658,7 @@ fn draw_cap_overlays(
     }
     let rotation_bevy = physics_quat_to_bevy_for_plus_z(reorient.quaternion_physics());
     let recenter_world = recenter.translation_world(*up, render_scale.0);
+    let bbox_center_bevy = overlays.bbox_center_bevy;
 
     // Dim factor: stale caps draw at 35% brightness so they read as
     // "needs refresh" without disappearing.
@@ -2540,6 +2699,7 @@ fn draw_cap_overlays(
                     rotation_bevy,
                     recenter_world,
                     render_scale.0,
+                    bbox_center_bevy,
                 )
             })
             .collect();
@@ -2559,7 +2719,14 @@ fn draw_cap_overlays(
             .centerline_polyline
             .iter()
             .map(|p| {
-                project_mesh_local_to_world(p, *up, rotation_bevy, recenter_world, render_scale.0)
+                project_mesh_local_to_world(
+                    p,
+                    *up,
+                    rotation_bevy,
+                    recenter_world,
+                    render_scale.0,
+                    bbox_center_bevy,
+                )
             })
             .collect();
         for window in centerline_world.windows(2) {
@@ -2698,6 +2865,7 @@ fn scan_prep_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     overlays: Res<OverlayLengths>,
+    scan: Res<ScanMesh>,
     mut simplify_state: ResMut<SimplifyState>,
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
@@ -2732,7 +2900,7 @@ fn scan_prep_panel(
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
                     render_simplify_section(ui, &info, &mut simplify_state);
-                    render_reorient_section(ui, &mut reorient_state);
+                    render_reorient_section(ui, &mut reorient_state, &scan.0);
                     render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
                     render_clip_section(ui, &mut clip_state, &overlays);
                     render_cap_section(
@@ -2845,16 +3013,31 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
 ///
 /// The state mutation pattern matches `render_simplify_section`:
 /// `&mut state` flows through, slider drags update fields directly,
-/// snap buttons set known-good triples. `apply_reorient_to_transform`
+/// snap buttons set known-good triples. `apply_world_transform_to_scan_entity`
 /// consumes the state every Update tick and projects it onto the Bevy
 /// Transform.
-fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState) {
+fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState, mesh: &IndexedMesh) {
     egui::CollapsingHeader::new("Reorient")
         .default_open(true)
         .show(ui, |ui| {
             ui.add(egui::Slider::new(&mut state.roll_deg, -180.0..=180.0).text("roll (deg)"));
             ui.add(egui::Slider::new(&mut state.pitch_deg, -180.0..=180.0).text("pitch (deg)"));
             ui.add(egui::Slider::new(&mut state.yaw_deg, -180.0..=180.0).text("yaw (deg)"));
+
+            ui.add_space(4.0);
+            // Auto-orient — PCA on vertex positions, principal axis
+            // → +Z (cast-frame demolding convention). Closes
+            // SCAN_PREP_DESIGN.md deferred item §5. The resulting
+            // Euler angles drop straight into the slider source-of-
+            // truth so the user can still nudge afterwards.
+            if ui.button("Auto-orient (PCA)").clicked() {
+                if let Some(q) = compute_pca_orientation(&mesh.vertices) {
+                    let (roll, pitch, yaw) = q.euler_angles();
+                    state.roll_deg = roll.to_degrees();
+                    state.pitch_deg = pitch.to_degrees();
+                    state.yaw_deg = yaw.to_degrees();
+                }
+            }
 
             ui.add_space(4.0);
             // Five snap shortcuts for the common scanner-frame →
@@ -2935,16 +3118,26 @@ fn render_recenter_section(
             ui.add(egui::Slider::new(&mut state.tz_mm, -range..=range).text("Z (mm)"));
 
             ui.add_space(4.0);
+            // [Center origin]: under centroid-pivot rotation the AABB
+            // CENTER stays at the raw centroid regardless of rotation —
+            // so the math collapses to "translate the centroid to
+            // world origin," rotation-independent.
             if ui.button("Center origin").clicked() {
-                let (min_mm, max_mm) =
-                    rotated_aabb_physics_mm(reorient.quaternion_physics(), &overlays.raw_aabb_m);
-                state.tx_mm = -0.5 * (min_mm.x + max_mm.x);
-                state.ty_mm = -0.5 * (min_mm.y + max_mm.y);
-                state.tz_mm = -0.5 * (min_mm.z + max_mm.z);
+                let c = overlays.raw_aabb_m.center();
+                state.tx_mm = -c.x * 1000.0;
+                state.ty_mm = -c.y * 1000.0;
+                state.tz_mm = -c.z * 1000.0;
             }
+            // [Floor -> z=0]: needs the rotated mesh's minimum z; the
+            // centroid-pivot helper returns the rotated AABB whose
+            // center is the centroid in mm (so min.z reflects how the
+            // current rotation orients the mesh around its own
+            // centroid).
             if ui.button("Floor -> z=0").clicked() {
-                let (min_mm, _max_mm) =
-                    rotated_aabb_physics_mm(reorient.quaternion_physics(), &overlays.raw_aabb_m);
+                let (min_mm, _max_mm) = rotated_aabb_around_centroid_physics_mm(
+                    reorient.quaternion_physics(),
+                    &overlays.raw_aabb_m,
+                );
                 state.tz_mm = -min_mm.z;
             }
 
@@ -3256,6 +3449,7 @@ fn handle_save_action(
         recenter.ty_mm * 0.001,
         recenter.tz_mm * 0.001,
     );
+    let pivot_centroid_m = scan.0.aabb().center();
     let toml_str = match build_prep_toml_string(
         &source.0,
         stl_units.0,
@@ -3266,6 +3460,7 @@ fn handle_save_action(
         &format!("{stem}.cleaned.stl"),
         rotation,
         translation,
+        pivot_centroid_m,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -3315,6 +3510,12 @@ fn render_status_bar(ctx: &egui::Context, status: &StatusBar) {
 
 #[cfg(test)]
 mod tests {
+    // `unwrap()` + `expect()` are denied at the crate level for
+    // production safety; allow them inside tests so assertions can
+    // pull values out of `Option` / `Result` returns without writing
+    // multi-line `match` ceremony for every fixture build.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     use mesh_types::Point3;
@@ -3679,6 +3880,112 @@ mod tests {
         assert!(q.k.abs() < 1e-12);
     }
 
+    // ----- compute_pca_orientation ----------------------------------
+
+    /// Empty vertex slice returns `None` — PCA needs at least one
+    /// point to define a centroid, three to define a principal axis.
+    /// Pinned so a misuse at the call site surfaces visibly rather
+    /// than panicking inside `symmetric_eigen` on a zero matrix.
+    #[test]
+    fn pca_orientation_too_few_vertices_returns_none() {
+        let v: Vec<Point3<f64>> = vec![];
+        assert!(compute_pca_orientation(&v).is_none());
+        let v = vec![Point3::origin(), Point3::new(1.0, 0.0, 0.0)];
+        assert!(compute_pca_orientation(&v).is_none());
+    }
+
+    /// Coincident vertices have zero covariance → no principal axis.
+    /// Returns `None` rather than producing an arbitrary rotation
+    /// from numerical noise.
+    #[test]
+    fn pca_orientation_degenerate_coincident_returns_none() {
+        let v = vec![Point3::origin(); 10];
+        assert!(compute_pca_orientation(&v).is_none());
+    }
+
+    /// Vertices stretched along physics-frame `+X` produce a rotation
+    /// that maps `+X` to `+Z`. The shortest such rotation is `-90°`
+    /// about `+Y`; via `from_axis_angle` that's quaternion
+    /// `(cos(-45°), 0, sin(-45°), 0)`.
+    #[test]
+    fn pca_orientation_long_x_axis_rotates_x_to_z() {
+        // 11 points along +X with no spread on Y or Z. Length 1.0 m
+        // along X, zero variance on Y / Z → principal axis = +X
+        // (or -X; sign-pick flips to +X for positive z-target).
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(f64::from(i) * 0.1, 0.0, 0.0))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+
+        // Apply the rotation to +X — should land at +Z.
+        let rotated = q.transform_vector(&Vector3::x());
+        assert!((rotated.x).abs() < 1e-9, "rotated.x = {}", rotated.x);
+        assert!((rotated.y).abs() < 1e-9, "rotated.y = {}", rotated.y);
+        assert!((rotated.z - 1.0).abs() < 1e-9, "rotated.z = {}", rotated.z);
+    }
+
+    /// Vertices already long along `+Z` produce the identity
+    /// rotation — no work needed. Pins the "no-op fast path" against
+    /// silently producing a small rotation from FP noise.
+    #[test]
+    fn pca_orientation_long_z_axis_yields_identity() {
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(0.0, 0.0, f64::from(i) * 0.1))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+        assert!((q.w - 1.0).abs() < 1e-9, "q.w = {}", q.w);
+        assert!(q.i.abs() < 1e-9, "q.i = {}", q.i);
+        assert!(q.j.abs() < 1e-9, "q.j = {}", q.j);
+        assert!(q.k.abs() < 1e-9, "q.k = {}", q.k);
+    }
+
+    /// Sign-pick check: the principal eigenvector for vertices
+    /// stretched along `-Z` could come out as `+Z` or `-Z`; the
+    /// helper flips to `+Z` (the side closer to the `+Z` target) so
+    /// the resulting rotation is identity rather than a 180° flip.
+    /// Sigil for "no rotation needed when the long axis ALREADY
+    /// points up, even if the eigenvector signs out the other way."
+    #[test]
+    fn pca_orientation_sign_pick_prefers_positive_z() {
+        // 11 points along ±Z spanning 1 m, symmetric about origin.
+        // Centroid = origin; principal eigenvector axis = ±Z line.
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(0.0, 0.0, (f64::from(i) - 5.0) * 0.1))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+        // Identity — sign-pick collapsed both ±Z choices onto +Z.
+        assert!((q.w - 1.0).abs() < 1e-9, "q.w = {}", q.w);
+    }
+
+    /// Cuboid mass distribution with the long axis along physics
+    /// `+Y` produces a rotation that maps `+Y` to `+Z` — i.e. the
+    /// 90°-about-X rotation behind the existing `[Snap +Y -> +Z]`
+    /// button. Sanity check that PCA picks up dominant variance
+    /// along a non-axis-of-largest-index direction.
+    #[test]
+    fn pca_orientation_long_y_axis_rotates_y_to_z() {
+        // Cuboid: 0.05 m × 1.0 m × 0.05 m (long along +Y). Use 9
+        // points covering corners + center to mimic mass spread.
+        let v = vec![
+            Point3::new(-0.025, -0.5, -0.025),
+            Point3::new(0.025, -0.5, -0.025),
+            Point3::new(-0.025, 0.5, -0.025),
+            Point3::new(0.025, 0.5, -0.025),
+            Point3::new(-0.025, -0.5, 0.025),
+            Point3::new(0.025, -0.5, 0.025),
+            Point3::new(-0.025, 0.5, 0.025),
+            Point3::new(0.025, 0.5, 0.025),
+            Point3::origin(),
+        ];
+        let q = compute_pca_orientation(&v).unwrap();
+        let rotated = q.transform_vector(&Vector3::y());
+        assert!((rotated.x).abs() < 1e-9, "rotated.x = {}", rotated.x);
+        assert!((rotated.y).abs() < 1e-9, "rotated.y = {}", rotated.y);
+        assert!((rotated.z - 1.0).abs() < 1e-9, "rotated.z = {}", rotated.z);
+    }
+
+    // ----- physics_quat_to_bevy (continued) -------------------------
+
     /// Identity physics quaternion maps to identity Bevy quaternion
     /// under the `UpAxis::PlusZ` swap. Sanity check that the
     /// scalar-form conversion preserves identity.
@@ -3742,7 +4049,7 @@ mod tests {
         assert!((q_bevy.z - expected_pos_sin).abs() < 1e-6);
     }
 
-    // ----- RecenterState + rotated_aabb_physics_mm -------------------
+    // ----- RecenterState + rotated_aabb_around_centroid_physics_mm --
 
     /// Default state is all-zeros (no translation). Pinned because
     /// changing the default would silently translate every loaded
@@ -3776,15 +4083,16 @@ mod tests {
         assert!((world.y - 3.0).abs() < 1e-5);
     }
 
-    /// Identity rotation: `rotated_aabb_physics_mm` returns the raw
-    /// AABB scaled to mm with no axis permutation.
+    /// Identity rotation: `rotated_aabb_around_centroid_physics_mm`
+    /// returns the raw AABB scaled to mm with no axis permutation.
     #[test]
     fn rotated_aabb_identity_preserves_bounds_in_mm() {
         let raw = Aabb::from_corners(
             mesh_types::Point3::new(-0.05, -0.10, -0.15),
             mesh_types::Point3::new(0.05, 0.10, 0.15),
         );
-        let (min_mm, max_mm) = rotated_aabb_physics_mm(UnitQuaternion::identity(), &raw);
+        let (min_mm, max_mm) =
+            rotated_aabb_around_centroid_physics_mm(UnitQuaternion::identity(), &raw);
 
         assert!((min_mm.x + 50.0).abs() < 1e-9);
         assert!((min_mm.y + 100.0).abs() < 1e-9);
@@ -3816,7 +4124,7 @@ mod tests {
             &nalgebra::Vector3::x_axis(),
             std::f64::consts::FRAC_PI_2,
         );
-        let (min_mm, max_mm) = rotated_aabb_physics_mm(rot, &raw);
+        let (min_mm, max_mm) = rotated_aabb_around_centroid_physics_mm(rot, &raw);
 
         // X unchanged.
         assert!((min_mm.x + 50.0).abs() < 1e-6);
@@ -3828,6 +4136,128 @@ mod tests {
         // but symmetric bbox -> same bounds).
         assert!((min_mm.z + 100.0).abs() < 1e-6);
         assert!((max_mm.z - 100.0).abs() < 1e-6);
+    }
+
+    /// Off-center AABB under centroid-pivot rotation: the AABB CENTER
+    /// stays at the centroid (in mm) regardless of rotation; only the
+    /// extents rotate. Test load: AABB from `(0.10, -0.05, 0.20)` to
+    /// `(0.20, 0.05, 0.40)` — centroid at `(0.15, 0.0, 0.30)`. Under
+    /// `+90°` about Y the half-extents `(50, 50, 100)` mm in
+    /// `(x, y, z)` rotate to `(100, 50, 50)` mm. After translating the
+    /// rotated centered AABB back to centroid (in mm `(150, 0, 300)`),
+    /// the world AABB is centroid ± rotated_half_extents.
+    ///
+    /// **This test is THE pivot-vs-origin discriminator** — under the
+    /// old origin-pivot helper, the rotated AABB would be far from the
+    /// raw bbox; here we pin it to stay locked at the centroid.
+    #[test]
+    fn rotated_aabb_off_center_pivots_around_centroid_not_origin() {
+        let raw = Aabb::from_corners(
+            mesh_types::Point3::new(0.10, -0.05, 0.20),
+            mesh_types::Point3::new(0.20, 0.05, 0.40),
+        );
+        let rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let (min_mm, max_mm) = rotated_aabb_around_centroid_physics_mm(rot, &raw);
+
+        // Centroid in mm: (150, 0, 300).
+        // Half-extents before rotation (mm): (50, 50, 100) in (x,y,z).
+        // +90° about Y sends original X-half-extent (50) to Z and
+        // original Z-half-extent (100) to -X (-100 → magnitude 100 in
+        // X). So rotated half-extents: (100, 50, 50) in (x,y,z).
+        // World AABB: centroid ± rotated_half_extents.
+        assert!(
+            (min_mm.x - (150.0 - 100.0)).abs() < 1e-6,
+            "min.x = {}",
+            min_mm.x
+        );
+        assert!(
+            (max_mm.x - (150.0 + 100.0)).abs() < 1e-6,
+            "max.x = {}",
+            max_mm.x
+        );
+        assert!(
+            (min_mm.y - (0.0 - 50.0)).abs() < 1e-6,
+            "min.y = {}",
+            min_mm.y
+        );
+        assert!(
+            (max_mm.y - (0.0 + 50.0)).abs() < 1e-6,
+            "max.y = {}",
+            max_mm.y
+        );
+        assert!(
+            (min_mm.z - (300.0 - 50.0)).abs() < 1e-6,
+            "min.z = {}",
+            min_mm.z
+        );
+        assert!(
+            (max_mm.z - (300.0 + 50.0)).abs() < 1e-6,
+            "max.z = {}",
+            max_mm.z
+        );
+        // Center of the rotated world AABB == centroid in mm.
+        let center_x = 0.5 * (min_mm.x + max_mm.x);
+        let center_y = 0.5 * (min_mm.y + max_mm.y);
+        let center_z = 0.5 * (min_mm.z + max_mm.z);
+        assert!((center_x - 150.0).abs() < 1e-6);
+        assert!(center_y.abs() < 1e-6);
+        assert!((center_z - 300.0).abs() < 1e-6);
+    }
+
+    // ----- bake_vertex_with_pivot -----------------------------------
+
+    /// Identity rotation + zero translation: bake is the identity
+    /// transform (returns the input point unchanged regardless of
+    /// centroid). Confirms the formula `R*(v-c)+c+t` collapses to `v`
+    /// at the trivial case.
+    #[test]
+    fn bake_vertex_with_pivot_identity_is_passthrough() {
+        let v = Point3::new(0.5, -0.3, 1.2);
+        let c = Point3::new(0.1, 0.2, 0.3);
+        let baked = bake_vertex_with_pivot(&v, UnitQuaternion::identity(), &c, Vector3::zeros());
+        assert!((baked.x - v.x).abs() < 1e-12);
+        assert!((baked.y - v.y).abs() < 1e-12);
+        assert!((baked.z - v.z).abs() < 1e-12);
+    }
+
+    /// Centroid itself is fixed under any pivot rotation (rotation
+    /// around centroid leaves the centroid in place by definition).
+    /// Translation shifts it linearly.
+    #[test]
+    fn bake_vertex_with_pivot_centroid_is_fixed_point() {
+        let c = Point3::new(0.15, 0.0, 0.30);
+        let rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let t = Vector3::new(0.05, -0.10, 0.20);
+        let baked = bake_vertex_with_pivot(&c, rot, &c, t);
+        // baked = R*(c-c)+c+t = c+t
+        assert!((baked.x - (c.x + t.x)).abs() < 1e-12);
+        assert!((baked.y - (c.y + t.y)).abs() < 1e-12);
+        assert!((baked.z - (c.z + t.z)).abs() < 1e-12);
+    }
+
+    /// 180° rotation around an off-origin centroid reflects every
+    /// point through the centroid. Sigil: an off-origin vertex
+    /// reflected through a non-origin pivot does NOT land at the
+    /// origin-reflected position — the pivot matters.
+    #[test]
+    fn bake_vertex_with_pivot_180_reflects_through_centroid() {
+        let v = Point3::new(0.20, 0.0, 0.30);
+        let c = Point3::new(0.15, 0.0, 0.30);
+        let rot =
+            UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), std::f64::consts::PI);
+        let baked = bake_vertex_with_pivot(&v, rot, &c, Vector3::zeros());
+        // Reflection of v through c on the X axis: c.x - (v.x - c.x) = 0.10.
+        // (Y axis 180° rotation also flips Z, but z component of v - c
+        // is 0, so z stays at c.z = 0.30.)
+        assert!((baked.x - 0.10).abs() < 1e-12, "baked.x = {}", baked.x);
+        assert!(baked.y.abs() < 1e-12, "baked.y = {}", baked.y);
+        assert!((baked.z - 0.30).abs() < 1e-12, "baked.z = {}", baked.z);
     }
 
     // ----- ClipState + clip_mesh_against_world_z ---------------------
@@ -4335,6 +4765,7 @@ mod tests {
             "scan.cleaned.stl",
             rotation,
             translation,
+            Point3::origin(),
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
         assert!(parsed.get("scan_prep").is_some());

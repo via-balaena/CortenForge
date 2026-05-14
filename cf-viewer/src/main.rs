@@ -244,7 +244,7 @@ fn combined_assembly_aabb(assembly: &AssemblyInputs) -> mesh_types::Aabb {
 }
 
 /// Startup system — frame the camera on the combined assembly AABB.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take Res/ResMut/Query/Commands by value
 fn setup_assembly_scene(
     mut commands: Commands,
     assembly: Res<AssemblyInputs>,
@@ -279,7 +279,7 @@ const TAB10: [Color; 10] = [
 /// Startup system — spawn one entity per piece. Each piece gets a
 /// flat-shaded mesh + a [`TAB10`] color indexed by piece position
 /// so overlapping pieces stay visually distinguishable.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take Res/ResMut/Query/Commands by value
 fn spawn_assembly_pieces(
     assembly: Res<AssemblyInputs>,
     up: Res<UpAxis>,
@@ -324,7 +324,7 @@ fn spawn_assembly_pieces(
 /// checkbox. Default all-on. Mutates [`AssemblyVisibility`] which
 /// [`apply_assembly_visibility`] then propagates to each entity's
 /// `Visibility` component.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take Res/ResMut/Query/Commands by value
 fn assembly_piece_panel(
     mut contexts: bevy_egui::EguiContexts,
     assembly: Res<AssemblyInputs>,
