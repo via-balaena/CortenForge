@@ -597,15 +597,40 @@ fn draw_cavity_overlay(
     // arrows / cyan centerline.
     let color = Color::srgb(0.95, 0.55, 0.45);
 
-    // Inward displacement = vertex.coords - normal * inset_m. Pre-
-    // compute the Bevy-framed positions for every proxy vertex so
-    // edge endpoints read cached values.
+    // Inward displacement = vertex.coords + signed_inward * inset_m
+    // where `signed_inward` points toward the proxy mesh's centroid.
+    // Using a centroid-anchored direction (rather than the per-vertex
+    // surface normal) is robust against scans where the area-weighted
+    // vertex normal happens to flip near boundary edges (cleaned-cap
+    // rim) or degenerate-triangle patches: a vertex's "inward" toward
+    // the proxy's interior is well-defined as `centroid - v`
+    // regardless of triangle winding. The proxy is a closed-ish
+    // surface so the centroid lies inside it.
+    let centroid: Vector3<f64> = if proxy.vertices.is_empty() {
+        Vector3::zeros()
+    } else {
+        #[allow(clippy::cast_precision_loss)] // count fits in f64.
+        let n = proxy.vertices.len() as f64;
+        let sum: Vector3<f64> = proxy
+            .vertices
+            .iter()
+            .map(|p| p.coords)
+            .fold(Vector3::zeros(), |a, b| a + b);
+        sum / n
+    };
+
     let displaced_bevy: Vec<Vec3> = proxy
         .vertices
         .iter()
-        .zip(proxy.vertex_normals.iter())
-        .map(|(v, n)| {
-            let displaced_physics = Point3::from(v.coords - n * state.inset_m);
+        .map(|v| {
+            let to_centroid = centroid - v.coords;
+            let len = to_centroid.norm();
+            let inward = if len > 1e-12 {
+                to_centroid / len
+            } else {
+                Vector3::zeros()
+            };
+            let displaced_physics = Point3::from(v.coords + inward * state.inset_m);
             Vec3::from_array(up.to_bevy_point(&displaced_physics)) * render_scale.0
         })
         .collect();
@@ -729,7 +754,6 @@ fn render_outer_envelope_section(
     egui::CollapsingHeader::new("Outer Envelope")
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.visible, "Show wireframe");
             let (min_m, max_m) = OuterEnvelopeState::clearance_slider_range_m();
             let mut clearance_mm = state.clearance_m * 1000.0;
             let min_mm = min_m * 1000.0;
@@ -770,7 +794,6 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
     egui::CollapsingHeader::new("Cavity")
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.visible, "Show wireframe");
             let (min_m, max_m) = CavityState::inset_slider_range_m();
             let mut inset_mm = state.inset_m * 1000.0;
             let min_mm = min_m * 1000.0;
@@ -830,7 +853,8 @@ fn device_design_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    render_scan_info_section(ui, &info, &mut scan_visible);
+                    render_display_section(ui, &mut scan_visible, &mut outer_envelope, &mut cavity);
+                    render_scan_info_section(ui, &info);
                     render_outer_envelope_section(ui, &mut outer_envelope, &proxy);
                     render_cavity_section(ui, &mut cavity);
                     render_panel_stubs(ui);
@@ -839,15 +863,30 @@ fn device_design_panel(
     Ok(())
 }
 
-fn render_scan_info_section(
+/// Top-of-panel Display section: three checkboxes consolidating
+/// visibility for the scan mesh + outer-envelope wireframe + cavity
+/// wireframe. Each entity has independent on/off; defaults are all
+/// ON. Lets the user isolate any single artifact for inspection
+/// without hunting through individual sections.
+fn render_display_section(
     ui: &mut egui::Ui,
-    info: &ScanInfo,
     scan_visible: &mut ScanMeshVisible,
+    outer_envelope: &mut OuterEnvelopeState,
+    cavity: &mut CavityState,
 ) {
+    egui::CollapsingHeader::new("Display")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.checkbox(&mut scan_visible.0, "Scan mesh (solid)");
+            ui.checkbox(&mut outer_envelope.visible, "Outer envelope (wireframe)");
+            ui.checkbox(&mut cavity.visible, "Cavity (wireframe)");
+        });
+}
+
+fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
     egui::CollapsingHeader::new("Scan Info")
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut scan_visible.0, "Show scan mesh");
             ui.label(format!("File:  {}", info.file_label));
             ui.label(format!("Vertices: {}", human_count(info.vertex_count)));
             ui.label(format!("Faces: {}", human_count(info.face_count)));
