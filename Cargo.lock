@@ -1917,14 +1917,17 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
+ "cf-design",
  "cf-viewer",
  "clap",
  "mesh-io",
  "mesh-repair",
+ "mesh-sdf",
  "mesh-types",
  "meshopt",
  "nalgebra",
  "serde",
+ "sim-soft",
  "toml",
 ]
 

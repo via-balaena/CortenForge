@@ -22,9 +22,14 @@
 //!   slacker`), and the Layers panel reads back the effective Shore
 //!   hardness, tack, and the mix in grams.
 //!
-//! Pending slices: Insertion Sim (FEM, slice 7) / Save / Open
-//! (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the build
-//! and is stale — trust the code.
+//! In progress: Insertion Sim (FEM, slice 7) — sub-commit 7.0 seeds
+//! `mod insertion_sim` with the Route-A SDF bridge spike (cleaned
+//! scan → `mesh_sdf` → `cf_design::Solid` CSG → `SdfMeshedTetMesh`),
+//! geometry-only, no solve yet.
+//!
+//! Pending slices: Insertion Sim solve + UI (slice 7.2+) / Save /
+//! Open (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the
+//! build and is stale — trust the code.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +48,17 @@ use mesh_types::{Bounded, IndexedMesh, Point3};
 use meshopt::simplify_sloppy_decoder;
 use nalgebra::Vector3;
 use serde::Deserialize;
+
+/// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
+///
+/// `#[cfg(test)]`-gated at sub-commit 7.0: the module is a
+/// measurement spike (cleaned scan → `mesh_sdf` → `cf_design::Solid`
+/// CSG → `SdfMeshedTetMesh`), exercised only by its `--ignored`
+/// integration test — nothing in the shipping binary calls it yet.
+/// Sub-commit 7.1 removes the gate when it wires the geometry builder
+/// into the app. See the module docs.
+#[cfg(test)]
+mod insertion_sim;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the

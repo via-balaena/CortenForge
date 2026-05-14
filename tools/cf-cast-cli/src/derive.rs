@@ -56,7 +56,7 @@ const ANCHORS: &[(&str, &str, f64)] = &[
 /// Resolve a cf-cast cure anchor key to a Smooth-On TDS density
 /// (kg/m³). Returns `None` for unrecognized anchors; the caller can
 /// layer a per-layer `density_kg_m3` override on top. See
-/// [`ANCHORS`] for the table + the FEM-decoupling rationale.
+/// `ANCHORS` for the table + the FEM-decoupling rationale.
 #[must_use]
 pub fn density_for_anchor(anchor: &str) -> Option<f64> {
     ANCHORS
@@ -66,7 +66,7 @@ pub fn density_for_anchor(anchor: &str) -> Option<f64> {
 }
 
 /// Resolve a cf-cast cure anchor key to its human-readable display
-/// name. Returns `None` for unrecognized anchors. See [`ANCHORS`].
+/// name. Returns `None` for unrecognized anchors. See `ANCHORS`.
 #[must_use]
 pub fn display_name_for_anchor(anchor: &str) -> Option<&'static str> {
     ANCHORS
@@ -102,7 +102,7 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
         .unwrap_or_else(|| layer.material.clone());
 
     // Resolve to a recognized cf-cast cure anchor (`&'static str`)
-    // only if the anchor matches one of [`ANCHORS`]' known keys.
+    // only if the anchor matches one of `ANCHORS`' known keys.
     // Custom keys surface in the procedure markdown as the "consult
     // Smooth-On TDS" placeholder branch.
     let anchor_key: Option<&'static str> = ANCHORS
