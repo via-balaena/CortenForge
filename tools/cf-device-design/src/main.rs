@@ -114,38 +114,6 @@ struct Centerline {
     points_m: Vec<Point3<f64>>,
 }
 
-/// Outer-envelope panel state — the user-dialed `clearance_m`
-/// between the scan surface and the envelope. The envelope IS the
-/// scan surface offset outward by clearance (slice 3 polish 10
-/// pivot from per-arc rings to direct offset-surface).
-///
-/// No per-end cap toggles: the scan's natural shape (closed dome at
-/// one end, cleaned flat cap at the other) drives the offset
-/// surface directly.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-struct OuterEnvelopeState {
-    /// Distance (meters) by which the envelope wireframe sits
-    /// outside the scan surface, measured along the per-vertex
-    /// outward normal of the decimated scan proxy.
-    clearance_m: f64,
-    /// Whether the outer-envelope wireframe is drawn this frame.
-    /// User toggle in the panel; lets them hide the green-blue
-    /// surface while inspecting the cavity (or vice versa).
-    visible: bool,
-}
-
-impl OuterEnvelopeState {
-    /// Default state. Clearance defaults to
-    /// [`ENVELOPE_DEFAULT_CLEARANCE_M`] (5 mm) so the envelope sits
-    /// a visible distance outside the scan surface from launch.
-    fn default_for_scan() -> Self {
-        Self {
-            clearance_m: ENVELOPE_DEFAULT_CLEARANCE_M,
-            visible: true,
-        }
-    }
-}
-
 /// Cavity panel state — the user-dialed `inset_m` by which the
 /// cavity surface sits INSIDE the scan surface. Casting context:
 /// the cavity is the void the appendage slides into; smaller than
@@ -282,23 +250,17 @@ impl LayersState {
     }
 }
 
-/// Decimated proxy of the cleaned scan, used to render the outer-
-/// envelope wireframe as a direct offset surface (slice 3 polish 10
-/// — fundamental pivot from centerline-parameterized rings).
+/// Decimated proxy of the cleaned scan, shared by every surface
+/// mesh (cavity + per-layer outer surfaces). Each surface entity's
+/// vertex positions are the proxy's positions displaced by a
+/// signed offset along the per-vertex radial direction:
 ///
-/// Each frame, the wireframe is the proxy mesh's edges with every
-/// vertex DISPLACED outward by `OuterEnvelopeState::clearance_m`
-/// along its per-vertex normal. The result IS the scan surface +
-/// clearance, by construction — no per-bucket statistics, no
-/// smoothing, no parametric capsule. Matches the downstream SDF
-/// that cf-cast-cli's slice-9 build (`Solid::from_sdf(scan_sdf)
-/// .offset(clearance)`) will produce.
+/// - cavity: `-cavity.inset_m`
+/// - layer i outer surface: `sum(layer.thickness[0..=i]) - cavity.inset_m`
 ///
-/// The proxy is decimated to ~`ENVELOPE_PROXY_TARGET_FACES` (1500
-/// faces by default) at startup — the iter-1 fixture's 3.3M-face
-/// cleaned mesh would be impossible to render as gizmo lines at
-/// full resolution. 1500 faces ≈ 4500 directed edges ≈ 2250 unique
-/// edges, well within Bevy's gizmo throughput.
+/// Decimated to ~`ENVELOPE_PROXY_TARGET_FACES` (1500 faces) at
+/// startup — the iter-1 fixture's 3.3M-face cleaned mesh would be
+/// impossible to re-mesh on every slider tick at full resolution.
 #[derive(Resource, Debug, Clone)]
 struct EnvelopeProxyMesh {
     /// Decimated scan vertices in physics-frame meters.
@@ -492,13 +454,6 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
     }
 }
 
-/// Default clearance (meters) added to the wrap-the-scan envelope
-/// radius. 5 mm gives the user a visible gap between the wireframe
-/// and the scan at default radius — communicates "the envelope is
-/// outside the scan" instead of "envelope sits on the scan
-/// surface."
-const ENVELOPE_DEFAULT_CLEARANCE_M: f64 = 0.005;
-
 /// Default cavity inset (meters). 3 mm = the minimum-acceptable
 /// starting point for a buildable silicone device:
 /// - Above Ecoflex 00-30's ~2 mm castability threshold (thinner
@@ -516,9 +471,9 @@ const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
 
 /// Decimate the cleaned scan to a ~`ENVELOPE_PROXY_TARGET_FACES`-
 /// face proxy mesh, compute per-vertex outward normals, and extract
-/// deduplicated edges. Returns the proxy struct used by
-/// [`draw_envelope_offset_overlay`] to render the scan's offset
-/// surface as a wireframe.
+/// deduplicated edges. Returns the proxy struct shared by the
+/// cavity + per-layer mesh-update systems for per-frame mesh
+/// regeneration.
 ///
 /// Pipeline:
 /// 1. Weld duplicated vertices (STL load produces 3-per-triangle
@@ -747,11 +702,6 @@ fn nearest_centerline_index(v: &Point3<f64>, centerline: &[Point3<f64>]) -> usiz
 // surface is sub-millisecond on the iter-1 decimated proxy
 // (1500 faces).
 
-/// Marker component for the outer-envelope mesh entity. One
-/// entity at runtime.
-#[derive(Component)]
-struct OuterEnvelopeEntity;
-
 /// Marker component for the cavity mesh entity. One entity at
 /// runtime.
 #[derive(Component)]
@@ -818,58 +768,27 @@ const LAYER_BOUNDARY_PALETTE: &[(f32, f32, f32)] = &[
     (0.95, 0.45, 0.70), // pink
 ];
 
-/// Surface colors (`StandardMaterial::base_color`). Each surface's
-/// material is double-sided so the user sees the inside when the
-/// outer envelope is hidden.
-const OUTER_ENVELOPE_COLOR: (f32, f32, f32) = (0.55, 0.85, 0.70);
+/// Cavity surface color (`StandardMaterial::base_color`). The
+/// cavity is the inner void surface; coral distinguishes it from
+/// the layer palette + scan + axis arrows. Material is double-
+/// sided so the user sees the inside when layers are hidden.
 const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
 
-/// Spawn the initial outer-envelope + cavity mesh entities at
-/// startup. Layer-boundary entities spawn lazily on the first
-/// state-change tick (the default 1-layer config has no boundaries).
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
-fn spawn_initial_surface_meshes(
+/// Spawn the cavity mesh entity at startup. Layer entities spawn
+/// lazily on the first state-change tick.
+#[allow(clippy::needless_pass_by_value)]
+fn spawn_cavity_mesh(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     proxy: Res<EnvelopeProxyMesh>,
-    mut outer_envelope: ResMut<OuterEnvelopeState>,
     cavity: Res<CavityState>,
-    layers: Res<LayersState>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
 ) {
     if proxy.vertices.is_empty() || proxy.faces.is_empty() {
         return;
     }
-    // Sync outer envelope clearance with the layer-driven derivation
-    // BEFORE building the initial mesh, so the first frame matches
-    // the rest. After this, `render_layers_section` continues to
-    // overwrite clearance whenever layers / cavity change.
-    let sum_layers_m: f64 = layers.layers.iter().map(|l| l.thickness_m).sum();
-    outer_envelope.clearance_m = sum_layers_m - cavity.inset_m;
-    let envelope_mesh = meshes.add(build_displaced_proxy_mesh(
-        &proxy,
-        outer_envelope.clearance_m,
-        *up,
-        render_scale.0,
-    ));
-    let envelope_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(
-            OUTER_ENVELOPE_COLOR.0,
-            OUTER_ENVELOPE_COLOR.1,
-            OUTER_ENVELOPE_COLOR.2,
-        ),
-        double_sided: true,
-        cull_mode: None,
-        ..default()
-    });
-    commands.spawn((
-        Mesh3d(envelope_mesh),
-        MeshMaterial3d(envelope_material),
-        OuterEnvelopeEntity,
-    ));
-
     let cavity_mesh = meshes.add(build_displaced_proxy_mesh(
         &proxy,
         -cavity.inset_m,
@@ -889,35 +808,8 @@ fn spawn_initial_surface_meshes(
     ));
 }
 
-/// Regenerate the outer-envelope mesh asset when `OuterEnvelopeState`
-/// changes. Only the mesh's vertex positions vary; the triangle
-/// indices stay constant (they're from the immutable proxy).
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
-fn update_outer_envelope_mesh(
-    state: Res<OuterEnvelopeState>,
-    proxy: Res<EnvelopeProxyMesh>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut q: Query<(&mut Mesh3d, &mut Visibility), With<OuterEnvelopeEntity>>,
-) {
-    if !state.is_changed() {
-        return;
-    }
-    for (mut mesh_handle, mut visibility) in &mut q {
-        let new_mesh = build_displaced_proxy_mesh(&proxy, state.clearance_m, *up, render_scale.0);
-        mesh_handle.0 = meshes.add(new_mesh);
-        *visibility = if state.visible {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
-    }
-}
-
 /// Regenerate the cavity mesh asset when `CavityState` changes.
-/// Same posture as `update_outer_envelope_mesh`.
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[allow(clippy::needless_pass_by_value)]
 fn update_cavity_mesh(
     state: Res<CavityState>,
     proxy: Res<EnvelopeProxyMesh>,
@@ -940,18 +832,17 @@ fn update_cavity_mesh(
     }
 }
 
-/// Synchronize the per-layer-boundary mesh entities with
-/// `LayersState`. When the layer count or any thickness / cavity
-/// inset changes, despawns all existing boundary entities and
-/// re-spawns one per intermediate boundary. Visibility tracks
+/// Synchronize the per-layer mesh entities with `LayersState`. One
+/// entity per layer, each at its OUTER-surface offset = cumulative
+/// `sum(thickness[0..=i]) - cavity.inset_m` from the scan surface.
+/// Layer N-1's outer surface is the device's outer skin (no
+/// separate "outer envelope" concept). Visibility tracks
 /// `LayersState.visible`.
 ///
-/// The despawn-and-respawn pattern is simpler than reconciling
-/// add/remove deltas and the layer count never exceeds
-/// `LAYER_COUNT_MAX = 6` (i.e., ≤ 5 boundary entities), so the
-/// cost is negligible.
+/// Despawn-and-respawn on any state change — layer count is small
+/// (≤ `LAYER_COUNT_MAX = 6`) so the cost is negligible.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
-fn update_layer_boundary_meshes(
+fn update_layer_meshes(
     layers: Res<LayersState>,
     cavity: Res<CavityState>,
     proxy: Res<EnvelopeProxyMesh>,
@@ -965,15 +856,14 @@ fn update_layer_boundary_meshes(
     if !layers.is_changed() && !cavity.is_changed() {
         return;
     }
-    // Wipe the existing entities — simpler than incremental reconcile.
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    if layers.layers.len() < 2 || proxy.vertices.is_empty() {
+    if layers.layers.is_empty() || proxy.vertices.is_empty() {
         return;
     }
     let mut cumulative_thickness_m = 0.0_f64;
-    for (i, layer) in layers.layers[..layers.layers.len() - 1].iter().enumerate() {
+    for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
         let offset_m = cumulative_thickness_m - cavity.inset_m;
         let mesh = meshes.add(build_displaced_proxy_mesh(
@@ -1099,49 +989,6 @@ fn draw_reference_overlays(
 
 /// Number of segments around each cross-section ring of the
 /// Render the Outer Envelope egui section. Slice 3 polish 10 pivot:
-/// the envelope is the cleaned scan's offset surface — a decimated
-/// proxy mesh with every vertex displaced outward by `clearance_m`
-/// along its per-vertex normal. The user dials the clearance; the
-/// surface IS the scan + offset, by construction.
-///
-/// Also surfaces the decimated proxy's face count so the user knows
-/// the visualization is approximate, plus the original face count
-/// for context.
-fn render_outer_envelope_section(
-    ui: &mut egui::Ui,
-    state: &OuterEnvelopeState,
-    proxy: &EnvelopeProxyMesh,
-) {
-    egui::CollapsingHeader::new("Outer Envelope")
-        .default_open(true)
-        .show(ui, |ui| {
-            // Clearance is DERIVED from the layer stack
-            // (`sum(layer.thickness_m) - cavity.inset_m`). The
-            // outer envelope is the outermost layer's outer
-            // surface; its position is set by the layers, not by
-            // an independent slider. Info-only readout here.
-            ui.label(format!(
-                "Clearance (derived): {:.1} mm",
-                state.clearance_m * 1000.0,
-            ));
-            if proxy.vertices.is_empty() || proxy.edges.is_empty() {
-                ui.label("(proxy mesh empty — no surface to render)");
-            } else {
-                // For closed manifolds Euler's relation gives
-                // F ≈ 2E/3 (each face has 3 edges, each edge shared
-                // by 2 faces). Approximate face count is for display
-                // only; the surface is rendered as edges.
-                let proxy_face_count = proxy.edges.len() * 2 / 3;
-                ui.label(format!(
-                    "Proxy: {} edges (~{} faces of {})",
-                    human_count(proxy.edges.len()),
-                    human_count(proxy_face_count),
-                    human_count(proxy.original_face_count),
-                ));
-            }
-        });
-}
-
 /// Render the Cavity egui section (slice 4 v1). The cavity is the
 /// scan-derived inner void the appendage slides into; its surface
 /// sits `inset_m` inside the scan along per-vertex normals so the
@@ -1180,14 +1027,15 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
 /// outer envelope is just the outermost layer's outer surface, not
 /// an independent design parameter.
 ///
-/// After rendering all per-layer rows, this fn writes the derived
-/// clearance into `outer_envelope.clearance_m` so the mesh-update
-/// system regenerates the outer-envelope mesh next frame.
+/// The layer mesh-update system regenerates the per-layer mesh
+/// entities (one per layer, each at its outer-surface offset)
+/// when `LayersState` or `CavityState` mutates — no separate
+/// outer-envelope concept.
 fn render_layers_section(
     ui: &mut egui::Ui,
     layers: &mut LayersState,
-    outer_envelope: &mut OuterEnvelopeState,
     cavity: &CavityState,
+    proxy: &EnvelopeProxyMesh,
 ) {
     egui::CollapsingHeader::new("Layers")
         .default_open(true)
@@ -1242,33 +1090,30 @@ fn render_layers_section(
                 });
             }
 
-            // Derive the outer-envelope clearance from the layer
-            // sum + cavity inset. Outer envelope = sum(layers) -
-            // inset radially outward from the scan surface. The
-            // mesh-update system regenerates the outer-envelope
-            // mesh next frame off this change.
+            // Derived geometric readouts: the device's outer skin
+            // is the outermost layer's outer surface, at offset
+            // `sum(thickness) - cavity.inset` radially from the
+            // scan surface.
             let sum_layers_m: f64 = layers.layers.iter().map(|l| l.thickness_m).sum();
-            let derived_clearance_m = sum_layers_m - cavity.inset_m;
-            if (outer_envelope.clearance_m - derived_clearance_m).abs() > 1e-9 {
-                outer_envelope.clearance_m = derived_clearance_m;
-            }
-
-            // Wall total readout: matches outer_envelope.clearance_m
-            // + cavity.inset_m by construction, but break it down
-            // so the user sees the layer-sum source-of-truth.
+            let derived_outer_offset_m = sum_layers_m - cavity.inset_m;
             ui.separator();
             ui.label(format!(
                 "Wall total: {:.1} mm  (sum of layers)",
                 sum_layers_m * 1000.0,
             ));
             ui.label(format!(
-                "  outer position: +{:.1} mm from scan",
-                derived_clearance_m * 1000.0,
+                "  outer skin: +{:.1} mm from scan",
+                derived_outer_offset_m * 1000.0,
             ));
             ui.label(format!(
-                "  cavity position: -{:.1} mm from scan",
+                "  cavity: -{:.1} mm from scan",
                 cavity.inset_m * 1000.0,
             ));
+            // Suppress unused-param warning when the proxy info is
+            // empty (compiles cleanly; no panel fields use proxy
+            // yet, but it stays in the signature for future readouts
+            // like per-layer pour volume).
+            let _ = proxy;
         });
 }
 
@@ -1339,7 +1184,6 @@ fn device_design_panel(
     info: Res<ScanInfo>,
     proxy: Res<EnvelopeProxyMesh>,
     mut scan_visible: ResMut<ScanMeshVisible>,
-    mut outer_envelope: ResMut<OuterEnvelopeState>,
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
 ) -> bevy::ecs::error::Result {
@@ -1351,42 +1195,33 @@ fn device_design_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    render_display_section(
-                        ui,
-                        &mut scan_visible,
-                        &mut outer_envelope,
-                        &mut cavity,
-                        &mut layers,
-                    );
+                    render_display_section(ui, &mut scan_visible, &mut cavity, &mut layers);
                     render_scan_info_section(ui, &info);
-                    render_outer_envelope_section(ui, &outer_envelope, &proxy);
                     render_cavity_section(ui, &mut cavity);
-                    render_layers_section(ui, &mut layers, &mut outer_envelope, &cavity);
+                    render_layers_section(ui, &mut layers, &cavity, &proxy);
                     render_panel_stubs(ui);
                 });
         });
     Ok(())
 }
 
-/// Top-of-panel Display section: three checkboxes consolidating
-/// visibility for the scan mesh + outer-envelope wireframe + cavity
-/// wireframe. Each entity has independent on/off; defaults are all
-/// ON. Lets the user isolate any single artifact for inspection
-/// without hunting through individual sections.
+/// Top-of-panel Display section: three checkboxes for the renderable
+/// entities — Scan mesh, Cavity (solid), Layers (solid). The
+/// outer-envelope concept is absorbed into the layers (slice 5
+/// polish 4) — the outermost layer's outer surface IS the device's
+/// outer skin.
 fn render_display_section(
     ui: &mut egui::Ui,
     scan_visible: &mut ScanMeshVisible,
-    outer_envelope: &mut OuterEnvelopeState,
     cavity: &mut CavityState,
     layers: &mut LayersState,
 ) {
     egui::CollapsingHeader::new("Display")
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut scan_visible.0, "Scan mesh (solid)");
-            ui.checkbox(&mut outer_envelope.visible, "Outer envelope (wireframe)");
-            ui.checkbox(&mut cavity.visible, "Cavity (wireframe)");
-            ui.checkbox(&mut layers.visible, "Layer boundaries (wireframe)");
+            ui.checkbox(&mut scan_visible.0, "Scan mesh");
+            ui.checkbox(&mut cavity.visible, "Cavity");
+            ui.checkbox(&mut layers.visible, "Layers");
         });
 }
 
@@ -1472,7 +1307,6 @@ fn run_render_app(
         envelope_proxy.vertices.len(),
         envelope_proxy.original_face_count,
     );
-    let outer_envelope = OuterEnvelopeState::default_for_scan();
     let cavity = CavityState::default_for_scan();
     let layers = LayersState::default_for_scan();
 
@@ -1495,22 +1329,17 @@ fn run_render_app(
             points_m: centerline_points,
         })
         .insert_resource(envelope_proxy)
-        .insert_resource(outer_envelope)
         .insert_resource(cavity)
         .insert_resource(layers)
         .insert_resource(ScanMeshVisible::default())
-        .add_systems(
-            Startup,
-            (setup_render_scene, spawn_initial_surface_meshes).chain(),
-        )
+        .add_systems(Startup, (setup_render_scene, spawn_cavity_mesh).chain())
         .add_systems(
             Update,
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 draw_reference_overlays,
-                update_outer_envelope_mesh,
                 update_cavity_mesh,
-                update_layer_boundary_meshes,
+                update_layer_meshes,
                 apply_scan_mesh_visibility,
                 exit_on_esc,
             ),
@@ -1701,14 +1530,6 @@ another_future_field = "foo"
         (a - b).abs() < eps
     }
 
-    // ----- Slice 3 polish 7 — clearance-only envelope state --------
-
-    #[test]
-    fn outer_envelope_default_clearance_is_five_mm() {
-        let state = OuterEnvelopeState::default_for_scan();
-        assert!(approx_eq(state.clearance_m, 0.005, 1e-12));
-    }
-
     // ----- Slice 4 v1 — cavity state -------------------------------
 
     #[test]
@@ -1727,16 +1548,15 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn default_overlays_are_both_visible() {
-        // Sanity: launching the app shows both wireframes by
-        // default; the user can hide either via the panel
-        // checkbox. If we ever flip a default to "hidden," the
-        // user would see a black viewport on launch — a real
-        // confusion-inducing failure mode worth a regression pin.
-        let oe = OuterEnvelopeState::default_for_scan();
+    fn default_surfaces_are_visible() {
+        // Sanity: launching the app shows both cavity + layers by
+        // default. If we ever flip a default to "hidden," the user
+        // would see a near-empty viewport on launch — worth a
+        // regression pin.
         let cv = CavityState::default_for_scan();
-        assert!(oe.visible);
+        let ls = LayersState::default_for_scan();
         assert!(cv.visible);
+        assert!(ls.visible);
     }
 
     // ----- Slice 5 v1 — layers state -------------------------------
