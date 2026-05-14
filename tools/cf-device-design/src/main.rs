@@ -208,6 +208,11 @@ struct LayerSpec {
     /// `'static` lifetime because the entries are compile-time
     /// constants.
     material_anchor_key: &'static str,
+    /// Whether this layer's outer-surface mesh is drawn this frame.
+    /// Per-layer visibility (slice 5 polish 5) replaces a single
+    /// global Layers toggle so the user can isolate any single
+    /// layer for inspection.
+    visible: bool,
 }
 
 impl LayerSpec {
@@ -229,11 +234,6 @@ impl LayerSpec {
 #[derive(Resource, Debug, Clone, PartialEq)]
 struct LayersState {
     layers: Vec<LayerSpec>,
-    /// Whether the per-layer boundary wireframes are drawn this
-    /// frame. The cavity + outer envelope wireframes are toggled
-    /// separately; this toggle only affects the N-1 intermediate
-    /// layer-boundary surfaces.
-    visible: bool,
 }
 
 impl LayersState {
@@ -244,8 +244,8 @@ impl LayersState {
             layers: vec![LayerSpec {
                 thickness_m: 0.005,
                 material_anchor_key: "ECOFLEX_00_30",
+                visible: true,
             }],
-            visible: true,
         }
     }
 }
@@ -879,7 +879,7 @@ fn update_layer_meshes(
             cull_mode: None,
             ..default()
         });
-        let visibility = if layers.visible {
+        let visibility = if layer.visible {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -1001,6 +1001,7 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
     egui::CollapsingHeader::new("Cavity")
         .default_open(true)
         .show(ui, |ui| {
+            ui.checkbox(&mut state.visible, "Show cavity");
             let (min_m, max_m) = CavityState::inset_slider_range_m();
             let mut inset_mm = state.inset_m * 1000.0;
             let min_mm = min_m * 1000.0;
@@ -1052,6 +1053,7 @@ fn render_layers_section(
             for i in 0..n {
                 ui.group(|ui| {
                     ui.label(format!("Layer {} ({})", i, layer_position_label(i, n)));
+                    ui.checkbox(&mut layers.layers[i].visible, "Show layer");
                     let mut t_mm = layers.layers[i].thickness_m * 1000.0;
                     let slider_text = if i == 0 {
                         "thickness from cavity (mm)"
@@ -1080,13 +1082,12 @@ fn render_layers_section(
 
             if layers.layers.len() < LAYER_COUNT_MAX && ui.button("+ Add layer").clicked() {
                 // Append at outermost position with 3 mm default.
-                // The new layer is fully user-controlled; no
-                // derived-thickness or remaining-budget gymnastics
-                // since the wall total is now defined BY the
-                // layers (not vice versa).
+                // New layer starts visible; user can toggle via
+                // the per-layer "Show layer" checkbox.
                 layers.layers.push(LayerSpec {
                     thickness_m: 0.003,
                     material_anchor_key: "ECOFLEX_00_30",
+                    visible: true,
                 });
             }
 
@@ -1195,8 +1196,7 @@ fn device_design_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    render_display_section(ui, &mut scan_visible, &mut cavity, &mut layers);
-                    render_scan_info_section(ui, &info);
+                    render_scan_info_section(ui, &info, &mut scan_visible);
                     render_cavity_section(ui, &mut cavity);
                     render_layers_section(ui, &mut layers, &cavity, &proxy);
                     render_panel_stubs(ui);
@@ -1205,30 +1205,15 @@ fn device_design_panel(
     Ok(())
 }
 
-/// Top-of-panel Display section: three checkboxes for the renderable
-/// entities — Scan mesh, Cavity (solid), Layers (solid). The
-/// outer-envelope concept is absorbed into the layers (slice 5
-/// polish 4) — the outermost layer's outer surface IS the device's
-/// outer skin.
-fn render_display_section(
+fn render_scan_info_section(
     ui: &mut egui::Ui,
+    info: &ScanInfo,
     scan_visible: &mut ScanMeshVisible,
-    cavity: &mut CavityState,
-    layers: &mut LayersState,
 ) {
-    egui::CollapsingHeader::new("Display")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.checkbox(&mut scan_visible.0, "Scan mesh");
-            ui.checkbox(&mut cavity.visible, "Cavity");
-            ui.checkbox(&mut layers.visible, "Layers");
-        });
-}
-
-fn render_scan_info_section(ui: &mut egui::Ui, info: &ScanInfo) {
     egui::CollapsingHeader::new("Scan Info")
         .default_open(true)
         .show(ui, |ui| {
+            ui.checkbox(&mut scan_visible.0, "Show scan mesh");
             ui.label(format!("File:  {}", info.file_label));
             ui.label(format!("Vertices: {}", human_count(info.vertex_count)));
             ui.label(format!("Faces: {}", human_count(info.face_count)));
@@ -1549,25 +1534,25 @@ another_future_field = "foo"
 
     #[test]
     fn default_surfaces_are_visible() {
-        // Sanity: launching the app shows both cavity + layers by
-        // default. If we ever flip a default to "hidden," the user
-        // would see a near-empty viewport on launch — worth a
-        // regression pin.
+        // Sanity: launching the app shows the cavity + every
+        // default layer. If we ever flip a default to "hidden,"
+        // the user would see a near-empty viewport on launch —
+        // worth a regression pin.
         let cv = CavityState::default_for_scan();
         let ls = LayersState::default_for_scan();
         assert!(cv.visible);
-        assert!(ls.visible);
+        assert!(ls.layers.iter().all(|l| l.visible));
     }
 
     // ----- Slice 5 v1 — layers state -------------------------------
 
     #[test]
-    fn layers_default_is_single_ecoflex_layer() {
+    fn layers_default_is_single_visible_ecoflex_layer() {
         let layers = LayersState::default_for_scan();
         assert_eq!(layers.layers.len(), 1);
         assert_eq!(layers.layers[0].material_anchor_key, "ECOFLEX_00_30");
         assert!(approx_eq(layers.layers[0].thickness_m, 0.005, 1e-12));
-        assert!(layers.visible);
+        assert!(layers.layers[0].visible);
     }
 
     #[test]
