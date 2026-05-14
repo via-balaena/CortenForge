@@ -21,12 +21,20 @@
 //!   turns a [`SimDesign`] (cavity inset + layer stack) into the
 //!   device-wall [`SdfMeshedTetMesh`] with per-tet Yeoh materials,
 //!   plus the rigid intruder SDF.
+//! - **7.2** adds [`run_single_insertion_step`]: one static FEM solve
+//!   (`CpuNewtonSolver` + `PenaltyRigidContact`) that presses the
+//!   intruder a chosen interference into the cavity and returns the
+//!   converged deformed positions. One step only — the quasi-static
+//!   ramp is 7.3.
 //!
-//! Still no solve — the Newton solve + quasi-static ramp land at
-//! 7.2–7.3, the UI at 7.4. The module is `#[cfg(test)]`-gated until
-//! 7.4 wires it into the app; for now it is exercised by `#[ignore]`d
-//! integration tests against the iter-1 scan.
+//! The UI lands at 7.4. The module is `#[cfg(test)]`-gated until 7.4
+//! wires it into the app; for now it is exercised by `#[ignore]`d
+//! integration tests — the iter-1 scan for the SDF-bridge spike + the
+//! geometry builder, a synthetic icosphere for the solve (the real
+//! scan's single-step solve does not converge — see the slice-7
+//! memo's "7.2 real-scan finding"; hardening it is 7.3's battle).
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
@@ -36,13 +44,16 @@ use mesh_sdf::SignedDistanceField;
 use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
 use nalgebra::{Point3, Vector3};
+use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::{
     DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
     ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
 };
 use sim_soft::{
-    Aabb3, ConstantField, Field, LayeredScalarField, MaterialField, Mesh, MeshingHints,
-    SdfMeshedTetMesh, SiliconeMaterial, Vec3, Yeoh,
+    Aabb3, BoundaryConditions, ConstantField, CpuNewtonSolver, Field, LayeredScalarField,
+    MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf, SdfMeshedTetMesh,
+    SiliconeMaterial, Solver, SolverConfig, Tet4, Vec3, VertexId, Yeoh, pick_vertices_by_predicate,
+    referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -427,6 +438,14 @@ pub struct InsertionGeometry {
     /// Scan-SDF offset (m) of the outer skin —
     /// `total_thickness - cavity_inset_m`.
     pub outer_offset_m: f64,
+    /// The BCC-lattice / interval-prune bound the `mesh` was built
+    /// with. Kept so the 7.2 solve can rebuild the outer-envelope +
+    /// intruder `Solid`s from `intruder` without re-deriving it (and
+    /// so 7.3's per-step re-mesh can reuse it).
+    pub bounds: Aabb,
+    /// The BCC lattice spacing (m) the `mesh` was built with — the
+    /// 7.2 solve sizes the Dirichlet pin-band at `0.5 * cell_size_m`.
+    pub cell_size_m: f64,
     /// Tet count of `mesh` — surfaced for the 7.4 UI readout + tests.
     pub n_tets: usize,
 }
@@ -571,7 +590,162 @@ pub fn build_insertion_geometry(
         intruder: scan_sdf,
         cavity_offset_m,
         outer_offset_m,
+        bounds,
+        cell_size_m,
         n_tets,
+    })
+}
+
+// ── 7.2 — single static insertion solve ────────────────────────────
+
+/// Static-solve time-step. `dt = 1.0` collapses inertia for a
+/// quasi-static solve — the rows 21–25 `STATIC_DT` precedent.
+const STATIC_DT: f64 = 1.0;
+
+/// Newton-iteration cap for the Yeoh insertion solve. Matches the
+/// row-23 `scan-fit-3layer-sleeve-yeoh-ramp` cap: the Yeoh path needs
+/// more iterations than row 22's Neo-Hookean 100 as contact deepens.
+/// `replay_step` *panics* if the solve doesn't converge within this
+/// cap — see [`run_single_insertion_step`]'s `# Panics`.
+const MAX_NEWTON_ITER: usize = 150;
+
+/// Outputs from one static insertion solve step.
+///
+/// A returned `InsertionStep` is converged by construction —
+/// `replay_step` panics rather than return a non-converged step
+/// (see [`run_single_insertion_step`]'s `# Panics`), so there is no
+/// `converged` flag; `iter_count` + `final_residual_norm` are
+/// convergence *diagnostics*, not a pass/fail.
+#[derive(Debug, Clone)]
+pub struct InsertionStep {
+    /// Converged vertex positions, vertex-major xyz (length
+    /// `3 * n_vertices`).
+    pub x_final: Vec<f64>,
+    /// Newton iterations the solve took.
+    pub iter_count: usize,
+    /// Free-DOF residual norm at convergence.
+    pub final_residual_norm: f64,
+    /// Number of outer-skin vertices pinned as Dirichlet BCs — the
+    /// device wall reacts against these.
+    pub n_pinned: usize,
+}
+
+/// Run ONE static insertion solve: press the scan-derived rigid
+/// intruder `interference_m` into the device cavity and solve for the
+/// deformed device wall.
+///
+/// Mirrors the rows 21–25 single-step pattern. Boundary conditions
+/// pin the outer-skin vertices (within `0.5 * cell_size_m` of the
+/// outer envelope, filtered to solver-referenced vertices); the
+/// intruder drives the deformation through `PenaltyRigidContact`. The
+/// intruder at interference `d` is the scan SDF offset by
+/// `d + cavity_offset_m` — at `d = cavity_inset_m` it is the bare
+/// scan (full press-fit), at `d = 0` it sits flush with the cavity
+/// wall (no penetration). The solve is static (`dt = 1.0`).
+///
+/// Consumes `geometry` — `CpuNewtonSolver::new` takes the mesh by
+/// value. 7.3's ramp will rebuild the geometry per step; 7.2 is one
+/// step only.
+///
+/// # Errors
+///
+/// - `interference_m` is non-finite;
+/// - no outer-skin vertex lands in the Dirichlet pin-band (the wall
+///   has nothing to react against — typically `cell_size_m` too
+///   coarse for the wall, or a degenerate geometry).
+///
+/// # Panics
+///
+/// `replay_step` panics if the Newton solve fails to converge within
+/// [`MAX_NEWTON_ITER`] — non-convergence returns no partial data. 7.2
+/// keeps to interferences that converge; graceful "failed at step N"
+/// reporting is 7.3 (the quasi-static ramp), where the contact-
+/// robustness envelope (≤ 8 mm Yeoh) is exercised in earnest.
+pub fn run_single_insertion_step(
+    geometry: InsertionGeometry,
+    interference_m: f64,
+) -> Result<InsertionStep> {
+    if !interference_m.is_finite() {
+        return Err(anyhow!(
+            "insertion interference is non-finite ({interference_m})"
+        ));
+    }
+
+    let InsertionGeometry {
+        mesh,
+        intruder,
+        cavity_offset_m,
+        outer_offset_m,
+        bounds,
+        cell_size_m,
+        n_tets: _,
+    } = geometry;
+
+    let n_vertices = mesh.n_vertices();
+    let n_dof = 3 * n_vertices;
+
+    // x_prev = the rest (undeformed) vertex positions, vertex-major xyz.
+    let mut x_prev_flat = vec![0.0_f64; n_dof];
+    for (v, p) in mesh.positions().iter().enumerate() {
+        x_prev_flat[3 * v] = p.x;
+        x_prev_flat[3 * v + 1] = p.y;
+        x_prev_flat[3 * v + 2] = p.z;
+    }
+
+    // Dirichlet BCs: pin the outer-skin vertices — those within half a
+    // BCC cell of the outer envelope `scan.offset(outer_offset_m)` —
+    // filtered to solver-referenced vertices (BCC orphans are not in
+    // any tet). The intruder, not a loaded BC, drives the deformation.
+    let referenced: BTreeSet<VertexId> = referenced_vertices(&mesh).into_iter().collect();
+    let outer_envelope = Solid::from_sdf(intruder.clone(), bounds).offset(outer_offset_m);
+    let band_tol = 0.5 * cell_size_m;
+    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| {
+        outer_envelope.eval(Point3::from(*p)).abs() < band_tol
+    })
+    .into_iter()
+    .filter(|v| referenced.contains(v))
+    .collect();
+    if pinned.is_empty() {
+        return Err(anyhow!(
+            "no outer-skin vertex landed in the {band_tol:.4} m Dirichlet band — \
+             the device wall has nothing pinned to react against (cell_size_m too \
+             coarse for the wall, or a degenerate geometry)"
+        ));
+    }
+    let n_pinned = pinned.len();
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        loaded_vertices: Vec::new(),
+    };
+
+    // The rigid intruder at the requested interference: penetration
+    // `d` past the cavity wall is the scan SDF offset by
+    // `d + cavity_offset_m` (cavity_offset_m = -inset, so
+    // `d = inset` reproduces the bare scan).
+    let intruder_solid = Solid::from_sdf(intruder, bounds).offset(interference_m + cavity_offset_m);
+    let contact = PenaltyRigidContact::new(vec![intruder_solid]);
+
+    // Static solve: `dt = 1.0` collapses inertia (rows 21–25
+    // quasi-static precedent); the Yeoh path gets the row-23 iter cap.
+    let mut config = SolverConfig::skeleton();
+    config.dt = STATIC_DT;
+    config.max_newton_iter = MAX_NEWTON_ITER;
+
+    let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+    let v_prev = Tensor::zeros(&[n_dof]);
+    // Empty θ — the insertion solve carries no differentiable
+    // parameters (the intruder is kinematic, fixed at construction).
+    let empty_theta: [f64; 0] = [];
+    let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+    let solver = CpuNewtonSolver::new(Tet4, mesh, contact, config, bc);
+    let step = solver.replay_step(&x_prev, &v_prev, &theta, config.dt);
+
+    Ok(InsertionStep {
+        x_final: step.x_final,
+        iter_count: step.iter_count,
+        final_residual_norm: step.final_residual_norm,
+        n_pinned,
     })
 }
 
@@ -938,6 +1112,162 @@ mod tests {
                 .any(|m| (m.mu() - first_mu).abs() > 1e-9),
             "three-layer mesh must carry ≥ 2 distinct per-tet moduli \
              (LayeredScalarField partition)",
+        );
+    }
+
+    /// Build an icosphere `IndexedMesh` of `radius` (meters), centered
+    /// at the origin, refined `subdivisions` times (0 = the bare
+    /// 20-face icosahedron; 3 = 1280 faces). Smooth, convex, closed —
+    /// `mesh_sdf` signs are reliable on it and there is no apex stress
+    /// concentration, so it is the well-conditioned synthetic stand-in
+    /// for the 7.2 single-step solve test. Subdivision midpoints are
+    /// not deduplicated; `decimate_for_sdf`'s vertex weld handles that.
+    fn icosphere(radius: f64, subdivisions: usize) -> IndexedMesh {
+        let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
+        let corners: [[f64; 3]; 12] = [
+            [-1.0, phi, 0.0],
+            [1.0, phi, 0.0],
+            [-1.0, -phi, 0.0],
+            [1.0, -phi, 0.0],
+            [0.0, -1.0, phi],
+            [0.0, 1.0, phi],
+            [0.0, -1.0, -phi],
+            [0.0, 1.0, -phi],
+            [phi, 0.0, -1.0],
+            [phi, 0.0, 1.0],
+            [-phi, 0.0, -1.0],
+            [-phi, 0.0, 1.0],
+        ];
+        let mut mesh = IndexedMesh::new();
+        for c in &corners {
+            let p = Vector3::new(c[0], c[1], c[2]).normalize() * radius;
+            mesh.vertices.push(Point3::from(p));
+        }
+        let mut faces: Vec<[u32; 3]> = vec![
+            [0, 11, 5],
+            [0, 5, 1],
+            [0, 1, 7],
+            [0, 7, 10],
+            [0, 10, 11],
+            [1, 5, 9],
+            [5, 11, 4],
+            [11, 10, 2],
+            [10, 7, 6],
+            [7, 1, 8],
+            [3, 9, 4],
+            [3, 4, 2],
+            [3, 2, 6],
+            [3, 6, 8],
+            [3, 8, 9],
+            [4, 9, 5],
+            [2, 4, 11],
+            [6, 2, 10],
+            [8, 6, 7],
+            [9, 8, 1],
+        ];
+        for _ in 0..subdivisions {
+            let mut next: Vec<[u32; 3]> = Vec::with_capacity(faces.len() * 4);
+            for &[a, b, c] in &faces {
+                let pa = mesh.vertices[a as usize].coords;
+                let pb = mesh.vertices[b as usize].coords;
+                let pc = mesh.vertices[c as usize].coords;
+                let mut push_mid = |p: Vector3<f64>, q: Vector3<f64>| -> u32 {
+                    let m = ((p + q) / 2.0).normalize() * radius;
+                    let idx = u32::try_from(mesh.vertices.len())
+                        .expect("icosphere vertex count fits u32");
+                    mesh.vertices.push(Point3::from(m));
+                    idx
+                };
+                let ab = push_mid(pa, pb);
+                let bc = push_mid(pb, pc);
+                let ca = push_mid(pc, pa);
+                next.push([a, ab, ca]);
+                next.push([b, bc, ab]);
+                next.push([c, ca, bc]);
+                next.push([ab, bc, ca]);
+            }
+            faces = next;
+        }
+        mesh.faces = faces;
+        mesh
+    }
+
+    /// [`run_single_insertion_step`] on a well-conditioned synthetic
+    /// device — a spherical-shell device with a slightly-smaller
+    /// sphere intruder.
+    ///
+    /// 7.2 proves the solver + contact + BC + config *wiring* on a
+    /// benign geometry: a smooth convex icosphere has reliable
+    /// `mesh_sdf` signs, no apex stress concentration, and uniform
+    /// radial contact — none of the real iter-1 scan's contact-
+    /// robustness pitfalls. The real scan's single-step solve does
+    /// *not* converge (non-PD pivots + Armijo stall, residual that
+    /// does not scale with interference); hardening contact for the
+    /// real scan is 7.3's battle — see the slice-7 memo's "7.2
+    /// real-scan finding".
+    ///
+    /// `#[ignore]` — a release-mode FEM solve, too slow under a debug
+    /// `cargo test`. Self-contained (no fixture). Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     --bin cf-device-design insertion_sim -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "release-mode FEM solve — slow under debug; run with --release --ignored"]
+    fn run_single_insertion_step_on_synthetic_sphere() {
+        // 40 mm icosphere "scan"; a chunky 10 mm single-layer wall
+        // (well-conditioned — ~2.5 BCC cells across) inset 3 mm.
+        let scan = icosphere(0.040, 3);
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
+            .expect("synthetic-sphere geometry should build");
+        let n_tets = geometry.n_tets;
+        // Rest positions captured before the solver consumes the mesh.
+        let rest: Vec<f64> = geometry
+            .mesh
+            .positions()
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
+
+        // 0.5 mm interference — small, but real contact on a clean
+        // convex geometry.
+        let interference_m = 0.0005;
+        let step = run_single_insertion_step(geometry, interference_m)
+            .expect("synthetic single insertion step should converge");
+        eprintln!(
+            "synthetic single-step solve: {n_tets} tets, {} pinned, \
+             {} Newton iters, residual {:.2e}",
+            step.n_pinned, step.iter_count, step.final_residual_norm,
+        );
+
+        assert_eq!(
+            step.x_final.len(),
+            rest.len(),
+            "x_final must cover every rest DOF",
+        );
+        assert!(
+            step.x_final.iter().all(|v| v.is_finite()),
+            "every converged DOF must be finite",
+        );
+        assert!(
+            step.n_pinned > 0,
+            "the outer skin must have pinned vertices to react against",
+        );
+        // The solve must do physics — penalty contact at a real
+        // interference moves at least one DOF off its rest position.
+        let max_disp = rest
+            .iter()
+            .zip(&step.x_final)
+            .map(|(r, f)| (f - r).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            max_disp > 0.0,
+            "a {interference_m} m interference solve should displace at least one DOF",
         );
     }
 }

@@ -25,7 +25,8 @@
 //! In progress: Insertion Sim (FEM, slice 7) — `mod insertion_sim`
 //! holds the Route-A SDF bridge: 7.0 the measurement spike, 7.1 the
 //! geometry + per-layer Yeoh material builder
-//! (`build_insertion_geometry`). Geometry only — no solve yet.
+//! (`build_insertion_geometry`), 7.2 the single static FEM solve
+//! (`run_single_insertion_step`). Quasi-static ramp + UI: 7.3+.
 //!
 //! Pending slices: Insertion Sim solve + UI (slice 7.2+) / Save /
 //! Open (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the

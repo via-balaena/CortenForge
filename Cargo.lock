@@ -1927,6 +1927,7 @@ dependencies = [
  "meshopt",
  "nalgebra",
  "serde",
+ "sim-ml-chassis",
  "sim-soft",
  "toml",
 ]
