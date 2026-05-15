@@ -13,7 +13,22 @@
 > See §"What didn't work, and why" below — the lesson reshapes the
 > next session's plan.
 >
-> **Iter 3 update (this commit, 2026-05-14)**: N1 / N2 / N3 measured.
+> **Iter 4 update (this commit, 2026-05-15)**: σ sweep on the slice-
+> 7.3c-shipped 2 500-face / σ = 0.5 cell config. The iter-1 "Yeoh-
+> validity wall at 75 %" the slice-7.3c post-implementation note
+> attributed to material physics turned out to be **numerical** —
+> σ = 1.0 cell unlocks the full 3 mm inset on both ramps (synthetic
+> 16 / 16 with `max 4` iters, iter-1 16 / 16 with `max 5` iters).
+> σ = 0.75 cell is a non-monotonic regression datapoint (iter-1 to
+> 69 %); σ = 1.5 cell also full-depth but at 9× σ = 0.5's bias.
+> σ = 1.0 is the sweet spot. The N3+N2 combo *still* regresses
+> even at σ = 1.0 (14 / 16 — exposing scan-capture noise that
+> wider σ doesn't fully suppress), confirming the slice-7.3c
+> hypothesis about that surprise. **Slice 7.3d ships σ = 1.0 cell
+> as the new default**, retiring the misdiagnosed "next recon
+> target is Yeoh-validity" item.
+>
+> **Iter 3 update (commit `f981a442`, 2026-05-14)**: N1 / N2 / N3 measured.
 > N1 (finer grid) *regressed* both envelopes — falsifies the recon's
 > "trilinear cell-face kink scales with grid spacing" mental model
 > for polyhedral inputs. N2 (10× SDF source mesh resolution) doubled
@@ -676,73 +691,76 @@ won't help there.
 
 ## Bookmark — implementation slice for next session
 
-Recon iter 3 closed the loop. The next session is the **N3
-implementation commit** (session 4 in the bookmark numbering):
+Recon iter 4 closes slice 7's structural-fix work. Both ramps
+reach the full 3 mm inset; no further smoothing or material
+recon is needed for the slice-7 milestone. The next session(s)
+have a choice:
 
-1. **Reintroduce `gaussian_smooth_3d_separable`** in
-   `tools/cf-device-design/src/insertion_sim.rs` (the prototype
-   from this session — kernel build via `(-r..=r).map(|i|
-   exp(-i²/(2σ²)))` then three separable passes with clamp-edge
-   boundary handling; ~95 LOC). Document σ²·κ surface-position
-   bias.
-2. **Wire it into `build_grid_sdf`** between step 6 (signed
-   buffer) and `SdfGrid::new`, with `sigma_cells = 0.5` as the
-   default. Update the function's docstring.
-3. **Validate**: run both insertion-sim ramps in `--release
-   --ignored`. Synthetic must hit `16 / 16` (full depth);
-   iter-1 must hit `≥ 12 / 16`.
-4. **Regression assertion**: tighten
-   `run_insertion_ramp_on_synthetic_sphere` from `>= 10 steps`
-   to `== 16 steps`. The iter-1 ramp test asserts only ramp
-   mechanics already; leave that alone but update its docstring
-   to record the post-fix envelope.
-5. **Optional within the same commit** — bump
-   `sdf_target_faces` from `2_500` to `25_000` on the iter-1
-   ramp test (recon-iter-3 §N2 finding) to characterize the
-   combined #1 + #2 envelope. If it cleanly hits `≥ 14 / 16`,
-   keep the bump; else split into a separate commit.
-6. **Add a small cf-device-design unit test** verifying the
-   Gaussian smoother is bit-exact on a constant field and is a
-   no-op (within fp-tol) for `sigma_cells = 0.0`. Algorithm-
-   neutral contract test for the helper.
-7. **Cold-read** the updated `build_grid_sdf` + insertion-sim
-   ramp tests as the N+1 pass. Then `cargo xtask grade
-   cf-device-design` and `xtask grade cf-geometry` (neither
-   should regress).
+### Option A — Open the slice-7 PR
 
-User's "autonomous architect" authority covers this commit.
+Slice 7.0–7.3d is a clean ship-able milestone:
+- 7.0 SDF bridge spike (Route A settled)
+- 7.1 `build_insertion_geometry`
+- 7.2 single-step insertion solve
+- 7.3a `GridSdf` flood-fill (sign-correct on sloppy decimation)
+- 7.3b.1 quasi-static ramp
+- 7.3c Gaussian pre-smooth on the GridSdf signed buffer
+- 7.3d σ retuning to 1.0 cell (this commit)
 
-Slice 7 closes after this commit, modulo deferred items —
-`mod insertion_sim` un-gate (7.4), `InsertionResult` UI surface
-(7.5), and the slacker-effective-modulus wiring (7.6) — which
-the bookmark plans for slice 7.4+.
+Three recon iterations are banked in
+`docs/INSERTION_SIM_RECON.md` as the audit trail. The PR would
+land the FEM pipeline at "full depth on both validated ramps,
+grade A, 59 + 9 tests."
+
+### Option B — Continue to slice 7.4 (UI un-gate)
+
+Un-gate `mod insertion_sim` (currently `#[cfg(test)]`), wire
+`InsertionResult` and the ramp control into the egui surface so
+users can drive the simulation from the live tool. Multi-commit
+arc — spec in [[project_cf_device_design_slice_7_plan.md]]. The
+UI work doesn't change the simulation pipeline; the slice-7 PR
+can either bundle slices 7.0–7.4 or split them.
+
+### Option C — Slice 7.5/7.6 deferred items first
+
+Wiring slacker-effective-modulus into the Yeoh material field is
+prerequisite-clean now that the FEM pipeline reaches full depth.
+
+User's "autonomous architect" authority covers all three. No
+fundamental recon is queued; future recon iterations would only
+be triggered by slice 8/9 (engineered devices) or slice 7.4 (UI
+exposure) surfacing a new failure mode the current pipeline
+doesn't characterize.
 
 ---
 
 ## Bookmark (commit + state)
 
-- **Branch**: `dev`, HEAD ⟨this commit⟩ (recon-iter-3 doc-only
-  update; cf-device-design code unchanged from recon-iter-2).
+- **Branch**: `dev`, HEAD ⟨this commit⟩ (slice 7.3d — recon-iter-4
+  + σ retuning to 1.0 cell).
 - **Preserves**:
   - The discriminating experiment
     `run_insertion_ramp_on_analytical_sphere_shell` (introduced in
-    `509f77dc`, the original recon commit).
+    `509f77dc`).
   - The algorithm-neutral gradient-contract tests in
     `design/cf-geometry/src/sdf.rs::tests` (introduced in
-    recon-iter-2, kept on revert).
-- **Reverts (carryover from recon-iter-2)**:
-  - `SdfGrid::gradient` from analytical-trilinear back to centered-
-    FD-on-`distance_clamped`.
+    recon-iter-2).
+  - The slice 7.3c smoother helper + its three contract tests
+    (`gaussian_smooth_*`) (introduced in `47806a37`).
+  - The slice 7.3c synthetic-ramp `== 16 steps` assertion
+    (now reinforced — passes with margin at σ = 1.0).
+- **Changes (slice 7.3d, this commit)**:
+  - `GRID_SDF_SMOOTH_SIGMA_CELLS: 0.5 → 1.0`.
+  - Updated docstrings on the constant, the inline step-7 comment
+    in `build_grid_sdf`, the iter-1 ramp test, and the iter-1
+    ramp test's `sdf_target_faces` rationale block (now records
+    the recon-iter-4 confirmation that 25 k faces does not
+    compose at any σ ≤ 1.5 cell).
 - **Reverts (this session — no code change committed)**:
-  - The N1 one-line edit (`grid_cell_m = 0.25 * cell_size_m`),
-    measured + reverted.
-  - The N2 one-line edit (`sdf_target_faces = 25_000` in the
+  - The R2 one-line edit (`sdf_target_faces = 25_000` in the
     iter-1 test), measured + reverted.
-  - The N3 ~95-LOC prototype (`gaussian_smooth_3d_separable` +
-    its call site in `build_grid_sdf`), measured + reverted.
-    Will be reintroduced in session 4 per the bookmark above.
-- **Next**: session 4 — implement N3. See §"Bookmark —
-  implementation slice for next session" above.
+- **Next**: see §"Bookmark — implementation slice for next
+  session" above — three options, all green.
 
 ---
 
@@ -783,3 +801,97 @@ downstream consumer needs more right now.
 `sdf_target_faces = 2_500` stays the iter-1 ramp test default;
 the test's docstring records the combo-regression so the next
 recon doesn't re-tread it without retuning σ first.
+
+---
+
+## Recon iter 4 results (2026-05-15, this session)
+
+Slice 7.3c's "iter-1 wall is now material-side Yeoh stretch-
+validity" framing turned out to be wrong. The user pushed back
+on shipping at 75 % without characterizing the new wall, and the
+σ sweep collapsed the question in three cheap measurements.
+
+### R1 — σ sweep on the default 2 500-face iter-1 (the binding axis)
+
+| σ (cells) | iter-1 envelope | per-step iters (max) | failure mode |
+|---|---|---|---|
+| 0.5 (slice 7.3c default) | 12 / 16 (75 %) | 18 | Yeoh-validity at tet 4130, `F = [2.027, 1.068, 0.325]` |
+| 0.75 | 11 / 16 (69 %) | 8 | Yeoh-validity at tet 4042, `F = [2.008, 1.228, 0.410]` |
+| **1.0** | **16 / 16 (100 %)** | **5** | **no failure — full depth, clean** |
+| 1.5 | 16 / 16 (100 %) | 5 | no failure — full depth, similar quality |
+
+Synthetic ramp also stays 16 / 16 at σ = 1.0 with `max 4`
+Newton iters per step (vs σ = 0.5's `max 47` at the wall).
+**σ = 1.0 is strictly dominant over σ = 0.5 on both ramps.**
+
+### What this collapses
+
+- **The "iter-1 Yeoh-validity wall" was numerical, not physical.**
+  The `max_stretch_deviation ≤ 1.0` validity check that slice 7.3c
+  read as a constitutive limit was firing on a handful of tets
+  whose Jacobians had been driven into the "looks degenerate"
+  regime by sharp contact-normal artifacts the σ = 0.5 cell
+  smoothing was too narrow to suppress. A wider σ = 1.0 cell
+  smoothing removes the source of those artifacts; the same tets
+  carry the full 3 mm depth without tripping the validity check.
+- **The non-monotonic σ = 0.75 regression is real and instructive.**
+  Three points of data are enough to know this isn't a smooth
+  σ → envelope curve. There is a σ-resonance with some
+  characteristic frequency in the iter-1 scan's noise spectrum;
+  σ = 0.5 cell is below it (eliminates polyhedral kinks but
+  leaves some sub-cell content), σ = 0.75 cell *amplifies* a
+  band the solver dislikes (more iters early but worse envelope
+  late), σ = 1.0 cell is above it (suppresses both kinks and the
+  resonant band). A future recon could chase the resonance origin
+  (probably the rotating-table scan's ~mm-scale capture
+  artifacts), but for the engineering goal it's enough to know
+  σ ≥ 1.0 cell sits above it.
+- **The recon-iter-3 prediction that Yeoh-validity was the next
+  recon target** was wrong on its premise. There was no material-
+  side wall at iter-1's depth; just numerical noise the slice-7.3c
+  σ wasn't tuned to suppress. Demoted.
+
+### R2 — σ = 1.0 cell + 25 000 faces (the N3+N2 combo, retested)
+
+| σ (cells) | sdf_target_faces | iter-1 envelope | failure mode |
+|---|---|---|---|
+| 0.5 (slice 7.3c default) | 25 000 | 9 / 16 (56 %) | Armijo stall, contact side |
+| 1.0 | 25 000 | 14 / 16 (87 %) | Armijo stall, contact side |
+| 1.0 | 2 500 | **16 / 16 (100 %)** | no failure |
+
+The slice-7.3c combo-regression *direction* (σ + 25 k worse than
+σ alone) holds at σ = 1.0 too, but at smaller magnitude
+(−2 steps vs −3). Hypothesis re-confirmed: 25 k-face resolution
+exposes scan-capture noise of higher frequency than the
+2 500-face proxy contains, and even σ = 1.0 cell smoothing
+doesn't fully suppress it. **The 2 500-face / σ = 1.0 cell pair
+is the empirically-optimal operating point** — no follow-up is
+needed; the slice-7.0 spike's "tet quality is governed by
+cell_size, not SDF face count" guidance composes correctly with
+the slice 7.3d default.
+
+### What's demoted, what stays
+
+- **Demoted**: "Yeoh-validity wall is the next recon target" — no
+  such wall exists at iter-1's 3 mm inset depth. May reappear at
+  larger interferences (≥ 5 mm on similar scans), in which case
+  it would be a *real* material-physics wall and the response
+  would be Yeoh-coefficient refit, not smoothing.
+- **Demoted**: "N2 follow-up (sdf_target_faces ≥ 25_000)" — does
+  not compose at any σ ≤ 1.5 cell. The 2 500-face default stays.
+- **Stays demoted**: tricubic / B-spline interpolation, analytical-
+  primitive fitting, finer-grid-as-fix. All from iter-3.
+- **Retained**: the algorithm-neutral gradient-contract tests in
+  `cf-geometry`, the analytical-sphere discriminating experiment,
+  the three Gaussian-smoother contract tests in cf-device-design.
+
+### Slice 7.3d implementation (this commit)
+
+One-line constant change: `GRID_SDF_SMOOTH_SIGMA_CELLS: f64 = 0.5
+→ 1.0`. Docstrings on the constant, the inline step-7 comment in
+`build_grid_sdf`, and the iter-1 ramp test updated to record the
+new full-depth envelope + the σ sweep that justified the bump.
+Slice 7.3d adds no new functions or tests; the slice 7.3c
+contract tests (constant-field, zero-σ, linear-field) all still
+pass since they're σ-parametric. cf-device-design test count
+stays at 59. Grade A automated criteria preserved.

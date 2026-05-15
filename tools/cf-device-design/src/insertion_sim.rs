@@ -935,24 +935,38 @@ fn neighbours6(i: usize, w: usize, h: usize, d: usize) -> [Option<usize>; 6] {
 }
 
 /// Per-cell σ of the [`GridSdf`] signed-distance Gaussian pre-smooth
-/// (slice 7.3c, [`gaussian_smooth_3d_separable`]).
+/// (slice 7.3c–7.3d, [`gaussian_smooth_3d_separable`]).
 ///
 /// The smoothing makes the trilinear interpolant inside `SdfGrid`
 /// approximate a C¹ function so the contact-side
 /// `gradient = ∇φ / ‖∇φ‖` does not carry the C⁰ kinks the polyhedral
-/// source mesh injects at facet boundaries. Recon-iter-3 (commit
-/// `f981a442`) measured σ = 0.5 cell unlocks the synthetic-icosphere
-/// ramp from 87 % → **100 %** and the iter-1 scan ramp from 31 % →
-/// **75 %** (both ramps' failure mode shifts from contact-side
-/// Armijo stall to material-side Yeoh stretch-validity).
+/// source mesh injects at facet boundaries.
+///
+/// Slice 7.3c shipped σ = 0.5 cell and saw the synthetic-icosphere
+/// ramp from 87 % → 100 % but the iter-1 scan ramp only reaching
+/// 75 % before what looked like a Yeoh-stretch-validity wall.
+/// Recon-iter-4 (commit `<this commit>`) measured σ ∈ {0.5, 0.75,
+/// 1.0, 1.5} and found the wall was **numerical, not material**:
+/// at σ = 1.0 cell the iter-1 ramp reaches the **full 3 mm inset
+/// (16 / 16)** with max 5 Newton iters per step. Synthetic stays at
+/// 16 / 16 with cleaner iters than σ = 0.5 (`max 4` vs `max 47`).
+/// σ = 0.75 cell is a regression-into-σ-resonance datapoint
+/// (iter-1 drops to 69 %); σ = 1.5 cell also reaches full depth but
+/// at 9× σ = 0.5's bias. **σ = 1.0 is the empirically-best
+/// operating point** — minimum bias of the full-depth-reaching σ
+/// values.
 ///
 /// Side effect: surface-position bias ≈ `σ²·κ / 2` where κ is local
-/// mean curvature. At σ = 0.5 cell = 1.5 mm on a 40 mm-radius sphere
-/// this is ~0.03 mm; on 5 mm-radius features ~0.2 mm. Both are well
-/// below the 4 mm BCC cell budget and inside the Fork-B
-/// relative-comparison tolerance. See `docs/INSERTION_SIM_RECON.md`
-/// §"Recon iter 3 results" for the discriminating-experiment trail.
-const GRID_SDF_SMOOTH_SIGMA_CELLS: f64 = 0.5;
+/// mean curvature. At σ = 1.0 cell × 3 mm grid = 3 mm physical:
+/// bias ≈ 0.11 mm on a 40 mm-radius sphere, ≈ 0.9 mm on 5 mm-radius
+/// features. Both inside the Fork-B relative-comparison tolerance
+/// (≤ the 4 mm BCC cell budget); the 0.9 mm on sharp features is
+/// non-trivial but consistent across design comparisons, so
+/// relative quantities (stress, contact pressure ratios) are not
+/// affected by it. See `docs/INSERTION_SIM_RECON.md`
+/// §"Recon iter 4 results" for the σ sweep + the demoted
+/// "Yeoh-validity wall is material side" interpretation.
+const GRID_SDF_SMOOTH_SIGMA_CELLS: f64 = 1.0;
 
 /// Separable 3D Gaussian smoothing on a flat `w × h × d` scalar
 /// buffer.
@@ -1239,12 +1253,15 @@ pub fn build_grid_sdf(
     let n_outside = region.iter().filter(|&&r| r == Region::Outside).count();
     let n_inside = n - n_outside;
 
-    // 7. Slice 7.3c — separable 3D Gaussian pre-smooth on the signed
-    //    buffer so the trilinear interpolant inside `SdfGrid`
-    //    approximates a C¹ function. Recon-iter-3 (`f981a442`) measured
-    //    σ = 0.5 cell extends the insertion-sim envelope from
-    //    {87 %, 31 %} to {100 %, 75 %} on the two ramps. See
-    //    `GRID_SDF_SMOOTH_SIGMA_CELLS` for the bias note + trail.
+    // 7. Slice 7.3c–7.3d — separable 3D Gaussian pre-smooth on the
+    //    signed buffer so the trilinear interpolant inside `SdfGrid`
+    //    approximates a C¹ function. σ = 1.0 cell (recon-iter-4)
+    //    delivers the full 3 mm inset on both the synthetic-icosphere
+    //    and iter-1 cleaned-scan ramps; σ = 0.5 cell (slice 7.3c)
+    //    left iter-1 at 75 % depth on what looked like a Yeoh-
+    //    validity wall but was actually under-bandwidth smoothing
+    //    feeding sharp gradients into specific tets. See
+    //    `GRID_SDF_SMOOTH_SIGMA_CELLS` for the σ-sweep trail + bias.
     let smoothed = gaussian_smooth_3d_separable(&signed, w, h, d, GRID_SDF_SMOOTH_SIGMA_CELLS);
     let grid = SdfGrid::new(smoothed, w, h, d, grid_cell_m, origin);
     let report = GridSdfReport {
@@ -2535,22 +2552,30 @@ mod tests {
     /// **7.3b.1 payoff** — [`run_insertion_ramp`] on the real iter-1
     /// scan.
     ///
-    /// Slice 7.3c (Gaussian pre-smooth on the GridSdf signed buffer)
-    /// lifts the iter-1 envelope from 5 / 16 (≈ 0.94 mm, 31 %,
-    /// contact-side Armijo stall — recon-iter-3 baseline `c05c2eb8`)
-    /// to **12 / 16** (≈ 2.25 mm, 75 %, material-side Yeoh
-    /// stretch-validity stop — recon-iter-3 measured `f981a442`).
-    /// The deep wall is now the constitutive model, not the contact
-    /// formulation. The N2 follow-up (raising `sdf_target_faces` to
-    /// 25 000) reaches further; that bump lives in
-    /// `build_insertion_geometry`'s caller knob.
+    /// Ladder of envelopes (each on top of the prior commit):
+    /// - **pre-7.3c** baseline: 5 / 16 (≈ 0.94 mm, 31 %), contact-side
+    ///   Armijo stall — recon-iter-3 baseline `c05c2eb8`.
+    /// - **slice 7.3c** (Gaussian pre-smooth σ = 0.5 cell): 12 / 16
+    ///   (≈ 2.25 mm, 75 %), what looked like a Yeoh stretch-validity
+    ///   stop — `47806a37`.
+    /// - **slice 7.3d** (σ retuning to 1.0 cell): **16 / 16
+    ///   (3.00 mm, 100 %)**, full depth, max 5 Newton iters per step
+    ///   — recon-iter-4 (`<this commit>`).
+    ///
+    /// Recon-iter-4 discovered that what slice 7.3c read as a
+    /// material-side wall was numerical: σ = 0.5 cell smoothing was
+    /// too narrow to suppress the sharp local features that
+    /// concentrated bad-Jacobian stress into specific tets, and the
+    /// `max_stretch_deviation ≤ 1.0` validity check fired on those
+    /// tets *before* the actual material limit. σ = 1.0 unlocks
+    /// past the false wall.
     ///
     /// Reports every step and asserts the ramp *mechanics* (monotonic
     /// interference, finite `final_x`, ≥ 1 step). The exact converged-
     /// step count is *not* asserted — the iter-1 scan is repo-excluded
-    /// and small geometry changes drift the Yeoh wall by a step or
-    /// two. The synthetic test pins the contract; this test
-    /// characterizes.
+    /// and exact-depth assertions on it would be brittle. The
+    /// synthetic test pins the full-depth contract for the regression
+    /// floor; this test characterizes the real-scan behavior.
     ///
     /// `#[ignore]` — needs the iter-1 fixture + a release-mode ramp.
     #[test]
@@ -2580,6 +2605,20 @@ mod tests {
         // polyhedral kinks is too weak to suppress it. A clean N2
         // follow-up requires σ retuning — recon-iter-4 territory if
         // and when slice 8/9 surfaces a deeper-envelope requirement.
+        // `sdf_target_faces = 2 500` per the slice 7.0 spike's "tet
+        // quality is governed by cell_size, not SDF face count"
+        // finding. The recon-iter-3 N2 experiment (`f981a442`) showed
+        // 25 000 faces *alone* doubles the iter-1 envelope (31 → 62 %)
+        // — but **the combo with the slice 7.3c Gaussian smooth
+        // regresses to 56 %**: at 25 k faces the scan-capture noise
+        // amplitude (rotating-table artifacts) is binding, and the
+        // σ = 0.5 cell smoothing tuned for the 2 500-face proxy's
+        // polyhedral kinks is too weak to suppress it. Recon-iter-4
+        // (`<this commit>`) retested at σ = 1.0 cell and the combo
+        // *still* regresses to 14/16 (vs N3-alone-at-σ=1.0's full
+        // 16/16): faithful 25 k-face resolution exposes scan noise
+        // even when σ is widened. The 2 500-face proxy + σ = 1.0
+        // cell is the empirically-best operating point.
         let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
             .expect("iter-1 geometry should build");
         let n_tets = geometry.n_tets;
