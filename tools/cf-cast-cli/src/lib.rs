@@ -18,30 +18,34 @@
 //! 5. Compute scan AABB; pad by `bounding_margin_m` per axis →
 //!    bounding cuboid.
 //! 6. Derive plug + per-layer body solids from a shared `Arc`-backed
-//!    scan SDF (one SDF allocation, N+1 cf-design references):
-//!    - `plug` = `Solid::from_sdf(scan_sdf, aabb)`  (Option A: scan
-//!      IS the inner cavity surface)
+//!    scan SDF (one SDF allocation, N+1 cf-design references). With
+//!    `cavity_inset_m` lifted from `.design.toml` (0 if no design
+//!    source):
+//!    - `plug` = `Solid::from_sdf(scan_sdf, aabb).offset(-cavity_inset_m)`
 //!    - `layer[N].body` =
-//!      `Solid::from_sdf(scan_sdf, aabb).offset(sum t[0..=N])`
+//!      `Solid::from_sdf(scan_sdf, aabb).offset(sum t[0..=N] - cavity_inset_m)`
 //! 7. Build [`cf_cast::Ribbon`] from the parsed centerline + the
 //!    config's split-normal + registration / pour-gate / plug-pin
 //!    overrides.
 //! 8. Invoke [`cf_cast::CastSpec::export_molds_v2`] +
 //!    [`cf_cast::CastSpec::write_procedure_v2`].
+//! 9. If `cavity_inset_m > 0`, post-process the procedure.md to
+//!    surface the press-fit reservation (see [`procedure_post`]).
 //!
-//! # Plug-derivation choice (Option A)
+//! # Plug-derivation choice (Option A.1)
 //!
-//! Per `project_scan_to_cast_bridge_design.md` + 2026-05-13 design
-//! call, the plug equals the scan with no inset. The TOML
-//! `[[layers]] thickness_m` value therefore equals the cured-silicone
-//! shell thickness on top of the scan surface (no compression bias).
-//! Workshop users wanting a compressive inner-surface fit can iterate
-//! to a future `[scan].inner_clearance_m` override.
+//! Per `project_scan_to_cast_bridge_design.md` + slice-9.6 update,
+//! the plug equals the scan shrunk inward by `cf-device-design`'s
+//! `cavity.inset_m`, baking the press-fit reservation into the
+//! mold geometry. When no design source is present (inline
+//! `[[layers]]`), `cavity_inset_m` defaults to `0.0`, recovering the
+//! original Option-A behavior (plug == scan literal) bit-for-bit.
 
 mod config;
 mod derive;
 pub mod design_ref;
 mod prep;
+mod procedure_post;
 mod scan;
 
 use std::fs;
@@ -158,6 +162,12 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     let procedure_path = out_dir.join("procedure.md");
     spec.write_procedure_v2(&ribbon, &procedure_path)
         .context("write_procedure_v2")?;
+    // Slice 9.6c — splice `## Press-Fit Reservation` into the
+    // procedure markdown when the design's cavity inset is non-zero.
+    // No-op for inline-layers casts (inset = 0.0) so pre-slice-9.6
+    // procedure output is preserved bit-for-bit.
+    procedure_post::inject_press_fit_section(&procedure_path, cavity_inset_m)
+        .context("post-process procedure.md to surface press-fit reservation")?;
 
     Ok(RunReport {
         out_dir,

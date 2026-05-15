@@ -145,6 +145,12 @@ enabled = false
         proc_text.contains("Ecoflex 00-30"),
         "procedure must reference the layer material; got:\n{proc_text}"
     );
+    // Slice 9.6c — inline-layers path defaults cavity_inset_m to 0.0,
+    // so the Press-Fit Reservation section must NOT appear.
+    assert!(
+        !proc_text.contains("## Press-Fit Reservation"),
+        "inline-layers procedure must NOT contain Press-Fit section (inset = 0); got:\n{proc_text}",
+    );
     // Pour mass should be positive + under default budget.
     let mass_kg = report.v2.layers[0].pour_volume.pour_mass_kg;
     assert!(mass_kg > 0.0, "pour mass must be positive: {mass_kg}");
@@ -404,6 +410,17 @@ enabled = false
     ] {
         assert!(p.exists(), "expected output {} to exist", p.display());
     }
+    // Slice 9.6c — procedure.md must surface the press-fit
+    // reservation when cavity.inset_m > 0.
+    let proc_text = std::fs::read_to_string(out_dir.join("procedure.md")).unwrap();
+    assert!(
+        proc_text.contains("## Press-Fit Reservation"),
+        "procedure.md must contain the Press-Fit Reservation section when inset > 0; got:\n{proc_text}",
+    );
+    assert!(
+        proc_text.contains("**2.00 mm**"),
+        "procedure.md must surface the inset value (2 mm) with 2-dp mm formatting; got:\n{proc_text}",
+    );
 }
 
 /// Slice 9 — cast.toml with neither `[design]` nor `[[layers]]` is
