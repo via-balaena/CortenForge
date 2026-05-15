@@ -400,7 +400,7 @@ fn layer_boundary_thresholds(design: &SimDesign) -> Vec<f64> {
 /// empty thresholds, so that case uses a [`ConstantField`] of the
 /// lone value.
 fn layered_param_field(
-    scan_sdf: &SignedDistanceField,
+    scan_sdf: &GridSdf,
     thresholds: &[f64],
     values: Vec<f64>,
 ) -> Box<dyn Field<f64>> {
@@ -429,10 +429,10 @@ pub struct InsertionGeometry {
     /// Device-wall tet mesh with per-tet Yeoh materials sampled from
     /// the layer stack. The solver (7.2) consumes this by value.
     pub mesh: SdfMeshedTetMesh<Yeoh>,
-    /// The scan-derived rigid intruder, as the SDF the penalty
-    /// contact primitive will consume at 7.2. Built here so 7.1's
-    /// geometry pass is self-contained; unused until the solve lands.
-    pub intruder: SignedDistanceField,
+    /// The scan-derived rigid intruder, as the flood-fill [`GridSdf`]
+    /// the penalty contact primitive consumes — the same SDF that
+    /// drove the body geometry; the solve offsets it per interference.
+    pub intruder: GridSdf,
     /// Scan-SDF offset (m) of the cavity surface — `-cavity_inset_m`.
     pub cavity_offset_m: f64,
     /// Scan-SDF offset (m) of the outer skin —
@@ -454,9 +454,11 @@ pub struct InsertionGeometry {
 /// with per-tet Yeoh materials, plus the rigid intruder SDF.
 ///
 /// Geometry (mirrors the sim-soft rows 21–25 layered-sleeve path):
-/// decimate the scan → [`SignedDistanceField`] → cavity =
-/// `scan.offset(-inset)`, outer skin = `scan.offset(total - inset)`,
-/// `body = outer.subtract(cavity)`. Materials: each layer's base
+/// decimate the scan → flood-fill [`GridSdf`] ([`build_grid_sdf`] —
+/// the 7.3a fix for `mesh_sdf`'s ~12%-wrong sign on the non-manifold
+/// decimated scan) → cavity = `scan.offset(-inset)`, outer skin =
+/// `scan.offset(total - inset)`, `body = outer.subtract(cavity)`.
+/// Materials: each layer's base
 /// silicone ([`silicone_for_anchor`]) supplies `(μ, C₂, λ)`; a
 /// [`LayeredScalarField`] per parameter partitions the wall by
 /// distance-from-scan at [`layer_boundary_thresholds`] (a
@@ -479,7 +481,8 @@ pub struct InsertionGeometry {
 ///   partition needs positive, finite thicknesses (otherwise
 ///   `LayeredScalarField::new` would panic rather than error);
 /// - a layer names an anchor key outside the catalog;
-/// - [`SignedDistanceField::new`] fails (empty decimated scan);
+/// - [`build_grid_sdf`] fails (the bbox margin is too small to seed
+///   the outside flood);
 /// - `SdfMeshedTetMesh::from_sdf_yeoh` fails (empty mesh — e.g. a
 ///   degenerate design whose cavity has collapsed — or a non-finite
 ///   SDF sample).
@@ -488,9 +491,9 @@ pub struct InsertionGeometry {
 ///
 /// `cell_size_m` is a programmer-set knob, not validated here: a
 /// non-positive `cell_size_m` (or a scan degenerate enough that its
-/// bbox is ill-formed) forwards a panic from `BccLattice::new` — the
-/// same "caller-supplied invariant" posture sim-soft documents for
-/// that argument.
+/// bbox is ill-formed) forwards a panic from `SdfGrid::new` /
+/// `BccLattice::new` — the same "caller-supplied invariant" posture
+/// sim-soft + cf-geometry document for that argument.
 pub fn build_insertion_geometry(
     scan: &IndexedMesh,
     design: &SimDesign,
@@ -540,8 +543,16 @@ pub fn build_insertion_geometry(
     let thresholds = layer_boundary_thresholds(design);
 
     let decimated = decimate_for_sdf(scan, sdf_target_faces);
-    let scan_sdf = SignedDistanceField::new(decimated)
-        .context("build SignedDistanceField from the decimated scan")?;
+    // Flood-fill `GridSdf`, not `mesh_sdf::SignedDistanceField`: the
+    // 7.3a diagnostic found the closest-face-normal sign ~12% wrong on
+    // the sloppy-decimated (non-manifold) scan. The grid is finer than
+    // the BCC cell so trilinear interp stays sub-mm; the wall-band
+    // threshold (0.75·grid_cell ≥ 0.5·grid_cell) keeps the flood
+    // leak-proof.
+    let grid_cell_m = 0.75 * cell_size_m;
+    let (scan_sdf, _grid_report) =
+        build_grid_sdf(&decimated, bounds, grid_cell_m, 0.75 * grid_cell_m)
+            .context("build flood-fill GridSdf from the decimated scan")?;
 
     // Three `LayeredScalarField`s (or `ConstantField`s) over the same
     // scan-distance partition — one per Yeoh parameter — mirroring the
@@ -1346,11 +1357,14 @@ mod tests {
                 .all(|m| (m.mu() - ecoflex_mu).abs() < 1e-9),
             "single-layer tets should all carry the ECOFLEX_00_30 modulus",
         );
-        // The rigid intruder is the decimated scan SDF — confirm it
-        // wraps a non-empty mesh (it drives the 7.2 press-fit ramp).
+        // The rigid intruder is the flood-fill `GridSdf` — confirm it
+        // is signed sanely: the bbox-min corner is outside the scan,
+        // so it must read positive (a wrong sign here was the whole
+        // 7.2 failure mode; the dedicated proof is `grid_sdf_fix_spike`
+        // + `run_single_insertion_step_on_iter1_scan`).
         assert!(
-            !g1.intruder.mesh().faces.is_empty(),
-            "intruder SDF must wrap a non-empty mesh",
+            g1.intruder.eval(g1.bounds.min) > 0.0,
+            "intruder GridSdf must read the bbox-min corner as outside (positive)",
         );
 
         // (2) A three-layer device, three different silicones, each
@@ -1544,6 +1558,83 @@ mod tests {
             max_disp > 0.0,
             "a {interference_m} m interference solve should displace at least one DOF",
         );
+    }
+
+    /// **7.3a fix characterization** — `run_single_insertion_step` on
+    /// the real iter-1 scan, post-`GridSdf` wire-in.
+    ///
+    /// 7.2's single-step solve did *not* converge on the real scan
+    /// (non-PD pivots + Armijo stall, residual ~6e4 *not scaling with
+    /// interference*); the 7.3a diagnostic root-caused it to
+    /// `mesh_sdf`'s ~12%-wrong sign on the sloppy-decimated scan. The
+    /// 7.3a fix swapped `build_insertion_geometry` onto the flood-fill
+    /// [`GridSdf`] — and it works: the residual collapses from ~6e4
+    /// into the ~0.1 regime (0.5 mm interference → 0.157 at iter 38).
+    /// The geometry/SDF problem is solved.
+    ///
+    /// What it does *not* yet do is reach `tol = 1e-10`: the residual
+    /// stalls near the solution on a non-SPD tangent (the capsule
+    /// geometry's secondary pathology) — `replay_step` panics rather
+    /// than return a non-converged step. Closing that last mile (the
+    /// quasi-static ramp's warm-starting, `tol` / `kappa` tuning) is
+    /// **7.3b**. So this is a `catch_unwind` *characterization*
+    /// harness, not a pass/fail test: it asserts the geometry builds
+    /// and reports the solve outcome — a regression guard that the
+    /// GridSdf wire-in keeps the real scan in the convergeable regime,
+    /// and a ready harness for 7.3b to measure progress against.
+    ///
+    /// `#[ignore]` — needs the iter-1 fixture + a release-mode solve.
+    #[test]
+    #[ignore = "7.3a fix characterization — needs the iter-1 scan + a release solve; run with --ignored"]
+    fn iter1_single_step_solve_characterization() {
+        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !path.exists() {
+            eprintln!("skip: iter-1 scan fixture not found at {}", path.display());
+            return;
+        }
+        let scan = load_stl(&path).expect("load the iter-1 cleaned scan");
+
+        // 10 mm single-layer wall (well-conditioned — ~2.5 BCC cells
+        // across, the same as the converging synthetic case).
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
+            .expect("iter-1 geometry should build on the GridSdf");
+        let n_tets = geometry.n_tets;
+        eprintln!("iter-1 geometry: {n_tets} tets (built on the flood-fill GridSdf)");
+
+        // `replay_step` panics on non-convergence — catch it so this
+        // characterization harness reports rather than fails. 7.3b
+        // turns this into a hard pass/fail once the ramp + tuning
+        // close the last mile to `tol`.
+        let interference_m = 0.0005;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            run_single_insertion_step(geometry, interference_m)
+        }));
+        match outcome {
+            Ok(Ok(step)) => eprintln!(
+                "  CONVERGED at {interference_m} m — {} pinned, {} Newton iters, \
+                 residual {:.2e}",
+                step.n_pinned, step.iter_count, step.final_residual_norm,
+            ),
+            Ok(Err(e)) => eprintln!("  errored (not a panic): {e:#}"),
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("<non-string panic payload>");
+                eprintln!(
+                    "  did not reach tol at {interference_m} m (expected at 7.3a — the \
+                     near-solution non-SPD tangent is 7.3b's ramp + tuning):\n    {msg}"
+                );
+            }
+        }
     }
 
     /// **7.3a diagnostic spike** — why does the real iter-1 scan's
