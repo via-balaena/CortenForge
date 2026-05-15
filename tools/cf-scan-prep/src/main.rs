@@ -1317,12 +1317,20 @@ fn build_cleaned_mesh(
 }
 
 // ----- .prep.toml serializable structures -----
+//
+// Block names match `docs/SCAN_PREP_DESIGN.md` §Output format (v1.0
+// completion rename CSP.1, 2026-05-15). Earlier as-built used
+// `[reorient]` / `[recenter]` — those names exposed internal egui-panel
+// nouns rather than the conceptual transform operation. Downstream
+// consumers (cf-cast-cli `prep.rs`, cf-device-design `parse_centerline`)
+// read only `[centerline]` and tolerate unknown sibling keys, so this
+// rename is downstream-safe.
 
 #[derive(Serialize)]
 struct PrepToml {
     scan_prep: PrepScanPrepBlock,
-    reorient: PrepReorientBlock,
-    recenter: PrepRecenterBlock,
+    simplify: PrepSimplifyBlock,
+    transform: PrepTransformBlock,
     clip: PrepClipBlock,
     caps: PrepCapsBlock,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1338,9 +1346,58 @@ struct PrepScanPrepBlock {
     stl_units_at_load: &'static str,
 }
 
+/// `[simplify]` provenance — what decimation, if any, was applied at
+/// save time. Per spec §Output format. Records both the user-targeted
+/// budget (slice 9.8: Simplify panel slider IS the save-time budget)
+/// and the actually-achieved face count, plus the originally-loaded
+/// count so the reduction ratio is visible.
 #[derive(Serialize)]
-struct PrepReorientBlock {
-    // Physics-frame quaternion (w, x, y, z).
+struct PrepSimplifyBlock {
+    /// `true` when meshopt was invoked at save time (target < pre-
+    /// simplify cleaned-mesh face count). `false` when the cleaned
+    /// mesh's face count was already at or below the target (no
+    /// decimation; achieved == original).
+    applied: bool,
+    /// Algorithm identifier — pinned literal so downstream audits know
+    /// what code path produced this file.
+    algorithm: &'static str,
+    /// Version string for the algorithm dependency. Tracks the
+    /// workspace `meshopt` Cargo dep; bump this constant in lockstep
+    /// when that dep is updated. Hard-coded literal because the
+    /// meshopt-rs crate doesn't expose its version at runtime and a
+    /// build-script lift for one provenance line would be overkill.
+    algorithm_version: &'static str,
+    /// Target face count from the Simplify panel slider at save time.
+    target_face_count: usize,
+    /// Actual face count of the cleaned mesh on disk. Equals
+    /// `target_face_count` ± boundary-locked vertex topology slack
+    /// when `applied`; equals `original_face_count` when `!applied`.
+    achieved_face_count: usize,
+    /// Face count of the as-loaded scan (in `OriginalScanMesh`,
+    /// before any decimation or transforms). Distinct from
+    /// `achieved_face_count` whenever simplify ran at all.
+    original_face_count: usize,
+    /// Always `true` — cf-scan-prep uses
+    /// `meshopt::SimplifyOptions::LockBorder` (NOT
+    /// `simplify_sloppy`) per spec §Architectural decisions §Simplify
+    /// algorithm. Surfaced in the TOML for audit purposes.
+    boundary_preserved: bool,
+}
+
+/// `[transform]` umbrella — `rotation` + `translation` sub-tables
+/// match spec §Output format. Each renders as `[transform.rotation]`
+/// + `[transform.translation]` in TOML.
+#[derive(Serialize)]
+struct PrepTransformBlock {
+    rotation: PrepRotationBlock,
+    translation: PrepTranslationBlock,
+}
+
+#[derive(Serialize)]
+struct PrepRotationBlock {
+    /// Physics-frame unit quaternion `(w, x, y, z)`. Source of truth
+    /// for downstream reconstruction; the Euler angles below mirror
+    /// the cf-scan-prep slider source-of-truth for human readability.
     quaternion: [f64; 4],
     roll_deg: f64,
     pitch_deg: f64,
@@ -1348,10 +1405,12 @@ struct PrepReorientBlock {
 }
 
 #[derive(Serialize)]
-struct PrepRecenterBlock {
-    // Physics-frame translation in meters.
-    translation_m: [f64; 3],
-    translation_mm: [f64; 3],
+struct PrepTranslationBlock {
+    /// Physics-frame translation in meters. Spec §Output format
+    /// names this `m`; the panel state stores mm but the on-disk
+    /// units convention is meters (matches cf-cast / the rest of
+    /// the workspace).
+    m: [f64; 3],
 }
 
 #[derive(Serialize)]
@@ -1381,7 +1440,7 @@ struct PrepCapLoop {
     loop_index: usize,
     vertex_count: usize,
     plane_fit_r_squared: f64,
-    /// Physics-frame outward normal at scan time (pre-Reorient bake).
+    /// Physics-frame outward normal at scan time (pre-transform bake).
     plane_normal: [f64; 3],
     /// Physics-frame centroid at scan time.
     plane_centroid_m: [f64; 3],
@@ -1400,18 +1459,45 @@ struct PrepCenterlineBlock {
 #[derive(Serialize)]
 struct PrepOutputBlock {
     cleaned_stl: String,
+    /// AABB of the cleaned mesh on disk (post-transform, post-cap,
+    /// post-save-time-simplify), in meters. Spec §Output format
+    /// promised this so downstream tooling can sanity-check the
+    /// cleaned scan extents without re-loading the STL.
+    aabb_m: PrepAabbBlock,
 }
 
+#[derive(Serialize)]
+struct PrepAabbBlock {
+    min: [f64; 3],
+    max: [f64; 3],
+}
+
+/// Algorithm identifier for `[simplify].algorithm`. Pinned literal so
+/// downstream audits can distinguish cf-scan-prep's boundary-preserving
+/// quadric collapse from other decimation strategies (e.g.,
+/// cf-device-design's `simplify_sloppy` proxy).
+const SIMPLIFY_ALGORITHM_NAME: &str = "meshopt_quadric_edge_collapse";
+
+/// Tracks the workspace `meshopt` Cargo dep. Update in lockstep with
+/// `Cargo.toml`'s `meshopt = "X.Y.Z"`.
+const SIMPLIFY_ALGORITHM_VERSION: &str = "0.6.2";
+
 /// Build the `.prep.toml` string from the current cf-scan-prep state.
-/// Includes provenance for every transform / cap / centerline so
-/// v2 cf-cast (or a future audit) can reconstruct what cf-scan-prep
-/// did to produce the cleaned STL.
+/// Includes provenance for every transform / cap / centerline /
+/// simplify-at-save so v2 cf-cast (or a future audit) can reconstruct
+/// what cf-scan-prep did to produce the cleaned STL.
 ///
 /// `pivot_centroid_m` is the raw scan AABB centroid (in physics-frame
 /// meters). The centerline polyline is baked through the same
 /// centroid-pivot transform `bake_vertex_with_pivot` uses for mesh
 /// vertices, so the polyline coordinates emitted into `.prep.toml`
 /// agree with the cleaned STL on disk.
+///
+/// `simplify_target_face_count`, `original_face_count`, and
+/// `cleaned_aabb_m` feed the spec-promised `[simplify]` and
+/// `[output.aabb_m]` blocks. The caller computes them from the live
+/// `SimplifyState` / `OriginalScanMesh` / final cleaned mesh AABB so
+/// this function stays pure (no Res lookups).
 #[allow(clippy::too_many_arguments)]
 fn build_prep_toml_string(
     source_stl: &Path,
@@ -1424,14 +1510,18 @@ fn build_prep_toml_string(
     rotation_for_centerline: UnitQuaternion<f64>,
     translation_for_centerline_m: Vector3<f64>,
     pivot_centroid_m: Point3<f64>,
+    simplify_target_face_count: usize,
+    original_face_count: usize,
+    achieved_face_count: usize,
+    cleaned_aabb_m: &Aabb,
 ) -> Result<String> {
     let q = reorient.quaternion_physics();
     let timestamp = chrono_like_timestamp();
 
     // Project the centerline polyline into world frame so v2 cf-cast
-    // can consume it directly without redoing Reorient+Recenter math.
-    // Same centroid-pivot transform as `build_cleaned_mesh` uses for
-    // mesh vertices.
+    // can consume it directly without redoing transform math. Same
+    // centroid-pivot transform as `build_cleaned_mesh` uses for mesh
+    // vertices.
     let centerline_world: Vec<[f64; 3]> = cap
         .centerline_polyline
         .iter()
@@ -1453,19 +1543,34 @@ fn build_prep_toml_string(
             generated_at: timestamp,
             stl_units_at_load: stl_units.panel_label(),
         },
-        reorient: PrepReorientBlock {
-            quaternion: [q.w, q.i, q.j, q.k],
-            roll_deg: reorient.roll_deg,
-            pitch_deg: reorient.pitch_deg,
-            yaw_deg: reorient.yaw_deg,
+        simplify: PrepSimplifyBlock {
+            // `applied = true` iff save-time simplify ran. The save
+            // handler invokes simplify only when the slider target is
+            // strictly below the current cleaned-mesh face count;
+            // mirror that condition here for the provenance flag.
+            applied: simplify_target_face_count < original_face_count
+                && achieved_face_count < original_face_count,
+            algorithm: SIMPLIFY_ALGORITHM_NAME,
+            algorithm_version: SIMPLIFY_ALGORITHM_VERSION,
+            target_face_count: simplify_target_face_count,
+            achieved_face_count,
+            original_face_count,
+            boundary_preserved: true,
         },
-        recenter: PrepRecenterBlock {
-            translation_m: [
-                recenter.tx_mm * 0.001,
-                recenter.ty_mm * 0.001,
-                recenter.tz_mm * 0.001,
-            ],
-            translation_mm: [recenter.tx_mm, recenter.ty_mm, recenter.tz_mm],
+        transform: PrepTransformBlock {
+            rotation: PrepRotationBlock {
+                quaternion: [q.w, q.i, q.j, q.k],
+                roll_deg: reorient.roll_deg,
+                pitch_deg: reorient.pitch_deg,
+                yaw_deg: reorient.yaw_deg,
+            },
+            translation: PrepTranslationBlock {
+                m: [
+                    recenter.tx_mm * 0.001,
+                    recenter.ty_mm * 0.001,
+                    recenter.tz_mm * 0.001,
+                ],
+            },
         },
         clip: PrepClipBlock {
             enabled: clip.enabled,
@@ -1503,6 +1608,18 @@ fn build_prep_toml_string(
         },
         output: PrepOutputBlock {
             cleaned_stl: cleaned_stl_name.to_string(),
+            aabb_m: PrepAabbBlock {
+                min: [
+                    cleaned_aabb_m.min.x,
+                    cleaned_aabb_m.min.y,
+                    cleaned_aabb_m.min.z,
+                ],
+                max: [
+                    cleaned_aabb_m.max.x,
+                    cleaned_aabb_m.max.y,
+                    cleaned_aabb_m.max.z,
+                ],
+            },
         },
     };
     toml::to_string_pretty(&toml_struct).context("serialize PrepToml to TOML")
@@ -3388,12 +3505,12 @@ fn render_save_section(
 ///
 /// Pipeline:
 ///
-/// 1. Build cleaned mesh: apply Reorient rotation + Recenter
-///    translation to every vertex; ear-clip + append cap triangles
-///    for each included loop.
-/// 2. Build `.prep.toml` string: scan-prep + reorient + recenter +
-///    clip + caps + (post-bake world-frame) centerline + output
-///    blocks.
+/// 1. Build cleaned mesh: apply transform.rotation + transform.translation
+///    to every vertex; ear-clip + append cap triangles for each
+///    included loop.
+/// 2. Build `.prep.toml` string: scan-prep + simplify + transform +
+///    clip + caps + (post-bake world-frame) centerline + output blocks
+///    (with cleaned-mesh AABB).
 /// 3. Atomic write: STL to `.stl.tmp`, TOML to `.toml.tmp`, rename
 ///    both. On any failure roll back both temp + final files so the
 ///    user doesn't end up with a half-written save.
@@ -3409,6 +3526,7 @@ fn render_save_section(
 fn handle_save_action(
     mut pending: ResMut<SavePendingAction>,
     scan: Res<ScanMesh>,
+    original: Res<OriginalScanMesh>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
     clip: Res<ClipState>,
@@ -3485,6 +3603,12 @@ fn handle_save_action(
         recenter.tz_mm * 0.001,
     );
     let pivot_centroid_m = scan.0.aabb().center();
+    // `[simplify]` provenance inputs: the as-loaded face count (in
+    // OriginalScanMesh, untouched by Apply / Reset / save-time
+    // budget) drives `original_face_count`; the final cleaned mesh's
+    // face count is what landed on disk.
+    let original_face_count = original.0.faces.len();
+    let cleaned_aabb_m = cleaned.aabb();
     let toml_str = match build_prep_toml_string(
         &source.0,
         stl_units.0,
@@ -3496,6 +3620,10 @@ fn handle_save_action(
         rotation,
         translation,
         pivot_centroid_m,
+        simplify.target_face_count,
+        original_face_count,
+        triangle_count,
+        &cleaned_aabb_m,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -4780,8 +4908,10 @@ mod tests {
     }
 
     /// `build_prep_toml_string` produces a string that re-parses as
-    /// TOML and contains the expected top-level keys. Validates the
-    /// serde-derive shape doesn't drift silently.
+    /// TOML and contains every spec-promised top-level block under
+    /// the v1.0 completion schema (CSP.1 rename, 2026-05-15). Pins
+    /// the on-disk shape against `docs/SCAN_PREP_DESIGN.md` §Output
+    /// format so silent block-renames surface here.
     #[test]
     fn prep_toml_string_round_trips_through_toml_parser() -> Result<()> {
         let reorient = ReorientState::default();
@@ -4790,6 +4920,10 @@ mod tests {
         let cap = CapState::default();
         let rotation = reorient.quaternion_physics();
         let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(-0.04, -0.03, -0.06),
+            max: Point3::new(0.04, 0.03, 0.06),
+        };
         let s = build_prep_toml_string(
             Path::new("/tmp/scan.stl"),
             StlUnits::Mm,
@@ -4801,14 +4935,35 @@ mod tests {
             rotation,
             translation,
             Point3::origin(),
+            200_000, // simplify target
+            500_000, // original face count
+            200_000, // achieved face count
+            &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
         assert!(parsed.get("scan_prep").is_some());
-        assert!(parsed.get("reorient").is_some());
-        assert!(parsed.get("recenter").is_some());
+        assert!(parsed.get("simplify").is_some(), "simplify block missing");
+        assert!(parsed.get("transform").is_some(), "transform block missing");
+        // Sub-tables under [transform] per spec §Output format.
+        let transform = parsed.get("transform").expect("transform block");
+        assert!(
+            transform.get("rotation").is_some(),
+            "transform.rotation missing"
+        );
+        assert!(
+            transform.get("translation").is_some(),
+            "transform.translation missing"
+        );
         assert!(parsed.get("clip").is_some());
         assert!(parsed.get("caps").is_some());
         assert!(parsed.get("output").is_some());
+        // [output.aabb_m] sub-table per spec §Output format.
+        let output = parsed.get("output").expect("output block");
+        assert!(output.get("aabb_m").is_some(), "output.aabb_m missing");
+        // Legacy block names from the as-built schema must NOT
+        // resurface — guards against accidental re-introduction.
+        assert!(parsed.get("reorient").is_none(), "legacy reorient name");
+        assert!(parsed.get("recenter").is_none(), "legacy recenter name");
         // No cap loops -> centerline block omitted.
         assert!(parsed.get("centerline").is_none());
         Ok(())
