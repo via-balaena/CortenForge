@@ -156,10 +156,25 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         None => cast_toml_dir.join(&config.cast.output_dir),
     };
 
+    // Slice 9.7 — orchestration progress for workshop runs (large
+    // scans at sub-5 mm cells take minutes; without this the run is
+    // a black box between "loaded design" and the final write).
+    eprintln!(
+        "[cf-cast-cli] exporting {layer_count} layer(s) × (2 pieces + 1 plug) = {stl_count} STLs at mesh_cell_size_m={cell_size}…",
+        layer_count = config.layers.len(),
+        stl_count = config.layers.len() * 3,
+        cell_size = config.cast.mesh_cell_size_m,
+    );
+    let t_export = std::time::Instant::now();
     let report = spec
         .export_molds_v2(&ribbon, &out_dir)
         .context("export_molds_v2 (2 pieces + 1 plug per layer)")?;
+    eprintln!(
+        "[cf-cast-cli] export_molds_v2 complete in {:.1}s",
+        t_export.elapsed().as_secs_f64()
+    );
     let procedure_path = out_dir.join("procedure.md");
+    eprintln!("[cf-cast-cli] writing procedure.md…");
     spec.write_procedure_v2(&ribbon, &procedure_path)
         .context("write_procedure_v2")?;
     // Slice 9.6c — splice `## Press-Fit Reservation` into the
@@ -168,6 +183,12 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     // procedure output is preserved bit-for-bit.
     procedure_post::inject_press_fit_section(&procedure_path, cavity_inset_m)
         .context("post-process procedure.md to surface press-fit reservation")?;
+    if cavity_inset_m > 0.0 {
+        eprintln!(
+            "[cf-cast-cli] press-fit reservation section injected ({:.2} mm)",
+            cavity_inset_m * 1e3
+        );
+    }
     // Slice 9.5 — splice `## Slacker Recipe` into the procedure
     // markdown when at least one layer has a non-zero Slacker
     // fraction. No-op when no layer uses Slacker. The recipe table
@@ -185,8 +206,19 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
             },
         )
         .collect();
+    let slacker_layer_count = slacker_recipes
+        .iter()
+        .filter(|r| r.slacker_fraction.is_some())
+        .count();
     procedure_post::inject_slacker_recipe_section(&procedure_path, &slacker_recipes)
         .context("post-process procedure.md to surface slacker recipe")?;
+    if slacker_layer_count > 0 {
+        eprintln!(
+            "[cf-cast-cli] slacker recipe section injected ({slacker_layer_count} of {total} layer(s) use Slacker)",
+            total = config.layers.len()
+        );
+    }
+    eprintln!("[cf-cast-cli] done — {}", procedure_path.display());
 
     Ok(RunReport {
         out_dir,

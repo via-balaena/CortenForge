@@ -728,6 +728,11 @@ impl CastSpec {
             source: mesh_io::IoError::from(e),
         })?;
 
+        let stl_count = self.layers.len() * 3;
+        eprintln!(
+            "[cf-cast] writing {stl_count} STLs to {out}…",
+            out = out_dir.display()
+        );
         let layers_out = write_v2_artifacts(self, pending_pieces, pending_plugs, pour_volumes)?;
 
         Ok(V2MoldExportReport { layers: layers_out })
@@ -738,12 +743,18 @@ impl CastSpec {
 /// Returns the v2 pending buffer organized as `[Negative, Positive]`
 /// per-layer pairs, so the writer phase consumes them without
 /// re-pairing or `expect()` on flat-vector ordering.
+///
+/// Emits per-piece progress lines to stderr so workshop runs on
+/// large scans aren't black-boxed for minutes between "loaded
+/// design" and the final STL writes. Format:
+/// `[cf-cast] layer N piece M (Negative|Positive) — composed + meshed in Xs, F4 gate passed in Ys`.
 fn mesh_and_gate_v2_pieces(
     spec: &CastSpec,
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Vec<[PendingPiece; 2]>, CastError> {
-    let mut pending_layers = Vec::with_capacity(spec.layers.len());
+    let layer_count = spec.layers.len();
+    let mut pending_layers = Vec::with_capacity(layer_count);
     for (layer_index, layer) in spec.layers.iter().enumerate() {
         let neg = mesh_and_gate_v2_piece(
             spec,
@@ -752,6 +763,7 @@ fn mesh_and_gate_v2_pieces(
             layer_index,
             PieceSide::Negative,
             out_dir,
+            layer_count,
         )?;
         let pos = mesh_and_gate_v2_piece(
             spec,
@@ -760,6 +772,7 @@ fn mesh_and_gate_v2_pieces(
             layer_index,
             PieceSide::Positive,
             out_dir,
+            layer_count,
         )?;
         pending_layers.push([neg, pos]);
     }
@@ -776,15 +789,20 @@ fn mesh_and_gate_v2_piece(
     layer_index: usize,
     piece_side: PieceSide,
     out_dir: &Path,
+    layer_count: usize,
 ) -> Result<PendingPiece, CastError> {
+    let t_compose = std::time::Instant::now();
     let piece_solid = compose_piece_solid(&layer.body, &spec.bounding_region, ribbon, piece_side)?;
     let target = CastTarget::MoldPiece {
         layer_index,
         piece_side,
     };
     let mesh = solid_to_mm_mesh(&piece_solid, spec.mesh_cell_size_m, target)?;
+    let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir.join(mold_piece_filename(layer_index, piece_side));
+    let t_gate = std::time::Instant::now();
     let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+    let gate_s = t_gate.elapsed().as_secs_f64();
 
     let blocking = blocking_critical_count(&validation);
     if blocking > 0 {
@@ -794,6 +812,13 @@ fn mesh_and_gate_v2_piece(
             path,
         });
     }
+    eprintln!(
+        "[cf-cast] layer {layer_index}/{layer_count_minus_1} piece {piece_side:?} \
+         — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+        layer_count_minus_1 = layer_count.saturating_sub(1),
+        verts = mesh.vertices.len(),
+        faces = mesh.faces.len(),
+    );
     Ok(PendingPiece {
         layer_index,
         piece_side,
@@ -816,8 +841,10 @@ fn mesh_and_gate_v2_plugs(
     ribbon: &Ribbon,
     out_dir: &Path,
 ) -> Result<Vec<PendingPlug>, CastError> {
-    let mut pending = Vec::with_capacity(spec.layers.len());
-    for layer_index in 0..spec.layers.len() {
+    let layer_count = spec.layers.len();
+    let mut pending = Vec::with_capacity(layer_count);
+    for layer_index in 0..layer_count {
+        let t_compose = std::time::Instant::now();
         let base_plug = if layer_index == 0 {
             spec.plug.clone()
         } else {
@@ -828,8 +855,11 @@ fn mesh_and_gate_v2_plugs(
             layer_index: Some(layer_index),
         };
         let mesh = solid_to_mm_mesh(&plug_solid, spec.mesh_cell_size_m, target)?;
+        let compose_mesh_s = t_compose.elapsed().as_secs_f64();
         let path = out_dir.join(plug_layer_filename(layer_index));
+        let t_gate = std::time::Instant::now();
         let validation = run_printability_gate(&mesh, &spec.printer_config, &path)?;
+        let gate_s = t_gate.elapsed().as_secs_f64();
         let blocking = blocking_critical_count(&validation);
         if blocking > 0 {
             return Err(CastError::PrintabilityCritical {
@@ -838,6 +868,13 @@ fn mesh_and_gate_v2_plugs(
                 path,
             });
         }
+        eprintln!(
+            "[cf-cast] layer {layer_index}/{layer_count_minus_1} plug \
+             — compose+MC {compose_mesh_s:.1}s, F4 {gate_s:.1}s ({verts} verts / {faces} faces)",
+            layer_count_minus_1 = layer_count.saturating_sub(1),
+            verts = mesh.vertices.len(),
+            faces = mesh.faces.len(),
+        );
         pending.push(PendingPlug {
             layer_index,
             mesh,
