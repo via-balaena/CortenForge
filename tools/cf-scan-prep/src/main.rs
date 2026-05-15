@@ -603,6 +603,39 @@ struct CapPendingAction {
     rescan: bool,
 }
 
+/// Centerline trim panel state (CSP.4b). The user dials how much
+/// to shave off each end of the centerline polyline; the save
+/// handler applies the cuts (perpendicular planes at each end
+/// distance) and auto-caps the new boundaries.
+///
+/// Both values are in **millimeters** along the polyline arc — they
+/// project to physics-meter coordinates inside
+/// [`trim_mesh_along_centerline`] when the plane is constructed.
+/// `0.0` means "no trim at that end."
+///
+/// The sliders only become meaningful after the user clicks
+/// Cap → Scan (which populates `CapState::centerline_polyline`).
+/// Until then the panel renders a hint to "Run Cap → Scan first."
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct CenterlineTrimState {
+    /// Distance from the centerline polyline's tip (index 0) end
+    /// to trim, in millimeters. Range `0..=max_trim_mm` enforced by
+    /// the panel slider, where `max_trim_mm` is derived from the
+    /// polyline arc length at panel-render time.
+    trim_tip_mm: f64,
+    /// Distance from the floor (index N-1) end to trim, in mm.
+    trim_floor_mm: f64,
+}
+
+impl Default for CenterlineTrimState {
+    fn default() -> Self {
+        Self {
+            trim_tip_mm: 0.0,
+            trim_floor_mm: 0.0,
+        }
+    }
+}
+
 /// User action queued by the Save panel's `[Save]` button. Consumed
 /// next Update tick by `handle_save_action`, which builds the
 /// cleaned mesh + the `.prep.toml` and writes both files atomically.
@@ -763,9 +796,14 @@ fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
     )
 }
 
-/// True-plane-intersection mesh clip against a horizontal-in-cast-frame
-/// plane at world `z = clip_z_m` (`docs/SCAN_PREP_DESIGN.md` §Panel
-/// specifications §5; spec §Architectural decisions §Clip cut style).
+/// True-plane-intersection mesh clip against a plane in the mesh's
+/// own coordinate frame, expressed as the equation
+/// `plane_normal · v >= plane_d` (kept side).
+///
+/// Shared core algorithm — both [`clip_mesh_against_world_z`] (the
+/// horizontal-Z clip from the Clip floor panel) and
+/// [`clip_mesh_against_plane`] (the centerline-trim cuts at each
+/// end) derive their inputs and then forward here.
 ///
 /// For each triangle:
 /// - **All 3 vertices on/above** the plane → keep as-is.
@@ -773,38 +811,22 @@ fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
 /// - **Mixed** → compute intersection points on the crossing edges +
 ///   triangulate the surviving polygon (3 or 4 vertices) via a fan
 ///   from the first vertex. The result is a clean planar cut along
-///   `z = clip_z`, suitable for capping (boundary stays planar so
-///   `mesh-repair`'s plane fit at commit #9 gets `R² ≈ 1.0`).
+///   the plane, suitable for capping (boundary stays planar so
+///   `mesh-repair`'s plane fit gets `R² ≈ 1.0`).
 ///
-/// **Edge case from spec §Risks §"True plane intersection edge cases"**:
-/// vertices exactly on the plane (`dist == 0`) are classified as
-/// "above" so the surrounding triangle is kept; this avoids degenerate
-/// sub-triangles in the cut.
-///
-/// Rejected alternative: vertex-drop (drop any triangle whose all 3
-/// vertices are below the plane). Cheaper (~30 LOC) but produces
-/// jagged ragged boundaries that lie off the clip plane → degrades
-/// the Cap panel's auto-fit `R²`. Spec mandates true plane
-/// intersection for this reason.
+/// Vertices exactly on the plane (`dist == 0`) are classified as
+/// "above" so the surrounding triangle is kept; this avoids
+/// degenerate sub-triangles in the cut.
 ///
 /// Output mesh's vertex buffer = original vertices + new intersection
 /// vertices appended; `remove_unreferenced_vertices` strips the
 /// dropped (all-below) original vertices afterwards so the result is
 /// tight.
-fn clip_mesh_against_world_z(
+fn clip_mesh_against_plane_eq(
     mesh: &IndexedMesh,
-    rotation: UnitQuaternion<f64>,
-    translation_z_m: f64,
-    clip_z_m: f64,
+    plane_normal: Vector3<f64>,
+    plane_d: f64,
 ) -> IndexedMesh {
-    // Express the world-frame plane `z = clip_z_m` in mesh-local frame.
-    // World `z = (R * v).z + T.z`; keep `z >= clip_z` becomes
-    // `dot(v, R^T · e_z) >= clip_z - T.z` in mesh-local coords.
-    let plane_normal = rotation
-        .inverse()
-        .transform_vector(&Vector3::new(0.0, 0.0, 1.0));
-    let plane_d = clip_z_m - translation_z_m;
-
     // Output buffers — start with the original vertices (later
     // stripped of unreferenced); append intersection points as we go.
     let mut new_vertices: Vec<Point3<f64>> = mesh.vertices.clone();
@@ -869,6 +891,260 @@ fn clip_mesh_against_world_z(
     clipped.faces = new_faces;
     remove_unreferenced_vertices(&mut clipped);
     clipped
+}
+
+/// Clip `mesh` against the world-frame horizontal plane at
+/// `z = clip_z_m`, given that mesh-local coords are related to world
+/// coords by `world = rotation * mesh + (0, 0, translation_z_m)`.
+/// CSP.2 Clip-floor wiring; see `docs/SCAN_PREP_DESIGN.md` §Panel
+/// specifications §5.
+fn clip_mesh_against_world_z(
+    mesh: &IndexedMesh,
+    rotation: UnitQuaternion<f64>,
+    translation_z_m: f64,
+    clip_z_m: f64,
+) -> IndexedMesh {
+    // Express the world-frame plane `z = clip_z_m` in mesh-local frame.
+    // World `z = (R * v).z + T.z`; keep `z >= clip_z` becomes
+    // `dot(v, R^T · e_z) >= clip_z - T.z` in mesh-local coords.
+    let plane_normal = rotation
+        .inverse()
+        .transform_vector(&Vector3::new(0.0, 0.0, 1.0));
+    let plane_d = clip_z_m - translation_z_m;
+    clip_mesh_against_plane_eq(mesh, plane_normal, plane_d)
+}
+
+/// Clip `mesh` against an arbitrary plane defined by a point on the
+/// plane and a normal. Kept side: where
+/// `(p - plane_point) · plane_normal >= 0`. CSP.4b — used by
+/// [`trim_mesh_along_centerline`] to clip each end of the centerline
+/// at a user-chosen distance.
+///
+/// `plane_normal` MUST be a unit vector — the algorithm relies on the
+/// dot product producing signed distances. Callers passing a
+/// non-unit normal will get a clip that succeeds but with wrong
+/// intersection-point math; cheaper than asserting here.
+fn clip_mesh_against_plane(
+    mesh: &IndexedMesh,
+    plane_point: Point3<f64>,
+    plane_normal: Vector3<f64>,
+) -> IndexedMesh {
+    // `plane_normal · (p - plane_point) >= 0`
+    //   ⇔ `plane_normal · p >= plane_normal · plane_point`
+    let plane_d = plane_normal.dot(&plane_point.coords);
+    clip_mesh_against_plane_eq(mesh, plane_normal, plane_d)
+}
+
+/// Trim `mesh` along its centerline polyline: clips off
+/// `trim_tip_mm` from the tip end (centerline\[0\]) and
+/// `trim_floor_mm` from the floor end (centerline\[N-1\]) of the
+/// polyline. Returns the trimmed mesh.
+///
+/// CSP.4b user-facing feature. The trim planes are perpendicular to
+/// the centerline tangent at each end — for a roughly-straight
+/// centerline along the PCA-baked `+Z` axis, both trim planes are
+/// roughly horizontal cuts at the corresponding world-Z heights.
+/// For a curved centerline (e.g., a bent prosthetic), the cuts are
+/// locally perpendicular to the spine, which matches the natural
+/// workshop intent of "shave off the noisy end."
+///
+/// Centerline polyline ordering convention: index 0 is the tip
+/// (closed end / dome), index N-1 is the floor (open end / rim).
+/// This is the order [`compute_centerline_polyline`] returns when
+/// driven by the first cap loop's outward normal (which points
+/// outward from the rim, toward -Z under PCA convention).
+///
+/// `trim_tip_mm == 0 && trim_floor_mm == 0` is a fast-path no-op
+/// (returns `mesh.clone()`). A degenerate centerline (< 2 points)
+/// also returns the input unchanged.
+///
+/// The trimmed mesh has new open boundaries at each non-zero cut.
+/// The caller is responsible for capping those — see
+/// [`auto_cap_open_boundaries`] for the auto-cap step.
+fn trim_mesh_along_centerline(
+    mesh: &IndexedMesh,
+    centerline: &[Point3<f64>],
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+) -> IndexedMesh {
+    if centerline.len() < 2 || (trim_tip_mm <= 0.0 && trim_floor_mm <= 0.0) {
+        return mesh.clone();
+    }
+    let mut out = mesh.clone();
+
+    // Tip-end trim: plane normal = tangent from tip toward floor.
+    // Kept side = the "floor" side, where `(p - plane_point) · tangent >= 0`.
+    if trim_tip_mm > 0.0 {
+        let tangent_raw = centerline[1].coords - centerline[0].coords;
+        let tangent_norm = tangent_raw.norm();
+        if tangent_norm > f64::EPSILON {
+            let tangent = tangent_raw / tangent_norm;
+            let plane_point_coords = centerline[0].coords + tangent * (trim_tip_mm * 0.001);
+            let plane_point = Point3::from(plane_point_coords);
+            out = clip_mesh_against_plane(&out, plane_point, tangent);
+        }
+    }
+
+    // Floor-end trim: plane normal = -tangent (pointing from floor
+    // back toward tip). Kept side = the "tip" side.
+    if trim_floor_mm > 0.0 {
+        let n = centerline.len();
+        let tangent_raw = centerline[n - 1].coords - centerline[n - 2].coords;
+        let tangent_norm = tangent_raw.norm();
+        if tangent_norm > f64::EPSILON {
+            let tangent = tangent_raw / tangent_norm;
+            let plane_point_coords = centerline[n - 1].coords - tangent * (trim_floor_mm * 0.001);
+            let plane_point = Point3::from(plane_point_coords);
+            out = clip_mesh_against_plane(&out, plane_point, -tangent);
+        }
+    }
+
+    out
+}
+
+/// Trim the centerline polyline by the same distances applied to
+/// the mesh in [`trim_mesh_along_centerline`]: drop `trim_tip_mm`
+/// from the start (index 0 = tip) and `trim_floor_mm` from the end
+/// (index N-1 = floor). Both trims measured in millimeters along
+/// the cumulative arc length.
+///
+/// CSP.4b — keeps the `.prep.toml`'s `[centerline].points_m` line
+/// in sync with the cleaned STL on disk. Without this, the TOML
+/// would describe a longer centerline than the mesh actually has.
+///
+/// Returns an empty vec if the trim consumes the whole polyline
+/// (`trim_tip_mm + trim_floor_mm >= total arc length`) — the
+/// caller's `[centerline]` block then drops out per the
+/// `skip_serializing_if` rule.
+fn trim_centerline_polyline(
+    centerline: &[Point3<f64>],
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+) -> Vec<Point3<f64>> {
+    if centerline.len() < 2 || (trim_tip_mm <= 0.0 && trim_floor_mm <= 0.0) {
+        return centerline.to_vec();
+    }
+    // Cumulative arc length from start, in millimeters. Seeded
+    // with `0.0` and built by single-pass accumulation; `last`
+    // dereferences are unwrap-free via tracking `accum` separately.
+    let mut cum_lengths_mm: Vec<f64> = Vec::with_capacity(centerline.len());
+    cum_lengths_mm.push(0.0);
+    let mut accum = 0.0_f64;
+    for w in centerline.windows(2) {
+        accum += (w[1].coords - w[0].coords).norm() * 1000.0;
+        cum_lengths_mm.push(accum);
+    }
+    let total_length_mm = accum;
+    let start_mm = trim_tip_mm.max(0.0);
+    let end_mm = (total_length_mm - trim_floor_mm.max(0.0)).max(start_mm);
+    if end_mm <= start_mm + f64::EPSILON {
+        return Vec::new();
+    }
+
+    // Linear interpolation at arc-length `target_mm` along the
+    // polyline. Walks segments; for a 30-point polyline this is
+    // trivial cost.
+    let interp = |target_mm: f64| -> Point3<f64> {
+        for i in 0..centerline.len() - 1 {
+            let s = cum_lengths_mm[i];
+            let e = cum_lengths_mm[i + 1];
+            if target_mm <= e {
+                let t = if e > s {
+                    (target_mm - s) / (e - s)
+                } else {
+                    0.0
+                };
+                let interpolated =
+                    centerline[i].coords + t * (centerline[i + 1].coords - centerline[i].coords);
+                return Point3::from(interpolated);
+            }
+        }
+        centerline[centerline.len() - 1]
+    };
+
+    let mut trimmed: Vec<Point3<f64>> = Vec::with_capacity(centerline.len());
+    trimmed.push(interp(start_mm));
+    for (i, p) in centerline.iter().enumerate() {
+        if cum_lengths_mm[i] > start_mm + f64::EPSILON && cum_lengths_mm[i] < end_mm - f64::EPSILON
+        {
+            trimmed.push(*p);
+        }
+    }
+    let last = trimmed.last().copied();
+    let end_pt = interp(end_mm);
+    if last.is_none_or(|p| (p.coords - end_pt.coords).norm_squared() > 1e-18) {
+        trimmed.push(end_pt);
+    }
+    trimmed
+}
+
+/// Detect all open boundary loops on `mesh`, fit a plane to each via
+/// SVD, orient the normal outward, and append ear-clipped cap faces
+/// that close every detected loop. CSP.4b — runs after
+/// [`trim_mesh_along_centerline`] so the trim cuts get sealed.
+///
+/// Mutates `mesh` in place. Returns the number of loops capped.
+///
+/// Same projection + winding logic as `build_cleaned_mesh`'s cap
+/// step (CSP.3a): boundary vertices are projected onto the fit plane
+/// before ear-clip so the cap is exactly planar. Cap faces use the
+/// existing loop vertex indices (no new vertices appended for the
+/// cap; only re-uses the now-projected boundary positions).
+fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
+    let loops = detect_boundary_loops(mesh);
+    let mut capped = 0;
+    for loop_data in &loops {
+        if !loop_data.is_valid() {
+            continue;
+        }
+        let loop_points_3d: Vec<Point3<f64>> = loop_data
+            .vertices
+            .iter()
+            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
+            .collect();
+        if loop_points_3d.len() != loop_data.vertices.len() {
+            continue;
+        }
+        let (plane_centroid, plane_normal_raw, _r_squared) = fit_plane_to_points(&loop_points_3d);
+        let plane_normal = orient_cap_normal_outward(mesh, plane_centroid, plane_normal_raw);
+
+        // CSP.3a — project loop vertices onto the fit plane so the
+        // cap is planar.
+        for &idx in &loop_data.vertices {
+            if let Some(p) = mesh.vertices.get(idx as usize).copied() {
+                let signed = (p.coords - plane_centroid.coords).dot(&plane_normal);
+                let projected = p.coords - plane_normal * signed;
+                mesh.vertices[idx as usize] = Point3::from(projected);
+            }
+        }
+
+        let loop_points_projected: Vec<Point3<f64>> = loop_data
+            .vertices
+            .iter()
+            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
+            .collect();
+        let verts_2d =
+            project_loop_to_plane_2d(&loop_points_projected, plane_centroid, plane_normal);
+        let triangulation = triangulate_polygon_2d_earclip(&verts_2d);
+
+        for tri in triangulation {
+            let a = loop_data.vertices[tri[0] as usize];
+            let b = loop_data.vertices[tri[1] as usize];
+            let c = loop_data.vertices[tri[2] as usize];
+            // Same outward-winding flip as `build_cleaned_mesh`.
+            let p0 = verts_2d[tri[0] as usize];
+            let p1 = verts_2d[tri[1] as usize];
+            let p2 = verts_2d[tri[2] as usize];
+            let signed_area_2d = (p1.0 - p0.0) * (p2.1 - p0.1) - (p1.1 - p0.1) * (p2.0 - p0.0);
+            if signed_area_2d >= 0.0 {
+                mesh.faces.push([a, c, b]);
+            } else {
+                mesh.faces.push([a, b, c]);
+            }
+        }
+        capped += 1;
+    }
+    capped
 }
 
 /// Detect all open boundary loops in `mesh`. Wraps `mesh-repair`'s
@@ -1519,6 +1795,7 @@ struct PrepToml {
     caps: PrepCapsBlock,
     #[serde(skip_serializing_if = "Option::is_none")]
     centerline: Option<PrepCenterlineBlock>,
+    centerline_trim: PrepCenterlineTrimBlock,
     output: PrepOutputBlock,
 }
 
@@ -1650,11 +1927,29 @@ struct PrepCapLoop {
 
 #[derive(Serialize)]
 struct PrepCenterlineBlock {
-    /// Polyline in **post-bake world-frame meters** (matches the
-    /// cleaned STL's coordinate system; v2 cf-cast consumes
-    /// directly).
+    /// Polyline in **post-bake, post-trim world-frame meters**
+    /// (matches the cleaned STL's coordinate system; v2 cf-cast
+    /// consumes directly). CSP.4b — when the user dialed centerline
+    /// trim, this is the polyline between the trim cut planes, not
+    /// the full pre-trim polyline.
     points_m: Vec<[f64; 3]>,
     algorithm: &'static str,
+}
+
+/// `[centerline_trim]` provenance — what user-driven centerline
+/// trim was applied at save time (CSP.4b). Always emitted, even
+/// when no trim was requested (the explicit `0.0 / 0.0` record
+/// makes "saved without trim" indistinguishable from an audit
+/// perspective).
+#[derive(Serialize)]
+struct PrepCenterlineTrimBlock {
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+    /// Number of boundary loops auto-capped after the trim cuts.
+    /// For a "trim only the floor end" save on a closed-tip sock,
+    /// this is 1; for "trim both ends" it's 2; for "no trim" it's
+    /// 0.
+    capped_loops: usize,
 }
 
 #[derive(Serialize)]
@@ -1709,6 +2004,8 @@ fn build_prep_toml_string(
     recenter: &RecenterState,
     clip: &ClipState,
     cap: &CapState,
+    centerline_trim: &CenterlineTrimState,
+    centerline_trim_capped: usize,
     cleaned_stl_name: &str,
     rotation_for_centerline: UnitQuaternion<f64>,
     translation_for_centerline_m: Vector3<f64>,
@@ -1724,20 +2021,28 @@ fn build_prep_toml_string(
     // Project the centerline polyline into world frame so v2 cf-cast
     // can consume it directly without redoing transform math. Same
     // centroid-pivot transform as `build_cleaned_mesh` uses for mesh
-    // vertices.
-    let centerline_world: Vec<[f64; 3]> = cap
+    // vertices. CSP.4b — if the user dialed trim, emit the
+    // POST-TRIM polyline so the TOML record matches what's actually
+    // in the cleaned STL on disk.
+    let baked_polyline: Vec<Point3<f64>> = cap
         .centerline_polyline
         .iter()
         .map(|p| {
-            let baked = bake_vertex_with_pivot(
+            bake_vertex_with_pivot(
                 p,
                 rotation_for_centerline,
                 &pivot_centroid_m,
                 translation_for_centerline_m,
-            );
-            [baked.x, baked.y, baked.z]
+            )
         })
         .collect();
+    let trimmed_polyline = trim_centerline_polyline(
+        &baked_polyline,
+        centerline_trim.trim_tip_mm,
+        centerline_trim.trim_floor_mm,
+    );
+    let centerline_world: Vec<[f64; 3]> =
+        trimmed_polyline.iter().map(|p| [p.x, p.y, p.z]).collect();
 
     let toml_struct = PrepToml {
         scan_prep: PrepScanPrepBlock {
@@ -1817,6 +2122,11 @@ fn build_prep_toml_string(
                 points_m: centerline_world,
                 algorithm: "cross_section_centroids",
             })
+        },
+        centerline_trim: PrepCenterlineTrimBlock {
+            trim_tip_mm: centerline_trim.trim_tip_mm,
+            trim_floor_mm: centerline_trim.trim_floor_mm,
+            capped_loops: centerline_trim_capped,
         },
         output: PrepOutputBlock {
             cleaned_stl: cleaned_stl_name.to_string(),
@@ -2510,6 +2820,7 @@ fn run_render_app(
         .insert_resource(ClipState::default())
         .insert_resource(CapState::default())
         .insert_resource(CapPendingAction::default())
+        .insert_resource(CenterlineTrimState::default())
         .insert_resource(SavePendingAction::default())
         .insert_resource(source)
         .insert_resource(output_dir)
@@ -3305,6 +3616,7 @@ fn scan_prep_panel(
     mut clip_state: ResMut<ClipState>,
     mut cap_state: ResMut<CapState>,
     mut cap_pending: ResMut<CapPendingAction>,
+    mut centerline_trim_state: ResMut<CenterlineTrimState>,
     mut save_pending: ResMut<SavePendingAction>,
     source: Res<SourceStlPath>,
     output_dir: Res<SaveOutputDir>,
@@ -3343,6 +3655,7 @@ fn scan_prep_panel(
                         &mut reorient_state,
                         &mut recenter_state,
                     );
+                    render_centerline_trim_section(ui, &mut centerline_trim_state, &cap_state);
                     render_save_section(
                         ui,
                         &source.0,
@@ -3734,6 +4047,84 @@ fn render_cap_section(
         });
 }
 
+/// `Centerline trim` section (CSP.4b — user-driven trim along the
+/// centerline polyline). Drives two perpendicular-plane cuts that get
+/// applied at save time + auto-capped, producing a workshop-ready
+/// trimmed mesh without requiring the user to fiddle with manual
+/// rotation / translation / clip-plane sliders.
+///
+/// Layout:
+///
+/// - "Run Cap → Scan first" hint when the centerline polyline is
+///   empty (the trim has no axis to cut along).
+/// - Two sliders: `trim from tip (mm)` + `trim from floor (mm)`.
+///   Range bounded by half the centerline arc length, so trimming
+///   both ends to slider-max produces zero-length output (no
+///   negative-length geometry).
+/// - `[Reset trim]` button → zeros both sliders.
+///
+/// The actual trim algorithm runs in [`trim_mesh_along_centerline`] at
+/// save time, taking the post-bake centerline polyline (built from
+/// `cap.centerline_polyline` through the user's Reorient + Recenter
+/// transforms) and clipping the mesh perpendicular to the polyline
+/// tangent at each end. Auto-capping of the new cut boundaries
+/// follows immediately via [`auto_cap_open_boundaries`].
+fn render_centerline_trim_section(
+    ui: &mut egui::Ui,
+    state: &mut CenterlineTrimState,
+    cap: &CapState,
+) {
+    egui::CollapsingHeader::new("Centerline trim")
+        .default_open(true)
+        .show(ui, |ui| {
+            if cap.centerline_polyline.len() < 2 {
+                ui.label(
+                    egui::RichText::new(
+                        "(no centerline yet — click Cap > Scan first to detect a centerline)",
+                    )
+                    .italics(),
+                );
+                return;
+            }
+
+            // Centerline arc length in mm; used to bound the
+            // sliders so the user can't trim more than the polyline
+            // provides per end.
+            let total_length_mm: f64 = cap
+                .centerline_polyline
+                .windows(2)
+                .map(|w| (w[1].coords - w[0].coords).norm() * 1000.0)
+                .sum();
+            // Per-end max = half the total. If both sliders sit at
+            // half, the polyline is fully consumed → trim cuts meet
+            // at the midpoint. Beyond that is undefined; the slider
+            // bound protects against it.
+            let max_trim_mm = total_length_mm * 0.5;
+
+            ui.label(format!("Centerline arc length: {total_length_mm:.1} mm"));
+            ui.add(
+                egui::Slider::new(&mut state.trim_tip_mm, 0.0..=max_trim_mm)
+                    .text("trim from tip (mm)"),
+            );
+            ui.add(
+                egui::Slider::new(&mut state.trim_floor_mm, 0.0..=max_trim_mm)
+                    .text("trim from floor (mm)"),
+            );
+
+            ui.add_space(4.0);
+            if ui.button("Reset trim").clicked() {
+                state.trim_tip_mm = 0.0;
+                state.trim_floor_mm = 0.0;
+            }
+
+            ui.add_space(4.0);
+            ui.small(
+                "Trim is applied at save time. The cleaned STL gets cut perpendicular to \
+                 the centerline at each end + auto-capped so the result is watertight.",
+            );
+        });
+}
+
 /// `Save` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications §9).
 /// Writes the cleaned STL + the `.prep.toml` provenance file to the
 /// configured output directory.
@@ -3848,6 +4239,7 @@ fn handle_save_action(
     clip: Res<ClipState>,
     cap: Res<CapState>,
     simplify: Res<SimplifyState>,
+    centerline_trim: Res<CenterlineTrimState>,
     output_dir: Res<SaveOutputDir>,
     source: Res<SourceStlPath>,
     stl_units: Res<StlUnitsResource>,
@@ -3884,14 +4276,63 @@ fn handle_save_action(
         || !recenter.ty_mm.is_finite()
         || !recenter.tz_mm.is_finite()
         || (clip.enabled && !clip.z_mm.is_finite())
+        || !centerline_trim.trim_tip_mm.is_finite()
+        || !centerline_trim.trim_floor_mm.is_finite()
     {
-        status.text = "Save failed: non-finite transform / clip values".into();
+        status.text = "Save failed: non-finite transform / clip / trim values".into();
         status.kind = StatusKind::Error;
         status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
         return;
     }
 
     let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &clip, &cap);
+
+    // CSP.4b — centerline trim. Apply user-requested trims to the
+    // cleaned mesh + auto-cap the resulting boundaries. The
+    // centerline in `cap.centerline_polyline` is in physics frame
+    // (pre-bake); bake it through the user transforms first so the
+    // trim planes match the cleaned mesh's world frame. Skip
+    // entirely when no trim requested — keeps the trim-zero path
+    // bit-exact with pre-CSP.4b behavior.
+    let trim_rotation = reorient.quaternion_physics();
+    let trim_translation = Vector3::new(
+        recenter.tx_mm * 0.001,
+        recenter.ty_mm * 0.001,
+        recenter.tz_mm * 0.001,
+    );
+    let trim_pivot_centroid_m = scan.0.aabb().center();
+    let centerline_world: Vec<Point3<f64>> = if (centerline_trim.trim_tip_mm > 0.0
+        || centerline_trim.trim_floor_mm > 0.0)
+        && cap.centerline_polyline.len() >= 2
+    {
+        cap.centerline_polyline
+            .iter()
+            .map(|p| {
+                bake_vertex_with_pivot(p, trim_rotation, &trim_pivot_centroid_m, trim_translation)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pre_trim_face_count = cleaned.faces.len();
+    let mut trim_capped = 0_usize;
+    let mut trim_status_suffix = String::new();
+    if !centerline_world.is_empty() {
+        cleaned = trim_mesh_along_centerline(
+            &cleaned,
+            &centerline_world,
+            centerline_trim.trim_tip_mm,
+            centerline_trim.trim_floor_mm,
+        );
+        trim_capped = auto_cap_open_boundaries(&mut cleaned);
+        trim_status_suffix = format!(
+            ", trim: {} -> {} faces, capped {} boundary loop{}",
+            human_count(pre_trim_face_count),
+            human_count(cleaned.faces.len()),
+            trim_capped,
+            if trim_capped == 1 { "" } else { "s" },
+        );
+    }
 
     // CSP.3b — mesh hygiene cleanup before simplify. Runs the four-
     // step pass (weld + degenerate + small-components + unreferenced)
@@ -3956,6 +4397,8 @@ fn handle_save_action(
         &recenter,
         &clip,
         &cap,
+        &centerline_trim,
+        trim_capped,
         &format!("{stem}.cleaned.stl"),
         rotation,
         translation,
@@ -3977,7 +4420,7 @@ fn handle_save_action(
     match atomic_write_save(&cleaned, &cleaned_stl_path, &prep_toml_path, &toml_str) {
         Ok(()) => {
             status.text = format!(
-                "Saved {stem}.cleaned.stl ({} triangles{simplify_status_suffix}{cleanup_status_suffix}) + {stem}.prep.toml",
+                "Saved {stem}.cleaned.stl ({} triangles{trim_status_suffix}{simplify_status_suffix}{cleanup_status_suffix}) + {stem}.prep.toml",
                 human_count(triangle_count),
             );
             status.kind = StatusKind::Normal;
@@ -5245,6 +5688,132 @@ mod tests {
         assert!(zero_dir.is_empty());
     }
 
+    // ----- Centerline trim (CSP.4b) ----------------------------------
+
+    /// `trim_mesh_along_centerline` with both trims at 0 is a
+    /// pure-clone no-op (returns the input unchanged). Pins the
+    /// fast-path guard so future refactors don't accidentally walk
+    /// vertices unnecessarily for un-trimmed saves.
+    #[test]
+    fn trim_mesh_along_centerline_no_op_when_both_trims_zero() {
+        let mesh = one_triangle_at(0.01);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 1.0)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 0.0, 0.0);
+        assert_eq!(trimmed.vertices, mesh.vertices);
+        assert_eq!(trimmed.faces, mesh.faces);
+    }
+
+    /// Degenerate centerline (< 2 points) is a no-op. Defensive
+    /// against the "Cap → Scan not yet clicked" path (CapState
+    /// centerline empty); the save handler skips trim entirely in
+    /// that case, but the function itself guards too.
+    #[test]
+    fn trim_mesh_along_centerline_no_op_when_centerline_too_short() {
+        let mesh = one_triangle_at(0.01);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 10.0, 10.0);
+        assert_eq!(trimmed.vertices, mesh.vertices);
+        assert_eq!(trimmed.faces, mesh.faces);
+    }
+
+    /// Trim from the floor end of a +Z-axis centerline drops
+    /// vertices beyond the trim plane. Vertical "pole" of 11 points
+    /// from z=0 to z=0.1 (100 mm), centerline tip→floor along +Z,
+    /// trim floor by 30 mm → keep points with z <= 0.07.
+    #[test]
+    fn trim_mesh_along_centerline_floor_end_clips_high_z_vertices() {
+        // Build a simple vertical column of triangles (pole), 11
+        // segments stacked from z=0 to z=0.1. Each "stack-rung" is
+        // a degenerate-ish 3-vertex triangle for testing.
+        let mut mesh = IndexedMesh::with_capacity(11, 9);
+        for i in 0..11 {
+            let z = f64::from(i) * 0.01;
+            mesh.vertices.push(Point3::new(0.0, 0.0, z));
+        }
+        // Connect into a chain of "triangles" with shared verts.
+        // (Geometrically degenerate but valid topology; serves the
+        // trim test.)
+        for i in 0..9 {
+            mesh.faces.push([i as u32, (i + 1) as u32, (i + 2) as u32]);
+        }
+        // Centerline from tip (z=0) to floor (z=0.1). Trim floor
+        // by 30 mm → clip plane at z = 0.07.
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.1)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 0.0, 30.0);
+        // All surviving vertices' z <= 0.07 (the trim plane).
+        for v in &trimmed.vertices {
+            assert!(v.z <= 0.07 + 1e-9, "kept vertex z={} above trim plane", v.z);
+        }
+        // Some vertices survived.
+        assert!(!trimmed.vertices.is_empty(), "all dropped by trim");
+    }
+
+    /// `trim_centerline_polyline` keeps the polyline whole when no
+    /// trim is requested. Pins the no-op identity.
+    #[test]
+    fn trim_centerline_polyline_no_op_when_both_zero() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.0, 0.0, 0.1),
+        ];
+        let trimmed = trim_centerline_polyline(&polyline, 0.0, 0.0);
+        assert_eq!(trimmed, polyline);
+    }
+
+    /// `trim_centerline_polyline` cuts the start + end of the
+    /// polyline at the requested mm distances. 100 mm polyline,
+    /// trim 30 mm tip + 20 mm floor → result is 50 mm long, from
+    /// the 30 mm mark to the 80 mm mark.
+    #[test]
+    fn trim_centerline_polyline_clips_both_ends_at_arc_length() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),   //  0 mm
+            Point3::new(0.0, 0.0, 0.025), // 25 mm
+            Point3::new(0.0, 0.0, 0.05),  // 50 mm
+            Point3::new(0.0, 0.0, 0.075), // 75 mm
+            Point3::new(0.0, 0.0, 0.1),   // 100 mm
+        ];
+        let trimmed = trim_centerline_polyline(&polyline, 30.0, 20.0);
+        // First trimmed point: z = 0.030 (interpolated between 25
+        // and 50 mm originals).
+        assert!((trimmed.first().unwrap().z - 0.030).abs() < 1e-9);
+        // Last trimmed point: z = 0.080.
+        assert!((trimmed.last().unwrap().z - 0.080).abs() < 1e-9);
+        // Total arc length collapsed from 100 mm to ~50 mm.
+        let new_total_mm: f64 = trimmed
+            .windows(2)
+            .map(|w| (w[1].coords - w[0].coords).norm() * 1000.0)
+            .sum();
+        assert!((new_total_mm - 50.0).abs() < 1e-6);
+    }
+
+    /// `trim_centerline_polyline` returns empty when the trim
+    /// consumes the entire polyline (`trim_tip + trim_floor >=
+    /// total arc length`). The save handler's
+    /// `centerline.is_empty()` check then omits the `[centerline]`
+    /// block from the TOML.
+    #[test]
+    fn trim_centerline_polyline_returns_empty_when_fully_consumed() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.1), // 100 mm total
+        ];
+        // Trim 60 + 60 = 120 mm > 100 mm total.
+        let trimmed = trim_centerline_polyline(&polyline, 60.0, 60.0);
+        assert!(trimmed.is_empty());
+    }
+
+    /// CenterlineTrimState defaults are zero — the trim is opt-in.
+    /// Pins the "no trim by default" semantic so future refactors
+    /// don't accidentally enable a trim baseline.
+    #[test]
+    fn centerline_trim_state_default_is_zero() {
+        let state = CenterlineTrimState::default();
+        assert_eq!(state.trim_tip_mm, 0.0);
+        assert_eq!(state.trim_floor_mm, 0.0);
+    }
+
     // ----- build_overlay_lengths -------------------------------------
 
     /// `build_overlay_lengths` derives the axis arrow length from the
@@ -5420,6 +5989,7 @@ mod tests {
             min: Point3::new(-0.04, -0.03, -0.06),
             max: Point3::new(0.04, 0.03, 0.06),
         };
+        let centerline_trim = CenterlineTrimState::default();
         let s = build_prep_toml_string(
             Path::new("/tmp/scan.stl"),
             StlUnits::Mm,
@@ -5429,6 +5999,8 @@ mod tests {
             &recenter,
             &clip,
             &cap,
+            &centerline_trim, // CSP.4b — default = no trim
+            0,                // CSP.4b — no boundaries auto-capped
             "scan.cleaned.stl",
             rotation,
             translation,
@@ -5482,6 +6054,14 @@ mod tests {
         assert!(parsed.get("recenter").is_none(), "legacy recenter name");
         // No cap loops -> centerline block omitted.
         assert!(parsed.get("centerline").is_none());
+        // CSP.4b — [centerline_trim] block always present, even
+        // when no trim was requested.
+        let trim = parsed
+            .get("centerline_trim")
+            .expect("centerline_trim block missing");
+        assert!((trim.get("trim_tip_mm").unwrap().as_float().unwrap() - 0.0).abs() < 1e-12);
+        assert!((trim.get("trim_floor_mm").unwrap().as_float().unwrap() - 0.0).abs() < 1e-12);
+        assert_eq!(trim.get("capped_loops").unwrap().as_integer().unwrap(), 0);
         Ok(())
     }
 
@@ -5507,6 +6087,7 @@ mod tests {
             &nalgebra::Vector3::x_axis(),
             std::f64::consts::FRAC_PI_2,
         );
+        let centerline_trim = CenterlineTrimState::default();
         let s = build_prep_toml_string(
             Path::new("/tmp/scan.stl"),
             StlUnits::Mm,
@@ -5516,6 +6097,8 @@ mod tests {
             &recenter,
             &clip,
             &cap,
+            &centerline_trim,
+            0,
             "scan.cleaned.stl",
             rotation,
             translation,
