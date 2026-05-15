@@ -1211,6 +1211,331 @@ fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
     capped
 }
 
+// ----- Centerline reconstruction (CSP.4e.2) -------------------------
+//
+// Replace a chopped floor region with extruded average-cross-section
+// geometry so the cleaned mesh keeps its original length. The user
+// dials the reference-zone slider + picks a shape (Constant in 4e.2;
+// Taper + Extrapolate in 4e.3/4e.4); this code consumes those values
+// to build new mesh geometry.
+//
+// Algorithm (Constant shape):
+// 1. Find the floor-end open boundary loop (closest to the polyline
+//    endpoint nearest the chopped end).
+// 2. Build a local frame at the cut: tangent (along the polyline),
+//    plus two perpendicular basis vectors u, v.
+// 3. Walk every mesh vertex; collect the ones within
+//    `reference_zone_m` of the cut (along the tangent direction
+//    INTO the mesh). For each, compute (angle = atan2(v·d, u·d),
+//    radial = √(u² + v²)). Bin angles into M bins, take the median
+//    radial per bin → canonical r(angle) profile.
+// 4. Project boundary-loop vertices onto the cut plane and snap
+//    them to the canonical profile (each vertex moves radially to
+//    r(angle_at_that_vertex)). The loop topology stays connected
+//    to the mesh body; only the rim vertices move.
+// 5. Extrude K rings DOWN the centerline (each ring has the same L
+//    angular positions as the boundary loop, at canonical radii
+//    for Constant shape). Connect each pair of rings with triangle
+//    strips.
+// 6. Add a flat bottom cap fanned from a centroid vertex at the
+//    new floor.
+
+/// Number of angular bins used when sampling the radial profile.
+/// 24 = one bin every 15°. Coarser than the typical boundary-loop
+/// vertex count (hundreds) so each bin has multiple samples to
+/// median-filter against scan noise.
+const RECONSTRUCT_ANGLE_BINS: usize = 24;
+
+/// Number of subdivisions along the extruded sidewall. 8 keeps the
+/// reconstruction lightweight (8 × L new triangles per band, L =
+/// boundary loop vertex count); enough for visual smoothness on
+/// the sock fixture's mostly-straight floor region.
+const RECONSTRUCT_RING_COUNT: usize = 8;
+
+/// Decide which of `loops` is the "floor end" loop — the one whose
+/// centroid sits closest to the centerline polyline's last point.
+/// Used by [`apply_reconstruct_to_floor`] to single out the loop
+/// the user wants to reconstruct (vs. e.g., the tip-end loop if
+/// both ends were trimmed).
+///
+/// Returns the loop's index in `loops` plus its plane fit. `None`
+/// when no valid loop exists.
+fn find_floor_loop_index(
+    loops: &[holes::BoundaryLoop],
+    mesh: &IndexedMesh,
+    centerline_last_point: Point3<f64>,
+) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, lp) in loops.iter().enumerate() {
+        if !lp.is_valid() {
+            continue;
+        }
+        let loop_points: Vec<Point3<f64>> = lp
+            .vertices
+            .iter()
+            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
+            .collect();
+        if loop_points.len() != lp.vertices.len() {
+            continue;
+        }
+        let (centroid, _, _) = fit_plane_to_points(&loop_points);
+        let dist_sq = (centroid.coords - centerline_last_point.coords).norm_squared();
+        if best.is_none_or(|(_, d)| dist_sq < d) {
+            best = Some((i, dist_sq));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Build an orthonormal basis `(u, v)` perpendicular to the unit
+/// vector `n`. Used to project 3D points around the centerline
+/// into a 2D (radial, angular) representation.
+///
+/// Standard Gram-Schmidt against a world axis that isn't parallel
+/// to `n`. Matches the heuristic in [`project_loop_to_plane_2d`]
+/// for consistency.
+fn perpendicular_basis_for(n: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let world_axis = if n.x.abs() < 0.9 {
+        Vector3::new(1.0, 0.0, 0.0)
+    } else {
+        Vector3::new(0.0, 1.0, 0.0)
+    };
+    let u = (world_axis - n * world_axis.dot(&n)).normalize();
+    let v = n.cross(&u).normalize();
+    (u, v)
+}
+
+/// Bin the mesh vertices in the reference zone above the cut by
+/// angular position around the centerline, then take the median
+/// radial distance per bin. Returns a length-M array of radii (M =
+/// [`RECONSTRUCT_ANGLE_BINS`]).
+///
+/// Robust to noise: per-bin **median** rather than mean. A single
+/// stray vertex doesn't pull the bin's radius.
+///
+/// Bins with zero samples fall back to the overall median radius
+/// (so the bottom-fan reconstruction stays well-defined even with
+/// patchy reference data).
+fn sample_radial_profile(
+    mesh: &IndexedMesh,
+    cut_point: Point3<f64>,
+    inward_tangent: Vector3<f64>,
+    u: Vector3<f64>,
+    v: Vector3<f64>,
+    reference_zone_m: f64,
+) -> [f64; RECONSTRUCT_ANGLE_BINS] {
+    let mut bins: Vec<Vec<f64>> = (0..RECONSTRUCT_ANGLE_BINS).map(|_| Vec::new()).collect();
+    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+    for vtx in &mesh.vertices {
+        let d = vtx.coords - cut_point.coords;
+        let along = d.dot(&inward_tangent);
+        // Sample only the slab ABOVE the cut (toward the mesh
+        // interior), within `reference_zone_m`. `along > 0` ⇒ on
+        // the interior side; `along < reference_zone_m` ⇒ within
+        // the zone.
+        if along <= 0.0 || along > reference_zone_m {
+            continue;
+        }
+        let proj_u = d.dot(&u);
+        let proj_v = d.dot(&v);
+        let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
+        let angle = proj_v.atan2(proj_u);
+        let normalized = if angle >= 0.0 {
+            angle
+        } else {
+            angle + std::f64::consts::TAU
+        };
+        let bin = ((normalized / bin_span) as usize).min(RECONSTRUCT_ANGLE_BINS - 1);
+        bins[bin].push(r);
+    }
+
+    // Compute per-bin median + a fallback "overall median" for
+    // empty bins.
+    let mut radii = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+    let mut all_radii: Vec<f64> = bins.iter().flat_map(|b| b.iter().copied()).collect();
+    let overall = if all_radii.is_empty() {
+        0.0
+    } else {
+        all_radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        all_radii[all_radii.len() / 2]
+    };
+    for (i, bin) in bins.iter_mut().enumerate() {
+        if bin.is_empty() {
+            radii[i] = overall;
+        } else {
+            bin.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            radii[i] = bin[bin.len() / 2];
+        }
+    }
+    radii
+}
+
+/// Linearly interpolate the canonical radius at angle `angle`
+/// (radians, any value) from the M-bin profile.
+fn sample_radius_at_angle(radii: &[f64; RECONSTRUCT_ANGLE_BINS], angle: f64) -> f64 {
+    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+    let normalized = if angle >= 0.0 {
+        angle
+    } else {
+        angle + std::f64::consts::TAU
+    };
+    let pos = (normalized / bin_span) % RECONSTRUCT_ANGLE_BINS as f64;
+    let lo_bin = (pos as usize) % RECONSTRUCT_ANGLE_BINS;
+    let hi_bin = (lo_bin + 1) % RECONSTRUCT_ANGLE_BINS;
+    let t = pos - pos.floor();
+    radii[lo_bin] * (1.0 - t) + radii[hi_bin] * t
+}
+
+/// Apply Constant-shape floor reconstruction to `mesh`. The mesh
+/// MUST already be trim-cut (open boundary at the floor end);
+/// other open boundaries (e.g., tip-end if tip was also trimmed)
+/// will be auto-capped flat. CSP.4e.2.
+///
+/// `centerline` is the POST-trim polyline in the same frame as
+/// `mesh` (physics-frame meters, pre-bake under the current live-
+/// preview pipeline).
+fn apply_constant_reconstruction(
+    mut mesh: IndexedMesh,
+    centerline: &[Point3<f64>],
+    applied_floor_mm: f64,
+    reference_zone_mm: f64,
+) -> IndexedMesh {
+    if centerline.len() < 2 || applied_floor_mm <= 0.0 || reference_zone_mm <= 0.0 {
+        // Nothing to reconstruct — fall back to flat-cap.
+        auto_cap_open_boundaries(&mut mesh);
+        return mesh;
+    }
+    let loops = detect_boundary_loops(&mesh);
+    let centerline_last = centerline[centerline.len() - 1];
+    let Some(floor_idx) = find_floor_loop_index(&loops, &mesh, centerline_last) else {
+        auto_cap_open_boundaries(&mut mesh);
+        return mesh;
+    };
+
+    // Build the local frame at the cut. `inward_tangent` points
+    // FROM the cut endpoint AWAY from the chopped end (i.e., back
+    // INTO the mesh body) — that's the direction of `polyline[N-2]
+    // - polyline[N-1]` after trim trimmed the polyline.
+    let n = centerline.len();
+    let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
+    let tangent_norm = tangent_raw.norm();
+    if tangent_norm < f64::EPSILON {
+        auto_cap_open_boundaries(&mut mesh);
+        return mesh;
+    }
+    let inward_tangent = tangent_raw / tangent_norm;
+    let (u_axis, v_axis) = perpendicular_basis_for(inward_tangent);
+
+    // Sample the canonical radial profile from the reference zone.
+    let radii = sample_radial_profile(
+        &mesh,
+        centerline_last,
+        inward_tangent,
+        u_axis,
+        v_axis,
+        reference_zone_mm * 0.001,
+    );
+
+    // Snap floor-loop vertices to the canonical profile + the cut
+    // plane. Each loop vertex keeps its angle but gets its radial
+    // distance replaced with `radius_at(angle)`, AND its
+    // along-tangent position projected to the cut plane (so the
+    // top ring is exactly planar).
+    let floor_loop = loops[floor_idx].clone();
+    let l = floor_loop.vertices.len();
+    let mut top_ring_angles = Vec::with_capacity(l);
+    for &vidx in &floor_loop.vertices {
+        if let Some(p) = mesh.vertices.get(vidx as usize).copied() {
+            let d = p.coords - centerline_last.coords;
+            let proj_u = d.dot(&u_axis);
+            let proj_v = d.dot(&v_axis);
+            let angle = proj_v.atan2(proj_u);
+            top_ring_angles.push(angle);
+            let r = sample_radius_at_angle(&radii, angle);
+            let new_pos =
+                centerline_last.coords + r * (u_axis * angle.cos() + v_axis * angle.sin());
+            mesh.vertices[vidx as usize] = Point3::from(new_pos);
+        }
+    }
+
+    // Generate K extrusion rings DOWN past the cut (in the
+    // direction OPPOSITE the inward tangent — outward toward the
+    // original chopped position).
+    let extension_m = applied_floor_mm * 0.001;
+    let extrusion_dir = -inward_tangent;
+    let mut prev_ring: Vec<u32> = floor_loop.vertices.clone();
+    for k in 1..=RECONSTRUCT_RING_COUNT {
+        let t_k = k as f64 / RECONSTRUCT_RING_COUNT as f64;
+        let ring_center = centerline_last.coords + extrusion_dir * extension_m * t_k;
+        let mut this_ring: Vec<u32> = Vec::with_capacity(l);
+        for (i, &angle) in top_ring_angles.iter().enumerate() {
+            let _ = i;
+            let r = sample_radius_at_angle(&radii, angle);
+            let new_pos = ring_center + r * (u_axis * angle.cos() + v_axis * angle.sin());
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = mesh.vertices.len() as u32;
+            mesh.vertices.push(Point3::from(new_pos));
+            this_ring.push(idx);
+        }
+        // Triangle strip between prev_ring (top) and this_ring (bottom).
+        // For each i: quad (prev[i], prev[i+1], this[i+1], this[i]).
+        // Triangulate as (prev[i], prev[i+1], this[i+1]) +
+        // (prev[i], this[i+1], this[i]). Winding chosen so the
+        // outward normal points radially AWAY from the centerline.
+        for i in 0..l {
+            let a = prev_ring[i];
+            let b = prev_ring[(i + 1) % l];
+            let c = this_ring[(i + 1) % l];
+            let d = this_ring[i];
+            mesh.faces.push([a, b, c]);
+            mesh.faces.push([a, c, d]);
+        }
+        prev_ring = this_ring;
+    }
+
+    // Bottom flat cap: fan from a centroid vertex at the extrusion
+    // tip. Winding: outward normal points FURTHER along
+    // `extrusion_dir` (away from the mesh body).
+    let bottom_center = centerline_last.coords + extrusion_dir * extension_m;
+    #[allow(clippy::cast_possible_truncation)]
+    let center_idx = mesh.vertices.len() as u32;
+    mesh.vertices.push(Point3::from(bottom_center));
+    for i in 0..l {
+        let a = prev_ring[i];
+        let b = prev_ring[(i + 1) % l];
+        mesh.faces.push([a, b, center_idx]);
+    }
+
+    // Verify winding empirically: pick the first sidewall triangle,
+    // compute its normal, check if it points radially OUTWARD. If
+    // not, flip all the sidewall + cap face winding. This is a
+    // one-shot heuristic — the boundary loop's CCW-vs-CW direction
+    // depends on which end was trimmed, so we can't pre-compute.
+    let first_sidewall_face_idx = mesh.faces.len() - 2 * l * RECONSTRUCT_RING_COUNT - l;
+    if let Some(&[a, b, c]) = mesh.faces.get(first_sidewall_face_idx) {
+        let va = mesh.vertices[a as usize];
+        let vb = mesh.vertices[b as usize];
+        let vc = mesh.vertices[c as usize];
+        let normal = (vb.coords - va.coords).cross(&(vc.coords - va.coords));
+        // Radial outward at va: va - ring_axis_point_at_same_along.
+        // Use the cut_point as a proxy for the radial-from-centerline
+        // origin at the top ring (it's close enough for the sign check).
+        let radial_at_va = va.coords - centerline_last.coords;
+        // Project out the along-tangent component to get the pure radial.
+        let radial_only = radial_at_va - inward_tangent * radial_at_va.dot(&inward_tangent);
+        if normal.dot(&radial_only) < 0.0 {
+            // Flip every new face we added (last 2*L*K + L faces).
+            let new_face_count = 2 * l * RECONSTRUCT_RING_COUNT + l;
+            let start = mesh.faces.len() - new_face_count;
+            for face in mesh.faces.iter_mut().skip(start) {
+                face.swap(1, 2);
+            }
+        }
+    }
+
+    mesh
+}
+
 /// Detect all open boundary loops in `mesh`. Wraps `mesh-repair`'s
 /// `detect_holes`, which builds adjacency + walks boundary edges into
 /// closed vertex-index loops. Returns a `Vec<BoundaryLoop>` (each
@@ -3286,6 +3611,13 @@ fn update_displayed_mesh(
     // Derive displayed mesh from APPLIED trim values + the base
     // ScanMesh. Skip the trim if no applied trim or centerline
     // unavailable.
+    //
+    // CSP.4e.2 — if reconstruct is applied AND the floor was
+    // chopped, replace the auto-cap call for the floor end with
+    // the centerline-driven reconstruction (extruded average
+    // cross-section + bottom flat cap). Tip-end (if also trimmed)
+    // still gets the original flat auto-cap inside
+    // `apply_constant_reconstruction` via its fallback path.
     let displayed = if cap.centerline_polyline.len() >= 2
         && (trim.applied_tip_mm > 0.0 || trim.applied_floor_mm > 0.0)
     {
@@ -3295,10 +3627,36 @@ fn update_displayed_mesh(
             trim.applied_tip_mm,
             trim.applied_floor_mm,
         );
-        // Cap the new boundaries created by the trim cuts so the
-        // displayed mesh stays watertight — matches what save will
-        // emit on disk.
-        let _capped = auto_cap_open_boundaries(&mut t);
+        match trim.applied_reconstruct {
+            Some(ar) if trim.applied_floor_mm > 0.0 => {
+                // CSP.4e.2 — Constant shape only; Taper +
+                // Extrapolate variants land at 4e.3 / 4e.4.
+                let trimmed_centerline = trim_centerline_polyline(
+                    &cap.centerline_polyline,
+                    trim.applied_tip_mm,
+                    trim.applied_floor_mm,
+                );
+                match ar.shape {
+                    ReconstructShape::Constant => {
+                        t = apply_constant_reconstruction(
+                            t,
+                            &trimmed_centerline,
+                            trim.applied_floor_mm,
+                            ar.reference_mm,
+                        );
+                    }
+                    // Placeholders: fall back to auto-cap until
+                    // those shapes ship.
+                    ReconstructShape::Taper | ReconstructShape::Extrapolate => {
+                        let _capped = auto_cap_open_boundaries(&mut t);
+                    }
+                }
+            }
+            _ => {
+                // No reconstruct applied — auto-cap all boundaries.
+                let _capped = auto_cap_open_boundaries(&mut t);
+            }
+        }
         t
     } else {
         scan.0.clone()
@@ -4694,13 +5052,49 @@ fn handle_save_action(
             centerline_trim.applied_tip_mm,
             centerline_trim.applied_floor_mm,
         );
-        trim_capped = auto_cap_open_boundaries(&mut cleaned);
+        // CSP.4e.2 — save-time reconstruction branch. When the
+        // user has applied reconstruct AND it's a shape this
+        // commit supports (Constant), run the reconstructed-
+        // geometry path; otherwise fall through to flat
+        // auto-cap. Mirrors the `update_displayed_mesh` branch
+        // so the on-disk STL matches the viewport.
+        let did_reconstruct = match centerline_trim.applied_reconstruct {
+            Some(ar)
+                if centerline_trim.applied_floor_mm > 0.0
+                    && matches!(ar.shape, ReconstructShape::Constant) =>
+            {
+                let trimmed_centerline = trim_centerline_polyline(
+                    &centerline_world,
+                    centerline_trim.applied_tip_mm,
+                    centerline_trim.applied_floor_mm,
+                );
+                cleaned = apply_constant_reconstruction(
+                    cleaned,
+                    &trimmed_centerline,
+                    centerline_trim.applied_floor_mm,
+                    ar.reference_mm,
+                );
+                true
+            }
+            _ => false,
+        };
+        if !did_reconstruct {
+            trim_capped = auto_cap_open_boundaries(&mut cleaned);
+        }
+        let suffix_action = if did_reconstruct {
+            "reconstructed".to_string()
+        } else {
+            format!(
+                "capped {} boundary loop{}",
+                trim_capped,
+                if trim_capped == 1 { "" } else { "s" },
+            )
+        };
         trim_status_suffix = format!(
-            ", trim: {} -> {} faces, capped {} boundary loop{}",
+            ", trim: {} -> {} faces, {}",
             human_count(pre_trim_face_count),
             human_count(cleaned.faces.len()),
-            trim_capped,
-            if trim_capped == 1 { "" } else { "s" },
+            suffix_action,
         );
     }
 
