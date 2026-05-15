@@ -603,10 +603,23 @@ struct CapPendingAction {
     rescan: bool,
 }
 
-/// Centerline trim panel state (CSP.4b). The user dials how much
-/// to shave off each end of the centerline polyline; the save
-/// handler applies the cuts (perpendicular planes at each end
-/// distance) and auto-caps the new boundaries.
+/// Centerline trim panel state (CSP.4b — apply-on-click model
+/// since CSP.4b.6). The user dials slider values to position the
+/// orange trim-plane circles live; clicking `[Apply trim]` commits
+/// those values + re-derives the displayed mesh from the cuts.
+///
+/// **Slider vs applied**:
+/// - `trim_tip_mm` / `trim_floor_mm` — slider state. Drives the
+///   orange overlay circles in real time. Cheap to mutate (no mesh
+///   recomputation per drag tick).
+/// - `applied_tip_mm` / `applied_floor_mm` — committed state.
+///   Drives the displayed mesh + the save-time cut. Mutated only
+///   when the user clicks `[Apply trim]`.
+///
+/// CSP.4b.4 ran the trim live (every slider tick → re-derive
+/// 200k-face mesh). User-reported 2026-05-15: "it feels very
+/// resource intensive." Apply-on-click matches the existing Apply
+/// Simplify pattern + amortizes the cost to discrete user actions.
 ///
 /// Both values are in **millimeters** along the polyline arc — they
 /// project to physics-meter coordinates inside
@@ -618,13 +631,23 @@ struct CapPendingAction {
 /// Until then the panel renders a hint to "Run Cap → Scan first."
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct CenterlineTrimState {
-    /// Distance from the centerline polyline's tip (index 0) end
-    /// to trim, in millimeters. Range `0..=max_trim_mm` enforced by
-    /// the panel slider, where `max_trim_mm` is derived from the
-    /// polyline arc length at panel-render time.
+    /// Slider value for the tip end, in mm. Drives the overlay
+    /// circle; does NOT mutate the mesh until the user clicks
+    /// `[Apply trim]`.
     trim_tip_mm: f64,
-    /// Distance from the floor (index N-1) end to trim, in mm.
+    /// Slider value for the floor end, in mm. Drives the overlay
+    /// circle.
     trim_floor_mm: f64,
+    /// Last value committed via `[Apply trim]` for the tip end,
+    /// in mm. Drives the displayed mesh + the save-time cut.
+    applied_tip_mm: f64,
+    /// Last value committed via `[Apply trim]` for the floor end,
+    /// in mm. Drives the displayed mesh + the save-time cut.
+    applied_floor_mm: f64,
+    /// Queued user action; consumed by
+    /// [`update_displayed_mesh`] each Update tick. Mirrors the
+    /// SimplifyState/CapPendingAction pattern.
+    pending_action: Option<TrimAction>,
 }
 
 impl Default for CenterlineTrimState {
@@ -632,8 +655,25 @@ impl Default for CenterlineTrimState {
         Self {
             trim_tip_mm: 0.0,
             trim_floor_mm: 0.0,
+            applied_tip_mm: 0.0,
+            applied_floor_mm: 0.0,
+            pending_action: None,
         }
     }
+}
+
+/// User action queued from the Centerline trim panel. Consumed by
+/// [`update_displayed_mesh`] next Update tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrimAction {
+    /// Commit current slider values → applied values + re-derive
+    /// the displayed mesh from the cuts.
+    Apply,
+    /// Zero both slider AND applied values + re-derive displayed
+    /// mesh as the untrimmed base. (Single button does both
+    /// resets — the user can't reasonably want "slider zero,
+    /// applied non-zero" or vice versa.)
+    Reset,
 }
 
 /// User action queued by the Save panel's `[Save]` button. Consumed
@@ -2109,10 +2149,13 @@ fn build_prep_toml_string(
             )
         })
         .collect();
+    // CSP.4b.6 — use APPLIED trim values (what the displayed +
+    // saved mesh was cut with), not the slider values (which may
+    // be ahead of the user's last Apply click).
     let trimmed_polyline = trim_centerline_polyline(
         &baked_polyline,
-        centerline_trim.trim_tip_mm,
-        centerline_trim.trim_floor_mm,
+        centerline_trim.applied_tip_mm,
+        centerline_trim.applied_floor_mm,
     );
     let centerline_world: Vec<[f64; 3]> =
         trimmed_polyline.iter().map(|p| [p.x, p.y, p.z]).collect();
@@ -2197,8 +2240,11 @@ fn build_prep_toml_string(
             })
         },
         centerline_trim: PrepCenterlineTrimBlock {
-            trim_tip_mm: centerline_trim.trim_tip_mm,
-            trim_floor_mm: centerline_trim.trim_floor_mm,
+            // CSP.4b.6 — record APPLIED values (what was actually
+            // cut into the saved STL), not slider values (the
+            // user's draft preview position).
+            trim_tip_mm: centerline_trim.applied_tip_mm,
+            trim_floor_mm: centerline_trim.applied_floor_mm,
             capped_loops: centerline_trim_capped,
         },
         output: PrepOutputBlock {
@@ -3184,12 +3230,16 @@ fn respawn_scan_entity(
 }
 
 /// Snapshot key the live-trim system uses to detect when the
-/// displayed mesh needs re-derivation (CSP.4b.4). Any change in
-/// the snapshot triggers a respawn from a freshly trimmed mesh.
+/// displayed mesh needs re-derivation (CSP.4b.4 + CSP.4b.6).
+/// Any change in the snapshot triggers a respawn from a freshly
+/// trimmed mesh.
 ///
 /// Field shape:
-/// - `trim_tip_mm` + `trim_floor_mm`: bit-pattern compared (cheap;
-///   sub-mm slider increments still trigger respawns).
+/// - `trim_tip_mm` + `trim_floor_mm`: bit-pattern compared. **These
+///   hold APPLIED values, not slider values** (CSP.4b.6 apply-on-
+///   click model). Dragging the slider without clicking Apply does
+///   NOT change the snapshot, so the mesh stays put — only the
+///   orange overlay moves.
 /// - `scan_face_count` + `scan_vertex_count`: proxy for "ScanMesh
 ///   identity changed" — Apply Simplify / Reset to original both
 ///   change the face count. Avoids the `Res::<>::is_changed()`
@@ -3240,7 +3290,7 @@ struct DisplayedMeshSnapshot {
 fn update_displayed_mesh(
     scan: Res<ScanMesh>,
     cap: Res<CapState>,
-    trim: Res<CenterlineTrimState>,
+    mut trim: ResMut<CenterlineTrimState>,
     mut info: ResMut<ScanInfo>,
     existing: Query<Entity, With<ScanMeshEntity>>,
     mut commands: Commands,
@@ -3250,9 +3300,32 @@ fn update_displayed_mesh(
     render_scale: Res<RenderScale>,
     mut last_snapshot: Local<Option<DisplayedMeshSnapshot>>,
 ) {
+    // CSP.4b.6 — apply-on-click. Consume the queued
+    // `TrimAction` (if any) BEFORE building the snapshot, so the
+    // applied values match what the user just clicked.
+    if let Some(action) = trim.pending_action.take() {
+        match action {
+            TrimAction::Apply => {
+                trim.applied_tip_mm = trim.trim_tip_mm;
+                trim.applied_floor_mm = trim.trim_floor_mm;
+            }
+            TrimAction::Reset => {
+                trim.trim_tip_mm = 0.0;
+                trim.trim_floor_mm = 0.0;
+                trim.applied_tip_mm = 0.0;
+                trim.applied_floor_mm = 0.0;
+            }
+        }
+    }
+
+    // Snapshot drives change detection: re-respawn the entity when
+    // any input that affects the displayed mesh has actually
+    // changed. CSP.4b.6 — uses APPLIED values, not slider values,
+    // so dragging the slider (without Apply) does NOT trigger a
+    // respawn. Only the orange overlay moves with the slider.
     let snapshot = DisplayedMeshSnapshot {
-        trim_tip_mm: trim.trim_tip_mm,
-        trim_floor_mm: trim.trim_floor_mm,
+        trim_tip_mm: trim.applied_tip_mm,
+        trim_floor_mm: trim.applied_floor_mm,
         scan_face_count: scan.0.faces.len(),
         scan_vertex_count: scan.0.vertices.len(),
         centerline_len: cap.centerline_polyline.len(),
@@ -3261,28 +3334,17 @@ fn update_displayed_mesh(
         return;
     }
 
-    // Derive displayed mesh. Skip the trim if no trim requested or
-    // centerline is unavailable; the live mesh then equals the
-    // base ScanMesh.
-    //
-    // CSP.4b.4 originally also gated on `!cap.stale` — but the
-    // staleness flag actually tracks loop-vertex-index validity
-    // (the cap loops' `vertex_indices` reference into `scan.0`
-    // which `[Apply simplify]` invalidates). The CENTERLINE
-    // polyline is in physics-frame meters, untouched by Reorient /
-    // Recenter / Clip slider changes; those don't make the trim
-    // wrong. User-reported 2026-05-15: trim was visibly a no-op
-    // because `cap.stale` would flip true on any panel change and
-    // silently skip the trim. Lifting the gate so the live trim
-    // does what the user expects.
+    // Derive displayed mesh from APPLIED trim values + the base
+    // ScanMesh. Skip the trim if no applied trim or centerline
+    // unavailable.
     let displayed = if cap.centerline_polyline.len() >= 2
-        && (trim.trim_tip_mm > 0.0 || trim.trim_floor_mm > 0.0)
+        && (trim.applied_tip_mm > 0.0 || trim.applied_floor_mm > 0.0)
     {
         let mut t = trim_mesh_along_centerline(
             &scan.0,
             &cap.centerline_polyline,
-            trim.trim_tip_mm,
-            trim.trim_floor_mm,
+            trim.applied_tip_mm,
+            trim.applied_floor_mm,
         );
         // Cap the new boundaries created by the trim cuts so the
         // displayed mesh stays watertight — matches what save will
@@ -4422,16 +4484,37 @@ fn render_centerline_trim_section(
                     .text("trim from floor (mm)"),
             );
 
-            ui.add_space(4.0);
-            if ui.button("Reset trim").clicked() {
-                state.trim_tip_mm = 0.0;
-                state.trim_floor_mm = 0.0;
+            // CSP.4b.6 — show the user the gap between slider
+            // (next-cut preview) and applied (current mesh cut)
+            // when they differ, so it's obvious when an Apply is
+            // pending.
+            let drifted = (state.trim_tip_mm - state.applied_tip_mm).abs() > 1e-6
+                || (state.trim_floor_mm - state.applied_floor_mm).abs() > 1e-6;
+            if drifted {
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 200, 80),
+                    format!(
+                        "⚠ Pending: applied tip {:.1} / floor {:.1} mm — click [Apply trim] to cut",
+                        state.applied_tip_mm, state.applied_floor_mm,
+                    ),
+                );
             }
 
             ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Apply trim").clicked() {
+                    state.pending_action = Some(TrimAction::Apply);
+                }
+                if ui.button("Reset trim").clicked() {
+                    state.pending_action = Some(TrimAction::Reset);
+                }
+            });
+
+            ui.add_space(4.0);
             ui.small(
-                "Trim is applied at save time. The cleaned STL gets cut perpendicular to \
-                 the centerline at each end + auto-capped so the result is watertight.",
+                "Drag the sliders to position the orange cut circles. \
+                 Click [Apply trim] to perform the cuts on the displayed mesh. \
+                 Save writes the displayed (already-applied) trim to disk.",
             );
         });
 }
@@ -4587,8 +4670,8 @@ fn handle_save_action(
         || !recenter.ty_mm.is_finite()
         || !recenter.tz_mm.is_finite()
         || (clip.enabled && !clip.z_mm.is_finite())
-        || !centerline_trim.trim_tip_mm.is_finite()
-        || !centerline_trim.trim_floor_mm.is_finite()
+        || !centerline_trim.applied_tip_mm.is_finite()
+        || !centerline_trim.applied_floor_mm.is_finite()
     {
         status.text = "Save failed: non-finite transform / clip / trim values".into();
         status.kind = StatusKind::Error;
@@ -4612,8 +4695,11 @@ fn handle_save_action(
         recenter.tz_mm * 0.001,
     );
     let trim_pivot_centroid_m = scan.0.aabb().center();
-    let centerline_world: Vec<Point3<f64>> = if (centerline_trim.trim_tip_mm > 0.0
-        || centerline_trim.trim_floor_mm > 0.0)
+    // CSP.4b.6 — use APPLIED trim values, not slider values. The
+    // save-time cut must match the displayed mesh (what the user
+    // sees), not the draft slider position.
+    let centerline_world: Vec<Point3<f64>> = if (centerline_trim.applied_tip_mm > 0.0
+        || centerline_trim.applied_floor_mm > 0.0)
         && cap.centerline_polyline.len() >= 2
     {
         cap.centerline_polyline
@@ -4632,8 +4718,8 @@ fn handle_save_action(
         cleaned = trim_mesh_along_centerline(
             &cleaned,
             &centerline_world,
-            centerline_trim.trim_tip_mm,
-            centerline_trim.trim_floor_mm,
+            centerline_trim.applied_tip_mm,
+            centerline_trim.applied_floor_mm,
         );
         trim_capped = auto_cap_open_boundaries(&mut cleaned);
         trim_status_suffix = format!(
