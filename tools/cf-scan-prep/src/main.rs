@@ -640,6 +640,26 @@ struct StlUnitsResource(StlUnits);
 #[derive(Resource, Debug, Clone, Copy)]
 struct AutoCenterOffset(Vector3<f64>);
 
+/// Auto-PCA rotation applied at load (CSP.4a). Physics-frame unit
+/// quaternion taking the scan's principal axis to `+Z` (cast-frame
+/// demolding direction). Baked into vertex positions at load, just
+/// like auto-center — so the in-memory + saved-to-disk mesh is in
+/// canonical orientation. The user's Reorient sliders therefore
+/// start at identity (no further rotation needed in the typical
+/// workflow); CSP.4c will retire those sliders entirely once the
+/// centerline-driven trim flow lands at CSP.4b.
+///
+/// `None` when PCA failed (degenerate mesh, < 3 vertices, all
+/// vertices coincident) — these scans are unworkable downstream
+/// anyway; the auto-orient just becomes a no-op + the user sees the
+/// raw orientation.
+///
+/// Recorded in `.prep.toml`'s `[scan_prep].auto_pca_quaternion` so
+/// the source-frame position is recoverable (multiply: auto_center
+/// + auto_pca then user transforms).
+#[derive(Resource, Debug, Clone, Copy)]
+struct AutoPcaQuaternion(Option<UnitQuaternion<f64>>);
+
 /// Walk the scan's vertices, transform each into cast-frame world
 /// coordinates (rotation + translation_z), and return the percentage
 /// that fall below `clip_z_mm`. Called by [`update_clip_drop_pct`]
@@ -1516,6 +1536,13 @@ struct PrepScanPrepBlock {
     /// of a cleaned-STL vertex, INVERT the user's Reorient +
     /// Recenter recorded in `[transform]`, then add this offset.
     auto_center_offset_m: [f64; 3],
+    /// Auto-PCA rotation applied at load (CSP.4a) — quaternion in
+    /// `(w, x, y, z)` order that takes the source's principal axis
+    /// to `+Z`. Skipped (serialized as `null`) when PCA was
+    /// degenerate (rare). Pairs with `auto_center_offset_m` for
+    /// full source-frame reconstruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_pca_quaternion: Option<[f64; 4]>,
 }
 
 /// `[simplify]` provenance — what decimation, if any, was applied at
@@ -1678,6 +1705,7 @@ fn build_prep_toml_string(
     source_stl: &Path,
     stl_units: StlUnits,
     auto_center_offset_m: Vector3<f64>,
+    auto_pca_quat: Option<UnitQuaternion<f64>>,
     reorient: &ReorientState,
     recenter: &RecenterState,
     clip: &ClipState,
@@ -1723,6 +1751,7 @@ fn build_prep_toml_string(
                 auto_center_offset_m.y,
                 auto_center_offset_m.z,
             ],
+            auto_pca_quaternion: auto_pca_quat.map(|q| [q.w, q.i, q.j, q.k]),
         },
         simplify: PrepSimplifyBlock {
             // `applied = true` iff save-time simplify ran. The save
@@ -2166,7 +2195,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match try_load_scan(&cli) {
-        Ok((scan_mesh, auto_center_offset_m)) => {
+        Ok((scan_mesh, auto_center_offset_m, auto_pca_quat)) => {
             let scan_info = ScanInfo::from_loaded(&cli.path, &scan_mesh, cli.stl_units);
             // Clone the loaded mesh into `OriginalScanMesh` so the
             // Simplify panel's `[Reset to original]` action can restore
@@ -2176,6 +2205,7 @@ fn main() -> Result<()> {
             let source = SourceStlPath(cli.path.clone());
             let stl_units = StlUnitsResource(cli.stl_units);
             let auto_center = AutoCenterOffset(auto_center_offset_m);
+            let auto_pca = AutoPcaQuaternion(auto_pca_quat);
             run_render_app(
                 scan_mesh,
                 original,
@@ -2184,6 +2214,7 @@ fn main() -> Result<()> {
                 output_dir,
                 stl_units,
                 auto_center,
+                auto_pca,
             );
         }
         Err(err) => {
@@ -2217,43 +2248,75 @@ fn resolve_output_dir(cli: &Cli) -> PathBuf {
 }
 
 /// Load the STL at `cli.path`, convert vertex coordinates into meters
-/// per `cli.stl_units`, and **auto-center the scan at the physics
-/// origin** (CSP.3.5). Returns the loaded+centered mesh plus the
-/// auto-center offset (in meters) so the saved `.prep.toml` can
-/// preserve the source-frame position as provenance.
+/// per `cli.stl_units`, **auto-center the scan at the physics origin**
+/// (CSP.3.5), and **auto-orient the principal axis to +Z** (CSP.4a).
+/// Returns the loaded+centered+oriented mesh plus the auto-center
+/// offset (in meters) plus the auto-PCA quaternion (or `None` if the
+/// PCA was degenerate) so the saved `.prep.toml` can preserve both
+/// transforms as provenance.
 ///
-/// # Why auto-center
+/// # Why auto-center + auto-PCA at load
 ///
-/// Scanners drop captured geometry wherever their internal frame
-/// puts it — a Revopoint pointing down at a fixture often produces a
-/// scan whose centroid sits hundreds of mm from the scanner-frame
-/// origin (negative z, in particular, for the "depth into scene"
-/// convention). Without auto-centering, the Recenter panel's
-/// `[Floor -> z=0]` button produces values like `+260 mm` that
-/// reflect the scanner-frame offset, not anything meaningful about
-/// the workshop. Auto-centering normalizes the scan to a sane
-/// starting state: AABB centroid at origin, so PCA + Floor → z=0 +
-/// Reorient + Recenter all operate on intuitive numbers (Floor →
-/// z=0 → half scan height; Center origin → no-op).
+/// CSP.4 redesign collapses the spec's manual Reorient + Recenter +
+/// Clip workflow into a centerline-driven trim flow. For that to be
+/// usable, the scan's frame must be canonical-on-load:
+///
+/// - **Auto-center**: AABB centroid → physics origin (CSP.3.5;
+///   scanners drop captured geometry at arbitrary offsets from
+///   their internal frame; without this, every downstream number
+///   carries that offset).
+/// - **Auto-PCA**: principal axis → `+Z` cast-frame demolding
+///   direction. After this, the centerline runs roughly along
+///   `+Z` (slightly tilted for asymmetric scans), the
+///   tip-vs-floor distinction is unambiguous, and the user's
+///   centerline-trim sliders operate on intuitive distances along
+///   that axis.
 ///
 /// # What gets recorded
 ///
-/// `[scan_prep].auto_center_offset_m` in the saved `.prep.toml`
-/// captures the translation that was auto-applied. To reconstruct
-/// the scanner-frame position of a cleaned-STL vertex:
-///   `scanner_frame_pos = cleaned_pos + auto_center_offset_m + ...`
-///   (plus the inverse of the user's Reorient/Recenter, recorded in
-///   `[transform]`).
+/// `[scan_prep].auto_center_offset_m` + `auto_pca_quaternion` in
+/// the saved `.prep.toml` capture both auto-transforms. To
+/// reconstruct the source-frame position of a cleaned-STL vertex,
+/// invert the user transforms (recorded elsewhere), then invert the
+/// auto-PCA, then subtract auto_center_offset_m.
 ///
 /// # Errors
 ///
 /// Bubbles up [`mesh_io::load_stl`]'s I/O + parse errors verbatim.
 /// The caller wraps the message into the error-overlay path.
-fn try_load_scan(cli: &Cli) -> Result<(IndexedMesh, Vector3<f64>)> {
+fn try_load_scan(cli: &Cli) -> Result<(IndexedMesh, Vector3<f64>, Option<UnitQuaternion<f64>>)> {
     let mut mesh = load_stl(&cli.path)?;
     scale_vertices_in_place(&mut mesh, cli.stl_units.to_meters_factor());
     let auto_center_offset_m = auto_center_in_place(&mut mesh);
-    Ok((mesh, auto_center_offset_m))
+    let auto_pca_quat = auto_pca_in_place(&mut mesh);
+    Ok((mesh, auto_center_offset_m, auto_pca_quat))
+}
+
+/// Apply the PCA-derived rotation to all vertices in `mesh`, taking
+/// the principal axis to `+Z`. Returns the quaternion that was
+/// applied (or `None` if PCA was degenerate — coincident vertices,
+/// < 3 verts, or all-zero covariance).
+///
+/// Operates on the mesh after auto-center, so the rotation pivot is
+/// the origin (= scan centroid). The result has its principal axis
+/// aligned with cast-frame `+Z`.
+///
+/// Skips when the resulting quaternion is near-identity (within 1
+/// µrad sin(θ/2) of identity) — the rotation would be a no-op
+/// modulo FP drift, and skipping the vertex walk keeps already-
+/// upright fixtures bit-exact.
+fn auto_pca_in_place(mesh: &mut IndexedMesh) -> Option<UnitQuaternion<f64>> {
+    let q = compute_pca_orientation(&mesh.vertices)?;
+    // Near-identity check: |q.i|² + |q.j|² + |q.k|² < 1e-12 means
+    // the vector part is sub-µrad; rotation is effectively identity.
+    let vec_sq = q.i * q.i + q.j * q.j + q.k * q.k;
+    if vec_sq < 1e-12 {
+        return Some(q);
+    }
+    for v in &mut mesh.vertices {
+        *v = q.transform_point(v);
+    }
+    Some(q)
 }
 
 /// Translate `mesh`'s vertices so the AABB centroid lands at physics
@@ -2412,6 +2475,7 @@ fn run_render_app(
     output_dir: SaveOutputDir,
     stl_units: StlUnitsResource,
     auto_center: AutoCenterOffset,
+    auto_pca: AutoPcaQuaternion,
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
@@ -2452,9 +2516,23 @@ fn run_render_app(
         .insert_resource(output_dir)
         .insert_resource(stl_units)
         .insert_resource(auto_center)
+        .insert_resource(auto_pca)
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
-        .add_systems(Startup, (setup_render_scene, init_status_for_load))
+        .add_systems(
+            Startup,
+            (
+                setup_render_scene,
+                init_status_for_load,
+                // CSP.4a — auto-trigger boundary detection + centerline
+                // computation on first Update tick. The handle_cap_actions
+                // system already drives this via the rescan flag; we just
+                // pre-set it so the user doesn't have to click `[Scan]`
+                // before saving. Pairs with the auto-PCA bake so the
+                // centerline runs roughly along world +Z out of the box.
+                trigger_auto_cap_detection,
+            ),
+        )
         // Apply/Reset handler runs before auto-clear so a newly-set
         // status's TTL is checked against the same tick's `Time`.
         // `apply_world_transform_to_scan_entity` is idempotent (no-op
@@ -2580,6 +2658,17 @@ fn setup_render_scene(
     // Marker so the Simplify Apply/Reset handler can despawn the
     // current scan render before respawning from the new mesh.
     commands.entity(entity).insert(ScanMeshEntity);
+}
+
+/// Startup system: prime `CapPendingAction::rescan = true` so the
+/// existing `handle_cap_actions` Update system runs boundary
+/// detection + centerline computation on the first Update tick.
+/// CSP.4a — replaces the user-click-`[Scan]` workflow with auto-
+/// detection at load. The Cap panel still renders the loop list as
+/// informational; CSP.4c removes the `[Scan]` button entirely.
+#[allow(clippy::needless_pass_by_value)]
+fn trigger_auto_cap_detection(mut pending: ResMut<CapPendingAction>) {
+    pending.rescan = true;
 }
 
 /// Startup system: surface the auto-suggest banner if the loaded scan
@@ -3788,6 +3877,7 @@ fn handle_save_action(
     source: Res<SourceStlPath>,
     stl_units: Res<StlUnitsResource>,
     auto_center: Res<AutoCenterOffset>,
+    auto_pca: Res<AutoPcaQuaternion>,
     mut status: ResMut<StatusBar>,
     time: Res<Time>,
 ) {
@@ -3886,6 +3976,7 @@ fn handle_save_action(
         &source.0,
         stl_units.0,
         auto_center.0,
+        auto_pca.0,
         &reorient,
         &recenter,
         &clip,
@@ -4084,6 +4175,99 @@ mod tests {
         let offset = auto_center_in_place(&mut mesh);
         assert_eq!(offset, Vector3::zeros());
         assert!(mesh.vertices.is_empty());
+    }
+
+    // ----- auto_pca_in_place (CSP.4a) --------------------------------
+
+    /// Mesh elongated along physics +X: after auto-PCA-in-place, the
+    /// long axis aligns with +Z (the principal-axis vertices' X
+    /// components rotate into Z). Confirms the bake-in-place
+    /// behavior matches the rotation `compute_pca_orientation`
+    /// returns.
+    #[test]
+    fn auto_pca_in_place_rotates_long_x_axis_to_plus_z() {
+        // 11 points along +X (centroid at origin), no spread on Y/Z.
+        let mut mesh = IndexedMesh::with_capacity(11, 0);
+        for i in -5..=5 {
+            mesh.vertices
+                .push(Point3::new(f64::from(i) * 0.01, 0.0, 0.0));
+        }
+        let pre_x_range_max = mesh
+            .vertices
+            .iter()
+            .map(|v| v.x.abs())
+            .fold(0.0_f64, f64::max);
+        assert!((pre_x_range_max - 0.05).abs() < 1e-12);
+
+        let q = auto_pca_in_place(&mut mesh).expect("PCA should succeed");
+
+        // After rotation, the long axis runs along +Z (or -Z; the
+        // sign-pick keeps the rotation short). The X spread
+        // collapses to ~zero; the Z spread inherits the original X
+        // spread.
+        let post_z_range_max = mesh
+            .vertices
+            .iter()
+            .map(|v| v.z.abs())
+            .fold(0.0_f64, f64::max);
+        let post_x_range_max = mesh
+            .vertices
+            .iter()
+            .map(|v| v.x.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (post_z_range_max - 0.05).abs() < 1e-9,
+            "post Z extent: {post_z_range_max}"
+        );
+        assert!(
+            post_x_range_max < 1e-9,
+            "post X extent should collapse: {post_x_range_max}"
+        );
+
+        // Quaternion identity-check: not identity (we actually rotated).
+        let vec_sq = q.i * q.i + q.j * q.j + q.k * q.k;
+        assert!(vec_sq > 1e-6, "expected non-identity rotation");
+    }
+
+    /// Already-PCA-aligned mesh (principal axis = +Z, vertices in
+    /// the YZ plane with the long axis on Z): auto-PCA is the
+    /// identity, vertex positions stay bit-exact.
+    #[test]
+    fn auto_pca_in_place_skips_vertex_walk_on_near_identity() {
+        // 11 points along +Z, centroid at origin. PCA principal axis
+        // = +Z already; rotation_between(+Z, +Z) = identity.
+        let mut mesh = IndexedMesh::with_capacity(11, 0);
+        for i in -5..=5 {
+            mesh.vertices
+                .push(Point3::new(0.0, 0.0, f64::from(i) * 0.01));
+        }
+        let mesh_before = mesh.clone();
+
+        let q = auto_pca_in_place(&mut mesh).expect("PCA should succeed");
+        // Quaternion should be near-identity.
+        assert!(
+            (q.w - 1.0).abs() < 1e-9,
+            "expected near-identity q.w, got {}",
+            q.w
+        );
+        // Vertices bit-exactly preserved (the near-identity skip
+        // path didn't walk them).
+        assert_eq!(mesh.vertices, mesh_before.vertices);
+    }
+
+    /// Degenerate input (all vertices coincident → no principal
+    /// axis): auto-PCA returns `None`, vertices unchanged. Pairs
+    /// with `compute_pca_orientation`'s `None` path.
+    #[test]
+    fn auto_pca_in_place_returns_none_on_degenerate() {
+        let mut mesh = IndexedMesh::with_capacity(10, 0);
+        for _ in 0..10 {
+            mesh.vertices.push(Point3::origin());
+        }
+        let mesh_before = mesh.clone();
+        let q = auto_pca_in_place(&mut mesh);
+        assert!(q.is_none(), "expected None on degenerate input");
+        assert_eq!(mesh.vertices, mesh_before.vertices);
     }
 
     // ----- CLI parsing ------------------------------------------------
@@ -5265,6 +5449,7 @@ mod tests {
             Path::new("/tmp/scan.stl"),
             StlUnits::Mm,
             Vector3::new(0.01, -0.02, 0.03), // auto_center_offset_m
+            None,                            // CSP.4a auto_pca_quat — omit for default
             &reorient,
             &recenter,
             &clip,
@@ -5291,6 +5476,13 @@ mod tests {
         assert!((offset[0].as_float().unwrap() - 0.01).abs() < 1e-12);
         assert!((offset[1].as_float().unwrap() - (-0.02)).abs() < 1e-12);
         assert!((offset[2].as_float().unwrap() - 0.03).abs() < 1e-12);
+        // CSP.4a — auto_pca_quaternion is `None` here (we passed None
+        // in this test), so the field should be SKIPPED in the
+        // serialized output (per `skip_serializing_if`).
+        assert!(
+            scan_prep.get("auto_pca_quaternion").is_none(),
+            "auto_pca_quaternion should be omitted when None",
+        );
         assert!(parsed.get("simplify").is_some(), "simplify block missing");
         assert!(parsed.get("transform").is_some(), "transform block missing");
         // Sub-tables under [transform] per spec §Output format.
@@ -5315,6 +5507,60 @@ mod tests {
         assert!(parsed.get("recenter").is_none(), "legacy recenter name");
         // No cap loops -> centerline block omitted.
         assert!(parsed.get("centerline").is_none());
+        Ok(())
+    }
+
+    /// CSP.4a — when `auto_pca_quat` is `Some`, the `.prep.toml`
+    /// `[scan_prep].auto_pca_quaternion` field round-trips as a
+    /// 4-element array of `(w, x, y, z)` matching the input
+    /// quaternion. Companion to the `None` case in
+    /// `prep_toml_string_round_trips_through_toml_parser`.
+    #[test]
+    fn prep_toml_serializes_auto_pca_quaternion_when_present() -> Result<()> {
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let clip = ClipState::default();
+        let cap = CapState::default();
+        let rotation = reorient.quaternion_physics();
+        let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(0.0, 0.0, 0.0),
+            max: Point3::new(0.1, 0.1, 0.1),
+        };
+        // A non-identity quaternion (~90° about +X).
+        let q = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::x_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let s = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            Some(q),
+            &reorient,
+            &recenter,
+            &clip,
+            &cap,
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            500_000,
+            200_000,
+            &cleaned_aabb,
+        )?;
+        let parsed: toml::Value = toml::from_str(&s)?;
+        let scan_prep = parsed.get("scan_prep").expect("scan_prep block");
+        let arr = scan_prep
+            .get("auto_pca_quaternion")
+            .and_then(|v| v.as_array())
+            .expect("auto_pca_quaternion missing or not an array");
+        assert_eq!(arr.len(), 4);
+        assert!((arr[0].as_float().unwrap() - q.w).abs() < 1e-12);
+        assert!((arr[1].as_float().unwrap() - q.i).abs() < 1e-12);
+        assert!((arr[2].as_float().unwrap() - q.j).abs() < 1e-12);
+        assert!((arr[3].as_float().unwrap() - q.k).abs() < 1e-12);
         Ok(())
     }
 
