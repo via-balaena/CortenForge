@@ -48,7 +48,10 @@ use cf_viewer::{
 };
 use clap::{Parser, ValueEnum};
 use mesh_io::{load_stl, save_stl};
-use mesh_repair::{MeshAdjacency, holes, remove_unreferenced_vertices, weld_vertices};
+use mesh_repair::{
+    MeshAdjacency, holes, remove_degenerate_triangles, remove_small_components,
+    remove_unreferenced_vertices, weld_vertices,
+};
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use meshopt::{SimplifyOptions, simplify_decoder};
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
@@ -223,6 +226,30 @@ const AUTO_SUGGEST_FACE_THRESHOLD: usize = 500_000;
 /// the STL's 3N unshared vertices collapse to ~N shared. 1 µm in
 /// meters; tighter than any practical scan precision.
 const SIMPLIFY_WELD_EPSILON_M: f64 = 1e-6;
+
+/// Area threshold for `remove_degenerate_triangles` in the
+/// `build_cleaned_mesh` cleanup pass (CSP.3). Square meters; 1e-15 m²
+/// is well below cf-cast's 2 mm-cell SDF resolution (4e-6 m² per cell
+/// face) and below the f32 quantization floor meshopt operates at,
+/// so anything we strip here is FP noise the downstream couldn't have
+/// used anyway. Catches zero-area triangles from cap ear-clip
+/// degeneracies, clip-intersection sliver triangles, and any
+/// preexisting degenerate faces the raw STL carried in. The latter
+/// is what made cf-device-design's `simplify_decoder` retain its
+/// full 3.34M face count on the iter-1 fixture
+/// (`tools/cf-device-design/src/main.rs:419-425`).
+const CLEANUP_DEGENERATE_AREA_M2: f64 = 1e-15;
+
+/// Minimum face count for a connected component to survive the
+/// `build_cleaned_mesh` cleanup pass. Components smaller than this
+/// are dropped as scanner noise. 10 is conservative — a meaningful
+/// shell (even a small cyst-like protrusion) has dozens of faces;
+/// noise islands are typically 1-3 stray triangles from scanner
+/// registration glitches or self-intersection artifacts. Spec
+/// §Strategic context assumes the user has pre-trimmed to a single
+/// shell externally; this threshold is the safety net for the
+/// "user forgot" case.
+const CLEANUP_MIN_COMPONENT_FACES: usize = 10;
 
 /// `target_error` parameter passed to `meshopt::simplify_decoder`.
 /// Normalized to mesh extents — `1.0` means "deviate by up to half
@@ -1291,6 +1318,28 @@ fn build_cleaned_mesh(
             bake_vertex_with_pivot(&cap_loop.plane_centroid, rotation, &centroid, translation);
         let normal_world = rotation.transform_vector(&cap_loop.plane_normal);
 
+        // CSP.3a — project each loop vertex onto the fit plane
+        // BEFORE the ear-clip. The boundary loop's points have
+        // sub-mm wobble for typical R² ≈ 0.9 fixtures; without this
+        // projection the resulting cap faces lie OFF the plane
+        // (because ear-clip's 2D projection is into the plane, but
+        // the final 3D faces draw from the unprojected vertex
+        // positions). Snapping the rim onto the plane keeps the cap
+        // planar at the cost of moving the scan-body rim ring by
+        // the wobble magnitude — sub-mm, well below the 2 mm SDF
+        // cell + below the meshopt target_error threshold. The
+        // alternative (append separate cap vertices) leaves a
+        // sub-mm seam gap that breaks watertightness for mesh_sdf.
+        // All loop indices are validated below; we project only the
+        // ones that exist in the current `out.vertices`.
+        for &idx in &cap_loop.vertex_indices {
+            if let Some(p) = out.vertices.get(idx as usize).copied() {
+                let signed = (p.coords - centroid_world.coords).dot(&normal_world);
+                let projected = p.coords - normal_world * signed;
+                out.vertices[idx as usize] = Point3::from(projected);
+            }
+        }
+
         let loop_points_world: Vec<Point3<f64>> = cap_loop
             .vertex_indices
             .iter()
@@ -1347,6 +1396,80 @@ fn build_cleaned_mesh(
     }
 
     out
+}
+
+/// Mesh hygiene cleanup pass applied at save time (CSP.3b).
+///
+/// Before this function existed the cleaned STL inherited the raw
+/// scan's vertex layout — 3N unshared verts from `mesh_io::load_stl`,
+/// no degenerate-triangle strip, no smallest-component drop — plus
+/// whatever new geometry the cap + clip steps appended. Downstream
+/// `simplify_decoder` choked on that (cf-device-design
+/// `main.rs:419-425` documents the iter-1 fixture retaining its full
+/// 3.34M face count under topology-preserving simplification, forcing
+/// a switch to `simplify_sloppy_decoder`).
+///
+/// This pass runs in `handle_save_action` between `build_cleaned_mesh`
+/// and the save-time simplify (slice 9.8). The fix-set lands here,
+/// not inside `build_cleaned_mesh`, so the cap-construction concern
+/// (loop-vertex projection) stays isolated from the disk-hygiene
+/// concern, and so unit-test fixtures with tiny face counts don't
+/// have to fight the `min_component_faces` cutoff.
+///
+/// Pipeline:
+///
+///   1. **weld_vertices** — collapse 3N STL-unshared verts to ~N
+///      shared so collapse-edge algorithms can find topology.
+///   2. **remove_degenerate_triangles** — drop FP-noise zero-area
+///      triangles from cap ear-clip + clip intersection slivers.
+///   3. **remove_small_components** — drop scanner-noise islands
+///      (`< CLEANUP_MIN_COMPONENT_FACES` per shell). Spec assumes
+///      the user pre-trimmed to single shell; this is the safety net.
+///   4. **remove_unreferenced_vertices** — tighten memory layout
+///      after the other passes orphan vertices.
+///
+/// Order matters: weld first (degenerate detection needs shared
+/// indices), then degenerate, then component analysis (so components
+/// don't bridge via zero-area triangles), then unreferenced cleanup
+/// last.
+///
+/// Mutates `mesh` in place. Returns a [`CleanupReport`] summarizing
+/// each step's effect so the Save status message can surface how
+/// aggressive the cleanup was for the user's confidence.
+fn cleanup_cleaned_mesh_for_disk(mesh: &mut IndexedMesh) -> CleanupReport {
+    let welded = weld_vertices(mesh, SIMPLIFY_WELD_EPSILON_M);
+    let degenerate = remove_degenerate_triangles(mesh, CLEANUP_DEGENERATE_AREA_M2);
+    let small_components = remove_small_components(mesh, CLEANUP_MIN_COMPONENT_FACES);
+    let unreferenced = remove_unreferenced_vertices(mesh);
+    CleanupReport {
+        welded,
+        degenerate,
+        small_components,
+        unreferenced,
+    }
+}
+
+/// Per-pass counts from [`cleanup_cleaned_mesh_for_disk`].
+///
+/// Sums are surfaced in the Save panel status message when non-zero,
+/// so the user can tell whether the cleanup pass did meaningful work
+/// (workshop-iter-1 fixture: high counts mean the raw scan needed
+/// hygiene help; future cleaned scans approaching ~zero counts
+/// indicate the pre-prep pipeline is producing cleaner inputs).
+#[derive(Debug, Clone, Copy, Default)]
+struct CleanupReport {
+    welded: usize,
+    degenerate: usize,
+    small_components: usize,
+    unreferenced: usize,
+}
+
+impl CleanupReport {
+    /// Total operations across all four passes. Zero when the input
+    /// was already disk-ready (no cleanup needed).
+    fn total(self) -> usize {
+        self.welded + self.degenerate + self.small_components + self.unreferenced
+    }
 }
 
 // ----- .prep.toml serializable structures -----
@@ -3617,6 +3740,23 @@ fn handle_save_action(
     }
 
     let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &clip, &cap);
+
+    // CSP.3b — mesh hygiene cleanup before simplify. Runs the four-
+    // step pass (weld + degenerate + small-components + unreferenced)
+    // so simplify operates on already-clean topology + the cleaned
+    // STL passes downstream `simplify_decoder` (not just
+    // `simplify_sloppy_decoder`). The report's non-zero terms feed
+    // the status message as a confidence signal for the user.
+    let cleanup = cleanup_cleaned_mesh_for_disk(&mut cleaned);
+    let cleanup_status_suffix = if cleanup.total() == 0 {
+        String::new()
+    } else {
+        format!(
+            ", cleanup: {} welded / {} degenerate / {} small-component / {} unreferenced",
+            cleanup.welded, cleanup.degenerate, cleanup.small_components, cleanup.unreferenced,
+        )
+    };
+
     // Slice 9.8 — Simplify panel slider acts as a face budget at save
     // time too, not just for the [Apply simplify] in-app action. If
     // the slider sits below the cleaned mesh's current face count,
@@ -3683,7 +3823,7 @@ fn handle_save_action(
     match atomic_write_save(&cleaned, &cleaned_stl_path, &prep_toml_path, &toml_str) {
         Ok(()) => {
             status.text = format!(
-                "Saved {stem}.cleaned.stl ({} triangles{simplify_status_suffix}) + {stem}.prep.toml",
+                "Saved {stem}.cleaned.stl ({} triangles{simplify_status_suffix}{cleanup_status_suffix}) + {stem}.prep.toml",
                 human_count(triangle_count),
             );
             status.kind = StatusKind::Normal;
@@ -5106,6 +5246,157 @@ mod tests {
         );
         assert_eq!(cleaned.vertices.len(), 3);
         assert_eq!(cleaned.faces.len(), 1);
+    }
+
+    /// CSP.3a — for an included cap loop, the loop vertices are
+    /// projected onto the fit plane BEFORE ear-clip so the resulting
+    /// cap faces are planar. Builds a 4-vertex wobble-rim square
+    /// loop (with one vertex pushed off-plane), wires it through a
+    /// `CapState`, and confirms the post-build vertex positions sit
+    /// on the fit plane to within FP noise. The pre-CSP.3a code path
+    /// would leave the off-plane vertex untouched (the cap face
+    /// would draw from that wobbly position → non-planar cap →
+    /// mesh_sdf garbage).
+    #[test]
+    fn build_cleaned_mesh_projects_loop_verts_onto_fit_plane() {
+        // 4 boundary vertices roughly on z=0 plane. Vertex 1 is
+        // pushed UP to z=0.005 m (5 mm wobble) to simulate a low-
+        // R² rim.
+        let mut mesh = IndexedMesh::with_capacity(4, 0);
+        mesh.vertices.push(Point3::new(0.000, 0.000, 0.0));
+        mesh.vertices.push(Point3::new(0.010, 0.000, 0.005)); // wobble
+        mesh.vertices.push(Point3::new(0.010, 0.010, 0.0));
+        mesh.vertices.push(Point3::new(0.000, 0.010, 0.0));
+
+        // Cap loop with the fit plane = world XY (centroid at
+        // (5, 5, ~1) mm, normal = +Z). orient_cap_normal_outward
+        // would flip the normal depending on mesh-majority, but
+        // for this synthetic fixture +Z is fine.
+        let cap_loop = DetectedCapLoop {
+            vertex_indices: vec![0, 1, 2, 3],
+            plane_centroid: Point3::new(0.005, 0.005, 0.0),
+            plane_normal: Vector3::new(0.0, 0.0, 1.0),
+            plane_fit_r_squared: 0.95,
+            include: true,
+        };
+        let cap = CapState {
+            loops: vec![cap_loop],
+            ..CapState::default()
+        };
+
+        let cleaned = build_cleaned_mesh(
+            &mesh,
+            &ReorientState::default(),
+            &RecenterState::default(),
+            &ClipState::default(),
+            &cap,
+        );
+
+        // All 4 boundary vertices must now lie on the z=0 plane
+        // (centroid.z = 0, normal = +Z, so projection sends each
+        // vertex's z component to 0).
+        for v in &cleaned.vertices {
+            assert!(
+                v.z.abs() < 1e-12,
+                "loop vertex z={} not projected onto fit plane",
+                v.z,
+            );
+        }
+        // Cap faces appended (2 triangles from a 4-vertex square).
+        assert!(
+            !cleaned.faces.is_empty(),
+            "cap triangulation produced zero faces",
+        );
+    }
+
+    /// Build the STL-style (per-triangle unshared) version of an
+    /// IndexedMesh — `mesh_io::load_stl` produces this layout because
+    /// binary STL stores each triangle's 3 vertices independently
+    /// without index sharing. cf-scan-prep's hygiene pass is supposed
+    /// to weld these back to the shared layout downstream
+    /// `simplify_decoder` requires. Test helper, not production code.
+    fn unshare_vertices(mesh: &IndexedMesh) -> IndexedMesh {
+        let n_faces = mesh.faces.len();
+        let mut out = IndexedMesh::with_capacity(n_faces * 3, n_faces);
+        #[allow(clippy::cast_possible_truncation)]
+        for face in &mesh.faces {
+            let base = out.vertices.len() as u32;
+            for &idx in face {
+                out.vertices.push(mesh.vertices[idx as usize]);
+            }
+            out.faces.push([base, base + 1, base + 2]);
+        }
+        out
+    }
+
+    /// CSP.3b — `cleanup_cleaned_mesh_for_disk` welds STL-style
+    /// unshared vertices into the shared-index layout that
+    /// downstream `simplify_decoder` requires. Builds a 4×4
+    /// grid-square (32 faces — comfortably above the 10-face
+    /// small-component floor), STL-unshares it via the test helper,
+    /// runs cleanup, and confirms the welded result has the shared-
+    /// vertex topology the iter-1 fixture's downstream consumer was
+    /// missing (`tools/cf-device-design/src/main.rs:419-425`).
+    #[test]
+    fn cleanup_welds_stl_style_unshared_vertices() {
+        let shared = grid_square(4); // 32 faces, 25 shared verts
+        let shared_vert_count = shared.vertices.len();
+        let shared_face_count = shared.faces.len();
+        assert!(shared_face_count >= CLEANUP_MIN_COMPONENT_FACES);
+        let mut unshared = unshare_vertices(&shared);
+        // STL-unshared form: 3 verts per face.
+        assert_eq!(unshared.vertices.len(), shared_face_count * 3);
+
+        let report = cleanup_cleaned_mesh_for_disk(&mut unshared);
+        assert!(
+            report.welded > 0,
+            "weld_vertices report welded=0: {report:?}",
+        );
+        // Welded back down to the shared form (25 verts) with all
+        // faces surviving.
+        assert_eq!(unshared.vertices.len(), shared_vert_count);
+        assert_eq!(unshared.faces.len(), shared_face_count);
+    }
+
+    /// CSP.3b — small-component strip drops scanner-noise islands
+    /// below `CLEANUP_MIN_COMPONENT_FACES`. Builds a 20-face main
+    /// component + a single 1-face island; cleanup keeps the main
+    /// component + drops the island.
+    #[test]
+    fn cleanup_drops_small_component_islands() {
+        // Main component: 5×5 grid (50 faces).
+        let mut mesh = grid_square(5);
+        let main_faces_before = mesh.faces.len();
+        assert!(main_faces_before >= CLEANUP_MIN_COMPONENT_FACES);
+        // Add a stray 1-face island far from the main grid (so
+        // welding doesn't accidentally merge it in).
+        let v0 = mesh.vertices.len() as u32;
+        mesh.vertices.push(Point3::new(100.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(101.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(100.5, 1.0, 0.0));
+        mesh.faces.push([v0, v0 + 1, v0 + 2]);
+
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        assert!(
+            report.small_components >= 1,
+            "small_components report: {report:?}",
+        );
+        // The 1-face island is gone; main component faces survive.
+        assert_eq!(mesh.faces.len(), main_faces_before);
+    }
+
+    /// CSP.3b — `CleanupReport::total()` is zero for an
+    /// already-clean input mesh. Pins the "no work needed → status
+    /// message stays clean" path so future cleanup pipeline
+    /// additions don't silently start surfacing spurious counts on
+    /// pristine inputs.
+    #[test]
+    fn cleanup_report_total_zero_on_clean_input() {
+        // 5×5 grid is already in shared-index form, no degenerates,
+        // single component, no unreferenced verts.
+        let mut mesh = grid_square(5);
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        assert_eq!(report.total(), 0, "clean mesh produced cleanup: {report:?}");
     }
 
     /// `resolve_output_dir` honors `--output-dir <path>` when supplied.
