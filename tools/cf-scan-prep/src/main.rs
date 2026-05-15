@@ -2917,6 +2917,17 @@ fn run_render_app(
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 handle_simplify_actions,
+                // CSP.4b.4 — live trim respawns the displayed
+                // mesh entity. Runs after `handle_simplify_actions`
+                // so the simplify mutation lands first; runs after
+                // `handle_cap_actions` so a fresh Cap → Scan's
+                // centerline is visible to the trim on the same
+                // tick. Both `.after`s are explicit since Bevy
+                // doesn't guarantee tuple-position ordering on its
+                // own.
+                update_displayed_mesh
+                    .after(handle_simplify_actions)
+                    .after(handle_cap_actions),
                 apply_world_transform_to_scan_entity,
                 update_clip_drop_pct,
                 handle_cap_actions,
@@ -3009,26 +3020,16 @@ fn setup_render_scene(
     scan: Res<ScanMesh>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let scale = render_scale.0;
+    // CSP.4b.4 — camera + lighting only. The mesh entity gets
+    // spawned on the first Update tick by `update_displayed_mesh`,
+    // which is the single owner of the rendered entity (so trim
+    // changes + Apply Simplify + Reset to original all flow
+    // through one place + the displayed mesh is always the
+    // post-trim view).
     let raw_aabb = scan.0.aabb();
-    let scaled_aabb = scale_aabb(&raw_aabb, scale);
+    let scaled_aabb = scale_aabb(&raw_aabb, render_scale.0);
     setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
-    let entity_transform = Transform::from_scale(Vec3::splat(scale));
-    let entity = spawn_face_mesh(
-        &mut commands,
-        meshes.as_mut(),
-        materials.as_mut(),
-        &scan.0,
-        None,
-        *up,
-        entity_transform,
-    );
-    // Marker so the Simplify Apply/Reset handler can despawn the
-    // current scan render before respawning from the new mesh.
-    commands.entity(entity).insert(ScanMeshEntity);
 }
 
 /// Startup system: surface the auto-suggest banner if the loaded scan
@@ -3070,27 +3071,22 @@ fn init_status_for_load(scan: Res<ScanMesh>, mut status: ResMut<StatusBar>) {
 /// current/target counts and pointing at `[Reset to original]` as the
 /// workflow recovery, then returns.
 ///
-/// On Reset: clones `OriginalScanMesh`, updates `ScanMesh` + `ScanInfo`,
-/// respawns the entity, sets a confirmation status message.
+/// On Reset: clones `OriginalScanMesh`, updates `ScanMesh`, sets a
+/// confirmation status message.
+///
+/// CSP.4b.4 — this system NO LONGER respawns the rendered entity
+/// or updates `ScanInfo`. Both now live in
+/// [`update_displayed_mesh`] so the displayed mesh always reflects
+/// the post-trim view (live trim preview). `ScanMesh` is the
+/// "base, pre-trim" mesh that the trim system reads.
 // Bevy systems take resources by value.
 #[allow(clippy::needless_pass_by_value)]
-// Bevy systems pull each Res / ResMut / Query / Commands as a separate
-// parameter; threading through a SystemParam-derive tuple costs more
-// boilerplate than the +N buys in readability.
-#[allow(clippy::too_many_arguments)]
 fn handle_simplify_actions(
     mut simplify_state: ResMut<SimplifyState>,
     mut scan: ResMut<ScanMesh>,
     original: Res<OriginalScanMesh>,
-    mut info: ResMut<ScanInfo>,
     mut status: ResMut<StatusBar>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
     time: Res<Time>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    existing: Query<Entity, With<ScanMeshEntity>>,
 ) {
     let Some(action) = simplify_state.pending_action.take() else {
         return;
@@ -3153,18 +3149,7 @@ fn handle_simplify_actions(
         }
     };
 
-    info.vertex_count = new_mesh.vertices.len();
-    info.face_count = new_mesh.faces.len();
     scan.0 = new_mesh;
-    respawn_scan_entity(
-        &mut commands,
-        &existing,
-        &scan.0,
-        meshes.as_mut(),
-        materials.as_mut(),
-        *up,
-        render_scale.0,
-    );
 
     status.text = status_text;
     status.kind = StatusKind::Normal;
@@ -3196,6 +3181,122 @@ fn respawn_scan_entity(
         Transform::from_scale(Vec3::splat(render_scale)),
     );
     commands.entity(entity).insert(ScanMeshEntity);
+}
+
+/// Snapshot key the live-trim system uses to detect when the
+/// displayed mesh needs re-derivation (CSP.4b.4). Any change in
+/// the snapshot triggers a respawn from a freshly trimmed mesh.
+///
+/// Field shape:
+/// - `trim_tip_mm` + `trim_floor_mm`: bit-pattern compared (cheap;
+///   sub-mm slider increments still trigger respawns).
+/// - `scan_face_count` + `scan_vertex_count`: proxy for "ScanMesh
+///   identity changed" — Apply Simplify / Reset to original both
+///   change the face count. Avoids the `Res::<>::is_changed()`
+///   footgun ([[project_bevy_is_changed_footgun]]) where any
+///   `&mut *res` deref flips the change-token.
+/// - `centerline_len`: proxy for "Cap → Scan ran." When the
+///   centerline appears (or disappears via re-Scan on a closed
+///   mesh) the trim semantics flip; force a respawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DisplayedMeshSnapshot {
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+    scan_face_count: usize,
+    scan_vertex_count: usize,
+    centerline_len: usize,
+}
+
+/// Update system: maintain the rendered `ScanMeshEntity` as the
+/// **live trimmed view** of `ScanMesh` (CSP.4b.4). Respawns the
+/// entity whenever a relevant input changes:
+///
+/// - Trim sliders moved (`CenterlineTrimState` values differ).
+/// - `ScanMesh` was mutated (Apply Simplify / Reset to original
+///   changed face/vertex counts).
+/// - Cap detection produced or lost a centerline (`centerline_len`
+///   differs).
+///
+/// CSP.4b's initial cut applied the trim only at SAVE time, with
+/// a live overlay (orange circles) hinting at the planned cuts.
+/// User-reported 2026-05-15: "the cut should happen inside of the
+/// program not at save time" — the mesh should visibly shrink as
+/// the user drags the trim sliders so they can see-it-as-they-go.
+/// This system performs that live cut.
+///
+/// **Cost**: trim + auto-cap on a 200k-face scan runs in ~40-50 ms
+/// (one trim plane = O(F) walking faces; auto-cap = O(F) building
+/// adjacency + O(loop_count × loop_vertices²) ear-clip). At 60 Hz
+/// drag this is borderline-fluid → workable but noticeable. The
+/// snapshot guard short-circuits when nothing relevant changed, so
+/// steady-state cost is zero.
+///
+/// **Skip path**: when `CapState::stale` is set (transforms
+/// changed since last Cap → Scan), the trim cuts would reference
+/// an off-mesh centerline. Skip the trim — display the untrimmed
+/// `ScanMesh` instead. The user re-clicks Cap → Scan to refresh.
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
+fn update_displayed_mesh(
+    scan: Res<ScanMesh>,
+    cap: Res<CapState>,
+    trim: Res<CenterlineTrimState>,
+    mut info: ResMut<ScanInfo>,
+    existing: Query<Entity, With<ScanMeshEntity>>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut last_snapshot: Local<Option<DisplayedMeshSnapshot>>,
+) {
+    let snapshot = DisplayedMeshSnapshot {
+        trim_tip_mm: trim.trim_tip_mm,
+        trim_floor_mm: trim.trim_floor_mm,
+        scan_face_count: scan.0.faces.len(),
+        scan_vertex_count: scan.0.vertices.len(),
+        centerline_len: cap.centerline_polyline.len(),
+    };
+    if last_snapshot.as_ref() == Some(&snapshot) {
+        return;
+    }
+
+    // Derive displayed mesh. Skip the trim if no trim requested or
+    // centerline is unavailable / stale; the live mesh then equals
+    // the base ScanMesh.
+    let displayed = if cap.centerline_polyline.len() >= 2
+        && !cap.stale
+        && (trim.trim_tip_mm > 0.0 || trim.trim_floor_mm > 0.0)
+    {
+        let mut t = trim_mesh_along_centerline(
+            &scan.0,
+            &cap.centerline_polyline,
+            trim.trim_tip_mm,
+            trim.trim_floor_mm,
+        );
+        // Cap the new boundaries created by the trim cuts so the
+        // displayed mesh stays watertight — matches what save will
+        // emit on disk.
+        let _capped = auto_cap_open_boundaries(&mut t);
+        t
+    } else {
+        scan.0.clone()
+    };
+
+    info.vertex_count = displayed.vertices.len();
+    info.face_count = displayed.faces.len();
+
+    respawn_scan_entity(
+        &mut commands,
+        &existing,
+        &displayed,
+        meshes.as_mut(),
+        materials.as_mut(),
+        *up,
+        render_scale.0,
+    );
+
+    *last_snapshot = Some(snapshot);
 }
 
 /// Update system: project the current `ReorientState` + `RecenterState`
