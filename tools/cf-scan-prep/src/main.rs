@@ -471,53 +471,14 @@ impl RecenterState {
     }
 }
 
-/// Clip floor panel state (`docs/SCAN_PREP_DESIGN.md` §Panel
-/// specifications §5). A horizontal-in-cast-frame plane at world
-/// `z = z_mm` (physics `+Z` direction; bevy `+Y` post-swap) that
-/// removes everything below it from the scan.
-///
-/// Scope at this commit: panel UI, the triangle-clipping algorithm,
-/// the disc visualization, and the live drop-percentage readout. The
-/// algorithm sits dormant — it's not yet applied to the displayed
-/// mesh to avoid the respawn-race complexity with
-/// `handle_simplify_actions`. Cap (commit #9) consumes the clipped
-/// mesh for boundary detection; Save (commit #12) bakes the clip into
-/// the cleaned STL. Until then the user sees the disc and the
-/// "Drops X% verts" readout as visual feedback, but the rendered
-/// mesh stays intact.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-struct ClipState {
-    /// When `false`, the disc visualization stays hidden and the panel
-    /// readout doesn't render. The slider value persists across
-    /// toggle.
-    enabled: bool,
-    /// Plane height in cast-frame world millimeters (post-Reorient +
-    /// post-Recenter). Spec convention: `z >= z_mm` is kept; `z < z_mm`
-    /// is removed.
-    z_mm: f64,
-    /// Cached percentage of vertices below the clip plane, populated
-    /// by [`update_clip_drop_pct`] only when relevant state actually
-    /// changes. Read-only by the panel.
-    ///
-    /// The vertex walk is O(N) — N can be 10M+ on an unsimplified
-    /// scan, which takes ~0.5-1.0 s per call. Computing on every
-    /// panel render (60 Hz) would freeze the UI; caching here makes
-    /// the panel render O(1).
-    ///
-    /// Written via `bypass_change_detection` so updating the cache
-    /// doesn't re-trigger the update system in a self-feedback loop.
-    drop_pct: f64,
-}
-
-impl Default for ClipState {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            z_mm: 0.0,
-            drop_pct: 0.0,
-        }
-    }
-}
+// CSP.4c — `ClipState` removed. The Clip floor feature was a
+// pre-CSP.4b world-Z axis-aligned cut; once centerline trim
+// shipped (CSP.4b — perpendicular-to-spine cuts with auto-cap)
+// the Clip floor's workshop use case was subsumed. User
+// confirmed removal 2026-05-15. `clip_mesh_against_plane_eq`
+// stays — it's the shared cut primitive that
+// `clip_mesh_against_plane` (used by `trim_mesh_along_centerline`)
+// builds on.
 
 /// One detected boundary loop on the scan, with its least-squares
 /// plane fit + per-loop user-decided cap-include state. Populated by
@@ -732,99 +693,8 @@ struct AutoCenterOffset(Vector3<f64>);
 #[derive(Resource, Debug, Clone, Copy)]
 struct AutoPcaQuaternion(Option<UnitQuaternion<f64>>);
 
-/// Walk the scan's vertices, transform each into cast-frame world
-/// coordinates (rotation + translation_z), and return the percentage
-/// that fall below `clip_z_mm`. Called by [`update_clip_drop_pct`]
-/// only on relevant state changes — not on every panel render — so
-/// the O(N) vertex walk doesn't freeze the UI.
-///
-/// Returns 0.0 for an empty mesh (no vertices to drop).
-///
-/// **Inner-loop optimization**: we only need the **z-component** of
-/// each rotated vertex. That's the 3rd row of the rotation matrix
-/// dotted with the vertex vector (~6 ops), not the full
-/// `transform_vector` call (~30 ops via `q · v · q^-1`). On a 10M-
-/// vertex unsimplified scan this is the difference between ~50 ms
-/// (acceptable single-shot lag on toggle / slider tick) and ~250 ms
-/// (perceptible UI hitch). For 200k simplified vertices both paths
-/// are sub-frame; the optimization mostly matters when the user
-/// enables Clip *before* simplifying.
-fn compute_drop_percentage(
-    scan: &IndexedMesh,
-    rotation: UnitQuaternion<f64>,
-    translation_z_mm: f64,
-    clip_z_mm: f64,
-) -> f64 {
-    if scan.vertices.is_empty() {
-        return 0.0;
-    }
-    // Pull the rotation matrix's 3rd row once outside the hot loop.
-    // `to_rotation_matrix` allocates a Matrix3; doing it per-vertex
-    // would dominate the loop.
-    let r = rotation.to_rotation_matrix();
-    let z_row_x = r[(2, 0)];
-    let z_row_y = r[(2, 1)];
-    let z_row_z = r[(2, 2)];
-
-    let mut below: usize = 0;
-    for v in &scan.vertices {
-        // Vertices are in physics-frame meters; lift to mm to match
-        // the clip plane's mm convention. Compute only the z-component
-        // of `rotation * v + translation_z`.
-        let world_z_mm = z_row_x * v.x * 1000.0
-            + z_row_y * v.y * 1000.0
-            + z_row_z * v.z * 1000.0
-            + translation_z_mm;
-        if world_z_mm < clip_z_mm {
-            below += 1;
-        }
-    }
-    // `as f64` is loss-free for usize values cf-scan-prep handles
-    // (well below 2^53).
-    #[allow(clippy::cast_precision_loss)]
-    {
-        100.0 * (below as f64) / (scan.vertices.len() as f64)
-    }
-}
-
-/// Update system: recompute [`ClipState::drop_pct`] when the clip
-/// state, scan mesh, reorient state, or recenter state has actually
-/// changed. Early-returns when clip is disabled (cached value stays
-/// dormant; re-enable toggle triggers a fresh recompute).
-///
-/// **Why a separate system, not panel-driven**: see [`ClipState::drop_pct`]
-/// docstring. The vertex walk is too expensive (~0.5-1.0 s on 10M
-/// verts) to run on every panel render (60 Hz). Doing it via an
-/// Update system + change detection makes the panel render O(1) and
-/// limits the heavy work to actual state transitions.
-///
-/// **`bypass_change_detection` write**: writing to `clip.drop_pct`
-/// via the normal `ResMut<ClipState>` path would mark `ClipState` as
-/// changed next tick, re-triggering this system in a self-feedback
-/// loop. `bypass_change_detection` returns `&mut ClipState` without
-/// updating the change-detection tick, breaking the cycle.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn update_clip_drop_pct(
-    mut clip: ResMut<ClipState>,
-    scan: Res<ScanMesh>,
-    reorient: Res<ReorientState>,
-    recenter: Res<RecenterState>,
-) {
-    if !clip.enabled {
-        return;
-    }
-    if !clip.is_changed() && !scan.is_changed() && !reorient.is_changed() && !recenter.is_changed()
-    {
-        return;
-    }
-    let pct = compute_drop_percentage(
-        &scan.0,
-        reorient.quaternion_physics(),
-        recenter.tz_mm,
-        clip.z_mm,
-    );
-    clip.bypass_change_detection().drop_pct = pct;
-}
+// CSP.4c — `compute_drop_percentage` + `update_clip_drop_pct`
+// removed alongside `ClipState`.
 
 /// Linear interpolation between two `Point3<f64>` positions.
 /// `t = 0` returns `a`; `t = 1` returns `b`.
@@ -933,26 +803,9 @@ fn clip_mesh_against_plane_eq(
     clipped
 }
 
-/// Clip `mesh` against the world-frame horizontal plane at
-/// `z = clip_z_m`, given that mesh-local coords are related to world
-/// coords by `world = rotation * mesh + (0, 0, translation_z_m)`.
-/// CSP.2 Clip-floor wiring; see `docs/SCAN_PREP_DESIGN.md` §Panel
-/// specifications §5.
-fn clip_mesh_against_world_z(
-    mesh: &IndexedMesh,
-    rotation: UnitQuaternion<f64>,
-    translation_z_m: f64,
-    clip_z_m: f64,
-) -> IndexedMesh {
-    // Express the world-frame plane `z = clip_z_m` in mesh-local frame.
-    // World `z = (R * v).z + T.z`; keep `z >= clip_z` becomes
-    // `dot(v, R^T · e_z) >= clip_z - T.z` in mesh-local coords.
-    let plane_normal = rotation
-        .inverse()
-        .transform_vector(&Vector3::new(0.0, 0.0, 1.0));
-    let plane_d = clip_z_m - translation_z_m;
-    clip_mesh_against_plane_eq(mesh, plane_normal, plane_d)
-}
+// CSP.4c — `clip_mesh_against_world_z` removed alongside
+// `ClipState`. The shared `clip_mesh_against_plane_eq` primitive
+// below is still load-bearing for `trim_mesh_along_centerline`.
 
 /// Clip `mesh` against an arbitrary plane defined by a point on the
 /// plane and a normal. Kept side: where
@@ -1649,8 +1502,7 @@ fn project_loop_to_plane_2d(
 }
 
 /// Build the cleaned IndexedMesh from the working scan + Reorient +
-/// Recenter + included cap loops + (CSP.2, 2026-05-15) the Clip floor
-/// state when enabled.
+/// Recenter + included cap loops.
 ///
 /// Pipeline:
 /// 1. Clone `scan` into `out`.
@@ -1660,37 +1512,20 @@ fn project_loop_to_plane_2d(
 ///    append triangles (using existing loop vertex indices — no new
 ///    vertices added). Cap faces inherit the world-frame coordinates
 ///    from step 2.
-/// 4. If `clip.enabled`, apply `clip_mesh_against_world_z` in world
-///    frame (identity rotation + zero translation since `out` is
-///    already in world frame). Drops faces below `z = clip.z_mm` and
-///    generates new intersection vertices on the clip plane for
-///    crossing triangles. Cap faces above the clip plane survive;
-///    cap faces below are dropped along with the underlying mesh.
+///
+/// CSP.4c — Clip-floor step removed (the feature itself retired
+/// alongside `ClipState`). Centerline trim handles the workshop
+/// "shave the noisy end" use case the clip used to cover.
 ///
 /// **Cap normal orientation**: the spec mandates that the cap's
 /// outward normal point away from the mesh interior. We orient the
 /// triangulation's vertex winding to match the loop's stored
 /// `plane_normal` (which `build_detected_cap_loop` already flipped
 /// to face outward).
-///
-/// **Why clip lands AFTER cap triangulation, not before**: the cap
-/// loops were detected on the pre-bake mesh; their vertex indices
-/// reference positions in `out` that are now in world frame. Running
-/// clip first would re-index `out`'s vertex buffer, invalidating the
-/// cap-loop indices. Caps-then-clip preserves indexing.
-///
-/// **Why clip does NOT re-cap**: the clip cut produces a planar open
-/// boundary on the kept side. v1.0 leaves that uncapped — workshop
-/// iter-1 will use the cleaned cap from `[caps]` (above the clip
-/// plane) for the rim; the clipped bottom is the "open" side that
-/// downstream cf-cast (curve-following multi-piece) handles via the
-/// pour gate, not via SDF. A future v1.1 could re-detect + re-cap
-/// post-clip if iter-1 shows that's needed.
 fn build_cleaned_mesh(
     scan: &IndexedMesh,
     reorient: &ReorientState,
     recenter: &RecenterState,
-    clip: &ClipState,
     cap: &CapState,
 ) -> IndexedMesh {
     let rotation = reorient.quaternion_physics();
@@ -1800,18 +1635,6 @@ fn build_cleaned_mesh(
         }
     }
 
-    // Step 4: clip-floor bake (CSP.2). When the user enabled the Clip
-    // panel toggle, `out` is in world frame (transforms + caps baked
-    // in steps 2/3) so the clip operates on world `z = clip.z_mm` with
-    // identity rotation + zero translation. The algorithm is the same
-    // one unit-tested at commit #8 — wired here, not at #8, because
-    // the v2 cf-cast pivot (curve-following molds) made the clip
-    // workflow-optional rather than mandatory.
-    if clip.enabled {
-        let clip_z_m = clip.z_mm * 0.001;
-        out = clip_mesh_against_world_z(&out, UnitQuaternion::identity(), 0.0, clip_z_m);
-    }
-
     out
 }
 
@@ -1904,7 +1727,6 @@ struct PrepToml {
     scan_prep: PrepScanPrepBlock,
     simplify: PrepSimplifyBlock,
     transform: PrepTransformBlock,
-    clip: PrepClipBlock,
     caps: PrepCapsBlock,
     #[serde(skip_serializing_if = "Option::is_none")]
     centerline: Option<PrepCenterlineBlock>,
@@ -2001,21 +1823,11 @@ struct PrepTranslationBlock {
     m: [f64; 3],
 }
 
-#[derive(Serialize)]
-struct PrepClipBlock {
-    enabled: bool,
-    /// World-frame Z height in meters.
-    z_m: f64,
-    /// Cached drop percentage at save time.
-    drop_pct: f64,
-    /// `true` when the Clip toggle was enabled at save time and
-    /// `clip_mesh_against_world_z` ran on the cleaned mesh (CSP.2
-    /// wired this; before CSP.2 the clip was advisory-only and this
-    /// flag was hard-coded `false`). Equals `enabled` exactly under
-    /// the current implementation; kept as a separate field so a
-    /// future "advisory-mode" toggle can break the equality cleanly.
-    baked: bool,
-}
+// CSP.4c — `PrepClipBlock` removed alongside `ClipState`. The
+// `.prep.toml` no longer emits a `[clip]` block. Downstream
+// consumers (cf-cast-cli, cf-device-design) read only
+// `[centerline]` and tolerate unknown sibling keys, so the
+// removal is downstream-safe.
 
 #[derive(Serialize)]
 struct PrepCapsBlock {
@@ -2115,7 +1927,6 @@ fn build_prep_toml_string(
     auto_pca_quat: Option<UnitQuaternion<f64>>,
     reorient: &ReorientState,
     recenter: &RecenterState,
-    clip: &ClipState,
     cap: &CapState,
     centerline_trim: &CenterlineTrimState,
     centerline_trim_capped: usize,
@@ -2201,15 +2012,6 @@ fn build_prep_toml_string(
                     recenter.tz_mm * 0.001,
                 ],
             },
-        },
-        clip: PrepClipBlock {
-            enabled: clip.enabled,
-            z_m: clip.z_mm * 0.001,
-            drop_pct: clip.drop_pct,
-            // CSP.2: `baked` tracks reality. `build_cleaned_mesh`
-            // applies the clip iff `clip.enabled`, so the two flags
-            // line up exactly.
-            baked: clip.enabled,
         },
         caps: PrepCapsBlock {
             applied: cap.loops.iter().any(|l| l.include),
@@ -2936,7 +2738,6 @@ fn run_render_app(
         .insert_resource(SimplifyState::default())
         .insert_resource(ReorientState::default())
         .insert_resource(RecenterState::default())
-        .insert_resource(ClipState::default())
         .insert_resource(CapState::default())
         .insert_resource(CapPendingAction::default())
         .insert_resource(CenterlineTrimState::default())
@@ -2975,7 +2776,6 @@ fn run_render_app(
                     .after(handle_simplify_actions)
                     .after(handle_cap_actions),
                 apply_world_transform_to_scan_entity,
-                update_clip_drop_pct,
                 handle_cap_actions,
                 handle_save_action,
                 mark_cap_stale_on_transform_change,
@@ -3459,7 +3259,6 @@ fn draw_reference_overlays(
     overlays: Res<OverlayLengths>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
-    clip: Res<ClipState>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
@@ -3490,41 +3289,10 @@ fn draw_reference_overlays(
     };
     gizmos.cube(wireframe_transform, Color::srgb(0.55, 0.55, 0.60));
 
-    // Clip-plane disc — a wireframe rectangle in the cast-frame XY
-    // plane at world `z = clip.z_mm`, indicating where the (eventual)
-    // clip will happen. Rendered only when the panel toggle is on so
-    // a disabled clip doesn't add visual clutter. Drawn as 4 gizmo
-    // lines forming a rectangle (Bevy gizmos can't fill polygons;
-    // gizmos.cube would be a 3D box not a flat plane).
-    if clip.enabled {
-        // Convert clip_z from cast mm to bevy world units: mm × 0.001
-        // (meters) × render_scale. cast +Z = Bevy +Y under the swap.
-        #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
-        let clip_y_bevy = (clip.z_mm * 0.001) as f32 * render_scale.0;
-        // Half-extent in Bevy world units. Use the largest Bevy bbox
-        // axis so the disc clearly extends past the mesh regardless of
-        // current rotation orientation.
-        let half = overlays
-            .bbox_dims_bevy
-            .x
-            .max(overlays.bbox_dims_bevy.y)
-            .max(overlays.bbox_dims_bevy.z)
-            * 0.75;
-        // Rectangle corners in Bevy XZ plane at y = clip_y_bevy.
-        let p00 = Vec3::new(-half, clip_y_bevy, -half);
-        let p10 = Vec3::new(half, clip_y_bevy, -half);
-        let p11 = Vec3::new(half, clip_y_bevy, half);
-        let p01 = Vec3::new(-half, clip_y_bevy, half);
-        let disc_color = Color::srgb(0.95, 0.45, 0.20);
-        gizmos.line(p00, p10, disc_color);
-        gizmos.line(p10, p11, disc_color);
-        gizmos.line(p11, p01, disc_color);
-        gizmos.line(p01, p00, disc_color);
-        // Also draw the diagonals so the disc reads as a translucent
-        // surface rather than just a wireframe outline.
-        gizmos.line(p00, p11, disc_color);
-        gizmos.line(p10, p01, disc_color);
-    }
+    // CSP.4c — Clip floor disc visualization removed alongside
+    // `ClipState`. The orange trim-plane circles
+    // (`draw_trim_plane_overlays`) cover the visual-feedback use
+    // case the disc used to.
 }
 
 /// Update system: handle the Cap panel's `[Scan]` action. Reads the
@@ -3603,7 +3371,6 @@ fn mark_cap_stale_on_transform_change(
     scan: Res<ScanMesh>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
-    clip: Res<ClipState>,
 ) {
     // Nothing to invalidate if no scan has happened yet.
     if cap.loops.is_empty() {
@@ -3612,7 +3379,7 @@ fn mark_cap_stale_on_transform_change(
     if cap.stale {
         return;
     }
-    if scan.is_changed() || reorient.is_changed() || recenter.is_changed() || clip.is_changed() {
+    if scan.is_changed() || reorient.is_changed() || recenter.is_changed() {
         cap.bypass_change_detection().stale = true;
     }
 }
@@ -3986,7 +3753,6 @@ fn scan_prep_panel(
     mut simplify_state: ResMut<SimplifyState>,
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
-    mut clip_state: ResMut<ClipState>,
     mut cap_state: ResMut<CapState>,
     mut cap_pending: ResMut<CapPendingAction>,
     mut centerline_trim_state: ResMut<CenterlineTrimState>,
@@ -4039,7 +3805,6 @@ fn scan_prep_panel(
                     // ----- Manual overrides (collapsed) -----
                     render_reorient_section(ui, &mut reorient_state, &scan.0);
                     render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
-                    render_clip_section(ui, &mut clip_state, &overlays);
                     // ----- Save (last) -----
                     render_save_section(
                         ui,
@@ -4297,48 +4062,7 @@ fn render_recenter_section(
         });
 }
 
-/// `Clip floor` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications
-/// §5). One enable checkbox + one Z slider + a live drop-percentage
-/// readout. The disc visualization renders in `draw_reference_overlays`
-/// when the toggle is on.
-///
-/// **Algorithm landing at #8 but not yet applied to the displayed
-/// mesh.** The triangle-clipping algorithm
-/// ([`clip_mesh_against_world_z`]) is implemented + unit-tested at
-/// this commit but sits dormant. It gets exercised at commit #9 (Cap
-/// detection consumes the clipped mesh for boundary identification)
-/// and commit #12 (Save bakes the clip into the cleaned STL). Until
-/// then the rendered mesh stays whole; the user reads the percentage
-/// + disc position to verify intent.
-///
-/// Drop percentage is read from `ClipState::drop_pct` — the cached
-/// value populated by [`update_clip_drop_pct`] on relevant state
-/// changes. The panel render itself stays O(1).
-fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &OverlayLengths) {
-    // CSP.4c — collapsed by default. Centerline trim subsumes the
-    // common-case "shave the noisy end" need; this clip is a
-    // simpler world-Z plane cut for cases where the user wants
-    // an axis-aligned slice instead of a centerline-perpendicular
-    // one.
-    egui::CollapsingHeader::new("Clip floor (advanced)")
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.checkbox(&mut state.enabled, "Enabled");
-
-            let range = overlays.recenter_slider_range_mm;
-            ui.add(egui::Slider::new(&mut state.z_mm, -range..=range).text("Z (mm)"));
-
-            if state.enabled {
-                ui.label(format!("Drops {:.1}% verts", state.drop_pct));
-                if state.drop_pct > 95.0 {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(240, 200, 80),
-                        "⚠ Clip removes nearly all geometry — verify Z value",
-                    );
-                }
-            }
-        });
-}
+// CSP.4c — `render_clip_section` removed alongside `ClipState`.
 
 /// `Cap open boundaries` section (`docs/SCAN_PREP_DESIGN.md` §Panel
 /// specifications §6). Detects open boundary loops on the current
@@ -4627,7 +4351,6 @@ fn handle_save_action(
     original: Res<OriginalScanMesh>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
-    clip: Res<ClipState>,
     cap: Res<CapState>,
     simplify: Res<SimplifyState>,
     centerline_trim: Res<CenterlineTrimState>,
@@ -4655,9 +4378,7 @@ fn handle_save_action(
     // Reject non-finite transforms before touching the disk. Per spec
     // §Architectural decisions §FS error handling, malformed slider
     // values (NaN / Inf from corrupted state) surface as a red error
-    // rather than writing garbage to disk. CSP.2: clip.z_mm joined
-    // the precondition because clip now bakes into the cleaned STL —
-    // a NaN clip plane would drop every triangle silently.
+    // rather than writing garbage to disk.
     let q = reorient.quaternion_physics();
     if !q.w.is_finite()
         || !q.i.is_finite()
@@ -4666,17 +4387,16 @@ fn handle_save_action(
         || !recenter.tx_mm.is_finite()
         || !recenter.ty_mm.is_finite()
         || !recenter.tz_mm.is_finite()
-        || (clip.enabled && !clip.z_mm.is_finite())
         || !centerline_trim.applied_tip_mm.is_finite()
         || !centerline_trim.applied_floor_mm.is_finite()
     {
-        status.text = "Save failed: non-finite transform / clip / trim values".into();
+        status.text = "Save failed: non-finite transform / trim values".into();
         status.kind = StatusKind::Error;
         status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
         return;
     }
 
-    let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &clip, &cap);
+    let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
 
     // CSP.4b — centerline trim. Apply user-requested trims to the
     // cleaned mesh + auto-cap the resulting boundaries. The
@@ -4789,7 +4509,6 @@ fn handle_save_action(
         auto_pca.0,
         &reorient,
         &recenter,
-        &clip,
         &cap,
         &centerline_trim,
         trim_capped,
@@ -5756,186 +5475,8 @@ mod tests {
         assert!((baked.z - 0.30).abs() < 1e-12, "baked.z = {}", baked.z);
     }
 
-    // ----- ClipState + clip_mesh_against_world_z ---------------------
-
-    /// Default ClipState is `enabled=false, z_mm=0.0`. Pinned because
-    /// flipping the default to enabled would silently clip every load.
-    #[test]
-    fn clip_state_default_is_disabled_at_origin() {
-        let state = ClipState::default();
-        assert!(!state.enabled);
-        assert_eq!(state.z_mm, 0.0);
-    }
-
-    /// `compute_drop_percentage` on an empty mesh returns 0 (no
-    /// vertices to drop).
-    #[test]
-    fn drop_percentage_empty_mesh_is_zero() {
-        let empty = IndexedMesh::with_capacity(0, 0);
-        let pct = compute_drop_percentage(&empty, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(pct, 0.0);
-    }
-
-    /// Identity rotation + zero translation: vertices below `clip_z_mm`
-    /// drop, vertices on/above stay. Test mesh has 4 vertices at
-    /// z = -50, -10, 10, 50 mm (in physics). Clip at z = 0 → 2 below
-    /// (50%).
-    #[test]
-    fn drop_percentage_counts_below_plane() {
-        let mut mesh = IndexedMesh::with_capacity(4, 0);
-        // Z values in physics meters; will be lifted to mm inside the
-        // function.
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.050));
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.010));
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.010));
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.050));
-        let pct = compute_drop_percentage(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert!(
-            (pct - 50.0).abs() < 1e-9,
-            "2 of 4 vertices below z=0 → 50% expected, got {pct}",
-        );
-    }
-
-    /// `clip_mesh_against_world_z` on a triangle entirely above the
-    /// plane: kept as-is, no new vertices, face count = 1.
-    #[test]
-    fn clip_keeps_triangle_entirely_above_plane() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.010));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020));
-        mesh.vertices.push(Point3::new(0.0, 1.0, 0.030));
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(
-            &mesh,
-            UnitQuaternion::identity(),
-            0.0,
-            0.0, // clip at z=0; all vertices have z > 0
-        );
-        assert_eq!(clipped.faces.len(), 1);
-        assert_eq!(clipped.vertices.len(), 3); // no intersections, no unreferenced
-    }
-
-    /// `clip_mesh_against_world_z` on a triangle entirely below the
-    /// plane: dropped, face count = 0, no surviving vertices.
-    #[test]
-    fn clip_drops_triangle_entirely_below_plane() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.030));
-        mesh.vertices.push(Point3::new(1.0, 0.0, -0.020));
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.010));
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(clipped.faces.len(), 0);
-        // remove_unreferenced_vertices strips all 3 since they're
-        // not used by any surviving face.
-        assert_eq!(clipped.vertices.len(), 0);
-    }
-
-    /// `clip_mesh_against_world_z` on a 1-above-2-below triangle:
-    /// 1 surviving triangle with 2 intersection points.
-    ///
-    /// Test setup: triangle at z = 0.030, -0.010, -0.020 (in meters)
-    /// → first vertex above z=0, other two below. Clip at z = 0
-    /// produces:
-    ///   - 1 surviving triangle
-    ///   - 3 vertices: the original above-vertex + 2 intersection
-    ///     points on the plane (z = 0 exactly)
-    #[test]
-    fn clip_one_above_two_below_produces_one_triangle() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.030)); // above
-        mesh.vertices.push(Point3::new(1.0, 0.0, -0.010)); // below
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.020)); // below
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(clipped.faces.len(), 1);
-        assert_eq!(clipped.vertices.len(), 3);
-
-        // The two intersection points must have z = 0 (within FP eps).
-        let mut on_plane_count = 0;
-        for v in &clipped.vertices {
-            if v.z.abs() < 1e-9 {
-                on_plane_count += 1;
-            }
-        }
-        assert_eq!(
-            on_plane_count, 2,
-            "expected 2 intersection points on z=0 plane, got {on_plane_count}",
-        );
-    }
-
-    /// `clip_mesh_against_world_z` on a 2-above-1-below triangle:
-    /// 2 surviving triangles (fan-triangulation of the quad) with 2
-    /// intersection points.
-    #[test]
-    fn clip_two_above_one_below_produces_two_triangles() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.030)); // above
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020)); // above
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.010)); // below
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(clipped.faces.len(), 2);
-        // 2 original above-vertices + 2 intersection points = 4
-        assert_eq!(clipped.vertices.len(), 4);
-
-        // The two intersection points must have z = 0.
-        let mut on_plane_count = 0;
-        for v in &clipped.vertices {
-            if v.z.abs() < 1e-9 {
-                on_plane_count += 1;
-            }
-        }
-        assert_eq!(on_plane_count, 2);
-    }
-
-    /// Spec edge case: a vertex EXACTLY on the plane should be treated
-    /// as above, so the surrounding triangle stays intact (no
-    /// degenerate sub-triangles). Triangle with one vertex on the
-    /// plane + two above: stays whole, no intersection points
-    /// generated.
-    #[test]
-    fn clip_vertex_exactly_on_plane_keeps_triangle() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0)); // on plane
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020)); // above
-        mesh.vertices.push(Point3::new(0.0, 1.0, 0.030)); // above
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(
-            clipped.faces.len(),
-            1,
-            "triangle with one vertex on plane should be kept intact",
-        );
-        assert_eq!(clipped.vertices.len(), 3);
-    }
-
-    /// Rotation interaction: a triangle that's "above" in world frame
-    /// but "below" in mesh-local frame should be kept. Tests that the
-    /// rotation is correctly applied when computing the plane in
-    /// mesh-local coordinates.
-    ///
-    /// Setup: triangle at mesh-local z = -0.020 (would be below
-    /// world z=0 without rotation). Apply a 180° rotation about X
-    /// (flips Z). After rotation, the triangle is at world z = +0.020,
-    /// which is ABOVE the world clip plane at z=0. Should be kept.
-    #[test]
-    fn clip_respects_rotation_when_computing_plane() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.020));
-        mesh.vertices.push(Point3::new(1.0, 0.0, -0.020));
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.020));
-        mesh.faces.push([0, 1, 2]);
-        // 180° rotation about X flips Y and Z signs.
-        let rot_180_about_x =
-            UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), std::f64::consts::PI);
-        let clipped = clip_mesh_against_world_z(&mesh, rot_180_about_x, 0.0, 0.0);
-        assert_eq!(
-            clipped.faces.len(),
-            1,
-            "after 180° X rotation the triangle is at world z=+0.020, above clip plane",
-        );
-    }
+    // CSP.4c — ClipState + clip_mesh_against_world_z tests removed
+    // alongside the feature.
 
     // ----- Cap algorithms (plane fit / normal / centerline) ---------
 
@@ -6451,7 +5992,6 @@ mod tests {
     fn prep_toml_string_round_trips_through_toml_parser() -> Result<()> {
         let reorient = ReorientState::default();
         let recenter = RecenterState::default();
-        let clip = ClipState::default();
         let cap = CapState::default();
         let rotation = reorient.quaternion_physics();
         let translation = nalgebra::Vector3::zeros();
@@ -6467,7 +6007,6 @@ mod tests {
             None,                            // CSP.4a auto_pca_quat — omit for default
             &reorient,
             &recenter,
-            &clip,
             &cap,
             &centerline_trim, // CSP.4b — default = no trim
             0,                // CSP.4b — no boundaries auto-capped
@@ -6512,7 +6051,9 @@ mod tests {
             transform.get("translation").is_some(),
             "transform.translation missing"
         );
-        assert!(parsed.get("clip").is_some());
+        // CSP.4c — `[clip]` block removed with the feature. Pin
+        // the absence so a future re-introduction surfaces here.
+        assert!(parsed.get("clip").is_none(), "clip block should be absent");
         assert!(parsed.get("caps").is_some());
         assert!(parsed.get("output").is_some());
         // [output.aabb_m] sub-table per spec §Output format.
@@ -6544,7 +6085,6 @@ mod tests {
     fn prep_toml_serializes_auto_pca_quaternion_when_present() -> Result<()> {
         let reorient = ReorientState::default();
         let recenter = RecenterState::default();
-        let clip = ClipState::default();
         let cap = CapState::default();
         let rotation = reorient.quaternion_physics();
         let translation = nalgebra::Vector3::zeros();
@@ -6565,7 +6105,6 @@ mod tests {
             Some(q),
             &reorient,
             &recenter,
-            &clip,
             &cap,
             &centerline_trim,
             0,
@@ -6594,9 +6133,7 @@ mod tests {
 
     /// `build_cleaned_mesh` bakes Reorient + Recenter into vertex
     /// positions: an identity Reorient + +x translation moves all
-    /// vertices by +x. Default state means no caps are appended,
-    /// `ClipState::default()` keeps the clip disabled so the function
-    /// returns the transform-baked mesh verbatim.
+    /// vertices by +x. Default state means no caps are appended.
     #[test]
     fn build_cleaned_mesh_bakes_recenter_translation() {
         let mesh = one_triangle_at(0.001);
@@ -6608,7 +6145,6 @@ mod tests {
             &mesh,
             &ReorientState::default(),
             &recenter,
-            &ClipState::default(),
             &CapState::default(),
         );
         assert_eq!(cleaned.vertices.len(), 3);
@@ -6619,71 +6155,10 @@ mod tests {
         );
     }
 
-    /// CSP.2 — enabling Clip with a Z plane mid-mesh drops the
-    /// triangles entirely below the plane. Builds a 5-tall vertical
-    /// strip from a single triangle at meters 0 / 0.5 / 1, clips at
-    /// world Z = 250 mm, and confirms the result keeps only the
-    /// portion above. Pins the wiring from `ClipState` through
-    /// `build_cleaned_mesh` step 4.
-    #[test]
-    fn build_cleaned_mesh_applies_clip_when_enabled() {
-        // Triangle with vertices at z = 0.0, 0.5, 1.0 (meters).
-        // Clip plane at world z = 0.25 m → vertex 0 (z=0) below;
-        // vertices 1 + 2 above. True-plane intersection produces a
-        // 4-vertex polygon (2 originals above + 2 new on the plane)
-        // → 2 triangles after fan triangulation.
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.5));
-        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
-        mesh.faces.push([0, 1, 2]);
-
-        let clip = ClipState {
-            enabled: true,
-            z_mm: 250.0, // 0.25 m
-            ..ClipState::default()
-        };
-        let cleaned = build_cleaned_mesh(
-            &mesh,
-            &ReorientState::default(),
-            &RecenterState::default(),
-            &clip,
-            &CapState::default(),
-        );
-
-        // Every remaining vertex's z is at or above the clip plane.
-        for v in &cleaned.vertices {
-            assert!(
-                v.z >= 0.25 - 1e-9,
-                "vertex z={} below clip plane (0.25 m)",
-                v.z,
-            );
-        }
-        // Some faces survived (the above-plane portion).
-        assert!(!cleaned.faces.is_empty(), "all faces dropped by clip");
-    }
-
-    /// CSP.2 — disabled Clip leaves the mesh untouched regardless of
-    /// `z_mm`. Guards against accidental "always-on" wiring that
-    /// would silently clip default-enabled-by-mistake states.
-    #[test]
-    fn build_cleaned_mesh_skips_clip_when_disabled() {
-        let mesh = one_triangle_at(0.001);
-        let clip = ClipState {
-            enabled: false,
-            z_mm: 100.0, // would clip everything if enabled
-            ..ClipState::default()
-        };
-        let cleaned = build_cleaned_mesh(
-            &mesh,
-            &ReorientState::default(),
-            &RecenterState::default(),
-            &clip,
-            &CapState::default(),
-        );
-        assert_eq!(cleaned.vertices.len(), 3);
-        assert_eq!(cleaned.faces.len(), 1);
-    }
+    // CSP.4c — `build_cleaned_mesh_applies_clip_when_enabled` +
+    // `build_cleaned_mesh_skips_clip_when_disabled` removed
+    // alongside `ClipState`. Centerline trim is now the single
+    // user-facing mesh-cutting feature.
 
     /// CSP.3a — for an included cap loop, the loop vertices are
     /// projected onto the fit plane BEFORE ear-clip so the resulting
@@ -6725,7 +6200,6 @@ mod tests {
             &mesh,
             &ReorientState::default(),
             &RecenterState::default(),
-            &ClipState::default(),
             &cap,
         );
 
