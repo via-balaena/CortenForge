@@ -423,8 +423,8 @@ fn layered_param_field(
 /// Intentionally no `Debug` derive: `mesh` + `intruder` hold the full
 /// tet mesh and scan SDF (tens of thousands of tets / faces), so a
 /// derived `Debug` would be unreadable and a `dbg!` footgun — mirrors
-/// `MeshingHints`'s no-`Debug` rationale. Inspect the scalar fields
-/// (`cavity_offset_m`, `outer_offset_m`, `n_tets`) directly.
+/// `MeshingHints`'s no-`Debug` rationale. Inspect the small fields
+/// (the offsets, `bounds`, `cell_size_m`, `n_tets`) directly.
 pub struct InsertionGeometry {
     /// Device-wall tet mesh with per-tet Yeoh materials sampled from
     /// the layer stack. The solver (7.2) consumes this by value.
@@ -616,6 +616,12 @@ const MAX_NEWTON_ITER: usize = 150;
 /// (see [`run_single_insertion_step`]'s `# Panics`), so there is no
 /// `converged` flag; `iter_count` + `final_residual_norm` are
 /// convergence *diagnostics*, not a pass/fail.
+///
+/// Derives `Debug` (unlike [`InsertionGeometry`], which omits it):
+/// `x_final` is a flat `Vec<f64>` that prints readably, and seeing
+/// the iter count / residual / pin count inline in a test-failure
+/// message is worth the verbosity — `InsertionGeometry`'s opaque
+/// tet-mesh + SDF structs are not.
 #[derive(Debug, Clone)]
 pub struct InsertionStep {
     /// Converged vertex positions, vertex-major xyz (length
