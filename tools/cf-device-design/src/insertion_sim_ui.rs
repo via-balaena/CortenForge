@@ -704,15 +704,7 @@ pub fn render_insertion_sim_section(
             };
 
             ui.separator();
-            ui.label(format!(
-                "Converged: {} of {} steps{}",
-                run.ramp.steps.len(),
-                state.n_steps,
-                run.ramp
-                    .failed_at_step
-                    .map(|k| format!(" — stalled at step {k}"))
-                    .unwrap_or_default(),
-            ));
+            render_convergence_summary(ui, &run.ramp, state.n_steps);
 
             render_force_displacement_plot(ui, &run.ramp);
             render_step_table(ui, &run.ramp);
@@ -735,7 +727,12 @@ pub fn render_insertion_sim_section(
                     );
                 });
                 let (lo, hi) = run.scalar_min_max[state.scalar_mode.buffer_index()];
-                ui.label(format!("range: {lo:.3e} → {hi:.3e}"));
+                // `..` (Rust range idiom) rather than `→` (U+2192) —
+                // egui's default proportional font in bevy_egui 0.39
+                // doesn't carry U+2192 and the workshop user sees a
+                // missing-glyph tofu box. `..` is universally
+                // supported and reads naturally as a range.
+                ui.label(format!("range: {lo:.3e} .. {hi:.3e}"));
             });
         });
 }
@@ -743,6 +740,78 @@ pub fn render_insertion_sim_section(
 /// Hand-rolled F-d plot via `egui::Painter`. Avoids pulling in
 /// `egui_plot` for a single small line plot. Axes: x = interference
 /// (mm), y = contact force magnitude (N).
+/// One-line convergence summary above the F-d plot. On full
+/// convergence (`failed_at_step.is_none()`) this is a plain
+/// neutral-color line; on partial convergence (a stall) it surfaces
+/// the **seated depth in mm** (not just the step index — the
+/// workshop user reads mm fluently and step indices not so much) in
+/// amber, plus a collapsing "Stall details" expander carrying the
+/// solver's `failure_reason` string for the engineering-curious.
+///
+/// Replaces the original `"stalled at step {k}"` readout — visual-
+/// pass finding 6 on the slice-7-9 PR: that phrasing read like a
+/// problem the user had to solve, but it's the slice-7 plan's
+/// documented "partial-but-honest" Fork-B behavior. The new copy
+/// reframes it: "seated to X of Y mm" tells the user what depth
+/// the sim *did* reach (which IS engineering-actionable data), not
+/// what depth it failed at.
+fn render_convergence_summary(ui: &mut egui::Ui, ramp: &InsertionRamp, n_steps: usize) {
+    // The ramp's per-step `interference_m` is evenly spaced from
+    // `cavity_inset_m / n_steps` (step 0) to `cavity_inset_m` (the
+    // would-be step `n_steps - 1`). Reconstruct `cavity_inset_m`
+    // from the first step's interference; this works because the
+    // ramp is consumed by the time we render (`InsertionGeometry`
+    // is gone) but `steps[0]` is guaranteed non-empty here — the
+    // upstream `run_sim_pipeline` errors with "no converged step"
+    // when `steps.is_empty()`, so by the time we have a
+    // `last_run`, `steps.len() >= 1`.
+    let target_mm = ramp
+        .steps
+        .first()
+        // `n_steps as f64` is bounded by `DEFAULT_N_STEPS = 16`,
+        // far under `f64`'s exact-integer ceiling.
+        .map_or(0.0, |s| {
+            #[allow(clippy::cast_precision_loss)]
+            let n = n_steps as f64;
+            s.interference_m * n * 1e3
+        });
+    let seated_mm = ramp.steps.last().map_or(0.0, |s| s.interference_m * 1e3);
+    match ramp.failed_at_step {
+        None => {
+            ui.label(format!(
+                "Converged: {} of {} steps — seated to {target_mm:.2} mm (full depth)",
+                ramp.steps.len(),
+                n_steps,
+            ));
+        }
+        Some(_) => {
+            ui.colored_label(
+                egui::Color32::from_rgb(225, 180, 90),
+                format!(
+                    "Converged: {} of {} steps — seated to {seated_mm:.2} of {target_mm:.2} mm",
+                    ramp.steps.len(),
+                    n_steps,
+                ),
+            );
+            if let Some(reason) = &ramp.failure_reason {
+                egui::CollapsingHeader::new("Stall details")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.label(
+                            "The Insertion Sim is a relative-comparison aid (Fork B); \
+                             the F-d curve through the converged depth is real \
+                             engineering data. The stall is the solver-robustness \
+                             envelope at this configuration — typically deeper \
+                             seating needs a thicker wall or a smaller cavity inset.",
+                        );
+                        ui.label("Solver reason:");
+                        ui.monospace(reason);
+                    });
+            }
+        }
+    }
+}
+
 fn render_force_displacement_plot(ui: &mut egui::Ui, ramp: &InsertionRamp) {
     if ramp.steps.is_empty() {
         return;
@@ -771,10 +840,16 @@ fn render_force_displacement_plot(ui: &mut egui::Ui, ramp: &InsertionRamp) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, egui::Color32::from_gray(28));
 
-    let pad = 28.0_f32;
+    // Left pad fits the Y-axis label `{y_max:.1} N` — "10.0 N" is
+    // ~38 px at 9 pt monospace; "100.0 N" is ~46. Bumped from the
+    // original 28 (which clipped "10.0 N" → ".0 N" — visual-pass
+    // finding 2 on the slice-7-9 PR review). Bottom pad stays at
+    // `pad` for the x-axis label.
+    let pad_left = 44.0_f32;
+    let pad_bottom = 28.0_f32;
     let plot_rect = egui::Rect::from_min_size(
-        rect.min + egui::vec2(pad, 8.0),
-        egui::vec2(rect.width() - pad - 8.0, rect.height() - pad),
+        rect.min + egui::vec2(pad_left, 8.0),
+        egui::vec2(rect.width() - pad_left - 8.0, rect.height() - pad_bottom),
     );
     // axes
     painter.line_segment(

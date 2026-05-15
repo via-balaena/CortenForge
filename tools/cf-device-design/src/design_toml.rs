@@ -126,6 +126,19 @@ pub fn resolve_design_toml_path(cleaned_stl: &Path, explicit: Option<&Path>) -> 
 // ── serialize from app state ────────────────────────────────────────
 
 /// Build a [`DesignToml`] from the current app state.
+///
+/// `cavity.inset_m` and `layer.thickness_m` are rounded to **1 µm
+/// precision** before serialization. The egui sliders operate on
+/// continuous `f64` values whose IEEE-754 binary representation
+/// often picks up ~1-ULP noise — dragging to "3.1 mm" stores
+/// `0.0031000000000000003 m`, and `toml::to_string_pretty` emits all
+/// 17 significant digits. Rounding to micrometers (`1e-6 m =
+/// 0.001 mm`) is well below any meaningful slider resolution
+/// (sliders show 1 decimal mm) and lets the TOML emitter pick the
+/// shortest-round-trip form, so the on-disk file reads "0.0031" not
+/// "0.0031000000000000003". Round-trip is bit-stable since the load
+/// path reads the rounded value verbatim. Visual-pass finding 5 on
+/// the slice-7-9 PR review.
 pub fn build_design_toml(
     cleaned_stl: &Path,
     cavity: &CavityState,
@@ -141,20 +154,38 @@ pub fn build_design_toml(
             cleaned_stl: cleaned_stl.display().to_string(),
         },
         cavity: CavityBlock {
-            inset_m: cavity.inset_m,
+            inset_m: round_to_micrometers(cavity.inset_m),
             visible: cavity.visible,
         },
         layers: layers
             .layers
             .iter()
             .map(|l| LayerBlock {
-                thickness_m: l.thickness_m,
+                thickness_m: round_to_micrometers(l.thickness_m),
                 material_anchor_key: l.material_anchor_key.to_string(),
+                // `slacker_fraction` is discrete (`0.0`, `0.25`, `0.5`,
+                // `0.75`, `1.00` per the TB curve) and the values are
+                // all exactly representable in f64; no rounding
+                // needed here.
                 slacker_fraction: l.slacker_fraction,
                 visible: l.visible,
             })
             .collect(),
     }
+}
+
+/// Round an `f64` value in meters to the nearest micrometer
+/// (`1e-6 m`). Cleans up IEEE-754 noise from slider-driven f64
+/// values; well below any meaningful slider resolution (sliders are
+/// 0.1 mm = 1e-4 m). Non-finite values pass through unchanged so
+/// `validate_design_toml`'s `is_finite()` gate sees the original
+/// (and the user gets the original bug message rather than a
+/// rounded one).
+fn round_to_micrometers(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    (x * 1_000_000.0).round() / 1_000_000.0
 }
 
 /// Save a [`DesignToml`] to disk. Atomic via `<path>.tmp` + rename so
@@ -547,6 +578,80 @@ mod tests {
         // Cleanup.
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// `round_to_micrometers` cleans up IEEE-754 noise without
+    /// shifting the meaning. `0.0031000000000000003` (the f64
+    /// value the cavity-slider stores when dragged to "3.1 mm")
+    /// rounds to the IEEE-754 canonical form of `0.0031`, which
+    /// `f64::to_string` then emits as `"0.0031"` (the shortest
+    /// round-trip).
+    #[test]
+    fn round_to_micrometers_strips_ieee754_noise() {
+        // The noisy form the slider produces.
+        let noisy = 0.0031000000000000003_f64;
+        let clean = round_to_micrometers(noisy);
+        // The clean form should serialize without 17-digit noise.
+        // We can't compare bit-equal because f64(0.0031) is itself
+        // not the exact decimal — but the toml-emitter (via Rust's
+        // `f64::to_string`) picks the shortest round-trip, so a
+        // `format!("{clean}")` should not contain the noise tail.
+        let s = format!("{clean}");
+        assert!(
+            !s.contains("0000000000000003"),
+            "rounded value should not carry the IEEE-754 noise tail: {s}"
+        );
+        // And the rounded value should be within 1 nm of the original
+        // (negligible compared to the 0.1 mm slider grid).
+        assert!(
+            (clean - noisy).abs() < 1e-9,
+            "rounding shifted by more than 1 nm: noisy={noisy} clean={clean}"
+        );
+    }
+
+    /// Non-finite values pass through `round_to_micrometers`
+    /// unchanged so the downstream `validate_design_toml` gate sees
+    /// the original NaN / inf and produces the precise diagnostic.
+    #[test]
+    fn round_to_micrometers_pass_through_nonfinite() {
+        assert!(round_to_micrometers(f64::NAN).is_nan());
+        assert_eq!(round_to_micrometers(f64::INFINITY), f64::INFINITY);
+        assert_eq!(round_to_micrometers(f64::NEG_INFINITY), f64::NEG_INFINITY);
+    }
+
+    /// End-to-end: build a `DesignToml` from a state whose
+    /// `inset_m` carries IEEE-754 noise, serialize to TOML, and
+    /// confirm the on-disk string carries the clean form.
+    #[test]
+    fn build_design_toml_emits_clean_decimals() {
+        let cavity = CavityState {
+            inset_m: 0.0031000000000000003,
+            visible: true,
+        };
+        let layers = LayersState {
+            layers: vec![LayerSpec {
+                thickness_m: 0.010000000000000002,
+                material_anchor_key: "ECOFLEX_00_30",
+                slacker_fraction: 0.25,
+                visible: true,
+            }],
+        };
+        let design = build_design_toml(std::path::Path::new("scan.cleaned.stl"), &cavity, &layers);
+        let body = toml::to_string_pretty(&design).unwrap();
+        // The cleaned values should serialize without the long
+        // IEEE-754 noise tail.
+        assert!(
+            body.contains("inset_m = 0.0031"),
+            "expected clean 'inset_m = 0.0031' in:\n{body}"
+        );
+        assert!(
+            body.contains("thickness_m = 0.01"),
+            "expected clean 'thickness_m = 0.01' in:\n{body}"
+        );
+        assert!(
+            !body.contains("0.0031000000000000003"),
+            "the long noise form should not appear: {body}"
+        );
     }
 
     /// `iso8601_utc_now` returns something that *looks* right —
