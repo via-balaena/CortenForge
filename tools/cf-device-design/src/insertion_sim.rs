@@ -782,6 +782,11 @@ pub fn run_single_insertion_step(
 /// is NOT immune to holes larger than a grid cell (the flood would
 /// leak through), but the diagnostic confirmed the decimated iter-1
 /// scan has only 2 boundary edges — far under that.
+///
+/// Intentionally no `Debug` derive: the inner [`SdfGrid`] is a
+/// `Vec<f64>` of tens to hundreds of thousands of samples — a derived
+/// `Debug` would be unreadable and a `dbg!` footgun (same rationale
+/// as [`InsertionGeometry`]). Inspect via [`GridSdfReport`] instead.
 #[derive(Clone)]
 pub struct GridSdf {
     grid: SdfGrid,
@@ -879,6 +884,14 @@ fn neighbours6(i: usize, w: usize, h: usize, d: usize) -> [Option<usize>; 6] {
 /// Returns an error if all eight bbox corners are wall points (the
 /// bbox margin is too small, or the grid too coarse, to seed the
 /// outside flood).
+///
+/// # Panics
+///
+/// `grid_cell_m` must be positive — a non-positive value forwards a
+/// panic from `SdfGrid::new` (or overflows the lattice-dimension
+/// arithmetic). It is a programmer-set knob, not validated here —
+/// the same posture `build_insertion_geometry` documents for
+/// `cell_size_m`.
 pub fn build_grid_sdf(
     scan: &IndexedMesh,
     bbox: Aabb,
