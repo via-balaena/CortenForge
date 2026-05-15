@@ -2386,4 +2386,195 @@ mod tests {
             "every final DOF must be finite",
         );
     }
+
+    /// **Recon discriminating experiment (post-7.3b.1)** — isolate
+    /// "full-surface contact period" from "GridSdf gradient roughness"
+    /// per `docs/INSERTION_SIM_STATE.md` Q3.
+    ///
+    /// Mirrors [`run_insertion_ramp_on_synthetic_sphere`] one-for-one
+    /// (κ = 1e3, tol = 1e-1, n_steps = 16, single-layer ECOFLEX_00_30,
+    /// 10 mm wall, cell_size 4 mm, cavity_inset 3 mm) except: the
+    /// intruder + body are built from `Solid::sphere` CSG directly —
+    /// **no `GridSdf` anywhere on either side**. Compare the stall
+    /// depth here against the icosphere baseline (which stalls at step
+    /// 13 / 16 ≈ 2.62 mm). The only axis of variation is "analytical
+    /// SDF vs `GridSdf` of an icosphere stand-in".
+    ///
+    /// Two outcomes:
+    /// - Reaches step 16 (full 3 mm) → `GridSdf` gradient roughness is
+    ///   a material contributor to the stall; a finer grid (or moving
+    ///   to an analytical / smoothed SDF where possible) unlocks
+    ///   envelope.
+    /// - Stalls at similar depth (≈ 2.6 mm) → full-surface penalty
+    ///   contact IS the wall regardless of SDF kind, and the
+    ///   formulation must change (Dirichlet hybrid, augmented
+    ///   Lagrangian, etc.) to push past it. The recon expects this
+    ///   outcome.
+    ///
+    /// `#[ignore]` — release-mode multi-step solve, no fixture. Self-
+    /// contained: does NOT go through [`build_insertion_geometry`] or
+    /// [`run_insertion_ramp`] (both are typed on `GridSdf`); the inner
+    /// loop is re-implemented here to swap the intruder primitive.
+    /// Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     run_insertion_ramp_on_analytical_sphere_shell \
+    ///     -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "recon discriminating experiment — release-mode ramp; run with --ignored --nocapture"]
+    fn run_insertion_ramp_on_analytical_sphere_shell() {
+        // Match the synthetic-icosphere ramp parameters one-for-one;
+        // the only varying axis is "analytical SDF vs GridSdf".
+        let r_intruder = 0.040; // 40 mm — same as icosphere(0.040, 3)
+        let cavity_inset_m = 0.003;
+        let wall_m = 0.010;
+        let cell_size_m = 0.004;
+        let n_steps = 16usize;
+
+        // Analytical SDFs. The "scan" surface sits at radius
+        // `r_intruder`; the cavity surface is inset inward by
+        // `cavity_inset_m`; the outer envelope is offset outward by
+        // `wall_m - cavity_inset_m`. body = outer ⊖ cavity (closed
+        // silicone shell, same wall thickness as the icosphere case).
+        let intruder_sdf = Solid::sphere(r_intruder);
+        let cavity = Solid::sphere(r_intruder).offset(-cavity_inset_m);
+        let outer = Solid::sphere(r_intruder).offset(wall_m - cavity_inset_m);
+        let body = outer.clone().subtract(cavity);
+
+        // Bounds large enough to contain the outer envelope plus a
+        // cell of slack — same posture as `build_insertion_geometry`.
+        let outer_r = r_intruder + wall_m - cavity_inset_m;
+        let half = outer_r + cell_size_m;
+        let bounds = Aabb::new(
+            Point3::new(-half, -half, -half),
+            Point3::new(half, half, half),
+        );
+
+        // Single-layer ECOFLEX_00_30, `ConstantField` path — matches
+        // the icosphere case's effective material distribution
+        // (`layer_boundary_thresholds` is empty for a single layer →
+        // `layered_param_field` returns a `ConstantField` too).
+        let silicone = silicone_for_anchor("ECOFLEX_00_30").unwrap();
+        let material_field = MaterialField::from_yeoh_fields(
+            Box::new(ConstantField::new(silicone.mu)),
+            Box::new(ConstantField::new(silicone.c2)),
+            Box::new(ConstantField::new(silicone.lambda)),
+        );
+
+        let hints = MeshingHints {
+            bbox: aabb3_for_meshing(&bounds),
+            cell_size: cell_size_m,
+            material_field: Some(material_field),
+        };
+        let mesh = SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&body, &hints)
+            .expect("analytical sphere-shell should mesh");
+        let n_tets = mesh.n_tets();
+        let n_vertices = mesh.n_vertices();
+        let n_dof = 3 * n_vertices;
+
+        // Pin the outer-skin vertices: those within `0.5 * cell_size`
+        // of the analytical outer envelope. Filter to solver-
+        // referenced vertices (BCC may produce orphans outside the
+        // body) — same posture as `outer_skin_bc`.
+        let band_tol = 0.5 * cell_size_m;
+        let referenced: BTreeSet<VertexId> = referenced_vertices(&mesh).into_iter().collect();
+        let pinned: Vec<VertexId> =
+            pick_vertices_by_predicate(&mesh, |p| outer.eval(Point3::from(*p)).abs() < band_tol)
+                .into_iter()
+                .filter(|v| referenced.contains(v))
+                .collect();
+        assert!(
+            !pinned.is_empty(),
+            "the analytical outer-envelope pin-band must catch at least one vertex"
+        );
+        let n_pinned = pinned.len();
+        let bc = BoundaryConditions {
+            pinned_vertices: pinned,
+            loaded_vertices: Vec::new(),
+        };
+
+        let config = insertion_solver_config();
+        let mut x_prev_flat: Vec<f64> = mesh
+            .positions()
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
+        let v_prev = Tensor::zeros(&[n_dof]);
+        let empty_theta: [f64; 0] = [];
+        let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+        eprintln!(
+            "analytical sphere-shell ramp — {n_tets} tets, {n_pinned} pinned, \
+             {n_steps} requested steps:"
+        );
+
+        let mut steps_converged = 0usize;
+        let mut failed_at_step: Option<usize> = None;
+        let mut failure_reason: Option<String> = None;
+        for k in 0..n_steps {
+            #[allow(clippy::cast_precision_loss)]
+            let interference_m = (k + 1) as f64 / n_steps as f64 * cavity_inset_m;
+            // Analytical contact intruder: `Solid::sphere` offset back
+            // toward / past the cavity wall, mirroring
+            // `intruder_contact_at`'s `interference + cavity_offset`
+            // (cavity_offset = -cavity_inset_m).
+            let contact_intruder = intruder_sdf.clone().offset(interference_m - cavity_inset_m);
+            let contact = PenaltyRigidContact::with_params(
+                vec![contact_intruder],
+                INSERTION_CONTACT_KAPPA,
+                INSERTION_CONTACT_DHAT,
+            );
+            let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
+            let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
+            }));
+            match outcome {
+                Ok(step) => {
+                    eprintln!(
+                        "  step interference {:.2} mm — {} Newton iters, residual {:.2e}",
+                        interference_m * 1e3,
+                        step.iter_count,
+                        step.final_residual_norm,
+                    );
+                    x_prev_flat = step.x_final;
+                    steps_converged += 1;
+                }
+                Err(payload) => {
+                    failed_at_step = Some(k);
+                    failure_reason = Some(panic_message(&*payload));
+                    break;
+                }
+            }
+        }
+
+        match failed_at_step {
+            None => eprintln!(
+                "  → converged all {n_steps} steps to the full {:.2} mm inset",
+                cavity_inset_m * 1e3,
+            ),
+            Some(k) => {
+                #[allow(clippy::cast_precision_loss)]
+                let depth_mm = (k as f64) / n_steps as f64 * cavity_inset_m * 1e3;
+                eprintln!(
+                    "  → stalled at step {k} (last converged depth ~{depth_mm:.2} mm); \
+                     reason: {}",
+                    failure_reason.as_deref().unwrap_or("<no reason>"),
+                );
+            }
+        }
+
+        // The setup is wired correctly: at least one step converged
+        // (a panic at step 0 would mean the mesh + BC + contact are
+        // ill-posed; nothing about the stall hypothesis to learn).
+        assert!(
+            steps_converged >= 1,
+            "the analytical-sphere ramp must converge at least one step \
+             (else the experiment is mis-wired)"
+        );
+        assert_eq!(x_prev_flat.len(), n_dof);
+        assert!(x_prev_flat.iter().all(|v| v.is_finite()));
+    }
 }
