@@ -40,6 +40,7 @@
 
 mod config;
 mod derive;
+pub mod design_ref;
 mod prep;
 mod scan;
 
@@ -49,8 +50,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 pub use config::{
-    CastConfig, CastDefaults, LayerConfig, PlugPinConfig, PourGateConfig, RegistrationConfig,
-    ScanConfig,
+    CastConfig, CastDefaults, DesignSourceConfig, LayerConfig, PlugPinConfig, PourGateConfig,
+    RegistrationConfig, ScanConfig,
 };
 pub use derive::{
     DerivedSpec, density_for_anchor, derive_spec_and_ribbon, display_name_for_anchor,
@@ -83,9 +84,34 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
 
     let cast_toml_text = fs::read_to_string(cast_toml_path)
         .with_context(|| format!("read cast TOML at {}", cast_toml_path.display()))?;
-    let config = config::CastConfig::from_toml_str(&cast_toml_text)
+    let mut config = config::CastConfig::from_toml_str(&cast_toml_text)
         .with_context(|| format!("parse cast TOML at {}", cast_toml_path.display()))?;
-    config.validate().context("cast TOML semantic validation")?;
+
+    // Slice 9 — interleaved validation: first the cross-field gate
+    // (`[design]` ↔ `[[layers]]` mutual exclusion), then the
+    // design.toml lift if applicable, then the per-layer + numeric
+    // gate on the populated layers. The split avoids the no-op
+    // contradiction where the gate wants `layers.is_empty()` pre-lift
+    // and per-layer checks want non-empty post-lift.
+    config
+        .validate_layer_source()
+        .context("cast TOML semantic validation (layer source)")?;
+    if let Some(design_cfg) = &config.design {
+        let design_path = resolve_relative(&cast_toml_dir, &design_cfg.path);
+        let design = design_ref::load_design_ref(&design_path)
+            .with_context(|| format!("load design TOML at {}", design_path.display()))?;
+        config.layers = derive_layers_from_design(&design);
+        println!(
+            "loaded design from {} ({} layers, cavity inset {:.2} mm, schema v{})",
+            design_path.display(),
+            config.layers.len(),
+            design.cavity.inset_m * 1e3,
+            design.device_design.schema_version,
+        );
+    }
+    config
+        .validate_after_layer_source()
+        .context("cast TOML semantic validation (post-layer-source)")?;
 
     let scan_stl_path = resolve_relative(&cast_toml_dir, &config.scan.cleaned_stl);
     let prep_toml_path = resolve_relative(&cast_toml_dir, &config.scan.prep_toml);
@@ -167,6 +193,37 @@ pub fn resolve_relative(cast_toml_dir: &Path, p: &Path) -> PathBuf {
     } else {
         cast_toml_dir.join(p)
     }
+}
+
+/// Slice 9 — lift a [`design_ref::DesignRef`]'s layer stack into
+/// cf-cast-cli's [`LayerConfig`] vector. The mapping is direct:
+///
+/// | design.toml field             | cast.toml LayerConfig field       |
+/// |---|---|
+/// | `thickness_m`                  | `thickness_m`                     |
+/// | `material_anchor_key`          | `material`                        |
+/// | `slacker_fraction`             | (informational — not consumed by cf-cast geometry today; future enhancement could surface it in `procedure.md` per-layer recipe) |
+/// | (none)                         | `density_kg_m3 = None` (auto-lookup via `density_for_anchor`) |
+/// | (none)                         | `display_name = None`             |
+/// | `visible`                      | (ignored — viewport-only concern) |
+///
+/// `cavity.inset_m` is NOT lifted into the cast TOML's layer stack —
+/// it documents the press-fit reservation at the design level; the
+/// v2 cast paradigm (plug = scan, Option A) doesn't currently apply
+/// it to mold geometry. A future enhancement may inset the plug by
+/// `cavity.inset_m` to bake the press-fit into the mold; until then,
+/// the procedure markdown could record it (deferred to a follow-up).
+pub fn derive_layers_from_design(design: &design_ref::DesignRef) -> Vec<LayerConfig> {
+    design
+        .layers
+        .iter()
+        .map(|l| LayerConfig {
+            thickness_m: l.thickness_m,
+            material: l.material_anchor_key.clone(),
+            density_kg_m3: None,
+            display_name: None,
+        })
+        .collect()
 }
 
 pub use cf_cast::V2MoldExportReport;

@@ -22,9 +22,15 @@
 //!   slacker`), and the Layers panel reads back the effective Shore
 //!   hardness, tack, and the mix in grams.
 //!
-//! Pending slices: Insertion Sim (FEM, slice 7) / Save / Open
-//! (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the build
-//! and is stale — trust the code.
+//! In progress: Insertion Sim (FEM, slice 7) — `mod insertion_sim`
+//! holds the Route-A SDF bridge: 7.0 the measurement spike, 7.1 the
+//! geometry + per-layer Yeoh material builder
+//! (`build_insertion_geometry`), 7.2 the single static FEM solve
+//! (`run_single_insertion_step`). Quasi-static ramp + UI: 7.3+.
+//!
+//! Pending slices: Insertion Sim solve + UI (slice 7.2+) / Save /
+//! Open (slice 8). `docs/ENGINEERING_SUITE_DESIGN.md` predates the
+//! build and is stale — trust the code.
 
 use std::path::{Path, PathBuf};
 
@@ -44,6 +50,36 @@ use meshopt::simplify_sloppy_decoder;
 use nalgebra::Vector3;
 use serde::Deserialize;
 
+/// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
+///
+/// `#[cfg(test)]`-gated through sub-commits 7.0–7.3b.2; un-gated at
+/// 7.4 (this slice) when the Insertion Sim panel wires it into the
+/// `device_design_panel` UI. The module is `pub(crate)` because
+/// `main.rs`'s panel + async-task glue consumes its public surface
+/// (`build_insertion_geometry`, `run_insertion_ramp`, `InsertionRamp`,
+/// `RampStep`, `StepReadout`, `TetReadout`, `InsertionResult`,
+/// `compute_tet_readouts`); the items themselves remain
+/// `pub` per their module-level docstrings — `pub(crate)` on the
+/// module declaration just keeps the binary's surface scoped (the
+/// crate doesn't export a library API). See the module docs for the
+/// slice-7 ladder.
+pub(crate) mod insertion_sim;
+
+/// Slice 7.4 — Insertion Sim panel + ECS glue. Wraps the `insertion_sim`
+/// module's public surface (`build_insertion_geometry`,
+/// `run_insertion_ramp`, `InsertionRamp`, `RampStep`, `StepReadout`,
+/// `TetReadout`, `compute_tet_readouts`) into an `AsyncComputeTaskPool`-
+/// driven sim run + egui panel + per-vertex heat-map projection on the
+/// existing per-layer surface shells.
+pub(crate) mod insertion_sim_ui;
+
+/// Slice 8 — `.design.toml` Save / Open. Serializes the design panel
+/// state (`CavityState` + `LayersState`) to a TOML file alongside the
+/// cleaned STL, so a session can resume. Schema + atomic-write
+/// helpers + round-trip tests; see the module docs for the schema
+/// layout.
+pub(crate) mod design_toml;
+
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
 /// `UpAxis::PlusZ` swap from physics frame to Bevy frame.
@@ -62,9 +98,9 @@ struct Cli {
 
     /// Optional path to a previously-saved design TOML to reopen +
     /// iterate on. When supplied, the suite pre-populates panels from
-    /// the file; absent, panels start at defaults. Wired in slice 8;
-    /// at this slice the flag is parsed but only the cleaned STL is
-    /// honored.
+    /// the file; absent, the suite auto-resolves
+    /// `<cleaned-stl-stem>.design.toml` next to the STL and loads it
+    /// if it exists (else panels start at defaults). Wired in slice 8.
     #[arg(long, value_name = "PATH")]
     design: Option<PathBuf>,
 
@@ -83,6 +119,13 @@ struct Cli {
 /// meters. Mirror of cf-scan-prep's `ScanMesh` (same posture).
 #[derive(Resource)]
 struct ScanMesh(IndexedMesh);
+
+/// Slice 8 — the on-disk path the cleaned scan loaded from, kept for
+/// the design-TOML's `scan_ref.cleaned_stl` provenance line. The
+/// design panel + Save section read this to know what the design
+/// is anchored against.
+#[derive(Resource, Debug, Clone)]
+struct ScanFilePath(PathBuf);
 
 /// Whether the scan mesh entity is visible this frame. Toggled by
 /// the "Show scan mesh" checkbox in the Scan Info panel. Useful
@@ -476,7 +519,40 @@ fn main() -> Result<()> {
         scan_info.centerline_arc_length_m,
     );
 
-    run_render_app(scan_mesh, scan_info, centerline_points);
+    // Slice 8 — resolve the design-TOML path and load it if it exists.
+    // The CLI's `--design` wins; else fall back to
+    // `<cleaned-stl-stem-minus-.cleaned>.design.toml`. A missing file
+    // is *not* an error (first-time use); a parse / validation error
+    // IS surfaced (the file exists but is broken — user wants to know
+    // before silently dropping their design).
+    let design_toml_path =
+        design_toml::resolve_design_toml_path(&cli.cleaned_stl, cli.design.as_deref());
+    let loaded_design = match &design_toml_path {
+        Some(p) if p.exists() => match design_toml::load_design_toml(p) {
+            Ok(d) => {
+                println!(
+                    "loaded design from {} ({} layers, cavity inset {:.2} mm)",
+                    p.display(),
+                    d.layers.len(),
+                    d.cavity.inset_m * 1e3,
+                );
+                Some(d)
+            }
+            Err(e) => {
+                return Err(e.context(format!("load design.toml at {}", p.display())));
+            }
+        },
+        _ => None,
+    };
+
+    run_render_app(
+        scan_mesh,
+        scan_info,
+        centerline_points,
+        cli.cleaned_stl.clone(),
+        design_toml_path,
+        loaded_design,
+    );
     Ok(())
 }
 
@@ -955,7 +1031,13 @@ fn compute_validations(
     }
 }
 
-mod slacker {
+// `pub(crate)` (slice 7.5): the insertion-sim path resolves a layer's
+// effective Yeoh material from `(anchor_key, slacker_fraction)`, which
+// requires reading the Slacker TB curves from this module. Module
+// visibility was private through 6.5 (only the panel UI in `main.rs`
+// consumed it); 7.5 widens to `pub(crate)` so `insertion_sim` can call
+// `slacker::support`.
+pub(crate) mod slacker {
     //! Slacker recipe data — Smooth-On Slacker™ silicone-softening
     //! tables, transcribed verbatim from the Slacker Tactile Mutator
     //! Technical Bulletin (rev 011524DH).
@@ -1393,6 +1475,37 @@ struct CavityEntity;
 #[derive(Component)]
 struct LayerSurfaceEntity;
 
+/// Snapshot of every input `update_layer_meshes` reads, kept in the
+/// system's `Local<>` so the per-frame check is "did the values
+/// actually change?" rather than "did Bevy's `Res::is_changed()`
+/// tick?". The latter is the deref-mut-on-access footgun; the
+/// former is the documented escape hatch (same posture as
+/// `insertion_sim_ui::invalidate_on_geometry_change`).
+///
+/// Fields cover every input that affects the rendered layer meshes:
+///
+/// - `cavity` / `layers`: govern the displaced shell vertex
+///   positions and which materials/colors the shells get.
+/// - `heat_map_on` / `scalar_mode`: pick which color buffer (Ψ or
+///   ‖P‖) drives the per-vertex COLOR attribute when heat map is
+///   on, or revert to palette tint when off.
+/// - `last_run_generation`: a counter `InsertionSimState` bumps
+///   whenever `last_run` changes meaningfully (a new run completed,
+///   or invalidation cleared the previous). The Vec<Vec<[f32; 4]>>
+///   color buffers themselves are large + identity-only, so we
+///   track this scalar proxy instead.
+///
+/// `proxy` / `up` / `render_scale` are intentionally NOT in the key:
+/// they're set once at app start and never change.
+#[derive(Debug, Clone, PartialEq)]
+struct LayerMeshKey {
+    cavity: CavityState,
+    layers: LayersState,
+    heat_map_on: bool,
+    scalar_mode: insertion_sim_ui::ScalarMode,
+    last_run_generation: u64,
+}
+
 /// Build a Bevy `Mesh` from the proxy mesh's connectivity, with
 /// each vertex displaced along its radial direction by `offset_m`
 /// in physics frame, then mapped through the cast-frame `UpAxis`
@@ -1402,6 +1515,31 @@ fn build_displaced_proxy_mesh(
     offset_m: f64,
     up: UpAxis,
     render_scale: f32,
+) -> Mesh {
+    build_displaced_proxy_mesh_with_colors(proxy, offset_m, up, render_scale, None)
+}
+
+/// Same as [`build_displaced_proxy_mesh`] but with optional per-vertex
+/// RGBA colors. When `vertex_colors` is `Some(slice)`, the mesh gets
+/// the [`Mesh::ATTRIBUTE_COLOR`] attribute populated; with
+/// [`StandardMaterial::base_color`] kept at white-multiplied, Bevy's
+/// PBR shader picks up the per-vertex color via Gouraud interpolation
+/// at fragments — used by the Insertion Sim panel's heat-map mode to
+/// recolor the existing per-layer shells without a separate mesh
+/// pipeline.
+///
+/// # Panics
+///
+/// `vertex_colors` must match `proxy.vertices.len()` when `Some`;
+/// mismatched lengths panic via the `Mesh::ATTRIBUTE_COLOR` insert
+/// invariant — a construction-side bug, not a runtime data
+/// dependence.
+fn build_displaced_proxy_mesh_with_colors(
+    proxy: &EnvelopeProxyMesh,
+    offset_m: f64,
+    up: UpAxis,
+    render_scale: f32,
+    vertex_colors: Option<&[[f32; 4]]>,
 ) -> Mesh {
     let positions: Vec<[f32; 3]> = proxy
         .vertices
@@ -1433,6 +1571,17 @@ fn build_displaced_proxy_mesh(
     // unindexed geometry — and the proxy mesh is indexed for
     // memory + render efficiency.
     mesh.compute_smooth_normals();
+    if let Some(colors) = vertex_colors {
+        assert_eq!(
+            colors.len(),
+            proxy.vertices.len(),
+            "build_displaced_proxy_mesh_with_colors: vertex_colors.len() = {} \
+             must match proxy.vertices.len() = {}",
+            colors.len(),
+            proxy.vertices.len(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
+    }
     mesh
 }
 
@@ -1517,8 +1666,24 @@ fn update_cavity_mesh(
 /// separate "outer envelope" concept). Each entity's visibility
 /// tracks its own `LayerSpec::visible` flag.
 ///
-/// Despawn-and-respawn on any state change — layer count is small
-/// (≤ `LAYER_COUNT_MAX = 6`) so the cost is negligible.
+/// **Change-detection** (cold-read finding): the prior implementation
+/// gated on `layers.is_changed() || cavity.is_changed() ||
+/// sim_state.is_changed()`. All three of those resources are held as
+/// `ResMut<>` by `device_design_panel` (sliders + sim-state mutation),
+/// which bumps their change ticks every frame the panel renders —
+/// regardless of whether any actual value moved. Net effect: the
+/// guard always passed, and the 6 layer mesh entities despawned-and-
+/// respawned every frame. Wasted asset traffic, not visible as a
+/// behavior bug.
+///
+/// Fix: snapshot-and-compare via `Local<>`, the same posture
+/// `invalidate_on_geometry_change` uses (slice-9 follow-up). Cache a
+/// [`LayerMeshKey`] (the meaningful inputs); rebuild only when the
+/// key differs from the prior frame's snapshot. Heat-map color
+/// buffers don't ride directly inside the key — they change implicitly
+/// through `sim_state.last_run_generation`, the counter
+/// `InsertionSimState` bumps when a new run lands or
+/// `invalidate_on_geometry_change` clears the previous one.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn update_layer_meshes(
     layers: Res<LayersState>,
@@ -1526,12 +1691,23 @@ fn update_layer_meshes(
     proxy: Res<EnvelopeProxyMesh>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
+    sim_state: Res<insertion_sim_ui::InsertionSimState>,
+    mut last_key: Local<Option<LayerMeshKey>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     existing: Query<Entity, With<LayerSurfaceEntity>>,
 ) {
-    if !layers.is_changed() && !cavity.is_changed() {
+    let current_key = LayerMeshKey {
+        cavity: *cavity,
+        layers: layers.clone(),
+        heat_map_on: sim_state.heat_map_on,
+        scalar_mode: sim_state.scalar_mode,
+        last_run_generation: sim_state.last_run_generation,
+    };
+    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
+    *last_key = Some(current_key);
+    if !changed {
         return;
     }
     for entity in &existing {
@@ -1540,19 +1716,49 @@ fn update_layer_meshes(
     if layers.layers.is_empty() || proxy.vertices.is_empty() {
         return;
     }
+    // When the heat map is on AND a completed run is available, pull
+    // the matching per-layer vertex-color buffers. The mode index
+    // (Energy = 0, Stress = 1) is from `ScalarMode::buffer_index`.
+    let heat_map_colors: Option<&Vec<Vec<[f32; 4]>>> = if sim_state.heat_map_on {
+        sim_state
+            .last_run
+            .as_ref()
+            .map(|r| &r.per_layer_vertex_colors[sim_state.scalar_mode.buffer_index()])
+    } else {
+        None
+    };
     let mut cumulative_thickness_m = 0.0_f64;
     for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
         let offset_m = cumulative_thickness_m - cavity.inset_m;
-        let mesh = meshes.add(build_displaced_proxy_mesh(
+        // Heat-map vertex colors for this layer, if available (the
+        // run is keyed on layer index; an out-of-range layer count
+        // mismatch — e.g. heat map cached for a 3-layer design,
+        // user added a layer — drops to `None` and the layer falls
+        // back to the palette color until the user re-Simulates).
+        let colors_slice = heat_map_colors
+            .and_then(|cs| cs.get(i))
+            .filter(|c| c.len() == proxy.vertices.len())
+            .map(Vec::as_slice);
+        let mesh = meshes.add(build_displaced_proxy_mesh_with_colors(
             &proxy,
             offset_m,
             *up,
             render_scale.0,
+            colors_slice,
         ));
         let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
+        // Heat-map mode pins base color to white so the per-vertex
+        // COLOR attribute carries the gradient straight through
+        // (StandardMaterial multiplies base × vertex × light). Off
+        // mode keeps the palette tint.
+        let base_color = if colors_slice.is_some() {
+            Color::WHITE
+        } else {
+            Color::srgb(r, g, b)
+        };
         let material = materials.add(StandardMaterial {
-            base_color: Color::srgb(r, g, b),
+            base_color,
             double_sided: true,
             cull_mode: None,
             ..default()
@@ -2000,17 +2206,27 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 /// readouts one frame later — imperceptible at frame rate, and it
 /// keeps both sections reading a single consistent computation
 /// rather than each re-deriving it.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+// 10 system parameters; over the default clippy cap. The alternative
+// is bundling resources into a SystemParam struct, which for this
+// single all-panels driver is more ceremony than the cap is worth —
+// every parameter is a Bevy resource consumed by a single section of
+// the panel.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     proxy: Res<EnvelopeProxyMesh>,
+    scan_path: Res<ScanFilePath>,
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
+    mut sim_state: ResMut<insertion_sim_ui::InsertionSimState>,
+    mut save_state: ResMut<SaveState>,
+    scan_mesh: Option<Res<ScanMesh>>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     let validations = compute_validations(&proxy, &cavity, &layers);
+    let scan_loaded = scan_mesh.is_some();
     egui::SidePanel::right("cf-device-design-panels")
         .resizable(false)
         .default_width(320.0)
@@ -2022,6 +2238,10 @@ fn device_design_panel(
                     render_cavity_section(ui, &mut cavity);
                     render_layers_section(ui, &mut layers, &cavity, &validations);
                     render_validations_section(ui, &validations);
+                    ui.separator();
+                    insertion_sim_ui::render_insertion_sim_section(ui, &mut sim_state, scan_loaded);
+                    ui.separator();
+                    render_save_open_section(ui, &mut save_state, &cavity, &layers, &scan_path.0);
                     render_panel_stubs(ui);
                 });
         });
@@ -2071,10 +2291,96 @@ fn render_scan_info_section(
 /// is pulled ahead of Features / Texture because the simulation IS
 /// the engineering payoff of the suite.
 fn render_panel_stubs(ui: &mut egui::Ui) {
-    ui.separator();
-    for name in ["Insertion Sim (slice 7)", "Save / Open (slice 8)"] {
-        ui.add_enabled(false, egui::Label::new(name));
+    // Slice 8 took the Save/Open stub; nothing left here today. The
+    // function remains so a future slice (10+: Features / Texture)
+    // can hang its own placeholder back on it.
+    let _ = ui;
+}
+
+/// Slice 8 — Save state for the Save/Open panel. Tracks the resolved
+/// design.toml path + last-save status (success message or error)
+/// for the panel readout.
+#[derive(Resource, Debug, Default)]
+struct SaveState {
+    /// Where `[Save]` writes to — resolved from the cleaned-STL path
+    /// or the `--design` flag at startup. `None` only in the
+    /// bare-filename-with-no-parent edge case (where the panel
+    /// disables `[Save]`).
+    path: Option<PathBuf>,
+    /// `Some(msg)` after a save attempt — green on success, red on
+    /// error. Cleared when the user clicks `[Save]` again.
+    last_message: Option<SaveMessage>,
+}
+
+#[derive(Debug, Clone)]
+enum SaveMessage {
+    /// `[Save]` succeeded — path it wrote to.
+    Ok(String),
+    /// `[Save]` failed — error chain.
+    Err(String),
+}
+
+impl SaveState {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            last_message: None,
+        }
     }
+}
+
+/// Slice 8 — Save / Open panel section. Clicking `[💾 Save Design]`
+/// writes the current `(CavityState, LayersState)` to the resolved
+/// `.design.toml` path, atomically (tmp + rename). Open is implicit:
+/// re-launch with `--design <PATH>` (or the auto-default) — no in-app
+/// open dialog yet (would need a `rfd`-class dep + a "reload mid-
+/// session" path; deferred).
+#[allow(clippy::needless_pass_by_value)]
+fn render_save_open_section(
+    ui: &mut egui::Ui,
+    save_state: &mut SaveState,
+    cavity: &CavityState,
+    layers: &LayersState,
+    cleaned_stl: &Path,
+) {
+    egui::CollapsingHeader::new("Save / Open")
+        .default_open(false)
+        .show(ui, |ui| {
+            match &save_state.path {
+                Some(p) => {
+                    ui.label(format!("Path: {}", p.display()));
+                    if ui.button("💾 Save Design").clicked() {
+                        let design = design_toml::build_design_toml(cleaned_stl, cavity, layers);
+                        save_state.last_message =
+                            Some(match design_toml::save_design_toml(&design, p) {
+                                Ok(()) => SaveMessage::Ok(format!(
+                                    "saved {} layers · cavity {:.2} mm",
+                                    layers.layers.len(),
+                                    cavity.inset_m * 1e3,
+                                )),
+                                Err(e) => SaveMessage::Err(format!("{e:#}")),
+                            });
+                    }
+                }
+                None => {
+                    ui.label(
+                        "(no parent directory to write into — \
+                         supply an absolute --design path on launch)",
+                    );
+                }
+            }
+            ui.label("Open: re-launch with `--design <path>`");
+            if let Some(msg) = &save_state.last_message {
+                match msg {
+                    SaveMessage::Ok(m) => {
+                        ui.colored_label(egui::Color32::from_rgb(90, 200, 110), format!("✓ {m}"));
+                    }
+                    SaveMessage::Err(m) => {
+                        ui.colored_label(egui::Color32::from_rgb(225, 90, 80), format!("✗ {m}"));
+                    }
+                }
+            }
+        });
 }
 
 /// egui color for a [`BudgetStatus`] — green / amber / red.
@@ -2191,6 +2497,9 @@ fn run_render_app(
     scan_mesh: IndexedMesh,
     scan_info: ScanInfo,
     centerline_points: Vec<Point3<f64>>,
+    cleaned_stl_path: PathBuf,
+    design_toml_path: Option<PathBuf>,
+    loaded_design: Option<design_toml::DesignToml>,
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
@@ -2207,8 +2516,24 @@ fn run_render_app(
         envelope_proxy.vertices.len(),
         envelope_proxy.original_face_count,
     );
-    let cavity = CavityState::default_for_scan();
-    let layers = LayersState::default_for_scan();
+    // Slice 8 — start from defaults, then apply the loaded design if
+    // any. `apply_design_toml` errors only on catalog lookup, already
+    // gated by `validate_design_toml` at `load_design_toml`. A failure
+    // here means the catalog regressed between load and apply — fall
+    // back to defaults + log, don't crash the GUI.
+    let mut cavity = CavityState::default_for_scan();
+    let mut layers = LayersState::default_for_scan();
+    if let Some(d) = &loaded_design {
+        if let Err(e) = design_toml::apply_design_toml(d, &mut cavity, &mut layers) {
+            eprintln!(
+                "warning: apply_design_toml failed on a validated load ({e:#}); \
+                 starting with defaults"
+            );
+            cavity = CavityState::default_for_scan();
+            layers = LayersState::default_for_scan();
+        }
+    }
+    let save_state = SaveState::new(design_toml_path);
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -2220,10 +2545,12 @@ fn run_render_app(
         }))
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
+        .add_plugins(insertion_sim_ui::InsertionSimPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(DEVICE_UP_AXIS)
         .insert_resource(RenderScale(render_scale))
         .insert_resource(ScanMesh(scan_mesh))
+        .insert_resource(ScanFilePath(cleaned_stl_path))
         .insert_resource(scan_info)
         .insert_resource(Centerline {
             points_m: centerline_points,
@@ -2231,6 +2558,7 @@ fn run_render_app(
         .insert_resource(envelope_proxy)
         .insert_resource(cavity)
         .insert_resource(layers)
+        .insert_resource(save_state)
         .insert_resource(ScanMeshVisible::default())
         .add_systems(Startup, (setup_render_scene, spawn_cavity_mesh).chain())
         .add_systems(

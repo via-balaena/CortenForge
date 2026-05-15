@@ -48,6 +48,18 @@ meshopt = { workspace = true }
 # `Point3` + `Vector3` for the centerline polyline parsing.
 nalgebra = { workspace = true }
 
+# Slice 7 insertion-sim SDF bridge (sub-commit 7.0+). `mesh-sdf` builds
+# a `SignedDistanceField` of the cleaned scan; cf-design's
+# `impl Sdf for SignedDistanceField` lets it flow into a `cf_design::Solid`
+# for the Route-A `outer.subtract(scan)` CSG; `sim-soft` tetrahedralizes
+# the result via `SdfMeshedTetMesh::from_sdf` and (7.2) runs the FEM
+# solve (`CpuNewtonSolver` + `PenaltyRigidContact`). `sim-ml-chassis`
+# supplies `Tensor`, the `replay_step` solve's position/velocity I/O type.
+mesh-sdf = { workspace = true }
+cf-design = { workspace = true }
+sim-soft = { workspace = true }
+sim-ml-chassis = { workspace = true }
+
 # Bevy 0.18 — feature set mirrors cf-scan-prep so the workspace's validated
 # rendering subset stays consistent across viewer binaries.
 bevy = { workspace = true, default-features = false, features = [

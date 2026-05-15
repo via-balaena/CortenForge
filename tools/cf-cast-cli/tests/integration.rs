@@ -153,3 +153,164 @@ enabled = false
         "pour mass {mass_kg} exceeds default budget"
     );
 }
+
+/// Slice 9 — same end-to-end pipeline but with the layer stack
+/// derived from a `<scan>.design.toml` produced by cf-device-design
+/// (here hand-written to exercise the schema). The cast.toml omits
+/// its own `[[layers]]` and instead points at the design TOML; the
+/// cf-cast-cli pipeline must lift the design's layer into the cast,
+/// then produce identical output to the inline-layers variant above.
+#[test]
+fn end_to_end_design_sourced_layers_produce_same_mold_artifacts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scan_stl = tmp.path().join("scan.cleaned.stl");
+    let prep_toml = tmp.path().join("scan.cleaned.prep.toml");
+    let design_toml = tmp.path().join("scan.design.toml");
+    let cast_toml = tmp.path().join("cast.toml");
+
+    let mesh = cube_mesh_m();
+    save_stl(&mesh, &scan_stl, true).unwrap();
+
+    std::fs::write(
+        &prep_toml,
+        r#"
+[scan_prep]
+source_stl = "raw.stl"
+tool_version = "0.0.0-test"
+generated_at = "2026-05-13T00:00:00Z"
+stl_units_at_load = "m"
+
+[centerline]
+points_m = [
+    [-0.011, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [0.011, 0.0, 0.0],
+]
+algorithm = "cross_section_centroids"
+"#,
+    )
+    .unwrap();
+
+    // cf-device-design `.design.toml` shape — hand-written to mirror
+    // what cf-device-design::design_toml::save_design_toml emits.
+    // Single ECOFLEX_00_30 layer at 6 mm, matching the inline-layers
+    // case above so the mold output is comparable.
+    std::fs::write(
+        &design_toml,
+        r#"
+[device_design]
+tool_version = "1.0.0"
+generated_at = "2026-05-15T22:34:00Z"
+schema_version = 1
+
+[scan_ref]
+cleaned_stl = "scan.cleaned.stl"
+
+[cavity]
+inset_m = 0.003
+visible = true
+
+[[layers]]
+thickness_m = 0.006
+material_anchor_key = "ECOFLEX_00_30"
+slacker_fraction = 0.0
+visible = true
+"#,
+    )
+    .unwrap();
+
+    // cast.toml with `[design]` block + NO `[[layers]]` — the lift
+    // populates them at run time.
+    std::fs::write(
+        &cast_toml,
+        r#"
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml = "scan.cleaned.prep.toml"
+
+[design]
+path = "scan.design.toml"
+
+[cast]
+mesh_cell_size_m = 0.005
+bounding_margin_m = 0.015
+piece_min_wall_mm = 0.1
+split_normal = [0.0, 0.0, -1.0]
+output_dir = "out"
+
+[plug_pins]
+enabled = false
+
+[pour_gate]
+enabled = false
+
+[registration_pins]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    let report = cf_cast_cli::run(&cast_toml, None).expect("cf-cast-cli design-sourced run");
+    assert_eq!(report.layer_count, 1);
+    assert_eq!(report.v2.layers.len(), 1);
+    let out_dir: PathBuf = tmp.path().join("out");
+    for p in [
+        out_dir.join("mold_layer_0_piece_0.stl"),
+        out_dir.join("mold_layer_0_piece_1.stl"),
+        out_dir.join("plug_layer_0.stl"),
+        out_dir.join("procedure.md"),
+    ] {
+        assert!(p.exists(), "expected output {} to exist", p.display());
+    }
+    // Procedure should still surface the design-lifted material.
+    let proc_text = std::fs::read_to_string(out_dir.join("procedure.md")).unwrap();
+    assert!(
+        proc_text.contains("Ecoflex 00-30"),
+        "procedure must reference the design-lifted material; got:\n{proc_text}"
+    );
+}
+
+/// Slice 9 — cast.toml with BOTH `[design]` and non-empty
+/// `[[layers]]` is rejected at validation (two sources of truth).
+/// Hand-builds a minimal CastConfig to exercise the gate without
+/// going through the full pipeline.
+#[test]
+fn design_plus_inline_layers_rejected() {
+    let toml_text = r#"
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml = "scan.cleaned.prep.toml"
+
+[design]
+path = "scan.design.toml"
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+    let cfg = cf_cast_cli::CastConfig::from_toml_str(toml_text).unwrap();
+    let err = cfg.validate_layer_source().unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("`[design]` is set"),
+        "expected layer-source error, got: {msg}"
+    );
+}
+
+/// Slice 9 — cast.toml with neither `[design]` nor `[[layers]]` is
+/// rejected at validation (no layer source at all).
+#[test]
+fn neither_design_nor_layers_rejected() {
+    let toml_text = r#"
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml = "scan.cleaned.prep.toml"
+"#;
+    let cfg = cf_cast_cli::CastConfig::from_toml_str(toml_text).unwrap();
+    let err = cfg.validate_layer_source().unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("neither layer source is set"),
+        "expected layer-source error, got: {msg}"
+    );
+}
