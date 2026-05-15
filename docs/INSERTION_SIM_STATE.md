@@ -721,3 +721,98 @@ become stale relative to the new design). User re-clicks Simulate.
 
 The slice-7 PR opens with everything through 7.4 in a single PR
 per the user's "all of 7.* in one PR" decision.
+
+---
+
+## Update — 2026-05-15 late: slice 7.5 SHIPPED — Slacker → sim-modulus
+
+Slice 7.5 plumbs `LayerSpec.slacker_fraction` (computed by slice 6.5
+and surfaced in the recipe panel) through to the insertion-sim's
+per-tet Yeoh material. At `slacker_fraction = 0` every layer's
+material is bit-exact with the pre-7.5 base anchor, so both
+regression ramps keep their pre-7.5 numbers; positive fractions
+shift the material to the Slacker-modified Shore reading via
+sim-soft's `SiliconeMaterial::from_effective_shore`.
+
+### Resolution scheme — `SlackerResolution`
+
+The Slacker TB pushes silicones across Shore scales (A → 00 → 000).
+sim-soft anchors Shore A + Shore 00 but **not** Shore 000 (the gel
+scale). New enum `SlackerResolution` captures every path:
+
+- `Base` — `slacker_fraction == 0` OR the anchor's
+  `slacker::Support` is `NotRecommended` (Ecoflex 00-10) / `NoData`
+  (Dragon Skin 15 / 20A / 30A). The base anchor is returned
+  unchanged.
+- `Interpolated` — the TB-tabulated point at this fraction lands
+  on Shore A or Shore 00. `from_effective_shore` resolves it
+  against the anchor family's bracketing anchors.
+  Example: `DRAGON_SKIN_10A + 0.25 Slacker` → Shore 00-30 → maps
+  exactly to ECOFLEX_00_30 (the anchor at that point).
+- `FlooredAtSoftestAnchor` — the TB point lands on Shore 000.
+  Returns `ECOFLEX_00_10`'s Yeoh material as a conservative floor
+  (slight over-stiffness vs ground truth, since Shore 000 is softer
+  than Shore 00-10). The user reads the **true** Slacker hardness
+  in the recipe panel; the sim caps below 00-10.
+
+### Why floor instead of extrapolate
+
+sim-soft has no published Shore-000 anchors — the gel scale isn't
+in the silicone table. Two plausible alternatives + why each was
+declined:
+
+- **Extrapolate from Shore-00-10's Yeoh** — would require a
+  calibrated mapping from Shore-000 hardness to (μ, λ, C₂). Not
+  in any published Smooth-On TDS; would need bench measurement.
+  Out of scope for slice 7.5.
+- **Synthesize Shore-000 anchors from `from_measured`** — needs
+  σ_100 readings for each gel grade. Available in Smooth-On TDS
+  for some grades but not as a complete anchor table. Future
+  slice 7.6 territory if the workshop-iter-1 cast surfaces a need.
+
+### New API surfaces (`insertion_sim`)
+
+- `pub struct SimLayer { ..., pub slacker_fraction: f64 }` (new
+  field; defaults to `0.0` via test sugar).
+- `pub enum SlackerResolution { Base, Interpolated, FlooredAtSoftestAnchor }`.
+- `fn effective_silicone_for_layer(&SimLayer) -> Result<(SiliconeMaterial, SlackerResolution)>`
+  — the resolution entry point.
+- `crate::slacker` module widened to `pub(crate)` so `insertion_sim`
+  can call `slacker::support`.
+
+### Tests + grade
+
+- `cargo test -p cf-device-design --bin cf-device-design`:
+  **78 passed, 9 ignored** (was 72 + 9; 6 new Slacker-resolution
+  tests):
+  - `effective_silicone_at_zero_slacker_is_base` — pins bit-exact
+    identity to base for all 8 anchors at `slacker = 0`.
+  - `effective_silicone_unsupported_anchors_fall_back_to_base` —
+    `NotRecommended` + `NoData` anchors return base even at
+    `slacker > 0`.
+  - `effective_silicone_ds10a_quarter_slacker_lands_at_ecoflex_00_30`
+    — the only Slacker outcome representable in sim-soft's anchored
+    families.
+  - `effective_silicone_shore_000_outcomes_floor_at_ecoflex_00_10`
+    — Shore-000 fallback path.
+  - `effective_silicone_off_curve_fraction_errors` — wiring-bug
+    surface for fractions not on a TB curve point.
+  - `effective_silicone_softens_monotonically_along_ds10a` —
+    sweeps the full DS10A curve, asserts μ decreases monotonically.
+- Both ignored ramps still 16/16 to 3 mm (synthetic F = 1.12 N,
+  λ ∈ [0.450, 1.239]; iter-1 max 5 Newton iters/step).
+- `cargo run -p xtask -- grade cf-device-design`: **A** on all 5
+  automated criteria.
+
+### What 7.5 does *not* try to do
+
+- No proper Shore-000 anchor calibration (deferred 7.6 if iter-1
+  cast surfaces a need; current floor is conservative).
+- No UI surface for `SlackerResolution` — the resolution variant
+  is internal-only for now (the recipe panel already shows the
+  TRUE effective hardness). Could surface in the Insertion-Sim
+  panel as a `(floored)` flag on layers using the 00-10 fallback
+  if that becomes useful.
+- No per-tet material at the layer-boundary interface — the
+  partition is still piecewise-constant (one Yeoh material per
+  layer's tets, not blended across the boundary).

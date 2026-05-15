@@ -984,7 +984,13 @@ fn compute_validations(
     }
 }
 
-mod slacker {
+// `pub(crate)` (slice 7.5): the insertion-sim path resolves a layer's
+// effective Yeoh material from `(anchor_key, slacker_fraction)`, which
+// requires reading the Slacker TB curves from this module. Module
+// visibility was private through 6.5 (only the panel UI in `main.rs`
+// consumed it); 7.5 widens to `pub(crate)` so `insertion_sim` can call
+// `slacker::support`.
+pub(crate) mod slacker {
     //! Slacker recipe data — Smooth-On Slacker™ silicone-softening
     //! tables, transcribed verbatim from the Slacker Tactile Mutator
     //! Technical Bulletin (rev 011524DH).

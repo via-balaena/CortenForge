@@ -76,8 +76,9 @@ use sim_soft::material::silicone_table::{
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPairReadout, CpuNewtonSolver, Field,
     LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf,
-    SdfMeshedTetMesh, SiliconeMaterial, Solver, SolverConfig, Tet4, TetId, Vec3, VertexId, Yeoh,
-    filter_pair_readouts_to_referenced, pick_vertices_by_predicate, referenced_vertices,
+    SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, Tet4, TetId, Vec3,
+    VertexId, Yeoh, filter_pair_readouts_to_referenced, pick_vertices_by_predicate,
+    referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -331,18 +332,15 @@ fn elapsed_ms(start: Instant) -> f64 {
 // ── 7.1 — insertion geometry + per-layer Yeoh material ──────────────
 
 /// One concentric layer of the device wall, projected for the
-/// insertion sim: a radial thickness + a base-silicone anchor key.
+/// insertion sim: a radial thickness + a base-silicone anchor key +
+/// the per-layer Slacker mass fraction.
 ///
-/// The decimated form of `main.rs`'s `LayerSpec` — drops `visible` (a
-/// viewport concern) and `slacker_fraction`. **Slacker note:** the
-/// per-layer Slacker ratio (slice 6.5) softens the *effective* Shore
-/// hardness, which would shift the Yeoh `(μ, C₂, λ)` the sim uses;
-/// 7.1 sims the *base* anchor only. Folding Slacker into the sim
-/// modulus is scheduled for **7.4** — that is when `SimDesign` is
-/// built from the real `LayersState` (which carries
-/// `slacker_fraction`), so the resolution via
-/// `SiliconeMaterial::from_effective_shore` rides the same app-state
-/// conversion. `SimLayer` grows a `slacker_fraction` field then.
+/// The decimated form of `main.rs`'s `LayerSpec` (drops `visible` —
+/// a viewport concern). `slacker_fraction` is plumbed straight
+/// through: slice 7.5 added the wiring from `LayerSpec.slacker_fraction`
+/// to the sim's per-tet Yeoh material via `effective_silicone_for_layer`
+/// — see the `Slacker → sim-modulus` section at module top for the
+/// resolution scheme + the Shore-000 floor.
 #[derive(Debug, Clone)]
 pub struct SimLayer {
     /// Radial thickness (meters). Innermost-first ordering, same as
@@ -351,6 +349,15 @@ pub struct SimLayer {
     /// Smooth-On base-silicone anchor key — one of the eight in
     /// `main.rs`'s `LAYER_MATERIALS` catalog.
     pub anchor_key: String,
+    /// Slacker mass as a fraction of the base silicone's Part A+B
+    /// mass — `0.0` for the base alone, matches the slice 6.5
+    /// `LayerSpec.slacker_fraction` semantics. The TB-tabulated
+    /// fractions are `{0.0, 0.25, 0.50, 0.75, 1.00}` per the
+    /// Smooth-On Slacker Technical Bulletin (rev 011524DH);
+    /// `crate::slacker::support(anchor_key)` returns the curve.
+    /// Off-curve values are snapped by `crate::resolve_slacker_fraction`
+    /// before reaching the sim.
+    pub slacker_fraction: f64,
 }
 
 /// Device-design parameters the insertion sim consumes: the cavity
@@ -389,6 +396,125 @@ fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
         other => Err(anyhow!(
             "unrecognized silicone anchor key {other:?} — not in the cf-device-design catalog"
         )),
+    }
+}
+
+/// How `effective_silicone_for_layer` resolved a layer — surfaces
+/// alongside the returned `SiliconeMaterial` so the panel can flag
+/// fallbacks to the user.
+///
+/// Slice 7.5: Slacker pushes silicones across Shore scales (A → 00 →
+/// 000). sim-soft's anchor table covers Shore 00 + Shore A; Shore 000
+/// (the gel scale, where most Slacker outcomes land) has no published
+/// Yeoh anchors. The variants below capture every path the resolver
+/// can take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlackerResolution {
+    /// `slacker_fraction == 0.0` (or `Support::NotRecommended` /
+    /// `Support::NoData`) — material is the base anchor unchanged.
+    Base,
+    /// Slacker fraction snapped to a TB curve point whose effective
+    /// hardness lands in Shore A or Shore 00, both of which sim-soft
+    /// anchors. The material was built via
+    /// `SiliconeMaterial::from_effective_shore`.
+    Interpolated,
+    /// Slacker fraction snapped to a TB point whose effective hardness
+    /// is Shore 000 (OOO) — softer than sim-soft's softest published
+    /// anchor (`ECOFLEX_00_10`). The resolver returns the
+    /// `ECOFLEX_00_10` material as a conservative floor (slight
+    /// over-stiffness vs ground truth). A proper Shore-000 calibration
+    /// is a future slice.
+    FlooredAtSoftestAnchor,
+}
+
+/// Resolve a layer's effective `SiliconeMaterial` from
+/// `(anchor_key, slacker_fraction)` — slice 7.5's Slacker → sim-modulus
+/// wiring.
+///
+/// **Resolution table** (driven by `crate::slacker::support`):
+///
+/// | `slacker_fraction` | `support(anchor)`        | Result |
+/// |---|---|---|
+/// | `0.0` (any anchor) | any                      | base anchor unchanged, `SlackerResolution::Base` |
+/// | `> 0.0`            | `NotRecommended`/`NoData` | base anchor unchanged, `SlackerResolution::Base` (defensive; the UI disables the picker for these anchors) |
+/// | `> 0.0`            | `Curve(c)`, point lands on Shore A  | `from_effective_shore(ShoreReading::A(points))`, `Interpolated` |
+/// | `> 0.0`            | `Curve(c)`, point lands on Shore 00 | `from_effective_shore(ShoreReading::DoubleZero(points))`, `Interpolated` |
+/// | `> 0.0`            | `Curve(c)`, point lands on Shore 000 | `ECOFLEX_00_10` material, `FlooredAtSoftestAnchor` |
+/// | `> 0.0`            | `Curve(c)`, no exact-match point at the fraction | base + a warning surfaced via `Err`; the UI's `resolve_slacker_fraction` snaps off-curve inputs before they reach here |
+///
+/// # Errors
+///
+/// - The anchor key is not in the catalog (delegated to
+///   [`silicone_for_anchor`]).
+/// - The slacker fraction is `> 0.0` but `Support::Curve` has no
+///   point at that fraction (within `f64::EPSILON`) — a wiring bug
+///   the UI's `resolve_slacker_fraction` should have prevented.
+/// - sim-soft's `from_effective_shore` rejects the interpolated
+///   point (out-of-range against the anchor family's bracketing
+///   pair).
+fn effective_silicone_for_layer(layer: &SimLayer) -> Result<(SiliconeMaterial, SlackerResolution)> {
+    let base = silicone_for_anchor(&layer.anchor_key)?;
+    // Zero-fraction shortcut: the base material is the answer
+    // regardless of `Support`. Bit-exact identity to pre-7.5
+    // behavior, which is what keeps both regression ramps' numbers
+    // unchanged.
+    if layer.slacker_fraction == 0.0 {
+        return Ok((base, SlackerResolution::Base));
+    }
+    let support = crate::slacker::support(&layer.anchor_key);
+    let curve = match support {
+        crate::slacker::Support::Curve(c) => c,
+        // The recipe panel disables the picker for these two
+        // variants, so a non-zero fraction reaching here is a wiring
+        // surprise — fall back to base rather than fail the sim.
+        crate::slacker::Support::NotRecommended | crate::slacker::Support::NoData => {
+            return Ok((base, SlackerResolution::Base));
+        }
+    };
+    // The UI snaps `slacker_fraction` to the curve's tabulated points
+    // (`resolve_slacker_fraction` in `main.rs`). Linear search through
+    // ≤ 5 points; binary-search overhead would be noise.
+    let point = curve
+        .iter()
+        .find(|p| (p.slacker_fraction - layer.slacker_fraction).abs() < f64::EPSILON)
+        .ok_or_else(|| {
+            anyhow!(
+                "slacker fraction {} is off the {} curve — the UI's resolve_slacker_fraction \
+                 should have snapped it to an exact point",
+                layer.slacker_fraction,
+                layer.anchor_key,
+            )
+        })?;
+    // `points: u32` from the TB; harmless cast to f64 (Shore values
+    // are 0-100 / 0-50 ranges, far under `2^53`).
+    #[allow(clippy::cast_precision_loss)]
+    let shore_points = f64::from(point.hardness.points);
+    match point.hardness.scale {
+        crate::slacker::ShoreScale::A => {
+            let mat = SiliconeMaterial::from_effective_shore(ShoreReading::A(shore_points), None)
+                .map_err(|e| {
+                anyhow!("sim-soft from_effective_shore(Shore A {shore_points}) failed: {e:?}")
+            })?;
+            Ok((mat, SlackerResolution::Interpolated))
+        }
+        crate::slacker::ShoreScale::OO => {
+            let mat = SiliconeMaterial::from_effective_shore(
+                ShoreReading::DoubleZero(shore_points),
+                None,
+            )
+            .map_err(|e| {
+                anyhow!("sim-soft from_effective_shore(Shore 00 {shore_points}) failed: {e:?}")
+            })?;
+            Ok((mat, SlackerResolution::Interpolated))
+        }
+        crate::slacker::ShoreScale::OOO => {
+            // Shore 000 (gel scale) is softer than ECOFLEX_00_10 (the
+            // softest sim-soft anchor). No published Yeoh data;
+            // floor to ECOFLEX_00_10 as a conservative over-stiffness.
+            // The user can read the recipe's TRUE hardness in the
+            // panel; the sim simply caps below 00-10.
+            Ok((ECOFLEX_00_10, SlackerResolution::FlooredAtSoftestAnchor))
+        }
     }
 }
 
@@ -571,12 +697,20 @@ pub fn build_insertion_geometry(
     // slack past the larger extent suffices.
     let bounds = scan_aabb(scan, outer_offset_m.max(0.0) + cell_size_m);
 
-    // Per-layer Yeoh parameters, innermost-first.
-    let materials = design
+    // Per-layer Yeoh parameters, innermost-first. Slice 7.5: resolve
+    // each layer through `effective_silicone_for_layer` so the
+    // Slacker fraction shifts the effective Shore + Yeoh params
+    // (representable Shore A / Shore 00 outcomes lift through
+    // `SiliconeMaterial::from_effective_shore`; Shore 000 outcomes
+    // floor to `ECOFLEX_00_10` — see `SlackerResolution` for the
+    // resolution table). At `slacker_fraction = 0.0` every layer
+    // returns its base anchor bit-exact, so both regression ramps
+    // keep their pre-7.5 numbers.
+    let materials: Vec<SiliconeMaterial> = design
         .layers
         .iter()
-        .map(|layer| silicone_for_anchor(&layer.anchor_key))
-        .collect::<Result<Vec<SiliconeMaterial>>>()?;
+        .map(|layer| effective_silicone_for_layer(layer).map(|(mat, _resolution)| mat))
+        .collect::<Result<Vec<_>>>()?;
     let thresholds = layer_boundary_thresholds(design);
 
     let decimated = decimate_for_sdf(scan, sdf_target_faces);
@@ -2034,11 +2168,24 @@ mod tests {
         }
     }
 
-    /// One [`SimLayer`] — test sugar.
+    /// One [`SimLayer`] — test sugar. `slacker_fraction` defaults to
+    /// `0.0` (base material). Tests that exercise slice 7.5's
+    /// Slacker-effective-shore path use `layer_with_slacker` instead.
     fn layer(thickness_m: f64, anchor: &str) -> SimLayer {
         SimLayer {
             thickness_m,
             anchor_key: anchor.to_string(),
+            slacker_fraction: 0.0,
+        }
+    }
+
+    /// Same as [`layer`] but with an explicit `slacker_fraction` —
+    /// slice 7.5's effective-Yeoh tests use this.
+    fn layer_with_slacker(thickness_m: f64, anchor: &str, slacker_fraction: f64) -> SimLayer {
+        SimLayer {
+            thickness_m,
+            anchor_key: anchor.to_string(),
+            slacker_fraction,
         }
     }
 
@@ -2073,6 +2220,156 @@ mod tests {
         );
         // An off-catalog key is an error, not a silent substitution.
         assert!(silicone_for_anchor("UNOBTANIUM").is_err());
+    }
+
+    // ── 7.5 — Slacker → sim-modulus resolution ────────────────────
+
+    /// `slacker_fraction = 0.0` returns the base anchor bit-exact —
+    /// the regression contract that keeps both ramps unchanged
+    /// post-7.5.
+    #[test]
+    fn effective_silicone_at_zero_slacker_is_base() {
+        for key in [
+            "ECOFLEX_00_10",
+            "ECOFLEX_00_20",
+            "ECOFLEX_00_30",
+            "ECOFLEX_00_50",
+            "DRAGON_SKIN_10A",
+            "DRAGON_SKIN_15",
+            "DRAGON_SKIN_20A",
+            "DRAGON_SKIN_30A",
+        ] {
+            let l = layer_with_slacker(0.005, key, 0.0);
+            let (mat, res) = effective_silicone_for_layer(&l).unwrap();
+            let base = silicone_for_anchor(key).unwrap();
+            assert_eq!(res, SlackerResolution::Base, "{key}");
+            // Bit-exact identity: the regression ramps depend on
+            // this.
+            assert_eq!(mat.mu, base.mu, "{key}: μ must match base");
+            assert_eq!(mat.lambda, base.lambda, "{key}: λ must match base");
+            assert_eq!(mat.c2, base.c2, "{key}: C₂ must match base");
+        }
+    }
+
+    /// `Support::NotRecommended` (Ecoflex 00-10 + Slacker) and
+    /// `Support::NoData` (Dragon Skin 15 / 20A / 30A) fall back to
+    /// the base anchor even when `slacker_fraction > 0` — the UI
+    /// disables the picker for these, so a non-zero value reaching
+    /// the sim is defensive territory; we surface it as `Base`
+    /// rather than failing.
+    #[test]
+    fn effective_silicone_unsupported_anchors_fall_back_to_base() {
+        for key in [
+            "ECOFLEX_00_10",
+            "DRAGON_SKIN_15",
+            "DRAGON_SKIN_20A",
+            "DRAGON_SKIN_30A",
+        ] {
+            let l = layer_with_slacker(0.005, key, 0.50);
+            let (mat, res) = effective_silicone_for_layer(&l).unwrap();
+            let base = silicone_for_anchor(key).unwrap();
+            assert_eq!(res, SlackerResolution::Base, "{key}");
+            assert_eq!(mat.mu, base.mu, "{key}");
+        }
+    }
+
+    /// `DRAGON_SKIN_10A + 0.25 Slacker` lands at Shore 00-30 (per the
+    /// TB curve), which sim-soft anchors exactly at ECOFLEX_00_30.
+    /// `from_effective_shore` returns the anchor's Yeoh params
+    /// bit-exact (the bracket interpolation collapses at the anchor
+    /// point). Resolution: `Interpolated`.
+    #[test]
+    fn effective_silicone_ds10a_quarter_slacker_lands_at_ecoflex_00_30() {
+        let l = layer_with_slacker(0.005, "DRAGON_SKIN_10A", 0.25);
+        let (mat, res) = effective_silicone_for_layer(&l).unwrap();
+        assert_eq!(res, SlackerResolution::Interpolated);
+        let target = silicone_for_anchor("ECOFLEX_00_30").unwrap();
+        // `from_effective_shore` interpolates across the Shore-00
+        // anchor table. Shore 00-30 happens to be an exact anchor
+        // point (ECOFLEX_00_30) so the bracket interpolation collapses
+        // to that anchor; μ / λ / C₂ are bit-exact.
+        assert!(
+            (mat.mu - target.mu).abs() < 1e-9,
+            "μ at DS10A+0.25 should match ECOFLEX_00_30 (got {} vs {})",
+            mat.mu,
+            target.mu,
+        );
+        assert!(
+            (mat.c2 - target.c2).abs() < 1e-9,
+            "C₂ at DS10A+0.25 should match ECOFLEX_00_30 (got {} vs {})",
+            mat.c2,
+            target.c2,
+        );
+        // The effective material is SOFTER than the base DS10A.
+        let base = silicone_for_anchor("DRAGON_SKIN_10A").unwrap();
+        assert!(mat.mu < base.mu, "+Slacker must soften the material");
+    }
+
+    /// Most Slacker-modified silicones land in Shore 000 (gel scale),
+    /// which sim-soft does not anchor. The resolver floors to
+    /// `ECOFLEX_00_10` (the softest published anchor) and flags
+    /// `FlooredAtSoftestAnchor`.
+    #[test]
+    fn effective_silicone_shore_000_outcomes_floor_at_ecoflex_00_10() {
+        // ECOFLEX_00_30 + 0.50 Slacker → 000-20 → floor.
+        let l = layer_with_slacker(0.005, "ECOFLEX_00_30", 0.50);
+        let (mat, res) = effective_silicone_for_layer(&l).unwrap();
+        assert_eq!(res, SlackerResolution::FlooredAtSoftestAnchor);
+        let floor = silicone_for_anchor("ECOFLEX_00_10").unwrap();
+        assert_eq!(mat.mu, floor.mu);
+        assert_eq!(mat.lambda, floor.lambda);
+        assert_eq!(mat.c2, floor.c2);
+
+        // DRAGON_SKIN_10A + 0.50 Slacker → 000-50 → also floor.
+        let l = layer_with_slacker(0.005, "DRAGON_SKIN_10A", 0.50);
+        let (_, res) = effective_silicone_for_layer(&l).unwrap();
+        assert_eq!(res, SlackerResolution::FlooredAtSoftestAnchor);
+    }
+
+    /// Off-curve `slacker_fraction` (not on any tabulated TB point)
+    /// is a wiring-side bug — surface it as an `Err` rather than
+    /// silently rounding. The UI's `resolve_slacker_fraction`
+    /// snaps inputs to the curve before they reach the sim.
+    #[test]
+    fn effective_silicone_off_curve_fraction_errors() {
+        let l = layer_with_slacker(0.005, "ECOFLEX_00_30", 0.10); // not on the curve
+        let err = effective_silicone_for_layer(&l).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("off the ECOFLEX_00_30 curve"),
+            "error should name the off-curve fraction + anchor (got {msg:?})"
+        );
+    }
+
+    /// As Slacker fraction increases along a curve, the effective μ
+    /// must decrease monotonically (softening). Spot-checks the
+    /// monotonicity across DS10A's published points (the only curve
+    /// with a Shore-A → Shore-00 → Shore-000 sweep representable in
+    /// the sim).
+    #[test]
+    fn effective_silicone_softens_monotonically_along_ds10a() {
+        let base = silicone_for_anchor("DRAGON_SKIN_10A").unwrap();
+        // 0.0 → DS10A native.
+        // 0.25 → Shore 00-30 (representable; ECOFLEX_00_30 anchor).
+        // 0.50+ → Shore 000-X (floored to ECOFLEX_00_10).
+        let mu_at = |frac: f64| -> f64 {
+            let l = layer_with_slacker(0.005, "DRAGON_SKIN_10A", frac);
+            effective_silicone_for_layer(&l).unwrap().0.mu
+        };
+        let m0 = base.mu;
+        let m1 = mu_at(0.25);
+        let m2 = mu_at(0.50);
+        let m3 = mu_at(0.75);
+        let m4 = mu_at(1.00);
+        assert!(m1 < m0, "0.25 must soften from base");
+        assert!(m2 < m1, "0.50 must soften from 0.25");
+        // 0.50 / 0.75 / 1.00 all hit the same floor (Shore 000 → 00-10),
+        // so m2 == m3 == m4.
+        assert_eq!(m2, m3, "floor at 0.50 should match 0.75 (both Shore 000)");
+        assert_eq!(m3, m4, "floor at 0.75 should match 1.00 (both Shore 000)");
+        // The floor is ECOFLEX_00_10's μ — pin that explicitly.
+        let floor_mu = silicone_for_anchor("ECOFLEX_00_10").unwrap().mu;
+        assert_eq!(m2, floor_mu);
     }
 
     #[test]

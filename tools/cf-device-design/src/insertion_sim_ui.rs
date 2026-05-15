@@ -309,6 +309,14 @@ fn build_sim_design(cavity: &CavityState, layers: &LayersState) -> SimDesign {
         .map(|l| SimLayer {
             thickness_m: l.thickness_m,
             anchor_key: l.material_anchor_key.to_string(),
+            // Slice 7.5: thread the per-layer Slacker fraction
+            // through to the sim. The UI's `resolve_slacker_fraction`
+            // already snaps off-curve values to the nearest TB
+            // tabulated point (or `0.0` when the anchor's
+            // `slacker::Support` flips to `NotRecommended` /
+            // `NoData`), so what reaches the sim is always either
+            // `0.0` or a known curve point.
+            slacker_fraction: l.slacker_fraction,
         })
         .collect();
     SimDesign {
