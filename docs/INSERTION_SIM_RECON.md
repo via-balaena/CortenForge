@@ -743,3 +743,43 @@ the bookmark plans for slice 7.4+.
     Will be reintroduced in session 4 per the bookmark above.
 - **Next**: session 4 — implement N3. See §"Bookmark —
   implementation slice for next session" above.
+
+---
+
+## Post-implementation note (slice 7.3c shipped, 2026-05-15)
+
+The N3 fix shipped as slice 7.3c. Synthetic ramp reaches
+`16 / 16` (full 3 mm); iter-1 ramp reaches `12 / 16` (~2.25 mm) —
+both bit-exact reproductions of the recon-iter-3 measurements.
+Synthetic-ramp assertion tightened from `>= 10 steps` to
+`== 16 steps`. cf-device-design grew from 56 → 59 tests (the
+three smoother contract tests).
+
+### Surprise: N3 + N2 combo *regresses* iter-1, doesn't compose
+
+The bookmark item 5 conditional "if combined ≥ 14 / 16, keep the
+bump" was measured this session. Result: **the combo regresses to
+9 / 16 (1.69 mm, 56 %)**, worse than N3-alone's 12 / 16. The
+failure mode also flipped back from Yeoh-validity (N3-alone) to
+Armijo line-search stall (combo).
+
+Hypothesis (post-hoc — needs recon-iter-4 to confirm before any
+re-attempt): at 2 500 faces the decimated proxy's facet length
+scale is ~10 mm, far above the σ = 0.5 cell × 3 mm = 1.5 mm
+smoothing bandwidth — the smoother completely eliminates the
+proxy's polyhedral kinks. At 25 000 faces the proxy's facet
+scale drops to ~3 mm, matching the smoothing bandwidth — but the
+real scan-capture noise (rotating-table artifacts, sub-mm
+amplitude features) is *exposed* by the faithful proxy. σ = 0.5
+cell is enough to suppress one source of high-frequency content
+or the other, but not both at the same time.
+
+A clean N2 follow-up therefore needs σ retuning — likely σ ≥ 1.0
+cell when `sdf_target_faces ≥ 25_000`. That's a recon-iter-4
+project, gated on slice 8/9 surfacing a deeper-iter-1-envelope
+*requirement*. Slice 7.3c shipped at 75 % iter-1 envelope; no
+downstream consumer needs more right now.
+
+`sdf_target_faces = 2_500` stays the iter-1 ramp test default;
+the test's docstring records the combo-regression so the next
+recon doesn't re-tread it without retuning σ first.

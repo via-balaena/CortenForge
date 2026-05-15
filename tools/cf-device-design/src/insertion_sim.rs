@@ -934,6 +934,138 @@ fn neighbours6(i: usize, w: usize, h: usize, d: usize) -> [Option<usize>; 6] {
     ]
 }
 
+/// Per-cell σ of the [`GridSdf`] signed-distance Gaussian pre-smooth
+/// (slice 7.3c, [`gaussian_smooth_3d_separable`]).
+///
+/// The smoothing makes the trilinear interpolant inside `SdfGrid`
+/// approximate a C¹ function so the contact-side
+/// `gradient = ∇φ / ‖∇φ‖` does not carry the C⁰ kinks the polyhedral
+/// source mesh injects at facet boundaries. Recon-iter-3 (commit
+/// `f981a442`) measured σ = 0.5 cell unlocks the synthetic-icosphere
+/// ramp from 87 % → **100 %** and the iter-1 scan ramp from 31 % →
+/// **75 %** (both ramps' failure mode shifts from contact-side
+/// Armijo stall to material-side Yeoh stretch-validity).
+///
+/// Side effect: surface-position bias ≈ `σ²·κ / 2` where κ is local
+/// mean curvature. At σ = 0.5 cell = 1.5 mm on a 40 mm-radius sphere
+/// this is ~0.03 mm; on 5 mm-radius features ~0.2 mm. Both are well
+/// below the 4 mm BCC cell budget and inside the Fork-B
+/// relative-comparison tolerance. See `docs/INSERTION_SIM_RECON.md`
+/// §"Recon iter 3 results" for the discriminating-experiment trail.
+const GRID_SDF_SMOOTH_SIGMA_CELLS: f64 = 0.5;
+
+/// Separable 3D Gaussian smoothing on a flat `w × h × d` scalar
+/// buffer.
+///
+/// Used by [`build_grid_sdf`] (slice 7.3c) to pre-smooth the
+/// signed-distance values so the [`GridSdf`] trilinear interpolant
+/// approximates a C¹ function — the contact-side
+/// `gradient = ∇φ / ‖∇φ‖` then carries far smaller cell-face
+/// direction artifacts than the unsmoothed FD path. See
+/// [`GRID_SDF_SMOOTH_SIGMA_CELLS`] for the rationale + measured
+/// envelope effect.
+///
+/// Kernel radius `r = ceil(2σ)` so the dropped tails carry < 0.5 %
+/// of total weight. The default σ = 0.5 cell uses a 3-tap kernel.
+/// Boundary handling is clamp-at-edge — the bbox margin
+/// (≥ `cell_size` past the scan outer envelope) keeps the outside
+/// well-saturated, so clamp is faithful and adds no sign-flip risk.
+///
+/// `sigma_cells = 0.0` short-circuits to a copy of the input
+/// (identity); negative σ would produce an empty kernel and
+/// `debug_assert!`s out.
+fn gaussian_smooth_3d_separable(
+    field: &[f64],
+    w: usize,
+    h: usize,
+    d: usize,
+    sigma_cells: f64,
+) -> Vec<f64> {
+    debug_assert!(
+        sigma_cells.is_finite() && sigma_cells >= 0.0,
+        "gaussian_smooth_3d_separable: sigma_cells must be finite and non-negative, got {sigma_cells}",
+    );
+    if sigma_cells == 0.0 {
+        return field.to_vec();
+    }
+    debug_assert_eq!(
+        field.len(),
+        w * h * d,
+        "gaussian_smooth_3d_separable: field length {} != w*h*d = {}*{}*{}",
+        field.len(),
+        w,
+        h,
+        d,
+    );
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let r = (2.0 * sigma_cells).ceil() as i32;
+    let two_sigma_sq = 2.0 * sigma_cells * sigma_cells;
+    let mut kernel: Vec<f64> = (-r..=r)
+        .map(|i| (-(f64::from(i)).powi(2) / two_sigma_sq).exp())
+        .collect();
+    let kernel_sum: f64 = kernel.iter().sum();
+    for k in &mut kernel {
+        *k /= kernel_sum;
+    }
+    #[allow(clippy::cast_possible_wrap)]
+    let clamp_idx = |i: i32, n: usize| i.max(0).min(n as i32 - 1) as usize;
+    let idx = |x: usize, y: usize, z: usize| z * w * h + y * w + x;
+
+    // X-pass: field → tmp1
+    let mut tmp1 = vec![0.0_f64; field.len()];
+    for z in 0..d {
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = 0.0;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let dx = ki as i32 - r;
+                    #[allow(clippy::cast_possible_wrap)]
+                    let xn = clamp_idx(x as i32 + dx, w);
+                    acc += kv * field[idx(xn, y, z)];
+                }
+                tmp1[idx(x, y, z)] = acc;
+            }
+        }
+    }
+    // Y-pass: tmp1 → tmp2
+    let mut tmp2 = vec![0.0_f64; field.len()];
+    for z in 0..d {
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = 0.0;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let dy = ki as i32 - r;
+                    #[allow(clippy::cast_possible_wrap)]
+                    let yn = clamp_idx(y as i32 + dy, h);
+                    acc += kv * tmp1[idx(x, yn, z)];
+                }
+                tmp2[idx(x, y, z)] = acc;
+            }
+        }
+    }
+    // Z-pass: tmp2 → out
+    let mut out = vec![0.0_f64; field.len()];
+    for z in 0..d {
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = 0.0;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let dz = ki as i32 - r;
+                    #[allow(clippy::cast_possible_wrap)]
+                    let zn = clamp_idx(z as i32 + dz, d);
+                    acc += kv * tmp2[idx(x, y, zn)];
+                }
+                out[idx(x, y, z)] = acc;
+            }
+        }
+    }
+    out
+}
+
 /// Build a flood-fill-signed [`GridSdf`] of `scan` over `bbox`.
 ///
 /// Pipeline: sample [`mesh_sdf::unsigned_distance`] at every lattice
@@ -943,7 +1075,10 @@ fn neighbours6(i: usize, w: usize, h: usize, d: usize) -> [Option<usize>; 6] {
 /// flood "outside" 6-connected from the eight bbox corners through
 /// non-wall points → non-wall, not-reached points are the interior →
 /// expand the Outside/Inside labels into the wall band by multi-
-/// source BFS → signed value = `±unsigned`.
+/// source BFS → signed value = `±unsigned` → **separable 3D
+/// Gaussian pre-smooth (σ = `GRID_SDF_SMOOTH_SIGMA_CELLS` = 0.5 cell)
+/// on the signed buffer (slice 7.3c)** — see
+/// [`GRID_SDF_SMOOTH_SIGMA_CELLS`] for the envelope-extension trail.
 ///
 /// `wall_threshold_m` must be `≥ 0.5 * grid_cell_m` so the wall band
 /// is 6-connectivity-watertight (a surface crossing between adjacent
@@ -1104,7 +1239,14 @@ pub fn build_grid_sdf(
     let n_outside = region.iter().filter(|&&r| r == Region::Outside).count();
     let n_inside = n - n_outside;
 
-    let grid = SdfGrid::new(signed, w, h, d, grid_cell_m, origin);
+    // 7. Slice 7.3c — separable 3D Gaussian pre-smooth on the signed
+    //    buffer so the trilinear interpolant inside `SdfGrid`
+    //    approximates a C¹ function. Recon-iter-3 (`f981a442`) measured
+    //    σ = 0.5 cell extends the insertion-sim envelope from
+    //    {87 %, 31 %} to {100 %, 75 %} on the two ramps. See
+    //    `GRID_SDF_SMOOTH_SIGMA_CELLS` for the bias note + trail.
+    let smoothed = gaussian_smooth_3d_separable(&signed, w, h, d, GRID_SDF_SMOOTH_SIGMA_CELLS);
+    let grid = SdfGrid::new(smoothed, w, h, d, grid_cell_m, origin);
     let report = GridSdfReport {
         dims: [w, h, d],
         grid_cell_m,
@@ -1351,6 +1493,86 @@ mod tests {
         // face set is returned unchanged (the cube survives the weld).
         let out = decimate_for_sdf(&unit_cube(), 10_000);
         assert_eq!(out.faces.len(), 12);
+    }
+
+    /// Slice 7.3c — [`gaussian_smooth_3d_separable`] is the identity on
+    /// a constant field. For any σ, a Gaussian-weighted average of a
+    /// constant is the constant; the smoother must preserve that bit-
+    /// exactly (modulo fp normalization round-off), because constant
+    /// regions of the signed buffer correspond to the bbox-margin
+    /// "deep outside" / "deep inside" that the contact solver relies
+    /// on for sign discrimination.
+    #[test]
+    fn gaussian_smooth_is_bit_exact_on_constant_field() {
+        let (w, h, d) = (5, 4, 3);
+        let c = 7.5_f64;
+        let field = vec![c; w * h * d];
+        for &sigma in &[0.0, 0.5, 1.0, 1.5] {
+            let out = gaussian_smooth_3d_separable(&field, w, h, d, sigma);
+            assert_eq!(out.len(), field.len());
+            for (i, &v) in out.iter().enumerate() {
+                assert!(
+                    (v - c).abs() < 1e-12,
+                    "constant-field smoothing at σ={sigma} drifted at index {i}: \
+                     got {v}, expected {c}",
+                );
+            }
+        }
+    }
+
+    /// Slice 7.3c — `sigma_cells = 0.0` is a true identity (the
+    /// implementation short-circuits to `field.to_vec()`). This pins
+    /// the contract that callers can disable smoothing without
+    /// fp-noise side effects.
+    #[test]
+    fn gaussian_smooth_with_zero_sigma_is_exact_identity() {
+        let (w, h, d) = (3, 3, 3);
+        // A field with structure — not a constant — so any
+        // accidental convolution would visibly mutate it.
+        let field: Vec<f64> = (0..w * h * d)
+            .map(|i| (i as f64).sin() * 17.5 - 0.25)
+            .collect();
+        let out = gaussian_smooth_3d_separable(&field, w, h, d, 0.0);
+        assert_eq!(out, field, "σ=0 must return the field bit-exactly");
+    }
+
+    /// Slice 7.3c — separability means the smoother shifts feature
+    /// position by O(σ²·κ) and preserves a *linear* field exactly
+    /// (within fp). Linear-along-x is bit-exact for any axis-aligned
+    /// kernel: each x-pass averages `f(x-1) + f(x) + f(x+1) = 3·f(x)`
+    /// (for an odd, symmetric, normalized kernel on a linear field —
+    /// the symmetric weights pair to zero around the center). This
+    /// pins the no-bias-on-flat-surfaces contract; non-zero
+    /// curvature is the only thing the smoother shifts.
+    #[test]
+    fn gaussian_smooth_preserves_linear_field_interior() {
+        let (w, h, d) = (7, 5, 5);
+        let idx = |x: usize, y: usize, z: usize| z * w * h + y * w + x;
+        // Linear along x: f(x, y, z) = 2x + 3 (interior is exact;
+        // boundary picks up the clamp-edge mirror, expected).
+        let mut field = vec![0.0_f64; w * h * d];
+        for z in 0..d {
+            for y in 0..h {
+                for x in 0..w {
+                    field[idx(x, y, z)] = 2.0 * x as f64 + 3.0;
+                }
+            }
+        }
+        let out = gaussian_smooth_3d_separable(&field, w, h, d, 0.5);
+        // Interior x ∈ {1 .. w-2} away from clamp boundaries.
+        for z in 0..d {
+            for y in 0..h {
+                for x in 1..w - 1 {
+                    let expected = 2.0 * x as f64 + 3.0;
+                    let got = out[idx(x, y, z)];
+                    assert!(
+                        (got - expected).abs() < 1e-12,
+                        "linear-field smoothing at ({x},{y},{z}) drifted: \
+                         got {got}, expected {expected}",
+                    );
+                }
+            }
+        }
     }
 
     /// One [`SimLayer`] — test sugar.
@@ -2226,12 +2448,14 @@ mod tests {
     }
 
     /// [`run_insertion_ramp`] on the well-conditioned synthetic
-    /// icosphere — the ramp seats the intruder deep into the press-fit
-    /// (warm-starting + the gentler contact `κ` reach ~2.6 mm of the
-    /// 3 mm inset, vs the single-step solve's ~0.5 mm), then the
-    /// deep-regime non-SPD tangent stalls it. The exact stall depth is
-    /// a *characterized finding*, not a bug — `failed_at_step` reports
-    /// it; the test's regression floor is "≥ 10 steps converged".
+    /// icosphere — slice 7.3c (Gaussian pre-smooth on the GridSdf
+    /// signed buffer) seats the intruder to the **full 3 mm inset**
+    /// in all 16 ramp steps. Pre-7.3c (FD-on-unsmoothed-trilinear) was
+    /// 14 / 16 (≈ 2.62 mm) with a contact-side Armijo stall at the
+    /// 15th step; post-7.3c the contact side is no longer the binding
+    /// constraint and the ramp completes cleanly. The regression
+    /// assertion is therefore `== 16 steps` (full depth). If a future
+    /// change re-introduces the contact wall, this test fires.
     ///
     /// `#[ignore]` — a release-mode multi-step solve. Self-contained
     /// (no fixture). Run:
@@ -2273,23 +2497,23 @@ mod tests {
             );
         }
 
-        // The ramp must seat the intruder deep — warm-starting + the
-        // gentler `κ` carry it well past the single-step ~0.5 mm
-        // envelope. `>= 10` of 16 steps (≥ ~1.9 mm) is the regression
-        // floor; the synthetic reaches ~14 (≈ 2.6 mm). The deep-regime
-        // stall past that is a characterized finding, not a failure.
-        assert!(
-            ramp.steps.len() >= 10,
-            "the ramp must seat the intruder past ~1.9 mm — got only {} steps",
+        // Slice 7.3c: Gaussian pre-smooth on the GridSdf signed buffer
+        // lifts the synthetic envelope from 14 / 16 (pre-fix Armijo
+        // stall) to the full 16 / 16. The regression assertion pins
+        // *full depth*; if a future change re-introduces a contact
+        // wall, the assert fires.
+        assert_eq!(
+            ramp.steps.len(),
+            n_steps,
+            "the synthetic ramp must reach the full {n_steps}-step depth \
+             (slice 7.3c — Gaussian pre-smooth); got only {}",
             ramp.steps.len(),
         );
-        // Graceful failure: a stalled deep step captures its reason.
-        if ramp.failed_at_step.is_some() {
-            assert!(
-                ramp.failure_reason.is_some(),
-                "a stalled ramp must capture the failure reason",
-            );
-        }
+        assert!(
+            ramp.failed_at_step.is_none(),
+            "slice 7.3c: full-depth ramp must not stall — got failure at step {:?}",
+            ramp.failed_at_step,
+        );
         assert!(
             ramp.n_pinned > 0,
             "the outer skin must have pinned vertices"
@@ -2309,15 +2533,24 @@ mod tests {
     }
 
     /// **7.3b.1 payoff** — [`run_insertion_ramp`] on the real iter-1
-    /// scan: does warm-starting fix the convergence the 7.2 / 7.3a
-    /// single-step solve could not reach?
+    /// scan.
+    ///
+    /// Slice 7.3c (Gaussian pre-smooth on the GridSdf signed buffer)
+    /// lifts the iter-1 envelope from 5 / 16 (≈ 0.94 mm, 31 %,
+    /// contact-side Armijo stall — recon-iter-3 baseline `c05c2eb8`)
+    /// to **12 / 16** (≈ 2.25 mm, 75 %, material-side Yeoh
+    /// stretch-validity stop — recon-iter-3 measured `f981a442`).
+    /// The deep wall is now the constitutive model, not the contact
+    /// formulation. The N2 follow-up (raising `sdf_target_faces` to
+    /// 25 000) reaches further; that bump lives in
+    /// `build_insertion_geometry`'s caller knob.
     ///
     /// Reports every step and asserts the ramp *mechanics* (monotonic
-    /// interference, finite `final_x`, ≥ 1 step). Whether it converges
-    /// *all* the way to the full cavity inset — vs `failed_at_step`
-    /// partway — is the empirical question this test answers; the
-    /// assertion is tightened to `failed_at_step.is_none()` once /
-    /// if the run confirms it.
+    /// interference, finite `final_x`, ≥ 1 step). The exact converged-
+    /// step count is *not* asserted — the iter-1 scan is repo-excluded
+    /// and small geometry changes drift the Yeoh wall by a step or
+    /// two. The synthetic test pins the contract; this test
+    /// characterizes.
     ///
     /// `#[ignore]` — needs the iter-1 fixture + a release-mode ramp.
     #[test]
@@ -2336,6 +2569,17 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
+        // `sdf_target_faces = 2 500` per the slice 7.0 spike's "tet
+        // quality is governed by cell_size, not SDF face count"
+        // finding. The recon-iter-3 N2 experiment (`f981a442`) showed
+        // 25 000 faces *alone* doubles the iter-1 envelope (31 → 62 %)
+        // — but **the combo with the slice 7.3c Gaussian smooth
+        // regresses to 56 %**: at 25 k faces the scan-capture noise
+        // amplitude (rotating-table artifacts) is binding, and the
+        // σ = 0.5 cell smoothing tuned for the 2 500-face proxy's
+        // polyhedral kinks is too weak to suppress it. A clean N2
+        // follow-up requires σ retuning — recon-iter-4 territory if
+        // and when slice 8/9 surfaces a deeper-envelope requirement.
         let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
             .expect("iter-1 geometry should build");
         let n_tets = geometry.n_tets;
