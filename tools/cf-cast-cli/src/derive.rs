@@ -347,18 +347,21 @@ mod tests {
                     material: "ECOFLEX_00_30".to_string(),
                     density_kg_m3: None,
                     display_name: None,
+                    slacker_fraction: None,
                 },
                 LayerConfig {
                     thickness_m: 0.004,
                     material: "DRAGON_SKIN_10A".to_string(),
                     density_kg_m3: None,
                     display_name: None,
+                    slacker_fraction: None,
                 },
                 LayerConfig {
                     thickness_m: 0.004,
                     material: "ECOFLEX_00_30".to_string(),
                     density_kg_m3: None,
                     display_name: None,
+                    slacker_fraction: None,
                 },
             ],
             plug_pins: PlugPinConfig::default(),
@@ -411,6 +414,7 @@ mod tests {
             material: "ECOFLEX_00_30".to_string(),
             density_kg_m3: None,
             display_name: None,
+            slacker_fraction: None,
         };
         let m = build_material(&cfg).unwrap();
         assert_eq!(m.display_name, "Ecoflex 00-30");
@@ -425,6 +429,7 @@ mod tests {
             material: "ECOFLEX_00_30".to_string(),
             density_kg_m3: Some(1234.0),
             display_name: Some("Custom Ecoflex".to_string()),
+            slacker_fraction: None,
         };
         let m = build_material(&cfg).unwrap();
         assert_eq!(m.display_name, "Custom Ecoflex");
@@ -439,6 +444,7 @@ mod tests {
             material: "CUSTOM_GRADE".to_string(),
             density_kg_m3: Some(1080.0),
             display_name: Some("Custom".to_string()),
+            slacker_fraction: None,
         };
         let m = build_material(&cfg).unwrap();
         assert_eq!(m.display_name, "Custom");

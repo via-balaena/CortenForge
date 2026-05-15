@@ -421,6 +421,117 @@ enabled = false
         proc_text.contains("**2.00 mm**"),
         "procedure.md must surface the inset value (2 mm) with 2-dp mm formatting; got:\n{proc_text}",
     );
+    // Slice 9.5 — design.toml had slacker_fraction = 0.0 for the
+    // single layer, so the Slacker Recipe section MUST NOT appear.
+    assert!(
+        !proc_text.contains("## Slacker Recipe"),
+        "slacker_fraction = 0 must omit the Slacker Recipe section; got:\n{proc_text}",
+    );
+}
+
+/// Slice 9.5 — design-sourced run with a non-zero `slacker_fraction`
+/// produces a `## Slacker Recipe` section in procedure.md alongside
+/// the existing Materials Summary table. Single-layer 6 mm Ecoflex
+/// 00-30 with 15 % Slacker on a 30 mm cube fixture.
+#[test]
+fn end_to_end_design_sourced_with_slacker_fraction_surfaces_recipe_in_procedure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scan_stl = tmp.path().join("scan.cleaned.stl");
+    let prep_toml = tmp.path().join("scan.cleaned.prep.toml");
+    let design_toml = tmp.path().join("scan.design.toml");
+    let cast_toml = tmp.path().join("cast.toml");
+
+    let mesh = cube_mesh_m();
+    save_stl(&mesh, &scan_stl, true).unwrap();
+
+    std::fs::write(
+        &prep_toml,
+        r#"
+[scan_prep]
+source_stl = "raw.stl"
+tool_version = "0.0.0-test"
+generated_at = "2026-05-13T00:00:00Z"
+stl_units_at_load = "m"
+
+[centerline]
+points_m = [
+    [-0.011, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [0.011, 0.0, 0.0],
+]
+algorithm = "cross_section_centroids"
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &design_toml,
+        r#"
+[device_design]
+tool_version = "1.0.0"
+generated_at = "2026-05-15T22:34:00Z"
+schema_version = 1
+
+[scan_ref]
+cleaned_stl = "scan.cleaned.stl"
+
+[cavity]
+inset_m = 0.0
+visible = true
+
+[[layers]]
+thickness_m = 0.006
+material_anchor_key = "ECOFLEX_00_30"
+slacker_fraction = 0.15
+visible = true
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &cast_toml,
+        r#"
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml = "scan.cleaned.prep.toml"
+
+[design]
+path = "scan.design.toml"
+
+[cast]
+mesh_cell_size_m = 0.005
+bounding_margin_m = 0.015
+piece_min_wall_mm = 0.1
+split_normal = [0.0, 0.0, -1.0]
+output_dir = "out"
+
+[plug_pins]
+enabled = false
+
+[pour_gate]
+enabled = false
+
+[registration_pins]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    let report = cf_cast_cli::run(&cast_toml, None).expect("cf-cast-cli slacker run");
+    let proc_text = std::fs::read_to_string(report.procedure_path).unwrap();
+    assert!(
+        proc_text.contains("## Slacker Recipe"),
+        "procedure.md must contain the Slacker Recipe section when slacker > 0; got:\n{proc_text}",
+    );
+    assert!(
+        proc_text.contains("15.0%"),
+        "procedure.md must surface the slacker fraction (15%); got:\n{proc_text}",
+    );
+    // No inset → no Press-Fit section.
+    assert!(
+        !proc_text.contains("## Press-Fit Reservation"),
+        "inset = 0 must omit Press-Fit section; got:\n{proc_text}",
+    );
 }
 
 /// Slice 9 — cast.toml with neither `[design]` nor `[[layers]]` is

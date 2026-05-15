@@ -168,6 +168,25 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     // procedure output is preserved bit-for-bit.
     procedure_post::inject_press_fit_section(&procedure_path, cavity_inset_m)
         .context("post-process procedure.md to surface press-fit reservation")?;
+    // Slice 9.5 — splice `## Slacker Recipe` into the procedure
+    // markdown when at least one layer has a non-zero Slacker
+    // fraction. No-op when no layer uses Slacker. The recipe table
+    // is built from `config.layers` (slacker_fraction) and
+    // `report.layers[i].pour_volume.pour_mass_kg` (base mass).
+    let slacker_recipes: Vec<procedure_post::SlackerLayerRecipe> = config
+        .layers
+        .iter()
+        .zip(report.layers.iter())
+        .map(
+            |(layer_cfg, mold_artifact)| procedure_post::SlackerLayerRecipe {
+                display_name: mold_artifact.material_display_name.clone(),
+                pour_mass_kg: mold_artifact.pour_volume.pour_mass_kg,
+                slacker_fraction: layer_cfg.slacker_fraction,
+            },
+        )
+        .collect();
+    procedure_post::inject_slacker_recipe_section(&procedure_path, &slacker_recipes)
+        .context("post-process procedure.md to surface slacker recipe")?;
 
     Ok(RunReport {
         out_dir,
@@ -243,6 +262,14 @@ pub fn derive_layers_from_design(design: &design_ref::DesignRef) -> Vec<LayerCon
             material: l.material_anchor_key.clone(),
             density_kg_m3: None,
             display_name: None,
+            // Slice 9.5 — lift slacker fraction only when non-zero,
+            // matching the "Slacker Recipe" section's opt-in
+            // semantics (no section emitted when no layer uses it).
+            slacker_fraction: if l.slacker_fraction > 0.0 {
+                Some(l.slacker_fraction)
+            } else {
+                None
+            },
         })
         .collect()
 }
