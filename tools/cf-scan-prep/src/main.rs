@@ -2852,6 +2852,7 @@ fn run_render_app(
                 auto_clear_status,
                 draw_reference_overlays,
                 draw_cap_overlays,
+                draw_trim_plane_overlays,
                 exit_on_esc,
             ),
         )
@@ -3477,6 +3478,140 @@ fn draw_cap_overlays(
             gizmos.line(window[0], window[1], centerline_color);
         }
     }
+}
+
+/// Update system: draw orange circles in the viewport at each
+/// centerline-trim cut plane (CSP.4b.2). Shows the user — live, as
+/// they drag the trim sliders — exactly where the cut will happen
+/// at save time. Two circles render when both trims are non-zero;
+/// one when only the corresponding slider is non-zero; none when
+/// both are zero (or the centerline hasn't been scanned yet).
+///
+/// Each circle:
+/// - **Center**: along the centerline polyline at the trim distance
+///   from the corresponding end (tip = polyline\[0\] + tangent ×
+///   trim_tip_mm; floor = polyline\[N-1\] - tangent × trim_floor_mm).
+/// - **Normal**: the centerline tangent at that end (perpendicular
+///   to the cut plane = the circle plane).
+/// - **Radius**: half the largest scan AABB extent, sized so the
+///   circle always pokes past the scan in any orientation.
+/// - **Color**: bright orange, distinct from the cyan centerline +
+///   the cap-loop palette.
+///
+/// Bakes the centerline-frame positions through the live Reorient +
+/// Recenter exactly the way `draw_cap_overlays` projects the
+/// centerline polyline itself — so the overlay tracks the mesh
+/// when the user nudges the manual sliders too.
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
+fn draw_trim_plane_overlays(
+    cap: Res<CapState>,
+    trim: Res<CenterlineTrimState>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+    overlays: Res<OverlayLengths>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut gizmos: Gizmos,
+) {
+    if cap.centerline_polyline.len() < 2 {
+        return;
+    }
+    if trim.trim_tip_mm <= 0.0 && trim.trim_floor_mm <= 0.0 {
+        return;
+    }
+    let rotation_bevy = physics_quat_to_bevy_for_plus_z(reorient.quaternion_physics());
+    let recenter_world = recenter.translation_world(*up, render_scale.0);
+    let bbox_center_bevy = overlays.bbox_center_bevy;
+
+    // Radius sized to clearly poke past the scan in any orientation.
+    // Use the max raw AABB extent so the circle's diameter is at
+    // least the longest scan dimension. Times render_scale to land
+    // in Bevy world units.
+    let raw_aabb = overlays.raw_aabb_m;
+    let max_extent_m = (raw_aabb.max.x - raw_aabb.min.x)
+        .max(raw_aabb.max.y - raw_aabb.min.y)
+        .max(raw_aabb.max.z - raw_aabb.min.z);
+    #[allow(clippy::cast_possible_truncation)]
+    let radius_world = (max_extent_m * 0.5 * 1.2) as f32 * render_scale.0;
+
+    let color = Color::srgb(1.0, 0.55, 0.10);
+
+    // Centerline tangent at the tip end (polyline[0] → polyline[1]).
+    let cl = &cap.centerline_polyline;
+    let n = cl.len();
+    let tip_tangent_raw = cl[1].coords - cl[0].coords;
+    let tip_tangent_norm = tip_tangent_raw.norm();
+    if trim.trim_tip_mm > 0.0 && tip_tangent_norm > f64::EPSILON {
+        let tangent_phys = tip_tangent_raw / tip_tangent_norm;
+        let plane_center_phys =
+            Point3::from(cl[0].coords + tangent_phys * (trim.trim_tip_mm * 0.001));
+        let plane_center_world = project_mesh_local_to_world(
+            &plane_center_phys,
+            *up,
+            rotation_bevy,
+            recenter_world,
+            render_scale.0,
+            bbox_center_bevy,
+        );
+        // Normal in Bevy frame: rotate the physics tangent through
+        // the same up-axis swap + Reorient as the mesh.
+        let tangent_swap = up.to_bevy_point(&Point3::from(tangent_phys));
+        let tangent_bevy_raw = Vec3::from_array(tangent_swap);
+        let tangent_bevy = (rotation_bevy * tangent_bevy_raw).normalize_or_zero();
+        if tangent_bevy.length_squared() > 0.0 {
+            let isometry = Isometry3d::new(plane_center_world, Quat::IDENTITY);
+            // `gizmos.circle` takes a position + normal direction
+            // via Isometry3d in Bevy 0.18; we draw via the
+            // `circle_with_normal` convenience helper.
+            draw_perpendicular_circle(&mut gizmos, isometry, tangent_bevy, radius_world, color);
+        }
+    }
+
+    // Floor end: tangent points from polyline[N-2] toward
+    // polyline[N-1].
+    let floor_tangent_raw = cl[n - 1].coords - cl[n - 2].coords;
+    let floor_tangent_norm = floor_tangent_raw.norm();
+    if trim.trim_floor_mm > 0.0 && floor_tangent_norm > f64::EPSILON {
+        let tangent_phys = floor_tangent_raw / floor_tangent_norm;
+        let plane_center_phys =
+            Point3::from(cl[n - 1].coords - tangent_phys * (trim.trim_floor_mm * 0.001));
+        let plane_center_world = project_mesh_local_to_world(
+            &plane_center_phys,
+            *up,
+            rotation_bevy,
+            recenter_world,
+            render_scale.0,
+            bbox_center_bevy,
+        );
+        let tangent_swap = up.to_bevy_point(&Point3::from(tangent_phys));
+        let tangent_bevy_raw = Vec3::from_array(tangent_swap);
+        let tangent_bevy = (rotation_bevy * tangent_bevy_raw).normalize_or_zero();
+        if tangent_bevy.length_squared() > 0.0 {
+            let isometry = Isometry3d::new(plane_center_world, Quat::IDENTITY);
+            draw_perpendicular_circle(&mut gizmos, isometry, tangent_bevy, radius_world, color);
+        }
+    }
+}
+
+/// Draw a wireframe circle of radius `radius` centered at
+/// `isometry.translation`, lying in the plane perpendicular to
+/// `normal`. Bevy's `gizmos.circle` takes a rotation that orients
+/// the circle's local +Z to the desired normal direction — this
+/// helper computes that rotation from a normal vector.
+fn draw_perpendicular_circle(
+    gizmos: &mut Gizmos,
+    base: Isometry3d,
+    normal: Vec3,
+    radius: f32,
+    color: Color,
+) {
+    // Bevy's `gizmos.circle` draws in the XY plane of its local
+    // frame (i.e., normal = local +Z). Build a rotation that maps
+    // local +Z to the supplied `normal`.
+    let circle_rotation = Quat::from_rotation_arc(Vec3::Z, normal);
+    let isometry = Isometry3d::new(base.translation, circle_rotation);
+    gizmos.circle(isometry, radius, color);
 }
 
 /// Update system: zero out the accumulated mouse motion + scroll
