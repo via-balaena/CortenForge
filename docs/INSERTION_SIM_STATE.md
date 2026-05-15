@@ -484,3 +484,133 @@ question above turned out to be the real answer.
   per-session plan + decision log lives in Claude's project memory
   alongside the codebase under `MEMORY.md`. This doc is the
   *public-artifact* version intended for cold reading.
+
+---
+
+## Update — 2026-05-15: the recon ran, 7.3c + 7.3d + 7.3b.2 SHIPPED
+
+> Read this section after the rest of the doc — the body above is the
+> 2026-05-14 bookmark, kept verbatim for the audit trail. This update
+> closes out the recon-and-implementation arc the bookmark opened.
+
+The recon ran across `docs/INSERTION_SIM_RECON.md` (iter-1 → iter-4)
+and identified the actual failure mode as **SDF gradient roughness on
+the `GridSdf` signed buffer**, not the speculative trust-region /
+mortar / Dirichlet-hybrid candidates the bookmark listed. The "non-SPD
+tangent near solution" symptom traced back to the unsmoothed signed
+buffer producing a discontinuous-gradient contact field that
+concentrated bad-Jacobian stress in localized tets, tripping the
+Armijo line-search before the actual material limit.
+
+### What landed (commits on `dev`, off `c9b8258d`)
+
+| Sub-slice | Commit | Win |
+|---|---|---|
+| 7.3c — Gaussian pre-smooth on `GridSdf` | `47806a37` | Synthetic 14/16 → **16/16**, iter-1 5/16 → 12/16. |
+| 7.3d — σ retuning to 1.0 cell | `7ff8c12f` | Iter-1 12/16 → **16/16** at the full 3 mm seating. |
+| 7.3b.2 — `InsertionResult` outputs | `<this commit>` | Per-step `StepReadout` (contact-force sum, principal-stretch extrema, peak ‖P‖, mean Ψ) + final-step per-tet `TetReadout` (F, first Piola, principal stretches, energy) + force-displacement curve. |
+
+The slice-7.3b.3 "sniped fix" the bookmark anticipated shipped *ahead
+of order*, folded into 7.3c + 7.3d. The structural-fix arc is closed.
+
+### `InsertionResult` API as built — what 7.3b.2 actually exposes
+
+```rust
+pub struct InsertionRamp {
+    pub steps: Vec<RampStep>,
+    pub failed_at_step: Option<usize>,
+    pub failure_reason: Option<String>,
+    pub final_x: Vec<f64>,
+    pub n_pinned: usize,
+    pub result: Option<InsertionResult>,  // 7.3b.2
+}
+
+pub struct RampStep {
+    pub interference_m: f64,
+    pub iter_count: usize,
+    pub final_residual_norm: f64,
+    pub x_final: Vec<f64>,                // 7.3b.2 — derive per-tet on demand
+    pub readout: StepReadout,             // 7.3b.2
+}
+
+pub struct StepReadout {
+    pub n_active_contact_pairs: usize,
+    pub contact_force_total_n: Vec3,
+    pub contact_force_magnitude_n: f64,   // F-d-curve ordinate
+    pub max_principal_stretch: f64,
+    pub min_principal_stretch: f64,
+    pub max_first_piola_frobenius_pa: f64,
+    pub mean_strain_energy_density_j_per_m3: f64,
+}
+
+pub struct TetReadout {
+    pub f: Matrix3<f64>,
+    pub first_piola: Matrix3<f64>,
+    pub first_piola_frobenius_pa: f64,
+    pub energy_density_j_per_m3: f64,
+    pub principal_stretches: Vector3<f64>,
+}
+
+pub struct InsertionResult {
+    pub final_per_tet: Vec<TetReadout>,                  // length n_tets
+    pub force_displacement_curve: Vec<(f64, f64)>,       // one per converged step
+}
+
+pub fn compute_tet_readouts(
+    rest: &[Vec3], curr: &[Vec3],
+    tets: &[[VertexId; 4]], materials: &[Yeoh],
+) -> Vec<TetReadout>;
+```
+
+Two design decisions worth pinning for the 7.4 UI:
+
+1. **Per-step per-tet detail is on-demand, not pre-computed.** The
+   bookmark's "per-step per-tet stress / stretch" spec is met via
+   the per-step scalar aggregates in `StepReadout` (cheap, all-step)
+   plus the public `compute_tet_readouts(...)` free helper that the
+   UI calls with `step.x_final` for the currently-selected step.
+   Pre-computing the per-tet tensor field for *every* step would
+   cost ~`184 B × n_tets × n_steps` — on the iter-1 scan that is
+   200 MB, too steep for a "lazy" output. The final-step detail in
+   `InsertionResult.final_per_tet` is pre-computed because the
+   deepest seating is the canonical heat-map state.
+2. **`InsertionResult` is `Option`-wrapped on `InsertionRamp`** — a
+   ramp that panicked at step 0 has no converged state to report.
+   The UI must check `result.is_some()` before drawing the heat
+   map.
+
+### Test count + grade as built
+
+- `cargo test -p cf-device-design --bin cf-device-design`:
+  **65 passed, 9 ignored** (the 6 new ones added in 7.3b.2: 3 F-
+  reconstruction sanity tests + 2 `aggregate_step_readout`
+  property tests + 1 `compute_tet_readouts` mismatched-lengths
+  panic gate).
+- `cargo run -p xtask -- grade cf-device-design`: **A** on all 5
+  automated criteria (coverage is bin-only, layer-integrity and
+  WASM are out of scope for a build-tooling workspace tool).
+
+### Per-step F-d curve at full depth — the engineering payoff
+
+```
+synthetic icosphere ramp (16/16, full 3 mm):
+  0.19 mm → 0.23 N → ... → 3.00 mm → 1.12 N    [≈ 5× rise, max ‖P‖ = 1.67e5 Pa]
+  λ ∈ [0.450, 1.239] across the final state (well inside Yeoh validity).
+
+iter-1 scan ramp (16/16, full 3 mm):
+  67 658 tets, 6 069 pinned, 23 s release build.
+  Max 5 Newton iters per step at full depth — converges flat.
+```
+
+### What 7.3b.2 does *not* try to do
+
+- It does not pre-compute per-step per-tet tensor fields — see
+  decision (1) above; the UI calls `compute_tet_readouts` for the
+  active step.
+- It does not un-gate `mod insertion_sim` from `#[cfg(test)]` — that
+  is 7.4 (UI wiring), the next slice. The constraint at line 446 still
+  holds.
+- It does not wire Slacker → sim-modulus — that is 7.5/7.6, after the
+  UI un-gate.
+
+The slice-7 PR is ready to open after this commit.

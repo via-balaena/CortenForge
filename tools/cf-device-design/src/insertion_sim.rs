@@ -44,17 +44,17 @@ use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{SignedDistanceField, unsigned_distance};
 use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Matrix3, Point3, Vector3};
 use sim_ml_chassis::Tensor;
 use sim_soft::material::silicone_table::{
     DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
     ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
 };
 use sim_soft::{
-    Aabb3, BoundaryConditions, ConstantField, CpuNewtonSolver, Field, LayeredScalarField,
-    MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf, SdfMeshedTetMesh,
-    SiliconeMaterial, Solver, SolverConfig, Tet4, Vec3, VertexId, Yeoh, pick_vertices_by_predicate,
-    referenced_vertices,
+    Aabb3, BoundaryConditions, ConstantField, ContactPair, ContactPairReadout, CpuNewtonSolver,
+    Field, LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
+    Sdf, SdfMeshedTetMesh, SiliconeMaterial, Solver, SolverConfig, Tet4, TetId, Vec3, VertexId,
+    Yeoh, filter_pair_readouts_to_referenced, pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -1279,7 +1279,16 @@ pub fn build_grid_sdf(
 // ── 7.3b — quasi-static insertion ramp ─────────────────────────────
 
 /// One converged step of a quasi-static insertion ramp.
-#[derive(Debug, Clone)]
+///
+/// Slice 7.3b.2 added [`x_final`](Self::x_final) and
+/// [`readout`](Self::readout) so each step carries the engineering data
+/// the layer-engineering tool will consume: the converged positions
+/// (so per-tet detail is derivable on demand via
+/// [`compute_tet_readouts`]) and pre-aggregated scalar metrics (contact
+/// force, principal-stretch extrema, peak stress, mean strain energy).
+/// Intentionally no `Debug` derive — `x_final` is a flat `Vec<f64>` of
+/// `3 * n_vertices`, same `dbg!`-footgun rationale as [`InsertionRamp`].
+#[derive(Clone)]
 pub struct RampStep {
     /// Press-fit interference (m) the intruder was seated to at this
     /// step — `(k + 1) / n_steps * cavity_inset_m`.
@@ -1288,6 +1297,123 @@ pub struct RampStep {
     pub iter_count: usize,
     /// Free-DOF residual norm at this step's convergence.
     pub final_residual_norm: f64,
+    /// Slice 7.3b.2 — converged vertex positions at this step,
+    /// vertex-major xyz (length `3 * n_vertices`). Lets a caller
+    /// reconstruct per-tet F at *any* step on demand via
+    /// [`compute_tet_readouts`].
+    pub x_final: Vec<f64>,
+    /// Slice 7.3b.2 — pre-aggregated engineering scalars for this step
+    /// (F-d curve ordinate, principal-stretch extrema, peak stress,
+    /// mean strain-energy density). Derived once when the step
+    /// converges.
+    pub readout: StepReadout,
+}
+
+/// Scalar per-step engineering aggregates — slice 7.3b.2's per-step
+/// summary of the per-tet stress / stretch field and the contact
+/// reaction. Stored on each converged [`RampStep`] and assembled into
+/// the [`force_displacement_curve`](InsertionResult::force_displacement_curve)
+/// on [`InsertionResult`].
+///
+/// Per-tet detail at a specific step is derivable from
+/// [`RampStep::x_final`] via [`compute_tet_readouts`]; pre-aggregating
+/// the scalar headlines keeps the F-d curve + Yeoh-validity sentinels
+/// cheap to inspect without re-walking every tet.
+#[derive(Debug, Clone)]
+pub struct StepReadout {
+    /// Orphan-filtered active contact pairs at this step — the count
+    /// surviving [`filter_pair_readouts_to_referenced`] (drops BCC
+    /// lattice corners not in any tet, per row 22 pattern (xx)).
+    pub n_active_contact_pairs: usize,
+    /// Vector sum of `force_on_soft` over orphan-filtered active
+    /// pairs (N) — Newton's-3rd-law: this is the soft body's net
+    /// resistance to the intruder seating, with sign opposite the
+    /// intruder's penetration direction.
+    pub contact_force_total_n: Vec3,
+    /// Magnitude of [`contact_force_total_n`](Self::contact_force_total_n)
+    /// — the natural F-d-curve ordinate.
+    pub contact_force_magnitude_n: f64,
+    /// Maximum singular value of `F` across every tet at this step
+    /// (peak principal stretch). Tracks proximity to the Yeoh
+    /// `validity.max_principal_stretch` cap; a step approaching it is
+    /// the warning the layer is past its calibrated stretch range.
+    pub max_principal_stretch: f64,
+    /// Minimum singular value of `F` across every tet (peak
+    /// compressive principal stretch). Mirrors
+    /// [`max_principal_stretch`](Self::max_principal_stretch) for the
+    /// `validity.min_principal_stretch` cap.
+    pub min_principal_stretch: f64,
+    /// Maximum Frobenius norm of first-Piola stress (Pa) across every
+    /// tet — the peak stress hotspot magnitude.
+    pub max_first_piola_frobenius_pa: f64,
+    /// Mean strain-energy density (J/m³) across every tet — the
+    /// per-step "how strained" scalar; integrating `× tet_volume`
+    /// recovers total elastic energy (volumes are in the mesh's
+    /// `QualityMetrics::signed_volume`, not aggregated here).
+    pub mean_strain_energy_density_j_per_m3: f64,
+}
+
+/// Per-tet engineering readout at a single step — slice 7.3b.2's
+/// per-tet detail surface.
+///
+/// Reconstructed by [`compute_tet_readouts`] from rest positions,
+/// current positions, tet connectivity, and per-tet [`Yeoh`] materials
+/// (the four pieces stored in the mesh that `run_insertion_ramp`
+/// snapshots before consuming `geometry`). The UI layer-heat-map
+/// (slice 7.4) consumes this directly; the per-step aggregates in
+/// [`StepReadout`] are reductions over these.
+#[derive(Debug, Clone)]
+pub struct TetReadout {
+    /// Deformation gradient `F = D_curr · D_rest⁻¹`, where each `D` is
+    /// the 3×3 column matrix `[v1−v0, v2−v0, v3−v0]` for the tet's
+    /// four vertices. The Yeoh element evaluates energy + stress at
+    /// `F`; SVD of `F` gives the principal stretches.
+    pub f: Matrix3<f64>,
+    /// First Piola stress `P = Yeoh::first_piola(F)` (Pa) — the
+    /// material-frame stress conjugate to `F`.
+    pub first_piola: Matrix3<f64>,
+    /// Frobenius norm of [`first_piola`](Self::first_piola) (Pa) —
+    /// the scalar hotspot intensity.
+    pub first_piola_frobenius_pa: f64,
+    /// Strain-energy density `Ψ = Yeoh::energy(F)` (J/m³).
+    pub energy_density_j_per_m3: f64,
+    /// Principal stretches — the three singular values of `F` from
+    /// `f.svd_unordered(false, false).singular_values`. Order is the
+    /// unordered SVD's (NOT sorted); see
+    /// `sim/L0/soft/src/solver/backward_euler.rs:613` for the
+    /// algorithm-shared canonical call.
+    pub principal_stretches: Vector3<f64>,
+}
+
+/// Per-tet engineering readouts at the **final** converged step of a
+/// quasi-static ramp, plus the ramp's force-displacement curve. Slice
+/// 7.3b.2's `InsertionResult` per `docs/INSERTION_SIM_STATE.md` §"What
+/// 7.3b.2 and 7.3b.3 look like after the recon".
+///
+/// `final_per_tet` is the heat-map data for the deepest seating the
+/// ramp reached (the most interesting state for a layer-engineering
+/// review). Per-step per-tet detail is derivable on demand via
+/// [`compute_tet_readouts`] using [`RampStep::x_final`]; pre-computing
+/// it for every step would blow up memory (≈ 184 bytes × n_tets ×
+/// n_steps, well into hundreds of MB at production cell sizes), and
+/// the UI consumes one step's detail at a time anyway.
+///
+/// Intentionally no `Debug` derive: `final_per_tet` is a `Vec<TetReadout>`
+/// at `O(n_tets)` — printing it in test failures or via `dbg!` is the
+/// same footgun [`InsertionGeometry`] and [`InsertionRamp`] dodge by
+/// omitting `Debug`.
+#[derive(Clone)]
+pub struct InsertionResult {
+    /// Per-tet readouts at the final converged step. Length
+    /// `geometry.n_tets`; indexed by [`TetId`] matching the ramp
+    /// mesh's tet ordering.
+    pub final_per_tet: Vec<TetReadout>,
+    /// Force-displacement curve over the ramp:
+    /// `(interference_m, contact_force_magnitude_n)` pairs, one per
+    /// converged step in ramp order. Length equals
+    /// [`InsertionRamp::steps`]`.len()`; values come straight from
+    /// [`StepReadout::contact_force_magnitude_n`].
+    pub force_displacement_curve: Vec<(f64, f64)>,
 }
 
 /// Result of a quasi-static insertion ramp — see [`run_insertion_ramp`].
@@ -1295,7 +1421,7 @@ pub struct RampStep {
 /// Intentionally no `Debug` derive: `final_x` is a flat `Vec<f64>` of
 /// `3 * n_vertices` — the same `dbg!`-footgun rationale as
 /// [`InsertionGeometry`]. The per-step [`RampStep`]s + `failed_at_step`
-/// are the inspectable summary.
+/// + [`result`](Self::result) are the inspectable summary.
 pub struct InsertionRamp {
     /// Per-step records in ramp order — only the *converged* steps, so
     /// `steps.len()` is how many steps converged.
@@ -1312,11 +1438,198 @@ pub struct InsertionRamp {
     pub failure_reason: Option<String>,
     /// Deformed vertex positions (vertex-major xyz) at the last
     /// converged step — the chained `x_final`; the rest positions if
-    /// step 0 itself failed.
+    /// step 0 itself failed. Mirrors [`RampStep::x_final`] of
+    /// [`steps`](Self::steps)`.last()` when at least one step
+    /// converged; kept as a top-level field for callers that only
+    /// need the final state.
     pub final_x: Vec<f64>,
     /// Dirichlet-pinned outer-skin vertex count — constant across the
     /// ramp (the outer skin does not move).
     pub n_pinned: usize,
+    /// Slice 7.3b.2 — per-tet engineering readouts at the final
+    /// converged step + the ramp-wide force-displacement curve.
+    /// `None` if no step converged (the ramp panicked at step 0 and
+    /// there is no deformed state to report).
+    pub result: Option<InsertionResult>,
+}
+
+/// Reconstruct the per-tet deformation gradient `F = D_curr · D_rest⁻¹`
+/// from one tet's vertex indices, the rest positions, and the current
+/// positions. The same construction
+/// `sim/L0/soft/src/solver/backward_euler.rs::solve_impl` and the row
+/// 22 / 23 layered-sleeve examples use: each `D` is the 3×3 matrix
+/// whose columns are the three edge vectors from vertex 0 to vertices
+/// 1, 2, 3.
+///
+/// # Panics
+///
+/// `D_rest.try_inverse()` returns `None` for a degenerate (zero-volume)
+/// rest tet. Production meshers (BCC + Isosurface Stuffing) reject
+/// degenerate tets before assembly via the signed-volume gate; a
+/// `None` here would mean the mesh was constructed inconsistent with
+/// its `QualityMetrics::signed_volume`, a construction-side contract
+/// violation worth surfacing fail-closed (same posture as the row 23
+/// fixture's `.expect`, mirroring the solver's validity gate at
+/// `sim/L0/soft/src/solver/backward_euler.rs:585`).
+//
+// `clippy::panic` is denied crate-wide, but a degenerate `D_rest`
+// indicates the mesh constructor skipped its signed-volume gate — a
+// construction-side bug, not a runtime data dependence. The local
+// `#[allow]` is the documented "this is an upstream-invariant
+// violation, surface it loudly" carve-out (matches sim-soft's
+// internal pattern for invariant-violation assertions).
+#[allow(clippy::panic)]
+fn deformation_gradient(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3]) -> Matrix3<f64> {
+    let r0 = rest[verts[0] as usize];
+    let r1 = rest[verts[1] as usize];
+    let r2 = rest[verts[2] as usize];
+    let r3 = rest[verts[3] as usize];
+    let c0 = curr[verts[0] as usize];
+    let c1 = curr[verts[1] as usize];
+    let c2 = curr[verts[2] as usize];
+    let c3 = curr[verts[3] as usize];
+    let d_rest = Matrix3::from_columns(&[r1 - r0, r2 - r0, r3 - r0]);
+    let d_curr = Matrix3::from_columns(&[c1 - c0, c2 - c0, c3 - c0]);
+    let d_rest_inv = d_rest.try_inverse().unwrap_or_else(|| {
+        panic!(
+            "tet rest configuration is degenerate (D_rest non-invertible) — \
+             the mesh constructor's signed-volume gate should have rejected it"
+        )
+    });
+    d_curr * d_rest_inv
+}
+
+/// Compute one tet's [`TetReadout`] from its vertex indices, the rest
+/// and current positions, and its [`Yeoh`] material.
+///
+/// Pure: no IO, no allocation beyond the `Matrix3` SVD's internal
+/// buffer. Three calls into the Yeoh material's [`Material`] surface
+/// (`first_piola`, `energy`) plus one SVD of `F` (`O(27)` FLOPs, cheap).
+fn tet_readout(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3], material: &Yeoh) -> TetReadout {
+    let f = deformation_gradient(verts, rest, curr);
+    let first_piola = material.first_piola(&f);
+    let first_piola_frobenius_pa = first_piola.norm();
+    let energy_density_j_per_m3 = material.energy(&f);
+    // Canonical sim-soft SVD-for-principal-stretches call, mirroring
+    // `sim/L0/soft/src/solver/backward_euler.rs:613` so a future
+    // re-validation of stretches against the solver's validity gate
+    // is bit-for-bit comparable.
+    let principal_stretches = f.svd_unordered(false, false).singular_values;
+    TetReadout {
+        f,
+        first_piola,
+        first_piola_frobenius_pa,
+        energy_density_j_per_m3,
+        principal_stretches,
+    }
+}
+
+/// Compute per-tet readouts ([`TetReadout`]) for every tet given the
+/// rest positions, current positions, tet connectivity, and per-tet
+/// [`Yeoh`] materials.
+///
+/// The public free helper: callers re-derive per-step per-tet detail
+/// from [`RampStep::x_final`] without going back through the ramp's
+/// consumed `geometry`. The four input slices are exactly the data
+/// the ramp snapshots before consuming `InsertionGeometry`.
+///
+/// # Panics
+///
+/// `materials.len()` must equal `tets.len()` (each tet has its own
+/// Yeoh material per
+/// [`Mesh::materials`]); mismatched lengths panic via slice indexing.
+/// `tets[t][i] as usize` must be in bounds for both `rest` and `curr`;
+/// out-of-range vertex IDs panic via slice indexing.
+#[must_use]
+pub fn compute_tet_readouts(
+    rest: &[Vec3],
+    curr: &[Vec3],
+    tets: &[[VertexId; 4]],
+    materials: &[Yeoh],
+) -> Vec<TetReadout> {
+    assert_eq!(
+        tets.len(),
+        materials.len(),
+        "compute_tet_readouts: tets.len() = {} must match materials.len() = {} \
+         (one Yeoh material per tet per Mesh::materials)",
+        tets.len(),
+        materials.len(),
+    );
+    tets.iter()
+        .zip(materials.iter())
+        .map(|(&verts, mat)| tet_readout(verts, rest, curr, mat))
+        .collect()
+}
+
+/// Reduce per-tet readouts + orphan-filtered contact-pair readouts to
+/// the scalar [`StepReadout`] aggregates a single ramp step records.
+fn aggregate_step_readout(
+    per_tet: &[TetReadout],
+    contact_readouts: &[ContactPairReadout],
+) -> StepReadout {
+    let n_active_contact_pairs = contact_readouts.len();
+    let contact_force_total_n: Vec3 = contact_readouts
+        .iter()
+        .map(|r| r.force_on_soft)
+        .fold(Vec3::zeros(), |a, b| a + b);
+    let contact_force_magnitude_n = contact_force_total_n.norm();
+
+    let mut max_principal_stretch = f64::NEG_INFINITY;
+    let mut min_principal_stretch = f64::INFINITY;
+    let mut max_first_piola_frobenius_pa = 0.0_f64;
+    let mut sum_energy = 0.0_f64;
+    for t in per_tet {
+        for &s in t.principal_stretches.iter() {
+            if s > max_principal_stretch {
+                max_principal_stretch = s;
+            }
+            if s < min_principal_stretch {
+                min_principal_stretch = s;
+            }
+        }
+        if t.first_piola_frobenius_pa > max_first_piola_frobenius_pa {
+            max_first_piola_frobenius_pa = t.first_piola_frobenius_pa;
+        }
+        sum_energy += t.energy_density_j_per_m3;
+    }
+    let mean_strain_energy_density_j_per_m3 = if per_tet.is_empty() {
+        0.0
+    } else {
+        // `per_tet.len()` here is the mesh's `n_tets`, bounded well
+        // under `f64`'s exact-integer ceiling (Phase 4 BCC grids cap
+        // in the millions, far under 2^53).
+        #[allow(clippy::cast_precision_loss)]
+        let n = per_tet.len() as f64;
+        sum_energy / n
+    };
+    // An empty `per_tet` (degenerate geometry with zero tets) makes
+    // the stretch sentinels meaningless; collapse to zero so the
+    // readout is still finite-valued.
+    if per_tet.is_empty() {
+        max_principal_stretch = 0.0;
+        min_principal_stretch = 0.0;
+    }
+
+    StepReadout {
+        n_active_contact_pairs,
+        contact_force_total_n,
+        contact_force_magnitude_n,
+        max_principal_stretch,
+        min_principal_stretch,
+        max_first_piola_frobenius_pa,
+        mean_strain_energy_density_j_per_m3,
+    }
+}
+
+/// Convert a flat `Vec<f64>` vertex-major xyz into the `Vec<Vec3>` slice
+/// view of vertex positions that `compute_tet_readouts` and
+/// `PenaltyRigidContact::per_pair_readout` take. The
+/// `solver.replay_step` API hands back the flat form; the readout
+/// helpers prefer the `Vec3` form.
+fn positions_from_flat(flat: &[f64]) -> Vec<Vec3> {
+    flat.chunks_exact(3)
+        .map(|c| Vec3::new(c[0], c[1], c[2]))
+        .collect()
 }
 
 /// Extract a human-readable message from a `catch_unwind` panic
@@ -1350,8 +1663,13 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// than aborting — the ramp returns the steps that *did* converge.
 ///
 /// Consumes `geometry` (the mesh is cloned per step; the original
-/// drops at the end). Geometry / convergence only — per-tet stress +
-/// contact-force outputs are 7.3b.2's `InsertionResult`.
+/// drops at the end). Slice 7.3b.2 added per-step engineering readouts
+/// and a final-step per-tet [`InsertionResult`]: each [`RampStep`]
+/// now carries the converged `x_final` and a scalar [`StepReadout`]
+/// (orphan-filtered contact-force sum, principal-stretch extrema,
+/// peak stress, mean strain energy), and [`InsertionRamp::result`]
+/// holds the final-step per-tet detail and the force-displacement
+/// curve.
 ///
 /// # Errors
 ///
@@ -1369,7 +1687,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
         outer_offset_m,
         bounds,
         cell_size_m,
-        n_tets: _,
+        n_tets,
     } = geometry;
 
     let n_vertices = mesh.n_vertices();
@@ -1380,6 +1698,21 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
     let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
     let n_pinned = bc.pinned_vertices.len();
 
+    // Snapshot per-tet immutables before consuming the mesh into the
+    // per-step solver clones: rest positions, tet connectivity, per-tet
+    // Yeoh materials, and the referenced-vertex set for orphan
+    // filtering (`SdfMeshedTetMesh` retains BCC lattice corners not
+    // referenced by any tet — see `referenced_vertices` docs). The
+    // ramp builds per-step readouts from these without needing the
+    // mesh after the loop ends. Materials are `Yeoh: Clone`.
+    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
+    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
+    // `u32::MAX` per `Mesh` trait docs.
+    #[allow(clippy::cast_possible_truncation)]
+    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
+    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+
     // Full press-fit interference = the cavity inset; the ramp seats
     // the intruder there in `n_steps` equal increments.
     let inset_m = -cavity_offset_m;
@@ -1387,8 +1720,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
     let config = insertion_solver_config();
 
     // x_prev starts at rest; each converged step chains its x_final in.
-    let mut x_prev_flat: Vec<f64> = mesh
-        .positions()
+    let mut x_prev_flat: Vec<f64> = rest_positions
         .iter()
         .flat_map(|p| [p.x, p.y, p.z])
         .collect();
@@ -1396,7 +1728,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
     let empty_theta: [f64; 0] = [];
     let theta = Tensor::from_slice(&empty_theta, &[0]);
 
-    let mut steps = Vec::with_capacity(n_steps);
+    let mut steps: Vec<RampStep> = Vec::with_capacity(n_steps);
     let mut failed_at_step = None;
     let mut failure_reason = None;
     for k in 0..n_steps {
@@ -1414,10 +1746,30 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
         }));
         match outcome {
             Ok(step) => {
+                // Per-step readout (slice 7.3b.2). The solver consumed
+                // the step-`k` `contact`; rebuild a fresh one with the
+                // same parameters for `per_pair_readout` at the
+                // converged positions. `PenaltyRigidContact` is not
+                // `Clone` (its `Vec<Box<dyn Sdf>>` rules it out), so
+                // double-build is the row 23 precedent
+                // ("inspection_contact" in `scan-fit-3layer-sleeve-
+                // yeoh-ramp`).
+                let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
+                let readout_contact =
+                    intruder_contact_at(&intruder, bounds, interference_m, cavity_offset_m);
+                let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
+                let contact_readouts =
+                    filter_pair_readouts_to_referenced(raw_readouts, &referenced);
+                let per_tet =
+                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts);
+
                 steps.push(RampStep {
                     interference_m,
                     iter_count: step.iter_count,
                     final_residual_norm: step.final_residual_norm,
+                    x_final: step.x_final.clone(),
+                    readout: step_readout,
                 });
                 x_prev_flat = step.x_final; // chain the warm start
             }
@@ -1429,12 +1781,30 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
         }
     }
 
+    // Slice 7.3b.2 — final-step per-tet detail + ramp force-displacement
+    // curve. `result = None` only when no step converged; otherwise the
+    // final converged step's positions drive the per-tet readout.
+    let result = steps.last().map(|last| {
+        let final_positions = positions_from_flat(&last.x_final);
+        let final_per_tet =
+            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let force_displacement_curve = steps
+            .iter()
+            .map(|s| (s.interference_m, s.readout.contact_force_magnitude_n))
+            .collect();
+        InsertionResult {
+            final_per_tet,
+            force_displacement_curve,
+        }
+    });
+
     Ok(InsertionRamp {
         steps,
         failed_at_step,
         failure_reason,
         final_x: x_prev_flat,
         n_pinned,
+        result,
     })
 }
 
@@ -1889,6 +2259,215 @@ mod tests {
             "three-layer mesh must carry ≥ 2 distinct per-tet moduli \
              (LayeredScalarField partition)",
         );
+    }
+
+    // ── 7.3b.2 — per-tet readout sanity ──────────────────────────────
+
+    /// Hand-built right-handed unit tet for the F-reconstruction tests
+    /// — corner vertices at `(0,0,0)`, `(1,0,0)`, `(0,1,0)`, `(0,0,1)`.
+    /// `D_rest` is the identity, so for any displacement field `x =
+    /// A·X + t` the deformation gradient is exactly `A`.
+    fn unit_tet_rest() -> Vec<Vec3> {
+        vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ]
+    }
+
+    /// Yeoh material for the F-reconstruction tests — ECOFLEX_00_30
+    /// converted via the silicone table, matching the synthetic-ramp
+    /// fixture so any future change in silicone-table calibration is
+    /// caught here too.
+    fn unit_tet_material() -> Yeoh {
+        silicone_for_anchor("ECOFLEX_00_30")
+            .expect("ECOFLEX_00_30 in the silicone table")
+            .to_yeoh()
+    }
+
+    /// Undeformed tet ⇒ `F = I`. `Yeoh::first_piola(I)` ⇒ zero stress.
+    /// `Yeoh::energy(I)` ⇒ zero strain energy. Principal stretches
+    /// ⇒ `[1, 1, 1]`. The bedrock of every other F-reconstruction
+    /// assertion.
+    #[test]
+    fn tet_readout_undeformed_is_identity() {
+        let rest = unit_tet_rest();
+        let curr = rest.clone();
+        let verts: [VertexId; 4] = [0, 1, 2, 3];
+        let material = unit_tet_material();
+        let readout = tet_readout(verts, &rest, &curr, &material);
+
+        let identity = Matrix3::<f64>::identity();
+        let diff = (readout.f - identity).norm();
+        assert!(
+            diff < 1e-12,
+            "undeformed tet must give F = I (got ‖F − I‖ = {diff:.3e})"
+        );
+        assert!(
+            readout.first_piola_frobenius_pa < 1e-6,
+            "first-Piola stress at F = I must be zero (got ‖P‖ = {:.3e} Pa)",
+            readout.first_piola_frobenius_pa,
+        );
+        assert!(
+            readout.energy_density_j_per_m3.abs() < 1e-9,
+            "strain-energy density at F = I must be zero (got {} J/m³)",
+            readout.energy_density_j_per_m3,
+        );
+        for &s in readout.principal_stretches.iter() {
+            assert!(
+                (s - 1.0).abs() < 1e-12,
+                "principal stretches at F = I must all be 1 (got {s})"
+            );
+        }
+    }
+
+    /// Pure rigid translation ⇒ `F = I`. Tests that the
+    /// edge-vector construction in [`deformation_gradient`] is
+    /// translation-invariant (sanity check on the `D_curr · D_rest⁻¹`
+    /// formula).
+    #[test]
+    fn tet_readout_pure_translation_is_identity() {
+        let rest = unit_tet_rest();
+        let t = Vec3::new(0.5, -0.3, 1.7);
+        let curr: Vec<Vec3> = rest.iter().map(|p| p + t).collect();
+        let verts: [VertexId; 4] = [0, 1, 2, 3];
+        let f = deformation_gradient(verts, &rest, &curr);
+        let diff = (f - Matrix3::<f64>::identity()).norm();
+        assert!(
+            diff < 1e-12,
+            "pure translation must give F = I (got ‖F − I‖ = {diff:.3e})"
+        );
+    }
+
+    /// Uniaxial stretch by `λ` along x with `1/√λ` on y and z (the
+    /// near-incompressible mode). `F = diag(λ, 1/√λ, 1/√λ)`; principal
+    /// stretches are those three values (in some order, since SVD is
+    /// unordered). The compressible Yeoh material won't be *exactly*
+    /// incompressible, but the F-reconstruction itself is purely
+    /// kinematic, so the diagonal must match exactly.
+    #[test]
+    fn tet_readout_uniaxial_stretch_principal_stretches() {
+        let lambda = 1.5_f64;
+        let trans = 1.0 / lambda.sqrt();
+        let a = Matrix3::from_diagonal(&Vec3::new(lambda, trans, trans));
+        let rest = unit_tet_rest();
+        let curr: Vec<Vec3> = rest.iter().map(|p| a * p).collect();
+        let verts: [VertexId; 4] = [0, 1, 2, 3];
+        let material = unit_tet_material();
+        let readout = tet_readout(verts, &rest, &curr, &material);
+
+        let diff = (readout.f - a).norm();
+        assert!(
+            diff < 1e-12,
+            "uniaxial stretch must give F = diag(λ, 1/√λ, 1/√λ) (got ‖F − A‖ = {diff:.3e})"
+        );
+
+        // Singular values appear in some order — sort and compare to
+        // the expected sorted vector `[λ, 1/√λ, 1/√λ]`.
+        let mut sigma: Vec<f64> = readout.principal_stretches.iter().copied().collect();
+        sigma.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let mut expected = vec![lambda, trans, trans];
+        expected.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        for (got, want) in sigma.iter().zip(expected.iter()) {
+            assert!(
+                (got - want).abs() < 1e-12,
+                "uniaxial-stretch principal stretches mismatch — got {sigma:?}, want {expected:?}"
+            );
+        }
+
+        // F = A is diagonal with det > 0, so Yeoh::first_piola is
+        // diagonal too (Yeoh is isotropic). It is *not* zero (we're
+        // not at the natural state). Sanity-check finiteness and
+        // tension along the stretched axis.
+        assert!(
+            readout.first_piola_frobenius_pa.is_finite() && readout.first_piola_frobenius_pa > 0.0,
+            "stress must be finite + positive away from F = I (got {} Pa)",
+            readout.first_piola_frobenius_pa,
+        );
+        assert!(
+            readout.first_piola[(0, 0)] > 0.0,
+            "uniaxial extension ⇒ first-Piola P_xx must be tensile (got {} Pa)",
+            readout.first_piola[(0, 0)],
+        );
+    }
+
+    /// `aggregate_step_readout` over an empty per-tet slice + empty
+    /// contact readouts must produce finite zeros — degenerate but
+    /// non-panicking.
+    #[test]
+    fn aggregate_step_readout_empty_is_zeroed() {
+        let r = aggregate_step_readout(&[], &[]);
+        assert_eq!(r.n_active_contact_pairs, 0);
+        assert!(r.contact_force_total_n.norm() < 1e-12);
+        assert!((r.contact_force_magnitude_n).abs() < 1e-12);
+        assert_eq!(r.max_principal_stretch, 0.0);
+        assert_eq!(r.min_principal_stretch, 0.0);
+        assert_eq!(r.max_first_piola_frobenius_pa, 0.0);
+        assert_eq!(r.mean_strain_energy_density_j_per_m3, 0.0);
+    }
+
+    /// `aggregate_step_readout` aggregates per-tet extrema and means
+    /// correctly across two hand-built readouts. Independent of the
+    /// Yeoh material's calibration — uses synthetic values straight
+    /// into the [`TetReadout`] fields.
+    #[test]
+    fn aggregate_step_readout_aggregates_correctly() {
+        let mk = |stretches: [f64; 3], frob: f64, psi: f64| TetReadout {
+            f: Matrix3::<f64>::identity(),
+            first_piola: Matrix3::<f64>::identity(),
+            first_piola_frobenius_pa: frob,
+            energy_density_j_per_m3: psi,
+            principal_stretches: Vec3::new(stretches[0], stretches[1], stretches[2]),
+        };
+        let per_tet = vec![
+            mk([1.2, 0.9, 0.95], 1.0e5, 1.0),
+            mk([1.5, 0.8, 1.0], 2.0e5, 3.0),
+        ];
+        let readouts: Vec<ContactPairReadout> = vec![
+            ContactPairReadout {
+                pair: ContactPair::Vertex {
+                    vertex_id: 0,
+                    primitive_id: 0,
+                },
+                position: Vec3::zeros(),
+                sd: -0.1,
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                force_on_soft: Vec3::new(0.0, 0.0, 3.0),
+            },
+            ContactPairReadout {
+                pair: ContactPair::Vertex {
+                    vertex_id: 1,
+                    primitive_id: 0,
+                },
+                position: Vec3::zeros(),
+                sd: -0.1,
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                force_on_soft: Vec3::new(0.0, 0.0, 5.0),
+            },
+        ];
+
+        let r = aggregate_step_readout(&per_tet, &readouts);
+        assert_eq!(r.n_active_contact_pairs, 2);
+        assert!((r.contact_force_total_n.z - 8.0).abs() < 1e-12);
+        assert!((r.contact_force_magnitude_n - 8.0).abs() < 1e-12);
+        assert!((r.max_principal_stretch - 1.5).abs() < 1e-12);
+        assert!((r.min_principal_stretch - 0.8).abs() < 1e-12);
+        assert!((r.max_first_piola_frobenius_pa - 2.0e5).abs() < 1e-9);
+        assert!((r.mean_strain_energy_density_j_per_m3 - 2.0).abs() < 1e-12);
+    }
+
+    /// `compute_tet_readouts` panics on a mismatched `tets` /
+    /// `materials` slice length — guards the slice-indexed Yeoh
+    /// lookup against silently picking a wrong material.
+    #[test]
+    #[should_panic(expected = "compute_tet_readouts: tets.len()")]
+    fn compute_tet_readouts_mismatched_lengths_panic() {
+        let rest = unit_tet_rest();
+        let tets = vec![[0_u32, 1, 2, 3]];
+        // 0 materials vs 1 tet.
+        let materials: Vec<Yeoh> = vec![];
+        let _ = compute_tet_readouts(&rest, &rest, &tets, &materials);
     }
 
     /// Build an icosphere `IndexedMesh` of `radius` (meters), centered
@@ -2498,13 +3077,20 @@ mod tests {
         // close (full-surface contact reshuffles the whole contact set
         // per increment, so coarse steps cost as much as a cold solve).
         let n_steps = 16;
+        let n_tets = geometry.n_tets;
         let ramp = run_insertion_ramp(geometry, n_steps).expect("synthetic ramp should run");
         for s in &ramp.steps {
             eprintln!(
-                "  step interference {:.2} mm — {} Newton iters, residual {:.2e}",
+                "  step interference {:.2} mm — {} Newton iters, residual {:.2e} \
+                 — contact F = {:.2} N over {} pairs — λ ∈ [{:.3}, {:.3}] — max ‖P‖ = {:.2e} Pa",
                 s.interference_m * 1e3,
                 s.iter_count,
                 s.final_residual_norm,
+                s.readout.contact_force_magnitude_n,
+                s.readout.n_active_contact_pairs,
+                s.readout.min_principal_stretch,
+                s.readout.max_principal_stretch,
+                s.readout.max_first_piola_frobenius_pa,
             );
         }
         if let Some(k) = ramp.failed_at_step {
@@ -2547,6 +3133,161 @@ mod tests {
             ramp.final_x.iter().all(|v| v.is_finite()),
             "every final DOF must be finite",
         );
+
+        // Slice 7.3b.2 — `InsertionResult` + per-step `StepReadout`
+        // contracts. The synthetic ramp is the canonical regression
+        // floor for these too: full convergence ⇒ `result.is_some()`,
+        // per-tet detail covers every tet, principal stretches finite
+        // and well-bounded, force-displacement curve is monotone
+        // non-decreasing.
+        for (k, s) in ramp.steps.iter().enumerate() {
+            assert_eq!(
+                s.x_final.len(),
+                n_dof,
+                "step {k} x_final must cover every DOF (got {} of {n_dof})",
+                s.x_final.len(),
+            );
+            assert!(
+                s.x_final.iter().all(|v| v.is_finite()),
+                "step {k} x_final must be all-finite",
+            );
+            let r = &s.readout;
+            assert!(
+                r.contact_force_magnitude_n.is_finite() && r.contact_force_magnitude_n >= 0.0,
+                "step {k} contact_force_magnitude_n must be finite + non-negative \
+                 (got {})",
+                r.contact_force_magnitude_n,
+            );
+            assert!(
+                r.max_principal_stretch.is_finite() && r.min_principal_stretch.is_finite(),
+                "step {k} principal stretches must be finite \
+                 (got [{:.3}, {:.3}])",
+                r.min_principal_stretch,
+                r.max_principal_stretch,
+            );
+            assert!(
+                r.min_principal_stretch >= 0.0,
+                "step {k} min_principal_stretch must be non-negative (got {})",
+                r.min_principal_stretch,
+            );
+            assert!(
+                r.max_principal_stretch >= r.min_principal_stretch,
+                "step {k} max ≥ min principal stretch (got [{:.3}, {:.3}])",
+                r.min_principal_stretch,
+                r.max_principal_stretch,
+            );
+            assert!(
+                r.max_first_piola_frobenius_pa.is_finite() && r.max_first_piola_frobenius_pa >= 0.0,
+                "step {k} max ‖P‖ must be finite + non-negative",
+            );
+            assert!(
+                r.mean_strain_energy_density_j_per_m3.is_finite()
+                    && r.mean_strain_energy_density_j_per_m3 >= 0.0,
+                "step {k} mean Ψ must be finite + non-negative \
+                 (Yeoh energy is non-negative at det F > 0)",
+            );
+        }
+
+        // The first ramp step (the smallest interference) should
+        // record a non-zero contact force — the intruder has crossed
+        // the cavity wall and the penalty contact is engaged. A zero
+        // here would mean the contact band missed the cavity surface.
+        assert!(
+            ramp.steps
+                .first()
+                .is_some_and(|s| s.readout.contact_force_magnitude_n > 0.0),
+            "first step must have a non-zero contact force (the contact penalty is engaged)",
+        );
+
+        // Force-displacement should rise meaningfully across the
+        // ramp on a convex synthetic geometry. Per-step monotonicity
+        // is *not* asserted: at `INSERTION_SOLVE_TOL = 1e-1` (the
+        // tuned Fork-B physically-negligible bar), successive
+        // converged residuals carry ~0.1 N of solver-tolerance
+        // noise, so the per-step F-d curve has ~10-15 % jitter on
+        // top of the monotone underlying trend. The end-to-end
+        // rise — first vs last — is what the contract pins; the
+        // visible per-step trace above already exposes any
+        // pathological drop for eyes-on review. Yeoh is a
+        // monotone-stiffening polynomial (the C₂(I₁−3)² term is
+        // convex in stretch), so an "underlying" non-monotone curve
+        // would indicate a contact-side regression, not a material
+        // one.
+        let f_first = ramp.steps[0].readout.contact_force_magnitude_n;
+        let f_last = ramp
+            .steps
+            .last()
+            .map(|s| s.readout.contact_force_magnitude_n)
+            .unwrap_or(0.0);
+        assert!(
+            f_last > 2.0 * f_first,
+            "synthetic ramp F-d must rise meaningfully end-to-end \
+             (got first = {f_first:.3} N, last = {f_last:.3} N — \
+             expected ≥ 2× growth across the full 3 mm seating)",
+        );
+
+        let result = ramp
+            .result
+            .as_ref()
+            .expect("full-depth ramp must populate InsertionResult");
+        assert_eq!(
+            result.final_per_tet.len(),
+            n_tets,
+            "InsertionResult per-tet detail must cover every tet",
+        );
+        assert_eq!(
+            result.force_displacement_curve.len(),
+            ramp.steps.len(),
+            "F-d curve length matches converged step count",
+        );
+        // Final-step per-tet detail must be all-finite and within the
+        // Yeoh material's calibrated principal-stretch envelope —
+        // ECOFLEX_00_30's `max_principal_stretch ≈ 6` (Smooth-On TDS
+        // elongation-at-break × 0.8 calibration), `min_principal_
+        // stretch ≈ 0.30`. A finite-out-of-bound result indicates a
+        // material-side regression even if the ramp converged.
+        let ecoflex = silicone_for_anchor("ECOFLEX_00_30").unwrap().to_yeoh();
+        let validity = Material::validity(&ecoflex);
+        // FP rounding floor for the non-negativity assertions —
+        // Yeoh energy at det F > 0 is mathematically non-negative,
+        // but the polynomial expansion has cancelling terms that can
+        // drift a hair negative at near-rest tets (interior, lightly
+        // strained — `½μ(I₁−3) − μ·ln_j` cancels to ~`O(μ · ε²)` at
+        // |F − I| → 0, hitting `f64` ULP noise). `-1e-3 J/m³` is
+        // ≫ any plausible rounding floor for ECOFLEX-class material
+        // and ≪ any physically meaningful energy density at the
+        // ramp's converged depth (mean Ψ is `O(10² – 10³) J/m³`).
+        let psi_floor = -1.0e-3;
+        for (t, tr) in result.final_per_tet.iter().enumerate() {
+            assert!(
+                tr.first_piola_frobenius_pa.is_finite(),
+                "tet {t} ‖P‖ at final step must be finite (got {})",
+                tr.first_piola_frobenius_pa,
+            );
+            assert!(
+                tr.energy_density_j_per_m3.is_finite() && tr.energy_density_j_per_m3 >= psi_floor,
+                "tet {t} Ψ at final step must be finite + ≥ {psi_floor} J/m³ (got {})",
+                tr.energy_density_j_per_m3,
+            );
+            for &s in tr.principal_stretches.iter() {
+                assert!(
+                    s.is_finite() && s > 0.0,
+                    "tet {t} stretch must be finite + positive (got {s})"
+                );
+                if let Some(cap) = validity.max_principal_stretch {
+                    assert!(
+                        s <= cap,
+                        "tet {t} principal stretch {s:.3} exceeds Yeoh validity cap {cap:.3}",
+                    );
+                }
+                if let Some(floor) = validity.min_principal_stretch {
+                    assert!(
+                        s >= floor,
+                        "tet {t} principal stretch {s:.3} below Yeoh validity floor {floor:.3}",
+                    );
+                }
+            }
+        }
     }
 
     /// **7.3b.1 payoff** — [`run_insertion_ramp`] on the real iter-1
