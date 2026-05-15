@@ -120,16 +120,27 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 /// Auto-derive [`CastSpec`] + [`Ribbon`] from the parsed config + scan
 /// SDF + centerline polyline.
 ///
-/// Geometry plan (Option A — plug == scan, no inset):
+/// Geometry plan (Option A.1 — plug + layers inset inward by
+/// `cavity_inset_m`):
 ///
-/// - `plug` = `Solid::from_sdf(scan_sdf, scan_aabb_padded)` — the scan
-///   IS the inner cavity surface; layer 0's silicone shell sits
-///   immediately outside this.
+/// - `plug` = `Solid::from_sdf(scan_sdf, scan_aabb_padded).offset(-cavity_inset_m)`
+///   — the plug is the scan surface shrunk inward by the press-fit
+///   reservation. Layer 0's silicone shell sits immediately outside
+///   this surface, so the cured part has a cavity that's `cavity_inset_m`
+///   smaller than the scan, leaving a press-fit interference for the
+///   real device to snap into. When `cavity_inset_m = 0.0` (the inline-
+///   layers path with no design.toml) the plug degenerates to the scan
+///   literal — matching pre-slice-9.6 v2 behavior bit-exactly.
 /// - `layers[N].body` = `Solid::from_sdf(scan_sdf, scan_aabb_padded)
-///   .offset(sum(thickness[0..=N]))` — cumulative outward offset.
+///   .offset(sum(thickness[0..=N]) - cavity_inset_m)` — each layer's
+///   outer surface is shifted inward by the same `cavity_inset_m`, so
+///   the whole stack moves together and inter-layer thickness is
+///   preserved.
 /// - `bounding_region` = `Solid::cuboid(half_extents).translate(scan_center)`
 ///   where `half_extents = scan.half_extents + cumulative_thickness +
-///   bounding_margin` (per-axis).
+///   bounding_margin` (per-axis). The cuboid envelope is conservative —
+///   it ignores the inward inset shift, which can only shrink the
+///   bounded region — so the SDF eval domain stays valid.
 ///
 /// All five solids share the same underlying `Arc<SignedDistanceField>`
 /// via [`SharedScanSdf::clone`], so the heavy mesh + face-normal arrays
@@ -139,6 +150,12 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 /// the cumulative outermost thickness — that ensures the outermost
 /// offset surface still falls inside the SDF's evaluation domain (the
 /// mesher uses bounds for octree pruning).
+///
+/// `cavity_inset_m` mirrors `design.cavity.inset_m` from
+/// `cf-device-design`'s `.design.toml`. The design-sourced path
+/// ([`crate::run`]) lifts it from [`crate::design_ref::DesignRef`]; the
+/// inline-layers path passes `0.0` so old cast.toml configs without a
+/// `[design]` block produce the same molds they always did.
 ///
 /// # Errors
 ///
@@ -151,6 +168,7 @@ pub fn derive_spec_and_ribbon(
     scan_sdf: &SharedScanSdf,
     scan_aabb: Aabb,
     centerline: &[Point3<f64>],
+    cavity_inset_m: f64,
 ) -> Result<DerivedSpec> {
     if config.layers.is_empty() {
         bail!("derive_spec_and_ribbon called with empty layers");
@@ -164,18 +182,30 @@ pub fn derive_spec_and_ribbon(
     // adds another `bounding_margin_m` of cup-wall material. The
     // mesher walks the SDF over `bounding_region.bounds()`, so the
     // SDF must produce finite distances over that whole domain.
+    // The inward `cavity_inset_m` shift can only shrink the outermost
+    // surface, so the existing padding stays an upper bound.
     let sdf_bounds_pad = cumulative_thickness + config.cast.bounding_margin_m;
     let sdf_bounds = scan_aabb.expanded(sdf_bounds_pad);
 
-    // Plug = scan literal (no inset) per Option A.
-    let plug = Solid::from_sdf(scan_sdf.clone(), sdf_bounds);
+    // Plug = scan shrunk inward by the press-fit reservation
+    // (`design.cavity.inset_m` — 0 for inline-layers configs).
+    // `Solid::offset(-x)` is the inward-shrink path: the SDF is
+    // evaluated at `original_value + x` instead of `original_value`,
+    // which moves the zero-iso-surface inward by `x` (see
+    // `cf-design::Solid::offset` docs + slice-9.6 design memo).
+    let plug = Solid::from_sdf(scan_sdf.clone(), sdf_bounds).offset(-cavity_inset_m);
 
-    // Layer bodies — cumulative outward offset.
+    // Layer bodies — cumulative outward offset, shifted inward by
+    // `cavity_inset_m` so the whole stack sits on top of the inset
+    // plug surface (preserves inter-layer thickness, matches
+    // cf-device-design's `outer.subtract(cavity)` body-construction
+    // logic).
     let mut layers = Vec::with_capacity(config.layers.len());
     let mut cumulative_so_far = 0.0;
     for layer_cfg in &config.layers {
         cumulative_so_far += layer_cfg.thickness_m;
-        let body = Solid::from_sdf(scan_sdf.clone(), sdf_bounds).offset(cumulative_so_far);
+        let body = Solid::from_sdf(scan_sdf.clone(), sdf_bounds)
+            .offset(cumulative_so_far - cavity_inset_m);
         let material = build_material(layer_cfg).with_context(|| {
             format!(
                 "build material for layer with thickness {} m",
@@ -317,18 +347,21 @@ mod tests {
                     material: "ECOFLEX_00_30".to_string(),
                     density_kg_m3: None,
                     display_name: None,
+                    slacker_fraction: None,
                 },
                 LayerConfig {
                     thickness_m: 0.004,
                     material: "DRAGON_SKIN_10A".to_string(),
                     density_kg_m3: None,
                     display_name: None,
+                    slacker_fraction: None,
                 },
                 LayerConfig {
                     thickness_m: 0.004,
                     material: "ECOFLEX_00_30".to_string(),
                     density_kg_m3: None,
                     display_name: None,
+                    slacker_fraction: None,
                 },
             ],
             plug_pins: PlugPinConfig::default(),
@@ -381,6 +414,7 @@ mod tests {
             material: "ECOFLEX_00_30".to_string(),
             density_kg_m3: None,
             display_name: None,
+            slacker_fraction: None,
         };
         let m = build_material(&cfg).unwrap();
         assert_eq!(m.display_name, "Ecoflex 00-30");
@@ -395,6 +429,7 @@ mod tests {
             material: "ECOFLEX_00_30".to_string(),
             density_kg_m3: Some(1234.0),
             display_name: Some("Custom Ecoflex".to_string()),
+            slacker_fraction: None,
         };
         let m = build_material(&cfg).unwrap();
         assert_eq!(m.display_name, "Custom Ecoflex");
@@ -409,6 +444,7 @@ mod tests {
             material: "CUSTOM_GRADE".to_string(),
             density_kg_m3: Some(1080.0),
             display_name: Some("Custom".to_string()),
+            slacker_fraction: None,
         };
         let m = build_material(&cfg).unwrap();
         assert_eq!(m.display_name, "Custom");
@@ -421,7 +457,8 @@ mod tests {
         let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline).unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         assert_eq!(derived.spec.layers.len(), 3);
         assert_eq!(
             derived.spec.layers[0].material.display_name,
@@ -443,7 +480,8 @@ mod tests {
         let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline).unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         assert!(
             matches!(derived.ribbon.registration, RegistrationKind::Pins(_)),
             "registration_pins.enabled=true must produce Pins(_)"
@@ -466,7 +504,8 @@ mod tests {
         cfg.plug_pins.enabled = false;
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline).unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         assert!(matches!(
             derived.ribbon.registration,
             RegistrationKind::None
@@ -481,7 +520,8 @@ mod tests {
         cfg.plug_pins.pin_length_m = Some(0.028);
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline).unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         let PlugPinKind::Axial(spec) = &derived.ribbon.plug_pins else {
             unreachable!("plug_pins.enabled=true should yield Axial(_)")
         };
@@ -494,8 +534,72 @@ mod tests {
         cfg.layers.clear();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let err = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline)
+        let err = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0)
             .expect_err("empty layers must fail");
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    /// Slice 9.6 — when `cavity_inset_m > 0`, the plug iso-surface
+    /// must sit INSIDE the scan surface (the press-fit reservation),
+    /// and every layer's outer iso-surface must be shifted inward by
+    /// the same amount so inter-layer thickness is preserved.
+    ///
+    /// The unit cube has half-extent 0.05 m. With `inset = 0.005` and
+    /// layer-0 thickness 0.006:
+    ///
+    /// - plug zero-iso at `+x = 0.045` (scan minus inset).
+    /// - layer-0 outer zero-iso at `+x = 0.051` (scan + thickness_0 - inset).
+    ///
+    /// Equivalently: layer-0 shell thickness = 0.051 − 0.045 = 0.006,
+    /// matching `thickness_m` exactly (the inset cancels in the
+    /// difference).
+    #[test]
+    fn derive_inset_shrinks_plug_and_shifts_layers_inward() {
+        let cfg = three_layer_config();
+        let sdf = unit_cube_sdf();
+        let centerline = straight_x_centerline();
+        let inset = 0.005;
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, inset).unwrap();
+
+        // Plug zero-iso is at ±0.045 (scan minus inset).
+        let plug = &derived.spec.plug;
+        assert!(
+            plug.evaluate(&Point3::new(0.044, 0.0, 0.0)) < 0.0,
+            "plug interior must be inside the inset surface",
+        );
+        assert!(
+            plug.evaluate(&Point3::new(0.046, 0.0, 0.0)) > 0.0,
+            "plug exterior must be outside the inset surface — scan surface (0.05) is OUTSIDE the shrunk plug",
+        );
+        assert!(
+            (plug.evaluate(&Point3::new(0.045, 0.0, 0.0))).abs() < 1e-3,
+            "plug zero-iso at 0.045 expected (scan 0.05 minus inset 0.005)",
+        );
+
+        // Layer-0 outer zero-iso is at ±0.051 (scan + thickness_0 - inset).
+        let layer0 = &derived.spec.layers[0].body;
+        assert!(
+            layer0.evaluate(&Point3::new(0.050, 0.0, 0.0)) < 0.0,
+            "layer-0 interior must include the scan surface",
+        );
+        assert!(
+            layer0.evaluate(&Point3::new(0.052, 0.0, 0.0)) > 0.0,
+            "layer-0 exterior at +0.052 must be past the outer iso",
+        );
+
+        // Sanity check: inset 0.0 reproduces pre-slice-9.6 behavior
+        // (plug zero-iso back at the scan surface).
+        let derived_zero =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
+        assert!(
+            (derived_zero
+                .spec
+                .plug
+                .evaluate(&Point3::new(0.050, 0.0, 0.0)))
+            .abs()
+                < 1e-3,
+            "inset = 0.0 must put plug zero-iso at the scan surface (0.050)",
+        );
     }
 }

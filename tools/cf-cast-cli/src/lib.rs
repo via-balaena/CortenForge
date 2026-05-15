@@ -18,30 +18,35 @@
 //! 5. Compute scan AABB; pad by `bounding_margin_m` per axis →
 //!    bounding cuboid.
 //! 6. Derive plug + per-layer body solids from a shared `Arc`-backed
-//!    scan SDF (one SDF allocation, N+1 cf-design references):
-//!    - `plug` = `Solid::from_sdf(scan_sdf, aabb)`  (Option A: scan
-//!      IS the inner cavity surface)
+//!    scan SDF (one SDF allocation, N+1 cf-design references). With
+//!    `cavity_inset_m` lifted from `.design.toml` (0 if no design
+//!    source):
+//!    - `plug` = `Solid::from_sdf(scan_sdf, aabb).offset(-cavity_inset_m)`
 //!    - `layer[N].body` =
-//!      `Solid::from_sdf(scan_sdf, aabb).offset(sum t[0..=N])`
+//!      `Solid::from_sdf(scan_sdf, aabb).offset(sum t[0..=N] - cavity_inset_m)`
 //! 7. Build [`cf_cast::Ribbon`] from the parsed centerline + the
 //!    config's split-normal + registration / pour-gate / plug-pin
 //!    overrides.
 //! 8. Invoke [`cf_cast::CastSpec::export_molds_v2`] +
 //!    [`cf_cast::CastSpec::write_procedure_v2`].
+//! 9. If `cavity_inset_m > 0`, post-process the procedure.md to
+//!    surface the press-fit reservation (see the
+//!    `procedure_post` private module).
 //!
-//! # Plug-derivation choice (Option A)
+//! # Plug-derivation choice (Option A.1)
 //!
-//! Per `project_scan_to_cast_bridge_design.md` + 2026-05-13 design
-//! call, the plug equals the scan with no inset. The TOML
-//! `[[layers]] thickness_m` value therefore equals the cured-silicone
-//! shell thickness on top of the scan surface (no compression bias).
-//! Workshop users wanting a compressive inner-surface fit can iterate
-//! to a future `[scan].inner_clearance_m` override.
+//! Per `project_scan_to_cast_bridge_design.md` + slice-9.6 update,
+//! the plug equals the scan shrunk inward by `cf-device-design`'s
+//! `cavity.inset_m`, baking the press-fit reservation into the
+//! mold geometry. When no design source is present (inline
+//! `[[layers]]`), `cavity_inset_m` defaults to `0.0`, recovering the
+//! original Option-A behavior (plug == scan literal) bit-for-bit.
 
 mod config;
 mod derive;
 pub mod design_ref;
 mod prep;
+mod procedure_post;
 mod scan;
 
 use std::fs;
@@ -96,11 +101,18 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     config
         .validate_layer_source()
         .context("cast TOML semantic validation (layer source)")?;
+    // Slice 9.6 — the inset is lifted from the design.toml's
+    // `[cavity].inset_m` when a design source is in play, and defaults
+    // to 0.0 for the inline-layers path. `derive_spec_and_ribbon`
+    // applies it to the plug + every layer outer surface, baking the
+    // press-fit reservation into the mold geometry.
+    let mut cavity_inset_m: f64 = 0.0;
     if let Some(design_cfg) = &config.design {
         let design_path = resolve_relative(&cast_toml_dir, &design_cfg.path);
         let design = design_ref::load_design_ref(&design_path)
             .with_context(|| format!("load design TOML at {}", design_path.display()))?;
         config.layers = derive_layers_from_design(&design);
+        cavity_inset_m = design.cavity.inset_m;
         println!(
             "loaded design from {} ({} layers, cavity inset {:.2} mm, schema v{})",
             design_path.display(),
@@ -130,9 +142,14 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         );
     }
 
-    let derived =
-        derive::derive_spec_and_ribbon(&config, &loaded_scan.sdf, loaded_scan.aabb, &centerline)
-            .context("derive CastSpec + Ribbon from scan + cast TOML")?;
+    let derived = derive::derive_spec_and_ribbon(
+        &config,
+        &loaded_scan.sdf,
+        loaded_scan.aabb,
+        &centerline,
+        cavity_inset_m,
+    )
+    .context("derive CastSpec + Ribbon from scan + cast TOML")?;
     let DerivedSpec { spec, ribbon } = derived;
 
     let out_dir = match output_dir_override {
@@ -140,12 +157,69 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         None => cast_toml_dir.join(&config.cast.output_dir),
     };
 
+    // Slice 9.7 — orchestration progress for workshop runs (large
+    // scans at sub-5 mm cells take minutes; without this the run is
+    // a black box between "loaded design" and the final write).
+    eprintln!(
+        "[cf-cast-cli] exporting {layer_count} layer(s) × (2 pieces + 1 plug) = {stl_count} STLs at mesh_cell_size_m={cell_size}…",
+        layer_count = config.layers.len(),
+        stl_count = config.layers.len() * 3,
+        cell_size = config.cast.mesh_cell_size_m,
+    );
+    let t_export = std::time::Instant::now();
     let report = spec
         .export_molds_v2(&ribbon, &out_dir)
         .context("export_molds_v2 (2 pieces + 1 plug per layer)")?;
+    eprintln!(
+        "[cf-cast-cli] export_molds_v2 complete in {:.1}s",
+        t_export.elapsed().as_secs_f64()
+    );
     let procedure_path = out_dir.join("procedure.md");
+    eprintln!("[cf-cast-cli] writing procedure.md…");
     spec.write_procedure_v2(&ribbon, &procedure_path)
         .context("write_procedure_v2")?;
+    // Slice 9.6c — splice `## Press-Fit Reservation` into the
+    // procedure markdown when the design's cavity inset is non-zero.
+    // No-op for inline-layers casts (inset = 0.0) so pre-slice-9.6
+    // procedure output is preserved bit-for-bit.
+    procedure_post::inject_press_fit_section(&procedure_path, cavity_inset_m)
+        .context("post-process procedure.md to surface press-fit reservation")?;
+    if cavity_inset_m > 0.0 {
+        eprintln!(
+            "[cf-cast-cli] press-fit reservation section injected ({:.2} mm)",
+            cavity_inset_m * 1e3
+        );
+    }
+    // Slice 9.5 — splice `## Slacker Recipe` into the procedure
+    // markdown when at least one layer has a non-zero Slacker
+    // fraction. No-op when no layer uses Slacker. The recipe table
+    // is built from `config.layers` (slacker_fraction) and
+    // `report.layers[i].pour_volume.pour_mass_kg` (base mass).
+    let slacker_recipes: Vec<procedure_post::SlackerLayerRecipe> = config
+        .layers
+        .iter()
+        .zip(report.layers.iter())
+        .map(
+            |(layer_cfg, mold_artifact)| procedure_post::SlackerLayerRecipe {
+                display_name: mold_artifact.material_display_name.clone(),
+                pour_mass_kg: mold_artifact.pour_volume.pour_mass_kg,
+                slacker_fraction: layer_cfg.slacker_fraction,
+            },
+        )
+        .collect();
+    let slacker_layer_count = slacker_recipes
+        .iter()
+        .filter(|r| r.slacker_fraction.is_some())
+        .count();
+    procedure_post::inject_slacker_recipe_section(&procedure_path, &slacker_recipes)
+        .context("post-process procedure.md to surface slacker recipe")?;
+    if slacker_layer_count > 0 {
+        eprintln!(
+            "[cf-cast-cli] slacker recipe section injected ({slacker_layer_count} of {total} layer(s) use Slacker)",
+            total = config.layers.len()
+        );
+    }
+    eprintln!("[cf-cast-cli] done — {}", procedure_path.display());
 
     Ok(RunReport {
         out_dir,
@@ -207,12 +281,11 @@ pub fn resolve_relative(cast_toml_dir: &Path, p: &Path) -> PathBuf {
 /// | (none)                         | `display_name = None`             |
 /// | `visible`                      | (ignored — viewport-only concern) |
 ///
-/// `cavity.inset_m` is NOT lifted into the cast TOML's layer stack —
-/// it documents the press-fit reservation at the design level; the
-/// v2 cast paradigm (plug = scan, Option A) doesn't currently apply
-/// it to mold geometry. A future enhancement may inset the plug by
-/// `cavity.inset_m` to bake the press-fit into the mold; until then,
-/// the procedure markdown could record it (deferred to a follow-up).
+/// `cavity.inset_m` is NOT a `LayerConfig` field — it's read directly
+/// in [`run`] and passed to [`derive_spec_and_ribbon`] as a top-level
+/// parameter (slice 9.6 — Option A.1: plug + every layer outer
+/// surface are shifted inward by `cavity.inset_m`, baking the
+/// press-fit reservation into the mold geometry).
 pub fn derive_layers_from_design(design: &design_ref::DesignRef) -> Vec<LayerConfig> {
     design
         .layers
@@ -222,6 +295,14 @@ pub fn derive_layers_from_design(design: &design_ref::DesignRef) -> Vec<LayerCon
             material: l.material_anchor_key.clone(),
             density_kg_m3: None,
             display_name: None,
+            // Slice 9.5 — lift slacker fraction only when non-zero,
+            // matching the "Slacker Recipe" section's opt-in
+            // semantics (no section emitted when no layer uses it).
+            slacker_fraction: if l.slacker_fraction > 0.0 {
+                Some(l.slacker_fraction)
+            } else {
+                None
+            },
         })
         .collect()
 }

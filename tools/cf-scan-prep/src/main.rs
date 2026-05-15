@@ -48,7 +48,10 @@ use cf_viewer::{
 };
 use clap::{Parser, ValueEnum};
 use mesh_io::{load_stl, save_stl};
-use mesh_repair::{MeshAdjacency, holes, remove_unreferenced_vertices, weld_vertices};
+use mesh_repair::{
+    MeshAdjacency, holes, remove_degenerate_triangles, remove_small_components,
+    remove_unreferenced_vertices, weld_vertices,
+};
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use meshopt::{SimplifyOptions, simplify_decoder};
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
@@ -223,6 +226,30 @@ const AUTO_SUGGEST_FACE_THRESHOLD: usize = 500_000;
 /// the STL's 3N unshared vertices collapse to ~N shared. 1 µm in
 /// meters; tighter than any practical scan precision.
 const SIMPLIFY_WELD_EPSILON_M: f64 = 1e-6;
+
+/// Area threshold for `remove_degenerate_triangles` in the
+/// `build_cleaned_mesh` cleanup pass (CSP.3). Square meters; 1e-15 m²
+/// is well below cf-cast's 2 mm-cell SDF resolution (4e-6 m² per cell
+/// face) and below the f32 quantization floor meshopt operates at,
+/// so anything we strip here is FP noise the downstream couldn't have
+/// used anyway. Catches zero-area triangles from cap ear-clip
+/// degeneracies, clip-intersection sliver triangles, and any
+/// preexisting degenerate faces the raw STL carried in. The latter
+/// is what made cf-device-design's `simplify_decoder` retain its
+/// full 3.34M face count on the iter-1 fixture
+/// (`tools/cf-device-design/src/main.rs:419-425`).
+const CLEANUP_DEGENERATE_AREA_M2: f64 = 1e-15;
+
+/// Minimum face count for a connected component to survive the
+/// `build_cleaned_mesh` cleanup pass. Components smaller than this
+/// are dropped as scanner noise. 10 is conservative — a meaningful
+/// shell (even a small cyst-like protrusion) has dozens of faces;
+/// noise islands are typically 1-3 stray triangles from scanner
+/// registration glitches or self-intersection artifacts. Spec
+/// §Strategic context assumes the user has pre-trimmed to a single
+/// shell externally; this threshold is the safety net for the
+/// "user forgot" case.
+const CLEANUP_MIN_COMPONENT_FACES: usize = 10;
 
 /// `target_error` parameter passed to `meshopt::simplify_decoder`.
 /// Normalized to mesh extents — `1.0` means "deviate by up to half
@@ -444,53 +471,14 @@ impl RecenterState {
     }
 }
 
-/// Clip floor panel state (`docs/SCAN_PREP_DESIGN.md` §Panel
-/// specifications §5). A horizontal-in-cast-frame plane at world
-/// `z = z_mm` (physics `+Z` direction; bevy `+Y` post-swap) that
-/// removes everything below it from the scan.
-///
-/// Scope at this commit: panel UI, the triangle-clipping algorithm,
-/// the disc visualization, and the live drop-percentage readout. The
-/// algorithm sits dormant — it's not yet applied to the displayed
-/// mesh to avoid the respawn-race complexity with
-/// `handle_simplify_actions`. Cap (commit #9) consumes the clipped
-/// mesh for boundary detection; Save (commit #12) bakes the clip into
-/// the cleaned STL. Until then the user sees the disc and the
-/// "Drops X% verts" readout as visual feedback, but the rendered
-/// mesh stays intact.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-struct ClipState {
-    /// When `false`, the disc visualization stays hidden and the panel
-    /// readout doesn't render. The slider value persists across
-    /// toggle.
-    enabled: bool,
-    /// Plane height in cast-frame world millimeters (post-Reorient +
-    /// post-Recenter). Spec convention: `z >= z_mm` is kept; `z < z_mm`
-    /// is removed.
-    z_mm: f64,
-    /// Cached percentage of vertices below the clip plane, populated
-    /// by [`update_clip_drop_pct`] only when relevant state actually
-    /// changes. Read-only by the panel.
-    ///
-    /// The vertex walk is O(N) — N can be 10M+ on an unsimplified
-    /// scan, which takes ~0.5-1.0 s per call. Computing on every
-    /// panel render (60 Hz) would freeze the UI; caching here makes
-    /// the panel render O(1).
-    ///
-    /// Written via `bypass_change_detection` so updating the cache
-    /// doesn't re-trigger the update system in a self-feedback loop.
-    drop_pct: f64,
-}
-
-impl Default for ClipState {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            z_mm: 0.0,
-            drop_pct: 0.0,
-        }
-    }
-}
+// CSP.4c — `ClipState` removed. The Clip floor feature was a
+// pre-CSP.4b world-Z axis-aligned cut; once centerline trim
+// shipped (CSP.4b — perpendicular-to-spine cuts with auto-cap)
+// the Clip floor's workshop use case was subsumed. User
+// confirmed removal 2026-05-15. `clip_mesh_against_plane_eq`
+// stays — it's the shared cut primitive that
+// `clip_mesh_against_plane` (used by `trim_mesh_along_centerline`)
+// builds on.
 
 /// One detected boundary loop on the scan, with its least-squares
 /// plane fit + per-loop user-decided cap-include state. Populated by
@@ -576,6 +564,177 @@ struct CapPendingAction {
     rescan: bool,
 }
 
+/// Centerline trim panel state (CSP.4b — apply-on-click model
+/// since CSP.4b.6). The user dials slider values to position the
+/// orange trim-plane circles live; clicking `[Apply trim]` commits
+/// those values + re-derives the displayed mesh from the cuts.
+///
+/// **Slider vs applied**:
+/// - `trim_tip_mm` / `trim_floor_mm` — slider state. Drives the
+///   orange overlay circles in real time. Cheap to mutate (no mesh
+///   recomputation per drag tick).
+/// - `applied_tip_mm` / `applied_floor_mm` — committed state.
+///   Drives the displayed mesh + the save-time cut. Mutated only
+///   when the user clicks `[Apply trim]`.
+///
+/// CSP.4b.4 ran the trim live (every slider tick → re-derive
+/// 200k-face mesh). User-reported 2026-05-15: "it feels very
+/// resource intensive." Apply-on-click matches the existing Apply
+/// Simplify pattern + amortizes the cost to discrete user actions.
+///
+/// Both values are in **millimeters** along the polyline arc — they
+/// project to physics-meter coordinates inside
+/// [`trim_mesh_along_centerline`] when the plane is constructed.
+/// `0.0` means "no trim at that end."
+///
+/// The sliders only become meaningful after the user clicks
+/// Cap → Scan (which populates `CapState::centerline_polyline`).
+/// Until then the panel renders a hint to "Run Cap → Scan first."
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+struct CenterlineTrimState {
+    /// Slider value for the tip end, in mm. Drives the overlay
+    /// circle; does NOT mutate the mesh until the user clicks
+    /// `[Apply trim]`.
+    trim_tip_mm: f64,
+    /// Slider value for the floor end, in mm. Drives the overlay
+    /// circle.
+    trim_floor_mm: f64,
+    /// Last value committed via `[Apply trim]` for the tip end,
+    /// in mm. Drives the displayed mesh + the save-time cut.
+    applied_tip_mm: f64,
+    /// Last value committed via `[Apply trim]` for the floor end,
+    /// in mm. Drives the displayed mesh + the save-time cut.
+    applied_floor_mm: f64,
+    /// Queued user action; consumed by
+    /// [`update_displayed_mesh`] each Update tick. Mirrors the
+    /// SimplifyState/CapPendingAction pattern.
+    pending_action: Option<TrimAction>,
+
+    // ----- CSP.4e Reconstruct state -----
+    //
+    // User-authorized directional workflow (2026-05-15): chop →
+    // Apply trim → reconstruct UI appears → pick reference zone +
+    // shape → Apply reconstruct. The reconstruct fields below are
+    // only meaningful + only rendered when `applied_floor_mm > 0`
+    // AND `trim_floor_mm == applied_floor_mm` (no drift since the
+    // last Apply trim). Any drift, any Reset trim, any change to
+    // the chop slider after Apply → the reconstruct fields RESET
+    // and the panel un-spawns. This protects against the
+    // state-machine trap of reconstruct staying applied to a
+    // stale chop value.
+    /// Reference-zone length in mm above the floor cut to sample
+    /// the canonical cross-section from. Slider value (draft).
+    /// 0.0 = no reconstruct preview yet.
+    reconstruct_reference_mm: f64,
+    /// Selected shape (Constant / Taper / Extrapolate). Draft
+    /// value driven by the radio buttons.
+    reconstruct_shape: ReconstructShape,
+    /// `Some(...)` when the user has clicked `[Apply reconstruct]`;
+    /// `None` while reconstruct is unapplied or un-spawned.
+    /// Carries `(applied_reference_mm, applied_shape)` so the
+    /// displayed-mesh snapshot can detect when reconstruct
+    /// changes vs trim-only changes.
+    applied_reconstruct: Option<AppliedReconstruct>,
+    /// Queued user action from the Reconstruct buttons. Consumed
+    /// next Update tick.
+    reconstruct_pending: Option<ReconstructAction>,
+}
+
+impl Default for CenterlineTrimState {
+    fn default() -> Self {
+        Self {
+            trim_tip_mm: 0.0,
+            trim_floor_mm: 0.0,
+            applied_tip_mm: 0.0,
+            applied_floor_mm: 0.0,
+            pending_action: None,
+            reconstruct_reference_mm: 0.0,
+            reconstruct_shape: ReconstructShape::Constant,
+            applied_reconstruct: None,
+            reconstruct_pending: None,
+        }
+    }
+}
+
+impl CenterlineTrimState {
+    /// CSP.4e — reconstruct workflow is gated on a stable floor
+    /// chop having been Applied. `available()` returns `true`
+    /// when:
+    /// - `applied_floor_mm > 0` (the user has committed a floor
+    ///   chop)
+    /// - `trim_floor_mm == applied_floor_mm` (no slider drift
+    ///   since that commit; protects against reconstruct
+    ///   applying to a stale chop)
+    fn reconstruct_available(&self) -> bool {
+        self.applied_floor_mm > 0.0
+            && (self.trim_floor_mm - self.applied_floor_mm).abs() < f64::EPSILON
+    }
+
+    /// Wipe reconstruct fields back to default. Called when the
+    /// "directional workflow" trip-wire fires: chop slider drift
+    /// after Apply, full Reset trim, etc.
+    fn reset_reconstruct(&mut self) {
+        self.reconstruct_reference_mm = 0.0;
+        self.reconstruct_shape = ReconstructShape::Constant;
+        self.applied_reconstruct = None;
+        self.reconstruct_pending = None;
+    }
+}
+
+/// Cross-section extrusion shape choice for the reconstruct
+/// algorithm (CSP.4e). User-picked via radio buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconstructShape {
+    /// Average radial profile from the reference zone, extruded
+    /// straight down the centerline at constant radius. Simplest
+    /// shape; ships first in CSP.4e.2.
+    Constant,
+    /// Constant profile linearly tapered toward a smaller radius
+    /// at the new floor. Ships in CSP.4e.3.
+    Taper,
+    /// Fit a linear trend `r(angle, s) = a + b·s` across the
+    /// reference zone; extrapolate `s` past the cut. Most
+    /// faithful to natural taper. Ships in CSP.4e.4.
+    Extrapolate,
+}
+
+/// What got committed by `[Apply reconstruct]`. Distinct from
+/// the live slider/shape state so the user can drift the
+/// sliders without un-applying the existing reconstruction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AppliedReconstruct {
+    reference_mm: f64,
+    shape: ReconstructShape,
+}
+
+/// User action queued from the Centerline trim panel. Consumed by
+/// [`update_displayed_mesh`] next Update tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrimAction {
+    /// Commit current slider values → applied values + re-derive
+    /// the displayed mesh from the cuts.
+    Apply,
+    /// Zero both slider AND applied values + re-derive displayed
+    /// mesh as the untrimmed base. Also resets the reconstruct
+    /// state (the "hard reset to restart" the user spec'd).
+    Reset,
+}
+
+/// User action queued from the Reconstruct sub-section
+/// (CSP.4e). Consumed by [`update_displayed_mesh`] next Update
+/// tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconstructAction {
+    /// Commit current reconstruct slider + shape selection →
+    /// `applied_reconstruct = Some(...)` + re-derive displayed
+    /// mesh. CSP.4e.1 — placeholder; the actual reconstruction
+    /// geometry lands at CSP.4e.2+.
+    Apply,
+    /// Unapply reconstruct: `applied_reconstruct = None`. The
+    /// chop stays in effect. (To wipe chop too, use Reset trim.)
+    Reset,
+}
+
 /// User action queued by the Save panel's `[Save]` button. Consumed
 /// next Update tick by `handle_save_action`, which builds the
 /// cleaned mesh + the `.prep.toml` and writes both files atomically.
@@ -604,99 +763,36 @@ struct SourceStlPath(PathBuf);
 #[derive(Resource, Debug, Clone, Copy)]
 struct StlUnitsResource(StlUnits);
 
-/// Walk the scan's vertices, transform each into cast-frame world
-/// coordinates (rotation + translation_z), and return the percentage
-/// that fall below `clip_z_mm`. Called by [`update_clip_drop_pct`]
-/// only on relevant state changes — not on every panel render — so
-/// the O(N) vertex walk doesn't freeze the UI.
-///
-/// Returns 0.0 for an empty mesh (no vertices to drop).
-///
-/// **Inner-loop optimization**: we only need the **z-component** of
-/// each rotated vertex. That's the 3rd row of the rotation matrix
-/// dotted with the vertex vector (~6 ops), not the full
-/// `transform_vector` call (~30 ops via `q · v · q^-1`). On a 10M-
-/// vertex unsimplified scan this is the difference between ~50 ms
-/// (acceptable single-shot lag on toggle / slider tick) and ~250 ms
-/// (perceptible UI hitch). For 200k simplified vertices both paths
-/// are sub-frame; the optimization mostly matters when the user
-/// enables Clip *before* simplifying.
-fn compute_drop_percentage(
-    scan: &IndexedMesh,
-    rotation: UnitQuaternion<f64>,
-    translation_z_mm: f64,
-    clip_z_mm: f64,
-) -> f64 {
-    if scan.vertices.is_empty() {
-        return 0.0;
-    }
-    // Pull the rotation matrix's 3rd row once outside the hot loop.
-    // `to_rotation_matrix` allocates a Matrix3; doing it per-vertex
-    // would dominate the loop.
-    let r = rotation.to_rotation_matrix();
-    let z_row_x = r[(2, 0)];
-    let z_row_y = r[(2, 1)];
-    let z_row_z = r[(2, 2)];
+/// Auto-center offset applied at load (CSP.3.5). In physics-frame
+/// meters; equals `-raw_aabb.center()` from the source STL after
+/// unit scaling. Read by `handle_save_action` to fill the
+/// `[scan_prep].auto_center_offset_m` provenance line. Read-only
+/// after startup. Zero vector when the source already happened to
+/// sit at the origin (rare).
+#[derive(Resource, Debug, Clone, Copy)]
+struct AutoCenterOffset(Vector3<f64>);
 
-    let mut below: usize = 0;
-    for v in &scan.vertices {
-        // Vertices are in physics-frame meters; lift to mm to match
-        // the clip plane's mm convention. Compute only the z-component
-        // of `rotation * v + translation_z`.
-        let world_z_mm = z_row_x * v.x * 1000.0
-            + z_row_y * v.y * 1000.0
-            + z_row_z * v.z * 1000.0
-            + translation_z_mm;
-        if world_z_mm < clip_z_mm {
-            below += 1;
-        }
-    }
-    // `as f64` is loss-free for usize values cf-scan-prep handles
-    // (well below 2^53).
-    #[allow(clippy::cast_precision_loss)]
-    {
-        100.0 * (below as f64) / (scan.vertices.len() as f64)
-    }
-}
+/// Auto-PCA rotation applied at load (CSP.4a). Physics-frame unit
+/// quaternion taking the scan's principal axis to `+Z` (cast-frame
+/// demolding direction). Baked into vertex positions at load, just
+/// like auto-center — so the in-memory + saved-to-disk mesh is in
+/// canonical orientation. The user's Reorient sliders therefore
+/// start at identity in the typical workflow; further manual
+/// adjustment via those sliders is still available.
+///
+/// `None` when PCA failed (degenerate mesh, < 3 vertices, all
+/// vertices coincident) — these scans are unworkable downstream
+/// anyway; the auto-orient just becomes a no-op + the user sees the
+/// raw orientation.
+///
+/// Recorded in `.prep.toml`'s `[scan_prep].auto_pca_quaternion` so
+/// the source-frame position is recoverable (multiply: auto_center
+/// + auto_pca then user transforms).
+#[derive(Resource, Debug, Clone, Copy)]
+struct AutoPcaQuaternion(Option<UnitQuaternion<f64>>);
 
-/// Update system: recompute [`ClipState::drop_pct`] when the clip
-/// state, scan mesh, reorient state, or recenter state has actually
-/// changed. Early-returns when clip is disabled (cached value stays
-/// dormant; re-enable toggle triggers a fresh recompute).
-///
-/// **Why a separate system, not panel-driven**: see [`ClipState::drop_pct`]
-/// docstring. The vertex walk is too expensive (~0.5-1.0 s on 10M
-/// verts) to run on every panel render (60 Hz). Doing it via an
-/// Update system + change detection makes the panel render O(1) and
-/// limits the heavy work to actual state transitions.
-///
-/// **`bypass_change_detection` write**: writing to `clip.drop_pct`
-/// via the normal `ResMut<ClipState>` path would mark `ClipState` as
-/// changed next tick, re-triggering this system in a self-feedback
-/// loop. `bypass_change_detection` returns `&mut ClipState` without
-/// updating the change-detection tick, breaking the cycle.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn update_clip_drop_pct(
-    mut clip: ResMut<ClipState>,
-    scan: Res<ScanMesh>,
-    reorient: Res<ReorientState>,
-    recenter: Res<RecenterState>,
-) {
-    if !clip.enabled {
-        return;
-    }
-    if !clip.is_changed() && !scan.is_changed() && !reorient.is_changed() && !recenter.is_changed()
-    {
-        return;
-    }
-    let pct = compute_drop_percentage(
-        &scan.0,
-        reorient.quaternion_physics(),
-        recenter.tz_mm,
-        clip.z_mm,
-    );
-    clip.bypass_change_detection().drop_pct = pct;
-}
+// CSP.4c — `compute_drop_percentage` + `update_clip_drop_pct`
+// removed alongside `ClipState`.
 
 /// Linear interpolation between two `Point3<f64>` positions.
 /// `t = 0` returns `a`; `t = 1` returns `b`.
@@ -708,9 +804,16 @@ fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
     )
 }
 
-/// True-plane-intersection mesh clip against a horizontal-in-cast-frame
-/// plane at world `z = clip_z_m` (`docs/SCAN_PREP_DESIGN.md` §Panel
-/// specifications §5; spec §Architectural decisions §Clip cut style).
+/// True-plane-intersection mesh clip against a plane in the mesh's
+/// own coordinate frame, expressed as the equation
+/// `plane_normal · v >= plane_d` (kept side).
+///
+/// Shared core algorithm — [`clip_mesh_against_plane`] (the
+/// centerline-trim cuts at each end) derives its inputs and then
+/// forwards here. Pre-CSP.4d there was also a
+/// `clip_mesh_against_world_z` for the now-retired Clip-floor
+/// panel; that wrapper is gone, but `clip_mesh_against_plane_eq`
+/// remained as the shared core.
 ///
 /// For each triangle:
 /// - **All 3 vertices on/above** the plane → keep as-is.
@@ -718,39 +821,22 @@ fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
 /// - **Mixed** → compute intersection points on the crossing edges +
 ///   triangulate the surviving polygon (3 or 4 vertices) via a fan
 ///   from the first vertex. The result is a clean planar cut along
-///   `z = clip_z`, suitable for capping (boundary stays planar so
-///   `mesh-repair`'s plane fit at commit #9 gets `R² ≈ 1.0`).
+///   the plane, suitable for capping (boundary stays planar so
+///   `mesh-repair`'s plane fit gets `R² ≈ 1.0`).
 ///
-/// **Edge case from spec §Risks §"True plane intersection edge cases"**:
-/// vertices exactly on the plane (`dist == 0`) are classified as
-/// "above" so the surrounding triangle is kept; this avoids degenerate
-/// sub-triangles in the cut.
-///
-/// Rejected alternative: vertex-drop (drop any triangle whose all 3
-/// vertices are below the plane). Cheaper (~30 LOC) but produces
-/// jagged ragged boundaries that lie off the clip plane → degrades
-/// the Cap panel's auto-fit `R²`. Spec mandates true plane
-/// intersection for this reason.
+/// Vertices exactly on the plane (`dist == 0`) are classified as
+/// "above" so the surrounding triangle is kept; this avoids
+/// degenerate sub-triangles in the cut.
 ///
 /// Output mesh's vertex buffer = original vertices + new intersection
 /// vertices appended; `remove_unreferenced_vertices` strips the
 /// dropped (all-below) original vertices afterwards so the result is
 /// tight.
-#[allow(dead_code)] // Used at commit #9 (Cap) and #12 (Save); shipped at #8 for the unit-tested algorithm.
-fn clip_mesh_against_world_z(
+fn clip_mesh_against_plane_eq(
     mesh: &IndexedMesh,
-    rotation: UnitQuaternion<f64>,
-    translation_z_m: f64,
-    clip_z_m: f64,
+    plane_normal: Vector3<f64>,
+    plane_d: f64,
 ) -> IndexedMesh {
-    // Express the world-frame plane `z = clip_z_m` in mesh-local frame.
-    // World `z = (R * v).z + T.z`; keep `z >= clip_z` becomes
-    // `dot(v, R^T · e_z) >= clip_z - T.z` in mesh-local coords.
-    let plane_normal = rotation
-        .inverse()
-        .transform_vector(&Vector3::new(0.0, 0.0, 1.0));
-    let plane_d = clip_z_m - translation_z_m;
-
     // Output buffers — start with the original vertices (later
     // stripped of unreferenced); append intersection points as we go.
     let mut new_vertices: Vec<Point3<f64>> = mesh.vertices.clone();
@@ -815,6 +901,803 @@ fn clip_mesh_against_world_z(
     clipped.faces = new_faces;
     remove_unreferenced_vertices(&mut clipped);
     clipped
+}
+
+// CSP.4c — `clip_mesh_against_world_z` removed alongside
+// `ClipState`. The shared `clip_mesh_against_plane_eq` primitive
+// below is still load-bearing for `trim_mesh_along_centerline`.
+
+/// Clip `mesh` against an arbitrary plane defined by a point on the
+/// plane and a normal. Kept side: where
+/// `(p - plane_point) · plane_normal >= 0`. CSP.4b — used by
+/// [`trim_mesh_along_centerline`] to clip each end of the centerline
+/// at a user-chosen distance.
+///
+/// `plane_normal` MUST be a unit vector — the algorithm relies on the
+/// dot product producing signed distances. Callers passing a
+/// non-unit normal will get a clip that succeeds but with wrong
+/// intersection-point math; cheaper than asserting here.
+fn clip_mesh_against_plane(
+    mesh: &IndexedMesh,
+    plane_point: Point3<f64>,
+    plane_normal: Vector3<f64>,
+) -> IndexedMesh {
+    // `plane_normal · (p - plane_point) >= 0`
+    //   ⇔ `plane_normal · p >= plane_normal · plane_point`
+    let plane_d = plane_normal.dot(&plane_point.coords);
+    clip_mesh_against_plane_eq(mesh, plane_normal, plane_d)
+}
+
+/// Walk along `polyline`'s arc and return the position + local
+/// tangent at arc-length `distance_m` from `polyline[0]`. The
+/// tangent is the unit direction of the segment containing the
+/// target point, pointing from `polyline[0]` toward
+/// `polyline[N-1]`. CSP.4b.3 — the load-bearing primitive for both
+/// the mesh-trim algorithm + the live overlay; both used to
+/// extrapolate linearly from the first/last segment's tangent
+/// (CSP.4b initial), which diverged from the actual centerline
+/// path on curved scans (user-reported via screenshots 2026-05-15).
+///
+/// Returns `None` for a < 2-point polyline (no segments to walk).
+/// For `distance_m` past the polyline's total arc length, returns
+/// a linear extrapolation along the LAST segment's tangent — fine
+/// for the panel-clamped slider range (max = half arc length per
+/// end), but explicit so future call sites that pass arbitrary
+/// distances don't hit a silent failure.
+fn point_along_polyline_at_arc_distance(
+    polyline: &[Point3<f64>],
+    distance_m: f64,
+) -> Option<(Point3<f64>, Vector3<f64>)> {
+    if polyline.len() < 2 {
+        return None;
+    }
+    let target_m = distance_m.max(0.0);
+    let mut walked_m = 0.0_f64;
+    for i in 0..polyline.len() - 1 {
+        let seg_vec = polyline[i + 1].coords - polyline[i].coords;
+        let seg_len = seg_vec.norm();
+        if seg_len < f64::EPSILON {
+            continue;
+        }
+        if walked_m + seg_len >= target_m {
+            // Target lies within segment `i..i+1`. Lerp to the
+            // exact point + return that segment's unit tangent.
+            let t = ((target_m - walked_m) / seg_len).clamp(0.0, 1.0);
+            let pos = Point3::from(polyline[i].coords + t * seg_vec);
+            let tangent = seg_vec / seg_len;
+            return Some((pos, tangent));
+        }
+        walked_m += seg_len;
+    }
+    // Past the end of the polyline — linear extrapolation along the
+    // last segment's tangent. Reaches this branch only if the
+    // caller's distance exceeds the polyline arc length (the
+    // user-facing panel clamps to half arc length per end, so this
+    // is a safety fallback, not a hot path).
+    let n = polyline.len();
+    let last_seg = polyline[n - 1].coords - polyline[n - 2].coords;
+    let last_seg_len = last_seg.norm();
+    if last_seg_len < f64::EPSILON {
+        return None;
+    }
+    let overrun_m = target_m - walked_m;
+    let tangent = last_seg / last_seg_len;
+    let pos = Point3::from(polyline[n - 1].coords + tangent * overrun_m);
+    Some((pos, tangent))
+}
+
+/// Total arc length of `polyline` in meters. Returns `0.0` for
+/// `< 2` points.
+fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
+    polyline
+        .windows(2)
+        .map(|w| (w[1].coords - w[0].coords).norm())
+        .sum()
+}
+
+/// Trim `mesh` along its centerline polyline: clips off
+/// `trim_tip_mm` from the tip end (centerline\[0\]) and
+/// `trim_floor_mm` from the floor end (centerline\[N-1\]) of the
+/// polyline. Returns the trimmed mesh.
+///
+/// CSP.4b user-facing feature. The trim planes are perpendicular to
+/// the centerline tangent **at the cut point** (computed via
+/// [`point_along_polyline_at_arc_distance`]). For a roughly-straight
+/// centerline this is a horizontal cut at the corresponding world-Z
+/// height; for a curved centerline (sock fixture with PCA-induced
+/// curvature) the cut tilts with the local spine direction — the
+/// natural workshop intent of "shave off the noisy end along the
+/// spine."
+///
+/// CSP.4b.3 — initial CSP.4b used the first/last polyline segment's
+/// tangent + linear extrapolation, which diverged badly from the
+/// real centerline on curved scans (visible in trim-overlay
+/// screenshots). The current implementation walks the polyline arc.
+///
+/// Centerline polyline ordering convention: index 0 is the tip
+/// (closed end / dome), index N-1 is the floor (open end / rim).
+/// This is the order [`compute_centerline_polyline`] returns when
+/// driven by the first cap loop's outward normal (which points
+/// outward from the rim, toward -Z under PCA convention).
+///
+/// `trim_tip_mm == 0 && trim_floor_mm == 0` is a fast-path no-op
+/// (returns `mesh.clone()`). A degenerate centerline (< 2 points)
+/// also returns the input unchanged.
+///
+/// The trimmed mesh has new open boundaries at each non-zero cut.
+/// The caller is responsible for capping those — see
+/// [`auto_cap_open_boundaries`] for the auto-cap step.
+fn trim_mesh_along_centerline(
+    mesh: &IndexedMesh,
+    centerline: &[Point3<f64>],
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+) -> IndexedMesh {
+    if centerline.len() < 2 || (trim_tip_mm <= 0.0 && trim_floor_mm <= 0.0) {
+        return mesh.clone();
+    }
+    let mut out = mesh.clone();
+
+    // Tip-end trim: plane at arc-distance `trim_tip_mm` forward
+    // from the tip; plane normal = local tangent (points toward
+    // floor). Kept side = the "floor" side.
+    if trim_tip_mm > 0.0 {
+        if let Some((plane_point, tangent)) =
+            point_along_polyline_at_arc_distance(centerline, trim_tip_mm * 0.001)
+        {
+            out = clip_mesh_against_plane(&out, plane_point, tangent);
+        }
+    }
+
+    // Floor-end trim: plane at arc-distance
+    // `total_length - trim_floor_mm` from the tip (i.e.,
+    // `trim_floor_mm` backward from the floor). Plane normal =
+    // -tangent (points toward tip). Kept side = the "tip" side.
+    if trim_floor_mm > 0.0 {
+        let total_length_m = polyline_arc_length_m(centerline);
+        let target_m = total_length_m - trim_floor_mm * 0.001;
+        if target_m > 0.0 {
+            if let Some((plane_point, tangent)) =
+                point_along_polyline_at_arc_distance(centerline, target_m)
+            {
+                out = clip_mesh_against_plane(&out, plane_point, -tangent);
+            }
+        }
+    }
+
+    out
+}
+
+/// Trim the centerline polyline by the same distances applied to
+/// the mesh in [`trim_mesh_along_centerline`]: drop `trim_tip_mm`
+/// from the start (index 0 = tip) and `trim_floor_mm` from the end
+/// (index N-1 = floor). Both trims measured in millimeters along
+/// the cumulative arc length.
+///
+/// CSP.4b — keeps the `.prep.toml`'s `[centerline].points_m` line
+/// in sync with the cleaned STL on disk. Without this, the TOML
+/// would describe a longer centerline than the mesh actually has.
+///
+/// Returns an empty vec if the trim consumes the whole polyline
+/// (`trim_tip_mm + trim_floor_mm >= total arc length`) — the
+/// caller's `[centerline]` block then drops out per the
+/// `skip_serializing_if` rule.
+fn trim_centerline_polyline(
+    centerline: &[Point3<f64>],
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+) -> Vec<Point3<f64>> {
+    if centerline.len() < 2 || (trim_tip_mm <= 0.0 && trim_floor_mm <= 0.0) {
+        return centerline.to_vec();
+    }
+    // Cumulative arc length from start, in millimeters. Seeded
+    // with `0.0` and built by single-pass accumulation; `last`
+    // dereferences are unwrap-free via tracking `accum` separately.
+    let mut cum_lengths_mm: Vec<f64> = Vec::with_capacity(centerline.len());
+    cum_lengths_mm.push(0.0);
+    let mut accum = 0.0_f64;
+    for w in centerline.windows(2) {
+        accum += (w[1].coords - w[0].coords).norm() * 1000.0;
+        cum_lengths_mm.push(accum);
+    }
+    let total_length_mm = accum;
+    let start_mm = trim_tip_mm.max(0.0);
+    let end_mm = (total_length_mm - trim_floor_mm.max(0.0)).max(start_mm);
+    if end_mm <= start_mm + f64::EPSILON {
+        return Vec::new();
+    }
+
+    // Linear interpolation at arc-length `target_mm` along the
+    // polyline. Walks segments; for a 30-point polyline this is
+    // trivial cost.
+    let interp = |target_mm: f64| -> Point3<f64> {
+        for i in 0..centerline.len() - 1 {
+            let s = cum_lengths_mm[i];
+            let e = cum_lengths_mm[i + 1];
+            if target_mm <= e {
+                let t = if e > s {
+                    (target_mm - s) / (e - s)
+                } else {
+                    0.0
+                };
+                let interpolated =
+                    centerline[i].coords + t * (centerline[i + 1].coords - centerline[i].coords);
+                return Point3::from(interpolated);
+            }
+        }
+        centerline[centerline.len() - 1]
+    };
+
+    let mut trimmed: Vec<Point3<f64>> = Vec::with_capacity(centerline.len());
+    trimmed.push(interp(start_mm));
+    for (i, p) in centerline.iter().enumerate() {
+        if cum_lengths_mm[i] > start_mm + f64::EPSILON && cum_lengths_mm[i] < end_mm - f64::EPSILON
+        {
+            trimmed.push(*p);
+        }
+    }
+    let last = trimmed.last().copied();
+    let end_pt = interp(end_mm);
+    if last.is_none_or(|p| (p.coords - end_pt.coords).norm_squared() > 1e-18) {
+        trimmed.push(end_pt);
+    }
+    trimmed
+}
+
+/// Detect all open boundary loops on `mesh`, fit a plane to each via
+/// SVD, orient the normal outward, and append ear-clipped cap faces
+/// that close every detected loop. CSP.4b — runs after
+/// [`trim_mesh_along_centerline`] so the trim cuts get sealed.
+///
+/// Mutates `mesh` in place. Returns the number of loops capped.
+///
+/// Same projection + winding logic as `build_cleaned_mesh`'s cap
+/// step (CSP.3a): boundary vertices are projected onto the fit plane
+/// before ear-clip so the cap is exactly planar. Cap faces use the
+/// existing loop vertex indices (no new vertices appended for the
+/// cap; only re-uses the now-projected boundary positions).
+fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
+    let loops = detect_boundary_loops(mesh);
+    let mut capped = 0;
+    for loop_data in &loops {
+        if !loop_data.is_valid() {
+            continue;
+        }
+        let loop_points_3d: Vec<Point3<f64>> = loop_data
+            .vertices
+            .iter()
+            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
+            .collect();
+        if loop_points_3d.len() != loop_data.vertices.len() {
+            continue;
+        }
+        let (plane_centroid, plane_normal_raw, _r_squared) = fit_plane_to_points(&loop_points_3d);
+        let plane_normal = orient_cap_normal_outward(mesh, plane_centroid, plane_normal_raw);
+
+        // CSP.3a — project loop vertices onto the fit plane so the
+        // cap is planar.
+        for &idx in &loop_data.vertices {
+            if let Some(p) = mesh.vertices.get(idx as usize).copied() {
+                let signed = (p.coords - plane_centroid.coords).dot(&plane_normal);
+                let projected = p.coords - plane_normal * signed;
+                mesh.vertices[idx as usize] = Point3::from(projected);
+            }
+        }
+
+        let loop_points_projected: Vec<Point3<f64>> = loop_data
+            .vertices
+            .iter()
+            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
+            .collect();
+        let verts_2d =
+            project_loop_to_plane_2d(&loop_points_projected, plane_centroid, plane_normal);
+        let triangulation = triangulate_polygon_2d_earclip(&verts_2d);
+
+        for tri in triangulation {
+            let a = loop_data.vertices[tri[0] as usize];
+            let b = loop_data.vertices[tri[1] as usize];
+            let c = loop_data.vertices[tri[2] as usize];
+            // Same outward-winding flip as `build_cleaned_mesh`.
+            let p0 = verts_2d[tri[0] as usize];
+            let p1 = verts_2d[tri[1] as usize];
+            let p2 = verts_2d[tri[2] as usize];
+            let signed_area_2d = (p1.0 - p0.0) * (p2.1 - p0.1) - (p1.1 - p0.1) * (p2.0 - p0.0);
+            if signed_area_2d >= 0.0 {
+                mesh.faces.push([a, c, b]);
+            } else {
+                mesh.faces.push([a, b, c]);
+            }
+        }
+        capped += 1;
+    }
+    capped
+}
+
+// ----- Centerline reconstruction (CSP.4e.2) -------------------------
+//
+// Replace a chopped floor region with extruded average-cross-section
+// geometry so the cleaned mesh keeps its original length. The user
+// dials the reference-zone slider + picks a shape (Constant in 4e.2;
+// Taper + Extrapolate in 4e.3/4e.4); this code consumes those values
+// to build new mesh geometry.
+//
+// Algorithm (Constant shape):
+// 1. Find the floor-end open boundary loop (closest to the polyline
+//    endpoint nearest the chopped end).
+// 2. Build a local frame at the cut: tangent (along the polyline),
+//    plus two perpendicular basis vectors u, v.
+// 3. Walk every mesh vertex; collect the ones within
+//    `reference_zone_m` of the cut (along the tangent direction
+//    INTO the mesh). For each, compute (angle = atan2(v·d, u·d),
+//    radial = √(u² + v²)). Bin angles into M bins, take the median
+//    radial per bin → canonical r(angle) profile.
+// 4. Project boundary-loop vertices onto the cut plane and snap
+//    them to the canonical profile (each vertex moves radially to
+//    r(angle_at_that_vertex)). The loop topology stays connected
+//    to the mesh body; only the rim vertices move.
+// 5. Extrude K rings DOWN the centerline (each ring has the same L
+//    angular positions as the boundary loop, at canonical radii
+//    for Constant shape). Connect each pair of rings with triangle
+//    strips.
+// 6. Add a flat bottom cap fanned from a centroid vertex at the
+//    new floor.
+
+/// Number of angular bins used when sampling the radial profile.
+/// 24 = one bin every 15°. Coarser than the typical boundary-loop
+/// vertex count (hundreds) so each bin has multiple samples to
+/// median-filter against scan noise.
+const RECONSTRUCT_ANGLE_BINS: usize = 24;
+
+/// Number of subdivisions along the extruded sidewall. 8 keeps the
+/// reconstruction lightweight (8 × L new triangles per band, L =
+/// boundary loop vertex count); enough for visual smoothness on
+/// the sock fixture's mostly-straight floor region.
+const RECONSTRUCT_RING_COUNT: usize = 8;
+
+/// Decide which of `loops` is the "floor end" loop — the LARGEST
+/// valid boundary loop. Used by [`apply_reconstruction`] to
+/// single out the loop the user wants to reconstruct (the cut
+/// rim) vs. scan-noise stragglers.
+///
+/// CSP.4e.2 fix-forward (2026-05-15): the initial implementation
+/// picked the loop whose centroid was closest to the centerline
+/// endpoint. On an unsimplified scan (iter-1 fixture: 1215
+/// boundary loops, mostly 3-vertex stragglers), that heuristic
+/// picked a tiny noise loop at random whose centroid happened to
+/// be closest. The reconstruction then generated a degenerate
+/// thin column at that location ("white vertical line" the user
+/// reported). The cut rim is overwhelmingly the largest loop on
+/// any practical scan, so picking by vertex count is robust.
+///
+/// Loops with fewer than `MIN_RIM_LOOP_VERTS` (10) vertices are
+/// filtered out — they're scanner-noise stragglers, never the
+/// actual rim. Among the remaining, the largest wins.
+///
+/// `centerline_last_point` is accepted for future use (e.g., a
+/// distance-based tiebreaker when two large loops exist —
+/// multi-shell scans) but unused in the current pick-by-count
+/// implementation.
+///
+/// Returns the loop's index in `loops`, or `None` when no
+/// sufficiently-large valid loop exists.
+fn find_floor_loop_index(
+    loops: &[holes::BoundaryLoop],
+    _mesh: &IndexedMesh,
+    _centerline_last_point: Point3<f64>,
+) -> Option<usize> {
+    const MIN_RIM_LOOP_VERTS: usize = 10;
+    let mut best: Option<(usize, usize)> = None;
+    for (i, lp) in loops.iter().enumerate() {
+        if !lp.is_valid() {
+            continue;
+        }
+        let count = lp.vertices.len();
+        if count < MIN_RIM_LOOP_VERTS {
+            continue;
+        }
+        if best.is_none_or(|(_, c)| count > c) {
+            best = Some((i, count));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Build an orthonormal basis `(u, v)` perpendicular to the unit
+/// vector `n`. Used to project 3D points around the centerline
+/// into a 2D (radial, angular) representation.
+///
+/// Standard Gram-Schmidt against a world axis that isn't parallel
+/// to `n`. Matches the heuristic in [`project_loop_to_plane_2d`]
+/// for consistency.
+fn perpendicular_basis_for(n: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let world_axis = if n.x.abs() < 0.9 {
+        Vector3::new(1.0, 0.0, 0.0)
+    } else {
+        Vector3::new(0.0, 1.0, 0.0)
+    };
+    let u = (world_axis - n * world_axis.dot(&n)).normalize();
+    let v = n.cross(&u).normalize();
+    (u, v)
+}
+
+/// Bin the mesh vertices in the reference zone above the cut by
+/// angular position around the centerline, then take the median
+/// radial distance per bin. Returns a length-M array of radii (M =
+/// [`RECONSTRUCT_ANGLE_BINS`]).
+///
+/// Robust to noise: per-bin **median** rather than mean. A single
+/// stray vertex doesn't pull the bin's radius.
+///
+/// Bins with zero samples fall back to the overall median radius
+/// (so the bottom-fan reconstruction stays well-defined even with
+/// patchy reference data).
+fn sample_radial_profile(
+    mesh: &IndexedMesh,
+    cut_point: Point3<f64>,
+    inward_tangent: Vector3<f64>,
+    u: Vector3<f64>,
+    v: Vector3<f64>,
+    reference_zone_m: f64,
+) -> [f64; RECONSTRUCT_ANGLE_BINS] {
+    let mut bins: Vec<Vec<f64>> = (0..RECONSTRUCT_ANGLE_BINS).map(|_| Vec::new()).collect();
+    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+    for vtx in &mesh.vertices {
+        let d = vtx.coords - cut_point.coords;
+        let along = d.dot(&inward_tangent);
+        // Sample only the slab ABOVE the cut (toward the mesh
+        // interior), within `reference_zone_m`. `along > 0` ⇒ on
+        // the interior side; `along < reference_zone_m` ⇒ within
+        // the zone.
+        if along <= 0.0 || along > reference_zone_m {
+            continue;
+        }
+        let proj_u = d.dot(&u);
+        let proj_v = d.dot(&v);
+        let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
+        let angle = proj_v.atan2(proj_u);
+        let normalized = if angle >= 0.0 {
+            angle
+        } else {
+            angle + std::f64::consts::TAU
+        };
+        let bin = ((normalized / bin_span) as usize).min(RECONSTRUCT_ANGLE_BINS - 1);
+        bins[bin].push(r);
+    }
+
+    // Compute per-bin median + a fallback "overall median" for
+    // empty bins.
+    let mut radii = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+    let mut all_radii: Vec<f64> = bins.iter().flat_map(|b| b.iter().copied()).collect();
+    let overall = if all_radii.is_empty() {
+        0.0
+    } else {
+        all_radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        all_radii[all_radii.len() / 2]
+    };
+    for (i, bin) in bins.iter_mut().enumerate() {
+        if bin.is_empty() {
+            radii[i] = overall;
+        } else {
+            bin.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            radii[i] = bin[bin.len() / 2];
+        }
+    }
+    radii
+}
+
+/// Same reference-zone walk as [`sample_radial_profile`] but
+/// fits a **per-angle-bin linear regression** `r(s) = a + b·s`
+/// instead of taking the median. Used by the Extrapolate shape
+/// variant (CSP.4e.3.b) — extrapolating below the cut at `s < 0`
+/// gives a profile that continues the reference-zone trend
+/// (e.g., a sock that narrows toward the rim keeps narrowing
+/// below the cut).
+///
+/// Returns `(intercepts, slopes)` — both length-M arrays:
+/// - `intercepts[i]` = `a` for bin i (radius at `s = 0`, the cut)
+/// - `slopes[i]`     = `b` for bin i (mm of radius per mm of s)
+///
+/// Per-bin samples with < 2 points fall back to (overall median,
+/// slope 0) — flat reconstruction for that angle.
+fn sample_radial_profile_linear_fit(
+    mesh: &IndexedMesh,
+    cut_point: Point3<f64>,
+    inward_tangent: Vector3<f64>,
+    u: Vector3<f64>,
+    v: Vector3<f64>,
+    reference_zone_m: f64,
+) -> ([f64; RECONSTRUCT_ANGLE_BINS], [f64; RECONSTRUCT_ANGLE_BINS]) {
+    let mut bins: Vec<Vec<(f64, f64)>> = (0..RECONSTRUCT_ANGLE_BINS).map(|_| Vec::new()).collect();
+    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+    let mut all_radii: Vec<f64> = Vec::new();
+    for vtx in &mesh.vertices {
+        let d = vtx.coords - cut_point.coords;
+        let s = d.dot(&inward_tangent);
+        if s <= 0.0 || s > reference_zone_m {
+            continue;
+        }
+        let proj_u = d.dot(&u);
+        let proj_v = d.dot(&v);
+        let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
+        let angle = proj_v.atan2(proj_u);
+        let normalized = if angle >= 0.0 {
+            angle
+        } else {
+            angle + std::f64::consts::TAU
+        };
+        let bin = ((normalized / bin_span) as usize).min(RECONSTRUCT_ANGLE_BINS - 1);
+        bins[bin].push((s, r));
+        all_radii.push(r);
+    }
+    // Fallback overall median for sparse bins.
+    let overall = if all_radii.is_empty() {
+        0.0
+    } else {
+        all_radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        all_radii[all_radii.len() / 2]
+    };
+    let mut intercepts = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+    let mut slopes = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+    for (i, samples) in bins.iter().enumerate() {
+        if samples.len() < 2 {
+            intercepts[i] = overall;
+            slopes[i] = 0.0;
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let n = samples.len() as f64;
+        let sum_s: f64 = samples.iter().map(|(s, _)| s).sum();
+        let sum_r: f64 = samples.iter().map(|(_, r)| r).sum();
+        let sum_s2: f64 = samples.iter().map(|(s, _)| s * s).sum();
+        let sum_sr: f64 = samples.iter().map(|(s, r)| s * r).sum();
+        let denom = n * sum_s2 - sum_s * sum_s;
+        if denom.abs() < f64::EPSILON {
+            intercepts[i] = sum_r / n;
+            slopes[i] = 0.0;
+        } else {
+            slopes[i] = (n * sum_sr - sum_s * sum_r) / denom;
+            intercepts[i] = (sum_r - slopes[i] * sum_s) / n;
+        }
+    }
+    (intercepts, slopes)
+}
+
+/// Taper rate for the Taper shape variant (CSP.4e.3.a). The new
+/// floor's radius is `1 - TAPER_AT_FLOOR` × the canonical
+/// profile; intermediate rings linearly interpolate. 0.3 = 30%
+/// reduction at the floor → visible-but-not-extreme pinch.
+const RECONSTRUCT_TAPER_AT_FLOOR: f64 = 0.3;
+
+/// Linearly interpolate the canonical radius at angle `angle`
+/// (radians, any value) from the M-bin profile.
+fn sample_radius_at_angle(radii: &[f64; RECONSTRUCT_ANGLE_BINS], angle: f64) -> f64 {
+    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+    let normalized = if angle >= 0.0 {
+        angle
+    } else {
+        angle + std::f64::consts::TAU
+    };
+    let pos = (normalized / bin_span) % RECONSTRUCT_ANGLE_BINS as f64;
+    let lo_bin = (pos as usize) % RECONSTRUCT_ANGLE_BINS;
+    let hi_bin = (lo_bin + 1) % RECONSTRUCT_ANGLE_BINS;
+    let t = pos - pos.floor();
+    radii[lo_bin] * (1.0 - t) + radii[hi_bin] * t
+}
+
+/// Apply floor reconstruction to `mesh`. The mesh MUST already be
+/// trim-cut (open boundary at the floor end); other open
+/// boundaries (e.g., tip-end if tip was also trimmed) fall
+/// through to flat auto-cap inside this function's degenerate
+/// paths. CSP.4e.2 (Constant), CSP.4e.3 (Taper, Extrapolate).
+///
+/// `shape` controls how the per-ring radius is computed as we
+/// extrude down the centerline from the cut to the new floor:
+/// - `Constant` — every ring uses the canonical median profile
+///   at the cut (cylindrical extrusion).
+/// - `Taper`    — linear scaling from canonical at the cut to
+///   `(1 - RECONSTRUCT_TAPER_AT_FLOOR) × canonical` at the new
+///   floor.
+/// - `Extrapolate` — per-angle linear regression `r(s) = a + b·s`
+///   across the reference zone; extrapolate to `s < 0` (below
+///   the cut) for each ring. Captures the natural taper of the
+///   reference geometry.
+///
+/// `centerline` is the POST-trim polyline in the same frame as
+/// `mesh` (physics-frame meters, pre-bake under the current live-
+/// preview pipeline).
+fn apply_reconstruction(
+    mut mesh: IndexedMesh,
+    centerline: &[Point3<f64>],
+    applied_floor_mm: f64,
+    reference_zone_mm: f64,
+    shape: ReconstructShape,
+) -> IndexedMesh {
+    if centerline.len() < 2 || applied_floor_mm <= 0.0 || reference_zone_mm <= 0.0 {
+        // Nothing to reconstruct — fall back to flat-cap.
+        auto_cap_open_boundaries(&mut mesh);
+        return mesh;
+    }
+    let loops = detect_boundary_loops(&mesh);
+    let centerline_last = centerline[centerline.len() - 1];
+    let Some(floor_idx) = find_floor_loop_index(&loops, &mesh, centerline_last) else {
+        auto_cap_open_boundaries(&mut mesh);
+        return mesh;
+    };
+
+    // Build the local frame at the cut. `inward_tangent` points
+    // FROM the cut endpoint AWAY from the chopped end (i.e., back
+    // INTO the mesh body) — that's the direction of `polyline[N-2]
+    // - polyline[N-1]` after trim trimmed the polyline.
+    let n = centerline.len();
+    let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
+    let tangent_norm = tangent_raw.norm();
+    if tangent_norm < f64::EPSILON {
+        auto_cap_open_boundaries(&mut mesh);
+        return mesh;
+    }
+    let inward_tangent = tangent_raw / tangent_norm;
+    let (u_axis, v_axis) = perpendicular_basis_for(inward_tangent);
+
+    // Sample the canonical radial profile from the reference zone.
+    // For Constant + Taper we only need per-bin medians; for
+    // Extrapolate we ALSO need per-bin linear-regression slopes
+    // so we can evaluate `r(s) = a + b·s` at `s < 0` (below the
+    // cut). The closure below dispatches per-shape.
+    let base_radii = sample_radial_profile(
+        &mesh,
+        centerline_last,
+        inward_tangent,
+        u_axis,
+        v_axis,
+        reference_zone_mm * 0.001,
+    );
+    let extrap_fit = if matches!(shape, ReconstructShape::Extrapolate) {
+        Some(sample_radial_profile_linear_fit(
+            &mesh,
+            centerline_last,
+            inward_tangent,
+            u_axis,
+            v_axis,
+            reference_zone_mm * 0.001,
+        ))
+    } else {
+        None
+    };
+    let extension_m = applied_floor_mm * 0.001;
+    // `t` ∈ [0, 1]: 0 = top ring at the cut, 1 = bottom ring at
+    // the new floor. Returns the per-angle radius for that ring.
+    let radius_at = |angle: f64, t: f64| -> f64 {
+        let base = sample_radius_at_angle(&base_radii, angle);
+        match shape {
+            ReconstructShape::Constant => base,
+            ReconstructShape::Taper => base * (1.0 - RECONSTRUCT_TAPER_AT_FLOOR * t),
+            ReconstructShape::Extrapolate => {
+                // CSP.4e.3.b — for Extrapolate, evaluate the
+                // per-angle linear fit at `s = -extension_m × t`
+                // (negative s = below cut). Fall back to Constant
+                // if the fit isn't available (shouldn't happen).
+                if let Some((a_arr, b_arr)) = extrap_fit.as_ref() {
+                    let a = sample_radius_at_angle(a_arr, angle);
+                    let b = sample_radius_at_angle(b_arr, angle);
+                    let s = -extension_m * t;
+                    let r = a + b * s;
+                    // Clamp non-negative — an aggressive trend
+                    // could project to negative radius for a long
+                    // extrusion. Below ~0 the mesh would
+                    // self-cross the centerline.
+                    r.max(0.0)
+                } else {
+                    base
+                }
+            }
+        }
+    };
+
+    // Snap floor-loop vertices to the canonical profile + the cut
+    // plane. Each loop vertex keeps its angle but gets its radial
+    // distance replaced with `radius_at(angle, 0)` (top of the
+    // extrusion = at the cut plane).
+    let floor_loop = loops[floor_idx].clone();
+    let l = floor_loop.vertices.len();
+    let mut top_ring_angles = Vec::with_capacity(l);
+    for &vidx in &floor_loop.vertices {
+        if let Some(p) = mesh.vertices.get(vidx as usize).copied() {
+            let d = p.coords - centerline_last.coords;
+            let proj_u = d.dot(&u_axis);
+            let proj_v = d.dot(&v_axis);
+            let angle = proj_v.atan2(proj_u);
+            top_ring_angles.push(angle);
+            let r = radius_at(angle, 0.0);
+            let new_pos =
+                centerline_last.coords + r * (u_axis * angle.cos() + v_axis * angle.sin());
+            mesh.vertices[vidx as usize] = Point3::from(new_pos);
+        }
+    }
+
+    // Generate K extrusion rings DOWN past the cut (in the
+    // direction OPPOSITE the inward tangent — outward toward the
+    // original chopped position).
+    let extrusion_dir = -inward_tangent;
+    let mut prev_ring: Vec<u32> = floor_loop.vertices.clone();
+    for k in 1..=RECONSTRUCT_RING_COUNT {
+        #[allow(clippy::cast_precision_loss)]
+        let t_k = k as f64 / RECONSTRUCT_RING_COUNT as f64;
+        let ring_center = centerline_last.coords + extrusion_dir * extension_m * t_k;
+        let mut this_ring: Vec<u32> = Vec::with_capacity(l);
+        for &angle in &top_ring_angles {
+            let r = radius_at(angle, t_k);
+            let new_pos = ring_center + r * (u_axis * angle.cos() + v_axis * angle.sin());
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = mesh.vertices.len() as u32;
+            mesh.vertices.push(Point3::from(new_pos));
+            this_ring.push(idx);
+        }
+        // Triangle strip between prev_ring (top) and this_ring (bottom).
+        // For each i: quad (prev[i], prev[i+1], this[i+1], this[i]).
+        // Triangulate as (prev[i], prev[i+1], this[i+1]) +
+        // (prev[i], this[i+1], this[i]). Winding chosen so the
+        // outward normal points radially AWAY from the centerline.
+        for i in 0..l {
+            let a = prev_ring[i];
+            let b = prev_ring[(i + 1) % l];
+            let c = this_ring[(i + 1) % l];
+            let d = this_ring[i];
+            mesh.faces.push([a, b, c]);
+            mesh.faces.push([a, c, d]);
+        }
+        prev_ring = this_ring;
+    }
+
+    // Bottom flat cap: fan from a centroid vertex at the extrusion
+    // tip. Winding: outward normal points FURTHER along
+    // `extrusion_dir` (away from the mesh body).
+    let bottom_center = centerline_last.coords + extrusion_dir * extension_m;
+    #[allow(clippy::cast_possible_truncation)]
+    let center_idx = mesh.vertices.len() as u32;
+    mesh.vertices.push(Point3::from(bottom_center));
+    for i in 0..l {
+        let a = prev_ring[i];
+        let b = prev_ring[(i + 1) % l];
+        mesh.faces.push([a, b, center_idx]);
+    }
+
+    // Verify winding empirically: pick the first sidewall triangle,
+    // compute its normal, check if it points radially OUTWARD. If
+    // not, flip all the sidewall + cap face winding. This is a
+    // one-shot heuristic — the boundary loop's CCW-vs-CW direction
+    // depends on which end was trimmed, so we can't pre-compute.
+    let first_sidewall_face_idx = mesh.faces.len() - 2 * l * RECONSTRUCT_RING_COUNT - l;
+    if let Some(&[a, b, c]) = mesh.faces.get(first_sidewall_face_idx) {
+        let va = mesh.vertices[a as usize];
+        let vb = mesh.vertices[b as usize];
+        let vc = mesh.vertices[c as usize];
+        let normal = (vb.coords - va.coords).cross(&(vc.coords - va.coords));
+        // Radial outward at va: va - ring_axis_point_at_same_along.
+        // Use the cut_point as a proxy for the radial-from-centerline
+        // origin at the top ring (it's close enough for the sign check).
+        let radial_at_va = va.coords - centerline_last.coords;
+        // Project out the along-tangent component to get the pure radial.
+        let radial_only = radial_at_va - inward_tangent * radial_at_va.dot(&inward_tangent);
+        if normal.dot(&radial_only) < 0.0 {
+            // Flip every new face we added (last 2*L*K + L faces).
+            let new_face_count = 2 * l * RECONSTRUCT_RING_COUNT + l;
+            let start = mesh.faces.len() - new_face_count;
+            for face in mesh.faces.iter_mut().skip(start) {
+                face.swap(1, 2);
+            }
+        }
+    }
+
+    // CSP.4e fix-forward (PR #246 cold-read review, 2026-05-15) —
+    // seal any OTHER open boundaries we didn't reconstruct. The
+    // floor end is closed by the extrusion sidewalls + bottom fan
+    // above; this call only acts on remaining open loops (typically
+    // the tip end if the user also trimmed there). Without it, a
+    // dual-end-trim + reconstruct workflow emits a non-watertight
+    // cleaned STL that breaks downstream cf-cast-cli offset/simplify.
+    auto_cap_open_boundaries(&mut mesh);
+
+    mesh
 }
 
 /// Detect all open boundary loops in `mesh`. Wraps `mesh-repair`'s
@@ -1030,6 +1913,45 @@ fn compute_centerline_polyline(
     polyline
 }
 
+/// Smooth a polyline by iterated 3-tap moving average over interior
+/// points, with endpoint pinning. User-driven 2026-05-15: "the
+/// actual line inside needs to be smooth before we trim."
+///
+/// `compute_centerline_polyline` produces cross-section centroids
+/// from raw scan vertex bins. On a noisy surface scan the centroids
+/// wobble several mm per slab — that wobble propagates downstream:
+/// trim cut planes pivot off the wobbly local tangent;
+/// `apply_constant_reconstruction` builds its sampling frame from
+/// a wobbly tangent. Smoothing the polyline before any downstream
+/// consumer sees it kills the noise.
+///
+/// Algorithm — `iterations` passes of the 3-tap update
+/// `next_i = (curr_im1 + curr_i + curr_ip1) / 3` for interior
+/// points; the first and last polyline points are PINNED (so
+/// the trim distance semantics — "trim from tip = forward from
+/// the first polyline point; trim from floor = backward from the
+/// last polyline point" — stay anchored). For `iterations=3` the
+/// effective filter footprint is ~5 samples wide; visibly
+/// smooths without flattening overall curvature.
+///
+/// No-op for polylines with < 3 points (no interior to smooth).
+fn smooth_polyline(polyline: &[Point3<f64>], iterations: usize) -> Vec<Point3<f64>> {
+    if polyline.len() < 3 || iterations == 0 {
+        return polyline.to_vec();
+    }
+    let mut current: Vec<Point3<f64>> = polyline.to_vec();
+    let n = current.len();
+    for _ in 0..iterations {
+        let mut next = current.clone();
+        for i in 1..(n - 1) {
+            let avg = (current[i - 1].coords + current[i].coords + current[i + 1].coords) / 3.0;
+            next[i] = Point3::from(avg);
+        }
+        current = next;
+    }
+    current
+}
+
 /// Project a physics-frame mesh-local point through the live
 /// Reorient + Recenter + render_scale + up-axis-swap pipeline into
 /// Bevy world-space, with rotation pivoted around the scan's raw
@@ -1206,16 +2128,20 @@ fn project_loop_to_plane_2d(
 }
 
 /// Build the cleaned IndexedMesh from the working scan + Reorient +
-/// Recenter + included cap loops. Skips clip baking for now (Clip
-/// panel stays advisory; v2 cf-cast handles trimming via the
-/// centerline-derived mold geometry).
+/// Recenter + included cap loops.
 ///
 /// Pipeline:
 /// 1. Clone `scan` into `out`.
 /// 2. Bake rotation + translation into vertex positions (in place).
+///    After this step `out.vertices` are in world frame.
 /// 3. For each included cap loop, ear-clip its 2D projection and
 ///    append triangles (using existing loop vertex indices — no new
-///    vertices added).
+///    vertices added). Cap faces inherit the world-frame coordinates
+///    from step 2.
+///
+/// CSP.4c — Clip-floor step removed (the feature itself retired
+/// alongside `ClipState`). Centerline trim handles the workshop
+/// "shave the noisy end" use case the clip used to cover.
 ///
 /// **Cap normal orientation**: the spec mandates that the cap's
 /// outward normal point away from the mesh interior. We orient the
@@ -1270,6 +2196,28 @@ fn build_cleaned_mesh(
             bake_vertex_with_pivot(&cap_loop.plane_centroid, rotation, &centroid, translation);
         let normal_world = rotation.transform_vector(&cap_loop.plane_normal);
 
+        // CSP.3a — project each loop vertex onto the fit plane
+        // BEFORE the ear-clip. The boundary loop's points have
+        // sub-mm wobble for typical R² ≈ 0.9 fixtures; without this
+        // projection the resulting cap faces lie OFF the plane
+        // (because ear-clip's 2D projection is into the plane, but
+        // the final 3D faces draw from the unprojected vertex
+        // positions). Snapping the rim onto the plane keeps the cap
+        // planar at the cost of moving the scan-body rim ring by
+        // the wobble magnitude — sub-mm, well below the 2 mm SDF
+        // cell + below the meshopt target_error threshold. The
+        // alternative (append separate cap vertices) leaves a
+        // sub-mm seam gap that breaks watertightness for mesh_sdf.
+        // All loop indices are validated below; we project only the
+        // ones that exist in the current `out.vertices`.
+        for &idx in &cap_loop.vertex_indices {
+            if let Some(p) = out.vertices.get(idx as usize).copied() {
+                let signed = (p.coords - centroid_world.coords).dot(&normal_world);
+                let projected = p.coords - normal_world * signed;
+                out.vertices[idx as usize] = Point3::from(projected);
+            }
+        }
+
         let loop_points_world: Vec<Point3<f64>> = cap_loop
             .vertex_indices
             .iter()
@@ -1316,17 +2264,99 @@ fn build_cleaned_mesh(
     out
 }
 
+/// Mesh hygiene cleanup pass applied at save time (CSP.3b).
+///
+/// Before this function existed the cleaned STL inherited the raw
+/// scan's vertex layout — 3N unshared verts from `mesh_io::load_stl`,
+/// no degenerate-triangle strip, no smallest-component drop — plus
+/// whatever new geometry the cap + clip steps appended. Downstream
+/// `simplify_decoder` choked on that (cf-device-design
+/// `main.rs:419-425` documents the iter-1 fixture retaining its full
+/// 3.34M face count under topology-preserving simplification, forcing
+/// a switch to `simplify_sloppy_decoder`).
+///
+/// This pass runs in `handle_save_action` between `build_cleaned_mesh`
+/// and the save-time simplify (slice 9.8). The fix-set lands here,
+/// not inside `build_cleaned_mesh`, so the cap-construction concern
+/// (loop-vertex projection) stays isolated from the disk-hygiene
+/// concern, and so unit-test fixtures with tiny face counts don't
+/// have to fight the `min_component_faces` cutoff.
+///
+/// Pipeline:
+///
+///   1. **weld_vertices** — collapse 3N STL-unshared verts to ~N
+///      shared so collapse-edge algorithms can find topology.
+///   2. **remove_degenerate_triangles** — drop FP-noise zero-area
+///      triangles from cap ear-clip + clip intersection slivers.
+///   3. **remove_small_components** — drop scanner-noise islands
+///      (`< CLEANUP_MIN_COMPONENT_FACES` per shell). Spec assumes
+///      the user pre-trimmed to single shell; this is the safety net.
+///   4. **remove_unreferenced_vertices** — tighten memory layout
+///      after the other passes orphan vertices.
+///
+/// Order matters: weld first (degenerate detection needs shared
+/// indices), then degenerate, then component analysis (so components
+/// don't bridge via zero-area triangles), then unreferenced cleanup
+/// last.
+///
+/// Mutates `mesh` in place. Returns a [`CleanupReport`] summarizing
+/// each step's effect so the Save status message can surface how
+/// aggressive the cleanup was for the user's confidence.
+fn cleanup_cleaned_mesh_for_disk(mesh: &mut IndexedMesh) -> CleanupReport {
+    let welded = weld_vertices(mesh, SIMPLIFY_WELD_EPSILON_M);
+    let degenerate = remove_degenerate_triangles(mesh, CLEANUP_DEGENERATE_AREA_M2);
+    let small_components = remove_small_components(mesh, CLEANUP_MIN_COMPONENT_FACES);
+    let unreferenced = remove_unreferenced_vertices(mesh);
+    CleanupReport {
+        welded,
+        degenerate,
+        small_components,
+        unreferenced,
+    }
+}
+
+/// Per-pass counts from [`cleanup_cleaned_mesh_for_disk`].
+///
+/// Sums are surfaced in the Save panel status message when non-zero,
+/// so the user can tell whether the cleanup pass did meaningful work
+/// (workshop-iter-1 fixture: high counts mean the raw scan needed
+/// hygiene help; future cleaned scans approaching ~zero counts
+/// indicate the pre-prep pipeline is producing cleaner inputs).
+#[derive(Debug, Clone, Copy, Default)]
+struct CleanupReport {
+    welded: usize,
+    degenerate: usize,
+    small_components: usize,
+    unreferenced: usize,
+}
+
+impl CleanupReport {
+    /// Total operations across all four passes. Zero when the input
+    /// was already disk-ready (no cleanup needed).
+    fn total(self) -> usize {
+        self.welded + self.degenerate + self.small_components + self.unreferenced
+    }
+}
+
 // ----- .prep.toml serializable structures -----
+//
+// Block names match `docs/SCAN_PREP_DESIGN.md` §Output format (v1.0
+// completion rename CSP.1, 2026-05-15). Earlier as-built used
+// `[reorient]` / `[recenter]` — those names exposed internal egui-panel
+// nouns rather than the conceptual transform operation. Downstream
+// consumers (cf-cast-cli `prep.rs`, cf-device-design `parse_centerline`)
+// read only `[centerline]` and tolerate unknown sibling keys, so this
+// rename is downstream-safe.
 
 #[derive(Serialize)]
 struct PrepToml {
     scan_prep: PrepScanPrepBlock,
-    reorient: PrepReorientBlock,
-    recenter: PrepRecenterBlock,
-    clip: PrepClipBlock,
+    simplify: PrepSimplifyBlock,
+    transform: PrepTransformBlock,
     caps: PrepCapsBlock,
     #[serde(skip_serializing_if = "Option::is_none")]
     centerline: Option<PrepCenterlineBlock>,
+    centerline_trim: PrepCenterlineTrimBlock,
     output: PrepOutputBlock,
 }
 
@@ -1336,11 +2366,74 @@ struct PrepScanPrepBlock {
     tool_version: &'static str,
     generated_at: String,
     stl_units_at_load: &'static str,
+    /// Physics-frame translation auto-applied at load (CSP.3.5) so
+    /// the scan's AABB centroid lands at origin. Provenance only —
+    /// the cleaned STL is in the auto-centered frame (plus the
+    /// user's transforms). To reconstruct the source-frame position
+    /// of a cleaned-STL vertex, INVERT the user's Reorient +
+    /// Recenter recorded in `[transform]`, then add this offset.
+    auto_center_offset_m: [f64; 3],
+    /// Auto-PCA rotation applied at load (CSP.4a) — quaternion in
+    /// `(w, x, y, z)` order that takes the source's principal axis
+    /// to `+Z`. Skipped (serialized as `null`) when PCA was
+    /// degenerate (rare). Pairs with `auto_center_offset_m` for
+    /// full source-frame reconstruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_pca_quaternion: Option<[f64; 4]>,
+}
+
+/// `[simplify]` provenance — what decimation, if any, was applied at
+/// save time. Per spec §Output format. Records both the user-targeted
+/// budget (slice 9.8: Simplify panel slider IS the save-time budget)
+/// and the actually-achieved face count, plus the originally-loaded
+/// count so the reduction ratio is visible.
+#[derive(Serialize)]
+struct PrepSimplifyBlock {
+    /// `true` when meshopt was invoked at save time (target < pre-
+    /// simplify cleaned-mesh face count). `false` when the cleaned
+    /// mesh's face count was already at or below the target (no
+    /// decimation; achieved == original).
+    applied: bool,
+    /// Algorithm identifier — pinned literal so downstream audits know
+    /// what code path produced this file.
+    algorithm: &'static str,
+    /// Version string for the algorithm dependency. Tracks the
+    /// workspace `meshopt` Cargo dep; bump this constant in lockstep
+    /// when that dep is updated. Hard-coded literal because the
+    /// meshopt-rs crate doesn't expose its version at runtime and a
+    /// build-script lift for one provenance line would be overkill.
+    algorithm_version: &'static str,
+    /// Target face count from the Simplify panel slider at save time.
+    target_face_count: usize,
+    /// Actual face count of the cleaned mesh on disk. Equals
+    /// `target_face_count` ± boundary-locked vertex topology slack
+    /// when `applied`; equals `original_face_count` when `!applied`.
+    achieved_face_count: usize,
+    /// Face count of the as-loaded scan (in `OriginalScanMesh`,
+    /// before any decimation or transforms). Distinct from
+    /// `achieved_face_count` whenever simplify ran at all.
+    original_face_count: usize,
+    /// Always `true` — cf-scan-prep uses
+    /// `meshopt::SimplifyOptions::LockBorder` (NOT
+    /// `simplify_sloppy`) per spec §Architectural decisions §Simplify
+    /// algorithm. Surfaced in the TOML for audit purposes.
+    boundary_preserved: bool,
+}
+
+/// `[transform]` umbrella — `rotation` + `translation` sub-tables
+/// match spec §Output format. Each renders as `[transform.rotation]`
+/// + `[transform.translation]` in TOML.
+#[derive(Serialize)]
+struct PrepTransformBlock {
+    rotation: PrepRotationBlock,
+    translation: PrepTranslationBlock,
 }
 
 #[derive(Serialize)]
-struct PrepReorientBlock {
-    // Physics-frame quaternion (w, x, y, z).
+struct PrepRotationBlock {
+    /// Physics-frame unit quaternion `(w, x, y, z)`. Source of truth
+    /// for downstream reconstruction; the Euler angles below mirror
+    /// the cf-scan-prep slider source-of-truth for human readability.
     quaternion: [f64; 4],
     roll_deg: f64,
     pitch_deg: f64,
@@ -1348,24 +2441,19 @@ struct PrepReorientBlock {
 }
 
 #[derive(Serialize)]
-struct PrepRecenterBlock {
-    // Physics-frame translation in meters.
-    translation_m: [f64; 3],
-    translation_mm: [f64; 3],
+struct PrepTranslationBlock {
+    /// Physics-frame translation in meters. Spec §Output format
+    /// names this `m`; the panel state stores mm but the on-disk
+    /// units convention is meters (matches cf-cast / the rest of
+    /// the workspace).
+    m: [f64; 3],
 }
 
-#[derive(Serialize)]
-struct PrepClipBlock {
-    enabled: bool,
-    /// World-frame Z height in meters.
-    z_m: f64,
-    /// Cached drop percentage at save time.
-    drop_pct: f64,
-    /// At commit #12 the clip is **not baked** into the cleaned STL
-    /// (advisory only); the panel state is recorded here for
-    /// provenance + future v2 cf-cast consumption.
-    baked: bool,
-}
+// CSP.4c — `PrepClipBlock` removed alongside `ClipState`. The
+// `.prep.toml` no longer emits a `[clip]` block. Downstream
+// consumers (cf-cast-cli, cf-device-design) read only
+// `[centerline]` and tolerate unknown sibling keys, so the
+// removal is downstream-safe.
 
 #[derive(Serialize)]
 struct PrepCapsBlock {
@@ -1381,7 +2469,7 @@ struct PrepCapLoop {
     loop_index: usize,
     vertex_count: usize,
     plane_fit_r_squared: f64,
-    /// Physics-frame outward normal at scan time (pre-Reorient bake).
+    /// Physics-frame outward normal at scan time (pre-transform bake).
     plane_normal: [f64; 3],
     /// Physics-frame centroid at scan time.
     plane_centroid_m: [f64; 3],
@@ -1390,61 +2478,145 @@ struct PrepCapLoop {
 
 #[derive(Serialize)]
 struct PrepCenterlineBlock {
-    /// Polyline in **post-bake world-frame meters** (matches the
-    /// cleaned STL's coordinate system; v2 cf-cast consumes
-    /// directly).
+    /// Polyline in **post-bake, post-trim world-frame meters**
+    /// (matches the cleaned STL's coordinate system; v2 cf-cast
+    /// consumes directly). CSP.4b — when the user dialed centerline
+    /// trim, this is the polyline between the trim cut planes, not
+    /// the full pre-trim polyline.
     points_m: Vec<[f64; 3]>,
     algorithm: &'static str,
+}
+
+/// `[centerline_trim]` provenance — what user-driven centerline
+/// trim was applied at save time (CSP.4b). Always emitted, even
+/// when no trim was requested (the explicit `0.0 / 0.0` record
+/// makes "saved without trim" indistinguishable from an audit
+/// perspective).
+#[derive(Serialize)]
+struct PrepCenterlineTrimBlock {
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+    /// Number of boundary loops auto-capped after the trim cuts.
+    /// For a "trim only the floor end" save on a closed-tip sock,
+    /// this is 1; for "trim both ends" it's 2; for "no trim" it's
+    /// 0. When floor reconstruction is applied this drops to 0 +
+    /// 1 (the tip-end auto-cap survives, the floor end is
+    /// extrusion + flat cap instead of an auto-cap).
+    capped_loops: usize,
+    /// CSP.4e.5 — present only when floor reconstruction was
+    /// applied at save time. The cleaned STL has the extruded
+    /// sidewall + flat cap baked in; this provenance block
+    /// records WHAT shape + how much reference zone the user
+    /// dialed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconstruct: Option<PrepReconstructSubBlock>,
+}
+
+/// `[centerline_trim.reconstruct]` provenance — emitted only
+/// when the user clicked Apply reconstruct before Save. CSP.4e.5.
+#[derive(Serialize)]
+struct PrepReconstructSubBlock {
+    /// "constant", "taper", or "extrapolate" — matches the
+    /// `ReconstructShape` variant the user selected.
+    shape: &'static str,
+    /// Reference-zone length in mm that drove the radial profile
+    /// sampling.
+    reference_mm: f64,
 }
 
 #[derive(Serialize)]
 struct PrepOutputBlock {
     cleaned_stl: String,
+    /// AABB of the cleaned mesh on disk (post-transform, post-cap,
+    /// post-save-time-simplify), in meters. Spec §Output format
+    /// promised this so downstream tooling can sanity-check the
+    /// cleaned scan extents without re-loading the STL.
+    aabb_m: PrepAabbBlock,
 }
 
+#[derive(Serialize)]
+struct PrepAabbBlock {
+    min: [f64; 3],
+    max: [f64; 3],
+}
+
+/// Algorithm identifier for `[simplify].algorithm`. Pinned literal so
+/// downstream audits can distinguish cf-scan-prep's boundary-preserving
+/// quadric collapse from other decimation strategies (e.g.,
+/// cf-device-design's `simplify_sloppy` proxy).
+const SIMPLIFY_ALGORITHM_NAME: &str = "meshopt_quadric_edge_collapse";
+
+/// Tracks the workspace `meshopt` Cargo dep. Update in lockstep with
+/// `Cargo.toml`'s `meshopt = "X.Y.Z"`.
+const SIMPLIFY_ALGORITHM_VERSION: &str = "0.6.2";
+
 /// Build the `.prep.toml` string from the current cf-scan-prep state.
-/// Includes provenance for every transform / cap / centerline so
-/// v2 cf-cast (or a future audit) can reconstruct what cf-scan-prep
-/// did to produce the cleaned STL.
+/// Includes provenance for every transform / cap / centerline /
+/// simplify-at-save so v2 cf-cast (or a future audit) can reconstruct
+/// what cf-scan-prep did to produce the cleaned STL.
 ///
 /// `pivot_centroid_m` is the raw scan AABB centroid (in physics-frame
 /// meters). The centerline polyline is baked through the same
 /// centroid-pivot transform `bake_vertex_with_pivot` uses for mesh
 /// vertices, so the polyline coordinates emitted into `.prep.toml`
 /// agree with the cleaned STL on disk.
+///
+/// `simplify_target_face_count`, `original_face_count`, and
+/// `cleaned_aabb_m` feed the spec-promised `[simplify]` and
+/// `[output.aabb_m]` blocks. The caller computes them from the live
+/// `SimplifyState` / `OriginalScanMesh` / final cleaned mesh AABB so
+/// this function stays pure (no Res lookups).
 #[allow(clippy::too_many_arguments)]
 fn build_prep_toml_string(
     source_stl: &Path,
     stl_units: StlUnits,
+    auto_center_offset_m: Vector3<f64>,
+    auto_pca_quat: Option<UnitQuaternion<f64>>,
     reorient: &ReorientState,
     recenter: &RecenterState,
-    clip: &ClipState,
     cap: &CapState,
+    centerline_trim: &CenterlineTrimState,
+    centerline_trim_capped: usize,
     cleaned_stl_name: &str,
     rotation_for_centerline: UnitQuaternion<f64>,
     translation_for_centerline_m: Vector3<f64>,
     pivot_centroid_m: Point3<f64>,
+    simplify_target_face_count: usize,
+    original_face_count: usize,
+    achieved_face_count: usize,
+    cleaned_aabb_m: &Aabb,
 ) -> Result<String> {
     let q = reorient.quaternion_physics();
     let timestamp = chrono_like_timestamp();
 
     // Project the centerline polyline into world frame so v2 cf-cast
-    // can consume it directly without redoing Reorient+Recenter math.
-    // Same centroid-pivot transform as `build_cleaned_mesh` uses for
-    // mesh vertices.
-    let centerline_world: Vec<[f64; 3]> = cap
+    // can consume it directly without redoing transform math. Same
+    // centroid-pivot transform as `build_cleaned_mesh` uses for mesh
+    // vertices. CSP.4b — if the user dialed trim, emit the
+    // POST-TRIM polyline so the TOML record matches what's actually
+    // in the cleaned STL on disk.
+    let baked_polyline: Vec<Point3<f64>> = cap
         .centerline_polyline
         .iter()
         .map(|p| {
-            let baked = bake_vertex_with_pivot(
+            bake_vertex_with_pivot(
                 p,
                 rotation_for_centerline,
                 &pivot_centroid_m,
                 translation_for_centerline_m,
-            );
-            [baked.x, baked.y, baked.z]
+            )
         })
         .collect();
+    // CSP.4b.6 — use APPLIED trim values (what the displayed +
+    // saved mesh was cut with), not the slider values (which may
+    // be ahead of the user's last Apply click).
+    let trimmed_polyline = trim_centerline_polyline(
+        &baked_polyline,
+        centerline_trim.applied_tip_mm,
+        centerline_trim.applied_floor_mm,
+    );
+    let centerline_world: Vec<[f64; 3]> =
+        trimmed_polyline.iter().map(|p| [p.x, p.y, p.z]).collect();
 
     let toml_struct = PrepToml {
         scan_prep: PrepScanPrepBlock {
@@ -1452,26 +2624,41 @@ fn build_prep_toml_string(
             tool_version: env!("CARGO_PKG_VERSION"),
             generated_at: timestamp,
             stl_units_at_load: stl_units.panel_label(),
-        },
-        reorient: PrepReorientBlock {
-            quaternion: [q.w, q.i, q.j, q.k],
-            roll_deg: reorient.roll_deg,
-            pitch_deg: reorient.pitch_deg,
-            yaw_deg: reorient.yaw_deg,
-        },
-        recenter: PrepRecenterBlock {
-            translation_m: [
-                recenter.tx_mm * 0.001,
-                recenter.ty_mm * 0.001,
-                recenter.tz_mm * 0.001,
+            auto_center_offset_m: [
+                auto_center_offset_m.x,
+                auto_center_offset_m.y,
+                auto_center_offset_m.z,
             ],
-            translation_mm: [recenter.tx_mm, recenter.ty_mm, recenter.tz_mm],
+            auto_pca_quaternion: auto_pca_quat.map(|q| [q.w, q.i, q.j, q.k]),
         },
-        clip: PrepClipBlock {
-            enabled: clip.enabled,
-            z_m: clip.z_mm * 0.001,
-            drop_pct: clip.drop_pct,
-            baked: false,
+        simplify: PrepSimplifyBlock {
+            // `applied = true` iff save-time simplify ran. The save
+            // handler invokes simplify only when the slider target is
+            // strictly below the current cleaned-mesh face count;
+            // mirror that condition here for the provenance flag.
+            applied: simplify_target_face_count < original_face_count
+                && achieved_face_count < original_face_count,
+            algorithm: SIMPLIFY_ALGORITHM_NAME,
+            algorithm_version: SIMPLIFY_ALGORITHM_VERSION,
+            target_face_count: simplify_target_face_count,
+            achieved_face_count,
+            original_face_count,
+            boundary_preserved: true,
+        },
+        transform: PrepTransformBlock {
+            rotation: PrepRotationBlock {
+                quaternion: [q.w, q.i, q.j, q.k],
+                roll_deg: reorient.roll_deg,
+                pitch_deg: reorient.pitch_deg,
+                yaw_deg: reorient.yaw_deg,
+            },
+            translation: PrepTranslationBlock {
+                m: [
+                    recenter.tx_mm * 0.001,
+                    recenter.ty_mm * 0.001,
+                    recenter.tz_mm * 0.001,
+                ],
+            },
         },
         caps: PrepCapsBlock {
             applied: cap.loops.iter().any(|l| l.include),
@@ -1501,8 +2688,46 @@ fn build_prep_toml_string(
                 algorithm: "cross_section_centroids",
             })
         },
+        centerline_trim: PrepCenterlineTrimBlock {
+            // CSP.4b.6 — record APPLIED values (what was actually
+            // cut into the saved STL), not slider values (the
+            // user's draft preview position).
+            trim_tip_mm: centerline_trim.applied_tip_mm,
+            trim_floor_mm: centerline_trim.applied_floor_mm,
+            capped_loops: centerline_trim_capped,
+            // CSP.4e.5 — reconstruct sub-block. Present only when
+            // floor reconstruction was applied (and the floor was
+            // chopped — the gate match in `handle_save_action`
+            // ensures both).
+            reconstruct: centerline_trim.applied_reconstruct.and_then(|ar| {
+                if centerline_trim.applied_floor_mm > 0.0 {
+                    Some(PrepReconstructSubBlock {
+                        shape: match ar.shape {
+                            ReconstructShape::Constant => "constant",
+                            ReconstructShape::Taper => "taper",
+                            ReconstructShape::Extrapolate => "extrapolate",
+                        },
+                        reference_mm: ar.reference_mm,
+                    })
+                } else {
+                    None
+                }
+            }),
+        },
         output: PrepOutputBlock {
             cleaned_stl: cleaned_stl_name.to_string(),
+            aabb_m: PrepAabbBlock {
+                min: [
+                    cleaned_aabb_m.min.x,
+                    cleaned_aabb_m.min.y,
+                    cleaned_aabb_m.min.z,
+                ],
+                max: [
+                    cleaned_aabb_m.max.x,
+                    cleaned_aabb_m.max.y,
+                    cleaned_aabb_m.max.z,
+                ],
+            },
         },
     };
     toml::to_string_pretty(&toml_struct).context("serialize PrepToml to TOML")
@@ -1865,7 +3090,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match try_load_scan(&cli) {
-        Ok(scan_mesh) => {
+        Ok((scan_mesh, auto_center_offset_m, auto_pca_quat)) => {
             let scan_info = ScanInfo::from_loaded(&cli.path, &scan_mesh, cli.stl_units);
             // Clone the loaded mesh into `OriginalScanMesh` so the
             // Simplify panel's `[Reset to original]` action can restore
@@ -1874,8 +3099,17 @@ fn main() -> Result<()> {
             let output_dir = SaveOutputDir(resolve_output_dir(&cli));
             let source = SourceStlPath(cli.path.clone());
             let stl_units = StlUnitsResource(cli.stl_units);
+            let auto_center = AutoCenterOffset(auto_center_offset_m);
+            let auto_pca = AutoPcaQuaternion(auto_pca_quat);
             run_render_app(
-                scan_mesh, original, scan_info, source, output_dir, stl_units,
+                scan_mesh,
+                original,
+                scan_info,
+                source,
+                output_dir,
+                stl_units,
+                auto_center,
+                auto_pca,
             );
         }
         Err(err) => {
@@ -1908,17 +3142,104 @@ fn resolve_output_dir(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Load the STL at `cli.path` and convert its vertex coordinates into
-/// meters per `cli.stl_units`. Returns the loaded mesh on success.
+/// Load the STL at `cli.path`, convert vertex coordinates into meters
+/// per `cli.stl_units`, **auto-center the scan at the physics origin**
+/// (CSP.3.5), and **auto-orient the principal axis to +Z** (CSP.4a).
+/// Returns the loaded+centered+oriented mesh plus the auto-center
+/// offset (in meters) plus the auto-PCA quaternion (or `None` if the
+/// PCA was degenerate) so the saved `.prep.toml` can preserve both
+/// transforms as provenance.
+///
+/// # Why auto-center + auto-PCA at load
+///
+/// CSP.4 redesign collapses the spec's manual Reorient + Recenter +
+/// Clip workflow into a centerline-driven trim flow. For that to be
+/// usable, the scan's frame must be canonical-on-load:
+///
+/// - **Auto-center**: AABB centroid → physics origin (CSP.3.5;
+///   scanners drop captured geometry at arbitrary offsets from
+///   their internal frame; without this, every downstream number
+///   carries that offset).
+/// - **Auto-PCA**: principal axis → `+Z` cast-frame demolding
+///   direction. After this, the centerline runs roughly along
+///   `+Z` (slightly tilted for asymmetric scans), the
+///   tip-vs-floor distinction is unambiguous, and the user's
+///   centerline-trim sliders operate on intuitive distances along
+///   that axis.
+///
+/// # What gets recorded
+///
+/// `[scan_prep].auto_center_offset_m` + `auto_pca_quaternion` in
+/// the saved `.prep.toml` capture both auto-transforms. To
+/// reconstruct the source-frame position of a cleaned-STL vertex,
+/// invert the user transforms (recorded elsewhere), then invert the
+/// auto-PCA, then subtract auto_center_offset_m.
 ///
 /// # Errors
 ///
-/// Bubbles up [`mesh_io::load_stl`]'s I/O + parse errors verbatim. The
-/// caller wraps the message into the error-overlay path.
-fn try_load_scan(cli: &Cli) -> Result<IndexedMesh> {
+/// Bubbles up [`mesh_io::load_stl`]'s I/O + parse errors verbatim.
+/// The caller wraps the message into the error-overlay path.
+fn try_load_scan(cli: &Cli) -> Result<(IndexedMesh, Vector3<f64>, Option<UnitQuaternion<f64>>)> {
     let mut mesh = load_stl(&cli.path)?;
     scale_vertices_in_place(&mut mesh, cli.stl_units.to_meters_factor());
-    Ok(mesh)
+    let auto_center_offset_m = auto_center_in_place(&mut mesh);
+    let auto_pca_quat = auto_pca_in_place(&mut mesh);
+    Ok((mesh, auto_center_offset_m, auto_pca_quat))
+}
+
+/// Apply the PCA-derived rotation to all vertices in `mesh`, taking
+/// the principal axis to `+Z`. Returns the quaternion that was
+/// applied (or `None` if PCA was degenerate — coincident vertices,
+/// < 3 verts, or all-zero covariance).
+///
+/// Operates on the mesh after auto-center, so the rotation pivot is
+/// the origin (= scan centroid). The result has its principal axis
+/// aligned with cast-frame `+Z`.
+///
+/// Skips when the resulting quaternion is near-identity (within 1
+/// µrad sin(θ/2) of identity) — the rotation would be a no-op
+/// modulo FP drift, and skipping the vertex walk keeps already-
+/// upright fixtures bit-exact.
+fn auto_pca_in_place(mesh: &mut IndexedMesh) -> Option<UnitQuaternion<f64>> {
+    let q = compute_pca_orientation(&mesh.vertices)?;
+    // Near-identity check: |q.i|² + |q.j|² + |q.k|² < 1e-12 means
+    // the vector part is sub-µrad; rotation is effectively identity.
+    let vec_sq = q.i * q.i + q.j * q.j + q.k * q.k;
+    if vec_sq < 1e-12 {
+        return Some(q);
+    }
+    for v in &mut mesh.vertices {
+        *v = q.transform_point(v);
+    }
+    Some(q)
+}
+
+/// Translate `mesh`'s vertices so the AABB centroid lands at physics
+/// origin. Returns the offset that was applied (`= -aabb.center()`
+/// from the input mesh in meters).
+///
+/// No-op for an empty mesh (no vertices to walk). When `centroid`
+/// is already at origin, returns near-zero offset and skips the
+/// walk to avoid FP-drift on bit-exact-centered fixtures.
+fn auto_center_in_place(mesh: &mut IndexedMesh) -> Vector3<f64> {
+    if mesh.vertices.is_empty() {
+        return Vector3::zeros();
+    }
+    let centroid = mesh.aabb().center();
+    // FP-drift guard: if the centroid is already within 1 µm of the
+    // origin, skip the walk — we'd be moving vertices by sub-FP-
+    // precision amounts that meshopt couldn't see anyway.
+    let centroid_v = centroid.coords;
+    if centroid_v.norm() < 1e-6 {
+        return Vector3::zeros();
+    }
+    let offset = -centroid_v;
+    for v in &mut mesh.vertices {
+        v.x += offset.x;
+        v.y += offset.y;
+        v.z += offset.z;
+    }
+    offset
 }
 
 /// Multiply each vertex of `mesh` by `factor` in place. No-op when
@@ -2048,6 +3369,8 @@ fn run_render_app(
     source: SourceStlPath,
     output_dir: SaveOutputDir,
     stl_units: StlUnitsResource,
+    auto_center: AutoCenterOffset,
+    auto_pca: AutoPcaQuaternion,
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
@@ -2080,13 +3403,15 @@ fn run_render_app(
         .insert_resource(SimplifyState::default())
         .insert_resource(ReorientState::default())
         .insert_resource(RecenterState::default())
-        .insert_resource(ClipState::default())
         .insert_resource(CapState::default())
         .insert_resource(CapPendingAction::default())
+        .insert_resource(CenterlineTrimState::default())
         .insert_resource(SavePendingAction::default())
         .insert_resource(source)
         .insert_resource(output_dir)
         .insert_resource(stl_units)
+        .insert_resource(auto_center)
+        .insert_resource(auto_pca)
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
@@ -2104,14 +3429,25 @@ fn run_render_app(
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
                 handle_simplify_actions,
+                // CSP.4b.4 — live trim respawns the displayed
+                // mesh entity. Runs after `handle_simplify_actions`
+                // so the simplify mutation lands first; runs after
+                // `handle_cap_actions` so a fresh Cap → Scan's
+                // centerline is visible to the trim on the same
+                // tick. Both `.after`s are explicit since Bevy
+                // doesn't guarantee tuple-position ordering on its
+                // own.
+                update_displayed_mesh
+                    .after(handle_simplify_actions)
+                    .after(handle_cap_actions),
                 apply_world_transform_to_scan_entity,
-                update_clip_drop_pct,
                 handle_cap_actions,
                 handle_save_action,
                 mark_cap_stale_on_transform_change,
                 auto_clear_status,
                 draw_reference_overlays,
                 draw_cap_overlays,
+                draw_trim_plane_overlays,
                 exit_on_esc,
             ),
         )
@@ -2195,26 +3531,16 @@ fn setup_render_scene(
     scan: Res<ScanMesh>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let scale = render_scale.0;
+    // CSP.4b.4 — camera + lighting only. The mesh entity gets
+    // spawned on the first Update tick by `update_displayed_mesh`,
+    // which is the single owner of the rendered entity (so trim
+    // changes + Apply Simplify + Reset to original all flow
+    // through one place + the displayed mesh is always the
+    // post-trim view).
     let raw_aabb = scan.0.aabb();
-    let scaled_aabb = scale_aabb(&raw_aabb, scale);
+    let scaled_aabb = scale_aabb(&raw_aabb, render_scale.0);
     setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
-    let entity_transform = Transform::from_scale(Vec3::splat(scale));
-    let entity = spawn_face_mesh(
-        &mut commands,
-        meshes.as_mut(),
-        materials.as_mut(),
-        &scan.0,
-        None,
-        *up,
-        entity_transform,
-    );
-    // Marker so the Simplify Apply/Reset handler can despawn the
-    // current scan render before respawning from the new mesh.
-    commands.entity(entity).insert(ScanMeshEntity);
 }
 
 /// Startup system: surface the auto-suggest banner if the loaded scan
@@ -2256,27 +3582,22 @@ fn init_status_for_load(scan: Res<ScanMesh>, mut status: ResMut<StatusBar>) {
 /// current/target counts and pointing at `[Reset to original]` as the
 /// workflow recovery, then returns.
 ///
-/// On Reset: clones `OriginalScanMesh`, updates `ScanMesh` + `ScanInfo`,
-/// respawns the entity, sets a confirmation status message.
+/// On Reset: clones `OriginalScanMesh`, updates `ScanMesh`, sets a
+/// confirmation status message.
+///
+/// CSP.4b.4 — this system NO LONGER respawns the rendered entity
+/// or updates `ScanInfo`. Both now live in
+/// [`update_displayed_mesh`] so the displayed mesh always reflects
+/// the post-trim view (live trim preview). `ScanMesh` is the
+/// "base, pre-trim" mesh that the trim system reads.
 // Bevy systems take resources by value.
 #[allow(clippy::needless_pass_by_value)]
-// Bevy systems pull each Res / ResMut / Query / Commands as a separate
-// parameter; threading through a SystemParam-derive tuple costs more
-// boilerplate than the +N buys in readability.
-#[allow(clippy::too_many_arguments)]
 fn handle_simplify_actions(
     mut simplify_state: ResMut<SimplifyState>,
     mut scan: ResMut<ScanMesh>,
     original: Res<OriginalScanMesh>,
-    mut info: ResMut<ScanInfo>,
     mut status: ResMut<StatusBar>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
     time: Res<Time>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    existing: Query<Entity, With<ScanMeshEntity>>,
 ) {
     let Some(action) = simplify_state.pending_action.take() else {
         return;
@@ -2339,18 +3660,7 @@ fn handle_simplify_actions(
         }
     };
 
-    info.vertex_count = new_mesh.vertices.len();
-    info.face_count = new_mesh.faces.len();
     scan.0 = new_mesh;
-    respawn_scan_entity(
-        &mut commands,
-        &existing,
-        &scan.0,
-        meshes.as_mut(),
-        materials.as_mut(),
-        *up,
-        render_scale.0,
-    );
 
     status.text = status_text;
     status.kind = StatusKind::Normal;
@@ -2382,6 +3692,263 @@ fn respawn_scan_entity(
         Transform::from_scale(Vec3::splat(render_scale)),
     );
     commands.entity(entity).insert(ScanMeshEntity);
+}
+
+/// Snapshot key the live-trim system uses to detect when the
+/// displayed mesh needs re-derivation (CSP.4b.4 + CSP.4b.6).
+/// Any change in the snapshot triggers a respawn from a freshly
+/// trimmed mesh.
+///
+/// Field shape:
+/// - `trim_tip_mm` + `trim_floor_mm`: bit-pattern compared. **These
+///   hold APPLIED values, not slider values** (CSP.4b.6 apply-on-
+///   click model). Dragging the slider without clicking Apply does
+///   NOT change the snapshot, so the mesh stays put — only the
+///   orange overlay moves.
+/// - `scan_face_count` + `scan_vertex_count`: proxy for "ScanMesh
+///   identity changed" — Apply Simplify / Reset to original both
+///   change the face count. Avoids the `Res::<>::is_changed()`
+///   footgun (`project_bevy_is_changed_footgun` per the auto-
+///   memory ledger) where any `&mut *res` deref flips the
+///   change-token.
+/// - `centerline_len`: proxy for "Cap → Scan ran." When the
+///   centerline appears (or disappears via re-Scan on a closed
+///   mesh) the trim semantics flip; force a respawn.
+/// - `reconstruct`: CSP.4e — Apply/Reset of the reconstruct
+///   sub-section drives mesh re-derivation. `None` at all times
+///   in CSP.4e.1 because the algorithm is stubbed; `Some(...)`
+///   from CSP.4e.2 onward triggers extruded-cross-section
+///   geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DisplayedMeshSnapshot {
+    trim_tip_mm: f64,
+    trim_floor_mm: f64,
+    scan_face_count: usize,
+    scan_vertex_count: usize,
+    centerline_len: usize,
+    reconstruct: Option<AppliedReconstruct>,
+}
+
+/// Update system: maintain the rendered `ScanMeshEntity` as the
+/// **live trimmed view** of `ScanMesh` (CSP.4b.4). Respawns the
+/// entity whenever a relevant input changes:
+///
+/// - Trim sliders moved (`CenterlineTrimState` values differ).
+/// - `ScanMesh` was mutated (Apply Simplify / Reset to original
+///   changed face/vertex counts).
+/// - Cap detection produced or lost a centerline (`centerline_len`
+///   differs).
+///
+/// CSP.4b's initial cut applied the trim only at SAVE time, with
+/// a live overlay (orange circles) hinting at the planned cuts.
+/// User-reported 2026-05-15: "the cut should happen inside of the
+/// program not at save time" — the mesh should visibly shrink as
+/// the user drags the trim sliders so they can see-it-as-they-go.
+/// This system performs that live cut.
+///
+/// **Cost**: trim + auto-cap on a 200k-face scan runs in ~40-50 ms
+/// (one trim plane = O(F) walking faces; auto-cap = O(F) building
+/// adjacency + O(loop_count × loop_vertices²) ear-clip). At 60 Hz
+/// drag this is borderline-fluid → workable but noticeable. The
+/// snapshot guard short-circuits when nothing relevant changed, so
+/// steady-state cost is zero.
+///
+/// **Skip path**: when `CapState::stale` is set (transforms
+/// changed since last Cap → Scan), the trim cuts would reference
+/// an off-mesh centerline. Skip the trim — display the untrimmed
+/// `ScanMesh` instead. The user re-clicks Cap → Scan to refresh.
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
+fn update_displayed_mesh(
+    scan: Res<ScanMesh>,
+    cap: Res<CapState>,
+    mut trim: ResMut<CenterlineTrimState>,
+    mut info: ResMut<ScanInfo>,
+    existing: Query<Entity, With<ScanMeshEntity>>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut status: ResMut<StatusBar>,
+    time: Res<Time>,
+    mut last_snapshot: Local<Option<DisplayedMeshSnapshot>>,
+) {
+    // CSP.4b.6 — apply-on-click. Consume the queued
+    // `TrimAction` (if any) BEFORE building the snapshot, so the
+    // applied values match what the user just clicked.
+    if let Some(action) = trim.pending_action.take() {
+        match action {
+            TrimAction::Apply => {
+                trim.applied_tip_mm = trim.trim_tip_mm;
+                trim.applied_floor_mm = trim.trim_floor_mm;
+                // CSP.4e — a fresh chop commit invalidates any
+                // existing reconstruct (it was applied to a
+                // potentially-different floor cut). Wipe to keep
+                // the directional workflow safe.
+                trim.reset_reconstruct();
+            }
+            TrimAction::Reset => {
+                trim.trim_tip_mm = 0.0;
+                trim.trim_floor_mm = 0.0;
+                trim.applied_tip_mm = 0.0;
+                trim.applied_floor_mm = 0.0;
+                // CSP.4e — Reset trim is the "hard reset" the
+                // user spec'd; wipe reconstruct too.
+                trim.reset_reconstruct();
+            }
+        }
+    }
+
+    // CSP.4e — directional-workflow trip-wire. If the user
+    // dragged the chop slider after Apply trim (drift),
+    // applied_floor_mm > 0 still holds but the floor cut is now
+    // stale relative to what the user is previewing → un-spawn
+    // reconstruct UI by wiping its state. `reconstruct_available()`
+    // captures both clauses; mismatch implies drift OR no chop
+    // committed, both of which require reconstruct to retreat.
+    if !trim.reconstruct_available() && trim.applied_reconstruct.is_some() {
+        trim.reset_reconstruct();
+    }
+
+    // CSP.4e — Reconstruct action handling. Same apply-on-click
+    // model as TrimAction. CSP.4e.2 fix-forward (2026-05-15
+    // user-reported "doesn't appear to generate the mesh back
+    // down"): guard against reference_mm == 0 + emit status
+    // messages so silent no-ops surface to the user.
+    if let Some(action) = trim.reconstruct_pending.take() {
+        match action {
+            ReconstructAction::Apply => {
+                if trim.reconstruct_reference_mm <= 0.0 {
+                    status.text =
+                        "Reconstruct skipped: reference zone is 0 mm — drag the slider above 0 to sample cross-sections."
+                            .into();
+                    status.kind = StatusKind::Warning;
+                    status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 8.0);
+                } else {
+                    trim.applied_reconstruct = Some(AppliedReconstruct {
+                        reference_mm: trim.reconstruct_reference_mm,
+                        shape: trim.reconstruct_shape,
+                    });
+                    let shape_label = match trim.reconstruct_shape {
+                        ReconstructShape::Constant => "Constant (average radius)",
+                        ReconstructShape::Taper => "Taper toward floor",
+                        ReconstructShape::Extrapolate => "Extrapolate reference trend",
+                    };
+                    status.text = format!(
+                        "Applied reconstruct: reference {:.1} mm, shape = {}",
+                        trim.reconstruct_reference_mm, shape_label,
+                    );
+                    status.kind = StatusKind::Normal;
+                    status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 8.0);
+                }
+            }
+            ReconstructAction::Reset => {
+                trim.applied_reconstruct = None;
+                status.text = "Reconstruct unapplied — mesh reverted to chopped-only state.".into();
+                status.kind = StatusKind::Normal;
+                status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
+            }
+        }
+    }
+
+    // Snapshot drives change detection: re-respawn the entity when
+    // any input that affects the displayed mesh has actually
+    // changed. CSP.4b.6 — uses APPLIED values, not slider values,
+    // so dragging the slider (without Apply) does NOT trigger a
+    // respawn. Only the orange overlay moves with the slider.
+    // CSP.4e — applied_reconstruct adds to the snapshot so the
+    // displayed mesh re-derives when reconstruct is applied or
+    // unapplied. At CSP.4e.1 this is a no-op visual change (the
+    // algorithm is stubbed); at CSP.4e.2 the respawn will swap
+    // in the reconstructed geometry.
+    let snapshot = DisplayedMeshSnapshot {
+        trim_tip_mm: trim.applied_tip_mm,
+        trim_floor_mm: trim.applied_floor_mm,
+        scan_face_count: scan.0.faces.len(),
+        scan_vertex_count: scan.0.vertices.len(),
+        centerline_len: cap.centerline_polyline.len(),
+        reconstruct: trim.applied_reconstruct,
+    };
+    if last_snapshot.as_ref() == Some(&snapshot) {
+        return;
+    }
+
+    // Derive displayed mesh from APPLIED trim values + the base
+    // ScanMesh. Skip the trim if no applied trim or centerline
+    // unavailable.
+    //
+    // CSP.4e.2 — if reconstruct is applied AND the floor was
+    // chopped, replace the auto-cap call for the floor end with
+    // the centerline-driven reconstruction (extruded average
+    // cross-section + bottom flat cap). Tip-end (if also trimmed)
+    // still gets the original flat auto-cap inside
+    // `apply_reconstruction` via its tail call to
+    // `auto_cap_open_boundaries` (PR #246 cold-read fix-forward).
+    let displayed = if cap.centerline_polyline.len() >= 2
+        && (trim.applied_tip_mm > 0.0 || trim.applied_floor_mm > 0.0)
+    {
+        let mut t = trim_mesh_along_centerline(
+            &scan.0,
+            &cap.centerline_polyline,
+            trim.applied_tip_mm,
+            trim.applied_floor_mm,
+        );
+        // CSP.4e.2.4 (2026-05-15) — weld the cut boundary's
+        // duplicate intersection vertices so `detect_holes`
+        // forms ONE closed loop at the cut, not hundreds of
+        // 2-edge fragments. `clip_mesh_against_plane_eq` appends
+        // a separate intersection vertex per crossing triangle —
+        // adjacent triangles sharing an edge get TWO duplicates
+        // at the same world position. Without welding,
+        // `find_floor_loop_index` ignored the fragmented cut
+        // boundary entirely + picked a scan-artifact loop
+        // (24-vertex tiny shape, user-reported "white lines
+        // forming a right angle" 2026-05-15).
+        weld_vertices(&mut t, SIMPLIFY_WELD_EPSILON_M);
+        match trim.applied_reconstruct {
+            Some(ar) if trim.applied_floor_mm > 0.0 => {
+                // CSP.4e.2 + 4e.3 — all three shapes (Constant,
+                // Taper, Extrapolate) ship the extruded-sidewall
+                // reconstruction. Per-shape per-ring radius logic
+                // is inside `apply_reconstruction` itself.
+                let trimmed_centerline = trim_centerline_polyline(
+                    &cap.centerline_polyline,
+                    trim.applied_tip_mm,
+                    trim.applied_floor_mm,
+                );
+                t = apply_reconstruction(
+                    t,
+                    &trimmed_centerline,
+                    trim.applied_floor_mm,
+                    ar.reference_mm,
+                    ar.shape,
+                );
+            }
+            _ => {
+                // No reconstruct applied — auto-cap all boundaries.
+                let _capped = auto_cap_open_boundaries(&mut t);
+            }
+        }
+        t
+    } else {
+        scan.0.clone()
+    };
+
+    info.vertex_count = displayed.vertices.len();
+    info.face_count = displayed.faces.len();
+
+    respawn_scan_entity(
+        &mut commands,
+        &existing,
+        &displayed,
+        meshes.as_mut(),
+        materials.as_mut(),
+        *up,
+        render_scale.0,
+    );
+
+    *last_snapshot = Some(snapshot);
 }
 
 /// Update system: project the current `ReorientState` + `RecenterState`
@@ -2472,7 +4039,6 @@ fn draw_reference_overlays(
     overlays: Res<OverlayLengths>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
-    clip: Res<ClipState>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut gizmos: Gizmos,
@@ -2503,41 +4069,10 @@ fn draw_reference_overlays(
     };
     gizmos.cube(wireframe_transform, Color::srgb(0.55, 0.55, 0.60));
 
-    // Clip-plane disc — a wireframe rectangle in the cast-frame XY
-    // plane at world `z = clip.z_mm`, indicating where the (eventual)
-    // clip will happen. Rendered only when the panel toggle is on so
-    // a disabled clip doesn't add visual clutter. Drawn as 4 gizmo
-    // lines forming a rectangle (Bevy gizmos can't fill polygons;
-    // gizmos.cube would be a 3D box not a flat plane).
-    if clip.enabled {
-        // Convert clip_z from cast mm to bevy world units: mm × 0.001
-        // (meters) × render_scale. cast +Z = Bevy +Y under the swap.
-        #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
-        let clip_y_bevy = (clip.z_mm * 0.001) as f32 * render_scale.0;
-        // Half-extent in Bevy world units. Use the largest Bevy bbox
-        // axis so the disc clearly extends past the mesh regardless of
-        // current rotation orientation.
-        let half = overlays
-            .bbox_dims_bevy
-            .x
-            .max(overlays.bbox_dims_bevy.y)
-            .max(overlays.bbox_dims_bevy.z)
-            * 0.75;
-        // Rectangle corners in Bevy XZ plane at y = clip_y_bevy.
-        let p00 = Vec3::new(-half, clip_y_bevy, -half);
-        let p10 = Vec3::new(half, clip_y_bevy, -half);
-        let p11 = Vec3::new(half, clip_y_bevy, half);
-        let p01 = Vec3::new(-half, clip_y_bevy, half);
-        let disc_color = Color::srgb(0.95, 0.45, 0.20);
-        gizmos.line(p00, p10, disc_color);
-        gizmos.line(p10, p11, disc_color);
-        gizmos.line(p11, p01, disc_color);
-        gizmos.line(p01, p00, disc_color);
-        // Also draw the diagonals so the disc reads as a translucent
-        // surface rather than just a wireframe outline.
-        gizmos.line(p00, p11, disc_color);
-        gizmos.line(p10, p01, disc_color);
-    }
+    // CSP.4c — Clip floor disc visualization removed alongside
+    // `ClipState`. The orange trim-plane circles
+    // (`draw_trim_plane_overlays`) cover the visual-feedback use
+    // case the disc used to.
 }
 
 /// Update system: handle the Cap panel's `[Scan]` action. Reads the
@@ -2574,8 +4109,18 @@ fn handle_cap_actions(
     // Centerline: use the first cap loop's outward normal as the
     // spine direction. If no loops detected (closed mesh — unusual
     // for cf-scan-prep input but possible), skip the centerline.
+    //
+    // CSP.4e.2.3 (2026-05-15) — apply 3-iteration moving-average
+    // smoothing to the raw cross-section centroids. The raw
+    // centroids wobble several mm per slab on a noisy surface
+    // scan, which (a) tilts trim cut planes off the body's true
+    // axis and (b) gives the reconstruction algorithm a wobbly
+    // sampling frame. Smoothing once at storage time means every
+    // downstream consumer (trim algo, trim overlay, reconstruct,
+    // save TOML) sees the cleaned polyline.
     cap.centerline_polyline = if let Some(first_loop) = cap.loops.first() {
-        compute_centerline_polyline(&scan.0, first_loop.plane_normal, 30)
+        let raw = compute_centerline_polyline(&scan.0, first_loop.plane_normal, 30);
+        smooth_polyline(&raw, 3)
     } else {
         Vec::new()
     };
@@ -2603,7 +4148,9 @@ fn handle_cap_actions(
 /// Recenter, or `ScanMesh` changes after a scan has populated
 /// `CapState::loops`. Spec §Panel specifications §6: the loop
 /// indices and plane fits are tied to the mesh as-it-was at scan
-/// time; subsequent transforms / simplify operations invalidate them.
+/// time; subsequent transforms / simplify operations invalidate
+/// them. (CSP.2 originally watched a `[clip]` slider too; CSP.4d
+/// removed clip from the tool entirely.)
 ///
 /// **Cheap check**: only reads change flags and writes a single bool
 /// via `bypass_change_detection` so we don't re-trigger ourselves.
@@ -2733,6 +4280,132 @@ fn draw_cap_overlays(
             gizmos.line(window[0], window[1], centerline_color);
         }
     }
+}
+
+/// Update system: draw orange circles in the viewport at each
+/// centerline-trim cut plane (CSP.4b.2). Shows the user — live, as
+/// they drag the trim sliders — exactly where the cut will happen
+/// at save time. Two circles render when both trims are non-zero;
+/// one when only the corresponding slider is non-zero; none when
+/// both are zero (or the centerline hasn't been scanned yet).
+///
+/// Each circle:
+/// - **Center**: along the centerline polyline at the trim distance
+///   from the corresponding end (tip = polyline\[0\] + tangent ×
+///   trim_tip_mm; floor = polyline\[N-1\] - tangent × trim_floor_mm).
+/// - **Normal**: the centerline tangent at that end (perpendicular
+///   to the cut plane = the circle plane).
+/// - **Radius**: half the largest scan AABB extent, sized so the
+///   circle always pokes past the scan in any orientation.
+/// - **Color**: bright orange, distinct from the cyan centerline +
+///   the cap-loop palette.
+///
+/// Bakes the centerline-frame positions through the live Reorient +
+/// Recenter exactly the way `draw_cap_overlays` projects the
+/// centerline polyline itself — so the overlay tracks the mesh
+/// when the user nudges the manual sliders too.
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
+fn draw_trim_plane_overlays(
+    cap: Res<CapState>,
+    trim: Res<CenterlineTrimState>,
+    reorient: Res<ReorientState>,
+    recenter: Res<RecenterState>,
+    overlays: Res<OverlayLengths>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut gizmos: Gizmos,
+) {
+    if cap.centerline_polyline.len() < 2 {
+        return;
+    }
+    if trim.trim_tip_mm <= 0.0 && trim.trim_floor_mm <= 0.0 {
+        return;
+    }
+    let rotation_bevy = physics_quat_to_bevy_for_plus_z(reorient.quaternion_physics());
+    let recenter_world = recenter.translation_world(*up, render_scale.0);
+    let bbox_center_bevy = overlays.bbox_center_bevy;
+
+    // Radius sized to clearly poke past the scan in any orientation.
+    // Use the max raw AABB extent so the circle's diameter is at
+    // least the longest scan dimension. Times render_scale to land
+    // in Bevy world units.
+    let raw_aabb = overlays.raw_aabb_m;
+    let max_extent_m = (raw_aabb.max.x - raw_aabb.min.x)
+        .max(raw_aabb.max.y - raw_aabb.min.y)
+        .max(raw_aabb.max.z - raw_aabb.min.z);
+    #[allow(clippy::cast_possible_truncation)]
+    let radius_world = (max_extent_m * 0.5 * 1.2) as f32 * render_scale.0;
+
+    let color = Color::srgb(1.0, 0.55, 0.10);
+    let cl = &cap.centerline_polyline;
+
+    // Closure: project a physics-frame (point, tangent) pair into
+    // Bevy world frame + draw the perpendicular circle. Used for
+    // both tip + floor ends so the projection math doesn't drift
+    // between them.
+    let mut draw_at = |plane_center_phys: Point3<f64>, tangent_phys: Vector3<f64>| {
+        let plane_center_world = project_mesh_local_to_world(
+            &plane_center_phys,
+            *up,
+            rotation_bevy,
+            recenter_world,
+            render_scale.0,
+            bbox_center_bevy,
+        );
+        let tangent_swap = up.to_bevy_point(&Point3::from(tangent_phys));
+        let tangent_bevy_raw = Vec3::from_array(tangent_swap);
+        let tangent_bevy = (rotation_bevy * tangent_bevy_raw).normalize_or_zero();
+        if tangent_bevy.length_squared() > 0.0 {
+            let isometry = Isometry3d::new(plane_center_world, Quat::IDENTITY);
+            draw_perpendicular_circle(&mut gizmos, isometry, tangent_bevy, radius_world, color);
+        }
+    };
+
+    // CSP.4b.3 — walk the polyline arc instead of linear-
+    // extrapolating from the first/last segment's tangent.
+    // Initial CSP.4b version diverged from the actual centerline
+    // path for curved scans (sock fixture's PCA-induced curvature
+    // surfaced this in eyes-on-pixels feedback).
+    if trim.trim_tip_mm > 0.0 {
+        if let Some((plane_center_phys, tangent_phys)) =
+            point_along_polyline_at_arc_distance(cl, trim.trim_tip_mm * 0.001)
+        {
+            draw_at(plane_center_phys, tangent_phys);
+        }
+    }
+
+    if trim.trim_floor_mm > 0.0 {
+        let total_length_m = polyline_arc_length_m(cl);
+        let target_m = total_length_m - trim.trim_floor_mm * 0.001;
+        if target_m > 0.0 {
+            if let Some((plane_center_phys, tangent_phys)) =
+                point_along_polyline_at_arc_distance(cl, target_m)
+            {
+                draw_at(plane_center_phys, tangent_phys);
+            }
+        }
+    }
+}
+
+/// Draw a wireframe circle of radius `radius` centered at
+/// `isometry.translation`, lying in the plane perpendicular to
+/// `normal`. Bevy's `gizmos.circle` takes a rotation that orients
+/// the circle's local +Z to the desired normal direction — this
+/// helper computes that rotation from a normal vector.
+fn draw_perpendicular_circle(
+    gizmos: &mut Gizmos,
+    base: Isometry3d,
+    normal: Vec3,
+    radius: f32,
+    color: Color,
+) {
+    // Bevy's `gizmos.circle` draws in the XY plane of its local
+    // frame (i.e., normal = local +Z). Build a rotation that maps
+    // local +Z to the supplied `normal`.
+    let circle_rotation = Quat::from_rotation_arc(Vec3::Z, normal);
+    let isometry = Isometry3d::new(base.translation, circle_rotation);
+    gizmos.circle(isometry, radius, color);
 }
 
 /// Update system: zero out the accumulated mouse motion + scroll
@@ -2869,9 +4542,9 @@ fn scan_prep_panel(
     mut simplify_state: ResMut<SimplifyState>,
     mut reorient_state: ResMut<ReorientState>,
     mut recenter_state: ResMut<RecenterState>,
-    mut clip_state: ResMut<ClipState>,
     mut cap_state: ResMut<CapState>,
     mut cap_pending: ResMut<CapPendingAction>,
+    mut centerline_trim_state: ResMut<CenterlineTrimState>,
     mut save_pending: ResMut<SavePendingAction>,
     source: Res<SourceStlPath>,
     output_dir: Res<SaveOutputDir>,
@@ -2888,28 +4561,40 @@ fn scan_prep_panel(
         .default_width(320.0)
         .show(ctx, |ui| {
             // Wrap the panel sections in a vertical ScrollArea —
-            // with 6+ collapsing sections (Scan Info / Simplify /
-            // Reorient / Recenter / Clip / Cap, plus #10-#12 to
-            // come), the total content exceeds typical viewport
-            // height on laptop screens. Without scrolling, sections
-            // below the fold are unreachable. `auto_shrink([false,
-            // true])` claims full available width but only as much
-            // height as content needs (with scrollbar on overflow).
+            // total content exceeds typical viewport height on
+            // laptop screens. Without scrolling, sections below
+            // the fold are unreachable. `auto_shrink([false,
+            // true])` claims full available width but only as
+            // much height as content needs (with scrollbar on
+            // overflow).
+            //
+            // CSP.4c — panel order = "centerline-driven flow":
+            //   1. Scan Info (read-only info at load)
+            //   2. Simplify (Apply simplify → 200k face workshop budget)
+            //   3. Cap open boundaries (Scan → detect centerline)
+            //   4. Centerline trim (drag sliders + Apply trim)
+            //   5. Reorient / Recenter / Clip floor (collapsed —
+            //      manual overrides for cases auto-PCA +
+            //      auto-center + trim don't cover)
+            //   6. Save (final action)
+            //
+            // Reorient + Recenter + Clip floor's panel functions
+            // open with `default_open(false)` so they appear as
+            // discoverable expanders without cluttering the
+            // primary flow. Auto-PCA at load + Auto-center at
+            // load + centerline trim are the load-bearing path;
+            // the override panels are escape hatches.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
                     render_simplify_section(ui, &info, &mut simplify_state);
+                    render_cap_section(ui, &mut cap_state, &mut cap_pending);
+                    render_centerline_trim_section(ui, &mut centerline_trim_state, &cap_state);
+                    // ----- Manual overrides (collapsed) -----
                     render_reorient_section(ui, &mut reorient_state, &scan.0);
                     render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
-                    render_clip_section(ui, &mut clip_state, &overlays);
-                    render_cap_section(
-                        ui,
-                        &mut cap_state,
-                        &mut cap_pending,
-                        &mut reorient_state,
-                        &mut recenter_state,
-                    );
+                    // ----- Save (last) -----
                     render_save_section(
                         ui,
                         &source.0,
@@ -2997,6 +4682,17 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
                     state.pending_action = Some(SimplifyAction::Reset);
                 }
             });
+            ui.add_space(4.0);
+            // Slice 9.8 — communicate the save-time budget semantics.
+            // Without this, users assume the slider only affects the
+            // viewport (true pre-9.8) and Save unexpectedly writes a
+            // full-resolution STL.
+            ui.small(
+                "Note: this slider is ALSO the save-time face budget. \
+                 When you click Save, the cleaned STL is simplified to \
+                 the target if it has more faces. Drag to max if you \
+                 want the full-resolution mesh saved.",
+            );
         });
 }
 
@@ -3017,8 +4713,12 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
 /// consumes the state every Update tick and projects it onto the Bevy
 /// Transform.
 fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState, mesh: &IndexedMesh) {
-    egui::CollapsingHeader::new("Reorient")
-        .default_open(true)
+    // CSP.4c — collapsed by default. The auto-PCA bake at load
+    // (CSP.4a) handles the common-case orientation; the sliders +
+    // snap buttons here are manual override for cases where PCA
+    // picked wrong.
+    egui::CollapsingHeader::new("Reorient (manual override)")
+        .default_open(false)
         .show(ui, |ui| {
             ui.add(egui::Slider::new(&mut state.roll_deg, -180.0..=180.0).text("roll (deg)"));
             ui.add(egui::Slider::new(&mut state.pitch_deg, -180.0..=180.0).text("pitch (deg)"));
@@ -3109,8 +4809,11 @@ fn render_recenter_section(
     reorient: &ReorientState,
     overlays: &OverlayLengths,
 ) {
-    egui::CollapsingHeader::new("Recenter")
-        .default_open(true)
+    // CSP.4c — collapsed by default. Auto-center at load (CSP.3.5)
+    // puts the AABB centroid at origin; these sliders + buttons
+    // are for users who want a different recentering target.
+    egui::CollapsingHeader::new("Recenter (manual override)")
+        .default_open(false)
         .show(ui, |ui| {
             let range = overlays.recenter_slider_range_mm;
             ui.add(egui::Slider::new(&mut state.tx_mm, -range..=range).text("X (mm)"));
@@ -3148,43 +4851,7 @@ fn render_recenter_section(
         });
 }
 
-/// `Clip floor` section (`docs/SCAN_PREP_DESIGN.md` §Panel specifications
-/// §5). One enable checkbox + one Z slider + a live drop-percentage
-/// readout. The disc visualization renders in `draw_reference_overlays`
-/// when the toggle is on.
-///
-/// **Algorithm landing at #8 but not yet applied to the displayed
-/// mesh.** The triangle-clipping algorithm
-/// ([`clip_mesh_against_world_z`]) is implemented + unit-tested at
-/// this commit but sits dormant. It gets exercised at commit #9 (Cap
-/// detection consumes the clipped mesh for boundary identification)
-/// and commit #12 (Save bakes the clip into the cleaned STL). Until
-/// then the rendered mesh stays whole; the user reads the percentage
-/// + disc position to verify intent.
-///
-/// Drop percentage is read from `ClipState::drop_pct` — the cached
-/// value populated by [`update_clip_drop_pct`] on relevant state
-/// changes. The panel render itself stays O(1).
-fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &OverlayLengths) {
-    egui::CollapsingHeader::new("Clip floor")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.checkbox(&mut state.enabled, "Enabled");
-
-            let range = overlays.recenter_slider_range_mm;
-            ui.add(egui::Slider::new(&mut state.z_mm, -range..=range).text("Z (mm)"));
-
-            if state.enabled {
-                ui.label(format!("Drops {:.1}% verts", state.drop_pct));
-                if state.drop_pct > 95.0 {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(240, 200, 80),
-                        "⚠ Clip removes nearly all geometry — verify Z value",
-                    );
-                }
-            }
-        });
-}
+// CSP.4c — `render_clip_section` removed alongside `ClipState`.
 
 /// `Cap open boundaries` section (`docs/SCAN_PREP_DESIGN.md` §Panel
 /// specifications §6). Detects open boundary loops on the current
@@ -3202,13 +4869,7 @@ fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &Over
 /// scan, the displayed list dims and a "Transform changed — re-Scan
 /// to refresh" notice appears. The user clicks `[Scan]` again to
 /// re-fit planes on the now-current mesh.
-fn render_cap_section(
-    ui: &mut egui::Ui,
-    state: &mut CapState,
-    pending: &mut CapPendingAction,
-    reorient: &mut ReorientState,
-    recenter: &mut RecenterState,
-) {
+fn render_cap_section(ui: &mut egui::Ui, state: &mut CapState, pending: &mut CapPendingAction) {
     egui::CollapsingHeader::new("Cap open boundaries")
         .default_open(true)
         .show(ui, |ui| {
@@ -3224,37 +4885,16 @@ fn render_cap_section(
                 return;
             }
 
-            // One-click alignment: rotate so the first loop's outward
-            // normal points to world -Z (cavity-floor convention) AND
-            // translate so its centroid lands at world origin. Solves
-            // the "manually lining it up is bound to give imperfect
-            // results" UX gap — the SVD plane fit already knows
-            // exactly where the boundary plane is.
-            if ui.button("Snap boundary -> floor").clicked() {
-                if let Some(loop_0) = state.loops.first() {
-                    let target = Vector3::new(0.0, 0.0, -1.0);
-                    let rotation = UnitQuaternion::rotation_between(&loop_0.plane_normal, &target)
-                        .unwrap_or_else(|| {
-                            UnitQuaternion::from_axis_angle(
-                                &nalgebra::Vector3::x_axis(),
-                                std::f64::consts::PI,
-                            )
-                        });
-                    let (roll, pitch, yaw) = rotation.euler_angles();
-                    reorient.roll_deg = roll.to_degrees();
-                    reorient.pitch_deg = pitch.to_degrees();
-                    reorient.yaw_deg = yaw.to_degrees();
-                    let rotated_centroid = rotation.transform_point(&loop_0.plane_centroid);
-                    recenter.tx_mm = -rotated_centroid.x * 1000.0;
-                    recenter.ty_mm = -rotated_centroid.y * 1000.0;
-                    recenter.tz_mm = -rotated_centroid.z * 1000.0;
-                    // Re-scan: the loop indices still reference the
-                    // same mesh vertices, but the staleness flag will
-                    // flip from the Reorient/Recenter mutations. A
-                    // queued rescan clears it on the next tick.
-                    pending.rescan = true;
-                }
-            }
+            // CSP.4c — `[Snap boundary -> floor]` button removed.
+            // It rotated/translated based on the FIRST detected cap
+            // loop's plane fit, which was the ORIGINAL rim (in
+            // pre-trim coordinates). After Centerline-trim Apply,
+            // the "floor" of the displayed mesh is the trim cut
+            // plane, NOT that original rim. Clicking snap
+            // post-trim would have aligned the no-longer-present
+            // rim. Auto-PCA + Auto-center at load handle the
+            // common alignment case; the Reorient + Recenter
+            // panels (collapsed by default) cover manual override.
 
             if state.stale {
                 ui.colored_label(
@@ -3286,6 +4926,228 @@ fn render_cap_section(
                     "Centerline: {} segments (cyan polyline)",
                     state.centerline_polyline.len().saturating_sub(1),
                 ));
+            }
+        });
+}
+
+/// `Centerline trim` section (CSP.4b — user-driven trim along the
+/// centerline polyline). Drives two perpendicular-plane cuts that get
+/// applied at save time + auto-capped, producing a workshop-ready
+/// trimmed mesh without requiring the user to fiddle with manual
+/// rotation / translation / clip-plane sliders.
+///
+/// Layout:
+///
+/// - "Run Cap → Scan first" hint when the centerline polyline is
+///   empty (the trim has no axis to cut along).
+/// - Two sliders: `trim from tip (mm)` + `trim from floor (mm)`.
+///   Range bounded by half the centerline arc length, so trimming
+///   both ends to slider-max produces zero-length output (no
+///   negative-length geometry).
+/// - `[Reset trim]` button → zeros both sliders.
+///
+/// The actual trim algorithm runs in [`trim_mesh_along_centerline`] at
+/// save time, taking the post-bake centerline polyline (built from
+/// `cap.centerline_polyline` through the user's Reorient + Recenter
+/// transforms) and clipping the mesh perpendicular to the polyline
+/// tangent at each end. Auto-capping of the new cut boundaries
+/// follows immediately via [`auto_cap_open_boundaries`].
+fn render_centerline_trim_section(
+    ui: &mut egui::Ui,
+    state: &mut CenterlineTrimState,
+    cap: &CapState,
+) {
+    egui::CollapsingHeader::new("Centerline trim")
+        .default_open(true)
+        .show(ui, |ui| {
+            if cap.centerline_polyline.len() < 2 {
+                ui.label(
+                    egui::RichText::new(
+                        "(no centerline yet — click Cap > Scan first to detect a centerline)",
+                    )
+                    .italics(),
+                );
+                return;
+            }
+
+            // Centerline arc length in mm; used to bound the
+            // sliders so the user can't trim more than the polyline
+            // provides per end.
+            let total_length_mm: f64 = cap
+                .centerline_polyline
+                .windows(2)
+                .map(|w| (w[1].coords - w[0].coords).norm() * 1000.0)
+                .sum();
+            // Per-end max = half the total. If both sliders sit at
+            // half, the polyline is fully consumed → trim cuts meet
+            // at the midpoint. Beyond that is undefined; the slider
+            // bound protects against it.
+            let max_trim_mm = total_length_mm * 0.5;
+
+            ui.label(format!("Centerline arc length: {total_length_mm:.1} mm"));
+            ui.add(
+                egui::Slider::new(&mut state.trim_tip_mm, 0.0..=max_trim_mm)
+                    .text("trim from tip (mm)"),
+            );
+            ui.add(
+                egui::Slider::new(&mut state.trim_floor_mm, 0.0..=max_trim_mm)
+                    .text("trim from floor (mm)"),
+            );
+
+            // CSP.4b.6 — show the user the gap between slider
+            // (next-cut preview) and applied (current mesh cut)
+            // when they differ, so it's obvious when an Apply is
+            // pending.
+            let drifted = (state.trim_tip_mm - state.applied_tip_mm).abs() > 1e-6
+                || (state.trim_floor_mm - state.applied_floor_mm).abs() > 1e-6;
+            if drifted {
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 200, 80),
+                    format!(
+                        "⚠ Pending: applied tip {:.1} / floor {:.1} mm — click [Apply trim] to cut",
+                        state.applied_tip_mm, state.applied_floor_mm,
+                    ),
+                );
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Apply trim").clicked() {
+                    state.pending_action = Some(TrimAction::Apply);
+                }
+                if ui.button("Reset trim").clicked() {
+                    state.pending_action = Some(TrimAction::Reset);
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.small(
+                "Drag the sliders to position the orange cut circles. \
+                 Click [Apply trim] to perform the cuts on the displayed mesh. \
+                 Save writes the displayed (already-applied) trim to disk.",
+            );
+
+            // ----- CSP.4e Reconstruct sub-section -----
+            //
+            // Only renders when a stable floor chop has been
+            // applied (`reconstruct_available()` — applied_floor_mm
+            // > 0 AND no slider drift since the Apply). The
+            // directional-workflow trip-wire in
+            // `update_displayed_mesh` un-spawns this state when
+            // drift / Reset fires, so the panel re-disappears on
+            // its own.
+            if state.reconstruct_available() {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Reconstruct chopped floor")
+                        .strong(),
+                );
+                ui.small(
+                    "Replace the chopped region with an extruded average of \
+                     cross-sections from a reference zone above the cut, so \
+                     the cleaned mesh keeps its original length.",
+                );
+                ui.add_space(4.0);
+
+                // Reference zone slider — bounded above by the
+                // remaining mesh length on the floor side.
+                // Sensible default range: 0..=applied_floor_mm
+                // (sampling more above the cut than was chopped
+                // is allowed, but capped to half the centerline
+                // length so we don't walk past the tip).
+                let max_ref_mm = max_trim_mm.min(total_length_mm - state.applied_floor_mm);
+                ui.add(
+                    egui::Slider::new(
+                        &mut state.reconstruct_reference_mm,
+                        0.0..=max_ref_mm,
+                    )
+                    .text("reference zone (mm)"),
+                );
+
+                // Shape radio buttons.
+                ui.add_space(4.0);
+                ui.label("Extrusion shape:");
+                ui.radio_value(
+                    &mut state.reconstruct_shape,
+                    ReconstructShape::Constant,
+                    "Constant (average radius)",
+                );
+                ui.radio_value(
+                    &mut state.reconstruct_shape,
+                    ReconstructShape::Taper,
+                    "Taper toward floor",
+                );
+                ui.radio_value(
+                    &mut state.reconstruct_shape,
+                    ReconstructShape::Extrapolate,
+                    "Extrapolate reference trend",
+                );
+
+                // Pending-apply drift indicator (mirrors the trim
+                // panel's pattern).
+                let reconstruct_drifted = match state.applied_reconstruct {
+                    None => state.reconstruct_reference_mm > 0.0,
+                    Some(applied) => {
+                        (state.reconstruct_reference_mm - applied.reference_mm).abs() > 1e-6
+                            || state.reconstruct_shape != applied.shape
+                    }
+                };
+                if reconstruct_drifted {
+                    let applied_desc = match state.applied_reconstruct {
+                        None => "(not yet applied)".to_string(),
+                        Some(applied) => format!(
+                            "ref {:.1} mm / {}",
+                            applied.reference_mm,
+                            match applied.shape {
+                                ReconstructShape::Constant => "Constant",
+                                ReconstructShape::Taper => "Taper",
+                                ReconstructShape::Extrapolate => "Extrapolate",
+                            },
+                        ),
+                    };
+                    ui.colored_label(
+                        egui::Color32::from_rgb(240, 200, 80),
+                        format!(
+                            "⚠ Pending: applied = {applied_desc} — click [Apply reconstruct] to rebuild",
+                        ),
+                    );
+                }
+
+                ui.add_space(4.0);
+                // CSP.4e.2 fix-forward — gate Apply reconstruct on
+                // reference_zone > 0. Apply with reference=0 was a
+                // silent no-op (the algorithm short-circuits to
+                // flat-cap) and the user couldn't tell why nothing
+                // happened. Disabling the button + hint makes the
+                // gate visible.
+                let can_apply = state.reconstruct_reference_mm > 0.0;
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(can_apply, |ui| {
+                        if ui.button("Apply reconstruct").clicked() {
+                            state.reconstruct_pending = Some(ReconstructAction::Apply);
+                        }
+                    });
+                    if state.applied_reconstruct.is_some()
+                        && ui.button("Unapply reconstruct").clicked()
+                    {
+                        state.reconstruct_pending = Some(ReconstructAction::Reset);
+                    }
+                });
+
+                if !can_apply {
+                    ui.small(
+                        "Drag the reference zone slider above 0 to enable Apply reconstruct.",
+                    );
+                }
+
+                ui.add_space(4.0);
+                ui.small(
+                    "All three shapes (Constant / Taper / Extrapolate) generate \
+                     extruded sidewall + flat cap. Taper pinches toward the new \
+                     floor; Extrapolate continues the reference zone's natural taper.",
+                );
             }
         });
 }
@@ -3377,12 +5239,12 @@ fn render_save_section(
 ///
 /// Pipeline:
 ///
-/// 1. Build cleaned mesh: apply Reorient rotation + Recenter
-///    translation to every vertex; ear-clip + append cap triangles
-///    for each included loop.
-/// 2. Build `.prep.toml` string: scan-prep + reorient + recenter +
-///    clip + caps + (post-bake world-frame) centerline + output
-///    blocks.
+/// 1. Build cleaned mesh: apply transform.rotation + transform.translation
+///    to every vertex; ear-clip + append cap triangles for each
+///    included loop.
+/// 2. Build `.prep.toml` string: scan-prep + simplify + transform +
+///    clip + caps + (post-bake world-frame) centerline + output blocks
+///    (with cleaned-mesh AABB).
 /// 3. Atomic write: STL to `.stl.tmp`, TOML to `.toml.tmp`, rename
 ///    both. On any failure roll back both temp + final files so the
 ///    user doesn't end up with a half-written save.
@@ -3398,13 +5260,17 @@ fn render_save_section(
 fn handle_save_action(
     mut pending: ResMut<SavePendingAction>,
     scan: Res<ScanMesh>,
+    original: Res<OriginalScanMesh>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
-    clip: Res<ClipState>,
     cap: Res<CapState>,
+    simplify: Res<SimplifyState>,
+    centerline_trim: Res<CenterlineTrimState>,
     output_dir: Res<SaveOutputDir>,
     source: Res<SourceStlPath>,
     stl_units: Res<StlUnitsResource>,
+    auto_center: Res<AutoCenterOffset>,
+    auto_pca: Res<AutoPcaQuaternion>,
     mut status: ResMut<StatusBar>,
     time: Res<Time>,
 ) {
@@ -3433,14 +5299,147 @@ fn handle_save_action(
         || !recenter.tx_mm.is_finite()
         || !recenter.ty_mm.is_finite()
         || !recenter.tz_mm.is_finite()
+        || !centerline_trim.applied_tip_mm.is_finite()
+        || !centerline_trim.applied_floor_mm.is_finite()
     {
-        status.text = "Save failed: non-finite Reorient / Recenter values".into();
+        status.text = "Save failed: non-finite transform / trim values".into();
         status.kind = StatusKind::Error;
         status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
         return;
     }
 
-    let cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
+    let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
+
+    // CSP.4b — centerline trim. Apply user-requested trims to the
+    // cleaned mesh + auto-cap the resulting boundaries. The
+    // centerline in `cap.centerline_polyline` is in physics frame
+    // (pre-bake); bake it through the user transforms first so the
+    // trim planes match the cleaned mesh's world frame. Skip
+    // entirely when no trim requested — keeps the trim-zero path
+    // bit-exact with pre-CSP.4b behavior.
+    let trim_rotation = reorient.quaternion_physics();
+    let trim_translation = Vector3::new(
+        recenter.tx_mm * 0.001,
+        recenter.ty_mm * 0.001,
+        recenter.tz_mm * 0.001,
+    );
+    let trim_pivot_centroid_m = scan.0.aabb().center();
+    // CSP.4b.6 — use APPLIED trim values, not slider values. The
+    // save-time cut must match the displayed mesh (what the user
+    // sees), not the draft slider position.
+    let centerline_world: Vec<Point3<f64>> = if (centerline_trim.applied_tip_mm > 0.0
+        || centerline_trim.applied_floor_mm > 0.0)
+        && cap.centerline_polyline.len() >= 2
+    {
+        cap.centerline_polyline
+            .iter()
+            .map(|p| {
+                bake_vertex_with_pivot(p, trim_rotation, &trim_pivot_centroid_m, trim_translation)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pre_trim_face_count = cleaned.faces.len();
+    let mut trim_capped = 0_usize;
+    let mut trim_status_suffix = String::new();
+    if !centerline_world.is_empty() {
+        cleaned = trim_mesh_along_centerline(
+            &cleaned,
+            &centerline_world,
+            centerline_trim.applied_tip_mm,
+            centerline_trim.applied_floor_mm,
+        );
+        // CSP.4e.2.4 — same weld fix as `update_displayed_mesh`.
+        // Trim emits duplicate intersection vertices per shared
+        // edge; without welding the cut boundary fragments and
+        // `find_floor_loop_index` picks a scan-artifact loop.
+        weld_vertices(&mut cleaned, SIMPLIFY_WELD_EPSILON_M);
+        // CSP.4e.2 — save-time reconstruction branch. When the
+        // user has applied reconstruct AND it's a shape this
+        // commit supports (Constant), run the reconstructed-
+        // geometry path; otherwise fall through to flat
+        // auto-cap. Mirrors the `update_displayed_mesh` branch
+        // so the on-disk STL matches the viewport.
+        let did_reconstruct = match centerline_trim.applied_reconstruct {
+            Some(ar) if centerline_trim.applied_floor_mm > 0.0 => {
+                // CSP.4e.2 + 4e.3 — all three shapes (Constant,
+                // Taper, Extrapolate) bake into the save output.
+                let trimmed_centerline = trim_centerline_polyline(
+                    &centerline_world,
+                    centerline_trim.applied_tip_mm,
+                    centerline_trim.applied_floor_mm,
+                );
+                cleaned = apply_reconstruction(
+                    cleaned,
+                    &trimmed_centerline,
+                    centerline_trim.applied_floor_mm,
+                    ar.reference_mm,
+                    ar.shape,
+                );
+                true
+            }
+            _ => false,
+        };
+        if !did_reconstruct {
+            trim_capped = auto_cap_open_boundaries(&mut cleaned);
+        }
+        let suffix_action = if did_reconstruct {
+            "reconstructed".to_string()
+        } else {
+            format!(
+                "capped {} boundary loop{}",
+                trim_capped,
+                if trim_capped == 1 { "" } else { "s" },
+            )
+        };
+        trim_status_suffix = format!(
+            ", trim: {} -> {} faces, {}",
+            human_count(pre_trim_face_count),
+            human_count(cleaned.faces.len()),
+            suffix_action,
+        );
+    }
+
+    // CSP.3b — mesh hygiene cleanup before simplify. Runs the four-
+    // step pass (weld + degenerate + small-components + unreferenced)
+    // so simplify operates on already-clean topology + the cleaned
+    // STL passes downstream `simplify_decoder` (not just
+    // `simplify_sloppy_decoder`). The report's non-zero terms feed
+    // the status message as a confidence signal for the user.
+    let cleanup = cleanup_cleaned_mesh_for_disk(&mut cleaned);
+    let cleanup_status_suffix = if cleanup.total() == 0 {
+        String::new()
+    } else {
+        format!(
+            ", cleanup: {} welded / {} degenerate / {} small-component / {} unreferenced",
+            cleanup.welded, cleanup.degenerate, cleanup.small_components, cleanup.unreferenced,
+        )
+    };
+
+    // Slice 9.8 — Simplify panel slider acts as a face budget at save
+    // time too, not just for the [Apply simplify] in-app action. If
+    // the slider sits below the cleaned mesh's current face count,
+    // run meshopt down to the target before writing — so saved STLs
+    // honor the slider regardless of whether [Apply] was clicked
+    // first. Default slider value is `SIMPLIFY_TARGET_DEFAULT` (200k),
+    // which keeps 3M+ face raw scans from landing on disk unfiltered
+    // and grinding cf-cast-cli / cf-device-design downstream.
+    //
+    // The user opts OUT by dragging the slider up to or above the
+    // current face count.
+    let pre_simplify_face_count = cleaned.faces.len();
+    let mut simplify_status_suffix = String::new();
+    if simplify.target_face_count < pre_simplify_face_count {
+        let result = simplify_mesh(&cleaned, simplify.target_face_count);
+        simplify_status_suffix = format!(
+            ", simplified {} \u{2192} {} faces in {:.1}s",
+            human_count(pre_simplify_face_count),
+            human_count(result.mesh.faces.len()),
+            result.elapsed_secs,
+        );
+        cleaned = result.mesh;
+    }
     let triangle_count = cleaned.faces.len();
 
     let rotation = reorient.quaternion_physics();
@@ -3450,17 +5449,30 @@ fn handle_save_action(
         recenter.tz_mm * 0.001,
     );
     let pivot_centroid_m = scan.0.aabb().center();
+    // `[simplify]` provenance inputs: the as-loaded face count (in
+    // OriginalScanMesh, untouched by Apply / Reset / save-time
+    // budget) drives `original_face_count`; the final cleaned mesh's
+    // face count is what landed on disk.
+    let original_face_count = original.0.faces.len();
+    let cleaned_aabb_m = cleaned.aabb();
     let toml_str = match build_prep_toml_string(
         &source.0,
         stl_units.0,
+        auto_center.0,
+        auto_pca.0,
         &reorient,
         &recenter,
-        &clip,
         &cap,
+        &centerline_trim,
+        trim_capped,
         &format!("{stem}.cleaned.stl"),
         rotation,
         translation,
         pivot_centroid_m,
+        simplify.target_face_count,
+        original_face_count,
+        triangle_count,
+        &cleaned_aabb_m,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -3474,7 +5486,7 @@ fn handle_save_action(
     match atomic_write_save(&cleaned, &cleaned_stl_path, &prep_toml_path, &toml_str) {
         Ok(()) => {
             status.text = format!(
-                "Saved {stem}.cleaned.stl ({} triangles) + {stem}.prep.toml",
+                "Saved {stem}.cleaned.stl ({} triangles{trim_status_suffix}{simplify_status_suffix}{cleanup_status_suffix}) + {stem}.prep.toml",
                 human_count(triangle_count),
             );
             status.kind = StatusKind::Normal;
@@ -3584,6 +5596,162 @@ mod tests {
         assert_eq!(mesh.vertices[0].x, 0.0254);
         assert_eq!(mesh.vertices[1].y, 0.0254);
         assert_eq!(mesh.vertices[2].z, 0.0254);
+    }
+
+    // ----- auto_center_in_place (CSP.3.5) ----------------------------
+
+    /// `auto_center_in_place` moves a scan offset far from the
+    /// physics origin to a centroid-at-origin position, and reports
+    /// the offset it applied. Simulates the "scanner pointed down,
+    /// captured geometry at negative z" workflow the CSP.3.5
+    /// followup addresses.
+    #[test]
+    fn auto_center_in_place_moves_centroid_to_origin() {
+        // A unit-cube-like mesh sitting at physics centroid
+        // (0.05, 0.00, -0.170) — far from origin, like a scanner
+        // dropped it there.
+        let mut mesh = IndexedMesh::with_capacity(8, 0);
+        for &(x, y, z) in &[
+            (0.05 - 0.04, 0.00 - 0.03, -0.170 - 0.06),
+            (0.05 + 0.04, 0.00 - 0.03, -0.170 - 0.06),
+            (0.05 + 0.04, 0.00 + 0.03, -0.170 - 0.06),
+            (0.05 - 0.04, 0.00 + 0.03, -0.170 - 0.06),
+            (0.05 - 0.04, 0.00 - 0.03, -0.170 + 0.06),
+            (0.05 + 0.04, 0.00 - 0.03, -0.170 + 0.06),
+            (0.05 + 0.04, 0.00 + 0.03, -0.170 + 0.06),
+            (0.05 - 0.04, 0.00 + 0.03, -0.170 + 0.06),
+        ] {
+            mesh.vertices.push(Point3::new(x, y, z));
+        }
+        let offset = auto_center_in_place(&mut mesh);
+        // Offset = -centroid → expect (-0.05, 0, +0.170).
+        assert!((offset.x - (-0.05)).abs() < 1e-12);
+        assert!(offset.y.abs() < 1e-12);
+        assert!((offset.z - 0.170).abs() < 1e-12);
+        // Post-centering AABB centroid should be ~origin.
+        let post_centroid = mesh.aabb().center();
+        assert!(post_centroid.coords.norm() < 1e-12);
+    }
+
+    /// `auto_center_in_place` is a no-op (returns zero offset) for
+    /// a mesh whose centroid is already within 1 µm of the origin.
+    /// Guards against FP-drift on already-centered fixtures. Uses a
+    /// symmetric ±1 mm cube — its AABB centroid lands at bit-exact
+    /// origin, so the threshold guard fires.
+    #[test]
+    fn auto_center_in_place_no_op_when_already_centered() {
+        let mut mesh = IndexedMesh::with_capacity(2, 0);
+        mesh.vertices.push(Point3::new(-0.001, -0.001, -0.001));
+        mesh.vertices.push(Point3::new(0.001, 0.001, 0.001));
+        let mesh_before = mesh.clone();
+        let offset = auto_center_in_place(&mut mesh);
+        assert!(offset.norm() < 1e-12, "near-zero offset, got {offset:?}");
+        // Vertices unchanged.
+        assert_eq!(mesh.vertices, mesh_before.vertices);
+    }
+
+    /// `auto_center_in_place` is a no-op on empty meshes (defensive
+    /// against the load-failure overlay path — never hit, but cheap
+    /// to guarantee).
+    #[test]
+    fn auto_center_in_place_handles_empty_mesh() {
+        let mut mesh = IndexedMesh::with_capacity(0, 0);
+        let offset = auto_center_in_place(&mut mesh);
+        assert_eq!(offset, Vector3::zeros());
+        assert!(mesh.vertices.is_empty());
+    }
+
+    // ----- auto_pca_in_place (CSP.4a) --------------------------------
+
+    /// Mesh elongated along physics +X: after auto-PCA-in-place, the
+    /// long axis aligns with +Z (the principal-axis vertices' X
+    /// components rotate into Z). Confirms the bake-in-place
+    /// behavior matches the rotation `compute_pca_orientation`
+    /// returns.
+    #[test]
+    fn auto_pca_in_place_rotates_long_x_axis_to_plus_z() {
+        // 11 points along +X (centroid at origin), no spread on Y/Z.
+        let mut mesh = IndexedMesh::with_capacity(11, 0);
+        for i in -5..=5 {
+            mesh.vertices
+                .push(Point3::new(f64::from(i) * 0.01, 0.0, 0.0));
+        }
+        let pre_x_range_max = mesh
+            .vertices
+            .iter()
+            .map(|v| v.x.abs())
+            .fold(0.0_f64, f64::max);
+        assert!((pre_x_range_max - 0.05).abs() < 1e-12);
+
+        let q = auto_pca_in_place(&mut mesh).expect("PCA should succeed");
+
+        // After rotation, the long axis runs along +Z (or -Z; the
+        // sign-pick keeps the rotation short). The X spread
+        // collapses to ~zero; the Z spread inherits the original X
+        // spread.
+        let post_z_range_max = mesh
+            .vertices
+            .iter()
+            .map(|v| v.z.abs())
+            .fold(0.0_f64, f64::max);
+        let post_x_range_max = mesh
+            .vertices
+            .iter()
+            .map(|v| v.x.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (post_z_range_max - 0.05).abs() < 1e-9,
+            "post Z extent: {post_z_range_max}"
+        );
+        assert!(
+            post_x_range_max < 1e-9,
+            "post X extent should collapse: {post_x_range_max}"
+        );
+
+        // Quaternion identity-check: not identity (we actually rotated).
+        let vec_sq = q.i * q.i + q.j * q.j + q.k * q.k;
+        assert!(vec_sq > 1e-6, "expected non-identity rotation");
+    }
+
+    /// Already-PCA-aligned mesh (principal axis = +Z, vertices in
+    /// the YZ plane with the long axis on Z): auto-PCA is the
+    /// identity, vertex positions stay bit-exact.
+    #[test]
+    fn auto_pca_in_place_skips_vertex_walk_on_near_identity() {
+        // 11 points along +Z, centroid at origin. PCA principal axis
+        // = +Z already; rotation_between(+Z, +Z) = identity.
+        let mut mesh = IndexedMesh::with_capacity(11, 0);
+        for i in -5..=5 {
+            mesh.vertices
+                .push(Point3::new(0.0, 0.0, f64::from(i) * 0.01));
+        }
+        let mesh_before = mesh.clone();
+
+        let q = auto_pca_in_place(&mut mesh).expect("PCA should succeed");
+        // Quaternion should be near-identity.
+        assert!(
+            (q.w - 1.0).abs() < 1e-9,
+            "expected near-identity q.w, got {}",
+            q.w
+        );
+        // Vertices bit-exactly preserved (the near-identity skip
+        // path didn't walk them).
+        assert_eq!(mesh.vertices, mesh_before.vertices);
+    }
+
+    /// Degenerate input (all vertices coincident → no principal
+    /// axis): auto-PCA returns `None`, vertices unchanged. Pairs
+    /// with `compute_pca_orientation`'s `None` path.
+    #[test]
+    fn auto_pca_in_place_returns_none_on_degenerate() {
+        let mut mesh = IndexedMesh::with_capacity(10, 0);
+        for _ in 0..10 {
+            mesh.vertices.push(Point3::origin());
+        }
+        let mesh_before = mesh.clone();
+        let q = auto_pca_in_place(&mut mesh);
+        assert!(q.is_none(), "expected None on degenerate input");
+        assert_eq!(mesh.vertices, mesh_before.vertices);
     }
 
     // ----- CLI parsing ------------------------------------------------
@@ -4260,186 +6428,8 @@ mod tests {
         assert!((baked.z - 0.30).abs() < 1e-12, "baked.z = {}", baked.z);
     }
 
-    // ----- ClipState + clip_mesh_against_world_z ---------------------
-
-    /// Default ClipState is `enabled=false, z_mm=0.0`. Pinned because
-    /// flipping the default to enabled would silently clip every load.
-    #[test]
-    fn clip_state_default_is_disabled_at_origin() {
-        let state = ClipState::default();
-        assert!(!state.enabled);
-        assert_eq!(state.z_mm, 0.0);
-    }
-
-    /// `compute_drop_percentage` on an empty mesh returns 0 (no
-    /// vertices to drop).
-    #[test]
-    fn drop_percentage_empty_mesh_is_zero() {
-        let empty = IndexedMesh::with_capacity(0, 0);
-        let pct = compute_drop_percentage(&empty, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(pct, 0.0);
-    }
-
-    /// Identity rotation + zero translation: vertices below `clip_z_mm`
-    /// drop, vertices on/above stay. Test mesh has 4 vertices at
-    /// z = -50, -10, 10, 50 mm (in physics). Clip at z = 0 → 2 below
-    /// (50%).
-    #[test]
-    fn drop_percentage_counts_below_plane() {
-        let mut mesh = IndexedMesh::with_capacity(4, 0);
-        // Z values in physics meters; will be lifted to mm inside the
-        // function.
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.050));
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.010));
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.010));
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.050));
-        let pct = compute_drop_percentage(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert!(
-            (pct - 50.0).abs() < 1e-9,
-            "2 of 4 vertices below z=0 → 50% expected, got {pct}",
-        );
-    }
-
-    /// `clip_mesh_against_world_z` on a triangle entirely above the
-    /// plane: kept as-is, no new vertices, face count = 1.
-    #[test]
-    fn clip_keeps_triangle_entirely_above_plane() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.010));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020));
-        mesh.vertices.push(Point3::new(0.0, 1.0, 0.030));
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(
-            &mesh,
-            UnitQuaternion::identity(),
-            0.0,
-            0.0, // clip at z=0; all vertices have z > 0
-        );
-        assert_eq!(clipped.faces.len(), 1);
-        assert_eq!(clipped.vertices.len(), 3); // no intersections, no unreferenced
-    }
-
-    /// `clip_mesh_against_world_z` on a triangle entirely below the
-    /// plane: dropped, face count = 0, no surviving vertices.
-    #[test]
-    fn clip_drops_triangle_entirely_below_plane() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.030));
-        mesh.vertices.push(Point3::new(1.0, 0.0, -0.020));
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.010));
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(clipped.faces.len(), 0);
-        // remove_unreferenced_vertices strips all 3 since they're
-        // not used by any surviving face.
-        assert_eq!(clipped.vertices.len(), 0);
-    }
-
-    /// `clip_mesh_against_world_z` on a 1-above-2-below triangle:
-    /// 1 surviving triangle with 2 intersection points.
-    ///
-    /// Test setup: triangle at z = 0.030, -0.010, -0.020 (in meters)
-    /// → first vertex above z=0, other two below. Clip at z = 0
-    /// produces:
-    ///   - 1 surviving triangle
-    ///   - 3 vertices: the original above-vertex + 2 intersection
-    ///     points on the plane (z = 0 exactly)
-    #[test]
-    fn clip_one_above_two_below_produces_one_triangle() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.030)); // above
-        mesh.vertices.push(Point3::new(1.0, 0.0, -0.010)); // below
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.020)); // below
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(clipped.faces.len(), 1);
-        assert_eq!(clipped.vertices.len(), 3);
-
-        // The two intersection points must have z = 0 (within FP eps).
-        let mut on_plane_count = 0;
-        for v in &clipped.vertices {
-            if v.z.abs() < 1e-9 {
-                on_plane_count += 1;
-            }
-        }
-        assert_eq!(
-            on_plane_count, 2,
-            "expected 2 intersection points on z=0 plane, got {on_plane_count}",
-        );
-    }
-
-    /// `clip_mesh_against_world_z` on a 2-above-1-below triangle:
-    /// 2 surviving triangles (fan-triangulation of the quad) with 2
-    /// intersection points.
-    #[test]
-    fn clip_two_above_one_below_produces_two_triangles() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.030)); // above
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020)); // above
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.010)); // below
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(clipped.faces.len(), 2);
-        // 2 original above-vertices + 2 intersection points = 4
-        assert_eq!(clipped.vertices.len(), 4);
-
-        // The two intersection points must have z = 0.
-        let mut on_plane_count = 0;
-        for v in &clipped.vertices {
-            if v.z.abs() < 1e-9 {
-                on_plane_count += 1;
-            }
-        }
-        assert_eq!(on_plane_count, 2);
-    }
-
-    /// Spec edge case: a vertex EXACTLY on the plane should be treated
-    /// as above, so the surrounding triangle stays intact (no
-    /// degenerate sub-triangles). Triangle with one vertex on the
-    /// plane + two above: stays whole, no intersection points
-    /// generated.
-    #[test]
-    fn clip_vertex_exactly_on_plane_keeps_triangle() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0)); // on plane
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.020)); // above
-        mesh.vertices.push(Point3::new(0.0, 1.0, 0.030)); // above
-        mesh.faces.push([0, 1, 2]);
-        let clipped = clip_mesh_against_world_z(&mesh, UnitQuaternion::identity(), 0.0, 0.0);
-        assert_eq!(
-            clipped.faces.len(),
-            1,
-            "triangle with one vertex on plane should be kept intact",
-        );
-        assert_eq!(clipped.vertices.len(), 3);
-    }
-
-    /// Rotation interaction: a triangle that's "above" in world frame
-    /// but "below" in mesh-local frame should be kept. Tests that the
-    /// rotation is correctly applied when computing the plane in
-    /// mesh-local coordinates.
-    ///
-    /// Setup: triangle at mesh-local z = -0.020 (would be below
-    /// world z=0 without rotation). Apply a 180° rotation about X
-    /// (flips Z). After rotation, the triangle is at world z = +0.020,
-    /// which is ABOVE the world clip plane at z=0. Should be kept.
-    #[test]
-    fn clip_respects_rotation_when_computing_plane() {
-        let mut mesh = IndexedMesh::with_capacity(3, 1);
-        mesh.vertices.push(Point3::new(0.0, 0.0, -0.020));
-        mesh.vertices.push(Point3::new(1.0, 0.0, -0.020));
-        mesh.vertices.push(Point3::new(0.0, 1.0, -0.020));
-        mesh.faces.push([0, 1, 2]);
-        // 180° rotation about X flips Y and Z signs.
-        let rot_180_about_x =
-            UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), std::f64::consts::PI);
-        let clipped = clip_mesh_against_world_z(&mesh, rot_180_about_x, 0.0, 0.0);
-        assert_eq!(
-            clipped.faces.len(),
-            1,
-            "after 180° X rotation the triangle is at world z=+0.020, above clip plane",
-        );
-    }
+    // CSP.4c — ClipState + clip_mesh_against_world_z tests removed
+    // alongside the feature.
 
     // ----- Cap algorithms (plane fit / normal / centerline) ---------
 
@@ -4584,6 +6574,257 @@ mod tests {
         tiny.vertices.push(Point3::new(0.0, 0.0, 0.0));
         let zero_dir = compute_centerline_polyline(&tiny, Vector3::zeros(), 10);
         assert!(zero_dir.is_empty());
+    }
+
+    // ----- Centerline trim (CSP.4b) ----------------------------------
+
+    /// `trim_mesh_along_centerline` with both trims at 0 is a
+    /// pure-clone no-op (returns the input unchanged). Pins the
+    /// fast-path guard so future refactors don't accidentally walk
+    /// vertices unnecessarily for un-trimmed saves.
+    #[test]
+    fn trim_mesh_along_centerline_no_op_when_both_trims_zero() {
+        let mesh = one_triangle_at(0.01);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 1.0)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 0.0, 0.0);
+        assert_eq!(trimmed.vertices, mesh.vertices);
+        assert_eq!(trimmed.faces, mesh.faces);
+    }
+
+    /// Degenerate centerline (< 2 points) is a no-op. Defensive
+    /// against the "Cap → Scan not yet clicked" path (CapState
+    /// centerline empty); the save handler skips trim entirely in
+    /// that case, but the function itself guards too.
+    #[test]
+    fn trim_mesh_along_centerline_no_op_when_centerline_too_short() {
+        let mesh = one_triangle_at(0.01);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 10.0, 10.0);
+        assert_eq!(trimmed.vertices, mesh.vertices);
+        assert_eq!(trimmed.faces, mesh.faces);
+    }
+
+    /// Trim from the floor end of a +Z-axis centerline drops
+    /// vertices beyond the trim plane. Vertical "pole" of 11 points
+    /// from z=0 to z=0.1 (100 mm), centerline tip→floor along +Z,
+    /// trim floor by 30 mm → keep points with z <= 0.07.
+    #[test]
+    fn trim_mesh_along_centerline_floor_end_clips_high_z_vertices() {
+        // Build a simple vertical column of triangles (pole), 11
+        // segments stacked from z=0 to z=0.1. Each "stack-rung" is
+        // a degenerate-ish 3-vertex triangle for testing.
+        let mut mesh = IndexedMesh::with_capacity(11, 9);
+        for i in 0..11 {
+            let z = f64::from(i) * 0.01;
+            mesh.vertices.push(Point3::new(0.0, 0.0, z));
+        }
+        // Connect into a chain of "triangles" with shared verts.
+        // (Geometrically degenerate but valid topology; serves the
+        // trim test.)
+        for i in 0..9 {
+            mesh.faces.push([i as u32, (i + 1) as u32, (i + 2) as u32]);
+        }
+        // Centerline from tip (z=0) to floor (z=0.1). Trim floor
+        // by 30 mm → clip plane at z = 0.07.
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.1)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 0.0, 30.0);
+        // All surviving vertices' z <= 0.07 (the trim plane).
+        for v in &trimmed.vertices {
+            assert!(v.z <= 0.07 + 1e-9, "kept vertex z={} above trim plane", v.z);
+        }
+        // Some vertices survived.
+        assert!(!trimmed.vertices.is_empty(), "all dropped by trim");
+    }
+
+    /// `trim_centerline_polyline` keeps the polyline whole when no
+    /// trim is requested. Pins the no-op identity.
+    #[test]
+    fn trim_centerline_polyline_no_op_when_both_zero() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.0, 0.0, 0.1),
+        ];
+        let trimmed = trim_centerline_polyline(&polyline, 0.0, 0.0);
+        assert_eq!(trimmed, polyline);
+    }
+
+    /// `trim_centerline_polyline` cuts the start + end of the
+    /// polyline at the requested mm distances. 100 mm polyline,
+    /// trim 30 mm tip + 20 mm floor → result is 50 mm long, from
+    /// the 30 mm mark to the 80 mm mark.
+    #[test]
+    fn trim_centerline_polyline_clips_both_ends_at_arc_length() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),   //  0 mm
+            Point3::new(0.0, 0.0, 0.025), // 25 mm
+            Point3::new(0.0, 0.0, 0.05),  // 50 mm
+            Point3::new(0.0, 0.0, 0.075), // 75 mm
+            Point3::new(0.0, 0.0, 0.1),   // 100 mm
+        ];
+        let trimmed = trim_centerline_polyline(&polyline, 30.0, 20.0);
+        // First trimmed point: z = 0.030 (interpolated between 25
+        // and 50 mm originals).
+        assert!((trimmed.first().unwrap().z - 0.030).abs() < 1e-9);
+        // Last trimmed point: z = 0.080.
+        assert!((trimmed.last().unwrap().z - 0.080).abs() < 1e-9);
+        // Total arc length collapsed from 100 mm to ~50 mm.
+        let new_total_mm: f64 = trimmed
+            .windows(2)
+            .map(|w| (w[1].coords - w[0].coords).norm() * 1000.0)
+            .sum();
+        assert!((new_total_mm - 50.0).abs() < 1e-6);
+    }
+
+    /// `trim_centerline_polyline` returns empty when the trim
+    /// consumes the entire polyline (`trim_tip + trim_floor >=
+    /// total arc length`). The save handler's
+    /// `centerline.is_empty()` check then omits the `[centerline]`
+    /// block from the TOML.
+    #[test]
+    fn trim_centerline_polyline_returns_empty_when_fully_consumed() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.1), // 100 mm total
+        ];
+        // Trim 60 + 60 = 120 mm > 100 mm total.
+        let trimmed = trim_centerline_polyline(&polyline, 60.0, 60.0);
+        assert!(trimmed.is_empty());
+    }
+
+    /// CenterlineTrimState defaults are zero — the trim is opt-in.
+    /// Pins the "no trim by default" semantic so future refactors
+    /// don't accidentally enable a trim baseline.
+    #[test]
+    fn centerline_trim_state_default_is_zero() {
+        let state = CenterlineTrimState::default();
+        assert_eq!(state.trim_tip_mm, 0.0);
+        assert_eq!(state.trim_floor_mm, 0.0);
+    }
+
+    /// CSP.4b.3 regression test — the polyline-walker primitive
+    /// that drives both the trim algorithm + the live overlay.
+    /// Pre-CSP.4b.3 trim/overlay code extrapolated linearly from
+    /// the first segment's tangent, which diverged from the actual
+    /// curve as the trim distance grew. This test builds a
+    /// L-shaped polyline (sharp 90° bend at mid-arc) and asserts
+    /// that walking past the bend lands on the SECOND-leg
+    /// position, NOT linearly extrapolated from the first leg's
+    /// tangent.
+    #[test]
+    fn point_along_polyline_walks_through_a_bend() {
+        // L-shaped polyline:
+        //   (0,0,0) → (0,0,0.05) → (0.05,0,0.05)
+        // Total arc length: 0.05 + 0.05 = 0.10 m (100 mm).
+        // First leg (+Z, 50 mm); second leg (+X, 50 mm); 90° bend
+        // at index 1.
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.05),
+        ];
+
+        // 25 mm in: on the first leg. Expect (0, 0, 0.025), tangent = +Z.
+        let (p, t) = point_along_polyline_at_arc_distance(&polyline, 0.025).unwrap();
+        assert!((p.x - 0.0).abs() < 1e-12);
+        assert!((p.z - 0.025).abs() < 1e-12);
+        assert!((t.z - 1.0).abs() < 1e-9);
+        assert!(t.x.abs() < 1e-9);
+
+        // 75 mm in: 25 mm into the SECOND leg. Expect (0.025, 0,
+        // 0.05), tangent = +X. The pre-CSP.4b.3 buggy code would
+        // have walked 75 mm along the first leg's +Z tangent and
+        // landed at (0, 0, 0.075) — way off the actual polyline.
+        let (p, t) = point_along_polyline_at_arc_distance(&polyline, 0.075).unwrap();
+        assert!(
+            (p.x - 0.025).abs() < 1e-12,
+            "x post-bend should be 0.025, got {}",
+            p.x
+        );
+        assert!(
+            (p.z - 0.05).abs() < 1e-12,
+            "z post-bend should be 0.05, got {}",
+            p.z
+        );
+        assert!(
+            (t.x - 1.0).abs() < 1e-9,
+            "tangent post-bend should be +X, got {t:?}"
+        );
+        assert!(t.z.abs() < 1e-9);
+    }
+
+    /// `point_along_polyline_at_arc_distance` returns `None` for a
+    /// polyline with < 2 points (no segment to walk). Pairs with
+    /// the trim algorithm's "skip if centerline too short" path.
+    #[test]
+    fn point_along_polyline_returns_none_when_too_short() {
+        let single = vec![Point3::origin()];
+        assert!(point_along_polyline_at_arc_distance(&single, 0.0).is_none());
+        let empty: Vec<Point3<f64>> = Vec::new();
+        assert!(point_along_polyline_at_arc_distance(&empty, 0.1).is_none());
+    }
+
+    /// `polyline_arc_length_m` sums Euclidean segment lengths.
+    #[test]
+    fn polyline_arc_length_sums_segments() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.0),
+        ];
+        // 50 + 50 + 50 mm = 0.15 m.
+        let total = polyline_arc_length_m(&polyline);
+        assert!((total - 0.15).abs() < 1e-12);
+    }
+
+    /// CSP.4e.2.3 — `smooth_polyline` pins the endpoints and
+    /// flattens an interior zigzag. Fixture: 5-point polyline
+    /// where the middle point is offset perpendicular to the
+    /// otherwise-straight line. After 3 iterations of 3-tap
+    /// moving average, the middle point should be pulled
+    /// substantially back toward the straight line; endpoints
+    /// `polyline[0]` and `polyline[N-1]` should be unchanged.
+    #[test]
+    fn smooth_polyline_flattens_interior_pins_endpoints() {
+        let raw = vec![
+            Point3::new(0.0, 0.0, 0.0), // endpoint
+            Point3::new(0.01, 0.0, 0.0),
+            Point3::new(0.02, 0.005, 0.0), // wobble +5 mm
+            Point3::new(0.03, 0.0, 0.0),
+            Point3::new(0.04, 0.0, 0.0), // endpoint
+        ];
+        let smoothed = smooth_polyline(&raw, 3);
+        assert_eq!(smoothed.len(), raw.len());
+        // Endpoints bit-exact preserved.
+        assert_eq!(smoothed[0], raw[0]);
+        assert_eq!(smoothed[4], raw[4]);
+        // Middle point's y substantially reduced (started at
+        // 5 mm; after 3 iterations of 3-tap should be < 2 mm).
+        assert!(
+            smoothed[2].y.abs() < raw[2].y.abs(),
+            "middle should smooth toward 0, got y = {}",
+            smoothed[2].y,
+        );
+        assert!(
+            smoothed[2].y.abs() < 0.002,
+            "after 3 iterations 5 mm wobble should drop below 2 mm, got {}",
+            smoothed[2].y,
+        );
+    }
+
+    /// `smooth_polyline` is a no-op for < 3-point input (no
+    /// interior to smooth) and for `iterations == 0`.
+    #[test]
+    fn smooth_polyline_no_op_when_too_short_or_zero_iters() {
+        let two_pt = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
+        assert_eq!(smooth_polyline(&two_pt, 5), two_pt);
+        let three_pt = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        ];
+        assert_eq!(smooth_polyline(&three_pt, 0), three_pt);
     }
 
     // ----- build_overlay_lengths -------------------------------------
@@ -4745,37 +6986,215 @@ mod tests {
     }
 
     /// `build_prep_toml_string` produces a string that re-parses as
-    /// TOML and contains the expected top-level keys. Validates the
-    /// serde-derive shape doesn't drift silently.
+    /// TOML and contains every spec-promised top-level block under
+    /// the v1.0 completion schema (CSP.1 rename, 2026-05-15). Pins
+    /// the on-disk shape against `docs/SCAN_PREP_DESIGN.md` §Output
+    /// format so silent block-renames surface here.
     #[test]
     fn prep_toml_string_round_trips_through_toml_parser() -> Result<()> {
         let reorient = ReorientState::default();
         let recenter = RecenterState::default();
-        let clip = ClipState::default();
         let cap = CapState::default();
         let rotation = reorient.quaternion_physics();
         let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(-0.04, -0.03, -0.06),
+            max: Point3::new(0.04, 0.03, 0.06),
+        };
+        let centerline_trim = CenterlineTrimState::default();
         let s = build_prep_toml_string(
             Path::new("/tmp/scan.stl"),
             StlUnits::Mm,
+            Vector3::new(0.01, -0.02, 0.03), // auto_center_offset_m
+            None,                            // CSP.4a auto_pca_quat — omit for default
             &reorient,
             &recenter,
-            &clip,
             &cap,
+            &centerline_trim, // CSP.4b — default = no trim
+            0,                // CSP.4b — no boundaries auto-capped
             "scan.cleaned.stl",
             rotation,
             translation,
             Point3::origin(),
+            200_000, // simplify target
+            500_000, // original face count
+            200_000, // achieved face count
+            &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
         assert!(parsed.get("scan_prep").is_some());
-        assert!(parsed.get("reorient").is_some());
-        assert!(parsed.get("recenter").is_some());
-        assert!(parsed.get("clip").is_some());
+        // CSP.3.5 — [scan_prep].auto_center_offset_m present and
+        // matches the value passed in.
+        let scan_prep = parsed.get("scan_prep").expect("scan_prep block");
+        let offset = scan_prep
+            .get("auto_center_offset_m")
+            .and_then(|v| v.as_array())
+            .expect("auto_center_offset_m missing or not an array");
+        assert_eq!(offset.len(), 3);
+        assert!((offset[0].as_float().unwrap() - 0.01).abs() < 1e-12);
+        assert!((offset[1].as_float().unwrap() - (-0.02)).abs() < 1e-12);
+        assert!((offset[2].as_float().unwrap() - 0.03).abs() < 1e-12);
+        // CSP.4a — auto_pca_quaternion is `None` here (we passed None
+        // in this test), so the field should be SKIPPED in the
+        // serialized output (per `skip_serializing_if`).
+        assert!(
+            scan_prep.get("auto_pca_quaternion").is_none(),
+            "auto_pca_quaternion should be omitted when None",
+        );
+        assert!(parsed.get("simplify").is_some(), "simplify block missing");
+        assert!(parsed.get("transform").is_some(), "transform block missing");
+        // Sub-tables under [transform] per spec §Output format.
+        let transform = parsed.get("transform").expect("transform block");
+        assert!(
+            transform.get("rotation").is_some(),
+            "transform.rotation missing"
+        );
+        assert!(
+            transform.get("translation").is_some(),
+            "transform.translation missing"
+        );
+        // CSP.4c — `[clip]` block removed with the feature. Pin
+        // the absence so a future re-introduction surfaces here.
+        assert!(parsed.get("clip").is_none(), "clip block should be absent");
         assert!(parsed.get("caps").is_some());
         assert!(parsed.get("output").is_some());
+        // [output.aabb_m] sub-table per spec §Output format.
+        let output = parsed.get("output").expect("output block");
+        assert!(output.get("aabb_m").is_some(), "output.aabb_m missing");
+        // Legacy block names from the as-built schema must NOT
+        // resurface — guards against accidental re-introduction.
+        assert!(parsed.get("reorient").is_none(), "legacy reorient name");
+        assert!(parsed.get("recenter").is_none(), "legacy recenter name");
         // No cap loops -> centerline block omitted.
         assert!(parsed.get("centerline").is_none());
+        // CSP.4b — [centerline_trim] block always present, even
+        // when no trim was requested.
+        let trim = parsed
+            .get("centerline_trim")
+            .expect("centerline_trim block missing");
+        assert!((trim.get("trim_tip_mm").unwrap().as_float().unwrap() - 0.0).abs() < 1e-12);
+        assert!((trim.get("trim_floor_mm").unwrap().as_float().unwrap() - 0.0).abs() < 1e-12);
+        assert_eq!(trim.get("capped_loops").unwrap().as_integer().unwrap(), 0);
+        // CSP.4e.5 — reconstruct sub-block ABSENT when no
+        // reconstruction was applied. Guards against accidental
+        // always-on emission.
+        assert!(
+            trim.get("reconstruct").is_none(),
+            "reconstruct sub-block should be omitted when applied_reconstruct = None",
+        );
+        Ok(())
+    }
+
+    /// CSP.4e.5 — when reconstruction WAS applied, the
+    /// `[centerline_trim.reconstruct]` sub-block is emitted with
+    /// `shape` + `reference_mm`. Pins the on-disk shape so future
+    /// audit / migration tooling can recover the reconstruction
+    /// parameters from the saved `.prep.toml`.
+    #[test]
+    fn prep_toml_emits_reconstruct_subblock_when_applied() -> Result<()> {
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let cap = CapState::default();
+        let rotation = reorient.quaternion_physics();
+        let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(-0.04, -0.03, -0.06),
+            max: Point3::new(0.04, 0.03, 0.06),
+        };
+        let centerline_trim = CenterlineTrimState {
+            trim_floor_mm: 30.0,
+            applied_floor_mm: 30.0,
+            applied_reconstruct: Some(AppliedReconstruct {
+                reference_mm: 25.0,
+                shape: ReconstructShape::Taper,
+            }),
+            ..CenterlineTrimState::default()
+        };
+        let s = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &reorient,
+            &recenter,
+            &cap,
+            &centerline_trim,
+            0, // capped_loops — 0 when reconstruct ran (no auto-cap at floor)
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            500_000,
+            200_000,
+            &cleaned_aabb,
+        )?;
+        let parsed: toml::Value = toml::from_str(&s)?;
+        let trim = parsed
+            .get("centerline_trim")
+            .expect("centerline_trim block missing");
+        let reconstruct = trim
+            .get("reconstruct")
+            .expect("reconstruct sub-block missing when applied");
+        assert_eq!(reconstruct.get("shape").unwrap().as_str().unwrap(), "taper");
+        assert!(
+            (reconstruct.get("reference_mm").unwrap().as_float().unwrap() - 25.0).abs() < 1e-12
+        );
+        Ok(())
+    }
+
+    /// CSP.4a — when `auto_pca_quat` is `Some`, the `.prep.toml`
+    /// `[scan_prep].auto_pca_quaternion` field round-trips as a
+    /// 4-element array of `(w, x, y, z)` matching the input
+    /// quaternion. Companion to the `None` case in
+    /// `prep_toml_string_round_trips_through_toml_parser`.
+    #[test]
+    fn prep_toml_serializes_auto_pca_quaternion_when_present() -> Result<()> {
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let cap = CapState::default();
+        let rotation = reorient.quaternion_physics();
+        let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(0.0, 0.0, 0.0),
+            max: Point3::new(0.1, 0.1, 0.1),
+        };
+        // A non-identity quaternion (~90° about +X).
+        let q = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::x_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let centerline_trim = CenterlineTrimState::default();
+        let s = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            Some(q),
+            &reorient,
+            &recenter,
+            &cap,
+            &centerline_trim,
+            0,
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            500_000,
+            200_000,
+            &cleaned_aabb,
+        )?;
+        let parsed: toml::Value = toml::from_str(&s)?;
+        let scan_prep = parsed.get("scan_prep").expect("scan_prep block");
+        let arr = scan_prep
+            .get("auto_pca_quaternion")
+            .and_then(|v| v.as_array())
+            .expect("auto_pca_quaternion missing or not an array");
+        assert_eq!(arr.len(), 4);
+        assert!((arr[0].as_float().unwrap() - q.w).abs() < 1e-12);
+        assert!((arr[1].as_float().unwrap() - q.i).abs() < 1e-12);
+        assert!((arr[2].as_float().unwrap() - q.j).abs() < 1e-12);
+        assert!((arr[3].as_float().unwrap() - q.k).abs() < 1e-12);
         Ok(())
     }
 
@@ -4801,6 +7220,161 @@ mod tests {
             "first vertex should be translated by +0.1m, got {}",
             cleaned.vertices[0].x,
         );
+    }
+
+    // CSP.4c — `build_cleaned_mesh_applies_clip_when_enabled` +
+    // `build_cleaned_mesh_skips_clip_when_disabled` removed
+    // alongside `ClipState`. Centerline trim is now the single
+    // user-facing mesh-cutting feature.
+
+    /// CSP.3a — for an included cap loop, the loop vertices are
+    /// projected onto the fit plane BEFORE ear-clip so the resulting
+    /// cap faces are planar. Builds a 4-vertex wobble-rim square
+    /// loop (with one vertex pushed off-plane), wires it through a
+    /// `CapState`, and confirms the post-build vertex positions sit
+    /// on the fit plane to within FP noise. The pre-CSP.3a code path
+    /// would leave the off-plane vertex untouched (the cap face
+    /// would draw from that wobbly position → non-planar cap →
+    /// mesh_sdf garbage).
+    #[test]
+    fn build_cleaned_mesh_projects_loop_verts_onto_fit_plane() {
+        // 4 boundary vertices roughly on z=0 plane. Vertex 1 is
+        // pushed UP to z=0.005 m (5 mm wobble) to simulate a low-
+        // R² rim.
+        let mut mesh = IndexedMesh::with_capacity(4, 0);
+        mesh.vertices.push(Point3::new(0.000, 0.000, 0.0));
+        mesh.vertices.push(Point3::new(0.010, 0.000, 0.005)); // wobble
+        mesh.vertices.push(Point3::new(0.010, 0.010, 0.0));
+        mesh.vertices.push(Point3::new(0.000, 0.010, 0.0));
+
+        // Cap loop with the fit plane = world XY (centroid at
+        // (5, 5, ~1) mm, normal = +Z). orient_cap_normal_outward
+        // would flip the normal depending on mesh-majority, but
+        // for this synthetic fixture +Z is fine.
+        let cap_loop = DetectedCapLoop {
+            vertex_indices: vec![0, 1, 2, 3],
+            plane_centroid: Point3::new(0.005, 0.005, 0.0),
+            plane_normal: Vector3::new(0.0, 0.0, 1.0),
+            plane_fit_r_squared: 0.95,
+            include: true,
+        };
+        let cap = CapState {
+            loops: vec![cap_loop],
+            ..CapState::default()
+        };
+
+        let cleaned = build_cleaned_mesh(
+            &mesh,
+            &ReorientState::default(),
+            &RecenterState::default(),
+            &cap,
+        );
+
+        // All 4 boundary vertices must now lie on the z=0 plane
+        // (centroid.z = 0, normal = +Z, so projection sends each
+        // vertex's z component to 0).
+        for v in &cleaned.vertices {
+            assert!(
+                v.z.abs() < 1e-12,
+                "loop vertex z={} not projected onto fit plane",
+                v.z,
+            );
+        }
+        // Cap faces appended (2 triangles from a 4-vertex square).
+        assert!(
+            !cleaned.faces.is_empty(),
+            "cap triangulation produced zero faces",
+        );
+    }
+
+    /// Build the STL-style (per-triangle unshared) version of an
+    /// IndexedMesh — `mesh_io::load_stl` produces this layout because
+    /// binary STL stores each triangle's 3 vertices independently
+    /// without index sharing. cf-scan-prep's hygiene pass is supposed
+    /// to weld these back to the shared layout downstream
+    /// `simplify_decoder` requires. Test helper, not production code.
+    fn unshare_vertices(mesh: &IndexedMesh) -> IndexedMesh {
+        let n_faces = mesh.faces.len();
+        let mut out = IndexedMesh::with_capacity(n_faces * 3, n_faces);
+        #[allow(clippy::cast_possible_truncation)]
+        for face in &mesh.faces {
+            let base = out.vertices.len() as u32;
+            for &idx in face {
+                out.vertices.push(mesh.vertices[idx as usize]);
+            }
+            out.faces.push([base, base + 1, base + 2]);
+        }
+        out
+    }
+
+    /// CSP.3b — `cleanup_cleaned_mesh_for_disk` welds STL-style
+    /// unshared vertices into the shared-index layout that
+    /// downstream `simplify_decoder` requires. Builds a 4×4
+    /// grid-square (32 faces — comfortably above the 10-face
+    /// small-component floor), STL-unshares it via the test helper,
+    /// runs cleanup, and confirms the welded result has the shared-
+    /// vertex topology the iter-1 fixture's downstream consumer was
+    /// missing (`tools/cf-device-design/src/main.rs:419-425`).
+    #[test]
+    fn cleanup_welds_stl_style_unshared_vertices() {
+        let shared = grid_square(4); // 32 faces, 25 shared verts
+        let shared_vert_count = shared.vertices.len();
+        let shared_face_count = shared.faces.len();
+        assert!(shared_face_count >= CLEANUP_MIN_COMPONENT_FACES);
+        let mut unshared = unshare_vertices(&shared);
+        // STL-unshared form: 3 verts per face.
+        assert_eq!(unshared.vertices.len(), shared_face_count * 3);
+
+        let report = cleanup_cleaned_mesh_for_disk(&mut unshared);
+        assert!(
+            report.welded > 0,
+            "weld_vertices report welded=0: {report:?}",
+        );
+        // Welded back down to the shared form (25 verts) with all
+        // faces surviving.
+        assert_eq!(unshared.vertices.len(), shared_vert_count);
+        assert_eq!(unshared.faces.len(), shared_face_count);
+    }
+
+    /// CSP.3b — small-component strip drops scanner-noise islands
+    /// below `CLEANUP_MIN_COMPONENT_FACES`. Builds a 20-face main
+    /// component + a single 1-face island; cleanup keeps the main
+    /// component + drops the island.
+    #[test]
+    fn cleanup_drops_small_component_islands() {
+        // Main component: 5×5 grid (50 faces).
+        let mut mesh = grid_square(5);
+        let main_faces_before = mesh.faces.len();
+        assert!(main_faces_before >= CLEANUP_MIN_COMPONENT_FACES);
+        // Add a stray 1-face island far from the main grid (so
+        // welding doesn't accidentally merge it in).
+        let v0 = mesh.vertices.len() as u32;
+        mesh.vertices.push(Point3::new(100.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(101.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(100.5, 1.0, 0.0));
+        mesh.faces.push([v0, v0 + 1, v0 + 2]);
+
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        assert!(
+            report.small_components >= 1,
+            "small_components report: {report:?}",
+        );
+        // The 1-face island is gone; main component faces survive.
+        assert_eq!(mesh.faces.len(), main_faces_before);
+    }
+
+    /// CSP.3b — `CleanupReport::total()` is zero for an
+    /// already-clean input mesh. Pins the "no work needed → status
+    /// message stays clean" path so future cleanup pipeline
+    /// additions don't silently start surfacing spurious counts on
+    /// pristine inputs.
+    #[test]
+    fn cleanup_report_total_zero_on_clean_input() {
+        // 5×5 grid is already in shared-index form, no degenerates,
+        // single component, no unreferenced verts.
+        let mut mesh = grid_square(5);
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        assert_eq!(report.total(), 0, "clean mesh produced cleanup: {report:?}");
     }
 
     /// `resolve_output_dir` honors `--output-dir <path>` when supplied.

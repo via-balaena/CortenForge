@@ -177,6 +177,18 @@ pub struct LayerConfig {
     /// `"ECOFLEX_00_30"` → `"Ecoflex 00-30"`).
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Slice 9.5 — Smooth-On Slacker mass fraction (0.0–1.0) to mix
+    /// into the base silicone for this layer. Informational only:
+    /// surfaced in procedure.md's `## Slacker Recipe` section as a
+    /// pour-side recipe line, but doesn't drive cf-cast geometry.
+    ///
+    /// Lifted from `.design.toml`'s per-layer `slacker_fraction` when
+    /// the design source is active; defaults to `None` for the
+    /// inline-layers path (cast.toml currently has no surface for
+    /// this — Slacker is a cf-device-design concept, surfaced in cf-
+    /// cast-cli's procedure markdown for workshop completeness).
+    #[serde(default)]
+    pub slacker_fraction: Option<f64>,
 }
 
 /// `[plug_pins]` block — plug-anchor pin override. Maps to
