@@ -34,13 +34,13 @@
 //! scan's single-step solve does not converge — see the slice-7
 //! memo's "7.2 real-scan finding"; hardening it is 7.3's battle).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use cf_design::{Aabb, Solid};
+use cf_design::{Aabb, SdfGrid, Solid};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use mesh_sdf::SignedDistanceField;
+use mesh_sdf::{SignedDistanceField, unsigned_distance};
 use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
 use nalgebra::{Point3, Vector3};
@@ -753,6 +753,271 @@ pub fn run_single_insertion_step(
         final_residual_norm: step.final_residual_norm,
         n_pinned,
     })
+}
+
+// ── 7.3a fix — grid-sampled SDF with flood-fill sign ────────────────
+
+/// A signed distance field backed by a [`SdfGrid`] whose **sign comes
+/// from a flood fill**, not from `mesh_sdf`'s closest-face normal.
+///
+/// The 7.3a diagnostic root-caused the real-scan solve failure to
+/// `mesh_sdf::SignedDistanceField`'s closest-face-normal sign being
+/// ~12% wrong on the sloppy-decimated (non-manifold) scan. `GridSdf`
+/// sidesteps it: [`build_grid_sdf`] samples the *unsigned* distance
+/// (always reliable — just closest-triangle, topology-blind) on a
+/// lattice, then flood-fills "outside" inward from the bounding-box
+/// corners. The sign is therefore **topological** — immune to
+/// non-manifold edges, inconsistent winding, and duplicate faces. It
+/// is NOT immune to holes larger than a grid cell (the flood would
+/// leak through), but the diagnostic confirmed the decimated iter-1
+/// scan has only 2 boundary edges — far under that.
+#[derive(Clone)]
+pub struct GridSdf {
+    grid: SdfGrid,
+}
+
+impl Sdf for GridSdf {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        // Clamped: contact / BC queries may land a hair outside the
+        // grid; the grid spans the body + margin so this is exact in
+        // practice and graceful at the edge.
+        self.grid.distance_clamped(p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        self.grid.gradient_clamped(p)
+    }
+}
+
+/// Per-lattice-point label from [`build_grid_sdf`]'s flood fill.
+#[derive(Clone, Copy, PartialEq)]
+enum Region {
+    /// Flood-reached from a bbox corner — air around the scan.
+    Outside,
+    /// Non-wall, not flood-reached — the scan's solid interior.
+    Inside,
+    /// Within `wall_threshold_m` of the surface — the flood cannot
+    /// pass through it; its sign is assigned by nearest-labelled
+    /// neighbour expansion.
+    Wall,
+}
+
+/// Flood-fill health diagnostics from one [`build_grid_sdf`] call.
+///
+/// A topologically-sound result has the inside region as a *single*
+/// connected component — a limb scan is one solid blob; more than one
+/// means the flood leaked through a hole (the grid is too coarse, or
+/// the scan has a genuine hole wider than a cell).
+#[derive(Debug, Clone)]
+pub struct GridSdfReport {
+    /// Lattice dimensions `[width, height, depth]`.
+    pub dims: [usize; 3],
+    /// Lattice spacing (meters).
+    pub grid_cell_m: f64,
+    /// Lattice points flood-labelled `Outside`.
+    pub n_outside: usize,
+    /// Lattice points labelled `Inside` (interior + the inside half
+    /// of the wall band, after label expansion).
+    pub n_inside: usize,
+    /// Wall-band lattice points (within `wall_threshold_m` of the
+    /// surface) — pre-expansion count.
+    pub n_wall: usize,
+    /// Connected-component count of the final inside region. **1 is
+    /// healthy**; more means the flood leaked.
+    pub inside_components: usize,
+    /// Wall-clock build time.
+    pub build_ms: f64,
+}
+
+/// The up-to-six 6-connected lattice neighbours of flat index `i` in a
+/// `w × h × d` grid (`x` fastest, then `y`, then `z`).
+fn neighbours6(i: usize, w: usize, h: usize, d: usize) -> [Option<usize>; 6] {
+    let x = i % w;
+    let y = (i / w) % h;
+    let z = i / (w * h);
+    [
+        (x > 0).then(|| i - 1),
+        (x + 1 < w).then(|| i + 1),
+        (y > 0).then(|| i - w),
+        (y + 1 < h).then(|| i + w),
+        (z > 0).then(|| i - w * h),
+        (z + 1 < d).then(|| i + w * h),
+    ]
+}
+
+/// Build a flood-fill-signed [`GridSdf`] of `scan` over `bbox`.
+///
+/// Pipeline: sample [`mesh_sdf::unsigned_distance`] at every lattice
+/// point (topology-blind — the sloppy-decimation damage that wrecks
+/// `mesh_sdf`'s *signed* query does not touch the *unsigned* one) →
+/// mark "wall" points within `wall_threshold_m` of the surface →
+/// flood "outside" 6-connected from the eight bbox corners through
+/// non-wall points → non-wall, not-reached points are the interior →
+/// expand the Outside/Inside labels into the wall band by multi-
+/// source BFS → signed value = `±unsigned`.
+///
+/// `wall_threshold_m` must be `≥ 0.5 * grid_cell_m` so the wall band
+/// is 6-connectivity-watertight (a surface crossing between adjacent
+/// lattice points always lands one of them within half a cell). The
+/// 7.3a fix spike sweeps `grid_cell_m`; `0.75 * grid_cell_m` is the
+/// recommended threshold (safe margin without over-thickening the
+/// band).
+///
+/// # Errors
+///
+/// Returns an error if all eight bbox corners are wall points (the
+/// bbox margin is too small, or the grid too coarse, to seed the
+/// outside flood).
+pub fn build_grid_sdf(
+    scan: &IndexedMesh,
+    bbox: Aabb,
+    grid_cell_m: f64,
+    wall_threshold_m: f64,
+) -> Result<(GridSdf, GridSdfReport)> {
+    let t = Instant::now();
+
+    // Lattice dimensions — sample points inclusive of both bbox ends.
+    let span = bbox.max - bbox.min;
+    // `span` components are non-negative and `grid_cell_m > 0`, so the
+    // ceil is a finite non-negative integer; +1 for the inclusive end.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let dim = |s: f64| (s / grid_cell_m).ceil().max(1.0) as usize + 1;
+    let (w, h, d) = (dim(span.x), dim(span.y), dim(span.z));
+    let n = w * h * d;
+    let origin = bbox.min;
+    let flat = |x: usize, y: usize, z: usize| z * w * h + y * w + x;
+
+    // 1. Unsigned distance at every lattice point.
+    #[allow(clippy::cast_precision_loss)] // lattice index → world coord
+    let world = |x: usize, y: usize, z: usize| {
+        Point3::new(
+            origin.x + x as f64 * grid_cell_m,
+            origin.y + y as f64 * grid_cell_m,
+            origin.z + z as f64 * grid_cell_m,
+        )
+    };
+    let mut unsigned = vec![0.0_f64; n];
+    for z in 0..d {
+        for y in 0..h {
+            for x in 0..w {
+                unsigned[flat(x, y, z)] = unsigned_distance(world(x, y, z), scan);
+            }
+        }
+    }
+
+    // 2. Wall points — within `wall_threshold_m` of the surface. The
+    //    flood cannot pass through these, so it cannot leak across
+    //    the surface.
+    let wall: Vec<bool> = unsigned.iter().map(|&u| u < wall_threshold_m).collect();
+    let n_wall = wall.iter().filter(|&&b| b).count();
+
+    // 3. Flood "outside" 6-connected from the eight bbox corners.
+    let mut region: Vec<Region> = wall
+        .iter()
+        .map(|&is_wall| {
+            if is_wall {
+                Region::Wall
+            } else {
+                Region::Inside
+            }
+        })
+        .collect();
+    let corners = [
+        flat(0, 0, 0),
+        flat(w - 1, 0, 0),
+        flat(0, h - 1, 0),
+        flat(w - 1, h - 1, 0),
+        flat(0, 0, d - 1),
+        flat(w - 1, 0, d - 1),
+        flat(0, h - 1, d - 1),
+        flat(w - 1, h - 1, d - 1),
+    ];
+    let mut flood: VecDeque<usize> = VecDeque::new();
+    for &c in &corners {
+        if region[c] == Region::Inside {
+            region[c] = Region::Outside;
+            flood.push_back(c);
+        }
+    }
+    if flood.is_empty() {
+        return Err(anyhow!(
+            "grid SDF flood-fill: all eight bbox corners are within wall_threshold_m \
+             ({wall_threshold_m} m) of the scan — bbox margin too small or grid too coarse"
+        ));
+    }
+    while let Some(i) = flood.pop_front() {
+        for j in neighbours6(i, w, h, d).into_iter().flatten() {
+            if region[j] == Region::Inside {
+                region[j] = Region::Outside;
+                flood.push_back(j);
+            }
+        }
+    }
+
+    // 4. Expand the Outside/Inside labels into the wall band: multi-
+    //    source BFS from every already-labelled (non-wall) point —
+    //    each wall point takes the label of the nearest one. Wall-band
+    //    `|value|` is sub-threshold, so a tie there barely matters.
+    let mut expand: VecDeque<usize> = (0..n).filter(|&i| region[i] != Region::Wall).collect();
+    while let Some(i) = expand.pop_front() {
+        let label = region[i];
+        for j in neighbours6(i, w, h, d).into_iter().flatten() {
+            if region[j] == Region::Wall {
+                region[j] = label;
+                expand.push_back(j);
+            }
+        }
+    }
+    // Any wall point with no path to a non-wall point (an isolated
+    // pocket inside the band) — default to Inside.
+    for r in &mut region {
+        if *r == Region::Wall {
+            *r = Region::Inside;
+        }
+    }
+
+    // 5. Inside-region connected-component count — the flood-fill
+    //    health metric.
+    let mut seen = vec![false; n];
+    let mut inside_components = 0;
+    for start in 0..n {
+        if region[start] != Region::Inside || seen[start] {
+            continue;
+        }
+        inside_components += 1;
+        seen[start] = true;
+        let mut comp: VecDeque<usize> = VecDeque::from([start]);
+        while let Some(i) = comp.pop_front() {
+            for j in neighbours6(i, w, h, d).into_iter().flatten() {
+                if region[j] == Region::Inside && !seen[j] {
+                    seen[j] = true;
+                    comp.push_back(j);
+                }
+            }
+        }
+    }
+
+    // 6. Signed values — magnitude from the (reliable) unsigned
+    //    distance, sign from the (topological) flood-fill label.
+    let signed: Vec<f64> = region
+        .iter()
+        .zip(&unsigned)
+        .map(|(&r, &u)| if r == Region::Outside { u } else { -u })
+        .collect();
+    let n_outside = region.iter().filter(|&&r| r == Region::Outside).count();
+    let n_inside = n - n_outside;
+
+    let grid = SdfGrid::new(signed, w, h, d, grid_cell_m, origin);
+    let report = GridSdfReport {
+        dims: [w, h, d],
+        grid_cell_m,
+        n_outside,
+        n_inside,
+        n_wall,
+        inside_components,
+        build_ms: elapsed_ms(t),
+    };
+    Ok((GridSdf { grid }, report))
 }
 
 #[cfg(test)]
@@ -1487,5 +1752,137 @@ mod tests {
             Err(e) => eprintln!("  body export skipped — geometry build failed: {e:#}"),
         }
         eprintln!("\n=== end 7.3a diagnostic ===\n");
+    }
+
+    /// **7.3a fix spike** — does the flood-fill [`GridSdf`] fix the
+    /// ~12% `mesh_sdf` sign error the 7.3a diagnostic root-caused?
+    ///
+    /// Builds a `GridSdf` of the iter-1 scan at a sweep of grid
+    /// resolutions and reports flood-fill health + sign correctness:
+    ///
+    /// - **inside_components == 1** — a limb is one solid blob; more
+    ///   means the flood leaked through a hole (grid too coarse).
+    /// - **spot checks** — the vertex centroid must read inside, the
+    ///   eight bbox corners outside.
+    /// - **sign vs the legacy methods** — where `distance()` (closest-
+    ///   face normal) and `is_inside()` (ray cast) *agree* (the
+    ///   confident ~88%), `GridSdf` should agree too; the ~12% they
+    ///   *dispute* is exactly what `GridSdf` resolves.
+    ///
+    /// The actual solve-convergence proof is the 7.3a wire-in
+    /// (sub-commit 2). `#[ignore]` — needs the iter-1 fixture; run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     --bin cf-device-design grid_sdf_fix_spike -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "7.3a fix spike — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
+    #[allow(clippy::cast_precision_loss)] // diagnostic counters → f64 for %/grid math
+    fn grid_sdf_fix_spike() {
+        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !path.exists() {
+            eprintln!("skip: iter-1 scan fixture not found at {}", path.display());
+            return;
+        }
+        let raw = load_stl(&path).expect("load the iter-1 cleaned scan");
+        let decimated = decimate_for_sdf(&raw, 2_500);
+        let bbox = scan_aabb(&decimated, 0.010);
+        let legacy = SignedDistanceField::new(decimated.clone()).expect("decimated scan SDF");
+
+        // Spot-check probes: the vertex centroid (must read inside) +
+        // the eight bbox corners (must read outside).
+        let centroid = {
+            let mut c = Vector3::zeros();
+            for v in &decimated.vertices {
+                c += v.coords;
+            }
+            Point3::from(c / decimated.vertices.len() as f64)
+        };
+        let corners: Vec<Point3<f64>> = {
+            let (lo, hi) = (bbox.min, bbox.max);
+            let mut cs = Vec::with_capacity(8);
+            for &x in &[lo.x, hi.x] {
+                for &y in &[lo.y, hi.y] {
+                    for &z in &[lo.z, hi.z] {
+                        cs.push(Point3::new(x, y, z));
+                    }
+                }
+            }
+            cs
+        };
+
+        eprintln!("\n=== 7.3a fix spike — flood-fill GridSdf ===");
+        for grid_cell_m in [0.004, 0.003, 0.002] {
+            let wall_threshold_m = 0.75 * grid_cell_m;
+            let (grid_sdf, report) =
+                build_grid_sdf(&decimated, bbox, grid_cell_m, wall_threshold_m)
+                    .expect("grid SDF builds");
+            eprintln!(
+                "\n  grid {:.1} mm — dims {:?}, {} ms\n    {} outside / {} inside / {} wall \
+                 | inside_components={} (1 = healthy)",
+                report.grid_cell_m * 1e3,
+                report.dims,
+                report.build_ms as u64,
+                report.n_outside,
+                report.n_inside,
+                report.n_wall,
+                report.inside_components,
+            );
+
+            // Spot checks.
+            let centroid_d = grid_sdf.eval(centroid);
+            let corners_outside = corners.iter().all(|&c| grid_sdf.eval(c) > 0.0);
+            eprintln!(
+                "    centroid eval={centroid_d:.4} m (expect < 0) | all 8 corners outside: \
+                 {corners_outside}"
+            );
+            assert!(
+                centroid_d < 0.0,
+                "vertex centroid must read inside the scan"
+            );
+            assert!(
+                corners_outside,
+                "every bbox corner must read outside the scan"
+            );
+
+            // Sign vs the legacy methods over a sample grid.
+            let samples = 16_usize;
+            let (mut confident, mut confident_agree, mut disputed) = (0, 0, 0);
+            for ix in 0..samples {
+                for iy in 0..samples {
+                    for iz in 0..samples {
+                        let axis = |i: usize, lo: f64, hi: f64| {
+                            lo + (hi - lo) * (i as f64 + 0.5) / samples as f64
+                        };
+                        let p = Point3::new(
+                            axis(ix, bbox.min.x, bbox.max.x),
+                            axis(iy, bbox.min.y, bbox.max.y),
+                            axis(iz, bbox.min.z, bbox.max.z),
+                        );
+                        let grid_inside = grid_sdf.eval(p) < 0.0;
+                        let legacy_dist_inside = legacy.distance(p) < 0.0;
+                        let legacy_ray_inside = legacy.is_inside(p);
+                        if legacy_dist_inside == legacy_ray_inside {
+                            confident += 1;
+                            if grid_inside == legacy_dist_inside {
+                                confident_agree += 1;
+                            }
+                        } else {
+                            disputed += 1;
+                        }
+                    }
+                }
+            }
+            let agree_pct = 100.0 * confident_agree as f64 / confident as f64;
+            eprintln!(
+                "    sign vs legacy: agrees with {confident_agree}/{confident} confident \
+                 points ({agree_pct:.1}%) | resolves {disputed} disputed (the ~12%)"
+            );
+        }
+        eprintln!("\n=== end 7.3a fix spike ===\n");
     }
 }
