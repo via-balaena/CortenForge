@@ -1510,36 +1510,17 @@ fn apply_reconstruction(
     reference_zone_mm: f64,
     shape: ReconstructShape,
 ) -> IndexedMesh {
-    eprintln!(
-        "  apply_reconstruction(shape={shape:?}): input mesh {}V/{}F, centerline {} points, applied_floor_mm = {:.2}, reference_zone_mm = {:.2}",
-        mesh.vertices.len(),
-        mesh.faces.len(),
-        centerline.len(),
-        applied_floor_mm,
-        reference_zone_mm,
-    );
     if centerline.len() < 2 || applied_floor_mm <= 0.0 || reference_zone_mm <= 0.0 {
         // Nothing to reconstruct — fall back to flat-cap.
-        eprintln!(
-            "    early-return guard: centerline_len/applied_floor_mm/reference_zone_mm out of range"
-        );
         auto_cap_open_boundaries(&mut mesh);
         return mesh;
     }
     let loops = detect_boundary_loops(&mesh);
-    eprintln!("    detect_boundary_loops returned {} loops", loops.len());
     let centerline_last = centerline[centerline.len() - 1];
     let Some(floor_idx) = find_floor_loop_index(&loops, &mesh, centerline_last) else {
-        eprintln!("    find_floor_loop_index returned None — no valid floor loop");
         auto_cap_open_boundaries(&mut mesh);
         return mesh;
     };
-    eprintln!(
-        "    selected floor loop {} of {} ({} vertices)",
-        floor_idx,
-        loops.len(),
-        loops[floor_idx].vertices.len(),
-    );
 
     // Build the local frame at the cut. `inward_tangent` points
     // FROM the cut endpoint AWAY from the chopped end (i.e., back
@@ -1549,7 +1530,6 @@ fn apply_reconstruction(
     let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
     let tangent_norm = tangent_raw.norm();
     if tangent_norm < f64::EPSILON {
-        eprintln!("    early-return: degenerate centerline tangent at cut");
         auto_cap_open_boundaries(&mut mesh);
         return mesh;
     }
@@ -1703,18 +1683,8 @@ fn apply_reconstruction(
             for face in mesh.faces.iter_mut().skip(start) {
                 face.swap(1, 2);
             }
-            eprintln!("    winding-flip applied to {new_face_count} new faces");
-        } else {
-            eprintln!("    winding check passed — no flip needed");
         }
     }
-    eprintln!(
-        "    reconstruction done: output mesh {}V/{}F (added {} verts, {} faces)",
-        mesh.vertices.len(),
-        mesh.faces.len(),
-        l * RECONSTRUCT_RING_COUNT + 1,
-        2 * l * RECONSTRUCT_RING_COUNT + l,
-    );
 
     mesh
 }
@@ -2517,8 +2487,29 @@ struct PrepCenterlineTrimBlock {
     /// Number of boundary loops auto-capped after the trim cuts.
     /// For a "trim only the floor end" save on a closed-tip sock,
     /// this is 1; for "trim both ends" it's 2; for "no trim" it's
-    /// 0.
+    /// 0. When floor reconstruction is applied this drops to 0 +
+    /// 1 (the tip-end auto-cap survives, the floor end is
+    /// extrusion + flat cap instead of an auto-cap).
     capped_loops: usize,
+    /// CSP.4e.5 — present only when floor reconstruction was
+    /// applied at save time. The cleaned STL has the extruded
+    /// sidewall + flat cap baked in; this provenance block
+    /// records WHAT shape + how much reference zone the user
+    /// dialed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconstruct: Option<PrepReconstructSubBlock>,
+}
+
+/// `[centerline_trim.reconstruct]` provenance — emitted only
+/// when the user clicked Apply reconstruct before Save. CSP.4e.5.
+#[derive(Serialize)]
+struct PrepReconstructSubBlock {
+    /// "constant", "taper", or "extrapolate" — matches the
+    /// `ReconstructShape` variant the user selected.
+    shape: &'static str,
+    /// Reference-zone length in mm that drove the radial profile
+    /// sampling.
+    reference_mm: f64,
 }
 
 #[derive(Serialize)]
@@ -2692,6 +2683,24 @@ fn build_prep_toml_string(
             trim_tip_mm: centerline_trim.applied_tip_mm,
             trim_floor_mm: centerline_trim.applied_floor_mm,
             capped_loops: centerline_trim_capped,
+            // CSP.4e.5 — reconstruct sub-block. Present only when
+            // floor reconstruction was applied (and the floor was
+            // chopped — the gate match in `handle_save_action`
+            // ensures both).
+            reconstruct: centerline_trim.applied_reconstruct.and_then(|ar| {
+                if centerline_trim.applied_floor_mm > 0.0 {
+                    Some(PrepReconstructSubBlock {
+                        shape: match ar.shape {
+                            ReconstructShape::Constant => "constant",
+                            ReconstructShape::Taper => "taper",
+                            ReconstructShape::Extrapolate => "extrapolate",
+                        },
+                        reference_mm: ar.reference_mm,
+                    })
+                } else {
+                    None
+                }
+            }),
         },
         output: PrepOutputBlock {
             cleaned_stl: cleaned_stl_name.to_string(),
@@ -3804,12 +3813,6 @@ fn update_displayed_mesh(
                     status.kind = StatusKind::Warning;
                     status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 8.0);
                 } else {
-                    eprintln!(
-                        "  CSP.4e.2 Apply reconstruct: reference_mm = {:.1}, shape = {:?}, applied_floor_mm = {:.1}",
-                        trim.reconstruct_reference_mm,
-                        trim.reconstruct_shape,
-                        trim.applied_floor_mm,
-                    );
                     trim.applied_reconstruct = Some(AppliedReconstruct {
                         reference_mm: trim.reconstruct_reference_mm,
                         shape: trim.reconstruct_shape,
@@ -7059,6 +7062,71 @@ mod tests {
         assert!((trim.get("trim_tip_mm").unwrap().as_float().unwrap() - 0.0).abs() < 1e-12);
         assert!((trim.get("trim_floor_mm").unwrap().as_float().unwrap() - 0.0).abs() < 1e-12);
         assert_eq!(trim.get("capped_loops").unwrap().as_integer().unwrap(), 0);
+        // CSP.4e.5 — reconstruct sub-block ABSENT when no
+        // reconstruction was applied. Guards against accidental
+        // always-on emission.
+        assert!(
+            trim.get("reconstruct").is_none(),
+            "reconstruct sub-block should be omitted when applied_reconstruct = None",
+        );
+        Ok(())
+    }
+
+    /// CSP.4e.5 — when reconstruction WAS applied, the
+    /// `[centerline_trim.reconstruct]` sub-block is emitted with
+    /// `shape` + `reference_mm`. Pins the on-disk shape so future
+    /// audit / migration tooling can recover the reconstruction
+    /// parameters from the saved `.prep.toml`.
+    #[test]
+    fn prep_toml_emits_reconstruct_subblock_when_applied() -> Result<()> {
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let cap = CapState::default();
+        let rotation = reorient.quaternion_physics();
+        let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(-0.04, -0.03, -0.06),
+            max: Point3::new(0.04, 0.03, 0.06),
+        };
+        let centerline_trim = CenterlineTrimState {
+            trim_floor_mm: 30.0,
+            applied_floor_mm: 30.0,
+            applied_reconstruct: Some(AppliedReconstruct {
+                reference_mm: 25.0,
+                shape: ReconstructShape::Taper,
+            }),
+            ..CenterlineTrimState::default()
+        };
+        let s = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &reorient,
+            &recenter,
+            &cap,
+            &centerline_trim,
+            0, // capped_loops — 0 when reconstruct ran (no auto-cap at floor)
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            500_000,
+            200_000,
+            &cleaned_aabb,
+        )?;
+        let parsed: toml::Value = toml::from_str(&s)?;
+        let trim = parsed
+            .get("centerline_trim")
+            .expect("centerline_trim block missing");
+        let reconstruct = trim
+            .get("reconstruct")
+            .expect("reconstruct sub-block missing when applied");
+        assert_eq!(reconstruct.get("shape").unwrap().as_str().unwrap(), "taper");
+        assert!(
+            (reconstruct.get("reference_mm").unwrap().as_float().unwrap() - 25.0).abs() < 1e-12
+        );
         Ok(())
     }
 
