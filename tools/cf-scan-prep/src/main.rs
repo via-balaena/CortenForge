@@ -736,7 +736,6 @@ fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
 /// vertices appended; `remove_unreferenced_vertices` strips the
 /// dropped (all-below) original vertices afterwards so the result is
 /// tight.
-#[allow(dead_code)] // Used at commit #9 (Cap) and #12 (Save); shipped at #8 for the unit-tested algorithm.
 fn clip_mesh_against_world_z(
     mesh: &IndexedMesh,
     rotation: UnitQuaternion<f64>,
@@ -1206,26 +1205,48 @@ fn project_loop_to_plane_2d(
 }
 
 /// Build the cleaned IndexedMesh from the working scan + Reorient +
-/// Recenter + included cap loops. Skips clip baking for now (Clip
-/// panel stays advisory; v2 cf-cast handles trimming via the
-/// centerline-derived mold geometry).
+/// Recenter + included cap loops + (CSP.2, 2026-05-15) the Clip floor
+/// state when enabled.
 ///
 /// Pipeline:
 /// 1. Clone `scan` into `out`.
 /// 2. Bake rotation + translation into vertex positions (in place).
+///    After this step `out.vertices` are in world frame.
 /// 3. For each included cap loop, ear-clip its 2D projection and
 ///    append triangles (using existing loop vertex indices — no new
-///    vertices added).
+///    vertices added). Cap faces inherit the world-frame coordinates
+///    from step 2.
+/// 4. If `clip.enabled`, apply `clip_mesh_against_world_z` in world
+///    frame (identity rotation + zero translation since `out` is
+///    already in world frame). Drops faces below `z = clip.z_mm` and
+///    generates new intersection vertices on the clip plane for
+///    crossing triangles. Cap faces above the clip plane survive;
+///    cap faces below are dropped along with the underlying mesh.
 ///
 /// **Cap normal orientation**: the spec mandates that the cap's
 /// outward normal point away from the mesh interior. We orient the
 /// triangulation's vertex winding to match the loop's stored
 /// `plane_normal` (which `build_detected_cap_loop` already flipped
 /// to face outward).
+///
+/// **Why clip lands AFTER cap triangulation, not before**: the cap
+/// loops were detected on the pre-bake mesh; their vertex indices
+/// reference positions in `out` that are now in world frame. Running
+/// clip first would re-index `out`'s vertex buffer, invalidating the
+/// cap-loop indices. Caps-then-clip preserves indexing.
+///
+/// **Why clip does NOT re-cap**: the clip cut produces a planar open
+/// boundary on the kept side. v1.0 leaves that uncapped — workshop
+/// iter-1 will use the cleaned cap from `[caps]` (above the clip
+/// plane) for the rim; the clipped bottom is the "open" side that
+/// downstream cf-cast (curve-following multi-piece) handles via the
+/// pour gate, not via SDF. A future v1.1 could re-detect + re-cap
+/// post-clip if iter-1 shows that's needed.
 fn build_cleaned_mesh(
     scan: &IndexedMesh,
     reorient: &ReorientState,
     recenter: &RecenterState,
+    clip: &ClipState,
     cap: &CapState,
 ) -> IndexedMesh {
     let rotation = reorient.quaternion_physics();
@@ -1311,6 +1332,18 @@ fn build_cleaned_mesh(
                 out.faces.push([a, b, c]);
             }
         }
+    }
+
+    // Step 4: clip-floor bake (CSP.2). When the user enabled the Clip
+    // panel toggle, `out` is in world frame (transforms + caps baked
+    // in steps 2/3) so the clip operates on world `z = clip.z_mm` with
+    // identity rotation + zero translation. The algorithm is the same
+    // one unit-tested at commit #8 — wired here, not at #8, because
+    // the v2 cf-cast pivot (curve-following molds) made the clip
+    // workflow-optional rather than mandatory.
+    if clip.enabled {
+        let clip_z_m = clip.z_mm * 0.001;
+        out = clip_mesh_against_world_z(&out, UnitQuaternion::identity(), 0.0, clip_z_m);
     }
 
     out
@@ -1420,9 +1453,12 @@ struct PrepClipBlock {
     z_m: f64,
     /// Cached drop percentage at save time.
     drop_pct: f64,
-    /// At commit #12 the clip is **not baked** into the cleaned STL
-    /// (advisory only); the panel state is recorded here for
-    /// provenance + future v2 cf-cast consumption.
+    /// `true` when the Clip toggle was enabled at save time and
+    /// `clip_mesh_against_world_z` ran on the cleaned mesh (CSP.2
+    /// wired this; before CSP.2 the clip was advisory-only and this
+    /// flag was hard-coded `false`). Equals `enabled` exactly under
+    /// the current implementation; kept as a separate field so a
+    /// future "advisory-mode" toggle can break the equality cleanly.
     baked: bool,
 }
 
@@ -1576,7 +1612,10 @@ fn build_prep_toml_string(
             enabled: clip.enabled,
             z_m: clip.z_mm * 0.001,
             drop_pct: clip.drop_pct,
-            baked: false,
+            // CSP.2: `baked` tracks reality. `build_cleaned_mesh`
+            // applies the clip iff `clip.enabled`, so the two flags
+            // line up exactly.
+            baked: clip.enabled,
         },
         caps: PrepCapsBlock {
             applied: cap.loops.iter().any(|l| l.include),
@@ -2717,10 +2756,13 @@ fn handle_cap_actions(
 }
 
 /// Update system: set `CapState::stale = true` when Reorient,
-/// Recenter, or `ScanMesh` changes after a scan has populated
+/// Recenter, Clip, or `ScanMesh` changes after a scan has populated
 /// `CapState::loops`. Spec §Panel specifications §6: the loop
 /// indices and plane fits are tied to the mesh as-it-was at scan
-/// time; subsequent transforms / simplify operations invalidate them.
+/// time; subsequent transforms / simplify / clip operations invalidate
+/// them. CSP.2 added Clip to the watch list because the clip now
+/// bakes into the cleaned STL — a clip-then-save cycle without a
+/// re-Scan would emit cap faces that reference pre-clip positions.
 ///
 /// **Cheap check**: only reads change flags and writes a single bool
 /// via `bypass_change_detection` so we don't re-trigger ourselves.
@@ -2730,6 +2772,7 @@ fn mark_cap_stale_on_transform_change(
     scan: Res<ScanMesh>,
     reorient: Res<ReorientState>,
     recenter: Res<RecenterState>,
+    clip: Res<ClipState>,
 ) {
     // Nothing to invalidate if no scan has happened yet.
     if cap.loops.is_empty() {
@@ -2738,7 +2781,7 @@ fn mark_cap_stale_on_transform_change(
     if cap.stale {
         return;
     }
-    if scan.is_changed() || reorient.is_changed() || recenter.is_changed() {
+    if scan.is_changed() || reorient.is_changed() || recenter.is_changed() || clip.is_changed() {
         cap.bypass_change_detection().stale = true;
     }
 }
@@ -3554,7 +3597,9 @@ fn handle_save_action(
     // Reject non-finite transforms before touching the disk. Per spec
     // §Architectural decisions §FS error handling, malformed slider
     // values (NaN / Inf from corrupted state) surface as a red error
-    // rather than writing garbage to disk.
+    // rather than writing garbage to disk. CSP.2: clip.z_mm joined
+    // the precondition because clip now bakes into the cleaned STL —
+    // a NaN clip plane would drop every triangle silently.
     let q = reorient.quaternion_physics();
     if !q.w.is_finite()
         || !q.i.is_finite()
@@ -3563,14 +3608,15 @@ fn handle_save_action(
         || !recenter.tx_mm.is_finite()
         || !recenter.ty_mm.is_finite()
         || !recenter.tz_mm.is_finite()
+        || (clip.enabled && !clip.z_mm.is_finite())
     {
-        status.text = "Save failed: non-finite Reorient / Recenter values".into();
+        status.text = "Save failed: non-finite transform / clip values".into();
         status.kind = StatusKind::Error;
         status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
         return;
     }
 
-    let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
+    let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &clip, &cap);
     // Slice 9.8 — Simplify panel slider acts as a face budget at save
     // time too, not just for the [Apply simplify] in-app action. If
     // the slider sits below the cleaned mesh's current face count,
@@ -4971,7 +5017,9 @@ mod tests {
 
     /// `build_cleaned_mesh` bakes Reorient + Recenter into vertex
     /// positions: an identity Reorient + +x translation moves all
-    /// vertices by +x. Default state means no caps are appended.
+    /// vertices by +x. Default state means no caps are appended,
+    /// `ClipState::default()` keeps the clip disabled so the function
+    /// returns the transform-baked mesh verbatim.
     #[test]
     fn build_cleaned_mesh_bakes_recenter_translation() {
         let mesh = one_triangle_at(0.001);
@@ -4983,6 +5031,7 @@ mod tests {
             &mesh,
             &ReorientState::default(),
             &recenter,
+            &ClipState::default(),
             &CapState::default(),
         );
         assert_eq!(cleaned.vertices.len(), 3);
@@ -4991,6 +5040,72 @@ mod tests {
             "first vertex should be translated by +0.1m, got {}",
             cleaned.vertices[0].x,
         );
+    }
+
+    /// CSP.2 — enabling Clip with a Z plane mid-mesh drops the
+    /// triangles entirely below the plane. Builds a 5-tall vertical
+    /// strip from a single triangle at meters 0 / 0.5 / 1, clips at
+    /// world Z = 250 mm, and confirms the result keeps only the
+    /// portion above. Pins the wiring from `ClipState` through
+    /// `build_cleaned_mesh` step 4.
+    #[test]
+    fn build_cleaned_mesh_applies_clip_when_enabled() {
+        // Triangle with vertices at z = 0.0, 0.5, 1.0 (meters).
+        // Clip plane at world z = 0.25 m → vertex 0 (z=0) below;
+        // vertices 1 + 2 above. True-plane intersection produces a
+        // 4-vertex polygon (2 originals above + 2 new on the plane)
+        // → 2 triangles after fan triangulation.
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.5));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
+        mesh.faces.push([0, 1, 2]);
+
+        let clip = ClipState {
+            enabled: true,
+            z_mm: 250.0, // 0.25 m
+            ..ClipState::default()
+        };
+        let cleaned = build_cleaned_mesh(
+            &mesh,
+            &ReorientState::default(),
+            &RecenterState::default(),
+            &clip,
+            &CapState::default(),
+        );
+
+        // Every remaining vertex's z is at or above the clip plane.
+        for v in &cleaned.vertices {
+            assert!(
+                v.z >= 0.25 - 1e-9,
+                "vertex z={} below clip plane (0.25 m)",
+                v.z,
+            );
+        }
+        // Some faces survived (the above-plane portion).
+        assert!(!cleaned.faces.is_empty(), "all faces dropped by clip");
+    }
+
+    /// CSP.2 — disabled Clip leaves the mesh untouched regardless of
+    /// `z_mm`. Guards against accidental "always-on" wiring that
+    /// would silently clip default-enabled-by-mistake states.
+    #[test]
+    fn build_cleaned_mesh_skips_clip_when_disabled() {
+        let mesh = one_triangle_at(0.001);
+        let clip = ClipState {
+            enabled: false,
+            z_mm: 100.0, // would clip everything if enabled
+            ..ClipState::default()
+        };
+        let cleaned = build_cleaned_mesh(
+            &mesh,
+            &ReorientState::default(),
+            &RecenterState::default(),
+            &clip,
+            &CapState::default(),
+        );
+        assert_eq!(cleaned.vertices.len(), 3);
+        assert_eq!(cleaned.faces.len(), 1);
     }
 
     /// `resolve_output_dir` honors `--output-dir <path>` when supplied.
