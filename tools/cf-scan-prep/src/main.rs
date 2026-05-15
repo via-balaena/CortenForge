@@ -3739,6 +3739,18 @@ fn update_displayed_mesh(
             trim.applied_tip_mm,
             trim.applied_floor_mm,
         );
+        // CSP.4e.2.4 (2026-05-15) — weld the cut boundary's
+        // duplicate intersection vertices so `detect_holes`
+        // forms ONE closed loop at the cut, not hundreds of
+        // 2-edge fragments. `clip_mesh_against_plane_eq` appends
+        // a separate intersection vertex per crossing triangle —
+        // adjacent triangles sharing an edge get TWO duplicates
+        // at the same world position. Without welding,
+        // `find_floor_loop_index` ignored the fragmented cut
+        // boundary entirely + picked a scan-artifact loop
+        // (24-vertex tiny shape, user-reported "white lines
+        // forming a right angle" 2026-05-15).
+        weld_vertices(&mut t, SIMPLIFY_WELD_EPSILON_M);
         match trim.applied_reconstruct {
             Some(ar) if trim.applied_floor_mm > 0.0 => {
                 // CSP.4e.2 — Constant shape only; Taper +
@@ -5190,6 +5202,11 @@ fn handle_save_action(
             centerline_trim.applied_tip_mm,
             centerline_trim.applied_floor_mm,
         );
+        // CSP.4e.2.4 — same weld fix as `update_displayed_mesh`.
+        // Trim emits duplicate intersection vertices per shared
+        // edge; without welding the cut boundary fragments and
+        // `find_floor_loop_index` picks a scan-artifact loop.
+        weld_vertices(&mut cleaned, SIMPLIFY_WELD_EPSILON_M);
         // CSP.4e.2 — save-time reconstruction branch. When the
         // user has applied reconstruct AND it's a shape this
         // commit supports (Constant), run the reconstructed-
