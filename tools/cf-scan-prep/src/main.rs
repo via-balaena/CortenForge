@@ -631,6 +631,15 @@ struct SourceStlPath(PathBuf);
 #[derive(Resource, Debug, Clone, Copy)]
 struct StlUnitsResource(StlUnits);
 
+/// Auto-center offset applied at load (CSP.3.5). In physics-frame
+/// meters; equals `-raw_aabb.center()` from the source STL after
+/// unit scaling. Read by `handle_save_action` to fill the
+/// `[scan_prep].auto_center_offset_m` provenance line. Read-only
+/// after startup. Zero vector when the source already happened to
+/// sit at the origin (rare).
+#[derive(Resource, Debug, Clone, Copy)]
+struct AutoCenterOffset(Vector3<f64>);
+
 /// Walk the scan's vertices, transform each into cast-frame world
 /// coordinates (rotation + translation_z), and return the percentage
 /// that fall below `clip_z_mm`. Called by [`update_clip_drop_pct`]
@@ -1500,6 +1509,13 @@ struct PrepScanPrepBlock {
     tool_version: &'static str,
     generated_at: String,
     stl_units_at_load: &'static str,
+    /// Physics-frame translation auto-applied at load (CSP.3.5) so
+    /// the scan's AABB centroid lands at origin. Provenance only —
+    /// the cleaned STL is in the auto-centered frame (plus the
+    /// user's transforms). To reconstruct the source-frame position
+    /// of a cleaned-STL vertex, INVERT the user's Reorient +
+    /// Recenter recorded in `[transform]`, then add this offset.
+    auto_center_offset_m: [f64; 3],
 }
 
 /// `[simplify]` provenance — what decimation, if any, was applied at
@@ -1661,6 +1677,7 @@ const SIMPLIFY_ALGORITHM_VERSION: &str = "0.6.2";
 fn build_prep_toml_string(
     source_stl: &Path,
     stl_units: StlUnits,
+    auto_center_offset_m: Vector3<f64>,
     reorient: &ReorientState,
     recenter: &RecenterState,
     clip: &ClipState,
@@ -1701,6 +1718,11 @@ fn build_prep_toml_string(
             tool_version: env!("CARGO_PKG_VERSION"),
             generated_at: timestamp,
             stl_units_at_load: stl_units.panel_label(),
+            auto_center_offset_m: [
+                auto_center_offset_m.x,
+                auto_center_offset_m.y,
+                auto_center_offset_m.z,
+            ],
         },
         simplify: PrepSimplifyBlock {
             // `applied = true` iff save-time simplify ran. The save
@@ -2144,7 +2166,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match try_load_scan(&cli) {
-        Ok(scan_mesh) => {
+        Ok((scan_mesh, auto_center_offset_m)) => {
             let scan_info = ScanInfo::from_loaded(&cli.path, &scan_mesh, cli.stl_units);
             // Clone the loaded mesh into `OriginalScanMesh` so the
             // Simplify panel's `[Reset to original]` action can restore
@@ -2153,8 +2175,15 @@ fn main() -> Result<()> {
             let output_dir = SaveOutputDir(resolve_output_dir(&cli));
             let source = SourceStlPath(cli.path.clone());
             let stl_units = StlUnitsResource(cli.stl_units);
+            let auto_center = AutoCenterOffset(auto_center_offset_m);
             run_render_app(
-                scan_mesh, original, scan_info, source, output_dir, stl_units,
+                scan_mesh,
+                original,
+                scan_info,
+                source,
+                output_dir,
+                stl_units,
+                auto_center,
             );
         }
         Err(err) => {
@@ -2187,17 +2216,72 @@ fn resolve_output_dir(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Load the STL at `cli.path` and convert its vertex coordinates into
-/// meters per `cli.stl_units`. Returns the loaded mesh on success.
+/// Load the STL at `cli.path`, convert vertex coordinates into meters
+/// per `cli.stl_units`, and **auto-center the scan at the physics
+/// origin** (CSP.3.5). Returns the loaded+centered mesh plus the
+/// auto-center offset (in meters) so the saved `.prep.toml` can
+/// preserve the source-frame position as provenance.
+///
+/// # Why auto-center
+///
+/// Scanners drop captured geometry wherever their internal frame
+/// puts it — a Revopoint pointing down at a fixture often produces a
+/// scan whose centroid sits hundreds of mm from the scanner-frame
+/// origin (negative z, in particular, for the "depth into scene"
+/// convention). Without auto-centering, the Recenter panel's
+/// `[Floor -> z=0]` button produces values like `+260 mm` that
+/// reflect the scanner-frame offset, not anything meaningful about
+/// the workshop. Auto-centering normalizes the scan to a sane
+/// starting state: AABB centroid at origin, so PCA + Floor → z=0 +
+/// Reorient + Recenter all operate on intuitive numbers (Floor →
+/// z=0 → half scan height; Center origin → no-op).
+///
+/// # What gets recorded
+///
+/// `[scan_prep].auto_center_offset_m` in the saved `.prep.toml`
+/// captures the translation that was auto-applied. To reconstruct
+/// the scanner-frame position of a cleaned-STL vertex:
+///   `scanner_frame_pos = cleaned_pos + auto_center_offset_m + ...`
+///   (plus the inverse of the user's Reorient/Recenter, recorded in
+///   `[transform]`).
 ///
 /// # Errors
 ///
-/// Bubbles up [`mesh_io::load_stl`]'s I/O + parse errors verbatim. The
-/// caller wraps the message into the error-overlay path.
-fn try_load_scan(cli: &Cli) -> Result<IndexedMesh> {
+/// Bubbles up [`mesh_io::load_stl`]'s I/O + parse errors verbatim.
+/// The caller wraps the message into the error-overlay path.
+fn try_load_scan(cli: &Cli) -> Result<(IndexedMesh, Vector3<f64>)> {
     let mut mesh = load_stl(&cli.path)?;
     scale_vertices_in_place(&mut mesh, cli.stl_units.to_meters_factor());
-    Ok(mesh)
+    let auto_center_offset_m = auto_center_in_place(&mut mesh);
+    Ok((mesh, auto_center_offset_m))
+}
+
+/// Translate `mesh`'s vertices so the AABB centroid lands at physics
+/// origin. Returns the offset that was applied (`= -aabb.center()`
+/// from the input mesh in meters).
+///
+/// No-op for an empty mesh (no vertices to walk). When `centroid`
+/// is already at origin, returns near-zero offset and skips the
+/// walk to avoid FP-drift on bit-exact-centered fixtures.
+fn auto_center_in_place(mesh: &mut IndexedMesh) -> Vector3<f64> {
+    if mesh.vertices.is_empty() {
+        return Vector3::zeros();
+    }
+    let centroid = mesh.aabb().center();
+    // FP-drift guard: if the centroid is already within 1 µm of the
+    // origin, skip the walk — we'd be moving vertices by sub-FP-
+    // precision amounts that meshopt couldn't see anyway.
+    let centroid_v = centroid.coords;
+    if centroid_v.norm() < 1e-6 {
+        return Vector3::zeros();
+    }
+    let offset = -centroid_v;
+    for v in &mut mesh.vertices {
+        v.x += offset.x;
+        v.y += offset.y;
+        v.z += offset.z;
+    }
+    offset
 }
 
 /// Multiply each vertex of `mesh` by `factor` in place. No-op when
@@ -2327,6 +2411,7 @@ fn run_render_app(
     source: SourceStlPath,
     output_dir: SaveOutputDir,
     stl_units: StlUnitsResource,
+    auto_center: AutoCenterOffset,
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
@@ -2366,6 +2451,7 @@ fn run_render_app(
         .insert_resource(source)
         .insert_resource(output_dir)
         .insert_resource(stl_units)
+        .insert_resource(auto_center)
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
         .add_systems(Startup, (setup_render_scene, init_status_for_load))
@@ -3701,6 +3787,7 @@ fn handle_save_action(
     output_dir: Res<SaveOutputDir>,
     source: Res<SourceStlPath>,
     stl_units: Res<StlUnitsResource>,
+    auto_center: Res<AutoCenterOffset>,
     mut status: ResMut<StatusBar>,
     time: Res<Time>,
 ) {
@@ -3798,6 +3885,7 @@ fn handle_save_action(
     let toml_str = match build_prep_toml_string(
         &source.0,
         stl_units.0,
+        auto_center.0,
         &reorient,
         &recenter,
         &clip,
@@ -3933,6 +4021,69 @@ mod tests {
         assert_eq!(mesh.vertices[0].x, 0.0254);
         assert_eq!(mesh.vertices[1].y, 0.0254);
         assert_eq!(mesh.vertices[2].z, 0.0254);
+    }
+
+    // ----- auto_center_in_place (CSP.3.5) ----------------------------
+
+    /// `auto_center_in_place` moves a scan offset far from the
+    /// physics origin to a centroid-at-origin position, and reports
+    /// the offset it applied. Simulates the "scanner pointed down,
+    /// captured geometry at negative z" workflow the CSP.3.5
+    /// followup addresses.
+    #[test]
+    fn auto_center_in_place_moves_centroid_to_origin() {
+        // A unit-cube-like mesh sitting at physics centroid
+        // (0.05, 0.00, -0.170) — far from origin, like a scanner
+        // dropped it there.
+        let mut mesh = IndexedMesh::with_capacity(8, 0);
+        for &(x, y, z) in &[
+            (0.05 - 0.04, 0.00 - 0.03, -0.170 - 0.06),
+            (0.05 + 0.04, 0.00 - 0.03, -0.170 - 0.06),
+            (0.05 + 0.04, 0.00 + 0.03, -0.170 - 0.06),
+            (0.05 - 0.04, 0.00 + 0.03, -0.170 - 0.06),
+            (0.05 - 0.04, 0.00 - 0.03, -0.170 + 0.06),
+            (0.05 + 0.04, 0.00 - 0.03, -0.170 + 0.06),
+            (0.05 + 0.04, 0.00 + 0.03, -0.170 + 0.06),
+            (0.05 - 0.04, 0.00 + 0.03, -0.170 + 0.06),
+        ] {
+            mesh.vertices.push(Point3::new(x, y, z));
+        }
+        let offset = auto_center_in_place(&mut mesh);
+        // Offset = -centroid → expect (-0.05, 0, +0.170).
+        assert!((offset.x - (-0.05)).abs() < 1e-12);
+        assert!(offset.y.abs() < 1e-12);
+        assert!((offset.z - 0.170).abs() < 1e-12);
+        // Post-centering AABB centroid should be ~origin.
+        let post_centroid = mesh.aabb().center();
+        assert!(post_centroid.coords.norm() < 1e-12);
+    }
+
+    /// `auto_center_in_place` is a no-op (returns zero offset) for
+    /// a mesh whose centroid is already within 1 µm of the origin.
+    /// Guards against FP-drift on already-centered fixtures. Uses a
+    /// symmetric ±1 mm cube — its AABB centroid lands at bit-exact
+    /// origin, so the threshold guard fires.
+    #[test]
+    fn auto_center_in_place_no_op_when_already_centered() {
+        let mut mesh = IndexedMesh::with_capacity(2, 0);
+        mesh.vertices.push(Point3::new(-0.001, -0.001, -0.001));
+        mesh.vertices.push(Point3::new(0.001, 0.001, 0.001));
+        let mesh_before = mesh.clone();
+        let offset = auto_center_in_place(&mut mesh);
+        assert!(offset.norm() < 1e-12, "near-zero offset, got {offset:?}");
+        // Vertices unchanged.
+        assert_eq!(mesh.vertices, mesh_before.vertices);
+    }
+
+    /// `auto_center_in_place` is a no-op on empty meshes (defensive
+    /// against the load-failure overlay path — never hit, but cheap
+    /// to guarantee).
+    #[test]
+    fn auto_center_in_place_handles_empty_mesh() {
+        let mut mesh = IndexedMesh::with_capacity(0, 0);
+        let offset = auto_center_in_place(&mut mesh);
+        assert_eq!(offset, Vector3::zeros());
+        assert!(mesh.vertices.is_empty());
     }
 
     // ----- CLI parsing ------------------------------------------------
@@ -5113,6 +5264,7 @@ mod tests {
         let s = build_prep_toml_string(
             Path::new("/tmp/scan.stl"),
             StlUnits::Mm,
+            Vector3::new(0.01, -0.02, 0.03), // auto_center_offset_m
             &reorient,
             &recenter,
             &clip,
@@ -5128,6 +5280,17 @@ mod tests {
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
         assert!(parsed.get("scan_prep").is_some());
+        // CSP.3.5 — [scan_prep].auto_center_offset_m present and
+        // matches the value passed in.
+        let scan_prep = parsed.get("scan_prep").expect("scan_prep block");
+        let offset = scan_prep
+            .get("auto_center_offset_m")
+            .and_then(|v| v.as_array())
+            .expect("auto_center_offset_m missing or not an array");
+        assert_eq!(offset.len(), 3);
+        assert!((offset[0].as_float().unwrap() - 0.01).abs() < 1e-12);
+        assert!((offset[1].as_float().unwrap() - (-0.02)).abs() < 1e-12);
+        assert!((offset[2].as_float().unwrap() - 0.03).abs() < 1e-12);
         assert!(parsed.get("simplify").is_some(), "simplify block missing");
         assert!(parsed.get("transform").is_some(), "transform block missing");
         // Sub-tables under [transform] per spec §Output format.
