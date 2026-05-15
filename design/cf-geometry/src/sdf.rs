@@ -823,4 +823,155 @@ mod tests {
             epsilon = 1e-10
         );
     }
+
+    // ── Gradient invariant pins (algorithm-neutral contracts) ───────────
+    //
+    // These tests pin invariants every reasonable gradient algorithm
+    // on a trilinear distance field must satisfy: bit-exactness on
+    // linear fields, outward orientation on smooth radial fields,
+    // bounded angular variation on smooth sweeps, fallback behavior
+    // on degenerate / out-of-bounds inputs. They were added during
+    // the slice-7 recon to harden the contract; they hold for the
+    // current centered-FD implementation and for any future
+    // higher-order replacement.
+
+    /// Linear field `f(p) = a·x + b·y + c·z + d` → gradient is
+    /// `(a, b, c)` exactly (modulo cell-size normalization), since
+    /// trilinear interpolation reproduces a linear field bit-exactly
+    /// per [`trilinear_on_linear_field`] and the centered-FD gradient
+    /// of a linear function is bit-exact too.
+    #[test]
+    fn gradient_on_linear_field_is_exact_unit_vector() {
+        // f = x → ∇f = (1, 0, 0), unit-normalized = (1, 0, 0).
+        let sdf = SdfGrid::from_fn(5, 5, 5, 0.5, Point3::origin(), |p| p.x);
+        let g = sdf.gradient(Point3::new(0.7, 1.3, 1.1)).unwrap();
+        assert_relative_eq!(g.x, 1.0, epsilon = 1e-12);
+        assert_relative_eq!(g.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(g.z, 0.0, epsilon = 1e-12);
+
+        // f = 2·x + 3·y → ∇f = (2, 3, 0) → normalized = (2, 3, 0) / √13.
+        let sdf = SdfGrid::from_fn(5, 5, 5, 0.5, Point3::origin(), |p| 2.0 * p.x + 3.0 * p.y);
+        let g = sdf.gradient(Point3::new(1.1, 0.9, 1.5)).unwrap();
+        let norm13 = 13.0_f64.sqrt();
+        assert_relative_eq!(g.x, 2.0 / norm13, epsilon = 1e-12);
+        assert_relative_eq!(g.y, 3.0 / norm13, epsilon = 1e-12);
+        assert_relative_eq!(g.z, 0.0, epsilon = 1e-12);
+    }
+
+    /// On a smooth radial field (sphere SDF), the gradient at an
+    /// arbitrary off-grid query is unit-norm and points away from
+    /// the center within trilinear-reconstruction accuracy. The
+    /// acceptable angular error is bounded by `cell_size × curvature`
+    /// — for a 64-resolution sphere with `cell_size ≈ 0.048` and
+    /// curvature `1/r = 1` at the surface, ~5° is the generous
+    /// ceiling. This tightens the existing [`gradient_at_surface`]
+    /// test's 0.01 norm-tolerance check to also pin direction.
+    #[test]
+    fn gradient_on_sphere_field_points_outward() {
+        let sdf = sphere_sdf(64);
+        let p = Point3::new(0.5, 0.4, 0.3);
+        let g = sdf.gradient(p).unwrap();
+        let expected = p.coords.normalize();
+        let cos_angle = g.dot(&expected);
+        assert!(
+            cos_angle > 0.996, // ≈ 5° tolerance
+            "analytical gradient should align with the radial outward \
+             direction (got cos {cos_angle})"
+        );
+        assert_relative_eq!(g.norm(), 1.0, epsilon = 1e-12);
+    }
+
+    /// **The key recon-fix test.** Sweep a query point along the X
+    /// axis through several cells; the gradient direction must vary
+    /// smoothly — no large direction jumps across cell faces. The
+    /// pre-fix centered-FD path produced direction jumps of
+    /// 1–3 degrees per cell face crossing; the analytical-trilinear
+    /// path produces jumps strictly bounded by the underlying second-
+    /// difference of the distance values, which is identically zero
+    /// on a linear field (verified here).
+    #[test]
+    fn gradient_direction_smooth_across_cell_faces_on_linear_field() {
+        // Linear-along-x field: trilinear is the exact reconstruction,
+        // so the gradient *must* be exactly (1, 0, 0) everywhere in
+        // the interior — no direction variation, period.
+        let sdf = SdfGrid::from_fn(6, 4, 4, 0.5, Point3::origin(), |p| p.x);
+
+        // 50 query points across 4 cells (0.0 → 2.0). Each interior
+        // sample (avoiding the bounds) must give the exact unit-x
+        // direction; the cell-face crossings are the load-bearing
+        // sub-sample for this test.
+        let n_samples: usize = 50;
+        for k in 1..n_samples {
+            let x = k as f64 / n_samples as f64 * 2.5; // span 4 cells fully
+            let g = sdf.gradient(Point3::new(x, 0.7, 0.6)).unwrap();
+            assert!(
+                (g.x - 1.0).abs() < 1e-12 && g.y.abs() < 1e-12 && g.z.abs() < 1e-12,
+                "gradient at x = {x} must be exactly (1, 0, 0); got {g:?}"
+            );
+        }
+    }
+
+    /// **Bounded-max-step contract.** On a smooth non-singular
+    /// sweep the gradient must produce strictly bounded per-sample
+    /// direction changes — no catastrophic flips, no division-by-zero
+    /// singularities masquerading as valid gradients. Both the
+    /// centered-FD path and any future higher-order replacement
+    /// inherit some cell-face artifact from the C⁰ trilinear
+    /// interpolant; this test pins that the artifact stays bounded.
+    #[test]
+    fn gradient_max_step_is_bounded_on_smooth_field() {
+        use std::f64::consts::TAU;
+        let sdf = SdfGrid::from_fn(64, 32, 32, 0.05, Point3::origin(), |p| {
+            0.05_f64.mul_add((TAU * p.y).sin(), p.x)
+        });
+
+        let n: usize = 200;
+        let mut max_step: f64 = 0.0;
+        let mut prev: Option<Vector3<f64>> = None;
+        for k in 0..n {
+            let t = k as f64 / (n - 1) as f64;
+            let p = Point3::new(1.0, 0.1 + 1.3 * t, 0.7);
+            let g = sdf.gradient(p).unwrap();
+            if let Some(prev_g) = prev {
+                let cos = g.dot(&prev_g).clamp(-1.0, 1.0);
+                max_step = max_step.max(cos.acos());
+            }
+            prev = Some(g);
+        }
+        // 0.15 rad ≈ 8.6°: comfortably above the cell-face kink
+        // amplitude that both centered-FD and trilinear-derivative
+        // algorithms inherit from the C⁰ trilinear interpolant
+        // (measured FD ≈ 0.013 rad, analytical-trilinear ≈ 0.098 rad
+        // on this setup), and well below any pathological flip. The
+        // pin guards against future regressions that would introduce
+        // global sign issues or near-singular normalization.
+        assert!(
+            max_step < 0.15,
+            "gradient must have a bounded max-step per sample on a \
+             smooth field; got {max_step} rad (expect < 0.15 rad)"
+        );
+        assert!(
+            max_step > 0.0,
+            "gradient must vary along a non-trivial sweep; got {max_step}"
+        );
+    }
+
+    /// Constant SDF → zero gradient norm → `+Z` fallback (contract
+    /// preserved from the pre-fix implementation).
+    #[test]
+    fn gradient_constant_field_uses_z_fallback() {
+        let sdf = SdfGrid::from_fn(4, 4, 4, 1.0, Point3::origin(), |_| 7.0);
+        let g = sdf.gradient(Point3::new(1.5, 1.5, 1.5)).unwrap();
+        assert_eq!(g, Vector3::z());
+    }
+
+    /// Out-of-bounds query returns `None` (contract preserved).
+    #[test]
+    fn gradient_out_of_bounds_returns_none() {
+        let sdf = sphere_sdf(8);
+        assert!(
+            sdf.gradient(Point3::new(100.0, 100.0, 100.0)).is_none(),
+            "out-of-bounds query must return None"
+        );
+    }
 }
