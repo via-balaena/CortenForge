@@ -609,6 +609,35 @@ struct CenterlineTrimState {
     /// [`update_displayed_mesh`] each Update tick. Mirrors the
     /// SimplifyState/CapPendingAction pattern.
     pending_action: Option<TrimAction>,
+
+    // ----- CSP.4e Reconstruct state -----
+    //
+    // User-authorized directional workflow (2026-05-15): chop →
+    // Apply trim → reconstruct UI appears → pick reference zone +
+    // shape → Apply reconstruct. The reconstruct fields below are
+    // only meaningful + only rendered when `applied_floor_mm > 0`
+    // AND `trim_floor_mm == applied_floor_mm` (no drift since the
+    // last Apply trim). Any drift, any Reset trim, any change to
+    // the chop slider after Apply → the reconstruct fields RESET
+    // and the panel un-spawns. This protects against the
+    // state-machine trap of reconstruct staying applied to a
+    // stale chop value.
+    /// Reference-zone length in mm above the floor cut to sample
+    /// the canonical cross-section from. Slider value (draft).
+    /// 0.0 = no reconstruct preview yet.
+    reconstruct_reference_mm: f64,
+    /// Selected shape (Constant / Taper / Extrapolate). Draft
+    /// value driven by the radio buttons.
+    reconstruct_shape: ReconstructShape,
+    /// `Some(...)` when the user has clicked `[Apply reconstruct]`;
+    /// `None` while reconstruct is unapplied or un-spawned.
+    /// Carries `(applied_reference_mm, applied_shape)` so the
+    /// displayed-mesh snapshot can detect when reconstruct
+    /// changes vs trim-only changes.
+    applied_reconstruct: Option<AppliedReconstruct>,
+    /// Queued user action from the Reconstruct buttons. Consumed
+    /// next Update tick.
+    reconstruct_pending: Option<ReconstructAction>,
 }
 
 impl Default for CenterlineTrimState {
@@ -619,8 +648,63 @@ impl Default for CenterlineTrimState {
             applied_tip_mm: 0.0,
             applied_floor_mm: 0.0,
             pending_action: None,
+            reconstruct_reference_mm: 0.0,
+            reconstruct_shape: ReconstructShape::Constant,
+            applied_reconstruct: None,
+            reconstruct_pending: None,
         }
     }
+}
+
+impl CenterlineTrimState {
+    /// CSP.4e — reconstruct workflow is gated on a stable floor
+    /// chop having been Applied. `available()` returns `true`
+    /// when:
+    /// - `applied_floor_mm > 0` (the user has committed a floor
+    ///   chop)
+    /// - `trim_floor_mm == applied_floor_mm` (no slider drift
+    ///   since that commit; protects against reconstruct
+    ///   applying to a stale chop)
+    fn reconstruct_available(&self) -> bool {
+        self.applied_floor_mm > 0.0
+            && (self.trim_floor_mm - self.applied_floor_mm).abs() < f64::EPSILON
+    }
+
+    /// Wipe reconstruct fields back to default. Called when the
+    /// "directional workflow" trip-wire fires: chop slider drift
+    /// after Apply, full Reset trim, etc.
+    fn reset_reconstruct(&mut self) {
+        self.reconstruct_reference_mm = 0.0;
+        self.reconstruct_shape = ReconstructShape::Constant;
+        self.applied_reconstruct = None;
+        self.reconstruct_pending = None;
+    }
+}
+
+/// Cross-section extrusion shape choice for the reconstruct
+/// algorithm (CSP.4e). User-picked via radio buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconstructShape {
+    /// Average radial profile from the reference zone, extruded
+    /// straight down the centerline at constant radius. Simplest
+    /// shape; ships first in CSP.4e.2.
+    Constant,
+    /// Constant profile linearly tapered toward a smaller radius
+    /// at the new floor. Ships in CSP.4e.3.
+    Taper,
+    /// Fit a linear trend `r(angle, s) = a + b·s` across the
+    /// reference zone; extrapolate `s` past the cut. Most
+    /// faithful to natural taper. Ships in CSP.4e.4.
+    Extrapolate,
+}
+
+/// What got committed by `[Apply reconstruct]`. Distinct from
+/// the live slider/shape state so the user can drift the
+/// sliders without un-applying the existing reconstruction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AppliedReconstruct {
+    reference_mm: f64,
+    shape: ReconstructShape,
 }
 
 /// User action queued from the Centerline trim panel. Consumed by
@@ -631,9 +715,23 @@ enum TrimAction {
     /// the displayed mesh from the cuts.
     Apply,
     /// Zero both slider AND applied values + re-derive displayed
-    /// mesh as the untrimmed base. (Single button does both
-    /// resets — the user can't reasonably want "slider zero,
-    /// applied non-zero" or vice versa.)
+    /// mesh as the untrimmed base. Also resets the reconstruct
+    /// state (the "hard reset to restart" the user spec'd).
+    Reset,
+}
+
+/// User action queued from the Reconstruct sub-section
+/// (CSP.4e). Consumed by [`update_displayed_mesh`] next Update
+/// tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconstructAction {
+    /// Commit current reconstruct slider + shape selection →
+    /// `applied_reconstruct = Some(...)` + re-derive displayed
+    /// mesh. CSP.4e.1 — placeholder; the actual reconstruction
+    /// geometry lands at CSP.4e.2+.
+    Apply,
+    /// Unapply reconstruct: `applied_reconstruct = None`. The
+    /// chop stays in effect. (To wipe chop too, use Reset trim.)
     Reset,
 }
 
@@ -3048,6 +3146,11 @@ fn respawn_scan_entity(
 /// - `centerline_len`: proxy for "Cap → Scan ran." When the
 ///   centerline appears (or disappears via re-Scan on a closed
 ///   mesh) the trim semantics flip; force a respawn.
+/// - `reconstruct`: CSP.4e — Apply/Reset of the reconstruct
+///   sub-section drives mesh re-derivation. `None` at all times
+///   in CSP.4e.1 because the algorithm is stubbed; `Some(...)`
+///   from CSP.4e.2 onward triggers extruded-cross-section
+///   geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DisplayedMeshSnapshot {
     trim_tip_mm: f64,
@@ -3055,6 +3158,7 @@ struct DisplayedMeshSnapshot {
     scan_face_count: usize,
     scan_vertex_count: usize,
     centerline_len: usize,
+    reconstruct: Option<AppliedReconstruct>,
 }
 
 /// Update system: maintain the rendered `ScanMeshEntity` as the
@@ -3108,12 +3212,51 @@ fn update_displayed_mesh(
             TrimAction::Apply => {
                 trim.applied_tip_mm = trim.trim_tip_mm;
                 trim.applied_floor_mm = trim.trim_floor_mm;
+                // CSP.4e — a fresh chop commit invalidates any
+                // existing reconstruct (it was applied to a
+                // potentially-different floor cut). Wipe to keep
+                // the directional workflow safe.
+                trim.reset_reconstruct();
             }
             TrimAction::Reset => {
                 trim.trim_tip_mm = 0.0;
                 trim.trim_floor_mm = 0.0;
                 trim.applied_tip_mm = 0.0;
                 trim.applied_floor_mm = 0.0;
+                // CSP.4e — Reset trim is the "hard reset" the
+                // user spec'd; wipe reconstruct too.
+                trim.reset_reconstruct();
+            }
+        }
+    }
+
+    // CSP.4e — directional-workflow trip-wire. If the user
+    // dragged the chop slider after Apply trim (drift),
+    // applied_floor_mm > 0 still holds but the floor cut is now
+    // stale relative to what the user is previewing → un-spawn
+    // reconstruct UI by wiping its state. `reconstruct_available()`
+    // captures both clauses; mismatch implies drift OR no chop
+    // committed, both of which require reconstruct to retreat.
+    if !trim.reconstruct_available() && trim.applied_reconstruct.is_some() {
+        trim.reset_reconstruct();
+    }
+
+    // CSP.4e — Reconstruct action handling. Same apply-on-click
+    // model as TrimAction.
+    if let Some(action) = trim.reconstruct_pending.take() {
+        match action {
+            ReconstructAction::Apply => {
+                // CSP.4e.1 — UI plumbing only; the geometry
+                // algorithm lands at CSP.4e.2. Until then,
+                // Apply commits the choice but the displayed
+                // mesh is identical to the chopped-only state.
+                trim.applied_reconstruct = Some(AppliedReconstruct {
+                    reference_mm: trim.reconstruct_reference_mm,
+                    shape: trim.reconstruct_shape,
+                });
+            }
+            ReconstructAction::Reset => {
+                trim.applied_reconstruct = None;
             }
         }
     }
@@ -3123,12 +3266,18 @@ fn update_displayed_mesh(
     // changed. CSP.4b.6 — uses APPLIED values, not slider values,
     // so dragging the slider (without Apply) does NOT trigger a
     // respawn. Only the orange overlay moves with the slider.
+    // CSP.4e — applied_reconstruct adds to the snapshot so the
+    // displayed mesh re-derives when reconstruct is applied or
+    // unapplied. At CSP.4e.1 this is a no-op visual change (the
+    // algorithm is stubbed); at CSP.4e.2 the respawn will swap
+    // in the reconstructed geometry.
     let snapshot = DisplayedMeshSnapshot {
         trim_tip_mm: trim.applied_tip_mm,
         trim_floor_mm: trim.applied_floor_mm,
         scan_face_count: scan.0.faces.len(),
         scan_vertex_count: scan.0.vertices.len(),
         centerline_len: cap.centerline_polyline.len(),
+        reconstruct: trim.applied_reconstruct,
     };
     if last_snapshot.as_ref() == Some(&snapshot) {
         return;
@@ -4237,6 +4386,113 @@ fn render_centerline_trim_section(
                  Click [Apply trim] to perform the cuts on the displayed mesh. \
                  Save writes the displayed (already-applied) trim to disk.",
             );
+
+            // ----- CSP.4e Reconstruct sub-section -----
+            //
+            // Only renders when a stable floor chop has been
+            // applied (`reconstruct_available()` — applied_floor_mm
+            // > 0 AND no slider drift since the Apply). The
+            // directional-workflow trip-wire in
+            // `update_displayed_mesh` un-spawns this state when
+            // drift / Reset fires, so the panel re-disappears on
+            // its own.
+            if state.reconstruct_available() {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Reconstruct chopped floor")
+                        .strong(),
+                );
+                ui.small(
+                    "Replace the chopped region with an extruded average of \
+                     cross-sections from a reference zone above the cut, so \
+                     the cleaned mesh keeps its original length.",
+                );
+                ui.add_space(4.0);
+
+                // Reference zone slider — bounded above by the
+                // remaining mesh length on the floor side.
+                // Sensible default range: 0..=applied_floor_mm
+                // (sampling more above the cut than was chopped
+                // is allowed, but capped to half the centerline
+                // length so we don't walk past the tip).
+                let max_ref_mm = max_trim_mm.min(total_length_mm - state.applied_floor_mm);
+                ui.add(
+                    egui::Slider::new(
+                        &mut state.reconstruct_reference_mm,
+                        0.0..=max_ref_mm,
+                    )
+                    .text("reference zone (mm)"),
+                );
+
+                // Shape radio buttons.
+                ui.add_space(4.0);
+                ui.label("Extrusion shape:");
+                ui.radio_value(
+                    &mut state.reconstruct_shape,
+                    ReconstructShape::Constant,
+                    "Constant (average radius)",
+                );
+                ui.radio_value(
+                    &mut state.reconstruct_shape,
+                    ReconstructShape::Taper,
+                    "Taper toward floor",
+                );
+                ui.radio_value(
+                    &mut state.reconstruct_shape,
+                    ReconstructShape::Extrapolate,
+                    "Extrapolate reference trend",
+                );
+
+                // Pending-apply drift indicator (mirrors the trim
+                // panel's pattern).
+                let reconstruct_drifted = match state.applied_reconstruct {
+                    None => state.reconstruct_reference_mm > 0.0,
+                    Some(applied) => {
+                        (state.reconstruct_reference_mm - applied.reference_mm).abs() > 1e-6
+                            || state.reconstruct_shape != applied.shape
+                    }
+                };
+                if reconstruct_drifted {
+                    let applied_desc = match state.applied_reconstruct {
+                        None => "(not yet applied)".to_string(),
+                        Some(applied) => format!(
+                            "ref {:.1} mm / {}",
+                            applied.reference_mm,
+                            match applied.shape {
+                                ReconstructShape::Constant => "Constant",
+                                ReconstructShape::Taper => "Taper",
+                                ReconstructShape::Extrapolate => "Extrapolate",
+                            },
+                        ),
+                    };
+                    ui.colored_label(
+                        egui::Color32::from_rgb(240, 200, 80),
+                        format!(
+                            "⚠ Pending: applied = {applied_desc} — click [Apply reconstruct] to rebuild",
+                        ),
+                    );
+                }
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Apply reconstruct").clicked() {
+                        state.reconstruct_pending = Some(ReconstructAction::Apply);
+                    }
+                    if state.applied_reconstruct.is_some() && ui.button("Unapply reconstruct").clicked() {
+                        state.reconstruct_pending = Some(ReconstructAction::Reset);
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.small(
+                    "Note (CSP.4e.1): UI scaffolding only — the reconstruction \
+                     geometry algorithm lands at CSP.4e.2+. Clicking Apply \
+                     reconstruct commits the choice but the displayed mesh stays \
+                     in its chopped-only state for now.",
+                );
+            }
         });
 }
 
