@@ -52,14 +52,26 @@ use serde::Deserialize;
 
 /// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
 ///
-/// `#[cfg(test)]`-gated through sub-commits 7.0–7.3: 7.0 seeded the
-/// SDF-bridge spike, 7.1 the geometry + per-layer Yeoh material
-/// builder, 7.2–7.3 the solve. Nothing in the shipping binary calls
-/// it yet — it is exercised by `--ignored` integration tests. The
-/// gate comes off at 7.4, when the Insertion Sim panel wires it in.
-/// See the module docs.
-#[cfg(test)]
-mod insertion_sim;
+/// `#[cfg(test)]`-gated through sub-commits 7.0–7.3b.2; un-gated at
+/// 7.4 (this slice) when the Insertion Sim panel wires it into the
+/// `device_design_panel` UI. The module is `pub(crate)` because
+/// `main.rs`'s panel + async-task glue consumes its public surface
+/// (`build_insertion_geometry`, `run_insertion_ramp`, `InsertionRamp`,
+/// `RampStep`, `StepReadout`, `TetReadout`, `InsertionResult`,
+/// `compute_tet_readouts`); the items themselves remain
+/// `pub` per their module-level docstrings — `pub(crate)` on the
+/// module declaration just keeps the binary's surface scoped (the
+/// crate doesn't export a library API). See the module docs for the
+/// slice-7 ladder.
+pub(crate) mod insertion_sim;
+
+/// Slice 7.4 — Insertion Sim panel + ECS glue. Wraps the `insertion_sim`
+/// module's public surface (`build_insertion_geometry`,
+/// `run_insertion_ramp`, `InsertionRamp`, `RampStep`, `StepReadout`,
+/// `TetReadout`, `compute_tet_readouts`) into an `AsyncComputeTaskPool`-
+/// driven sim run + egui panel + per-vertex heat-map projection on the
+/// existing per-layer surface shells.
+pub(crate) mod insertion_sim_ui;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
@@ -1420,6 +1432,31 @@ fn build_displaced_proxy_mesh(
     up: UpAxis,
     render_scale: f32,
 ) -> Mesh {
+    build_displaced_proxy_mesh_with_colors(proxy, offset_m, up, render_scale, None)
+}
+
+/// Same as [`build_displaced_proxy_mesh`] but with optional per-vertex
+/// RGBA colors. When `vertex_colors` is `Some(slice)`, the mesh gets
+/// the [`Mesh::ATTRIBUTE_COLOR`] attribute populated; with
+/// [`StandardMaterial::base_color`] kept at white-multiplied, Bevy's
+/// PBR shader picks up the per-vertex color via Gouraud interpolation
+/// at fragments — used by the Insertion Sim panel's heat-map mode to
+/// recolor the existing per-layer shells without a separate mesh
+/// pipeline.
+///
+/// # Panics
+///
+/// `vertex_colors` must match `proxy.vertices.len()` when `Some`;
+/// mismatched lengths panic via the `Mesh::ATTRIBUTE_COLOR` insert
+/// invariant — a construction-side bug, not a runtime data
+/// dependence.
+fn build_displaced_proxy_mesh_with_colors(
+    proxy: &EnvelopeProxyMesh,
+    offset_m: f64,
+    up: UpAxis,
+    render_scale: f32,
+    vertex_colors: Option<&[[f32; 4]]>,
+) -> Mesh {
     let positions: Vec<[f32; 3]> = proxy
         .vertices
         .iter()
@@ -1450,6 +1487,17 @@ fn build_displaced_proxy_mesh(
     // unindexed geometry — and the proxy mesh is indexed for
     // memory + render efficiency.
     mesh.compute_smooth_normals();
+    if let Some(colors) = vertex_colors {
+        assert_eq!(
+            colors.len(),
+            proxy.vertices.len(),
+            "build_displaced_proxy_mesh_with_colors: vertex_colors.len() = {} \
+             must match proxy.vertices.len() = {}",
+            colors.len(),
+            proxy.vertices.len(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
+    }
     mesh
 }
 
@@ -1543,12 +1591,17 @@ fn update_layer_meshes(
     proxy: Res<EnvelopeProxyMesh>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
+    sim_state: Res<insertion_sim_ui::InsertionSimState>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     existing: Query<Entity, With<LayerSurfaceEntity>>,
 ) {
-    if !layers.is_changed() && !cavity.is_changed() {
+    // Slice 7.4 widens the rebuild triggers to include `InsertionSimState`
+    // so heat-map toggle / scalar-mode flip / a fresh sim run re-skin
+    // the layer meshes. `is_changed()` is the standard Bevy change-
+    // detection guard; one trigger fires per actual mutation.
+    if !layers.is_changed() && !cavity.is_changed() && !sim_state.is_changed() {
         return;
     }
     for entity in &existing {
@@ -1557,19 +1610,49 @@ fn update_layer_meshes(
     if layers.layers.is_empty() || proxy.vertices.is_empty() {
         return;
     }
+    // When the heat map is on AND a completed run is available, pull
+    // the matching per-layer vertex-color buffers. The mode index
+    // (Energy = 0, Stress = 1) is from `ScalarMode::buffer_index`.
+    let heat_map_colors: Option<&Vec<Vec<[f32; 4]>>> = if sim_state.heat_map_on {
+        sim_state
+            .last_run
+            .as_ref()
+            .map(|r| &r.per_layer_vertex_colors[sim_state.scalar_mode.buffer_index()])
+    } else {
+        None
+    };
     let mut cumulative_thickness_m = 0.0_f64;
     for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
         let offset_m = cumulative_thickness_m - cavity.inset_m;
-        let mesh = meshes.add(build_displaced_proxy_mesh(
+        // Heat-map vertex colors for this layer, if available (the
+        // run is keyed on layer index; an out-of-range layer count
+        // mismatch — e.g. heat map cached for a 3-layer design,
+        // user added a layer — drops to `None` and the layer falls
+        // back to the palette color until the user re-Simulates).
+        let colors_slice = heat_map_colors
+            .and_then(|cs| cs.get(i))
+            .filter(|c| c.len() == proxy.vertices.len())
+            .map(Vec::as_slice);
+        let mesh = meshes.add(build_displaced_proxy_mesh_with_colors(
             &proxy,
             offset_m,
             *up,
             render_scale.0,
+            colors_slice,
         ));
         let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
+        // Heat-map mode pins base color to white so the per-vertex
+        // COLOR attribute carries the gradient straight through
+        // (StandardMaterial multiplies base × vertex × light). Off
+        // mode keeps the palette tint.
+        let base_color = if colors_slice.is_some() {
+            Color::WHITE
+        } else {
+            Color::srgb(r, g, b)
+        };
         let material = materials.add(StandardMaterial {
-            base_color: Color::srgb(r, g, b),
+            base_color,
             double_sided: true,
             cull_mode: None,
             ..default()
@@ -2017,7 +2100,12 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 /// readouts one frame later — imperceptible at frame rate, and it
 /// keeps both sections reading a single consistent computation
 /// rather than each re-deriving it.
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+// 8 system parameters; one over the default clippy cap. The
+// alternative is bundling resources into a SystemParam struct, which
+// for this single all-panels driver is more ceremony than the cap is
+// worth — every parameter is a Bevy resource consumed by a single
+// section of the panel.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
@@ -2025,9 +2113,12 @@ fn device_design_panel(
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
+    mut sim_state: ResMut<insertion_sim_ui::InsertionSimState>,
+    scan_mesh: Option<Res<ScanMesh>>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     let validations = compute_validations(&proxy, &cavity, &layers);
+    let scan_loaded = scan_mesh.is_some();
     egui::SidePanel::right("cf-device-design-panels")
         .resizable(false)
         .default_width(320.0)
@@ -2039,6 +2130,8 @@ fn device_design_panel(
                     render_cavity_section(ui, &mut cavity);
                     render_layers_section(ui, &mut layers, &cavity, &validations);
                     render_validations_section(ui, &validations);
+                    ui.separator();
+                    insertion_sim_ui::render_insertion_sim_section(ui, &mut sim_state, scan_loaded);
                     render_panel_stubs(ui);
                 });
         });
@@ -2089,9 +2182,7 @@ fn render_scan_info_section(
 /// the engineering payoff of the suite.
 fn render_panel_stubs(ui: &mut egui::Ui) {
     ui.separator();
-    for name in ["Insertion Sim (slice 7)", "Save / Open (slice 8)"] {
-        ui.add_enabled(false, egui::Label::new(name));
-    }
+    ui.add_enabled(false, egui::Label::new("Save / Open (slice 8)"));
 }
 
 /// egui color for a [`BudgetStatus`] — green / amber / red.
@@ -2237,6 +2328,7 @@ fn run_render_app(
         }))
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
+        .add_plugins(insertion_sim_ui::InsertionSimPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(DEVICE_UP_AXIS)
         .insert_resource(RenderScale(render_scale))

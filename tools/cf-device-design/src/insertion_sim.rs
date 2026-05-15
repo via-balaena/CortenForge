@@ -1,3 +1,15 @@
+// `dead_code` is allowed at module scope because this module's public
+// surface (`InsertionRamp`, `StepReadout`, `TetReadout`,
+// `InsertionResult`, etc.) is consumed selectively by three different
+// callers — the integration tests in this file, the slice-7.4
+// `insertion_sim_ui` panel, and (pending) slice-7.5/7.6 + slice-8/9
+// downstream wiring — so the binary's `main.rs` reads only a subset
+// at any given slice. The "never read" lint is rightly conservative
+// for a `pub(crate)` module in a binary crate; documenting it as a
+// known-and-deliberate carve-out here is cheaper than chasing per-
+// field `#[allow]`s as each slice lands.
+#![allow(dead_code)]
+
 //! `insertion_sim` — FEM insertion-simulation pipeline for cf-device-design.
 //!
 //! Slice 7 (sub-commit 7.0) seeds this module with the **SDF bridge
@@ -10,29 +22,38 @@
 //! `outer.subtract(cavity)` device-wall body offset from that SDF —
 //! mirroring the validated sim-soft rows 21–25 layered-sleeve path.
 //!
-//! - **7.0** seeded the module with the SDF-bridge *spike*,
-//!   [`run_sdf_bridge_spike`]: a measurement harness that proved
+//! - **7.0** seeded the module with the SDF-bridge *spike* —
+//!   `run_sdf_bridge_spike` is a measurement harness that proved
 //!   Route A end-to-end and characterized the decimation/timing
 //!   tradeoff. `SignedDistanceField::distance` is brute-force
 //!   O(faces) and the mesher samples the SDF at every BCC lattice
 //!   vertex, so the raw 3.34 M-face scan must be decimated — the
 //!   spike found a low target (~1.5–3k faces) is best.
-//! - **7.1** adds [`build_insertion_geometry`]: the real builder that
-//!   turns a [`SimDesign`] (cavity inset + layer stack) into the
-//!   device-wall [`SdfMeshedTetMesh`] with per-tet Yeoh materials,
+//! - **7.1** adds `build_insertion_geometry` — the real builder
+//!   that turns a `SimDesign` (cavity inset + layer stack) into the
+//!   device-wall `SdfMeshedTetMesh` with per-tet Yeoh materials,
 //!   plus the rigid intruder SDF.
-//! - **7.2** adds [`run_single_insertion_step`]: one static FEM solve
+//! - **7.2** adds `run_single_insertion_step` — one static FEM solve
 //!   (`CpuNewtonSolver` + `PenaltyRigidContact`) that presses the
 //!   intruder a chosen interference into the cavity and returns the
 //!   converged deformed positions. One step only — the quasi-static
 //!   ramp is 7.3.
+//! - **7.3b.1 / 7.3b.2** add `run_insertion_ramp` + `InsertionResult`
+//!   — quasi-static interference ramp with per-step + per-tet
+//!   engineering readouts.
+//! - **7.4** un-gates this module (`pub(crate)`) for the Insertion-Sim
+//!   panel in `main.rs`; see `crate::insertion_sim_ui` for the egui
+//!   surface, async-compute task wiring, and heat-map projection
+//!   that surfaces the `InsertionResult` per-tet field onto the
+//!   per-layer shell meshes via Option-C per-vertex coloring.
 //!
-//! The UI lands at 7.4. The module is `#[cfg(test)]`-gated until 7.4
-//! wires it into the app; for now it is exercised by `#[ignore]`d
-//! integration tests — the iter-1 scan for the SDF-bridge spike + the
-//! geometry builder, a synthetic icosphere for the solve (the real
-//! scan's single-step solve does not converge — see the slice-7
-//! memo's "7.2 real-scan finding"; hardening it is 7.3's battle).
+//! Note on doc-link convention: this module uses plain-backtick code
+//! spans, not `[`name`]` intra-doc links, for cross-references inside
+//! the module-level docstring. Binary-crate rustdoc does not always
+//! resolve item-path links from a `pub(crate)` module's `//!`
+//! comments; switching to code-spans keeps the docs warning-free
+//! across the 7.0→7.4 ladder without papering over a real ambiguity
+//! with `#[allow]`.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -46,15 +67,17 @@ use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
 use nalgebra::{Matrix3, Point3, Vector3};
 use sim_ml_chassis::Tensor;
+#[cfg(test)]
+use sim_soft::ContactPair;
 use sim_soft::material::silicone_table::{
     DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
     ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
 };
 use sim_soft::{
-    Aabb3, BoundaryConditions, ConstantField, ContactPair, ContactPairReadout, CpuNewtonSolver,
-    Field, LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
-    Sdf, SdfMeshedTetMesh, SiliconeMaterial, Solver, SolverConfig, Tet4, TetId, Vec3, VertexId,
-    Yeoh, filter_pair_readouts_to_referenced, pick_vertices_by_predicate, referenced_vertices,
+    Aabb3, BoundaryConditions, ConstantField, ContactPairReadout, CpuNewtonSolver, Field,
+    LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf,
+    SdfMeshedTetMesh, SiliconeMaterial, Solver, SolverConfig, Tet4, TetId, Vec3, VertexId, Yeoh,
+    filter_pair_readouts_to_referenced, pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -378,7 +401,7 @@ fn silicone_for_anchor(anchor_key: &str) -> Result<SiliconeMaterial> {
 /// Strictly increasing (thicknesses are positive), as
 /// [`LayeredScalarField::new`] requires. Empty for a single-layer
 /// design — the caller uses a [`ConstantField`] instead.
-fn layer_boundary_thresholds(design: &SimDesign) -> Vec<f64> {
+pub fn layer_boundary_thresholds(design: &SimDesign) -> Vec<f64> {
     let mut cumulative = 0.0;
     design
         .layers
@@ -449,6 +472,19 @@ pub struct InsertionGeometry {
     pub cell_size_m: f64,
     /// Tet count of `mesh` — surfaced for the 7.4 UI readout + tests.
     pub n_tets: usize,
+    /// Slice 7.4 — per-tet layer index, length `n_tets`, indexed by
+    /// [`TetId`]. Derived from the scan SDF distance at each tet's
+    /// centroid bucketed against [`layer_boundary_thresholds`]:
+    /// values land in `0..design.layers.len()`, innermost-first
+    /// (`0` = cavity-side layer, `n−1` = outer skin). Drives the
+    /// Insertion-Sim panel's per-layer aggregates + heat-map
+    /// projection (each layer's per-tet readouts feed only that
+    /// layer's shell-vertex coloring). The same partition that
+    /// builds the per-tet Yeoh material, surfaced explicitly so a
+    /// consumer doesn't have to back it out by comparing
+    /// `Yeoh` parameters (which collapse when two layers happen to
+    /// share an anchor key).
+    pub per_tet_layer: Vec<usize>,
 }
 
 /// Build the Route-A insertion-sim geometry: the device-wall tet mesh
@@ -595,6 +631,39 @@ pub fn build_insertion_geometry(
     })?;
     let n_tets = mesh.n_tets();
 
+    // Slice 7.4 per-tet layer assignment. Sample the scan SDF at each
+    // tet centroid, bucket against `thresholds`: the partition is
+    // monotone — `scan_sdf(centroid) < thresholds[0]` is layer 0
+    // (innermost), `< thresholds[i]` is layer `i`, the tail bucket
+    // is layer `n_layers - 1` (outermost). Matches the
+    // `LayeredScalarField` partition exactly (the material field is
+    // sampled at the centroid by `materials_from_field` per
+    // `sim/L0/soft/src/mesh/mod.rs:209`).
+    let n_layers = design.layers.len();
+    let per_tet_layer: Vec<usize> = (0..n_tets)
+        .map(|t| {
+            // `t as TetId` (u32) — Phase 4 BCC meshes stay well under
+            // `u32::MAX` per the `Mesh` trait docs.
+            #[allow(clippy::cast_possible_truncation)]
+            let verts = mesh.tet_vertices(t as TetId);
+            let positions = mesh.positions();
+            let centroid = (positions[verts[0] as usize]
+                + positions[verts[1] as usize]
+                + positions[verts[2] as usize]
+                + positions[verts[3] as usize])
+                * 0.25;
+            let sd = scan_sdf.eval(Point3::from(centroid));
+            // Linear scan — `thresholds.len()` is at most
+            // `LAYER_COUNT_MAX − 1 = 5`, no payoff from binary
+            // search. `n_layers - 1` covers the tail bucket
+            // (sd ≥ last threshold).
+            thresholds
+                .iter()
+                .position(|&th| sd < th)
+                .unwrap_or(n_layers - 1)
+        })
+        .collect();
+
     Ok(InsertionGeometry {
         mesh,
         // The scan SDF doubles as the rigid intruder — the press-fit
@@ -605,6 +674,7 @@ pub fn build_insertion_geometry(
         bounds,
         cell_size_m,
         n_tets,
+        per_tet_layer,
     })
 }
 
@@ -803,6 +873,7 @@ pub fn run_single_insertion_step(
         bounds,
         cell_size_m,
         n_tets: _,
+        per_tet_layer: _,
     } = geometry;
 
     let n_vertices = mesh.n_vertices();
@@ -1688,6 +1759,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
         bounds,
         cell_size_m,
         n_tets,
+        per_tet_layer: _,
     } = geometry;
 
     let n_vertices = mesh.n_vertices();

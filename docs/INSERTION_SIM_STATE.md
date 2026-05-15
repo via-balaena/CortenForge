@@ -614,3 +614,110 @@ iter-1 scan ramp (16/16, full 3 mm):
   UI un-gate.
 
 The slice-7 PR is ready to open after this commit.
+
+---
+
+## Update — 2026-05-15 evening: slice 7.4 also SHIPPED
+
+`mod insertion_sim` is no longer `#[cfg(test)]`-gated. A new sibling
+module `insertion_sim_ui` (in `tools/cf-device-design/src/insertion_
+sim_ui.rs`) wraps the public surface into a Bevy plugin that
+surfaces the engineering data to the user.
+
+### What 7.4 delivers
+
+**Panel.** `Insertion Sim` section in the right-side egui panel
+(below Validations, before the Save/Open stub). Sections:
+
+- **Simulate button.** `[▶ Simulate Insertion]` kicks off a ramp on
+  the current `(CavityState, LayersState)` design. Button label
+  flips to "Simulating…" while a task is pending. Disabled when no
+  scan is loaded.
+- **Settings line.** Reports the locked configuration: `16 steps ·
+  4 mm cell · Yeoh material · tol=1e-1 · κ=1e3`. Not user-tunable —
+  these are the empirically-best operating points the slice-7 arc
+  validated.
+- **F-d plot.** Hand-rolled `egui::Painter` line plot of
+  `(interference_mm, contact_force_n)` from
+  `InsertionResult.force_displacement_curve`. Axes labeled, dots at
+  each sampled step. No external plot dep (avoids `egui_plot`).
+- **Per-step collapsible table.** One row per converged step:
+  `d / iter / res / F / λ_min…λ_max / ‖P‖`. Collapsed by default.
+- **Per-layer aggregates table.** Innermost-first rows:
+  `Layer / Tets / mean Ψ / max ‖P‖ / λ range`. Each row prefixed by
+  the layer's existing palette swatch.
+- **Heat-map toggle.** Off by default; when on, layer surface
+  shells are recolored by either Ψ or ‖P‖ (radio toggle). The
+  selected scalar's `(min, max)` range is reported below.
+
+**Async-compute pipeline.** The ramp runs off-main-thread via
+`bevy::tasks::AsyncComputeTaskPool::get().spawn(...)`. The main
+thread polls the task with non-blocking `future::poll_once` each
+frame; the UI stays responsive during the ~10-20 s ramp. The task's
+async closure clones the cleaned scan (chunky one-time alloc,
+dwarfed by the ramp itself) along with the snapshot it needs (sim
+design + per-layer displaced-proxy shells); returns
+`InsertionSimOutputs` (ramp + per-layer aggregates +
+per-vertex-color buffers for both scalar modes).
+
+**Heat-map projection — Option C as planned.** Per-vertex
+`Mesh::ATTRIBUTE_COLOR` on the existing per-layer surface shells
+(no new mesh-render path). For each shell vertex on each layer,
+the async task scans the same layer's tet centroids, picks the
+nearest, looks up Ψ / ‖P‖, normalizes against the global
+(`min`, `max`) range, and bakes RGBA via a three-stop blue → yellow
+→ red gradient. Cost: ~100M brute-force ops total on iter-1 (~1 s,
+absorbed by the ramp task). When heat map is on,
+`StandardMaterial::base_color` is set to white so the per-vertex
+color carries the gradient straight through Gouraud interpolation;
+when off, palette colors are restored.
+
+**Geometry-change invalidation.** Any edit to `CavityState` or
+`LayersState` clears `last_run` + toggles heat map off (results
+become stale relative to the new design). User re-clicks Simulate.
+
+### New API surfaces
+
+- `pub fn layer_boundary_thresholds(design) -> Vec<f64>` on
+  `insertion_sim` (previously private to that module).
+- `pub per_tet_layer: Vec<usize>` field on `InsertionGeometry` —
+  per-tet layer index (innermost-first), derived from the scan SDF
+  + thresholds at build-geometry time.
+- `pub fn aggregate_per_layer(per_tet, per_tet_layer, n_layers) ->
+  Vec<LayerAggregate>` on `insertion_sim_ui` — reduces per-tet
+  readouts to per-layer aggregates.
+- `pub fn render_insertion_sim_section(ui, state, scan_loaded)` —
+  the egui section renderer (called from `device_design_panel`).
+
+### Tests + grade as built
+
+- `cargo test -p cf-device-design --bin cf-device-design`:
+  **72 passed, 9 ignored** (was 65 + 9 pre-7.4; the 7 new
+  `insertion_sim_ui::tests` tests cover `aggregate_per_layer`,
+  `project_heat_map_per_layer` in-layer correctness, the colormap
+  edge cases, and `ScalarMode` buffer indexing).
+- Both ignored ramps still converge to the full 3 mm:
+  synthetic 16/16 in 10 s, iter-1 16/16 in 23 s. The
+  `per_tet_layer` snapshot adds zero observed perf cost.
+- `cargo run -p xtask -- grade cf-device-design`: **A** on all 5
+  automated criteria (documentation criterion required dropping
+  the `[\`name\`]:` reference-link syntax in the `insertion_sim`
+  module-level docs — they didn't surface as warnings while the
+  module was `#[cfg(test)]`-gated, but binary-crate rustdoc
+  flagged them on un-gate).
+
+### What 7.4 does *not* try to do
+
+- No per-step scrubbing slider (deferred 7.4b).
+- No deformed-mesh overlay (the heat map paints on the rest-shell
+  geometry; the user reads "where in this layer is hot," not
+  "where does the cavity bulge in").
+- No volumetric per-tet boundary-triangle mesh (Option B, deferred
+  unless iter-1 cast surfaces a "Option-C-projection
+  approximation costs me the answer" workflow gap).
+- No Slacker → sim-modulus wiring (that is 7.5/7.6 — the panel's
+  Yeoh material per-layer still comes from the base silicone's
+  anchor, not the layer's `slacker_fraction`).
+
+The slice-7 PR opens with everything through 7.4 in a single PR
+per the user's "all of 7.* in one PR" decision.
