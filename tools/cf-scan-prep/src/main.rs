@@ -808,10 +808,12 @@ fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
 /// own coordinate frame, expressed as the equation
 /// `plane_normal · v >= plane_d` (kept side).
 ///
-/// Shared core algorithm — both [`clip_mesh_against_world_z`] (the
-/// horizontal-Z clip from the Clip floor panel) and
-/// [`clip_mesh_against_plane`] (the centerline-trim cuts at each
-/// end) derive their inputs and then forward here.
+/// Shared core algorithm — [`clip_mesh_against_plane`] (the
+/// centerline-trim cuts at each end) derives its inputs and then
+/// forwards here. Pre-CSP.4d there was also a
+/// `clip_mesh_against_world_z` for the now-retired Clip-floor
+/// panel; that wrapper is gone, but `clip_mesh_against_plane_eq`
+/// remained as the shared core.
 ///
 /// For each triangle:
 /// - **All 3 vertices on/above** the plane → keep as-is.
@@ -1253,8 +1255,8 @@ const RECONSTRUCT_ANGLE_BINS: usize = 24;
 const RECONSTRUCT_RING_COUNT: usize = 8;
 
 /// Decide which of `loops` is the "floor end" loop — the LARGEST
-/// valid boundary loop. Used by [`apply_constant_reconstruction`]
-/// to single out the loop the user wants to reconstruct (the cut
+/// valid boundary loop. Used by [`apply_reconstruction`] to
+/// single out the loop the user wants to reconstruct (the cut
 /// rim) vs. scan-noise stragglers.
 ///
 /// CSP.4e.2 fix-forward (2026-05-15): the initial implementation
@@ -1914,13 +1916,14 @@ fn compute_centerline_polyline(
 /// a wobbly tangent. Smoothing the polyline before any downstream
 /// consumer sees it kills the noise.
 ///
-/// Algorithm — `iterations` passes of `next[i] = (curr[i-1] +
-/// curr[i] + curr[i+1]) / 3` for interior points; endpoints
-/// `polyline[0]` and `polyline[N-1]` pin (so the trim distance
-/// semantics — "trim from tip = polyline[0] forward, trim from
-/// floor = polyline[N-1] backward" — stay anchored). For
-/// `iterations=3` the effective filter footprint is ~5 samples
-/// wide; visibly smooths without flattening overall curvature.
+/// Algorithm — `iterations` passes of the 3-tap update
+/// `next_i = (curr_im1 + curr_i + curr_ip1) / 3` for interior
+/// points; the first and last polyline points are PINNED (so
+/// the trim distance semantics — "trim from tip = forward from
+/// the first polyline point; trim from floor = backward from the
+/// last polyline point" — stay anchored). For `iterations=3` the
+/// effective filter footprint is ~5 samples wide; visibly
+/// smooths without flattening overall curvature.
 ///
 /// No-op for polylines with < 3 points (no interior to smooth).
 fn smooth_polyline(polyline: &[Point3<f64>], iterations: usize) -> Vec<Point3<f64>> {
@@ -3696,8 +3699,9 @@ fn respawn_scan_entity(
 /// - `scan_face_count` + `scan_vertex_count`: proxy for "ScanMesh
 ///   identity changed" — Apply Simplify / Reset to original both
 ///   change the face count. Avoids the `Res::<>::is_changed()`
-///   footgun ([[project_bevy_is_changed_footgun]]) where any
-///   `&mut *res` deref flips the change-token.
+///   footgun (`project_bevy_is_changed_footgun` per the auto-
+///   memory ledger) where any `&mut *res` deref flips the
+///   change-token.
 /// - `centerline_len`: proxy for "Cap → Scan ran." When the
 ///   centerline appears (or disappears via re-Scan on a closed
 ///   mesh) the trim semantics flip; force a respawn.

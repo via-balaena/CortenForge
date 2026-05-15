@@ -153,7 +153,7 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 ///
 /// `cavity_inset_m` mirrors `design.cavity.inset_m` from
 /// `cf-device-design`'s `.design.toml`. The design-sourced path
-/// ([`crate::run`]) lifts it from [`design_ref::DesignRef`]; the
+/// ([`crate::run`]) lifts it from [`crate::design_ref::DesignRef`]; the
 /// inline-layers path passes `0.0` so old cast.toml configs without a
 /// `[design]` block produce the same molds they always did.
 ///

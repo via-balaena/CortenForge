@@ -30,7 +30,8 @@
 //! 8. Invoke [`cf_cast::CastSpec::export_molds_v2`] +
 //!    [`cf_cast::CastSpec::write_procedure_v2`].
 //! 9. If `cavity_inset_m > 0`, post-process the procedure.md to
-//!    surface the press-fit reservation (see [`procedure_post`]).
+//!    surface the press-fit reservation (see the
+//!    `procedure_post` private module).
 //!
 //! # Plug-derivation choice (Option A.1)
 //!
