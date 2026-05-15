@@ -12,6 +12,19 @@
 > was measured, gave only marginal improvement, and was reverted.
 > See §"What didn't work, and why" below — the lesson reshapes the
 > next session's plan.
+>
+> **Iter 3 update (this commit, 2026-05-14)**: N1 / N2 / N3 measured.
+> N1 (finer grid) *regressed* both envelopes — falsifies the recon's
+> "trilinear cell-face kink scales with grid spacing" mental model
+> for polyhedral inputs. N2 (10× SDF source mesh resolution) doubled
+> the iter-1 envelope (31 % → 62 %); the iter-1 scan was severely
+> under-resolved at 2 500 faces on a 50 cm geometry. N3 (Gaussian
+> pre-smooth, σ = 0.5 cell) won decisively on both: synthetic 87 %
+> → **100 %**, iter-1 31 % → **75 %**, and changed the failure mode
+> from Armijo-stall (contact side) to Yeoh-stretch-validity
+> (material side). **Structural-fix recommendation locked**: ship
+> N3 in `cf-device-design::build_grid_sdf` next session. See
+> §"Recon iter 3 results" below.
 
 This document is the recon at the fundamental layer of the
 slice-7.3b.1 depth-envelope stall. It is intended to be readable
@@ -21,34 +34,37 @@ cold alongside the bookmark.
 
 ## TL;DR
 
-- **The stall is a trilinear-interpolation problem**, not a
+- **The stall is a contact-side SDF-smoothness problem**, not a
   contact-formulation problem. The bookmark's hypothesis
   "full-surface penalty contact is the wall" is **falsified** by
-  the discriminating experiment (`Solid::sphere` analytical SDF
-  reaches the full 3 mm inset, no stall, with the same κ, tol,
-  n_steps, Yeoh material).
-- The stall depth on `GridSdf`-mediated contact tracks how rough
-  the contact-side SDF is — but the relevant roughness is *the
-  C⁰-but-not-C¹ trilinear interpolant itself*, not just how its
-  gradient is sampled. **Both centered-FD-of-trilinear and
-  analytical-derivative-of-trilinear inherit similar total
-  cell-face angular variation** (different distributions, similar
-  totals). Replacing one with the other does not unlock the
-  envelope — empirically validated by trying it (see §"What
-  didn't work").
-- The actual fix must make the underlying interpolant **smoother
-  than trilinear**: either pre-smoothing the distance buffer
-  before trilinear interpolation (so the interpolant approximates
-  a C¹ function), upgrading to tricubic / B-spline interpolation
-  (literally C¹ or C²), or feeding the contact path an analytical
-  primitive fitted to the scan instead of `GridSdf`.
-- **Next step: more recon, not implementation.** Three cheap
-  discriminating experiments are listed in §"Next-recon
-  experiments" — finer grid, larger SDF face budget, Gaussian
-  pre-smooth on the distance buffer. Each is 1–10 lines of
-  code, runs in ≤ 10 min wall time on the existing ramps, and
-  gives a sharp data point. Run them before committing to a
-  specific structural fix.
+  the analytical-sphere experiment (full 3 mm inset, no stall,
+  same κ / tol / n_steps / Yeoh material as the GridSdf ramps).
+- **Recon iter 3 (measured) settled the structural-fix question
+  with three discriminating experiments** (N1 / N2 / N3 — see
+  §"Recon iter 3 results"):
+  - **N1 (finer GridSdf grid) regressed both envelopes** —
+    falsifies recon-iter-2's "cell-face kink scales with grid
+    spacing" mental model. The polyhedral source mesh is itself
+    C⁰; finer grid resolves its facet edges more faithfully, not
+    less. Demoted as a fix.
+  - **N2 (10× `sdf_target_faces` on the iter-1 scan)** doubled
+    the iter-1 envelope (31 → 62 %). The decimated-scan proxy
+    was severely under-resolved at 2 500 faces (~10 mm spacing
+    on a 50 cm geometry). Recommended follow-up.
+  - **N3 (Gaussian pre-smooth on the GridSdf signed buffer,
+    σ = 0.5 cell) is the win** — synthetic icosphere 87 → **100 %**
+    (full depth), iter-1 scan 31 → **75 %**, plus the per-step
+    iter-count explosion of the FD baseline (8/24/56/58/61) is
+    gone (replaced by steady 2-iter convergence). Failure mode
+    on both ramps shifts from contact-side Armijo stall to
+    material-side Yeoh-stretch-validity violation. **The contact-
+    formulation is no longer the binding constraint after N3.**
+- **Next step**: session 4 ships N3 as ~95 LOC in
+  `cf-device-design::build_grid_sdf` (the prototype was built
+  this session and reverted). User's autonomous-architect
+  authority covers it. Tricubic / analytical-primitive fits and
+  finer-grid options are all demoted — see §"Sniped fixes — final
+  ranking."
 
 ---
 
@@ -360,7 +376,7 @@ recon, now promoted in priority by the analysis above.
   is the safe variant; an unrestricted smooth would leak the
   flood-fill assignment.
 
-### Cross-experiment interpretation
+### Cross-experiment interpretation (specified, pre-measurement)
 
 The three experiments combined give a 2×2 (or 2×3) discrimination
 table:
@@ -376,103 +392,260 @@ not.
 
 ---
 
-## Sniped fixes — revised ranking (post-revert)
+## Recon iter 3 results (2026-05-14, this session)
 
-Each fix's expected envelope-extension depends on the N1–N3
-discriminating-experiment outcomes, so the ranking is *conditional*
-on those experiments having been run. Until they are, this is the
-informed-prior ranking:
+The three experiments were measured on this branch. Each
+experiment ran the two existing ramps (synthetic icosphere +
+iter-1 scan) in release mode with `--ignored --nocapture`; logs
+are checked in under `target/recon-iter-3/` for the session and
+discarded after the commit.
 
-### Conditional #1 — Gaussian pre-smooth on the GridSdf scalar buffer
+### The baseline (post-revert FD on trilinear, current `dev` HEAD)
 
-(This was the original recon's Option (b), now promoted by the
-falsification of (a).)
+| Ramp | Steps converged | Last depth | Per-step Newton iters |
+|---|---|---|---|
+| Synthetic icosphere | **14 / 16** (87 %) | 2.62 mm | 3/1/1/2/2/1/2/2/2/8/24/56/58/61 → Armijo stall at 2.81 mm |
+| Real iter-1 scan | **5 / 16** (31 %) | 0.94 mm | 4/3/5/5/9 → Armijo stall at 1.12 mm |
 
-**Effect**: shrinks the cell-face kink amplitude proportional to
-the smoothing strength. A C¹-approximating interpolant produces
-near-C¹ gradients with both FD and analytical-derivative methods.
-This is the **single most-targeted fix** for the trilinear-
-interpolant-is-C⁰ root cause.
+> *Bias-debiaser correction to recon-iter-2*: the recon-iter-2
+> draft reported pre-fix synthetic baseline as `13/16` and pre-fix
+> iter counts as "mostly-1 / max-2." The actual current-`dev`
+> baseline shows 14/16 and the 8/24/56/58/61 iter explosion near
+> 1.88 mm. The earlier numbers were either from an older state
+> or imprecisely transcribed. **The iter-count explosion is
+> present at the FD baseline, not introduced by Option (a)** —
+> the recon-iter-2 §"Why Newton's iterations exploded post-fix"
+> narrative misattributed it. The actual difference Option (a)
+> made was a +1 step in envelope and ~3× wall-time regression,
+> both small.
 
-**Cost**: ~80 lines in `cf-device-design::build_grid_sdf` (or
-`cf-geometry::SdfGrid::new` if we want it to be universal). The
-smoothing pass is separable 3D Gaussian, well-understood.
+### N1 — finer grid (0.25× cell_size, 1 mm grid spacing)
 
-**Risk**: surface-position bias proportional to smoothing σ;
-characterizable + correctable. Wall-band-preservation needs care.
+One-line change: `let grid_cell_m = 0.25 * cell_size_m` in
+`build_insertion_geometry`.
 
-**Predicted envelope-extension** (conditional on N3 confirming):
-icosphere 87 → 95+%, real scan 31 → 60+%. Higher than Option (a)
-delivered because this attacks the actual root.
+| Ramp | Steps converged | Last depth | Δ from baseline |
+|---|---|---|---|
+| Synthetic icosphere | 11 / 16 (69 %) | 2.06 mm | **−3 steps, regressed** |
+| Real iter-1 scan | 4 / 16 (25 %) | 0.75 mm | **−1 step, regressed** |
 
-### Conditional #2 — Tricubic / Catmull-Rom interpolation in `SdfGrid`
+**Falsification of the recon-iter-2 prediction "envelopes scale
+linearly with kink amplitude."** Both envelopes regressed; the
+finer grid made things *worse*, not better. Per-step iter counts
+also exploded earlier (synthetic 11-iter stall at 2.06 mm with
+prior steps already at 5/9/11; iter-1 already at 11 / 5 / 9 / 15
+in the first four steps).
 
-**Effect**: the literal C¹ (Catmull-Rom) or C² (B-spline)
-upgrade. No cell-face kinks of any kind — the interpolant and its
-gradient are smooth functions everywhere.
+**Mental-model correction**: the input mesh (icosphere or
+decimated scan) is itself C⁰ — its faces are the source of the
+gradient discontinuities. A coarser grid was incidentally
+low-pass-filtering the polyhedral facet edges; a finer grid
+*resolves the polyhedral C⁰-ness more faithfully*. The cell-face
+kink amplitude isn't a function of grid spacing; the kink is
+inherited from the source mesh and the grid samples it.
 
-**Cost**: heavier, ~200–400 lines in `cf-geometry`. The
-interpolation has to be implemented carefully (and the existing
-trilinear-bit-exact tests need to be amended — Catmull-Rom is
-not bit-exact on linear fields the way trilinear is, since it
-uses 4 corners per axis).
+This puts us decisively in the **"N1 doesn't help"** column of
+the discrimination table.
 
-**Risk**: Catmull-Rom can overshoot near discontinuities — the
-flood-fill wall-band's hard distance transition would need
-handling. Probably constrains to the "clamped" cubic variants.
-Higher implementation complexity than Option #1.
+### N2 — sdf_target_faces 10× on the iter-1 scan (2 500 → 25 000)
 
-**Predicted envelope-extension** (conditional): the most
-generous — likely icosphere → 100%, real scan → 80–90%. But
-the cost is also the highest of the three.
+Synthetic icosphere is fixed at 1 280 faces (subdivision-3
+icosphere); N2 doesn't apply.
 
-### Conditional #3 — Analytical-primitive fitting for the contact intruder
+| Ramp | Steps converged | Last depth | Δ from baseline |
+|---|---|---|---|
+| Real iter-1 scan | **10 / 16** (62 %) | 1.88 mm | **+5 steps, +0.94 mm** |
 
-**Effect**: keep `GridSdf` for the body (so layered materials,
-inset offsets, etc. all stay working), but fit a smooth
-analytical primitive (capsule, ellipsoid, cylinder + caps) to the
-*scan* and use that as the contact intruder in
-`intruder_contact_at`. The contact normal is then C^∞ smooth —
-exactly the regime the discriminating experiment showed reaches
-full depth.
+Per-step iters: `7/4/4/5/8/7/21/40/97/102` → Yeoh
+stretch-validity violation at tet 3690, `max_stretch_deviation =
+1.014`, `F = [2.014, 0.914, 0.520]`. **The failure mode changed**
+from contact-side Armijo stall to material-side principal-
+stretch validity.
 
-**Cost**: ~150–250 lines. Need a fit algorithm (least-squares fit
-to scan vertices, with a chosen primitive family). The cf-cast arc
-has prior art for capsule fits.
+**Interpretation**: at 2 500 faces, the iter-1 scan has an
+average face spacing ≈ √(scan_surface_area / face_count) ≈
+10 mm on a 50 cm leg — *more than twice the BCC cell_size
+(4 mm)*. The grid is over-sampling the source mesh, picking up
+its under-resolution as aliasing artifacts. At 25 000 faces,
+face spacing drops to ≈ 3 mm, matching the grid_cell, and the
+scan-side surface representation becomes faithful.
 
-**Risk**: changes the engineering meaning — the contact is now
-against an *approximation* of the limb, not the actual cleaned
-scan. For Fork-B relative comparison this is acceptable (and is
-how many commercial socket-fit tools work), but it does lose
-fidelity.
+The recon's "may help (additive)" prediction *understated* N2 —
+it was a 2× envelope improvement, more powerful than the
+N3 smoothing on iter-1 alone.
 
-**Predicted envelope-extension**: likely 100% on both ramps if the
-fit is reasonable. The clearest path to "full depth on the real
-scan", at the cost of changing what the simulation is actually
-solving.
+### N3 — Gaussian pre-smooth on the GridSdf signed-distance buffer
 
-### Demoted — Analytical-derivative-of-trilinear (original Option (a))
+Separable 3D Gaussian, σ = 0.5 cell, kernel radius 1 (3-tap),
+clamp-edge boundary, applied to `signed` between step 6 and
+`SdfGrid::new` in `build_grid_sdf`. Prototype in this session
+was ~95 LOC; reverted on commit per "no implementation this
+session" constraint.
 
-**Empirically falsified** in the session that produced this recon
-update. Reverted on `dev`. Should not be revisited unless paired
-with N3 (Gaussian pre-smooth) — on top of a smoother underlying
-field, the analytical-derivative variant might match FD's per-step
-smoothness while preserving its per-cell consistency. But there is
-no current evidence that this combined variant would beat
-N3-alone.
+| Ramp | Steps converged | Last depth | Δ from baseline |
+|---|---|---|---|
+| Synthetic icosphere | **16 / 16** (100 %) | 3.00 mm | **+2 steps, +0.38 mm** — full depth |
+| Real iter-1 scan | **12 / 16** (75 %) | 2.25 mm | **+7 steps, +1.31 mm** |
 
-### Punted — Finer SDF grid (Option #2 from original recon)
+Per-step iters synthetic: `3/1/1/2/2/1/2/2/2/2/2/2/15/14/47/14`
+— the explosion pattern is *gone* through step 12, replaced by
+steady 2-iter convergence; only the last four steps grow, and
+the final step (3.00 mm) lands in 14 iters.
 
-Useful as the N1 *experiment*, but not durable as a *fix*. The
-memory and build-time cost of a 1 mm grid (let alone 0.5 mm) on
-larger scans is real, and it doesn't address the kink — only
-shrinks it.
+Per-step iters iter-1: `4/2/2/3/6/4/4/5/8/11/13/18` → Yeoh
+stretch-validity violation at tet 4130, `F = [2.027, 1.068,
+0.325]`. Smooth growth through step 12, then material wall.
+Like N2, **the failure mode changed** from Armijo-stall to
+Yeoh-validity.
 
-### Punted — Adaptive-step continuation (Option #3 from original recon)
+**Side-effect characterization (surface-position bias)**:
+Gaussian-smoothed signed-distance shifts the zero isosurface
+by ≈ σ²·κ / 2 where κ is local mean curvature. With σ = 0.5 cell
+= 1.5 mm on a 40 mm-radius sphere: bias ≈ 1.5² / (2·40) ≈
+0.028 mm. For sharper device features (radii ~5 mm): bias
+≈ 1.5² / (2·5) = 0.225 mm. Both are well within Fork-B
+relative-comparison tolerance and below the BCC cell_size (4 mm).
+Wall-band sign correctness preserved automatically — the
+smoothing of a piecewise-`±|unsigned|` field with the kernel
+radius ≤ wall-band width does not change region labels.
 
-Still punted. The bookmark's observation that the stall is
-depth-driven, not increment-driven, remains valid. Adaptive
-continuation can't push past a depth wall.
+### Cross-experiment interpretation (populated, post-measurement)
+
+|  | N1 grid helps | **N1 grid doesn't help** |
+|---|---|---|
+| **N3 smooth helps** | n/a | **← we are here. The fix is smoothing alone.** |
+| N3 smooth doesn't help | n/a | (Would have meant: structural fix is something else — contact-formulation, Yeoh-validity preconditioning.) |
+
+N2 axis (orthogonal): the iter-1 scan's source-mesh resolution
+*also* matters, additively. The largest single-axis win on iter-1
+is N3 alone (+7 steps); N2 alone is +5 steps; **N2 and N3 combined
+were not measured this session** (session budget — listed as
+session-4 verification) but the failure-mode change of both
+experiments to Yeoh-validity suggests the combination would reach
+deeper before hitting the material wall.
+
+### Settled structural-fix recommendation
+
+**Implement N3** (Gaussian pre-smooth on `GridSdf` signed buffer)
+as the slice-7 fix. Specifically:
+
+1. Re-introduce `gaussian_smooth_3d_separable` in
+   `tools/cf-device-design/src/insertion_sim.rs` (prototype from
+   this session is durable — kernel build + three separable
+   passes + clamp-edge, ~95 LOC).
+2. Call it after step 6 of `build_grid_sdf`, just before
+   `SdfGrid::new`, with `sigma_cells = 0.5` as the default.
+3. Update `build_grid_sdf`'s docstring with the σ²·κ
+   surface-position-bias note and the Fork-B-relative caveat.
+4. Tighten the `run_insertion_ramp_on_synthetic_sphere`
+   regression assertion from `>= 10 steps` to `== 16 steps`
+   (full depth) — earned now.
+5. The iter-1 ramp test stays unchanged (it does not assert a
+   step count); document the post-fix 12 / 16 envelope in its
+   docstring.
+6. **Keep N2 (`sdf_target_faces = 25_000` on iter-1) as a
+   follow-up commit** if the 12 / 16 envelope isn't enough for
+   slice-8/9 downstream use. Likely yes — the Yeoh-validity wall
+   is the *next* recon target if higher inset depths are
+   required, and N2 + N3 together would be a clean reach toward
+   that wall.
+
+**Why N3 and not tricubic**: Tricubic / B-spline would buy the
+last few percent (synthetic already at 100 %, iter-1 already at
+75 % with a material-side wall blocking the rest). The ~200–400
+LOC `cf-geometry` upgrade isn't justified by remaining gain. If
+slice-8 Save/Open or slice-9 wiring surface a regime where N3
+isn't enough, revisit then.
+
+**Why N3 in `cf-device-design`, not `cf-geometry`**: the σ²·κ
+surface-position bias is acceptable for Fork-B insertion FEM but
+*not* for cast-mold geometry (cf-cast-cli sizes molds from the
+exact scan SDF) or scan-prep visualization. Scoping the smoothing
+to insertion-sim's `GridSdf` preserves the engineering meaning of
+the geometry elsewhere.
+
+---
+
+## Sniped fixes — final ranking (post-N1/N2/N3 measurement)
+
+The recon-iter-2 ranking was conditional on the experiments. Now
+that they are run, the ranking collapses to a single
+implementation directive (#1) with one optional follow-up (#2)
+and the rest demoted.
+
+### #1 — Gaussian pre-smooth on the GridSdf scalar buffer ← SHIP
+
+**Measured envelope-extension**: synthetic 87 → 100 %, iter-1
+31 → 75 %. **Failure-mode shift** from Armijo-stall to
+Yeoh-validity on both ramps — the contact-formulation is no
+longer the binding constraint after the fix.
+
+**Cost**: ~95 LOC inside `cf-device-design::build_grid_sdf`,
+prototyped in this session and reverted per the no-implementation
+constraint. Re-introduction in session 4 is a copy from the
+recon-iter-3 spike.
+
+**Risk**: surface-position bias ≈ σ²·κ / 2 ≈ 0.03 mm on smooth
+features and ≈ 0.2 mm on 5 mm-radius features. Documented as a
+Fork-B-relative tolerance; below the 4 mm cell_size budget;
+auditable.
+
+**Why scope to `cf-device-design`, not `cf-geometry`**: see
+recommendation above.
+
+### #2 — Raise `sdf_target_faces` on real-scan inputs (follow-up)
+
+**Measured envelope-extension on iter-1**: 31 → 62 % at 25 k
+faces alone; predicted ≥ 75–90 % when combined with #1.
+
+**Cost**: 1-line change in the iter-1 ramp test + a constant
+documented in `build_insertion_geometry` (recommend
+`sdf_target_faces ≥ 25_000` for cleaned-scan inputs). Trades SDF
+build time linearly with face count — the iter-1 build at 25 k
+took ~30 s of additional setup, well within the ramp budget.
+
+**When to ship**: if slice-8/9 downstream needs deeper inset than
+75 % on real scans, combine with #1. Otherwise hold until a
+real engineering case demands it.
+
+### Demoted — Finer GridSdf grid (N1 falsified)
+
+Empirically *regresses* both envelopes (synthetic 87 → 69 %,
+iter-1 31 → 25 %). The cell-face-kink-vs-grid-spacing mental
+model was wrong on polyhedral inputs — the kink is inherited
+from the source mesh, not produced by the grid. Should not be
+revisited as a fix; the N1 experiment itself stays useful as
+historical evidence.
+
+### Demoted — Tricubic / Catmull-Rom upgrade in `cf-geometry`
+
+Not needed. The contact wall is no longer the binding constraint
+post-N3. ~200–400 LOC `cf-geometry` upgrade would buy at most
+the last 25 % of iter-1 envelope, and that gap is on the
+material-validity side, not the gradient-smoothness side.
+Revisit only if slice-8/9 surfaces a regime where N3 + N2 are
+insufficient.
+
+### Demoted — Analytical-primitive fitting for the contact intruder
+
+Not needed for the same reason. The N3 fix preserves the scan
+geometry verbatim (modulo the σ²·κ bias) and reaches deeper than
+analytical-primitive fitting would (the iter-1 75 % envelope is
+limited by Yeoh validity, not by intruder smoothness).
+
+### Demoted (carryover) — Analytical-derivative-of-trilinear
+
+Already falsified in recon-iter-2. Reaffirmed by recon-iter-3:
+the cell-face kink it would have addressed isn't from the
+trilinear interpolant per se — it's from the source mesh — and
+N3 attacks it at the right layer.
+
+### Punted (carryover) — Adaptive-step continuation
+
+Still punted. The N3 ramp doesn't show a depth wall in the
+"can't take another step" sense — it hits a material-side
+validity check the solver enforces unconditionally. Continuation
+won't help there.
 
 ---
 
@@ -503,43 +676,70 @@ continuation can't push past a depth wall.
 
 ## Bookmark — implementation slice for next session
 
-The next session is *another recon session*, not an implementation
-session. The deliverable is:
+Recon iter 3 closed the loop. The next session is the **N3
+implementation commit** (session 4 in the bookmark numbering):
 
-1. **Run N1, N2, N3** as branched experiments on `dev`. Each is a
-   1-commit measurement (the `cf-device-design` change is small;
-   run the ramps; record the numbers in a `cf-device-design` test
-   docstring or an appended section of this doc).
-2. **Update this doc** with the experimental results in
-   §"Cross-experiment interpretation."
-3. **Settle on a single structural fix** (Gaussian pre-smooth,
-   tricubic, or analytical primitive) based on the data.
-4. **Implement the chosen fix** as a dedicated commit (or 2 if
-   needed). Validate with both insertion-sim ramps.
+1. **Reintroduce `gaussian_smooth_3d_separable`** in
+   `tools/cf-device-design/src/insertion_sim.rs` (the prototype
+   from this session — kernel build via `(-r..=r).map(|i|
+   exp(-i²/(2σ²)))` then three separable passes with clamp-edge
+   boundary handling; ~95 LOC). Document σ²·κ surface-position
+   bias.
+2. **Wire it into `build_grid_sdf`** between step 6 (signed
+   buffer) and `SdfGrid::new`, with `sigma_cells = 0.5` as the
+   default. Update the function's docstring.
+3. **Validate**: run both insertion-sim ramps in `--release
+   --ignored`. Synthetic must hit `16 / 16` (full depth);
+   iter-1 must hit `≥ 12 / 16`.
+4. **Regression assertion**: tighten
+   `run_insertion_ramp_on_synthetic_sphere` from `>= 10 steps`
+   to `== 16 steps`. The iter-1 ramp test asserts only ramp
+   mechanics already; leave that alone but update its docstring
+   to record the post-fix envelope.
+5. **Optional within the same commit** — bump
+   `sdf_target_faces` from `2_500` to `25_000` on the iter-1
+   ramp test (recon-iter-3 §N2 finding) to characterize the
+   combined #1 + #2 envelope. If it cleanly hits `≥ 14 / 16`,
+   keep the bump; else split into a separate commit.
+6. **Add a small cf-device-design unit test** verifying the
+   Gaussian smoother is bit-exact on a constant field and is a
+   no-op (within fp-tol) for `sigma_cells = 0.0`. Algorithm-
+   neutral contract test for the helper.
+7. **Cold-read** the updated `build_grid_sdf` + insertion-sim
+   ramp tests as the N+1 pass. Then `cargo xtask grade
+   cf-device-design` and `xtask grade cf-geometry` (neither
+   should regress).
 
-This is one or two sessions away. The user's authority to commit
-the chosen fix autonomously is granted by the project-memory
-"autonomous architect" memo; the choice of *which* fix has now
-been gated on N1–N3 specifically because the original recon's
-hypothesis was wrong about the FD-vs-analytical tradeoff.
+User's "autonomous architect" authority covers this commit.
+
+Slice 7 closes after this commit, modulo deferred items —
+`mod insertion_sim` un-gate (7.4), `InsertionResult` UI surface
+(7.5), and the slacker-effective-modulus wiring (7.6) — which
+the bookmark plans for slice 7.4+.
 
 ---
 
 ## Bookmark (commit + state)
 
-- **Branch**: `dev`, HEAD ⟨this commit⟩.
+- **Branch**: `dev`, HEAD ⟨this commit⟩ (recon-iter-3 doc-only
+  update; cf-device-design code unchanged from recon-iter-2).
 - **Preserves**:
   - The discriminating experiment
     `run_insertion_ramp_on_analytical_sphere_shell` (introduced in
     `509f77dc`, the original recon commit).
   - The algorithm-neutral gradient-contract tests in
-    `design/cf-geometry/src/sdf.rs::tests` (introduced this
-    session, kept on revert).
-- **Reverts**:
+    `design/cf-geometry/src/sdf.rs::tests` (introduced in
+    recon-iter-2, kept on revert).
+- **Reverts (carryover from recon-iter-2)**:
   - `SdfGrid::gradient` from analytical-trilinear back to centered-
-    FD-on-`distance_clamped`. WGSL shader comments + GPU spec
-    doc warnings rolled back. cf-geometry test framings made
-    algorithm-neutral.
-- **Next**: more recon — run N1 (finer grid), N2 (more SDF faces),
-  N3 (Gaussian pre-smooth) on the existing ramps; update this
-  doc; settle the structural fix.
+    FD-on-`distance_clamped`.
+- **Reverts (this session — no code change committed)**:
+  - The N1 one-line edit (`grid_cell_m = 0.25 * cell_size_m`),
+    measured + reverted.
+  - The N2 one-line edit (`sdf_target_faces = 25_000` in the
+    iter-1 test), measured + reverted.
+  - The N3 ~95-LOC prototype (`gaussian_smooth_3d_separable` +
+    its call site in `build_grid_sdf`), measured + reverted.
+    Will be reintroduced in session 4 per the bookmark above.
+- **Next**: session 4 — implement N3. See §"Bookmark —
+  implementation slice for next session" above.
