@@ -4006,29 +4006,41 @@ fn scan_prep_panel(
         .default_width(320.0)
         .show(ctx, |ui| {
             // Wrap the panel sections in a vertical ScrollArea —
-            // with 6+ collapsing sections (Scan Info / Simplify /
-            // Reorient / Recenter / Clip / Cap, plus #10-#12 to
-            // come), the total content exceeds typical viewport
-            // height on laptop screens. Without scrolling, sections
-            // below the fold are unreachable. `auto_shrink([false,
-            // true])` claims full available width but only as much
-            // height as content needs (with scrollbar on overflow).
+            // total content exceeds typical viewport height on
+            // laptop screens. Without scrolling, sections below
+            // the fold are unreachable. `auto_shrink([false,
+            // true])` claims full available width but only as
+            // much height as content needs (with scrollbar on
+            // overflow).
+            //
+            // CSP.4c — panel order = "centerline-driven flow":
+            //   1. Scan Info (read-only info at load)
+            //   2. Simplify (Apply simplify → 200k face workshop budget)
+            //   3. Cap open boundaries (Scan → detect centerline)
+            //   4. Centerline trim (drag sliders + Apply trim)
+            //   5. Reorient / Recenter / Clip floor (collapsed —
+            //      manual overrides for cases auto-PCA +
+            //      auto-center + trim don't cover)
+            //   6. Save (final action)
+            //
+            // Reorient + Recenter + Clip floor's panel functions
+            // open with `default_open(false)` so they appear as
+            // discoverable expanders without cluttering the
+            // primary flow. Auto-PCA at load + Auto-center at
+            // load + centerline trim are the load-bearing path;
+            // the override panels are escape hatches.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     render_scan_info_section(ui, &info);
                     render_simplify_section(ui, &info, &mut simplify_state);
+                    render_cap_section(ui, &mut cap_state, &mut cap_pending);
+                    render_centerline_trim_section(ui, &mut centerline_trim_state, &cap_state);
+                    // ----- Manual overrides (collapsed) -----
                     render_reorient_section(ui, &mut reorient_state, &scan.0);
                     render_recenter_section(ui, &mut recenter_state, &reorient_state, &overlays);
                     render_clip_section(ui, &mut clip_state, &overlays);
-                    render_cap_section(
-                        ui,
-                        &mut cap_state,
-                        &mut cap_pending,
-                        &mut reorient_state,
-                        &mut recenter_state,
-                    );
-                    render_centerline_trim_section(ui, &mut centerline_trim_state, &cap_state);
+                    // ----- Save (last) -----
                     render_save_section(
                         ui,
                         &source.0,
@@ -4147,8 +4159,12 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
 /// consumes the state every Update tick and projects it onto the Bevy
 /// Transform.
 fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState, mesh: &IndexedMesh) {
-    egui::CollapsingHeader::new("Reorient")
-        .default_open(true)
+    // CSP.4c — collapsed by default. The auto-PCA bake at load
+    // (CSP.4a) handles the common-case orientation; the sliders +
+    // snap buttons here are manual override for cases where PCA
+    // picked wrong.
+    egui::CollapsingHeader::new("Reorient (manual override)")
+        .default_open(false)
         .show(ui, |ui| {
             ui.add(egui::Slider::new(&mut state.roll_deg, -180.0..=180.0).text("roll (deg)"));
             ui.add(egui::Slider::new(&mut state.pitch_deg, -180.0..=180.0).text("pitch (deg)"));
@@ -4239,8 +4255,11 @@ fn render_recenter_section(
     reorient: &ReorientState,
     overlays: &OverlayLengths,
 ) {
-    egui::CollapsingHeader::new("Recenter")
-        .default_open(true)
+    // CSP.4c — collapsed by default. Auto-center at load (CSP.3.5)
+    // puts the AABB centroid at origin; these sliders + buttons
+    // are for users who want a different recentering target.
+    egui::CollapsingHeader::new("Recenter (manual override)")
+        .default_open(false)
         .show(ui, |ui| {
             let range = overlays.recenter_slider_range_mm;
             ui.add(egui::Slider::new(&mut state.tx_mm, -range..=range).text("X (mm)"));
@@ -4296,8 +4315,13 @@ fn render_recenter_section(
 /// value populated by [`update_clip_drop_pct`] on relevant state
 /// changes. The panel render itself stays O(1).
 fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &OverlayLengths) {
-    egui::CollapsingHeader::new("Clip floor")
-        .default_open(true)
+    // CSP.4c — collapsed by default. Centerline trim subsumes the
+    // common-case "shave the noisy end" need; this clip is a
+    // simpler world-Z plane cut for cases where the user wants
+    // an axis-aligned slice instead of a centerline-perpendicular
+    // one.
+    egui::CollapsingHeader::new("Clip floor (advanced)")
+        .default_open(false)
         .show(ui, |ui| {
             ui.checkbox(&mut state.enabled, "Enabled");
 
@@ -4332,13 +4356,7 @@ fn render_clip_section(ui: &mut egui::Ui, state: &mut ClipState, overlays: &Over
 /// scan, the displayed list dims and a "Transform changed — re-Scan
 /// to refresh" notice appears. The user clicks `[Scan]` again to
 /// re-fit planes on the now-current mesh.
-fn render_cap_section(
-    ui: &mut egui::Ui,
-    state: &mut CapState,
-    pending: &mut CapPendingAction,
-    reorient: &mut ReorientState,
-    recenter: &mut RecenterState,
-) {
+fn render_cap_section(ui: &mut egui::Ui, state: &mut CapState, pending: &mut CapPendingAction) {
     egui::CollapsingHeader::new("Cap open boundaries")
         .default_open(true)
         .show(ui, |ui| {
@@ -4354,37 +4372,16 @@ fn render_cap_section(
                 return;
             }
 
-            // One-click alignment: rotate so the first loop's outward
-            // normal points to world -Z (cavity-floor convention) AND
-            // translate so its centroid lands at world origin. Solves
-            // the "manually lining it up is bound to give imperfect
-            // results" UX gap — the SVD plane fit already knows
-            // exactly where the boundary plane is.
-            if ui.button("Snap boundary -> floor").clicked() {
-                if let Some(loop_0) = state.loops.first() {
-                    let target = Vector3::new(0.0, 0.0, -1.0);
-                    let rotation = UnitQuaternion::rotation_between(&loop_0.plane_normal, &target)
-                        .unwrap_or_else(|| {
-                            UnitQuaternion::from_axis_angle(
-                                &nalgebra::Vector3::x_axis(),
-                                std::f64::consts::PI,
-                            )
-                        });
-                    let (roll, pitch, yaw) = rotation.euler_angles();
-                    reorient.roll_deg = roll.to_degrees();
-                    reorient.pitch_deg = pitch.to_degrees();
-                    reorient.yaw_deg = yaw.to_degrees();
-                    let rotated_centroid = rotation.transform_point(&loop_0.plane_centroid);
-                    recenter.tx_mm = -rotated_centroid.x * 1000.0;
-                    recenter.ty_mm = -rotated_centroid.y * 1000.0;
-                    recenter.tz_mm = -rotated_centroid.z * 1000.0;
-                    // Re-scan: the loop indices still reference the
-                    // same mesh vertices, but the staleness flag will
-                    // flip from the Reorient/Recenter mutations. A
-                    // queued rescan clears it on the next tick.
-                    pending.rescan = true;
-                }
-            }
+            // CSP.4c — `[Snap boundary -> floor]` button removed.
+            // It rotated/translated based on the FIRST detected cap
+            // loop's plane fit, which was the ORIGINAL rim (in
+            // pre-trim coordinates). After Centerline-trim Apply,
+            // the "floor" of the displayed mesh is the trim cut
+            // plane, NOT that original rim. Clicking snap
+            // post-trim would have aligned the no-longer-present
+            // rim. Auto-PCA + Auto-center at load handle the
+            // common alignment case; the Reorient + Recenter
+            // panels (collapsed by default) cover manual override.
 
             if state.stale {
                 ui.colored_label(
