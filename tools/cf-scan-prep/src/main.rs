@@ -1792,6 +1792,44 @@ fn compute_centerline_polyline(
     polyline
 }
 
+/// Smooth a polyline by iterated 3-tap moving average over interior
+/// points, with endpoint pinning. User-driven 2026-05-15: "the
+/// actual line inside needs to be smooth before we trim."
+///
+/// `compute_centerline_polyline` produces cross-section centroids
+/// from raw scan vertex bins. On a noisy surface scan the centroids
+/// wobble several mm per slab — that wobble propagates downstream:
+/// trim cut planes pivot off the wobbly local tangent;
+/// `apply_constant_reconstruction` builds its sampling frame from
+/// a wobbly tangent. Smoothing the polyline before any downstream
+/// consumer sees it kills the noise.
+///
+/// Algorithm — `iterations` passes of `next[i] = (curr[i-1] +
+/// curr[i] + curr[i+1]) / 3` for interior points; endpoints
+/// `polyline[0]` and `polyline[N-1]` pin (so the trim distance
+/// semantics — "trim from tip = polyline[0] forward, trim from
+/// floor = polyline[N-1] backward" — stay anchored). For
+/// `iterations=3` the effective filter footprint is ~5 samples
+/// wide; visibly smooths without flattening overall curvature.
+///
+/// No-op for polylines with < 3 points (no interior to smooth).
+fn smooth_polyline(polyline: &[Point3<f64>], iterations: usize) -> Vec<Point3<f64>> {
+    if polyline.len() < 3 || iterations == 0 {
+        return polyline.to_vec();
+    }
+    let mut current: Vec<Point3<f64>> = polyline.to_vec();
+    let n = current.len();
+    for _ in 0..iterations {
+        let mut next = current.clone();
+        for i in 1..(n - 1) {
+            let avg = (current[i - 1].coords + current[i].coords + current[i + 1].coords) / 3.0;
+            next[i] = Point3::from(avg);
+        }
+        current = next;
+    }
+    current
+}
+
 /// Project a physics-frame mesh-local point through the live
 /// Reorient + Recenter + render_scale + up-axis-swap pipeline into
 /// Bevy world-space, with rotation pivoted around the scan's raw
@@ -3910,8 +3948,18 @@ fn handle_cap_actions(
     // Centerline: use the first cap loop's outward normal as the
     // spine direction. If no loops detected (closed mesh — unusual
     // for cf-scan-prep input but possible), skip the centerline.
+    //
+    // CSP.4e.2.3 (2026-05-15) — apply 3-iteration moving-average
+    // smoothing to the raw cross-section centroids. The raw
+    // centroids wobble several mm per slab on a noisy surface
+    // scan, which (a) tilts trim cut planes off the body's true
+    // axis and (b) gives the reconstruction algorithm a wobbly
+    // sampling frame. Smoothing once at storage time means every
+    // downstream consumer (trim algo, trim overlay, reconstruct,
+    // save TOML) sees the cleaned polyline.
     cap.centerline_polyline = if let Some(first_loop) = cap.loops.first() {
-        compute_centerline_polyline(&scan.0, first_loop.plane_normal, 30)
+        let raw = compute_centerline_polyline(&scan.0, first_loop.plane_normal, 30);
+        smooth_polyline(&raw, 3)
     } else {
         Vec::new()
     };
@@ -6563,6 +6611,55 @@ mod tests {
         // 50 + 50 + 50 mm = 0.15 m.
         let total = polyline_arc_length_m(&polyline);
         assert!((total - 0.15).abs() < 1e-12);
+    }
+
+    /// CSP.4e.2.3 — `smooth_polyline` pins the endpoints and
+    /// flattens an interior zigzag. Fixture: 5-point polyline
+    /// where the middle point is offset perpendicular to the
+    /// otherwise-straight line. After 3 iterations of 3-tap
+    /// moving average, the middle point should be pulled
+    /// substantially back toward the straight line; endpoints
+    /// `polyline[0]` and `polyline[N-1]` should be unchanged.
+    #[test]
+    fn smooth_polyline_flattens_interior_pins_endpoints() {
+        let raw = vec![
+            Point3::new(0.0, 0.0, 0.0), // endpoint
+            Point3::new(0.01, 0.0, 0.0),
+            Point3::new(0.02, 0.005, 0.0), // wobble +5 mm
+            Point3::new(0.03, 0.0, 0.0),
+            Point3::new(0.04, 0.0, 0.0), // endpoint
+        ];
+        let smoothed = smooth_polyline(&raw, 3);
+        assert_eq!(smoothed.len(), raw.len());
+        // Endpoints bit-exact preserved.
+        assert_eq!(smoothed[0], raw[0]);
+        assert_eq!(smoothed[4], raw[4]);
+        // Middle point's y substantially reduced (started at
+        // 5 mm; after 3 iterations of 3-tap should be < 2 mm).
+        assert!(
+            smoothed[2].y.abs() < raw[2].y.abs(),
+            "middle should smooth toward 0, got y = {}",
+            smoothed[2].y,
+        );
+        assert!(
+            smoothed[2].y.abs() < 0.002,
+            "after 3 iterations 5 mm wobble should drop below 2 mm, got {}",
+            smoothed[2].y,
+        );
+    }
+
+    /// `smooth_polyline` is a no-op for < 3-point input (no
+    /// interior to smooth) and for `iterations == 0`.
+    #[test]
+    fn smooth_polyline_no_op_when_too_short_or_zero_iters() {
+        let two_pt = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
+        assert_eq!(smooth_polyline(&two_pt, 5), two_pt);
+        let three_pt = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        ];
+        assert_eq!(smooth_polyline(&three_pt, 0), three_pt);
     }
 
     // ----- build_overlay_lengths -------------------------------------
