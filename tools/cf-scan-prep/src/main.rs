@@ -645,9 +645,8 @@ struct AutoCenterOffset(Vector3<f64>);
 /// demolding direction). Baked into vertex positions at load, just
 /// like auto-center — so the in-memory + saved-to-disk mesh is in
 /// canonical orientation. The user's Reorient sliders therefore
-/// start at identity (no further rotation needed in the typical
-/// workflow); CSP.4c will retire those sliders entirely once the
-/// centerline-driven trim flow lands at CSP.4b.
+/// start at identity in the typical workflow; further manual
+/// adjustment via those sliders is still available.
 ///
 /// `None` when PCA failed (degenerate mesh, < 3 vertices, all
 /// vertices coincident) — these scans are unworkable downstream
@@ -2519,20 +2518,7 @@ fn run_render_app(
         .insert_resource(auto_pca)
         .insert_resource(StatusBar::default())
         .insert_resource(overlays)
-        .add_systems(
-            Startup,
-            (
-                setup_render_scene,
-                init_status_for_load,
-                // CSP.4a — auto-trigger boundary detection + centerline
-                // computation on first Update tick. The handle_cap_actions
-                // system already drives this via the rescan flag; we just
-                // pre-set it so the user doesn't have to click `[Scan]`
-                // before saving. Pairs with the auto-PCA bake so the
-                // centerline runs roughly along world +Z out of the box.
-                trigger_auto_cap_detection,
-            ),
-        )
+        .add_systems(Startup, (setup_render_scene, init_status_for_load))
         // Apply/Reset handler runs before auto-clear so a newly-set
         // status's TTL is checked against the same tick's `Time`.
         // `apply_world_transform_to_scan_entity` is idempotent (no-op
@@ -2658,17 +2644,6 @@ fn setup_render_scene(
     // Marker so the Simplify Apply/Reset handler can despawn the
     // current scan render before respawning from the new mesh.
     commands.entity(entity).insert(ScanMeshEntity);
-}
-
-/// Startup system: prime `CapPendingAction::rescan = true` so the
-/// existing `handle_cap_actions` Update system runs boundary
-/// detection + centerline computation on the first Update tick.
-/// CSP.4a — replaces the user-click-`[Scan]` workflow with auto-
-/// detection at load. The Cap panel still renders the loop list as
-/// informational; CSP.4c removes the `[Scan]` button entirely.
-#[allow(clippy::needless_pass_by_value)]
-fn trigger_auto_cap_detection(mut pending: ResMut<CapPendingAction>) {
-    pending.rescan = true;
 }
 
 /// Startup system: surface the auto-suggest banner if the loaded scan
