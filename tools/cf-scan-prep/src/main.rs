@@ -1688,6 +1688,15 @@ fn apply_reconstruction(
         }
     }
 
+    // CSP.4e fix-forward (PR #246 cold-read review, 2026-05-15) —
+    // seal any OTHER open boundaries we didn't reconstruct. The
+    // floor end is closed by the extrusion sidewalls + bottom fan
+    // above; this call only acts on remaining open loops (typically
+    // the tip end if the user also trimmed there). Without it, a
+    // dual-end-trim + reconstruct workflow emits a non-watertight
+    // cleaned STL that breaks downstream cf-cast-cli offset/simplify.
+    auto_cap_open_boundaries(&mut mesh);
+
     mesh
 }
 
@@ -3874,7 +3883,8 @@ fn update_displayed_mesh(
     // the centerline-driven reconstruction (extruded average
     // cross-section + bottom flat cap). Tip-end (if also trimmed)
     // still gets the original flat auto-cap inside
-    // `apply_constant_reconstruction` via its fallback path.
+    // `apply_reconstruction` via its tail call to
+    // `auto_cap_open_boundaries` (PR #246 cold-read fix-forward).
     let displayed = if cap.centerline_polyline.len() >= 2
         && (trim.applied_tip_mm > 0.0 || trim.applied_floor_mm > 0.0)
     {
@@ -4135,13 +4145,12 @@ fn handle_cap_actions(
 }
 
 /// Update system: set `CapState::stale = true` when Reorient,
-/// Recenter, Clip, or `ScanMesh` changes after a scan has populated
+/// Recenter, or `ScanMesh` changes after a scan has populated
 /// `CapState::loops`. Spec §Panel specifications §6: the loop
 /// indices and plane fits are tied to the mesh as-it-was at scan
-/// time; subsequent transforms / simplify / clip operations invalidate
-/// them. CSP.2 added Clip to the watch list because the clip now
-/// bakes into the cleaned STL — a clip-then-save cycle without a
-/// re-Scan would emit cap faces that reference pre-clip positions.
+/// time; subsequent transforms / simplify operations invalidate
+/// them. (CSP.2 originally watched a `[clip]` slider too; CSP.4d
+/// removed clip from the tool entirely.)
 ///
 /// **Cheap check**: only reads change flags and writes a single bool
 /// via `bypass_change_detection` so we don't re-trigger ourselves.

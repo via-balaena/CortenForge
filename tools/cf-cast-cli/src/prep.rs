@@ -16,12 +16,13 @@ use serde::Deserialize;
 ///
 /// Only the `[centerline]` block matters for cast generation; every
 /// other block (`[scan_prep]` / `[simplify]` / `[transform]` /
-/// `[clip]` / `[caps]` / `[output]`) is provenance already baked into
-/// the cleaned STL by the time cf-cast-cli runs. Marking unknown
-/// fields permitted (no `deny_unknown_fields`) keeps us forward-
-/// compatible with future cf-scan-prep schema additions — and made
-/// the v1.0-completion `[reorient]/[recenter]` → `[transform]` rename
-/// (cf-scan-prep CSP.1, 2026-05-15) downstream-safe.
+/// `[caps]` / `[centerline_trim]` / `[output]`) is provenance already
+/// baked into the cleaned STL by the time cf-cast-cli runs. Marking
+/// unknown fields permitted (no `deny_unknown_fields`) keeps us
+/// forward-compatible with future cf-scan-prep schema additions —
+/// and made the v1.0-completion `[reorient]/[recenter]` →
+/// `[transform]` rename + `[clip]` removal (cf-scan-prep CSP.1 +
+/// CSP.4d, 2026-05-15) downstream-safe.
 #[derive(Debug, Clone, Deserialize)]
 struct PrepTomlSubset {
     centerline: Option<CenterlineBlock>,
