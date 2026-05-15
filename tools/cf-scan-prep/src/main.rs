@@ -1400,17 +1400,36 @@ fn apply_constant_reconstruction(
     applied_floor_mm: f64,
     reference_zone_mm: f64,
 ) -> IndexedMesh {
+    eprintln!(
+        "  apply_constant_reconstruction: input mesh {}V/{}F, centerline {} points, applied_floor_mm = {:.2}, reference_zone_mm = {:.2}",
+        mesh.vertices.len(),
+        mesh.faces.len(),
+        centerline.len(),
+        applied_floor_mm,
+        reference_zone_mm,
+    );
     if centerline.len() < 2 || applied_floor_mm <= 0.0 || reference_zone_mm <= 0.0 {
         // Nothing to reconstruct — fall back to flat-cap.
+        eprintln!(
+            "    early-return guard: centerline_len/applied_floor_mm/reference_zone_mm out of range"
+        );
         auto_cap_open_boundaries(&mut mesh);
         return mesh;
     }
     let loops = detect_boundary_loops(&mesh);
+    eprintln!("    detect_boundary_loops returned {} loops", loops.len());
     let centerline_last = centerline[centerline.len() - 1];
     let Some(floor_idx) = find_floor_loop_index(&loops, &mesh, centerline_last) else {
+        eprintln!("    find_floor_loop_index returned None — no valid floor loop");
         auto_cap_open_boundaries(&mut mesh);
         return mesh;
     };
+    eprintln!(
+        "    selected floor loop {} of {} ({} vertices)",
+        floor_idx,
+        loops.len(),
+        loops[floor_idx].vertices.len(),
+    );
 
     // Build the local frame at the cut. `inward_tangent` points
     // FROM the cut endpoint AWAY from the chopped end (i.e., back
@@ -1420,6 +1439,7 @@ fn apply_constant_reconstruction(
     let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
     let tangent_norm = tangent_raw.norm();
     if tangent_norm < f64::EPSILON {
+        eprintln!("    early-return: degenerate centerline tangent at cut");
         auto_cap_open_boundaries(&mut mesh);
         return mesh;
     }
@@ -1530,8 +1550,18 @@ fn apply_constant_reconstruction(
             for face in mesh.faces.iter_mut().skip(start) {
                 face.swap(1, 2);
             }
+            eprintln!("    winding-flip applied to {new_face_count} new faces");
+        } else {
+            eprintln!("    winding check passed — no flip needed");
         }
     }
+    eprintln!(
+        "    reconstruction done: output mesh {}V/{}F (added {} verts, {} faces)",
+        mesh.vertices.len(),
+        mesh.faces.len(),
+        l * RECONSTRUCT_RING_COUNT + 1,
+        2 * l * RECONSTRUCT_RING_COUNT + l,
+    );
 
     mesh
 }
@@ -3527,6 +3557,8 @@ fn update_displayed_mesh(
     mut materials: ResMut<Assets<StandardMaterial>>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
+    mut status: ResMut<StatusBar>,
+    time: Res<Time>,
     mut last_snapshot: Local<Option<DisplayedMeshSnapshot>>,
 ) {
     // CSP.4b.6 — apply-on-click. Consume the queued
@@ -3567,21 +3599,50 @@ fn update_displayed_mesh(
     }
 
     // CSP.4e — Reconstruct action handling. Same apply-on-click
-    // model as TrimAction.
+    // model as TrimAction. CSP.4e.2 fix-forward (2026-05-15
+    // user-reported "doesn't appear to generate the mesh back
+    // down"): guard against reference_mm == 0 + emit status
+    // messages so silent no-ops surface to the user.
     if let Some(action) = trim.reconstruct_pending.take() {
         match action {
             ReconstructAction::Apply => {
-                // CSP.4e.1 — UI plumbing only; the geometry
-                // algorithm lands at CSP.4e.2. Until then,
-                // Apply commits the choice but the displayed
-                // mesh is identical to the chopped-only state.
-                trim.applied_reconstruct = Some(AppliedReconstruct {
-                    reference_mm: trim.reconstruct_reference_mm,
-                    shape: trim.reconstruct_shape,
-                });
+                if trim.reconstruct_reference_mm <= 0.0 {
+                    status.text =
+                        "Reconstruct skipped: reference zone is 0 mm — drag the slider above 0 to sample cross-sections."
+                            .into();
+                    status.kind = StatusKind::Warning;
+                    status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 8.0);
+                } else {
+                    eprintln!(
+                        "  CSP.4e.2 Apply reconstruct: reference_mm = {:.1}, shape = {:?}, applied_floor_mm = {:.1}",
+                        trim.reconstruct_reference_mm,
+                        trim.reconstruct_shape,
+                        trim.applied_floor_mm,
+                    );
+                    trim.applied_reconstruct = Some(AppliedReconstruct {
+                        reference_mm: trim.reconstruct_reference_mm,
+                        shape: trim.reconstruct_shape,
+                    });
+                    let shape_label = match trim.reconstruct_shape {
+                        ReconstructShape::Constant => "Constant (average radius)",
+                        ReconstructShape::Taper => "Taper (stub — falls back to flat cap)",
+                        ReconstructShape::Extrapolate => {
+                            "Extrapolate (stub — falls back to flat cap)"
+                        }
+                    };
+                    status.text = format!(
+                        "Applied reconstruct: reference {:.1} mm, shape = {}",
+                        trim.reconstruct_reference_mm, shape_label,
+                    );
+                    status.kind = StatusKind::Normal;
+                    status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 8.0);
+                }
             }
             ReconstructAction::Reset => {
                 trim.applied_reconstruct = None;
+                status.text = "Reconstruct unapplied — mesh reverted to chopped-only state.".into();
+                status.kind = StatusKind::Normal;
+                status.auto_clear_at_secs = Some(time.elapsed_secs_f64() + 6.0);
             }
         }
     }
@@ -4834,21 +4895,37 @@ fn render_centerline_trim_section(
                 }
 
                 ui.add_space(4.0);
+                // CSP.4e.2 fix-forward — gate Apply reconstruct on
+                // reference_zone > 0. Apply with reference=0 was a
+                // silent no-op (the algorithm short-circuits to
+                // flat-cap) and the user couldn't tell why nothing
+                // happened. Disabling the button + hint makes the
+                // gate visible.
+                let can_apply = state.reconstruct_reference_mm > 0.0;
                 ui.horizontal(|ui| {
-                    if ui.button("Apply reconstruct").clicked() {
-                        state.reconstruct_pending = Some(ReconstructAction::Apply);
-                    }
-                    if state.applied_reconstruct.is_some() && ui.button("Unapply reconstruct").clicked() {
+                    ui.add_enabled_ui(can_apply, |ui| {
+                        if ui.button("Apply reconstruct").clicked() {
+                            state.reconstruct_pending = Some(ReconstructAction::Apply);
+                        }
+                    });
+                    if state.applied_reconstruct.is_some()
+                        && ui.button("Unapply reconstruct").clicked()
+                    {
                         state.reconstruct_pending = Some(ReconstructAction::Reset);
                     }
                 });
 
+                if !can_apply {
+                    ui.small(
+                        "Drag the reference zone slider above 0 to enable Apply reconstruct.",
+                    );
+                }
+
                 ui.add_space(4.0);
                 ui.small(
-                    "Note (CSP.4e.1): UI scaffolding only — the reconstruction \
-                     geometry algorithm lands at CSP.4e.2+. Clicking Apply \
-                     reconstruct commits the choice but the displayed mesh stays \
-                     in its chopped-only state for now.",
+                    "CSP.4e.2 — Constant shape generates extruded sidewall + flat cap. \
+                     Taper / Extrapolate land in 4e.3+; they currently fall back to flat \
+                     auto-cap.",
                 );
             }
         });
