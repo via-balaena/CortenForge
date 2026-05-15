@@ -2997,6 +2997,17 @@ fn render_simplify_section(ui: &mut egui::Ui, info: &ScanInfo, state: &mut Simpl
                     state.pending_action = Some(SimplifyAction::Reset);
                 }
             });
+            ui.add_space(4.0);
+            // Slice 9.8 — communicate the save-time budget semantics.
+            // Without this, users assume the slider only affects the
+            // viewport (true pre-9.8) and Save unexpectedly writes a
+            // full-resolution STL.
+            ui.small(
+                "Note: this slider is ALSO the save-time face budget. \
+                 When you click Save, the cleaned STL is simplified to \
+                 the target if it has more faces. Drag to max if you \
+                 want the full-resolution mesh saved.",
+            );
         });
 }
 
@@ -3402,6 +3413,7 @@ fn handle_save_action(
     recenter: Res<RecenterState>,
     clip: Res<ClipState>,
     cap: Res<CapState>,
+    simplify: Res<SimplifyState>,
     output_dir: Res<SaveOutputDir>,
     source: Res<SourceStlPath>,
     stl_units: Res<StlUnitsResource>,
@@ -3440,7 +3452,30 @@ fn handle_save_action(
         return;
     }
 
-    let cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
+    let mut cleaned = build_cleaned_mesh(&scan.0, &reorient, &recenter, &cap);
+    // Slice 9.8 — Simplify panel slider acts as a face budget at save
+    // time too, not just for the [Apply simplify] in-app action. If
+    // the slider sits below the cleaned mesh's current face count,
+    // run meshopt down to the target before writing — so saved STLs
+    // honor the slider regardless of whether [Apply] was clicked
+    // first. Default slider value is `SIMPLIFY_TARGET_DEFAULT` (200k),
+    // which keeps 3M+ face raw scans from landing on disk unfiltered
+    // and grinding cf-cast-cli / cf-device-design downstream.
+    //
+    // The user opts OUT by dragging the slider up to or above the
+    // current face count.
+    let pre_simplify_face_count = cleaned.faces.len();
+    let mut simplify_status_suffix = String::new();
+    if simplify.target_face_count < pre_simplify_face_count {
+        let result = simplify_mesh(&cleaned, simplify.target_face_count);
+        simplify_status_suffix = format!(
+            ", simplified {} \u{2192} {} faces in {:.1}s",
+            human_count(pre_simplify_face_count),
+            human_count(result.mesh.faces.len()),
+            result.elapsed_secs,
+        );
+        cleaned = result.mesh;
+    }
     let triangle_count = cleaned.faces.len();
 
     let rotation = reorient.quaternion_physics();
@@ -3474,7 +3509,7 @@ fn handle_save_action(
     match atomic_write_save(&cleaned, &cleaned_stl_path, &prep_toml_path, &toml_str) {
         Ok(()) => {
             status.text = format!(
-                "Saved {stem}.cleaned.stl ({} triangles) + {stem}.prep.toml",
+                "Saved {stem}.cleaned.stl ({} triangles{simplify_status_suffix}) + {stem}.prep.toml",
                 human_count(triangle_count),
             );
             status.kind = StatusKind::Normal;
