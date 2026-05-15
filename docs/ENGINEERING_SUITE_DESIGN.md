@@ -7,8 +7,10 @@
 > stack), surfaces are solid meshes (not wireframes), every layer is
 > user-dialed, and the slice ladder was reprioritized (FEM insertion
 > sim pulled forward). The as-built architecture lives in the code's
-> module docstrings and in `project_cf_device_design_slices_2_5`. This
-> doc is retained only for the original requirements-gathering record.
+> module docstrings. For the **insertion-sim subsystem** specifically
+> (slices 7.0 → 7.3b.1, as-built + open recon question), see
+> [`INSERTION_SIM_STATE.md`](INSERTION_SIM_STATE.md). This doc is
+> retained only for the original requirements-gathering record.
 
 **Status**: superseded by the as-built code (slices 2–6.5 shipped).
 Original status at authoring: design draft, not yet implemented
