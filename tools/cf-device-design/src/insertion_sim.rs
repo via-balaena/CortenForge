@@ -761,9 +761,13 @@ mod tests {
     // module opts out, same posture as `main.rs`'s test module.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::PathBuf;
 
-    use mesh_io::load_stl;
+    use mesh_io::{load_stl, save_stl};
+    use mesh_repair::{
+        RepairParams, find_connected_components, fix_winding_order, repair_mesh, validate_mesh,
+    };
 
     use super::*;
 
@@ -1275,5 +1279,213 @@ mod tests {
             max_disp > 0.0,
             "a {interference_m} m interference solve should displace at least one DOF",
         );
+    }
+
+    /// **7.3a diagnostic spike** — why does the real iter-1 scan's
+    /// single-step solve fail? (7.2 finding: non-PD pivots + Armijo
+    /// stall, residual ~6e4 that does *not* scale with interference.)
+    ///
+    /// Four phases, all *reporting* (no hard asserts beyond "the
+    /// fixture loaded") — this is a measurement harness, not a
+    /// regression test:
+    ///
+    /// 1. **Topology audit** — `validate_mesh` + components on the raw
+    ///    scan, the current decimated SDF source, and a repair-pass
+    ///    candidate. `mesh_sdf`'s closest-face-normal sign is only
+    ///    reliable on a watertight + manifold + consistently-wound
+    ///    mesh.
+    /// 2. **SDF sign cross-check** — `distance()` sign (closest-face
+    ///    normal, what `Sdf::eval` feeds the contact + BCs) vs
+    ///    `is_inside()` (ray cast). Disagreement = unreliable sign.
+    /// 3. **Controlled thick-wall experiment** — re-run the solve on
+    ///    the real scan with a 10 mm wall (vs 7.2's 5 mm). Isolates
+    ///    the thin-wall conditioning confound from the geometry/SDF.
+    /// 4. **STL exports** — the decimated SDF source + the meshed
+    ///    device-wall body, for eyes-on review in a mesh viewer.
+    ///
+    /// `#[ignore]` — needs the iter-1 fixture; run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     --bin cf-device-design diagnose_iter1 -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "7.3a diagnostic — needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
+    #[allow(clippy::cast_precision_loss)] // diagnostic counters → f64 for %/grid math
+    fn diagnose_iter1_scan_geometry() {
+        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !path.exists() {
+            eprintln!("skip: iter-1 scan fixture not found at {}", path.display());
+            return;
+        }
+        let raw = load_stl(&path).expect("load the iter-1 cleaned scan");
+        eprintln!("\n=== 7.3a diagnostic — {} ===", path.display());
+
+        // ── Phase 1 — topology audit ────────────────────────────────
+        let audit = |label: &str, m: &IndexedMesh| {
+            let r = validate_mesh(m);
+            let c = find_connected_components(m);
+            eprintln!(
+                "  [{label}]\n    {} faces / {} verts | watertight={} manifold={} \
+                 inside_out={}\n    boundary_edges={} non_manifold_edges={} \
+                 degenerate={} duplicate={} | components={}",
+                r.face_count,
+                r.vertex_count,
+                r.is_watertight,
+                r.is_manifold,
+                r.is_inside_out,
+                r.boundary_edge_count,
+                r.non_manifold_edge_count,
+                r.degenerate_face_count,
+                r.duplicate_face_count,
+                c.component_count,
+            );
+        };
+        eprintln!(
+            "\nPHASE 1 — topology audit (mesh_sdf sign needs watertight + manifold + \
+             consistent winding):"
+        );
+        audit("raw scan", &raw);
+        let decimated = decimate_for_sdf(&raw, 2_500);
+        audit("decimated @2500 — the current SDF source", &decimated);
+        // Candidate 7.3a fix: does a basic mesh-repair pass clean it up?
+        let mut repaired = decimated.clone();
+        let _ = fix_winding_order(&mut repaired);
+        let _ = repair_mesh(&mut repaired, &RepairParams::for_scans());
+        audit(
+            "decimated + fix_winding_order + repair_mesh(for_scans)",
+            &repaired,
+        );
+
+        // ── Phase 2 — mesh_sdf sign cross-check ─────────────────────
+        eprintln!(
+            "\nPHASE 2 — mesh_sdf sign cross-check (closest-face-normal `distance()` vs \
+             ray-cast `is_inside()`):"
+        );
+        let sdf = SignedDistanceField::new(decimated.clone()).expect("decimated scan SDF");
+        let bbox = scan_aabb(&decimated, 0.005);
+        let n = 18_usize;
+        let (mut total, mut disagree, mut near_total, mut near_disagree) = (0, 0, 0, 0);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let axis =
+                        |i: usize, lo: f64, hi: f64| lo + (hi - lo) * (i as f64 + 0.5) / n as f64;
+                    let p = Point3::new(
+                        axis(ix, bbox.min.x, bbox.max.x),
+                        axis(iy, bbox.min.y, bbox.max.y),
+                        axis(iz, bbox.min.z, bbox.max.z),
+                    );
+                    let d = sdf.distance(p);
+                    let mismatched = (d < 0.0) != sdf.is_inside(p);
+                    total += 1;
+                    disagree += usize::from(mismatched);
+                    // Near-surface points are the contact-relevant ones.
+                    if d.abs() < 0.008 {
+                        near_total += 1;
+                        near_disagree += usize::from(mismatched);
+                    }
+                }
+            }
+        }
+        let pct = |num: usize, den: usize| {
+            if den == 0 {
+                0.0
+            } else {
+                100.0 * num as f64 / den as f64
+            }
+        };
+        eprintln!(
+            "  {disagree}/{total} grid points disagree ({:.1}%) | near-surface (|d|<8mm): \
+             {near_disagree}/{near_total} ({:.1}%)",
+            pct(disagree, total),
+            pct(near_disagree, near_total),
+        );
+        // Centroid sanity: a closed blob's vertex centroid must read inside.
+        let centroid = {
+            let mut c = Vector3::zeros();
+            for v in &decimated.vertices {
+                c += v.coords;
+            }
+            Point3::from(c / decimated.vertices.len() as f64)
+        };
+        eprintln!(
+            "  vertex centroid: distance()={:.4} m (expect < 0), is_inside()={} (expect true)",
+            sdf.distance(centroid),
+            sdf.is_inside(centroid),
+        );
+
+        // ── Phase 3 — controlled thick-wall solve experiment ────────
+        eprintln!(
+            "\nPHASE 3 — controlled thick-wall solve experiment (real scan, 10 mm wall — \
+             7.2 failed at 5 mm / ~1.25 cells):"
+        );
+        let design_10mm = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        match build_insertion_geometry(&raw, &design_10mm, 2_500, 0.004) {
+            Ok(geometry) => {
+                eprintln!("  geometry: {} tets", geometry.n_tets);
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    run_single_insertion_step(geometry, 0.0002)
+                }));
+                match outcome {
+                    Ok(Ok(step)) => eprintln!(
+                        "  CONVERGED — {} pinned, {} Newton iters, residual {:.2e}\n  \
+                         → the thin wall was the 7.2 confound",
+                        step.n_pinned, step.iter_count, step.final_residual_norm,
+                    ),
+                    Ok(Err(e)) => eprintln!("  errored (not a panic): {e:#}"),
+                    Err(_) => eprintln!(
+                        "  PANICKED (Newton non-convergence) — a thicker wall does NOT fix \
+                         it; the geometry/SDF is the culprit"
+                    ),
+                }
+            }
+            Err(e) => eprintln!("  geometry build failed: {e:#}"),
+        }
+
+        // ── Phase 4 — STL exports for eyes-on review ────────────────
+        eprintln!("\nPHASE 4 — STL exports (open in a mesh viewer):");
+        let out_dir = std::env::temp_dir().join("cf_device_design_diag");
+        std::fs::create_dir_all(&out_dir).expect("create diag output dir");
+
+        let decimated_path = out_dir.join("decimated_scan.stl");
+        save_stl(&decimated, &decimated_path, true).expect("save decimated scan STL");
+        eprintln!(
+            "  {} — the SDF source; check for holes / flipped faces / stray components",
+            decimated_path.display(),
+        );
+
+        let design_5mm = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        match build_insertion_geometry(&raw, &design_5mm, 2_500, 0.004) {
+            Ok(geometry) => {
+                let mut surface = IndexedMesh::new();
+                surface.vertices = geometry
+                    .mesh
+                    .positions()
+                    .iter()
+                    .map(|p| Point3::from(*p))
+                    .collect();
+                surface.faces = geometry.mesh.boundary_faces().to_vec();
+                let body_path = out_dir.join("device_wall_body_5mm.stl");
+                save_stl(&surface, &body_path, true).expect("save device-wall body STL");
+                eprintln!(
+                    "  {} — the meshed 5 mm device wall ({} boundary faces); should be a \
+                     clean closed shell, not islands/holes",
+                    body_path.display(),
+                    surface.faces.len(),
+                );
+            }
+            Err(e) => eprintln!("  body export skipped — geometry build failed: {e:#}"),
+        }
+        eprintln!("\n=== end 7.3a diagnostic ===\n");
     }
 }
