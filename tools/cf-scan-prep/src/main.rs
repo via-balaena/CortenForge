@@ -1252,36 +1252,49 @@ const RECONSTRUCT_ANGLE_BINS: usize = 24;
 /// the sock fixture's mostly-straight floor region.
 const RECONSTRUCT_RING_COUNT: usize = 8;
 
-/// Decide which of `loops` is the "floor end" loop — the one whose
-/// centroid sits closest to the centerline polyline's last point.
-/// Used by [`apply_reconstruct_to_floor`] to single out the loop
-/// the user wants to reconstruct (vs. e.g., the tip-end loop if
-/// both ends were trimmed).
+/// Decide which of `loops` is the "floor end" loop — the LARGEST
+/// valid boundary loop. Used by [`apply_constant_reconstruction`]
+/// to single out the loop the user wants to reconstruct (the cut
+/// rim) vs. scan-noise stragglers.
 ///
-/// Returns the loop's index in `loops` plus its plane fit. `None`
-/// when no valid loop exists.
+/// CSP.4e.2 fix-forward (2026-05-15): the initial implementation
+/// picked the loop whose centroid was closest to the centerline
+/// endpoint. On an unsimplified scan (iter-1 fixture: 1215
+/// boundary loops, mostly 3-vertex stragglers), that heuristic
+/// picked a tiny noise loop at random whose centroid happened to
+/// be closest. The reconstruction then generated a degenerate
+/// thin column at that location ("white vertical line" the user
+/// reported). The cut rim is overwhelmingly the largest loop on
+/// any practical scan, so picking by vertex count is robust.
+///
+/// Loops with fewer than `MIN_RIM_LOOP_VERTS` (10) vertices are
+/// filtered out — they're scanner-noise stragglers, never the
+/// actual rim. Among the remaining, the largest wins.
+///
+/// `centerline_last_point` is accepted for future use (e.g., a
+/// distance-based tiebreaker when two large loops exist —
+/// multi-shell scans) but unused in the current pick-by-count
+/// implementation.
+///
+/// Returns the loop's index in `loops`, or `None` when no
+/// sufficiently-large valid loop exists.
 fn find_floor_loop_index(
     loops: &[holes::BoundaryLoop],
-    mesh: &IndexedMesh,
-    centerline_last_point: Point3<f64>,
+    _mesh: &IndexedMesh,
+    _centerline_last_point: Point3<f64>,
 ) -> Option<usize> {
-    let mut best: Option<(usize, f64)> = None;
+    const MIN_RIM_LOOP_VERTS: usize = 10;
+    let mut best: Option<(usize, usize)> = None;
     for (i, lp) in loops.iter().enumerate() {
         if !lp.is_valid() {
             continue;
         }
-        let loop_points: Vec<Point3<f64>> = lp
-            .vertices
-            .iter()
-            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
-            .collect();
-        if loop_points.len() != lp.vertices.len() {
+        let count = lp.vertices.len();
+        if count < MIN_RIM_LOOP_VERTS {
             continue;
         }
-        let (centroid, _, _) = fit_plane_to_points(&loop_points);
-        let dist_sq = (centroid.coords - centerline_last_point.coords).norm_squared();
-        if best.is_none_or(|(_, d)| dist_sq < d) {
-            best = Some((i, dist_sq));
+        if best.is_none_or(|(_, c)| count > c) {
+            best = Some((i, count));
         }
     }
     best.map(|(i, _)| i)
