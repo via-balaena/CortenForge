@@ -1185,10 +1185,13 @@ const GRID_SDF_SMOOTH_SIGMA_CELLS: f64 = 1.0;
 /// envelope effect.
 ///
 /// Kernel radius `r = ceil(2σ)` so the dropped tails carry < 0.5 %
-/// of total weight. The default σ = 0.5 cell uses a 3-tap kernel.
-/// Boundary handling is clamp-at-edge — the bbox margin
-/// (≥ `cell_size` past the scan outer envelope) keeps the outside
-/// well-saturated, so clamp is faithful and adds no sign-flip risk.
+/// of total weight. The current default σ = 1.0 cell
+/// ([`GRID_SDF_SMOOTH_SIGMA_CELLS`], settled at slice 7.3d) uses a
+/// 5-tap kernel (`r = ceil(2·1.0) = 2`, so `2r+1 = 5`); the earlier
+/// slice-7.3c σ = 0.5 cell used a 3-tap. Boundary handling is
+/// clamp-at-edge — the bbox margin (≥ `cell_size` past the scan
+/// outer envelope) keeps the outside well-saturated, so clamp is
+/// faithful and adds no sign-flip risk.
 ///
 /// `sigma_cells = 0.0` short-circuits to a copy of the input
 /// (identity); negative σ would produce an empty kernel and
@@ -1295,8 +1298,9 @@ fn gaussian_smooth_3d_separable(
 /// non-wall points → non-wall, not-reached points are the interior →
 /// expand the Outside/Inside labels into the wall band by multi-
 /// source BFS → signed value = `±unsigned` → **separable 3D
-/// Gaussian pre-smooth (σ = `GRID_SDF_SMOOTH_SIGMA_CELLS` = 0.5 cell)
-/// on the signed buffer (slice 7.3c)** — see
+/// Gaussian pre-smooth (σ = [`GRID_SDF_SMOOTH_SIGMA_CELLS`] = 1.0
+/// cell, settled at slice 7.3d after the σ sweep; slice 7.3c
+/// shipped at 0.5 cell) on the signed buffer** — see
 /// [`GRID_SDF_SMOOTH_SIGMA_CELLS`] for the envelope-extension trail.
 ///
 /// `wall_threshold_m` must be `≥ 0.5 * grid_cell_m` so the wall band

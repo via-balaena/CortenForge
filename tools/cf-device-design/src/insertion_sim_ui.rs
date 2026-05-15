@@ -183,6 +183,18 @@ pub struct InsertionSimState {
     /// Which scalar to color by when `heat_map_on`. Toggle is free —
     /// both buffers are pre-computed by the async task.
     pub scalar_mode: ScalarMode,
+    /// Monotonic counter incremented every time `last_run` changes
+    /// in a way that should re-skin the layer meshes — i.e. a new
+    /// run completed, or [`invalidate_on_geometry_change`] cleared
+    /// the previous run. Read by `main.rs`'s `update_layer_meshes`
+    /// (a `Local<>` snapshot) to detect "the per-tet color buffers
+    /// changed" without relying on Bevy's `Res::is_changed()`, which
+    /// fires every frame anyway because the panel + sim systems
+    /// hold `ResMut<Self>` (the same change-detection footgun the
+    /// [`invalidate_on_geometry_change`] snapshot-and-compare guards
+    /// against). Wraps on overflow; the snapshot only needs strict
+    /// inequality across consecutive frames.
+    pub last_run_generation: u64,
 }
 
 impl Default for InsertionSimState {
@@ -195,6 +207,7 @@ impl Default for InsertionSimState {
             n_steps: DEFAULT_N_STEPS,
             heat_map_on: false,
             scalar_mode: ScalarMode::default(),
+            last_run_generation: 0,
         }
     }
 }
@@ -262,6 +275,7 @@ pub fn invalidate_on_geometry_change(
     if changed && state.last_run.is_some() {
         state.last_run = None;
         state.heat_map_on = false;
+        state.last_run_generation = state.last_run_generation.wrapping_add(1);
     }
 }
 
@@ -315,6 +329,11 @@ pub fn poll_simulation_task(mut state: ResMut<InsertionSimState>) {
             Ok(outputs) => {
                 state.last_run = Some(outputs);
                 state.last_error = None;
+                // Bump the generation so `update_layer_meshes` (in
+                // `main.rs`) sees the new color buffers without
+                // relying on Bevy's `Res::is_changed()` (which fires
+                // every frame anyway — see `last_run_generation` doc).
+                state.last_run_generation = state.last_run_generation.wrapping_add(1);
             }
             Err(e) => {
                 state.last_error = Some(e);
@@ -737,9 +756,6 @@ pub fn render_insertion_sim_section(
         });
 }
 
-/// Hand-rolled F-d plot via `egui::Painter`. Avoids pulling in
-/// `egui_plot` for a single small line plot. Axes: x = interference
-/// (mm), y = contact force magnitude (N).
 /// One-line convergence summary above the F-d plot. On full
 /// convergence (`failed_at_step.is_none()`) this is a plain
 /// neutral-color line; on partial convergence (a stall) it surfaces
@@ -812,6 +828,11 @@ fn render_convergence_summary(ui: &mut egui::Ui, ramp: &InsertionRamp, n_steps: 
     }
 }
 
+/// Hand-rolled F-d plot via `egui::Painter`. Avoids pulling in
+/// `egui_plot` for a single small line plot. Axes: x = interference
+/// (mm), y = contact force magnitude (N). 16 dots (one per converged
+/// step) connected by a sky-blue polyline; axis labels render at the
+/// top-left, bottom-left, and bottom-right of the plot rect.
 fn render_force_displacement_plot(ui: &mut egui::Ui, ramp: &InsertionRamp) {
     if ramp.steps.is_empty() {
         return;

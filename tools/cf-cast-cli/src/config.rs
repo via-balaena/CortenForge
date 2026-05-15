@@ -260,21 +260,12 @@ impl CastConfig {
         Ok(cfg)
     }
 
-    /// Run semantic validation against this config. Pure (no I/O).
+    /// Slice 9 cross-field gate — pre-lift check that exactly one of
+    /// `[design]` / `[[layers]]` is set. Pure (no I/O); the actual
+    /// design-TOML lift happens in `crate::run` between this method
+    /// and [`validate_after_layer_source`](Self::validate_after_layer_source).
     ///
-    /// Validates non-empty layers, finite + positive thicknesses,
-    /// positive mesh cell size + bounding margin, finite + positive
-    /// piece minimum wall, normalizable split-normal, and per-layer
-    /// material resolvable to a density (anchor lookup OR explicit
-    /// override).
-    ///
-    /// # Errors
-    ///
-    /// Returns the first failing invariant; chains are short so the
-    /// CLI's stderr error includes the field name + value.
-    /// Slice 9 cross-field gate — checks `[design]` ↔ `[[layers]]`
-    /// mutual exclusion + non-emptiness BEFORE any design.toml lift.
-    /// Caller pattern:
+    /// Caller pattern (see `crate::run`):
     ///
     /// 1. `cfg.validate_layer_source()?;` — enforce the gate.
     /// 2. If `cfg.design.is_some()`, lift `design.layers` → `cfg.layers`.

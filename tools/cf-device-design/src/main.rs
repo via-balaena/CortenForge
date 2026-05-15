@@ -1475,6 +1475,37 @@ struct CavityEntity;
 #[derive(Component)]
 struct LayerSurfaceEntity;
 
+/// Snapshot of every input `update_layer_meshes` reads, kept in the
+/// system's `Local<>` so the per-frame check is "did the values
+/// actually change?" rather than "did Bevy's `Res::is_changed()`
+/// tick?". The latter is the deref-mut-on-access footgun; the
+/// former is the documented escape hatch (same posture as
+/// `insertion_sim_ui::invalidate_on_geometry_change`).
+///
+/// Fields cover every input that affects the rendered layer meshes:
+///
+/// - `cavity` / `layers`: govern the displaced shell vertex
+///   positions and which materials/colors the shells get.
+/// - `heat_map_on` / `scalar_mode`: pick which color buffer (Ψ or
+///   ‖P‖) drives the per-vertex COLOR attribute when heat map is
+///   on, or revert to palette tint when off.
+/// - `last_run_generation`: a counter `InsertionSimState` bumps
+///   whenever `last_run` changes meaningfully (a new run completed,
+///   or invalidation cleared the previous). The Vec<Vec<[f32; 4]>>
+///   color buffers themselves are large + identity-only, so we
+///   track this scalar proxy instead.
+///
+/// `proxy` / `up` / `render_scale` are intentionally NOT in the key:
+/// they're set once at app start and never change.
+#[derive(Debug, Clone, PartialEq)]
+struct LayerMeshKey {
+    cavity: CavityState,
+    layers: LayersState,
+    heat_map_on: bool,
+    scalar_mode: insertion_sim_ui::ScalarMode,
+    last_run_generation: u64,
+}
+
 /// Build a Bevy `Mesh` from the proxy mesh's connectivity, with
 /// each vertex displaced along its radial direction by `offset_m`
 /// in physics frame, then mapped through the cast-frame `UpAxis`
@@ -1635,8 +1666,24 @@ fn update_cavity_mesh(
 /// separate "outer envelope" concept). Each entity's visibility
 /// tracks its own `LayerSpec::visible` flag.
 ///
-/// Despawn-and-respawn on any state change — layer count is small
-/// (≤ `LAYER_COUNT_MAX = 6`) so the cost is negligible.
+/// **Change-detection** (cold-read finding): the prior implementation
+/// gated on `layers.is_changed() || cavity.is_changed() ||
+/// sim_state.is_changed()`. All three of those resources are held as
+/// `ResMut<>` by `device_design_panel` (sliders + sim-state mutation),
+/// which bumps their change ticks every frame the panel renders —
+/// regardless of whether any actual value moved. Net effect: the
+/// guard always passed, and the 6 layer mesh entities despawned-and-
+/// respawned every frame. Wasted asset traffic, not visible as a
+/// behavior bug.
+///
+/// Fix: snapshot-and-compare via `Local<>`, the same posture
+/// `invalidate_on_geometry_change` uses (slice-9 follow-up). Cache a
+/// [`LayerMeshKey`] (the meaningful inputs); rebuild only when the
+/// key differs from the prior frame's snapshot. Heat-map color
+/// buffers don't ride directly inside the key — they change implicitly
+/// through `sim_state.last_run_generation`, the counter
+/// `InsertionSimState` bumps when a new run lands or
+/// `invalidate_on_geometry_change` clears the previous one.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn update_layer_meshes(
     layers: Res<LayersState>,
@@ -1645,16 +1692,22 @@ fn update_layer_meshes(
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     sim_state: Res<insertion_sim_ui::InsertionSimState>,
+    mut last_key: Local<Option<LayerMeshKey>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     existing: Query<Entity, With<LayerSurfaceEntity>>,
 ) {
-    // Slice 7.4 widens the rebuild triggers to include `InsertionSimState`
-    // so heat-map toggle / scalar-mode flip / a fresh sim run re-skin
-    // the layer meshes. `is_changed()` is the standard Bevy change-
-    // detection guard; one trigger fires per actual mutation.
-    if !layers.is_changed() && !cavity.is_changed() && !sim_state.is_changed() {
+    let current_key = LayerMeshKey {
+        cavity: *cavity,
+        layers: layers.clone(),
+        heat_map_on: sim_state.heat_map_on,
+        scalar_mode: sim_state.scalar_mode,
+        last_run_generation: sim_state.last_run_generation,
+    };
+    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
+    *last_key = Some(current_key);
+    if !changed {
         return;
     }
     for entity in &existing {
@@ -2463,18 +2516,14 @@ fn run_render_app(
         envelope_proxy.vertices.len(),
         envelope_proxy.original_face_count,
     );
-    // Slice 8 — start from defaults, then apply loaded design if any.
-    // `apply_design_toml` errors only on catalog lookup, already gated
-    // by `validate_design_toml`; the `expect` here surfaces a wiring
-    // bug rather than a runtime data dependence (the validated TOML
-    // already passed catalog checks at load time).
+    // Slice 8 — start from defaults, then apply the loaded design if
+    // any. `apply_design_toml` errors only on catalog lookup, already
+    // gated by `validate_design_toml` at `load_design_toml`. A failure
+    // here means the catalog regressed between load and apply — fall
+    // back to defaults + log, don't crash the GUI.
     let mut cavity = CavityState::default_for_scan();
     let mut layers = LayersState::default_for_scan();
     if let Some(d) = &loaded_design {
-        // `apply_design_toml` errors only on catalog lookup, already
-        // gated by `validate_design_toml` at `load_design_toml`. A
-        // failure here means the catalog regressed between load and
-        // apply — fall back to defaults + log, don't crash the GUI.
         if let Err(e) = design_toml::apply_design_toml(d, &mut cavity, &mut layers) {
             eprintln!(
                 "warning: apply_design_toml failed on a validated load ({e:#}); \
