@@ -96,11 +96,18 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     config
         .validate_layer_source()
         .context("cast TOML semantic validation (layer source)")?;
+    // Slice 9.6 — the inset is lifted from the design.toml's
+    // `[cavity].inset_m` when a design source is in play, and defaults
+    // to 0.0 for the inline-layers path. `derive_spec_and_ribbon`
+    // applies it to the plug + every layer outer surface, baking the
+    // press-fit reservation into the mold geometry.
+    let mut cavity_inset_m: f64 = 0.0;
     if let Some(design_cfg) = &config.design {
         let design_path = resolve_relative(&cast_toml_dir, &design_cfg.path);
         let design = design_ref::load_design_ref(&design_path)
             .with_context(|| format!("load design TOML at {}", design_path.display()))?;
         config.layers = derive_layers_from_design(&design);
+        cavity_inset_m = design.cavity.inset_m;
         println!(
             "loaded design from {} ({} layers, cavity inset {:.2} mm, schema v{})",
             design_path.display(),
@@ -130,9 +137,14 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         );
     }
 
-    let derived =
-        derive::derive_spec_and_ribbon(&config, &loaded_scan.sdf, loaded_scan.aabb, &centerline)
-            .context("derive CastSpec + Ribbon from scan + cast TOML")?;
+    let derived = derive::derive_spec_and_ribbon(
+        &config,
+        &loaded_scan.sdf,
+        loaded_scan.aabb,
+        &centerline,
+        cavity_inset_m,
+    )
+    .context("derive CastSpec + Ribbon from scan + cast TOML")?;
     let DerivedSpec { spec, ribbon } = derived;
 
     let out_dir = match output_dir_override {
@@ -207,12 +219,11 @@ pub fn resolve_relative(cast_toml_dir: &Path, p: &Path) -> PathBuf {
 /// | (none)                         | `display_name = None`             |
 /// | `visible`                      | (ignored — viewport-only concern) |
 ///
-/// `cavity.inset_m` is NOT lifted into the cast TOML's layer stack —
-/// it documents the press-fit reservation at the design level; the
-/// v2 cast paradigm (plug = scan, Option A) doesn't currently apply
-/// it to mold geometry. A future enhancement may inset the plug by
-/// `cavity.inset_m` to bake the press-fit into the mold; until then,
-/// the procedure markdown could record it (deferred to a follow-up).
+/// `cavity.inset_m` is NOT a `LayerConfig` field — it's read directly
+/// in [`run`] and passed to [`derive_spec_and_ribbon`] as a top-level
+/// parameter (slice 9.6 — Option A.1: plug + every layer outer
+/// surface are shifted inward by `cavity.inset_m`, baking the
+/// press-fit reservation into the mold geometry).
 pub fn derive_layers_from_design(design: &design_ref::DesignRef) -> Vec<LayerConfig> {
     design
         .layers

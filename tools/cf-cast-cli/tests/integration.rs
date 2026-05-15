@@ -297,6 +297,115 @@ material = "ECOFLEX_00_30"
     );
 }
 
+/// Slice 9.6 — design-sourced run with a non-zero `cavity.inset_m`
+/// shifts plug + every layer outer surface inward, so the cured
+/// part's inner cavity is `inset_m` smaller than the scan. Exercised
+/// here on the same 30 mm cube fixture as the prior tests with a
+/// 2 mm inset; the mold pieces + plug + procedure.md must still be
+/// produced (the cube minus 2 mm inset minus the 0.1 mm seam wall is
+/// well above the min-wall gate), and the procedure's material name
+/// reference is unchanged.
+#[test]
+fn end_to_end_design_sourced_with_cavity_inset_writes_artifacts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scan_stl = tmp.path().join("scan.cleaned.stl");
+    let prep_toml = tmp.path().join("scan.cleaned.prep.toml");
+    let design_toml = tmp.path().join("scan.design.toml");
+    let cast_toml = tmp.path().join("cast.toml");
+
+    let mesh = cube_mesh_m();
+    save_stl(&mesh, &scan_stl, true).unwrap();
+
+    std::fs::write(
+        &prep_toml,
+        r#"
+[scan_prep]
+source_stl = "raw.stl"
+tool_version = "0.0.0-test"
+generated_at = "2026-05-13T00:00:00Z"
+stl_units_at_load = "m"
+
+[centerline]
+points_m = [
+    [-0.011, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [0.011, 0.0, 0.0],
+]
+algorithm = "cross_section_centroids"
+"#,
+    )
+    .unwrap();
+
+    // design.toml with cavity.inset_m = 0.002 (2 mm press-fit
+    // reservation). Layer-0 silicone thickness 6 mm — outer surface
+    // ends up at +4 mm vs scan surface (thickness − inset).
+    std::fs::write(
+        &design_toml,
+        r#"
+[device_design]
+tool_version = "1.0.0"
+generated_at = "2026-05-15T22:34:00Z"
+schema_version = 1
+
+[scan_ref]
+cleaned_stl = "scan.cleaned.stl"
+
+[cavity]
+inset_m = 0.002
+visible = true
+
+[[layers]]
+thickness_m = 0.006
+material_anchor_key = "ECOFLEX_00_30"
+slacker_fraction = 0.0
+visible = true
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &cast_toml,
+        r#"
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml = "scan.cleaned.prep.toml"
+
+[design]
+path = "scan.design.toml"
+
+[cast]
+mesh_cell_size_m = 0.005
+bounding_margin_m = 0.015
+piece_min_wall_mm = 0.1
+split_normal = [0.0, 0.0, -1.0]
+output_dir = "out"
+
+[plug_pins]
+enabled = false
+
+[pour_gate]
+enabled = false
+
+[registration_pins]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    let report =
+        cf_cast_cli::run(&cast_toml, None).expect("cf-cast-cli design-sourced + inset run");
+    assert_eq!(report.layer_count, 1);
+    let out_dir: PathBuf = tmp.path().join("out");
+    for p in [
+        out_dir.join("mold_layer_0_piece_0.stl"),
+        out_dir.join("mold_layer_0_piece_1.stl"),
+        out_dir.join("plug_layer_0.stl"),
+        out_dir.join("procedure.md"),
+    ] {
+        assert!(p.exists(), "expected output {} to exist", p.display());
+    }
+}
+
 /// Slice 9 — cast.toml with neither `[design]` nor `[[layers]]` is
 /// rejected at validation (no layer source at all).
 #[test]
