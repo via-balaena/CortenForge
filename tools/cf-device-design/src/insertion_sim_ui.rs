@@ -222,15 +222,44 @@ impl Plugin for InsertionSimPlugin {
 /// When the user edits the cavity or layer stack, the cached run is
 /// stale — drop it + turn off the heat map so the viewport falls back
 /// to the palette base colors. The user re-clicks Simulate after the
-/// edit. Cheap: change detection is per-frame, and the body only fires
-/// on actual mutation.
+/// edit.
+///
+/// Slice-9 follow-up: this used to gate on
+/// `cavity.is_changed() || layers.is_changed()`, but Bevy's
+/// change-detection marks a `ResMut<T>` as changed on every `deref_mut`
+/// access — not only on actual mutations. `device_design_panel` holds
+/// `ResMut<CavityState>` + `ResMut<LayersState>` for the sliders, so
+/// those resources were getting flagged changed every frame the panel
+/// rendered, which cleared `last_run` immediately after every sim
+/// completion (the user saw the F-d plot for at most one frame, then
+/// it vanished). The fix here is the documented Bevy escape hatch:
+/// **snapshot-and-compare** via a `Local<>`. We cache the last-seen
+/// values, compare to current, and clear `last_run` only on a real
+/// value change. This is the same posture
+/// `bevy::ecs::change_detection`'s docs recommend for "I want
+/// actual-mutation detection, not deref-mut detection."
 #[allow(clippy::needless_pass_by_value)]
 pub fn invalidate_on_geometry_change(
     cavity: Res<CavityState>,
     layers: Res<LayersState>,
     mut state: ResMut<InsertionSimState>,
+    mut last_seen: Local<Option<(CavityState, LayersState)>>,
 ) {
-    if (cavity.is_changed() || layers.is_changed()) && state.last_run.is_some() {
+    // `cavity` is `Copy`; `layers` carries a `Vec<LayerSpec>` so the
+    // clone is genuine (≤ LAYER_COUNT_MAX = 6 items — negligible).
+    let current_cavity: CavityState = *cavity;
+    let current_layers: LayersState = layers.clone();
+    let changed = match &*last_seen {
+        Some((prev_cavity, prev_layers)) => {
+            *prev_cavity != current_cavity || *prev_layers != current_layers
+        }
+        // First tick — no prior snapshot. Don't clear; this avoids a
+        // spurious invalidation on the very first frame before
+        // anything had a chance to run.
+        None => false,
+    };
+    *last_seen = Some((current_cavity, current_layers));
+    if changed && state.last_run.is_some() {
         state.last_run = None;
         state.heat_map_on = false;
     }
