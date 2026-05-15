@@ -3262,10 +3262,20 @@ fn update_displayed_mesh(
     }
 
     // Derive displayed mesh. Skip the trim if no trim requested or
-    // centerline is unavailable / stale; the live mesh then equals
-    // the base ScanMesh.
+    // centerline is unavailable; the live mesh then equals the
+    // base ScanMesh.
+    //
+    // CSP.4b.4 originally also gated on `!cap.stale` — but the
+    // staleness flag actually tracks loop-vertex-index validity
+    // (the cap loops' `vertex_indices` reference into `scan.0`
+    // which `[Apply simplify]` invalidates). The CENTERLINE
+    // polyline is in physics-frame meters, untouched by Reorient /
+    // Recenter / Clip slider changes; those don't make the trim
+    // wrong. User-reported 2026-05-15: trim was visibly a no-op
+    // because `cap.stale` would flip true on any panel change and
+    // silently skip the trim. Lifting the gate so the live trim
+    // does what the user expects.
     let displayed = if cap.centerline_polyline.len() >= 2
-        && !cap.stale
         && (trim.trim_tip_mm > 0.0 || trim.trim_floor_mm > 0.0)
     {
         let mut t = trim_mesh_along_centerline(
