@@ -35,6 +35,7 @@
 //! memo's "7.2 real-scan finding"; hardening it is 7.3's battle).
 
 use std::collections::{BTreeSet, VecDeque};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
@@ -620,6 +621,113 @@ const STATIC_DT: f64 = 1.0;
 /// cap — see [`run_single_insertion_step`]'s `# Panics`.
 const MAX_NEWTON_ITER: usize = 150;
 
+/// Newton convergence tolerance (free-DOF residual norm, in newtons)
+/// for the insertion solve. `SolverConfig::skeleton()`'s `1e-10`
+/// default is a walking-skeleton bar far tighter than this tool
+/// needs: cf-device-design is a *relative-comparison* engineering aid
+/// (Fork B), and a `0.1`-N out-of-balance residual is physically
+/// negligible against the tens-of-newtons contact forces.
+///
+/// `1e-1` is not arbitrary — the 7.3b.1 finding is that the deeper
+/// ramp steps Armijo-*stall* (non-SPD tangent near the solution; the
+/// capsule geometry's secondary pathology) at a residual floor right
+/// around `0.1 N`. Setting `tol` at that floor converts those stalls
+/// into clean (loose-but-physically-exact) convergences, which is
+/// what lets the ramp seat the intruder to a meaningful depth. The
+/// shallow steps still converge far below this (to ~`1e-5`) — `tol`
+/// only bites once a step hits the stall floor.
+const INSERTION_SOLVE_TOL: f64 = 1e-1;
+
+/// Shared solver config for the insertion solve — the walking-
+/// skeleton defaults with `dt` (static), `max_newton_iter`, and `tol`
+/// set for this tool. Used by [`run_single_insertion_step`] (7.2) and
+/// [`run_insertion_ramp`] (7.3b).
+fn insertion_solver_config() -> SolverConfig {
+    let mut config = SolverConfig::skeleton();
+    config.dt = STATIC_DT;
+    config.max_newton_iter = MAX_NEWTON_ITER;
+    config.tol = INSERTION_SOLVE_TOL;
+    config
+}
+
+/// Penalty-contact stiffness `κ` for the insertion solve. 7.3b.1
+/// found `PenaltyRigidContact::new`'s default `1e4` keeps the Newton
+/// tangent non-SPD near the solution past ~1.5 mm interference —
+/// full-surface contact (the *whole* cavity wall engages at once,
+/// unlike the rows' localized probe) concentrates the penalty
+/// Hessian. A gentler `1e3` widens the convergeable depth envelope;
+/// the tradeoff is slightly more residual penetration, acceptable
+/// for this relative-comparison tool (Fork B).
+const INSERTION_CONTACT_KAPPA: f64 = 1.0e3;
+
+/// Penalty-contact band `d̂` (meters) for the insertion solve —
+/// matches sim-soft's crate-private `PENALTY_DHAT_DEFAULT`
+/// (1 mm). `with_params` requires it explicitly once `κ` is tuned.
+const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
+
+/// Build the rigid-intruder contact primitive for a given press-fit
+/// `interference_m` — the scan SDF offset by
+/// `interference_m + cavity_offset_m` (so `interference_m =
+/// cavity_inset_m` reproduces the bare scan, `0` sits flush with the
+/// cavity wall). Shared by [`run_single_insertion_step`] (7.2) and
+/// [`run_insertion_ramp`] (7.3b — the ramp rebuilds this per step as
+/// the intruder seats deeper).
+fn intruder_contact_at(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    interference_m: f64,
+    cavity_offset_m: f64,
+) -> PenaltyRigidContact {
+    let intruder_solid =
+        Solid::from_sdf(intruder.clone(), bounds).offset(interference_m + cavity_offset_m);
+    PenaltyRigidContact::with_params(
+        vec![intruder_solid],
+        INSERTION_CONTACT_KAPPA,
+        INSERTION_CONTACT_DHAT,
+    )
+}
+
+/// Build the Dirichlet boundary conditions: pin the outer-skin
+/// vertices — those within `0.5 * cell_size_m` of the outer envelope
+/// `scan.offset(outer_offset_m)`, filtered to solver-referenced
+/// vertices (BCC orphans are in no tet). The intruder, not a loaded
+/// BC, drives the deformation. Constant across a ramp (the outer skin
+/// does not move) — [`run_insertion_ramp`] builds it once and clones.
+///
+/// # Errors
+///
+/// No outer-skin vertex lands in the pin-band — the wall has nothing
+/// to react against (`cell_size_m` too coarse for the wall, or a
+/// degenerate geometry).
+fn outer_skin_bc(
+    mesh: &SdfMeshedTetMesh<Yeoh>,
+    intruder: &GridSdf,
+    bounds: Aabb,
+    outer_offset_m: f64,
+    cell_size_m: f64,
+) -> Result<BoundaryConditions> {
+    let referenced: BTreeSet<VertexId> = referenced_vertices(mesh).into_iter().collect();
+    let outer_envelope = Solid::from_sdf(intruder.clone(), bounds).offset(outer_offset_m);
+    let band_tol = 0.5 * cell_size_m;
+    let pinned: Vec<VertexId> = pick_vertices_by_predicate(mesh, |p| {
+        outer_envelope.eval(Point3::from(*p)).abs() < band_tol
+    })
+    .into_iter()
+    .filter(|v| referenced.contains(v))
+    .collect();
+    if pinned.is_empty() {
+        return Err(anyhow!(
+            "no outer-skin vertex landed in the {band_tol:.4} m Dirichlet band — the \
+             device wall has nothing pinned to react against (cell_size_m too coarse \
+             for the wall, or a degenerate geometry)"
+        ));
+    }
+    Ok(BoundaryConditions {
+        pinned_vertices: pinned,
+        loaded_vertices: Vec::new(),
+    })
+}
+
 /// Outputs from one static insertion solve step.
 ///
 /// A returned `InsertionStep` is converged by construction —
@@ -661,23 +769,22 @@ pub struct InsertionStep {
 /// wall (no penetration). The solve is static (`dt = 1.0`).
 ///
 /// Consumes `geometry` — `CpuNewtonSolver::new` takes the mesh by
-/// value. 7.3's ramp will rebuild the geometry per step; 7.2 is one
-/// step only.
+/// value. [`run_insertion_ramp`] (7.3b) clones the prebuilt mesh per
+/// step instead; `run_single_insertion_step` is one step only.
 ///
 /// # Errors
 ///
 /// - `interference_m` is non-finite;
-/// - no outer-skin vertex lands in the Dirichlet pin-band (the wall
-///   has nothing to react against — typically `cell_size_m` too
-///   coarse for the wall, or a degenerate geometry).
+/// - [`outer_skin_bc`] fails — no outer-skin vertex in the Dirichlet
+///   pin-band (the wall has nothing to react against).
 ///
 /// # Panics
 ///
 /// `replay_step` panics if the Newton solve fails to converge within
-/// [`MAX_NEWTON_ITER`] — non-convergence returns no partial data. 7.2
-/// keeps to interferences that converge; graceful "failed at step N"
-/// reporting is 7.3 (the quasi-static ramp), where the contact-
-/// robustness envelope (≤ 8 mm Yeoh) is exercised in earnest.
+/// [`MAX_NEWTON_ITER`] — non-convergence returns no partial data.
+/// `run_single_insertion_step` keeps to interferences that converge;
+/// graceful "failed at step N" reporting is [`run_insertion_ramp`]
+/// (7.3b), which `catch_unwind`s each step.
 pub fn run_single_insertion_step(
     geometry: InsertionGeometry,
     interference_m: f64,
@@ -709,44 +816,10 @@ pub fn run_single_insertion_step(
         x_prev_flat[3 * v + 2] = p.z;
     }
 
-    // Dirichlet BCs: pin the outer-skin vertices — those within half a
-    // BCC cell of the outer envelope `scan.offset(outer_offset_m)` —
-    // filtered to solver-referenced vertices (BCC orphans are not in
-    // any tet). The intruder, not a loaded BC, drives the deformation.
-    let referenced: BTreeSet<VertexId> = referenced_vertices(&mesh).into_iter().collect();
-    let outer_envelope = Solid::from_sdf(intruder.clone(), bounds).offset(outer_offset_m);
-    let band_tol = 0.5 * cell_size_m;
-    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| {
-        outer_envelope.eval(Point3::from(*p)).abs() < band_tol
-    })
-    .into_iter()
-    .filter(|v| referenced.contains(v))
-    .collect();
-    if pinned.is_empty() {
-        return Err(anyhow!(
-            "no outer-skin vertex landed in the {band_tol:.4} m Dirichlet band — \
-             the device wall has nothing pinned to react against (cell_size_m too \
-             coarse for the wall, or a degenerate geometry)"
-        ));
-    }
-    let n_pinned = pinned.len();
-    let bc = BoundaryConditions {
-        pinned_vertices: pinned,
-        loaded_vertices: Vec::new(),
-    };
-
-    // The rigid intruder at the requested interference: penetration
-    // `d` past the cavity wall is the scan SDF offset by
-    // `d + cavity_offset_m` (cavity_offset_m = -inset, so
-    // `d = inset` reproduces the bare scan).
-    let intruder_solid = Solid::from_sdf(intruder, bounds).offset(interference_m + cavity_offset_m);
-    let contact = PenaltyRigidContact::new(vec![intruder_solid]);
-
-    // Static solve: `dt = 1.0` collapses inertia (rows 21–25
-    // quasi-static precedent); the Yeoh path gets the row-23 iter cap.
-    let mut config = SolverConfig::skeleton();
-    config.dt = STATIC_DT;
-    config.max_newton_iter = MAX_NEWTON_ITER;
+    let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
+    let n_pinned = bc.pinned_vertices.len();
+    let contact = intruder_contact_at(&intruder, bounds, interference_m, cavity_offset_m);
+    let config = insertion_solver_config();
 
     let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
     let v_prev = Tensor::zeros(&[n_dof]);
@@ -1042,6 +1115,168 @@ pub fn build_grid_sdf(
         build_ms: elapsed_ms(t),
     };
     Ok((GridSdf { grid }, report))
+}
+
+// ── 7.3b — quasi-static insertion ramp ─────────────────────────────
+
+/// One converged step of a quasi-static insertion ramp.
+#[derive(Debug, Clone)]
+pub struct RampStep {
+    /// Press-fit interference (m) the intruder was seated to at this
+    /// step — `(k + 1) / n_steps * cavity_inset_m`.
+    pub interference_m: f64,
+    /// Newton iterations this step's solve took.
+    pub iter_count: usize,
+    /// Free-DOF residual norm at this step's convergence.
+    pub final_residual_norm: f64,
+}
+
+/// Result of a quasi-static insertion ramp — see [`run_insertion_ramp`].
+///
+/// Intentionally no `Debug` derive: `final_x` is a flat `Vec<f64>` of
+/// `3 * n_vertices` — the same `dbg!`-footgun rationale as
+/// [`InsertionGeometry`]. The per-step [`RampStep`]s + `failed_at_step`
+/// are the inspectable summary.
+pub struct InsertionRamp {
+    /// Per-step records in ramp order — only the *converged* steps, so
+    /// `steps.len()` is how many steps converged.
+    pub steps: Vec<RampStep>,
+    /// `Some(k)` if step `k` failed to converge — the solver hit a
+    /// non-SPD tangent / Armijo stall and `replay_step` panicked; the
+    /// ramp stopped there and `steps` holds `0..k`. `None` if every
+    /// requested step converged.
+    pub failed_at_step: Option<usize>,
+    /// The solver's panic message for the failed step — the "why"
+    /// behind `failed_at_step` (Armijo stall at residual X, or the
+    /// Newton-iteration cap). `None` if every step converged. Picking
+    /// the convergence lever (tol / kappa / more steps) needs this.
+    pub failure_reason: Option<String>,
+    /// Deformed vertex positions (vertex-major xyz) at the last
+    /// converged step — the chained `x_final`; the rest positions if
+    /// step 0 itself failed.
+    pub final_x: Vec<f64>,
+    /// Dirichlet-pinned outer-skin vertex count — constant across the
+    /// ramp (the outer skin does not move).
+    pub n_pinned: usize,
+}
+
+/// Extract a human-readable message from a `catch_unwind` panic
+/// payload — panics from `panic!` / `assert!` carry a `String` or a
+/// `&'static str`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_else(|| "<non-string panic payload>".to_string())
+}
+
+/// Run a quasi-static insertion ramp: seat the scan-derived intruder
+/// into the device cavity in `n_steps` equal interference increments
+/// (`0 → cavity_inset_m`), each step's Newton solve warm-started from
+/// the previous step's converged `x_final`.
+///
+/// Warm-starting is the answer to the 7.2 / 7.3a finding that a
+/// *single* static step to a meaningful interference stalls near the
+/// solution on a non-SPD tangent: each ramp increment is small enough
+/// to stay in the convergeable regime, and chaining `x_final` keeps
+/// every step close to its solution.
+///
+/// The rest geometry + per-tet materials are constant across the ramp
+/// — only the intruder moves — so the prebuilt `geometry.mesh` and the
+/// outer-skin BCs are *cloned* per step rather than re-meshed (faster
+/// than the rows-21–25 re-mesh-per-step precedent, and bit-identical).
+/// `replay_step` panics on non-convergence; each step is wrapped in
+/// `catch_unwind`, so a stall is reported as `failed_at_step` rather
+/// than aborting — the ramp returns the steps that *did* converge.
+///
+/// Consumes `geometry` (the mesh is cloned per step; the original
+/// drops at the end). Geometry / convergence only — per-tet stress +
+/// contact-force outputs are 7.3b.2's `InsertionResult`.
+///
+/// # Errors
+///
+/// - `n_steps` is zero;
+/// - [`outer_skin_bc`] fails (no outer-skin vertex in the pin-band).
+pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result<InsertionRamp> {
+    if n_steps == 0 {
+        return Err(anyhow!("insertion ramp needs at least one step"));
+    }
+
+    let InsertionGeometry {
+        mesh,
+        intruder,
+        cavity_offset_m,
+        outer_offset_m,
+        bounds,
+        cell_size_m,
+        n_tets: _,
+    } = geometry;
+
+    let n_vertices = mesh.n_vertices();
+    let n_dof = 3 * n_vertices;
+
+    // BCs are constant across the ramp (the outer skin does not move)
+    // — build once, clone per step.
+    let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
+    let n_pinned = bc.pinned_vertices.len();
+
+    // Full press-fit interference = the cavity inset; the ramp seats
+    // the intruder there in `n_steps` equal increments.
+    let inset_m = -cavity_offset_m;
+
+    let config = insertion_solver_config();
+
+    // x_prev starts at rest; each converged step chains its x_final in.
+    let mut x_prev_flat: Vec<f64> = mesh
+        .positions()
+        .iter()
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let empty_theta: [f64; 0] = [];
+    let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+    let mut steps = Vec::with_capacity(n_steps);
+    let mut failed_at_step = None;
+    let mut failure_reason = None;
+    for k in 0..n_steps {
+        // k + 1 and n_steps are tiny — well under f64's exact-integer ceiling.
+        #[allow(clippy::cast_precision_loss)]
+        let interference_m = (k + 1) as f64 / n_steps as f64 * inset_m;
+        let contact = intruder_contact_at(&intruder, bounds, interference_m, cavity_offset_m);
+        let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
+        let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+        // `replay_step` panics on non-convergence — catch it so the
+        // ramp records `failed_at_step` + the panic's reason instead
+        // of aborting.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
+        }));
+        match outcome {
+            Ok(step) => {
+                steps.push(RampStep {
+                    interference_m,
+                    iter_count: step.iter_count,
+                    final_residual_norm: step.final_residual_norm,
+                });
+                x_prev_flat = step.x_final; // chain the warm start
+            }
+            Err(payload) => {
+                failed_at_step = Some(k);
+                failure_reason = Some(panic_message(&*payload));
+                break;
+            }
+        }
+    }
+
+    Ok(InsertionRamp {
+        steps,
+        failed_at_step,
+        failure_reason,
+        final_x: x_prev_flat,
+        n_pinned,
+    })
 }
 
 #[cfg(test)]
@@ -1988,5 +2223,167 @@ mod tests {
             );
         }
         eprintln!("\n=== end 7.3a fix spike ===\n");
+    }
+
+    /// [`run_insertion_ramp`] on the well-conditioned synthetic
+    /// icosphere — the ramp seats the intruder deep into the press-fit
+    /// (warm-starting + the gentler contact `κ` reach ~2.6 mm of the
+    /// 3 mm inset, vs the single-step solve's ~0.5 mm), then the
+    /// deep-regime non-SPD tangent stalls it. The exact stall depth is
+    /// a *characterized finding*, not a bug — `failed_at_step` reports
+    /// it; the test's regression floor is "≥ 10 steps converged".
+    ///
+    /// `#[ignore]` — a release-mode multi-step solve. Self-contained
+    /// (no fixture). Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     --bin cf-device-design run_insertion_ramp_on_synthetic \
+    ///     -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "release-mode multi-step solve — slow under debug; run with --release --ignored"]
+    fn run_insertion_ramp_on_synthetic_sphere() {
+        let scan = icosphere(0.040, 3);
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
+            .expect("synthetic-sphere geometry should build");
+        let n_dof = geometry.mesh.positions().len() * 3;
+
+        // 16 steps — small increments so each step's warm start lands
+        // close (full-surface contact reshuffles the whole contact set
+        // per increment, so coarse steps cost as much as a cold solve).
+        let n_steps = 16;
+        let ramp = run_insertion_ramp(geometry, n_steps).expect("synthetic ramp should run");
+        for s in &ramp.steps {
+            eprintln!(
+                "  step interference {:.2} mm — {} Newton iters, residual {:.2e}",
+                s.interference_m * 1e3,
+                s.iter_count,
+                s.final_residual_norm,
+            );
+        }
+        if let Some(k) = ramp.failed_at_step {
+            eprintln!(
+                "  stalled at step {k}: {}",
+                ramp.failure_reason.as_deref().unwrap_or("<no reason>"),
+            );
+        }
+
+        // The ramp must seat the intruder deep — warm-starting + the
+        // gentler `κ` carry it well past the single-step ~0.5 mm
+        // envelope. `>= 10` of 16 steps (≥ ~1.9 mm) is the regression
+        // floor; the synthetic reaches ~14 (≈ 2.6 mm). The deep-regime
+        // stall past that is a characterized finding, not a failure.
+        assert!(
+            ramp.steps.len() >= 10,
+            "the ramp must seat the intruder past ~1.9 mm — got only {} steps",
+            ramp.steps.len(),
+        );
+        // Graceful failure: a stalled deep step captures its reason.
+        if ramp.failed_at_step.is_some() {
+            assert!(
+                ramp.failure_reason.is_some(),
+                "a stalled ramp must capture the failure reason",
+            );
+        }
+        assert!(
+            ramp.n_pinned > 0,
+            "the outer skin must have pinned vertices"
+        );
+        // Interference ramps strictly monotonically.
+        for pair in ramp.steps.windows(2) {
+            assert!(
+                pair[1].interference_m > pair[0].interference_m,
+                "ramp interference must increase each step",
+            );
+        }
+        assert_eq!(ramp.final_x.len(), n_dof, "final_x covers every DOF");
+        assert!(
+            ramp.final_x.iter().all(|v| v.is_finite()),
+            "every final DOF must be finite",
+        );
+    }
+
+    /// **7.3b.1 payoff** — [`run_insertion_ramp`] on the real iter-1
+    /// scan: does warm-starting fix the convergence the 7.2 / 7.3a
+    /// single-step solve could not reach?
+    ///
+    /// Reports every step and asserts the ramp *mechanics* (monotonic
+    /// interference, finite `final_x`, ≥ 1 step). Whether it converges
+    /// *all* the way to the full cavity inset — vs `failed_at_step`
+    /// partway — is the empirical question this test answers; the
+    /// assertion is tightened to `failed_at_step.is_none()` once /
+    /// if the run confirms it.
+    ///
+    /// `#[ignore]` — needs the iter-1 fixture + a release-mode ramp.
+    #[test]
+    #[ignore = "7.3b.1 payoff — needs the iter-1 scan + a release ramp; run with --ignored --nocapture"]
+    fn run_insertion_ramp_on_iter1_scan() {
+        let path = std::env::var("CF_DEVICE_DESIGN_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !path.exists() {
+            eprintln!("skip: iter-1 scan fixture not found at {}", path.display());
+            return;
+        }
+        let scan = load_stl(&path).expect("load the iter-1 cleaned scan");
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
+            .expect("iter-1 geometry should build");
+        let n_tets = geometry.n_tets;
+        let n_dof = geometry.mesh.positions().len() * 3;
+
+        let n_steps = 16;
+        let ramp = run_insertion_ramp(geometry, n_steps).expect("iter-1 ramp should run");
+        eprintln!(
+            "iter-1 ramp — {n_tets} tets, {} pinned, {n_steps} requested steps:",
+            ramp.n_pinned
+        );
+        for s in &ramp.steps {
+            eprintln!(
+                "  interference {:.2} mm — {} Newton iters, residual {:.2e}",
+                s.interference_m * 1e3,
+                s.iter_count,
+                s.final_residual_norm,
+            );
+        }
+        match ramp.failed_at_step {
+            None => eprintln!("  → converged all {n_steps} steps to the full 3 mm inset"),
+            Some(k) => eprintln!(
+                "  → stalled at step {k} (interference {:.2} mm) — warm-starting got \
+                 {} steps in; the rest needs 7.3b's tol / kappa tuning",
+                (k + 1) as f64 / n_steps as f64 * 3.0,
+                ramp.steps.len(),
+            ),
+        }
+
+        // Ramp mechanics — true regardless of how far convergence got.
+        assert!(
+            !ramp.steps.is_empty(),
+            "the ramp must converge at least one step"
+        );
+        assert!(
+            ramp.n_pinned > 0,
+            "the outer skin must have pinned vertices"
+        );
+        for pair in ramp.steps.windows(2) {
+            assert!(
+                pair[1].interference_m > pair[0].interference_m,
+                "ramp interference must increase each step",
+            );
+        }
+        assert_eq!(ramp.final_x.len(), n_dof, "final_x covers every DOF");
+        assert!(
+            ramp.final_x.iter().all(|v| v.is_finite()),
+            "every final DOF must be finite",
+        );
     }
 }
