@@ -310,6 +310,7 @@ mod tests {
                 prep_toml: std::path::PathBuf::from("scan.prep.toml"),
             },
             cast: CastDefaults::default(),
+            design: None,
             layers: vec![
                 LayerConfig {
                     thickness_m: 0.006,

@@ -20,8 +20,20 @@ pub struct CastConfig {
     /// Cast-level numerical defaults + overrides.
     #[serde(default)]
     pub cast: CastDefaults,
-    /// Innermost-first per-layer thickness + material. Must be
-    /// non-empty.
+    /// Slice 9 — optional reference to a `<scan>.design.toml`
+    /// produced by cf-device-design. When set, the layer stack is
+    /// **derived** from the design (the cast.toml's `[[layers]]`
+    /// must be empty in that case). When absent, the cast.toml's
+    /// own `[[layers]]` is authoritative — backward compatible with
+    /// pre-slice-9 cast TOMLs. See
+    /// `docs/INSERTION_SIM_STATE.md`'s slice-9 update for the
+    /// rationale + mapping rules.
+    #[serde(default)]
+    pub design: Option<DesignSourceConfig>,
+    /// Innermost-first per-layer thickness + material. Required iff
+    /// `[design]` is absent; must be empty iff `[design]` is set.
+    /// See `CastConfig::validate` for the cross-field gate.
+    #[serde(default)]
     pub layers: Vec<LayerConfig>,
     /// Plug-anchor pin override (default = `PlugPinSpec::iter1()`).
     /// Absence of the table means "enabled with iter1 defaults".
@@ -39,6 +51,20 @@ pub struct CastConfig {
     /// disable.
     #[serde(default)]
     pub registration_pins: RegistrationConfig,
+}
+
+/// Slice 9 — `[design]` block. Points cf-cast-cli at the
+/// cf-device-design output for this scan, so the engineered layer
+/// stack feeds the cast directly (no hand-duplication between
+/// `.design.toml` and `cast.toml`'s `[[layers]]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignSourceConfig {
+    /// Path (absolute or relative to the cast TOML's directory) to
+    /// the cf-device-design `.design.toml`. The file's
+    /// `schema_version` must be ≤
+    /// [`design_ref::DESIGN_TOML_SCHEMA_VERSION_READ`](crate::design_ref::DESIGN_TOML_SCHEMA_VERSION_READ).
+    pub path: PathBuf,
 }
 
 /// `[scan]` block — points the bridge at the cf-scan-prep output.
@@ -246,8 +272,82 @@ impl CastConfig {
     ///
     /// Returns the first failing invariant; chains are short so the
     /// CLI's stderr error includes the field name + value.
+    /// Slice 9 cross-field gate — checks `[design]` ↔ `[[layers]]`
+    /// mutual exclusion + non-emptiness BEFORE any design.toml lift.
+    /// Caller pattern:
+    ///
+    /// 1. `cfg.validate_layer_source()?;` — enforce the gate.
+    /// 2. If `cfg.design.is_some()`, lift `design.layers` → `cfg.layers`.
+    /// 3. `cfg.validate_after_layer_source()?;` — per-layer + numeric
+    ///    + split-normal + plug-pin checks on the now-populated layers.
+    ///
+    /// The split exists because step 1's "layers must be empty when
+    /// `[design]` is set" disagrees with step 3's "layers must be
+    /// non-empty". Splitting the two passes makes each one's
+    /// invariant unambiguous.
+    ///
+    /// # Errors
+    ///
+    /// - `[design]` is set AND `[[layers]]` is non-empty (two sources
+    ///   of truth — the user dialed both).
+    /// - `[design]` is absent AND `[[layers]]` is empty (no layer
+    ///   source at all).
+    pub fn validate_layer_source(&self) -> Result<()> {
+        if self.design.is_some() {
+            ensure!(
+                self.layers.is_empty(),
+                "cast.toml: `[design]` is set, so `[[layers]]` must be empty \
+                 (the layer stack is derived from the design.toml). Remove the \
+                 `[[layers]]` entries or drop `[design]`."
+            );
+        } else {
+            ensure!(
+                !self.layers.is_empty(),
+                "cast.toml: `[[layers]]` is empty AND `[design]` is absent — \
+                 neither layer source is set. Either add `[[layers]]` entries \
+                 or point `[design].path` at a cf-device-design `.design.toml`."
+            );
+        }
+        Ok(())
+    }
+
+    /// Pre-slice-9 single-pass validate, kept for callers that don't
+    /// participate in the design-lift dance. Internally calls
+    /// [`validate_layer_source`](Self::validate_layer_source) (the
+    /// cross-field gate) then [`validate_after_layer_source`](Self::validate_after_layer_source).
+    /// The split lets the run pipeline interleave the design TOML
+    /// lift between them; callers that don't need that interleave
+    /// can keep using `validate()` unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Forwards either sub-method's error.
     pub fn validate(&self) -> Result<()> {
-        ensure!(!self.layers.is_empty(), "cast.toml [[layers]] is empty");
+        self.validate_layer_source()?;
+        self.validate_after_layer_source()
+    }
+
+    /// Per-layer + numeric + split-normal + plug-pin invariants.
+    /// Slice 9 split: callers that lifted layers from a design.toml
+    /// run this AFTER the lift; callers without a `[design]` block
+    /// reach it via [`validate`](Self::validate) directly.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces the first failing invariant (field name + value in
+    /// the chain).
+    pub fn validate_after_layer_source(&self) -> Result<()> {
+        // After the layer-source gate this assert holds (either
+        // `[design]` was just lifted into `layers`, or there was no
+        // `[design]` and `layers` was non-empty from the start).
+        // `ensure!` rather than a bare assert because hand-built
+        // `CastConfig`s in tests sometimes call this method out of
+        // order.
+        ensure!(
+            !self.layers.is_empty(),
+            "cast.toml: validate_after_layer_source called with empty layers — \
+             call validate_layer_source() first (or lift from a design TOML)"
+        );
         for (i, layer) in self.layers.iter().enumerate() {
             ensure!(
                 layer.thickness_m.is_finite() && layer.thickness_m > 0.0,

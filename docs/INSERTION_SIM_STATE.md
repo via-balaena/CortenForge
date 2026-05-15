@@ -944,7 +944,114 @@ warning rather than crashing.
 - No multi-file project (one design TOML per scan). The schema is
   flat; slice-10 features / texture would land in the same file.
 
-NEXT: slice 9 — cf-cast-cli wiring. The `<scan>.design.toml` will
-feed cf-cast-cli for mold derivation, closing the
-`scan → design → cast` loop. Then open the all-of-7.* + 8 + 9 PR
-per the user's decision.
+---
+
+## Update — 2026-05-15 late-night: slice 9 SHIPPED — cf-cast-cli reads `.design.toml`
+
+Slice 9 wires the design TOML into cf-cast-cli. The
+`scan → design → cast` loop is closed: a cleaned scan + a
+cf-device-design `.design.toml` + a thin `cast.toml` (with
+`[design].path` pointing at the design) is enough to drive
+cf-cast-cli's mold export — no hand-duplication of the layer stack
+between the two TOMLs.
+
+### `cast.toml` schema additions
+
+```toml
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml   = "scan.cleaned.prep.toml"
+
+[design]                          # NEW (slice 9)
+path = "scan.design.toml"         # relative to cast.toml dir, or absolute
+
+# [[layers]] MUST be empty when [design] is set.
+```
+
+When `[design]` is present, `[[layers]]` MUST be empty (the layer
+stack is **derived** from the design TOML at run-time). When
+`[design]` is absent, `[[layers]]` is authoritative — the pre-slice-9
+flow is preserved bit-for-bit (backward compatible).
+
+### Lift mapping
+
+| `.design.toml` field           | `cast.toml` LayerConfig field |
+|---|---|
+| `thickness_m`                   | `thickness_m`                  |
+| `material_anchor_key`           | `material`                     |
+| `slacker_fraction`              | (informational — not consumed today; future enhancement could surface in `procedure.md`) |
+| `cavity.inset_m`                | (informational — `plug = scan` Option A doesn't apply the inset to mold geometry today; future enhancement could inset the plug) |
+| (not lifted)                    | `density_kg_m3 = None` (auto-lookup via `density_for_anchor`) |
+| `visible`                       | (ignored — viewport-only concern) |
+
+### Schema-version gating
+
+cf-cast-cli mirrors the design-TOML schema in a read-only module
+`design_ref` with its own `DESIGN_TOML_SCHEMA_VERSION_READ` constant.
+A design.toml with `schema_version >
+DESIGN_TOML_SCHEMA_VERSION_READ` is rejected with a precise error
+("update cf-cast-cli"). Both binaries currently target version 1;
+a future schema bump in cf-device-design that this cf-cast-cli
+hasn't been updated for is caught at load.
+
+### Why duplicate the schema instead of extracting a shared crate?
+
+At slice 9 there are two consumers (cf-device-design emit-side +
+cf-cast-cli read-side) and the schema is ~50 LOC of structs +
+validation. A new workspace lib crate (`cf-device-design-format`
+or similar) would cleanly de-duplicate but cost workspace-edit
+overhead, a third version pin, a new dep edge from both binaries.
+The parallel-source-of-truth cost is bounded by `schema_version`
+gating and is documented as the lighter-weight choice for now —
+when a *third* consumer appears, the extraction is the right move.
+
+### Validation split
+
+`CastConfig::validate` previously ran both the layer-source gate
+("`[[layers]]` must be non-empty") and the per-layer numeric +
+material gates in one pass. With slice 9's interleaved lift, the
+two phases disagree (the gate wants `layers.empty` pre-lift when
+`[design]` is set; the per-layer gate wants `!layers.empty`
+post-lift). The validate method now splits into:
+
+- `validate_layer_source()` — pre-lift, gates the
+  `[design] ↔ [[layers]]` mutual exclusion + at-least-one-source
+  requirement.
+- `validate_after_layer_source()` — post-lift, runs the per-layer +
+  numeric + split-normal + plug-pin checks on the now-populated
+  layers.
+
+`validate()` keeps the old single-pass behavior for callers that
+don't need the interleaved lift (test fixtures, hand-built
+configs).
+
+### Tests + grade
+
+- `cargo test -p cf-cast-cli --release`:
+  - `lib`: 33 pass (was 26 pre-9; +7 in `design_ref::tests` for the
+    schema mirror).
+  - `integration`: 4 pass (was 1 pre-9; +3 for the design-sourced
+    end-to-end pipeline, the design+inline-layers reject, and the
+    neither-source reject).
+- `cargo run -p xtask -- grade cf-cast-cli`: **A** on all 5
+  automated criteria.
+
+### What 9 does *not* try to do
+
+- Doesn't inset the plug by `cavity.inset_m` to bake the press-fit
+  reservation into the mold geometry — the lift records it
+  informationally only. A future enhancement could plumb it.
+- Doesn't lift the per-layer `slacker_fraction` into the procedure
+  markdown's recipe block. cf-cast doesn't currently model Slacker;
+  surfacing the fraction in the procedure (e.g. "Mix 50 g Slacker +
+  100 g A + 100 g B" per layer) is a clear future improvement.
+- Doesn't extract a shared schema crate — see "Why duplicate the
+  schema" above. Format drift is gated by `schema_version`.
+
+NEXT: open the all-of-7.* + 8 + 9 PR per the user's decision.
+After that, deferred items:
+- 7.6 (optional): Shore-000 Yeoh calibration.
+- 9.5 (optional): slacker-fraction → procedure.md recipe block.
+- 9.6 (optional): inset the plug by `cavity.inset_m` to bake the
+  press-fit reservation into the mold.
+- Schema-crate extraction if a third TOML consumer appears.
