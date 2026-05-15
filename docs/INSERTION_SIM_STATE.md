@@ -816,3 +816,135 @@ declined:
 - No per-tet material at the layer-boundary interface — the
   partition is still piecewise-constant (one Yeoh material per
   layer's tets, not blended across the boundary).
+
+---
+
+## Update — 2026-05-15 night: slice 8 SHIPPED — `.design.toml` Save/Open
+
+Slice 8 adds session persistence: the design panel's `CavityState +
+LayersState` state round-trips through a `<scan>.design.toml` file
+next to the cleaned STL. The `--design <PATH>` CLI flag (parsed
+since slice 5 but unused) now loads the file on startup; the Save
+button writes it atomically. Open is implicit: re-launch with
+`--design` or just re-run the binary (the auto-default path is
+picked up automatically).
+
+### New module: `design_toml`
+
+Bevy-free data layer — `tools/cf-device-design/src/design_toml.rs`.
+Slice 9 (cf-cast-cli wiring) will reuse this without dragging in
+Bevy / egui. Public surface:
+
+```rust
+pub const DESIGN_TOML_SCHEMA_VERSION: u32 = 1;
+
+pub struct DesignToml {
+    pub device_design: DesignMetaBlock,   // tool_version, generated_at, schema_version
+    pub scan_ref: ScanRefBlock,           // cleaned_stl path
+    pub cavity: CavityBlock,              // inset_m + visible
+    pub layers: Vec<LayerBlock>,          // thickness/anchor/slacker/visible
+}
+
+pub fn resolve_design_toml_path(cleaned_stl, explicit) -> Option<PathBuf>;
+pub fn build_design_toml(cleaned_stl, &CavityState, &LayersState) -> DesignToml;
+pub fn save_design_toml(&DesignToml, path) -> Result<()>;       // atomic via tmp + rename
+pub fn load_design_toml(path) -> Result<DesignToml>;            // calls validate
+pub fn validate_design_toml(&DesignToml) -> Result<()>;
+pub fn apply_design_toml(&DesignToml, &mut CavityState, &mut LayersState) -> Result<()>;
+```
+
+### Schema (versioned at 1)
+
+```toml
+[device_design]
+tool_version = "1.0.0"
+generated_at = "2026-05-15T22:34:00Z"
+schema_version = 1
+
+[scan_ref]
+cleaned_stl = "sock_over_capsule.cleaned.stl"  # relative or absolute
+
+[cavity]
+inset_m = 0.003
+visible = true
+
+[[layers]]
+thickness_m = 0.005
+material_anchor_key = "ECOFLEX_00_30"
+slacker_fraction = 0.0
+visible = true
+
+[[layers]]
+thickness_m = 0.005
+material_anchor_key = "DRAGON_SKIN_10A"
+slacker_fraction = 0.25
+visible = true
+```
+
+`schema_version` is rejected if newer than `DESIGN_TOML_SCHEMA_VERSION`
+— a future-binary write wouldn't silently load into this version.
+
+### Validation gates
+
+`validate_design_toml` rejects:
+- `schema_version > DESIGN_TOML_SCHEMA_VERSION` (forward-incompat).
+- `layers.is_empty()` (at least one layer required).
+- `layers.len() > LAYER_COUNT_MAX` (matches the UI's add-button cap).
+- Unknown `material_anchor_key` (not in the 8-entry catalog).
+- Non-finite / non-positive `thickness_m`.
+- Non-finite / negative `slacker_fraction`.
+- Non-finite / negative `cavity.inset_m`.
+
+### UI section
+
+New `Save / Open` collapsing header in the right panel, below
+Insertion Sim:
+- Path readout: the resolved `.design.toml` path.
+- `[💾 Save Design]` button — writes atomically; surfaces a green
+  `✓ saved N layers · cavity X mm` or red `✗ <error chain>`.
+- "Open: re-launch with `--design <path>`" reminder (no in-app
+  file dialog — would need `rfd` or similar dep; deferred).
+
+### Startup flow
+
+`main()` resolves the design-TOML path → if file exists, load +
+validate + apply to `(CavityState, LayersState)` before the Bevy
+App spins up. A parse / validation error is **fatal** at startup
+(the user supplied a broken file and wants to know before
+silently dropping their design). A missing file is **not** an
+error (first-time use; defaults apply). The `apply_design_toml`
+call is non-fatal at app-spin-up — if the catalog regressed
+between load and apply, the GUI falls back to defaults with a
+warning rather than crashing.
+
+### Tests + grade
+
+- `cargo test -p cf-device-design --bin cf-device-design`:
+  **90 passed, 9 ignored** (was 78 + 9; 12 new `design_toml::tests`):
+  - path-resolution: strips `.cleaned`, handles no-suffix stem,
+    honors `--design` override.
+  - round-trip preserves every field (in-memory + on-disk).
+  - schema-version-newer rejection.
+  - empty / overflow layer counts.
+  - unknown anchor key rejection (with the bad key named).
+  - non-finite + negative thickness / slacker / inset rejection.
+  - ISO 8601 timestamp shape.
+- Both ignored ramps still 16/16 at full 3 mm (synthetic
+  F = 1.12 N — bit-exact with pre-7.5; the slice doesn't touch the
+  sim path).
+- `cargo run -p xtask -- grade cf-device-design`: **A** on all 5
+  automated criteria.
+
+### What 8 does *not* try to do
+
+- No in-app file dialog (Open is re-launch only — would need an
+  `rfd`-class dep + a "reload mid-session" path).
+- No autosave / dirty-state tracking (panel never marks "unsaved
+  changes"; Save is a pure command, no Cmd-S keybind).
+- No multi-file project (one design TOML per scan). The schema is
+  flat; slice-10 features / texture would land in the same file.
+
+NEXT: slice 9 — cf-cast-cli wiring. The `<scan>.design.toml` will
+feed cf-cast-cli for mold derivation, closing the
+`scan → design → cast` loop. Then open the all-of-7.* + 8 + 9 PR
+per the user's decision.

@@ -73,6 +73,13 @@ pub(crate) mod insertion_sim;
 /// existing per-layer surface shells.
 pub(crate) mod insertion_sim_ui;
 
+/// Slice 8 — `.design.toml` Save / Open. Serializes the design panel
+/// state (`CavityState` + `LayersState`) to a TOML file alongside the
+/// cleaned STL, so a session can resume. Schema + atomic-write
+/// helpers + round-trip tests; see the module docs for the schema
+/// layout.
+pub(crate) mod design_toml;
+
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
 /// `UpAxis::PlusZ` swap from physics frame to Bevy frame.
@@ -91,9 +98,9 @@ struct Cli {
 
     /// Optional path to a previously-saved design TOML to reopen +
     /// iterate on. When supplied, the suite pre-populates panels from
-    /// the file; absent, panels start at defaults. Wired in slice 8;
-    /// at this slice the flag is parsed but only the cleaned STL is
-    /// honored.
+    /// the file; absent, the suite auto-resolves
+    /// `<cleaned-stl-stem>.design.toml` next to the STL and loads it
+    /// if it exists (else panels start at defaults). Wired in slice 8.
     #[arg(long, value_name = "PATH")]
     design: Option<PathBuf>,
 
@@ -112,6 +119,13 @@ struct Cli {
 /// meters. Mirror of cf-scan-prep's `ScanMesh` (same posture).
 #[derive(Resource)]
 struct ScanMesh(IndexedMesh);
+
+/// Slice 8 — the on-disk path the cleaned scan loaded from, kept for
+/// the design-TOML's `scan_ref.cleaned_stl` provenance line. The
+/// design panel + Save section read this to know what the design
+/// is anchored against.
+#[derive(Resource, Debug, Clone)]
+struct ScanFilePath(PathBuf);
 
 /// Whether the scan mesh entity is visible this frame. Toggled by
 /// the "Show scan mesh" checkbox in the Scan Info panel. Useful
@@ -505,7 +519,40 @@ fn main() -> Result<()> {
         scan_info.centerline_arc_length_m,
     );
 
-    run_render_app(scan_mesh, scan_info, centerline_points);
+    // Slice 8 — resolve the design-TOML path and load it if it exists.
+    // The CLI's `--design` wins; else fall back to
+    // `<cleaned-stl-stem-minus-.cleaned>.design.toml`. A missing file
+    // is *not* an error (first-time use); a parse / validation error
+    // IS surfaced (the file exists but is broken — user wants to know
+    // before silently dropping their design).
+    let design_toml_path =
+        design_toml::resolve_design_toml_path(&cli.cleaned_stl, cli.design.as_deref());
+    let loaded_design = match &design_toml_path {
+        Some(p) if p.exists() => match design_toml::load_design_toml(p) {
+            Ok(d) => {
+                println!(
+                    "loaded design from {} ({} layers, cavity inset {:.2} mm)",
+                    p.display(),
+                    d.layers.len(),
+                    d.cavity.inset_m * 1e3,
+                );
+                Some(d)
+            }
+            Err(e) => {
+                return Err(e.context(format!("load design.toml at {}", p.display())));
+            }
+        },
+        _ => None,
+    };
+
+    run_render_app(
+        scan_mesh,
+        scan_info,
+        centerline_points,
+        cli.cleaned_stl.clone(),
+        design_toml_path,
+        loaded_design,
+    );
     Ok(())
 }
 
@@ -2106,20 +2153,22 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 /// readouts one frame later — imperceptible at frame rate, and it
 /// keeps both sections reading a single consistent computation
 /// rather than each re-deriving it.
-// 8 system parameters; one over the default clippy cap. The
-// alternative is bundling resources into a SystemParam struct, which
-// for this single all-panels driver is more ceremony than the cap is
-// worth — every parameter is a Bevy resource consumed by a single
-// section of the panel.
+// 10 system parameters; over the default clippy cap. The alternative
+// is bundling resources into a SystemParam struct, which for this
+// single all-panels driver is more ceremony than the cap is worth —
+// every parameter is a Bevy resource consumed by a single section of
+// the panel.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     proxy: Res<EnvelopeProxyMesh>,
+    scan_path: Res<ScanFilePath>,
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
     mut sim_state: ResMut<insertion_sim_ui::InsertionSimState>,
+    mut save_state: ResMut<SaveState>,
     scan_mesh: Option<Res<ScanMesh>>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -2138,6 +2187,8 @@ fn device_design_panel(
                     render_validations_section(ui, &validations);
                     ui.separator();
                     insertion_sim_ui::render_insertion_sim_section(ui, &mut sim_state, scan_loaded);
+                    ui.separator();
+                    render_save_open_section(ui, &mut save_state, &cavity, &layers, &scan_path.0);
                     render_panel_stubs(ui);
                 });
         });
@@ -2187,8 +2238,96 @@ fn render_scan_info_section(
 /// is pulled ahead of Features / Texture because the simulation IS
 /// the engineering payoff of the suite.
 fn render_panel_stubs(ui: &mut egui::Ui) {
-    ui.separator();
-    ui.add_enabled(false, egui::Label::new("Save / Open (slice 8)"));
+    // Slice 8 took the Save/Open stub; nothing left here today. The
+    // function remains so a future slice (10+: Features / Texture)
+    // can hang its own placeholder back on it.
+    let _ = ui;
+}
+
+/// Slice 8 — Save state for the Save/Open panel. Tracks the resolved
+/// design.toml path + last-save status (success message or error)
+/// for the panel readout.
+#[derive(Resource, Debug, Default)]
+struct SaveState {
+    /// Where `[Save]` writes to — resolved from the cleaned-STL path
+    /// or the `--design` flag at startup. `None` only in the
+    /// bare-filename-with-no-parent edge case (where the panel
+    /// disables `[Save]`).
+    path: Option<PathBuf>,
+    /// `Some(msg)` after a save attempt — green on success, red on
+    /// error. Cleared when the user clicks `[Save]` again.
+    last_message: Option<SaveMessage>,
+}
+
+#[derive(Debug, Clone)]
+enum SaveMessage {
+    /// `[Save]` succeeded — path it wrote to.
+    Ok(String),
+    /// `[Save]` failed — error chain.
+    Err(String),
+}
+
+impl SaveState {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            last_message: None,
+        }
+    }
+}
+
+/// Slice 8 — Save / Open panel section. Clicking `[💾 Save Design]`
+/// writes the current `(CavityState, LayersState)` to the resolved
+/// `.design.toml` path, atomically (tmp + rename). Open is implicit:
+/// re-launch with `--design <PATH>` (or the auto-default) — no in-app
+/// open dialog yet (would need a `rfd`-class dep + a "reload mid-
+/// session" path; deferred).
+#[allow(clippy::needless_pass_by_value)]
+fn render_save_open_section(
+    ui: &mut egui::Ui,
+    save_state: &mut SaveState,
+    cavity: &CavityState,
+    layers: &LayersState,
+    cleaned_stl: &Path,
+) {
+    egui::CollapsingHeader::new("Save / Open")
+        .default_open(false)
+        .show(ui, |ui| {
+            match &save_state.path {
+                Some(p) => {
+                    ui.label(format!("Path: {}", p.display()));
+                    if ui.button("💾 Save Design").clicked() {
+                        let design = design_toml::build_design_toml(cleaned_stl, cavity, layers);
+                        save_state.last_message =
+                            Some(match design_toml::save_design_toml(&design, p) {
+                                Ok(()) => SaveMessage::Ok(format!(
+                                    "saved {} layers · cavity {:.2} mm",
+                                    layers.layers.len(),
+                                    cavity.inset_m * 1e3,
+                                )),
+                                Err(e) => SaveMessage::Err(format!("{e:#}")),
+                            });
+                    }
+                }
+                None => {
+                    ui.label(
+                        "(no parent directory to write into — \
+                         supply an absolute --design path on launch)",
+                    );
+                }
+            }
+            ui.label("Open: re-launch with `--design <path>`");
+            if let Some(msg) = &save_state.last_message {
+                match msg {
+                    SaveMessage::Ok(m) => {
+                        ui.colored_label(egui::Color32::from_rgb(90, 200, 110), format!("✓ {m}"));
+                    }
+                    SaveMessage::Err(m) => {
+                        ui.colored_label(egui::Color32::from_rgb(225, 90, 80), format!("✗ {m}"));
+                    }
+                }
+            }
+        });
 }
 
 /// egui color for a [`BudgetStatus`] — green / amber / red.
@@ -2305,6 +2444,9 @@ fn run_render_app(
     scan_mesh: IndexedMesh,
     scan_info: ScanInfo,
     centerline_points: Vec<Point3<f64>>,
+    cleaned_stl_path: PathBuf,
+    design_toml_path: Option<PathBuf>,
+    loaded_design: Option<design_toml::DesignToml>,
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
@@ -2321,8 +2463,28 @@ fn run_render_app(
         envelope_proxy.vertices.len(),
         envelope_proxy.original_face_count,
     );
-    let cavity = CavityState::default_for_scan();
-    let layers = LayersState::default_for_scan();
+    // Slice 8 — start from defaults, then apply loaded design if any.
+    // `apply_design_toml` errors only on catalog lookup, already gated
+    // by `validate_design_toml`; the `expect` here surfaces a wiring
+    // bug rather than a runtime data dependence (the validated TOML
+    // already passed catalog checks at load time).
+    let mut cavity = CavityState::default_for_scan();
+    let mut layers = LayersState::default_for_scan();
+    if let Some(d) = &loaded_design {
+        // `apply_design_toml` errors only on catalog lookup, already
+        // gated by `validate_design_toml` at `load_design_toml`. A
+        // failure here means the catalog regressed between load and
+        // apply — fall back to defaults + log, don't crash the GUI.
+        if let Err(e) = design_toml::apply_design_toml(d, &mut cavity, &mut layers) {
+            eprintln!(
+                "warning: apply_design_toml failed on a validated load ({e:#}); \
+                 starting with defaults"
+            );
+            cavity = CavityState::default_for_scan();
+            layers = LayersState::default_for_scan();
+        }
+    }
+    let save_state = SaveState::new(design_toml_path);
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -2339,6 +2501,7 @@ fn run_render_app(
         .insert_resource(DEVICE_UP_AXIS)
         .insert_resource(RenderScale(render_scale))
         .insert_resource(ScanMesh(scan_mesh))
+        .insert_resource(ScanFilePath(cleaned_stl_path))
         .insert_resource(scan_info)
         .insert_resource(Centerline {
             points_m: centerline_points,
@@ -2346,6 +2509,7 @@ fn run_render_app(
         .insert_resource(envelope_proxy)
         .insert_resource(cavity)
         .insert_resource(layers)
+        .insert_resource(save_state)
         .insert_resource(ScanMeshVisible::default())
         .add_systems(Startup, (setup_render_scene, spawn_cavity_mesh).chain())
         .add_systems(
