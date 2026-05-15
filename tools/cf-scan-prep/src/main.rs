@@ -935,18 +935,91 @@ fn clip_mesh_against_plane(
     clip_mesh_against_plane_eq(mesh, plane_normal, plane_d)
 }
 
+/// Walk along `polyline`'s arc and return the position + local
+/// tangent at arc-length `distance_m` from `polyline[0]`. The
+/// tangent is the unit direction of the segment containing the
+/// target point, pointing from `polyline[0]` toward
+/// `polyline[N-1]`. CSP.4b.3 — the load-bearing primitive for both
+/// the mesh-trim algorithm + the live overlay; both used to
+/// extrapolate linearly from the first/last segment's tangent
+/// (CSP.4b initial), which diverged from the actual centerline
+/// path on curved scans (user-reported via screenshots 2026-05-15).
+///
+/// Returns `None` for a < 2-point polyline (no segments to walk).
+/// For `distance_m` past the polyline's total arc length, returns
+/// a linear extrapolation along the LAST segment's tangent — fine
+/// for the panel-clamped slider range (max = half arc length per
+/// end), but explicit so future call sites that pass arbitrary
+/// distances don't hit a silent failure.
+fn point_along_polyline_at_arc_distance(
+    polyline: &[Point3<f64>],
+    distance_m: f64,
+) -> Option<(Point3<f64>, Vector3<f64>)> {
+    if polyline.len() < 2 {
+        return None;
+    }
+    let target_m = distance_m.max(0.0);
+    let mut walked_m = 0.0_f64;
+    for i in 0..polyline.len() - 1 {
+        let seg_vec = polyline[i + 1].coords - polyline[i].coords;
+        let seg_len = seg_vec.norm();
+        if seg_len < f64::EPSILON {
+            continue;
+        }
+        if walked_m + seg_len >= target_m {
+            // Target lies within segment `i..i+1`. Lerp to the
+            // exact point + return that segment's unit tangent.
+            let t = ((target_m - walked_m) / seg_len).clamp(0.0, 1.0);
+            let pos = Point3::from(polyline[i].coords + t * seg_vec);
+            let tangent = seg_vec / seg_len;
+            return Some((pos, tangent));
+        }
+        walked_m += seg_len;
+    }
+    // Past the end of the polyline — linear extrapolation along the
+    // last segment's tangent. Reaches this branch only if the
+    // caller's distance exceeds the polyline arc length (the
+    // user-facing panel clamps to half arc length per end, so this
+    // is a safety fallback, not a hot path).
+    let n = polyline.len();
+    let last_seg = polyline[n - 1].coords - polyline[n - 2].coords;
+    let last_seg_len = last_seg.norm();
+    if last_seg_len < f64::EPSILON {
+        return None;
+    }
+    let overrun_m = target_m - walked_m;
+    let tangent = last_seg / last_seg_len;
+    let pos = Point3::from(polyline[n - 1].coords + tangent * overrun_m);
+    Some((pos, tangent))
+}
+
+/// Total arc length of `polyline` in meters. Returns `0.0` for
+/// `< 2` points.
+fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
+    polyline
+        .windows(2)
+        .map(|w| (w[1].coords - w[0].coords).norm())
+        .sum()
+}
+
 /// Trim `mesh` along its centerline polyline: clips off
 /// `trim_tip_mm` from the tip end (centerline\[0\]) and
 /// `trim_floor_mm` from the floor end (centerline\[N-1\]) of the
 /// polyline. Returns the trimmed mesh.
 ///
 /// CSP.4b user-facing feature. The trim planes are perpendicular to
-/// the centerline tangent at each end — for a roughly-straight
-/// centerline along the PCA-baked `+Z` axis, both trim planes are
-/// roughly horizontal cuts at the corresponding world-Z heights.
-/// For a curved centerline (e.g., a bent prosthetic), the cuts are
-/// locally perpendicular to the spine, which matches the natural
-/// workshop intent of "shave off the noisy end."
+/// the centerline tangent **at the cut point** (computed via
+/// [`point_along_polyline_at_arc_distance`]). For a roughly-straight
+/// centerline this is a horizontal cut at the corresponding world-Z
+/// height; for a curved centerline (sock fixture with PCA-induced
+/// curvature) the cut tilts with the local spine direction — the
+/// natural workshop intent of "shave off the noisy end along the
+/// spine."
+///
+/// CSP.4b.3 — initial CSP.4b used the first/last polyline segment's
+/// tangent + linear extrapolation, which diverged badly from the
+/// real centerline on curved scans (visible in trim-overlay
+/// screenshots). The current implementation walks the polyline arc.
 ///
 /// Centerline polyline ordering convention: index 0 is the tip
 /// (closed end / dome), index N-1 is the floor (open end / rim).
@@ -972,30 +1045,30 @@ fn trim_mesh_along_centerline(
     }
     let mut out = mesh.clone();
 
-    // Tip-end trim: plane normal = tangent from tip toward floor.
-    // Kept side = the "floor" side, where `(p - plane_point) · tangent >= 0`.
+    // Tip-end trim: plane at arc-distance `trim_tip_mm` forward
+    // from the tip; plane normal = local tangent (points toward
+    // floor). Kept side = the "floor" side.
     if trim_tip_mm > 0.0 {
-        let tangent_raw = centerline[1].coords - centerline[0].coords;
-        let tangent_norm = tangent_raw.norm();
-        if tangent_norm > f64::EPSILON {
-            let tangent = tangent_raw / tangent_norm;
-            let plane_point_coords = centerline[0].coords + tangent * (trim_tip_mm * 0.001);
-            let plane_point = Point3::from(plane_point_coords);
+        if let Some((plane_point, tangent)) =
+            point_along_polyline_at_arc_distance(centerline, trim_tip_mm * 0.001)
+        {
             out = clip_mesh_against_plane(&out, plane_point, tangent);
         }
     }
 
-    // Floor-end trim: plane normal = -tangent (pointing from floor
-    // back toward tip). Kept side = the "tip" side.
+    // Floor-end trim: plane at arc-distance
+    // `total_length - trim_floor_mm` from the tip (i.e.,
+    // `trim_floor_mm` backward from the floor). Plane normal =
+    // -tangent (points toward tip). Kept side = the "tip" side.
     if trim_floor_mm > 0.0 {
-        let n = centerline.len();
-        let tangent_raw = centerline[n - 1].coords - centerline[n - 2].coords;
-        let tangent_norm = tangent_raw.norm();
-        if tangent_norm > f64::EPSILON {
-            let tangent = tangent_raw / tangent_norm;
-            let plane_point_coords = centerline[n - 1].coords - tangent * (trim_floor_mm * 0.001);
-            let plane_point = Point3::from(plane_point_coords);
-            out = clip_mesh_against_plane(&out, plane_point, -tangent);
+        let total_length_m = polyline_arc_length_m(centerline);
+        let target_m = total_length_m - trim_floor_mm * 0.001;
+        if target_m > 0.0 {
+            if let Some((plane_point, tangent)) =
+                point_along_polyline_at_arc_distance(centerline, target_m)
+            {
+                out = clip_mesh_against_plane(&out, plane_point, -tangent);
+            }
         }
     }
 
@@ -3536,16 +3609,13 @@ fn draw_trim_plane_overlays(
     let radius_world = (max_extent_m * 0.5 * 1.2) as f32 * render_scale.0;
 
     let color = Color::srgb(1.0, 0.55, 0.10);
-
-    // Centerline tangent at the tip end (polyline[0] → polyline[1]).
     let cl = &cap.centerline_polyline;
-    let n = cl.len();
-    let tip_tangent_raw = cl[1].coords - cl[0].coords;
-    let tip_tangent_norm = tip_tangent_raw.norm();
-    if trim.trim_tip_mm > 0.0 && tip_tangent_norm > f64::EPSILON {
-        let tangent_phys = tip_tangent_raw / tip_tangent_norm;
-        let plane_center_phys =
-            Point3::from(cl[0].coords + tangent_phys * (trim.trim_tip_mm * 0.001));
+
+    // Closure: project a physics-frame (point, tangent) pair into
+    // Bevy world frame + draw the perpendicular circle. Used for
+    // both tip + floor ends so the projection math doesn't drift
+    // between them.
+    let mut draw_at = |plane_center_phys: Point3<f64>, tangent_phys: Vector3<f64>| {
         let plane_center_world = project_mesh_local_to_world(
             &plane_center_phys,
             *up,
@@ -3554,42 +3624,37 @@ fn draw_trim_plane_overlays(
             render_scale.0,
             bbox_center_bevy,
         );
-        // Normal in Bevy frame: rotate the physics tangent through
-        // the same up-axis swap + Reorient as the mesh.
         let tangent_swap = up.to_bevy_point(&Point3::from(tangent_phys));
         let tangent_bevy_raw = Vec3::from_array(tangent_swap);
         let tangent_bevy = (rotation_bevy * tangent_bevy_raw).normalize_or_zero();
         if tangent_bevy.length_squared() > 0.0 {
             let isometry = Isometry3d::new(plane_center_world, Quat::IDENTITY);
-            // `gizmos.circle` takes a position + normal direction
-            // via Isometry3d in Bevy 0.18; we draw via the
-            // `circle_with_normal` convenience helper.
             draw_perpendicular_circle(&mut gizmos, isometry, tangent_bevy, radius_world, color);
+        }
+    };
+
+    // CSP.4b.3 — walk the polyline arc instead of linear-
+    // extrapolating from the first/last segment's tangent.
+    // Initial CSP.4b version diverged from the actual centerline
+    // path for curved scans (sock fixture's PCA-induced curvature
+    // surfaced this in eyes-on-pixels feedback).
+    if trim.trim_tip_mm > 0.0 {
+        if let Some((plane_center_phys, tangent_phys)) =
+            point_along_polyline_at_arc_distance(cl, trim.trim_tip_mm * 0.001)
+        {
+            draw_at(plane_center_phys, tangent_phys);
         }
     }
 
-    // Floor end: tangent points from polyline[N-2] toward
-    // polyline[N-1].
-    let floor_tangent_raw = cl[n - 1].coords - cl[n - 2].coords;
-    let floor_tangent_norm = floor_tangent_raw.norm();
-    if trim.trim_floor_mm > 0.0 && floor_tangent_norm > f64::EPSILON {
-        let tangent_phys = floor_tangent_raw / floor_tangent_norm;
-        let plane_center_phys =
-            Point3::from(cl[n - 1].coords - tangent_phys * (trim.trim_floor_mm * 0.001));
-        let plane_center_world = project_mesh_local_to_world(
-            &plane_center_phys,
-            *up,
-            rotation_bevy,
-            recenter_world,
-            render_scale.0,
-            bbox_center_bevy,
-        );
-        let tangent_swap = up.to_bevy_point(&Point3::from(tangent_phys));
-        let tangent_bevy_raw = Vec3::from_array(tangent_swap);
-        let tangent_bevy = (rotation_bevy * tangent_bevy_raw).normalize_or_zero();
-        if tangent_bevy.length_squared() > 0.0 {
-            let isometry = Isometry3d::new(plane_center_world, Quat::IDENTITY);
-            draw_perpendicular_circle(&mut gizmos, isometry, tangent_bevy, radius_world, color);
+    if trim.trim_floor_mm > 0.0 {
+        let total_length_m = polyline_arc_length_m(cl);
+        let target_m = total_length_m - trim.trim_floor_mm * 0.001;
+        if target_m > 0.0 {
+            if let Some((plane_center_phys, tangent_phys)) =
+                point_along_polyline_at_arc_distance(cl, target_m)
+            {
+                draw_at(plane_center_phys, tangent_phys);
+            }
         }
     }
 }
@@ -5947,6 +6012,82 @@ mod tests {
         let state = CenterlineTrimState::default();
         assert_eq!(state.trim_tip_mm, 0.0);
         assert_eq!(state.trim_floor_mm, 0.0);
+    }
+
+    /// CSP.4b.3 regression test — the polyline-walker primitive
+    /// that drives both the trim algorithm + the live overlay.
+    /// Pre-CSP.4b.3 trim/overlay code extrapolated linearly from
+    /// the first segment's tangent, which diverged from the actual
+    /// curve as the trim distance grew. This test builds a
+    /// L-shaped polyline (sharp 90° bend at mid-arc) and asserts
+    /// that walking past the bend lands on the SECOND-leg
+    /// position, NOT linearly extrapolated from the first leg's
+    /// tangent.
+    #[test]
+    fn point_along_polyline_walks_through_a_bend() {
+        // L-shaped polyline:
+        //   (0,0,0) → (0,0,0.05) → (0.05,0,0.05)
+        // Total arc length: 0.05 + 0.05 = 0.10 m (100 mm).
+        // First leg (+Z, 50 mm); second leg (+X, 50 mm); 90° bend
+        // at index 1.
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.05),
+        ];
+
+        // 25 mm in: on the first leg. Expect (0, 0, 0.025), tangent = +Z.
+        let (p, t) = point_along_polyline_at_arc_distance(&polyline, 0.025).unwrap();
+        assert!((p.x - 0.0).abs() < 1e-12);
+        assert!((p.z - 0.025).abs() < 1e-12);
+        assert!((t.z - 1.0).abs() < 1e-9);
+        assert!(t.x.abs() < 1e-9);
+
+        // 75 mm in: 25 mm into the SECOND leg. Expect (0.025, 0,
+        // 0.05), tangent = +X. The pre-CSP.4b.3 buggy code would
+        // have walked 75 mm along the first leg's +Z tangent and
+        // landed at (0, 0, 0.075) — way off the actual polyline.
+        let (p, t) = point_along_polyline_at_arc_distance(&polyline, 0.075).unwrap();
+        assert!(
+            (p.x - 0.025).abs() < 1e-12,
+            "x post-bend should be 0.025, got {}",
+            p.x
+        );
+        assert!(
+            (p.z - 0.05).abs() < 1e-12,
+            "z post-bend should be 0.05, got {}",
+            p.z
+        );
+        assert!(
+            (t.x - 1.0).abs() < 1e-9,
+            "tangent post-bend should be +X, got {t:?}"
+        );
+        assert!(t.z.abs() < 1e-9);
+    }
+
+    /// `point_along_polyline_at_arc_distance` returns `None` for a
+    /// polyline with < 2 points (no segment to walk). Pairs with
+    /// the trim algorithm's "skip if centerline too short" path.
+    #[test]
+    fn point_along_polyline_returns_none_when_too_short() {
+        let single = vec![Point3::origin()];
+        assert!(point_along_polyline_at_arc_distance(&single, 0.0).is_none());
+        let empty: Vec<Point3<f64>> = Vec::new();
+        assert!(point_along_polyline_at_arc_distance(&empty, 0.1).is_none());
+    }
+
+    /// `polyline_arc_length_m` sums Euclidean segment lengths.
+    #[test]
+    fn polyline_arc_length_sums_segments() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.0),
+        ];
+        // 50 + 50 + 50 mm = 0.15 m.
+        let total = polyline_arc_length_m(&polyline);
+        assert!((total - 0.15).abs() < 1e-12);
     }
 
     // ----- build_overlay_lengths -------------------------------------
