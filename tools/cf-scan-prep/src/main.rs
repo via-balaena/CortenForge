@@ -1383,6 +1383,89 @@ fn sample_radial_profile(
     radii
 }
 
+/// Same reference-zone walk as [`sample_radial_profile`] but
+/// fits a **per-angle-bin linear regression** `r(s) = a + b·s`
+/// instead of taking the median. Used by the Extrapolate shape
+/// variant (CSP.4e.3.b) — extrapolating below the cut at `s < 0`
+/// gives a profile that continues the reference-zone trend
+/// (e.g., a sock that narrows toward the rim keeps narrowing
+/// below the cut).
+///
+/// Returns `(intercepts, slopes)` — both length-M arrays:
+/// - `intercepts[i]` = `a` for bin i (radius at `s = 0`, the cut)
+/// - `slopes[i]`     = `b` for bin i (mm of radius per mm of s)
+///
+/// Per-bin samples with < 2 points fall back to (overall median,
+/// slope 0) — flat reconstruction for that angle.
+fn sample_radial_profile_linear_fit(
+    mesh: &IndexedMesh,
+    cut_point: Point3<f64>,
+    inward_tangent: Vector3<f64>,
+    u: Vector3<f64>,
+    v: Vector3<f64>,
+    reference_zone_m: f64,
+) -> ([f64; RECONSTRUCT_ANGLE_BINS], [f64; RECONSTRUCT_ANGLE_BINS]) {
+    let mut bins: Vec<Vec<(f64, f64)>> = (0..RECONSTRUCT_ANGLE_BINS).map(|_| Vec::new()).collect();
+    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+    let mut all_radii: Vec<f64> = Vec::new();
+    for vtx in &mesh.vertices {
+        let d = vtx.coords - cut_point.coords;
+        let s = d.dot(&inward_tangent);
+        if s <= 0.0 || s > reference_zone_m {
+            continue;
+        }
+        let proj_u = d.dot(&u);
+        let proj_v = d.dot(&v);
+        let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
+        let angle = proj_v.atan2(proj_u);
+        let normalized = if angle >= 0.0 {
+            angle
+        } else {
+            angle + std::f64::consts::TAU
+        };
+        let bin = ((normalized / bin_span) as usize).min(RECONSTRUCT_ANGLE_BINS - 1);
+        bins[bin].push((s, r));
+        all_radii.push(r);
+    }
+    // Fallback overall median for sparse bins.
+    let overall = if all_radii.is_empty() {
+        0.0
+    } else {
+        all_radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        all_radii[all_radii.len() / 2]
+    };
+    let mut intercepts = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+    let mut slopes = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+    for (i, samples) in bins.iter().enumerate() {
+        if samples.len() < 2 {
+            intercepts[i] = overall;
+            slopes[i] = 0.0;
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let n = samples.len() as f64;
+        let sum_s: f64 = samples.iter().map(|(s, _)| s).sum();
+        let sum_r: f64 = samples.iter().map(|(_, r)| r).sum();
+        let sum_s2: f64 = samples.iter().map(|(s, _)| s * s).sum();
+        let sum_sr: f64 = samples.iter().map(|(s, r)| s * r).sum();
+        let denom = n * sum_s2 - sum_s * sum_s;
+        if denom.abs() < f64::EPSILON {
+            intercepts[i] = sum_r / n;
+            slopes[i] = 0.0;
+        } else {
+            slopes[i] = (n * sum_sr - sum_s * sum_r) / denom;
+            intercepts[i] = (sum_r - slopes[i] * sum_s) / n;
+        }
+    }
+    (intercepts, slopes)
+}
+
+/// Taper rate for the Taper shape variant (CSP.4e.3.a). The new
+/// floor's radius is `1 - TAPER_AT_FLOOR` × the canonical
+/// profile; intermediate rings linearly interpolate. 0.3 = 30%
+/// reduction at the floor → visible-but-not-extreme pinch.
+const RECONSTRUCT_TAPER_AT_FLOOR: f64 = 0.3;
+
 /// Linearly interpolate the canonical radius at angle `angle`
 /// (radians, any value) from the M-bin profile.
 fn sample_radius_at_angle(radii: &[f64; RECONSTRUCT_ANGLE_BINS], angle: f64) -> f64 {
@@ -1399,22 +1482,36 @@ fn sample_radius_at_angle(radii: &[f64; RECONSTRUCT_ANGLE_BINS], angle: f64) -> 
     radii[lo_bin] * (1.0 - t) + radii[hi_bin] * t
 }
 
-/// Apply Constant-shape floor reconstruction to `mesh`. The mesh
-/// MUST already be trim-cut (open boundary at the floor end);
-/// other open boundaries (e.g., tip-end if tip was also trimmed)
-/// will be auto-capped flat. CSP.4e.2.
+/// Apply floor reconstruction to `mesh`. The mesh MUST already be
+/// trim-cut (open boundary at the floor end); other open
+/// boundaries (e.g., tip-end if tip was also trimmed) fall
+/// through to flat auto-cap inside this function's degenerate
+/// paths. CSP.4e.2 (Constant), CSP.4e.3 (Taper, Extrapolate).
+///
+/// `shape` controls how the per-ring radius is computed as we
+/// extrude down the centerline from the cut to the new floor:
+/// - `Constant` — every ring uses the canonical median profile
+///   at the cut (cylindrical extrusion).
+/// - `Taper`    — linear scaling from canonical at the cut to
+///   `(1 - RECONSTRUCT_TAPER_AT_FLOOR) × canonical` at the new
+///   floor.
+/// - `Extrapolate` — per-angle linear regression `r(s) = a + b·s`
+///   across the reference zone; extrapolate to `s < 0` (below
+///   the cut) for each ring. Captures the natural taper of the
+///   reference geometry.
 ///
 /// `centerline` is the POST-trim polyline in the same frame as
 /// `mesh` (physics-frame meters, pre-bake under the current live-
 /// preview pipeline).
-fn apply_constant_reconstruction(
+fn apply_reconstruction(
     mut mesh: IndexedMesh,
     centerline: &[Point3<f64>],
     applied_floor_mm: f64,
     reference_zone_mm: f64,
+    shape: ReconstructShape,
 ) -> IndexedMesh {
     eprintln!(
-        "  apply_constant_reconstruction: input mesh {}V/{}F, centerline {} points, applied_floor_mm = {:.2}, reference_zone_mm = {:.2}",
+        "  apply_reconstruction(shape={shape:?}): input mesh {}V/{}F, centerline {} points, applied_floor_mm = {:.2}, reference_zone_mm = {:.2}",
         mesh.vertices.len(),
         mesh.faces.len(),
         centerline.len(),
@@ -1460,7 +1557,11 @@ fn apply_constant_reconstruction(
     let (u_axis, v_axis) = perpendicular_basis_for(inward_tangent);
 
     // Sample the canonical radial profile from the reference zone.
-    let radii = sample_radial_profile(
+    // For Constant + Taper we only need per-bin medians; for
+    // Extrapolate we ALSO need per-bin linear-regression slopes
+    // so we can evaluate `r(s) = a + b·s` at `s < 0` (below the
+    // cut). The closure below dispatches per-shape.
+    let base_radii = sample_radial_profile(
         &mesh,
         centerline_last,
         inward_tangent,
@@ -1468,12 +1569,52 @@ fn apply_constant_reconstruction(
         v_axis,
         reference_zone_mm * 0.001,
     );
+    let extrap_fit = if matches!(shape, ReconstructShape::Extrapolate) {
+        Some(sample_radial_profile_linear_fit(
+            &mesh,
+            centerline_last,
+            inward_tangent,
+            u_axis,
+            v_axis,
+            reference_zone_mm * 0.001,
+        ))
+    } else {
+        None
+    };
+    let extension_m = applied_floor_mm * 0.001;
+    // `t` ∈ [0, 1]: 0 = top ring at the cut, 1 = bottom ring at
+    // the new floor. Returns the per-angle radius for that ring.
+    let radius_at = |angle: f64, t: f64| -> f64 {
+        let base = sample_radius_at_angle(&base_radii, angle);
+        match shape {
+            ReconstructShape::Constant => base,
+            ReconstructShape::Taper => base * (1.0 - RECONSTRUCT_TAPER_AT_FLOOR * t),
+            ReconstructShape::Extrapolate => {
+                // CSP.4e.3.b — for Extrapolate, evaluate the
+                // per-angle linear fit at `s = -extension_m × t`
+                // (negative s = below cut). Fall back to Constant
+                // if the fit isn't available (shouldn't happen).
+                if let Some((a_arr, b_arr)) = extrap_fit.as_ref() {
+                    let a = sample_radius_at_angle(a_arr, angle);
+                    let b = sample_radius_at_angle(b_arr, angle);
+                    let s = -extension_m * t;
+                    let r = a + b * s;
+                    // Clamp non-negative — an aggressive trend
+                    // could project to negative radius for a long
+                    // extrusion. Below ~0 the mesh would
+                    // self-cross the centerline.
+                    r.max(0.0)
+                } else {
+                    base
+                }
+            }
+        }
+    };
 
     // Snap floor-loop vertices to the canonical profile + the cut
     // plane. Each loop vertex keeps its angle but gets its radial
-    // distance replaced with `radius_at(angle)`, AND its
-    // along-tangent position projected to the cut plane (so the
-    // top ring is exactly planar).
+    // distance replaced with `radius_at(angle, 0)` (top of the
+    // extrusion = at the cut plane).
     let floor_loop = loops[floor_idx].clone();
     let l = floor_loop.vertices.len();
     let mut top_ring_angles = Vec::with_capacity(l);
@@ -1484,7 +1625,7 @@ fn apply_constant_reconstruction(
             let proj_v = d.dot(&v_axis);
             let angle = proj_v.atan2(proj_u);
             top_ring_angles.push(angle);
-            let r = sample_radius_at_angle(&radii, angle);
+            let r = radius_at(angle, 0.0);
             let new_pos =
                 centerline_last.coords + r * (u_axis * angle.cos() + v_axis * angle.sin());
             mesh.vertices[vidx as usize] = Point3::from(new_pos);
@@ -1494,16 +1635,15 @@ fn apply_constant_reconstruction(
     // Generate K extrusion rings DOWN past the cut (in the
     // direction OPPOSITE the inward tangent — outward toward the
     // original chopped position).
-    let extension_m = applied_floor_mm * 0.001;
     let extrusion_dir = -inward_tangent;
     let mut prev_ring: Vec<u32> = floor_loop.vertices.clone();
     for k in 1..=RECONSTRUCT_RING_COUNT {
+        #[allow(clippy::cast_precision_loss)]
         let t_k = k as f64 / RECONSTRUCT_RING_COUNT as f64;
         let ring_center = centerline_last.coords + extrusion_dir * extension_m * t_k;
         let mut this_ring: Vec<u32> = Vec::with_capacity(l);
-        for (i, &angle) in top_ring_angles.iter().enumerate() {
-            let _ = i;
-            let r = sample_radius_at_angle(&radii, angle);
+        for &angle in &top_ring_angles {
+            let r = radius_at(angle, t_k);
             let new_pos = ring_center + r * (u_axis * angle.cos() + v_axis * angle.sin());
             #[allow(clippy::cast_possible_truncation)]
             let idx = mesh.vertices.len() as u32;
@@ -3676,10 +3816,8 @@ fn update_displayed_mesh(
                     });
                     let shape_label = match trim.reconstruct_shape {
                         ReconstructShape::Constant => "Constant (average radius)",
-                        ReconstructShape::Taper => "Taper (stub — falls back to flat cap)",
-                        ReconstructShape::Extrapolate => {
-                            "Extrapolate (stub — falls back to flat cap)"
-                        }
+                        ReconstructShape::Taper => "Taper toward floor",
+                        ReconstructShape::Extrapolate => "Extrapolate reference trend",
                     };
                     status.text = format!(
                         "Applied reconstruct: reference {:.1} mm, shape = {}",
@@ -3753,28 +3891,22 @@ fn update_displayed_mesh(
         weld_vertices(&mut t, SIMPLIFY_WELD_EPSILON_M);
         match trim.applied_reconstruct {
             Some(ar) if trim.applied_floor_mm > 0.0 => {
-                // CSP.4e.2 — Constant shape only; Taper +
-                // Extrapolate variants land at 4e.3 / 4e.4.
+                // CSP.4e.2 + 4e.3 — all three shapes (Constant,
+                // Taper, Extrapolate) ship the extruded-sidewall
+                // reconstruction. Per-shape per-ring radius logic
+                // is inside `apply_reconstruction` itself.
                 let trimmed_centerline = trim_centerline_polyline(
                     &cap.centerline_polyline,
                     trim.applied_tip_mm,
                     trim.applied_floor_mm,
                 );
-                match ar.shape {
-                    ReconstructShape::Constant => {
-                        t = apply_constant_reconstruction(
-                            t,
-                            &trimmed_centerline,
-                            trim.applied_floor_mm,
-                            ar.reference_mm,
-                        );
-                    }
-                    // Placeholders: fall back to auto-cap until
-                    // those shapes ship.
-                    ReconstructShape::Taper | ReconstructShape::Extrapolate => {
-                        let _capped = auto_cap_open_boundaries(&mut t);
-                    }
-                }
+                t = apply_reconstruction(
+                    t,
+                    &trimmed_centerline,
+                    trim.applied_floor_mm,
+                    ar.reference_mm,
+                    ar.shape,
+                );
             }
             _ => {
                 // No reconstruct applied — auto-cap all boundaries.
@@ -4996,9 +5128,9 @@ fn render_centerline_trim_section(
 
                 ui.add_space(4.0);
                 ui.small(
-                    "CSP.4e.2 — Constant shape generates extruded sidewall + flat cap. \
-                     Taper / Extrapolate land in 4e.3+; they currently fall back to flat \
-                     auto-cap.",
+                    "All three shapes (Constant / Taper / Extrapolate) generate \
+                     extruded sidewall + flat cap. Taper pinches toward the new \
+                     floor; Extrapolate continues the reference zone's natural taper.",
                 );
             }
         });
@@ -5214,20 +5346,20 @@ fn handle_save_action(
         // auto-cap. Mirrors the `update_displayed_mesh` branch
         // so the on-disk STL matches the viewport.
         let did_reconstruct = match centerline_trim.applied_reconstruct {
-            Some(ar)
-                if centerline_trim.applied_floor_mm > 0.0
-                    && matches!(ar.shape, ReconstructShape::Constant) =>
-            {
+            Some(ar) if centerline_trim.applied_floor_mm > 0.0 => {
+                // CSP.4e.2 + 4e.3 — all three shapes (Constant,
+                // Taper, Extrapolate) bake into the save output.
                 let trimmed_centerline = trim_centerline_polyline(
                     &centerline_world,
                     centerline_trim.applied_tip_mm,
                     centerline_trim.applied_floor_mm,
                 );
-                cleaned = apply_constant_reconstruction(
+                cleaned = apply_reconstruction(
                     cleaned,
                     &trimmed_centerline,
                     centerline_trim.applied_floor_mm,
                     ar.reference_mm,
+                    ar.shape,
                 );
                 true
             }
