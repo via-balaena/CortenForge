@@ -1343,6 +1343,82 @@ fn perpendicular_basis_for(n: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
     (u, v)
 }
 
+/// Look-back distance for [`stable_inward_tangent`] in meters.
+/// 20 mm averages enough centerline segments on a typical
+/// workshop scan (segment density ~5 mm; 20 mm = ~4 segments)
+/// to wash out the noisy single-segment tangent at the
+/// post-trim cut endpoint, while staying short enough that the
+/// resulting direction tracks the body's local axis (not the
+/// whole-body PCA average).
+const STABLE_INWARD_TANGENT_LOOKBACK_M: f64 = 0.020;
+
+/// Estimate a stable inward tangent at the centerline polyline's
+/// last (cut) endpoint by walking back along the polyline by
+/// `lookback_m` arc-length, then taking the unit vector from
+/// that look-back point to the cut endpoint and **negating** it
+/// so the result points FROM the cut INTO the body (matching
+/// the convention used by [`apply_reconstruction`]'s
+/// `inward_tangent`).
+///
+/// Falls back to the head→cut direction when `lookback_m`
+/// exceeds the polyline's total arc length, and to the
+/// last-segment vector when the polyline has only two points.
+/// Returns `None` for degenerate inputs (single-point polyline,
+/// non-positive lookback, or coincident look-back/cut points).
+///
+/// **Why this helper exists** (2026-05-16): the pre-fix
+/// `apply_reconstruction` used `centerline[n-2] - centerline[n-1]`
+/// directly. On the iter-1 sock-over-capsule scan that single
+/// segment wandered laterally relative to the body's main axis,
+/// causing (a) the K-ring extrusion to extend off-axis and (b)
+/// the blend pass to project scan vertices onto a tilted global
+/// frame, producing visible spike artifacts. Look-back averaging
+/// over ~20 mm tames both.
+fn stable_inward_tangent(centerline: &[Point3<f64>], lookback_m: f64) -> Option<Vector3<f64>> {
+    let n = centerline.len();
+    if n < 2 || lookback_m <= 0.0 {
+        return None;
+    }
+    let cut = centerline[n - 1];
+    // Walk segments from the cut endpoint inward, accumulating
+    // arc-length. Stop when `accumulated + this_segment >=
+    // lookback_m` and interpolate within that segment so the
+    // look-back point is exactly `lookback_m` from the cut.
+    let mut accumulated = 0.0;
+    // Default: if every segment is degenerate (zero-length), fall
+    // back to centerline[n-2] (the immediate inward neighbor).
+    let mut lookback_point = centerline[n - 2];
+    let mut found = false;
+    for i in (0..n - 1).rev() {
+        let seg = centerline[i].coords - centerline[i + 1].coords;
+        let seg_len = seg.norm();
+        if seg_len < f64::EPSILON {
+            continue;
+        }
+        if accumulated + seg_len >= lookback_m {
+            let remaining = lookback_m - accumulated;
+            let t = remaining / seg_len;
+            lookback_point = centerline[i + 1] + seg * t;
+            found = true;
+            break;
+        }
+        accumulated += seg_len;
+        lookback_point = centerline[i];
+    }
+    // If we exhausted the polyline without reaching `lookback_m`,
+    // the last assignment of `lookback_point` is the head of the
+    // polyline (centerline[0] or last non-degenerate inward
+    // point) — that's the right fallback for short polylines.
+    let _ = found;
+
+    let dir = lookback_point.coords - cut.coords;
+    let norm = dir.norm();
+    if norm < f64::EPSILON {
+        return None;
+    }
+    Some(dir / norm)
+}
+
 /// Bin the mesh vertices in the reference zone above the cut by
 /// angular position around the centerline, then take the median
 /// radial distance per bin. Returns a length-M array of radii (M =
@@ -1528,6 +1604,28 @@ fn sample_radius_at_angle(radii: &[f64; RECONSTRUCT_ANGLE_BINS], angle: f64) -> 
 /// `centerline` is the POST-trim polyline in the same frame as
 /// `mesh` (physics-frame meters, pre-bake under the current live-
 /// preview pipeline).
+///
+/// # Seam handling (2026-05-16)
+///
+/// The transition from the noisy scan above the cut to the smooth
+/// reconstruction below used to produce a visible "lip": the
+/// floor-loop's noisy radii didn't match the smoothed canonical
+/// profile, leaving a ridge at the join. **Always-on fix**: the
+/// floor-loop vertices are NOT snapped to the canonical profile;
+/// they BECOME the top extrusion ring as-is, and each subsequent
+/// ring `k` lerps toward the canonical profile via a smoothstep
+/// weight (0 at the top, 1 at the new floor). The bottom flat
+/// cap still sits on the fully-smooth canonical profile, so the
+/// reconstruction doesn't carry the noise into the floor. Combined
+/// with the [`stable_inward_tangent`]-driven extrusion direction,
+/// this produces a clean seam without any user-tunable knob.
+///
+/// (A scan-side blend-zone slider was prototyped 2026-05-16 and
+/// removed the same session: the local-frame projection it needed
+/// produced visible artifacts on the iter-1 sock-over-capsule
+/// fixture at any non-zero blend, and `blend_zone_mm = 0` already
+/// looked "pretty much perfect" per user verification. The slider
+/// was carrying surface area without earning it.)
 fn apply_reconstruction(
     mut mesh: IndexedMesh,
     centerline: &[Point3<f64>],
@@ -1551,14 +1649,25 @@ fn apply_reconstruction(
     // FROM the cut endpoint AWAY from the chopped end (i.e., back
     // INTO the mesh body) — that's the direction of `polyline[N-2]
     // - polyline[N-1]` after trim trimmed the polyline.
-    let n = centerline.len();
-    let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
-    let tangent_norm = tangent_raw.norm();
-    if tangent_norm < f64::EPSILON {
-        auto_cap_open_boundaries(&mut mesh);
-        return mesh;
-    }
-    let inward_tangent = tangent_raw / tangent_norm;
+    // Stable inward tangent: walk back along the centerline by
+    // ~20 mm and take the dir-into-body. Replaces the prior
+    // single-segment `centerline[n-2] - centerline[n-1]` which
+    // wandered laterally on noisy polylines, tilting the K-ring
+    // extrusion direction off the body's actual axis. Falls
+    // back to the single-segment vector for short polylines.
+    let inward_tangent =
+        if let Some(t) = stable_inward_tangent(centerline, STABLE_INWARD_TANGENT_LOOKBACK_M) {
+            t
+        } else {
+            let n = centerline.len();
+            let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
+            let tangent_norm = tangent_raw.norm();
+            if tangent_norm < f64::EPSILON {
+                auto_cap_open_boundaries(&mut mesh);
+                return mesh;
+            }
+            tangent_raw / tangent_norm
+        };
     let (u_axis, v_axis) = perpendicular_basis_for(inward_tangent);
 
     // Sample the canonical radial profile from the reference zone.
@@ -1616,39 +1725,54 @@ fn apply_reconstruction(
         }
     };
 
-    // Snap floor-loop vertices to the canonical profile + the cut
-    // plane. Each loop vertex keeps its angle but gets its radial
-    // distance replaced with `radius_at(angle, 0)` (top of the
-    // extrusion = at the cut plane).
+    // Capture the floor-loop's per-vertex angle + radius as the
+    // top extrusion ring. **Anti-lip**: we use the noisy raw
+    // radii as-is (no snap to the canonical profile), so the
+    // top ring matches the boundary the scan is welded to —
+    // no geometric step at the seam. The K-ring loop below
+    // smoothsteps each subsequent ring toward the canonical
+    // profile, fading the noise out over K rings.
     let floor_loop = loops[floor_idx].clone();
     let l = floor_loop.vertices.len();
     let mut top_ring_angles = Vec::with_capacity(l);
+    let mut top_ring_radii = Vec::with_capacity(l);
     for &vidx in &floor_loop.vertices {
         if let Some(p) = mesh.vertices.get(vidx as usize).copied() {
             let d = p.coords - centerline_last.coords;
             let proj_u = d.dot(&u_axis);
             let proj_v = d.dot(&v_axis);
             let angle = proj_v.atan2(proj_u);
+            let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
             top_ring_angles.push(angle);
-            let r = radius_at(angle, 0.0);
-            let new_pos =
-                centerline_last.coords + r * (u_axis * angle.cos() + v_axis * angle.sin());
-            mesh.vertices[vidx as usize] = Point3::from(new_pos);
+            top_ring_radii.push(r);
+        } else {
+            top_ring_angles.push(0.0);
+            top_ring_radii.push(0.0);
         }
     }
 
     // Generate K extrusion rings DOWN past the cut (in the
     // direction OPPOSITE the inward tangent — outward toward the
-    // original chopped position).
+    // original chopped position). Each ring's per-angle radius is
+    // a smoothstep lerp from `top_ring_radii` (k=0, the floor loop)
+    // to the canonical `radius_at(angle, t_k)` (k=K, the new floor).
+    // At blend_zone=0 this gradual smoothing IS the anti-lip — the
+    // noisy top ring doesn't snap to the smooth profile abruptly.
+    // At blend_zone > 0 the top ring is already on the canonical
+    // profile (from the blend pass), so the lerp degenerates to
+    // smooth-all-the-way.
     let extrusion_dir = -inward_tangent;
     let mut prev_ring: Vec<u32> = floor_loop.vertices.clone();
     for k in 1..=RECONSTRUCT_RING_COUNT {
         #[allow(clippy::cast_precision_loss)]
         let t_k = k as f64 / RECONSTRUCT_RING_COUNT as f64;
+        let ring_blend = t_k * t_k * (3.0 - 2.0 * t_k);
         let ring_center = centerline_last.coords + extrusion_dir * extension_m * t_k;
         let mut this_ring: Vec<u32> = Vec::with_capacity(l);
-        for &angle in &top_ring_angles {
-            let r = radius_at(angle, t_k);
+        for (i, &angle) in top_ring_angles.iter().enumerate() {
+            let r_smooth = radius_at(angle, t_k);
+            let r_top = top_ring_radii[i];
+            let r = r_top * (1.0 - ring_blend) + r_smooth * ring_blend;
             let new_pos = ring_center + r * (u_axis * angle.cos() + v_axis * angle.sin());
             #[allow(clippy::cast_possible_truncation)]
             let idx = mesh.vertices.len() as u32;
@@ -7098,6 +7222,61 @@ mod tests {
         verts.reverse();
         let tris = triangulate_polygon_2d_earclip(&verts);
         assert_eq!(tris.len(), 2);
+    }
+
+    // ----- stable_inward_tangent --------------------------------------
+    //
+    // Helper introduced 2026-05-16 to fix `apply_reconstruction`'s
+    // K-ring extrusion direction (previously derived from the
+    // noisy last centerline segment, which tilted the extrusion
+    // off the body's actual axis on the iter-1 sock-over-capsule
+    // scan). Pinned here so future refactors don't silently
+    // revert to the single-segment tangent.
+
+    /// 2-point polyline → look-back walks the only segment fully
+    /// and returns the head→tail (then negated) direction. The
+    /// `lookback_m` exceeding the polyline arc-length falls
+    /// through to the head endpoint, NOT an error.
+    #[test]
+    fn stable_inward_tangent_falls_back_to_last_segment_on_2_point_polyline() {
+        let polyline = [Point3::new(0.0, 0.0, 1.0), Point3::new(0.0, 0.0, 0.0)];
+        // Cut endpoint = (0,0,0); look-back at (0,0,1). Inward
+        // direction (cut → body) = +Z.
+        let dir = stable_inward_tangent(&polyline, 0.020).expect("tangent");
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+
+    /// On a long polyline the look-back point sits at exactly
+    /// `lookback_m` arc-length from the cut endpoint (interpolated
+    /// within the relevant segment). Pin the resulting direction
+    /// against a known-good handcomputed answer.
+    #[test]
+    fn stable_inward_tangent_walks_back_lookback_arc_length() {
+        // 4-point centerline along +Z, segments of length 0.010 m.
+        // Total arc length = 0.030 m.
+        let polyline = [
+            Point3::new(0.0, 0.0, 0.030), // body end
+            Point3::new(0.0, 0.0, 0.020),
+            Point3::new(0.0, 0.0, 0.010),
+            Point3::new(0.0, 0.0, 0.000), // cut end
+        ];
+        // Look back 0.015 m → between segments [2] and [1] (i.e.
+        // halfway through the segment from (0,0,0.010) to
+        // (0,0,0.020)). Look-back point = (0,0,0.015).
+        let dir = stable_inward_tangent(&polyline, 0.015).expect("tangent");
+        // dir = (lookback - cut) / norm = (0,0,0.015) / 0.015 = +Z.
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+
+    /// Look-back exceeding the polyline arc-length walks the
+    /// whole polyline and returns the head→tail unit vector.
+    /// Important so very-short trim-cut polylines don't crash.
+    #[test]
+    fn stable_inward_tangent_uses_full_polyline_when_lookback_exceeds_arc_length() {
+        // Total arc length = 0.005 m; ask for 0.020 m look-back.
+        let polyline = [Point3::new(0.0, 0.0, 0.005), Point3::new(0.0, 0.0, 0.000)];
+        let dir = stable_inward_tangent(&polyline, 0.020).expect("tangent");
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
     }
 
     /// Polygons with `n < 3` vertices produce no triangles (early
