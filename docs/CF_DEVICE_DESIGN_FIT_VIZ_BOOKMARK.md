@@ -49,6 +49,27 @@ What's in place today that this program builds on:
 
 ## Ladder — proposed baby-step order
 
+### **PREREQUISITE for rungs 2-6**: cavity mouth opening (BOOKMARKED 2026-05-16)
+
+After rung 1 visually surfaced the closed-cavity issue, we
+discovered the cavity is fully enclosed (per
+`docs/CF_DEVICE_DESIGN_CAVITY_MOUTH_BOOKMARK.md`). Rungs 2-6
+cannot ship meaningfully against a closed cavity:
+
+- Rung 2 animates the existing insertion sim, which is silently
+  broken against the closed cavity.
+- Rung 3 needs the scan to enter the cavity — structurally
+  impossible without an opening.
+- Rungs 4-5 depend on rung 3.
+
+User-pinned approach: cf-device-design holds each iso surface at
+the cap plane cf-scan-prep already records in `[caps]`. No
+cf-scan-prep changes. See the cavity-mouth bookmark for full
+recon prep.
+
+**Estimated 1 small-to-medium arc (3-5 sub-leaves)**. Must ship
+BEFORE rungs 2-6 are worth touching.
+
 ### Rung 1: Clipping plane (A) — **SHIPPED 2026-05-16**
 
 **Status**: SHIPPED on `dev` 2026-05-16. Six sub-leaves
