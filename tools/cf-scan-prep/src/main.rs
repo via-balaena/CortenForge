@@ -89,6 +89,20 @@ struct Cli {
     /// useful when the input directory is read-only.
     #[arg(long, value_name = "PATH")]
     output_dir: Option<PathBuf>,
+
+    /// **Debug-only.** Headless smoke test for the Apply-Simplify
+    /// pipeline: loads the STL exactly like the GUI path
+    /// (`try_load_scan` → auto-center + auto-PCA), runs
+    /// [`simplify_mesh`] to the supplied target face count, prints
+    /// per-pass diagnostics to stderr, and exits without opening a
+    /// window. Used 2026-05-15 night to debug the
+    /// `[Apply Simplify]` one-click bug surfaced post-PR #246
+    /// (memo: `cf-scan-prep-simplify-one-click-bug`).
+    ///
+    /// Mutually exclusive with the normal GUI launch: when present,
+    /// no Bevy window is opened.
+    #[arg(long, value_name = "FACE_COUNT")]
+    diagnose_simplify: Option<usize>,
 }
 
 /// Unit convention for the input STL's vertex coordinates. The selected
@@ -178,6 +192,14 @@ struct SimplifyState {
     /// Queued user action; consumed (cleared) by
     /// [`handle_simplify_actions`] each Update tick.
     pending_action: Option<SimplifyAction>,
+    /// Has the user actively run `[Apply Simplify]` against the
+    /// currently-loaded mesh? Drives the `.prep.toml`
+    /// `[simplify].applied` provenance flag directly, instead of
+    /// inferring from `achieved < original` face counts (which lies
+    /// when the save-time cleanup pass drops faces but the user
+    /// never clicked Apply). Set `true` in [`handle_simplify_actions`]
+    /// on the `Apply` branch; reset to `false` on `Reset`.
+    was_applied: bool,
 }
 
 impl Default for SimplifyState {
@@ -185,6 +207,7 @@ impl Default for SimplifyState {
         Self {
             target_face_count: SIMPLIFY_TARGET_DEFAULT,
             pending_action: None,
+            was_applied: false,
         }
     }
 }
@@ -2582,6 +2605,7 @@ fn build_prep_toml_string(
     translation_for_centerline_m: Vector3<f64>,
     pivot_centroid_m: Point3<f64>,
     simplify_target_face_count: usize,
+    simplify_ran: bool,
     original_face_count: usize,
     achieved_face_count: usize,
     cleaned_aabb_m: &Aabb,
@@ -2632,12 +2656,15 @@ fn build_prep_toml_string(
             auto_pca_quaternion: auto_pca_quat.map(|q| [q.w, q.i, q.j, q.k]),
         },
         simplify: PrepSimplifyBlock {
-            // `applied = true` iff save-time simplify ran. The save
-            // handler invokes simplify only when the slider target is
-            // strictly below the current cleaned-mesh face count;
-            // mirror that condition here for the provenance flag.
-            applied: simplify_target_face_count < original_face_count
-                && achieved_face_count < original_face_count,
+            // `applied = true` iff the user clicked [Apply Simplify]
+            // against the currently-loaded mesh — threaded directly
+            // from `SimplifyState::was_applied`. Replaces a prior
+            // face-count-inference (`achieved < original`) which
+            // produced false positives once save-time simplify was
+            // retired (commit `a66a3cda`, 2026-05-15) and the
+            // save-time cleanup pass became the only face-dropper
+            // for the "user never clicked Apply" case.
+            applied: simplify_ran,
             algorithm: SIMPLIFY_ALGORITHM_NAME,
             algorithm_version: SIMPLIFY_ALGORITHM_VERSION,
             target_face_count: simplify_target_face_count,
@@ -3089,6 +3116,13 @@ fn human_count(n: usize) -> String {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Debug-only headless smoke test (`--diagnose-simplify N`).
+    // Bypasses the Bevy window entirely; loads + simplifies + prints
+    // + exits. Used to debug the one-click-vs-two-click bug.
+    if let Some(target) = cli.diagnose_simplify {
+        return run_diagnose_simplify(&cli, target);
+    }
+
     match try_load_scan(&cli) {
         Ok((scan_mesh, auto_center_offset_m, auto_pca_quat)) => {
             let scan_info = ScanInfo::from_loaded(&cli.path, &scan_mesh, cli.stl_units);
@@ -3185,6 +3219,31 @@ fn try_load_scan(cli: &Cli) -> Result<(IndexedMesh, Vector3<f64>, Option<UnitQua
     let auto_center_offset_m = auto_center_in_place(&mut mesh);
     let auto_pca_quat = auto_pca_in_place(&mut mesh);
     Ok((mesh, auto_center_offset_m, auto_pca_quat))
+}
+
+/// Headless `--diagnose-simplify` path: load + simplify + print + exit.
+/// Mirrors the GUI's first-click behavior exactly (loads + auto-frame,
+/// then calls [`simplify_mesh`]) so a reproducer can be observed without
+/// any user interaction. Per-pass diagnostics come from
+/// [`simplify_mesh`]'s own eprintlns (gated on
+/// `CF_SCAN_PREP_SIMPLIFY_DIAG=1`); this function just prints the
+/// before/after summary line.
+fn run_diagnose_simplify(cli: &Cli, target: usize) -> Result<()> {
+    let (mesh, _auto_center, _auto_pca) = try_load_scan(cli)?;
+    eprintln!(
+        "[diagnose] loaded: faces={} vertices={} target={}",
+        mesh.faces.len(),
+        mesh.vertices.len(),
+        target,
+    );
+    let result = simplify_mesh(&mesh, target);
+    eprintln!(
+        "[diagnose] result: faces={} vertices={} elapsed={:.3}s",
+        result.mesh.faces.len(),
+        result.mesh.vertices.len(),
+        result.elapsed_secs,
+    );
+    Ok(())
 }
 
 /// Apply the PCA-derived rotation to all vertices in `mesh`, taking
@@ -3314,35 +3373,75 @@ fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyRe
         };
     }
 
-    // Step 1: weld unshared vertices into shared indices.
+    // Step 1: weld unshared vertices into shared indices, then
+    // **compact the vertex array**. `weld_vertices` remaps face
+    // indices to canonical representatives + drops degenerate faces,
+    // but leaves the merged-away duplicates as unreferenced entries
+    // in `mesh.vertices`. On the iter-1 sock-over-capsule scan that
+    // means 10.06M positions with only ~1.67M referenced after the
+    // weld.
+    //
+    // **Bug fixed 2026-05-16**: passing this sparse positions array
+    // to `simplify_decoder` causes meshopt to return the input
+    // unchanged (`result_error=0`, zero face reduction). Diagnosed
+    // via `--diagnose-simplify`:
+    // ```
+    // [simplify_mesh] pass 0: in_verts=10056204 meshopt_out_faces=3334935
+    //   result_error=0.000000           <-- meshopt did no work
+    // ```
+    // The 17k-face drop the user observed in pre-fix click 1 came
+    // entirely from the weld dropping degenerates — meshopt itself
+    // was idle. The reason click 2 then succeeded: click 1's
+    // post-meshopt `remove_unreferenced_vertices` compacted the
+    // verts to 1.67M, so click 2 fed meshopt a dense positions
+    // array that it could actually collapse.
+    //
+    // Fix: compact unreferenced vertices once, after the weld,
+    // BEFORE the meshopt call. Single pass is sufficient — meshopt
+    // reaches the target in one shot on the compacted input. The
+    // pre-fix iterative loop (May 15 WIP commit) didn't help
+    // because it kept feeding the sparse vertex array back in
+    // (pass 0's `remove_unreferenced_vertices` ran post-meshopt
+    // and never executed because the no-progress guard already
+    // broke). Loop retained as a defensive safety net + safety cap
+    // for edge cases where the dense single-pass still hits the
+    // quadric error ceiling.
     let mut welded = original.clone();
     weld_vertices(&mut welded, SIMPLIFY_WELD_EPSILON_M);
+    remove_unreferenced_vertices(&mut welded);
 
-    // Step 2-4: iterate meshopt's simplify_decoder. On scans with
-    // high-frequency surface noise (workshop scanners typically
-    // produce sub-mm noise on the silicone surface), the first
-    // pass's per-edge quadric error hits `SIMPLIFY_TARGET_ERROR`
-    // (~5% of bbox extent) BEFORE the face-count target is
-    // reached — meshopt returns with the mesh barely reduced.
-    // User-reported 2026-05-15 evening: clicking Apply Simplify
-    // on the iter-1 sock-over-capsule scan dropped 3.35M → 3.33M
-    // (0.5% reduction) on the first click; the second click then
-    // dropped 3.33M → 200k (the requested target). Root cause:
-    // the first pass smooths the high-frequency noise out of the
-    // local quadric metric, so subsequent passes can collapse
-    // freely.
-    //
-    // Fix: loop until either (a) the target is reached, (b) a pass
-    // makes no progress (converged at the error ceiling), or (c) a
-    // safety cap of 10 iterations is hit (typical convergence: 2-3
-    // passes). One Apply click now produces the expected result.
+    // Env-var-gated per-pass diagnostics. Set
+    // `CF_SCAN_PREP_SIMPLIFY_DIAG=1` to see pass counts, in/out
+    // face counts, meshopt `result_error`, and per-pass timing on
+    // stderr. Used during the 2026-05-15 one-click bug recon; kept
+    // for future debugging of meshopt convergence on novel scans.
+    let diag = std::env::var("CF_SCAN_PREP_SIMPLIFY_DIAG").is_ok_and(|v| !v.is_empty());
+    if diag {
+        eprintln!(
+            "[simplify_mesh] start: target={} welded_faces={} welded_vertices={}",
+            target_face_count,
+            welded.faces.len(),
+            welded.vertices.len(),
+        );
+    }
+
     const MAX_PASSES: usize = 10;
     let mut current = welded;
     let mut previous_face_count = current.faces.len();
-    for _pass in 0..MAX_PASSES {
+    for pass in 0..MAX_PASSES {
         if current.faces.len() <= target_face_count {
+            if diag {
+                eprintln!(
+                    "[simplify_mesh] pass {pass}: at-or-below-target ({} <= {}), break",
+                    current.faces.len(),
+                    target_face_count,
+                );
+            }
             break;
         }
+        let pass_start = Instant::now();
+        let in_faces = current.faces.len();
+        let in_verts = current.vertices.len();
         #[allow(clippy::cast_possible_truncation)]
         let positions: Vec<[f32; 3]> = current
             .vertices
@@ -3366,15 +3465,39 @@ fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyRe
             simplified_faces.push([tri[0], tri[1], tri[2]]);
         }
         current.faces = simplified_faces;
-        remove_unreferenced_vertices(&mut current);
+        let removed = remove_unreferenced_vertices(&mut current);
+        if diag {
+            let pass_elapsed = pass_start.elapsed().as_secs_f64();
+            eprintln!(
+                "[simplify_mesh] pass {pass}: in_faces={in_faces} in_verts={in_verts} \
+                 meshopt_out_faces={achieved_face_count} unreferenced_removed={removed} \
+                 out_verts={out_verts} result_error={result_error:.6} elapsed={pass_elapsed:.3}s",
+                out_verts = current.vertices.len(),
+            );
+        }
 
         // Converged: this pass made no progress (still hitting the
         // error ceiling at the same place). Stop — further passes
         // would just spin.
         if current.faces.len() >= previous_face_count {
+            if diag {
+                eprintln!(
+                    "[simplify_mesh] pass {pass}: no-progress guard ({} >= {}), break",
+                    current.faces.len(),
+                    previous_face_count,
+                );
+            }
             break;
         }
         previous_face_count = current.faces.len();
+    }
+    if diag {
+        eprintln!(
+            "[simplify_mesh] end: final_faces={} final_vertices={} elapsed={:.3}s",
+            current.faces.len(),
+            current.vertices.len(),
+            start.elapsed().as_secs_f64(),
+        );
     }
 
     SimplifyResult {
@@ -3675,6 +3798,12 @@ fn handle_simplify_actions(
                 format_count_with_separators(achieved),
                 result.elapsed_secs,
             );
+            // Provenance: user actively ran simplify on this mesh.
+            // Threaded into `.prep.toml`'s `[simplify].applied` flag
+            // by `build_prep_toml_string` instead of the broken
+            // face-count-inference (which can lie when the save-time
+            // cleanup pass drops faces with no user Apply).
+            simplify_state.was_applied = true;
             (result.mesh, text)
         }
         SimplifyAction::Reset => {
@@ -3683,6 +3812,7 @@ fn handle_simplify_actions(
                 "Restored original mesh ({} faces)",
                 human_count(cloned.faces.len()),
             );
+            simplify_state.was_applied = false;
             (cloned, text)
         }
     };
@@ -5486,6 +5616,7 @@ fn handle_save_action(
         translation,
         pivot_centroid_m,
         simplify.target_face_count,
+        simplify.was_applied,
         original_face_count,
         triangle_count,
         &cleaned_aabb_m,
@@ -5885,6 +6016,10 @@ mod tests {
         assert_eq!(state.target_face_count, 200_000);
         assert_eq!(state.target_face_count, SIMPLIFY_TARGET_DEFAULT);
         assert!(state.pending_action.is_none());
+        // Provenance: a freshly-constructed state has not yet seen
+        // a user Apply click, so the `.prep.toml` `[simplify].applied`
+        // flag should be `false` on a Save-without-Apply.
+        assert!(!state.was_applied);
     }
 
     /// Slider bounds spec-pin (1k–1M) per spec §Panel specifications §2.
@@ -7033,6 +7168,7 @@ mod tests {
             translation,
             Point3::origin(),
             200_000, // simplify target
+            true,    // simplify_ran — user clicked Apply
             500_000, // original face count
             200_000, // achieved face count
             &cleaned_aabb,
@@ -7141,6 +7277,7 @@ mod tests {
             translation,
             Point3::origin(),
             200_000,
+            true,
             500_000,
             200_000,
             &cleaned_aabb,
@@ -7196,6 +7333,7 @@ mod tests {
             translation,
             Point3::origin(),
             200_000,
+            true,
             500_000,
             200_000,
             &cleaned_aabb,
@@ -7211,6 +7349,96 @@ mod tests {
         assert!((arr[1].as_float().unwrap() - q.i).abs() < 1e-12);
         assert!((arr[2].as_float().unwrap() - q.j).abs() < 1e-12);
         assert!((arr[3].as_float().unwrap() - q.k).abs() < 1e-12);
+        Ok(())
+    }
+
+    /// `[simplify].applied` reflects the `simplify_ran` parameter
+    /// **directly**, NOT a `achieved < original` face-count
+    /// inference. Pre-fix (2026-05-15 night, post slice-9.8 revert)
+    /// the inference produced false positives whenever the save-time
+    /// cleanup pass dropped any faces — even when the user never
+    /// clicked Apply. Both directions pinned so future refactors
+    /// can't silently re-introduce the inference.
+    #[test]
+    fn prep_toml_simplify_applied_reflects_simplify_ran_parameter() -> Result<()> {
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let cap = CapState::default();
+        let rotation = reorient.quaternion_physics();
+        let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(0.0, 0.0, 0.0),
+            max: Point3::new(0.1, 0.1, 0.1),
+        };
+        let centerline_trim = CenterlineTrimState::default();
+
+        // Case A — user did NOT click Apply, but cleanup dropped
+        // faces (`achieved < original`). Old inference would
+        // mis-report `applied = true`; the new wiring honors the
+        // explicit `simplify_ran = false`.
+        let s_false = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &reorient,
+            &recenter,
+            &cap,
+            &centerline_trim,
+            0,
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            false, // simplify_ran — user did NOT click Apply
+            500_000,
+            499_900, // achieved < original (cleanup dropped 100 faces)
+            &cleaned_aabb,
+        )?;
+        let parsed_false: toml::Value = toml::from_str(&s_false)?;
+        let applied_false = parsed_false
+            .get("simplify")
+            .and_then(|s| s.get("applied"))
+            .and_then(|v| v.as_bool())
+            .expect("simplify.applied missing or not a bool");
+        assert!(
+            !applied_false,
+            "simplify.applied must be false when simplify_ran = false, \
+             regardless of achieved < original",
+        );
+
+        // Case B — user DID click Apply. Honors `simplify_ran = true`.
+        let s_true = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &reorient,
+            &recenter,
+            &cap,
+            &centerline_trim,
+            0,
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            true,
+            500_000,
+            200_000,
+            &cleaned_aabb,
+        )?;
+        let parsed_true: toml::Value = toml::from_str(&s_true)?;
+        let applied_true = parsed_true
+            .get("simplify")
+            .and_then(|s| s.get("applied"))
+            .and_then(|v| v.as_bool())
+            .expect("simplify.applied missing or not a bool");
+        assert!(
+            applied_true,
+            "simplify.applied must be true when simplify_ran = true",
+        );
         Ok(())
     }
 
