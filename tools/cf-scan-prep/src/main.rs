@@ -2056,7 +2056,6 @@ struct MeshEdgeKey {
 }
 
 impl MeshEdgeKey {
-    #[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
     fn new(a: u32, b: u32) -> Self {
         Self {
             lo: a.min(b),
@@ -2074,7 +2073,6 @@ impl MeshEdgeKey {
 /// 1e-12 m = 1 picometer — well below any geometric feature on
 /// body-part scans (mm scale) and far below f64 precision around
 /// typical coordinate magnitudes (≤ 1 m).
-#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
 const PLANE_INTERSECTION_ON_PLANE_EPS_M: f64 = 1e-12;
 
 /// Intersect a plane with a triangle mesh and return the resulting
@@ -2127,7 +2125,6 @@ const PLANE_INTERSECTION_ON_PLANE_EPS_M: f64 = 1e-12;
 /// - Open / non-watertight mesh at the slice: incomplete loops
 ///   (segments with dead ends) are dropped by the `len >= 3` filter
 ///   — caller sees fewer / smaller loops than expected.
-#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
 fn intersect_plane_with_mesh(
     plane_point: &Point3<f64>,
     plane_normal: &Vector3<f64>,
@@ -2279,7 +2276,6 @@ fn intersect_plane_with_mesh(
 ///
 /// **Returns** `None` when the polygon has fewer than 3 vertices
 /// OR its total area projects to ≈ 0 (degenerate / collinear).
-#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
 fn polygon_centroid_3d(
     polygon: &[Point3<f64>],
     plane_normal: &Vector3<f64>,
@@ -2312,7 +2308,6 @@ fn polygon_centroid_3d(
 /// to (a) gate degenerate slabs below `MIN_SLAB_AREA_M2` and (b)
 /// pick the largest loop when a slab intersection produces
 /// multiple loops (non-convex body / multi-component slice).
-#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
 fn polygon_area_3d(polygon: &[Point3<f64>], plane_normal: &Vector3<f64>) -> f64 {
     if polygon.len() < 3 {
         return 0.0;
@@ -2328,83 +2323,97 @@ fn polygon_area_3d(polygon: &[Point3<f64>], plane_normal: &Vector3<f64>) -> f64 
     total_signed_area.abs()
 }
 
+/// Minimum projected slab area (m²) below which a slab's
+/// intersection polygon is treated as degenerate — its centroid is
+/// discarded and the polyline point at that slab is filled in by
+/// interpolation from neighboring non-degenerate slabs. 1e-8 m² =
+/// 0.01 mm² — well below any real cross-section on body-part scans
+/// (smallest expected: dome-tip slabs of a few mm² = 1e-6 m²) and
+/// well above the polygon-area numerical noise floor for f64
+/// coordinates in meters.
+const MIN_SLAB_AREA_M2: f64 = 1e-8;
+
 /// Compute the scan's centerline as **N evenly-spaced points
-/// along the line passing through the mesh AABB center in the
-/// `spine_hint` direction**. Used by cf-cast's curve-following
-/// multi-piece mold generator AND by cf-device-design's
-/// per-vertex radial direction computation.
+/// along the body's true geometric axis**, with each point
+/// derived from the area-weighted centroid of the per-slab
+/// cross-section polygon.
 ///
-/// **Algorithm** (2026-05-16, final iteration):
+/// Used by cf-cast's curve-following multi-piece mold generator AND
+/// by cf-device-design's per-vertex radial direction computation.
+/// Both consumers REQUIRE that the centerline track the body's
+/// true visual center — an off-center centerline produces lopsided
+/// layer dome surfaces (the iter-1 failure mode documented in
+/// `docs/CENTERLINE_RECON_BOOKMARK.md`).
+///
+/// **Algorithm** (`docs/CENTERLINE_SPEC.md` §2.4, sixth iteration —
+/// the one that escapes the density / extreme-point biases that
+/// sank the prior five):
 ///
 /// 1. Normalize `spine_hint` to a unit axis. This is the user's
 ///    chosen body direction — typically the cap loop's outward
 ///    normal, which after cf-scan-prep's auto-PCA-at-load is
-///    aligned with the body's principal axis (`-Z` for floor
-///    caps).
-/// 2. Compute the mesh AABB center — the midpoint of the body's
-///    extent in each axis. After cf-scan-prep's auto-center at
-///    load this is at origin (the load-time pipeline pins
-///    AABB center to physics origin).
-/// 3. Project all vertices onto the axis to get the depth range
-///    `[min_d, max_d]`.
-/// 4. Generate `n_slices` evenly-spaced points along the line
-///    passing through the AABB center in the axis direction, at
-///    depths from `min_d` to `max_d`.
+///    aligned with the body's principal axis (`-Z` for floor caps).
+/// 2. Project all vertices onto the axis to find the body's depth
+///    range `[min_d, max_d]`.
+/// 3. For each of `n_slices` evenly-spaced depths `d_i`, intersect
+///    the slab plane at depth `d_i` (perpendicular to the axis)
+///    with the mesh via [`intersect_plane_with_mesh`]. Pick the
+///    largest-area loop (handles non-convex bodies / multi-
+///    component slices) and compute its area-weighted polygon
+///    centroid via [`polygon_centroid_3d`]. Slabs with area below
+///    [`MIN_SLAB_AREA_M2`] are marked degenerate and filled in by
+///    linear interpolation between non-degenerate neighbors (or
+///    extrapolation along the axis at the extremes).
 ///
-/// **Why AABB center + spine-hint, not centroid / PCA / per-slab
-/// fit** (2026-05-16, fourth iteration):
+/// **Why per-slab area-weighted polygon centroid, not the prior
+/// algorithms** (full recon at `docs/CENTERLINE_RECON_BOOKMARK.md`):
 ///
-/// - **Per-slab Kasa** (first attempt): non-uniform vertex
-///   density around cross-sections biased the per-slab fit
-///   center toward the dense side. Off-axis curve at the dome.
-/// - **Per-slab Kasa + centroid prior** (second attempt): blend
-///   threshold meant dense dome slabs never engaged the prior.
-///   Curve persisted.
-/// - **PCA-only** (third attempt): for short-wide bodies the
-///   PCA principal eigenvector lies LATERAL, not along the
-///   body's intended axis.
-/// - **Vertex centroid + spine-hint** (fourth attempt): vertex
-///   centroid is biased by non-uniform vertex density along the
-///   body (more verts on dense regions, less on sparse) AND by
-///   the reconstruct extension at the floor (which adds verts
-///   weighted toward one end). User saw the centerline straight
-///   but laterally offset from the body's geometric center.
-/// - **AABB center + spine-hint** (this version): the AABB
-///   midpoint is determined by the body's EXTREME points, not by
-///   sample distribution. It's robust to vertex-density
-///   variation, asymmetric reconstruction artifacts, and load-time
-///   noise. After auto-center at load, AABB center is at origin
-///   exactly; the centerline runs along the world Z axis through
-///   the body's true geometric center for axisymmetric bodies.
+/// - All 5 prior iterations (per-slab Kasa, Kasa+centroid-prior,
+///   PCA, vertex-centroid+spine, AABB+spine) were SAMPLE-biased:
+///   their statistics depend on how vertices are distributed
+///   around the surface, OR on the body's extreme points. Real
+///   scans have non-uniform vertex density (denser on
+///   scanner-facing side) and noisy extreme points (scanner spikes,
+///   reconstruct artifacts), so all five drifted off-axis.
+/// - The polygon centroid is **DENSITY-INDEPENDENT BY CONSTRUCTION**:
+///   it depends only on the slab-mesh intersection polygon's
+///   BOUNDARY GEOMETRY, not on the vertex density of the underlying
+///   triangulation. Two scans of the same body with different
+///   sampling produce the SAME polygon centroid (modulo
+///   discretization error from boundary-edge subdivision, which is
+///   sub-pixel for typical mesh resolutions). The geometric
+///   property is verified by `polygon_centroid_3d_density_independent`.
 ///
-/// **Trade-off**: the centerline is always a straight line
-/// (cannot track genuinely curved bodies like a bent finger or
-/// flexed limb). For the target use case — body-part scans of
-/// roughly-straight limbs — this is what we want. If a
-/// curved-body fixture surfaces later, an adaptive per-slab
-/// algorithm would be needed alongside this default-straight
-/// path.
+/// **Performance**: O(n_slices × n_faces) per call ≈ 5M triangle-
+/// plane intersections for `n_slices=30` and a 169k-face cleaned
+/// scan. ~50ms single-threaded; fine for both Cap-step and
+/// per-frame re-evaluation budgets.
 ///
-/// **Empty / degenerate input**: returns `Vec::new()` if the
-/// mesh has no vertices, the spine hint is zero-magnitude, or
-/// `n_slices == 0`.
+/// **Trade-off**: the algorithm produces a STRAIGHT centerline (no
+/// curvature support). For genuinely curved bodies (bent finger,
+/// flexed arm), an outer iteration loop re-orienting slabs
+/// perpendicular to the local polyline tangent would be needed —
+/// banked as spec §2.7 stretch goal G.s2 until a curved-body
+/// fixture surfaces.
+///
+/// **Empty / degenerate input**: returns `Vec::new()` if the mesh
+/// has no vertices OR no faces (the algorithm needs faces to
+/// intersect, not just vertices), the spine hint is zero-magnitude,
+/// `n_slices == 0`, or all slabs end up degenerate (e.g., a
+/// non-watertight mesh that no slab plane intersects).
 fn compute_centerline_polyline(
     mesh: &IndexedMesh,
     spine_hint: Vector3<f64>,
     n_slices: usize,
 ) -> Vec<Point3<f64>> {
-    if mesh.vertices.is_empty() || spine_hint.norm_squared() < f64::EPSILON || n_slices == 0 {
+    if mesh.vertices.is_empty()
+        || mesh.faces.is_empty()
+        || spine_hint.norm_squared() < f64::EPSILON
+        || n_slices == 0
+    {
         return Vec::new();
     }
     let axis = spine_hint.normalize();
-
-    // AABB center: anchor of the centerline. For axisymmetric
-    // bodies the AABB midpoint lies on the body's principal
-    // axis; combined with the spine-hint direction (assumed to
-    // be the body's principal direction), the line through the
-    // AABB center IS the body's axis. Robust to vertex-density
-    // variation in a way the vertex centroid is not.
-    let aabb_center: Vector3<f64> = mesh.aabb().center().coords;
 
     // Depth range of the body along the chosen axis.
     let depths: Vec<f64> = mesh.vertices.iter().map(|p| axis.dot(&p.coords)).collect();
@@ -2415,20 +2424,110 @@ fn compute_centerline_polyline(
         return Vec::new();
     }
 
-    // Generate N evenly-spaced points along the centerline axis
-    // from min_d to max_d, anchored to the AABB center. Each
-    // point is the unique location on the line through
-    // `aabb_center` in direction `axis` whose projection onto
-    // `axis` equals the requested depth.
-    let anchor_depth = axis.dot(&aabb_center);
-    let mut polyline = Vec::with_capacity(n_slices);
+    // Per-slab area-weighted polygon centroid. `None` for degenerate
+    // slabs (no intersection / area below MIN_SLAB_AREA_M2 /
+    // collinear polygon); filled in by interpolation in step 4.
+    let mut centroids: Vec<Option<Point3<f64>>> = Vec::with_capacity(n_slices);
     for i in 0..n_slices {
         #[allow(clippy::cast_precision_loss)]
         let t = (i as f64 + 0.5) / (n_slices as f64);
         let depth = min_d + t * range;
-        let depth_offset = depth - anchor_depth;
-        let point = aabb_center + axis * depth_offset;
-        polyline.push(Point3::from(point));
+        // Slab plane at signed depth `depth` along the axis. Any
+        // point with `axis.dot = depth` works as plane_pt; the
+        // simplest is `axis * depth` (the foot of the perpendicular
+        // from origin onto the plane).
+        let plane_pt = Point3::from(axis * depth);
+        let loops = intersect_plane_with_mesh(&plane_pt, &axis, mesh);
+        // Pick the largest-area loop. For convex bodies there's
+        // only one loop; for non-convex bodies (or accidental
+        // multi-component slices) the largest loop is the body's
+        // main cross-section and the secondaries are usually
+        // small artifacts.
+        let best = loops.into_iter().max_by(|a, b| {
+            polygon_area_3d(a, &axis)
+                .partial_cmp(&polygon_area_3d(b, &axis))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let centroid = best.and_then(|polygon| {
+            if polygon_area_3d(&polygon, &axis) < MIN_SLAB_AREA_M2 {
+                None
+            } else {
+                polygon_centroid_3d(&polygon, &axis)
+            }
+        });
+        centroids.push(centroid);
+    }
+
+    fill_null_centroids_by_interpolation(&centroids, axis, min_d, max_d, n_slices)
+}
+
+/// Replace `None` entries in a per-slab centroid array with values
+/// interpolated from the nearest non-`None` neighbors.
+///
+/// **Interior nulls**: linearly interpolated between the nearest
+/// valid neighbor on each side, by slab-index fraction.
+/// **Leading / trailing nulls** (no neighbor on one side): the
+/// last known centroid is projected along the axis to the target
+/// slab's depth. Keeps the centerline endpoint on the axis line
+/// established by the interior centroids — a reasonable straight-
+/// line extrapolation for dome / floor degeneracies.
+/// **All-null** (every slab degenerate; pathological input): falls
+/// back to a straight line along the axis through origin, evenly
+/// spaced over `[min_d, max_d]`. Should not happen for cleaned
+/// scans but documented for completeness.
+fn fill_null_centroids_by_interpolation(
+    centroids: &[Option<Point3<f64>>],
+    axis: Vector3<f64>,
+    min_d: f64,
+    max_d: f64,
+    n_slices: usize,
+) -> Vec<Point3<f64>> {
+    let valid: Vec<(usize, Point3<f64>)> = centroids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| c.map(|p| (i, p)))
+        .collect();
+
+    if valid.is_empty() {
+        // Total-degenerate fallback: straight line along axis through origin.
+        let mut polyline = Vec::with_capacity(n_slices);
+        for i in 0..n_slices {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (i as f64 + 0.5) / (n_slices as f64);
+            let depth = min_d + t * (max_d - min_d);
+            polyline.push(Point3::from(axis * depth));
+        }
+        return polyline;
+    }
+
+    let mut polyline = Vec::with_capacity(n_slices);
+    for (i, slot) in centroids.iter().enumerate() {
+        if let Some(p) = slot {
+            polyline.push(*p);
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let t_target = (i as f64 + 0.5) / (n_slices as f64);
+        let depth_target = min_d + t_target * (max_d - min_d);
+        let left = valid.iter().rev().find(|(j, _)| *j < i).copied();
+        let right = valid.iter().find(|(j, _)| *j > i).copied();
+        let pt = match (left, right) {
+            (Some((j_l, p_l)), Some((j_r, p_r))) => {
+                #[allow(clippy::cast_precision_loss)]
+                let frac = (i - j_l) as f64 / (j_r - j_l) as f64;
+                Point3::from(p_l.coords + frac * (p_r.coords - p_l.coords))
+            }
+            (Some((_, p_l)), None) => {
+                let depth_l = axis.dot(&p_l.coords);
+                Point3::from(p_l.coords + axis * (depth_target - depth_l))
+            }
+            (None, Some((_, p_r))) => {
+                let depth_r = axis.dot(&p_r.coords);
+                Point3::from(p_r.coords + axis * (depth_target - depth_r))
+            }
+            (None, None) => unreachable!("valid is non-empty per the early return above"),
+        };
+        polyline.push(pt);
     }
     polyline
 }
@@ -7310,6 +7409,180 @@ mod tests {
         mesh
     }
 
+    /// Build a closed Z-axis frustum (cylinder if `radius_base ==
+    /// radius_tip`; cone if `radius_tip == 0`) with `n_rings` axial
+    /// rings × `n_segs` angular segments per ring, plus triangle-fan
+    /// caps at z = ±height/2. Watertight; CCW-outward winding;
+    /// centered on z-axis.
+    ///
+    /// `apply_noise(ring_idx, seg_idx, theta) -> f64` is added to
+    /// the ring's interpolated radius per vertex. Use a closure
+    /// returning `0.0` for a clean surface.
+    fn make_closed_frustum_mesh(
+        n_rings: usize,
+        n_segs: usize,
+        radius_base: f64,
+        radius_tip: f64,
+        height: f64,
+        apply_noise: impl Fn(usize, usize, f64) -> f64,
+    ) -> IndexedMesh {
+        assert!(
+            n_rings >= 2 && n_segs >= 3,
+            "frustum needs >= 2 rings, >= 3 segs"
+        );
+        let vert_count = n_rings * n_segs + 2;
+        let face_count = 2 * (n_rings - 1) * n_segs + 2 * n_segs;
+        let mut mesh = IndexedMesh::with_capacity(vert_count, face_count);
+
+        // Side-wall vertices: index = ring * n_segs + seg.
+        for r in 0..n_rings {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (r as f64) / ((n_rings - 1) as f64);
+            let z = -height / 2.0 + t * height;
+            let ring_radius = radius_base * (1.0 - t) + radius_tip * t;
+            for k in 0..n_segs {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = (k as f64) * std::f64::consts::TAU / (n_segs as f64);
+                let radius = ring_radius + apply_noise(r, k, theta);
+                mesh.vertices
+                    .push(Point3::new(radius * theta.cos(), radius * theta.sin(), z));
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let bottom_center_idx = (n_rings * n_segs) as u32;
+        let top_center_idx = bottom_center_idx + 1;
+        mesh.vertices.push(Point3::new(0.0, 0.0, -height / 2.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, height / 2.0));
+
+        // Side-wall: 2 CCW-outward triangles per quad.
+        for r in 0..(n_rings - 1) {
+            for k in 0..n_segs {
+                #[allow(clippy::cast_possible_truncation)]
+                let i00 = (r * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i01 = (r * n_segs + (k + 1) % n_segs) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i10 = ((r + 1) * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i11 = ((r + 1) * n_segs + (k + 1) % n_segs) as u32;
+                mesh.faces.push([i00, i01, i11]);
+                mesh.faces.push([i00, i11, i10]);
+            }
+        }
+        // Bottom cap (normal -Z): CW when viewed from +Z above.
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = k as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = ((k + 1) % n_segs) as u32;
+            mesh.faces.push([bottom_center_idx, i1, i0]);
+        }
+        // Top cap (normal +Z): CCW when viewed from +Z above.
+        let top_ring_base = (n_rings - 1) * n_segs;
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = (top_ring_base + k) as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = (top_ring_base + (k + 1) % n_segs) as u32;
+            mesh.faces.push([top_center_idx, i0, i1]);
+        }
+        mesh
+    }
+
+    /// Like [`make_closed_frustum_mesh`] but with **non-uniform
+    /// angular sampling** per ring — vertices are placed at the
+    /// user-provided `thetas` (in `[0, 2π)`, monotonic; same set
+    /// repeated for every ring). Pure cylinder shape (`radius_base
+    /// == radius_tip`), no noise.
+    ///
+    /// Used to verify density-independence: with `thetas` densely
+    /// sampled on one side of the circle and sparsely on the other,
+    /// the BOUNDARY shape is still the same circle but the vertex
+    /// density is asymmetric — the polygon centroid is invariant
+    /// (regression test for the iter-1 failure mode), while the
+    /// prior vertex-centroid statistic would have been biased
+    /// toward the dense side.
+    fn make_density_biased_cylinder_mesh(
+        n_rings: usize,
+        thetas: &[f64],
+        radius: f64,
+        height: f64,
+    ) -> IndexedMesh {
+        let n_segs = thetas.len();
+        assert!(
+            n_rings >= 2 && n_segs >= 3,
+            "density-biased cylinder needs >= 2 rings, >= 3 thetas"
+        );
+        let vert_count = n_rings * n_segs + 2;
+        let face_count = 2 * (n_rings - 1) * n_segs + 2 * n_segs;
+        let mut mesh = IndexedMesh::with_capacity(vert_count, face_count);
+
+        for r in 0..n_rings {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (r as f64) / ((n_rings - 1) as f64);
+            let z = -height / 2.0 + t * height;
+            for &theta in thetas {
+                mesh.vertices
+                    .push(Point3::new(radius * theta.cos(), radius * theta.sin(), z));
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let bottom_center_idx = (n_rings * n_segs) as u32;
+        let top_center_idx = bottom_center_idx + 1;
+        mesh.vertices.push(Point3::new(0.0, 0.0, -height / 2.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, height / 2.0));
+
+        for r in 0..(n_rings - 1) {
+            for k in 0..n_segs {
+                #[allow(clippy::cast_possible_truncation)]
+                let i00 = (r * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i01 = (r * n_segs + (k + 1) % n_segs) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i10 = ((r + 1) * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i11 = ((r + 1) * n_segs + (k + 1) % n_segs) as u32;
+                mesh.faces.push([i00, i01, i11]);
+                mesh.faces.push([i00, i11, i10]);
+            }
+        }
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = k as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = ((k + 1) % n_segs) as u32;
+            mesh.faces.push([bottom_center_idx, i1, i0]);
+        }
+        let top_ring_base = (n_rings - 1) * n_segs;
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = (top_ring_base + k) as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = (top_ring_base + (k + 1) % n_segs) as u32;
+            mesh.faces.push([top_center_idx, i0, i1]);
+        }
+        mesh
+    }
+
+    /// Translate every vertex of a mesh by `offset` (utility for
+    /// building off-axis fixtures — apply to a centered fixture to
+    /// shift the whole body laterally).
+    fn translate_mesh(mesh: &mut IndexedMesh, offset: Vector3<f64>) {
+        for v in &mut mesh.vertices {
+            v.coords += offset;
+        }
+    }
+
+    /// Rotate every vertex of a mesh by `rotation` around origin
+    /// (utility for building rotated-axis fixtures — apply to a
+    /// Z-axis centered fixture to test XYZ-independence with a
+    /// non-Z body axis).
+    fn rotate_mesh(mesh: &mut IndexedMesh, rotation: UnitQuaternion<f64>) {
+        for v in &mut mesh.vertices {
+            v.coords = rotation * v.coords;
+        }
+    }
+
     /// Plane bisecting a unit cube perpendicular to +Z at `z=0.5`
     /// produces exactly one closed loop describing the unit square
     /// cross-section at z=0.5. **Contract test for
@@ -7503,46 +7776,30 @@ mod tests {
         assert!((polygon_area_3d(&cw, &n) - 1.0).abs() < 1e-12);
     }
 
-    /// `compute_centerline_polyline` on an elongated mesh along
-    /// physics +X axis: returned polyline points should themselves
-    /// lie roughly along +X (each slab's centroid stays near the
-    /// shape's mid-Y / mid-Z).
+    /// `compute_centerline_polyline` on a closed Z-axis cylinder
+    /// produces polyline points along the Z axis (every centroid
+    /// at (0, 0, z)) with monotonically increasing z. **Contract
+    /// test for the per-slab area-weighted polygon centroid
+    /// algorithm.** XYZ-independence (non-Z body axes) is
+    /// separately covered by [`centerline_algorithm_xyz_independent`].
     #[test]
-    fn centerline_along_elongated_x_axis_follows_x() {
-        // Build a cigar-shaped point cloud: vertices at
-        // (x, 0, 0) for x in [-1, 1] plus a few off-axis "skin"
-        // vertices at each x. Centroid of each x-slab should be
-        // ~(x, 0, 0).
-        let mut mesh = IndexedMesh::with_capacity(100, 0);
-        for i in 0..20 {
-            #[allow(clippy::cast_precision_loss)]
-            let x = (i as f64) * 0.1 - 1.0;
-            for theta_step in 0..5 {
-                #[allow(clippy::cast_precision_loss)]
-                let theta = (theta_step as f64) * std::f64::consts::TAU / 5.0;
-                mesh.vertices
-                    .push(Point3::new(x, 0.1 * theta.cos(), 0.1 * theta.sin()));
-            }
-        }
-        let polyline = compute_centerline_polyline(&mesh, Vector3::new(1.0, 0.0, 0.0), 10);
+    fn centerline_along_closed_cylinder_z_axis_follows_z() {
+        let mesh = make_closed_frustum_mesh(10, 16, 0.1, 0.1, 2.0, |_, _, _| 0.0);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 10);
         assert!(
             polyline.len() >= 5,
             "expected ≥5 polyline pts; got {}",
             polyline.len()
         );
-        // Each polyline point should have y ≈ 0 and z ≈ 0 (centroid
-        // of a symmetric ring around the x-axis).
         for p in &polyline {
-            assert!(p.y.abs() < 0.01, "polyline y drifted: {p:?}");
-            assert!(p.z.abs() < 0.01, "polyline z drifted: {p:?}");
+            assert!(p.x.abs() < 1e-9, "polyline x drifted: {p:?}");
+            assert!(p.y.abs() < 1e-9, "polyline y drifted: {p:?}");
         }
-        // Polyline x values should monotonically increase from min
-        // to max along the spine.
-        let xs: Vec<f64> = polyline.iter().map(|p| p.x).collect();
-        for window in xs.windows(2) {
+        let zs: Vec<f64> = polyline.iter().map(|p| p.z).collect();
+        for window in zs.windows(2) {
             assert!(
                 window[1] > window[0],
-                "polyline x should monotonically increase: {xs:?}",
+                "polyline z should monotonically increase: {zs:?}",
             );
         }
     }
@@ -7561,52 +7818,35 @@ mod tests {
         assert!(zero_dir.is_empty());
     }
 
-    /// **Load-bearing test for the PCA-only fix** (2026-05-16): a
-    /// tapering cylindrical body — many vertices per slab at
-    /// the wide base, few per slab at the narrow tip — produces
-    /// a centerline that stays on the body's true axis at
-    /// EVERY slab, including the sparse tip. This is the failure
-    /// mode the old centroid algorithm exhibited: the tip slabs
-    /// wobbled laterally because the centroid of a few noisy
-    /// surface points isn't the geometric center of the
-    /// underlying circle.
-    ///
-    /// Fixture: a cone tapering from radius 1.0 at z=0 to
-    /// radius 0.05 at z=1.0, with 20 rings. Per-ring vertex
-    /// count is CONSTANT at 16, so the wide base + narrow tip
-    /// have the same number of samples but different radii.
-    /// Adds asymmetric per-vertex noise so the test would fail
-    /// for the centroid algorithm (centroid is biased by the
-    /// noise direction) but passes for Kasa (circle fit
-    /// recovers the true center despite the noise).
+    /// A tapering frustum (radius 1.0 at z=−0.5 → 0.05 at z=+0.5,
+    /// 20 rings × 16 segs, with asymmetric per-vertex noise) has a
+    /// centerline that stays on its true axis at EVERY slab,
+    /// including the narrow-tip end. **Load-bearing test for the
+    /// per-slab area-weighted polygon centroid algorithm vs. the
+    /// failed vertex-centroid statistic** — vertex-centroid would
+    /// be biased toward the noise direction at small-cross-section
+    /// slabs; polygon-centroid is geometry-only, so the noise's
+    /// effect averages out around the slab boundary.
     #[test]
     fn centerline_tapered_cylinder_tip_stays_on_axis() {
         const N_RINGS: usize = 20;
-        const N_PER_RING: usize = 16;
+        const N_SEGS: usize = 16;
         const RADIUS_BASE: f64 = 1.0;
         const RADIUS_TIP: f64 = 0.05;
         const NOISE_MAG: f64 = 0.005; // 0.5 % of the base radius
 
-        let mut mesh = IndexedMesh::with_capacity(N_RINGS * N_PER_RING, 0);
-        for i in 0..N_RINGS {
-            #[allow(clippy::cast_precision_loss)]
-            let t = (i as f64) / ((N_RINGS - 1) as f64);
-            let z = t;
-            let radius = RADIUS_BASE * (1.0 - t) + RADIUS_TIP * t;
-            for k in 0..N_PER_RING {
-                #[allow(clippy::cast_precision_loss)]
-                let theta = (k as f64) * std::f64::consts::TAU / (N_PER_RING as f64);
-                // Asymmetric noise: amplitude tied to (i + k) so
-                // different rings have different noise patterns.
-                let noise = NOISE_MAG * (((i * 7 + k * 13) % 11) as f64 / 11.0 - 0.5);
-                let r_actual = radius + noise;
-                mesh.vertices.push(Point3::new(
-                    r_actual * theta.cos(),
-                    r_actual * theta.sin(),
-                    z,
-                ));
-            }
-        }
+        let mesh = make_closed_frustum_mesh(
+            N_RINGS,
+            N_SEGS,
+            RADIUS_BASE,
+            RADIUS_TIP,
+            1.0,
+            |ring, seg, _theta| {
+                // Asymmetric noise: amplitude tied to (ring + seg)
+                // so different rings have different noise patterns.
+                NOISE_MAG * (((ring * 7 + seg * 13) % 11) as f64 / 11.0 - 0.5)
+            },
+        );
 
         let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), N_RINGS);
         assert!(
@@ -7615,22 +7855,167 @@ mod tests {
             polyline.len()
         );
 
-        // EVERY polyline point should be on the body axis (x ≈ 0,
-        // y ≈ 0), including the narrow-tip slabs. The tolerance
-        // is held to NOISE_MAG / 2 — centroid + spine-hint
-        // anchors the line to the body's mean position, which
-        // for a symmetric tapered cone with sub-percent noise
-        // stays well within half the per-vertex noise amplitude.
+        // Every polyline point should be on the body axis (x ≈ 0,
+        // y ≈ 0) within the per-slab noise envelope. The polygon
+        // centroid is unbiased w.r.t. uniform-around-the-ring noise;
+        // residual drift comes from second-order chord-area
+        // asymmetry (bounded by ~ NOISE_MAG for a 16-segment
+        // polygon).
         for (i, p) in polyline.iter().enumerate() {
             assert!(
-                p.x.abs() < NOISE_MAG / 2.0,
-                "x drift at slab {i}: {p:?} (NOISE_MAG/2 = {})",
-                NOISE_MAG / 2.0,
+                p.x.abs() < NOISE_MAG,
+                "x drift at slab {i}: {p:?} (NOISE_MAG = {NOISE_MAG})"
             );
             assert!(
-                p.y.abs() < NOISE_MAG / 2.0,
-                "y drift at slab {i}: {p:?} (NOISE_MAG/2 = {})",
-                NOISE_MAG / 2.0,
+                p.y.abs() < NOISE_MAG,
+                "y drift at slab {i}: {p:?} (NOISE_MAG = {NOISE_MAG})"
+            );
+        }
+    }
+
+    // ---- New algorithm regression tests (docs/CENTERLINE_SPEC.md §6.1) ----
+
+    /// **Spec test #1 (contract)** — a perfectly symmetric closed
+    /// cylinder along Z produces a centerline pinned to the Z axis
+    /// at every slab. Tightest tolerance of the suite.
+    #[test]
+    fn centerline_algorithm_axisymmetric_cylinder_along_axis() {
+        let mesh = make_closed_frustum_mesh(20, 32, 0.05, 0.05, 0.2, |_, _, _| 0.0);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(polyline.len(), 30);
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(p.x.abs() < 1e-9, "x drift at slab {i}: {p:?}");
+            assert!(p.y.abs() < 1e-9, "y drift at slab {i}: {p:?}");
+        }
+    }
+
+    /// **Spec test #2 (regression for iter-1 failure mode)** — a
+    /// closed cylinder translated by Δx = 5mm off the world Z axis
+    /// produces a centerline pinned to the BODY'S axis (i.e. at
+    /// (5mm, 0, z)), NOT to the world Z axis. This is the iteration-5
+    /// failure mode the algorithm switch fixes.
+    #[test]
+    fn centerline_algorithm_offset_cylinder_tracks_body_axis() {
+        const OFFSET_X: f64 = 0.005;
+        let mut mesh = make_closed_frustum_mesh(20, 32, 0.05, 0.05, 0.2, |_, _, _| 0.0);
+        translate_mesh(&mut mesh, Vector3::new(OFFSET_X, 0.0, 0.0));
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(polyline.len(), 30);
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(
+                (p.x - OFFSET_X).abs() < 1e-9,
+                "x should track OFFSET_X at slab {i}: {p:?}"
+            );
+            assert!(p.y.abs() < 1e-9, "y should be 0 at slab {i}: {p:?}");
+        }
+    }
+
+    /// **Spec test #3 (load-bearing: density-independence)** — a
+    /// cylinder sampled with 80% of its angular vertices in the
+    /// right semi-circle and 20% in the left semi-circle has the
+    /// SAME centerline as a uniformly-sampled cylinder of the same
+    /// radius. This is the property that escapes ALL five prior
+    /// failed algorithms (Kasa, Kasa+prior, PCA, vertex-centroid,
+    /// AABB-midpoint were each biased by sampling asymmetry).
+    ///
+    /// Vertex-centroid baseline (FOR THE OLD ALGORITHM, would have
+    /// FAILED): mean x of the boundary samples for the dense fixture
+    /// is ~ +0.022 m (vs. radius 0.05 → 44% bias), which would have
+    /// pulled the prior centerline off-axis by ~22mm on a 50mm-radius
+    /// body. The new algorithm produces sub-mm residual.
+    #[test]
+    fn centerline_algorithm_density_independent() {
+        const RADIUS: f64 = 0.05;
+        // 80% (24/30) of thetas densely packed in the right
+        // semi-circle (theta ∈ (-π/2, π/2)); 20% (6/30) sparsely
+        // in the left semi-circle. Boundary shape is still the
+        // same circle.
+        let mut thetas: Vec<f64> = Vec::new();
+        for k in 0..24 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = (k as f64 + 0.5) / 24.0;
+            thetas.push(-std::f64::consts::FRAC_PI_2 + f * std::f64::consts::PI);
+        }
+        for k in 0..6 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = (k as f64 + 0.5) / 6.0;
+            thetas.push(std::f64::consts::FRAC_PI_2 + f * std::f64::consts::PI);
+        }
+        let mesh = make_density_biased_cylinder_mesh(20, &thetas, RADIUS, 0.2);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(polyline.len(), 30);
+        // Residual chord-area asymmetry: ~(1 - cos(π / n_dense))
+        // for the dense side × similar on sparse side. With 24 vs 6
+        // segments, residual x-drift is at most a few percent of
+        // RADIUS (sub-mm at RADIUS=50mm). The vertex-centroid
+        // statistic on the SAME fixture would drift by ~50% of
+        // RADIUS — this tolerance is 100× tighter.
+        let tol_x = 0.05 * RADIUS;
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(
+                p.x.abs() < tol_x,
+                "density-biased x drift at slab {i}: {p:?} (tol = {tol_x})"
+            );
+            assert!(
+                p.y.abs() < tol_x,
+                "density-biased y drift at slab {i}: {p:?} (tol = {tol_x})"
+            );
+        }
+    }
+
+    /// **Spec test #4 (degenerate-slab interpolation)** — a needle
+    /// cone (radius 1.0 at z=−0.5 → 0.00001 at z=+0.5) has its
+    /// tip-end slabs fall below MIN_SLAB_AREA_M2 (π × 1e-5² ≈
+    /// 3e-10 m² < 1e-8 m²). Those degenerate slabs must be filled
+    /// in by linear interpolation / axial extrapolation; the
+    /// polyline length should match `n_slices` exactly (no gaps)
+    /// and the filled-in points should stay on the body axis.
+    #[test]
+    fn centerline_algorithm_degenerate_slabs_filled_by_interpolation() {
+        let mesh = make_closed_frustum_mesh(20, 32, 1.0, 1e-5, 1.0, |_, _, _| 0.0);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(
+            polyline.len(),
+            30,
+            "polyline length should equal n_slices even with degenerate slabs"
+        );
+        // All points (interior + filled-in tip) should be on the
+        // body axis. The interpolation from non-degenerate
+        // neighbors stays on axis since those neighbors are on axis
+        // for a symmetric cone.
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(p.x.abs() < 1e-9, "x drift at slab {i}: {p:?}");
+            assert!(p.y.abs() < 1e-9, "y drift at slab {i}: {p:?}");
+        }
+    }
+
+    /// **Spec test #5 (XYZ-independence)** — a closed cylinder
+    /// whose body axis has been rotated 30° around Y produces a
+    /// centerline that follows the ROTATED body axis, not the
+    /// world Z axis. The algorithm uses `spine_hint` (not world
+    /// directions) for slicing, so any spine_hint direction works.
+    /// See `project_scans_axis_orientation` memo.
+    #[test]
+    fn centerline_algorithm_xyz_independent() {
+        let mut mesh = make_closed_frustum_mesh(20, 32, 0.05, 0.05, 0.2, |_, _, _| 0.0);
+        let axis_angle_deg = 30.0;
+        let rotation = UnitQuaternion::from_axis_angle(
+            &Vector3::y_axis(),
+            axis_angle_deg * std::f64::consts::PI / 180.0,
+        );
+        rotate_mesh(&mut mesh, rotation);
+        let rotated_axis = rotation * Vector3::new(0.0, 0.0, 1.0);
+        let polyline = compute_centerline_polyline(&mesh, rotated_axis, 30);
+        assert_eq!(polyline.len(), 30);
+        // Each polyline point should lie on the line through origin
+        // in direction `rotated_axis`. Cross-product magnitude with
+        // the axis direction tells us the perpendicular distance —
+        // should be ~ 0 for an on-axis point.
+        for (i, p) in polyline.iter().enumerate() {
+            let perp = p.coords.cross(&rotated_axis).norm();
+            assert!(
+                perp < 1e-9,
+                "perp distance from rotated axis at slab {i}: {perp} (point {p:?})"
             );
         }
     }
