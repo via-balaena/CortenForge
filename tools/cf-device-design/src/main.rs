@@ -1458,6 +1458,15 @@ fn update_layer_meshes(
     if layers.layers.is_empty() {
         return;
     }
+    // Pre-fetch the heat-map run reference for the per-layer
+    // projection (sub-leaf 7). When `heat_map_on && last_run` →
+    // each layer gets a per-MC-vertex projection from the sim's
+    // per-tet scalar field; otherwise palette tint.
+    let heat_map_run = if sim_state.heat_map_on {
+        sim_state.last_run.as_ref()
+    } else {
+        None
+    };
     let mut cumulative_thickness_m = 0.0_f64;
     for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
@@ -1478,18 +1487,38 @@ fn update_layer_meshes(
         let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
         let layer_indexed = sdf_layers::extract_layer_surface(&cached_sdf, safe_offset_m);
-        let mesh = meshes.add(build_bevy_mesh_from_indexed(
+        // Heat-map: project per-tet scalars onto this layer's MC
+        // vertices (sub-leaf 7). `project_layer_heat_map` returns
+        // `None` if the sim ran with fewer layers than the current
+        // GUI shows, or the layer has no tets in its partition —
+        // in either case the layer falls back to the palette tint.
+        let colors_vec = heat_map_run.and_then(|run| {
+            insertion_sim_ui::project_layer_heat_map(
+                run,
+                i,
+                sim_state.scalar_mode,
+                &layer_indexed.vertices,
+            )
+        });
+        let colors_slice = colors_vec.as_deref();
+        let mesh = meshes.add(build_bevy_mesh_from_indexed_with_colors(
             &layer_indexed,
             *up,
             render_scale.0,
+            colors_slice,
         ));
         let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
-        // Heat-map mode (per-vertex color attribute) is offline until
-        // sub-leaf 7 re-projects per-tet scalars onto each layer's
-        // MC vertex set — `proxy.vertices.len()` no longer matches
-        // any per-layer mesh's vertex count under the SDF path.
+        // Heat-map mode pins base color to white so the per-vertex
+        // COLOR attribute carries the gradient straight through
+        // (StandardMaterial multiplies base × vertex × light). Off
+        // mode keeps the palette tint.
+        let base_color = if colors_slice.is_some() {
+            Color::WHITE
+        } else {
+            Color::srgb(r, g, b)
+        };
         let material = materials.add(StandardMaterial {
-            base_color: Color::srgb(r, g, b),
+            base_color,
             double_sided: true,
             cull_mode: None,
             ..default()

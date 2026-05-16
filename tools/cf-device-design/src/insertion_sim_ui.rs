@@ -25,6 +25,8 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::egui;
 use mesh_types::IndexedMesh;
+use nalgebra::{Point3, Vector3};
+use sim_soft::{Mesh as SimMesh, TetId};
 
 use crate::insertion_sim::{
     InsertionRamp, RampStep, SimDesign, SimLayer, StepReadout, TetReadout,
@@ -72,7 +74,8 @@ pub enum ScalarMode {
 }
 
 impl ScalarMode {
-    /// Index into [`InsertionSimOutputs::per_layer_vertex_colors`].
+    /// Index into [`InsertionSimOutputs::scalar_fields`] +
+    /// [`InsertionSimOutputs::scalar_min_max`].
     pub fn buffer_index(self) -> usize {
         match self {
             Self::EnergyDensity => 0,
@@ -113,29 +116,34 @@ pub struct LayerAggregate {
     pub min_principal_stretch: f64,
 }
 
-/// Async-task outputs: the raw ramp + the panel's derived readouts.
-/// `per_layer_vertex_colors` is `[Energy, Stress]` (matches
-/// [`ScalarMode::buffer_index`]); each inner `Vec<Vec<[f32; 4]>>` is
-/// indexed `[layer_index][proxy_vertex_index]`, length matches the
-/// envelope proxy's vertex count for the layer's displaced shell.
+/// Async-task outputs: the raw ramp + the panel's derived readouts +
+/// the per-tet substrate that [`project_layer_heat_map`] needs to
+/// re-project scalar fields onto each layer's SDF-extracted MC mesh
+/// at render time (slice 9 sub-leaf 7).
 pub struct InsertionSimOutputs {
     /// The raw ramp — for the F-d plot + per-step table.
     pub ramp: InsertionRamp,
     /// Per-layer reductions of `ramp.result.final_per_tet`.
     pub per_layer: Vec<LayerAggregate>,
-    /// `[Energy, Stress]` → layer-indexed → proxy-vertex-indexed
-    /// RGBA in `[0, 1]` colors, ready for Bevy's
-    /// `Mesh::ATTRIBUTE_COLOR`.
+    /// Rest-frame centroid of every tet in the insertion-sim mesh.
+    /// Indexed by tet id (same indexing as `ramp.result.final_per_tet`
+    /// + [`per_tet_layer`]).
     ///
-    /// Temporarily orphaned (slice-9 sub-leaf 4): the per-layer mesh
-    /// path swapped from per-vertex proxy displacement to
-    /// SDF-extracted MC topology, so the prior `proxy.vertices.len()`
-    /// → `[layer_index][vertex_index]` indexing no longer matches
-    /// any per-layer MC mesh. Sub-leaf 7 re-projects per-tet scalars
-    /// onto each layer's MC vertex set via closest-point lookup and
-    /// re-wires the heat-map material path.
-    #[allow(dead_code)] // re-wired in sub-leaf 7
-    pub per_layer_vertex_colors: [Vec<Vec<[f32; 4]>>; 2],
+    /// Used by [`project_layer_heat_map`] to find the nearest tet
+    /// IN-LAYER for each MC-mesh vertex.
+    ///
+    /// [`per_tet_layer`]: InsertionSimOutputs::per_tet_layer
+    pub tet_centroids: Vec<Vector3<f64>>,
+    /// Layer index for each tet (0..n_layers). Indexed by tet id.
+    /// Tets bucketed to the same layer the GUI's `LayersState`
+    /// surfaces; used by [`project_layer_heat_map`] to filter the
+    /// nearest-tet search to in-layer candidates only.
+    pub per_tet_layer: Vec<usize>,
+    /// Per-tet scalar fields — `[Energy J/m³, Stress ‖P‖ Pa]`,
+    /// indexed `[scalar_mode_index][tet_id]` (matches
+    /// [`ScalarMode::buffer_index`]). The mode-keyed projection in
+    /// [`project_layer_heat_map`] picks the right slot.
+    pub scalar_fields: [Vec<f64>; 2],
     /// `[Energy, Stress]` global (min, max) used to normalize the
     /// gradient — also reported alongside the heat map so the user
     /// can read absolute scale.
@@ -145,13 +153,15 @@ pub struct InsertionSimOutputs {
 impl fmt::Debug for InsertionSimOutputs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Same `dbg!`-footgun rationale as `InsertionGeometry` /
-        // `InsertionRamp`: the per-layer color buffers are large and
-        // would dominate any debug print.
+        // `InsertionRamp`: the per-tet centroid + scalar buffers are
+        // large and would dominate any debug print.
         write!(
             f,
-            "InsertionSimOutputs {{ n_steps_converged: {}, n_layers: {}, ranges: {:?} }}",
+            "InsertionSimOutputs {{ n_steps_converged: {}, n_layers: {}, \
+             n_tets: {}, ranges: {:?} }}",
             self.ramp.steps.len(),
             self.per_layer.len(),
+            self.tet_centroids.len(),
             self.scalar_min_max,
         )
     }
@@ -382,14 +392,9 @@ fn build_sim_design(cavity: &CavityState, layers: &LayersState) -> SimDesign {
 
 /// The end-to-end sim pipeline that runs inside the async task: build
 /// geometry → snapshot per-tet immutables → run ramp → compute
-/// per-layer aggregates. Pure compute; no Bevy / egui access (the
-/// task pool runs off main thread).
-///
-/// Slice 9 sub-leaf 6: per-vertex heat-map projection is offline
-/// here — the prior path keyed projection on the now-retired
-/// `EnvelopeProxyMesh.vertices`; sub-leaf 7 re-projects per-tet
-/// scalars onto each layer's SDF-extracted MC mesh and re-fills
-/// the per-layer vertex-color buffers.
+/// per-layer aggregates + the tet-level substrate the render-time
+/// heat-map projection consumes. Pure compute; no Bevy / egui access
+/// (the task pool runs off main thread).
 fn run_sim_pipeline(
     scan: IndexedMesh,
     design: SimDesign,
@@ -397,8 +402,25 @@ fn run_sim_pipeline(
 ) -> Result<InsertionSimOutputs> {
     let geometry = build_insertion_geometry(&scan, &design, SIM_SDF_TARGET_FACES, SIM_CELL_SIZE_M)?;
 
+    let n_tets = geometry.n_tets;
     let n_layers = design.layers.len();
     let per_tet_layer = geometry.per_tet_layer.clone();
+    let rest_positions: Vec<Vector3<f64>> = geometry.mesh.positions().to_vec();
+    // Rest-frame tet centroids — the projection's nearest-tet lookup
+    // operates on these. Precomputing here once avoids re-deriving
+    // them at every heat-map render.
+    let tet_centroids: Vec<Vector3<f64>> = (0..n_tets)
+        .map(|t| {
+            // `t as TetId` (u32) — Phase 4 BCC meshes stay under `u32::MAX`.
+            #[allow(clippy::cast_possible_truncation)]
+            let v = geometry.mesh.tet_vertices(t as TetId);
+            (rest_positions[v[0] as usize]
+                + rest_positions[v[1] as usize]
+                + rest_positions[v[2] as usize]
+                + rest_positions[v[3] as usize])
+                * 0.25
+        })
+        .collect();
 
     let ramp = run_insertion_ramp(geometry, n_steps)?;
 
@@ -411,9 +433,6 @@ fn run_sim_pipeline(
 
     let per_layer = aggregate_per_layer(&result.final_per_tet, &per_tet_layer, n_layers);
 
-    // Two scalar fields (energy + stress norm) per tet — reported
-    // through `scalar_min_max` so the panel can show absolute scale
-    // even with the heat-map projection offline.
     let energy_field: Vec<f64> = result
         .final_per_tet
         .iter()
@@ -427,14 +446,12 @@ fn run_sim_pipeline(
     let energy_min_max = global_min_max(&energy_field);
     let stress_min_max = global_min_max(&stress_field);
 
-    // Sub-leaf 6: heat-map color buffers empty (one Vec per layer,
-    // each Vec empty). Sub-leaf 7 fills them via per-MC-vertex
-    // nearest-tet lookup.
-    let empty_layer_buffers: Vec<Vec<[f32; 4]>> = (0..n_layers).map(|_| Vec::new()).collect();
     Ok(InsertionSimOutputs {
         ramp,
         per_layer,
-        per_layer_vertex_colors: [empty_layer_buffers.clone(), empty_layer_buffers],
+        tet_centroids,
+        per_tet_layer,
+        scalar_fields: [energy_field, stress_field],
         scalar_min_max: [energy_min_max, stress_min_max],
     })
 }
@@ -527,14 +544,84 @@ fn global_min_max(values: &[f64]) -> (f64, f64) {
     }
 }
 
+/// Project the sim's per-tet scalar field onto an SDF-extracted
+/// layer mesh: for each MC vertex, find the nearest in-layer tet
+/// centroid, sample [`InsertionSimOutputs::scalar_fields`] for the
+/// requested mode, encode RGBA via [`scalar_to_rgba`].
+///
+/// `mc_vertices` should be the per-layer surface's MC vertex
+/// positions in physics-frame meters (the same ones
+/// `build_bevy_mesh_from_indexed_with_colors` consumes; cf.
+/// `update_layer_meshes` in main.rs).
+///
+/// Returns `None` when:
+/// - `layer_idx` exceeds the sim's layer count (sim was run with
+///   fewer layers than the GUI now shows — the heat map for the
+///   extra layers has no data),
+/// - or the requested layer has no tets in its partition (degenerate
+///   geometry that the GUI surfaces elsewhere).
+///
+/// Otherwise returns one RGBA per `mc_vertices` entry.
+///
+/// Cost: O(`mc_vertices.len()` × `n_tets_in_layer`). On iter-1 with
+/// ~3 k MC verts per layer × ~5 k tets per layer ≈ 15 M ops per
+/// rebuild; release-mode cost ~10 ms per layer. Re-walks per
+/// `update_layer_meshes` rebuild (which fires on slider change OR
+/// sim completion). The per-layer-vertex → nearest-tet cache the
+/// spec calls out is a future optimization if scalar-mode toggle
+/// ever feels laggy — drop in a `HashMap<(layer_idx, vertex_idx),
+/// tet_idx>` keyed on the same `LayerMeshKey` that gates the
+/// rebuild.
+#[must_use]
+pub(crate) fn project_layer_heat_map(
+    outputs: &InsertionSimOutputs,
+    layer_idx: usize,
+    scalar_mode: ScalarMode,
+    mc_vertices: &[Point3<f64>],
+) -> Option<Vec<[f32; 4]>> {
+    let n_layers = outputs
+        .per_tet_layer
+        .iter()
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+    if layer_idx >= n_layers {
+        return None;
+    }
+    let layer_tets: Vec<usize> = outputs
+        .per_tet_layer
+        .iter()
+        .enumerate()
+        .filter_map(|(t, &l)| (l == layer_idx).then_some(t))
+        .collect();
+    if layer_tets.is_empty() {
+        return None;
+    }
+    let mode = scalar_mode.buffer_index();
+    let scalar_field = &outputs.scalar_fields[mode];
+    let min_max = outputs.scalar_min_max[mode];
+    let centroids = &outputs.tet_centroids;
+
+    let colors: Vec<[f32; 4]> = mc_vertices
+        .iter()
+        .map(|v| {
+            let mut best_t = layer_tets[0];
+            let mut best_d2 = (centroids[best_t] - v.coords).norm_squared();
+            for &t in &layer_tets[1..] {
+                let d2 = (centroids[t] - v.coords).norm_squared();
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    best_t = t;
+                }
+            }
+            scalar_to_rgba(scalar_field[best_t], min_max)
+        })
+        .collect();
+    Some(colors)
+}
+
 /// Map a scalar to an RGBA color in `[0, 1]` via a three-stop gradient
-//
-// Slice 9 sub-leaf 6: heat-map projection retired (was the only
-// caller); sub-leaf 7 re-projects per-tet scalars onto each layer's
-// SDF-extracted MC mesh and re-introduces a (different) caller.
-// Worth keeping inline pending sub-leaf 7 rather than churning the
-// gradient stops + sign-by-sign clamp through deletion + reintro.
-#[allow(dead_code)] // re-wired in sub-leaf 7
 /// (cold blue → warm yellow → hot red). Engineering-readable and
 /// avoids the matplotlib-style perceptually-uniform colormap's external
 /// dep. Out-of-range or non-finite values clamp to the endpoints.
