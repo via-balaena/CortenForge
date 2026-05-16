@@ -1800,6 +1800,12 @@ struct LayerMeshKey {
 /// each vertex displaced along its radial direction by `offset_m`
 /// in physics frame, then mapped through the cast-frame `UpAxis`
 /// swap + `render_scale` lift to Bevy frame.
+///
+/// Retired-but-retained for sub-leaf 4: `update_layer_meshes` still
+/// consumes the `_with_colors` variant until sub-leaf 4 swaps the
+/// per-layer path too. Sub-leaf 6 retires both wrappers + the
+/// `EnvelopeProxyMesh`'s per-vertex radial machinery wholesale.
+#[allow(dead_code)] // retired in sub-leaf 6
 fn build_displaced_proxy_mesh(
     proxy: &EnvelopeProxyMesh,
     offset_m: f64,
@@ -1875,6 +1881,73 @@ fn build_displaced_proxy_mesh_with_colors(
     mesh
 }
 
+/// Build a Bevy `Mesh` directly from an [`IndexedMesh`] — no
+/// per-vertex displacement. Used by the SDF-extracted cavity + per-
+/// layer surfaces (slice 9, [`sdf_layers::extract_layer_surface`]).
+/// Maps physics-frame vertices through the cast-frame `UpAxis` swap
+/// plus the `render_scale` lift to Bevy frame; computes smooth
+/// per-vertex normals from face winding.
+///
+/// Parallel to [`build_displaced_proxy_mesh`]; the SDF path
+/// extracts geometry where the iso surface naturally lives, so
+/// there's no displacement step at the bevy-mesh-build boundary.
+fn build_bevy_mesh_from_indexed(mesh: &IndexedMesh, up: UpAxis, render_scale: f32) -> Mesh {
+    build_bevy_mesh_from_indexed_with_colors(mesh, up, render_scale, None)
+}
+
+/// Same as [`build_bevy_mesh_from_indexed`] but with optional per-
+/// vertex RGBA colors — heat-map analog of
+/// [`build_displaced_proxy_mesh_with_colors`] for the SDF path
+/// (slice 9 sub-leaf 7 wires this for the Insertion Sim panel).
+///
+/// # Panics
+///
+/// `vertex_colors` must match `mesh.vertices.len()` when `Some`;
+/// mismatched lengths panic via the `Mesh::ATTRIBUTE_COLOR` insert
+/// invariant — a construction-side bug, not a runtime data
+/// dependence.
+fn build_bevy_mesh_from_indexed_with_colors(
+    mesh: &IndexedMesh,
+    up: UpAxis,
+    render_scale: f32,
+    vertex_colors: Option<&[[f32; 4]]>,
+) -> Mesh {
+    let positions: Vec<[f32; 3]> = mesh
+        .vertices
+        .iter()
+        .map(|v| {
+            let bevy = up.to_bevy_point(v);
+            #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
+            [
+                bevy[0] * render_scale,
+                bevy[1] * render_scale,
+                bevy[2] * render_scale,
+            ]
+        })
+        .collect();
+    let indices: Vec<u32> = mesh.faces.iter().flatten().copied().collect();
+
+    let mut bevy_mesh = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+    bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    bevy_mesh.insert_indices(bevy::mesh::Indices::U32(indices));
+    bevy_mesh.compute_smooth_normals();
+    if let Some(colors) = vertex_colors {
+        assert_eq!(
+            colors.len(),
+            mesh.vertices.len(),
+            "build_bevy_mesh_from_indexed_with_colors: vertex_colors.len() = {} \
+             must match mesh.vertices.len() = {}",
+            colors.len(),
+            mesh.vertices.len(),
+        );
+        bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
+    }
+    bevy_mesh
+}
+
 /// Palette for the per-layer outer-surface mesh entities. Repeats
 /// if the layer count exceeds the palette length.
 const LAYER_SURFACE_PALETTE: &[(f32, f32, f32)] = &[
@@ -1893,22 +1966,25 @@ const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
 
 /// Spawn the cavity mesh entity at startup. Layer entities spawn
 /// lazily on the first state-change tick.
+///
+/// Slice 9 sub-leaf 3: extracts the cavity surface from the cached
+/// scan SDF at `iso = -cavity.inset_m` (inward offset by the inset
+/// distance). Replaces the prior per-vertex radial displacement of
+/// the proxy mesh — the SDF iso is exactly perpendicular to the
+/// source surface by construction (no apex-nipple artifacts).
 #[allow(clippy::needless_pass_by_value)]
 fn spawn_cavity_mesh(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    proxy: Res<EnvelopeProxyMesh>,
+    cached_sdf: Res<sdf_layers::CachedScanSdf>,
     cavity: Res<CavityState>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
 ) {
-    if proxy.vertices.is_empty() || proxy.faces.is_empty() {
-        return;
-    }
-    let cavity_mesh = meshes.add(build_displaced_proxy_mesh(
-        &proxy,
-        -cavity.inset_m,
+    let cavity_indexed = sdf_layers::extract_layer_surface(&cached_sdf, -cavity.inset_m);
+    let cavity_mesh = meshes.add(build_bevy_mesh_from_indexed(
+        &cavity_indexed,
         *up,
         render_scale.0,
     ));
@@ -1926,10 +2002,14 @@ fn spawn_cavity_mesh(
 }
 
 /// Regenerate the cavity mesh asset when `CavityState` changes.
+///
+/// Slice 9 sub-leaf 3: pulls the cavity surface from the cached SDF
+/// at `iso = -state.inset_m` rather than displacing the per-vertex
+/// proxy mesh.
 #[allow(clippy::needless_pass_by_value)]
 fn update_cavity_mesh(
     state: Res<CavityState>,
-    proxy: Res<EnvelopeProxyMesh>,
+    cached_sdf: Res<sdf_layers::CachedScanSdf>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1939,7 +2019,8 @@ fn update_cavity_mesh(
         return;
     }
     for (mut mesh_handle, mut visibility) in &mut q {
-        let new_mesh = build_displaced_proxy_mesh(&proxy, -state.inset_m, *up, render_scale.0);
+        let cavity_indexed = sdf_layers::extract_layer_surface(&cached_sdf, -state.inset_m);
+        let new_mesh = build_bevy_mesh_from_indexed(&cavity_indexed, *up, render_scale.0);
         mesh_handle.0 = meshes.add(new_mesh);
         *visibility = if state.visible {
             Visibility::Visible
