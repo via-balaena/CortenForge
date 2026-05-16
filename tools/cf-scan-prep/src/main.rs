@@ -49,8 +49,8 @@ use cf_viewer::{
 use clap::{Parser, ValueEnum};
 use mesh_io::{load_stl, save_stl};
 use mesh_repair::{
-    MeshAdjacency, holes, remove_degenerate_triangles, remove_small_components,
-    remove_unreferenced_vertices, weld_vertices,
+    MeshAdjacency, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, holes, remove_degenerate_triangles,
+    remove_small_components, remove_unreferenced_vertices, taubin_smooth_vertices, weld_vertices,
 };
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use meshopt::{SimplifyOptions, simplify_decoder};
@@ -89,6 +89,20 @@ struct Cli {
     /// useful when the input directory is read-only.
     #[arg(long, value_name = "PATH")]
     output_dir: Option<PathBuf>,
+
+    /// **Debug-only.** Headless smoke test for the Apply-Simplify
+    /// pipeline: loads the STL exactly like the GUI path
+    /// (`try_load_scan` → auto-center + auto-PCA), runs
+    /// [`simplify_mesh`] to the supplied target face count, prints
+    /// per-pass diagnostics to stderr, and exits without opening a
+    /// window. Used 2026-05-15 night to debug the
+    /// `[Apply Simplify]` one-click bug surfaced post-PR #246
+    /// (memo: `cf-scan-prep-simplify-one-click-bug`).
+    ///
+    /// Mutually exclusive with the normal GUI launch: when present,
+    /// no Bevy window is opened.
+    #[arg(long, value_name = "FACE_COUNT")]
+    diagnose_simplify: Option<usize>,
 }
 
 /// Unit convention for the input STL's vertex coordinates. The selected
@@ -178,6 +192,14 @@ struct SimplifyState {
     /// Queued user action; consumed (cleared) by
     /// [`handle_simplify_actions`] each Update tick.
     pending_action: Option<SimplifyAction>,
+    /// Has the user actively run `[Apply Simplify]` against the
+    /// currently-loaded mesh? Drives the `.prep.toml`
+    /// `[simplify].applied` provenance flag directly, instead of
+    /// inferring from `achieved < original` face counts (which lies
+    /// when the save-time cleanup pass drops faces but the user
+    /// never clicked Apply). Set `true` in [`handle_simplify_actions`]
+    /// on the `Apply` branch; reset to `false` on `Reset`.
+    was_applied: bool,
 }
 
 impl Default for SimplifyState {
@@ -185,6 +207,7 @@ impl Default for SimplifyState {
         Self {
             target_face_count: SIMPLIFY_TARGET_DEFAULT,
             pending_action: None,
+            was_applied: false,
         }
     }
 }
@@ -742,6 +765,51 @@ enum ReconstructAction {
 struct SavePendingAction {
     save_now: bool,
 }
+
+/// Save-time surface-smoothing state (2026-05-16, user-driven).
+///
+/// Controls the Taubin-smoothing pass applied in
+/// [`cleanup_cleaned_mesh_for_disk`] before the cleaned STL is
+/// written. The slider lives in the Save panel; iteration count
+/// is per-scan because scanner-noise amplitude varies (raw
+/// limb-tissue scans need 15-20 iters; high-quality reference
+/// scans 3-5).
+///
+/// **Default** [`SMOOTHING_DEFAULT_ITERATIONS`] (8) — sweet
+/// spot for typical body-part scans on the iter-1 fixture;
+/// suppresses sub-mm scanner noise without erasing real
+/// geometric detail. `0` disables smoothing entirely
+/// (back-compat with pre-fix saves).
+///
+/// Surfaced in the saved `.prep.toml`'s `[smoothing]` block so
+/// downstream consumers (cf-cast SDF sampling, cf-device-design
+/// previews, future audit tooling) can see exactly how much
+/// smoothing was applied to the cleaned mesh on disk.
+#[derive(Resource, Debug, Clone, Copy)]
+struct SmoothingState {
+    iterations: usize,
+}
+
+impl Default for SmoothingState {
+    fn default() -> Self {
+        Self {
+            iterations: SMOOTHING_DEFAULT_ITERATIONS,
+        }
+    }
+}
+
+/// Default iteration count for [`SmoothingState`] — 8 Taubin
+/// passes. See [`SmoothingState`] docs for the per-scan-tuning
+/// rationale + the suggested ranges for different scan
+/// qualities.
+const SMOOTHING_DEFAULT_ITERATIONS: usize = 8;
+
+/// Upper slider bound for the Save panel's smoothing slider.
+/// 30 iterations is enough to visibly over-smooth a noisy
+/// limb scan; above that the user is degrading real geometric
+/// detail (limb-end taper, anatomical features) without
+/// returns. Display-only cap; the algorithm doesn't enforce it.
+const SMOOTHING_MAX_ITERATIONS: usize = 30;
 
 /// Output directory for the Save panel's writes. Built at startup
 /// from `--output-dir <path>` if supplied, else from the input
@@ -1320,6 +1388,82 @@ fn perpendicular_basis_for(n: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
     (u, v)
 }
 
+/// Look-back distance for [`stable_inward_tangent`] in meters.
+/// 20 mm averages enough centerline segments on a typical
+/// workshop scan (segment density ~5 mm; 20 mm = ~4 segments)
+/// to wash out the noisy single-segment tangent at the
+/// post-trim cut endpoint, while staying short enough that the
+/// resulting direction tracks the body's local axis (not the
+/// whole-body PCA average).
+const STABLE_INWARD_TANGENT_LOOKBACK_M: f64 = 0.020;
+
+/// Estimate a stable inward tangent at the centerline polyline's
+/// last (cut) endpoint by walking back along the polyline by
+/// `lookback_m` arc-length, then taking the unit vector from
+/// that look-back point to the cut endpoint and **negating** it
+/// so the result points FROM the cut INTO the body (matching
+/// the convention used by [`apply_reconstruction`]'s
+/// `inward_tangent`).
+///
+/// Falls back to the head→cut direction when `lookback_m`
+/// exceeds the polyline's total arc length, and to the
+/// last-segment vector when the polyline has only two points.
+/// Returns `None` for degenerate inputs (single-point polyline,
+/// non-positive lookback, or coincident look-back/cut points).
+///
+/// **Why this helper exists** (2026-05-16): the pre-fix
+/// `apply_reconstruction` used `centerline[n-2] - centerline[n-1]`
+/// directly. On the iter-1 sock-over-capsule scan that single
+/// segment wandered laterally relative to the body's main axis,
+/// causing (a) the K-ring extrusion to extend off-axis and (b)
+/// the blend pass to project scan vertices onto a tilted global
+/// frame, producing visible spike artifacts. Look-back averaging
+/// over ~20 mm tames both.
+fn stable_inward_tangent(centerline: &[Point3<f64>], lookback_m: f64) -> Option<Vector3<f64>> {
+    let n = centerline.len();
+    if n < 2 || lookback_m <= 0.0 {
+        return None;
+    }
+    let cut = centerline[n - 1];
+    // Walk segments from the cut endpoint inward, accumulating
+    // arc-length. Stop when `accumulated + this_segment >=
+    // lookback_m` and interpolate within that segment so the
+    // look-back point is exactly `lookback_m` from the cut.
+    let mut accumulated = 0.0;
+    // Default: if every segment is degenerate (zero-length), fall
+    // back to centerline[n-2] (the immediate inward neighbor).
+    let mut lookback_point = centerline[n - 2];
+    let mut found = false;
+    for i in (0..n - 1).rev() {
+        let seg = centerline[i].coords - centerline[i + 1].coords;
+        let seg_len = seg.norm();
+        if seg_len < f64::EPSILON {
+            continue;
+        }
+        if accumulated + seg_len >= lookback_m {
+            let remaining = lookback_m - accumulated;
+            let t = remaining / seg_len;
+            lookback_point = centerline[i + 1] + seg * t;
+            found = true;
+            break;
+        }
+        accumulated += seg_len;
+        lookback_point = centerline[i];
+    }
+    // If we exhausted the polyline without reaching `lookback_m`,
+    // the last assignment of `lookback_point` is the head of the
+    // polyline (centerline[0] or last non-degenerate inward
+    // point) — that's the right fallback for short polylines.
+    let _ = found;
+
+    let dir = lookback_point.coords - cut.coords;
+    let norm = dir.norm();
+    if norm < f64::EPSILON {
+        return None;
+    }
+    Some(dir / norm)
+}
+
 /// Bin the mesh vertices in the reference zone above the cut by
 /// angular position around the centerline, then take the median
 /// radial distance per bin. Returns a length-M array of radii (M =
@@ -1505,6 +1649,28 @@ fn sample_radius_at_angle(radii: &[f64; RECONSTRUCT_ANGLE_BINS], angle: f64) -> 
 /// `centerline` is the POST-trim polyline in the same frame as
 /// `mesh` (physics-frame meters, pre-bake under the current live-
 /// preview pipeline).
+///
+/// # Seam handling (2026-05-16)
+///
+/// The transition from the noisy scan above the cut to the smooth
+/// reconstruction below used to produce a visible "lip": the
+/// floor-loop's noisy radii didn't match the smoothed canonical
+/// profile, leaving a ridge at the join. **Always-on fix**: the
+/// floor-loop vertices are NOT snapped to the canonical profile;
+/// they BECOME the top extrusion ring as-is, and each subsequent
+/// ring `k` lerps toward the canonical profile via a smoothstep
+/// weight (0 at the top, 1 at the new floor). The bottom flat
+/// cap still sits on the fully-smooth canonical profile, so the
+/// reconstruction doesn't carry the noise into the floor. Combined
+/// with the [`stable_inward_tangent`]-driven extrusion direction,
+/// this produces a clean seam without any user-tunable knob.
+///
+/// (A scan-side blend-zone slider was prototyped 2026-05-16 and
+/// removed the same session: the local-frame projection it needed
+/// produced visible artifacts on the iter-1 sock-over-capsule
+/// fixture at any non-zero blend, and `blend_zone_mm = 0` already
+/// looked "pretty much perfect" per user verification. The slider
+/// was carrying surface area without earning it.)
 fn apply_reconstruction(
     mut mesh: IndexedMesh,
     centerline: &[Point3<f64>],
@@ -1528,14 +1694,25 @@ fn apply_reconstruction(
     // FROM the cut endpoint AWAY from the chopped end (i.e., back
     // INTO the mesh body) — that's the direction of `polyline[N-2]
     // - polyline[N-1]` after trim trimmed the polyline.
-    let n = centerline.len();
-    let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
-    let tangent_norm = tangent_raw.norm();
-    if tangent_norm < f64::EPSILON {
-        auto_cap_open_boundaries(&mut mesh);
-        return mesh;
-    }
-    let inward_tangent = tangent_raw / tangent_norm;
+    // Stable inward tangent: walk back along the centerline by
+    // ~20 mm and take the dir-into-body. Replaces the prior
+    // single-segment `centerline[n-2] - centerline[n-1]` which
+    // wandered laterally on noisy polylines, tilting the K-ring
+    // extrusion direction off the body's actual axis. Falls
+    // back to the single-segment vector for short polylines.
+    let inward_tangent =
+        if let Some(t) = stable_inward_tangent(centerline, STABLE_INWARD_TANGENT_LOOKBACK_M) {
+            t
+        } else {
+            let n = centerline.len();
+            let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
+            let tangent_norm = tangent_raw.norm();
+            if tangent_norm < f64::EPSILON {
+                auto_cap_open_boundaries(&mut mesh);
+                return mesh;
+            }
+            tangent_raw / tangent_norm
+        };
     let (u_axis, v_axis) = perpendicular_basis_for(inward_tangent);
 
     // Sample the canonical radial profile from the reference zone.
@@ -1593,39 +1770,54 @@ fn apply_reconstruction(
         }
     };
 
-    // Snap floor-loop vertices to the canonical profile + the cut
-    // plane. Each loop vertex keeps its angle but gets its radial
-    // distance replaced with `radius_at(angle, 0)` (top of the
-    // extrusion = at the cut plane).
+    // Capture the floor-loop's per-vertex angle + radius as the
+    // top extrusion ring. **Anti-lip**: we use the noisy raw
+    // radii as-is (no snap to the canonical profile), so the
+    // top ring matches the boundary the scan is welded to —
+    // no geometric step at the seam. The K-ring loop below
+    // smoothsteps each subsequent ring toward the canonical
+    // profile, fading the noise out over K rings.
     let floor_loop = loops[floor_idx].clone();
     let l = floor_loop.vertices.len();
     let mut top_ring_angles = Vec::with_capacity(l);
+    let mut top_ring_radii = Vec::with_capacity(l);
     for &vidx in &floor_loop.vertices {
         if let Some(p) = mesh.vertices.get(vidx as usize).copied() {
             let d = p.coords - centerline_last.coords;
             let proj_u = d.dot(&u_axis);
             let proj_v = d.dot(&v_axis);
             let angle = proj_v.atan2(proj_u);
+            let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
             top_ring_angles.push(angle);
-            let r = radius_at(angle, 0.0);
-            let new_pos =
-                centerline_last.coords + r * (u_axis * angle.cos() + v_axis * angle.sin());
-            mesh.vertices[vidx as usize] = Point3::from(new_pos);
+            top_ring_radii.push(r);
+        } else {
+            top_ring_angles.push(0.0);
+            top_ring_radii.push(0.0);
         }
     }
 
     // Generate K extrusion rings DOWN past the cut (in the
     // direction OPPOSITE the inward tangent — outward toward the
-    // original chopped position).
+    // original chopped position). Each ring's per-angle radius is
+    // a smoothstep lerp from `top_ring_radii` (k=0, the floor loop)
+    // to the canonical `radius_at(angle, t_k)` (k=K, the new floor).
+    // At blend_zone=0 this gradual smoothing IS the anti-lip — the
+    // noisy top ring doesn't snap to the smooth profile abruptly.
+    // At blend_zone > 0 the top ring is already on the canonical
+    // profile (from the blend pass), so the lerp degenerates to
+    // smooth-all-the-way.
     let extrusion_dir = -inward_tangent;
     let mut prev_ring: Vec<u32> = floor_loop.vertices.clone();
     for k in 1..=RECONSTRUCT_RING_COUNT {
         #[allow(clippy::cast_precision_loss)]
         let t_k = k as f64 / RECONSTRUCT_RING_COUNT as f64;
+        let ring_blend = t_k * t_k * (3.0 - 2.0 * t_k);
         let ring_center = centerline_last.coords + extrusion_dir * extension_m * t_k;
         let mut this_ring: Vec<u32> = Vec::with_capacity(l);
-        for &angle in &top_ring_angles {
-            let r = radius_at(angle, t_k);
+        for (i, &angle) in top_ring_angles.iter().enumerate() {
+            let r_smooth = radius_at(angle, t_k);
+            let r_top = top_ring_radii[i];
+            let r = r_top * (1.0 - ring_blend) + r_smooth * ring_blend;
             let new_pos = ring_center + r * (u_axis * angle.cos() + v_axis * angle.sin());
             #[allow(clippy::cast_possible_truncation)]
             let idx = mesh.vertices.len() as u32;
@@ -1849,66 +2041,107 @@ fn build_detected_cap_loop(mesh: &IndexedMesh, loop_data: &holes::BoundaryLoop) 
     }
 }
 
-/// Approximate the scan's centerline via cross-section centroids
-/// along a "spine" axis. Option-3 hedge: validates the centerline
-/// algorithm cf-cast needs for curve-following multi-piece molds.
+/// Compute the scan's centerline as **N evenly-spaced points
+/// along the line passing through the mesh AABB center in the
+/// `spine_hint` direction**. Used by cf-cast's curve-following
+/// multi-piece mold generator AND by cf-device-design's
+/// per-vertex radial direction computation.
 ///
-/// **Algorithm**: pick a spine direction (the first cap loop's
-/// outward normal — points from cup-mouth toward the appendage tip).
-/// Project every mesh vertex onto this axis to get its "depth"; bin
-/// vertices into `n_slices` slabs covering the depth range; take the
-/// 3D centroid of each slab → polyline of centroids.
+/// **Algorithm** (2026-05-16, final iteration):
 ///
-/// For an elongated, mostly-tubular scan (the prosthetic-appendage
-/// case): each slab's centroid is roughly where the spine sits at
-/// that depth. The polyline follows the natural curve. Fails on
-/// branching geometry (multi-finger hands, multi-limb torsos) where
-/// a single centroid can't represent multiple branches; those cases
-/// would need a real medial-axis algorithm (MCF / Voronoi). Not in
-/// MVP scope.
+/// 1. Normalize `spine_hint` to a unit axis. This is the user's
+///    chosen body direction — typically the cap loop's outward
+///    normal, which after cf-scan-prep's auto-PCA-at-load is
+///    aligned with the body's principal axis (`-Z` for floor
+///    caps).
+/// 2. Compute the mesh AABB center — the midpoint of the body's
+///    extent in each axis. After cf-scan-prep's auto-center at
+///    load this is at origin (the load-time pipeline pins
+///    AABB center to physics origin).
+/// 3. Project all vertices onto the axis to get the depth range
+///    `[min_d, max_d]`.
+/// 4. Generate `n_slices` evenly-spaced points along the line
+///    passing through the AABB center in the axis direction, at
+///    depths from `min_d` to `max_d`.
 ///
-/// **Empty / degenerate input**: returns `Vec::new()` if the mesh
-/// has no vertices or the spine direction is zero-magnitude; the
-/// drawing system then skips the centerline overlay.
+/// **Why AABB center + spine-hint, not centroid / PCA / per-slab
+/// fit** (2026-05-16, fourth iteration):
+///
+/// - **Per-slab Kasa** (first attempt): non-uniform vertex
+///   density around cross-sections biased the per-slab fit
+///   center toward the dense side. Off-axis curve at the dome.
+/// - **Per-slab Kasa + centroid prior** (second attempt): blend
+///   threshold meant dense dome slabs never engaged the prior.
+///   Curve persisted.
+/// - **PCA-only** (third attempt): for short-wide bodies the
+///   PCA principal eigenvector lies LATERAL, not along the
+///   body's intended axis.
+/// - **Vertex centroid + spine-hint** (fourth attempt): vertex
+///   centroid is biased by non-uniform vertex density along the
+///   body (more verts on dense regions, less on sparse) AND by
+///   the reconstruct extension at the floor (which adds verts
+///   weighted toward one end). User saw the centerline straight
+///   but laterally offset from the body's geometric center.
+/// - **AABB center + spine-hint** (this version): the AABB
+///   midpoint is determined by the body's EXTREME points, not by
+///   sample distribution. It's robust to vertex-density
+///   variation, asymmetric reconstruction artifacts, and load-time
+///   noise. After auto-center at load, AABB center is at origin
+///   exactly; the centerline runs along the world Z axis through
+///   the body's true geometric center for axisymmetric bodies.
+///
+/// **Trade-off**: the centerline is always a straight line
+/// (cannot track genuinely curved bodies like a bent finger or
+/// flexed limb). For the target use case — body-part scans of
+/// roughly-straight limbs — this is what we want. If a
+/// curved-body fixture surfaces later, an adaptive per-slab
+/// algorithm would be needed alongside this default-straight
+/// path.
+///
+/// **Empty / degenerate input**: returns `Vec::new()` if the
+/// mesh has no vertices, the spine hint is zero-magnitude, or
+/// `n_slices == 0`.
 fn compute_centerline_polyline(
     mesh: &IndexedMesh,
-    spine_direction: Vector3<f64>,
+    spine_hint: Vector3<f64>,
     n_slices: usize,
 ) -> Vec<Point3<f64>> {
-    if mesh.vertices.is_empty() || spine_direction.norm_squared() < f64::EPSILON {
+    if mesh.vertices.is_empty() || spine_hint.norm_squared() < f64::EPSILON || n_slices == 0 {
         return Vec::new();
     }
-    let axis = spine_direction.normalize();
+    let axis = spine_hint.normalize();
 
-    // Single pass: collect depth + 3D position per vertex.
-    let depths: Vec<f64> = mesh.vertices.iter().map(|v| axis.dot(&v.coords)).collect();
+    // AABB center: anchor of the centerline. For axisymmetric
+    // bodies the AABB midpoint lies on the body's principal
+    // axis; combined with the spine-hint direction (assumed to
+    // be the body's principal direction), the line through the
+    // AABB center IS the body's axis. Robust to vertex-density
+    // variation in a way the vertex centroid is not.
+    let aabb_center: Vector3<f64> = mesh.aabb().center().coords;
+
+    // Depth range of the body along the chosen axis.
+    let depths: Vec<f64> = mesh.vertices.iter().map(|p| axis.dot(&p.coords)).collect();
     let min_d = depths.iter().copied().fold(f64::INFINITY, f64::min);
     let max_d = depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = max_d - min_d;
     if range < f64::EPSILON {
         return Vec::new();
     }
-    #[allow(clippy::cast_precision_loss)]
-    let slab_width = range / (n_slices as f64);
 
-    let mut polyline: Vec<Point3<f64>> = Vec::with_capacity(n_slices);
+    // Generate N evenly-spaced points along the centerline axis
+    // from min_d to max_d, anchored to the AABB center. Each
+    // point is the unique location on the line through
+    // `aabb_center` in direction `axis` whose projection onto
+    // `axis` equals the requested depth.
+    let anchor_depth = axis.dot(&aabb_center);
+    let mut polyline = Vec::with_capacity(n_slices);
     for i in 0..n_slices {
         #[allow(clippy::cast_precision_loss)]
-        let lo = min_d + (i as f64) * slab_width;
-        let hi = lo + slab_width;
-        let mut sum = Vector3::zeros();
-        let mut count: usize = 0;
-        for (j, v) in mesh.vertices.iter().enumerate() {
-            if depths[j] >= lo && depths[j] < hi {
-                sum += v.coords;
-                count += 1;
-            }
-        }
-        if count > 0 {
-            #[allow(clippy::cast_precision_loss)]
-            let centroid = sum / (count as f64);
-            polyline.push(Point3::from(centroid));
-        }
+        let t = (i as f64 + 0.5) / (n_slices as f64);
+        let depth = min_d + t * range;
+        let depth_offset = depth - anchor_depth;
+        let point = aabb_center + axis * depth_offset;
+        polyline.push(Point3::from(point));
     }
     polyline
 }
@@ -2302,16 +2535,34 @@ fn build_cleaned_mesh(
 /// Mutates `mesh` in place. Returns a [`CleanupReport`] summarizing
 /// each step's effect so the Save status message can surface how
 /// aggressive the cleanup was for the user's confidence.
-fn cleanup_cleaned_mesh_for_disk(mesh: &mut IndexedMesh) -> CleanupReport {
+///
+/// `smoothing_iterations` controls a final Taubin-smoothing pass
+/// (added 2026-05-16, user-driven) that suppresses sub-mm scanner
+/// noise so the cleaned STL represents the silicone cast's actual
+/// outcome (surface tension during cure smooths sub-mm features
+/// physically), not the noisy scan capture.
+/// `0` = skip smoothing entirely (back-compat with pre-fix behavior).
+/// Default per the Save panel slider is `SMOOTHING_DEFAULT_ITERATIONS`.
+fn cleanup_cleaned_mesh_for_disk(
+    mesh: &mut IndexedMesh,
+    smoothing_iterations: usize,
+) -> CleanupReport {
     let welded = weld_vertices(mesh, SIMPLIFY_WELD_EPSILON_M);
     let degenerate = remove_degenerate_triangles(mesh, CLEANUP_DEGENERATE_AREA_M2);
     let small_components = remove_small_components(mesh, CLEANUP_MIN_COMPONENT_FACES);
     let unreferenced = remove_unreferenced_vertices(mesh);
+    let smoothing = taubin_smooth_vertices(
+        mesh,
+        smoothing_iterations,
+        TAUBIN_DEFAULT_LAMBDA,
+        TAUBIN_DEFAULT_MU,
+    );
     CleanupReport {
         welded,
         degenerate,
         small_components,
         unreferenced,
+        smoothing,
     }
 }
 
@@ -2328,13 +2579,20 @@ struct CleanupReport {
     degenerate: usize,
     small_components: usize,
     unreferenced: usize,
+    /// Number of Taubin-smoothing iterations actually applied
+    /// (returned by [`taubin_smooth_vertices`]; matches the
+    /// `smoothing_iterations` parameter unless the mesh was
+    /// degenerate). Surfaced in the Save status so the user
+    /// can see how much smoothing landed in the file.
+    smoothing: usize,
 }
 
 impl CleanupReport {
-    /// Total operations across all four passes. Zero when the input
-    /// was already disk-ready (no cleanup needed).
+    /// Total operations across all five passes. Zero when the input
+    /// was already disk-ready (no cleanup needed) AND the smoothing
+    /// slider was at 0.
     fn total(self) -> usize {
-        self.welded + self.degenerate + self.small_components + self.unreferenced
+        self.welded + self.degenerate + self.small_components + self.unreferenced + self.smoothing
     }
 }
 
@@ -2352,6 +2610,7 @@ impl CleanupReport {
 struct PrepToml {
     scan_prep: PrepScanPrepBlock,
     simplify: PrepSimplifyBlock,
+    smoothing: PrepSmoothingBlock,
     transform: PrepTransformBlock,
     caps: PrepCapsBlock,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2419,6 +2678,36 @@ struct PrepSimplifyBlock {
     /// algorithm. Surfaced in the TOML for audit purposes.
     boundary_preserved: bool,
 }
+
+/// `[smoothing]` provenance — what surface smoothing was
+/// applied at save time. Added 2026-05-16 with the Taubin
+/// smoothing pass in [`cleanup_cleaned_mesh_for_disk`].
+///
+/// Downstream consumers can use this to know how aggressively
+/// the cleaned mesh has been smoothed — e.g., cf-cast's SDF
+/// sampling math is unaffected (it just samples whatever
+/// surface is on disk), but a future re-mesh / re-process
+/// pipeline can decide whether to apply additional smoothing
+/// based on what's already there.
+#[derive(Serialize)]
+struct PrepSmoothingBlock {
+    /// Algorithm identifier — pinned literal so downstream
+    /// audits know what produced the smoothed vertices.
+    algorithm: &'static str,
+    /// Number of Taubin (shrink + expand) pass pairs applied.
+    /// `0` = smoothing disabled at save time.
+    iterations: usize,
+    /// Shrink-pass weight `λ` (positive Laplacian step).
+    lambda: f64,
+    /// Expand-pass weight `μ` (negative Laplacian step).
+    mu: f64,
+}
+
+/// Algorithm identifier pinned literal for
+/// [`PrepSmoothingBlock::algorithm`]. Matches the function
+/// name in `mesh-repair`'s public API so downstream audit
+/// tooling can trace back to the implementation.
+const SMOOTHING_ALGORITHM_NAME: &str = "taubin_smooth_vertices";
 
 /// `[transform]` umbrella — `rotation` + `translation` sub-tables
 /// match spec §Output format. Each renders as `[transform.rotation]`
@@ -2582,8 +2871,10 @@ fn build_prep_toml_string(
     translation_for_centerline_m: Vector3<f64>,
     pivot_centroid_m: Point3<f64>,
     simplify_target_face_count: usize,
+    simplify_ran: bool,
     original_face_count: usize,
     achieved_face_count: usize,
+    smoothing_iterations: usize,
     cleaned_aabb_m: &Aabb,
 ) -> Result<String> {
     let q = reorient.quaternion_physics();
@@ -2632,18 +2923,27 @@ fn build_prep_toml_string(
             auto_pca_quaternion: auto_pca_quat.map(|q| [q.w, q.i, q.j, q.k]),
         },
         simplify: PrepSimplifyBlock {
-            // `applied = true` iff save-time simplify ran. The save
-            // handler invokes simplify only when the slider target is
-            // strictly below the current cleaned-mesh face count;
-            // mirror that condition here for the provenance flag.
-            applied: simplify_target_face_count < original_face_count
-                && achieved_face_count < original_face_count,
+            // `applied = true` iff the user clicked [Apply Simplify]
+            // against the currently-loaded mesh — threaded directly
+            // from `SimplifyState::was_applied`. Replaces a prior
+            // face-count-inference (`achieved < original`) which
+            // produced false positives once save-time simplify was
+            // retired (commit `a66a3cda`, 2026-05-15) and the
+            // save-time cleanup pass became the only face-dropper
+            // for the "user never clicked Apply" case.
+            applied: simplify_ran,
             algorithm: SIMPLIFY_ALGORITHM_NAME,
             algorithm_version: SIMPLIFY_ALGORITHM_VERSION,
             target_face_count: simplify_target_face_count,
             achieved_face_count,
             original_face_count,
             boundary_preserved: true,
+        },
+        smoothing: PrepSmoothingBlock {
+            algorithm: SMOOTHING_ALGORITHM_NAME,
+            iterations: smoothing_iterations,
+            lambda: TAUBIN_DEFAULT_LAMBDA,
+            mu: TAUBIN_DEFAULT_MU,
         },
         transform: PrepTransformBlock {
             rotation: PrepRotationBlock {
@@ -3089,6 +3389,13 @@ fn human_count(n: usize) -> String {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Debug-only headless smoke test (`--diagnose-simplify N`).
+    // Bypasses the Bevy window entirely; loads + simplifies + prints
+    // + exits. Used to debug the one-click-vs-two-click bug.
+    if let Some(target) = cli.diagnose_simplify {
+        return run_diagnose_simplify(&cli, target);
+    }
+
     match try_load_scan(&cli) {
         Ok((scan_mesh, auto_center_offset_m, auto_pca_quat)) => {
             let scan_info = ScanInfo::from_loaded(&cli.path, &scan_mesh, cli.stl_units);
@@ -3185,6 +3492,31 @@ fn try_load_scan(cli: &Cli) -> Result<(IndexedMesh, Vector3<f64>, Option<UnitQua
     let auto_center_offset_m = auto_center_in_place(&mut mesh);
     let auto_pca_quat = auto_pca_in_place(&mut mesh);
     Ok((mesh, auto_center_offset_m, auto_pca_quat))
+}
+
+/// Headless `--diagnose-simplify` path: load + simplify + print + exit.
+/// Mirrors the GUI's first-click behavior exactly (loads + auto-frame,
+/// then calls [`simplify_mesh`]) so a reproducer can be observed without
+/// any user interaction. Per-pass diagnostics come from
+/// [`simplify_mesh`]'s own eprintlns (gated on
+/// `CF_SCAN_PREP_SIMPLIFY_DIAG=1`); this function just prints the
+/// before/after summary line.
+fn run_diagnose_simplify(cli: &Cli, target: usize) -> Result<()> {
+    let (mesh, _auto_center, _auto_pca) = try_load_scan(cli)?;
+    eprintln!(
+        "[diagnose] loaded: faces={} vertices={} target={}",
+        mesh.faces.len(),
+        mesh.vertices.len(),
+        target,
+    );
+    let result = simplify_mesh(&mesh, target);
+    eprintln!(
+        "[diagnose] result: faces={} vertices={} elapsed={:.3}s",
+        result.mesh.faces.len(),
+        result.mesh.vertices.len(),
+        result.elapsed_secs,
+    );
+    Ok(())
 }
 
 /// Apply the PCA-derived rotation to all vertices in `mesh`, taking
@@ -3314,44 +3646,135 @@ fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyRe
         };
     }
 
-    // Step 1: weld unshared vertices into shared indices.
+    // Step 1: weld unshared vertices into shared indices, then
+    // **compact the vertex array**. `weld_vertices` remaps face
+    // indices to canonical representatives + drops degenerate faces,
+    // but leaves the merged-away duplicates as unreferenced entries
+    // in `mesh.vertices`. On the iter-1 sock-over-capsule scan that
+    // means 10.06M positions with only ~1.67M referenced after the
+    // weld.
+    //
+    // **Bug fixed 2026-05-16**: passing this sparse positions array
+    // to `simplify_decoder` causes meshopt to return the input
+    // unchanged (`result_error=0`, zero face reduction). Diagnosed
+    // via `--diagnose-simplify`:
+    // ```
+    // [simplify_mesh] pass 0: in_verts=10056204 meshopt_out_faces=3334935
+    //   result_error=0.000000           <-- meshopt did no work
+    // ```
+    // The 17k-face drop the user observed in pre-fix click 1 came
+    // entirely from the weld dropping degenerates — meshopt itself
+    // was idle. The reason click 2 then succeeded: click 1's
+    // post-meshopt `remove_unreferenced_vertices` compacted the
+    // verts to 1.67M, so click 2 fed meshopt a dense positions
+    // array that it could actually collapse.
+    //
+    // Fix: compact unreferenced vertices once, after the weld,
+    // BEFORE the meshopt call. Single pass is sufficient — meshopt
+    // reaches the target in one shot on the compacted input. The
+    // pre-fix iterative loop (May 15 WIP commit) didn't help
+    // because it kept feeding the sparse vertex array back in
+    // (pass 0's `remove_unreferenced_vertices` ran post-meshopt
+    // and never executed because the no-progress guard already
+    // broke). Loop retained as a defensive safety net + safety cap
+    // for edge cases where the dense single-pass still hits the
+    // quadric error ceiling.
     let mut welded = original.clone();
     weld_vertices(&mut welded, SIMPLIFY_WELD_EPSILON_M);
+    remove_unreferenced_vertices(&mut welded);
 
-    // Step 2: convert positions to meshopt-friendly f32 triples.
-    // f64 → f32 cast is intentional; meshopt's C API operates on f32.
-    #[allow(clippy::cast_possible_truncation)]
-    let positions: Vec<[f32; 3]> = welded
-        .vertices
-        .iter()
-        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
-        .collect();
-    let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
-
-    // Step 3: run meshopt. `target_count` is in INDICES, not faces.
-    let target_index_count = target_face_count.saturating_mul(3);
-    let mut result_error: f32 = 0.0;
-    let simplified_indices = simplify_decoder(
-        &indices,
-        &positions,
-        target_index_count,
-        SIMPLIFY_TARGET_ERROR,
-        SimplifyOptions::LockBorder,
-        Some(&mut result_error),
-    );
-
-    // Step 4: reassemble. Indices reference the welded vertex buffer.
-    let achieved_face_count = simplified_indices.len() / 3;
-    let mut simplified_faces: Vec<[u32; 3]> = Vec::with_capacity(achieved_face_count);
-    for tri in simplified_indices.chunks_exact(3) {
-        simplified_faces.push([tri[0], tri[1], tri[2]]);
+    // Env-var-gated per-pass diagnostics. Set
+    // `CF_SCAN_PREP_SIMPLIFY_DIAG=1` to see pass counts, in/out
+    // face counts, meshopt `result_error`, and per-pass timing on
+    // stderr. Used during the 2026-05-15 one-click bug recon; kept
+    // for future debugging of meshopt convergence on novel scans.
+    let diag = std::env::var("CF_SCAN_PREP_SIMPLIFY_DIAG").is_ok_and(|v| !v.is_empty());
+    if diag {
+        eprintln!(
+            "[simplify_mesh] start: target={} welded_faces={} welded_vertices={}",
+            target_face_count,
+            welded.faces.len(),
+            welded.vertices.len(),
+        );
     }
-    let mut simplified_mesh = welded;
-    simplified_mesh.faces = simplified_faces;
-    remove_unreferenced_vertices(&mut simplified_mesh);
+
+    const MAX_PASSES: usize = 10;
+    let mut current = welded;
+    let mut previous_face_count = current.faces.len();
+    for pass in 0..MAX_PASSES {
+        if current.faces.len() <= target_face_count {
+            if diag {
+                eprintln!(
+                    "[simplify_mesh] pass {pass}: at-or-below-target ({} <= {}), break",
+                    current.faces.len(),
+                    target_face_count,
+                );
+            }
+            break;
+        }
+        let pass_start = Instant::now();
+        let in_faces = current.faces.len();
+        let in_verts = current.vertices.len();
+        #[allow(clippy::cast_possible_truncation)]
+        let positions: Vec<[f32; 3]> = current
+            .vertices
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+            .collect();
+        let indices: Vec<u32> = current.faces.iter().flatten().copied().collect();
+        let target_index_count = target_face_count.saturating_mul(3);
+        let mut result_error: f32 = 0.0;
+        let simplified_indices = simplify_decoder(
+            &indices,
+            &positions,
+            target_index_count,
+            SIMPLIFY_TARGET_ERROR,
+            SimplifyOptions::LockBorder,
+            Some(&mut result_error),
+        );
+        let achieved_face_count = simplified_indices.len() / 3;
+        let mut simplified_faces: Vec<[u32; 3]> = Vec::with_capacity(achieved_face_count);
+        for tri in simplified_indices.chunks_exact(3) {
+            simplified_faces.push([tri[0], tri[1], tri[2]]);
+        }
+        current.faces = simplified_faces;
+        let removed = remove_unreferenced_vertices(&mut current);
+        if diag {
+            let pass_elapsed = pass_start.elapsed().as_secs_f64();
+            eprintln!(
+                "[simplify_mesh] pass {pass}: in_faces={in_faces} in_verts={in_verts} \
+                 meshopt_out_faces={achieved_face_count} unreferenced_removed={removed} \
+                 out_verts={out_verts} result_error={result_error:.6} elapsed={pass_elapsed:.3}s",
+                out_verts = current.vertices.len(),
+            );
+        }
+
+        // Converged: this pass made no progress (still hitting the
+        // error ceiling at the same place). Stop — further passes
+        // would just spin.
+        if current.faces.len() >= previous_face_count {
+            if diag {
+                eprintln!(
+                    "[simplify_mesh] pass {pass}: no-progress guard ({} >= {}), break",
+                    current.faces.len(),
+                    previous_face_count,
+                );
+            }
+            break;
+        }
+        previous_face_count = current.faces.len();
+    }
+    if diag {
+        eprintln!(
+            "[simplify_mesh] end: final_faces={} final_vertices={} elapsed={:.3}s",
+            current.faces.len(),
+            current.vertices.len(),
+            start.elapsed().as_secs_f64(),
+        );
+    }
 
     SimplifyResult {
-        mesh: simplified_mesh,
+        mesh: current,
         elapsed_secs: start.elapsed().as_secs_f64(),
     }
 }
@@ -3407,6 +3830,7 @@ fn run_render_app(
         .insert_resource(CapPendingAction::default())
         .insert_resource(CenterlineTrimState::default())
         .insert_resource(SavePendingAction::default())
+        .insert_resource(SmoothingState::default())
         .insert_resource(source)
         .insert_resource(output_dir)
         .insert_resource(stl_units)
@@ -3648,6 +4072,12 @@ fn handle_simplify_actions(
                 format_count_with_separators(achieved),
                 result.elapsed_secs,
             );
+            // Provenance: user actively ran simplify on this mesh.
+            // Threaded into `.prep.toml`'s `[simplify].applied` flag
+            // by `build_prep_toml_string` instead of the broken
+            // face-count-inference (which can lie when the save-time
+            // cleanup pass drops faces with no user Apply).
+            simplify_state.was_applied = true;
             (result.mesh, text)
         }
         SimplifyAction::Reset => {
@@ -3656,6 +4086,7 @@ fn handle_simplify_actions(
                 "Restored original mesh ({} faces)",
                 human_count(cloned.faces.len()),
             );
+            simplify_state.was_applied = false;
             (cloned, text)
         }
     };
@@ -4546,6 +4977,7 @@ fn scan_prep_panel(
     mut cap_pending: ResMut<CapPendingAction>,
     mut centerline_trim_state: ResMut<CenterlineTrimState>,
     mut save_pending: ResMut<SavePendingAction>,
+    mut smoothing_state: ResMut<SmoothingState>,
     source: Res<SourceStlPath>,
     output_dir: Res<SaveOutputDir>,
     status: Res<StatusBar>,
@@ -4601,6 +5033,7 @@ fn scan_prep_panel(
                         &output_dir.0,
                         &cap_state,
                         &mut save_pending,
+                        &mut smoothing_state,
                     );
                 });
         });
@@ -5178,6 +5611,7 @@ fn render_save_section(
     output_dir: &Path,
     cap_state: &CapState,
     save_pending: &mut SavePendingAction,
+    smoothing_state: &mut SmoothingState,
 ) {
     egui::CollapsingHeader::new("Save")
         .default_open(true)
@@ -5203,6 +5637,28 @@ fn render_save_section(
                 ui.label(dir_label)
                     .on_hover_text(output_dir.display().to_string());
             });
+
+            // Surface smoothing slider — applied at save time
+            // via `cleanup_cleaned_mesh_for_disk`. Per-scan
+            // because noise amplitude varies; raise for noisy
+            // limb scans, lower to preserve fine detail.
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Surface smoothing").strong());
+            ui.add(
+                egui::Slider::new(
+                    &mut smoothing_state.iterations,
+                    0..=SMOOTHING_MAX_ITERATIONS,
+                )
+                .text("Taubin iterations"),
+            );
+            ui.small(
+                "Suppresses sub-mm scanner noise so the cleaned STL represents the \
+                 silicone-cast outcome (surface tension smooths sub-mm features \
+                 physically). 0 = off (preserve all scan detail); raise for noisier \
+                 scans, lower to preserve fine geometric features.",
+            );
 
             let included = cap_state.loops.iter().filter(|l| l.include).count();
             let excluded = cap_state.loops.len().saturating_sub(included);
@@ -5265,6 +5721,7 @@ fn handle_save_action(
     recenter: Res<RecenterState>,
     cap: Res<CapState>,
     simplify: Res<SimplifyState>,
+    smoothing: Res<SmoothingState>,
     centerline_trim: Res<CenterlineTrimState>,
     output_dir: Res<SaveOutputDir>,
     source: Res<SourceStlPath>,
@@ -5407,39 +5864,37 @@ fn handle_save_action(
     // STL passes downstream `simplify_decoder` (not just
     // `simplify_sloppy_decoder`). The report's non-zero terms feed
     // the status message as a confidence signal for the user.
-    let cleanup = cleanup_cleaned_mesh_for_disk(&mut cleaned);
+    let cleanup = cleanup_cleaned_mesh_for_disk(&mut cleaned, smoothing.iterations);
     let cleanup_status_suffix = if cleanup.total() == 0 {
         String::new()
     } else {
+        let smoothing_part = if cleanup.smoothing > 0 {
+            format!(" / {} smoothing iters", cleanup.smoothing)
+        } else {
+            String::new()
+        };
         format!(
-            ", cleanup: {} welded / {} degenerate / {} small-component / {} unreferenced",
-            cleanup.welded, cleanup.degenerate, cleanup.small_components, cleanup.unreferenced,
+            ", cleanup: {} welded / {} degenerate / {} small-component / {} unreferenced{}",
+            cleanup.welded,
+            cleanup.degenerate,
+            cleanup.small_components,
+            cleanup.unreferenced,
+            smoothing_part,
         )
     };
 
-    // Slice 9.8 — Simplify panel slider acts as a face budget at save
-    // time too, not just for the [Apply simplify] in-app action. If
-    // the slider sits below the cleaned mesh's current face count,
-    // run meshopt down to the target before writing — so saved STLs
-    // honor the slider regardless of whether [Apply] was clicked
-    // first. Default slider value is `SIMPLIFY_TARGET_DEFAULT` (200k),
-    // which keeps 3M+ face raw scans from landing on disk unfiltered
-    // and grinding cf-cast-cli / cf-device-design downstream.
-    //
-    // The user opts OUT by dragging the slider up to or above the
-    // current face count.
-    let pre_simplify_face_count = cleaned.faces.len();
-    let mut simplify_status_suffix = String::new();
-    if simplify.target_face_count < pre_simplify_face_count {
-        let result = simplify_mesh(&cleaned, simplify.target_face_count);
-        simplify_status_suffix = format!(
-            ", simplified {} \u{2192} {} faces in {:.1}s",
-            human_count(pre_simplify_face_count),
-            human_count(result.mesh.faces.len()),
-            result.elapsed_secs,
-        );
-        cleaned = result.mesh;
-    }
+    // CSP.4e fix-forward (2026-05-15 evening): slice 9.8's save-time
+    // simplify-as-budget was removed. The in-app [Apply Simplify]
+    // button is the user-controlled simplification entry point; a
+    // hidden save-time re-simplify-if-target-exceeded was destructive
+    // to user-applied reconstruction geometry (it collapsed
+    // `apply_reconstruction`'s K=8 extrusion rings + flat-cap fan into
+    // sliver "spike" triangles, user-reported 2026-05-15 evening).
+    // Save now writes whatever the user has actively simplified +
+    // trimmed + reconstructed in-app, byte-faithfully — no hidden
+    // post-processing. The slider's `target_face_count` remains the
+    // [Apply]-button target and feeds the `.prep.toml` provenance.
+    let simplify_status_suffix = String::new();
     let triangle_count = cleaned.faces.len();
 
     let rotation = reorient.quaternion_physics();
@@ -5470,8 +5925,10 @@ fn handle_save_action(
         translation,
         pivot_centroid_m,
         simplify.target_face_count,
+        simplify.was_applied,
         original_face_count,
         triangle_count,
+        smoothing.iterations,
         &cleaned_aabb_m,
     ) {
         Ok(s) => s,
@@ -5869,6 +6326,10 @@ mod tests {
         assert_eq!(state.target_face_count, 200_000);
         assert_eq!(state.target_face_count, SIMPLIFY_TARGET_DEFAULT);
         assert!(state.pending_action.is_none());
+        // Provenance: a freshly-constructed state has not yet seen
+        // a user Apply click, so the `.prep.toml` `[simplify].applied`
+        // flag should be `false` on a Save-without-Apply.
+        assert!(!state.was_applied);
     }
 
     /// Slider bounds spec-pin (1k–1M) per spec §Panel specifications §2.
@@ -6576,6 +7037,80 @@ mod tests {
         assert!(zero_dir.is_empty());
     }
 
+    /// **Load-bearing test for the PCA-only fix** (2026-05-16): a
+    /// tapering cylindrical body — many vertices per slab at
+    /// the wide base, few per slab at the narrow tip — produces
+    /// a centerline that stays on the body's true axis at
+    /// EVERY slab, including the sparse tip. This is the failure
+    /// mode the old centroid algorithm exhibited: the tip slabs
+    /// wobbled laterally because the centroid of a few noisy
+    /// surface points isn't the geometric center of the
+    /// underlying circle.
+    ///
+    /// Fixture: a cone tapering from radius 1.0 at z=0 to
+    /// radius 0.05 at z=1.0, with 20 rings. Per-ring vertex
+    /// count is CONSTANT at 16, so the wide base + narrow tip
+    /// have the same number of samples but different radii.
+    /// Adds asymmetric per-vertex noise so the test would fail
+    /// for the centroid algorithm (centroid is biased by the
+    /// noise direction) but passes for Kasa (circle fit
+    /// recovers the true center despite the noise).
+    #[test]
+    fn centerline_tapered_cylinder_tip_stays_on_axis() {
+        const N_RINGS: usize = 20;
+        const N_PER_RING: usize = 16;
+        const RADIUS_BASE: f64 = 1.0;
+        const RADIUS_TIP: f64 = 0.05;
+        const NOISE_MAG: f64 = 0.005; // 0.5 % of the base radius
+
+        let mut mesh = IndexedMesh::with_capacity(N_RINGS * N_PER_RING, 0);
+        for i in 0..N_RINGS {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (i as f64) / ((N_RINGS - 1) as f64);
+            let z = t;
+            let radius = RADIUS_BASE * (1.0 - t) + RADIUS_TIP * t;
+            for k in 0..N_PER_RING {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = (k as f64) * std::f64::consts::TAU / (N_PER_RING as f64);
+                // Asymmetric noise: amplitude tied to (i + k) so
+                // different rings have different noise patterns.
+                let noise = NOISE_MAG * (((i * 7 + k * 13) % 11) as f64 / 11.0 - 0.5);
+                let r_actual = radius + noise;
+                mesh.vertices.push(Point3::new(
+                    r_actual * theta.cos(),
+                    r_actual * theta.sin(),
+                    z,
+                ));
+            }
+        }
+
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), N_RINGS);
+        assert!(
+            polyline.len() >= N_RINGS - 2,
+            "expected ~N_RINGS polyline pts; got {}",
+            polyline.len()
+        );
+
+        // EVERY polyline point should be on the body axis (x ≈ 0,
+        // y ≈ 0), including the narrow-tip slabs. The tolerance
+        // is held to NOISE_MAG / 2 — centroid + spine-hint
+        // anchors the line to the body's mean position, which
+        // for a symmetric tapered cone with sub-percent noise
+        // stays well within half the per-vertex noise amplitude.
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(
+                p.x.abs() < NOISE_MAG / 2.0,
+                "x drift at slab {i}: {p:?} (NOISE_MAG/2 = {})",
+                NOISE_MAG / 2.0,
+            );
+            assert!(
+                p.y.abs() < NOISE_MAG / 2.0,
+                "y drift at slab {i}: {p:?} (NOISE_MAG/2 = {})",
+                NOISE_MAG / 2.0,
+            );
+        }
+    }
+
     // ----- Centerline trim (CSP.4b) ----------------------------------
 
     /// `trim_mesh_along_centerline` with both trims at 0 is a
@@ -6949,6 +7484,61 @@ mod tests {
         assert_eq!(tris.len(), 2);
     }
 
+    // ----- stable_inward_tangent --------------------------------------
+    //
+    // Helper introduced 2026-05-16 to fix `apply_reconstruction`'s
+    // K-ring extrusion direction (previously derived from the
+    // noisy last centerline segment, which tilted the extrusion
+    // off the body's actual axis on the iter-1 sock-over-capsule
+    // scan). Pinned here so future refactors don't silently
+    // revert to the single-segment tangent.
+
+    /// 2-point polyline → look-back walks the only segment fully
+    /// and returns the head→tail (then negated) direction. The
+    /// `lookback_m` exceeding the polyline arc-length falls
+    /// through to the head endpoint, NOT an error.
+    #[test]
+    fn stable_inward_tangent_falls_back_to_last_segment_on_2_point_polyline() {
+        let polyline = [Point3::new(0.0, 0.0, 1.0), Point3::new(0.0, 0.0, 0.0)];
+        // Cut endpoint = (0,0,0); look-back at (0,0,1). Inward
+        // direction (cut → body) = +Z.
+        let dir = stable_inward_tangent(&polyline, 0.020).expect("tangent");
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+
+    /// On a long polyline the look-back point sits at exactly
+    /// `lookback_m` arc-length from the cut endpoint (interpolated
+    /// within the relevant segment). Pin the resulting direction
+    /// against a known-good handcomputed answer.
+    #[test]
+    fn stable_inward_tangent_walks_back_lookback_arc_length() {
+        // 4-point centerline along +Z, segments of length 0.010 m.
+        // Total arc length = 0.030 m.
+        let polyline = [
+            Point3::new(0.0, 0.0, 0.030), // body end
+            Point3::new(0.0, 0.0, 0.020),
+            Point3::new(0.0, 0.0, 0.010),
+            Point3::new(0.0, 0.0, 0.000), // cut end
+        ];
+        // Look back 0.015 m → between segments [2] and [1] (i.e.
+        // halfway through the segment from (0,0,0.010) to
+        // (0,0,0.020)). Look-back point = (0,0,0.015).
+        let dir = stable_inward_tangent(&polyline, 0.015).expect("tangent");
+        // dir = (lookback - cut) / norm = (0,0,0.015) / 0.015 = +Z.
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+
+    /// Look-back exceeding the polyline arc-length walks the
+    /// whole polyline and returns the head→tail unit vector.
+    /// Important so very-short trim-cut polylines don't crash.
+    #[test]
+    fn stable_inward_tangent_uses_full_polyline_when_lookback_exceeds_arc_length() {
+        // Total arc length = 0.005 m; ask for 0.020 m look-back.
+        let polyline = [Point3::new(0.0, 0.0, 0.005), Point3::new(0.0, 0.0, 0.000)];
+        let dir = stable_inward_tangent(&polyline, 0.020).expect("tangent");
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+
     /// Polygons with `n < 3` vertices produce no triangles (early
     /// return). Otherwise an `n=3` polygon should produce exactly
     /// 1 triangle.
@@ -7017,8 +7607,10 @@ mod tests {
             translation,
             Point3::origin(),
             200_000, // simplify target
+            true,    // simplify_ran — user clicked Apply
             500_000, // original face count
             200_000, // achieved face count
+            8,       // smoothing iterations
             &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
@@ -7125,8 +7717,10 @@ mod tests {
             translation,
             Point3::origin(),
             200_000,
+            true,
             500_000,
             200_000,
+            8,
             &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
@@ -7180,8 +7774,10 @@ mod tests {
             translation,
             Point3::origin(),
             200_000,
+            true,
             500_000,
             200_000,
+            8,
             &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
@@ -7195,6 +7791,98 @@ mod tests {
         assert!((arr[1].as_float().unwrap() - q.i).abs() < 1e-12);
         assert!((arr[2].as_float().unwrap() - q.j).abs() < 1e-12);
         assert!((arr[3].as_float().unwrap() - q.k).abs() < 1e-12);
+        Ok(())
+    }
+
+    /// `[simplify].applied` reflects the `simplify_ran` parameter
+    /// **directly**, NOT a `achieved < original` face-count
+    /// inference. Pre-fix (2026-05-15 night, post slice-9.8 revert)
+    /// the inference produced false positives whenever the save-time
+    /// cleanup pass dropped any faces — even when the user never
+    /// clicked Apply. Both directions pinned so future refactors
+    /// can't silently re-introduce the inference.
+    #[test]
+    fn prep_toml_simplify_applied_reflects_simplify_ran_parameter() -> Result<()> {
+        let reorient = ReorientState::default();
+        let recenter = RecenterState::default();
+        let cap = CapState::default();
+        let rotation = reorient.quaternion_physics();
+        let translation = nalgebra::Vector3::zeros();
+        let cleaned_aabb = Aabb {
+            min: Point3::new(0.0, 0.0, 0.0),
+            max: Point3::new(0.1, 0.1, 0.1),
+        };
+        let centerline_trim = CenterlineTrimState::default();
+
+        // Case A — user did NOT click Apply, but cleanup dropped
+        // faces (`achieved < original`). Old inference would
+        // mis-report `applied = true`; the new wiring honors the
+        // explicit `simplify_ran = false`.
+        let s_false = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &reorient,
+            &recenter,
+            &cap,
+            &centerline_trim,
+            0,
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            false, // simplify_ran — user did NOT click Apply
+            500_000,
+            499_900, // achieved < original (cleanup dropped 100 faces)
+            0,       // smoothing iterations
+            &cleaned_aabb,
+        )?;
+        let parsed_false: toml::Value = toml::from_str(&s_false)?;
+        let applied_false = parsed_false
+            .get("simplify")
+            .and_then(|s| s.get("applied"))
+            .and_then(|v| v.as_bool())
+            .expect("simplify.applied missing or not a bool");
+        assert!(
+            !applied_false,
+            "simplify.applied must be false when simplify_ran = false, \
+             regardless of achieved < original",
+        );
+
+        // Case B — user DID click Apply. Honors `simplify_ran = true`.
+        let s_true = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &reorient,
+            &recenter,
+            &cap,
+            &centerline_trim,
+            0,
+            "scan.cleaned.stl",
+            rotation,
+            translation,
+            Point3::origin(),
+            200_000,
+            true,
+            500_000,
+            200_000,
+            0,
+            &cleaned_aabb,
+        )?;
+        let parsed_true: toml::Value = toml::from_str(&s_true)?;
+        let applied_true = parsed_true
+            .get("simplify")
+            .and_then(|s| s.get("applied"))
+            .and_then(|v| v.as_bool())
+            .expect("simplify.applied missing or not a bool");
+        assert!(
+            applied_true,
+            "simplify.applied must be true when simplify_ran = true",
+        );
         Ok(())
     }
 
@@ -7325,7 +8013,9 @@ mod tests {
         // STL-unshared form: 3 verts per face.
         assert_eq!(unshared.vertices.len(), shared_face_count * 3);
 
-        let report = cleanup_cleaned_mesh_for_disk(&mut unshared);
+        // Smoothing disabled — this test asserts the weld/degenerate
+        // hygiene path, not the smoothing pass.
+        let report = cleanup_cleaned_mesh_for_disk(&mut unshared, 0);
         assert!(
             report.welded > 0,
             "weld_vertices report welded=0: {report:?}",
@@ -7354,7 +8044,7 @@ mod tests {
         mesh.vertices.push(Point3::new(100.5, 1.0, 0.0));
         mesh.faces.push([v0, v0 + 1, v0 + 2]);
 
-        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 0);
         assert!(
             report.small_components >= 1,
             "small_components report: {report:?}",
@@ -7373,8 +8063,37 @@ mod tests {
         // 5×5 grid is already in shared-index form, no degenerates,
         // single component, no unreferenced verts.
         let mut mesh = grid_square(5);
-        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 0);
         assert_eq!(report.total(), 0, "clean mesh produced cleanup: {report:?}");
+    }
+
+    /// Smoothing with non-zero iterations counts toward
+    /// [`CleanupReport::total()`] AND actually moves vertices.
+    /// Pins the slider's `iterations > 0` path so a future
+    /// refactor doesn't silently disconnect the slider from
+    /// the smoothing call.
+    #[test]
+    fn cleanup_applies_taubin_smoothing_when_iterations_positive() {
+        let mut mesh = grid_square(5);
+        let original_verts = mesh.vertices.clone();
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 5);
+        assert_eq!(
+            report.smoothing, 5,
+            "smoothing iters not threaded: {report:?}"
+        );
+        // grid_square produces vertices ON a plane; Taubin should
+        // not significantly displace them (Laplacian of a planar
+        // mesh is ~zero), but some boundary verts will drift
+        // toward the interior. At least one vertex should differ.
+        let any_moved = mesh
+            .vertices
+            .iter()
+            .enumerate()
+            .any(|(i, v)| (v.coords - original_verts[i].coords).norm() > 1e-12);
+        assert!(
+            any_moved,
+            "Taubin smoothing with 5 iters did not move any vertex on grid_square(5)",
+        );
     }
 
     /// `resolve_output_dir` honors `--output-dir <path>` when supplied.

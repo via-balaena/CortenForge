@@ -44,9 +44,9 @@ use cf_viewer::{
 };
 use clap::Parser;
 use mesh_io::load_stl;
-use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
+use mesh_repair::{remove_degenerate_triangles, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Bounded, IndexedMesh, Point3};
-use meshopt::simplify_sloppy_decoder;
+use meshopt::{SimplifyOptions, simplify_decoder, simplify_sloppy_decoder};
 use nalgebra::Vector3;
 use serde::Deserialize;
 
@@ -395,11 +395,48 @@ struct EnvelopeProxyMesh {
 }
 
 /// Target face count after decimation for the shared scan proxy.
-/// 1500 faces is dense enough to show the scan's gross shape
-/// (cylinder + dome + cleaned cap), sparse enough that the cavity
-/// and per-layer surface meshes can be regenerated on every slider
-/// tick without a frame hitch.
+/// **Only used when the input mesh exceeds
+/// [`ENVELOPE_PROXY_USE_FULL_MESH_THRESHOLD`]** — for typical
+/// cleaned scans coming out of cf-scan-prep (~100-300k faces)
+/// the proxy uses the full input mesh and this constant is
+/// inert.
+///
+/// 1500 faces was the historical default when the input was the
+/// raw 3.34M-face scan (slice 5 perf pass); kept as the fallback
+/// target for uncleaned / oversized inputs above the threshold.
 const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
+
+/// Input face-count threshold at or below which
+/// [`compute_envelope_proxy_mesh`] **skips decimation entirely**
+/// and uses the input mesh as the proxy directly.
+///
+/// **Why this exists** (2026-05-16): the original 1500-face proxy
+/// was a slice-5 perf pass for the raw 3.34M-face scan (then the
+/// input). Now that cf-scan-prep ships cleaned STLs in the
+/// 100-300k face range, decimating to 1500 is destructive — it
+/// produces visible 5 mm facets on cavity + layer previews that
+/// the user can't distinguish from real geometry. At 169k
+/// (iter-1 fixture) the per-tick rebuild cost is well under one
+/// frame:
+///
+/// | per-tick cost (169k faces) | observed |
+/// |---|---|
+/// | per-vertex displacement | < 1 ms |
+/// | `compute_smooth_normals`  | ~ 1 ms |
+/// | GPU upload (~4 MB)        | ~ 2-3 ms |
+/// | **per layer**             | **< 5 ms** |
+///
+/// Two layers + cavity ≈ 15 ms, well under the 16.6 ms 60-FPS
+/// frame budget. So for typical inputs we just use the full mesh
+/// and skip the entire decimation pipeline.
+///
+/// **500k is the cutoff** because above that the per-tick costs
+/// (GPU upload + smooth-normals walk) start to scale into
+/// noticeable frame hitch territory on M-series hardware. Users
+/// who load a >500k face scan get the original
+/// decimate-to-`ENVELOPE_PROXY_TARGET_FACES` path as a
+/// safety-net for interactivity.
+const ENVELOPE_PROXY_USE_FULL_MESH_THRESHOLD: usize = 500_000;
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld.
 /// Matches cf-scan-prep's `SIMPLIFY_WELD_EPSILON_M = 1e-6` — the
@@ -407,23 +444,89 @@ const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
 /// vertices that meshopt needs welded to find collapsible edges.
 const ENVELOPE_PROXY_WELD_EPSILON_M: f64 = 1e-6;
 
-/// `meshopt::simplify_sloppy_decoder`'s target-error parameter.
-/// Effectively unbounded (1000 % of mesh diagonal) — we want the
-/// decimation to ALWAYS reach the target face count, sacrificing
-/// geometric fidelity if necessary. simplify_sloppy is topology-
-/// non-preserving and per its docs "always able to reach target
-/// triangle count," so this error cap exists only as a defensive
-/// upper bound; under normal operation the face-count target is
-/// the binding constraint.
+/// `meshopt::simplify_decoder`'s target-error parameter — relaxed
+/// upper bound (10.0 ≈ 1000 % of mesh half-extent) so the face-count
+/// target is the binding constraint, not the quadric error ceiling.
+/// `simplify_decoder` (topology-preserving) doesn't produce the
+/// sliver triangles that `simplify_sloppy_decoder` is prone to, so
+/// the slightly looser target-error is safe.
 ///
-/// Switched from `simplify_decoder` (slice 4 polish) to
-/// `simplify_sloppy_decoder` (slice 5 perf pass) after observing
-/// that the iter-1 cleaned scan retains its full 3.34 M face count
-/// through topology-preserving simplification — the scan has
-/// disconnected components / degenerate triangles that block the
-/// regular collapse algorithm. The sloppy variant ignores topology
-/// and reliably hits ~1500 faces.
+/// **2026-05-16**: switched from `simplify_sloppy_decoder` back to
+/// `simplify_decoder` after user-reported sliver triangles visible
+/// in the cavity + layer previews on the iter-1 sock-over-capsule
+/// fixture. `simplify_sloppy` is "topology-non-preserving" by
+/// design — its slivers had no cast impact (cf-cast samples the
+/// cleaned STL's SDF directly, not this proxy) but undermined
+/// design-time confidence in the viewport. The original switch to
+/// sloppy (slice 5 perf pass) was driven by the RAW iter-1 scan
+/// (3.34 M faces with degenerates + disconnected components)
+/// blocking topology-preserving collapse. Since then,
+/// cf-scan-prep's `cleanup_cleaned_mesh_for_disk` runs the same
+/// hygiene pass at save time (weld + degenerate-removal + small
+/// components + unreferenced-vertex compaction), so the cleaned
+/// STLs cf-device-design sees today are amenable to the regular
+/// `simplify_decoder` again. [`compute_envelope_proxy_mesh`] falls
+/// back to `simplify_sloppy_decoder` if the topology-preserving
+/// path doesn't reach a reasonable face count — defensive for
+/// users who load uncleaned scans directly.
 const ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
+
+/// Area threshold for the post-decimation
+/// [`remove_degenerate_triangles`] hygiene pass in
+/// [`compute_envelope_proxy_mesh`]. Square meters; 1e-15 m² matches
+/// cf-scan-prep's `CLEANUP_DEGENERATE_AREA_M2` (the same constant
+/// scope rationale: well below cf-cast's 2 mm-cell SDF resolution
+/// + below the f32 quantization floor meshopt operates at).
+const ENVELOPE_PROXY_DEGENERATE_AREA_M2: f64 = 1e-15;
+
+/// Number of Laplacian-smoothing iterations applied to the
+/// per-vertex radial direction field in
+/// [`compute_envelope_proxy_mesh`].
+///
+/// **Why this exists** (2026-05-16): displacement uses
+/// `vertex + radial * offset` per-vertex; with a 1500-face proxy
+/// the raw radials at neighboring vertices can diverge by several
+/// degrees (each is sensitive to local mesh noise + the
+/// centerline-tip wiggle). At a 10 mm offset, 5° of neighbor
+/// divergence produces ~0.9 mm of lateral skew per triangle —
+/// enough to visibly chunk the Layer 0 / Layer 1 surfaces.
+///
+/// Smoothing the radial vector field via Laplacian iterations
+/// (each vertex's radial becomes the weighted average of itself
+/// and its 1-ring neighbors, re-normalized) reduces neighbor
+/// divergence by ~80% in 5 iterations on the iter-1 fixture
+/// without changing the dominant displacement direction. The
+/// fixed point of this smoother is the area-weighted body-axis
+/// approximation, which is exactly the direction we want for
+/// each layer to expand uniformly outward.
+///
+/// **Constraints preserved after each iteration**:
+/// - Below-centerline vertices (the bottom-rim region) are
+///   re-zeroed in Z, so the bottom plane stays pinned at its
+///   Z level.
+/// - All radials are re-normalized to unit length.
+///
+/// 5 iterations was the smallest count that visibly cleaned up
+/// Layer 1 (the worst offender) on the iter-1 sock-over-capsule
+/// fixture without erasing meaningful per-vertex variation. Raise
+/// if higher proxy densities or curvier bodies surface residual
+/// chunkiness.
+const VERTEX_RADIAL_SMOOTH_ITERATIONS: usize = 5;
+
+/// Sloppy-fallback threshold for [`compute_envelope_proxy_mesh`].
+/// `simplify_decoder` (topology-preserving) is allowed to stop
+/// short of the target if local quadric error or topology pinning
+/// limits collapse — that's fine for cleaned STLs, but raw /
+/// uncleaned STLs may stop with far too many faces (the iter-1
+/// raw 3.34 M scan retained its full count through the regular
+/// simplify before cf-scan-prep started running cleanup). When
+/// the regular path leaves more than this multiplier × the
+/// target face count, fall back to `simplify_sloppy_decoder` so
+/// the viewport stays responsive. 4× target (= 6000 faces for a
+/// 1500-face target) is loose enough that lightly-noisy
+/// cleaned STLs don't trip it but tight enough that an
+/// uncleaned multi-million-face STL does.
+const ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER: usize = 4;
 
 // ----- .prep.toml parsing (subset; centerline only) -----------------
 
@@ -622,45 +725,89 @@ fn compute_envelope_proxy_mesh(
 ) -> EnvelopeProxyMesh {
     let original_face_count = scan_mesh.faces.len();
 
-    // Step 1: weld unshared vertices.
+    // Step 1: weld unshared vertices, then **compact the vertex
+    // array**. Same trick as cf-scan-prep's `simplify_mesh`
+    // (commit `e314d713`, 2026-05-16): `weld_vertices` remaps face
+    // indices to canonical reps but leaves merged-away duplicates
+    // as unreferenced entries; meshopt silently no-ops on sparse
+    // positions arrays. Compact before feeding meshopt.
     let mut welded = scan_mesh.clone();
     weld_vertices(&mut welded, ENVELOPE_PROXY_WELD_EPSILON_M);
+    remove_unreferenced_vertices(&mut welded);
 
-    // Step 2: meshopt simplify. Target index count = target faces × 3.
-    // f64 → f32 cast is intentional; meshopt's C API operates on f32.
-    #[allow(clippy::cast_possible_truncation)]
-    let positions: Vec<[f32; 3]> = welded
-        .vertices
-        .iter()
-        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
-        .collect();
-    let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
-    let target_index_count = ENVELOPE_PROXY_TARGET_FACES.saturating_mul(3);
-    let mut result_error = 0.0_f32;
-    // `simplify_sloppy` ignores topology — required for the iter-1
-    // cleaned scan (3.34 M faces with disconnected components +
-    // degenerate triangles that block topology-preserving collapse).
-    // Guaranteed to reach the target face count per the meshopt
-    // docs ("always able to reach target triangle count").
-    let simplified_indices = if target_index_count < indices.len() {
-        simplify_sloppy_decoder(
-            &indices,
-            &positions,
-            target_index_count,
-            ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
-            Some(&mut result_error),
-        )
-    } else {
-        // Mesh is already at or below the target; skip decimation.
-        indices.clone()
-    };
-
-    // Step 3: reassemble + strip unreferenced vertices.
+    // Step 2: decimate ONLY if the input exceeds the
+    // use-full-mesh threshold. For typical cleaned scans
+    // (100-300k faces) the proxy IS the full input mesh — the
+    // per-slider-tick rebuild cost fits comfortably within a
+    // 60-FPS frame budget at that scale, and we avoid the
+    // visible facets that any decimation introduces.
     let mut proxy = welded;
-    proxy.faces = simplified_indices
-        .chunks_exact(3)
-        .map(|tri| [tri[0], tri[1], tri[2]])
-        .collect();
+    if proxy.faces.len() > ENVELOPE_PROXY_USE_FULL_MESH_THRESHOLD {
+        // f64 → f32 cast is intentional; meshopt's C API operates on f32.
+        #[allow(clippy::cast_possible_truncation)]
+        let positions: Vec<[f32; 3]> = proxy
+            .vertices
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+            .collect();
+        let indices: Vec<u32> = proxy.faces.iter().flatten().copied().collect();
+        let target_index_count = ENVELOPE_PROXY_TARGET_FACES.saturating_mul(3);
+        // Topology-preserving simplify first. Doesn't produce the
+        // sliver triangles that `simplify_sloppy_decoder` is prone
+        // to. `LockBorder` pins open-boundary loops in place —
+        // important because cleaned scans coming out of cf-scan-prep
+        // are watertight; this is belt-and-suspenders.
+        let mut result_error = 0.0_f32;
+        let simplified_indices = if target_index_count < indices.len() {
+            let regular = simplify_decoder(
+                &indices,
+                &positions,
+                target_index_count,
+                ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
+                SimplifyOptions::LockBorder,
+                Some(&mut result_error),
+            );
+            let regular_face_count = regular.len() / 3;
+            let fallback_threshold = ENVELOPE_PROXY_TARGET_FACES
+                .saturating_mul(ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER);
+            if regular_face_count > fallback_threshold {
+                // Topology-preserving simplify left too many
+                // faces — input STL likely has degenerate
+                // triangles / disconnected components blocking
+                // collapse (the pre-cf-scan-prep-cleanup raw
+                // scan failure mode). Fall back to sloppy so the
+                // viewport stays responsive.
+                eprintln!(
+                    "[envelope_proxy] simplify_decoder stopped at {regular_face_count} faces \
+                     (target {ENVELOPE_PROXY_TARGET_FACES}, fallback threshold {fallback_threshold}); \
+                     falling back to simplify_sloppy_decoder",
+                );
+                simplify_sloppy_decoder(
+                    &indices,
+                    &positions,
+                    target_index_count,
+                    ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
+                    Some(&mut result_error),
+                )
+            } else {
+                regular
+            }
+        } else {
+            indices.clone()
+        };
+        proxy.faces = simplified_indices
+            .chunks_exact(3)
+            .map(|tri| [tri[0], tri[1], tri[2]])
+            .collect();
+    }
+
+    // Step 3: defensive degenerate-triangle hygiene pass, then
+    // re-compact unreferenced vertices. Most useful when we fell
+    // back to sloppy (the failure mode we're trying to mask), but
+    // also cheap insurance for the no-decimation path (the welded
+    // input is already clean, so this is a no-op in the typical
+    // case).
+    remove_degenerate_triangles(&mut proxy, ENVELOPE_PROXY_DEGENERATE_AREA_M2);
     remove_unreferenced_vertices(&mut proxy);
 
     // Step 4: face normals (CCW triangle winding × right-hand rule
@@ -798,7 +945,35 @@ fn compute_envelope_proxy_mesh(
         .iter()
         .map(|(_, d)| *d)
         .fold(f64::INFINITY, f64::min);
-    let vertex_radial_directions = radial_pairs.into_iter().map(|(dir, _)| dir).collect();
+    let raw_radials: Vec<Vector3<f64>> = radial_pairs.into_iter().map(|(dir, _)| dir).collect();
+
+    // Per-vertex below-centerline flag, captured once so the
+    // smoothing pass can re-apply the z=0 constraint after each
+    // iteration without re-recomputing `nearest_centerline_index`.
+    // For polylines with fewer than 2 points the radial computation
+    // above used the centerline-absent path (every radial already
+    // has z=0 via per-vertex-normal projection); treat all vertices
+    // as below-centerline so the constraint re-application is a
+    // no-op (matches the radial-pair contract).
+    let below_centerline_flags: Vec<bool> = if centerline.len() >= 2 {
+        let centerline_min_z = centerline.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
+        proxy
+            .vertices
+            .iter()
+            .map(|v| v.z < centerline_min_z)
+            .collect()
+    } else {
+        vec![true; proxy.vertices.len()]
+    };
+
+    // Smooth the radial vector field via [`VERTEX_RADIAL_SMOOTH_ITERATIONS`]
+    // Laplacian passes; see the constant's docstring for rationale.
+    let vertex_radial_directions = smooth_radial_field(
+        &raw_radials,
+        &proxy.faces,
+        &below_centerline_flags,
+        VERTEX_RADIAL_SMOOTH_ITERATIONS,
+    );
 
     EnvelopeProxyMesh {
         vertices: proxy.vertices,
@@ -807,6 +982,89 @@ fn compute_envelope_proxy_mesh(
         original_face_count,
         min_radial_distance_m,
     }
+}
+
+/// Laplacian-smooth a per-vertex unit-vector field over the
+/// proxy mesh's 1-ring adjacency, with two constraints
+/// re-applied after each iteration:
+///
+/// 1. Below-centerline vertices (per `below_centerline_flags`)
+///    have their Z component re-zeroed, so the bottom-rim
+///    stays purely radial-horizontal.
+/// 2. All vectors are re-normalized to unit length.
+///
+/// 1-ring adjacency is derived from `faces`: vertex `i` is
+/// adjacent to vertex `j` iff they share at least one face.
+/// Each Laplacian update is `new[i] = (raw[i] + sum_neighbors[i])
+/// / (1 + neighbor_count[i])`, then re-projected to the unit
+/// sphere (with the z=0 constraint where applicable).
+///
+/// Returns `radials.to_vec()` unchanged when `iterations == 0`
+/// or `radials.is_empty()`. For a degenerate vertex (no
+/// neighbors or near-zero smoothed length) the input radial is
+/// passed through; the input radial's own degenerate handling
+/// (e.g., the `(1, 0, 0)` fallback in `compute_envelope_proxy_mesh`)
+/// applies.
+///
+/// **Cost**: O(iterations × (vertices + 3 × faces)) — for the
+/// iter-1 fixture (~750 verts, 1500 faces, 5 iterations) this is
+/// ~12k vector adds + 4k normalizes, well under 1 ms at startup.
+fn smooth_radial_field(
+    radials: &[Vector3<f64>],
+    faces: &[[u32; 3]],
+    below_centerline_flags: &[bool],
+    iterations: usize,
+) -> Vec<Vector3<f64>> {
+    if iterations == 0 || radials.is_empty() {
+        return radials.to_vec();
+    }
+    let n = radials.len();
+    // Build 1-ring adjacency: `neighbors[i]` is the list of
+    // vertex indices sharing at least one face with `i`. Use a
+    // sorted-deduped Vec rather than a HashSet — typical valence
+    // is 5-7, so linear search beats hash overhead.
+    let mut neighbors: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for face in faces {
+        for &a in face {
+            for &b in face {
+                if a == b {
+                    continue;
+                }
+                if !neighbors[a as usize].contains(&b) {
+                    neighbors[a as usize].push(b);
+                }
+            }
+        }
+    }
+
+    let mut current = radials.to_vec();
+    let mut next = current.clone();
+    for _ in 0..iterations {
+        for i in 0..n {
+            let mut sum = current[i];
+            let mut count = 1.0_f64;
+            for &j in &neighbors[i] {
+                sum += current[j as usize];
+                count += 1.0;
+            }
+            let mut avg = sum / count;
+            if i < below_centerline_flags.len() && below_centerline_flags[i] {
+                avg.z = 0.0;
+            }
+            let len = avg.norm();
+            next[i] = if len > 1e-9 {
+                avg / len
+            } else {
+                // Smoothed vector collapsed (e.g., neighbor
+                // radials cancelled out). Keep the un-smoothed
+                // value so the fallback chain in
+                // `compute_envelope_proxy_mesh` stays valid.
+                current[i]
+            };
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
+    current
 }
 
 /// Index of the centerline polyline point closest to `v` by
