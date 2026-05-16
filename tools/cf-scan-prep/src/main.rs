@@ -2468,7 +2468,6 @@ struct SlabSample {
     centroid: Point3<f64>,
     area: f64,
     n_loops: usize,
-    n_verts: usize,
 }
 
 /// Sample one slab: intersect the plane with the mesh, pick the
@@ -2492,13 +2491,11 @@ fn compute_slab_sample(
     if area < MIN_SLAB_AREA_M2 {
         return None;
     }
-    let n_verts = best.len();
     let centroid = polygon_centroid_3d(&best, plane_n)?;
     Some(SlabSample {
         centroid,
         area,
         n_loops,
-        n_verts,
     })
 }
 
@@ -2738,20 +2735,6 @@ fn compute_centerline_polyline(
         return Vec::new();
     }
 
-    let debug_log = std::env::var("CF_CENTERLINE_DEBUG").is_ok();
-    if debug_log {
-        eprintln!(
-            "CF_CENTERLINE_DEBUG: n_slices={n_slices} axis=({:.6},{:.6},{:.6}) depth=[{:.6},{:.6}] mesh: {} verts {} faces",
-            axis.x,
-            axis.y,
-            axis.z,
-            min_d,
-            max_d,
-            mesh.vertices.len(),
-            mesh.faces.len(),
-        );
-    }
-
     // Pass 0: slabs perpendicular to spine_hint, evenly spaced
     // along the body's depth range.
     let mut plane_pts: Vec<Point3<f64>> = (0..n_slices)
@@ -2797,10 +2780,6 @@ fn compute_centerline_polyline(
         }
         polyline = build_polyline_with_boundary_trim(&samples, axis, min_d, max_d);
 
-        if debug_log {
-            log_centerline_pass(pass_idx, &samples, &polyline);
-        }
-
         if pass_idx < CENTERLINE_REORIENT_PASSES {
             // Re-orient for next pass: each slab plane passes
             // through the current polyline point with normal equal
@@ -2830,29 +2809,6 @@ fn compute_centerline_polyline(
     }
 
     polyline
-}
-
-/// Temporary recon instrumentation per [`compute_centerline_polyline`]
-/// pass — gated behind `CF_CENTERLINE_DEBUG=1`. Logs per-slab
-/// sample metrics + final polyline coords for one pass. To be
-/// reverted once the iter-1 fixture is workshop-ready.
-fn log_centerline_pass(pass_idx: usize, samples: &[Option<SlabSample>], polyline: &[Point3<f64>]) {
-    eprintln!("CF_CENTERLINE_DEBUG: --- pass={pass_idx} ---");
-    for (i, sample) in samples.iter().enumerate() {
-        match sample {
-            Some(s) => eprintln!(
-                "CF_CENTERLINE_DEBUG: slab={i:02} loops={} verts={} area={:.4e} centroid=({:.6},{:.6},{:.6})",
-                s.n_loops, s.n_verts, s.area, s.centroid.x, s.centroid.y, s.centroid.z
-            ),
-            None => eprintln!("CF_CENTERLINE_DEBUG: slab={i:02} DEGENERATE"),
-        }
-    }
-    for (i, p) in polyline.iter().enumerate() {
-        eprintln!(
-            "CF_CENTERLINE_DEBUG: final={i:02} pos=({:.6},{:.6},{:.6})",
-            p.x, p.y, p.z
-        );
-    }
 }
 
 /// Smooth a polyline by iterated 3-tap moving average over interior
