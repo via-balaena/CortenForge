@@ -112,7 +112,7 @@ const SPIKE_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 /// that block topology-preserving collapse), strip unreferenced
 /// vertices. Returns the scan unchanged (modulo the vertex weld) when
 /// it is already at or below `target_faces`.
-fn decimate_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh {
+pub(crate) fn decimate_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh {
     let mut welded = scan.clone();
     weld_vertices(&mut welded, SPIKE_WELD_EPSILON_M);
 

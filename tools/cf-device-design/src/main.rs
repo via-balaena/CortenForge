@@ -80,6 +80,12 @@ pub(crate) mod insertion_sim_ui;
 /// layout.
 pub(crate) mod design_toml;
 
+/// Slice 9 — SDF-based layer surfaces. Replaces the per-vertex radial
+/// displacement of [`EnvelopeProxyMesh`] with cached-SDF + per-iso
+/// marching-cubes extraction. See `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md`
+/// for the architecture; module docs for the API + sign convention.
+pub(crate) mod sdf_layers;
+
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
 /// cf-scan-prep + cf-cast — every CortenForge cast tool assumes the
 /// `UpAxis::PlusZ` swap from physics frame to Bevy frame.
