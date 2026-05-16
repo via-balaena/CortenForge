@@ -1,8 +1,25 @@
 # cf-device-design Clip Plane (Fit-Viz Rung 1) — Spec
 
-**Status**: SPEC 2026-05-16 (post-SDF-layers ship `320d6dcd`, post-fit-
-viz bookmark `e786dbc9`). Implementation deferred to the next
-session.
+**Status**: **SHIPPED on `dev` 2026-05-16** in 5 implementation
+commits (`46421011` → `799e478f`) + this docs commit. cf-device-
+design at 118 tests / clippy clean / release build clean. Visual
+gate passed on iter-1 `sock_over_capsule.cleaned.stl` (user-
+confirmed). Arc-end memo at
+`memory/project_cf_device_design_clip_plane_arc.md`. This spec
+stays as the design-of-record.
+
+**One spec drift discovered at implementation**: the WGSL snippet
+used `@group(2)` for the material bind group; that was Bevy 0.17.
+Bevy 0.18 moved the material bind group to index 3
+(`bevy_pbr::MATERIAL_BIND_GROUP_INDEX = 3`). Fixed by switching to
+the `#{MATERIAL_BIND_GROUP}` shader-def in the embedded WGSL —
+self-updating against any further renumbering. Caught by the
+first sub-leaf-3 smoke run's `wgpu` validation panic; cost ~5
+minutes.
+
+**Original status**: SPEC 2026-05-16 (post-SDF-layers ship
+`320d6dcd`, post-fit-viz bookmark `e786dbc9`). Implementation
+deferred to the next session.
 
 **Parent**: [fit-viz program bookmark](./CF_DEVICE_DESIGN_FIT_VIZ_BOOKMARK.md).
 **Rung order**: 1 of 6 — cheapest, composes forward into rungs 2

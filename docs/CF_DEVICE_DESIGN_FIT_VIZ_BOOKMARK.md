@@ -49,27 +49,31 @@ What's in place today that this program builds on:
 
 ## Ladder — proposed baby-step order
 
-### Rung 1: Clipping plane (A)
+### Rung 1: Clipping plane (A) — **SHIPPED 2026-05-16**
 
-Static cross-section through the current scene (cavity + layer
-surfaces). Slider OR plane gizmo controls the cut. No new physics
-— pure rendering-layer change.
+**Status**: SHIPPED on `dev` 2026-05-16. Six sub-leaves
+(`46421011` → docs commit). Spec at
+`docs/CF_DEVICE_DESIGN_CLIP_PLANE_SPEC.md`; arc-end memo at
+`memory/project_cf_device_design_clip_plane_arc.md`.
 
-**Why first**: cheapest of the lot, immediately useful for static
-inspection of layered cross-sections, AND keeps working as later
-rungs add animated + scan-intruder geometry on top.
+**Pinned UX**: centerline-anchored, lengthways-only (plane contains
+the centerline tangent — controls are "position along centerline"
++ "roll around tangent"). Hollow shell (per-fragment `discard`); no
+filled cut cap. Both decisions made in-session with the user before
+spec; recorded in the spec's "User-pinned decisions" section.
 
-**Open shape questions** (worth a quick recon):
-- Bevy approach: per-mesh material clip-plane uniform, vs custom
-  shader, vs CPU-side mesh trim (rebuild MC for the clipped half).
-  First is cheapest; last is most accurate at the cut boundary.
-- Plane orientation: world-aligned slider per axis, vs free-axis
-  gizmo. Workshop-iter-1 case probably wants axial cut + free
-  rotation (sensor-axis view).
-- Show the cut face filled (as a flat "interior" cap) or hollow?
-  Filled is more readable; hollow shows the layer-mesh topology.
+**Pinned approach**: Bevy 0.18 `ExtendedMaterial<StandardMaterial,
+ClipPlaneExt>` with an embedded WGSL fragment shader (binding
+slot 100 in `@group(#{MATERIAL_BIND_GROUP})`). One uniform-push
+system per frame projects the resolved physics-frame plane into
+render frame + writes the packed `(vec4, u32)` uniform to every
+ClipPlaneMaterial asset; snapshot-and-compare via
+`Local<Option<UniformKey>>` plus an `AssetEvent::Added` watcher
+for new layers spawned mid-arc.
 
-Estimated 1 small arc (3–6 commits).
+**Visual gate**: user-verified on iter-1 `sock_over_capsule.cleaned
+.stl` — slider sweeps cleanly along the centerline; roll rotates
+windshield-wiper style; cavity + layers + scan clip in lockstep.
 
 ### Rung 2: Per-step playback animation (formerly "B")
 
