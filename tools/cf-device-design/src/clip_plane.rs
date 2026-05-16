@@ -54,6 +54,8 @@ use bevy::{
     render::render_resource::AsBindGroup,
     shader::ShaderRef,
 };
+use cf_bevy_common::axis::UpAxis;
+use cf_viewer::RenderScale;
 use mesh_types::{Point3, Vector3};
 
 use crate::Centerline;
@@ -115,10 +117,10 @@ impl MaterialExtension for ClipPlaneExt {
 
 /// Plugin that embeds the clip-plane WGSL asset + registers the
 /// `MaterialPlugin` for [`ClipPlaneMaterial`] + inserts the
-/// [`ClipPlaneState`] resource. Add AFTER `DefaultPlugins` (the
-/// `EmbeddedAssetRegistry` resource the `embedded_asset!` macro
-/// writes into is set up by Bevy's `AssetPlugin`, which lives in
-/// `DefaultPlugins`).
+/// [`ClipPlaneState`] resource + the per-frame uniform-push system.
+/// Add AFTER `DefaultPlugins` (the `EmbeddedAssetRegistry` resource
+/// the `embedded_asset!` macro writes into is set up by Bevy's
+/// `AssetPlugin`, which lives in `DefaultPlugins`).
 pub(crate) struct ClipPlanePlugin;
 
 impl Plugin for ClipPlanePlugin {
@@ -126,6 +128,107 @@ impl Plugin for ClipPlanePlugin {
         embedded_asset!(app, "clip_plane.wgsl");
         app.init_resource::<ClipPlaneState>();
         app.add_plugins(MaterialPlugin::<ClipPlaneMaterial>::default());
+        app.add_systems(Update, update_clip_plane_uniform);
+    }
+}
+
+// ============================================================
+// Sub-leaf 4 — per-frame uniform push.
+// ============================================================
+//
+// Resolves the clip plane from `ClipPlaneState` + `Centerline` +
+// `UpAxis` + `RenderScale` into a single `(plane: Vec4, enabled:
+// u32)` tuple in RENDER FRAME, then pushes that tuple to every
+// `ClipPlaneMaterial` asset whose `extension` differs from it.
+//
+// Two early-out guards keep per-frame work cheap:
+//
+// 1. **Snapshot-and-compare on the target uniform** via
+//    `Local<Option<UniformKey>>` — same posture as
+//    `update_layer_meshes` + `invalidate_on_geometry_change` (and
+//    the [[project-bevy-is-changed-footgun]] memo). Avoids re-pushing
+//    when state + centerline + camera unchanged.
+// 2. **AssetEvent::Added watcher** for `ClipPlaneMaterial`: catches
+//    new materials spawned mid-arc (layer-rebuild spawns fresh
+//    materials with default zero-uniforms) so they get pushed even
+//    when the key was already current. Without this, a layer added
+//    while clipping is on would render unclipped until the next
+//    state-change tick.
+
+/// The render-frame uniform tuple the WGSL `ClipPlane` struct
+/// consumes. Pure data so `Local<>` snapshotting is a trivial
+/// equality check (no float-trap; computed deterministically from
+/// the same inputs each frame).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct UniformKey {
+    plane: Vec4,
+    enabled: u32,
+}
+
+/// Project the resolved plane into render frame + pack into the
+/// `(vec4, u32)` uniform layout. `None`-input (no centerline, plane
+/// disabled, or polyline degenerate) collapses to `enabled = 0` and
+/// a zero plane vector — the WGSL fragment shader's pass-through
+/// path.
+fn compute_uniform_key(
+    state: &ClipPlaneState,
+    centerline: &Centerline,
+    up: UpAxis,
+    render_scale: f32,
+) -> UniformKey {
+    let Some(resolved) = resolve_plane(state, centerline) else {
+        return UniformKey {
+            plane: Vec4::ZERO,
+            enabled: 0,
+        };
+    };
+    // Origin: physics-frame point → Bevy frame (UpAxis swap) →
+    // render-frame (uniform scale). Matches the conversion
+    // `draw_reference_overlays` applies to the centerline polyline,
+    // so the clip plane stays anchored to the centerline at any
+    // render scale.
+    let origin_bevy = Vec3::from_array(up.to_bevy_point(&resolved.origin_m));
+    let origin_render = origin_bevy * render_scale;
+    // Normal: directions are scale-invariant. The UpAxis swap is
+    // identical to the point swap (cf. `UpAxis::to_bevy_normal` doc);
+    // we re-normalize defensively because the f64 → f32 cast can
+    // introduce tiny rounding.
+    let normal_bevy = Vec3::from_array(up.to_bevy_normal(&resolved.normal));
+    let normal_render = normal_bevy.normalize_or_zero();
+    let offset = origin_render.dot(normal_render);
+    UniformKey {
+        plane: Vec4::new(normal_render.x, normal_render.y, normal_render.z, offset),
+        enabled: 1,
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+fn update_clip_plane_uniform(
+    state: Res<ClipPlaneState>,
+    centerline: Res<Centerline>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut materials: ResMut<Assets<ClipPlaneMaterial>>,
+    mut last_key: Local<Option<UniformKey>>,
+    mut asset_events: MessageReader<AssetEvent<ClipPlaneMaterial>>,
+) {
+    let target = compute_uniform_key(&state, &centerline, *up, render_scale.0);
+    let new_assets = asset_events
+        .read()
+        .any(|event| matches!(event, AssetEvent::Added { .. }));
+    if !new_assets && last_key.as_ref() == Some(&target) {
+        return;
+    }
+    *last_key = Some(target);
+    // Collect IDs first so the `iter()` borrow is released before
+    // the `get_mut()` writes. With ≤ 8 materials in the scene
+    // (cavity + ≤ 6 layers + scan), the allocation is trivial.
+    let ids: Vec<_> = materials.iter().map(|(id, _)| id).collect();
+    for id in ids {
+        if let Some(material) = materials.get_mut(id) {
+            material.extension.plane = target.plane;
+            material.extension.enabled = target.enabled;
+        }
     }
 }
 
@@ -476,6 +579,79 @@ mod tests {
             "origin = {:?}",
             plane.origin_m
         );
+    }
+
+    #[test]
+    fn compute_uniform_key_disabled_packs_zero_plane() {
+        let key = compute_uniform_key(
+            &ClipPlaneState::default(),
+            &centerline_straight_z(),
+            UpAxis::PlusZ,
+            1.0,
+        );
+        assert_eq!(key.enabled, 0);
+        assert_eq!(key.plane, Vec4::ZERO);
+    }
+
+    #[test]
+    fn compute_uniform_key_applies_up_axis_swap() {
+        // Straight-Z centerline (physics frame), enabled, default
+        // roll. UpAxis::PlusZ swaps Y↔Z, so the physics-Z tangent
+        // becomes Bevy-Y; the physics-X up reference stays at
+        // Bevy-X; therefore normal stays Bevy-X = (1, 0, 0).
+        let key = compute_uniform_key(
+            &enabled_state(),
+            &centerline_straight_z(),
+            UpAxis::PlusZ,
+            1.0,
+        );
+        assert_eq!(key.enabled, 1);
+        // Plane normal (.xyz) = +Bevy-X.
+        assert!((key.plane.x - 1.0).abs() < 1e-6, "key = {key:?}");
+        assert!(key.plane.y.abs() < 1e-6);
+        assert!(key.plane.z.abs() < 1e-6);
+        // Origin (physics 0,0,0.5) → Bevy (0,0.5,0). Plane offset
+        // `w = dot(origin_render, normal_render) = 0`.
+        assert!(key.plane.w.abs() < 1e-6, "key = {key:?}");
+    }
+
+    #[test]
+    fn compute_uniform_key_render_scale_lifts_offset() {
+        // Straight-Z centerline (origin spans 0..1m). Shift the
+        // origin off the plane by giving the slider a non-X plane
+        // (use roll = π/2 so normal becomes Bevy-Z, the swapped
+        // physics-Y) and a 10× scale. The plane equation's offset
+        // `w = dot(origin_render, normal_render)` must scale with
+        // the origin lift.
+        let state = ClipPlaneState {
+            roll_rad: std::f64::consts::FRAC_PI_2,
+            ..enabled_state()
+        };
+        // Centerline offset from origin so the lift is visible: a
+        // straight-Z polyline shifted by +0.2 m along physics Y.
+        let centerline = Centerline {
+            points_m: vec![Point3::new(0.0, 0.2, 0.0), Point3::new(0.0, 0.2, 1.0)],
+        };
+        // physics tangent = +Z, U_ref = +X (fallback), binormal = Z×X = +Y.
+        // roll = π/2 → normal_physics = cos(π/2)·X + sin(π/2)·Y = +Y.
+        // UpAxis::PlusZ swap on +Y normal → Bevy (0, 0, 1) = +Z.
+        // origin physics (0, 0.2, 0.5) → Bevy (0, 0.5, 0.2).
+        // With render_scale = 10, origin_render = (0, 5, 2).
+        // w = dot((0,5,2), (0,0,1)) = 2.
+        let key_1x = compute_uniform_key(&state, &centerline, UpAxis::PlusZ, 1.0);
+        let key_10x = compute_uniform_key(&state, &centerline, UpAxis::PlusZ, 10.0);
+        // Normals are scale-invariant.
+        assert!(
+            (key_1x.plane.truncate() - key_10x.plane.truncate()).length() < 1e-6,
+            "normal diverged across scales: {key_1x:?} vs {key_10x:?}"
+        );
+        // Offsets scale linearly with render_scale.
+        assert!(
+            (key_10x.plane.w - 10.0 * key_1x.plane.w).abs() < 1e-5,
+            "offset did not scale: {key_1x:?} vs {key_10x:?}"
+        );
+        // Spot-check the 10× absolute offset.
+        assert!((key_10x.plane.w - 2.0).abs() < 1e-5, "key = {key_10x:?}");
     }
 
     #[test]
