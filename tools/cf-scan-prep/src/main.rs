@@ -2401,6 +2401,235 @@ const MIN_SLAB_AREA_M2: f64 = 1e-8;
 /// intersect, not just vertices), the spine hint is zero-magnitude,
 /// `n_slices == 0`, or all slabs end up degenerate (e.g., a
 /// non-watertight mesh that no slab plane intersects).
+/// Number of iterative re-orientation passes after the initial
+/// spine_hint-perpendicular pass. Each pass re-runs the slab
+/// sampling with slab planes perpendicular to the local polyline
+/// tangent (instead of the global spine_hint axis), allowing the
+/// centerline to track curved bodies (banana, bent limb) where a
+/// single global axis can't perpendicularly cut all parts of the
+/// body simultaneously. The polyline is `smooth_polyline`-damped
+/// between passes so per-slab polygon-centroid noise doesn't
+/// amplify into divergent tangent tilt (saw 5× drift amplification
+/// without this damping on the noisy tapered-cone fixture).
+///
+/// `1` is the empirical sweet spot: a single re-orientation
+/// pass takes spine_hint-aligned slabs → local-tangent-aligned
+/// slabs (handles ≤ ~15° curvature well, approximate up to 30°),
+/// and re-runs the sampling once at the better slab orientation.
+/// Bumping to 2 measurably improves 30°+ curvature handling but
+/// re-introduces noise amplification on small-body fixtures (the
+/// tapered-cone test fails by ~2×). When a real 30°+ curved
+/// body-part fixture surfaces, revisit — likely the right fix is
+/// adaptive iteration count gated on detected curvature, not a
+/// blanket bump.
+const CENTERLINE_REORIENT_PASSES: usize = 1;
+
+/// One per-slab sample produced by intersecting a slab plane with
+/// the mesh and computing its area-weighted polygon centroid.
+/// Plus diagnostic metrics used by [`build_polyline_with_boundary_trim`]
+/// to classify quality.
+#[derive(Clone, Copy, Debug)]
+struct SlabSample {
+    centroid: Point3<f64>,
+    area: f64,
+    n_loops: usize,
+    n_verts: usize,
+}
+
+/// Sample one slab: intersect the plane with the mesh, pick the
+/// largest-area loop, return its centroid + diagnostic metrics.
+/// `None` if no valid intersection (no loops, or the largest
+/// loop's area is below `MIN_SLAB_AREA_M2` numerical floor, or
+/// the polygon centroid is degenerate).
+fn compute_slab_sample(
+    mesh: &IndexedMesh,
+    plane_pt: &Point3<f64>,
+    plane_n: &Vector3<f64>,
+) -> Option<SlabSample> {
+    let loops = intersect_plane_with_mesh(plane_pt, plane_n, mesh);
+    let n_loops = loops.len();
+    let best = loops.into_iter().max_by(|a, b| {
+        polygon_area_3d(a, plane_n)
+            .partial_cmp(&polygon_area_3d(b, plane_n))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    let area = polygon_area_3d(&best, plane_n);
+    if area < MIN_SLAB_AREA_M2 {
+        return None;
+    }
+    let n_verts = best.len();
+    let centroid = polygon_centroid_3d(&best, plane_n)?;
+    Some(SlabSample {
+        centroid,
+        area,
+        n_loops,
+        n_verts,
+    })
+}
+
+/// Compute per-vertex tangent direction along a polyline.
+/// Interior: central difference between neighbors. Endpoints:
+/// forward / backward difference. Each tangent is unit-normalized;
+/// zero-length segments produce a zero tangent (defensive — the
+/// caller's slab plane normal would then be invalid, which the
+/// downstream intersection routine rejects).
+fn local_polyline_tangents(polyline: &[Point3<f64>]) -> Vec<Vector3<f64>> {
+    let n = polyline.len();
+    if n < 2 {
+        return vec![Vector3::zeros(); n];
+    }
+    let mut tangents = Vec::with_capacity(n);
+    for i in 0..n {
+        let raw = if i == 0 {
+            polyline[1].coords - polyline[0].coords
+        } else if i == n - 1 {
+            polyline[n - 1].coords - polyline[n - 2].coords
+        } else {
+            polyline[i + 1].coords - polyline[i - 1].coords
+        };
+        let unit = if raw.norm_squared() > f64::EPSILON {
+            raw.normalize()
+        } else {
+            Vector3::zeros()
+        };
+        tangents.push(unit);
+    }
+    tangents
+}
+
+/// Build the centerline polyline from per-slab samples with
+/// **boundary-trim + local-tangent extrapolation**.
+///
+/// Algorithm:
+///
+/// 1. **Classify each slab as high-quality** iff the sample is
+///    `Some` AND `n_loops == 1`. Single-loop slabs have unambiguous
+///    polygon centroids; multi-loop slabs (typical at fragmented
+///    dome-tip cross-sections) are unreliable because the
+///    "largest loop" pick can be any of several similar-area
+///    fragments. The single-loop criterion catches the iter-1
+///    failure mode (dome-tip slabs at 10–22 loops; floor-extreme
+///    slab at 2 loops) without rejecting clean tapered interiors
+///    (where every slab is one loop regardless of area).
+/// 2. **High-quality slabs**: use the sample's centroid directly.
+/// 3. **Leading boundary low-quality slabs** (before the first
+///    high-quality index): extrapolate from the local tangent
+///    between the first two high-quality samples, stepping
+///    backward one slab-index at a time. Keeps the boundary
+///    polyline on the body's local axis line established by the
+///    high-quality interior.
+/// 4. **Trailing boundary low-quality slabs** (after the last
+///    high-quality index): symmetric, forward extrapolation from
+///    the local tangent between the last two high-quality samples.
+/// 5. **Interior low-quality slabs** (between two high-quality
+///    neighbors): linear interpolation by slab-index fraction.
+/// 6. **All-degenerate fallback** (no high-quality slab anywhere;
+///    pathological input): straight line along `fallback_axis`
+///    through origin, evenly spaced over `[min_d, max_d]`.
+fn build_polyline_with_boundary_trim(
+    samples: &[Option<SlabSample>],
+    fallback_axis: Vector3<f64>,
+    min_d: f64,
+    max_d: f64,
+) -> Vec<Point3<f64>> {
+    let n = samples.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    // Collect (slab_index, centroid) pairs for high-quality slabs.
+    // Quality = single-loop polygon (multi-loop slabs are fragmented
+    // and the "largest loop" pick is unreliable; the iter-1 dome-tip
+    // at 10-22 loops + the floor extreme at 2 loops both fail this
+    // criterion while clean tapered interiors with 1 loop always pass
+    // regardless of area).
+    let hq: Vec<(usize, Point3<f64>)> = samples
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            s.as_ref()
+                .filter(|sample| sample.n_loops == 1)
+                .map(|sample| (i, sample.centroid))
+        })
+        .collect();
+
+    let Some(&(hq_first_idx, hq_first_centroid)) = hq.first() else {
+        let mut polyline = Vec::with_capacity(n);
+        for i in 0..n {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (i as f64 + 0.5) / (n as f64);
+            let depth = min_d + t * (max_d - min_d);
+            polyline.push(Point3::from(fallback_axis * depth));
+        }
+        return polyline;
+    };
+    // last() is guaranteed Some since first() was Some.
+    let Some(&(hq_last_idx, hq_last_centroid)) = hq.last() else {
+        unreachable!()
+    };
+
+    let mut polyline = Vec::with_capacity(n);
+    for i in 0..n {
+        // Direct match against the hq list (small N — linear scan
+        // is cheaper than a HashSet for n ≤ 30).
+        if let Some(&(_, centroid)) = hq.iter().find(|(j, _)| *j == i) {
+            polyline.push(centroid);
+            continue;
+        }
+        let pt = if i < hq_first_idx {
+            // Leading boundary: extrapolate backward from
+            // hq_first_centroid along the local tangent to the
+            // next high-quality slab.
+            if let Some(&(j_next, p_next)) = hq.get(1) {
+                #[allow(clippy::cast_precision_loss)]
+                let step =
+                    (p_next.coords - hq_first_centroid.coords) / (j_next - hq_first_idx) as f64;
+                #[allow(clippy::cast_precision_loss)]
+                let count = (hq_first_idx - i) as f64;
+                Point3::from(hq_first_centroid.coords - step * count)
+            } else {
+                hq_first_centroid
+            }
+        } else if i > hq_last_idx {
+            // Trailing boundary: extrapolate forward from
+            // hq_last_centroid along the local tangent to the
+            // previous high-quality slab.
+            if hq.len() >= 2 {
+                if let Some(&(j_prev, p_prev)) = hq.get(hq.len() - 2) {
+                    #[allow(clippy::cast_precision_loss)]
+                    let step =
+                        (hq_last_centroid.coords - p_prev.coords) / (hq_last_idx - j_prev) as f64;
+                    #[allow(clippy::cast_precision_loss)]
+                    let count = (i - hq_last_idx) as f64;
+                    Point3::from(hq_last_centroid.coords + step * count)
+                } else {
+                    hq_last_centroid
+                }
+            } else {
+                hq_last_centroid
+            }
+        } else {
+            // Interior gap: linear interpolate between nearest
+            // high-quality neighbors on each side. Both Some since
+            // hq_first_idx < i < hq_last_idx and i is not itself
+            // in `hq` (the early `find` above handled that case).
+            let left = hq.iter().rev().find(|(j, _)| *j < i);
+            let right = hq.iter().find(|(j, _)| *j > i);
+            if let (Some(&(j_l, p_l)), Some(&(j_r, p_r))) = (left, right) {
+                #[allow(clippy::cast_precision_loss)]
+                let frac = (i - j_l) as f64 / (j_r - j_l) as f64;
+                Point3::from(p_l.coords + frac * (p_r.coords - p_l.coords))
+            } else {
+                // Defensive: shouldn't reach this branch given the
+                // index range; fall back to hq_first.
+                hq_first_centroid
+            }
+        };
+        polyline.push(pt);
+    }
+    polyline
+}
+
 fn compute_centerline_polyline(
     mesh: &IndexedMesh,
     spine_hint: Vector3<f64>,
@@ -2416,19 +2645,17 @@ fn compute_centerline_polyline(
     let axis = spine_hint.normalize();
 
     // Depth range of the body along the chosen axis.
-    let depths: Vec<f64> = mesh.vertices.iter().map(|p| axis.dot(&p.coords)).collect();
-    let min_d = depths.iter().copied().fold(f64::INFINITY, f64::min);
-    let max_d = depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let depths_proj: Vec<f64> = mesh.vertices.iter().map(|p| axis.dot(&p.coords)).collect();
+    let min_d = depths_proj.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_d = depths_proj
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
     let range = max_d - min_d;
     if range < f64::EPSILON {
         return Vec::new();
     }
 
-    // Temporary recon instrumentation, gated behind CF_CENTERLINE_DEBUG=1.
-    // Logs per-slab depth, polygon area, vertex count, raw centroid coords +
-    // final filled polyline coords. Diagnoses the dome-tip / floor wander
-    // observed on the iter-1 sock_over_capsule fixture (2026-05-16). To be
-    // reverted once the recon settles on a fix.
     let debug_log = std::env::var("CF_CENTERLINE_DEBUG").is_ok();
     if debug_log {
         eprintln!(
@@ -2443,137 +2670,76 @@ fn compute_centerline_polyline(
         );
     }
 
-    // Per-slab area-weighted polygon centroid. `None` for degenerate
-    // slabs (no intersection / area below MIN_SLAB_AREA_M2 /
-    // collinear polygon); filled in by interpolation in step 4.
-    let mut centroids: Vec<Option<Point3<f64>>> = Vec::with_capacity(n_slices);
-    for i in 0..n_slices {
-        #[allow(clippy::cast_precision_loss)]
-        let t = (i as f64 + 0.5) / (n_slices as f64);
-        let depth = min_d + t * range;
-        // Slab plane at signed depth `depth` along the axis. Any
-        // point with `axis.dot = depth` works as plane_pt; the
-        // simplest is `axis * depth` (the foot of the perpendicular
-        // from origin onto the plane).
-        let plane_pt = Point3::from(axis * depth);
-        let loops = intersect_plane_with_mesh(&plane_pt, &axis, mesh);
-        // Pick the largest-area loop. For convex bodies there's
-        // only one loop; for non-convex bodies (or accidental
-        // multi-component slices) the largest loop is the body's
-        // main cross-section and the secondaries are usually
-        // small artifacts.
-        let n_loops = loops.len();
-        let best = loops.into_iter().max_by(|a, b| {
-            polygon_area_3d(a, &axis)
-                .partial_cmp(&polygon_area_3d(b, &axis))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let (centroid, area_logged, n_verts_logged) = match best {
-            Some(polygon) => {
-                let area = polygon_area_3d(&polygon, &axis);
-                let n_verts = polygon.len();
-                if area < MIN_SLAB_AREA_M2 {
-                    (None, area, n_verts)
-                } else {
-                    (polygon_centroid_3d(&polygon, &axis), area, n_verts)
-                }
-            }
-            None => (None, 0.0, 0),
-        };
+    // Pass 0: slabs perpendicular to spine_hint, evenly spaced
+    // along the body's depth range.
+    let mut plane_pts: Vec<Point3<f64>> = (0..n_slices)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (i as f64 + 0.5) / (n_slices as f64);
+            Point3::from(axis * (min_d + t * range))
+        })
+        .collect();
+    let mut plane_normals: Vec<Vector3<f64>> = vec![axis; n_slices];
+
+    let mut polyline: Vec<Point3<f64>> = Vec::new();
+    for pass_idx in 0..=CENTERLINE_REORIENT_PASSES {
+        let samples: Vec<Option<SlabSample>> = plane_pts
+            .iter()
+            .zip(plane_normals.iter())
+            .map(|(pt, n)| compute_slab_sample(mesh, pt, n))
+            .collect();
+        polyline = build_polyline_with_boundary_trim(&samples, axis, min_d, max_d);
+
         if debug_log {
-            let centroid_str = match centroid {
-                Some(p) => format!("({:.6},{:.6},{:.6})", p.x, p.y, p.z),
-                None => "DEGENERATE".to_string(),
-            };
-            eprintln!(
-                "CF_CENTERLINE_DEBUG: slab={i:02} depth={depth:.6} loops={n_loops} verts={n_verts_logged} area={area_logged:.4e} centroid={centroid_str}"
-            );
+            log_centerline_pass(pass_idx, &samples, &polyline);
         }
-        centroids.push(centroid);
+
+        if pass_idx < CENTERLINE_REORIENT_PASSES {
+            // Re-orient for next pass: each slab plane passes
+            // through the current polyline point with normal equal
+            // to the local polyline tangent. Curved bodies get
+            // perpendicular cuts even at the apex of the bend.
+            //
+            // SMOOTH BEFORE TANGENT EXTRACTION — slab-to-slab
+            // polygon-centroid noise on the order of the per-vertex
+            // mesh noise translates directly into tangent tilt; over
+            // multiple iterations, tilt amplifies into a divergent
+            // off-axis bias (saw 5× drift amplification on the
+            // tapered-cone test before this smoothing pass was
+            // added). 5 iterations of 3-tap moving average reduces
+            // tangent noise by ~ sqrt(5)× without flattening the
+            // body's real curvature (kernel width ~7 samples on
+            // a 30-slab polyline).
+            let smoothed = smooth_polyline(&polyline, 5);
+            plane_normals = local_polyline_tangents(&smoothed);
+            plane_pts = smoothed;
+        }
     }
 
-    let polyline = fill_null_centroids_by_interpolation(&centroids, axis, min_d, max_d, n_slices);
-    if debug_log {
-        for (i, p) in polyline.iter().enumerate() {
-            let was_raw = centroids[i].is_some();
-            eprintln!(
-                "CF_CENTERLINE_DEBUG: final={i:02} pos=({:.6},{:.6},{:.6}) raw={was_raw}",
-                p.x, p.y, p.z
-            );
-        }
-    }
     polyline
 }
 
-/// Replace `None` entries in a per-slab centroid array with values
-/// interpolated from the nearest non-`None` neighbors.
-///
-/// **Interior nulls**: linearly interpolated between the nearest
-/// valid neighbor on each side, by slab-index fraction.
-/// **Leading / trailing nulls** (no neighbor on one side): the
-/// last known centroid is projected along the axis to the target
-/// slab's depth. Keeps the centerline endpoint on the axis line
-/// established by the interior centroids — a reasonable straight-
-/// line extrapolation for dome / floor degeneracies.
-/// **All-null** (every slab degenerate; pathological input): falls
-/// back to a straight line along the axis through origin, evenly
-/// spaced over `[min_d, max_d]`. Should not happen for cleaned
-/// scans but documented for completeness.
-fn fill_null_centroids_by_interpolation(
-    centroids: &[Option<Point3<f64>>],
-    axis: Vector3<f64>,
-    min_d: f64,
-    max_d: f64,
-    n_slices: usize,
-) -> Vec<Point3<f64>> {
-    let valid: Vec<(usize, Point3<f64>)> = centroids
-        .iter()
-        .enumerate()
-        .filter_map(|(i, c)| c.map(|p| (i, p)))
-        .collect();
-
-    if valid.is_empty() {
-        // Total-degenerate fallback: straight line along axis through origin.
-        let mut polyline = Vec::with_capacity(n_slices);
-        for i in 0..n_slices {
-            #[allow(clippy::cast_precision_loss)]
-            let t = (i as f64 + 0.5) / (n_slices as f64);
-            let depth = min_d + t * (max_d - min_d);
-            polyline.push(Point3::from(axis * depth));
+/// Temporary recon instrumentation per [`compute_centerline_polyline`]
+/// pass — gated behind `CF_CENTERLINE_DEBUG=1`. Logs per-slab
+/// sample metrics + final polyline coords for one pass. To be
+/// reverted once the iter-1 fixture is workshop-ready.
+fn log_centerline_pass(pass_idx: usize, samples: &[Option<SlabSample>], polyline: &[Point3<f64>]) {
+    eprintln!("CF_CENTERLINE_DEBUG: --- pass={pass_idx} ---");
+    for (i, sample) in samples.iter().enumerate() {
+        match sample {
+            Some(s) => eprintln!(
+                "CF_CENTERLINE_DEBUG: slab={i:02} loops={} verts={} area={:.4e} centroid=({:.6},{:.6},{:.6})",
+                s.n_loops, s.n_verts, s.area, s.centroid.x, s.centroid.y, s.centroid.z
+            ),
+            None => eprintln!("CF_CENTERLINE_DEBUG: slab={i:02} DEGENERATE"),
         }
-        return polyline;
     }
-
-    let mut polyline = Vec::with_capacity(n_slices);
-    for (i, slot) in centroids.iter().enumerate() {
-        if let Some(p) = slot {
-            polyline.push(*p);
-            continue;
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let t_target = (i as f64 + 0.5) / (n_slices as f64);
-        let depth_target = min_d + t_target * (max_d - min_d);
-        let left = valid.iter().rev().find(|(j, _)| *j < i).copied();
-        let right = valid.iter().find(|(j, _)| *j > i).copied();
-        let pt = match (left, right) {
-            (Some((j_l, p_l)), Some((j_r, p_r))) => {
-                #[allow(clippy::cast_precision_loss)]
-                let frac = (i - j_l) as f64 / (j_r - j_l) as f64;
-                Point3::from(p_l.coords + frac * (p_r.coords - p_l.coords))
-            }
-            (Some((_, p_l)), None) => {
-                let depth_l = axis.dot(&p_l.coords);
-                Point3::from(p_l.coords + axis * (depth_target - depth_l))
-            }
-            (None, Some((_, p_r))) => {
-                let depth_r = axis.dot(&p_r.coords);
-                Point3::from(p_r.coords + axis * (depth_target - depth_r))
-            }
-            (None, None) => unreachable!("valid is non-empty per the early return above"),
-        };
-        polyline.push(pt);
+    for (i, p) in polyline.iter().enumerate() {
+        eprintln!(
+            "CF_CENTERLINE_DEBUG: final={i:02} pos=({:.6},{:.6},{:.6})",
+            p.x, p.y, p.z
+        );
     }
-    polyline
 }
 
 /// Smooth a polyline by iterated 3-tap moving average over interior
