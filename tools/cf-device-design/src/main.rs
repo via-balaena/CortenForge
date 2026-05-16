@@ -603,6 +603,7 @@ fn main() -> Result<()> {
     let sdf_build_start = std::time::Instant::now();
     let cached_scan_sdf = sdf_layers::build_cached_scan_sdf(
         &scan_mesh,
+        &cap_planes,
         sdf_layers::LAYER_PREVIEW_CELL_SIZE_M,
         sdf_layers::LAYER_GRID_MARGIN_M,
     )
@@ -611,9 +612,10 @@ fn main() -> Result<()> {
     let (gx, gy, gz) = cached_scan_sdf.grid.dimensions();
     println!(
         "cached scan SDF: {gx}×{gy}×{gz} grid cells ({} k), \
-         min sdf {:.3} mm, fill {sdf_build_ms:.0} ms",
+         min sdf {:.3} mm, fill {sdf_build_ms:.0} ms (caps = {})",
         gx * gy * gz / 1_000,
         cached_scan_sdf.min_sdf_value * 1e3,
+        cap_planes.len(),
     );
 
     run_render_app(
@@ -3001,7 +3003,8 @@ included = true
         // `compute_validations` relies on for monotonic shell
         // volumes.
         let cube = unit_cube_mesh();
-        let cache = sdf_layers::build_cached_scan_sdf(&cube, 0.005, 0.043).expect("build cache");
+        let cache =
+            sdf_layers::build_cached_scan_sdf(&cube, &[], 0.005, 0.043).expect("build cache");
         let inner = sdf_layers::extract_layer_surface(&cache, -0.005);
         let outer = sdf_layers::extract_layer_surface(&cache, 0.005);
         let v_inner = signed_volume_m3(&inner);
@@ -3042,7 +3045,7 @@ included = true
     /// margin (`MARGIN_OFFSET_M` defined inline at 0.043 m) to dodge
     /// `mesh-sdf::compute_sign`'s tie at axis-aligned grid points.
     fn cube_cached_sdf() -> sdf_layers::CachedScanSdf {
-        sdf_layers::build_cached_scan_sdf(&unit_cube_mesh(), 0.005, 0.043)
+        sdf_layers::build_cached_scan_sdf(&unit_cube_mesh(), &[], 0.005, 0.043)
             .expect("build cached scan SDF for unit cube fixture")
     }
 
