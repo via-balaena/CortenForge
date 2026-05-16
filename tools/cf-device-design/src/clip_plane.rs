@@ -40,13 +40,6 @@
 //! prepass fragment shader override (and flip `enable_prepass` back
 //! to `true`); the spec's open-risk #2 covers the followup.
 //!
-//! Module-level `#![allow(dead_code)]` matches the `sdf_layers`
-//! precedent: this surface (`ClipPlaneState`, `ClipPlaneExt`,
-//! `ClipPlanePlugin`, `resolve_plane`) only finishes wiring at
-//! sub-leaf 5; the allowance keeps the bin's compile clean at the
-//! in-flight sub-leaf boundary.
-#![allow(dead_code)]
-
 use bevy::{
     asset::embedded_asset,
     pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin},
@@ -54,6 +47,7 @@ use bevy::{
     render::render_resource::AsBindGroup,
     shader::ShaderRef,
 };
+use bevy_egui::egui;
 use cf_bevy_common::axis::UpAxis;
 use cf_viewer::RenderScale;
 use mesh_types::{Point3, Vector3};
@@ -200,6 +194,63 @@ fn compute_uniform_key(
         plane: Vec4::new(normal_render.x, normal_render.y, normal_render.z, offset),
         enabled: 1,
     }
+}
+
+// ============================================================
+// Sub-leaf 5 — egui panel.
+// ============================================================
+
+/// Render the Clip Plane egui section. Surfaces the four user
+/// controls (toggle, position along centerline, roll around tangent,
+/// flip), all greyed-out + tooltipped when the loaded scan has no
+/// centerline (i.e., `.prep.toml` was missing or its `[centerline]`
+/// block was empty).
+///
+/// Caller passes whether the centerline is present so the disabled
+/// state survives the slider being mutated without the resource
+/// itself: a panel that read `centerline.points_m.is_empty()`
+/// directly would still let the user touch the disabled controls;
+/// the `enabled_section` guard around each widget is the actual
+/// gate.
+pub(crate) fn render_clip_plane_section(
+    ui: &mut egui::Ui,
+    state: &mut ClipPlaneState,
+    centerline_available: bool,
+) {
+    egui::CollapsingHeader::new("Clip plane")
+        .default_open(false)
+        .show(ui, |ui| {
+            if !centerline_available {
+                ui.label("(needs a centerline — re-run cf-scan-prep on the source scan to emit a `.prep.toml`)");
+                ui.add_enabled(false, egui::Checkbox::new(&mut state.enabled, "Enable clip plane"));
+                return;
+            }
+            ui.checkbox(&mut state.enabled, "Enable clip plane");
+            ui.add_enabled_ui(state.enabled, |ui| {
+                let mut t_pct = state.t * 100.0;
+                if ui
+                    .add(egui::Slider::new(&mut t_pct, 0.0..=100.0).text("position along (%)"))
+                    .changed()
+                {
+                    state.t = (t_pct * 0.01).clamp(0.0, 1.0);
+                }
+                let mut roll_deg = state.roll_rad.to_degrees();
+                // Wrap into [0, 360) for the slider so the user sees a
+                // single full revolution. The state stays in radians.
+                let roll_max = 360.0_f64;
+                roll_deg = roll_deg.rem_euclid(roll_max);
+                if ui
+                    .add(egui::Slider::new(&mut roll_deg, 0.0..=roll_max).text("roll (°)"))
+                    .changed()
+                {
+                    state.roll_rad = roll_deg.to_radians();
+                }
+                if ui.button("Flip kept half").clicked() {
+                    state.flip = !state.flip;
+                }
+                ui.label("(plane slides along centerline; rolls around it)");
+            });
+        });
 }
 
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.

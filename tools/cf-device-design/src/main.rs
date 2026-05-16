@@ -2008,9 +2008,11 @@ fn device_design_panel(
     info: Res<ScanInfo>,
     cached_sdf: Res<sdf_layers::CachedScanSdf>,
     scan_path: Res<ScanFilePath>,
+    centerline: Res<Centerline>,
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut cavity: ResMut<CavityState>,
     mut layers: ResMut<LayersState>,
+    mut clip_state: ResMut<clip_plane::ClipPlaneState>,
     mut sim_state: ResMut<insertion_sim_ui::InsertionSimState>,
     mut save_state: ResMut<SaveState>,
     scan_mesh: Option<Res<ScanMesh>>,
@@ -2018,6 +2020,7 @@ fn device_design_panel(
     let ctx = contexts.ctx_mut()?;
     let validations = compute_validations(&cached_sdf, &cavity, &layers);
     let scan_loaded = scan_mesh.is_some();
+    let centerline_available = centerline.points_m.len() >= 2;
     egui::SidePanel::right("cf-device-design-panels")
         .resizable(false)
         .default_width(320.0)
@@ -2029,6 +2032,12 @@ fn device_design_panel(
                     render_cavity_section(ui, &mut cavity);
                     render_layers_section(ui, &mut layers, &cavity, &validations);
                     render_validations_section(ui, &validations);
+                    ui.separator();
+                    clip_plane::render_clip_plane_section(
+                        ui,
+                        &mut clip_state,
+                        centerline_available,
+                    );
                     ui.separator();
                     insertion_sim_ui::render_insertion_sim_section(ui, &mut sim_state, scan_loaded);
                     ui.separator();
