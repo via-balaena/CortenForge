@@ -12,9 +12,13 @@
 //! Architecture (per `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md`):
 //!
 //! - Decimate the cleaned scan to `SDF_SOURCE_TARGET_FACES` triangles
-//!   via `insertion_sim::decimate_for_sdf` (mesh-sdf has no spatial
+//!   via the local `decimate_scan_for_sdf` (regular `simplify_decoder`
+//!   with sloppy fallback + degenerate hygiene — mirrors
+//!   `compute_envelope_proxy_mesh`'s pipeline, NOT
+//!   `insertion_sim::decimate_for_sdf`'s sloppy-only path which the
+//!   FEM BCC-mesher resamples past anyway). mesh-sdf has no spatial
 //!   acceleration; brute-force O(faces) per query, so the raw
-//!   3 M-face scan is non-viable — measured 39 s grid fill at 5 mm).
+//!   3 M-face scan is non-viable — measured 39 s grid fill at 5 mm.
 //! - Build a `SignedDistanceField` over the decimated mesh; wrap in
 //!   `Arc` for cheap cloning (matches `cf-cast-cli::scan::SharedScanSdf`).
 //! - Allocate a `ScalarGrid` over the scan AABB + `LAYER_GRID_MARGIN_M`
@@ -48,11 +52,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
+use mesh_repair::{remove_degenerate_triangles, remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::SignedDistanceField;
 use mesh_types::{Bounded, IndexedMesh};
+use meshopt::{SimplifyOptions, simplify_decoder, simplify_sloppy_decoder};
 use nalgebra::Point3;
-
-use crate::insertion_sim::decimate_for_sdf;
 
 /// Decimation target for the SDF source mesh. mesh-sdf queries are
 /// brute-force O(faces); 2500 is the spike-measured sweet spot for
@@ -64,6 +68,29 @@ use crate::insertion_sim::decimate_for_sdf;
 /// §"Open risks #2" — revisit when iter-2 / iter-3 scans surface a
 /// visible quality regression.
 pub(crate) const SDF_SOURCE_TARGET_FACES: usize = 2_500;
+
+/// Weld epsilon (meters) for the pre-decimation vertex weld — mirrors
+/// `ENVELOPE_PROXY_WELD_EPSILON_M` (1 µm). cf-scan-prep's STL loader
+/// produces 3-per-triangle unshared vertices; meshopt needs them
+/// welded to find collapsible edges.
+const SDF_WELD_EPSILON_M: f64 = 1e-6;
+
+/// `meshopt::simplify_decoder`'s target-error cap — same posture as
+/// `ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR`: relaxed (10.0 ≈ 1000 % of
+/// half-extent) so the face-count target is the binding constraint.
+const SDF_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
+
+/// If topology-preserving `simplify_decoder` stops short with more
+/// than `SDF_SLOPPY_FALLBACK_MULTIPLIER × target` faces, fall back to
+/// `simplify_sloppy_decoder` so the SDF source stays in the
+/// O(2 500-face) cost envelope. 4× target mirrors
+/// `ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER`.
+const SDF_SLOPPY_FALLBACK_MULTIPLIER: usize = 4;
+
+/// Area threshold for the post-decimation `remove_degenerate_triangles`
+/// hygiene pass. 1 e-15 m² mirrors `ENVELOPE_PROXY_DEGENERATE_AREA_M2`
+/// + cf-scan-prep's `CLEANUP_DEGENERATE_AREA_M2`.
+const SDF_DEGENERATE_AREA_M2: f64 = 1e-15;
 
 /// Cell pitch (meters) for the cached `ScalarGrid`. 5 mm = the spike's
 /// production setting: < 1 ms MC per extraction, ~20 k grid cells on
@@ -116,6 +143,96 @@ pub(crate) struct CachedScanSdf {
     pub(crate) min_sdf_value: f64,
 }
 
+/// Decimate the cleaned scan to roughly `SDF_SOURCE_TARGET_FACES`
+/// triangles for SDF source consumption — topology-preserving with a
+/// sloppy fallback, mirroring `compute_envelope_proxy_mesh`'s
+/// pipeline (which switched FROM sloppy TO regular on 2026-05-16
+/// after the iter-1 sock fixture surfaced sliver triangles that
+/// produced visual artifacts in the preview).
+///
+/// Why a dedicated decimator here rather than reusing
+/// `insertion_sim::decimate_for_sdf`: that path is sloppy-only by
+/// design — sized for raw uncleaned scans with disconnected
+/// components / degenerates that block topology-preserving collapse,
+/// and tuned for the FEM sim's BCC-mesher (which tolerates slivers
+/// in the SDF source because the BCC lattice resamples
+/// independently). The layer-surface MC extraction is more sensitive
+/// — slivers in the decimated source produce spurious axis-aligned
+/// face-plane segments, which then trigger
+/// `mesh-sdf::SignedDistanceField::compute_sign`'s tie behavior at
+/// grid points landing on those planes, surfacing as floating
+/// "needle" fragments in the extracted layer. Same hygiene as
+/// `compute_envelope_proxy_mesh` keeps the SDF source clean enough
+/// that MC produces a single connected iso surface per layer.
+///
+/// Pipeline (per `compute_envelope_proxy_mesh` precedent):
+/// 1. Weld unshared STL vertices, then `remove_unreferenced_vertices`
+///    (the cf-scan-prep `e314d713` lesson — `weld_vertices` leaves a
+///    sparse positions array which meshopt silently no-ops on).
+/// 2. `simplify_decoder` with `LockBorder` (topology-preserving).
+/// 3. If regular leaves > `SDF_SLOPPY_FALLBACK_MULTIPLIER × target`
+///    faces, fall back to `simplify_sloppy_decoder` (defensive for
+///    uncleaned scans that bypass cf-scan-prep).
+/// 4. `remove_degenerate_triangles` + `remove_unreferenced_vertices`
+///    post-decimation hygiene pass.
+fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh {
+    let mut welded = scan.clone();
+    weld_vertices(&mut welded, SDF_WELD_EPSILON_M);
+    remove_unreferenced_vertices(&mut welded);
+
+    let mut proxy = welded;
+    if proxy.faces.len() > target_faces {
+        #[allow(clippy::cast_possible_truncation)] // meshopt's C API is f32.
+        let positions: Vec<[f32; 3]> = proxy
+            .vertices
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+            .collect();
+        let indices: Vec<u32> = proxy.faces.iter().flatten().copied().collect();
+        let target_index_count = target_faces.saturating_mul(3);
+
+        let mut result_error = 0.0_f32;
+        let simplified_indices = if target_index_count < indices.len() {
+            let regular = simplify_decoder(
+                &indices,
+                &positions,
+                target_index_count,
+                SDF_SIMPLIFY_TARGET_ERROR,
+                SimplifyOptions::LockBorder,
+                Some(&mut result_error),
+            );
+            let regular_face_count = regular.len() / 3;
+            let fallback_threshold = target_faces.saturating_mul(SDF_SLOPPY_FALLBACK_MULTIPLIER);
+            if regular_face_count > fallback_threshold {
+                eprintln!(
+                    "[sdf_layers] simplify_decoder stopped at {regular_face_count} faces \
+                     (target {target_faces}, fallback {fallback_threshold}); \
+                     falling back to simplify_sloppy_decoder",
+                );
+                simplify_sloppy_decoder(
+                    &indices,
+                    &positions,
+                    target_index_count,
+                    SDF_SIMPLIFY_TARGET_ERROR,
+                    Some(&mut result_error),
+                )
+            } else {
+                regular
+            }
+        } else {
+            indices
+        };
+        proxy.faces = simplified_indices
+            .chunks_exact(3)
+            .map(|tri| [tri[0], tri[1], tri[2]])
+            .collect();
+    }
+
+    remove_degenerate_triangles(&mut proxy, SDF_DEGENERATE_AREA_M2);
+    remove_unreferenced_vertices(&mut proxy);
+    proxy
+}
+
 /// Build the cached SDF + grid from a cleaned-scan mesh.
 ///
 /// Decimates the scan to [`SDF_SOURCE_TARGET_FACES`] via
@@ -136,7 +253,7 @@ pub(crate) fn build_cached_scan_sdf(
     cell_size_m: f64,
     margin_m: f64,
 ) -> Result<CachedScanSdf> {
-    let decimated = decimate_for_sdf(scan, SDF_SOURCE_TARGET_FACES);
+    let decimated = decimate_scan_for_sdf(scan, SDF_SOURCE_TARGET_FACES);
     let sdf = SignedDistanceField::new(decimated)
         .context("build SignedDistanceField from the decimated scan")?;
 

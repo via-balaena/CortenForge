@@ -128,6 +128,15 @@ pub struct InsertionSimOutputs {
     /// `[Energy, Stress]` → layer-indexed → proxy-vertex-indexed
     /// RGBA in `[0, 1]` colors, ready for Bevy's
     /// `Mesh::ATTRIBUTE_COLOR`.
+    ///
+    /// Temporarily orphaned (slice-9 sub-leaf 4): the per-layer mesh
+    /// path swapped from per-vertex proxy displacement to
+    /// SDF-extracted MC topology, so the prior `proxy.vertices.len()`
+    /// → `[layer_index][vertex_index]` indexing no longer matches
+    /// any per-layer MC mesh. Sub-leaf 7 re-projects per-tet scalars
+    /// onto each layer's MC vertex set via closest-point lookup and
+    /// re-wires the heat-map material path.
+    #[allow(dead_code)] // re-wired in sub-leaf 7
     pub per_layer_vertex_colors: [Vec<Vec<[f32; 4]>>; 2],
     /// `[Energy, Stress]` global (min, max) used to normalize the
     /// gradient — also reported alongside the heat map so the user

@@ -2037,29 +2037,51 @@ fn update_cavity_mesh(
 /// separate "outer envelope" concept). Each entity's visibility
 /// tracks its own `LayerSpec::visible` flag.
 ///
-/// **Change-detection** (cold-read finding): the prior implementation
-/// gated on `layers.is_changed() || cavity.is_changed() ||
-/// sim_state.is_changed()`. All three of those resources are held as
-/// `ResMut<>` by `device_design_panel` (sliders + sim-state mutation),
-/// which bumps their change ticks every frame the panel renders —
-/// regardless of whether any actual value moved. Net effect: the
-/// guard always passed, and the 6 layer mesh entities despawned-and-
-/// respawned every frame. Wasted asset traffic, not visible as a
-/// behavior bug.
+/// Slice 9 sub-leaf 4 — the load-bearing visual gate of the
+/// SDF-based-layer-surfaces arc. Replaces per-vertex radial
+/// displacement of `EnvelopeProxyMesh` with
+/// [`sdf_layers::extract_layer_surface`] at `iso = cumulative_thickness
+/// - cavity.inset_m`. Two consequences worth pinning:
 ///
-/// Fix: snapshot-and-compare via `Local<>`, the same posture
-/// `invalidate_on_geometry_change` uses (slice-9 follow-up). Cache a
-/// [`LayerMeshKey`] (the meaningful inputs); rebuild only when the
-/// key differs from the prior frame's snapshot. Heat-map color
-/// buffers don't ride directly inside the key — they change implicitly
-/// through `sim_state.last_run_generation`, the counter
-/// `InsertionSimState` bumps when a new run lands or
-/// `invalidate_on_geometry_change` clears the previous one.
+/// 1. **Dome-apex nipple gone.** The per-vertex path raced apex
+///    vertices outward (their radial pointed up-and-out from a
+///    centerline point inside the body); the SDF iso is exactly
+///    perpendicular to the source by construction, so the apex
+///    grows uniformly with thickness.
+/// 2. **Per-layer MC mesh topology.** Each layer has its own vertex
+///    set; together with its own face set, this replaces every
+///    layer sharing the proxy's connectivity. The Insertion Sim
+///    panel's heat-map projection was keyed on
+///    `proxy.vertices.len()`; that path is temporarily disabled
+///    here and re-wired in sub-leaf 7 via per-layer-vertex
+///    closest-point lookup against the SDF tet mesh.
+///
+/// **Change-detection** (cold-read finding from slice-9 follow-up):
+/// the prior implementation gated on
+/// `layers.is_changed() || cavity.is_changed() || sim_state.is_changed()`.
+/// All three resources are held as `ResMut<>` by
+/// `device_design_panel`, which bumps their change ticks every frame
+/// regardless of whether any value moved. Net effect: the guard
+/// always passed, and the 6 layer entities despawned-and-respawned
+/// every frame. Snapshot-and-compare via `Local<>` (same posture
+/// `invalidate_on_geometry_change` uses) keeps rebuild cost paid
+/// only on real input changes.
+///
+/// **Envelope note** ([`sdf_layers::LAYER_GRID_MARGIN_M`] = 40 mm):
+/// cumulative thickness theoretically reaches 6 layers × 20 mm =
+/// 120 mm via the existing per-layer thickness slider — past the
+/// cached grid's envelope. The current per-layer slider defaults
+/// keep typical use well inside 40 mm; release builds silently
+/// clip to the grid bounds if a user dials past, and debug builds
+/// trip the `debug_assert!` in
+/// [`sdf_layers::extract_layer_surface`]. A future arc may tighten
+/// the slider OR grow the grid — for iter-1 the 40 mm envelope is
+/// the load-bearing constraint.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn update_layer_meshes(
     layers: Res<LayersState>,
     cavity: Res<CavityState>,
-    proxy: Res<EnvelopeProxyMesh>,
+    cached_sdf: Res<sdf_layers::CachedScanSdf>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     sim_state: Res<insertion_sim_ui::InsertionSimState>,
@@ -2084,52 +2106,41 @@ fn update_layer_meshes(
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    if layers.layers.is_empty() || proxy.vertices.is_empty() {
+    if layers.layers.is_empty() {
         return;
     }
-    // When the heat map is on AND a completed run is available, pull
-    // the matching per-layer vertex-color buffers. The mode index
-    // (Energy = 0, Stress = 1) is from `ScalarMode::buffer_index`.
-    let heat_map_colors: Option<&Vec<Vec<[f32; 4]>>> = if sim_state.heat_map_on {
-        sim_state
-            .last_run
-            .as_ref()
-            .map(|r| &r.per_layer_vertex_colors[sim_state.scalar_mode.buffer_index()])
-    } else {
-        None
-    };
     let mut cumulative_thickness_m = 0.0_f64;
     for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
         let offset_m = cumulative_thickness_m - cavity.inset_m;
-        // Heat-map vertex colors for this layer, if available (the
-        // run is keyed on layer index; an out-of-range layer count
-        // mismatch — e.g. heat map cached for a 3-layer design,
-        // user added a layer — drops to `None` and the layer falls
-        // back to the palette color until the user re-Simulates).
-        let colors_slice = heat_map_colors
-            .and_then(|cs| cs.get(i))
-            .filter(|c| c.len() == proxy.vertices.len())
-            .map(Vec::as_slice);
-        let mesh = meshes.add(build_displaced_proxy_mesh_with_colors(
-            &proxy,
-            offset_m,
+        // Clamp the iso value to the cached grid's envelope so a wide
+        // slider configuration doesn't trip the debug-assert in
+        // [`sdf_layers::extract_layer_surface`]. Clamping AT the
+        // envelope (not just BELOW it) lets MC pull whatever surface
+        // is visible inside the cached grid; the alternative
+        // (silently dropping the layer) would leave the user without
+        // a visual cue that the slider exceeded the envelope. A
+        // future arc should either widen `LAYER_GRID_MARGIN_M` or
+        // tighten the slider once iter-1 / iter-2 surfaces a real
+        // case.
+        let envelope = sdf_layers::LAYER_GRID_MARGIN_M;
+        // Pull the iso strictly INSIDE the envelope so the
+        // `debug_assert!` (strict `<`) still passes in debug builds.
+        let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
+        let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
+        let layer_indexed = sdf_layers::extract_layer_surface(&cached_sdf, safe_offset_m);
+        let mesh = meshes.add(build_bevy_mesh_from_indexed(
+            &layer_indexed,
             *up,
             render_scale.0,
-            colors_slice,
         ));
         let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
-        // Heat-map mode pins base color to white so the per-vertex
-        // COLOR attribute carries the gradient straight through
-        // (StandardMaterial multiplies base × vertex × light). Off
-        // mode keeps the palette tint.
-        let base_color = if colors_slice.is_some() {
-            Color::WHITE
-        } else {
-            Color::srgb(r, g, b)
-        };
+        // Heat-map mode (per-vertex color attribute) is offline until
+        // sub-leaf 7 re-projects per-tet scalars onto each layer's
+        // MC vertex set — `proxy.vertices.len()` no longer matches
+        // any per-layer mesh's vertex count under the SDF path.
         let material = materials.add(StandardMaterial {
-            base_color,
+            base_color: Color::srgb(r, g, b),
             double_sided: true,
             cull_mode: None,
             ..default()
