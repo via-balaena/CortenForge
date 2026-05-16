@@ -35,6 +35,7 @@
 //! Per-commit additions are tracked in the spec's slice-ship-log
 //! (`docs/SCAN_PREP_DESIGN.md` §Slice ship log).
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -2039,6 +2040,292 @@ fn build_detected_cap_loop(mesh: &IndexedMesh, loop_data: &holes::BoundaryLoop) 
         plane_fit_r_squared: r_squared,
         include,
     }
+}
+
+/// Identifies a mesh edge by the unordered pair of its vertex
+/// indices (`lo <= hi`). Used as a hash key to deduplicate
+/// plane-edge intersection points across the two faces that share
+/// each interior mesh edge — two adjacent triangles' segments meet
+/// at the SAME intersection point because they share the same edge
+/// key, so segment chaining is robust without coordinate-tolerance
+/// matching.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct MeshEdgeKey {
+    lo: u32,
+    hi: u32,
+}
+
+impl MeshEdgeKey {
+    #[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
+    fn new(a: u32, b: u32) -> Self {
+        Self {
+            lo: a.min(b),
+            hi: a.max(b),
+        }
+    }
+}
+
+/// SOS perturbation magnitude (meters) used by
+/// [`intersect_plane_with_mesh`] to push vertices with signed
+/// distance below this magnitude consistently to the positive side
+/// of the plane. With every vertex strictly off-plane after the
+/// perturbation, each plane-crossing triangle produces a well-
+/// defined 2-edge segment (no vertex-on-plane degenerate cases).
+/// 1e-12 m = 1 picometer — well below any geometric feature on
+/// body-part scans (mm scale) and far below f64 precision around
+/// typical coordinate magnitudes (≤ 1 m).
+#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
+const PLANE_INTERSECTION_ON_PLANE_EPS_M: f64 = 1e-12;
+
+/// Intersect a plane with a triangle mesh and return the resulting
+/// cross-section as one or more closed polygon loops.
+///
+/// **Inputs**: `plane_point` is any point on the plane (used as the
+/// plane's origin for signed-distance computation); `plane_normal`
+/// MUST be unit-magnitude (caller normalizes once); `mesh` is a
+/// watertight indexed triangle mesh (input meshes from cf-scan-prep
+/// post-Cap are watertight by construction).
+///
+/// **Output**: each inner `Vec<Point3<f64>>` is the ordered vertex
+/// sequence of a closed polygon loop; the implicit last edge
+/// connects `loop[n-1]` back to `loop[0]`. Order around each loop
+/// is consistent (traversal-walk order) but the WINDING (CCW vs.
+/// CW with respect to `plane_normal`) is arbitrary — downstream
+/// consumers like [`polygon_centroid_3d`] handle both orientations
+/// via signed-area cancellation.
+///
+/// **Algorithm**:
+///
+/// 1. **Signed distance per vertex** with SOS perturbation — any
+///    vertex with `|dist| < PLANE_INTERSECTION_ON_PLANE_EPS_M` is
+///    snapped to `+EPS`. After this no vertex is exactly on the
+///    plane, so every plane-crossing triangle has signs that are
+///    strictly `(+, +, -)` or `(+, -, -)` — exactly 2 of its 3
+///    edges have endpoints of opposite sign.
+/// 2. **Per-face intersection segments** — for each plane-crossing
+///    triangle, compute the linear interpolation parameter on its
+///    two sign-flipping edges. Each endpoint is identified by a
+///    [`MeshEdgeKey`] so the SAME intersection point is shared
+///    between the two faces adjacent to that mesh edge (no
+///    coordinate dedup needed — the key is exact).
+/// 3. **Segment graph** — `adjacency: MeshEdgeKey → Vec<MeshEdgeKey>`
+///    records the segments. In a watertight mesh each crossing edge
+///    has exactly 2 neighbors (one from each adjacent face), so the
+///    graph decomposes into disjoint cycles.
+/// 4. **Loop extraction** — walk the graph starting from each
+///    unvisited key, following adjacency (avoid the previous node)
+///    until the start is revisited. Drop fragments shorter than 3
+///    points (degenerate / open boundary remnants).
+///
+/// **Edge cases**:
+/// - Empty mesh / zero-magnitude normal: returns `Vec::new()`.
+/// - Plane outside the mesh: returns `Vec::new()` (no triangles
+///   have mixed signs).
+/// - Non-convex body (e.g., a torus slice): returns multiple loops
+///   — the caller (centerline algorithm) picks the largest-area
+///   loop for centroid computation.
+/// - Open / non-watertight mesh at the slice: incomplete loops
+///   (segments with dead ends) are dropped by the `len >= 3` filter
+///   — caller sees fewer / smaller loops than expected.
+#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
+fn intersect_plane_with_mesh(
+    plane_point: &Point3<f64>,
+    plane_normal: &Vector3<f64>,
+    mesh: &IndexedMesh,
+) -> Vec<Vec<Point3<f64>>> {
+    if mesh.vertices.is_empty()
+        || mesh.faces.is_empty()
+        || plane_normal.norm_squared() < f64::EPSILON
+    {
+        return Vec::new();
+    }
+    // Caller's contract is to pass a unit normal; defensive
+    // re-normalize is one sqrt and protects against drift.
+    let n = plane_normal.normalize();
+
+    // Step 1: signed distance per vertex, with SOS perturbation.
+    let dists: Vec<f64> = mesh
+        .vertices
+        .iter()
+        .map(|v| {
+            let raw = n.dot(&(v.coords - plane_point.coords));
+            if raw.abs() < PLANE_INTERSECTION_ON_PLANE_EPS_M {
+                PLANE_INTERSECTION_ON_PLANE_EPS_M
+            } else {
+                raw
+            }
+        })
+        .collect();
+
+    // Step 2-3: per-face intersection + segment graph build.
+    let mut point_at: HashMap<MeshEdgeKey, Point3<f64>> = HashMap::new();
+    let mut adjacency: HashMap<MeshEdgeKey, Vec<MeshEdgeKey>> = HashMap::new();
+
+    for face in &mesh.faces {
+        let signs = [
+            dists[face[0] as usize].signum(),
+            dists[face[1] as usize].signum(),
+            dists[face[2] as usize].signum(),
+        ];
+        let any_pos = signs.iter().any(|&s| s > 0.0);
+        let any_neg = signs.iter().any(|&s| s < 0.0);
+        if !(any_pos && any_neg) {
+            continue;
+        }
+
+        // Find the two edges of this triangle whose endpoints have
+        // opposite signs (these are the two edges the plane crosses).
+        // After SOS perturbation, a mixed-sign triangle has exactly
+        // 2 sign-flipping edges, so `crossing.len() == 2` is the
+        // expected case; the defensive `if let` skips any anomaly.
+        let mut crossing: Vec<MeshEdgeKey> = Vec::with_capacity(2);
+        for e in 0..3 {
+            let i = face[e];
+            let j = face[(e + 1) % 3];
+            if signs[e] != signs[(e + 1) % 3] {
+                let key = MeshEdgeKey::new(i, j);
+                crossing.push(key);
+
+                // Compute the intersection point on this edge (once
+                // per edge, shared across the two adjacent faces).
+                point_at.entry(key).or_insert_with(|| {
+                    let p_i = mesh.vertices[i as usize].coords;
+                    let p_j = mesh.vertices[j as usize].coords;
+                    let d_i = dists[i as usize];
+                    let d_j = dists[j as usize];
+                    // Linear-interpolation parameter where the
+                    // signed distance crosses zero. With strict
+                    // sign-flip guaranteed by SOS, `d_i - d_j` is
+                    // bounded away from zero (same sign as d_i).
+                    let t = d_i / (d_i - d_j);
+                    Point3::from(p_i + t * (p_j - p_i))
+                });
+            }
+        }
+        if let &[a, b] = crossing.as_slice() {
+            adjacency.entry(a).or_default().push(b);
+            adjacency.entry(b).or_default().push(a);
+        }
+    }
+
+    // Step 4: walk segment graph to extract closed loops.
+    // Collect keys into a sorted Vec for deterministic loop-output
+    // order across runs (HashMap key iteration is nondeterministic).
+    let mut keys: Vec<MeshEdgeKey> = adjacency.keys().copied().collect();
+    keys.sort_by_key(|k| (k.lo, k.hi));
+
+    let mut visited: HashSet<MeshEdgeKey> = HashSet::new();
+    let mut loops: Vec<Vec<Point3<f64>>> = Vec::new();
+
+    for start in keys {
+        if visited.contains(&start) {
+            continue;
+        }
+        let mut loop_pts: Vec<Point3<f64>> = Vec::new();
+        let mut current = start;
+        let mut prev: Option<MeshEdgeKey> = None;
+        loop {
+            if visited.contains(&current) {
+                // Either closed the loop (current == start, second
+                // visit) or hit an already-traversed area. Either
+                // way the walk ends.
+                break;
+            }
+            visited.insert(current);
+            loop_pts.push(point_at[&current]);
+            // Pick the next neighbor that isn't the previous step.
+            // In a watertight mesh each crossing edge has exactly 2
+            // neighbors; on a clean loop the non-prev choice is
+            // unique.
+            let neighbors = &adjacency[&current];
+            let next = neighbors.iter().find(|&&n| Some(n) != prev).copied();
+            match next {
+                Some(n) => {
+                    prev = Some(current);
+                    current = n;
+                }
+                None => break, // dead end (degenerate boundary)
+            }
+        }
+        if loop_pts.len() >= 3 {
+            loops.push(loop_pts);
+        }
+    }
+
+    loops
+}
+
+/// Compute the area-weighted centroid of a closed 3D polygon
+/// lying in a plane.
+///
+/// Uses fan triangulation from `polygon[0]` and the signed-area
+/// projected onto `plane_normal`: each sub-triangle contributes
+/// its centroid weighted by its signed area, divided by the total
+/// signed area. The signed-area sum cancels out spurious
+/// contributions from non-convex regions, so the result is correct
+/// for any simple polygon (convex or non-convex) and is invariant
+/// to winding direction (CW vs CCW with respect to `plane_normal`).
+///
+/// **Density-independence**: the formula depends only on the
+/// polygon's BOUNDARY GEOMETRY — adding redundant collinear
+/// vertices between existing ones (subdividing edges) does not
+/// change the centroid. This is the load-bearing property that
+/// makes the centerline algorithm density-independent.
+///
+/// **Caller's contract**: `plane_normal` MUST be unit-magnitude.
+/// Polygon vertices MUST be approximately coplanar with that
+/// normal; otherwise the signed-area projection under-counts
+/// contributions tilted away from the plane.
+///
+/// **Returns** `None` when the polygon has fewer than 3 vertices
+/// OR its total area projects to ≈ 0 (degenerate / collinear).
+#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
+fn polygon_centroid_3d(
+    polygon: &[Point3<f64>],
+    plane_normal: &Vector3<f64>,
+) -> Option<Point3<f64>> {
+    if polygon.len() < 3 {
+        return None;
+    }
+    let v0 = polygon[0].coords;
+    let mut total_signed_area: f64 = 0.0;
+    let mut centroid_accum: Vector3<f64> = Vector3::zeros();
+    for i in 1..(polygon.len() - 1) {
+        let v1 = polygon[i].coords;
+        let v2 = polygon[i + 1].coords;
+        let cross = (v1 - v0).cross(&(v2 - v0));
+        let signed_area = 0.5 * cross.dot(plane_normal);
+        let tri_centroid = (v0 + v1 + v2) / 3.0;
+        centroid_accum += signed_area * tri_centroid;
+        total_signed_area += signed_area;
+    }
+    if total_signed_area.abs() < f64::EPSILON {
+        return None;
+    }
+    Some(Point3::from(centroid_accum / total_signed_area))
+}
+
+/// Unsigned area of a closed 3D polygon projected onto
+/// `plane_normal`. Same fan-triangulation + signed-area summation
+/// as [`polygon_centroid_3d`]; absolute value at the end so the
+/// result is winding-invariant. Used by the centerline algorithm
+/// to (a) gate degenerate slabs below `MIN_SLAB_AREA_M2` and (b)
+/// pick the largest loop when a slab intersection produces
+/// multiple loops (non-convex body / multi-component slice).
+#[allow(dead_code)] // wired into compute_centerline_polyline in the next commit
+fn polygon_area_3d(polygon: &[Point3<f64>], plane_normal: &Vector3<f64>) -> f64 {
+    if polygon.len() < 3 {
+        return 0.0;
+    }
+    let v0 = polygon[0].coords;
+    let mut total_signed_area: f64 = 0.0;
+    for i in 1..(polygon.len() - 1) {
+        let v1 = polygon[i].coords;
+        let v2 = polygon[i + 1].coords;
+        let cross = (v1 - v0).cross(&(v2 - v0));
+        total_signed_area += 0.5 * cross.dot(plane_normal);
+    }
+    total_signed_area.abs()
 }
 
 /// Compute the scan's centerline as **N evenly-spaced points
@@ -6977,6 +7264,243 @@ mod tests {
             "expected outward normal to point -Z; got {:?}",
             oriented,
         );
+    }
+
+    // ---- plane-mesh intersection + polygon centroid subroutines ----
+
+    /// Build a unit-cube indexed mesh (corners at 0/1 on each axis,
+    /// 8 verts + 12 triangles, CCW-outward winding). Hand-crafted
+    /// fixture used by the [`intersect_plane_with_mesh`] tests; the
+    /// general-purpose body-shape fixture helpers live alongside the
+    /// algorithm tests further down.
+    fn make_unit_cube_mesh() -> IndexedMesh {
+        let mut mesh = IndexedMesh::with_capacity(8, 12);
+        // Corner ordering: bit 0 = x, bit 1 = y, bit 2 = z.
+        for i in 0..8 {
+            mesh.vertices.push(Point3::new(
+                f64::from(i & 1),
+                f64::from((i >> 1) & 1),
+                f64::from((i >> 2) & 1),
+            ));
+        }
+        // 6 faces × 2 triangles, CCW from outside.
+        let faces: [[u32; 3]; 12] = [
+            // -Z (bottom)
+            [0, 2, 1],
+            [1, 2, 3],
+            // +Z (top)
+            [4, 5, 6],
+            [5, 7, 6],
+            // -Y (front)
+            [0, 1, 4],
+            [1, 5, 4],
+            // +Y (back)
+            [2, 6, 3],
+            [3, 6, 7],
+            // -X (left)
+            [0, 4, 2],
+            [2, 4, 6],
+            // +X (right)
+            [1, 3, 5],
+            [3, 7, 5],
+        ];
+        for f in faces {
+            mesh.faces.push(f);
+        }
+        mesh
+    }
+
+    /// Plane bisecting a unit cube perpendicular to +Z at `z=0.5`
+    /// produces exactly one closed loop describing the unit square
+    /// cross-section at z=0.5. **Contract test for
+    /// `intersect_plane_with_mesh`.**
+    ///
+    /// The unit cube's 4 vertical edges each contribute one corner;
+    /// each side face is split into 2 triangles whose internal
+    /// DIAGONAL also crosses the plane, contributing 4 extra
+    /// (collinear-on-the-square's-edges) intersection points. So
+    /// the returned loop has 8 vertices around a square boundary,
+    /// not the "minimal" 4 — this is correct algorithmic behavior
+    /// (the polygon centroid is invariant to such mesh-diagonal
+    /// subdivisions, verified by `polygon_centroid_3d_density_independent`).
+    /// Test asserts the polygon's CENTROID + AREA, not vertex count.
+    #[test]
+    fn intersect_plane_unit_cube_bisecting_z_returns_square() {
+        let mesh = make_unit_cube_mesh();
+        let plane_pt = Point3::new(0.5, 0.5, 0.5);
+        let plane_n = Vector3::new(0.0, 0.0, 1.0);
+        let loops = intersect_plane_with_mesh(&plane_pt, &plane_n, &mesh);
+        assert_eq!(
+            loops.len(),
+            1,
+            "expected exactly 1 loop; got {}",
+            loops.len()
+        );
+        let loop0 = &loops[0];
+        assert!(
+            loop0.len() >= 4,
+            "expected ≥ 4 verts on square cross-section; got {}",
+            loop0.len()
+        );
+        // Every vertex sits at z=0.5 and on the boundary of the
+        // unit square (x or y coordinate equals 0 or 1).
+        for p in loop0 {
+            assert!((p.z - 0.5).abs() < 1e-9, "vert {p:?} not on z=0.5 plane");
+            let on_boundary = (p.x.abs() < 1e-9 || (p.x - 1.0).abs() < 1e-9)
+                || (p.y.abs() < 1e-9 || (p.y - 1.0).abs() < 1e-9);
+            assert!(
+                on_boundary,
+                "vert {p:?} not on unit-square boundary at z=0.5"
+            );
+        }
+        // Polygon-level geometric properties: area = 1.0, centroid
+        // = (0.5, 0.5, 0.5).
+        let area = polygon_area_3d(loop0, &plane_n);
+        assert!((area - 1.0).abs() < 1e-9, "area should be 1.0; got {area}");
+        let c = polygon_centroid_3d(loop0, &plane_n).expect("non-degenerate square");
+        assert!((c.x - 0.5).abs() < 1e-9, "centroid x: {c:?}");
+        assert!((c.y - 0.5).abs() < 1e-9, "centroid y: {c:?}");
+        assert!((c.z - 0.5).abs() < 1e-9, "centroid z: {c:?}");
+    }
+
+    /// Plane parked outside the mesh's z-range produces no loops.
+    /// Defensive test for the "no triangles crossed" path.
+    #[test]
+    fn intersect_plane_outside_mesh_returns_empty() {
+        let mesh = make_unit_cube_mesh();
+        let plane_pt = Point3::new(0.0, 0.0, 10.0);
+        let plane_n = Vector3::new(0.0, 0.0, 1.0);
+        let loops = intersect_plane_with_mesh(&plane_pt, &plane_n, &mesh);
+        assert!(loops.is_empty(), "expected no loops; got {}", loops.len());
+    }
+
+    /// Defensive paths: empty mesh OR zero-magnitude normal return
+    /// `Vec::new()` without panicking.
+    #[test]
+    fn intersect_plane_degenerate_input_returns_empty() {
+        let empty = IndexedMesh::with_capacity(0, 0);
+        let plane_pt = Point3::origin();
+        let plane_n = Vector3::new(0.0, 0.0, 1.0);
+        assert!(intersect_plane_with_mesh(&plane_pt, &plane_n, &empty).is_empty());
+
+        let cube = make_unit_cube_mesh();
+        let zero_n = Vector3::zeros();
+        assert!(intersect_plane_with_mesh(&plane_pt, &zero_n, &cube).is_empty());
+    }
+
+    /// Polygon centroid of an axis-aligned unit square in the
+    /// xy-plane sits at the square's geometric center. Contract
+    /// test for [`polygon_centroid_3d`].
+    #[test]
+    fn polygon_centroid_3d_unit_square_at_center() {
+        let square = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let c = polygon_centroid_3d(&square, &n).expect("non-degenerate square");
+        assert!((c.x - 0.5).abs() < 1e-12, "x centroid: {c:?}");
+        assert!((c.y - 0.5).abs() < 1e-12, "y centroid: {c:?}");
+        assert!(c.z.abs() < 1e-12, "z centroid: {c:?}");
+    }
+
+    /// **Load-bearing test for density-independence.** A unit
+    /// square traversed with 4 vertices vs. the SAME square with
+    /// 4 extra collinear midpoints (8 verts on the boundary, same
+    /// SHAPE) produces the same centroid. This is the geometric
+    /// property that makes the centerline algorithm density-
+    /// independent: adding redundant boundary samples does not
+    /// shift the polygon centroid, unlike the failed vertex-centroid
+    /// statistic (which would average toward the dense side).
+    #[test]
+    fn polygon_centroid_3d_density_independent() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let sparse = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        // Same boundary, traversed with midpoints between each
+        // pair of corners (8 verts total, all on the boundary).
+        let dense = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.5, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 0.5, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.5, 0.0),
+        ];
+        let c_sparse = polygon_centroid_3d(&sparse, &n).unwrap();
+        let c_dense = polygon_centroid_3d(&dense, &n).unwrap();
+        let diff = (c_sparse.coords - c_dense.coords).norm();
+        assert!(
+            diff < 1e-12,
+            "density-asymmetric boundary shifted centroid: sparse={c_sparse:?}, dense={c_dense:?}, diff={diff}"
+        );
+    }
+
+    /// Polygon centroid is invariant to traversal winding (CW vs
+    /// CCW with respect to `plane_normal`): the signed-area sum in
+    /// the numerator AND denominator both flip sign, canceling out.
+    /// Defensive test — the centerline algorithm doesn't control the
+    /// winding of loops produced by [`intersect_plane_with_mesh`].
+    #[test]
+    fn polygon_centroid_3d_winding_invariant() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let ccw = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let cw = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        ];
+        let c_ccw = polygon_centroid_3d(&ccw, &n).unwrap();
+        let c_cw = polygon_centroid_3d(&cw, &n).unwrap();
+        let diff = (c_ccw.coords - c_cw.coords).norm();
+        assert!(
+            diff < 1e-12,
+            "winding changed centroid: ccw={c_ccw:?}, cw={c_cw:?}"
+        );
+    }
+
+    /// `polygon_centroid_3d` returns `None` for degenerate inputs:
+    /// < 3 vertices OR collinear vertices (zero projected area).
+    #[test]
+    fn polygon_centroid_3d_degenerate_returns_none() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let two = [Point3::origin(), Point3::new(1.0, 0.0, 0.0)];
+        assert!(polygon_centroid_3d(&two, &n).is_none());
+        let collinear = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        assert!(polygon_centroid_3d(&collinear, &n).is_none());
+    }
+
+    /// `polygon_area_3d` of a unit square is 1.0; winding-invariant.
+    #[test]
+    fn polygon_area_3d_unit_square() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let ccw = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        assert!((polygon_area_3d(&ccw, &n) - 1.0).abs() < 1e-12);
+        let cw = [ccw[0], ccw[3], ccw[2], ccw[1]];
+        assert!((polygon_area_3d(&cw, &n) - 1.0).abs() < 1e-12);
     }
 
     /// `compute_centerline_polyline` on an elongated mesh along
