@@ -2302,6 +2302,7 @@ fn run_render_app(
         }))
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
+        .add_plugins(clip_plane::ClipPlanePlugin)
         .add_plugins(insertion_sim_ui::InsertionSimPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(DEVICE_UP_AXIS)

@@ -13,21 +13,121 @@
 //! `RenderScale` lift) is the uniform-push system's responsibility
 //! (sub-leaf 4); this module is pure math + the resource declaration.
 //!
-//! The actual fragment-discard material extension + WGSL embedding
-//! land in sub-leaf 2; the per-frame uniform push system in sub-leaf
-//! 4; the egui panel in sub-leaf 5.
+//! Sub-leaf 2 layers on:
+//!
+//! - the [`ClipPlaneExt`] `MaterialExtension` (a `vec4` plane + a
+//!   `u32` enabled flag, packed into a single uniform at binding 100)
+//!   plus the WGSL fragment-discard shader (embedded next to this
+//!   file, loaded via Bevy's `embedded_asset!` macro);
+//! - the [`ClipPlanePlugin`] that registers the shader asset, the
+//!   `MaterialPlugin<ExtendedMaterial<StandardMaterial, …>>`, and the
+//!   [`ClipPlaneState`] resource.
+//!
+//! Sub-leaves 4 + 5 add the per-frame uniform push system and the
+//! egui panel.
+//!
+//! **Prepass posture**: cf-device-design's camera does NOT add
+//! `DepthPrepass` / `MotionVectorPrepass` / `NormalPrepass` (see
+//! `cf-viewer::setup_camera_and_lighting`) and its directional light
+//! has `shadows_enabled: false`, so the depth + shadow prepasses
+//! never run for these meshes — i.e., no "ghost shadows on the kept
+//! half" risk the spec called out (open risk #2). To stay defensive
+//! against a future arc enabling shadows or prepass without also
+//! reaching into this module, we explicitly set
+//! [`MaterialExtension::enable_prepass`] → `false` below, which
+//! prevents the prepass pipeline from being built for our extended
+//! material. If a future rung needs shadows, the fix is to add a
+//! prepass fragment shader override (and flip `enable_prepass` back
+//! to `true`); the spec's open-risk #2 covers the followup.
 //!
 //! Module-level `#![allow(dead_code)]` matches the `sdf_layers`
-//! precedent: the resource + resolver land in sub-leaf 1 but the
-//! consumers (the uniform-push system + the panel) only un-shade them
-//! later. The allowance keeps the bin's compile clean at the in-flight
-//! sub-leaf boundary.
+//! precedent: this surface (`ClipPlaneState`, `ClipPlaneExt`,
+//! `ClipPlanePlugin`, `resolve_plane`) only finishes wiring at
+//! sub-leaf 5; the allowance keeps the bin's compile clean at the
+//! in-flight sub-leaf boundary.
 #![allow(dead_code)]
 
-use bevy::prelude::Resource;
+use bevy::{
+    asset::embedded_asset,
+    pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin},
+    prelude::*,
+    render::render_resource::AsBindGroup,
+    shader::ShaderRef,
+};
 use mesh_types::{Point3, Vector3};
 
 use crate::Centerline;
+
+/// Embedded-asset URI of the clip-plane WGSL shader (sub-leaf 2).
+///
+/// Resolves to `tools/cf-device-design/src/clip_plane.wgsl`, embedded
+/// at compile time by [`ClipPlanePlugin::build`]'s `embedded_asset!`
+/// call. The crate-name segment uses Cargo's underscored bin name
+/// (`cf_device_design`), matching `module_path!()` — see
+/// `bevy_asset::io::embedded::_embedded_asset_path` for the exact
+/// resolution rule.
+const CLIP_PLANE_SHADER_PATH: &str = "embedded://cf_device_design/clip_plane.wgsl";
+
+/// Type alias for the concrete extended material used to clip the
+/// cavity + per-layer + scan meshes (sub-leaf 3 swaps the spawn
+/// sites).
+pub(crate) type ClipPlaneMaterial = ExtendedMaterial<StandardMaterial, ClipPlaneExt>;
+
+/// `ExtendedMaterial` extension that adds the clip-plane uniform +
+/// fragment-discard shader to a `StandardMaterial` base. Both fields
+/// share binding slot 100 — `AsBindGroup` packs them into a single
+/// uniform struct matching `struct ClipPlane` in the WGSL.
+///
+/// Render-frame meters (NOT physics-frame). The uniform-push system
+/// in sub-leaf 4 applies the `UpAxis::PlusZ` swap + `RenderScale`
+/// lift before writing this field.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+pub(crate) struct ClipPlaneExt {
+    /// `.xyz` = unit plane normal (render-frame), `.w = dot(origin,
+    /// normal)` — the plane offset along the normal. Kept half is
+    /// `dot(world_pos, normal) - w >= 0`.
+    #[uniform(100)]
+    pub plane: Vec4,
+    /// Non-zero → the WGSL fragment shader runs the discard test.
+    /// Zero → pass-through (the entire world is kept). The Rust-side
+    /// gate ([`ClipPlaneState::enabled`] AND a non-empty centerline)
+    /// is the source of truth; the uniform flag is a render-side
+    /// mirror so toggling doesn't require a material asset rebuild.
+    #[uniform(100)]
+    pub enabled: u32,
+}
+
+impl MaterialExtension for ClipPlaneExt {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::from(CLIP_PLANE_SHADER_PATH)
+    }
+
+    fn enable_prepass() -> bool {
+        // See the module docstring — cf-device-design's camera +
+        // lighting setup means the depth/shadow prepasses never run
+        // for our meshes today; opting out here prevents the prepass
+        // pipeline being built for our material if a future arc adds
+        // `DepthPrepass` without first authoring a prepass shader
+        // override.
+        false
+    }
+}
+
+/// Plugin that embeds the clip-plane WGSL asset + registers the
+/// `MaterialPlugin` for [`ClipPlaneMaterial`] + inserts the
+/// [`ClipPlaneState`] resource. Add AFTER `DefaultPlugins` (the
+/// `EmbeddedAssetRegistry` resource the `embedded_asset!` macro
+/// writes into is set up by Bevy's `AssetPlugin`, which lives in
+/// `DefaultPlugins`).
+pub(crate) struct ClipPlanePlugin;
+
+impl Plugin for ClipPlanePlugin {
+    fn build(&self, app: &mut App) {
+        embedded_asset!(app, "clip_plane.wgsl");
+        app.init_resource::<ClipPlaneState>();
+        app.add_plugins(MaterialPlugin::<ClipPlaneMaterial>::default());
+    }
+}
 
 /// Clip-plane state. Anchored to the centerline; meaningless without
 /// one (the slider and toggle disable themselves when
