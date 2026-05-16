@@ -3318,40 +3318,67 @@ fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyRe
     let mut welded = original.clone();
     weld_vertices(&mut welded, SIMPLIFY_WELD_EPSILON_M);
 
-    // Step 2: convert positions to meshopt-friendly f32 triples.
-    // f64 → f32 cast is intentional; meshopt's C API operates on f32.
-    #[allow(clippy::cast_possible_truncation)]
-    let positions: Vec<[f32; 3]> = welded
-        .vertices
-        .iter()
-        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
-        .collect();
-    let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
+    // Step 2-4: iterate meshopt's simplify_decoder. On scans with
+    // high-frequency surface noise (workshop scanners typically
+    // produce sub-mm noise on the silicone surface), the first
+    // pass's per-edge quadric error hits `SIMPLIFY_TARGET_ERROR`
+    // (~5% of bbox extent) BEFORE the face-count target is
+    // reached — meshopt returns with the mesh barely reduced.
+    // User-reported 2026-05-15 evening: clicking Apply Simplify
+    // on the iter-1 sock-over-capsule scan dropped 3.35M → 3.33M
+    // (0.5% reduction) on the first click; the second click then
+    // dropped 3.33M → 200k (the requested target). Root cause:
+    // the first pass smooths the high-frequency noise out of the
+    // local quadric metric, so subsequent passes can collapse
+    // freely.
+    //
+    // Fix: loop until either (a) the target is reached, (b) a pass
+    // makes no progress (converged at the error ceiling), or (c) a
+    // safety cap of 10 iterations is hit (typical convergence: 2-3
+    // passes). One Apply click now produces the expected result.
+    const MAX_PASSES: usize = 10;
+    let mut current = welded;
+    let mut previous_face_count = current.faces.len();
+    for _pass in 0..MAX_PASSES {
+        if current.faces.len() <= target_face_count {
+            break;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let positions: Vec<[f32; 3]> = current
+            .vertices
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+            .collect();
+        let indices: Vec<u32> = current.faces.iter().flatten().copied().collect();
+        let target_index_count = target_face_count.saturating_mul(3);
+        let mut result_error: f32 = 0.0;
+        let simplified_indices = simplify_decoder(
+            &indices,
+            &positions,
+            target_index_count,
+            SIMPLIFY_TARGET_ERROR,
+            SimplifyOptions::LockBorder,
+            Some(&mut result_error),
+        );
+        let achieved_face_count = simplified_indices.len() / 3;
+        let mut simplified_faces: Vec<[u32; 3]> = Vec::with_capacity(achieved_face_count);
+        for tri in simplified_indices.chunks_exact(3) {
+            simplified_faces.push([tri[0], tri[1], tri[2]]);
+        }
+        current.faces = simplified_faces;
+        remove_unreferenced_vertices(&mut current);
 
-    // Step 3: run meshopt. `target_count` is in INDICES, not faces.
-    let target_index_count = target_face_count.saturating_mul(3);
-    let mut result_error: f32 = 0.0;
-    let simplified_indices = simplify_decoder(
-        &indices,
-        &positions,
-        target_index_count,
-        SIMPLIFY_TARGET_ERROR,
-        SimplifyOptions::LockBorder,
-        Some(&mut result_error),
-    );
-
-    // Step 4: reassemble. Indices reference the welded vertex buffer.
-    let achieved_face_count = simplified_indices.len() / 3;
-    let mut simplified_faces: Vec<[u32; 3]> = Vec::with_capacity(achieved_face_count);
-    for tri in simplified_indices.chunks_exact(3) {
-        simplified_faces.push([tri[0], tri[1], tri[2]]);
+        // Converged: this pass made no progress (still hitting the
+        // error ceiling at the same place). Stop — further passes
+        // would just spin.
+        if current.faces.len() >= previous_face_count {
+            break;
+        }
+        previous_face_count = current.faces.len();
     }
-    let mut simplified_mesh = welded;
-    simplified_mesh.faces = simplified_faces;
-    remove_unreferenced_vertices(&mut simplified_mesh);
 
     SimplifyResult {
-        mesh: simplified_mesh,
+        mesh: current,
         elapsed_secs: start.elapsed().as_secs_f64(),
     }
 }
@@ -5417,29 +5444,18 @@ fn handle_save_action(
         )
     };
 
-    // Slice 9.8 — Simplify panel slider acts as a face budget at save
-    // time too, not just for the [Apply simplify] in-app action. If
-    // the slider sits below the cleaned mesh's current face count,
-    // run meshopt down to the target before writing — so saved STLs
-    // honor the slider regardless of whether [Apply] was clicked
-    // first. Default slider value is `SIMPLIFY_TARGET_DEFAULT` (200k),
-    // which keeps 3M+ face raw scans from landing on disk unfiltered
-    // and grinding cf-cast-cli / cf-device-design downstream.
-    //
-    // The user opts OUT by dragging the slider up to or above the
-    // current face count.
-    let pre_simplify_face_count = cleaned.faces.len();
-    let mut simplify_status_suffix = String::new();
-    if simplify.target_face_count < pre_simplify_face_count {
-        let result = simplify_mesh(&cleaned, simplify.target_face_count);
-        simplify_status_suffix = format!(
-            ", simplified {} \u{2192} {} faces in {:.1}s",
-            human_count(pre_simplify_face_count),
-            human_count(result.mesh.faces.len()),
-            result.elapsed_secs,
-        );
-        cleaned = result.mesh;
-    }
+    // CSP.4e fix-forward (2026-05-15 evening): slice 9.8's save-time
+    // simplify-as-budget was removed. The in-app [Apply Simplify]
+    // button is the user-controlled simplification entry point; a
+    // hidden save-time re-simplify-if-target-exceeded was destructive
+    // to user-applied reconstruction geometry (it collapsed
+    // `apply_reconstruction`'s K=8 extrusion rings + flat-cap fan into
+    // sliver "spike" triangles, user-reported 2026-05-15 evening).
+    // Save now writes whatever the user has actively simplified +
+    // trimmed + reconstructed in-app, byte-faithfully — no hidden
+    // post-processing. The slider's `target_face_count` remains the
+    // [Apply]-button target and feeds the `.prep.toml` provenance.
+    let simplify_status_suffix = String::new();
     let triangle_count = cleaned.faces.len();
 
     let rotation = reorient.quaternion_physics();
