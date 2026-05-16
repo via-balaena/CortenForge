@@ -163,6 +163,21 @@ pub(crate) const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
 /// the `debug_assert!` in [`extract_layer_surface`].
 pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 
+/// Planarity tolerance (meters) for cap-face detection. A triangle
+/// is classified as a cap face iff *all three* of its vertices lie
+/// within this distance of any `included` cap plane.
+///
+/// 1 µm matches [`SDF_WELD_EPSILON_M`] — well above the float-ULP
+/// noise floor cf-scan-prep's `auto_cap_open_boundaries` leaves
+/// (vertices get projected exactly onto the fit plane before ear-
+/// clipping, so cap-face vertices sit bit-exactly on the plane
+/// modulo a few ULPs from the projection arithmetic). Generous
+/// enough for downstream decimation jitter; tight enough that an
+/// off-plane dome face that happens to graze the cap plane is not
+/// mis-classified (only an all-three-vertices match triggers
+/// removal — single-vertex grazes are kept).
+const CAP_FACE_PLANARITY_EPS_M: f64 = 1e-6;
+
 /// Decimated-scan SDF + a pre-filled `ScalarGrid` of its raw distance
 /// values, plus the AABB the grid covers.
 ///
@@ -288,6 +303,53 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
     remove_degenerate_triangles(&mut proxy, SDF_DEGENERATE_AREA_M2);
     remove_unreferenced_vertices(&mut proxy);
     proxy
+}
+
+/// Strip cap-polygon faces from a cleaned-scan mesh so the resulting
+/// open surface can drive the two-SDF cavity-mouth construction
+/// (cavity-mouth spec sub-leaf 2).
+///
+/// A face is a cap face iff its three vertices all lie within
+/// [`CAP_FACE_PLANARITY_EPS_M`] of any `included` cap plane.
+/// cf-scan-prep's `auto_cap_open_boundaries` projects boundary
+/// vertices onto the fit plane *before* ear-clipping, so cap-face
+/// vertices sit bit-exactly on the plane modulo a few float ULPs
+/// from the projection arithmetic; 1 µm is generous for that noise
+/// floor and survives decimation jitter.
+///
+/// Vertices are NOT compacted — the SDF construction tolerates
+/// unreferenced vertices (`SignedDistanceField::new` walks faces, not
+/// vertices); skipping the compaction step keeps face-index parity
+/// with the input so the cap planes stay aligned with whatever
+/// downstream code references both.
+///
+/// Empty `cap_planes` → mesh cloned unchanged (legacy fast path).
+fn dome_wall_only_mesh(cleaned_mesh: &IndexedMesh, cap_planes: &[CapPlane]) -> IndexedMesh {
+    if cap_planes.is_empty() {
+        return cleaned_mesh.clone();
+    }
+    let kept_faces: Vec<[u32; 3]> = cleaned_mesh
+        .faces
+        .iter()
+        .filter(|face| {
+            let v = [
+                cleaned_mesh.vertices[face[0] as usize],
+                cleaned_mesh.vertices[face[1] as usize],
+                cleaned_mesh.vertices[face[2] as usize],
+            ];
+            !cap_planes.iter().any(|plane| {
+                v.iter().all(|vi| {
+                    (vi.coords - plane.centroid.coords).dot(&plane.normal).abs()
+                        < CAP_FACE_PLANARITY_EPS_M
+                })
+            })
+        })
+        .copied()
+        .collect();
+    IndexedMesh {
+        vertices: cleaned_mesh.vertices.clone(),
+        faces: kept_faces,
+    }
 }
 
 /// Build the cached SDF + grid from a cleaned-scan mesh.
@@ -850,6 +912,116 @@ mod tests {
             .zip(second_fresh.vertices.iter())
         {
             assert!((a.coords - b.coords).norm() < 1e-12);
+        }
+    }
+
+    // ----- Sub-leaf 2: dome_wall_only_mesh ------------------------
+
+    /// Helper: build a `CapPlane` for tests (drops vertex_count /
+    /// loop_index — the helper under test only reads centroid + normal).
+    fn cap_plane_at(centroid: Point3<f64>, normal: Vector3<f64>) -> CapPlane {
+        CapPlane {
+            centroid,
+            normal: normal.normalize(),
+            vertex_count: 0,
+            loop_index: 0,
+        }
+    }
+
+    #[test]
+    fn dome_wall_only_mesh_empty_caps_returns_mesh_unchanged() {
+        // Legacy fast path: no caps → no face stripping.
+        let cube = axis_aligned_cube(0.5, Vector3::zeros());
+        let original_face_count = cube.faces.len();
+        let stripped = dome_wall_only_mesh(&cube, &[]);
+        assert_eq!(stripped.faces.len(), original_face_count);
+        assert_eq!(stripped.vertices.len(), cube.vertices.len());
+    }
+
+    #[test]
+    fn dome_wall_only_mesh_removes_top_face_of_cube() {
+        // Cube of half-extent 0.5 centered at origin. Top face is the
+        // +z face at z = 0.5; caller flags that plane as a cap. The
+        // cube has two triangles per face, so exactly two are removed.
+        let cube = axis_aligned_cube(0.5, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.5), Vector3::new(0.0, 0.0, 1.0));
+        let stripped = dome_wall_only_mesh(&cube, &[cap]);
+        assert_eq!(
+            stripped.faces.len(),
+            cube.faces.len() - 2,
+            "expected 2 top-face triangles removed; got {} (was {})",
+            stripped.faces.len(),
+            cube.faces.len(),
+        );
+        // No surviving face has all 3 vertices at z = 0.5 (the top cap
+        // was the only such face cluster).
+        for face in &stripped.faces {
+            let zs = [
+                stripped.vertices[face[0] as usize].z,
+                stripped.vertices[face[1] as usize].z,
+                stripped.vertices[face[2] as usize].z,
+            ];
+            assert!(
+                !zs.iter()
+                    .all(|&z| (z - 0.5).abs() < CAP_FACE_PLANARITY_EPS_M),
+                "expected no top-face triangle to survive; got {face:?} at z={zs:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn dome_wall_only_mesh_removes_both_caps_of_cylinder() {
+        // Capped cylinder, bottom cap at z = -h, top cap at z = +h.
+        // Flag both planes as caps → both cap fans removed (2n triangles
+        // per cap → 4n total), side wall (2n triangles) survives.
+        let n = 12;
+        let half_h = 0.4;
+        let cyl = capped_cylinder(0.3, half_h, n, Vector3::zeros());
+        let bot = cap_plane_at(Point3::new(0.0, 0.0, -half_h), Vector3::new(0.0, 0.0, -1.0));
+        let top = cap_plane_at(Point3::new(0.0, 0.0, half_h), Vector3::new(0.0, 0.0, 1.0));
+        let stripped = dome_wall_only_mesh(&cyl, &[bot, top]);
+        // Side wall: 2 triangles per circumference segment × n segments
+        // = 2n triangles. Each cap contributes n fan triangles.
+        let expected = 2 * (n as usize);
+        assert_eq!(
+            stripped.faces.len(),
+            expected,
+            "expected side wall only ({expected} tris); got {}",
+            stripped.faces.len(),
+        );
+    }
+
+    #[test]
+    fn dome_wall_only_mesh_keeps_face_grazing_cap_with_only_one_vertex() {
+        // A triangle with ONE vertex on a cap plane and two vertices
+        // off the plane is NOT a cap face; only the all-three-vertices
+        // case triggers removal. Guards against over-aggressive
+        // stripping in scans where the dome wall meets the cap rim.
+        let mut mesh = IndexedMesh::new();
+        // Two vertices off-plane, one on the cap plane (z = 0.5).
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.5));
+        mesh.vertices.push(Point3::new(0.1, 0.0, 0.3));
+        mesh.vertices.push(Point3::new(0.0, 0.1, 0.3));
+        mesh.faces.push([0, 1, 2]);
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.5), Vector3::new(0.0, 0.0, 1.0));
+        let stripped = dome_wall_only_mesh(&mesh, &[cap]);
+        assert_eq!(
+            stripped.faces.len(),
+            1,
+            "single-vertex graze must NOT trigger removal",
+        );
+    }
+
+    #[test]
+    fn dome_wall_only_mesh_vertex_array_unchanged() {
+        // Pin the "no compaction" invariant — face indices stay valid
+        // against the original vertex array.
+        let cube = axis_aligned_cube(0.5, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.5), Vector3::new(0.0, 0.0, 1.0));
+        let stripped = dome_wall_only_mesh(&cube, &[cap]);
+        assert_eq!(stripped.vertices.len(), cube.vertices.len());
+        for (i, v) in stripped.vertices.iter().enumerate() {
+            assert!((v.coords - cube.vertices[i].coords).norm() < 1e-12);
         }
     }
 }
