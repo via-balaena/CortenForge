@@ -44,10 +44,7 @@ use cf_viewer::{
 };
 use clap::Parser;
 use mesh_io::load_stl;
-use mesh_repair::{remove_degenerate_triangles, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Bounded, IndexedMesh, Point3};
-use meshopt::{SimplifyOptions, simplify_decoder, simplify_sloppy_decoder};
-use nalgebra::Vector3;
 use serde::Deserialize;
 
 /// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
@@ -80,10 +77,11 @@ pub(crate) mod insertion_sim_ui;
 /// layout.
 pub(crate) mod design_toml;
 
-/// Slice 9 — SDF-based layer surfaces. Replaces the per-vertex radial
-/// displacement of [`EnvelopeProxyMesh`] with cached-SDF + per-iso
-/// marching-cubes extraction. See `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md`
-/// for the architecture; module docs for the API + sign convention.
+/// Slice 9 — SDF-based layer surfaces. Replaces the retired per-vertex
+/// radial displacement (slice-3 `EnvelopeProxyMesh`) with cached-SDF
+/// + per-iso marching-cubes extraction. See
+/// `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md` for the architecture;
+/// module docs for the API + sign convention.
 pub(crate) mod sdf_layers;
 
 /// Cast-frame demolding-axis convention: `+Z` is up. Inherited from
@@ -112,11 +110,11 @@ struct Cli {
 
     /// Optional path to the cf-scan-prep `.prep.toml` companion file.
     /// Defaults to `<cleaned_stl_stem>.prep.toml` next to the cleaned
-    /// STL. The `[centerline].points_m` block drives the per-vertex
-    /// radial split that shapes the cavity + layer surfaces (see
-    /// [`EnvelopeProxyMesh`]); absent, the centerline overlay doesn't
-    /// render and the radials fall back to Z-stripped per-vertex
-    /// normals.
+    /// STL. The `[centerline].points_m` block drives the on-screen
+    /// centerline overlay; absent, the overlay does not render. The
+    /// centerline no longer participates in cavity / layer surface
+    /// shaping under the slice-9 SDF path — those surfaces come from
+    /// uniform-offset isosurfaces of the cleaned scan's SDF directly.
     #[arg(long, value_name = "PATH")]
     prep_toml: Option<PathBuf>,
 }
@@ -184,20 +182,17 @@ struct Centerline {
 /// strain ≈ `inset_m / local_scan_radius` — too little = sloppy
 /// fit, too much = silicone tears.
 ///
-/// Slice 4 v1: a single uniform inset along the entire scan proxy.
-/// A later slice may add the insertable-length clip
+/// Slice 4 v1: a single uniform inset along the entire scan. A
+/// later slice may add the insertable-length clip
 /// (`docs/ENGINEERING_SUITE_DESIGN.md` § 4) so the cavity covers
 /// only the inserted portion, with a tangent-perpendicular end
 /// cap.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 struct CavityState {
     /// Distance (meters) by which the cavity surface sits inside
-    /// the scan surface, measured along the per-vertex radial
-    /// direction ([`EnvelopeProxyMesh::vertex_radial_directions`]).
-    /// The cavity mesh displaces each proxy vertex by `-radial *
-    /// inset_m`. The radial is horizontal for below-/alongside-
-    /// centerline vertices and full-3D for the dome — see the
-    /// field docs on [`EnvelopeProxyMesh`].
+    /// the scan surface. The cavity surface is the uniform-offset
+    /// isosurface of the cleaned scan's SDF at iso = -`inset_m`
+    /// (slice 9 sub-leaves 3/4, [`sdf_layers::extract_layer_surface`]).
     inset_m: f64,
     /// Whether the cavity mesh entity is drawn this frame. User
     /// toggle in the Cavity panel.
@@ -337,204 +332,6 @@ impl LayersState {
         }
     }
 }
-
-/// Decimated proxy of the cleaned scan, shared by every surface
-/// mesh (cavity + per-layer outer surfaces). Each surface entity's
-/// vertex positions are the proxy's positions displaced by a
-/// signed offset along the per-vertex radial direction:
-///
-/// - cavity: `-cavity.inset_m`
-/// - layer i outer surface: `sum(layer.thickness[0..=i]) - cavity.inset_m`
-///
-/// Decimated to ~`ENVELOPE_PROXY_TARGET_FACES` (1500 faces) at
-/// startup — the iter-1 fixture's 3.3M-face cleaned mesh would be
-/// impossible to re-mesh on every slider tick at full resolution.
-#[derive(Resource, Debug, Clone)]
-struct EnvelopeProxyMesh {
-    /// Decimated scan vertices in physics-frame meters.
-    vertices: Vec<Point3<f64>>,
-    /// Per-vertex unit displacement direction. Used by both the
-    /// cavity (`-radial * inset`) and per-layer (`+radial * offset`)
-    /// surface meshes. Split by Z-region (computed in
-    /// [`compute_envelope_proxy_mesh`] step 5):
-    ///
-    /// - Vertices BELOW the centerline's Z-range (cleaned-cap rim +
-    ///   the bottom gap): HORIZONTAL-only radial — the Z component
-    ///   of `(v - nearest_centerline_pt)` is zeroed. Keeps the
-    ///   bottom plane pinned at its Z level under any displacement.
-    /// - Vertices WITHIN / ABOVE the centerline's Z-range (side
-    ///   walls + dome): FULL 3D radial — `(v - nearest_centerline_pt)`
-    ///   normalized. Side walls get a ≈-horizontal direction
-    ///   naturally; the dome gets a vertical component so it grows
-    ///   outward AND upward as layers thicken.
-    ///
-    /// Degenerate fallback (vertex coincident with the centerline
-    /// point): per-vertex normal, Z-stripped for below-centerline
-    /// vertices; finally `(1, 0, 0)` if even that is degenerate.
-    vertex_radial_directions: Vec<Vector3<f64>>,
-    /// Triangle face indices (post-decimation). Each face is three
-    /// `u32` indices into `vertices`. The cavity + per-layer
-    /// surface renderers build Bevy `Mesh` assets from the
-    /// displaced vertex positions + this connectivity.
-    faces: Vec<[u32; 3]>,
-    /// Original face count (pre-decimation) — surfaced in the panel
-    /// so the user knows the proxy is approximate.
-    original_face_count: usize,
-    /// Minimum radial distance (meters) from any non-degenerate
-    /// proxy vertex to its nearest centerline point — i.e. the
-    /// smallest `‖v − nearest_centerline_pt‖` over the vertices,
-    /// measured in the same Z-region-split metric as the radial
-    /// directions (horizontal-only below the centerline, full-3D
-    /// within/above).
-    ///
-    /// This is the cavity-collapse threshold: displacing the cavity
-    /// inward by `inset_m` moves each vertex `inset_m` along its
-    /// radial, so once `inset_m ≥ min_radial_distance_m` at least
-    /// one vertex has reached / crossed the centerline and the
-    /// cavity mesh self-intersects. The Validations panel (slice 6)
-    /// reads this for the cavity self-intersection check.
-    ///
-    /// `f64::INFINITY` when no centerline is available (< 2 points)
-    /// — without a centerline there is no radial-collapse metric, so
-    /// the check is reported as not-applicable.
-    #[allow(dead_code)]
-    // SDF analog (CachedScanSdf::min_sdf_value) consumed instead; retired in sub-leaf 6
-    min_radial_distance_m: f64,
-}
-
-/// Target face count after decimation for the shared scan proxy.
-/// **Only used when the input mesh exceeds
-/// [`ENVELOPE_PROXY_USE_FULL_MESH_THRESHOLD`]** — for typical
-/// cleaned scans coming out of cf-scan-prep (~100-300k faces)
-/// the proxy uses the full input mesh and this constant is
-/// inert.
-///
-/// 1500 faces was the historical default when the input was the
-/// raw 3.34M-face scan (slice 5 perf pass); kept as the fallback
-/// target for uncleaned / oversized inputs above the threshold.
-const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
-
-/// Input face-count threshold at or below which
-/// [`compute_envelope_proxy_mesh`] **skips decimation entirely**
-/// and uses the input mesh as the proxy directly.
-///
-/// **Why this exists** (2026-05-16): the original 1500-face proxy
-/// was a slice-5 perf pass for the raw 3.34M-face scan (then the
-/// input). Now that cf-scan-prep ships cleaned STLs in the
-/// 100-300k face range, decimating to 1500 is destructive — it
-/// produces visible 5 mm facets on cavity + layer previews that
-/// the user can't distinguish from real geometry. At 169k
-/// (iter-1 fixture) the per-tick rebuild cost is well under one
-/// frame:
-///
-/// | per-tick cost (169k faces) | observed |
-/// |---|---|
-/// | per-vertex displacement | < 1 ms |
-/// | `compute_smooth_normals`  | ~ 1 ms |
-/// | GPU upload (~4 MB)        | ~ 2-3 ms |
-/// | **per layer**             | **< 5 ms** |
-///
-/// Two layers + cavity ≈ 15 ms, well under the 16.6 ms 60-FPS
-/// frame budget. So for typical inputs we just use the full mesh
-/// and skip the entire decimation pipeline.
-///
-/// **500k is the cutoff** because above that the per-tick costs
-/// (GPU upload + smooth-normals walk) start to scale into
-/// noticeable frame hitch territory on M-series hardware. Users
-/// who load a >500k face scan get the original
-/// decimate-to-`ENVELOPE_PROXY_TARGET_FACES` path as a
-/// safety-net for interactivity.
-const ENVELOPE_PROXY_USE_FULL_MESH_THRESHOLD: usize = 500_000;
-
-/// Weld epsilon (meters) for the pre-decimation vertex weld.
-/// Matches cf-scan-prep's `SIMPLIFY_WELD_EPSILON_M = 1e-6` — the
-/// cleaned scan's STL load produces 3-per-triangle unshared
-/// vertices that meshopt needs welded to find collapsible edges.
-const ENVELOPE_PROXY_WELD_EPSILON_M: f64 = 1e-6;
-
-/// `meshopt::simplify_decoder`'s target-error parameter — relaxed
-/// upper bound (10.0 ≈ 1000 % of mesh half-extent) so the face-count
-/// target is the binding constraint, not the quadric error ceiling.
-/// `simplify_decoder` (topology-preserving) doesn't produce the
-/// sliver triangles that `simplify_sloppy_decoder` is prone to, so
-/// the slightly looser target-error is safe.
-///
-/// **2026-05-16**: switched from `simplify_sloppy_decoder` back to
-/// `simplify_decoder` after user-reported sliver triangles visible
-/// in the cavity + layer previews on the iter-1 sock-over-capsule
-/// fixture. `simplify_sloppy` is "topology-non-preserving" by
-/// design — its slivers had no cast impact (cf-cast samples the
-/// cleaned STL's SDF directly, not this proxy) but undermined
-/// design-time confidence in the viewport. The original switch to
-/// sloppy (slice 5 perf pass) was driven by the RAW iter-1 scan
-/// (3.34 M faces with degenerates + disconnected components)
-/// blocking topology-preserving collapse. Since then,
-/// cf-scan-prep's `cleanup_cleaned_mesh_for_disk` runs the same
-/// hygiene pass at save time (weld + degenerate-removal + small
-/// components + unreferenced-vertex compaction), so the cleaned
-/// STLs cf-device-design sees today are amenable to the regular
-/// `simplify_decoder` again. [`compute_envelope_proxy_mesh`] falls
-/// back to `simplify_sloppy_decoder` if the topology-preserving
-/// path doesn't reach a reasonable face count — defensive for
-/// users who load uncleaned scans directly.
-const ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
-
-/// Area threshold for the post-decimation
-/// [`remove_degenerate_triangles`] hygiene pass in
-/// [`compute_envelope_proxy_mesh`]. Square meters; 1e-15 m² matches
-/// cf-scan-prep's `CLEANUP_DEGENERATE_AREA_M2` (the same constant
-/// scope rationale: well below cf-cast's 2 mm-cell SDF resolution
-/// + below the f32 quantization floor meshopt operates at).
-const ENVELOPE_PROXY_DEGENERATE_AREA_M2: f64 = 1e-15;
-
-/// Number of Laplacian-smoothing iterations applied to the
-/// per-vertex radial direction field in
-/// [`compute_envelope_proxy_mesh`].
-///
-/// **Why this exists** (2026-05-16): displacement uses
-/// `vertex + radial * offset` per-vertex; with a 1500-face proxy
-/// the raw radials at neighboring vertices can diverge by several
-/// degrees (each is sensitive to local mesh noise + the
-/// centerline-tip wiggle). At a 10 mm offset, 5° of neighbor
-/// divergence produces ~0.9 mm of lateral skew per triangle —
-/// enough to visibly chunk the Layer 0 / Layer 1 surfaces.
-///
-/// Smoothing the radial vector field via Laplacian iterations
-/// (each vertex's radial becomes the weighted average of itself
-/// and its 1-ring neighbors, re-normalized) reduces neighbor
-/// divergence by ~80% in 5 iterations on the iter-1 fixture
-/// without changing the dominant displacement direction. The
-/// fixed point of this smoother is the area-weighted body-axis
-/// approximation, which is exactly the direction we want for
-/// each layer to expand uniformly outward.
-///
-/// **Constraints preserved after each iteration**:
-/// - Below-centerline vertices (the bottom-rim region) are
-///   re-zeroed in Z, so the bottom plane stays pinned at its
-///   Z level.
-/// - All radials are re-normalized to unit length.
-///
-/// 5 iterations was the smallest count that visibly cleaned up
-/// Layer 1 (the worst offender) on the iter-1 sock-over-capsule
-/// fixture without erasing meaningful per-vertex variation. Raise
-/// if higher proxy densities or curvier bodies surface residual
-/// chunkiness.
-const VERTEX_RADIAL_SMOOTH_ITERATIONS: usize = 5;
-
-/// Sloppy-fallback threshold for [`compute_envelope_proxy_mesh`].
-/// `simplify_decoder` (topology-preserving) is allowed to stop
-/// short of the target if local quadric error or topology pinning
-/// limits collapse — that's fine for cleaned STLs, but raw /
-/// uncleaned STLs may stop with far too many faces (the iter-1
-/// raw 3.34 M scan retained its full count through the regular
-/// simplify before cf-scan-prep started running cleanup). When
-/// the regular path leaves more than this multiplier × the
-/// target face count, fall back to `simplify_sloppy_decoder` so
-/// the viewport stays responsive. 4× target (= 6000 faces for a
-/// 1500-face target) is loose enough that lightly-noisy
-/// cleaned STLs don't trip it but tight enough that an
-/// uncleaned multi-million-face STL does.
-const ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER: usize = 4;
 
 // ----- .prep.toml parsing (subset; centerline only) -----------------
 
@@ -727,394 +524,6 @@ fn build_scan_info(path: &Path, mesh: &IndexedMesh, centerline_points: &[Point3<
 /// (down to 0 = cavity-coincident-with-scan, useful as a debug
 /// reference but not a buildable design).
 const CAVITY_DEFAULT_INSET_M: f64 = 0.003;
-
-/// Decimate the cleaned scan to a ~`ENVELOPE_PROXY_TARGET_FACES`-
-/// face proxy mesh + compute the per-vertex radial directions.
-/// Returns the proxy struct shared by the cavity + per-layer
-/// mesh-update systems for per-frame mesh regeneration.
-///
-/// Pipeline:
-/// 1. Weld duplicated vertices (STL load produces 3-per-triangle
-///    unshared vertices that meshopt can't decimate without
-///    shared topology).
-/// 2. `meshopt::simplify_sloppy_decoder` — topology-non-preserving
-///    decimation that ALWAYS reaches the target face count.
-///    Required for the iter-1 cleaned scan, which retains its full
-///    3.34 M face count through topology-preserving simplification
-///    (disconnected components + degenerate triangles block the
-///    regular collapse algorithm).
-/// 3. Strip unreferenced vertices left over from the decimation.
-/// 4. Compute face normals from triangle CCW order, then per-vertex
-///    normals as area-weighted averages of incident face normals
-///    (used only as the degenerate fallback for radial directions).
-/// 5. Compute per-vertex radial directions, split by Z-region (see
-///    the `vertex_radial_directions` field docs).
-///
-/// Cost: O(N_orig_faces) for weld + meshopt + O(N_decimated) for
-/// normals + radials. For the iter-1 fixture (3.3 M cleaned faces →
-/// 1500 proxy faces) this runs in ~5–10 s at startup; one-time.
-fn compute_envelope_proxy_mesh(
-    scan_mesh: &IndexedMesh,
-    centerline: &[Point3<f64>],
-) -> EnvelopeProxyMesh {
-    let original_face_count = scan_mesh.faces.len();
-
-    // Step 1: weld unshared vertices, then **compact the vertex
-    // array**. Same trick as cf-scan-prep's `simplify_mesh`
-    // (commit `e314d713`, 2026-05-16): `weld_vertices` remaps face
-    // indices to canonical reps but leaves merged-away duplicates
-    // as unreferenced entries; meshopt silently no-ops on sparse
-    // positions arrays. Compact before feeding meshopt.
-    let mut welded = scan_mesh.clone();
-    weld_vertices(&mut welded, ENVELOPE_PROXY_WELD_EPSILON_M);
-    remove_unreferenced_vertices(&mut welded);
-
-    // Step 2: decimate ONLY if the input exceeds the
-    // use-full-mesh threshold. For typical cleaned scans
-    // (100-300k faces) the proxy IS the full input mesh — the
-    // per-slider-tick rebuild cost fits comfortably within a
-    // 60-FPS frame budget at that scale, and we avoid the
-    // visible facets that any decimation introduces.
-    let mut proxy = welded;
-    if proxy.faces.len() > ENVELOPE_PROXY_USE_FULL_MESH_THRESHOLD {
-        // f64 → f32 cast is intentional; meshopt's C API operates on f32.
-        #[allow(clippy::cast_possible_truncation)]
-        let positions: Vec<[f32; 3]> = proxy
-            .vertices
-            .iter()
-            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
-            .collect();
-        let indices: Vec<u32> = proxy.faces.iter().flatten().copied().collect();
-        let target_index_count = ENVELOPE_PROXY_TARGET_FACES.saturating_mul(3);
-        // Topology-preserving simplify first. Doesn't produce the
-        // sliver triangles that `simplify_sloppy_decoder` is prone
-        // to. `LockBorder` pins open-boundary loops in place —
-        // important because cleaned scans coming out of cf-scan-prep
-        // are watertight; this is belt-and-suspenders.
-        let mut result_error = 0.0_f32;
-        let simplified_indices = if target_index_count < indices.len() {
-            let regular = simplify_decoder(
-                &indices,
-                &positions,
-                target_index_count,
-                ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
-                SimplifyOptions::LockBorder,
-                Some(&mut result_error),
-            );
-            let regular_face_count = regular.len() / 3;
-            let fallback_threshold = ENVELOPE_PROXY_TARGET_FACES
-                .saturating_mul(ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER);
-            if regular_face_count > fallback_threshold {
-                // Topology-preserving simplify left too many
-                // faces — input STL likely has degenerate
-                // triangles / disconnected components blocking
-                // collapse (the pre-cf-scan-prep-cleanup raw
-                // scan failure mode). Fall back to sloppy so the
-                // viewport stays responsive.
-                eprintln!(
-                    "[envelope_proxy] simplify_decoder stopped at {regular_face_count} faces \
-                     (target {ENVELOPE_PROXY_TARGET_FACES}, fallback threshold {fallback_threshold}); \
-                     falling back to simplify_sloppy_decoder",
-                );
-                simplify_sloppy_decoder(
-                    &indices,
-                    &positions,
-                    target_index_count,
-                    ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
-                    Some(&mut result_error),
-                )
-            } else {
-                regular
-            }
-        } else {
-            indices.clone()
-        };
-        proxy.faces = simplified_indices
-            .chunks_exact(3)
-            .map(|tri| [tri[0], tri[1], tri[2]])
-            .collect();
-    }
-
-    // Step 3: defensive degenerate-triangle hygiene pass, then
-    // re-compact unreferenced vertices. Most useful when we fell
-    // back to sloppy (the failure mode we're trying to mask), but
-    // also cheap insurance for the no-decimation path (the welded
-    // input is already clean, so this is a no-op in the typical
-    // case).
-    remove_degenerate_triangles(&mut proxy, ENVELOPE_PROXY_DEGENERATE_AREA_M2);
-    remove_unreferenced_vertices(&mut proxy);
-
-    // Step 4: face normals (CCW triangle winding × right-hand rule
-    // = outward for cf-scan-prep's cleaned-mesh convention).
-    let face_normals: Vec<Vector3<f64>> = proxy
-        .faces
-        .iter()
-        .map(|face| {
-            let v0 = proxy.vertices[face[0] as usize].coords;
-            let v1 = proxy.vertices[face[1] as usize].coords;
-            let v2 = proxy.vertices[face[2] as usize].coords;
-            let e1 = v1 - v0;
-            let e2 = v2 - v0;
-            // Un-normalized so the magnitude carries the face area
-            // weight (= 2 × triangle area) into the vertex-normal
-            // accumulation. Area-weighting biases the per-vertex
-            // normal toward bigger neighboring triangles, which
-            // gives a more physically meaningful "outward" at
-            // vertices on a curved surface.
-            e1.cross(&e2)
-        })
-        .collect();
-
-    // Per-vertex normals: sum face normals (which carry area
-    // weight via their pre-normalized magnitudes), then normalize.
-    let mut vertex_normals: Vec<Vector3<f64>> = vec![Vector3::zeros(); proxy.vertices.len()];
-    for (face, fn_vec) in proxy.faces.iter().zip(face_normals.iter()) {
-        for &idx in face {
-            vertex_normals[idx as usize] += fn_vec;
-        }
-    }
-    // Normalize; fall back to +Z for any vertex with no incident
-    // faces (defensive — should not happen after remove_unrefed).
-    for n in &mut vertex_normals {
-        let norm = n.norm();
-        if norm > 1e-12 {
-            *n /= norm;
-        } else {
-            *n = Vector3::new(0.0, 0.0, 1.0);
-        }
-    }
-
-    // Step 5: per-vertex radial directions. Split by Z-region so
-    // the bottom rim stays pinned while the dome grows in 3D:
-    //
-    // - Vertices BELOW the centerline's Z-range (the cleaned-cap
-    //   rim + the bottom gap where the centerline doesn't reach):
-    //   HORIZONTAL-only radial = `(vertex - nearest_centerline_pt)`
-    //   with Z zeroed. Keeps the bottom plane fixed at its Z level;
-    //   displacement grows the rim laterally, never axially.
-    //
-    // - Vertices WITHIN / ABOVE the centerline's Z-range (side
-    //   walls + dome): FULL 3D radial = `(vertex -
-    //   nearest_centerline_pt)` normalized. For side walls this is
-    //   naturally ≈ horizontal (vertex is beside the centerline);
-    //   for the dome it has a vertical component so the dome grows
-    //   outward AND upward when layers thicken.
-    //
-    // The split point is `centerline_min_z` — below it the
-    // centerline doesn't run alongside the geometry, so a 3D radial
-    // would tilt downward (the centerline endpoint is ABOVE the rim
-    // vertex) and drag the rim down. There's no visible
-    // discontinuity at the threshold because the 3D radial just
-    // above `centerline_min_z` is itself ≈ horizontal.
-    // Each closure returns `(radial_direction, radial_distance)`:
-    // the unit displacement direction plus the distance from the
-    // vertex to its nearest centerline point in the same metric.
-    // Degenerate vertices carry `f64::INFINITY` distance so they do
-    // not drag the cavity-collapse minimum to zero.
-    let centerline_min_z = centerline.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
-    let radial_pairs: Vec<(Vector3<f64>, f64)> = if centerline.len() >= 2 {
-        proxy
-            .vertices
-            .iter()
-            .zip(vertex_normals.iter())
-            .map(|(v, n)| {
-                let nearest_i = nearest_centerline_index(v, centerline);
-                let diff = v.coords - centerline[nearest_i].coords;
-                let below_centerline = v.z < centerline_min_z;
-                let raw = if below_centerline {
-                    // Bottom rim / gap region: horizontal only.
-                    Vector3::new(diff.x, diff.y, 0.0)
-                } else {
-                    // Side wall + dome: full 3D radial.
-                    diff
-                };
-                let len = raw.norm();
-                if len > 1e-9 {
-                    (raw / len, len)
-                } else {
-                    // Degenerate (vertex coincident with the
-                    // centerline point). Fall back to the per-vertex
-                    // normal, Z-stripped for below-centerline
-                    // vertices (keep them axially fixed), full 3D
-                    // otherwise. Distance is INFINITY — a coincident
-                    // vertex has no meaningful radial collapse depth.
-                    let fallback = if below_centerline {
-                        Vector3::new(n.x, n.y, 0.0)
-                    } else {
-                        *n
-                    };
-                    let len_f = fallback.norm();
-                    let dir = if len_f > 1e-9 {
-                        fallback / len_f
-                    } else {
-                        Vector3::new(1.0, 0.0, 0.0)
-                    };
-                    (dir, f64::INFINITY)
-                }
-            })
-            .collect()
-    } else {
-        // No centerline available; use per-vertex normals (with Z
-        // stripped) as the radial proxy. Consistent posture with the
-        // centerline-present path's below-centerline branch. Without
-        // a centerline there is no radial-collapse metric, so every
-        // distance is INFINITY (cavity self-intersection check is
-        // reported not-applicable downstream).
-        vertex_normals
-            .iter()
-            .map(|n| {
-                let n_xy = Vector3::new(n.x, n.y, 0.0);
-                let len = n_xy.norm();
-                let dir = if len > 1e-9 {
-                    n_xy / len
-                } else {
-                    Vector3::new(1.0, 0.0, 0.0)
-                };
-                (dir, f64::INFINITY)
-            })
-            .collect()
-    };
-
-    let min_radial_distance_m = radial_pairs
-        .iter()
-        .map(|(_, d)| *d)
-        .fold(f64::INFINITY, f64::min);
-    let raw_radials: Vec<Vector3<f64>> = radial_pairs.into_iter().map(|(dir, _)| dir).collect();
-
-    // Per-vertex below-centerline flag, captured once so the
-    // smoothing pass can re-apply the z=0 constraint after each
-    // iteration without re-recomputing `nearest_centerline_index`.
-    // For polylines with fewer than 2 points the radial computation
-    // above used the centerline-absent path (every radial already
-    // has z=0 via per-vertex-normal projection); treat all vertices
-    // as below-centerline so the constraint re-application is a
-    // no-op (matches the radial-pair contract).
-    let below_centerline_flags: Vec<bool> = if centerline.len() >= 2 {
-        let centerline_min_z = centerline.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
-        proxy
-            .vertices
-            .iter()
-            .map(|v| v.z < centerline_min_z)
-            .collect()
-    } else {
-        vec![true; proxy.vertices.len()]
-    };
-
-    // Smooth the radial vector field via [`VERTEX_RADIAL_SMOOTH_ITERATIONS`]
-    // Laplacian passes; see the constant's docstring for rationale.
-    let vertex_radial_directions = smooth_radial_field(
-        &raw_radials,
-        &proxy.faces,
-        &below_centerline_flags,
-        VERTEX_RADIAL_SMOOTH_ITERATIONS,
-    );
-
-    EnvelopeProxyMesh {
-        vertices: proxy.vertices,
-        vertex_radial_directions,
-        faces: proxy.faces,
-        original_face_count,
-        min_radial_distance_m,
-    }
-}
-
-/// Laplacian-smooth a per-vertex unit-vector field over the
-/// proxy mesh's 1-ring adjacency, with two constraints
-/// re-applied after each iteration:
-///
-/// 1. Below-centerline vertices (per `below_centerline_flags`)
-///    have their Z component re-zeroed, so the bottom-rim
-///    stays purely radial-horizontal.
-/// 2. All vectors are re-normalized to unit length.
-///
-/// 1-ring adjacency is derived from `faces`: vertex `i` is
-/// adjacent to vertex `j` iff they share at least one face.
-/// Each Laplacian update is `new[i] = (raw[i] + sum_neighbors[i])
-/// / (1 + neighbor_count[i])`, then re-projected to the unit
-/// sphere (with the z=0 constraint where applicable).
-///
-/// Returns `radials.to_vec()` unchanged when `iterations == 0`
-/// or `radials.is_empty()`. For a degenerate vertex (no
-/// neighbors or near-zero smoothed length) the input radial is
-/// passed through; the input radial's own degenerate handling
-/// (e.g., the `(1, 0, 0)` fallback in `compute_envelope_proxy_mesh`)
-/// applies.
-///
-/// **Cost**: O(iterations × (vertices + 3 × faces)) — for the
-/// iter-1 fixture (~750 verts, 1500 faces, 5 iterations) this is
-/// ~12k vector adds + 4k normalizes, well under 1 ms at startup.
-fn smooth_radial_field(
-    radials: &[Vector3<f64>],
-    faces: &[[u32; 3]],
-    below_centerline_flags: &[bool],
-    iterations: usize,
-) -> Vec<Vector3<f64>> {
-    if iterations == 0 || radials.is_empty() {
-        return radials.to_vec();
-    }
-    let n = radials.len();
-    // Build 1-ring adjacency: `neighbors[i]` is the list of
-    // vertex indices sharing at least one face with `i`. Use a
-    // sorted-deduped Vec rather than a HashSet — typical valence
-    // is 5-7, so linear search beats hash overhead.
-    let mut neighbors: Vec<Vec<u32>> = vec![Vec::new(); n];
-    for face in faces {
-        for &a in face {
-            for &b in face {
-                if a == b {
-                    continue;
-                }
-                if !neighbors[a as usize].contains(&b) {
-                    neighbors[a as usize].push(b);
-                }
-            }
-        }
-    }
-
-    let mut current = radials.to_vec();
-    let mut next = current.clone();
-    for _ in 0..iterations {
-        for i in 0..n {
-            let mut sum = current[i];
-            let mut count = 1.0_f64;
-            for &j in &neighbors[i] {
-                sum += current[j as usize];
-                count += 1.0;
-            }
-            let mut avg = sum / count;
-            if i < below_centerline_flags.len() && below_centerline_flags[i] {
-                avg.z = 0.0;
-            }
-            let len = avg.norm();
-            next[i] = if len > 1e-9 {
-                avg / len
-            } else {
-                // Smoothed vector collapsed (e.g., neighbor
-                // radials cancelled out). Keep the un-smoothed
-                // value so the fallback chain in
-                // `compute_envelope_proxy_mesh` stays valid.
-                current[i]
-            };
-        }
-        std::mem::swap(&mut current, &mut next);
-    }
-    current
-}
-
-/// Index of the centerline polyline point closest to `v` by
-/// Euclidean distance. Returns 0 for an empty centerline.
-fn nearest_centerline_index(v: &Point3<f64>, centerline: &[Point3<f64>]) -> usize {
-    let mut best_i = 0;
-    let mut best_dist_sq = f64::INFINITY;
-    for (i, p) in centerline.iter().enumerate() {
-        let d = (v.coords - p.coords).norm_squared();
-        if d < best_dist_sq {
-            best_dist_sq = d;
-            best_i = i;
-        }
-    }
-    best_i
-}
 
 // ============================================================
 // Geometric validations (slice 6)
@@ -1821,91 +1230,6 @@ struct LayerMeshKey {
     last_run_generation: u64,
 }
 
-/// Build a Bevy `Mesh` from the proxy mesh's connectivity, with
-/// each vertex displaced along its radial direction by `offset_m`
-/// in physics frame, then mapped through the cast-frame `UpAxis`
-/// swap + `render_scale` lift to Bevy frame.
-///
-/// Retired-but-retained for sub-leaf 4: `update_layer_meshes` still
-/// consumes the `_with_colors` variant until sub-leaf 4 swaps the
-/// per-layer path too. Sub-leaf 6 retires both wrappers + the
-/// `EnvelopeProxyMesh`'s per-vertex radial machinery wholesale.
-#[allow(dead_code)] // retired in sub-leaf 6
-fn build_displaced_proxy_mesh(
-    proxy: &EnvelopeProxyMesh,
-    offset_m: f64,
-    up: UpAxis,
-    render_scale: f32,
-) -> Mesh {
-    build_displaced_proxy_mesh_with_colors(proxy, offset_m, up, render_scale, None)
-}
-
-/// Same as [`build_displaced_proxy_mesh`] but with optional per-vertex
-/// RGBA colors. When `vertex_colors` is `Some(slice)`, the mesh gets
-/// the [`Mesh::ATTRIBUTE_COLOR`] attribute populated; with
-/// [`StandardMaterial::base_color`] kept at white-multiplied, Bevy's
-/// PBR shader picks up the per-vertex color via Gouraud interpolation
-/// at fragments — used by the Insertion Sim panel's heat-map mode to
-/// recolor the existing per-layer shells without a separate mesh
-/// pipeline.
-///
-/// # Panics
-///
-/// `vertex_colors` must match `proxy.vertices.len()` when `Some`;
-/// mismatched lengths panic via the `Mesh::ATTRIBUTE_COLOR` insert
-/// invariant — a construction-side bug, not a runtime data
-/// dependence.
-fn build_displaced_proxy_mesh_with_colors(
-    proxy: &EnvelopeProxyMesh,
-    offset_m: f64,
-    up: UpAxis,
-    render_scale: f32,
-    vertex_colors: Option<&[[f32; 4]]>,
-) -> Mesh {
-    let positions: Vec<[f32; 3]> = proxy
-        .vertices
-        .iter()
-        .zip(proxy.vertex_radial_directions.iter())
-        .map(|(v, r)| {
-            let displaced_physics = Point3::from(v.coords + r * offset_m);
-            let bevy = up.to_bevy_point(&displaced_physics);
-            #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
-            [
-                bevy[0] * render_scale,
-                bevy[1] * render_scale,
-                bevy[2] * render_scale,
-            ]
-        })
-        .collect();
-    let indices: Vec<u32> = proxy.faces.iter().flatten().copied().collect();
-
-    let mut mesh = Mesh::new(
-        bevy::mesh::PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-    // Compute smooth (per-vertex-averaged) normals from the
-    // triangle winding. Bevy's PBR shader needs vertex normals for
-    // lighting; without them surfaces render uniform-dark. We use
-    // smooth-normals (not flat) because flat-normals require
-    // unindexed geometry — and the proxy mesh is indexed for
-    // memory + render efficiency.
-    mesh.compute_smooth_normals();
-    if let Some(colors) = vertex_colors {
-        assert_eq!(
-            colors.len(),
-            proxy.vertices.len(),
-            "build_displaced_proxy_mesh_with_colors: vertex_colors.len() = {} \
-             must match proxy.vertices.len() = {}",
-            colors.len(),
-            proxy.vertices.len(),
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.to_vec());
-    }
-    mesh
-}
-
 /// Build a Bevy `Mesh` directly from an [`IndexedMesh`] — no
 /// per-vertex displacement. Used by the SDF-extracted cavity + per-
 /// layer surfaces (slice 9, [`sdf_layers::extract_layer_surface`]).
@@ -1913,17 +1237,17 @@ fn build_displaced_proxy_mesh_with_colors(
 /// plus the `render_scale` lift to Bevy frame; computes smooth
 /// per-vertex normals from face winding.
 ///
-/// Parallel to [`build_displaced_proxy_mesh`]; the SDF path
-/// extracts geometry where the iso surface naturally lives, so
-/// there's no displacement step at the bevy-mesh-build boundary.
+/// Replaced the prior `build_displaced_proxy_mesh*` wrappers (sub-leaf
+/// 6) — the SDF iso path extracts geometry where it naturally lives,
+/// so there is no displacement step at the bevy-mesh-build boundary.
 fn build_bevy_mesh_from_indexed(mesh: &IndexedMesh, up: UpAxis, render_scale: f32) -> Mesh {
     build_bevy_mesh_from_indexed_with_colors(mesh, up, render_scale, None)
 }
 
 /// Same as [`build_bevy_mesh_from_indexed`] but with optional per-
-/// vertex RGBA colors — heat-map analog of
-/// [`build_displaced_proxy_mesh_with_colors`] for the SDF path
-/// (slice 9 sub-leaf 7 wires this for the Insertion Sim panel).
+/// vertex RGBA colors — the SDF-path heat-map analog of the
+/// retired `build_displaced_proxy_mesh_with_colors` (slice 9
+/// sub-leaf 7 wires this for the Insertion Sim panel).
 ///
 /// # Panics
 ///
@@ -2912,18 +2236,6 @@ fn run_render_app(
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
     let render_scale = compute_render_scale(raw_diagonal);
-    // Decimate the cleaned scan to a shared proxy mesh (~1500
-    // faces) + per-vertex radial directions. The cavity + per-layer
-    // surface meshes are regenerated from this proxy on every
-    // slider tick. One-time decimation cost at startup; ~5–10 s on
-    // the iter-1 3.3 M-face fixture, sub-second on small inputs.
-    let envelope_proxy = compute_envelope_proxy_mesh(&scan_mesh, &centerline_points);
-    println!(
-        "envelope proxy: {} faces, {} vertices (decimated from {} faces)",
-        envelope_proxy.faces.len(),
-        envelope_proxy.vertices.len(),
-        envelope_proxy.original_face_count,
-    );
     // Slice 8 — start from defaults, then apply the loaded design if
     // any. `apply_design_toml` errors only on catalog lookup, already
     // gated by `validate_design_toml` at `load_design_toml`. A failure
@@ -2963,7 +2275,6 @@ fn run_render_app(
         .insert_resource(Centerline {
             points_m: centerline_points,
         })
-        .insert_resource(envelope_proxy)
         .insert_resource(cached_scan_sdf)
         .insert_resource(cavity)
         .insert_resource(layers)
@@ -3281,130 +2592,6 @@ another_future_field = "foo"
         // the cavity, which sits INSIDE the scan and is occluded by
         // it when both are drawn.
         assert!(ScanMeshVisible::default().0);
-    }
-
-    // ----- Slice 3 — decimated scan proxy --------------------------
-
-    #[test]
-    fn envelope_proxy_unit_cube_yields_decimated_mesh_with_radials() {
-        // Unit cube fixture has 12 faces; with
-        // ENVELOPE_PROXY_TARGET_FACES = 1500 the sloppy decimator
-        // skips decimation (already under target). Proxy should
-        // match the input face count, weld to 8 shared vertices,
-        // and expose one unit-length radial per vertex.
-        let mesh = unit_cube_mesh();
-        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
-        assert_eq!(proxy.original_face_count, 12);
-        assert_eq!(proxy.faces.len(), 12);
-        // After welding ±0.05 cube vertices match exactly; 8 shared.
-        assert_eq!(proxy.vertices.len(), 8);
-        assert_eq!(proxy.vertex_radial_directions.len(), proxy.vertices.len());
-        for r in &proxy.vertex_radial_directions {
-            assert!(
-                approx_eq(r.norm(), 1.0, 1e-9),
-                "radial not unit-length: |r| = {}",
-                r.norm()
-            );
-        }
-    }
-
-    #[test]
-    fn envelope_proxy_empty_mesh_yields_empty_proxy() {
-        let mesh = IndexedMesh::new();
-        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
-        assert_eq!(proxy.original_face_count, 0);
-        assert!(proxy.vertices.is_empty());
-        assert!(proxy.vertex_radial_directions.is_empty());
-        assert!(proxy.faces.is_empty());
-    }
-
-    #[test]
-    fn envelope_proxy_radials_horizontal_when_vertices_align_with_centerline() {
-        // Cube fixture spanning Z ∈ [-0.05, 0.05] with a Z-aligned
-        // centerline at the same Z extents. Every cube vertex sits
-        // at the SAME Z as its nearest centerline point, so
-        // `(v - centerline_pt)` has zero Z component — radial is
-        // purely horizontal on every vertex regardless of the
-        // below-/above-centerline branch. Unit length on every path.
-        let mesh = unit_cube_mesh();
-        let centerline = vec![
-            Point3::new(0.0, 0.0, -0.05),
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 0.05),
-        ];
-        let proxy = compute_envelope_proxy_mesh(&mesh, &centerline);
-        for r in &proxy.vertex_radial_directions {
-            assert!(
-                r.z.abs() < 1e-9,
-                "radial {:?} has nonzero Z (vertex aligns with centerline Z)",
-                r
-            );
-            assert!(
-                (r.norm() - 1.0).abs() < 1e-9,
-                "radial {:?} not unit length",
-                r
-            );
-        }
-    }
-
-    #[test]
-    fn envelope_proxy_dome_vertices_get_vertical_radial_component() {
-        // A vertex ABOVE the centerline's Z-range must get a radial
-        // with a positive Z component (full 3D radial) so the dome
-        // grows outward AND upward. Build a 2-point Z centerline
-        // capped at z = 0.0; a single vertex at (0, 0, 0.1) is
-        // directly above the top centerline point. Its radial must
-        // be +Z (the dome-growth direction).
-        //
-        // We can't easily inject a custom proxy mesh, so this test
-        // exercises the radial branch logic directly: with
-        // centerline_min_z = -0.05 and a vertex at z = 0.1 (above
-        // it), the diff (0, 0, 0.1) - (0, 0, 0.0) = (0, 0, 0.1)
-        // normalizes to +Z.
-        //
-        // The unit cube proxy doesn't have a vertex above its
-        // centerline's max, so this is verified via a small
-        // synthetic single-triangle mesh whose apex sits above the
-        // centerline.
-        let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Point3::new(-0.01, -0.01, -0.05)); // base rim
-        mesh.vertices.push(Point3::new(0.01, -0.01, -0.05));
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.10)); // apex, above centerline
-        mesh.faces.push([0, 1, 2]);
-        let centerline = vec![Point3::new(0.0, 0.0, -0.05), Point3::new(0.0, 0.0, 0.0)];
-        let proxy = compute_envelope_proxy_mesh(&mesh, &centerline);
-        // The apex vertex (z = 0.10, above centerline_max) must have
-        // a radial with a positive Z component.
-        let apex_idx = proxy
-            .vertices
-            .iter()
-            .position(|v| v.z > 0.05)
-            .expect("apex vertex should survive decimation");
-        assert!(
-            proxy.vertex_radial_directions[apex_idx].z > 0.1,
-            "apex radial {:?} should have a clear +Z component for dome growth",
-            proxy.vertex_radial_directions[apex_idx],
-        );
-    }
-
-    #[test]
-    fn envelope_proxy_no_centerline_yields_horizontal_radials() {
-        // Without a centerline (< 2 points), the radial directions
-        // are still purely horizontal — derived from the per-vertex
-        // normals with Z stripped + renormalized. Pinning this
-        // guarantees no axial Z bleeds into displacement regardless
-        // of centerline presence.
-        let mesh = unit_cube_mesh();
-        let proxy = compute_envelope_proxy_mesh(&mesh, &[]);
-        assert_eq!(proxy.vertex_radial_directions.len(), proxy.vertices.len());
-        for r in &proxy.vertex_radial_directions {
-            assert!(r.z.abs() < 1e-9, "radial {:?} has nonzero Z component", r);
-            assert!(
-                (r.norm() - 1.0).abs() < 1e-9,
-                "radial {:?} not unit length",
-                r
-            );
-        }
     }
 
     /// `Aabb` re-export from `mesh_types` (transitive from

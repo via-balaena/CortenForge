@@ -25,14 +25,12 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::egui;
 use mesh_types::IndexedMesh;
-use nalgebra::Vector3;
-use sim_soft::Mesh as SimMesh;
 
 use crate::insertion_sim::{
     InsertionRamp, RampStep, SimDesign, SimLayer, StepReadout, TetReadout,
     build_insertion_geometry, run_insertion_ramp,
 };
-use crate::{CavityState, EnvelopeProxyMesh, LAYER_SURFACE_PALETTE, LayersState, ScanMesh};
+use crate::{CavityState, LAYER_SURFACE_PALETTE, LayersState, ScanMesh};
 
 // ── tuned defaults ──────────────────────────────────────────────────
 
@@ -298,7 +296,6 @@ pub fn kick_off_simulation(
     scan: Option<Res<ScanMesh>>,
     cavity: Res<CavityState>,
     layers: Res<LayersState>,
-    proxy: Res<EnvelopeProxyMesh>,
     mut state: ResMut<InsertionSimState>,
 ) {
     if !state.request_simulate {
@@ -316,12 +313,11 @@ pub fn kick_off_simulation(
     let scan_clone: IndexedMesh = scan.0.clone();
     let design = build_sim_design(&cavity, &layers);
     let n_steps = state.n_steps;
-    let layer_shells = build_layer_shell_vertices_physics(&proxy, &cavity, &layers);
 
     state.last_error = None;
     let pool = AsyncComputeTaskPool::get();
     let task = pool.spawn(async move {
-        run_sim_pipeline(scan_clone, design, n_steps, layer_shells).map_err(|e| format!("{e:?}"))
+        run_sim_pipeline(scan_clone, design, n_steps).map_err(|e| format!("{e:?}"))
     });
     state.pending = Some(task);
 }
@@ -382,81 +378,27 @@ fn build_sim_design(cavity: &CavityState, layers: &LayersState) -> SimDesign {
     }
 }
 
-/// For each layer `i`, build the physics-frame proxy-vertex positions
-/// at that layer's *outer* cumulative offset — the same surface
-/// `update_layer_meshes` renders. Returns `Vec<Vec<Vec3>>` indexed
-/// `[layer][proxy_vertex]`. The async task projects against these.
-fn build_layer_shell_vertices_physics(
-    proxy: &EnvelopeProxyMesh,
-    cavity: &CavityState,
-    layers: &LayersState,
-) -> Vec<Vec<Vector3<f64>>> {
-    let mut cumulative = 0.0_f64;
-    layers
-        .layers
-        .iter()
-        .map(|l| {
-            cumulative += l.thickness_m;
-            let offset_m = cumulative - cavity.inset_m;
-            proxy
-                .vertices
-                .iter()
-                .zip(proxy.vertex_radial_directions.iter())
-                .map(|(v, r)| v.coords + r * offset_m)
-                .collect()
-        })
-        .collect()
-}
-
 // ── async pipeline ──────────────────────────────────────────────────
 
 /// The end-to-end sim pipeline that runs inside the async task: build
 /// geometry → snapshot per-tet immutables → run ramp → compute
-/// per-layer aggregates + heat-map projections for both scalar modes.
-/// Pure compute; no Bevy / egui access (the task pool runs off main
-/// thread).
+/// per-layer aggregates. Pure compute; no Bevy / egui access (the
+/// task pool runs off main thread).
+///
+/// Slice 9 sub-leaf 6: per-vertex heat-map projection is offline
+/// here — the prior path keyed projection on the now-retired
+/// `EnvelopeProxyMesh.vertices`; sub-leaf 7 re-projects per-tet
+/// scalars onto each layer's SDF-extracted MC mesh and re-fills
+/// the per-layer vertex-color buffers.
 fn run_sim_pipeline(
     scan: IndexedMesh,
     design: SimDesign,
     n_steps: usize,
-    layer_shells: Vec<Vec<Vector3<f64>>>,
 ) -> Result<InsertionSimOutputs> {
     let geometry = build_insertion_geometry(&scan, &design, SIM_SDF_TARGET_FACES, SIM_CELL_SIZE_M)?;
 
-    let n_tets = geometry.n_tets;
     let n_layers = design.layers.len();
     let per_tet_layer = geometry.per_tet_layer.clone();
-    let rest_positions: Vec<Vector3<f64>> = geometry.mesh.positions().to_vec();
-    // Tet centroids — for the heat-map nearest-tet projection. The
-    // BCC mesh's tet vertex indices are stable; precomputing once
-    // outside the per-shell-vertex loop avoids the inner-loop
-    // gather.
-    let tet_centroids: Vec<Vector3<f64>> = {
-        use sim_soft::{Mesh, TetId};
-        (0..n_tets)
-            .map(|t| {
-                // `t as TetId` (u32) — Phase 4 BCC meshes stay under `u32::MAX`.
-                #[allow(clippy::cast_possible_truncation)]
-                let v = geometry.mesh.tet_vertices(t as TetId);
-                (rest_positions[v[0] as usize]
-                    + rest_positions[v[1] as usize]
-                    + rest_positions[v[2] as usize]
-                    + rest_positions[v[3] as usize])
-                    * 0.25
-            })
-            .collect()
-    };
-    // Tet IDs grouped by layer index — the heat-map projection's
-    // in-layer subset.
-    let tets_in_layer: Vec<Vec<usize>> = (0..n_layers)
-        .map(|i| {
-            per_tet_layer
-                .iter()
-                .enumerate()
-                .filter_map(|(t, &l)| (l == i).then_some(t))
-                .collect()
-        })
-        .collect();
 
     let ramp = run_insertion_ramp(geometry, n_steps)?;
 
@@ -469,7 +411,9 @@ fn run_sim_pipeline(
 
     let per_layer = aggregate_per_layer(&result.final_per_tet, &per_tet_layer, n_layers);
 
-    // Two scalar fields (energy + stress norm) per tet.
+    // Two scalar fields (energy + stress norm) per tet — reported
+    // through `scalar_min_max` so the panel can show absolute scale
+    // even with the heat-map projection offline.
     let energy_field: Vec<f64> = result
         .final_per_tet
         .iter()
@@ -483,25 +427,14 @@ fn run_sim_pipeline(
     let energy_min_max = global_min_max(&energy_field);
     let stress_min_max = global_min_max(&stress_field);
 
-    let energy_colors = project_heat_map_per_layer(
-        &layer_shells,
-        &tets_in_layer,
-        &tet_centroids,
-        &energy_field,
-        energy_min_max,
-    );
-    let stress_colors = project_heat_map_per_layer(
-        &layer_shells,
-        &tets_in_layer,
-        &tet_centroids,
-        &stress_field,
-        stress_min_max,
-    );
-
+    // Sub-leaf 6: heat-map color buffers empty (one Vec per layer,
+    // each Vec empty). Sub-leaf 7 fills them via per-MC-vertex
+    // nearest-tet lookup.
+    let empty_layer_buffers: Vec<Vec<[f32; 4]>> = (0..n_layers).map(|_| Vec::new()).collect();
     Ok(InsertionSimOutputs {
         ramp,
         per_layer,
-        per_layer_vertex_colors: [energy_colors, stress_colors],
+        per_layer_vertex_colors: [empty_layer_buffers.clone(), empty_layer_buffers],
         scalar_min_max: [energy_min_max, stress_min_max],
     })
 }
@@ -594,59 +527,14 @@ fn global_min_max(values: &[f64]) -> (f64, f64) {
     }
 }
 
-/// For each layer's shell vertices, find the nearest tet centroid
-/// in the same layer's partition, sample the scalar field there,
-/// normalize against the global `(min, max)`, encode RGBA.
-///
-/// Brute-force inner loop — `O(|shell_verts_i| × |tets_in_layer_i|)`
-/// per layer. On the iter-1 fixture: ~1500 shell verts × ~67 000
-/// tets / 6 layers ≈ 17M ops per layer, ~6 layers ≈ 100M total. At
-/// release-mode FLOP throughput this is ≪ 1 s — dwarfed by the ramp
-/// itself. No kd-tree dep needed.
-fn project_heat_map_per_layer(
-    layer_shells: &[Vec<Vector3<f64>>],
-    tets_in_layer: &[Vec<usize>],
-    tet_centroids: &[Vector3<f64>],
-    scalar_field: &[f64],
-    scalar_min_max: (f64, f64),
-) -> Vec<Vec<[f32; 4]>> {
-    assert_eq!(
-        layer_shells.len(),
-        tets_in_layer.len(),
-        "project_heat_map_per_layer: layer_shells.len() = {} must match \
-         tets_in_layer.len() = {}",
-        layer_shells.len(),
-        tets_in_layer.len(),
-    );
-    layer_shells
-        .iter()
-        .enumerate()
-        .map(|(li, shell_verts)| {
-            let layer_tets = &tets_in_layer[li];
-            shell_verts
-                .iter()
-                .map(|v| {
-                    if layer_tets.is_empty() {
-                        return [0.5, 0.5, 0.5, 1.0]; // grey — no data
-                    }
-                    let mut best_t = layer_tets[0];
-                    let mut best_d2 = (tet_centroids[best_t] - v).norm_squared();
-                    for &t in &layer_tets[1..] {
-                        let d2 = (tet_centroids[t] - v).norm_squared();
-                        if d2 < best_d2 {
-                            best_d2 = d2;
-                            best_t = t;
-                        }
-                    }
-                    let scalar = scalar_field[best_t];
-                    scalar_to_rgba(scalar, scalar_min_max)
-                })
-                .collect()
-        })
-        .collect()
-}
-
 /// Map a scalar to an RGBA color in `[0, 1]` via a three-stop gradient
+//
+// Slice 9 sub-leaf 6: heat-map projection retired (was the only
+// caller); sub-leaf 7 re-projects per-tet scalars onto each layer's
+// SDF-extracted MC mesh and re-introduces a (different) caller.
+// Worth keeping inline pending sub-leaf 7 rather than churning the
+// gradient stops + sign-by-sign clamp through deletion + reintro.
+#[allow(dead_code)] // re-wired in sub-leaf 7
 /// (cold blue → warm yellow → hot red). Engineering-readable and
 /// avoids the matplotlib-style perceptually-uniform colormap's external
 /// dep. Out-of-range or non-finite values clamp to the endpoints.
@@ -1035,7 +923,7 @@ fn render_layer_table(ui: &mut egui::Ui, per_layer: &[LayerAggregate]) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use nalgebra::Matrix3;
+    use nalgebra::{Matrix3, Vector3};
 
     use super::*;
     use crate::insertion_sim::TetReadout;
@@ -1088,45 +976,6 @@ mod tests {
         assert_eq!(per_layer[1].max_first_piola_frobenius_pa, 0.0);
         assert_eq!(per_layer[1].max_principal_stretch, 0.0);
         assert_eq!(per_layer[1].min_principal_stretch, 0.0);
-    }
-
-    /// Heat-map projection picks the nearest tet IN-LAYER, even when a
-    /// closer tet exists in a different layer. Sanity-checks the
-    /// in-layer subset filtering.
-    #[test]
-    fn project_heat_map_picks_in_layer_tet() {
-        // Two tets — one in layer 0 at z=0, one in layer 1 at z=10.
-        // A shell vertex at z=5 (closer to neither but equidistant)
-        // would naively pick whichever was first; the in-layer
-        // filter forces the picked tet to match.
-        let tet_centroids = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 10.0)];
-        let tets_in_layer = vec![vec![0_usize], vec![1_usize]];
-        let scalar_field = vec![1.0, 5.0];
-        let scalar_min_max = (1.0, 5.0);
-
-        // One shell vertex per layer at z=4 — closer to tet 0, but
-        // layer 1's shell should still pick tet 1.
-        let layer_shells = vec![
-            vec![Vector3::new(0.0, 0.0, 4.0)], // layer 0
-            vec![Vector3::new(0.0, 0.0, 4.0)], // layer 1
-        ];
-        let colors = project_heat_map_per_layer(
-            &layer_shells,
-            &tets_in_layer,
-            &tet_centroids,
-            &scalar_field,
-            scalar_min_max,
-        );
-        // Layer 0 → tet 0 → scalar = 1.0 → t=0 → cold (mostly blue).
-        // Layer 1 → tet 1 → scalar = 5.0 → t=1 → hot (mostly red).
-        assert!(
-            colors[0][0][2] > colors[0][0][0],
-            "layer 0 vertex should map to cold (B > R)"
-        );
-        assert!(
-            colors[1][0][0] > colors[1][0][2],
-            "layer 1 vertex should map to hot (R > B)"
-        );
     }
 
     /// `scalar_to_rgba` clamps out-of-range and degenerate inputs.
