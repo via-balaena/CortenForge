@@ -1,6 +1,26 @@
 # cf-device-design Cavity Mouth Opening — Bookmark
 
-**Status**: BOOKMARK 2026-05-16 EOD (post-clip-plane arc ship). No
+**Status**: RECON COMPLETE 2026-05-16 — spec at
+[`CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md).
+Implementation pending (5-sub-leaf ladder; spec calls it as the
+next session per the three-session pattern).
+
+**One-line structural finding from recon**: post-MC half-space clip
+alone CANNOT open the cavity — the cavity iso surface for `iso = -T`
+sits entirely on the body-interior side of the cap plane, so a half-
+space test discards nothing. Recon settled on a **two-SDF
+construction** (closed-body SDF for sign, dome+wall-only SDF for
+magnitude) that surgically removes the cap polygon's influence on
+the inward offset. The user-pinned approach (cf-scan-prep untouched,
+each iso held at the cap plane, knife-edge OK) is preserved.
+
+The rest of this bookmark is preserved as the original problem
+write-up + design framing. Spec linked above is the source of truth
+for implementation.
+
+---
+
+**Status (original)**: BOOKMARK 2026-05-16 EOD (post-clip-plane arc ship). No
 spec yet, no recon yet. Captured at session-end because the
 implication chain runs deep: this blocks the fit-viz program
 (rungs 2–6) and silently invalidates the existing insertion-sim
