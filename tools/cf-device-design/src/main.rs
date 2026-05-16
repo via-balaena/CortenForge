@@ -399,6 +399,22 @@ struct EnvelopeProxyMesh {
 /// (cylinder + dome + cleaned cap), sparse enough that the cavity
 /// and per-layer surface meshes can be regenerated on every slider
 /// tick without a frame hitch.
+///
+/// **History** (2026-05-16): briefly raised to 8000 in an attempt
+/// to smooth chunky layer-surface previews, but at that density
+/// the dome region's `vertex_radial_directions` exposed a coupled
+/// failure mode — the centerline polyline emitted by cf-scan-prep
+/// wiggles in its last few segments near the dome tip (the
+/// `cross_section_centroids` algorithm goes unstable as
+/// cross-sections shrink toward a point). Dome vertices use
+/// `(vertex - centerline_top_endpoint).normalize()` as their
+/// radial; with the top endpoint off-axis (from the wiggle),
+/// adjacent dome verts at higher density got slightly different
+/// radials, triangles folded under displacement, and back-faces
+/// rendered as dark dappling. Reverting to 1500 ships the clean
+/// preview from the topology-preserving simplify fix immediately;
+/// the deeper proxy-density × centerline-quality coupling is
+/// bookmarked for a dedicated arc.
 const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld.
