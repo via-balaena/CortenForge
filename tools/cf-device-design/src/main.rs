@@ -46,7 +46,8 @@ use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_
 use crate::clip_plane::{ClipPlaneExt, ClipPlaneMaterial};
 use clap::Parser;
 use mesh_io::load_stl;
-use mesh_types::{Bounded, IndexedMesh, Point3};
+use mesh_types::{Bounded, IndexedMesh, Point3, Vector3};
+use nalgebra::{Quaternion, UnitQuaternion};
 use serde::Deserialize;
 
 /// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
@@ -343,16 +344,57 @@ impl LayersState {
     }
 }
 
-// ----- .prep.toml parsing (subset; centerline only) -----------------
+// ----- .prep.toml parsing (subset; centerline + caps + transform) ---
 
 #[derive(Deserialize)]
 struct PrepTomlSubset {
     centerline: Option<CenterlineBlock>,
+    transform: Option<TransformBlock>,
+    caps: Option<CapsBlock>,
 }
 
 #[derive(Deserialize)]
 struct CenterlineBlock {
     points_m: Vec<[f64; 3]>,
+}
+
+#[derive(Deserialize)]
+struct TransformBlock {
+    rotation: TransformRotationBlock,
+    translation: TransformTranslationBlock,
+}
+
+#[derive(Deserialize)]
+struct TransformRotationBlock {
+    /// Physics-frame unit quaternion in `(w, x, y, z)` order — matches
+    /// `cf-scan-prep::PrepRotationBlock::quaternion`.
+    quaternion: [f64; 4],
+}
+
+#[derive(Deserialize)]
+struct TransformTranslationBlock {
+    /// Physics-frame translation in meters — matches
+    /// `cf-scan-prep::PrepTranslationBlock::m`.
+    m: [f64; 3],
+}
+
+#[derive(Deserialize)]
+struct CapsBlock {
+    #[serde(default)]
+    loops: Vec<CapsLoopRecord>,
+}
+
+#[derive(Deserialize)]
+struct CapsLoopRecord {
+    loop_index: usize,
+    vertex_count: usize,
+    /// Pre-bake physics-frame outward normal (matches
+    /// `cf-scan-prep::PrepCapLoop::plane_normal`).
+    plane_normal: [f64; 3],
+    /// Pre-bake physics-frame centroid in meters (matches
+    /// `cf-scan-prep::PrepCapLoop::plane_centroid_m`).
+    plane_centroid_m: [f64; 3],
+    included: bool,
 }
 
 /// Parse a `.prep.toml` string and return the centerline polyline.
@@ -368,6 +410,85 @@ fn parse_centerline(text: &str) -> Result<Vec<Point3<f64>>> {
         .into_iter()
         .map(|[x, y, z]| Point3::new(x, y, z))
         .collect())
+}
+
+/// Parse a `.prep.toml` string and return the cap planes baked into
+/// the cleaned-STL frame.
+///
+/// Bake convention: cf-scan-prep records cap loops in the PRE-bake
+/// physics frame (`PrepCapLoop::plane_centroid_m` /
+/// `plane_normal`); the cleaned STL on disk has the user's
+/// `[transform]` (rotation + translation) baked into vertex positions.
+/// To align cap planes with the cleaned STL we apply the same
+/// rotation + translation here. Excluded loops are silently dropped
+/// (consistent with cf-scan-prep keeping their cap-polygon face in
+/// the cleaned STL — the device treats the hole as closed).
+///
+/// **Pivot caveat**: `cf-scan-prep::build_cleaned_mesh` rotates
+/// vertices around the working-scan AABB centroid (`bake_vertex_with_pivot`)
+/// to feel like "rotate in place". This parser uses pivot = origin
+/// because the working-scan AABB centroid is not recorded in
+/// `.prep.toml`. After cf-scan-prep's `auto_center_offset_m` (CSP.3.5)
+/// the working-scan AABB centroid sits at origin to within sub-cm,
+/// so identity-transform scans (the common case) and small manual
+/// reorients land cap planes correctly; meaningful manual reorients
+/// drift by `‖(R − I) c_w‖` where `c_w` is the residual working-scan
+/// AABB centroid. Adding the pivot to `[scan_prep]` would tighten
+/// this — deferred (the user-pinned position is "cf-scan-prep stays
+/// untouched").
+///
+/// Returns empty `Vec` when:
+/// - the `[caps]` block is absent (legacy `.prep.toml` predating
+///   cf-scan-prep's caps feature),
+/// - no loops are present, or
+/// - every loop has `included = false`.
+fn parse_cap_planes(text: &str) -> Result<Vec<sdf_layers::CapPlane>> {
+    let subset: PrepTomlSubset = toml::from_str(text)?;
+    let rotation = subset
+        .transform
+        .as_ref()
+        .map(|t| {
+            let q = t.rotation.quaternion;
+            UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]))
+        })
+        .unwrap_or_else(UnitQuaternion::identity);
+    let translation = subset
+        .transform
+        .as_ref()
+        .map(|t| Vector3::new(t.translation.m[0], t.translation.m[1], t.translation.m[2]))
+        .unwrap_or_else(Vector3::zeros);
+
+    let loops = subset.caps.map(|c| c.loops).unwrap_or_default();
+    let mut planes = Vec::new();
+    for record in loops {
+        if !record.included {
+            continue;
+        }
+        let centroid_pre = Point3::new(
+            record.plane_centroid_m[0],
+            record.plane_centroid_m[1],
+            record.plane_centroid_m[2],
+        );
+        let normal_pre = Vector3::new(
+            record.plane_normal[0],
+            record.plane_normal[1],
+            record.plane_normal[2],
+        );
+        // Pivot = origin (see docstring); rotation is rotation-only on
+        // the centroid (translation added below), rotation-only on the
+        // normal (directions ignore translation), then re-normalize to
+        // shed any quaternion-roundoff drift.
+        let centroid_baked =
+            Point3::from(rotation.transform_point(&centroid_pre).coords + translation);
+        let normal_baked = rotation.transform_vector(&normal_pre).normalize();
+        planes.push(sdf_layers::CapPlane {
+            centroid: centroid_baked,
+            normal: normal_baked,
+            vertex_count: record.vertex_count,
+            loop_index: record.loop_index,
+        });
+    }
+    Ok(planes)
 }
 
 /// Resolve the `.prep.toml` path from CLI args. Honors `--prep-toml
@@ -409,32 +530,39 @@ fn main() -> Result<()> {
         .with_context(|| format!("load cleaned STL {}", cli.cleaned_stl.display()))?;
 
     let prep_toml_path = resolve_prep_toml_path(&cli);
-    let centerline_points = if let Some(prep_path) = &prep_toml_path {
+    let (centerline_points, cap_planes) = if let Some(prep_path) = &prep_toml_path {
         match std::fs::read_to_string(prep_path) {
-            Ok(text) => parse_centerline(&text).with_context(|| {
-                format!("parse `.prep.toml` centerline at {}", prep_path.display())
-            })?,
+            Ok(text) => {
+                let centerline = parse_centerline(&text).with_context(|| {
+                    format!("parse `.prep.toml` centerline at {}", prep_path.display())
+                })?;
+                let caps = parse_cap_planes(&text).with_context(|| {
+                    format!("parse `.prep.toml` caps at {}", prep_path.display())
+                })?;
+                (centerline, caps)
+            }
             Err(e) => {
                 eprintln!(
-                    "warning: could not read {} ({e:#}); centerline overlay disabled",
+                    "warning: could not read {} ({e:#}); centerline overlay + cap planes disabled",
                     prep_path.display()
                 );
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         }
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     let scan_info = build_scan_info(&cli.cleaned_stl, &scan_mesh, &centerline_points);
     println!(
         "loaded {} vertices, {} faces; bbox diagonal = {:.4} m; \
-         centerline = {} points / {:.4} m arc",
+         centerline = {} points / {:.4} m arc; cap planes = {}",
         scan_info.vertex_count,
         scan_info.face_count,
         scan_info.bbox_diagonal_m,
         scan_info.centerline_point_count,
         scan_info.centerline_arc_length_m,
+        cap_planes.len(),
     );
 
     // Slice 8 — resolve the design-TOML path and load it if it exists.
@@ -496,6 +624,7 @@ fn main() -> Result<()> {
         design_toml_path,
         loaded_design,
         cached_scan_sdf,
+        sdf_layers::CapPlanes { planes: cap_planes },
     );
     Ok(())
 }
@@ -2293,6 +2422,7 @@ fn human_count(n: usize) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_render_app(
     scan_mesh: IndexedMesh,
     scan_info: ScanInfo,
@@ -2301,6 +2431,7 @@ fn run_render_app(
     design_toml_path: Option<PathBuf>,
     loaded_design: Option<design_toml::DesignToml>,
     cached_scan_sdf: sdf_layers::CachedScanSdf,
+    cap_planes: sdf_layers::CapPlanes,
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
@@ -2346,6 +2477,7 @@ fn run_render_app(
             points_m: centerline_points,
         })
         .insert_resource(cached_scan_sdf)
+        .insert_resource(cap_planes)
         .insert_resource(cavity)
         .insert_resource(layers)
         .insert_resource(save_state)
@@ -2460,6 +2592,173 @@ another_future_field = "foo"
 "#;
         let pts = parse_centerline(text).unwrap();
         assert_eq!(pts.len(), 2);
+    }
+
+    #[test]
+    fn parse_cap_planes_absent_block_returns_empty() {
+        let text = r#"
+[scan_prep]
+source_stl = "raw.stl"
+"#;
+        let planes = parse_cap_planes(text).unwrap();
+        assert!(planes.is_empty());
+    }
+
+    #[test]
+    fn parse_cap_planes_filters_excluded_loops() {
+        let text = r#"
+[scan_prep]
+source_stl = "raw.stl"
+
+[transform.rotation]
+quaternion = [1.0, 0.0, 0.0, 0.0]
+
+[transform.translation]
+m = [0.0, 0.0, 0.0]
+
+[caps]
+applied = true
+
+[[caps.loops]]
+loop_index = 0
+vertex_count = 32
+plane_fit_r_squared = 0.99
+plane_normal = [0.0, 0.0, 1.0]
+plane_centroid_m = [0.0, 0.0, 0.5]
+included = true
+
+[[caps.loops]]
+loop_index = 1
+vertex_count = 5
+plane_fit_r_squared = 0.5
+plane_normal = [1.0, 0.0, 0.0]
+plane_centroid_m = [0.1, 0.0, 0.0]
+included = false
+"#;
+        let planes = parse_cap_planes(text).unwrap();
+        assert_eq!(planes.len(), 1, "only included loop kept");
+        assert_eq!(planes[0].loop_index, 0);
+        assert_eq!(planes[0].vertex_count, 32);
+    }
+
+    #[test]
+    fn parse_cap_planes_identity_transform_passes_through() {
+        let text = r#"
+[scan_prep]
+source_stl = "raw.stl"
+
+[transform.rotation]
+quaternion = [1.0, 0.0, 0.0, 0.0]
+
+[transform.translation]
+m = [0.0, 0.0, 0.0]
+
+[caps]
+applied = true
+
+[[caps.loops]]
+loop_index = 0
+vertex_count = 16
+plane_fit_r_squared = 0.99
+plane_normal = [0.0, 0.0, 1.0]
+plane_centroid_m = [0.01, 0.02, 0.5]
+included = true
+"#;
+        let planes = parse_cap_planes(text).unwrap();
+        assert_eq!(planes.len(), 1);
+        let p = &planes[0];
+        assert!((p.centroid.x - 0.01).abs() < 1e-12);
+        assert!((p.centroid.y - 0.02).abs() < 1e-12);
+        assert!((p.centroid.z - 0.5).abs() < 1e-12);
+        assert!((p.normal.z - 1.0).abs() < 1e-12);
+        assert!(p.normal.x.abs() < 1e-12);
+        assert!(p.normal.y.abs() < 1e-12);
+    }
+
+    #[test]
+    fn parse_cap_planes_bakes_90deg_x_rotation_plus_translation() {
+        // 90° rotation about +X (right-hand rule) maps:
+        //   +Y → +Z, +Z → -Y.
+        // Apply to a cap centered at (0, 0, 0.5) with normal +Z,
+        // then translate by (0, 0, 0.1):
+        //   centroid:  R*(0,0,0.5) = (0, -0.5, 0); + (0,0,0.1) = (0, -0.5, 0.1)
+        //   normal:    R*(0,0,1)   = (0, -1, 0)
+        // Quaternion for 90° about +X = (cos45, sin45, 0, 0)
+        // = (0.70710678…, 0.70710678…, 0, 0).
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let text = format!(
+            r#"
+[scan_prep]
+source_stl = "raw.stl"
+
+[transform.rotation]
+quaternion = [{s}, {s}, 0.0, 0.0]
+
+[transform.translation]
+m = [0.0, 0.0, 0.1]
+
+[caps]
+applied = true
+
+[[caps.loops]]
+loop_index = 0
+vertex_count = 32
+plane_fit_r_squared = 0.99
+plane_normal = [0.0, 0.0, 1.0]
+plane_centroid_m = [0.0, 0.0, 0.5]
+included = true
+"#,
+            s = s,
+        );
+        let planes = parse_cap_planes(&text).unwrap();
+        assert_eq!(planes.len(), 1);
+        let p = &planes[0];
+        let tol = 1e-9;
+        assert!(p.centroid.x.abs() < tol, "cx = {}", p.centroid.x);
+        assert!(
+            (p.centroid.y - -0.5).abs() < tol,
+            "cy = {}; expected -0.5",
+            p.centroid.y,
+        );
+        assert!(
+            (p.centroid.z - 0.1).abs() < tol,
+            "cz = {}; expected 0.1",
+            p.centroid.z,
+        );
+        assert!(p.normal.x.abs() < tol);
+        assert!(
+            (p.normal.y - -1.0).abs() < tol,
+            "ny = {}; expected -1.0",
+            p.normal.y,
+        );
+        assert!(p.normal.z.abs() < tol);
+        assert!((p.normal.norm() - 1.0).abs() < 1e-12, "normal must be unit");
+    }
+
+    #[test]
+    fn parse_cap_planes_missing_transform_defaults_to_identity() {
+        // `[transform]` absent → identity bake (pre-bake = post-bake).
+        // Defensive against legacy `.prep.toml` files predating the
+        // schema additions.
+        let text = r#"
+[scan_prep]
+source_stl = "raw.stl"
+
+[caps]
+applied = true
+
+[[caps.loops]]
+loop_index = 0
+vertex_count = 16
+plane_fit_r_squared = 0.99
+plane_normal = [0.0, 0.0, 1.0]
+plane_centroid_m = [0.0, 0.0, 0.5]
+included = true
+"#;
+        let planes = parse_cap_planes(text).unwrap();
+        assert_eq!(planes.len(), 1);
+        assert!((planes[0].centroid.z - 0.5).abs() < 1e-12);
+        assert!((planes[0].normal.z - 1.0).abs() < 1e-12);
     }
 
     #[test]

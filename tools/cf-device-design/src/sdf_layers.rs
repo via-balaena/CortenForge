@@ -56,7 +56,64 @@ use mesh_repair::{remove_degenerate_triangles, remove_unreferenced_vertices, wel
 use mesh_sdf::SignedDistanceField;
 use mesh_types::{Bounded, IndexedMesh};
 use meshopt::{SimplifyOptions, simplify_decoder, simplify_sloppy_decoder};
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
+
+/// One cap-polygon plane parsed out of cf-scan-prep's `[caps]` block
+/// and baked into the cleaned-STL frame.
+///
+/// Cap planes drive the cavity-mouth opening (cavity-mouth spec): the
+/// two-SDF construction uses them to strip cap-polygon faces from the
+/// SDF source (so the cavity iso has no floor), and the post-MC half-
+/// space clip uses them to trim outer-iso skirts that extend past the
+/// cap plane on the cap-extension side.
+///
+/// Only loops with `included == true` survive the parse — excluded
+/// loops keep their cap-polygon face in the cleaned STL and stay
+/// closed in the device preview (consistent with "the user said leave
+/// this hole as-is").
+#[derive(Debug, Clone)]
+pub(crate) struct CapPlane {
+    /// Cap-polygon centroid in cleaned-STL physics-frame meters
+    /// (post-`[transform]`-bake). cf-scan-prep emits this in the
+    /// PRE-bake frame; the parser applies the user's rotation +
+    /// translation before stuffing the value into here so all
+    /// downstream geometric code can treat it as cleaned-STL-frame.
+    pub(crate) centroid: Point3<f64>,
+    /// Cap-polygon outward unit normal in cleaned-STL physics-frame
+    /// coordinates. "Outward" = away-from-body-interior (cf-scan-prep
+    /// flips raw fit-plane normals via `orient_cap_normal_outward`
+    /// before recording). Re-normalized after rotation.
+    pub(crate) normal: Vector3<f64>,
+    /// Boundary-loop vertex count, recorded at scan time. Used by the
+    /// volume-integral primary-cap heuristic (cap-centroid-origin) —
+    /// the largest cap by vertex count is picked as the integration
+    /// origin when multiple caps are present.
+    pub(crate) vertex_count: usize,
+    /// Loop index from cf-scan-prep's boundary-loop enumeration. Used
+    /// as a secondary tiebreaker for the primary-cap selection (lowest
+    /// loop_index wins on ties) and for log/diagnostic readouts.
+    pub(crate) loop_index: usize,
+}
+
+/// Bevy resource holding the parsed + baked cap planes. Built once at
+/// scan load by the `.prep.toml` parser; consumed by the two-SDF
+/// `build_cached_scan_sdf` (sub-leaf 3) and the post-MC half-space
+/// clip in `extract_layer_surface` (sub-leaf 4).
+///
+/// Empty default = "no caps" — `Default` makes the resource insertable
+/// without conditional wiring at app startup (the parser inserts the
+/// fully-populated value, but the resource type always exists so
+/// systems can `Res<CapPlanes>` it unconditionally).
+#[derive(Resource, Debug, Clone, Default)]
+pub(crate) struct CapPlanes {
+    pub(crate) planes: Vec<CapPlane>,
+}
+
+impl CapPlanes {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.planes.is_empty()
+    }
+}
 
 /// Decimation target for the SDF source mesh. mesh-sdf queries are
 /// brute-force O(faces); 2500 is the spike-measured sweet spot for
