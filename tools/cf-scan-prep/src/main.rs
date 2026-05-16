@@ -2424,6 +2424,25 @@ fn compute_centerline_polyline(
         return Vec::new();
     }
 
+    // Temporary recon instrumentation, gated behind CF_CENTERLINE_DEBUG=1.
+    // Logs per-slab depth, polygon area, vertex count, raw centroid coords +
+    // final filled polyline coords. Diagnoses the dome-tip / floor wander
+    // observed on the iter-1 sock_over_capsule fixture (2026-05-16). To be
+    // reverted once the recon settles on a fix.
+    let debug_log = std::env::var("CF_CENTERLINE_DEBUG").is_ok();
+    if debug_log {
+        eprintln!(
+            "CF_CENTERLINE_DEBUG: n_slices={n_slices} axis=({:.6},{:.6},{:.6}) depth=[{:.6},{:.6}] mesh: {} verts {} faces",
+            axis.x,
+            axis.y,
+            axis.z,
+            min_d,
+            max_d,
+            mesh.vertices.len(),
+            mesh.faces.len(),
+        );
+    }
+
     // Per-slab area-weighted polygon centroid. `None` for degenerate
     // slabs (no intersection / area below MIN_SLAB_AREA_M2 /
     // collinear polygon); filled in by interpolation in step 4.
@@ -2443,22 +2462,47 @@ fn compute_centerline_polyline(
         // multi-component slices) the largest loop is the body's
         // main cross-section and the secondaries are usually
         // small artifacts.
+        let n_loops = loops.len();
         let best = loops.into_iter().max_by(|a, b| {
             polygon_area_3d(a, &axis)
                 .partial_cmp(&polygon_area_3d(b, &axis))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let centroid = best.and_then(|polygon| {
-            if polygon_area_3d(&polygon, &axis) < MIN_SLAB_AREA_M2 {
-                None
-            } else {
-                polygon_centroid_3d(&polygon, &axis)
+        let (centroid, area_logged, n_verts_logged) = match best {
+            Some(polygon) => {
+                let area = polygon_area_3d(&polygon, &axis);
+                let n_verts = polygon.len();
+                if area < MIN_SLAB_AREA_M2 {
+                    (None, area, n_verts)
+                } else {
+                    (polygon_centroid_3d(&polygon, &axis), area, n_verts)
+                }
             }
-        });
+            None => (None, 0.0, 0),
+        };
+        if debug_log {
+            let centroid_str = match centroid {
+                Some(p) => format!("({:.6},{:.6},{:.6})", p.x, p.y, p.z),
+                None => "DEGENERATE".to_string(),
+            };
+            eprintln!(
+                "CF_CENTERLINE_DEBUG: slab={i:02} depth={depth:.6} loops={n_loops} verts={n_verts_logged} area={area_logged:.4e} centroid={centroid_str}"
+            );
+        }
         centroids.push(centroid);
     }
 
-    fill_null_centroids_by_interpolation(&centroids, axis, min_d, max_d, n_slices)
+    let polyline = fill_null_centroids_by_interpolation(&centroids, axis, min_d, max_d, n_slices);
+    if debug_log {
+        for (i, p) in polyline.iter().enumerate() {
+            let was_raw = centroids[i].is_some();
+            eprintln!(
+                "CF_CENTERLINE_DEBUG: final={i:02} pos=({:.6},{:.6},{:.6}) raw={was_raw}",
+                p.x, p.y, p.z
+            );
+        }
+    }
+    polyline
 }
 
 /// Replace `None` entries in a per-slab centroid array with values
