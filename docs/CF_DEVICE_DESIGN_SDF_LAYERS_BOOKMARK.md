@@ -1,8 +1,21 @@
 # cf-device-design SDF-Based Layer Surfaces — Bookmark
 
-**Status**: RECON RESOLVED 2026-05-16. Spec lives at
-[`docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md`](CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md).
-Implementation arc is the next session.
+**Status**: **RESOLVED 2026-05-16**. Implementation arc shipped on
+`dev` across seven commits (`d5f423ec` → `320d6dcd`). The
+load-bearing visual gate — Layer 1 dome-apex nipple disappearance
+on the iter-1 `sock_over_capsule.cleaned.stl` fixture — is
+**user-verified clean**. The Validations panel + heat-map projection
+were ported to the SDF path; the entire per-vertex
+`EnvelopeProxyMesh` machinery is retired (~1011 LOC deleted). Spec
+at [`CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md`](CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md);
+patterns banked in `memory/project_cf_device_design_sdf_layers.md`.
+
+The text below is preserved as the recon-session record (problem
+statement + per-vertex bug analysis + open questions). The
+"Implementation arc shape" below was the recon's pre-ship
+estimate; the as-built ladder lives in the patterns memo.
+
+---
 
 ## Three-session pattern
 
