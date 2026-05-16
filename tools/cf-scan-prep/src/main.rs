@@ -2424,6 +2424,41 @@ const MIN_SLAB_AREA_M2: f64 = 1e-8;
 /// blanket bump.
 const CENTERLINE_REORIENT_PASSES: usize = 1;
 
+/// Area threshold (as a fraction of the per-call max polygon area)
+/// above which a slab is classified as **main-body** vs **end-region**
+/// for the iterative re-orientation tangent correction.
+///
+/// **Why this matters** (the sphere-cut bias, discovered on the iter-1
+/// fixture 2026-05-16): for a body shaped like a hemispherical dome
+/// capping a cylinder, oblique slab cuts (slab normal tilted from
+/// the body axis) of the CYLINDER portion produce ELLIPSES whose
+/// centers lie on the body axis (algorithm works correctly there).
+/// Oblique slab cuts of the HEMISPHERE produce CIRCLES whose centers
+/// trace a line **parallel to the slab normal** (not the body axis)
+/// — this is a pure geometry property of plane-sphere intersection
+/// independent of mesh tessellation. The result is a phantom curve
+/// in the dome-region polyline that the local-tangent iteration can't
+/// fix (the biased tangent equals the slab normal, so re-sampling
+/// with that tangent doesn't change anything).
+///
+/// **Fix**: classify each pass-0 slab as main-body iff it's
+/// single-loop AND its area is at least this fraction of the per-call
+/// max. For end-region slabs (dome / floor extremes / small
+/// fragmented), override the local tangent with the tangent of the
+/// nearest main-body slab — this forces dome-region slabs in the
+/// re-orientation pass to be perpendicular to the CYLINDER axis,
+/// not the spine_hint-aligned biased dome direction. Centroids of
+/// the re-sampled dome slabs then sit on the body axis line
+/// extending through the cylinder.
+///
+/// 0.95 catches only the truly cylindrical slabs (where area is near
+/// maximum) — strict enough to exclude transitioning dome slabs whose
+/// tangents are still partially biased. Tested fixtures (uniform
+/// cylinder, tapered cone, offset cylinder, density-biased, rotated)
+/// all have either uniform area (all slabs main-body) or a clear
+/// max-area cluster, so this threshold doesn't regress them.
+const CENTERLINE_MAIN_BODY_AREA_FRACTION: f64 = 0.95;
+
 /// One per-slab sample produced by intersecting a slab plane with
 /// the mesh and computing its area-weighted polygon centroid.
 /// Plus diagnostic metrics used by [`build_polyline_with_boundary_trim`]
@@ -2495,6 +2530,53 @@ fn local_polyline_tangents(polyline: &[Point3<f64>]) -> Vec<Vector3<f64>> {
         tangents.push(unit);
     }
     tangents
+}
+
+/// Replace end-region slabs' tangents with the tangent of the
+/// nearest main-body slab. Fixes the dome / sphere-cut bias
+/// described at [`CENTERLINE_MAIN_BODY_AREA_FRACTION`]: end-region
+/// slabs' raw local tangents are biased along the slab normal
+/// (sphere-cap geometry), so iterating with those tangents
+/// re-creates the same biased orientation. Substituting the
+/// nearest cylindrical-region tangent re-orients dome slabs to
+/// be perpendicular to the body axis, putting their re-sampled
+/// centroids on the body axis line.
+///
+/// If no slab is main-body (pathological input: every slab is
+/// multi-loop or below the area threshold), returns the raw
+/// tangents unchanged — the algorithm degrades to local-tangent
+/// iteration rather than failing.
+fn correct_tangents_for_end_regions(
+    raw_tangents: &[Vector3<f64>],
+    is_main_body: &[bool],
+) -> Vec<Vector3<f64>> {
+    let n = raw_tangents.len().min(is_main_body.len());
+    if n == 0 {
+        return Vec::new();
+    }
+    let any_main_body = is_main_body.iter().take(n).any(|&b| b);
+    if !any_main_body {
+        return raw_tangents[..n].to_vec();
+    }
+    let mut corrected = raw_tangents[..n].to_vec();
+    for i in 0..n {
+        if is_main_body[i] {
+            continue;
+        }
+        // Linear scan for nearest main-body index — n ≤ 30 in
+        // practice; a fancier data structure would be overkill.
+        let nearest = is_main_body
+            .iter()
+            .take(n)
+            .enumerate()
+            .filter(|(_, b)| **b)
+            .min_by_key(|(j, _)| j.abs_diff(i))
+            .map(|(j, _)| j);
+        if let Some(j) = nearest {
+            corrected[i] = raw_tangents[j];
+        }
+    }
+    corrected
 }
 
 /// Build the centerline polyline from per-slab samples with
@@ -2682,12 +2764,37 @@ fn compute_centerline_polyline(
     let mut plane_normals: Vec<Vector3<f64>> = vec![axis; n_slices];
 
     let mut polyline: Vec<Point3<f64>> = Vec::new();
+    // Captured from pass 0 samples and reused for every subsequent
+    // re-orientation pass's tangent correction (the cylinder vs.
+    // dome classification is a property of the BODY, not of the
+    // polyline orientation in any particular pass).
+    let mut is_main_body: Vec<bool> = Vec::new();
     for pass_idx in 0..=CENTERLINE_REORIENT_PASSES {
         let samples: Vec<Option<SlabSample>> = plane_pts
             .iter()
             .zip(plane_normals.iter())
             .map(|(pt, n)| compute_slab_sample(mesh, pt, n))
             .collect();
+        if pass_idx == 0 {
+            // Main-body classification (pass 0 only): cylinder
+            // region of the body, where polygon-centroid is
+            // unbiased. Used to correct end-region tangents in the
+            // re-orientation pass — see
+            // [`CENTERLINE_MAIN_BODY_AREA_FRACTION`] and
+            // [`correct_tangents_for_end_regions`].
+            let max_area = samples
+                .iter()
+                .filter_map(|s| s.as_ref().map(|s| s.area))
+                .fold(0.0_f64, f64::max);
+            let threshold = CENTERLINE_MAIN_BODY_AREA_FRACTION * max_area;
+            is_main_body = samples
+                .iter()
+                .map(|s| {
+                    s.as_ref()
+                        .is_some_and(|sample| sample.n_loops == 1 && sample.area >= threshold)
+                })
+                .collect();
+        }
         polyline = build_polyline_with_boundary_trim(&samples, axis, min_d, max_d);
 
         if debug_log {
@@ -2697,8 +2804,13 @@ fn compute_centerline_polyline(
         if pass_idx < CENTERLINE_REORIENT_PASSES {
             // Re-orient for next pass: each slab plane passes
             // through the current polyline point with normal equal
-            // to the local polyline tangent. Curved bodies get
-            // perpendicular cuts even at the apex of the bend.
+            // to the corrected local polyline tangent (end-region
+            // slabs' tangents are overridden with the tangent of
+            // the nearest main-body slab — see
+            // [`correct_tangents_for_end_regions`] for the sphere-
+            // cut bias this fixes). Curved bodies still get
+            // body-axis-aligned cuts at the bend via the main-body
+            // tangent propagation.
             //
             // SMOOTH BEFORE TANGENT EXTRACTION — slab-to-slab
             // polygon-centroid noise on the order of the per-vertex
@@ -2711,7 +2823,8 @@ fn compute_centerline_polyline(
             // body's real curvature (kernel width ~7 samples on
             // a 30-slab polyline).
             let smoothed = smooth_polyline(&polyline, 5);
-            plane_normals = local_polyline_tangents(&smoothed);
+            let raw_tangents = local_polyline_tangents(&smoothed);
+            plane_normals = correct_tangents_for_end_regions(&raw_tangents, &is_main_body);
             plane_pts = smoothed;
         }
     }
