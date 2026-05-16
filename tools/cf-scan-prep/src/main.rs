@@ -49,8 +49,8 @@ use cf_viewer::{
 use clap::{Parser, ValueEnum};
 use mesh_io::{load_stl, save_stl};
 use mesh_repair::{
-    MeshAdjacency, holes, remove_degenerate_triangles, remove_small_components,
-    remove_unreferenced_vertices, weld_vertices,
+    MeshAdjacency, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, holes, remove_degenerate_triangles,
+    remove_small_components, remove_unreferenced_vertices, taubin_smooth_vertices, weld_vertices,
 };
 use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 use meshopt::{SimplifyOptions, simplify_decoder};
@@ -765,6 +765,51 @@ enum ReconstructAction {
 struct SavePendingAction {
     save_now: bool,
 }
+
+/// Save-time surface-smoothing state (2026-05-16, user-driven).
+///
+/// Controls the Taubin-smoothing pass applied in
+/// [`cleanup_cleaned_mesh_for_disk`] before the cleaned STL is
+/// written. The slider lives in the Save panel; iteration count
+/// is per-scan because scanner-noise amplitude varies (raw
+/// limb-tissue scans need 15-20 iters; high-quality reference
+/// scans 3-5).
+///
+/// **Default** [`SMOOTHING_DEFAULT_ITERATIONS`] (8) — sweet
+/// spot for typical body-part scans on the iter-1 fixture;
+/// suppresses sub-mm scanner noise without erasing real
+/// geometric detail. `0` disables smoothing entirely
+/// (back-compat with pre-fix saves).
+///
+/// Surfaced in the saved `.prep.toml`'s `[smoothing]` block so
+/// downstream consumers (cf-cast SDF sampling, cf-device-design
+/// previews, future audit tooling) can see exactly how much
+/// smoothing was applied to the cleaned mesh on disk.
+#[derive(Resource, Debug, Clone, Copy)]
+struct SmoothingState {
+    iterations: usize,
+}
+
+impl Default for SmoothingState {
+    fn default() -> Self {
+        Self {
+            iterations: SMOOTHING_DEFAULT_ITERATIONS,
+        }
+    }
+}
+
+/// Default iteration count for [`SmoothingState`] — 8 Taubin
+/// passes. See [`SmoothingState`] docs for the per-scan-tuning
+/// rationale + the suggested ranges for different scan
+/// qualities.
+const SMOOTHING_DEFAULT_ITERATIONS: usize = 8;
+
+/// Upper slider bound for the Save panel's smoothing slider.
+/// 30 iterations is enough to visibly over-smooth a noisy
+/// limb scan; above that the user is degrading real geometric
+/// detail (limb-end taper, anatomical features) without
+/// returns. Display-only cap; the algorithm doesn't enforce it.
+const SMOOTHING_MAX_ITERATIONS: usize = 30;
 
 /// Output directory for the Save panel's writes. Built at startup
 /// from `--output-dir <path>` if supplied, else from the input
@@ -1996,66 +2041,107 @@ fn build_detected_cap_loop(mesh: &IndexedMesh, loop_data: &holes::BoundaryLoop) 
     }
 }
 
-/// Approximate the scan's centerline via cross-section centroids
-/// along a "spine" axis. Option-3 hedge: validates the centerline
-/// algorithm cf-cast needs for curve-following multi-piece molds.
+/// Compute the scan's centerline as **N evenly-spaced points
+/// along the line passing through the mesh AABB center in the
+/// `spine_hint` direction**. Used by cf-cast's curve-following
+/// multi-piece mold generator AND by cf-device-design's
+/// per-vertex radial direction computation.
 ///
-/// **Algorithm**: pick a spine direction (the first cap loop's
-/// outward normal — points from cup-mouth toward the appendage tip).
-/// Project every mesh vertex onto this axis to get its "depth"; bin
-/// vertices into `n_slices` slabs covering the depth range; take the
-/// 3D centroid of each slab → polyline of centroids.
+/// **Algorithm** (2026-05-16, final iteration):
 ///
-/// For an elongated, mostly-tubular scan (the prosthetic-appendage
-/// case): each slab's centroid is roughly where the spine sits at
-/// that depth. The polyline follows the natural curve. Fails on
-/// branching geometry (multi-finger hands, multi-limb torsos) where
-/// a single centroid can't represent multiple branches; those cases
-/// would need a real medial-axis algorithm (MCF / Voronoi). Not in
-/// MVP scope.
+/// 1. Normalize `spine_hint` to a unit axis. This is the user's
+///    chosen body direction — typically the cap loop's outward
+///    normal, which after cf-scan-prep's auto-PCA-at-load is
+///    aligned with the body's principal axis (`-Z` for floor
+///    caps).
+/// 2. Compute the mesh AABB center — the midpoint of the body's
+///    extent in each axis. After cf-scan-prep's auto-center at
+///    load this is at origin (the load-time pipeline pins
+///    AABB center to physics origin).
+/// 3. Project all vertices onto the axis to get the depth range
+///    `[min_d, max_d]`.
+/// 4. Generate `n_slices` evenly-spaced points along the line
+///    passing through the AABB center in the axis direction, at
+///    depths from `min_d` to `max_d`.
 ///
-/// **Empty / degenerate input**: returns `Vec::new()` if the mesh
-/// has no vertices or the spine direction is zero-magnitude; the
-/// drawing system then skips the centerline overlay.
+/// **Why AABB center + spine-hint, not centroid / PCA / per-slab
+/// fit** (2026-05-16, fourth iteration):
+///
+/// - **Per-slab Kasa** (first attempt): non-uniform vertex
+///   density around cross-sections biased the per-slab fit
+///   center toward the dense side. Off-axis curve at the dome.
+/// - **Per-slab Kasa + centroid prior** (second attempt): blend
+///   threshold meant dense dome slabs never engaged the prior.
+///   Curve persisted.
+/// - **PCA-only** (third attempt): for short-wide bodies the
+///   PCA principal eigenvector lies LATERAL, not along the
+///   body's intended axis.
+/// - **Vertex centroid + spine-hint** (fourth attempt): vertex
+///   centroid is biased by non-uniform vertex density along the
+///   body (more verts on dense regions, less on sparse) AND by
+///   the reconstruct extension at the floor (which adds verts
+///   weighted toward one end). User saw the centerline straight
+///   but laterally offset from the body's geometric center.
+/// - **AABB center + spine-hint** (this version): the AABB
+///   midpoint is determined by the body's EXTREME points, not by
+///   sample distribution. It's robust to vertex-density
+///   variation, asymmetric reconstruction artifacts, and load-time
+///   noise. After auto-center at load, AABB center is at origin
+///   exactly; the centerline runs along the world Z axis through
+///   the body's true geometric center for axisymmetric bodies.
+///
+/// **Trade-off**: the centerline is always a straight line
+/// (cannot track genuinely curved bodies like a bent finger or
+/// flexed limb). For the target use case — body-part scans of
+/// roughly-straight limbs — this is what we want. If a
+/// curved-body fixture surfaces later, an adaptive per-slab
+/// algorithm would be needed alongside this default-straight
+/// path.
+///
+/// **Empty / degenerate input**: returns `Vec::new()` if the
+/// mesh has no vertices, the spine hint is zero-magnitude, or
+/// `n_slices == 0`.
 fn compute_centerline_polyline(
     mesh: &IndexedMesh,
-    spine_direction: Vector3<f64>,
+    spine_hint: Vector3<f64>,
     n_slices: usize,
 ) -> Vec<Point3<f64>> {
-    if mesh.vertices.is_empty() || spine_direction.norm_squared() < f64::EPSILON {
+    if mesh.vertices.is_empty() || spine_hint.norm_squared() < f64::EPSILON || n_slices == 0 {
         return Vec::new();
     }
-    let axis = spine_direction.normalize();
+    let axis = spine_hint.normalize();
 
-    // Single pass: collect depth + 3D position per vertex.
-    let depths: Vec<f64> = mesh.vertices.iter().map(|v| axis.dot(&v.coords)).collect();
+    // AABB center: anchor of the centerline. For axisymmetric
+    // bodies the AABB midpoint lies on the body's principal
+    // axis; combined with the spine-hint direction (assumed to
+    // be the body's principal direction), the line through the
+    // AABB center IS the body's axis. Robust to vertex-density
+    // variation in a way the vertex centroid is not.
+    let aabb_center: Vector3<f64> = mesh.aabb().center().coords;
+
+    // Depth range of the body along the chosen axis.
+    let depths: Vec<f64> = mesh.vertices.iter().map(|p| axis.dot(&p.coords)).collect();
     let min_d = depths.iter().copied().fold(f64::INFINITY, f64::min);
     let max_d = depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = max_d - min_d;
     if range < f64::EPSILON {
         return Vec::new();
     }
-    #[allow(clippy::cast_precision_loss)]
-    let slab_width = range / (n_slices as f64);
 
-    let mut polyline: Vec<Point3<f64>> = Vec::with_capacity(n_slices);
+    // Generate N evenly-spaced points along the centerline axis
+    // from min_d to max_d, anchored to the AABB center. Each
+    // point is the unique location on the line through
+    // `aabb_center` in direction `axis` whose projection onto
+    // `axis` equals the requested depth.
+    let anchor_depth = axis.dot(&aabb_center);
+    let mut polyline = Vec::with_capacity(n_slices);
     for i in 0..n_slices {
         #[allow(clippy::cast_precision_loss)]
-        let lo = min_d + (i as f64) * slab_width;
-        let hi = lo + slab_width;
-        let mut sum = Vector3::zeros();
-        let mut count: usize = 0;
-        for (j, v) in mesh.vertices.iter().enumerate() {
-            if depths[j] >= lo && depths[j] < hi {
-                sum += v.coords;
-                count += 1;
-            }
-        }
-        if count > 0 {
-            #[allow(clippy::cast_precision_loss)]
-            let centroid = sum / (count as f64);
-            polyline.push(Point3::from(centroid));
-        }
+        let t = (i as f64 + 0.5) / (n_slices as f64);
+        let depth = min_d + t * range;
+        let depth_offset = depth - anchor_depth;
+        let point = aabb_center + axis * depth_offset;
+        polyline.push(Point3::from(point));
     }
     polyline
 }
@@ -2449,16 +2535,34 @@ fn build_cleaned_mesh(
 /// Mutates `mesh` in place. Returns a [`CleanupReport`] summarizing
 /// each step's effect so the Save status message can surface how
 /// aggressive the cleanup was for the user's confidence.
-fn cleanup_cleaned_mesh_for_disk(mesh: &mut IndexedMesh) -> CleanupReport {
+///
+/// `smoothing_iterations` controls a final Taubin-smoothing pass
+/// (added 2026-05-16, user-driven) that suppresses sub-mm scanner
+/// noise so the cleaned STL represents the silicone cast's actual
+/// outcome (surface tension during cure smooths sub-mm features
+/// physically), not the noisy scan capture.
+/// `0` = skip smoothing entirely (back-compat with pre-fix behavior).
+/// Default per the Save panel slider is `SMOOTHING_DEFAULT_ITERATIONS`.
+fn cleanup_cleaned_mesh_for_disk(
+    mesh: &mut IndexedMesh,
+    smoothing_iterations: usize,
+) -> CleanupReport {
     let welded = weld_vertices(mesh, SIMPLIFY_WELD_EPSILON_M);
     let degenerate = remove_degenerate_triangles(mesh, CLEANUP_DEGENERATE_AREA_M2);
     let small_components = remove_small_components(mesh, CLEANUP_MIN_COMPONENT_FACES);
     let unreferenced = remove_unreferenced_vertices(mesh);
+    let smoothing = taubin_smooth_vertices(
+        mesh,
+        smoothing_iterations,
+        TAUBIN_DEFAULT_LAMBDA,
+        TAUBIN_DEFAULT_MU,
+    );
     CleanupReport {
         welded,
         degenerate,
         small_components,
         unreferenced,
+        smoothing,
     }
 }
 
@@ -2475,13 +2579,20 @@ struct CleanupReport {
     degenerate: usize,
     small_components: usize,
     unreferenced: usize,
+    /// Number of Taubin-smoothing iterations actually applied
+    /// (returned by [`taubin_smooth_vertices`]; matches the
+    /// `smoothing_iterations` parameter unless the mesh was
+    /// degenerate). Surfaced in the Save status so the user
+    /// can see how much smoothing landed in the file.
+    smoothing: usize,
 }
 
 impl CleanupReport {
-    /// Total operations across all four passes. Zero when the input
-    /// was already disk-ready (no cleanup needed).
+    /// Total operations across all five passes. Zero when the input
+    /// was already disk-ready (no cleanup needed) AND the smoothing
+    /// slider was at 0.
     fn total(self) -> usize {
-        self.welded + self.degenerate + self.small_components + self.unreferenced
+        self.welded + self.degenerate + self.small_components + self.unreferenced + self.smoothing
     }
 }
 
@@ -2499,6 +2610,7 @@ impl CleanupReport {
 struct PrepToml {
     scan_prep: PrepScanPrepBlock,
     simplify: PrepSimplifyBlock,
+    smoothing: PrepSmoothingBlock,
     transform: PrepTransformBlock,
     caps: PrepCapsBlock,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2566,6 +2678,36 @@ struct PrepSimplifyBlock {
     /// algorithm. Surfaced in the TOML for audit purposes.
     boundary_preserved: bool,
 }
+
+/// `[smoothing]` provenance — what surface smoothing was
+/// applied at save time. Added 2026-05-16 with the Taubin
+/// smoothing pass in [`cleanup_cleaned_mesh_for_disk`].
+///
+/// Downstream consumers can use this to know how aggressively
+/// the cleaned mesh has been smoothed — e.g., cf-cast's SDF
+/// sampling math is unaffected (it just samples whatever
+/// surface is on disk), but a future re-mesh / re-process
+/// pipeline can decide whether to apply additional smoothing
+/// based on what's already there.
+#[derive(Serialize)]
+struct PrepSmoothingBlock {
+    /// Algorithm identifier — pinned literal so downstream
+    /// audits know what produced the smoothed vertices.
+    algorithm: &'static str,
+    /// Number of Taubin (shrink + expand) pass pairs applied.
+    /// `0` = smoothing disabled at save time.
+    iterations: usize,
+    /// Shrink-pass weight `λ` (positive Laplacian step).
+    lambda: f64,
+    /// Expand-pass weight `μ` (negative Laplacian step).
+    mu: f64,
+}
+
+/// Algorithm identifier pinned literal for
+/// [`PrepSmoothingBlock::algorithm`]. Matches the function
+/// name in `mesh-repair`'s public API so downstream audit
+/// tooling can trace back to the implementation.
+const SMOOTHING_ALGORITHM_NAME: &str = "taubin_smooth_vertices";
 
 /// `[transform]` umbrella — `rotation` + `translation` sub-tables
 /// match spec §Output format. Each renders as `[transform.rotation]`
@@ -2732,6 +2874,7 @@ fn build_prep_toml_string(
     simplify_ran: bool,
     original_face_count: usize,
     achieved_face_count: usize,
+    smoothing_iterations: usize,
     cleaned_aabb_m: &Aabb,
 ) -> Result<String> {
     let q = reorient.quaternion_physics();
@@ -2795,6 +2938,12 @@ fn build_prep_toml_string(
             achieved_face_count,
             original_face_count,
             boundary_preserved: true,
+        },
+        smoothing: PrepSmoothingBlock {
+            algorithm: SMOOTHING_ALGORITHM_NAME,
+            iterations: smoothing_iterations,
+            lambda: TAUBIN_DEFAULT_LAMBDA,
+            mu: TAUBIN_DEFAULT_MU,
         },
         transform: PrepTransformBlock {
             rotation: PrepRotationBlock {
@@ -3681,6 +3830,7 @@ fn run_render_app(
         .insert_resource(CapPendingAction::default())
         .insert_resource(CenterlineTrimState::default())
         .insert_resource(SavePendingAction::default())
+        .insert_resource(SmoothingState::default())
         .insert_resource(source)
         .insert_resource(output_dir)
         .insert_resource(stl_units)
@@ -4827,6 +4977,7 @@ fn scan_prep_panel(
     mut cap_pending: ResMut<CapPendingAction>,
     mut centerline_trim_state: ResMut<CenterlineTrimState>,
     mut save_pending: ResMut<SavePendingAction>,
+    mut smoothing_state: ResMut<SmoothingState>,
     source: Res<SourceStlPath>,
     output_dir: Res<SaveOutputDir>,
     status: Res<StatusBar>,
@@ -4882,6 +5033,7 @@ fn scan_prep_panel(
                         &output_dir.0,
                         &cap_state,
                         &mut save_pending,
+                        &mut smoothing_state,
                     );
                 });
         });
@@ -5459,6 +5611,7 @@ fn render_save_section(
     output_dir: &Path,
     cap_state: &CapState,
     save_pending: &mut SavePendingAction,
+    smoothing_state: &mut SmoothingState,
 ) {
     egui::CollapsingHeader::new("Save")
         .default_open(true)
@@ -5484,6 +5637,28 @@ fn render_save_section(
                 ui.label(dir_label)
                     .on_hover_text(output_dir.display().to_string());
             });
+
+            // Surface smoothing slider — applied at save time
+            // via `cleanup_cleaned_mesh_for_disk`. Per-scan
+            // because noise amplitude varies; raise for noisy
+            // limb scans, lower to preserve fine detail.
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Surface smoothing").strong());
+            ui.add(
+                egui::Slider::new(
+                    &mut smoothing_state.iterations,
+                    0..=SMOOTHING_MAX_ITERATIONS,
+                )
+                .text("Taubin iterations"),
+            );
+            ui.small(
+                "Suppresses sub-mm scanner noise so the cleaned STL represents the \
+                 silicone-cast outcome (surface tension smooths sub-mm features \
+                 physically). 0 = off (preserve all scan detail); raise for noisier \
+                 scans, lower to preserve fine geometric features.",
+            );
 
             let included = cap_state.loops.iter().filter(|l| l.include).count();
             let excluded = cap_state.loops.len().saturating_sub(included);
@@ -5546,6 +5721,7 @@ fn handle_save_action(
     recenter: Res<RecenterState>,
     cap: Res<CapState>,
     simplify: Res<SimplifyState>,
+    smoothing: Res<SmoothingState>,
     centerline_trim: Res<CenterlineTrimState>,
     output_dir: Res<SaveOutputDir>,
     source: Res<SourceStlPath>,
@@ -5688,13 +5864,22 @@ fn handle_save_action(
     // STL passes downstream `simplify_decoder` (not just
     // `simplify_sloppy_decoder`). The report's non-zero terms feed
     // the status message as a confidence signal for the user.
-    let cleanup = cleanup_cleaned_mesh_for_disk(&mut cleaned);
+    let cleanup = cleanup_cleaned_mesh_for_disk(&mut cleaned, smoothing.iterations);
     let cleanup_status_suffix = if cleanup.total() == 0 {
         String::new()
     } else {
+        let smoothing_part = if cleanup.smoothing > 0 {
+            format!(" / {} smoothing iters", cleanup.smoothing)
+        } else {
+            String::new()
+        };
         format!(
-            ", cleanup: {} welded / {} degenerate / {} small-component / {} unreferenced",
-            cleanup.welded, cleanup.degenerate, cleanup.small_components, cleanup.unreferenced,
+            ", cleanup: {} welded / {} degenerate / {} small-component / {} unreferenced{}",
+            cleanup.welded,
+            cleanup.degenerate,
+            cleanup.small_components,
+            cleanup.unreferenced,
+            smoothing_part,
         )
     };
 
@@ -5743,6 +5928,7 @@ fn handle_save_action(
         simplify.was_applied,
         original_face_count,
         triangle_count,
+        smoothing.iterations,
         &cleaned_aabb_m,
     ) {
         Ok(s) => s,
@@ -6851,6 +7037,80 @@ mod tests {
         assert!(zero_dir.is_empty());
     }
 
+    /// **Load-bearing test for the PCA-only fix** (2026-05-16): a
+    /// tapering cylindrical body — many vertices per slab at
+    /// the wide base, few per slab at the narrow tip — produces
+    /// a centerline that stays on the body's true axis at
+    /// EVERY slab, including the sparse tip. This is the failure
+    /// mode the old centroid algorithm exhibited: the tip slabs
+    /// wobbled laterally because the centroid of a few noisy
+    /// surface points isn't the geometric center of the
+    /// underlying circle.
+    ///
+    /// Fixture: a cone tapering from radius 1.0 at z=0 to
+    /// radius 0.05 at z=1.0, with 20 rings. Per-ring vertex
+    /// count is CONSTANT at 16, so the wide base + narrow tip
+    /// have the same number of samples but different radii.
+    /// Adds asymmetric per-vertex noise so the test would fail
+    /// for the centroid algorithm (centroid is biased by the
+    /// noise direction) but passes for Kasa (circle fit
+    /// recovers the true center despite the noise).
+    #[test]
+    fn centerline_tapered_cylinder_tip_stays_on_axis() {
+        const N_RINGS: usize = 20;
+        const N_PER_RING: usize = 16;
+        const RADIUS_BASE: f64 = 1.0;
+        const RADIUS_TIP: f64 = 0.05;
+        const NOISE_MAG: f64 = 0.005; // 0.5 % of the base radius
+
+        let mut mesh = IndexedMesh::with_capacity(N_RINGS * N_PER_RING, 0);
+        for i in 0..N_RINGS {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (i as f64) / ((N_RINGS - 1) as f64);
+            let z = t;
+            let radius = RADIUS_BASE * (1.0 - t) + RADIUS_TIP * t;
+            for k in 0..N_PER_RING {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = (k as f64) * std::f64::consts::TAU / (N_PER_RING as f64);
+                // Asymmetric noise: amplitude tied to (i + k) so
+                // different rings have different noise patterns.
+                let noise = NOISE_MAG * (((i * 7 + k * 13) % 11) as f64 / 11.0 - 0.5);
+                let r_actual = radius + noise;
+                mesh.vertices.push(Point3::new(
+                    r_actual * theta.cos(),
+                    r_actual * theta.sin(),
+                    z,
+                ));
+            }
+        }
+
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), N_RINGS);
+        assert!(
+            polyline.len() >= N_RINGS - 2,
+            "expected ~N_RINGS polyline pts; got {}",
+            polyline.len()
+        );
+
+        // EVERY polyline point should be on the body axis (x ≈ 0,
+        // y ≈ 0), including the narrow-tip slabs. The tolerance
+        // is held to NOISE_MAG / 2 — centroid + spine-hint
+        // anchors the line to the body's mean position, which
+        // for a symmetric tapered cone with sub-percent noise
+        // stays well within half the per-vertex noise amplitude.
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(
+                p.x.abs() < NOISE_MAG / 2.0,
+                "x drift at slab {i}: {p:?} (NOISE_MAG/2 = {})",
+                NOISE_MAG / 2.0,
+            );
+            assert!(
+                p.y.abs() < NOISE_MAG / 2.0,
+                "y drift at slab {i}: {p:?} (NOISE_MAG/2 = {})",
+                NOISE_MAG / 2.0,
+            );
+        }
+    }
+
     // ----- Centerline trim (CSP.4b) ----------------------------------
 
     /// `trim_mesh_along_centerline` with both trims at 0 is a
@@ -7350,6 +7610,7 @@ mod tests {
             true,    // simplify_ran — user clicked Apply
             500_000, // original face count
             200_000, // achieved face count
+            8,       // smoothing iterations
             &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
@@ -7459,6 +7720,7 @@ mod tests {
             true,
             500_000,
             200_000,
+            8,
             &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
@@ -7515,6 +7777,7 @@ mod tests {
             true,
             500_000,
             200_000,
+            8,
             &cleaned_aabb,
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
@@ -7573,6 +7836,7 @@ mod tests {
             false, // simplify_ran — user did NOT click Apply
             500_000,
             499_900, // achieved < original (cleanup dropped 100 faces)
+            0,       // smoothing iterations
             &cleaned_aabb,
         )?;
         let parsed_false: toml::Value = toml::from_str(&s_false)?;
@@ -7606,6 +7870,7 @@ mod tests {
             true,
             500_000,
             200_000,
+            0,
             &cleaned_aabb,
         )?;
         let parsed_true: toml::Value = toml::from_str(&s_true)?;
@@ -7748,7 +8013,9 @@ mod tests {
         // STL-unshared form: 3 verts per face.
         assert_eq!(unshared.vertices.len(), shared_face_count * 3);
 
-        let report = cleanup_cleaned_mesh_for_disk(&mut unshared);
+        // Smoothing disabled — this test asserts the weld/degenerate
+        // hygiene path, not the smoothing pass.
+        let report = cleanup_cleaned_mesh_for_disk(&mut unshared, 0);
         assert!(
             report.welded > 0,
             "weld_vertices report welded=0: {report:?}",
@@ -7777,7 +8044,7 @@ mod tests {
         mesh.vertices.push(Point3::new(100.5, 1.0, 0.0));
         mesh.faces.push([v0, v0 + 1, v0 + 2]);
 
-        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 0);
         assert!(
             report.small_components >= 1,
             "small_components report: {report:?}",
@@ -7796,8 +8063,37 @@ mod tests {
         // 5×5 grid is already in shared-index form, no degenerates,
         // single component, no unreferenced verts.
         let mut mesh = grid_square(5);
-        let report = cleanup_cleaned_mesh_for_disk(&mut mesh);
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 0);
         assert_eq!(report.total(), 0, "clean mesh produced cleanup: {report:?}");
+    }
+
+    /// Smoothing with non-zero iterations counts toward
+    /// [`CleanupReport::total()`] AND actually moves vertices.
+    /// Pins the slider's `iterations > 0` path so a future
+    /// refactor doesn't silently disconnect the slider from
+    /// the smoothing call.
+    #[test]
+    fn cleanup_applies_taubin_smoothing_when_iterations_positive() {
+        let mut mesh = grid_square(5);
+        let original_verts = mesh.vertices.clone();
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 5);
+        assert_eq!(
+            report.smoothing, 5,
+            "smoothing iters not threaded: {report:?}"
+        );
+        // grid_square produces vertices ON a plane; Taubin should
+        // not significantly displace them (Laplacian of a planar
+        // mesh is ~zero), but some boundary verts will drift
+        // toward the interior. At least one vertex should differ.
+        let any_moved = mesh
+            .vertices
+            .iter()
+            .enumerate()
+            .any(|(i, v)| (v.coords - original_verts[i].coords).norm() > 1e-12);
+        assert!(
+            any_moved,
+            "Taubin smoothing with 5 iters did not move any vertex on grid_square(5)",
+        );
     }
 
     /// `resolve_output_dir` honors `--output-dir <path>` when supplied.

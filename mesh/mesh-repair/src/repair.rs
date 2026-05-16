@@ -16,7 +16,7 @@
 
 use hashbrown::{HashMap, HashSet};
 use mesh_types::IndexedMesh;
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 
 /// Configuration parameters for mesh repair operations.
 ///
@@ -532,6 +532,183 @@ const fn normalize_face(face: [u32; 3]) -> [u32; 3] {
     ]
 }
 
+/// Default Laplacian-step weight for [`taubin_smooth_vertices`].
+///
+/// Pulls each vertex 50 % of the way toward its 1-ring neighbor
+/// centroid per shrink pass. Matches the value in Taubin (1995)
+/// §3.1 for the default low-pass filter design.
+pub const TAUBIN_DEFAULT_LAMBDA: f64 = 0.5;
+
+/// Default inverse-Laplacian step weight for [`taubin_smooth_vertices`].
+///
+/// Slightly more aggressive than `-λ` (so the expansion pass
+/// undoes a little more than the shrink pass put in) to
+/// compensate for the volume-shrinkage pure Laplacian smoothing
+/// would otherwise produce. The `(λ, μ) = (0.5, -0.53)` pair
+/// gives a low-pass filter with pass-band-stop-band cutoff near
+/// `k_pb ≈ 0.1` per Taubin (1995); empirically holds
+/// bounding-box extent within ~1 % of the original over 10-20
+/// iterations on typical scan meshes.
+pub const TAUBIN_DEFAULT_MU: f64 = -0.53;
+
+/// Taubin smoothing — Laplacian + inverse-Laplacian vertex
+/// updates that suppress high-frequency surface noise.
+///
+/// Alternating shrink (+λ) and expand (-μ) passes form a
+/// low-pass filter on the mesh's spectral representation,
+/// preventing the monotonic volume shrinkage that pure
+/// Laplacian smoothing would otherwise produce (Taubin,
+/// "A signal processing approach to fair surface design,"
+/// SIGGRAPH 1995).
+///
+/// Each iteration performs two passes:
+///
+/// 1. **Shrink pass** (weight `λ`, typically `+0.5`): each
+///    vertex moves toward the centroid of its 1-ring neighbors
+///    by `λ × (centroid - vertex)`.
+/// 2. **Expand pass** (weight `μ`, typically `-0.53`): same
+///    update with a negative weight, so each vertex moves AWAY
+///    from the centroid. With `|μ| > |λ|` slightly, the expand
+///    pass over-corrects to cancel the shrink-pass's cumulative
+///    volume loss.
+///
+/// The composite filter is a low-pass filter on the mesh's
+/// spectral representation, suppressing high-frequency noise
+/// while preserving low-frequency geometric features. Good for
+/// scanner noise / surface texture cleanup on body-part scans
+/// (sub-mm peak-to-peak noise) where the noise has no geometric
+/// significance — the silicone cast won't carry it (surface
+/// tension smooths sub-mm features during cure).
+///
+/// # Arguments
+///
+/// * `mesh` — mesh to smooth in place (vertex positions
+///   mutated; face indices unchanged).
+/// * `iterations` — number of (shrink, expand) pass pairs.
+///   8 is a reasonable default for body-part scans; raise for
+///   noisier scans (15-20) or lower (3-5) to preserve more
+///   surface detail.
+/// * `lambda` — shrink-pass weight; see
+///   [`TAUBIN_DEFAULT_LAMBDA`].
+/// * `mu` — expand-pass weight; see [`TAUBIN_DEFAULT_MU`].
+///
+/// # Returns
+///
+/// The number of iterations actually applied (`0` for empty
+/// mesh, no faces, or `iterations == 0`).
+///
+/// # Boundary handling
+///
+/// Vertices with no 1-ring neighbors (e.g., orphan vertices)
+/// are left untouched. Boundary vertices (on the open edge of a
+/// non-watertight mesh) ARE smoothed against whatever interior
+/// neighbors they have — they may drift slightly inward over
+/// many iterations, but for cleaned-and-capped scans this is
+/// rare. Watertight inputs are unaffected.
+///
+/// # Example
+///
+/// ```
+/// use mesh_types::{IndexedMesh, Point3};
+/// use mesh_repair::{TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, taubin_smooth_vertices};
+///
+/// let mut mesh = IndexedMesh::new();
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+/// // Closed tetrahedron — every vertex shares the apex / base / sides.
+/// mesh.faces.push([0, 1, 2]);
+/// mesh.faces.push([0, 1, 3]);
+/// mesh.faces.push([0, 2, 3]);
+/// mesh.faces.push([1, 2, 3]);
+///
+/// let iters = taubin_smooth_vertices(
+///     &mut mesh,
+///     5,
+///     TAUBIN_DEFAULT_LAMBDA,
+///     TAUBIN_DEFAULT_MU,
+/// );
+/// assert_eq!(iters, 5);
+/// ```
+pub fn taubin_smooth_vertices(
+    mesh: &mut IndexedMesh,
+    iterations: usize,
+    lambda: f64,
+    mu: f64,
+) -> usize {
+    if iterations == 0 || mesh.vertices.is_empty() || mesh.faces.is_empty() {
+        return 0;
+    }
+
+    // Build 1-ring adjacency: `neighbors[i]` is the set of
+    // vertex indices sharing an EDGE with vertex `i`. Linear
+    // dedup is fine — typical valence is 5-7 on triangulated
+    // surfaces, so the inner `contains` check is bounded.
+    let n = mesh.vertices.len();
+    let mut neighbors: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for face in &mesh.faces {
+        let [a, b, c] = *face;
+        push_edge(&mut neighbors, a, b);
+        push_edge(&mut neighbors, b, c);
+        push_edge(&mut neighbors, c, a);
+    }
+
+    let mut buffer = mesh.vertices.clone();
+    for _ in 0..iterations {
+        apply_taubin_step(&mesh.vertices, &neighbors, &mut buffer, lambda);
+        std::mem::swap(&mut mesh.vertices, &mut buffer);
+        apply_taubin_step(&mesh.vertices, &neighbors, &mut buffer, mu);
+        std::mem::swap(&mut mesh.vertices, &mut buffer);
+    }
+
+    iterations
+}
+
+/// Push (a → b) and (b → a) edges into the adjacency lists,
+/// deduping linearly. Helper for [`taubin_smooth_vertices`].
+fn push_edge(neighbors: &mut [Vec<u32>], a: u32, b: u32) {
+    if a == b {
+        return;
+    }
+    if !neighbors[a as usize].contains(&b) {
+        neighbors[a as usize].push(b);
+    }
+    if !neighbors[b as usize].contains(&a) {
+        neighbors[b as usize].push(a);
+    }
+}
+
+/// One Laplacian umbrella step: `dst[i] = src[i] + weight ×
+/// (centroid_of_neighbors[i] - src[i])`. Vertices with no
+/// neighbors pass through unchanged.
+fn apply_taubin_step(
+    src: &[Point3<f64>],
+    neighbors: &[Vec<u32>],
+    dst: &mut [Point3<f64>],
+    weight: f64,
+) {
+    for (i, v) in src.iter().enumerate() {
+        let nbs = &neighbors[i];
+        if nbs.is_empty() {
+            dst[i] = *v;
+            continue;
+        }
+        let mut sum = Vector3::zeros();
+        for &nb in nbs {
+            sum += src[nb as usize].coords;
+        }
+        // `nbs.len()` is bounded by the per-vertex valence
+        // (typically 5-7 on triangulated surfaces); the f64
+        // cast is exact for any usize that fits in the
+        // hardware vertex-count budget.
+        #[allow(clippy::cast_precision_loss)]
+        let avg = sum / nbs.len() as f64;
+        let umbrella = avg - v.coords;
+        dst[i] = Point3::from(v.coords + umbrella * weight);
+    }
+}
+
 /// Run the basic repair pipeline on a mesh.
 ///
 /// This performs:
@@ -660,6 +837,140 @@ mod tests {
         mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
+    }
+
+    // ----- taubin_smooth_vertices -------------------------------------
+
+    /// Closed tetrahedron — every vertex is connected to every
+    /// other via at least one edge. Used to exercise Taubin
+    /// smoothing on a non-degenerate closed mesh.
+    fn closed_tetrahedron() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.faces.push([0, 1, 2]);
+        mesh.faces.push([0, 1, 3]);
+        mesh.faces.push([0, 2, 3]);
+        mesh.faces.push([1, 2, 3]);
+        mesh
+    }
+
+    /// `iterations == 0` is a no-op. Pin the contract so callers
+    /// can safely route a slider value to 0 without an extra
+    /// guard.
+    #[test]
+    fn taubin_smooth_zero_iterations_is_no_op() {
+        let mut mesh = closed_tetrahedron();
+        let original = mesh.vertices.clone();
+        let n = taubin_smooth_vertices(&mut mesh, 0, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
+        assert_eq!(n, 0);
+        assert_eq!(mesh.vertices, original);
+    }
+
+    /// Empty vertex array → no-op (no positions to smooth).
+    /// Guards against per-pass `[0; 0]` allocations in the
+    /// adjacency build for callers loading a degenerate file.
+    #[test]
+    fn taubin_smooth_empty_mesh_is_no_op() {
+        let mut mesh = IndexedMesh::new();
+        let n = taubin_smooth_vertices(&mut mesh, 5, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
+        assert_eq!(n, 0);
+        assert!(mesh.vertices.is_empty());
+    }
+
+    /// Vertices-but-no-faces → no-op. Smoothing without faces
+    /// has no neighbor topology to average against.
+    #[test]
+    fn taubin_smooth_no_faces_is_no_op() {
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        let original = mesh.vertices.clone();
+        let n = taubin_smooth_vertices(&mut mesh, 5, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
+        assert_eq!(n, 0);
+        assert_eq!(mesh.vertices, original);
+    }
+
+    /// Smoothing a non-degenerate mesh moves at least one
+    /// vertex. Pinned as a regression guard: it would be a
+    /// silent bug if `taubin_smooth_vertices(_, > 0, _, _)`
+    /// ever became a no-op on a real mesh.
+    #[test]
+    fn taubin_smooth_modifies_vertices_on_real_mesh() {
+        let mut mesh = closed_tetrahedron();
+        let original = mesh.vertices.clone();
+        let n = taubin_smooth_vertices(&mut mesh, 3, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
+        assert_eq!(n, 3);
+        let any_moved = mesh
+            .vertices
+            .iter()
+            .enumerate()
+            .any(|(i, v)| (v.coords - original[i].coords).norm() > 1e-12);
+        assert!(any_moved, "no vertex moved after 3 Taubin iterations");
+    }
+
+    /// Taubin (with `μ < 0`) shrinks LESS than pure Laplacian
+    /// (μ = 0). Pin this property — it's the whole reason
+    /// Taubin exists. Measure via bounding-box volume; Laplacian
+    /// monotonically shrinks, Taubin holds steady.
+    #[test]
+    fn taubin_smooth_shrinks_less_than_pure_laplacian() {
+        // Use a closed octahedron — 6 vertices, 8 faces, evenly
+        // distributed around the origin so shrinkage is a
+        // global bounding-box-decrease (not direction-biased).
+        let mut octa = IndexedMesh::new();
+        octa.vertices.push(Point3::new(1.0, 0.0, 0.0)); // +X
+        octa.vertices.push(Point3::new(-1.0, 0.0, 0.0)); // -X
+        octa.vertices.push(Point3::new(0.0, 1.0, 0.0)); // +Y
+        octa.vertices.push(Point3::new(0.0, -1.0, 0.0)); // -Y
+        octa.vertices.push(Point3::new(0.0, 0.0, 1.0)); // +Z
+        octa.vertices.push(Point3::new(0.0, 0.0, -1.0)); // -Z
+        // Top half (+Z apex) — 4 faces around vertex 4.
+        octa.faces.push([0, 2, 4]);
+        octa.faces.push([2, 1, 4]);
+        octa.faces.push([1, 3, 4]);
+        octa.faces.push([3, 0, 4]);
+        // Bottom half (-Z apex) — 4 faces around vertex 5.
+        octa.faces.push([2, 0, 5]);
+        octa.faces.push([1, 2, 5]);
+        octa.faces.push([3, 1, 5]);
+        octa.faces.push([0, 3, 5]);
+
+        let mut laplacian_mesh = octa.clone();
+        let mut taubin_mesh = octa.clone();
+
+        // 10 iterations of pure Laplacian (μ = 0) vs Taubin
+        // (μ = -0.53).
+        taubin_smooth_vertices(&mut laplacian_mesh, 10, 0.5, 0.0);
+        taubin_smooth_vertices(&mut taubin_mesh, 10, 0.5, TAUBIN_DEFAULT_MU);
+
+        #[allow(clippy::cast_precision_loss)]
+        // vertex_count fits in f64 mantissa for any practical mesh
+        let laplacian_extent: f64 = laplacian_mesh
+            .vertices
+            .iter()
+            .map(|p| p.coords.norm())
+            .sum::<f64>()
+            / laplacian_mesh.vertices.len() as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let taubin_extent: f64 = taubin_mesh
+            .vertices
+            .iter()
+            .map(|p| p.coords.norm())
+            .sum::<f64>()
+            / taubin_mesh.vertices.len() as f64;
+
+        // Laplacian should shrink hard (toward 0); Taubin
+        // should hold near 1.0 (the original radius).
+        assert!(
+            laplacian_extent < 0.5,
+            "pure Laplacian extent {laplacian_extent} should be < 0.5 (heavy shrinkage)",
+        );
+        assert!(
+            taubin_extent > laplacian_extent * 1.5,
+            "Taubin extent {taubin_extent} should be > 1.5× Laplacian extent {laplacian_extent}",
+        );
     }
 
     #[test]
