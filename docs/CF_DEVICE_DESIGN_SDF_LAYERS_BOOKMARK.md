@@ -1,19 +1,26 @@
 # cf-device-design SDF-Based Layer Surfaces — Bookmark
 
-**Status**: OPEN. Recon session is NEXT. Implementation arc is the session
-after.
+**Status**: RECON RESOLVED 2026-05-16. Spec lives at
+[`docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md`](CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md).
+Implementation arc is the next session.
 
-## Three-session pattern in flight
+## Three-session pattern
 
-1. **Bookmark session** (2026-05-16, this one). Centerline arc shipped on
+1. **Bookmark session** (2026-05-16, earlier). Centerline arc shipped on
    `dev` (PR #248), 6 commits. Architectural decision: cf-device-design's
    per-layer surfaces should be UNIFORM-OFFSET ISOSURFACES of the scan
    SDF, replacing the current per-vertex displacement approach.
-2. **Recon session** (NEXT). Read cf-cast-cli's SDF + marching-cubes
-   pattern, spec the cf-device-design integration, measure performance
-   budget, decide caching strategy. **NO IMPLEMENTATION.**
-3. **Implementation session** (AFTER). Build against the recon's chosen
-   approach. Estimated 4-8 commits.
+2. **Recon session** (2026-05-16, later — DONE). Read cf-cast-cli's
+   SDF + marching-cubes pattern, measured perf via throwaway spike on
+   the iter-1 scan, picked architecture, wrote
+   [`docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md`](CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md).
+   Headline: `decimate to 2500 faces → cache SDF + filled ScalarGrid →
+   MC at `at_iso_value(offset)` per layer`. RAW scan SDF = 39 s grid
+   fill (non-viable); dec-2500 at 5 mm = 324 ms one-time + < 1 ms per
+   slider tick.
+3. **Implementation session** (NEXT). Build against the spec's chosen
+   approach. Estimated 5–7 sub-leaves; the Layer 1 dome-apex nipple
+   disappearing on iter-1 is the load-bearing visual gate.
 
 ## TL;DR — why the per-vertex approach is wrong
 
