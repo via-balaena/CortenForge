@@ -44,9 +44,9 @@ use cf_viewer::{
 };
 use clap::Parser;
 use mesh_io::load_stl;
-use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
+use mesh_repair::{remove_degenerate_triangles, remove_unreferenced_vertices, weld_vertices};
 use mesh_types::{Bounded, IndexedMesh, Point3};
-use meshopt::simplify_sloppy_decoder;
+use meshopt::{SimplifyOptions, simplify_decoder, simplify_sloppy_decoder};
 use nalgebra::Vector3;
 use serde::Deserialize;
 
@@ -407,23 +407,55 @@ const ENVELOPE_PROXY_TARGET_FACES: usize = 1500;
 /// vertices that meshopt needs welded to find collapsible edges.
 const ENVELOPE_PROXY_WELD_EPSILON_M: f64 = 1e-6;
 
-/// `meshopt::simplify_sloppy_decoder`'s target-error parameter.
-/// Effectively unbounded (1000 % of mesh diagonal) — we want the
-/// decimation to ALWAYS reach the target face count, sacrificing
-/// geometric fidelity if necessary. simplify_sloppy is topology-
-/// non-preserving and per its docs "always able to reach target
-/// triangle count," so this error cap exists only as a defensive
-/// upper bound; under normal operation the face-count target is
-/// the binding constraint.
+/// `meshopt::simplify_decoder`'s target-error parameter — relaxed
+/// upper bound (10.0 ≈ 1000 % of mesh half-extent) so the face-count
+/// target is the binding constraint, not the quadric error ceiling.
+/// `simplify_decoder` (topology-preserving) doesn't produce the
+/// sliver triangles that `simplify_sloppy_decoder` is prone to, so
+/// the slightly looser target-error is safe.
 ///
-/// Switched from `simplify_decoder` (slice 4 polish) to
-/// `simplify_sloppy_decoder` (slice 5 perf pass) after observing
-/// that the iter-1 cleaned scan retains its full 3.34 M face count
-/// through topology-preserving simplification — the scan has
-/// disconnected components / degenerate triangles that block the
-/// regular collapse algorithm. The sloppy variant ignores topology
-/// and reliably hits ~1500 faces.
+/// **2026-05-16**: switched from `simplify_sloppy_decoder` back to
+/// `simplify_decoder` after user-reported sliver triangles visible
+/// in the cavity + layer previews on the iter-1 sock-over-capsule
+/// fixture. `simplify_sloppy` is "topology-non-preserving" by
+/// design — its slivers had no cast impact (cf-cast samples the
+/// cleaned STL's SDF directly, not this proxy) but undermined
+/// design-time confidence in the viewport. The original switch to
+/// sloppy (slice 5 perf pass) was driven by the RAW iter-1 scan
+/// (3.34 M faces with degenerates + disconnected components)
+/// blocking topology-preserving collapse. Since then,
+/// cf-scan-prep's `cleanup_cleaned_mesh_for_disk` runs the same
+/// hygiene pass at save time (weld + degenerate-removal + small
+/// components + unreferenced-vertex compaction), so the cleaned
+/// STLs cf-device-design sees today are amenable to the regular
+/// `simplify_decoder` again. [`compute_envelope_proxy_mesh`] falls
+/// back to `simplify_sloppy_decoder` if the topology-preserving
+/// path doesn't reach a reasonable face count — defensive for
+/// users who load uncleaned scans directly.
 const ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
+
+/// Area threshold for the post-decimation
+/// [`remove_degenerate_triangles`] hygiene pass in
+/// [`compute_envelope_proxy_mesh`]. Square meters; 1e-15 m² matches
+/// cf-scan-prep's `CLEANUP_DEGENERATE_AREA_M2` (the same constant
+/// scope rationale: well below cf-cast's 2 mm-cell SDF resolution
+/// + below the f32 quantization floor meshopt operates at).
+const ENVELOPE_PROXY_DEGENERATE_AREA_M2: f64 = 1e-15;
+
+/// Sloppy-fallback threshold for [`compute_envelope_proxy_mesh`].
+/// `simplify_decoder` (topology-preserving) is allowed to stop
+/// short of the target if local quadric error or topology pinning
+/// limits collapse — that's fine for cleaned STLs, but raw /
+/// uncleaned STLs may stop with far too many faces (the iter-1
+/// raw 3.34 M scan retained its full count through the regular
+/// simplify before cf-scan-prep started running cleanup). When
+/// the regular path leaves more than this multiplier × the
+/// target face count, fall back to `simplify_sloppy_decoder` so
+/// the viewport stays responsive. 4× target (= 6000 faces for a
+/// 1500-face target) is loose enough that lightly-noisy
+/// cleaned STLs don't trip it but tight enough that an
+/// uncleaned multi-million-face STL does.
+const ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER: usize = 4;
 
 // ----- .prep.toml parsing (subset; centerline only) -----------------
 
@@ -622,9 +654,15 @@ fn compute_envelope_proxy_mesh(
 ) -> EnvelopeProxyMesh {
     let original_face_count = scan_mesh.faces.len();
 
-    // Step 1: weld unshared vertices.
+    // Step 1: weld unshared vertices, then **compact the vertex
+    // array**. Same trick as cf-scan-prep's `simplify_mesh`
+    // (commit `e314d713`, 2026-05-16): `weld_vertices` remaps face
+    // indices to canonical reps but leaves merged-away duplicates
+    // as unreferenced entries; meshopt silently no-ops on sparse
+    // positions arrays. Compact before feeding meshopt.
     let mut welded = scan_mesh.clone();
     weld_vertices(&mut welded, ENVELOPE_PROXY_WELD_EPSILON_M);
+    remove_unreferenced_vertices(&mut welded);
 
     // Step 2: meshopt simplify. Target index count = target faces × 3.
     // f64 → f32 cast is intentional; meshopt's C API operates on f32.
@@ -636,31 +674,65 @@ fn compute_envelope_proxy_mesh(
         .collect();
     let indices: Vec<u32> = welded.faces.iter().flatten().copied().collect();
     let target_index_count = ENVELOPE_PROXY_TARGET_FACES.saturating_mul(3);
+    // Topology-preserving simplify first. Doesn't produce the
+    // sliver triangles that `simplify_sloppy_decoder` is prone to,
+    // which is the whole point of this switch (user-reported
+    // 2026-05-16: slivers visible in cavity + layer previews on
+    // the iter-1 fixture). `LockBorder` pins open-boundary loops
+    // in place — important because cleaned scans coming out of
+    // cf-scan-prep are watertight; this is belt-and-suspenders.
     let mut result_error = 0.0_f32;
-    // `simplify_sloppy` ignores topology — required for the iter-1
-    // cleaned scan (3.34 M faces with disconnected components +
-    // degenerate triangles that block topology-preserving collapse).
-    // Guaranteed to reach the target face count per the meshopt
-    // docs ("always able to reach target triangle count").
     let simplified_indices = if target_index_count < indices.len() {
-        simplify_sloppy_decoder(
+        let regular = simplify_decoder(
             &indices,
             &positions,
             target_index_count,
             ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
+            SimplifyOptions::LockBorder,
             Some(&mut result_error),
-        )
+        );
+        let regular_face_count = regular.len() / 3;
+        let fallback_threshold =
+            ENVELOPE_PROXY_TARGET_FACES.saturating_mul(ENVELOPE_PROXY_SLOPPY_FALLBACK_MULTIPLIER);
+        if regular_face_count > fallback_threshold {
+            // Topology-preserving simplify left too many faces —
+            // input STL likely has degenerate triangles / disconnected
+            // components blocking collapse (the pre-cf-scan-prep-
+            // cleanup raw scan failure mode). Fall back to sloppy so
+            // the viewport stays responsive. Will produce slivers;
+            // the post-decimation hygiene pass below catches the
+            // worst.
+            eprintln!(
+                "[envelope_proxy] simplify_decoder stopped at {regular_face_count} faces \
+                 (target {ENVELOPE_PROXY_TARGET_FACES}, fallback threshold {fallback_threshold}); \
+                 falling back to simplify_sloppy_decoder",
+            );
+            simplify_sloppy_decoder(
+                &indices,
+                &positions,
+                target_index_count,
+                ENVELOPE_PROXY_SIMPLIFY_TARGET_ERROR,
+                Some(&mut result_error),
+            )
+        } else {
+            regular
+        }
     } else {
         // Mesh is already at or below the target; skip decimation.
         indices.clone()
     };
 
-    // Step 3: reassemble + strip unreferenced vertices.
+    // Step 3: reassemble, strip unreferenced vertices, and run a
+    // defensive degenerate-triangle hygiene pass. The latter is
+    // most useful when we fell back to sloppy (the failure mode
+    // we're trying to mask), but is also cheap insurance against
+    // any zero-area collapses the regular path might leave.
     let mut proxy = welded;
     proxy.faces = simplified_indices
         .chunks_exact(3)
         .map(|tri| [tri[0], tri[1], tri[2]])
         .collect();
+    remove_degenerate_triangles(&mut proxy, ENVELOPE_PROXY_DEGENERATE_AREA_M2);
     remove_unreferenced_vertices(&mut proxy);
 
     // Step 4: face normals (CCW triangle winding × right-hand rule
