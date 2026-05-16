@@ -397,6 +397,8 @@ struct EnvelopeProxyMesh {
     /// `f64::INFINITY` when no centerline is available (< 2 points)
     /// — without a centerline there is no radial-collapse metric, so
     /// the check is reported as not-applicable.
+    #[allow(dead_code)]
+    // SDF analog (CachedScanSdf::min_sdf_value) consumed instead; retired in sub-leaf 6
     min_radial_distance_m: f64,
 }
 
@@ -1201,8 +1203,9 @@ struct LayerValidation {
 }
 
 /// Whole-device validation readout, computed fresh each frame by
-/// [`compute_validations`] from the proxy mesh + cavity + layer
-/// state.
+/// [`compute_validations`] from the cached scan SDF + cavity +
+/// layer state (slice 9 sub-leaf 5; per-vertex `EnvelopeProxyMesh`
+/// path retired).
 #[derive(Debug, Clone, PartialEq)]
 struct DeviceValidations {
     /// One entry per layer, innermost-first.
@@ -1215,67 +1218,84 @@ struct DeviceValidations {
     /// Worst per-layer budget status — drives the panel's headline
     /// color. [`BudgetStatus::Green`] for an empty layer stack.
     worst_status: BudgetStatus,
-    /// Whether the cavity mesh self-intersects at the current inset:
-    /// `true` when `cavity.inset_m ≥ proxy.min_radial_distance_m`
-    /// (at least one vertex has reached / crossed the centerline).
-    /// Always `false` when no centerline is available — the check
-    /// is reported not-applicable in that case.
+    /// Whether the cavity mesh collapses at the current inset:
+    /// `true` when `cavity.inset_m ≥ -cached_sdf.min_sdf_value` (the
+    /// requested inset exceeds the maximum interior SDF depth, so
+    /// the marching-cubes extraction at iso = -inset is empty). SDF
+    /// analog of the prior `cavity.inset_m ≥ proxy.min_radial_distance_m`
+    /// check. Always applicable (no centerline-absent fallback —
+    /// the SDF carries its own collapse depth).
     cavity_self_intersects: bool,
-    /// The inset (m) at which the cavity first collapses onto the
-    /// centerline = `proxy.min_radial_distance_m`. `f64::INFINITY`
-    /// when no centerline is available (check not applicable).
+    /// The inset (m) at which the cavity first collapses =
+    /// `-cached_sdf.min_sdf_value`. Always finite (the cached grid
+    /// always has at least one interior cell for a non-empty scan).
     cavity_collapse_inset_m: f64,
     /// `true` when every layer is at or above
     /// [`MIN_CASTABLE_THICKNESS_M`].
     min_wall_ok: bool,
 }
 
-/// Enclosed volume (m³) of the proxy mesh with every vertex
-/// displaced by `offset_m` along its per-vertex radial direction
-/// (negative `offset_m` = inward, e.g. the cavity surface).
-///
-/// Divergence-theorem signed volume: `⅙·Σ_faces a·(b×c)` over the
-/// displaced triangles, where `a, b, c` are the face's displaced
-/// vertices. cf-scan-prep's cleaned mesh winds CCW / outward, so a
-/// closed mesh yields a positive volume that grows monotonically
-/// with `offset_m`. For the slightly-open cleaned scan the small
-/// open-boundary error is common to every offset and largely
-/// cancels in the shell differences [`compute_validations`] takes.
+/// Absolute enclosed volume (m³) of an `IndexedMesh` (the
+/// marching-cubes output of [`sdf_layers::extract_layer_surface`])
+/// via the divergence theorem: `⅙·|Σ_faces a·(b×c)|` over the
+/// triangles, with `a, b, c` the face's vertices.
 ///
 /// Pure geometry in physics-frame meters — no render-scale / UpAxis
-/// mapping (those are display-only concerns).
-fn signed_volume_m3(proxy: &EnvelopeProxyMesh, offset_m: f64) -> f64 {
-    let displaced = |i: u32| -> Vector3<f64> {
-        let idx = i as usize;
-        proxy.vertices[idx].coords + proxy.vertex_radial_directions[idx] * offset_m
-    };
+/// mapping (those are display-only concerns). The mesh is consumed
+/// as-extracted: no displacement step (the iso surface naturally
+/// sits where it should).
+///
+/// The `abs` is load-bearing: mesh-offset's marching-cubes table
+/// produces INWARD-winding triangles for our SDF convention
+/// (negative inside, positive outside), so the raw divergence
+/// integral is negative for a closed iso surface. Stripping the
+/// sign lets downstream callers (`compute_validations`) treat the
+/// result as the geometric "amount enclosed" without coupling to MC's
+/// winding choice. The shell-volume difference in
+/// `compute_validations` is then itself `.abs()`'d for the same
+/// floating-point-sign-noise reason (a near-closed cleaned scan
+/// can leave a tiny sign asymmetry between outer and inner).
+fn signed_volume_m3(mesh: &IndexedMesh) -> f64 {
     let mut six_volume = 0.0_f64;
-    for face in &proxy.faces {
-        let a = displaced(face[0]);
-        let b = displaced(face[1]);
-        let c = displaced(face[2]);
+    for face in &mesh.faces {
+        let a = mesh.vertices[face[0] as usize].coords;
+        let b = mesh.vertices[face[1] as usize].coords;
+        let c = mesh.vertices[face[2] as usize].coords;
         six_volume += a.dot(&b.cross(&c));
     }
-    six_volume / 6.0
+    (six_volume / 6.0).abs()
 }
 
-/// Compute the whole-device validation readout from the proxy mesh
-/// plus the current cavity + layer state. Pure function — the
+/// Compute the whole-device validation readout from the cached scan
+/// SDF plus the current cavity + layer state. Pure function — the
 /// Validations panel calls this each frame; the tests call it
 /// directly.
 ///
 /// Shell volumes: layer 0's inner surface is the cavity surface (at
-/// offset `−inset_m`); layer `i > 0`'s inner surface is layer
-/// `i − 1`'s outer surface. Layer `i`'s outer surface is at offset
+/// iso `−inset_m`); layer `i > 0`'s inner surface is layer `i − 1`'s
+/// outer surface. Layer `i`'s outer surface is at iso
 /// `cumulative_thickness − inset_m`. A pour's shell volume is
 /// `V(outer) − V(inner)` — the new material that pour adds.
+///
+/// Per-tick cost: one marching-cubes extraction per layer + one for
+/// the cavity (sub-millisecond each on the cached 5 mm grid), then
+/// six divergence-theorem volume reductions. Cheap enough to run
+/// every frame the panel renders; matches the spec's
+/// "extract-many" contract.
 fn compute_validations(
-    proxy: &EnvelopeProxyMesh,
+    cached_sdf: &sdf_layers::CachedScanSdf,
     cavity: &CavityState,
     layers: &LayersState,
 ) -> DeviceValidations {
+    // Clamp the iso to the cached grid's envelope so a wide slider
+    // never trips the `debug_assert!` in `extract_layer_surface` —
+    // same clamp shape as `update_layer_meshes` (slice 9 sub-leaf 4).
+    let max_iso = sdf_layers::LAYER_GRID_MARGIN_M - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
+    let clamp = |iso: f64| iso.clamp(-max_iso, max_iso);
+
     // The cavity surface is layer 0's inner surface.
-    let mut prev_inner_volume = signed_volume_m3(proxy, -cavity.inset_m);
+    let cavity_mesh = sdf_layers::extract_layer_surface(cached_sdf, clamp(-cavity.inset_m));
+    let mut prev_inner_volume = signed_volume_m3(&cavity_mesh);
     let mut cumulative_thickness_m = 0.0_f64;
     let mut layer_validations = Vec::with_capacity(layers.layers.len());
     let mut total_mass_kg = 0.0_f64;
@@ -1284,12 +1304,12 @@ fn compute_validations(
 
     for (layer_index, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
-        let outer_offset_m = cumulative_thickness_m - cavity.inset_m;
-        let outer_volume = signed_volume_m3(proxy, outer_offset_m);
-        // The outer surface is a strictly larger radial offset than
-        // the inner surface, so it always encloses more volume; the
-        // `abs` is a guard against floating-point sign noise on the
-        // near-closed cleaned scan, not a real sign ambiguity.
+        let outer_iso = clamp(cumulative_thickness_m - cavity.inset_m);
+        let outer_mesh = sdf_layers::extract_layer_surface(cached_sdf, outer_iso);
+        let outer_volume = signed_volume_m3(&outer_mesh);
+        // The outer surface always encloses more volume than the
+        // inner; `abs` guards against floating-point sign noise on
+        // a near-closed cleaned scan, not a real sign ambiguity.
         let shell_volume_m3 = (outer_volume - prev_inner_volume).abs();
         prev_inner_volume = outer_volume;
 
@@ -1311,12 +1331,17 @@ fn compute_validations(
         });
     }
 
+    // SDF-side cavity collapse: when the requested inset exceeds the
+    // deepest interior SDF magnitude, the iso lies past every grid
+    // cell value → marching cubes returns an empty mesh. Equivalent
+    // gate the per-vertex path used `proxy.min_radial_distance_m` for.
+    let cavity_collapse_inset_m = -cached_sdf.min_sdf_value;
     DeviceValidations {
         layers: layer_validations,
         total_mass_kg,
         worst_status,
-        cavity_self_intersects: cavity.inset_m >= proxy.min_radial_distance_m,
-        cavity_collapse_inset_m: proxy.min_radial_distance_m,
+        cavity_self_intersects: cavity.inset_m >= cavity_collapse_inset_m,
+        cavity_collapse_inset_m,
         min_wall_ok,
     }
 }
@@ -2597,7 +2622,7 @@ fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>
 fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
-    proxy: Res<EnvelopeProxyMesh>,
+    cached_sdf: Res<sdf_layers::CachedScanSdf>,
     scan_path: Res<ScanFilePath>,
     mut scan_visible: ResMut<ScanMeshVisible>,
     mut cavity: ResMut<CavityState>,
@@ -2607,7 +2632,7 @@ fn device_design_panel(
     scan_mesh: Option<Res<ScanMesh>>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
-    let validations = compute_validations(&proxy, &cavity, &layers);
+    let validations = compute_validations(&cached_sdf, &cavity, &layers);
     let scan_loaded = scan_mesh.is_some();
     egui::SidePanel::right("cf-device-design-panels")
         .resizable(false)
@@ -3396,25 +3421,14 @@ another_future_field = "foo"
 
     // ----- Slice 6 — geometric validations -------------------------
 
-    /// Z-aligned centerline spanning the unit cube fixture's Z
-    /// extents — shared by the slice-6 validation tests so every
-    /// cube vertex gets a horizontal full-3D radial.
-    fn cube_centerline() -> Vec<Point3<f64>> {
-        vec![
-            Point3::new(0.0, 0.0, -0.05),
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 0.05),
-        ]
-    }
-
     #[test]
-    fn signed_volume_recovers_unit_cube_volume_at_zero_offset() {
-        // The unit cube fixture is 0.1 m on a side → 1e-3 m³. At
-        // offset 0 the proxy vertices are undisplaced, so the
-        // divergence-theorem volume must recover the cube volume
-        // (positive — cf-scan-prep meshes wind CCW / outward).
-        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
-        let vol = signed_volume_m3(&proxy, 0.0);
+    fn signed_volume_recovers_unit_cube_volume() {
+        // The unit cube fixture is 0.1 m on a side → 1e-3 m³.
+        // Divergence-theorem volume on the cube mesh directly (no
+        // displacement) recovers the analytical volume — positive
+        // because cf-scan-prep meshes wind CCW / outward (the fixture
+        // mirrors that convention).
+        let vol = signed_volume_m3(&unit_cube_mesh());
         assert!(
             approx_eq(vol, 1.0e-3, 1e-9),
             "unit-cube signed volume = {vol}, expected 1e-3",
@@ -3422,18 +3436,23 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn signed_volume_is_monotonic_in_offset() {
-        // Displacing every vertex outward along its radial enlarges
-        // the enclosed volume; inward shrinks it. Pins both the sign
-        // convention and that the radial displacement grows the
-        // surface the way the cavity / layer meshes assume.
-        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
-        let inward = signed_volume_m3(&proxy, -0.01);
-        let zero = signed_volume_m3(&proxy, 0.0);
-        let outward = signed_volume_m3(&proxy, 0.01);
+    fn signed_volume_grows_with_outward_offset_extracted_mesh() {
+        // Extract two iso surfaces from the same SDF cache (small
+        // cube fixture, off-grid margin to dodge the mesh-sdf
+        // sign-tie at face planes — same posture as sdf_layers'
+        // own tests). The outward iso should enclose more volume
+        // than the inward iso. This is the property
+        // `compute_validations` relies on for monotonic shell
+        // volumes.
+        let cube = unit_cube_mesh();
+        let cache = sdf_layers::build_cached_scan_sdf(&cube, 0.005, 0.043).expect("build cache");
+        let inner = sdf_layers::extract_layer_surface(&cache, -0.005);
+        let outer = sdf_layers::extract_layer_surface(&cache, 0.005);
+        let v_inner = signed_volume_m3(&inner);
+        let v_outer = signed_volume_m3(&outer);
         assert!(
-            inward < zero && zero < outward,
-            "expected inward ({inward}) < zero ({zero}) < outward ({outward})",
+            v_inner < v_outer,
+            "inner ({v_inner}) should enclose less volume than outer ({v_outer})",
         );
     }
 
@@ -3462,12 +3481,21 @@ another_future_field = "foo"
         );
     }
 
+    /// Build a cached scan SDF from the unit-cube fixture suitable
+    /// for the slice-6 validation tests. Cell pitch 5 mm, off-grid
+    /// margin (`MARGIN_OFFSET_M` defined inline at 0.043 m) to dodge
+    /// `mesh-sdf::compute_sign`'s tie at axis-aligned grid points.
+    fn cube_cached_sdf() -> sdf_layers::CachedScanSdf {
+        sdf_layers::build_cached_scan_sdf(&unit_cube_mesh(), 0.005, 0.043)
+            .expect("build cached scan SDF for unit cube fixture")
+    }
+
     #[test]
     fn compute_validations_one_entry_per_layer_with_positive_shells() {
-        // Two-layer stack on the cube proxy: one validation per
-        // layer, every shell volume + mass strictly positive, and
-        // the total mass is the sum of the per-layer pour masses.
-        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        // Two-layer stack on the cube SDF: one validation per layer,
+        // every shell volume + mass strictly positive, and the total
+        // mass is the sum of the per-layer pour masses.
+        let cache = cube_cached_sdf();
         let cavity = CavityState {
             inset_m: 0.003,
             visible: true,
@@ -3488,7 +3516,7 @@ another_future_field = "foo"
                 },
             ],
         };
-        let v = compute_validations(&proxy, &cavity, &layers);
+        let v = compute_validations(&cache, &cavity, &layers);
         assert_eq!(v.layers.len(), 2);
         for lv in &v.layers {
             assert!(lv.shell_volume_m3 > 0.0, "shell volume must be positive");
@@ -3512,15 +3540,17 @@ another_future_field = "foo"
 
     #[test]
     fn compute_validations_flags_cavity_self_intersection() {
-        // Below the proxy's min radial distance the cavity is fine;
-        // at or above it the cavity mesh self-intersects.
-        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
-        let collapse = proxy.min_radial_distance_m;
+        // Below the cached SDF's max-interior-depth the cavity is
+        // fine; at or above it the cavity MC mesh is empty and the
+        // self-intersection flag fires. SDF analog of the prior
+        // `proxy.min_radial_distance_m` check.
+        let cache = cube_cached_sdf();
+        let collapse = -cache.min_sdf_value;
         assert!(collapse.is_finite() && collapse > 0.0);
         let layers = LayersState::default_for_scan();
 
         let safe = compute_validations(
-            &proxy,
+            &cache,
             &CavityState {
                 inset_m: collapse * 0.5,
                 visible: true,
@@ -3531,7 +3561,7 @@ another_future_field = "foo"
         assert!(approx_eq(safe.cavity_collapse_inset_m, collapse, 1e-12));
 
         let collapsed = compute_validations(
-            &proxy,
+            &cache,
             &CavityState {
                 inset_m: collapse * 1.5,
                 visible: true,
@@ -3542,26 +3572,8 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn compute_validations_cavity_check_not_applicable_without_centerline() {
-        // No centerline → min_radial_distance_m is INFINITY → the
-        // cavity self-intersection check can never fire.
-        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &[]);
-        assert!(proxy.min_radial_distance_m.is_infinite());
-        let v = compute_validations(
-            &proxy,
-            &CavityState {
-                inset_m: 0.5,
-                visible: true,
-            },
-            &LayersState::default_for_scan(),
-        );
-        assert!(!v.cavity_self_intersects);
-        assert!(v.cavity_collapse_inset_m.is_infinite());
-    }
-
-    #[test]
     fn compute_validations_min_wall_flags_sub_floor_layers() {
-        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let cache = cube_cached_sdf();
         let cavity = CavityState {
             inset_m: 0.003,
             visible: true,
@@ -3575,7 +3587,7 @@ another_future_field = "foo"
                 visible: true,
             }],
         };
-        let v_thin = compute_validations(&proxy, &cavity, &thin);
+        let v_thin = compute_validations(&cache, &cavity, &thin);
         assert!(!v_thin.min_wall_ok);
         assert!(!v_thin.layers[0].thickness_castable);
 
@@ -3588,7 +3600,7 @@ another_future_field = "foo"
                 visible: true,
             }],
         };
-        let v_thick = compute_validations(&proxy, &cavity, &thick);
+        let v_thick = compute_validations(&cache, &cavity, &thick);
         assert!(v_thick.min_wall_ok);
         assert!(v_thick.layers[0].thickness_castable);
     }
@@ -3596,7 +3608,7 @@ another_future_field = "foo"
     #[test]
     fn compute_validations_worst_status_is_the_max_layer_status() {
         // `worst_status` must equal the most-severe per-layer grade.
-        let proxy = compute_envelope_proxy_mesh(&unit_cube_mesh(), &cube_centerline());
+        let cache = cube_cached_sdf();
         let cavity = CavityState {
             inset_m: 0.003,
             visible: true,
@@ -3617,7 +3629,7 @@ another_future_field = "foo"
                 },
             ],
         };
-        let v = compute_validations(&proxy, &cavity, &layers);
+        let v = compute_validations(&cache, &cavity, &layers);
         let expected = v
             .layers
             .iter()

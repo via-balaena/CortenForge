@@ -236,9 +236,9 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 /// Build the cached SDF + grid from a cleaned-scan mesh.
 ///
 /// Decimates the scan to [`SDF_SOURCE_TARGET_FACES`] via
-/// [`decimate_for_sdf`], builds a [`SignedDistanceField`], allocates
-/// a [`ScalarGrid`] over the scan AABB expanded by `margin_m`, and
-/// fills the grid with raw SDF values at every cell.
+/// [`decimate_scan_for_sdf`], builds a [`SignedDistanceField`],
+/// allocates a [`ScalarGrid`] over the scan AABB expanded by
+/// `margin_m`, and fills the grid with raw SDF values at every cell.
 ///
 /// Use [`LAYER_PREVIEW_CELL_SIZE_M`] for `cell_size_m` and
 /// [`LAYER_GRID_MARGIN_M`] for `margin_m` in production calls; the
