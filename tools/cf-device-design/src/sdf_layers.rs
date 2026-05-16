@@ -46,6 +46,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bevy::prelude::Resource;
 use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 use mesh_sdf::SignedDistanceField;
 use mesh_types::{Bounded, IndexedMesh};
@@ -94,7 +95,7 @@ pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 /// path (spec §"Open risks #3"). `bounds` is held for the same
 /// future Save-side consumer + for `cf_design::Sdf` adapters that
 /// need an outer bounding interval.
-#[derive(Clone)]
+#[derive(Resource, Clone)]
 pub(crate) struct CachedScanSdf {
     /// Reference-counted SDF over the decimated scan. `Arc<T>` is
     /// `Send + Sync` whenever `T` is, and `SignedDistanceField` holds

@@ -654,6 +654,31 @@ fn main() -> Result<()> {
         _ => None,
     };
 
+    // Slice 9 — build the cached scan SDF + grid that feeds the
+    // per-layer iso-extraction pipeline (`mod sdf_layers`).
+    // One-time cost at startup: ~324 ms on the iter-1 sock fixture
+    // (dec-2500 @ 5 mm); the slider-tick MC pulls from this cache
+    // rather than re-sampling the SDF per layer. See the spec at
+    // `docs/CF_DEVICE_DESIGN_SDF_LAYERS_SPEC.md` for the perf table
+    // that pinned the constants. Sub-leaves 3/4 swap the cavity +
+    // per-layer surface previews from `EnvelopeProxyMesh` to the
+    // marching-cubes extraction this cache powers.
+    let sdf_build_start = std::time::Instant::now();
+    let cached_scan_sdf = sdf_layers::build_cached_scan_sdf(
+        &scan_mesh,
+        sdf_layers::LAYER_PREVIEW_CELL_SIZE_M,
+        sdf_layers::LAYER_GRID_MARGIN_M,
+    )
+    .with_context(|| format!("build cached scan SDF from {}", cli.cleaned_stl.display(),))?;
+    let sdf_build_ms = sdf_build_start.elapsed().as_secs_f64() * 1e3;
+    let (gx, gy, gz) = cached_scan_sdf.grid.dimensions();
+    println!(
+        "cached scan SDF: {gx}×{gy}×{gz} grid cells ({} k), \
+         min sdf {:.3} mm, fill {sdf_build_ms:.0} ms",
+        gx * gy * gz / 1_000,
+        cached_scan_sdf.min_sdf_value * 1e3,
+    );
+
     run_render_app(
         scan_mesh,
         scan_info,
@@ -661,6 +686,7 @@ fn main() -> Result<()> {
         cli.cleaned_stl.clone(),
         design_toml_path,
         loaded_design,
+        cached_scan_sdf,
     );
     Ok(())
 }
@@ -2764,6 +2790,7 @@ fn run_render_app(
     cleaned_stl_path: PathBuf,
     design_toml_path: Option<PathBuf>,
     loaded_design: Option<design_toml::DesignToml>,
+    cached_scan_sdf: sdf_layers::CachedScanSdf,
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
@@ -2820,6 +2847,7 @@ fn run_render_app(
             points_m: centerline_points,
         })
         .insert_resource(envelope_proxy)
+        .insert_resource(cached_scan_sdf)
         .insert_resource(cavity)
         .insert_resource(layers)
         .insert_resource(save_state)
