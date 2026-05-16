@@ -29,7 +29,11 @@ struct ClipPlane {
     enabled: u32,
 };
 
-@group(2) @binding(100) var<uniform> clip: ClipPlane;
+// `#{MATERIAL_BIND_GROUP}` is a Bevy shader def that expands to the
+// current material bind group index (3 in Bevy 0.18 — changed from
+// 2 in 0.17). Using the def keeps this future-proof against further
+// bind-group renumbering.
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> clip: ClipPlane;
 
 @fragment
 fn fragment(

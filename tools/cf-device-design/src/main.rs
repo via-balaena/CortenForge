@@ -36,12 +36,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::*;
-use cf_viewer::{
-    RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting, spawn_face_mesh,
-};
+use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
+
+use crate::clip_plane::{ClipPlaneExt, ClipPlaneMaterial};
 use clap::Parser;
 use mesh_io::load_stl;
 use mesh_types::{Bounded, IndexedMesh, Point3};
@@ -1333,7 +1335,7 @@ const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
 fn spawn_cavity_mesh(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ClipPlaneMaterial>>,
     cached_sdf: Res<sdf_layers::CachedScanSdf>,
     cavity: Res<CavityState>,
     up: Res<UpAxis>,
@@ -1345,11 +1347,14 @@ fn spawn_cavity_mesh(
         *up,
         render_scale.0,
     ));
-    let cavity_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(CAVITY_COLOR.0, CAVITY_COLOR.1, CAVITY_COLOR.2),
-        double_sided: true,
-        cull_mode: None,
-        ..default()
+    let cavity_material = materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: Color::srgb(CAVITY_COLOR.0, CAVITY_COLOR.1, CAVITY_COLOR.2),
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        },
+        extension: ClipPlaneExt::default(),
     });
     commands.spawn((
         Mesh3d(cavity_mesh),
@@ -1445,7 +1450,7 @@ fn update_layer_meshes(
     mut last_key: Local<Option<LayerMeshKey>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ClipPlaneMaterial>>,
     existing: Query<Entity, With<LayerSurfaceEntity>>,
 ) {
     let current_key = LayerMeshKey {
@@ -1525,11 +1530,14 @@ fn update_layer_meshes(
         } else {
             Color::srgb(r, g, b)
         };
-        let material = materials.add(StandardMaterial {
-            base_color,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
+        let material = materials.add(ExtendedMaterial {
+            base: StandardMaterial {
+                base_color,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            },
+            extension: ClipPlaneExt::default(),
         });
         let visibility = if layer.visible {
             Visibility::Visible
@@ -1570,23 +1578,38 @@ fn setup_render_scene(
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
 ) {
     let scale = render_scale.0;
     let raw_aabb = scan.0.aabb();
     let scaled_aabb = scale_aabb(&raw_aabb, scale);
     setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
     let entity_transform = Transform::from_scale(Vec3::splat(scale));
-    let entity = spawn_face_mesh(
-        &mut commands,
-        meshes.as_mut(),
-        materials.as_mut(),
-        &scan.0,
-        None,
-        *up,
+    // Local inline of `cf_viewer::spawn_face_mesh` that mounts the
+    // `ClipPlaneMaterial` extended material instead of the stock
+    // `StandardMaterial` — keeps cf-viewer generic (per spec sub-leaf 3
+    // open risk #3) and gives the scan mesh the same clip-plane
+    // behavior as the cavity + per-layer shells. Same material shape
+    // as cf-viewer's helper: opaque grey, double-sided, cull-mode
+    // None.
+    let bevy_mesh = triangle_mesh_flat_shaded(&scan.0, None, *up);
+    let material = clip_materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: Color::srgb(0.70, 0.72, 0.78),
+            metallic: 0.10,
+            perceptual_roughness: 0.6,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        },
+        extension: ClipPlaneExt::default(),
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(bevy_mesh)),
+        MeshMaterial3d(material),
         entity_transform,
-    );
-    commands.entity(entity).insert(ScanMeshEntity);
+        ScanMeshEntity,
+    ));
 }
 
 /// Draw the always-on viewport reference overlays each frame:
