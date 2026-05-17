@@ -68,12 +68,18 @@
 //!
 //! ```ignore
 //! use mesh_io::load_stl;
-//! use mesh_sdf::SignedDistanceField;
+//! use mesh_sdf::{flood_filled_sdf, WALL_THRESHOLD_FACTOR_DEFAULT};
 //!
 //! // Load the cleaned watertight scan (cf-scan-prep commit #12 output).
 //! let scan_mesh = load_stl("path/to/scan.cleaned.stl")?;
-//! let scan_sdf = SignedDistanceField::from_mesh(&scan_mesh, ...);
 //! let scan_aabb = /* compute from scan_mesh bounds */;
+//! let scan_bounds_padded = scan_aabb.expanded(cumulative_thickness_m);
+//! let (scan_sdf, _report) = flood_filled_sdf(
+//!     scan_mesh,
+//!     scan_bounds_padded,
+//!     cell_size_m,
+//!     WALL_THRESHOLD_FACTOR_DEFAULT,
+//! )?;
 //! let body = Solid::from_sdf(scan_sdf, scan_aabb);
 //!
 //! // Parse the .prep.toml [centerline] block to recover the

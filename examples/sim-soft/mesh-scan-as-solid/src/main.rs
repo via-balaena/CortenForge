@@ -87,8 +87,15 @@ use anyhow::Result;
 use approx::assert_relative_eq;
 use cf_design::Sdf;
 use mesh_io::{load_mesh, save_stl};
-use mesh_sdf::SignedDistanceField;
+use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::{AttributedMesh, IndexedMesh, Point3, Vector3};
+
+/// Local alias — `Signed<TriMeshDistance, PseudoNormalSign>` is the
+/// post-D arc shape of the deprecated `SignedDistanceField` type alias.
+/// [`PseudoNormalSign`] is the cheap parry pseudo-normal path; for
+/// cleaned body-part scans prefer `mesh_sdf::flood_filled_sdf` per
+/// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`.
+type ScanSdf = Signed<TriMeshDistance, PseudoNormalSign>;
 
 // =============================================================================
 // Constants
@@ -423,11 +430,7 @@ fn verify_grad_finite_and_outward_on_face_band(sdf: &dyn Sdf) {
 /// of 8 — the SDF computation is unaffected since it only consumes
 /// `mesh.faces` + `mesh.vertices` per face, not the index dedup. The
 /// face count must match the original (12).
-fn verify_stl_round_trip(
-    mesh: &IndexedMesh,
-    sdf: &SignedDistanceField,
-    out_dir: &Path,
-) -> Result<()> {
+fn verify_stl_round_trip(mesh: &IndexedMesh, sdf: &ScanSdf, out_dir: &Path) -> Result<()> {
     let stl_path = out_dir.join("cube_scan.stl");
     save_stl(mesh, &stl_path, true)?;
 
@@ -438,28 +441,29 @@ fn verify_stl_round_trip(
         "STL round-trip must preserve face count",
     );
 
-    let Ok(loaded_sdf) = SignedDistanceField::new(loaded) else {
+    let Ok(loaded_distance) = TriMeshDistance::new(loaded) else {
         unreachable!("loaded cube has 12 faces; new must succeed");
+    };
+    let loaded_sign = PseudoNormalSign::from_distance(&loaded_distance);
+    let loaded_sdf: ScanSdf = Signed {
+        distance: loaded_distance,
+        sign: loaded_sign,
     };
 
     // Bit-exact agreement at face-region probes (dyadic distances).
     for axis in [Vector3::x(), Vector3::y(), Vector3::z()] {
         for sign in [1.0, -1.0_f64] {
             let p = Point3::from(sign * (R + 0.5) * axis);
-            assert_relative_eq!(
-                <SignedDistanceField as Sdf>::eval(&loaded_sdf, p),
-                <SignedDistanceField as Sdf>::eval(sdf, p),
-                epsilon = EXACT_TOL,
-            );
+            assert_relative_eq!(loaded_sdf.eval(p), sdf.eval(p), epsilon = EXACT_TOL);
         }
     }
 
     // Interior anchor.
     let origin = Point3::origin();
     assert_relative_eq!(
-        <SignedDistanceField as Sdf>::eval(&loaded_sdf, origin),
-        <SignedDistanceField as Sdf>::eval(sdf, origin),
-        epsilon = EXACT_TOL,
+        loaded_sdf.eval(origin),
+        sdf.eval(origin),
+        epsilon = EXACT_TOL
     );
 
     Ok(())
@@ -495,7 +499,7 @@ fn is_off_xface_diagonal(g: &GridSample) -> bool {
 /// f64 for every grid index because the spacing is dyadic
 /// (`0.25 = 2⁻²`); ±R = ±1.0 lands exactly at axis indices 4 and
 /// 12.
-fn build_grid(sdf: &SignedDistanceField) -> Vec<GridSample> {
+fn build_grid(sdf: &ScanSdf) -> Vec<GridSample> {
     let mut grid = Vec::with_capacity(GRID_TOTAL);
     for ix in 0..GRID_RES {
         let x = -GRID_HALF_EXTENT + (ix as f64) * GRID_SPACING;
@@ -506,7 +510,7 @@ fn build_grid(sdf: &SignedDistanceField) -> Vec<GridSample> {
                 let p = Point3::new(x, y, z);
                 grid.push(GridSample {
                     p,
-                    eval: <SignedDistanceField as Sdf>::eval(sdf, p),
+                    eval: sdf.eval(p),
                     inside_raycast: sdf.is_inside(p),
                 });
             }
@@ -707,17 +711,18 @@ fn main() -> Result<()> {
     let mesh = build_cube_mesh(R);
     verify_cube_geometry(&mesh);
 
-    let Ok(sdf) = SignedDistanceField::new(mesh.clone()) else {
+    let Ok(distance) = TriMeshDistance::new(mesh.clone()) else {
         unreachable!("cube has 12 faces; new must succeed");
     };
+    let sign = PseudoNormalSign::from_distance(&distance);
+    let sdf: ScanSdf = Signed { distance, sign };
 
     // Trait-dispatch contract: every closed-form anchor goes through
-    // the cf_design::Sdf trait surface, not the inherent
-    // SignedDistanceField API. This is the load-bearing F2
-    // demonstration — a mesh-derived SDF is a first-class Sdf
-    // primitive without per-mesh wrapper code. Row 16 will exercise
-    // the parallel F3 path (sim_soft consumers via the Sdf
-    // re-export); row 15 stays cf-design-side.
+    // the cf_design::Sdf trait surface, not the inherent ScanSdf API.
+    // This is the load-bearing F2 demonstration — a mesh-derived SDF
+    // is a first-class Sdf primitive without per-mesh wrapper code.
+    // Row 16 will exercise the parallel F3 path (sim_soft consumers
+    // via the Sdf re-export); row 15 stays cf-design-side.
     let trait_sdf: &dyn Sdf = &sdf;
     verify_face_region_exterior(trait_sdf);
     verify_edge_region_exterior(trait_sdf);
@@ -741,22 +746,27 @@ fn main() -> Result<()> {
          (any extra would be an F2-caveat false-positive on the cube fixture)",
     );
 
-    // Raycast + divergence are empirical pins on mesh-sdf's
-    // Möller-Trumbore epsilon handling at face-coplanar / edge-
-    // incident probes. Captured at row-15 land time with cube
-    // fixture + 17³ × 0.25 grid; drift here would indicate a
-    // change in `mesh-sdf::point_in_mesh`'s parallel-/edge-ray
-    // policy, which is worth flagging on bump.
+    // Raycast + divergence are empirical pins on the sign oracle's
+    // boundary handling at face-coplanar / edge-incident probes.
+    // Captured post-D arc with cube fixture + 17³ × 0.25 grid +
+    // `Signed<TriMeshDistance, PseudoNormalSign>` (parry pseudo-normal
+    // sign, see [[project-mesh-sdf-oracle-decomposition-spec]]); drift
+    // here would indicate a parry policy change or an oracle swap.
+    // Pre-parry the captured count was 576 (ray-cast based); the
+    // change to 729 is structural — parry's pseudo-normal sign returns
+    // a different inside/outside boundary classification than the old
+    // +X ray-cast on the cube fixture's face / edge / vertex probes.
     assert_eq!(
-        raycast_inside, 576,
-        "raycast_inside drifted from captured 576 \
-         (mesh-sdf parallel-/edge-ray policy change?)",
+        raycast_inside, 729,
+        "pseudo-normal inside-count drifted from captured 729 \
+         (parry pseudo-normal policy change or oracle swap?)",
     );
-    assert_eq!(
-        divergence, 331,
-        "divergence drifted from captured 331 \
-         (mesh-sdf parallel-/edge-ray policy change?)",
-    );
+    // `divergence` (heuristic-vs-raycast disagreement) is no longer
+    // pinned: the pre-parry value of 331 was tied to the old +X
+    // ray-cast policy; post-parry both `eval` sign and `is_inside`
+    // come from the same pseudo-normal oracle so divergence is
+    // bounded by sub-cell-scale pseudo-normal-vs-eval-sign noise at
+    // edge/vertex regions. Surfaced informationally in the summary.
 
     let cube_path = out_dir.join("cube_scan.stl");
     let grid_path = out_dir.join("sdf_grid.ply");

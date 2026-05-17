@@ -20,10 +20,9 @@
 //! Stage 2 ships a capsule-plug-only example because the v1.0
 //! workflow (per Q2) defaults to the capsule fallback when the
 //! user's scanned reference geometry isn't loaded; the swap-in
-//! pattern for a scan-derived plug via
-//! `mesh_sdf::SignedDistanceField` + `mesh_io::load_stl` is
-//! documented in the module body below and lands as a follow-up
-//! once the user produces an iter-1 scan asset.
+//! pattern for a scan-derived plug via `mesh_sdf::flood_filled_sdf` +
+//! `mesh_io::load_stl` is documented in the module body below and
+//! lands as a follow-up once the user produces an iter-1 scan asset.
 //!
 //! Sanitization: per the layered-silicone-device memo's tracked-file
 //! directive, the cavity geometry is referred to as
@@ -119,9 +118,14 @@ const DRAGON_SKIN_10A_DENSITY_KG_M3: f64 = 1070.0;
 ///
 /// ```ignore
 /// use mesh_io::load_stl;
-/// use mesh_sdf::SignedDistanceField;
+/// use mesh_sdf::{flood_filled_sdf, WALL_THRESHOLD_FACTOR_DEFAULT};
 /// let scan_mesh = load_stl("scan.stl")?;
-/// let scan_sdf = SignedDistanceField::from_mesh(&scan_mesh, ...);
+/// let (scan_sdf, _report) = flood_filled_sdf(
+///     scan_mesh,
+///     scan_bounds,
+///     cell_size_m,
+///     WALL_THRESHOLD_FACTOR_DEFAULT,
+/// )?;
 /// let cavity = Solid::from_sdf(scan_sdf, scan_bounds);
 /// ```
 ///

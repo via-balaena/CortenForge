@@ -3953,6 +3953,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
+ "cf-geometry",
  "mesh-io",
  "mesh-sdf",
  "mesh-types",

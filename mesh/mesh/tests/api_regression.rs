@@ -226,10 +226,18 @@ mod tier4_analysis {
 
     #[test]
     fn sdf_distance_queries() {
-        use mesh::sdf::SignedDistanceField;
+        // Post-D arc: SignedDistanceField is decomposed into a
+        // TriMeshDistance (BVH-backed unsigned distance) composed with
+        // a Sign oracle via `Signed<D, S>`. PseudoNormalSign is the
+        // cheap parry path; the explicit composition makes the sign
+        // choice visible at the call site. See
+        // docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md.
+        use mesh::sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 
         let cube = types::unit_cube();
-        let sdf = SignedDistanceField::new(cube).unwrap();
+        let distance = TriMeshDistance::new(cube).unwrap();
+        let sign = PseudoNormalSign::from_distance(&distance);
+        let sdf = Signed { distance, sign };
 
         // Query distance from outside the cube
         let outside = types::Point3::new(2.0, 0.5, 0.5);
