@@ -30,14 +30,8 @@ path = "src/lib.rs"
 cf-cast = { workspace = true }
 # `Solid::from_sdf` (scan SDF → typed Solid kernel) +
 # `Solid::offset` (cumulative outer-shell construction) +
-# `Solid::cuboid` (default bounding region) +
-# `pinned_floor_shell` for the pinned-floor scope-C plug + bodies.
+# `Solid::cuboid` (default bounding region).
 cf-design = { workspace = true }
-# `CapPlane` runtime type, `parse_cap_planes`, `dome_wall_only_mesh`,
-# `DomeWallSignedSdf` — pinned-floor scope-C plumbing for plug + per-
-# layer bodies when a `.prep.toml` `[caps]` block is present. No-caps
-# fast path is byte-identical to today's uniform-offset construction.
-cf-cap-planes = { workspace = true }
 # `IndexedMesh` for the scan-mesh container + the cf-design Aabb
 # alias re-export.
 cf-geometry = { workspace = true }

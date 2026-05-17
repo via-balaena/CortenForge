@@ -5,18 +5,14 @@
 //! Pure (no I/O); the heavy lifting (STL load, marching cubes, file
 //! writes) happens upstream / downstream of this module.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result, bail};
-use cf_cap_planes::{CapPlane, DomeWallSignedSdf, dome_wall_only_mesh};
 use cf_cast::{
     CastLayer, CastSpec, MoldingMaterial, PinSpec, PlugPinKind, PlugPinSpec, PourGateKind,
     PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
 };
-use cf_design::{Sdf, Solid, pinned_floor_shell};
-use cf_geometry::{Aabb, IndexedMesh};
+use cf_design::Solid;
+use cf_geometry::Aabb;
 use mesh_printability::PrinterConfig;
-use mesh_sdf::SignedDistanceField;
 use nalgebra::{Point3, Vector3};
 
 use crate::config::{CastConfig, LayerConfig};
@@ -170,10 +166,8 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 pub fn derive_spec_and_ribbon(
     config: &CastConfig,
     scan_sdf: &SharedScanSdf,
-    scan_mesh: &IndexedMesh,
     scan_aabb: Aabb,
     centerline: &[Point3<f64>],
-    cap_planes: &[CapPlane],
     cavity_inset_m: f64,
 ) -> Result<DerivedSpec> {
     if config.layers.is_empty() {
@@ -193,77 +187,25 @@ pub fn derive_spec_and_ribbon(
     let sdf_bounds_pad = cumulative_thickness + config.cast.bounding_margin_m;
     let sdf_bounds = scan_aabb.expanded(sdf_bounds_pad);
 
-    // Pinned-floor scope-C sub-leaf 6: build a DomeWallSignedSdf
-    // adapter combining the closed-body scan SDF (sign source) with a
-    // second SDF over the cap-polygon-stripped open mesh (magnitude
-    // source via `.abs()`). pinned_floor_shell then offsets this
-    // composed field and intersects with each cap's body-interior
-    // half-space, producing CLOSED shells with flat floors pinned at
-    // every cap plane.
-    //
-    // No-caps fast path: cap_planes empty → closed === open (same
-    // Arc), pinned_floor_shell with empty caps collapses to
-    // `Solid::from_sdf(scan_sdf).offset(offset_m)` — byte-identical
-    // to the pre-pinned-floor uniform-offset construction. The raw-
-    // scan no-`.prep.toml`-caps path is the regression sentinel for
-    // the entire workshop iter-1 pipeline.
-    //
-    // Open-mesh SDF construction uses `mesh_sdf::SignedDistanceField`
-    // (same as the closed scan, NOT insertion_sim's flood-fill
-    // `build_grid_sdf`): the §7 risk #2 sign-heuristic concern bites
-    // only when the SIGN of the open SDF is consumed, but
-    // DomeWallSignedSdf only takes the OPEN SDF's `.abs()` — so the
-    // unsigned-magnitude path is reliable regardless of mesh-sdf's
-    // sign heuristic on the non-manifold open mesh.
-    let dome_wall_signed = if cap_planes.is_empty() {
-        let arc: Arc<dyn Sdf> = scan_sdf.inner_arc();
-        DomeWallSignedSdf {
-            closed: arc.clone(),
-            open: arc,
-        }
-    } else {
-        let open_mesh = dome_wall_only_mesh(scan_mesh, cap_planes);
-        let open_sdf = SignedDistanceField::new(open_mesh)
-            .context("build SignedDistanceField from cap-polygon-stripped scan mesh")?;
-        let closed_arc: Arc<dyn Sdf> = scan_sdf.inner_arc();
-        let open_arc: Arc<dyn Sdf> = Arc::new(open_sdf);
-        DomeWallSignedSdf {
-            closed: closed_arc,
-            open: open_arc,
-        }
-    };
-    let cap_tuples: Vec<_> = cap_planes.iter().map(CapPlane::as_tuple).collect();
-
     // Plug = scan shrunk inward by the press-fit reservation
-    // (`design.cavity.inset_m` — 0 for inline-layers configs), composed
-    // as a pinned-floor shell so the plug's floor sits at the cap
-    // plane (NOT extended past it via uniform offset). `offset_m =
-    // -cavity_inset_m`: the inward-shrink path.
-    let plug = pinned_floor_shell(
-        dome_wall_signed.clone(),
-        sdf_bounds,
-        &cap_tuples,
-        -cavity_inset_m,
-    );
+    // (`design.cavity.inset_m` — 0 for inline-layers configs).
+    // `Solid::offset(-x)` is the inward-shrink path: the SDF is
+    // evaluated at `original_value + x` instead of `original_value`,
+    // which moves the zero-iso-surface inward by `x` (see
+    // `cf-design::Solid::offset` docs + slice-9.6 design memo).
+    let plug = Solid::from_sdf(scan_sdf.clone(), sdf_bounds).offset(-cavity_inset_m);
 
     // Layer bodies — cumulative outward offset, shifted inward by
     // `cavity_inset_m` so the whole stack sits on top of the inset
     // plug surface (preserves inter-layer thickness, matches
     // cf-device-design's `outer.subtract(cavity)` body-construction
-    // logic). Each body is a pinned-floor shell so every layer's outer
-    // surface terminates with a flat floor at the cap plane (matches
-    // cf-device-design's preview + sim, ensuring the cast mold geometry
-    // produces a part whose cap-plane face is flat).
+    // logic).
     let mut layers = Vec::with_capacity(config.layers.len());
     let mut cumulative_so_far = 0.0;
     for layer_cfg in &config.layers {
         cumulative_so_far += layer_cfg.thickness_m;
-        let body = pinned_floor_shell(
-            dome_wall_signed.clone(),
-            sdf_bounds,
-            &cap_tuples,
-            cumulative_so_far - cavity_inset_m,
-        );
+        let body = Solid::from_sdf(scan_sdf.clone(), sdf_bounds)
+            .offset(cumulative_so_far - cavity_inset_m);
         let material = build_material(layer_cfg).with_context(|| {
             format!(
                 "build material for layer with thickness {} m",
@@ -349,7 +291,7 @@ mod tests {
         )
     }
 
-    fn unit_cube_mesh() -> IndexedMesh {
+    fn unit_cube_sdf() -> SharedScanSdf {
         let mut m = IndexedMesh::new();
         let coords = [
             (-0.05, -0.05, -0.05),
@@ -380,11 +322,7 @@ mod tests {
         ] {
             m.faces.push(f);
         }
-        m
-    }
-
-    fn unit_cube_sdf() -> SharedScanSdf {
-        SharedScanSdf::new(SignedDistanceField::new(unit_cube_mesh()).unwrap())
+        SharedScanSdf::new(SignedDistanceField::new(m).unwrap())
     }
 
     fn straight_x_centerline() -> Vec<Point3<f64>> {
@@ -519,16 +457,8 @@ mod tests {
         let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            0.0,
-        )
-        .unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         assert_eq!(derived.spec.layers.len(), 3);
         assert_eq!(
             derived.spec.layers[0].material.display_name,
@@ -550,16 +480,8 @@ mod tests {
         let cfg = three_layer_config();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            0.0,
-        )
-        .unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         assert!(
             matches!(derived.ribbon.registration, RegistrationKind::Pins(_)),
             "registration_pins.enabled=true must produce Pins(_)"
@@ -582,16 +504,8 @@ mod tests {
         cfg.plug_pins.enabled = false;
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            0.0,
-        )
-        .unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         assert!(matches!(
             derived.ribbon.registration,
             RegistrationKind::None
@@ -606,16 +520,8 @@ mod tests {
         cfg.plug_pins.pin_length_m = Some(0.028);
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            0.0,
-        )
-        .unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         let PlugPinKind::Axial(spec) = &derived.ribbon.plug_pins else {
             unreachable!("plug_pins.enabled=true should yield Axial(_)")
         };
@@ -628,16 +534,8 @@ mod tests {
         cfg.layers.clear();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let err = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            0.0,
-        )
-        .expect_err("empty layers must fail");
+        let err = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0)
+            .expect_err("empty layers must fail");
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
     }
 
@@ -661,16 +559,8 @@ mod tests {
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let inset = 0.005;
-        let derived = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            inset,
-        )
-        .unwrap();
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, inset).unwrap();
 
         // Plug zero-iso is at ±0.045 (scan minus inset).
         let plug = &derived.spec.plug;
@@ -700,16 +590,8 @@ mod tests {
 
         // Sanity check: inset 0.0 reproduces pre-slice-9.6 behavior
         // (plug zero-iso back at the scan surface).
-        let derived_zero = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            0.0,
-        )
-        .unwrap();
+        let derived_zero =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
         assert!(
             (derived_zero
                 .spec
@@ -718,80 +600,6 @@ mod tests {
             .abs()
                 < 1e-3,
             "inset = 0.0 must put plug zero-iso at the scan surface (0.050)",
-        );
-    }
-
-    // ----- Pinned-floor scope-C sub-leaf 6 ----------------------------
-
-    #[test]
-    fn derive_no_caps_byte_identical_to_pre_pinned_floor_path() {
-        // Regression sentinel for the raw-scan path (no `.prep.toml`
-        // caps). With empty cap_planes, pinned_floor_shell collapses
-        // to `Solid::from_sdf(scan_sdf).offset(offset_m)`. Validates
-        // by sampling the plug + each layer body at probe points
-        // matching the pre-pinned-floor `derive_inset_shrinks_plug_*`
-        // test expectations (the inset = 0.0 path is the canonical
-        // "no behavior change" check).
-        let cfg = three_layer_config();
-        let sdf = unit_cube_sdf();
-        let centerline = straight_x_centerline();
-        let derived = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[],
-            0.0,
-        )
-        .unwrap();
-
-        // Plug zero-iso at scan surface (x = 0.05) with inset = 0 +
-        // no caps — same as legacy.
-        let plug = &derived.spec.plug;
-        assert!(plug.evaluate(&Point3::new(0.050, 0.0, 0.0)).abs() < 1e-3);
-        assert!(plug.evaluate(&Point3::new(0.045, 0.0, 0.0)) < 0.0);
-        assert!(plug.evaluate(&Point3::new(0.055, 0.0, 0.0)) > 0.0);
-    }
-
-    #[test]
-    fn derive_with_caps_pins_plug_floor_at_cap_plane() {
-        // Cap at +z = 0.05 (top face of unit cube), normal +Z, no
-        // inset. Plug = pinned_floor_shell(scan, &[cap], 0.0) — plug
-        // should have a flat floor at the cap plane: above the cap
-        // plane the plug is clipped (outside); below the cap plane
-        // the plug = the scan body.
-        let cfg = three_layer_config();
-        let sdf = unit_cube_sdf();
-        let centerline = straight_x_centerline();
-        let cap = CapPlane {
-            centroid: Point3::new(0.0, 0.0, 0.05),
-            normal: Vector3::new(0.0, 0.0, 1.0),
-            vertex_count: 4,
-            loop_index: 0,
-        };
-        let derived = derive_spec_and_ribbon(
-            &cfg,
-            &sdf,
-            &unit_cube_mesh(),
-            unit_cube_aabb(),
-            &centerline,
-            &[cap],
-            0.0,
-        )
-        .unwrap();
-
-        let plug = &derived.spec.plug;
-        // Below the cap plane at the scan center: deep inside body →
-        // negative.
-        assert!(
-            plug.evaluate(&Point3::new(0.0, 0.0, 0.0)) < 0.0,
-            "plug interior below cap should be inside",
-        );
-        // Just above the cap plane: clipped → outside.
-        assert!(
-            plug.evaluate(&Point3::new(0.0, 0.0, 0.06)) > 0.0,
-            "above cap plane (z=0.06) should be clipped (outside)",
         );
     }
 }

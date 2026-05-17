@@ -35,15 +35,6 @@ impl SharedScanSdf {
     pub fn new(sdf: SignedDistanceField) -> Self {
         Self(Arc::new(sdf))
     }
-
-    /// Clone the underlying `Arc<SignedDistanceField>` — used by the
-    /// pinned-floor plumbing in [`crate::derive`] to share the
-    /// closed-body SDF with the [`cf_cap_planes::DomeWallSignedSdf`]
-    /// adapter (which holds `Arc<dyn Sdf>`).
-    #[must_use]
-    pub fn inner_arc(&self) -> Arc<SignedDistanceField> {
-        Arc::clone(&self.0)
-    }
 }
 
 impl cf_design::Sdf for SharedScanSdf {
@@ -77,15 +68,7 @@ impl cf_design::Sdf for SharedScanSdf {
 /// snapshot the mesh AABB before the SDF takes ownership.
 ///
 /// Returns the [`SharedScanSdf`] (wrapping the SDF in an `Arc`) plus
-/// the scan AABB (in meters, the same frame the SDF queries) plus an
-/// `Arc<IndexedMesh>` of the loaded cleaned scan — kept so the
-/// pinned-floor plumbing in [`crate::derive`] can build a second
-/// `SignedDistanceField` over the cap-polygon-stripped mesh via
-/// `cf_cap_planes::dome_wall_only_mesh` without re-loading the STL.
-///
-/// The mesh clone is small relative to SDF construction
-/// (~6 MB on iter-1's 167 k-face cleaned scan vs O(faces²) SDF build);
-/// shared via `Arc` so it's cheap to hand to multiple consumers.
+/// the scan AABB (in meters, the same frame the SDF queries).
 ///
 /// # Errors
 ///
@@ -95,12 +78,10 @@ impl cf_design::Sdf for SharedScanSdf {
 pub fn load_scan_sdf(path: &Path) -> Result<LoadedScan> {
     let mesh = mesh_io::load_stl(path).with_context(|| format!("load_stl({})", path.display()))?;
     let aabb = mesh.aabb();
-    let mesh_arc = Arc::new(mesh.clone());
     let sdf = SignedDistanceField::new(mesh).context("build SignedDistanceField from scan mesh")?;
     Ok(LoadedScan {
         sdf: SharedScanSdf::new(sdf),
         aabb,
-        mesh: mesh_arc,
     })
 }
 
@@ -113,10 +94,6 @@ pub struct LoadedScan {
     /// AABB of the cleaned scan mesh, in meters (same frame as the
     /// SDF queries).
     pub aabb: Aabb,
-    /// Reference-counted cleaned scan mesh — used by the pinned-floor
-    /// plumbing to derive the cap-polygon-stripped open-body SDF.
-    /// Empty consumers can ignore this field.
-    pub mesh: Arc<cf_geometry::IndexedMesh>,
 }
 
 #[cfg(test)]
