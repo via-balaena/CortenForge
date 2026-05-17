@@ -35,6 +35,11 @@ cf-design = { workspace = true }
 # `IndexedMesh` for the scan-mesh container + the cf-design Aabb
 # alias re-export.
 cf-geometry = { workspace = true }
+# `CapPlane` runtime type + `parse_cap_planes` (lifted from
+# .prep.toml) + `dome_wall_only_mesh` (cap-polygon stripping for the
+# open SDF that `cf_design::pinned_floor_shell` consumes via the
+# candidate-A unsigned-rind adapter).
+cf-cap-planes = { workspace = true }
 # `load_stl` for the cleaned scan STL.
 mesh-io = { workspace = true }
 # `SignedDistanceField::new` over the loaded scan mesh — used as

@@ -5,14 +5,18 @@
 //! Pure (no I/O); the heavy lifting (STL load, marching cubes, file
 //! writes) happens upstream / downstream of this module.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result, bail};
+use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_cast::{
     CastLayer, CastSpec, MoldingMaterial, PinSpec, PlugPinKind, PlugPinSpec, PourGateKind,
     PourGateSpec, RegistrationKind, Ribbon, SplitNormal,
 };
-use cf_design::Solid;
+use cf_design::{Solid, pinned_floor_shell};
 use cf_geometry::Aabb;
 use mesh_printability::PrinterConfig;
+use mesh_sdf::SignedDistanceField;
 use nalgebra::{Point3, Vector3};
 
 use crate::config::{CastConfig, LayerConfig};
@@ -121,21 +125,23 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 /// SDF + centerline polyline.
 ///
 /// Geometry plan (Option A.1 — plug + layers inset inward by
-/// `cavity_inset_m`):
+/// `cavity_inset_m`, threaded through `cf_design::pinned_floor_shell`
+/// for the candidate-A pinned-floor construction):
 ///
-/// - `plug` = `Solid::from_sdf(scan_sdf, scan_aabb_padded).offset(-cavity_inset_m)`
-///   — the plug is the scan surface shrunk inward by the press-fit
-///   reservation. Layer 0's silicone shell sits immediately outside
-///   this surface, so the cured part has a cavity that's `cavity_inset_m`
-///   smaller than the scan, leaving a press-fit interference for the
-///   real device to snap into. When `cavity_inset_m = 0.0` (the inline-
-///   layers path with no design.toml) the plug degenerates to the scan
-///   literal — matching pre-slice-9.6 v2 behavior bit-exactly.
-/// - `layers[N].body` = `Solid::from_sdf(scan_sdf, scan_aabb_padded)
-///   .offset(sum(thickness[0..=N]) - cavity_inset_m)` — each layer's
-///   outer surface is shifted inward by the same `cavity_inset_m`, so
-///   the whole stack moves together and inter-layer thickness is
-///   preserved.
+/// - `plug` = `pinned_floor_shell(scan_sdf, open_scan_sdf, scan_aabb_padded,
+///   cap_planes, -cavity_inset_m)` — the plug is the scan surface
+///   shrunk inward by the press-fit reservation, with its floor
+///   pinned at every cap plane when caps are present (and a plain
+///   isotropic offset when not). When `cavity_inset_m = 0.0` (the
+///   inline-layers path with no design.toml) and `cap_planes` is empty,
+///   the plug degenerates to the scan literal — matching pre-slice-9.6
+///   v2 behavior bit-exactly.
+/// - `layers[N].body` = `pinned_floor_shell(scan_sdf, open_scan_sdf,
+///   scan_aabb_padded, cap_planes, sum(thickness[0..=N]) - cavity_inset_m)`
+///   — each layer's outer surface is shifted inward by the same
+///   `cavity_inset_m`, so the whole stack moves together and inter-layer
+///   thickness is preserved; the cap-plane fold pins every layer's
+///   floor at the cap plane.
 /// - `bounding_region` = `Solid::cuboid(half_extents).translate(scan_center)`
 ///   where `half_extents = scan.half_extents + cumulative_thickness +
 ///   bounding_margin` (per-axis). The cuboid envelope is conservative —
@@ -144,7 +150,10 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 ///
 /// All five solids share the same underlying `Arc<SignedDistanceField>`
 /// via [`SharedScanSdf::clone`], so the heavy mesh + face-normal arrays
-/// live in one allocation regardless of layer count.
+/// live in one allocation regardless of layer count. The cap-stripped
+/// open SDF (built once when `cap_planes` is non-empty) is similarly
+/// `Arc`-shared so the candidate-A unsigned-rind adapter inside
+/// `pinned_floor_shell` queries the same allocation across every call.
 ///
 /// The AABB passed to [`Solid::from_sdf`] is the scan AABB padded by
 /// the cumulative outermost thickness — that ensures the outermost
@@ -157,18 +166,28 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 /// inline-layers path passes `0.0` so old cast.toml configs without a
 /// `[design]` block produce the same molds they always did.
 ///
+/// `cap_planes` is parsed out of the scan's `.prep.toml` via
+/// `cf_cap_planes::parse_cap_planes`; empty for scans without a
+/// `[caps]` block or where every loop is excluded (the no-caps fast
+/// path inside `pinned_floor_shell` then short-circuits to a plain
+/// isotropic offset — byte-identical to the pre-pinned-floor mold
+/// geometry the v2 example crate ships).
+///
 /// # Errors
 ///
 /// - empty layers (caught earlier by [`CastConfig::validate`], but
 ///   defensive here too)
 /// - centerline polyline non-finite or too short for [`Ribbon::new`]
 /// - non-normalizable split-normal (caught by [`SplitNormal::new`])
+/// - cap-stripped open mesh empty or unsuitable for
+///   [`SignedDistanceField::new`] (only on the with-caps path)
 pub fn derive_spec_and_ribbon(
     config: &CastConfig,
     scan_sdf: &SharedScanSdf,
     scan_aabb: Aabb,
     centerline: &[Point3<f64>],
     cavity_inset_m: f64,
+    cap_planes: &[CapPlane],
 ) -> Result<DerivedSpec> {
     if config.layers.is_empty() {
         bail!("derive_spec_and_ribbon called with empty layers");
@@ -187,25 +206,63 @@ pub fn derive_spec_and_ribbon(
     let sdf_bounds_pad = cumulative_thickness + config.cast.bounding_margin_m;
     let sdf_bounds = scan_aabb.expanded(sdf_bounds_pad);
 
+    // Candidate-A two-SDF construction (per the redesign spec §2 A5
+    // at `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md`).
+    // The closed-body SDF is the existing scan SDF; the open-body SDF
+    // is built once over the cap-stripped scan mesh and shared by Arc
+    // across the plug + every layer body call. With no cap planes the
+    // primitive short-circuits to the previous `Solid::from_sdf(scan)
+    // .offset(...)` formulation, so the inline-layers path stays
+    // byte-identical to pre-pinned-floor.
+    //
+    // cf-cast-cli uses `mesh_sdf::SignedDistanceField` for the open
+    // mesh (NOT flood-fill `build_grid_sdf` like insertion_sim) —
+    // matches the scan-side SDF posture this crate already follows.
+    // The open mesh's sign heuristic on the non-manifold cap-stripped
+    // surface is irrelevant here because `pinned_floor_shell`'s
+    // private unsigned-rind adapter consumes only `.abs()`.
+    let closed_sdf_arc: Arc<dyn cf_design::Sdf> = Arc::new(scan_sdf.clone());
+    let open_sdf_arc: Arc<dyn cf_design::Sdf> = if cap_planes.is_empty() {
+        Arc::clone(&closed_sdf_arc)
+    } else {
+        let open_mesh = dome_wall_only_mesh(scan_sdf.mesh(), cap_planes);
+        let open_sdf = SignedDistanceField::new(open_mesh)
+            .context("build SignedDistanceField from the cap-stripped scan mesh")?;
+        Arc::new(open_sdf)
+    };
+    let cap_tuples: Vec<(Point3<f64>, Vector3<f64>)> =
+        cap_planes.iter().map(CapPlane::as_tuple).collect();
+
     // Plug = scan shrunk inward by the press-fit reservation
-    // (`design.cavity.inset_m` — 0 for inline-layers configs).
-    // `Solid::offset(-x)` is the inward-shrink path: the SDF is
-    // evaluated at `original_value + x` instead of `original_value`,
-    // which moves the zero-iso-surface inward by `x` (see
-    // `cf-design::Solid::offset` docs + slice-9.6 design memo).
-    let plug = Solid::from_sdf(scan_sdf.clone(), sdf_bounds).offset(-cavity_inset_m);
+    // (`design.cavity.inset_m` — 0 for inline-layers configs). Under
+    // candidate A this is the cavity surface with its floor pinned at
+    // every cap plane; under the no-caps fast path it degenerates to
+    // `Solid::from_sdf(scan).offset(-cavity_inset_m)` bit-for-bit.
+    let plug = pinned_floor_shell(
+        closed_sdf_arc.clone(),
+        open_sdf_arc.clone(),
+        sdf_bounds,
+        &cap_tuples,
+        -cavity_inset_m,
+    );
 
     // Layer bodies — cumulative outward offset, shifted inward by
     // `cavity_inset_m` so the whole stack sits on top of the inset
     // plug surface (preserves inter-layer thickness, matches
     // cf-device-design's `outer.subtract(cavity)` body-construction
-    // logic).
+    // logic). Same Arc-clone pattern: every layer threads the same
+    // shared closed + open SDFs into `pinned_floor_shell`.
     let mut layers = Vec::with_capacity(config.layers.len());
     let mut cumulative_so_far = 0.0;
     for layer_cfg in &config.layers {
         cumulative_so_far += layer_cfg.thickness_m;
-        let body = Solid::from_sdf(scan_sdf.clone(), sdf_bounds)
-            .offset(cumulative_so_far - cavity_inset_m);
+        let body = pinned_floor_shell(
+            closed_sdf_arc.clone(),
+            open_sdf_arc.clone(),
+            sdf_bounds,
+            &cap_tuples,
+            cumulative_so_far - cavity_inset_m,
+        );
         let material = build_material(layer_cfg).with_context(|| {
             format!(
                 "build material for layer with thickness {} m",
@@ -458,7 +515,7 @@ mod tests {
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
-            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
         assert_eq!(derived.spec.layers.len(), 3);
         assert_eq!(
             derived.spec.layers[0].material.display_name,
@@ -481,7 +538,7 @@ mod tests {
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
-            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
         assert!(
             matches!(derived.ribbon.registration, RegistrationKind::Pins(_)),
             "registration_pins.enabled=true must produce Pins(_)"
@@ -505,7 +562,7 @@ mod tests {
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
-            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
         assert!(matches!(
             derived.ribbon.registration,
             RegistrationKind::None
@@ -521,7 +578,7 @@ mod tests {
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
         let derived =
-            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
         let PlugPinKind::Axial(spec) = &derived.ribbon.plug_pins else {
             unreachable!("plug_pins.enabled=true should yield Axial(_)")
         };
@@ -534,7 +591,7 @@ mod tests {
         cfg.layers.clear();
         let sdf = unit_cube_sdf();
         let centerline = straight_x_centerline();
-        let err = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0)
+        let err = derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[])
             .expect_err("empty layers must fail");
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
     }
@@ -560,7 +617,7 @@ mod tests {
         let centerline = straight_x_centerline();
         let inset = 0.005;
         let derived =
-            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, inset).unwrap();
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, inset, &[]).unwrap();
 
         // Plug zero-iso is at ±0.045 (scan minus inset).
         let plug = &derived.spec.plug;
@@ -591,7 +648,7 @@ mod tests {
         // Sanity check: inset 0.0 reproduces pre-slice-9.6 behavior
         // (plug zero-iso back at the scan surface).
         let derived_zero =
-            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0).unwrap();
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.0, &[]).unwrap();
         assert!(
             (derived_zero
                 .spec
@@ -600,6 +657,104 @@ mod tests {
             .abs()
                 < 1e-3,
             "inset = 0.0 must put plug zero-iso at the scan surface (0.050)",
+        );
+    }
+
+    // ── Sub-leaf A5: candidate-A pinned-floor plug + bodies ─────────
+
+    #[test]
+    fn derive_no_prep_toml_byte_identical_to_pre_pinned_floor() {
+        // No-caps fast path inside `pinned_floor_shell` returns
+        // `Solid::from_sdf(closed).offset(offset)` — byte-identical to
+        // the pre-pinned-floor `Solid::from_sdf(scan_sdf).offset(...)`
+        // formulation cf-cast-cli used before this sub-leaf. The
+        // primitive-level byte equality is pinned by
+        // `pinned_floor_shell_empty_caps_byte_identical_to_offset` in
+        // cf-design; at the consumer level we just need to prove
+        // multiple probes on plug + each layer body match a hand-built
+        // reference `Solid::from_sdf(scan_sdf).offset(...)` to f64
+        // tolerance.
+        let cfg = three_layer_config();
+        let sdf = unit_cube_sdf();
+        let centerline = straight_x_centerline();
+        let inset = 0.005;
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, inset, &[]).unwrap();
+
+        let sdf_bounds_pad: f64 =
+            cfg.layers.iter().map(|l| l.thickness_m).sum::<f64>() + cfg.cast.bounding_margin_m;
+        let sdf_bounds = unit_cube_aabb().expanded(sdf_bounds_pad);
+        let plug_ref = Solid::from_sdf(sdf.clone(), sdf_bounds).offset(-inset);
+
+        let probes = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.03, 0.02, 0.01),
+            Point3::new(-0.04, -0.02, 0.0),
+            Point3::new(0.045, 0.0, 0.0),
+            Point3::new(0.06, 0.0, 0.0),
+        ];
+        for p in probes {
+            let a = derived.spec.plug.evaluate(&p);
+            let b = plug_ref.evaluate(&p);
+            assert!(
+                (a - b).abs() < 1e-12,
+                "plug no-caps fast path drifted at {p:?}: {a} vs reference {b}",
+            );
+        }
+
+        let mut cumulative = 0.0_f64;
+        for (i, layer_cfg) in cfg.layers.iter().enumerate() {
+            cumulative += layer_cfg.thickness_m;
+            let body_ref = Solid::from_sdf(sdf.clone(), sdf_bounds).offset(cumulative - inset);
+            for p in probes {
+                let a = derived.spec.layers[i].body.evaluate(&p);
+                let b = body_ref.evaluate(&p);
+                assert!(
+                    (a - b).abs() < 1e-12,
+                    "layer {i} no-caps fast path drifted at {p:?}: {a} vs reference {b}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derive_with_caps_plug_iso_zero_on_cap_plane_body_center() {
+        // Synthetic unit-cube scan + a single cap on the +z face. The
+        // plug = `pinned_floor_shell(scan, open_scan, bounds, [cap],
+        // -inset)` and at the body center on the cap plane the cavity
+        // SDF must sit on the boundary (≈ 0) — the consumer-level
+        // surface of the structural-validation gate pinned at cf-design
+        // level by
+        // `pinned_floor_shell_cavity_iso_zero_on_cap_plane_at_body_center`.
+        let cfg = three_layer_config();
+        let sdf = unit_cube_sdf();
+        let centerline = straight_x_centerline();
+        let cap = CapPlane {
+            centroid: Point3::new(0.0, 0.0, 0.05),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_count: 4,
+            loop_index: 0,
+        };
+        let derived =
+            derive_spec_and_ribbon(&cfg, &sdf, unit_cube_aabb(), &centerline, 0.005, &[cap])
+                .unwrap();
+        // Body center on cap plane: cavity SDF ≈ 0.
+        let sd_on_cap = derived.spec.plug.evaluate(&Point3::new(0.0, 0.0, 0.05));
+        assert!(
+            sd_on_cap.abs() < 0.01,
+            "plug SDF at body center on cap plane must be ≈ 0 (got {sd_on_cap})",
+        );
+        // Above cap plane: outside the plug (clipped).
+        let sd_above = derived.spec.plug.evaluate(&Point3::new(0.0, 0.0, 0.06));
+        assert!(
+            sd_above > 0.0,
+            "above cap plane must be outside plug, got {sd_above}",
+        );
+        // Deep inside body, well below the cap plane: strictly inside.
+        let sd_deep = derived.spec.plug.evaluate(&Point3::new(0.0, 0.0, -0.02));
+        assert!(
+            sd_deep < 0.0,
+            "deep interior must be inside plug, got {sd_deep}",
         );
     }
 }

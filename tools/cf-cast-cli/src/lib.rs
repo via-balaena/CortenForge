@@ -141,6 +141,21 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
             prep_toml_path.display()
         );
     }
+    // Lift the `[caps]` block out of the same .prep.toml. Empty when
+    // the block is absent or every loop is excluded — the no-caps
+    // fast path inside `pinned_floor_shell` then degenerates to the
+    // pre-pinned-floor uniform offset, so older scans (cf-scan-prep
+    // pre-PR-246) and excluded-cap scans keep producing the same
+    // molds they always did.
+    let cap_planes = cf_cap_planes::parse_cap_planes(&prep_text)
+        .with_context(|| format!("parse cap planes from {}", prep_toml_path.display()))?;
+    if !cap_planes.is_empty() {
+        println!(
+            "loaded {n} cap plane(s) from {} (candidate-A pinned floor enabled)",
+            prep_toml_path.display(),
+            n = cap_planes.len(),
+        );
+    }
 
     let derived = derive::derive_spec_and_ribbon(
         &config,
@@ -148,6 +163,7 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         loaded_scan.aabb,
         &centerline,
         cavity_inset_m,
+        &cap_planes,
     )
     .context("derive CastSpec + Ribbon from scan + cast TOML")?;
     let DerivedSpec { spec, ribbon } = derived;

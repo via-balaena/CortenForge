@@ -35,6 +35,18 @@ impl SharedScanSdf {
     pub fn new(sdf: SignedDistanceField) -> Self {
         Self(Arc::new(sdf))
     }
+
+    /// Borrow the underlying cleaned-scan mesh.
+    ///
+    /// `mesh_sdf::SignedDistanceField::mesh` returns the mesh the SDF
+    /// was constructed over; cf-cap-planes' `dome_wall_only_mesh`
+    /// needs it to strip cap-polygon faces for the candidate-A open
+    /// SDF that `cf_design::pinned_floor_shell`'s unsigned-rind
+    /// adapter consumes.
+    #[must_use]
+    pub fn mesh(&self) -> &cf_geometry::IndexedMesh {
+        self.0.mesh()
+    }
 }
 
 impl cf_design::Sdf for SharedScanSdf {
