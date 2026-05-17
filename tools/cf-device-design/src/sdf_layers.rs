@@ -52,6 +52,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh, report_cap_face_classification};
+use cf_design::Sdf;
 use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 use mesh_repair::{remove_degenerate_triangles, remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{
@@ -760,6 +761,69 @@ pub(crate) fn extract_layer_surface(
 
     let config = MarchingCubesConfig::at_iso_value(0.0);
     marching_cubes(&composed, &config)
+}
+
+/// Slice S11.1 — sample an arbitrary [`Sdf`] source into a fresh
+/// [`ScalarGrid`] mirroring `template`'s lattice (dimensions, origin,
+/// cell pitch). Used by the insertion-sim's per-step intruder render
+/// to materialize the FEM-internal intruder `GridSdf` (which lives on
+/// a different decimator + grid than `cache.closed_grid`) onto the
+/// cached-SDF lattice so MC can extract the per-step intruder iso
+/// surface.
+///
+/// Why sample instead of MC the cached SDF directly: the FEM solves
+/// against `geometry.intruder`, which is built from a SLOPPY decimator
+/// at a 3 mm grid (per `insertion_sim::build_insertion_geometry`); the
+/// cached scan SDF uses a TOPOLOGY-PRESERVING decimator at a 5 mm
+/// grid (per `build_cached_scan_sdf`). On iter-1 the two iso surfaces
+/// differ by SEVERAL mm — the deformed cavity (BCC mesh anchored to
+/// the FEM intruder) and the cached SDF iso surface do not coincide.
+/// Sampling the FEM SDF into the cached-grid lattice eliminates the
+/// decimator mismatch; what remains is the cached-grid resolution
+/// (5 mm cells), within BCC chunkiness.
+///
+/// Cost: one allocation of `~nx·ny·nz` `f64`s + that many `sdf.eval()`
+/// calls (trilinear interp on a flood-fill grid — O(1) per call). On
+/// iter-1 this is ~44 k cells × ~100 ns ≈ 5 ms — paid once at sim
+/// completion, dwarfed by the FEM ramp.
+#[must_use]
+pub(crate) fn sample_sdf_into_cached_template<S: Sdf + ?Sized>(
+    sdf: &S,
+    template: &CachedScanSdf,
+) -> ScalarGrid {
+    let (nx, ny, nz) = template.closed_grid.dimensions();
+    let mut grid = ScalarGrid::new(
+        template.closed_grid.dimensions(),
+        template.closed_grid.origin(),
+        template.closed_grid.cell_size(),
+    );
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let p = template.closed_grid.position(ix, iy, iz);
+                grid.set(ix, iy, iz, sdf.eval(p));
+            }
+        }
+    }
+    grid
+}
+
+/// Slice S11.1 — MC a [`ScalarGrid`] at the requested iso value, with
+/// the same `LAYER_GRID_MARGIN_M` envelope `debug_assert!` the
+/// per-layer + cavity extraction paths use. Wraps the
+/// `MarchingCubesConfig::at_iso_value` / `marching_cubes` boilerplate
+/// for the per-step intruder loop in `insertion_sim_ui`.
+#[must_use]
+pub(crate) fn marching_cubes_at_iso(grid: &ScalarGrid, iso: f64) -> IndexedMesh {
+    debug_assert!(
+        iso.abs() < LAYER_GRID_MARGIN_M,
+        "marching_cubes_at_iso: |iso|={:.4} exceeds LAYER_GRID_MARGIN_M={:.4}; \
+         grid AABB cannot represent this iso value",
+        iso.abs(),
+        LAYER_GRID_MARGIN_M,
+    );
+    let config = MarchingCubesConfig::at_iso_value(iso);
+    marching_cubes(grid, &config)
 }
 
 #[cfg(test)]

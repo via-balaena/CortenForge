@@ -35,7 +35,9 @@ use crate::insertion_sim::{
     InsertionRamp, RampStep, SimDesign, SimLayer, StepReadout, TetReadout,
     build_insertion_geometry, compute_tet_readouts, run_insertion_ramp,
 };
-use crate::sdf_layers::CapPlanes;
+use crate::sdf_layers::{
+    CachedScanSdf, CapPlanes, marching_cubes_at_iso, sample_sdf_into_cached_template,
+};
 use crate::{CavityState, LAYER_SURFACE_PALETTE, LayersState, ScanMesh};
 
 // ── tuned defaults ──────────────────────────────────────────────────
@@ -181,6 +183,27 @@ pub struct InsertionSimOutputs {
     /// excluded — the cavity render owns the cavity surface, not the
     /// layer-shells render.
     pub per_layer_outer_faces: Vec<Vec<[u32; 3]>>,
+    /// Slice S11.1 — pre-computed per-step intruder MC meshes for the
+    /// FEM-accurate intruder render. Outer index is converged-step
+    /// index (matches `ramp.steps`); each `IndexedMesh` is the cached
+    /// scan SDF iso surface at `step.interference_m + cavity_offset_m`
+    /// (= `step.interference_m - design.cavity_inset_m`). At the first
+    /// converged step the iso sits deep inside the scan (intruder is
+    /// roughly cavity-sized); at the final step the iso reaches 0
+    /// (intruder = bare scan). Built once in `run_sim_pipeline` from
+    /// the `CachedScanSdf` cloned into the async task at kickoff.
+    ///
+    /// S11.1 replaces S4's rigid-translation visual proxy: the FEM
+    /// intruder is an SDF offset that grows from cavity-sized to full
+    /// scan over the ramp, not a translation. Rendering the SDF iso
+    /// directly keeps the intruder geometrically consistent with the
+    /// deformed cavity at every step (they coincide in contact zones)
+    /// instead of the user reading a phantom air gap between a full-
+    /// size translated scan and the deformed cavity wall.
+    ///
+    /// Memory: 16 steps × ~5 K vertices × 24 B + ~10 K faces × 12 B ≈
+    /// ~4 MB per run (dwarfed by `per_step_scalar_fields`).
+    pub per_step_intruder_meshes: Vec<IndexedMesh>,
 }
 
 impl InsertionSimOutputs {
@@ -248,6 +271,17 @@ impl InsertionSimOutputs {
         mesh.vertices = positions;
         mesh.faces = faces.clone();
         Some(mesh)
+    }
+
+    /// Slice S11.1 — borrow the pre-computed intruder mesh for the
+    /// requested step. Returns `None` past the converged range so the
+    /// caller (`update_intruder_mesh` in `main.rs`) can hide the
+    /// entity rather than displaying stale geometry. Reference return
+    /// — the caller uploads positions + faces through
+    /// `build_bevy_mesh_from_indexed`, no clone needed at the borrow.
+    #[must_use]
+    pub fn intruder_mesh_at(&self, step: usize) -> Option<&IndexedMesh> {
+        self.per_step_intruder_meshes.get(step)
     }
 }
 
@@ -443,12 +477,21 @@ fn sim_relevant_snapshot(cavity: &CavityState, layers: &LayersState) -> SimRelev
 /// is still pending. Clones the cleaned scan into the task (a
 /// one-time chunky alloc — ~MB-scale — dwarfed by the 10-20 s ramp
 /// itself).
+///
+/// Slice S11.1 — also clones [`CachedScanSdf`] into the task so the
+/// per-step intruder MC extraction (inside `run_sim_pipeline`) has
+/// the SDF + filled grids it needs without round-tripping through the
+/// main thread. `CachedScanSdf` is `Clone`; the underlying grids +
+/// `Arc`-wrapped distance fields make this a ~700 KB clone at iter-1
+/// (Arc-clones for the trait objects, full clones for the two
+/// `ScalarGrid`s), dwarfed by the FEM ramp's compute time.
 #[allow(clippy::needless_pass_by_value)]
 pub fn kick_off_simulation(
     scan: Option<Res<ScanMesh>>,
     cavity: Res<CavityState>,
     layers: Res<LayersState>,
     cap_planes: Res<CapPlanes>,
+    cached_sdf: Res<CachedScanSdf>,
     mut state: ResMut<InsertionSimState>,
 ) {
     if !state.request_simulate {
@@ -469,13 +512,20 @@ pub fn kick_off_simulation(
     // change while the simulation runs (a new scan load) and the task
     // must consume the value as-it-was-at-kickoff.
     let cap_planes_clone: Vec<CapPlane> = cap_planes.planes.clone();
+    let cached_sdf_clone: CachedScanSdf = cached_sdf.clone();
     let n_steps = state.n_steps;
 
     state.last_error = None;
     let pool = AsyncComputeTaskPool::get();
     let task = pool.spawn(async move {
-        run_sim_pipeline(scan_clone, design, cap_planes_clone, n_steps)
-            .map_err(|e| format!("{e:?}"))
+        run_sim_pipeline(
+            scan_clone,
+            design,
+            cap_planes_clone,
+            cached_sdf_clone,
+            n_steps,
+        )
+        .map_err(|e| format!("{e:?}"))
     });
     state.pending = Some(task);
 }
@@ -556,6 +606,7 @@ fn run_sim_pipeline(
     scan: IndexedMesh,
     design: SimDesign,
     cap_planes: Vec<CapPlane>,
+    cached_sdf: CachedScanSdf,
     n_steps: usize,
 ) -> Result<InsertionSimOutputs> {
     let geometry = build_insertion_geometry(
@@ -589,6 +640,16 @@ fn run_sim_pipeline(
     // the ramp completes (outer-skin pinned-vertex detection needs
     // `ramp.final_x`).
     let all_bcc_boundary_faces: Vec<[u32; 3]> = geometry.mesh.boundary_faces().to_vec();
+    // Slice S11.1 — clone the FEM intruder GridSdf BEFORE
+    // `run_insertion_ramp` consumes `geometry`. The per-step intruder
+    // render MCs the FEM's own intruder (not the cached scan SDF)
+    // because the deformed cavity is anchored to the FEM intruder
+    // shape at every converged step; using the cached SDF (different
+    // decimator + grid) produced a several-mm misalignment on iter-1
+    // (2026-05-18 LATE visual gate). `GridSdf` is `Clone` (its
+    // underlying `SdfGrid` is a `Vec<f64>` + lattice descriptor);
+    // ~MB-scale clone, dwarfed by the FEM ramp's compute.
+    let intruder_sdf = geometry.intruder.clone();
     // Rest-frame tet centroids — the projection's nearest-tet lookup
     // operates on these. Precomputing here once avoids re-deriving
     // them at every heat-map render.
@@ -676,6 +737,38 @@ fn run_sim_pipeline(
         .filter(|f| !f.iter().any(|v| outer_skin_vertices.contains(v)))
         .collect();
 
+    // Slice S11.1 — per-step intruder MC against the FEM-internal
+    // intruder SDF. The FEM intruder is an SDF offset of the cleaned
+    // scan by `interference_m + cavity_offset_m` (= `interference_m -
+    // design.cavity_inset_m`): at step 1 the iso lies deep inside the
+    // scan and the extracted surface is roughly cavity-sized; at the
+    // final step the iso sits at 0 and the extracted surface is the
+    // bare scan.
+    //
+    // Sample the FEM intruder GridSdf onto the cached SDF's grid
+    // lattice (build_once via `sample_sdf_into_cached_template`) then
+    // MC at each step's iso. Two earlier attempts on this slice (using
+    // `extract_layer_surface`'s with-caps composition; using a direct
+    // MC of `cached_sdf.closed_grid`) both produced visible
+    // intruder/cavity misalignments on iter-1: the recon's "use cached
+    // scan SDF" decision is structurally wrong because the cached SDF
+    // and the FEM intruder are built from DIFFERENT scan decimators
+    // (topology-preserving 7500 faces vs sloppy 2500 faces), and the
+    // deformed cavity tracks the FEM intruder shape, not the cached
+    // one. Sampling the FEM SDF eliminates the decimator mismatch;
+    // grid-resolution residual (5 mm cells) stays within BCC
+    // chunkiness.
+    let cavity_offset_m = -design.cavity_inset_m;
+    let intruder_grid = sample_sdf_into_cached_template(&intruder_sdf, &cached_sdf);
+    let per_step_intruder_meshes: Vec<IndexedMesh> = ramp
+        .steps
+        .iter()
+        .map(|step| {
+            let iso = step.interference_m + cavity_offset_m;
+            marching_cubes_at_iso(&intruder_grid, iso)
+        })
+        .collect();
+
     Ok(InsertionSimOutputs {
         ramp,
         per_layer,
@@ -685,6 +778,7 @@ fn run_sim_pipeline(
         scalar_min_max: [energy_min_max, stress_min_max],
         cavity_boundary_faces,
         per_layer_outer_faces,
+        per_step_intruder_meshes,
     })
 }
 
@@ -1715,6 +1809,7 @@ mod tests {
             scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
             cavity_boundary_faces: vec![[0, 1, 2]],
             per_layer_outer_faces: Vec::new(),
+            per_step_intruder_meshes: Vec::new(),
         };
         let step0 = outputs.deformed_boundary_mesh_at(0).expect("step 0");
         assert_eq!(step0.faces, vec![[0, 1, 2]]);
@@ -1754,6 +1849,7 @@ mod tests {
             scalar_min_max: [(1.0, 3.0), (10.0, 30.0)],
             cavity_boundary_faces: Vec::new(),
             per_layer_outer_faces: Vec::new(),
+            per_step_intruder_meshes: Vec::new(),
         };
         assert_eq!(outputs.scalar_fields_at(0)[0], vec![1.0]);
         assert_eq!(outputs.scalar_fields_at(1)[0], vec![2.0]);
@@ -1781,6 +1877,124 @@ mod tests {
         assert_eq!(global_min_max_across(&per_step, 1), (5.0, 80.0));
         // Empty input — degenerate, collapses to (0, 0).
         assert_eq!(global_min_max_across(&[], 0), (0.0, 0.0));
+    }
+
+    /// Slice S11.1 — synthetic outputs fixture for the per-step
+    /// intruder mesh tests below. 3 hand-built intruder meshes with
+    /// monotonically increasing vertex counts (1 → 2 → 3) standing in
+    /// for the cavity-sized → bare-scan growth of the real FEM
+    /// intruder iso surface across the ramp. Synthetic over going
+    /// through `run_sim_pipeline`: a real-pipeline test would tie this
+    /// to a ramp + cached SDF + ~minute of solve, outside the unit-
+    /// test budget.
+    fn synthetic_outputs_with_step_intruder_meshes(
+        intruder_meshes: Vec<IndexedMesh>,
+    ) -> InsertionSimOutputs {
+        let n_steps = intruder_meshes.len();
+        InsertionSimOutputs {
+            ramp: InsertionRamp {
+                steps: (0..n_steps)
+                    .map(|k| RampStep {
+                        // `k as f64` lossless for the test's small `n_steps`.
+                        #[allow(clippy::cast_precision_loss)]
+                        interference_m: 0.001 * (k as f64 + 1.0),
+                        iter_count: 1,
+                        final_residual_norm: 0.0,
+                        x_final: Vec::new(),
+                        readout: StepReadout {
+                            n_active_contact_pairs: 0,
+                            contact_force_total_n: Vector3::zeros(),
+                            contact_force_magnitude_n: 0.0,
+                            max_principal_stretch: 1.0,
+                            min_principal_stretch: 1.0,
+                            max_first_piola_frobenius_pa: 0.0,
+                            mean_strain_energy_density_j_per_m3: 0.0,
+                        },
+                    })
+                    .collect(),
+                failed_at_step: None,
+                failure_reason: None,
+                final_x: Vec::new(),
+                n_pinned: 0,
+                result: None,
+            },
+            per_layer: Vec::new(),
+            tet_centroids: Vec::new(),
+            per_tet_layer: Vec::new(),
+            per_step_scalar_fields: Vec::new(),
+            scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
+            cavity_boundary_faces: Vec::new(),
+            per_layer_outer_faces: Vec::new(),
+            per_step_intruder_meshes: intruder_meshes,
+        }
+    }
+
+    fn mk_mesh_with_n_vertices(n: usize) -> IndexedMesh {
+        let mut m = IndexedMesh::new();
+        for i in 0..n {
+            // `i as f64` lossless for tiny test sizes.
+            #[allow(clippy::cast_precision_loss)]
+            m.vertices.push(Point3::new(i as f64, 0.0, 0.0));
+        }
+        m
+    }
+
+    /// Slice S11.1 — `intruder_mesh_at` returns meshes whose vertex
+    /// counts increase from step 0 to step N-1. The real FEM intruder
+    /// is an SDF offset that grows from cavity-sized at step 1 to bare
+    /// scan at step N; the iso surface gains vertices as it expands.
+    #[test]
+    fn per_step_intruder_meshes_grow_from_step0_to_stepn_minus_1() {
+        let outputs = synthetic_outputs_with_step_intruder_meshes(vec![
+            mk_mesh_with_n_vertices(1),
+            mk_mesh_with_n_vertices(2),
+            mk_mesh_with_n_vertices(3),
+        ]);
+        let first = outputs.intruder_mesh_at(0).expect("step 0");
+        let last = outputs.intruder_mesh_at(2).expect("step 2");
+        assert!(
+            first.vertices.len() < last.vertices.len(),
+            "intruder iso surface should grow over the ramp \
+             ({} → {} vertices)",
+            first.vertices.len(),
+            last.vertices.len(),
+        );
+    }
+
+    /// Slice S11.1 — `run_sim_pipeline` contract: exactly one intruder
+    /// mesh per converged step. Caller (`update_intruder_mesh`) indexes
+    /// by `displayed_step`, so a count mismatch would race with the
+    /// playback slider's bounds.
+    #[test]
+    fn per_step_intruder_meshes_count_matches_ramp_steps() {
+        let outputs = synthetic_outputs_with_step_intruder_meshes(vec![
+            mk_mesh_with_n_vertices(1),
+            mk_mesh_with_n_vertices(2),
+            mk_mesh_with_n_vertices(3),
+        ]);
+        assert_eq!(
+            outputs.per_step_intruder_meshes.len(),
+            outputs.ramp.steps.len(),
+            "per-step intruder mesh count must match the ramp step count",
+        );
+    }
+
+    /// Slice S11.1 — `intruder_mesh_at` returns `None` past the
+    /// converged range (fail-closed, same posture as
+    /// `deformed_boundary_mesh_at`). The caller hides the entity
+    /// rather than displaying stale geometry.
+    #[test]
+    fn intruder_mesh_at_returns_none_past_converged_range() {
+        let outputs = synthetic_outputs_with_step_intruder_meshes(vec![
+            mk_mesh_with_n_vertices(1),
+            mk_mesh_with_n_vertices(2),
+        ]);
+        // Steps 0, 1 in range.
+        assert!(outputs.intruder_mesh_at(0).is_some());
+        assert!(outputs.intruder_mesh_at(1).is_some());
+        // Past the converged tail.
+        assert!(outputs.intruder_mesh_at(2).is_none());
+        assert!(outputs.intruder_mesh_at(99).is_none());
     }
 
     /// `LAYER_COUNT_MAX` (from main.rs) caps the user-facing layer
