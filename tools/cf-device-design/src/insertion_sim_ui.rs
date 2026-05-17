@@ -157,17 +157,18 @@ pub struct InsertionSimOutputs {
     /// the saturation jumping mid-scrub. Also reported alongside the
     /// heat map so the user can read absolute scale.
     pub scalar_min_max: [(f64, f64); 2],
-    /// Slice S2 — BCC analysis-mesh boundary triangles, indexed into
-    /// the per-step `x_final` vertex arrays. Snapshotted once at
-    /// pipeline time so the panel's "Show deformed" cavity render can
-    /// build a per-step `IndexedMesh` by pairing these triangles with
-    /// `ramp.steps[displayed_step].x_final` — the same vertex layout
-    /// the ramp solves on, just with displaced coordinates. Covers the
-    /// full mesh boundary (both the inner cavity surface and the
-    /// pinned outer skin); the outer skin is Dirichlet-pinned in the
-    /// solve so it stays at its rest position, the cavity surface is
-    /// what visibly bulges as the intruder seats.
-    pub bcc_boundary_faces: Vec<[u32; 3]>,
+    /// Slice S2 — cavity-side BCC boundary triangles ONLY (initial S2
+    /// shipped the full mesh boundary; visual gate 2026-05-18 surfaced
+    /// that the outer-skin faces dragged the cavity render way outside
+    /// the cavity, so we now filter to triangles whose 3 vertices are
+    /// ALL non-pinned = ALL in the cavity-deforming free DOF set).
+    /// Indexed into per-step `x_final` vertex arrays; the panel's
+    /// "Show deformed" cavity render pairs these triangles with
+    /// `ramp.steps[displayed_step].x_final` to build a per-step
+    /// `IndexedMesh`. Cap-rim mixed faces (1-2 pinned vertices) are
+    /// also excluded — they're visually distracting slivers between
+    /// the pinned outer rim and the deforming inner rim.
+    pub cavity_boundary_faces: Vec<[u32; 3]>,
     /// Slice S3 — per-layer OUTWARD face triangles for the deformed
     /// layer-shells render. Outer index is layer (innermost-first,
     /// matches `per_tet_layer`); inner triangle indices reference the
@@ -201,7 +202,7 @@ impl InsertionSimOutputs {
     /// expects, or the run has no steps at all).
     ///
     /// Cost: one allocation per call (~`n_vertices` `Point3` + a
-    /// per-call clone of `bcc_boundary_faces`). Cheap enough to be
+    /// per-call clone of `cavity_boundary_faces`). Cheap enough to be
     /// rebuilt every time the panel slider moves; the system that
     /// consumes this is gated by `CavityMeshKey` change-detection so
     /// it only fires on actual input changes.
@@ -215,7 +216,7 @@ impl InsertionSimOutputs {
             .collect();
         let mut mesh = IndexedMesh::new();
         mesh.vertices = positions;
-        mesh.faces = self.bcc_boundary_faces.clone();
+        mesh.faces = self.cavity_boundary_faces.clone();
         Some(mesh)
     }
 
@@ -583,13 +584,11 @@ fn run_sim_pipeline(
         .collect();
     let materials: Vec<Yeoh> = geometry.mesh.materials().to_vec();
     // Slice S2 — snapshot the BCC analysis-mesh boundary triangles
-    // BEFORE `run_insertion_ramp` consumes `geometry`. These index
-    // into the same vertex array `step.x_final` carries (the ramp
-    // doesn't add or remove vertices, only moves them), so a deformed
-    // cavity render at any displayed step is `boundary_faces` paired
-    // with that step's `x_final`. Cost: ~3 × n_boundary_faces × 4 B
-    // — a few hundred KB at iter-1 size.
-    let bcc_boundary_faces: Vec<[u32; 3]> = geometry.mesh.boundary_faces().to_vec();
+    // BEFORE `run_insertion_ramp` consumes `geometry`. The
+    // FULL-boundary snapshot is filtered to cavity-side only AFTER
+    // the ramp completes (outer-skin pinned-vertex detection needs
+    // `ramp.final_x`).
+    let all_bcc_boundary_faces: Vec<[u32; 3]> = geometry.mesh.boundary_faces().to_vec();
     // Rest-frame tet centroids — the projection's nearest-tet lookup
     // operates on these. Precomputing here once avoids re-deriving
     // them at every heat-map render.
@@ -664,6 +663,19 @@ fn run_sim_pipeline(
     let per_layer_outer_faces =
         build_per_layer_outer_faces(&tets, &per_tet_layer, &outer_skin_vertices, n_layers);
 
+    // Slice S2 polish (visual gate 2026-05-18) — filter the full BCC
+    // boundary down to CAVITY-SIDE faces only. Two reject classes:
+    // (a) outer-skin face (all 3 vertices pinned → no deformation,
+    // visually identical to rest), (b) cap-rim mixed face (1-2 verts
+    // pinned → sliver that stretches between pinned outer rim and
+    // deforming inner rim, looks like a spike under intruder load).
+    // Keep only faces with ZERO pinned vertices = pure cavity surface.
+    let cavity_boundary_faces: Vec<[u32; 3]> = all_bcc_boundary_faces
+        .iter()
+        .copied()
+        .filter(|f| !f.iter().any(|v| outer_skin_vertices.contains(v)))
+        .collect();
+
     Ok(InsertionSimOutputs {
         ramp,
         per_layer,
@@ -671,7 +683,7 @@ fn run_sim_pipeline(
         per_tet_layer,
         per_step_scalar_fields,
         scalar_min_max: [energy_min_max, stress_min_max],
-        bcc_boundary_faces,
+        cavity_boundary_faces,
         per_layer_outer_faces,
     })
 }
@@ -1701,7 +1713,7 @@ mod tests {
             per_tet_layer: Vec::new(),
             per_step_scalar_fields: vec![[vec![], vec![]], [vec![], vec![]]],
             scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
-            bcc_boundary_faces: vec![[0, 1, 2]],
+            cavity_boundary_faces: vec![[0, 1, 2]],
             per_layer_outer_faces: Vec::new(),
         };
         let step0 = outputs.deformed_boundary_mesh_at(0).expect("step 0");
@@ -1740,7 +1752,7 @@ mod tests {
                 [vec![3.0], vec![30.0]],
             ],
             scalar_min_max: [(1.0, 3.0), (10.0, 30.0)],
-            bcc_boundary_faces: Vec::new(),
+            cavity_boundary_faces: Vec::new(),
             per_layer_outer_faces: Vec::new(),
         };
         assert_eq!(outputs.scalar_fields_at(0)[0], vec![1.0]);
