@@ -198,6 +198,12 @@ pub struct FloodFillReport {
     pub wall_threshold_m: f64,
     /// Wall-clock build time in seconds.
     pub build_secs: f64,
+    /// Most-negative signed distance over the cached grid (= the
+    /// signed `min(unsigned)` over Inside cells, or `+min(unsigned)`
+    /// if no Inside cells exist). A correctness contract for the
+    /// build: any value below `-bbox_half_diagonal` indicates a sign
+    /// flip (see [[project-pinned-floor-visual-gate-postmortem]]).
+    pub min_signed_distance_m: f64,
 }
 
 #[cfg(test)]

@@ -52,10 +52,15 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 mod error;
+mod flood_fill;
 mod oracle;
 mod sdf;
 
 pub use error::{SdfError, SdfResult};
+pub use flood_fill::{
+    CachedGridSdf, FloodFillSign, FloodFilledSdfError, WALL_THRESHOLD_FACTOR_DEFAULT,
+    flood_filled_sdf,
+};
 pub use oracle::{FloodFillError, FloodFillReport, Region, Sign, Signed, UnsignedDistance};
 pub use sdf::{PseudoNormalSign, TriMeshDistance};
 #[allow(deprecated)]

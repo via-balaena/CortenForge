@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use mesh_sdf::{Sign, Signed, UnsignedDistance};
+use mesh_sdf::{CachedGridSdf, Sign, Signed, UnsignedDistance};
 use nalgebra::{Point3, Vector3};
 
 use crate::Solid;
@@ -133,6 +133,27 @@ where
                 - self.evaluate(Point3::new(p.x, p.y, p.z - eps)))
                 * inv_2eps,
         )
+    }
+}
+
+/// [`CachedGridSdf`] (mesh-sdf D.2) implements [`Sdf`] via its native
+/// trilinear-interpolated signed distance + analytic-on-the-trilinear
+/// gradient. The grid IS the smoothed source, so `eval` reads
+/// directly and `grad` central-differences the trilinear interpolant
+/// at the lattice spacing — exact for the piecewise-trilinear
+/// representation, no `Signed::grad`-style 1e-6 finite-difference
+/// step needed.
+///
+/// Orphan-rule reason: `Sdf` is owned by cf-design; `CachedGridSdf`
+/// is owned by mesh-sdf. The adapter lives here alongside the
+/// `Signed<D, S>` blanket above.
+impl Sdf for CachedGridSdf {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.signed_distance(p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        self.gradient(p)
     }
 }
 
