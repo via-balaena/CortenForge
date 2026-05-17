@@ -4743,15 +4743,34 @@ mod tests {
     }
 
     /// Build a sliding-ramp fixture: `icosphere(40 mm, 3)` body + 3 mm
-    /// cavity inset + 10 mm `ECOFLEX_00_30` layer. Shared by the
-    /// heavyweight tests below.
+    /// cavity inset + 10 mm `ECOFLEX_00_30` layer + ONE cap plane at
+    /// the `+Z` apex. Shared by the heavyweight tests below.
+    ///
+    /// The cap plane is load-bearing: without it, `build_insertion_
+    /// geometry` short-circuits the open-body SDF to equal the closed-
+    /// body SDF and the cavity has no mouth — the sliding intruder
+    /// then crashes the cavity-wall material into the Yeoh validity
+    /// wall as it approaches full coincidence at `t = 1`. With a cap
+    /// plane at `+Z`, `dome_wall_only_mesh` strips the icosphere's
+    /// `+Z`-apex triangles, `pinned_floor_shell` opens the cavity at
+    /// that plane, and the intruder enters cleanly along the `+Z`
+    /// centerline through the open mouth — matching the product
+    /// pipeline shape (cf-scan-prep records caps in `.prep.toml`,
+    /// cf-device-design carves the mouth via the same primitive in
+    /// `build_insertion_geometry`).
     fn synthetic_sliding_geometry() -> InsertionGeometry {
         let scan = icosphere(0.040, 3);
         let design = SimDesign {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
+        let cap = CapPlane {
+            centroid: Point3::new(0.0, 0.0, 0.040),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_count: 0,
+            loop_index: 0,
+        };
+        build_insertion_geometry(&scan, &design, &[cap], 2_000, 0.004)
             .expect("synthetic-sphere geometry should build for the sliding fixture")
     }
 
@@ -4814,25 +4833,29 @@ mod tests {
     }
 
     /// Solver-only FEM-correctness gate: the 16-step sliding ramp on
-    /// the synthetic icosphere makes meaningful progress before any
-    /// Yeoh-validity stall. The synthetic fixture is a CLOSED sphere
-    /// (no cap mouth) so the intruder's translation back toward rest
-    /// drives the per-step overlap geometry quadratically toward full
-    /// coincidence — at large t-values the local stretch can exceed
-    /// the Yeoh material's validity range, surfacing as a fail-closed
-    /// panic per `sim-soft/src/solver/backward_euler.rs:625` Phase 4
-    /// scope memo Decision Q.
+    /// the synthetic icosphere cup makes meaningful progress before
+    /// any Yeoh-validity stall. The fixture is a cup (icosphere with
+    /// the `+Z` apex carved open by a cap plane — see
+    /// `synthetic_sliding_geometry`), but the sphere cross-section
+    /// narrows along the slide direction (it's an icosphere, not a
+    /// straight tube), so the local cavity-wall stretch climbs as the
+    /// intruder slides deeper. Past a few steps the Yeoh material
+    /// validity wall fires per `sim-soft/src/solver/backward_euler.rs`
+    /// `:625` Phase 4 scope memo Decision Q.
     ///
-    /// This is exactly the spec §6 risk #2 (high-curvature / high-
-    /// stretch → Yeoh validity wall) + the D-Slide6 Fork-B "partial
-    /// seating is honest engineering data" stall handling. We assert
-    /// Fork-B behavior end-to-end: at least 1 step converges; every
-    /// converged step has finite all-positive force + finite x_final;
-    /// arc length is monotone; if `failed_at_step` is set, the failure
-    /// message mentions the validity wall. The "all 16 steps converge"
-    /// gate is for cup-geometry fixtures (real iter-1 sock_over_capsule)
-    /// where the intruder has an open mouth to enter through and
-    /// never reaches full coincidence with the body.
+    /// This is exactly the spec §6 risk #2 (high-curvature plus
+    /// high-stretch plus Yeoh validity wall) and the D-Slide6 Fork-B
+    /// "partial seating is honest engineering data" stall handling.
+    /// We assert Fork-B behavior end-to-end: at least 1 step
+    /// converges; every converged step has finite all-positive force
+    /// plus finite x_final; arc length is monotone; if `failed_at_step`
+    /// is set, the failure message mentions the validity wall. The
+    /// "all 16 steps converge" gate is for fixtures with more uniform
+    /// cross-section along the slide direction. Real iter-1
+    /// `sock_over_capsule` is sock-shaped (tube of roughly constant
+    /// radius along its length) and gives the intruder a long arc of
+    /// near-uniform interference; that's the natural surface for the
+    /// all-steps-converge gate at SL.3+.
     ///
     /// `n_steps = 16` per spec D-Slide5 default for an 80 mm centerline
     /// (`max(16, ceil(L_m / 5e-3))`).
@@ -4933,23 +4956,17 @@ mod tests {
     /// FEM-correctness gate: at the LAST converged step of the sliding
     /// ramp (whichever it is — Fork-B partial seating is acceptable per
     /// D-Slide6), referenced vertices in the LOWER hemisphere (well
-    /// outside the upper-half contact zone) deform less than `5 mm`
+    /// outside the upper-half contact zone) deform less than `0.5 mm`
     /// from rest. This is the spec §4 SL.2 gate (c) + §5 gate (4)
     /// assertion: sliding contact is LOCAL — far-from-contact regions
     /// stay near rest — distinguishing it from the growing ramp's
     /// UNIFORM offset (which would deform every cavity vertex by
     /// roughly the same `interference_m`).
     ///
-    /// The synthetic-sphere fixture cannot use the spec's strict
-    /// 0.5 mm bound because the closed body forces large local
-    /// stretches as the intruder seats; elastic propagation from a
-    /// hard-contact upper-half patch into the lower half is several
-    /// mm. 5 mm is still WELL BELOW what a growing-ramp uniform-offset
-    /// would produce (`cavity_inset_m = 3 mm` × full-cavity coverage
-    /// would offset every cavity-side vertex by ~3 mm radially → on a
-    /// 0.040-m radius body, displacement scale `O(3 mm)` everywhere,
-    /// not localized in the upper half). The iter-1 cup fixture
-    /// (SL.3+) will tighten this bound back toward 0.5 mm.
+    /// Empirically `~3 µm` on the cup fixture, three orders of
+    /// magnitude under the bound; a growing-ramp regression would
+    /// produce `O(3 mm)` displacement everywhere (uniform offset
+    /// across the full cavity), failing the bound by 3 orders.
     ///
     /// `#[ignore]` — release-mode multi-step solve.
     #[test]
@@ -5003,14 +5020,15 @@ mod tests {
             "fixture must expose enough lower-hemisphere referenced vertices \
              to be meaningful; got {n_far}",
         );
-        // 5 mm bound — closed-body fixture-pragmatic envelope; see
-        // doc-comment rationale. A growing-ramp uniform offset would
-        // produce ≈ 3 mm everywhere; this still falsifies that mode.
+        // 0.5 mm bound per spec §4 SL.2 gate column — empirically
+        // `~3 µm` on the cup fixture (3 orders under), so the bound
+        // is sensitive enough to catch a growing-intruder regression
+        // (which would produce `O(3 mm)` everywhere).
         assert!(
-            max_far_displacement_m < 0.005,
+            max_far_displacement_m < 0.0005,
             "sliding contact must be local — lower-hemisphere displacement {:.3} mm \
-             ≥ 5 mm bound (would indicate the FEM is propagating deformation \
-             far-field, i.e. a regression toward growing-intruder behavior)",
+             ≥ 0.5 mm bound (would indicate the FEM is propagating deformation \
+             uniformly, i.e. a regression to growing-intruder behavior)",
             max_far_displacement_m * 1e3,
         );
     }
