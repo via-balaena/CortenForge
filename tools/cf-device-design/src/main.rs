@@ -1395,11 +1395,43 @@ fn spawn_cavity_mesh(
     ));
 }
 
-/// Regenerate the cavity mesh asset when `CavityState` changes.
+/// Snapshot of every input `update_cavity_mesh` reads, kept in the
+/// system's `Local<>` so the per-frame check is "did the values
+/// actually change?" rather than "did Bevy's `Res::is_changed()`
+/// tick?" — same posture as [`LayerMeshKey`] +
+/// `insertion_sim_ui::invalidate_on_geometry_change`.
 ///
-/// Slice 9 sub-leaf 3: pulls the cavity surface from the cached SDF
-/// at `iso = -state.inset_m` rather than displacing the per-vertex
-/// proxy mesh.
+/// `show_deformed` + `displayed_step` + `last_run_generation` are the
+/// slice-S2 additions: a step-scrub, a Show-deformed toggle, or a new
+/// run completion each rebuilds the cavity mesh asset.
+#[derive(Debug, Clone, PartialEq)]
+struct CavityMeshKey {
+    cavity: CavityState,
+    show_deformed: bool,
+    displayed_step: usize,
+    last_run_generation: u64,
+}
+
+/// Regenerate the cavity mesh asset.
+///
+/// Two render modes:
+///
+/// - **Rest** (default; pre-S2 behavior): cavity surface extracted from
+///   the cached scan SDF at `iso = -cavity.inset_m`. Slice 9 sub-leaf
+///   3's smooth MC iso-surface, fitting the scan exactly perpendicular
+///   to its source (no apex-nipple artifacts).
+/// - **Deformed** (slice S2; only when `sim_state.show_deformed && last_run.is_some()`):
+///   cavity entity gets the FEM analysis mesh's deformed boundary at
+///   `sim_state.displayed_step` — the same BCC vertex layout the ramp
+///   solves on, with each step's `x_final` displaced coordinates.
+///   Coarser than the SDF iso (4 mm BCC vs ~1 mm MC) but it's the
+///   "see the squish" view the workshop user reaches for after a sim
+///   completes. Falls back to rest if `displayed_step` is out of the
+///   converged-step range.
+///
+/// Change-detection mirrors [`update_layer_meshes`]: snapshot-and-
+/// compare via `Local<Option<CavityMeshKey>>` so a Bevy `ResMut<T>`
+/// deref-mut-on-access tick doesn't rebuild every frame.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn update_cavity_mesh(
     state: Res<CavityState>,
@@ -1407,17 +1439,45 @@ fn update_cavity_mesh(
     cap_planes: Res<sdf_layers::CapPlanes>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
+    sim_state: Res<insertion_sim_ui::InsertionSimState>,
+    mut last_key: Local<Option<CavityMeshKey>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut q: Query<(&mut Mesh3d, &mut Visibility), With<CavityEntity>>,
 ) {
-    if !state.is_changed() {
+    let current_key = CavityMeshKey {
+        cavity: *state,
+        show_deformed: sim_state.show_deformed,
+        displayed_step: sim_state.displayed_step,
+        last_run_generation: sim_state.last_run_generation,
+    };
+    let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
+    *last_key = Some(current_key);
+    if !changed {
         return;
     }
+    // Slice S2 — deformed view consumes the FEM boundary at the
+    // displayed step; otherwise fall through to the rest-frame SDF
+    // iso extraction. The decision + mesh build are loop-invariant
+    // (one CavityEntity expected; the loop is defensive against
+    // transient duplicates), so they live outside the entity loop.
+    let cavity_indexed = if sim_state.show_deformed {
+        sim_state
+            .last_run
+            .as_ref()
+            .and_then(|run| run.deformed_boundary_mesh_at(sim_state.displayed_step))
+            .unwrap_or_else(|| {
+                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
+            })
+    } else {
+        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m)
+    };
+    let mesh_asset = meshes.add(build_bevy_mesh_from_indexed(
+        &cavity_indexed,
+        *up,
+        render_scale.0,
+    ));
     for (mut mesh_handle, mut visibility) in &mut q {
-        let cavity_indexed =
-            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m);
-        let new_mesh = build_bevy_mesh_from_indexed(&cavity_indexed, *up, render_scale.0);
-        mesh_handle.0 = meshes.add(new_mesh);
+        mesh_handle.0 = mesh_asset.clone();
         *visibility = if state.visible {
             Visibility::Visible
         } else {

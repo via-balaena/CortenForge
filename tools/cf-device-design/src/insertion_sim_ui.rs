@@ -156,6 +156,17 @@ pub struct InsertionSimOutputs {
     /// the saturation jumping mid-scrub. Also reported alongside the
     /// heat map so the user can read absolute scale.
     pub scalar_min_max: [(f64, f64); 2],
+    /// Slice S2 — BCC analysis-mesh boundary triangles, indexed into
+    /// the per-step `x_final` vertex arrays. Snapshotted once at
+    /// pipeline time so the panel's "Show deformed" cavity render can
+    /// build a per-step `IndexedMesh` by pairing these triangles with
+    /// `ramp.steps[displayed_step].x_final` — the same vertex layout
+    /// the ramp solves on, just with displaced coordinates. Covers the
+    /// full mesh boundary (both the inner cavity surface and the
+    /// pinned outer skin); the outer skin is Dirichlet-pinned in the
+    /// solve so it stays at its rest position, the cavity surface is
+    /// what visibly bulges as the intruder seats.
+    pub bcc_boundary_faces: Vec<[u32; 3]>,
 }
 
 impl InsertionSimOutputs {
@@ -167,6 +178,32 @@ impl InsertionSimOutputs {
     pub fn scalar_fields_at(&self, step: usize) -> &[Vec<f64>; 2] {
         let last = self.per_step_scalar_fields.len().saturating_sub(1);
         &self.per_step_scalar_fields[step.min(last)]
+    }
+
+    /// Slice S2 — build a deformed `IndexedMesh` for the cavity render
+    /// at the requested converged step by pairing the BCC analysis
+    /// mesh's snapshotted boundary triangles with the step's
+    /// `x_final` displaced positions. Returns `None` if `step` is
+    /// out-of-range (the ramp converged fewer steps than the caller
+    /// expects, or the run has no steps at all).
+    ///
+    /// Cost: one allocation per call (~`n_vertices` `Point3` + a
+    /// per-call clone of `bcc_boundary_faces`). Cheap enough to be
+    /// rebuilt every time the panel slider moves; the system that
+    /// consumes this is gated by `CavityMeshKey` change-detection so
+    /// it only fires on actual input changes.
+    #[must_use]
+    pub fn deformed_boundary_mesh_at(&self, step: usize) -> Option<IndexedMesh> {
+        let ramp_step = self.ramp.steps.get(step)?;
+        let positions: Vec<Point3<f64>> = ramp_step
+            .x_final
+            .chunks_exact(3)
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices = positions;
+        mesh.faces = self.bcc_boundary_faces.clone();
+        Some(mesh)
     }
 }
 
@@ -240,6 +277,13 @@ pub struct InsertionSimState {
     /// `LayerMeshKey` so a step change triggers a layer-mesh rebuild;
     /// also drives the viewport `Step N/M` badge.
     pub displayed_step: usize,
+    /// Slice S2 — when `true`, the cavity entity renders the deformed
+    /// BCC analysis-mesh boundary at `displayed_step` instead of the
+    /// rest-frame SDF-extracted cavity surface. Set ON automatically
+    /// when a run completes ("squish" view is the more interesting
+    /// default when sim data is available); cleared on invalidation.
+    /// Read by `main.rs::update_cavity_mesh` via `CavityMeshKey`.
+    pub show_deformed: bool,
 }
 
 impl Default for InsertionSimState {
@@ -254,6 +298,7 @@ impl Default for InsertionSimState {
             scalar_mode: ScalarMode::default(),
             last_run_generation: 0,
             displayed_step: 0,
+            show_deformed: false,
         }
     }
 }
@@ -325,6 +370,7 @@ pub fn invalidate_on_geometry_change(
         state.heat_map_on = false;
         state.last_run_generation = state.last_run_generation.wrapping_add(1);
         state.displayed_step = 0;
+        state.show_deformed = false;
     }
 }
 
@@ -385,6 +431,10 @@ pub fn poll_simulation_task(mut state: ResMut<InsertionSimState>) {
                 // matches pre-S1 behavior (the user's first sight of
                 // the heat map is at full insertion).
                 state.displayed_step = outputs.per_step_scalar_fields.len().saturating_sub(1);
+                // Slice S2 — auto-enable the deformed-cavity view so
+                // the user sees the squish immediately. The rest
+                // cavity view stays one click away.
+                state.show_deformed = true;
                 state.last_run = Some(outputs);
                 state.last_error = None;
                 // Bump the generation so `update_layer_meshes` (in
@@ -469,6 +519,14 @@ fn run_sim_pipeline(
         .map(|t| geometry.mesh.tet_vertices(t))
         .collect();
     let materials: Vec<Yeoh> = geometry.mesh.materials().to_vec();
+    // Slice S2 — snapshot the BCC analysis-mesh boundary triangles
+    // BEFORE `run_insertion_ramp` consumes `geometry`. These index
+    // into the same vertex array `step.x_final` carries (the ramp
+    // doesn't add or remove vertices, only moves them), so a deformed
+    // cavity render at any displayed step is `boundary_faces` paired
+    // with that step's `x_final`. Cost: ~3 × n_boundary_faces × 4 B
+    // — a few hundred KB at iter-1 size.
+    let bcc_boundary_faces: Vec<[u32; 3]> = geometry.mesh.boundary_faces().to_vec();
     // Rest-frame tet centroids — the projection's nearest-tet lookup
     // operates on these. Precomputing here once avoids re-deriving
     // them at every heat-map render.
@@ -540,6 +598,7 @@ fn run_sim_pipeline(
         per_tet_layer,
         per_step_scalar_fields,
         scalar_min_max: [energy_min_max, stress_min_max],
+        bcc_boundary_faces,
     })
 }
 
@@ -827,6 +886,7 @@ pub fn render_insertion_sim_section(
 
             ui.separator();
             render_playback_slider(ui, &run.ramp, &mut state.displayed_step);
+            ui.checkbox(&mut state.show_deformed, "Show deformed cavity (vs rest)");
             ui.checkbox(&mut state.heat_map_on, "Heat map");
             ui.add_enabled_ui(state.heat_map_on, |ui| {
                 ui.horizontal(|ui| {
@@ -1275,6 +1335,75 @@ mod tests {
         assert_eq!(indices, vec![0, 1]);
     }
 
+    /// Slice S2 — `deformed_boundary_mesh_at` pairs the snapshotted
+    /// BCC boundary triangles with the requested step's `x_final`,
+    /// producing an `IndexedMesh` ready to feed `build_bevy_mesh`. OOB
+    /// step indices return `None` (no clamp — the caller should
+    /// not silently shift onto a different step).
+    #[test]
+    fn deformed_boundary_mesh_at_pairs_step_positions_with_snapshot_faces() {
+        // Two converged steps, 3 vertices, 1 boundary face.
+        let outputs = InsertionSimOutputs {
+            ramp: InsertionRamp {
+                steps: vec![
+                    RampStep {
+                        interference_m: 0.001,
+                        iter_count: 1,
+                        final_residual_norm: 0.0,
+                        x_final: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                        readout: StepReadout {
+                            n_active_contact_pairs: 0,
+                            contact_force_total_n: Vector3::zeros(),
+                            contact_force_magnitude_n: 0.0,
+                            max_principal_stretch: 1.0,
+                            min_principal_stretch: 1.0,
+                            max_first_piola_frobenius_pa: 0.0,
+                            mean_strain_energy_density_j_per_m3: 0.0,
+                        },
+                    },
+                    RampStep {
+                        interference_m: 0.002,
+                        iter_count: 1,
+                        final_residual_norm: 0.0,
+                        // Step 2: vertex 1 has moved +0.5 in x; the
+                        // deformed mesh should pick THIS step's x_final
+                        // when asked for step 1.
+                        x_final: vec![0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0],
+                        readout: StepReadout {
+                            n_active_contact_pairs: 0,
+                            contact_force_total_n: Vector3::zeros(),
+                            contact_force_magnitude_n: 0.0,
+                            max_principal_stretch: 1.0,
+                            min_principal_stretch: 1.0,
+                            max_first_piola_frobenius_pa: 0.0,
+                            mean_strain_energy_density_j_per_m3: 0.0,
+                        },
+                    },
+                ],
+                failed_at_step: None,
+                failure_reason: None,
+                final_x: vec![0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0],
+                n_pinned: 0,
+                result: None,
+            },
+            per_layer: Vec::new(),
+            tet_centroids: Vec::new(),
+            per_tet_layer: Vec::new(),
+            per_step_scalar_fields: vec![[vec![], vec![]], [vec![], vec![]]],
+            scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
+            bcc_boundary_faces: vec![[0, 1, 2]],
+        };
+        let step0 = outputs.deformed_boundary_mesh_at(0).expect("step 0");
+        assert_eq!(step0.faces, vec![[0, 1, 2]]);
+        assert_eq!(step0.vertices.len(), 3);
+        assert_eq!(step0.vertices[1], nalgebra::Point3::new(1.0, 0.0, 0.0));
+        let step1 = outputs.deformed_boundary_mesh_at(1).expect("step 1");
+        // Step 1 vertex 1 moved to (1.5, 0, 0) — the deformation.
+        assert_eq!(step1.vertices[1], nalgebra::Point3::new(1.5, 0.0, 0.0));
+        // OOB → None (no clamp; spec calls out fail-closed here).
+        assert!(outputs.deformed_boundary_mesh_at(2).is_none());
+    }
+
     /// Slice S1 — `scalar_fields_at` clamps OOB step indices to the
     /// last converged step (matches the "panel slider past the end"
     /// case + `displayed_step` default-zero before a run completes).
@@ -1300,6 +1429,7 @@ mod tests {
                 [vec![3.0], vec![30.0]],
             ],
             scalar_min_max: [(1.0, 3.0), (10.0, 30.0)],
+            bcc_boundary_faces: Vec::new(),
         };
         assert_eq!(outputs.scalar_fields_at(0)[0], vec![1.0]);
         assert_eq!(outputs.scalar_fields_at(1)[0], vec![2.0]);
