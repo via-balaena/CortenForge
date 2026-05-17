@@ -1321,39 +1321,41 @@ fn gaussian_smooth_3d_separable(
 
 /// Build a flood-fill-signed [`GridSdf`] of `scan` over `bbox`.
 ///
-/// Pipeline: sample [`mesh_sdf::unsigned_distance`] at every lattice
-/// point (topology-blind — the sloppy-decimation damage that wrecks
-/// `mesh_sdf`'s *signed* query does not touch the *unsigned* one) →
-/// mark "wall" points within `wall_threshold_m` of the surface →
-/// flood "outside" 6-connected from the eight bbox corners through
-/// non-wall points → non-wall, not-reached points are the interior →
-/// expand the Outside/Inside labels into the wall band by multi-
-/// source BFS → signed value = `±unsigned` → **separable 3D
-/// Gaussian pre-smooth (σ = [`GRID_SDF_SMOOTH_SIGMA_CELLS`] = 1.0
-/// cell, settled at slice 7.3d after the σ sweep; slice 7.3c
-/// shipped at 0.5 cell) on the signed buffer** — see
-/// [`GRID_SDF_SMOOTH_SIGMA_CELLS`] for the envelope-extension trail.
+/// Pipeline (post-D.3b): build a parry BVH-backed
+/// [`TriMeshDistance`] over `scan`, delegate to mesh-sdf D.2's
+/// [`CachedGridSdf::build`] which runs the shared 3-region
+/// (Inside / Outside / Wall) flood-fill + multi-source label
+/// expansion + `inside_components` health count, walk the lattice
+/// once more to sample the cached signed values into a flat row-
+/// major `Vec<f64>`, then apply a separable 3D Gaussian pre-smooth
+/// (σ = [`GRID_SDF_SMOOTH_SIGMA_CELLS`] = 1.0 cell, settled at slice
+/// 7.3d after the σ sweep; slice 7.3c shipped at 0.5 cell) on the
+/// signed buffer — see [`GRID_SDF_SMOOTH_SIGMA_CELLS`] for the
+/// envelope-extension trail. The Gaussian post-pass stays here
+/// rather than inside `CachedGridSdf` because it is FEM-specific
+/// (contact-gradient C¹ approximation) and not load-bearing for
+/// sign correctness; mesh-sdf primitives are smoothing-free by
+/// design.
 ///
 /// `wall_threshold_m` must be `≥ 0.5 * grid_cell_m` so the wall band
 /// is 6-connectivity-watertight (a surface crossing between adjacent
 /// lattice points always lands one of them within half a cell). The
 /// 7.3a fix spike sweeps `grid_cell_m`; `0.75 * grid_cell_m` is the
 /// recommended threshold (safe margin without over-thickening the
-/// band).
+/// band). Internally the value is converted to the dimensionless
+/// `wall_threshold_factor = wall_threshold_m / grid_cell_m` that
+/// `CachedGridSdf::build` takes.
 ///
 /// # Errors
 ///
-/// Returns an error if all eight bbox corners are wall points (the
-/// bbox margin is too small, or the grid too coarse, to seed the
-/// outside flood).
-///
-/// # Panics
-///
-/// `grid_cell_m` must be positive — a non-positive value forwards a
-/// panic from `SdfGrid::new` (or overflows the lattice-dimension
-/// arithmetic). It is a programmer-set knob, not validated here —
-/// the same posture `build_insertion_geometry` documents for
-/// `cell_size_m`.
+/// Forwards [`CachedGridSdf::build`] failures with context:
+/// non-finite or non-positive `grid_cell_m`
+/// ([`mesh_sdf::FloodFillError::NonPositiveCellSize`]), degenerate
+/// bbox ([`mesh_sdf::FloodFillError::DegenerateBounds`]), or all
+/// eight bbox corners landing within the wall band so no outside
+/// seed exists ([`mesh_sdf::FloodFillError::NoOutsideSeed`] —
+/// bbox margin too small or grid too coarse). Also forwards
+/// [`TriMeshDistance::new`] failure on an empty mesh.
 pub fn build_grid_sdf(
     scan: &IndexedMesh,
     bbox: Aabb,

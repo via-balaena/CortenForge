@@ -152,15 +152,25 @@ pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 ///
 /// **Two-grid construction** (per the candidate-A redesign at
 /// `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md`):
-/// - `closed_grid` holds the raw `sdf_closed.distance(p)` (signed,
-///   negative inside, positive outside) at every cell. Drives the
-///   no-caps fast path via `MarchingCubesConfig::at_iso_value(offset_m)`
-///   — byte-identical to the pre-pinned-floor uniform offset.
+/// - `closed_grid` holds the closed-body signed distance
+///   (negative inside, positive outside) at every cell. Sourced from
+///   mesh-sdf D.2's [`CachedGridSdf::build`] flood-fill — magnitude
+///   matches `sdf_closed.unsigned_distance(p)` to f64 ulp tolerance;
+///   sign comes from the topology-blind 3-region flood-fill, NOT
+///   from `sdf_closed.distance(p)` (which is pseudo-normal-based
+///   and known to flip far-field on cleaned scans — see the
+///   `sdf_closed` field doc). Drives the no-caps fast path via
+///   `MarchingCubesConfig::at_iso_value(offset_m)` (byte-identical
+///   to the pre-pinned-floor uniform offset) AND the with-caps
+///   per-cell candidate-A composition.
 /// - `open_grid` (Some only when cap planes are present) holds the
 ///   raw `sdf_open.unsigned_distance(p)` (always ≥ 0) at every cell.
-///   Drives the with-caps path's per-cell candidate-A composition
-///   (`body.subtract(rind)` for cavity, `body.union(rind)` for outer)
-///   in [`extract_layer_surface`].
+///   No flood-fill needed: the `pinned_floor_shell`
+///   `UnsignedRindSdf` adapter `.abs()`es the value, so sign is
+///   irrelevant by construction. Drives the with-caps path's
+///   per-cell candidate-A composition (`body.subtract(rind)` for
+///   cavity, `body.union(rind)` for outer) in
+///   [`extract_layer_surface`].
 ///
 /// `sdf_closed` and `sdf_open` (the underlying mesh-derived SDFs) are
 /// retained for two future uses: (a) the heat-map re-projection
@@ -171,13 +181,30 @@ pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 #[derive(Resource, Clone)]
 pub(crate) struct CachedScanSdf {
     /// Reference-counted SDF over the decimated CLOSED scan (cap
-    /// polygons included). Retained for the heat-map closest-point
-    /// projection in sub-leaf 7 and the higher-fidelity Save path;
-    /// the per-cell SIGN used by the candidate-A composition lives
-    /// on `closed_grid`. `Arc<T>` is `Send + Sync` whenever `T` is,
-    /// and the underlying `Signed { distance, sign }` carries an
-    /// `Arc<parry3d::TriMesh>` plus the source `IndexedMesh` — so
-    /// this satisfies Bevy's `Resource: Send + Sync` requirement.
+    /// polygons included).
+    ///
+    /// **Sign-oracle warning.** The composition is
+    /// `Signed<TriMeshDistance, PseudoNormalSign>` — calling
+    /// `sdf_closed.distance(p)` (the SIGNED method) returns the
+    /// pseudo-normal sign, which is known to flip far-field on
+    /// cleaned scans (see
+    /// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`). The
+    /// reliable signed distance lives on [`Self::closed_grid`]
+    /// (flood-fill sign via mesh-sdf D.2's [`CachedGridSdf::build`]),
+    /// and the unsigned magnitude lives on
+    /// `sdf_closed.unsigned_distance(p)`. **Reach for the field
+    /// only when you genuinely need the parry BVH** — closest-point
+    /// projection (`sdf_closed.closest_point(p)`, sign-independent)
+    /// for the heat-map re-projection in sub-leaf 7, or unsigned
+    /// distance for the higher-fidelity Save path. The downstream
+    /// pseudo-normal sign would have to be replaced with a
+    /// `FloodFillSign` composition (deferred follow-up) before any
+    /// caller can safely call `sdf_closed.distance(p)`.
+    ///
+    /// `Arc<T>` is `Send + Sync` whenever `T` is, and the underlying
+    /// `Signed { distance, sign }` carries an `Arc<parry3d::TriMesh>`
+    /// plus the source `IndexedMesh` — so this satisfies Bevy's
+    /// `Resource: Send + Sync` requirement.
     pub(crate) sdf_closed: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
     /// Reference-counted SDF over the decimated OPEN scan (cap
     /// polygons stripped via [`dome_wall_only_mesh`]). Provides the
@@ -186,10 +213,13 @@ pub(crate) struct CachedScanSdf {
     /// `build_cached_scan_sdf` shortcut so `Arc::ptr_eq` lets callers
     /// detect the no-caps fast path.
     pub(crate) sdf_open: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
-    /// Grid pre-filled with the raw closed-body signed distance
-    /// `sdf_closed.distance(p)` at every cell. Used directly for the
-    /// no-caps `MarchingCubesConfig::at_iso_value(offset_m)` extraction
-    /// AND as the body-SDF source for the with-caps per-cell candidate
+    /// Grid pre-filled with the closed-body signed distance via
+    /// [`CachedGridSdf::build`] — magnitude matches
+    /// `sdf_closed.unsigned_distance(p)`, sign comes from the
+    /// 3-region flood-fill (NOT pseudo-normal — see the warning on
+    /// `sdf_closed`). Used directly for the no-caps
+    /// `MarchingCubesConfig::at_iso_value(offset_m)` extraction AND
+    /// as the body-SDF source for the with-caps per-cell candidate
     /// A composition.
     pub(crate) closed_grid: ScalarGrid,
     /// Grid pre-filled with the raw unsigned open-body distance
@@ -324,12 +354,18 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 /// [`extract_layer_surface`]; see [`CachedScanSdf`] for the storage
 /// contract.
 ///
-/// **Cost**: the no-caps fast path matches the legacy single-SDF
-/// performance (1 SDF build + 1 grid fill). The cap path adds a
-/// second SDF build at startup + a second grid fill — for the iter-1
-/// sock fixture this measured ~324 ms → ~648 ms (one-time at scan
-/// load); per-extraction cost is the per-cell candidate-A composition
-/// (~ms range, see spec §1 Q3).
+/// **Cost**: dominated by the [`CachedGridSdf::build`] grid fill
+/// (one parry BVH query per lattice node, plus the 3-region
+/// flood-fill and label-expansion passes). Post-D.3a the closed-
+/// grid path adds a second lattice walk for the trilinear-sample
+/// unpack into `ScalarGrid` — pure FP arithmetic, no parry
+/// queries, so the overhead is small relative to the build pass.
+/// The cap path doubles the up-front cost (a second
+/// `TriMeshDistance` and a second grid fill for `open_grid`'s
+/// unsigned distance, no flood-fill on that one). Per-extraction
+/// cost stays at the per-cell candidate-A composition (~ms range,
+/// see spec §1 Q3). Empirical numbers on iter-1 sock are stale
+/// post-D.3a — re-measure if perf becomes load-bearing.
 ///
 /// Use [`LAYER_PREVIEW_CELL_SIZE_M`] for `cell_size_m` and
 /// [`LAYER_GRID_MARGIN_M`] for `margin_m` in production calls; the
@@ -1556,6 +1592,42 @@ mod tests {
                         (cached - direct).abs() < 1e-12,
                         "open_grid value drifted at ({ix},{iy},{iz}): cached={cached} vs \
                          direct unsigned_distance={direct}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn with_caps_closed_grid_magnitude_equals_unsigned_distance() {
+        // Storage contract for the with-caps path's CLOSED grid —
+        // symmetric to `no_caps_closed_grid_magnitude_equals_unsigned_distance`.
+        // Same source code fills both no-caps and with-caps closed grids
+        // (the `CachedGridSdf::build` + trilinear-unpack path), so the
+        // same magnitude=unsigned_distance contract must hold to 1e-12
+        // tolerance per lattice node. Pins that the cap-plane presence
+        // doesn't accidentally divert the closed grid to a different
+        // signing path.
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cache = build_cached_scan_sdf(&cube, &[cap], 0.005, 0.043).expect("build cache");
+        assert!(
+            cache.open_grid.is_some(),
+            "with-caps build must populate open_grid (precondition for this test's scope)",
+        );
+        let (nx, ny, nz) = cache.closed_grid.dimensions();
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let cached = cache.closed_grid.get(ix, iy, iz);
+                    let unsigned = cache
+                        .sdf_closed
+                        .unsigned_distance(cache.closed_grid.position(ix, iy, iz));
+                    assert!(
+                        (cached.abs() - unsigned).abs() < 1e-12,
+                        "with-caps closed_grid magnitude at ({ix},{iy},{iz}) drifted: \
+                         |cached|={} vs unsigned={unsigned}",
+                        cached.abs(),
                     );
                 }
             }
