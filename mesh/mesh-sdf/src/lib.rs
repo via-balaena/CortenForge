@@ -41,12 +41,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 mod error;
-mod query;
 mod sdf;
 
 pub use error::{SdfError, SdfResult};
-pub use query::{
-    closest_point_on_triangle, point_in_mesh, point_segment_distance_squared,
-    ray_triangle_intersect,
-};
 pub use sdf::{SignedDistanceField, signed_distance, unsigned_distance};

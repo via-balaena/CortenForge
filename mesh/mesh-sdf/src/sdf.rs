@@ -1,22 +1,32 @@
 //! Signed distance field computation.
 //!
 //! Computes the signed distance from any point to the nearest surface of a mesh.
+//! Backed by parry3d's BVH-accelerated TriMesh: per-query cost is O(log faces).
+//!
+//! # Sign contract
+//!
+//! For **watertight** meshes, sign is reliable (pseudo-normal-based via parry).
+//! For **non-manifold** meshes (e.g., cap-stripped open meshes), sign is
+//! undefined; consumers should use [`SignedDistanceField::unsigned_distance`]
+//! instead. The construction never panics on non-manifold input.
 
 use mesh_types::IndexedMesh;
-use nalgebra::{Point3, Vector3};
+use nalgebra::Point3;
+use parry3d::math::{Point as ParryPoint, Real as ParryReal};
+use parry3d::query::PointQuery;
+use parry3d::shape::{TriMesh, TriMeshFlags};
 
 use crate::error::{SdfError, SdfResult};
-use crate::query::{closest_point_on_triangle, point_in_mesh};
 
 /// A signed distance field for a mesh.
 ///
-/// Provides efficient distance queries after precomputation.
+/// Provides efficient distance queries via parry3d's BVH-accelerated TriMesh.
 #[derive(Debug, Clone)]
 pub struct SignedDistanceField {
-    /// The mesh for which this SDF was computed.
+    /// The mesh for which this SDF was computed (kept for the `mesh()` accessor).
     mesh: IndexedMesh,
-    /// Cached face normals.
-    face_normals: Vec<Vector3<f64>>,
+    /// parry's BVH-backed TriMesh; backs all queries.
+    tri_mesh: TriMesh,
 }
 
 impl SignedDistanceField {
@@ -50,15 +60,18 @@ impl SignedDistanceField {
             return Err(SdfError::EmptyMesh);
         }
 
-        let face_normals = compute_face_normals(&mesh);
+        let tri_mesh = build_tri_mesh(&mesh);
 
-        Ok(Self { mesh, face_normals })
+        Ok(Self { mesh, tri_mesh })
     }
 
     /// Query the signed distance at a point.
     ///
     /// Returns the distance to the nearest surface. Positive values indicate
     /// the point is outside the mesh, negative values indicate inside.
+    ///
+    /// Sign is reliable for watertight meshes; undefined for non-manifold
+    /// meshes (see crate-level docs).
     ///
     /// # Arguments
     ///
@@ -86,12 +99,15 @@ impl SignedDistanceField {
     /// ```
     #[must_use]
     pub fn distance(&self, point: Point3<f64>) -> f64 {
-        let (unsigned_dist, closest_face) = self.unsigned_distance_with_face(point);
-
-        // Determine sign based on whether point is inside or outside
-        let sign = self.compute_sign(point, closest_face);
-
-        sign * unsigned_dist
+        let projection = self
+            .tri_mesh
+            .project_local_point(&f64_to_parry(point), false);
+        let unsigned = (point - parry_to_f64(projection.point)).norm();
+        if projection.is_inside {
+            -unsigned
+        } else {
+            unsigned
+        }
     }
 
     /// Query the unsigned distance at a point.
@@ -99,7 +115,10 @@ impl SignedDistanceField {
     /// Returns the absolute distance to the nearest surface.
     #[must_use]
     pub fn unsigned_distance(&self, point: Point3<f64>) -> f64 {
-        self.unsigned_distance_with_face(point).0
+        let projection = self
+            .tri_mesh
+            .project_local_point(&f64_to_parry(point), false);
+        (point - parry_to_f64(projection.point)).norm()
     }
 
     /// Query the closest point on the mesh surface.
@@ -113,32 +132,21 @@ impl SignedDistanceField {
     /// The closest point on the mesh surface.
     #[must_use]
     pub fn closest_point(&self, point: Point3<f64>) -> Point3<f64> {
-        let mut min_dist_sq = f64::MAX;
-        let mut closest = point;
-
-        for face in &self.mesh.faces {
-            let v0 = &self.mesh.vertices[face[0] as usize];
-            let v1 = &self.mesh.vertices[face[1] as usize];
-            let v2 = &self.mesh.vertices[face[2] as usize];
-
-            let candidate = closest_point_on_triangle(point, *v0, *v1, *v2);
-            let dist_sq = (candidate - point).norm_squared();
-
-            if dist_sq < min_dist_sq {
-                min_dist_sq = dist_sq;
-                closest = candidate;
-            }
-        }
-
-        closest
+        let projection = self
+            .tri_mesh
+            .project_local_point(&f64_to_parry(point), false);
+        parry_to_f64(projection.point)
     }
 
     /// Check if a point is inside the mesh.
     ///
-    /// Uses ray casting to determine inside/outside status.
+    /// Reliable for watertight meshes (pseudo-normal-based); undefined for
+    /// non-manifold meshes.
     #[must_use]
     pub fn is_inside(&self, point: Point3<f64>) -> bool {
-        point_in_mesh(point, &self.mesh)
+        self.tri_mesh
+            .project_local_point(&f64_to_parry(point), false)
+            .is_inside
     }
 
     /// Get a reference to the underlying mesh.
@@ -146,67 +154,39 @@ impl SignedDistanceField {
     pub fn mesh(&self) -> &IndexedMesh {
         &self.mesh
     }
-
-    /// Compute unsigned distance and return the closest face index.
-    fn unsigned_distance_with_face(&self, point: Point3<f64>) -> (f64, usize) {
-        let mut min_dist_sq = f64::MAX;
-        let mut closest_face = 0;
-
-        for (face_idx, face) in self.mesh.faces.iter().enumerate() {
-            let v0 = &self.mesh.vertices[face[0] as usize];
-            let v1 = &self.mesh.vertices[face[1] as usize];
-            let v2 = &self.mesh.vertices[face[2] as usize];
-
-            let closest = closest_point_on_triangle(point, *v0, *v1, *v2);
-            let dist_sq = (closest - point).norm_squared();
-
-            if dist_sq < min_dist_sq {
-                min_dist_sq = dist_sq;
-                closest_face = face_idx;
-            }
-        }
-
-        (min_dist_sq.sqrt(), closest_face)
-    }
-
-    /// Compute the sign (+1 outside, -1 inside) for a point.
-    fn compute_sign(&self, point: Point3<f64>, closest_face: usize) -> f64 {
-        // Use face normal to determine sign
-        let face = &self.mesh.faces[closest_face];
-        let v0 = &self.mesh.vertices[face[0] as usize];
-        let normal = &self.face_normals[closest_face];
-
-        let to_point = point - v0;
-        if to_point.dot(normal) >= 0.0 {
-            1.0
-        } else {
-            -1.0
-        }
-    }
 }
 
-/// Compute face normals for all faces in a mesh.
-fn compute_face_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
-    mesh.faces
+/// Build a parry `TriMesh` from an `IndexedMesh`.
+///
+/// Sets `TriMeshFlags::ORIENTED` so pseudo-normals are computed; this enables
+/// the reliable `is_inside` path on watertight meshes. On non-manifold input,
+/// pseudo-normal computation may be partial — `is_inside` then becomes
+/// undefined (consumers should use `unsigned_distance`).
+fn build_tri_mesh(mesh: &IndexedMesh) -> TriMesh {
+    let vertices: Vec<ParryPoint<ParryReal>> = mesh
+        .vertices
         .iter()
-        .map(|face| {
-            let v0 = &mesh.vertices[face[0] as usize];
-            let v1 = &mesh.vertices[face[1] as usize];
-            let v2 = &mesh.vertices[face[2] as usize];
+        .map(|v| ParryPoint::new(v.x as ParryReal, v.y as ParryReal, v.z as ParryReal))
+        .collect();
+    let indices: Vec<[u32; 3]> = mesh.faces.to_vec();
+    TriMesh::with_flags(vertices, indices, TriMeshFlags::ORIENTED)
+}
 
-            let e1 = *v1 - *v0;
-            let e2 = *v2 - *v0;
-            let normal = e1.cross(&e2);
+#[inline]
+fn f64_to_parry(p: Point3<f64>) -> ParryPoint<ParryReal> {
+    ParryPoint::new(p.x as ParryReal, p.y as ParryReal, p.z as ParryReal)
+}
 
-            normal.try_normalize(f64::EPSILON).unwrap_or(Vector3::z())
-        })
-        .collect()
+#[inline]
+fn parry_to_f64(p: ParryPoint<ParryReal>) -> Point3<f64> {
+    Point3::new(p.x as f64, p.y as f64, p.z as f64)
 }
 
 /// Compute the signed distance from a point to a mesh without precomputation.
 ///
 /// For one-off queries, this is simpler than creating a `SignedDistanceField`.
-/// For multiple queries, prefer creating a `SignedDistanceField` once and reusing it.
+/// For multiple queries, prefer creating a `SignedDistanceField` once and
+/// reusing it — construction includes a BVH build that's wasted on a single query.
 ///
 /// # Arguments
 ///
@@ -215,7 +195,9 @@ fn compute_face_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
 ///
 /// # Returns
 ///
-/// The signed distance (positive = outside, negative = inside).
+/// The signed distance (positive = outside, negative = inside). Returns
+/// `f64::MAX` on an empty mesh. Sign contract matches
+/// [`SignedDistanceField::distance`].
 ///
 /// # Example
 ///
@@ -237,37 +219,13 @@ pub fn signed_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
     if mesh.faces.is_empty() {
         return f64::MAX;
     }
-
-    let normals = compute_face_normals(mesh);
-    let mut min_dist_sq = f64::MAX;
-    let mut closest_face = 0;
-
-    for (face_idx, face) in mesh.faces.iter().enumerate() {
-        let v0 = &mesh.vertices[face[0] as usize];
-        let v1 = &mesh.vertices[face[1] as usize];
-        let v2 = &mesh.vertices[face[2] as usize];
-
-        let closest = closest_point_on_triangle(point, *v0, *v1, *v2);
-        let dist_sq = (closest - point).norm_squared();
-
-        if dist_sq < min_dist_sq {
-            min_dist_sq = dist_sq;
-            closest_face = face_idx;
-        }
-    }
-
-    let unsigned_dist = min_dist_sq.sqrt();
-
-    // Determine sign
-    let face = &mesh.faces[closest_face];
-    let v0 = &mesh.vertices[face[0] as usize];
-    let normal = &normals[closest_face];
-    let to_point = point - v0;
-
-    if to_point.dot(normal) >= 0.0 {
-        unsigned_dist
+    let tri_mesh = build_tri_mesh(mesh);
+    let projection = tri_mesh.project_local_point(&f64_to_parry(point), false);
+    let unsigned = (point - parry_to_f64(projection.point)).norm();
+    if projection.is_inside {
+        -unsigned
     } else {
-        -unsigned_dist
+        unsigned
     }
 }
 
@@ -280,29 +238,16 @@ pub fn signed_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
 ///
 /// # Returns
 ///
-/// The unsigned (absolute) distance to the nearest surface.
+/// The unsigned (absolute) distance to the nearest surface. Returns
+/// `f64::MAX` on an empty mesh.
 #[must_use]
 pub fn unsigned_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
     if mesh.faces.is_empty() {
         return f64::MAX;
     }
-
-    let mut min_dist_sq = f64::MAX;
-
-    for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize];
-        let v1 = &mesh.vertices[face[1] as usize];
-        let v2 = &mesh.vertices[face[2] as usize];
-
-        let closest = closest_point_on_triangle(point, *v0, *v1, *v2);
-        let dist_sq = (closest - point).norm_squared();
-
-        if dist_sq < min_dist_sq {
-            min_dist_sq = dist_sq;
-        }
-    }
-
-    min_dist_sq.sqrt()
+    let tri_mesh = build_tri_mesh(mesh);
+    let projection = tri_mesh.project_local_point(&f64_to_parry(point), false);
+    (point - parry_to_f64(projection.point)).norm()
 }
 
 #[cfg(test)]
@@ -332,6 +277,67 @@ mod tests {
         mesh.faces.push([0, 1, 3]); // front
         mesh.faces.push([1, 2, 3]); // right
         mesh.faces.push([2, 0, 3]); // left
+        mesh
+    }
+
+    /// Open-top unit cube (no +z face): 10 triangles instead of 12.
+    /// Non-manifold by construction — sign is undefined by contract.
+    fn open_top_unit_cube() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        // 8 corners of the unit cube
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0)); // 0: ---
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0)); // 1: +--
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0)); // 2: ++-
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0)); // 3: -+-
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0)); // 4: --+
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0)); // 5: +-+
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0)); // 6: +++
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0)); // 7: -++
+
+        // Bottom (-z), outward normal -z
+        mesh.faces.push([0, 2, 1]);
+        mesh.faces.push([0, 3, 2]);
+        // -y face
+        mesh.faces.push([0, 1, 5]);
+        mesh.faces.push([0, 5, 4]);
+        // +x face
+        mesh.faces.push([1, 2, 6]);
+        mesh.faces.push([1, 6, 5]);
+        // +y face
+        mesh.faces.push([2, 3, 7]);
+        mesh.faces.push([2, 7, 6]);
+        // -x face
+        mesh.faces.push([3, 0, 4]);
+        mesh.faces.push([3, 4, 7]);
+        // +z face deliberately omitted -> open top, non-manifold.
+        mesh
+    }
+
+    /// Closed pyramid (square base + apex), watertight via a cap-fan on the
+    /// base. This is the kind of geometry where the old face-normal sign
+    /// heuristic could flip far from the surface — at probes near the apex
+    /// axis, "the closest face's plane happens to lie between the probe and
+    /// the rest of the body" (mesh-sdf's documented failure mode). parry's
+    /// pseudo-normal at the apex aggregates the four sloped-side normals,
+    /// giving a consistent outward direction regardless of which slope face
+    /// happens to be returned as the BVH leaf.
+    fn closed_pyramid() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        // 4 base corners at z=0, apex at z=1.
+        mesh.vertices.push(Point3::new(-1.0, -1.0, 0.0)); // 0
+        mesh.vertices.push(Point3::new(1.0, -1.0, 0.0)); // 1
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0)); // 2
+        mesh.vertices.push(Point3::new(-1.0, 1.0, 0.0)); // 3
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0)); // 4: apex
+
+        // Base, outward normal -z (CCW from below).
+        mesh.faces.push([0, 2, 1]);
+        mesh.faces.push([0, 3, 2]);
+        // 4 sloped sides, CCW from outside.
+        mesh.faces.push([0, 1, 4]); // -y side
+        mesh.faces.push([1, 2, 4]); // +x side
+        mesh.faces.push([2, 3, 4]); // +y side
+        mesh.faces.push([3, 0, 4]); // -x side
         mesh
     }
 
@@ -388,7 +394,7 @@ mod tests {
         let point = Point3::new(5.0, 3.0, 5.0);
 
         let dist = signed_distance(point, &mesh);
-        assert!(dist > 0.0); // Above the triangle = outside
+        assert!(dist.abs() > 0.0);
     }
 
     #[test]
@@ -434,5 +440,69 @@ mod tests {
         let mesh = IndexedMesh::new();
         let dist = unsigned_distance(Point3::new(0.0, 0.0, 0.0), &mesh);
         assert_eq!(dist, f64::MAX);
+    }
+
+    /// Far-field sign is reliable on a watertight pyramid (cap-fan style)
+    /// — the failure mode the old face-normal heuristic produced on real
+    /// cleaned scans (see project memory `pinned-floor-visual-gate-postmortem`,
+    /// `min_sdf = -89.5 mm` on a 71 mm body). With parry's pseudo-normals,
+    /// probes far above / below / lateral of the pyramid all get the
+    /// expected outside sign, independent of which BVH leaf face is hit.
+    #[test]
+    fn far_field_sign_reliable_on_pathological_cap_fan() {
+        let mesh = closed_pyramid();
+        let sdf = SignedDistanceField::new(mesh).expect("should create SDF");
+
+        // Probes far outside in every cardinal direction.
+        let probes_outside = [
+            Point3::new(0.0, 0.0, 5.0),  // above apex
+            Point3::new(0.0, 0.0, -5.0), // below base
+            Point3::new(5.0, 0.0, 0.5),  // far +x at mid-height
+            Point3::new(-5.0, 0.0, 0.5), // far -x at mid-height
+            Point3::new(0.0, 5.0, 0.5),  // far +y at mid-height
+            Point3::new(0.0, -5.0, 0.5), // far -y at mid-height
+        ];
+        for p in probes_outside {
+            let d = sdf.distance(p);
+            assert!(
+                d > 0.0,
+                "outside probe at {p:?} must have positive distance, got {d}"
+            );
+        }
+
+        // Probe deep inside, near apex on axis (where the old heuristic
+        // could be tripped by an arbitrary sloped-side leaf face).
+        let inside = Point3::new(0.0, 0.0, 0.5);
+        let d_in = sdf.distance(inside);
+        assert!(
+            d_in < 0.0,
+            "inside probe must have negative distance, got {d_in}"
+        );
+    }
+
+    /// Non-manifold contract test per spec §8.
+    ///
+    /// On an open-top cube, `unsigned_distance` must remain correct,
+    /// deterministic, and finite. `distance` must remain finite. We do NOT
+    /// pin the sign — it is undefined by contract on non-manifold input.
+    #[test]
+    fn non_manifold_unsigned_distance_correct_and_deterministic() {
+        let open_cube = open_top_unit_cube();
+        let sdf = SignedDistanceField::new(open_cube).expect("should create SDF");
+        let probes = [
+            Point3::new(0.5, 0.5, 2.0),  // above the open top
+            Point3::new(0.5, 0.5, -1.0), // below the closed bottom
+            Point3::new(2.0, 0.5, 0.5),  // beside the closed +x wall
+        ];
+        for p in probes {
+            let d1 = sdf.unsigned_distance(p);
+            let d2 = sdf.unsigned_distance(p);
+            assert_eq!(d1, d2, "unsigned_distance must be deterministic");
+            assert!(d1.is_finite() && d1 >= 0.0);
+
+            let signed = sdf.distance(p);
+            assert!(signed.is_finite(), "distance finite even on non-manifold");
+            // NO assertion on sign — undefined by contract.
+        }
     }
 }
