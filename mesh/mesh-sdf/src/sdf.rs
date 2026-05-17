@@ -1,14 +1,25 @@
-//! Signed distance field computation.
+//! Parry-backed unsigned-distance and sign oracles.
 //!
-//! Computes the signed distance from any point to the nearest surface of a mesh.
-//! Backed by parry3d's BVH-accelerated TriMesh: per-query cost is O(log faces).
+//! [`TriMeshDistance`] wraps a parry3d `TriMesh` BVH and exposes the
+//! per-query unsigned distance + closest-point oracle. [`PseudoNormalSign`]
+//! shares the same `Arc<TriMesh>` and exposes parry's pseudo-normal-based
+//! inside test. Composed via [`crate::Signed`], they recover the
+//! previous `SignedDistanceField` behavior — kept around as a deprecated
+//! type alias + constructor so legacy call sites keep building during
+//! the D arc consumer migration.
 //!
 //! # Sign contract
 //!
-//! For **watertight** meshes, sign is reliable (pseudo-normal-based via parry).
-//! For **non-manifold** meshes (e.g., cap-stripped open meshes), sign is
-//! undefined; consumers should use [`SignedDistanceField::unsigned_distance`]
-//! instead. The construction never panics on non-manifold input.
+//! [`PseudoNormalSign`] is **fast** on watertight, well-formed meshes
+//! but **fragile** on decimated / cleaned scans with cap fans whose
+//! winding flipped during reconstruction. cf-cast-cli's
+//! `NotWatertight: 3156 open edges` on iter-1's `plug_layer_0.stl`
+//! ([[project-cf-cast-plug-layer-0-watertight-discovery]]) is the
+//! canonical failure mode. New consumers that derive an SDF from a
+//! cf-scan-prep cleaned scan should prefer the flood-fill sign oracle
+//! shipped in D.2.
+
+use std::sync::Arc;
 
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;
@@ -17,151 +28,202 @@ use parry3d::query::PointQuery;
 use parry3d::shape::{TriMesh, TriMeshFlags};
 
 use crate::error::{SdfError, SdfResult};
+use crate::oracle::{Sign, Signed, UnsignedDistance};
 
-/// A signed distance field for a mesh.
+/// Unsigned-distance oracle backed by a parry3d BVH.
 ///
-/// Provides efficient distance queries via parry3d's BVH-accelerated TriMesh.
+/// Construction builds the BVH once; queries are O(log faces). The
+/// inner `Arc<TriMesh>` is the share point — `PseudoNormalSign`
+/// instances built over the same mesh hold a clone of the same Arc so
+/// the BVH is built exactly once per source mesh.
 #[derive(Debug, Clone)]
-pub struct SignedDistanceField {
-    /// The mesh for which this SDF was computed (kept for the `mesh()` accessor).
+pub struct TriMeshDistance {
+    tri_mesh: Arc<TriMesh>,
     mesh: IndexedMesh,
-    /// parry's BVH-backed TriMesh; backs all queries.
-    tri_mesh: TriMesh,
 }
 
-impl SignedDistanceField {
-    /// Create a new signed distance field from a mesh.
-    ///
-    /// # Arguments
-    ///
-    /// * `mesh` - The mesh to compute the SDF for
+impl TriMeshDistance {
+    /// Build the BVH over `mesh`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the mesh is empty.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use mesh_types::{IndexedMesh, Point3};
-    /// use mesh_sdf::SignedDistanceField;
-    ///
-    /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
-    /// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
-    /// mesh.faces.push([0, 1, 2]);
-    ///
-    /// let sdf = SignedDistanceField::new(mesh);
-    /// assert!(sdf.is_ok());
-    /// ```
+    /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
     pub fn new(mesh: IndexedMesh) -> SdfResult<Self> {
         if mesh.faces.is_empty() {
             return Err(SdfError::EmptyMesh);
         }
-
-        let tri_mesh = build_tri_mesh(&mesh);
-
-        Ok(Self { mesh, tri_mesh })
+        let tri_mesh = Arc::new(build_tri_mesh(&mesh));
+        Ok(Self { tri_mesh, mesh })
     }
 
-    /// Query the signed distance at a point.
-    ///
-    /// Returns the distance to the nearest surface. Positive values indicate
-    /// the point is outside the mesh, negative values indicate inside.
-    ///
-    /// Sign is reliable for watertight meshes; undefined for non-manifold
-    /// meshes (see crate-level docs).
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - The point to query
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use mesh_types::IndexedMesh;
-    /// use mesh_sdf::SignedDistanceField;
-    /// use nalgebra::Point3;
-    ///
-    /// // Create a simple triangle
-    /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
-    /// mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
-    /// mesh.faces.push([0, 1, 2]);
-    ///
-    /// let sdf = SignedDistanceField::new(mesh).unwrap();
-    ///
-    /// // Point above the triangle
-    /// let dist = sdf.distance(Point3::new(5.0, 5.0, 5.0));
-    /// assert!(dist > 0.0); // Positive = outside
-    /// ```
-    #[must_use]
-    pub fn distance(&self, point: Point3<f64>) -> f64 {
-        let projection = self
-            .tri_mesh
-            .project_local_point(&f64_to_parry(point), false);
-        let unsigned = (point - parry_to_f64(projection.point)).norm();
-        if projection.is_inside {
-            -unsigned
-        } else {
-            unsigned
-        }
+    /// Build from a shared `Arc<TriMesh>` plus the source mesh — used
+    /// internally to keep `TriMeshDistance` and [`PseudoNormalSign`]
+    /// sharing one BVH allocation when constructed together.
+    pub(crate) fn from_shared(tri_mesh: Arc<TriMesh>, mesh: IndexedMesh) -> Self {
+        Self { tri_mesh, mesh }
     }
 
-    /// Query the unsigned distance at a point.
-    ///
-    /// Returns the absolute distance to the nearest surface.
+    /// Borrow the underlying `IndexedMesh` the BVH was built over.
     #[must_use]
-    pub fn unsigned_distance(&self, point: Point3<f64>) -> f64 {
+    pub fn mesh(&self) -> &IndexedMesh {
+        &self.mesh
+    }
+
+    /// Borrow the shared parry `TriMesh`.
+    pub(crate) fn shared_tri_mesh(&self) -> &Arc<TriMesh> {
+        &self.tri_mesh
+    }
+}
+
+impl UnsignedDistance for TriMeshDistance {
+    fn distance(&self, point: Point3<f64>) -> f64 {
         let projection = self
             .tri_mesh
             .project_local_point(&f64_to_parry(point), false);
         (point - parry_to_f64(projection.point)).norm()
     }
 
-    /// Query the closest point on the mesh surface.
-    ///
-    /// # Arguments
-    ///
-    /// * `point` - The query point
-    ///
-    /// # Returns
-    ///
-    /// The closest point on the mesh surface.
-    #[must_use]
-    pub fn closest_point(&self, point: Point3<f64>) -> Point3<f64> {
+    fn closest_point(&self, point: Point3<f64>) -> Point3<f64> {
         let projection = self
             .tri_mesh
             .project_local_point(&f64_to_parry(point), false);
         parry_to_f64(projection.point)
     }
+}
 
-    /// Check if a point is inside the mesh.
+/// Sign oracle backed by parry3d's pseudo-normal inside test.
+///
+/// Fast (one BVH closest-feature query per call) and reliable on
+/// watertight, well-formed meshes. Fragile on decimated / cleaned
+/// scans with inverted-winding cap fans or high-valence apex vertices
+/// — see the crate-level sign-contract docs.
+#[derive(Debug, Clone)]
+pub struct PseudoNormalSign {
+    tri_mesh: Arc<TriMesh>,
+}
+
+impl PseudoNormalSign {
+    /// Build from an owned mesh — convenience constructor; rebuilds
+    /// the BVH internally. Prefer composing with a
+    /// [`TriMeshDistance`] (and sharing the underlying `Arc<TriMesh>`
+    /// via [`Self::from_distance`]) when both oracles are wanted.
     ///
-    /// Reliable for watertight meshes (pseudo-normal-based); undefined for
-    /// non-manifold meshes.
+    /// # Errors
+    ///
+    /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
+    pub fn new(mesh: &IndexedMesh) -> SdfResult<Self> {
+        if mesh.faces.is_empty() {
+            return Err(SdfError::EmptyMesh);
+        }
+        Ok(Self {
+            tri_mesh: Arc::new(build_tri_mesh(mesh)),
+        })
+    }
+
+    /// Share the parry BVH already built by a [`TriMeshDistance`].
+    ///
+    /// Use this when constructing both oracles over the same mesh —
+    /// the resulting `Signed<TriMeshDistance, PseudoNormalSign>` then
+    /// owns exactly one BVH.
     #[must_use]
-    pub fn is_inside(&self, point: Point3<f64>) -> bool {
+    pub fn from_distance(distance: &TriMeshDistance) -> Self {
+        Self {
+            tri_mesh: Arc::clone(distance.shared_tri_mesh()),
+        }
+    }
+}
+
+impl Sign for PseudoNormalSign {
+    fn is_inside(&self, point: Point3<f64>) -> bool {
         self.tri_mesh
             .project_local_point(&f64_to_parry(point), false)
             .is_inside
     }
+}
 
-    /// Get a reference to the underlying mesh.
+/// **Deprecated.** Type alias preserved so existing call sites keep
+/// building during the D arc consumer migration.
+///
+/// The previous monolithic `SignedDistanceField` conflated unsigned
+/// distance and sign in a single struct, which papered over the choice
+/// of sign oracle and let consumers silently ship without sign
+/// defense. The replacement is an explicit composition:
+///
+/// ```ignore
+/// // Old:
+/// let sdf = SignedDistanceField::new(mesh)?;
+///
+/// // New (preserves old behavior):
+/// let distance = TriMeshDistance::new(mesh)?;
+/// let sign = PseudoNormalSign::from_distance(&distance);
+/// let sdf = Signed { distance, sign };
+///
+/// // Preferred on cf-scan-prep cleaned scans (D.2 ships FloodFillSign):
+/// // let sign = FloodFillSign::build(&distance, bounds, cell_size, 0.75)?;
+/// // let sdf = Signed { distance, sign };
+/// ```
+///
+/// The convenience constructor [`SignedDistanceField::new`] is
+/// retained for one release cycle to bridge the migration; it returns
+/// this alias type directly so `Arc<SignedDistanceField>` and similar
+/// patterns work unchanged. See
+/// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the migration
+/// plan.
+#[deprecated(
+    since = "0.1.0",
+    note = "Conflates distance and sign — pick a sign oracle explicitly. \
+            `SignedDistanceField::new(mesh)?` is equivalent to \
+            `Signed::new(TriMeshDistance::new(mesh)?, PseudoNormalSign::from_distance(&distance))` \
+            but `PseudoNormalSign` is unreliable on cf-scan-prep cleaned scans. Prefer \
+            `FloodFillSign` (mesh-sdf D.2) for any SDF derived from a body-part scan. See \
+            docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md."
+)]
+pub type SignedDistanceField = Signed<TriMeshDistance, PseudoNormalSign>;
+
+/// Convenience constructor + `mesh()` accessor for the specific
+/// `Signed<TriMeshDistance, PseudoNormalSign>` composition — bridges
+/// the deprecated `SignedDistanceField::new(mesh)?` API.
+///
+/// `mesh()` lives here (not on the generic `Signed<D, S>` impl)
+/// because it only makes sense when `D` carries the source mesh; the
+/// `TriMeshDistance`-specific impl makes that explicit.
+impl Signed<TriMeshDistance, PseudoNormalSign> {
+    /// **Deprecated.** Build a `Signed<TriMeshDistance,
+    /// PseudoNormalSign>` from a mesh — preserves the old
+    /// `SignedDistanceField::new` shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Conflates distance and sign — pick a sign oracle explicitly. Construct via \
+                `TriMeshDistance::new(mesh)?` + `PseudoNormalSign::from_distance(&distance)` + \
+                `Signed::new(distance, sign)`. Prefer `FloodFillSign` (D.2) on cleaned scans."
+    )]
+    pub fn new(mesh: IndexedMesh) -> SdfResult<Self> {
+        if mesh.faces.is_empty() {
+            return Err(SdfError::EmptyMesh);
+        }
+        let tri_mesh = Arc::new(build_tri_mesh(&mesh));
+        let distance = TriMeshDistance::from_shared(Arc::clone(&tri_mesh), mesh);
+        let sign = PseudoNormalSign { tri_mesh };
+        Ok(Signed { distance, sign })
+    }
+
+    /// Borrow the source mesh.
     #[must_use]
     pub fn mesh(&self) -> &IndexedMesh {
-        &self.mesh
+        self.distance.mesh()
     }
 }
 
 /// Build a parry `TriMesh` from an `IndexedMesh`.
 ///
-/// Sets `TriMeshFlags::ORIENTED` so pseudo-normals are computed; this enables
-/// the reliable `is_inside` path on watertight meshes. On non-manifold input,
-/// pseudo-normal computation may be partial — `is_inside` then becomes
-/// undefined (consumers should use `unsigned_distance`).
+/// Sets `TriMeshFlags::ORIENTED` so pseudo-normals are computed; this
+/// is what makes [`PseudoNormalSign::is_inside`] meaningful on
+/// watertight meshes. On non-manifold input, pseudo-normal computation
+/// may be partial — `is_inside` then becomes undefined.
 fn build_tri_mesh(mesh: &IndexedMesh) -> TriMesh {
     let vertices: Vec<ParryPoint<ParryReal>> = mesh
         .vertices
@@ -182,38 +244,21 @@ fn parry_to_f64(p: ParryPoint<ParryReal>) -> Point3<f64> {
     Point3::new(p.x as f64, p.y as f64, p.z as f64)
 }
 
-/// Compute the signed distance from a point to a mesh without precomputation.
+/// **Deprecated.** One-shot signed distance — rebuilds the BVH per
+/// call.
 ///
-/// For one-off queries, this is simpler than creating a `SignedDistanceField`.
-/// For multiple queries, prefer creating a `SignedDistanceField` once and
-/// reusing it — construction includes a BVH build that's wasted on a single query.
+/// Retained for one release cycle to bridge insertion_sim's
+/// `unsigned_distance` consumer migration (planned D.3). New code
+/// should build a `TriMeshDistance` once and compose with a sign
+/// oracle.
 ///
-/// # Arguments
-///
-/// * `point` - The point to query
-/// * `mesh` - The mesh
-///
-/// # Returns
-///
-/// The signed distance (positive = outside, negative = inside). Returns
-/// `f64::MAX` on an empty mesh. Sign contract matches
-/// [`SignedDistanceField::distance`].
-///
-/// # Example
-///
-/// ```
-/// use mesh_types::IndexedMesh;
-/// use mesh_sdf::signed_distance;
-/// use nalgebra::Point3;
-///
-/// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
-/// mesh.faces.push([0, 1, 2]);
-///
-/// let dist = signed_distance(Point3::new(5.0, 5.0, 5.0), &mesh);
-/// ```
+/// Returns `f64::MAX` on an empty mesh.
+#[deprecated(
+    since = "0.1.0",
+    note = "Rebuilds the BVH per call and ships PseudoNormalSign's fragile sign branch. \
+            Build a TriMeshDistance once and compose with a Sign oracle (PseudoNormalSign or \
+            FloodFillSign) explicitly."
+)]
 #[must_use]
 pub fn signed_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
     if mesh.faces.is_empty() {
@@ -229,17 +274,18 @@ pub fn signed_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
     }
 }
 
-/// Compute the unsigned distance from a point to a mesh.
+/// **Deprecated.** One-shot unsigned distance — rebuilds the BVH per
+/// call.
 ///
-/// # Arguments
+/// Retained for one release cycle to bridge insertion_sim's existing
+/// consumer (planned D.3 migration). New code should build a
+/// [`TriMeshDistance`] once and call `distance` per query.
 ///
-/// * `point` - The point to query
-/// * `mesh` - The mesh
-///
-/// # Returns
-///
-/// The unsigned (absolute) distance to the nearest surface. Returns
-/// `f64::MAX` on an empty mesh.
+/// Returns `f64::MAX` on an empty mesh.
+#[deprecated(
+    since = "0.1.0",
+    note = "Rebuilds the BVH per call. Build a TriMeshDistance once and call distance() per query."
+)]
 #[must_use]
 pub fn unsigned_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
     if mesh.faces.is_empty() {
@@ -251,6 +297,7 @@ pub fn unsigned_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
@@ -313,14 +360,11 @@ mod tests {
         mesh
     }
 
-    /// Closed pyramid (square base + apex), watertight via a cap-fan on the
-    /// base. This is the kind of geometry where the old face-normal sign
-    /// heuristic could flip far from the surface — at probes near the apex
-    /// axis, "the closest face's plane happens to lie between the probe and
-    /// the rest of the body" (mesh-sdf's documented failure mode). parry's
-    /// pseudo-normal at the apex aggregates the four sloped-side normals,
-    /// giving a consistent outward direction regardless of which slope face
-    /// happens to be returned as the BVH leaf.
+    /// Closed pyramid (square base + apex), watertight via a cap-fan
+    /// on the base. The kind of geometry where the old face-normal
+    /// sign heuristic could flip far from the surface; pseudo-normals
+    /// aggregate per-vertex so the apex returns a consistent outward
+    /// direction regardless of which BVH leaf is returned.
     fn closed_pyramid() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         // 4 base corners at z=0, apex at z=1.
@@ -442,12 +486,13 @@ mod tests {
         assert_eq!(dist, f64::MAX);
     }
 
-    /// Far-field sign is reliable on a watertight pyramid (cap-fan style)
-    /// — the failure mode the old face-normal heuristic produced on real
-    /// cleaned scans (see project memory `pinned-floor-visual-gate-postmortem`,
-    /// `min_sdf = -89.5 mm` on a 71 mm body). With parry's pseudo-normals,
-    /// probes far above / below / lateral of the pyramid all get the
-    /// expected outside sign, independent of which BVH leaf face is hit.
+    /// Far-field sign is reliable on a watertight pyramid (cap-fan
+    /// style) — the failure mode the old face-normal heuristic
+    /// produced on real cleaned scans (see project memory
+    /// `pinned-floor-visual-gate-postmortem`, `min_sdf = -89.5 mm` on
+    /// a 71 mm body). With parry's pseudo-normals, probes far above
+    /// / below / lateral of the pyramid all get the expected outside
+    /// sign, independent of which BVH leaf face is hit.
     #[test]
     fn far_field_sign_reliable_on_pathological_cap_fan() {
         let mesh = closed_pyramid();
@@ -470,8 +515,7 @@ mod tests {
             );
         }
 
-        // Probe deep inside, near apex on axis (where the old heuristic
-        // could be tripped by an arbitrary sloped-side leaf face).
+        // Probe deep inside, near apex on axis.
         let inside = Point3::new(0.0, 0.0, 0.5);
         let d_in = sdf.distance(inside);
         assert!(
@@ -480,11 +524,10 @@ mod tests {
         );
     }
 
-    /// Non-manifold contract test per spec §8.
-    ///
-    /// On an open-top cube, `unsigned_distance` must remain correct,
-    /// deterministic, and finite. `distance` must remain finite. We do NOT
-    /// pin the sign — it is undefined by contract on non-manifold input.
+    /// Non-manifold contract — on an open-top cube,
+    /// `unsigned_distance` must remain correct, deterministic, and
+    /// finite. `distance` must remain finite. Sign is undefined by
+    /// contract.
     #[test]
     fn non_manifold_unsigned_distance_correct_and_deterministic() {
         let open_cube = open_top_unit_cube();
@@ -502,7 +545,32 @@ mod tests {
 
             let signed = sdf.distance(p);
             assert!(signed.is_finite(), "distance finite even on non-manifold");
-            // NO assertion on sign — undefined by contract.
         }
+    }
+
+    /// `TriMeshDistance` and `PseudoNormalSign` constructed together
+    /// share one BVH allocation; constructed separately, two.
+    #[test]
+    fn shared_arc_construction_one_bvh() {
+        let mesh = unit_tetrahedron();
+        let distance = TriMeshDistance::new(mesh).expect("non-empty mesh");
+        let sign = PseudoNormalSign::from_distance(&distance);
+        assert!(
+            Arc::ptr_eq(distance.shared_tri_mesh(), &sign.tri_mesh),
+            "from_distance must share the TriMeshDistance's Arc"
+        );
+    }
+
+    /// The deprecated `SignedDistanceField::new` constructor also
+    /// shares the Arc internally — distance + sign both pull from one
+    /// BVH.
+    #[test]
+    fn deprecated_constructor_shares_arc_between_fields() {
+        let mesh = unit_tetrahedron();
+        let sdf = SignedDistanceField::new(mesh).expect("non-empty mesh");
+        assert!(
+            Arc::ptr_eq(sdf.distance.shared_tri_mesh(), &sdf.sign.tri_mesh),
+            "deprecated convenience must share the BVH between its two fields"
+        );
     }
 }

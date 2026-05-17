@@ -143,21 +143,21 @@ where
 ///
 /// Consuming only `open.eval(p).abs()` is the load-bearing design
 /// choice — the open SDF's sign on a non-manifold cap-stripped mesh is
-/// unreliable (`mesh_sdf::SignedDistanceField`'s face-normal heuristic
-/// fails ~12% of far-field probes per the `insertion_sim` diagnostic),
-/// but its unsigned magnitude is robust.
+/// unreliable (`mesh_sdf::PseudoNormalSign`'s pseudo-normal branch is
+/// undefined on non-manifold input), but its unsigned magnitude is
+/// robust.
 ///
 /// Gradient is a central finite difference; the eval is piecewise
 /// smooth with kinks on `open.eval == 0`, so no analytic form is
 /// available in closed form. Matches `cf_design::Sdf for
-/// SignedDistanceField`'s precedent.
+/// mesh_sdf::Signed`'s precedent.
 struct UnsignedRindSdf<O: Sdf> {
     open: O,
     half_thickness: f64,
 }
 
 /// Central-finite-difference step (meters) for [`UnsignedRindSdf`]'s
-/// gradient. Matches `Sdf for SignedDistanceField`'s 1e-6 step — small
+/// gradient. Matches `Sdf for Signed<D, S>`'s 1e-6 step — small
 /// enough that the central-difference truncation error on a piecewise-
 /// smooth SDF stays well below surface-locating tolerances, large
 /// enough that f64 cancellation does not eat the signal.
@@ -201,10 +201,20 @@ mod tests {
 
     use std::sync::Arc;
 
-    use mesh_sdf::SignedDistanceField;
+    use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
     use mesh_types::IndexedMesh;
 
     use super::*;
+
+    /// Build the parry-backed `Signed<TriMeshDistance,
+    /// PseudoNormalSign>` composition the test fixtures use as their
+    /// SDF source. Concentrating the construction here keeps every
+    /// downstream test on the new explicit-composition API.
+    fn sdf(mesh: IndexedMesh) -> Signed<TriMeshDistance, PseudoNormalSign> {
+        let distance = TriMeshDistance::new(mesh).unwrap();
+        let sign = PseudoNormalSign::from_distance(&distance);
+        Signed { distance, sign }
+    }
 
     // ----- Fixtures ----------------------------------------------------
 
@@ -286,8 +296,8 @@ mod tests {
         // `Solid::from_sdf(closed).offset(T)` at every probe.
         let closed = closed_half_box();
         let open = open_dome_only();
-        let closed_sdf = SignedDistanceField::new(closed).unwrap();
-        let open_sdf = SignedDistanceField::new(open).unwrap();
+        let closed_sdf = sdf(closed);
+        let open_sdf = sdf(open);
         let bounds = fixture_bounds();
 
         let shell = pinned_floor_shell(closed_sdf.clone(), open_sdf, bounds, &[], -0.1);
@@ -322,8 +332,8 @@ mod tests {
         // propagate to consumers (A3/A4/A5); recon iteration 3 starts
         // instead. See `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_FALSIFICATION_BOOKMARK.md`
         // for what scope-C did wrong and why this test is load-bearing.
-        let closed_sdf = SignedDistanceField::new(closed_half_box()).unwrap();
-        let open_sdf = SignedDistanceField::new(open_dome_only()).unwrap();
+        let closed_sdf = sdf(closed_half_box());
+        let open_sdf = sdf(open_dome_only());
         let bounds = fixture_bounds();
         let cap = cap_at_origin_plus_z();
 
@@ -353,8 +363,8 @@ mod tests {
     #[test]
     fn pinned_floor_shell_outer_iso_zero_on_cap_plane_at_body_center() {
         // Same structural gate for the +offset_m branch (layer outer).
-        let closed_sdf = SignedDistanceField::new(closed_half_box()).unwrap();
-        let open_sdf = SignedDistanceField::new(open_dome_only()).unwrap();
+        let closed_sdf = sdf(closed_half_box());
+        let open_sdf = sdf(open_dome_only());
         let bounds = fixture_bounds();
         let cap = cap_at_origin_plus_z();
 
@@ -382,8 +392,8 @@ mod tests {
         // Cavity floor = cap polygon shrunk inward by T. Probes sit
         // just below the cap plane (z = -0.01) so the cavity interior
         // is strictly < 0 there, not on the boundary.
-        let closed_sdf = SignedDistanceField::new(closed_half_box()).unwrap();
-        let open_sdf = SignedDistanceField::new(open_dome_only()).unwrap();
+        let closed_sdf = sdf(closed_half_box());
+        let open_sdf = sdf(open_dome_only());
         let bounds = fixture_bounds();
         let cap = cap_at_origin_plus_z();
         let t = 0.2_f64;
@@ -408,8 +418,8 @@ mod tests {
     #[test]
     fn pinned_floor_shell_outer_floor_outline_extended_by_t() {
         // Layer-outer floor = cap polygon extended outward by T.
-        let closed_sdf = SignedDistanceField::new(closed_half_box()).unwrap();
-        let open_sdf = SignedDistanceField::new(open_dome_only()).unwrap();
+        let closed_sdf = sdf(closed_half_box());
+        let open_sdf = sdf(open_dome_only());
         let bounds = fixture_bounds();
         let cap = cap_at_origin_plus_z();
         let t = 0.2_f64;
@@ -473,8 +483,8 @@ mod tests {
                 .filter_map(|(i, f)| (i >= 4).then_some(*f))
                 .collect(),
         };
-        let closed_sdf = SignedDistanceField::new(closed).unwrap();
-        let open_sdf = SignedDistanceField::new(open).unwrap();
+        let closed_sdf = sdf(closed);
+        let open_sdf = sdf(open);
         let bounds = Aabb::new(Point3::new(-3.0, -3.0, -3.0), Point3::new(3.0, 3.0, 3.0));
         let caps = [
             (Point3::new(0.0, 0.0, 1.0), Vector3::new(0.0, 0.0, 1.0)),
@@ -501,8 +511,8 @@ mod tests {
     fn pinned_floor_shell_offset_zero_returns_body_clipped_by_caps() {
         // T == 0 short-circuits past the rind ops; result is the body
         // intersected with the cap half-spaces.
-        let closed_sdf = SignedDistanceField::new(closed_half_box()).unwrap();
-        let open_sdf = SignedDistanceField::new(open_dome_only()).unwrap();
+        let closed_sdf = sdf(closed_half_box());
+        let open_sdf = sdf(open_dome_only());
         let bounds = fixture_bounds();
         let cap = cap_at_origin_plus_z();
 
@@ -522,8 +532,8 @@ mod tests {
         // Spot-check that the Solid AST extracted by `pinned_floor_shell`
         // meshes — same downstream codepath cf-device-design / cf-cast-
         // cli go through to surface the cavity.
-        let closed_sdf = SignedDistanceField::new(closed_half_box()).unwrap();
-        let open_sdf = SignedDistanceField::new(open_dome_only()).unwrap();
+        let closed_sdf = sdf(closed_half_box());
+        let open_sdf = sdf(open_dome_only());
         let bounds = fixture_bounds();
         let cap = cap_at_origin_plus_z();
 
@@ -570,8 +580,8 @@ mod tests {
         // `pinned_floor_shell` calls (plug + per-layer bodies). The
         // `Sdf for Arc<T>` blanket impl makes this work without each
         // consumer re-building its SDFs per call.
-        let closed: Arc<dyn Sdf> = Arc::new(SignedDistanceField::new(closed_half_box()).unwrap());
-        let open: Arc<dyn Sdf> = Arc::new(SignedDistanceField::new(open_dome_only()).unwrap());
+        let closed: Arc<dyn Sdf> = Arc::new(sdf(closed_half_box()));
+        let open: Arc<dyn Sdf> = Arc::new(sdf(open_dome_only()));
         let bounds = fixture_bounds();
         let cap = cap_at_origin_plus_z();
         let plug = pinned_floor_shell(closed.clone(), open.clone(), bounds, &[cap], -0.05);
