@@ -1,10 +1,15 @@
-# cf-device-design Cavity Pinned-Floor — Spec
+# cf-device-design Cavity Pinned-Floor — Spec (Scope C)
 
 **Status**: RECON COMPLETE 2026-05-16 EVENING (fresh-context session
 following [`CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_BOOKMARK.md`](CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_BOOKMARK.md)).
-Implementation NOT yet started; user reviews this spec before any
-code lands. dev at `3cb6c8a0`, tree clean, 146 tests / 9 ignored on
-cf-device-design.
+Implementation NOT yet started. dev at `80716523` (recon-COMPLETE
+commit; awaits scope-C update), tree clean. cf-device-design baseline
+146 tests / 9 ignored.
+
+**Scope**: **C — all three consumers updated together** (cf-device-design
+preview + insertion_sim + cf-cast-cli). User-confirmed 2026-05-16
+EVENING after recon laid out scope (A) narrow / (B) preview+sim /
+(C) all-three trade-offs.
 
 **Parent**: [`CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_BOOKMARK.md`](CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_BOOKMARK.md)
 — carries the verbatim user geometric model + 8 recon questions. Read
@@ -14,418 +19,124 @@ its §1 BEFORE this spec; the user's model is the load-bearing context.
 — shipped but solving wrong problem (open cavity vs closed-with-pinned-
 floor). Most of its scaffolding survives unchanged (see §1 Q5).
 
-**Blocks**: penetration sim, mold generation, fit-viz rungs 2-6 — all
-LOCKED until this lands.
+**Blocks**: cf-device-design preview, insertion sim correctness, cf-cast-cli
+mold geometry — all targeted in this arc. Workshop iter-1 cast happens
+on the new pinned-floor mold geometry (single-commit rollback path
+documented in §7 if print/cast surfaces a failure mode).
 
 ---
 
 ## Headline finding (read this first if you read nothing else)
 
-**The cavity-mouth arc's two-SDF cached-grid construction is exactly
-the primitive the pinned-floor formulation needs.** The shipped code
-stripped cap polygons from the SDF source for an open cavity; the
-pinned-floor version uses the SAME two-SDF construction and INTERSECTS
-the iso surface with the cap-plane half-space at extract time. Net
-implementation change: ~80 LOC in `extract_layer_surface` + ~50 LOC
-deletion in `signed_volume_m3` callers. The expensive scaffolding
-(`CapPlane` parser, `dome_wall_only_mesh`, `build_cached_scan_sdf`'s
-two-SDF path, `CachedScanSdf` struct, `report_cap_face_classification`
-diagnostic) stays VERBATIM.
+Three load-bearing recon outputs:
 
-The downstream-consumer plumbing (insertion_sim + cf-cast-cli
-switching from `scan_sdf.offset(...)` to a pinned-floor variant) is
-banked as followups — those consumers compose at the
-`cf-design::Solid` level today, never see a triangle mesh, and depend
-on a primitive that's a separate (later) arc to extract.
+1. **The cavity-mouth arc's two-SDF cached-grid construction is
+   exactly the dome-wall-signed-distance field the pinned-floor
+   primitive needs.** The shipped code stripped cap polygons from the
+   SDF source for an OPEN cavity; the pinned-floor version uses the
+   SAME two-SDF construction and INTERSECTS the iso surface with the
+   cap-plane half-space.
+
+2. **Insertion sim + cf-cast-cli compose at the `cf-design::Solid`
+   level** (`Solid::from_sdf(scan_sdf, bounds).offset(...).subtract(...)`),
+   never consume a triangle mesh from `extract_layer_surface`. The
+   pinned-floor primitive for them is a `Solid`-returning composition:
+   `Solid::from_sdf(dome_wall_signed_sdf).offset(offset_m).intersect(Solid::plane(...))`
+   per cap. Triangle-mesh closed/manifold properties are load-bearing
+   for cf-device-design's preview + Validations panel volume integral
+   ONLY.
+
+3. **Scope C requires a shared library home** for `CapPlane` +
+   parser + `dome_wall_only_mesh` + the two-SDF adapter so all three
+   consumers can use the same code. **Decision: new `cf-cap-planes`
+   workspace crate** (NOT cf-design — would couple it to cf-scan-prep's
+   schema; NOT cf-scan-prep-as-lib — makes a binary tool a load-bearing
+   library dep with awkward workspace topology). cf-design's
+   `pinned_floor_shell` takes generic `&[(Point3, Vector3)]` cap
+   tuples and has ZERO cf-cap-planes dep — keeps cf-design schema-
+   agnostic.
+
+Implementation = **6 sub-leaves + visual gate + iter-1 physical cast**.
+Right at the ~6-sub-leaf scope-creep trigger but defensible: sub-leaf 1
+is enabling scaffolding (new crate creation) with independent reuse
+value; sub-leaves 2-6 are the actual pinned-floor behavior change.
 
 ---
 
 ## 1. Recon answers
 
-### Q1. API shape — primitive's signature
+### Q1. API shape — primitive signatures
 
-**Answer**: keep the current
-`extract_layer_surface(cache, cap_planes, offset_m) -> IndexedMesh`
-signature. Behavior changes (now returns a CLOSED manifold with a
-flat floor at every included cap plane) but every call site stays
-unchanged.
+**Answer**: TWO primitives — one for cached-grid extraction (cf-device-
+design preview), one for ad-hoc `Solid` composition (insertion_sim +
+cf-cast-cli).
 
-**Rationale**:
-- All four production call sites (`spawn_cavity_mesh`,
-  `update_cavity_mesh`, `update_layer_meshes`, `compute_validations`)
-  already pass `(cache, &cap_planes.planes, offset_m)`. No threading
-  changes.
-- The `(cavity, layer 0, layer 1, ..., layer N-1)` shells share one
-  uniform primitive — every shell is "scan offset by some
-  `offset_m`, floor pinned at the cap plane(s)". The cavity is
-  just `offset_m = -inset`; outer layers are `offset_m = +T`.
-  Splitting the primitive into wall + floor halves would force every
-  caller to compose them, with no upside.
-- Multi-cap support is automatic (the slice already accepts `&[CapPlane]`;
-  the new composition folds over caps with `max`).
+**Primitive A** — cf-device-design preview path (signature unchanged
+from today; behavior changes to return CLOSED manifold):
 
-**Downstream-consumer primitive** (the cf-design version for
-insertion_sim + cf-cast-cli): banked as Followup F1. That primitive
-returns a `Solid` (not a mesh) and composes
-`Solid::from_sdf(dome_wall_signed_sdf, bounds).offset(offset_m).intersect(Solid::plane(...))`
-per cap. Out of scope for v1 — see §5.
+```rust
+// tools/cf-device-design/src/sdf_layers.rs
+pub(crate) fn extract_layer_surface(
+    cache: &CachedScanSdf,
+    cap_planes: &[CapPlane],
+    offset_m: f64,
+) -> IndexedMesh
+```
 
-### Q2. Implementation strategy — pick one of (a)-(c) from the bookmark
+Every existing call site (`spawn_cavity_mesh`, `update_cavity_mesh`,
+`update_layer_meshes`, `compute_validations`) stays unchanged.
 
-**Picked**: **(d) per-extract SDF composition** (a new alternative
-the bookmark didn't list).
+**Primitive B** — cf-design Solid composition (new):
 
-**Construction**: leave the cached grid storing the two-SDF modulated
-distance `sign(sd_closed) * |sd_open|` (= the dome-wall-signed-distance
-field). At extract time, clone the grid and per-cell compose with
-the cap-plane half-spaces:
+```rust
+// design/cf-design/src/lib.rs (or new file solid_layered.rs)
+pub fn pinned_floor_shell<S: Sdf + 'static>(
+    sdf: S,
+    bounds: Aabb,
+    cap_planes: &[(Point3<f64>, Vector3<f64>)],
+    offset_m: f64,
+) -> Solid {
+    let mut shell = Solid::from_sdf(sdf, bounds).offset(offset_m);
+    for (centroid, normal) in cap_planes {
+        // Solid::plane SDF f(p) = p·normal - offset. With offset =
+        // centroid·normal, the plane passes through centroid. The
+        // cap-normal-side (= outside body) is "positive" → intersect
+        // (= max) discards it, keeping body-interior half-space.
+        let d = centroid.coords.dot(normal);
+        shell = shell.intersect(Solid::plane(*normal, d));
+    }
+    shell
+}
+```
+
+**Why two primitives** (not one shared):
+- Preview path needs cached-grid acceleration (~20 k cells filled
+  once at scan load, extracted many times per frame on slider edits).
+  Pointwise `Solid::evaluate` is too slow for per-extract per-cell
+  use (no spatial accel).
+- Sim/cast path operates on Solid composition that downstream
+  meshers (`SdfMeshedTetMesh::from_sdf_yeoh`, mesh-offset's MC) consume.
+  They DO accept a `Solid` because the meshers do their own grid fills
+  at their own preferred cell sizes.
+- Both primitives share the same SEMANTIC composition:
+  `dome_wall_signed_sdf.offset(offset_m) ∩ body-interior-side of each cap`.
+  Just implemented in two ways for the two performance postures.
+
+### Q2. Implementation strategy — composition mechanism
+
+**Picked**: **per-extract SDF composition (preview) + cf-design::Solid
+composition (sim/cast)**. Rejected anisotropic SDF offset (Q6 below),
+post-MC delete-floor + stitch-down, scan-cap-polygon reuse.
+
+**Preview construction** (per-cell composition at extract time):
 
 ```rust
 fn extract_layer_surface(cache, cap_planes, offset_m) -> IndexedMesh {
     if cap_planes.is_empty() {
-        // No-caps fast path = pre-pinned-floor behavior, byte-identical.
+        // No-caps fast path: byte-identical pre-pinned-floor behavior.
         let config = MarchingCubesConfig::at_iso_value(offset_m);
         return marching_cubes(&cache.grid, &config);
     }
-    let mut composed = cache.grid.clone();
-    for (ix, iy, iz) in grid_cells {
-        let p = composed.position(ix, iy, iz);
-        let shifted_scan_sd = composed.get(ix, iy, iz) - offset_m;
-        // Cap half-space SDF: > 0 outside body (above cap plane).
-        // Intersection-of-half-spaces => fold with max.
-        let cap_sd = cap_planes.iter()
-            .map(|c| (p.coords - c.centroid.coords).dot(&c.normal))
-            .fold(f64::NEG_INFINITY, f64::max);
-        // Intersection of (shifted dome-wall-signed body) and (body-
-        // interior side of every cap plane).
-        composed.set(ix, iy, iz, shifted_scan_sd.max(cap_sd));
-    }
-    marching_cubes(&composed, &MarchingCubesConfig::at_iso_value(0.0))
-}
-```
-
-**Why (d) over the bookmark's three options**:
-
-- **(a) anisotropic SDF offset (skip cap-normal direction)** — REJECTED.
-  `mesh-sdf` has no such API (Q6 below); building one is an
-  arc-sized addition to `mesh-sdf` / `mesh-offset` that would have
-  to support per-vertex direction masking. The cf-design composition
-  achieves the same geometric result without modifying either crate.
-- **(b) post-MC delete-floor + stitch-down + flat-cap triangulation** —
-  REJECTED. Post-MC stitching is fragile: boundary loops may not be
-  clean after MC interpolation jitter, multi-cap requires per-cap loop
-  detection + classification, and the flat-cap triangulation has to
-  match the boundary-loop polygon shape per shell. (d) sidesteps all
-  of this by letting MC handle the closure naturally — the iso 0 of
-  the composed SDF includes the cap-plane intersection as a flat
-  polygon.
-- **(c) use the cleaned-scan's actual cap polygon as the floor
-  triangulation directly** — REJECTED. The cleaned-scan cap polygon
-  is at one fixed shape (matching cf-scan-prep's emitted polygon).
-  Per-shell pinned-floor polygons have DIFFERENT shapes per
-  `offset_m` (the inset cavity's floor is the inset polygon; the
-  outer layer's floor is the outward polygon). Reusing cf-scan-prep's
-  polygon would require per-shell shrink/grow logic on the polygon
-  itself — a 2D polygon offset problem that's harder than the 3D
-  SDF composition.
-
-**Subtle benefit of (d)**: every shell's floor is a triangulated
-polygon at `iso 0 ∩ cap_plane`, produced by MC's own triangulator.
-Each shell gets its own naturally-stitched floor matched to its own
-iso shape, with NO custom triangulation code anywhere in the pipeline.
-
-**Cost**: per-extract grid clone is `O(cells)`. iter-1's cached grid
-is ≈20 k cells, ≈ 0.5 ms per extract. Per-cell composition is
-`O(cells × n_caps)`; n_caps = 1 on iter-1 → another ≈ 0.5 ms. MC stays
-sub-millisecond. Total per-extract cost roughly doubles from ~0.5 ms
-→ ~1.5 ms; absolutely negligible against frame rate. Could optimize
-further by composing in-place (no clone) if profiling surfaces a
-real cost — banked as Followup F6.
-
-### Q3. Where it lives — cf-device-design vs cf-design
-
-**Picked**: v1 stays in cf-device-design's `sdf_layers` module. The
-cf-design extraction is banked as Followup F1.
-
-**Rationale**:
-- The cf-device-design preview is the ONLY consumer today (insertion_sim
-  + cf-cast-cli operate on `Solid::from_sdf(scan_sdf, bounds).offset(...)`,
-  the BARE closed-scan SDF, and don't know about cap planes at all).
-- The v1 change is narrowly scoped to `extract_layer_surface` +
-  `signed_volume_m3` callers — both inside cf-device-design.
-- Extracting to cf-design requires pulling `CapPlane` (currently
-  `pub(crate)` in cf-device-design) + the two-SDF builder
-  (`build_cached_scan_sdf` + `dome_wall_only_mesh`) + cap-face
-  classification constants into a shared library. That's its own arc
-  with its own design questions (does cf-design own `.prep.toml`
-  schema awareness? if not, where does CapPlane parsing live? does
-  insertion_sim's tet-mesher tolerate the composed SDF's piecewise-
-  smooth gradient near the cap plane?).
-- v1 unblocks cf-device-design's penetration-sim preview + fit-viz
-  rungs 2-6. F1 separately unblocks insertion_sim + cf-cast-cli to
-  use pinned-floor geometry (today they both use uniform offset of
-  the closed scan, which has its own well-documented "the scan's
-  cap polygon is part of the SDF body, so offset shrinks/grows past
-  the cap plane" behavior — works for v1 of cf-cast-cli + the
-  insertion sim because both consume the resulting mesh / tet mesh
-  without caring about the cap-plane side; F1 makes them caring is
-  the workshop-iter-2 ergonomics step).
-
-**Implication**: cf-device-design's preview will show CLOSED shells
-with pinned floors; cf-cast-cli's mold STLs + insertion_sim's tet
-mesh will STILL be uniform-offset of closed scan (= today's behavior)
-until F1+F2+F3 land. The visual divergence (preview shows pinned-
-floor; downstream tools don't) is acceptable for v1 — preview is the
-load-bearing user-facing tool; the downstream consumers' geometry has
-been workshop-iter-1-good enough.
-
-### Q4. Shells vs scan cap polygon — shared or per-shell triangulation?
-
-**Answer**: per-shell, naturally-triangulated by marching cubes at
-the iso ∩ cap-plane intersection.
-
-**Rationale** (covered in Q2): every shell's pinned-floor polygon is
-a different shape (the inset cavity's floor is the inset polygon; the
-outer T-shell's floor is the outward polygon). MC on the composed
-SDF triangulates each polygon at extract time. No shared cap
-polygon, no per-shell shrink/grow logic on a polygon, no relationship
-between cf-scan-prep's emitted cap polygon and the per-shell floors.
-
-The cf-scan-prep emitted cap polygon is consumed ONLY for the
-`CapPlane` parameters (centroid + outward normal + vertex_count for
-the primary-cap tiebreak). The polygon ITSELF is not consumed
-geometrically by the pinned-floor primitive.
-
-Winding-consistency: MC on a well-formed SDF produces consistent
-inward-winding triangles (per `mesh-offset`'s convention; the existing
-`signed_volume_m3` already strips the sign for floating-point-noise
-reasons). The pinned-floor extraction preserves this convention.
-
-### Q5. Two-SDF code disposition — keep vs rip out
-
-**Answer**: KEEP. Almost the entire cavity-mouth arc's scaffolding
-is reusable for the pinned-floor primitive.
-
-**Stays** (~1011 LOC across sdf_layers.rs + main.rs):
-- `CapPlane` / `CapPlanes` struct (75 LOC). Data layer is unchanged.
-- `parse_cap_planes` (≈40 LOC). Cap-plane parser stays.
-- `dome_wall_only_mesh` (≈50 LOC). Two-SDF construction needs the
-  open mesh.
-- `report_cap_face_classification` (≈100 LOC diagnostic). Permanent
-  regression sentinel for cap-face detection.
-- `build_cached_scan_sdf` two-SDF path (≈80 LOC). Cached grid still
-  stores modulated distance.
-- `CachedScanSdf` struct (≈30 LOC). All fields still used (`sdf_closed`,
-  `sdf_open`, `grid`, `bounds`, `min_sdf_value`).
-- `CAP_FACE_NORMAL_DOT_MIN` + `CAP_FACE_CENTROID_DIST_M` constants
-  (face-normal cap-face detection survives).
-- `clip_mesh_against_cap_plane` (≈100 LOC). KEPT as generic utility
-  (matches the bookmark's pattern-bank note), but loses its only
-  caller. Could delete now if no future use predicted; recommendation
-  is KEEP for one revision cycle in case Followup F1's tetra-mesher
-  needs it, then prune in F6 cleanup.
-
-**Deletes** (~50 LOC across main.rs):
-- `primary_cap_origin` (≈15 LOC) — closed shells are divergence-
-  origin-invariant, so the cap-centroid-origin trick is no longer
-  needed; revert to `Point3::origin()`. Tests
-  `primary_cap_origin_no_caps_is_world_origin`,
-  `primary_cap_origin_picks_largest_by_vertex_count`,
-  `primary_cap_origin_ties_break_on_lowest_loop_index` (≈40 LOC)
-  go with the function.
-- `signed_volume_m3`'s second `origin` parameter (≈5 LOC). Revert
-  to single-arg `signed_volume_m3(mesh) -> f64`. The 6 test cases
-  that exercised origin-shifting (`signed_volume_m3` returns 1.0
-  for origin + (1,1,1) shifts) still pass — origin-invariance was
-  the property being tested, just for the closed case.
-
-**Changes** (~80 LOC in sdf_layers.rs):
-- `extract_layer_surface` body: replace `at_iso_value(offset_m) +
-  post-MC clip loop` with `clone grid + per-cell compose + MC at iso 0`.
-  See §2 sub-leaf 1 for the diff.
-
-### Q6. Anisotropic offset feasibility
-
-**Answer**: not needed; mesh-sdf / mesh-offset don't support it
-(confirmed by surface-scan); the cf-design composition (= the per-
-extract SDF composition picked in Q2) achieves the same geometric
-result without modifying either crate.
-
-**API survey** (mesh-sdf + mesh-offset):
-
-| Crate | Function | Behavior |
-| --- | --- | --- |
-| mesh-sdf | `SignedDistanceField::{new, distance, unsigned_distance, closest_point, is_inside}` | Uniform SDF queries only. No directional masking. |
-| mesh-offset | `offset_mesh(mesh, config)` | Uniform offset via SDF + MC. One-shot. No per-vertex direction. |
-| mesh-offset | `ScalarGrid::{from_bounds, get, set, dimensions, position}` | Generic scalar grid; consumers compose SDF values into cells. |
-| mesh-offset | `MarchingCubesConfig::{at_iso_zero, at_iso_value}` | Extract iso surface at a stored value. |
-
-To implement (a) anisotropic offset: would need either (a1)
-per-face directional offset distances in mesh-offset's SDF→grid fill
-loop, or (a2) a new "skip-axis" parameter that's applied per-cell
-based on the cell's spatial relationship to a reference plane. Either
-addition spans both mesh-sdf (the SDF derivation) and mesh-offset
-(the fill loop). 100+ LOC, separate arc, new public API surface.
-
-The cf-design composition does the same job by INTERSECTING the
-uniform-offset SDF with a cap-plane half-space at composition time
-— uses ONLY existing primitives (`max` operation in SDF algebra,
-already implicit in `Solid::intersect`).
-
-**Verdict**: (a) is over-engineering for this primitive. The
-composition approach is correct, cheap, and uses existing crate
-surfaces.
-
-### Q7. Multi-cap handling
-
-**Answer**: automatic via the fold-over-caps with `max`. iter-1
-single-cap and iter-N two-cap (proximal + distal) use the same code
-path.
-
-**Construction**: the per-cell composition `fold(NEG_INFINITY, max)`
-over caps composes the intersection-of-half-spaces SDF. For:
-
-- 0 caps: `cap_sd = NEG_INFINITY`; `max(scan_sd - offset, -inf) =
-  scan_sd - offset`. Identical to today's `at_iso_value(offset_m)`.
-  No-caps fast path is byte-identical.
-- 1 cap: one half-space intersection. Shell has 1 flat floor.
-- 2 caps: two half-space intersections. Shell has 2 flat floors
-  (one at each cap plane).
-- N caps: N flat floors.
-
-**iter-2 scope**: body-part scans (e.g. forearm: wrist + elbow caps)
-will exercise the 2-cap path. The primitive needs no special code
-for it — the fold handles N caps uniformly. iter-2 visual gate is
-just confirmation, not a separate code change.
-
-**The primary-cap concept becomes obsolete**: today
-`primary_cap_origin(cap_planes)` picks ONE cap centroid as the
-divergence-volume integration origin (largest by vertex_count,
-tiebroken by lowest loop_index). With closed shells, the divergence
-volume is origin-invariant, so no primary-cap pick is needed. Delete
-the helper. (See Q5.)
-
-### Q8. What does the insertion sim CSG actually want? (LOAD-BEARING)
-
-**Answer**: it doesn't want a triangle mesh at all. The insertion
-sim composes at the SDF/`Solid` level via `cf-design::Solid::subtract`,
-never sees a cavity mesh, doesn't care about manifold/winding/water-
-tightness of any triangle output of `extract_layer_surface`.
-
-**Evidence** (`tools/cf-device-design/src/insertion_sim.rs:660-813`):
-
-```rust
-let (scan_sdf, _) = build_grid_sdf(&decimated, bounds, grid_cell_m, ...)?;
-// ...
-let cavity = Solid::from_sdf(scan_sdf.clone(), bounds).offset(cavity_offset_m);
-let outer = Solid::from_sdf(scan_sdf.clone(), bounds).offset(outer_offset_m);
-let body = outer.subtract(cavity);
-// ...
-let mesh = SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&body, &hints)?;
-```
-
-The chain: scan_sdf → `Solid::from_sdf` → `.offset()` → `.subtract()`
-→ `from_sdf_yeoh` (BCC-lattice tet-mesher resamples the SDF
-independently — doesn't see any caller's triangle mesh).
-
-cf-cast-cli takes the same path
-(`tools/cf-cast-cli/src/derive.rs:196-208`):
-
-```rust
-let plug = Solid::from_sdf(scan_sdf.clone(), sdf_bounds).offset(-cavity_inset_m);
-// ...
-let body = Solid::from_sdf(scan_sdf.clone(), sdf_bounds)
-    .offset(cumulative_so_far - cavity_inset_m);
-```
-
-**Implication**:
-- **For the FEM sim**, the cavity mesh's manifoldness/winding/water-
-  tightness is irrelevant — the sim's `from_sdf_yeoh` consumes
-  `body` as a Solid, samples its SDF over a BCC lattice, and builds
-  its own tet mesh. The pinned-floor primitive's job is to deliver
-  the CORRECT GEOMETRIC SDF (= "scan inset cavity AND floor at cap
-  plane"), not a particular mesh representation.
-- **For cf-device-design's PREVIEW** (the egui+Bevy visualization),
-  the cavity mesh IS what the user sees — closed/manifold/water-tight
-  matters here. MC on the composed SDF produces a closed manifold
-  naturally when the SDF is well-formed. The pinned-floor formulation
-  in Q2 is well-formed.
-- **For `signed_volume_m3`** (the Validations panel's per-layer pour-
-  volume + mass-budget readout), CLOSED shells make the divergence
-  integral origin-invariant, recovering the pre-cavity-mouth-arc
-  bit-exact contract. Cap-centroid-origin trick (added for OPEN
-  surfaces) is no longer needed.
-- **For cf-cast-cli's mold STLs** (the workshop-physical output),
-  the per-layer body mesh is what gets sliced + printed. Today
-  cf-cast-cli uses `Solid::from_sdf(scan_sdf).offset(...)` directly,
-  producing meshes that aren't pinned-floor. That's a separate plumb-
-  ing arc (Followup F3). v1 of the pinned-floor primitive does NOT
-  change cf-cast-cli's output.
-
-**Cross-checking against the user's geometric model (bookmark §1)**:
-> "All shells are closed manifolds — the cavity is a 'hole' that
-> gets subtracted (CSG) from the layer 0 material for the
-> penetration simulation."
-
-The user said "CSG subtract". The insertion sim's `outer.subtract(cavity)`
-IS CSG subtract — at the SDF level (`Solid::subtract` = SDF max of
-shell vs `-other`). The user's words and the sim's mechanism agree;
-the user just didn't necessarily realize the CSG happens at the SDF
-level (no triangle CSG library is involved). No user-spec collision.
-The pinned-floor primitive delivers the CORRECT geometric `Solid`
-for `subtract` to operate on; the rest already works.
-
----
-
-## 2. Implementation ladder
-
-**Total: 2 sub-leaves of code change + 1 user-side visual gate.**
-Per-sub-leaf rationale + test list below.
-
-### Sub-leaf 1 — Rewrite `extract_layer_surface` to compose pinned-floor SDF at extract time
-
-**File**: `tools/cf-device-design/src/sdf_layers.rs`
-
-**Change**: replace the body of `extract_layer_surface` with the
-construction from §1 Q2. Drop the post-MC clip loop.
-
-**Diff sketch**:
-
-```rust
-// BEFORE (lines 846-864):
-pub(crate) fn extract_layer_surface(
-    cache: &CachedScanSdf,
-    cap_planes: &[CapPlane],
-    offset_m: f64,
-) -> IndexedMesh {
-    debug_assert!(offset_m.abs() < LAYER_GRID_MARGIN_M, ...);
-    let config = MarchingCubesConfig::at_iso_value(offset_m);
-    let mut mesh = marching_cubes(&cache.grid, &config);
-    for plane in cap_planes {
-        mesh = clip_mesh_against_cap_plane(&mesh, plane);  // ← REMOVED
-    }
-    mesh
-}
-
-// AFTER:
-pub(crate) fn extract_layer_surface(
-    cache: &CachedScanSdf,
-    cap_planes: &[CapPlane],
-    offset_m: f64,
-) -> IndexedMesh {
-    debug_assert!(offset_m.abs() < LAYER_GRID_MARGIN_M, ...);
-    if cap_planes.is_empty() {
-        // No-caps fast path: byte-identical to pre-pinned-floor behavior.
-        let config = MarchingCubesConfig::at_iso_value(offset_m);
-        return marching_cubes(&cache.grid, &config);
-    }
-    // Composed pinned-floor SDF (per §1 Q2):
-    //   shell_sd(p) = max( cache.grid(p) - offset_m,
-    //                      max over caps of (p - cap.centroid) · cap.normal )
-    // The first term is the uniform-offset two-SDF body; the second
-    // is the union-of-cap-half-spaces SDF (positive outside body
-    // interior, intersected via SDF max). iso 0 of the composed
-    // field is the pinned-floor shell boundary.
     let mut composed = cache.grid.clone();
     let (nx, ny, nz) = composed.dimensions();
     for iz in 0..nz {
@@ -433,6 +144,8 @@ pub(crate) fn extract_layer_surface(
             for ix in 0..nx {
                 let p = composed.position(ix, iy, iz);
                 let shifted_scan_sd = composed.get(ix, iy, iz) - offset_m;
+                // Outward cap normals: (p - c)·n > 0 outside body.
+                // Intersection (max) of body-interior half-spaces:
                 let cap_sd = cap_planes
                     .iter()
                     .map(|c| (p.coords - c.centroid.coords).dot(&c.normal))
@@ -445,355 +158,860 @@ pub(crate) fn extract_layer_surface(
 }
 ```
 
+**Sim/cast construction** uses Primitive B per Q1.
+
+**Why per-extract composition over alternatives**:
+
+- **Anisotropic SDF offset (skip cap-normal direction)** — REJECTED.
+  mesh-sdf / mesh-offset have no such API (Q6); adding one is an
+  arc-sized addition spanning two crates. cf-design composition
+  achieves the same result with existing primitives.
+- **Post-MC delete-floor + stitch-down + flat-cap triangulation** —
+  REJECTED. Fragile: boundary loops post-MC may have interpolation
+  jitter; multi-cap requires per-cap loop detection + classification;
+  flat-cap triangulation per shell must match its boundary polygon
+  shape. MC on the composed SDF handles closure naturally.
+- **Use cleaned-scan's actual cap polygon as the floor directly** —
+  REJECTED. cf-scan-prep's polygon is at the SCAN surface (offset=0);
+  inset/outset shells have different floor polygon shapes per offset_m.
+  Reuse would need per-shell 2D polygon offset.
+
+**Subtle benefit of per-extract composition**: every shell's floor is
+triangulated by MC at the iso 0 ∩ cap_plane intersection. Each shell
+gets its own naturally-stitched floor matched to its iso shape, with
+NO custom triangulation code anywhere.
+
+**Cost**: per-extract grid clone is `O(cells)` (~160 kB f64 alloc on
+iter-1's 20 k-cell grid); per-cell composition is `O(cells × n_caps)`.
+Total ~1.5 ms per extract on iter-1, doubles current ~0.5 ms. Negligible
+against frame budget. In-place composition (no clone) is a Followup F6
+optimization if profiling surfaces a real cost.
+
+### Q3. Where the shared code lives (THE SCOPE-C DECISION)
+
+**Picked**: **new `cf-cap-planes` workspace crate** (option (ii) of the
+three architecture options surfaced post-recon).
+
+**Layout**:
+
+```
+design/cf-cap-planes/
+├── Cargo.toml          # deps: mesh-types, mesh-sdf, mesh-repair,
+│                       #       nalgebra, serde, toml, anyhow
+└── src/
+    └── lib.rs          # ~250 LOC total
+```
+
+**Public surface**:
+
+```rust
+// design/cf-cap-planes/src/lib.rs
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CapPlane {
+    pub centroid: Point3<f64>,
+    pub normal: Vector3<f64>,
+    pub vertex_count: usize,
+    pub loop_index: usize,
+}
+
+impl CapPlane {
+    /// Helper for cf-design::pinned_floor_shell call sites that take
+    /// generic (centroid, normal) tuples.
+    pub fn as_tuple(&self) -> (Point3<f64>, Vector3<f64>) { (self.centroid, self.normal) }
+}
+
+/// Parse + transform-bake `[caps]` block from a `.prep.toml` text.
+/// Empty `Vec` when block absent, no loops, or all `included = false`.
+pub fn parse_cap_planes(prep_toml_text: &str) -> anyhow::Result<Vec<CapPlane>>;
+
+/// Strip cap-polygon faces from a cleaned-scan mesh.
+pub fn dome_wall_only_mesh(scan: &IndexedMesh, planes: &[CapPlane]) -> IndexedMesh;
+
+/// Constants for cap-face classification (face-normal + centroid-distance).
+pub const CAP_FACE_NORMAL_DOT_MIN: f64 = 0.95;
+pub const CAP_FACE_CENTROID_DIST_M: f64 = 0.025;
+
+/// Permanent regression-sentinel diagnostic. Logs per-face cap
+/// classification table at startup.
+pub fn report_cap_face_classification(mesh: &IndexedMesh, planes: &[CapPlane]);
+
+/// Sdf adapter combining sign-from-closed-body × magnitude-from-open-body.
+/// Composes two underlying SDFs into a "signed distance to dome+wall
+/// surface" field that has the right sign at every point AND zero
+/// magnitude at the cap polygon's natural opening.
+pub struct DomeWallSignedSdf {
+    pub closed: Arc<dyn Sdf>,
+    pub open: Arc<dyn Sdf>,
+}
+
+impl Sdf for DomeWallSignedSdf {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.closed.eval(p).signum() * self.open.eval(p).abs()
+    }
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        // Central finite-difference; piecewise-smooth at cap-plane / dome-
+        // wall boundaries (DomeWallSignedSdf inherits the piecewise-smooth
+        // gradient of mesh-sdf, which cf-design's `Sdf for SignedDistanceField`
+        // already documents).
+        // ... (eps=1e-6 central diff, matches Sdf for SignedDistanceField precedent)
+    }
+}
+```
+
+**Why (ii) — new crate** vs the alternatives:
+- **(i) cf-design owns it**: REJECTED. cf-design today is geometry-
+  agnostic — knows nothing about `.prep.toml` schema. Adding parser
+  couples it to scan-prep's emit format + adds toml/serde deps it
+  doesn't otherwise need. `dome_wall_only_mesh` is also a mesh op
+  (walks IndexedMesh faces); cf-design deals in SDF/Solid composition,
+  not mesh manipulation. Two abstraction-layer violations.
+- **(iii) cf-scan-prep becomes lib+bin**: REJECTED. Makes a Bevy-based
+  GUI binary a load-bearing library dep across the workspace. Awkward
+  topology; the lib could acquire scope creep over time. cf-scan-prep
+  is a tool, not a foundation crate.
+- **(ii) new cf-cap-planes**: PICKED. Focused crate (~250 LOC),
+  owns the cap-plane abstraction across emit (cf-scan-prep) + consume
+  (cf-device-design, cf-design call sites, insertion_sim, cf-cast-cli).
+  Bonus benefit: shared serde CapPlane type makes the cf-scan-prep
+  emit ↔ consumer parse round-trip type-safe (today both sides hand-
+  roll TOML strings).
+
+**Where pinned_floor_shell lives**: cf-design owns the SDF
+composition primitive (it's a Solid composition); it takes
+generic `&[(Point3, Vector3)]` cap tuples (NOT `&[CapPlane]`) so
+cf-design has NO cf-cap-planes dep. Consumers convert at call sites:
+`cap_planes.iter().map(|c| c.as_tuple()).collect::<Vec<_>>()`.
+
+**Dependency graph (post-scope-C)**:
+
+```
+cf-cap-planes ──── mesh-types, mesh-sdf, mesh-repair, nalgebra, serde, toml
+cf-design ──────── mesh-sdf, mesh-offset, nalgebra
+                   (NO dep on cf-cap-planes — schema-agnostic)
+cf-device-design ─ cf-cap-planes, cf-design, mesh-* (and Bevy/egui)
+cf-cast-cli ────── cf-cap-planes, cf-design, mesh-*
+insertion_sim ──── cf-cap-planes, cf-design, sim/L0/soft, mesh-*
+                   (insertion_sim is in cf-device-design's tree; its
+                    deps go through that crate's Cargo.toml)
+cf-scan-prep ───── cf-cap-planes (for serde CapPlane round-trip),
+                   mesh-* (and Bevy/egui)
+```
+
+### Q4. Per-shell triangulation — shared or per-shell?
+
+**Answer**: per-shell, naturally-triangulated by marching cubes at
+the iso ∩ cap-plane intersection.
+
+Every shell's pinned-floor polygon is a different shape (inset
+cavity's floor = inset polygon; outer T-shell's floor = outward
+polygon). MC on the composed SDF triangulates each polygon at extract
+time. No shared cap polygon, no per-shell shrink/grow logic, no
+relationship between cf-scan-prep's emitted cap polygon and the per-
+shell floors.
+
+cf-scan-prep's emitted cap polygon is consumed ONLY for the CapPlane
+parameters (centroid + outward normal + vertex_count for tiebreak —
+NOTE: tiebreak becomes obsolete with scope-C closed shells; see Q5).
+The polygon ITSELF is not consumed geometrically by the pinned-floor
+primitive.
+
+### Q5. Two-SDF code disposition — keep or rip out
+
+**Answer**: KEEP, LIFT to cf-cap-planes. Almost the entire cavity-
+mouth arc's scaffolding is reusable.
+
+**Lifts to cf-cap-planes** (~700 LOC moving cross-crate):
+- `CapPlane` struct (~75 LOC) — now public + serde-derived for emit ↔
+  parse round-trip safety.
+- `parse_cap_planes` (~50 LOC including PrepTomlSubset schema) —
+  moves from cf-device-design's main.rs.
+- `dome_wall_only_mesh` (~50 LOC) — moves from sdf_layers.rs.
+- `report_cap_face_classification` (~100 LOC) — moves; permanent
+  regression sentinel for any face-vs-plane classification.
+- Constants (`CAP_FACE_NORMAL_DOT_MIN`, `CAP_FACE_CENTROID_DIST_M`,
+  `CAP_FACE_PLANARITY_EPS_M`) — move with their consumers.
+- `DomeWallSignedSdf` struct + Sdf impl (~40 LOC NEW; lifts the
+  inline two-SDF formula from `build_cached_scan_sdf`'s fill loop
+  into a reusable adapter that insertion_sim + cf-cast-cli need
+  for pointwise eval via cf-design::Solid::from_sdf).
+
+**Stays in cf-device-design** (cached-grid acceleration is
+preview-specific):
+- `CachedScanSdf` struct + `build_cached_scan_sdf` (~150 LOC). The
+  fill-once / extract-many caching is preview-tied; sim + cast use
+  their own SDF construction at their own preferred resolutions.
+- `extract_layer_surface` (~80 LOC, rewritten per Q2).
+- Cache constants (`LAYER_PREVIEW_CELL_SIZE_M`, `LAYER_GRID_MARGIN_M`,
+  `SDF_SOURCE_TARGET_FACES`).
+
+**Deletes** (~50 LOC across cf-device-design's main.rs):
+- `primary_cap_origin` (~15 LOC) — closed shells are origin-invariant;
+  cap-centroid trick no longer needed.
+- `signed_volume_m3`'s second `origin` parameter (~5 LOC). Revert
+  to pre-cavity-mouth single-arg form.
+- Three associated tests (~40 LOC).
+
+**Stays in cf-device-design as utility, no caller** (~100 LOC; bookmark
+recommendation = keep one revision cycle, prune in F6 if no new caller
+emerges):
+- `clip_mesh_against_cap_plane` — generic Sutherland-Hodgman half-
+  space clipper. Loses its caller in sub-leaf 2.
+
+### Q6. Anisotropic offset feasibility
+
+**Answer**: not needed; mesh-sdf / mesh-offset don't support it; the
+cf-design composition (uniform offset ∩ cap half-space) achieves the
+same geometric result.
+
+**API survey** (confirmed against `mesh/mesh-sdf/src/sdf.rs` +
+`mesh/mesh-offset/src/{offset.rs,grid.rs,marching_cubes.rs}`):
+
+| Crate | Function | Behavior |
+| --- | --- | --- |
+| mesh-sdf | `SignedDistanceField::{new, distance, unsigned_distance, closest_point, is_inside}` | Uniform SDF queries; no directional masking. |
+| mesh-offset | `offset_mesh(mesh, config)` | Uniform SDF→MC offset; no per-axis directional config. |
+| mesh-offset | `ScalarGrid::{from_bounds, get, set, position, dimensions}` | Generic scalar storage; consumer composes per cell. |
+| mesh-offset | `MarchingCubesConfig::{at_iso_zero, at_iso_value}` | Iso surface extraction at a stored value. |
+
+Adding anisotropic offset would span both crates (per-face directional
+config in mesh-sdf + per-cell axis-masked fill in mesh-offset). 100+ LOC,
+separate arc, new public API. cf-design composition gets the same
+result with existing primitives + zero crate changes.
+
+### Q7. Multi-cap handling
+
+**Answer**: automatic via fold-over-caps with `max`. iter-1 single-cap,
+iter-N two-cap (proximal + distal), N-cap all use the same code path.
+
+- 0 caps: `cap_sd = NEG_INFINITY`; intersection no-op; identical to
+  today's `at_iso_value(offset_m)` byte-for-byte.
+- 1 cap: one flat floor.
+- 2 caps: two flat floors.
+- N caps: N flat floors.
+
+The primary-cap concept (used by today's `primary_cap_origin` for the
+divergence-volume integral on open surfaces) becomes obsolete — closed
+shells are origin-invariant. See Q5.
+
+### Q8. What does the insertion sim CSG actually want? (LOAD-BEARING)
+
+**Answer**: not a triangle mesh at all. The insertion sim composes at
+SDF/`Solid` level via `cf-design::Solid::subtract`, never sees a
+triangle mesh.
+
+**Evidence** (`tools/cf-device-design/src/insertion_sim.rs:660-813`):
+
+```rust
+let (scan_sdf, _) = build_grid_sdf(&decimated, bounds, grid_cell_m, ...)?;
+let cavity = Solid::from_sdf(scan_sdf.clone(), bounds).offset(cavity_offset_m);
+let outer = Solid::from_sdf(scan_sdf.clone(), bounds).offset(outer_offset_m);
+let body = outer.subtract(cavity);
+let mesh = SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&body, &hints)?;
+```
+
+cf-cast-cli takes the same path (`tools/cf-cast-cli/src/derive.rs:196-208`).
+
+**Scope-C implication**: both consumers swap their
+`Solid::from_sdf(scan_sdf, bounds).offset(offset_m)` calls for
+`pinned_floor_shell(dome_wall_signed_sdf, bounds, &cap_tuples, offset_m)`.
+The FEM sim's `from_sdf_yeoh` and cf-cast-cli's mesher consume the
+resulting `Solid` exactly as they consume today's offset-Solid — no
+upstream API changes needed.
+
+**Cross-checked against user's geometric model** (bookmark §1):
+> "All shells are closed manifolds — the cavity is a 'hole' that
+> gets subtracted (CSG) from the layer 0 material for the
+> penetration simulation."
+
+`outer.subtract(cavity)` IS that CSG subtract, just at the SDF level
+(Solid::subtract = SDF max of shell vs `-other`). User-spec aligned;
+the user didn't need to know that the CSG happens at SDF level
+mechanically.
+
+---
+
+## 2. Implementation ladder
+
+**Total: 6 sub-leaves + visual gate + iter-1 physical cast.**
+
+Per system-prompt PAUSE-and-flag trigger ("spec ladder grows beyond
+~6 sub-leaves — primitive is probably the wrong scope"): at the
+threshold but defensible. Sub-leaf 1 is enabling scaffolding (new
+workspace crate creation + cross-crate refactor); sub-leaves 2-6 are
+the actual pinned-floor primitive work. Each sub-leaf is one commit;
+sub-leaf 6 is the LAST so the rollback path (§7) is a single-commit
+revert.
+
+### Sub-leaf 1 — Create `cf-cap-planes` crate; lift CapPlane + parser + dome_wall_only_mesh + DomeWallSignedSdf + diagnostics
+
+**Files**:
+- NEW: `design/cf-cap-planes/Cargo.toml`
+- NEW: `design/cf-cap-planes/src/lib.rs` (~250 LOC)
+- `Cargo.toml` (workspace): add `design/cf-cap-planes` member.
+- `tools/cf-device-design/Cargo.toml`: add `cf-cap-planes = { path = "../../design/cf-cap-planes" }` dep.
+- `tools/cf-device-design/src/sdf_layers.rs`: replace local `CapPlane`,
+  `dome_wall_only_mesh`, `report_cap_face_classification`,
+  `CAP_FACE_*` constants with `use cf_cap_planes::*;`.
+- `tools/cf-device-design/src/main.rs`: replace local `parse_cap_planes`
+  with `cf_cap_planes::parse_cap_planes`.
+
+**Behavior**: PURE REFACTOR — no functional changes. All 146 existing
+cf-device-design tests pass unchanged. New cf-cap-planes crate has
+its own unit tests (lifted from sdf_layers.rs's tests for the moved
+functions).
+
+**NEW (didn't exist before)**: `DomeWallSignedSdf` adapter. ~40 LOC +
+tests. Implements `Sdf` (eval = `closed.eval().signum() * open.eval().abs()`;
+grad = central finite-difference per cf-design's `Sdf for SignedDistanceField`
+precedent).
+
+**Tests** (in cf-cap-planes' own tests module):
+- All lifted unit tests for the moved functions (parse_cap_planes,
+  dome_wall_only_mesh, report_cap_face_classification).
+- `dome_wall_signed_sdf_evaluates_to_zero_at_cap_polygon` — point on
+  cap polygon's natural boundary returns 0 (open SDF has 0 unsigned
+  there; sign × 0 = 0).
+- `dome_wall_signed_sdf_negative_inside_body` — point deep inside
+  body returns negative (sign(closed_sdf) = -1, magnitude > 0).
+- `dome_wall_signed_sdf_positive_outside_body` — point well outside
+  body returns positive.
+- `dome_wall_signed_sdf_grad_central_diff` — gradient approximates
+  the unit normal of the dome-wall surface at a sample point.
+
+**Acceptance**:
+- `cargo test -p cf-cap-planes --lib` clean.
+- `cargo test -p cf-device-design --lib` clean (regression — 146
+  tests pass unchanged).
+- `cargo clippy -p cf-cap-planes -p cf-device-design --all-targets` clean.
+
+**LOC delta**: ~+250 in cf-cap-planes, ~-200 in cf-device-design (the
+lift) + ~-30 in main.rs (parse_cap_planes lift) + ~+5 in
+Cargo.toml/use lines.
+
+### Sub-leaf 2 — Rewrite `extract_layer_surface` to compose pinned-floor SDF at extract time
+
+**File**: `tools/cf-device-design/src/sdf_layers.rs`
+
+**Change**: replace `at_iso_value(offset_m) + post-MC clip loop` with
+`clone grid + per-cell compose + MC at iso 0`. Delete the post-MC
+`for plane in cap_planes { mesh = clip_mesh_against_cap_plane(...); }`
+block. Two-SDF cached grid stays unchanged (built in sub-leaf 1's
+refactor target).
+
+**Diff sketch** as in §1 Q2 above.
+
 **Tests** (add to `sdf_layers::tests`):
+- `extract_pinned_floor_cube_cavity_has_flat_floor` — unit cube + 1
+  cap, `offset_m = -0.005`. Assert closed mesh (χ = 2), bottom
+  vertices at cap plane within tol, signed volume ≈ analytical.
+- `extract_pinned_floor_cube_outer_grown_has_flat_floor` — same setup,
+  `offset_m = +0.005`. Assert closed mesh, flat floor at cap plane,
+  signed volume ≈ analytical.
+- `extract_pinned_floor_no_caps_fast_path_byte_identical` — empty
+  cap_planes; mesh vertices + faces match pre-pinned-floor output
+  byte-for-byte.
+- `extract_pinned_floor_multi_cap_closes_both_floors` — unit cube +
+  2 opposed caps. Assert mesh has TWO flat floors, is closed.
+- `extract_pinned_floor_cube_taubin_drift_robustness` — same cube,
+  Taubin-smoothed cap vertices (~1 mm drift). Face-normal
+  classification stays robust.
 
-- `extract_pinned_floor_cube_cavity_has_flat_floor` — unit cube
-  scan, single cap on bottom face, `offset_m = -0.005`. Extract,
-  assert (1) mesh is closed (Euler characteristic χ = 2 for a
-  closed sphere/box topology), (2) bottom vertices all sit at the
-  cap plane within numerical tolerance, (3) signed volume is within
-  ~1 % of analytical `(0.99)² × 0.495` (depth = 1.0 - 0.005 inset
-  on top + 0.005 on cap-plane side closure).
-- `extract_pinned_floor_cube_outer_grown_has_flat_floor` — same
-  setup but `offset_m = +0.005`. Assert closed mesh, flat floor at
-  cap plane, signed volume within ~1 % of `1.01² × 1.005`.
-- `extract_pinned_floor_no_caps_fast_path_byte_identical` — unit
-  cube scan, empty `cap_planes`. Build cache, extract at
-  `offset_m = ±0.005`. Assert mesh vertices + faces match what the
-  pre-pinned-floor code path would produce (regression sentinel for
-  the no-caps fast path's byte-identical behavior). Pre-pinned-floor
-  expected mesh can be checked in as a small golden file or computed
-  via a separate `marching_cubes(&cache.grid, &MarchingCubesConfig::at_iso_value(...))`
-  call.
-- `extract_pinned_floor_multi_cap_closes_both_floors` — unit cube
-  scan, 2 caps (bottom face + top face). Extract at `offset_m = -0.003`.
-  Assert mesh has TWO flat floors (one at each cap plane), is
-  closed, volume ≈ analytical `0.994² × 0.994`.
-- `extract_pinned_floor_cube_taubin_drift_robustness` — same cube
-  test but slight Taubin-smoothed cap vertices (drifts ~1 mm off
-  plane). Reuse the existing `dome_wall_only_mesh` face-normal
-  classification — the test exercises that the cap classification
-  STAYS robust to the same Taubin drift the cavity-mouth arc fixed.
-
-**Acceptance criteria**:
-- Existing no-caps tests pass byte-identical (no-caps fast path
-  short-circuits to pre-pinned-floor code).
+**Acceptance**:
 - New caps tests pass.
-- `cargo test -p cf-device-design --lib` clean.
-- `cargo clippy -p cf-device-design --all-targets` clean.
+- No-caps fast path byte-identical to pre-pinned-floor.
+- `cargo test -p cf-device-design --lib` + `cargo clippy -p
+  cf-device-design --all-targets` clean.
 
-**LOC delta**: ~80 net (removes ~5 LOC of post-MC clip, adds ~30
-LOC of per-cell composition, plus ~50 LOC of new tests).
+**LOC delta**: ~+80 net (delete ~5 LOC post-MC clip; add ~30 LOC
+per-cell composition; ~+50 LOC new tests).
 
-### Sub-leaf 2 — Revert `signed_volume_m3` callers to world origin; delete `primary_cap_origin`
+### Sub-leaf 3 — Revert `signed_volume_m3` to single-arg; delete `primary_cap_origin`
 
 **File**: `tools/cf-device-design/src/main.rs`
 
 **Change**:
-- Drop `signed_volume_m3`'s `origin: Point3<f64>` parameter — restore
-  the pre-cavity-mouth signature `signed_volume_m3(mesh: &IndexedMesh) -> f64`
-  with internal origin = world origin. (Closed shells are
-  divergence-origin-invariant — proven by the existing test
-  `signed_volume_m3_origin_invariant`.)
-- Delete `primary_cap_origin` (≈15 LOC) and its three tests
-  (`primary_cap_origin_no_caps_is_world_origin`,
-  `primary_cap_origin_picks_largest_by_vertex_count`,
-  `primary_cap_origin_ties_break_on_lowest_loop_index`).
-- Update `compute_validations`: drop the `volume_origin =
-  primary_cap_origin(cap_planes)` line; pass nothing to
-  `signed_volume_m3`.
-
-**Diff sketch**:
-
-```rust
-// BEFORE (main.rs:829-862):
-fn signed_volume_m3(mesh: &IndexedMesh, origin: Point3<f64>) -> f64 {
-    let o = origin.coords;
-    let mut six_volume = 0.0_f64;
-    for face in &mesh.faces { ... a.dot(&b.cross(&c)) ... }
-    (six_volume / 6.0).abs()
-}
-
-fn primary_cap_origin(cap_planes: &sdf_layers::CapPlanes) -> Point3<f64> {
-    cap_planes.planes.iter().max_by(...).map_or(Point3::origin(), |p| p.centroid)
-}
-
-// AFTER:
-fn signed_volume_m3(mesh: &IndexedMesh) -> f64 {
-    let mut six_volume = 0.0_f64;
-    for face in &mesh.faces {
-        let a = mesh.vertices[face[0] as usize].coords;
-        let b = mesh.vertices[face[1] as usize].coords;
-        let c = mesh.vertices[face[2] as usize].coords;
-        six_volume += a.dot(&b.cross(&c));
-    }
-    (six_volume / 6.0).abs()
-}
-// primary_cap_origin gone.
-```
-
-**`compute_validations` update**:
-
-```rust
-// BEFORE (main.rs:900-922):
-let volume_origin = primary_cap_origin(cap_planes);
-let cavity_mesh = sdf_layers::extract_layer_surface(...);
-let mut prev_inner_volume = signed_volume_m3(&cavity_mesh, volume_origin);
-// ...
-let outer_volume = signed_volume_m3(&outer_mesh, volume_origin);
-
-// AFTER:
-let cavity_mesh = sdf_layers::extract_layer_surface(...);
-let mut prev_inner_volume = signed_volume_m3(&cavity_mesh);
-// ...
-let outer_volume = signed_volume_m3(&outer_mesh);
-```
+- Drop `signed_volume_m3`'s `origin: Point3<f64>` parameter. Restore
+  pre-cavity-mouth single-arg signature; closed shells are origin-
+  invariant (proven by existing test).
+- Delete `primary_cap_origin` (~15 LOC) and its 3 tests (~40 LOC).
+- Update `compute_validations`: drop `volume_origin =
+  primary_cap_origin(cap_planes)`; pass nothing to `signed_volume_m3`.
 
 **Tests**:
-- Update existing volume tests that called `signed_volume_m3(&mesh, Point3::origin())`
-  to drop the second arg.
-- Update `signed_volume_m3_origin_invariant` test → becomes
-  redundant (the function no longer takes origin); convert to a
-  CLOSED-shell test that verifies the integral is bit-identical
-  whether the mesh is translated by `(1, 1, 1)` or not. Keep this
-  as the origin-invariance regression sentinel.
+- Update existing volume tests that called `signed_volume_m3(&mesh,
+  Point3::origin())` to drop the second arg.
+- Convert `signed_volume_m3_origin_invariant` to a CLOSED-shell
+  translation test (translate by `(1, 1, 1)`, assert bit-identical
+  volume). Keep as regression sentinel.
 - Delete the three `primary_cap_origin_*` tests.
 
-**Acceptance criteria**:
-- `cargo test -p cf-device-design --lib` clean.
+**Acceptance**:
+- `cargo test -p cf-device-design --lib` + `cargo clippy` clean.
+- `compute_validations` cube + cylinder analytical-fixture tests pass
+  with bit-identical pre-cavity-mouth-arc numbers (cap-centroid trick
+  added a tiny numerical drift on open meshes that's now gone).
+
+**LOC delta**: ~-50 net deletion.
+
+### Sub-leaf 4 — `cf-design::pinned_floor_shell` primitive + tests
+
+**File**:
+- `design/cf-design/src/solid_layered.rs` (NEW, ~50 LOC) OR add to
+  `design/cf-design/src/solid.rs` near `Solid::offset` (lighter).
+  Recommendation: NEW file `solid_layered.rs` — keeps composite-
+  primitive functions separate from primitive constructors.
+- `design/cf-design/src/lib.rs`: re-export `pub use solid_layered::pinned_floor_shell;`.
+
+**Signature**:
+
+```rust
+pub fn pinned_floor_shell<S: Sdf + 'static>(
+    sdf: S,
+    bounds: Aabb,
+    cap_planes: &[(Point3<f64>, Vector3<f64>)],
+    offset_m: f64,
+) -> Solid {
+    let mut shell = Solid::from_sdf(sdf, bounds).offset(offset_m);
+    for (centroid, normal) in cap_planes {
+        let d = centroid.coords.dot(normal);
+        shell = shell.intersect(Solid::plane(*normal, d));
+    }
+    shell
+}
+```
+
+**Tests** (in `solid_layered::tests`):
+- `pinned_floor_shell_empty_caps_byte_identical_to_offset` —
+  `pinned_floor_shell(sdf, bounds, &[], offset_m).evaluate(p)` ≡
+  `Solid::from_sdf(sdf, bounds).offset(offset_m).evaluate(p)` at
+  10 sample points. Empty-caps fast path is degenerate-correct.
+- `pinned_floor_shell_cube_inset_pins_floor` — unit cube + 1 cap
+  on -Z face, `offset_m = -0.005`. Sample SDF at (0, 0, 0) (cap
+  plane center, on body side) → returns ~0 (on boundary); at
+  (0, 0, +0.01) (above cap plane on cap-normal side) → returns
+  positive (outside).
+- `pinned_floor_shell_cube_outer_pins_floor` — `offset_m = +0.005`.
+  Sample SDF at (0, 0, 0) → returns ~0 (on boundary); same outside
+  test.
+- `pinned_floor_shell_multi_cap_intersects_all` — unit cube + 2
+  opposed caps; at the cube center returns negative; at +Z above
+  the top cap returns positive (cap intersection clips).
+- `pinned_floor_shell_grad_outside_cap_plane_is_cap_normal` —
+  gradient at a point just outside the cap plane points in the cap
+  normal direction (the cap-plane Solid's plane SDF dominates).
+
+**Acceptance**:
+- `cargo test -p cf-design --lib` clean (existing + new tests).
+- `cargo clippy -p cf-design --all-targets` clean.
+
+**LOC delta**: ~+50 (primitive + tests in cf-design).
+
+### Sub-leaf 5 — insertion_sim plumbing: cavity + outer become pinned-floor
+
+**File**: `tools/cf-device-design/src/insertion_sim.rs`
+
+**Change**:
+- `build_insertion_geometry` accepts new `cap_planes: &[CapPlane]`
+  parameter (or threads via the existing CapPlanes resource —
+  caller's choice; recommend explicit param for explicit data flow).
+- Build the open-mesh GridSdf alongside the existing closed-mesh
+  GridSdf:
+  ```rust
+  let decimated_open = cf_cap_planes::dome_wall_only_mesh(&decimated, cap_planes);
+  let (scan_sdf_open, _) = build_grid_sdf(&decimated_open, bounds, grid_cell_m, ...)?;
+  let dome_wall_signed = cf_cap_planes::DomeWallSignedSdf {
+      closed: scan_sdf.clone(),  // Arc<GridSdf>
+      open: scan_sdf_open,       // Arc<GridSdf>
+  };
+  ```
+  (Note: cf-cap-planes' `DomeWallSignedSdf` holds `Arc<dyn Sdf>`,
+  so `GridSdf` must implement `Sdf` — it does today per
+  `insertion_sim::GridSdf::Sdf` impl.)
+- Replace cavity + outer constructions:
+  ```rust
+  // BEFORE:
+  let cavity = Solid::from_sdf(scan_sdf.clone(), bounds).offset(cavity_offset_m);
+  let outer  = Solid::from_sdf(scan_sdf.clone(), bounds).offset(outer_offset_m);
+  // AFTER:
+  let cap_tuples: Vec<_> = cap_planes.iter().map(|c| c.as_tuple()).collect();
+  let cavity = pinned_floor_shell(dome_wall_signed.clone(), bounds, &cap_tuples, cavity_offset_m);
+  let outer  = pinned_floor_shell(dome_wall_signed.clone(), bounds, &cap_tuples, outer_offset_m);
+  ```
+  (`dome_wall_signed.clone()` is `Arc`-cheap.)
+- `InsertionGeometry` gains a `cap_planes: Vec<CapPlane>` field for
+  downstream consumers (the Bevy panel's per-layer projection may
+  want the cap geometry for visualization).
+- The per-tet layer assignment (`per_tet_layer` field) — currently
+  buckets via `scan_sdf.eval(centroid)` against `layer_boundary_thresholds`.
+  With pinned-floor shells, the right scan-distance for bucketing is
+  `dome_wall_signed.eval(centroid)` — the new field. Update the
+  centroid sampling site to use `dome_wall_signed` instead of
+  `scan_sdf` for the layer-membership decision.
+
+**Tests** (in insertion_sim::tests):
+- `build_insertion_geometry_no_caps_byte_identical_to_pre_pinned_floor` —
+  empty cap_planes; the cavity + outer solids should evaluate to the
+  same SDF values as the pre-pinned-floor `scan_sdf.offset()` at 10
+  sample points.
+- `build_insertion_geometry_with_caps_produces_pinned_floor_body` —
+  iter-1-like fixture (cube + 1 cap). Cavity SDF samples: at cap-
+  plane center returns ~0; at cube center returns negative; at +Z
+  beyond cap plane returns positive.
+- Existing row-23 + cf-device-design ramp regression tests pass with
+  iter-1's empty-caps path (no caps fixture). The "with caps" ramp
+  regression is new behavior; expected to change. NEW reference
+  values to be captured at first run (the user reviews + accepts;
+  this is the F2 calibration step — bookmark observation that
+  pinned-floor changes sim force readouts in a physically-meaningful
+  way).
+
+**Acceptance**:
+- New tests pass.
+- Pre-existing tests on empty-caps path pass bit-identical (regression
+  protection on no-caps fast path).
+- `cargo test -p cf-device-design --lib --release` clean.
 - `cargo clippy -p cf-device-design --all-targets` clean.
-- `compute_validations` cube + cylinder analytical-fixture tests
-  pass with bit-identical pre-cavity-mouth-arc numbers (the
-  divergence integral was origin-invariant for closed cube + cylinder
-  fixtures; the cap-centroid trick added a tiny numerical drift on
-  open meshes that's now gone).
+- The Bevy Insertion Sim panel's per-layer heat-map projection runs
+  cleanly when caps are present (visual gate, post-sub-leaf-5).
 
-**LOC delta**: ~50 net deletion (≈15 LOC primary_cap_origin + ≈40
-LOC its tests + ≈5 LOC origin-parameter plumbing − ≈10 LOC test
-adjustments).
+**LOC delta**: ~+80 net (new open-mesh GridSdf build + DomeWallSignedSdf
+construction + pinned_floor_shell calls + per_tet_layer source switch).
 
-### Visual gate (NOT a sub-leaf — the ship point)
+### Sub-leaf 6 — cf-cast-cli plumbing: plug + per-layer bodies become pinned-floor (LAST sub-leaf; rollback target)
 
-User opens `~/scans/sock_over_capsule.cleaned.stl` in cf-device-design
-post-sub-leaf-2. Confirms by eye:
+**File**: `tools/cf-cast-cli/src/derive.rs` + `tools/cf-cast-cli/src/lib.rs`
 
-1. **Cavity** has flat floor pinned at cap plane (the load-bearing
-   visual gate — the original cavity-mouth visual revealed the
-   wrong-fit; this gate proves the new code matches the user model).
-2. **Outer layers** are closed shells with flat floors at cap plane.
-3. **Layer-stack preview** looks reasonable (no layer "skirt"
-   sticking out past the cap plane, no missing floors, no broken
-   topology).
-4. **Validations panel** mass numbers are sane (cube + cylinder
-   analytical fixtures match pre-cavity-mouth-arc bit-exact numbers).
+**Change**:
+- Add `.prep.toml` discovery + parsing to cf-cast-cli (currently
+  reads only scan + design):
+  ```rust
+  // lib.rs or scan.rs:
+  fn resolve_prep_toml_path(scan_path: &Path) -> Option<PathBuf> {
+      // Mirror cf-device-design's resolve_prep_toml_path logic
+      // (strip ".cleaned" suffix; sibling .prep.toml).
+  }
+  let cap_planes = if let Some(p) = resolve_prep_toml_path(...) {
+      cf_cap_planes::parse_cap_planes(&std::fs::read_to_string(p)?)?
+  } else {
+      Vec::new()  // raw scan, no caps — pinned_floor_shell empty-caps
+                  // fast path is byte-identical to today's behavior.
+  };
+  ```
+- Build open-mesh SDF + DomeWallSignedSdf same as sub-leaf 5.
+- Replace plug + per-layer body constructions in derive.rs:
+  ```rust
+  // BEFORE:
+  let plug = Solid::from_sdf(scan_sdf.clone(), sdf_bounds).offset(-cavity_inset_m);
+  let body = Solid::from_sdf(scan_sdf.clone(), sdf_bounds)
+      .offset(cumulative_so_far - cavity_inset_m);
+  // AFTER:
+  let cap_tuples: Vec<_> = cap_planes.iter().map(|c| c.as_tuple()).collect();
+  let plug = pinned_floor_shell(dome_wall_signed.clone(), sdf_bounds, &cap_tuples, -cavity_inset_m);
+  let body = pinned_floor_shell(dome_wall_signed.clone(), sdf_bounds, &cap_tuples, cumulative_so_far - cavity_inset_m);
+  ```
+- Update `procedure_post.rs` if it references cavity geometry in
+  markdown (probably not — it just emits press-fit instructions
+  driven by `cavity_inset_m`).
+- Workshop iter-1 cast geometry CHANGES vs prior iters. See §7 Open
+  Risks for the rollback path.
 
-If iter-1 reveals the model is wrong somewhere, this is the
-falsification gate — work resumes from a new bookmark, NOT this
-spec.
+**Tests** (in cf-cast-cli's tests):
+- `derive_no_prep_toml_path_byte_identical` — config without
+  `.prep.toml` next door yields byte-identical Solid composition to
+  pre-pinned-floor (empty-caps fast path).
+- `derive_with_caps_uses_pinned_floor_geometry` — synthetic test
+  fixture with `.prep.toml` available; plug + bodies are pinned-
+  floor (the Solid evaluates ~0 at cap-plane center sample).
+- Pre-existing cf-cast-cli tests pass bit-identical on the no-prep-
+  toml path.
 
-If iter-1 passes the gate, the cf-device-design preview is unblocked
-and Followups F2-F6 become eligible for separate arcs.
+**Acceptance**:
+- New tests pass; old tests pass bit-identical on no-caps path.
+- `cargo test -p cf-cast-cli --lib --release` + `cargo clippy` clean.
+- `cargo run -p xtask -- grade cf-cast-cli` ≥ A.
+- Workshop iter-1 example produces 9 mold STLs + procedure.md
+  (matches v2.1 arc's contract; mold geometry changes to pinned-floor
+  is the EXPECTED behavior change, NOT a test failure).
+
+**LOC delta**: ~+80 net (.prep.toml discovery + DomeWallSignedSdf
+construction + pinned_floor_shell calls).
+
+### Visual gate (post-sub-leaf-6, user-driven)
+
+User runs:
+1. **cf-device-design preview** on
+   `~/scans/sock_over_capsule.cleaned.stl`. Confirms cavity has flat
+   floor pinned at cap plane; outer layers are closed shells with
+   coplanar floors; Validations panel mass numbers sane.
+2. **Insertion sim** with `[insertion-sim]` enabled. Confirms ramp
+   completes; force readouts shift in a physically-meaningful
+   direction vs pre-pinned-floor (the cavity floor pin produces a
+   harder press-fit toward the cap plane — expected).
+3. **cf-cast-cli mold gen** on the same fixture. Confirms 9 mold
+   STLs + procedure.md emit; plug visualization in your preferred
+   STL viewer shows flat floor at cap plane.
+
+If iter-1 preview or sim looks wrong → that's a falsification of the
+spec; work resumes from a new bookmark (NOT continuation).
+
+If iter-1 LOOKS RIGHT but workshop iter-1 print/cast fails on the
+new mold geometry → §7 rollback path: `git revert <sub-leaf-6-commit>`
+falls back to today's uniform-offset mold while preview + sim retain
+pinned-floor.
+
+If all three pass → v1 ships. Followups F4 (fit-viz rungs 2-6), F5
+(iter-N multi-cap), F6 (cleanup pass) become eligible for separate
+arcs.
 
 ---
 
 ## 3. Test plan
 
-### Unit (per sub-leaf, listed above)
+### Unit (per sub-leaf above)
 
-- 5 new tests in `sdf_layers::tests` (sub-leaf 1).
-- 1 updated test, 3 deleted tests in `main::tests` (sub-leaf 2).
+- Sub-leaf 1: ~10 lifted tests + 4 new `DomeWallSignedSdf` tests in
+  cf-cap-planes.
+- Sub-leaf 2: 5 new pinned-floor extraction tests in cf-device-design.
+- Sub-leaf 3: 1 updated origin-invariance test; 3 deleted tests.
+- Sub-leaf 4: 5 new pinned_floor_shell tests in cf-design.
+- Sub-leaf 5: 2 new sim-side tests; 1 reference-value capture.
+- Sub-leaf 6: 2 new cf-cast-cli tests.
 
 ### Integration
 
-Confirm cf-device-design end-to-end test (the analytical-fixture
-cube preview test) passes bit-exactly with pre-cavity-mouth-arc
-numbers. No new integration tests.
+- `cargo test --workspace --release` on the empty-caps path produces
+  bit-identical behavior to pre-pinned-floor across all touched
+  consumers.
+- `cargo run -p cf-cast-cli --release -- iter-1-config` produces the
+  expected 9-STL output set.
 
-### Visual gate (user-driven, post-sub-leaf-2)
+### Visual gate (user-driven, post-sub-leaf-6)
 
-Iter-1 sock fixture, per §2 "Visual gate" section above. User-side;
-Claude cannot verify (no GUI visibility).
+iter-1 sock fixture, per §2. User-side; Claude cannot verify
+(no GUI visibility).
 
 ### Regression
 
-- `cargo test -p cf-device-design --lib` — 146 tests baseline → ~148
-  expected (drop 3 primary_cap_origin tests + 1 test arg-update; add 5
-  new pinned-floor tests).
-- `cargo clippy -p cf-device-design --all-targets` clean.
-- `cargo run -p xtask -- grade cf-device-design` ≥ A.
-- `cargo build -p cf-device-design --release` clean (release path is
-  what the user runs).
+- `cargo test --workspace --release` clean.
+- `cargo clippy --workspace --all-targets` clean.
+- `cargo run -p xtask -- grade cf-cap-planes cf-design cf-device-design cf-cast-cli`
+  each ≥ A.
+- cf-device-design test count: 146 baseline + ~5 new (pinned-floor
+  tests) − ~4 (deleted primary_cap_origin tests) = ~147 expected.
+- cf-cap-planes: NEW crate; tests target ~15.
+- cf-design: existing + ~5 new pinned_floor_shell tests.
+- cf-cast-cli: existing + ~2 new pinned-floor tests.
+- insertion_sim: existing + ~2 new pinned-floor tests.
 
 ---
 
 ## 4. Acceptance criteria
 
+- [ ] `cf-cap-planes` workspace crate exists; CapPlane / parser /
+      dome_wall_only_mesh / DomeWallSignedSdf / report diagnostic /
+      constants all live there with public API.
+- [ ] cf-device-design depends on cf-cap-planes; local copies of
+      lifted code DELETED.
+- [ ] cf-design::pinned_floor_shell primitive exists; ZERO cf-cap-planes
+      dep (takes generic `&[(Point3, Vector3)]` tuples).
 - [ ] `extract_layer_surface` produces CLOSED manifold output with
       flat floor(s) at every included cap plane for `offset_m` in
       `[-LAYER_GRID_MARGIN_M, +LAYER_GRID_MARGIN_M]`.
-- [ ] No-caps fast path is byte-identical to pre-pinned-floor code.
-- [ ] `signed_volume_m3` reverts to single-argument form; closed-
-      shell `compute_validations` numbers match pre-cavity-mouth-arc
-      bit-exact on cube + cylinder analytical fixtures.
-- [ ] All existing tests pass unchanged (except the 3 deleted
-      `primary_cap_origin_*` and the 1 updated origin-invariance
-      test).
-- [ ] New unit tests for closed cavity, closed outer-grown, no-caps
-      fast path, multi-cap, Taubin-drift robustness pass.
-- [ ] `cargo test -p cf-device-design --lib` + `cargo clippy -p
-      cf-device-design --all-targets` + `cargo build -p cf-device-design
-      --release` all clean.
-- [ ] **User visual gate** on iter-1 sock fixture: cavity has flat
-      floor pinned at cap plane; outer layers are closed shells with
-      flat floors at cap plane.
+- [ ] No-caps fast path byte-identical to pre-pinned-floor on ALL
+      consumers (preview + sim + cast).
+- [ ] `signed_volume_m3` reverted to single-arg; closed-shell
+      `compute_validations` numbers match pre-cavity-mouth-arc bit-
+      exact on cube + cylinder fixtures.
+- [ ] insertion_sim's `build_insertion_geometry` accepts cap_planes;
+      cavity + outer become pinned-floor `Solid`s.
+- [ ] cf-cast-cli's `derive` reads sibling `.prep.toml` for caps; plug
+      + bodies become pinned-floor `Solid`s.
+- [ ] All pre-existing tests pass unchanged (except the 3 deleted
+      `primary_cap_origin_*` and the 1 updated origin-invariance test).
+- [ ] New unit tests across all 4 crates pass.
+- [ ] `cargo test --workspace --release` + `cargo clippy --workspace
+      --all-targets` + `cargo run -p xtask -- grade <each>` all clean.
+- [ ] **User visual gate** on iter-1 sock fixture (preview + sim +
+      mold): all three show pinned-floor geometry correctly.
+- [ ] Workshop iter-1 physical print + cast on the new mold geometry
+      ships OR rollback path (§7) is exercised cleanly.
 
 ---
 
 ## 5. Banked followups (out of scope for v1)
 
-- **F1. Extract `pinned_floor_shell` primitive to cf-design** as a
-  generic `pub fn pinned_floor_shell(dome_wall_signed_sdf: impl Sdf,
-  cap_planes: &[(Point3, Vector3)], offset_m, bounds: Aabb) -> Solid`.
-  Consumers (insertion_sim, cf-cast-cli) pass a
-  `DomeWallSignedSdf { closed: Arc<SDF>, open: Arc<SDF> }` adapter
-  implementing `Sdf`. Requires pulling `CapPlane` parser +
-  `dome_wall_only_mesh` from cf-device-design into cf-design (or a
-  new `cf-scan-prep-shared` crate). Estimated ~200 LOC + tests +
-  call-site plumbing. Unblocks F2 + F3.
-- **F2. insertion_sim consumes pinned-floor geometry via F1**.
-  Replace `Solid::from_sdf(scan_sdf, bounds).offset(cavity_offset_m)`
-  with `pinned_floor_shell(...)`. Re-run the row-23 + cf-device-design
-  ramp regressions to confirm pinned-floor cavity changes the
-  intruder-cavity contact behavior in the expected direction.
-  Required for slice-7 penetration sim correctness on real body-part
-  scans with cap plane(s).
-- **F3. cf-cast-cli consumes pinned-floor geometry via F1**. Plug
-  + per-layer body construction switches to pinned-floor. Workshop
-  iter-2+ mold STLs will have flat-floor cavity (vs today's
-  uniform-shrink dome-poking-through). Requires updating
-  `tools/cf-cast-cli/src/derive.rs` + threading cap-planes through
-  the config schema (new `.cast.toml` field or implicit from
-  `.design.toml` + `.prep.toml`).
+(F1/F2/F3 from the scope-B spec are FOLDED INTO v1 as sub-leaves 4/5/6.
+The followup list shrinks to:)
+
 - **F4. Fit-viz rungs 2-6 re-enabled**: per-step playback, scan-as-
   intruder, pressure scoring, retraction + over-cycle score,
-  auto-search. These consume the cf-device-design preview's CLOSED
-  cavity mesh from sub-leaf 1; unblocked once v1 lands.
-- **F5. Multi-cap iter-N visual gate**: when a 2-cap body-part scan
-  is in hand (forearm: wrist + elbow), confirm the dual-pinned-floor
-  shells render correctly. Code-wise already supported by the fold-
-  over-caps composition; this is a confirmation pass, not a code
-  change.
+  auto-search. These consume cf-device-design preview's CLOSED
+  cavity mesh from sub-leaf 2; unblocked once v1 lands.
+- **F5. iter-N multi-cap visual gate**: when a 2-cap body-part scan
+  is in hand (e.g. forearm: wrist + elbow), exercise the fold-over-
+  caps path in all three consumers. Code-wise already supported
+  by the fold-with-max composition; this is a confirmation pass,
+  not a code change.
 - **F6. Cleanup pass**: delete `clip_mesh_against_cap_plane` if no
-  consumer surfaces in F1-F5. Optimize `extract_layer_surface`'s
+  consumer surfaces in F4/F5. Optimize `extract_layer_surface`'s
   per-cell composition in-place (no grid clone) if profiling
-  surfaces a real cost. Delete `dome_wall_only_mesh`'s
-  `report_cap_face_classification` diagnostic if the regression
-  sentinel turns out unused after 2 iters.
+  surfaces a real cost. Delete `report_cap_face_classification`
+  diagnostic if regression sentinel turns out unused after 2 iters.
+- **F7. Sim-side reference-value re-baseline** (within v1's sub-
+  leaf 5; called out separately so the followup ledger captures
+  it). The pre-pinned-floor force readouts on the row-23 + cf-device-
+  design ramp regressions need user-blessed new reference values
+  the first time the with-caps path runs. Worth a session to walk
+  through the new numbers + commit them as the new baseline.
 
 ---
 
 ## 6. Patterns predicted to bank from implementation
 
-- **SDF-level CSG via per-extract grid composition**: the pattern
-  of "cache the expensive SDF source; compose cheap per-extract
-  overlays at extract time" lets a single fill serve many extraction
-  variants. Reusable wherever an SDF needs to be intersected /
-  united with a cheap analytical SDF (half-spaces, spheres, etc).
+- **Two-primitive composition pattern**: cached-grid-acceleration
+  variant for the preview path + pointwise-Sdf variant for ad-hoc
+  Solid composition. Same SEMANTIC composition; two implementations
+  for two performance postures. Reusable wherever a primitive needs
+  both fill-once preview + pointwise downstream use.
+- **`DomeWallSignedSdf` two-source SDF adapter** as a reusable Sdf
+  impl idiom. Generalizes to any "sign from one SDF, magnitude from
+  another" composition need.
+- **SDF-level CSG via per-extract grid composition**: cache the
+  expensive SDF source; compose cheap per-extract overlays at
+  extract time. Reusable wherever an SDF needs intersection / union
+  with cheap analytical SDFs (half-spaces, spheres, etc).
 - **Fold-over-half-spaces with `max`** as a multi-cap composition
   primitive. Order-independent, naturally handles N caps with no
-  special-casing for the multi-cap case.
+  special-casing.
 - **MC closure of an SDF intersection produces naturally-stitched
   flat polygons** at the intersection planes — no custom
-  triangulation needed, no boundary-loop detection, no fan
-  triangulation logic. The triangulator inherits its quality from
-  marching cubes.
-- **The two-SDF construction (sign-from-closed × magnitude-from-open)
-  is the natural way to represent a "body inset INWARD from a SUBSET
-  of the surface" SDF**. The cavity-mouth arc shipped it for OPEN
-  shells; the pinned-floor arc retains it as the dome-wall-signed-
-  distance field and composes the cap-plane intersection on top. The
-  two-SDF generalization (sign from one source, magnitude from
-  another) is a reusable idiom for any "treat parts of the surface
-  differently" SDF need.
+  triangulation needed.
+- **New focused workspace crate for cross-binary-tool shared schema
+  + types** (vs putting it in a foundation crate). Pattern: when 3+
+  binary tools need the same schema-aware code, create a focused
+  crate rather than coupling foundation crates to the schema.
 
 ---
 
 ## 7. Open risks
 
 - **MC iso-0 sign-tie behavior at the cap plane**. mesh-sdf's
-  `distance` heuristic has a `>= 0.0` branch at sign assignment
-  (see `sdf_layers.rs::MARGIN_OFFSET_M` doc comment for the prior
-  workaround). The composed `max(scan_sd - offset, cap_sd)` field
-  produces an EXACTLY-zero cell-corner value on the cap plane
-  whenever `scan_sd >= offset`. MC's behavior on exact-zero
-  corners can produce phantom-needle fragments. The existing
-  fixture-offset technique (3 × 1.7 mm fixture translation, 43 mm
-  grid margin) was the workaround for closed-body fixtures with
-  axis-aligned faces. The pinned-floor extraction may surface a
-  NEW phantom-needle case at the cap plane on the iter-1 sock
-  fixture (whose cap plane isn't axis-aligned, so it MAY avoid the
-  exact-zero tie, but the body-interior corners adjacent to the
-  cap plane are subject to the modulated-distance sign branch).
-  **Mitigation**: if visual gate surfaces phantom needles at the
-  cap plane, replace `cap_sd` with `(p - centroid).dot(normal) +
-  CAP_SD_TIE_BREAK_M` (~1e-9) to nudge the cap-plane half-space
-  inward by a sub-numerical-tie amount. Banked the resolution
-  rather than implementing eagerly; tackle if the visual gate
-  reveals it.
+  `distance` heuristic has a `>= 0.0` branch at sign assignment.
+  Composed `max(scan_sd - offset, cap_sd)` can produce exactly-zero
+  cell-corner values on the cap plane. MC's exact-zero corner
+  handling can produce phantom-needle fragments. **Mitigation**: if
+  visual gate (sub-leaf 2) surfaces phantom needles at the cap
+  plane, add `CAP_SD_TIE_BREAK_M ≈ 1e-9` to nudge the cap-plane
+  half-space inward by a sub-numerical-tie amount. Banked the
+  resolution rather than implementing eagerly.
 
-- **`mesh-sdf`'s far-field sign heuristic on the dome-wall-only mesh**
-  (per cavity-mouth spec §1 Q2 + insertion_sim's `build_grid_sdf`
-  precedent — sign was ~12% wrong on the sloppy-decimated open
-  scan). For the cf-device-design preview, the cached grid only
-  evaluates SDF inside the body AABB + 40 mm margin, where mesh-sdf's
-  heuristic was reliable enough on iter-1 (the cavity-mouth visual
-  gate passed). The pinned-floor extraction adds a per-cell cap_sd
-  composition but doesn't re-query mesh-sdf, so this risk is
-  unchanged from cavity-mouth ship. **Mitigation**: not needed at
-  v1 of pinned-floor; if iter-2+ surfaces it, switch the cf-device-
-  design preview's SDF source from `mesh-sdf::SignedDistanceField`
-  to insertion_sim's `build_grid_sdf` (flood-fill, robust sign).
-  Bigger arc; bank for iter-2.
+- **mesh-sdf's far-field sign heuristic on dome_wall_only mesh**
+  (per cavity-mouth spec §1 Q2 + insertion_sim's build_grid_sdf
+  precedent — sign was ~12% wrong on sloppy-decimated open scan).
+  For cf-device-design preview, the cached grid only evaluates SDF
+  inside body AABB + 40 mm margin where mesh-sdf's heuristic was
+  reliable on iter-1. **For insertion_sim's open-mesh GridSdf**
+  (NEW in sub-leaf 5): `build_grid_sdf` is the flood-fill SDF that
+  was specifically built to handle non-manifold open meshes
+  (insertion_sim::build_grid_sdf docstring §7.3a). The
+  DomeWallSignedSdf adapter consumes this flood-fill SDF for the
+  open side — should sidestep the heuristic-sign issue entirely.
+  **For cf-cast-cli** (NEW in sub-leaf 6): cf-cast-cli builds via
+  `mesh_sdf::SignedDistanceField` today, not flood-fill. The
+  open-mesh SDF build in cf-cast-cli could surface the ~12%-wrong
+  sign at points far from the open surface. **Mitigation**:
+  cf-cast-cli's sub-leaf 6 should mirror insertion_sim's path and
+  use `build_grid_sdf` for the open SDF — this requires lifting
+  `build_grid_sdf` from insertion_sim.rs into cf-cap-planes (or
+  cf-design). Bundle this into sub-leaf 6's design pass or call it
+  out as a sub-leaf-6 dependency. **Recommend**: lift `build_grid_sdf`
+  into cf-cap-planes' v1.0 surface alongside DomeWallSignedSdf —
+  it's the canonical SDF construction for the open mesh and all
+  consumers need it.
 
-- **`extract_layer_surface`'s per-extract `cache.grid.clone()`** —
-  iter-1's grid is ~20 k cells (~160 kB f64); cloning every frame
-  at 60 Hz is ~10 MB/s allocator churn. Bevy's frame-time budget
-  has ~16 ms per frame; per-extract cost is ~1.5 ms including the
-  clone (per Q2 cost estimate). Acceptable for v1. If profiling
-  surfaces a real cost (e.g. iter-2 grids with finer pitch), switch
-  to in-place composition with a per-cell `read → write` scan (no
-  clone). Banked as F6.
+- **Per-extract grid clone churn** (cf-device-design preview): iter-1's
+  ~20 k cells × ~8 bytes = ~160 kB/clone; per-frame at 60 Hz is
+  ~10 MB/s allocator. Acceptable for v1; in-place composition is F6.
+
+- **iter-1 mold geometry changes** vs prior iters (sub-leaf 6). New
+  potential failure modes at print/cast:
+  - Print: flat cap-plane floor adds a large flat face; orientation
+    + supports may need adjustment.
+  - Cast: plug now has a flat cap-plane-side floor instead of a
+    uniformly-shrunk dome; plug orientation in mold may need
+    adjustment.
+  **Rollback path**: `git revert <sub-leaf-6-commit>` removes ONLY
+  the cf-cast-cli plumbing, leaving preview + sim on pinned-floor
+  while cf-cast-cli falls back to today's uniform-offset mold.
+  Single-commit revert; clean rollback. Sub-leaf 6 is the LAST
+  sub-leaf precisely so this revert is uncomplicated.
+
+- **insertion_sim reference-value re-baseline** (sub-leaf 5). The
+  row-23 + cf-device-design ramp regression tests today have force
+  readouts captured against uniform-offset geometry. With pinned-
+  floor cavity, the cavity floor pin shifts force balance in
+  physically-meaningful ways — the regression tests' empty-caps
+  path stays bit-identical, but with-caps fixtures need new
+  reference values. F7 (banked in §5) captures this; user walks
+  through the new numbers + accepts them as the new baseline.
+
+- **cf-scan-prep ↔ cf-cap-planes round-trip schema** (sub-leaf 1).
+  cf-cap-planes' serde-derived CapPlane should make the
+  cf-scan-prep emit ↔ consumer parse round-trip type-safe. If
+  cf-scan-prep doesn't already use cf-cap-planes (today it emits
+  TOML by hand), sub-leaf 1 should ALSO update cf-scan-prep's
+  emit path to use the shared serde CapPlane. Bundle this into
+  sub-leaf 1 to lock in the round-trip safety from day 1, OR call
+  out as a sub-leaf-1.5 (cf-scan-prep emit refactor). **Recommend**:
+  bundle into sub-leaf 1 — it's a small additional change (~20 LOC
+  in cf-scan-prep) and gets the round-trip safety in place before
+  any consumer relies on it.
 
 ---
 
 ## 8. Decision: spec-only this session
 
 This session produces ONLY this spec doc + a `git commit
-docs(cf-device-design): recon → spec` commit. NO code, NO experiments,
-NO one-off scripts. Per [[feedback-autonomous-architecture]] +
+docs(cf-device-design): pinned-floor scope-C spec rewrite` commit.
+NO code, NO experiments, NO one-off scripts. Per
+[[feedback-autonomous-architecture]] +
 [[feedback-bookmark-when-surface-levers-exhaust]] three-session
 pattern.
 
 NEXT SESSION = implementation per the §2 ladder. Cold-read entry
-point: this spec, then `sdf_layers.rs::extract_layer_surface` +
-`main.rs::signed_volume_m3` + `main.rs::compute_validations`. The
-existing two-SDF cached-grid path stays UNCHANGED.
+point: this spec, then the parent bookmark §1 (user model), then the
+file surfaces listed per sub-leaf. The existing two-SDF cached-grid
+path stays as the dome-wall-signed-distance source.
 
 ---
 
 ## 9. Decisions log (load-bearing recon outputs)
 
-1. **Pinned-floor primitive is per-extract SDF composition**, NOT
-   anisotropic offset or post-MC stitching. (§1 Q2)
-2. **Two-SDF cached grid stays** as the dome-wall-signed-distance
-   field source. (§1 Q5)
-3. **`primary_cap_origin` + cap-centroid-origin volume integral
+1. **Scope C — all three consumers updated in v1** (preview + sim +
+   mold). User-confirmed after recon laid out trade-offs. (§ Headline)
+2. **New `cf-cap-planes` workspace crate** as the shared library
+   home for CapPlane + parser + dome_wall_only_mesh + DomeWallSignedSdf
+   + diagnostics. (§1 Q3)
+3. **Two primitives, one semantic composition**: cached-grid extract
+   for preview; cf-design Solid composition for sim/cast. Same
+   `dome_wall_signed_sdf.offset(offset_m) ∩ cap half-spaces`
+   formula. (§1 Q1 + Q2)
+4. **cf-design stays schema-agnostic** — `pinned_floor_shell` takes
+   generic `&[(Point3, Vector3)]`, NO cf-cap-planes dep. (§1 Q3)
+5. **Two-SDF cached grid stays** as the dome-wall-signed-distance
+   field source. The cavity-mouth arc's scaffolding survives almost
+   entirely. (§1 Q5)
+6. **`primary_cap_origin` + cap-centroid-origin volume integral
    trick gets deleted** — closed shells are origin-invariant. (§1 Q5)
-4. **v1 stays inside cf-device-design**; cf-design extraction is
-   Followup F1. (§1 Q3)
-5. **Insertion sim + cf-cast-cli don't change in v1** — they
-   compose at SDF/`Solid` level, never consume the
-   `extract_layer_surface` triangle mesh. F2 + F3 plumb them to
-   pinned-floor geometry separately. (§1 Q8)
-6. **Multi-cap is automatic** via fold-over-caps with `max`. iter-1
+7. **Six sub-leaves; cf-cast-cli plumbing is LAST**; single-commit
+   revert path for iter-1 print/cast rollback. (§2 + §7)
+8. **Insertion sim + cf-cast-cli compose at `Solid` level** — never
+   consume a triangle mesh; pinned-floor primitive returns `Solid`.
+   (§1 Q8)
+9. **Multi-cap is automatic** via fold-over-caps with `max`. iter-1
    single-cap + iter-N two-cap use the same code path. (§1 Q7)
+10. **`build_grid_sdf` may need to lift into cf-cap-planes** for
+    cf-cast-cli's open-mesh SDF construction (sub-leaf 6 risk
+    surfaced in §7). Recommend bundle into sub-leaf 1.
+11. **cf-scan-prep emit path** should be updated to use serde CapPlane
+    in sub-leaf 1 for round-trip schema safety from day 1.
