@@ -134,68 +134,70 @@ pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 // Tests below import `cf_cap_planes::CAP_FACE_PLANARITY_EPS_M`
 // directly where the original value was used as an assertion bound.
 
-/// Decimated-scan SDF(s) + a pre-filled `ScalarGrid` of cached
-/// modulated distance values, plus the AABB the grid covers.
+/// Decimated-scan SDF(s) + pre-filled `ScalarGrid`(s) of cached
+/// distance values, plus the AABB the grids cover.
 ///
 /// Built ONCE per scan load via [`build_cached_scan_sdf`]. Every
-/// per-tick layer extraction reads from the same cached grid via
-/// [`extract_layer_surface`]; the per-iso `MarchingCubesConfig::at_iso_value`
-/// trick lets every layer share the single fill. Contrast with
-/// [`mesh_offset::offset_mesh`], which subtracts the offset inside
-/// `sample_sdf_to_grid` and extracts at iso 0 — one fill per offset.
+/// per-tick layer extraction reads from the cached grids via
+/// [`extract_layer_surface`].
 ///
-/// **Two-SDF construction** (cavity-mouth spec sub-leaf 3): the
-/// `grid` cells store a *modulated* distance
-/// `sd_mod = sign(sd_closed) * |sd_open|`, where
-/// - `sdf_closed` is the SDF of the full closed cleaned mesh (cap
-///   polygons included). Its sign correctly distinguishes body-
-///   interior from body-exterior even for points outside the body
-///   laterally (e.g. far above the dome).
-/// - `sdf_open` is the SDF of the cleaned mesh with `included` cap
-///   polygons stripped (via [`dome_wall_only_mesh`]). Its unsigned
-///   distance does NOT see the cap polygon, so the inward iso
-///   surface has no cap-polygon offset to enclose — the cavity
-///   terminates naturally at the cap plane.
+/// **Two-grid construction** (per the candidate-A redesign at
+/// `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md`):
+/// - `closed_grid` holds the raw `sdf_closed.distance(p)` (signed,
+///   negative inside, positive outside) at every cell. Drives the
+///   no-caps fast path via `MarchingCubesConfig::at_iso_value(offset_m)`
+///   — byte-identical to the pre-pinned-floor uniform offset.
+/// - `open_grid` (Some only when cap planes are present) holds the
+///   raw `sdf_open.unsigned_distance(p)` (always ≥ 0) at every cell.
+///   Drives the with-caps path's per-cell candidate-A composition
+///   (`body.subtract(rind)` for cavity, `body.union(rind)` for outer)
+///   in [`extract_layer_surface`].
 ///
-/// When there are no cap planes the two SDFs are the same `Arc` and
-/// the fill loop skips the second query — single-SDF fast path. See
-/// `docs/CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md` §1 Q2 for the full
-/// derivation.
-///
-/// Both SDFs are retained (not just consumed by the fill) for two
-/// future uses: (a) the heat-map re-projection (per-tet → per-layer-
-/// vertex closest-point lookup, sub-leaf 7) and (b) a higher-fidelity
-/// Save path. `bounds` is held for the same future Save-side
-/// consumer + for `cf_design::Sdf` adapters that need an outer
-/// bounding interval.
+/// `sdf_closed` and `sdf_open` (the underlying mesh-derived SDFs) are
+/// retained for two future uses: (a) the heat-map re-projection
+/// (per-tet → per-layer-vertex closest-point lookup, sub-leaf 7) and
+/// (b) a higher-fidelity Save path. `bounds` is held for the same
+/// future Save-side consumer + for `cf_design::Sdf` adapters that
+/// need an outer bounding interval.
 #[derive(Resource, Clone)]
 pub(crate) struct CachedScanSdf {
     /// Reference-counted SDF over the decimated CLOSED scan (cap
-    /// polygons included). Provides the SIGN for the cached grid's
-    /// modulated distance. `Arc<T>` is `Send + Sync` whenever `T` is,
-    /// and `SignedDistanceField` holds plain `Vec`s of
+    /// polygons included). Provides the SIGN for the candidate-A
+    /// composition. `Arc<T>` is `Send + Sync` whenever `T` is, and
+    /// `SignedDistanceField` holds plain `Vec`s of
     /// `f64`/`u32`/`Vector3<f64>` — so this satisfies Bevy's
     /// `Resource: Send + Sync` requirement.
     pub(crate) sdf_closed: Arc<SignedDistanceField>,
     /// Reference-counted SDF over the decimated OPEN scan (cap
-    /// polygons stripped). Provides the unsigned MAGNITUDE for the
-    /// cached grid's modulated distance. Equals `sdf_closed` (same
-    /// `Arc`) when no cap planes are present — the fill loop skips
-    /// the second query in that case.
+    /// polygons stripped via [`dome_wall_only_mesh`]). Provides the
+    /// unsigned MAGNITUDE for the candidate-A rind. Equals `sdf_closed`
+    /// (same `Arc`) when no cap planes are present — the
+    /// `build_cached_scan_sdf` shortcut so `Arc::ptr_eq` lets callers
+    /// detect the no-caps fast path.
     pub(crate) sdf_open: Arc<SignedDistanceField>,
-    /// Grid pre-filled with the modulated distance
-    /// `sign(sdf_closed.distance(p)) * sdf_open.unsigned_distance(p)`
-    /// at every cell (or just `sdf_closed.distance(p)` when no caps).
-    /// NOT iso-shifted — per-layer extraction picks the iso value at
-    /// extract-time.
-    pub(crate) grid: ScalarGrid,
-    /// Margin-expanded AABB the grid covers, in physics-frame meters.
+    /// Grid pre-filled with the raw closed-body signed distance
+    /// `sdf_closed.distance(p)` at every cell. Used directly for the
+    /// no-caps `MarchingCubesConfig::at_iso_value(offset_m)` extraction
+    /// AND as the body-SDF source for the with-caps per-cell candidate
+    /// A composition.
+    pub(crate) closed_grid: ScalarGrid,
+    /// Grid pre-filled with the raw unsigned open-body distance
+    /// `sdf_open.unsigned_distance(p)` (always ≥ 0). `Some` only when
+    /// cap planes were present at build time; `None` on the no-caps
+    /// fast path (where the second grid would never be queried).
+    pub(crate) open_grid: Option<ScalarGrid>,
+    /// Margin-expanded AABB the grids cover, in physics-frame meters.
     pub(crate) bounds: (Point3<f64>, Point3<f64>),
-    /// Most-negative cached grid value (= negation of the cavity-
-    /// collapse threshold). When the user-requested cavity inset goes
-    /// below this, the inward iso lies past the modulated minimum
-    /// and the extracted cavity mesh is empty — the SDF analog of
-    /// the prior `min_radial_distance_m` check.
+    /// Most-negative `closed_grid` value (= negation of the cavity-
+    /// collapse threshold under the no-caps fast path). When the user-
+    /// requested cavity inset goes below this, the inward iso lies
+    /// past the closed-grid minimum and marching cubes finds no
+    /// surface — the SDF analog of the prior `min_radial_distance_m`
+    /// check. (Under the with-caps candidate-A composition the actual
+    /// collapse threshold depends on `open_grid`'s in-body minimum;
+    /// pre-pinned-floor `cavity_collapse_inset_m` semantics are
+    /// preserved via the closed-grid minimum for now — sharpening this
+    /// for the with-caps path is a banked validations-panel followup.)
     pub(crate) min_sdf_value: f64,
 }
 
@@ -294,22 +296,27 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 // this module now invoke `cf_cap_planes::dome_wall_only_mesh` +
 // `cf_cap_planes::report_cap_face_classification` directly.
 
-/// Build the cached SDF(s) + grid from a cleaned-scan mesh.
+/// Build the cached SDF(s) + grids from a cleaned-scan mesh.
 ///
 /// Decimates the scan to [`SDF_SOURCE_TARGET_FACES`] via
 /// [`decimate_scan_for_sdf`], builds the closed-body
 /// [`SignedDistanceField`], optionally builds a second SDF over the
 /// open mesh (cap polygons stripped via [`dome_wall_only_mesh`]) when
-/// `cap_planes` is non-empty, allocates a [`ScalarGrid`] over the
-/// scan AABB expanded by `margin_m`, and fills the grid with the
-/// modulated distance `sign(sd_closed) * |sd_open|` at every cell
-/// (or just `sd_closed` when no caps).
+/// `cap_planes` is non-empty, allocates one or two [`ScalarGrid`]s
+/// over the scan AABB expanded by `margin_m`, and fills each with the
+/// raw distance from its underlying SDF (signed for the closed grid,
+/// unsigned for the open grid).
+///
+/// The two grids drive the candidate-A composition in
+/// [`extract_layer_surface`]; see [`CachedScanSdf`] for the storage
+/// contract.
 ///
 /// **Cost**: the no-caps fast path matches the legacy single-SDF
-/// performance (1 SDF build + 1 query per cell). The cap path adds a
-/// second SDF build at startup + a second query per cell — for the
-/// iter-1 sock fixture this measured ~324 ms → ~648 ms (one-time at
-/// scan load); per-extraction cost is unchanged.
+/// performance (1 SDF build + 1 grid fill). The cap path adds a
+/// second SDF build at startup + a second grid fill — for the iter-1
+/// sock fixture this measured ~324 ms → ~648 ms (one-time at scan
+/// load); per-extraction cost is the per-cell candidate-A composition
+/// (~ms range, see spec §1 Q3).
 ///
 /// Use [`LAYER_PREVIEW_CELL_SIZE_M`] for `cell_size_m` and
 /// [`LAYER_GRID_MARGIN_M`] for `margin_m` in production calls; the
@@ -340,10 +347,9 @@ pub(crate) fn build_cached_scan_sdf(
     let sdf_closed_raw = SignedDistanceField::new(decimated.clone())
         .context("build closed-body SignedDistanceField from the decimated scan")?;
     let sdf_closed = Arc::new(sdf_closed_raw);
-    // No-caps fast path: share the same Arc so the per-cell fill
-    // loop's `cap_planes.is_empty()` branch can skip the second
-    // query without leaving `sdf_open` empty for downstream
-    // consumers.
+    // No-caps fast path: share the same Arc so callers can `Arc::ptr_eq`
+    // to detect the no-caps build, and the second SDF construction is
+    // skipped.
     let sdf_open = if cap_planes.is_empty() {
         Arc::clone(&sdf_closed)
     } else {
@@ -364,33 +370,28 @@ pub(crate) fn build_cached_scan_sdf(
         aabb.max.y + margin_m,
         aabb.max.z + margin_m,
     );
-    let mut grid = ScalarGrid::from_bounds(min, max, cell_size_m, 0);
+    let mut closed_grid = ScalarGrid::from_bounds(min, max, cell_size_m, 0);
+    let mut open_grid =
+        (!cap_planes.is_empty()).then(|| ScalarGrid::from_bounds(min, max, cell_size_m, 0));
 
-    let (nx, ny, nz) = grid.dimensions();
+    let (nx, ny, nz) = closed_grid.dimensions();
     let mut min_sdf_value = f64::INFINITY;
-    let has_caps = !cap_planes.is_empty();
     for iz in 0..nz {
         for iy in 0..ny {
             for ix in 0..nx {
-                let p = grid.position(ix, iy, iz);
+                let p = closed_grid.position(ix, iy, iz);
                 let sd_closed = sdf_closed.distance(p);
-                let d = if has_caps {
-                    // Two-SDF magnitude: cap polygon is invisible to
-                    // `sdf_open.unsigned_distance`, so the inward iso
-                    // has no cap-polygon offset to enclose. Sign
-                    // comes from `sd_closed` (correct sign for points
-                    // outside the body laterally — see spec §1 Q2).
-                    // `signum` returns 0.0 when sd_closed is exactly
-                    // zero; for grid cells landing on the closed-body
-                    // surface this collapses to 0, which is the
-                    // correct iso-zero value either way.
-                    sd_closed.signum() * sdf_open.unsigned_distance(p)
-                } else {
-                    sd_closed
-                };
-                grid.set(ix, iy, iz, d);
-                if d < min_sdf_value {
-                    min_sdf_value = d;
+                closed_grid.set(ix, iy, iz, sd_closed);
+                if sd_closed < min_sdf_value {
+                    min_sdf_value = sd_closed;
+                }
+                if let Some(grid) = open_grid.as_mut() {
+                    // Unsigned distance — non-negative everywhere; the
+                    // open mesh's far-field sign heuristic is
+                    // sidestepped by construction (see
+                    // `cf_design::pinned_floor_shell`'s `UnsignedRindSdf`
+                    // docstring).
+                    grid.set(ix, iy, iz, sdf_open.unsigned_distance(p));
                 }
             }
         }
@@ -399,7 +400,8 @@ pub(crate) fn build_cached_scan_sdf(
     Ok(CachedScanSdf {
         sdf_closed,
         sdf_open,
-        grid,
+        closed_grid,
+        open_grid,
         bounds: (min, max),
         min_sdf_value,
     })
@@ -431,6 +433,14 @@ pub(crate) fn build_cached_scan_sdf(
 /// interior, as cf-scan-prep's `orient_cap_normal_outward` flips
 /// raw fit-plane normals before recording). The kept half-space is
 /// therefore `signed ≤ 0`.
+///
+/// **Orphaned in production post-A3** (per the redesign spec's
+/// candidate-A composition, the cap-plane intersection is baked into
+/// the per-cell composed grid in [`extract_layer_surface`]). Retained
+/// for potential ad-hoc mesh-level clips and as a regression-testable
+/// reference for the per-cell `cap_sd.max` fold; deletion is a banked
+/// cleanup (spec §5 F6). Tests below still exercise it.
+#[allow(dead_code)]
 fn clip_mesh_against_cap_plane(mesh: &IndexedMesh, plane: &CapPlane) -> IndexedMesh {
     let centroid = plane.centroid.coords;
     let normal = plane.normal;
@@ -532,35 +542,57 @@ fn clip_mesh_against_cap_plane(mesh: &IndexedMesh, plane: &CapPlane) -> IndexedM
     out
 }
 
-/// Extract one layer's iso surface from the cached grid, then trim
-/// triangles that fall on the cap-extension side of every cap plane.
+/// Extract one layer's iso surface from the cached grids via the
+/// candidate-A composition (per the redesign spec §1 Q3).
 ///
-/// `offset_m` is the iso value in meters: positive = outward
-/// (layer outer surfaces), negative = inward (cavity surface),
-/// zero = original scan surface.
+/// `offset_m` is the offset distance in meters: positive = outward
+/// (layer outer surfaces), negative = inward (cavity surface), zero =
+/// original scan surface clipped by the cap half-spaces.
 ///
-/// The cap-plane half-space clip is uniform across cavity and outer
-/// extractions:
-/// - For the cavity (`offset_m < 0`) the two-SDF construction already
-///   terminates the iso surface at the cap plane, so the clip is
-///   typically a no-op (any triangles that drift past the cap plane
-///   from MC interpolation jitter get pruned).
-/// - For an outer surface (`offset_m > 0`) the iso extends PAST the
-///   cap plane as a "skirt" (the dome+wall-only SDF has large
-///   unsigned distance up there, distance to the cap-edge ring), so
-///   the clip removes the skirt and leaves a knife-edge brim at the
-///   cap plane.
+/// # No-caps fast path
 ///
-/// Cheap (sub-millisecond MC on a 5 mm grid + O(faces × caps) clip;
-/// caps is 1–2 in practice).
+/// When `cap_planes` is empty the result is `marching_cubes(closed_grid,
+/// at_iso_value(offset_m))` — byte-identical to the pre-pinned-floor
+/// uniform offset. `open_grid` is unused (in fact `None`).
+///
+/// # With-caps composition
+///
+/// Per cell, compose the candidate-A SDF and the cap-plane half-space
+/// intersections into a fresh `ScalarGrid`, then extract at iso 0:
+///
+/// ```text
+/// body_sd = closed_grid.get(cell)
+/// open_d  = open_grid.get(cell)        // unsigned, ≥ 0
+/// T       = offset_m.abs()
+///
+/// composed_sd = match offset_m.signum() {
+///     ≤ 0.0 (cavity): max(body_sd, T - open_d)   // body.subtract(rind)
+///      > 0.0 (outer):  min(body_sd, open_d - T)   // body.union(rind)
+/// }
+/// for cap in cap_planes:
+///     cap_sd = (cell_pos - cap.centroid) · cap.normal  // positive outside body
+///     composed_sd = composed_sd.max(cap_sd)            // intersect with body-interior side
+/// ```
+///
+/// The MC then extracts the iso-0 surface of the composed grid — a
+/// closed manifold with flat floor(s) at the cap plane(s) per the
+/// candidate-A geometric model.
+///
+/// # Cost
+///
+/// One O(cells) composition pass + one MC call. No post-MC clip is
+/// needed (the cap-plane intersection is baked into the composed grid
+/// via the max-fold). Per-extract allocator churn for the composed
+/// grid is `cells × 8 bytes`; on iter-1 (~44k cells) this is ~350 KB
+/// per extraction.
 ///
 /// Pure: does not mutate the cache.
 ///
 /// # Panics
 ///
 /// `debug_assert!`s that `|offset_m| < LAYER_GRID_MARGIN_M` — the
-/// grid AABB was sized for that envelope; extractions past the
-/// margin would silently clip against the bounds.
+/// grid AABB was sized for that envelope; extractions past the margin
+/// would silently clip against the bounds.
 #[must_use]
 pub(crate) fn extract_layer_surface(
     cache: &CachedScanSdf,
@@ -574,12 +606,71 @@ pub(crate) fn extract_layer_surface(
         offset_m.abs(),
         LAYER_GRID_MARGIN_M,
     );
-    let config = MarchingCubesConfig::at_iso_value(offset_m);
-    let mut mesh = marching_cubes(&cache.grid, &config);
-    for plane in cap_planes {
-        mesh = clip_mesh_against_cap_plane(&mesh, plane);
+    if cap_planes.is_empty() {
+        // Pre-pinned-floor parity: MC at `iso = offset_m` on the raw
+        // closed-body SDF grid. Byte-identical to the uniform-offset
+        // path this primitive replaced.
+        let config = MarchingCubesConfig::at_iso_value(offset_m);
+        return marching_cubes(&cache.closed_grid, &config);
     }
-    mesh
+
+    // `build_cached_scan_sdf` populates `open_grid` exactly when
+    // `cap_planes` is non-empty, and the same `cap_planes` value flows
+    // through extraction. The internal invariant is pinned by
+    // `with_caps_open_grid_is_raw_unsigned_distance`; a None here is
+    // either a build bug or the caller wiring a `CachedScanSdf` built
+    // with one cap_planes value against an extraction with a different
+    // value — either way an expected internal contract violation.
+    #[allow(clippy::expect_used)]
+    let open_grid = cache
+        .open_grid
+        .as_ref()
+        .expect("with-caps CachedScanSdf must carry open_grid (Some when caps present)");
+    let (nx, ny, nz) = cache.closed_grid.dimensions();
+    // Composed grid mirrors the cached grid's lattice exactly — same
+    // dimensions, origin, and cell pitch — so `composed.position` and
+    // `closed_grid.position` agree cell-for-cell.
+    let mut composed = ScalarGrid::new(
+        cache.closed_grid.dimensions(),
+        cache.closed_grid.origin(),
+        cache.closed_grid.cell_size(),
+    );
+    let t = offset_m.abs();
+
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let body_sd = cache.closed_grid.get(ix, iy, iz);
+                let open_d = open_grid.get(ix, iy, iz);
+                // Candidate A: rind = {|open| − T}. cavity =
+                // body.subtract(rind) ⇒ max(body, −rind) = max(body, T −
+                // open). outer = body.union(rind) ⇒ min(body, rind) =
+                // min(body, open − T). offset_m == 0 just clips the
+                // body by the caps below.
+                let composed_body_rind = if offset_m < 0.0 {
+                    body_sd.max(t - open_d)
+                } else if offset_m > 0.0 {
+                    body_sd.min(open_d - t)
+                } else {
+                    body_sd
+                };
+                // Intersect with the body-interior half-space of every
+                // cap plane: `(p − centroid) · normal > 0` is the
+                // cap-extension side, positive there → max collapses to
+                // it, evicting any iso below the cap plane in the
+                // cap-extension region.
+                let p = cache.closed_grid.position(ix, iy, iz);
+                let composed_sd = cap_planes.iter().fold(composed_body_rind, |acc, plane| {
+                    let cap_sd = (p.coords - plane.centroid.coords).dot(&plane.normal);
+                    acc.max(cap_sd)
+                });
+                composed.set(ix, iy, iz, composed_sd);
+            }
+        }
+    }
+
+    let config = MarchingCubesConfig::at_iso_value(0.0);
+    marching_cubes(&composed, &config)
 }
 
 #[cfg(test)]
@@ -1014,13 +1105,13 @@ mod tests {
         let sphere = unit_icosphere(2);
         let a = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build a");
         let b = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build b");
-        assert_eq!(a.grid.dimensions(), b.grid.dimensions());
-        let (nx, ny, nz) = a.grid.dimensions();
+        assert_eq!(a.closed_grid.dimensions(), b.closed_grid.dimensions());
+        let (nx, ny, nz) = a.closed_grid.dimensions();
         for iz in 0..nz {
             for iy in 0..ny {
                 for ix in 0..nx {
-                    let va = a.grid.get(ix, iy, iz);
-                    let vb = b.grid.get(ix, iy, iz);
+                    let va = a.closed_grid.get(ix, iy, iz);
+                    let vb = b.closed_grid.get(ix, iy, iz);
                     assert!(
                         (va - vb).abs() < 1e-12,
                         "grid mismatch at ({ix},{iy},{iz}): {va} vs {vb}",
@@ -1308,34 +1399,33 @@ mod tests {
     }
 
     #[test]
-    fn two_sdf_cavity_opens_at_cap_plane_on_cube() {
+    fn candidate_a_cavity_floor_pinned_to_cap_plane_on_cube() {
         // Cube of half-extent 0.05 m centered at origin, top face
-        // (z = +0.05) flagged as the cap plane. Without the two-SDF
-        // construction the cavity at iso = -0.005 would be a smaller
-        // closed box at z ∈ [-0.045, +0.045]. With two-SDF the cavity
-        // has no floor at z = +0.045 — its top vertices reach up to
-        // z ≈ +0.05 (the cap plane) because the open mesh (top face
-        // stripped) has no surface up there for the unsigned distance
-        // to be 5 mm from.
+        // (z = +0.05) flagged as the cap plane. Under candidate A the
+        // cavity is a closed manifold whose floor sits AT the cap
+        // plane (z = +0.05) — the body's top cap-polygon face survives
+        // body.subtract(rind) untouched because the rind is built over
+        // the cap-stripped open mesh and therefore never thickens
+        // around the cap polygon.
         //
-        // Assertion: max z across extracted cavity vertices is closer
-        // to the cap-plane height (+0.05) than to the would-be inward
-        // floor (+0.045). With a 5 mm grid the MC vertex placement
-        // can drift by half a cell — we accept up to 2.5 mm from the
-        // cap plane, which is still well above the closed-cavity
-        // floor.
+        // Pin both halves of the contract: cavity reaches z ≈ cap
+        // plane (within half a cell, well above the would-be uniform-
+        // offset floor at z = +0.045) AND does not extend past the
+        // cap plane (the per-cell cap-half-space fold clips outward).
         let cube = axis_aligned_cube(0.05, Vector3::zeros());
         let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
         let cell = 0.005;
-        let cache = build_cached_scan_sdf(&cube, &[cap], cell, 0.043).expect("build cache");
-        let cavity = extract_layer_surface(&cache, &[], -0.005);
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build cache");
+        let cavity = extract_layer_surface(&cache, &caps, -0.005);
         assert!(!cavity.vertices.is_empty(), "cavity must extract");
         let max_z = cavity.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
         let floor_z = 0.045_f64;
         let cap_z = 0.05_f64;
         assert!(
             max_z > floor_z + 0.002,
-            "cavity top reached only z = {max_z}; expected > {} (above closed-cavity floor at {floor_z})",
+            "cavity top reached only z = {max_z}; expected > {} (above the \
+             uniform-offset would-be floor at {floor_z}; candidate A pins floor at cap plane)",
             floor_z + 0.002,
         );
         assert!(
@@ -1345,28 +1435,66 @@ mod tests {
     }
 
     #[test]
-    fn two_sdf_no_caps_path_is_bit_identical_to_legacy_fast_path() {
-        // Determinism + backwards-compat: the no-caps modulated fill
-        // collapses to `sd_closed.distance(p)` for every cell. Any
-        // grid-value drift between the two-SDF path with empty caps
-        // and a hypothetical single-SDF fill would indicate the
-        // branch wasn't actually short-circuiting.
-        //
-        // We exercise the property by hand here: re-run the fill via
-        // direct SDF queries and compare cell-by-cell with the cached
-        // grid. Used as the regression gate that the no-caps branch
-        // matches the pre-spec single-SDF behaviour.
+    fn no_caps_closed_grid_is_raw_sd_closed() {
+        // Backwards-compat: the no-caps build fills `closed_grid` with
+        // raw `sd_closed.distance(p)` and leaves `open_grid` as None.
+        // Pin both halves of the contract so a future refactor that
+        // accidentally re-introduces grid modulation surfaces here.
         let sphere = unit_icosphere(2);
         let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build cache");
-        let (nx, ny, nz) = cache.grid.dimensions();
+        assert!(
+            cache.open_grid.is_none(),
+            "no-caps fast path must leave open_grid as None",
+        );
+        let (nx, ny, nz) = cache.closed_grid.dimensions();
         for iz in 0..nz {
             for iy in 0..ny {
                 for ix in 0..nx {
-                    let cached = cache.grid.get(ix, iy, iz);
-                    let direct = cache.sdf_closed.distance(cache.grid.position(ix, iy, iz));
+                    let cached = cache.closed_grid.get(ix, iy, iz);
+                    let direct = cache
+                        .sdf_closed
+                        .distance(cache.closed_grid.position(ix, iy, iz));
                     assert!(
                         (cached - direct).abs() < 1e-12,
-                        "no-caps grid value at ({ix},{iy},{iz}) drifted: cached={cached} vs direct sd_closed={direct}",
+                        "no-caps closed_grid value at ({ix},{iy},{iz}) drifted: \
+                         cached={cached} vs direct sd_closed={direct}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn with_caps_open_grid_is_raw_unsigned_distance() {
+        // Cap-present build populates `open_grid` with raw
+        // `sdf_open.unsigned_distance(p)`. Cell values are always
+        // non-negative — pin both halves so the candidate-A composition
+        // in `extract_layer_surface` can rely on `open_d ≥ 0` without
+        // an `.abs()`.
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cache = build_cached_scan_sdf(&cube, &[cap], 0.005, 0.043).expect("build cache");
+        let open_grid = cache
+            .open_grid
+            .as_ref()
+            .expect("with-caps build must populate open_grid");
+        let (nx, ny, nz) = open_grid.dimensions();
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let cached = open_grid.get(ix, iy, iz);
+                    assert!(
+                        cached >= 0.0,
+                        "open_grid value at ({ix},{iy},{iz}) is negative: {cached} \
+                         (unsigned distance must be non-negative by construction)",
+                    );
+                    let direct = cache
+                        .sdf_open
+                        .unsigned_distance(open_grid.position(ix, iy, iz));
+                    assert!(
+                        (cached - direct).abs() < 1e-12,
+                        "open_grid value drifted at ({ix},{iy},{iz}): cached={cached} vs \
+                         direct unsigned_distance={direct}",
                     );
                 }
             }
@@ -1485,12 +1613,13 @@ mod tests {
     #[test]
     fn extract_layer_surface_with_outer_clip_trims_skirt_on_cube() {
         // Cube of half-extent 50 mm, top face flagged as cap plane,
-        // outward offset T = 10 mm. Without the post-MC clip the
-        // outer iso surface extends past the cap plane (forming a
-        // skirt going to z ≈ +60 mm because the dome+wall-only SDF
-        // has large unsigned distance up there). With the clip the
-        // outer iso terminates at the cap plane (z ≤ +50 mm modulo
-        // half a cell).
+        // outward offset T = 10 mm. Under the candidate-A composition
+        // the cap-plane half-space is folded into the per-cell
+        // composed grid (`composed.max(cap_sd)`), so the iso-0
+        // extraction natively terminates at the cap plane (z ≤
+        // +50 mm modulo half a cell). Previously the post-MC
+        // Sutherland-Hodgman clip pulled off the skirt; the property
+        // is the same and this test still pins it.
         let cube = axis_aligned_cube(0.05, Vector3::zeros());
         let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
         let cell = 0.005;
@@ -1502,6 +1631,178 @@ mod tests {
         assert!(
             max_z <= 0.05 + 1e-9,
             "outer iso top z = {max_z} must be clipped to cap plane (z = 0.05)",
+        );
+    }
+
+    // ----- Sub-leaf A3: candidate-A per-cell composition --------------
+
+    #[test]
+    fn extract_layer_surface_no_caps_byte_identical_to_pre_pinned_floor() {
+        // No-caps fast path is the regression sentinel for the pre-
+        // pinned-floor uniform-offset behavior: MC at `iso = offset_m`
+        // on the raw closed-body SDF grid. Reproduce that reference
+        // result by hand and require byte equality across many probe
+        // offsets so any accidental modulation creeps back in here.
+        let sphere = unit_icosphere(2);
+        let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build cache");
+        for &offset_m in &[-0.03, -0.005, 0.0, 0.005, 0.03] {
+            let candidate_a = extract_layer_surface(&cache, &[], offset_m);
+            let reference = marching_cubes(
+                &cache.closed_grid,
+                &MarchingCubesConfig::at_iso_value(offset_m),
+            );
+            assert_eq!(
+                candidate_a.vertices.len(),
+                reference.vertices.len(),
+                "no-caps fast path drifted in vertex count at offset_m={offset_m}",
+            );
+            assert_eq!(
+                candidate_a.faces.len(),
+                reference.faces.len(),
+                "no-caps fast path drifted in face count at offset_m={offset_m}",
+            );
+            for (a, b) in candidate_a.vertices.iter().zip(reference.vertices.iter()) {
+                assert!(
+                    (a.coords - b.coords).norm() < 1e-12,
+                    "no-caps fast path drifted in vertex position at offset_m={offset_m}",
+                );
+            }
+            for (a, b) in candidate_a.faces.iter().zip(reference.faces.iter()) {
+                assert_eq!(
+                    a, b,
+                    "no-caps fast path drifted in face indices at offset_m={offset_m}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extract_cube_cavity_has_flat_floor_at_cap_plane() {
+        // Unit cube, T = 5 mm cavity inset, cap plane on top face.
+        // Vertices near the cap plane (within half a cell) form the
+        // cavity floor and must sit AT z = cap plane — that's the
+        // candidate-A pinning property.
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cell = 0.005;
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let cavity = extract_layer_surface(&cache, &caps, -0.005);
+        assert!(
+            !cavity.faces.is_empty(),
+            "cavity must extract a non-empty mesh"
+        );
+        // At least one vertex must sit within half a cell of the cap
+        // plane — the cavity floor. (A fully open cavity would have
+        // no vertex up there.)
+        let near_cap = cavity
+            .vertices
+            .iter()
+            .filter(|v| (v.z - 0.05).abs() < 0.5 * cell)
+            .count();
+        assert!(
+            near_cap > 0,
+            "cavity must have a floor at the cap plane (z = 0.05); none of {} vertices within \
+             half a cell of the cap plane",
+            cavity.vertices.len(),
+        );
+    }
+
+    #[test]
+    fn extract_cube_outer_has_flat_floor_at_cap_plane() {
+        // Same fixture, T = +5 mm outer. The outer surface also has
+        // its floor pinned at the cap plane (composed body.union(rind)
+        // ∩ body-interior half-space yields a flat boundary at the cap
+        // plane).
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cell = 0.005;
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let outer = extract_layer_surface(&cache, &caps, 0.005);
+        assert!(
+            !outer.faces.is_empty(),
+            "outer must extract a non-empty mesh"
+        );
+        let near_cap = outer
+            .vertices
+            .iter()
+            .filter(|v| (v.z - 0.05).abs() < 0.5 * cell)
+            .count();
+        assert!(
+            near_cap > 0,
+            "outer must have a floor at the cap plane (z = 0.05); none of {} vertices within \
+             half a cell of the cap plane",
+            outer.vertices.len(),
+        );
+    }
+
+    #[test]
+    fn extract_multi_cap_cube_closes_both_floors() {
+        // Cube extending z ∈ [-h, +h] with caps on BOTH ends. Cavity
+        // must close at both cap planes (vertices near both ±h
+        // present) — the per-cell fold over multiple caps applies
+        // each cap's half-space independently.
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cell = 0.005;
+        let caps = [
+            cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0)),
+            cap_plane_at(Point3::new(0.0, 0.0, -0.05), Vector3::new(0.0, 0.0, -1.0)),
+        ];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let cavity = extract_layer_surface(&cache, &caps, -0.005);
+        assert!(!cavity.faces.is_empty(), "two-cap cavity must extract");
+        let near_top = cavity
+            .vertices
+            .iter()
+            .filter(|v| (v.z - 0.05).abs() < 0.5 * cell)
+            .count();
+        let near_bot = cavity
+            .vertices
+            .iter()
+            .filter(|v| (v.z + 0.05).abs() < 0.5 * cell)
+            .count();
+        assert!(
+            near_top > 0,
+            "must have a floor at +z cap (got {near_top} vertices)"
+        );
+        assert!(
+            near_bot > 0,
+            "must have a floor at −z cap (got {near_bot} vertices)"
+        );
+    }
+
+    #[test]
+    fn extract_cube_cavity_floor_outline_shrunk_by_t() {
+        // Cube of half-extent 50 mm; cavity inset T = 10 mm. Floor
+        // outline = cap polygon shrunk inward by T = 40 mm half-extent.
+        // Pick the cavity floor vertices (those near the cap plane)
+        // and verify their lateral extent matches `h - T` modulo a
+        // half cell.
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cell = 0.005;
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let cavity = extract_layer_surface(&cache, &caps, -0.01);
+        let floor_vertices: Vec<_> = cavity
+            .vertices
+            .iter()
+            .filter(|v| (v.z - 0.05).abs() < 0.5 * cell)
+            .collect();
+        assert!(
+            !floor_vertices.is_empty(),
+            "cavity must have floor vertices near the cap plane",
+        );
+        let max_lateral = floor_vertices
+            .iter()
+            .map(|v| v.x.abs().max(v.y.abs()))
+            .fold(f64::MIN, f64::max);
+        let expected = 0.05 - 0.01; // h − T = 0.04 m.
+        assert!(
+            (max_lateral - expected).abs() < cell,
+            "cavity floor outline lateral extent = {max_lateral} m; expected ≈ {expected} m \
+             (h − T) within half a cell",
         );
     }
 }

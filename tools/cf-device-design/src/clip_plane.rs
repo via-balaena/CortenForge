@@ -19,9 +19,9 @@
 //!   `u32` enabled flag, packed into a single uniform at binding 100)
 //!   plus the WGSL fragment-discard shader (embedded next to this
 //!   file, loaded via Bevy's `embedded_asset!` macro);
-//! - the [`ClipPlanePlugin`] that registers the shader asset, the
+//! - the `ClipPlanePlugin` that registers the shader asset, the
 //!   `MaterialPlugin<ExtendedMaterial<StandardMaterial, …>>`, and the
-//!   [`ClipPlaneState`] resource.
+//!   `ClipPlaneState` resource.
 //!
 //! Sub-leaves 4 + 5 add the per-frame uniform push system and the
 //! egui panel.
@@ -34,7 +34,7 @@
 //! half" risk the spec called out (open risk #2). To stay defensive
 //! against a future arc enabling shadows or prepass without also
 //! reaching into this module, we explicitly set
-//! [`MaterialExtension::enable_prepass`] → `false` below, which
+//! `MaterialExtension::enable_prepass` → `false` below, which
 //! prevents the prepass pipeline from being built for our extended
 //! material. If a future rung needs shadows, the fix is to add a
 //! prepass fragment shader override (and flip `enable_prepass` back

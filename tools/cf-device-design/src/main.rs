@@ -489,7 +489,7 @@ fn main() -> Result<()> {
     )
     .with_context(|| format!("build cached scan SDF from {}", cli.cleaned_stl.display(),))?;
     let sdf_build_ms = sdf_build_start.elapsed().as_secs_f64() * 1e3;
-    let (gx, gy, gz) = cached_scan_sdf.grid.dimensions();
+    let (gx, gy, gz) = cached_scan_sdf.closed_grid.dimensions();
     println!(
         "cached scan SDF: {gx}×{gy}×{gz} grid cells ({} k), \
          min sdf {:.3} mm, fill {sdf_build_ms:.0} ms (caps = {})",
