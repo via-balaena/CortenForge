@@ -163,20 +163,45 @@ pub(crate) const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
 /// the `debug_assert!` in [`extract_layer_surface`].
 pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 
-/// Planarity tolerance (meters) for cap-face detection. A triangle
-/// is classified as a cap face iff *all three* of its vertices lie
-/// within this distance of any `included` cap plane.
+/// Legacy vertex-distance threshold (meters). Retained as a
+/// reference value referenced by [`report_cap_face_classification`]
+/// (so the diagnostic still reports "what the old rule would have
+/// stripped" as a regression sentinel) — NOT consulted by the
+/// production cap-face classifier any longer.
 ///
-/// 1 µm matches [`SDF_WELD_EPSILON_M`] — well above the float-ULP
-/// noise floor cf-scan-prep's `auto_cap_open_boundaries` leaves
-/// (vertices get projected exactly onto the fit plane before ear-
-/// clipping, so cap-face vertices sit bit-exactly on the plane
-/// modulo a few ULPs from the projection arithmetic). Generous
-/// enough for downstream decimation jitter; tight enough that an
-/// off-plane dome face that happens to graze the cap plane is not
-/// mis-classified (only an all-three-vertices match triggers
-/// removal — single-vertex grazes are kept).
+/// The spec's recon Q2 assumed cap-face vertices sit bit-exactly on
+/// the cap plane (modulo float roundoff from cf-scan-prep's
+/// `auto_cap_open_boundaries` projection). Empirically false: cf-
+/// scan-prep also runs 8 iterations of `taubin_smooth_vertices` on
+/// the cleaned mesh, which pulls cap-rim vertices toward their
+/// off-plane wall neighbors. On the iter-1 sock fixture this drifts
+/// cap vertices up to ~6 mm off the plane — 6000× this 1 µm
+/// threshold. See `report_cap_face_classification` for the diagnostic
+/// that surfaced this and `CAP_FACE_NORMAL_DOT_MIN` /
+/// `CAP_FACE_CENTROID_DIST_M` for the replacement classifier.
 const CAP_FACE_PLANARITY_EPS_M: f64 = 1e-6;
+
+/// Minimum `|dot(face_normal, cap_normal)|` for a triangle to be
+/// classified as a cap face. 0.95 ≈ 18° tolerance — generous enough
+/// to absorb decimation jitter on the cap fan, tight enough to
+/// exclude the dome wall's normals (which are perpendicular to the
+/// cap normal so |dot| ≈ 0).
+///
+/// Plateau analysis on iter-1 (`docs/CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`
+/// §1 Q2 footnote 2026-05-16): with this threshold, 116 faces had
+/// parallel normals; of those, 31 were within `CAP_FACE_CENTROID_DIST_M`
+/// of the cap plane (= true cap fan) and 85 were dome-apex faces
+/// excluded by the centroid distance check.
+const CAP_FACE_NORMAL_DOT_MIN: f64 = 0.95;
+
+/// Maximum face-centroid-to-cap-plane distance (meters) for a
+/// triangle to be classified as a cap face. 25 mm sits squarely
+/// inside the plateau the diagnostic exposed on iter-1 — between 10
+/// mm (all 31 cap-fan triangles caught) and 50 mm (no additional
+/// catches), with the next nearest false-positive cluster at ~120
+/// mm (the dome apex). The 5× safety margin in either direction
+/// absorbs scan variability across iter-2 / iter-3.
+const CAP_FACE_CENTROID_DIST_M: f64 = 0.025;
 
 /// Decimated-scan SDF(s) + a pre-filled `ScalarGrid` of cached
 /// modulated distance values, plus the AABB the grid covers.
@@ -337,13 +362,39 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 /// open surface can drive the two-SDF cavity-mouth construction
 /// (cavity-mouth spec sub-leaf 2).
 ///
-/// A face is a cap face iff its three vertices all lie within
-/// [`CAP_FACE_PLANARITY_EPS_M`] of any `included` cap plane.
-/// cf-scan-prep's `auto_cap_open_boundaries` projects boundary
-/// vertices onto the fit plane *before* ear-clipping, so cap-face
-/// vertices sit bit-exactly on the plane modulo a few float ULPs
-/// from the projection arithmetic; 1 µm is generous for that noise
-/// floor and survives decimation jitter.
+/// A face is a cap face iff its NORMAL is parallel to a cap plane's
+/// normal (`|dot| > CAP_FACE_NORMAL_DOT_MIN`, ~18° tolerance) AND
+/// its centroid lies within `CAP_FACE_CENTROID_DIST_M` of that cap
+/// plane.
+///
+/// **Why face-normal instead of vertex-distance** (2026-05-16
+/// recon-iter-2, after the initial vertex-distance rule shipped
+/// in sub-leaf 2 was falsified at the visual gate):
+///
+/// cf-scan-prep applies 8 iterations of `taubin_smooth_vertices`
+/// (λ=0.5, μ=-0.53) to the cleaned mesh AFTER
+/// `auto_cap_open_boundaries` projects boundary vertices onto the
+/// fit plane. Taubin smoothing pulls each vertex toward its
+/// neighbors' centroid; for a cap-rim vertex surrounded by off-
+/// plane wall vertices that's a meaningful normal component to the
+/// cap plane. On the iter-1 sock fixture this drifts cap-fan
+/// vertices up to ~6 mm off the cap plane — six thousand times the
+/// original 1 µm vertex-distance threshold the spec proposed.
+///
+/// The diagnostic (`report_cap_face_classification`) sweep made the
+/// failure observable: 0 strips at the 1 µm rule vs 31 strips at
+/// the face-normal rule, with a plateau between 10–50 mm centroid
+/// distance pinning 31 as the true cap-fan count. The 116 vs 31
+/// gap is dome-apex faces with `|dot| ≈ 0.96` whose centroids sit
+/// at the opposite end of the body (p50 ≈ 120 mm centroid
+/// distance) — excluded by the 25 mm centroid threshold.
+///
+/// Face-normal classification is robust against vertex drift: cap-
+/// fan triangles still have normals parallel to the cap normal even
+/// after every vertex moved a few mm, while dome-wall normals
+/// remain perpendicular regardless of smoothing. The centroid-
+/// distance check is the spatial gate that separates real caps
+/// from accidentally-parallel dome patches.
 ///
 /// Vertices are NOT compacted — the SDF construction tolerates
 /// unreferenced vertices (`SignedDistanceField::new` walks faces, not
@@ -365,11 +416,29 @@ fn dome_wall_only_mesh(cleaned_mesh: &IndexedMesh, cap_planes: &[CapPlane]) -> I
                 cleaned_mesh.vertices[face[1] as usize],
                 cleaned_mesh.vertices[face[2] as usize],
             ];
+            // Compute face normal once per triangle. Degenerate
+            // (zero-area) triangles can't be classified — keep them
+            // (SDF construction tolerates them; downstream hygiene
+            // passes can strip them later if needed).
+            let e1 = v[1].coords - v[0].coords;
+            let e2 = v[2].coords - v[0].coords;
+            let face_normal_unnorm = e1.cross(&e2);
+            let face_area2 = face_normal_unnorm.norm();
+            if face_area2 < 1e-18 {
+                return true;
+            }
+            let face_normal = face_normal_unnorm / face_area2;
+            let face_centroid = (v[0].coords + v[1].coords + v[2].coords) / 3.0;
+            // Cap face iff ANY cap plane matches both conditions
+            // (normal aligned AND centroid near). Survives iff NO
+            // cap plane matches both.
             !cap_planes.iter().any(|plane| {
-                v.iter().all(|vi| {
-                    (vi.coords - plane.centroid.coords).dot(&plane.normal).abs()
-                        < CAP_FACE_PLANARITY_EPS_M
-                })
+                let normal_aligned = face_normal.dot(&plane.normal).abs() > CAP_FACE_NORMAL_DOT_MIN;
+                let centroid_near = (face_centroid - plane.centroid.coords)
+                    .dot(&plane.normal)
+                    .abs()
+                    < CAP_FACE_CENTROID_DIST_M;
+                normal_aligned && centroid_near
             })
         })
         .copied()
@@ -377,6 +446,132 @@ fn dome_wall_only_mesh(cleaned_mesh: &IndexedMesh, cap_planes: &[CapPlane]) -> I
     IndexedMesh {
         vertices: cleaned_mesh.vertices.clone(),
         faces: kept_faces,
+    }
+}
+
+/// Threshold (unitless) above which a face's normal is considered
+/// "parallel" to a cap plane's normal for the counterfactual diagnostic
+/// reported by [`report_cap_face_classification`]. 0.95 ≈ 18°
+/// tolerance — generous enough to absorb decimation jitter on the
+/// cap fan, tight enough to exclude the dome wall's perpendicular-
+/// normal faces.
+const DIAG_PARALLEL_DOT_THRESHOLD: f64 = 0.95;
+
+/// Centroid-distance threshold (meters) for the counterfactual cap-
+/// face diagnostic. 5 mm covers Taubin-smoothing drift on cap-rim
+/// vertices while staying tight enough to exclude the next dome-wall
+/// triangle inward (which is typically > 1 cm from the cap plane).
+const DIAG_CENTROID_DIST_M: f64 = 5e-3;
+
+/// Diagnostic helper: report cap-face classification statistics on
+/// the decimated scan mesh, to validate or falsify the spec's recon
+/// Q2 claim that cap-face vertices "sit EXACTLY on the cap plane
+/// (modulo float roundoff)". For each `included` cap plane, emits to
+/// stderr:
+///
+/// - face count classified under the current vertex-distance rule
+///   (`< CAP_FACE_PLANARITY_EPS_M`) — the actual stripping count;
+/// - face count classified under a counterfactual face-normal rule
+///   (`|dot(face_normal, cap_normal)| > DIAG_PARALLEL_DOT_THRESHOLD`
+///   AND face centroid within `DIAG_CENTROID_DIST_M` of the cap plane);
+/// - max vertex-to-plane distance across faces flagged by the
+///   counterfactual — tells us how much Taubin smoothing / decimation
+///   actually moved cap-face vertices off the plane.
+///
+/// No-op on empty `cap_planes`.
+fn report_cap_face_classification(mesh: &IndexedMesh, cap_planes: &[CapPlane]) {
+    if cap_planes.is_empty() {
+        return;
+    }
+    for plane in cap_planes {
+        let n = plane.normal;
+        let c = plane.centroid.coords;
+        let signed = |p: Point3<f64>| (p.coords - c).dot(&n);
+        let mut current_rule_strip = 0_usize;
+        // Sweep parallel-normal counts over a centroid-distance ladder.
+        // 1 m is effectively "no constraint" (caps lie within the mesh
+        // AABB of ~16 cm diagonal, so 1 m bound never trips).
+        let centroid_bins_m: [f64; 5] = [5e-3, 10e-3, 25e-3, 50e-3, 1.0];
+        let mut parallel_by_bin: [usize; 5] = [0; 5];
+        let mut centroid_dist_samples: Vec<f64> = Vec::new();
+        for face in &mesh.faces {
+            let v = [
+                mesh.vertices[face[0] as usize],
+                mesh.vertices[face[1] as usize],
+                mesh.vertices[face[2] as usize],
+            ];
+            let d0 = signed(v[0]).abs();
+            let d1 = signed(v[1]).abs();
+            let d2 = signed(v[2]).abs();
+            if d0 < CAP_FACE_PLANARITY_EPS_M
+                && d1 < CAP_FACE_PLANARITY_EPS_M
+                && d2 < CAP_FACE_PLANARITY_EPS_M
+            {
+                current_rule_strip += 1;
+            }
+            let e1 = v[1].coords - v[0].coords;
+            let e2 = v[2].coords - v[0].coords;
+            let face_normal_unnorm = e1.cross(&e2);
+            let face_area2 = face_normal_unnorm.norm();
+            if face_area2 < 1e-18 {
+                continue;
+            }
+            let face_normal = face_normal_unnorm / face_area2;
+            let dot_abs = face_normal.dot(&n).abs();
+            if dot_abs > DIAG_PARALLEL_DOT_THRESHOLD {
+                let face_centroid = (v[0].coords + v[1].coords + v[2].coords) / 3.0;
+                let centroid_dist = (face_centroid - c).dot(&n).abs();
+                centroid_dist_samples.push(centroid_dist);
+                for (i, &bound) in centroid_bins_m.iter().enumerate() {
+                    if centroid_dist < bound {
+                        parallel_by_bin[i] += 1;
+                    }
+                }
+            }
+        }
+        // Print main row.
+        eprintln!(
+            "[cavity-mouth diag] cap loop {}: decimated faces in = {}; \
+             current rule (vdist < {:.0e}) strips {}; \
+             face-normal sweep (|dot| > {}):",
+            plane.loop_index,
+            mesh.faces.len(),
+            CAP_FACE_PLANARITY_EPS_M,
+            current_rule_strip,
+            DIAG_PARALLEL_DOT_THRESHOLD,
+        );
+        // Print sweep table.
+        for (i, &bound) in centroid_bins_m.iter().enumerate() {
+            eprintln!(
+                "    centroid < {:>7.4} m: {:>4} faces",
+                bound, parallel_by_bin[i],
+            );
+        }
+        // Print centroid distance histogram (parallel-normal faces only).
+        if !centroid_dist_samples.is_empty() {
+            let mut sorted = centroid_dist_samples.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let pct = |q: f64| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::cast_precision_loss
+                )]
+                let idx = ((sorted.len() as f64 - 1.0) * q).round() as usize;
+                sorted[idx]
+            };
+            eprintln!(
+                "    centroid-dist distribution among parallel-normal faces (n={}): \
+                 p0={:.4} p25={:.4} p50={:.4} p75={:.4} p90={:.4} p100={:.4} m",
+                sorted.len(),
+                sorted[0],
+                pct(0.25),
+                pct(0.50),
+                pct(0.75),
+                pct(0.90),
+                sorted[sorted.len() - 1],
+            );
+        }
     }
 }
 
@@ -413,6 +608,16 @@ pub(crate) fn build_cached_scan_sdf(
     margin_m: f64,
 ) -> Result<CachedScanSdf> {
     let decimated = decimate_scan_for_sdf(scan, SDF_SOURCE_TARGET_FACES);
+    // Diagnostic: report cap-face classification on the decimated mesh
+    // (the actual `dome_wall_only_mesh` input). Compares the current
+    // `vertex-distance < CAP_FACE_PLANARITY_EPS_M` rule with a face-
+    // normal-based counterfactual; surfaces the hypothesis that
+    // post-Taubin-smoothing the vertex-distance rule under-strips on
+    // real cleaned scans. See `docs/CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`
+    // §1 Q2. Permanent startup log — two integers + a couple
+    // f64s — useful as a regression sentinel for every scan load.
+    report_cap_face_classification(&decimated, cap_planes);
+
     let sdf_closed_raw = SignedDistanceField::new(decimated.clone())
         .context("build closed-body SignedDistanceField from the decimated scan")?;
     let sdf_closed = Arc::new(sdf_closed_raw);
@@ -1242,6 +1447,116 @@ mod tests {
         for (i, v) in stripped.vertices.iter().enumerate() {
             assert!((v.coords - cube.vertices[i].coords).norm() < 1e-12);
         }
+    }
+
+    #[test]
+    fn dome_wall_only_mesh_strips_taubin_drifted_cap_face() {
+        // Regression for the iter-1-falsification bug fixed
+        // 2026-05-16: cf-scan-prep's Taubin smoothing drifts cap-face
+        // vertices off the cap plane by hundreds of µm to several mm,
+        // which the original `vdist < 1 µm` rule under-stripped (0
+        // faces caught) and the closed-cavity visual exposed.
+        //
+        // Synthetic fixture mimicking the post-smoothing state:
+        // cube top face vertices pushed off the cap plane by 1 mm
+        // (alternating ±). Face normal is still nearly +Z so the
+        // face-normal rule catches them.
+        let h = 0.5_f64;
+        let drift = 1e-3_f64; // 1 mm — well above 1 µm legacy eps.
+        let v = vec![
+            Point3::new(-h, -h, -h),        // 0
+            Point3::new(h, -h, -h),         // 1
+            Point3::new(h, h, -h),          // 2
+            Point3::new(-h, h, -h),         // 3
+            Point3::new(-h, -h, h - drift), // 4 (drifted)
+            Point3::new(h, -h, h + drift),  // 5 (drifted)
+            Point3::new(h, h, h - drift),   // 6 (drifted)
+            Point3::new(-h, h, h + drift),  // 7 (drifted)
+        ];
+        let faces: Vec<[u32; 3]> = vec![
+            [0, 2, 1],
+            [0, 3, 2], // -z
+            [4, 5, 6],
+            [4, 6, 7], // +z (top — to be stripped, vertices drifted ±1mm)
+            [0, 1, 5],
+            [0, 5, 4], // -y
+            [2, 3, 7],
+            [2, 7, 6], // +y
+            [0, 4, 7],
+            [0, 7, 3], // -x
+            [1, 2, 6],
+            [1, 6, 5], // +x
+        ];
+        let drifted_cube = IndexedMesh { vertices: v, faces };
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, h), Vector3::new(0.0, 0.0, 1.0));
+        let stripped = dome_wall_only_mesh(&drifted_cube, &[cap]);
+        assert_eq!(
+            stripped.faces.len(),
+            drifted_cube.faces.len() - 2,
+            "expected 2 top-face triangles stripped despite 1 mm vertex drift; \
+             got {} (was {})",
+            stripped.faces.len(),
+            drifted_cube.faces.len(),
+        );
+    }
+
+    #[test]
+    fn dome_wall_only_mesh_excludes_dome_apex_with_aligned_normal() {
+        // Regression: on iter-1 sock the cap normal points roughly
+        // -Z and the dome-apex face normals point +Z (|dot| ≈ 0.96).
+        // Without the centroid-distance gate those dome-apex faces
+        // would be falsely stripped. Pin that the centroid check
+        // excludes them.
+        //
+        // Synthetic fixture: cube of half-extent 50 mm with cap plane
+        // at the BOTTOM face (z = -50 mm, outward normal -Z). The
+        // top face vertices have normals (0, 0, +1) — |dot| with
+        // cap normal (0,0,-1) = 1.0 > 0.95 (aligned). But the top
+        // face centroid sits at z = +50 mm, which is 100 mm from
+        // the bottom cap plane — well outside `CAP_FACE_CENTROID_DIST_M`
+        // (25 mm). Top face must be KEPT.
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let bottom_cap = cap_plane_at(Point3::new(0.0, 0.0, -0.05), Vector3::new(0.0, 0.0, -1.0));
+        let stripped = dome_wall_only_mesh(&cube, &[bottom_cap]);
+        // Only the BOTTOM face (2 triangles) should be stripped — top
+        // face survives despite aligned normal because its centroid
+        // is too far from the bottom cap plane.
+        assert_eq!(
+            stripped.faces.len(),
+            cube.faces.len() - 2,
+            "expected only 2 bottom-face triangles stripped (not the top); \
+             got {} (was {})",
+            stripped.faces.len(),
+            cube.faces.len(),
+        );
+        // Verify NO surviving face has all vertices at z ≈ -0.05
+        // (the would-be-stripped bottom face).
+        for face in &stripped.faces {
+            let zs = [
+                stripped.vertices[face[0] as usize].z,
+                stripped.vertices[face[1] as usize].z,
+                stripped.vertices[face[2] as usize].z,
+            ];
+            assert!(
+                !zs.iter().all(|&z| (z - -0.05).abs() < 1e-9),
+                "expected no bottom-face triangle to survive; got {face:?} at z={zs:?}",
+            );
+        }
+        // And verify the top face DID survive (would have been
+        // stripped under a normal-only rule with no centroid gate).
+        let top_face_survivors = stripped
+            .faces
+            .iter()
+            .filter(|face| {
+                [face[0], face[1], face[2]]
+                    .iter()
+                    .all(|&i| (stripped.vertices[i as usize].z - 0.05).abs() < 1e-9)
+            })
+            .count();
+        assert_eq!(
+            top_face_survivors, 2,
+            "expected both top-face triangles to survive (aligned normal but far centroid)",
+        );
     }
 
     // ----- Sub-leaf 3: two-SDF build_cached_scan_sdf --------------
