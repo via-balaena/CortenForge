@@ -1274,11 +1274,17 @@ fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
             // aligns with `plane_normal` (which `orient_cap_normal_outward`
             // already returned in OUTWARD direction). Per
             // `project_loop_to_plane_2d`'s (u, v, plane_normal) =
-            // right-handed basis: a 2D-CCW loop (signed_area > 0)
+            // right-handed basis: a 2D-CCW triangle (signed_area > 0)
             // emitted as `[a, b, c]` produces a 3D cross = +plane_normal
-            // = outward; 2D-CW (signed_area < 0) emitted as `[a, c, b]`
-            // reverses the order to land the same outward direction.
-            // See `auto_cap_open_boundaries_emits_outward_cap_normals`.
+            // = outward. This is the common path —
+            // `triangulate_polygon_2d_earclip` reverses input loops to
+            // CCW before triangulating, so every ear-emitted triangle
+            // has signed_area > 0. The `signed_area < 0` branch is
+            // defensive against the earclip's fan-fallback path on
+            // degenerate (non-convex / self-intersecting) inputs;
+            // emitting `[a, c, b]` reverses the order to land the same
+            // outward direction. See
+            // `auto_cap_open_boundaries_emits_outward_cap_normals`.
             let p0 = verts_2d[tri[0] as usize];
             let p1 = verts_2d[tri[1] as usize];
             let p2 = verts_2d[tri[2] as usize];
@@ -3260,12 +3266,20 @@ fn build_cleaned_mesh(
             // outward at `build_detected_cap_loop` time via
             // `orient_cap_normal_outward`). Per `project_loop_to_plane_2d`'s
             // `(u, v, normal_world)` = right-handed basis: a 2D-CCW
-            // loop (signed_area > 0) emitted as `[a, b, c]` produces a
-            // 3D cross = +normal_world = outward; 2D-CW (signed_area
-            // < 0) emitted as `[a, c, b]` reverses the order to land
-            // the same outward direction. See
+            // triangle (signed_area > 0) emitted as `[a, b, c]`
+            // produces a 3D cross = +normal_world = outward. This is
+            // the common path — `triangulate_polygon_2d_earclip`
+            // reverses input loops to CCW before triangulating, so
+            // every ear-emitted triangle has signed_area > 0. The
+            // `signed_area < 0` branch is defensive against the
+            // earclip's fan-fallback path on degenerate inputs;
+            // emitting `[a, c, b]` reverses the order to land the same
+            // outward direction. Same algorithm + assertion target as
+            // `auto_cap_open_boundaries`; see
             // `auto_cap_open_boundaries_emits_outward_cap_normals` for
-            // the regression-anchor.
+            // the regression-anchor +
+            // `build_cleaned_mesh_projects_loop_verts_onto_fit_plane`
+            // for the build_cleaned_mesh-path outward-winding anchor.
             let p0 = verts_2d[tri[0] as usize];
             let p1 = verts_2d[tri[1] as usize];
             let p2 = verts_2d[tri[2] as usize];
@@ -7798,19 +7812,22 @@ mod tests {
         );
     }
 
-    /// B arc — cf-scan-prep cap-winding fix (see
-    /// `project_cf_scan_prep_b_arc_cap_winding.md`). Pre-B,
-    /// `auto_cap_open_boundaries` produced cap triangles whose 3D
-    /// cross-product normals pointed OPPOSITE to `orient_cap_normal_outward`'s
-    /// returned direction (= inward into the body). cf-view's flat-
-    /// shaded render path computed face normals from the winding and
-    /// shaded cap faces DARK; mesh-io's `save_stl` wrote inverted
+    /// Cap-face 3D winding emission anchor for
+    /// `auto_cap_open_boundaries` (see also the sister anchor on the
+    /// `build_cleaned_mesh` path inside
+    /// `build_cleaned_mesh_projects_loop_verts_onto_fit_plane`). The
+    /// function must emit cap triangles whose 3D cross-product normals
+    /// align with `orient_cap_normal_outward`'s returned OUTWARD
+    /// direction. Without this assertion the emission could (and
+    /// historically did, until the B arc fix at commit `99f2c512`)
+    /// produce inward normals: cf-view's flat-shaded render path
+    /// would compute inward face normals from the winding and shade
+    /// cap faces DARK; mesh-io's `save_stl` would write inverted
     /// facet normals to disk for 3rd-party STL tools (Meshlab,
-    /// ParaView, slicers). All in-tree SDF consumers tolerated the
-    /// flip post-D arc (FloodFillSign uses topological reachability;
+    /// ParaView, slicers). All in-tree SDF consumers tolerate either
+    /// winding (FloodFillSign is topological-reachability-based;
     /// TriMeshDistance is unsigned; cf-cap-planes uses `.dot().abs()`),
-    /// so the bug was visualization-only. This test pins the post-B
-    /// outward-pointing cap face normals.
+    /// so the bug was visualization-only — but reader-grating.
     ///
     /// Fixture: 5-vertex square pyramid with the base OPEN (4 side
     /// triangles, no base triangulation). Apex at (0, 0, +1); base
@@ -7821,7 +7838,8 @@ mod tests {
     /// point -Z (outward, away from apex).
     #[test]
     fn auto_cap_open_boundaries_emits_outward_cap_normals() {
-        let mut mesh = IndexedMesh::with_capacity(5, 4);
+        // 5 verts + 4 side triangles + 2 cap triangles = 6 faces post-cap.
+        let mut mesh = IndexedMesh::with_capacity(5, 6);
         // Base square (z=0) + apex (z=+1).
         mesh.vertices.push(Point3::new(-1.0, -1.0, 0.0)); // 0
         mesh.vertices.push(Point3::new(1.0, -1.0, 0.0)); // 1
@@ -7843,8 +7861,9 @@ mod tests {
             "auto-cap should append ≥1 cap triangle",
         );
         // Every cap face's 3D cross-product normal must point -Z
-        // (outward, away from the apex above). Pre-B the normals
-        // pointed +Z (inward toward apex).
+        // (outward, away from the apex above). Without the B-arc
+        // fix the normals pointed +Z (inward toward apex), shading
+        // dark under Bevy lighting in cf-view.
         for face in cap_faces {
             let v0 = mesh.vertices[face[0] as usize];
             let v1 = mesh.vertices[face[1] as usize];
@@ -9587,6 +9606,29 @@ mod tests {
             !cleaned.faces.is_empty(),
             "cap triangulation produced zero faces",
         );
+        // B arc — sister-anchor of
+        // `auto_cap_open_boundaries_emits_outward_cap_normals`.
+        // `build_cleaned_mesh`'s cap step has the same emission
+        // logic as `auto_cap_open_boundaries`; both should produce
+        // cap-face 3D cross-product normals aligned to the OUTWARD
+        // `plane_normal`. The cap loop here has `plane_normal = +Z`
+        // and `cap_loop.include = true`, with no other mesh faces
+        // to bias `orient_cap_normal_outward`'s majority check (the
+        // loop verts themselves sit on the plane → signed = 0 →
+        // neither above/below counted, returns `plane_normal`
+        // unchanged). So the post-fix emitted cap faces should have
+        // 3D normals pointing +Z.
+        for face in &cleaned.faces {
+            let v0 = cleaned.vertices[face[0] as usize];
+            let v1 = cleaned.vertices[face[1] as usize];
+            let v2 = cleaned.vertices[face[2] as usize];
+            let normal = (v1.coords - v0.coords).cross(&(v2.coords - v0.coords));
+            assert!(
+                normal.z > 0.0,
+                "build_cleaned_mesh cap-face normal must point +Z (outward, \
+                 matching plane_normal); face {face:?} produced normal {normal:?}",
+            );
+        }
     }
 
     /// Build the STL-style (per-triangle unshared) version of an
