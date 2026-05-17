@@ -5,6 +5,8 @@
 //! code add more by writing their own `impl Sdf for ...`. Consumers
 //! query SDFs through the trait without naming the concrete source.
 
+use std::sync::Arc;
+
 use mesh_sdf::SignedDistanceField;
 use nalgebra::{Point3, Vector3};
 
@@ -38,6 +40,25 @@ pub trait Sdf: Send + Sync {
 /// at every site that takes any `S: Sdf` — without an inner deref or a
 /// `&dyn Sdf` reborrow.
 impl<T: Sdf + ?Sized> Sdf for Box<T> {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        (**self).eval(p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        (**self).grad(p)
+    }
+}
+
+/// Forwarding impl through `Arc<T>` for any `T: Sdf + ?Sized`.
+///
+/// Lets a shared, heap-erased SDF satisfy [`Sdf`] directly, so an
+/// `Arc<dyn Sdf>` is callable at every site that takes any `S: Sdf` —
+/// and cloning shares the inner allocation. Consumers that need the
+/// same SDF threaded through several composition trees (e.g. a closed-
+/// body SDF passed to multiple `pinned_floor_shell` calls — one for
+/// the plug, one per layer body) wrap it once in `Arc<dyn Sdf>` and
+/// pass cheap clones of the `Arc` to each.
+impl<T: Sdf + ?Sized> Sdf for Arc<T> {
     fn eval(&self, p: Point3<f64>) -> f64 {
         (**self).eval(p)
     }
@@ -184,6 +205,25 @@ mod tests {
         ] {
             assert_relative_eq!(boxed.eval(p), s.evaluate(&p), epsilon = 0.0);
             assert_relative_eq!(boxed.grad(p), s.gradient(&p), epsilon = 0.0);
+        }
+    }
+
+    #[test]
+    fn arc_dyn_sdf_blanket_forwards_eval_and_grad() {
+        let s = Solid::sphere(1.0);
+        let shared: Arc<dyn Sdf> = Arc::new(s.clone());
+        // Cloning the Arc shares the inner allocation — both clones
+        // forward to the same Solid.
+        let clone = shared.clone();
+        for &p in &[
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(2.0, 0.0, 0.0),
+        ] {
+            assert_relative_eq!(shared.eval(p), s.evaluate(&p), epsilon = 0.0);
+            assert_relative_eq!(shared.grad(p), s.gradient(&p), epsilon = 0.0);
+            assert_relative_eq!(clone.eval(p), s.evaluate(&p), epsilon = 0.0);
+            assert_relative_eq!(clone.grad(p), s.gradient(&p), epsilon = 0.0);
         }
     }
 
