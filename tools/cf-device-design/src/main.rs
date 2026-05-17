@@ -787,13 +787,34 @@ struct DeviceValidations {
 
 /// Absolute enclosed volume (m³) of an `IndexedMesh` (the
 /// marching-cubes output of [`sdf_layers::extract_layer_surface`])
-/// via the divergence theorem: `⅙·|Σ_faces a·(b×c)|` over the
-/// triangles, with `a, b, c` the face's vertices.
+/// via the divergence theorem, integrated about `origin`:
+/// `⅙·|Σ_faces (a−o)·((b−o)×(c−o))|` over the triangles, with
+/// `a, b, c` the face's vertices and `o` the integration origin.
 ///
 /// Pure geometry in physics-frame meters — no render-scale / UpAxis
 /// mapping (those are display-only concerns). The mesh is consumed
 /// as-extracted: no displacement step (the iso surface naturally
 /// sits where it should).
+///
+/// **Why the origin parameter** (cavity-mouth spec sub-leaf 5):
+/// each triangle's `(a−o)·((b−o)×(c−o))` is the signed volume of
+/// the tetrahedron `(o, a, b, c)`. Summed over a CLOSED mesh the
+/// internal contributions cancel and only the enclosed volume
+/// survives — origin-independent (the standard textbook result).
+/// Summed over an OPEN mesh the result is the volume of the closed
+/// shape formed by connecting the boundary to the origin via a
+/// cone — origin-DEPENDENT. After the cavity-mouth post-MC clip,
+/// extracted meshes ARE open (boundary at the cap plane); to
+/// recover the volume enclosed by `mesh + cap_polygon` the caller
+/// passes the cap centroid as `origin`. Triangles lying on the cap
+/// plane through that origin then collapse to zero contribution,
+/// so the implicit "cap-polygon contribution" vanishes and the
+/// integral lands on the volume bounded by the open mesh PLUS a
+/// flat cap polygon at the cap plane.
+///
+/// For closed meshes the choice of origin does not affect the
+/// result — see the `cube_signed_volume_translation_invariant_with_origin`
+/// test for the regression gate.
 ///
 /// The `abs` is load-bearing: mesh-offset's marching-cubes table
 /// produces INWARD-winding triangles for our SDF convention
@@ -805,15 +826,39 @@ struct DeviceValidations {
 /// `compute_validations` is then itself `.abs()`'d for the same
 /// floating-point-sign-noise reason (a near-closed cleaned scan
 /// can leave a tiny sign asymmetry between outer and inner).
-fn signed_volume_m3(mesh: &IndexedMesh) -> f64 {
+fn signed_volume_m3(mesh: &IndexedMesh, origin: Point3<f64>) -> f64 {
+    let o = origin.coords;
     let mut six_volume = 0.0_f64;
     for face in &mesh.faces {
-        let a = mesh.vertices[face[0] as usize].coords;
-        let b = mesh.vertices[face[1] as usize].coords;
-        let c = mesh.vertices[face[2] as usize].coords;
+        let a = mesh.vertices[face[0] as usize].coords - o;
+        let b = mesh.vertices[face[1] as usize].coords - o;
+        let c = mesh.vertices[face[2] as usize].coords - o;
         six_volume += a.dot(&b.cross(&c));
     }
     (six_volume / 6.0).abs()
+}
+
+/// Pick the integration origin for [`signed_volume_m3`] from the
+/// available cap planes. Returns the primary cap's centroid (largest
+/// by vertex count, tiebroken by lowest `loop_index`) or the world
+/// origin when no caps are present.
+///
+/// Multi-cap caveat: v1 picks ONE cap centroid; the implicit cap
+/// polygons of the OTHER caps still contribute an error proportional
+/// to their distance from the chosen origin × their area. For typical
+/// body-part scans with proximal + distal cuts (10–50 cm apart) the
+/// readouts may diverge a few percent from truth. Per-cap divergence
+/// corrections are deferred to v2 (spec §1 Q3).
+fn primary_cap_origin(cap_planes: &sdf_layers::CapPlanes) -> Point3<f64> {
+    cap_planes
+        .planes
+        .iter()
+        .max_by(|a, b| {
+            a.vertex_count
+                .cmp(&b.vertex_count)
+                .then_with(|| b.loop_index.cmp(&a.loop_index))
+        })
+        .map_or(Point3::origin(), |p| p.centroid)
 }
 
 /// Compute the whole-device validation readout from the cached scan
@@ -844,10 +889,20 @@ fn compute_validations(
     let max_iso = sdf_layers::LAYER_GRID_MARGIN_M - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
     let clamp = |iso: f64| iso.clamp(-max_iso, max_iso);
 
+    // Origin for the divergence-theorem volume integral. With caps
+    // the surfaces are open at the cap plane; integrating about the
+    // primary cap centroid recovers the volume enclosed by mesh +
+    // cap polygon (the implicit cap contribution collapses to zero
+    // because cap-plane triangles through that origin contribute
+    // no signed volume). No-caps path keeps world origin — for a
+    // closed mesh the integral is origin-invariant, so existing
+    // analytical-fixture tests stay bit-identical.
+    let volume_origin = primary_cap_origin(cap_planes);
+
     // The cavity surface is layer 0's inner surface.
     let cavity_mesh =
         sdf_layers::extract_layer_surface(cached_sdf, &cap_planes.planes, clamp(-cavity.inset_m));
-    let mut prev_inner_volume = signed_volume_m3(&cavity_mesh);
+    let mut prev_inner_volume = signed_volume_m3(&cavity_mesh, volume_origin);
     let mut cumulative_thickness_m = 0.0_f64;
     let mut layer_validations = Vec::with_capacity(layers.layers.len());
     let mut total_mass_kg = 0.0_f64;
@@ -859,7 +914,7 @@ fn compute_validations(
         let outer_iso = clamp(cumulative_thickness_m - cavity.inset_m);
         let outer_mesh =
             sdf_layers::extract_layer_surface(cached_sdf, &cap_planes.planes, outer_iso);
-        let outer_volume = signed_volume_m3(&outer_mesh);
+        let outer_volume = signed_volume_m3(&outer_mesh, volume_origin);
         // The outer surface always encloses more volume than the
         // inner; `abs` guards against floating-point sign noise on
         // a near-closed cleaned scan, not a real sign ambiguity.
@@ -2996,10 +3051,172 @@ included = true
         // displacement) recovers the analytical volume — positive
         // because cf-scan-prep meshes wind CCW / outward (the fixture
         // mirrors that convention).
-        let vol = signed_volume_m3(&unit_cube_mesh());
+        let vol = signed_volume_m3(&unit_cube_mesh(), Point3::origin());
         assert!(
             approx_eq(vol, 1.0e-3, 1e-9),
             "unit-cube signed volume = {vol}, expected 1e-3",
+        );
+    }
+
+    #[test]
+    fn signed_volume_closed_mesh_origin_invariant() {
+        // For a CLOSED mesh the divergence integral is independent
+        // of the integration origin — internal tetrahedra cancel.
+        // Cavity-mouth sub-leaf 5 regression: pre-spec callers always
+        // passed origin = world origin, so any drift here would
+        // silently shift readouts on the no-caps path.
+        let mesh = unit_cube_mesh();
+        let v_origin = signed_volume_m3(&mesh, Point3::origin());
+        let v_shifted = signed_volume_m3(&mesh, Point3::new(1.0, 1.0, 1.0));
+        assert!(
+            approx_eq(v_origin, v_shifted, 1e-9),
+            "closed mesh: integral about origin ({v_origin}) must equal integral about (1,1,1) ({v_shifted})",
+        );
+    }
+
+    #[test]
+    fn signed_volume_open_box_about_cap_centroid_recovers_closed_volume() {
+        // Cube of half-extent 0.05 m, top face removed (CCW-outward
+        // walls + bottom). Integrating about the cap centroid
+        // (0, 0, +0.05) closes the mesh with a flat polygon at the
+        // cap plane — its triangles through the cap centroid
+        // contribute zero volume — so the integral recovers the
+        // CLOSED cube volume (0.1)^3 = 1 mm³.
+        let h = 0.05_f64;
+        let v = vec![
+            Point3::new(-h, -h, -h), // 0
+            Point3::new(h, -h, -h),  // 1
+            Point3::new(h, h, -h),   // 2
+            Point3::new(-h, h, -h),  // 3
+            Point3::new(-h, -h, h),  // 4
+            Point3::new(h, -h, h),   // 5
+            Point3::new(h, h, h),    // 6
+            Point3::new(-h, h, h),   // 7
+        ];
+        // CCW-outward winding (matches axis_aligned_cube in sdf_layers);
+        // top face (vertices 4-5-6-7) intentionally OMITTED.
+        let faces: Vec<[u32; 3]> = vec![
+            [0, 2, 1],
+            [0, 3, 2], // -z (bottom)
+            [0, 1, 5],
+            [0, 5, 4], // -y
+            [2, 3, 7],
+            [2, 7, 6], // +y
+            [0, 4, 7],
+            [0, 7, 3], // -x
+            [1, 2, 6],
+            [1, 6, 5], // +x
+        ];
+        let mesh = IndexedMesh { vertices: v, faces };
+        let cap_centroid = Point3::new(0.0, 0.0, h);
+        let vol = signed_volume_m3(&mesh, cap_centroid);
+        let expected = (2.0 * h).powi(3); // 0.1^3 = 1e-3
+        assert!(
+            approx_eq(vol, expected, 1e-9),
+            "open-box about cap centroid: vol = {vol}, expected {expected}",
+        );
+    }
+
+    #[test]
+    fn signed_volume_open_mesh_is_origin_dependent() {
+        // Same open box. Integrating about (0, 0, 0) closes with a
+        // pyramidal cone from rim → origin, NOT with the geometric
+        // cap polygon. The result should differ from the closed-cube
+        // volume by the cone's signed-volume contribution. The point
+        // of this test is to pin the origin-dependence as a real
+        // observable behaviour — passing the wrong origin produces
+        // visibly wrong volume readouts.
+        let h = 0.05_f64;
+        let v = vec![
+            Point3::new(-h, -h, -h),
+            Point3::new(h, -h, -h),
+            Point3::new(h, h, -h),
+            Point3::new(-h, h, -h),
+            Point3::new(-h, -h, h),
+            Point3::new(h, -h, h),
+            Point3::new(h, h, h),
+            Point3::new(-h, h, h),
+        ];
+        let faces: Vec<[u32; 3]> = vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        let mesh = IndexedMesh { vertices: v, faces };
+        let vol_cap = signed_volume_m3(&mesh, Point3::new(0.0, 0.0, h));
+        let vol_origin = signed_volume_m3(&mesh, Point3::origin());
+        // The two integrations should differ by ≳ 10% of the closed-
+        // cube volume (the cone-from-rim-to-origin has meaningfully
+        // different volume than the flat cap polygon).
+        let rel_diff = (vol_origin - vol_cap).abs() / vol_cap;
+        assert!(
+            rel_diff > 0.1,
+            "open-mesh integrals about cap centroid ({vol_cap}) and origin ({vol_origin}) should differ meaningfully; rel_diff = {rel_diff}",
+        );
+    }
+
+    #[test]
+    fn primary_cap_origin_no_caps_is_world_origin() {
+        let empty = sdf_layers::CapPlanes::default();
+        let o = primary_cap_origin(&empty);
+        assert!(approx_eq(o.x, 0.0, 1e-12));
+        assert!(approx_eq(o.y, 0.0, 1e-12));
+        assert!(approx_eq(o.z, 0.0, 1e-12));
+    }
+
+    #[test]
+    fn primary_cap_origin_picks_largest_by_vertex_count() {
+        let cap_a = sdf_layers::CapPlane {
+            centroid: Point3::new(0.0, 0.0, 0.5),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_count: 8,
+            loop_index: 0,
+        };
+        let cap_b = sdf_layers::CapPlane {
+            centroid: Point3::new(1.0, 0.0, 0.0),
+            normal: Vector3::new(1.0, 0.0, 0.0),
+            vertex_count: 32,
+            loop_index: 1,
+        };
+        let planes = sdf_layers::CapPlanes {
+            planes: vec![cap_a, cap_b],
+        };
+        let o = primary_cap_origin(&planes);
+        assert!(
+            approx_eq(o.x, 1.0, 1e-12) && approx_eq(o.z, 0.0, 1e-12),
+            "primary should be cap_b (32 verts > 8 verts); got {o}",
+        );
+    }
+
+    #[test]
+    fn primary_cap_origin_ties_break_on_lowest_loop_index() {
+        let cap_high = sdf_layers::CapPlane {
+            centroid: Point3::new(0.0, 0.0, 1.0),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_count: 16,
+            loop_index: 3,
+        };
+        let cap_low = sdf_layers::CapPlane {
+            centroid: Point3::new(0.0, 0.0, -1.0),
+            normal: Vector3::new(0.0, 0.0, -1.0),
+            vertex_count: 16,
+            loop_index: 1,
+        };
+        let planes = sdf_layers::CapPlanes {
+            planes: vec![cap_high, cap_low],
+        };
+        let o = primary_cap_origin(&planes);
+        assert!(
+            approx_eq(o.z, -1.0, 1e-12),
+            "tie on vertex_count must break to lowest loop_index (=1, z=-1.0); got z={}",
+            o.z,
         );
     }
 
@@ -3017,8 +3234,8 @@ included = true
             sdf_layers::build_cached_scan_sdf(&cube, &[], 0.005, 0.043).expect("build cache");
         let inner = sdf_layers::extract_layer_surface(&cache, &[], -0.005);
         let outer = sdf_layers::extract_layer_surface(&cache, &[], 0.005);
-        let v_inner = signed_volume_m3(&inner);
-        let v_outer = signed_volume_m3(&outer);
+        let v_inner = signed_volume_m3(&inner, Point3::origin());
+        let v_outer = signed_volume_m3(&outer, Point3::origin());
         assert!(
             v_inner < v_outer,
             "inner ({v_inner}) should enclose less volume than outer ({v_outer})",
