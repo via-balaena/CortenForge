@@ -16,7 +16,7 @@ use cf_cast::{
 use cf_design::{Solid, pinned_floor_shell};
 use cf_geometry::Aabb;
 use mesh_printability::PrinterConfig;
-use mesh_sdf::SignedDistanceField;
+use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use nalgebra::{Point3, Vector3};
 
 use crate::config::{CastConfig, LayerConfig};
@@ -148,12 +148,13 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 ///   it ignores the inward inset shift, which can only shrink the
 ///   bounded region — so the SDF eval domain stays valid.
 ///
-/// All five solids share the same underlying `Arc<SignedDistanceField>`
-/// via [`SharedScanSdf::clone`], so the heavy mesh + face-normal arrays
-/// live in one allocation regardless of layer count. The cap-stripped
-/// open SDF (built once when `cap_planes` is non-empty) is similarly
-/// `Arc`-shared so the candidate-A unsigned-rind adapter inside
-/// `pinned_floor_shell` queries the same allocation across every call.
+/// All five solids share the same underlying flood-fill-signed scan
+/// SDF via [`SharedScanSdf::clone`], so the heavy parry BVH + flood-fill
+/// grid live in one allocation regardless of layer count. The
+/// cap-stripped open SDF (built once when `cap_planes` is non-empty) is
+/// similarly `Arc`-shared so the candidate-A unsigned-rind adapter
+/// inside `pinned_floor_shell` queries the same allocation across every
+/// call.
 ///
 /// The AABB passed to [`Solid::from_sdf`] is the scan AABB padded by
 /// the cumulative outermost thickness — that ensures the outermost
@@ -180,7 +181,7 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 /// - centerline polyline non-finite or too short for [`Ribbon::new`]
 /// - non-normalizable split-normal (caught by [`SplitNormal::new`])
 /// - cap-stripped open mesh empty or unsuitable for
-///   [`SignedDistanceField::new`] (only on the with-caps path)
+///   [`TriMeshDistance::new`] (only on the with-caps path)
 pub fn derive_spec_and_ribbon(
     config: &CastConfig,
     scan_sdf: &SharedScanSdf,
@@ -208,27 +209,34 @@ pub fn derive_spec_and_ribbon(
 
     // Candidate-A two-SDF construction (per the redesign spec §2 A5
     // at `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md`).
-    // The closed-body SDF is the existing scan SDF; the open-body SDF
-    // is built once over the cap-stripped scan mesh and shared by Arc
-    // across the plug + every layer body call. With no cap planes the
-    // primitive short-circuits to the previous `Solid::from_sdf(scan)
-    // .offset(...)` formulation, so the inline-layers path stays
-    // byte-identical to pre-pinned-floor.
+    // The closed-body SDF is the existing scan SDF (flood-fill-signed
+    // via [`crate::scan::SharedScanSdf`] — the load-bearing sign-defense
+    // that pre-D.5 cf-cast-cli was missing, root-caused at
+    // [[project-cf-cast-plug-layer-0-watertight-discovery]]). The
+    // open-body SDF is built once over the cap-stripped scan mesh and
+    // shared by Arc across the plug + every layer body call. With no
+    // cap planes the primitive short-circuits to the previous
+    // `Solid::from_sdf(scan).offset(...)` formulation, so the
+    // inline-layers path stays byte-identical to pre-pinned-floor.
     //
-    // cf-cast-cli uses `mesh_sdf::SignedDistanceField` for the open
-    // mesh (NOT flood-fill `build_grid_sdf` like insertion_sim) —
-    // matches the scan-side SDF posture this crate already follows.
-    // The open mesh's sign heuristic on the non-manifold cap-stripped
-    // surface is irrelevant here because `pinned_floor_shell`'s
-    // private unsigned-rind adapter consumes only `.abs()`.
+    // open_sdf stays on pseudo-normal sign (the cheap parry path) —
+    // `pinned_floor_shell`'s private `UnsignedRindSdf` adapter consumes
+    // only `.eval(p).abs()`, so the sign oracle's output is mathematically
+    // irrelevant on the open side. Switching it to flood-fill would add a
+    // grid build with no behavior change. See spec §D.5 #4
+    // (`docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`).
     let closed_sdf_arc: Arc<dyn cf_design::Sdf> = Arc::new(scan_sdf.clone());
     let open_sdf_arc: Arc<dyn cf_design::Sdf> = if cap_planes.is_empty() {
         Arc::clone(&closed_sdf_arc)
     } else {
         let open_mesh = dome_wall_only_mesh(scan_sdf.mesh(), cap_planes);
-        let open_sdf = SignedDistanceField::new(open_mesh)
-            .context("build SignedDistanceField from the cap-stripped scan mesh")?;
-        Arc::new(open_sdf)
+        let open_distance = TriMeshDistance::new(open_mesh)
+            .context("build TriMeshDistance from the cap-stripped scan mesh")?;
+        let open_sign = PseudoNormalSign::from_distance(&open_distance);
+        Arc::new(Signed {
+            distance: open_distance,
+            sign: open_sign,
+        })
     };
     let cap_tuples: Vec<(Point3<f64>, Vector3<f64>)> =
         cap_planes.iter().map(CapPlane::as_tuple).collect();
@@ -339,7 +347,7 @@ mod tests {
     use super::*;
     use crate::config::{CastConfig, CastDefaults, LayerConfig, PlugPinConfig, PourGateConfig};
     use cf_geometry::IndexedMesh;
-    use mesh_sdf::SignedDistanceField;
+    use mesh_sdf::{WALL_THRESHOLD_FACTOR_DEFAULT, flood_filled_sdf};
 
     fn unit_cube_aabb() -> Aabb {
         Aabb::new(
@@ -379,7 +387,25 @@ mod tests {
         ] {
             m.faces.push(f);
         }
-        SharedScanSdf::new(SignedDistanceField::new(m).unwrap())
+        // Flood-fill bounds = unit_cube_aabb() expanded by the same
+        // padding `derive_spec_and_ribbon` computes from its config
+        // (cumulative thickness + bounding margin = 14 mm + 20 mm =
+        // 34 mm); round up to 50 mm for headroom and to keep the helper
+        // independent of the three-layer fixture's exact thicknesses.
+        //
+        // `cell_size` is intentionally NOT a divisor of the cube's
+        // 0.05 m half-extent: any aligned cell_size (0.01, 0.005,
+        // 0.0025, …) puts a lattice node EXACTLY on the cube surface,
+        // tags it Wall, and lets the BFS label expansion pick an
+        // arbitrary sign for that node — which then propagates to
+        // SharedScanSdf probes that round to it. 0.0017 m (prime-ish)
+        // keeps every lattice node off the cube surface so the sign at
+        // probe-distance > wall_threshold is unambiguously
+        // flood-reachable (Outside) or unreachable (Inside).
+        let bounds = unit_cube_aabb().expanded(0.05);
+        let (signed, _report) =
+            flood_filled_sdf(m, bounds, 0.0017, WALL_THRESHOLD_FACTOR_DEFAULT).unwrap();
+        SharedScanSdf::new(signed)
     }
 
     fn straight_x_centerline() -> Vec<Point3<f64>> {
