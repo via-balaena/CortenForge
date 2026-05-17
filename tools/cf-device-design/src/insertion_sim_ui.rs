@@ -255,6 +255,11 @@ impl InsertionSimOutputs {
     /// — the unreferenced vertices are silently ignored by the bevy
     /// mesh build's `Mesh::compute_smooth_normals` consumer and the
     /// per-GPU-asset waste is small at iter-1 (≤ a few hundred KB).
+    ///
+    /// Slice S11.2 — kept as the LEGACY outer-only helper for the
+    /// SDF-iso fallback path in `update_layer_meshes` (when the sim's
+    /// layer count doesn't cover this UI layer); the slab helper
+    /// below is the deformed render's primary path.
     #[must_use]
     pub fn deformed_layer_mesh_at(&self, layer_idx: usize, step: usize) -> Option<IndexedMesh> {
         let faces = self.per_layer_outer_faces.get(layer_idx)?;
@@ -270,6 +275,63 @@ impl InsertionSimOutputs {
         let mut mesh = IndexedMesh::new();
         mesh.vertices = positions;
         mesh.faces = faces.clone();
+        Some(mesh)
+    }
+
+    /// Slice S11.2 — build a deformed layer-SLAB `IndexedMesh` at the
+    /// requested step for layer `layer_idx`. Concatenates the layer's
+    /// INNER face triangles + OUTER face triangles into one mesh so
+    /// the render is a closed band (both surfaces of the silicone
+    /// wall) instead of just the outer skin. Bookmark §2 F2: the
+    /// outer-only render read as "where is the silicone wall?" — the
+    /// volume between cavity and layer 0 outer face IS the layer 0
+    /// silicone but it was unrendered.
+    ///
+    /// Inner faces:
+    /// - `layer_idx == 0` → `cavity_boundary_faces` (the cavity
+    ///   surface IS layer 0's inner face).
+    /// - `layer_idx > 0` → `per_layer_outer_faces[layer_idx - 1]`
+    ///   (the prior layer's outer face IS this layer's inner face;
+    ///   shared BCC interface triangles).
+    ///
+    /// Outer faces: `per_layer_outer_faces[layer_idx]`.
+    ///
+    /// Inner and outer triangles reference disjoint BCC vertex
+    /// subsets (cavity-side vs outer-side of the layer band), so
+    /// `compute_smooth_normals` accumulates correctly per surface
+    /// without interference between the two skins.
+    ///
+    /// Returns `None` if `layer_idx` is out of range OR `step` is
+    /// out of the converged range. Returns an empty-face mesh if
+    /// the inner + outer face lists are both empty (degenerate
+    /// configuration — the caller falls through to the SDF iso
+    /// fallback).
+    #[must_use]
+    pub fn deformed_layer_slab_mesh_at(
+        &self,
+        layer_idx: usize,
+        step: usize,
+    ) -> Option<IndexedMesh> {
+        let outer_faces = self.per_layer_outer_faces.get(layer_idx)?;
+        let inner_faces: &Vec<[u32; 3]> = if layer_idx == 0 {
+            &self.cavity_boundary_faces
+        } else {
+            self.per_layer_outer_faces.get(layer_idx - 1)?
+        };
+        if outer_faces.is_empty() && inner_faces.is_empty() {
+            return None;
+        }
+        let ramp_step = self.ramp.steps.get(step)?;
+        let positions: Vec<Point3<f64>> = ramp_step
+            .x_final
+            .chunks_exact(3)
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices = positions;
+        mesh.faces = Vec::with_capacity(inner_faces.len() + outer_faces.len());
+        mesh.faces.extend_from_slice(inner_faces);
+        mesh.faces.extend_from_slice(outer_faces);
         Some(mesh)
     }
 
@@ -1995,6 +2057,129 @@ mod tests {
         // Past the converged tail.
         assert!(outputs.intruder_mesh_at(2).is_none());
         assert!(outputs.intruder_mesh_at(99).is_none());
+    }
+
+    /// Slice S11.2 — synthetic outputs builder for the slab-mesh
+    /// tests below. Cap planes + scalar fields kept empty; the slab
+    /// helper only reads `cavity_boundary_faces` +
+    /// `per_layer_outer_faces` + `ramp.steps[step].x_final`.
+    fn synthetic_outputs_for_slab_tests(
+        cavity_boundary_faces: Vec<[u32; 3]>,
+        per_layer_outer_faces: Vec<Vec<[u32; 3]>>,
+        n_steps: usize,
+        n_vertices: usize,
+    ) -> InsertionSimOutputs {
+        InsertionSimOutputs {
+            ramp: InsertionRamp {
+                steps: (0..n_steps)
+                    .map(|_| RampStep {
+                        interference_m: 0.001,
+                        iter_count: 1,
+                        final_residual_norm: 0.0,
+                        x_final: vec![0.0; 3 * n_vertices],
+                        readout: StepReadout {
+                            n_active_contact_pairs: 0,
+                            contact_force_total_n: Vector3::zeros(),
+                            contact_force_magnitude_n: 0.0,
+                            max_principal_stretch: 1.0,
+                            min_principal_stretch: 1.0,
+                            max_first_piola_frobenius_pa: 0.0,
+                            mean_strain_energy_density_j_per_m3: 0.0,
+                        },
+                    })
+                    .collect(),
+                failed_at_step: None,
+                failure_reason: None,
+                final_x: Vec::new(),
+                n_pinned: 0,
+                result: None,
+            },
+            per_layer: Vec::new(),
+            tet_centroids: Vec::new(),
+            per_tet_layer: Vec::new(),
+            per_step_scalar_fields: Vec::new(),
+            scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
+            cavity_boundary_faces,
+            per_layer_outer_faces,
+            per_step_intruder_meshes: Vec::new(),
+        }
+    }
+
+    /// Slice S11.2 — layer 0's slab uses `cavity_boundary_faces` as
+    /// its INNER face (the cavity surface IS layer 0's inner face)
+    /// and `per_layer_outer_faces[0]` as its OUTER face. Bookmark §3
+    /// Tier 1 (2): the inner face must come from the cavity, not
+    /// from a prior layer (there is no prior layer for layer 0).
+    #[test]
+    fn deformed_layer_slab_mesh_at_layer_0_uses_cavity_boundary_for_inner() {
+        let outputs =
+            synthetic_outputs_for_slab_tests(vec![[0, 1, 2]], vec![vec![[3, 4, 5]]], 1, 6);
+        let slab = outputs
+            .deformed_layer_slab_mesh_at(0, 0)
+            .expect("layer 0 slab");
+        assert_eq!(slab.faces.len(), 2);
+        assert!(
+            slab.faces.contains(&[0, 1, 2]),
+            "cavity face must be in slab"
+        );
+        assert!(
+            slab.faces.contains(&[3, 4, 5]),
+            "outer face must be in slab"
+        );
+    }
+
+    /// Slice S11.2 — layer i > 0's slab uses
+    /// `per_layer_outer_faces[i - 1]` as its INNER face (the prior
+    /// layer's outer face IS this layer's inner face — same BCC
+    /// interface triangles, shared vertex layout).
+    #[test]
+    fn deformed_layer_slab_mesh_at_layer_i_uses_prior_outer_for_inner() {
+        let outputs = synthetic_outputs_for_slab_tests(
+            vec![[0, 1, 2]],
+            vec![vec![[3, 4, 5]], vec![[6, 7, 8]]],
+            1,
+            9,
+        );
+        let slab = outputs
+            .deformed_layer_slab_mesh_at(1, 0)
+            .expect("layer 1 slab");
+        assert_eq!(slab.faces.len(), 2);
+        assert!(
+            slab.faces.contains(&[3, 4, 5]),
+            "layer 0 outer face must be layer 1's inner face",
+        );
+        assert!(
+            slab.faces.contains(&[6, 7, 8]),
+            "layer 1 outer face must be in slab",
+        );
+    }
+
+    /// Slice S11.2 — `layer_idx` past the layer count returns None
+    /// (fail-closed, same posture as `deformed_layer_mesh_at`).
+    #[test]
+    fn deformed_layer_slab_mesh_at_returns_none_for_out_of_range_layer() {
+        let outputs = synthetic_outputs_for_slab_tests(
+            vec![[0, 1, 2]],
+            vec![vec![[3, 4, 5]], vec![[6, 7, 8]]],
+            1,
+            9,
+        );
+        // Indices 0, 1 valid; 2 out of range.
+        assert!(outputs.deformed_layer_slab_mesh_at(0, 0).is_some());
+        assert!(outputs.deformed_layer_slab_mesh_at(1, 0).is_some());
+        assert!(outputs.deformed_layer_slab_mesh_at(2, 0).is_none());
+    }
+
+    /// Slice S11.2 — `step` past the converged ramp range returns
+    /// None.
+    #[test]
+    fn deformed_layer_slab_mesh_at_returns_none_for_out_of_range_step() {
+        let outputs =
+            synthetic_outputs_for_slab_tests(vec![[0, 1, 2]], vec![vec![[3, 4, 5]]], 2, 6);
+        // Steps 0, 1 valid; 2 out of range.
+        assert!(outputs.deformed_layer_slab_mesh_at(0, 0).is_some());
+        assert!(outputs.deformed_layer_slab_mesh_at(0, 1).is_some());
+        assert!(outputs.deformed_layer_slab_mesh_at(0, 2).is_none());
     }
 
     /// `LAYER_COUNT_MAX` (from main.rs) caps the user-facing layer

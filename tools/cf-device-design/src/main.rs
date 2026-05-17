@@ -1371,6 +1371,17 @@ const LAYER_SURFACE_PALETTE: &[(f32, f32, f32)] = &[
     (0.95, 0.45, 0.70), // pink
 ];
 
+/// Slice S11.2 — translucency for the per-layer slab render. Each
+/// layer entity carries both its inner + outer face triangles
+/// (`InsertionSimOutputs::deformed_layer_slab_mesh_at`) and renders
+/// with `AlphaMode::Blend` at this alpha so the user sees through
+/// the outer layer into the inner ones + the cavity + intruder.
+/// Bookmark §3 Tier 1 (2)–(3): opaque outer shells occluded
+/// everything else (finding F3); 0.35 lets the user see a clear
+/// translucent band of silicone per layer without losing the inner
+/// geometry behind it.
+const LAYER_SLAB_ALPHA: f32 = 0.35;
+
 /// Cavity surface color (`StandardMaterial::base_color`). The
 /// cavity is the inner void surface; coral distinguishes it from
 /// the layer palette + scan + axis arrows. Material is double-
@@ -1630,8 +1641,19 @@ fn update_layer_meshes(
         // `debug_assert!` (strict `<`) still passes in debug builds.
         let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
+        // Slice S11.2 — deformed-shells path picks the SLAB mesh
+        // (inner + outer faces) so the user reads each layer as a
+        // translucent band of silicone instead of an opaque outer
+        // skin. Falls through to the legacy outer-only helper when
+        // the slab build is unavailable (e.g., sim ran with fewer
+        // layers than the GUI now shows), then to the rest-frame
+        // SDF iso when the deformed view is off altogether.
         let layer_indexed = deformed_layers_run
-            .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
+            .and_then(|run| run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step))
+            .or_else(|| {
+                deformed_layers_run
+                    .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
+            })
             .unwrap_or_else(|| {
                 sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
             });
@@ -1657,18 +1679,22 @@ fn update_layer_meshes(
             colors_slice,
         ));
         let (r, g, b) = LAYER_SURFACE_PALETTE[i % LAYER_SURFACE_PALETTE.len()];
-        // Heat-map mode pins base color to white so the per-vertex
-        // COLOR attribute carries the gradient straight through
-        // (StandardMaterial multiplies base × vertex × light). Off
-        // mode keeps the palette tint.
+        // Slice S11.2 — slab materials carry `LAYER_SLAB_ALPHA` and
+        // `AlphaMode::Blend` so outer layers don't fully occlude the
+        // inner geometry. Heat-map mode pins base color to white so
+        // the per-vertex COLOR attribute carries the gradient
+        // straight through (StandardMaterial multiplies base ×
+        // vertex × light); off mode keeps the palette tint with the
+        // same alpha.
         let base_color = if colors_slice.is_some() {
-            Color::WHITE
+            Color::srgba(1.0, 1.0, 1.0, LAYER_SLAB_ALPHA)
         } else {
-            Color::srgb(r, g, b)
+            Color::srgba(r, g, b, LAYER_SLAB_ALPHA)
         };
         let material = materials.add(ExtendedMaterial {
             base: StandardMaterial {
                 base_color,
+                alpha_mode: AlphaMode::Blend,
                 double_sided: true,
                 cull_mode: None,
                 ..default()
