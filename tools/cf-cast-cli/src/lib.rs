@@ -142,11 +142,27 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         );
     }
 
+    // Pinned-floor scope-C sub-leaf 6: read the `[caps]` block from the
+    // same `.prep.toml` text. Empty Vec when the block is absent or all
+    // loops are excluded — derive_spec_and_ribbon then takes the
+    // byte-identical-to-pre-pinned-floor no-caps fast path.
+    let cap_planes = cf_cap_planes::parse_cap_planes(&prep_text)
+        .with_context(|| format!("parse caps from {}", prep_toml_path.display()))?;
+    if !cap_planes.is_empty() {
+        eprintln!(
+            "[cf-cast-cli] {} cap plane(s) loaded — plug + bodies will be \
+             pinned-floor shells (cavity-mouth floors pinned to cap plane)",
+            cap_planes.len(),
+        );
+    }
+
     let derived = derive::derive_spec_and_ribbon(
         &config,
         &loaded_scan.sdf,
+        &loaded_scan.mesh,
         loaded_scan.aabb,
         &centerline,
+        &cap_planes,
         cavity_inset_m,
     )
     .context("derive CastSpec + Ribbon from scan + cast TOML")?;
