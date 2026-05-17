@@ -306,7 +306,6 @@ pub fn kick_off_simulation(
     scan: Option<Res<ScanMesh>>,
     cavity: Res<CavityState>,
     layers: Res<LayersState>,
-    cap_planes: Res<crate::sdf_layers::CapPlanes>,
     mut state: ResMut<InsertionSimState>,
 ) {
     if !state.request_simulate {
@@ -323,14 +322,12 @@ pub fn kick_off_simulation(
 
     let scan_clone: IndexedMesh = scan.0.clone();
     let design = build_sim_design(&cavity, &layers);
-    let cap_planes_clone = cap_planes.planes.clone();
     let n_steps = state.n_steps;
 
     state.last_error = None;
     let pool = AsyncComputeTaskPool::get();
     let task = pool.spawn(async move {
-        run_sim_pipeline(scan_clone, design, cap_planes_clone, n_steps)
-            .map_err(|e| format!("{e:?}"))
+        run_sim_pipeline(scan_clone, design, n_steps).map_err(|e| format!("{e:?}"))
     });
     state.pending = Some(task);
 }
@@ -401,16 +398,9 @@ fn build_sim_design(cavity: &CavityState, layers: &LayersState) -> SimDesign {
 fn run_sim_pipeline(
     scan: IndexedMesh,
     design: SimDesign,
-    cap_planes: Vec<cf_cap_planes::CapPlane>,
     n_steps: usize,
 ) -> Result<InsertionSimOutputs> {
-    let geometry = build_insertion_geometry(
-        &scan,
-        &design,
-        &cap_planes,
-        SIM_SDF_TARGET_FACES,
-        SIM_CELL_SIZE_M,
-    )?;
+    let geometry = build_insertion_geometry(&scan, &design, SIM_SDF_TARGET_FACES, SIM_CELL_SIZE_M)?;
 
     let n_tets = geometry.n_tets;
     let n_layers = design.layers.len();

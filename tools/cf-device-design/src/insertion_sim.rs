@@ -60,8 +60,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use cf_cap_planes::{CapPlane, DomeWallSignedSdf, dome_wall_only_mesh};
-use cf_design::{Aabb, SdfGrid, Solid, pinned_floor_shell};
+use cf_design::{Aabb, SdfGrid, Solid};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{SignedDistanceField, unsigned_distance};
 use mesh_types::IndexedMesh;
@@ -612,13 +611,6 @@ pub struct InsertionGeometry {
     /// `Yeoh` parameters (which collapse when two layers happen to
     /// share an anchor key).
     pub per_tet_layer: Vec<usize>,
-    /// Pinned-floor scope-C sub-leaf 5 — the cap planes the cavity +
-    /// outer shells were composed against. Empty for the no-caps fast
-    /// path (no `.prep.toml` `[caps]` block). Surfaced so a downstream
-    /// consumer (the Bevy panel's per-layer projection, fit-viz rungs
-    /// 2-6) can visualize the cap geometry without re-parsing the
-    /// `.prep.toml`.
-    pub cap_planes: Vec<CapPlane>,
 }
 
 /// Build the Route-A insertion-sim geometry: the device-wall tet mesh
@@ -668,7 +660,6 @@ pub struct InsertionGeometry {
 pub fn build_insertion_geometry(
     scan: &IndexedMesh,
     design: &SimDesign,
-    cap_planes: &[CapPlane],
     sdf_target_faces: usize,
     cell_size_m: f64,
 ) -> Result<InsertionGeometry> {
@@ -734,60 +725,9 @@ pub fn build_insertion_geometry(
         build_grid_sdf(&decimated, bounds, grid_cell_m, 0.75 * grid_cell_m)
             .context("build flood-fill GridSdf from the decimated scan")?;
 
-    // Pinned-floor scope-C sub-leaf 5: when caps are present, build a
-    // second GridSdf over the cap-polygon-stripped scan and compose
-    // `DomeWallSignedSdf { closed: scan_sdf, open: scan_sdf_open }`.
-    // The cavity + outer Solids are then `pinned_floor_shell`s over the
-    // dome-wall-signed SDF, which closes every shell with a flat floor
-    // at every cap plane.
-    //
-    // No-caps fast path: dome_wall_signed = `{ closed: scan_sdf, open:
-    // scan_sdf }` (same Arc both sides — equivalent to single-SDF).
-    // pinned_floor_shell with empty caps reduces to
-    // `Solid::from_sdf(sdf, bounds).offset(offset_m)`, byte-identical
-    // to the pre-pinned-floor construction.
-    let dome_wall_signed = if cap_planes.is_empty() {
-        let arc = std::sync::Arc::new(scan_sdf.clone());
-        DomeWallSignedSdf {
-            closed: arc.clone(),
-            open: arc,
-        }
-    } else {
-        let decimated_open = dome_wall_only_mesh(&decimated, cap_planes);
-        let (scan_sdf_open, _open_report) =
-            build_grid_sdf(&decimated_open, bounds, grid_cell_m, 0.75 * grid_cell_m)
-                .context("build flood-fill GridSdf from the cap-polygon-stripped decimated scan")?;
-        DomeWallSignedSdf {
-            closed: std::sync::Arc::new(scan_sdf.clone()),
-            open: std::sync::Arc::new(scan_sdf_open),
-        }
-    };
-
     // Three `LayeredScalarField`s (or `ConstantField`s) over the same
     // scan-distance partition — one per Yeoh parameter — mirroring the
     // row-23 `build_material_field` precedent.
-    //
-    // **Pinned-floor scope-C deviation from spec sub-leaf 5**: the
-    // partition SDF stays `scan_sdf` (NOT dome_wall_signed). The spec
-    // recommended switching to dome_wall_signed for both the material
-    // field + the per_tet_layer bucketing. At the dome wall the two
-    // SDFs agree, but at the cap-plane FLOOR REGION they diverge — and
-    // the divergence puts dome_wall_signed in the wrong place per the
-    // user's geometric model. A tet in the body at z = cap_z - ε
-    // laterally between the cavity outline and layer-0 outer outline:
-    //   • scan_sdf ≈ -ε (distance from cap polygon, monotone in depth
-    //     from cap plane). Threshold-bucketed → layer 0 at small ε,
-    //     deeper layers as ε grows — matches the user's "layer N is
-    //     wall N around the n-1 layer wall" radial nesting at the floor.
-    //   • dome_wall_signed = sign(closed) × |open|. Open SDF strips
-    //     the cap polygon so the nearest dome-wall surface is the cap
-    //     rim, MANY mm away regardless of depth. Bucketed by lateral
-    //     distance to the rim, NOT by radial nesting → puts most floor
-    //     tets in the outermost layer, contradicting the user's model.
-    //
-    // Per [[feedback-autonomous-architecture]] flagging this deviation
-    // in the commit message. The no-caps fast path is byte-identical
-    // either way (scan_sdf === dome_wall_signed when no caps).
     let material_field = MaterialField::from_yeoh_fields(
         layered_param_field(
             &scan_sdf,
@@ -806,25 +746,11 @@ pub fn build_insertion_geometry(
         ),
     );
 
-    // Pinned-floor cavity + outer: each closed with a flat floor at
-    // every cap plane. The intersection of body-interior half-spaces
-    // is rolled into the Solid composition (cf-design::pinned_floor_shell),
-    // so the mesher (SdfMeshedTetMesh::from_sdf_yeoh) sees a closed body
-    // with flat cap-plane floor(s). Empty caps → byte-identical to the
-    // pre-pinned-floor uniform offset.
-    let cap_tuples: Vec<_> = cap_planes.iter().map(CapPlane::as_tuple).collect();
-    let cavity = pinned_floor_shell(
-        dome_wall_signed.clone(),
-        bounds,
-        &cap_tuples,
-        cavity_offset_m,
-    );
-    let outer = pinned_floor_shell(
-        dome_wall_signed.clone(),
-        bounds,
-        &cap_tuples,
-        outer_offset_m,
-    );
+    // Route-A device wall: outer skin minus cavity void. `Solid::offset`
+    // takes signed distances — `cavity_offset_m` is negative (the
+    // cavity is inset *inside* the scan).
+    let cavity = Solid::from_sdf(scan_sdf.clone(), bounds).offset(cavity_offset_m);
+    let outer = Solid::from_sdf(scan_sdf.clone(), bounds).offset(outer_offset_m);
     let body = outer.subtract(cavity);
 
     let hints = MeshingHints {
@@ -875,13 +801,7 @@ pub fn build_insertion_geometry(
     Ok(InsertionGeometry {
         mesh,
         // The scan SDF doubles as the rigid intruder — the press-fit
-        // ramp (7.2) drives this into the cavity. The intruder is the
-        // bare scan body (closed scan SDF), NOT the pinned-floor
-        // composition: the rigid intruder represents the real physical
-        // body sliding into the cavity, which has its own scan-natural
-        // floor at the cap polygon; only the SOFT silicone wall needs
-        // the pinned-floor shaping (because the wall is constructed
-        // around the cavity outline, not scanned).
+        // ramp (7.2) drives this into the cavity.
         intruder: scan_sdf,
         cavity_offset_m,
         outer_offset_m,
@@ -889,7 +809,6 @@ pub fn build_insertion_geometry(
         cell_size_m,
         n_tets,
         per_tet_layer,
-        cap_planes: cap_planes.to_vec(),
     })
 }
 
@@ -1089,7 +1008,6 @@ pub fn run_single_insertion_step(
         cell_size_m,
         n_tets: _,
         per_tet_layer: _,
-        cap_planes: _,
     } = geometry;
 
     let n_vertices = mesh.n_vertices();
@@ -1980,7 +1898,6 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
         cell_size_m,
         n_tets,
         per_tet_layer: _,
-        cap_planes: _,
     } = geometry;
 
     let n_vertices = mesh.n_vertices();
@@ -2497,7 +2414,7 @@ mod tests {
         // before the scan is decimated, so a stub cube is enough and
         // the test stays fast.
         let scan = unit_cube();
-        let build = |design: &SimDesign| build_insertion_geometry(&scan, design, &[], 2_500, 0.004);
+        let build = |design: &SimDesign| build_insertion_geometry(&scan, design, 2_500, 0.004);
 
         let cases = [
             (
@@ -2549,73 +2466,6 @@ mod tests {
                 "{label} design should be rejected as Err",
             );
         }
-    }
-
-    // ----- Pinned-floor scope-C sub-leaf 5 ----------------------------
-
-    #[test]
-    fn build_insertion_geometry_empty_caps_populates_empty_cap_planes_field() {
-        // No-caps fast path: cap_planes returned in InsertionGeometry
-        // is empty. Pinned-floor primitive collapses to plain offset
-        // (regression sentinel for the no-caps Solid composition).
-        let scan = unit_cube();
-        let design = SimDesign {
-            cavity_inset_m: 0.003,
-            layers: vec![layer(0.005, "ECOFLEX_00_30")],
-        };
-        let g = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
-            .expect("no-caps geometry build must succeed on cube");
-        assert!(
-            g.cap_planes.is_empty(),
-            "empty cap_planes input must produce empty cap_planes field; got {} planes",
-            g.cap_planes.len(),
-        );
-        // Sanity: per_tet_layer length matches n_tets; all assignments
-        // land in the single layer (index 0).
-        assert_eq!(g.per_tet_layer.len(), g.n_tets);
-        assert!(
-            g.per_tet_layer.iter().all(|&l| l == 0),
-            "single-layer design: every tet should land in layer 0",
-        );
-    }
-
-    #[test]
-    fn build_insertion_geometry_with_caps_propagates_cap_planes_to_geometry() {
-        // With-caps path: cap_planes round-trips through
-        // InsertionGeometry. The pinned-floor Solid composition
-        // (cavity + outer) builds with the dome-wall-signed SDF; the
-        // mesher tetrahedralizes the body and returns n_tets > 0.
-        // Cap-plane lateral position chosen to NOT prune the cube
-        // entirely (top cap at +z = +0.5, normal +Z — keeps the full
-        // cube body below the cap).
-        let scan = unit_cube();
-        let design = SimDesign {
-            cavity_inset_m: 0.003,
-            layers: vec![layer(0.005, "ECOFLEX_00_30")],
-        };
-        let cap = CapPlane {
-            centroid: Point3::new(0.0, 0.0, 0.5),
-            normal: Vector3::new(0.0, 0.0, 1.0),
-            vertex_count: 4,
-            loop_index: 0,
-        };
-        let g = build_insertion_geometry(&scan, &design, &[cap], 2_500, 0.004)
-            .expect("with-caps geometry build must succeed on cube");
-        assert_eq!(
-            g.cap_planes.len(),
-            1,
-            "single cap input must round-trip; got {} planes",
-            g.cap_planes.len(),
-        );
-        let p = &g.cap_planes[0];
-        assert!((p.normal - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
-        assert!((p.centroid - Point3::new(0.0, 0.0, 0.5)).norm() < 1e-12);
-        // Sanity: pinned-floor body still mesh-able.
-        assert!(
-            g.n_tets > 0,
-            "with-caps geometry must produce non-empty mesh"
-        );
-        assert_eq!(g.per_tet_layer.len(), g.n_tets);
     }
 
     /// SDF bridge spike against the iter-1 cleaned scan.
@@ -2715,7 +2565,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.005, "ECOFLEX_00_30")],
         };
-        let g1 = build_insertion_geometry(&scan, &single, &[], sdf_target_faces, cell_size_m)
+        let g1 = build_insertion_geometry(&scan, &single, sdf_target_faces, cell_size_m)
             .expect("single-layer geometry should build");
         eprintln!(
             "single-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
@@ -2759,7 +2609,7 @@ mod tests {
                 layer(0.005, "DRAGON_SKIN_20A"),
             ],
         };
-        let g3 = build_insertion_geometry(&scan, &triple, &[], sdf_target_faces, cell_size_m)
+        let g3 = build_insertion_geometry(&scan, &triple, sdf_target_faces, cell_size_m)
             .expect("three-layer geometry should build");
         eprintln!(
             "three-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
@@ -3101,7 +2951,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
             .expect("synthetic-sphere geometry should build");
         let n_tets = geometry.n_tets;
         // Rest positions captured before the solver consumes the mesh.
@@ -3192,7 +3042,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
             .expect("iter-1 geometry should build on the GridSdf");
         let n_tets = geometry.n_tets;
         eprintln!("iter-1 geometry: {n_tets} tets (built on the flood-fill GridSdf)");
@@ -3372,7 +3222,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        match build_insertion_geometry(&raw, &design_10mm, &[], 2_500, 0.004) {
+        match build_insertion_geometry(&raw, &design_10mm, 2_500, 0.004) {
             Ok(geometry) => {
                 eprintln!("  geometry: {} tets", geometry.n_tets);
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -3410,7 +3260,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.005, "ECOFLEX_00_30")],
         };
-        match build_insertion_geometry(&raw, &design_5mm, &[], 2_500, 0.004) {
+        match build_insertion_geometry(&raw, &design_5mm, 2_500, 0.004) {
             Ok(geometry) => {
                 let mut surface = IndexedMesh::new();
                 surface.vertices = geometry
@@ -3592,7 +3442,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
             .expect("synthetic-sphere geometry should build");
         let n_dof = geometry.mesh.positions().len() * 3;
 
@@ -3883,7 +3733,7 @@ mod tests {
         // 16/16): faithful 25 k-face resolution exposes scan noise
         // even when σ is widened. The 2 500-face proxy + σ = 1.0
         // cell is the empirically-best operating point.
-        let geometry = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
             .expect("iter-1 geometry should build");
         let n_tets = geometry.n_tets;
         let n_dof = geometry.mesh.positions().len() * 3;
