@@ -30,10 +30,6 @@
 //!   diagnostic. Emits a stderr table of cap-face classification stats
 //!   so a Taubin-smoothing or decimation drift that breaks the cap-face
 //!   detection rule surfaces at startup, not at the visual gate.
-//! - [`DomeWallSignedSdf`] — `Sdf` adapter combining sign from a CLOSED
-//!   SDF with magnitude from an OPEN SDF, producing the dome-wall-
-//!   signed-distance field that cf-design's `pinned_floor_shell`
-//!   primitive offsets + intersects with cap half-spaces.
 //!
 //! # The `CapPlane` runtime frame (post-bake)
 //!
@@ -71,10 +67,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::Arc;
-
 use anyhow::Result;
-use cf_design::Sdf;
 use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Quaternion, UnitQuaternion, Vector3};
 use serde::Deserialize;
@@ -488,95 +481,6 @@ pub fn report_cap_face_classification(mesh: &IndexedMesh, cap_planes: &[CapPlane
     }
 }
 
-// ---- DomeWallSignedSdf adapter ----------------------------------------
-
-/// Finite-difference epsilon (meters) for [`DomeWallSignedSdf`]'s
-/// gradient. 1e-6 matches cf-design's `Sdf for SignedDistanceField`
-/// precedent — small enough that the central-difference error on a
-/// piecewise-smooth SDF is negligible against the surface-locating
-/// tolerance, large enough that f64 cancellation does not eat the
-/// signal.
-const DOME_WALL_SIGNED_SDF_GRAD_EPS: f64 = 1e-6;
-
-/// Sdf adapter combining the SIGN from a CLOSED-body SDF with the
-/// MAGNITUDE from an OPEN-body SDF.
-///
-/// Used to build the dome-wall-signed-distance field that cf-design's
-/// `pinned_floor_shell` primitive offsets + intersects with cap half-
-/// spaces. The closed SDF's sign correctly distinguishes body-interior
-/// from body-exterior even for points outside the body laterally (e.g.
-/// far above the dome); the open SDF's magnitude does NOT "see" the
-/// cap polygon, so the inward iso surface has no cap-polygon offset to
-/// enclose — the cavity terminates naturally at the cap plane.
-///
-/// The adapter takes the open SDF's unsigned magnitude via `.abs()`, so
-/// the §"open risks" sign-heuristic concern about `mesh_sdf`'s far-
-/// field heuristic (~12% wrong sign on the non-manifold open mesh) is
-/// SIDESTEPPED by construction: only the sign comes from the closed
-/// SDF, the open SDF's sign is discarded.
-///
-/// Both fields are `Arc<dyn Sdf + Send + Sync>` (via the `Sdf`
-/// supertrait) so the adapter is `Clone` + `Send` + `Sync` — the same
-/// shape `Solid::from_sdf` requires.
-pub struct DomeWallSignedSdf {
-    /// Sign source. SDF of the cleaned scan WITH cap polygons (closed
-    /// manifold). Reliable sign inside / outside the body.
-    pub closed: Arc<dyn Sdf>,
-    /// Magnitude source. SDF of the cleaned scan WITHOUT cap polygons
-    /// (open surface). Only its `.eval(p).abs()` is consumed, so its
-    /// own sign is irrelevant — the open mesh's sign heuristic can be
-    /// wrong without affecting this adapter.
-    pub open: Arc<dyn Sdf>,
-}
-
-impl DomeWallSignedSdf {
-    /// Construct an adapter from two SDFs. Convenience over the bare
-    /// struct literal for the common case where the caller already has
-    /// `Arc<dyn Sdf>` values.
-    #[must_use]
-    pub fn new(closed: Arc<dyn Sdf>, open: Arc<dyn Sdf>) -> Self {
-        Self { closed, open }
-    }
-}
-
-impl Sdf for DomeWallSignedSdf {
-    fn eval(&self, p: Point3<f64>) -> f64 {
-        // Rust's `f64::signum(0.0) = +1.0` (NOT 0). On a point that's
-        // EXACTLY on the closed body's surface, the composed value is
-        // `+|open.eval(p)|`. In practice the closed-body surface and
-        // dome-wall surface coincide everywhere except across the cap
-        // polygon, so `open.eval(p)` is also ~0 on the closed surface
-        // (away from caps); the +1 sign tie-break only affects points
-        // on the cap polygon itself (where open.eval = distance-to-
-        // cap-rim, positive = outside the dome-wall manifold, matching
-        // the geometric intent that the cap polygon is "outside" the
-        // open body).
-        self.closed.eval(p).signum() * self.open.eval(p).abs()
-    }
-
-    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
-        // Central finite-difference. Same posture cf-design's
-        // `Sdf for SignedDistanceField` uses — `eval` is piecewise-
-        // smooth (kinks at the cap plane where `sign(closed)` flips and
-        // at face boundaries of either source), so an analytic gradient
-        // is not available in closed form. The eps matches the
-        // SignedDistanceField adapter for behavioral consistency.
-        let eps = DOME_WALL_SIGNED_SDF_GRAD_EPS;
-        let inv_2eps = 0.5 / eps;
-        Vector3::new(
-            (self.eval(Point3::new(p.x + eps, p.y, p.z))
-                - self.eval(Point3::new(p.x - eps, p.y, p.z)))
-                * inv_2eps,
-            (self.eval(Point3::new(p.x, p.y + eps, p.z))
-                - self.eval(Point3::new(p.x, p.y - eps, p.z)))
-                * inv_2eps,
-            (self.eval(Point3::new(p.x, p.y, p.z + eps))
-                - self.eval(Point3::new(p.x, p.y, p.z - eps)))
-                * inv_2eps,
-        )
-    }
-}
-
 // ---- Tests -------------------------------------------------------------
 
 #[cfg(test)]
@@ -861,119 +765,5 @@ mod tests {
         let cube = axis_aligned_cube(0.5);
         let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.5), Vector3::new(0.0, 0.0, 1.0));
         report_cap_face_classification(&cube, &[cap]);
-    }
-
-    // ----- DomeWallSignedSdf ------------------------------------------
-
-    /// Trivial Sdf for tests: returns a constant value.
-    struct ConstSdf(f64);
-    impl Sdf for ConstSdf {
-        fn eval(&self, _p: Point3<f64>) -> f64 {
-            self.0
-        }
-        fn grad(&self, _p: Point3<f64>) -> Vector3<f64> {
-            Vector3::zeros()
-        }
-    }
-
-    /// Sdf of an axis-aligned plane at z = 0, with normal +Z: returns
-    /// the z coordinate (positive above, negative below). Mimics a
-    /// "closed body below the plane" for sign-source tests.
-    struct PlaneZSdf;
-    impl Sdf for PlaneZSdf {
-        fn eval(&self, p: Point3<f64>) -> f64 {
-            p.z
-        }
-        fn grad(&self, _p: Point3<f64>) -> Vector3<f64> {
-            Vector3::new(0.0, 0.0, 1.0)
-        }
-    }
-
-    #[test]
-    fn dome_wall_signed_sdf_sign_from_closed_magnitude_from_open() {
-        // Closed says "interior" (negative), open returns absolute
-        // value 3.0 → composed = -3.0.
-        let closed: Arc<dyn Sdf> = Arc::new(ConstSdf(-1.0));
-        let open: Arc<dyn Sdf> = Arc::new(ConstSdf(3.0));
-        let adapter = DomeWallSignedSdf::new(closed, open);
-        let v = adapter.eval(Point3::new(0.0, 0.0, 0.0));
-        assert!((v + 3.0).abs() < 1e-12, "expected -3.0, got {v}");
-    }
-
-    #[test]
-    fn dome_wall_signed_sdf_ignores_open_sign() {
-        // Open SDF's sign is irrelevant — we take its magnitude. Same
-        // result whether open returns +3 or -3.
-        let closed: Arc<dyn Sdf> = Arc::new(ConstSdf(-1.0));
-        let open_positive: Arc<dyn Sdf> = Arc::new(ConstSdf(3.0));
-        let open_negative: Arc<dyn Sdf> = Arc::new(ConstSdf(-3.0));
-        let a = DomeWallSignedSdf::new(closed.clone(), open_positive).eval(Point3::origin());
-        let b = DomeWallSignedSdf::new(closed, open_negative).eval(Point3::origin());
-        assert!((a - b).abs() < 1e-12);
-    }
-
-    #[test]
-    fn dome_wall_signed_sdf_on_closed_surface_uses_open_magnitude() {
-        // closed.eval = 0 → signum = +1.0 (Rust convention) → composed
-        // = +|open.eval|. In practice the dome-wall and closed surfaces
-        // coincide away from caps so open.eval ≈ 0 there too, but this
-        // test pins the sign-tie semantics for the cap-polygon case
-        // (where open.eval = distance-to-rim, treated as "outside" the
-        // open dome-wall manifold).
-        let closed: Arc<dyn Sdf> = Arc::new(ConstSdf(0.0));
-        let open: Arc<dyn Sdf> = Arc::new(ConstSdf(5.0));
-        let adapter = DomeWallSignedSdf::new(closed, open);
-        let v = adapter.eval(Point3::origin());
-        assert!((v - 5.0).abs() < 1e-12, "expected +5.0, got {v}");
-    }
-
-    #[test]
-    fn dome_wall_signed_sdf_zero_when_open_is_zero() {
-        // The semantically-important zero is where the OPEN body's
-        // surface lies (since that's the dome-wall + offset's natural
-        // iso set). When open.eval = 0, composed = sign × 0 = 0
-        // regardless of closed's sign.
-        for closed_val in [-1.0, 0.0, 1.0] {
-            let closed: Arc<dyn Sdf> = Arc::new(ConstSdf(closed_val));
-            let open: Arc<dyn Sdf> = Arc::new(ConstSdf(0.0));
-            let adapter = DomeWallSignedSdf::new(closed, open);
-            let v = adapter.eval(Point3::origin());
-            assert!(
-                v.abs() < 1e-12,
-                "open=0 must give composed=0 regardless of closed={closed_val}; got {v}",
-            );
-        }
-    }
-
-    #[test]
-    fn dome_wall_signed_sdf_positive_outside_closed_body() {
-        // Above plane z=0 → closed sign = +1, open mag = 0.5 → +0.5.
-        let closed: Arc<dyn Sdf> = Arc::new(PlaneZSdf);
-        let open: Arc<dyn Sdf> = Arc::new(ConstSdf(0.5));
-        let adapter = DomeWallSignedSdf::new(closed, open);
-        let v = adapter.eval(Point3::new(0.0, 0.0, 1.0));
-        assert!((v - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn dome_wall_signed_sdf_gradient_central_difference() {
-        // closed = z, open = |z| → composed = sign(z) * |z| = z.
-        // d/dz of z is 1.
-        struct AbsZSdf;
-        impl Sdf for AbsZSdf {
-            fn eval(&self, p: Point3<f64>) -> f64 {
-                p.z.abs()
-            }
-            fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
-                Vector3::new(0.0, 0.0, p.z.signum())
-            }
-        }
-        let closed: Arc<dyn Sdf> = Arc::new(PlaneZSdf);
-        let open: Arc<dyn Sdf> = Arc::new(AbsZSdf);
-        let adapter = DomeWallSignedSdf::new(closed, open);
-        let g = adapter.grad(Point3::new(0.0, 0.0, 1.0));
-        assert!((g.x).abs() < 1e-3, "expected gx ≈ 0, got {}", g.x);
-        assert!((g.y).abs() < 1e-3, "expected gy ≈ 0, got {}", g.y);
-        assert!((g.z - 1.0).abs() < 1e-3, "expected gz ≈ 1, got {}", g.z);
     }
 }

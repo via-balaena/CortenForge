@@ -1857,7 +1857,6 @@ name = "cf-cap-planes"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "cf-design",
  "mesh-types",
  "nalgebra",
  "serde",
