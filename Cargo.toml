@@ -375,6 +375,15 @@ members = [
     # Cast tooling (active development)
     "design/cf-cast",
 
+    # Shared cap-plane abstraction (parser + dome_wall_only_mesh +
+    # DomeWallSignedSdf adapter). Consumed by cf-scan-prep emit /
+    # cf-device-design preview + insertion sim / cf-cast-cli mold gen
+    # to keep the cap-plane schema in lockstep across the workshop
+    # iter-1 pipeline. See `design/cf-cap-planes/src/lib.rs` for the
+    # full public surface + the pinned-floor scope-C spec for the
+    # architectural arc that introduced it.
+    "design/cf-cap-planes",
+
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
     "sim/L0/simd",
@@ -582,6 +591,9 @@ cf-design-tests = { path = "design/cf-design-tests" }
 
 # Cast tooling
 cf-cast = { path = "design/cf-cast" }
+
+# Shared cap-plane abstraction
+cf-cap-planes = { path = "design/cf-cap-planes" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }

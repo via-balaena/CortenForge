@@ -63,6 +63,13 @@ mesh-sdf = { workspace = true }
 # directly so the same cached grid serves every layer extraction.
 mesh-offset = { workspace = true }
 cf-design = { workspace = true }
+# Shared cap-plane abstraction — CapPlane runtime type +
+# `parse_cap_planes` + `dome_wall_only_mesh` + diagnostic +
+# `DomeWallSignedSdf` adapter. Lifted from this crate's local
+# `sdf_layers` / `main.rs` into `design/cf-cap-planes` so cf-cast-cli +
+# insertion_sim can consume the same primitives without duplicating
+# them. See the pinned-floor scope-C spec for the architectural arc.
+cf-cap-planes = { workspace = true }
 sim-soft = { workspace = true }
 sim-ml-chassis = { workspace = true }
 

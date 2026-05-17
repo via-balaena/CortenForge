@@ -1,0 +1,29 @@
+[package]
+name = "cf-cap-planes"
+description = "Shared cap-plane abstraction for CortenForge scan-prep / device-design / cast tools — parses cf-scan-prep's [caps] block, strips cap-polygon faces from a cleaned scan, and provides the dome-wall-signed-distance SDF adapter that the pinned-floor shell primitive composes on"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `IndexedMesh` (input to `dome_wall_only_mesh` + the diagnostic).
+mesh-types = { workspace = true }
+# `Sdf` trait — `DomeWallSignedSdf` impls it; the cf-design
+# `pinned_floor_shell` primitive consumes it generically.
+cf-design = { workspace = true }
+# `Point3` + `Vector3` for the post-bake `CapPlane` runtime type.
+nalgebra = { workspace = true }
+# `.prep.toml` parser for the `[caps]` + `[transform]` blocks.
+serde = { workspace = true }
+toml = { workspace = true }
+# `Result` + `Context` for the parser's error reporting.
+anyhow = { workspace = true }

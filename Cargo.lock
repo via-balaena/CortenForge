@@ -1853,6 +1853,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-cap-planes"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-design",
+ "mesh-types",
+ "nalgebra",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "cf-cast"
 version = "1.0.0"
 dependencies = [
@@ -1917,6 +1929,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
+ "cf-cap-planes",
  "cf-design",
  "cf-viewer",
  "clap",
