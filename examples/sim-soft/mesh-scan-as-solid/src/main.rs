@@ -7,16 +7,16 @@
 // a real panic site. Same precedent as
 // `examples/mesh/mesh-sdf-distance-query`.
 #![allow(clippy::unreachable)]
-//! mesh-scan-as-solid — `mesh_sdf::SignedDistanceField` satisfies
-//! [`cf_design::Sdf`], shipped at PR3 F2.
+//! mesh-scan-as-solid — a mesh-derived SDF satisfies [`cf_design::Sdf`].
 //!
-//! A scanned mesh is a triangle soup with no analytical SDF. Building
-//! [`SignedDistanceField::new`] over it — and dispatching through the
-//! [`cf_design::Sdf`] trait — turns it into a first-class design
-//! primitive on equal footing with parametric [`cf_design::Solid`]
-//! bodies, without per-mesh wrapper boilerplate. This is the bridge
-//! that lets `mesh-scan` flow into `cf-design` flow into `sim-soft`
-//! along the layered-silicone-device pipeline.
+//! A scanned mesh is a triangle soup with no analytical SDF. Composing
+//! a [`mesh_sdf::TriMeshDistance`] (parry BVH-backed unsigned distance)
+//! with a [`mesh_sdf::Sign`] oracle via [`mesh_sdf::Signed<D, S>`] —
+//! and dispatching through the [`cf_design::Sdf`] trait — turns it into
+//! a first-class design primitive on equal footing with parametric
+//! [`cf_design::Solid`] bodies, without per-mesh wrapper boilerplate.
+//! This is the bridge that lets `mesh-scan` flow into `cf-design` flow
+//! into `sim-soft` along the layered-silicone-device pipeline.
 //!
 //! Fixture: a 12-triangle axis-aligned cube with half-extent
 //! `R = 1.0`, built programmatically so the SDF has a closed form and
@@ -36,35 +36,37 @@
 //! grounded.
 //!
 //! On-disk transit: the programmatic mesh is round-tripped through
-//! `mesh_io::save_stl` → `mesh_io::load_mesh` → [`SignedDistanceField`]
+//! `mesh_io::save_stl` → `mesh_io::load_mesh` → composed [`ScanSdf`]
 //! to demo the literal scan-import workflow without a checked-in STL
 //! asset. The round-tripped SDF agrees with the in-memory SDF
 //! bit-exact at all named probes — STL stores binary f32 vertex
 //! coords, but our cube vertices are integer `±1.0` which round-trip
-//! losslessly through f32.
+//! losslessly through f32, and parry's internal f32 BVH path produces
+//! the same closest-feature classification for both routes.
 //!
-//! Sign-heuristic caveat (per F2 docstring at
-//! `design/cf-design/src/sdf.rs:81-89`): mesh-sdf's `distance` infers
-//! sign from a face-normal heuristic that is reliable within roughly
-//! one mesh-edge of the surface, and may flip sign at far-field
-//! vertex / edge regions where the closest-face plane separates the
-//! probe from the body interior. The contact band — where penalty
-//! contact engages in sim-soft — sits well within the reliability
-//! domain. Far-field consumers requiring robust inside/outside should
-//! prefer [`SignedDistanceField::is_inside`] (ray-cast).
+//! Sign oracle on this fixture: [`mesh_sdf::PseudoNormalSign`] (parry
+//! pseudo-normal). Fast on watertight + well-formed meshes; fragile
+//! on cleaned body-part scans with inverted-winding cap fans or
+//! high-valence apex vertices ([[project-mesh-sdf-oracle-decomposition-spec]]).
+//! Production cleaned-scan code paths in cf-cast-cli + cf-device-design
+//! ship [`mesh_sdf::FloodFillSign`] defense instead; see
+//! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the architectural
+//! background.
 //!
-//! On *this* cube fixture the F2 caveat does not surface — the bulk
+//! On *this* cube fixture both oracles agree everywhere — the bulk
 //! grid's `heuristic_inside == STRICT_INTERIOR_COUNT` identity
-//! (asserted in `main`) pins the absence: every grid point with
-//! `eval < 0` is a strict-interior probe, no false-positives outside.
-//! Independently, mesh-sdf's `is_inside` ray-cast HE-1 degeneracy
-//! flips at the 49 strict-interior probes lying on the `+X` face's
-//! shared diagonal `y == z`, and contributes a non-zero
-//! heuristic ↔ raycast divergence (captured at 331 grid points; see
-//! `verify_grid_consistency`). For a fixture where the F2 caveat
-//! *does* surface, see `examples/mesh/mesh-sdf-distance-query`
-//! (octahedron, 6 vertex-region false-positives at the bbox
-//! boundary).
+//! (asserted in `main`) pins the absence of any sign-oracle failure
+//! mode. `eval < 0` (strict-inequality heuristic-inside) and
+//! [`Signed::is_inside`] now both route through the same
+//! [`PseudoNormalSign`], so the historical "heuristic ↔ raycast
+//! divergence" framing collapses; the residual divergence (~386 grid
+//! points on the 17³ grid) is structural boundary-convention noise on
+//! probes that land exactly on cube faces (`unsigned_distance == 0`
+//! → `eval == 0` → `eval < 0` false even when `is_inside` is true).
+//! For a
+//! fixture where a sign oracle does demonstrably fail (and the D-arc
+//! flood-fill defense actively rescues it), see
+//! `examples/mesh/mesh-sdf-distance-query`'s inverted-cap pyramid.
 
 // PLY field-data is single-precision on disk; converting f64 SDF
 // values to f32 for `extras["signed_distance"]` is intrinsic to the

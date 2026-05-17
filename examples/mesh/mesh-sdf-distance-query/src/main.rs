@@ -517,10 +517,13 @@ fn main() -> Result<()> {
 
     // ── Section 1: oracle composition walkthrough on the octahedron ───
     //
-    // The recommended construction pattern for Signed<TriMeshDistance, S>
-    // composition: build TriMeshDistance once, then share its Arc<TriMesh>
-    // with PseudoNormalSign via `from_distance` — one BVH allocation feeds
-    // both oracles.
+    // Recommended construction pattern for Signed<TriMeshDistance,
+    // PseudoNormalSign>: build TriMeshDistance once, then share its
+    // Arc<TriMesh> with PseudoNormalSign via `from_distance` — one BVH
+    // allocation feeds both the distance and the pseudo-normal sign
+    // queries inside this composition. (Section 2's `flood_filled_sdf`
+    // convenience helper rebuilds a separate TriMeshDistance internally,
+    // so the example as a whole owns two BVHs — one per Signed.)
     let octa_distance =
         TriMeshDistance::new(octahedron.clone()).expect("octahedron is non-empty by construction");
     let octa_pn_sign = PseudoNormalSign::from_distance(&octa_distance);

@@ -218,6 +218,15 @@ use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
+
+/// Local alias — `Signed<TriMeshDistance, PseudoNormalSign>` is the
+/// post-D arc shape of the deprecated `SignedDistanceField` type alias.
+/// Matches the sister mesh-scan-as-solid example's `ScanSdf` for
+/// cross-file consistency. [`PseudoNormalSign`] is the cheap parry
+/// pseudo-normal path; cleaned body-part scans should prefer
+/// `mesh_sdf::flood_filled_sdf` per
+/// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`.
+type ScanSdf = Signed<TriMeshDistance, PseudoNormalSign>;
 use mesh_types::{IndexedMesh, Point3, Vector3};
 use nalgebra::Matrix3;
 use serde_json::{Value, json};
@@ -377,11 +386,11 @@ const N_PINNED_EXACT: usize = 2_842;
 
 /// Per-shell tet counts at first capture. `INNER + MIDDLE + OUTER ==
 /// N_TETS_EXACT` by construction (every tet centroid sits in exactly
-/// one of the three radial bins). Re-captured 2026-05-18 post-D arc
-/// (`PseudoNormalSign` vs the pre-parry ray-cast sign produces slightly
-/// different inside/outside classification at the cavity boundary →
-/// the tet inclusion test at scan-cavity carve time drifts the per-shell
-/// counts. Sum still equals `N_TETS_EXACT`.).
+/// one of the three radial bins). Re-captured 2026-05-18 post-D arc:
+/// `PseudoNormalSign` vs the pre-parry ray-cast sign produces a
+/// slightly different inside/outside classification at the cavity
+/// boundary → the tet inclusion test at scan-cavity carve time drifts
+/// the per-shell counts. Sum still equals `N_TETS_EXACT`.
 const N_INNER_TETS_EXACT: usize = 5_068;
 const N_MIDDLE_TETS_EXACT: usize = 14_736;
 const N_OUTER_TETS_EXACT: usize = 31_488;
@@ -437,7 +446,7 @@ const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f44_0ecb_b0cb_1cbc;
 /// `SignedDistanceField::new(loaded)`, and every downstream code path
 /// (`Solid::from_sdf` + `SdfMeshedTetMesh::from_sdf` + the contact
 /// `PenaltyRigidContact::new(scan.clone())` line) stays unchanged.
-fn build_scan_fixture() -> Signed<TriMeshDistance, PseudoNormalSign> {
+fn build_scan_fixture() -> ScanSdf {
     let mut mesh = IndexedMesh::new();
     let cx = SCAN_OFFSET_X;
 
@@ -512,7 +521,7 @@ fn scan_bounds() -> cf_design::Aabb {
 /// typed-Solid kernel via `Solid::from_sdf` (PR3 F5); the resulting
 /// `Solid` composes with parametric primitives via the standard
 /// `subtract` / `union` / `intersect` API.
-fn build_body(scan_sdf: Signed<TriMeshDistance, PseudoNormalSign>) -> Solid {
+fn build_body(scan_sdf: ScanSdf) -> Solid {
     let cavity = Solid::from_sdf(scan_sdf, scan_bounds());
     Solid::sphere(R_OUTER).subtract(cavity)
 }
