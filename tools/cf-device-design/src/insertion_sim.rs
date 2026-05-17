@@ -55,7 +55,7 @@
 //! across the 7.0→7.4 ladder without papering over a real ambiguity
 //! with `#[allow]`.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Instant;
@@ -64,7 +64,7 @@ use anyhow::{Context, Result, anyhow};
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
 use cf_design::{Aabb, SdfGrid, Solid, pinned_floor_shell};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use mesh_sdf::{SignedDistanceField, unsigned_distance};
+use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
 use nalgebra::{Matrix3, Point3, Vector3};
@@ -192,7 +192,8 @@ pub struct SpikeReport {
     pub wall_thickness_m: f64,
     /// Wall-clock time to decimate the scan.
     pub decimate_ms: f64,
-    /// Wall-clock time to build the [`SignedDistanceField`].
+    /// Wall-clock time to build the
+    /// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed).
     pub sdf_build_ms: f64,
     /// Wall-clock time for [`SdfMeshedTetMesh::from_sdf`] — the
     /// dominant cost. One brute-force SDF query per BCC lattice
@@ -243,7 +244,8 @@ impl std::fmt::Display for SpikeReport {
 /// Run the Route-A SDF bridge end-to-end on `scan` and report timing +
 /// tet-mesh quality.
 ///
-/// Pipeline: [`decimate_for_sdf`] → [`SignedDistanceField`] →
+/// Pipeline: [`decimate_for_sdf`] →
+/// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed) →
 /// [`Solid::from_sdf`] → `outer.subtract(scan)` body (`outer =
 /// scan.offset(wall_thickness_m)`) → [`SdfMeshedTetMesh::from_sdf`] at
 /// `cell_size_m`. Geometry only — no materials (skeleton-default
@@ -251,7 +253,7 @@ impl std::fmt::Display for SpikeReport {
 ///
 /// # Errors
 ///
-/// Propagates [`SignedDistanceField::new`] (empty mesh) and
+/// Propagates [`TriMeshDistance::new`] (empty mesh) and
 /// [`SdfMeshedTetMesh::from_sdf`] (empty mesh, non-finite SDF value)
 /// failures with context.
 pub fn run_sdf_bridge_spike(
@@ -273,8 +275,13 @@ pub fn run_sdf_bridge_spike(
     let decimated_faces = decimated.faces.len();
 
     let t = Instant::now();
-    let sdf = SignedDistanceField::new(decimated)
-        .context("build SignedDistanceField from the decimated scan")?;
+    let sdf_distance =
+        TriMeshDistance::new(decimated).context("build TriMeshDistance from the decimated scan")?;
+    let sdf_sign = PseudoNormalSign::from_distance(&sdf_distance);
+    let sdf = Signed {
+        distance: sdf_distance,
+        sign: sdf_sign,
+    };
     let sdf_build_ms = elapsed_ms(t);
 
     // Route-A geometry: body = outer.subtract(scan), mirroring the
@@ -1126,19 +1133,6 @@ impl Sdf for GridSdf {
     }
 }
 
-/// Per-lattice-point label from [`build_grid_sdf`]'s flood fill.
-#[derive(Clone, Copy, PartialEq)]
-enum Region {
-    /// Flood-reached from a bbox corner — air around the scan.
-    Outside,
-    /// Non-wall, not flood-reached — the scan's solid interior.
-    Inside,
-    /// Within `wall_threshold_m` of the surface — the flood cannot
-    /// pass through it; its sign is assigned by nearest-labelled
-    /// neighbour expansion.
-    Wall,
-}
-
 /// Flood-fill health diagnostics from one [`build_grid_sdf`] call.
 ///
 /// A topologically-sound result has the inside region as a *single*
@@ -1166,21 +1160,15 @@ pub struct GridSdfReport {
     pub build_ms: f64,
 }
 
-/// The up-to-six 6-connected lattice neighbours of flat index `i` in a
-/// `w × h × d` grid (`x` fastest, then `y`, then `z`).
-fn neighbours6(i: usize, w: usize, h: usize, d: usize) -> [Option<usize>; 6] {
-    let x = i % w;
-    let y = (i / w) % h;
-    let z = i / (w * h);
-    [
-        (x > 0).then(|| i - 1),
-        (x + 1 < w).then(|| i + 1),
-        (y > 0).then(|| i - w),
-        (y + 1 < h).then(|| i + w),
-        (z > 0).then(|| i - w * h),
-        (z + 1 < d).then(|| i + w * h),
-    ]
-}
+// `Region` enum + `neighbours6` helper + the inline 4-pass flood-fill
+// in `build_grid_sdf` were promoted to mesh-sdf D.2's `CachedGridSdf`
+// primitive (`docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`). The shared
+// classifier core in mesh-sdf preserves the exact algorithm + region
+// label semantics; this module now invokes it via
+// [`CachedGridSdf::build`] and re-applies the Gaussian post-pass
+// externally on the returned signed buffer (FEM contact-gradient C¹
+// approximation, NOT load-bearing for sign correctness — kept here so
+// mesh-sdf primitives stay smoothing-free).
 
 /// Per-cell σ of the [`GridSdf`] signed-distance Gaussian pre-smooth
 /// (slice 7.3c–7.3d, [`gaussian_smooth_3d_separable`]).
@@ -1374,18 +1362,32 @@ pub fn build_grid_sdf(
 ) -> Result<(GridSdf, GridSdfReport)> {
     let t = Instant::now();
 
-    // Lattice dimensions — sample points inclusive of both bbox ends.
-    let span = bbox.max - bbox.min;
-    // `span` components are non-negative and `grid_cell_m > 0`, so the
-    // ceil is a finite non-negative integer; +1 for the inclusive end.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let dim = |s: f64| (s / grid_cell_m).ceil().max(1.0) as usize + 1;
-    let (w, h, d) = (dim(span.x), dim(span.y), dim(span.z));
+    // Build the parry BVH-backed distance source once; mesh-sdf D.2's
+    // `CachedGridSdf::build` runs the shared 3-region flood-fill,
+    // multi-source label expansion, and `inside_components` count over
+    // it. The shared core preserves the same Region labels + corner
+    // seeds + BFS order the bespoke copy used, so signs are
+    // bit-equivalent on every well-formed input.
+    let distance = TriMeshDistance::new(scan.clone())
+        .context("build TriMeshDistance from the scan for flood-fill GridSdf")?;
+    let factor = wall_threshold_m / grid_cell_m;
+    let (cached, ff_report) = CachedGridSdf::build(&distance, bbox, grid_cell_m, factor)
+        .with_context(|| {
+            format!(
+                "build CachedGridSdf (grid_cell_m={grid_cell_m} m, \
+                 wall_threshold_m={wall_threshold_m} m) — bbox margin too small or grid too \
+                 coarse to seed the outside flood"
+            )
+        })?;
+    let [w, h, d] = ff_report.dims;
     let n = w * h * d;
     let origin = bbox.min;
-    let flat = |x: usize, y: usize, z: usize| z * w * h + y * w + x;
 
-    // 1. Unsigned distance at every lattice point.
+    // Sample the cached signed grid back into a flat row-major
+    // `Vec<f64>` aligned with the existing post-processing pipeline.
+    // CachedGridSdf's internal lattice has identical dims + origin +
+    // cell_size, so trilinear sampling at each world point collapses
+    // to the stored cell value within f64 ulps.
     #[allow(clippy::cast_precision_loss)] // lattice index → world coord
     let world = |x: usize, y: usize, z: usize| {
         Point3::new(
@@ -1394,135 +1396,39 @@ pub fn build_grid_sdf(
             origin.z + z as f64 * grid_cell_m,
         )
     };
-    let mut unsigned = vec![0.0_f64; n];
+    let flat = |x: usize, y: usize, z: usize| z * w * h + y * w + x;
+    let mut signed = vec![0.0_f64; n];
     for z in 0..d {
         for y in 0..h {
             for x in 0..w {
-                unsigned[flat(x, y, z)] = unsigned_distance(world(x, y, z), scan);
+                signed[flat(x, y, z)] = cached.signed_distance(world(x, y, z));
             }
         }
     }
 
-    // 2. Wall points — within `wall_threshold_m` of the surface. The
-    //    flood cannot pass through these, so it cannot leak across
-    //    the surface.
-    let wall: Vec<bool> = unsigned.iter().map(|&u| u < wall_threshold_m).collect();
-    let n_wall = wall.iter().filter(|&&b| b).count();
-
-    // 3. Flood "outside" 6-connected from the eight bbox corners.
-    let mut region: Vec<Region> = wall
-        .iter()
-        .map(|&is_wall| {
-            if is_wall {
-                Region::Wall
-            } else {
-                Region::Inside
-            }
-        })
-        .collect();
-    let corners = [
-        flat(0, 0, 0),
-        flat(w - 1, 0, 0),
-        flat(0, h - 1, 0),
-        flat(w - 1, h - 1, 0),
-        flat(0, 0, d - 1),
-        flat(w - 1, 0, d - 1),
-        flat(0, h - 1, d - 1),
-        flat(w - 1, h - 1, d - 1),
-    ];
-    let mut flood: VecDeque<usize> = VecDeque::new();
-    for &c in &corners {
-        if region[c] == Region::Inside {
-            region[c] = Region::Outside;
-            flood.push_back(c);
-        }
-    }
-    if flood.is_empty() {
-        return Err(anyhow!(
-            "grid SDF flood-fill: all eight bbox corners are within wall_threshold_m \
-             ({wall_threshold_m} m) of the scan — bbox margin too small or grid too coarse"
-        ));
-    }
-    while let Some(i) = flood.pop_front() {
-        for j in neighbours6(i, w, h, d).into_iter().flatten() {
-            if region[j] == Region::Inside {
-                region[j] = Region::Outside;
-                flood.push_back(j);
-            }
-        }
-    }
-
-    // 4. Expand the Outside/Inside labels into the wall band: multi-
-    //    source BFS from every already-labelled (non-wall) point —
-    //    each wall point takes the label of the nearest one. Wall-band
-    //    `|value|` is sub-threshold, so a tie there barely matters.
-    let mut expand: VecDeque<usize> = (0..n).filter(|&i| region[i] != Region::Wall).collect();
-    while let Some(i) = expand.pop_front() {
-        let label = region[i];
-        for j in neighbours6(i, w, h, d).into_iter().flatten() {
-            if region[j] == Region::Wall {
-                region[j] = label;
-                expand.push_back(j);
-            }
-        }
-    }
-    // Any wall point with no path to a non-wall point (an isolated
-    // pocket inside the band) — default to Inside.
-    for r in &mut region {
-        if *r == Region::Wall {
-            *r = Region::Inside;
-        }
-    }
-
-    // 5. Inside-region connected-component count — the flood-fill
-    //    health metric.
-    let mut seen = vec![false; n];
-    let mut inside_components = 0;
-    for start in 0..n {
-        if region[start] != Region::Inside || seen[start] {
-            continue;
-        }
-        inside_components += 1;
-        seen[start] = true;
-        let mut comp: VecDeque<usize> = VecDeque::from([start]);
-        while let Some(i) = comp.pop_front() {
-            for j in neighbours6(i, w, h, d).into_iter().flatten() {
-                if region[j] == Region::Inside && !seen[j] {
-                    seen[j] = true;
-                    comp.push_back(j);
-                }
-            }
-        }
-    }
-
-    // 6. Signed values — magnitude from the (reliable) unsigned
-    //    distance, sign from the (topological) flood-fill label.
-    let signed: Vec<f64> = region
-        .iter()
-        .zip(&unsigned)
-        .map(|(&r, &u)| if r == Region::Outside { u } else { -u })
-        .collect();
-    let n_outside = region.iter().filter(|&&r| r == Region::Outside).count();
-    let n_inside = n - n_outside;
-
-    // 7. Slice 7.3c–7.3d — separable 3D Gaussian pre-smooth on the
-    //    signed buffer so the trilinear interpolant inside `SdfGrid`
-    //    approximates a C¹ function. σ = 1.0 cell (recon-iter-4)
-    //    delivers the full 3 mm inset on both the synthetic-icosphere
-    //    and iter-1 cleaned-scan ramps; σ = 0.5 cell (slice 7.3c)
-    //    left iter-1 at 75 % depth on what looked like a Yeoh-
-    //    validity wall but was actually under-bandwidth smoothing
-    //    feeding sharp gradients into specific tets. See
-    //    `GRID_SDF_SMOOTH_SIGMA_CELLS` for the σ-sweep trail + bias.
+    // Slice 7.3c–7.3d — separable 3D Gaussian pre-smooth on the
+    // signed buffer so the trilinear interpolant inside `SdfGrid`
+    // approximates a C¹ function. σ = 1.0 cell (recon-iter-4)
+    // delivers the full 3 mm inset on both the synthetic-icosphere
+    // and iter-1 cleaned-scan ramps; σ = 0.5 cell (slice 7.3c)
+    // left iter-1 at 75 % depth on what looked like a Yeoh-validity
+    // wall but was actually under-bandwidth smoothing feeding sharp
+    // gradients into specific tets. See `GRID_SDF_SMOOTH_SIGMA_CELLS`
+    // for the σ-sweep trail + bias.
+    //
+    // Applied externally (not folded into `CachedGridSdf`) so the
+    // mesh-sdf primitive stays smoothing-free — Gaussian smoothing
+    // is FEM-specific (contact-gradient C¹ approximation) and not
+    // load-bearing for sign correctness.
     let smoothed = gaussian_smooth_3d_separable(&signed, w, h, d, GRID_SDF_SMOOTH_SIGMA_CELLS);
     let grid = SdfGrid::new(smoothed, w, h, d, grid_cell_m, origin);
     let report = GridSdfReport {
-        dims: [w, h, d],
+        dims: ff_report.dims,
         grid_cell_m,
-        n_outside,
-        n_inside,
-        n_wall,
-        inside_components,
+        n_outside: ff_report.outside_cells,
+        n_inside: ff_report.inside_cells,
+        n_wall: ff_report.wall_cells,
+        inside_components: ff_report.inside_components,
         build_ms: elapsed_ms(t),
     };
     Ok((GridSdf { grid }, report))
@@ -3344,7 +3250,13 @@ mod tests {
             "\nPHASE 2 — mesh_sdf sign cross-check (closest-face-normal `distance()` vs \
              ray-cast `is_inside()`):"
         );
-        let sdf = SignedDistanceField::new(decimated.clone()).expect("decimated scan SDF");
+        let sdf_distance =
+            TriMeshDistance::new(decimated.clone()).expect("decimated scan TriMeshDistance");
+        let sdf_sign = PseudoNormalSign::from_distance(&sdf_distance);
+        let sdf = Signed {
+            distance: sdf_distance,
+            sign: sdf_sign,
+        };
         let bbox = scan_aabb(&decimated, 0.005);
         let n = 18_usize;
         let (mut total, mut disagree, mut near_total, mut near_disagree) = (0, 0, 0, 0);
@@ -3505,7 +3417,13 @@ mod tests {
         let raw = load_stl(&path).expect("load the iter-1 cleaned scan");
         let decimated = decimate_for_sdf(&raw, 2_500);
         let bbox = scan_aabb(&decimated, 0.010);
-        let legacy = SignedDistanceField::new(decimated.clone()).expect("decimated scan SDF");
+        let legacy_distance =
+            TriMeshDistance::new(decimated.clone()).expect("decimated scan TriMeshDistance");
+        let legacy_sign = PseudoNormalSign::from_distance(&legacy_distance);
+        let legacy = Signed {
+            distance: legacy_distance,
+            sign: legacy_sign,
+        };
 
         // Spot-check probes: the vertex centroid (must read inside) +
         // the eight bbox corners (must read outside).

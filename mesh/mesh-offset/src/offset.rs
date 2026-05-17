@@ -3,6 +3,17 @@
 //! This module provides functionality to offset (expand or contract) a mesh
 //! by a given distance using SDF-based techniques.
 
+// Temporary defense-in-depth: this module still constructs the
+// deprecated `mesh_sdf::SignedDistanceField` alias. The mesh-sdf
+// oracle decomposition arc (docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md)
+// migrates this consumer to `Signed<TriMeshDistance, FloodFillSign>`
+// in sub-leaf D.4a. Removed alongside that migration; until then the
+// pre-commit hook's `-D warnings` clippy run on any cf-device-design
+// or cf-cast-cli touchpoint would otherwise propagate these
+// deprecation warnings into errors against this transitively-built
+// dep.
+#![allow(deprecated)]
+
 use mesh_sdf::SignedDistanceField;
 use mesh_types::IndexedMesh;
 use nalgebra::Point3;

@@ -47,16 +47,17 @@
 //! at the in-flight slice boundary.
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use cf_cap_planes::{CapPlane, dome_wall_only_mesh, report_cap_face_classification};
 use mesh_offset::{MarchingCubesConfig, ScalarGrid, marching_cubes};
 use mesh_repair::{remove_degenerate_triangles, remove_unreferenced_vertices, weld_vertices};
-use mesh_sdf::SignedDistanceField;
-use mesh_types::{Bounded, IndexedMesh};
+use mesh_sdf::{
+    CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance, WALL_THRESHOLD_FACTOR_DEFAULT,
+};
+use mesh_types::{Aabb, Bounded, IndexedMesh};
 use meshopt::{SimplifyOptions, simplify_decoder, simplify_sloppy_decoder};
 use nalgebra::Point3;
 
@@ -128,62 +129,12 @@ pub(crate) const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.005;
 /// the `debug_assert!` in [`extract_layer_surface`].
 pub(crate) const LAYER_GRID_MARGIN_M: f64 = 0.040;
 
-/// Wall-band half-width (meters) for the flood-fill sign labeling in
-/// [`build_cached_scan_sdf`].
-///
-/// A grid cell whose unsigned distance to the scan surface is below
-/// this threshold is treated as part of the "wall band" that the
-/// outside flood cannot cross — guaranteeing the flood-fill sign
-/// labeling never leaks across the surface even when adjacent grid
-/// cells straddle a face.
-///
-/// Must be ≥ `0.5 × LAYER_PREVIEW_CELL_SIZE_M` so the wall band is
-/// 6-connectivity-watertight (any surface crossing between adjacent
-/// lattice points puts at least one of them within half a cell). The
-/// `0.75 × cell` factor mirrors `insertion_sim::build_grid_sdf`'s
-/// 7.3a-shipped threshold and leaves comfortable margin against face-
-/// plane alignment artifacts without over-thickening the band.
-const CLOSED_SDF_WALL_THRESHOLD_FACTOR: f64 = 0.75;
-
-/// Flood-fill region label for the closed-body sign-labeling pass in
-/// [`build_cached_scan_sdf`]. Adapted (no Gaussian smooth) from
-/// `insertion_sim::build_grid_sdf`'s 7.3a-shipped robust-sign approach
-/// after `mesh_sdf::SignedDistanceField::distance`'s face-normal sign
-/// heuristic was found to flip sign far from the surface on the iter-1
-/// cleaned scan (cleaned-mesh save 2026-05-16 LATE-EVENING surfaced a
-/// `min_sdf = -89.5 mm` reading on a 71 mm × 127 mm body — the body
-/// half-diagonal upper bound is ~81 mm, so the reading was strictly
-/// impossible for a correct SDF).
-///
-/// The flood-fill posture is topology-blind: only the UNSIGNED
-/// distance to the surface (which is robust even on decimated /
-/// non-manifold-around-the-cap meshes) drives the wall mask; sign
-/// then comes from connectivity to the 8 bbox corners (which the
-/// margin guarantees are outside the body) through non-wall cells.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Region {
-    Outside,
-    Inside,
-    Wall,
-}
-
-/// 6-connected neighbour indices in a `(nx × ny × nz)` flat-indexed
-/// grid (`idx = iz * nx * ny + iy * nx + ix`). `None` at boundaries.
-fn neighbours6(i: usize, nx: usize, ny: usize, nz: usize) -> [Option<usize>; 6] {
-    let plane = nx * ny;
-    let iz = i / plane;
-    let rem = i % plane;
-    let iy = rem / nx;
-    let ix = rem % nx;
-    [
-        (ix > 0).then(|| i - 1),
-        (ix + 1 < nx).then(|| i + 1),
-        (iy > 0).then(|| i - nx),
-        (iy + 1 < ny).then(|| i + nx),
-        (iz > 0).then(|| i - plane),
-        (iz + 1 < nz).then(|| i + plane),
-    ]
-}
+// Wall-band threshold + the 3-region flood-fill (Region enum +
+// neighbours6 helper + dual BFS) were promoted to mesh-sdf D.2's
+// `FloodFillSign` / `CachedGridSdf` primitives; this module consumes
+// them through [`CachedGridSdf::build`] and the
+// [`mesh_sdf::WALL_THRESHOLD_FACTOR_DEFAULT`] constant (= 0.75, same
+// value the bespoke copy shipped).
 
 // CAP_FACE_PLANARITY_EPS_M / CAP_FACE_NORMAL_DOT_MIN /
 // CAP_FACE_CENTROID_DIST_M lifted to cf-cap-planes alongside
@@ -220,19 +171,21 @@ fn neighbours6(i: usize, nx: usize, ny: usize, nz: usize) -> [Option<usize>; 6] 
 #[derive(Resource, Clone)]
 pub(crate) struct CachedScanSdf {
     /// Reference-counted SDF over the decimated CLOSED scan (cap
-    /// polygons included). Provides the SIGN for the candidate-A
-    /// composition. `Arc<T>` is `Send + Sync` whenever `T` is, and
-    /// `SignedDistanceField` holds plain `Vec`s of
-    /// `f64`/`u32`/`Vector3<f64>` — so this satisfies Bevy's
-    /// `Resource: Send + Sync` requirement.
-    pub(crate) sdf_closed: Arc<SignedDistanceField>,
+    /// polygons included). Retained for the heat-map closest-point
+    /// projection in sub-leaf 7 and the higher-fidelity Save path;
+    /// the per-cell SIGN used by the candidate-A composition lives
+    /// on `closed_grid`. `Arc<T>` is `Send + Sync` whenever `T` is,
+    /// and the underlying `Signed { distance, sign }` carries an
+    /// `Arc<parry3d::TriMesh>` plus the source `IndexedMesh` — so
+    /// this satisfies Bevy's `Resource: Send + Sync` requirement.
+    pub(crate) sdf_closed: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
     /// Reference-counted SDF over the decimated OPEN scan (cap
     /// polygons stripped via [`dome_wall_only_mesh`]). Provides the
     /// unsigned MAGNITUDE for the candidate-A rind. Equals `sdf_closed`
     /// (same `Arc`) when no cap planes are present — the
     /// `build_cached_scan_sdf` shortcut so `Arc::ptr_eq` lets callers
     /// detect the no-caps fast path.
-    pub(crate) sdf_open: Arc<SignedDistanceField>,
+    pub(crate) sdf_open: Arc<Signed<TriMeshDistance, PseudoNormalSign>>,
     /// Grid pre-filled with the raw closed-body signed distance
     /// `sdf_closed.distance(p)` at every cell. Used directly for the
     /// no-caps `MarchingCubesConfig::at_iso_value(offset_m)` extraction
@@ -358,12 +311,14 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 ///
 /// Decimates the scan to [`SDF_SOURCE_TARGET_FACES`] via
 /// [`decimate_scan_for_sdf`], builds the closed-body
-/// [`SignedDistanceField`], optionally builds a second SDF over the
-/// open mesh (cap polygons stripped via [`dome_wall_only_mesh`]) when
-/// `cap_planes` is non-empty, allocates one or two [`ScalarGrid`]s
-/// over the scan AABB expanded by `margin_m`, and fills each with the
-/// raw distance from its underlying SDF (signed for the closed grid,
-/// unsigned for the open grid).
+/// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed), optionally
+/// builds a second SDF over the open mesh (cap polygons stripped via
+/// [`dome_wall_only_mesh`]) when `cap_planes` is non-empty, allocates
+/// one or two [`ScalarGrid`]s over the scan AABB expanded by
+/// `margin_m`, and fills each — the closed grid via
+/// [`CachedGridSdf::build`]'s flood-fill signed distance, the open
+/// grid via raw [`Signed::unsigned_distance`] (no flood-fill needed —
+/// the candidate-A rind consumer `.abs()`es the value).
 ///
 /// The two grids drive the candidate-A composition in
 /// [`extract_layer_surface`]; see [`CachedScanSdf`] for the storage
@@ -382,9 +337,10 @@ fn decimate_scan_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh
 ///
 /// # Errors
 ///
-/// Propagates [`SignedDistanceField::new`] failures (empty mesh, or
-/// open mesh empty after stripping all faces as cap faces) with
-/// context.
+/// Propagates [`TriMeshDistance::new`] failures (empty mesh, or
+/// open mesh empty after stripping all faces as cap faces) and
+/// [`CachedGridSdf::build`] failures (bbox margin too small or grid
+/// too coarse to seed the outside flood) with context.
 pub(crate) fn build_cached_scan_sdf(
     scan: &IndexedMesh,
     cap_planes: &[CapPlane],
@@ -402,9 +358,19 @@ pub(crate) fn build_cached_scan_sdf(
     // f64s — useful as a regression sentinel for every scan load.
     report_cap_face_classification(&decimated, cap_planes);
 
-    let sdf_closed_raw = SignedDistanceField::new(decimated.clone())
-        .context("build closed-body SignedDistanceField from the decimated scan")?;
-    let sdf_closed = Arc::new(sdf_closed_raw);
+    // Build the closed-body distance + sign explicitly so the parry
+    // BVH is shared between the `Signed<TriMeshDistance,
+    // PseudoNormalSign>` we hand back as `sdf_closed` (downstream
+    // heat-map closest-point projection retains the legacy surface)
+    // and the [`CachedGridSdf::build`] flood-fill that fills the
+    // signed grid below. Same Arc<TriMesh> through both consumers.
+    let closed_distance = TriMeshDistance::new(decimated.clone())
+        .context("build closed-body TriMeshDistance from the decimated scan")?;
+    let closed_sign = PseudoNormalSign::from_distance(&closed_distance);
+    let sdf_closed: Arc<Signed<TriMeshDistance, PseudoNormalSign>> = Arc::new(Signed {
+        distance: closed_distance,
+        sign: closed_sign,
+    });
     // No-caps fast path: share the same Arc so callers can `Arc::ptr_eq`
     // to detect the no-caps build, and the second SDF construction is
     // skipped.
@@ -412,9 +378,13 @@ pub(crate) fn build_cached_scan_sdf(
         Arc::clone(&sdf_closed)
     } else {
         let open_mesh = dome_wall_only_mesh(&decimated, cap_planes);
-        let sdf_open_raw = SignedDistanceField::new(open_mesh)
-            .context("build open-body SignedDistanceField (caps stripped)")?;
-        Arc::new(sdf_open_raw)
+        let open_distance = TriMeshDistance::new(open_mesh)
+            .context("build open-body TriMeshDistance (caps stripped)")?;
+        let open_sign = PseudoNormalSign::from_distance(&open_distance);
+        Arc::new(Signed {
+            distance: open_distance,
+            sign: open_sign,
+        })
     };
 
     let aabb = scan.aabb();
@@ -428,131 +398,53 @@ pub(crate) fn build_cached_scan_sdf(
         aabb.max.y + margin_m,
         aabb.max.z + margin_m,
     );
+
+    // ── Closed grid: flood-fill signed distance via mesh-sdf D.2 ───
+    //
+    // [`CachedGridSdf::build`] runs the same 3-region (Inside /
+    // Outside / Wall) flood-fill the bespoke copy did, plus the
+    // wall-band label expansion, plus an `inside_components` health
+    // count. The cached signed values are then sampled back into the
+    // existing `ScalarGrid` storage so downstream consumers
+    // (`extract_layer_surface` + the heat-map re-projection in
+    // sub-leaf 7) see byte-equivalent grid contents. The unpack uses
+    // `CachedGridSdf::signed_distance` which trilinear-samples — at a
+    // lattice node every interpolation weight collapses to the cell-
+    // centre value, so the round trip recovers the stored signed
+    // distance to f64 ulp tolerance.
+    let cached_closed = CachedGridSdf::build(
+        &sdf_closed.distance,
+        Aabb::new(min, max),
+        cell_size_m,
+        WALL_THRESHOLD_FACTOR_DEFAULT,
+    )
+    .with_context(|| {
+        format!(
+            "build CachedGridSdf for the closed-body scan (cell_size_m={cell_size_m} m, \
+             margin_m={margin_m} m) — bbox margin too small or grid too coarse to seed \
+             the outside flood"
+        )
+    })?;
+    let (cached_closed, closed_report) = cached_closed;
+    let min_sdf_value = closed_report.min_signed_distance_m;
+
     let mut closed_grid = ScalarGrid::from_bounds(min, max, cell_size_m, 0);
     let mut open_grid =
         (!cap_planes.is_empty()).then(|| ScalarGrid::from_bounds(min, max, cell_size_m, 0));
 
     let (nx, ny, nz) = closed_grid.dimensions();
-    let n = nx * ny * nz;
-    let idx = |ix: usize, iy: usize, iz: usize| iz * nx * ny + iy * nx + ix;
-    let wall_threshold_m = CLOSED_SDF_WALL_THRESHOLD_FACTOR * cell_size_m;
-
-    // ── Pass 1: unsigned distances ─────────────────────────────────
-    //
-    // closed_grid temporarily holds the UNSIGNED distance from the
-    // closed-body SDF at every cell (sourced from mesh-sdf's robust
-    // unsigned_distance — topology-blind, immune to the face-normal
-    // sign heuristic that `distance` suffers from on decimated /
-    // non-manifold-near-the-cap meshes). Pass 2 builds the sign labels;
-    // pass 3 overwrites closed_grid with the signed result.
-    //
-    // open_grid (when present) holds the unsigned distance from the
-    // cap-stripped SDF — already in the form `pinned_floor_shell`'s
-    // unsigned-rind adapter consumes; no sign labeling needed.
     for iz in 0..nz {
         for iy in 0..ny {
             for ix in 0..nx {
                 let p = closed_grid.position(ix, iy, iz);
-                closed_grid.set(ix, iy, iz, sdf_closed.unsigned_distance(p));
+                closed_grid.set(ix, iy, iz, cached_closed.signed_distance(p));
                 if let Some(grid) = open_grid.as_mut() {
+                    // open_grid holds raw unsigned distance — sign is
+                    // irrelevant for the candidate-A rind consumer
+                    // (`UnsignedRindSdf` `.abs()`es the value), so no
+                    // flood-fill is needed. Direct query via the same
+                    // shared parry BVH.
                     grid.set(ix, iy, iz, sdf_open.unsigned_distance(p));
-                }
-            }
-        }
-    }
-
-    // ── Pass 2: flood-fill sign labels ─────────────────────────────
-    //
-    // Wall cells (within `wall_threshold_m` of the surface) are
-    // barriers; the outside flood seeded from the 8 bbox corners
-    // can never cross the surface. After the flood, every non-wall
-    // cell is labeled Inside or Outside; then the labels are expanded
-    // into the wall band by multi-source BFS so every cell carries a
-    // sign. See [`Region`] for the wider rationale.
-    let mut region: Vec<Region> = (0..n)
-        .map(|i| {
-            let iz = i / (nx * ny);
-            let rem = i % (nx * ny);
-            let iy = rem / nx;
-            let ix = rem % nx;
-            if closed_grid.get(ix, iy, iz) < wall_threshold_m {
-                Region::Wall
-            } else {
-                Region::Inside
-            }
-        })
-        .collect();
-
-    let corners = [
-        idx(0, 0, 0),
-        idx(nx - 1, 0, 0),
-        idx(0, ny - 1, 0),
-        idx(nx - 1, ny - 1, 0),
-        idx(0, 0, nz - 1),
-        idx(nx - 1, 0, nz - 1),
-        idx(0, ny - 1, nz - 1),
-        idx(nx - 1, ny - 1, nz - 1),
-    ];
-    let mut flood: VecDeque<usize> = VecDeque::new();
-    for &c in &corners {
-        if region[c] == Region::Inside {
-            region[c] = Region::Outside;
-            flood.push_back(c);
-        }
-    }
-    if flood.is_empty() {
-        return Err(anyhow!(
-            "closed-grid flood-fill: all 8 bbox corners are within wall_threshold_m \
-             ({wall_threshold_m} m) of the scan — `margin_m` ({margin_m} m) too small \
-             or `cell_size_m` ({cell_size_m} m) too coarse for the scan AABB"
-        ));
-    }
-    while let Some(i) = flood.pop_front() {
-        for j in neighbours6(i, nx, ny, nz).into_iter().flatten() {
-            if region[j] == Region::Inside {
-                region[j] = Region::Outside;
-                flood.push_back(j);
-            }
-        }
-    }
-
-    // Expand Outside/Inside labels into the wall band: multi-source
-    // BFS from every already-labelled (non-wall) cell. Each wall cell
-    // takes the label of the nearest one; wall-band `|value|` is
-    // sub-threshold, so a tie barely affects MC extraction.
-    let mut expand: VecDeque<usize> = (0..n).filter(|&i| region[i] != Region::Wall).collect();
-    while let Some(i) = expand.pop_front() {
-        let label = region[i];
-        for j in neighbours6(i, nx, ny, nz).into_iter().flatten() {
-            if region[j] == Region::Wall {
-                region[j] = label;
-                expand.push_back(j);
-            }
-        }
-    }
-    // Isolated wall pockets with no path to a labelled cell default
-    // to Inside.
-    for r in &mut region {
-        if *r == Region::Wall {
-            *r = Region::Inside;
-        }
-    }
-
-    // ── Pass 3: sign the closed grid ───────────────────────────────
-    let mut min_sdf_value = f64::INFINITY;
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let unsigned = closed_grid.get(ix, iy, iz);
-                let sign = if region[idx(ix, iy, iz)] == Region::Outside {
-                    1.0
-                } else {
-                    -1.0
-                };
-                let signed = sign * unsigned;
-                closed_grid.set(ix, iy, iz, signed);
-                if signed < min_sdf_value {
-                    min_sdf_value = signed;
                 }
             }
         }
