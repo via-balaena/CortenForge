@@ -13,8 +13,8 @@ use crate::params::LatticeParams;
 use crate::strut::{combine_struts, generate_strut};
 use crate::types::LatticeType;
 use mesh_offset::{OffsetConfig, offset_mesh};
-use mesh_sdf::SignedDistanceField;
-use mesh_types::IndexedMesh;
+use mesh_sdf::{Sign, Signed, UnsignedDistance, WALL_THRESHOLD_FACTOR_DEFAULT, flood_filled_sdf};
+use mesh_types::{Aabb, Bounded, IndexedMesh};
 use nalgebra::Point3;
 use std::sync::Arc;
 
@@ -407,39 +407,68 @@ pub fn generate_infill(
     let inner_offset = offset_mesh(mesh, -params.shell_thickness, &offset_config)
         .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?;
 
-    // Build a cavity-bounded SDF on the inner offset. `mesh-offset`'s
-    // inward-offset MC orients inner faces with normals into the cavity
-    // (`inner_offset.signed_volume() < 0` standalone), so `mesh-sdf::distance`
-    // returns positive in the cavity and negative in the wall material — the
-    // opposite sign of what `is_outside_shape` expects. Negate to get the
-    // cavity-SDF convention: `< 0` in cavity, `> 0` in wall.
+    // Build a cavity-bounded SDF on the inner offset.
     //
-    // Face-normal sign rather than `unsigned_distance + is_inside`: the
-    // un-welded MC output of `mesh-offset` produces overlapping triangles
-    // wherever adjacent voxels resolve the same surface region, and
-    // `point_in_mesh`'s ray-crossing parity test goes noisy on that soup —
-    // empirically miscounts ~36% of cavity nodes as outside on the cube
-    // fixture, dropping ~48% of struts. The face-normal approach uses one
-    // closest face per query and is stable under MC discretization.
+    // Sign-oracle history: the predecessor `mesh-sdf::point_in_mesh`
+    // ray-crossing parity test went noisy on `mesh-offset`'s un-welded
+    // MC output (overlapping triangles wherever adjacent voxels
+    // resolve the same surface region), empirically miscounting ~36%
+    // of cavity nodes as outside on the cube fixture and dropping
+    // ~48% of struts. The parry pseudo-normal sign that followed was
+    // stable under MC discretization but only by accident: it returned
+    // POSITIVE in the cavity (the topological interior of
+    // `inner_offset`) because `mesh-offset`'s inward-offset MC
+    // produces a mesh with `signed_volume() < 0` (faces oriented with
+    // normals into the cavity), and pseudo-normal then read the cavity
+    // as "outside" the closed surface. The old call site negated the
+    // result to recover the cavity-SDF convention (`< 0` in cavity,
+    // `> 0` in wall).
     //
-    // Limitation: for non-convex inputs whose AABB inset includes regions
-    // outside the part (e.g., the hole of a torus), `-distance` returns
-    // negative there too — outside-the-part is on the same side of the
-    // closest inner face as the cavity. Convex inputs are unaffected.
+    // The mesh-sdf oracle decomposition arc replaces both with
+    // `FloodFillSign` (BFS from grid corners, walls block leakage):
+    // labels every cell topologically reachable from outside as
+    // Outside and every other cell as Inside. On `inner_offset` that
+    // means cavity → Inside (negative signed distance), wall + outside
+    // the part → Outside (positive). The negation that used to be
+    // required is gone — `inner_sdf.distance(p)` is already in the
+    // cavity-SDF convention the lattice clip expects.
     //
-    // The `inner_sdf` is `Arc`-shared with the lattice-to-shell
-    // connections pass below (gap b): both queries reuse the same
-    // precomputed face-normal table and avoid building a second SDF
-    // on the same `inner_offset`.
-    let inner_sdf = Arc::new(
-        SignedDistanceField::new(inner_offset.clone())
-            .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?,
+    // Bonus correctness gain: the documented pseudo-normal limitation
+    // for non-convex inputs (e.g., the hole of a torus, where
+    // "outside-the-part" sat on the same side of the closest inner
+    // face as the cavity and got incorrectly INCLUDED in the lattice
+    // domain) is also fixed. Flood-fill labels reachability, not
+    // closest-face-normal direction, so any region the corner flood
+    // can reach is Outside regardless of part topology.
+    //
+    // The Arc-shared `inner_sdf` is reused below by
+    // `build_lattice_to_shell_connections` for `closest_point`
+    // queries; the wrapped `TriMeshDistance` shares its `Arc<TriMesh>`
+    // BVH between the two consumers.
+    //
+    // See `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` and project
+    // memory `mesh-sdf-oracle-decomposition-spec` for the full
+    // architectural reasoning.
+    let inner_bbox = inner_offset.aabb();
+    let inner_padding = 5.0 * offset_resolution;
+    let inner_pad_vec = nalgebra::Vector3::new(inner_padding, inner_padding, inner_padding);
+    let inner_bounds = Aabb::new(
+        inner_bbox.min - inner_pad_vec,
+        inner_bbox.max + inner_pad_vec,
     );
+    let (inner_sdf_value, _report) = flood_filled_sdf(
+        inner_offset.clone(),
+        inner_bounds,
+        offset_resolution,
+        WALL_THRESHOLD_FACTOR_DEFAULT,
+    )
+    .map_err(|e| LatticeError::OffsetFailed(e.to_string()))?;
+    let inner_sdf = Arc::new(inner_sdf_value);
     let inner_sdf_for_clip = Arc::clone(&inner_sdf);
     let cavity_lattice_params = params
         .lattice
         .clone()
-        .with_shape_sdf(Arc::new(move |p| -inner_sdf_for_clip.distance(p)));
+        .with_shape_sdf(Arc::new(move |p| inner_sdf_for_clip.distance(p)));
 
     // Generate lattice in the (cap-shrunken) iteration domain, clipped to
     // the cavity by the SDF.
@@ -568,14 +597,10 @@ pub fn generate_infill(
 /// Builds bridging struts from each near-shell lattice node to its
 /// closest point on the inner shell.
 ///
-/// Iteration is O(M × N) where M is the unique-node count from
-/// `lattice_result.nodes` and N is the inner-offset face count
-/// (`SignedDistanceField::closest_point` does an O(N) scan over all
-/// faces). On the canonical cube fixture (~50 unique nodes ×
-/// ~75 000 inner-offset faces ≈ 3.8 M ops), this runs in
-/// milliseconds in release mode — well within v1.0 example budgets.
-/// A BVH-accelerated `mesh-sdf` is a v0.9 candidate that would speed
-/// this up by ~3 orders of magnitude on large fixtures.
+/// Iteration is O(M × log N) per node thanks to the parry BVH that
+/// backs [`TriMeshDistance::closest_point`]. On the canonical cube
+/// fixture (~50 unique nodes × ~75 000 inner-offset faces) this runs
+/// in milliseconds in release mode — well within v1.0 example budgets.
 ///
 /// Threshold semantic: a node is considered "near-shell" when its
 /// closest-point distance is `<= threshold` (inclusive). On the
@@ -589,9 +614,15 @@ pub fn generate_infill(
 /// Cap-band filter: only emit a strut if the closest-point's z lies
 /// in the lattice iteration domain `[iter_min_z, iter_max_z]`. See
 /// the call-site doc-comment for rationale.
-fn build_lattice_to_shell_connections(
+///
+/// Generic over the wrapped [`Signed`] composition so the function
+/// composes with whichever sign oracle the call site picks. Only
+/// `closest_point` is consumed here, which delegates through to the
+/// underlying [`UnsignedDistance`] — the [`Sign`] type parameter is
+/// effectively pass-through.
+fn build_lattice_to_shell_connections<D: UnsignedDistance, S: Sign>(
     nodes: &[Point3<f64>],
-    inner_sdf: &SignedDistanceField,
+    inner_sdf: &Signed<D, S>,
     threshold: f64,
     strut_radius: f64,
     iter_min_z: f64,
