@@ -404,6 +404,20 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
 #[derive(Component)]
 struct ScanMeshEntity;
 
+/// Slice S4 — marker for the FEM intruder render. Lives alongside the
+/// rest-frame `ScanMeshEntity` but visible only when the insertion
+/// sim has run AND `show_deformed` is on; per-step the translate is
+/// `interference_m × -cap_plane.normal` (= cavity-inward), placing
+/// the scan-as-intruder at the seated depth so the "press fit"
+/// overlap with the deformed cavity is visually obvious.
+#[derive(Component)]
+struct IntruderEntity;
+
+/// Color for the [`IntruderEntity`] render — warm orange, distinct
+/// from the grey rest-scan + coral cavity + layer palette. Picked so
+/// the user sees the intruder mesh against the cavity at a glance.
+const INTRUDER_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.20);
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let scan_mesh = load_stl(&cli.cleaned_stl)
@@ -1688,6 +1702,104 @@ fn apply_scan_mesh_visibility(
     }
 }
 
+/// Slice S4 — spawn the intruder render entity at startup. Uses the
+/// SAME cleaned scan mesh as [`ScanMeshEntity`] (so the per-step
+/// translation places the actual scan geometry into the cavity), but
+/// with a distinct [`INTRUDER_COLOR`] material and `Visibility::Hidden`
+/// default. The transform's translation gets rewritten each frame by
+/// [`update_intruder_transform`] from the sim's `displayed_step`.
+#[allow(clippy::needless_pass_by_value)]
+fn spawn_intruder_mesh(
+    mut commands: Commands,
+    scan: Res<ScanMesh>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
+) {
+    let scale = render_scale.0;
+    let bevy_mesh = triangle_mesh_flat_shaded(&scan.0, None, *up);
+    let material = clip_materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: Color::srgb(INTRUDER_COLOR.0, INTRUDER_COLOR.1, INTRUDER_COLOR.2),
+            metallic: 0.10,
+            perceptual_roughness: 0.6,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        },
+        extension: ClipPlaneExt::default(),
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(bevy_mesh)),
+        MeshMaterial3d(material),
+        Transform::from_scale(Vec3::splat(scale)),
+        Visibility::Hidden,
+        IntruderEntity,
+    ));
+}
+
+/// Slice S4 — per-frame update of the [`IntruderEntity`]'s transform +
+/// visibility from the sim state. Visible when `last_run.is_some() &&
+/// show_deformed` (the playback affordance); translation magnitude
+/// is `displayed_step`'s `interference_m`, direction is
+/// `-cap_plane.normal` (cavity-inward, per recon D4). Hidden when no
+/// run is loaded OR the rest-cavity view is selected — the rest scan
+/// already conveys the at-mouth pose.
+///
+/// **Visual proxy, not FEM-literal**: the FEM intruder is actually an
+/// SDF offset (the intruder SDF grows uniformly from cavity-sized at
+/// step 0 to full-scan-sized at the final step), not a rigid
+/// translation. The translation here implements the user's "slide
+/// the scan into the cavity" mental model (recon §3 user-vision
+/// verbatim); the deformed cavity + layer shells (S2/S3) carry the
+/// geometric truth of the press-fit interference. The two together
+/// communicate insertion progress + contact deformation in a way
+/// either alone would not.
+///
+/// Single-cap convention: uses `cap_planes.planes[0]`. iter-1 has
+/// exactly one cap so this is unambiguous; multi-cap designs will
+/// need a primary-cap selector (banked as a future decision).
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn update_intruder_transform(
+    sim_state: Res<insertion_sim_ui::InsertionSimState>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
+    mut q: Query<(&mut Transform, &mut Visibility), With<IntruderEntity>>,
+) {
+    let scale = render_scale.0;
+    // Translation in physics-frame meters, swapped to bevy axis, then
+    // scaled to bevy units. `to_bevy_normal` applies the same axis
+    // swap as `to_bevy_point` (linear, origin-fixed), which is exactly
+    // what a vector-as-translation needs.
+    let (translation, visible) = match (
+        sim_state.show_deformed.then_some(()),
+        sim_state.last_run.as_ref(),
+        cap_planes.planes.first(),
+    ) {
+        (Some(()), Some(run), Some(cap)) => {
+            if let Some(step) = run.ramp.steps.get(sim_state.displayed_step) {
+                let intrude_axis = -cap.normal;
+                let physics_translation = intrude_axis * step.interference_m;
+                let bevy_dir: [f32; 3] = up.to_bevy_normal(&physics_translation);
+                (Vec3::from(bevy_dir) * scale, true)
+            } else {
+                (Vec3::ZERO, false)
+            }
+        }
+        _ => (Vec3::ZERO, false),
+    };
+    for (mut tf, mut vis) in &mut q {
+        tf.translation = translation;
+        *vis = if visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn setup_render_scene(
     mut commands: Commands,
@@ -2471,7 +2583,10 @@ fn run_render_app(
         .insert_resource(layers)
         .insert_resource(save_state)
         .insert_resource(ScanMeshVisible::default())
-        .add_systems(Startup, (setup_render_scene, spawn_cavity_mesh).chain())
+        .add_systems(
+            Startup,
+            (setup_render_scene, spawn_cavity_mesh, spawn_intruder_mesh).chain(),
+        )
         .add_systems(
             Update,
             (
@@ -2479,6 +2594,7 @@ fn run_render_app(
                 draw_reference_overlays,
                 update_cavity_mesh,
                 update_layer_meshes,
+                update_intruder_transform,
                 apply_scan_mesh_visibility,
                 exit_on_esc,
             ),
