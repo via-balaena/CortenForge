@@ -57,10 +57,12 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use cf_design::{Aabb, SdfGrid, Solid};
+use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
+use cf_design::{Aabb, SdfGrid, Solid, pinned_floor_shell};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{SignedDistanceField, unsigned_distance};
 use mesh_types::IndexedMesh;
@@ -660,6 +662,7 @@ pub struct InsertionGeometry {
 pub fn build_insertion_geometry(
     scan: &IndexedMesh,
     design: &SimDesign,
+    cap_planes: &[CapPlane],
     sdf_target_faces: usize,
     cell_size_m: f64,
 ) -> Result<InsertionGeometry> {
@@ -725,6 +728,29 @@ pub fn build_insertion_geometry(
         build_grid_sdf(&decimated, bounds, grid_cell_m, 0.75 * grid_cell_m)
             .context("build flood-fill GridSdf from the decimated scan")?;
 
+    // Candidate-A two-SDF body geometry (per the redesign spec §2 A4
+    // at `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md`).
+    // Closed-body SDF supplies the sign; open-body SDF (cap polygons
+    // stripped) supplies the unsigned-rind magnitude that pinned-floor
+    // shell anchors the floor on. The open SDF's sign is sidestepped
+    // by construction — `pinned_floor_shell`'s private
+    // `UnsignedRindSdf` adapter consumes only `.abs()`. With no caps
+    // the primitive short-circuits to a plain isotropic offset, so we
+    // skip the open-mesh decimation + SDF build entirely and reuse the
+    // closed `Arc` for both arguments (it is never queried).
+    let closed_sdf_arc: Arc<dyn cf_design::Sdf> = Arc::new(scan_sdf.clone());
+    let open_sdf_arc: Arc<dyn cf_design::Sdf> = if cap_planes.is_empty() {
+        Arc::clone(&closed_sdf_arc)
+    } else {
+        let decimated_open = dome_wall_only_mesh(&decimated, cap_planes);
+        let (open_sdf, _open_grid_report) =
+            build_grid_sdf(&decimated_open, bounds, grid_cell_m, 0.75 * grid_cell_m)
+                .context("build flood-fill GridSdf from the cap-stripped decimated scan")?;
+        Arc::new(open_sdf)
+    };
+    let cap_tuples: Vec<(Point3<f64>, Vector3<f64>)> =
+        cap_planes.iter().map(CapPlane::as_tuple).collect();
+
     // Three `LayeredScalarField`s (or `ConstantField`s) over the same
     // scan-distance partition — one per Yeoh parameter — mirroring the
     // row-23 `build_material_field` precedent.
@@ -746,11 +772,28 @@ pub fn build_insertion_geometry(
         ),
     );
 
-    // Route-A device wall: outer skin minus cavity void. `Solid::offset`
-    // takes signed distances — `cavity_offset_m` is negative (the
-    // cavity is inset *inside* the scan).
-    let cavity = Solid::from_sdf(scan_sdf.clone(), bounds).offset(cavity_offset_m);
-    let outer = Solid::from_sdf(scan_sdf.clone(), bounds).offset(outer_offset_m);
+    // Route-A device wall: outer skin minus cavity void. Both shells
+    // go through `pinned_floor_shell` (candidate A) — when `cap_planes`
+    // is empty this degenerates to the previous
+    // `Solid::from_sdf(scan_sdf).offset(...)` byte-identically; when
+    // caps are present each shell gains a flat floor pinned at every
+    // cap polygon. `cavity_offset_m` is negative (cavity inset *inside*
+    // the scan); `outer_offset_m` may be positive (outer skin extends
+    // out from the scan) or negative (thin total wall sits inside).
+    let cavity = pinned_floor_shell(
+        closed_sdf_arc.clone(),
+        open_sdf_arc.clone(),
+        bounds,
+        &cap_tuples,
+        cavity_offset_m,
+    );
+    let outer = pinned_floor_shell(
+        closed_sdf_arc,
+        open_sdf_arc,
+        bounds,
+        &cap_tuples,
+        outer_offset_m,
+    );
     let body = outer.subtract(cavity);
 
     let hints = MeshingHints {
@@ -2407,6 +2450,147 @@ mod tests {
         assert!(t[1] > t[0]);
     }
 
+    // ── Sub-leaf A4: candidate-A pinned-floor consumer ───────────────
+
+    /// Compact cube (half-extent 25 mm) sized so a 4 mm BCC build
+    /// completes in well under a second — small enough for a unit
+    /// test but with enough internal room for a `cavity_inset_m=3 mm
+    /// + layer_thickness=5 mm` design.
+    fn small_test_cube() -> IndexedMesh {
+        let h = 0.025_f64;
+        let mut mesh = IndexedMesh::new();
+        for &(x, y, z) in &[
+            (-h, -h, -h),
+            (h, -h, -h),
+            (h, h, -h),
+            (-h, h, -h),
+            (-h, -h, h),
+            (h, -h, h),
+            (h, h, h),
+            (-h, h, h),
+        ] {
+            mesh.vertices.push(Point3::new(x, y, z));
+        }
+        for tri in [
+            [0, 2, 1],
+            [0, 3, 2], // -z
+            [4, 5, 6],
+            [4, 6, 7], // +z
+            [0, 1, 5],
+            [0, 5, 4], // -y
+            [2, 3, 7],
+            [2, 7, 6], // +y
+            [1, 2, 6],
+            [1, 6, 5], // +x
+            [0, 4, 7],
+            [0, 7, 3], // -x
+        ] {
+            mesh.faces.push(tri);
+        }
+        mesh
+    }
+
+    #[test]
+    fn build_insertion_geometry_no_caps_byte_identical_to_pre_pinned_floor() {
+        // The no-caps fast path threads through
+        // `pinned_floor_shell(closed_sdf, _, bounds, &[], offset)`,
+        // which short-circuits to `Solid::from_sdf(closed).offset(offset)`
+        // — bit-identical to the pre-pinned-floor uniform-offset call
+        // the consumer used before sub-leaf 5 (and what scope-C broke).
+        // The candidate-A primitive's no-caps byte-equality is pinned
+        // at the cf-design level
+        // (`solid_layered::tests::pinned_floor_shell_empty_caps_byte_identical_to_offset`);
+        // at the consumer level we just need to prove the call site
+        // still produces a deterministic, non-empty mesh on a tiny
+        // fixture so any future refactor that breaks the no-caps
+        // short-circuit surfaces here.
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let g_a = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("no-caps build must succeed");
+        let g_b = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("no-caps re-build must succeed");
+        assert!(
+            g_a.n_tets > 0,
+            "no-caps build must produce a non-empty mesh"
+        );
+        // Determinism: identical inputs → identical mesh — proves the
+        // no-caps fast path is stable across rebuilds and surfaces any
+        // accidental iterator-order non-determinism the new
+        // `Arc<dyn Sdf>` wiring might introduce.
+        assert_eq!(
+            g_a.n_tets, g_b.n_tets,
+            "no-caps build must be deterministic"
+        );
+        let pa = g_a.mesh.positions();
+        let pb = g_b.mesh.positions();
+        assert_eq!(pa.len(), pb.len());
+        for (a, b) in pa.iter().zip(pb.iter()) {
+            assert!(
+                (a - b).norm() < 1e-12,
+                "no-caps positions diverged across rebuilds: {a:?} vs {b:?}",
+            );
+        }
+        // Intruder is the closed-body SDF — must still read the
+        // bbox-min corner as outside (positive sign). The
+        // `Arc::new(scan_sdf.clone())` wrapping must not flip sign.
+        assert!(
+            g_a.intruder.eval(g_a.bounds.min) > 0.0,
+            "intruder GridSdf must read bbox-min corner positive (outside)",
+        );
+    }
+
+    #[test]
+    fn build_insertion_geometry_with_caps_opens_body_at_cap_plane() {
+        // Build the same design twice: once without caps, once with a
+        // single cap on the +z face. Under candidate A the cap-plane
+        // fold inside `pinned_floor_shell` pins the cavity's floor at
+        // the cap plane — the cavity reaches all the way up to z = h,
+        // and the body shell at the cap plane collapses to an annular
+        // rim (instead of the full domed wall the no-caps uniform
+        // offset gives). At BCC cell size 4 mm the tet count drops by
+        // a factor of ~5 on the 50 mm cube fixture (24884 → 4564 on
+        // the iter-1 reference run); the structural difference between
+        // the user's pinned-floor geometric model and the pre-pinned
+        // uniform offset surfaces at the consumer level here.
+        let h = 0.025_f64;
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let cap = CapPlane {
+            centroid: Point3::new(0.0, 0.0, h),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_count: 4,
+            loop_index: 0,
+        };
+
+        let g_no_caps = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("no-caps build must succeed");
+        let g_caps = build_insertion_geometry(&scan, &design, &[cap], 2_500, 0.004)
+            .expect("with-caps build must succeed");
+
+        // Both meshes non-empty.
+        assert!(g_no_caps.n_tets > 0);
+        assert!(g_caps.n_tets > 0);
+        // The body wall loses its dome over the cavity (the cap plane
+        // is the cavity floor); tet count must drop by ≥ 2× to count
+        // as a meaningful structural difference, not just a noise-
+        // level BCC-lattice shift.
+        assert!(
+            g_caps.n_tets * 2 < g_no_caps.n_tets,
+            "with-caps build must produce ≥ 2× fewer tets than no-caps \
+             (got no_caps={}, with_caps={}); the cap fold should open the cavity \
+             at the cap plane and remove the dome shell",
+            g_no_caps.n_tets,
+            g_caps.n_tets,
+        );
+    }
+
     #[test]
     fn build_insertion_geometry_rejects_degenerate_designs() {
         // Degenerate inputs are caught up front as `Err` — never a
@@ -2414,7 +2598,7 @@ mod tests {
         // before the scan is decimated, so a stub cube is enough and
         // the test stays fast.
         let scan = unit_cube();
-        let build = |design: &SimDesign| build_insertion_geometry(&scan, design, 2_500, 0.004);
+        let build = |design: &SimDesign| build_insertion_geometry(&scan, design, &[], 2_500, 0.004);
 
         let cases = [
             (
@@ -2565,7 +2749,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.005, "ECOFLEX_00_30")],
         };
-        let g1 = build_insertion_geometry(&scan, &single, sdf_target_faces, cell_size_m)
+        let g1 = build_insertion_geometry(&scan, &single, &[], sdf_target_faces, cell_size_m)
             .expect("single-layer geometry should build");
         eprintln!(
             "single-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
@@ -2609,7 +2793,7 @@ mod tests {
                 layer(0.005, "DRAGON_SKIN_20A"),
             ],
         };
-        let g3 = build_insertion_geometry(&scan, &triple, sdf_target_faces, cell_size_m)
+        let g3 = build_insertion_geometry(&scan, &triple, &[], sdf_target_faces, cell_size_m)
             .expect("three-layer geometry should build");
         eprintln!(
             "three-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
@@ -2951,7 +3135,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
             .expect("synthetic-sphere geometry should build");
         let n_tets = geometry.n_tets;
         // Rest positions captured before the solver consumes the mesh.
@@ -3042,7 +3226,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
             .expect("iter-1 geometry should build on the GridSdf");
         let n_tets = geometry.n_tets;
         eprintln!("iter-1 geometry: {n_tets} tets (built on the flood-fill GridSdf)");
@@ -3222,7 +3406,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        match build_insertion_geometry(&raw, &design_10mm, 2_500, 0.004) {
+        match build_insertion_geometry(&raw, &design_10mm, &[], 2_500, 0.004) {
             Ok(geometry) => {
                 eprintln!("  geometry: {} tets", geometry.n_tets);
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -3260,7 +3444,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.005, "ECOFLEX_00_30")],
         };
-        match build_insertion_geometry(&raw, &design_5mm, 2_500, 0.004) {
+        match build_insertion_geometry(&raw, &design_5mm, &[], 2_500, 0.004) {
             Ok(geometry) => {
                 let mut surface = IndexedMesh::new();
                 surface.vertices = geometry
@@ -3442,7 +3626,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
             .expect("synthetic-sphere geometry should build");
         let n_dof = geometry.mesh.positions().len() * 3;
 
@@ -3733,7 +3917,7 @@ mod tests {
         // 16/16): faithful 25 k-face resolution exposes scan noise
         // even when σ is widened. The 2 500-face proxy + σ = 1.0
         // cell is the empirically-best operating point.
-        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
             .expect("iter-1 geometry should build");
         let n_tets = geometry.n_tets;
         let n_dof = geometry.mesh.positions().len() * 3;
