@@ -67,7 +67,7 @@ use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
-use nalgebra::{Matrix3, Point3, Vector3};
+use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use sim_ml_chassis::Tensor;
 #[cfg(test)]
 use sim_soft::ContactPair;
@@ -1969,6 +1969,171 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
     })
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// SL.1 — sliding-intruder scaffolding
+// ───────────────────────────────────────────────────────────────────────
+//
+// Helpers consumed at SL.2 by `run_sliding_insertion_ramp`. The
+// module-level `#![allow(dead_code)]` already covers the unused-
+// warning until that ramp lands; section header surfaces the intent.
+//
+// Cross-references: `docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §3b
+// (TransformedSdf), §3c (slide_pose_at), + decision D-Slide2
+// (local copies of the polyline helpers — no tools→tools dep on
+// cf-scan-prep; sources at `tools/cf-scan-prep/src/main.rs:1016` +
+// `:1060`).
+
+/// Adapter: present a static [`Sdf`] as if it had been rigidly
+/// transformed by `transform` in world space.
+///
+/// For a rigid transform `T: p ↦ R p + t`:
+/// - `eval(q) = inner.eval(T⁻¹ q)` (signed distance is rigid-invariant);
+/// - `grad(q) = R · inner.grad(T⁻¹ q)` (the gradient rotates with `T`,
+///   recovering the world-frame outward normal of the moved surface).
+///
+/// For translation-only (`R = I`), `grad` collapses to a query-point
+/// shift + pass-through gradient.
+///
+/// Designed for sliding-intruder contact: an immutable [`GridSdf`] of
+/// the cleaned scan is wrapped per slide step at a fresh `slide_pose`
+/// (from [`slide_pose_at`]) and handed to [`PenaltyRigidContact`]
+/// (`docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §3a). The
+/// `Isometry3<f64>` parameter shape absorbs the iter-2 rotation
+/// followup without API churn even though iter-1 only uses
+/// translation.
+///
+/// `T⁻¹` is cached at construction — eval/grad are called inside the
+/// contact-pair inner loop ([`PenaltyRigidContact::active_pairs`])
+/// where even scalar-cheap recomputation matters at full BCC-mesh
+/// scale.
+///
+/// **Grid-coverage caveat**: `inner` may be backed by a finite-extent
+/// [`GridSdf`] with `distance_clamped` semantics outside the grid.
+/// After the inverse transform, queries falling outside the grid are
+/// silently clamped to the nearest grid sample. For sliding-intruder
+/// use this is benign — the static intruder grid covers the body
+/// bbox + outer margin, and active contact pairs (`sd < d̂ = 1 mm`)
+/// fire only when the moved intruder surface is within 1 mm of the
+/// body wall, putting the inverse-transformed query well inside the
+/// grid. Inactive pairs report large `sd` and are skipped by
+/// [`PenaltyRigidContact::active_pairs`].
+#[derive(Clone)]
+pub(crate) struct TransformedSdf<S: Sdf> {
+    inner: S,
+    transform: Isometry3<f64>,
+    inverse: Isometry3<f64>,
+}
+
+impl<S: Sdf> TransformedSdf<S> {
+    pub(crate) fn new(inner: S, transform: Isometry3<f64>) -> Self {
+        let inverse = transform.inverse();
+        Self {
+            inner,
+            transform,
+            inverse,
+        }
+    }
+}
+
+impl<S: Sdf> Sdf for TransformedSdf<S> {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.inner.eval(self.inverse * p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        self.transform.rotation * self.inner.grad(self.inverse * p)
+    }
+}
+
+/// Walk along `polyline`'s arc and return the position + local tangent
+/// at arc-length `distance_m` from `polyline[0]`. The tangent is the
+/// unit direction of the segment containing the target point, pointing
+/// from `polyline[0]` toward `polyline.last()`.
+///
+/// Local copy of `tools/cf-scan-prep/src/main.rs:1016` per D-Slide2
+/// (no `tools/` → `tools/` dependency).
+///
+/// Returns `None` for a `< 2`-point polyline. For `distance_m` past the
+/// polyline's total arc length, returns a linear extrapolation along
+/// the last segment's tangent.
+pub(crate) fn point_along_polyline_at_arc_distance(
+    polyline: &[Point3<f64>],
+    distance_m: f64,
+) -> Option<(Point3<f64>, Vector3<f64>)> {
+    if polyline.len() < 2 {
+        return None;
+    }
+    let target_m = distance_m.max(0.0);
+    let mut walked_m = 0.0_f64;
+    for i in 0..polyline.len() - 1 {
+        let seg_vec = polyline[i + 1].coords - polyline[i].coords;
+        let seg_len = seg_vec.norm();
+        if seg_len < f64::EPSILON {
+            continue;
+        }
+        if walked_m + seg_len >= target_m {
+            let t = ((target_m - walked_m) / seg_len).clamp(0.0, 1.0);
+            let pos = Point3::from(polyline[i].coords + t * seg_vec);
+            let tangent = seg_vec / seg_len;
+            return Some((pos, tangent));
+        }
+        walked_m += seg_len;
+    }
+    let n = polyline.len();
+    let last_seg = polyline[n - 1].coords - polyline[n - 2].coords;
+    let last_seg_len = last_seg.norm();
+    if last_seg_len < f64::EPSILON {
+        return None;
+    }
+    let overrun_m = target_m - walked_m;
+    let tangent = last_seg / last_seg_len;
+    let pos = Point3::from(polyline[n - 1].coords + tangent * overrun_m);
+    Some((pos, tangent))
+}
+
+/// Total arc length of `polyline` in meters. Returns `0.0` for `< 2`
+/// points.
+///
+/// Local copy of `tools/cf-scan-prep/src/main.rs:1060` per D-Slide2.
+pub(crate) fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
+    polyline
+        .windows(2)
+        .map(|w| (w[1].coords - w[0].coords).norm())
+        .sum()
+}
+
+/// Compute the rigid transform for the intruder at slide fraction
+/// `t ∈ [0, 1]` along the cleaned-scan centerline polyline.
+///
+/// Centerline ordering convention (cf-scan-prep
+/// `compute_centerline_polyline` + `trim_mesh_along_centerline` docs):
+/// `centerline[0]` is the TIP (closed end / dome apex);
+/// `centerline.last()` is the FLOOR (open end / cap rim).
+///
+/// - `t = 1`: tip at rest (identity transform).
+/// - `t = 0`: tip translated to `centerline.last()` (cap mouth); body
+///   extends arc-length past the cap into the air outside.
+/// - `t ∈ (0, 1)`: tip walks backward from rest by arc-length
+///   `L · (1 − t)`.
+///
+/// Translation-only iter-1 (D-Slide2). The `Isometry3<f64>` return
+/// type absorbs the banked iter-2 rotation followup without API
+/// churn. For a degenerate polyline (< 2 points or zero arc length),
+/// returns identity — defensive; sliding-ramp drivers validate
+/// polyline shape up front and surface their own error.
+pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64> {
+    if centerline.len() < 2 {
+        return Isometry3::identity();
+    }
+    let l_m = polyline_arc_length_m(centerline);
+    let tip_rest = centerline[0];
+    let walk_from_tip = (l_m * (1.0 - t.clamp(0.0, 1.0))).max(0.0);
+    let (tip_world, _tangent) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
+        .unwrap_or((tip_rest, Vector3::z()));
+    let translation = tip_world.coords - tip_rest.coords;
+    Isometry3::translation(translation.x, translation.y, translation.z)
+}
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
@@ -2018,6 +2183,183 @@ mod tests {
             mesh.faces.push(tri);
         }
         mesh
+    }
+
+    // ─── SL.1 — TransformedSdf + slide_pose_at unit tests ──────────
+    //
+    // 7 tests pin the spec §3b + §3c primitive contract before they
+    // get consumed by SL.2's `run_sliding_insertion_ramp`. Inner SDF
+    // is `RigidPlane` (sim-soft) — flat surface + constant normal
+    // keeps the rotated/translated expectations algebraically
+    // closed-form.
+
+    /// `TransformedSdf` with the identity transform must be a
+    /// bit-exact pass-through of the inner SDF (no inverse-mul drift,
+    /// no spurious rotation of `grad`).
+    #[test]
+    fn transformed_sdf_identity_passes_through_eval_and_grad() {
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let wrapped = TransformedSdf::new(plane, Isometry3::identity());
+        for &p in &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 3.0),
+            Point3::new(-0.5, 0.25, -1.5),
+        ] {
+            assert!(
+                (wrapped.eval(p) - Sdf::eval(&plane, p)).abs() < 1e-12,
+                "identity-transformed eval drifted at {p:?}",
+            );
+            let g_wrapped = wrapped.grad(p);
+            let g_plane = Sdf::grad(&plane, p);
+            assert!(
+                (g_wrapped - g_plane).norm() < 1e-12,
+                "identity-transformed grad drifted at {p:?}: {g_wrapped:?} vs {g_plane:?}",
+            );
+        }
+    }
+
+    /// Pure translation by `Δ` along the plane normal must shift the
+    /// signed distance by `−Δ·n` (plane sitting `Δ` higher reports
+    /// `+Δ` smaller signed distance for a point above the original).
+    /// `grad` stays as the original outward normal — translation does
+    /// not rotate the gradient.
+    #[test]
+    fn transformed_sdf_pure_translation_shifts_eval_passes_grad() {
+        // Plane `z = 0`, outward normal +Z. Translating it to `z = 0.5`
+        // moves the surface up; for `p` at `(0, 0, 1)`, the signed
+        // distance to the translated plane is `0.5` (was `1.0` to the
+        // original plane).
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let translation = Isometry3::translation(0.0, 0.0, 0.5);
+        let wrapped = TransformedSdf::new(plane, translation);
+        let p = Point3::new(0.0, 0.0, 1.0);
+        assert!(
+            (wrapped.eval(p) - 0.5).abs() < 1e-12,
+            "translated eval wrong: {}",
+            wrapped.eval(p),
+        );
+        let g = wrapped.grad(p);
+        assert!(
+            (g - Vec3::new(0.0, 0.0, 1.0)).norm() < 1e-12,
+            "translation should not rotate grad, got {g:?}",
+        );
+    }
+
+    /// Pure rotation of the plane (about an axis NOT parallel to its
+    /// normal) rotates the world-frame outward normal. A plane with
+    /// rest normal `+Z` rotated 90° about the +Y axis ends up with
+    /// world normal `+X`; `grad` must reflect that.
+    #[test]
+    fn transformed_sdf_pure_rotation_rotates_grad() {
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        // Rotate +Z → +X via 90° rotation about +Y.
+        let rotation = Isometry3::rotation(Vector3::new(0.0, std::f64::consts::FRAC_PI_2, 0.0));
+        let wrapped = TransformedSdf::new(plane, rotation);
+        // Query at `(1, 0, 0)`: the rotated plane passes through the
+        // origin with normal +X, so signed distance is `+1`.
+        let p = Point3::new(1.0, 0.0, 0.0);
+        assert!(
+            (wrapped.eval(p) - 1.0).abs() < 1e-12,
+            "rotated eval wrong: {}",
+            wrapped.eval(p),
+        );
+        let g = wrapped.grad(p);
+        let expected = Vec3::new(1.0, 0.0, 0.0);
+        assert!(
+            (g - expected).norm() < 1e-12,
+            "rotated grad should be +X, got {g:?}",
+        );
+    }
+
+    /// Combined translation + rotation must apply both: rotate the
+    /// plane to the new orientation, then translate it. The plane
+    /// originally `{z = 0, n = +Z}` rotated 90° about +Y becomes
+    /// `{x = 0, n = +X}`; translating by `+1.0` along +X moves the
+    /// surface to `x = 1`. A query at `(2, 0, 0)` then sits at signed
+    /// distance `+1` with outward normal `+X`.
+    #[test]
+    fn transformed_sdf_combined_translation_and_rotation() {
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let rotation = nalgebra::UnitQuaternion::from_axis_angle(
+            &Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let translation = nalgebra::Translation3::new(1.0, 0.0, 0.0);
+        let iso = Isometry3::from_parts(translation, rotation);
+        let wrapped = TransformedSdf::new(plane, iso);
+        let p = Point3::new(2.0, 0.0, 0.0);
+        assert!(
+            (wrapped.eval(p) - 1.0).abs() < 1e-12,
+            "combined eval wrong: {}",
+            wrapped.eval(p),
+        );
+        let g = wrapped.grad(p);
+        assert!(
+            (g - Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-12,
+            "combined grad should be +X, got {g:?}",
+        );
+    }
+
+    /// Helper: straight 4-segment polyline along +Z spanning
+    /// `z ∈ [0, 4]`. `centerline[0]` = TIP (closed end), index 4 =
+    /// FLOOR (open end / cap rim).
+    fn straight_z_centerline() -> Vec<Point3<f64>> {
+        vec![
+            Point3::new(0.0, 0.0, 0.0), // tip (rest pose)
+            Point3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 0.0, 2.0),
+            Point3::new(0.0, 0.0, 3.0),
+            Point3::new(0.0, 0.0, 4.0), // floor / cap mouth
+        ]
+    }
+
+    /// `slide_pose_at(t = 1)` = fully seated = identity transform.
+    /// The intruder's tip sits at its rest position
+    /// `centerline[0]`; the cleaned-scan body geometry is unchanged.
+    #[test]
+    fn slide_pose_at_t_eq_1_is_identity() {
+        let centerline = straight_z_centerline();
+        let pose = slide_pose_at(&centerline, 1.0);
+        let p = Point3::new(0.5, -0.25, 1.0);
+        let transformed = pose * p;
+        assert!(
+            (transformed - p).norm() < 1e-12,
+            "t=1 should be identity, got transformed = {transformed:?}",
+        );
+    }
+
+    /// `slide_pose_at(t = 0)` = start of slide = tip translated all
+    /// the way from the rest position (centerline[0]) to the floor /
+    /// cap mouth (centerline.last()). For the straight `+Z` fixture
+    /// of length 4, that's a `(0, 0, +4)` translation of every body
+    /// point.
+    #[test]
+    fn slide_pose_at_t_eq_0_translates_tip_to_floor() {
+        let centerline = straight_z_centerline();
+        let pose = slide_pose_at(&centerline, 0.0);
+        let tip_rest = centerline[0];
+        let tip_world = pose * tip_rest;
+        let floor = *centerline.last().unwrap();
+        assert!(
+            (tip_world - floor).norm() < 1e-12,
+            "t=0 should land tip at floor {floor:?}, got {tip_world:?}",
+        );
+    }
+
+    /// `slide_pose_at(t = 0.5)` lands the intruder tip at the
+    /// arc-length midpoint of the centerline. For the straight `+Z`
+    /// fixture of length 4, the midpoint is `(0, 0, 2)`.
+    #[test]
+    fn slide_pose_at_t_eq_0_5_translates_tip_to_arc_midpoint() {
+        let centerline = straight_z_centerline();
+        let pose = slide_pose_at(&centerline, 0.5);
+        let tip_rest = centerline[0];
+        let tip_world = pose * tip_rest;
+        let midpoint = Point3::new(0.0, 0.0, 2.0);
+        assert!(
+            (tip_world - midpoint).norm() < 1e-12,
+            "t=0.5 should land tip at midpoint {midpoint:?}, got {tip_world:?}",
+        );
     }
 
     #[test]
