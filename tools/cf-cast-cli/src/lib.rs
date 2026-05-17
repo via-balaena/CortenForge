@@ -13,7 +13,8 @@
 //! 1. Parse `cast.toml` → [`config::CastConfig`].
 //! 2. Resolve scan paths (relative to the `cast.toml` directory).
 //! 3. Load cleaned STL → `IndexedMesh` →
-//!    [`mesh_sdf::SignedDistanceField`].
+//!    flood-fill-signed [`mesh_sdf::Signed<TriMeshDistance,
+//!    FloodFillSign>`].
 //! 4. Parse `.prep.toml` → centerline polyline.
 //! 5. Compute scan AABB; pad by `bounding_margin_m` per axis →
 //!    bounding cuboid.
@@ -128,8 +129,19 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
     let scan_stl_path = resolve_relative(&cast_toml_dir, &config.scan.cleaned_stl);
     let prep_toml_path = resolve_relative(&cast_toml_dir, &config.scan.prep_toml);
 
-    let loaded_scan = scan::load_scan_sdf(&scan_stl_path)
-        .with_context(|| format!("load scan SDF from {}", scan_stl_path.display()))?;
+    // Flood-fill bounds must enclose every point `derive_spec_and_ribbon`
+    // queries — the consumer-side `sdf_bounds = scan_aabb.expanded(
+    // cumulative_thickness + bounding_margin_m)`. Compute the same
+    // padding here so the SDF built in `load_scan_sdf` covers the same
+    // domain the mesher walks downstream.
+    let cumulative_thickness: f64 = config.layers.iter().map(|l| l.thickness_m).sum();
+    let bounds_padding_m = cumulative_thickness + config.cast.bounding_margin_m;
+    let loaded_scan = scan::load_scan_sdf(
+        &scan_stl_path,
+        bounds_padding_m,
+        config.cast.mesh_cell_size_m,
+    )
+    .with_context(|| format!("load scan SDF from {}", scan_stl_path.display()))?;
 
     let prep_text = fs::read_to_string(&prep_toml_path)
         .with_context(|| format!("read prep TOML at {}", prep_toml_path.display()))?;
@@ -141,6 +153,21 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
             prep_toml_path.display()
         );
     }
+    // Lift the `[caps]` block out of the same .prep.toml. Empty when
+    // the block is absent or every loop is excluded — the no-caps
+    // fast path inside `pinned_floor_shell` then degenerates to the
+    // pre-pinned-floor uniform offset, so older scans (cf-scan-prep
+    // pre-PR-246) and excluded-cap scans keep producing the same
+    // molds they always did.
+    let cap_planes = cf_cap_planes::parse_cap_planes(&prep_text)
+        .with_context(|| format!("parse cap planes from {}", prep_toml_path.display()))?;
+    if !cap_planes.is_empty() {
+        println!(
+            "loaded {n} cap plane(s) from {} (candidate-A pinned floor enabled)",
+            prep_toml_path.display(),
+            n = cap_planes.len(),
+        );
+    }
 
     let derived = derive::derive_spec_and_ribbon(
         &config,
@@ -148,6 +175,7 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
         loaded_scan.aabb,
         &centerline,
         cavity_inset_m,
+        &cap_planes,
     )
     .context("derive CastSpec + Ribbon from scan + cast TOML")?;
     let DerivedSpec { spec, ribbon } = derived;

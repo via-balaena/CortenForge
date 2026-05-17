@@ -70,7 +70,7 @@ use anyhow::{Result, anyhow};
 use mesh_io::{load_ply, save_ply};
 use mesh_measure::cross_section;
 use mesh_repair::validate_mesh;
-use mesh_sdf::SignedDistanceField;
+use mesh_sdf::{TriMeshDistance, UnsignedDistance};
 use mesh_shell::{ShellBuildResult, ShellBuilder, WallGenerationMethod};
 use mesh_types::{Bounded, IndexedMesh, Point3, Vector3};
 
@@ -488,8 +488,11 @@ fn verify_wall_uniformity(
     before: &IndexedMesh,
 ) -> Result<()> {
     let outer_only = extract_outer_only(shell, stats.inner_vertex_count, before.faces.len());
-    let sdf = SignedDistanceField::new(outer_only)
-        .map_err(|e| anyhow!("SDF construction failed on outer-only mesh: {e}"))?;
+    // Post-D arc: TriMeshDistance is the bare unsigned-distance oracle;
+    // wall-uniformity only needs `.distance()` (sign-irrelevant), so
+    // skip composing a Signed and avoid the flood-fill grid build.
+    let sdf = TriMeshDistance::new(outer_only)
+        .map_err(|e| anyhow!("TriMeshDistance construction failed on outer-only mesh: {e}"))?;
 
     let samples = wall_interior_samples(SIDE_MM);
     assert_eq!(samples.len(), 24, "24 wall-interior samples expected");
@@ -497,7 +500,7 @@ fn verify_wall_uniformity(
     let mut min_dist = f64::INFINITY;
     let mut max_dist = f64::NEG_INFINITY;
     for sample in &samples {
-        let dist = sdf.unsigned_distance(*sample);
+        let dist = sdf.distance(*sample);
         min_dist = min_dist.min(dist);
         max_dist = max_dist.max(dist);
         let drift = (dist - WALL_THICKNESS_MM).abs();

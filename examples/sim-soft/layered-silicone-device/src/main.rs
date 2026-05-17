@@ -1,4 +1,4 @@
-// Localized `expect(...)` allowance — `SignedDistanceField::new` on a
+// Localized `expect(...)` allowance — `TriMeshDistance::new` on a
 // programmatic 12-tri cube fixture cannot return `Err(EmptyMesh)` by
 // construction (12 faces, non-empty), so the expect is a diagnostic
 // guard on a `Result::Err` impossibility. Same precedent as PR3 row 15
@@ -217,7 +217,16 @@ use anyhow::Result;
 use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
-use mesh_sdf::SignedDistanceField;
+use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
+
+/// Local alias — `Signed<TriMeshDistance, PseudoNormalSign>` is the
+/// post-D arc shape of the deprecated `SignedDistanceField` type alias.
+/// Matches the sister mesh-scan-as-solid example's `ScanSdf` for
+/// cross-file consistency. [`PseudoNormalSign`] is the cheap parry
+/// pseudo-normal path; cleaned body-part scans should prefer
+/// `mesh_sdf::flood_filled_sdf` per
+/// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`.
+type ScanSdf = Signed<TriMeshDistance, PseudoNormalSign>;
 use mesh_types::{IndexedMesh, Point3, Vector3};
 use nalgebra::Matrix3;
 use serde_json::{Value, json};
@@ -361,59 +370,95 @@ const F4_PROVENANCE_EXACT_TOL: f64 = 0.0;
 /// cube at `(0.015, 0, 0)`) differs from rows 11 + 16's `R_CAVITY =
 /// 0.04 m` sphere — pattern (y) cross-row bit-equal continuity does
 /// NOT extend.
-const N_TETS_EXACT: usize = 51_670;
+const N_TETS_EXACT: usize = 51_292;
 
 /// Total mesh vertex count, including BCC lattice corners not
 /// referenced by any tet.
-const N_VERTICES_EXACT: usize = 32_496;
+const N_VERTICES_EXACT: usize = 32_162;
 
 /// Vertices referenced by at least one tet.
-const N_REFERENCED_EXACT: usize = 10_259;
+const N_REFERENCED_EXACT: usize = 10_013;
 
 /// Outer-surface Dirichlet-pinned vertex count (every vertex with
 /// `(‖p‖ - R_OUTER).abs() < CELL_SIZE / 2 = 0.005`, filtered to
 /// referenced set).
-const N_PINNED_EXACT: usize = 2_800;
+const N_PINNED_EXACT: usize = 2_842;
 
 /// Per-shell tet counts at first capture. `INNER + MIDDLE + OUTER ==
 /// N_TETS_EXACT` by construction (every tet centroid sits in exactly
-/// one of the three radial bins).
-const N_INNER_TETS_EXACT: usize = 5_330;
-const N_MIDDLE_TETS_EXACT: usize = 15_401;
-const N_OUTER_TETS_EXACT: usize = 30_939;
+/// one of the three radial bins). Re-captured 2026-05-18 post-D arc:
+/// `PseudoNormalSign` vs the pre-parry ray-cast sign produces a
+/// slightly different inside/outside classification at the cavity
+/// boundary → the tet inclusion test at scan-cavity carve time drifts
+/// the per-shell counts. Sum still equals `N_TETS_EXACT`.
+const N_INNER_TETS_EXACT: usize = 5_068;
+const N_MIDDLE_TETS_EXACT: usize = 14_736;
+const N_OUTER_TETS_EXACT: usize = 31_488;
 
 /// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.005`
 /// z-slab cut. Survives at the F1.5 retrofit as a cheap centroid
-/// regression filter (no PLY data emitted there anymore).
-const N_INNER_TETS_ZSLAB_EXACT: usize = 548;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 912;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 1_225;
+/// regression filter (no PLY data emitted there anymore). Re-captured
+/// 2026-05-18 post-D arc.
+const N_INNER_TETS_ZSLAB_EXACT: usize = 460;
+const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 752;
+const N_OUTER_TETS_ZSLAB_EXACT: usize = 1_288;
 
 /// Active contact-pair count at the static fit pose. Contact band is
 /// `sd < d̂ = PENALTY_DHAT_DEFAULT` (sim-soft's crate-default value);
 /// at rest the cavity walls already kiss the indenter, so all cavity-
-/// surface vertices within `d̂` are active. Larger at the refined
-/// mesh than the original 0.02 m capture (~127) because the
-/// cavity-wall vertex population scales with surface area at finer
-/// lattice resolution.
-const N_CONTACT_PAIRS_EXACT: usize = 532;
+/// surface vertices within `d̂` are active. Re-captured 2026-05-18
+/// post-D arc.
+///
+/// Per-face partition (from the per-pair JSON readout):
+///
+/// | face | `n_pairs` |
+/// |------|---------|
+/// | -X / +X | 71 / 71 |
+/// | -Y / +Y | 86 / 87 |
+/// | -Z / +Z | 61 / 66 |
+///
+/// The Y faces hold ~46 more pairs than the Z faces (173 vs 127) on
+/// what's geometrically a Y↔Z-symmetric cube cavity. Root cause: the
+/// BCC tet-stuffing warp step at
+/// `sim/L0/soft/src/sdf_bridge/stuffing.rs::warp_lattice` walks 14
+/// incident edges per lattice vertex in a fixed `+x, -x, +y, -y, +z,
+/// -z, …` order and first-match-wins on the warp-violation predicate
+/// (Decision M D-11 — deterministic; theorem-safe because
+/// Labelle-Shewchuk Theorem 1's angle guarantees are independent of
+/// which violating cut is chosen). At every YZ cavity corner where
+/// both a `+y` and a `+z` edge cross the SDF boundary simultaneously,
+/// `+y` wins → the corner-vertex snaps onto the Y face instead of the
+/// Z face. Net effect on a synthetic axis-aligned cube fixture: Y
+/// faces gain pairs that "should" geometrically have gone to Z faces.
+/// The within-axis residuals (Y Δ=1, Z Δ=5) are below-noise FP
+/// boundary-classification jitter at lattice vertices that land
+/// exactly on a cube face plane.
+///
+/// Workshop-realistic cleaned scans don't trigger any of this — body-
+/// part geometry has no axis-aligned faces, no axis-aligned edges, no
+/// lattice-aligned vertex positions, so no two perpendicular edges
+/// cross the boundary simultaneously and the warp's axis-priority
+/// branch is inert.
+const N_CONTACT_PAIRS_EXACT: usize = 442;
 
 /// Total z-component of the rest-state contact reaction force (N).
 /// `force_on_soft = +κ · (d̂ - sd) · normal`; the z-sum captures the
 /// axial component of the fit-tightness force at zero indenter
 /// displacement.
-/// `f64::from_bits(0x3f9c_cd87_639b_8cf0) ≈ 2.8128e-2 N`. Smaller
-/// magnitude than the original 0.02 m capture because at the refined
-/// mesh the cavity-wall surface integration is finer and the +z and
-/// -z contributions cancel more closely (the cavity is z-symmetric
-/// up to BCC lattice artifacts; the offset is only in x).
-const FORCE_TOTAL_Z_REF_BITS: u64 = 0x3f9c_cd87_639b_8cf0;
+/// `f64::from_bits(0xbf2d_6b5f_f144_0800) ≈ -2.245e-4 N`. Re-captured
+/// 2026-05-18 post-D arc (`PseudoNormalSign` vs the pre-parry ray-cast
+/// boundary classification at the cavity edge produces a slightly
+/// different cavity-tet inclusion set; the z-component near-cancels at
+/// rest and the residual sign/magnitude depends on which boundary tets
+/// land just-inside vs just-outside the cavity).
+const FORCE_TOTAL_Z_REF_BITS: u64 = 0xbf2d_6b5f_f144_0800;
 
 /// Cavity-wall mean displacement-magnitude bits (m) at the static fit
 /// pose. Mean over the active-contact-pair vertex set of
 /// `(deformed - rest).norm()`.
-/// `f64::from_bits(0x3f40_a094_dbee_1514) ≈ 5.0742e-4 m`.
-const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f40_a094_dbee_1514;
+/// `f64::from_bits(0x3f44_0ecb_b0cb_1cbc) ≈ 6.110e-4 m`. Re-captured
+/// 2026-05-18 post-D arc.
+const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f44_0ecb_b0cb_1cbc;
 
 // =============================================================================
 // Programmatic 12-tri cube scan fixture
@@ -432,7 +477,7 @@ const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f40_a094_dbee_1514;
 /// `SignedDistanceField::new(loaded)`, and every downstream code path
 /// (`Solid::from_sdf` + `SdfMeshedTetMesh::from_sdf` + the contact
 /// `PenaltyRigidContact::new(scan.clone())` line) stays unchanged.
-fn build_scan_fixture() -> SignedDistanceField {
+fn build_scan_fixture() -> ScanSdf {
     let mut mesh = IndexedMesh::new();
     let cx = SCAN_OFFSET_X;
 
@@ -476,7 +521,15 @@ fn build_scan_fixture() -> SignedDistanceField {
         mesh.faces.push(tri);
     }
 
-    SignedDistanceField::new(mesh).expect("12-tri cube fixture is non-empty by construction")
+    // Synthetic CCW cube — both PseudoNormalSign and FloodFillSign
+    // produce correct signs here. PseudoNormalSign is the cheap parry
+    // pseudo-normal path; no flood-fill grid build cost. Production
+    // cleaned-scan code paths should prefer `mesh_sdf::flood_filled_sdf`
+    // — see [[project-mesh-sdf-oracle-decomposition-spec]].
+    let distance =
+        TriMeshDistance::new(mesh).expect("12-tri cube fixture is non-empty by construction");
+    let sign = PseudoNormalSign::from_distance(&distance);
+    Signed { distance, sign }
 }
 
 /// Conservative bbox for the scan fixture — `[-R_SCAN + cx, R_SCAN + cx]`
@@ -499,7 +552,7 @@ fn scan_bounds() -> cf_design::Aabb {
 /// typed-Solid kernel via `Solid::from_sdf` (PR3 F5); the resulting
 /// `Solid` composes with parametric primitives via the standard
 /// `subtract` / `union` / `intersect` API.
-fn build_body(scan_sdf: SignedDistanceField) -> Solid {
+fn build_body(scan_sdf: ScanSdf) -> Solid {
     let cavity = Solid::from_sdf(scan_sdf, scan_bounds());
     Solid::sphere(R_OUTER).subtract(cavity)
 }

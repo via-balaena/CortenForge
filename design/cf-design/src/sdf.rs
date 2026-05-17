@@ -5,7 +5,9 @@
 //! code add more by writing their own `impl Sdf for ...`. Consumers
 //! query SDFs through the trait without naming the concrete source.
 
-use mesh_sdf::SignedDistanceField;
+use std::sync::Arc;
+
+use mesh_sdf::{CachedGridSdf, Sign, Signed, UnsignedDistance};
 use nalgebra::{Point3, Vector3};
 
 use crate::Solid;
@@ -47,6 +49,25 @@ impl<T: Sdf + ?Sized> Sdf for Box<T> {
     }
 }
 
+/// Forwarding impl through `Arc<T>` for any `T: Sdf + ?Sized`.
+///
+/// Lets a shared, heap-erased SDF satisfy [`Sdf`] directly, so an
+/// `Arc<dyn Sdf>` is callable at every site that takes any `S: Sdf` —
+/// and cloning shares the inner allocation. Consumers that need the
+/// same SDF threaded through several composition trees (e.g. a closed-
+/// body SDF passed to multiple `pinned_floor_shell` calls — one for
+/// the plug, one per layer body) wrap it once in `Arc<dyn Sdf>` and
+/// pass cheap clones of the `Arc` to each.
+impl<T: Sdf + ?Sized> Sdf for Arc<T> {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        (**self).eval(p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        (**self).grad(p)
+    }
+}
+
 /// Every [`Solid`] satisfies the [`Sdf`] contract.
 ///
 /// `eval` delegates to [`Solid::evaluate`]; `grad` delegates to
@@ -63,11 +84,12 @@ impl Sdf for Solid {
     }
 }
 
-/// Every [`mesh_sdf::SignedDistanceField`] satisfies the [`Sdf`] contract.
+/// Every composed `mesh_sdf::Signed<D, S>` satisfies the [`Sdf`]
+/// contract — blanket adapter spanning the decomposed
+/// `UnsignedDistance` + `Sign` traits.
 ///
-/// `eval` delegates to [`SignedDistanceField::distance`]; both use the
-/// same sign convention (negative inside, positive outside, zero on
-/// surface).
+/// `eval` delegates to [`Signed::evaluate`] (negative inside, positive
+/// outside, zero on the surface).
 ///
 /// `grad` is a central finite-difference approximation with step size
 /// `1e-6` (matching cf-design's existing `Solid::user_fn` finite-diff
@@ -78,34 +100,60 @@ impl Sdf for Solid {
 /// consumers requiring boundary-stable gradients should query at points
 /// well within face interiors.
 ///
-/// **Sign-heuristic caveat (inherited from `mesh-sdf`).** mesh-sdf's
-/// `distance` infers inside/outside from a face-normal heuristic
-/// applied to the closest face. The heuristic is reliable for points
-/// within roughly one mesh-edge-length of the surface, but for points
-/// far from the surface where the closest face's plane happens to lie
-/// between the probe and the rest of the body, the heuristic can
-/// return the wrong sign. Consumers needing robust far-field
-/// inside/outside should prefer [`SignedDistanceField::is_inside`]
-/// (ray-cast based) directly.
-impl Sdf for SignedDistanceField {
+/// **Sign-oracle caveat.** The reliability of `eval`'s sign branch is
+/// determined by the wrapped `S: Sign` oracle.
+/// `mesh_sdf::PseudoNormalSign` is reliable on watertight, well-formed
+/// meshes but **fragile** on decimated / cleaned scans with cap fans
+/// whose winding flipped during reconstruction or high-valence apex
+/// vertices — see project memory `pinned-floor-visual-gate-postmortem`
+/// for the canonical iter-1 failure mode. Consumers deriving an SDF
+/// from a cf-scan-prep cleaned scan should prefer `FloodFillSign`
+/// (mesh-sdf D.2) in place of `PseudoNormalSign`. See
+/// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the rationale.
+impl<D, S> Sdf for Signed<D, S>
+where
+    D: UnsignedDistance,
+    S: Sign,
+{
     fn eval(&self, p: Point3<f64>) -> f64 {
-        self.distance(p)
+        self.evaluate(p)
     }
 
     fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
         let eps = 1e-6;
         let inv_2eps = 0.5 / eps;
         Vector3::new(
-            (self.distance(Point3::new(p.x + eps, p.y, p.z))
-                - self.distance(Point3::new(p.x - eps, p.y, p.z)))
+            (self.evaluate(Point3::new(p.x + eps, p.y, p.z))
+                - self.evaluate(Point3::new(p.x - eps, p.y, p.z)))
                 * inv_2eps,
-            (self.distance(Point3::new(p.x, p.y + eps, p.z))
-                - self.distance(Point3::new(p.x, p.y - eps, p.z)))
+            (self.evaluate(Point3::new(p.x, p.y + eps, p.z))
+                - self.evaluate(Point3::new(p.x, p.y - eps, p.z)))
                 * inv_2eps,
-            (self.distance(Point3::new(p.x, p.y, p.z + eps))
-                - self.distance(Point3::new(p.x, p.y, p.z - eps)))
+            (self.evaluate(Point3::new(p.x, p.y, p.z + eps))
+                - self.evaluate(Point3::new(p.x, p.y, p.z - eps)))
                 * inv_2eps,
         )
+    }
+}
+
+/// [`CachedGridSdf`] (mesh-sdf D.2) implements [`Sdf`] via its native
+/// trilinear-interpolated signed distance + analytic-on-the-trilinear
+/// gradient. The grid IS the smoothed source, so `eval` reads
+/// directly and `grad` central-differences the trilinear interpolant
+/// at the lattice spacing — exact for the piecewise-trilinear
+/// representation, no `Signed::grad`-style 1e-6 finite-difference
+/// step needed.
+///
+/// Orphan-rule reason: `Sdf` is owned by cf-design; `CachedGridSdf`
+/// is owned by mesh-sdf. The adapter lives here alongside the
+/// `Signed<D, S>` blanket above.
+impl Sdf for CachedGridSdf {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.signed_distance(p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        self.gradient(p)
     }
 }
 
@@ -187,6 +235,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn arc_dyn_sdf_blanket_forwards_eval_and_grad() {
+        let s = Solid::sphere(1.0);
+        let shared: Arc<dyn Sdf> = Arc::new(s.clone());
+        // Cloning the Arc shares the inner allocation — both clones
+        // forward to the same Solid.
+        let clone = shared.clone();
+        for &p in &[
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(2.0, 0.0, 0.0),
+        ] {
+            assert_relative_eq!(shared.eval(p), s.evaluate(&p), epsilon = 0.0);
+            assert_relative_eq!(shared.grad(p), s.gradient(&p), epsilon = 0.0);
+            assert_relative_eq!(clone.eval(p), s.evaluate(&p), epsilon = 0.0);
+            assert_relative_eq!(clone.grad(p), s.gradient(&p), epsilon = 0.0);
+        }
+    }
+
     /// Regular tetrahedron with the bottom face on z=0 and apex above.
     /// Bottom face winding `[0, 2, 1]` is CCW from below — outward face
     /// normal of the bottom is `-z`.
@@ -203,35 +270,36 @@ mod tests {
         mesh
     }
 
-    #[test]
-    // Localized expect: tetrahedron fixture has 4 faces, never empty.
+    /// Construct the explicit `Signed<TriMeshDistance, PseudoNormalSign>`
+    /// composition the post-D.1 API uses — the blanket
+    /// `impl<D, S> Sdf for Signed<D, S>` is what these tests pin.
     #[allow(clippy::expect_used)]
-    fn mesh_sdf_eval_sign_convention_in_contact_band() {
-        let sdf = SignedDistanceField::new(unit_tetrahedron())
+    fn mesh_sdf_for_tetrahedron() -> Signed<mesh_sdf::TriMeshDistance, mesh_sdf::PseudoNormalSign> {
+        let distance = mesh_sdf::TriMeshDistance::new(unit_tetrahedron())
             .expect("tetrahedron fixture has four faces");
+        let sign = mesh_sdf::PseudoNormalSign::from_distance(&distance);
+        Signed { distance, sign }
+    }
+
+    #[test]
+    fn mesh_sdf_eval_sign_convention_in_contact_band() {
+        let sdf = mesh_sdf_for_tetrahedron();
 
         // Strictly inside (negative): on the bottom-centroid → apex
         // axis halfway up.
         let interior = Point3::new(0.5, 0.289, 0.4);
-        assert!(<SignedDistanceField as Sdf>::eval(&sdf, interior) < 0.0);
+        assert!(Sdf::eval(&sdf, interior) < 0.0);
 
         // Strictly outside (positive): one unit below the bottom-face
         // centroid — the closest face is unambiguously the bottom
         // (outward `-z`), and the signed distance is exactly 1.
         let exterior_below = Point3::new(0.5, 0.289, -1.0);
-        assert_relative_eq!(
-            <SignedDistanceField as Sdf>::eval(&sdf, exterior_below),
-            1.0,
-            epsilon = 1e-12,
-        );
+        assert_relative_eq!(Sdf::eval(&sdf, exterior_below), 1.0, epsilon = 1e-12,);
     }
 
     #[test]
-    // Localized expect: tetrahedron fixture has 4 faces, never empty.
-    #[allow(clippy::expect_used)]
     fn mesh_sdf_grad_below_bottom_face_approximates_outward_normal() {
-        let sdf = SignedDistanceField::new(unit_tetrahedron())
-            .expect("tetrahedron fixture has four faces");
+        let sdf = mesh_sdf_for_tetrahedron();
 
         // Probe directly below the bottom-face centroid (0.5, 0.289, 0)
         // at z = -1 — the closest face is the bottom triangle (winding
@@ -239,7 +307,44 @@ mod tests {
         // gradient should match that normal up to the float-equality
         // tolerance of mesh-sdf's distance computation.
         let p = Point3::new(0.5, 0.289, -1.0);
-        let g = <SignedDistanceField as Sdf>::grad(&sdf, p);
+        let g = Sdf::grad(&sdf, p);
         assert_relative_eq!(g, -Vector3::z(), epsilon = 1e-6);
+    }
+
+    /// `impl Sdf for CachedGridSdf` (the D.2 orphan-rule adapter) —
+    /// `eval` reads the cached signed grid directly; `grad` central-
+    /// differences the trilinear interpolant. Verifies the adapter
+    /// honors the cf-design `Sdf` sign convention end-to-end on a
+    /// known fixture (signed-distance negative interior, positive
+    /// below the bottom face, outward gradient pointing -z below).
+    #[allow(clippy::expect_used)]
+    #[test]
+    fn cached_grid_sdf_adapter_honors_sdf_sign_convention() {
+        let distance = mesh_sdf::TriMeshDistance::new(unit_tetrahedron())
+            .expect("tetrahedron fixture has four faces");
+        let bounds =
+            mesh_types::Aabb::new(Point3::new(-1.0, -1.0, -1.5), Point3::new(2.0, 2.0, 2.0));
+        let (cached, report) = mesh_sdf::CachedGridSdf::build(
+            &distance,
+            bounds,
+            0.1,
+            mesh_sdf::WALL_THRESHOLD_FACTOR_DEFAULT,
+        )
+        .expect("CachedGridSdf builds for the tetrahedron fixture");
+        assert_eq!(report.inside_components, 1);
+
+        // Interior probe (negative).
+        let interior = Point3::new(0.5, 0.289, 0.4);
+        assert!(Sdf::eval(&cached, interior) < 0.0);
+
+        // Exterior probe below the bottom face — gradient should
+        // point predominantly -z (outward from the body).
+        let below = Point3::new(0.5, 0.289, -1.0);
+        assert!(Sdf::eval(&cached, below) > 0.0);
+        let g = Sdf::grad(&cached, below);
+        assert!(
+            g.z < -0.5,
+            "below-bottom-face gradient should point -z, got {g:?}"
+        );
     }
 }

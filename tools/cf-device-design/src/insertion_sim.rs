@@ -55,17 +55,19 @@
 //! across the 7.0→7.4 ladder without papering over a real ambiguity
 //! with `#[allow]`.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use cf_design::{Aabb, SdfGrid, Solid};
+use cf_cap_planes::{CapPlane, dome_wall_only_mesh};
+use cf_design::{Aabb, SdfGrid, Solid, pinned_floor_shell};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
-use mesh_sdf::{SignedDistanceField, unsigned_distance};
+use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
 use meshopt::simplify_sloppy_decoder;
-use nalgebra::{Matrix3, Point3, Vector3};
+use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use sim_ml_chassis::Tensor;
 #[cfg(test)]
 use sim_soft::ContactPair;
@@ -112,7 +114,7 @@ const SPIKE_SIMPLIFY_TARGET_ERROR: f32 = 10.0;
 /// that block topology-preserving collapse), strip unreferenced
 /// vertices. Returns the scan unchanged (modulo the vertex weld) when
 /// it is already at or below `target_faces`.
-fn decimate_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh {
+pub(crate) fn decimate_for_sdf(scan: &IndexedMesh, target_faces: usize) -> IndexedMesh {
     let mut welded = scan.clone();
     weld_vertices(&mut welded, SPIKE_WELD_EPSILON_M);
 
@@ -190,7 +192,8 @@ pub struct SpikeReport {
     pub wall_thickness_m: f64,
     /// Wall-clock time to decimate the scan.
     pub decimate_ms: f64,
-    /// Wall-clock time to build the [`SignedDistanceField`].
+    /// Wall-clock time to build the
+    /// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed).
     pub sdf_build_ms: f64,
     /// Wall-clock time for [`SdfMeshedTetMesh::from_sdf`] — the
     /// dominant cost. One brute-force SDF query per BCC lattice
@@ -241,7 +244,8 @@ impl std::fmt::Display for SpikeReport {
 /// Run the Route-A SDF bridge end-to-end on `scan` and report timing +
 /// tet-mesh quality.
 ///
-/// Pipeline: [`decimate_for_sdf`] → [`SignedDistanceField`] →
+/// Pipeline: [`decimate_for_sdf`] →
+/// [`Signed<TriMeshDistance, PseudoNormalSign>`](Signed) →
 /// [`Solid::from_sdf`] → `outer.subtract(scan)` body (`outer =
 /// scan.offset(wall_thickness_m)`) → [`SdfMeshedTetMesh::from_sdf`] at
 /// `cell_size_m`. Geometry only — no materials (skeleton-default
@@ -249,7 +253,7 @@ impl std::fmt::Display for SpikeReport {
 ///
 /// # Errors
 ///
-/// Propagates [`SignedDistanceField::new`] (empty mesh) and
+/// Propagates [`TriMeshDistance::new`] (empty mesh) and
 /// [`SdfMeshedTetMesh::from_sdf`] (empty mesh, non-finite SDF value)
 /// failures with context.
 pub fn run_sdf_bridge_spike(
@@ -271,8 +275,13 @@ pub fn run_sdf_bridge_spike(
     let decimated_faces = decimated.faces.len();
 
     let t = Instant::now();
-    let sdf = SignedDistanceField::new(decimated)
-        .context("build SignedDistanceField from the decimated scan")?;
+    let sdf_distance =
+        TriMeshDistance::new(decimated).context("build TriMeshDistance from the decimated scan")?;
+    let sdf_sign = PseudoNormalSign::from_distance(&sdf_distance);
+    let sdf = Signed {
+        distance: sdf_distance,
+        sign: sdf_sign,
+    };
     let sdf_build_ms = elapsed_ms(t);
 
     // Route-A geometry: body = outer.subtract(scan), mirroring the
@@ -660,6 +669,7 @@ pub struct InsertionGeometry {
 pub fn build_insertion_geometry(
     scan: &IndexedMesh,
     design: &SimDesign,
+    cap_planes: &[CapPlane],
     sdf_target_faces: usize,
     cell_size_m: f64,
 ) -> Result<InsertionGeometry> {
@@ -725,6 +735,29 @@ pub fn build_insertion_geometry(
         build_grid_sdf(&decimated, bounds, grid_cell_m, 0.75 * grid_cell_m)
             .context("build flood-fill GridSdf from the decimated scan")?;
 
+    // Candidate-A two-SDF body geometry (per the redesign spec §2 A4
+    // at `docs/CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md`).
+    // Closed-body SDF supplies the sign; open-body SDF (cap polygons
+    // stripped) supplies the unsigned-rind magnitude that pinned-floor
+    // shell anchors the floor on. The open SDF's sign is sidestepped
+    // by construction — `pinned_floor_shell`'s private
+    // `UnsignedRindSdf` adapter consumes only `.abs()`. With no caps
+    // the primitive short-circuits to a plain isotropic offset, so we
+    // skip the open-mesh decimation + SDF build entirely and reuse the
+    // closed `Arc` for both arguments (it is never queried).
+    let closed_sdf_arc: Arc<dyn cf_design::Sdf> = Arc::new(scan_sdf.clone());
+    let open_sdf_arc: Arc<dyn cf_design::Sdf> = if cap_planes.is_empty() {
+        Arc::clone(&closed_sdf_arc)
+    } else {
+        let decimated_open = dome_wall_only_mesh(&decimated, cap_planes);
+        let (open_sdf, _open_grid_report) =
+            build_grid_sdf(&decimated_open, bounds, grid_cell_m, 0.75 * grid_cell_m)
+                .context("build flood-fill GridSdf from the cap-stripped decimated scan")?;
+        Arc::new(open_sdf)
+    };
+    let cap_tuples: Vec<(Point3<f64>, Vector3<f64>)> =
+        cap_planes.iter().map(CapPlane::as_tuple).collect();
+
     // Three `LayeredScalarField`s (or `ConstantField`s) over the same
     // scan-distance partition — one per Yeoh parameter — mirroring the
     // row-23 `build_material_field` precedent.
@@ -746,11 +779,28 @@ pub fn build_insertion_geometry(
         ),
     );
 
-    // Route-A device wall: outer skin minus cavity void. `Solid::offset`
-    // takes signed distances — `cavity_offset_m` is negative (the
-    // cavity is inset *inside* the scan).
-    let cavity = Solid::from_sdf(scan_sdf.clone(), bounds).offset(cavity_offset_m);
-    let outer = Solid::from_sdf(scan_sdf.clone(), bounds).offset(outer_offset_m);
+    // Route-A device wall: outer skin minus cavity void. Both shells
+    // go through `pinned_floor_shell` (candidate A) — when `cap_planes`
+    // is empty this degenerates to the previous
+    // `Solid::from_sdf(scan_sdf).offset(...)` byte-identically; when
+    // caps are present each shell gains a flat floor pinned at every
+    // cap polygon. `cavity_offset_m` is negative (cavity inset *inside*
+    // the scan); `outer_offset_m` may be positive (outer skin extends
+    // out from the scan) or negative (thin total wall sits inside).
+    let cavity = pinned_floor_shell(
+        closed_sdf_arc.clone(),
+        open_sdf_arc.clone(),
+        bounds,
+        &cap_tuples,
+        cavity_offset_m,
+    );
+    let outer = pinned_floor_shell(
+        closed_sdf_arc,
+        open_sdf_arc,
+        bounds,
+        &cap_tuples,
+        outer_offset_m,
+    );
     let body = outer.subtract(cavity);
 
     let hints = MeshingHints {
@@ -1083,19 +1133,6 @@ impl Sdf for GridSdf {
     }
 }
 
-/// Per-lattice-point label from [`build_grid_sdf`]'s flood fill.
-#[derive(Clone, Copy, PartialEq)]
-enum Region {
-    /// Flood-reached from a bbox corner — air around the scan.
-    Outside,
-    /// Non-wall, not flood-reached — the scan's solid interior.
-    Inside,
-    /// Within `wall_threshold_m` of the surface — the flood cannot
-    /// pass through it; its sign is assigned by nearest-labelled
-    /// neighbour expansion.
-    Wall,
-}
-
 /// Flood-fill health diagnostics from one [`build_grid_sdf`] call.
 ///
 /// A topologically-sound result has the inside region as a *single*
@@ -1123,21 +1160,15 @@ pub struct GridSdfReport {
     pub build_ms: f64,
 }
 
-/// The up-to-six 6-connected lattice neighbours of flat index `i` in a
-/// `w × h × d` grid (`x` fastest, then `y`, then `z`).
-fn neighbours6(i: usize, w: usize, h: usize, d: usize) -> [Option<usize>; 6] {
-    let x = i % w;
-    let y = (i / w) % h;
-    let z = i / (w * h);
-    [
-        (x > 0).then(|| i - 1),
-        (x + 1 < w).then(|| i + 1),
-        (y > 0).then(|| i - w),
-        (y + 1 < h).then(|| i + w),
-        (z > 0).then(|| i - w * h),
-        (z + 1 < d).then(|| i + w * h),
-    ]
-}
+// `Region` enum + `neighbours6` helper + the inline 4-pass flood-fill
+// in `build_grid_sdf` were promoted to mesh-sdf D.2's `CachedGridSdf`
+// primitive (`docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`). The shared
+// classifier core in mesh-sdf preserves the exact algorithm + region
+// label semantics; this module now invokes it via
+// [`CachedGridSdf::build`] and re-applies the Gaussian post-pass
+// externally on the returned signed buffer (FEM contact-gradient C¹
+// approximation, NOT load-bearing for sign correctness — kept here so
+// mesh-sdf primitives stay smoothing-free).
 
 /// Per-cell σ of the [`GridSdf`] signed-distance Gaussian pre-smooth
 /// (slice 7.3c–7.3d, [`gaussian_smooth_3d_separable`]).
@@ -1290,39 +1321,41 @@ fn gaussian_smooth_3d_separable(
 
 /// Build a flood-fill-signed [`GridSdf`] of `scan` over `bbox`.
 ///
-/// Pipeline: sample [`mesh_sdf::unsigned_distance`] at every lattice
-/// point (topology-blind — the sloppy-decimation damage that wrecks
-/// `mesh_sdf`'s *signed* query does not touch the *unsigned* one) →
-/// mark "wall" points within `wall_threshold_m` of the surface →
-/// flood "outside" 6-connected from the eight bbox corners through
-/// non-wall points → non-wall, not-reached points are the interior →
-/// expand the Outside/Inside labels into the wall band by multi-
-/// source BFS → signed value = `±unsigned` → **separable 3D
-/// Gaussian pre-smooth (σ = [`GRID_SDF_SMOOTH_SIGMA_CELLS`] = 1.0
-/// cell, settled at slice 7.3d after the σ sweep; slice 7.3c
-/// shipped at 0.5 cell) on the signed buffer** — see
-/// [`GRID_SDF_SMOOTH_SIGMA_CELLS`] for the envelope-extension trail.
+/// Pipeline (post-D.3b): build a parry BVH-backed
+/// [`TriMeshDistance`] over `scan`, delegate to mesh-sdf D.2's
+/// [`CachedGridSdf::build`] which runs the shared 3-region
+/// (Inside / Outside / Wall) flood-fill + multi-source label
+/// expansion + `inside_components` health count, walk the lattice
+/// once more to sample the cached signed values into a flat row-
+/// major `Vec<f64>`, then apply a separable 3D Gaussian pre-smooth
+/// (σ = [`GRID_SDF_SMOOTH_SIGMA_CELLS`] = 1.0 cell, settled at slice
+/// 7.3d after the σ sweep; slice 7.3c shipped at 0.5 cell) on the
+/// signed buffer — see [`GRID_SDF_SMOOTH_SIGMA_CELLS`] for the
+/// envelope-extension trail. The Gaussian post-pass stays here
+/// rather than inside `CachedGridSdf` because it is FEM-specific
+/// (contact-gradient C¹ approximation) and not load-bearing for
+/// sign correctness; mesh-sdf primitives are smoothing-free by
+/// design.
 ///
 /// `wall_threshold_m` must be `≥ 0.5 * grid_cell_m` so the wall band
 /// is 6-connectivity-watertight (a surface crossing between adjacent
 /// lattice points always lands one of them within half a cell). The
 /// 7.3a fix spike sweeps `grid_cell_m`; `0.75 * grid_cell_m` is the
 /// recommended threshold (safe margin without over-thickening the
-/// band).
+/// band). Internally the value is converted to the dimensionless
+/// `wall_threshold_factor = wall_threshold_m / grid_cell_m` that
+/// `CachedGridSdf::build` takes.
 ///
 /// # Errors
 ///
-/// Returns an error if all eight bbox corners are wall points (the
-/// bbox margin is too small, or the grid too coarse, to seed the
-/// outside flood).
-///
-/// # Panics
-///
-/// `grid_cell_m` must be positive — a non-positive value forwards a
-/// panic from `SdfGrid::new` (or overflows the lattice-dimension
-/// arithmetic). It is a programmer-set knob, not validated here —
-/// the same posture `build_insertion_geometry` documents for
-/// `cell_size_m`.
+/// Forwards [`CachedGridSdf::build`] failures with context:
+/// non-finite or non-positive `grid_cell_m`
+/// ([`mesh_sdf::FloodFillError::NonPositiveCellSize`]), degenerate
+/// bbox ([`mesh_sdf::FloodFillError::DegenerateBounds`]), or all
+/// eight bbox corners landing within the wall band so no outside
+/// seed exists ([`mesh_sdf::FloodFillError::NoOutsideSeed`] —
+/// bbox margin too small or grid too coarse). Also forwards
+/// [`TriMeshDistance::new`] failure on an empty mesh.
 pub fn build_grid_sdf(
     scan: &IndexedMesh,
     bbox: Aabb,
@@ -1331,18 +1364,32 @@ pub fn build_grid_sdf(
 ) -> Result<(GridSdf, GridSdfReport)> {
     let t = Instant::now();
 
-    // Lattice dimensions — sample points inclusive of both bbox ends.
-    let span = bbox.max - bbox.min;
-    // `span` components are non-negative and `grid_cell_m > 0`, so the
-    // ceil is a finite non-negative integer; +1 for the inclusive end.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let dim = |s: f64| (s / grid_cell_m).ceil().max(1.0) as usize + 1;
-    let (w, h, d) = (dim(span.x), dim(span.y), dim(span.z));
+    // Build the parry BVH-backed distance source once; mesh-sdf D.2's
+    // `CachedGridSdf::build` runs the shared 3-region flood-fill,
+    // multi-source label expansion, and `inside_components` count over
+    // it. The shared core preserves the same Region labels + corner
+    // seeds + BFS order the bespoke copy used, so signs are
+    // bit-equivalent on every well-formed input.
+    let distance = TriMeshDistance::new(scan.clone())
+        .context("build TriMeshDistance from the scan for flood-fill GridSdf")?;
+    let factor = wall_threshold_m / grid_cell_m;
+    let (cached, ff_report) = CachedGridSdf::build(&distance, bbox, grid_cell_m, factor)
+        .with_context(|| {
+            format!(
+                "build CachedGridSdf (grid_cell_m={grid_cell_m} m, \
+                 wall_threshold_m={wall_threshold_m} m) — bbox margin too small or grid too \
+                 coarse to seed the outside flood"
+            )
+        })?;
+    let [w, h, d] = ff_report.dims;
     let n = w * h * d;
     let origin = bbox.min;
-    let flat = |x: usize, y: usize, z: usize| z * w * h + y * w + x;
 
-    // 1. Unsigned distance at every lattice point.
+    // Sample the cached signed grid back into a flat row-major
+    // `Vec<f64>` aligned with the existing post-processing pipeline.
+    // CachedGridSdf's internal lattice has identical dims + origin +
+    // cell_size, so trilinear sampling at each world point collapses
+    // to the stored cell value within f64 ulps.
     #[allow(clippy::cast_precision_loss)] // lattice index → world coord
     let world = |x: usize, y: usize, z: usize| {
         Point3::new(
@@ -1351,135 +1398,39 @@ pub fn build_grid_sdf(
             origin.z + z as f64 * grid_cell_m,
         )
     };
-    let mut unsigned = vec![0.0_f64; n];
+    let flat = |x: usize, y: usize, z: usize| z * w * h + y * w + x;
+    let mut signed = vec![0.0_f64; n];
     for z in 0..d {
         for y in 0..h {
             for x in 0..w {
-                unsigned[flat(x, y, z)] = unsigned_distance(world(x, y, z), scan);
+                signed[flat(x, y, z)] = cached.signed_distance(world(x, y, z));
             }
         }
     }
 
-    // 2. Wall points — within `wall_threshold_m` of the surface. The
-    //    flood cannot pass through these, so it cannot leak across
-    //    the surface.
-    let wall: Vec<bool> = unsigned.iter().map(|&u| u < wall_threshold_m).collect();
-    let n_wall = wall.iter().filter(|&&b| b).count();
-
-    // 3. Flood "outside" 6-connected from the eight bbox corners.
-    let mut region: Vec<Region> = wall
-        .iter()
-        .map(|&is_wall| {
-            if is_wall {
-                Region::Wall
-            } else {
-                Region::Inside
-            }
-        })
-        .collect();
-    let corners = [
-        flat(0, 0, 0),
-        flat(w - 1, 0, 0),
-        flat(0, h - 1, 0),
-        flat(w - 1, h - 1, 0),
-        flat(0, 0, d - 1),
-        flat(w - 1, 0, d - 1),
-        flat(0, h - 1, d - 1),
-        flat(w - 1, h - 1, d - 1),
-    ];
-    let mut flood: VecDeque<usize> = VecDeque::new();
-    for &c in &corners {
-        if region[c] == Region::Inside {
-            region[c] = Region::Outside;
-            flood.push_back(c);
-        }
-    }
-    if flood.is_empty() {
-        return Err(anyhow!(
-            "grid SDF flood-fill: all eight bbox corners are within wall_threshold_m \
-             ({wall_threshold_m} m) of the scan — bbox margin too small or grid too coarse"
-        ));
-    }
-    while let Some(i) = flood.pop_front() {
-        for j in neighbours6(i, w, h, d).into_iter().flatten() {
-            if region[j] == Region::Inside {
-                region[j] = Region::Outside;
-                flood.push_back(j);
-            }
-        }
-    }
-
-    // 4. Expand the Outside/Inside labels into the wall band: multi-
-    //    source BFS from every already-labelled (non-wall) point —
-    //    each wall point takes the label of the nearest one. Wall-band
-    //    `|value|` is sub-threshold, so a tie there barely matters.
-    let mut expand: VecDeque<usize> = (0..n).filter(|&i| region[i] != Region::Wall).collect();
-    while let Some(i) = expand.pop_front() {
-        let label = region[i];
-        for j in neighbours6(i, w, h, d).into_iter().flatten() {
-            if region[j] == Region::Wall {
-                region[j] = label;
-                expand.push_back(j);
-            }
-        }
-    }
-    // Any wall point with no path to a non-wall point (an isolated
-    // pocket inside the band) — default to Inside.
-    for r in &mut region {
-        if *r == Region::Wall {
-            *r = Region::Inside;
-        }
-    }
-
-    // 5. Inside-region connected-component count — the flood-fill
-    //    health metric.
-    let mut seen = vec![false; n];
-    let mut inside_components = 0;
-    for start in 0..n {
-        if region[start] != Region::Inside || seen[start] {
-            continue;
-        }
-        inside_components += 1;
-        seen[start] = true;
-        let mut comp: VecDeque<usize> = VecDeque::from([start]);
-        while let Some(i) = comp.pop_front() {
-            for j in neighbours6(i, w, h, d).into_iter().flatten() {
-                if region[j] == Region::Inside && !seen[j] {
-                    seen[j] = true;
-                    comp.push_back(j);
-                }
-            }
-        }
-    }
-
-    // 6. Signed values — magnitude from the (reliable) unsigned
-    //    distance, sign from the (topological) flood-fill label.
-    let signed: Vec<f64> = region
-        .iter()
-        .zip(&unsigned)
-        .map(|(&r, &u)| if r == Region::Outside { u } else { -u })
-        .collect();
-    let n_outside = region.iter().filter(|&&r| r == Region::Outside).count();
-    let n_inside = n - n_outside;
-
-    // 7. Slice 7.3c–7.3d — separable 3D Gaussian pre-smooth on the
-    //    signed buffer so the trilinear interpolant inside `SdfGrid`
-    //    approximates a C¹ function. σ = 1.0 cell (recon-iter-4)
-    //    delivers the full 3 mm inset on both the synthetic-icosphere
-    //    and iter-1 cleaned-scan ramps; σ = 0.5 cell (slice 7.3c)
-    //    left iter-1 at 75 % depth on what looked like a Yeoh-
-    //    validity wall but was actually under-bandwidth smoothing
-    //    feeding sharp gradients into specific tets. See
-    //    `GRID_SDF_SMOOTH_SIGMA_CELLS` for the σ-sweep trail + bias.
+    // Slice 7.3c–7.3d — separable 3D Gaussian pre-smooth on the
+    // signed buffer so the trilinear interpolant inside `SdfGrid`
+    // approximates a C¹ function. σ = 1.0 cell (recon-iter-4)
+    // delivers the full 3 mm inset on both the synthetic-icosphere
+    // and iter-1 cleaned-scan ramps; σ = 0.5 cell (slice 7.3c)
+    // left iter-1 at 75 % depth on what looked like a Yeoh-validity
+    // wall but was actually under-bandwidth smoothing feeding sharp
+    // gradients into specific tets. See `GRID_SDF_SMOOTH_SIGMA_CELLS`
+    // for the σ-sweep trail + bias.
+    //
+    // Applied externally (not folded into `CachedGridSdf`) so the
+    // mesh-sdf primitive stays smoothing-free — Gaussian smoothing
+    // is FEM-specific (contact-gradient C¹ approximation) and not
+    // load-bearing for sign correctness.
     let smoothed = gaussian_smooth_3d_separable(&signed, w, h, d, GRID_SDF_SMOOTH_SIGMA_CELLS);
     let grid = SdfGrid::new(smoothed, w, h, d, grid_cell_m, origin);
     let report = GridSdfReport {
-        dims: [w, h, d],
+        dims: ff_report.dims,
         grid_cell_m,
-        n_outside,
-        n_inside,
-        n_wall,
-        inside_components,
+        n_outside: ff_report.outside_cells,
+        n_inside: ff_report.inside_cells,
+        n_wall: ff_report.wall_cells,
+        inside_components: ff_report.inside_components,
         build_ms: elapsed_ms(t),
     };
     Ok((GridSdf { grid }, report))
@@ -2018,6 +1969,471 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
     })
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// SL.1 — sliding-intruder scaffolding
+// ───────────────────────────────────────────────────────────────────────
+//
+// Helpers consumed at SL.2 by `run_sliding_insertion_ramp`. The
+// module-level `#![allow(dead_code)]` already covers the unused-
+// warning until that ramp lands; section header surfaces the intent.
+//
+// Cross-references: `docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §3b
+// (TransformedSdf), §3c (slide_pose_at), + decision D-Slide2
+// (local copies of the polyline helpers — no tools→tools dep on
+// cf-scan-prep; sources at `tools/cf-scan-prep/src/main.rs:1016` +
+// `:1060`).
+
+/// Adapter: present a static [`Sdf`] as if it had been rigidly
+/// transformed by `transform` in world space.
+///
+/// For a rigid transform `T: p ↦ R p + t`:
+/// - `eval(q) = inner.eval(T⁻¹ q)` (signed distance is rigid-invariant);
+/// - `grad(q) = R · inner.grad(T⁻¹ q)` (the gradient rotates with `T`,
+///   recovering the world-frame outward normal of the moved surface).
+///
+/// For translation-only (`R = I`), `grad` collapses to a query-point
+/// shift + pass-through gradient.
+///
+/// Designed for sliding-intruder contact: an immutable [`GridSdf`] of
+/// the cleaned scan is wrapped per slide step at a fresh `slide_pose`
+/// (from [`slide_pose_at`]) and handed to [`PenaltyRigidContact`]
+/// (`docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §3a). The
+/// `Isometry3<f64>` parameter shape absorbs the iter-2 rotation
+/// followup without API churn even though iter-1 only uses
+/// translation.
+///
+/// `T⁻¹` is cached at construction — eval/grad are called inside the
+/// contact-pair inner loop ([`PenaltyRigidContact::active_pairs`])
+/// where even scalar-cheap recomputation matters at full BCC-mesh
+/// scale.
+///
+/// **Grid-coverage caveat**: `inner` may be backed by a finite-extent
+/// [`GridSdf`] with `distance_clamped` semantics outside the grid.
+/// After the inverse transform, queries falling outside the grid are
+/// silently clamped to the nearest grid sample. For sliding-intruder
+/// use this is benign — the static intruder grid covers the body
+/// bbox + outer margin, and active contact pairs (`sd < d̂ = 1 mm`)
+/// fire only when the moved intruder surface is within 1 mm of the
+/// body wall, putting the inverse-transformed query well inside the
+/// grid. Inactive pairs report large `sd` and are skipped by
+/// [`PenaltyRigidContact::active_pairs`].
+#[derive(Clone)]
+pub(crate) struct TransformedSdf<S: Sdf> {
+    inner: S,
+    transform: Isometry3<f64>,
+    inverse: Isometry3<f64>,
+}
+
+impl<S: Sdf> TransformedSdf<S> {
+    pub(crate) fn new(inner: S, transform: Isometry3<f64>) -> Self {
+        let inverse = transform.inverse();
+        Self {
+            inner,
+            transform,
+            inverse,
+        }
+    }
+}
+
+impl<S: Sdf> Sdf for TransformedSdf<S> {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        self.inner.eval(self.inverse * p)
+    }
+
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        self.transform.rotation * self.inner.grad(self.inverse * p)
+    }
+}
+
+/// Walk along `polyline`'s arc and return the position + local tangent
+/// at arc-length `distance_m` from `polyline[0]`. The tangent is the
+/// unit direction of the segment containing the target point, pointing
+/// from `polyline[0]` toward `polyline.last()`.
+///
+/// Local copy of `tools/cf-scan-prep/src/main.rs:1016` per D-Slide2
+/// (no `tools/` → `tools/` dependency).
+///
+/// Returns `None` for a `< 2`-point polyline. For `distance_m` past the
+/// polyline's total arc length, returns a linear extrapolation along
+/// the last segment's tangent.
+pub(crate) fn point_along_polyline_at_arc_distance(
+    polyline: &[Point3<f64>],
+    distance_m: f64,
+) -> Option<(Point3<f64>, Vector3<f64>)> {
+    if polyline.len() < 2 {
+        return None;
+    }
+    let target_m = distance_m.max(0.0);
+    let mut walked_m = 0.0_f64;
+    for i in 0..polyline.len() - 1 {
+        let seg_vec = polyline[i + 1].coords - polyline[i].coords;
+        let seg_len = seg_vec.norm();
+        if seg_len < f64::EPSILON {
+            continue;
+        }
+        if walked_m + seg_len >= target_m {
+            let t = ((target_m - walked_m) / seg_len).clamp(0.0, 1.0);
+            let pos = Point3::from(polyline[i].coords + t * seg_vec);
+            let tangent = seg_vec / seg_len;
+            return Some((pos, tangent));
+        }
+        walked_m += seg_len;
+    }
+    let n = polyline.len();
+    let last_seg = polyline[n - 1].coords - polyline[n - 2].coords;
+    let last_seg_len = last_seg.norm();
+    if last_seg_len < f64::EPSILON {
+        return None;
+    }
+    let overrun_m = target_m - walked_m;
+    let tangent = last_seg / last_seg_len;
+    let pos = Point3::from(polyline[n - 1].coords + tangent * overrun_m);
+    Some((pos, tangent))
+}
+
+/// Total arc length of `polyline` in meters. Returns `0.0` for `< 2`
+/// points.
+///
+/// Local copy of `tools/cf-scan-prep/src/main.rs:1060` per D-Slide2.
+pub(crate) fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
+    polyline
+        .windows(2)
+        .map(|w| (w[1].coords - w[0].coords).norm())
+        .sum()
+}
+
+/// Compute the rigid transform for the intruder at slide fraction
+/// `t ∈ [0, 1]` along the cleaned-scan centerline polyline.
+///
+/// Centerline ordering convention (cf-scan-prep
+/// `compute_centerline_polyline` + `trim_mesh_along_centerline` docs):
+/// `centerline[0]` is the TIP (closed end / dome apex);
+/// `centerline.last()` is the FLOOR (open end / cap rim).
+///
+/// - `t = 1`: tip at rest (identity transform).
+/// - `t = 0`: tip translated to `centerline.last()` (cap mouth); body
+///   extends arc-length past the cap into the air outside.
+/// - `t ∈ (0, 1)`: tip walks backward from rest by arc-length
+///   `L · (1 − t)`.
+///
+/// Translation-only iter-1 (D-Slide2). The `Isometry3<f64>` return
+/// type absorbs the banked iter-2 rotation followup without API
+/// churn. For a degenerate polyline (< 2 points or zero arc length),
+/// returns identity — defensive; sliding-ramp drivers validate
+/// polyline shape up front and surface their own error.
+pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64> {
+    if centerline.len() < 2 {
+        return Isometry3::identity();
+    }
+    let l_m = polyline_arc_length_m(centerline);
+    let tip_rest = centerline[0];
+    let walk_from_tip = (l_m * (1.0 - t.clamp(0.0, 1.0))).max(0.0);
+    let (tip_world, _tangent) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
+        .unwrap_or((tip_rest, Vector3::z()));
+    let translation = tip_world.coords - tip_rest.coords;
+    Isometry3::translation(translation.x, translation.y, translation.z)
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// SL.2 — sliding-intruder ramp solver
+// ───────────────────────────────────────────────────────────────────────
+//
+// Per `docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §3a + §3d. Mirrors
+// [`run_insertion_ramp`] (growing-intruder, preserved per Q1) but
+// with a rigid intruder of constant geometry translated along the
+// centerline arc — the contact primitive at each step is the
+// transformed scan offset inward by `cavity_offset_m`, NOT the
+// scan grown outward by interference. The per-step `x_final` shape
+// + `StepReadout` aggregates are byte-identical to the growing
+// ramp so the existing render plumbing (`cavity_boundary_faces`,
+// `per_layer_outer_faces`, `deformed_layer_slab_mesh_at`) consumes
+// the sliding output unchanged at SL.3.
+
+/// Default per-step slide distance (m) — `5 mm` per the spec
+/// (D-Slide5). Larger gives a visibly-propagating deformation wave
+/// across playback steps; smaller gives a continuous-looking wave at
+/// the cost of solver iters. Programmer-set, not user-tunable —
+/// same posture as [`DEFAULT_N_STEPS`] (the growing-ramp counterpart
+/// is a fixed `n_steps`, not a step size).
+pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
+
+/// Build the sliding-intruder contact primitive at a given slide pose.
+///
+/// The contact SDF is `Solid::from_sdf(TransformedSdf(intruder,
+/// slide_pose), bounds).offset(cavity_offset_m)` — the rigid-translated
+/// scan, offset inward by `cavity_offset_m` (which is negative; per
+/// `cavity_offset_m = -design.cavity_inset_m`). Unlike the growing-
+/// intruder [`intruder_contact_at`] which grows the scan outward by
+/// `interference_m`, the sliding contact's SDF geometry is CONSTANT
+/// across the ramp — only the pose varies. Cavity-wall deformation is
+/// driven by the moving primitive's local interference rather than the
+/// uniform offset growth.
+///
+/// Penalty `(κ, d̂)` reuses [`INSERTION_CONTACT_KAPPA`] +
+/// [`INSERTION_CONTACT_DHAT`] from the growing ramp; the kappa
+/// tradeoff (7.3b.1 wider convergeable envelope at slight cost in
+/// residual penetration) is independent of the contact model.
+fn intruder_contact_sliding_at(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    slide_pose: Isometry3<f64>,
+    cavity_offset_m: f64,
+) -> PenaltyRigidContact {
+    let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
+    let intruder_solid = Solid::from_sdf(transformed, bounds).offset(cavity_offset_m);
+    PenaltyRigidContact::with_params(
+        vec![intruder_solid],
+        INSERTION_CONTACT_KAPPA,
+        INSERTION_CONTACT_DHAT,
+    )
+}
+
+/// One converged step of a sliding-intruder insertion ramp.
+///
+/// Sliding-ramp sibling of [`RampStep`]. Carries the same shape
+/// (`x_final` + `readout`) so render plumbing built around `RampStep`
+/// works unchanged on the per-step output. The per-step *abscissa*
+/// differs: `slide_fraction_t` + `arc_length_s_m` replace the growing
+/// ramp's `interference_m`. The F-d curve at SL.3 reads
+/// `(arc_length_s_m, contact_force_magnitude_n)` (per D-Slide7 +
+/// `force_arc_length_curve` on [`SlideResult`]).
+#[derive(Clone)]
+pub struct SlideRampStep {
+    /// Slide fraction `t ∈ (0, 1]` — `(k + 1) / n_steps`. `t = 1` is
+    /// the fully-seated (rest-pose) step, `t = 1/n_steps` is the
+    /// first step. Per D-Slide3: rest pose at `t = 0` is implicit
+    /// warm-start, not a recorded step.
+    pub slide_fraction_t: f64,
+    /// Arc length the intruder has slid from the cap mouth (m) =
+    /// `t * polyline_arc_length`. The F-d-curve abscissa replaces the
+    /// growing ramp's `interference_m`.
+    pub arc_length_s_m: f64,
+    /// Newton iterations this step's solve took.
+    pub iter_count: usize,
+    /// Free-DOF residual norm at this step's convergence.
+    pub final_residual_norm: f64,
+    /// Converged vertex positions at this step, vertex-major xyz.
+    /// Same shape as [`RampStep::x_final`]; per-tet detail derivable
+    /// via [`compute_tet_readouts`].
+    pub x_final: Vec<f64>,
+    /// Pre-aggregated engineering scalars. Same shape + semantics as
+    /// the growing ramp's [`StepReadout`] (contact force,
+    /// principal-stretch extrema, peak Piola, mean energy). The
+    /// engineering interpretation differs (sliding vs press-fit) but
+    /// the scalars are identically defined.
+    pub readout: StepReadout,
+}
+
+/// Per-tet engineering readouts at the final converged step of a
+/// sliding ramp, plus the ramp-wide force–arc-length curve.
+///
+/// Mirrors [`InsertionResult`]. The only headline difference is the
+/// curve's abscissa: arc-length-slid (m) instead of press-fit
+/// interference (m) — D-Slide7. Renamed
+/// [`force_arc_length_curve`](Self::force_arc_length_curve) to make
+/// the abscissa unambiguous at call sites.
+#[derive(Clone)]
+pub struct SlideResult {
+    /// Per-tet readouts at the final converged step.
+    pub final_per_tet: Vec<TetReadout>,
+    /// Force vs slide arc length over the ramp:
+    /// `(arc_length_s_m, contact_force_magnitude_n)` pairs in ramp
+    /// order. Replaces the growing ramp's
+    /// `force_displacement_curve`; SL.5's F-d plot reads this and
+    /// labels the abscissa "Slide arc-length (mm)".
+    pub force_arc_length_curve: Vec<(f64, f64)>,
+}
+
+/// Result of a sliding insertion ramp — see [`run_sliding_insertion_ramp`].
+///
+/// Mirrors [`InsertionRamp`] one-for-one with two additions:
+/// [`intruder_poses`](Self::intruder_poses) — one `Isometry3` per
+/// converged step recording where the rigid intruder sat for that
+/// step's solve — and the `result` is a [`SlideResult`] keyed on
+/// arc-length instead of interference. The render plumbing at SL.4
+/// uses `intruder_poses[step]` to position the constant intruder
+/// mesh in the viewport.
+pub struct SlideRamp {
+    /// Per-step records in ramp order — only the *converged* steps.
+    pub steps: Vec<SlideRampStep>,
+    /// `Some(k)` if step `k` failed to converge (Fork-B graceful
+    /// stall — D-Slide6); `None` if every step converged.
+    pub failed_at_step: Option<usize>,
+    /// Solver panic message for the failed step. `None` if every
+    /// step converged.
+    pub failure_reason: Option<String>,
+    /// Deformed vertex positions (vertex-major xyz) at the last
+    /// converged step — or rest positions if step 0 itself failed.
+    pub final_x: Vec<f64>,
+    /// Dirichlet-pinned outer-skin vertex count (constant across the
+    /// ramp; the outer skin does not move).
+    pub n_pinned: usize,
+    /// Per-tet detail at the final converged step + the ramp-wide
+    /// force–arc-length curve. `None` if no step converged.
+    pub result: Option<SlideResult>,
+    /// One `Isometry3` per converged step recording the intruder's
+    /// pose at that step's solve — the per-step source-of-truth for
+    /// the SL.4 viewport render (`intruder_pose_at(displayed_step)`).
+    pub intruder_poses: Vec<Isometry3<f64>>,
+}
+
+/// Run a quasi-static sliding-intruder insertion ramp: translate the
+/// rigid scan along the centerline from `t = 1/n_steps` (just seated)
+/// to `t = 1.0` (fully seated, rest pose) in `n_steps` equal
+/// arc-length increments, solving the FEM at each step.
+///
+/// At each step the contact primitive is the transformed scan offset
+/// inward by `cavity_offset_m` (see [`intruder_contact_sliding_at`]).
+/// Cavity-wall deformation is localized to the contact zone where
+/// the intruder currently sits, NOT propagated uniformly across the
+/// wall as in the growing ramp.
+///
+/// Solver convergence: each Newton solve is warm-started from the
+/// previous step's `x_final` (D-Slide4 — no convection-aware
+/// remapping in iter-1; the contact-set discontinuity at slide-step
+/// boundaries may stall some intermediate solves, which Fork-B's
+/// `catch_unwind` records gracefully).
+///
+/// # Errors
+///
+/// - `n_steps` is zero;
+/// - `centerline_polyline_m` has fewer than 2 points (no segments to
+///   walk);
+/// - [`outer_skin_bc`] fails (no outer-skin vertex in the pin-band).
+pub fn run_sliding_insertion_ramp(
+    geometry: InsertionGeometry,
+    centerline_polyline_m: &[Point3<f64>],
+    n_steps: usize,
+) -> Result<SlideRamp> {
+    if n_steps == 0 {
+        return Err(anyhow!("sliding insertion ramp needs at least one step"));
+    }
+    if centerline_polyline_m.len() < 2 {
+        return Err(anyhow!(
+            "sliding insertion ramp needs a centerline polyline of ≥ 2 points (got {})",
+            centerline_polyline_m.len(),
+        ));
+    }
+
+    let InsertionGeometry {
+        mesh,
+        intruder,
+        cavity_offset_m,
+        outer_offset_m,
+        bounds,
+        cell_size_m,
+        n_tets,
+        per_tet_layer: _,
+    } = geometry;
+
+    let n_vertices = mesh.n_vertices();
+    let n_dof = 3 * n_vertices;
+
+    // BCs are constant across the ramp (the outer skin does not move
+    // for sliding either; per spec §3d the outer_skin_bc primitive is
+    // shared unchanged with the growing ramp).
+    let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
+    let n_pinned = bc.pinned_vertices.len();
+
+    // Snapshot per-tet immutables before consuming the mesh into the
+    // per-step solver clones — same dance as the growing ramp.
+    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
+    #[allow(clippy::cast_possible_truncation)]
+    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
+    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+    let l_m = polyline_arc_length_m(centerline_polyline_m);
+
+    let config = insertion_solver_config();
+
+    // x_prev starts at rest; each converged step chains its x_final in.
+    let mut x_prev_flat: Vec<f64> = rest_positions
+        .iter()
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let empty_theta: [f64; 0] = [];
+    let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+    let mut steps: Vec<SlideRampStep> = Vec::with_capacity(n_steps);
+    let mut intruder_poses: Vec<Isometry3<f64>> = Vec::with_capacity(n_steps);
+    let mut failed_at_step = None;
+    let mut failure_reason = None;
+    for k in 0..n_steps {
+        // `(k + 1) as f64 / n_steps as f64`: tiny integers — well
+        // under f64's exact-integer ceiling.
+        #[allow(clippy::cast_precision_loss)]
+        let t = (k + 1) as f64 / n_steps as f64;
+        let pose = slide_pose_at(centerline_polyline_m, t);
+        let contact = intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m);
+        let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
+        let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+        // `replay_step` panics on non-convergence; Fork-B graceful
+        // stall handling per D-Slide6.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
+        }));
+        match outcome {
+            Ok(step) => {
+                let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
+                // `PenaltyRigidContact` is not `Clone`; rebuild for
+                // the readout pass (same row-23 precedent the growing
+                // ramp uses at `run_insertion_ramp`).
+                let readout_contact =
+                    intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m);
+                let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
+                let contact_readouts =
+                    filter_pair_readouts_to_referenced(raw_readouts, &referenced);
+                let per_tet =
+                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts);
+
+                steps.push(SlideRampStep {
+                    slide_fraction_t: t,
+                    arc_length_s_m: t * l_m,
+                    iter_count: step.iter_count,
+                    final_residual_norm: step.final_residual_norm,
+                    x_final: step.x_final.clone(),
+                    readout: step_readout,
+                });
+                intruder_poses.push(pose);
+                x_prev_flat = step.x_final;
+            }
+            Err(payload) => {
+                failed_at_step = Some(k);
+                failure_reason = Some(panic_message(&*payload));
+                break;
+            }
+        }
+    }
+
+    // Per-tet detail at the final converged step + ramp force-arc-length
+    // curve. `result = None` only when no step converged.
+    let result = steps.last().map(|last| {
+        let final_positions = positions_from_flat(&last.x_final);
+        let final_per_tet =
+            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let force_arc_length_curve = steps
+            .iter()
+            .map(|s| (s.arc_length_s_m, s.readout.contact_force_magnitude_n))
+            .collect();
+        SlideResult {
+            final_per_tet,
+            force_arc_length_curve,
+        }
+    });
+
+    Ok(SlideRamp {
+        steps,
+        failed_at_step,
+        failure_reason,
+        final_x: x_prev_flat,
+        n_pinned,
+        result,
+        intruder_poses,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
@@ -2067,6 +2483,183 @@ mod tests {
             mesh.faces.push(tri);
         }
         mesh
+    }
+
+    // ─── SL.1 — TransformedSdf + slide_pose_at unit tests ──────────
+    //
+    // 7 tests pin the spec §3b + §3c primitive contract before they
+    // get consumed by SL.2's `run_sliding_insertion_ramp`. Inner SDF
+    // is `RigidPlane` (sim-soft) — flat surface + constant normal
+    // keeps the rotated/translated expectations algebraically
+    // closed-form.
+
+    /// `TransformedSdf` with the identity transform must be a
+    /// bit-exact pass-through of the inner SDF (no inverse-mul drift,
+    /// no spurious rotation of `grad`).
+    #[test]
+    fn transformed_sdf_identity_passes_through_eval_and_grad() {
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let wrapped = TransformedSdf::new(plane, Isometry3::identity());
+        for &p in &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 3.0),
+            Point3::new(-0.5, 0.25, -1.5),
+        ] {
+            assert!(
+                (wrapped.eval(p) - Sdf::eval(&plane, p)).abs() < 1e-12,
+                "identity-transformed eval drifted at {p:?}",
+            );
+            let g_wrapped = wrapped.grad(p);
+            let g_plane = Sdf::grad(&plane, p);
+            assert!(
+                (g_wrapped - g_plane).norm() < 1e-12,
+                "identity-transformed grad drifted at {p:?}: {g_wrapped:?} vs {g_plane:?}",
+            );
+        }
+    }
+
+    /// Pure translation by `Δ` along the plane normal must shift the
+    /// signed distance by `−Δ·n` (plane sitting `Δ` higher reports
+    /// `+Δ` smaller signed distance for a point above the original).
+    /// `grad` stays as the original outward normal — translation does
+    /// not rotate the gradient.
+    #[test]
+    fn transformed_sdf_pure_translation_shifts_eval_passes_grad() {
+        // Plane `z = 0`, outward normal +Z. Translating it to `z = 0.5`
+        // moves the surface up; for `p` at `(0, 0, 1)`, the signed
+        // distance to the translated plane is `0.5` (was `1.0` to the
+        // original plane).
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let translation = Isometry3::translation(0.0, 0.0, 0.5);
+        let wrapped = TransformedSdf::new(plane, translation);
+        let p = Point3::new(0.0, 0.0, 1.0);
+        assert!(
+            (wrapped.eval(p) - 0.5).abs() < 1e-12,
+            "translated eval wrong: {}",
+            wrapped.eval(p),
+        );
+        let g = wrapped.grad(p);
+        assert!(
+            (g - Vec3::new(0.0, 0.0, 1.0)).norm() < 1e-12,
+            "translation should not rotate grad, got {g:?}",
+        );
+    }
+
+    /// Pure rotation of the plane (about an axis NOT parallel to its
+    /// normal) rotates the world-frame outward normal. A plane with
+    /// rest normal `+Z` rotated 90° about the +Y axis ends up with
+    /// world normal `+X`; `grad` must reflect that.
+    #[test]
+    fn transformed_sdf_pure_rotation_rotates_grad() {
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        // Rotate +Z → +X via 90° rotation about +Y.
+        let rotation = Isometry3::rotation(Vector3::new(0.0, std::f64::consts::FRAC_PI_2, 0.0));
+        let wrapped = TransformedSdf::new(plane, rotation);
+        // Query at `(1, 0, 0)`: the rotated plane passes through the
+        // origin with normal +X, so signed distance is `+1`.
+        let p = Point3::new(1.0, 0.0, 0.0);
+        assert!(
+            (wrapped.eval(p) - 1.0).abs() < 1e-12,
+            "rotated eval wrong: {}",
+            wrapped.eval(p),
+        );
+        let g = wrapped.grad(p);
+        let expected = Vec3::new(1.0, 0.0, 0.0);
+        assert!(
+            (g - expected).norm() < 1e-12,
+            "rotated grad should be +X, got {g:?}",
+        );
+    }
+
+    /// Combined translation + rotation must apply both: rotate the
+    /// plane to the new orientation, then translate it. The plane
+    /// originally `{z = 0, n = +Z}` rotated 90° about +Y becomes
+    /// `{x = 0, n = +X}`; translating by `+1.0` along +X moves the
+    /// surface to `x = 1`. A query at `(2, 0, 0)` then sits at signed
+    /// distance `+1` with outward normal `+X`.
+    #[test]
+    fn transformed_sdf_combined_translation_and_rotation() {
+        let plane = sim_soft::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let rotation = nalgebra::UnitQuaternion::from_axis_angle(
+            &Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let translation = nalgebra::Translation3::new(1.0, 0.0, 0.0);
+        let iso = Isometry3::from_parts(translation, rotation);
+        let wrapped = TransformedSdf::new(plane, iso);
+        let p = Point3::new(2.0, 0.0, 0.0);
+        assert!(
+            (wrapped.eval(p) - 1.0).abs() < 1e-12,
+            "combined eval wrong: {}",
+            wrapped.eval(p),
+        );
+        let g = wrapped.grad(p);
+        assert!(
+            (g - Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-12,
+            "combined grad should be +X, got {g:?}",
+        );
+    }
+
+    /// Helper: straight 4-segment polyline along +Z spanning
+    /// `z ∈ [0, 4]`. `centerline[0]` = TIP (closed end), index 4 =
+    /// FLOOR (open end / cap rim).
+    fn straight_z_centerline() -> Vec<Point3<f64>> {
+        vec![
+            Point3::new(0.0, 0.0, 0.0), // tip (rest pose)
+            Point3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 0.0, 2.0),
+            Point3::new(0.0, 0.0, 3.0),
+            Point3::new(0.0, 0.0, 4.0), // floor / cap mouth
+        ]
+    }
+
+    /// `slide_pose_at(t = 1)` = fully seated = identity transform.
+    /// The intruder's tip sits at its rest position
+    /// `centerline[0]`; the cleaned-scan body geometry is unchanged.
+    #[test]
+    fn slide_pose_at_t_eq_1_is_identity() {
+        let centerline = straight_z_centerline();
+        let pose = slide_pose_at(&centerline, 1.0);
+        let p = Point3::new(0.5, -0.25, 1.0);
+        let transformed = pose * p;
+        assert!(
+            (transformed - p).norm() < 1e-12,
+            "t=1 should be identity, got transformed = {transformed:?}",
+        );
+    }
+
+    /// `slide_pose_at(t = 0)` = start of slide = tip translated all
+    /// the way from the rest position (centerline[0]) to the floor /
+    /// cap mouth (centerline.last()). For the straight `+Z` fixture
+    /// of length 4, that's a `(0, 0, +4)` translation of every body
+    /// point.
+    #[test]
+    fn slide_pose_at_t_eq_0_translates_tip_to_floor() {
+        let centerline = straight_z_centerline();
+        let pose = slide_pose_at(&centerline, 0.0);
+        let tip_rest = centerline[0];
+        let tip_world = pose * tip_rest;
+        let floor = *centerline.last().unwrap();
+        assert!(
+            (tip_world - floor).norm() < 1e-12,
+            "t=0 should land tip at floor {floor:?}, got {tip_world:?}",
+        );
+    }
+
+    /// `slide_pose_at(t = 0.5)` lands the intruder tip at the
+    /// arc-length midpoint of the centerline. For the straight `+Z`
+    /// fixture of length 4, the midpoint is `(0, 0, 2)`.
+    #[test]
+    fn slide_pose_at_t_eq_0_5_translates_tip_to_arc_midpoint() {
+        let centerline = straight_z_centerline();
+        let pose = slide_pose_at(&centerline, 0.5);
+        let tip_rest = centerline[0];
+        let tip_world = pose * tip_rest;
+        let midpoint = Point3::new(0.0, 0.0, 2.0);
+        assert!(
+            (tip_world - midpoint).norm() < 1e-12,
+            "t=0.5 should land tip at midpoint {midpoint:?}, got {tip_world:?}",
+        );
     }
 
     #[test]
@@ -2407,6 +3000,147 @@ mod tests {
         assert!(t[1] > t[0]);
     }
 
+    // ── Sub-leaf A4: candidate-A pinned-floor consumer ───────────────
+
+    /// Compact cube (half-extent 25 mm) sized so a 4 mm BCC build
+    /// completes in well under a second — small enough for a unit
+    /// test but with enough internal room for a `cavity_inset_m=3 mm
+    /// + layer_thickness=5 mm` design.
+    fn small_test_cube() -> IndexedMesh {
+        let h = 0.025_f64;
+        let mut mesh = IndexedMesh::new();
+        for &(x, y, z) in &[
+            (-h, -h, -h),
+            (h, -h, -h),
+            (h, h, -h),
+            (-h, h, -h),
+            (-h, -h, h),
+            (h, -h, h),
+            (h, h, h),
+            (-h, h, h),
+        ] {
+            mesh.vertices.push(Point3::new(x, y, z));
+        }
+        for tri in [
+            [0, 2, 1],
+            [0, 3, 2], // -z
+            [4, 5, 6],
+            [4, 6, 7], // +z
+            [0, 1, 5],
+            [0, 5, 4], // -y
+            [2, 3, 7],
+            [2, 7, 6], // +y
+            [1, 2, 6],
+            [1, 6, 5], // +x
+            [0, 4, 7],
+            [0, 7, 3], // -x
+        ] {
+            mesh.faces.push(tri);
+        }
+        mesh
+    }
+
+    #[test]
+    fn build_insertion_geometry_no_caps_byte_identical_to_pre_pinned_floor() {
+        // The no-caps fast path threads through
+        // `pinned_floor_shell(closed_sdf, _, bounds, &[], offset)`,
+        // which short-circuits to `Solid::from_sdf(closed).offset(offset)`
+        // — bit-identical to the pre-pinned-floor uniform-offset call
+        // the consumer used before sub-leaf 5 (and what scope-C broke).
+        // The candidate-A primitive's no-caps byte-equality is pinned
+        // at the cf-design level
+        // (`solid_layered::tests::pinned_floor_shell_empty_caps_byte_identical_to_offset`);
+        // at the consumer level we just need to prove the call site
+        // still produces a deterministic, non-empty mesh on a tiny
+        // fixture so any future refactor that breaks the no-caps
+        // short-circuit surfaces here.
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let g_a = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("no-caps build must succeed");
+        let g_b = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("no-caps re-build must succeed");
+        assert!(
+            g_a.n_tets > 0,
+            "no-caps build must produce a non-empty mesh"
+        );
+        // Determinism: identical inputs → identical mesh — proves the
+        // no-caps fast path is stable across rebuilds and surfaces any
+        // accidental iterator-order non-determinism the new
+        // `Arc<dyn Sdf>` wiring might introduce.
+        assert_eq!(
+            g_a.n_tets, g_b.n_tets,
+            "no-caps build must be deterministic"
+        );
+        let pa = g_a.mesh.positions();
+        let pb = g_b.mesh.positions();
+        assert_eq!(pa.len(), pb.len());
+        for (a, b) in pa.iter().zip(pb.iter()) {
+            assert!(
+                (a - b).norm() < 1e-12,
+                "no-caps positions diverged across rebuilds: {a:?} vs {b:?}",
+            );
+        }
+        // Intruder is the closed-body SDF — must still read the
+        // bbox-min corner as outside (positive sign). The
+        // `Arc::new(scan_sdf.clone())` wrapping must not flip sign.
+        assert!(
+            g_a.intruder.eval(g_a.bounds.min) > 0.0,
+            "intruder GridSdf must read bbox-min corner positive (outside)",
+        );
+    }
+
+    #[test]
+    fn build_insertion_geometry_with_caps_opens_body_at_cap_plane() {
+        // Build the same design twice: once without caps, once with a
+        // single cap on the +z face. Under candidate A the cap-plane
+        // fold inside `pinned_floor_shell` pins the cavity's floor at
+        // the cap plane — the cavity reaches all the way up to z = h,
+        // and the body shell at the cap plane collapses to an annular
+        // rim (instead of the full domed wall the no-caps uniform
+        // offset gives). At BCC cell size 4 mm the tet count drops by
+        // a factor of ~5 on the 50 mm cube fixture (24884 → 4564 on
+        // the iter-1 reference run); the structural difference between
+        // the user's pinned-floor geometric model and the pre-pinned
+        // uniform offset surfaces at the consumer level here.
+        let h = 0.025_f64;
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let cap = CapPlane {
+            centroid: Point3::new(0.0, 0.0, h),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_count: 4,
+            loop_index: 0,
+        };
+
+        let g_no_caps = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
+            .expect("no-caps build must succeed");
+        let g_caps = build_insertion_geometry(&scan, &design, &[cap], 2_500, 0.004)
+            .expect("with-caps build must succeed");
+
+        // Both meshes non-empty.
+        assert!(g_no_caps.n_tets > 0);
+        assert!(g_caps.n_tets > 0);
+        // The body wall loses its dome over the cavity (the cap plane
+        // is the cavity floor); tet count must drop by ≥ 2× to count
+        // as a meaningful structural difference, not just a noise-
+        // level BCC-lattice shift.
+        assert!(
+            g_caps.n_tets * 2 < g_no_caps.n_tets,
+            "with-caps build must produce ≥ 2× fewer tets than no-caps \
+             (got no_caps={}, with_caps={}); the cap fold should open the cavity \
+             at the cap plane and remove the dome shell",
+            g_no_caps.n_tets,
+            g_caps.n_tets,
+        );
+    }
+
     #[test]
     fn build_insertion_geometry_rejects_degenerate_designs() {
         // Degenerate inputs are caught up front as `Err` — never a
@@ -2414,7 +3148,7 @@ mod tests {
         // before the scan is decimated, so a stub cube is enough and
         // the test stays fast.
         let scan = unit_cube();
-        let build = |design: &SimDesign| build_insertion_geometry(&scan, design, 2_500, 0.004);
+        let build = |design: &SimDesign| build_insertion_geometry(&scan, design, &[], 2_500, 0.004);
 
         let cases = [
             (
@@ -2565,7 +3299,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.005, "ECOFLEX_00_30")],
         };
-        let g1 = build_insertion_geometry(&scan, &single, sdf_target_faces, cell_size_m)
+        let g1 = build_insertion_geometry(&scan, &single, &[], sdf_target_faces, cell_size_m)
             .expect("single-layer geometry should build");
         eprintln!(
             "single-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
@@ -2609,7 +3343,7 @@ mod tests {
                 layer(0.005, "DRAGON_SKIN_20A"),
             ],
         };
-        let g3 = build_insertion_geometry(&scan, &triple, sdf_target_faces, cell_size_m)
+        let g3 = build_insertion_geometry(&scan, &triple, &[], sdf_target_faces, cell_size_m)
             .expect("three-layer geometry should build");
         eprintln!(
             "three-layer: {} tets, cavity-offset {:.1} mm, outer-offset {:.1} mm",
@@ -2951,7 +3685,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
             .expect("synthetic-sphere geometry should build");
         let n_tets = geometry.n_tets;
         // Rest positions captured before the solver consumes the mesh.
@@ -3042,7 +3776,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
             .expect("iter-1 geometry should build on the GridSdf");
         let n_tets = geometry.n_tets;
         eprintln!("iter-1 geometry: {n_tets} tets (built on the flood-fill GridSdf)");
@@ -3160,7 +3894,13 @@ mod tests {
             "\nPHASE 2 — mesh_sdf sign cross-check (closest-face-normal `distance()` vs \
              ray-cast `is_inside()`):"
         );
-        let sdf = SignedDistanceField::new(decimated.clone()).expect("decimated scan SDF");
+        let sdf_distance =
+            TriMeshDistance::new(decimated.clone()).expect("decimated scan TriMeshDistance");
+        let sdf_sign = PseudoNormalSign::from_distance(&sdf_distance);
+        let sdf = Signed {
+            distance: sdf_distance,
+            sign: sdf_sign,
+        };
         let bbox = scan_aabb(&decimated, 0.005);
         let n = 18_usize;
         let (mut total, mut disagree, mut near_total, mut near_disagree) = (0, 0, 0, 0);
@@ -3222,7 +3962,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        match build_insertion_geometry(&raw, &design_10mm, 2_500, 0.004) {
+        match build_insertion_geometry(&raw, &design_10mm, &[], 2_500, 0.004) {
             Ok(geometry) => {
                 eprintln!("  geometry: {} tets", geometry.n_tets);
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -3260,7 +4000,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.005, "ECOFLEX_00_30")],
         };
-        match build_insertion_geometry(&raw, &design_5mm, 2_500, 0.004) {
+        match build_insertion_geometry(&raw, &design_5mm, &[], 2_500, 0.004) {
             Ok(geometry) => {
                 let mut surface = IndexedMesh::new();
                 surface.vertices = geometry
@@ -3321,7 +4061,13 @@ mod tests {
         let raw = load_stl(&path).expect("load the iter-1 cleaned scan");
         let decimated = decimate_for_sdf(&raw, 2_500);
         let bbox = scan_aabb(&decimated, 0.010);
-        let legacy = SignedDistanceField::new(decimated.clone()).expect("decimated scan SDF");
+        let legacy_distance =
+            TriMeshDistance::new(decimated.clone()).expect("decimated scan TriMeshDistance");
+        let legacy_sign = PseudoNormalSign::from_distance(&legacy_distance);
+        let legacy = Signed {
+            distance: legacy_distance,
+            sign: legacy_sign,
+        };
 
         // Spot-check probes: the vertex centroid (must read inside) +
         // the eight bbox corners (must read outside).
@@ -3442,7 +4188,7 @@ mod tests {
             cavity_inset_m: 0.003,
             layers: vec![layer(0.010, "ECOFLEX_00_30")],
         };
-        let geometry = build_insertion_geometry(&scan, &design, 2_000, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
             .expect("synthetic-sphere geometry should build");
         let n_dof = geometry.mesh.positions().len() * 3;
 
@@ -3733,7 +4479,7 @@ mod tests {
         // 16/16): faithful 25 k-face resolution exposes scan noise
         // even when σ is widened. The 2 500-face proxy + σ = 1.0
         // cell is the empirically-best operating point.
-        let geometry = build_insertion_geometry(&scan, &design, 2_500, 0.004)
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_500, 0.004)
             .expect("iter-1 geometry should build");
         let n_tets = geometry.n_tets;
         let n_dof = geometry.mesh.positions().len() * 3;
@@ -3973,5 +4719,317 @@ mod tests {
         );
         assert_eq!(x_prev_flat.len(), n_dof);
         assert!(x_prev_flat.iter().all(|v| v.is_finite()));
+    }
+
+    // ─── SL.2 — sliding-intruder ramp solver-only fixture ──────────
+    //
+    // Per `docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §4 SL.2 row +
+    // §5 gate (4): the synthetic-icosphere fixture validates FEM
+    // convergence + the central locality assertion BEFORE the UI
+    // plumbing at SL.3. Body, centerline, and asserts share names
+    // prefixed `sliding_insertion_ramp_` so the spec's filter
+    // (`cargo test ... sliding_insertion_ramp_tests`) catches them.
+
+    /// Straight centerline along `+Z` spanning the icosphere body
+    /// diameter — `index 0` (TIP) at the `-Z` apex, `last` (FLOOR /
+    /// cap mouth) at the `+Z` apex. Arc length = `2 * radius = 0.080 m`
+    /// for the standard `icosphere(0.040, 3)` fixture.
+    fn synthetic_icosphere_centerline_z() -> Vec<Point3<f64>> {
+        vec![
+            Point3::new(0.0, 0.0, -0.040), // tip (rest pose)
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.040), // floor / cap mouth
+        ]
+    }
+
+    /// Build a sliding-ramp fixture: `icosphere(40 mm, 3)` body + 3 mm
+    /// cavity inset + 10 mm `ECOFLEX_00_30` layer + ONE cap plane at
+    /// the `+Z` apex. Shared by the heavyweight tests below.
+    ///
+    /// The cap plane is load-bearing: without it, `build_insertion_
+    /// geometry` short-circuits the open-body SDF to equal the closed-
+    /// body SDF and the cavity has no mouth — the sliding intruder
+    /// then crashes the cavity-wall material into the Yeoh validity
+    /// wall as it approaches full coincidence at `t = 1`. With a cap
+    /// plane at `+Z`, `dome_wall_only_mesh` strips the icosphere's
+    /// `+Z`-apex triangles, `pinned_floor_shell` opens the cavity at
+    /// that plane, and the intruder enters cleanly along the `+Z`
+    /// centerline through the open mouth — matching the product
+    /// pipeline shape (cf-scan-prep records caps in `.prep.toml`,
+    /// cf-device-design carves the mouth via the same primitive in
+    /// `build_insertion_geometry`).
+    fn synthetic_sliding_geometry() -> InsertionGeometry {
+        let scan = icosphere(0.040, 3);
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        let cap = CapPlane {
+            centroid: Point3::new(0.0, 0.0, 0.040),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_count: 0,
+            loop_index: 0,
+        };
+        build_insertion_geometry(&scan, &design, &[cap], 2_000, 0.004)
+            .expect("synthetic-sphere geometry should build for the sliding fixture")
+    }
+
+    /// A `< 2`-point centerline cannot be walked — the sliding ramp
+    /// MUST error closed before consuming the geometry, so the caller
+    /// sees a clean failure instead of an opaque inner panic.
+    #[test]
+    fn sliding_insertion_ramp_rejects_degenerate_centerline() {
+        let geometry = synthetic_sliding_geometry();
+        let single_point = vec![Point3::new(0.0, 0.0, 0.0)];
+        // `SlideRamp` intentionally omits `Debug` (same posture as
+        // `InsertionRamp`'s flat-Vec footgun) so `expect_err` is
+        // unavailable; assert `is_err` then destructure with a guarded
+        // `let-else` (cheaper than a bare `panic!` which trips the
+        // crate-wide `clippy::panic` deny).
+        let result = run_sliding_insertion_ramp(geometry, &single_point, 8);
+        assert!(result.is_err(), "single-point centerline must be rejected");
+        let Err(err) = result else { unreachable!() };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("centerline polyline of ≥ 2 points"),
+            "error message must surface the polyline-length requirement, got: {msg}",
+        );
+    }
+
+    /// At `t = 0` the rigid intruder is translated all the way from
+    /// rest (centered at the origin) to centered at the FLOOR end of
+    /// the centerline (`+Z` apex of the sphere). For the synthetic
+    /// icosphere fixture (closed body, not a cup), the intruder
+    /// overlaps the body's upper-bbox region by construction — the
+    /// "zero active pairs at t=0" intent in the spec applies to cup
+    /// geometries (real iter-1 sock_over_capsule has an open mouth),
+    /// not to a closed sphere. What we CAN test here is the slide-
+    /// pose direction: active contact must be in the upper-bbox
+    /// region only; the LOWER hemisphere of the body should see no
+    /// active contact pairs at `t = 0`. A sign-flipped inverse inside
+    /// [`TransformedSdf`] would surface here as spurious lower-half
+    /// contact (the intruder would appear to be at `-Z` instead of
+    /// `+Z`).
+    #[test]
+    fn sliding_insertion_ramp_at_t_eq_0_has_no_lower_hemisphere_contact() {
+        let geometry = synthetic_sliding_geometry();
+        let centerline = synthetic_icosphere_centerline_z();
+
+        let pose = slide_pose_at(&centerline, 0.0);
+        let contact = intruder_contact_sliding_at(
+            &geometry.intruder,
+            geometry.bounds,
+            pose,
+            -0.003, // cavity_offset_m = -cavity_inset_m
+        );
+        let rest_positions: Vec<Vec3> = geometry.mesh.positions().to_vec();
+        let readouts = contact.per_pair_readout(&geometry.mesh, &rest_positions);
+        let n_lower_half_active = readouts.iter().filter(|r| r.position.z < -0.005).count();
+        assert_eq!(
+            n_lower_half_active, 0,
+            "intruder at t=0 (translated +Z) must NOT fire active contact in \
+             the lower hemisphere — sign-flipped inverse would surface here",
+        );
+    }
+
+    /// Solver-only FEM-correctness gate: the 16-step sliding ramp on
+    /// the synthetic icosphere cup makes meaningful progress before
+    /// any Yeoh-validity stall. The fixture is a cup (icosphere with
+    /// the `+Z` apex carved open by a cap plane — see
+    /// `synthetic_sliding_geometry`), but the sphere cross-section
+    /// narrows along the slide direction (it's an icosphere, not a
+    /// straight tube), so the local cavity-wall stretch climbs as the
+    /// intruder slides deeper. Past a few steps the Yeoh material
+    /// validity wall fires per `sim-soft/src/solver/backward_euler.rs`
+    /// `:625` Phase 4 scope memo Decision Q.
+    ///
+    /// This is exactly the spec §6 risk #2 (high-curvature plus
+    /// high-stretch plus Yeoh validity wall) and the D-Slide6 Fork-B
+    /// "partial seating is honest engineering data" stall handling.
+    /// We assert Fork-B behavior end-to-end: at least 1 step
+    /// converges; every converged step has finite all-positive force
+    /// plus finite x_final; arc length is monotone; if `failed_at_step`
+    /// is set, the failure message mentions the validity wall. The
+    /// "all 16 steps converge" gate is for fixtures with more uniform
+    /// cross-section along the slide direction. Real iter-1
+    /// `sock_over_capsule` is sock-shaped (tube of roughly constant
+    /// radius along its length) and gives the intruder a long arc of
+    /// near-uniform interference; that's the natural surface for the
+    /// all-steps-converge gate at SL.3+.
+    ///
+    /// `n_steps = 16` per spec D-Slide5 default for an 80 mm centerline
+    /// (`max(16, ceil(L_m / 5e-3))`).
+    ///
+    /// `#[ignore]` — release-mode multi-step solve; mirrors the
+    /// growing-ramp synthetic test's posture. Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-device-design --release \
+    ///     sliding_insertion_ramp_converges -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "release-mode multi-step solve — slow under debug; run with --release --ignored"]
+    fn sliding_insertion_ramp_converges_on_synthetic_icosphere() {
+        let geometry = synthetic_sliding_geometry();
+        let centerline = synthetic_icosphere_centerline_z();
+        let n_dof = geometry.mesh.positions().len() * 3;
+        let n_steps = 16;
+
+        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps)
+            .expect("synthetic sliding ramp should run");
+        for s in &ramp.steps {
+            eprintln!(
+                "  step t={:.3} (arc {:5.2} mm) — {} Newton iters, residual {:.2e} \
+                 — contact F = {:.2} N over {} pairs",
+                s.slide_fraction_t,
+                s.arc_length_s_m * 1e3,
+                s.iter_count,
+                s.final_residual_norm,
+                s.readout.contact_force_magnitude_n,
+                s.readout.n_active_contact_pairs,
+            );
+        }
+        if let Some(k) = ramp.failed_at_step {
+            eprintln!(
+                "  stalled at step {k}: {}",
+                ramp.failure_reason.as_deref().unwrap_or("<no reason>"),
+            );
+        }
+
+        // Fork-B contract: at least one step must converge (a step-0
+        // panic would mean the contact + BC + mesh are ill-posed).
+        assert!(
+            !ramp.steps.is_empty(),
+            "sliding ramp must converge at least one step",
+        );
+        assert!(
+            ramp.n_pinned > 0,
+            "the outer skin must have pinned vertices",
+        );
+        // Slide fraction climbs monotonically; arc length too.
+        for pair in ramp.steps.windows(2) {
+            assert!(
+                pair[1].slide_fraction_t > pair[0].slide_fraction_t,
+                "slide fraction must increase each step",
+            );
+            assert!(
+                pair[1].arc_length_s_m > pair[0].arc_length_s_m,
+                "arc length must increase each step",
+            );
+        }
+        for (k, s) in ramp.steps.iter().enumerate() {
+            assert_eq!(s.x_final.len(), n_dof);
+            assert!(
+                s.x_final.iter().all(|v| v.is_finite()),
+                "step {k} x_final must be all-finite",
+            );
+            assert!(
+                s.readout.contact_force_magnitude_n.is_finite()
+                    && s.readout.contact_force_magnitude_n >= 0.0,
+                "step {k} contact force must be finite + non-negative \
+                 (got {})",
+                s.readout.contact_force_magnitude_n,
+            );
+        }
+        assert_eq!(ramp.intruder_poses.len(), ramp.steps.len());
+
+        let result = ramp.result.as_ref().expect("at least one step converged");
+        assert_eq!(
+            result.force_arc_length_curve.len(),
+            ramp.steps.len(),
+            "force-arc-length curve has one point per converged step",
+        );
+        // If the ramp stalled, the failure must be the Yeoh-validity
+        // wall (Phase 4 fail-closed) per spec §6 risk #2 — NOT some
+        // unexpected solver pathology that should surface as a test
+        // failure. The "validity violation" + "stretch" substrings
+        // pin the expected failure mode.
+        if let Some(reason) = &ramp.failure_reason {
+            assert!(
+                reason.contains("validity violation") || reason.contains("stretch"),
+                "synthetic-sphere stall must be the Yeoh validity wall (closed-body \
+                 overlap → high local stretch); got unexpected reason: {reason}",
+            );
+        }
+    }
+
+    /// FEM-correctness gate: at the LAST converged step of the sliding
+    /// ramp (whichever it is — Fork-B partial seating is acceptable per
+    /// D-Slide6), referenced vertices in the LOWER hemisphere (well
+    /// outside the upper-half contact zone) deform less than `0.5 mm`
+    /// from rest. This is the spec §4 SL.2 gate (c) + §5 gate (4)
+    /// assertion: sliding contact is LOCAL — far-from-contact regions
+    /// stay near rest — distinguishing it from the growing ramp's
+    /// UNIFORM offset (which would deform every cavity vertex by
+    /// roughly the same `interference_m`).
+    ///
+    /// Empirically `~3 µm` on the cup fixture, three orders of
+    /// magnitude under the bound; a growing-ramp regression would
+    /// produce `O(3 mm)` displacement everywhere (uniform offset
+    /// across the full cavity), failing the bound by 3 orders.
+    ///
+    /// `#[ignore]` — release-mode multi-step solve.
+    #[test]
+    #[ignore = "release-mode multi-step solve — slow under debug; run with --release --ignored"]
+    fn sliding_insertion_ramp_localizes_deformation_at_intermediate_step() {
+        let geometry = synthetic_sliding_geometry();
+        let centerline = synthetic_icosphere_centerline_z();
+        let rest_positions: Vec<Vec3> = geometry.mesh.positions().to_vec();
+        let referenced: Vec<VertexId> = referenced_vertices(&geometry.mesh);
+        let n_steps = 16;
+
+        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps)
+            .expect("synthetic sliding ramp should run");
+        assert!(
+            !ramp.steps.is_empty(),
+            "ramp must converge at least one step for the locality assertion",
+        );
+
+        let last = ramp.steps.last().expect("non-empty steps");
+        let positions_k: Vec<Vec3> = positions_from_flat(&last.x_final);
+        eprintln!(
+            "  locality on last converged step: t={:.3} (arc {:5.2} mm), \
+             contact F = {:.2} N over {} pairs",
+            last.slide_fraction_t,
+            last.arc_length_s_m * 1e3,
+            last.readout.contact_force_magnitude_n,
+            last.readout.n_active_contact_pairs,
+        );
+
+        // Far-from-contact = referenced vertices with rest z < -20 mm
+        // (the lower-hemisphere region of the body, well below the
+        // upper-half contact zone the sliding intruder sweeps through).
+        let mut max_far_displacement_m = 0.0_f64;
+        let mut n_far = 0_usize;
+        for &vid in &referenced {
+            let rest = rest_positions[vid as usize];
+            if rest.z >= -0.020 {
+                continue;
+            }
+            n_far += 1;
+            let displacement = (positions_k[vid as usize] - rest).norm();
+            max_far_displacement_m = max_far_displacement_m.max(displacement);
+        }
+        eprintln!(
+            "  locality: {n_far} far-from-contact referenced vertices, \
+             max displacement {:.3} mm",
+            max_far_displacement_m * 1e3,
+        );
+        assert!(
+            n_far >= 4,
+            "fixture must expose enough lower-hemisphere referenced vertices \
+             to be meaningful; got {n_far}",
+        );
+        // 0.5 mm bound per spec §4 SL.2 gate column — empirically
+        // `~3 µm` on the cup fixture (3 orders under), so the bound
+        // is sensitive enough to catch a growing-intruder regression
+        // (which would produce `O(3 mm)` everywhere).
+        assert!(
+            max_far_displacement_m < 0.0005,
+            "sliding contact must be local — lower-hemisphere displacement {:.3} mm \
+             ≥ 0.5 mm bound (would indicate the FEM is propagating deformation \
+             uniformly, i.e. a regression to growing-intruder behavior)",
+            max_far_displacement_m * 1e3,
+        );
     }
 }

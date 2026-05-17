@@ -56,7 +56,20 @@ nalgebra = { workspace = true }
 # solve (`CpuNewtonSolver` + `PenaltyRigidContact`). `sim-ml-chassis`
 # supplies `Tensor`, the `replay_step` solve's position/velocity I/O type.
 mesh-sdf = { workspace = true }
+# Slice 9 (SDF-based layer surfaces) — `ScalarGrid` + `MarchingCubesConfig`
+# + `marching_cubes` for the cached-SDF + per-layer iso-extraction
+# pipeline in `mod sdf_layers`. mesh-offset's own `offset_mesh` rebuilds
+# the SDF + grid per call; we use the lower-level grid + MC primitives
+# directly so the same cached grid serves every layer extraction.
+mesh-offset = { workspace = true }
 cf-design = { workspace = true }
+# Shared cap-plane abstraction — CapPlane runtime type +
+# `parse_cap_planes` + `dome_wall_only_mesh` + diagnostic +
+# `DomeWallSignedSdf` adapter. Lifted from this crate's local
+# `sdf_layers` / `main.rs` into `design/cf-cap-planes` so cf-cast-cli +
+# insertion_sim can consume the same primitives without duplicating
+# them. See the pinned-floor scope-C spec for the architectural arc.
+cf-cap-planes = { workspace = true }
 sim-soft = { workspace = true }
 sim-ml-chassis = { workspace = true }
 

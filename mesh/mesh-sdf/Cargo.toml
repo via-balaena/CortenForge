@@ -18,6 +18,9 @@ mesh-types = { workspace = true }
 nalgebra = { workspace = true }
 # Derive error types
 thiserror = { workspace = true }
+# BVH-backed mesh queries (closest-point + inside test via pseudo-normals).
+# Backs SignedDistanceField; per-query cost drops O(faces) -> O(log faces).
+parry3d = { workspace = true }
 
 [dev-dependencies]
 # Approximate equality for numeric tests
