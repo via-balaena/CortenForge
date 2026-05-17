@@ -1,6 +1,6 @@
 # cf-device-design Fit-Visualization + Scoring — Sim Arc Recon
 
-**Status**: RECON v1, no implementation yet. This doc replaces the stale-by-2-days slice 7 memo + the fit-viz bookmark with a single source of truth grounded in empirical screenshots from the user's actual iter-1 design (2026-05-18). The user's framing: "the sim is the final part of this entire workflow we need to do."
+**Status**: RECON v1, S1-S4 SHIPPED 2026-05-18 on dev (`01dfa153` S1 → `294b1982` S2 → `8dd2ac71` S3 → `9a55cc2a` S4) — visual story arc COMPLETE per §6 ship-breakpoint. S5-S7 (scoring story) + S8-S10 (polish) PENDING. User-verified visual gate on iter-1 PENDING after S4 → cold-read findings (below §10) await user disposition. This doc replaces the stale-by-2-days slice 7 memo + the fit-viz bookmark with a single source of truth grounded in empirical screenshots from the user's actual iter-1 design (2026-05-18). The user's framing: "the sim is the final part of this entire workflow we need to do."
 
 **Reading order for the next session**: §1 empirical baseline first (it overturns several stale memo claims), §3 user vision second (the target), §4 gap table third (the work), §5 decisions fourth (resolve before §6), §6 sub-leaf ladder fifth (the execution plan).
 
@@ -129,7 +129,7 @@ Each row is one feature delta between end-state and current state. Effort sized 
 
 Sequenced for empirical validation between sub-leaves. Each sub-leaf is independently shippable + user-reviewable in cf-view OR the egui app.
 
-### S1 — Per-step playback timeline (G1) [~1 hr]
+### S1 — Per-step playback timeline (G1) [~1 hr] — **SHIPPED `01dfa153`**
 
 - Add `displayed_step: Option<usize>` to `InsertionSimState`. `None` = final step (current behavior).
 - Add `egui::Slider` in panel (visible only when `last_run.is_some() && steps.len() > 1`).
@@ -138,7 +138,7 @@ Sequenced for empirical validation between sub-leaves. Each sub-leaf is independ
 
 **Visual gate**: scrub through steps 0..N-1; heat-map colors smoothly transition from low (rest) to high (full insertion).
 
-### S2 — Deformed cavity surface render (G2) [~2-3 hr]
+### S2 — Deformed cavity surface render (G2) [~2-3 hr] — **SHIPPED `294b1982`**
 
 - New `extract_deformed_cavity_mesh(geometry, x_final, layer_index=cavity)` helper.
 - Investigate `sim_soft::viz::boundary_surface` for arbitrary-position support; fall back to custom BCC-tet surface extractor if it doesn't fit.
@@ -147,14 +147,14 @@ Sequenced for empirical validation between sub-leaves. Each sub-leaf is independ
 
 **Visual gate**: at step N-1, cavity surface visibly bulges outward from the rest position; heat-map shows pressure hot spots on the deformed surface.
 
-### S3 — Deformed layer shells render (G3) [~1-2 hr]
+### S3 — Deformed layer shells render (G3) [~1-2 hr] — **SHIPPED `8dd2ac71`**
 
 - Extend S2's extractor per-layer (split tet set by material id, extract each layer's outward face).
 - Wire into `update_layer_meshes` system.
 
 **Visual gate**: at step N-1, all layer shells deformed consistently with the cavity; outer Dragon Skin layer's deformation visibly subtler than inner Ecoflex's.
 
-### S4 — Scan-as-intruder render (G4) [~1 hr]
+### S4 — Scan-as-intruder render (G4) [~1 hr] — **SHIPPED `9a55cc2a`**
 
 - New `IntruderEntity` resource + render system.
 - Load cleaned scan mesh once (already loaded for the cavity SDF — share the Arc).
@@ -271,3 +271,31 @@ Cross-arc:
 - [ ] Slice 7 + fit-viz bookmark memos rewritten / annotated.
 - [ ] User-verified visual gate on iter-1 after S4 (visual story complete) AND after S7 (quantitative story complete).
 - [ ] Per-sub-leaf cold-read pass per [[feedback-cold-read-review-post-ship]].
+
+---
+
+## 10. Cold-read findings on cumulative S1-S4 diff (2026-05-18 post-S4)
+
+Per [[feedback-cold-read-review-post-ship]]: fresh-eyes pass on the four commits as a unit. No blocking bugs; minor concerns to surface for post-visual-gate disposition.
+
+1. **`update_intruder_transform` ignores `ScanMeshVisible` toggle.** The "Show scan" sidebar checkbox affects only the rest ScanMeshEntity, not the new IntruderEntity. Arguably correct (intruder is a sim artifact, not the rest scan), but a user toggling "Show scan" OFF to declutter the device view might be surprised that the orange intruder shell still renders. Disposition open: leave or wire in.
+2. **`InsertionSimOutputs.tet_centroids` doc rot.** Doc still says "Used by `project_layer_heat_map` to find the nearest tet IN-LAYER for each MC-mesh vertex." S3 makes the projection also fire on DEFORMED layer mesh vertices (not just SDF-MC). Same type/shape, but the doc could acknowledge both consumers.
+3. **OOB accessor behavior inconsistent.** `scalar_fields_at(step)` clamps; `deformed_boundary_mesh_at(step)` + `deformed_layer_mesh_at(layer, step)` return `None`. Intentional — slider is bounded so clamp is safe, while None lets the caller fall back to rest SDF — but worth documenting on the impl block.
+4. **1-layer design with S3 deformed-shells = static outer skin.** A single-layer design has no inter-layer interfaces; `per_layer_outer_faces[0]` only carries outermost-skin triangles (Dirichlet-pinned, no displacement). The user sees a STATIC rest-position outer surface for layer 0 in show_deformed mode. Acceptable degenerate case — the cavity (S2) still shows deformation — but the visual gate may flag it as confusing.
+5. **D8 (PLY save) deferred from S2.** Recon §5 allotted ~30 min within S2; shipped without it to keep S2 visual-story-focused. Lands as a polish commit or rolls into S6/S7.
+6. **Memory ceiling for `per_step_scalar_fields`.** At iter-1 (16 steps × 73k tets × 16 B/step) = ~18 MB. At a future 32-step 200k-tet design = ~100 MB. Document the ceiling on the field once a deeper config surfaces.
+
+User disposition + visual-gate findings should be bundled into a single polish commit post-arc.
+
+---
+
+## 11. Resolved arc commits (S1-S4)
+
+| Sub-leaf | Commit | Headline |
+|---|---|---|
+| S1 | `01dfa153` | Per-step playback timeline — slider + viewport `Step N/16` badge + per-step scalar field cache. 139 → 141 tests. |
+| S2 | `294b1982` | Deformed cavity surface render — `bcc_boundary_faces` snapshot + `deformed_boundary_mesh_at` + `update_cavity_mesh` snapshot-and-compare. 141 → 142 tests. |
+| S3 | `8dd2ac71` | Deformed per-layer shells render — `per_layer_outer_faces` build + outer-skin pinned detection + `deformed_layer_mesh_at`. 142 → 144 tests. |
+| S4 | `9a55cc2a` | Scan-as-intruder render — IntruderEntity spawn + per-step translation along `-cap_plane.normal`. 144 tests (no new). |
+
+All four `cargo xtask grade cf-device-design` → A across all automated criteria; clippy `-D warnings` clean; pre-commit hooks pass.
