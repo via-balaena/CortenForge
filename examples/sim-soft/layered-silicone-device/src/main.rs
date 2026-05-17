@@ -408,6 +408,37 @@ const N_OUTER_TETS_ZSLAB_EXACT: usize = 1_288;
 /// at rest the cavity walls already kiss the indenter, so all cavity-
 /// surface vertices within `d̂` are active. Re-captured 2026-05-18
 /// post-D arc.
+///
+/// Per-face partition (from the per-pair JSON readout):
+///
+/// | face | `n_pairs` |
+/// |------|---------|
+/// | -X / +X | 71 / 71 |
+/// | -Y / +Y | 86 / 87 |
+/// | -Z / +Z | 61 / 66 |
+///
+/// The Y faces hold ~46 more pairs than the Z faces (173 vs 127) on
+/// what's geometrically a Y↔Z-symmetric cube cavity. Root cause: the
+/// BCC tet-stuffing warp step at
+/// `sim/L0/soft/src/sdf_bridge/stuffing.rs::warp_lattice` walks 14
+/// incident edges per lattice vertex in a fixed `+x, -x, +y, -y, +z,
+/// -z, …` order and first-match-wins on the warp-violation predicate
+/// (Decision M D-11 — deterministic; theorem-safe because
+/// Labelle-Shewchuk Theorem 1's angle guarantees are independent of
+/// which violating cut is chosen). At every YZ cavity corner where
+/// both a `+y` and a `+z` edge cross the SDF boundary simultaneously,
+/// `+y` wins → the corner-vertex snaps onto the Y face instead of the
+/// Z face. Net effect on a synthetic axis-aligned cube fixture: Y
+/// faces gain pairs that "should" geometrically have gone to Z faces.
+/// The within-axis residuals (Y Δ=1, Z Δ=5) are below-noise FP
+/// boundary-classification jitter at lattice vertices that land
+/// exactly on a cube face plane.
+///
+/// Workshop-realistic cleaned scans don't trigger any of this — body-
+/// part geometry has no axis-aligned faces, no axis-aligned edges, no
+/// lattice-aligned vertex positions, so no two perpendicular edges
+/// cross the boundary simultaneously and the warp's axis-priority
+/// branch is inert.
 const N_CONTACT_PAIRS_EXACT: usize = 442;
 
 /// Total z-component of the rest-state contact reaction force (N).
