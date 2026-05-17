@@ -180,8 +180,8 @@ struct ScanInfo {
 /// coordinate system). Empty when no `.prep.toml` is present or its
 /// `[centerline]` block is absent.
 #[derive(Resource, Default, Clone)]
-struct Centerline {
-    points_m: Vec<Point3<f64>>,
+pub(crate) struct Centerline {
+    pub(crate) points_m: Vec<Point3<f64>>,
 }
 
 /// Cavity panel state — the user-dialed `inset_m` by which the
@@ -1785,36 +1785,25 @@ struct IntruderMeshKey {
     show_deformed: bool,
 }
 
-/// Slice S11.1 — per-frame update of the [`IntruderEntity`]'s mesh
-/// asset and visibility from the sim state. Visible when there is a
-/// completed run AND `show_deformed` is on (the playback affordance);
-/// the mesh asset is rebuilt from
-/// `last_run.intruder_mesh_at(displayed_step)`, the cached scan SDF
-/// iso surface at `step.interference_m + cavity_offset_m`. Hidden when
-/// no run is loaded, the rest-cavity view is selected, or the
-/// displayed step is past the converged range.
+/// SL.3 (sliding-intruder arc) — stubbed to always hide the
+/// [`IntruderEntity`]. The slice-S11.1 per-step iso MC render path
+/// was removed when `run_sim_pipeline` stopped extracting per-step
+/// intruder meshes (the new sliding ramp uses a constant-mesh +
+/// per-step `Transform` render, scheduled for SL.4). Until SL.4
+/// rewires this system as `update_intruder_transform` (S4-style),
+/// the intruder is hidden — the cavity-render at the FEM-deformed
+/// boundary is the SL.3 visual gate, not the intruder shape.
 ///
-/// Replaces the S4 `update_intruder_transform` rigid-translation
-/// proxy. The FEM intruder is an SDF offset that grows from cavity-
-/// sized at step 1 to bare scan at step N, not a translation — the
-/// iso surface coincides with the deformed cavity at contact zones at
-/// every step. The S4 visual gate (2026-05-18) read the translated-
-/// full-scan as a phantom air gap between probe and cavity wall;
-/// S11.1 closes that gap by surfacing the geometry the FEM actually
-/// solved against.
-///
-/// Change-detection mirrors [`update_cavity_mesh`]: snapshot-and-
-/// compare via `Local<Option<IntruderMeshKey>>` so a Bevy `ResMut<T>`
-/// deref-mut-on-access tick doesn't rebuild the mesh asset every
-/// frame.
+/// Change-detection still uses `IntruderMeshKey` so SL.4 can drop
+/// straight into this slot.
 #[allow(clippy::needless_pass_by_value)]
 fn update_intruder_mesh(
     sim_state: Res<insertion_sim_ui::InsertionSimState>,
-    up: Res<UpAxis>,
-    render_scale: Res<RenderScale>,
+    _up: Res<UpAxis>,
+    _render_scale: Res<RenderScale>,
     mut last_key: Local<Option<IntruderMeshKey>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut q: Query<(&mut Mesh3d, &mut Visibility), With<IntruderEntity>>,
+    _meshes: ResMut<Assets<Mesh>>,
+    mut q: Query<&mut Visibility, With<IntruderEntity>>,
 ) {
     let current_key = IntruderMeshKey {
         displayed_step: sim_state.displayed_step,
@@ -1826,27 +1815,8 @@ fn update_intruder_mesh(
     if !changed {
         return;
     }
-    let intruder_mesh = sim_state
-        .show_deformed
-        .then_some(())
-        .and(sim_state.last_run.as_ref())
-        .and_then(|run| run.intruder_mesh_at(sim_state.displayed_step));
-    let (mesh_asset, visible) = match intruder_mesh {
-        Some(indexed) => (
-            Some(meshes.add(build_bevy_mesh_from_indexed(indexed, *up, render_scale.0))),
-            true,
-        ),
-        None => (None, false),
-    };
-    for (mut mesh_handle, mut vis) in &mut q {
-        if let Some(asset) = mesh_asset.clone() {
-            mesh_handle.0 = asset;
-        }
-        *vis = if visible {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+    for mut vis in &mut q {
+        *vis = Visibility::Hidden;
     }
 }
 

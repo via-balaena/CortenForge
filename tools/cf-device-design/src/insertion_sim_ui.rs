@@ -26,19 +26,19 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use mesh_types::IndexedMesh;
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Isometry3, Point3, Vector3};
 use sim_soft::{Mesh as SimMesh, TetId, VertexId, Yeoh};
 
 use cf_cap_planes::CapPlane;
 
+#[cfg(test)]
+use crate::insertion_sim::RampStep;
 use crate::insertion_sim::{
-    InsertionRamp, RampStep, SimDesign, SimLayer, StepReadout, TetReadout,
-    build_insertion_geometry, compute_tet_readouts, run_insertion_ramp,
+    InsertionRamp, SimDesign, SimLayer, SlideRamp, StepReadout, TetReadout,
+    build_insertion_geometry, compute_tet_readouts, run_insertion_ramp, run_sliding_insertion_ramp,
 };
-use crate::sdf_layers::{
-    CachedScanSdf, CapPlanes, marching_cubes_at_iso, sample_sdf_into_cached_template,
-};
-use crate::{CavityState, LAYER_SURFACE_PALETTE, LayersState, ScanMesh};
+use crate::sdf_layers::{CachedScanSdf, CapPlanes};
+use crate::{CavityState, Centerline, LAYER_SURFACE_PALETTE, LayersState, ScanMesh};
 
 // ── tuned defaults ──────────────────────────────────────────────────
 
@@ -99,6 +99,49 @@ impl ScalarMode {
     }
 }
 
+/// Which insertion-sim model the next Simulate click runs.
+///
+/// Per `docs/SIM_ARC_SLIDING_INTRUDER_SPEC.md` §2 Q2 + §4 SL.3 row.
+/// Defaults to [`Sliding`](Self::Sliding) — the new sliding-intruder
+/// FEM is the workshop-product model. [`GrowingIntruder`](Self::GrowingIntruder)
+/// is the legacy uniform-offset ramp, preserved for "prototype
+/// variations of the scanned size going through the cavity" per the
+/// user's banked note (bookmark §2). SL.7 (pass B) reawakens the
+/// growing-mode UI + render handling; SL.3 ships the dispatch with
+/// both branches functionally wired but the per-mode UI affordances
+/// (mode selector, intruder render rename) at SL.4 + SL.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SimMode {
+    /// New sliding-intruder model (default): constant-geometry rigid
+    /// intruder translated along the centerline arc, per-position
+    /// FEM-solved local cavity deformation. Requires a non-empty
+    /// `Centerline` resource (`.prep.toml [centerline]`).
+    #[default]
+    Sliding,
+    /// Legacy growing-intruder model: uniform SDF offset ramped from
+    /// `cavity_inset_m / n_steps` to `cavity_inset_m` over the ramp,
+    /// causing the whole cavity wall to deform uniformly at each
+    /// step. Useful for "what if the scanned shape was bigger by 1%"
+    /// prototyping (banked use case per bookmark §2 + §6).
+    GrowingIntruder,
+}
+
+/// Which ramp the most recent run produced. Per spec §3a + §3e: both
+/// kinds share the per-step `x_final` shape and `StepReadout`
+/// aggregates, so render plumbing built on those (cavity-boundary
+/// plus per-layer-outer face meshes, heat-map projection) consumes
+/// either kind unchanged. The wrapper is what `InsertionSimOutputs`
+/// stores in place of the slice-7 `InsertionRamp`-only `ramp` field;
+/// unified accessors on `InsertionSimOutputs` dispatch on this so
+/// downstream callers don't pattern-match every site.
+pub enum RampKind {
+    /// Sliding-intruder ramp output from [`run_sliding_insertion_ramp`].
+    Sliding(SlideRamp),
+    /// Growing-intruder ramp output from [`run_insertion_ramp`] —
+    /// legacy uniform-offset path.
+    Growing(InsertionRamp),
+}
+
 /// Per-layer reduction of the final-step per-tet readout — load-
 /// bearing for the panel's "compare two designs" workflow + the heat-
 /// map projection's per-layer in-layer-tet sub-search.
@@ -128,8 +171,13 @@ pub struct LayerAggregate {
 /// re-project scalar fields onto each layer's SDF-extracted MC mesh
 /// at render time (slice 9 sub-leaf 7).
 pub struct InsertionSimOutputs {
-    /// The raw ramp — for the F-d plot + per-step table.
-    pub ramp: InsertionRamp,
+    /// The raw ramp output — sliding or growing, dispatched on
+    /// [`SimMode`]. Per spec §3e, both kinds expose the same
+    /// per-step `x_final` shape + `StepReadout`; unified accessors
+    /// on this struct (`step_count`, `step_x_final_at`,
+    /// `step_readout_at`, etc.) hide the kind from the renderers
+    /// + heat-map projection at every call site.
+    pub ramp_kind: RampKind,
     /// Per-layer reductions of `ramp.result.final_per_tet`.
     pub per_layer: Vec<LayerAggregate>,
     /// Rest-frame centroid of every tet in the insertion-sim mesh.
@@ -183,30 +231,147 @@ pub struct InsertionSimOutputs {
     /// excluded — the cavity render owns the cavity surface, not the
     /// layer-shells render.
     pub per_layer_outer_faces: Vec<Vec<[u32; 3]>>,
-    /// Slice S11.1 — pre-computed per-step intruder MC meshes for the
-    /// FEM-accurate intruder render. Outer index is converged-step
-    /// index (matches `ramp.steps`); each `IndexedMesh` is the cached
-    /// scan SDF iso surface at `step.interference_m + cavity_offset_m`
-    /// (= `step.interference_m - design.cavity_inset_m`). At the first
-    /// converged step the iso sits deep inside the scan (intruder is
-    /// roughly cavity-sized); at the final step the iso reaches 0
-    /// (intruder = bare scan). Built once in `run_sim_pipeline` from
-    /// the `CachedScanSdf` cloned into the async task at kickoff.
+    /// Per-converged-step rigid pose of the intruder (sliding mode)
+    /// or identity (growing mode — the legacy ramp grew the intruder
+    /// shape via SDF offset, not translation; SL.7 pass-B can wire
+    /// the growing-mode visualization separately).
     ///
-    /// S11.1 replaces S4's rigid-translation visual proxy: the FEM
-    /// intruder is an SDF offset that grows from cavity-sized to full
-    /// scan over the ramp, not a translation. Rendering the SDF iso
-    /// directly keeps the intruder geometrically consistent with the
-    /// deformed cavity at every step (they coincide in contact zones)
-    /// instead of the user reading a phantom air gap between a full-
-    /// size translated scan and the deformed cavity wall.
+    /// Replaces the slice-S11.1 `per_step_intruder_meshes` per spec
+    /// §3a + §3f: the SL.4 render path mounts the cleaned scan as a
+    /// constant Bevy mesh asset once at startup and writes per-step
+    /// `Transform.translation` from `intruder_pose_at(step)` — no
+    /// per-step mesh rebuild, no per-step SDF iso extraction. Length
+    /// matches the converged-step count.
     ///
-    /// Memory: 16 steps × ~5 K vertices × 24 B + ~10 K faces × 12 B ≈
-    /// ~4 MB per run (dwarfed by `per_step_scalar_fields`).
-    pub per_step_intruder_meshes: Vec<IndexedMesh>,
+    /// `#[allow(dead_code)]` because SL.3 populates this field but
+    /// SL.4 wires the consumer; tests already cover the accessor.
+    #[allow(dead_code)]
+    pub intruder_poses: Vec<Isometry3<f64>>,
 }
 
 impl InsertionSimOutputs {
+    /// Number of converged steps. Dispatches on [`RampKind`] —
+    /// `match` is hidden from callers; renderers + change-detection
+    /// keys read `step_count()` and stay model-agnostic.
+    #[must_use]
+    pub fn step_count(&self) -> usize {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.steps.len(),
+            RampKind::Growing(r) => r.steps.len(),
+        }
+    }
+
+    /// Returns `true` if this run produced a sliding ramp. Lets the
+    /// panel's UI text branch on slide-vs-growing semantics without
+    /// pattern-matching `RampKind` at every site (SL.5 will use this
+    /// for axis labels + step badge copy).
+    #[must_use]
+    pub fn is_sliding_mode(&self) -> bool {
+        matches!(self.ramp_kind, RampKind::Sliding(_))
+    }
+
+    /// Converged vertex positions at the requested step (vertex-major
+    /// xyz, length `3 * n_vertices`). Returns `None` past the
+    /// converged tail. Same shape for both ramp kinds — sliding +
+    /// growing produce identical `x_final` layout.
+    #[must_use]
+    pub fn step_x_final_at(&self, step: usize) -> Option<&[f64]> {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.steps.get(step).map(|s| s.x_final.as_slice()),
+            RampKind::Growing(r) => r.steps.get(step).map(|s| s.x_final.as_slice()),
+        }
+    }
+
+    /// Per-step `StepReadout` — identical struct shape for both ramps;
+    /// the engineering scalars (contact force, principal-stretch
+    /// extrema, peak Piola, mean energy) carry the same semantics
+    /// across modes.
+    #[must_use]
+    pub fn step_readout_at(&self, step: usize) -> Option<&StepReadout> {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.steps.get(step).map(|s| &s.readout),
+            RampKind::Growing(r) => r.steps.get(step).map(|s| &s.readout),
+        }
+    }
+
+    /// Per-step Newton iteration count — same field semantics in both
+    /// ramps.
+    #[must_use]
+    pub fn step_iter_count_at(&self, step: usize) -> Option<usize> {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.steps.get(step).map(|s| s.iter_count),
+            RampKind::Growing(r) => r.steps.get(step).map(|s| s.iter_count),
+        }
+    }
+
+    /// Per-step free-DOF residual norm at convergence — same field
+    /// semantics in both ramps.
+    #[must_use]
+    pub fn step_residual_norm_at(&self, step: usize) -> Option<f64> {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.steps.get(step).map(|s| s.final_residual_norm),
+            RampKind::Growing(r) => r.steps.get(step).map(|s| s.final_residual_norm),
+        }
+    }
+
+    /// Per-step abscissa in meters — for the F-d plot + per-step
+    /// table. Semantics:
+    ///
+    /// - **Sliding**: arc length the intruder has slid from the cap
+    ///   mouth (`slide_fraction_t * polyline_arc_length`).
+    /// - **Growing**: press-fit interference depth (`interference_m`,
+    ///   ramp-ordinal × `cavity_inset_m / n_steps`).
+    ///
+    /// Both have units of meters and are monotonically increasing
+    /// across the ramp, so a single plot/table column works for
+    /// either mode — SL.5 updates the axis label to track the active
+    /// mode's interpretation. At SL.3 the column is mislabeled
+    /// "Interference (mm)" for sliding runs; the temp mislabel is
+    /// load-bearing-OK because the cavity render (geometry-only,
+    /// independent of the abscissa label) is the actual SL.3 visual
+    /// gate.
+    #[must_use]
+    pub fn step_abscissa_m_at(&self, step: usize) -> Option<f64> {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.steps.get(step).map(|s| s.arc_length_s_m),
+            RampKind::Growing(r) => r.steps.get(step).map(|s| s.interference_m),
+        }
+    }
+
+    /// Forward to the ramp's Fork-B "failed at step k" record. `None`
+    /// if every requested step converged.
+    #[must_use]
+    pub fn failed_at_step(&self) -> Option<usize> {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.failed_at_step,
+            RampKind::Growing(r) => r.failed_at_step,
+        }
+    }
+
+    /// Forward to the ramp's Fork-B failure-reason string (solver
+    /// panic message); `None` if every step converged.
+    #[must_use]
+    pub fn failure_reason(&self) -> Option<&str> {
+        match &self.ramp_kind {
+            RampKind::Sliding(r) => r.failure_reason.as_deref(),
+            RampKind::Growing(r) => r.failure_reason.as_deref(),
+        }
+    }
+
+    /// Rigid pose of the intruder at the requested step — `Some` only
+    /// for sliding mode (growing-mode records identity poses but the
+    /// SL.4 render path hides the intruder entity in that mode).
+    /// `None` past the converged range.
+    ///
+    /// `#[allow(dead_code)]` because the SL.4 `update_intruder_transform`
+    /// system is the production consumer; this accessor lands at SL.3
+    /// alongside the data it reads.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn intruder_pose_at(&self, step: usize) -> Option<Isometry3<f64>> {
+        self.intruder_poses.get(step).copied()
+    }
+
     /// Per-tet scalar fields at the requested converged step (slice S1
     /// playback). Clamps `step` to the last converged index — callers
     /// passing the panel's `displayed_step` get the final step's data
@@ -231,9 +396,8 @@ impl InsertionSimOutputs {
     /// it only fires on actual input changes.
     #[must_use]
     pub fn deformed_boundary_mesh_at(&self, step: usize) -> Option<IndexedMesh> {
-        let ramp_step = self.ramp.steps.get(step)?;
-        let positions: Vec<Point3<f64>> = ramp_step
-            .x_final
+        let x_final = self.step_x_final_at(step)?;
+        let positions: Vec<Point3<f64>> = x_final
             .chunks_exact(3)
             .map(|c| Point3::new(c[0], c[1], c[2]))
             .collect();
@@ -266,9 +430,8 @@ impl InsertionSimOutputs {
         if faces.is_empty() {
             return None;
         }
-        let ramp_step = self.ramp.steps.get(step)?;
-        let positions: Vec<Point3<f64>> = ramp_step
-            .x_final
+        let x_final = self.step_x_final_at(step)?;
+        let positions: Vec<Point3<f64>> = x_final
             .chunks_exact(3)
             .map(|c| Point3::new(c[0], c[1], c[2]))
             .collect();
@@ -321,9 +484,8 @@ impl InsertionSimOutputs {
         if outer_faces.is_empty() && inner_faces.is_empty() {
             return None;
         }
-        let ramp_step = self.ramp.steps.get(step)?;
-        let positions: Vec<Point3<f64>> = ramp_step
-            .x_final
+        let x_final = self.step_x_final_at(step)?;
+        let positions: Vec<Point3<f64>> = x_final
             .chunks_exact(3)
             .map(|c| Point3::new(c[0], c[1], c[2]))
             .collect();
@@ -334,17 +496,6 @@ impl InsertionSimOutputs {
         mesh.faces.extend_from_slice(outer_faces);
         Some(mesh)
     }
-
-    /// Slice S11.1 — borrow the pre-computed intruder mesh for the
-    /// requested step. Returns `None` past the converged range so the
-    /// caller (`update_intruder_mesh` in `main.rs`) can hide the
-    /// entity rather than displaying stale geometry. Reference return
-    /// — the caller uploads positions + faces through
-    /// `build_bevy_mesh_from_indexed`, no clone needed at the borrow.
-    #[must_use]
-    pub fn intruder_mesh_at(&self, step: usize) -> Option<&IndexedMesh> {
-        self.per_step_intruder_meshes.get(step)
-    }
 }
 
 impl fmt::Debug for InsertionSimOutputs {
@@ -352,10 +503,15 @@ impl fmt::Debug for InsertionSimOutputs {
         // Same `dbg!`-footgun rationale as `InsertionGeometry` /
         // `InsertionRamp`: the per-tet centroid + scalar buffers are
         // large and would dominate any debug print.
+        let mode = if self.is_sliding_mode() {
+            "Sliding"
+        } else {
+            "Growing"
+        };
         write!(
             f,
-            "InsertionSimOutputs {{ n_steps_converged: {}, n_layers: {}, \
-             n_tets: {}, ranges: {:?} }}",
+            "InsertionSimOutputs {{ mode: {mode}, n_steps_converged: {}, \
+             n_layers: {}, n_tets: {}, ranges: {:?} }}",
             self.per_step_scalar_fields.len(),
             self.per_layer.len(),
             self.tet_centroids.len(),
@@ -424,6 +580,12 @@ pub struct InsertionSimState {
     /// default when sim data is available); cleared on invalidation.
     /// Read by `main.rs::update_cavity_mesh` via `CavityMeshKey`.
     pub show_deformed: bool,
+    /// Per spec §4 SL.3 / Q2: which insertion-sim model the next
+    /// Simulate click runs. Default [`SimMode::Sliding`]. SL.5 adds
+    /// the panel selector; until then the field is set programmatically
+    /// (and falls back to `GrowingIntruder` automatically when the
+    /// `.prep.toml [centerline]` block is missing).
+    pub sim_mode: SimMode,
 }
 
 impl Default for InsertionSimState {
@@ -439,6 +601,7 @@ impl Default for InsertionSimState {
             last_run_generation: 0,
             displayed_step: 0,
             show_deformed: false,
+            sim_mode: SimMode::default(),
         }
     }
 }
@@ -540,13 +703,22 @@ fn sim_relevant_snapshot(cavity: &CavityState, layers: &LayersState) -> SimRelev
 /// one-time chunky alloc — ~MB-scale — dwarfed by the 10-20 s ramp
 /// itself).
 ///
-/// Slice S11.1 — also clones [`CachedScanSdf`] into the task so the
-/// per-step intruder MC extraction (inside `run_sim_pipeline`) has
-/// the SDF + filled grids it needs without round-tripping through the
-/// main thread. `CachedScanSdf` is `Clone`; the underlying grids +
-/// `Arc`-wrapped distance fields make this a ~700 KB clone at iter-1
-/// (Arc-clones for the trait objects, full clones for the two
-/// `ScalarGrid`s), dwarfed by the FEM ramp's compute time.
+/// SL.3 (sliding-intruder arc): also snapshots the [`Centerline`]
+/// resource (parsed once at startup from `.prep.toml [centerline]`)
+/// and the current [`SimMode`] selector into the task input. The
+/// sliding ramp needs the centerline polyline to compute per-step
+/// `slide_pose_at(t)`; the growing ramp ignores it. When a sliding
+/// run is requested but the centerline is empty (no
+/// `[centerline]` block in the prep file, or fewer than 2 points),
+/// `kick_off_simulation` auto-degrades to `GrowingIntruder` mode so
+/// the user gets a visible result with a panel error explaining the
+/// fallback (a sliding ramp without a centerline would fail-closed
+/// inside the ramp builder anyway).
+///
+/// The `CachedScanSdf` snapshot survives the SL.3 plumbing rewrite
+/// even though the per-step intruder MC was removed — `build_insertion_
+/// geometry` consumes it for the open-body SDF; future render paths
+/// may also reach for it.
 #[allow(clippy::needless_pass_by_value)]
 pub fn kick_off_simulation(
     scan: Option<Res<ScanMesh>>,
@@ -554,6 +726,7 @@ pub fn kick_off_simulation(
     layers: Res<LayersState>,
     cap_planes: Res<CapPlanes>,
     cached_sdf: Res<CachedScanSdf>,
+    centerline: Res<Centerline>,
     mut state: ResMut<InsertionSimState>,
 ) {
     if !state.request_simulate {
@@ -575,9 +748,24 @@ pub fn kick_off_simulation(
     // must consume the value as-it-was-at-kickoff.
     let cap_planes_clone: Vec<CapPlane> = cap_planes.planes.clone();
     let cached_sdf_clone: CachedScanSdf = cached_sdf.clone();
+    let centerline_clone: Vec<Point3<f64>> = centerline.points_m.clone();
     let n_steps = state.n_steps;
+    // Auto-degrade sliding → growing if the centerline is unusable.
+    // Surfaces a panel error so the user knows the fallback fired
+    // (consistent with the spec §6 risk #1 "centerline absence on
+    // iter-2+ scans" mitigation).
+    let mut sim_mode = state.sim_mode;
+    if sim_mode == SimMode::Sliding && centerline_clone.len() < 2 {
+        sim_mode = SimMode::GrowingIntruder;
+        state.last_error = Some(
+            "no centerline (`.prep.toml [centerline]` is missing or < 2 points); \
+             falling back to growing-intruder mode for this run"
+                .into(),
+        );
+    } else {
+        state.last_error = None;
+    }
 
-    state.last_error = None;
     let pool = AsyncComputeTaskPool::get();
     let task = pool.spawn(async move {
         run_sim_pipeline(
@@ -585,6 +773,8 @@ pub fn kick_off_simulation(
             design,
             cap_planes_clone,
             cached_sdf_clone,
+            centerline_clone,
+            sim_mode,
             n_steps,
         )
         .map_err(|e| format!("{e:?}"))
@@ -664,11 +854,27 @@ fn build_sim_design(cavity: &CavityState, layers: &LayersState) -> SimDesign {
 /// per-layer aggregates + the tet-level substrate the render-time
 /// heat-map projection consumes. Pure compute; no Bevy / egui access
 /// (the task pool runs off main thread).
+///
+/// SL.3: dispatches on `sim_mode` between the sliding ramp
+/// (`run_sliding_insertion_ramp`, needs the centerline polyline) and
+/// the growing ramp (`run_insertion_ramp`, ignores it). Per spec
+/// §3a + §3e the two ramps share identical per-step `x_final` +
+/// `StepReadout` shape, so the downstream pipeline steps (heat-map
+/// projection, cavity-boundary classification, per-layer outer-face
+/// build) consume either kind unchanged via `RampKind` dispatch on
+/// `InsertionSimOutputs`.
+///
+/// `cached_sdf` is retained as a parameter even though SL.3 no
+/// longer extracts per-step intruder iso meshes from it — future
+/// pass-B (SL.7) render paths for growing mode may reach for it.
+#[allow(clippy::too_many_arguments)]
 fn run_sim_pipeline(
     scan: IndexedMesh,
     design: SimDesign,
     cap_planes: Vec<CapPlane>,
-    cached_sdf: CachedScanSdf,
+    _cached_sdf: CachedScanSdf,
+    centerline_polyline_m: Vec<Point3<f64>>,
+    sim_mode: SimMode,
     n_steps: usize,
 ) -> Result<InsertionSimOutputs> {
     let geometry = build_insertion_geometry(
@@ -684,12 +890,10 @@ fn run_sim_pipeline(
     let per_tet_layer = geometry.per_tet_layer.clone();
     let rest_positions: Vec<Vector3<f64>> = geometry.mesh.positions().to_vec();
     // Slice S1 — snapshot the tet connectivity + per-tet materials
-    // BEFORE `run_insertion_ramp` consumes `geometry`, so we can
-    // recompute per-tet readouts at every converged step's
-    // `x_final` for the playback slider. Same construction the ramp
-    // itself uses internally (`insertion_sim.rs` ≈ line 1869); doing
-    // it twice is cheap (≤ a few MB of clones) vs. the alternative
-    // of pre-baking 16 × n_tets × 184 B readouts inside the ramp.
+    // BEFORE the ramp consumes `geometry`, so we can recompute
+    // per-tet readouts at every converged step's `x_final` for the
+    // playback slider. Same construction the ramp uses internally;
+    // doing it twice is cheap (≤ a few MB of clones).
     // `t as TetId` (u32) — Phase 4 BCC meshes stay under `u32::MAX`.
     #[allow(clippy::cast_possible_truncation)]
     let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId)
@@ -697,21 +901,11 @@ fn run_sim_pipeline(
         .collect();
     let materials: Vec<Yeoh> = geometry.mesh.materials().to_vec();
     // Slice S2 — snapshot the BCC analysis-mesh boundary triangles
-    // BEFORE `run_insertion_ramp` consumes `geometry`. The
-    // FULL-boundary snapshot is filtered to cavity-side only AFTER
-    // the ramp completes (outer-skin pinned-vertex detection needs
-    // `ramp.final_x`).
+    // BEFORE the ramp consumes `geometry`. The FULL-boundary
+    // snapshot is filtered to cavity-side only AFTER the ramp
+    // completes (outer-skin pinned-vertex detection needs the
+    // ramp's `final_x`).
     let all_bcc_boundary_faces: Vec<[u32; 3]> = geometry.mesh.boundary_faces().to_vec();
-    // Slice S11.1 — clone the FEM intruder GridSdf BEFORE
-    // `run_insertion_ramp` consumes `geometry`. The per-step intruder
-    // render MCs the FEM's own intruder (not the cached scan SDF)
-    // because the deformed cavity is anchored to the FEM intruder
-    // shape at every converged step; using the cached SDF (different
-    // decimator + grid) produced a several-mm misalignment on iter-1
-    // (2026-05-18 LATE visual gate). `GridSdf` is `Clone` (its
-    // underlying `SdfGrid` is a `Vec<f64>` + lattice descriptor);
-    // ~MB-scale clone, dwarfed by the FEM ramp's compute.
-    let intruder_sdf = geometry.intruder.clone();
     // Rest-frame tet centroids — the projection's nearest-tet lookup
     // operates on these. Precomputing here once avoids re-deriving
     // them at every heat-map render.
@@ -726,35 +920,76 @@ fn run_sim_pipeline(
         })
         .collect();
 
-    let ramp = run_insertion_ramp(geometry, n_steps)?;
+    // SL.3 — dispatch on sim_mode. Both ramp builders consume
+    // `geometry` so this `match` is the one place we branch; from
+    // here on the pipeline is `RampKind`-uniform.
+    let (ramp_kind, ramp_steps_len, final_x, final_per_tet, intruder_poses) = match sim_mode {
+        SimMode::Sliding => {
+            let ramp = run_sliding_insertion_ramp(geometry, &centerline_polyline_m, n_steps)?;
+            let result = ramp.result.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "sliding ramp failed at step 0 — no converged step. {}",
+                    ramp.failure_reason.as_deref().unwrap_or("(no reason)"),
+                )
+            })?;
+            let final_per_tet = result.final_per_tet.clone();
+            let intruder_poses = ramp.intruder_poses.clone();
+            let len = ramp.steps.len();
+            let final_x = ramp.final_x.clone();
+            (
+                RampKind::Sliding(ramp),
+                len,
+                final_x,
+                final_per_tet,
+                intruder_poses,
+            )
+        }
+        SimMode::GrowingIntruder => {
+            let ramp = run_insertion_ramp(geometry, n_steps)?;
+            let result = ramp.result.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "growing ramp failed at step 0 — no converged step. {}",
+                    ramp.failure_reason.as_deref().unwrap_or("(no reason)"),
+                )
+            })?;
+            let final_per_tet = result.final_per_tet.clone();
+            // Per spec §3e: growing mode populates `intruder_poses`
+            // with identities — the SL.4 render path hides the
+            // intruder entity in growing mode (pass-B at SL.7 wires
+            // a separate growing-mode visualization if the user
+            // wants it).
+            let len = ramp.steps.len();
+            let intruder_poses = vec![Isometry3::identity(); len];
+            let final_x = ramp.final_x.clone();
+            (
+                RampKind::Growing(ramp),
+                len,
+                final_x,
+                final_per_tet,
+                intruder_poses,
+            )
+        }
+    };
 
-    let result = ramp.result.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "ramp failed at step 0 — no converged step. {}",
-            ramp.failure_reason.as_deref().unwrap_or("(no reason)"),
-        )
-    })?;
-
-    let per_layer = aggregate_per_layer(&result.final_per_tet, &per_tet_layer, n_layers);
+    let per_layer = aggregate_per_layer(&final_per_tet, &per_tet_layer, n_layers);
 
     // Slice S1 — per-step scalar fields drive the playback slider.
-    // The final step reuses `result.final_per_tet` (already computed
-    // by the ramp); intermediate steps rerun `compute_tet_readouts`
-    // from their own `x_final` against the snapshotted rest geometry +
-    // tets + materials. Cost: ~15 × n_tets × per-tet F + Yeoh evals
-    // — a few seconds at iter-1 size, dwarfed by the ramp itself.
-    let last_step_idx = ramp.steps.len().saturating_sub(1);
-    let per_step_scalar_fields: Vec<[Vec<f64>; 2]> = ramp
-        .steps
-        .iter()
-        .enumerate()
-        .map(|(k, step)| {
+    // The final step reuses `final_per_tet` (already computed by
+    // the ramp); intermediate steps rerun `compute_tet_readouts`
+    // from their own `x_final` against the snapshotted rest geometry
+    // + tets + materials.
+    let last_step_idx = ramp_steps_len.saturating_sub(1);
+    let per_step_scalar_fields: Vec<[Vec<f64>; 2]> = (0..ramp_steps_len)
+        .map(|k| {
             let per_tet_owned;
             let per_tet: &[TetReadout] = if k == last_step_idx {
-                &result.final_per_tet
+                &final_per_tet
             } else {
-                let positions_k: Vec<Vector3<f64>> = step
-                    .x_final
+                let x_final = match &ramp_kind {
+                    RampKind::Sliding(r) => r.steps[k].x_final.as_slice(),
+                    RampKind::Growing(r) => r.steps[k].x_final.as_slice(),
+                };
+                let positions_k: Vec<Vector3<f64>> = x_final
                     .chunks_exact(3)
                     .map(|c| Vector3::new(c[0], c[1], c[2]))
                     .collect();
@@ -769,70 +1004,27 @@ fn run_sim_pipeline(
         .collect();
 
     // Global (across all steps) min/max so the gradient stays
-    // calibrated as the user scrubs through the playback — step 0
-    // reads as cold and step N-1 as hot without per-step rescaling
-    // jitter. The S1 spec calls this the natural "watch heat build
-    // up" affordance over per-step renormalization.
+    // calibrated as the user scrubs through the playback.
     let energy_min_max = global_min_max_across(&per_step_scalar_fields, 0);
     let stress_min_max = global_min_max_across(&per_step_scalar_fields, 1);
 
-    // Slice S3 — build per-layer outer-face triangle lists for the
-    // deformed layer-shells render. Requires the outer-skin pinned
-    // vertex set; detected from the final converged step's `x_final`
-    // (zero displacement = Dirichlet-pinned). Done AFTER the ramp so
-    // both `tets` snapshot and the final step's `x_final` are
-    // available without re-running `outer_skin_bc`.
-    let outer_skin_vertices = detect_outer_skin_vertices(&rest_positions, &ramp.final_x);
+    // Slice S3 — build per-layer outer-face triangle lists. Requires
+    // the outer-skin pinned vertex set; detected from the final
+    // converged step's `x_final` (zero displacement = Dirichlet-pinned).
+    let outer_skin_vertices = detect_outer_skin_vertices(&rest_positions, &final_x);
     let per_layer_outer_faces =
         build_per_layer_outer_faces(&tets, &per_tet_layer, &outer_skin_vertices, n_layers);
 
-    // Slice S2 polish (visual gate 2026-05-18) — filter the full BCC
-    // boundary down to CAVITY-SIDE faces only. Two reject classes:
-    // (a) outer-skin face (all 3 vertices pinned → no deformation,
-    // visually identical to rest), (b) cap-rim mixed face (1-2 verts
-    // pinned → sliver that stretches between pinned outer rim and
-    // deforming inner rim, looks like a spike under intruder load).
-    // Keep only faces with ZERO pinned vertices = pure cavity surface.
+    // Slice S2 polish — filter the full BCC boundary to cavity-side
+    // faces only (drop outer-skin faces + cap-rim slivers).
     let cavity_boundary_faces: Vec<[u32; 3]> = all_bcc_boundary_faces
         .iter()
         .copied()
         .filter(|f| !f.iter().any(|v| outer_skin_vertices.contains(v)))
         .collect();
 
-    // Slice S11.1 — per-step intruder MC against the FEM-internal
-    // intruder SDF. The FEM intruder is an SDF offset of the cleaned
-    // scan by `interference_m + cavity_offset_m` (= `interference_m -
-    // design.cavity_inset_m`): at step 1 the iso lies deep inside the
-    // scan and the extracted surface is roughly cavity-sized; at the
-    // final step the iso sits at 0 and the extracted surface is the
-    // bare scan.
-    //
-    // Sample the FEM intruder GridSdf onto the cached SDF's grid
-    // lattice (build_once via `sample_sdf_into_cached_template`) then
-    // MC at each step's iso. Two earlier attempts on this slice (using
-    // `extract_layer_surface`'s with-caps composition; using a direct
-    // MC of `cached_sdf.closed_grid`) both produced visible
-    // intruder/cavity misalignments on iter-1: the recon's "use cached
-    // scan SDF" decision is structurally wrong because the cached SDF
-    // and the FEM intruder are built from DIFFERENT scan decimators
-    // (topology-preserving 7500 faces vs sloppy 2500 faces), and the
-    // deformed cavity tracks the FEM intruder shape, not the cached
-    // one. Sampling the FEM SDF eliminates the decimator mismatch;
-    // grid-resolution residual (5 mm cells) stays within BCC
-    // chunkiness.
-    let cavity_offset_m = -design.cavity_inset_m;
-    let intruder_grid = sample_sdf_into_cached_template(&intruder_sdf, &cached_sdf);
-    let per_step_intruder_meshes: Vec<IndexedMesh> = ramp
-        .steps
-        .iter()
-        .map(|step| {
-            let iso = step.interference_m + cavity_offset_m;
-            marching_cubes_at_iso(&intruder_grid, iso)
-        })
-        .collect();
-
     Ok(InsertionSimOutputs {
-        ramp,
+        ramp_kind,
         per_layer,
         tet_centroids,
         per_tet_layer,
@@ -840,7 +1032,7 @@ fn run_sim_pipeline(
         scalar_min_max: [energy_min_max, stress_min_max],
         cavity_boundary_faces,
         per_layer_outer_faces,
-        per_step_intruder_meshes,
+        intruder_poses,
     })
 }
 
@@ -1241,14 +1433,14 @@ pub fn render_insertion_sim_section(
             };
 
             ui.separator();
-            render_convergence_summary(ui, &run.ramp, state.n_steps);
+            render_convergence_summary(ui, run, state.n_steps);
 
-            render_force_displacement_plot(ui, &run.ramp);
-            render_step_table(ui, &run.ramp);
+            render_force_displacement_plot(ui, run);
+            render_step_table(ui, run);
             render_layer_table(ui, &run.per_layer);
 
             ui.separator();
-            render_playback_slider(ui, &run.ramp, &mut state.displayed_step);
+            render_playback_slider(ui, run, &mut state.displayed_step);
             ui.checkbox(&mut state.show_deformed, "Show deformed cavity (vs rest)");
             ui.checkbox(&mut state.heat_map_on, "Heat map");
             ui.add_enabled_ui(state.heat_map_on, |ui| {
@@ -1281,8 +1473,12 @@ pub fn render_insertion_sim_section(
 /// Range is `[0, last_converged_step]`; the headline label reads
 /// `Step N / 16 — d = X.XX mm` so the scrub state is legible without
 /// looking at the viewport badge.
-fn render_playback_slider(ui: &mut egui::Ui, ramp: &InsertionRamp, displayed_step: &mut usize) {
-    let n_steps = ramp.steps.len();
+fn render_playback_slider(
+    ui: &mut egui::Ui,
+    run: &InsertionSimOutputs,
+    displayed_step: &mut usize,
+) {
+    let n_steps = run.step_count();
     if n_steps <= 1 {
         return;
     }
@@ -1290,9 +1486,13 @@ fn render_playback_slider(ui: &mut egui::Ui, ramp: &InsertionRamp, displayed_ste
     if *displayed_step > last {
         *displayed_step = last;
     }
-    let interference_mm = ramp.steps[*displayed_step].interference_m * 1e3;
+    // SL.3 — `step_abscissa_m` returns interference for growing
+    // and arc length for sliding; both display as mm. SL.5 will
+    // branch the label `d` (interference) vs `s` (arc length)
+    // on `is_sliding_mode()`.
+    let abscissa_mm = run.step_abscissa_m_at(*displayed_step).unwrap_or(0.0) * 1e3;
     ui.label(format!(
-        "Step {} / {n_steps} — d = {interference_mm:.2} mm",
+        "Step {} / {n_steps} — d = {abscissa_mm:.2} mm",
         *displayed_step + 1,
     ));
     ui.add(
@@ -1314,7 +1514,7 @@ pub fn render_step_badge(
     let Some(run) = state.last_run.as_ref() else {
         return Ok(());
     };
-    let n_steps = run.ramp.steps.len();
+    let n_steps = run.step_count();
     if n_steps <= 1 {
         return Ok(());
     }
@@ -1345,32 +1545,26 @@ pub fn render_step_badge(
 /// reframes it: "seated to X of Y mm" tells the user what depth
 /// the sim *did* reach (which IS engineering-actionable data), not
 /// what depth it failed at.
-fn render_convergence_summary(ui: &mut egui::Ui, ramp: &InsertionRamp, n_steps: usize) {
-    // The ramp's per-step `interference_m` is evenly spaced from
-    // `cavity_inset_m / n_steps` (step 0) to `cavity_inset_m` (the
-    // would-be step `n_steps - 1`). Reconstruct `cavity_inset_m`
-    // from the first step's interference; this works because the
-    // ramp is consumed by the time we render (`InsertionGeometry`
-    // is gone) but `steps[0]` is guaranteed non-empty here — the
-    // upstream `run_sim_pipeline` errors with "no converged step"
-    // when `steps.is_empty()`, so by the time we have a
-    // `last_run`, `steps.len() >= 1`.
-    let target_mm = ramp
-        .steps
-        .first()
-        // `n_steps as f64` is bounded by `DEFAULT_N_STEPS = 16`,
-        // far under `f64`'s exact-integer ceiling.
-        .map_or(0.0, |s| {
-            #[allow(clippy::cast_precision_loss)]
-            let n = n_steps as f64;
-            s.interference_m * n * 1e3
-        });
-    let seated_mm = ramp.steps.last().map_or(0.0, |s| s.interference_m * 1e3);
-    match ramp.failed_at_step {
+fn render_convergence_summary(ui: &mut egui::Ui, run: &InsertionSimOutputs, n_steps: usize) {
+    // Last step's abscissa = "seated depth" (interference for
+    // growing; arc length for sliding — same display: mm). First
+    // step times `n_steps` reconstructs the would-be full-ramp
+    // value (the ramp is consumed by the time we render so we infer
+    // it from the per-step ordinal × first-step ordinate).
+    let first_abscissa = run.step_abscissa_m_at(0).unwrap_or(0.0);
+    let last_abscissa = run
+        .step_abscissa_m_at(run.step_count().saturating_sub(1))
+        .unwrap_or(0.0);
+    // `n_steps as f64` is bounded by `DEFAULT_N_STEPS = 16`, well
+    // under `f64`'s exact-integer ceiling.
+    #[allow(clippy::cast_precision_loss)]
+    let target_mm = first_abscissa * n_steps as f64 * 1e3;
+    let seated_mm = last_abscissa * 1e3;
+    match run.failed_at_step() {
         None => {
             ui.label(format!(
                 "Converged: {} of {} steps — seated to {target_mm:.2} mm (full depth)",
-                ramp.steps.len(),
+                run.step_count(),
                 n_steps,
             ));
         }
@@ -1379,11 +1573,11 @@ fn render_convergence_summary(ui: &mut egui::Ui, ramp: &InsertionRamp, n_steps: 
                 egui::Color32::from_rgb(225, 180, 90),
                 format!(
                     "Converged: {} of {} steps — seated to {seated_mm:.2} of {target_mm:.2} mm",
-                    ramp.steps.len(),
+                    run.step_count(),
                     n_steps,
                 ),
             );
-            if let Some(reason) = &ramp.failure_reason {
+            if let Some(reason) = run.failure_reason() {
                 egui::CollapsingHeader::new("Stall details")
                     .default_open(false)
                     .show(ui, |ui| {
@@ -1407,20 +1601,21 @@ fn render_convergence_summary(ui: &mut egui::Ui, ramp: &InsertionRamp, n_steps: 
 /// (mm), y = contact force magnitude (N). 16 dots (one per converged
 /// step) connected by a sky-blue polyline; axis labels render at the
 /// top-left, bottom-left, and bottom-right of the plot rect.
-fn render_force_displacement_plot(ui: &mut egui::Ui, ramp: &InsertionRamp) {
-    if ramp.steps.is_empty() {
+fn render_force_displacement_plot(ui: &mut egui::Ui, run: &InsertionSimOutputs) {
+    let n_steps = run.step_count();
+    if n_steps == 0 {
         return;
     }
-    let curve: Vec<(f32, f32)> = ramp
-        .steps
-        .iter()
-        .map(|s| {
+    let curve: Vec<(f32, f32)> = (0..n_steps)
+        .filter_map(|k| {
+            let abscissa_m = run.step_abscissa_m_at(k)?;
+            let force_n = run.step_readout_at(k)?.contact_force_magnitude_n;
             // f64 → f32 for screen coords: mm + N values are tiny.
             #[allow(clippy::cast_possible_truncation)]
-            let x = (s.interference_m * 1e3) as f32;
+            let x = (abscissa_m * 1e3) as f32;
             #[allow(clippy::cast_possible_truncation)]
-            let y = s.readout.contact_force_magnitude_n as f32;
-            (x, y)
+            let y = force_n as f32;
+            Some((x, y))
         })
         .collect();
     let x_max = curve.iter().map(|(x, _)| *x).fold(0.0_f32, f32::max);
@@ -1504,11 +1699,12 @@ fn render_force_displacement_plot(ui: &mut egui::Ui, ramp: &InsertionRamp) {
 
 /// Per-step scalar table — one row per converged step. Compact; uses
 /// `egui::Grid` for column alignment.
-fn render_step_table(ui: &mut egui::Ui, ramp: &InsertionRamp) {
-    if ramp.steps.is_empty() {
+fn render_step_table(ui: &mut egui::Ui, run: &InsertionSimOutputs) {
+    let n_steps = run.step_count();
+    if n_steps == 0 {
         return;
     }
-    egui::CollapsingHeader::new(format!("Per-step ({} rows)", ramp.steps.len()))
+    egui::CollapsingHeader::new(format!("Per-step ({n_steps} rows)"))
         .default_open(false)
         .show(ui, |ui| {
             egui::Grid::new("insertion_sim_step_table")
@@ -1523,18 +1719,23 @@ fn render_step_table(ui: &mut egui::Ui, ramp: &InsertionRamp) {
                     ui.label("λ");
                     ui.label("‖P‖");
                     ui.end_row();
-                    for step in &ramp.steps {
-                        render_step_row(ui, step);
+                    for k in 0..n_steps {
+                        render_step_row(ui, run, k);
                     }
                 });
         });
 }
 
-fn render_step_row(ui: &mut egui::Ui, step: &RampStep) {
-    let r: &StepReadout = &step.readout;
-    ui.label(format!("{:.2}", step.interference_m * 1e3));
-    ui.label(format!("{}", step.iter_count));
-    ui.label(format!("{:.1e}", step.final_residual_norm));
+fn render_step_row(ui: &mut egui::Ui, run: &InsertionSimOutputs, k: usize) {
+    let Some(r) = run.step_readout_at(k) else {
+        return;
+    };
+    let abscissa_m = run.step_abscissa_m_at(k).unwrap_or(0.0);
+    let iter_count = run.step_iter_count_at(k).unwrap_or(0);
+    let residual = run.step_residual_norm_at(k).unwrap_or(0.0);
+    ui.label(format!("{:.2}", abscissa_m * 1e3));
+    ui.label(format!("{iter_count}"));
+    ui.label(format!("{residual:.1e}"));
     ui.label(format!("{:.2}", r.contact_force_magnitude_n));
     ui.label(format!(
         "{:.2}…{:.2}",
@@ -1822,7 +2023,7 @@ mod tests {
     fn deformed_boundary_mesh_at_pairs_step_positions_with_snapshot_faces() {
         // Two converged steps, 3 vertices, 1 boundary face.
         let outputs = InsertionSimOutputs {
-            ramp: InsertionRamp {
+            ramp_kind: RampKind::Growing(InsertionRamp {
                 steps: vec![
                     RampStep {
                         interference_m: 0.001,
@@ -1863,7 +2064,7 @@ mod tests {
                 final_x: vec![0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0],
                 n_pinned: 0,
                 result: None,
-            },
+            }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),
             per_tet_layer: Vec::new(),
@@ -1871,7 +2072,7 @@ mod tests {
             scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
             cavity_boundary_faces: vec![[0, 1, 2]],
             per_layer_outer_faces: Vec::new(),
-            per_step_intruder_meshes: Vec::new(),
+            intruder_poses: vec![Isometry3::identity(); 2],
         };
         let step0 = outputs.deformed_boundary_mesh_at(0).expect("step 0");
         assert_eq!(step0.faces, vec![[0, 1, 2]]);
@@ -1890,14 +2091,14 @@ mod tests {
     #[test]
     fn scalar_fields_at_clamps_out_of_range_to_last_step() {
         let outputs = InsertionSimOutputs {
-            ramp: InsertionRamp {
+            ramp_kind: RampKind::Growing(InsertionRamp {
                 steps: Vec::new(),
                 failed_at_step: None,
                 failure_reason: None,
                 final_x: Vec::new(),
                 n_pinned: 0,
                 result: None,
-            },
+            }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),
             per_tet_layer: Vec::new(),
@@ -1911,7 +2112,7 @@ mod tests {
             scalar_min_max: [(1.0, 3.0), (10.0, 30.0)],
             cavity_boundary_faces: Vec::new(),
             per_layer_outer_faces: Vec::new(),
-            per_step_intruder_meshes: Vec::new(),
+            intruder_poses: Vec::new(),
         };
         assert_eq!(outputs.scalar_fields_at(0)[0], vec![1.0]);
         assert_eq!(outputs.scalar_fields_at(1)[0], vec![2.0]);
@@ -1941,122 +2142,49 @@ mod tests {
         assert_eq!(global_min_max_across(&[], 0), (0.0, 0.0));
     }
 
-    /// Slice S11.1 — synthetic outputs fixture for the per-step
-    /// intruder mesh tests below. 3 hand-built intruder meshes with
-    /// monotonically increasing vertex counts (1 → 2 → 3) standing in
-    /// for the cavity-sized → bare-scan growth of the real FEM
-    /// intruder iso surface across the ramp. Synthetic over going
-    /// through `run_sim_pipeline`: a real-pipeline test would tie this
-    /// to a ramp + cached SDF + ~minute of solve, outside the unit-
-    /// test budget.
-    fn synthetic_outputs_with_step_intruder_meshes(
-        intruder_meshes: Vec<IndexedMesh>,
-    ) -> InsertionSimOutputs {
-        let n_steps = intruder_meshes.len();
-        InsertionSimOutputs {
-            ramp: InsertionRamp {
-                steps: (0..n_steps)
-                    .map(|k| RampStep {
-                        // `k as f64` lossless for the test's small `n_steps`.
-                        #[allow(clippy::cast_precision_loss)]
-                        interference_m: 0.001 * (k as f64 + 1.0),
-                        iter_count: 1,
-                        final_residual_norm: 0.0,
-                        x_final: Vec::new(),
-                        readout: StepReadout {
-                            n_active_contact_pairs: 0,
-                            contact_force_total_n: Vector3::zeros(),
-                            contact_force_magnitude_n: 0.0,
-                            max_principal_stretch: 1.0,
-                            min_principal_stretch: 1.0,
-                            max_first_piola_frobenius_pa: 0.0,
-                            mean_strain_energy_density_j_per_m3: 0.0,
-                        },
-                    })
-                    .collect(),
-                failed_at_step: None,
-                failure_reason: None,
-                final_x: Vec::new(),
-                n_pinned: 0,
-                result: None,
-            },
-            per_layer: Vec::new(),
-            tet_centroids: Vec::new(),
-            per_tet_layer: Vec::new(),
-            per_step_scalar_fields: Vec::new(),
-            scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
-            cavity_boundary_faces: Vec::new(),
-            per_layer_outer_faces: Vec::new(),
-            per_step_intruder_meshes: intruder_meshes,
-        }
-    }
-
-    fn mk_mesh_with_n_vertices(n: usize) -> IndexedMesh {
-        let mut m = IndexedMesh::new();
-        for i in 0..n {
-            // `i as f64` lossless for tiny test sizes.
-            #[allow(clippy::cast_precision_loss)]
-            m.vertices.push(Point3::new(i as f64, 0.0, 0.0));
-        }
-        m
-    }
-
-    /// Slice S11.1 — `intruder_mesh_at` returns meshes whose vertex
-    /// counts increase from step 0 to step N-1. The real FEM intruder
-    /// is an SDF offset that grows from cavity-sized at step 1 to bare
-    /// scan at step N; the iso surface gains vertices as it expands.
+    /// SL.3 — `intruder_pose_at` returns `Some(identity)` for growing-
+    /// mode runs (the legacy uniform-offset ramp doesn't translate
+    /// the intruder; pose-of-identity is the spec-§3e contract).
+    /// Returns `None` past the converged range so the caller can hide
+    /// the entity rather than displaying stale state.
     #[test]
-    fn per_step_intruder_meshes_grow_from_step0_to_stepn_minus_1() {
-        let outputs = synthetic_outputs_with_step_intruder_meshes(vec![
-            mk_mesh_with_n_vertices(1),
-            mk_mesh_with_n_vertices(2),
-            mk_mesh_with_n_vertices(3),
-        ]);
-        let first = outputs.intruder_mesh_at(0).expect("step 0");
-        let last = outputs.intruder_mesh_at(2).expect("step 2");
-        assert!(
-            first.vertices.len() < last.vertices.len(),
-            "intruder iso surface should grow over the ramp \
-             ({} → {} vertices)",
-            first.vertices.len(),
-            last.vertices.len(),
-        );
-    }
-
-    /// Slice S11.1 — `run_sim_pipeline` contract: exactly one intruder
-    /// mesh per converged step. Caller (`update_intruder_mesh`) indexes
-    /// by `displayed_step`, so a count mismatch would race with the
-    /// playback slider's bounds.
-    #[test]
-    fn per_step_intruder_meshes_count_matches_ramp_steps() {
-        let outputs = synthetic_outputs_with_step_intruder_meshes(vec![
-            mk_mesh_with_n_vertices(1),
-            mk_mesh_with_n_vertices(2),
-            mk_mesh_with_n_vertices(3),
-        ]);
-        assert_eq!(
-            outputs.per_step_intruder_meshes.len(),
-            outputs.ramp.steps.len(),
-            "per-step intruder mesh count must match the ramp step count",
-        );
-    }
-
-    /// Slice S11.1 — `intruder_mesh_at` returns `None` past the
-    /// converged range (fail-closed, same posture as
-    /// `deformed_boundary_mesh_at`). The caller hides the entity
-    /// rather than displaying stale geometry.
-    #[test]
-    fn intruder_mesh_at_returns_none_past_converged_range() {
-        let outputs = synthetic_outputs_with_step_intruder_meshes(vec![
-            mk_mesh_with_n_vertices(1),
-            mk_mesh_with_n_vertices(2),
-        ]);
-        // Steps 0, 1 in range.
-        assert!(outputs.intruder_mesh_at(0).is_some());
-        assert!(outputs.intruder_mesh_at(1).is_some());
+    fn intruder_pose_at_returns_identity_for_growing_mode_and_none_past_end() {
+        let outputs = synthetic_outputs_for_slab_tests(Vec::new(), Vec::new(), 2, 3);
+        let p0 = outputs.intruder_pose_at(0).expect("step 0 pose");
+        let p1 = outputs.intruder_pose_at(1).expect("step 1 pose");
+        // Translation magnitude is zero — identity.
+        assert!(p0.translation.vector.norm() < 1e-12);
+        assert!(p1.translation.vector.norm() < 1e-12);
         // Past the converged tail.
-        assert!(outputs.intruder_mesh_at(2).is_none());
-        assert!(outputs.intruder_mesh_at(99).is_none());
+        assert!(outputs.intruder_pose_at(2).is_none());
+        assert!(outputs.intruder_pose_at(99).is_none());
+    }
+
+    /// SL.3 — `step_count` + `is_sliding_mode` dispatch on `RampKind`.
+    /// Growing-mode fixture (synthetic_outputs_for_slab_tests builds
+    /// `RampKind::Growing` under the hood) returns the right counts +
+    /// `is_sliding_mode() == false`.
+    #[test]
+    fn step_count_and_is_sliding_mode_dispatch_growing() {
+        let outputs = synthetic_outputs_for_slab_tests(Vec::new(), Vec::new(), 5, 3);
+        assert_eq!(outputs.step_count(), 5);
+        assert!(!outputs.is_sliding_mode());
+    }
+
+    /// SL.3 — `step_abscissa_m_at` returns the per-step interference
+    /// in growing mode. The synthetic fixture sets `interference_m =
+    /// 0.001` per step (1 mm), so every step's abscissa reads 1 mm.
+    #[test]
+    fn step_abscissa_m_at_returns_interference_for_growing_mode() {
+        let outputs = synthetic_outputs_for_slab_tests(Vec::new(), Vec::new(), 3, 3);
+        for k in 0..3 {
+            let a = outputs.step_abscissa_m_at(k).expect("in-range step");
+            assert!(
+                (a - 0.001).abs() < 1e-12,
+                "growing-mode abscissa at step {k} must be 1 mm; got {a}",
+            );
+        }
+        assert!(outputs.step_abscissa_m_at(99).is_none());
     }
 
     /// Slice S11.2 — synthetic outputs builder for the slab-mesh
@@ -2070,7 +2198,7 @@ mod tests {
         n_vertices: usize,
     ) -> InsertionSimOutputs {
         InsertionSimOutputs {
-            ramp: InsertionRamp {
+            ramp_kind: RampKind::Growing(InsertionRamp {
                 steps: (0..n_steps)
                     .map(|_| RampStep {
                         interference_m: 0.001,
@@ -2093,7 +2221,7 @@ mod tests {
                 final_x: Vec::new(),
                 n_pinned: 0,
                 result: None,
-            },
+            }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),
             per_tet_layer: Vec::new(),
@@ -2101,7 +2229,7 @@ mod tests {
             scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
             cavity_boundary_faces,
             per_layer_outer_faces,
-            per_step_intruder_meshes: Vec::new(),
+            intruder_poses: vec![Isometry3::identity(); n_steps],
         }
     }
 
