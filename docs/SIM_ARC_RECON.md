@@ -107,12 +107,15 @@ Each row is one feature delta between end-state and current state. Effort sized 
 - **D3 (retraction physics fidelity)**: quasi-static reverse-ramp is just relabeling — true retraction would solve a hysteresis cycle (path-dependent material response). **Default**: treat retraction as reverse-quasi-static (no hysteresis); document explicitly. Yeoh's load/unload is path-independent in the quasi-static limit anyway. Real visco-elastic hysteresis is a sim-soft v2 sub-arc, not this one.
 - **D4 (intruder motion axis)**: scan translates along cavity-mouth normal (- cap-plane outward normal) by `interference_m`. **Default**: use cap-plane outward normal from `cf_cap_planes::CapPlane`; iter-1 has a single cap so this is unambiguous. Multi-cap designs would need a primary-cap convention.
 
-### Open (need user input before S6+ start)
+### Closed in recon session (2026-05-18, user-confirmed)
 
-- **D5 (scoring band thresholds)**: snug-pressure band [low_kPa, high_kPa] — what are the numbers? The fit-viz vision says "snug ≠ crushing ≠ floating" but doesn't quantify. Workshop guess: low = 5 kPa (gentle contact), high = 100 kPa (firm but not bruising). User decides; defaults shipped + slider for tuning.
-- **D6 (score aggregation formula)**: many shapes possible (mean coverage × in-band ratio × time? Penalize floating + crushing equally? Asymmetric penalty?). Default proposal: per-step score `s_k = (1/N_cavity) × Σ_v in_band(p_v)` where `in_band(p) ∈ [0, 1]` is a smooth tent over [low, high]; over-cycle score `= mean(s_k)` across insert + retract. User-editable formula? Or fixed?
-- **D7 (UI surface for displayed-step scrub)**: timeline slider in the panel? Bevy viewport overlay? Both? **Recommend**: panel slider (consistent with existing UI) + a small frame number badge in the viewport.
-- **D8 (PLY/JSON export of ramp + scores)**: should the [Simulate Insertion] button optionally save a sequence of PLYs (one per step) + a JSON scoring record to disk, for cf-view scrub + external analysis? Mirrors row-23's output shape. Adds ~30 min to S2/S3 if shipped together. **Recommend**: yes, optional checkbox in panel ("Save PLY sequence on completion").
+- **D5 (scoring band thresholds) — RESOLVED**: `[5, 100] kPa`. 5 kPa = gentle contact threshold (below = "floating"); 100 kPa = firm-but-not-bruising threshold (above = "crushing"). Ship as defaults + UI slider on the Insertion Sim panel for runtime tuning. Workshop-tunable per design.
+- **D7 (UI surface for displayed-step scrub) — RESOLVED**: panel slider in the Insertion Sim section (consistent with existing UI) + a small `Step N/16` badge overlaid in the viewport corner so the current frame is visible without glancing at the panel. ~10 LOC extra for the badge over the slider-only option.
+- **D8 (PLY/JSON export of ramp + scores) — RESOLVED**: yes, optional checkbox "Save PLY sequence on completion" on the Insertion Sim panel (default OFF). When ON: writes `~/scans/insertion_sim/<design_name>/step_NN.ply` per step + `result.json` (F-d curve + per-layer aggregates + per-step scores). Workshop-useful for cf-view design reviews + external analysis. Adds ~30 min to S2 (PLY emission alongside Bevy mesh build).
+
+### Open (need user input before S5+ starts)
+
+- **D6 (score aggregation formula)**: many shapes possible (mean coverage × in-band ratio × time? Penalize floating + crushing equally? Asymmetric penalty?). Default proposal: per-step score `s_k = (1/N_cavity) × Σ_v in_band(p_v)` where `in_band(p) ∈ [0, 1]` is a smooth tent over [low, high]; over-cycle score `= mean(s_k)` across insert + retract. User-editable formula? Or fixed? **Defer to next-session fresh-eyes thought; D6 is the load-bearing scoring math.**
 
 ### Settled by empirical baseline (no action needed)
 
@@ -236,7 +239,7 @@ S1 → S2 → S3 → S4 (visual squish story, ~5-7 hr) → S5 (D5 needed) → S6
 
 3. **Read §6 sub-leaf ladder third**. Suggested execution: S1 → S2 → S3 → S4 ships the visual story (~5-7 hr); user can stop here and have a complete arc. S5–S7 add scoring (~4-5 hr); S8–S10 polish (~1.5 hr). Total ~11-14 hr.
 
-4. **Resolve open decisions D5–D8 with user before starting S5**. D5 (pressure thresholds) and D6 (score formula) are the load-bearing-for-scoring decisions; D7 + D8 are UX preferences.
+4. **D5 + D7 + D8 resolved in the recon session** (2026-05-18). **D6 still open** — the score aggregation formula needs fresh-eyes thought + maybe user-sketched formula shape. Resolve D6 before starting S7 (over-cycle aggregate score).
 
 5. **Implementation start**: S1 is a ~1 hr UI-only change in `insertion_sim_ui.rs` (add slider + plumb to mesh-rebuild key). Lowest-risk first sub-leaf to validate the recon's empirical baseline + the UI integration approach.
 
