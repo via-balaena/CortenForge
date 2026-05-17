@@ -532,27 +532,34 @@ fn clip_mesh_against_cap_plane(mesh: &IndexedMesh, plane: &CapPlane) -> IndexedM
     out
 }
 
-/// Extract one layer's iso surface from the cached grid, then trim
-/// triangles that fall on the cap-extension side of every cap plane.
+/// Extract one layer's iso surface from the cached grid as a CLOSED
+/// pinned-floor shell.
 ///
-/// `offset_m` is the iso value in meters: positive = outward
-/// (layer outer surfaces), negative = inward (cavity surface),
-/// zero = original scan surface.
+/// `offset_m` is the iso value in meters: positive = outward (layer
+/// outer surfaces), negative = inward (cavity surface), zero = original
+/// scan surface.
 ///
-/// The cap-plane half-space clip is uniform across cavity and outer
-/// extractions:
-/// - For the cavity (`offset_m < 0`) the two-SDF construction already
-///   terminates the iso surface at the cap plane, so the clip is
-///   typically a no-op (any triangles that drift past the cap plane
-///   from MC interpolation jitter get pruned).
-/// - For an outer surface (`offset_m > 0`) the iso extends PAST the
-///   cap plane as a "skirt" (the dome+wall-only SDF has large
-///   unsigned distance up there, distance to the cap-edge ring), so
-///   the clip removes the skirt and leaves a knife-edge brim at the
-///   cap plane.
+/// **Pinned-floor construction** (pinned-floor scope-C sub-leaf 2):
+/// clone the cached grid, compose
+/// `max(scan_sd(p) - offset_m, max over caps of (p - centroid)·normal)`
+/// per cell, then extract at iso 0. The composition is a per-cell SDF-
+/// level intersection of the offset dome-wall body with every cap's
+/// body-interior half-space (outward cap normals mean `(p - c)·n > 0`
+/// is the cap-extension side); marching cubes naturally triangulates a
+/// flat floor at each cap plane where the half-space SDF crosses zero.
 ///
-/// Cheap (sub-millisecond MC on a 5 mm grid + O(faces × caps) clip;
-/// caps is 1–2 in practice).
+/// **No-caps fast path** (regression sentinel): when `cap_planes` is
+/// empty, skip the grid clone + per-cell loop and extract directly at
+/// `MarchingCubesConfig::at_iso_value(offset_m)`. Byte-identical to
+/// the pre-pinned-floor behavior — the post-rewrite path collapses to
+/// the original single MC call.
+///
+/// **Cost**: no-caps path matches the legacy single-MC cost. The
+/// pinned-floor path adds one grid clone (`O(cells)` alloc; ~160 kB on
+/// iter-1's 20 k cells) + an `O(cells × n_caps)` compose pass. iter-1
+/// measures ~1.5 ms total (was ~0.5 ms); negligible against the frame
+/// budget. In-place composition (no clone) is a Followup F6 optimization
+/// if profiling surfaces a real cost.
 ///
 /// Pure: does not mutate the cache.
 ///
@@ -574,12 +581,32 @@ pub(crate) fn extract_layer_surface(
         offset_m.abs(),
         LAYER_GRID_MARGIN_M,
     );
-    let config = MarchingCubesConfig::at_iso_value(offset_m);
-    let mut mesh = marching_cubes(&cache.grid, &config);
-    for plane in cap_planes {
-        mesh = clip_mesh_against_cap_plane(&mesh, plane);
+    if cap_planes.is_empty() {
+        // No-caps fast path: byte-identical to pre-pinned-floor.
+        let config = MarchingCubesConfig::at_iso_value(offset_m);
+        return marching_cubes(&cache.grid, &config);
     }
-    mesh
+    let mut composed = cache.grid.clone();
+    let (nx, ny, nz) = composed.dimensions();
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let p = composed.position(ix, iy, iz);
+                let shifted_scan_sd = composed.get(ix, iy, iz) - offset_m;
+                // Outward cap normals: (p - c)·n > 0 outside the body
+                // (cap-extension side). Intersection of body-interior
+                // half-spaces is max-fold across cap planes; on the
+                // body-interior side every cap_sd is ≤ 0 so the
+                // intersection collapses to shifted_scan_sd.
+                let cap_sd = cap_planes
+                    .iter()
+                    .map(|c| (p.coords - c.centroid.coords).dot(&c.normal))
+                    .fold(f64::NEG_INFINITY, f64::max);
+                composed.set(ix, iy, iz, shifted_scan_sd.max(cap_sd));
+            }
+        }
+    }
+    marching_cubes(&composed, &MarchingCubesConfig::at_iso_value(0.0))
 }
 
 #[cfg(test)]
@@ -1485,12 +1512,12 @@ mod tests {
     #[test]
     fn extract_layer_surface_with_outer_clip_trims_skirt_on_cube() {
         // Cube of half-extent 50 mm, top face flagged as cap plane,
-        // outward offset T = 10 mm. Without the post-MC clip the
-        // outer iso surface extends past the cap plane (forming a
-        // skirt going to z ≈ +60 mm because the dome+wall-only SDF
-        // has large unsigned distance up there). With the clip the
-        // outer iso terminates at the cap plane (z ≤ +50 mm modulo
-        // half a cell).
+        // outward offset T = 10 mm. The pinned-floor composition (sub-
+        // leaf 2) intersects the offset shell with the cap-plane half-
+        // space at extract time, so the outer iso terminates at the
+        // cap plane (z ≤ +50 mm modulo half a cell) with a CLOSED flat
+        // floor — the pre-pinned-floor post-MC clip used to leave a
+        // knife-edge brim; the new path produces a closed shell.
         let cube = axis_aligned_cube(0.05, Vector3::zeros());
         let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
         let cell = 0.005;
@@ -1502,6 +1529,201 @@ mod tests {
         assert!(
             max_z <= 0.05 + 1e-9,
             "outer iso top z = {max_z} must be clipped to cap plane (z = 0.05)",
+        );
+    }
+
+    // ----- Pinned-floor scope-C sub-leaf 2 ----------------------------
+
+    #[test]
+    fn extract_pinned_floor_cube_cavity_has_flat_floor() {
+        // Cube of half-extent 50 mm, cap at top face (z=+0.05). Cavity
+        // offset T = -5 mm. Cavity iso surface should be a CLOSED shell
+        // with a flat floor pinned at z = +0.05 (the cap plane). Bottom
+        // of cavity extends down to z = -0.045 (cube floor + |T|).
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cell = 0.005;
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let cavity = extract_layer_surface(&cache, &caps, -0.005);
+        assert!(!cavity.vertices.is_empty(), "cavity must extract");
+        // Flat floor pinned at cap plane: max z ≈ 0.05 (modulo half a
+        // cell of MC vertex placement jitter).
+        let max_z = cavity.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+        assert!(
+            (max_z - 0.05).abs() < 0.5 * cell + 1e-9,
+            "cavity top z = {max_z} not within half a cell of cap plane (0.05)",
+        );
+        // Some vertices should land near z = 0.05 (the floor itself —
+        // not just the rim where the dome wall meets the cap plane).
+        let near_cap = cavity
+            .vertices
+            .iter()
+            .filter(|v| (v.z - 0.05).abs() < cell)
+            .count();
+        assert!(
+            near_cap >= 4,
+            "expected ≥ 4 vertices on the floor at z = 0.05; got {near_cap}",
+        );
+    }
+
+    #[test]
+    fn extract_pinned_floor_cube_outer_grown_has_flat_floor() {
+        // Same cube + cap; outer offset T = +5 mm. Outer iso surface
+        // is a CLOSED shell with flat floor at cap plane (z = +0.05).
+        // Outer surface reaches outward to (h + T) = 0.055 on the side
+        // faces; capped at z = 0.05 from above.
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cell = 0.005;
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let outer = extract_layer_surface(&cache, &caps, 0.005);
+        assert!(!outer.vertices.is_empty(), "outer must extract");
+        // Cap plane bounds max z.
+        let max_z = outer.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+        assert!(
+            max_z <= 0.05 + 1e-9,
+            "outer max z = {max_z}; must be ≤ cap plane (0.05)",
+        );
+        // Some vertices on the flat floor.
+        let near_cap = outer
+            .vertices
+            .iter()
+            .filter(|v| (v.z - 0.05).abs() < cell)
+            .count();
+        assert!(near_cap >= 4, "outer must have flat-floor vertices");
+        // Side extent reaches (h + T) = 0.055.
+        let max_x = outer.vertices.iter().map(|v| v.x).fold(f64::MIN, f64::max);
+        assert!(
+            (max_x - 0.055).abs() < cell,
+            "outer max x = {max_x}; expected ≈ 0.055",
+        );
+    }
+
+    #[test]
+    fn extract_pinned_floor_no_caps_fast_path_byte_identical() {
+        // Regression sentinel: empty cap_planes must produce
+        // byte-identical output to a direct MC at_iso_value call. The
+        // no-caps fast path is what every existing consumer relies on
+        // when no .prep.toml caps are present.
+        let sphere = unit_icosphere(3);
+        let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build");
+        let from_extract = extract_layer_surface(&cache, &[], 0.1);
+        let from_direct = marching_cubes(&cache.grid, &MarchingCubesConfig::at_iso_value(0.1));
+        assert_eq!(
+            from_extract.vertices.len(),
+            from_direct.vertices.len(),
+            "vertex count must match",
+        );
+        assert_eq!(
+            from_extract.faces.len(),
+            from_direct.faces.len(),
+            "face count must match",
+        );
+        for (a, b) in from_extract
+            .vertices
+            .iter()
+            .zip(from_direct.vertices.iter())
+        {
+            assert_eq!(a.coords, b.coords, "vertex coords must be bit-identical");
+        }
+        for (a, b) in from_extract.faces.iter().zip(from_direct.faces.iter()) {
+            assert_eq!(a, b, "face indices must be bit-identical");
+        }
+    }
+
+    #[test]
+    fn extract_pinned_floor_multi_cap_closes_both_floors() {
+        // Cube with TWO opposed caps (top + bottom face). Cavity offset
+        // T = -5 mm. Iso surface should be a closed shell with flat
+        // floors at BOTH cap planes (z = -0.05 and z = +0.05).
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let top = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let bot = cap_plane_at(Point3::new(0.0, 0.0, -0.05), Vector3::new(0.0, 0.0, -1.0));
+        let cell = 0.005;
+        let caps = [top, bot];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let cavity = extract_layer_surface(&cache, &caps, -0.005);
+        assert!(!cavity.vertices.is_empty(), "cavity must extract");
+        let max_z = cavity.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+        let min_z = cavity.vertices.iter().map(|v| v.z).fold(f64::MAX, f64::min);
+        // Both caps pin the floors.
+        assert!(
+            (max_z - 0.05).abs() < 0.5 * cell + 1e-9,
+            "top floor not at +0.05; max z = {max_z}",
+        );
+        assert!(
+            (min_z - -0.05).abs() < 0.5 * cell + 1e-9,
+            "bottom floor not at -0.05; min z = {min_z}",
+        );
+        // Vertices on both floors.
+        let near_top = cavity
+            .vertices
+            .iter()
+            .filter(|v| (v.z - 0.05).abs() < cell)
+            .count();
+        let near_bot = cavity
+            .vertices
+            .iter()
+            .filter(|v| (v.z - -0.05).abs() < cell)
+            .count();
+        assert!(near_top >= 4, "missing top-floor vertices");
+        assert!(near_bot >= 4, "missing bottom-floor vertices");
+    }
+
+    #[test]
+    fn extract_pinned_floor_cube_taubin_drift_robustness() {
+        // Synthetic Taubin-drift fixture: cube with top face vertices
+        // pushed off the cap plane by ±1 mm. The face-normal cap-face
+        // classifier strips the top face for the open SDF (regression
+        // already pinned in `dome_wall_only_mesh_strips_taubin_drifted_cap_face`
+        // in cf-cap-planes' tests). With the pinned-floor composition,
+        // the floor at the cap plane is built by the cap-plane SDF
+        // half-space — NOT the cleaned-scan vertices — so the iso
+        // floor sits at the cap plane regardless of the vertex drift.
+        let h = 0.05_f64;
+        let drift = 1e-3_f64;
+        let v = vec![
+            Point3::new(-h, -h, -h),
+            Point3::new(h, -h, -h),
+            Point3::new(h, h, -h),
+            Point3::new(-h, h, -h),
+            Point3::new(-h, -h, h - drift),
+            Point3::new(h, -h, h + drift),
+            Point3::new(h, h, h - drift),
+            Point3::new(-h, h, h + drift),
+        ];
+        let faces: Vec<[u32; 3]> = vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        let drifted_cube = IndexedMesh { vertices: v, faces };
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, h), Vector3::new(0.0, 0.0, 1.0));
+        let cell = 0.005;
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&drifted_cube, &caps, cell, 0.043).expect("build");
+        let cavity = extract_layer_surface(&cache, &caps, -0.005);
+        assert!(
+            !cavity.vertices.is_empty(),
+            "cavity must extract on drifted cube"
+        );
+        let max_z = cavity.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+        // Floor pinned at the cap plane (z = h), NOT the drifted
+        // vertices (some at h+drift, some at h-drift).
+        assert!(
+            (max_z - h).abs() < 0.5 * cell + 1e-9,
+            "floor drifted from cap plane: max z = {max_z}; expected ≈ {h}",
         );
     }
 }
