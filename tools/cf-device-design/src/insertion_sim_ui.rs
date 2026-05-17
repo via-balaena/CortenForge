@@ -18,6 +18,7 @@
 //! and full-per-tet-mesh) gives ~1 cm spatial detail on the existing
 //! smooth proxy shells without a new mesh-render path.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use anyhow::Result;
@@ -167,6 +168,18 @@ pub struct InsertionSimOutputs {
     /// solve so it stays at its rest position, the cavity surface is
     /// what visibly bulges as the intruder seats.
     pub bcc_boundary_faces: Vec<[u32; 3]>,
+    /// Slice S3 — per-layer OUTWARD face triangles for the deformed
+    /// layer-shells render. Outer index is layer (innermost-first,
+    /// matches `per_tet_layer`); inner triangle indices reference the
+    /// same vertex layout as `x_final` for any step. Built once at
+    /// pipeline time from the BCC tet adjacency: a face's "outward
+    /// face of layer i" if it sits between layer i and layer i+1
+    /// (inter-layer interface) OR it's on the global outer skin AND
+    /// its incident tet is in the OUTERMOST layer (no further layer
+    /// outward to claim it). Cavity-side global-boundary faces are
+    /// excluded — the cavity render owns the cavity surface, not the
+    /// layer-shells render.
+    pub per_layer_outer_faces: Vec<Vec<[u32; 3]>>,
 }
 
 impl InsertionSimOutputs {
@@ -203,6 +216,36 @@ impl InsertionSimOutputs {
         let mut mesh = IndexedMesh::new();
         mesh.vertices = positions;
         mesh.faces = self.bcc_boundary_faces.clone();
+        Some(mesh)
+    }
+
+    /// Slice S3 — build a deformed layer-shell `IndexedMesh` at the
+    /// requested step for layer `layer_idx`. Pairs the layer's
+    /// outer-face triangles with the step's `x_final`. Returns `None`
+    /// if `layer_idx` exceeds the sim's layer count, the layer has no
+    /// outer faces (e.g., degenerate single-cell layer), or `step` is
+    /// out of the converged range.
+    ///
+    /// The mesh still carries every BCC vertex in its `.vertices`
+    /// slot (only the layer's outer-face triangles reference a subset)
+    /// — the unreferenced vertices are silently ignored by the bevy
+    /// mesh build's `Mesh::compute_smooth_normals` consumer and the
+    /// per-GPU-asset waste is small at iter-1 (≤ a few hundred KB).
+    #[must_use]
+    pub fn deformed_layer_mesh_at(&self, layer_idx: usize, step: usize) -> Option<IndexedMesh> {
+        let faces = self.per_layer_outer_faces.get(layer_idx)?;
+        if faces.is_empty() {
+            return None;
+        }
+        let ramp_step = self.ramp.steps.get(step)?;
+        let positions: Vec<Point3<f64>> = ramp_step
+            .x_final
+            .chunks_exact(3)
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices = positions;
+        mesh.faces = faces.clone();
         Some(mesh)
     }
 }
@@ -591,6 +634,16 @@ fn run_sim_pipeline(
     let energy_min_max = global_min_max_across(&per_step_scalar_fields, 0);
     let stress_min_max = global_min_max_across(&per_step_scalar_fields, 1);
 
+    // Slice S3 — build per-layer outer-face triangle lists for the
+    // deformed layer-shells render. Requires the outer-skin pinned
+    // vertex set; detected from the final converged step's `x_final`
+    // (zero displacement = Dirichlet-pinned). Done AFTER the ramp so
+    // both `tets` snapshot and the final step's `x_final` are
+    // available without re-running `outer_skin_bc`.
+    let outer_skin_vertices = detect_outer_skin_vertices(&rest_positions, &ramp.final_x);
+    let per_layer_outer_faces =
+        build_per_layer_outer_faces(&tets, &per_tet_layer, &outer_skin_vertices, n_layers);
+
     Ok(InsertionSimOutputs {
         ramp,
         per_layer,
@@ -599,6 +652,7 @@ fn run_sim_pipeline(
         per_step_scalar_fields,
         scalar_min_max: [energy_min_max, stress_min_max],
         bcc_boundary_faces,
+        per_layer_outer_faces,
     })
 }
 
@@ -688,6 +742,127 @@ fn global_min_max(values: &[f64]) -> (f64, f64) {
     } else {
         (lo, hi)
     }
+}
+
+/// Slice S3 — partition the BCC analysis mesh's triangles into
+/// per-layer OUTWARD faces. Two kinds of triangle qualify as layer i's
+/// outer face:
+///
+/// 1. **Inter-layer interface.** A triangle shared by exactly two
+///    tets `t_a`, `t_b` with `per_tet_layer[t_a] == i` and
+///    `per_tet_layer[t_b] == i + 1` (or vice-versa): the triangle is
+///    layer `min`'s outer face (and layer `max`'s inner face, which
+///    we don't render — the outer-face of the inner layer is enough
+///    to depict the boundary).
+/// 2. **Outermost global-boundary face.** A triangle on the global
+///    BCC boundary (only one incident tet `t`) with
+///    `per_tet_layer[t] == n_layers - 1` AND all 3 vertices in
+///    `outer_skin_vertices`: layer N-1's outer skin. Cavity-side
+///    global-boundary triangles (layer 0, vertices not pinned) are
+///    excluded — the cavity render owns them.
+///
+/// Winding follows the first tet to register the face (any of the 4
+/// vertex-triples extracted in canonical order); the per-layer-shell
+/// material is double-sided so winding doesn't affect visibility.
+///
+/// Cost: O(n_tets × 4 × log n_faces) ≈ 5 M ops at iter-1 (~73 k tets);
+/// runs once at sim completion inside the async pipeline.
+fn build_per_layer_outer_faces(
+    tets: &[[VertexId; 4]],
+    per_tet_layer: &[usize],
+    outer_skin_vertices: &std::collections::BTreeSet<VertexId>,
+    n_layers: usize,
+) -> Vec<Vec<[u32; 3]>> {
+    if n_layers == 0 {
+        return Vec::new();
+    }
+    // Sorted-key → (first-encountered-face winding, list of incident tet ids).
+    let mut face_map: BTreeMap<[u32; 3], ([u32; 3], Vec<usize>)> = BTreeMap::new();
+    for (t, verts) in tets.iter().enumerate() {
+        let faces = [
+            [verts[1], verts[2], verts[3]],
+            [verts[0], verts[2], verts[3]],
+            [verts[0], verts[1], verts[3]],
+            [verts[0], verts[1], verts[2]],
+        ];
+        for f in faces {
+            let mut sorted = f;
+            sorted.sort_unstable();
+            face_map
+                .entry(sorted)
+                .or_insert_with(|| (f, Vec::new()))
+                .1
+                .push(t);
+        }
+    }
+    let mut per_layer: Vec<Vec<[u32; 3]>> = vec![Vec::new(); n_layers];
+    let outermost = n_layers - 1;
+    for (_sorted, (face, tet_ids)) in face_map {
+        match tet_ids.as_slice() {
+            [t_a, t_b] => {
+                let l_a = per_tet_layer[*t_a];
+                let l_b = per_tet_layer[*t_b];
+                if l_a == l_b {
+                    continue; // interior to a single layer
+                }
+                let lower = l_a.min(l_b);
+                if lower < n_layers {
+                    per_layer[lower].push(face);
+                }
+            }
+            [t] => {
+                if per_tet_layer[*t] != outermost {
+                    continue; // inner cavity surface — not a layer's outer
+                }
+                if !face.iter().all(|v| outer_skin_vertices.contains(v)) {
+                    continue; // cap-plane side face or other non-skin boundary
+                }
+                per_layer[outermost].push(face);
+            }
+            _ => {
+                // 0 or >2 incident tets in a tet mesh: malformed; skip
+                // defensively. Production BCC meshes are 2-manifold so
+                // this branch should be unreachable.
+            }
+        }
+    }
+    per_layer
+}
+
+/// Slice S3 — detect the outer-skin pinned vertex set from the final
+/// converged step's `x_final`. Outer-skin vertices are Dirichlet-
+/// pinned (zero displacement); other boundary vertices move under
+/// intruder contact. The strict-equality check is robust because
+/// pinned vertices are written verbatim from rest by the solver (no
+/// arithmetic applied), so even a sub-µm cavity displacement
+/// distinguishes them from outer-skin verts.
+///
+/// Falls back to an empty set when no step converged or
+/// `result.final_per_tet` is absent — callers must tolerate an empty
+/// pinned set (no outer-skin face passes the membership check, so
+/// layer N-1 ends up with an empty outer face list, which
+/// `deformed_layer_mesh_at` reports as `None` → falls through to the
+/// rest-frame SDF iso).
+fn detect_outer_skin_vertices(
+    rest_positions: &[Vector3<f64>],
+    final_x: &[f64],
+) -> std::collections::BTreeSet<VertexId> {
+    if final_x.len() != 3 * rest_positions.len() {
+        return std::collections::BTreeSet::new();
+    }
+    let mut pinned = std::collections::BTreeSet::new();
+    for (v_idx, rest) in rest_positions.iter().enumerate() {
+        let offset = 3 * v_idx;
+        if final_x[offset] == rest.x
+            && final_x[offset + 1] == rest.y
+            && final_x[offset + 2] == rest.z
+        {
+            // `v_idx` is bounded by `n_vertices` (Phase 4 ≤ u32::MAX).
+            #[allow(clippy::cast_possible_truncation)]
+            pinned.insert(v_idx as VertexId);
+        }
+    }
+    pinned
 }
 
 /// Slice S1 — `(min, max)` across every step's slot-`slot_idx` per-tet
@@ -1335,6 +1510,70 @@ mod tests {
         assert_eq!(indices, vec![0, 1]);
     }
 
+    /// Slice S3 — `build_per_layer_outer_faces` assigns inter-layer
+    /// interface triangles to the LOWER layer's outer face + claims
+    /// outermost global-boundary triangles for the OUTERMOST layer.
+    /// 2-tet fixture: tet 0 in layer 0, tet 1 in layer 1, sharing
+    /// face [v0, v1, v2]. Layer 0's outer should be that shared face;
+    /// layer 1's outer should be the OUTERMOST-skin face (the face
+    /// opposite v_shared in tet 1, with all 3 verts pinned).
+    #[test]
+    fn build_per_layer_outer_faces_assigns_interface_and_outermost_skin() {
+        use std::collections::BTreeSet;
+        // Tet 0 = [0, 1, 2, 3] in layer 0; tet 1 = [1, 2, 3, 4] in
+        // layer 1. They share the face {1, 2, 3} (the "interface").
+        // Tet 1's other faces are {1, 2, 4}, {1, 3, 4}, {2, 3, 4}; if
+        // their vertices include 4 (the outermost vertex), they are
+        // candidates for layer 1's outer skin.
+        let tets: Vec<[VertexId; 4]> = vec![[0, 1, 2, 3], [1, 2, 3, 4]];
+        let per_tet_layer: Vec<usize> = vec![0, 1];
+        // Vertex 4 is the only "outermost" vertex; pin it (plus its
+        // 3 neighbors to make a 3-vertex face all-pinned).
+        let pinned: BTreeSet<VertexId> = [1, 2, 3, 4].into_iter().collect();
+
+        let per_layer = build_per_layer_outer_faces(&tets, &per_tet_layer, &pinned, 2);
+
+        // Layer 0's outer face is the shared interface (sorted: 1, 2, 3).
+        assert_eq!(per_layer[0].len(), 1, "layer 0 should have 1 outer face");
+        let mut layer0_face = per_layer[0][0];
+        layer0_face.sort_unstable();
+        assert_eq!(layer0_face, [1, 2, 3]);
+
+        // Layer 1's outer skin faces — every tet-1 face EXCEPT the
+        // shared interface (which is interior to the two-tet pair):
+        // {1, 2, 4}, {1, 3, 4}, {2, 3, 4}. All 3 candidates have
+        // every vertex pinned per the fixture, so all 3 land in
+        // layer 1's outer.
+        assert_eq!(
+            per_layer[1].len(),
+            3,
+            "layer 1 should pick up 3 outer-skin faces"
+        );
+    }
+
+    /// Slice S3 — `detect_outer_skin_vertices` flags vertices whose
+    /// final-step `x_final` matches rest exactly (Dirichlet-pinned)
+    /// and skips ones that moved (cavity-side, displaced by intruder
+    /// contact).
+    #[test]
+    fn detect_outer_skin_vertices_flags_only_zero_displacement() {
+        let rest = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ];
+        // v0: pinned (matches rest). v1: moved. v2: pinned.
+        let final_x = vec![
+            0.0, 0.0, 0.0, // v0 pinned
+            1.001, 0.0, 0.0, // v1 displaced
+            0.0, 1.0, 0.0, // v2 pinned
+        ];
+        let pinned = detect_outer_skin_vertices(&rest, &final_x);
+        assert!(pinned.contains(&0));
+        assert!(!pinned.contains(&1));
+        assert!(pinned.contains(&2));
+    }
+
     /// Slice S2 — `deformed_boundary_mesh_at` pairs the snapshotted
     /// BCC boundary triangles with the requested step's `x_final`,
     /// producing an `IndexedMesh` ready to feed `build_bevy_mesh`. OOB
@@ -1392,6 +1631,7 @@ mod tests {
             per_step_scalar_fields: vec![[vec![], vec![]], [vec![], vec![]]],
             scalar_min_max: [(0.0, 0.0), (0.0, 0.0)],
             bcc_boundary_faces: vec![[0, 1, 2]],
+            per_layer_outer_faces: Vec::new(),
         };
         let step0 = outputs.deformed_boundary_mesh_at(0).expect("step 0");
         assert_eq!(step0.faces, vec![[0, 1, 2]]);
@@ -1430,6 +1670,7 @@ mod tests {
             ],
             scalar_min_max: [(1.0, 3.0), (10.0, 30.0)],
             bcc_boundary_faces: Vec::new(),
+            per_layer_outer_faces: Vec::new(),
         };
         assert_eq!(outputs.scalar_fields_at(0)[0], vec![1.0]);
         assert_eq!(outputs.scalar_fields_at(1)[0], vec![2.0]);

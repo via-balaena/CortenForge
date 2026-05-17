@@ -1268,6 +1268,11 @@ struct LayerMeshKey {
     /// Slice S1 — playback-slider index. A step change re-projects the
     /// heat map at the new step's per-tet scalar field.
     displayed_step: usize,
+    /// Slice S3 — when `true`, the per-layer shells render the FEM
+    /// analysis mesh's deformed outer faces at `displayed_step`
+    /// instead of the rest-frame SDF iso. Same toggle the cavity uses;
+    /// keeps the two renders consistent.
+    show_deformed: bool,
 }
 
 /// Build a Bevy `Mesh` directly from an [`IndexedMesh`] — no
@@ -1555,6 +1560,7 @@ fn update_layer_meshes(
         scalar_mode: sim_state.scalar_mode,
         last_run_generation: sim_state.last_run_generation,
         displayed_step: sim_state.displayed_step,
+        show_deformed: sim_state.show_deformed,
     };
     let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
     *last_key = Some(current_key);
@@ -1572,6 +1578,16 @@ fn update_layer_meshes(
     // each layer gets a per-MC-vertex projection from the sim's
     // per-tet scalar field; otherwise palette tint.
     let heat_map_run = if sim_state.heat_map_on {
+        sim_state.last_run.as_ref()
+    } else {
+        None
+    };
+    // Slice S3 — deformed-shells path consumes `last_run`'s per-layer
+    // outer faces at the displayed step; falls through to the
+    // rest-frame SDF iso when toggled off OR when the sim's layer
+    // count doesn't cover this UI layer (e.g., user added a layer
+    // after the run).
+    let deformed_layers_run = if sim_state.show_deformed {
         sim_state.last_run.as_ref()
     } else {
         None
@@ -1595,8 +1611,11 @@ fn update_layer_meshes(
         // `debug_assert!` (strict `<`) still passes in debug builds.
         let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
-        let layer_indexed =
-            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m);
+        let layer_indexed = deformed_layers_run
+            .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
+            .unwrap_or_else(|| {
+                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
+            });
         // Heat-map: project per-tet scalars onto this layer's MC
         // vertices (sub-leaf 7). `project_layer_heat_map` returns
         // `None` if the sim ran with fewer layers than the current
