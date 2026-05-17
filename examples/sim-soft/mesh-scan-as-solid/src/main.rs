@@ -763,10 +763,17 @@ fn main() -> Result<()> {
     );
     // `divergence` (heuristic-vs-raycast disagreement) is no longer
     // pinned: the pre-parry value of 331 was tied to the old +X
-    // ray-cast policy; post-parry both `eval` sign and `is_inside`
-    // come from the same pseudo-normal oracle so divergence is
-    // bounded by sub-cell-scale pseudo-normal-vs-eval-sign noise at
-    // edge/vertex regions. Surfaced informationally in the summary.
+    // ray-cast policy. Post-parry, both `eval` sign and `is_inside`
+    // route through the SAME `Sign::is_inside` oracle, but the count
+    // is non-zero (386 empirically on this 17³ grid) because `eval <
+    // 0` is a strict-inequality test: probes exactly on the cube
+    // surface have `unsigned_distance == 0` → `eval == 0` → `eval < 0`
+    // is false, even when `Sign::is_inside` returns true (boundary
+    // convention). The strictly-axis-aligned `±R` faces account for
+    // most of these boundary-convention disagreements at the chosen
+    // dyadic spacing. Surfaced informationally in the summary; the
+    // load-bearing strict-interior heuristic_inside == 343 assertion
+    // above already pins the F2 caveat absent on this fixture.
 
     let cube_path = out_dir.join("cube_scan.stl");
     let grid_path = out_dir.join("sdf_grid.ply");
