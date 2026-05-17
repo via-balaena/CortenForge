@@ -198,11 +198,19 @@ pub struct FloodFillReport {
     pub wall_threshold_m: f64,
     /// Wall-clock build time in seconds.
     pub build_secs: f64,
-    /// Most-negative signed distance over the cached grid (= the
-    /// signed `min(unsigned)` over Inside cells, or `+min(unsigned)`
-    /// if no Inside cells exist). A correctness contract for the
-    /// build: any value below `-bbox_half_diagonal` indicates a sign
-    /// flip (see [[project-pinned-floor-visual-gate-postmortem]]).
+    /// Most-negative signed distance after the flood-fill labelling
+    /// (`min` taken over every lattice node, with each node's
+    /// unsigned distance flipped to negative iff its node is labelled
+    /// Inside). On healthy inputs this is `-max(unsigned over Inside
+    /// cells)`; on Inside-empty grids it equals
+    /// `+min(unsigned over Outside cells)` (i.e. positive) and never
+    /// flips below zero.
+    ///
+    /// A correctness contract for the build: a value below
+    /// `-bbox_half_diagonal` indicates a sign flip — the unsigned
+    /// magnitude can't exceed the bounding-box half-diagonal for a
+    /// body that fits inside the grid (see
+    /// [[project-pinned-floor-visual-gate-postmortem]]).
     pub min_signed_distance_m: f64,
 }
 

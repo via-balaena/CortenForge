@@ -310,4 +310,41 @@ mod tests {
         let g = Sdf::grad(&sdf, p);
         assert_relative_eq!(g, -Vector3::z(), epsilon = 1e-6);
     }
+
+    /// `impl Sdf for CachedGridSdf` (the D.2 orphan-rule adapter) —
+    /// `eval` reads the cached signed grid directly; `grad` central-
+    /// differences the trilinear interpolant. Verifies the adapter
+    /// honors the cf-design `Sdf` sign convention end-to-end on a
+    /// known fixture (signed-distance negative interior, positive
+    /// below the bottom face, outward gradient pointing -z below).
+    #[allow(clippy::expect_used)]
+    #[test]
+    fn cached_grid_sdf_adapter_honors_sdf_sign_convention() {
+        let distance = mesh_sdf::TriMeshDistance::new(unit_tetrahedron())
+            .expect("tetrahedron fixture has four faces");
+        let bounds =
+            mesh_types::Aabb::new(Point3::new(-1.0, -1.0, -1.5), Point3::new(2.0, 2.0, 2.0));
+        let (cached, report) = mesh_sdf::CachedGridSdf::build(
+            &distance,
+            bounds,
+            0.1,
+            mesh_sdf::WALL_THRESHOLD_FACTOR_DEFAULT,
+        )
+        .expect("CachedGridSdf builds for the tetrahedron fixture");
+        assert_eq!(report.inside_components, 1);
+
+        // Interior probe (negative).
+        let interior = Point3::new(0.5, 0.289, 0.4);
+        assert!(Sdf::eval(&cached, interior) < 0.0);
+
+        // Exterior probe below the bottom face — gradient should
+        // point predominantly -z (outward from the body).
+        let below = Point3::new(0.5, 0.289, -1.0);
+        assert!(Sdf::eval(&cached, below) > 0.0);
+        let g = Sdf::grad(&cached, below);
+        assert!(
+            g.z < -0.5,
+            "below-bottom-face gradient should point -z, got {g:?}"
+        );
+    }
 }

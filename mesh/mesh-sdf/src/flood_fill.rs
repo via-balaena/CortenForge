@@ -20,6 +20,11 @@
 //! [`TriMeshDistance`]: crate::TriMeshDistance
 
 use std::collections::VecDeque;
+// `std::time::Instant::now()` panics at runtime on `wasm32-unknown-unknown`
+// (`unimplemented!()` in stdlib). Keep the import gated so the WASM build
+// doesn't drag unused-import warnings either; build_secs reports 0.0 on
+// WASM via the cfg branches below.
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use mesh_types::Aabb;
@@ -206,6 +211,7 @@ fn build_classified_grid<D: UnsignedDistance + ?Sized>(
         return Err(FloodFillError::DegenerateBounds);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     let started = Instant::now();
     let dims = lattice_dims(bounds, cell_size);
     let [nx, ny, nz] = dims;
@@ -340,7 +346,12 @@ fn build_classified_grid<D: UnsignedDistance + ?Sized>(
         min_signed = 0.0;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     let build_secs = started.elapsed().as_secs_f64();
+    // wasm32 has no `Instant`; report 0.0 so callers can still display
+    // the field without a runtime panic. See the import-site comment.
+    #[cfg(target_arch = "wasm32")]
+    let build_secs = 0.0_f64;
     let report = FloodFillReport {
         dims,
         inside_cells,
@@ -654,6 +665,11 @@ impl Sign for CachedGridSdf {
 /// flips and high-valence apex vertices can't poison far-field
 /// queries.
 ///
+/// **Ownership.** `mesh` is consumed (moved into the underlying
+/// [`crate::TriMeshDistance`] which retains it for `mesh()` access
+/// and the parry BVH). Clone before calling if the caller still
+/// needs the original.
+///
 /// # Errors
 ///
 /// - [`crate::error::SdfError::EmptyMesh`] when `mesh` has no faces
@@ -670,17 +686,21 @@ pub fn flood_filled_sdf(
         Signed<crate::TriMeshDistance, FloodFillSign>,
         FloodFillReport,
     ),
-    FloodFilledSdfError,
+    FloodFilledSdfBuildError,
 > {
-    let distance = crate::TriMeshDistance::new(mesh).map_err(FloodFilledSdfError::Sdf)?;
+    let distance = crate::TriMeshDistance::new(mesh).map_err(FloodFilledSdfBuildError::Sdf)?;
     let (sign, report) = FloodFillSign::build(&distance, bounds, cell_size, wall_threshold_factor)
-        .map_err(FloodFilledSdfError::Flood)?;
+        .map_err(FloodFilledSdfBuildError::Flood)?;
     Ok((Signed { distance, sign }, report))
 }
 
 /// Error variants for [`flood_filled_sdf`].
+///
+/// Named `…BuildError` (rather than just `FloodFilledSdfError`) so the
+/// shape of the failure — *building* the SDF from a mesh + bounds —
+/// is visible at the call site without having to read the variants.
 #[derive(Debug, thiserror::Error)]
-pub enum FloodFilledSdfError {
+pub enum FloodFilledSdfBuildError {
     /// Construction of the underlying [`crate::TriMeshDistance`] failed.
     #[error(transparent)]
     Sdf(#[from] crate::SdfError),
@@ -737,9 +757,13 @@ mod tests {
         mesh
     }
 
-    /// Same pyramid with explicit outward base winding (equivalent to
-    /// [`closed_pyramid`]). Kept as a fixture-pair counterpart to
-    /// [`dome_with_inward_cap`]; both oracles must agree.
+    /// Same shape as [`closed_pyramid`] with *explicit* outward base
+    /// winding — kept as the named fixture-pair counterpart to
+    /// [`dome_with_inward_cap`] so the symmetry between
+    /// "pre-B (broken)" and "post-B (target)" is legible in test
+    /// names. Both oracles must agree everywhere on this fixture.
+    /// Construction-wise it is literally `closed_pyramid()`; the
+    /// naming carries the spec §9 semantic (post-B target).
     fn dome_with_outward_cap() -> IndexedMesh {
         closed_pyramid()
     }
@@ -1000,6 +1024,141 @@ mod tests {
         let err = FloodFillSign::build(&distance, tight, 0.1, 50.0)
             .expect_err("absurd wall band must trip NoOutsideSeed");
         assert!(matches!(err, FloodFillError::NoOutsideSeed { .. }));
+    }
+
+    // ── flood_filled_sdf helper ───────────────────────────────────────
+
+    /// Smoke-test the one-call ergonomic helper end-to-end. Pins the
+    /// API contract (signature + return shape + sign behavior) so
+    /// future refactors of the helper don't regress its surface.
+    #[test]
+    fn flood_filled_sdf_helper_round_trips_through_signed() {
+        let mesh = closed_pyramid();
+        let (sdf, report) = flood_filled_sdf(mesh, pyramid_bounds(), 0.1, 0.75)
+            .expect("flood_filled_sdf builds for a healthy mesh");
+
+        assert_eq!(report.inside_components, 1);
+
+        // The returned `Signed<TriMeshDistance, FloodFillSign>` carries
+        // the full unsigned-distance + flood-fill-sign composition.
+        let inside = Point3::new(0.0, 0.0, 0.5);
+        let outside = Point3::new(0.0, 0.0, 1.5);
+
+        assert!(sdf.evaluate(inside) < 0.0);
+        assert!(sdf.evaluate(outside) > 0.0);
+        assert!(sdf.is_inside(inside));
+        assert!(!sdf.is_inside(outside));
+        assert!(sdf.unsigned_distance(outside) > 0.0);
+
+        // `mesh()` accessor (per D.1's `impl<S: Sign> Signed<TriMeshDistance, S>`)
+        // works on the recommended FloodFillSign composition too.
+        assert_eq!(sdf.mesh().faces.len(), 6);
+    }
+
+    /// Empty mesh propagates through as the underlying
+    /// `SdfError::EmptyMesh` variant of the build error.
+    #[test]
+    fn flood_filled_sdf_helper_propagates_empty_mesh_error() {
+        let empty = IndexedMesh::new();
+        let err =
+            flood_filled_sdf(empty, pyramid_bounds(), 0.1, 0.75).expect_err("empty mesh must fail");
+        assert!(matches!(err, FloodFilledSdfBuildError::Sdf(_)));
+    }
+
+    /// `wall_threshold_factor` so large that every corner sits inside
+    /// the wall band propagates through as the underlying
+    /// `FloodFillError::NoOutsideSeed` variant.
+    #[test]
+    fn flood_filled_sdf_helper_propagates_flood_error() {
+        let mesh = closed_pyramid();
+        let tight = aabb(
+            Point3::new(-1.05, -1.05, -0.05),
+            Point3::new(1.05, 1.05, 1.05),
+        );
+        let err = flood_filled_sdf(mesh, tight, 0.1, 50.0).expect_err("absurd wall band must fail");
+        assert!(matches!(err, FloodFilledSdfBuildError::Flood(_)));
+    }
+
+    // ── CachedGridSdf::closest_point ─────────────────────────────────
+
+    /// `closest_point` for an exterior probe directly above the apex
+    /// should step back to roughly the apex itself — the gradient
+    /// points predominantly +z in that region (single-face), so one
+    /// Newton step along `-(φ / ‖∇φ‖) · ∇φ` lands near the surface.
+    #[test]
+    fn cached_grid_sdf_closest_point_recovers_apex() {
+        let mesh = closed_pyramid();
+        let distance = TriMeshDistance::new(mesh).expect("non-empty mesh");
+        let (cached, _) =
+            CachedGridSdf::build(&distance, pyramid_bounds(), 0.1, 0.75).expect("build");
+
+        let probe = Point3::new(0.0, 0.0, 1.5);
+        let cp = <CachedGridSdf as UnsignedDistance>::closest_point(&cached, probe);
+        // The apex sits at (0, 0, 1); trilinear-grid Newton step lands
+        // within one cell of it. Generous epsilon — the grid is
+        // 0.1-cell coarse and the apex is a singular point.
+        assert!(
+            (cp - Point3::new(0.0, 0.0, 1.0)).norm() < 0.2,
+            "closest_point should recover near the apex, got {cp:?}"
+        );
+    }
+
+    // ── inside_components > 1 (flood-leak / multi-body detector) ─────
+
+    /// Two spatially-separated tetrahedra in one bounds → flood from
+    /// the corners marks everything-but-the-tetrahedra as Outside,
+    /// leaving two disconnected Inside regions. Pins the `> 1`
+    /// branch of the connected-component count that healthy fixtures
+    /// can't exercise.
+    fn two_disjoint_tetrahedra() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        // Tet A near origin.
+        for (x, y, z) in [
+            (0.0, 0.0, 0.0),
+            (0.4, 0.0, 0.0),
+            (0.2, 0.346, 0.0),
+            (0.2, 0.115, 0.327),
+        ] {
+            mesh.vertices.push(Point3::new(x, y, z));
+        }
+        // Tet B shifted +x by 2.0 (well separated from A in our bounds).
+        for (x, y, z) in [
+            (2.0, 0.0, 0.0),
+            (2.4, 0.0, 0.0),
+            (2.2, 0.346, 0.0),
+            (2.2, 0.115, 0.327),
+        ] {
+            mesh.vertices.push(Point3::new(x, y, z));
+        }
+        // Tet A faces (CCW outward).
+        mesh.faces.push([0, 2, 1]);
+        mesh.faces.push([0, 1, 3]);
+        mesh.faces.push([1, 2, 3]);
+        mesh.faces.push([2, 0, 3]);
+        // Tet B faces (same winding, shifted indices).
+        mesh.faces.push([4, 6, 5]);
+        mesh.faces.push([4, 5, 7]);
+        mesh.faces.push([5, 6, 7]);
+        mesh.faces.push([6, 4, 7]);
+        mesh
+    }
+
+    #[test]
+    fn flood_fill_inside_components_two_for_disjoint_bodies() {
+        let mesh = two_disjoint_tetrahedra();
+        let distance = TriMeshDistance::new(mesh).expect("non-empty mesh");
+        let (_sign, report) = FloodFillSign::build(
+            &distance,
+            aabb(Point3::new(-0.5, -0.5, -0.5), Point3::new(3.0, 1.0, 1.0)),
+            0.05,
+            0.75,
+        )
+        .expect("flood build");
+
+        assert_eq!(
+            report.inside_components, 2,
+            "two disjoint tetrahedra must yield two Inside components"
+        );
     }
 
     // ── Deprecated-bridge numerical equivalence (deferred from D.1 #3) ──
