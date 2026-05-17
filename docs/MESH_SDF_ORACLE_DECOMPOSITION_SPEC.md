@@ -1,6 +1,6 @@
 # mesh-sdf — Oracle Decomposition Spec (D) + cf-scan-prep Winding Fix (B)
 
-**Status**: SPEC v2 (post stress-test, ready for cold-read). v1 was drafted then stress-tested against the actual code in the same session — see §"Stress-test findings (v1 → v2)" at the bottom for the revisions and why each one mattered. Next session: cold-read v2 + D.1 implementation.
+**Status**: SPEC v2. **D.1 SHIPPED 2026-05-18 on dev `9b6863f6` + cold-read polish `8500da57`** (traits + parry oracles + cf-design blanket adapter + deprecated SignedDistanceField wrapper). **D.2 SHIPPED 2026-05-18 on dev `a9de1e62`** (FloodFillSign + CachedGridSdf + 4 synthetic fixtures + numerical-equivalence test; +10 mesh-sdf tests, grade A, WASM clean). D.3 (cf-device-design migration) is next.
 
 **Trigger**: The parry-accel arc ([[project-mesh-sdf-parry-accel-spec]], dev `1b333cd4`) unblocked cf-cast-cli geometry-gen but exposed `NotWatertight: 3156 open edges` on `plug_layer_0.stl`. Forensic analysis (this session) traced the failure to parry's `is_inside` returning wrongly-negative far-field at +Y and +Z probes on the iter-1 cleaned scan, propagating through `body.subtract(rind)` into MC, which then extracts a "phantom interior" surface that exits the SDF grid on five of six faces.
 
@@ -339,7 +339,7 @@ The stress-test pass may reveal that one or more decisions above need revision. 
 - WASM gate.
 - `cargo run -p xtask -- grade mesh-sdf` ≥ A.
 
-**D.2 — `FloodFillSign` + `CachedGridSdf` + synthetic fixtures.** One commit (the BFS + 3-region machinery + both primitives are one logical unit).
+**D.2 — `FloodFillSign` + `CachedGridSdf` + synthetic fixtures.** SHIPPED 2026-05-18 dev `a9de1e62`. One commit per spec (BFS + 3-region machinery + both primitives + 4 fixtures + numerical-equivalence test all landed together). +10 mesh-sdf tests (18 → 28 + 1 doctest); WASM clean; clippy clean; grade automated A; coverage 93.2% A+; downstream cf-design / cf-device-design / cf-cast-cli build unchanged. Helper `flood_filled_sdf(mesh, bounds, cell_size, wall_threshold_factor)` returns the recommended `Signed<TriMeshDistance, FloodFillSign>` composition in one call (for D.5's cf-cast-cli ergonomics). Private `SdfGrid` storage local to mesh-sdf (deferred the public `ScalarGrid` movement out of D.2 scope — see "Implementation deviations" §A below).
 - Port the 3-region flood-fill from `cf-device-design::sdf_layers::build_cached_scan_sdf` into mesh-sdf. Generic over any `UnsignedDistance`.
 - `FloodFillSign::build(distance, bounds, cell_size, wall_threshold_factor) -> Result<(Self, FloodFillReport), FloodFillError>`.
 - `CachedGridSdf::build(...)` — same signature, fills both an unsigned grid AND the FloodFillSign; stores the signed grid for O(1) queries.
@@ -484,17 +484,22 @@ Six findings from grepping the actual code after v1 was drafted. Each forced a s
 
 ---
 
-## Cold-read entry for next session
+## Implementation deviations (D.2)
 
-1. Read this spec (v2) in full.
-2. Skim [[project-cf-cast-plug-layer-0-watertight-discovery]] and the postmortem [[project-pinned-floor-visual-gate-postmortem]] for context on why the parry sign is unreliable.
-3. Skim [[project-mesh-sdf-parry-accel-spec]] §"What changed since" — the §F1 cancellation lives there too.
-4. Re-run §10's stress-test gate ONE MORE TIME on the actual code, particularly:
-   - Confirm `Region` enum + `neighbours6` helper match between the two cf-device-design copies (sdf_layers + insertion_sim). If they have drifted, document which is canonical before D.2.
-   - Confirm `Solid::from_sdf<S: Sdf + 'static>` signature is still as documented.
-   - Re-grep for `SignedDistanceField` — the migration list in §6 is only valid as of this session's grep.
-5. Land D.1.
+The D.2 implementation followed the spec as-written with two small, documented departures:
 
-**If anything in this spec looks wrong with fresh eyes, ITERATE THE SPEC BEFORE WRITING CODE.** v2 has 10 decisions stress-tested against the code; the cold-read pass is the last chance to catch a drift since v2 was written.
+**§A — Private `SdfGrid` storage inside mesh-sdf instead of importing the public `ScalarGrid` from mesh-offset.** mesh-offset owns `ScalarGrid` but sits ABOVE mesh-sdf in the L0 tier hierarchy, so importing it in D.2 would have required moving the public type across crates as part of this commit. The local storage is minimal — `Vec<f64>` + dims + origin + cell_size + trilinear sampler + central-diff gradient — and never leaks out of `FloodFillSign` / `CachedGridSdf`. If a downstream consumer ever wants a unified L0 grid type, that's a separate consolidation arc.
 
-**Implementation start**: `mesh/mesh-sdf/src/lib.rs` (add traits + `Signed` + `Region` + report/error types) → `mesh/mesh-sdf/src/sdf.rs` (rewrite as `TriMeshDistance` + `PseudoNormalSign` + deprecated `SignedDistanceField`) → `design/cf-design/src/sdf.rs` (`impl Sdf for Signed<D, S>`).
+**§B — `FloodFillReport` carries `min_signed_distance_m`.** Free correctness contract per [[project-pinned-floor-visual-gate-postmortem]]: `min_signed_distance_m > -bbox_half_diagonal` is a one-line guard against an entire class of sign-flip regressions. Not in spec §3 but cheap to compute during build and useful to surface in build logs.
+
+**Smoothing-free primitives by design.** insertion_sim's existing `build_grid_sdf` runs a separable 3D Gaussian post-pass (σ = 1.0 cell) on the signed buffer for FEM contact-gradient C¹ approximation; sdf_layers does not. Per the stress-test, smoothing is tool-specific and orthogonal to sign correctness. mesh-sdf ships pure flood-fill; insertion_sim re-applies the Gaussian externally during D.3.
+
+## Cold-read entry for next session (D.3)
+
+1. Re-read §6 (per-consumer migration table) + §"Sub-leaf ladder" D.3 in this spec.
+2. Read `cf-device-design::sdf_layers::build_cached_scan_sdf` (the canonical 3-region flood-fill) — the migration target. Drop the bespoke `Region` enum + `neighbours6` helper + the 4-pass body in favor of `CachedGridSdf::build(distance, bounds, cell_size, 0.75)`. `closed_grid` retains `ScalarGrid` for the marching-cubes path; this means D.3a unpacks `CachedGridSdf` and re-fills the existing `ScalarGrid` storage rather than rewriting `CachedScanSdf` end-to-end. Keep that scope-tight.
+3. Read `cf-device-design::insertion_sim::build_grid_sdf` (the second copy). Migrates same way; keep the Gaussian post-pass external on the result. `GridSdfReport` becomes a thin projection of `FloodFillReport`.
+4. Visual gate on iter-1 sock after D.3: cavity + Layer 0 + Layer 1 render unchanged in cf-device-design preview. Pre-migration vs post-migration MC vertices should be bit-equivalent on the sock fixture (modulo the pure-flood-fill vs Gaussian-smoothed signed grid in insertion_sim — that path applies Gaussian externally to preserve bit-equivalence).
+5. Run `cargo run -p xtask -- grade cf-device-design` ≥ A.
+
+**Implementation start (D.3)**: `tools/cf-device-design/src/sdf_layers.rs:388-560` (sdf_layers migration) → `tools/cf-device-design/src/insertion_sim.rs:720-820` + `1369-1529` (insertion_sim migration) → `cargo test -p cf-device-design --release` → visual gate.
