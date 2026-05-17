@@ -518,6 +518,7 @@ const DOME_WALL_SIGNED_SDF_GRAD_EPS: f64 = 1e-6;
 /// Both fields are `Arc<dyn Sdf + Send + Sync>` (via the `Sdf`
 /// supertrait) so the adapter is `Clone` + `Send` + `Sync` — the same
 /// shape `Solid::from_sdf` requires.
+#[derive(Clone)]
 pub struct DomeWallSignedSdf {
     /// Sign source. SDF of the cleaned scan WITH cap polygons (closed
     /// manifold). Reliable sign inside / outside the body.
