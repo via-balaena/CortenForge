@@ -1389,6 +1389,112 @@ fn perpendicular_basis_for(n: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
     (u, v)
 }
 
+/// Identify the floor loop in [`CapState::loops`] for the
+/// reconstruction-plane override: the LARGEST valid loop, matching
+/// [`find_floor_loop_index`]'s pick-by-count heuristic (`MIN_RIM_LOOP_VERTS`
+/// = 10). The cut rim is overwhelmingly the largest loop on practical
+/// scans; small loops are scanner-noise stragglers and should keep
+/// their detected planes. Returns `None` when no sufficiently-large
+/// loop exists (in which case the override is skipped).
+fn floor_loop_index_in_cap_state(cap: &CapState) -> Option<usize> {
+    const MIN_RIM_LOOP_VERTS: usize = 10;
+    cap.loops
+        .iter()
+        .enumerate()
+        .filter(|(_, cl)| cl.vertex_indices.len() >= MIN_RIM_LOOP_VERTS)
+        .max_by_key(|(_, cl)| cl.vertex_indices.len())
+        .map(|(i, _)| i)
+}
+
+/// Reconstructed-floor plane recorded in the `.prep.toml` `[caps]`
+/// block when the user applied centerline-driven floor reconstruction.
+///
+/// After [`apply_reconstruction`] extends the chopped floor by
+/// `applied_floor_mm`, the cleaned mesh's actual closed-floor plane
+/// sits at `centerline_last + (-inward_tangent) * extension_m` — NOT
+/// at the original cut boundary's fit plane that
+/// [`CapState::loops`] records (those were detected from the raw scan
+/// BEFORE reconstruction added the extrusion + cap fan).
+///
+/// Without this override, downstream consumers (cf-cap-planes →
+/// cf-device-design candidate-A pinned-floor) clip the cavity against
+/// the stale pre-reconstruction plane, which lands MID-BODY (verified
+/// 2.73 mm offset on iter-1 sock_over_capsule). The cavity's iso=0
+/// then traces a mid-body slice and the marching-cubes reconstruction
+/// shows "dripping-wax" rim artifacts at the cap plane (iter-1 visual
+/// gate failure, 2026-05-17). Recording the post-reconstruction plane
+/// here aligns the .prep.toml's `[caps]` contract with the actual
+/// cleaned-STL floor.
+#[derive(Debug, Clone, Copy)]
+struct ReconstructedFloorPlane {
+    /// Floor centroid in PRE-BAKE physics-frame meters — `bottom_center`
+    /// from [`apply_reconstruction`]'s computation: trimmed centerline
+    /// endpoint plus `extension_m` along the outward extrusion direction.
+    centroid_m: Point3<f64>,
+    /// Outward unit normal in PRE-BAKE physics-frame coordinates.
+    /// Mirrors [`orient_cap_normal_outward`]'s convention: points AWAY
+    /// from body interior (into the chopped-end half-space). Equals
+    /// `-inward_tangent`.
+    normal: Vector3<f64>,
+}
+
+/// Compute the reconstructed-floor plane in PRE-BAKE physics frame
+/// from the in-memory centerline polyline + applied trim values.
+///
+/// Mirrors the `bottom_center` + `extrusion_dir` calculation inside
+/// [`apply_reconstruction`] so the recorded plane matches the actual
+/// reconstructed floor of the cleaned mesh. Operates on the physics-
+/// frame polyline (cf-scan-prep's `CapState::centerline_polyline`)
+/// directly; the bake transform that the cleaned mesh goes through
+/// is applied to neither input nor output, so the result lives in
+/// the same frame as [`DetectedCapLoop::plane_centroid`] / `plane_normal`
+/// — which is what the .prep.toml's `[caps]` block contract expects
+/// (cf-cap-planes' `parse_cap_planes` bakes the recorded plane through
+/// the [`transform`] block at load time).
+///
+/// Returns `None` when reconstruction would not produce a usable floor
+/// plane: zero floor trim, polyline too short after trimming, or a
+/// degenerate inward tangent.
+fn compute_reconstructed_floor_plane_physics(
+    centerline_polyline_physics: &[Point3<f64>],
+    applied_tip_mm: f64,
+    applied_floor_mm: f64,
+) -> Option<ReconstructedFloorPlane> {
+    if applied_floor_mm <= 0.0 {
+        return None;
+    }
+    let trimmed = trim_centerline_polyline(
+        centerline_polyline_physics,
+        applied_tip_mm,
+        applied_floor_mm,
+    );
+    if trimmed.len() < 2 {
+        return None;
+    }
+    let n_last = trimmed[trimmed.len() - 1];
+    // Same tangent posture as `apply_reconstruction`: prefer the
+    // ~20 mm look-back average for axis-stability, fall back to the
+    // last-segment vector for short polylines.
+    let inward_tangent = stable_inward_tangent(&trimmed, STABLE_INWARD_TANGENT_LOOKBACK_M)
+        .or_else(|| {
+            let n = trimmed.len();
+            let tangent_raw = trimmed[n - 2].coords - trimmed[n - 1].coords;
+            let norm = tangent_raw.norm();
+            if norm < f64::EPSILON {
+                None
+            } else {
+                Some(tangent_raw / norm)
+            }
+        })?;
+    let extrusion_dir = -inward_tangent;
+    let extension_m = applied_floor_mm * 0.001;
+    let centroid_m = Point3::from(n_last.coords + extrusion_dir * extension_m);
+    Some(ReconstructedFloorPlane {
+        centroid_m,
+        normal: extrusion_dir,
+    })
+}
+
 /// Look-back distance for [`stable_inward_tangent`] in meters.
 /// 20 mm averages enough centerline segments on a typical
 /// workshop scan (segment density ~5 mm; 20 mm = ~4 segments)
@@ -3541,6 +3647,7 @@ fn build_prep_toml_string(
     achieved_face_count: usize,
     smoothing_iterations: usize,
     cleaned_aabb_m: &Aabb,
+    reconstructed_floor: Option<ReconstructedFloorPlane>,
 ) -> Result<String> {
     let q = reorient.quaternion_physics();
     let timestamp = chrono_like_timestamp();
@@ -3631,17 +3738,33 @@ fn build_prep_toml_string(
                 .loops
                 .iter()
                 .enumerate()
-                .map(|(i, cl)| PrepCapLoop {
-                    loop_index: i,
-                    vertex_count: cl.vertex_indices.len(),
-                    plane_fit_r_squared: cl.plane_fit_r_squared,
-                    plane_normal: [cl.plane_normal.x, cl.plane_normal.y, cl.plane_normal.z],
-                    plane_centroid_m: [
-                        cl.plane_centroid.x,
-                        cl.plane_centroid.y,
-                        cl.plane_centroid.z,
-                    ],
-                    included: cl.include,
+                .map(|(i, cl)| {
+                    // Reconstruction override: when the user applied
+                    // centerline-driven floor reconstruction, the
+                    // cleaned mesh's actual floor sits at the
+                    // post-reconstruction plane (NOT at this loop's
+                    // pre-reconstruction fit plane). Identify the
+                    // floor loop with the same pick-by-count
+                    // heuristic `find_floor_loop_index` uses (the
+                    // largest valid loop is overwhelmingly the cut
+                    // rim on practical scans) and override its plane.
+                    // Other loops (top-end caps, scanner-noise
+                    // stragglers below the size threshold) keep their
+                    // detected planes verbatim.
+                    let is_floor_loop = reconstructed_floor.is_some()
+                        && floor_loop_index_in_cap_state(cap) == Some(i);
+                    let (centroid, normal, r_squared) = match reconstructed_floor {
+                        Some(rf) if is_floor_loop => (rf.centroid_m, rf.normal, 1.0_f64),
+                        _ => (cl.plane_centroid, cl.plane_normal, cl.plane_fit_r_squared),
+                    };
+                    PrepCapLoop {
+                        loop_index: i,
+                        vertex_count: cl.vertex_indices.len(),
+                        plane_fit_r_squared: r_squared,
+                        plane_normal: [normal.x, normal.y, normal.z],
+                        plane_centroid_m: [centroid.x, centroid.y, centroid.z],
+                        included: cl.include,
+                    }
                 })
                 .collect(),
         },
@@ -6575,6 +6698,23 @@ fn handle_save_action(
     // face count is what landed on disk.
     let original_face_count = original.0.faces.len();
     let cleaned_aabb_m = cleaned.aabb();
+    // Reconstructed-floor cap plane override (see
+    // `ReconstructedFloorPlane` docstring). Computed in PRE-BAKE
+    // physics frame from `cap.centerline_polyline` + the applied trim
+    // values; `None` when reconstruction wasn't applied (zero floor
+    // trim or shape unsupported), in which case the .prep.toml emits
+    // the pre-reconstruction cap loops verbatim (legacy posture).
+    let reconstructed_floor = if centerline_trim.applied_reconstruct.is_some()
+        && centerline_trim.applied_floor_mm > 0.0
+    {
+        compute_reconstructed_floor_plane_physics(
+            &cap.centerline_polyline,
+            centerline_trim.applied_tip_mm,
+            centerline_trim.applied_floor_mm,
+        )
+    } else {
+        None
+    };
     let toml_str = match build_prep_toml_string(
         &source.0,
         stl_units.0,
@@ -6595,6 +6735,7 @@ fn handle_save_action(
         triangle_count,
         smoothing.iterations,
         &cleaned_aabb_m,
+        reconstructed_floor,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -8800,6 +8941,7 @@ mod tests {
             200_000, // achieved face count
             8,       // smoothing iterations
             &cleaned_aabb,
+            None, // reconstructed_floor — tests do not exercise reconstruction
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
         assert!(parsed.get("scan_prep").is_some());
@@ -8910,6 +9052,7 @@ mod tests {
             200_000,
             8,
             &cleaned_aabb,
+            None, // reconstructed_floor — tests do not exercise reconstruction
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
         let trim = parsed
@@ -8967,6 +9110,7 @@ mod tests {
             200_000,
             8,
             &cleaned_aabb,
+            None, // reconstructed_floor — tests do not exercise reconstruction
         )?;
         let parsed: toml::Value = toml::from_str(&s)?;
         let scan_prep = parsed.get("scan_prep").expect("scan_prep block");
@@ -9026,6 +9170,7 @@ mod tests {
             499_900, // achieved < original (cleanup dropped 100 faces)
             0,       // smoothing iterations
             &cleaned_aabb,
+            None, // reconstructed_floor — tests do not exercise reconstruction
         )?;
         let parsed_false: toml::Value = toml::from_str(&s_false)?;
         let applied_false = parsed_false
@@ -9060,6 +9205,7 @@ mod tests {
             200_000,
             0,
             &cleaned_aabb,
+            None, // reconstructed_floor — tests do not exercise reconstruction
         )?;
         let parsed_true: toml::Value = toml::from_str(&s_true)?;
         let applied_true = parsed_true
@@ -9072,6 +9218,211 @@ mod tests {
             "simplify.applied must be true when simplify_ran = true",
         );
         Ok(())
+    }
+
+    // ---- Reconstructed-floor plane override --------------------------
+
+    #[test]
+    fn compute_reconstructed_floor_plane_matches_apply_reconstruction_geometry() {
+        // Synthetic 40 mm centerline along +Z; floor end at z = 0.
+        // The reconstruction workflow is: trim removes the last
+        // `applied_floor_mm` of arc length, then `apply_reconstruction`
+        // extends the body by `applied_floor_mm` along the OUTWARD
+        // direction from the trimmed endpoint. The trim-then-extend
+        // pair restores the original body length with cleaner floor
+        // geometry, so `bottom_center` lands at the original
+        // polyline's floor endpoint (z = 0.000 in this fixture).
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.040),
+            Point3::new(0.0, 0.0, 0.020),
+            Point3::new(0.0, 0.0, 0.010),
+            Point3::new(0.0, 0.0, 0.000),
+        ];
+        let rf =
+            compute_reconstructed_floor_plane_physics(&polyline, 0.0, 10.0).expect("Some plane");
+        // Trim drops last 10 mm → trimmed_last = z=0.010; outward
+        // extension by 10 mm in -Z → bottom_center z = 0.000.
+        assert!((rf.centroid_m.x).abs() < 1e-9);
+        assert!((rf.centroid_m.y).abs() < 1e-9);
+        assert!(
+            (rf.centroid_m.z).abs() < 1e-9,
+            "bottom_center.z = {} (expected 0.000)",
+            rf.centroid_m.z,
+        );
+        // Outward normal = -inward (+Z) = -Z.
+        assert!((rf.normal.x).abs() < 1e-9);
+        assert!((rf.normal.y).abs() < 1e-9);
+        assert!((rf.normal.z - (-1.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_reconstructed_floor_plane_iter1_reproducer() {
+        // Reproduces the iter-1 numerical hypothesis check: the
+        // synthetic offset along the cap normal should be ~ extension
+        // along the tangent ≈ 40 mm (since recorded cap_centroid is
+        // the pre-reconstruction boundary fit-plane at the trim cut,
+        // and bottom_center is 40 mm beyond it along the centerline
+        // tangent). Pin the math on a tangent-mostly-Z polyline so
+        // future refactors of stable_inward_tangent don't silently
+        // drift the recorded plane back toward the old stale position.
+        let polyline = vec![
+            Point3::new(0.001, -0.002, 0.060),
+            Point3::new(0.001, -0.002, 0.040),
+            Point3::new(0.001, -0.002, 0.020),
+            Point3::new(0.001, -0.002, 0.000),
+        ];
+        let rf =
+            compute_reconstructed_floor_plane_physics(&polyline, 0.0, 20.0).expect("Some plane");
+        // Trim drops last 20 mm → trimmed_last = z=0.020; outward
+        // (= -Z) extension by 20 mm → bottom_center z = 0.000.
+        assert!((rf.centroid_m.z).abs() < 1e-9);
+        // The override's centroid sits 20 mm below the trim cut
+        // (trimmed_last z = 0.020) along the tangent. cf-device-design's
+        // candidate-A clip would otherwise hit the body at trim_cut +
+        // recorded-plane-offset; this assertion is the load-bearing
+        // contract that the override moves it to bottom_center.
+        let trim_cut_z = 0.020;
+        let override_minus_trim = rf.centroid_m.z - trim_cut_z;
+        assert!((override_minus_trim - (-0.020)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_reconstructed_floor_plane_returns_none_for_zero_floor_trim() {
+        let polyline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.010)];
+        assert!(compute_reconstructed_floor_plane_physics(&polyline, 0.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn compute_reconstructed_floor_plane_returns_none_for_short_polyline() {
+        let polyline = vec![Point3::new(0.0, 0.0, 0.0)];
+        assert!(compute_reconstructed_floor_plane_physics(&polyline, 0.0, 10.0).is_none());
+        let polyline2 = vec![Point3::new(0.0, 0.0, 0.020), Point3::new(0.0, 0.0, 0.010)];
+        // applied_floor_mm = 15 > polyline length (10 mm) → trim
+        // consumes everything → None.
+        assert!(compute_reconstructed_floor_plane_physics(&polyline2, 0.0, 15.0).is_none());
+    }
+
+    #[test]
+    fn build_prep_toml_string_overrides_floor_cap_plane_when_reconstructed() {
+        // Build a CapState with one large cap loop whose pre-recon
+        // fit plane sits at (0, 0, -0.05) with normal (0, 0, -1). The
+        // override should replace this with the reconstructed plane.
+        let mut cap = CapState::default();
+        cap.loops.push(DetectedCapLoop {
+            vertex_indices: (0..32).collect(),
+            plane_centroid: Point3::new(0.0, 0.0, -0.050),
+            plane_normal: Vector3::new(0.0, 0.0, -1.0),
+            plane_fit_r_squared: 0.99,
+            include: true,
+        });
+        let override_plane = ReconstructedFloorPlane {
+            centroid_m: Point3::new(0.001, 0.002, -0.060),
+            normal: Vector3::new(0.0, 0.0, -1.0),
+        };
+        let cleaned_aabb = Aabb::new(
+            Point3::new(-0.05, -0.05, -0.06),
+            Point3::new(0.05, 0.05, 0.07),
+        );
+        let s = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &ReorientState::default(),
+            &RecenterState::default(),
+            &cap,
+            &CenterlineTrimState::default(),
+            0,
+            "scan.cleaned.stl",
+            UnitQuaternion::identity(),
+            Vector3::zeros(),
+            Point3::origin(),
+            200_000,
+            false,
+            500_000,
+            200_000,
+            0,
+            &cleaned_aabb,
+            Some(override_plane),
+        )
+        .expect("build_prep_toml_string");
+        let parsed: toml::Value = toml::from_str(&s).unwrap();
+        let loops = parsed
+            .get("caps")
+            .and_then(|c| c.get("loops"))
+            .and_then(|l| l.as_array())
+            .expect("caps.loops");
+        assert_eq!(loops.len(), 1);
+        let centroid = loops[0]
+            .get("plane_centroid_m")
+            .and_then(|v| v.as_array())
+            .expect("plane_centroid_m");
+        assert!((centroid[0].as_float().unwrap() - 0.001).abs() < 1e-12);
+        assert!((centroid[1].as_float().unwrap() - 0.002).abs() < 1e-12);
+        assert!((centroid[2].as_float().unwrap() - (-0.060)).abs() < 1e-12);
+        let r_sq = loops[0]
+            .get("plane_fit_r_squared")
+            .and_then(|v| v.as_float())
+            .expect("plane_fit_r_squared");
+        assert!((r_sq - 1.0).abs() < 1e-12, "override sets R² = 1.0");
+    }
+
+    #[test]
+    fn build_prep_toml_string_no_override_leaves_floor_cap_plane_untouched() {
+        // Same setup as the override test but `reconstructed_floor =
+        // None` — emitted plane must equal the cap loop's detected
+        // fit plane verbatim.
+        let mut cap = CapState::default();
+        cap.loops.push(DetectedCapLoop {
+            vertex_indices: (0..32).collect(),
+            plane_centroid: Point3::new(0.0, 0.0, -0.050),
+            plane_normal: Vector3::new(0.0, 0.0, -1.0),
+            plane_fit_r_squared: 0.99,
+            include: true,
+        });
+        let cleaned_aabb = Aabb::new(
+            Point3::new(-0.05, -0.05, -0.05),
+            Point3::new(0.05, 0.05, 0.07),
+        );
+        let s = build_prep_toml_string(
+            Path::new("/tmp/scan.stl"),
+            StlUnits::Mm,
+            Vector3::zeros(),
+            None,
+            &ReorientState::default(),
+            &RecenterState::default(),
+            &cap,
+            &CenterlineTrimState::default(),
+            0,
+            "scan.cleaned.stl",
+            UnitQuaternion::identity(),
+            Vector3::zeros(),
+            Point3::origin(),
+            200_000,
+            false,
+            500_000,
+            200_000,
+            0,
+            &cleaned_aabb,
+            None,
+        )
+        .expect("build_prep_toml_string");
+        let parsed: toml::Value = toml::from_str(&s).unwrap();
+        let loops = parsed
+            .get("caps")
+            .and_then(|c| c.get("loops"))
+            .and_then(|l| l.as_array())
+            .expect("caps.loops");
+        let centroid = loops[0]
+            .get("plane_centroid_m")
+            .and_then(|v| v.as_array())
+            .expect("plane_centroid_m");
+        assert!((centroid[2].as_float().unwrap() - (-0.050)).abs() < 1e-12);
+        let r_sq = loops[0]
+            .get("plane_fit_r_squared")
+            .and_then(|v| v.as_float())
+            .expect("plane_fit_r_squared");
+        assert!((r_sq - 0.99).abs() < 1e-12);
     }
 
     /// `build_cleaned_mesh` bakes Reorient + Recenter into vertex
