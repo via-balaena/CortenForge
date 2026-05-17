@@ -481,23 +481,168 @@ pub(crate) fn build_cached_scan_sdf(
     })
 }
 
-/// Extract one layer's iso surface from the cached grid.
+/// Clip a triangle mesh against ONE cap-plane half-space, keeping
+/// only the body-interior side (where `(p - centroid) · normal ≤ 0`).
+///
+/// Standard Sutherland-Hodgman triangle-vs-plane clip: walk the
+/// triangle's three edges in cyclic order; for each edge classify
+/// the endpoint pair against the plane and emit kept vertices +
+/// edge-plane intersection points into an output polygon. Fan-
+/// triangulate the result from the first vertex.
+///
+/// Result cases per triangle:
+/// - All 3 vertices inside → triangle kept verbatim.
+/// - All 3 outside → discarded.
+/// - 1 inside, 2 outside → 1 sub-triangle (cut corner kept).
+/// - 2 inside, 1 outside → quad → 2 sub-triangles.
+///
+/// New intersection vertices are appended to the output mesh's
+/// vertex array. After clipping all faces, unreferenced vertices
+/// are stripped via [`remove_unreferenced_vertices`] so the result
+/// stays tight (the original vertex array is preserved as a prefix
+/// when no clipping happens, otherwise the post-clip vertex set is
+/// what survives).
+///
+/// Plane convention: `plane.normal` points OUTWARD (away from body
+/// interior, as cf-scan-prep's `orient_cap_normal_outward` flips
+/// raw fit-plane normals before recording). The kept half-space is
+/// therefore `signed ≤ 0`.
+fn clip_mesh_against_cap_plane(mesh: &IndexedMesh, plane: &CapPlane) -> IndexedMesh {
+    let centroid = plane.centroid.coords;
+    let normal = plane.normal;
+    let signed = |p: Point3<f64>| (p.coords - centroid).dot(&normal);
+
+    let mut out_vertices = mesh.vertices.clone();
+    let mut out_faces: Vec<[u32; 3]> = Vec::with_capacity(mesh.faces.len());
+
+    // Linear interpolation between an inside endpoint `a` (with
+    // signed distance `da ≤ 0`) and an outside endpoint `b` (with
+    // signed distance `db > 0`). Solves `da + t·(db - da) = 0` →
+    // `t = da / (da - db)`. Since `da ≤ 0 < db`, denominator is
+    // strictly negative and numerator non-positive, so `t ∈ [0, 1]`.
+    // `da == db` is unreachable (one is positive, the other non-
+    // positive); no zero-divide guard needed.
+    let interp = |a: Point3<f64>, da: f64, b: Point3<f64>, db: f64| -> Point3<f64> {
+        let t = da / (da - db);
+        Point3::from(a.coords + (b.coords - a.coords) * t)
+    };
+
+    for face in &mesh.faces {
+        let idx = [face[0] as usize, face[1] as usize, face[2] as usize];
+        let v = [
+            mesh.vertices[idx[0]],
+            mesh.vertices[idx[1]],
+            mesh.vertices[idx[2]],
+        ];
+        let d = [signed(v[0]), signed(v[1]), signed(v[2])];
+
+        // Walk edges (0→1), (1→2), (2→0); for each edge apply the
+        // Sutherland-Hodgman rule. Output is up to 4 vertices.
+        // Track whether each output vertex is original (face-index
+        // reusable) or interpolated (needs a new vertex appended).
+        enum OutVtx {
+            Original(u32),
+            Interp(Point3<f64>),
+        }
+        let mut polygon: Vec<OutVtx> = Vec::with_capacity(4);
+        for edge in 0..3 {
+            let a_local = edge;
+            let b_local = (edge + 1) % 3;
+            let da = d[a_local];
+            let db = d[b_local];
+            let a_in = da <= 0.0;
+            let b_in = db <= 0.0;
+            let b_face_idx = face[b_local];
+            match (a_in, b_in) {
+                (true, true) => {
+                    polygon.push(OutVtx::Original(b_face_idx));
+                }
+                (true, false) => {
+                    polygon.push(OutVtx::Interp(interp(v[a_local], da, v[b_local], db)));
+                }
+                (false, true) => {
+                    polygon.push(OutVtx::Interp(interp(v[a_local], da, v[b_local], db)));
+                    polygon.push(OutVtx::Original(b_face_idx));
+                }
+                (false, false) => {}
+            }
+        }
+
+        if polygon.len() < 3 {
+            // Fully clipped (0 or degenerate polygon).
+            continue;
+        }
+
+        // Materialize indices for each output vertex (allocating new
+        // ones for interpolated points), then fan-triangulate from
+        // index 0.
+        let resolved: Vec<u32> = polygon
+            .into_iter()
+            .map(|v| match v {
+                OutVtx::Original(idx) => idx,
+                OutVtx::Interp(p) => {
+                    // Vertex count overflowing u32 needs > 4 billion
+                    // vertices, physically impossible for any
+                    // marching-cubes output the cached 5 mm grid can
+                    // produce — and the underlying `IndexedMesh::faces`
+                    // is `Vec<[u32; 3]>` so the input mesh itself
+                    // already proves the count fits.
+                    #[allow(clippy::expect_used)]
+                    let new_idx = u32::try_from(out_vertices.len())
+                        .expect("clipped mesh vertex count must fit in u32");
+                    out_vertices.push(p);
+                    new_idx
+                }
+            })
+            .collect();
+        for i in 1..(resolved.len() - 1) {
+            out_faces.push([resolved[0], resolved[i], resolved[i + 1]]);
+        }
+    }
+
+    let mut out = IndexedMesh {
+        vertices: out_vertices,
+        faces: out_faces,
+    };
+    remove_unreferenced_vertices(&mut out);
+    out
+}
+
+/// Extract one layer's iso surface from the cached grid, then trim
+/// triangles that fall on the cap-extension side of every cap plane.
 ///
 /// `offset_m` is the iso value in meters: positive = outward
 /// (layer outer surfaces), negative = inward (cavity surface),
 /// zero = original scan surface.
 ///
-/// Cheap (sub-millisecond on a 5 mm grid). Pure: does not mutate the
-/// cache.
+/// The cap-plane half-space clip is uniform across cavity and outer
+/// extractions:
+/// - For the cavity (`offset_m < 0`) the two-SDF construction already
+///   terminates the iso surface at the cap plane, so the clip is
+///   typically a no-op (any triangles that drift past the cap plane
+///   from MC interpolation jitter get pruned).
+/// - For an outer surface (`offset_m > 0`) the iso extends PAST the
+///   cap plane as a "skirt" (the dome+wall-only SDF has large
+///   unsigned distance up there, distance to the cap-edge ring), so
+///   the clip removes the skirt and leaves a knife-edge brim at the
+///   cap plane.
+///
+/// Cheap (sub-millisecond MC on a 5 mm grid + O(faces × caps) clip;
+/// caps is 1–2 in practice).
+///
+/// Pure: does not mutate the cache.
 ///
 /// # Panics
 ///
 /// `debug_assert!`s that `|offset_m| < LAYER_GRID_MARGIN_M` — the
 /// grid AABB was sized for that envelope; extractions past the
-/// margin would silently clip against the bounds. See spec
-/// §"Open risks #4".
+/// margin would silently clip against the bounds.
 #[must_use]
-pub(crate) fn extract_layer_surface(cache: &CachedScanSdf, offset_m: f64) -> IndexedMesh {
+pub(crate) fn extract_layer_surface(
+    cache: &CachedScanSdf,
+    cap_planes: &[CapPlane],
+    offset_m: f64,
+) -> IndexedMesh {
     debug_assert!(
         offset_m.abs() < LAYER_GRID_MARGIN_M,
         "extract_layer_surface: |offset_m|={:.4} exceeds LAYER_GRID_MARGIN_M={:.4}; \
@@ -506,7 +651,11 @@ pub(crate) fn extract_layer_surface(cache: &CachedScanSdf, offset_m: f64) -> Ind
         LAYER_GRID_MARGIN_M,
     );
     let config = MarchingCubesConfig::at_iso_value(offset_m);
-    marching_cubes(&cache.grid, &config)
+    let mut mesh = marching_cubes(&cache.grid, &config);
+    for plane in cap_planes {
+        mesh = clip_mesh_against_cap_plane(&mesh, plane);
+    }
+    mesh
 }
 
 #[cfg(test)]
@@ -746,7 +895,7 @@ mod tests {
         // radial path could not.
         let sphere = unit_icosphere(3);
         let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build cache");
-        let surf = extract_layer_surface(&cache, 0.1);
+        let surf = extract_layer_surface(&cache, &[], 0.1);
         assert!(!surf.vertices.is_empty(), "surface must extract");
 
         let r_expected = 1.1_f64;
@@ -765,7 +914,7 @@ mod tests {
         // Same fixture, inward offset T = 0.1 → vertices at radius 0.9.
         let sphere = unit_icosphere(3);
         let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build cache");
-        let surf = extract_layer_surface(&cache, -0.1);
+        let surf = extract_layer_surface(&cache, &[], -0.1);
         assert!(!surf.vertices.is_empty(), "inward surface must extract");
 
         let r_expected = 0.9_f64;
@@ -790,7 +939,7 @@ mod tests {
         // Non-integer-multiple margin defeats mesh-sdf's sign-tie on
         // axis-aligned face planes; see [`MARGIN_OFFSET_M`].
         let cache = build_cached_scan_sdf(&cube, &[], 0.02, MARGIN_OFFSET_M).expect("build cache");
-        let surf = extract_layer_surface(&cache, 0.1);
+        let surf = extract_layer_surface(&cache, &[], 0.1);
         assert!(!surf.vertices.is_empty(), "cube offset must extract");
 
         let max_x = surf.vertices.iter().map(|v| v.x).fold(f64::MIN, f64::max);
@@ -813,7 +962,7 @@ mod tests {
         // failure mode of the prior per-vertex radial path).
         let cube = axis_aligned_cube(0.5, FIXTURE_OFFSET);
         let cache = build_cached_scan_sdf(&cube, &[], 0.02, MARGIN_OFFSET_M).expect("build cache");
-        let surf = extract_layer_surface(&cache, 0.1);
+        let surf = extract_layer_surface(&cache, &[], 0.1);
 
         let max_norm = surf
             .vertices
@@ -849,7 +998,7 @@ mod tests {
         // axis-alignment bug in the fill.
         let cyl = capped_cylinder(0.3, 0.4, 48, FIXTURE_OFFSET);
         let cache = build_cached_scan_sdf(&cyl, &[], 0.003, 0.1).expect("build cache");
-        let surf = extract_layer_surface(&cache, 0.05);
+        let surf = extract_layer_surface(&cache, &[], 0.05);
         assert!(!surf.vertices.is_empty(), "cylinder offset must extract");
 
         // Pick vertices near the mid-plane (z ≈ center.z ± 1.5 mm)
@@ -917,7 +1066,7 @@ mod tests {
         // Past the min SDF: completely empty.
         // -0.025 < cache.min_sdf_value (≈ -0.02), so every grid cell
         // has value >= -0.025; cube-index = 0 in every cell; empty.
-        let surf_empty = extract_layer_surface(&cache, -0.025);
+        let surf_empty = extract_layer_surface(&cache, &[], -0.025);
         assert!(
             surf_empty.faces.is_empty(),
             "iso past min SDF should yield empty mesh; got {} faces",
@@ -926,7 +1075,7 @@ mod tests {
 
         // Just within the min SDF: should still produce a non-empty
         // surface (sanity that the "empty" gate above is meaningful).
-        let surf_alive = extract_layer_surface(&cache, -0.015);
+        let surf_alive = extract_layer_surface(&cache, &[], -0.015);
         assert!(
             !surf_alive.faces.is_empty(),
             "iso just inside min SDF should yield a non-empty mesh",
@@ -968,11 +1117,11 @@ mod tests {
         let sphere = unit_icosphere(3);
         let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build cache");
 
-        let _first = extract_layer_surface(&cache, 0.1);
-        let second_after = extract_layer_surface(&cache, -0.1);
+        let _first = extract_layer_surface(&cache, &[], 0.1);
+        let second_after = extract_layer_surface(&cache, &[], -0.1);
 
         let fresh_cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("fresh");
-        let second_fresh = extract_layer_surface(&fresh_cache, -0.1);
+        let second_fresh = extract_layer_surface(&fresh_cache, &[], -0.1);
 
         assert_eq!(second_after.vertices.len(), second_fresh.vertices.len());
         assert_eq!(second_after.faces.len(), second_fresh.faces.len());
@@ -1145,7 +1294,7 @@ mod tests {
         let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
         let cell = 0.005;
         let cache = build_cached_scan_sdf(&cube, &[cap], cell, 0.043).expect("build cache");
-        let cavity = extract_layer_surface(&cache, -0.005);
+        let cavity = extract_layer_surface(&cache, &[], -0.005);
         assert!(!cavity.vertices.is_empty(), "cavity must extract");
         let max_z = cavity.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
         let floor_z = 0.045_f64;
@@ -1188,5 +1337,137 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ----- Sub-leaf 4: post-MC half-space clip --------------------
+
+    /// Triangle-only fixture: build a one-triangle `IndexedMesh`
+    /// for half-space clip tests.
+    fn single_triangle(a: Point3<f64>, b: Point3<f64>, c: Point3<f64>) -> IndexedMesh {
+        IndexedMesh {
+            vertices: vec![a, b, c],
+            faces: vec![[0, 1, 2]],
+        }
+    }
+
+    #[test]
+    fn clip_keeps_triangle_entirely_inside() {
+        // All three vertices on the body-interior side (signed < 0)
+        // → triangle kept verbatim.
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        let tri = single_triangle(
+            Point3::new(0.0, 0.0, -0.1),
+            Point3::new(0.1, 0.0, -0.05),
+            Point3::new(0.0, 0.1, -0.1),
+        );
+        let clipped = clip_mesh_against_cap_plane(&tri, &cap);
+        assert_eq!(clipped.faces.len(), 1);
+        // Vertex coordinates preserved (modulo `remove_unreferenced_vertices`
+        // permutation — for an all-kept face the order is unchanged).
+        assert_eq!(clipped.vertices.len(), 3);
+    }
+
+    #[test]
+    fn clip_discards_triangle_entirely_outside() {
+        // All three vertices on the cap-extension side (signed > 0)
+        // → triangle dropped.
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        let tri = single_triangle(
+            Point3::new(0.0, 0.0, 0.1),
+            Point3::new(0.1, 0.0, 0.05),
+            Point3::new(0.0, 0.1, 0.1),
+        );
+        let clipped = clip_mesh_against_cap_plane(&tri, &cap);
+        assert!(clipped.faces.is_empty());
+        assert!(clipped.vertices.is_empty());
+    }
+
+    #[test]
+    fn clip_one_outside_two_inside_emits_quad_as_two_triangles() {
+        // V0 outside (z = +0.1), V1 + V2 inside (z = -0.1) → output
+        // polygon is a quad → 2 triangles. The two interpolated
+        // points sit exactly on the cap plane (z = 0).
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        let tri = single_triangle(
+            Point3::new(0.0, 0.0, 0.1),  // outside
+            Point3::new(0.2, 0.0, -0.1), // inside
+            Point3::new(0.0, 0.2, -0.1), // inside
+        );
+        let clipped = clip_mesh_against_cap_plane(&tri, &cap);
+        assert_eq!(clipped.faces.len(), 2, "quad → 2 sub-triangles");
+        // Every surviving vertex must have z ≤ 0 (body-interior).
+        for v in &clipped.vertices {
+            assert!(v.z <= 1e-12, "vertex z = {} should be ≤ 0", v.z);
+        }
+        // The two interpolated points sit exactly on z = 0 (cap
+        // plane); the two original-inside vertices sit at z = -0.1.
+        let on_plane = clipped.vertices.iter().filter(|v| v.z.abs() < 1e-9).count();
+        assert_eq!(on_plane, 2, "expected 2 vertices on the cap plane");
+    }
+
+    #[test]
+    fn clip_two_outside_one_inside_emits_single_triangle() {
+        // V0 inside, V1 + V2 outside → output is one triangle (the
+        // kept vertex + 2 interpolated points).
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        let tri = single_triangle(
+            Point3::new(0.0, 0.0, -0.1), // inside
+            Point3::new(0.2, 0.0, 0.1),  // outside
+            Point3::new(0.0, 0.2, 0.1),  // outside
+        );
+        let clipped = clip_mesh_against_cap_plane(&tri, &cap);
+        assert_eq!(clipped.faces.len(), 1, "tri-out-tri-in → 1 sub-triangle");
+        for v in &clipped.vertices {
+            assert!(v.z <= 1e-12, "vertex z = {} should be ≤ 0", v.z);
+        }
+        // One vertex stays at the original (0, 0, -0.1); two new
+        // intersections sit on z = 0.
+        let on_plane = clipped.vertices.iter().filter(|v| v.z.abs() < 1e-9).count();
+        assert_eq!(on_plane, 2);
+    }
+
+    #[test]
+    fn clip_against_two_cap_planes_keeps_intersection_region() {
+        // Sphere clipped by TWO planes: top (z > 0) AND lateral
+        // (x > 0). The surviving region is the lower-left quadrant
+        // of the sphere surface. Pin that both clips applied
+        // independently produce a non-empty mesh with no vertex on
+        // the wrong side of either plane.
+        let sphere = unit_icosphere(2);
+        let cap_z = cap_plane_at(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        let cap_x = cap_plane_at(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
+        let after_z = clip_mesh_against_cap_plane(&sphere, &cap_z);
+        let after_both = clip_mesh_against_cap_plane(&after_z, &cap_x);
+        assert!(!after_both.faces.is_empty());
+        // No vertex should land on the wrong (positive) side of
+        // either plane, beyond the float tolerance the interpolation
+        // can introduce.
+        for v in &after_both.vertices {
+            assert!(v.z <= 1e-9, "vertex z = {} survived top clip", v.z);
+            assert!(v.x <= 1e-9, "vertex x = {} survived lateral clip", v.x);
+        }
+    }
+
+    #[test]
+    fn extract_layer_surface_with_outer_clip_trims_skirt_on_cube() {
+        // Cube of half-extent 50 mm, top face flagged as cap plane,
+        // outward offset T = 10 mm. Without the post-MC clip the
+        // outer iso surface extends past the cap plane (forming a
+        // skirt going to z ≈ +60 mm because the dome+wall-only SDF
+        // has large unsigned distance up there). With the clip the
+        // outer iso terminates at the cap plane (z ≤ +50 mm modulo
+        // half a cell).
+        let cube = axis_aligned_cube(0.05, Vector3::zeros());
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.05), Vector3::new(0.0, 0.0, 1.0));
+        let cell = 0.005;
+        let caps = [cap];
+        let cache = build_cached_scan_sdf(&cube, &caps, cell, 0.043).expect("build");
+        let outer = extract_layer_surface(&cache, &caps, 0.01);
+        assert!(!outer.vertices.is_empty(), "outer iso must extract");
+        let max_z = outer.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+        assert!(
+            max_z <= 0.05 + 1e-9,
+            "outer iso top z = {max_z} must be clipped to cap plane (z = 0.05)",
+        );
     }
 }

@@ -834,6 +834,7 @@ fn signed_volume_m3(mesh: &IndexedMesh) -> f64 {
 /// "extract-many" contract.
 fn compute_validations(
     cached_sdf: &sdf_layers::CachedScanSdf,
+    cap_planes: &sdf_layers::CapPlanes,
     cavity: &CavityState,
     layers: &LayersState,
 ) -> DeviceValidations {
@@ -844,7 +845,8 @@ fn compute_validations(
     let clamp = |iso: f64| iso.clamp(-max_iso, max_iso);
 
     // The cavity surface is layer 0's inner surface.
-    let cavity_mesh = sdf_layers::extract_layer_surface(cached_sdf, clamp(-cavity.inset_m));
+    let cavity_mesh =
+        sdf_layers::extract_layer_surface(cached_sdf, &cap_planes.planes, clamp(-cavity.inset_m));
     let mut prev_inner_volume = signed_volume_m3(&cavity_mesh);
     let mut cumulative_thickness_m = 0.0_f64;
     let mut layer_validations = Vec::with_capacity(layers.layers.len());
@@ -855,7 +857,8 @@ fn compute_validations(
     for (layer_index, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
         let outer_iso = clamp(cumulative_thickness_m - cavity.inset_m);
-        let outer_mesh = sdf_layers::extract_layer_surface(cached_sdf, outer_iso);
+        let outer_mesh =
+            sdf_layers::extract_layer_surface(cached_sdf, &cap_planes.planes, outer_iso);
         let outer_volume = signed_volume_m3(&outer_mesh);
         // The outer surface always encloses more volume than the
         // inner; `abs` guards against floating-point sign noise on
@@ -1462,17 +1465,19 @@ const CAVITY_COLOR: (f32, f32, f32) = (0.95, 0.55, 0.45);
 /// distance). Replaces the prior per-vertex radial displacement of
 /// the proxy mesh — the SDF iso is exactly perpendicular to the
 /// source surface by construction (no apex-nipple artifacts).
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn spawn_cavity_mesh(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ClipPlaneMaterial>>,
     cached_sdf: Res<sdf_layers::CachedScanSdf>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
     cavity: Res<CavityState>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
 ) {
-    let cavity_indexed = sdf_layers::extract_layer_surface(&cached_sdf, -cavity.inset_m);
+    let cavity_indexed =
+        sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -cavity.inset_m);
     let cavity_mesh = meshes.add(build_bevy_mesh_from_indexed(
         &cavity_indexed,
         *up,
@@ -1499,10 +1504,11 @@ fn spawn_cavity_mesh(
 /// Slice 9 sub-leaf 3: pulls the cavity surface from the cached SDF
 /// at `iso = -state.inset_m` rather than displacing the per-vertex
 /// proxy mesh.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn update_cavity_mesh(
     state: Res<CavityState>,
     cached_sdf: Res<sdf_layers::CachedScanSdf>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1512,7 +1518,8 @@ fn update_cavity_mesh(
         return;
     }
     for (mut mesh_handle, mut visibility) in &mut q {
-        let cavity_indexed = sdf_layers::extract_layer_surface(&cached_sdf, -state.inset_m);
+        let cavity_indexed =
+            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, -state.inset_m);
         let new_mesh = build_bevy_mesh_from_indexed(&cavity_indexed, *up, render_scale.0);
         mesh_handle.0 = meshes.add(new_mesh);
         *visibility = if state.visible {
@@ -1575,6 +1582,7 @@ fn update_layer_meshes(
     layers: Res<LayersState>,
     cavity: Res<CavityState>,
     cached_sdf: Res<sdf_layers::CachedScanSdf>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
     up: Res<UpAxis>,
     render_scale: Res<RenderScale>,
     sim_state: Res<insertion_sim_ui::InsertionSimState>,
@@ -1630,7 +1638,8 @@ fn update_layer_meshes(
         // `debug_assert!` (strict `<`) still passes in debug builds.
         let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
-        let layer_indexed = sdf_layers::extract_layer_surface(&cached_sdf, safe_offset_m);
+        let layer_indexed =
+            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m);
         // Heat-map: project per-tet scalars onto this layer's MC
         // vertices (sub-leaf 7). `project_layer_heat_map` returns
         // `None` if the sim ran with fewer layers than the current
@@ -2138,6 +2147,7 @@ fn device_design_panel(
     mut contexts: EguiContexts,
     info: Res<ScanInfo>,
     cached_sdf: Res<sdf_layers::CachedScanSdf>,
+    cap_planes: Res<sdf_layers::CapPlanes>,
     scan_path: Res<ScanFilePath>,
     centerline: Res<Centerline>,
     mut scan_visible: ResMut<ScanMeshVisible>,
@@ -2149,7 +2159,7 @@ fn device_design_panel(
     scan_mesh: Option<Res<ScanMesh>>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
-    let validations = compute_validations(&cached_sdf, &cavity, &layers);
+    let validations = compute_validations(&cached_sdf, &cap_planes, &cavity, &layers);
     let scan_loaded = scan_mesh.is_some();
     let centerline_available = centerline.points_m.len() >= 2;
     egui::SidePanel::right("cf-device-design-panels")
@@ -3005,8 +3015,8 @@ included = true
         let cube = unit_cube_mesh();
         let cache =
             sdf_layers::build_cached_scan_sdf(&cube, &[], 0.005, 0.043).expect("build cache");
-        let inner = sdf_layers::extract_layer_surface(&cache, -0.005);
-        let outer = sdf_layers::extract_layer_surface(&cache, 0.005);
+        let inner = sdf_layers::extract_layer_surface(&cache, &[], -0.005);
+        let outer = sdf_layers::extract_layer_surface(&cache, &[], 0.005);
         let v_inner = signed_volume_m3(&inner);
         let v_outer = signed_volume_m3(&outer);
         assert!(
@@ -3075,7 +3085,7 @@ included = true
                 },
             ],
         };
-        let v = compute_validations(&cache, &cavity, &layers);
+        let v = compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &layers);
         assert_eq!(v.layers.len(), 2);
         for lv in &v.layers {
             assert!(lv.shell_volume_m3 > 0.0, "shell volume must be positive");
@@ -3110,6 +3120,7 @@ included = true
 
         let safe = compute_validations(
             &cache,
+            &sdf_layers::CapPlanes::default(),
             &CavityState {
                 inset_m: collapse * 0.5,
                 visible: true,
@@ -3121,6 +3132,7 @@ included = true
 
         let collapsed = compute_validations(
             &cache,
+            &sdf_layers::CapPlanes::default(),
             &CavityState {
                 inset_m: collapse * 1.5,
                 visible: true,
@@ -3146,7 +3158,7 @@ included = true
                 visible: true,
             }],
         };
-        let v_thin = compute_validations(&cache, &cavity, &thin);
+        let v_thin = compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &thin);
         assert!(!v_thin.min_wall_ok);
         assert!(!v_thin.layers[0].thickness_castable);
 
@@ -3159,7 +3171,8 @@ included = true
                 visible: true,
             }],
         };
-        let v_thick = compute_validations(&cache, &cavity, &thick);
+        let v_thick =
+            compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &thick);
         assert!(v_thick.min_wall_ok);
         assert!(v_thick.layers[0].thickness_castable);
     }
@@ -3188,7 +3201,7 @@ included = true
                 },
             ],
         };
-        let v = compute_validations(&cache, &cavity, &layers);
+        let v = compute_validations(&cache, &sdf_layers::CapPlanes::default(), &cavity, &layers);
         let expected = v
             .layers
             .iter()
