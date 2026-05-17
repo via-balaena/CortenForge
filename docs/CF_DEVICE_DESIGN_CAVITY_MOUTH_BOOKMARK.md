@@ -1,9 +1,11 @@
 # cf-device-design Cavity Mouth Opening — Bookmark
 
-**Status**: RECON COMPLETE 2026-05-16 — spec at
-[`CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md).
-Implementation pending (5-sub-leaf ladder; spec calls it as the
-next session per the three-session pattern).
+**Status**: SHIPPED 2026-05-16 — spec at
+[`CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md)
+(see §"Implementation summary"). 5 commits on dev (`03bb695f` →
+`a403a4f3`); 144 tests / clippy clean. Slice-7 followup at
+[`CF_DEVICE_DESIGN_INSERTION_SIM_OPEN_CAVITY_BOOKMARK.md`](CF_DEVICE_DESIGN_INSERTION_SIM_OPEN_CAVITY_BOOKMARK.md)
+(not blocking fit-viz). **Fit-viz rungs 2-6 are now unblocked.**
 
 **One-line structural finding from recon**: post-MC half-space clip
 alone CANNOT open the cavity — the cavity iso surface for `iso = -T`

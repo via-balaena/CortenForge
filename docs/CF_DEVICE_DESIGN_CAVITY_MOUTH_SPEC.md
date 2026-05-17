@@ -1,7 +1,94 @@
 # cf-device-design Cavity Mouth Opening — Spec
 
-**Status**: SPEC 2026-05-16 (recon complete; implementation pending).
+**Status**: SHIPPED 2026-05-16 (5 commits on dev, `03bb695f` →
+`a403a4f3`; 144 tests / 9 ignored; clippy clean; release-build clean).
+User visual gate on iter-1 sock fixture pending.
 **Parent**: [`CF_DEVICE_DESIGN_CAVITY_MOUTH_BOOKMARK.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_BOOKMARK.md).
+**Followup** (not blocking fit-viz): [`CF_DEVICE_DESIGN_INSERTION_SIM_OPEN_CAVITY_BOOKMARK.md`](CF_DEVICE_DESIGN_INSERTION_SIM_OPEN_CAVITY_BOOKMARK.md).
+
+## Implementation summary
+
+5 sub-leaves shipped one commit at a time:
+
+| Sub-leaf | Commit       | What                                                                                  |
+| -------- | ------------ | ------------------------------------------------------------------------------------- |
+| 1        | `03bb695f`   | `[caps]` parser + `CapPlane` / `CapPlanes` Bevy resource; `[transform]` bake (+5 tests). |
+| 2        | `cb03b144`   | `dome_wall_only_mesh` helper (`CAP_FACE_PLANARITY_EPS_M=1e-6`) (+5 tests).            |
+| 3        | `544a8905`   | Two-SDF `build_cached_scan_sdf`; `Arc::clone` no-caps fast path (+4 tests).           |
+| 4        | `5ad09176`   | Post-MC Sutherland-Hodgman half-space clip; thread `cap_planes` into every caller (+6 tests). |
+| 5        | `a403a4f3`   | Cap-centroid-origin `signed_volume_m3` + `primary_cap_origin` (+6 tests).             |
+
+Total: 26 new tests; no regressions on the no-caps path.
+
+## Acceptance criteria
+
+- [x] cf-device-design parses `[caps]` and bakes `[transform]`.
+- [x] `build_cached_scan_sdf` builds two SDFs when caps present;
+      one when not.
+- [x] `extract_layer_surface` clips against every `included` cap
+      plane.
+- [x] `signed_volume_m3` accepts an integration origin; default
+      callers pass the primary cap centroid (or world origin).
+- [x] All existing tests pass unchanged on the no-caps path.
+- [x] New unit tests for dome_wall_only_mesh, two-SDF construction,
+      half-space clip, and cap-origin volume integral pass.
+- [ ] **User visual gate** on iter-1 sock fixture pending.
+- [ ] Grid-fill cost on iter-1 < 1 s — predicted ~648 ms, will
+      observe at visual gate.
+- [x] No regression in `compute_validations` numbers vs current on
+      the closed-body analytical fixtures.
+
+## Patterns banked from this arc
+
+- **Two-SDF construction pattern.** Closed-body SDF for sign, open-
+  body SDF for magnitude. Reusable wherever a "subtract a virtual
+  face from the SDF" operation is needed — e.g., the same trick can
+  open arbitrary holes on top of body parts (deferred multi-hole
+  rim feature).
+- **Cap-centroid divergence-volume integral.** Origin-translated
+  divergence theorem for open surfaces. Reusable in any future shell-
+  volume computation where the shell is bounded by a polygon.
+- **`Arc::clone` short-circuit for absent-feature fast path.** Sharing
+  the Arc between `sdf_closed` and `sdf_open` when no cap planes are
+  present avoids paying the second SDF build cost. Pattern: feature-
+  gated arc clone + per-cell `if cap_planes.is_empty()` short-circuit.
+- **Sutherland-Hodgman triangle clip.** Standard 4-case
+  (k=0/1/2/3 vertices inside) Sutherland-Hodgman implementation with
+  cyclic edge walk + fan triangulation from index 0. Reusable
+  whenever a triangle mesh needs to be clipped against a half-space.
+- **Pre-bake → post-bake transform recovery from `.prep.toml`.**
+  cf-scan-prep emits the user's `[transform]` (rotation quaternion
+  + translation) and records geometric features in the pre-bake
+  frame. Downstream consumers can recover post-bake coordinates by
+  applying the same rotation + translation; pivot = origin is an
+  acceptable approximation when the working scan AABB centroid sits
+  at origin (which auto-center delivers to sub-cm).
+
+## Lessons during implementation
+
+(Items that diverged from the spec or surfaced edge cases.)
+
+- **Spec called for `pub(crate) const CAP_FACE_PLANARITY_EPS_M`,
+  implementation went private.** Only `sdf_layers.rs` uses it; no
+  cross-module exposure needed.
+- **Spec's `extract_layer_surface(cache, cap_planes, offset_m)`
+  signature touched 17 call sites** (11 in sdf_layers tests, 2
+  production + 4 test in main.rs). The `&[]` empty-slice pattern
+  for the no-caps path kept the test sweep simple (sed swap).
+- **`signed_volume_m3` got a sibling helper.** Spec sketched
+  `compute_validations` inlining the origin pick; pulling it into
+  `primary_cap_origin(cap_planes)` made the multi-cap tiebreaker
+  (vertex_count → loop_index) testable independently.
+- **Pivot caveat documented in code.** The bake formula uses
+  pivot = origin, not the working-scan AABB centroid (which
+  `.prep.toml` does not persist). Recorded in `parse_cap_planes`'s
+  docstring; behaviour is correct for identity transforms (the
+  common case) and within sub-mm for typical manual reorients
+  after auto-center.
+
+---
+
+
 
 The user-pinned approach from the bookmark is preserved verbatim:
 
