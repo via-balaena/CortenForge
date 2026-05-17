@@ -43,7 +43,6 @@ mod param_gradient;
 mod sdf;
 mod simplify;
 mod solid;
-mod solid_layered;
 
 pub use mechanism::templates;
 pub use mechanism::{
@@ -55,7 +54,6 @@ pub use mechanism::{
 pub use param::{ParamRef, ParamStore};
 pub use sdf::Sdf;
 pub use solid::{InfillKind, ShapeHint, Solid};
-pub use solid_layered::pinned_floor_shell;
 
 // Re-export geometry types that appear in our public API
 // (Solid::bounds() → Aabb, Solid::sdf_grid_at() → SdfGrid, Solid::mesh() → AttributedMesh)
