@@ -23,16 +23,16 @@ use std::fmt;
 use anyhow::Result;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
-use bevy_egui::egui;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
-use sim_soft::{Mesh as SimMesh, TetId};
+use sim_soft::{Mesh as SimMesh, TetId, VertexId, Yeoh};
 
 use cf_cap_planes::CapPlane;
 
 use crate::insertion_sim::{
     InsertionRamp, RampStep, SimDesign, SimLayer, StepReadout, TetReadout,
-    build_insertion_geometry, run_insertion_ramp,
+    build_insertion_geometry, compute_tet_readouts, run_insertion_ramp,
 };
 use crate::sdf_layers::CapPlanes;
 use crate::{CavityState, LAYER_SURFACE_PALETTE, LayersState, ScanMesh};
@@ -77,7 +77,8 @@ pub enum ScalarMode {
 }
 
 impl ScalarMode {
-    /// Index into [`InsertionSimOutputs::scalar_fields`] +
+    /// Index into each step's `[Vec<f64>; 2]` in
+    /// [`InsertionSimOutputs::per_step_scalar_fields`] +
     /// [`InsertionSimOutputs::scalar_min_max`].
     pub fn buffer_index(self) -> usize {
         match self {
@@ -142,15 +143,31 @@ pub struct InsertionSimOutputs {
     /// surfaces; used by [`project_layer_heat_map`] to filter the
     /// nearest-tet search to in-layer candidates only.
     pub per_tet_layer: Vec<usize>,
-    /// Per-tet scalar fields — `[Energy J/m³, Stress ‖P‖ Pa]`,
-    /// indexed `[scalar_mode_index][tet_id]` (matches
-    /// [`ScalarMode::buffer_index`]). The mode-keyed projection in
-    /// [`project_layer_heat_map`] picks the right slot.
-    pub scalar_fields: [Vec<f64>; 2],
-    /// `[Energy, Stress]` global (min, max) used to normalize the
-    /// gradient — also reported alongside the heat map so the user
-    /// can read absolute scale.
+    /// Per-step per-tet scalar fields — outer index is converged-step
+    /// index (matches `ramp.steps`), inner is
+    /// `[Energy J/m³, Stress ‖P‖ Pa]` per [`ScalarMode::buffer_index`],
+    /// each then per tet id. Slice S1: populated for every converged
+    /// step so the panel's playback slider can re-color the heat map
+    /// at any seating depth without re-running the ramp.
+    pub per_step_scalar_fields: Vec<[Vec<f64>; 2]>,
+    /// `[Energy, Stress]` (min, max) **across all converged steps**.
+    /// Normalizes the gradient consistently as the user scrubs through
+    /// playback — step 0 reads as "cold" and step N-1 as "hot" without
+    /// the saturation jumping mid-scrub. Also reported alongside the
+    /// heat map so the user can read absolute scale.
     pub scalar_min_max: [(f64, f64); 2],
+}
+
+impl InsertionSimOutputs {
+    /// Per-tet scalar fields at the requested converged step (slice S1
+    /// playback). Clamps `step` to the last converged index — callers
+    /// passing the panel's `displayed_step` get the final step's data
+    /// when the field is at or past the converged tail.
+    #[must_use]
+    pub fn scalar_fields_at(&self, step: usize) -> &[Vec<f64>; 2] {
+        let last = self.per_step_scalar_fields.len().saturating_sub(1);
+        &self.per_step_scalar_fields[step.min(last)]
+    }
 }
 
 impl fmt::Debug for InsertionSimOutputs {
@@ -162,7 +179,7 @@ impl fmt::Debug for InsertionSimOutputs {
             f,
             "InsertionSimOutputs {{ n_steps_converged: {}, n_layers: {}, \
              n_tets: {}, ranges: {:?} }}",
-            self.ramp.steps.len(),
+            self.per_step_scalar_fields.len(),
             self.per_layer.len(),
             self.tet_centroids.len(),
             self.scalar_min_max,
@@ -215,6 +232,14 @@ pub struct InsertionSimState {
     /// against). Wraps on overflow; the snapshot only needs strict
     /// inequality across consecutive frames.
     pub last_run_generation: u64,
+    /// Slice S1 — index into `last_run.per_step_scalar_fields` for the
+    /// heat-map playback slider. Set to `last_step_index` by
+    /// [`poll_simulation_task`] when a run completes (default-shows the
+    /// fully-seated state, matching pre-S1 behavior); reset to 0 by
+    /// [`invalidate_on_geometry_change`]. Read by `main.rs`'s
+    /// `LayerMeshKey` so a step change triggers a layer-mesh rebuild;
+    /// also drives the viewport `Step N/M` badge.
+    pub displayed_step: usize,
 }
 
 impl Default for InsertionSimState {
@@ -228,6 +253,7 @@ impl Default for InsertionSimState {
             heat_map_on: false,
             scalar_mode: ScalarMode::default(),
             last_run_generation: 0,
+            displayed_step: 0,
         }
     }
 }
@@ -238,15 +264,17 @@ pub struct InsertionSimPlugin;
 
 impl Plugin for InsertionSimPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<InsertionSimState>().add_systems(
-            Update,
-            (
-                invalidate_on_geometry_change,
-                kick_off_simulation,
-                poll_simulation_task,
+        app.init_resource::<InsertionSimState>()
+            .add_systems(
+                Update,
+                (
+                    invalidate_on_geometry_change,
+                    kick_off_simulation,
+                    poll_simulation_task,
+                )
+                    .chain(),
             )
-                .chain(),
-        );
+            .add_systems(EguiPrimaryContextPass, render_step_badge);
     }
 }
 
@@ -296,6 +324,7 @@ pub fn invalidate_on_geometry_change(
         state.last_run = None;
         state.heat_map_on = false;
         state.last_run_generation = state.last_run_generation.wrapping_add(1);
+        state.displayed_step = 0;
     }
 }
 
@@ -351,6 +380,11 @@ pub fn poll_simulation_task(mut state: ResMut<InsertionSimState>) {
     if let Some(result) = future::block_on(future::poll_once(&mut task)) {
         match result {
             Ok(outputs) => {
+                // Slice S1 — default the playback slider to the
+                // fully-seated final step so the post-completion view
+                // matches pre-S1 behavior (the user's first sight of
+                // the heat map is at full insertion).
+                state.displayed_step = outputs.per_step_scalar_fields.len().saturating_sub(1);
                 state.last_run = Some(outputs);
                 state.last_error = None;
                 // Bump the generation so `update_layer_meshes` (in
@@ -422,14 +456,25 @@ fn run_sim_pipeline(
     let n_layers = design.layers.len();
     let per_tet_layer = geometry.per_tet_layer.clone();
     let rest_positions: Vec<Vector3<f64>> = geometry.mesh.positions().to_vec();
+    // Slice S1 — snapshot the tet connectivity + per-tet materials
+    // BEFORE `run_insertion_ramp` consumes `geometry`, so we can
+    // recompute per-tet readouts at every converged step's
+    // `x_final` for the playback slider. Same construction the ramp
+    // itself uses internally (`insertion_sim.rs` ≈ line 1869); doing
+    // it twice is cheap (≤ a few MB of clones) vs. the alternative
+    // of pre-baking 16 × n_tets × 184 B readouts inside the ramp.
+    // `t as TetId` (u32) — Phase 4 BCC meshes stay under `u32::MAX`.
+    #[allow(clippy::cast_possible_truncation)]
+    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId)
+        .map(|t| geometry.mesh.tet_vertices(t))
+        .collect();
+    let materials: Vec<Yeoh> = geometry.mesh.materials().to_vec();
     // Rest-frame tet centroids — the projection's nearest-tet lookup
     // operates on these. Precomputing here once avoids re-deriving
     // them at every heat-map render.
-    let tet_centroids: Vec<Vector3<f64>> = (0..n_tets)
-        .map(|t| {
-            // `t as TetId` (u32) — Phase 4 BCC meshes stay under `u32::MAX`.
-            #[allow(clippy::cast_possible_truncation)]
-            let v = geometry.mesh.tet_vertices(t as TetId);
+    let tet_centroids: Vec<Vector3<f64>> = tets
+        .iter()
+        .map(|v| {
             (rest_positions[v[0] as usize]
                 + rest_positions[v[1] as usize]
                 + rest_positions[v[2] as usize]
@@ -449,25 +494,51 @@ fn run_sim_pipeline(
 
     let per_layer = aggregate_per_layer(&result.final_per_tet, &per_tet_layer, n_layers);
 
-    let energy_field: Vec<f64> = result
-        .final_per_tet
+    // Slice S1 — per-step scalar fields drive the playback slider.
+    // The final step reuses `result.final_per_tet` (already computed
+    // by the ramp); intermediate steps rerun `compute_tet_readouts`
+    // from their own `x_final` against the snapshotted rest geometry +
+    // tets + materials. Cost: ~15 × n_tets × per-tet F + Yeoh evals
+    // — a few seconds at iter-1 size, dwarfed by the ramp itself.
+    let last_step_idx = ramp.steps.len().saturating_sub(1);
+    let per_step_scalar_fields: Vec<[Vec<f64>; 2]> = ramp
+        .steps
         .iter()
-        .map(|t| t.energy_density_j_per_m3)
+        .enumerate()
+        .map(|(k, step)| {
+            let per_tet_owned;
+            let per_tet: &[TetReadout] = if k == last_step_idx {
+                &result.final_per_tet
+            } else {
+                let positions_k: Vec<Vector3<f64>> = step
+                    .x_final
+                    .chunks_exact(3)
+                    .map(|c| Vector3::new(c[0], c[1], c[2]))
+                    .collect();
+                per_tet_owned =
+                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                &per_tet_owned
+            };
+            let energy: Vec<f64> = per_tet.iter().map(|t| t.energy_density_j_per_m3).collect();
+            let stress: Vec<f64> = per_tet.iter().map(|t| t.first_piola_frobenius_pa).collect();
+            [energy, stress]
+        })
         .collect();
-    let stress_field: Vec<f64> = result
-        .final_per_tet
-        .iter()
-        .map(|t| t.first_piola_frobenius_pa)
-        .collect();
-    let energy_min_max = global_min_max(&energy_field);
-    let stress_min_max = global_min_max(&stress_field);
+
+    // Global (across all steps) min/max so the gradient stays
+    // calibrated as the user scrubs through the playback — step 0
+    // reads as cold and step N-1 as hot without per-step rescaling
+    // jitter. The S1 spec calls this the natural "watch heat build
+    // up" affordance over per-step renormalization.
+    let energy_min_max = global_min_max_across(&per_step_scalar_fields, 0);
+    let stress_min_max = global_min_max_across(&per_step_scalar_fields, 1);
 
     Ok(InsertionSimOutputs {
         ramp,
         per_layer,
         tet_centroids,
         per_tet_layer,
-        scalar_fields: [energy_field, stress_field],
+        per_step_scalar_fields,
         scalar_min_max: [energy_min_max, stress_min_max],
     })
 }
@@ -560,9 +631,33 @@ fn global_min_max(values: &[f64]) -> (f64, f64) {
     }
 }
 
+/// Slice S1 — `(min, max)` across every step's slot-`slot_idx` per-tet
+/// scalar field. Used to calibrate the heat-map gradient consistently
+/// across the playback slider so a scrub doesn't jump the color scale.
+/// Defaults to `(0, 0)` on empty input (matches [`global_min_max`]).
+fn global_min_max_across(per_step_fields: &[[Vec<f64>; 2]], slot_idx: usize) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for fields in per_step_fields {
+        let (step_lo, step_hi) = global_min_max(&fields[slot_idx]);
+        if step_lo < lo {
+            lo = step_lo;
+        }
+        if step_hi > hi {
+            hi = step_hi;
+        }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        (0.0, 0.0)
+    } else {
+        (lo, hi)
+    }
+}
+
 /// Project the sim's per-tet scalar field onto an SDF-extracted
 /// layer mesh: for each MC vertex, find the nearest in-layer tet
-/// centroid, sample [`InsertionSimOutputs::scalar_fields`] for the
+/// centroid, sample
+/// [`InsertionSimOutputs::scalar_fields_at`]`(step)` for the
 /// requested mode, encode RGBA via [`scalar_to_rgba`].
 ///
 /// `mc_vertices` should be the per-layer surface's MC vertex
@@ -593,6 +688,7 @@ pub(crate) fn project_layer_heat_map(
     outputs: &InsertionSimOutputs,
     layer_idx: usize,
     scalar_mode: ScalarMode,
+    step: usize,
     mc_vertices: &[Point3<f64>],
 ) -> Option<Vec<[f32; 4]>> {
     let n_layers = outputs
@@ -615,7 +711,7 @@ pub(crate) fn project_layer_heat_map(
         return None;
     }
     let mode = scalar_mode.buffer_index();
-    let scalar_field = &outputs.scalar_fields[mode];
+    let scalar_field = &outputs.scalar_fields_at(step)[mode];
     let min_max = outputs.scalar_min_max[mode];
     let centroids = &outputs.tet_centroids;
 
@@ -730,6 +826,7 @@ pub fn render_insertion_sim_section(
             render_layer_table(ui, &run.per_layer);
 
             ui.separator();
+            render_playback_slider(ui, &run.ramp, &mut state.displayed_step);
             ui.checkbox(&mut state.heat_map_on, "Heat map");
             ui.add_enabled_ui(state.heat_map_on, |ui| {
                 ui.horizontal(|ui| {
@@ -754,6 +851,60 @@ pub fn render_insertion_sim_section(
                 ui.label(format!("range: {lo:.3e} .. {hi:.3e}"));
             });
         });
+}
+
+/// Slice S1 — per-step playback slider. Shown only when the ramp
+/// converged at least 2 steps (a 1-step run has nothing to scrub).
+/// Range is `[0, last_converged_step]`; the headline label reads
+/// `Step N / 16 — d = X.XX mm` so the scrub state is legible without
+/// looking at the viewport badge.
+fn render_playback_slider(ui: &mut egui::Ui, ramp: &InsertionRamp, displayed_step: &mut usize) {
+    let n_steps = ramp.steps.len();
+    if n_steps <= 1 {
+        return;
+    }
+    let last = n_steps - 1;
+    if *displayed_step > last {
+        *displayed_step = last;
+    }
+    let interference_mm = ramp.steps[*displayed_step].interference_m * 1e3;
+    ui.label(format!(
+        "Step {} / {n_steps} — d = {interference_mm:.2} mm",
+        *displayed_step + 1,
+    ));
+    ui.add(
+        egui::Slider::new(displayed_step, 0..=last)
+            .integer()
+            .show_value(false),
+    );
+}
+
+/// Slice S1 — viewport `Step N/M` badge. Anchored top-left so the
+/// workshop user sees the current playback frame without glancing at
+/// the side panel. Only shown when a converged run with ≥ 2 steps is
+/// loaded.
+#[allow(clippy::needless_pass_by_value)]
+pub fn render_step_badge(
+    mut contexts: EguiContexts,
+    state: Res<InsertionSimState>,
+) -> bevy::ecs::error::Result {
+    let Some(run) = state.last_run.as_ref() else {
+        return Ok(());
+    };
+    let n_steps = run.ramp.steps.len();
+    if n_steps <= 1 {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+    let current = state.displayed_step.min(n_steps - 1) + 1;
+    egui::Area::new(egui::Id::new("insertion_sim_step_badge"))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(16.0, 16.0))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.label(egui::RichText::new(format!("Step {current} / {n_steps}")).monospace());
+            });
+        });
+    Ok(())
 }
 
 /// One-line convergence summary above the F-d plot. On full
@@ -1122,6 +1273,60 @@ mod tests {
             .map(|m| m.buffer_index())
             .collect();
         assert_eq!(indices, vec![0, 1]);
+    }
+
+    /// Slice S1 — `scalar_fields_at` clamps OOB step indices to the
+    /// last converged step (matches the "panel slider past the end"
+    /// case + `displayed_step` default-zero before a run completes).
+    #[test]
+    fn scalar_fields_at_clamps_out_of_range_to_last_step() {
+        let outputs = InsertionSimOutputs {
+            ramp: InsertionRamp {
+                steps: Vec::new(),
+                failed_at_step: None,
+                failure_reason: None,
+                final_x: Vec::new(),
+                n_pinned: 0,
+                result: None,
+            },
+            per_layer: Vec::new(),
+            tet_centroids: Vec::new(),
+            per_tet_layer: Vec::new(),
+            // Three steps with distinct energy fields so we can tell
+            // which step the accessor returns.
+            per_step_scalar_fields: vec![
+                [vec![1.0], vec![10.0]],
+                [vec![2.0], vec![20.0]],
+                [vec![3.0], vec![30.0]],
+            ],
+            scalar_min_max: [(1.0, 3.0), (10.0, 30.0)],
+        };
+        assert_eq!(outputs.scalar_fields_at(0)[0], vec![1.0]);
+        assert_eq!(outputs.scalar_fields_at(1)[0], vec![2.0]);
+        assert_eq!(outputs.scalar_fields_at(2)[0], vec![3.0]);
+        // Past the last converged step → clamp to last (3 steps → idx 2).
+        assert_eq!(outputs.scalar_fields_at(99)[0], vec![3.0]);
+        // Stress slot picks the same step index.
+        assert_eq!(outputs.scalar_fields_at(0)[1], vec![10.0]);
+        assert_eq!(outputs.scalar_fields_at(99)[1], vec![30.0]);
+    }
+
+    /// Slice S1 — `global_min_max_across` unions per-step ranges so the
+    /// heat-map gradient stays calibrated across a playback scrub.
+    #[test]
+    fn global_min_max_across_unions_step_ranges() {
+        let per_step: Vec<[Vec<f64>; 2]> = vec![
+            // Step 0: energy [1, 5], stress [10, 50]
+            [vec![1.0, 5.0], vec![10.0, 50.0]],
+            // Step 1: energy [3, 7], stress [20, 30]
+            [vec![3.0, 7.0], vec![20.0, 30.0]],
+            // Step 2: energy [-2, 0.5], stress [5, 80]
+            [vec![-2.0, 0.5], vec![5.0, 80.0]],
+        ];
+        assert_eq!(global_min_max_across(&per_step, 0), (-2.0, 7.0));
+        assert_eq!(global_min_max_across(&per_step, 1), (5.0, 80.0));
+        // Empty input — degenerate, collapses to (0, 0).
+        assert_eq!(global_min_max_across(&[], 0), (0.0, 0.0));
     }
 
     /// `LAYER_COUNT_MAX` (from main.rs) caps the user-facing layer

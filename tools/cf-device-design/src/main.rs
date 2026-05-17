@@ -1265,6 +1265,9 @@ struct LayerMeshKey {
     heat_map_on: bool,
     scalar_mode: insertion_sim_ui::ScalarMode,
     last_run_generation: u64,
+    /// Slice S1 — playback-slider index. A step change re-projects the
+    /// heat map at the new step's per-tet scalar field.
+    displayed_step: usize,
 }
 
 /// Build a Bevy `Mesh` directly from an [`IndexedMesh`] — no
@@ -1491,6 +1494,7 @@ fn update_layer_meshes(
         heat_map_on: sim_state.heat_map_on,
         scalar_mode: sim_state.scalar_mode,
         last_run_generation: sim_state.last_run_generation,
+        displayed_step: sim_state.displayed_step,
     };
     let changed = last_key.as_ref().is_none_or(|prev| prev != &current_key);
     *last_key = Some(current_key);
@@ -1543,6 +1547,7 @@ fn update_layer_meshes(
                 run,
                 i,
                 sim_state.scalar_mode,
+                sim_state.displayed_step,
                 &layer_indexed.vertices,
             )
         });
