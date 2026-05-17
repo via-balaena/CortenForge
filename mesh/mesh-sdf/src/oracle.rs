@@ -60,6 +60,13 @@ pub trait Sign: Send + Sync {
 /// `impl<D: UnsignedDistance, S: Sign> Sdf for Signed<D, S>` in
 /// cf-design — so the composition drops into `Solid::from_sdf` and the
 /// `Arc<dyn Sdf>` consumer pattern without ceremony.
+///
+/// **Pub fields + same-name methods.** The `distance: D` field shares
+/// a name with the [`Signed::distance`] method — Rust resolves
+/// `sdf.distance(p)` to the method (takes args) and `sdf.distance` to
+/// the field. Direct field access bypasses the sign oracle; reach for
+/// the method unless you're consciously composing on the unsigned
+/// oracle alone.
 #[derive(Debug, Clone)]
 pub struct Signed<D: UnsignedDistance, S: Sign> {
     /// Unsigned-distance oracle.
@@ -70,6 +77,7 @@ pub struct Signed<D: UnsignedDistance, S: Sign> {
 
 impl<D: UnsignedDistance, S: Sign> Signed<D, S> {
     /// Signed distance at `p` (negative inside, positive outside).
+    #[must_use]
     pub fn evaluate(&self, p: Point3<f64>) -> f64 {
         let u = self.distance.distance(p);
         if self.sign.is_inside(p) { -u } else { u }
@@ -78,22 +86,26 @@ impl<D: UnsignedDistance, S: Sign> Signed<D, S> {
     /// Alias for [`Signed::evaluate`] — preserves the
     /// `SignedDistanceField::distance` API shape so deprecated call
     /// sites work unchanged.
+    #[must_use]
     pub fn distance(&self, p: Point3<f64>) -> f64 {
         self.evaluate(p)
     }
 
     /// Unsigned distance — delegates to the wrapped distance oracle.
+    #[must_use]
     pub fn unsigned_distance(&self, p: Point3<f64>) -> f64 {
         self.distance.distance(p)
     }
 
     /// Inside test — delegates to the wrapped sign oracle.
+    #[must_use]
     pub fn is_inside(&self, p: Point3<f64>) -> bool {
         self.sign.is_inside(p)
     }
 
     /// Closest point on the surface — delegates to the wrapped
     /// distance oracle.
+    #[must_use]
     pub fn closest_point(&self, p: Point3<f64>) -> Point3<f64> {
         self.distance.closest_point(p)
     }

@@ -173,20 +173,18 @@ impl Sign for PseudoNormalSign {
     since = "0.1.0",
     note = "Conflates distance and sign — pick a sign oracle explicitly. \
             `SignedDistanceField::new(mesh)?` is equivalent to \
-            `Signed::new(TriMeshDistance::new(mesh)?, PseudoNormalSign::from_distance(&distance))` \
+            `let distance = TriMeshDistance::new(mesh)?; \
+            let sign = PseudoNormalSign::from_distance(&distance); \
+            Signed { distance, sign }` \
             but `PseudoNormalSign` is unreliable on cf-scan-prep cleaned scans. Prefer \
             `FloodFillSign` (mesh-sdf D.2) for any SDF derived from a body-part scan. See \
             docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md."
 )]
 pub type SignedDistanceField = Signed<TriMeshDistance, PseudoNormalSign>;
 
-/// Convenience constructor + `mesh()` accessor for the specific
-/// `Signed<TriMeshDistance, PseudoNormalSign>` composition — bridges
-/// the deprecated `SignedDistanceField::new(mesh)?` API.
-///
-/// `mesh()` lives here (not on the generic `Signed<D, S>` impl)
-/// because it only makes sense when `D` carries the source mesh; the
-/// `TriMeshDistance`-specific impl makes that explicit.
+/// Convenience constructor for the specific `Signed<TriMeshDistance,
+/// PseudoNormalSign>` composition — bridges the deprecated
+/// `SignedDistanceField::new(mesh)?` API.
 impl Signed<TriMeshDistance, PseudoNormalSign> {
     /// **Deprecated.** Build a `Signed<TriMeshDistance,
     /// PseudoNormalSign>` from a mesh — preserves the old
@@ -198,8 +196,9 @@ impl Signed<TriMeshDistance, PseudoNormalSign> {
     #[deprecated(
         since = "0.1.0",
         note = "Conflates distance and sign — pick a sign oracle explicitly. Construct via \
-                `TriMeshDistance::new(mesh)?` + `PseudoNormalSign::from_distance(&distance)` + \
-                `Signed::new(distance, sign)`. Prefer `FloodFillSign` (D.2) on cleaned scans."
+                `let distance = TriMeshDistance::new(mesh)?; \
+                let sign = PseudoNormalSign::from_distance(&distance); \
+                Signed { distance, sign }`. Prefer `FloodFillSign` (D.2) on cleaned scans."
     )]
     pub fn new(mesh: IndexedMesh) -> SdfResult<Self> {
         if mesh.faces.is_empty() {
@@ -210,8 +209,16 @@ impl Signed<TriMeshDistance, PseudoNormalSign> {
         let sign = PseudoNormalSign { tri_mesh };
         Ok(Signed { distance, sign })
     }
+}
 
-    /// Borrow the source mesh.
+/// `mesh()` accessor on any `Signed<TriMeshDistance, S>` —
+/// independent of the sign oracle, so the D.2 `FloodFillSign`
+/// composition + the D.5 cf-cast-cli `SharedScanSdf` migration both
+/// pick this up without re-implementing the accessor per
+/// instantiation.
+impl<S: Sign> Signed<TriMeshDistance, S> {
+    /// Borrow the source mesh the distance oracle's BVH was built
+    /// over.
     #[must_use]
     pub fn mesh(&self) -> &IndexedMesh {
         self.distance.mesh()
