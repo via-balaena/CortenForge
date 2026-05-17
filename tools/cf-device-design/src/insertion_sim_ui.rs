@@ -392,22 +392,23 @@ pub fn invalidate_on_geometry_change(
     cavity: Res<CavityState>,
     layers: Res<LayersState>,
     mut state: ResMut<InsertionSimState>,
-    mut last_seen: Local<Option<(CavityState, LayersState)>>,
+    mut last_seen: Local<Option<SimRelevantSnapshot>>,
 ) {
-    // `cavity` is `Copy`; `layers` carries a `Vec<LayerSpec>` so the
-    // clone is genuine (≤ LAYER_COUNT_MAX = 6 items — negligible).
-    let current_cavity: CavityState = *cavity;
-    let current_layers: LayersState = layers.clone();
+    // Compare only the sim-affecting fields. `CavityState` + `LayerSpec`
+    // also carry `visible` (the per-entity Show toggle) — those don't
+    // change the FEM result, so we must NOT invalidate on them. Visual-
+    // gate bug 2026-05-18: toggling Layer 1's visibility wiped the
+    // last_run because the derived `PartialEq` on `LayersState` saw
+    // any field change, visibility included.
+    let current = sim_relevant_snapshot(&cavity, &layers);
     let changed = match &*last_seen {
-        Some((prev_cavity, prev_layers)) => {
-            *prev_cavity != current_cavity || *prev_layers != current_layers
-        }
+        Some(prev) => *prev != current,
         // First tick — no prior snapshot. Don't clear; this avoids a
         // spurious invalidation on the very first frame before
         // anything had a chance to run.
         None => false,
     };
-    *last_seen = Some((current_cavity, current_layers));
+    *last_seen = Some(current);
     if changed && state.last_run.is_some() {
         state.last_run = None;
         state.heat_map_on = false;
@@ -415,6 +416,25 @@ pub fn invalidate_on_geometry_change(
         state.displayed_step = 0;
         state.show_deformed = false;
     }
+}
+
+/// Sim-relevant subset of `(CavityState, LayersState)` —
+/// `cavity.inset_m` + per-layer `(thickness_m, material_anchor_key,
+/// slacker_fraction)`. The full state structs also carry per-entity
+/// `visible: bool` flags, but visibility doesn't affect the FEM
+/// result, so [`invalidate_on_geometry_change`] must compare only
+/// these fields. Snapshot type for the system's `Local<>`.
+type SimRelevantSnapshot = (f64, Vec<(f64, &'static str, f64)>);
+
+fn sim_relevant_snapshot(cavity: &CavityState, layers: &LayersState) -> SimRelevantSnapshot {
+    (
+        cavity.inset_m,
+        layers
+            .layers
+            .iter()
+            .map(|l| (l.thickness_m, l.material_anchor_key, l.slacker_fraction))
+            .collect(),
+    )
 }
 
 /// Spawn the async ramp when the user clicks Simulate. Idempotent on
@@ -1508,6 +1528,57 @@ mod tests {
             .map(|m| m.buffer_index())
             .collect();
         assert_eq!(indices, vec![0, 1]);
+    }
+
+    /// Slice S4 polish — `sim_relevant_snapshot` ignores per-entity
+    /// `visible` flags, so toggling the cavity's or any layer's Show
+    /// checkbox does NOT invalidate `last_run`. Regression test for
+    /// the visual-gate bug 2026-05-18: toggling Layer 1's visibility
+    /// reset the sim because the auto-derived `PartialEq` on
+    /// `LayersState` saw any field change, visibility included.
+    #[test]
+    fn sim_relevant_snapshot_ignores_visibility_toggles() {
+        use crate::LayerSpec;
+        let cavity_a = CavityState {
+            inset_m: 0.003,
+            visible: true,
+        };
+        let cavity_b = CavityState {
+            inset_m: 0.003,
+            visible: false, // visibility flipped
+        };
+        let layers_a = LayersState {
+            layers: vec![
+                LayerSpec {
+                    thickness_m: 0.010,
+                    material_anchor_key: "ECOFLEX_00_30",
+                    slacker_fraction: 0.0,
+                    visible: true,
+                },
+                LayerSpec {
+                    thickness_m: 0.003,
+                    material_anchor_key: "DRAGON_SKIN_20A",
+                    slacker_fraction: 0.0,
+                    visible: true,
+                },
+            ],
+        };
+        let mut layers_b = layers_a.clone();
+        layers_b.layers[1].visible = false; // outer-layer visibility flipped
+        // Sim-relevant snapshot ignores both flips.
+        assert_eq!(
+            sim_relevant_snapshot(&cavity_a, &layers_a),
+            sim_relevant_snapshot(&cavity_b, &layers_b),
+            "visibility flips on cavity and layers must NOT change the sim-relevant snapshot",
+        );
+        // Sanity: an ACTUAL sim-affecting change DOES register.
+        let mut layers_c = layers_a.clone();
+        layers_c.layers[0].thickness_m = 0.012;
+        assert_ne!(
+            sim_relevant_snapshot(&cavity_a, &layers_a),
+            sim_relevant_snapshot(&cavity_a, &layers_c),
+            "thickness change must register in the sim-relevant snapshot",
+        );
     }
 
     /// Slice S3 — `build_per_layer_outer_faces` assigns inter-layer
