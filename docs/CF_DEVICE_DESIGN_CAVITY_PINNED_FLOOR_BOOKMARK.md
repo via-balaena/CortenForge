@@ -1,8 +1,13 @@
 # cf-device-design Cavity Pinned-Floor — Bookmark
 
-**Status**: BOOKMARK 2026-05-16 EVENING. Session paused; recon to
-happen in a new (fresh-context) session, not a continuation of this
-one. Three-session pattern.
+**Status**: RECON COMPLETE 2026-05-16 EVENING; spec at
+[`CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_SPEC.md).
+Implementation NOT yet started — user reviews spec before any code
+lands. (Three-session pattern: bookmark → recon/spec → implementation.)
+
+**Original bookmark status** (kept verbatim below): BOOKMARK 2026-05-16
+EVENING. Session paused; recon to happen in a new (fresh-context)
+session, not a continuation of this one.
 
 **Parent**: [`CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md)
 (SHIPPED but solving wrong problem — see below).
