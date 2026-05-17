@@ -1215,8 +1215,9 @@ fn trim_centerline_polyline(
 
 /// Detect all open boundary loops on `mesh`, fit a plane to each via
 /// SVD, orient the normal outward, and append ear-clipped cap faces
-/// that close every detected loop. CSP.4b — runs after
-/// [`trim_mesh_along_centerline`] so the trim cuts get sealed.
+/// (with outward-pointing 3D normals) that close every detected loop.
+/// CSP.4b — runs after [`trim_mesh_along_centerline`] so the trim cuts
+/// get sealed.
 ///
 /// Mutates `mesh` in place. Returns the number of loops capped.
 ///
@@ -1224,7 +1225,10 @@ fn trim_centerline_polyline(
 /// step (CSP.3a): boundary vertices are projected onto the fit plane
 /// before ear-clip so the cap is exactly planar. Cap faces use the
 /// existing loop vertex indices (no new vertices appended for the
-/// cap; only re-uses the now-projected boundary positions).
+/// cap; only re-uses the now-projected boundary positions). Cap-face
+/// 3D winding emits with cross-product normals aligned to the
+/// outward-oriented plane normal — pinned by
+/// `auto_cap_open_boundaries_emits_outward_cap_normals`.
 fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
     let loops = detect_boundary_loops(mesh);
     let mut capped = 0;
@@ -1266,15 +1270,23 @@ fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
             let a = loop_data.vertices[tri[0] as usize];
             let b = loop_data.vertices[tri[1] as usize];
             let c = loop_data.vertices[tri[2] as usize];
-            // Same outward-winding flip as `build_cleaned_mesh`.
+            // Emit cap face winding so its 3D cross-product normal
+            // aligns with `plane_normal` (which `orient_cap_normal_outward`
+            // already returned in OUTWARD direction). Per
+            // `project_loop_to_plane_2d`'s (u, v, plane_normal) =
+            // right-handed basis: a 2D-CCW loop (signed_area > 0)
+            // emitted as `[a, b, c]` produces a 3D cross = +plane_normal
+            // = outward; 2D-CW (signed_area < 0) emitted as `[a, c, b]`
+            // reverses the order to land the same outward direction.
+            // See `auto_cap_open_boundaries_emits_outward_cap_normals`.
             let p0 = verts_2d[tri[0] as usize];
             let p1 = verts_2d[tri[1] as usize];
             let p2 = verts_2d[tri[2] as usize];
             let signed_area_2d = (p1.0 - p0.0) * (p2.1 - p0.1) - (p1.1 - p0.1) * (p2.0 - p0.0);
             if signed_area_2d >= 0.0 {
-                mesh.faces.push([a, c, b]);
-            } else {
                 mesh.faces.push([a, b, c]);
+            } else {
+                mesh.faces.push([a, c, b]);
             }
         }
         capped += 1;
@@ -3242,25 +3254,26 @@ fn build_cleaned_mesh(
             let a = cap_loop.vertex_indices[tri[0] as usize];
             let b = cap_loop.vertex_indices[tri[1] as usize];
             let c = cap_loop.vertex_indices[tri[2] as usize];
-            // Determine winding from the triangulation's 2D
-            // orientation + match the outward normal. If 2D CCW
-            // (positive cross) the triangle faces +normal in 3D;
-            // we want -normal (outward). Flip if needed.
+            // Emit cap face winding so its 3D cross-product normal
+            // aligns with `normal_world` (the post-bake outward cap
+            // normal — `cap_loop.plane_normal` was already oriented
+            // outward at `build_detected_cap_loop` time via
+            // `orient_cap_normal_outward`). Per `project_loop_to_plane_2d`'s
+            // `(u, v, normal_world)` = right-handed basis: a 2D-CCW
+            // loop (signed_area > 0) emitted as `[a, b, c]` produces a
+            // 3D cross = +normal_world = outward; 2D-CW (signed_area
+            // < 0) emitted as `[a, c, b]` reverses the order to land
+            // the same outward direction. See
+            // `auto_cap_open_boundaries_emits_outward_cap_normals` for
+            // the regression-anchor.
             let p0 = verts_2d[tri[0] as usize];
             let p1 = verts_2d[tri[1] as usize];
             let p2 = verts_2d[tri[2] as usize];
             let signed_area_2d = (p1.0 - p0.0) * (p2.1 - p0.1) - (p1.1 - p0.1) * (p2.0 - p0.0);
             if signed_area_2d >= 0.0 {
-                // CCW in 2D → triangle faces +normal in 3D. We want
-                // outward = away-from-mesh-interior, which is
-                // -normal_world (because orient_cap_normal_outward
-                // already flipped normal to point outward; the cap
-                // surface NORMAL points outward, so the triangle's
-                // GEOMETRIC normal needs to match → 2D-CCW order
-                // gives +normal, we need -normal, so reverse).
-                out.faces.push([a, c, b]);
-            } else {
                 out.faces.push([a, b, c]);
+            } else {
+                out.faces.push([a, c, b]);
             }
         }
     }
@@ -7783,6 +7796,68 @@ mod tests {
             "expected outward normal to point -Z; got {:?}",
             oriented,
         );
+    }
+
+    /// B arc — cf-scan-prep cap-winding fix (see
+    /// `project_cf_scan_prep_b_arc_cap_winding.md`). Pre-B,
+    /// `auto_cap_open_boundaries` produced cap triangles whose 3D
+    /// cross-product normals pointed OPPOSITE to `orient_cap_normal_outward`'s
+    /// returned direction (= inward into the body). cf-view's flat-
+    /// shaded render path computed face normals from the winding and
+    /// shaded cap faces DARK; mesh-io's `save_stl` wrote inverted
+    /// facet normals to disk for 3rd-party STL tools (Meshlab,
+    /// ParaView, slicers). All in-tree SDF consumers tolerated the
+    /// flip post-D arc (FloodFillSign uses topological reachability;
+    /// TriMeshDistance is unsigned; cf-cap-planes uses `.dot().abs()`),
+    /// so the bug was visualization-only. This test pins the post-B
+    /// outward-pointing cap face normals.
+    ///
+    /// Fixture: 5-vertex square pyramid with the base OPEN (4 side
+    /// triangles, no base triangulation). Apex at (0, 0, +1); base
+    /// at z=0 with 4 corner verts. The open base is the boundary loop.
+    /// `orient_cap_normal_outward` checks vertex distribution — 4 verts
+    /// at z=0 (no sign), 1 at z=+1 (above) → returns -plane_normal →
+    /// outward = -Z. After cap, every cap-face cross product must
+    /// point -Z (outward, away from apex).
+    #[test]
+    fn auto_cap_open_boundaries_emits_outward_cap_normals() {
+        let mut mesh = IndexedMesh::with_capacity(5, 4);
+        // Base square (z=0) + apex (z=+1).
+        mesh.vertices.push(Point3::new(-1.0, -1.0, 0.0)); // 0
+        mesh.vertices.push(Point3::new(1.0, -1.0, 0.0)); // 1
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0)); // 2
+        mesh.vertices.push(Point3::new(-1.0, 1.0, 0.0)); // 3
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0)); // 4 apex
+        // 4 side triangles (CCW from outside — outward normals point
+        // sideways + upward). Base is open.
+        mesh.faces.push([0, 1, 4]);
+        mesh.faces.push([1, 2, 4]);
+        mesh.faces.push([2, 3, 4]);
+        mesh.faces.push([3, 0, 4]);
+        let initial_faces = mesh.faces.len();
+        let capped = auto_cap_open_boundaries(&mut mesh);
+        assert_eq!(capped, 1, "expected exactly 1 cap loop to be capped");
+        let cap_faces = &mesh.faces[initial_faces..];
+        assert!(
+            !cap_faces.is_empty(),
+            "auto-cap should append ≥1 cap triangle",
+        );
+        // Every cap face's 3D cross-product normal must point -Z
+        // (outward, away from the apex above). Pre-B the normals
+        // pointed +Z (inward toward apex).
+        for face in cap_faces {
+            let v0 = mesh.vertices[face[0] as usize];
+            let v1 = mesh.vertices[face[1] as usize];
+            let v2 = mesh.vertices[face[2] as usize];
+            let e1 = v1.coords - v0.coords;
+            let e2 = v2.coords - v0.coords;
+            let normal = e1.cross(&e2);
+            assert!(
+                normal.z < 0.0,
+                "cap-face normal must point -Z (outward, away from apex); \
+                 face {face:?} produced normal {normal:?}",
+            );
+        }
     }
 
     // ---- plane-mesh intersection + polygon centroid subroutines ----
