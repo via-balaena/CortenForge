@@ -75,4 +75,4 @@ mod offset;
 pub use error::{OffsetError, OffsetResult};
 pub use grid::ScalarGrid;
 pub use marching_cubes::{MarchingCubesConfig, marching_cubes};
-pub use offset::{OffsetConfig, offset_mesh, offset_mesh_default};
+pub use offset::{OffsetConfig, SignOracle, offset_mesh, offset_mesh_default};

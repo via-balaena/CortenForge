@@ -3,24 +3,41 @@
 //! This module provides functionality to offset (expand or contract) a mesh
 //! by a given distance using SDF-based techniques.
 
-// Temporary defense-in-depth: this module still constructs the
-// deprecated `mesh_sdf::SignedDistanceField` alias. The mesh-sdf
-// oracle decomposition arc (docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md)
-// migrates this consumer to `Signed<TriMeshDistance, FloodFillSign>`
-// in sub-leaf D.4a. Removed alongside that migration; until then the
-// pre-commit hook's `-D warnings` clippy run on any cf-device-design
-// or cf-cast-cli touchpoint would otherwise propagate these
-// deprecation warnings into errors against this transitively-built
-// dep.
-#![allow(deprecated)]
-
-use mesh_sdf::SignedDistanceField;
-use mesh_types::IndexedMesh;
+use mesh_sdf::{
+    PseudoNormalSign, Sign, Signed, TriMeshDistance, UnsignedDistance,
+    WALL_THRESHOLD_FACTOR_DEFAULT, flood_filled_sdf,
+};
+use mesh_types::{Aabb, IndexedMesh};
 use nalgebra::Point3;
 
 use crate::error::{OffsetError, OffsetResult};
 use crate::grid::ScalarGrid;
 use crate::marching_cubes::{MarchingCubesConfig, marching_cubes};
+
+/// Which sign oracle to use when building the SDF inside [`offset_mesh`].
+///
+/// The default is [`SignOracle::FloodFill`] — safe for any input,
+/// including non-watertight or auto-capped scans where parry's
+/// pseudo-normal sign returns wrong signs at far-field probes (see
+/// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the discovery and
+/// the fix). [`SignOracle::PseudoNormal`] is an opt-in fast path for
+/// callers with a known-watertight, well-conditioned mesh that want
+/// to skip the flood-fill grid build cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SignOracle {
+    /// Robust flood-fill from the grid corners (default). Allocates a
+    /// secondary grid sized by `OffsetConfig::resolution` over the
+    /// padded mesh bounds and runs one BFS. Safe on cleaned scans,
+    /// auto-capped meshes, and any input where the pseudo-normal sign
+    /// can flip far from the surface.
+    #[default]
+    FloodFill,
+    /// parry pseudo-normal inside-test. One BVH query per sampled
+    /// cell, no extra grid. Fast and correct on well-formed CCW
+    /// watertight meshes; unreliable on cleaned scans, auto-capped
+    /// boundaries, and high-valence apex vertices.
+    PseudoNormal,
+}
 
 /// Configuration for mesh offset operations.
 #[derive(Debug, Clone)]
@@ -32,6 +49,12 @@ pub struct OffsetConfig {
     pub padding: usize,
     /// Marching cubes configuration.
     pub marching_cubes: MarchingCubesConfig,
+    /// Sign oracle used to build the SDF. Defaults to
+    /// [`SignOracle::FloodFill`] — robust on any input. Opt in to
+    /// [`SignOracle::PseudoNormal`] only when the mesh is known to be
+    /// watertight and well-conditioned for the parry pseudo-normal
+    /// inside-test.
+    pub sign_oracle: SignOracle,
 }
 
 impl Default for OffsetConfig {
@@ -40,6 +63,7 @@ impl Default for OffsetConfig {
             resolution: 0.1,
             padding: 5,
             marching_cubes: MarchingCubesConfig::default(),
+            sign_oracle: SignOracle::default(),
         }
     }
 }
@@ -52,6 +76,13 @@ impl OffsetConfig {
         self
     }
 
+    /// Select the sign oracle. See [`SignOracle`] for tradeoffs.
+    #[must_use]
+    pub fn with_sign_oracle(mut self, sign_oracle: SignOracle) -> Self {
+        self.sign_oracle = sign_oracle;
+        self
+    }
+
     /// Create a configuration optimized for high quality output.
     ///
     /// Uses finer resolution for smoother surfaces.
@@ -60,7 +91,7 @@ impl OffsetConfig {
         Self {
             resolution: 0.05,
             padding: 8,
-            marching_cubes: MarchingCubesConfig::default(),
+            ..Self::default()
         }
     }
 
@@ -72,7 +103,7 @@ impl OffsetConfig {
         Self {
             resolution: 0.5,
             padding: 3,
-            marching_cubes: MarchingCubesConfig::default(),
+            ..Self::default()
         }
     }
 }
@@ -150,9 +181,6 @@ pub fn offset_mesh(
     let extended_min = Point3::new(min.x - extension, min.y - extension, min.z - extension);
     let extended_max = Point3::new(max.x + extension, max.y + extension, max.z + extension);
 
-    // Create SDF
-    let sdf = SignedDistanceField::new(mesh.clone())?;
-
     // Create grid and sample SDF values
     let mut grid = ScalarGrid::from_bounds(
         extended_min,
@@ -161,8 +189,30 @@ pub fn offset_mesh(
         0, // No additional padding, we already extended bounds
     );
 
-    // Fill grid with SDF values adjusted by offset distance
-    sample_sdf_to_grid(&sdf, &mut grid, distance);
+    // Build the SDF with the caller-selected sign oracle and fill the
+    // grid. The branch is at construction time only; both paths run
+    // through the same generic `sample_sdf_to_grid` helper afterward.
+    match config.sign_oracle {
+        SignOracle::FloodFill => {
+            let bounds = Aabb::new(extended_min, extended_max);
+            let (sdf, _report) = flood_filled_sdf(
+                mesh.clone(),
+                bounds,
+                config.resolution,
+                WALL_THRESHOLD_FACTOR_DEFAULT,
+            )?;
+            sample_sdf_to_grid(&sdf, &mut grid, distance);
+        }
+        SignOracle::PseudoNormal => {
+            let distance_oracle = TriMeshDistance::new(mesh.clone())?;
+            let sign = PseudoNormalSign::from_distance(&distance_oracle);
+            let sdf = Signed {
+                distance: distance_oracle,
+                sign,
+            };
+            sample_sdf_to_grid(&sdf, &mut grid, distance);
+        }
+    }
 
     // Extract isosurface at 0 level
     let result = marching_cubes(&grid, &config.marching_cubes);
@@ -213,8 +263,13 @@ fn compute_bounds(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
 ///
 /// For a positive offset (dilation), we want points that were at distance `d`
 /// from the surface to now be at distance `d - offset`. So we subtract the
-/// offset from each SDF value.
-fn sample_sdf_to_grid(sdf: &SignedDistanceField, grid: &mut ScalarGrid, offset: f64) {
+/// offset from each SDF value. Generic over `Signed<D, S>` so both
+/// [`SignOracle`] paths route through the same loop.
+fn sample_sdf_to_grid<D: UnsignedDistance, S: Sign>(
+    sdf: &Signed<D, S>,
+    grid: &mut ScalarGrid,
+    offset: f64,
+) {
     let (nx, ny, nz) = grid.dimensions();
 
     for iz in 0..nz {
@@ -411,7 +466,9 @@ mod tests {
     #[test]
     fn sample_sdf_to_grid_runs() {
         let mesh = unit_cube();
-        let sdf = SignedDistanceField::new(mesh).expect("should create SDF");
+        let distance = TriMeshDistance::new(mesh).expect("should create distance oracle");
+        let sign = PseudoNormalSign::from_distance(&distance);
+        let sdf = Signed { distance, sign };
 
         let mut grid = ScalarGrid::new((5, 5, 5), Point3::new(-1.0, -1.0, -1.0), 0.5);
 
@@ -423,6 +480,29 @@ mod tests {
         // Just verify it was set to something other than the initial 0.0
         // The actual value depends on the SDF computation
         assert!(center_val.is_finite());
+    }
+
+    #[test]
+    fn offset_cube_pseudo_normal_opt_in() {
+        // The opt-in fast path should produce a comparable result on a
+        // well-formed CCW cube (where both sign oracles agree).
+        let mesh = unit_cube();
+        let config = OffsetConfig::preview().with_sign_oracle(SignOracle::PseudoNormal);
+        let result = offset_mesh(&mesh, 0.1, &config).expect("should succeed");
+        assert!(!result.faces.is_empty());
+    }
+
+    #[test]
+    fn offset_config_default_sign_oracle_is_flood_fill() {
+        // Pin the safe default. Callers who opt into PseudoNormal do so
+        // explicitly; everyone else gets the robust path.
+        let config = OffsetConfig::default();
+        assert_eq!(config.sign_oracle, SignOracle::FloodFill);
+        assert_eq!(OffsetConfig::preview().sign_oracle, SignOracle::FloodFill);
+        assert_eq!(
+            OffsetConfig::high_quality().sign_oracle,
+            SignOracle::FloodFill
+        );
     }
 
     #[test]
