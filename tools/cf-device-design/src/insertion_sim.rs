@@ -1087,6 +1087,13 @@ pub fn run_single_insertion_step(
     let theta = Tensor::from_slice(&empty_theta, &[0]);
 
     let solver = CpuNewtonSolver::new(Tet4, mesh, contact, config, bc);
+    // MAINTENANCE NOTE — these `SolverFailure` arms mirror the variant
+    // wording in `solver_failure_message` (the ramp consumer). Different
+    // surfaces (anyhow! errors here, `failure_reason` strings there) and
+    // intentionally different prefixes ("insertion solve …" vs the
+    // step-N-prefixed viewport reason), but the per-variant *fields*
+    // pulled out + the `{...:.3e}` formatting must stay in sync. If a
+    // future `SolverFailure` variant lands, update BOTH sites.
     let step = match solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt) {
         Ok(step) => step,
         Err(SolverFailure::ArmijoStall {
@@ -1841,6 +1848,13 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// same regardless of whether the failure came through `try_replay_step`
 /// (F3.4 Fork-B path) or, for the still-panicking
 /// `run_insertion_ramp` (growing-intruder) path, `catch_unwind`.
+///
+/// MAINTENANCE NOTE — the per-variant field extraction here mirrors the
+/// inline match arms in `run_single_insertion_step` (which wrap the
+/// same variants in `anyhow::Error` for its `Result` return).
+/// Intentionally separate surfaces (viewport string vs CLI anyhow), so
+/// the prefix wording diverges by design — but if a future
+/// `SolverFailure` variant lands, update BOTH sites.
 fn solver_failure_message(failure: &SolverFailure) -> String {
     match failure {
         SolverFailure::ArmijoStall {
