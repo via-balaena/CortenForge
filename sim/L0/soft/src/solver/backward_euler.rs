@@ -743,12 +743,13 @@ where
         context: &str,
     ) -> FactoredFreeTangent {
         // Snapshot max_diag ONCE per call (not per retry) per spec §2.1.
-        // Mass scatter at `assemble_free_hessian_triplets` line 1247
-        // guarantees a positive diagonal entry per free DOF (the orphan
-        // auto-pin in new() excludes zero-mass DOFs from `free_dof_
-        // indices`); the hand-built test fixtures in this module's
-        // `tests` mod also include non-zero diagonal triplets. Both
-        // gates make `max_diag > 0` a structural invariant.
+        // The mass-diagonal scatter inside `assemble_free_hessian_
+        // triplets` (search for `Mass diagonal:`) guarantees a positive
+        // diagonal entry per free DOF — the orphan auto-pin in `new()`
+        // excludes zero-mass DOFs from `free_dof_indices`; the
+        // hand-built test fixtures in this module's `tests` mod also
+        // include non-zero diagonal triplets. Both gates make
+        // `max_diag > 0` a structural invariant.
         let max_diag = triplets_max_diag(triplets);
         debug_assert!(
             max_diag > 0.0,
@@ -1613,10 +1614,10 @@ fn triplets_max_diag(triplets: &[Triplet<usize, usize, f64>]) -> f64 {
 /// Mutates EXISTING diagonal entries — does NOT append fresh
 /// `(k, k, λ)` triplets — because `SparseColMat::try_new_from_triplets`
 /// rejects duplicates. The `assemble_free_hessian_triplets` mass
-/// scatter at line 1247 guarantees a diagonal entry per free DOF, so
-/// every `(k, k)` is mutated exactly once. `O(n_triplets)` clone +
-/// `O(n_triplets)` walk = `O(n_triplets)`; negligible vs the Llt
-/// factor cost.
+/// scatter (search for `Mass diagonal:`) guarantees a diagonal entry
+/// per free DOF, so every `(k, k)` is mutated exactly once.
+/// `O(n_triplets)` clone + `O(n_triplets)` walk = `O(n_triplets)`;
+/// negligible vs the Llt factor cost.
 fn triplets_with_diagonal_offset(
     triplets: &[Triplet<usize, usize, f64>],
     lambda: f64,

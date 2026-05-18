@@ -1,14 +1,22 @@
-//! Levenberg-Marquardt regularization config for non-PD tangent rescue.
+//! Levenberg-Marquardt regularization config + per-solve state for
+//! non-PD tangent rescue.
 //!
-//! Per `docs/F3_LM_REGULARIZATION_SPEC.md`. F3.1 lands the **types only**
-//! (this module + the `SolverConfig::lm_regularization` field opt-in
-//! gate). No execution path consumes these types yet — F3.2 wires the
-//! `+λI` retry loop into `factor_free_tangent` (private method in
-//! [`super::backward_euler`]) alongside the in-solve `LmState` plumbing.
+//! Per `docs/F3_LM_REGULARIZATION_SPEC.md`. Module surface:
+//! - [`LmConfig`] (pub) + [`SaturationPolicy`] (pub) — tunables; opt
+//!   in via `SolverConfig::lm_regularization` (F3.1).
+//! - [`LmState`] (`pub(super)`) — mutable in-solve state, threaded
+//!   through `factor_free_tangent` / `factor_and_solve_free` /
+//!   `factor_at_position` from `solve_impl`. The `disabled()`
+//!   constructor is the bit-equal short-circuit when
+//!   `lm_regularization == None` (F3.2).
 //!
-//! Bit-equality invariant for F3.1: with `SolverConfig::lm_regularization
-//! = None` (the [`super::backward_euler::SolverConfig::skeleton`]
-//! default), the new types are inert — no behavior change vs pre-F3.
+//! Bit-equality invariant: with `SolverConfig::lm_regularization =
+//! None` (the [`super::backward_euler::SolverConfig::skeleton`]
+//! default), `LmState::disabled` makes `can_bump` permanently false
+//! and `factor_free_tangent`'s retry loop reduces to a single Llt
+//! attempt followed by direct LU fallback — observably bit-equal vs
+//! pre-F3 including the existing `"sim-soft: faer LU fallback fired"`
+//! stderr line.
 
 /// Per-stall policy applying ONLY to `SolverFailure::ArmijoStall`.
 ///
@@ -42,8 +50,8 @@ pub enum SaturationPolicy {
 ///
 /// Carried on `SolverConfig::lm_regularization` as `Option<LmConfig>`;
 /// `None` is the bit-equal-to-pre-F3 opt-out. Fork-B (cf-device-design)
-/// consumers opt in via [`Self::fork_b`]. F3.2 wires the loop into
-/// `factor_free_tangent`; until then this struct is config-only.
+/// consumers opt in via [`Self::fork_b`]; F3.2 consumes this config
+/// inside the retry loop in `factor_free_tangent`.
 #[derive(Clone, Copy, Debug)]
 pub struct LmConfig {
     /// Seed λ at first non-PD detection. Computed as
