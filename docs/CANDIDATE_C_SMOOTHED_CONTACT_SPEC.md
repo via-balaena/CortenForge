@@ -713,9 +713,8 @@ Per §5 falsifier matrix outcomes:
 - `c16fe375` — F3 recon A outcome-B follow-up (A.4: UI cap 8→4 mm +
   cavity-5mm bookmark + memory).
 - `a1c26105` — F3 recon A outcome-B cold-read polish (5 findings).
-- `edba9f48` — C.0 spec (this commit at draft).
-- *(next commit)* — C.0 cold-read polish (the in-flight commit
-  this spec is being polished for).
+- `edba9f48` — C.0 spec (initial draft).
+- `f1dc082f` — C.0 spec cold-read polish (10 findings, pass-1 + pass-2).
 
 **Predecessor docs**:
 - `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` — the bookmark this acts on.
