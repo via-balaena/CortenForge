@@ -1,6 +1,37 @@
 # F3 recon — candidate A — gated LM — design spec
 
-> **STATUS — DRAFT, no implementation yet.** Recon-iter-1 of the F3
+> **STATUS — SHIPPED outcome B 2026-05-18 EVENING.** Implementation
+> (commits `9a1433b8` + `61b31f9b` + `59997c41`) + user-driven 3-gate
+> visual scrub same session. Empirical result per §5 falsifier matrix:
+>
+> - **Gate A — cavity 3 mm**: ✅ 16/16 converged (baseline restored).
+>   ZERO LM seedings — LU + Armijo accepts every iter, LM stays dormant.
+>   Gated A's design intent fully validated.
+> - **Gate B — cavity 5 mm**: ⚠️ 0/16 (Armijo stall iter 61, r_norm =
+>   **1.784**). Gated A extended Newton's walk from pre-F3 Run 2's
+>   ~5-iter `1.78` plateau to iter 57 of LU+Armijo accepts, then 1 LM
+>   escalation (seeded at tiny λ = 6.67e-3, converged in 1 retry),
+>   then re-stall at the SAME structural floor — **class 2 active-set
+>   chattering** dominates the late-iter geometry, `+λI` cannot smooth
+>   it.
+> - **Gate C — cavity 8 mm**: 1/16 (out of scope per §TL;DR — Yeoh
+>   validity panic at tet 1078 caught by `catch_unwind`).
+>
+> **A.4 follow-up shipped same session**:
+> - Cavity UI slider capped at 4 mm (`main.rs:245-247
+>   inset_slider_range_m` → `(0.0, 0.004)`); sentinel test renamed +
+>   docstring + UI label refreshed with gated-A empirical justification.
+> - `docs/F3_FALSIFICATION_BOOKMARK.md` §8 RESOLUTION footer added.
+> - `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` created as the
+>   candidate-C (smoothed contact) next-arc entry point.
+>
+> Spec body below preserved AS WRITTEN for audit trail — it remains a
+> correct design for an empirically-CONFIRMED partial-rescue mechanism.
+> The §5 falsifier matrix is the load-bearing artifact: outcome B was
+> what the spec said would tell us "class 2 dominates"; that's exactly
+> what happened.
+
+> **STATUS — DRAFT (historical pre-ship).** Recon-iter-1 of the F3
 > falsification bookmark's §4 four-candidate ladder. Picks candidate A
 > (gated LM) per `docs/F3_FALSIFICATION_BOOKMARK.md` §5 recommendation
 > ("the natural first stop"). Implementation lands same session per

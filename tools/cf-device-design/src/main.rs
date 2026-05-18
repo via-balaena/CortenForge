@@ -224,26 +224,47 @@ impl CavityState {
         }
     }
 
-    /// Slider range for the cavity inset, in meters. Capped at **8 mm**
-    /// (F4.1 — `docs/CAVITY_INSET_STALL_BOOKMARK.md` §9):
+    /// Slider range for the cavity inset, in meters. Capped at **4 mm**
+    /// (F3 recon A — `docs/F3_RECON_A_GATED_LM_SPEC.md` §6 A.4
+    /// outcome B, 2026-05-18 EVENING):
     ///
-    /// - Physical strain: 8 mm interference on a typical body-part scan
-    ///   diameter (~70 mm) is ~15-20% engineered compression — the
-    ///   aggressive-grip edge of comfortable wearable territory. 10+ mm
-    ///   approaches circulation-impact; 15 mm = tourniquet territory.
-    /// - Yeoh material model validity: ≥10 mm interference exceeds the
-    ///   stretch ratio where published Yeoh constants stay physically
-    ///   meaningful for typical layer thicknesses. Past that, FEM
-    ///   converges but engineering scalars become math fiction.
-    /// - Solver envelope: the sliding-mode insertion sim's F4 homotopy
-    ///   warmup (next sub-leaf) targets reliable convergence across
-    ///   [0, 8 mm]; designs past 8 mm would need more aggressive
-    ///   sub-stepping than the K_MAX cap and aren't worth the wall-clock.
+    /// - Physical strain: 4 mm interference on a typical body-part scan
+    ///   diameter (~70 mm) is ~6% engineered compression — comfortable
+    ///   compression-fit territory. The 5+ mm region exists as a real
+    ///   product knob (Yeoh material is happy there), but the sliding-
+    ///   ramp solver doesn't converge past 4 mm with the current
+    ///   `(LU + Armijo) → gated-LM-rescue` mechanism — see below.
+    /// - Solver envelope (THIS is the binding cap): the original F4.1
+    ///   8 mm cap was sized against material strain + circulation; the
+    ///   gated-LM F3-recon-A `try_solve_impl` empirically converges
+    ///   cavity = 3 mm at 16/16 + full Newton baseline restored
+    ///   (verified user-driven visual gate 2026-05-18 EVENING, ZERO LM
+    ///   seedings — LU + Armijo accepts every iter). At cavity = 5 mm
+    ///   the gated mechanism extends Newton's walk from pre-F3 Run 2's
+    ///   ~5-iter `r_norm ≈ 1.78` plateau to **iter 57** before LM
+    ///   first escalates, but lands at the SAME structural floor
+    ///   (Armijo stall at iter 61 with `r_norm = 1.784`) — the
+    ///   convergence ceiling is dominated by **class 2 active-set
+    ///   chattering** (`H_contact(x)` discontinuity at active-pair
+    ///   on/off boundaries), which `+λI` regularization cannot smooth.
+    ///   See `docs/F3_FALSIFICATION_BOOKMARK.md` §2.2 + `docs/CAVITY_
+    ///   5MM_CHATTERING_BOOKMARK.md` for the class-2 mental model and
+    ///   candidate C (smoothed-contact penalty barrier) recon pointer.
+    /// - Yeoh material model validity: ≥8 mm interference exposes
+    ///   per-tet stretch > 2.0 (e.g., F3.4 Gate C tet 1324 reached
+    ///   `max_stretch_deviation = 1.209`), tripping the Phase 4
+    ///   Decision Q fail-closed validity assertion. Past 4 mm even
+    ///   isolated tets reach this regime as Newton walks deeper —
+    ///   capping at 4 mm keeps the design space inside the solver +
+    ///   material envelopes simultaneously.
     ///
-    /// Revisit if physical experimentation surfaces a need for greater
-    /// cavity shrink (banked at bookmark §9).
+    /// Revisit when candidate C (smoothed contact) ships — that arc's
+    /// expected outcome is restoring the 5-8 mm design space for both
+    /// solver convergence (class 2 fix) and material validity (deeper
+    /// Newton walks become safe). Banked at the 5 mm chattering
+    /// bookmark above.
     fn inset_slider_range_m() -> (f64, f64) {
-        (0.0, 0.008)
+        (0.0, 0.004)
     }
 }
 
@@ -2070,7 +2091,10 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
                 state.inset_m = inset_mm * 0.001;
             }
             ui.label("(silicone skin stretches inset_m over appendage)");
-            ui.label("(capped at 8 mm — past this, material strain exceeds Yeoh validity)");
+            ui.label(
+                "(capped at 4 mm — past this, sliding-ramp solver hits class-2 \
+                 active-set chattering floor; see CAVITY_5MM_CHATTERING_BOOKMARK)",
+            );
         });
 }
 
@@ -2955,13 +2979,19 @@ another_future_field = "foo"
     }
 
     #[test]
-    fn cavity_inset_slider_range_zero_to_eight_mm() {
-        // F4.1 — capped at 8 mm per docs/CAVITY_INSET_STALL_BOOKMARK.md
-        // §9 (material-validity + circulation-strain bounds). Was 15 mm
-        // pre-F4.1 (a generous UI default that wasn't engineering-derived).
+    fn cavity_inset_slider_range_zero_to_four_mm() {
+        // F3 recon A outcome B (2026-05-18 EVENING) — capped at 4 mm
+        // per docs/F3_RECON_A_GATED_LM_SPEC.md §6 A.4: gated LM rescue
+        // restores cavity = 3 mm baseline (16/16 converged, ZERO LM
+        // seedings) but cavity = 5 mm hits a structural class-2 active-
+        // set chattering floor at r_norm ≈ 1.784 even with LM rescue
+        // engaged. See docs/CAVITY_5MM_CHATTERING_BOOKMARK.md for the
+        // candidate-C (smoothed contact) next-arc that's expected to
+        // restore the 5+ mm design space.
+        // Was 8 mm (F4.1) and 15 mm (pre-F4.1) historically.
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
-        assert!(approx_eq(max_m, 0.008, 1e-12));
+        assert!(approx_eq(max_m, 0.004, 1e-12));
     }
 
     #[test]

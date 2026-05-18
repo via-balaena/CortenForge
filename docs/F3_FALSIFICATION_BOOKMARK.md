@@ -380,3 +380,52 @@ panel readout)
   header pointing here. The spec's design content survives as audit
   trail; it's a correctly-designed implementation of an
   incorrectly-modeled failure class.
+
+---
+
+## 8. RESOLUTION — F3 recon candidate A (gated LM) SHIPPED outcome B, 2026-05-18 EVENING
+
+**`docs/F3_RECON_A_GATED_LM_SPEC.md`** picked candidate A from §4 (gated
+LM activation — first try LU + Armijo, escalate to LM rescue only on
+first-pass Armijo failure). Spec + cold-read + implementation shipped
+same session (commits `9a1433b8` + `61b31f9b` + `59997c41`). User-driven
+3-gate visual scrub 2026-05-18 EVENING confirmed **outcome B (PARTIAL
+SHIP-IT)** per spec §5 falsifier matrix:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| **A — cavity 3 mm** | ✅ **BASELINE RESTORED** 16/16 converged, seated to 83.35 mm (full depth), peak F = 3.0 N | 4 LU-fallback stderr lines (iters 1-4 non-PD), **ZERO LM seedings** — gated A's design intent fully validated, LU + Armijo accepts every iter, LM dormant. |
+| **B — cavity 5 mm** | ⚠️ **CLASS 2 FLOOR** 0/16 converged, Armijo stall at Newton iter **61**, r_norm = **1.784** | Gated A extended Newton's walk from pre-F3 Run 2's ~5-iter `r_norm 1.78` plateau to iter 57 of LU+Armijo accepts, then escalation fired at iter 57 (LM seeded λ = 6.67e-3, converged in 1 retry); iters 58/60/61 saw more LU+Armijo accepts before final Armijo stall at the SAME structural r_norm floor (~1.78 N). **Only 1 LM seeding event total** — gated A worked exactly as designed but hit a class-2 active-set chattering floor that `+λI` cannot smooth. |
+| **C — cavity 8 mm** | (out of scope — Yeoh validity expected) 1/16 converged | Step 1 converged with LM activity (λ range 0.09…2.60); step 2 hit Yeoh validity panic at tet **1078** (different tet than F3.4 Gate C's tet 1324 — geometry-dependent, but same Phase 4 Decision Q fail-closed mechanism). Caught by `catch_unwind` belt-and-suspenders → surfaced as partial-ramp failure, NO app crash. |
+
+**The class-2 finding (Gate B)**: the iter 57 LM escalation produced an
+Armijo-accepting δ_LM at λ = 6.67e-3 — tiny regularization (the
+tangent was only mildly indefinite). Newton continued to iter 58-61 with
+LU + Armijo accepting through more iters, then re-stalled at the
+**same r_norm 1.784** floor. The convergence ceiling is dominated by
+the active-set discontinuity (`H_contact(x)` jumps when active pairs
+flip on/off — first surfaced at the F3.4 Gate B iter-1→iter-2
+`10.94 → 56.65` r_norm trajectory), not by tangent indefiniteness.
+**Candidate A's mechanism cannot smooth this** — its rescue produces a
+descent step, but the post-step active-set switch produces a worse
+residual at the new x_curr. Candidate C (smoothed-contact penalty
+barrier — mollified active-set boundary) is the next-arc target,
+bookmarked at **`docs/CAVITY_5MM_CHATTERING_BOOKMARK.md`**.
+
+**A.4 outcome-B follow-up shipped same session**:
+
+- `tools/cf-device-design/src/main.rs::inset_slider_range_m` capped
+  cavity UI slider at **4 mm** (was 8 mm F4.1; now 4 mm per the gated-A
+  empirical envelope). Docstring + UI label + sentinel test renamed
+  + refreshed with the gated-A justification + candidate-C pointer.
+- `docs/F3_RECON_A_GATED_LM_SPEC.md` STATUS header updated DRAFT →
+  SHIPPED outcome B.
+- `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` created — the candidate-C
+  recon entry point.
+- Memory: this bookmark's memory entry pointed at "RESOLVED partial by
+  gated A — cavity 5+ mm chattering is the next-arc"; new memory entry
+  for the candidate-C bookmark.
+
+**Branch state at outcome-B ship**: `sim-arc/sl-4-intruder-render` at
+`<this commit>`, 4 new commits past `2e54a8ee` plus the 26 from the F3
+arc; 151 sim-soft + 170 cf-device-design tests green; clippy clean.
