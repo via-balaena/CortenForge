@@ -2157,17 +2157,32 @@ pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64
 /// is a fixed `n_steps`, not a step size).
 pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 
-/// Build the sliding-intruder contact primitive at a given slide pose.
+/// Build the sliding-intruder contact primitive at a given slide pose
+/// and engineered interference.
 ///
 /// The contact SDF is `Solid::from_sdf(TransformedSdf(intruder,
-/// slide_pose), bounds).offset(cavity_offset_m)` — the rigid-translated
-/// scan, offset inward by `cavity_offset_m` (which is negative; per
-/// `cavity_offset_m = -design.cavity_inset_m`). Unlike the growing-
-/// intruder [`intruder_contact_at`] which grows the scan outward by
-/// `interference_m`, the sliding contact's SDF geometry is CONSTANT
-/// across the ramp — only the pose varies. Cavity-wall deformation is
-/// driven by the moving primitive's local interference rather than the
-/// uniform offset growth.
+/// slide_pose), bounds).offset(interference_m + cavity_offset_m)` —
+/// the rigid-translated scan, offset by `interference_m +
+/// cavity_offset_m`. With `cavity_offset_m = -design.cavity_inset_m`:
+/// - `interference_m = 0` → composed offset = `-cavity_inset_m` →
+///   transformed scan SHRUNK by `cavity_inset_m` (pre-F4 sliding
+///   model; the intruder coincides with the cavity wall at rest pose,
+///   and local interference at non-rest poses comes purely from the
+///   pose-induced geometric mismatch).
+/// - `interference_m = cavity_inset_m` → composed offset = `0` → bare
+///   transformed scan (full engineered interference uniformly applied:
+///   the body geometry overlaps the un-deformed cavity by
+///   `cavity_inset_m` everywhere the surfaces are in contact).
+///
+/// `interference_m` is the F4 homotopy parameter
+/// (`docs/CAVITY_INSET_STALL_BOOKMARK.md` §9-§10): [`run_sliding_insertion_ramp`]
+/// ramps it `0 → cavity_inset_m` across K warmup substeps to ease the
+/// solver into the full engineered-interference contact at step 0.
+/// Single-step callers (the wire-up tests) pass `interference_m = 0`
+/// to reproduce the pre-F4 shrunk-scan model bit-equal — analogous to
+/// growing-mode [`intruder_contact_at`]'s `interference_m + cavity_offset_m`
+/// composition where `interference_m = 0` sits flush with the cavity
+/// wall and `interference_m = cavity_inset_m` reproduces the bare scan.
 ///
 /// Penalty `(κ, d̂)` reuses [`INSERTION_CONTACT_KAPPA`] +
 /// [`INSERTION_CONTACT_DHAT`] from the growing ramp; the kappa
@@ -2191,11 +2206,13 @@ fn intruder_contact_sliding_at(
     intruder: &GridSdf,
     bounds: Aabb,
     slide_pose: Isometry3<f64>,
+    interference_m: f64,
     cavity_offset_m: f64,
     cavity_inset_m: f64,
 ) -> PenaltyRigidContact {
     let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
-    let intruder_solid = Solid::from_sdf(transformed, bounds).offset(cavity_offset_m);
+    let intruder_solid =
+        Solid::from_sdf(transformed, bounds).offset(interference_m + cavity_offset_m);
     PenaltyRigidContact::with_params_and_interior_cutoff(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
@@ -2388,8 +2405,14 @@ pub fn run_sliding_insertion_ramp(
         #[allow(clippy::cast_precision_loss)]
         let t = (k + 1) as f64 / n_steps as f64;
         let pose = slide_pose_at(centerline_polyline_m, t);
-        let contact =
-            intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m, cavity_inset_m);
+        let contact = intruder_contact_sliding_at(
+            &intruder,
+            bounds,
+            pose,
+            0.0,
+            cavity_offset_m,
+            cavity_inset_m,
+        );
         let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
         let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
         // `replay_step` panics on non-convergence; Fork-B graceful
@@ -2407,6 +2430,7 @@ pub fn run_sliding_insertion_ramp(
                     &intruder,
                     bounds,
                     pose,
+                    0.0,
                     cavity_offset_m,
                     cavity_inset_m,
                 );
@@ -4861,6 +4885,8 @@ mod tests {
             &geometry.intruder,
             geometry.bounds,
             pose,
+            0.0, // interference_m — pre-F4 shrunk-scan model (the
+            // wire-up gate is independent of the F4 homotopy knob)
             -0.003, // cavity_offset_m
             3.0e-3, // cavity_inset_m → 6 mm interior_cutoff
         );
@@ -4898,6 +4924,8 @@ mod tests {
             &geometry.intruder,
             geometry.bounds,
             pose,
+            0.0, // interference_m — pre-F4 shrunk-scan model (the
+            // sign-of-pose gate is independent of the F4 homotopy knob)
             -0.003, // cavity_offset_m = -cavity_inset_m
             3.0e-3, // cavity_inset_m
         );
