@@ -79,7 +79,9 @@ pub use readout::{
 pub use sdf_bridge::{
     Aabb3, DifferenceSdf, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf,
 };
-pub use solver::{CpuNewtonSolver, CpuTape, NewtonStep, Solver, SolverConfig};
+pub use solver::{
+    CpuNewtonSolver, CpuTape, LmConfig, NewtonStep, SaturationPolicy, Solver, SolverConfig,
+};
 pub use viz::{
     Plane, VizError, boundary_surface, design_scene, design_scene_deformed, design_slab_cut,
     design_surface, design_surface_deformed, slab_cut, slab_cut_deformed,

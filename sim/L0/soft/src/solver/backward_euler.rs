@@ -40,6 +40,7 @@ use faer::{Conj, MatMut, Side};
 use nalgebra::{Matrix3, SMatrix};
 use sim_ml_chassis::{Tensor, Var};
 
+use super::lm::LmConfig;
 use super::{CpuTape, NewtonStep, Solver};
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
@@ -90,6 +91,17 @@ pub struct SolverConfig {
     /// `assemble_external_force` short-circuits the body-force scatter
     /// when this is exactly zero.
     pub gravity_z: f64,
+    /// Levenberg-Marquardt regularization for non-PD tangent rescue
+    /// per `docs/F3_LM_REGULARIZATION_SPEC.md`. `None` (the
+    /// [`Self::skeleton`] default) preserves pre-F3 behavior bit-equal:
+    /// `factor_free_tangent` tries `Llt` and on non-PD falls through to
+    /// `Lu` immediately, no `+λI`. `Some(LmConfig)` opts into the
+    /// in-iter Marquardt adapter (wired at F3.2); the `Lu` fallback
+    /// then becomes the λ-saturation surface.
+    ///
+    /// F3.1: field exists but is not yet consumed. Bit-equal with
+    /// pre-F3 unconditionally — see the spec §2.3 acceptance gate.
+    pub lm_regularization: Option<LmConfig>,
 }
 
 impl SolverConfig {
@@ -109,6 +121,7 @@ impl SolverConfig {
             max_newton_iter: 10,
             max_line_search_backtracks: 20,
             gravity_z: 0.0,
+            lm_regularization: None,
         }
     }
 }

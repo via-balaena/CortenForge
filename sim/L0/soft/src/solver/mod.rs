@@ -17,9 +17,11 @@ use std::marker::PhantomData;
 use sim_ml_chassis::{Tape, Tensor, Var};
 
 pub mod backward_euler;
+pub mod lm;
 
 pub(crate) use backward_euler::FactoredFreeTangent;
 pub use backward_euler::{CpuNewtonSolver, SolverConfig};
+pub use lm::{LmConfig, SaturationPolicy};
 
 /// CPU tape — alias for the chassis `Tape` so VJPs register against a
 /// named backend type. `GpuTape` (Phase E) lands as a separate alias.
