@@ -2367,9 +2367,12 @@ pub struct SlideRamp {
     /// `Some(k)` if step `k` failed to converge (Fork-B graceful
     /// stall — D-Slide6); `None` if every step converged.
     pub failed_at_step: Option<usize>,
-    /// Human-readable description of the failure for the failed step
-    /// (formatted from [`SolverFailure`] via [`solver_failure_message`]).
-    /// `None` if every step converged.
+    /// Human-readable description of the failure for the failed step.
+    /// Two sources: F3.4 Fork-B graceful `SolverFailure` formatted via
+    /// [`solver_failure_message`], or — for undocumented solver-internal
+    /// panics (e.g., Yeoh material validity) caught by `catch_unwind`
+    /// — the panic payload formatted via [`panic_message`]. `None` if
+    /// every step converged.
     pub failure_reason: Option<String>,
     /// Deformed vertex positions (vertex-major xyz) at the last
     /// converged step — or rest positions if step 0 itself failed.
@@ -2400,10 +2403,13 @@ pub struct SlideRamp {
 /// Solver convergence: each Newton solve is warm-started from the
 /// previous step's `x_final` (D-Slide4 — no convection-aware
 /// remapping in iter-1; the contact-set discontinuity at slide-step
-/// boundaries may stall some intermediate solves, which the F3.4
-/// Fork-B LM opt-in surfaces as `Err(SolverFailure)` from
-/// `try_replay_step` — translated to a `failure_reason` string and
-/// recorded at `failed_at_step`).
+/// boundaries may stall some intermediate solves). Two graceful
+/// surfaces (both feed `failure_reason`): the F3.4 Fork-B LM opt-in
+/// makes `try_replay_step` return `Err(SolverFailure)` for the three
+/// documented failure variants, and `catch_unwind` wraps the call to
+/// catch undocumented solver-internal panics (Yeoh material validity
+/// at `backward_euler.rs:678`, `debug_assert!`s) that are NOT
+/// `SolverFailure` variants.
 ///
 /// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
 /// is the engineered shell-wall interference. It is forwarded
@@ -2495,12 +2501,19 @@ pub fn run_sliding_insertion_ramp(
         let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
         // F3.4 Fork-B: `try_replay_step` surfaces Armijo stall +
         // Newton-iter-cap + doubly-failed-factor as `Err(SolverFailure)`
-        // (no panic), thanks to the LM opt-in in `insertion_solver_config`.
-        // Translate to a human-readable `failure_reason` and record
-        // `failed_at_step`, preserving the partial-ramp semantic.
-        let outcome = solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt);
+        // (richer context than a panic message). BUT only those three
+        // variants — solver-internal panics (Yeoh material validity at
+        // `backward_euler.rs:678`, `debug_assert!`s, OOM) still unwind
+        // and would crash the Bevy app if not caught. Belt-and-suspenders:
+        // `catch_unwind` outside catches those, `try_replay_step` inside
+        // gives the graceful path SolverFailure context. Both feed into
+        // `failure_reason` so the viewport reads "stalled at step N:
+        // <reason>" regardless of which surface tripped.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt)
+        }));
         match outcome {
-            Ok(step) => {
+            Ok(Ok(step)) => {
                 let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
                 // `PenaltyRigidContact` is not `Clone`; rebuild for
                 // the readout pass (same row-23 precedent the growing
@@ -2531,9 +2544,21 @@ pub fn run_sliding_insertion_ramp(
                 intruder_poses.push(pose);
                 x_prev_flat = step.x_final;
             }
-            Err(failure) => {
+            Ok(Err(failure)) => {
+                // F3.4 graceful SolverFailure (ArmijoStall /
+                // NewtonIterCap / DoublyFailedFactor).
                 failed_at_step = Some(k);
                 failure_reason = Some(solver_failure_message(&failure));
+                break;
+            }
+            Err(payload) => {
+                // Undocumented panic from inside the solver — e.g.,
+                // Yeoh material validity (Phase 4 Decision Q
+                // fail-closed). Not a SolverFailure variant; surface
+                // it as the partial-ramp `failure_reason` via the
+                // pre-F3.4 `panic_message` path.
+                failed_at_step = Some(k);
+                failure_reason = Some(panic_message(&*payload));
                 break;
             }
         }
