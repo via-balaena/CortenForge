@@ -75,6 +75,27 @@ pub struct PenaltyRigidContact {
     primitives: Vec<Box<dyn Sdf>>,
     kappa: f64,
     d_hat: f64,
+    /// Optional active-set lower bound. When `Some(c)`, the active-set
+    /// walk excludes pairs whose signed distance is below `-c` (the
+    /// pathologically-deep-interior band). `None` (default) preserves
+    /// the original behavior — every pair in the `sd < d̂` contact band
+    /// fires.
+    ///
+    /// Use case: rigid-vs-soft sims where the rigid SDF is defined
+    /// globally over a closed-body domain (e.g., a flood-filled
+    /// `GridSdf` of a cleaned body-part scan), and a moving pose can
+    /// project soft-body vertices into deep-interior regions where the
+    /// SDF reports `sd << 0`. Without the filter, those pairs generate
+    /// force `κ·(d̂ − sd)·n` with `(d̂ − sd)` in tens of millimeters,
+    /// breaking Newton convergence (Armijo stall). With the filter,
+    /// those pairs are silently skipped; elastic forces can move the
+    /// vertex back into the contact band, at which point normal
+    /// penalty contact resumes.
+    ///
+    /// Motivating consumer: cortenforge cf-device-design sliding-
+    /// intruder FEM ramp (see
+    /// `docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md`).
+    interior_cutoff: Option<f64>,
 }
 
 impl PenaltyRigidContact {
@@ -110,6 +131,51 @@ impl PenaltyRigidContact {
             primitives,
             kappa,
             d_hat,
+            interior_cutoff: None,
+        }
+    }
+
+    /// Construct with non-default `(κ, d̂)` plus a positive interior
+    /// cutoff — pairs whose signed distance is below `-interior_cutoff`
+    /// are silently excluded from the active set. See the
+    /// [`interior_cutoff`](Self::interior_cutoff) field docs for the
+    /// motivating use case.
+    ///
+    /// # Panics
+    ///
+    /// `interior_cutoff` must be strictly positive, finite, and
+    /// strictly greater than `d_hat` — otherwise the active band
+    /// `[max(-cutoff, ...), d_hat)` collapses or excludes legitimate
+    /// near-contact pairs.
+    #[must_use]
+    pub fn with_params_and_interior_cutoff<I>(
+        primitives: I,
+        kappa: f64,
+        d_hat: f64,
+        interior_cutoff: f64,
+    ) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Sdf + 'static,
+    {
+        assert!(
+            interior_cutoff > 0.0 && interior_cutoff.is_finite(),
+            "interior_cutoff must be positive and finite, got {interior_cutoff}",
+        );
+        assert!(
+            interior_cutoff > d_hat,
+            "interior_cutoff ({interior_cutoff}) must exceed d_hat ({d_hat}) — \
+             otherwise the active band collapses or excludes legitimate near-contact pairs",
+        );
+        let primitives: Vec<Box<dyn Sdf>> = primitives
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn Sdf>)
+            .collect();
+        Self {
+            primitives,
+            kappa,
+            d_hat,
+            interior_cutoff: Some(interior_cutoff),
         }
     }
 
@@ -147,6 +213,12 @@ impl PenaltyRigidContact {
             let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
                 let sd = prim.eval(p_pt);
+                // Interior cutoff — pathologically-deep-interior filter.
+                if let Some(c) = self.interior_cutoff
+                    && sd < -c
+                {
+                    continue;
+                }
                 if sd < self.d_hat {
                     let normal = prim.grad(p_pt);
                     let force_on_soft = self.kappa * (self.d_hat - sd) * normal;
@@ -275,7 +347,14 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
         for (vid, &p) in positions.iter().enumerate() {
             let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
-                if prim.eval(p_pt) < self.d_hat {
+                let sd = prim.eval(p_pt);
+                // Interior cutoff — pathologically-deep-interior filter.
+                if let Some(c) = self.interior_cutoff
+                    && sd < -c
+                {
+                    continue;
+                }
+                if sd < self.d_hat {
                     pairs.push(ContactPair::Vertex {
                         vertex_id: vid as VertexId,
                         primitive_id: pid as u32,
