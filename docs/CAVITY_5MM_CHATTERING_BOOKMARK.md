@@ -23,7 +23,9 @@ commit.
   F5 (smoothed contact) appears in §10 candidate-set scoring as a
   high-cost alternative — that's what candidate C builds on.
 
-**Predecessor memory**: [[project-f3-falsification-bookmark]],
+**Predecessor memory**: [[project-f3-recon-a-gated-lm-shipped]]
+(direct predecessor — gated-A's outcome-B Gate B is the empirical
+surface this bookmark addresses), [[project-f3-falsification-bookmark]],
 [[project-cavity-inset-stall-bookmark]],
 [[project-f4-falsification-postmortem]], [[project-sl-4-arc-shipped]].
 
@@ -75,13 +77,14 @@ Error: sliding ramp failed at step 0 — no converged step. Armijo line-search s
 
 | Iter | r_norm | Mechanism |
 |---|---|---|
-| 1 | 10.94 | initial residual at x_prev = rest position |
-| 2 | **56.65** ↑ | active-set CROSSING — iter-1's LU step crossed an active-pair boundary; iter-2's assembly at the new x lands in a DIFFERENT partition with much higher residual |
-| 3-56 | 38 → 5 → ~1.79 | progressive descent — LU + Armijo accepts every iter (the residual is monotone-decreasing modulo small chattering ripples) |
+| 0 | unobserved (Llt-PD, no log) | initial residual at x_prev = rest position |
+| 1 | unobserved (Llt-PD, no log) | iter 0's LU step + Armijo accepted; gated A's first-pass succeeded → no LM activity, no stderr log line |
+| 2 | **56.65** | first iter where Llt non-PD detection fires (LU-fallback log line emitted); IF iter 1's r_norm was modest (per F3.4 Gate B's always-on-LM data, iter 1 saw r_norm = 10.94 at the SAME geometry — strong evidence iter 1 → iter 2 crossed an active-pair boundary), this r_norm jump is the active-set CROSSING signature. **Caveat**: gated A's iter 1 r_norm is unobservable from stderr (PD iters don't log); the iter-1 → iter-2 chattering jump inference is by-geometry-analogy with F3.4 Gate B, not direct evidence. |
+| 3-56 | 38 → 5 → ~1.79 | progressive descent — LU + Armijo accepts every iter despite Llt-non-PD throughout (LU fallback fires per iter; Armijo accepts every step) |
 | 57 | 1.7836 | first iter where LU + Armijo Armijo-stalls — gated A escalates |
-| 57 (LM) | 1.7836 | LM seeded at λ = 6.67e-3 (very small — the tangent is only mildly indefinite); 1 retry; Armijo accepts the LM step |
-| 58-61 | 1.7837 → 1.7837 | LU + Armijo accepts again at iter 58 (LM dormant); iters 60-61 similar; r_norm decreasing by ~1e-5 per iter — converging on a structural floor |
-| 62 | (Armijo stall) | LU step + Armijo can't satisfy decrease ratio (1 - α·c1)·1.7836 ≈ 1.7836 within α budget — even a 5e-4 absolute decrease would satisfy Armijo, so the trial residual must be > 1.7836; THIS IS THE CHATTERING FLOOR |
+| 57 (LM) | 1.7836 | LM seeded at λ = 6.67e-3 (very small — the tangent is only mildly indefinite); 1 retry; Armijo accepts the LM step (proven by iter 58's existence — Newton advanced) |
+| 58, 60, 61 | 1.7837 → 1.7837 → 1.7837 | LU + Armijo accepts again at iter 58 (LM dormant; persistent λ not consumed because first-pass succeeded); iters 60-61 similar; r_norm decreasing by ~1e-5 per iter — converging on a structural floor |
+| 61 (Armijo) | 1.7837 → stall | iter 61's factor + solve succeeded (last LU-fallback log line shown above) but armijo_backtrack failed: `trial_norm ≤ (1 - α·c1) · 1.7836` couldn't be satisfied within `max_line_search_backtracks = 20` backtracks — even a 5e-4 absolute decrease would satisfy Armijo, so the trial residual stayed > 1.7836 for every α tried. THIS IS THE CHATTERING FLOOR. |
 
 The r_norm decreases by `O(1e-5)` per iter from iter 57 onward — the
 Newton iteration is computing valid descent steps, the LM rescue

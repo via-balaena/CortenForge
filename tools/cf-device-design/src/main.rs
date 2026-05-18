@@ -226,43 +226,52 @@ impl CavityState {
 
     /// Slider range for the cavity inset, in meters. Capped at **4 mm**
     /// (F3 recon A — `docs/F3_RECON_A_GATED_LM_SPEC.md` §6 A.4
-    /// outcome B, 2026-05-18 EVENING):
+    /// outcome B, 2026-05-18 EVENING).
     ///
-    /// - Physical strain: 4 mm interference on a typical body-part scan
-    ///   diameter (~70 mm) is ~6% engineered compression — comfortable
-    ///   compression-fit territory. The 5+ mm region exists as a real
-    ///   product knob (Yeoh material is happy there), but the sliding-
-    ///   ramp solver doesn't converge past 4 mm with the current
-    ///   `(LU + Armijo) → gated-LM-rescue` mechanism — see below.
-    /// - Solver envelope (THIS is the binding cap): the original F4.1
-    ///   8 mm cap was sized against material strain + circulation; the
-    ///   gated-LM F3-recon-A `try_solve_impl` empirically converges
-    ///   cavity = 3 mm at 16/16 + full Newton baseline restored
-    ///   (verified user-driven visual gate 2026-05-18 EVENING, ZERO LM
-    ///   seedings — LU + Armijo accepts every iter). At cavity = 5 mm
-    ///   the gated mechanism extends Newton's walk from pre-F3 Run 2's
-    ///   ~5-iter `r_norm ≈ 1.78` plateau to **iter 57** before LM
-    ///   first escalates, but lands at the SAME structural floor
-    ///   (Armijo stall at iter 61 with `r_norm = 1.784`) — the
-    ///   convergence ceiling is dominated by **class 2 active-set
-    ///   chattering** (`H_contact(x)` discontinuity at active-pair
-    ///   on/off boundaries), which `+λI` regularization cannot smooth.
-    ///   See `docs/F3_FALSIFICATION_BOOKMARK.md` §2.2 + `docs/CAVITY_
-    ///   5MM_CHATTERING_BOOKMARK.md` for the class-2 mental model and
-    ///   candidate C (smoothed-contact penalty barrier) recon pointer.
-    /// - Yeoh material model validity: ≥8 mm interference exposes
-    ///   per-tet stretch > 2.0 (e.g., F3.4 Gate C tet 1324 reached
-    ///   `max_stretch_deviation = 1.209`), tripping the Phase 4
-    ///   Decision Q fail-closed validity assertion. Past 4 mm even
-    ///   isolated tets reach this regime as Newton walks deeper —
-    ///   capping at 4 mm keeps the design space inside the solver +
-    ///   material envelopes simultaneously.
+    /// **Binding constraint is the SOLVER ENVELOPE (class 2 active-set
+    /// chattering), NOT material validity at this range.** The
+    /// gated-LM F3-recon-A `try_solve_impl` empirically converges
+    /// cavity = 3 mm at 16/16 + full Newton baseline restored (verified
+    /// user-driven visual gate 2026-05-18 EVENING, ZERO LM seedings —
+    /// LU + Armijo accepts every iter). At cavity = 5 mm the gated
+    /// mechanism extends Newton's walk from pre-F3 Run 2's ~5-iter
+    /// `r_norm ≈ 1.78` plateau to **iter 57** before LM first
+    /// escalates, but lands at the SAME structural floor (Armijo stall
+    /// at iter 61 with `r_norm = 1.784`) — `H_contact(x)`
+    /// discontinuity at active-pair on/off boundaries is the binding
+    /// pathology, `+λI` regularization cannot smooth a value
+    /// discontinuity. See `docs/CAVITY_5MM_CHATTERING_BOOKMARK.md` for
+    /// the class-2 mental model and candidate C (smoothed-contact
+    /// penalty barrier) recon pointer.
+    ///
+    /// Yeoh material validity (Phase 4 Decision Q fail-closed) becomes
+    /// the binding constraint at ≥ 8 mm (F3.4 Gate C tet 1324 reached
+    /// `max_stretch_deviation = 1.209` at cavity 8 mm); 4-7 mm is
+    /// MATERIAL-VALID territory where the chattering envelope happens
+    /// to bite first. The conservative 4 mm cap therefore keeps the
+    /// design space inside BOTH envelopes (solver + material) — but
+    /// the limiting one TODAY at cavity ≤ 7 mm is the solver.
+    ///
+    /// Physical strain context: 4 mm interference on a typical body-
+    /// part scan diameter (~70 mm) is ~6% engineered compression —
+    /// comfortable compression-fit territory. The 5+ mm region exists
+    /// as a real product knob (Yeoh material is happy there + medical-
+    /// compression-grip range) but is gated by the solver envelope
+    /// until candidate C ships.
     ///
     /// Revisit when candidate C (smoothed contact) ships — that arc's
-    /// expected outcome is restoring the 5-8 mm design space for both
-    /// solver convergence (class 2 fix) and material validity (deeper
-    /// Newton walks become safe). Banked at the 5 mm chattering
-    /// bookmark above.
+    /// expected outcome restores the 5-7 mm design space (class 2 fix);
+    /// raising to 8 mm additionally needs candidate B (material-
+    /// validity safe-step) per the F3 falsification bookmark §4.
+    ///
+    /// **MAINTENANCE NOTE**: if you change the cap value here, mirror
+    /// the change to **(1)** the egui label below at
+    /// [`render_cavity_section`] (`(capped at 4 mm — past this, ...)`
+    /// string), AND **(2)** the sentinel test
+    /// [`tests::cavity_inset_slider_range_zero_to_four_mm`] which pins
+    /// the bound + carries the per-cap rationale. All three surfaces
+    /// must agree on cap value AND on the binding-constraint
+    /// attribution (solver envelope vs material validity vs other).
     fn inset_slider_range_m() -> (f64, f64) {
         (0.0, 0.004)
     }
@@ -2091,6 +2100,11 @@ fn render_cavity_section(ui: &mut egui::Ui, state: &mut CavityState) {
                 state.inset_m = inset_mm * 0.001;
             }
             ui.label("(silicone skin stretches inset_m over appendage)");
+            // MAINTENANCE NOTE: this 4 mm + class-2-chattering wording
+            // mirrors [`CavityState::inset_slider_range_m`]'s docstring
+            // + the `cavity_inset_slider_range_zero_to_four_mm` sentinel
+            // test's comment. If cap value or binding-constraint
+            // attribution changes, mirror to BOTH peer surfaces.
             ui.label(
                 "(capped at 4 mm — past this, sliding-ramp solver hits class-2 \
                  active-set chattering floor; see CAVITY_5MM_CHATTERING_BOOKMARK)",
@@ -2989,6 +3003,13 @@ another_future_field = "foo"
         // candidate-C (smoothed contact) next-arc that's expected to
         // restore the 5+ mm design space.
         // Was 8 mm (F4.1) and 15 mm (pre-F4.1) historically.
+        //
+        // MAINTENANCE NOTE: this 4 mm bound + the rationale above mirror
+        // the docstring on `CavityState::inset_slider_range_m` + the
+        // egui label in `render_cavity_section` ("capped at 4 mm —
+        // past this, sliding-ramp solver hits class-2 ..."). If cap
+        // value or binding-constraint attribution changes, mirror to
+        // BOTH peer surfaces.
         let (min_m, max_m) = CavityState::inset_slider_range_m();
         assert!(approx_eq(min_m, 0.0, 1e-12));
         assert!(approx_eq(max_m, 0.004, 1e-12));

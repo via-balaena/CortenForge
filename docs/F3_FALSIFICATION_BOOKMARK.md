@@ -427,5 +427,7 @@ bookmarked at **`docs/CAVITY_5MM_CHATTERING_BOOKMARK.md`**.
   for the candidate-C bookmark.
 
 **Branch state at outcome-B ship**: `sim-arc/sl-4-intruder-render` at
-`<this commit>`, 4 new commits past `2e54a8ee` plus the 26 from the F3
-arc; 151 sim-soft + 170 cf-device-design tests green; clippy clean.
+`c16fe375`, 30 commits total past `2e54a8ee` (26 from prior arcs +
+4 from this session: `9a1433b8` spec + `61b31f9b` cold-read polish +
+`59997c41` implementation + `c16fe375` this outcome-B follow-up).
+151 sim-soft + 170 cf-device-design tests green; clippy clean.
