@@ -1,10 +1,31 @@
 # F3 — sim-soft Levenberg-Marquardt regularization — design spec
 
-**Status**: DESIGN SPEC. No implementation yet. Per [[feedback-bookmark-when-surface-levers-exhaust]] three-session pattern (design-spec → implementation → visual gate): this is session 1. F3.1 + F3.2 land in session 2; cf-device-design opt-in + visual gate is session 3.
+> **STATUS — FALSIFIED 2026-05-18 EVENING** (`sim-arc/sl-4-intruder-render`)
+>
+> F3.1 → F3.4 shipped; visual gate on iter-1 `sock_over_capsule.cleaned.stl`
+> produced a non-monotone outcome that maps to none of §3's A/B/C/D
+> categories. F3.4 LM opt-in **reverted on dev** (1-line revert in
+> `tools/cf-device-design/src/insertion_sim.rs::insertion_solver_config`);
+> F3.1 → F3.4 sim-soft + surface plumbing **KEPT** (architectural wins
+> independent of the LM mental model).
+>
+> See **`docs/F3_FALSIFICATION_BOOKMARK.md`** for: three-gate data,
+> three-failure-class mental-model update, future-arc candidate ladder
+> (A gated-LM / B material-validity safe-step / C smoothed contact / D
+> mesh refinement), recon recommendation.
+>
+> This spec is preserved AS WRITTEN for audit trail — it remains a
+> correctly-designed implementation of an incorrectly-modeled failure
+> class. The recon next session may invalidate the LM mechanism but
+> the SolverFailure / try_step API surface defined here is sound and
+> consumed by every candidate.
+
+**Status (historical)**: DESIGN SPEC. No implementation yet. Per [[feedback-bookmark-when-surface-levers-exhaust]] three-session pattern (design-spec → implementation → visual gate): this is session 1. F3.1 + F3.2 land in session 2; cf-device-design opt-in + visual gate is session 3.
 
 **Predecessor docs**:
 - `docs/CAVITY_INSET_STALL_BOOKMARK.md` — original bookmark (Q1 bisection identified cavity-inset as the driver).
 - `docs/F4_FALSIFICATION_POSTMORTEM.md` — F4 + F2 falsifications. §10 carries the F3 design-question scaffold this doc fills out.
+- `docs/F3_FALSIFICATION_BOOKMARK.md` — **this spec's empirical falsification, written same-session as F3.4** (2026-05-18 EVENING).
 - Memory: [[project-cavity-inset-stall-bookmark]], [[project-f4-falsification-postmortem]], [[project-sl-4-arc-shipped]].
 
 ---

@@ -77,10 +77,10 @@ use sim_soft::material::silicone_table::{
 };
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPairReadout, CpuNewtonSolver, Field,
-    LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
-    Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, SolverFailure,
-    Tet4, TetId, Vec3, VertexId, Yeoh, filter_pair_readouts_to_referenced,
-    pick_vertices_by_predicate, referenced_vertices,
+    LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf,
+    SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, SolverFailure, Tet4,
+    TetId, Vec3, VertexId, Yeoh, filter_pair_readouts_to_referenced, pick_vertices_by_predicate,
+    referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -901,11 +901,14 @@ fn insertion_solver_config() -> SolverConfig {
     config.dt = STATIC_DT;
     config.max_newton_iter = MAX_NEWTON_ITER;
     config.tol = INSERTION_SOLVE_TOL;
-    // F3.4 Fork-B opt-in: LM +λI regularization with `ReturnFailed`
-    // Armijo-stall policy so `try_replay_step` surfaces the cavity-
-    // inset stall as `Err(SolverFailure)` instead of panicking. See
-    // `docs/F3_LM_REGULARIZATION_SPEC.md` §2.4.
-    config.lm_regularization = Some(LmConfig::fork_b());
+    // F3.4 LM opt-in REVERTED 2026-05-18 EVENING per
+    // `docs/F3_FALSIFICATION_BOOKMARK.md`: the LM +λI trajectory broke
+    // the cavity = 3 mm baseline (Armijo stall at iter 10 just above
+    // loose tol) even as it halved the cavity = 5 mm r_norm floor and
+    // enabled 1 converged step at cavity = 8 mm. Non-monotone outcome
+    // → recon next session. `try_replay_step` + `SolverFailure` +
+    // `catch_unwind` belt-and-suspenders below KEPT — those are
+    // independent architectural wins.
     config
 }
 
