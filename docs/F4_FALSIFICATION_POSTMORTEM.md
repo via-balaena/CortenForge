@@ -79,12 +79,69 @@ The implement-measure-revert per [[feedback-implement-measure-revert-pattern]] a
 
 ## 9. Anchors
 
-- F4.3 falsification commit ladder:
+- F4 + F2 falsification commit ladder:
+  - `73114956` — revert of F2 (new this session)
+  - `dc757656` — F2 (the falsified attempt; reverted, history preserved)
+  - `123aa0a4` — F4 falsification postmortem (this doc, original)
   - `c0443df4` — revert of F4.3
   - `573e56fe` — F4.3 (the falsified attempt; reverted, history preserved)
   - `26e83fa4` — F4.2 (KEPT)
   - `3f7691b5` — F4.1 (KEPT)
   - `5c653b57` — F4.0 bookmark (KEPT, needs annotation)
-- User's terminal log of the failure: see chat transcript for this session.
+- User's terminal logs of both failures: see chat transcript for this session.
 - Original bookmark: `docs/CAVITY_INSET_STALL_BOOKMARK.md` (needs §11 annotation pointing here + §5 Q3 verdict rewrite).
-- Memory entry to update: [[project-cavity-inset-stall-bookmark]] status changes from "F4.0 + F4.1 SHIPPED, F4.2 + F4.3 next session" to "F4.0 + F4.1 + F4.2 SHIPPED, F4.3 FALSIFIED + REVERTED, F2 candidate next session".
+- Memory entry: [[project-cavity-inset-stall-bookmark]] + [[project-f4-falsification-postmortem]] — both updated this session to reflect F2 falsification.
+
+## 10. F2 falsification — same-session addendum
+
+**Status**: F2 (`sliding_contact_kappa` step function: κ = 1e3 for cavity ≤ 3 mm, 5e2 otherwise) SHIPPED `dc757656` + REVERTED `73114956` same session after user-driven visual gate at cavity = 5 mm. F2 is now also DEAD; F3 (sim-soft Levenberg-Marquardt regularization) is the next-arc with no remaining cf-device-design-only candidates on the table.
+
+### What F2 did
+Wired a piecewise κ-step into `intruder_contact_sliding_at` only (growing-ramp + analytical-sphere test unchanged). For cavity ≤ 3 mm, κ stayed at the 7.3b.1 baseline of 1e3 (bit-equal preserved — confirmed by the synthetic-sliding `#[ignore]` test reproducing identical step-0 0.28 N + 3-step convergence + Yeoh-validity-wall stall). For cavity > 3 mm, κ dropped to 5e2 — the same mechanism the 7.3b.1 1e4 → 1e3 step used.
+
+### What F2 produced at cavity = 5 mm
+
+| Metric | Pre-F2 (κ = 1e3) | F2 (κ = 5e2) | Δ |
+|---|---|---|---|
+| Newton iter at stall | 63 | **35** | halved |
+| r_norm at stall | **0.572** | **0.551** | **~4% (noise floor)** |
+| α-collapse | 4.77e-7 | 4.77e-7 | same |
+| Initial residual (iter 2) | 68.78 | 28.66 | ~halved |
+| LU fallback fire count | ~30 | ~14 | ~halved |
+
+**The r_norm floor barely moved (~4%, within noise).** Lowering κ scales every contact contribution down proportionally — the initial residual halves, Newton reaches the stall floor in half the iters, the LU fallback fires half as often — but the r_norm value at which Armijo gives up is essentially unchanged.
+
+### What this means structurally
+
+κ scales the *magnitude* of the contact penalty Hessian's contribution to the tangent. It does NOT change the *eigenstructure* of the tangent. The non-PD pivots that drive the Armijo stall are a property of the contact configuration's geometry (which active pairs participate, what their gradients are, how they couple through the FEM stiffness) — and that geometry is independent of κ.
+
+Concretely: if the contact-set's Hessian contribution has any negative eigenvalues (e.g. from a near-rigid-body mode in the active-set's null space), reducing κ multiplies the negative eigenvalues by the same factor as the positive ones. The tangent stays non-PD; the Armijo line search still can't find a descent direction; r_norm stalls at roughly the same value because the same modes are still un-condensed.
+
+This was the empirical falsification of "κ is the right lever". The corrected diagnosis from postmortem §4 — that cavity_inset_m drives the stall via the wider `interior_cutoff = 2 × cavity_inset_m` active-set band — is still correct in pointing to the active set as the proximate cause, but **the active set widens the geometry of the non-PD modes, not the magnitude of the contact stiffness**. F2 attacked the magnitude; the cure needed the geometry-aware regularization F3 provides.
+
+### Rescored §5 Q3 candidates (second revision)
+
+| # | Lever | Verdict |
+|---|---|---|
+| F1 | Adaptive `tol` scaled with cavity_inset_m | Still a band-aid. r_norm floor invariance suggests adaptive tol would just give up sooner without fixing convergence. |
+| F2 | ~~Lower κ for larger cavities~~ | **DEAD**. r_norm floor is κ-invariant; same mechanism scaling. |
+| **F3** | **Levenberg-Marquardt `+λI` in `factor_and_solve_free` (sim-soft)** | **The only remaining candidate**. Directly attacks the non-PD eigenstructure regardless of where it comes from. λ adapts to the non-PD pivot count from the LU fallback — when LU fires, bump λ; when it doesn't, decay λ. Helps every consumer's non-PD pivot pattern across sim-soft. Bigger blast radius + sim-soft review, but the only lever that actually addresses the failure class. |
+| F4 | ~~Interference homotopy continuation~~ | DEAD (postmortem §3). |
+| F5 | Smaller `cell_size_m` | Indirect; untested. Mesh refinement can sometimes help conditioning but the κ-invariance result suggests the issue isn't discretization-scale. Low priority. |
+| F6 | UI warning + design-space gating | F4.1 (8 mm cap) already landed the conservative bound. Doesn't answer cavity ∈ [4, 8] mm. |
+
+### Next-session arc — F3 design-spec
+
+F3 needs a design-spec session BEFORE implementation per [[feedback-bookmark-when-surface-levers-exhaust]] — bigger blast radius (touches sim-soft, affects every consumer with non-PD pivot patterns: cf-device-design insertion sim, the rows' growing ramp, every cf-design downstream solver build), needs to think about:
+
+1. **Where the `+λI` happens**. `factor_and_solve_free` in `sim/L0/soft/src/solver/backward_euler.rs` is the obvious site; the LU fallback already fires there when LLT non-PD pivots are detected. Adding `+λI` to the FREE-DOF assembled tangent before factorization is the standard LM step.
+2. **How `λ` adapts**. Options: (a) constant `λ = ε * max_diag(K)` (cheap but suboptimal); (b) Marquardt-style increase/decrease on convergence behavior; (c) per-pivot-count adaptation (count LU fallbacks per Newton iter, bump λ proportionally). (c) is the most informative but most code.
+3. **Backwards compatibility**. The growing-ramp insertion test + every cf-design consumer's regression-tested numerics depend on the current solver's exact output. F3 must default to `λ = 0` (no regularization) so existing tests stay bit-equal, with opt-in via a `SolverConfig::lm_regularization` field.
+4. **The Fork-A vs Fork-B question**. Fork A (sim-hard, the production solver) might want different LM semantics than Fork B (cf-device-design's relative-comparison tool). The 7.3b.1 doc that picked κ=1e3 explicitly leaned into Fork-B "more residual penetration is acceptable" — F3 should probably default to Fork-B semantics in cf-device-design and leave Fork-A as future work.
+5. **The convergence-failure surface**. Today's solver `panic!`s on Armijo stall; F3 should consider whether `λ` adaptation can run to a convergence-or-give-up loop instead. Probably yes, but it's a behavior change.
+
+That's enough material for a 3-5 hour design-spec session. Three-session pattern: design-spec session, then implementation session, then visual-gate session. Per the bookmark [[feedback-bookmark-when-surface-levers-exhaust]], do NOT collapse design-spec + implementation into one session for a change of this blast radius.
+
+### Why this session ended cleanly
+
+[[feedback-implement-measure-revert-pattern]] earned its keep TWICE this session: F4.3 (~150 LOC) + F2 (~30 LOC) both shipped + falsified + reverted. The empirical r_norm-floor invariance from F2 is the single most decision-shaping result of the whole arc — without it, F3 might have been put off another two-three sessions waiting for "smaller κ" or "different homotopy" candidates that don't exist. Now F3 is unambiguously the next arc.
