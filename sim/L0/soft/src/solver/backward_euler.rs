@@ -132,14 +132,15 @@ pub struct SolverConfig {
     pub gravity_z: f64,
     /// Levenberg-Marquardt regularization for non-PD tangent rescue
     /// per `docs/F3_LM_REGULARIZATION_SPEC.md`. `None` (the
-    /// [`Self::skeleton`] default) preserves pre-F3 behavior bit-equal:
-    /// `factor_free_tangent` tries `Llt` and on non-PD falls through to
-    /// `Lu` immediately, no `+λI`. `Some(LmConfig)` opts into the
-    /// in-iter Marquardt adapter (wired at F3.2); the `Lu` fallback
-    /// then becomes the λ-saturation surface.
-    ///
-    /// F3.1: field exists but is not yet consumed. Bit-equal with
-    /// pre-F3 unconditionally — see the spec §2.3 acceptance gate.
+    /// [`Self::skeleton`] default) preserves pre-F3 behavior bit-equal
+    /// via [`LmState::disabled`](super::lm::LmState)'s short-circuit
+    /// at `factor_free_tangent`'s retry loop: `Llt` first, then direct
+    /// `Lu` fallback on non-PD, no `+λI`. `Some(LmConfig)` activates
+    /// the in-iter Marquardt adapter; the `Lu` fallback then becomes
+    /// the λ-saturation surface. Fork-B (cf-device-design) consumers
+    /// opt in via [`LmConfig::fork_b`] paired with
+    /// [`Solver::try_step`](super::Solver::try_step) for graceful
+    /// failure on Armijo stall.
     pub lm_regularization: Option<LmConfig>,
 }
 
@@ -757,6 +758,19 @@ where
     /// the LM seed/bump/summary logs, and the doubly-failed panic
     /// message so debug can identify which factor site fired which
     /// path.
+    ///
+    /// **MAINTENANCE NOTE**: this method's retry-loop body is
+    /// structurally mirrored by [`Self::try_factor_free_tangent`]
+    /// (per F3.3 — the two diverge only at the LU-fallback dispatch:
+    /// this one calls [`Self::lu_fallback`] which panics on
+    /// doubly-failed factor; the `try_*` sibling calls
+    /// [`Self::try_lu_fallback`] which returns `Err`). Spec authority
+    /// (F3.3 `try_factor_free_tangent` doc) chose duplication over
+    /// shared inner-helper to keep this method's hot path free of
+    /// `Result` indirection. Any change to the retry-loop body
+    /// (seed/bump rules, log forms, the Cow regularization branch)
+    /// MUST be mirrored to `try_factor_free_tangent` to avoid silent
+    /// divergence.
     //
     // expect_used + panic justifications (helper owns both):
     //   • `SparseColMat::try_new_from_triplets` can only fail on
@@ -1060,6 +1074,11 @@ where
     /// and to keep the panicking variant's hot path free of `Result`
     /// indirection. The two methods diverge only at the LU fallback
     /// dispatch.
+    ///
+    /// **MAINTENANCE NOTE**: see [`Self::factor_free_tangent`]'s
+    /// maintenance note. Any change to the retry-loop body
+    /// (seed/bump rules, log forms, the Cow regularization branch)
+    /// MUST be mirrored from the other direction too.
     //
     // expect_used + panic justifications: same as
     // `factor_free_tangent`'s outer comment.
@@ -1231,15 +1250,6 @@ where
         step.x_final_var = Some(x_final_var);
     }
 
-    /// Graceful-failure mirror of [`Self::factor_at_position`] (F3.3
-    /// per spec §2.5). Used by [`Self::try_step`] for the IFT-adjoint
-    /// factor at converged `x_final`. On doubly-failed factor returns
-    /// `Err(SolverFailure::DoublyFailedFactor)` with
-    /// `x_partial = x_curr` (which IS `x_final` here — the natural
-    /// partial position) and `last_iter = 0` (no Newton iter applies
-    /// post-Newton; the `context` string carries the
-    /// `"factor_at_position (IFT adjoint at x_final)"` site tag for
-    /// disambiguation).
     /// Resolve the effective Armijo-stall policy for `try_step` /
     /// `try_replay_step`. Defaults to
     /// [`SaturationPolicy::PanicOnStall`](crate::SaturationPolicy::PanicOnStall)
@@ -1255,6 +1265,15 @@ where
             })
     }
 
+    /// Graceful-failure mirror of [`Self::factor_at_position`] (F3.3
+    /// per spec §2.5). Used by [`Self::try_step`] for the IFT-adjoint
+    /// factor at converged `x_final`. On doubly-failed factor returns
+    /// `Err(SolverFailure::DoublyFailedFactor)` with
+    /// `x_partial = x_curr` (which IS `x_final` here — the natural
+    /// partial position) and `last_iter = 0` (no Newton iter applies
+    /// post-Newton; the `context` string carries the
+    /// `"factor_at_position (IFT adjoint at x_final)"` site tag for
+    /// disambiguation).
     fn try_factor_at_position(
         &self,
         x_curr: &[f64],
@@ -1320,12 +1339,7 @@ where
                     last_iter,
                     last_r_norm,
                     ..
-                } => panic!(
-                    "Armijo line-search stalled at Newton iter {last_iter} \
-                     (r_norm {last_r_norm:e}). Likely causes: non-SPD tangent \
-                     near solution (spec §3 R-2 violation), or near-singular \
-                     condensed system."
-                ),
+                } => panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm)),
                 SolverFailure::NewtonIterCap { max_iter, .. } => panic!(
                     "Newton failed to converge within {max_iter} iterations at \
                      tol {tol:e}. Likely causes: θ drives system out of R-2's \
@@ -1857,12 +1871,9 @@ where
                     last_iter,
                     last_r_norm,
                     ..
-                }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => panic!(
-                    "Armijo line-search stalled at Newton iter {last_iter} \
-                 (r_norm {last_r_norm:e}). Likely causes: non-SPD tangent \
-                 near solution (spec §3 R-2 violation), or near-singular \
-                 condensed system."
-                ),
+                }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => {
+                    panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm))
+                }
                 Err(other) => return Err(other),
             };
         let factor = self.try_factor_at_position(&step.x_final, dt, lm_final_lambda)?;
@@ -1888,12 +1899,9 @@ where
                 last_iter,
                 last_r_norm,
                 ..
-            }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => panic!(
-                "Armijo line-search stalled at Newton iter {last_iter} \
-                 (r_norm {last_r_norm:e}). Likely causes: non-SPD tangent \
-                 near solution (spec §3 R-2 violation), or near-singular \
-                 condensed system."
-            ),
+            }) if matches!(policy, crate::SaturationPolicy::PanicOnStall) => {
+                panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm))
+            }
             Err(other) => return Err(other),
         };
         Ok(step)
@@ -1979,6 +1987,23 @@ fn residual_into(
         let mass_over_dt2 = mass_per_dof[i] / dt2;
         r[i] = mass_over_dt2.mul_add(x_curr[i] - x_hat, f_int[i]) - f_ext[i];
     }
+}
+
+/// Standard Armijo-stall panic message text, shared by `solve_impl`,
+/// `Solver::try_step`, and `Solver::try_replay_step` so the three
+/// panic surfaces emit byte-identical stderr regardless of which
+/// entry point tripped the stall. Pulled into a free fn to dodge
+/// the multi-line-string-literal indentation trap where continuation
+/// lines silently embed leading whitespace into the message text —
+/// drifted across the three call sites pre-polish (21-space vs
+/// 17-space continuation), making the panic UX site-dependent.
+fn armijo_stall_panic_message(last_iter: usize, last_r_norm: f64) -> String {
+    format!(
+        "Armijo line-search stalled at Newton iter {last_iter} \
+         (r_norm {last_r_norm:e}). Likely causes: non-SPD tangent \
+         near solution (spec §3 R-2 violation), or near-singular \
+         condensed system."
+    )
 }
 
 /// Maximum diagonal entry magnitude (signed, not abs) across a

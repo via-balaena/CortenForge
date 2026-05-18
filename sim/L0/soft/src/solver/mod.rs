@@ -91,8 +91,9 @@ impl<T> NewtonStep<T> {
 /// Each variant carries `x_partial` — the Newton iterate at which the
 /// failure was detected — so the caller can decide whether to accept
 /// the partial solve (Fork-B `tol = 1e-1` is loose enough to
-/// physically interpret some non-converged states; see
-/// `tools/cf-device-design/src/insertion_sim.rs:888`).
+/// physically interpret some non-converged states; see the docstring
+/// on `insertion_solver_config()` in
+/// `tools/cf-device-design/src/insertion_sim.rs`).
 ///
 /// Variant semantics per [`crate::SaturationPolicy`]:
 /// - `ArmijoStall`: only this variant is governed by the
