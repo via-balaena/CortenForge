@@ -190,14 +190,25 @@ pub struct LmConfig {
     pub on_saturation: SaturationPolicy,
 }
 
+/// Per-stall policy applying ONLY to `SolverFailure::ArmijoStall`. The
+/// other two `SolverFailure` variants (`NewtonIterCap`,
+/// `DoublyFailedFactor`) always return `Err` on `try_step` and always
+/// panic on `step`, regardless of this setting — there is no
+/// "PanicOnIterCap" policy because the iter-cap failure is rare and
+/// the existing test regression-net already pins on its panic.
+///
+/// The "saturation" in the name refers specifically to LM saturation
+/// (retries exhausted at λ_max) followed by Armijo stall on the LU
+/// fallback step (per §2.5 step 5b). With LM disabled, the policy
+/// applies to first-Armijo-stall (today's only stall surface).
 #[derive(Clone, Copy, Debug)]
 pub enum SaturationPolicy {
-    /// Today's behavior: `Solver::step` panics with the existing
-    /// Armijo-stall message (augmented to note LM-saturated when
-    /// applicable). The only path on `Solver::step` regardless of LM
-    /// enabled-ness — see §2.5 for why the panic surface is preserved.
+    /// Today's behavior: panic with the existing Armijo-stall message
+    /// (augmented to note LM-saturated when applicable). `Solver::step`
+    /// always uses this regardless of LM enabled-ness; `try_step`
+    /// dispatches to this when `PanicOnStall` is set.
     PanicOnStall,
-    /// Used only by `Solver::try_step` (new method, see §2.5). Returns
+    /// Used only by `Solver::try_step`. Returns
     /// `Err(SolverFailure::ArmijoStall { x_partial, last_iter, last_r_norm })`
     /// — the caller decides whether to accept the partial solve.
     /// `Solver::step` still panics on Armijo stall regardless of this
@@ -227,7 +238,7 @@ impl LmConfig {
 **Fork A (sim-hard / production solver — every other sim-soft consumer)**: NOT in this spec. The `lm_regularization` field exists in `SolverConfig`; Fork-A consumers leave it `None` for now. When a production consumer eventually needs LM (e.g., the rows' growing ramp at extreme contact concentrations), the spec for Fork-A is a future doc that:
 1. Decides on stricter saturation policy (`SaturationPolicy::PanicOnStall` is the natural default — production should not silently degrade).
 2. Considers tighter `max_relative` (smaller ceiling — stop early on degenerate input rather than slide into pure gradient descent).
-3. Validates the **numerical consistency** of gradient values computed through a non-zero-λ IFT adjoint factor. F3 already threads `lm_seed_lambda` through `factor_at_position` per §2.1 (so the adjoint factor uses the same λ Newton converged with). The question Fork-A needs to answer is whether those gradients are USEFUL for backprop — i.e., does `(A + λI)^{-1}` produce an adjoint that's close enough to `A^{-1}` for downstream learning, or does the λI regularization bias the gradients in ways that break training. Numerical-consistency study, not API-shape. Fork-B doesn't consume gradients so doesn't surface this.
+3. Validates the **numerical consistency** of gradient values computed through a non-zero-λ IFT adjoint factor. F3 already threads `lm_seed_lambda` through `factor_at_position` per §2.1 — the adjoint factor uses the Newton-final λ as its SEED, then runs its own retry loop if the adjoint tangent is also non-PD (so the actual λ at the adjoint factor may be ≥ the seed). The question Fork-A needs to answer is whether those gradients are USEFUL for backprop — i.e., does `(A + λI)^{-1}` produce an adjoint that's close enough to `A^{-1}` for downstream learning, or does the λI regularization bias the gradients in ways that break training. Numerical-consistency study, not API-shape. Fork-B doesn't consume gradients so doesn't surface this.
 
 The reason Fork-A is deferred: the gradient-consuming consumers haven't surfaced an LM need yet, and the right design for them depends on what failure mode surfaces first. Speculating now risks designing for the wrong production case.
 
@@ -249,7 +260,7 @@ Three failure surfaces under F3 (with `LmConfig::Some(...)`):
 
 The implementer should NOT confuse "saturation" (step 2-3, recoverable if Armijo accepts) with "Armijo stall after saturation" (step 5b, the actual terminal failure surface).
 
-**Why graceful-give-up requires both opt-in (LmConfig) AND a new method (try_step)**: today's `Solver::step` is called from ~30+ test sites + the cf-device-design insertion ramp. Changing its return type to `Result<NewtonStep, SolverFailure>` cascades through every caller. Adding `try_step` keeps the existing method bit-equal-compatible and forces graceful-failure consumers to make an explicit choice — both by setting `SaturationPolicy::ReturnFailed` AND by calling the new method. Two-key authentication for "I really want this solver to gracefully degrade."
+**Why graceful-give-up requires both opt-in AND a new method**: see §7 decision-trace entry on `try_step`. Short version: backward-compat of 30+ existing `Solver::step` callers requires keeping `step`'s signature stable; the new `try_step` keeps `step` bit-equal-compatible and forces graceful-failure consumers to make an explicit choice.
 
 **Public API change** (the only public API change in this spec):
 
@@ -309,17 +320,17 @@ pub enum SolverFailure {
     /// Doubly-failed factor (Llt non-PD AND LU also failed). This was
     /// already a model-level non-recoverable condition; surfacing it as
     /// `Err` rather than `panic!` is the consistent graceful-failure
-    /// posture. No x_partial because the factor failure happened mid-
-    /// iter — the most recent valid x_curr is what the caller should
-    /// reference (carried in the SolverFailure-wrapping Result chain
-    /// or accessible via the solver's last-position cache).
-    DoublyFailedFactor { context: String },
+    /// posture. `x_partial` is the `x_curr` at the start of the failed
+    /// Newton iter (same semantics as ArmijoStall) — the factor failure
+    /// happens during assembly + factor of the tangent at this position;
+    /// the position itself is well-defined.
+    DoublyFailedFactor { x_partial: Vec<f64>, last_iter: usize, context: String },
 }
 ```
 
 **`NewtonStep<T>` stays a struct** (today's shape at `solver/mod.rs:40-56`). `SolverFailure` is the new failure-carrier type; `NewtonStep` only ever represents a converged step (its existing invariant).
 
-**`armijo_backtrack` changes**: returns `Result<Vec<f64>, ArmijoStall>` instead of panicking directly. `solve_impl` and `try_solve_impl` (the new mirror of `solve_impl` with `Result` return) translate to either `panic!` (existing path) or `Err(SolverFailure::ArmijoStall)` (new path) based on which entry-point the caller invoked. The internal API change is local; external callers of `step` see no change.
+**`armijo_backtrack` changes**: returns `Result<Vec<f64>, ArmijoStall>` instead of panicking directly. `ArmijoStall` here is a **local struct** in `backward_euler.rs` carrying `(x_curr, iter, r_norm)` — distinct from the public `SolverFailure::ArmijoStall` variant. `solve_impl` translates the local struct back to `panic!` (preserving today's panic message; observable behavior unchanged); `try_solve_impl` (new mirror of `solve_impl` with `Result` return) translates to `Err(SolverFailure::ArmijoStall { x_partial: stall.x_curr, last_iter: stall.iter, last_r_norm: stall.r_norm })`. The internal API change is local; external callers of `step` see no change.
 
 **Logging policy** (the per-retry warn-log surface):
 - **First non-PD detection per Newton iter, λ transitioning from 0** logs `"sim-soft: LM seeded λ = {…} at Newton iter {…}"`.
@@ -366,56 +377,67 @@ Sized for two follow-up sessions (implementation, visual gate) with explicit acc
 
 ### F3.2 — Plumbing + `factor_free_tangent` LM retry loop + unit test — session 2 (medium)
 - Add `LmState` internal struct (mutable in-solve state: current λ, retry count). `LmState::disabled()` returns a state where `lambda == 0.0` permanently and `can_bump(max_diag)` is permanently `false`.
-- Plumb `&mut LmState` through `factor_and_solve_free` and `factor_at_position` callers. Initialize in `solve_impl` from `self.config.lm_regularization`.
-- Implement the §2.1 retry loop in `factor_free_tangent`. `triplets_with_diagonal_offset` helper (clones triplets, walks for `row == col`, adds `λ` in place — see §2.1 for why appending isn't an option). `debug_assert!(max_diag > 0.0)` at top.
-- Pre-compute `max_diag` at the top of `factor_free_tangent` (before the retry loop) by walking input triplets for entries with `row == col`. O(n_triplets) once per call — negligible vs the factor cost.
-- Implement the §2.5 logging policy (first-bump-per-iter seed/bump line + post-loop outcome line summarizing retries-to-success or saturation; decay events silent).
+- Plumb `&mut LmState` through `factor_free_tangent`, `factor_and_solve_free`, and `factor_at_position`. Initialize in `solve_impl` from `self.config.lm_regularization` (disabled state when `None`).
+- Implement the §2.1 retry loop in `factor_free_tangent` (pseudocode is the source of truth; max_diag snapshot + `debug_assert!(max_diag > 0.0)` + `triplets_with_diagonal_offset` helper + Llt-retry-bump-saturate logic + LU fallback on original triplets when saturated).
+- Implement the §2.5 logging policy — four distinct log forms total (seed-line, bump-line, success-summary-line, saturation-summary-line). This is non-trivial; budget ~30 LOC for the logging alone.
 - Add a new unit test in `backward_euler.rs`'s `mod tests` mirroring `factor_free_tangent_falls_through_to_lu_on_non_pd` (the existing non-PD fixture, line 1570) but with LM enabled — assert that Llt returns `Ok` after the LM bump rather than falling through to LU. The existing non-PD test stays as the LM-disabled baseline.
 - **No cavity visual gates here** — defer to F3.4 where Fork-B opt-in is wired up. Running F3.2's LM enabled at cavity = 3 mm would require either temporarily patching `insertion_solver_config()` (and reverting) or wiring a temp test fixture; both are clunky. The unit test on the existing non-PD fixture is sufficient F3.2 verification — visual gates belong at F3.4.
-- Acceptance: existing LU fallback unit test passes (LM disabled, bit-equal); new LM unit test passes (LM enabled, Llt-Ok after bump); all other sim-soft tests pass bit-equal (signatures changed via `Default::default()` LmState propagation but behavior is inert when `lm_regularization: None`).
-- Sizing: ~250 LOC (plumbing ~50, retry loop + helpers ~150, unit test ~50). Most of the math complexity lives here.
+- Acceptance: existing LU fallback unit test passes bit-equal (internal-API plumbing changes are inert at `lm_regularization: None` — the `disabled()` state short-circuits all LM logic); new LM unit test passes (LM enabled, Llt-Ok after bump); all other sim-soft tests pass bit-equal (only `Solver::step`'s public signature is unchanged — test sites that call `step` see no signature change AND no behavior change).
+- Sizing: ~280 LOC (plumbing ~50, retry loop + helpers ~150, logging ~30, unit test ~50). Most of the math complexity lives here.
 
 **Note on `tests/contact_stability.rs`**: this is the natural F3 regression-test harbor — it already catches solver panics (`NonPositivePivot`, Armijo stall, Newton non-convergence) across a κ × cell_size scan grid. Once F3.3 lands and `try_step` is available, augment the scan harness with an LM-enabled mode and assert that all previously panicking grid points either (a) converge under LM or (b) return `Err(SolverFailure)` cleanly. Defer to F3.5 if F3.4 visual gate ships clean — at that point the scan harness becomes a permanent regression net.
 
 ### F3.3 — Decay rule + saturation policy + `try_step` + `SolverFailure` — session 2 (medium)
 - Implement decay (`down_factor` on Llt success when λ > 0; floor at `λ_min = 0` per §2.2).
 - Implement saturation: when retries exceed `max_retries_per_iter` OR `λ ≥ λ_max`, fall through to LU on the **original (un-regularized) triplets** (per §2.1) and let Armijo run. NOT terminal — if Armijo accepts the LU step, Newton continues normally (per §2.5 step 5a).
-- Add `SolverFailure` enum (all three variants — `ArmijoStall`, `NewtonIterCap`, `DoublyFailedFactor`) + `Solver::try_step` + `Solver::try_replay_step` per §2.5 public-API change. Both `try_*` methods are REQUIRED (no default impl); `CpuNewtonSolver` implements them to dispatch on `SaturationPolicy`. The dispatch:
-  - `PanicOnStall` → forward to existing `step`/`replay_step` (panics on any failure).
-  - `ReturnFailed` → call `try_solve_impl` (new); translate each existing `panic!` site to the corresponding `Err(SolverFailure::*)` variant:
-    - `armijo_backtrack`'s stall panic → `Err(SolverFailure::ArmijoStall)`.
-    - `solve_impl`'s Newton-iter-cap panic (lines 902-909) → `Err(SolverFailure::NewtonIterCap)`.
-    - `factor_free_tangent`'s doubly-failed-factor panic (lines 749-757) → `Err(SolverFailure::DoublyFailedFactor)` (this also needs `try_factor_and_solve_free` mirroring `factor_and_solve_free`).
-- `armijo_backtrack` returns `Result<Vec<f64>, ArmijoStall>`; `try_solve_impl` (new mirror of `solve_impl`) translates to `Err(SolverFailure::ArmijoStall)`. Existing `solve_impl` keeps the `panic!` path bit-equal so today's `Solver::step` consumers see no behavior change.
-- Acceptance: all existing tests still pass under `cargo test -p sim-soft --release` (bit-equal); saturation-policy unit tests exercise all three `SolverFailure` variants under both `PanicOnStall` (asserts panic) and `ReturnFailed` (asserts the corresponding `Err(SolverFailure::*)`); the new LM-enabled-on-non-PD unit test from F3.2 still passes.
-- Sizing: ~200 LOC for the math + ~60 LOC for the trait additions + ~60 LOC for the saturation-policy unit tests (one per variant × 2 policies = 6 cases). Bundle-able with F3.2 in one implementation session if energy allows; split into a second implementation session if not.
+- Add `SolverFailure` enum (all three variants — `ArmijoStall`, `NewtonIterCap`, `DoublyFailedFactor`) + `Solver::try_step` + `Solver::try_replay_step` per §2.5 public-API change. Both `try_*` methods are REQUIRED (no default impl); `CpuNewtonSolver` implements them to dispatch.
+
+  **Dispatch semantics** (per §2.5 `SaturationPolicy` docstring):
+  - For `ArmijoStall`: `PanicOnStall` panics (forward to existing `step`/`replay_step`); `ReturnFailed` returns `Err(SolverFailure::ArmijoStall)`.
+  - For `NewtonIterCap` + `DoublyFailedFactor`: `try_step` ALWAYS returns `Err` regardless of `SaturationPolicy`; `step` ALWAYS panics regardless of policy. There is no per-variant policy for these two.
+
+  **Three mirror methods needed** (Result-returning variants of the existing panic-returning chain):
+  - `try_factor_free_tangent(triplets, lm_state, context) -> Result<FactoredFreeTangent, SolverFailure::DoublyFailedFactor>` — mirror of `factor_free_tangent` (line 710) with the doubly-failed-factor panic at lines 749-757 translated to `Err`.
+  - `try_factor_and_solve_free(triplets, r_full, newton_iter, r_norm, lm_state) -> Result<Vec<f64>, SolverFailure>` — mirror of `factor_and_solve_free` (line 787) routing through `try_factor_free_tangent`.
+  - `try_solve_impl(x_prev, v_prev, theta, dt) -> Result<NewtonStep, SolverFailure>` — mirror of `solve_impl` (line 830) routing through `try_factor_and_solve_free` AND `armijo_backtrack`'s Result variant; translates the iter-cap panic (lines 902-909) to `Err(SolverFailure::NewtonIterCap)`.
+
+- `armijo_backtrack` is REWRITTEN to return `Result<Vec<f64>, ArmijoStall>` (a local `ArmijoStall` struct in `backward_euler.rs`, distinct from `SolverFailure::ArmijoStall` the public variant). Both callers translate:
+  - `solve_impl` (existing): `armijo_backtrack(...).unwrap_or_else(|stall| panic!(...))` — preserves today's panic message. Observable behavior unchanged from today even though the source-level body differs.
+  - `try_solve_impl` (new): `armijo_backtrack(...).map_err(|stall| SolverFailure::ArmijoStall { x_partial: stall.x_curr, last_iter: stall.iter, last_r_norm: stall.r_norm })`.
+- Acceptance: all existing tests still pass under `cargo test -p sim-soft --release` (bit-equal); the new LM-enabled-on-non-PD unit test from F3.2 still passes; new unit tests cover the three `SolverFailure` variants on `try_step`:
+  - `ArmijoStall` × `PanicOnStall` (asserts panic) and × `ReturnFailed` (asserts `Err(SolverFailure::ArmijoStall)`).
+  - `NewtonIterCap` on `try_step` (asserts `Err(SolverFailure::NewtonIterCap)` regardless of policy).
+  - `DoublyFailedFactor` on `try_step` (asserts `Err(SolverFailure::DoublyFailedFactor)` regardless of policy).
+- **Fixture construction guidance**: forcing saturation requires a deeply-non-PD tangent that exhausts the 8-retry budget. The existing `factor_free_tangent_falls_through_to_lu_on_non_pd` fixture (line 1570) rescues at retry 1 — too shallow. Construct a fixture matrix with many negative eigenvalues at magnitudes near `max_diag` (so `λ_seed` and `λ_seed × 10` are both insufficient). For NewtonIterCap: a `max_newton_iter = 2` SolverConfig on a problem that needs 5 iters to converge. For DoublyFailedFactor: a rank-deficient matrix where neither Llt nor Lu produces a valid factor.
+- Sizing: ~200 LOC for the math + ~60 LOC for the trait additions + ~80 LOC for the unit tests (4 cases above + fixture construction). Bundle-able with F3.2 (and F3.1) in one implementation session if energy allows; split otherwise.
 
 ### F3.4 — cf-device-design opt-in + visual gate — session 3
 - `insertion_sim.rs::insertion_solver_config()` adds `config.lm_regularization = Some(LmConfig::fork_b())`.
-- Update **BOTH** insertion-ramp call sites — `run_single_insertion_step` AND `run_sliding_insertion_ramp` — to use `Solver::try_step` instead of `Solver::step`. Per §2.4, both are Fork-B consumers.
-- Handle the full `SolverFailure` enum in the call-site error translation (not just `ArmijoStall`):
+- Update **BOTH** insertion-ramp consumer functions — `run_single_insertion_step` AND `run_sliding_insertion_ramp` — to use `Solver::try_step` instead of `Solver::step` at each internal call site. Per §2.4, both are Fork-B consumers. Implementer should grep `solver.step` within both functions; today there are typically 1-2 call sites per function, but verify by inspection.
+- Handle the full `SolverFailure` enum in the call-site error translation (not just `ArmijoStall`). Today's `Ok` arm — propagate the converged step up the call chain — is unchanged from how `Ok(self.step(...))` would be handled. Pattern:
   ```rust
-  match solver.try_step(...) {
-      Ok(step) => /* accept */,
+  match solver.try_step(tape, &x_prev, &v_prev, theta_var, dt) {
+      Ok(step) => step,  // unchanged from today: propagate up
       Err(SolverFailure::ArmijoStall { last_iter, last_r_norm, .. }) =>
           return Err(anyhow!("Armijo stall at iter {last_iter}, r_norm {last_r_norm:e}")),
       Err(SolverFailure::NewtonIterCap { max_iter, last_r_norm, .. }) =>
           return Err(anyhow!("Newton iter cap {max_iter} reached, r_norm {last_r_norm:e}")),
-      Err(SolverFailure::DoublyFailedFactor { context }) =>
-          return Err(anyhow!("Solver factor doubly failed: {context}")),
+      Err(SolverFailure::DoublyFailedFactor { last_iter, context, .. }) =>
+          return Err(anyhow!("Solver factor doubly failed at iter {last_iter}: {context}")),
   }
   ```
-- Run cavity = 3 mm visual gate (baseline regression check — must still converge 16/16 in approximately the same iter count per §4 F3.2 framing; LU-fallback firings replaced by LM bumps in the trace).
+- Run cavity = 3 mm visual gate (baseline regression check).
 - Run cavity = 5 mm visual gate (the load-bearing test).
 - Run cavity = 8 mm visual gate (the F4.1 UI cap — does F3 lift it?).
 - Decide outcome A/B/C/D per §3.
-- Sizing: ~40 LOC code (2 call sites × match block + opt-in field) + 3 manual visual-gate runs. Outcome-dependent on what comes next.
+- **Acceptance**: cavity = 3 mm converges 16/16 within ≤ 1.5× baseline iter count (`max_newton_iter` budget for SL.4.3 baseline was ~30-40 iters per converged step; F3-enabled budget headroom is the 150 cap minus 60 = 90 iters of slack — generous). LU-fallback firings replaced by LM bumps in the trace (per §2.5 logging). Visual outcome at cavity = 5 mm is A/B (ship) or C/D (bookmark + recon).
+- Sizing: ~40 LOC code (2-4 call sites × match block + opt-in field) + 3 manual visual-gate runs + outcome decision + (if A/B) F3.5 polish. Outcome-dependent on what comes next.
 
 ### F3.5 — post-ship polish — session 3 (only if outcomes A/B)
 - Update `docs/CAVITY_INSET_STALL_BOOKMARK.md` §11 with F3 resolution.
 - Update memory entries [[project-cavity-inset-stall-bookmark]] + [[project-f4-falsification-postmortem]] + this spec doc with shipped status.
 - Adjust UI cap in cf-device-design slider (`sliding_ramp_panel.rs` or wherever F4.1 landed) to the validated ceiling.
-- Cold-read pass per [[feedback-cold-read-review-post-ship]].
+- Cold-read pass per [[feedback-cold-read-review-post-ship]] — this is a post-IMPLEMENTATION cold-read of the F3.1-F3.4 diff, distinct from this spec's own pre-implementation cold-read passes (3b4ec375 + 6e65aaf6 + ab40683b + the pass-3 polish commit that lands this section). Different scope: spec passes refine the design artifact; F3.5 cold-read finds implementation bugs + doc drift + test gaps in the shipped code.
 
 ---
 
