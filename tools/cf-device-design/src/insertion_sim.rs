@@ -77,10 +77,10 @@ use sim_soft::material::silicone_table::{
 };
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPairReadout, CpuNewtonSolver, Field,
-    LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf,
-    SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, Tet4, TetId, Vec3,
-    VertexId, Yeoh, filter_pair_readouts_to_referenced, pick_vertices_by_predicate,
-    referenced_vertices,
+    LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
+    Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, SolverFailure,
+    Tet4, TetId, Vec3, VertexId, Yeoh, filter_pair_readouts_to_referenced,
+    pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -901,6 +901,11 @@ fn insertion_solver_config() -> SolverConfig {
     config.dt = STATIC_DT;
     config.max_newton_iter = MAX_NEWTON_ITER;
     config.tol = INSERTION_SOLVE_TOL;
+    // F3.4 Fork-B opt-in: LM +λI regularization with `ReturnFailed`
+    // Armijo-stall policy so `try_replay_step` surfaces the cavity-
+    // inset stall as `Err(SolverFailure)` instead of panicking. See
+    // `docs/F3_LM_REGULARIZATION_SPEC.md` §2.4.
+    config.lm_regularization = Some(LmConfig::fork_b());
     config
 }
 
@@ -1030,15 +1035,13 @@ pub struct InsertionStep {
 ///
 /// - `interference_m` is non-finite;
 /// - [`outer_skin_bc`] fails — no outer-skin vertex in the Dirichlet
-///   pin-band (the wall has nothing to react against).
-///
-/// # Panics
-///
-/// `replay_step` panics if the Newton solve fails to converge within
-/// [`MAX_NEWTON_ITER`] — non-convergence returns no partial data.
-/// `run_single_insertion_step` keeps to interferences that converge;
-/// graceful "failed at step N" reporting is [`run_insertion_ramp`]
-/// (7.3b), which `catch_unwind`s each step.
+///   pin-band (the wall has nothing to react against);
+/// - the Newton solve fails to converge — Armijo line-search stall,
+///   [`MAX_NEWTON_ITER`] cap, or doubly-failed Llt-then-Lu factor.
+///   Under F3.4's Fork-B LM opt-in (see [`insertion_solver_config`]),
+///   `try_replay_step` surfaces these as `Err(SolverFailure)` instead
+///   of panicking; each variant is translated to an [`anyhow::Error`]
+///   carrying the iter index + residual / context.
 pub fn run_single_insertion_step(
     geometry: InsertionGeometry,
     interference_m: f64,
@@ -1084,7 +1087,36 @@ pub fn run_single_insertion_step(
     let theta = Tensor::from_slice(&empty_theta, &[0]);
 
     let solver = CpuNewtonSolver::new(Tet4, mesh, contact, config, bc);
-    let step = solver.replay_step(&x_prev, &v_prev, &theta, config.dt);
+    let step = match solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt) {
+        Ok(step) => step,
+        Err(SolverFailure::ArmijoStall {
+            last_iter,
+            last_r_norm,
+            ..
+        }) => {
+            return Err(anyhow!(
+                "insertion solve Armijo-stalled at Newton iter {last_iter}, \
+                 r_norm {last_r_norm:.3e}"
+            ));
+        }
+        Err(SolverFailure::NewtonIterCap {
+            max_iter,
+            last_r_norm,
+            ..
+        }) => {
+            return Err(anyhow!(
+                "insertion solve hit Newton iter cap {max_iter}, \
+                 last r_norm {last_r_norm:.3e}"
+            ));
+        }
+        Err(SolverFailure::DoublyFailedFactor {
+            last_iter, context, ..
+        }) => {
+            return Err(anyhow!(
+                "insertion solve doubly-failed factor at Newton iter {last_iter}: {context}"
+            ));
+        }
+    };
 
     Ok(InsertionStep {
         x_final: step.x_final,
@@ -1803,6 +1835,35 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "<non-string panic payload>".to_string())
 }
 
+/// Format a [`SolverFailure`] into the same `failure_reason` shape the
+/// pre-F3.4 catch_unwind pattern produced via [`panic_message`] — so
+/// the SL.4 viewport's "stalled at step N: <reason>" surface reads the
+/// same regardless of whether the failure came through `try_replay_step`
+/// (F3.4 Fork-B path) or, for the still-panicking
+/// `run_insertion_ramp` (growing-intruder) path, `catch_unwind`.
+fn solver_failure_message(failure: &SolverFailure) -> String {
+    match failure {
+        SolverFailure::ArmijoStall {
+            last_iter,
+            last_r_norm,
+            ..
+        } => format!(
+            "Armijo line-search stalled at Newton iter {last_iter}, r_norm {last_r_norm:.3e}"
+        ),
+        SolverFailure::NewtonIterCap {
+            max_iter,
+            last_r_norm,
+            ..
+        } => format!(
+            "Newton iter cap {max_iter} reached without convergence, \
+             last r_norm {last_r_norm:.3e}"
+        ),
+        SolverFailure::DoublyFailedFactor {
+            last_iter, context, ..
+        } => format!("doubly-failed factor at Newton iter {last_iter}: {context}"),
+    }
+}
+
 /// Run a quasi-static insertion ramp: seat the scan-derived intruder
 /// into the device cavity in `n_steps` equal interference increments
 /// (`0 → cavity_inset_m`), each step's Newton solve warm-started from
@@ -2292,8 +2353,9 @@ pub struct SlideRamp {
     /// `Some(k)` if step `k` failed to converge (Fork-B graceful
     /// stall — D-Slide6); `None` if every step converged.
     pub failed_at_step: Option<usize>,
-    /// Solver panic message for the failed step. `None` if every
-    /// step converged.
+    /// Human-readable description of the failure for the failed step
+    /// (formatted from [`SolverFailure`] via [`solver_failure_message`]).
+    /// `None` if every step converged.
     pub failure_reason: Option<String>,
     /// Deformed vertex positions (vertex-major xyz) at the last
     /// converged step — or rest positions if step 0 itself failed.
@@ -2324,8 +2386,10 @@ pub struct SlideRamp {
 /// Solver convergence: each Newton solve is warm-started from the
 /// previous step's `x_final` (D-Slide4 — no convection-aware
 /// remapping in iter-1; the contact-set discontinuity at slide-step
-/// boundaries may stall some intermediate solves, which Fork-B's
-/// `catch_unwind` records gracefully).
+/// boundaries may stall some intermediate solves, which the F3.4
+/// Fork-B LM opt-in surfaces as `Err(SolverFailure)` from
+/// `try_replay_step` — translated to a `failure_reason` string and
+/// recorded at `failed_at_step`).
 ///
 /// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
 /// is the engineered shell-wall interference. It is forwarded
@@ -2415,11 +2479,12 @@ pub fn run_sliding_insertion_ramp(
         );
         let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
         let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
-        // `replay_step` panics on non-convergence; Fork-B graceful
-        // stall handling per D-Slide6.
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
-        }));
+        // F3.4 Fork-B: `try_replay_step` surfaces Armijo stall +
+        // Newton-iter-cap + doubly-failed-factor as `Err(SolverFailure)`
+        // (no panic), thanks to the LM opt-in in `insertion_solver_config`.
+        // Translate to a human-readable `failure_reason` and record
+        // `failed_at_step`, preserving the partial-ramp semantic.
+        let outcome = solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt);
         match outcome {
             Ok(step) => {
                 let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
@@ -2452,9 +2517,9 @@ pub fn run_sliding_insertion_ramp(
                 intruder_poses.push(pose);
                 x_prev_flat = step.x_final;
             }
-            Err(payload) => {
+            Err(failure) => {
                 failed_at_step = Some(k);
-                failure_reason = Some(panic_message(&*payload));
+                failure_reason = Some(solver_failure_message(&failure));
                 break;
             }
         }
