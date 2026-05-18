@@ -113,4 +113,19 @@ mod tests {
         // so consumers can build SolverConfig in const contexts.
         const _CFG: LmConfig = LmConfig::fork_b();
     }
+
+    #[test]
+    fn skeleton_solver_config_does_not_opt_into_lm() {
+        // Bit-equal invariant pinned per spec §2.3: `SolverConfig::
+        // skeleton()` MUST default `lm_regularization` to `None` so the
+        // 25+ existing test sites that route through `skeleton()` stay
+        // bit-equal vs pre-F3. A future "everyone should benefit, flip
+        // the default" change would break this and the whole regression
+        // net — pin it here with a focused error message.
+        assert!(
+            super::super::SolverConfig::skeleton()
+                .lm_regularization
+                .is_none()
+        );
+    }
 }
