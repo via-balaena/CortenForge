@@ -911,37 +911,8 @@ fn insertion_solver_config() -> SolverConfig {
 /// unlike the rows' localized probe) concentrates the penalty
 /// Hessian. A gentler `1e3` widens the convergeable depth envelope;
 /// the tradeoff is slightly more residual penetration, acceptable
-/// for this relative-comparison tool (Fork B). The growing ramp +
-/// the analytical-sphere test use this constant directly; sliding-
-/// mode contacts go through [`sliding_contact_kappa`] which steps
-/// down κ for cavity insets past the 3 mm 7.3b.1 baseline (F2 —
-/// see `docs/F4_FALSIFICATION_POSTMORTEM.md` §5).
+/// for this relative-comparison tool (Fork B).
 const INSERTION_CONTACT_KAPPA: f64 = 1.0e3;
-
-/// F2 — sliding-mode κ-step. Sliding contacts go through
-/// `intruder_contact_sliding_at`, which passes a wider
-/// `interior_cutoff = 2 × cavity_inset_m` than the growing ramp uses;
-/// more contact pairs land in the Newton assembly as cavity inset
-/// grows, concentrating the Hessian past the κ = 1e3 convergence
-/// envelope edge. Lowering κ to `5e2` for cavity insets > 3 mm
-/// widens the envelope (same tradeoff as the 7.3b.1 1e4 → 1e3 step:
-/// slightly more residual penetration in exchange for more
-/// convergence-space). The 3 mm threshold preserves the 7.3b.1
-/// baseline bit-equal for the default-and-smaller designs that the
-/// 1e3 tuning was calibrated against. Per the F4 falsification
-/// postmortem `docs/F4_FALSIFICATION_POSTMORTEM.md` §5: F2 is the
-/// new top candidate after F4 (interference homotopy) was falsified
-/// by the load class the sliding solver can't handle. If F2 doesn't
-/// reach cavity = 5 mm convergence at `5e2`, drop to `1e2`; if that
-/// still doesn't, escalate to F3 (sim-soft Levenberg-Marquardt) per
-/// the postmortem §8 ladder.
-fn sliding_contact_kappa(cavity_inset_m: f64) -> f64 {
-    if cavity_inset_m <= 3.0e-3 {
-        INSERTION_CONTACT_KAPPA
-    } else {
-        5.0e2
-    }
-}
 
 /// Penalty-contact band `d̂` (meters) for the insertion solve —
 /// matches sim-soft's crate-private `PENALTY_DHAT_DEFAULT`
@@ -2213,13 +2184,10 @@ pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 /// composition where `interference_m = 0` sits flush with the cavity
 /// wall and `interference_m = cavity_inset_m` reproduces the bare scan.
 ///
-/// Penalty `κ` comes from [`sliding_contact_kappa`] (F2 — keyed on
-/// `cavity_inset_m`, stays at the growing-ramp's
-/// [`INSERTION_CONTACT_KAPPA`] = 1e3 for cavity ≤ 3 mm to preserve
-/// the 7.3b.1 baseline, steps down to 5e2 for larger cavities to
-/// widen the convergence envelope against the wider `interior_cutoff`
-/// active-set band). `d̂` reuses [`INSERTION_CONTACT_DHAT`] from the
-/// growing ramp.
+/// Penalty `(κ, d̂)` reuses [`INSERTION_CONTACT_KAPPA`] +
+/// [`INSERTION_CONTACT_DHAT`] from the growing ramp; the kappa
+/// tradeoff (7.3b.1 wider convergeable envelope at slight cost in
+/// residual penetration) is independent of the contact model.
 ///
 /// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
 /// is the engineered shell-wall interference. The contact model passes
@@ -2247,7 +2215,7 @@ fn intruder_contact_sliding_at(
         Solid::from_sdf(transformed, bounds).offset(interference_m + cavity_offset_m);
     PenaltyRigidContact::with_params_and_interior_cutoff(
         vec![intruder_solid],
-        sliding_contact_kappa(cavity_inset_m),
+        INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
         2.0 * cavity_inset_m,
     )
