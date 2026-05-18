@@ -3,8 +3,8 @@
 //! Per `docs/F3_LM_REGULARIZATION_SPEC.md`. F3.1 lands the **types only**
 //! (this module + the `SolverConfig::lm_regularization` field opt-in
 //! gate). No execution path consumes these types yet — F3.2 wires the
-//! `+λI` retry loop into [`super::backward_euler::CpuNewtonSolver::
-//! factor_free_tangent`] alongside the in-solve `LmState` plumbing.
+//! `+λI` retry loop into `factor_free_tangent` (private method in
+//! [`super::backward_euler`]) alongside the in-solve `LmState` plumbing.
 //!
 //! Bit-equality invariant for F3.1: with `SolverConfig::lm_regularization
 //! = None` (the [`super::backward_euler::SolverConfig::skeleton`]
@@ -47,26 +47,32 @@ pub enum SaturationPolicy {
 #[derive(Clone, Copy, Debug)]
 pub struct LmConfig {
     /// Seed λ at first non-PD detection. Computed as
-    /// `seed_relative * max_diag_of_assembled_tangent`.
+    /// `seed_relative * max_diag_of_assembled_tangent`. Default
+    /// `1e-6` (per [`Self::fork_b`]).
     pub seed_relative: f64,
     /// Multiplicative bump per non-PD retry beyond the seed retry.
+    /// Default `10.0` (per [`Self::fork_b`]).
     pub up_factor: f64,
     /// Multiplicative decay per `Llt` success with `λ > 0`. Floored at
     /// `λ_min = 0.0` (no sticky-warm policy — λ may decay all the way
     /// to zero between Newton iters; the next non-PD detection re-seeds
-    /// from `seed_relative * max_diag`).
+    /// from `seed_relative * max_diag`). Default `0.5` (per
+    /// [`Self::fork_b`]).
     pub down_factor: f64,
     /// Ceiling as multiple of `max_diag`. Above this, the regularized
     /// system degenerates to gradient descent with step size
     /// `1 / λ_max`, which is worse than the existing LU fallback.
+    /// Default `1e3` (per [`Self::fork_b`]).
     pub max_relative: f64,
     /// Backstop against infinite retry loops. With the rule
     /// `λ = max(λ * up_factor, λ_seed)`, retry 1 seeds (no
     /// multiplication), retries 2..N each multiply by `up_factor` — so
-    /// the budget spans `λ_seed` → `λ_seed × up_factor^(N-1)`.
+    /// the budget spans `λ_seed` → `λ_seed × up_factor^(N-1)`. Default
+    /// `8` (per [`Self::fork_b`]).
     pub max_retries_per_iter: usize,
     /// What happens when λ saturates at `λ_max` AND the saturated LU
     /// fallback step still Armijo-stalls. See [`SaturationPolicy`].
+    /// Set to [`SaturationPolicy::ReturnFailed`] by [`Self::fork_b`].
     pub on_saturation: SaturationPolicy,
 }
 
@@ -123,7 +129,7 @@ mod tests {
         // the default" change would break this and the whole regression
         // net — pin it here with a focused error message.
         assert!(
-            super::super::SolverConfig::skeleton()
+            crate::solver::SolverConfig::skeleton()
                 .lm_regularization
                 .is_none()
         );
