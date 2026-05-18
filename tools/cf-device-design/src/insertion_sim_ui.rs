@@ -925,7 +925,12 @@ fn run_sim_pipeline(
     // here on the pipeline is `RampKind`-uniform.
     let (ramp_kind, ramp_steps_len, final_x, final_per_tet, intruder_poses) = match sim_mode {
         SimMode::Sliding => {
-            let ramp = run_sliding_insertion_ramp(geometry, &centerline_polyline_m, n_steps)?;
+            let ramp = run_sliding_insertion_ramp(
+                geometry,
+                &centerline_polyline_m,
+                n_steps,
+                design.cavity_inset_m,
+            )?;
             let result = ramp.result.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "sliding ramp failed at step 0 — no converged step. {}",

@@ -2173,18 +2173,34 @@ pub const DEFAULT_SLIDE_STEP_SIZE_M: f64 = 5.0e-3;
 /// [`INSERTION_CONTACT_DHAT`] from the growing ramp; the kappa
 /// tradeoff (7.3b.1 wider convergeable envelope at slight cost in
 /// residual penetration) is independent of the contact model.
+///
+/// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
+/// is the engineered shell-wall interference. The contact model passes
+/// `2 × cavity_inset_m` as the
+/// [`PenaltyRigidContact::with_params_and_interior_cutoff`] cutoff —
+/// one design margin past the engineered interference. Physical
+/// contact pairs (composed sd ∈ [-cavity_inset_m, d̂]) stay in the
+/// active set; pose-dependent deep-interior pairs whose
+/// inverse-transformed position lands inside the closed scan body
+/// (composed sd << -cavity_inset_m) are silently excluded — the FEM
+/// can't productively resolve them, and including them breaks Newton
+/// convergence at non-rest slide poses. See
+/// `docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md` §2-§3 for the
+/// full derivation.
 fn intruder_contact_sliding_at(
     intruder: &GridSdf,
     bounds: Aabb,
     slide_pose: Isometry3<f64>,
     cavity_offset_m: f64,
+    cavity_inset_m: f64,
 ) -> PenaltyRigidContact {
     let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
     let intruder_solid = Solid::from_sdf(transformed, bounds).offset(cavity_offset_m);
-    PenaltyRigidContact::with_params(
+    PenaltyRigidContact::with_params_and_interior_cutoff(
         vec![intruder_solid],
         INSERTION_CONTACT_KAPPA,
         INSERTION_CONTACT_DHAT,
+        2.0 * cavity_inset_m,
     )
 }
 
@@ -2294,6 +2310,12 @@ pub struct SlideRamp {
 /// boundaries may stall some intermediate solves, which Fork-B's
 /// `catch_unwind` records gracefully).
 ///
+/// `cavity_inset_m` (positive — same value as `design.cavity_inset_m`)
+/// is the engineered shell-wall interference. It is forwarded
+/// unchanged to [`intruder_contact_sliding_at`] for the per-step
+/// contact build; see that function's docstring + the CR.1 recon spec
+/// for the active-set interior-cutoff derivation.
+///
 /// # Errors
 ///
 /// - `n_steps` is zero;
@@ -2304,6 +2326,7 @@ pub fn run_sliding_insertion_ramp(
     geometry: InsertionGeometry,
     centerline_polyline_m: &[Point3<f64>],
     n_steps: usize,
+    cavity_inset_m: f64,
 ) -> Result<SlideRamp> {
     if n_steps == 0 {
         return Err(anyhow!("sliding insertion ramp needs at least one step"));
@@ -2365,7 +2388,8 @@ pub fn run_sliding_insertion_ramp(
         #[allow(clippy::cast_precision_loss)]
         let t = (k + 1) as f64 / n_steps as f64;
         let pose = slide_pose_at(centerline_polyline_m, t);
-        let contact = intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m);
+        let contact =
+            intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m, cavity_inset_m);
         let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
         let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
         // `replay_step` panics on non-convergence; Fork-B graceful
@@ -2379,8 +2403,13 @@ pub fn run_sliding_insertion_ramp(
                 // `PenaltyRigidContact` is not `Clone`; rebuild for
                 // the readout pass (same row-23 precedent the growing
                 // ramp uses at `run_insertion_ramp`).
-                let readout_contact =
-                    intruder_contact_sliding_at(&intruder, bounds, pose, cavity_offset_m);
+                let readout_contact = intruder_contact_sliding_at(
+                    &intruder,
+                    bounds,
+                    pose,
+                    cavity_offset_m,
+                    cavity_inset_m,
+                );
                 let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
                 let contact_readouts =
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
@@ -4786,7 +4815,7 @@ mod tests {
         // unavailable; assert `is_err` then destructure with a guarded
         // `let-else` (cheaper than a bare `panic!` which trips the
         // crate-wide `clippy::panic` deny).
-        let result = run_sliding_insertion_ramp(geometry, &single_point, 8);
+        let result = run_sliding_insertion_ramp(geometry, &single_point, 8, 3.0e-3);
         assert!(result.is_err(), "single-point centerline must be rejected");
         let Err(err) = result else { unreachable!() };
         let msg = format!("{err:#}");
@@ -4821,6 +4850,7 @@ mod tests {
             geometry.bounds,
             pose,
             -0.003, // cavity_offset_m = -cavity_inset_m
+            3.0e-3, // cavity_inset_m
         );
         let rest_positions: Vec<Vec3> = geometry.mesh.positions().to_vec();
         let readouts = contact.per_pair_readout(&geometry.mesh, &rest_positions);
@@ -4875,7 +4905,7 @@ mod tests {
         let n_dof = geometry.mesh.positions().len() * 3;
         let n_steps = 16;
 
-        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps)
+        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps, 3.0e-3)
             .expect("synthetic sliding ramp should run");
         for s in &ramp.steps {
             eprintln!(
@@ -4978,7 +5008,7 @@ mod tests {
         let referenced: Vec<VertexId> = referenced_vertices(&geometry.mesh);
         let n_steps = 16;
 
-        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps)
+        let ramp = run_sliding_insertion_ramp(geometry, &centerline, n_steps, 3.0e-3)
             .expect("synthetic sliding ramp should run");
         assert!(
             !ramp.steps.is_empty(),
