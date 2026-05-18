@@ -47,6 +47,7 @@ use crate::clip_plane::{ClipPlaneExt, ClipPlaneMaterial};
 use clap::Parser;
 use mesh_io::load_stl;
 use mesh_types::{Bounded, IndexedMesh, Point3};
+use nalgebra::Isometry3;
 use serde::Deserialize;
 
 /// Slice 7 insertion-sim pipeline — Route-A SDF bridge.
@@ -404,15 +405,19 @@ fn centerline_arc_length_m(points: &[Point3<f64>]) -> f64 {
 #[derive(Component)]
 struct ScanMeshEntity;
 
-/// Slice S4 / S11.1 — marker for the FEM intruder render. Lives
-/// alongside the rest-frame `ScanMeshEntity` but visible only when the
-/// insertion sim has run AND `show_deformed` is on. Per-step the
-/// entity's Mesh3d is swapped to `last_run.intruder_mesh_at(step)`
-/// (the cached scan SDF iso surface at the step's interference depth)
-/// so the intruder coincides with the deformed cavity in contact zones
-/// at every step. S11.1 replaces the S4 rigid translation of the bare
-/// scan with per-step geometry that matches what the FEM solved
-/// against.
+/// SL.4 — marker for the rigid sliding-intruder render. Lives alongside
+/// the rest-frame `ScanMeshEntity`, visible only when the most-recent
+/// run was sliding mode AND `show_deformed` is on. The mesh asset is
+/// the cleaned scan, mounted once at startup by [`spawn_intruder_mesh`];
+/// per-step kinematics live in the entity's `Transform`, written by
+/// [`update_intruder_mesh`] from
+/// [`InsertionSimOutputs::intruder_pose_at`].
+///
+/// Historical: S4 mounted the bare scan and slid it in via a hand-built
+/// ramp transform. S11.1 swapped to per-step FEM-iso meshes against the
+/// growing intruder. SL.4 returns to constant-mesh + per-step Transform
+/// because the SL.2 sliding ramp records the exact rigid pose at every
+/// converged step, so there is no need to extract per-step geometry.
 #[derive(Component)]
 struct IntruderEntity;
 
@@ -1780,6 +1785,10 @@ fn spawn_intruder_mesh(
 /// tick?" — same posture as [`CavityMeshKey`] +
 /// [`LayerMeshKey`] +
 /// `insertion_sim_ui::invalidate_on_geometry_change`.
+///
+/// `last_run_generation` rolls forward whenever a new sim run lands,
+/// which is the only time `last_run.is_sliding_mode()` can change —
+/// so a separate `is_sliding_mode` field would be redundant in the key.
 #[derive(Debug, Clone, PartialEq)]
 struct IntruderMeshKey {
     displayed_step: usize,
@@ -1787,25 +1796,88 @@ struct IntruderMeshKey {
     show_deformed: bool,
 }
 
-/// SL.3 (sliding-intruder arc) — stubbed to always hide the
-/// [`IntruderEntity`]. The slice-S11.1 per-step iso MC render path
-/// was removed when `run_sim_pipeline` stopped extracting per-step
-/// intruder meshes (the new sliding ramp uses a constant-mesh +
-/// per-step `Transform` render, scheduled for SL.4). Until SL.4
-/// rewires this system as `update_intruder_transform` (S4-style),
-/// the intruder is hidden — the cavity-render at the FEM-deformed
-/// boundary is the SL.3 visual gate, not the intruder shape.
+/// Convert a physics-frame rigid pose to a Bevy [`Transform`] under the
+/// device's [`UpAxis`] convention, applying the `render_scale` lift.
 ///
-/// Change-detection still uses `IntruderMeshKey` so SL.4 can drop
-/// straight into this slot.
+/// SL.4 — consumed by [`update_intruder_mesh`]. The intruder mesh is
+/// mounted in [`spawn_intruder_mesh`] with vertices already in Bevy
+/// frame (via [`triangle_mesh_flat_shaded`]) but in unscaled meters,
+/// so the returned transform carries:
+///
+/// - `translation`: physics-frame translation projected through
+///   [`UpAxis::to_bevy_point`] and scaled by `render_scale`.
+/// - `rotation`: physics-frame rotation conjugated by the axis-swap
+///   permutation `S` (`R_bevy = S · R_phys · S`). For `PlusZ` and
+///   `PlusX` the swap is a reflection (det = -1), which inverts the
+///   rotation sense — the closed-form quaternion identity collapses to
+///   a scalar component swap with negated vector parts (mirroring
+///   `tools/cf-scan-prep/src/main.rs::physics_quat_to_bevy_for_plus_z`).
+///   For `PlusY` (identity swap) the quaternion is copied verbatim.
+/// - `scale`: uniform `render_scale` — matches the
+///   [`Transform::from_scale`] applied to [`ScanMeshEntity`] at
+///   [`setup_render_scene`].
+///
+/// For iter-1 the [`run_sliding_insertion_ramp`] pose is translation-
+/// only (per `slide_pose_at`), but the rotation branch is kept active
+/// so the banked iter-2 rotation enable lands without rework.
+///
+/// [`run_sliding_insertion_ramp`]: insertion_sim::run_sliding_insertion_ramp
+#[inline]
+#[must_use]
+fn pose_to_bevy_transform(pose: Isometry3<f64>, up: UpAxis, render_scale: f32) -> Transform {
+    let phys_point = Point3::from(pose.translation.vector);
+    let bevy_t = up.to_bevy_point(&phys_point);
+    let translation = Vec3::from_array(bevy_t) * render_scale;
+
+    let q = pose.rotation;
+    #[allow(clippy::cast_possible_truncation)] // f64 → f32 for Bevy.
+    let rotation = match up {
+        UpAxis::PlusY => Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32),
+        UpAxis::PlusZ => Quat::from_xyzw(-q.i as f32, -q.k as f32, -q.j as f32, q.w as f32),
+        UpAxis::PlusX => Quat::from_xyzw(-q.j as f32, -q.i as f32, -q.k as f32, q.w as f32),
+    };
+
+    Transform {
+        translation,
+        rotation,
+        scale: Vec3::splat(render_scale),
+    }
+}
+
+/// SL.4 — write per-step rigid pose to the [`IntruderEntity`] from
+/// [`InsertionSimOutputs::intruder_pose_at`]. Replaces the SL.3
+/// always-hide stub. The intruder mesh asset is constant (mounted at
+/// startup by [`spawn_intruder_mesh`]); per-step kinematics live in
+/// the entity's `Transform`.
+///
+/// Visibility = `last_run.is_sliding_mode() && show_deformed &&
+/// intruder_pose_at(displayed_step).is_some()`.
+/// - `is_sliding_mode`: growing mode records identity poses per spec
+///   §3e; rendering a static intruder at origin would be wrong for
+///   that mode's geometry (the growing intruder grows in place via
+///   SDF offset, not translation). SL.7 pass-B may reawaken a
+///   separate growing-mode visualization.
+/// - `show_deformed`: symmetric with [`update_cavity_mesh`] — when
+///   OFF the cavity renders at rest, so an identity-relative intruder
+///   would overlap its own rest-pose footprint confusingly. Playback
+///   ON shows the matched deformed-cavity / moving-intruder pair.
+/// - `pose_at(step).is_some()`: bakes "we have a completed run AND
+///   the step is in range" into one check.
+///
+/// Snapshot-and-compare via `Local<Option<IntruderMeshKey>>` —
+/// `Res::is_changed()` fires every frame because the panel + sim
+/// systems hold `ResMut<InsertionSimState>` (per
+/// `[[project-bevy-is-changed-footgun]]`).
+///
+/// [`InsertionSimOutputs::intruder_pose_at`]: insertion_sim_ui::InsertionSimOutputs::intruder_pose_at
+/// [`update_cavity_mesh`]: crate::update_cavity_mesh
 #[allow(clippy::needless_pass_by_value)]
 fn update_intruder_mesh(
     sim_state: Res<insertion_sim_ui::InsertionSimState>,
-    _up: Res<UpAxis>,
-    _render_scale: Res<RenderScale>,
+    up: Res<UpAxis>,
+    render_scale: Res<RenderScale>,
     mut last_key: Local<Option<IntruderMeshKey>>,
-    _meshes: ResMut<Assets<Mesh>>,
-    mut q: Query<&mut Visibility, With<IntruderEntity>>,
+    mut q: Query<(&mut Transform, &mut Visibility), With<IntruderEntity>>,
 ) {
     let current_key = IntruderMeshKey {
         displayed_step: sim_state.displayed_step,
@@ -1817,8 +1889,25 @@ fn update_intruder_mesh(
     if !changed {
         return;
     }
-    for mut vis in &mut q {
-        *vis = Visibility::Hidden;
+
+    let visible_pose = sim_state.last_run.as_ref().and_then(|run| {
+        if run.is_sliding_mode() && sim_state.show_deformed {
+            run.intruder_pose_at(sim_state.displayed_step)
+        } else {
+            None
+        }
+    });
+
+    for (mut t, mut v) in &mut q {
+        match visible_pose {
+            Some(pose) => {
+                *t = pose_to_bevy_transform(pose, *up, render_scale.0);
+                *v = Visibility::Visible;
+            }
+            None => {
+                *v = Visibility::Hidden;
+            }
+        }
     }
 }
 
@@ -3294,6 +3383,74 @@ another_future_field = "foo"
         assert_eq!(
             slacker_point_label(&curve[1]),
             "+25% Slacker — Shore 000-40 (slight-to-very tack)",
+        );
+    }
+
+    // ─── SL.4 — pose_to_bevy_transform ────────────────────────────────
+    //
+    // Round-tripping the device's `UpAxis::PlusZ` swap is the main
+    // load-bearing path (DEVICE_UP_AXIS = PlusZ); the +Y identity case
+    // is a control for the rotation match arm; the rotation-about-
+    // physics-Z case mirrors `sim/L1/bevy/src/convert.rs`'s
+    // `rotation_around_physics_z_becomes_negative_rotation_around_bevy_y`
+    // test (workspace canonical; SL.4 helper is the cf-device-design
+    // local mirror that switches on `UpAxis`).
+
+    #[test]
+    fn pose_to_bevy_transform_plus_z_swaps_y_and_z_and_keeps_identity_rotation() {
+        let pose = Isometry3::translation(1.0, 2.0, 3.0);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusZ, 0.5);
+        // (1, 2, 3) physics → (1, 3, 2) Bevy → × 0.5 scale.
+        assert!((t.translation.x - 0.5).abs() < 1e-6);
+        assert!((t.translation.y - 1.5).abs() < 1e-6);
+        assert!((t.translation.z - 1.0).abs() < 1e-6);
+        // Identity rotation stays identity through the scalar swap.
+        assert!(t.rotation.x.abs() < 1e-6);
+        assert!(t.rotation.y.abs() < 1e-6);
+        assert!(t.rotation.z.abs() < 1e-6);
+        assert!((t.rotation.w - 1.0).abs() < 1e-6);
+        // Uniform scale matches `ScanMeshEntity`.
+        assert!((t.scale.x - 0.5).abs() < 1e-6);
+        assert!((t.scale.y - 0.5).abs() < 1e-6);
+        assert!((t.scale.z - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pose_to_bevy_transform_plus_y_is_identity_copy() {
+        // PlusY is the identity swap — translation and rotation copy
+        // through verbatim (modulo f64 → f32).
+        let q = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(nalgebra::Vector3::new(1.0, 0.0, 0.0)),
+            std::f64::consts::FRAC_PI_3,
+        );
+        let pose = Isometry3::from_parts(nalgebra::Translation3::new(1.0, 2.0, 3.0), q);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusY, 1.0);
+        assert!((t.translation.x - 1.0).abs() < 1e-6);
+        assert!((t.translation.y - 2.0).abs() < 1e-6);
+        assert!((t.translation.z - 3.0).abs() < 1e-6);
+        #[allow(clippy::cast_possible_truncation)]
+        let expected = Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32);
+        assert!(t.rotation.dot(expected).abs() > 0.999);
+    }
+
+    #[test]
+    fn pose_to_bevy_transform_plus_z_negates_rotation_about_physics_z() {
+        // Physics +90° about +Z (the up axis under PlusZ) → Bevy -90°
+        // about +Y. The Y↔Z swap is a reflection (det = -1), which
+        // flips the handedness of the swapped plane and inverts the
+        // rotation sense. Mirrors `sim/L1/bevy/src/convert.rs`'s
+        // `rotation_around_physics_z_becomes_negative_rotation_around_bevy_y`.
+        let q = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(nalgebra::Vector3::z()),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let pose = Isometry3::from_parts(nalgebra::Translation3::identity(), q);
+        let t = pose_to_bevy_transform(pose, UpAxis::PlusZ, 1.0);
+        let expected = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        assert!(
+            t.rotation.dot(expected).abs() > 0.999,
+            "physics +90° Z → bevy -90° Y; got {:?}, expected {expected:?}",
+            t.rotation,
         );
     }
 }

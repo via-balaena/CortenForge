@@ -243,9 +243,8 @@ pub struct InsertionSimOutputs {
     /// per-step mesh rebuild, no per-step SDF iso extraction. Length
     /// matches the converged-step count.
     ///
-    /// `#[allow(dead_code)]` because SL.3 populates this field but
-    /// SL.4 wires the consumer; tests already cover the accessor.
-    #[allow(dead_code)]
+    /// Consumed by `main.rs::update_intruder_mesh` via
+    /// [`InsertionSimOutputs::intruder_pose_at`] (SL.4).
     pub intruder_poses: Vec<Isometry3<f64>>,
 }
 
@@ -363,10 +362,7 @@ impl InsertionSimOutputs {
     /// SL.4 render path hides the intruder entity in that mode).
     /// `None` past the converged range.
     ///
-    /// `#[allow(dead_code)]` because the SL.4 `update_intruder_transform`
-    /// system is the production consumer; this accessor lands at SL.3
-    /// alongside the data it reads.
-    #[allow(dead_code)]
+    /// Production consumer: `main.rs::update_intruder_mesh` (SL.4).
     #[must_use]
     pub fn intruder_pose_at(&self, step: usize) -> Option<Isometry3<f64>> {
         self.intruder_poses.get(step).copied()
