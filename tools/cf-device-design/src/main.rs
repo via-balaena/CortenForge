@@ -1733,26 +1733,28 @@ fn apply_scan_mesh_visibility(
     }
 }
 
-/// Slice S11.1 — spawn the intruder render entity at startup with an
-/// empty placeholder mesh. [`update_intruder_mesh`] fills the actual
-/// per-step iso surface as soon as `InsertionSimState.last_run`
-/// becomes `Some` and `show_deformed` is on.
+/// SL.4 — spawn the intruder render entity at startup with the cleaned
+/// scan mesh as its constant `Mesh3d`. The sliding intruder is a rigid
+/// body of constant geometry translated along the centerline arc, so
+/// the mesh asset never changes after spawn; per-step pose lives in the
+/// entity's `Transform`, written by [`update_intruder_mesh`] from
+/// `InsertionSimOutputs::intruder_pose_at(displayed_step)`.
 ///
-/// Distinct from S4: the S4 path mounted the bare scan mesh up front
-/// and rewrote the entity's transform per frame to "slide it in." The
-/// per-step iso surface is geometrically right (matches the FEM-solved
-/// intruder), so spawning with an empty mesh and letting the per-step
-/// system swap the asset is both simpler and FEM-truthful.
+/// Distinct from S4 (which also mounted the bare scan up front but
+/// drove a hand-built ramp transform) and S11.1 (which swapped per-step
+/// iso meshes against a growing intruder): the SL.2 sliding ramp records
+/// the rigid pose at every converged step in `SlideRamp.intruder_poses`,
+/// so SL.4 just consumes that field — no per-step mesh rebuild, no SDF
+/// iso extraction at render time.
 #[allow(clippy::needless_pass_by_value)]
 fn spawn_intruder_mesh(
     mut commands: Commands,
+    scan: Res<ScanMesh>,
+    up: Res<UpAxis>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
 ) {
-    let placeholder = meshes.add(Mesh::new(
-        bevy::mesh::PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    ));
+    let bevy_mesh = triangle_mesh_flat_shaded(&scan.0, None, *up);
     let material = clip_materials.add(ExtendedMaterial {
         base: StandardMaterial {
             base_color: Color::srgb(INTRUDER_COLOR.0, INTRUDER_COLOR.1, INTRUDER_COLOR.2),
@@ -1765,7 +1767,7 @@ fn spawn_intruder_mesh(
         extension: ClipPlaneExt::default(),
     });
     commands.spawn((
-        Mesh3d(placeholder),
+        Mesh3d(meshes.add(bevy_mesh)),
         MeshMaterial3d(material),
         Visibility::Hidden,
         IntruderEntity,
