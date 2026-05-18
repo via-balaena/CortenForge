@@ -1,6 +1,8 @@
 # cf-device-design Sim Arc — Sliding-Intruder Contact-Primitive Recon
 
-**Status**: RECON 2026-05-19 (v5 — five-iteration convergence after three cold-read passes that successively eliminated wrong architectural framings). Three-session pattern's second instance for this arc: bookmark (`a1f13a57` — SL.3 visual-gate failure recorded at [[project-cf-device-design-sliding-intruder-bookmark]]) → recon (this spec) → implementation (next session).
+**Status**: IMPLEMENTATION SHIPPED 2026-05-19 on branch `sim-arc/sliding-intruder-contact-recon`. CR.0+ → CR.4 landed across commits `d34d1181` (probe + iter-1 step-0 histogram) → `c0c7d3a0` (CR.1 sim-soft interior_cutoff) → `61d8b2fd` (CR.2 cf-device-design wire-up) → `cc8340a2` (CR.3 contact-force sentinel + icosphere docstring flip + new probe unit test). CR.4 iter-1 visual gate completed — see §10 below. CR.5 cold-read next.
+
+**Status of recon spec**: RECON 2026-05-19 (v5 — five-iteration convergence after three cold-read passes that successively eliminated wrong architectural framings). Three-session pattern's second instance for this arc: bookmark (`a1f13a57` — SL.3 visual-gate failure recorded at [[project-cf-device-design-sliding-intruder-bookmark]]) → recon (this spec) → implementation (SHIPPED).
 
 **The fix**: add an `interior_cutoff: Option<f64>` field to `PenaltyRigidContact` and filter the active-set walk to exclude pairs where `sd < -interior_cutoff`. cf-device-design's sliding ramp passes `2 × design.cavity_inset_m` (= 6 mm default) as the cutoff. ~20 LOC of sim-soft addition + signature change to `run_sliding_insertion_ramp` to thread `cavity_inset_m`. Existing `TransformedSdf<GridSdf>` contact primitive unchanged. No SDF gymnastics, no vertex-identity classification, no chain-rule math.
 
@@ -363,3 +365,44 @@ Before CR.1 lands:
 - **Two cold-reads + one manual math check is the right cadence when each rewrite introduces a non-trivial new construct.** Each cold-read found real issues; v3's non-monotonicity needed a manual math check because the smoothstep blend was novel construct that cold-read agents reasoned about correctly but didn't fully simulate. (Banked from v2-v3 transitions.)
 - **"The bookmark's option list is a direction, not a complete fix."** The bookmark presented (a)/(b)/(c)/(d) as alternatives; the v1-v4 iterations showed that (a) by itself doesn't suffice, (b) by itself doesn't suffice, (c) AS AN SDF WRAPPER doesn't suffice. The convergence point was (c) AT THE ACTIVE-SET WALK — a placement the bookmark didn't enumerate. Recon spec craft is about finding the right LEVEL at which to apply a fix, not just picking from a menu.
 - **When iteration count > 3, ask: is the problem genuinely hard, or is my framing wrong?** Five iterations on one spec is a lot. In this case, each iteration genuinely surfaced a real architectural insight, and v5 looks dramatically simpler than v1-v4 — a sign the design is converging on the minimal viable shape. The simplicity of v5 (one Option<f64> field + one filter line) compared to v4 (sim-soft API change + cf-device-design mask construction + signature pollution) is the right end-state for a problem of this kind.
+
+---
+
+## 10. As-built record (CR.0+ → CR.4)
+
+### 10a. Commit ladder
+
+| # | Commit | Crate(s) | Headline |
+| - | ------ | -------- | -------- |
+| CR.0+ | `d34d1181` | cf-device-design | One-shot step-0 raw `transformed.eval` histogram probe on `run_sliding_insertion_ramp`. Falsified spec §5's "tens of thousands" prediction (actual: 2,232 pathological pairs at iter-1) but validated the 6 mm cutoff value (well-placed: 2.5 k pathological filtered, 2.2 k physical preserved, ~540 straddling — below §7 risk #2 shoulder threshold). |
+| CR.1 | `c0c7d3a0` | sim-soft | `PenaltyRigidContact::with_params_and_interior_cutoff` constructor + `interior_cutoff: Option<f64>` field + filter at `active_pairs` (`penalty.rs:300`) and `per_pair_readout` (`penalty.rs:157`). 3 new sim-soft unit tests in `sim/L0/soft/tests/penalty_interior_cutoff.rs`. Probe removed. |
+| CR.2 | `61d8b2fd` | cf-device-design | `intruder_contact_sliding_at` + `run_sliding_insertion_ramp` thread `cavity_inset_m`. 5 call sites updated. Production dispatch passes `design.cavity_inset_m`. |
+| CR.3 | `cc8340a2` | cf-device-design | Step-0 contact-force SL.3-regression sentinel (50 N bound) + new `intruder_contact_sliding_at_excludes_deep_interior_probe` fast unit test. Spec deviation: all-16-converge gate on icosphere fixture softened back to Fork-B tolerance — empirical run showed the icosphere genuinely stalls at the Yeoh validity wall around step 3 (max_stretch_deviation = 1.33), confirming v5 fixed the SL.3 mode but the icosphere's narrowing geometry has a separate genuine stall. Docstring rewritten with the two-mechanism story. |
+
+### 10b. CR.4 iter-1 visual gate — numerical-affirmative pass with locality verification deferred to SL.4
+
+Tool launched with `cargo run --release -p cf-device-design -- ~/scans/sock_over_capsule.cleaned.stl`. Sliding-mode Simulate ran to completion in **~minutes** (wall-clock; precise instrumentation deferred). Headline UI panel readout:
+
+| Signal | Pre-v5 (bookmark `f2de9a8d`) | Post-v5 (CR.4 run) |
+| ------ | ---------------------------- | ------------------ |
+| Step 0 outcome | Armijo stall, `r_norm=4.14, α=4.77e-7, Newton iter 41` | Converged |
+| Steps reached | 0 of 16 | **16 of 16** (full 83.35 mm depth) |
+| Force curve | n/a | Monotone climb 1.4 N → 3.0 N peak (~step 14), tails to ~1.2 N at step 16 (full seating) |
+| Yeoh λ range | n/a | Layer 0 (48,385 tets): `0.88..1.07`; Layer 1 (24,495 tets): `0.98..1.01` — both physical, no validity-wall violations |
+| Cavity / min-wall validations | n/a | All green |
+
+The 3.0 N peak force at κ = 1e3 implies ~3 mm interference at peak seating — exactly `cavity_inset_m`. Physics is consistent end-to-end.
+
+**What's verified by CR.4**: the v5 `interior_cutoff` fix eliminates the SL.3 Armijo stall on iter-1; the FEM converges all 16 ramp steps to the full 83.35 mm seating depth; per-step + per-layer engineering scalars are physical; no rendering anomalies in the cavity surface across the step-scrub range.
+
+**What's NOT verified by CR.4 (deferred to SL.4)**: the recon arc shipped on top of SL.3's `update_intruder_mesh` hide-stub (per [[project-cf-device-design-sliding-intruder-bookmark]]). Without the intruder mesh rendered per-step, the spec's "deformation wave propagates from cap mouth to closed end as user scrubs `displayed_step`" check is unverifiable from the cavity-only view alone. Cavity-wall deformation across steps IS subtle on the sock geometry (peak displacement ~mm-scale on an 80 mm body), and without the intruder as a positional reference the eye has nothing to anchor to. SL.4 (rewrite `update_intruder_mesh` from hide-stub to per-step `Transform` writes per the bookmark) is the natural next inflection point and will unblock the full visual locality verification.
+
+**What stays the regression sentinel for the SL.3 mode in CI**: the CR.3 step-0 contact-force ≤ 50 N bound in `sliding_insertion_ramp_converges_on_synthetic_icosphere`. The icosphere fixture observed 0.28 N at step 0 post-v5 (vs kN range pre-v5) — three orders of magnitude below the bound, so the sentinel sharply discriminates regression to the deep-interior firing.
+
+### 10c. Three patterns banked (additions to the spec's §9 insights)
+
+- **Empirical falsification of a spec-level confidence claim is high-information data**, not a problem to paper over. CR.0+'s histogram falsified spec §5's "tens of thousands" pathological-pair prediction (actual: 2.2 k, one order of magnitude smaller) — but the underlying cutoff value remained well-placed, so the empirical data narrowed our understanding without invalidating the fix. CR.3's icosphere all-converge gate falsification told us the synthetic fixture has a separate Yeoh-validity-wall stall mode, requiring us to soften the gate AND keep the SL.3 regression sentinel (the contact-force bound). Both fit the previously-banked [[feedback-implement-measure-revert-pattern]].
+- **Visual gates with a stubbed render are only partially conclusive.** SL.3 shipped with `update_intruder_mesh` as a hide-stub, scoped on the assumption that the intruder render would land at SL.4 BEFORE the iter-1 visual gate. The recon arc inserted CR.0+ → CR.4 between SL.3 and SL.4; CR.4's visual locality check is consequently blocked until SL.4 ships. The lesson: when a render dependency is stubbed, downstream visual gates need an explicit dependency arrow OR they need to fall back to numerical-affirmative pass + explicit deferral (this arc's choice).
+- **The recon arc's three-session bookmark/recon/implementation cadence held a third time** (after the cavity-pinned-floor arc and the SDF-layers arc). The recon spec converged across 5 iterations + 5 sibling cold-reads to the simplest viable shape (~20 LOC sim-soft addition); the implementation arc ran straight through CR.0+/CR.1/CR.2/CR.3 with one minor spec-deviation handled inline (the CR.3 all-converge gate softening). User involvement was at exactly the right granularity: CR.0+ path choice (β chosen), CR.3 spec deviation surfaced before commit, CR.4 visual-gate disposition. Confirms the cadence as the durable pattern.
+
+---
