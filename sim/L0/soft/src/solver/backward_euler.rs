@@ -1351,6 +1351,118 @@ where
             })
     }
 
+    /// F3 recon candidate A — gated factor + solve + Armijo for one
+    /// Newton iter (per `docs/F3_RECON_A_GATED_LM_SPEC.md` §2.2 + §2.3).
+    /// Used exclusively by [`Self::try_solve_impl`].
+    ///
+    /// **First pass** (always): factor + solve with `LmState::disabled`
+    /// → `δ_LU`; [`Self::armijo_backtrack`] on `δ_LU`. Bit-equal to
+    /// pre-F3 LU + Armijo.
+    ///
+    /// **First pass succeeds** → return the Armijo-accepted iterate.
+    ///
+    /// **First pass fails AND outer `lm_state` is disabled** (§2.3
+    /// short-circuit): return the first-pass failure directly. NO
+    /// second factor + solve attempted — preserves the F3 spec's §F3.1
+    /// bit-equal-when-dormant contract (no 2× factor wall-clock cost
+    /// at LM-disabled stalls).
+    ///
+    /// **First pass fails AND outer `lm_state` is active** (§2.2
+    /// ESCALATION): re-factor + re-solve using the outer persistent
+    /// `lm_state` (which carries cross-Newton-iter λ per F3 spec §2.2).
+    /// The first non-PD detection at this iter seeds-or-bumps λ via the
+    /// inner `factor_free_tangent` retry loop. The LM-rescued `δ_LM`
+    /// goes through `armijo_backtrack`; if Armijo accepts → return; if
+    /// the LM step ALSO Armijo-stalls → return
+    /// `Err(SolverFailure::ArmijoStall)` (no further escalation —
+    /// already in the LM-rescue regime per §2.2 step 4b.ii).
+    ///
+    /// First-pass failure info (`DoublyFailedFactor` context,
+    /// `ArmijoStall` `r_norm`) is DISCARDED on escalation per spec
+    /// §2.5 ("the LU step already had its chance; escalation is the
+    /// recovery attempt; if escalation also fails, THAT's the
+    /// committed-iterate failure for the surfaced `SolverFailure`
+    /// variant").
+    //
+    // too_many_arguments: 10 inputs mirror the residual + Newton-iter
+    // formula's reads; bundling into a struct adds name-the-fields
+    // ceremony for a sole caller (try_solve_impl) with no readability
+    // gain (try_solve_impl already names its locals identically).
+    #[allow(clippy::too_many_arguments)]
+    fn try_gated_factor_solve_armijo(
+        &self,
+        triplets: &[Triplet<usize, usize, f64>],
+        r_full: &[f64],
+        x_curr: &[f64],
+        x_prev_vec: &[f64],
+        v_prev_vec: &[f64],
+        f_ext: &[f64],
+        dt: f64,
+        r_norm: f64,
+        newton_iter: usize,
+        lm_state: &mut LmState,
+    ) -> Result<Vec<f64>, SolverFailure> {
+        // First pass: LM-disabled (bit-equal to pre-F3).
+        let mut lm_disabled = LmState::disabled();
+        let first_pass_outcome = self
+            .try_factor_and_solve_free(triplets, r_full, newton_iter, r_norm, &mut lm_disabled)
+            .map_err(|info| SolverFailure::DoublyFailedFactor {
+                x_partial: x_curr.to_vec(),
+                last_iter: newton_iter,
+                context: info.context,
+            })
+            .and_then(|delta_lu| {
+                self.armijo_backtrack(
+                    x_curr,
+                    x_prev_vec,
+                    v_prev_vec,
+                    f_ext,
+                    dt,
+                    &delta_lu,
+                    r_norm,
+                    newton_iter,
+                )
+                .map_err(|stall| SolverFailure::ArmijoStall {
+                    x_partial: stall.x_curr,
+                    last_iter: stall.iter,
+                    last_r_norm: stall.r_norm,
+                })
+            });
+
+        match first_pass_outcome {
+            Ok(x_accepted) => Ok(x_accepted),
+            Err(failure) if !lm_state.is_active() => {
+                // §2.3 short-circuit: no LM rescue mechanism available.
+                Err(failure)
+            }
+            Err(_first_pass_failure_discarded) => {
+                // §2.2 ESCALATION via the OUTER persistent lm_state.
+                let delta_lm = self
+                    .try_factor_and_solve_free(triplets, r_full, newton_iter, r_norm, lm_state)
+                    .map_err(|info| SolverFailure::DoublyFailedFactor {
+                        x_partial: x_curr.to_vec(),
+                        last_iter: newton_iter,
+                        context: info.context,
+                    })?;
+                self.armijo_backtrack(
+                    x_curr,
+                    x_prev_vec,
+                    v_prev_vec,
+                    f_ext,
+                    dt,
+                    &delta_lm,
+                    r_norm,
+                    newton_iter,
+                )
+                .map_err(|stall| SolverFailure::ArmijoStall {
+                    x_partial: stall.x_curr,
+                    last_iter: stall.iter,
+                    last_r_norm: stall.r_norm,
+                })
+            }
+        }
+    }
+
     /// Graceful-failure counterpart to [`Self::solve_impl`] (F3.3 per
     /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5). Same Newton loop,
     /// but returns `Result<(NewtonStep, f64), SolverFailure>` instead
@@ -1364,6 +1476,20 @@ where
     /// `NewtonIterCap`'s `x_partial` is the most-recent
     /// armijo-accepted iterate (one full iter past the last failed
     /// convergence check).
+    ///
+    /// **F3 recon candidate A — gated LM activation** (per
+    /// `docs/F3_RECON_A_GATED_LM_SPEC.md`). At each Newton iter, the
+    /// inner factor + solve + Armijo is attempted TWICE in the failure
+    /// path: first with LM SUPPRESSED (bit-equal to pre-F3 LU + Armijo
+    /// — the cavity = 3 mm baseline preservation lever); on first-pass
+    /// failure AND `lm_state.is_active()`, escalate to the persistent
+    /// outer `lm_state`'s LM-rescued retry. At LM-disabled
+    /// (`SolverConfig::lm_regularization == None`), the §2.3
+    /// short-circuit returns the first-pass failure directly to
+    /// preserve the F3 spec's §F3.1 bit-equal-when-dormant contract
+    /// (no 2× factor cost at LM-disabled stalls). The OUTER
+    /// `lm_state` carries cross-iter λ per F3 spec §2.2 persistence
+    /// rule — only consumed by the escalation branch.
     fn try_solve_impl(
         &self,
         x_prev: &Tensor<f64>,
@@ -1431,29 +1557,18 @@ where
             }
 
             let triplets = self.assemble_free_hessian_triplets(&x_curr, dt);
-            let delta_free = self
-                .try_factor_and_solve_free(&triplets, &r_full, newton_iter, r_norm, &mut lm_state)
-                .map_err(|info| SolverFailure::DoublyFailedFactor {
-                    x_partial: x_curr.clone(),
-                    last_iter: newton_iter,
-                    context: info.context,
-                })?;
-            x_curr = self
-                .armijo_backtrack(
-                    &x_curr,
-                    &x_prev_vec,
-                    &v_prev_vec,
-                    &f_ext,
-                    dt,
-                    &delta_free,
-                    r_norm,
-                    newton_iter,
-                )
-                .map_err(|stall| SolverFailure::ArmijoStall {
-                    x_partial: stall.x_curr,
-                    last_iter: stall.iter,
-                    last_r_norm: stall.r_norm,
-                })?;
+            x_curr = self.try_gated_factor_solve_armijo(
+                &triplets,
+                &r_full,
+                &x_curr,
+                &x_prev_vec,
+                &v_prev_vec,
+                &f_ext,
+                dt,
+                r_norm,
+                newton_iter,
+                &mut lm_state,
+            )?;
         }
 
         Err(SolverFailure::NewtonIterCap {
@@ -2520,5 +2635,93 @@ mod tests {
 
         // Should panic with the pre-F3 NewtonIterCap message preserved.
         let _ = solver.step(&mut tape, &x_prev, &v_prev, theta_var, 1e-2);
+    }
+
+    // ── F3 recon candidate A (gated LM) tests ─────────────────────────
+
+    /// F3 recon A: with LM ENABLED (Fork-B preset), the gated
+    /// `try_solve_impl` must still converge normally on a happy-path
+    /// fixture where pre-F3 LU + Armijo succeeds at every iter — no
+    /// regression from F3.4's always-on LM behavior, no regression
+    /// from pre-F3.
+    ///
+    /// The gated mechanism's intent is "LM stays dormant when the
+    /// first-pass LU + Armijo succeeds." Hard to assert directly
+    /// without internal introspection, but the observable signature
+    /// is: a fixture that converges pre-F3 in N iters MUST still
+    /// converge with gated-LM-enabled in N iters (no extra iter
+    /// cost, no different `x_final` at the converged tol). This is
+    /// the LM-enabled half of the §3 bit-equal-when-dormant
+    /// contract (the LM-disabled half is covered by the existing
+    /// test suite passing bit-equal).
+    ///
+    /// Companion: the gated short-circuit branch (`!lm_state.
+    /// is_active()`) is exercised by every existing LM-disabled
+    /// test that completes normally; the gated escalation branch
+    /// is exercised end-to-end by the cf-device-design insertion
+    /// suite (integration test).
+    #[test]
+    fn gated_lm_enabled_happy_path_converges_same_as_pre_f3() {
+        // Baseline: LM-disabled (default skeleton), converges normally.
+        let baseline_cfg = SolverConfig::skeleton();
+        let baseline_solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            baseline_cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+        let zero = [0.0_f64; 12];
+        let x_prev = sim_ml_chassis::Tensor::from_slice(&rest, &[12]);
+        let v_prev = sim_ml_chassis::Tensor::from_slice(&zero, &[12]);
+        let theta = sim_ml_chassis::Tensor::from_slice(&[1.0_f64], &[1]);
+        let dt = 1e-2;
+
+        let (baseline_step, _baseline_lambda) = baseline_solver
+            .try_solve_impl(&x_prev, &v_prev, &theta, dt)
+            .expect("baseline (LM-disabled) must converge on the happy-path fixture");
+
+        // Same scene, but LM enabled with Fork-B preset. Gated A's
+        // intent: LM stays dormant because LU + Armijo succeeds at
+        // every iter on this fixture. Observable: iter_count +
+        // x_final must match baseline bit-equal (no LM activity =
+        // no trajectory difference).
+        let mut lm_cfg = SolverConfig::skeleton();
+        lm_cfg.lm_regularization = Some(LmConfig::fork_b());
+        let lm_solver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            lm_cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+
+        let (lm_step, lm_lambda) = lm_solver
+            .try_solve_impl(&x_prev, &v_prev, &theta, dt)
+            .expect("LM-enabled gated A must converge on the happy-path fixture");
+
+        assert_eq!(
+            lm_step.iter_count, baseline_step.iter_count,
+            "gated LM-enabled must converge in the same iter count as LM-disabled \
+             baseline (no escalation should fire on this happy-path fixture)"
+        );
+        assert_eq!(
+            lm_step.x_final, baseline_step.x_final,
+            "gated LM-enabled must reach the same x_final as LM-disabled baseline \
+             (bit-equal trajectory — proves LM stayed dormant)"
+        );
+        assert_eq!(
+            lm_lambda, 0.0,
+            "outer lm_state.lambda must stay 0.0 throughout (no escalation fired \
+             on happy-path), got {lm_lambda}"
+        );
     }
 }

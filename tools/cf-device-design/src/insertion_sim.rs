@@ -77,10 +77,10 @@ use sim_soft::material::silicone_table::{
 };
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPairReadout, CpuNewtonSolver, Field,
-    LayeredScalarField, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf,
-    SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, SolverFailure, Tet4,
-    TetId, Vec3, VertexId, Yeoh, filter_pair_readouts_to_referenced, pick_vertices_by_predicate,
-    referenced_vertices,
+    LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
+    Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, SolverFailure,
+    Tet4, TetId, Vec3, VertexId, Yeoh, filter_pair_readouts_to_referenced,
+    pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -901,14 +901,20 @@ fn insertion_solver_config() -> SolverConfig {
     config.dt = STATIC_DT;
     config.max_newton_iter = MAX_NEWTON_ITER;
     config.tol = INSERTION_SOLVE_TOL;
-    // F3.4 LM opt-in REVERTED 2026-05-18 EVENING per
-    // `docs/F3_FALSIFICATION_BOOKMARK.md`: the LM +λI trajectory broke
-    // the cavity = 3 mm baseline (Armijo stall at iter 10 just above
-    // loose tol) even as it halved the cavity = 5 mm r_norm floor and
-    // enabled 1 converged step at cavity = 8 mm. Non-monotone outcome
-    // → recon next session. `try_replay_step` + `SolverFailure` +
-    // `catch_unwind` belt-and-suspenders below KEPT — those are
-    // independent architectural wins.
+    // F3 recon candidate A — gated LM opt-in (per
+    // `docs/F3_RECON_A_GATED_LM_SPEC.md`). The same `LmConfig::fork_b()`
+    // preset F3.4 used; the behavioral change is in sim-soft's
+    // `try_solve_impl` — LM rescue now fires ONLY on first-pass LU +
+    // Armijo failure (gated activation), not on every Llt non-PD
+    // detection (eager activation per F3 spec §2.2 — empirically
+    // falsified 2026-05-18 EVENING, see `docs/F3_FALSIFICATION_BOOKMARK.md`).
+    // The bit-equal-when-dormant contract preserves the cavity = 3 mm
+    // baseline by keeping LM inactive when the LU + Armijo path
+    // succeeds; LM escalates only when needed at hard-conditioned
+    // iters. `try_replay_step` + `solver_failure_message` +
+    // `catch_unwind` belt-and-suspenders surface plumbing reused
+    // unchanged from F3.4 — gated A adds no SolverFailure variants.
+    config.lm_regularization = Some(LmConfig::fork_b());
     config
 }
 
