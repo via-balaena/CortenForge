@@ -30,7 +30,7 @@ The cavity-inset stall (cavity > 3 mm in cf-device-design's sliding insertion ra
 
 ### 2.1 Where the `+λI` lands
 
-**Site**: `sim/L0/soft/src/solver/backward_euler.rs`, function `factor_free_tangent` (line 710), as a 2-line addition cloned from the existing mass-diagonal scatter at line 1230 of `assemble_free_hessian_triplets`. The triplet container is already a `BTreeMap<(col, row), f64>` keyed on lower-triangle indices, so adding `λ` to each `(k, k)` entry is a direct insertion before the `Llt::try_new_with_symbolic` call.
+**Site**: `sim/L0/soft/src/solver/backward_euler.rs`, function `factor_free_tangent` (line 710). The triplet input already contains diagonal `(k, k)` entries from the mass-diagonal scatter at line 1230 of `assemble_free_hessian_triplets` — so `+λI` is implemented by **cloning the triplets and mutating existing diagonal entries in place**, not by appending. Appending would fail: `SparseColMat::try_new_from_triplets` errors on duplicate triplets (per the comment at line 696-700; the BTreeMap accumulator at assembly time exists exactly to dedupe).
 
 The new shape of `factor_free_tangent`:
 
@@ -38,39 +38,69 @@ The new shape of `factor_free_tangent`:
 fn factor_free_tangent(
     &self,
     triplets: &[Triplet<usize, usize, f64>],
-    lm_state: &mut LmState,    // <-- new: mutable per-iter LM state
+    lm_state: &mut LmState,    // mutable per-Newton-iter LM state
     context: &str,
 ) -> FactoredFreeTangent {
+    // Snapshot max_diag once per call (before retry loop). λ scaling is
+    // relative to this. Walk triplets for entries with row == col;
+    // O(n_triplets), negligible vs factor cost.
+    let max_diag = triplets_max_diag(triplets);
+
     loop {
-        let regularized = if lm_state.lambda > 0.0 {
-            add_diagonal(triplets, lm_state.lambda, self.n_free)
+        // λ = 0 → borrow the original triplets (no clone, bit-equal to
+        // pre-F3). λ > 0 → clone + mutate (k,k) entries in place.
+        let regularized: Cow<[Triplet<_, _, _>]> = if lm_state.lambda > 0.0 {
+            Cow::Owned(triplets_with_diagonal_offset(triplets, lm_state.lambda))
         } else {
             Cow::Borrowed(triplets)
         };
-        match Llt::try_new_with_symbolic(...regularized...) {
+        match Llt::try_new_with_symbolic(self.symbolic.clone(), build_mat(&regularized), Side::Lower) {
             Ok(llt) => {
-                lm_state.on_llt_success();   // decay λ
+                lm_state.on_llt_success();   // decay λ (down_factor; floor at 0)
                 return FactoredFreeTangent::Llt(llt);
             }
-            Err(LltError::Numeric(_)) if lm_state.can_bump() => {
-                lm_state.on_non_pd();         // bump λ, retry
+            Err(LltError::Numeric(_)) if lm_state.can_bump(max_diag) => {
+                lm_state.on_non_pd(max_diag); // seed-or-bump λ, retry
                 continue;
             }
             Err(LltError::Numeric(numeric_err)) => {
-                // λ-saturated: existing LU fallback + warn-log path.
+                // λ-saturated. Fall through to today's LU fallback on
+                // the ORIGINAL (un-regularized) triplets — this preserves
+                // backward-compat with the lm_regularization: None path
+                // and makes saturation a true graceful-give-up (best step
+                // the un-regularized LU can produce). DO NOT pass the
+                // regularized triplets here; that would conflate "LM
+                // saturation" with "LU on λ_max-regularized system" and
+                // make the saturation surface a moving target.
                 return self.lu_fallback(triplets, numeric_err, context);
             }
-            Err(LltError::Generic(...)) => panic!(...),
+            Err(LltError::Generic(faer_err)) => panic!(...),
         }
     }
 }
+
+// Helper. Clones triplets, walks the clone, adds λ to each (k, k) entry
+// in place. Preserves triplet ordering (the symbolic factor depends on
+// it). O(n_triplets) clone + O(n_triplets) walk = O(n_triplets).
+fn triplets_with_diagonal_offset(
+    triplets: &[Triplet<usize, usize, f64>],
+    lambda: f64,
+) -> Vec<Triplet<usize, usize, f64>> {
+    let mut out = triplets.to_vec();
+    for t in &mut out {
+        if t.row == t.col {
+            t.val += lambda;
+        }
+    }
+    out
+}
 ```
 
-The LU fallback path stays intact behind the saturation guard. When LM is disabled (`SolverConfig::lm_regularization: None`), `lm_state.lambda` is permanently 0 AND `lm_state.can_bump()` is permanently `false`, so the function reduces bit-equally to today's code (try Llt; on non-PD fall back to LU; on other LltError panic). This is the backward-compat invariant.
+The LU fallback path stays intact behind the saturation guard. When LM is disabled (`SolverConfig::lm_regularization: None`), `lm_state.lambda` is permanently 0 AND `lm_state.can_bump()` is permanently `false`, so the function reduces bit-equally to today's code (try Llt on the borrowed-as-is triplets; on non-PD fall back to LU; on other LltError panic). This is the backward-compat invariant.
 
-`factor_at_position` (the IFT-adjoint post-convergence factor at `x_final`) takes its own fresh `LmState` initialized from the converged Newton iter's final λ; in practice the IFT adjoint is on the SPD happy path (we just converged) and `λ = 0` is the expected value. The interface signature change is internal — `factor_at_position` is a private method.
+**`factor_at_position` (IFT adjoint) behavior**: by symmetry, `factor_at_position` also engages the LM retry loop — there is exactly one factor site (`factor_free_tangent`) and one behavior. The IFT adjoint runs at converged `x_final` on what is typically the SPD happy path (we just converged), so in practice `λ = 0` is the expected value and LM does not fire. The Newton-iter final `LmState` is snapshotted in `solve_impl` and passed to `factor_at_position` as a fresh `LmState` initialized from that final λ (small-but-non-zero λ values from late-iter LM activity carry into the adjoint factor for consistency). Internal API change: `factor_at_position(x_curr, dt)` becomes `factor_at_position(x_curr, dt, lm_seed_lambda)`; `solve_impl` passes the Newton-final λ. For consumers who don't care about the IFT adjoint (Fork-B / cf-device-design — see §2.4), this is dead weight but harmless.
 
-**Why this site, not the assembly site**: `assemble_free_hessian_triplets` is the natural place to *inflate* the diagonal, but pushing `+λI` into the assembly means re-assembling the entire Hessian on every LM bump-and-retry. Doing it inside `factor_free_tangent` keeps the assembly cost out of the retry loop — the triplets are immutable input, only the diagonal modification is per-retry. With λ-bumps capped at 5-10 per Newton iter (see §2.2), the retry overhead is bounded.
+**Why this site, not the assembly site**: `assemble_free_hessian_triplets` is the natural place to *inflate* the diagonal, but pushing `+λI` into the assembly means re-assembling the entire Hessian on every LM bump-and-retry (active-pair walk, per-tet tangent recompute, scatter — order-of-magnitude more expensive than the factor itself). Doing it inside `factor_free_tangent` keeps assembly out of the retry loop — the triplets are immutable input, only the diagonal modification is per-retry. With λ-bumps capped at 5-10 per Newton iter (see §2.2), the retry overhead is bounded by `max_retries_per_iter × (clone_triplets + Llt)`.
 
 ### 2.2 How λ adapts (Marquardt-style in-iter retry)
 
@@ -84,13 +114,27 @@ The LU fallback path stays intact behind the saturation guard. When LM is disabl
 | Llt non-PD, `λ ≥ λ_max` | fall through to LU + Armijo (saturation graceful-give-up) |
 
 **Defaults** (provisional; tunable via `LmConfig`):
-- `λ_seed = 1e-6 * max_diag_of_assembled_tangent` — first non-zero λ value (computed once, cached on the solver). Seed scales with the mass + element-stiffness order so it's geometry-aware.
-- `up_factor = 10.0` — aggressive bump; 5-10 retries reach `λ = 10^5 · λ_seed` which is enough to dominate any contact-Hessian negative eigenvalue we've seen in practice (κ = 1e3 contact Hessian contributions are O(1e3); mass diagonal is O(1e6) at typical mesh densities).
+- `λ_seed = 1e-6 * max_diag_of_assembled_tangent` — first non-zero λ value (recomputed per `factor_free_tangent` call from current triplets' diagonal). Seed scales with the mass + element-stiffness order so it's geometry-aware.
+- `up_factor = 10.0` — aggressive bump; 8 retries reach `λ = 10^8 · λ_seed`.
 - `down_factor = 0.5` — gentle decay; preserves quadratic convergence near the solution by not stomping λ to zero between iters.
 - `λ_max = 1e3 * max_diag` — ceiling; above this, the regularized system is essentially `λ_max · I · δ = -r` (gradient descent with step size `1/λ_max`), which is worse than the existing LU fallback.
+- `λ_min = 0.0` — decay floor. λ is allowed to decay all the way to zero (no sticky-warm policy); the next non-PD detection re-seeds from `λ_seed`. Simpler than maintaining a permanent floor and avoids the question of "is the warm λ helping or hurting after the active-set shifts."
 - `max_retries_per_iter = 8` — backstop against infinite retry loops; with `up_factor = 10`, 8 retries spans `λ_seed → 1e8 · λ_seed`, more than enough to hit any sensible `λ_max`.
 
-**Per-iter vs per-step state**: `LmState` lives for the duration of one `solve_impl` call (one time-step / one Newton solve). It is created at Newton-iter 0 with `λ = 0`, mutated by `factor_free_tangent` retries within an iter, and persists across Newton iters within the same `solve_impl`. λ does NOT reset between iters — the decay rule (`down_factor` per Llt success) handles the case where the problem becomes well-conditioned mid-solve.
+**Numerical sanity of the defaults — back-of-envelope at cf-device-design's failure point**:
+- Mass diagonal `mass / dt²` dominates `max_diag` at fine BCC meshes (~1e3 N/m per DOF at default cell-size + `dt = STATIC_DT`).
+- `λ_seed ≈ 1e-3 N/m` at the cavity-inset failure case.
+- Negative-eigenvalue magnitude from contact Hessian: `κ · ‖grad sd‖² ~ 1e3` per active pair at `INSERTION_CONTACT_KAPPA = 1e3`.
+- To dominate that requires λ ≈ 1e3, which is 6 bumps from `λ_seed` (10⁶× from 1e-3 to 1e3).
+- With `max_retries_per_iter = 8`, this leaves **2 retries of headroom** — TIGHT but workable.
+
+**Bidirectional tuning guidance** (F3.2 implementation will need to empirically tune the seed-scaling):
+- If LM fires at the cavity = 3 mm baseline (where pre-F3 converges 16/16 with occasional LU-fallback firings) AND adds extra Newton iterations → `seed_relative` is too aggressive; lower it (e.g., 1e-8) so LM only activates for the harder cavity > 3 mm cases.
+- If LM saturates at `λ_max` without rescuing cavity = 5 mm → `seed_relative` is too conservative (we run out of retry budget before reaching the needed regularization) OR `up_factor` is too small; either widen seed (1e-3 or 1e-2) or bump up_factor to 100.0. The visual-gate trace at F3.4 makes which one obvious from the saturation log.
+
+The default `1e-6 · max_diag` is the principled starting point (six-orders-of-magnitude headroom below the dominant diagonal); if empirical results push it more than ±2 orders, that's a finding worth documenting at F3.5.
+
+**Per-iter vs per-step state**: `LmState` lives for the duration of one `solve_impl` call (one time-step / one Newton solve). It is created at Newton-iter 0 with `λ = 0`, mutated by `factor_free_tangent` retries within an iter, and persists across Newton iters within the same `solve_impl`. λ does NOT reset between Newton iters — the decay rule (`down_factor` per Llt success, floor at `λ_min = 0`) handles the case where the problem becomes well-conditioned mid-solve.
 
 **Why classic Marquardt over alternatives**:
 - *Constant `λ`*: simpler but worse — small constant λ fails to rescue deep pathologies; large constant λ kills quadratic convergence on the easy iters.
@@ -148,11 +192,17 @@ pub struct LmConfig {
 
 #[derive(Clone, Copy, Debug)]
 pub enum SaturationPolicy {
-    /// Today's behavior: panic with the existing Armijo-stall message.
-    Panic,
-    /// Return a best-effort `NewtonStep::new_failed(x_curr, last_iter, last_r_norm)`
+    /// Today's behavior: `Solver::step` panics with the existing
+    /// Armijo-stall message (augmented to note LM-saturated when
+    /// applicable). The only path on `Solver::step` regardless of LM
+    /// enabled-ness — see §2.5 for why the panic surface is preserved.
+    PanicOnStall,
+    /// Used only by `Solver::try_step` (new method, see §2.5). Returns
+    /// `Err(SolverFailure::ArmijoStall { x_partial, last_iter, last_r_norm })`
     /// — the caller decides whether to accept the partial solve.
-    GiveUp,
+    /// `Solver::step` still panics on Armijo stall regardless of this
+    /// setting; callers wanting graceful failure must use `try_step`.
+    ReturnFailed,
 }
 
 impl LmConfig {
@@ -160,20 +210,22 @@ impl LmConfig {
         Self {
             seed_relative: 1e-6, up_factor: 10.0, down_factor: 0.5,
             max_relative: 1e3, max_retries_per_iter: 8,
-            on_saturation: SaturationPolicy::GiveUp,
+            on_saturation: SaturationPolicy::ReturnFailed,
         }
     }
 }
 ```
 
-**Bit-equal verification (F3.1 acceptance gate)**: run `cargo test -p sim-soft --release` post-F3.1; every existing test passes without modification. Specifically inspect `multi_element_isolation.rs` (exact iter counts), `solver_convergence.rs` (iter count < 10), and `concentric_lame_shells.rs` (50-iter cap). If any test breaks, the dispatch in `factor_free_tangent` is wrong (it's not falling through to the `None` path bit-equally) — fix before F3.2.
+**Bit-equal verification (F3.1 acceptance gate)**: the concrete pass criterion is `cargo test -p sim-soft --release` returning green with no test modifications. If the F3.1 plumbing is truly inert at `lm_regularization: None` (the dispatch in `factor_free_tangent` falls through to today's exact path before touching any LM state), this passes trivially. Specifically inspect for regressions: `multi_element_isolation.rs` (exact iter counts at lines 229-233), `solver_convergence.rs` (iter count < 10 at line 58), `concentric_lame_shells.rs` (50-iter cap at line 568+). If ANY of these break, the F3.1 implementation is wrong — fix before F3.2 begins.
 
 ### 2.4 Fork-A vs Fork-B semantics
 
-**Fork B (cf-device-design)**: opts in via `insertion_solver_config()` setting `lm_regularization = Some(LmConfig::fork_b())`. Saturation policy is `GiveUp`. The relative-comparison tool already tolerates loose `tol = 1e-1` and explicitly accepts "loose-but-physically-exact convergences" (`insertion_sim.rs:888`). On λ saturation, the insertion-step caller (`run_single_insertion_step`, `run_sliding_insertion_ramp`) sees a non-converged step and decides whether to abort the ramp or accept the partial. Default behavior at insertion-ramp consumers: abort with the same anyhow-error pattern as today's `replay_step panicked at...` propagation, but no panic.
+**Fork B (cf-device-design)**: opts in via `insertion_solver_config()` setting `lm_regularization = Some(LmConfig::fork_b())` AND switching from `Solver::step` to `Solver::try_step` at the insertion-ramp call sites. Saturation policy is `ReturnFailed`. The relative-comparison tool already tolerates loose `tol = 1e-1` and explicitly accepts "loose-but-physically-exact convergences" (`insertion_sim.rs:888`). On λ saturation, the insertion-step caller (`run_single_insertion_step`, `run_sliding_insertion_ramp`) receives an `Err(SolverFailure::ArmijoStall)` and decides whether to abort the ramp or accept the partial. Default behavior at insertion-ramp consumers: abort with the same anyhow-error propagation pattern as today's panic-catch path, but with no actual panic — the failure is structured data.
+
+**Fork-B's `factor_at_position` is functionally dead**: cf-device-design does NOT consume Newton-step gradients (no `theta_var` flows downstream to a backward pass). The IFT adjoint factor at `x_final` runs as a no-op by-product of `Solver::step`'s tape-pushing contract; with LM enabled at Fork-B, the factor still happens, but its LM behavior is invisible to anything Fork-B cares about. F3.4's visual gate therefore doesn't need to validate IFT-adjoint LM semantics — they're inert in the cf-device-design test surface. (Fork-A consumers will care eventually; see below.)
 
 **Fork A (sim-hard / production solver — every other sim-soft consumer)**: NOT in this spec. The `lm_regularization` field exists in `SolverConfig`; Fork-A consumers leave it `None` for now. When a production consumer eventually needs LM (e.g., the rows' growing ramp at extreme contact concentrations), the spec for Fork-A is a future doc that:
-1. Decides on stricter saturation policy (`SaturationPolicy::Panic` is the natural default — production should not silently degrade).
+1. Decides on stricter saturation policy (`SaturationPolicy::PanicOnStall` is the natural default — production should not silently degrade).
 2. Considers tighter `max_relative` (smaller ceiling — stop early on degenerate input rather than slide into pure gradient descent).
 3. Re-examines the IFT adjoint at `factor_at_position`: today the adjoint runs at `x_final` after Newton converged, so the assembled tangent is the converged one — the same tangent that Newton last factored without issue. If Newton converged via LM with `λ > 0` AT THE LAST ITER, the IFT adjoint's `factor_at_position` factor should use the same λ for consistency. This is a Fork-A concern because Fork-B does not consume gradients.
 
@@ -184,27 +236,73 @@ The reason Fork-A is deferred: the gradient-consuming consumers haven't surfaced
 Three failure surfaces under F3 (with `LmConfig::Some(...)`):
 
 1. **Llt-PD with λ = 0 + Newton converges**: identical to today. No code change visible.
-2. **Llt-non-PD + λ bump succeeds + Newton converges**: new path. LM does its job. Visible only as warn-log lines `"sim-soft: LM bumped λ to {…} at Newton iter {…}"` (analogous to today's LU fallback log).
-3. **Llt-non-PD + λ saturates AT `λ_max` + LU fallback fires + Armijo stalls**: the saturation surface. Behavior is governed by `SaturationPolicy`:
-   - `Panic` (Fork-A default, also today's behavior with LM disabled): panic with the existing `"Armijo line-search stalled at Newton iter {…}"` message, augmented to note LM-saturated when applicable.
-   - `GiveUp` (Fork-B default): `armijo_backtrack` returns a `Result<Vec<f64>, ArmijoStall>` instead of panicking; `solve_impl` returns a `NewtonStep::new_failed(x_curr, last_iter, last_r_norm)` for the caller to inspect.
+2. **Llt-non-PD + λ bump succeeds + Newton converges**: new path. LM does its job. Visible only via the log policy below.
+3. **Llt-non-PD + λ saturates AT `λ_max` + LU fallback fires + Armijo stalls**: the saturation surface. Behavior is governed by which `Solver` method the caller invoked AND by `SaturationPolicy`:
+   - `Solver::step` (existing, infallible signature): always panics on Armijo stall regardless of `on_saturation`. Preserves today's panic-on-stall semantics; backward-compat for every existing caller.
+   - `Solver::try_step` (new method, see "Public API change" below): dispatches on `on_saturation`. With `PanicOnStall`, behaves like `step`. With `ReturnFailed`, returns `Err(SolverFailure::ArmijoStall { x_partial, last_iter, last_r_norm })` for the caller to inspect.
 
-**Why graceful-give-up is opt-in, not default**: today's panic policy on Armijo stall is documented as a "book-level finding" (scope §11 S-2) — the existing tests' regression-net depends on these panics being detectable failures. Flipping the default to "silently return" would risk masking real solver failures in production code. The opt-in flag forces explicit acknowledgment: "I want this solver to gracefully fail rather than panic" is a deliberate choice cf-device-design makes; sim-soft tests + future production consumers stay panic-on-stall by default.
+**Why graceful-give-up requires both opt-in (LmConfig) AND a new method (try_step)**: today's `Solver::step` is called from ~30+ test sites + the cf-device-design insertion ramp. Changing its return type to `Result<NewtonStep, SolverFailure>` cascades through every caller. Adding `try_step` keeps the existing method bit-equal-compatible and forces graceful-failure consumers to make an explicit choice — both by setting `SaturationPolicy::ReturnFailed` AND by calling the new method. Two-key authentication for "I really want this solver to gracefully degrade."
 
-**`NewtonStep` shape change**:
+**Public API change** (the only public API change in this spec):
 
 ```rust
-pub enum NewtonStep<T: Tape> {
-    Converged { x_final: Vec<f64>, iters: usize, final_r_norm: f64, tape_entry: T::Entry },
-    /// New variant added by F3 — only constructed when `SolverConfig::lm_regularization`
-    /// is `Some` AND `on_saturation == GiveUp` AND the solve actually fails.
-    Failed { x_partial: Vec<f64>, iters: usize, last_r_norm: f64, reason: FailureReason },
+pub trait Solver: Send + Sync {
+    type Tape;
+
+    // Existing methods — unchanged signatures, panic-on-failure semantics preserved.
+    fn step(...) -> NewtonStep<Self::Tape>;
+    fn replay_step(...) -> NewtonStep<Self::Tape>;
+    fn current_dt(&self) -> f64;
+    fn convergence_tol(&self) -> f64;
+
+    // NEW. Default impl forwards to `step` (i.e., panics on failure)
+    // for back-compat with consumers who don't care. CpuNewtonSolver
+    // overrides to dispatch on SaturationPolicy.
+    fn try_step(
+        &mut self,
+        tape: &mut Self::Tape,
+        x_prev: &Tensor<f64>,
+        v_prev: &Tensor<f64>,
+        theta_var: Var,
+        dt: f64,
+    ) -> Result<NewtonStep<Self::Tape>, SolverFailure> {
+        Ok(self.step(tape, x_prev, v_prev, theta_var, dt))
+    }
+
+    // Same shape, for replay path.
+    fn try_replay_step(...) -> Result<NewtonStep<Self::Tape>, SolverFailure> {
+        Ok(self.replay_step(...))
+    }
+}
+
+#[derive(Debug)]
+pub enum SolverFailure {
+    /// Armijo line-search stalled after exhausting LM retries (or with
+    /// LM disabled, on the first Armijo stall). Carries the partial
+    /// solve state at the failing Newton iter.
+    ArmijoStall { x_partial: Vec<f64>, last_iter: usize, last_r_norm: f64 },
+    /// Newton iter cap reached without converging. Carries the partial
+    /// solve state at the last iter (the new Result variant of today's
+    /// `panic!` at solve_impl line 902-909).
+    NewtonIterCap { x_partial: Vec<f64>, max_iter: usize, last_r_norm: f64 },
+    /// Doubly-failed factor (Llt non-PD AND LU also failed). This was
+    /// already a model-level non-recoverable condition; surfacing it as
+    /// `Err` rather than `panic!` is the consistent graceful-failure
+    /// posture.
+    DoublyFailedFactor { context: String },
 }
 ```
 
-Today's `NewtonStep` has a single tape-entry payload; `Solver::step`'s return type changes from infallible to `Result<…, SolverFailure>` OR remains infallible but with a richer variant. The exact shape is an F3.3 implementation detail — the spec commitment is: the failure surface is structured (caller can inspect) and never silently produces a degraded `Converged` value.
+**`NewtonStep<T>` stays a struct** (today's shape at `solver/mod.rs:40-56`). The Failed-variant idea is not pursued — it would cascade through every consumer that reads the struct's fields. `SolverFailure` is the new failure-carrier type; `NewtonStep` only ever represents a converged step (its existing invariant). Today's `NewtonStep::new_converged` constructor is unchanged.
 
-**`armijo_backtrack` changes**: signature returns `Result<Vec<f64>, ArmijoStall>` instead of panicking directly. `solve_impl` translates to either `panic!` or `NewtonStep::Failed` based on `SolverConfig`. The internal API change is local; external callers (today `solve_impl` is the only caller) update with it.
+**`armijo_backtrack` changes**: returns `Result<Vec<f64>, ArmijoStall>` instead of panicking directly. `solve_impl` and `try_solve_impl` (the new mirror of `solve_impl` with `Result` return) translate to either `panic!` (existing path) or `Err(SolverFailure::ArmijoStall)` (new path) based on which entry-point the caller invoked. The internal API change is local; external callers of `step` see no change.
+
+**Logging policy** (the per-retry warn-log surface):
+- **First non-PD detection per Newton iter** logs `"sim-soft: LM seeded λ = {…} at Newton iter {…}"` (analogous to today's `"faer LU fallback fired"` line, fired at the same cadence — once per iter when activity occurs).
+- **Subsequent bumps within the same Newton iter** are silent during the bump loop; the post-loop outcome line summarizes: `"sim-soft: LM converged in {N} retries to λ = {…} at Newton iter {…}"` (on Llt success) or `"sim-soft: LM saturated at λ = λ_max = {…} after {N} retries at Newton iter {…}; falling back to LU on un-regularized triplets"` (on saturation).
+- **Decay events** (Llt success with λ > 0 after non-decay activity) are silent — the post-success log already captures the salient information.
+
+This bounds total log volume at ~2 lines per Newton iter when LM is active, regardless of how many retries fire. At the cavity-inset failure case (~150 Newton iters per stalled step), that's a few hundred lines per failed step — comparable to today's LU fallback log noise.
 
 ---
 
@@ -244,23 +342,27 @@ Sized for two follow-up sessions (implementation, visual gate) with explicit acc
 - Sizing: ~150 LOC across SolverConfig + new module + plumbing. Quick.
 
 ### F3.2 — `factor_free_tangent` LM retry loop + unit test — session 2 (medium)
-- Implement the §2.1 retry loop in `factor_free_tangent`. `add_diagonal` helper (`Cow<[Triplet]>` returning either the borrowed input when λ == 0 or an owned vec with `+λI` injected).
-- Pre-compute `max_diag` once per Newton iter (the seed scaling). Storage: `LmState::seed_lambda` cached on first computation, refreshed at each Newton iter (the diagonal magnitudes shift with x).
+- Implement the §2.1 retry loop in `factor_free_tangent`. `triplets_with_diagonal_offset` helper (clones triplets, walks for `row == col`, adds `λ` in place — see §2.1 for why appending isn't an option).
+- Pre-compute `max_diag` at the top of `factor_free_tangent` (before the retry loop) by walking input triplets for entries with `row == col`. O(n_triplets) once per call — negligible vs the factor cost.
+- Implement the §2.5 logging policy (first-bump-per-iter seed line + post-loop outcome line summarizing retries-to-success or saturation; decay events silent).
 - Add a new unit test in `backward_euler.rs`'s `mod tests` mirroring `factor_free_tangent_falls_through_to_lu_on_non_pd` (the existing non-PD fixture, line 1570) but with LM enabled — assert that Llt returns `Ok` after the LM bump rather than falling through to LU. The existing non-PD test stays as the LM-disabled baseline.
-- Run cavity = 3 mm visual gate manually (the baseline that converged 16/16 pre-F4): the trace should be bit-equal-or-better; if LM fires *at all* at the baseline, the seed/up_factor are mistuned.
-- Acceptance: existing LU fallback test passes (LM disabled); new LM test passes; cavity = 3 mm still converges 16/16 with LM enabled (Fork-B preset).
+- Run cavity = 3 mm visual gate manually (the baseline that converged 16/16 pre-F4): expectation is **approximately the same iter count, NOT bit-equal** — at cavity = 3 mm pre-F3 the LU fallback already fires occasionally on the converging path (visible in logs), and with LM enabled those non-PD detections trigger `+λI` instead of LU → different step direction → numerically different iter counts. If iter counts grow significantly (>1.5× baseline) → seed/up_factor too aggressive; if iter counts drop dramatically (LM "rescuing" cases that didn't need rescue) → look for stability regressions in the trace.
+- Acceptance: existing LU fallback unit test passes (LM disabled, bit-equal); new LM unit test passes (LM enabled, Llt-Ok after bump); cavity = 3 mm still converges 16/16 with LM enabled (Fork-B preset) within ~1.5× baseline iter count.
 - Sizing: ~200 LOC. Most of the math complexity lives here.
 
-### F3.3 — Decay rule + saturation policy + `NewtonStep::Failed` — session 2 (medium)
-- Implement decay (`down_factor` on Llt success when λ > 0).
-- Implement saturation: when retries exceed `max_retries_per_iter` OR `λ ≥ λ_max`, dispatch on `SaturationPolicy::Panic | GiveUp`. `GiveUp` requires `armijo_backtrack` returning a `Result` and `solve_impl` translating into `NewtonStep::Failed`.
-- Update `Solver::step` / `Solver::replay_step` return type — Result-or-richer-NewtonStep. Choice depends on whether the trait's existing Solver consumers can tolerate a Result. Today only `CpuNewtonSolver` impls Solver and only `insertion_sim.rs` consumers + the tests call it. If changing the trait to `Result` cascades, add a `try_step` method instead and leave `step` as the panic-fallback for backward-compat.
-- Acceptance: all existing tests still pass; saturation-policy unit test (force a degenerate matrix, assert `Panic` panics and `GiveUp` returns `NewtonStep::Failed`).
-- Sizing: ~150 LOC plus consumer updates. Bundle-able with F3.2 in one implementation session if energy allows; can be split into a second implementation session if needed.
+**Note on `tests/contact_stability.rs`**: this is the natural F3 regression-test harbor — it already catches solver panics (`NonPositivePivot`, Armijo stall, Newton non-convergence) across a κ × cell_size scan grid. Once F3.3 lands and `try_step` is available, augment the scan harness with an LM-enabled mode and assert that all previously panicking grid points either (a) converge under LM or (b) return `Err(SolverFailure)` cleanly. Defer to F3.5 if F3.4 visual gate ships clean — at that point the scan harness becomes a permanent regression net.
+
+### F3.3 — Decay rule + saturation policy + `try_step` + `SolverFailure` — session 2 (medium)
+- Implement decay (`down_factor` on Llt success when λ > 0; floor at `λ_min = 0` per §2.2).
+- Implement saturation: when retries exceed `max_retries_per_iter` OR `λ ≥ λ_max`, fall through to LU on the **original (un-regularized) triplets** (per §2.1) and let Armijo run.
+- Add `SolverFailure` enum + `Solver::try_step` + `Solver::try_replay_step` per §2.5 public-API change. Default impls forward to existing `step`/`replay_step` (preserving back-compat). `CpuNewtonSolver` overrides to dispatch on `SaturationPolicy`.
+- `armijo_backtrack` returns `Result<Vec<f64>, ArmijoStall>`; `try_solve_impl` (new mirror of `solve_impl`) translates to `Err(SolverFailure::ArmijoStall)`. Existing `solve_impl` keeps the `panic!` path bit-equal so today's `Solver::step` consumers see no behavior change.
+- Acceptance: all existing tests still pass under `cargo test -p sim-soft --release` (bit-equal); saturation-policy unit test exercises both `PanicOnStall` (asserts panic) and `ReturnFailed` (asserts `Err(SolverFailure::ArmijoStall)`); the new LM-enabled-on-non-PD unit test from F3.2 still passes.
+- Sizing: ~150 LOC for the math + ~50 LOC for the trait additions + ~30 LOC for the saturation-policy unit test. Bundle-able with F3.2 in one implementation session if energy allows; split into a second implementation session if not.
 
 ### F3.4 — cf-device-design opt-in + visual gate — session 3
 - `insertion_sim.rs::insertion_solver_config()` adds `config.lm_regularization = Some(LmConfig::fork_b())`.
-- Update `run_sliding_insertion_ramp` to handle `NewtonStep::Failed` gracefully (anyhow-error propagation, no panic).
+- Update `run_sliding_insertion_ramp` to use `Solver::try_step` and handle `Err(SolverFailure::ArmijoStall)` gracefully (anyhow-error propagation, no panic).
 - Run cavity = 3 mm visual gate (baseline regression check — must still converge 16/16).
 - Run cavity = 5 mm visual gate (the load-bearing test).
 - Run cavity = 8 mm visual gate (the F4.1 UI cap — does F3 lift it?).
@@ -296,7 +398,8 @@ Sized for two follow-up sessions (implementation, visual gate) with explicit acc
 - `sim/L0/soft/src/solver/backward_euler.rs:710-766` — `factor_free_tangent` (the F3.2 modification site).
 - `sim/L0/soft/src/solver/backward_euler.rs:787-809` — `factor_and_solve_free` (carries `LmState` through).
 - `sim/L0/soft/src/solver/backward_euler.rs:830-910` — `solve_impl` (initializes `LmState` from `SolverConfig::lm_regularization`).
-- `sim/L0/soft/src/solver/backward_euler.rs:924-975` — `armijo_backtrack` (returns `Result` under `GiveUp` policy).
+- `sim/L0/soft/src/solver/backward_euler.rs:924-975` — `armijo_backtrack` (returns `Result<Vec<f64>, ArmijoStall>`; existing `solve_impl` keeps `panic!` for back-compat, new `try_solve_impl` translates to `Err(SolverFailure::ArmijoStall)`).
+- `sim/L0/soft/src/solver/mod.rs:40-56` — `NewtonStep<T>` struct (unchanged shape; F3 does NOT add a `Failed` variant — see §2.5 for the `SolverFailure` enum + `try_step` rationale).
 - `sim/L0/soft/src/solver/backward_euler.rs:1148-1234` — `assemble_free_hessian_triplets` (the mass-diagonal scatter pattern `+λI` clones).
 - `sim/L0/soft/src/solver/backward_euler.rs:1570+` — `factor_free_tangent_falls_through_to_lu_on_non_pd` test (the F3.2 unit-test scaffold).
 - `tools/cf-device-design/src/insertion_sim.rs:899-905` — `insertion_solver_config()` (the F3.4 opt-in site).
@@ -306,6 +409,9 @@ Sized for two follow-up sessions (implementation, visual gate) with explicit acc
 - `sim/L0/soft/tests/multi_element_isolation.rs:229-233` — exact iter count assertions.
 - `sim/L0/soft/tests/solver_convergence.rs:58` — `step.iter_count < cfg.max_newton_iter` assertion.
 - `sim/L0/soft/tests/concentric_lame_shells.rs` — 50-iter cap regression net.
+
+**Natural F3 regression-test harbor** (F3.2 unit + F3.3 saturation + F3.5 long-term):
+- `sim/L0/soft/tests/contact_stability.rs` — already a κ × cell_size scan harness catching solver panics (`NonPositivePivot`, Armijo stall, Newton non-convergence). Augment with an LM-enabled mode once F3.3 lands `try_step` + `SolverFailure`; assert all previously panicking grid points either converge under LM or return clean `Err(SolverFailure)`. Defer the augment to F3.5 if F3.4 visual gate ships clean; the scan harness becomes the permanent regression net.
 
 **Memory references**:
 - [[feedback-bookmark-when-surface-levers-exhaust]] — the three-session pattern.
@@ -319,7 +425,7 @@ Sized for two follow-up sessions (implementation, visual gate) with explicit acc
 
 - **Why not `K + βM` mass-damping instead of `+λI`**: mass-damping is the standard rescue for transient time-stepping; sim-soft is quasi-static at `dt = 1e-2` with all damping already baked into the mass-diagonal scatter. Adding a separate `β` knob fights with the existing mass diagonal. `+λI` is the cleaner geometric-regularization knob.
 - **Why not trust-region / Dogleg / Levenberg-Marquardt-with-reduction-ratio**: more general; more code; defer until classic Marquardt is empirically insufficient.
-- **Why not "just lower κ further at cf-device-design"**: F2 falsified this — see postmortem §10.
+- **Why not "just lower κ further at cf-device-design"**: F2 falsified this — see postmortem §10. The existing `INSERTION_CONTACT_KAPPA = 1e3` stays load-bearing alongside F3: κ scales per-pair penalty magnitude (the residual force at any given interpenetration), F3 scales the regularization of the assembled tangent's eigenstructure. The two knobs do different jobs; F3 doesn't subsume κ tuning.
 - **Why not "smoothed barrier contact (Hauser-Pal or IPC-style)"**: the right tool for active-set chattering, NOT non-PD tangent direction. F3 attacks the direction problem. If the visual gate falsifies F3 with outcome C/D, smoothed barriers become a candidate next-arc.
 - **Why opt-in by default, not default-on**: bit-equality of the 25+ existing test regression net is non-negotiable. Opt-in is the only safe path. Once F3 ships and bakes in the field, the discussion of flipping default-on is a future polish arc.
 - **Why a separate `LmConfig` type, not flat fields on `SolverConfig`**: encapsulation. `LmConfig` is its own design surface with 5-6 tunables; flattening them onto SolverConfig pollutes the latter's surface for a feature most consumers don't use. `Option<LmConfig>` keeps the gate clean.
